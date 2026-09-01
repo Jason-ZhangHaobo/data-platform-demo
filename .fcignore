@@ -1,0 +1,12 @@
+.git/**
+.github/**
+.data/**
+dist/**
+docs/**
+test/**
+scripts/**
+.env*
+AGENTS.md
+Dockerfile
+README.md
+*.log

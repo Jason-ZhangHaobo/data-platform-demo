@@ -6,9 +6,10 @@ const taskRoute = (pathname) => {
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
 
-export function createApiController({ store, simulationDelayMs = 1_200, environment = "local" }) {
-  return async function handle({ method, pathname, body = {} }) {
+export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken }) {
+  return async function handle({ method, pathname, body = {}, headers = {} }) {
     if (method === "GET" && pathname === "/api/health") return result(200, { status: "ok", service: "data-platform-demo", environment, time: new Date().toISOString() });
+    if (accessToken && headers.authorization !== `Bearer ${accessToken}`) return result(401, { message: "请输入正确的演示访问码" });
     if (method === "GET" && pathname === "/api/summary") return result(200, await store.getSummary());
     if (method === "GET" && pathname === "/api/tasks") return result(200, await store.listTasks());
     if (method === "POST" && pathname === "/api/tasks") return result(201, await store.createTask(validateTaskInput(body)));
@@ -32,14 +33,16 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       const startedAt = new Date().toISOString();
       const run = await store.createRun({ taskId: task.id, status: "RUNNING", startedAt, rowsRead: 0, rowsWritten: 0, message: "正在模拟读取源端数据……" });
       await store.updateTask(task.id, { status: "RUNNING", lastRunAt: startedAt });
-      setTimeout(async () => {
-        const current = await store.getTask(task.id);
-        if (!current || current.status !== "RUNNING") return;
-        const rows = 1_000 + Math.floor(Math.random() * 18_000);
-        await store.updateRun(run.id, { status: "SUCCESS", finishedAt: new Date().toISOString(), rowsRead: rows, rowsWritten: rows, message: "模拟执行完成，源端与目标端记录数一致。" });
-        await store.updateTask(task.id, { status: "SUCCESS", lastRunAt: startedAt });
-      }, simulationDelayMs);
-      return result(202, run);
+      await new Promise((resolve) => setTimeout(resolve, simulationDelayMs));
+      const current = await store.getTask(task.id);
+      if (!current || current.status !== "RUNNING") {
+        const stoppedRun = (await store.listRuns(task.id)).find((item) => item.id === run.id);
+        return result(200, stoppedRun ?? run);
+      }
+      const rows = 1_000 + Math.floor(Math.random() * 18_000);
+      const completedRun = await store.updateRun(run.id, { status: "SUCCESS", finishedAt: new Date().toISOString(), rowsRead: rows, rowsWritten: rows, message: "模拟执行完成，源端与目标端记录数一致。" });
+      await store.updateTask(task.id, { status: "SUCCESS", lastRunAt: startedAt });
+      return result(200, completedRun);
     }
     if (method === "POST" && route.action === "stop") {
       if (task.status !== "RUNNING") return result(409, { message: "只有运行中的任务可以停止" });

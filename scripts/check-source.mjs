@@ -12,7 +12,15 @@ async function filesUnder(directory) {
   return files;
 }
 
-const files = [...await filesUnder("src"), ...await filesUnder("scripts"), ...await filesUnder("test")];
+const files = [
+  ...await filesUnder("src"),
+  ...await filesUnder("scripts"),
+  ...await filesUnder("test"),
+  ...await filesUnder("docs"),
+  ...await filesUnder(".github"),
+  "s.yaml",
+  ".env.example",
+];
 for (const file of files.filter((path) => path.endsWith(".mjs"))) {
   const checked = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
   if (checked.status !== 0) throw new Error(checked.stderr || `Syntax check failed: ${file}`);
