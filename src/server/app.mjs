@@ -34,7 +34,11 @@ async function serveStatic(response, pathname, clientDirectory) {
     response.writeHead(200, { "Content-Type": contentTypes[extname(filePath)] ?? "application/octet-stream", "Cache-Control": "no-cache", "X-Robots-Tag": "noindex, nofollow" });
     response.end(content);
   } catch (error) {
-    if (error.code !== "ENOENT" || extname(pathname)) throw error;
+    if (error.code !== "ENOENT") throw error;
+    if (extname(pathname)) {
+      response.writeHead(404, { "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" });
+      return response.end();
+    }
     filePath = join(clientDirectory, "index.html");
     response.writeHead(200, { "Content-Type": contentTypes[".html"], "Cache-Control": "no-cache", "X-Robots-Tag": "noindex, nofollow" });
     response.end(await readFile(filePath));

@@ -22,13 +22,39 @@ TaskStore 接口
 
 ```text
 data-platform-demo
+├─ data-agent        跨模块智能入口与任务编排
 ├─ offline-sync      已实现第一版
 ├─ data-development  后续迭代
 ├─ data-masking      后续迭代
-└─ data-assets       后续迭代
+├─ data-assets       后续迭代
+└─ data-operations   后续迭代
 ```
 
 共享的账号、权限、审计和发布能力放在平台层，各业务模块保持清晰边界。
+
+## Data Agent 目标架构
+
+```text
+全页面 Chat / 模块侧边栏 / IM 机器人
+                 │
+                 ▼
+        Data Agent Orchestrator
+   意图识别 · 上下文 · 计划 · 状态 · 总结
+                 │
+       ┌─────────┼─────────┐
+       ▼         ▼         ▼
+ 数据集成技能  数据开发技能  数据安全技能
+       ▼         ▼         ▼
+ 离线同步 API  SQL/工作流 API  脱敏/权限 API
+       └─────────┼─────────┘
+                 ▼
+   资产目录 · 运维诊断 · ChatBI · 知识库
+                 │
+                 ▼
+     权限校验 · 人工确认 · 审计 · 回滚
+```
+
+Data Agent 是编排层，不直接绕过模块 API 操作数据。所有模块能力以可测试的 Skill/Tool 形式注册给 Agent，从而复用同一套权限、校验、审计和发布规则。
 
 ## 环境
 

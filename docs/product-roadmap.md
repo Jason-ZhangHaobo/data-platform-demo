@@ -1,0 +1,121 @@
+# 数栈产品蓝图：数据中台＋Data Agent
+
+## 1. 产品愿景
+
+让用户既可以通过传统界面精确管理数据中台，也可以通过自然语言让 Data Agent 跨模块完成规划、配置、诊断和分析；所有执行结果可查看、可确认、可审计、可回滚。
+
+## 2. 产品结构
+
+### 2.1 业务能力层
+
+| 模块 | 核心能力 |
+|---|---|
+| 离线同步 | 数据源、字段映射、全量/增量、调度、运行日志、真实 CSV → MySQL |
+| 数据开发 | SQL/Python 节点、工作流、依赖、调试、发布 |
+| 数据脱敏 | 脱敏规则、样例预览、审批、执行记录 |
+| 数据资产目录 | 表与字段、标签、负责人、血缘、搜索、语义说明 |
+| 数据运维 | 任务健康、日志诊断、依赖影响、资源与质量巡检 |
+| 账号权限审计 | 用户、角色、授权、审批、操作审计、风险回溯 |
+
+### 2.2 Data Agent 智能层
+
+| 能力 | 我们的目标 |
+|---|---|
+| 自然语言交互 | 中文描述需求，多轮澄清后形成可执行任务 |
+| 专用 Skills | 数据集成、开发、脱敏、安全、资产、运维、ChatBI |
+| 自动路由 | 根据用户意图和当前模块自动选择技能 |
+| 多步计划 | 把复杂任务拆为待办清单，持续反馈状态 |
+| 上下文引用 | 支持表、任务、代码、规则、数据集、文件和知识库 |
+| 预览与确认 | 写入或发布前展示影响范围，由用户确认 |
+| 执行总结 | 汇总创建/修改的资源、验证结果、风险和后续动作 |
+| ChatBI | 自然语言问数、SQL 生成、执行、图表和结论摘要 |
+| 语义知识 | 表关系、字段语义、指标口径、业务文档和团队规则 |
+| 主动服务 | 任务诊断、周期巡检、风险提醒和 IM 频道交互 |
+
+## 3. 与 DataWorks Data Agent 的对标原则
+
+参考阿里云 DataWorks 的能力方向：
+
+- 数据集成 Agent：自然语言生成同步任务配置。
+- 数据开发 Agent：需求分析、代码和工作流生成、发起发布。
+- 数据运维 Agent：健康评估、根因定位和诊断报告。
+- 数据地图/资产 Agent：找表、理解元数据和血缘。
+- 数据治理/安全 Agent：质量规则、治理动作和安全操作。
+- ChatBI：自然语言查询与可视化分析。
+- Context Graph：以元数据和业务资料形成统一知识上下文。
+
+对标不等于照搬。我们的优先级由产品经理真实工作流、可交付闭环和成本约束决定。
+
+## 4. 分期路线
+
+### Phase 1：平台闭环（当前）
+
+- 离线同步管理 MVP。
+- GitHub PR 与自动测试。
+- staging 自动部署、production 人工审批。
+- 费用和安全门禁。
+
+### Phase 2：真实同步
+
+- CSV → MySQL 小规模真实同步。
+- 数据源连接测试、字段映射、失败重试。
+- 运行指标、日志和结果校验。
+
+### Phase 3：Data Agent Lite
+
+- 在全页面 Chat 中描述同步需求。
+- Agent 生成结构化同步任务草稿。
+- 用户预览字段、调度和影响范围。
+- 用户确认后调用离线同步 API 保存或执行。
+- 所有对话、计划、确认和执行写入审计日志。
+
+### Phase 4：扩展业务 Skills
+
+- 数据开发 Skill。
+- 数据脱敏与安全 Skill。
+- 数据资产搜索与血缘 Skill。
+- 数据运维诊断 Skill。
+- 账号权限与审计 Skill。
+
+### Phase 5：智能分析与知识
+
+- ChatBI 问数和可视化。
+- 统一知识库与语义模型。
+- 团队规则和最佳实践上下文。
+- 周期巡检与主动提醒。
+- 钉钉、飞书、企业微信等 IM 入口。
+
+## 5. Agent 安全红线
+
+1. Agent 不直接绕过模块 API 修改数据。
+2. 写入、删除、发布、授权、脱敏等动作必须展示执行计划和影响范围。
+3. 高风险动作必须人工确认，不能因多轮对话默认获得永久授权。
+4. 每次调用记录用户、输入、上下文、工具、参数、结果和时间。
+5. 数据访问遵循用户角色和数据范围，Agent 不能扩大权限。
+6. 生成代码和 SQL 必须经过静态检查、测试或只读预览。
+7. Agent 输出要区分事实、推断和建议，并能追溯数据来源。
+
+## 6. Data Agent Lite 首个验收场景
+
+用户输入：
+
+> 帮我创建一个每天凌晨 2 点执行的离线同步任务，把演示 CSV 会员数据增量同步到 MySQL 会员画像表。
+
+验收流程：
+
+1. Agent 识别为数据集成需求。
+2. Agent 追问缺失的数据源、目标表和增量字段。
+3. Agent 生成任务草稿和执行计划。
+4. 用户查看源端、目标端、字段映射、调度和预计影响。
+5. 用户明确确认。
+6. Agent 调用离线同步 API 创建任务。
+7. Agent 返回任务链接、验证结果、风险和后续建议。
+
+## 7. 官方对标资料
+
+- [DataWorks Agent 智能体](https://help.aliyun.com/zh/dataworks/user-guide/data-agent)
+- [新版 Data Agent](https://help.aliyun.com/zh/dataworks/user-guide/new-data-agent)
+- [数据集成 DI Agent](https://help.aliyun.com/zh/dataworks/user-guide/introduction-to-data-integration-and-ai-native-capabilities)
+- [DataWorks ChatBI](https://help.aliyun.com/zh/dataworks/user-guide/dataworks-chatbi-overview)
+- [Data Agent 语义分析](https://help.aliyun.com/zh/dataworks/user-guide/data-agent-semantic-analysis)
+- [DataWorks 知识库](https://help.aliyun.com/zh/dataworks/user-guide/dataworks-knowledge-base-user-guide)
