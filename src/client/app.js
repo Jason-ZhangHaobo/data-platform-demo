@@ -8,8 +8,16 @@ const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => (
 const formatTime = (value) => value ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)) : "尚未运行";
 
 async function request(path, options) {
-  const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...options?.headers } });
+  const accessToken = sessionStorage.getItem("demoAccessToken");
+  const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), ...options?.headers } });
   const body = response.status === 204 ? undefined : await response.json().catch(() => ({}));
+  if (response.status === 401 && !options?.retried) {
+    const nextToken = window.prompt("请输入云端 Demo 访问码");
+    if (nextToken) {
+      sessionStorage.setItem("demoAccessToken", nextToken);
+      return request(path, { ...options, retried: true });
+    }
+  }
   if (!response.ok) throw new Error(body?.message ?? `请求失败（${response.status}）`);
   return body;
 }

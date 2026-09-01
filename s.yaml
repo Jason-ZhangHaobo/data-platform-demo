@@ -1,0 +1,56 @@
+edition: 3.0.0
+name: data-platform-demo
+access: default
+
+vars:
+  region: cn-hangzhou
+  stage: ${env('DEPLOY_ENV')}
+  bucket: ${env('OSS_BUCKET')}
+  roleArn: ${env('FC_ROLE_ARN')}
+  accessToken: ${env('DEMO_ACCESS_TOKEN')}
+
+resources:
+  web:
+    component: fc3
+    props:
+      region: ${vars.region}
+      functionName: data-platform-demo-${vars.stage}
+      description: Fictional data platform demo for learning controlled delivery.
+      runtime: custom.debian12
+      code: ./
+      handler: not-used
+      memorySize: 256
+      cpu: 0.1
+      diskSize: 512
+      timeout: 30
+      instanceConcurrency: 10
+      internetAccess: true
+      role: ${vars.roleArn}
+      environmentVariables:
+        PORT: "9000"
+        APP_ENV: ${vars.stage}
+        STORAGE_DRIVER: oss
+        OSS_ENDPOINT: oss-cn-hangzhou-internal.aliyuncs.com
+        OSS_BUCKET: ${vars.bucket}
+        OSS_OBJECT_KEY: data-platform-demo/store.json
+        DEMO_ACCESS_TOKEN: ${vars.accessToken}
+        SIMULATION_DELAY_MS: "1200"
+        PATH: /var/fc/lang/nodejs20/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+      customRuntimeConfig:
+        port: 9000
+        command:
+          - /var/fc/lang/nodejs20/bin/node
+        args:
+          - src/server/index.mjs
+      triggers:
+        - triggerName: http-trigger
+          triggerType: http
+          triggerConfig:
+            authType: anonymous
+            disableURLInternet: false
+            methods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - HEAD

@@ -1,0 +1,95 @@
+import { createHmac } from "node:crypto";
+import { MemoryTaskStore } from "./memory-store.mjs";
+import { createSeedState } from "./store.mjs";
+
+const encodeKey = (key) => key.split("/").map(encodeURIComponent).join("/");
+
+export function createOssRequest({ method, bucket, key, endpoint, credentials, body }) {
+  const date = new Date().toUTCString();
+  const contentType = body === undefined ? "" : "application/json; charset=utf-8";
+  const securityHeader = credentials.securityToken ? `x-oss-security-token:${credentials.securityToken}\n` : "";
+  const canonicalResource = `/${bucket}/${key}`;
+  const stringToSign = `${method}\n\n${contentType}\n${date}\n${securityHeader}${canonicalResource}`;
+  const signature = createHmac("sha1", credentials.accessKeySecret).update(stringToSign, "utf8").digest("base64");
+  const headers = {
+    Date: date,
+    Authorization: `OSS ${credentials.accessKeyId}:${signature}`,
+  };
+  if (contentType) headers["Content-Type"] = contentType;
+  if (credentials.securityToken) headers["x-oss-security-token"] = credentials.securityToken;
+  const host = endpoint.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  return {
+    url: `https://${bucket}.${host}/${encodeKey(key)}`,
+    options: { method, headers, body },
+    stringToSign,
+  };
+}
+
+export class OssTaskStore extends MemoryTaskStore {
+  constructor(config, state, fetchImpl = fetch) {
+    super(state);
+    this.config = config;
+    this.fetchImpl = fetchImpl;
+  }
+
+  static async open(config, fetchImpl = fetch) {
+    const store = new OssTaskStore(config, createSeedState(), fetchImpl);
+    const remote = await store.readRemote();
+    if (remote) store.state = remote;
+    else await store.persist();
+    return store;
+  }
+
+  async request(method, body) {
+    const request = createOssRequest({ ...this.config, method, body });
+    return this.fetchImpl(request.url, request.options);
+  }
+
+  async readRemote() {
+    const response = await this.request("GET");
+    if (response.status === 404) return undefined;
+    if (!response.ok) throw new Error(`OSS 读取失败（${response.status}）`);
+    return response.json();
+  }
+
+  async refresh() {
+    const remote = await this.readRemote();
+    if (remote) this.state = remote;
+  }
+
+  async persist() {
+    const response = await this.request("PUT", JSON.stringify(this.state));
+    if (!response.ok) throw new Error(`OSS 写入失败（${response.status}）`);
+  }
+
+  async listTasks() { await this.refresh(); return super.listTasks(); }
+  async getTask(id) { await this.refresh(); return super.getTask(id); }
+  async createTask(input) { await this.refresh(); return super.createTask(input); }
+  async updateTask(id, input) { await this.refresh(); return super.updateTask(id, input); }
+  async deleteTask(id) { await this.refresh(); return super.deleteTask(id); }
+  async listRuns(taskId) { await this.refresh(); return super.listRuns(taskId); }
+  async createRun(input) { await this.refresh(); return super.createRun(input); }
+  async updateRun(id, patch) { await this.refresh(); return super.updateRun(id, patch); }
+  async getSummary() { await this.refresh(); return super.getSummary(); }
+}
+
+export function ossConfigFromEnvironment(env = process.env) {
+  const required = [
+    "OSS_BUCKET",
+    "OSS_ENDPOINT",
+    "ALIBABA_CLOUD_ACCESS_KEY_ID",
+    "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+  ];
+  const missing = required.filter((key) => !env[key]);
+  if (missing.length) throw new Error(`OSS 配置缺失：${missing.join(", ")}`);
+  return {
+    bucket: env.OSS_BUCKET,
+    endpoint: env.OSS_ENDPOINT,
+    key: env.OSS_OBJECT_KEY ?? "data-platform-demo/store.json",
+    credentials: {
+      accessKeyId: env.ALIBABA_CLOUD_ACCESS_KEY_ID,
+      accessKeySecret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET,
+      securityToken: env.ALIBABA_CLOUD_SECURITY_TOKEN,
+    },
+  };
+}

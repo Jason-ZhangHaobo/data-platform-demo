@@ -4,6 +4,7 @@ import { createApiController } from "../src/server/api-controller.mjs";
 import { MemoryTaskStore } from "../src/server/repositories/memory-store.mjs";
 import { createSeedState } from "../src/server/repositories/store.mjs";
 import { ValidationError } from "../src/shared/validation.mjs";
+import { OssTaskStore, createOssRequest } from "../src/server/repositories/oss-store.mjs";
 
 const setup = (state = createSeedState(), simulationDelayMs = 1_200) => {
   const store = new MemoryTaskStore(state);
@@ -46,5 +47,41 @@ describe("data platform API controller", () => {
     const response = await handle({ method: "POST", pathname: `/api/tasks/${task.id}/run` });
     assert.equal(response.status, 409);
     assert.match(response.body.message, /启用/);
+  });
+
+  test("persists task state through the OSS adapter", async () => {
+    let stored;
+    let authorization;
+    const fakeFetch = async (_url, options) => {
+      authorization = options.headers.Authorization;
+      if (options.method === "GET" && stored === undefined) return new Response("", { status: 404 });
+      if (options.method === "GET") return Response.json(JSON.parse(stored));
+      stored = options.body;
+      return new Response("", { status: 200 });
+    };
+    const config = {
+      bucket: "demo-bucket",
+      endpoint: "oss-cn-hangzhou-internal.aliyuncs.com",
+      key: "staging/store.json",
+      credentials: { accessKeyId: "temporary-id", accessKeySecret: "temporary-secret", securityToken: "temporary-token" },
+    };
+    const store = await OssTaskStore.open(config, fakeFetch);
+    await store.createTask({ name: "OSS 持久化测试", description: "", sourceType: "CSV", sourceName: "demo.csv", targetType: "MySQL", targetName: "demo.target", syncMode: "FULL", schedule: "手动", owner: "测试组", enabled: true });
+    const reopened = await OssTaskStore.open(config, fakeFetch);
+    assert.equal((await reopened.listTasks()).length, 4);
+    assert.match(authorization, /^OSS temporary-id:/);
+    const signed = createOssRequest({ ...config, method: "GET" });
+    assert.match(signed.stringToSign, /x-oss-security-token:temporary-token/);
+  });
+
+  test("protects cloud APIs with an access token", async () => {
+    const store = new MemoryTaskStore(createSeedState());
+    const handle = createApiController({ store, accessToken: "demo-secret", environment: "staging" });
+    const denied = await handle({ method: "GET", pathname: "/api/tasks" });
+    const allowed = await handle({ method: "GET", pathname: "/api/tasks", headers: { authorization: "Bearer demo-secret" } });
+    const health = await handle({ method: "GET", pathname: "/api/health" });
+    assert.equal(denied.status, 401);
+    assert.equal(allowed.status, 200);
+    assert.equal(health.status, 200);
   });
 });

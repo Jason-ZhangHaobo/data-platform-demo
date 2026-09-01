@@ -40,6 +40,8 @@ npm start
 
 - [产品需求文档](docs/PRD.md)
 - [技术架构](docs/architecture.md)
+- [阿里云部署方案](docs/aliyun-deployment.md)
+- [费用控制与清理手册](docs/cost-controls.md)
 
 ## 路线图
 

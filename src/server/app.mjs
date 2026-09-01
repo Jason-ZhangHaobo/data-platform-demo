@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FileTaskStore } from "./repositories/file-store.mjs";
+import { OssTaskStore, ossConfigFromEnvironment } from "./repositories/oss-store.mjs";
 import { createApiController } from "./api-controller.mjs";
 import { ValidationError } from "../shared/validation.mjs";
 
@@ -41,19 +42,22 @@ async function serveStatic(response, pathname, clientDirectory) {
 }
 
 export async function createServer(options = {}) {
-  const store = options.store ?? await FileTaskStore.open(process.env.DATA_FILE_PATH ?? join(process.cwd(), ".data/store.json"));
+  const store = options.store ?? (process.env.STORAGE_DRIVER === "oss"
+    ? await OssTaskStore.open(ossConfigFromEnvironment())
+    : await FileTaskStore.open(process.env.DATA_FILE_PATH ?? join(process.cwd(), ".data/store.json")));
   const clientDirectory = options.clientDirectory ?? defaultClientDirectory;
   const handleApi = createApiController({
     store,
     simulationDelayMs: options.simulationDelayMs ?? Number(process.env.SIMULATION_DELAY_MS ?? 1_200),
     environment: process.env.APP_ENV ?? "local",
+    accessToken: process.env.DEMO_ACCESS_TOKEN,
   });
 
   return createHttpServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     try {
       const body = ["POST", "PUT"].includes(request.method ?? "") && url.pathname.startsWith("/api/") ? await readJson(request) : {};
-      const apiResult = await handleApi({ method: request.method, pathname: url.pathname, body });
+      const apiResult = await handleApi({ method: request.method, pathname: url.pathname, body, headers: request.headers });
       if (apiResult) return json(response, apiResult.status, apiResult.body);
       return await serveStatic(response, url.pathname, clientDirectory);
     } catch (error) {
