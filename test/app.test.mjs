@@ -4,7 +4,7 @@ import { createApiController } from "../src/server/api-controller.mjs";
 import { MemoryTaskStore } from "../src/server/repositories/memory-store.mjs";
 import { createSeedState } from "../src/server/repositories/store.mjs";
 import { ValidationError } from "../src/shared/validation.mjs";
-import { OssTaskStore, createOssRequest } from "../src/server/repositories/oss-store.mjs";
+import { OssTaskStore, StorageConflictError, createOssRequest } from "../src/server/repositories/oss-store.mjs";
 
 const setup = (state = createSeedState(), simulationDelayMs = 1_200) => {
   const store = new MemoryTaskStore(state);
@@ -35,8 +35,7 @@ describe("data platform API controller", () => {
     const { handle, store } = setup(createSeedState(), 0);
     const task = (await store.listTasks()).find((item) => item.enabled);
     const started = await handle({ method: "POST", pathname: `/api/tasks/${task.id}/run` });
-    assert.equal(started.status, 202);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(started.status, 200);
     assert.equal((await store.getTask(task.id)).status, "SUCCESS");
     assert.equal((await store.listRuns(task.id))[0].status, "SUCCESS");
   });
@@ -52,12 +51,15 @@ describe("data platform API controller", () => {
   test("persists task state through the OSS adapter", async () => {
     let stored;
     let authorization;
+    let etag = '"version-0"';
     const fakeFetch = async (_url, options) => {
       authorization = options.headers.Authorization;
       if (options.method === "GET" && stored === undefined) return new Response("", { status: 404 });
-      if (options.method === "GET") return Response.json(JSON.parse(stored));
+      if (options.method === "GET") return Response.json(JSON.parse(stored), { headers: { ETag: etag } });
+      if (options.headers["If-Match"] && options.headers["If-Match"] !== etag) return new Response("", { status: 412 });
       stored = options.body;
-      return new Response("", { status: 200 });
+      etag = `"version-${Number(etag.match(/\d+/)?.[0] ?? 0) + 1}"`;
+      return new Response("", { status: 200, headers: { ETag: etag } });
     };
     const config = {
       bucket: "demo-bucket",
@@ -72,6 +74,23 @@ describe("data platform API controller", () => {
     assert.match(authorization, /^OSS temporary-id:/);
     const signed = createOssRequest({ ...config, method: "GET" });
     assert.match(signed.stringToSign, /x-oss-security-token:temporary-token/);
+  });
+
+  test("rejects a stale OSS write instead of overwriting newer data", async () => {
+    let stored = JSON.stringify(createSeedState());
+    let etag = '"version-1"';
+    const fakeFetch = async (_url, options) => {
+      if (options.method === "GET") return Response.json(JSON.parse(stored), { headers: { ETag: etag } });
+      if (options.headers["If-Match"] !== etag) return new Response("", { status: 412 });
+      stored = options.body;
+      etag = '"version-2"';
+      return new Response("", { status: 200, headers: { ETag: etag } });
+    };
+    const config = { bucket: "demo-bucket", endpoint: "oss-cn-hangzhou-internal.aliyuncs.com", key: "store.json", credentials: { accessKeyId: "id", accessKeySecret: "secret", securityToken: "token" } };
+    const first = await OssTaskStore.open(config, fakeFetch);
+    const stale = await OssTaskStore.open(config, fakeFetch);
+    await first.createTask({ name: "第一次更新", description: "", sourceType: "CSV", sourceName: "a.csv", targetType: "MySQL", targetName: "demo.a", syncMode: "FULL", schedule: "手动", owner: "测试组", enabled: true });
+    await assert.rejects(() => stale.persist(), StorageConflictError);
   });
 
   test("protects cloud APIs with an access token", async () => {

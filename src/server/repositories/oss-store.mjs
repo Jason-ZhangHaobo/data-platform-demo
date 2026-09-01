@@ -4,7 +4,14 @@ import { createSeedState } from "./store.mjs";
 
 const encodeKey = (key) => key.split("/").map(encodeURIComponent).join("/");
 
-export function createOssRequest({ method, bucket, key, endpoint, credentials, body }) {
+export class StorageConflictError extends Error {
+  constructor() {
+    super("云端数据刚刚被其他操作更新，请刷新后重试");
+    this.name = "StorageConflictError";
+  }
+}
+
+export function createOssRequest({ method, bucket, key, endpoint, credentials, body, etag }) {
   const date = new Date().toUTCString();
   const contentType = body === undefined ? "" : "application/json; charset=utf-8";
   const securityHeader = credentials.securityToken ? `x-oss-security-token:${credentials.securityToken}\n` : "";
@@ -17,6 +24,7 @@ export function createOssRequest({ method, bucket, key, endpoint, credentials, b
   };
   if (contentType) headers["Content-Type"] = contentType;
   if (credentials.securityToken) headers["x-oss-security-token"] = credentials.securityToken;
+  if (etag) headers["If-Match"] = etag;
   const host = endpoint.replace(/^https?:\/\//, "").replace(/\/$/, "");
   return {
     url: `https://${bucket}.${host}/${encodeKey(key)}`,
@@ -35,13 +43,16 @@ export class OssTaskStore extends MemoryTaskStore {
   static async open(config, fetchImpl = fetch) {
     const store = new OssTaskStore(config, createSeedState(), fetchImpl);
     const remote = await store.readRemote();
-    if (remote) store.state = remote;
+    if (remote) {
+      store.state = remote.state;
+      store.etag = remote.etag;
+    }
     else await store.persist();
     return store;
   }
 
-  async request(method, body) {
-    const request = createOssRequest({ ...this.config, method, body });
+  async request(method, body, etag) {
+    const request = createOssRequest({ ...this.config, method, body, etag });
     return this.fetchImpl(request.url, request.options);
   }
 
@@ -49,17 +60,22 @@ export class OssTaskStore extends MemoryTaskStore {
     const response = await this.request("GET");
     if (response.status === 404) return undefined;
     if (!response.ok) throw new Error(`OSS 读取失败（${response.status}）`);
-    return response.json();
+    return { state: await response.json(), etag: response.headers.get("etag") };
   }
 
   async refresh() {
     const remote = await this.readRemote();
-    if (remote) this.state = remote;
+    if (remote) {
+      this.state = remote.state;
+      this.etag = remote.etag;
+    }
   }
 
   async persist() {
-    const response = await this.request("PUT", JSON.stringify(this.state));
+    const response = await this.request("PUT", JSON.stringify(this.state), this.etag);
+    if (response.status === 412) throw new StorageConflictError();
     if (!response.ok) throw new Error(`OSS 写入失败（${response.status}）`);
+    this.etag = response.headers.get("etag") ?? this.etag;
   }
 
   async listTasks() { await this.refresh(); return super.listTasks(); }
