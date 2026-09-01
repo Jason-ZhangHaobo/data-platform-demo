@@ -1,0 +1,52 @@
+import { validateTaskInput } from "../shared/validation.mjs";
+
+const result = (status, body) => ({ status, body });
+const taskRoute = (pathname) => {
+  const match = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(runs|run|stop|toggle))?$/);
+  return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
+};
+
+export function createApiController({ store, simulationDelayMs = 1_200, environment = "local" }) {
+  return async function handle({ method, pathname, body = {} }) {
+    if (method === "GET" && pathname === "/api/health") return result(200, { status: "ok", service: "data-platform-demo", environment, time: new Date().toISOString() });
+    if (method === "GET" && pathname === "/api/summary") return result(200, await store.getSummary());
+    if (method === "GET" && pathname === "/api/tasks") return result(200, await store.listTasks());
+    if (method === "POST" && pathname === "/api/tasks") return result(201, await store.createTask(validateTaskInput(body)));
+
+    const route = taskRoute(pathname);
+    if (!route) return pathname.startsWith("/api/") ? result(404, { message: "未找到对应资源" }) : undefined;
+    const task = await store.getTask(route.id);
+    if (!task) return result(404, { message: "未找到对应资源" });
+    if (method === "GET" && !route.action) return result(200, task);
+    if (method === "PUT" && !route.action) return result(200, await store.updateTask(route.id, validateTaskInput(body)));
+    if (method === "DELETE" && !route.action) { await store.deleteTask(route.id); return result(204); }
+    if (method === "GET" && route.action === "runs") return result(200, await store.listRuns(route.id));
+    if (method === "POST" && route.action === "toggle") {
+      if (task.status === "RUNNING") return result(409, { message: "运行中的任务不能直接停用" });
+      const enabled = !task.enabled;
+      return result(200, await store.updateTask(task.id, { enabled, status: enabled ? "READY" : "STOPPED" }));
+    }
+    if (method === "POST" && route.action === "run") {
+      if (!task.enabled) return result(409, { message: "请先启用任务" });
+      if (task.status === "RUNNING") return result(409, { message: "任务已经在运行" });
+      const startedAt = new Date().toISOString();
+      const run = await store.createRun({ taskId: task.id, status: "RUNNING", startedAt, rowsRead: 0, rowsWritten: 0, message: "正在模拟读取源端数据……" });
+      await store.updateTask(task.id, { status: "RUNNING", lastRunAt: startedAt });
+      setTimeout(async () => {
+        const current = await store.getTask(task.id);
+        if (!current || current.status !== "RUNNING") return;
+        const rows = 1_000 + Math.floor(Math.random() * 18_000);
+        await store.updateRun(run.id, { status: "SUCCESS", finishedAt: new Date().toISOString(), rowsRead: rows, rowsWritten: rows, message: "模拟执行完成，源端与目标端记录数一致。" });
+        await store.updateTask(task.id, { status: "SUCCESS", lastRunAt: startedAt });
+      }, simulationDelayMs);
+      return result(202, run);
+    }
+    if (method === "POST" && route.action === "stop") {
+      if (task.status !== "RUNNING") return result(409, { message: "只有运行中的任务可以停止" });
+      const runningRun = (await store.listRuns(task.id)).find((run) => run.status === "RUNNING");
+      if (runningRun) await store.updateRun(runningRun.id, { status: "STOPPED", finishedAt: new Date().toISOString(), message: "用户手动停止了模拟任务。" });
+      return result(200, await store.updateTask(task.id, { status: "STOPPED" }));
+    }
+    return result(405, { message: "不支持的请求方法" });
+  };
+}
