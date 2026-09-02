@@ -46,14 +46,16 @@ async function serveStatic(response, pathname, clientDirectory) {
 }
 
 export async function createServer(options = {}) {
-  const store = options.store ?? (process.env.STORAGE_DRIVER === "oss"
+  const useOss = process.env.STORAGE_DRIVER === "oss"
+    || (process.env.FC_FUNCTION_NAME && process.env.OSS_BUCKET);
+  const store = options.store ?? (useOss
     ? await OssTaskStore.open(ossConfigFromEnvironment())
     : await FileTaskStore.open(process.env.DATA_FILE_PATH ?? join(process.cwd(), ".data/store.json")));
   const clientDirectory = options.clientDirectory ?? defaultClientDirectory;
   const handleApi = createApiController({
     store,
     simulationDelayMs: options.simulationDelayMs ?? Number(process.env.SIMULATION_DELAY_MS ?? 1_200),
-    environment: process.env.APP_ENV ?? "local",
+    environment: process.env.APP_ENV ?? process.env.DEPLOY_ENV ?? "local",
     accessToken: process.env.DEMO_ACCESS_TOKEN,
   });
 
