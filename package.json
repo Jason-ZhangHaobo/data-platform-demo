@@ -5,9 +5,9 @@
   "type": "module",
   "description": "A zero-dependency data platform demo for practicing the full delivery loop.",
   "scripts": {
-    "dev": "node --watch src/server/index.mjs",
+    "dev": "PORT=3000 node --watch src/server/index.mjs",
     "build": "node scripts/build.mjs",
-    "start": "node src/server/index.mjs",
+    "start": "PORT=3000 node src/server/index.mjs",
     "lint": "node scripts/check-source.mjs",
     "test": "node --test",
     "ci": "npm run lint && npm test && npm run build"
