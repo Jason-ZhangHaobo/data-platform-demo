@@ -92,15 +92,15 @@ export class OssTaskStore extends MemoryTaskStore {
 export function ossConfigFromEnvironment(env = process.env) {
   const required = [
     "OSS_BUCKET",
-    "OSS_ENDPOINT",
     "ALIBABA_CLOUD_ACCESS_KEY_ID",
     "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
   ];
   const missing = required.filter((key) => !env[key]);
   if (missing.length) throw new Error(`OSS 配置缺失：${missing.join(", ")}`);
+  const region = env.FC_REGION ?? env.OSS_REGION ?? "cn-hangzhou";
   return {
     bucket: env.OSS_BUCKET,
-    endpoint: env.OSS_ENDPOINT,
+    endpoint: env.OSS_ENDPOINT ?? `oss-${region}-internal.aliyuncs.com`,
     key: env.OSS_OBJECT_KEY ?? "data-platform-demo/store.json",
     credentials: {
       accessKeyId: env.ALIBABA_CLOUD_ACCESS_KEY_ID,
