@@ -27,6 +27,10 @@ npm run dev
 npm run ci
 ```
 
+## Staging 访问保护
+
+staging 的 `health` 接口保持公开，任务和汇总 API 需要 Bearer 访问码。访问码只保存在 GitHub Actions Secret `DEMO_ACCESS_TOKEN` 和阿里云 FC 环境变量中，不要写入仓库。每次部署时，工作流会保留现有 FC 环境变量并同步访问码，同时开启 `REQUIRE_ACCESS_TOKEN=true`。
+
 ## 生产构建
 
 ```bash
