@@ -1,0 +1,72 @@
+name: Deploy staging
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "package.json"
+      - "s.yaml"
+      - ".github/workflows/deploy-staging.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to Aliyun FC staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: staging
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run quality gate
+        run: npm run ci
+
+      - name: Package function code
+        run: |
+          zip -qr function.zip src package.json
+          test -s function.zip
+
+      - name: Set up Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@v1
+        with:
+          version: "3.4.11"
+
+      - name: Configure Alibaba Cloud credentials with GitHub OIDC
+        uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ vars.ALIYUN_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIYUN_OIDC_PROVIDER_ARN }}
+          role-session-name: github-actions-staging
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+
+      - name: Update existing FC function
+        env:
+          FUNCTION_NAME: dataplatform-staging-api
+        run: |
+          ZIP_B64="$(base64 -w 0 function.zip)"
+          BODY="$(jq -n --arg zip "$ZIP_B64" '{code:{zipFile:$zip}}')"
+          aliyun fc UpdateFunction --functionName "$FUNCTION_NAME" --body "$BODY"
+
+      - name: Verify staging health
+        run: |
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+            https://dataplaging-api-qagxeaqdmd.cn-hangzhou.fcapp.run/api/health \
+            | tee health.json
+          jq -e '.status == "ok" and .environment == "staging"' health.json
