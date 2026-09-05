@@ -66,9 +66,12 @@ jobs:
       - name: Update existing FC function
         env:
           FUNCTION_NAME: dataplatform-staging-api
+          DEMO_ACCESS_TOKEN: ${{ secrets.DEMO_ACCESS_TOKEN }}
         run: |
           ZIP_B64="$(base64 -w 0 function.zip)"
-          BODY="$(jq -n --arg zip "$ZIP_B64" '{code:{zipFile:$zip}}')"
+          CURRENT_ENV="$(aliyun fc GetFunction --functionName "$FUNCTION_NAME" | jq -c '.environmentVariables // {}')"
+          BODY="$(jq -n --arg zip "$ZIP_B64" --arg token "$DEMO_ACCESS_TOKEN" --argjson current "$CURRENT_ENV" \
+            '$current + {DEMO_ACCESS_TOKEN: $token, REQUIRE_ACCESS_TOKEN: "true"} | {code:{zipFile:$zip}, environmentVariables: .}')"
           aliyun fc UpdateFunction --functionName "$FUNCTION_NAME" --body "$BODY"
 
       - name: Verify staging health
@@ -79,12 +82,16 @@ jobs:
           jq -e '.status == "ok" and .environment == "staging"' health.json
 
       - name: Verify staging read APIs
+        env:
+          DEMO_ACCESS_TOKEN: ${{ secrets.DEMO_ACCESS_TOKEN }}
         run: |
           curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+            -H "Authorization: Bearer ${DEMO_ACCESS_TOKEN}" \
             https://dataplaging-api-qagxeaqdmd.cn-hangzhou.fcapp.run/api/tasks \
             | tee tasks.json
           jq -e 'length == 3 and (map(select(.enabled == true)) | length == 2)' tasks.json
           curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+            -H "Authorization: Bearer ${DEMO_ACCESS_TOKEN}" \
             https://dataplaging-api-qagxeaqdmd.cn-hangzhou.fcapp.run/api/summary \
             | tee summary.json
           jq -e '.totalTasks == 3 and .enabledTasks == 2 and .runningTasks == 0' summary.json
