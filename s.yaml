@@ -14,7 +14,9 @@ resources:
     component: fc3
     props:
       region: ${vars.region}
-      functionName: data-platform-demo-${vars.stage}
+      # Keep deployments pointed at the single function created for each stage.
+      # For the current staging-only setup this resolves to dataplatform-staging-api.
+      functionName: dataplatform-${vars.stage}-api
       description: Fictional data platform demo for learning controlled delivery.
       runtime: custom.debian12
       code: ./
