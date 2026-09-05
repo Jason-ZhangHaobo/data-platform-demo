@@ -76,3 +76,14 @@ jobs:
             https://dataplaging-api-qagxeaqdmd.cn-hangzhou.fcapp.run/api/health \
             | tee health.json
           jq -e '.status == "ok" and .environment == "staging"' health.json
+
+      - name: Verify staging read APIs
+        run: |
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+            https://dataplaging-api-qagxeaqdmd.cn-hangzhou.fcapp.run/api/tasks \
+            | tee tasks.json
+          jq -e 'length == 3 and (map(select(.enabled == true)) | length == 2)' tasks.json
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+            https://dataplaging-api-qagxeaqdmd.cn-hangzhou.fcapp.run/api/summary \
+            | tee summary.json
+          jq -e '.totalTasks == 3 and .enabledTasks == 2 and .runningTasks == 0' summary.json

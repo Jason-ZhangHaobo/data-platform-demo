@@ -103,4 +103,13 @@ describe("data platform API controller", () => {
     assert.equal(allowed.status, 200);
     assert.equal(health.status, 200);
   });
+
+  test("fails closed when staging requires a token but none is configured", async () => {
+    const store = new MemoryTaskStore(createSeedState());
+    const handle = createApiController({ store, environment: "staging", requireAccessToken: true });
+    const response = await handle({ method: "GET", pathname: "/api/tasks" });
+    const health = await handle({ method: "GET", pathname: "/api/health" });
+    assert.equal(response.status, 503);
+    assert.equal(health.status, 200);
+  });
 });

@@ -8,6 +8,7 @@ vars:
   bucket: ${env('OSS_BUCKET')}
   roleArn: ${env('FC_ROLE_ARN')}
   accessToken: ${env('DEMO_ACCESS_TOKEN')}
+  requireAccessToken: ${env('REQUIRE_ACCESS_TOKEN')}
 
 resources:
   web:
@@ -36,6 +37,7 @@ resources:
         OSS_BUCKET: ${vars.bucket}
         OSS_OBJECT_KEY: data-platform-demo/store.json
         DEMO_ACCESS_TOKEN: ${vars.accessToken}
+        REQUIRE_ACCESS_TOKEN: ${vars.requireAccessToken}
         SIMULATION_DELAY_MS: "1200"
         PATH: /var/fc/lang/nodejs20/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
       customRuntimeConfig:
