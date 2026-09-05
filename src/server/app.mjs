@@ -57,6 +57,7 @@ export async function createServer(options = {}) {
     simulationDelayMs: options.simulationDelayMs ?? Number(process.env.SIMULATION_DELAY_MS ?? 1_200),
     environment: process.env.APP_ENV ?? process.env.DEPLOY_ENV ?? "local",
     accessToken: process.env.DEMO_ACCESS_TOKEN,
+    requireAccessToken: process.env.REQUIRE_ACCESS_TOKEN === "true",
   });
 
   return createHttpServer(async (request, response) => {

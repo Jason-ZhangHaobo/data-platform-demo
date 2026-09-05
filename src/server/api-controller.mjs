@@ -6,10 +6,14 @@ const taskRoute = (pathname) => {
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
 
-export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken }) {
+export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken, requireAccessToken = false }) {
   return async function handle({ method, pathname, body = {}, headers = {} }) {
     if (method === "GET" && pathname === "/api/health") return result(200, { status: "ok", service: "data-platform-demo", environment, time: new Date().toISOString() });
-    if (accessToken && headers.authorization !== `Bearer ${accessToken}`) return result(401, { message: "请输入正确的演示访问码" });
+    const protectedApi = pathname.startsWith("/api/") && pathname !== "/api/health";
+    if (protectedApi && (requireAccessToken || accessToken)) {
+      if (!accessToken) return result(503, { message: "服务未配置演示访问码" });
+      if (headers.authorization !== `Bearer ${accessToken}`) return result(401, { message: "请输入正确的演示访问码" });
+    }
     if (method === "GET" && pathname === "/api/summary") return result(200, await store.getSummary());
     if (method === "GET" && pathname === "/api/tasks") return result(200, await store.listTasks());
     if (method === "POST" && pathname === "/api/tasks") return result(201, await store.createTask(validateTaskInput(body)));
