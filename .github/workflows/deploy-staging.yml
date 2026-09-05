@@ -29,6 +29,7 @@ jobs:
       # These are resource identifiers, not credentials. Keeping them in the
       # workflow avoids a separate GitHub variable bootstrap step; the OIDC
       # trust policy still restricts use to this repository's staging env.
+      ALIBABA_CLOUD_REGION_ID: cn-hangzhou
       ALIYUN_ROLE_ARN: acs:ram::1170828584875736:role/dataplatform-github-staging-deploy-role
       ALIYUN_OIDC_PROVIDER_ARN: acs:ram::1170828584875736:oidc-provider/github-actions-data-platform
     steps:
