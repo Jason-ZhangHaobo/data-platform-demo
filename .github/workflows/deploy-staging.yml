@@ -25,6 +25,12 @@ jobs:
     timeout-minutes: 15
     environment:
       name: staging
+    env:
+      # These are resource identifiers, not credentials. Keeping them in the
+      # workflow avoids a separate GitHub variable bootstrap step; the OIDC
+      # trust policy still restricts use to this repository's staging env.
+      ALIYUN_ROLE_ARN: acs:ram::1170828584875736:role/dataplatform-github-staging-deploy-role
+      ALIYUN_OIDC_PROVIDER_ARN: acs:ram::1170828584875736:oidc-provider/github-actions-data-platform
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -50,8 +56,8 @@ jobs:
       - name: Configure Alibaba Cloud credentials with GitHub OIDC
         uses: aliyun/configure-aliyun-credentials-action@v1
         with:
-          role-to-assume: ${{ vars.ALIYUN_ROLE_ARN }}
-          oidc-provider-arn: ${{ vars.ALIYUN_OIDC_PROVIDER_ARN }}
+          role-to-assume: ${{ env.ALIYUN_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.ALIYUN_OIDC_PROVIDER_ARN }}
           role-session-name: github-actions-staging
           role-session-expiration: 1800
           audience: sts.aliyuncs.com
