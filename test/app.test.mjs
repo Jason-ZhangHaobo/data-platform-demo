@@ -95,13 +95,20 @@ describe("data platform API controller", () => {
 
   test("protects cloud APIs with an access token", async () => {
     const store = new MemoryTaskStore(createSeedState());
-    const handle = createApiController({ store, accessToken: "demo-secret", environment: "staging" });
+    const handle = createApiController({ store, accessToken: "demo-secret", requireAccessToken: true, environment: "staging" });
     const denied = await handle({ method: "GET", pathname: "/api/tasks" });
     const allowed = await handle({ method: "GET", pathname: "/api/tasks", headers: { authorization: "Bearer demo-secret" } });
     const health = await handle({ method: "GET", pathname: "/api/health" });
     assert.equal(denied.status, 401);
     assert.equal(allowed.status, 200);
     assert.equal(health.status, 200);
+  });
+
+  test("allows cloud APIs when access-token enforcement is disabled", async () => {
+    const store = new MemoryTaskStore(createSeedState());
+    const handle = createApiController({ store, accessToken: "demo-secret", requireAccessToken: false, environment: "staging" });
+    const response = await handle({ method: "GET", pathname: "/api/tasks" });
+    assert.equal(response.status, 200);
   });
 
   test("fails closed when staging requires a token but none is configured", async () => {
