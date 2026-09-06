@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { FileTaskStore } from "./repositories/file-store.mjs";
 import { OssTaskStore, StorageConflictError, ossConfigFromEnvironment } from "./repositories/oss-store.mjs";
 import { createApiController } from "./api-controller.mjs";
+import { createCsvMySqlSyncService } from "./services/csv-mysql-sync.mjs";
 import { ValidationError } from "../shared/validation.mjs";
 
 const defaultClientDirectory = fileURLToPath(new URL("../client", import.meta.url));
@@ -67,12 +68,16 @@ export async function createServer(options = {}) {
     ? await OssTaskStore.open(ossConfigFromEnvironment())
     : await FileTaskStore.open(process.env.DATA_FILE_PATH ?? join(process.cwd(), ".data/store.json")));
   const clientDirectory = options.clientDirectory ?? defaultClientDirectory;
+  const realSyncEnabled = process.env.REAL_SYNC_ENABLED === "true";
+  const syncService = options.syncService ?? (realSyncEnabled ? await createCsvMySqlSyncService({ clientDirectory }) : undefined);
   const handleApi = createApiController({
     store,
     simulationDelayMs: options.simulationDelayMs ?? Number(process.env.SIMULATION_DELAY_MS ?? 1_200),
     environment: process.env.APP_ENV ?? process.env.DEPLOY_ENV ?? "local",
     accessToken: process.env.DEMO_ACCESS_TOKEN,
     requireAccessToken: process.env.REQUIRE_ACCESS_TOKEN === "true",
+    syncService,
+    realSyncEnabled,
   });
 
   return createHttpServer(async (request, response) => {

@@ -6,7 +6,7 @@ const taskRoute = (pathname) => {
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
 
-export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken, requireAccessToken = false }) {
+export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken, requireAccessToken = false, syncService, realSyncEnabled = false }) {
   return async function handle({ method, pathname, body = {}, headers = {} }) {
     if (method === "GET" && pathname === "/api/health") return result(200, { status: "ok", service: "data-platform-demo", environment, time: new Date().toISOString() });
     const protectedApi = pathname.startsWith("/api/") && pathname !== "/api/health";
@@ -37,6 +37,19 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       const startedAt = new Date().toISOString();
       const run = await store.createRun({ taskId: task.id, status: "RUNNING", startedAt, rowsRead: 0, rowsWritten: 0, message: "正在模拟读取源端数据……" });
       await store.updateTask(task.id, { status: "RUNNING", lastRunAt: startedAt });
+      if (realSyncEnabled && task.sourceType === "CSV" && task.targetType === "MySQL") {
+        try {
+          if (!syncService) throw new Error("真实同步服务未配置");
+          const completed = await syncService.runTask(task);
+          const completedRun = await store.updateRun(run.id, { status: "SUCCESS", finishedAt: new Date().toISOString(), ...completed });
+          await store.updateTask(task.id, { status: "SUCCESS", lastRunAt: startedAt });
+          return result(200, completedRun);
+        } catch (error) {
+          await store.updateRun(run.id, { status: "FAILED", finishedAt: new Date().toISOString(), message: error.message });
+          await store.updateTask(task.id, { status: "FAILED", lastRunAt: startedAt });
+          throw error;
+        }
+      }
       await new Promise((resolve) => setTimeout(resolve, simulationDelayMs));
       const current = await store.getTask(task.id);
       if (!current || current.status !== "RUNNING") {
