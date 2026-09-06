@@ -30,6 +30,11 @@ resources:
       instanceConcurrency: 10
       internetAccess: true
       role: ${vars.roleArn}
+      vpcConfig:
+        vpcId: vpc-bp1ndb4243ew96drhs8zv
+        vSwitchIds:
+          - vsw-bp1e8fz4pfi0ed7kvp5zv
+        securityGroupId: sg-bp11iqykaweqpigltq44
       environmentVariables:
         PORT: "9000"
         APP_ENV: ${vars.stage}
