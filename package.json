@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "A zero-dependency data platform demo for practicing the full delivery loop.",
+  "dependencies": {
+    "mysql2": "^3.11.5"
+  },
   "scripts": {
     "dev": "PORT=3000 node --watch src/server/index.mjs",
     "build": "node scripts/build.mjs",

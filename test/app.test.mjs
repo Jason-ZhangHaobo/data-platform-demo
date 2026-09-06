@@ -40,6 +40,24 @@ describe("data platform API controller", () => {
     assert.equal((await store.listRuns(task.id))[0].status, "SUCCESS");
   });
 
+  test("runs a CSV to MySQL task through the real sync service when enabled", async () => {
+    const state = createSeedState();
+    const task = state.tasks.find((item) => item.sourceType === "CSV");
+    task.enabled = true;
+    task.status = "READY";
+    const store = new MemoryTaskStore(state);
+    const handle = createApiController({
+      store,
+      realSyncEnabled: true,
+      syncService: { runTask: async () => ({ rowsRead: 2, rowsWritten: 2, message: "真实 CSV 已写入 MySQL 表 business_demo.demo_supplier。" }) },
+      environment: "test",
+    });
+    const response = await handle({ method: "POST", pathname: `/api/tasks/${task.id}/run` });
+    assert.equal(response.status, 200);
+    assert.equal(response.body.rowsWritten, 2);
+    assert.equal(response.body.status, "SUCCESS");
+  });
+
   test("rejects a run for a disabled task", async () => {
     const { handle, store } = setup();
     const task = (await store.listTasks()).find((item) => !item.enabled);

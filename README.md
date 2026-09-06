@@ -29,7 +29,11 @@ npm run ci
 
 ## Staging 访问保护
 
-staging 的 `health` 接口保持公开，任务和汇总 API 需要 Bearer 访问码。访问码只保存在 GitHub Actions Secret `DEMO_ACCESS_TOKEN` 和阿里云 FC 环境变量中，不要写入仓库。每次部署时，工作流会保留现有 FC 环境变量并同步访问码，同时开启 `REQUIRE_ACCESS_TOKEN=true`。
+当前 staging 为公开验收 Demo，`REQUIRE_ACCESS_TOKEN=false`，方便朋友直接体验。需要恢复访问保护时，将 FC 环境变量切换为 `REQUIRE_ACCESS_TOKEN=true`，并保留 `DEMO_ACCESS_TOKEN` 在 GitHub Secret 和阿里云 FC 环境变量中，不要写入仓库。
+
+## 真实 CSV → MySQL
+
+真实同步默认关闭，只有设置 `REAL_SYNC_ENABLED=true` 才会执行。运行时需要配置 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD` 和 `MYSQL_DATABASE`；密码只能放在阿里云 FC 环境变量或 GitHub Secret 中。CSV 源文件放在 `src/shared`，目标任务必须指向配置的业务数据库。
 
 ## 生产构建
 
