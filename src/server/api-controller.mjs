@@ -10,7 +10,7 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
   return async function handle({ method, pathname, body = {}, headers = {} }) {
     if (method === "GET" && pathname === "/api/health") return result(200, { status: "ok", service: "data-platform-demo", environment, time: new Date().toISOString() });
     const protectedApi = pathname.startsWith("/api/") && pathname !== "/api/health";
-    if (protectedApi && (requireAccessToken || accessToken)) {
+    if (protectedApi && requireAccessToken) {
       if (!accessToken) return result(503, { message: "服务未配置演示访问码" });
       if (headers.authorization !== `Bearer ${accessToken}`) return result(401, { message: "请输入正确的演示访问码" });
     }
