@@ -10,8 +10,23 @@ import { ValidationError } from "../shared/validation.mjs";
 const defaultClientDirectory = fileURLToPath(new URL("../client", import.meta.url));
 const contentTypes = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };
 
-function json(response, status, body) {
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" });
+function corsHeaders(request) {
+  const configured = process.env.CORS_ALLOW_ORIGIN ?? "*";
+  const origin = request.headers.origin;
+  const allowed = configured === "*"
+    ? "*"
+    : configured.split(",").map((item) => item.trim()).includes(origin) ? origin : "null";
+  return {
+    "Access-Control-Allow-Origin": allowed,
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Expose-Headers": "Date, X-Fc-Request-Id",
+    Vary: "Origin",
+  };
+}
+
+function json(response, status, body, request) {
+  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", ...corsHeaders(request) });
   response.end(body === undefined ? undefined : JSON.stringify(body));
 }
 
@@ -63,16 +78,20 @@ export async function createServer(options = {}) {
   return createHttpServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     try {
+      if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
+        response.writeHead(204, corsHeaders(request));
+        return response.end();
+      }
       const body = ["POST", "PUT"].includes(request.method ?? "") && url.pathname.startsWith("/api/") ? await readJson(request) : {};
       const apiResult = await handleApi({ method: request.method, pathname: url.pathname, body, headers: request.headers });
-      if (apiResult) return json(response, apiResult.status, apiResult.body);
+      if (apiResult) return json(response, apiResult.status, apiResult.body, request);
       return await serveStatic(response, url.pathname, clientDirectory);
     } catch (error) {
-      if (error instanceof ValidationError) return json(response, 400, { message: error.message, issues: error.issues });
-      if (error instanceof StorageConflictError) return json(response, 409, { message: error.message });
-      if (error.status) return json(response, error.status, { message: error.message });
+      if (error instanceof ValidationError) return json(response, 400, { message: error.message, issues: error.issues }, request);
+      if (error instanceof StorageConflictError) return json(response, 409, { message: error.message }, request);
+      if (error.status) return json(response, error.status, { message: error.message }, request);
       console.error(error);
-      return json(response, 500, { message: "服务暂时不可用，请稍后重试" });
+      return json(response, 500, { message: "服务暂时不可用，请稍后重试" }, request);
     }
   });
 }

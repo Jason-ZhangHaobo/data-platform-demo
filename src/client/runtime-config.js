@@ -1,0 +1,1 @@
+globalThis.DATA_PLATFORM_API_BASE_URL = "";

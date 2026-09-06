@@ -71,7 +71,7 @@ jobs:
           ZIP_B64="$(base64 -w 0 function.zip)"
           CURRENT_ENV="$(aliyun fc GetFunction --functionName "$FUNCTION_NAME" | jq -c '.environmentVariables // {}')"
           BODY="$(jq -n --arg zip "$ZIP_B64" --arg token "$DEMO_ACCESS_TOKEN" --argjson current "$CURRENT_ENV" \
-            '$current + {DEMO_ACCESS_TOKEN: $token, REQUIRE_ACCESS_TOKEN: "true"} | {code:{zipFile:$zip}, environmentVariables: .}')"
+            '$current + {DEMO_ACCESS_TOKEN: $token, REQUIRE_ACCESS_TOKEN: "true", CORS_ALLOW_ORIGIN: "https://jason-zhanghaobo.github.io"} | {code:{zipFile:$zip}, environmentVariables: .}')"
           aliyun fc UpdateFunction --functionName "$FUNCTION_NAME" --body "$BODY"
 
       - name: Verify staging health
