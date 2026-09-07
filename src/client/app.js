@@ -131,7 +131,7 @@ function renderDevelopment() {
 }
 
 function render() {
-  if (state.view === "development") return renderDevelopment();
+  if (state.view === "development") { app.innerHTML = renderDevelopment(); return; }
   const summary = { totalTasks: 0, enabledTasks: 0, runningTasks: 0, runsToday: 0, successRate: 100, ...state.summary };
   const task = selectedTask();
   app.innerHTML = `<div class="app-shell">
