@@ -152,7 +152,7 @@ async function action(id, type) {
   catch (error) { state.error = error.message; state.busyId = undefined; render(); }
 }
 
-app.addEventListener("click", async (event) => {
+document.addEventListener("click", async (event) => {
   const target = event.target?.closest?.("button, [data-select], [data-dev-select], a.nav-item")
     ?? event.target?.parentElement?.closest?.("button, [data-select], [data-dev-select], a.nav-item");
   if (!target) return;
@@ -187,7 +187,7 @@ app.addEventListener("click", async (event) => {
   if (target.dataset.select) { state.selectedId = target.dataset.select; state.runs = await request(`/api/tasks/${state.selectedId}/runs`); return render(); }
 });
 
-app.addEventListener("submit", async (event) => {
+document.addEventListener("submit", async (event) => {
   if (event.target.id === "dev-job-form") {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.target)); data.jobType = "SQL"; data.enabled = event.target.elements.enabled.checked;
