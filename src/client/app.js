@@ -153,7 +153,8 @@ async function action(id, type) {
 }
 
 app.addEventListener("click", async (event) => {
-  const target = event.target.closest("button, [data-select], [data-dev-select], a.nav-item");
+  const target = event.target?.closest?.("button, [data-select], [data-dev-select], a.nav-item")
+    ?? event.target?.parentElement?.closest?.("button, [data-select], [data-dev-select], a.nav-item");
   if (!target) return;
   if (target.classList.contains("nav-item")) {
     event.preventDefault();
@@ -167,8 +168,9 @@ app.addEventListener("click", async (event) => {
   }
   if (target.dataset.new !== undefined) { state.editing = null; return render(); }
   if (target.dataset.newDev !== undefined) { state.devEditing = null; return render(); }
-  if (target.dataset.devClose !== undefined || event.target.classList.contains("modal-backdrop")) { state.devEditing = undefined; return render(); }
-  if (target.dataset.close !== undefined || event.target.classList.contains("modal-backdrop")) { state.editing = undefined; return render(); }
+  const clickedBackdrop = event.target?.classList?.contains?.("modal-backdrop") ?? false;
+  if (target.dataset.devClose !== undefined || clickedBackdrop) { state.devEditing = undefined; return render(); }
+  if (target.dataset.close !== undefined || clickedBackdrop) { state.editing = undefined; return render(); }
   if (target.dataset.dismiss !== undefined) { state.error = undefined; return render(); }
   if (target.dataset.edit) { state.editing = state.tasks.find((task) => task.id === target.dataset.edit); return render(); }
   if (target.dataset.action) return action(target.dataset.id, target.dataset.action);
