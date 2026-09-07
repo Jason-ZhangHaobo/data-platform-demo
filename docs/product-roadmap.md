@@ -74,7 +74,7 @@
 ### Phase 4：扩展业务 Skills
 
 - 数据开发 Skill。
-- 数据脱敏与安全 Skill。
+- 数据脱敏与安全 Skill（当前先交付规则管理、启停和虚构样例预览 MVP）。
 - 数据资产搜索与血缘 Skill。
 - 数据运维诊断 Skill。
 - 账号权限与审计 Skill。
