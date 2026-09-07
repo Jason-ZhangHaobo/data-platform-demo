@@ -44,7 +44,7 @@ export class OssTaskStore extends MemoryTaskStore {
     const store = new OssTaskStore(config, createSeedState(), fetchImpl);
     const remote = await store.readRemote();
     if (remote) {
-      store.state = remote.state;
+      store.replaceState(remote.state);
       store.etag = remote.etag;
     }
     else await store.persist();
@@ -66,7 +66,7 @@ export class OssTaskStore extends MemoryTaskStore {
   async refresh() {
     const remote = await this.readRemote();
     if (remote) {
-      this.state = remote.state;
+      this.replaceState(remote.state);
       this.etag = remote.etag;
     }
   }
