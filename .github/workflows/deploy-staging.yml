@@ -74,9 +74,9 @@ jobs:
         run: |
           base64 -w 0 function.zip > function.zip.b64
           CURRENT_ENV="$(aliyun fc GetFunction --functionName "$FUNCTION_NAME" | jq -c '.environmentVariables // {}')"
-          BODY="$(jq -n --rawfile zip function.zip.b64 --arg token "$DEMO_ACCESS_TOKEN" --argjson current "$CURRENT_ENV" \
-            '$current + {DEMO_ACCESS_TOKEN: $token, REQUIRE_ACCESS_TOKEN: "false", CORS_ALLOW_ORIGIN: "https://jason-zhanghaobo.github.io"} | {code:{zipFile:$zip}, environmentVariables: ., vpcConfig:{vpcId:"vpc-bp1ndb4243ew96drhs8zv", vSwitchIds:["vsw-bp1e8fz4pfi0ed7kvp5zv"], securityGroupId:"sg-bp11iqykaweqpigltq44"}}')"
-          aliyun fc UpdateFunction --functionName "$FUNCTION_NAME" --body "$BODY"
+          jq -n --rawfile zip function.zip.b64 --arg token "$DEMO_ACCESS_TOKEN" --argjson current "$CURRENT_ENV" \
+            '$current + {DEMO_ACCESS_TOKEN: $token, REQUIRE_ACCESS_TOKEN: "false", CORS_ALLOW_ORIGIN: "https://jason-zhanghaobo.github.io"} | {code:{zipFile:$zip}, environmentVariables: ., vpcConfig:{vpcId:"vpc-bp1ndb4243ew96drhs8zv", vSwitchIds:["vsw-bp1e8fz4pfi0ed7kvp5zv"], securityGroupId:"sg-bp11iqykaweqpigltq44"}}' > function-update.json
+          aliyun fc-open PUT "/2023-03-30/functions/${FUNCTION_NAME}" --body-file function-update.json
 
       - name: Verify staging health
         run: |
