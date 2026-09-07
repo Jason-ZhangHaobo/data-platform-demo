@@ -159,6 +159,9 @@ app.addEventListener("click", async (event) => {
     event.preventDefault();
     state.view = target.getAttribute("href") === "#development" ? "development" : "sync";
     window.history.replaceState({}, "", target.getAttribute("href"));
+    // Switch the visible view immediately. The data refresh can involve a
+    // network round trip; waiting for it made navigation look unresponsive.
+    render();
     (state.view === "development" ? refreshDevelopment() : refresh()).catch((error) => { state.error = error.message; render(); });
     return;
   }
