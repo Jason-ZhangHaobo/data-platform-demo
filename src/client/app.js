@@ -153,8 +153,15 @@ async function action(id, type) {
 }
 
 app.addEventListener("click", async (event) => {
-  const target = event.target.closest("button, [data-select], [data-dev-select]");
+  const target = event.target.closest("button, [data-select], [data-dev-select], a.nav-item");
   if (!target) return;
+  if (target.classList.contains("nav-item")) {
+    event.preventDefault();
+    state.view = target.getAttribute("href") === "#development" ? "development" : "sync";
+    window.history.replaceState({}, "", target.getAttribute("href"));
+    (state.view === "development" ? refreshDevelopment() : refresh()).catch((error) => { state.error = error.message; render(); });
+    return;
+  }
   if (target.dataset.new !== undefined) { state.editing = null; return render(); }
   if (target.dataset.newDev !== undefined) { state.devEditing = null; return render(); }
   if (target.dataset.devClose !== undefined || event.target.classList.contains("modal-backdrop")) { state.devEditing = undefined; return render(); }
