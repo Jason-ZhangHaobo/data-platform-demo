@@ -3,7 +3,8 @@ const statusMeta = {
   SUCCESS: ["成功", "success"], FAILED: ["失败", "danger"], STOPPED: ["已停用", "neutral"],
 };
 const devStatusMeta = { DRAFT: ["草稿", "neutral"], READY: ["待发布", "info"], RUNNING: ["运行中", "running"], SUCCESS: ["成功", "success"], FAILED: ["失败", "danger"] };
-const state = { view: window.location.hash === "#development" ? "development" : "sync", tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, error: undefined, busyId: undefined };
+const requestedView = () => window.location.hash === "#development" || new URLSearchParams(window.location.search).get("view") === "development";
+const state = { view: requestedView() ? "development" : "sync", tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -121,7 +122,7 @@ function devJobForm(job) {
 function renderDevelopment() {
   const job = state.devJobs.find((item) => item.id === state.devSelectedId);
   const enabled = state.devJobs.filter((item) => item.enabled).length;
-  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="#tasks">同步任务</a><a class="nav-item active" href="#development">数据开发</a><span class="nav-item muted">数据资产 · 即将开放</span></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item active" href="?view=development#development">数据开发</a><span class="nav-item muted">数据资产 · 即将开放</span></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
     <section class="hero"><div><p class="eyebrow">DATA DEVELOPMENT · MVP 0.1</p><h1>把 SQL 变成<br>可校验、可运行的任务。</h1><p class="hero-copy">这一版只做虚构数据模拟执行，先跑通 SQL 草稿、风险提示、运行记录和后续发布的产品流程。</p></div><button class="button button-primary hero-action" data-new-dev><span>＋</span> 新建 SQL 任务</button></section>
     <section class="summary-grid"><article><span>任务总数</span><strong>${state.devJobs.length}</strong><small>个 SQL 任务</small></article><article><span>待发布</span><strong>${enabled}</strong><small>可进入模拟执行</small></article><article><span>运行记录</span><strong>${state.devRuns.length}</strong><small>当前任务记录</small></article><article class="success-card"><span>当前阶段</span><strong>0.1</strong><small>模拟执行</small></article></section>
     ${state.error ? `<div class="error-banner"><span>!</span>${escapeHtml(state.error)}<button data-dismiss>关闭</button></div>` : ""}
@@ -134,7 +135,7 @@ function render() {
   const summary = { totalTasks: 0, enabledTasks: 0, runningTasks: 0, runsToday: 0, successRate: 100, ...state.summary };
   const task = selectedTask();
   app.innerHTML = `<div class="app-shell">
-    <header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item active" href="#tasks">同步任务</a><a class="nav-item" href="#development">数据开发</a><span class="nav-item muted">数据资产 · 即将开放</span></nav><div class="environment-pill"><span></span>本地演示环境</div></header>
+    <header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item active" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><span class="nav-item muted">数据资产 · 即将开放</span></nav><div class="environment-pill"><span></span>本地演示环境</div></header>
     <main id="top">
       <section class="hero"><div><p class="eyebrow">OFFLINE SYNC CENTER · MVP 0.1</p><h1>让每一次数据流动<br>都清晰、可控、可追溯。</h1><p class="hero-copy">这是一个使用完全虚构数据构建的产品 Demo，用来练习从需求、前后端开发、自动测试到生产审批发布的完整闭环。</p></div><button class="button button-primary hero-action" data-new><span>＋</span> 新建同步任务</button></section>
       <section class="summary-grid"><article><span>任务总数</span><strong>${summary.totalTasks}</strong><small>个已登记任务</small></article><article><span>已启用</span><strong>${summary.enabledTasks}</strong><small>等待调度或手动运行</small></article><article><span>运行中</span><strong class="${summary.runningTasks ? "accent" : ""}">${summary.runningTasks}</strong><small>实时模拟执行</small></article><article><span>今日运行</span><strong>${summary.runsToday}</strong><small>次执行记录</small></article><article class="success-card"><span>执行成功率</span><strong>${summary.successRate}%</strong><small>基于已完成记录</small></article></section>
@@ -160,8 +161,9 @@ document.addEventListener("click", async (event) => {
   if (!target) return;
   if (target.classList.contains("nav-item")) {
     event.preventDefault();
-    state.view = target.getAttribute("href") === "#development" ? "development" : "sync";
-    window.history.replaceState({}, "", target.getAttribute("href"));
+    const href = target.getAttribute("href");
+    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : "sync";
+    window.history.replaceState({}, "", href);
     // Switch the visible view immediately. The data refresh can involve a
     // network round trip; waiting for it made navigation look unresponsive.
     render();
@@ -207,10 +209,11 @@ document.addEventListener("submit", async (event) => {
   } catch (error) { state.error = error.message; state.editing = undefined; render(); }
 });
 
+render();
 const initialLoad = state.view === "development" ? refreshDevelopment() : refresh();
 initialLoad.catch((error) => { state.error = error.message; render(); });
 window.addEventListener("hashchange", () => {
-  state.view = window.location.hash === "#development" ? "development" : "sync";
+  state.view = requestedView() ? "development" : "sync";
   render();
   (state.view === "development" ? refreshDevelopment() : refresh()).catch((error) => { state.error = error.message; render(); });
 });
