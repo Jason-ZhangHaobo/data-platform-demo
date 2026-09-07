@@ -1,4 +1,4 @@
-import { analyzeSql, validateDevJobInput, validateTaskInput } from "../shared/validation.mjs";
+import { analyzeSql, maskValue, validateDevJobInput, validateMaskingRuleInput, validateTaskInput } from "../shared/validation.mjs";
 
 const result = (status, body) => ({ status, body });
 const taskRoute = (pathname) => {
@@ -7,6 +7,10 @@ const taskRoute = (pathname) => {
 };
 const devJobRoute = (pathname) => {
   const match = pathname.match(/^\/api\/dev\/jobs\/([^/]+)(?:\/(runs|validate|run))?$/);
+  return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
+};
+const maskingRoute = (pathname) => {
+  const match = pathname.match(/^\/api\/masking\/rules\/([^/]+)(?:\/(preview|toggle))?$/);
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
 
@@ -23,6 +27,24 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
     if (method === "POST" && pathname === "/api/tasks") return result(201, await store.createTask(validateTaskInput(body)));
     if (method === "GET" && pathname === "/api/dev/jobs") return result(200, await store.listDevJobs());
     if (method === "POST" && pathname === "/api/dev/jobs") return result(201, await store.createDevJob(validateDevJobInput(body)));
+    if (method === "GET" && pathname === "/api/masking/rules") return result(200, await store.listMaskingRules());
+    if (method === "POST" && pathname === "/api/masking/rules") return result(201, await store.createMaskingRule(validateMaskingRuleInput(body)));
+
+    const masking = maskingRoute(pathname);
+    if (masking) {
+      const rule = await store.getMaskingRule(masking.id);
+      if (!rule) return result(404, { message: "未找到对应脱敏规则" });
+      if (method === "POST" && masking.action === "toggle") return result(200, await store.updateMaskingRule(rule.id, { enabled: !rule.enabled }));
+      if (method === "POST" && masking.action === "preview") {
+        const sampleValue = typeof body.value === "string" && body.value.trim() ? body.value.trim() : rule.sampleValue;
+        const maskedValue = rule.enabled ? maskValue(rule.strategy, sampleValue) : sampleValue;
+        const preview = await store.createMaskingPreview({ ruleId: rule.id, fieldName: rule.fieldName, strategy: rule.strategy, input: sampleValue, output: maskedValue, operator: typeof body.operator === "string" ? body.operator.slice(0, 40) : "演示用户" });
+        await store.updateMaskingRule(rule.id, { previewCount: (rule.previewCount ?? 0) + 1 });
+        return result(200, { ...preview, ruleName: rule.name, enabled: rule.enabled });
+      }
+      if (method === "GET" && masking.action === "preview") return result(200, await store.listMaskingPreviews(rule.id));
+      return result(405, { message: "不支持的脱敏规则请求方法" });
+    }
 
     const devRoute = devJobRoute(pathname);
     if (devRoute) {

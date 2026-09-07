@@ -13,6 +13,8 @@ export class MemoryTaskStore {
       runs: provided.runs ?? seed.runs,
       devJobs: provided.devJobs ?? seed.devJobs,
       devRuns: provided.devRuns ?? seed.devRuns,
+      maskingRules: provided.maskingRules ?? seed.maskingRules,
+      maskingPreviews: provided.maskingPreviews ?? seed.maskingPreviews,
     };
     return this.state;
   }
@@ -65,5 +67,19 @@ export class MemoryTaskStore {
     const index = this.state.devRuns.findIndex((run) => run.id === id); if (index < 0) return undefined;
     this.state.devRuns[index] = { ...this.state.devRuns[index], ...patch }; await this.persist(); return structuredClone(this.state.devRuns[index]);
   }
+  async listMaskingRules() { return structuredClone([...this.state.maskingRules].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))); }
+  async getMaskingRule(id) { const rule = this.state.maskingRules.find((item) => item.id === id); return rule ? structuredClone(rule) : undefined; }
+  async createMaskingRule(input) {
+    const now = new Date().toISOString();
+    const rule = { ...input, id: randomUUID(), createdAt: now, updatedAt: now, previewCount: 0 };
+    this.state.maskingRules.push(rule); await this.persist(); return structuredClone(rule);
+  }
+  async updateMaskingRule(id, patch) {
+    const index = this.state.maskingRules.findIndex((rule) => rule.id === id); if (index < 0) return undefined;
+    this.state.maskingRules[index] = { ...this.state.maskingRules[index], ...patch, updatedAt: new Date().toISOString() };
+    await this.persist(); return structuredClone(this.state.maskingRules[index]);
+  }
+  async createMaskingPreview(input) { const preview = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }; this.state.maskingPreviews.push(preview); await this.persist(); return structuredClone(preview); }
+  async listMaskingPreviews(ruleId) { return structuredClone(this.state.maskingPreviews.filter((item) => !ruleId || item.ruleId === ruleId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))); }
   async persist() {}
 }

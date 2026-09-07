@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createApiController } from "../src/server/api-controller.mjs";
 import { MemoryTaskStore } from "../src/server/repositories/memory-store.mjs";
 import { createSeedState } from "../src/server/repositories/store.mjs";
-import { ValidationError } from "../src/shared/validation.mjs";
+import { ValidationError, maskValue } from "../src/shared/validation.mjs";
 import { OssTaskStore, StorageConflictError, createOssRequest } from "../src/server/repositories/oss-store.mjs";
 
 const setup = (state = createSeedState(), simulationDelayMs = 1_200) => {
@@ -50,6 +50,26 @@ describe("data platform API controller", () => {
     const validated = await handle({ method: "POST", pathname: `/api/dev/jobs/${created.body.id}/validate` });
     assert.equal(validated.status, 200);
     assert.match(validated.body.warnings.join(" "), /WHERE/);
+  });
+
+  test("manages securities masking rules and records previews", async () => {
+    const { handle } = setup();
+    const rules = await handle({ method: "GET", pathname: "/api/masking/rules" });
+    assert.equal(rules.status, 200);
+    assert.equal(rules.body.length, 3);
+    const phoneRule = rules.body.find((rule) => rule.strategy === "PHONE");
+    const preview = await handle({ method: "POST", pathname: `/api/masking/rules/${phoneRule.id}/preview`, body: { value: "13812348000", operator: "测试用户" } });
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.output, "138****8000");
+    assert.equal(preview.body.operator, "测试用户");
+    const history = await handle({ method: "GET", pathname: `/api/masking/rules/${phoneRule.id}/preview` });
+    assert.equal(history.body.length, 1);
+    const disabled = await handle({ method: "POST", pathname: `/api/masking/rules/${phoneRule.id}/toggle` });
+    assert.equal(disabled.body.enabled, false);
+    const disabledPreview = await handle({ method: "POST", pathname: `/api/masking/rules/${phoneRule.id}/preview`, body: { value: "13812348000" } });
+    assert.equal(disabledPreview.body.output, "13812348000");
+    assert.equal(maskValue("SECURITY_ACCOUNT", "SEC-DEMO-0001234"), "SEC*********1234");
+    await assert.rejects(() => handle({ method: "POST", pathname: "/api/masking/rules", body: { name: "非法规则", description: "", fieldName: "x", strategy: "RAW", sampleValue: "demo", owner: "测试组", enabled: true } }), ValidationError);
   });
 
   test("backfills data development state for legacy stores", async () => {

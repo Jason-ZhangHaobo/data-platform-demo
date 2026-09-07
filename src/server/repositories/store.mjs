@@ -31,6 +31,20 @@ export const createSeedState = () => {
       createdAt: minutesAgo(1_440), updatedAt: minutesAgo(120),
     },
   ];
+  const maskingRules = [
+    {
+      id: randomUUID(), name: "投资者手机号脱敏", description: "客户适当性和运营分析场景使用，保留前三位与后四位。", fieldName: "investor_phone", strategy: "PHONE", sampleValue: "13812348000", owner: "数据安全组", enabled: true,
+      createdAt: minutesAgo(960), updatedAt: minutesAgo(90), previewCount: 2,
+    },
+    {
+      id: randomUUID(), name: "证券账户脱敏", description: "资产分析仅展示账户前缀和末四位。", fieldName: "security_account", strategy: "SECURITY_ACCOUNT", sampleValue: "SEC-DEMO-0001234", owner: "经纪数据组", enabled: true,
+      createdAt: minutesAgo(720), updatedAt: minutesAgo(75), previewCount: 1,
+    },
+    {
+      id: randomUUID(), name: "投资者标识脱敏", description: "合规演示中隐藏投资者身份标识，禁止使用真实证件号。", fieldName: "investor_id_card", strategy: "ID_CARD", sampleValue: "ID-DEMO-19900101-1234", owner: "数据安全组", enabled: false,
+      createdAt: minutesAgo(480), updatedAt: minutesAgo(180), previewCount: 0,
+    },
+  ];
   return {
     tasks,
     runs: [
@@ -39,6 +53,8 @@ export const createSeedState = () => {
     ],
     devJobs,
     devRuns: [],
+    maskingRules,
+    maskingPreviews: [],
   };
 };
 

@@ -1,6 +1,7 @@
 const sourceTypes = new Set(["MySQL", "PostgreSQL", "Oracle", "CSV"]);
 const syncModes = new Set(["FULL", "INCREMENTAL"]);
 const devJobTypes = new Set(["SQL", "PYTHON"]);
+const maskingStrategies = new Set(["PHONE", "ID_CARD", "SECURITY_ACCOUNT", "BANK_CARD", "NAME"]);
 
 export class ValidationError extends Error {
   constructor(issues) {
@@ -71,4 +72,37 @@ export function validateDevJobInput(value) {
   if (!analysis.valid) issues.push({ path: "sql", message: "SQL 不能为空" });
   if (issues.length) throw new ValidationError(issues);
   return { ...result, analysis };
+}
+
+export function validateMaskingRuleInput(value) {
+  const input = value && typeof value === "object" ? value : {};
+  const issues = [];
+  const text = (key, min, max, message) => {
+    const result = typeof input[key] === "string" ? input[key].trim() : "";
+    if (result.length < min || result.length > max) issues.push({ path: key, message });
+    return result;
+  };
+  const result = {
+    name: text("name", 2, 60, "规则名称需要 2—60 个字符"),
+    description: text("description", 0, 200, "规则说明不能超过 200 个字符"),
+    fieldName: text("fieldName", 2, 80, "请输入敏感字段名称"),
+    strategy: input.strategy,
+    sampleValue: text("sampleValue", 1, 200, "请输入虚构样例值"),
+    owner: text("owner", 2, 40, "请输入负责人"),
+    enabled: input.enabled !== false,
+  };
+  if (!maskingStrategies.has(result.strategy)) issues.push({ path: "strategy", message: "脱敏策略不合法" });
+  if (issues.length) throw new ValidationError(issues);
+  return result;
+}
+
+export function maskValue(strategy, value) {
+  const text = String(value ?? "");
+  if (!text) return "";
+  if (strategy === "PHONE") return text.length <= 4 ? "*".repeat(text.length) : `${text.slice(0, 3)}${"*".repeat(Math.max(1, text.length - 7))}${text.slice(-4)}`;
+  if (strategy === "ID_CARD") return text.length <= 8 ? "*".repeat(text.length) : `${text.slice(0, 4)}${"*".repeat(text.length - 8)}${text.slice(-4)}`;
+  if (strategy === "SECURITY_ACCOUNT") return text.length <= 7 ? "*".repeat(text.length) : `${text.slice(0, 3)}${"*".repeat(text.length - 7)}${text.slice(-4)}`;
+  if (strategy === "BANK_CARD") return text.length <= 4 ? "*".repeat(text.length) : `${"*".repeat(text.length - 4)}${text.slice(-4)}`;
+  if (strategy === "NAME") return text.length <= 1 ? "*" : `${text.slice(0, 1)}${"*".repeat(Math.max(1, text.length - 1))}`;
+  return text;
 }

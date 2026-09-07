@@ -3,8 +3,13 @@ const statusMeta = {
   SUCCESS: ["成功", "success"], FAILED: ["失败", "danger"], STOPPED: ["已停用", "neutral"],
 };
 const devStatusMeta = { DRAFT: ["草稿", "neutral"], READY: ["待发布", "info"], RUNNING: ["运行中", "running"], SUCCESS: ["成功", "success"], FAILED: ["失败", "danger"] };
-const requestedView = () => window.location.hash === "#development" || new URLSearchParams(window.location.search).get("view") === "development";
-const state = { view: requestedView() ? "development" : "sync", tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, error: undefined, busyId: undefined };
+const maskingStrategyMeta = { PHONE: ["手机号", "保留前三位与后四位"], ID_CARD: ["投资者标识", "保留前四位与后四位"], SECURITY_ACCOUNT: ["证券账户", "保留前三位与后四位"], BANK_CARD: ["银行卡号", "仅保留后四位"], NAME: ["姓名", "保留首字" ] };
+const requestedView = () => {
+  const view = new URLSearchParams(window.location.search).get("view");
+  if (view === "development" || view === "masking") return view;
+  return window.location.hash === "#development" ? "development" : "sync";
+};
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -42,6 +47,14 @@ async function refreshDevelopment() {
   state.busyId = undefined;
   render();
 }
+
+async function refreshMasking() {
+  state.maskingRules = await request("/api/masking/rules");
+  state.busyId = undefined;
+  render();
+}
+
+const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : refresh();
 
 const selectedTask = () => state.tasks.find((task) => task.id === state.selectedId);
 
@@ -119,10 +132,43 @@ function devJobForm(job) {
   </form></section></div>`;
 }
 
+function maskingRuleCard(rule) {
+  const [label, hint] = maskingStrategyMeta[rule.strategy] ?? [rule.strategy, "规则策略"];
+  return `<article class="task-card ${rule.enabled ? "selected" : ""}">
+    <div class="task-card-main"><div class="task-title-row"><span class="status-dot ${rule.enabled ? "success" : "neutral"}"></span><h3>${escapeHtml(rule.name)}</h3><span class="status-badge ${rule.enabled ? "success" : "neutral"}">${rule.enabled ? "已启用" : "已停用"}</span></div>
+    <p>${escapeHtml(rule.fieldName)} · ${escapeHtml(label)}</p><div class="task-meta"><span>${escapeHtml(hint)}</span><span>预览 ${Number(rule.previewCount ?? 0)} 次</span><span>${escapeHtml(rule.owner)}</span></div></div>
+    <div class="task-actions"><button class="button button-quiet" data-mask-preview="${rule.id}">预览脱敏</button><button class="button button-secondary" data-mask-toggle="${rule.id}">${rule.enabled ? "停用" : "启用"}</button></div>
+  </article>`;
+}
+
+function maskingRuleForm(rule) {
+  const value = rule ?? { name: "", description: "", fieldName: "investor_phone", strategy: "PHONE", sampleValue: "13812348000", owner: "数据安全组", enabled: true };
+  const options = Object.entries(maskingStrategyMeta).map(([key, [label]]) => `<option value="${key}" ${key === value.strategy ? "selected" : ""}>${label}</option>`).join("");
+  return `<div class="modal-backdrop"><section class="task-form" role="dialog" aria-modal="true"><div class="form-heading"><div><p class="eyebrow">DATA MASKING</p><h2>新建脱敏规则</h2></div><button class="icon-button" data-mask-close>×</button></div><form id="masking-rule-form">
+    <label class="field field-wide"><span>规则名称</span><input name="name" required minlength="2" maxlength="60" value="${escapeHtml(value.name)}"></label>
+    <label class="field field-wide"><span>规则说明</span><textarea name="description" maxlength="200" rows="2">${escapeHtml(value.description)}</textarea></label>
+    <label class="field"><span>敏感字段</span><input name="fieldName" required value="${escapeHtml(value.fieldName)}" placeholder="investor_phone"></label><label class="field"><span>脱敏策略</span><select name="strategy">${options}</select></label>
+    <label class="field field-wide"><span>虚构样例值</span><input name="sampleValue" required value="${escapeHtml(value.sampleValue)}"></label><label class="field"><span>负责人</span><input name="owner" required value="${escapeHtml(value.owner)}"></label>
+    <label class="checkbox-field"><input name="enabled" type="checkbox" ${value.enabled ? "checked" : ""}><span>创建后启用规则</span></label>
+    <div class="form-actions field-wide"><button class="button button-secondary" type="button" data-mask-close>取消</button><button class="button button-primary" type="submit">保存规则</button></div>
+  </form></section></div>`;
+}
+
+function renderMasking() {
+  const preview = state.maskingPreview;
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><a class="nav-item active" href="?view=masking#masking">数据脱敏</a><span class="nav-item muted">数据资产 · 即将开放</span></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
+    <section class="hero"><div><p class="eyebrow">DATA MASKING · MVP 0.1</p><h1>让敏感数据<br>可用但不可见。</h1><p class="hero-copy">围绕投资者、证券账户和资金信息建立可预览、可审计的脱敏规则；当前仅处理虚构样例。</p></div><button class="button button-primary hero-action" data-new-masking><span>＋</span> 新建脱敏规则</button></section>
+    <section class="summary-grid"><article><span>规则总数</span><strong>${state.maskingRules.length}</strong><small>条脱敏规则</small></article><article><span>已启用</span><strong>${state.maskingRules.filter((rule) => rule.enabled).length}</strong><small>进入数据使用流程</small></article><article><span>预览次数</span><strong>${state.maskingRules.reduce((sum, rule) => sum + Number(rule.previewCount ?? 0), 0)}</strong><small>虚构样例预览</small></article><article class="success-card"><span>当前阶段</span><strong>0.1</strong><small>规则与预览</small></article></section>
+    ${state.error ? `<div class="error-banner"><span>!</span>${escapeHtml(state.error)}<button data-dismiss>关闭</button></div>` : ""}
+    ${preview ? `<section class="panel preview-panel"><div class="panel-heading"><div><p class="eyebrow">PREVIEW RESULT</p><h2>${escapeHtml(preview.ruleName)}</h2></div><button class="button button-quiet" data-mask-dismiss-preview>清除预览</button></div><div class="preview-values"><div><span>原始样例</span><code>${escapeHtml(preview.input)}</code></div><div class="preview-arrow">→</div><div><span>脱敏结果</span><code>${escapeHtml(preview.output)}</code></div></div><small>策略：${escapeHtml(maskingStrategyMeta[preview.strategy]?.[0] ?? preview.strategy)} · 操作人：${escapeHtml(preview.operator)}</small></section>` : ""}
+    <section class="workspace"><div class="panel task-panel"><div class="panel-heading"><div><p class="eyebrow">MASKING RULES</p><h2>脱敏规则</h2></div><span>${state.maskingRules.length} 项</span></div><div class="task-list">${state.maskingRules.map(maskingRuleCard).join("")}</div></div><aside class="panel detail-panel"><div class="panel-heading"><div><p class="eyebrow">SECURITY CONTEXT</p><h2>安全边界</h2></div><span>虚构演示</span></div><div class="empty-state">仅对虚构投资者、证券账户、银行卡和姓名样例执行预览。真实数据访问、生产脱敏和监管报送将在权限与审计模块完成后再评估。</div></aside></section>
+  </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 禁止接入真实生产</span></footer>${state.maskingEditing !== undefined ? maskingRuleForm(state.maskingEditing) : ""}</div>`;
+}
+
 function renderDevelopment() {
   const job = state.devJobs.find((item) => item.id === state.devSelectedId);
   const enabled = state.devJobs.filter((item) => item.enabled).length;
-  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item active" href="?view=development#development">数据开发</a><span class="nav-item muted">数据资产 · 即将开放</span></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item active" href="?view=development#development">数据开发</a><a class="nav-item" href="?view=masking#masking">数据脱敏</a><span class="nav-item muted">数据资产 · 即将开放</span></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
     <section class="hero"><div><p class="eyebrow">DATA DEVELOPMENT · MVP 0.1</p><h1>把 SQL 变成<br>可校验、可运行的任务。</h1><p class="hero-copy">这一版只做虚构数据模拟执行，先跑通 SQL 草稿、风险提示、运行记录和后续发布的产品流程。</p></div><button class="button button-primary hero-action" data-new-dev><span>＋</span> 新建 SQL 任务</button></section>
     <section class="summary-grid"><article><span>任务总数</span><strong>${state.devJobs.length}</strong><small>个 SQL 任务</small></article><article><span>待发布</span><strong>${enabled}</strong><small>可进入模拟执行</small></article><article><span>运行记录</span><strong>${state.devRuns.length}</strong><small>当前任务记录</small></article><article class="success-card"><span>当前阶段</span><strong>0.1</strong><small>模拟执行</small></article></section>
     ${state.error ? `<div class="error-banner"><span>!</span>${escapeHtml(state.error)}<button data-dismiss>关闭</button></div>` : ""}
@@ -132,10 +178,11 @@ function renderDevelopment() {
 
 function render() {
   if (state.view === "development") { app.innerHTML = renderDevelopment(); return; }
+  if (state.view === "masking") { app.innerHTML = renderMasking(); return; }
   const summary = { totalTasks: 0, enabledTasks: 0, runningTasks: 0, runsToday: 0, successRate: 100, ...state.summary };
   const task = selectedTask();
   app.innerHTML = `<div class="app-shell">
-    <header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item active" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><span class="nav-item muted">数据资产 · 即将开放</span></nav><div class="environment-pill"><span></span>本地演示环境</div></header>
+    <header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item active" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><a class="nav-item" href="?view=masking#masking">数据脱敏</a><span class="nav-item muted">数据资产 · 即将开放</span></nav><div class="environment-pill"><span></span>本地演示环境</div></header>
     <main id="top">
       <section class="hero"><div><p class="eyebrow">OFFLINE SYNC CENTER · MVP 0.1</p><h1>让每一次数据流动<br>都清晰、可控、可追溯。</h1><p class="hero-copy">这是一个使用完全虚构数据构建的产品 Demo，用来练习从需求、前后端开发、自动测试到生产审批发布的完整闭环。</p></div><button class="button button-primary hero-action" data-new><span>＋</span> 新建同步任务</button></section>
       <section class="summary-grid"><article><span>任务总数</span><strong>${summary.totalTasks}</strong><small>个已登记任务</small></article><article><span>已启用</span><strong>${summary.enabledTasks}</strong><small>等待调度或手动运行</small></article><article><span>运行中</span><strong class="${summary.runningTasks ? "accent" : ""}">${summary.runningTasks}</strong><small>实时模拟执行</small></article><article><span>今日运行</span><strong>${summary.runsToday}</strong><small>次执行记录</small></article><article class="success-card"><span>执行成功率</span><strong>${summary.successRate}%</strong><small>基于已完成记录</small></article></section>
@@ -162,20 +209,23 @@ document.addEventListener("click", async (event) => {
   if (target.classList.contains("nav-item")) {
     event.preventDefault();
     const href = target.getAttribute("href");
-    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : "sync";
+    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : href.includes("view=masking") || href.endsWith("#masking") ? "masking" : "sync";
     window.history.replaceState({}, "", href);
     // Switch the visible view immediately. The data refresh can involve a
     // network round trip; waiting for it made navigation look unresponsive.
     render();
-    (state.view === "development" ? refreshDevelopment() : refresh()).catch((error) => { state.error = error.message; render(); });
+    refreshCurrentView().catch((error) => { state.error = error.message; render(); });
     return;
   }
   if (target.dataset.new !== undefined) { state.editing = null; return render(); }
   if (target.dataset.newDev !== undefined) { state.devEditing = null; return render(); }
+  if (target.dataset.newMasking !== undefined) { state.maskingEditing = null; return render(); }
   const clickedBackdrop = event.target?.classList?.contains?.("modal-backdrop") ?? false;
   if (target.dataset.devClose !== undefined || clickedBackdrop) { state.devEditing = undefined; return render(); }
+  if (target.dataset.maskClose !== undefined) { state.maskingEditing = undefined; return render(); }
   if (target.dataset.close !== undefined || clickedBackdrop) { state.editing = undefined; return render(); }
   if (target.dataset.dismiss !== undefined) { state.error = undefined; return render(); }
+  if (target.dataset.maskDismissPreview !== undefined) { state.maskingPreview = undefined; return render(); }
   if (target.dataset.edit) { state.editing = state.tasks.find((task) => task.id === target.dataset.edit); return render(); }
   if (target.dataset.action) return action(target.dataset.id, target.dataset.action);
   if (target.dataset.devSelect) { state.devSelectedId = target.dataset.devSelect; state.devRuns = await request(`/api/dev/jobs/${state.devSelectedId}/runs`); return render(); }
@@ -186,6 +236,18 @@ document.addEventListener("click", async (event) => {
       if (target.dataset.devAction === "validate") window.alert(response.warnings?.length ? `SQL 校验通过，但有提醒：\n${response.warnings.join("\n")}` : "SQL 校验通过");
       state.devSelectedId = target.dataset.id; await refreshDevelopment();
     } catch (error) { state.error = error.message; state.busyId = undefined; render(); }
+    return;
+  }
+  if (target.dataset.maskToggle) {
+    state.busyId = target.dataset.maskToggle; state.error = undefined; render();
+    try { await request(`/api/masking/rules/${target.dataset.maskToggle}/toggle`, { method: "POST" }); await refreshMasking(); }
+    catch (error) { state.error = error.message; state.busyId = undefined; render(); }
+    return;
+  }
+  if (target.dataset.maskPreview) {
+    state.busyId = target.dataset.maskPreview; state.error = undefined; render();
+    try { state.maskingPreview = await request(`/api/masking/rules/${target.dataset.maskPreview}/preview`, { method: "POST", body: JSON.stringify({ operator: "演示用户" }) }); await refreshMasking(); }
+    catch (error) { state.error = error.message; state.busyId = undefined; render(); }
     return;
   }
   if (target.dataset.select) { state.selectedId = target.dataset.select; state.runs = await request(`/api/tasks/${state.selectedId}/runs`); return render(); }
@@ -199,6 +261,13 @@ document.addEventListener("submit", async (event) => {
     catch (error) { state.error = error.message; state.devEditing = undefined; render(); }
     return;
   }
+  if (event.target.id === "masking-rule-form") {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.target)); data.enabled = event.target.elements.enabled.checked;
+    try { state.maskingPreview = undefined; state.maskingEditing = undefined; await request("/api/masking/rules", { method: "POST", body: JSON.stringify(data) }); await refreshMasking(); }
+    catch (error) { state.error = error.message; state.maskingEditing = undefined; render(); }
+    return;
+  }
   if (event.target.id !== "task-form") return;
   event.preventDefault();
   const data = Object.fromEntries(new FormData(event.target));
@@ -210,11 +279,11 @@ document.addEventListener("submit", async (event) => {
 });
 
 render();
-const initialLoad = state.view === "development" ? refreshDevelopment() : refresh();
+const initialLoad = refreshCurrentView();
 initialLoad.catch((error) => { state.error = error.message; render(); });
 window.addEventListener("hashchange", () => {
-  state.view = requestedView() ? "development" : "sync";
+  state.view = requestedView();
   render();
-  (state.view === "development" ? refreshDevelopment() : refresh()).catch((error) => { state.error = error.message; render(); });
+  refreshCurrentView().catch((error) => { state.error = error.message; render(); });
 });
 setInterval(() => { if (state.tasks.some((task) => task.status === "RUNNING")) refresh().catch(() => {}); }, 900);
