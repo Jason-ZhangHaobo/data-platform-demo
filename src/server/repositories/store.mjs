@@ -23,12 +23,22 @@ export const createSeedState = () => {
       createdAt: minutesAgo(8_640), updatedAt: minutesAgo(720),
     },
   ];
+  const devJobs = [
+    {
+      id: randomUUID(), name: "会员画像日汇总", description: "将演示会员明细聚合为画像宽表，当前仅模拟执行。", jobType: "SQL",
+      sql: "SELECT member_level, city, COUNT(*) AS member_count\nFROM business_demo.customer_profile\nGROUP BY member_level, city\nLIMIT 1000;",
+      schedule: "每天 03:00", owner: "数据开发组", enabled: false, status: "DRAFT",
+      createdAt: minutesAgo(1_440), updatedAt: minutesAgo(120),
+    },
+  ];
   return {
     tasks,
     runs: [
       { id: randomUUID(), taskId: tasks[0].id, status: "SUCCESS", startedAt: minutesAgo(33), finishedAt: minutesAgo(32), rowsRead: 12_480, rowsWritten: 12_480, message: "模拟执行完成，源端与目标端记录数一致。" },
       { id: randomUUID(), taskId: tasks[1].id, status: "SUCCESS", startedAt: minutesAgo(87), finishedAt: minutesAgo(85), rowsRead: 2_316, rowsWritten: 2_316, message: "模拟增量同步完成。" },
     ],
+    devJobs,
+    devRuns: [],
   };
 };
 

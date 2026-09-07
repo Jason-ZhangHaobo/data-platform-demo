@@ -31,6 +31,27 @@ describe("data platform API controller", () => {
     await assert.rejects(() => handle({ method: "POST", pathname: "/api/tasks", body: { ...task, name: "" } }), ValidationError);
   });
 
+  test("creates, validates, and simulates a data development job", async () => {
+    const { handle } = setup();
+    const created = await handle({ method: "POST", pathname: "/api/dev/jobs", body: { name: "会员画像 SQL", description: "聚合演示会员数据", jobType: "SQL", sql: "SELECT city, COUNT(*) FROM business_demo.customer_profile GROUP BY city LIMIT 1000;", schedule: "手动", owner: "数据开发组", enabled: true } });
+    assert.equal(created.status, 201);
+    const validated = await handle({ method: "POST", pathname: `/api/dev/jobs/${created.body.id}/validate` });
+    assert.equal(validated.status, 200);
+    assert.equal(validated.body.valid, true);
+    const run = await handle({ method: "POST", pathname: `/api/dev/jobs/${created.body.id}/run` });
+    assert.equal(run.status, 200);
+    assert.equal(run.body.status, "SUCCESS");
+    assert.equal(run.body.rowsAffected, 128);
+  });
+
+  test("warns on dangerous or unbounded SQL", async () => {
+    const { handle } = setup();
+    const created = await handle({ method: "POST", pathname: "/api/dev/jobs", body: { name: "危险 SQL", description: "", jobType: "SQL", sql: "DELETE FROM business_demo.customer_profile", schedule: "手动", owner: "测试组", enabled: true } });
+    const validated = await handle({ method: "POST", pathname: `/api/dev/jobs/${created.body.id}/validate` });
+    assert.equal(validated.status, 200);
+    assert.match(validated.body.warnings.join(" "), /WHERE/);
+  });
+
   test("simulates a task run and records success", async () => {
     const { handle, store } = setup(createSeedState(), 0);
     const task = (await store.listTasks()).find((item) => item.enabled);

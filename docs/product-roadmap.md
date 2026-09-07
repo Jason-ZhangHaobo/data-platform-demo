@@ -119,3 +119,14 @@
 - [DataWorks ChatBI](https://help.aliyun.com/zh/dataworks/user-guide/dataworks-chatbi-overview)
 - [Data Agent 语义分析](https://help.aliyun.com/zh/dataworks/user-guide/data-agent-semantic-analysis)
 - [DataWorks 知识库](https://help.aliyun.com/zh/dataworks/user-guide/dataworks-knowledge-base-user-guide)
+
+## 8. 产品经理复刻与讲解材料
+
+在数据中台各模块和 Data Agent 能力完成后，制作一份全流程讲解 PPT，作为产品经理的复刻手册和团队分享材料。最终版需要包含：
+
+- 一张总路线图，说明从需求分析、PRD、前后端代码、GitHub 协作、CI/CD、阿里云 staging、真实数据同步到后续模块扩展的完整链路。
+- 两条子路线图：一条说明 Codex 负责的代码、测试、PR、部署和验证工作；一条说明产品经理负责的需求澄清、范围定义、验收判断和发布决策。
+- 里程碑事件、每个阶段的产出、阶段重要性、复刻时的关键动作和常见风险。
+- 用当前项目的真实实施记录作为案例，但不写入密码、令牌、公司内部地址或真实业务数据。
+
+这份 PPT 的目标有两个：帮助产品经理掌握从需求到可运行数据中台的完整过程，并向其他成员清晰讲解如何复刻同样的交付闭环。最终版在全部模块完成后生成，期间可以先制作 Demo 版验证表达风格。
