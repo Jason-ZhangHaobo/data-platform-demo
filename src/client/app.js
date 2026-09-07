@@ -153,8 +153,10 @@ async function action(id, type) {
 }
 
 document.addEventListener("click", async (event) => {
-  const target = event.target?.closest?.("button, [data-select], [data-dev-select], a.nav-item")
-    ?? event.target?.parentElement?.closest?.("button, [data-select], [data-dev-select], a.nav-item");
+  const selector = "button, [data-select], [data-dev-select], a.nav-item";
+  const target = event.composedPath?.().find((node) => node?.matches?.(selector))
+    ?? event.target?.closest?.(selector)
+    ?? event.target?.parentElement?.closest?.(selector);
   if (!target) return;
   if (target.classList.contains("nav-item")) {
     event.preventDefault();
@@ -207,5 +209,9 @@ document.addEventListener("submit", async (event) => {
 
 const initialLoad = state.view === "development" ? refreshDevelopment() : refresh();
 initialLoad.catch((error) => { state.error = error.message; render(); });
-window.addEventListener("hashchange", () => { state.view = window.location.hash === "#development" ? "development" : "sync"; (state.view === "development" ? refreshDevelopment() : refresh()).catch((error) => { state.error = error.message; render(); }); });
+window.addEventListener("hashchange", () => {
+  state.view = window.location.hash === "#development" ? "development" : "sync";
+  render();
+  (state.view === "development" ? refreshDevelopment() : refresh()).catch((error) => { state.error = error.message; render(); });
+});
 setInterval(() => { if (state.tasks.some((task) => task.status === "RUNNING")) refresh().catch(() => {}); }, 900);
