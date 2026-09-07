@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { createSeedState, summaryFromState } from "./store.mjs";
 
 export class MemoryTaskStore {
-  constructor(initialState = createSeedState()) {
+  constructor(initialState = createSeedState()) { this.replaceState(initialState); }
+  replaceState(initialState) {
     const seed = createSeedState();
     const provided = structuredClone(initialState);
     this.state = {
@@ -13,6 +14,7 @@ export class MemoryTaskStore {
       devJobs: provided.devJobs ?? seed.devJobs,
       devRuns: provided.devRuns ?? seed.devRuns,
     };
+    return this.state;
   }
   async listTasks() { return structuredClone([...this.state.tasks].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))); }
   async getTask(id) { const task = this.state.tasks.find((item) => item.id === id); return task ? structuredClone(task) : undefined; }
