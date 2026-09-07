@@ -28,6 +28,7 @@ jobs:
           mkdir -p _site
           cp -R src/client/. _site/
           sed -i 's#globalThis.DATA_PLATFORM_API_BASE_URL = "";#globalThis.DATA_PLATFORM_API_BASE_URL = "https://dataplaging-api-qagxeaqdmd.cn-hangzhou.fcapp.run";#' _site/runtime-config.js
+          sed -i "s#src=\"./app.js\"#src=\"./app.js?v=${GITHUB_SHA}\"#" _site/index.html
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
