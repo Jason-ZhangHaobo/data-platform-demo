@@ -52,6 +52,13 @@ describe("data platform API controller", () => {
     assert.match(validated.body.warnings.join(" "), /WHERE/);
   });
 
+  test("backfills data development state for legacy stores", async () => {
+    const seed = createSeedState();
+    const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });
+    assert.equal((await store.listDevJobs()).length, 1);
+    assert.deepEqual(await store.listDevRuns(), []);
+  });
+
   test("simulates a task run and records success", async () => {
     const { handle, store } = setup(createSeedState(), 0);
     const task = (await store.listTasks()).find((item) => item.enabled);
