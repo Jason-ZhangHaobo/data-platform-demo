@@ -31,5 +31,26 @@ export class MemoryTaskStore {
     this.state.runs[index] = { ...this.state.runs[index], ...patch }; await this.persist(); return structuredClone(this.state.runs[index]);
   }
   async getSummary() { return summaryFromState(this.state); }
+  async listDevJobs() { return structuredClone([...this.state.devJobs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))); }
+  async getDevJob(id) { const job = this.state.devJobs.find((item) => item.id === id); return job ? structuredClone(job) : undefined; }
+  async createDevJob(input) {
+    const now = new Date().toISOString();
+    const job = { ...input, id: randomUUID(), status: input.enabled ? "READY" : "DRAFT", createdAt: now, updatedAt: now };
+    this.state.devJobs.push(job); await this.persist(); return structuredClone(job);
+  }
+  async updateDevJob(id, input) {
+    const index = this.state.devJobs.findIndex((job) => job.id === id); if (index < 0) return undefined;
+    this.state.devJobs[index] = { ...this.state.devJobs[index], ...input, updatedAt: new Date().toISOString() };
+    await this.persist(); return structuredClone(this.state.devJobs[index]);
+  }
+  async listDevRuns(jobId) {
+    const runs = jobId ? this.state.devRuns.filter((run) => run.jobId === jobId) : this.state.devRuns;
+    return structuredClone([...runs].sort((a, b) => b.startedAt.localeCompare(a.startedAt)));
+  }
+  async createDevRun(input) { const run = { ...input, id: randomUUID() }; this.state.devRuns.push(run); await this.persist(); return structuredClone(run); }
+  async updateDevRun(id, patch) {
+    const index = this.state.devRuns.findIndex((run) => run.id === id); if (index < 0) return undefined;
+    this.state.devRuns[index] = { ...this.state.devRuns[index], ...patch }; await this.persist(); return structuredClone(this.state.devRuns[index]);
+  }
   async persist() {}
 }

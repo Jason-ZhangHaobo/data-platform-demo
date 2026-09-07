@@ -89,6 +89,7 @@ main { width: min(1480px, calc(100% - 48px)); margin: 0 auto; }
 .task-card-main > p span { margin: 0 8px; color: var(--green); }
 .task-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: #7d8782; font-size: 11px; }
 .task-meta span:not(:first-child)::before { content: "·"; margin-right: 12px; color: #bdc4bf; }
+.sql-preview { margin: 12px 0 0; max-height: 76px; overflow: hidden; color: #b8c9c1; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; }
 .task-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 
 .detail-panel { position: sticky; top: 96px; }

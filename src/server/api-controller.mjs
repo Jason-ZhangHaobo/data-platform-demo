@@ -1,8 +1,12 @@
-import { validateTaskInput } from "../shared/validation.mjs";
+import { analyzeSql, validateDevJobInput, validateTaskInput } from "../shared/validation.mjs";
 
 const result = (status, body) => ({ status, body });
 const taskRoute = (pathname) => {
   const match = pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(runs|run|stop|toggle))?$/);
+  return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
+};
+const devJobRoute = (pathname) => {
+  const match = pathname.match(/^\/api\/dev\/jobs\/([^/]+)(?:\/(runs|validate|run))?$/);
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
 
@@ -17,6 +21,29 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
     if (method === "GET" && pathname === "/api/summary") return result(200, await store.getSummary());
     if (method === "GET" && pathname === "/api/tasks") return result(200, await store.listTasks());
     if (method === "POST" && pathname === "/api/tasks") return result(201, await store.createTask(validateTaskInput(body)));
+    if (method === "GET" && pathname === "/api/dev/jobs") return result(200, await store.listDevJobs());
+    if (method === "POST" && pathname === "/api/dev/jobs") return result(201, await store.createDevJob(validateDevJobInput(body)));
+
+    const devRoute = devJobRoute(pathname);
+    if (devRoute) {
+      const job = await store.getDevJob(devRoute.id);
+      if (!job) return result(404, { message: "未找到对应数据开发任务" });
+      if (method === "GET" && devRoute.action === "runs") return result(200, await store.listDevRuns(job.id));
+      if (method === "POST" && devRoute.action === "validate") return result(200, { ...analyzeSql(job.sql), jobId: job.id });
+      if (method === "POST" && devRoute.action === "run") {
+        if (!job.enabled) return result(409, { message: "请先启用数据开发任务" });
+        const analysis = analyzeSql(job.sql);
+        if (!analysis.valid) return result(400, { message: "SQL 校验未通过", ...analysis });
+        const startedAt = new Date().toISOString();
+        const run = await store.createDevRun({ jobId: job.id, status: "RUNNING", startedAt, message: "正在模拟提交 SQL 执行……" });
+        await store.updateDevJob(job.id, { status: "RUNNING" });
+        await new Promise((resolve) => setTimeout(resolve, simulationDelayMs));
+        const completed = await store.updateDevRun(run.id, { status: "SUCCESS", finishedAt: new Date().toISOString(), rowsAffected: 128, message: "SQL 模拟执行完成，未连接真实生产数据。" });
+        await store.updateDevJob(job.id, { status: "SUCCESS" });
+        return result(200, completed);
+      }
+      return result(405, { message: "不支持的数据开发请求方法" });
+    }
 
     const route = taskRoute(pathname);
     if (!route) return pathname.startsWith("/api/") ? result(404, { message: "未找到对应资源" }) : undefined;
