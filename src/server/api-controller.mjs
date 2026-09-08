@@ -1,4 +1,4 @@
-import { analyzeSql, maskValue, validateDevJobInput, validateMaskingRuleInput, validateTaskInput } from "../shared/validation.mjs";
+import { analyzeSql, maskValue, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateTaskInput } from "../shared/validation.mjs";
 
 const result = (status, body) => ({ status, body });
 const taskRoute = (pathname) => {
@@ -13,9 +13,13 @@ const maskingRoute = (pathname) => {
   const match = pathname.match(/^\/api\/masking\/rules\/([^/]+)(?:\/(preview|toggle))?$/);
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
+const assetRoute = (pathname) => {
+  const match = pathname.match(/^\/api\/assets\/([^/]+)$/);
+  return match ? { id: decodeURIComponent(match[1]) } : undefined;
+};
 
 export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken, requireAccessToken = false, syncService, realSyncEnabled = false }) {
-  return async function handle({ method, pathname, body = {}, headers = {} }) {
+  return async function handle({ method, pathname, body = {}, headers = {}, query }) {
     if (method === "GET" && pathname === "/api/health") return result(200, { status: "ok", service: "data-platform-demo", environment, time: new Date().toISOString() });
     const protectedApi = pathname.startsWith("/api/") && pathname !== "/api/health";
     if (protectedApi && requireAccessToken) {
@@ -29,6 +33,16 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
     if (method === "POST" && pathname === "/api/dev/jobs") return result(201, await store.createDevJob(validateDevJobInput(body)));
     if (method === "GET" && pathname === "/api/masking/rules") return result(200, await store.listMaskingRules());
     if (method === "POST" && pathname === "/api/masking/rules") return result(201, await store.createMaskingRule(validateMaskingRuleInput(body)));
+    if (method === "GET" && pathname === "/api/assets") return result(200, await store.listAssets({ q: query?.get("q"), domain: query?.get("domain"), sensitivity: query?.get("sensitivity") }));
+    if (method === "POST" && pathname === "/api/assets") return result(201, await store.createAsset(validateAssetInput(body)));
+
+    const asset = assetRoute(pathname);
+    if (asset) {
+      const item = await store.getAsset(asset.id);
+      if (!item) return result(404, { message: "未找到对应数据资产" });
+      if (method === "GET") return result(200, item);
+      return result(405, { message: "不支持的数据资产请求方法" });
+    }
 
     const masking = maskingRoute(pathname);
     if (masking) {
