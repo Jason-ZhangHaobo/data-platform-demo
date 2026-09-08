@@ -88,7 +88,7 @@ export async function createServer(options = {}) {
         return response.end();
       }
       const body = ["POST", "PUT"].includes(request.method ?? "") && url.pathname.startsWith("/api/") ? await readJson(request) : {};
-      const apiResult = await handleApi({ method: request.method, pathname: url.pathname, body, headers: request.headers });
+      const apiResult = await handleApi({ method: request.method, pathname: url.pathname, body, headers: request.headers, query: url.searchParams });
       if (apiResult) return json(response, apiResult.status, apiResult.body, request);
       return await serveStatic(response, url.pathname, clientDirectory);
     } catch (error) {

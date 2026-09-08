@@ -15,6 +15,7 @@ export class MemoryTaskStore {
       devRuns: provided.devRuns ?? seed.devRuns,
       maskingRules: provided.maskingRules ?? seed.maskingRules,
       maskingPreviews: provided.maskingPreviews ?? seed.maskingPreviews,
+      assets: provided.assets ?? seed.assets,
     };
     return this.state;
   }
@@ -81,5 +82,18 @@ export class MemoryTaskStore {
   }
   async createMaskingPreview(input) { const preview = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }; this.state.maskingPreviews.push(preview); await this.persist(); return structuredClone(preview); }
   async listMaskingPreviews(ruleId) { return structuredClone(this.state.maskingPreviews.filter((item) => !ruleId || item.ruleId === ruleId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))); }
+  async listAssets(filters = {}) {
+    const query = String(filters.q ?? "").trim().toLowerCase();
+    const domain = String(filters.domain ?? "").trim();
+    const sensitivity = String(filters.sensitivity ?? "").trim();
+    const matches = (asset) => !query || [asset.name, asset.physicalName, asset.domain, asset.owner, asset.description, ...asset.tags, ...asset.fields.flatMap((field) => [field.name, field.label, field.description])].join(" ").toLowerCase().includes(query);
+    return structuredClone(this.state.assets.filter((asset) => matches(asset) && (!domain || asset.domain === domain) && (!sensitivity || asset.sensitivity === sensitivity)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+  }
+  async getAsset(id) { const asset = this.state.assets.find((item) => item.id === id); return asset ? structuredClone(asset) : undefined; }
+  async createAsset(input) {
+    const now = new Date().toISOString();
+    const asset = { ...input, id: randomUUID(), updatedAt: now, indexedAt: now, status: "ACTIVE" };
+    this.state.assets.push(asset); await this.persist(); return structuredClone(asset);
+  }
   async persist() {}
 }

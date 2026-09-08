@@ -93,6 +93,9 @@ export class OssTaskStore extends MemoryTaskStore {
   async updateMaskingRule(id, patch) { await this.refresh(); return super.updateMaskingRule(id, patch); }
   async createMaskingPreview(input) { await this.refresh(); return super.createMaskingPreview(input); }
   async listMaskingPreviews(ruleId) { await this.refresh(); return super.listMaskingPreviews(ruleId); }
+  async listAssets(filters) { await this.refresh(); return super.listAssets(filters); }
+  async getAsset(id) { await this.refresh(); return super.getAsset(id); }
+  async createAsset(input) { await this.refresh(); return super.createAsset(input); }
 }
 
 export function ossConfigFromEnvironment(env = process.env) {

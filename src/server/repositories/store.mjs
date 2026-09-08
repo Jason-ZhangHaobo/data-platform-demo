@@ -45,6 +45,49 @@ export const createSeedState = () => {
       createdAt: minutesAgo(480), updatedAt: minutesAgo(180), previewCount: 0,
     },
   ];
+  const assets = [
+    {
+      id: randomUUID(), name: "证券主数据", physicalName: "ods_security_master", assetType: "TABLE", layer: "ODS", domain: "行情参考", owner: "行情数据组", sensitivity: "PUBLIC", tags: ["证券", "主数据", "行情"], description: "虚构证券代码、市场和交易日历的标准化主数据。", upstream: ["外部行情文件（虚构）"], fields: [
+        { name: "security_code", label: "证券代码", type: "STRING", sensitivity: "PUBLIC", description: "虚构证券标识，如 SEC-DEMO-0001" },
+        { name: "security_name", label: "证券简称", type: "STRING", sensitivity: "PUBLIC", description: "证券展示名称" },
+        { name: "market", label: "交易市场", type: "STRING", sensitivity: "PUBLIC", description: "沪深港等市场分类的虚构值" },
+        { name: "trade_date", label: "交易日", type: "DATE", sensitivity: "PUBLIC", description: "行情所属交易日" },
+      ], updatedAt: minutesAgo(35), indexedAt: minutesAgo(12), status: "ACTIVE",
+    },
+    {
+      id: randomUUID(), name: "投资者账户", physicalName: "dwd_investor_account", assetType: "TABLE", layer: "DWD", domain: "经纪业务", owner: "经纪数据组", sensitivity: "RESTRICTED", tags: ["投资者", "账户", "适当性"], description: "投资者证券账户的标准化宽表，仅用于虚构的客户资产分析。", upstream: ["ods_investor_account", "dim_branch"], fields: [
+        { name: "investor_id", label: "投资者标识", type: "STRING", sensitivity: "RESTRICTED", description: "禁止写入真实证件号" },
+        { name: "security_account", label: "证券账户", type: "STRING", sensitivity: "RESTRICTED", description: "需经过证券账户脱敏规则后对外展示" },
+        { name: "account_status", label: "账户状态", type: "STRING", sensitivity: "INTERNAL", description: "正常、休眠等虚构状态" },
+        { name: "open_date", label: "开户日期", type: "DATE", sensitivity: "INTERNAL", description: "账户开户日期" },
+      ], updatedAt: minutesAgo(48), indexedAt: minutesAgo(13), status: "ACTIVE",
+    },
+    {
+      id: randomUUID(), name: "订单成交明细", physicalName: "dwd_order_trade", assetType: "TABLE", layer: "DWD", domain: "交易清算", owner: "交易数据组", sensitivity: "SENSITIVE", tags: ["订单", "成交", "清算"], description: "订单、成交和交易方向标准化明细，供交易与清算分析使用。", upstream: ["ods_order_event", "ods_trade_event", "ods_security_master"], fields: [
+        { name: "order_id", label: "订单标识", type: "STRING", sensitivity: "SENSITIVE", description: "虚构订单标识" },
+        { name: "security_code", label: "证券代码", type: "STRING", sensitivity: "PUBLIC", description: "关联证券主数据" },
+        { name: "side", label: "买卖方向", type: "STRING", sensitivity: "INTERNAL", description: "买入或卖出" },
+        { name: "trade_quantity", label: "成交数量", type: "DECIMAL", sensitivity: "SENSITIVE", description: "成交数量" },
+        { name: "trade_time", label: "成交时间", type: "TIMESTAMP", sensitivity: "SENSITIVE", description: "成交发生时间" },
+      ], updatedAt: minutesAgo(62), indexedAt: minutesAgo(16), status: "ACTIVE",
+    },
+    {
+      id: randomUUID(), name: "持仓快照", physicalName: "dws_position_snapshot", assetType: "DATASET", layer: "DWS", domain: "财富管理", owner: "资产分析组", sensitivity: "SENSITIVE", tags: ["持仓", "市值", "资产分析"], description: "按交易日汇总投资者持仓和市值的分析数据集。", upstream: ["dwd_investor_account", "dwd_order_trade", "ods_security_master"], fields: [
+        { name: "security_account", label: "证券账户", type: "STRING", sensitivity: "RESTRICTED", description: "内部关联键，展示需脱敏" },
+        { name: "security_code", label: "证券代码", type: "STRING", sensitivity: "PUBLIC", description: "关联证券主数据" },
+        { name: "holding_quantity", label: "持仓数量", type: "DECIMAL", sensitivity: "SENSITIVE", description: "交易日持仓数量" },
+        { name: "market_value", label: "持仓市值", type: "DECIMAL", sensitivity: "SENSITIVE", description: "虚构市值金额" },
+      ], updatedAt: minutesAgo(72), indexedAt: minutesAgo(17), status: "ACTIVE",
+    },
+    {
+      id: randomUUID(), name: "基金净值指标", physicalName: "ads_fund_nav_metric", assetType: "VIEW", layer: "ADS", domain: "资产管理", owner: "资管数据组", sensitivity: "INTERNAL", tags: ["基金", "净值", "指标"], description: "基金产品净值和收益指标的主题视图。", upstream: ["dwd_fund_nav", "dim_fund_product"], fields: [
+        { name: "fund_code", label: "基金代码", type: "STRING", sensitivity: "PUBLIC", description: "虚构基金标识" },
+        { name: "nav_date", label: "净值日期", type: "DATE", sensitivity: "PUBLIC", description: "净值所属日期" },
+        { name: "unit_nav", label: "单位净值", type: "DECIMAL", sensitivity: "INTERNAL", description: "虚构单位净值" },
+        { name: "return_1d", label: "日收益率", type: "DECIMAL", sensitivity: "INTERNAL", description: "日收益指标" },
+      ], updatedAt: minutesAgo(88), indexedAt: minutesAgo(18), status: "ACTIVE",
+    },
+  ];
   return {
     tasks,
     runs: [
@@ -55,6 +98,7 @@ export const createSeedState = () => {
     devRuns: [],
     maskingRules,
     maskingPreviews: [],
+    assets,
   };
 };
 

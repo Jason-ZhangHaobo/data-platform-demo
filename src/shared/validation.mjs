@@ -2,6 +2,9 @@ const sourceTypes = new Set(["MySQL", "PostgreSQL", "Oracle", "CSV"]);
 const syncModes = new Set(["FULL", "INCREMENTAL"]);
 const devJobTypes = new Set(["SQL", "PYTHON"]);
 const maskingStrategies = new Set(["PHONE", "ID_CARD", "SECURITY_ACCOUNT", "BANK_CARD", "NAME"]);
+const assetTypes = new Set(["TABLE", "VIEW", "DATASET"]);
+const assetLayers = new Set(["ODS", "DWD", "DWS", "DIM", "ADS"]);
+const assetSensitivityLevels = new Set(["PUBLIC", "INTERNAL", "SENSITIVE", "RESTRICTED"]);
 
 export class ValidationError extends Error {
   constructor(issues) {
@@ -105,4 +108,43 @@ export function maskValue(strategy, value) {
   if (strategy === "BANK_CARD") return text.length <= 4 ? "*".repeat(text.length) : `${"*".repeat(text.length - 4)}${text.slice(-4)}`;
   if (strategy === "NAME") return text.length <= 1 ? "*" : `${text.slice(0, 1)}${"*".repeat(Math.max(1, text.length - 1))}`;
   return text;
+}
+
+export function validateAssetInput(value) {
+  const input = value && typeof value === "object" ? value : {};
+  const issues = [];
+  const text = (key, min, max, message) => {
+    const result = typeof input[key] === "string" ? input[key].trim() : "";
+    if (result.length < min || result.length > max) issues.push({ path: key, message });
+    return result;
+  };
+  const result = {
+    name: text("name", 2, 80, "资产名称需要 2—80 个字符"),
+    physicalName: text("physicalName", 2, 120, "请输入物理表或视图名称"),
+    assetType: input.assetType,
+    layer: input.layer,
+    domain: text("domain", 2, 40, "请输入业务域"),
+    owner: text("owner", 2, 40, "请输入负责人"),
+    sensitivity: input.sensitivity,
+    description: text("description", 0, 240, "资产说明不能超过 240 个字符"),
+    tags: Array.isArray(input.tags) ? input.tags.filter((item) => typeof item === "string").slice(0, 12) : [],
+    fields: Array.isArray(input.fields) ? input.fields.slice(0, 80).map((field) => ({
+      name: typeof field?.name === "string" ? field.name.trim() : "",
+      label: typeof field?.label === "string" ? field.label.trim() : "",
+      type: typeof field?.type === "string" ? field.type.trim() : "STRING",
+      sensitivity: field?.sensitivity,
+      description: typeof field?.description === "string" ? field.description.trim() : "",
+    })) : [],
+    upstream: Array.isArray(input.upstream) ? input.upstream.filter((item) => typeof item === "string").slice(0, 20) : [],
+  };
+  if (!assetTypes.has(result.assetType)) issues.push({ path: "assetType", message: "资产类型不合法" });
+  if (!assetLayers.has(result.layer)) issues.push({ path: "layer", message: "数据分层不合法" });
+  if (!assetSensitivityLevels.has(result.sensitivity)) issues.push({ path: "sensitivity", message: "敏感等级不合法" });
+  if (!result.fields.length) issues.push({ path: "fields", message: "至少登记一个字段" });
+  result.fields.forEach((field, index) => {
+    if (!field.name || !field.label) issues.push({ path: `fields[${index}]`, message: "字段名称和业务名称不能为空" });
+    if (!assetSensitivityLevels.has(field.sensitivity)) issues.push({ path: `fields[${index}].sensitivity`, message: "字段敏感等级不合法" });
+  });
+  if (issues.length) throw new ValidationError(issues);
+  return result;
 }

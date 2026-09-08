@@ -72,6 +72,21 @@ describe("data platform API controller", () => {
     await assert.rejects(() => handle({ method: "POST", pathname: "/api/masking/rules", body: { name: "非法规则", description: "", fieldName: "x", strategy: "RAW", sampleValue: "demo", owner: "测试组", enabled: true } }), ValidationError);
   });
 
+  test("searches securities assets and returns field lineage context", async () => {
+    const { handle } = setup();
+    const assets = await handle({ method: "GET", pathname: "/api/assets" });
+    assert.equal(assets.status, 200);
+    assert.equal(assets.body.length, 5);
+    const search = await handle({ method: "GET", pathname: "/api/assets", query: new URLSearchParams("q=持仓") });
+    assert.equal(search.body.length, 1);
+    assert.equal(search.body[0].physicalName, "dws_position_snapshot");
+    const detail = await handle({ method: "GET", pathname: `/api/assets/${search.body[0].id}` });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.fields.some((field) => field.name === "market_value"), true);
+    assert.equal(detail.body.upstream.includes("dwd_order_trade"), true);
+    await assert.rejects(() => handle({ method: "POST", pathname: "/api/assets", body: { name: "无效资产", physicalName: "demo_invalid", assetType: "TABLE", layer: "ODS", domain: "交易", owner: "测试组", sensitivity: "PUBLIC", description: "", tags: [], fields: [], upstream: [] } }), ValidationError);
+  });
+
   test("backfills data development state for legacy stores", async () => {
     const seed = createSeedState();
     const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });
