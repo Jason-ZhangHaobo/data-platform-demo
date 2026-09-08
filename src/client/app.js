@@ -6,10 +6,10 @@ const devStatusMeta = { DRAFT: ["草稿", "neutral"], READY: ["待发布", "info
 const maskingStrategyMeta = { PHONE: ["手机号", "保留前三位与后四位"], ID_CARD: ["投资者标识", "保留前四位与后四位"], SECURITY_ACCOUNT: ["证券账户", "保留前三位与后四位"], BANK_CARD: ["银行卡号", "仅保留后四位"], NAME: ["姓名", "保留首字" ] };
 const requestedView = () => {
   const view = new URLSearchParams(window.location.search).get("view");
-  if (view === "development" || view === "masking" || view === "assets") return view;
+  if (view === "development" || view === "masking" || view === "assets" || view === "security") return view;
   return window.location.hash === "#development" ? "development" : "sync";
 };
-const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", error: undefined, busyId: undefined };
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -64,7 +64,14 @@ async function refreshAssets() {
   render();
 }
 
-const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : refresh();
+async function refreshSecurity() {
+  [state.securityUsers, state.securityRoles, state.securityAudit] = await Promise.all([request("/api/security/users"), request("/api/security/roles"), request("/api/security/audit")]);
+  state.securitySelectedUserId ??= state.securityUsers[0]?.id;
+  state.busyId = undefined;
+  render();
+}
+
+const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : refresh();
 
 const selectedTask = () => state.tasks.find((task) => task.id === state.selectedId);
 
@@ -166,7 +173,7 @@ function maskingRuleForm(rule) {
 
 function renderMasking() {
   const preview = state.maskingPreview;
-  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><a class="nav-item active" href="?view=masking#masking">数据脱敏</a><a class="nav-item" href="?view=assets#assets">数据资产</a></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><a class="nav-item active" href="?view=masking#masking">数据脱敏</a><a class="nav-item" href="?view=assets#assets">数据资产</a><a class="nav-item" href="?view=security#security">账号权限</a></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
     <section class="hero"><div><p class="eyebrow">DATA MASKING · MVP 0.1</p><h1>让敏感数据<br>可用但不可见。</h1><p class="hero-copy">围绕投资者、证券账户和资金信息建立可预览、可审计的脱敏规则；当前仅处理虚构样例。</p></div><button class="button button-primary hero-action" data-new-masking><span>＋</span> 新建脱敏规则</button></section>
     <section class="summary-grid"><article><span>规则总数</span><strong>${state.maskingRules.length}</strong><small>条脱敏规则</small></article><article><span>已启用</span><strong>${state.maskingRules.filter((rule) => rule.enabled).length}</strong><small>进入数据使用流程</small></article><article><span>预览次数</span><strong>${state.maskingRules.reduce((sum, rule) => sum + Number(rule.previewCount ?? 0), 0)}</strong><small>虚构样例预览</small></article><article class="success-card"><span>当前阶段</span><strong>0.1</strong><small>规则与预览</small></article></section>
     ${state.error ? `<div class="error-banner"><span>!</span>${escapeHtml(state.error)}<button data-dismiss>关闭</button></div>` : ""}
@@ -191,7 +198,7 @@ function renderAssetDetail(asset) {
 }
 
 function renderAssets() {
-  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><a class="nav-item" href="?view=masking#masking">数据脱敏</a><a class="nav-item active" href="?view=assets#assets">数据资产</a></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><a class="nav-item" href="?view=masking#masking">数据脱敏</a><a class="nav-item active" href="?view=assets#assets">数据资产</a><a class="nav-item" href="?view=security#security">账号权限</a></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
     <section class="hero"><div><p class="eyebrow">DATA ASSET CATALOG · MVP 0.1</p><h1>让每张表都有<br>可理解的上下文。</h1><p class="hero-copy">围绕证券主数据、投资者账户、订单成交、持仓和基金净值，建立字段、敏感等级、负责人和血缘摘要。</p></div><form class="asset-search" id="asset-search-form"><input name="q" value="${escapeHtml(state.assetQuery)}" placeholder="搜索资产、字段、业务域或标签"><button class="button button-primary" type="submit">搜索资产</button></form></section>
     <section class="summary-grid"><article><span>资产总数</span><strong>${state.assets.length}</strong><small>当前检索结果</small></article><article><span>受限资产</span><strong>${state.assets.filter((asset) => asset.sensitivity === "RESTRICTED").length}</strong><small>需要权限审计</small></article><article><span>字段总数</span><strong>${state.assets.reduce((sum, asset) => sum + asset.fields.length, 0)}</strong><small>已登记字段</small></article><article class="success-card"><span>当前阶段</span><strong>0.1</strong><small>元数据检索</small></article></section>
     ${state.error ? `<div class="error-banner"><span>!</span>${escapeHtml(state.error)}<button data-dismiss>关闭</button></div>` : ""}
@@ -199,10 +206,22 @@ function renderAssets() {
   </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 禁止接入真实生产</span></footer></div>`;
 }
 
+function renderSecurity() {
+  const result = state.securityCheckResult;
+  const sensitivityLabels = { PUBLIC: "公开", INTERNAL: "内部", SENSITIVE: "敏感", RESTRICTED: "受限" };
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><a class="nav-item" href="?view=masking#masking">数据脱敏</a><a class="nav-item" href="?view=assets#assets">数据资产</a><a class="nav-item active" href="?view=security#security">账号权限</a></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
+    <section class="hero"><div><p class="eyebrow">SECURITY & AUDIT · MVP 0.1</p><h1>让每一次访问<br>都有边界、有记录。</h1><p class="hero-copy">使用虚构证券行业岗位验证最小权限：角色决定动作权限，敏感等级决定数据访问范围，允许和拒绝都写入审计。</p></div><div class="security-summary"><strong>${state.securityUsers.length}</strong><span>个演示用户</span><strong>${state.securityRoles.length}</strong><span>个角色</span></div></section>
+    <section class="summary-grid"><article><span>演示用户</span><strong>${state.securityUsers.length}</strong><small>全部为虚构身份</small></article><article><span>角色</span><strong>${state.securityRoles.length}</strong><small>最小权限集合</small></article><article><span>审计记录</span><strong>${state.securityAudit.length}</strong><small>允许与拒绝</small></article><article class="success-card"><span>当前阶段</span><strong>0.1</strong><small>访问检查</small></article></section>
+    ${state.error ? `<div class="error-banner"><span>!</span>${escapeHtml(state.error)}<button data-dismiss>关闭</button></div>` : ""}
+    <section class="workspace security-workspace"><div class="panel task-panel"><div class="panel-heading"><div><p class="eyebrow">ROLES</p><h2>角色与权限</h2></div><span>${state.securityRoles.length} 项</span></div><div class="role-list">${state.securityRoles.map((role) => `<article class="role-card"><div><h3>${escapeHtml(role.name)}</h3><p>${escapeHtml(role.description)}</p></div><div class="task-meta"><span>最高：${escapeHtml(sensitivityLabels[role.maxSensitivity] ?? role.maxSensitivity)}</span><span>${role.permissions.length} 项权限</span></div><div class="permission-chips">${role.permissions.map((permission) => `<code>${escapeHtml(permission)}</code>`).join("")}</div></article>`).join("")}</div></div><aside class="panel detail-panel"><div class="panel-heading"><div><p class="eyebrow">ACCESS CHECK</p><h2>访问检查</h2></div><span>只影响演示审计</span></div><form id="security-check-form" class="security-form"><label class="field"><span>演示用户</span><select name="userId">${state.securityUsers.map((user) => `<option value="${user.id}" ${user.id === state.securitySelectedUserId ? "selected" : ""}>${escapeHtml(user.name)} · ${escapeHtml(user.department)}</option>`).join("")}</select></label><label class="field"><span>访问动作</span><select name="permission"><option value="asset.read">读取资产</option><option value="asset.sensitive.read">读取敏感资产</option><option value="asset.restricted.read">读取受限资产</option><option value="masking.preview">预览脱敏</option><option value="audit.read">读取审计</option></select></label><label class="field"><span>资源敏感等级</span><select name="sensitivity">${Object.entries(sensitivityLabels).map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select></label><button class="button button-primary" type="submit">检查并记录</button></form>${result ? `<div class="access-result ${result.allowed ? "allow" : "deny"}"><strong>${result.allowed ? "允许访问" : "拒绝访问"}</strong><p>${escapeHtml(result.reason)}</p><small>审计 ID：${escapeHtml(result.auditId)}</small></div>` : ""}</aside></section>
+    <section class="panel audit-panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT LOG</p><h2>最近审计记录</h2></div><span>${state.securityAudit.length} 条</span></div><div class="audit-list">${state.securityAudit.slice(0, 8).map((log) => `<div class="audit-row"><span class="audit-result ${log.result === "ALLOW" ? "allow" : "deny"}">${log.result === "ALLOW" ? "允许" : "拒绝"}</span><div><strong>${escapeHtml(log.actorName)} · ${escapeHtml(log.action)}</strong><small>${escapeHtml(log.resourceId)} · ${escapeHtml(log.reason)}</small></div><time>${formatTime(log.createdAt)}</time></div>`).join("")}</div></section>
+  </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 禁止连接真实生产</span></footer></div>`;
+}
+
 function renderDevelopment() {
   const job = state.devJobs.find((item) => item.id === state.devSelectedId);
   const enabled = state.devJobs.filter((item) => item.enabled).length;
-  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item active" href="?view=development#development">数据开发</a><a class="nav-item" href="?view=masking#masking">数据脱敏</a><a class="nav-item" href="?view=assets#assets">数据资产</a></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item active" href="?view=development#development">数据开发</a><a class="nav-item" href="?view=masking#masking">数据脱敏</a><a class="nav-item" href="?view=assets#assets">数据资产</a><a class="nav-item" href="?view=security#security">账号权限</a></nav><div class="environment-pill"><span></span>本地演示环境</div></header><main id="top">
     <section class="hero"><div><p class="eyebrow">DATA DEVELOPMENT · MVP 0.1</p><h1>把 SQL 变成<br>可校验、可运行的任务。</h1><p class="hero-copy">这一版只做虚构数据模拟执行，先跑通 SQL 草稿、风险提示、运行记录和后续发布的产品流程。</p></div><button class="button button-primary hero-action" data-new-dev><span>＋</span> 新建 SQL 任务</button></section>
     <section class="summary-grid"><article><span>任务总数</span><strong>${state.devJobs.length}</strong><small>个 SQL 任务</small></article><article><span>待发布</span><strong>${enabled}</strong><small>可进入模拟执行</small></article><article><span>运行记录</span><strong>${state.devRuns.length}</strong><small>当前任务记录</small></article><article class="success-card"><span>当前阶段</span><strong>0.1</strong><small>模拟执行</small></article></section>
     ${state.error ? `<div class="error-banner"><span>!</span>${escapeHtml(state.error)}<button data-dismiss>关闭</button></div>` : ""}
@@ -214,10 +233,11 @@ function render() {
   if (state.view === "development") { app.innerHTML = renderDevelopment(); return; }
   if (state.view === "masking") { app.innerHTML = renderMasking(); return; }
   if (state.view === "assets") { app.innerHTML = renderAssets(); return; }
+  if (state.view === "security") { app.innerHTML = renderSecurity(); return; }
   const summary = { totalTasks: 0, enabledTasks: 0, runningTasks: 0, runsToday: 0, successRate: 100, ...state.summary };
   const task = selectedTask();
   app.innerHTML = `<div class="app-shell">
-    <header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item active" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><a class="nav-item" href="?view=masking#masking">数据脱敏</a><a class="nav-item" href="?view=assets#assets">数据资产</a></nav><div class="environment-pill"><span></span>本地演示环境</div></header>
+    <header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item active" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><a class="nav-item" href="?view=masking#masking">数据脱敏</a><a class="nav-item" href="?view=assets#assets">数据资产</a><a class="nav-item" href="?view=security#security">账号权限</a></nav><div class="environment-pill"><span></span>本地演示环境</div></header>
     <main id="top">
       <section class="hero"><div><p class="eyebrow">OFFLINE SYNC CENTER · MVP 0.1</p><h1>让每一次数据流动<br>都清晰、可控、可追溯。</h1><p class="hero-copy">这是一个使用完全虚构数据构建的产品 Demo，用来练习从需求、前后端开发、自动测试到生产审批发布的完整闭环。</p></div><button class="button button-primary hero-action" data-new><span>＋</span> 新建同步任务</button></section>
       <section class="summary-grid"><article><span>任务总数</span><strong>${summary.totalTasks}</strong><small>个已登记任务</small></article><article><span>已启用</span><strong>${summary.enabledTasks}</strong><small>等待调度或手动运行</small></article><article><span>运行中</span><strong class="${summary.runningTasks ? "accent" : ""}">${summary.runningTasks}</strong><small>实时模拟执行</small></article><article><span>今日运行</span><strong>${summary.runsToday}</strong><small>次执行记录</small></article><article class="success-card"><span>执行成功率</span><strong>${summary.successRate}%</strong><small>基于已完成记录</small></article></section>
@@ -244,7 +264,7 @@ document.addEventListener("click", async (event) => {
   if (target.classList.contains("nav-item")) {
     event.preventDefault();
     const href = target.getAttribute("href");
-    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : href.includes("view=masking") || href.endsWith("#masking") ? "masking" : href.includes("view=assets") || href.endsWith("#assets") ? "assets" : "sync";
+    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : href.includes("view=masking") || href.endsWith("#masking") ? "masking" : href.includes("view=assets") || href.endsWith("#assets") ? "assets" : href.includes("view=security") || href.endsWith("#security") ? "security" : "sync";
     window.history.replaceState({}, "", href);
     // Switch the visible view immediately. The data refresh can involve a
     // network round trip; waiting for it made navigation look unresponsive.
@@ -298,6 +318,14 @@ document.addEventListener("submit", async (event) => {
     event.preventDefault();
     state.assetQuery = new FormData(event.target).get("q")?.toString().trim() ?? "";
     await refreshAssets().catch((error) => { state.error = error.message; render(); });
+    return;
+  }
+  if (event.target.id === "security-check-form") {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.target));
+    state.securitySelectedUserId = data.userId;
+    try { state.securityCheckResult = await request("/api/security/access-check", { method: "POST", body: JSON.stringify({ ...data, resourceType: "asset" }) }); await refreshSecurity(); }
+    catch (error) { state.error = error.message; render(); }
     return;
   }
   if (event.target.id === "dev-job-form") {

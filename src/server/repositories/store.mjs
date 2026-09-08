@@ -88,6 +88,23 @@ export const createSeedState = () => {
       ], updatedAt: minutesAgo(88), indexedAt: minutesAgo(18), status: "ACTIVE",
     },
   ];
+  const securityRoles = [
+    { id: "role-platform-admin", name: "平台管理员", description: "负责平台配置、权限和审计管理。", permissions: ["asset.read", "asset.sensitive.read", "asset.restricted.read", "masking.preview", "masking.manage", "dev.write", "audit.read"], maxSensitivity: "RESTRICTED" },
+    { id: "role-data-security", name: "数据安全管理员", description: "负责敏感数据规则、访问审核和安全审计。", permissions: ["asset.read", "asset.sensitive.read", "asset.restricted.read", "masking.preview", "masking.manage", "audit.read"], maxSensitivity: "RESTRICTED" },
+    { id: "role-data-engineer", name: "数据开发工程师", description: "负责数据开发和受控资产检索。", permissions: ["asset.read", "asset.sensitive.read", "masking.preview", "dev.write"], maxSensitivity: "SENSITIVE" },
+    { id: "role-business-analyst", name: "业务分析师", description: "只读查看公开与内部资产并使用脱敏预览。", permissions: ["asset.read", "masking.preview"], maxSensitivity: "INTERNAL" },
+  ];
+  const securityUsers = [
+    { id: "user-investor-analyst", name: "林分析", username: "investor_analyst_demo", department: "财富管理部", roleIds: ["role-business-analyst"], status: "ACTIVE" },
+    { id: "user-data-engineer", name: "周开发", username: "data_engineer_demo", department: "数据开发部", roleIds: ["role-data-engineer"], status: "ACTIVE" },
+    { id: "user-data-security", name: "顾安全", username: "data_security_demo", department: "数据安全部", roleIds: ["role-data-security"], status: "ACTIVE" },
+    { id: "user-platform-admin", name: "许平台", username: "platform_admin_demo", department: "平台运营部", roleIds: ["role-platform-admin"], status: "ACTIVE" },
+  ];
+  const auditLogs = [
+    { id: randomUUID(), actorId: "user-data-engineer", actorName: "周开发", action: "asset.read", resourceType: "asset", resourceId: "dws_position_snapshot", sensitivity: "SENSITIVE", result: "ALLOW", reason: "角色允许读取敏感资产", createdAt: minutesAgo(18) },
+    { id: randomUUID(), actorId: "user-investor-analyst", actorName: "林分析", action: "asset.restricted.read", resourceType: "asset", resourceId: "dwd_investor_account", sensitivity: "RESTRICTED", result: "DENY", reason: "角色最高可访问内部等级", createdAt: minutesAgo(42) },
+    { id: randomUUID(), actorId: "user-data-security", actorName: "顾安全", action: "masking.preview", resourceType: "masking_rule", resourceId: "投资者手机号脱敏", sensitivity: "SENSITIVE", result: "ALLOW", reason: "安全管理员允许预览脱敏样例", createdAt: minutesAgo(65) },
+  ];
   return {
     tasks,
     runs: [
@@ -99,6 +116,9 @@ export const createSeedState = () => {
     maskingRules,
     maskingPreviews: [],
     assets,
+    securityRoles,
+    securityUsers,
+    auditLogs,
   };
 };
 

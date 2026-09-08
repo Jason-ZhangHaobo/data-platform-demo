@@ -5,6 +5,7 @@ const maskingStrategies = new Set(["PHONE", "ID_CARD", "SECURITY_ACCOUNT", "BANK
 const assetTypes = new Set(["TABLE", "VIEW", "DATASET"]);
 const assetLayers = new Set(["ODS", "DWD", "DWS", "DIM", "ADS"]);
 const assetSensitivityLevels = new Set(["PUBLIC", "INTERNAL", "SENSITIVE", "RESTRICTED"]);
+const securityPermissions = new Set(["asset.read", "asset.sensitive.read", "asset.restricted.read", "masking.preview", "masking.manage", "dev.write", "audit.read"]);
 
 export class ValidationError extends Error {
   constructor(issues) {
@@ -147,4 +148,17 @@ export function validateAssetInput(value) {
   });
   if (issues.length) throw new ValidationError(issues);
   return result;
+}
+
+export function validateAccessCheckInput(value) {
+  const input = value && typeof value === "object" ? value : {};
+  const userId = typeof input.userId === "string" ? input.userId.trim() : "";
+  const permission = typeof input.permission === "string" ? input.permission.trim() : "";
+  const sensitivity = typeof input.sensitivity === "string" ? input.sensitivity.trim() : "";
+  const issues = [];
+  if (!userId) issues.push({ path: "userId", message: "请选择演示用户" });
+  if (!securityPermissions.has(permission)) issues.push({ path: "permission", message: "访问权限不合法" });
+  if (!assetSensitivityLevels.has(sensitivity)) issues.push({ path: "sensitivity", message: "敏感等级不合法" });
+  if (issues.length) throw new ValidationError(issues);
+  return { userId, permission, sensitivity, resourceType: typeof input.resourceType === "string" ? input.resourceType.trim().slice(0, 40) : "asset" };
 }

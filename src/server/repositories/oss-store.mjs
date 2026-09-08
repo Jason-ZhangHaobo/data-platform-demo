@@ -96,6 +96,11 @@ export class OssTaskStore extends MemoryTaskStore {
   async listAssets(filters) { await this.refresh(); return super.listAssets(filters); }
   async getAsset(id) { await this.refresh(); return super.getAsset(id); }
   async createAsset(input) { await this.refresh(); return super.createAsset(input); }
+  async listSecurityRoles() { await this.refresh(); return super.listSecurityRoles(); }
+  async listSecurityUsers() { await this.refresh(); return super.listSecurityUsers(); }
+  async getSecurityUser(id) { await this.refresh(); return super.getSecurityUser(id); }
+  async listAuditLogs(filters) { await this.refresh(); return super.listAuditLogs(filters); }
+  async createAuditLog(input) { await this.refresh(); return super.createAuditLog(input); }
 }
 
 export function ossConfigFromEnvironment(env = process.env) {

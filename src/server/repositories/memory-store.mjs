@@ -16,6 +16,9 @@ export class MemoryTaskStore {
       maskingRules: provided.maskingRules ?? seed.maskingRules,
       maskingPreviews: provided.maskingPreviews ?? seed.maskingPreviews,
       assets: provided.assets ?? seed.assets,
+      securityRoles: provided.securityRoles ?? seed.securityRoles,
+      securityUsers: provided.securityUsers ?? seed.securityUsers,
+      auditLogs: provided.auditLogs ?? seed.auditLogs,
     };
     return this.state;
   }
@@ -95,5 +98,15 @@ export class MemoryTaskStore {
     const asset = { ...input, id: randomUUID(), updatedAt: now, indexedAt: now, status: "ACTIVE" };
     this.state.assets.push(asset); await this.persist(); return structuredClone(asset);
   }
+  async listSecurityRoles() { return structuredClone(this.state.securityRoles); }
+  async listSecurityUsers() { return structuredClone(this.state.securityUsers); }
+  async getSecurityUser(id) { const user = this.state.securityUsers.find((item) => item.id === id); return user ? structuredClone(user) : undefined; }
+  async listAuditLogs(filters = {}) {
+    const query = String(filters.q ?? "").trim().toLowerCase();
+    const result = filters.result ? String(filters.result).trim() : "";
+    const matches = (item) => !query || [item.actorName, item.action, item.resourceType, item.resourceId, item.reason].join(" ").toLowerCase().includes(query);
+    return structuredClone(this.state.auditLogs.filter((item) => matches(item) && (!result || item.result === result)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+  }
+  async createAuditLog(input) { const log = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }; this.state.auditLogs.push(log); await this.persist(); return structuredClone(log); }
   async persist() {}
 }
