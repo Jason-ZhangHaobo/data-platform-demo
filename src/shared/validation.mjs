@@ -162,3 +162,21 @@ export function validateAccessCheckInput(value) {
   if (issues.length) throw new ValidationError(issues);
   return { userId, permission, sensitivity, resourceType: typeof input.resourceType === "string" ? input.resourceType.trim().slice(0, 40) : "asset" };
 }
+
+export function validateAgentPlanInput(value) {
+  const input = value && typeof value === "object" ? value : {};
+  const message = typeof input.message === "string" ? input.message.trim() : "";
+  const userId = typeof input.userId === "string" ? input.userId.trim() : "user-platform-admin";
+  const issues = [];
+  if (message.length < 4 || message.length > 2_000) issues.push({ path: "message", message: "请描述 4—2000 个字符的业务需求" });
+  if (userId.length < 2 || userId.length > 80) issues.push({ path: "userId", message: "演示用户标识不合法" });
+  if (issues.length) throw new ValidationError(issues);
+  return { message, userId };
+}
+
+export function validateAgentConfirmInput(value) {
+  const planId = typeof value?.planId === "string" ? value.planId.trim() : "";
+  const userId = typeof value?.userId === "string" ? value.userId.trim() : "";
+  if (!planId || !userId) throw new ValidationError([{ path: "planId", message: "缺少 Agent 计划或确认用户" }]);
+  return { planId, userId };
+}
