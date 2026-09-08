@@ -69,11 +69,16 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       if (!plan) return result(404, { message: "未找到 Data Agent 计划" });
       if (plan.userId !== input.userId) return result(403, { message: "只能由原计划用户确认执行" });
       if (plan.questions?.length) return result(409, { message: "计划仍有待澄清问题，请先补充信息", questions: plan.questions });
+      const effectiveDraft = input.draft ? { ...plan.draft, ...input.draft } : plan.draft;
       let execution;
       if (plan.intent === "SYNC_TASK") execution = await store.createTask(validateTaskInput(plan.draft));
       else if (plan.intent === "MASKING_RULE") execution = await store.createMaskingRule(validateMaskingRuleInput(plan.draft));
       else if (plan.intent === "DEV_JOB") execution = await store.createDevJob(validateDevJobInput(plan.draft));
       else if (plan.intent === "ASSET_SEARCH") execution = await store.listAssets({ q: plan.draft.query });
+      else if (plan.intent === "HOLDINGS_REPORT") {
+        const devJob = await store.createDevJob(validateDevJobInput(effectiveDraft.devJob ? { ...effectiveDraft.devJob, sql: effectiveDraft.sql } : { name: "财富顾问客户持仓分析 SQL", description: "Data Agent 生成的 Hive/Spark SQL 草稿，第一版仅模拟执行。", jobType: "SQL", sql: effectiveDraft.sql, schedule: "交易日 T+1 02:30", owner: "数据开发组", enabled: false }));
+        execution = { type: "HOLDINGS_REPORT", status: "DRAFT_CREATED", devJob, artifacts: { engine: effectiveDraft.engine, sql: effectiveDraft.sql, testSql: effectiveDraft.testSql, scheduleConfig: effectiveDraft.scheduleConfig, deploymentConfig: effectiveDraft.deploymentConfig }, reportSpec: effectiveDraft.reportSpec, permissionScope: effectiveDraft.permissionScope };
+      }
       else return result(409, { message: "当前计划没有可执行模块" });
       const completed = await store.updateAgentPlan(plan.id, { status: "COMPLETED", confirmedBy: input.userId, confirmedAt: new Date().toISOString(), execution });
       await store.createAuditLog({ actorId: input.userId, actorName: input.userId, action: "agent.confirm", resourceType: plan.intent, resourceId: plan.id, sensitivity: "INTERNAL", result: "ALLOW", reason: "用户确认 Data Agent 计划并执行" });

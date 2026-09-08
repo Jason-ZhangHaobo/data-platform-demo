@@ -153,6 +153,16 @@ main { width: min(1480px, calc(100% - 48px)); margin: 0 auto; }
 .agent-questions { padding: 14px; border-radius: 10px; background: #fff7e8; color: #8a5b1d; font-size: 12px; }
 .agent-questions p { margin: 8px 0 0; }
 .agent-history { margin-bottom: 76px; }
+.agent-code-workspace { margin: 22px 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #F6F8F6; }
+.code-heading { display: flex; justify-content: space-between; align-items: center; color: var(--green); font-size: 12px; }
+.code-heading span { color: var(--muted); font: 11px "DM Mono", monospace; }
+.agent-code-workspace textarea { width: 100%; min-height: 250px; margin: 12px 0; padding: 14px; border: 1px solid #18384A; border-radius: 8px; background: #102B3D; color: #F0FAF7; font: 12px/1.6 "DM Mono", monospace; resize: vertical; outline: none; }
+.artifact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.artifact-grid > div { min-width: 0; }
+.artifact-grid strong, .report-spec strong { display: block; color: var(--ink); font-size: 11px; }
+.artifact-grid pre { min-height: 86px; margin: 6px 0 0; padding: 9px; border-radius: 8px; background: #E8F0EE; color: var(--muted); font: 10px/1.45 "DM Mono", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.report-spec { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; margin-top: 12px; padding: 10px; border-radius: 8px; background: #DDF3EE; }
+.report-spec span, .report-spec small { color: #075A5B; font-size: 11px; }
 .task-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 
 .detail-panel { position: sticky; top: 96px; }
@@ -228,5 +238,7 @@ footer { display: flex; justify-content: space-between; padding: 28px clamp(24px
   .audit-row { grid-template-columns: auto 1fr; }
   .audit-row time { grid-column: 2; }
   .agent-columns { grid-template-columns: 1fr; }
+  .artifact-grid { grid-template-columns: 1fr; }
+  .report-spec { grid-template-columns: 1fr; }
   footer { display: grid; gap: 8px; }
 }

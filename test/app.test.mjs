@@ -122,6 +122,21 @@ describe("data platform API controller", () => {
     assert.equal(blocked.status, 409);
   });
 
+  test("plans a wealth advisor holdings report with Spark SQL artifacts", async () => {
+    const { handle } = setup();
+    const planned = await handle({ method: "POST", pathname: "/api/agent/plan", body: { userId: "user-platform-admin", message: "财富顾问查询客户持仓，生成客户总资产、持仓市值、证券数量、资产类别和行业分布报表。" } });
+    assert.equal(planned.body.intent, "HOLDINGS_REPORT");
+    assert.equal(planned.body.draft.engine, "SPARK_SQL");
+    assert.equal(planned.body.draft.permissionScope, "OWN_CLIENTS_ONLY");
+    assert.match(planned.body.draft.sql, /dws_position_snapshot/);
+    assert.equal(planned.body.draft.reportSpec.metrics.length, 5);
+    const confirmed = await handle({ method: "POST", pathname: `/api/agent/plans/${planned.body.id}/confirm`, body: { planId: planned.body.id, userId: "user-platform-admin", draft: { sql: planned.body.draft.sql } } });
+    assert.equal(confirmed.body.status, "COMPLETED");
+    assert.equal(confirmed.body.execution.type, "HOLDINGS_REPORT");
+    assert.equal(confirmed.body.execution.devJob.enabled, false);
+    assert.equal(confirmed.body.execution.artifacts.deploymentConfig.platform, "aliyun-dataworks-emr");
+  });
+
   test("backfills data development state for legacy stores", async () => {
     const seed = createSeedState();
     const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });
