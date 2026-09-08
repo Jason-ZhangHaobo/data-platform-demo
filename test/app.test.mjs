@@ -87,6 +87,21 @@ describe("data platform API controller", () => {
     await assert.rejects(() => handle({ method: "POST", pathname: "/api/assets", body: { name: "无效资产", physicalName: "demo_invalid", assetType: "TABLE", layer: "ODS", domain: "交易", owner: "测试组", sensitivity: "PUBLIC", description: "", tags: [], fields: [], upstream: [] } }), ValidationError);
   });
 
+  test("checks securities access and records allow or deny audit", async () => {
+    const { handle } = setup();
+    const users = await handle({ method: "GET", pathname: "/api/security/users" });
+    const analyst = users.body.find((user) => user.id === "user-investor-analyst");
+    const denied = await handle({ method: "POST", pathname: "/api/security/access-check", body: { userId: analyst.id, permission: "asset.restricted.read", sensitivity: "RESTRICTED", resourceType: "asset" } });
+    assert.equal(denied.status, 200);
+    assert.equal(denied.body.allowed, false);
+    const engineer = users.body.find((user) => user.id === "user-data-engineer");
+    const allowed = await handle({ method: "POST", pathname: "/api/security/access-check", body: { userId: engineer.id, permission: "asset.sensitive.read", sensitivity: "SENSITIVE", resourceType: "asset" } });
+    assert.equal(allowed.body.allowed, true);
+    const audit = await handle({ method: "GET", pathname: "/api/security/audit", query: new URLSearchParams("result=DENY") });
+    assert.equal(audit.body.some((item) => item.actorId === analyst.id), true);
+    await assert.rejects(() => handle({ method: "POST", pathname: "/api/security/access-check", body: { userId: analyst.id, permission: "root", sensitivity: "RESTRICTED" } }), ValidationError);
+  });
+
   test("backfills data development state for legacy stores", async () => {
     const seed = createSeedState();
     const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });

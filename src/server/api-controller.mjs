@@ -1,4 +1,4 @@
-import { analyzeSql, maskValue, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateTaskInput } from "../shared/validation.mjs";
+import { analyzeSql, maskValue, validateAccessCheckInput, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateTaskInput } from "../shared/validation.mjs";
 
 const result = (status, body) => ({ status, body });
 const taskRoute = (pathname) => {
@@ -17,6 +17,7 @@ const assetRoute = (pathname) => {
   const match = pathname.match(/^\/api\/assets\/([^/]+)$/);
   return match ? { id: decodeURIComponent(match[1]) } : undefined;
 };
+const securitySensitivityRank = { PUBLIC: 0, INTERNAL: 1, SENSITIVE: 2, RESTRICTED: 3 };
 
 export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken, requireAccessToken = false, syncService, realSyncEnabled = false }) {
   return async function handle({ method, pathname, body = {}, headers = {}, query }) {
@@ -35,6 +36,19 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
     if (method === "POST" && pathname === "/api/masking/rules") return result(201, await store.createMaskingRule(validateMaskingRuleInput(body)));
     if (method === "GET" && pathname === "/api/assets") return result(200, await store.listAssets({ q: query?.get("q"), domain: query?.get("domain"), sensitivity: query?.get("sensitivity") }));
     if (method === "POST" && pathname === "/api/assets") return result(201, await store.createAsset(validateAssetInput(body)));
+    if (method === "GET" && pathname === "/api/security/users") return result(200, await store.listSecurityUsers());
+    if (method === "GET" && pathname === "/api/security/roles") return result(200, await store.listSecurityRoles());
+    if (method === "GET" && pathname === "/api/security/audit") return result(200, await store.listAuditLogs({ q: query?.get("q"), result: query?.get("result") }));
+    if (method === "POST" && pathname === "/api/security/access-check") {
+      const input = validateAccessCheckInput(body);
+      const user = await store.getSecurityUser(input.userId);
+      const roles = await store.listSecurityRoles();
+      const userRoles = user ? roles.filter((role) => user.roleIds.includes(role.id) && role.enabled !== false) : [];
+      const allowed = Boolean(user && user.status === "ACTIVE" && userRoles.some((role) => role.permissions.includes(input.permission) && securitySensitivityRank[input.sensitivity] <= securitySensitivityRank[role.maxSensitivity]));
+      const reason = !user ? "未找到演示用户" : user.status !== "ACTIVE" ? "用户已停用" : allowed ? "角色权限与敏感等级均满足要求" : "角色权限或最高可访问敏感等级不足";
+      const audit = await store.createAuditLog({ actorId: input.userId, actorName: user?.name ?? "未知用户", action: input.permission, resourceType: input.resourceType, resourceId: "security-access-check", sensitivity: input.sensitivity, result: allowed ? "ALLOW" : "DENY", reason });
+      return result(200, { allowed, reason, user: user?.name, roles: userRoles.map((role) => role.name), auditId: audit.id });
+    }
 
     const asset = assetRoute(pathname);
     if (asset) {
