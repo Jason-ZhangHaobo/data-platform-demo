@@ -13,8 +13,10 @@ export function planAgentRequest(message) {
   const isMasking = includesAny(text, ["脱敏", "手机号", "证件", "证券账户", "银行卡"]);
   const isDevelopment = includesAny(text, ["SQL", "sql", "数据开发", "指标", "宽表", "查询"]);
   const isSync = includesAny(text, ["同步", "CSV", "持仓", "订单", "成交", "行情", "MySQL", "数据库"]);
+  const isHoldingsReport = text.includes("持仓") && includesAny(text, ["财富顾问", "客户", "报表", "看板", "资产分析", "行业分布"]);
   let intent = "UNKNOWN";
-  if (isAsset) intent = "ASSET_SEARCH";
+  if (isHoldingsReport) intent = "HOLDINGS_REPORT";
+  else if (isAsset) intent = "ASSET_SEARCH";
   else if (isMasking) intent = "MASKING_RULE";
   else if (isSync) intent = "SYNC_TASK";
   else if (isDevelopment) intent = "DEV_JOB";
@@ -30,6 +32,23 @@ export function planAgentRequest(message) {
     questions: [], steps: ["在证券资产目录中搜索资产、字段、标签和血缘", "展示候选资产及敏感等级", "用户确认后返回可引用的资产上下文"],
     draft: { query: ["持仓", "投资者", "订单", "成交", "基金", "净值", "证券"].find((keyword) => text.includes(keyword)) ?? text }, risks: ["检索结果可能包含敏感资产，仅展示元数据，不返回业务数据。"], requiresConfirmation: true,
   };
+
+  if (intent === "HOLDINGS_REPORT") {
+    const sql = `WITH client_positions AS (\n  SELECT\n    advisor_id,\n    client_id,\n    security_code,\n    asset_class,\n    industry,\n    market_value,\n    trade_date\n  FROM dws_position_snapshot\n  WHERE advisor_id = '{{current_user_id}}'\n    AND trade_date = '{{trade_date}}'\n)\nINSERT OVERWRITE TABLE ads_advisor_holdings_summary\nPARTITION (trade_date = '{{trade_date}}')\nSELECT\n  client_id,\n  SUM(market_value) AS total_assets,\n  SUM(market_value) AS holding_market_value,\n  COUNT(DISTINCT security_code) AS security_count,\n  asset_class,\n  industry\nFROM client_positions\nGROUP BY client_id, asset_class, industry;`;
+    const testSql = `SELECT client_id, SUM(market_value) AS total_assets, COUNT(DISTINCT security_code) AS security_count\nFROM dws_position_snapshot\nWHERE advisor_id = '{{current_user_id}}'\n  AND trade_date = '{{trade_date}}'\nGROUP BY client_id\nLIMIT 20;`;
+    return {
+      intent, title: "财富顾问客户持仓分析计划", summary: "生成 T+1 客户持仓分析任务，默认只读取当前财富顾问负责的客户。", questions: [],
+      steps: ["检索客户、账户、持仓、市值、资产类别和行业字段", "生成 Hive/Spark SQL 与测试 SQL", "生成 T+1 交易日调度配置", "生成 DataWorks/EMR 方向部署文件", "在代码编辑器确认后创建未发布开发任务和看板草稿"],
+      draft: {
+        engine: "SPARK_SQL", permissionScope: "OWN_CLIENTS_ONLY", sql, testSql,
+        scheduleConfig: { calendar: "trading_day", frequency: "T+1", cron: "0 30 2 * * ?", timezone: "Asia/Shanghai", dependency: "dws_position_snapshot_t1" },
+        deploymentConfig: { platform: "aliyun-dataworks-emr", environment: "staging", artifact: "ads_advisor_holdings_summary", approval: "human_confirmation", rollback: true },
+        reportSpec: { name: "客户持仓分析", metrics: ["客户总资产", "持仓市值", "证券数量", "资产类别分布", "行业分布"], output: ["dashboard", "csv", "api"] },
+        devJob: { name: "财富顾问客户持仓分析 SQL", description: "Data Agent 生成的 Hive/Spark SQL 草稿，第一版仅模拟执行。", jobType: "SQL", sql, schedule: "交易日 T+1 02:30", owner: "数据开发组", enabled: false },
+      },
+      risks: ["当前只在本地/测试环境模拟执行，不连接真实 Hive/Spark。", "SQL 使用 current_user_id 模板，发布前必须通过行级权限检查。", "生成任务默认为未发布，必须人工确认。"], requiresConfirmation: true,
+    };
+  }
 
   if (intent === "MASKING_RULE") {
     const strategy = text.includes("手机号") ? "PHONE" : text.includes("证券账户") ? "SECURITY_ACCOUNT" : text.includes("银行卡") ? "BANK_CARD" : text.includes("姓名") ? "NAME" : "ID_CARD";

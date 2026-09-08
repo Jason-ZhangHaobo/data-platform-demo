@@ -61,6 +61,7 @@ npm start
 - [费用控制与清理手册](docs/cost-controls.md)
 - [数据中台＋Data Agent 产品蓝图](docs/product-roadmap.md)
 - [中国证券行业业务上下文](docs/business-context.md)
+- [第二个总体目标：世界级数据中台差距与演进路线](docs/second-goal-gap-and-roadmap.md)
 
 ## 路线图
 

@@ -178,5 +178,6 @@ export function validateAgentConfirmInput(value) {
   const planId = typeof value?.planId === "string" ? value.planId.trim() : "";
   const userId = typeof value?.userId === "string" ? value.userId.trim() : "";
   if (!planId || !userId) throw new ValidationError([{ path: "planId", message: "缺少 Agent 计划或确认用户" }]);
-  return { planId, userId };
+  const draft = value?.draft && typeof value.draft === "object" ? value.draft : undefined;
+  return { planId, userId, draft: draft ? { sql: typeof draft.sql === "string" ? draft.sql.slice(0, 20_000) : undefined } : undefined };
 }
