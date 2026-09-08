@@ -19,6 +19,7 @@ export class MemoryTaskStore {
       securityRoles: provided.securityRoles ?? seed.securityRoles,
       securityUsers: provided.securityUsers ?? seed.securityUsers,
       auditLogs: provided.auditLogs ?? seed.auditLogs,
+      agentPlans: provided.agentPlans ?? seed.agentPlans,
     };
     return this.state;
   }
@@ -108,5 +109,9 @@ export class MemoryTaskStore {
     return structuredClone(this.state.auditLogs.filter((item) => matches(item) && (!result || item.result === result)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
   }
   async createAuditLog(input) { const log = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }; this.state.auditLogs.push(log); await this.persist(); return structuredClone(log); }
+  async listAgentPlans() { return structuredClone([...this.state.agentPlans].sort((a, b) => b.createdAt.localeCompare(a.createdAt))); }
+  async getAgentPlan(id) { const plan = this.state.agentPlans.find((item) => item.id === id); return plan ? structuredClone(plan) : undefined; }
+  async createAgentPlan(input) { const plan = { ...input, id: randomUUID(), status: "AWAITING_CONFIRMATION", createdAt: new Date().toISOString() }; this.state.agentPlans.push(plan); await this.persist(); return structuredClone(plan); }
+  async updateAgentPlan(id, patch) { const index = this.state.agentPlans.findIndex((plan) => plan.id === id); if (index < 0) return undefined; this.state.agentPlans[index] = { ...this.state.agentPlans[index], ...patch }; await this.persist(); return structuredClone(this.state.agentPlans[index]); }
   async persist() {}
 }

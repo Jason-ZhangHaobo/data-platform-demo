@@ -1,4 +1,5 @@
-import { analyzeSql, maskValue, validateAccessCheckInput, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateTaskInput } from "../shared/validation.mjs";
+import { analyzeSql, maskValue, validateAccessCheckInput, validateAgentConfirmInput, validateAgentPlanInput, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateTaskInput } from "../shared/validation.mjs";
+import { planAgentRequest } from "./services/data-agent.mjs";
 
 const result = (status, body) => ({ status, body });
 const taskRoute = (pathname) => {
@@ -18,6 +19,10 @@ const assetRoute = (pathname) => {
   return match ? { id: decodeURIComponent(match[1]) } : undefined;
 };
 const securitySensitivityRank = { PUBLIC: 0, INTERNAL: 1, SENSITIVE: 2, RESTRICTED: 3 };
+const agentPlanRoute = (pathname) => {
+  const match = pathname.match(/^\/api\/agent\/plans\/([^/]+)\/confirm$/);
+  return match ? decodeURIComponent(match[1]) : undefined;
+};
 
 export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken, requireAccessToken = false, syncService, realSyncEnabled = false }) {
   return async function handle({ method, pathname, body = {}, headers = {}, query }) {
@@ -48,6 +53,31 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       const reason = !user ? "未找到演示用户" : user.status !== "ACTIVE" ? "用户已停用" : allowed ? "角色权限与敏感等级均满足要求" : "角色权限或最高可访问敏感等级不足";
       const audit = await store.createAuditLog({ actorId: input.userId, actorName: user?.name ?? "未知用户", action: input.permission, resourceType: input.resourceType, resourceId: "security-access-check", sensitivity: input.sensitivity, result: allowed ? "ALLOW" : "DENY", reason });
       return result(200, { allowed, reason, user: user?.name, roles: userRoles.map((role) => role.name), auditId: audit.id });
+    }
+    if (method === "GET" && pathname === "/api/agent/plans") return result(200, await store.listAgentPlans());
+    if (method === "POST" && pathname === "/api/agent/plan") {
+      const input = validateAgentPlanInput(body);
+      const plan = planAgentRequest(input.message);
+      const created = await store.createAgentPlan({ ...plan, userId: input.userId, message: input.message });
+      await store.createAuditLog({ actorId: input.userId, actorName: input.userId, action: "agent.plan", resourceType: "agent_plan", resourceId: created.id, sensitivity: "INTERNAL", result: "ALLOW", reason: "生成 Data Agent 计划，不执行写入" });
+      return result(201, created);
+    }
+    const agentPlanId = agentPlanRoute(pathname);
+    if (method === "POST" && agentPlanId) {
+      const input = validateAgentConfirmInput(body);
+      const plan = await store.getAgentPlan(agentPlanId);
+      if (!plan) return result(404, { message: "未找到 Data Agent 计划" });
+      if (plan.userId !== input.userId) return result(403, { message: "只能由原计划用户确认执行" });
+      if (plan.questions?.length) return result(409, { message: "计划仍有待澄清问题，请先补充信息", questions: plan.questions });
+      let execution;
+      if (plan.intent === "SYNC_TASK") execution = await store.createTask(validateTaskInput(plan.draft));
+      else if (plan.intent === "MASKING_RULE") execution = await store.createMaskingRule(validateMaskingRuleInput(plan.draft));
+      else if (plan.intent === "DEV_JOB") execution = await store.createDevJob(validateDevJobInput(plan.draft));
+      else if (plan.intent === "ASSET_SEARCH") execution = await store.listAssets({ q: plan.draft.query });
+      else return result(409, { message: "当前计划没有可执行模块" });
+      const completed = await store.updateAgentPlan(plan.id, { status: "COMPLETED", confirmedBy: input.userId, confirmedAt: new Date().toISOString(), execution });
+      await store.createAuditLog({ actorId: input.userId, actorName: input.userId, action: "agent.confirm", resourceType: plan.intent, resourceId: plan.id, sensitivity: "INTERNAL", result: "ALLOW", reason: "用户确认 Data Agent 计划并执行" });
+      return result(200, completed);
     }
 
     const asset = assetRoute(pathname);

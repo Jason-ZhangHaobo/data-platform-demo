@@ -6,10 +6,10 @@ const devStatusMeta = { DRAFT: ["草稿", "neutral"], READY: ["待发布", "info
 const maskingStrategyMeta = { PHONE: ["手机号", "保留前三位与后四位"], ID_CARD: ["投资者标识", "保留前四位与后四位"], SECURITY_ACCOUNT: ["证券账户", "保留前三位与后四位"], BANK_CARD: ["银行卡号", "仅保留后四位"], NAME: ["姓名", "保留首字" ] };
 const requestedView = () => {
   const view = new URLSearchParams(window.location.search).get("view");
-  if (view === "development" || view === "masking" || view === "assets" || view === "security") return view;
+  if (view === "development" || view === "masking" || view === "assets" || view === "security" || view === "agent") return view;
   return window.location.hash === "#development" ? "development" : "sync";
 };
-const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, error: undefined, busyId: undefined };
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -71,7 +71,13 @@ async function refreshSecurity() {
   render();
 }
 
-const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : refresh();
+async function refreshAgent() {
+  state.agentPlans = await request("/api/agent/plans");
+  state.busyId = undefined;
+  render();
+}
+
+const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : state.view === "agent" ? refreshAgent() : refresh();
 
 const selectedTask = () => state.tasks.find((task) => task.id === state.selectedId);
 
@@ -218,6 +224,17 @@ function renderSecurity() {
   </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 禁止连接真实生产</span></footer></div>`;
 }
 
+function renderAgent() {
+  const plan = state.agentPlan;
+  const intentLabels = { SYNC_TASK: "数据同步", MASKING_RULE: "数据脱敏", DEV_JOB: "数据开发", ASSET_SEARCH: "资产检索", UNKNOWN: "待澄清" };
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=sync#tasks">同步任务</a><a class="nav-item" href="?view=development#development">数据开发</a><a class="nav-item" href="?view=masking#masking">数据脱敏</a><a class="nav-item" href="?view=assets#assets">数据资产</a><a class="nav-item" href="?view=security#security">账号权限</a><a class="nav-item active" href="?view=agent#agent">Data Agent</a></nav><div class="environment-pill"><span></span>规则编排演示</div></header><main id="top">
+    <section class="hero"><div><p class="eyebrow">DATA AGENT LITE · MVP 0.1</p><h1>用一句话，<br>开始数据中台工作。</h1><p class="hero-copy">先用可测试的规则编排服务同步、开发、脱敏和资产模块；每次写入或执行前都展示计划，必须由用户确认。</p></div><div class="agent-badge"><strong>4</strong><span>模块路由</span><strong>0</strong><span>外部模型调用</span></div></section>
+    <section class="agent-workspace"><section class="panel agent-input-panel"><div class="panel-heading"><div><p class="eyebrow">NATURAL LANGUAGE REQUEST</p><h2>描述你的证券数据需求</h2></div><span>虚构环境</span></div><form id="agent-plan-form" class="agent-form"><textarea name="message" rows="5" placeholder="例如：帮我把虚构券商投资者持仓 CSV 增量同步到 MySQL 持仓表，每个工作日凌晨 2 点执行。">${escapeHtml(state.agentMessage)}</textarea><label class="field"><span>确认用户</span><select name="userId"><option value="user-platform-admin">许平台 · 平台运营部</option><option value="user-data-engineer">周开发 · 数据开发部</option><option value="user-data-security">顾安全 · 数据安全部</option><option value="user-investor-analyst">林分析 · 财富管理部</option></select></label><button class="button button-primary" type="submit">生成计划</button></form><div class="agent-prompts"><button type="button" data-agent-prompt="帮我找出和投资者持仓相关的证券数据资产，并说明敏感等级。">资产检索示例</button><button type="button" data-agent-prompt="为投资者手机号创建脱敏规则，保留前三位和后四位。">脱敏规则示例</button><button type="button" data-agent-prompt="帮我创建每个工作日凌晨 2 点把虚构投资者持仓 CSV 增量同步到 MySQL 持仓表的任务。">同步任务示例</button></div></section>
+    <section class="panel agent-plan-panel"><div class="panel-heading"><div><p class="eyebrow">PLAN & CONFIRMATION</p><h2>计划预览</h2></div><span>${plan ? intentLabels[plan.intent] ?? plan.intent : "等待输入"}</span></div>${plan ? `<div class="agent-plan"><h3>${escapeHtml(plan.title)}</h3><p class="agent-summary">${escapeHtml(plan.summary)}</p><div class="agent-columns"><div><strong>执行步骤</strong><ol>${plan.steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol></div><div><strong>风险与边界</strong><ul>${plan.risks.map((risk) => `<li>${escapeHtml(risk)}</li>`).join("")}</ul></div></div>${plan.questions.length ? `<div class="agent-questions"><strong>需要澄清</strong>${plan.questions.map((question) => `<p>？${escapeHtml(question)}</p>`).join("")}</div>` : `<button class="button button-primary" data-agent-confirm="${plan.id}">${plan.status === "COMPLETED" ? "已完成" : "确认并执行"}</button>`}</div>` : `<div class="empty-state">输入需求后，Agent 会先生成意图、步骤、风险和待确认项，不会直接执行。</div>`}</section></section>
+    <section class="panel agent-history"><div class="panel-heading"><div><p class="eyebrow">PLAN HISTORY</p><h2>最近计划</h2></div><span>${state.agentPlans.length} 条</span></div><div class="audit-list">${state.agentPlans.slice(0, 6).map((item) => `<div class="audit-row"><span class="audit-result ${item.status === "COMPLETED" ? "allow" : "deny"}">${item.status === "COMPLETED" ? "已完成" : "待确认"}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.message)}</small></div><time>${formatTime(item.createdAt)}</time></div>`).join("")}</div></section>
+  </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 不连接真实生产</span></footer></div>`;
+}
+
 function renderDevelopment() {
   const job = state.devJobs.find((item) => item.id === state.devSelectedId);
   const enabled = state.devJobs.filter((item) => item.enabled).length;
@@ -234,6 +251,7 @@ function render() {
   if (state.view === "masking") { app.innerHTML = renderMasking(); return; }
   if (state.view === "assets") { app.innerHTML = renderAssets(); return; }
   if (state.view === "security") { app.innerHTML = renderSecurity(); return; }
+  if (state.view === "agent") { app.innerHTML = renderAgent(); return; }
   const summary = { totalTasks: 0, enabledTasks: 0, runningTasks: 0, runsToday: 0, successRate: 100, ...state.summary };
   const task = selectedTask();
   app.innerHTML = `<div class="app-shell">
@@ -264,7 +282,7 @@ document.addEventListener("click", async (event) => {
   if (target.classList.contains("nav-item")) {
     event.preventDefault();
     const href = target.getAttribute("href");
-    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : href.includes("view=masking") || href.endsWith("#masking") ? "masking" : href.includes("view=assets") || href.endsWith("#assets") ? "assets" : href.includes("view=security") || href.endsWith("#security") ? "security" : "sync";
+    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : href.includes("view=masking") || href.endsWith("#masking") ? "masking" : href.includes("view=assets") || href.endsWith("#assets") ? "assets" : href.includes("view=security") || href.endsWith("#security") ? "security" : href.includes("view=agent") || href.endsWith("#agent") ? "agent" : "sync";
     window.history.replaceState({}, "", href);
     // Switch the visible view immediately. The data refresh can involve a
     // network round trip; waiting for it made navigation look unresponsive.
@@ -310,10 +328,25 @@ document.addEventListener("click", async (event) => {
     state.assetDetail = await request(`/api/assets/${state.assetSelectedId}`);
     return render();
   }
+  if (target.dataset.agentPrompt) { state.agentMessage = target.dataset.agentPrompt; return render(); }
+  if (target.dataset.agentConfirm) {
+    state.busyId = target.dataset.agentConfirm; state.error = undefined; render();
+    try { const result = await request(`/api/agent/plans/${target.dataset.agentConfirm}/confirm`, { method: "POST", body: JSON.stringify({ planId: target.dataset.agentConfirm, userId: state.agentPlan?.userId ?? "user-platform-admin" }) }); state.agentPlan = result; await refreshAgent(); }
+    catch (error) { state.error = error.message; state.busyId = undefined; render(); }
+    return;
+  }
   if (target.dataset.select) { state.selectedId = target.dataset.select; state.runs = await request(`/api/tasks/${state.selectedId}/runs`); return render(); }
 });
 
 document.addEventListener("submit", async (event) => {
+  if (event.target.id === "agent-plan-form") {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.target));
+    state.agentMessage = data.message;
+    try { state.agentPlan = await request("/api/agent/plan", { method: "POST", body: JSON.stringify(data) }); await refreshAgent(); }
+    catch (error) { state.error = error.message; render(); }
+    return;
+  }
   if (event.target.id === "asset-search-form") {
     event.preventDefault();
     state.assetQuery = new FormData(event.target).get("q")?.toString().trim() ?? "";

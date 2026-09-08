@@ -102,6 +102,26 @@ describe("data platform API controller", () => {
     await assert.rejects(() => handle({ method: "POST", pathname: "/api/security/access-check", body: { userId: analyst.id, permission: "root", sensitivity: "RESTRICTED" } }), ValidationError);
   });
 
+  test("plans and confirms Data Agent cross-module actions", async () => {
+    const { handle } = setup();
+    const planned = await handle({ method: "POST", pathname: "/api/agent/plan", body: { userId: "user-platform-admin", message: "帮我把虚构投资者持仓 CSV 增量同步到 MySQL 持仓表，每个工作日凌晨 2 点执行。" } });
+    assert.equal(planned.status, 201);
+    assert.equal(planned.body.intent, "SYNC_TASK");
+    assert.equal(planned.body.questions.length, 0);
+    const confirmed = await handle({ method: "POST", pathname: `/api/agent/plans/${planned.body.id}/confirm`, body: { planId: planned.body.id, userId: "user-platform-admin" } });
+    assert.equal(confirmed.status, 200);
+    assert.equal(confirmed.body.status, "COMPLETED");
+    assert.equal(confirmed.body.execution.name, "投资者持仓同步");
+    const assetPlan = await handle({ method: "POST", pathname: "/api/agent/plan", body: { userId: "user-investor-analyst", message: "帮我找出投资者持仓相关的数据资产" } });
+    assert.equal(assetPlan.body.intent, "ASSET_SEARCH");
+    const assetResult = await handle({ method: "POST", pathname: `/api/agent/plans/${assetPlan.body.id}/confirm`, body: { planId: assetPlan.body.id, userId: "user-investor-analyst" } });
+    assert.equal(assetResult.body.execution.length, 1);
+    const unknown = await handle({ method: "POST", pathname: "/api/agent/plan", body: { userId: "user-platform-admin", message: "帮我做一个事情" } });
+    assert.equal(unknown.body.intent, "UNKNOWN");
+    const blocked = await handle({ method: "POST", pathname: `/api/agent/plans/${unknown.body.id}/confirm`, body: { planId: unknown.body.id, userId: "user-platform-admin" } });
+    assert.equal(blocked.status, 409);
+  });
+
   test("backfills data development state for legacy stores", async () => {
     const seed = createSeedState();
     const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });
