@@ -46,6 +46,16 @@ node bin/dataplatform.mjs assets search --query 持仓
 node bin/dataplatform.mjs agent plan --message "财富顾问查询客户持仓，生成客户总资产和行业分布报表"
 ```
 
+## MCP 入口
+
+Data Agent 客户端可以通过 stdio 启动 MCP Server，发现并调用同一套 API 能力：
+
+```bash
+DATA_PLATFORM_API_BASE_URL=https://dataplaging-api-qagxeaqdmd.cn-hangzhou.fcapp.run node bin/dataplatform-mcp.mjs
+```
+
+MCP 暴露 `data_agent_plan`、`data_agent_confirm`、`assets_search` 和 `security_access_check`。确认工具必须在用户看到计划并明确确认后调用。
+
 ## Staging 访问保护
 
 当前 staging 为公开验收 Demo，`REQUIRE_ACCESS_TOKEN=false`，方便朋友直接体验。需要恢复访问保护时，将 FC 环境变量切换为 `REQUIRE_ACCESS_TOKEN=true`，并保留 `DEMO_ACCESS_TOKEN` 在 GitHub Secret 和阿里云 FC 环境变量中，不要写入仓库。
