@@ -2,6 +2,9 @@
   "name": "data-platform-demo",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "dataplatform": "bin/dataplatform.mjs"
+  },
   "type": "module",
   "description": "A zero-dependency data platform demo for practicing the full delivery loop.",
   "dependencies": {

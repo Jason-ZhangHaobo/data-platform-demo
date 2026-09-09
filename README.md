@@ -36,6 +36,16 @@ npm run dev
 npm run ci
 ```
 
+## CLI 入口
+
+CLI 与 GUI、Data Agent 共享同一套 API、权限和审计。
+
+```bash
+node bin/dataplatform.mjs help
+node bin/dataplatform.mjs assets search --query 持仓
+node bin/dataplatform.mjs agent plan --message "财富顾问查询客户持仓，生成客户总资产和行业分布报表"
+```
+
 ## Staging 访问保护
 
 当前 staging 为公开验收 Demo，`REQUIRE_ACCESS_TOKEN=false`，方便朋友直接体验。需要恢复访问保护时，将 FC 环境变量切换为 `REQUIRE_ACCESS_TOKEN=true`，并保留 `DEMO_ACCESS_TOKEN` 在 GitHub Secret 和阿里云 FC 环境变量中，不要写入仓库。
