@@ -1,4 +1,4 @@
-import { analyzeSql, maskValue, validateAccessCheckInput, validateAgentConfirmInput, validateAgentPlanInput, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateTaskInput } from "../shared/validation.mjs";
+import { analyzeSql, maskValue, validateAccessCheckInput, validateAgentConfirmInput, validateAgentPlanInput, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateQualityRuleInput, validateTaskInput } from "../shared/validation.mjs";
 import { planAgentRequest } from "./services/data-agent.mjs";
 
 const result = (status, body) => ({ status, body });
@@ -22,6 +22,10 @@ const securitySensitivityRank = { PUBLIC: 0, INTERNAL: 1, SENSITIVE: 2, RESTRICT
 const agentPlanRoute = (pathname) => {
   const match = pathname.match(/^\/api\/agent\/plans\/([^/]+)\/confirm$/);
   return match ? decodeURIComponent(match[1]) : undefined;
+};
+const qualityRuleRoute = (pathname) => {
+  const match = pathname.match(/^\/api\/quality\/rules\/([^/]+)(?:\/(runs|run|toggle))?$/);
+  return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
 
 export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken, requireAccessToken = false, syncService, realSyncEnabled = false }) {
@@ -83,6 +87,27 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       const completed = await store.updateAgentPlan(plan.id, { status: "COMPLETED", confirmedBy: input.userId, confirmedAt: new Date().toISOString(), execution });
       await store.createAuditLog({ actorId: input.userId, actorName: input.userId, action: "agent.confirm", resourceType: plan.intent, resourceId: plan.id, sensitivity: "INTERNAL", result: "ALLOW", reason: "用户确认 Data Agent 计划并执行" });
       return result(200, completed);
+    }
+    if (method === "GET" && pathname === "/api/quality/rules") return result(200, await store.listQualityRules());
+    if (method === "POST" && pathname === "/api/quality/rules") return result(201, await store.createQualityRule(validateQualityRuleInput(body)));
+    if (method === "GET" && pathname === "/api/quality/summary") {
+      const rules = await store.listQualityRules();
+      return result(200, { totalRules: rules.length, enabledRules: rules.filter((rule) => rule.enabled).length, passRules: rules.filter((rule) => rule.lastStatus === "PASS").length, warnRules: rules.filter((rule) => rule.lastStatus === "WARN").length, failRules: rules.filter((rule) => rule.lastStatus === "FAIL").length });
+    }
+    const quality = qualityRuleRoute(pathname);
+    if (quality) {
+      const rule = await store.getQualityRule(quality.id);
+      if (!rule) return result(404, { message: "未找到对应质量规则" });
+      if (method === "GET" && quality.action === "runs") return result(200, await store.listQualityRuns(rule.id));
+      if (method === "POST" && quality.action === "toggle") return result(200, await store.updateQualityRule(rule.id, { enabled: !rule.enabled }));
+      if (method === "POST" && quality.action === "run") {
+        if (!rule.enabled) return result(409, { message: "请先启用质量规则" });
+        const metrics = { NOT_NULL: { score: 100, status: "PASS", observed: "0 个空值" }, UNIQUE: { score: 98, status: "PASS", observed: "重复率 0.2%" }, ROW_COUNT: { score: 100, status: "PASS", observed: "读取 1280 行" }, FRESHNESS: { score: 92, status: "WARN", observed: "延迟 18 分钟" } }[rule.ruleType] ?? { score: 0, status: "FAIL", observed: "无法识别规则" };
+        const run = await store.createQualityRun({ ruleId: rule.id, status: metrics.status, score: metrics.score, observed: metrics.observed, rowsChecked: 1280, message: metrics.status === "PASS" ? "质量检查通过。" : "质量检查有提醒，请关注时效。" });
+        await store.updateQualityRule(rule.id, { lastStatus: metrics.status, lastScore: metrics.score });
+        return result(200, run);
+      }
+      return result(405, { message: "不支持的质量规则请求方法" });
     }
 
     const asset = assetRoute(pathname);

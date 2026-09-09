@@ -6,6 +6,7 @@ const assetTypes = new Set(["TABLE", "VIEW", "DATASET"]);
 const assetLayers = new Set(["ODS", "DWD", "DWS", "DIM", "ADS"]);
 const assetSensitivityLevels = new Set(["PUBLIC", "INTERNAL", "SENSITIVE", "RESTRICTED"]);
 const securityPermissions = new Set(["asset.read", "asset.sensitive.read", "asset.restricted.read", "masking.preview", "masking.manage", "dev.write", "audit.read"]);
+const qualityRuleTypes = new Set(["NOT_NULL", "UNIQUE", "ROW_COUNT", "FRESHNESS"]);
 
 export class ValidationError extends Error {
   constructor(issues) {
@@ -180,4 +181,16 @@ export function validateAgentConfirmInput(value) {
   if (!planId || !userId) throw new ValidationError([{ path: "planId", message: "缺少 Agent 计划或确认用户" }]);
   const draft = value?.draft && typeof value.draft === "object" ? value.draft : undefined;
   return { planId, userId, draft: draft ? { sql: typeof draft.sql === "string" ? draft.sql.slice(0, 20_000) : undefined } : undefined };
+}
+
+export function validateQualityRuleInput(value) {
+  const input = value && typeof value === "object" ? value : {};
+  const text = (key, min, max, message) => {
+    const result = typeof input[key] === "string" ? input[key].trim() : "";
+    if (result.length < min || result.length > max) throw new ValidationError([{ path: key, message }]);
+    return result;
+  };
+  const type = input.ruleType;
+  if (!qualityRuleTypes.has(type)) throw new ValidationError([{ path: "ruleType", message: "质量规则类型不合法" }]);
+  return { name: text("name", 2, 80, "规则名称需要 2—80 个字符"), assetId: text("assetId", 2, 100, "请输入资产标识"), ruleType: type, fieldName: typeof input.fieldName === "string" ? input.fieldName.trim() : "", threshold: Number.isFinite(Number(input.threshold)) ? Number(input.threshold) : 0, owner: text("owner", 2, 40, "请输入负责人"), enabled: input.enabled !== false, description: typeof input.description === "string" ? input.description.trim().slice(0, 200) : "" };
 }
