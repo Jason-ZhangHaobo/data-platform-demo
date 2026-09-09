@@ -6,10 +6,10 @@ const devStatusMeta = { DRAFT: ["草稿", "neutral"], READY: ["待发布", "info
 const maskingStrategyMeta = { PHONE: ["手机号", "保留前三位与后四位"], ID_CARD: ["投资者标识", "保留前四位与后四位"], SECURITY_ACCOUNT: ["证券账户", "保留前三位与后四位"], BANK_CARD: ["银行卡号", "仅保留后四位"], NAME: ["姓名", "保留首字" ] };
 const requestedView = () => {
   const view = new URLSearchParams(window.location.search).get("view");
-  if (view === "development" || view === "masking" || view === "assets" || view === "security" || view === "agent") return view;
+  if (view === "development" || view === "masking" || view === "assets" || view === "security" || view === "agent" || view === "quality") return view;
   return window.location.hash === "#development" ? "development" : "sync";
 };
-const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], error: undefined, busyId: undefined };
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -77,7 +77,15 @@ async function refreshAgent() {
   render();
 }
 
-const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : state.view === "agent" ? refreshAgent() : refresh();
+async function refreshQuality() {
+  [state.qualityRules, state.qualitySummary] = await Promise.all([request("/api/quality/rules"), request("/api/quality/summary")]);
+  state.qualitySelectedRuleId ??= state.qualityRules[0]?.id;
+  state.qualityRuns = state.qualitySelectedRuleId ? await request(`/api/quality/rules/${state.qualitySelectedRuleId}/runs`) : [];
+  state.busyId = undefined;
+  render();
+}
+
+const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : state.view === "agent" ? refreshAgent() : state.view === "quality" ? refreshQuality() : refresh();
 
 const selectedTask = () => state.tasks.find((task) => task.id === state.selectedId);
 
@@ -237,6 +245,16 @@ function renderAgent() {
   </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 不连接真实生产</span></footer></div>`;
 }
 
+function renderQuality() {
+  const statusLabel = { PASS: "通过", WARN: "提醒", FAIL: "失败", NOT_RUN: "未运行" };
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=agent#agent">Data Agent</a><a class="nav-item active" href="?view=quality#quality">数据质量</a><a class="nav-item" href="?view=assets#assets">数据资产</a><a class="nav-item" href="?view=security#security">账号权限</a></nav><div class="environment-pill"><span></span>质量模拟环境</div></header><main id="top">
+    <section class="hero"><div><p class="eyebrow">DATA QUALITY & OPS · MVP 0.1</p><h1>让每个任务<br>都有可解释的质量结果。</h1><p class="hero-copy">围绕财富顾问持仓分析，先验证空值、唯一性、行数和 T+1 时效，再接入真实质量规则和运维告警。</p></div><div class="agent-badge"><strong>${state.qualitySummary.enabledRules ?? 0}</strong><span>启用规则</span><strong>${state.qualitySummary.passRules ?? 0}</strong><span>通过规则</span></div></section>
+    <section class="summary-grid"><article><span>规则总数</span><strong>${state.qualitySummary.totalRules ?? 0}</strong><small>资产质量规则</small></article><article><span>通过</span><strong>${state.qualitySummary.passRules ?? 0}</strong><small>最近检查</small></article><article><span>提醒</span><strong>${state.qualitySummary.warnRules ?? 0}</strong><small>需要关注</small></article><article class="success-card"><span>当前阶段</span><strong>0.1</strong><small>模拟检查</small></article></section>
+    ${state.error ? `<div class="error-banner"><span>!</span>${escapeHtml(state.error)}<button data-dismiss>关闭</button></div>` : ""}
+    <section class="workspace"><div class="panel task-panel"><div class="panel-heading"><div><p class="eyebrow">QUALITY RULES</p><h2>持仓质量规则</h2></div><span>${state.qualityRules.length} 项</span></div><div class="task-list">${state.qualityRules.map((rule) => `<article class="task-card ${rule.id === state.qualitySelectedRuleId ? "selected" : ""}" data-quality-select="${rule.id}"><div class="task-card-main"><div class="task-title-row"><span class="status-dot ${rule.lastStatus === "PASS" ? "success" : rule.lastStatus === "WARN" ? "running" : "neutral"}"></span><h3>${escapeHtml(rule.name)}</h3><span class="status-badge ${rule.lastStatus === "PASS" ? "success" : rule.lastStatus === "WARN" ? "running" : "neutral"}">${statusLabel[rule.lastStatus] ?? rule.lastStatus}</span></div><p>${escapeHtml(rule.assetId)} · ${escapeHtml(rule.ruleType)} · ${escapeHtml(rule.fieldName || "整表")}</p><div class="task-meta"><span>得分 ${rule.lastScore ?? "—"}</span><span>${escapeHtml(rule.owner)}</span></div></div><div class="task-actions"><button class="button button-quiet" data-quality-run="${rule.id}">运行检查</button><button class="button button-secondary" data-quality-toggle="${rule.id}">${rule.enabled ? "停用" : "启用"}</button></div></article>`).join("")}</div></div><aside class="panel detail-panel"><div class="panel-heading"><div><p class="eyebrow">QUALITY HISTORY</p><h2>检查历史</h2></div><span>${state.qualityRuns.length} 条</span></div><div class="run-list">${state.qualityRuns.slice(0, 8).map((run) => `<div class="audit-row"><span class="audit-result ${run.status === "PASS" ? "allow" : "deny"}">${statusLabel[run.status]}</span><div><strong>得分 ${run.score}</strong><small>${escapeHtml(run.observed)} · ${escapeHtml(run.message)}</small></div><time>${formatTime(run.createdAt)}</time></div>`).join("") || `<div class="empty-state">选择规则并运行一次检查。</div>`}</div></aside></section>
+  </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 禁止连接真实生产</span></footer></div>`;
+}
+
 function renderDevelopment() {
   const job = state.devJobs.find((item) => item.id === state.devSelectedId);
   const enabled = state.devJobs.filter((item) => item.enabled).length;
@@ -254,6 +272,7 @@ function render() {
   if (state.view === "assets") { app.innerHTML = renderAssets(); return; }
   if (state.view === "security") { app.innerHTML = renderSecurity(); return; }
   if (state.view === "agent") { app.innerHTML = renderAgent(); return; }
+  if (state.view === "quality") { app.innerHTML = renderQuality(); return; }
   const summary = { totalTasks: 0, enabledTasks: 0, runningTasks: 0, runsToday: 0, successRate: 100, ...state.summary };
   const task = selectedTask();
   app.innerHTML = `<div class="app-shell">
@@ -284,7 +303,7 @@ document.addEventListener("click", async (event) => {
   if (target.classList.contains("nav-item")) {
     event.preventDefault();
     const href = target.getAttribute("href");
-    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : href.includes("view=masking") || href.endsWith("#masking") ? "masking" : href.includes("view=assets") || href.endsWith("#assets") ? "assets" : href.includes("view=security") || href.endsWith("#security") ? "security" : href.includes("view=agent") || href.endsWith("#agent") ? "agent" : "sync";
+    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : href.includes("view=masking") || href.endsWith("#masking") ? "masking" : href.includes("view=assets") || href.endsWith("#assets") ? "assets" : href.includes("view=security") || href.endsWith("#security") ? "security" : href.includes("view=agent") || href.endsWith("#agent") ? "agent" : href.includes("view=quality") || href.endsWith("#quality") ? "quality" : "sync";
     window.history.replaceState({}, "", href);
     // Switch the visible view immediately. The data refresh can involve a
     // network round trip; waiting for it made navigation look unresponsive.
@@ -334,6 +353,19 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.agentConfirm) {
     state.busyId = target.dataset.agentConfirm; state.error = undefined; render();
     try { const sql = document.querySelector("#agent-sql-editor")?.value; const result = await request(`/api/agent/plans/${target.dataset.agentConfirm}/confirm`, { method: "POST", body: JSON.stringify({ planId: target.dataset.agentConfirm, userId: state.agentPlan?.userId ?? "user-platform-admin", draft: sql ? { sql } : undefined }) }); state.agentPlan = result; await refreshAgent(); }
+    catch (error) { state.error = error.message; state.busyId = undefined; render(); }
+    return;
+  }
+  if (target.dataset.qualitySelect) { state.qualitySelectedRuleId = target.dataset.qualitySelect; state.qualityRuns = await request(`/api/quality/rules/${state.qualitySelectedRuleId}/runs`); return render(); }
+  if (target.dataset.qualityToggle) {
+    state.busyId = target.dataset.qualityToggle; state.error = undefined; render();
+    try { await request(`/api/quality/rules/${target.dataset.qualityToggle}/toggle`, { method: "POST" }); await refreshQuality(); }
+    catch (error) { state.error = error.message; state.busyId = undefined; render(); }
+    return;
+  }
+  if (target.dataset.qualityRun) {
+    state.busyId = target.dataset.qualityRun; state.error = undefined; render();
+    try { state.qualitySelectedRuleId = target.dataset.qualityRun; await request(`/api/quality/rules/${target.dataset.qualityRun}/run`, { method: "POST" }); await refreshQuality(); }
     catch (error) { state.error = error.message; state.busyId = undefined; render(); }
     return;
   }

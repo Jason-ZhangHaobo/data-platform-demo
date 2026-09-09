@@ -137,6 +137,22 @@ describe("data platform API controller", () => {
     assert.equal(confirmed.body.execution.artifacts.deploymentConfig.platform, "aliyun-dataworks-emr");
   });
 
+  test("runs securities data quality rules and returns operations history", async () => {
+    const { handle } = setup();
+    const rules = await handle({ method: "GET", pathname: "/api/quality/rules" });
+    assert.equal(rules.status, 200);
+    assert.equal(rules.body.length, 3);
+    const freshness = rules.body.find((rule) => rule.ruleType === "FRESHNESS");
+    const run = await handle({ method: "POST", pathname: `/api/quality/rules/${freshness.id}/run` });
+    assert.equal(run.status, 200);
+    assert.equal(run.body.status, "WARN");
+    assert.equal(run.body.score, 92);
+    const history = await handle({ method: "GET", pathname: `/api/quality/rules/${freshness.id}/runs` });
+    assert.equal(history.body.length, 1);
+    const summary = await handle({ method: "GET", pathname: "/api/quality/summary" });
+    assert.equal(summary.body.warnRules, 1);
+  });
+
   test("backfills data development state for legacy stores", async () => {
     const seed = createSeedState();
     const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });

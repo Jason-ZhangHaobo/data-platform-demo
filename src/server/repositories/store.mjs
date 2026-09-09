@@ -105,6 +105,12 @@ export const createSeedState = () => {
     { id: randomUUID(), actorId: "user-investor-analyst", actorName: "林分析", action: "asset.restricted.read", resourceType: "asset", resourceId: "dwd_investor_account", sensitivity: "RESTRICTED", result: "DENY", reason: "角色最高可访问内部等级", createdAt: minutesAgo(42) },
     { id: randomUUID(), actorId: "user-data-security", actorName: "顾安全", action: "masking.preview", resourceType: "masking_rule", resourceId: "投资者手机号脱敏", sensitivity: "SENSITIVE", result: "ALLOW", reason: "安全管理员允许预览脱敏样例", createdAt: minutesAgo(65) },
   ];
+  const holdingsAssetId = assets.find((asset) => asset.physicalName === "dws_position_snapshot")?.id ?? "asset-position-snapshot";
+  const qualityRules = [
+    { id: randomUUID(), name: "持仓客户不能为空", assetId: holdingsAssetId, ruleType: "NOT_NULL", fieldName: "client_id", threshold: 0, owner: "数据质量组", enabled: true, description: "持仓快照必须具备客户标识。", updatedAt: minutesAgo(20), lastStatus: "PASS", lastScore: 100 },
+    { id: randomUUID(), name: "持仓证券代码唯一性", assetId: holdingsAssetId, ruleType: "UNIQUE", fieldName: "security_code", threshold: 0, owner: "数据质量组", enabled: true, description: "同一客户和交易日内证券代码不应重复。", updatedAt: minutesAgo(40), lastStatus: "PASS", lastScore: 98 },
+    { id: randomUUID(), name: "持仓快照 T+1 时效", assetId: holdingsAssetId, ruleType: "FRESHNESS", fieldName: "trade_date", threshold: 1, owner: "数据运维组", enabled: true, description: "交易日收盘后的持仓快照应在次日 02:30 前完成。", updatedAt: minutesAgo(55), lastStatus: "WARN", lastScore: 92 },
+  ];
   return {
     tasks,
     runs: [
@@ -120,6 +126,8 @@ export const createSeedState = () => {
     securityUsers,
     auditLogs,
     agentPlans: [],
+    qualityRules,
+    qualityRuns: [],
   };
 };
 

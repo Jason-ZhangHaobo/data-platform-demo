@@ -20,6 +20,8 @@ export class MemoryTaskStore {
       securityUsers: provided.securityUsers ?? seed.securityUsers,
       auditLogs: provided.auditLogs ?? seed.auditLogs,
       agentPlans: provided.agentPlans ?? seed.agentPlans,
+      qualityRules: provided.qualityRules ?? seed.qualityRules,
+      qualityRuns: provided.qualityRuns ?? seed.qualityRuns,
     };
     return this.state;
   }
@@ -113,5 +115,11 @@ export class MemoryTaskStore {
   async getAgentPlan(id) { const plan = this.state.agentPlans.find((item) => item.id === id); return plan ? structuredClone(plan) : undefined; }
   async createAgentPlan(input) { const plan = { ...input, id: randomUUID(), status: "AWAITING_CONFIRMATION", createdAt: new Date().toISOString() }; this.state.agentPlans.push(plan); await this.persist(); return structuredClone(plan); }
   async updateAgentPlan(id, patch) { const index = this.state.agentPlans.findIndex((plan) => plan.id === id); if (index < 0) return undefined; this.state.agentPlans[index] = { ...this.state.agentPlans[index], ...patch }; await this.persist(); return structuredClone(this.state.agentPlans[index]); }
+  async listQualityRules() { return structuredClone([...this.state.qualityRules].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))); }
+  async getQualityRule(id) { const rule = this.state.qualityRules.find((item) => item.id === id); return rule ? structuredClone(rule) : undefined; }
+  async createQualityRule(input) { const now = new Date().toISOString(); const rule = { ...input, id: randomUUID(), updatedAt: now, lastStatus: "NOT_RUN", lastScore: null }; this.state.qualityRules.push(rule); await this.persist(); return structuredClone(rule); }
+  async updateQualityRule(id, patch) { const index = this.state.qualityRules.findIndex((rule) => rule.id === id); if (index < 0) return undefined; this.state.qualityRules[index] = { ...this.state.qualityRules[index], ...patch, updatedAt: new Date().toISOString() }; await this.persist(); return structuredClone(this.state.qualityRules[index]); }
+  async listQualityRuns(ruleId) { return structuredClone(this.state.qualityRuns.filter((run) => !ruleId || run.ruleId === ruleId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))); }
+  async createQualityRun(input) { const run = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }; this.state.qualityRuns.push(run); await this.persist(); return structuredClone(run); }
   async persist() {}
 }
