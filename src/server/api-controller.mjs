@@ -37,6 +37,16 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       if (headers.authorization !== `Bearer ${accessToken}`) return result(401, { message: "请输入正确的演示访问码" });
     }
     if (method === "GET" && pathname === "/api/summary") return result(200, await store.getSummary());
+    if (method === "GET" && pathname === "/api/reports/holdings") return result(200, {
+      reportName: "财富顾问客户持仓分析",
+      generatedAt: new Date().toISOString(),
+      scope: "OWN_CLIENTS_ONLY",
+      freshness: "T+1 模拟数据",
+      metrics: { totalAssets: 12_800_000, holdingMarketValue: 12_000_000, securityCount: 8 },
+      assetClassDistribution: [{ name: "股票", value: 7_200_000, ratio: 60 }, { name: "债券", value: 3_600_000, ratio: 30 }, { name: "基金", value: 1_200_000, ratio: 10 }],
+      industryDistribution: [{ name: "金融", value: 4_200_000, ratio: 35 }, { name: "信息技术", value: 3_000_000, ratio: 25 }, { name: "医药", value: 2_400_000, ratio: 20 }, { name: "其他", value: 2_400_000, ratio: 20 }],
+      disclaimer: "虚构数据，仅用于学习演示，不构成投资建议。",
+    });
     if (method === "GET" && pathname === "/api/tasks") return result(200, await store.listTasks());
     if (method === "POST" && pathname === "/api/tasks") return result(201, await store.createTask(validateTaskInput(body)));
     if (method === "GET" && pathname === "/api/dev/jobs") return result(200, await store.listDevJobs());
@@ -81,7 +91,7 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       else if (plan.intent === "ASSET_SEARCH") execution = await store.listAssets({ q: plan.draft.query });
       else if (plan.intent === "HOLDINGS_REPORT") {
         const devJob = await store.createDevJob(validateDevJobInput(effectiveDraft.devJob ? { ...effectiveDraft.devJob, sql: effectiveDraft.sql } : { name: "财富顾问客户持仓分析 SQL", description: "Data Agent 生成的 Hive/Spark SQL 草稿，第一版仅模拟执行。", jobType: "SQL", sql: effectiveDraft.sql, schedule: "交易日 T+1 02:30", owner: "数据开发组", enabled: false }));
-        execution = { type: "HOLDINGS_REPORT", status: "DRAFT_CREATED", devJob, artifacts: { engine: effectiveDraft.engine, sql: effectiveDraft.sql, testSql: effectiveDraft.testSql, scheduleConfig: effectiveDraft.scheduleConfig, deploymentConfig: effectiveDraft.deploymentConfig }, reportSpec: effectiveDraft.reportSpec, permissionScope: effectiveDraft.permissionScope };
+        execution = { type: "HOLDINGS_REPORT", status: "DRAFT_CREATED", devJob, artifacts: { engine: effectiveDraft.engine, sql: effectiveDraft.sql, testSql: effectiveDraft.testSql, scheduleConfig: effectiveDraft.scheduleConfig, deploymentConfig: effectiveDraft.deploymentConfig }, reportSpec: effectiveDraft.reportSpec, permissionScope: effectiveDraft.permissionScope, reportUrl: "?view=holdings-report#holdings-report" };
       }
       else return result(409, { message: "当前计划没有可执行模块" });
       const completed = await store.updateAgentPlan(plan.id, { status: "COMPLETED", confirmedBy: input.userId, confirmedAt: new Date().toISOString(), execution });
