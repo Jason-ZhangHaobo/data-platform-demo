@@ -6,10 +6,10 @@ const devStatusMeta = { DRAFT: ["草稿", "neutral"], READY: ["待发布", "info
 const maskingStrategyMeta = { PHONE: ["手机号", "保留前三位与后四位"], ID_CARD: ["投资者标识", "保留前四位与后四位"], SECURITY_ACCOUNT: ["证券账户", "保留前三位与后四位"], BANK_CARD: ["银行卡号", "仅保留后四位"], NAME: ["姓名", "保留首字" ] };
 const requestedView = () => {
   const view = new URLSearchParams(window.location.search).get("view");
-  if (view === "development" || view === "masking" || view === "assets" || view === "security" || view === "agent" || view === "quality") return view;
+  if (view === "development" || view === "masking" || view === "assets" || view === "security" || view === "agent" || view === "quality" || view === "holdings-report") return view;
   return window.location.hash === "#development" ? "development" : "sync";
 };
-const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], error: undefined, busyId: undefined };
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], holdingsReport: undefined, error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -85,7 +85,9 @@ async function refreshQuality() {
   render();
 }
 
-const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : state.view === "agent" ? refreshAgent() : state.view === "quality" ? refreshQuality() : refresh();
+async function refreshHoldingsReport() { state.holdingsReport = await request("/api/reports/holdings"); render(); }
+
+const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : state.view === "agent" ? refreshAgent() : state.view === "quality" ? refreshQuality() : state.view === "holdings-report" ? refreshHoldingsReport() : refresh();
 
 const selectedTask = () => state.tasks.find((task) => task.id === state.selectedId);
 
@@ -255,6 +257,15 @@ function renderQuality() {
   </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 禁止连接真实生产</span></footer></div>`;
 }
 
+function renderHoldingsReport() {
+  const report = state.holdingsReport;
+  const money = (value) => `¥${Number(value).toLocaleString("zh-CN")}`;
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=agent#agent">Data Agent</a><a class="nav-item active" href="?view=holdings-report#holdings-report">持仓看板</a><a class="nav-item" href="?view=quality#quality">数据质量</a><a class="nav-item" href="?view=assets#assets">数据资产</a></nav><div class="environment-pill"><span></span>T+1 模拟看板</div></header><main id="top">
+    <section class="hero"><div><p class="eyebrow">WEALTH MANAGEMENT · HOLDINGS REPORT</p><h1>财富顾问客户持仓分析</h1><p class="hero-copy">权限范围：${escapeHtml(report?.scope ?? "OWN_CLIENTS_ONLY")} · 数据时效：${escapeHtml(report?.freshness ?? "T+1 模拟数据")}</p></div><div class="report-disclaimer">${escapeHtml(report?.disclaimer ?? "虚构数据，仅用于学习演示")}</div></section>
+    ${report ? `<section class="report-metrics"><article><span>客户总资产</span><strong>${money(report.metrics.totalAssets)}</strong><small>T+1 快照</small></article><article><span>持仓市值</span><strong>${money(report.metrics.holdingMarketValue)}</strong><small>可用资产</small></article><article><span>证券数量</span><strong>${report.metrics.securityCount}</strong><small>去重证券</small></article></section><section class="report-grid"><div class="panel report-panel"><div class="panel-heading"><h2>资产类别分布</h2><span>市值占比</span></div>${report.assetClassDistribution.map((item) => `<div class="distribution-row"><div><strong>${escapeHtml(item.name)}</strong><span>${money(item.value)}</span></div><div class="bar"><i style="width:${item.ratio}%"></i></div><b>${item.ratio}%</b></div>`).join("")}</div><div class="panel report-panel"><div class="panel-heading"><h2>行业分布</h2><span>市值占比</span></div>${report.industryDistribution.map((item) => `<div class="distribution-row"><div><strong>${escapeHtml(item.name)}</strong><span>${money(item.value)}</span></div><div class="bar blue"><i style="width:${item.ratio}%"></i></div><b>${item.ratio}%</b></div>`).join("")}</div></section>` : `<div class="empty-state">正在加载持仓分析结果。</div>`}
+  </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 不构成投资建议</span></footer></div>`;
+}
+
 function renderDevelopment() {
   const job = state.devJobs.find((item) => item.id === state.devSelectedId);
   const enabled = state.devJobs.filter((item) => item.enabled).length;
@@ -273,6 +284,7 @@ function render() {
   if (state.view === "security") { app.innerHTML = renderSecurity(); return; }
   if (state.view === "agent") { app.innerHTML = renderAgent(); return; }
   if (state.view === "quality") { app.innerHTML = renderQuality(); return; }
+  if (state.view === "holdings-report") { app.innerHTML = renderHoldingsReport(); return; }
   const summary = { totalTasks: 0, enabledTasks: 0, runningTasks: 0, runsToday: 0, successRate: 100, ...state.summary };
   const task = selectedTask();
   app.innerHTML = `<div class="app-shell">
@@ -303,7 +315,7 @@ document.addEventListener("click", async (event) => {
   if (target.classList.contains("nav-item")) {
     event.preventDefault();
     const href = target.getAttribute("href");
-    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : href.includes("view=masking") || href.endsWith("#masking") ? "masking" : href.includes("view=assets") || href.endsWith("#assets") ? "assets" : href.includes("view=security") || href.endsWith("#security") ? "security" : href.includes("view=agent") || href.endsWith("#agent") ? "agent" : href.includes("view=quality") || href.endsWith("#quality") ? "quality" : "sync";
+    state.view = href.includes("view=development") || href.endsWith("#development") ? "development" : href.includes("view=masking") || href.endsWith("#masking") ? "masking" : href.includes("view=assets") || href.endsWith("#assets") ? "assets" : href.includes("view=security") || href.endsWith("#security") ? "security" : href.includes("view=agent") || href.endsWith("#agent") ? "agent" : href.includes("view=quality") || href.endsWith("#quality") ? "quality" : href.includes("view=holdings-report") || href.endsWith("#holdings-report") ? "holdings-report" : "sync";
     window.history.replaceState({}, "", href);
     // Switch the visible view immediately. The data refresh can involve a
     // network round trip; waiting for it made navigation look unresponsive.

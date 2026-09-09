@@ -153,6 +153,16 @@ describe("data platform API controller", () => {
     assert.equal(summary.body.warnRules, 1);
   });
 
+  test("returns a scoped holdings report preview", async () => {
+    const { handle } = setup();
+    const report = await handle({ method: "GET", pathname: "/api/reports/holdings" });
+    assert.equal(report.status, 200);
+    assert.equal(report.body.scope, "OWN_CLIENTS_ONLY");
+    assert.equal(report.body.metrics.securityCount, 8);
+    assert.equal(report.body.assetClassDistribution.length, 3);
+    assert.equal(report.body.industryDistribution.length, 4);
+  });
+
   test("backfills data development state for legacy stores", async () => {
     const seed = createSeedState();
     const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });
