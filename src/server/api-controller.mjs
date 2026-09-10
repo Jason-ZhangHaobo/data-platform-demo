@@ -1,5 +1,6 @@
 import { analyzeSql, maskValue, validateAccessCheckInput, validateAgentConfirmInput, validateAgentPlanInput, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateQualityRuleInput, validateTaskInput } from "../shared/validation.mjs";
 import { planAgentRequest } from "./services/data-agent.mjs";
+import { evaluationCases, runAgentEvaluation } from "./services/agent-evaluation.mjs";
 import { searchSemanticContext } from "../shared/semantic-context.mjs";
 
 const result = (status, body) => ({ status, body });
@@ -71,6 +72,13 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       return result(200, { allowed, reason, user: user?.name, roles: userRoles.map((role) => role.name), auditId: audit.id });
     }
     if (method === "GET" && pathname === "/api/agent/plans") return result(200, await store.listAgentPlans());
+    if (method === "GET" && pathname === "/api/agent/evaluation/cases") return result(200, evaluationCases);
+    if (method === "GET" && pathname === "/api/agent/evaluation/runs") return result(200, await store.listAgentEvalRuns());
+    if (method === "POST" && pathname === "/api/agent/evaluation/run") {
+      const evaluation = runAgentEvaluation();
+      const saved = await store.createAgentEvalRun(evaluation);
+      return result(200, saved);
+    }
     if (method === "POST" && pathname === "/api/agent/plan") {
       const input = validateAgentPlanInput(body);
       const plan = planAgentRequest(input.message);

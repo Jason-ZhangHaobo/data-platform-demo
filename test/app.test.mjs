@@ -174,6 +174,19 @@ describe("data platform API controller", () => {
     assert.equal(plan.body.draft.semanticContext.items.length > 0, true);
   });
 
+  test("runs Agent evaluation cases and records regression score", async () => {
+    const { handle } = setup();
+    const cases = await handle({ method: "GET", pathname: "/api/agent/evaluation/cases" });
+    assert.equal(cases.status, 200);
+    assert.equal(cases.body.length, 5);
+    const run = await handle({ method: "POST", pathname: "/api/agent/evaluation/run" });
+    assert.equal(run.status, 200);
+    assert.equal(run.body.total, 5);
+    assert.equal(run.body.failed, 0);
+    const history = await handle({ method: "GET", pathname: "/api/agent/evaluation/runs" });
+    assert.equal(history.body.length, 1);
+  });
+
   test("backfills data development state for legacy stores", async () => {
     const seed = createSeedState();
     const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });

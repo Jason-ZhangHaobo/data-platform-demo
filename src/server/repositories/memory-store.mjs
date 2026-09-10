@@ -22,6 +22,7 @@ export class MemoryTaskStore {
       agentPlans: provided.agentPlans ?? seed.agentPlans,
       qualityRules: provided.qualityRules ?? seed.qualityRules,
       qualityRuns: provided.qualityRuns ?? seed.qualityRuns,
+      agentEvalRuns: provided.agentEvalRuns ?? seed.agentEvalRuns,
     };
     return this.state;
   }
@@ -121,5 +122,7 @@ export class MemoryTaskStore {
   async updateQualityRule(id, patch) { const index = this.state.qualityRules.findIndex((rule) => rule.id === id); if (index < 0) return undefined; this.state.qualityRules[index] = { ...this.state.qualityRules[index], ...patch, updatedAt: new Date().toISOString() }; await this.persist(); return structuredClone(this.state.qualityRules[index]); }
   async listQualityRuns(ruleId) { return structuredClone(this.state.qualityRuns.filter((run) => !ruleId || run.ruleId === ruleId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))); }
   async createQualityRun(input) { const run = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }; this.state.qualityRuns.push(run); await this.persist(); return structuredClone(run); }
+  async listAgentEvalRuns() { return structuredClone([...this.state.agentEvalRuns].sort((a, b) => b.createdAt.localeCompare(a.createdAt))); }
+  async createAgentEvalRun(input) { const run = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }; this.state.agentEvalRuns.push(run); await this.persist(); return structuredClone(run); }
   async persist() {}
 }

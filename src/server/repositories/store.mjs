@@ -128,6 +128,7 @@ export const createSeedState = () => {
     agentPlans: [],
     qualityRules,
     qualityRuns: [],
+    agentEvalRuns: [],
   };
 };
 
