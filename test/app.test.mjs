@@ -44,6 +44,20 @@ describe("data platform API controller", () => {
     assert.equal(run.body.rowsAffected, 128);
   });
 
+  test("publishes a validated development job to simulated scheduling", async () => {
+    const { handle } = setup();
+    const created = await handle({ method: "POST", pathname: "/api/dev/jobs", body: { name: "持仓 T+1 汇总", description: "虚构证券持仓汇总", jobType: "SQL", sql: "SELECT security_code, SUM(market_value) AS market_value FROM dws_position_snapshot GROUP BY security_code LIMIT 1000;", schedule: "交易日 T+1 02:30", owner: "数据开发组", enabled: false } });
+    const published = await handle({ method: "POST", pathname: `/api/dev/jobs/${created.body.id}/deploy` });
+    assert.equal(published.status, 200);
+    assert.equal(published.body.status, "PUBLISHED");
+    assert.equal(published.body.enabled, true);
+    assert.equal(published.body.release.mode, "SIMULATED");
+    const run = await handle({ method: "POST", pathname: `/api/dev/jobs/${created.body.id}/run` });
+    assert.equal(run.status, 200);
+    const job = await handle({ method: "GET", pathname: `/api/dev/jobs/${created.body.id}` });
+    assert.equal(job.body.status, "PUBLISHED");
+  });
+
   test("warns on dangerous or unbounded SQL", async () => {
     const { handle } = setup();
     const created = await handle({ method: "POST", pathname: "/api/dev/jobs", body: { name: "危险 SQL", description: "", jobType: "SQL", sql: "DELETE FROM business_demo.customer_profile", schedule: "手动", owner: "测试组", enabled: true } });
