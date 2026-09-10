@@ -37,6 +37,10 @@ const dataSourceRoute = (pathname) => {
   const match = pathname.match(/^\/api\/sources\/([^/]+)\/(test|metadata)$/);
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
+const opsIncidentRoute = (pathname) => {
+  const match = pathname.match(/^\/api\/ops\/incidents\/([^/]+)\/(acknowledge|resolve)$/);
+  return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
+};
 const metadataProfiles = {
   MYSQL: { objectCount: 2, fieldCount: 9, sensitiveFieldCount: 5, assetPhysicalNames: ["dwd_investor_account", "dwd_order_trade"] },
   CSV: { objectCount: 1, fieldCount: 4, sensitiveFieldCount: 2, assetPhysicalNames: ["dws_position_snapshot"] },
@@ -53,6 +57,23 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       if (headers.authorization !== `Bearer ${accessToken}`) return result(401, { message: "请输入正确的演示访问码" });
     }
     if (method === "GET" && pathname === "/api/summary") return result(200, await store.getSummary());
+    if (method === "GET" && pathname === "/api/ops/incidents") return result(200, await store.listOpsIncidents());
+    const opsIncident = opsIncidentRoute(pathname);
+    if (opsIncident) {
+      const incident = await store.getOpsIncident(opsIncident.id);
+      if (!incident) return result(404, { message: "未找到运维告警" });
+      if (method !== "POST") return result(405, { message: "不支持的运维告警请求方法" });
+      if (opsIncident.action === "acknowledge") {
+        if (incident.status !== "OPEN") return result(409, { message: "只有未确认的告警可以确认" });
+        const updated = await store.updateOpsIncident(incident.id, { status: "ACKNOWLEDGED", acknowledgedAt: new Date().toISOString(), acknowledgedBy: "数据运维组" });
+        await store.createAuditLog({ actorId: "user-platform-admin", actorName: "许平台", action: "ops.acknowledge", resourceType: "ops_incident", resourceId: incident.id, sensitivity: "INTERNAL", result: "ALLOW", reason: "确认虚构运维告警并开始处置" });
+        return result(200, updated);
+      }
+      if (incident.status !== "ACKNOWLEDGED") return result(409, { message: "请先确认告警，再标记恢复" });
+      const updated = await store.updateOpsIncident(incident.id, { status: "RESOLVED", resolvedAt: new Date().toISOString(), resolvedBy: "数据运维组" });
+      await store.createAuditLog({ actorId: "user-platform-admin", actorName: "许平台", action: "ops.resolve", resourceType: "ops_incident", resourceId: incident.id, sensitivity: "INTERNAL", result: "ALLOW", reason: "虚构告警已按处置手册恢复" });
+      return result(200, updated);
+    }
     if (method === "GET" && pathname === "/api/reports/holdings") return result(200, {
       reportName: "财富顾问客户持仓分析",
       generatedAt: new Date().toISOString(),
