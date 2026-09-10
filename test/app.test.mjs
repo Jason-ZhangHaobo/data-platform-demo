@@ -167,6 +167,25 @@ describe("data platform API controller", () => {
     assert.equal(summary.body.warnRules, 1);
   });
 
+  test("acknowledges and resolves a fictional operations incident with a runbook", async () => {
+    const { handle } = setup();
+    const incidents = await handle({ method: "GET", pathname: "/api/ops/incidents" });
+    assert.equal(incidents.status, 200);
+    assert.equal(incidents.body.length, 1);
+    assert.equal(incidents.body[0].status, "OPEN");
+    assert.equal(incidents.body[0].runbook.length, 4);
+    const blocked = await handle({ method: "POST", pathname: `/api/ops/incidents/${incidents.body[0].id}/resolve` });
+    assert.equal(blocked.status, 409);
+    const acknowledged = await handle({ method: "POST", pathname: `/api/ops/incidents/${incidents.body[0].id}/acknowledge` });
+    assert.equal(acknowledged.status, 200);
+    assert.equal(acknowledged.body.status, "ACKNOWLEDGED");
+    const resolved = await handle({ method: "POST", pathname: `/api/ops/incidents/${incidents.body[0].id}/resolve` });
+    assert.equal(resolved.status, 200);
+    assert.equal(resolved.body.status, "RESOLVED");
+    const audit = await handle({ method: "GET", pathname: "/api/security/audit", query: new URLSearchParams("q=ops.resolve") });
+    assert.equal(audit.body.length, 1);
+  });
+
   test("returns a scoped holdings report preview", async () => {
     const { handle } = setup();
     const report = await handle({ method: "GET", pathname: "/api/reports/holdings" });

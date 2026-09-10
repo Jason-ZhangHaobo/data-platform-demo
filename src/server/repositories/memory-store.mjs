@@ -25,6 +25,7 @@ export class MemoryTaskStore {
       agentEvalRuns: provided.agentEvalRuns ?? seed.agentEvalRuns,
       streamJobs: provided.streamJobs ?? seed.streamJobs,
       dataSources: provided.dataSources ?? seed.dataSources,
+      opsIncidents: provided.opsIncidents ?? seed.opsIncidents,
     };
     return this.state;
   }
@@ -134,5 +135,8 @@ export class MemoryTaskStore {
   async getDataSource(id) { const source = this.state.dataSources.find((item) => item.id === id); return source ? structuredClone(source) : undefined; }
   async createDataSource(input) { const now = new Date().toISOString(); const source = { ...input, id: randomUUID(), status: "NOT_TESTED", lastTestAt: null, updatedAt: now }; this.state.dataSources.push(source); await this.persist(); return structuredClone(source); }
   async updateDataSource(id, patch) { const index = this.state.dataSources.findIndex((source) => source.id === id); if (index < 0) return undefined; this.state.dataSources[index] = { ...this.state.dataSources[index], ...patch, updatedAt: new Date().toISOString() }; await this.persist(); return structuredClone(this.state.dataSources[index]); }
+  async listOpsIncidents() { return structuredClone([...this.state.opsIncidents].sort((a, b) => b.detectedAt.localeCompare(a.detectedAt))); }
+  async getOpsIncident(id) { const incident = this.state.opsIncidents.find((item) => item.id === id); return incident ? structuredClone(incident) : undefined; }
+  async updateOpsIncident(id, patch) { const index = this.state.opsIncidents.findIndex((incident) => incident.id === id); if (index < 0) return undefined; this.state.opsIncidents[index] = { ...this.state.opsIncidents[index], ...patch, updatedAt: new Date().toISOString() }; await this.persist(); return structuredClone(this.state.opsIncidents[index]); }
   async persist() {}
 }

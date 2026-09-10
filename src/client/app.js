@@ -9,7 +9,7 @@ const requestedView = () => {
   if (["sources", "sync", "realtime", "development", "quality", "assets", "masking", "holdings-report", "ops", "security", "agent"].includes(view)) return view;
   return window.location.hash === "#development" ? "development" : "sync";
 };
-const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], holdingsReport: undefined, streamJobs: [], dataSources: [], error: undefined, busyId: undefined };
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], holdingsReport: undefined, streamJobs: [], dataSources: [], opsIncidents: [], error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -91,7 +91,7 @@ async function refreshQuality() {
 async function refreshHoldingsReport() { state.holdingsReport = await request("/api/reports/holdings"); render(); }
 async function refreshRealtime() { state.streamJobs = await request("/api/stream/jobs"); render(); }
 async function refreshSources() { state.dataSources = await request("/api/sources"); render(); }
-async function refreshOps() { [state.tasks, state.qualitySummary, state.streamJobs] = await Promise.all([request("/api/tasks"), request("/api/quality/summary"), request("/api/stream/jobs")]); render(); }
+async function refreshOps() { [state.tasks, state.qualitySummary, state.streamJobs, state.opsIncidents] = await Promise.all([request("/api/tasks"), request("/api/quality/summary"), request("/api/stream/jobs"), request("/api/ops/incidents")]); state.busyId = undefined; render(); }
 
 const refreshCurrentView = () => state.view === "sources" ? refreshSources() : state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : state.view === "agent" ? refreshAgent() : state.view === "quality" ? refreshQuality() : state.view === "holdings-report" ? refreshHoldingsReport() : state.view === "realtime" ? refreshRealtime() : state.view === "ops" ? refreshOps() : refresh();
 
@@ -238,7 +238,10 @@ function renderSources() {
 }
 
 function renderOps() {
-  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav></nav><div class="environment-pill"><span></span>运维监控</div></header><main id="top"><section class="hero"><div><p class="eyebrow">DATA OPERATIONS · MVP 0.1</p><h1>让失败变成<br>可解释、可恢复。</h1><p class="hero-copy">统一查看任务、实时流和数据质量状态；当前展示模拟指标，后续接入日志、SLA、告警和根因诊断。</p></div><div class="agent-badge"><strong>${state.tasks.filter((task) => task.status === "RUNNING").length}</strong><span>运行中</span><strong>${state.qualitySummary.warnRules ?? 0}</strong><span>质量提醒</span></div></section><section class="summary-grid"><article><span>同步任务</span><strong>${state.tasks.length}</strong><small>当前登记</small></article><article><span>实时任务</span><strong>${state.streamJobs.length}</strong><small>Kafka/Flink 模拟</small></article><article><span>质量规则</span><strong>${state.qualitySummary.totalRules ?? 0}</strong><small>检查范围</small></article><article class="success-card"><span>当前阶段</span><strong>0.1</strong><small>监控摘要</small></article></section><section class="panel audit-panel"><div class="panel-heading"><div><p class="eyebrow">OPERATIONS ROADMAP</p><h2>运维能力建设边界</h2></div><span>规划中</span></div><div class="empty-state">下一步接入任务日志、运行趋势、资源水位、影响分析、自动诊断、重试、回滚和告警渠道。</div></section></main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 不连接真实生产</span></footer></div>`;
+  const status = { OPEN: ["待处置", "danger"], ACKNOWLEDGED: ["处置中", "running"], RESOLVED: ["已恢复", "success"] };
+  const openCount = state.opsIncidents.filter((item) => item.status === "OPEN").length;
+  const processingCount = state.opsIncidents.filter((item) => item.status === "ACKNOWLEDGED").length;
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav></nav><div class="environment-pill"><span></span>运维监控</div></header><main id="top"><section class="hero"><div><p class="eyebrow">DATA OPERATIONS · MVP 0.2</p><h1>让异常变成<br>可解释、可恢复。</h1><p class="hero-copy">统一查看虚构证券数据任务、质量和实时流；告警必须明确影响范围、责任人和处置手册，避免只看到一个红点。</p></div><div class="agent-badge"><strong>${openCount}</strong><span>待处置</span><strong>${processingCount}</strong><span>处置中</span></div></section><section class="summary-grid"><article><span>同步任务</span><strong>${state.tasks.length}</strong><small>当前登记</small></article><article><span>实时任务</span><strong>${state.streamJobs.length}</strong><small>Kafka/Flink 模拟</small></article><article><span>质量提醒</span><strong>${state.qualitySummary.warnRules ?? 0}</strong><small>触发告警源</small></article><article class="success-card"><span>当前阶段</span><strong>0.2</strong><small>告警处置闭环</small></article></section>${state.error ? `<div class="error-banner"><span>!</span>${escapeHtml(state.error)}<button data-dismiss>关闭</button></div>` : ""}<section class="panel audit-panel"><div class="panel-heading"><div><p class="eyebrow">INCIDENT CENTER</p><h2>告警与影响分析</h2></div><span>${state.opsIncidents.length} 项</span></div><div class="task-list">${state.opsIncidents.map((incident) => { const [label, tone] = status[incident.status] ?? status.OPEN; return `<article class="task-card"><div class="task-card-main"><div class="task-title-row"><span class="status-dot ${tone}"></span><h3>${escapeHtml(incident.title)}</h3><span class="status-badge ${tone}">${label}</span></div><p>${escapeHtml(incident.source)} · ${escapeHtml(incident.asset)}</p><div class="task-meta"><span>影响：${escapeHtml(incident.impact)}</span><span>负责人：${escapeHtml(incident.owner)}</span><span>发现：${formatTime(incident.detectedAt)}</span></div><div class="runbook"><strong>处置手册</strong><ol>${incident.runbook.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol></div></div><div class="task-actions">${incident.status === "OPEN" ? `<button class="button button-primary" data-ops-ack="${incident.id}">确认告警</button>` : incident.status === "ACKNOWLEDGED" ? `<button class="button button-run" data-ops-resolve="${incident.id}">标记已恢复</button>` : `<span class="status-badge success">已完成</span>`}</div></article>`; }).join("") || `<div class="empty-state">当前没有待处置告警。</div>`}</div></section></main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 不连接真实生产</span></footer></div>`;
 }
 
 function renderRealtime() {
@@ -427,6 +430,14 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.sourceMetadata) {
     state.busyId = target.dataset.sourceMetadata; state.error = undefined; render();
     try { await request(`/api/sources/${target.dataset.sourceMetadata}/metadata`, { method: "POST" }); await refreshSources(); }
+    catch (error) { state.error = error.message; state.busyId = undefined; render(); }
+    return;
+  }
+  if (target.dataset.opsAck || target.dataset.opsResolve) {
+    const action = target.dataset.opsAck ? "acknowledge" : "resolve";
+    const id = target.dataset.opsAck ?? target.dataset.opsResolve;
+    state.busyId = id; state.error = undefined; render();
+    try { await request(`/api/ops/incidents/${id}/${action}`, { method: "POST" }); await refreshOps(); }
     catch (error) { state.error = error.message; state.busyId = undefined; render(); }
     return;
   }

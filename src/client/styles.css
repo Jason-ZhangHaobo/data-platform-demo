@@ -184,6 +184,9 @@ main { width: min(1480px, calc(100% - 48px)); margin: 0 auto; }
 .report-spec { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; margin-top: 12px; padding: 10px; border-radius: 8px; background: #DDF3EE; }
 .report-spec span, .report-spec small { color: #075A5B; font-size: 11px; }
 .task-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.runbook { display: grid; gap: 6px; margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: #f3f7f3; color: var(--muted); font-size: 11px; }
+.runbook strong { color: var(--green); }
+.runbook ol { margin: 0; padding-left: 18px; line-height: 1.7; }
 
 .detail-panel { position: sticky; top: 96px; }
 .selected-task-summary { display: flex; gap: 14px; padding: 22px 26px; border-bottom: 1px solid var(--line); }

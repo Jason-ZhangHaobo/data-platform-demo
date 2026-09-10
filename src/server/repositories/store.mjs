@@ -120,6 +120,13 @@ export const createSeedState = () => {
     { id: randomUUID(), name: "行情事件 Kafka", sourceType: "KAFKA", environment: "staging", endpoint: "demo.market.quote", owner: "实时数据组", description: "虚构行情事件 Topic，当前只做模拟。", enabled: false, status: "NOT_TESTED", lastTestAt: null, updatedAt: minutesAgo(60) },
     { id: randomUUID(), name: "证券分析数仓", sourceType: "HIVE_SPARK", environment: "staging", endpoint: "demo_dw / Spark SQL", owner: "数据开发组", description: "Hive/Spark SQL 方向的虚构数仓执行环境。", enabled: false, status: "NOT_TESTED", lastTestAt: null, updatedAt: minutesAgo(75) },
   ];
+  const opsIncidents = [
+    {
+      id: randomUUID(), title: "持仓快照 T+1 时效提醒", severity: "MEDIUM", status: "OPEN", source: "数据质量规则：持仓快照 T+1 时效",
+      asset: "dws_position_snapshot", impact: "财富顾问客户持仓分析看板可能延后刷新", owner: "数据运维组", detectedAt: minutesAgo(18),
+      runbook: ["确认上游持仓同步任务是否完成", "检查 trade_date 分区与数据质量检查记录", "必要时在模拟环境重跑依赖任务", "确认看板时效恢复后关闭告警"],
+    },
+  ];
   return {
     tasks,
     runs: [
@@ -140,6 +147,7 @@ export const createSeedState = () => {
     agentEvalRuns: [],
     streamJobs,
     dataSources,
+    opsIncidents,
   };
 };
 
