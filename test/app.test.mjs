@@ -203,6 +203,17 @@ describe("data platform API controller", () => {
     assert.equal(stopped.body.status, "STOPPED");
   });
 
+  test("lists and tests registered data sources", async () => {
+    const { handle } = setup();
+    const sources = await handle({ method: "GET", pathname: "/api/sources" });
+    assert.equal(sources.status, 200);
+    assert.equal(sources.body.length, 4);
+    const kafka = sources.body.find((source) => source.sourceType === "KAFKA");
+    const tested = await handle({ method: "POST", pathname: `/api/sources/${kafka.id}/test` });
+    assert.equal(tested.status, 200);
+    assert.equal(tested.body.status, "SIMULATED");
+  });
+
   test("backfills data development state for legacy stores", async () => {
     const seed = createSeedState();
     const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });

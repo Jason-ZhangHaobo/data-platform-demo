@@ -114,6 +114,12 @@ export const createSeedState = () => {
   const streamJobs = [
     { id: randomUUID(), name: "行情事件实时同步", description: "虚构行情事件通过 Kafka 进入 Flink SQL，供财富顾问盘中分析。", engine: "FLINK_SQL", sourceTopic: "demo.market.quote", targetTable: "dws_realtime_quote", sql: "INSERT INTO dws_realtime_quote\nSELECT security_code, market, price, event_time\nFROM demo_market_quote\nWATERMARK FOR event_time AS event_time - INTERVAL '5' SECOND;", owner: "实时数据组", enabled: false, status: "STOPPED", checkpointIntervalMs: 30_000, updatedAt: minutesAgo(28), metrics: { lagMs: 0, throughput: 0, events: 0 } },
   ];
+  const dataSources = [
+    { id: randomUUID(), name: "证券业务 MySQL", sourceType: "MYSQL", environment: "staging", endpoint: "rm-demo.rds.aliyuncs.com:3306/business_demo", owner: "数据集成组", description: "虚构证券业务数据库，用于 CSV→MySQL 和任务验收。", enabled: true, status: "CONNECTED", lastTestAt: minutesAgo(15), updatedAt: minutesAgo(20) },
+    { id: randomUUID(), name: "投资者持仓 CSV", sourceType: "CSV", environment: "local", endpoint: "src/shared/demo_position_snapshot.csv", owner: "经纪数据组", description: "虚构投资者持仓样例文件。", enabled: true, status: "CONNECTED", lastTestAt: minutesAgo(40), updatedAt: minutesAgo(45) },
+    { id: randomUUID(), name: "行情事件 Kafka", sourceType: "KAFKA", environment: "staging", endpoint: "demo.market.quote", owner: "实时数据组", description: "虚构行情事件 Topic，当前只做模拟。", enabled: false, status: "NOT_TESTED", lastTestAt: null, updatedAt: minutesAgo(60) },
+    { id: randomUUID(), name: "证券分析数仓", sourceType: "HIVE_SPARK", environment: "staging", endpoint: "demo_dw / Spark SQL", owner: "数据开发组", description: "Hive/Spark SQL 方向的虚构数仓执行环境。", enabled: false, status: "NOT_TESTED", lastTestAt: null, updatedAt: minutesAgo(75) },
+  ];
   return {
     tasks,
     runs: [
@@ -133,6 +139,7 @@ export const createSeedState = () => {
     qualityRuns: [],
     agentEvalRuns: [],
     streamJobs,
+    dataSources,
   };
 };
 
