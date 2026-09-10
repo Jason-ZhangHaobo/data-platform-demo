@@ -15,11 +15,13 @@ export function planAgentRequest(message) {
   const isMasking = includesAny(text, ["脱敏", "手机号", "证件", "证券账户", "银行卡"]);
   const isDevelopment = includesAny(text, ["SQL", "sql", "数据开发", "指标", "宽表", "查询"]);
   const isSync = includesAny(text, ["同步", "CSV", "持仓", "订单", "成交", "行情", "MySQL", "数据库"]);
+  const isRealtime = includesAny(text, ["实时", "Kafka", "Flink", "事件流"]);
   const isHoldingsReport = text.includes("持仓") && includesAny(text, ["财富顾问", "客户", "报表", "看板", "资产分析", "行业分布"]);
   let intent = "UNKNOWN";
   if (isHoldingsReport) intent = "HOLDINGS_REPORT";
   else if (isAsset) intent = "ASSET_SEARCH";
   else if (isMasking) intent = "MASKING_RULE";
+  else if (isRealtime) intent = "REALTIME_SYNC";
   else if (isSync) intent = "SYNC_TASK";
   else if (isDevelopment) intent = "DEV_JOB";
 
@@ -51,6 +53,13 @@ export function planAgentRequest(message) {
       risks: ["当前只在本地/测试环境模拟执行，不连接真实 Hive/Spark。", "SQL 使用 current_user_id 模板，发布前必须通过行级权限检查。", "生成任务默认为未发布，必须人工确认。"], requiresConfirmation: true,
     };
   }
+
+  if (intent === "REALTIME_SYNC") return {
+    intent, title: "证券行情实时同步计划", summary: "生成 Kafka → Flink SQL → 实时明细表的任务草稿。", questions: [],
+    steps: ["确认 Kafka Topic、事件时间和 Watermark", "生成 Flink SQL 和检查点配置", "生成实时任务部署草稿", "用户确认后启动模拟实时任务"],
+    draft: { name: "行情事件实时同步", description: "Data Agent 生成的虚构行情事件实时同步草稿。", engine: "FLINK_SQL", sourceTopic: "demo.market.quote", targetTable: "dws_realtime_quote", sql: "INSERT INTO dws_realtime_quote\nSELECT security_code, market, price, event_time\nFROM demo_market_quote\nWATERMARK FOR event_time AS event_time - INTERVAL '5' SECOND;", owner: "实时数据组", enabled: false, checkpointIntervalMs: 30_000 },
+    risks: ["当前只模拟实时任务启停和延迟指标，不连接真实 Kafka/Flink。", "生产启动前必须确认 Topic、Watermark 和检查点策略。"], requiresConfirmation: true,
+  };
 
   if (intent === "MASKING_RULE") {
     const strategy = text.includes("手机号") ? "PHONE" : text.includes("证券账户") ? "SECURITY_ACCOUNT" : text.includes("银行卡") ? "BANK_CARD" : text.includes("姓名") ? "NAME" : "ID_CARD";
