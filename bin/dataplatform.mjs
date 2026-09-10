@@ -8,6 +8,7 @@ const HELP = `数栈 Data Platform CLI
   dataplatform health [--base-url URL]
   dataplatform agent plan --message "需求" [--user-id ID] [--json]
   dataplatform agent confirm --plan-id ID [--user-id ID] [--json]
+  dataplatform agent eval [--json]
   dataplatform assets search --query "关键词" [--json]
   dataplatform security check --user-id ID --permission PERMISSION --sensitivity LEVEL [--json]
 
@@ -61,6 +62,7 @@ export async function runCli(argv, env = process.env) {
       if (!options.plan_id) throw new Error("缺少 --plan-id");
       output(await request(baseUrl, `/api/agent/plans/${encodeURIComponent(options.plan_id)}/confirm`, { method: "POST", body: JSON.stringify({ planId: options.plan_id, userId: options.user_id ?? "user-platform-admin" }) }), options); return 0;
     }
+    if (resource === "agent" && action === "eval") { output(await request(baseUrl, "/api/agent/evaluation/run", { method: "POST", body: JSON.stringify({}) }), options); return 0; }
     if (resource === "assets" && action === "search") {
       const query = options.query ? `?q=${encodeURIComponent(options.query)}` : "";
       output(await request(baseUrl, `/api/assets${query}`), options); return 0;

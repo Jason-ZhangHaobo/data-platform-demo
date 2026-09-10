@@ -111,6 +111,8 @@ export class OssTaskStore extends MemoryTaskStore {
   async updateQualityRule(id, patch) { await this.refresh(); return super.updateQualityRule(id, patch); }
   async listQualityRuns(ruleId) { await this.refresh(); return super.listQualityRuns(ruleId); }
   async createQualityRun(input) { await this.refresh(); return super.createQualityRun(input); }
+  async listAgentEvalRuns() { await this.refresh(); return super.listAgentEvalRuns(); }
+  async createAgentEvalRun(input) { await this.refresh(); return super.createAgentEvalRun(input); }
 }
 
 export function ossConfigFromEnvironment(env = process.env) {
