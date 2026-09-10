@@ -1,5 +1,6 @@
 import { analyzeSql, maskValue, validateAccessCheckInput, validateAgentConfirmInput, validateAgentPlanInput, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateQualityRuleInput, validateTaskInput } from "../shared/validation.mjs";
 import { planAgentRequest } from "./services/data-agent.mjs";
+import { searchSemanticContext } from "../shared/semantic-context.mjs";
 
 const result = (status, body) => ({ status, body });
 const taskRoute = (pathname) => {
@@ -47,6 +48,7 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       industryDistribution: [{ name: "金融", value: 4_200_000, ratio: 35 }, { name: "信息技术", value: 3_000_000, ratio: 25 }, { name: "医药", value: 2_400_000, ratio: 20 }, { name: "其他", value: 2_400_000, ratio: 20 }],
       disclaimer: "虚构数据，仅用于学习演示，不构成投资建议。",
     });
+    if (method === "GET" && pathname === "/api/semantic/context") return result(200, searchSemanticContext(query?.get("q") ?? ""));
     if (method === "GET" && pathname === "/api/tasks") return result(200, await store.listTasks());
     if (method === "POST" && pathname === "/api/tasks") return result(201, await store.createTask(validateTaskInput(body)));
     if (method === "GET" && pathname === "/api/dev/jobs") return result(200, await store.listDevJobs());

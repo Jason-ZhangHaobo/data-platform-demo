@@ -163,6 +163,17 @@ describe("data platform API controller", () => {
     assert.equal(report.body.industryDistribution.length, 4);
   });
 
+  test("returns semantic context and grounds holdings agent plans", async () => {
+    const { handle } = setup();
+    const context = await handle({ method: "GET", pathname: "/api/semantic/context", query: new URLSearchParams("q=客户总资产") });
+    assert.equal(context.status, 200);
+    assert.equal(context.body.items[0].id, "total_assets");
+    assert.equal(context.body.items[0].sourceAsset, "dws_position_snapshot");
+    const plan = await handle({ method: "POST", pathname: "/api/agent/plan", body: { userId: "user-platform-admin", message: "财富顾问查询客户持仓，生成客户总资产和行业分布报表。" } });
+    assert.equal(plan.body.intent, "HOLDINGS_REPORT");
+    assert.equal(plan.body.draft.semanticContext.items.length > 0, true);
+  });
+
   test("backfills data development state for legacy stores", async () => {
     const seed = createSeedState();
     const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });
