@@ -111,6 +111,9 @@ export const createSeedState = () => {
     { id: randomUUID(), name: "持仓证券代码唯一性", assetId: holdingsAssetId, ruleType: "UNIQUE", fieldName: "security_code", threshold: 0, owner: "数据质量组", enabled: true, description: "同一客户和交易日内证券代码不应重复。", updatedAt: minutesAgo(40), lastStatus: "PASS", lastScore: 98 },
     { id: randomUUID(), name: "持仓快照 T+1 时效", assetId: holdingsAssetId, ruleType: "FRESHNESS", fieldName: "trade_date", threshold: 1, owner: "数据运维组", enabled: true, description: "交易日收盘后的持仓快照应在次日 02:30 前完成。", updatedAt: minutesAgo(55), lastStatus: "WARN", lastScore: 92 },
   ];
+  const streamJobs = [
+    { id: randomUUID(), name: "行情事件实时同步", description: "虚构行情事件通过 Kafka 进入 Flink SQL，供财富顾问盘中分析。", engine: "FLINK_SQL", sourceTopic: "demo.market.quote", targetTable: "dws_realtime_quote", sql: "INSERT INTO dws_realtime_quote\nSELECT security_code, market, price, event_time\nFROM demo_market_quote\nWATERMARK FOR event_time AS event_time - INTERVAL '5' SECOND;", owner: "实时数据组", enabled: false, status: "STOPPED", checkpointIntervalMs: 30_000, updatedAt: minutesAgo(28), metrics: { lagMs: 0, throughput: 0, events: 0 } },
+  ];
   return {
     tasks,
     runs: [
@@ -129,6 +132,7 @@ export const createSeedState = () => {
     qualityRules,
     qualityRuns: [],
     agentEvalRuns: [],
+    streamJobs,
   };
 };
 

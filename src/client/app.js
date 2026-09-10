@@ -6,10 +6,10 @@ const devStatusMeta = { DRAFT: ["草稿", "neutral"], READY: ["待发布", "info
 const maskingStrategyMeta = { PHONE: ["手机号", "保留前三位与后四位"], ID_CARD: ["投资者标识", "保留前四位与后四位"], SECURITY_ACCOUNT: ["证券账户", "保留前三位与后四位"], BANK_CARD: ["银行卡号", "仅保留后四位"], NAME: ["姓名", "保留首字" ] };
 const requestedView = () => {
   const view = new URLSearchParams(window.location.search).get("view");
-  if (view === "development" || view === "masking" || view === "assets" || view === "security" || view === "agent" || view === "quality" || view === "holdings-report") return view;
+  if (view === "development" || view === "masking" || view === "assets" || view === "security" || view === "agent" || view === "quality" || view === "holdings-report" || view === "realtime") return view;
   return window.location.hash === "#development" ? "development" : "sync";
 };
-const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], holdingsReport: undefined, error: undefined, busyId: undefined };
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], holdingsReport: undefined, streamJobs: [], error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -86,8 +86,9 @@ async function refreshQuality() {
 }
 
 async function refreshHoldingsReport() { state.holdingsReport = await request("/api/reports/holdings"); render(); }
+async function refreshRealtime() { state.streamJobs = await request("/api/stream/jobs"); render(); }
 
-const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : state.view === "agent" ? refreshAgent() : state.view === "quality" ? refreshQuality() : state.view === "holdings-report" ? refreshHoldingsReport() : refresh();
+const refreshCurrentView = () => state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : state.view === "agent" ? refreshAgent() : state.view === "quality" ? refreshQuality() : state.view === "holdings-report" ? refreshHoldingsReport() : state.view === "realtime" ? refreshRealtime() : refresh();
 
 const selectedTask = () => state.tasks.find((task) => task.id === state.selectedId);
 
@@ -222,6 +223,10 @@ function renderAssets() {
   </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 禁止接入真实生产</span></footer></div>`;
 }
 
+function renderRealtime() {
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=agent#agent">Data Agent</a><a class="nav-item active" href="?view=realtime#realtime">实时同步</a><a class="nav-item" href="?view=quality#quality">数据质量</a><a class="nav-item" href="?view=holdings-report#holdings-report">持仓看板</a></nav><div class="environment-pill"><span></span>Kafka/Flink 模拟</div></header><main id="top"><section class="hero"><div><p class="eyebrow">REALTIME INGESTION · MVP 0.1</p><h1>离线与实时<br>共享一套任务模型。</h1><p class="hero-copy">当前用虚构行情事件模拟 Kafka → Flink SQL → 实时表，展示状态、吞吐、延迟和检查点。</p></div><div class="agent-badge"><strong>${state.streamJobs.length}</strong><span>实时任务</span><strong>${state.streamJobs.filter((job) => job.status === "RUNNING").length}</strong><span>运行中</span></div></section><section class="workspace"><div class="panel task-panel"><div class="panel-heading"><div><p class="eyebrow">STREAM JOBS</p><h2>实时同步任务</h2></div><span>${state.streamJobs.length} 项</span></div><div class="task-list">${state.streamJobs.map((job) => `<article class="task-card"><div class="task-card-main"><div class="task-title-row"><span class="status-dot ${job.status === "RUNNING" ? "running" : "neutral"}"></span><h3>${escapeHtml(job.name)}</h3><span class="status-badge ${job.status === "RUNNING" ? "running" : "neutral"}">${job.status === "RUNNING" ? "运行中" : "已停止"}</span></div><p>${escapeHtml(job.sourceTopic)} · ${escapeHtml(job.engine)} · ${escapeHtml(job.targetTable)}</p><div class="task-meta"><span>延迟 ${job.metrics.lagMs}ms</span><span>吞吐 ${job.metrics.throughput}/s</span><span>事件 ${job.metrics.events}</span><span>Checkpoint ${job.checkpointIntervalMs}ms</span></div></div><div class="task-actions">${job.status === "RUNNING" ? `<button class="button button-secondary" data-stream-stop="${job.id}">停止</button>` : `<button class="button button-run" data-stream-start="${job.id}">启动模拟</button>`}</div></article>`).join("")}</div></div><aside class="panel detail-panel"><div class="panel-heading"><div><p class="eyebrow">STREAM SAFETY</p><h2>实时边界</h2></div><span>虚构事件</span></div><div class="empty-state">生产接入前需要完成 Topic 权限、Watermark、Checkpoint、延迟 SLA、回放策略和告警配置。</div></aside></section></main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行情事件 · 不连接真实 Kafka/Flink</span></footer></div>`;
+}
+
 function renderSecurity() {
   const result = state.securityCheckResult;
   const sensitivityLabels = { PUBLIC: "公开", INTERNAL: "内部", SENSITIVE: "敏感", RESTRICTED: "受限" };
@@ -285,6 +290,7 @@ function render() {
   if (state.view === "agent") { app.innerHTML = renderAgent(); return; }
   if (state.view === "quality") { app.innerHTML = renderQuality(); return; }
   if (state.view === "holdings-report") { app.innerHTML = renderHoldingsReport(); return; }
+  if (state.view === "realtime") { app.innerHTML = renderRealtime(); return; }
   const summary = { totalTasks: 0, enabledTasks: 0, runningTasks: 0, runsToday: 0, successRate: 100, ...state.summary };
   const task = selectedTask();
   app.innerHTML = `<div class="app-shell">
@@ -378,6 +384,14 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.qualityRun) {
     state.busyId = target.dataset.qualityRun; state.error = undefined; render();
     try { state.qualitySelectedRuleId = target.dataset.qualityRun; await request(`/api/quality/rules/${target.dataset.qualityRun}/run`, { method: "POST" }); await refreshQuality(); }
+    catch (error) { state.error = error.message; state.busyId = undefined; render(); }
+    return;
+  }
+  if (target.dataset.streamStart || target.dataset.streamStop) {
+    const action = target.dataset.streamStart ? "start" : "stop";
+    const id = target.dataset.streamStart ?? target.dataset.streamStop;
+    state.busyId = id; state.error = undefined; render();
+    try { await request(`/api/stream/jobs/${id}/${action}`, { method: "POST" }); await refreshRealtime(); }
     catch (error) { state.error = error.message; state.busyId = undefined; render(); }
     return;
   }

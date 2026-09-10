@@ -7,6 +7,7 @@ const assetLayers = new Set(["ODS", "DWD", "DWS", "DIM", "ADS"]);
 const assetSensitivityLevels = new Set(["PUBLIC", "INTERNAL", "SENSITIVE", "RESTRICTED"]);
 const securityPermissions = new Set(["asset.read", "asset.sensitive.read", "asset.restricted.read", "masking.preview", "masking.manage", "dev.write", "audit.read"]);
 const qualityRuleTypes = new Set(["NOT_NULL", "UNIQUE", "ROW_COUNT", "FRESHNESS"]);
+const streamEngines = new Set(["FLINK_SQL", "KAFKA_CONNECT"]);
 
 export class ValidationError extends Error {
   constructor(issues) {
@@ -193,4 +194,16 @@ export function validateQualityRuleInput(value) {
   const type = input.ruleType;
   if (!qualityRuleTypes.has(type)) throw new ValidationError([{ path: "ruleType", message: "质量规则类型不合法" }]);
   return { name: text("name", 2, 80, "规则名称需要 2—80 个字符"), assetId: text("assetId", 2, 100, "请输入资产标识"), ruleType: type, fieldName: typeof input.fieldName === "string" ? input.fieldName.trim() : "", threshold: Number.isFinite(Number(input.threshold)) ? Number(input.threshold) : 0, owner: text("owner", 2, 40, "请输入负责人"), enabled: input.enabled !== false, description: typeof input.description === "string" ? input.description.trim().slice(0, 200) : "" };
+}
+
+export function validateStreamJobInput(value) {
+  const input = value && typeof value === "object" ? value : {};
+  const text = (key, min, max, message) => {
+    const result = typeof input[key] === "string" ? input[key].trim() : "";
+    if (result.length < min || result.length > max) throw new ValidationError([{ path: key, message }]);
+    return result;
+  };
+  if (!streamEngines.has(input.engine)) throw new ValidationError([{ path: "engine", message: "实时引擎不合法" }]);
+  const result = { name: text("name", 2, 80, "任务名称需要 2—80 个字符"), description: text("description", 0, 200, "任务说明不能超过 200 个字符"), engine: input.engine, sourceTopic: text("sourceTopic", 2, 160, "请输入 Kafka Topic"), targetTable: text("targetTable", 2, 120, "请输入目标表"), sql: text("sql", 1, 20_000, "请输入实时 SQL"), owner: text("owner", 2, 40, "请输入负责人"), enabled: input.enabled === true, checkpointIntervalMs: Number.isFinite(Number(input.checkpointIntervalMs)) ? Math.max(1_000, Number(input.checkpointIntervalMs)) : 30_000 };
+  return result;
 }

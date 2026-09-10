@@ -187,6 +187,22 @@ describe("data platform API controller", () => {
     assert.equal(history.body.length, 1);
   });
 
+  test("plans and controls a simulated realtime stream job", async () => {
+    const { handle } = setup();
+    const jobs = await handle({ method: "GET", pathname: "/api/stream/jobs" });
+    assert.equal(jobs.status, 200);
+    assert.equal(jobs.body[0].engine, "FLINK_SQL");
+    const planned = await handle({ method: "POST", pathname: "/api/agent/plan", body: { userId: "user-platform-admin", message: "创建一个 Kafka 到 Flink 的实时行情事件同步任务。" } });
+    assert.equal(planned.body.intent, "REALTIME_SYNC");
+    const confirmed = await handle({ method: "POST", pathname: `/api/agent/plans/${planned.body.id}/confirm`, body: { planId: planned.body.id, userId: "user-platform-admin" } });
+    assert.equal(confirmed.body.execution.status, "STOPPED");
+    const started = await handle({ method: "POST", pathname: `/api/stream/jobs/${confirmed.body.execution.id}/start` });
+    assert.equal(started.body.status, "RUNNING");
+    assert.equal(started.body.metrics.lagMs, 420);
+    const stopped = await handle({ method: "POST", pathname: `/api/stream/jobs/${confirmed.body.execution.id}/stop` });
+    assert.equal(stopped.body.status, "STOPPED");
+  });
+
   test("backfills data development state for legacy stores", async () => {
     const seed = createSeedState();
     const store = new MemoryTaskStore({ tasks: seed.tasks, runs: seed.runs });

@@ -1,4 +1,4 @@
-import { analyzeSql, maskValue, validateAccessCheckInput, validateAgentConfirmInput, validateAgentPlanInput, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateQualityRuleInput, validateTaskInput } from "../shared/validation.mjs";
+import { analyzeSql, maskValue, validateAccessCheckInput, validateAgentConfirmInput, validateAgentPlanInput, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateQualityRuleInput, validateStreamJobInput, validateTaskInput } from "../shared/validation.mjs";
 import { planAgentRequest } from "./services/data-agent.mjs";
 import { evaluationCases, runAgentEvaluation } from "./services/agent-evaluation.mjs";
 import { searchSemanticContext } from "../shared/semantic-context.mjs";
@@ -27,6 +27,10 @@ const agentPlanRoute = (pathname) => {
 };
 const qualityRuleRoute = (pathname) => {
   const match = pathname.match(/^\/api\/quality\/rules\/([^/]+)(?:\/(runs|run|toggle))?$/);
+  return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
+};
+const streamJobRoute = (pathname) => {
+  const match = pathname.match(/^\/api\/stream\/jobs\/([^/]+)(?:\/(start|stop))?$/);
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
 
@@ -99,6 +103,7 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       else if (plan.intent === "MASKING_RULE") execution = await store.createMaskingRule(validateMaskingRuleInput(plan.draft));
       else if (plan.intent === "DEV_JOB") execution = await store.createDevJob(validateDevJobInput(plan.draft));
       else if (plan.intent === "ASSET_SEARCH") execution = await store.listAssets({ q: plan.draft.query });
+      else if (plan.intent === "REALTIME_SYNC") execution = await store.createStreamJob(validateStreamJobInput(plan.draft));
       else if (plan.intent === "HOLDINGS_REPORT") {
         const devJob = await store.createDevJob(validateDevJobInput(effectiveDraft.devJob ? { ...effectiveDraft.devJob, sql: effectiveDraft.sql } : { name: "财富顾问客户持仓分析 SQL", description: "Data Agent 生成的 Hive/Spark SQL 草稿，第一版仅模拟执行。", jobType: "SQL", sql: effectiveDraft.sql, schedule: "交易日 T+1 02:30", owner: "数据开发组", enabled: false }));
         execution = { type: "HOLDINGS_REPORT", status: "DRAFT_CREATED", devJob, artifacts: { engine: effectiveDraft.engine, sql: effectiveDraft.sql, testSql: effectiveDraft.testSql, scheduleConfig: effectiveDraft.scheduleConfig, deploymentConfig: effectiveDraft.deploymentConfig }, reportSpec: effectiveDraft.reportSpec, permissionScope: effectiveDraft.permissionScope, reportUrl: "?view=holdings-report#holdings-report" };
@@ -128,6 +133,17 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
         return result(200, run);
       }
       return result(405, { message: "不支持的质量规则请求方法" });
+    }
+    if (method === "GET" && pathname === "/api/stream/jobs") return result(200, await store.listStreamJobs());
+    if (method === "POST" && pathname === "/api/stream/jobs") return result(201, await store.createStreamJob(validateStreamJobInput(body)));
+    const stream = streamJobRoute(pathname);
+    if (stream) {
+      const job = await store.getStreamJob(stream.id);
+      if (!job) return result(404, { message: "未找到实时任务" });
+      if (method === "POST" && stream.action === "start") return result(200, await store.updateStreamJob(job.id, { status: "RUNNING", enabled: true, metrics: { lagMs: 420, throughput: 1280, events: 1280 } }));
+      if (method === "POST" && stream.action === "stop") return result(200, await store.updateStreamJob(job.id, { status: "STOPPED", enabled: false }));
+      if (method === "GET" && !stream.action) return result(200, job);
+      return result(405, { message: "不支持的实时任务请求方法" });
     }
 
     const asset = assetRoute(pathname);

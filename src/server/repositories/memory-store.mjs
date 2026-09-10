@@ -23,6 +23,7 @@ export class MemoryTaskStore {
       qualityRules: provided.qualityRules ?? seed.qualityRules,
       qualityRuns: provided.qualityRuns ?? seed.qualityRuns,
       agentEvalRuns: provided.agentEvalRuns ?? seed.agentEvalRuns,
+      streamJobs: provided.streamJobs ?? seed.streamJobs,
     };
     return this.state;
   }
@@ -124,5 +125,9 @@ export class MemoryTaskStore {
   async createQualityRun(input) { const run = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }; this.state.qualityRuns.push(run); await this.persist(); return structuredClone(run); }
   async listAgentEvalRuns() { return structuredClone([...this.state.agentEvalRuns].sort((a, b) => b.createdAt.localeCompare(a.createdAt))); }
   async createAgentEvalRun(input) { const run = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }; this.state.agentEvalRuns.push(run); await this.persist(); return structuredClone(run); }
+  async listStreamJobs() { return structuredClone([...this.state.streamJobs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))); }
+  async getStreamJob(id) { const job = this.state.streamJobs.find((item) => item.id === id); return job ? structuredClone(job) : undefined; }
+  async createStreamJob(input) { const now = new Date().toISOString(); const job = { ...input, id: randomUUID(), status: "STOPPED", updatedAt: now, metrics: { lagMs: 0, throughput: 0, events: 0 } }; this.state.streamJobs.push(job); await this.persist(); return structuredClone(job); }
+  async updateStreamJob(id, patch) { const index = this.state.streamJobs.findIndex((job) => job.id === id); if (index < 0) return undefined; this.state.streamJobs[index] = { ...this.state.streamJobs[index], ...patch, updatedAt: new Date().toISOString() }; await this.persist(); return structuredClone(this.state.streamJobs[index]); }
   async persist() {}
 }
