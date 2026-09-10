@@ -33,6 +33,16 @@ const streamJobRoute = (pathname) => {
   const match = pathname.match(/^\/api\/stream\/jobs\/([^/]+)(?:\/(start|stop))?$/);
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
+const dataSourceRoute = (pathname) => {
+  const match = pathname.match(/^\/api\/sources\/([^/]+)\/(test|metadata)$/);
+  return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
+};
+const metadataProfiles = {
+  MYSQL: { objectCount: 2, fieldCount: 9, sensitiveFieldCount: 5, assetPhysicalNames: ["dwd_investor_account", "dwd_order_trade"] },
+  CSV: { objectCount: 1, fieldCount: 4, sensitiveFieldCount: 2, assetPhysicalNames: ["dws_position_snapshot"] },
+  KAFKA: { objectCount: 1, fieldCount: 4, sensitiveFieldCount: 0, assetPhysicalNames: ["ods_security_master"] },
+  HIVE_SPARK: { objectCount: 2, fieldCount: 8, sensitiveFieldCount: 3, assetPhysicalNames: ["dws_position_snapshot", "ads_fund_nav_metric"] },
+};
 
 export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken, requireAccessToken = false, syncService, realSyncEnabled = false }) {
   return async function handle({ method, pathname, body = {}, headers = {}, query }) {
@@ -138,11 +148,19 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
     if (method === "POST" && pathname === "/api/stream/jobs") return result(201, await store.createStreamJob(validateStreamJobInput(body)));
     if (method === "GET" && pathname === "/api/sources") return result(200, await store.listDataSources());
     if (method === "POST" && pathname === "/api/sources") return result(201, await store.createDataSource(validateDataSourceInput(body)));
-    if (method === "POST" && pathname.startsWith("/api/sources/") && pathname.endsWith("/test")) {
-      const sourceId = pathname.slice("/api/sources/".length, -"/test".length);
-      const source = await store.getDataSource(sourceId);
+    const sourceRoute = dataSourceRoute(pathname);
+    if (sourceRoute) {
+      const source = await store.getDataSource(sourceRoute.id);
       if (!source) return result(404, { message: "未找到数据源" });
-      return result(200, await store.updateDataSource(sourceId, { status: source.sourceType === "KAFKA" || source.sourceType === "HIVE_SPARK" ? "SIMULATED" : "CONNECTED", lastTestAt: new Date().toISOString() }));
+      if (method === "POST" && sourceRoute.action === "test") return result(200, await store.updateDataSource(sourceRoute.id, { status: source.sourceType === "KAFKA" || source.sourceType === "HIVE_SPARK" ? "SIMULATED" : "CONNECTED", lastTestAt: new Date().toISOString() }));
+      if (method === "GET" && sourceRoute.action === "metadata") return result(200, { source, metadata: source.metadata ?? null });
+      if (method === "POST" && sourceRoute.action === "metadata") {
+        if (source.status === "NOT_TESTED") return result(409, { message: "请先完成连接测试，再采集元数据" });
+        const profile = metadataProfiles[source.sourceType] ?? { objectCount: 0, fieldCount: 0, sensitiveFieldCount: 0, assetPhysicalNames: [] };
+        const metadata = { status: "COLLECTED", collectedAt: new Date().toISOString(), classification: "SIMULATED", ...profile };
+        return result(200, await store.updateDataSource(sourceRoute.id, { metadata }));
+      }
+      return result(405, { message: "不支持的数据源请求方法" });
     }
     const stream = streamJobRoute(pathname);
     if (stream) {

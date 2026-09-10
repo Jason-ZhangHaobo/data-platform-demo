@@ -203,15 +203,23 @@ describe("data platform API controller", () => {
     assert.equal(stopped.body.status, "STOPPED");
   });
 
-  test("lists and tests registered data sources", async () => {
+  test("tests data sources and collects fictional metadata", async () => {
     const { handle } = setup();
     const sources = await handle({ method: "GET", pathname: "/api/sources" });
     assert.equal(sources.status, 200);
     assert.equal(sources.body.length, 4);
     const kafka = sources.body.find((source) => source.sourceType === "KAFKA");
+    const blocked = await handle({ method: "POST", pathname: `/api/sources/${kafka.id}/metadata` });
+    assert.equal(blocked.status, 409);
     const tested = await handle({ method: "POST", pathname: `/api/sources/${kafka.id}/test` });
     assert.equal(tested.status, 200);
     assert.equal(tested.body.status, "SIMULATED");
+    const collected = await handle({ method: "POST", pathname: `/api/sources/${kafka.id}/metadata` });
+    assert.equal(collected.status, 200);
+    assert.equal(collected.body.metadata.status, "COLLECTED");
+    assert.deepEqual(collected.body.metadata.assetPhysicalNames, ["ods_security_master"]);
+    const metadata = await handle({ method: "GET", pathname: `/api/sources/${kafka.id}/metadata` });
+    assert.equal(metadata.body.metadata.fieldCount, 4);
   });
 
   test("backfills data development state for legacy stores", async () => {
