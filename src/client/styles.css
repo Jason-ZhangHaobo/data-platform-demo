@@ -101,6 +101,9 @@ main { width: min(1480px, calc(100% - 48px)); margin: 0 auto; }
 .asset-search input { min-width: 0; flex: 1; border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px; color: var(--ink); background: var(--paper); outline: none; }
 .asset-search input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(23, 107, 77, 0.1); }
 .asset-detail-meta { display: flex; flex-wrap: wrap; gap: 8px; padding: 18px 26px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.metadata-source { display: grid; gap: 5px; margin: 16px 26px 4px; padding: 12px 14px; border: 1px solid #cde3d5; border-radius: 10px; background: #f3faf5; color: #33664a; font-size: 11px; }
+.metadata-source strong { color: var(--green); font-size: 12px; }
+.metadata-source small { color: var(--muted); }
 .lineage-block { padding: 20px 26px 8px; }
 .lineage-block p:last-child { color: var(--muted); font-size: 12px; line-height: 2.2; }
 .lineage-chip { display: inline-block; padding: 3px 8px; border-radius: 6px; background: #eef1eb; color: var(--ink); font: 11px "DM Mono", monospace; }
