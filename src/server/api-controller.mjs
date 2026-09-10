@@ -9,7 +9,7 @@ const taskRoute = (pathname) => {
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
 const devJobRoute = (pathname) => {
-  const match = pathname.match(/^\/api\/dev\/jobs\/([^/]+)(?:\/(runs|validate|run))?$/);
+  const match = pathname.match(/^\/api\/dev\/jobs\/([^/]+)(?:\/(runs|validate|run|deploy))?$/);
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
 const maskingRoute = (pathname) => {
@@ -115,7 +115,8 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       else if (plan.intent === "ASSET_SEARCH") execution = await store.listAssets({ q: plan.draft.query });
       else if (plan.intent === "REALTIME_SYNC") execution = await store.createStreamJob(validateStreamJobInput(plan.draft));
       else if (plan.intent === "HOLDINGS_REPORT") {
-        const devJob = await store.createDevJob(validateDevJobInput(effectiveDraft.devJob ? { ...effectiveDraft.devJob, sql: effectiveDraft.sql } : { name: "财富顾问客户持仓分析 SQL", description: "Data Agent 生成的 Hive/Spark SQL 草稿，第一版仅模拟执行。", jobType: "SQL", sql: effectiveDraft.sql, schedule: "交易日 T+1 02:30", owner: "数据开发组", enabled: false }));
+        const createdDevJob = await store.createDevJob(validateDevJobInput(effectiveDraft.devJob ? { ...effectiveDraft.devJob, sql: effectiveDraft.sql } : { name: "财富顾问客户持仓分析 SQL", description: "Data Agent 生成的 Hive/Spark SQL 草稿，第一版仅模拟执行。", jobType: "SQL", sql: effectiveDraft.sql, schedule: "交易日 T+1 02:30", owner: "数据开发组", enabled: false }));
+        const devJob = await store.updateDevJob(createdDevJob.id, { scheduleConfig: effectiveDraft.scheduleConfig, deploymentConfig: effectiveDraft.deploymentConfig, agentPlanId: plan.id });
         execution = { type: "HOLDINGS_REPORT", status: "DRAFT_CREATED", devJob, artifacts: { engine: effectiveDraft.engine, sql: effectiveDraft.sql, testSql: effectiveDraft.testSql, scheduleConfig: effectiveDraft.scheduleConfig, deploymentConfig: effectiveDraft.deploymentConfig }, reportSpec: effectiveDraft.reportSpec, permissionScope: effectiveDraft.permissionScope, reportUrl: "?view=holdings-report#holdings-report" };
       }
       else return result(409, { message: "当前计划没有可执行模块" });
@@ -200,8 +201,28 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
     if (devRoute) {
       const job = await store.getDevJob(devRoute.id);
       if (!job) return result(404, { message: "未找到对应数据开发任务" });
+      if (method === "GET" && !devRoute.action) return result(200, job);
       if (method === "GET" && devRoute.action === "runs") return result(200, await store.listDevRuns(job.id));
       if (method === "POST" && devRoute.action === "validate") return result(200, { ...analyzeSql(job.sql), jobId: job.id });
+      if (method === "POST" && devRoute.action === "deploy") {
+        if (job.release?.status === "PUBLISHED") return result(409, { message: "任务已经发布到模拟调度环境" });
+        const analysis = analyzeSql(job.sql);
+        if (!analysis.valid) return result(400, { message: "SQL 校验未通过", ...analysis });
+        const blockingWarnings = analysis.warnings.filter((warning) => /高风险|缺少 WHERE/.test(warning));
+        if (blockingWarnings.length) return result(409, { message: "发布被风险校验拦截", warnings: blockingWarnings });
+        const release = {
+          status: "PUBLISHED",
+          releasedAt: new Date().toISOString(),
+          environment: job.deploymentConfig?.environment ?? "staging",
+          platform: job.deploymentConfig?.platform ?? "local-simulator",
+          artifact: job.deploymentConfig?.artifact ?? job.name,
+          schedule: job.scheduleConfig ?? { frequency: job.schedule, approval: "human_confirmation", rollback: true },
+          mode: "SIMULATED",
+        };
+        const published = await store.updateDevJob(job.id, { enabled: true, status: "PUBLISHED", release });
+        await store.createAuditLog({ actorId: "user-platform-admin", actorName: "许平台", action: "dev.deploy", resourceType: "dev_job", resourceId: job.id, sensitivity: "INTERNAL", result: "ALLOW", reason: "发布到虚构 staging 调度环境" });
+        return result(200, published);
+      }
       if (method === "POST" && devRoute.action === "run") {
         if (!job.enabled) return result(409, { message: "请先启用数据开发任务" });
         const analysis = analyzeSql(job.sql);
@@ -211,7 +232,7 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
         await store.updateDevJob(job.id, { status: "RUNNING" });
         await new Promise((resolve) => setTimeout(resolve, simulationDelayMs));
         const completed = await store.updateDevRun(run.id, { status: "SUCCESS", finishedAt: new Date().toISOString(), rowsAffected: 128, message: "SQL 模拟执行完成，未连接真实生产数据。" });
-        await store.updateDevJob(job.id, { status: "SUCCESS" });
+        await store.updateDevJob(job.id, { status: job.release?.status === "PUBLISHED" ? "PUBLISHED" : "SUCCESS" });
         return result(200, completed);
       }
       return result(405, { message: "不支持的数据开发请求方法" });

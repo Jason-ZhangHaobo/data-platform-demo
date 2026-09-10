@@ -87,6 +87,13 @@ export class OssTaskStore extends MemoryTaskStore {
   async createRun(input) { await this.refresh(); return super.createRun(input); }
   async updateRun(id, patch) { await this.refresh(); return super.updateRun(id, patch); }
   async getSummary() { await this.refresh(); return super.getSummary(); }
+  async listDevJobs() { await this.refresh(); return super.listDevJobs(); }
+  async getDevJob(id) { await this.refresh(); return super.getDevJob(id); }
+  async createDevJob(input) { await this.refresh(); return super.createDevJob(input); }
+  async updateDevJob(id, input) { await this.refresh(); return super.updateDevJob(id, input); }
+  async listDevRuns(jobId) { await this.refresh(); return super.listDevRuns(jobId); }
+  async createDevRun(input) { await this.refresh(); return super.createDevRun(input); }
+  async updateDevRun(id, patch) { await this.refresh(); return super.updateDevRun(id, patch); }
   async listMaskingRules() { await this.refresh(); return super.listMaskingRules(); }
   async getMaskingRule(id) { await this.refresh(); return super.getMaskingRule(id); }
   async createMaskingRule(input) { await this.refresh(); return super.createMaskingRule(input); }
