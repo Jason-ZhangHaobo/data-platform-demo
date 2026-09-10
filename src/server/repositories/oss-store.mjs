@@ -117,6 +117,10 @@ export class OssTaskStore extends MemoryTaskStore {
   async getStreamJob(id) { await this.refresh(); return super.getStreamJob(id); }
   async createStreamJob(input) { await this.refresh(); return super.createStreamJob(input); }
   async updateStreamJob(id, patch) { await this.refresh(); return super.updateStreamJob(id, patch); }
+  async listDataSources() { await this.refresh(); return super.listDataSources(); }
+  async getDataSource(id) { await this.refresh(); return super.getDataSource(id); }
+  async createDataSource(input) { await this.refresh(); return super.createDataSource(input); }
+  async updateDataSource(id, patch) { await this.refresh(); return super.updateDataSource(id, patch); }
 }
 
 export function ossConfigFromEnvironment(env = process.env) {

@@ -9,7 +9,7 @@ const requestedView = () => {
   if (["sources", "sync", "realtime", "development", "quality", "assets", "masking", "holdings-report", "ops", "security", "agent"].includes(view)) return view;
   return window.location.hash === "#development" ? "development" : "sync";
 };
-const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], holdingsReport: undefined, streamJobs: [], error: undefined, busyId: undefined };
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], holdingsReport: undefined, streamJobs: [], dataSources: [], error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -90,7 +90,7 @@ async function refreshQuality() {
 
 async function refreshHoldingsReport() { state.holdingsReport = await request("/api/reports/holdings"); render(); }
 async function refreshRealtime() { state.streamJobs = await request("/api/stream/jobs"); render(); }
-async function refreshSources() { state.tasks = await request("/api/tasks"); render(); }
+async function refreshSources() { state.dataSources = await request("/api/sources"); render(); }
 async function refreshOps() { [state.tasks, state.qualitySummary, state.streamJobs] = await Promise.all([request("/api/tasks"), request("/api/quality/summary"), request("/api/stream/jobs")]); render(); }
 
 const refreshCurrentView = () => state.view === "sources" ? refreshSources() : state.view === "development" ? refreshDevelopment() : state.view === "masking" ? refreshMasking() : state.view === "assets" ? refreshAssets() : state.view === "security" ? refreshSecurity() : state.view === "agent" ? refreshAgent() : state.view === "quality" ? refreshQuality() : state.view === "holdings-report" ? refreshHoldingsReport() : state.view === "realtime" ? refreshRealtime() : state.view === "ops" ? refreshOps() : refresh();
@@ -229,7 +229,8 @@ function renderAssets() {
 }
 
 function renderSources() {
-  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav></nav><div class="environment-pill"><span></span>数据源管理</div></header><main id="top"><section class="hero"><div><p class="eyebrow">DATA SOURCES · MVP 0.1</p><h1>先知道数据从哪里来。</h1><p class="hero-copy">数据源注册、连接测试和负责人，是同步、资产和质量模块的共同起点。</p></div><div class="security-summary"><strong>4</strong><span>虚构数据源类型</span><strong>${state.tasks.length}</strong><span>关联任务</span></div></section><section class="workspace"><div class="panel task-panel"><div class="panel-heading"><div><p class="eyebrow">SOURCE REGISTRY</p><h2>数据源类型</h2></div><span>规划中</span></div><div class="task-list">${["MySQL 业务库", "CSV 文件", "Kafka 行情事件", "Hive/Spark 数仓"].map((item) => `<article class="task-card"><div class="task-card-main"><div class="task-title-row"><span class="status-dot info"></span><h3>${item}</h3></div><p>连接配置、连通性测试、负责人和敏感边界</p></div><span class="status-badge info">第一阶段目录</span></article>`).join("")}</div></div><aside class="panel detail-panel"><div class="panel-heading"><div><p class="eyebrow">NEXT CAPABILITY</p><h2>下一步</h2></div><span>待实现</span></div><div class="empty-state">接下来会把数据源注册、连接测试和元数据采集接入同一条 Agent/CLI/API 链路。</div></aside></section></main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 禁止连接真实生产</span></footer></div>`;
+  const typeLabel = { MYSQL: "MySQL", CSV: "CSV", KAFKA: "Kafka", HIVE_SPARK: "Hive/Spark" };
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav></nav><div class="environment-pill"><span></span>数据源管理</div></header><main id="top"><section class="hero"><div><p class="eyebrow">DATA SOURCES · MVP 0.1</p><h1>先知道数据从哪里来。</h1><p class="hero-copy">数据源注册、连接测试和负责人，是同步、资产和质量模块的共同起点。</p></div><div class="security-summary"><strong>${state.dataSources.length}</strong><span>数据源</span><strong>${state.dataSources.filter((source) => source.status === "CONNECTED").length}</strong><span>已连接</span></div></section><section class="workspace"><div class="panel task-panel"><div class="panel-heading"><div><p class="eyebrow">SOURCE REGISTRY</p><h2>数据源清单</h2></div><span>${state.dataSources.length} 项</span></div><div class="task-list">${state.dataSources.map((source) => `<article class="task-card"><div class="task-card-main"><div class="task-title-row"><span class="status-dot ${source.status === "CONNECTED" ? "success" : "neutral"}"></span><h3>${escapeHtml(source.name)}</h3><span class="status-badge ${source.status === "CONNECTED" ? "success" : "neutral"}">${source.status === "CONNECTED" ? "已连接" : source.status === "SIMULATED" ? "模拟连接" : "未测试"}</span></div><p>${escapeHtml(typeLabel[source.sourceType] ?? source.sourceType)} · ${escapeHtml(source.environment)} · ${escapeHtml(source.endpoint)}</p><div class="task-meta"><span>${escapeHtml(source.owner)}</span><span>${escapeHtml(source.description)}</span></div></div><div class="task-actions"><button class="button button-quiet" data-source-test="${source.id}">测试连接</button></div></article>`).join("")}</div></div><aside class="panel detail-panel"><div class="panel-heading"><div><p class="eyebrow">SOURCE SAFETY</p><h2>连接边界</h2></div><span>虚构环境</span></div><div class="empty-state">真实数据源接入前，需要完成凭证托管、网络白名单、权限审批、连接测试和元数据采集。当前页面只处理虚构端点。</div></aside></section></main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 禁止连接真实生产</span></footer></div>`;
 }
 
 function renderOps() {
@@ -408,6 +409,12 @@ document.addEventListener("click", async (event) => {
     const id = target.dataset.streamStart ?? target.dataset.streamStop;
     state.busyId = id; state.error = undefined; render();
     try { await request(`/api/stream/jobs/${id}/${action}`, { method: "POST" }); await refreshRealtime(); }
+    catch (error) { state.error = error.message; state.busyId = undefined; render(); }
+    return;
+  }
+  if (target.dataset.sourceTest) {
+    state.busyId = target.dataset.sourceTest; state.error = undefined; render();
+    try { await request(`/api/sources/${target.dataset.sourceTest}/test`, { method: "POST" }); await refreshSources(); }
     catch (error) { state.error = error.message; state.busyId = undefined; render(); }
     return;
   }

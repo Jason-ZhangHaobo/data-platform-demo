@@ -24,6 +24,7 @@ export class MemoryTaskStore {
       qualityRuns: provided.qualityRuns ?? seed.qualityRuns,
       agentEvalRuns: provided.agentEvalRuns ?? seed.agentEvalRuns,
       streamJobs: provided.streamJobs ?? seed.streamJobs,
+      dataSources: provided.dataSources ?? seed.dataSources,
     };
     return this.state;
   }
@@ -129,5 +130,9 @@ export class MemoryTaskStore {
   async getStreamJob(id) { const job = this.state.streamJobs.find((item) => item.id === id); return job ? structuredClone(job) : undefined; }
   async createStreamJob(input) { const now = new Date().toISOString(); const job = { ...input, id: randomUUID(), status: "STOPPED", updatedAt: now, metrics: { lagMs: 0, throughput: 0, events: 0 } }; this.state.streamJobs.push(job); await this.persist(); return structuredClone(job); }
   async updateStreamJob(id, patch) { const index = this.state.streamJobs.findIndex((job) => job.id === id); if (index < 0) return undefined; this.state.streamJobs[index] = { ...this.state.streamJobs[index], ...patch, updatedAt: new Date().toISOString() }; await this.persist(); return structuredClone(this.state.streamJobs[index]); }
+  async listDataSources() { return structuredClone([...this.state.dataSources].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))); }
+  async getDataSource(id) { const source = this.state.dataSources.find((item) => item.id === id); return source ? structuredClone(source) : undefined; }
+  async createDataSource(input) { const now = new Date().toISOString(); const source = { ...input, id: randomUUID(), status: "NOT_TESTED", lastTestAt: null, updatedAt: now }; this.state.dataSources.push(source); await this.persist(); return structuredClone(source); }
+  async updateDataSource(id, patch) { const index = this.state.dataSources.findIndex((source) => source.id === id); if (index < 0) return undefined; this.state.dataSources[index] = { ...this.state.dataSources[index], ...patch, updatedAt: new Date().toISOString() }; await this.persist(); return structuredClone(this.state.dataSources[index]); }
   async persist() {}
 }

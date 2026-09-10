@@ -1,4 +1,4 @@
-import { analyzeSql, maskValue, validateAccessCheckInput, validateAgentConfirmInput, validateAgentPlanInput, validateAssetInput, validateDevJobInput, validateMaskingRuleInput, validateQualityRuleInput, validateStreamJobInput, validateTaskInput } from "../shared/validation.mjs";
+import { analyzeSql, maskValue, validateAccessCheckInput, validateAgentConfirmInput, validateAgentPlanInput, validateAssetInput, validateDataSourceInput, validateDevJobInput, validateMaskingRuleInput, validateQualityRuleInput, validateStreamJobInput, validateTaskInput } from "../shared/validation.mjs";
 import { planAgentRequest } from "./services/data-agent.mjs";
 import { evaluationCases, runAgentEvaluation } from "./services/agent-evaluation.mjs";
 import { searchSemanticContext } from "../shared/semantic-context.mjs";
@@ -136,6 +136,14 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
     }
     if (method === "GET" && pathname === "/api/stream/jobs") return result(200, await store.listStreamJobs());
     if (method === "POST" && pathname === "/api/stream/jobs") return result(201, await store.createStreamJob(validateStreamJobInput(body)));
+    if (method === "GET" && pathname === "/api/sources") return result(200, await store.listDataSources());
+    if (method === "POST" && pathname === "/api/sources") return result(201, await store.createDataSource(validateDataSourceInput(body)));
+    if (method === "POST" && pathname.startsWith("/api/sources/") && pathname.endsWith("/test")) {
+      const sourceId = pathname.slice("/api/sources/".length, -"/test".length);
+      const source = await store.getDataSource(sourceId);
+      if (!source) return result(404, { message: "未找到数据源" });
+      return result(200, await store.updateDataSource(sourceId, { status: source.sourceType === "KAFKA" || source.sourceType === "HIVE_SPARK" ? "SIMULATED" : "CONNECTED", lastTestAt: new Date().toISOString() }));
+    }
     const stream = streamJobRoute(pathname);
     if (stream) {
       const job = await store.getStreamJob(stream.id);
