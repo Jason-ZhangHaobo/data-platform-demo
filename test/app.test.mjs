@@ -274,6 +274,10 @@ describe("data platform API controller", () => {
     assert.deepEqual(collected.body.metadata.assetPhysicalNames, ["ods_security_master"]);
     const metadata = await handle({ method: "GET", pathname: `/api/sources/${kafka.id}/metadata` });
     assert.equal(metadata.body.metadata.fieldCount, 4);
+    const created = await handle({ method: "POST", pathname: "/api/sources", body: { name: "虚构基金净值 CSV", sourceType: "CSV", environment: "staging", endpoint: "src/shared/demo_fund_nav.csv", owner: "资管数据组", description: "仅用于演示登记", enabled: true } });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.status, "NOT_TESTED");
+    await assert.rejects(() => handle({ method: "POST", pathname: "/api/sources", body: { ...created.body, name: "x", sourceType: "INVALID" } }), ValidationError);
   });
 
   test("backfills data development state for legacy stores", async () => {
