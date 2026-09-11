@@ -135,6 +135,15 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       else if (plan.intent === "DEV_JOB") execution = await store.createDevJob(validateDevJobInput(plan.draft));
       else if (plan.intent === "ASSET_SEARCH") execution = await store.listAssets({ q: plan.draft.query });
       else if (plan.intent === "REALTIME_SYNC") execution = await store.createStreamJob(validateStreamJobInput(plan.draft));
+      else if (plan.intent === "OPS_INCIDENT") {
+        const incidents = await store.listOpsIncidents();
+        const query = String(plan.draft.query ?? "").toLowerCase();
+        const incident = incidents.find((item) => item.status === "OPEN" && [item.title, item.source, item.asset, item.impact].join(" ").toLowerCase().includes(query));
+        if (!incident) return result(409, { message: "没有匹配的待处置虚构告警，请到运维监控确认当前状态" });
+        const updated = await store.updateOpsIncident(incident.id, { status: "ACKNOWLEDGED", acknowledgedAt: new Date().toISOString(), acknowledgedBy: plan.draft.escalationOwner });
+        await store.createAuditLog({ actorId: input.userId, actorName: input.userId, action: "agent.ops_acknowledge", resourceType: "ops_incident", resourceId: incident.id, sensitivity: "INTERNAL", result: "ALLOW", reason: "用户确认 Data Agent 运维诊断计划，转交数据运维组处置" });
+        execution = { type: "OPS_INCIDENT", status: "ACKNOWLEDGED", incident: updated, impact: updated.impact, runbook: updated.runbook, opsUrl: plan.draft.opsUrl };
+      }
       else if (plan.intent === "HOLDINGS_REPORT") {
         const createdDevJob = await store.createDevJob(validateDevJobInput(effectiveDraft.devJob ? { ...effectiveDraft.devJob, sql: effectiveDraft.sql } : { name: "财富顾问客户持仓分析 SQL", description: "Data Agent 生成的 Hive/Spark SQL 草稿，第一版仅模拟执行。", jobType: "SQL", sql: effectiveDraft.sql, schedule: "交易日 T+1 02:30", owner: "数据开发组", enabled: false }));
         const devJob = await store.updateDevJob(createdDevJob.id, { scheduleConfig: effectiveDraft.scheduleConfig, deploymentConfig: effectiveDraft.deploymentConfig, agentPlanId: plan.id });

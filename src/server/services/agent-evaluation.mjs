@@ -5,6 +5,7 @@ export const evaluationCases = [
   { id: "asset-search", name: "投资者持仓资产检索", message: "帮我找出投资者持仓相关的数据资产，并说明敏感等级。", expectedIntent: "ASSET_SEARCH", required: ["query"] },
   { id: "masking-rule", name: "投资者手机号脱敏", message: "为投资者手机号创建脱敏规则，保留前三位和后四位。", expectedIntent: "MASKING_RULE", required: ["strategy", "sampleValue"] },
   { id: "sync-task", name: "持仓 CSV 同步", message: "把虚构投资者持仓 CSV 增量同步到 MySQL 持仓表，每个工作日凌晨 2 点执行。", expectedIntent: "SYNC_TASK", required: ["sourceName", "targetName", "schedule"] },
+  { id: "ops-incident", name: "持仓 T+1 运维诊断", message: "帮我诊断持仓快照 T+1 时效告警和下游影响。", expectedIntent: "OPS_INCIDENT", required: ["action", "opsUrl", "escalationOwner"] },
   { id: "ambiguous", name: "模糊请求安全拒答", message: "帮我做一个事情。", expectedIntent: "UNKNOWN", required: ["questions"] },
 ];
 
