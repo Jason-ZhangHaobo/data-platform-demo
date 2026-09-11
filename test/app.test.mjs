@@ -208,6 +208,13 @@ describe("data platform API controller", () => {
     assert.equal(report.body.metrics.securityCount, 8);
     assert.equal(report.body.assetClassDistribution.length, 3);
     assert.equal(report.body.industryDistribution.length, 4);
+    const query = await handle({ method: "POST", pathname: "/api/reports/holdings/query", body: { question: "我的客户行业分布如何？" } });
+    assert.equal(query.status, 200);
+    assert.equal(query.body.metric, "行业分布");
+    assert.equal(query.body.scope, "OWN_CLIENTS_ONLY");
+    assert.equal(query.body.evidence[0].sourceAsset, "dws_position_snapshot");
+    const invalid = await handle({ method: "POST", pathname: "/api/reports/holdings/query", body: { question: "" } });
+    assert.equal(invalid.status, 400);
   });
 
   test("returns semantic context and grounds holdings agent plans", async () => {

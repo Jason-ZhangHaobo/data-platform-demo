@@ -51,6 +51,30 @@ const metadataProfiles = {
   KAFKA: { objectCount: 1, fieldCount: 4, sensitiveFieldCount: 0, assetPhysicalNames: ["ods_security_master"] },
   HIVE_SPARK: { objectCount: 2, fieldCount: 8, sensitiveFieldCount: 3, assetPhysicalNames: ["dws_position_snapshot", "ads_fund_nav_metric"] },
 };
+const holdingsReportPayload = () => ({
+  reportName: "财富顾问客户持仓分析",
+  generatedAt: new Date().toISOString(),
+  scope: "OWN_CLIENTS_ONLY",
+  freshness: "T+1 模拟数据",
+  metrics: { totalAssets: 12_800_000, holdingMarketValue: 12_000_000, securityCount: 8 },
+  assetClassDistribution: [{ name: "股票", value: 7_200_000, ratio: 60 }, { name: "债券", value: 3_600_000, ratio: 30 }, { name: "基金", value: 1_200_000, ratio: 10 }],
+  industryDistribution: [{ name: "金融", value: 4_200_000, ratio: 35 }, { name: "信息技术", value: 3_000_000, ratio: 25 }, { name: "医药", value: 2_400_000, ratio: 20 }, { name: "其他", value: 2_400_000, ratio: 20 }],
+  disclaimer: "虚构数据，仅用于学习演示，不构成投资建议。",
+});
+const formatMoney = (value) => `¥${Number(value).toLocaleString("zh-CN")}`;
+const answerHoldingsQuestion = (question) => {
+  const report = holdingsReportPayload();
+  const normalized = question.toLowerCase();
+  let metric = "持仓分析范围";
+  let answer = "当前只支持客户总资产、持仓市值、证券数量、资产类别分布和行业分布五类虚构持仓问题。";
+  if (normalized.includes("总资产")) { metric = "客户总资产"; answer = `当前虚构 T+1 客户总资产为 ${formatMoney(report.metrics.totalAssets)}。`; }
+  else if (normalized.includes("持仓市值")) { metric = "持仓市值"; answer = `当前虚构 T+1 持仓市值为 ${formatMoney(report.metrics.holdingMarketValue)}。`; }
+  else if (normalized.includes("证券数量") || normalized.includes("几只证券")) { metric = "证券数量"; answer = `当前虚构客户持有去重证券 ${report.metrics.securityCount} 只。`; }
+  else if (normalized.includes("资产类别") || normalized.includes("股票") || normalized.includes("债券") || normalized.includes("基金")) { metric = "资产类别分布"; answer = `资产类别分布为：${report.assetClassDistribution.map((item) => `${item.name} ${item.ratio}%（${formatMoney(item.value)}）`).join("；")}。`; }
+  else if (normalized.includes("行业")) { metric = "行业分布"; answer = `行业分布为：${report.industryDistribution.map((item) => `${item.name} ${item.ratio}%`).join("；")}；当前最高为金融行业。`; }
+  const semantic = searchSemanticContext(metric).items;
+  return { question, metric, answer, scope: report.scope, freshness: report.freshness, evidence: semantic.map((item) => ({ name: item.name, sourceAsset: item.sourceAsset, fields: item.fields, caveat: item.caveat })), disclaimer: report.disclaimer };
+};
 
 export function createApiController({ store, simulationDelayMs = 1_200, environment = "local", accessToken, requireAccessToken = false, syncService, realSyncEnabled = false }) {
   return async function handle({ method, pathname, body = {}, headers = {}, query }) {
@@ -78,16 +102,12 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       await store.createAuditLog({ actorId: "user-platform-admin", actorName: "许平台", action: "ops.resolve", resourceType: "ops_incident", resourceId: incident.id, sensitivity: "INTERNAL", result: "ALLOW", reason: "虚构告警已按处置手册恢复" });
       return result(200, updated);
     }
-    if (method === "GET" && pathname === "/api/reports/holdings") return result(200, {
-      reportName: "财富顾问客户持仓分析",
-      generatedAt: new Date().toISOString(),
-      scope: "OWN_CLIENTS_ONLY",
-      freshness: "T+1 模拟数据",
-      metrics: { totalAssets: 12_800_000, holdingMarketValue: 12_000_000, securityCount: 8 },
-      assetClassDistribution: [{ name: "股票", value: 7_200_000, ratio: 60 }, { name: "债券", value: 3_600_000, ratio: 30 }, { name: "基金", value: 1_200_000, ratio: 10 }],
-      industryDistribution: [{ name: "金融", value: 4_200_000, ratio: 35 }, { name: "信息技术", value: 3_000_000, ratio: 25 }, { name: "医药", value: 2_400_000, ratio: 20 }, { name: "其他", value: 2_400_000, ratio: 20 }],
-      disclaimer: "虚构数据，仅用于学习演示，不构成投资建议。",
-    });
+    if (method === "GET" && pathname === "/api/reports/holdings") return result(200, holdingsReportPayload());
+    if (method === "POST" && pathname === "/api/reports/holdings/query") {
+      const question = typeof body.question === "string" ? body.question.trim() : "";
+      if (question.length < 2 || question.length > 500) return result(400, { message: "请提出 2—500 个字符的持仓分析问题" });
+      return result(200, answerHoldingsQuestion(question));
+    }
     if (method === "GET" && pathname === "/api/semantic/context") return result(200, searchSemanticContext(query?.get("q") ?? ""));
     if (method === "GET" && pathname === "/api/tasks") return result(200, await store.listTasks());
     if (method === "POST" && pathname === "/api/tasks") return result(201, await store.createTask(validateTaskInput(body)));
