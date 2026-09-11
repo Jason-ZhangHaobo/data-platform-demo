@@ -9,7 +9,7 @@ const requestedView = () => {
   if (["sources", "sync", "realtime", "development", "quality", "assets", "masking", "holdings-report", "ops", "security", "agent"].includes(view)) return view;
   return window.location.hash === "#development" ? "development" : "sync";
 };
-const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], qualityCreating: undefined, holdingsReport: undefined, holdingsQuestion: "", holdingsAnswer: undefined, streamJobs: [], dataSources: [], sourceCreating: undefined, dataContracts: [], opsIncidents: [], error: undefined, busyId: undefined };
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], agentEvalRuns: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], qualityCreating: undefined, holdingsReport: undefined, holdingsQuestion: "", holdingsAnswer: undefined, streamJobs: [], dataSources: [], sourceCreating: undefined, dataContracts: [], opsIncidents: [], error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -75,7 +75,7 @@ async function refreshSecurity() {
 }
 
 async function refreshAgent() {
-  state.agentPlans = await request("/api/agent/plans");
+  [state.agentPlans, state.agentEvalRuns] = await Promise.all([request("/api/agent/plans"), request("/api/agent/evaluation/runs")]);
   state.busyId = undefined;
   render();
 }
@@ -275,6 +275,13 @@ function renderSecurity() {
   </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 禁止连接真实生产</span></footer></div>`;
 }
 
+function agentEvaluationPanel() {
+  const latest = state.agentEvalRuns[0];
+  if (!latest) return `<section class="panel agent-history"><div class="panel-heading"><div><p class="eyebrow">AGENT EVALUATION</p><h2>可信度回归评测</h2></div><button class="button button-primary" data-agent-eval>运行评测</button></div><div class="empty-state">运行 6 条虚构证券场景用例，检查意图、必需上下文和人工确认门禁。</div></section>`;
+  const caseRows = latest.cases.map((item) => `<div class="audit-row"><span class="audit-result ${item.passed ? "allow" : "deny"}">${item.passed ? "通过" : "失败"}</span><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.intent)} · ${item.checks.filter((check) => check.passed).length}/${item.checks.length} 项检查通过</small></div><time>${item.latencyMs}ms</time></div>`).join("");
+  return `<section class="panel agent-history"><div class="panel-heading"><div><p class="eyebrow">AGENT EVALUATION</p><h2>可信度回归评测</h2></div><button class="button button-primary" data-agent-eval>重新运行</button></div><section class="summary-grid"><article><span>通过率</span><strong>${latest.accuracy}%</strong><small>${latest.passed}/${latest.total} 用例</small></article><article><span>失败</span><strong>${latest.failed}</strong><small>需人工分析</small></article><article><span>运行时间</span><strong>${formatTime(latest.evaluatedAt)}</strong><small>规则编排评测</small></article></section><div class="audit-list">${caseRows}</div></section>`;
+}
+
 function renderAgent() {
   const plan = state.agentPlan;
   const intentLabels = { SYNC_TASK: "数据同步", MASKING_RULE: "数据脱敏", DEV_JOB: "数据开发", ASSET_SEARCH: "资产检索", HOLDINGS_REPORT: "持仓分析", OPS_INCIDENT: "运维诊断", UNKNOWN: "待澄清" };
@@ -286,6 +293,7 @@ function renderAgent() {
     <section class="agent-workspace"><section class="panel agent-input-panel"><div class="panel-heading"><div><p class="eyebrow">NATURAL LANGUAGE REQUEST</p><h2>描述你的证券数据需求</h2></div><span>虚构环境</span></div><form id="agent-plan-form" class="agent-form"><textarea name="message" rows="5" placeholder="例如：帮我把虚构券商投资者持仓 CSV 增量同步到 MySQL 持仓表，每个工作日凌晨 2 点执行。">${escapeHtml(state.agentMessage)}</textarea><label class="field"><span>确认用户</span><select name="userId"><option value="user-platform-admin">许平台 · 平台运营部</option><option value="user-data-engineer">周开发 · 数据开发部</option><option value="user-data-security">顾安全 · 数据安全部</option><option value="user-investor-analyst">林分析 · 财富管理部</option></select></label><button class="button button-primary" type="submit">生成计划</button></form><div class="agent-prompts"><button type="button" data-agent-prompt="帮我找出和投资者持仓相关的证券数据资产，并说明敏感等级。">资产检索示例</button><button type="button" data-agent-prompt="为投资者手机号创建脱敏规则，保留前三位和后四位。">脱敏规则示例</button><button type="button" data-agent-prompt="帮我创建每个工作日凌晨 2 点把虚构投资者持仓 CSV 增量同步到 MySQL 持仓表的任务。">同步任务示例</button><button type="button" data-agent-prompt="帮我诊断持仓快照 T+1 时效告警和下游影响。">运维诊断示例</button></div></section>
     <section class="panel agent-plan-panel"><div class="panel-heading"><div><p class="eyebrow">PLAN & CONFIRMATION</p><h2>计划预览</h2></div><span>${plan ? intentLabels[plan.intent] ?? plan.intent : "等待输入"}</span></div>${plan ? `<div class="agent-plan"><h3>${escapeHtml(plan.title)}</h3><p class="agent-summary">${escapeHtml(plan.summary)}</p><div class="agent-columns"><div><strong>执行步骤</strong><ol>${plan.steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol></div><div><strong>风险与边界</strong><ul>${plan.risks.map((risk) => `<li>${escapeHtml(risk)}</li>`).join("")}</ul></div></div>${holdings ? `<section class="agent-code-workspace"><div class="code-heading"><strong>Hive/Spark SQL</strong><span>${escapeHtml(holdingsDraft.engine)}</span></div><textarea id="agent-sql-editor" spellcheck="false">${escapeHtml(holdingsDraft.sql)}</textarea><div class="artifact-grid"><div><strong>测试 SQL</strong><pre>${escapeHtml(holdingsDraft.testSql)}</pre></div><div><strong>调度配置</strong><pre>${escapeHtml(JSON.stringify(holdingsDraft.scheduleConfig, null, 2))}</pre></div><div><strong>部署文件</strong><pre>${escapeHtml(JSON.stringify(holdingsDraft.deploymentConfig, null, 2))}</pre></div></div><div class="report-spec"><strong>看板指标</strong><span>${holdingsDraft.reportSpec.metrics.map((metric) => escapeHtml(metric)).join(" · ")}</span><small>权限范围：${escapeHtml(holdingsDraft.permissionScope)}</small><small>语义证据：${holdingsDraft.semanticContext?.items?.length ?? 0} 项</small></div></section>` : ""}${releaseHandoff}${plan.questions.length ? `<div class="agent-questions"><strong>需要澄清</strong>${plan.questions.map((question) => `<p>？${escapeHtml(question)}</p>`).join("")}</div>` : `<button class="button button-primary" data-agent-confirm="${plan.id}">${plan.status === "COMPLETED" ? "已完成" : "确认并执行"}</button>`}</div>` : `<div class="empty-state">输入需求后，Agent 会先生成意图、步骤、风险和待确认项，不会直接执行。</div>`}</section></section>
     <section class="panel agent-history"><div class="panel-heading"><div><p class="eyebrow">PLAN HISTORY</p><h2>最近计划</h2></div><span>${state.agentPlans.length} 条</span></div><div class="audit-list">${state.agentPlans.slice(0, 6).map((item) => `<div class="audit-row"><span class="audit-result ${item.status === "COMPLETED" ? "allow" : "deny"}">${item.status === "COMPLETED" ? "已完成" : "待确认"}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.message)}</small></div><time>${formatTime(item.createdAt)}</time></div>`).join("")}</div></section>
+    ${agentEvaluationPanel()}
   </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 学习环境 · 不连接真实生产</span></footer></div>`;
 }
 
@@ -421,6 +429,12 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.agentPrompt) { state.agentMessage = target.dataset.agentPrompt; return render(); }
   if (target.dataset.holdingsPrompt) { state.holdingsQuestion = target.dataset.holdingsPrompt; state.holdingsAnswer = undefined; return render(); }
+  if (target.dataset.agentEval !== undefined) {
+    state.busyId = "agent-eval"; state.error = undefined; render();
+    try { await request("/api/agent/evaluation/run", { method: "POST", body: JSON.stringify({}) }); await refreshAgent(); }
+    catch (error) { state.error = error.message; state.busyId = undefined; render(); }
+    return;
+  }
   if (target.dataset.agentConfirm) {
     state.busyId = target.dataset.agentConfirm; state.error = undefined; render();
     try { const sql = document.querySelector("#agent-sql-editor")?.value; const result = await request(`/api/agent/plans/${target.dataset.agentConfirm}/confirm`, { method: "POST", body: JSON.stringify({ planId: target.dataset.agentConfirm, userId: state.agentPlan?.userId ?? "user-platform-admin", draft: sql ? { sql } : undefined }) }); state.agentPlan = result; await refreshAgent(); }
