@@ -130,6 +130,12 @@ describe("data platform API controller", () => {
     assert.equal(assetPlan.body.intent, "ASSET_SEARCH");
     const assetResult = await handle({ method: "POST", pathname: `/api/agent/plans/${assetPlan.body.id}/confirm`, body: { planId: assetPlan.body.id, userId: "user-investor-analyst" } });
     assert.equal(assetResult.body.execution.length, 1);
+    const opsPlan = await handle({ method: "POST", pathname: "/api/agent/plan", body: { userId: "user-platform-admin", message: "帮我诊断持仓快照 T+1 时效告警和下游影响。" } });
+    assert.equal(opsPlan.body.intent, "OPS_INCIDENT");
+    assert.equal(opsPlan.body.draft.action, "ACKNOWLEDGE_ONLY");
+    const opsResult = await handle({ method: "POST", pathname: `/api/agent/plans/${opsPlan.body.id}/confirm`, body: { planId: opsPlan.body.id, userId: "user-platform-admin" } });
+    assert.equal(opsResult.body.execution.status, "ACKNOWLEDGED");
+    assert.equal(opsResult.body.execution.runbook.length, 4);
     const unknown = await handle({ method: "POST", pathname: "/api/agent/plan", body: { userId: "user-platform-admin", message: "帮我做一个事情" } });
     assert.equal(unknown.body.intent, "UNKNOWN");
     const blocked = await handle({ method: "POST", pathname: `/api/agent/plans/${unknown.body.id}/confirm`, body: { planId: unknown.body.id, userId: "user-platform-admin" } });
@@ -211,10 +217,10 @@ describe("data platform API controller", () => {
     const { handle } = setup();
     const cases = await handle({ method: "GET", pathname: "/api/agent/evaluation/cases" });
     assert.equal(cases.status, 200);
-    assert.equal(cases.body.length, 5);
+    assert.equal(cases.body.length, 6);
     const run = await handle({ method: "POST", pathname: "/api/agent/evaluation/run" });
     assert.equal(run.status, 200);
-    assert.equal(run.body.total, 5);
+    assert.equal(run.body.total, 6);
     assert.equal(run.body.failed, 0);
     const history = await handle({ method: "GET", pathname: "/api/agent/evaluation/runs" });
     assert.equal(history.body.length, 1);

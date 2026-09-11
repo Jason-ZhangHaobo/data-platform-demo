@@ -17,8 +17,10 @@ export function planAgentRequest(message) {
   const isSync = includesAny(text, ["同步", "CSV", "持仓", "订单", "成交", "行情", "MySQL", "数据库"]);
   const isRealtime = includesAny(text, ["实时", "Kafka", "Flink", "事件流"]);
   const isHoldingsReport = text.includes("持仓") && includesAny(text, ["财富顾问", "客户", "报表", "看板", "资产分析", "行业分布"]);
+  const isOpsIncident = includesAny(text, ["告警", "时效", "延迟", "失败", "故障", "诊断", "运维", "恢复"]);
   let intent = "UNKNOWN";
   if (isHoldingsReport) intent = "HOLDINGS_REPORT";
+  else if (isOpsIncident) intent = "OPS_INCIDENT";
   else if (isAsset) intent = "ASSET_SEARCH";
   else if (isMasking) intent = "MASKING_RULE";
   else if (isRealtime) intent = "REALTIME_SYNC";
@@ -35,6 +37,13 @@ export function planAgentRequest(message) {
     intent, title: "证券数据资产检索计划", summary: `根据你的描述检索证券数据资产：${text}`,
     questions: [], steps: ["在证券资产目录中搜索资产、字段、标签和血缘", "展示候选资产及敏感等级", "用户确认后返回可引用的资产上下文"],
     draft: { query: ["持仓", "投资者", "订单", "成交", "基金", "净值", "证券"].find((keyword) => text.includes(keyword)) ?? text }, risks: ["检索结果可能包含敏感资产，仅展示元数据，不返回业务数据。"], requiresConfirmation: true,
+  };
+
+  if (intent === "OPS_INCIDENT") return {
+    intent, title: "证券数据运维诊断计划", summary: "识别持仓 T+1 时效告警的影响范围与处置手册；确认后仅将告警转为处置中。", questions: [],
+    steps: ["检索待处置的运维告警与触发规则", "展示受影响的数据资产、下游看板和责任人", "给出上游同步、分区检查和质量复核手册", "用户确认后确认告警，交由数据运维组处置"],
+    draft: { query: text.includes("持仓") ? "持仓" : "T+1", action: "ACKNOWLEDGE_ONLY", escalationOwner: "数据运维组", opsUrl: "?view=ops#ops" },
+    risks: ["Agent 只能确认告警，不会自行标记恢复。", "当前只读取和更新虚构演示告警，不连接真实监控或生产任务。"], requiresConfirmation: true,
   };
 
   if (intent === "HOLDINGS_REPORT") {
