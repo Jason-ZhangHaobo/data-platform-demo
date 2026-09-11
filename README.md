@@ -48,6 +48,8 @@ CLI 与 GUI、Data Agent 共享同一套 API、权限和审计。
 node bin/dataplatform.mjs help
 node bin/dataplatform.mjs assets search --query 持仓
 node bin/dataplatform.mjs agent plan --message "财富顾问查询客户持仓，生成客户总资产和行业分布报表"
+node bin/dataplatform.mjs dev list
+node bin/dataplatform.mjs ops list
 ```
 
 ## MCP 入口
@@ -58,7 +60,7 @@ Data Agent 客户端可以通过 stdio 启动 MCP Server，发现并调用同一
 DATA_PLATFORM_API_BASE_URL=https://dataplaging-api-qagxeaqdmd.cn-hangzhou.fcapp.run node bin/dataplatform-mcp.mjs
 ```
 
-MCP 暴露 `data_agent_plan`、`data_agent_confirm`、`assets_search` 和 `security_access_check`。确认工具必须在用户看到计划并明确确认后调用。
+MCP 暴露数据资产检索、权限检查、Data Agent 计划/确认、SQL 任务查询/校验/发布，以及运维告警查询/确认。确认工具必须在用户看到计划、SQL 或告警影响后明确确认才可调用。MCP 不提供自动结案工具，告警恢复仍需人类完成核验。
 
 ## Staging 访问保护
 
