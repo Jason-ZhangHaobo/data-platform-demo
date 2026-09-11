@@ -9,7 +9,7 @@ const requestedView = () => {
   if (["sources", "sync", "realtime", "development", "quality", "assets", "masking", "holdings-report", "ops", "security", "agent"].includes(view)) return view;
   return window.location.hash === "#development" ? "development" : "sync";
 };
-const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], agentEvalRuns: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], qualityCreating: undefined, holdingsReport: undefined, holdingsQuestion: "", holdingsAnswer: undefined, streamJobs: [], dataSources: [], sourceCreating: undefined, dataContracts: [], opsIncidents: [], error: undefined, busyId: undefined };
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], agentEvalRuns: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], qualityCreating: undefined, holdingsReport: undefined, holdingsQuestion: "", holdingsAnswer: undefined, streamJobs: [], streamCreating: undefined, dataSources: [], sourceCreating: undefined, dataContracts: [], opsIncidents: [], error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -172,6 +172,10 @@ function devJobForm(job) {
     <label class="checkbox-field"><input name="enabled" type="checkbox" ${value.enabled ? "checked" : ""}><span>创建后进入待发布</span></label>
     <div class="form-actions field-wide"><button class="button button-secondary" type="button" data-dev-close>取消</button><button class="button button-primary" type="submit">保存任务</button></div>
   </form></section></div>`;
+}
+
+function streamJobForm() {
+  return `<div class="modal-backdrop"><section class="task-form" role="dialog" aria-modal="true"><div class="form-heading"><div><p class="eyebrow">REALTIME INGESTION</p><h2>新建实时任务</h2></div><button class="icon-button" data-stream-close>×</button></div><form id="stream-job-form"><label class="field field-wide"><span>任务名称</span><input name="name" required minlength="2" maxlength="80" placeholder="例如：基金净值实时同步"></label><label class="field field-wide"><span>任务说明</span><textarea name="description" maxlength="200" rows="2" placeholder="说明虚构事件及下游消费者。"></textarea></label><label class="field"><span>执行引擎</span><select name="engine"><option value="FLINK_SQL">Flink SQL</option><option value="KAFKA_CONNECT">Kafka Connect</option></select></label><label class="field"><span>检查点间隔（毫秒）</span><input name="checkpointIntervalMs" type="number" min="1000" value="30000"></label><label class="field"><span>Kafka Topic</span><input name="sourceTopic" required value="demo.market.quote"></label><label class="field"><span>目标实时表</span><input name="targetTable" required value="dws_realtime_quote"></label><label class="field field-wide"><span>Flink SQL</span><textarea name="sql" required rows="5">INSERT INTO dws_realtime_quote SELECT security_code, market, price, event_time FROM demo_market_quote;</textarea></label><label class="field"><span>负责人</span><input name="owner" required value="实时数据组"></label><label class="checkbox-field"><input name="enabled" type="checkbox"><span>创建后进入可启动状态</span></label><div class="form-actions field-wide"><button class="button button-secondary" type="button" data-stream-close>取消</button><button class="button button-primary" type="submit">创建实时任务</button></div></form></section></div>`;
 }
 
 function maskingRuleCard(rule) {
@@ -343,7 +347,14 @@ function render() {
   if (state.view === "agent") { app.innerHTML = renderAgent(); applyPrimaryNav(); return; }
   if (state.view === "quality") { app.innerHTML = renderQuality(); applyPrimaryNav(); return; }
   if (state.view === "holdings-report") { app.innerHTML = renderHoldingsReport(); applyPrimaryNav(); return; }
-  if (state.view === "realtime") { app.innerHTML = renderRealtime(); applyPrimaryNav(); return; }
+  if (state.view === "realtime") {
+    app.innerHTML = renderRealtime();
+    const hero = app.querySelector(".hero");
+    hero?.insertAdjacentHTML("beforeend", `<button class="button button-primary hero-action" data-new-stream><span>＋</span> 新建实时任务</button>`);
+    if (state.streamCreating !== undefined) app.insertAdjacentHTML("beforeend", streamJobForm());
+    applyPrimaryNav();
+    return;
+  }
   if (state.view === "ops") { app.innerHTML = renderOps(); applyPrimaryNav(); return; }
   const summary = { totalTasks: 0, enabledTasks: 0, runningTasks: 0, runsToday: 0, successRate: 100, ...state.summary };
   const task = selectedTask();
@@ -389,9 +400,11 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.newMasking !== undefined) { state.maskingEditing = null; return render(); }
   if (target.dataset.newSource !== undefined) { state.sourceCreating = null; return render(); }
   if (target.dataset.newQuality !== undefined) { state.qualityCreating = null; return render(); }
+  if (target.dataset.newStream !== undefined) { state.streamCreating = null; return render(); }
   const clickedBackdrop = event.target?.classList?.contains?.("modal-backdrop") ?? false;
   if (target.dataset.sourceClose !== undefined || (clickedBackdrop && state.sourceCreating !== undefined)) { state.sourceCreating = undefined; return render(); }
   if (target.dataset.qualityClose !== undefined || (clickedBackdrop && state.qualityCreating !== undefined)) { state.qualityCreating = undefined; return render(); }
+  if (target.dataset.streamClose !== undefined || (clickedBackdrop && state.streamCreating !== undefined)) { state.streamCreating = undefined; return render(); }
   if (target.dataset.devClose !== undefined || clickedBackdrop) { state.devEditing = undefined; return render(); }
   if (target.dataset.maskClose !== undefined) { state.maskingEditing = undefined; return render(); }
   if (target.dataset.close !== undefined || clickedBackdrop) { state.editing = undefined; return render(); }
@@ -486,6 +499,13 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("submit", async (event) => {
+  if (event.target.id === "stream-job-form") {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.target)); data.enabled = event.target.elements.enabled.checked;
+    try { await request("/api/stream/jobs", { method: "POST", body: JSON.stringify(data) }); state.streamCreating = undefined; await refreshRealtime(); }
+    catch (error) { state.error = error.message; state.streamCreating = undefined; render(); }
+    return;
+  }
   if (event.target.id === "quality-rule-form") {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.target)); data.enabled = event.target.elements.enabled.checked;

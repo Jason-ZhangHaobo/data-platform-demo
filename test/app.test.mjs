@@ -262,6 +262,9 @@ describe("data platform API controller", () => {
     assert.equal(started.body.metrics.lagMs, 420);
     const stopped = await handle({ method: "POST", pathname: `/api/stream/jobs/${confirmed.body.execution.id}/stop` });
     assert.equal(stopped.body.status, "STOPPED");
+    const created = await handle({ method: "POST", pathname: "/api/stream/jobs", body: { name: "基金净值实时同步", description: "虚构基金净值事件。", engine: "FLINK_SQL", sourceTopic: "demo.fund.nav", targetTable: "dws_realtime_fund_nav", sql: "INSERT INTO dws_realtime_fund_nav SELECT fund_code, nav FROM demo_fund_nav;", owner: "实时数据组", enabled: false, checkpointIntervalMs: 30000 } });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.status, "STOPPED");
   });
 
   test("tests data sources and collects fictional metadata", async () => {
