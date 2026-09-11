@@ -177,7 +177,7 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
       }
       else if (plan.intent === "HOLDINGS_REPORT") {
         const createdDevJob = await store.createDevJob(validateDevJobInput(effectiveDraft.devJob ? { ...effectiveDraft.devJob, sql: effectiveDraft.sql } : { name: "财富顾问客户持仓分析 SQL", description: "Data Agent 生成的 Hive/Spark SQL 草稿，第一版仅模拟执行。", jobType: "SQL", sql: effectiveDraft.sql, schedule: "交易日 T+1 02:30", owner: "数据开发组", enabled: false }));
-        const devJob = await store.updateDevJob(createdDevJob.id, { scheduleConfig: effectiveDraft.scheduleConfig, deploymentConfig: effectiveDraft.deploymentConfig, agentPlanId: plan.id });
+        const devJob = await store.updateDevJob(createdDevJob.id, { scheduleConfig: effectiveDraft.scheduleConfig, deploymentConfig: { ...effectiveDraft.deploymentConfig, dependencies: createdDevJob.dependencies }, agentPlanId: plan.id });
         execution = { type: "HOLDINGS_REPORT", status: "DRAFT_CREATED", devJob, artifacts: { engine: effectiveDraft.engine, sql: effectiveDraft.sql, testSql: effectiveDraft.testSql, scheduleConfig: effectiveDraft.scheduleConfig, deploymentConfig: effectiveDraft.deploymentConfig }, reportSpec: effectiveDraft.reportSpec, permissionScope: effectiveDraft.permissionScope, reportUrl: "?view=holdings-report#holdings-report" };
       }
       else return result(409, { message: "当前计划没有可执行模块" });

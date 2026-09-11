@@ -73,10 +73,12 @@ export function validateDevJobInput(value) {
     schedule: text("schedule", 2, 60, "请输入调度周期"),
     owner: text("owner", 2, 40, "请输入负责人"),
     enabled: input.enabled === true,
+    dependencies: (Array.isArray(input.dependencies) ? input.dependencies : String(input.dependencies ?? "").split(",")).map((item) => String(item).trim()).filter(Boolean),
   };
   if (!devJobTypes.has(result.jobType)) issues.push({ path: "jobType", message: "任务类型不合法" });
   const analysis = analyzeSql(result.sql);
   if (!analysis.valid) issues.push({ path: "sql", message: "SQL 不能为空" });
+  if (result.dependencies.length > 12 || result.dependencies.some((item) => item.length > 100)) issues.push({ path: "dependencies", message: "依赖数量或名称不符合要求" });
   if (issues.length) throw new ValidationError(issues);
   return { ...result, analysis };
 }

@@ -57,7 +57,7 @@ export function planAgentRequest(message) {
         scheduleConfig: { calendar: "trading_day", frequency: "T+1", cron: "0 30 2 * * ?", timezone: "Asia/Shanghai", dependency: "dws_position_snapshot_t1" },
         deploymentConfig: { platform: "aliyun-dataworks-emr", environment: "staging", artifact: "ads_advisor_holdings_summary", approval: "human_confirmation", rollback: true },
         reportSpec: { name: "客户持仓分析", metrics: ["客户总资产", "持仓市值", "证券数量", "资产类别分布", "行业分布"], output: ["dashboard", "csv", "api"] }, semanticContext: holdingsSemanticContext(),
-        devJob: { name: "财富顾问客户持仓分析 SQL", description: "Data Agent 生成的 Hive/Spark SQL 草稿，第一版仅模拟执行。", jobType: "SQL", sql, schedule: "交易日 T+1 02:30", owner: "数据开发组", enabled: false },
+        devJob: { name: "财富顾问客户持仓分析 SQL", description: "Data Agent 生成的 Hive/Spark SQL 草稿，第一版仅模拟执行。", jobType: "SQL", sql, schedule: "交易日 T+1 02:30", owner: "数据开发组", dependencies: ["dws_position_snapshot_t1"], enabled: false },
       },
       risks: ["当前只在本地/测试环境模拟执行，不连接真实 Hive/Spark。", "SQL 使用 current_user_id 模板，发布前必须通过行级权限检查。", "生成任务默认为未发布，必须人工确认。"], requiresConfirmation: true,
     };

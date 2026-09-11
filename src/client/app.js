@@ -148,7 +148,7 @@ function devJobCard(job) {
   const [label, tone] = devStatusMeta[job.status] ?? devStatusMeta.DRAFT;
   return `<article class="task-card ${job.id === state.devSelectedId ? "selected" : ""}" data-dev-select="${job.id}">
     <div class="task-card-main"><div class="task-title-row"><span class="status-dot ${tone}"></span><h3>${escapeHtml(job.name)}</h3><span class="status-badge ${tone}">${label}</span></div>
-    <p>${escapeHtml(job.owner)} <span>·</span> ${escapeHtml(job.schedule)}</p><pre class="sql-preview">${escapeHtml(job.sql)}</pre></div>
+    <p>${escapeHtml(job.owner)} <span>·</span> ${escapeHtml(job.schedule)}</p><div class="task-meta"><span>DAG 依赖：${job.dependencies?.length ?? 0} 项</span></div><pre class="sql-preview">${escapeHtml(job.sql)}</pre></div>
     <div class="task-actions"><button class="button button-quiet" data-dev-action="validate" data-id="${job.id}">校验 SQL</button><button class="button button-primary" data-dev-action="deploy" data-id="${job.id}" ${state.busyId === job.id || job.release?.status === "PUBLISHED" ? "disabled" : ""}>${job.release?.status === "PUBLISHED" ? "已发布" : "发布调度"}</button><button class="button button-run" data-dev-action="run" data-id="${job.id}" ${state.busyId === job.id || !job.enabled ? "disabled" : ""}>模拟运行</button></div>
   </article>`;
 }
@@ -157,16 +157,18 @@ function devRunHistory(job) {
   if (!job) return `<div class="empty-state">请选择一个数据开发任务。</div>`;
   const list = state.devRuns.length ? state.devRuns.slice(0, 6).map((run) => `<li><span class="timeline-dot ${run.status.toLowerCase()}"></span><div><div class="run-row"><strong>${run.status === "SUCCESS" ? "执行成功" : run.status === "RUNNING" ? "执行中" : "执行失败"}</strong><time>${formatTime(run.startedAt)}</time></div><p>${escapeHtml(run.message)}</p><small>影响 ${Number(run.rowsAffected ?? 0).toLocaleString()} 行</small></div></li>`).join("") : `<li class="empty-state">还没有运行记录。</li>`;
   const release = job.release ? `<div class="metadata-source"><strong>已发布至 ${escapeHtml(job.release.environment)} · ${escapeHtml(job.release.platform)}</strong><span>产物：${escapeHtml(job.release.artifact)} · 调度：${escapeHtml(job.release.schedule.frequency ?? job.schedule)}</span><small>发布：${formatTime(job.release.releasedAt)} · ${escapeHtml(job.release.mode)}</small></div>` : `<div class="metadata-source"><strong>尚未发布</strong><span>先校验 SQL，再人工确认发布到模拟调度环境。</span></div>`;
-  return `<div class="selected-task-summary"><span class="source-icon">SQL</span><div><strong>${escapeHtml(job.name)}</strong><small>${escapeHtml(job.description || "暂无任务说明")}</small></div></div>${release}<ol class="run-list">${list}</ol>`;
+  const dependencies = job.dependencies?.length ? `<div class="metadata-source"><strong>依赖 DAG</strong><span>${job.dependencies.map(escapeHtml).join(" → ")} → ${escapeHtml(job.name)}</span><small>发布前会记录依赖摘要；真实调度依赖将在适配 DataWorks/EMR 后执行。</small></div>` : `<div class="metadata-source"><strong>依赖 DAG</strong><span>当前没有登记上游依赖。</span></div>`;
+  return `<div class="selected-task-summary"><span class="source-icon">SQL</span><div><strong>${escapeHtml(job.name)}</strong><small>${escapeHtml(job.description || "暂无任务说明")}</small></div></div>${dependencies}${release}<ol class="run-list">${list}</ol>`;
 }
 
 function devJobForm(job) {
-  const value = job ?? { name: "", description: "", jobType: "SQL", sql: "SELECT * FROM business_demo.customer_profile LIMIT 1000;", schedule: "手动", owner: "数据开发组", enabled: false };
+  const value = job ?? { name: "", description: "", jobType: "SQL", sql: "SELECT * FROM business_demo.customer_profile LIMIT 1000;", schedule: "手动", owner: "数据开发组", dependencies: [], enabled: false };
   return `<div class="modal-backdrop"><section class="task-form" role="dialog" aria-modal="true"><div class="form-heading"><div><p class="eyebrow">DATA DEVELOPMENT</p><h2>新建 SQL 任务</h2></div><button class="icon-button" data-dev-close>×</button></div><form id="dev-job-form">
     <label class="field field-wide"><span>任务名称</span><input name="name" required minlength="2" maxlength="60" value="${escapeHtml(value.name)}"></label>
     <label class="field field-wide"><span>任务说明</span><textarea name="description" maxlength="200" rows="2">${escapeHtml(value.description)}</textarea></label>
     <label class="field field-wide"><span>SQL</span><textarea name="sql" required rows="8">${escapeHtml(value.sql)}</textarea></label>
     <label class="field"><span>调度周期</span><input name="schedule" required value="${escapeHtml(value.schedule)}"></label><label class="field"><span>负责人</span><input name="owner" required value="${escapeHtml(value.owner)}"></label>
+    <label class="field field-wide"><span>上游依赖</span><input name="dependencies" value="${escapeHtml((value.dependencies ?? []).join(", "))}" placeholder="例如：dws_position_snapshot_t1，多个依赖用逗号分隔"></label>
     <label class="checkbox-field"><input name="enabled" type="checkbox" ${value.enabled ? "checked" : ""}><span>创建后进入待发布</span></label>
     <div class="form-actions field-wide"><button class="button button-secondary" type="button" data-dev-close>取消</button><button class="button button-primary" type="submit">保存任务</button></div>
   </form></section></div>`;
