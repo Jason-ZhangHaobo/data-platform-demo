@@ -9,7 +9,7 @@ const requestedView = () => {
   if (["sources", "sync", "realtime", "development", "quality", "assets", "masking", "holdings-report", "ops", "security", "agent"].includes(view)) return view;
   return window.location.hash === "#development" ? "development" : "sync";
 };
-const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], holdingsReport: undefined, streamJobs: [], dataSources: [], dataContracts: [], opsIncidents: [], error: undefined, busyId: undefined };
+const state = { view: requestedView(), tasks: [], summary: {}, selectedId: undefined, runs: [], editing: undefined, devJobs: [], devRuns: [], devSelectedId: undefined, devEditing: undefined, maskingRules: [], maskingPreview: undefined, maskingEditing: undefined, assets: [], assetSelectedId: undefined, assetDetail: undefined, assetQuery: "", securityUsers: [], securityRoles: [], securityAudit: [], securityCheckResult: undefined, securitySelectedUserId: undefined, agentMessage: "", agentPlan: undefined, agentPlans: [], qualityRules: [], qualitySummary: {}, qualitySelectedRuleId: undefined, qualityRuns: [], holdingsReport: undefined, holdingsQuestion: "", holdingsAnswer: undefined, streamJobs: [], dataSources: [], dataContracts: [], opsIncidents: [], error: undefined, busyId: undefined };
 const app = document.querySelector("#app");
 const API_BASE_URL = String(globalThis.DATA_PLATFORM_API_BASE_URL ?? "").replace(/\/$/, "");
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -288,11 +288,13 @@ function renderQuality() {
 
 function renderHoldingsReport() {
   const report = state.holdingsReport;
+  const answer = state.holdingsAnswer;
   const money = (value) => `¥${Number(value).toLocaleString("zh-CN")}`;
-  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=agent#agent">Data Agent</a><a class="nav-item active" href="?view=holdings-report#holdings-report">持仓看板</a><a class="nav-item" href="?view=quality#quality">数据质量</a><a class="nav-item" href="?view=assets#assets">数据资产</a></nav><div class="environment-pill"><span></span>T+1 模拟看板</div></header><main id="top">
-    <section class="hero"><div><p class="eyebrow">WEALTH MANAGEMENT · HOLDINGS REPORT</p><h1>财富顾问客户持仓分析</h1><p class="hero-copy">权限范围：${escapeHtml(report?.scope ?? "OWN_CLIENTS_ONLY")} · 数据时效：${escapeHtml(report?.freshness ?? "T+1 模拟数据")}</p></div><div class="report-disclaimer">${escapeHtml(report?.disclaimer ?? "虚构数据，仅用于学习演示")}</div></section>
-    ${report ? `<section class="report-metrics"><article><span>客户总资产</span><strong>${money(report.metrics.totalAssets)}</strong><small>T+1 快照</small></article><article><span>持仓市值</span><strong>${money(report.metrics.holdingMarketValue)}</strong><small>可用资产</small></article><article><span>证券数量</span><strong>${report.metrics.securityCount}</strong><small>去重证券</small></article></section><section class="report-grid"><div class="panel report-panel"><div class="panel-heading"><h2>资产类别分布</h2><span>市值占比</span></div>${report.assetClassDistribution.map((item) => `<div class="distribution-row"><div><strong>${escapeHtml(item.name)}</strong><span>${money(item.value)}</span></div><div class="bar"><i style="width:${item.ratio}%"></i></div><b>${item.ratio}%</b></div>`).join("")}</div><div class="panel report-panel"><div class="panel-heading"><h2>行业分布</h2><span>市值占比</span></div>${report.industryDistribution.map((item) => `<div class="distribution-row"><div><strong>${escapeHtml(item.name)}</strong><span>${money(item.value)}</span></div><div class="bar blue"><i style="width:${item.ratio}%"></i></div><b>${item.ratio}%</b></div>`).join("")}</div></section>` : `<div class="empty-state">正在加载持仓分析结果。</div>`}
-  </main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 不构成投资建议</span></footer></div>`;
+  const distribution = (items, tone = "") => items.map((item) => `<div class="distribution-row"><div><strong>${escapeHtml(item.name)}</strong><span>${money(item.value)}</span></div><div class="bar ${tone}"><i style="width:${item.ratio}%"></i></div><b>${item.ratio}%</b></div>`).join("");
+  const evidence = answer?.evidence.map((item) => `${escapeHtml(item.sourceAsset)}.${item.fields.map(escapeHtml).join("/")}`).join("；") || "未匹配到语义证据";
+  const queryPanel = `<section class="panel chatbi-panel"><div class="panel-heading"><div><p class="eyebrow">SCOPED CHATBI</p><h2>问持仓数据</h2></div><span>本人客户范围</span></div><form id="holdings-query-form" class="chatbi-form"><input name="question" value="${escapeHtml(state.holdingsQuestion)}" placeholder="例如：我的客户总资产是多少？或行业分布如何？"><button class="button button-primary" type="submit">开始问数</button></form><div class="agent-prompts"><button type="button" data-holdings-prompt="我的客户总资产是多少？">客户总资产</button><button type="button" data-holdings-prompt="我的客户持仓市值是多少？">持仓市值</button><button type="button" data-holdings-prompt="我的客户行业分布如何？">行业分布</button></div>${answer ? `<div class="chatbi-answer"><strong>${escapeHtml(answer.metric)}</strong><p>${escapeHtml(answer.answer)}</p><div class="task-meta"><span>范围：${escapeHtml(answer.scope)}</span><span>时效：${escapeHtml(answer.freshness)}</span></div><small>来源：${evidence}</small><small>${escapeHtml(answer.disclaimer)}</small></div>` : ""}</section>`;
+  const reportContent = report ? `<section class="report-metrics"><article><span>客户总资产</span><strong>${money(report.metrics.totalAssets)}</strong><small>T+1 快照</small></article><article><span>持仓市值</span><strong>${money(report.metrics.holdingMarketValue)}</strong><small>可用资产</small></article><article><span>证券数量</span><strong>${report.metrics.securityCount}</strong><small>去重证券</small></article></section>${queryPanel}<section class="report-grid"><div class="panel report-panel"><div class="panel-heading"><h2>资产类别分布</h2><span>市值占比</span></div>${distribution(report.assetClassDistribution)}</div><div class="panel report-panel"><div class="panel-heading"><h2>行业分布</h2><span>市值占比</span></div>${distribution(report.industryDistribution, "blue")}</div></section>` : `<div class="empty-state">正在加载持仓分析结果。</div>`;
+  return `<div class="app-shell"><header class="topbar"><a class="brand" href="#top"><span class="brand-mark">数</span><span><strong>数栈</strong><small>DATA PLATFORM LAB</small></span></a><nav><a class="nav-item" href="?view=agent#agent">Data Agent</a><a class="nav-item active" href="?view=holdings-report#holdings-report">持仓看板</a><a class="nav-item" href="?view=quality#quality">数据质量</a><a class="nav-item" href="?view=assets#assets">数据资产</a></nav><div class="environment-pill"><span></span>T+1 模拟看板</div></header><main id="top"><section class="hero"><div><p class="eyebrow">WEALTH MANAGEMENT · HOLDINGS REPORT</p><h1>财富顾问客户持仓分析</h1><p class="hero-copy">权限范围：${escapeHtml(report?.scope ?? "OWN_CLIENTS_ONLY")} · 数据时效：${escapeHtml(report?.freshness ?? "T+1 模拟数据")}</p></div><div class="report-disclaimer">${escapeHtml(report?.disclaimer ?? "虚构数据，仅用于学习演示")}</div></section>${state.error ? `<div class="error-banner"><span>!</span>${escapeHtml(state.error)}<button data-dismiss>关闭</button></div>` : ""}${reportContent}</main><footer><span>数栈 Data Platform Lab</span><span>虚构证券行业数据 · 不构成投资建议</span></footer></div>`;
 }
 
 function renderDevelopment() {
@@ -396,6 +398,7 @@ document.addEventListener("click", async (event) => {
     return render();
   }
   if (target.dataset.agentPrompt) { state.agentMessage = target.dataset.agentPrompt; return render(); }
+  if (target.dataset.holdingsPrompt) { state.holdingsQuestion = target.dataset.holdingsPrompt; state.holdingsAnswer = undefined; return render(); }
   if (target.dataset.agentConfirm) {
     state.busyId = target.dataset.agentConfirm; state.error = undefined; render();
     try { const sql = document.querySelector("#agent-sql-editor")?.value; const result = await request(`/api/agent/plans/${target.dataset.agentConfirm}/confirm`, { method: "POST", body: JSON.stringify({ planId: target.dataset.agentConfirm, userId: state.agentPlan?.userId ?? "user-platform-admin", draft: sql ? { sql } : undefined }) }); state.agentPlan = result; await refreshAgent(); }
@@ -447,6 +450,13 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("submit", async (event) => {
+  if (event.target.id === "holdings-query-form") {
+    event.preventDefault();
+    state.holdingsQuestion = new FormData(event.target).get("question")?.toString().trim() ?? "";
+    try { state.holdingsAnswer = await request("/api/reports/holdings/query", { method: "POST", body: JSON.stringify({ question: state.holdingsQuestion }) }); render(); }
+    catch (error) { state.error = error.message; render(); }
+    return;
+  }
   if (event.target.id === "agent-plan-form") {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.target));
