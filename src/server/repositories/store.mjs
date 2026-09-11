@@ -120,6 +120,10 @@ export const createSeedState = () => {
     { id: randomUUID(), name: "行情事件 Kafka", sourceType: "KAFKA", environment: "staging", endpoint: "demo.market.quote", owner: "实时数据组", description: "虚构行情事件 Topic，当前只做模拟。", enabled: false, status: "NOT_TESTED", lastTestAt: null, updatedAt: minutesAgo(60) },
     { id: randomUUID(), name: "证券分析数仓", sourceType: "HIVE_SPARK", environment: "staging", endpoint: "demo_dw / Spark SQL", owner: "数据开发组", description: "Hive/Spark SQL 方向的虚构数仓执行环境。", enabled: false, status: "NOT_TESTED", lastTestAt: null, updatedAt: minutesAgo(75) },
   ];
+  const dataContracts = [
+    { id: randomUUID(), name: "持仓快照数据契约", assetPhysicalName: "dws_position_snapshot", version: "1.0.0", status: "ACTIVE", compatibility: "BACKWARD_COMPATIBLE", owner: "资产分析组", consumers: ["财富顾问客户持仓分析", "T+1 数据质量检查"], requiredFields: ["security_account", "security_code", "holding_quantity", "market_value"], qualitySlo: "交易日 T+1 02:30 前可用；关键字段非空率 ≥ 99.9%", changePolicy: "新增字段向后兼容；删除或修改字段需先评估下游消费者。", updatedAt: minutesAgo(14) },
+    { id: randomUUID(), name: "订单成交明细数据契约", assetPhysicalName: "dwd_order_trade", version: "0.9.0", status: "DRAFT", compatibility: "REVIEW_REQUIRED", owner: "交易数据组", consumers: ["交易清算分析", "持仓快照加工"], requiredFields: ["order_id", "security_code", "trade_quantity", "trade_time"], qualitySlo: "交易日内增量延迟 ≤ 30 分钟；订单标识唯一。", changePolicy: "字段类型或口径变化必须经下游开发、质量与业务负责人评审。", updatedAt: minutesAgo(32) },
+  ];
   const opsIncidents = [
     {
       id: randomUUID(), title: "持仓快照 T+1 时效提醒", severity: "MEDIUM", status: "OPEN", source: "数据质量规则：持仓快照 T+1 时效",
@@ -147,6 +151,7 @@ export const createSeedState = () => {
     agentEvalRuns: [],
     streamJobs,
     dataSources,
+    dataContracts,
     opsIncidents,
   };
 };

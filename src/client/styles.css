@@ -104,6 +104,12 @@ main { width: min(1480px, calc(100% - 48px)); margin: 0 auto; }
 .metadata-source { display: grid; gap: 5px; margin: 16px 26px 4px; padding: 12px 14px; border: 1px solid #cde3d5; border-radius: 10px; background: #f3faf5; color: #33664a; font-size: 11px; }
 .metadata-source strong { color: var(--green); font-size: 12px; }
 .metadata-source small { color: var(--muted); }
+.contract-context { display: grid; gap: 7px; margin: 14px 26px 4px; padding: 14px; border: 1px solid #cbdcf1; border-radius: 10px; background: #f3f7fc; color: #3d5d81; font-size: 11px; }
+.contract-context > div { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.contract-context strong { color: #254f82; font-size: 12px; }
+.contract-context p { margin: 0; line-height: 1.55; }
+.contract-context small { color: var(--muted); line-height: 1.5; }
+.contract-context.empty { border-style: dashed; background: #fbfcfa; color: var(--muted); }
 .lineage-block { padding: 20px 26px 8px; }
 .lineage-block p:last-child { color: var(--muted); font-size: 12px; line-height: 2.2; }
 .lineage-chip { display: inline-block; padding: 3px 8px; border-radius: 6px; background: #eef1eb; color: var(--ink); font: 11px "DM Mono", monospace; }

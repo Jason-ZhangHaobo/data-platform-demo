@@ -37,6 +37,10 @@ const dataSourceRoute = (pathname) => {
   const match = pathname.match(/^\/api\/sources\/([^/]+)\/(test|metadata)$/);
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
 };
+const dataContractRoute = (pathname) => {
+  const match = pathname.match(/^\/api\/contracts\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : undefined;
+};
 const opsIncidentRoute = (pathname) => {
   const match = pathname.match(/^\/api\/ops\/incidents\/([^/]+)\/(acknowledge|resolve)$/);
   return match ? { id: decodeURIComponent(match[1]), action: match[2] } : undefined;
@@ -93,6 +97,13 @@ export function createApiController({ store, simulationDelayMs = 1_200, environm
     if (method === "POST" && pathname === "/api/masking/rules") return result(201, await store.createMaskingRule(validateMaskingRuleInput(body)));
     if (method === "GET" && pathname === "/api/assets") return result(200, await store.listAssets({ q: query?.get("q"), domain: query?.get("domain"), sensitivity: query?.get("sensitivity") }));
     if (method === "POST" && pathname === "/api/assets") return result(201, await store.createAsset(validateAssetInput(body)));
+    if (method === "GET" && pathname === "/api/contracts") return result(200, await store.listDataContracts());
+    const contractId = dataContractRoute(pathname);
+    if (contractId) {
+      const contract = await store.getDataContract(contractId);
+      if (!contract) return result(404, { message: "未找到数据契约" });
+      return method === "GET" ? result(200, contract) : result(405, { message: "不支持的数据契约请求方法" });
+    }
     if (method === "GET" && pathname === "/api/security/users") return result(200, await store.listSecurityUsers());
     if (method === "GET" && pathname === "/api/security/roles") return result(200, await store.listSecurityRoles());
     if (method === "GET" && pathname === "/api/security/audit") return result(200, await store.listAuditLogs({ q: query?.get("q"), result: query?.get("result") }));
