@@ -179,6 +179,11 @@ describe("data platform API controller", () => {
     assert.equal(history.body.length, 1);
     const summary = await handle({ method: "GET", pathname: "/api/quality/summary" });
     assert.equal(summary.body.warnRules, 1);
+    const assets = await handle({ method: "GET", pathname: "/api/assets" });
+    const created = await handle({ method: "POST", pathname: "/api/quality/rules", body: { name: "持仓市值不能为空", assetId: assets.body.find((item) => item.physicalName === "dws_position_snapshot").id, ruleType: "NOT_NULL", fieldName: "market_value", threshold: 0, owner: "数据质量组", enabled: true, description: "虚构持仓市值字段不可为空。" } });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.lastStatus, "NOT_RUN");
+    await assert.rejects(() => handle({ method: "POST", pathname: "/api/quality/rules", body: { ...created.body, name: "x", ruleType: "INVALID" } }), ValidationError);
   });
 
   test("acknowledges and resolves a fictional operations incident with a runbook", async () => {
