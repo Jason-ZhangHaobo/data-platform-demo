@@ -128,6 +128,8 @@ export class OssTaskStore extends MemoryTaskStore {
   async getDataSource(id) { await this.refresh(); return super.getDataSource(id); }
   async createDataSource(input) { await this.refresh(); return super.createDataSource(input); }
   async updateDataSource(id, patch) { await this.refresh(); return super.updateDataSource(id, patch); }
+  async listDataContracts() { await this.refresh(); return super.listDataContracts(); }
+  async getDataContract(id) { await this.refresh(); return super.getDataContract(id); }
   async listOpsIncidents() { await this.refresh(); return super.listOpsIncidents(); }
   async getOpsIncident(id) { await this.refresh(); return super.getOpsIncident(id); }
   async updateOpsIncident(id, patch) { await this.refresh(); return super.updateOpsIncident(id, patch); }

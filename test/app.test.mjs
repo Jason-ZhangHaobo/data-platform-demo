@@ -98,6 +98,14 @@ describe("data platform API controller", () => {
     assert.equal(detail.status, 200);
     assert.equal(detail.body.fields.some((field) => field.name === "market_value"), true);
     assert.equal(detail.body.upstream.includes("dwd_order_trade"), true);
+    const contracts = await handle({ method: "GET", pathname: "/api/contracts" });
+    assert.equal(contracts.status, 200);
+    assert.equal(contracts.body.length, 2);
+    const holdingContract = contracts.body.find((item) => item.assetPhysicalName === "dws_position_snapshot");
+    assert.equal(holdingContract.status, "ACTIVE");
+    assert.equal(holdingContract.requiredFields.includes("market_value"), true);
+    const contractDetail = await handle({ method: "GET", pathname: `/api/contracts/${holdingContract.id}` });
+    assert.equal(contractDetail.body.compatibility, "BACKWARD_COMPATIBLE");
     await assert.rejects(() => handle({ method: "POST", pathname: "/api/assets", body: { name: "无效资产", physicalName: "demo_invalid", assetType: "TABLE", layer: "ODS", domain: "交易", owner: "测试组", sensitivity: "PUBLIC", description: "", tags: [], fields: [], upstream: [] } }), ValidationError);
   });
 
