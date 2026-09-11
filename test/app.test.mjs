@@ -33,8 +33,9 @@ describe("data platform API controller", () => {
 
   test("creates, validates, and simulates a data development job", async () => {
     const { handle } = setup();
-    const created = await handle({ method: "POST", pathname: "/api/dev/jobs", body: { name: "会员画像 SQL", description: "聚合演示会员数据", jobType: "SQL", sql: "SELECT city, COUNT(*) FROM business_demo.customer_profile GROUP BY city LIMIT 1000;", schedule: "手动", owner: "数据开发组", enabled: true } });
+    const created = await handle({ method: "POST", pathname: "/api/dev/jobs", body: { name: "会员画像 SQL", description: "聚合演示会员数据", jobType: "SQL", sql: "SELECT city, COUNT(*) FROM business_demo.customer_profile GROUP BY city LIMIT 1000;", schedule: "手动", owner: "数据开发组", dependencies: "ods_member, dim_city", enabled: true } });
     assert.equal(created.status, 201);
+    assert.deepEqual(created.body.dependencies, ["ods_member", "dim_city"]);
     const validated = await handle({ method: "POST", pathname: `/api/dev/jobs/${created.body.id}/validate` });
     assert.equal(validated.status, 200);
     assert.equal(validated.body.valid, true);
@@ -162,6 +163,7 @@ describe("data platform API controller", () => {
     assert.equal(confirmed.body.status, "COMPLETED");
     assert.equal(confirmed.body.execution.type, "HOLDINGS_REPORT");
     assert.equal(confirmed.body.execution.devJob.enabled, false);
+    assert.deepEqual(confirmed.body.execution.devJob.dependencies, ["dws_position_snapshot_t1"]);
     assert.equal(confirmed.body.execution.artifacts.deploymentConfig.platform, "aliyun-dataworks-emr");
   });
 
