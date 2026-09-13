@@ -6,6 +6,12 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.v2.example
 .DS_Store
 *.log
-
+.runtime/
+.v2-artifacts/
+.env.local
+web-dist/
+__pycache__/
+*.py[cod]

@@ -6,6 +6,7 @@ async function filesUnder(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
+    if (entry.name === "__pycache__") continue;
     const path = join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await filesUnder(path)); else files.push(path);
   }
@@ -18,8 +19,11 @@ const files = [
   ...await filesUnder("test"),
   ...await filesUnder("docs"),
   ...await filesUnder(".github"),
+  ...await filesUnder("web"),
+  ...await filesUnder("fixtures"),
   "s.yaml",
   ".env.example",
+  ".env.v2.example",
 ];
 for (const file of files.filter((path) => path.endsWith(".mjs"))) {
   const checked = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });

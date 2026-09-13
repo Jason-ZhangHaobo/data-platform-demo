@@ -1,0 +1,1417 @@
+import React, { Suspense, lazy, useEffect, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
+import {
+  Activity,
+  ArrowDownToLine,
+  ArrowRight,
+  ArrowUpRight,
+  Bell,
+  Bot,
+  Boxes,
+  Braces,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  CircleHelp,
+  Clock3,
+  Code2,
+  Database,
+  FileCode2,
+  FolderKanban,
+  GitBranch,
+  GitCompareArrows,
+  History,
+  Layers3,
+  ListChecks,
+  LoaderCircle,
+  Menu,
+  MoreHorizontal,
+  PanelRightClose,
+  PanelRightOpen,
+  Play,
+  Plus,
+  Search,
+  Send,
+  Settings2,
+  ShieldCheck,
+  Square,
+  Table2,
+  Terminal,
+  Undo2,
+  Workflow,
+  X,
+  AlertCircle,
+  Radio,
+  Save,
+} from "lucide-react";
+import "./styles.css";
+const SqlEditor = lazy(() => import("./SqlEditor"));
+type Column = { name: string; type: string };
+type Context = {
+  id: string;
+  name: string;
+  definition: string;
+  advisorId: string;
+  businessDate: string;
+  referenceSql: string;
+  tables: {
+    name: string;
+    label: string;
+    columns: [string, string][];
+    rows: (string | null)[][];
+  }[];
+};
+type Capability = {
+  id: string;
+  name: string;
+  group: string;
+  stage: string;
+  description: string;
+  features: string[];
+};
+type Status = {
+  mode: string;
+  projectId: string;
+  model: { configured: boolean; model: string };
+  spark: { available: boolean; engine: string; isolation: string };
+  metadata: { driver: string; cloudVerified: boolean };
+  publicReady: boolean;
+  capabilities: Capability[];
+};
+type Revision = {
+  id: string;
+  sql: string;
+  hash: string;
+  createdAt: string;
+  contextId: string;
+  source: string;
+};
+type Run = {
+  id: string;
+  status: string;
+  revisionId: string;
+  contextId: string;
+  createdAt: string;
+  engine?: string;
+  engineVersion?: string;
+  durationMs?: number;
+  rows?: Record<string, string | number | null>[];
+  columns?: Column[];
+  validation?: { passed: boolean; issues: string[]; assertions: string[] };
+  error?: string;
+  log?: string;
+};
+type AgentTask = {
+  id: string;
+  status: string;
+  message: string;
+  sql?: string;
+  explanation?: string;
+  error?: string;
+  revisionId?: string;
+  attempts: { attempt: number; status: string; runId: string }[];
+};
+const icons: Record<string, React.ComponentType<{ size?: number }>> = {
+  sources: Database,
+  sync: GitBranch,
+  development: Code2,
+  schedules: Workflow,
+  assets: Layers3,
+  quality: ListChecks,
+  security: ShieldCheck,
+  services: Braces,
+  reports: Table2,
+  ops: Activity,
+  settings: Settings2,
+};
+const labels: Record<string, string> = {
+  QUEUED: "排队中",
+  RUNNING: "执行中",
+  SUCCEEDED: "验证通过",
+  VALIDATION_FAILED: "结果不符",
+  FAILED: "运行失败",
+  CANCELLED: "已取消",
+  INTERRUPTED: "已中断",
+};
+const isPending = (s?: string) => s === "QUEUED" || s === "RUNNING";
+const time = (s: string) =>
+  new Date(s).toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+async function api<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch("/api/v2" + path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shuzhan-Client": "workbench",
+      ...(body === undefined ? {} : { "Idempotency-Key": crypto.randomUUID() }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const value = await response.json();
+  if (!response.ok) throw new Error(value.message ?? "请求失败");
+  return value;
+}
+function App() {
+  const [status, setStatus] = useState<Status>(),
+    [contexts, setContexts] = useState<Context[]>([]),
+    [contextId, setContextId] = useState("holdings-t1");
+  const [nav, setNav] = useState(
+      () =>
+        new URLSearchParams(window.location.search).get("module") ??
+        "development",
+    ),
+    [sql, setSql] = useState(""),
+    [original, setOriginal] = useState(""),
+    [diff, setDiff] = useState(false);
+  const [runs, setRuns] = useState<Run[]>([]),
+    [run, setRun] = useState<Run>(),
+    [revisions, setRevisions] = useState<Revision[]>([]);
+  const [agentTask, setAgentTask] = useState<AgentTask>(),
+    [message, setMessage] = useState(""),
+    [agentOpen, setAgentOpen] = useState(true);
+  const [tab, setTab] = useState("结果"),
+    [modal, setModal] = useState<"versions" | "search" | null>(null),
+    [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false),
+    [notice, setNotice] = useState(""),
+    [error, setError] = useState(""),
+    [expanded, setExpanded] = useState("positions");
+  const sqlRef = useRef(sql);
+  const [modelKey, setModelKey] = useState("");
+  sqlRef.current = sql;
+  const modalRef = useRef<HTMLElement>(null);
+  const context = contexts.find((c) => c.id === contextId),
+    active = status?.capabilities.find((c) => c.id === nav);
+  const totalRows = context?.tables.reduce((s, t) => s + t.rows.length, 0) ?? 0;
+  const groupNames = [...new Set(status?.capabilities.map((c) => c.group))];
+  useEffect(() => {
+    if (!status) return;
+    if (!status.capabilities.some((cap) => cap.id === nav)) {
+      setNav("development");
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.set("module", nav);
+    window.history.replaceState(null, "", url);
+  }, [nav, status]);
+  const reload = async () => {
+    const [s, c, r, v, a] = await Promise.all([
+      api<Status>("/status"),
+      api<Context[]>("/contexts"),
+      api<Run[]>("/runs"),
+      api<Revision[]>("/revisions"),
+      api<AgentTask[]>("/agent/tasks"),
+    ]);
+    setStatus(s);
+    setContexts(c);
+    setRuns(r);
+    setRevisions(v);
+    if (!sqlRef.current) {
+      const initial = v[0]?.sql ?? c[0].referenceSql;
+      setSql(initial);
+      setOriginal(initial);
+      if (v[0]) setContextId(v[0].contextId);
+    }
+    setRun(r[0]);
+    setAgentTask(a[0]);
+  };
+  useEffect(() => {
+    reload().catch((e) => setError(e.message));
+  }, []);
+  useEffect(() => {
+    if (!isPending(run?.status) && !isPending(agentTask?.status)) return;
+    const interval = setInterval(async () => {
+      try {
+        if (run && isPending(run.status)) {
+          const current = await api<Run>("/runs/" + run.id);
+          setRun(current);
+          if (!isPending(current.status)) setRuns(await api<Run[]>("/runs"));
+        }
+        if (agentTask && isPending(agentTask.status)) {
+          const current = await api<AgentTask>("/agent/tasks/" + agentTask.id);
+          setAgentTask(current);
+          if (!isPending(current.status)) {
+            setRevisions(await api<Revision[]>("/revisions"));
+            setRuns(await api<Run[]>("/runs"));
+          }
+        }
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    }, 1400);
+    return () => clearInterval(interval);
+  }, [run?.id, run?.status, agentTask?.id, agentTask?.status]);
+  useEffect(() => {
+    const listener = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setModal(null);
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setModal("search");
+      }
+    };
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(""), 4000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+  useEffect(() => {
+    if (!modal || !modalRef.current) return;
+    const previous = document.activeElement,
+      container = modalRef.current;
+    const focusable = () =>
+      Array.from(
+        container.querySelectorAll<HTMLElement>(
+          'button:not(:disabled),input,select,textarea,a[href],[tabindex="0"]',
+        ),
+      ).filter((e) => e.offsetParent !== null);
+    (
+      container.querySelector<HTMLInputElement>("input") ?? focusable()[0]
+    )?.focus();
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const items = focusable(),
+        first = items[0],
+        last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      }
+      if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    container.addEventListener("keydown", trap);
+    return () => {
+      container.removeEventListener("keydown", trap);
+      if (previous instanceof HTMLElement) previous.focus();
+    };
+  }, [modal]);
+  const save = async () => {
+    const saved = await api<Revision>("/revisions", { sql, contextId });
+    setOriginal(saved.sql);
+    setSql(saved.sql);
+    setRevisions(await api<Revision[]>("/revisions"));
+    return saved;
+  };
+  const saveClick = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await save();
+      setNotice("代码版本已保存");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const execute = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const saved = await save();
+      const result = await api<Run>("/runs", { revisionId: saved.id });
+      setRun(result);
+      setTab("结果");
+      setNotice("已提交 Spark 后台执行");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const send = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const task = await api<AgentTask>("/agent/tasks", {
+        message,
+        sql,
+        contextId,
+      });
+      setAgentTask(task);
+      setMessage("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const download = async () => {
+    if (!run) return;
+    try {
+      const bundle = await api<unknown>("/runs/" + run.id + "/bundle");
+      const url = URL.createObjectURL(
+        new Blob([JSON.stringify(bundle, null, 2)], {
+          type: "application/json",
+        }),
+      );
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "shuzhan-verification-" + run.id.slice(0, 8) + ".json";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const switchContext = (id: string) => {
+    setContextId(id);
+    setRun(undefined);
+    setNotice("已切换输入数据，代码保留；重新运行以验证结果");
+  };
+  const dirty = sql !== original,
+    canWrite = status?.mode === "LOCAL_DEVELOPMENT";
+  const runRevision = revisions.find(
+    (revision) => revision.id === run?.revisionId,
+  );
+  const resultIsCurrent = Boolean(
+    run && run.contextId === contextId && runRevision?.sql === sql.trim(),
+  );
+  return (
+    <div className="shell">
+      <aside className="sidebar">
+        <a className="brand" href="/v2/" aria-label="数栈工作台">
+          <span className="brand-symbol">
+            <Layers3 size={22} />
+          </span>
+          <strong>
+            数栈<span>SHUZHAN</span>
+          </strong>
+          <small>V2</small>
+        </a>
+        <button
+          className="workspace-picker"
+          onClick={() => {
+            setNav("settings");
+          }}
+        >
+          <FolderKanban size={17} />
+          <span>
+            证券数据实验室<small>个人工作空间</small>
+          </span>
+          <ChevronDown size={14} />
+        </button>
+        <button
+          className="nav-search"
+          aria-label="搜索功能与模块"
+          title="搜索功能与模块"
+          onClick={() => setModal("search")}
+        >
+          <Search size={15} />
+          <span>搜索功能与模块</span>
+          <kbd>⌘ K</kbd>
+        </button>
+        <button
+          aria-label="Data Agent"
+          title="Data Agent"
+          className={
+            "agent-entry " +
+            (agentOpen && nav === "development" ? "active" : "")
+          }
+          onClick={() => {
+            setNav("development");
+            setAgentOpen(true);
+          }}
+        >
+          <Bot size={17} />
+          <span>Data Agent</span>
+          <span className="ai-tag">AI</span>
+        </button>
+        <nav aria-label="主要功能">
+          {groupNames.map((group) => (
+            <section key={group}>
+              <h2>{group}</h2>
+              {status?.capabilities
+                .filter((c) => c.group === group)
+                .map((cap) => {
+                  const Icon = icons[cap.id] ?? Boxes;
+                  return (
+                    <button
+                      title={cap.name}
+                      key={cap.id}
+                      className={
+                        "nav-link " + (nav === cap.id ? "selected" : "")
+                      }
+                      onClick={() => setNav(cap.id)}
+                    >
+                      <Icon size={17} />
+                      <span>{cap.name}</span>
+                      {cap.id === "development" && <span className="nav-dot" />}
+                    </button>
+                  );
+                })}
+            </section>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <span className="user-avatar">数</span>
+          <div>
+            <strong>本地开发者</strong>
+            <small>合成数据 · 开发验证</small>
+          </div>
+          <button aria-label="查看运行设置" onClick={() => setNav("settings")}>
+            <Settings2 size={16} />
+          </button>
+        </div>
+      </aside>
+      <main className="main">
+        <header className="topbar">
+          <div className="breadcrumb">
+            <span>证券数据实验室</span>
+            <ChevronRight size={13} />
+            <strong>{active?.name ?? "数据开发"}</strong>
+          </div>
+          <div className="top-actions">
+            <span className="env-tag">
+              <span />
+              本地验证
+            </span>
+            <button title="帮助与验收标准" onClick={() => setNav("settings")}>
+              <CircleHelp size={18} />
+            </button>
+            <span className="top-avatar">数</span>
+          </div>
+        </header>
+        {error && (
+          <div role="alert" className="error-banner">
+            <AlertCircle size={16} />
+            <span>{error}</span>
+            <button onClick={() => setError("")} aria-label="关闭错误提示">
+              <X size={15} />
+            </button>
+          </div>
+        )}
+        {nav === "development" ? (
+          <>
+            <div className="page-heading">
+              <div>
+                <div className="eyebrow">
+                  <span /> DATA DEVELOPMENT
+                </div>
+                <h1>
+                  客户资产 T+1 <span className="draft-badge">开发中</span>
+                </h1>
+                <p>在已知数据与业务口径下，编写、执行并验证 SQL。</p>
+              </div>
+              <div className="heading-actions">
+                <button className="button" onClick={() => setModal("versions")}>
+                  <History size={15} />
+                  版本 <span>{revisions.length}</span>
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label={agentOpen ? "收起 Agent" : "展开 Agent"}
+                  onClick={() => setAgentOpen(!agentOpen)}
+                >
+                  {agentOpen ? (
+                    <PanelRightClose size={18} />
+                  ) : (
+                    <PanelRightOpen size={18} />
+                  )}
+                </button>
+              </div>
+            </div>
+            <div className="journey" aria-label="开发流程">
+              <span className="done">
+                <Check size={13} />
+                选择上下文
+              </span>
+              <ChevronRight size={12} />
+              <span className="current">02 编写与调试</span>
+              <ChevronRight size={12} />
+              <span
+                className={
+                  run?.status === "SUCCEEDED" && resultIsCurrent ? "done" : ""
+                }
+              >
+                03 核验结果
+              </span>
+              <ChevronRight size={12} />
+              <span title="M2：实际调度发布待实现">
+                04 发布交付 <small>M2</small>
+              </span>
+              <div className="journey-end">
+                <Database size={13} />
+                {context?.tables.length ?? 0} 张样例表 · {totalRows} 行
+              </div>
+            </div>
+            <div className={"work-area " + (agentOpen ? "with-agent" : "")}>
+              <section className="studio">
+                <div className="studio-top">
+                  <div className="file-tab">
+                    <FileCode2 size={15} />
+                    <strong>customer_assets.sql</strong>
+                    {dirty && (
+                      <span className="unsaved-dot" title="编辑已修改" />
+                    )}
+                  </div>
+                  <span>Spark SQL</span>
+                </div>
+                <div className="editor-toolbar">
+                  <label>
+                    <Database size={14} />
+                    <select
+                      aria-label="输入数据版本"
+                      value={contextId}
+                      onChange={(e) => switchContext(e.target.value)}
+                    >
+                      {contexts.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="toolbar-actions">
+                    <button
+                      title="查看与参考版本的差异"
+                      className={diff ? "on" : ""}
+                      onClick={() => setDiff(!diff)}
+                    >
+                      <GitCompareArrows size={15} />
+                      <span>差异</span>
+                    </button>
+                    <button
+                      title="撤销至载入版本"
+                      onClick={() => {
+                        setSql(original);
+                        setNotice("已恢复载入版本");
+                      }}
+                    >
+                      <Undo2 size={15} />
+                    </button>
+                    <button
+                      onClick={saveClick}
+                      disabled={busy || !canWrite}
+                      title="保存代码版本"
+                    >
+                      <Save size={15} />
+                    </button>
+                    <button
+                      className="run-button"
+                      onClick={execute}
+                      disabled={
+                        busy ||
+                        isPending(run?.status) ||
+                        !status?.spark.available ||
+                        !canWrite
+                      }
+                    >
+                      {isPending(run?.status) ? (
+                        <LoaderCircle size={14} className="spin" />
+                      ) : (
+                        <Play size={14} />
+                      )}
+                      <span>
+                        {isPending(run?.status) ? "执行中" : "运行 SQL"}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+                <div className="editor-region">
+                  <Suspense
+                    fallback={
+                      <textarea
+                        aria-label="SQL 编辑器"
+                        value={sql}
+                        onChange={(e) => setSql(e.target.value)}
+                      />
+                    }
+                  >
+                    {sql && (
+                      <SqlEditor
+                        value={sql}
+                        original={original}
+                        onChange={setSql}
+                        diff={diff}
+                      />
+                    )}
+                  </Suspense>
+                </div>
+                <div className="editor-status">
+                  <span>
+                    <CheckCircle2 size={12} />
+                    参考 SQL 可人工编辑
+                  </span>
+                  <span>UTF-8 · Spark SQL · {sql.split("\n").length} 行</span>
+                </div>
+                <section className="result-panel">
+                  <div className="result-toolbar">
+                    <div role="tablist" aria-label="运行结果视图">
+                      {["结果", "验证", "日志", "运行记录"].map((label) => (
+                        <button
+                          role="tab"
+                          aria-selected={tab === label}
+                          className={tab === label ? "active" : ""}
+                          key={label}
+                          onClick={() => setTab(label)}
+                        >
+                          {label}
+                          {label === "结果" && run?.rows && (
+                            <small>{run.rows.length}</small>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="run-meta">
+                      {run && (
+                        <span
+                          className={
+                            "status-pill " +
+                            (resultIsCurrent
+                              ? run.status.toLowerCase()
+                              : "stale")
+                          }
+                        >
+                          {resultIsCurrent
+                            ? (labels[run.status] ?? run.status)
+                            : "历史结果"}
+                        </span>
+                      )}
+                      {run?.durationMs && (
+                        <span>{(run.durationMs / 1000).toFixed(1)}s</span>
+                      )}
+                      {isPending(run?.status) && (
+                        <button
+                          aria-label="取消运行"
+                          onClick={async () => {
+                            try {
+                              setRun(
+                                await api<Run>(
+                                  "/runs/" + run?.id + "/cancel",
+                                  {},
+                                ),
+                              );
+                            } catch (e) {
+                              setError((e as Error).message);
+                            }
+                          }}
+                        >
+                          <Square size={13} />
+                        </button>
+                      )}
+                      <button
+                        title="导出验证包"
+                        aria-label="导出验证包"
+                        disabled={run?.status !== "SUCCEEDED"}
+                        onClick={download}
+                      >
+                        <ArrowDownToLine size={15} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="result-body">
+                    {run && tab !== "运行记录" && (
+                      <div
+                        className={
+                          "run-reference " + (resultIsCurrent ? "" : "stale")
+                        }
+                      >
+                        <span>
+                          版本{" "}
+                          {runRevision?.hash.slice(0, 8) ??
+                            run.revisionId.slice(0, 8)}{" "}
+                          · 批次 {run.id.slice(0, 8)}
+                        </span>
+                        {!resultIsCurrent && (
+                          <strong>代码或上下文已变更，请重新运行核验</strong>
+                        )}
+                      </div>
+                    )}
+                    {tab === "结果" &&
+                      (run?.rows ? (
+                        <>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>#</th>
+                                {run.columns?.map((c) => (
+                                  <th key={c.name}>
+                                    {c.name}
+                                    <small>{c.type}</small>
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {run.rows.map((row, i) => (
+                                <tr key={i}>
+                                  <td>{i + 1}</td>
+                                  {run.columns?.map((c) => (
+                                    <td key={c.name}>
+                                      {String(row[c.name] ?? "NULL")}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          <div className="table-foot">
+                            <span>
+                              <ShieldCheck size={12} />
+                              仅当前上下文的合成客户
+                            </span>
+                            <span>
+                              {run.engine} {run.engineVersion}
+                            </span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="empty-result">
+                          {isPending(run?.status) ? (
+                            <LoaderCircle size={27} className="spin" />
+                          ) : (
+                            <Terminal size={27} />
+                          )}
+                          <strong>
+                            {run?.error ??
+                              (isPending(run?.status)
+                                ? "Spark 正在后台执行"
+                                : "运行代码，查看真实结果")}
+                          </strong>
+                          <p>
+                            {isPending(run?.status)
+                              ? "你可以继续浏览；运行状态会自动保存。"
+                              : "每次执行会记录代码版本，并用独立业务断言核验结果。"}
+                          </p>
+                        </div>
+                      ))}
+                    {tab === "验证" &&
+                      (run?.validation ? (
+                        <div
+                          className={
+                            "validation-list " +
+                            (run.validation.passed ? "passed" : "failed")
+                          }
+                        >
+                          <h3>
+                            {run.validation.passed
+                              ? "独立业务断言通过"
+                              : "结果需要修正"}
+                          </h3>
+                          {!run.validation.passed && (
+                            <p>
+                              以下为本次核验范围，并非全部通过；具体问题见下方。
+                            </p>
+                          )}
+                          {run.validation.assertions.map((item) => (
+                            <div key={item}>
+                              {run.validation!.passed ? (
+                                <CheckCircle2 size={15} />
+                              ) : (
+                                <Circle size={15} />
+                              )}
+                              {item}
+                            </div>
+                          ))}
+                          {run.validation.issues.map((item) => (
+                            <p className="validation-error" key={item}>
+                              {item}
+                            </p>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="empty-result">
+                          <ListChecks size={27} />
+                          <strong>运行后生成验证报告</strong>
+                          <p>核验客户范围、现金聚合、证券去重和金额精度。</p>
+                        </div>
+                      ))}
+                    {tab === "日志" && (
+                      <pre className="log-text">
+                        {run?.error ??
+                          run?.log ??
+                          "等待运行日志。模型未配置时不会生成模拟成功日志。"}
+                      </pre>
+                    )}
+                    {tab === "运行记录" && (
+                      <div className="run-history">
+                        {runs.length ? (
+                          runs.map((r) => (
+                            <button
+                              key={r.id}
+                              onClick={() => {
+                                setRun(r);
+                                setTab("结果");
+                              }}
+                            >
+                              <span
+                                className={
+                                  "status-pill " + r.status.toLowerCase()
+                                }
+                              >
+                                {labels[r.status]}
+                              </span>
+                              <span>{r.id.slice(0, 8)}</span>
+                              <span>{time(r.createdAt)}</span>
+                              <ArrowUpRight size={14} />
+                            </button>
+                          ))
+                        ) : (
+                          <div className="empty-result">
+                            <History size={25} />
+                            <strong>还没有执行记录</strong>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              </section>
+              {agentOpen && (
+                <aside className="agent-panel">
+                  <header>
+                    <span className="agent-icon">
+                      <Bot size={20} />
+                    </span>
+                    <div>
+                      <strong>Data Agent</strong>
+                      <small>与当前代码和上下文协作</small>
+                    </div>
+                    <button
+                      aria-label="收起 Agent 面板"
+                      onClick={() => setAgentOpen(false)}
+                    >
+                      <X size={17} />
+                    </button>
+                  </header>
+                  <div className="agent-content">
+                    <div className="assistant-message">
+                      <span className="mini-agent">
+                        <Bot size={15} />
+                      </span>
+                      <div>
+                        <strong>从业务目标，到可验证的代码。</strong>
+                        <p>
+                          我会基于你选择的表结构与口径编写
+                          SQL，读取执行结果，并在限定次数内修正问题。
+                        </p>
+                      </div>
+                    </div>
+                    <div className="context-card">
+                      <div>
+                        <span>
+                          <Layers3 size={14} />
+                          已关联上下文
+                        </span>
+                        <small>{context?.tables.length ?? 0} 张表</small>
+                      </div>
+                      {context?.tables.map((t) => (
+                        <button
+                          key={t.name}
+                          onClick={() => {
+                            setExpanded(t.name);
+                            setNav("assets");
+                          }}
+                        >
+                          <Table2 size={13} />
+                          <code>{t.name}</code>
+                          <small>{t.columns.length} 字段</small>
+                          <ChevronRight size={12} />
+                        </button>
+                      ))}
+                      <p>
+                        <ShieldCheck size={13} />
+                        已定义：现金独立聚合、持仓去重
+                      </p>
+                    </div>
+                    <p className="section-caption">你可以这样开始</p>
+                    <div className="prompt-list">
+                      {[
+                        "检查当前 SQL 是否会重复累计现金",
+                        "完善客户总资产计算，并执行验证",
+                        "检查证券去重逻辑，修正后重新运行",
+                      ].map((prompt) => (
+                        <button key={prompt} onClick={() => setMessage(prompt)}>
+                          <span>{prompt}</span>
+                          <ArrowUpRight size={14} />
+                        </button>
+                      ))}
+                    </div>
+                    {agentTask && (
+                      <div className="agent-task">
+                        {isPending(agentTask.status) && (
+                          <button
+                            className="button"
+                            onClick={async () => {
+                              try {
+                                setAgentTask(
+                                  await api<AgentTask>(
+                                    "/agent/tasks/" + agentTask.id + "/cancel",
+                                    {},
+                                  ),
+                                );
+                              } catch (e) {
+                                setError((e as Error).message);
+                              }
+                            }}
+                          >
+                            停止委托
+                            <Square size={13} />
+                          </button>
+                        )}
+                        <div>
+                          <strong>最近的委托</strong>
+                          <span
+                            className={
+                              "status-pill " + agentTask.status.toLowerCase()
+                            }
+                          >
+                            {labels[agentTask.status]}
+                          </span>
+                        </div>
+                        <p>{agentTask.message}</p>
+                        {agentTask.attempts.map((a) => (
+                          <p key={a.attempt}>
+                            第 {a.attempt} 次 · {labels[a.status]}
+                          </p>
+                        ))}
+                        {agentTask.explanation && (
+                          <p>{agentTask.explanation}</p>
+                        )}
+                        {agentTask.error && (
+                          <p className="validation-error">{agentTask.error}</p>
+                        )}
+                        {agentTask.sql && !isPending(agentTask.status) && (
+                          <button
+                            className="button"
+                            onClick={() => {
+                              setOriginal(sql);
+                              setSql(agentTask.sql!);
+                              setDiff(true);
+                              setNotice("已打开 Agent 产物差异");
+                            }}
+                          >
+                            审阅生成代码
+                            <GitCompareArrows size={14} />
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {!status?.model.configured && (
+                      <div className="model-notice">
+                        <CircleHelp size={16} />
+                        <div>
+                          <strong>模型服务待连接</strong>
+                          <p>
+                            参考 SQL 可直接编辑运行。连接模型后即可委托 Agent
+                            自动编写与修正。
+                          </p>
+                          <button onClick={() => setNav("settings")}>
+                            查看配置方法
+                            <ArrowRight size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <form
+                    className="agent-composer"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      send();
+                    }}
+                  >
+                    <textarea
+                      aria-label="向 Data Agent 描述需求"
+                      value={message}
+                      onChange={(e) => setMessage(e.target.value)}
+                      placeholder="描述你希望生成、修改或检查的代码…"
+                      rows={3}
+                    />
+                    <div>
+                      <span>
+                        <span
+                          className={
+                            "connection-dot " +
+                            (status?.model.configured ? "online" : "")
+                          }
+                        />
+                        {status?.model.configured
+                          ? status.model.model
+                          : "尚未连接模型"}
+                      </span>
+                      <button
+                        type="submit"
+                        aria-label="委托 Agent"
+                        disabled={
+                          busy ||
+                          isPending(agentTask?.status) ||
+                          !canWrite ||
+                          !status?.model.configured ||
+                          message.trim().length < 4
+                        }
+                      >
+                        <Send size={15} />
+                      </button>
+                    </div>
+                  </form>
+                  <small className="agent-footer">
+                    生成 → 执行 → 核验 · 最多 3 次修正
+                  </small>
+                </aside>
+              )}
+            </div>
+          </>
+        ) : (
+          <section className="module-page">
+            <div className="eyebrow">
+              {active?.group} / {active?.stage}
+            </div>
+            <h1>{active?.name}</h1>
+            <p className="module-subtitle">{active?.description}</p>
+            {nav === "assets" || nav === "sources" ? (
+              <>
+                <div className="module-summary">
+                  <Database size={22} />
+                  <div>
+                    <strong>证券测试数据上下文</strong>
+                    <p>
+                      真实执行输入 · {context?.name} · {context?.businessDate}
+                    </p>
+                  </div>
+                  <button
+                    className="button"
+                    onClick={() => setNav("development")}
+                  >
+                    进入开发
+                    <ArrowUpRight size={15} />
+                  </button>
+                </div>
+                <div className="asset-grid">
+                  {context?.tables.map((t) => (
+                    <article key={t.name} className="asset-card">
+                      <button
+                        onClick={() =>
+                          setExpanded(expanded === t.name ? "" : t.name)
+                        }
+                      >
+                        <Database size={19} />
+                        <div>
+                          <strong>{t.label}</strong>
+                          <code>{t.name}</code>
+                        </div>
+                        <span>
+                          {t.rows.length} 行 · {t.columns.length} 字段
+                        </span>
+                        <ChevronDown size={15} />
+                      </button>
+                      {expanded === t.name && (
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>字段</th>
+                              <th>类型</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {t.columns.map(([name, type]) => (
+                              <tr key={name}>
+                                <td>
+                                  <code>{name}</code>
+                                </td>
+                                <td>{type}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </article>
+                  ))}
+                </div>
+                <div className="definition-card">
+                  <h3>已确认业务口径</h3>
+                  <p>{context?.definition}</p>
+                  <small>
+                    这里展示内置合成数据结构，外部数据源真实采集在 M4 接入。
+                  </small>
+                </div>
+              </>
+            ) : nav === "settings" ? (
+              <>
+                <div className="settings-grid">
+                  <article>
+                    <Code2 size={23} />
+                    <h3>SQL 执行引擎</h3>
+                    <span
+                      className={
+                        "status-pill " +
+                        (status?.spark.available ? "succeeded" : "failed")
+                      }
+                    >
+                      {status?.spark.available
+                        ? runs.some(
+                            (r) =>
+                              r.status === "SUCCEEDED" &&
+                              r.engine === "Apache Spark" &&
+                              r.engineVersion !== "TEST_DOUBLE",
+                          )
+                          ? "已有真实执行记录"
+                          : "环境已安装，待运行核验"
+                        : "待安装"}
+                    </span>
+                    <p>Apache Spark · 本地执行单元</p>
+                    <code>npm run v2:bootstrap</code>
+                  </article>
+                  <article>
+                    <Bot size={23} />
+                    <h3>模型服务</h3>
+                    <span
+                      className={
+                        "status-pill " +
+                        (status?.model.configured ? "succeeded" : "queued")
+                      }
+                    >
+                      {status?.model.configured ? "已配置，待实测" : "未配置"}
+                    </span>
+                    <p>{status?.model.model}</p>
+                    <code>DASHSCOPE_API_KEY</code>
+                  </article>
+                  <article>
+                    <Database size={23} />
+                    <h3>平台元数据库</h3>
+                    <span className="status-pill succeeded">本地 SQLite</span>
+                    <p>独立存储版本和后台运行</p>
+                    <small>云端 MySQL 尚未验收</small>
+                  </article>
+                </div>
+                <div className="definition-card">
+                  <h3>连接真实模型服务</h3>
+                  <p>
+                    在百炼北京地域获取本项目专用 API Key，然后在下方粘贴。
+                    仅保存密钥，不会自动调用收费模型；不要使用公司凭证。
+                  </p>
+                  <a
+                    className="button"
+                    href="https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    打开百炼 API Key 页面
+                    <ArrowUpRight size={14} />
+                  </a>
+                  <form
+                    className="model-key-form"
+                    onSubmit={async (event) => {
+                      event.preventDefault();
+                      setBusy(true);
+                      setError("");
+                      try {
+                        await api("/settings/model-key", { apiKey: modelKey });
+                        setModelKey("");
+                        setStatus(await api<Status>("/status"));
+                        setNotice("密钥已保存在本机；真实模型能力仍需实测");
+                      } catch (e) {
+                        setError((e as Error).message);
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    <label htmlFor="model-key">百炼 API Key</label>
+                    <div>
+                      <input
+                        id="model-key"
+                        type="password"
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={modelKey}
+                        onChange={(event) => setModelKey(event.target.value)}
+                        placeholder="只在本机输入，不发送到聊天"
+                        disabled={!canWrite}
+                      />
+                      <button
+                        className="button primary"
+                        type="submit"
+                        disabled={busy || !canWrite || modelKey.length < 23}
+                      >
+                        保存到本机
+                      </button>
+                    </div>
+                    <small>
+                      保存为项目内仅本人可读写的
+                      .env.local；不回显、不写入任务记录、不提交
+                      Git。公网模式禁用此入口。
+                    </small>
+                  </form>
+                  <p>
+                    本地开发运行：npm run
+                    v2:dev。公网写入将在邀请认证、隔离执行与预算验收后开放。
+                  </p>
+                  <small>
+                    计划约束：200 元/月以内 · 内地部署与域名备案 · 少量受邀用户
+                  </small>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="stage-card">
+                  <span className="stage-label">
+                    {active?.stage} · 已纳入新版计划
+                  </span>
+                  <h2>
+                    {nav === "services"
+                      ? "让业务数据成为可调用的服务"
+                      : "让 " + active?.name + " 与 Agent 协同工作"}
+                  </h2>
+                  <p>
+                    {nav === "services"
+                      ? "DAPI 通过参数化 SQL 提供查询；XAPI 编排多个查询和接口。发布、授权、版本和监控共同建设。"
+                      : "该模块将与代码工作台共用项目上下文、资源模型与运行记录。当前显示规划范围，未宣称已具备实际执行能力。"}
+                  </p>
+                  <div className="feature-list">
+                    {active?.features.map((f) => (
+                      <div key={f}>
+                        <Circle size={13} />
+                        {f}
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    className="button primary"
+                    onClick={() => setNav("development")}
+                  >
+                    体验已实现的代码工作台
+                    <ArrowRight size={15} />
+                  </button>
+                </div>
+                {nav === "ops" && (
+                  <div className="run-history module-runs">
+                    {runs.map((r) => (
+                      <button
+                        key={r.id}
+                        onClick={() => {
+                          setRun(r);
+                          setNav("development");
+                          setTab("日志");
+                        }}
+                      >
+                        <span
+                          className={"status-pill " + r.status.toLowerCase()}
+                        >
+                          {labels[r.status]}
+                        </span>
+                        <code>{r.id.slice(0, 8)}</code>
+                        <span>{time(r.createdAt)}</span>
+                        <ArrowUpRight size={14} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+        )}
+        <footer className="statusbar">
+          <span>
+            <span className={"connection-dot " + (status ? "online" : "")} />
+            {status ? "服务已连接" : "正在连接服务"}
+          </span>
+          <span>经典中台 × Data Agent</span>
+          <span className="statusbar-right">合成证券数据 · 本地开发验证</span>
+        </footer>
+      </main>
+      {notice && (
+        <div role="status" className="toast">
+          <CheckCircle2 size={17} />
+          {notice}
+        </div>
+      )}
+      {modal && (
+        <div className="modal-overlay" onClick={() => setModal(null)}>
+          <section
+            ref={modalRef}
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={modal === "versions" ? "代码版本" : "搜索功能"}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header>
+              <h2>{modal === "versions" ? "代码版本" : "快速前往"}</h2>
+              <button aria-label="关闭对话框" onClick={() => setModal(null)}>
+                <X size={18} />
+              </button>
+            </header>
+            {modal === "search" ? (
+              <>
+                <input
+                  autoFocus
+                  aria-label="搜索功能"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="搜索模块、DAPI、质量…"
+                />
+                {status?.capabilities
+                  .filter((c) =>
+                    (c.name + c.features.join(""))
+                      .toLowerCase()
+                      .includes(query.toLowerCase()),
+                  )
+                  .map((c) => (
+                    <button
+                      className="search-result"
+                      key={c.id}
+                      onClick={() => {
+                        setNav(c.id);
+                        setModal(null);
+                        setQuery("");
+                      }}
+                    >
+                      <span>{c.name}</span>
+                      <small>{c.description}</small>
+                      <ArrowRight size={14} />
+                    </button>
+                  ))}
+              </>
+            ) : (
+              <div className="versions">
+                {revisions.length ? (
+                  revisions.map((v, i) => (
+                    <button
+                      key={v.id}
+                      onClick={() => {
+                        setOriginal(sql);
+                        setSql(v.sql);
+                        setContextId(v.contextId);
+                        setDiff(true);
+                        setModal(null);
+                      }}
+                    >
+                      <FileCode2 size={17} />
+                      <div>
+                        <strong>
+                          版本 {revisions.length - i}{" "}
+                          <small>
+                            {v.source === "LIVE_MODEL"
+                              ? "Agent 生成"
+                              : "人工保存"}
+                          </small>
+                        </strong>
+                        <code>{v.hash.slice(0, 12)}</code>
+                      </div>
+                      <time>{time(v.createdAt)}</time>
+                      <GitCompareArrows size={16} />
+                    </button>
+                  ))
+                ) : (
+                  <p>点击“保存”创建第一个不可变代码版本。</p>
+                )}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+createRoot(document.getElementById("root")!).render(<App />);

@@ -1,0 +1,161 @@
+{
+  "id": "holdings-t1",
+  "name": "客户资产 T+1",
+  "businessDate": "2026-09-10",
+  "advisorId": "ADVISOR-DEMO-A",
+  "classification": "SYNTHETIC",
+  "definition": "客户总资产 = 去重持仓市值 + 客户可用现金。按客户与交易日聚合，证券数量按代码去重，现金独立聚合后关联，空金额按 0 处理。",
+  "tables": [
+    {
+      "name": "accounts",
+      "label": "客户归属",
+      "columns": [
+        [
+          "client_id",
+          "STRING"
+        ],
+        [
+          "advisor_id",
+          "STRING"
+        ]
+      ],
+      "rows": [
+        [
+          "CLIENT-001",
+          "ADVISOR-DEMO-A"
+        ],
+        [
+          "CLIENT-002",
+          "ADVISOR-DEMO-A"
+        ],
+        [
+          "CLIENT-003",
+          "ADVISOR-DEMO-B"
+        ]
+      ]
+    },
+    {
+      "name": "positions",
+      "label": "持仓快照",
+      "columns": [
+        [
+          "position_id",
+          "STRING"
+        ],
+        [
+          "client_id",
+          "STRING"
+        ],
+        [
+          "security_code",
+          "STRING"
+        ],
+        [
+          "asset_class",
+          "STRING"
+        ],
+        [
+          "industry",
+          "STRING"
+        ],
+        [
+          "market_value",
+          "DECIMAL(18,2)"
+        ],
+        [
+          "trade_date",
+          "STRING"
+        ]
+      ],
+      "rows": [
+        [
+          "POS-001",
+          "CLIENT-001",
+          "SEC-DEMO-001",
+          "股票",
+          "金融",
+          "1000.00",
+          "2026-09-10"
+        ],
+        [
+          "POS-002",
+          "CLIENT-001",
+          "SEC-DEMO-002",
+          "债券",
+          "公共事业",
+          "500.00",
+          "2026-09-10"
+        ],
+        [
+          "POS-003",
+          "CLIENT-002",
+          "SEC-DEMO-001",
+          "股票",
+          "金融",
+          "750.00",
+          "2026-09-10"
+        ],
+        [
+          "POS-004",
+          "CLIENT-003",
+          "SEC-DEMO-003",
+          "股票",
+          "信息技术",
+          "9000.00",
+          "2026-09-10"
+        ]
+      ]
+    },
+    {
+      "name": "cash",
+      "label": "可用现金",
+      "columns": [
+        [
+          "client_id",
+          "STRING"
+        ],
+        [
+          "available_cash",
+          "DECIMAL(18,2)"
+        ],
+        [
+          "trade_date",
+          "STRING"
+        ]
+      ],
+      "rows": [
+        [
+          "CLIENT-001",
+          "300.00",
+          "2026-09-10"
+        ],
+        [
+          "CLIENT-002",
+          "200.00",
+          "2026-09-10"
+        ],
+        [
+          "CLIENT-003",
+          "99.00",
+          "2026-09-10"
+        ]
+      ]
+    }
+  ],
+  "expected": [
+    {
+      "client_id": "CLIENT-001",
+      "holding_market_value": "1500.00",
+      "available_cash": "300.00",
+      "total_assets": "1800.00",
+      "security_count": 2
+    },
+    {
+      "client_id": "CLIENT-002",
+      "holding_market_value": "750.00",
+      "available_cash": "200.00",
+      "total_assets": "950.00",
+      "security_count": 1
+    }
+  ]
+}
