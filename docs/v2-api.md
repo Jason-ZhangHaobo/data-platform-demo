@@ -28,6 +28,9 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /agent/tasks/:id/cancel | 取消委托及其执行 | CANCELLED |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
+当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
+即使 SUCCEEDED 也只代表代码阶段通过。旧记录缺少范围字段同样不能被计为完整 E2E。
+完整 E2E 要求理解需求至上线后监控的全部证据，定义及分阶段门槛见 PRD.md。
 服务重启会把未完成任务标为 INTERRUPTED，保留记录，等待人工重跑；自动续接尚未实现。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 
@@ -43,6 +46,7 @@ Spark 3.5.7 只允许已登记的 accounts/positions/cash 合成数据视图、�
 总 Token 默认预算 32,000，输出默认上限 6,000；请求前保守估算并缩减输出，缺失/异常用量按剩余额度消耗，不继续调用。
 这些是单任务防护，不是已验收的月度云账单硬封顶。
 模型密钥入口拒绝换行注入和配置文件符号链接；只记录“已设置”审计事件，不保存密钥到平台元数据。
+粘贴密钥会清理首尾空白，但绝不删除内部空白或允许追加环境配置行；保存错误在输入框旁持续显示。
 
 ## 尚未开放
 

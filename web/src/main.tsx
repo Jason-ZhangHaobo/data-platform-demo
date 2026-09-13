@@ -182,6 +182,8 @@ function App() {
     [expanded, setExpanded] = useState("positions");
   const sqlRef = useRef(sql);
   const [modelKey, setModelKey] = useState("");
+  const [modelSaveError, setModelSaveError] = useState("");
+  const [modelSaved, setModelSaved] = useState(false);
   sqlRef.current = sql;
   const modalRef = useRef<HTMLElement>(null);
   const context = contexts.find((c) => c.id === contextId),
@@ -1057,6 +1059,9 @@ function App() {
                   </form>
                   <small className="agent-footer">
                     生成 → 执行 → 核验 · 最多 3 次修正
+                    <span className="agent-scope-note">
+                      当前仅代码阶段；完整 E2E 还需调度、部署、上线与监控
+                    </span>
                   </small>
                 </aside>
               )}
@@ -1205,13 +1210,17 @@ function App() {
                       event.preventDefault();
                       setBusy(true);
                       setError("");
+                      setModelSaveError("");
+                      setModelSaved(false);
                       try {
                         await api("/settings/model-key", { apiKey: modelKey });
                         setModelKey("");
                         setStatus(await api<Status>("/status"));
+                        setModelSaved(true);
                         setNotice("密钥已保存在本机；真实模型能力仍需实测");
                       } catch (e) {
                         setError((e as Error).message);
+                        setModelSaveError((e as Error).message);
                       } finally {
                         setBusy(false);
                       }
@@ -1237,6 +1246,16 @@ function App() {
                         保存到本机
                       </button>
                     </div>
+                    {modelSaveError && (
+                      <p role="alert" className="model-key-error">
+                        {modelSaveError}
+                      </p>
+                    )}
+                    {modelSaved && (
+                      <p role="status" className="model-key-success">
+                        已保存到本机。模型尚未调用验证，可以返回开发页试运行。
+                      </p>
+                    )}
                     <small>
                       保存为项目内仅本人可读写的
                       .env.local；不回显、不写入任务记录、不提交

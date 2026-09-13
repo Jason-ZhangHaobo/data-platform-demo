@@ -477,3 +477,47 @@ test("public mode rejects model setup before creating local credentials", async 
     await app.close();
   }
 });
+test("model setup trims only outer clipboard whitespace", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuzhan-trim-key-")),
+    env = {};
+  const key = "sk-" + "LOCAL_TEST_ONLY_".repeat(3);
+  await saveLocalModelKey(root, env, " \r\n" + key + "\n\t ");
+  assert.equal(env.DASHSCOPE_API_KEY, key);
+  assert.equal(
+    readFileSync(join(root, ".env.local"), "utf8"),
+    "DASHSCOPE_API_KEY=" + key + "\n",
+  );
+  await assert.rejects(
+    saveLocalModelKey(root, env, key.slice(0, 12) + " " + key.slice(12)),
+    { status: 400 },
+  );
+  assert.equal(env.DASHSCOPE_API_KEY, key);
+});
+test("a successful SQL agent stage is never reported as full lifecycle E2E", async () => {
+  const app = await setup({
+    generator: async () => ({
+      sql: referenceSql,
+      explanation: "阶段边界测试",
+      model: "TEST_DOUBLE",
+      usage: { total_tokens: 100 },
+    }),
+    runner: async () => result(),
+  });
+  try {
+    const task = (
+      await app.call("/agent/tasks", {
+        message: "检查客户资产计算",
+        sql: referenceSql,
+        contextId: "holdings-t1",
+      })
+    ).body;
+    const complete = await eventually(
+      () => app.call("/agent/tasks/" + task.id),
+      "SUCCEEDED",
+    );
+    assert.equal(complete.body.completionScope, "SQL_DEVELOPMENT");
+    assert.equal(complete.body.fullLifecycleE2E, false);
+  } finally {
+    await app.close();
+  }
+});

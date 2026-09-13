@@ -4,9 +4,14 @@ import { randomUUID } from "node:crypto";
 
 // Local developer setup only. The cloud identity/secret manager is a separate gate.
 export async function saveLocalModelKey(root, env, key) {
+  // Clipboard selections often include outer whitespace; never strip characters
+  // inside a credential or permit multiline environment-variable injection.
+  if (typeof key === "string") key = key.trim();
   if (typeof key !== "string" || !/^sk-[A-Za-z0-9_-]{20,240}$/.test(key)) {
     throw Object.assign(
-      new Error("请输入完整的百炼 API Key，不要包含空格或换行"),
+      new Error(
+        "未保存：请粘贴完整的百炼 API Key（sk- 开头），不要附带引号、说明文字或中间空白；云账号 AccessKey 不能代替模型 API Key",
+      ),
       { status: 400 },
     );
   }

@@ -1744,6 +1744,21 @@ kbd {
   margin: 20px 0;
   max-width: 760px;
 }
+.model-key-error {
+  color: #a04630 !important;
+  font-size: 13px !important;
+}
+.model-key-success {
+  color: #205c3d !important;
+  font-size: 13px !important;
+}
+.agent-scope-note {
+  display: block;
+  margin: 5px 10px 0;
+  color: #596b4d;
+  line-height: 1.5;
+  font-size: 10px;
+}
 .model-key-form label {
   display: block;
   margin-bottom: 8px;

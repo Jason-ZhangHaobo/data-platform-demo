@@ -296,6 +296,8 @@ export function createV2Server(options = {}) {
               status: "QUEUED",
               attempts: [],
               mode: "LIVE_MODEL",
+              completionScope: "SQL_DEVELOPMENT",
+              fullLifecycleE2E: false,
               maxAttempts: 3,
             }),
         );
