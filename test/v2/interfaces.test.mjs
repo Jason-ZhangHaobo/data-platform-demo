@@ -337,6 +337,7 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     );
   assert.deepEqual(names, V2_MCP_TOOL_NAMES);
   for (const required of [
+    "budget_status",
     "dapi_create",
     "xapi_create",
     "data_service_test",

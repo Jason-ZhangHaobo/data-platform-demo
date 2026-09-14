@@ -63,6 +63,10 @@ import {
   LocalArtifactStore,
   deliveryArtifactValue,
 } from "./artifact-store.mjs";
+import {
+  BudgetManager,
+  budgetAgentCreationPaths,
+} from "./budget.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -169,19 +173,32 @@ export function createV2Server(options = {}) {
     project: PROJECT,
     now: options.now,
     env,
-  });
-  const runtime = runtimeConfig(env, root),
-    runner = options.runner ?? ((input) => runSpark(input, runtime));
+  }),
+    budget = new BudgetManager({
+      store,
+      project: PROJECT,
+      env,
+      now: options.now,
+    });
+  const runtime = runtimeConfig(env, root);
   const runnerDescriptor = options.runnerDescriptor ?? options.runner?.descriptor ?? {
     engine: "Apache Spark",
     isolation: "LOCAL_PROCESS",
     endpointConfigured: false,
     publicWriteEnabled: false,
-  };
+  },
+    rawRunner = options.runner ?? ((input) => runSpark(input, runtime)),
+    runner = async (input) => {
+      if (runnerDescriptor.isolation === "REMOTE_FUNCTION")
+        budget.assertCanStartRemoteSpark();
+      return rawRunner(input);
+    };
+  runner.descriptor = runnerDescriptor;
   let modelVerifiedAt = null;
   const generator =
     options.generator ??
     (async (input) => {
+      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY;
       const result = await generateSql(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -243,6 +260,7 @@ export function createV2Server(options = {}) {
   const servicePlanner =
     options.servicePlanner ??
     (async (input) => {
+      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateDataServicePlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -260,6 +278,7 @@ export function createV2Server(options = {}) {
   const ingestionPlanner =
     options.ingestionPlanner ??
     (async (input) => {
+      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateIngestionPlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -278,6 +297,7 @@ export function createV2Server(options = {}) {
   const realtimePlanner =
     options.realtimePlanner ??
     (async (input) => {
+      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateRealtimePlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -295,6 +315,7 @@ export function createV2Server(options = {}) {
   const assetPlanner =
     options.assetPlanner ??
     (async (input) => {
+      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateAssetInsight(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -310,6 +331,7 @@ export function createV2Server(options = {}) {
   const qualityPlanner =
     options.qualityPlanner ??
     (async (input) => {
+      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateQualityPlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -325,6 +347,7 @@ export function createV2Server(options = {}) {
   const securityPlanner =
     options.securityPlanner ??
     (async (input) => {
+      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateSecurityPlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -341,6 +364,7 @@ export function createV2Server(options = {}) {
   const reportPlanner =
     options.reportPlanner ??
     (async (input) => {
+      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateReportPlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -355,6 +379,7 @@ export function createV2Server(options = {}) {
   const opsPlanner =
     options.opsPlanner ??
     (async (input) => {
+      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateOpsDiagnosis(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -501,6 +526,8 @@ export function createV2Server(options = {}) {
         )
           auth.requireMutation(req.headers, path);
       }
+      if (method === "POST" && budgetAgentCreationPaths.has(path))
+        budget.assertCanStartModel();
       if (path === "/api/v2/auth/session" && method === "GET") {
         const context = auth.sessionFromHeaders(req.headers);
         return json(
@@ -692,8 +719,11 @@ export function createV2Server(options = {}) {
             publicSessionEnforced: !local,
           },
           artifacts: artifactStore.status(),
+          budget: budget.overview(),
         });
       }
+      if (path === "/api/v2/budget" && method === "GET")
+        return json(res, 200, budget.overview());
       const openService = path.match(
         /^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/,
       );
@@ -2808,6 +2838,7 @@ export function createV2Server(options = {}) {
     operations,
     auth,
     artifactStore,
+    budget,
     stateCoordinator: options.stateCoordinator,
   };
 }

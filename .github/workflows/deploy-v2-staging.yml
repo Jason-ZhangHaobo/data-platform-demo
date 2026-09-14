@@ -37,6 +37,7 @@ jobs:
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
       V2_SPARK_EXECUTOR_URL: ${{ vars.V2_SPARK_EXECUTOR_URL }}
       V2_SPARK_EXECUTOR_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
+      V2_ACCOUNT_MONTHLY_SPEND_CNY: ${{ vars.V2_ACCOUNT_MONTHLY_SPEND_CNY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -116,6 +117,7 @@ jobs:
             --arg model_key "$DASHSCOPE_API_KEY" \
             --arg spark_url "$V2_SPARK_EXECUTOR_URL" \
             --arg spark_secret "$V2_SPARK_EXECUTOR_SECRET" \
+            --arg account_spend "$V2_ACCOUNT_MONTHLY_SPEND_CNY" \
             '$current + {
               PORT:"9000",
               V2_LOCAL_DEVELOPMENT:"false",
@@ -140,7 +142,13 @@ jobs:
               V2_MODEL_BASE_URL:"https://dashscope.aliyuncs.com/compatible-mode/v1",
               V2_SPARK_EXECUTOR_URL:$spark_url,
               V2_SPARK_EXECUTOR_SECRET:$spark_secret,
-              V2_SPARK_EXECUTOR_TIMEOUT_MS:"120000"
+              V2_SPARK_EXECUTOR_TIMEOUT_MS:"120000",
+              V2_HARD_MONTHLY_BUDGET_CNY:"200",
+              V2_MODEL_MONTHLY_BUDGET_CNY:"50",
+              V2_MONTHLY_REMOTE_SPARK_SECONDS_LIMIT:"3600",
+              V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT:"200",
+              V2_REMOTE_SPARK_RESERVATION_SECONDS:"30",
+              V2_ACCOUNT_MONTHLY_SPEND_CNY:$account_spend
             } | {
               code:{zipFile:$zip},
               runtime:"custom.debian12",

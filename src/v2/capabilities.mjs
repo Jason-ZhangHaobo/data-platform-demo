@@ -126,6 +126,11 @@ export const capabilities = [
     name: "平台设置",
     description: "运行环境与模型接入",
     stage: "M0",
-    features: ["模型配置状态", "引擎就绪检查", "预算与部署前置条件"],
+    features: [
+      "模型配置状态",
+      "引擎就绪检查",
+      "模型与远程Spark月度预算硬门",
+      "账号账单与部署前置状态",
+    ],
   },
 ];

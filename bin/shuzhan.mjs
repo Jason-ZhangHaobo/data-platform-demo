@@ -6,6 +6,7 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
 
 用法：
   shuzhan status
+  shuzhan budget
   shuzhan release-runs list
   shuzhan services list [--type dapi|xapi]
   shuzhan services create-dapi --name 名称 --slug path --source-run-id ID [--fields a,b]
@@ -208,6 +209,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     }
     let result;
     if (resource === "status") result = await client.request("/status");
+    else if (resource === "budget" && !action)
+      result = await client.request("/budget");
     else if (resource === "release-runs" && action === "list")
       result = await client.request("/release/runs");
     else if (resource === "services" && action === "list") {

@@ -14,6 +14,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  CircleDollarSign,
   CircleHelp,
   Clock3,
   Code2,
@@ -106,6 +107,27 @@ type Status = {
     activeSessions: number;
     mode: string;
     publicSessionEnforced: boolean;
+  };
+  budget?: {
+    month: string;
+    preferredTotalCny: number;
+    hardLimitCny: number;
+    enforced: "ALLOW" | "RESOURCE_STOP" | "HARD_STOP";
+    model: {
+      estimatedCostCny: number;
+      limitCny: number;
+      recordedCalls: number;
+    };
+    remoteSpark: {
+      runCount: number;
+      runLimit: number;
+      seconds: number;
+      secondsLimit: number;
+    };
+    account: {
+      observedSpendCny?: number;
+      source: string;
+    };
   };
   capabilities: Capability[];
 };
@@ -1348,6 +1370,34 @@ function App() {
                     <span className="status-pill succeeded">本地 SQLite</span>
                     <p>独立存储版本和后台运行</p>
                     <small>云端 MySQL 尚未验收</small>
+                  </article>
+                  <article>
+                    <CircleDollarSign size={23} />
+                    <h3>月度预算门</h3>
+                    <span
+                      className={`status-pill ${status?.budget?.enforced === "ALLOW" ? "succeeded" : "failed"}`}
+                    >
+                      {status?.budget?.enforced === "ALLOW"
+                        ? "允许"
+                        : status?.budget?.enforced === "HARD_STOP"
+                          ? "硬停止"
+                          : "资源停止"}
+                    </span>
+                    <p>
+                      模型估算 ¥
+                      {status?.budget?.model.estimatedCostCny.toFixed(3) ?? "0.000"}
+                      / ¥{status?.budget?.model.limitCny ?? 50}
+                    </p>
+                    <code>
+                      Spark {status?.budget?.remoteSpark.runCount ?? 0}/
+                      {status?.budget?.remoteSpark.runLimit ?? 200} 次 · 硬上限 ¥
+                      {status?.budget?.hardLimitCny ?? 200}
+                    </code>
+                    <small>
+                      {status?.budget?.account.source === "NOT_CONNECTED"
+                        ? "账号账单尚未接入，不能证明全站费用"
+                        : `账号已核验 ¥${status?.budget?.account.observedSpendCny}`}
+                    </small>
                   </article>
                 </div>
                 {status?.mode !== "LOCAL_DEVELOPMENT" &&

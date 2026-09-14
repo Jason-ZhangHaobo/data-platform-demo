@@ -4,6 +4,7 @@ import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 
 const tools = [
   { name: "v2_status", description: "读取数栈V2真实/本机/公网能力边界。", inputSchema: { type: "object", properties: {} } },
+  { name: "budget_status", description: "读取当月模型估算、远程Spark用量、账号账单连接状态和预算门；未连接账号账单时不代表全站费用。", inputSchema: { type: "object", properties: {} } },
   { name: "release_runs_list", description: "列出真实调度发布批次及验证证据。", inputSchema: { type: "object", properties: {} } },
   { name: "dapi_list", description: "列出版本化DAPI。", inputSchema: { type: "object", properties: {} } },
   { name: "dapi_create", description: "从已验证发布批次创建DAPI草稿，不自动发布。", inputSchema: { type: "object", properties: { name: { type: "string" }, slug: { type: "string" }, sourceReleaseRunId: { type: "string" }, fields: { type: "array", items: { type: "string" } } }, required: ["name", "slug", "sourceReleaseRunId"] } },
@@ -115,6 +116,7 @@ const typePath = (value) => {
 };
 async function callTool(name, args = {}) {
   if (name === "v2_status") return client.request("/status");
+  if (name === "budget_status") return client.request("/budget");
   if (name === "release_runs_list") return client.request("/release/runs");
   if (name === "dapi_list") return client.request("/data-services/dapis");
   if (name === "xapi_list") return client.request("/data-services/xapis");
