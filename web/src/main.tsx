@@ -98,8 +98,25 @@ type Status = {
     connectionVerified?: boolean;
     verifiedAt?: string | null;
   };
-  spark: { available: boolean; engine: string; isolation: string };
+  spark: {
+    available: boolean;
+    engine: string;
+    isolation: string;
+    healthVerified?: boolean;
+    publicWriteEnabled?: boolean;
+  };
   metadata: { driver: string; cloudVerified: boolean };
+  persistence?: {
+    mode: string;
+    healthy: boolean;
+    dataState?: { driver: string; healthy: boolean };
+  };
+  artifacts?: {
+    driver: string;
+    durable: boolean;
+    cloudVerified: boolean;
+    lastVerifiedAt?: string;
+  };
   publicReady: boolean;
   authentication?: {
     users: number;
@@ -1343,8 +1360,18 @@ function App() {
                           : "环境已安装，待运行核验"
                         : "待安装"}
                     </span>
-                    <p>Apache Spark · 本地执行单元</p>
-                    <code>npm run v2:bootstrap</code>
+                    <p>
+                      Apache Spark · {status?.spark.isolation === "REMOTE_FUNCTION"
+                        ? "远程隔离 Worker"
+                        : "本地执行单元"}
+                    </p>
+                    <code>
+                      {status?.spark.isolation === "REMOTE_FUNCTION"
+                        ? status.spark.healthVerified
+                          ? "远程健康检查通过"
+                          : "远程端点未通过健康检查"
+                        : "npm run v2:bootstrap"}
+                    </code>
                   </article>
                   <article>
                     <Bot size={23} />
@@ -1367,9 +1394,26 @@ function App() {
                   <article>
                     <Database size={23} />
                     <h3>平台元数据库</h3>
-                    <span className="status-pill succeeded">本地 SQLite</span>
-                    <p>独立存储版本和后台运行</p>
-                    <small>云端 MySQL 尚未验收</small>
+                    <span
+                      className={`status-pill ${status?.metadata.cloudVerified ? "succeeded" : "queued"}`}
+                    >
+                      {status?.metadata.cloudVerified
+                        ? "云端持久化已连接"
+                        : "本地 SQLite"}
+                    </span>
+                    <p>
+                      {status?.metadata.driver === "mysql-project-snapshot-cas"
+                        ? "MySQL元数据 · OSS业务状态"
+                        : "独立存储版本和后台运行"}
+                    </p>
+                    <code>{status?.metadata.driver ?? "sqlite"}</code>
+                    <small>
+                      {status?.metadata.cloudVerified
+                        ? status?.artifacts?.cloudVerified
+                          ? "OSS不可变产物已实际核验"
+                          : "OSS状态已连接，产物待首次实际核验"
+                        : "云端 MySQL / OSS 尚未验收"}
+                    </small>
                   </article>
                   <article>
                     <CircleDollarSign size={23} />
