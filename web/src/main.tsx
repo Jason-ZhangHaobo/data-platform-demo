@@ -54,6 +54,7 @@ import { AssetWorkbench } from "./AssetWorkbench";
 import { QualityWorkbench } from "./QualityWorkbench";
 import { SecurityWorkbench } from "./SecurityWorkbench";
 import { ReportsWorkbench } from "./ReportsWorkbench";
+import { OperationsWorkbench } from "./OperationsWorkbench";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 type Column = { name: string; type: string };
 type Context = {
@@ -1203,6 +1204,8 @@ function App() {
               <SecurityWorkbench api={api} canWrite={Boolean(canWrite)} />
             ) : nav === "reports" ? (
               <ReportsWorkbench api={api} canWrite={Boolean(canWrite)} />
+            ) : nav === "ops" ? (
+              <OperationsWorkbench api={api} canWrite={Boolean(canWrite)} />
             ) : nav === "settings" ? (
               <>
                 <div className="settings-grid">
@@ -1388,29 +1391,6 @@ function App() {
                     <ArrowRight size={15} />
                   </button>
                 </div>
-                {nav === "ops" && (
-                  <div className="run-history module-runs">
-                    {runs.map((r) => (
-                      <button
-                        key={r.id}
-                        onClick={() => {
-                          setRun(r);
-                          setNav("development");
-                          setTab("日志");
-                        }}
-                      >
-                        <span
-                          className={"status-pill " + r.status.toLowerCase()}
-                        >
-                          {labels[r.status]}
-                        </span>
-                        <code>{r.id.slice(0, 8)}</code>
-                        <span>{time(r.createdAt)}</span>
-                        <ArrowUpRight size={14} />
-                      </button>
-                    ))}
-                  </div>
-                )}
               </>
             )}
           </section>

@@ -772,3 +772,116 @@ export async function generateReportPlan(
     mode: "LIVE_MODEL",
   };
 }
+
+export async function generateOpsDiagnosis(
+  { message, health, domainCounts, incidents, signal },
+  env = process.env,
+  fetchImpl = fetch,
+) {
+  if (!env.DASHSCOPE_API_KEY) throw new ModelUnavailable();
+  const settings = modelSettings(env),
+    base = new URL(settings.baseUrl);
+  if (base.protocol !== "https:") throw new Error("模型 API 必须使用 HTTPS");
+  const incidentAlias = new Map(),
+    evidenceAlias = new Map(),
+    reverseIncidentAlias = new Map(),
+    reverseEvidenceAlias = new Map();
+  incidents.forEach((incident, index) => {
+    const alias = `incident-${index + 1}`,
+      sourceAlias = `evidence-${index + 1}-failure`,
+      recoveryAlias = incident.recoveryId
+        ? `evidence-${index + 1}-recovery`
+        : undefined;
+    incidentAlias.set(incident.id, alias);
+    evidenceAlias.set(incident.sourceId, sourceAlias);
+    reverseIncidentAlias.set(alias, incident.id);
+    reverseEvidenceAlias.set(sourceAlias, incident.sourceId);
+    if (incident.recoveryId) {
+      evidenceAlias.set(incident.recoveryId, recoveryAlias);
+      reverseEvidenceAlias.set(recoveryAlias, incident.recoveryId);
+    }
+  });
+  let safeMessage = String(message);
+  for (const [id, alias] of [...incidentAlias, ...evidenceAlias])
+    safeMessage = safeMessage.replaceAll(id, alias);
+  const prompt = JSON.stringify({
+    request: safeMessage,
+    platformHealth: health,
+    domainCounts,
+    incidents: incidents.map((incident) => ({
+      id: incidentAlias.get(incident.id),
+      domain: incident.domain,
+      title: incident.title,
+      status: incident.status,
+      severity: incident.severity,
+      errorCode: incident.errorCode,
+      sourceKind: incident.sourceKind,
+      sourceId: evidenceAlias.get(incident.sourceId),
+      recoveryKind: incident.recoveryKind,
+      recoveryId: incident.recoveryId
+        ? evidenceAlias.get(incident.recoveryId)
+        : undefined,
+    })),
+    contract: {
+      output:
+        "只返回JSON对象：incidentId,diagnosis,recommendedActions,evidenceIds,confidence。incidentId与evidenceIds必须来自给定事故；confidence为0—1。",
+      boundary:
+        "只诊断和建议，不执行命令、不关闭事故、不修改数据或配置；缺少证据时必须说明。",
+    },
+  });
+  const response = await fetchImpl(
+    settings.baseUrl.replace(/\/$/, "") + "/chat/completions",
+    {
+      method: "POST",
+      redirect: "error",
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(60000)])
+        : AbortSignal.timeout(60000),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + env.DASHSCOPE_API_KEY,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        temperature: 0.1,
+        max_tokens: 2000,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是证券数据平台运维助手。只根据给定事故与聚合运行证据进行诊断。不得虚构日志或证据ID、执行处置、关闭事故、改变数据、输出凭证或声称公网监控。不要输出推理过程。",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      "模型请求失败（" + response.status + "），请检查服务配置或额度",
+    );
+  const payload = await response.json();
+  let content = payload.choices?.[0]?.message?.content ?? "";
+  content = content
+    .replace(/^\s*```(?:json)?\s*/, "")
+    .replace(/\s*```\s*$/, "");
+  let diagnosis;
+  try {
+    diagnosis = JSON.parse(content);
+  } catch {
+    throw new Error("模型未返回可解析的运维诊断");
+  }
+  diagnosis.incidentId =
+    reverseIncidentAlias.get(diagnosis.incidentId) ?? diagnosis.incidentId;
+  diagnosis.evidenceIds = Array.isArray(diagnosis.evidenceIds)
+    ? diagnosis.evidenceIds.map(
+        (id) => reverseEvidenceAlias.get(id) ?? id,
+      )
+    : diagnosis.evidenceIds;
+  return {
+    diagnosis,
+    model: settings.model,
+    usage: payload.usage ?? {},
+    mode: "LIVE_MODEL",
+  };
+}

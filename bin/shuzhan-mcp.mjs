@@ -89,6 +89,14 @@ const tools = [
   { name: "report_plan_list", description: "列出受治理报表Agent方案。", inputSchema: { type: "object", properties: {} } },
   { name: "report_plan_create", description: "让真实模型基于数据集字段和快照摘要生成聚合报表草稿，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
   { name: "report_plan_apply", description: "把已验证报表方案应用为草稿，不执行或导出。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
+  { name: "ops_overview", description: "读取跨开发、同步、发布、质量、服务、报表和安全审计的本机运行健康。", inputSchema: { type: "object", properties: {} } },
+  { name: "ops_refresh", description: "扫描实际失败与恢复证据并幂等归一为运维事故。", inputSchema: { type: "object", properties: {} } },
+  { name: "ops_incident_list", description: "列出开放、已确认和已恢复事故。", inputSchema: { type: "object", properties: {} } },
+  { name: "ops_incident_detail", description: "读取事故源证据、恢复证据和人工事件，不返回业务行。", inputSchema: { type: "object", properties: { incidentId: { type: "string" } }, required: ["incidentId"] } },
+  { name: "ops_incident_acknowledge", description: "确认开放事故并记录操作人和说明；不等于解决。", inputSchema: { type: "object", properties: { incidentId: { type: "string" }, actor: { type: "string" }, note: { type: "string" } }, required: ["incidentId", "note"] } },
+  { name: "ops_incident_resolve", description: "仅用同资源、晚于失败的成功运行证据解除事故。", inputSchema: { type: "object", properties: { incidentId: { type: "string" }, actor: { type: "string" }, evidenceKind: { type: "string" }, evidenceId: { type: "string" }, note: { type: "string" } }, required: ["incidentId", "evidenceKind", "evidenceId", "note"] } },
+  { name: "ops_diagnosis_list", description: "列出受治理运维Agent诊断。", inputSchema: { type: "object", properties: {} } },
+  { name: "ops_diagnosis_create", description: "让真实模型基于事故与聚合证据诊断，不读取业务行、不执行处置。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
 ];
 
 export const V2_MCP_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
@@ -392,6 +400,36 @@ async function callTool(name, args = {}) {
       `/reports/agent/plans/${encodeURIComponent(args.planId)}/apply`,
       { method: "POST", body: {} },
     );
+  if (name === "ops_overview") return client.request("/operations/overview");
+  if (name === "ops_refresh")
+    return client.request("/operations/refresh", { method: "POST", body: {} });
+  if (name === "ops_incident_list")
+    return client.request("/operations/incidents");
+  if (name === "ops_incident_detail")
+    return client.request(
+      `/operations/incidents/${encodeURIComponent(args.incidentId)}`,
+    );
+  if (name === "ops_incident_acknowledge") {
+    const { incidentId, ...body } = args;
+    return client.request(
+      `/operations/incidents/${encodeURIComponent(incidentId)}/acknowledge`,
+      { method: "POST", body },
+    );
+  }
+  if (name === "ops_incident_resolve") {
+    const { incidentId, ...body } = args;
+    return client.request(
+      `/operations/incidents/${encodeURIComponent(incidentId)}/resolve`,
+      { method: "POST", body },
+    );
+  }
+  if (name === "ops_diagnosis_list")
+    return client.request("/operations/agent/diagnoses");
+  if (name === "ops_diagnosis_create")
+    return client.request("/operations/agent/diagnoses", {
+      method: "POST",
+      body: { message: args.message },
+    });
   throw new Error(`未知V2 MCP工具：${name}`);
 }
 const response = (id, result) => JSON.stringify({ jsonrpc: "2.0", id, result });

@@ -298,6 +298,19 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
   assert.equal(requests[7].path, "/reports");
   assert.equal(requests[7].options.body.widgets.length, 4);
   assert.equal(requests[7].options.body.widgets[2].type, "PIE");
+  assert.equal(
+    await runV2Cli(
+      ["ops", "show", "--id", "incident-id"],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[8].path, "/operations/incidents/incident-id");
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -392,6 +405,14 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "report_plan_list",
     "report_plan_create",
     "report_plan_apply",
+    "ops_overview",
+    "ops_refresh",
+    "ops_incident_list",
+    "ops_incident_detail",
+    "ops_incident_acknowledge",
+    "ops_incident_resolve",
+    "ops_diagnosis_list",
+    "ops_diagnosis_create",
   ])
     assert.ok(names.includes(required));
   assert.match(createApp.description, /明确确认/);

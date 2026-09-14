@@ -76,6 +76,12 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan reports plan --message "生成持仓结构报告"
   shuzhan reports plans
   shuzhan reports apply-plan --id PLAN_ID
+  shuzhan ops overview|refresh|incidents
+  shuzhan ops show --id INCIDENT_ID
+  shuzhan ops acknowledge --id INCIDENT_ID --note "已确认"
+  shuzhan ops resolve --id INCIDENT_ID --evidence-kind offline_sync_run --evidence-id RUN_ID --note "新批次已成功"
+  shuzhan ops diagnose --message "诊断当前事故"
+  shuzhan ops diagnoses
 
 环境变量：
   SHUZHAN_V2_API_BASE_URL  默认 http://127.0.0.1:3100/api/v2
@@ -718,6 +724,50 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         `/reports/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
         { method: "POST", body: {} },
       );
+    else if (resource === "ops" && action === "overview")
+      result = await client.request("/operations/overview");
+    else if (resource === "ops" && action === "refresh")
+      result = await client.request("/operations/refresh", {
+        method: "POST",
+        body: {},
+      });
+    else if (resource === "ops" && action === "incidents")
+      result = await client.request("/operations/incidents");
+    else if (resource === "ops" && action === "show")
+      result = await client.request(
+        `/operations/incidents/${encodeURIComponent(required(parsed.options, "id"))}`,
+      );
+    else if (resource === "ops" && action === "acknowledge")
+      result = await client.request(
+        `/operations/incidents/${encodeURIComponent(required(parsed.options, "id"))}/acknowledge`,
+        {
+          method: "POST",
+          body: {
+            actor: parsed.options.actor ?? "local-operator",
+            note: required(parsed.options, "note"),
+          },
+        },
+      );
+    else if (resource === "ops" && action === "resolve")
+      result = await client.request(
+        `/operations/incidents/${encodeURIComponent(required(parsed.options, "id"))}/resolve`,
+        {
+          method: "POST",
+          body: {
+            actor: parsed.options.actor ?? "local-operator",
+            evidenceKind: required(parsed.options, "evidence_kind"),
+            evidenceId: required(parsed.options, "evidence_id"),
+            note: required(parsed.options, "note"),
+          },
+        },
+      );
+    else if (resource === "ops" && action === "diagnose")
+      result = await client.request("/operations/agent/diagnoses", {
+        method: "POST",
+        body: { message: required(parsed.options, "message") },
+      });
+    else if (resource === "ops" && action === "diagnoses")
+      result = await client.request("/operations/agent/diagnoses");
     else throw new Error(`不支持的V2命令：${parsed.positionals.join(" ")}`);
     out(JSON.stringify(result, null, 2));
     return 0;

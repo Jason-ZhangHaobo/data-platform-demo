@@ -111,9 +111,14 @@ export const capabilities = [
     id: "ops",
     group: "运行管理",
     name: "运维监控",
-    description: "日志、告警与运行状态",
-    stage: "M4",
-    features: ["执行批次与日志", "运行证据", "告警与恢复"],
+    description: "跨模块运行健康、事故、证据恢复与Agent诊断",
+    stage: "M4g",
+    features: [
+      "开发、同步、发布、质量、服务与报表活动",
+      "失败和恢复证据的事故归一",
+      "同资源成功证据约束的事故解除",
+      "Data Agent受治理诊断与人工处置边界",
+    ],
   },
   {
     id: "settings",

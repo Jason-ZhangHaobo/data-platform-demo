@@ -133,6 +133,15 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /reports/agent/plans/:id | 无 | 受治理方案、解释、模型与用量 |
 | POST /reports/agent/plans/:id/apply | 空对象 | 人工应用为报表草稿，不运行或导出 |
 | POST /reports/agent/plans/:id/cancel | 空对象 | 取消生成并保留记录 |
+| GET /operations/overview | 无 | 跨模块健康、域计数、事故和最近活动；含外部模型上下文开关 |
+| POST /operations/refresh | 空对象 | 扫描实际失败/恢复运行，按源运行幂等生成或更新事故 |
+| GET /operations/incidents | 无 | 开放、已确认和已恢复事故 |
+| GET /operations/incidents/:id | 无 | 不含业务行的源证据、恢复证据和人工事件 |
+| POST /operations/incidents/:id/acknowledge | 操作人/说明 | 记录确认并转ACKNOWLEDGED，不冒充恢复 |
+| POST /operations/incidents/:id/resolve | 成功证据类型/ID/说明 | 仅同资源且晚于失败的成功运行可解除 |
+| GET/POST /operations/agent/diagnoses | 列表或诊断需求 | 默认外发门关闭；开启后只发送别名化聚合事故证据 |
+| GET /operations/agent/diagnoses/:id | 无 | 诊断、建议、证据引用、置信度和不可执行边界 |
+| POST /operations/agent/diagnoses/:id/cancel | 空对象 | 取消诊断并保留记录 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
@@ -145,6 +154,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 质量Agent返回completionScope=QUALITY_RULE_DESIGN、fullLifecycleE2E=false；模型不读取业务行或无效样本，方案应用后运行数仍为0，不能代表数据质量已通过。
 安全Agent返回completionScope=SECURITY_POLICY_DESIGN、fullLifecycleE2E=false；模型不读取业务行、不执行查询或审批。`X-Actor-Id`仅验证本机策略语义，不能被视为认证凭据。
 报表Agent返回completionScope=REPORT_DESIGN、fullLifecycleE2E=false；模型不读取数据集行，应用后运行数为0，不能代表报表结果已验证、导出或公网发布。
+运维Agent返回completionScope=OPS_DIAGNOSIS、executable=false、requiresHumanApproval=true；默认不允许把运维摘要发送外部模型。当前真实Qwen调用未获单独授权，因此M4g不能把测试替身记为真实Agent验收。
 服务重启会把正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 

@@ -22,6 +22,7 @@ import {
   generateQualityPlan,
   generateSecurityPlan,
   generateReportPlan,
+  generateOpsDiagnosis,
   modelSettings,
   ModelUnavailable,
 } from "./model.mjs";
@@ -56,6 +57,7 @@ import { AssetCatalogManager } from "./assets.mjs";
 import { QualityManager } from "./quality.mjs";
 import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
+import { OperationsManager } from "./operations.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -273,6 +275,20 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
+  const operations = new OperationsManager({
+    store,
+    project: PROJECT,
+    now: options.now,
+  });
+  const opsPlanner =
+    options.opsPlanner ??
+    (async (input) => {
+      const keyAtRequest = env.DASHSCOPE_API_KEY,
+        result = await generateOpsDiagnosis(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
   const revision = (sql, contextId, source) =>
     store.create("revision", PROJECT, {
       sql,
@@ -461,6 +477,12 @@ export function createV2Server(options = {}) {
             executionScope: "LOCAL_AGGREGATED_REPORTING",
             publicDeployed: false,
             cloudVerified: false,
+          },
+          operations: {
+            ...operations.overview().counts,
+            health: operations.overview().health,
+            scope: "LOCAL_CROSS_MODULE_OBSERVABILITY",
+            publicDeployed: false,
           },
         });
       const openService = path.match(
@@ -1470,6 +1492,117 @@ export function createV2Server(options = {}) {
           return json(res, dedup.replayed ? 200 : 201, reports.reportDetail(report.id));
         }
       }
+      if (path === "/api/v2/operations/overview" && method === "GET")
+        return json(res, 200, {
+          ...operations.overview(),
+          externalModelContextAllowed: Boolean(
+            options.opsPlanner ||
+              env.V2_ALLOW_EXTERNAL_OPS_CONTEXT === "true",
+          ),
+        });
+      if (path === "/api/v2/operations/refresh" && method === "POST") {
+        await readBody(req);
+        return json(res, 200, operations.refresh());
+      }
+      if (path === "/api/v2/operations/incidents" && method === "GET")
+        return json(res, 200, operations.listIncidents());
+      const opsIncidentRecord = path.match(
+        /^\/api\/v2\/operations\/incidents\/([a-f0-9-]+)(?:\/(acknowledge|resolve))?$/,
+      );
+      if (opsIncidentRecord) {
+        const incident = operations.incidentDetail(opsIncidentRecord[1]),
+          action = opsIncidentRecord[2];
+        if (method === "GET" && !action) return json(res, 200, incident);
+        if (method === "POST" && ["acknowledge", "resolve"].includes(action)) {
+          const body = await readBody(req),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:ops-incident:${incident.id}:${action}:${key}`,
+              hash(JSON.stringify(body)),
+              () =>
+                action === "acknowledge"
+                  ? operations.acknowledge(incident.id, body)
+                  : operations.resolve(incident.id, body),
+            );
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            operations.incidentDetail(dedup.id),
+          );
+        }
+      }
+      if (path === "/api/v2/operations/agent/diagnoses" && method === "GET")
+        return json(res, 200, store.list("ops_agent_diagnosis", PROJECT));
+      if (path === "/api/v2/operations/agent/diagnoses" && method === "POST") {
+        const body = await readBody(req),
+          message = text(body.message, 4, 2000);
+        if (!operations.listIncidents().length)
+          throw fail(409, "请先刷新并选择有实际证据的事故");
+        if (
+          !options.opsPlanner &&
+          env.V2_ALLOW_EXTERNAL_OPS_CONTEXT !== "true"
+        )
+          throw fail(
+            412,
+            "运维摘要默认禁止发送到外部模型；需用户明确授权后设置V2_ALLOW_EXTERNAL_OPS_CONTEXT=true",
+          );
+        if (!options.opsPlanner && !modelSettings(env).configured)
+          throw new ModelUnavailable();
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:ops-agent-diagnosis:${key}`,
+            hash(JSON.stringify({ message })),
+            () =>
+              store.create("ops_agent_diagnosis", PROJECT, {
+                message,
+                status: "QUEUED",
+                mode: "LIVE_MODEL",
+                completionScope: "OPS_DIAGNOSIS",
+                fullLifecycleE2E: false,
+                executable: false,
+              }),
+          ),
+          task = get("ops_agent_diagnosis", dedup.id);
+        if (!dedup.replayed)
+          schedule("ops_agent_diagnosis", task, async (signal) => {
+            const context = operations.agentContext(),
+              generated = await opsPlanner({
+                message,
+                ...context,
+                signal,
+              }),
+              diagnosis = operations.validateAgentDiagnosis(
+                generated.diagnosis,
+              );
+            store.update("ops_agent_diagnosis", task.id, PROJECT, {
+              status: "SUCCEEDED",
+              diagnosis,
+              model: generated.model,
+              usage: generated.usage,
+              finishedAt: new Date().toISOString(),
+            });
+          });
+        return json(res, 202, task);
+      }
+      const opsAgentDiagnosis = path.match(
+        /^\/api\/v2\/operations\/agent\/diagnoses\/([a-f0-9-]+)(?:\/(cancel))?$/,
+      );
+      if (opsAgentDiagnosis) {
+        const task = get("ops_agent_diagnosis", opsAgentDiagnosis[1]),
+          action = opsAgentDiagnosis[2];
+        if (method === "GET" && !action) return json(res, 200, task);
+        if (method === "POST" && action === "cancel") {
+          await readBody(req);
+          if (!terminal.has(task.status)) {
+            store.update("ops_agent_diagnosis", task.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            controls.get(task.id)?.abort();
+          }
+          return json(res, 200, get("ops_agent_diagnosis", task.id));
+        }
+      }
       if (path === "/api/v2/settings/model-key" && method === "POST") {
         const body = await readBody(req);
         const configured = await saveLocalModelKey(root, env, body.apiKey);
@@ -2423,6 +2556,7 @@ export function createV2Server(options = {}) {
     security,
     reports,
     reportStore,
+    operations,
   };
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
