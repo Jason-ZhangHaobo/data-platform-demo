@@ -84,6 +84,20 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /streams/agent/plans/:id | 方案状态 | 受治理提案、模型用量或明确失败 |
 | POST /streams/agent/plans/:id/apply | 空对象 | 人工应用已验证方案为READY任务，不自动启动 |
 | POST /streams/agent/plans/:id/cancel | 空对象 | 取消排队或运行中的方案并保留记录 |
+| GET /assets | q/kind可选 | 搜索从当前实际资源和版本关系投影的逻辑资产目录 |
+| GET /assets/:id | 资产编号 | 字段、证据摘要、说明、血缘、指标与标准 |
+| POST /assets/:id/annotation | 业务名称/说明/域/负责人/分类/标签 | 保存新的资产说明版本，不覆盖底层证据 |
+| GET /assets/:id/lineage | 无 | 上下游版本绑定及同步字段映射；明确SQL字段级解析状态 |
+| GET /assets/:id/impact | 无 | 基于有向版本绑定的下游影响范围 |
+| GET/POST /metrics | 列表或资产/聚合/字段/分组/口径 | 版本化指标定义；首版只支持实际落地/实时状态行 |
+| GET /metrics/:id | 无 | 指标定义与全部实际运行 |
+| POST /metrics/:id/run | 空对象 + 幂等键 | 用整数分精确SUM或COUNT执行，保存结果摘要 |
+| GET/POST /standards | 列表或资产/字段/语义类型/说明 | 创建版本化数据标准 |
+| GET /standards/:id | 无 | 标准定义与全部实际检查 |
+| POST /standards/:id/check | 空对象 + 幂等键 | 在实际行上检查；无效值只返回SHA-256 |
+| GET/POST /assets/agent/tasks | 列表或自然语言问题 | 真实模型基于资产摘要和版本边找数据、解释口径/影响 |
+| GET /assets/agent/tasks/:id | 无 | 受治理回答、资产引用、边界和用量 |
+| POST /assets/agent/tasks/:id/cancel | 空对象 | 取消资产问答并保留记录 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
@@ -92,6 +106,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 数据服务Agent返回completionScope=DATA_SERVICE_DESIGN、fullLifecycleE2E=false；成功只表示方案引用和约束校验通过。
 同步Agent返回completionScope=OFFLINE_SYNC_DESIGN、fullLifecycleE2E=false；模型不读取CSV业务行，成功只表示基于当前元数据的草稿方案通过后端校验。
 实时Agent返回completionScope=REALTIME_SYNC_DESIGN、fullLifecycleE2E=false；模型只读取源摘要和事件契约，成功或应用均不表示任务已启动、Kafka/Flink已连接或公网已部署。
+资产Agent返回completionScope=ASSET_DISCOVERY、fullLifecycleE2E=false；引用必须命中当前目录，模型不读取业务行或修改资产，回答只代表受治理发现与解释。
 服务重启会把正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 

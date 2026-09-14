@@ -191,6 +191,19 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
   );
   assert.equal(requests[3].path, "/streams/jobs");
   assert.equal(requests[3].options.body.checkpointEvery, 3);
+  assert.equal(
+    await runV2Cli(
+      ["assets", "lineage", "--id", "landing:raw_positions"],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[4].path, "/assets/landing%3Araw_positions/lineage");
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -239,6 +252,19 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "realtime_plan_list",
     "realtime_plan_create",
     "realtime_plan_apply",
+    "asset_list",
+    "asset_detail",
+    "asset_lineage",
+    "asset_impact",
+    "asset_annotate",
+    "metric_list",
+    "metric_create",
+    "metric_run",
+    "standard_list",
+    "standard_create",
+    "standard_check",
+    "asset_agent_list",
+    "asset_agent_create",
   ])
     assert.ok(names.includes(required));
   assert.match(createApp.description, /明确确认/);
@@ -277,6 +303,17 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
     const cliMonitor = JSON.parse(cliOutput[1]);
     assert.equal(cliMonitor.adapter, "local-event-log-v1");
     assert.equal(cliMonitor.kafkaConnected, false);
+    const assetCode = await runV2Cli(
+      ["assets", "list", "--base-url", baseUrl],
+      {},
+      {
+        output: (value) => cliOutput.push(value),
+        error: (value) => cliError.push(value),
+      },
+    );
+    assert.equal(assetCode, 0, cliError.join("\n"));
+    const cliAssets = JSON.parse(cliOutput[2]);
+    assert.ok(cliAssets.some((asset) => asset.id === "fixture:positions"));
 
     const child = spawn(process.execPath, ["bin/shuzhan-mcp.mjs"], {
       cwd: process.cwd(),
@@ -293,14 +330,24 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
         id: 2,
         method: "tools/call",
         params: { name: "stream_monitor", arguments: {} },
-      }) + "\n",
+      }) +
+        "\n" +
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: { name: "asset_list", arguments: {} },
+        }) +
+        "\n",
     );
     const exit = await new Promise((resolve, reject) => {
       child.once("error", reject);
       child.once("close", resolve);
     });
     assert.equal(exit, 0, stderr);
-    const response = JSON.parse(stdout.trim());
+    const responses = stdout.trim().split("\n").map((line) => JSON.parse(line)),
+      response = responses.find((item) => item.id === 2),
+      assetResponse = responses.find((item) => item.id === 3);
     assert.equal(
       response.result.structuredContent.adapter,
       cliMonitor.adapter,
@@ -309,6 +356,7 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
       response.result.structuredContent.counts,
       cliMonitor.counts,
     );
+    assert.deepEqual(assetResponse.result.structuredContent, cliAssets);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     businessStore.close();

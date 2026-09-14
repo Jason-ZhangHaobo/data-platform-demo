@@ -18,6 +18,7 @@ import {
   generateDataServicePlan,
   generateIngestionPlan,
   generateRealtimePlan,
+  generateAssetInsight,
   modelSettings,
   ModelUnavailable,
 } from "./model.mjs";
@@ -48,6 +49,7 @@ import {
   RealtimeManager,
   StreamStateStore,
 } from "./realtime.mjs";
+import { AssetCatalogManager } from "./assets.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -192,6 +194,23 @@ export function createV2Server(options = {}) {
     (async (input) => {
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateRealtimePlan(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
+  const assets = new AssetCatalogManager({
+    store,
+    landingStore,
+    stateStore: streamStateStore,
+    dataServices,
+    project: PROJECT,
+    now: options.now,
+  });
+  const assetPlanner =
+    options.assetPlanner ??
+    (async (input) => {
+      const keyAtRequest = env.DASHSCOPE_API_KEY,
+        result = await generateAssetInsight(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
         modelVerifiedAt = new Date().toISOString();
       return result;
@@ -358,6 +377,14 @@ export function createV2Server(options = {}) {
             adapter: "local-event-log-v1",
             kafkaConnected: false,
             flinkConnected: false,
+            cloudVerified: false,
+          },
+          assets: {
+            assetCount: assets.listAssets().length,
+            metricCount: assets.listMetrics().length,
+            standardCount: assets.listStandards().length,
+            lineageDerivation: "VERSION_BINDINGS",
+            sqlColumnLineageParsed: false,
             cloudVerified: false,
           },
         });
@@ -723,6 +750,166 @@ export function createV2Server(options = {}) {
         if (method === "POST" && action === "stop") {
           await readBody(req);
           return json(res, 202, realtime.stopJob(job.id));
+        }
+      }
+      if (path === "/api/v2/assets" && method === "GET")
+        return json(
+          res,
+          200,
+          assets.listAssets({
+            q: url.searchParams.get("q") ?? "",
+            kind: url.searchParams.get("kind") ?? "",
+          }),
+        );
+      if (path === "/api/v2/assets/agent/tasks" && method === "GET")
+        return json(res, 200, store.list("asset_agent_task", PROJECT));
+      if (path === "/api/v2/assets/agent/tasks" && method === "POST") {
+        const body = await readBody(req),
+          message = text(body.message, 4, 2000);
+        if (!options.assetPlanner && !modelSettings(env).configured)
+          throw new ModelUnavailable();
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:asset-agent-task:${key}`,
+            hash(JSON.stringify({ message })),
+            () =>
+              store.create("asset_agent_task", PROJECT, {
+                message,
+                status: "QUEUED",
+                mode: "LIVE_MODEL",
+                completionScope: "ASSET_DISCOVERY",
+                fullLifecycleE2E: false,
+              }),
+          ),
+          task = get("asset_agent_task", dedup.id);
+        if (!dedup.replayed)
+          schedule("asset_agent_task", task, async (signal) => {
+            const context = assets.agentContext(),
+              generated = await assetPlanner({
+                message,
+                ...context,
+                signal,
+              }),
+              insight = assets.validateAgentInsight(generated.insight);
+            store.update("asset_agent_task", task.id, PROJECT, {
+              status: "SUCCEEDED",
+              insight,
+              model: generated.model,
+              usage: generated.usage,
+              finishedAt: new Date().toISOString(),
+            });
+          });
+        return json(res, 202, task);
+      }
+      const assetAgentTask = path.match(
+        /^\/api\/v2\/assets\/agent\/tasks\/([a-f0-9-]+)(?:\/(cancel))?$/,
+      );
+      if (assetAgentTask) {
+        const task = get("asset_agent_task", assetAgentTask[1]),
+          action = assetAgentTask[2];
+        if (method === "GET" && !action) return json(res, 200, task);
+        if (method === "POST" && action === "cancel") {
+          await readBody(req);
+          if (!terminal.has(task.status)) {
+            store.update("asset_agent_task", task.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            controls.get(task.id)?.abort();
+          }
+          return json(res, 200, get("asset_agent_task", task.id));
+        }
+      }
+      const assetRecord = path.match(
+        /^\/api\/v2\/assets\/([^/]+)(?:\/(annotation|lineage|impact))?$/,
+      );
+      if (assetRecord) {
+        const id = decodeURIComponent(assetRecord[1]),
+          action = assetRecord[2];
+        if (method === "GET" && !action)
+          return json(res, 200, assets.detail(id));
+        if (method === "GET" && action === "lineage")
+          return json(res, 200, assets.lineage(id));
+        if (method === "GET" && action === "impact")
+          return json(res, 200, assets.impact(id));
+        if (method === "POST" && action === "annotation") {
+          const body = await readBody(req),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:asset-annotation:${id}:${key}`,
+              hash(JSON.stringify(body)),
+              () => assets.annotate(id, body).annotation,
+            );
+          get("asset_annotation", dedup.id);
+          return json(res, dedup.replayed ? 200 : 201, assets.detail(id));
+        }
+      }
+      if (path === "/api/v2/metrics" && method === "GET")
+        return json(res, 200, assets.listMetrics());
+      if (path === "/api/v2/metrics" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:metric:${key}`,
+            hash(JSON.stringify(body)),
+            () => assets.createMetric(body),
+          );
+        return json(res, dedup.replayed ? 200 : 201, get("metric_definition", dedup.id));
+      }
+      const metricRecord = path.match(
+        /^\/api\/v2\/metrics\/([a-f0-9-]+)(?:\/(run))?$/,
+      );
+      if (metricRecord) {
+        const metric = assets
+            .listMetrics()
+            .find((item) => item.id === metricRecord[1]),
+          action = metricRecord[2];
+        if (!metric) throw fail(404, "未找到指标");
+        if (method === "GET" && !action) return json(res, 200, metric);
+        if (method === "POST" && action === "run") {
+          await readBody(req);
+          const key = text(req.headers["idempotency-key"], 1, 100),
+            evidenceHash = assets.detail(metric.assetId).evidenceHash,
+            dedup = store.deduplicate(
+              `${PROJECT}:metric-run:${metric.id}:${key}`,
+              hash(JSON.stringify({ metricId: metric.id, evidenceHash })),
+              () => assets.runMetric(metric.id),
+            );
+          return json(res, dedup.replayed ? 200 : 201, get("metric_run", dedup.id));
+        }
+      }
+      if (path === "/api/v2/standards" && method === "GET")
+        return json(res, 200, assets.listStandards());
+      if (path === "/api/v2/standards" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:standard:${key}`,
+            hash(JSON.stringify(body)),
+            () => assets.createStandard(body),
+          );
+        return json(res, dedup.replayed ? 200 : 201, get("data_standard", dedup.id));
+      }
+      const standardRecord = path.match(
+        /^\/api\/v2\/standards\/([a-f0-9-]+)(?:\/(check))?$/,
+      );
+      if (standardRecord) {
+        const standard = assets
+            .listStandards()
+            .find((item) => item.id === standardRecord[1]),
+          action = standardRecord[2];
+        if (!standard) throw fail(404, "未找到数据标准");
+        if (method === "GET" && !action) return json(res, 200, standard);
+        if (method === "POST" && action === "check") {
+          await readBody(req);
+          const key = text(req.headers["idempotency-key"], 1, 100),
+            evidenceHash = assets.detail(standard.assetId).evidenceHash,
+            dedup = store.deduplicate(
+              `${PROJECT}:standard-check:${standard.id}:${key}`,
+              hash(JSON.stringify({ standardId: standard.id, evidenceHash })),
+              () => assets.checkStandard(standard.id),
+            );
+          return json(res, dedup.replayed ? 200 : 201, get("standard_check", dedup.id));
         }
       }
       if (path === "/api/v2/settings/model-key" && method === "POST") {

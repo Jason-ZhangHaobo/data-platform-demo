@@ -40,6 +40,17 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan streams plan --message "实时同步需求"
   shuzhan streams plans
   shuzhan streams apply-plan --id PLAN_ID
+  shuzhan assets list [--query 持仓] [--kind LANDING_TABLE]
+  shuzhan assets show|lineage|impact --id ASSET_ID
+  shuzhan assets annotate --id ASSET_ID --business-name 名称 --description 说明 --domain 财富管理 --owner 负责人 [--tags 持仓,T+1]
+  shuzhan assets agent --message "找出持仓市值资产并解释来源"
+  shuzhan assets agents
+  shuzhan metrics list
+  shuzhan metrics create --name 持仓市值 --code holding_market_value --asset-id landing:raw_positions --aggregation SUM --field market_value --group-by asset_class --definition "按资产类别汇总持仓，不含现金"
+  shuzhan metrics run --id METRIC_ID
+  shuzhan standards list
+  shuzhan standards create --name 证券代码格式 --code security_code_format --asset-id landing:raw_positions --field security_code --semantic-type SECURITY_CODE --description "使用SEC前缀"
+  shuzhan standards check --id STANDARD_ID
 
 环境变量：
   SHUZHAN_V2_API_BASE_URL  默认 http://127.0.0.1:3100/api/v2
@@ -360,6 +371,84 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "streams" && action === "apply-plan")
       result = await client.request(
         `/streams/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "assets" && action === "list") {
+      const query = new URLSearchParams({
+        ...(parsed.options.query ? { q: parsed.options.query } : {}),
+        ...(parsed.options.kind ? { kind: parsed.options.kind } : {}),
+      });
+      result = await client.request(`/assets${query.size ? `?${query}` : ""}`);
+    } else if (
+      resource === "assets" &&
+      ["show", "lineage", "impact"].includes(action)
+    ) {
+      const id = encodeURIComponent(required(parsed.options, "id"));
+      result = await client.request(
+        `/assets/${id}${action === "show" ? "" : `/${action}`}`,
+      );
+    } else if (resource === "assets" && action === "annotate")
+      result = await client.request(
+        `/assets/${encodeURIComponent(required(parsed.options, "id"))}/annotation`,
+        {
+          method: "POST",
+          body: {
+            businessName: required(parsed.options, "business_name"),
+            description: required(parsed.options, "description"),
+            domain: required(parsed.options, "domain"),
+            owner: required(parsed.options, "owner"),
+            classification:
+              parsed.options.classification ?? "INTERNAL_DEMO",
+            ...(parsed.options.tags
+              ? { tags: list(parsed.options.tags, "--tags") }
+              : {}),
+          },
+        },
+      );
+    else if (resource === "assets" && action === "agent")
+      result = await client.request("/assets/agent/tasks", {
+        method: "POST",
+        body: { message: required(parsed.options, "message") },
+      });
+    else if (resource === "assets" && action === "agents")
+      result = await client.request("/assets/agent/tasks");
+    else if (resource === "metrics" && action === "list")
+      result = await client.request("/metrics");
+    else if (resource === "metrics" && action === "create")
+      result = await client.request("/metrics", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          code: required(parsed.options, "code"),
+          assetId: required(parsed.options, "asset_id"),
+          aggregation: required(parsed.options, "aggregation").toUpperCase(),
+          ...(parsed.options.field ? { field: parsed.options.field } : {}),
+          ...(parsed.options.group_by ? { groupBy: parsed.options.group_by } : {}),
+          definition: required(parsed.options, "definition"),
+        },
+      });
+    else if (resource === "metrics" && action === "run")
+      result = await client.request(
+        `/metrics/${encodeURIComponent(required(parsed.options, "id"))}/run`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "standards" && action === "list")
+      result = await client.request("/standards");
+    else if (resource === "standards" && action === "create")
+      result = await client.request("/standards", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          code: required(parsed.options, "code"),
+          assetId: required(parsed.options, "asset_id"),
+          field: required(parsed.options, "field"),
+          semanticType: required(parsed.options, "semantic_type").toUpperCase(),
+          description: required(parsed.options, "description"),
+        },
+      });
+    else if (resource === "standards" && action === "check")
+      result = await client.request(
+        `/standards/${encodeURIComponent(required(parsed.options, "id"))}/check`,
         { method: "POST", body: {} },
       );
     else throw new Error(`不支持的V2命令：${parsed.positionals.join(" ")}`);

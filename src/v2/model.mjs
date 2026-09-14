@@ -400,3 +400,86 @@ export async function generateRealtimePlan(
     mode: "LIVE_MODEL",
   };
 }
+
+export async function generateAssetInsight(
+  { message, assets, lineage, signal },
+  env = process.env,
+  fetchImpl = fetch,
+) {
+  if (!env.DASHSCOPE_API_KEY) throw new ModelUnavailable();
+  const settings = modelSettings(env),
+    base = new URL(settings.baseUrl);
+  if (base.protocol !== "https:") throw new Error("模型 API 必须使用 HTTPS");
+  const prompt = JSON.stringify({
+    request: message,
+    governedAssets: assets.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      businessName: asset.businessName,
+      kind: asset.kind,
+      system: asset.system,
+      rowCount: asset.rowCount,
+      fields: (asset.fields ?? []).map(({ name, type }) => ({ name, type })),
+      tags: asset.tags,
+    })),
+    versionBindingLineage: lineage.map(({ from, to, type }) => ({
+      from,
+      to,
+      type,
+    })),
+    contract: {
+      output:
+        "仅返回JSON对象：answer,assetIds,lineageFocusAssetId,caveats。assetIds只能引用给定id，最多8个。",
+      caveat:
+        "血缘来自版本绑定，不得声称已完成Spark SQL字段级表达式解析；本机资产不得称为公网或生产资产。",
+    },
+  });
+  const response = await fetchImpl(
+    settings.baseUrl.replace(/\/$/, "") + "/chat/completions",
+    {
+      method: "POST",
+      redirect: "error",
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(60000)])
+        : AbortSignal.timeout(60000),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + env.DASHSCOPE_API_KEY,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        temperature: 0.1,
+        max_tokens: 1800,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是证券数据资产助手。只根据给定资产摘要和版本绑定血缘帮助用户找数据、解释口径和识别下游影响。不得虚构资产ID、读取业务行、输出凭证、改变资产或把版本绑定血缘说成完整字段级SQL血缘。不要输出推理过程。",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      "模型请求失败（" + response.status + "），请检查服务配置或额度",
+    );
+  const payload = await response.json();
+  let content = payload.choices?.[0]?.message?.content ?? "";
+  content = content
+    .replace(/^\s*```(?:json)?\s*/, "")
+    .replace(/\s*```\s*$/, "");
+  let insight;
+  try {
+    insight = JSON.parse(content);
+  } catch {
+    throw new Error("模型未返回可解析的资产回答");
+  }
+  return {
+    insight,
+    model: settings.model,
+    usage: payload.usage ?? {},
+    mode: "LIVE_MODEL",
+  };
+}

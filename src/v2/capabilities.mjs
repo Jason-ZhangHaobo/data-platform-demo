@@ -46,9 +46,14 @@ export const capabilities = [
     id: "assets",
     group: "治理与服务",
     name: "数据资产",
-    description: "目录、元数据与血缘",
-    stage: "M4",
-    features: ["字段说明", "指标与标准", "血缘和契约"],
+    description: "可搜索目录、版本血缘、指标与标准",
+    stage: "M4c",
+    features: [
+      "真实资源自动入目录",
+      "版本绑定与字段映射血缘",
+      "实际行指标与数据标准",
+      "Data Agent受治理发现与影响解释",
+    ],
   },
   {
     id: "quality",

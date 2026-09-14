@@ -50,6 +50,7 @@ import "./styles.css";
 import { DeliveryWorkbench } from "./DeliveryWorkbench";
 import { DataServicesWorkbench } from "./DataServicesWorkbench";
 import { IngestionWorkbench } from "./IngestionWorkbench";
+import { AssetWorkbench } from "./AssetWorkbench";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 type Column = { name: string; type: string };
 type Context = {
@@ -215,7 +216,7 @@ function App() {
   const [busy, setBusy] = useState(false),
     [notice, setNotice] = useState(""),
     [error, setError] = useState(""),
-    [expanded, setExpanded] = useState("positions");
+    [expanded, setExpanded] = useState("");
   const sqlRef = useRef(sql);
   const [modelKey, setModelKey] = useState("");
   const [deliverySourceId, setDeliverySourceId] = useState("");
@@ -1181,72 +1182,11 @@ function App() {
                 onBack={() => setNav("development")}
               />
             ) : nav === "assets" ? (
-              <>
-                <div className="module-summary">
-                  <Database size={22} />
-                  <div>
-                    <strong>证券测试数据上下文</strong>
-                    <p>
-                      真实执行输入 · {context?.name} · {context?.businessDate}
-                    </p>
-                  </div>
-                  <button
-                    className="button"
-                    onClick={() => setNav("development")}
-                  >
-                    进入开发
-                    <ArrowUpRight size={15} />
-                  </button>
-                </div>
-                <div className="asset-grid">
-                  {context?.tables.map((t) => (
-                    <article key={t.name} className="asset-card">
-                      <button
-                        onClick={() =>
-                          setExpanded(expanded === t.name ? "" : t.name)
-                        }
-                      >
-                        <Database size={19} />
-                        <div>
-                          <strong>{t.label}</strong>
-                          <code>{t.name}</code>
-                        </div>
-                        <span>
-                          {t.rows.length} 行 · {t.columns.length} 字段
-                        </span>
-                        <ChevronDown size={15} />
-                      </button>
-                      {expanded === t.name && (
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>字段</th>
-                              <th>类型</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {t.columns.map(([name, type]) => (
-                              <tr key={name}>
-                                <td>
-                                  <code>{name}</code>
-                                </td>
-                                <td>{type}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </article>
-                  ))}
-                </div>
-                <div className="definition-card">
-                  <h3>已确认业务口径</h3>
-                  <p>{context?.definition}</p>
-                  <small>
-                    这里展示内置合成数据结构，外部数据源真实采集在 M4 接入。
-                  </small>
-                </div>
-              </>
+              <AssetWorkbench
+                api={api}
+                canWrite={Boolean(canWrite)}
+                initialAssetId={expanded ? `fixture:${expanded}` : undefined}
+              />
             ) : nav === "settings" ? (
               <>
                 <div className="settings-grid">

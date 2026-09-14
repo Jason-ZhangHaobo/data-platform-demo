@@ -41,6 +41,19 @@ export const V2_OPERATIONS = Object.freeze([
   "realtime_plan_list",
   "realtime_plan_create",
   "realtime_plan_apply",
+  "asset_list",
+  "asset_detail",
+  "asset_lineage",
+  "asset_impact",
+  "asset_annotate",
+  "metric_list",
+  "metric_create",
+  "metric_run",
+  "standard_list",
+  "standard_create",
+  "standard_check",
+  "asset_agent_list",
+  "asset_agent_create",
 ]);
 
 export class V2ApiError extends Error {

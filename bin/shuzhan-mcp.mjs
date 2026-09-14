@@ -43,6 +43,19 @@ const tools = [
   { name: "realtime_plan_list", description: "列出受治理的实时同步Agent方案。", inputSchema: { type: "object", properties: {} } },
   { name: "realtime_plan_create", description: "让真实模型基于实时源契约生成任务草稿，不读取事件行、不启动任务。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
   { name: "realtime_plan_apply", description: "把已验证实时方案应用为READY草稿，不自动启动。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
+  { name: "asset_list", description: "搜索由实际版本绑定生成的数据资产目录。", inputSchema: { type: "object", properties: { query: { type: "string" }, kind: { type: "string" } } } },
+  { name: "asset_detail", description: "读取资产字段、证据摘要、指标、标准和血缘。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
+  { name: "asset_lineage", description: "读取来自同步、发布和数据服务版本绑定的血缘；不是完整SQL字段级解析。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
+  { name: "asset_impact", description: "读取指定资产的下游版本绑定影响范围。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
+  { name: "asset_annotate", description: "为合成资产保存版本化业务名称、说明、域、负责人和标签。", inputSchema: { type: "object", properties: { assetId: { type: "string" }, businessName: { type: "string" }, description: { type: "string" }, domain: { type: "string" }, owner: { type: "string" }, classification: { type: "string", enum: ["PUBLIC_DEMO", "INTERNAL_DEMO", "RESTRICTED_DEMO"] }, tags: { type: "array", items: { type: "string" } } }, required: ["assetId", "businessName", "description", "domain", "owner"] } },
+  { name: "metric_list", description: "列出版本化指标定义及实际运行。", inputSchema: { type: "object", properties: {} } },
+  { name: "metric_create", description: "在可执行的落地或实时状态资产上创建SUM/COUNT指标定义。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, aggregation: { type: "string", enum: ["SUM", "COUNT_DISTINCT", "COUNT_ROWS"] }, field: { type: "string" }, groupBy: { type: "string" }, definition: { type: "string" } }, required: ["name", "code", "assetId", "aggregation", "definition"] } },
+  { name: "metric_run", description: "对当前资产实际行执行指标并保存摘要。", inputSchema: { type: "object", properties: { metricId: { type: "string" } }, required: ["metricId"] } },
+  { name: "standard_list", description: "列出数据标准及实际检查结果。", inputSchema: { type: "object", properties: {} } },
+  { name: "standard_create", description: "为可执行资产字段创建受限语义标准。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, field: { type: "string" }, semanticType: { type: "string", enum: ["SECURITY_CODE", "CLIENT_ID", "DECIMAL_18_2", "TRADE_DATE"] }, description: { type: "string" } }, required: ["name", "code", "assetId", "field", "semanticType", "description"] } },
+  { name: "standard_check", description: "在实际资产行上检查标准；无效值只返回哈希。", inputSchema: { type: "object", properties: { standardId: { type: "string" } }, required: ["standardId"] } },
+  { name: "asset_agent_list", description: "列出受治理的数据资产Agent回答。", inputSchema: { type: "object", properties: {} } },
+  { name: "asset_agent_create", description: "让真实模型基于资产摘要和版本绑定血缘找数据、解释口径与影响，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
 ];
 
 export const V2_MCP_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
@@ -191,6 +204,50 @@ async function callTool(name, args = {}) {
       `/streams/agent/plans/${encodeURIComponent(args.planId)}/apply`,
       { method: "POST", body: {} },
     );
+  if (name === "asset_list") {
+    const query = new URLSearchParams({
+      ...(args.query ? { q: args.query } : {}),
+      ...(args.kind ? { kind: args.kind } : {}),
+    });
+    return client.request(`/assets${query.size ? `?${query}` : ""}`);
+  }
+  if (["asset_detail", "asset_lineage", "asset_impact"].includes(name)) {
+    const action = {
+      asset_detail: "",
+      asset_lineage: "/lineage",
+      asset_impact: "/impact",
+    }[name];
+    return client.request(`/assets/${encodeURIComponent(args.assetId)}${action}`);
+  }
+  if (name === "asset_annotate") {
+    const { assetId, ...body } = args;
+    return client.request(`/assets/${encodeURIComponent(assetId)}/annotation`, {
+      method: "POST",
+      body,
+    });
+  }
+  if (name === "metric_list") return client.request("/metrics");
+  if (name === "metric_create")
+    return client.request("/metrics", { method: "POST", body: args });
+  if (name === "metric_run")
+    return client.request(`/metrics/${encodeURIComponent(args.metricId)}/run`, {
+      method: "POST",
+      body: {},
+    });
+  if (name === "standard_list") return client.request("/standards");
+  if (name === "standard_create")
+    return client.request("/standards", { method: "POST", body: args });
+  if (name === "standard_check")
+    return client.request(
+      `/standards/${encodeURIComponent(args.standardId)}/check`,
+      { method: "POST", body: {} },
+    );
+  if (name === "asset_agent_list") return client.request("/assets/agent/tasks");
+  if (name === "asset_agent_create")
+    return client.request("/assets/agent/tasks", {
+      method: "POST",
+      body: { message: args.message },
+    });
   throw new Error(`未知V2 MCP工具：${name}`);
 }
 const response = (id, result) => JSON.stringify({ jsonrpc: "2.0", id, result });
