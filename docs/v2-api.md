@@ -58,6 +58,15 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET/POST /data-services/agent/plans | 列表或自然语言需求 | 后台真实模型方案，范围为DATA_SERVICE_DESIGN |
 | GET /data-services/agent/plans/:id | 方案状态 | 受治理提案、模型用量或明确失败 |
 | POST /data-services/agent/plans/:id/apply | 空对象 | 人工应用已验证方案为草稿，不自动发布 |
+| GET/POST /sources | 列表或name/sourceType/fileName | 创建仅限合成目录的LOCAL_CSV源及V1版本 |
+| GET /sources/:id | 数据源详情 | 当前版本、历史版本、连接测试和元数据版本 |
+| POST /sources/:id/test | 空对象 | 真实读取文件并记录摘要、字节、行列数和耗时 |
+| POST /sources/:id/metadata | 空对象 | 实际扫描字段类型、可空、基数、结构摘要和变化 |
+| POST /sources/:id/revisions | fileName + 幂等键 | 创建不可变源版本；旧测试/元数据不自动复用 |
+| GET/POST /sync/tasks | 列表或映射/主键/水位/模式 | 创建绑定源及元数据版本的离线同步任务 |
+| GET /sync/tasks/:id | 任务详情 | 配置摘要、状态、水位和全部成功/失败运行 |
+| POST /sync/tasks/:id/run | 空对象 + 幂等键 | 执行FULL或INCREMENTAL_UPSERT，返回实际读写与目标摘要 |
+| GET /sync/targets/:table/rows | 目标表 | 读取本机落地区实际行；仅用于当前合成验收 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；

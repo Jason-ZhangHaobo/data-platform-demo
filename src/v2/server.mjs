@@ -38,6 +38,10 @@ import {
   BusinessQueryStore,
   DataServiceManager,
 } from "./data-services.mjs";
+import {
+  IngestionManager,
+  LandingStore,
+} from "./ingestion.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -76,6 +80,12 @@ export function createV2Server(options = {}) {
       options.businessStore ??
       new BusinessQueryStore(
         options.store ? ":memory:" : join(root, ".data/v2-business-services.sqlite"),
+      );
+  const ownsLandingStore = !options.landingStore,
+    landingStore =
+      options.landingStore ??
+      new LandingStore(
+        options.store ? ":memory:" : join(root, ".data/v2-landing.sqlite"),
       );
   const host = env.V2_HOST ?? "127.0.0.1",
     local = env.V2_LOCAL_DEVELOPMENT !== "false";
@@ -139,6 +149,14 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
+  const ingestion = new IngestionManager({
+    store,
+    landingStore,
+    project: PROJECT,
+    fixtureRoot:
+      options.fixtureRoot ?? join(process.cwd(), "fixtures", "sources"),
+    now: options.now,
+  });
   const revision = (sql, contextId, source) =>
     store.create("revision", PROJECT, {
       sql,
@@ -288,6 +306,13 @@ export function createV2Server(options = {}) {
             businessDriver: "sqlite",
             cloudVerified: false,
           },
+          ingestion: {
+            sourceCount: ingestion.listSources().length,
+            offlineTaskCount: ingestion.listTasks().length,
+            sourceType: "LOCAL_CSV",
+            landingDriver: "sqlite",
+            cloudVerified: false,
+          },
         });
       const openService = path.match(
         /^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/,
@@ -305,6 +330,97 @@ export function createV2Server(options = {}) {
         );
       if (path === "/api/v2/contexts" && method === "GET")
         return json(res, 200, contextIds.map(publicContext));
+      if (path === "/api/v2/sources" && method === "GET")
+        return json(res, 200, ingestion.listSources());
+      if (path === "/api/v2/sources" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:source:${key}`,
+            hash(JSON.stringify(body)),
+            () => ingestion.createSource(body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          ingestion.sourceDetail(dedup.id),
+        );
+      }
+      const sourceRecord = path.match(
+        /^\/api\/v2\/sources\/([a-f0-9-]+)(?:\/(test|metadata|revisions))?$/,
+      );
+      if (sourceRecord) {
+        const source = ingestion.sourceDetail(sourceRecord[1]),
+          action = sourceRecord[2];
+        if (method === "GET" && !action) return json(res, 200, source);
+        if (method === "POST" && action === "test") {
+          await readBody(req);
+          return json(res, 200, ingestion.testConnection(source.id));
+        }
+        if (method === "POST" && action === "metadata") {
+          await readBody(req);
+          return json(res, 200, ingestion.collectMetadata(source.id));
+        }
+        if (method === "POST" && action === "revisions") {
+          const body = await readBody(req),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:source-revision:${source.id}:${key}`,
+              hash(JSON.stringify(body)),
+              () => ingestion.createSourceRevision(source.id, body),
+            );
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            get("source_revision", dedup.id),
+          );
+        }
+      }
+      if (path === "/api/v2/sync/tasks" && method === "GET")
+        return json(res, 200, ingestion.listTasks());
+      if (path === "/api/v2/sync/tasks" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:offline-sync-task:${key}`,
+            hash(JSON.stringify(body)),
+            () => ingestion.createTask(body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          ingestion.taskDetail(dedup.id),
+        );
+      }
+      const syncTaskRecord = path.match(
+        /^\/api\/v2\/sync\/tasks\/([a-f0-9-]+)(?:\/(run))?$/,
+      );
+      if (syncTaskRecord) {
+        const task = ingestion.taskDetail(syncTaskRecord[1]),
+          action = syncTaskRecord[2];
+        if (method === "GET" && !action) return json(res, 200, task);
+        if (method === "POST" && action === "run") {
+          await readBody(req);
+          const requestKey = text(req.headers["idempotency-key"], 1, 100),
+            requestSignature = hash(
+              JSON.stringify({
+                taskId: task.id,
+                configHash: task.configHash,
+                sourceRevisionId: task.sourceRevisionId,
+              }),
+            );
+          return json(
+            res,
+            200,
+            ingestion.runTask(task.id, { requestKey, requestSignature }),
+          );
+        }
+      }
+      const targetRows = path.match(
+        /^\/api\/v2\/sync\/targets\/([a-z][a-z0-9_]{0,62})\/rows$/,
+      );
+      if (targetRows && method === "GET")
+        return json(res, 200, ingestion.previewTarget(targetRows[1]));
       if (path === "/api/v2/settings/model-key" && method === "POST") {
         const body = await readBody(req);
         const configured = await saveLocalModelKey(root, env, body.apiKey);
@@ -1227,6 +1343,7 @@ export function createV2Server(options = {}) {
         /^[A-Z][A-Z0-9_]{2,64}$/.test(error.code)
           ? { code: error.code }
           : {}),
+        ...(typeof error.runId === "string" ? { runId: error.runId } : {}),
       });
       if (!error.status) console.error(error.message);
     }
@@ -1235,6 +1352,7 @@ export function createV2Server(options = {}) {
     for (const c of controls.values()) c.abort();
     releaseScheduler.shutdown();
     if (ownsBusinessStore) businessStore.close();
+    if (ownsLandingStore) landingStore.close();
   });
   return {
     server,
@@ -1243,6 +1361,8 @@ export function createV2Server(options = {}) {
     releaseScheduler,
     dataServices,
     businessStore,
+    ingestion,
+    landingStore,
   };
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
