@@ -57,6 +57,11 @@ export class ReportDataStore {
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS report_snapshots(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL,content_hash TEXT NOT NULL,row_count INTEGER NOT NULL,rows_json TEXT NOT NULL,created_at TEXT NOT NULL);",
     );
+    this.mutationListener = undefined;
+  }
+
+  setMutationListener(listener) {
+    this.mutationListener = listener;
   }
 
   materialize(assetId, rows, createdAt) {
@@ -73,6 +78,7 @@ export class ReportDataStore {
         canonical(normalized),
         createdAt,
       );
+    this.mutationListener?.();
     return { id, assetId, contentHash, rowCount: normalized.length, createdAt };
   }
 

@@ -128,6 +128,11 @@ export class StreamStateStore {
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS stream_events(job_id TEXT NOT NULL,event_id TEXT NOT NULL,source_offset INTEGER NOT NULL,sequence INTEGER NOT NULL,event_time TEXT NOT NULL,payload TEXT NOT NULL,event_hash TEXT NOT NULL,processed_at TEXT NOT NULL,PRIMARY KEY(job_id,event_id)); CREATE TABLE IF NOT EXISTS stream_state(job_id TEXT NOT NULL,state_key TEXT NOT NULL,payload TEXT NOT NULL,last_sequence INTEGER NOT NULL,event_time TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(job_id,state_key)); CREATE TABLE IF NOT EXISTS stream_checkpoints(id TEXT PRIMARY KEY,job_id TEXT NOT NULL,run_id TEXT NOT NULL,source_revision_id TEXT NOT NULL,last_offset INTEGER NOT NULL,event_count INTEGER NOT NULL,duplicate_count INTEGER NOT NULL,watermark TEXT NOT NULL,prefix_hash TEXT NOT NULL,state_hash TEXT NOT NULL,created_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS stream_checkpoints_job ON stream_checkpoints(job_id,created_at);",
     );
+    this.mutationListener = undefined;
+  }
+
+  setMutationListener(listener) {
+    this.mutationListener = listener;
   }
 
   applyEvent(jobId, event, offset, now) {
@@ -169,6 +174,7 @@ export class StreamStateStore {
             now,
           );
       this.db.exec("COMMIT");
+      this.mutationListener?.();
       return { duplicate: false, stateUpdated, late: !stateUpdated, eventHash };
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
@@ -199,6 +205,7 @@ export class StreamStateStore {
         checkpoint.stateHash,
         checkpoint.createdAt,
       );
+    this.mutationListener?.();
     return checkpoint;
   }
 

@@ -72,14 +72,31 @@ const text = (value, min = 1, max = 20000) => {
     throw fail(400, "提交内容长度不符合要求");
   return value.trim();
 };
-const json = (res, status, data, headers = {}) => {
-  res.writeHead(status, {
+const json = async (res, status, data, headers = {}) => {
+  let responseStatus = status,
+    responseData = data,
+    responseHeaders = headers;
+  try {
+    await res.metadataFlush?.();
+  } catch (error) {
+    responseStatus = error.status ?? 503;
+    responseData = {
+      message: error.status
+        ? error.message
+        : "云端元数据保存失败，请刷新确认后重试",
+      ...(typeof error.code === "string" ? { code: error.code } : {}),
+    };
+    // Never issue a login/session cookie when the session itself did not reach
+    // durable storage.
+    responseHeaders = {};
+  }
+  res.writeHead(responseStatus, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
-    ...headers,
+    ...responseHeaders,
   });
-  res.end(JSON.stringify(data));
+  res.end(JSON.stringify(responseData));
 };
 const terminal = new Set([
   "SUCCEEDED",
@@ -117,6 +134,7 @@ export function createV2Server(options = {}) {
       new ReportDataStore(
         options.store ? ":memory:" : join(root, ".data/v2-reports.sqlite"),
       );
+  const persistence = options.stateCoordinator ?? store;
   const host = env.V2_HOST ?? "127.0.0.1",
     local = env.V2_LOCAL_DEVELOPMENT !== "false",
     insecurePublicCookies =
@@ -129,10 +147,16 @@ export function createV2Server(options = {}) {
     !["127.0.0.1", "localhost", "::1"].includes(host)
   )
     throw new Error("非安全公网Cookie仅允许回环地址测试");
-  if (env.V2_META_DRIVER && env.V2_META_DRIVER !== "sqlite")
-    throw new Error(
-      "云端 MySQL 元数据库尚未接入，本地启动不会回退或假报云端就绪",
-    );
+  if (
+    env.V2_META_DRIVER &&
+    !["sqlite", "mysql-project-snapshot-cas"].includes(env.V2_META_DRIVER)
+  )
+    throw new Error("平台元数据库驱动不受支持");
+  if (
+    env.V2_META_DRIVER === "mysql-project-snapshot-cas" &&
+    typeof store.replicationStatus !== "function"
+  )
+    throw new Error("已要求云端MySQL元数据库，但当前存储没有复制能力");
   const auth = new AuthManager({
     store,
     project: PROJECT,
@@ -406,6 +430,9 @@ export function createV2Server(options = {}) {
       const url = new URL(req.url, "http://localhost"),
         path = url.pathname,
         method = req.method;
+      if (typeof persistence.refresh === "function") await persistence.refresh();
+      if (method !== "GET" && typeof persistence.flush === "function")
+        res.metadataFlush = () => persistence.flush();
       const origin = req.headers.origin;
       if (
         origin &&
@@ -503,7 +530,11 @@ export function createV2Server(options = {}) {
           auth.createInvitation(actor, await readBody(req)),
         );
       }
-      if (path === "/api/v2/status" && method === "GET")
+      if (path === "/api/v2/status" && method === "GET") {
+        const cloudReplication =
+          typeof options.stateCoordinator?.replicationStatus === "function"
+            ? options.stateCoordinator.replicationStatus()
+            : undefined;
         return json(res, 200, {
           projectId: PROJECT,
           mode: local ? "LOCAL_DEVELOPMENT" : "PUBLIC_INVITATION",
@@ -518,7 +549,21 @@ export function createV2Server(options = {}) {
             engine: "Apache Spark",
             isolation: "LOCAL_PROCESS",
           },
-          metadata: { driver: "sqlite", cloudVerified: false },
+          metadata:
+            typeof store.replicationStatus === "function"
+              ? {
+                  ...store.replicationStatus(),
+                  cloudVerified: store.replicationStatus().healthy,
+                }
+              : { driver: "sqlite", cloudVerified: false },
+          persistence:
+            cloudReplication
+              ? cloudReplication
+              : {
+                  mode: "local-sqlite",
+                  healthy: true,
+                  dataState: { driver: "sqlite", healthy: true },
+                },
           publicReady: false,
           validationContract: {
             id: validationContractId,
@@ -526,15 +571,23 @@ export function createV2Server(options = {}) {
           },
           dataServices: {
             serviceCount: dataServices.list().length,
-            businessDriver: "sqlite",
-            cloudVerified: false,
+            businessDriver: options.stateCoordinator
+              ? "sqlite-index-with-oss-snapshot-cas"
+              : "sqlite",
+            cloudVerified: Boolean(
+              cloudReplication?.dataState.healthy,
+            ),
           },
           ingestion: {
             sourceCount: ingestion.listSources().length,
             offlineTaskCount: ingestion.listTasks().length,
             sourceType: "LOCAL_CSV",
-            landingDriver: "sqlite",
-            cloudVerified: false,
+            landingDriver: options.stateCoordinator
+              ? "sqlite-index-with-oss-snapshot-cas"
+              : "sqlite",
+            cloudVerified: Boolean(
+              cloudReplication?.dataState.healthy,
+            ),
           },
           realtime: {
             sourceCount: realtime.listSources().length,
@@ -542,7 +595,12 @@ export function createV2Server(options = {}) {
             adapter: "local-event-log-v1",
             kafkaConnected: false,
             flinkConnected: false,
-            cloudVerified: false,
+            stateDriver: options.stateCoordinator
+              ? "sqlite-index-with-oss-snapshot-cas"
+              : "sqlite",
+            cloudVerified: Boolean(
+              cloudReplication?.dataState.healthy,
+            ),
           },
           assets: {
             assetCount: assets.listAssets().length,
@@ -559,15 +617,24 @@ export function createV2Server(options = {}) {
           },
           security: {
             ...security.overview().counts,
-            identityMode: "LOCAL_SYNTHETIC_HEADER",
-            publicAuthentication: false,
-            cloudVerified: false,
+            identityMode: local
+              ? "LOCAL_SYNTHETIC_HEADER"
+              : "INVITATION_SESSION",
+            publicAuthentication: !local,
+            cloudVerified: Boolean(
+              cloudReplication?.metadata.healthy,
+            ),
           },
           reports: {
             ...reports.overview().counts,
             executionScope: "LOCAL_AGGREGATED_REPORTING",
             publicDeployed: false,
-            cloudVerified: false,
+            snapshotDriver: options.stateCoordinator
+              ? "sqlite-index-with-oss-snapshot-cas"
+              : "sqlite",
+            cloudVerified: Boolean(
+              cloudReplication?.dataState.healthy,
+            ),
           },
           operations: {
             ...operations.overview().counts,
@@ -581,6 +648,7 @@ export function createV2Server(options = {}) {
             publicSessionEnforced: !local,
           },
         });
+      }
       const openService = path.match(
         /^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/,
       );
@@ -2640,7 +2708,7 @@ export function createV2Server(options = {}) {
       });
       res.end(content);
     } catch (error) {
-      json(res, error.status ?? 500, {
+      return json(res, error.status ?? 500, {
         message: error.status ? error.message : "处理失败，请检查服务日志",
         ...(typeof error.code === "string" &&
         /^[A-Z][A-Z0-9_]{2,64}$/.test(error.code)
@@ -2648,8 +2716,9 @@ export function createV2Server(options = {}) {
           : {}),
         ...(typeof error.runId === "string" ? { runId: error.runId } : {}),
         ...(typeof error.auditId === "string" ? { auditId: error.auditId } : {}),
+      }).finally(() => {
+        if (!error.status) console.error(error.message);
       });
-      if (!error.status) console.error(error.message);
     }
   });
   server.on("close", () => {
@@ -2679,6 +2748,7 @@ export function createV2Server(options = {}) {
     reportStore,
     operations,
     auth,
+    stateCoordinator: options.stateCoordinator,
   };
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

@@ -193,6 +193,11 @@ export class LandingStore {
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS landing_rows(target_table TEXT NOT NULL,row_key TEXT NOT NULL,payload TEXT NOT NULL,source_hash TEXT NOT NULL,synced_at TEXT NOT NULL,PRIMARY KEY(target_table,row_key)); CREATE INDEX IF NOT EXISTS landing_target ON landing_rows(target_table,row_key);",
     );
+    this.mutationListener = undefined;
+  }
+
+  setMutationListener(listener) {
+    this.mutationListener = listener;
   }
 
   sync({ targetTable, mode, rows, mapping, keyFields, sourceHash, syncedAt }) {
@@ -247,6 +252,7 @@ export class LandingStore {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     }
+    this.mutationListener?.();
     const finalRows = this.readTable(target);
     return {
       targetTable: target,

@@ -95,6 +95,11 @@ export class BusinessQueryStore {
     this.db.exec(
       "PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS service_snapshots(id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, row_count INTEGER NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS customer_assets(snapshot_id TEXT NOT NULL, client_id TEXT NOT NULL, holding_market_value TEXT NOT NULL, available_cash TEXT NOT NULL, total_assets TEXT NOT NULL, security_count INTEGER NOT NULL, PRIMARY KEY(snapshot_id,client_id), FOREIGN KEY(snapshot_id) REFERENCES service_snapshots(id)); CREATE INDEX IF NOT EXISTS customer_assets_snapshot ON customer_assets(snapshot_id,client_id);",
     );
+    this.mutationListener = undefined;
+  }
+
+  setMutationListener(listener) {
+    this.mutationListener = listener;
   }
 
   materialize(snapshotId, rows, now = new Date().toISOString()) {
@@ -161,6 +166,7 @@ export class BusinessQueryStore {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     }
+    this.mutationListener?.();
     return { id, contentHash, rowCount: normalized.length, replayed: false };
   }
 
