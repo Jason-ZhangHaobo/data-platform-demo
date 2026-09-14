@@ -165,6 +165,12 @@ export function createV2Server(options = {}) {
   });
   const runtime = runtimeConfig(env, root),
     runner = options.runner ?? ((input) => runSpark(input, runtime));
+  const runnerDescriptor = options.runnerDescriptor ?? options.runner?.descriptor ?? {
+    engine: "Apache Spark",
+    isolation: "LOCAL_PROCESS",
+    endpointConfigured: false,
+    publicWriteEnabled: false,
+  };
   let modelVerifiedAt = null;
   const generator =
     options.generator ??
@@ -188,7 +194,7 @@ export function createV2Server(options = {}) {
     throw new Error("本机发布调度时间单位不合法");
   const releaseRunner =
     options.releaseRunner ??
-    ((input) => verifyDeliveryDirectory(input, { runtime }));
+    ((input) => verifyDeliveryDirectory(input, { runtime, runner }));
   const releaseScheduler = new LocalReleaseScheduler({
     store,
     project: PROJECT,
@@ -545,9 +551,10 @@ export function createV2Server(options = {}) {
             verifiedAt: modelVerifiedAt,
           },
           spark: {
-            available: options.runner ? true : runtime.available,
-            engine: "Apache Spark",
-            isolation: "LOCAL_PROCESS",
+            available: options.runner
+              ? runnerDescriptor.publicWriteEnabled !== false
+              : runtime.available,
+            ...runnerDescriptor,
           },
           metadata:
             typeof store.replicationStatus === "function"
@@ -2242,7 +2249,7 @@ export function createV2Server(options = {}) {
               );
               const executeFiles =
                 options.deliveryRunner ??
-                ((input) => verifyDeliveryDirectory(input, { runtime }));
+                ((input) => verifyDeliveryDirectory(input, { runtime, runner }));
               const result = await executeFiles({
                 directory,
                 expectedDigest: item.digest,

@@ -35,6 +35,8 @@ jobs:
       V2_BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.V2_BOOTSTRAP_ADMIN_PASSWORD }}
       V2_BOOTSTRAP_ADMIN_NAME: ${{ secrets.V2_BOOTSTRAP_ADMIN_NAME }}
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+      V2_SPARK_EXECUTOR_URL: ${{ vars.V2_SPARK_EXECUTOR_URL }}
+      V2_SPARK_EXECUTOR_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -112,6 +114,8 @@ jobs:
             --arg admin_password "$V2_BOOTSTRAP_ADMIN_PASSWORD" \
             --arg admin_name "${V2_BOOTSTRAP_ADMIN_NAME:-平台管理员}" \
             --arg model_key "$DASHSCOPE_API_KEY" \
+            --arg spark_url "$V2_SPARK_EXECUTOR_URL" \
+            --arg spark_secret "$V2_SPARK_EXECUTOR_SECRET" \
             '$current + {
               PORT:"9000",
               V2_LOCAL_DEVELOPMENT:"false",
@@ -132,7 +136,10 @@ jobs:
               V2_BOOTSTRAP_ADMIN_NAME:$admin_name,
               DASHSCOPE_API_KEY:$model_key,
               V2_MODEL:"qwen3-coder-plus",
-              V2_MODEL_BASE_URL:"https://dashscope.aliyuncs.com/compatible-mode/v1"
+              V2_MODEL_BASE_URL:"https://dashscope.aliyuncs.com/compatible-mode/v1",
+              V2_SPARK_EXECUTOR_URL:$spark_url,
+              V2_SPARK_EXECUTOR_SECRET:$spark_secret,
+              V2_SPARK_EXECUTOR_TIMEOUT_MS:"120000"
             } | {
               code:{zipFile:$zip},
               runtime:"custom.debian12",

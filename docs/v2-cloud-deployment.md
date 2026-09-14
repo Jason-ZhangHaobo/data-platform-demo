@@ -39,6 +39,7 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 - `V2_MYSQL_HOST`、`V2_MYSQL_PORT`、`V2_MYSQL_USER`、`V2_MYSQL_PASSWORD`、`V2_MYSQL_DATABASE`
 - `V2_BOOTSTRAP_ADMIN_EMAIL`、`V2_BOOTSTRAP_ADMIN_PASSWORD`、`V2_BOOTSTRAP_ADMIN_NAME`
 - `DASHSCOPE_API_KEY`
+- 可选隔离执行：变量`V2_SPARK_EXECUTOR_URL`与秘密`V2_SPARK_EXECUTOR_SECRET`；Worker未完成真实验收前保持为空
 
 秘密只进入GitHub受保护Environment和FC加密环境变量；仓库、日志和构建产物不保存值。函数角色负责注入临时OSS凭证，不创建或手填长期AccessKey。
 
@@ -56,4 +57,4 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 
 ## 仍然关闭的能力
 
-公网函数尚无通过验收的隔离Spark执行单元，所以`publicReady=false`必须保持。公开浏览和受邀控制面可以先灰度，任意代码/SQL执行不能因页面可点击就开放；执行层完成后另做故障、超时、权限、成本和回滚验收。
+公网函数已有远程Spark客户端和Worker协议，但尚无通过真实云验收的Java/PySpark执行资源，所以`publicReady=false`必须保持。公开浏览和受邀控制面可以先灰度，任意代码/SQL执行不能因协议测试或页面可点击就开放；执行层完成后另做私网/函数鉴权、故障、超时、权限、成本和回滚验收。

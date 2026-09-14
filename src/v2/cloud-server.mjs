@@ -11,6 +11,7 @@ import {
   ossDataStateConfigFromEnvironment,
 } from "./oss-data-state-backend.mjs";
 import { CloudStateCoordinator } from "./cloud-state-coordinator.mjs";
+import { createRemoteSparkRunner } from "./remote-spark.mjs";
 
 const metadataBackend = await MySqlMetadataBackend.open(process.env),
   store = await ReplicatedMetadataStore.open({
@@ -35,11 +36,26 @@ const metadataBackend = await MySqlMetadataBackend.open(process.env),
     metadata: store,
     dataState,
   }),
+  runnerCandidate = createRemoteSparkRunner(process.env),
   env = {
     ...process.env,
     V2_LOCAL_DEVELOPMENT: "false",
     V2_META_DRIVER: "mysql-project-snapshot-cas",
   },
+  runnerStatus = runnerCandidate
+    ? await runnerCandidate
+        .verify()
+        .then(() => ({ runner: runnerCandidate, descriptor: runnerCandidate.descriptor }))
+        .catch((error) => ({
+          runner: undefined,
+          descriptor: {
+            ...runnerCandidate.descriptor,
+            healthVerified: false,
+            publicWriteEnabled: false,
+            errorCode: error.code ?? "REMOTE_SPARK_NOT_READY",
+          },
+        }))
+    : { runner: undefined, descriptor: undefined },
   app = createV2Server({
     store,
     businessStore,
@@ -47,6 +63,10 @@ const metadataBackend = await MySqlMetadataBackend.open(process.env),
     streamStateStore,
     reportStore,
     stateCoordinator,
+    ...(runnerStatus.runner ? { runner: runnerStatus.runner } : {}),
+    ...(runnerStatus.descriptor
+      ? { runnerDescriptor: runnerStatus.descriptor }
+      : {}),
     env,
   });
 await stateCoordinator.flush();

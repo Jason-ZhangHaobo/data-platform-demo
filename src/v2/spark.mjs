@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -9,6 +15,8 @@ export function runtimeConfig(env = process.env, root = process.cwd()) {
     javaHome,
     python,
     root,
+    artifactRoot: env.V2_ARTIFACT_ROOT ?? root,
+    retainArtifacts: env.V2_RETAIN_SPARK_ARTIFACTS !== "false",
     available: existsSync(join(javaHome, "bin/java")) && existsSync(python),
   };
 }
@@ -26,7 +34,11 @@ export function runSpark(
         { status: 503 },
       ),
     );
-  const directory = resolve(config.root, ".v2-artifacts", randomUUID());
+  const directory = resolve(
+    config.artifactRoot ?? config.root,
+    ".v2-artifacts",
+    randomUUID(),
+  );
   mkdirSync(directory, { recursive: true });
   const input = join(directory, "input.json"),
     output = join(directory, "output.json");
@@ -35,6 +47,10 @@ export function runSpark(
     JSON.stringify({ sql, context, validationContexts, testSql }),
   ); // Generated per-run input; never committed.
   return new Promise((resolveResult, reject) => {
+    const cleanup = () => {
+      if (!config.retainArtifacts)
+        rmSync(directory, { recursive: true, force: true });
+    };
     const child = spawn(
       config.python,
       [join(config.root, "src/v2/worker.py"), input, output],
@@ -44,8 +60,8 @@ export function runSpark(
         env: {
           PATH: process.env.PATH,
           JAVA_HOME: config.javaHome,
-          HOME: directory,
           TMPDIR: directory,
+          SPARK_LOCAL_DIRS: directory,
           SPARK_LOCAL_IP: "127.0.0.1",
           PYSPARK_PYTHON: config.python,
           OPENBLAS_NUM_THREADS: "1",
@@ -78,21 +94,35 @@ export function runSpark(
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       finished = true;
+      cleanup();
       reject(error);
     });
     child.on("close", (code) => {
       if (finished) return;
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      if (signal?.aborted) return reject(new Error("运行已取消"));
-      if (timedOut) return reject(new Error("Spark 执行超时，运行进程已终止"));
+      if (signal?.aborted) {
+        cleanup();
+        return reject(new Error("运行已取消"));
+      }
+      if (timedOut) {
+        cleanup();
+        return reject(new Error("Spark 执行超时，运行进程已终止"));
+      }
       let result;
       try {
         result = JSON.parse(readFileSync(output, "utf8"));
       } catch {
+        cleanup();
         return reject(new Error("Spark 未返回结果；" + log.slice(-1800)));
       }
-      resolveResult({ ...result, exitCode: code, log, directory });
+      cleanup();
+      resolveResult({
+        ...result,
+        exitCode: code,
+        log,
+        ...(config.retainArtifacts ? { directory } : {}),
+      });
     });
   });
 }
