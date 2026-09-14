@@ -680,3 +680,95 @@ export async function generateSecurityPlan(
     mode: "LIVE_MODEL",
   };
 }
+
+export async function generateReportPlan(
+  { message, datasets, reports, signal },
+  env = process.env,
+  fetchImpl = fetch,
+) {
+  if (!env.DASHSCOPE_API_KEY) throw new ModelUnavailable();
+  const settings = modelSettings(env),
+    base = new URL(settings.baseUrl);
+  if (base.protocol !== "https:") throw new Error("模型 API 必须使用 HTTPS");
+  const prompt = JSON.stringify({
+    request: message,
+    readyDatasets: datasets.map((dataset) => ({
+      id: dataset.id,
+      name: dataset.name,
+      code: dataset.code,
+      assetId: dataset.assetId,
+      fields: dataset.fields,
+      rowCount: dataset.rowCount,
+      snapshotId: dataset.snapshotId,
+      contentHash: dataset.contentHash,
+    })),
+    existingReports: reports.map((report) => ({
+      id: report.id,
+      name: report.name,
+      code: report.code,
+      datasetId: report.datasetId,
+      status: report.status,
+      widgets: report.widgets,
+    })),
+    contract: {
+      kind: "REPORT",
+      widgetTypes: ["KPI", "BAR", "PIE"],
+      aggregations: ["SUM", "COUNT_DISTINCT", "COUNT_ROWS"],
+      output:
+        "只返回JSON对象：kind,name,code,datasetId,description,widgets,explanation。每个widget包含id,type,title,aggregation，以及需要时的field或dimension；全部引用必须来自数据集。",
+      boundary:
+        "只生成聚合组件，不返回业务行、不声称已执行或已发布。",
+    },
+  });
+  const response = await fetchImpl(
+    settings.baseUrl.replace(/\/$/, "") + "/chat/completions",
+    {
+      method: "POST",
+      redirect: "error",
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(60000)])
+        : AbortSignal.timeout(60000),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + env.DASHSCOPE_API_KEY,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        temperature: 0.1,
+        max_tokens: 2400,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是证券数据报表助手。只根据已就绪数据集的字段与快照摘要生成聚合报表草稿。不得读取或复述业务行、虚构数据集/字段、执行报表、导出文件或声称公网发布。不要输出推理过程。",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      "模型请求失败（" + response.status + "），请检查服务配置或额度",
+    );
+  const payload = await response.json();
+  let content = payload.choices?.[0]?.message?.content ?? "";
+  content = content
+    .replace(/^\s*```(?:json)?\s*/, "")
+    .replace(/\s*```\s*$/, "");
+  let plan;
+  try {
+    plan = JSON.parse(content);
+  } catch {
+    throw new Error("模型未返回可解析的报表方案");
+  }
+  const explanation = String(plan.explanation ?? "").slice(0, 1200);
+  delete plan.explanation;
+  return {
+    plan,
+    explanation,
+    model: settings.model,
+    usage: payload.usage ?? {},
+    mode: "LIVE_MODEL",
+  };
+}

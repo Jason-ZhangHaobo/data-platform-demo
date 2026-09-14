@@ -77,6 +77,18 @@ const tools = [
   { name: "security_plan_list", description: "列出受治理安全Agent策略方案。", inputSchema: { type: "object", properties: {} } },
   { name: "security_plan_create", description: "让真实模型基于合成身份和字段元数据生成最小权限草稿，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
   { name: "security_plan_apply", description: "把已验证安全方案应用为策略V1，不执行查询或审批。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
+  { name: "report_overview", description: "读取报表数据集、报告和实际运行汇总。", inputSchema: { type: "object", properties: {} } },
+  { name: "report_dataset_list", description: "列出报表数据集和不可变快照摘要。", inputSchema: { type: "object", properties: {} } },
+  { name: "report_dataset_create", description: "从可报表资产创建字段受限数据集草稿，不复制数据。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, fields: { type: "array", items: { type: "string" } } }, required: ["name", "code", "assetId", "fields"] } },
+  { name: "report_dataset_refresh", description: "将实际资产行物化到独立报表快照库并保存摘要。", inputSchema: { type: "object", properties: { datasetId: { type: "string" } }, required: ["datasetId"] } },
+  { name: "report_list", description: "列出版本化报表、聚合组件和运行。", inputSchema: { type: "object", properties: {} } },
+  { name: "report_create", description: "创建绑定数据集快照的聚合报表草稿，不自动执行。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, datasetId: { type: "string" }, description: { type: "string" }, widgets: { type: "array", items: { type: "object" } } }, required: ["name", "code", "datasetId", "description", "widgets"] } },
+  { name: "report_version", description: "创建报表新版本并固定当前数据集快照。", inputSchema: { type: "object", properties: { reportId: { type: "string" }, description: { type: "string" }, widgets: { type: "array", items: { type: "object" } } }, required: ["reportId", "description", "widgets"] } },
+  { name: "report_run", description: "对固定快照实际运行KPI/柱状/饼图聚合并保存摘要。", inputSchema: { type: "object", properties: { reportId: { type: "string" } }, required: ["reportId"] } },
+  { name: "report_export", description: "导出最后一次成功聚合结果CSV；不导出业务明细。", inputSchema: { type: "object", properties: { reportId: { type: "string" } }, required: ["reportId"] } },
+  { name: "report_plan_list", description: "列出受治理报表Agent方案。", inputSchema: { type: "object", properties: {} } },
+  { name: "report_plan_create", description: "让真实模型基于数据集字段和快照摘要生成聚合报表草稿，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
+  { name: "report_plan_apply", description: "把已验证报表方案应用为草稿，不执行或导出。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
 ];
 
 export const V2_MCP_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
@@ -341,6 +353,43 @@ async function callTool(name, args = {}) {
   if (name === "security_plan_apply")
     return client.request(
       `/security/agent/plans/${encodeURIComponent(args.planId)}/apply`,
+      { method: "POST", body: {} },
+    );
+  if (name === "report_overview") return client.request("/reports/overview");
+  if (name === "report_dataset_list") return client.request("/reports/datasets");
+  if (name === "report_dataset_create")
+    return client.request("/reports/datasets", { method: "POST", body: args });
+  if (name === "report_dataset_refresh")
+    return client.request(
+      `/reports/datasets/${encodeURIComponent(args.datasetId)}/refresh`,
+      { method: "POST", body: {} },
+    );
+  if (name === "report_list") return client.request("/reports");
+  if (name === "report_create")
+    return client.request("/reports", { method: "POST", body: args });
+  if (name === "report_version") {
+    const { reportId, ...body } = args;
+    return client.request(`/reports/${encodeURIComponent(reportId)}/versions`, {
+      method: "POST",
+      body,
+    });
+  }
+  if (name === "report_run")
+    return client.request(`/reports/${encodeURIComponent(args.reportId)}/run`, {
+      method: "POST",
+      body: {},
+    });
+  if (name === "report_export")
+    return client.request(`/reports/${encodeURIComponent(args.reportId)}/export`);
+  if (name === "report_plan_list") return client.request("/reports/agent/plans");
+  if (name === "report_plan_create")
+    return client.request("/reports/agent/plans", {
+      method: "POST",
+      body: { message: args.message },
+    });
+  if (name === "report_plan_apply")
+    return client.request(
+      `/reports/agent/plans/${encodeURIComponent(args.planId)}/apply`,
       { method: "POST", body: {} },
     );
   throw new Error(`未知V2 MCP工具：${name}`);

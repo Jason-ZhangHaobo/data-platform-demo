@@ -67,6 +67,15 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan security plan --message "为财富顾问生成持仓最小权限策略"
   shuzhan security plans
   shuzhan security apply-plan --id PLAN_ID
+  shuzhan reports overview|datasets|list
+  shuzhan reports create-dataset --name 名称 --code holdings_dataset --asset-id landing:raw_positions --fields client_id,security_code,asset_class,industry,market_value,trade_date
+  shuzhan reports refresh-dataset --id DATASET_ID
+  shuzhan reports create --name 持仓结构报告 --code holdings_structure --dataset-id DATASET_ID --preset holdings --description "持仓指标与分布"
+  shuzhan reports version --id REPORT_ID --preset holdings --description "报表V2"
+  shuzhan reports run|export --id REPORT_ID
+  shuzhan reports plan --message "生成持仓结构报告"
+  shuzhan reports plans
+  shuzhan reports apply-plan --id PLAN_ID
 
 环境变量：
   SHUZHAN_V2_API_BASE_URL  默认 http://127.0.0.1:3100/api/v2
@@ -152,6 +161,21 @@ const qualityConfig = (options, type) => {
   return {
     maxAgeSeconds: Number(required(options, "max_age_seconds")),
   };
+};
+const reportWidgets = (preset) => {
+  if (preset === "holdings")
+    return [
+      { id: "holding_value", type: "KPI", title: "持仓市值", aggregation: "SUM", field: "market_value" },
+      { id: "security_count", type: "KPI", title: "证券数量", aggregation: "COUNT_DISTINCT", field: "security_code" },
+      { id: "asset_class_distribution", type: "PIE", title: "资产类别分布", aggregation: "SUM", field: "market_value", dimension: "asset_class" },
+      { id: "industry_distribution", type: "BAR", title: "行业分布", aggregation: "SUM", field: "market_value", dimension: "industry" },
+    ];
+  if (preset === "customer-assets")
+    return [
+      { id: "total_assets", type: "KPI", title: "客户总资产", aggregation: "SUM", field: "total_assets" },
+      { id: "client_assets", type: "BAR", title: "客户资产分布", aggregation: "SUM", field: "total_assets", dimension: "client_id" },
+    ];
+  throw new Error("--preset必须是holdings或customer-assets");
 };
 
 export const V2_CLI_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
@@ -632,6 +656,66 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "security" && action === "apply-plan")
       result = await client.request(
         `/security/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "reports" && action === "overview")
+      result = await client.request("/reports/overview");
+    else if (resource === "reports" && action === "datasets")
+      result = await client.request("/reports/datasets");
+    else if (resource === "reports" && action === "create-dataset")
+      result = await client.request("/reports/datasets", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          code: required(parsed.options, "code"),
+          assetId: required(parsed.options, "asset_id"),
+          fields: list(required(parsed.options, "fields"), "--fields"),
+        },
+      });
+    else if (resource === "reports" && action === "refresh-dataset")
+      result = await client.request(
+        `/reports/datasets/${encodeURIComponent(required(parsed.options, "id"))}/refresh`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "reports" && action === "list")
+      result = await client.request("/reports");
+    else if (resource === "reports" && action === "create")
+      result = await client.request("/reports", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          code: required(parsed.options, "code"),
+          datasetId: required(parsed.options, "dataset_id"),
+          widgets: reportWidgets(required(parsed.options, "preset")),
+          description: required(parsed.options, "description"),
+        },
+      });
+    else if (resource === "reports" && action === "version")
+      result = await client.request(
+        `/reports/${encodeURIComponent(required(parsed.options, "id"))}/versions`,
+        {
+          method: "POST",
+          body: {
+            widgets: reportWidgets(required(parsed.options, "preset")),
+            description: required(parsed.options, "description"),
+          },
+        },
+      );
+    else if (resource === "reports" && ["run", "export"].includes(action))
+      result = await client.request(
+        `/reports/${encodeURIComponent(required(parsed.options, "id"))}/${action}`,
+        action === "run" ? { method: "POST", body: {} } : {},
+      );
+    else if (resource === "reports" && action === "plan")
+      result = await client.request("/reports/agent/plans", {
+        method: "POST",
+        body: { message: required(parsed.options, "message") },
+      });
+    else if (resource === "reports" && action === "plans")
+      result = await client.request("/reports/agent/plans");
+    else if (resource === "reports" && action === "apply-plan")
+      result = await client.request(
+        `/reports/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
         { method: "POST", body: {} },
       );
     else throw new Error(`不支持的V2命令：${parsed.positionals.join(" ")}`);

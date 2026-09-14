@@ -270,6 +270,34 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
   );
   assert.equal(requests[6].path, "/security/query/landing%3Araw_positions");
   assert.equal(requests[6].options.actorId, "user-wealth-advisor");
+  assert.equal(
+    await runV2Cli(
+      [
+        "reports",
+        "create",
+        "--name",
+        "持仓结构报告",
+        "--code",
+        "holdings_structure",
+        "--dataset-id",
+        "dataset-id",
+        "--preset",
+        "holdings",
+        "--description",
+        "持仓指标与分布",
+      ],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[7].path, "/reports");
+  assert.equal(requests[7].options.body.widgets.length, 4);
+  assert.equal(requests[7].options.body.widgets[2].type, "PIE");
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -352,6 +380,18 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "security_plan_list",
     "security_plan_create",
     "security_plan_apply",
+    "report_overview",
+    "report_dataset_list",
+    "report_dataset_create",
+    "report_dataset_refresh",
+    "report_list",
+    "report_create",
+    "report_version",
+    "report_run",
+    "report_export",
+    "report_plan_list",
+    "report_plan_create",
+    "report_plan_apply",
   ])
     assert.ok(names.includes(required));
   assert.match(createApp.description, /明确确认/);

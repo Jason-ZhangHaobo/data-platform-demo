@@ -75,6 +75,18 @@ export const V2_OPERATIONS = Object.freeze([
   "security_plan_list",
   "security_plan_create",
   "security_plan_apply",
+  "report_overview",
+  "report_dataset_list",
+  "report_dataset_create",
+  "report_dataset_refresh",
+  "report_list",
+  "report_create",
+  "report_version",
+  "report_run",
+  "report_export",
+  "report_plan_list",
+  "report_plan_create",
+  "report_plan_apply",
 ]);
 
 export class V2ApiError extends Error {

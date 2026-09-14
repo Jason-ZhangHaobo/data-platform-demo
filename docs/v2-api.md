@@ -120,6 +120,19 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /security/agent/plans/:id | 无 | 受治理方案、解释、模型与用量 |
 | POST /security/agent/plans/:id/apply | 空对象 | 人工应用为策略V1，不查询或审批 |
 | POST /security/agent/plans/:id/cancel | 空对象 | 取消生成并保留记录 |
+| GET /reports/overview | 无 | 数据集、就绪快照、报表和实际运行汇总 |
+| GET/POST /reports/datasets | 列表或名称/代码/资产/字段 | 创建数据集草稿，不复制业务行 |
+| GET /reports/datasets/:id | 无 | 数据集与全部不可变快照摘要 |
+| POST /reports/datasets/:id/refresh | 空对象 + 幂等键 | 从实际资产物化独立快照并绑定证据摘要 |
+| GET/POST /reports | 列表或名称/代码/数据集/组件/说明 | 创建固定当前快照的报表V1 |
+| GET /reports/:id | 无 | 当前/历史版本与全部聚合运行 |
+| POST /reports/:id/versions | 组件/说明 + 幂等键 | 创建固定当前数据集快照的新版本 |
+| POST /reports/:id/run | 空对象 + 幂等键 | 实际执行KPI/BAR/PIE受限聚合并保存摘要 |
+| GET /reports/:id/export | 无 | 导出最后成功运行的聚合CSV，不含明细行 |
+| GET/POST /reports/agent/plans | 列表或自然语言需求 | 真实模型基于字段和快照摘要生成报表方案 |
+| GET /reports/agent/plans/:id | 无 | 受治理方案、解释、模型与用量 |
+| POST /reports/agent/plans/:id/apply | 空对象 | 人工应用为报表草稿，不运行或导出 |
+| POST /reports/agent/plans/:id/cancel | 空对象 | 取消生成并保留记录 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
@@ -131,6 +144,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 资产Agent返回completionScope=ASSET_DISCOVERY、fullLifecycleE2E=false；引用必须命中当前目录，模型不读取业务行或修改资产，回答只代表受治理发现与解释。
 质量Agent返回completionScope=QUALITY_RULE_DESIGN、fullLifecycleE2E=false；模型不读取业务行或无效样本，方案应用后运行数仍为0，不能代表数据质量已通过。
 安全Agent返回completionScope=SECURITY_POLICY_DESIGN、fullLifecycleE2E=false；模型不读取业务行、不执行查询或审批。`X-Actor-Id`仅验证本机策略语义，不能被视为认证凭据。
+报表Agent返回completionScope=REPORT_DESIGN、fullLifecycleE2E=false；模型不读取数据集行，应用后运行数为0，不能代表报表结果已验证、导出或公网发布。
 服务重启会把正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 

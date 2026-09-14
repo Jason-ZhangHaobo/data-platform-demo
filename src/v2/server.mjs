@@ -21,6 +21,7 @@ import {
   generateAssetInsight,
   generateQualityPlan,
   generateSecurityPlan,
+  generateReportPlan,
   modelSettings,
   ModelUnavailable,
 } from "./model.mjs";
@@ -54,6 +55,7 @@ import {
 import { AssetCatalogManager } from "./assets.mjs";
 import { QualityManager } from "./quality.mjs";
 import { SecurityManager } from "./security.mjs";
+import { ReportDataStore, ReportManager } from "./reports.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -104,6 +106,12 @@ export function createV2Server(options = {}) {
       options.streamStateStore ??
       new StreamStateStore(
         options.store ? ":memory:" : join(root, ".data/v2-stream-state.sqlite"),
+      );
+  const ownsReportStore = !options.reportStore,
+    reportStore =
+      options.reportStore ??
+      new ReportDataStore(
+        options.store ? ":memory:" : join(root, ".data/v2-reports.sqlite"),
       );
   const host = env.V2_HOST ?? "127.0.0.1",
     local = env.V2_LOCAL_DEVELOPMENT !== "false";
@@ -245,6 +253,22 @@ export function createV2Server(options = {}) {
     (async (input) => {
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateSecurityPlan(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
+  const reports = new ReportManager({
+    store,
+    reportStore,
+    assets,
+    project: PROJECT,
+    now: options.now,
+  });
+  const reportPlanner =
+    options.reportPlanner ??
+    (async (input) => {
+      const keyAtRequest = env.DASHSCOPE_API_KEY,
+        result = await generateReportPlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
         modelVerifiedAt = new Date().toISOString();
       return result;
@@ -430,6 +454,12 @@ export function createV2Server(options = {}) {
             ...security.overview().counts,
             identityMode: "LOCAL_SYNTHETIC_HEADER",
             publicAuthentication: false,
+            cloudVerified: false,
+          },
+          reports: {
+            ...reports.overview().counts,
+            executionScope: "LOCAL_AGGREGATED_REPORTING",
+            publicDeployed: false,
             cloudVerified: false,
           },
         });
@@ -1263,6 +1293,181 @@ export function createV2Server(options = {}) {
             appliedAt: new Date().toISOString(),
           });
           return json(res, 201, policy);
+        }
+      }
+      if (path === "/api/v2/reports/overview" && method === "GET")
+        return json(res, 200, reports.overview());
+      if (path === "/api/v2/reports/datasets" && method === "GET")
+        return json(res, 200, reports.listDatasets());
+      if (path === "/api/v2/reports/datasets" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:report-dataset:${key}`,
+            hash(JSON.stringify(body)),
+            () => reports.createDataset(body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          reports.datasetDetail(dedup.id),
+        );
+      }
+      const reportDatasetRecord = path.match(
+        /^\/api\/v2\/reports\/datasets\/([a-f0-9-]+)(?:\/(refresh))?$/,
+      );
+      if (reportDatasetRecord) {
+        const dataset = reports.datasetDetail(reportDatasetRecord[1]),
+          action = reportDatasetRecord[2];
+        if (method === "GET" && !action) return json(res, 200, dataset);
+        if (method === "POST" && action === "refresh") {
+          await readBody(req);
+          const asset = assets.detail(dataset.assetId),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:report-dataset-refresh:${dataset.id}:${key}`,
+              hash(
+                JSON.stringify({
+                  datasetId: dataset.id,
+                  fields: dataset.fields,
+                  assetEvidenceHash: asset.evidenceHash,
+                }),
+              ),
+              () => reports.refreshDataset(dataset.id).currentSnapshot,
+            );
+          get("report_snapshot", dedup.id);
+          return json(res, dedup.replayed ? 200 : 201, reports.datasetDetail(dataset.id));
+        }
+      }
+      if (path === "/api/v2/reports" && method === "GET")
+        return json(res, 200, reports.listReports());
+      if (path === "/api/v2/reports" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:report:${key}`,
+            hash(JSON.stringify(body)),
+            () => reports.createReport(body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          reports.reportDetail(dedup.id),
+        );
+      }
+      if (path === "/api/v2/reports/agent/plans" && method === "GET")
+        return json(res, 200, store.list("report_agent_plan", PROJECT));
+      if (path === "/api/v2/reports/agent/plans" && method === "POST") {
+        const body = await readBody(req),
+          message = text(body.message, 4, 2000);
+        if (!options.reportPlanner && !modelSettings(env).configured)
+          throw new ModelUnavailable();
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:report-agent-plan:${key}`,
+            hash(JSON.stringify({ message })),
+            () =>
+              store.create("report_agent_plan", PROJECT, {
+                message,
+                status: "QUEUED",
+                mode: "LIVE_MODEL",
+                completionScope: "REPORT_DESIGN",
+                fullLifecycleE2E: false,
+              }),
+          ),
+          task = get("report_agent_plan", dedup.id);
+        if (!dedup.replayed)
+          schedule("report_agent_plan", task, async (signal) => {
+            const context = reports.agentContext(),
+              generated = await reportPlanner({
+                message,
+                ...context,
+                signal,
+              }),
+              proposal = reports.validateAgentPlan(generated.plan);
+            store.update("report_agent_plan", task.id, PROJECT, {
+              status: "SUCCEEDED",
+              proposal,
+              explanation: generated.explanation,
+              model: generated.model,
+              usage: generated.usage,
+              finishedAt: new Date().toISOString(),
+            });
+          });
+        return json(res, 202, task);
+      }
+      const reportAgentPlan = path.match(
+        /^\/api\/v2\/reports\/agent\/plans\/([a-f0-9-]+)(?:\/(apply|cancel))?$/,
+      );
+      if (reportAgentPlan) {
+        const plan = get("report_agent_plan", reportAgentPlan[1]),
+          action = reportAgentPlan[2];
+        if (method === "GET" && !action) return json(res, 200, plan);
+        if (method === "POST" && action === "cancel") {
+          await readBody(req);
+          if (!terminal.has(plan.status) && plan.status !== "APPLIED") {
+            store.update("report_agent_plan", plan.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            controls.get(plan.id)?.abort();
+          }
+          return json(res, 200, get("report_agent_plan", plan.id));
+        }
+        if (method === "POST" && action === "apply") {
+          await readBody(req);
+          if (plan.status === "APPLIED" && plan.reportId)
+            return json(res, 200, reports.reportDetail(plan.reportId));
+          if (plan.status !== "SUCCEEDED" || !plan.proposal)
+            throw fail(409, "只有模型报表方案验证通过后才能创建草稿");
+          const proposal = reports.validateAgentPlan(plan.proposal),
+            report = reports.createReport(proposal);
+          store.update("report_agent_plan", plan.id, PROJECT, {
+            status: "APPLIED",
+            reportId: report.id,
+            appliedAt: new Date().toISOString(),
+          });
+          return json(res, 201, report);
+        }
+      }
+      const reportRecord = path.match(
+        /^\/api\/v2\/reports\/([a-f0-9-]+)(?:\/(versions|run|export))?$/,
+      );
+      if (reportRecord) {
+        const report = reports.reportDetail(reportRecord[1]),
+          action = reportRecord[2];
+        if (method === "GET" && !action) return json(res, 200, report);
+        if (method === "GET" && action === "export")
+          return json(res, 200, reports.exportReport(report.id));
+        if (method === "POST" && action === "versions") {
+          const body = await readBody(req),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:report-version:${report.id}:${key}`,
+              hash(JSON.stringify(body)),
+              () => reports.createReportVersion(report.id, body).currentVersion,
+            );
+          get("report_version", dedup.id);
+          return json(res, dedup.replayed ? 200 : 201, reports.reportDetail(report.id));
+        }
+        if (method === "POST" && action === "run") {
+          await readBody(req);
+          const current = reports.reportDetail(report.id),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:report-run:${report.id}:${key}`,
+              hash(
+                JSON.stringify({
+                  reportId: report.id,
+                  versionId: current.currentVersionId,
+                  configHash: current.currentVersion.configHash,
+                  datasetSnapshotId: current.currentVersion.datasetSnapshotId,
+                }),
+              ),
+              () => reports.runReport(report.id).run,
+            );
+          get("report_run", dedup.id);
+          return json(res, dedup.replayed ? 200 : 201, reports.reportDetail(report.id));
         }
       }
       if (path === "/api/v2/settings/model-key" && method === "POST") {
@@ -2200,6 +2405,7 @@ export function createV2Server(options = {}) {
     if (ownsBusinessStore) businessStore.close();
     if (ownsLandingStore) landingStore.close();
     if (ownsStreamStateStore) streamStateStore.close();
+    if (ownsReportStore) reportStore.close();
   });
   return {
     server,
@@ -2215,6 +2421,8 @@ export function createV2Server(options = {}) {
     assets,
     quality,
     security,
+    reports,
+    reportStore,
   };
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

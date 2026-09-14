@@ -434,6 +434,19 @@ export class AssetCatalogManager {
     return { asset, rows: this.#rows(asset) };
   }
 
+  reportRows(id) {
+    const asset = this.#asset(id);
+    if (!asset.reportable)
+      throw fail(422, "资产当前不支持报表快照", "ASSET_NOT_REPORTABLE");
+    if (asset.kind === "PUBLISHED_DATASET") {
+      const run = this.store.get("release_run", asset.versionId, this.project);
+      if (!run?.rows)
+        throw fail(409, "发布数据集缺少可验证结果行", "REPORT_SOURCE_MISSING");
+      return { asset, rows: structuredClone(run.rows) };
+    }
+    return { asset, rows: this.#rows(asset) };
+  }
+
   #inventory() {
     const items = [],
       context = getContext("holdings-t1");
@@ -452,6 +465,7 @@ export class AssetCatalogManager {
         tags: ["虚构证券", "Spark输入"],
         evidenceHash: stableHash({ name: table.name, columns: table.columns, rows: table.rows }),
         executableMetrics: false,
+        reportable: false,
       });
     for (const source of this.store.list("ingestion_source", this.project)) {
       const metadata = this.store.get(
@@ -480,6 +494,7 @@ export class AssetCatalogManager {
         evidenceHash: metadata.contentHash,
         versionId: metadata.id,
         executableMetrics: false,
+        reportable: false,
       });
     }
     const targets = new Map();
@@ -509,6 +524,7 @@ export class AssetCatalogManager {
         evidenceHash: task.runs?.[0]?.targetHash ?? stableHash(rows),
         versionId: task.id,
         executableMetrics: true,
+        reportable: true,
       });
     }
     for (const source of this.store.list("stream_source", this.project)) {
@@ -533,6 +549,7 @@ export class AssetCatalogManager {
         evidenceHash: revision.contentHash,
         versionId: revision.id,
         executableMetrics: false,
+        reportable: false,
       });
     }
     for (const job of this.store.list("stream_job", this.project)) {
@@ -553,6 +570,7 @@ export class AssetCatalogManager {
         evidenceHash: job.stateHash ?? stableHash(state),
         versionId: job.id,
         executableMetrics: true,
+        reportable: true,
       });
     }
     const publishedRuns = this.store.list("release_run", this.project).filter(
@@ -587,6 +605,7 @@ export class AssetCatalogManager {
         versionCount: publishedRuns.length,
         runIds: publishedRuns.map((item) => item.id),
         executableMetrics: false,
+        reportable: true,
       });
     }
     for (const service of this.dataServices.list()) {
@@ -610,6 +629,7 @@ export class AssetCatalogManager {
         evidenceHash: version?.configHash ?? stableHash(service),
         versionId: version?.id,
         executableMetrics: false,
+        reportable: false,
       });
     }
     return items.map((item) => {

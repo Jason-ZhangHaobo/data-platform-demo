@@ -98,9 +98,14 @@ export const capabilities = [
     id: "reports",
     group: "治理与服务",
     name: "数据报表",
-    description: "指标、数据集与业务洞察",
-    stage: "M4",
-    features: ["实际加工结果", "可视化与导出", "语义问数"],
+    description: "不可变数据集快照、实际聚合图表与受治理问数",
+    stage: "M4f",
+    features: [
+      "实际资产行的独立数据集快照",
+      "KPI、柱状图和饼图聚合组件",
+      "聚合CSV导出与标识维度默认脱敏",
+      "Data Agent基于字段和快照摘要设计报表",
+    ],
   },
   {
     id: "ops",
