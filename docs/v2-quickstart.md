@@ -65,6 +65,16 @@ npm run v2:runtime-test
 npm audit
 ```
 
+如需有意识地再次产生模型调用并复跑冻结的M1代码阶段评测，可执行：
+
+```bash
+npm run v2:m1-eval
+```
+
+该命令顺序运行20个真实模型+Spark场景，并把报告写入忽略提交的`.v2-artifacts/evaluations/`；会产生按量模型费用，普通CI不会自动运行。它只报告代码阶段，不能替代完整E2E。
+
+进入[本机调度与发布](http://127.0.0.1:3100/v2/?module=schedules)可查看M2a文件演练、M2b摘要审批/计时发布以及M2c批次与恢复监控。页面中的“发布”仅为本机测试版本激活，接口保留`publicDeployed=false`。
+
 CI 的模型/执行器边界测试使用明确标注的 TEST_DOUBLE，不计入真实 Agent E2E 成功率。
 Spark 检查才运行真正引擎，生成 `.v2-artifacts/spark-acceptance.json`。
 后台版本/状态保存在独立 `.data/v2-platform.sqlite`，引擎输入输出在 `.v2-artifacts/`，均不提交 Git。

@@ -26,6 +26,7 @@
     "v2:web": "vite --host 127.0.0.1 --port 5173",
     "v2:build": "tsc --noEmit -p web/tsconfig.json && vite build",
     "v2:test": "node --test test/v2/*.test.mjs",
+    "v2:m1-eval": "node --env-file-if-exists=.env.local scripts/run-m1-evaluation.mjs",
     "v2:spark-test": ".runtime/python/bin/python scripts/verify-spark.py",
     "v2:runtime-test": "node scripts/verify-runtime.mjs",
     "v2:package": "node bin/shuzhan-package.mjs",

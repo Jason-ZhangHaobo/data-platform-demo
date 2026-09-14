@@ -2033,6 +2033,173 @@ kbd {
   display: block;
   color: #984c35;
 }
+.release-lifecycle {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+.release-stepper {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  background: #fff;
+}
+.release-step {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 15px;
+  color: #7a8772;
+  border-right: 1px solid var(--border);
+}
+.release-step:last-child {
+  border-right: 0;
+}
+.release-step > span {
+  font: 600 10px/1 "SFMono-Regular", Consolas, monospace;
+  color: #829179;
+}
+.release-step strong,
+.release-step small {
+  display: block;
+}
+.release-step strong {
+  margin-bottom: 4px;
+  color: #4d5f48;
+  font-size: 12px;
+}
+.release-step small {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.release-step.complete {
+  color: #2e7550;
+  background: linear-gradient(135deg, #f8fbf4, #eef6ea);
+}
+.release-step.complete > span,
+.release-step.complete strong {
+  color: #225f3e;
+}
+.release-panels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+.release-action-card,
+.monitor-card {
+  min-width: 0;
+  padding: 19px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+}
+.release-action-card > header,
+.monitor-card > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  color: #37634a;
+}
+.release-action-card .eyebrow,
+.monitor-card .eyebrow {
+  color: #628058;
+  font-size: 9px;
+  letter-spacing: 0.13em;
+}
+.release-action-card h3,
+.monitor-card h3 {
+  margin: 5px 0 0;
+  color: #2e4735;
+  font-size: 15px;
+}
+.release-action-card > p,
+.monitor-empty {
+  min-height: 42px;
+  margin: 14px 0;
+  color: #65735f;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.release-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.release-proof-line {
+  display: block;
+  margin-top: 13px;
+  color: #788571;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.monitor-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0;
+}
+.monitor-kpis > div {
+  padding: 10px;
+  border: 1px solid #e2e9dc;
+  border-radius: 7px;
+  background: #fafcf8;
+}
+.monitor-kpis span,
+.monitor-kpis strong {
+  display: block;
+}
+.monitor-kpis span {
+  margin-bottom: 6px;
+  color: #7b8875;
+  font-size: 10px;
+}
+.monitor-kpis strong {
+  overflow: hidden;
+  color: #315842;
+  font-size: 14px;
+  text-overflow: ellipsis;
+}
+.monitor-runs {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.active-release-line {
+  display: block;
+  margin: -3px 0 12px;
+  color: #66775f;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.monitor-runs p {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 10px;
+}
+.monitor-runs code {
+  overflow: hidden;
+  color: #61715b;
+  font-size: 10px;
+  text-overflow: ellipsis;
+}
+.monitor-runs small {
+  color: #75806f;
+  white-space: nowrap;
+}
+.button.rollback {
+  color: #6c5639;
+  border-color: #decfb8;
+  background: #fffaf2;
+}
 @media (max-width: 1100px) {
   .delivery-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -2050,6 +2217,20 @@ kbd {
   .delivery-files pre {
     height: 360px;
   }
+  .release-stepper {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .release-step:nth-child(2) {
+    border-right: 0;
+  }
+  .release-step:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--border);
+  }
+}
+@media (max-width: 820px) {
+  .release-panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 @media (max-width: 680px) {
   .delivery-create {
@@ -2064,6 +2245,26 @@ kbd {
   }
   .delivery-files footer {
     flex-wrap: wrap;
+  }
+  .release-stepper,
+  .release-panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .release-step,
+  .release-step:nth-child(2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .release-step:last-child {
+    border-bottom: 0;
+  }
+  .release-actions .button {
+    width: 100%;
+    justify-content: center;
+  }
+  .monitor-kpis {
+    grid-template-columns: repeat(4, minmax(90px, 1fr));
+    overflow-x: auto;
   }
 }
 .model-key-success {

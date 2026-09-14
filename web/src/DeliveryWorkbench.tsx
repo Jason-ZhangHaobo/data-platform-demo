@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Activity,
   ArrowDownToLine,
   CheckCircle2,
   Clock3,
@@ -8,6 +9,8 @@ import {
   LoaderCircle,
   Package,
   Play,
+  Radio,
+  RotateCcw,
   ShieldCheck,
   Square,
   AlertCircle,
@@ -55,6 +58,76 @@ type Verification = {
   validation?: { passed: boolean };
   workflowTrace?: { id: string; kind: string; status: string }[];
 };
+type Approval = {
+  id: string;
+  packageId: string;
+  packageDigest: string;
+  status: string;
+  approvedAt: string;
+  reviewer: string;
+  reviewNote: string;
+  consumedByReleaseId?: string;
+};
+type Release = {
+  id: string;
+  packageId: string;
+  packageDigest: string;
+  sourceSqlHash: string;
+  approvalId: string;
+  status: string;
+  health: string;
+  activatedAt?: string;
+  successfulRunCount?: number;
+  failedRunCount?: number;
+  openAlertCount?: number;
+  publicDeployed: false;
+  artifactReady: boolean;
+};
+type ReleaseRun = {
+  id: string;
+  releaseId: string;
+  status: string;
+  sequence: number;
+  triggerReason: string;
+  scheduledTriggerAt: string;
+  triggeredAt?: string;
+  durationMs?: number;
+  schedulerTriggered: boolean;
+  clockMode?: string;
+  error?: string;
+};
+type MonitorAlert = {
+  id: string;
+  releaseId: string;
+  releaseRunId: string;
+  status: string;
+  message: string;
+  openedAt: string;
+  resolvedAt?: string;
+  recoveryRunId?: string;
+};
+type MonitorOverview = {
+  scope: string;
+  publicDeployed: false;
+  fullLifecycleE2E: false;
+  activeRelease?: Release;
+  counts: {
+    scheduled: number;
+    running: number;
+    succeeded: number;
+    failed: number;
+    openAlerts: number;
+  };
+  recentRuns: ReleaseRun[];
+  alerts: MonitorAlert[];
+  recentEvents: {
+    id: string;
+    type: string;
+    releaseId: string;
+    recoveryReleaseId?: string;
+  }[];
+  notice: string;
+};
 const labels: Record<string, string> = {
   QUEUED: "等待执行",
   RUNNING: "文件演练中",
@@ -67,6 +140,23 @@ const labels: Record<string, string> = {
 const pending = (status?: string) =>
   ["QUEUED", "RUNNING"].includes(status ?? "");
 const scheduledFor = "2026-09-11T09:00:00+08:00";
+const releasePending = (overview?: MonitorOverview) =>
+  Boolean(overview?.counts.scheduled || overview?.counts.running);
+const releaseLabels: Record<string, string> = {
+  ACTIVE_LOCAL: "本机版本已激活",
+  SUPERSEDED_LOCAL: "本机版本已被替代",
+  ROLLED_BACK_LOCAL: "本机版本已回滚",
+  FAILED_LOCAL: "本机发布失败",
+};
+const releaseRunLabels: Record<string, string> = {
+  SCHEDULED: "等待计时触发",
+  RUNNING: "批次执行中",
+  SUCCEEDED: "批次成功",
+  FAILED: "批次失败",
+  VALIDATION_FAILED: "结果未通过",
+  CANCELLED: "批次已取消",
+  INTERRUPTED: "批次已中断",
+};
 
 export function DeliveryWorkbench({
   api,
@@ -93,6 +183,9 @@ export function DeliveryWorkbench({
     [selected, setSelected] = useState<Bundle>();
   const [checks, setChecks] = useState<Verification[]>([]),
     [check, setCheck] = useState<Verification>();
+  const [approvals, setApprovals] = useState<Approval[]>([]),
+    [releases, setReleases] = useState<Release[]>([]),
+    [monitor, setMonitor] = useState<MonitorOverview>();
   const [file, setFile] = useState("schedule.json"),
     [busy, setBusy] = useState(""),
     [error, setError] = useState("");
@@ -105,6 +198,16 @@ export function DeliveryWorkbench({
       setCheck(checks.find((check) => check.packageId === id));
     }
   };
+  const loadLifecycle = async () => {
+    const [nextApprovals, nextReleases, nextMonitor] = await Promise.all([
+      api<Approval[]>("/release/approvals"),
+      api<Release[]>("/releases"),
+      api<MonitorOverview>("/monitoring/overview"),
+    ]);
+    setApprovals(nextApprovals);
+    setReleases(nextReleases);
+    setMonitor(nextMonitor);
+  };
   useEffect(() => {
     if (sourceRunId && eligible.some((run) => run.id === sourceRunId))
       setSource(sourceRunId);
@@ -115,11 +218,24 @@ export function DeliveryWorkbench({
     Promise.all([
       api<Bundle[]>("/delivery/packages"),
       api<Verification[]>("/delivery/verifications"),
+      api<Approval[]>("/release/approvals"),
+      api<Release[]>("/releases"),
+      api<MonitorOverview>("/monitoring/overview"),
     ])
-      .then(async ([bundles, verifications]) => {
+      .then(
+        async ([
+          bundles,
+          verifications,
+          initialApprovals,
+          initialReleases,
+          initialMonitor,
+        ]) => {
         if (!active) return;
         setPackages(bundles);
         setChecks(verifications);
+        setApprovals(initialApprovals);
+        setReleases(initialReleases);
+        setMonitor(initialMonitor);
         if (bundles[0]) {
           const bundle = await api<Bundle>(
             "/delivery/packages/" + bundles[0].id,
@@ -129,7 +245,8 @@ export function DeliveryWorkbench({
             setCheck(verifications.find((v) => v.packageId === bundle.id));
           }
         }
-      })
+        },
+      )
       .catch((error) => {
         if (active) setError(error.message);
       });
@@ -153,6 +270,13 @@ export function DeliveryWorkbench({
     }, 1400);
     return () => clearInterval(timer);
   }, [check?.id, check?.status]);
+  useEffect(() => {
+    if (!releasePending(monitor)) return;
+    const timer = setInterval(() => {
+      loadLifecycle().catch((error) => setError(error.message));
+    }, 1400);
+    return () => clearInterval(timer);
+  }, [monitor?.counts.scheduled, monitor?.counts.running]);
   const create = async () => {
     setBusy("create");
     setError("");
@@ -187,6 +311,64 @@ export function DeliveryWorkbench({
       setBusy("");
     }
   };
+  const approve = async () => {
+    if (!selected) return;
+    setBusy("approve");
+    setError("");
+    try {
+      await api<Approval>(`/delivery/packages/${selected.id}/approve`, {
+        packageDigest: selected.digest,
+        reviewNote: "已审阅代码版本、独立断言、DAG、部署边界与演练结果",
+      });
+      await loadLifecycle();
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
+  const publish = async () => {
+    if (!selected) return;
+    const approval = approvals.find(
+      (item) =>
+        item.packageId === selected.id &&
+        item.packageDigest === selected.digest &&
+        item.status === "APPROVED",
+    );
+    if (!approval) return;
+    setBusy("publish");
+    setError("");
+    try {
+      await api<Release>("/releases", {
+        approvalId: approval.id,
+        triggerAfterSeconds: 5,
+        intervalSeconds: 15,
+        runCount: 2,
+      });
+      await loadLifecycle();
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
+  const rollback = async (from: Release, target: Release) => {
+    setBusy("rollback");
+    setError("");
+    try {
+      await api(`/releases/${from.id}/rollback`, {
+        targetReleaseId: target.id,
+        triggerAfterSeconds: 5,
+        intervalSeconds: 15,
+        reason: "恢复最近已验证版本并重新执行两个计时批次",
+      });
+      await loadLifecycle();
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
   const download = (text: string, filename: string) => {
     const url = URL.createObjectURL(
       new Blob([text], {
@@ -208,15 +390,46 @@ export function DeliveryWorkbench({
       ? JSON.stringify(selected.manifest, null, 2)
       : (selected.files?.[file] ?? "")
     : "";
+  const selectedApproval = selected
+    ? approvals.find(
+        (item) =>
+          item.packageId === selected.id &&
+          item.packageDigest === selected.digest &&
+          item.status === "APPROVED",
+      )
+    : undefined;
+  const selectedRelease = selected
+    ? releases.find(
+        (item) =>
+          item.packageId === selected.id &&
+          item.packageDigest === selected.digest,
+      )
+    : undefined;
+  const activeRelease = monitor?.activeRelease;
+  const resolvedAlertCount =
+    monitor?.alerts.filter((item) => item.status === "RESOLVED").length ?? 0;
+  const m2cRecoveryVerified = Boolean(
+    activeRelease?.health === "HEALTHY" &&
+      monitor?.counts.failed &&
+      resolvedAlertCount,
+  );
+  const rollbackTarget = activeRelease
+    ? releases.find(
+        (item) =>
+          item.id !== activeRelease.id &&
+          item.status === "SUPERSEDED_LOCAL" &&
+          Number(item.successfulRunCount ?? 0) > 0,
+      )
+    : undefined;
   return (
     <div className="delivery-workbench">
       <div className="delivery-notice">
         <ShieldCheck size={19} />
         <div>
-          <strong>M2a · 文件交付与本机演练</strong>
+          <strong>M2a–M2c · 从文件交付到本机发布监控</strong>
           <p>
-            生成包和演练不会发布上线。真实定时触发、审批与回滚属于
-            M2b；当前使用明确标注的样例交易日历。
+            先按文件演练，再锁定摘要审批。本机发布由真实墙上时钟触发两个
+            Spark 批次并产生监控证据；全程不代表公网或生产上线。
           </p>
         </div>
       </div>
@@ -345,7 +558,22 @@ export function DeliveryWorkbench({
                 {selected.digest.slice(0, 16)}
               </code>
             </span>
-            <span className="status-pill queued">未发布上线</span>
+            <span
+              className={
+                "status-pill " +
+                (selectedRelease?.status === "ACTIVE_LOCAL"
+                  ? "succeeded"
+                  : selectedApproval
+                    ? "running"
+                    : "queued")
+              }
+            >
+              {selectedRelease
+                ? (releaseLabels[selectedRelease.status] ?? selectedRelease.status)
+                : selectedApproval
+                  ? "已审批待发布"
+                  : "未审批发布"}
+            </span>
           </div>
           <div className="delivery-grid">
             <section className="delivery-files">
@@ -458,6 +686,172 @@ export function DeliveryWorkbench({
               )}
             </aside>
           </div>
+          <section className="release-lifecycle" aria-label="发布与监控链路">
+            <div className="release-stepper">
+              {[
+                ["01", "交付包", "不可变代码与文件摘要", true],
+                [
+                  "02",
+                  "文件演练",
+                  "Spark与独立断言",
+                  check?.status === "SUCCEEDED",
+                ],
+                ["03", "审批发布", "摘要绑定与计时触发", !!selectedRelease],
+                [
+                  "04",
+                  "运行监控",
+                  "两批、告警与恢复",
+                  m2cRecoveryVerified || selectedRelease?.health === "HEALTHY",
+                ],
+              ].map(([number, title, subtitle, complete]) => (
+                <div
+                  className={complete ? "release-step complete" : "release-step"}
+                  key={String(number)}
+                >
+                  <span>{number}</span>
+                  <div>
+                    <strong>{title}</strong>
+                    <small>{subtitle}</small>
+                  </div>
+                  {complete ? <CheckCircle2 size={16} /> : <Clock3 size={15} />}
+                </div>
+              ))}
+            </div>
+            <div className="release-panels">
+              <article className="release-action-card">
+                <header>
+                  <div>
+                    <span className="eyebrow">M2b · REVIEW & RELEASE</span>
+                    <h3>审批绑定不可变版本</h3>
+                  </div>
+                  <ShieldCheck size={22} />
+                </header>
+                <p>
+                  审批只对当前包摘要生效。发布后 5 秒触发首批、间隔 15 秒触发第二批；
+                  页面刷新不会丢失批次记录。
+                </p>
+                <div className="release-actions">
+                  <button
+                    className="button"
+                    onClick={approve}
+                    disabled={
+                      !canWrite ||
+                      check?.status !== "SUCCEEDED" ||
+                      !!selectedApproval ||
+                      !!busy
+                    }
+                  >
+                    <ShieldCheck size={15} />
+                    {busy === "approve"
+                      ? "正在锁定…"
+                      : selectedApproval
+                        ? "摘要已审批"
+                        : "审阅并锁定摘要"}
+                  </button>
+                  <button
+                    className="button primary"
+                    onClick={publish}
+                    disabled={
+                      !canWrite ||
+                      !selectedApproval ||
+                      !!selectedRelease ||
+                      !!busy
+                    }
+                  >
+                    {busy === "publish" ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <Radio size={15} />
+                    )}
+                    {selectedRelease
+                      ? (releaseLabels[selectedRelease.status] ?? "已有发布记录")
+                      : "发布到本机调度器"}
+                  </button>
+                </div>
+                {selectedApproval && (
+                  <small className="release-proof-line">
+                    审批 {selectedApproval.id.slice(0, 8)} · 包摘要
+                    {selectedApproval.packageDigest.slice(0, 12)} · 仅本机测试
+                  </small>
+                )}
+              </article>
+              <article className="monitor-card">
+                <header>
+                  <div>
+                    <span className="eyebrow">M2c · POST-RELEASE EVIDENCE</span>
+                    <h3>上线后运行监控</h3>
+                  </div>
+                  <Activity size={22} />
+                </header>
+                {!activeRelease ? (
+                  <p className="monitor-empty">发布本机版本后显示真实计时批次。</p>
+                ) : (
+                  <>
+                    <div className="monitor-kpis">
+                      <div>
+                        <span>健康度</span>
+                        <strong>{activeRelease.health}</strong>
+                      </div>
+                      <div>
+                        <span>成功批次</span>
+                        <strong>{activeRelease.successfulRunCount ?? 0}</strong>
+                      </div>
+                      <div>
+                        <span>开放告警</span>
+                        <strong>{activeRelease.openAlertCount ?? 0}</strong>
+                      </div>
+                      <div>
+                        <span>已恢复告警</span>
+                        <strong>{resolvedAlertCount}</strong>
+                      </div>
+                    </div>
+                    <small className="active-release-line">
+                      当前生效版本 {activeRelease.id.slice(0, 8)} · 历史失败批次
+                      {monitor?.counts.failed ?? 0}
+                      {m2cRecoveryVerified ? " · 回滚恢复已验证" : ""}
+                    </small>
+                    <div className="monitor-runs">
+                      {monitor?.recentRuns
+                        .filter((item) => item.releaseId === activeRelease.id)
+                        .slice(0, 3)
+                        .map((item) => (
+                          <p key={item.id}>
+                            <span
+                              className={
+                                "status-pill " + item.status.toLowerCase()
+                              }
+                            >
+                              {releaseRunLabels[item.status] ?? item.status}
+                            </span>
+                            <code>批次 {item.id.slice(0, 8)}</code>
+                            <small>
+                              {item.schedulerTriggered
+                                ? "墙上时钟已触发"
+                                : new Date(item.scheduledTriggerAt).toLocaleTimeString(
+                                    "zh-CN",
+                                  ) + " 待触发"}
+                            </small>
+                          </p>
+                        ))}
+                    </div>
+                    {rollbackTarget && (
+                      <button
+                        className="button rollback"
+                        onClick={() => rollback(activeRelease, rollbackTarget)}
+                        disabled={!canWrite || !!busy}
+                      >
+                        <RotateCcw size={15} />
+                        回滚到 {rollbackTarget.id.slice(0, 8)}
+                      </button>
+                    )}
+                  </>
+                )}
+                <small className="release-proof-line">
+                  本机发布与监控，不代表公网部署或完整 Agent E2E
+                </small>
+              </article>
+            </div>
+          </section>
         </>
       )}
     </div>

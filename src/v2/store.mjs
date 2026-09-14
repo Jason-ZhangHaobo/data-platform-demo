@@ -86,9 +86,18 @@ export class MetadataStore {
     }
   }
   interruptPending(project) {
-    for (const kind of ["run", "agent", "delivery_verification"])
+    for (const kind of [
+      "run",
+      "agent",
+      "delivery_verification",
+      "release",
+      "release_run",
+    ])
       for (const item of this.list(kind, project))
-        if (["QUEUED", "RUNNING"].includes(item.status))
+        if (
+          ["QUEUED", "RUNNING", "DEPLOYING"].includes(item.status) &&
+          !(kind === "release_run" && item.status === "SCHEDULED")
+        )
           this.update(kind, item.id, project, {
             status: "INTERRUPTED",
             error: "服务已重启，该任务未完成。请检查记录后重新发起。",

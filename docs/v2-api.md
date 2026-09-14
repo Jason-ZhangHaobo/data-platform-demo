@@ -1,6 +1,6 @@
 # V2 API 契约与实现边界
 
-更新：2026-09-13。基础地址为本地开发服务的 `/api/v2`。以下接口已实现；旧 CLI/MCP 仍使用旧版 API，不能用其测试证明 V2 多端一致。
+更新：2026-09-14。基础地址为本地开发服务的 `/api/v2`。以下接口已实现；旧 CLI/MCP 仍使用旧版 API，不能用其测试证明 V2 多端一致。
 
 ## 权限与请求
 
@@ -33,12 +33,21 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /delivery/verifications | 当前项目演练历史 | 文件摘要、状态与实际运行证据 |
 | GET /delivery/verifications/:id | 指定演练 | 同上 |
 | POST /delivery/verifications/:id/cancel | 取消排队/运行中的演练 | CANCELLED |
+| GET /release/approvals | 本机审批记录 | 包摘要、源SQL哈希、演练与审阅证据 |
+| POST /delivery/packages/:id/approve | packageDigest、reviewNote + 幂等键 | 只审批摘要匹配且成功演练的不可变包 |
+| GET /releases | 本机发布版本 | 状态、健康度、摘要、审批与批次计数；不返回本机绝对路径 |
+| POST /releases | approvalId、1—300秒短周期、2—3批 + 幂等键 | 激活本机版本并持久化计时计划；publicDeployed=false |
+| GET /releases/:id | 指定本机发布版本 | 版本、健康、源摘要及批次统计 |
+| POST /releases/:id/rollback | 健康历史targetReleaseId、原因、恢复周期 | 回滚并安排两个墙上时钟恢复批次 |
+| GET /release/runs | 发布批次历史 | 计划/触发/完成时间、Spark、断言、日志摘要和状态 |
+| GET /release/runs/:id | 指定发布批次 | 同上；工作区路径被替换为占位符 |
+| GET /monitoring/overview | 本机发布监控 | 当前版本、全局计数、事件、开放/已恢复告警 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
 即使 SUCCEEDED 也只代表代码阶段通过。旧记录缺少范围字段同样不能被计为完整 E2E。
 完整 E2E 要求理解需求至上线后监控的全部证据，定义及分阶段门槛见 PRD.md。
-服务重启会把未完成任务标为 INTERRUPTED，保留记录，等待人工重跑；自动续接尚未实现。
+服务重启会把正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 
 ## 真实执行边界
@@ -64,6 +73,7 @@ Spark 3.5.7 只允许已登记的 accounts/positions/cash 合成数据视图、�
 
 ## 尚未开放
 
-真实用户认证、跨用户授权、云端元数据库/OSS、自动恢复、多实例队列、审批及发布绑定在后续门槛内。
-DAPI/XAPI 的发布和外部消费、版本回滚、交易日调度、V2 CLI/MCP 尚未实现。
+真实用户认证、跨用户授权、云端元数据库/OSS、自动恢复、多实例队列、云端审批及发布绑定在后续门槛内。
+DAPI/XAPI 的发布和外部消费、官方交易日生产调度、V2 CLI/MCP 尚未实现。
 M1验证包不能被称为已部署任务。M2a新增交付包包含实际被解析的部署清单，但仍是本机文件演练，未进行云端部署或发布；详见 [交付规范](m2a-delivery.md)。
+M2b/M2c已增加本机摘要审批、短周期墙上时钟发布、监控告警与回滚。其`published=true`仅表示本机测试版本生效，同时固定`publicDeployed=false`和`fullLifecycleE2E=false`；详见[本机发布报告](m2b-m2c-local-release.md)。

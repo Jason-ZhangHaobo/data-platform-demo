@@ -23,6 +23,12 @@ import {
   unpackDeliveryPackage,
 } from "./delivery.mjs";
 import { verifyDeliveryDirectory } from "./delivery-runner.mjs";
+import {
+  LocalReleaseScheduler,
+  localScheduleSpec,
+  plannedLocalRuns,
+  publicRelease,
+} from "./release-scheduler.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -84,6 +90,23 @@ export function createV2Server(options = {}) {
     if (!item) throw fail(404, "未找到当前项目的记录");
     return item;
   };
+  const releaseTimeUnitMs = Number(options.releaseTimeUnitMs ?? 1000);
+  if (!Number.isSafeInteger(releaseTimeUnitMs) || releaseTimeUnitMs < 1)
+    throw new Error("本机发布调度时间单位不合法");
+  const releaseRunner =
+    options.releaseRunner ??
+    ((input) => verifyDeliveryDirectory(input, { runtime }));
+  const releaseScheduler = new LocalReleaseScheduler({
+    store,
+    project: PROJECT,
+    packageFor: (id) => store.get("delivery_package", id, PROJECT),
+    runPackage: releaseRunner,
+    now: options.now,
+    setTimer: options.setTimer,
+    clearTimer: options.clearTimer,
+  });
+  releaseScheduler.start();
+  const expose = (item) => publicRelease(item, root);
   const revision = (sql, contextId, source) =>
     store.create("revision", PROJECT, {
       sql,
@@ -254,6 +277,49 @@ export function createV2Server(options = {}) {
         );
       if (path === "/api/v2/delivery/verifications" && method === "GET")
         return json(res, 200, store.list("delivery_verification", PROJECT));
+      if (path === "/api/v2/release/approvals" && method === "GET")
+        return json(res, 200, store.list("release_approval", PROJECT));
+      if (path === "/api/v2/releases" && method === "GET")
+        return json(
+          res,
+          200,
+          store.list("release", PROJECT).map(expose),
+        );
+      if (path === "/api/v2/release/runs" && method === "GET")
+        return json(
+          res,
+          200,
+          store.list("release_run", PROJECT).map(expose),
+        );
+      if (path === "/api/v2/monitoring/overview" && method === "GET") {
+        const releases = store.list("release", PROJECT),
+          runs = store.list("release_run", PROJECT),
+          alerts = store.list("monitor_alert", PROJECT),
+          events = store.list("monitor_event", PROJECT),
+          activeRelease = releases.find(
+            (release) => release.status === "ACTIVE_LOCAL",
+          );
+        return json(res, 200, {
+          scope: "LOCAL_RELEASE_MONITORING",
+          publicDeployed: false,
+          fullLifecycleE2E: false,
+          activeRelease: expose(activeRelease),
+          counts: {
+            scheduled: runs.filter((run) => run.status === "SCHEDULED").length,
+            running: runs.filter((run) => run.status === "RUNNING").length,
+            succeeded: runs.filter((run) => run.status === "SUCCEEDED").length,
+            failed: runs.filter((run) =>
+              ["FAILED", "VALIDATION_FAILED"].includes(run.status),
+            ).length,
+            openAlerts: alerts.filter((alert) => alert.status === "OPEN").length,
+          },
+          recentRuns: runs.slice(0, 20).map(expose),
+          alerts: alerts.slice(0, 20),
+          recentEvents: events.slice(0, 30),
+          notice:
+            "这里只展示本机发布批次与告警证据，不能作为公网、生产或完整Agent E2E验收。",
+        });
+      }
       if (path === "/api/v2/delivery/packages" && method === "POST") {
         const body = await readBody(req),
           sourceRun = get("run", text(body.sourceRunId, 1, 80));
@@ -289,7 +355,7 @@ export function createV2Server(options = {}) {
         );
       }
       const deliveryRecord = path.match(
-        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel))?$/,
+        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|approve))?$/,
       );
       if (deliveryRecord) {
         const kind =
@@ -308,6 +374,72 @@ export function createV2Server(options = {}) {
             controls.get(item.id)?.abort();
           }
           return json(res, 200, get(kind, item.id));
+        }
+        if (
+          kind === "delivery_package" &&
+          deliveryRecord[3] === "approve" &&
+          method === "POST"
+        ) {
+          const body = await readBody(req),
+            packageDigest = text(body.packageDigest, 64, 64);
+          if (packageDigest !== item.digest)
+            throw fail(409, "审批摘要与当前交付包不一致");
+          validateDeliveryPackage(item, item.digest);
+          const rehearsal = store
+            .list("delivery_verification", PROJECT)
+            .find(
+              (record) =>
+                record.packageId === item.id &&
+                record.packageDigest === item.digest &&
+                record.status === "SUCCEEDED",
+            );
+          if (!rehearsal)
+            throw fail(409, "交付包尚无成功的按文件演练，不能审批发布");
+          const reviewNote =
+            body.reviewNote === undefined
+              ? "已审阅代码版本、文件摘要和本机演练证据"
+              : text(body.reviewNote, 4, 500);
+          const existingApproval = store
+            .list("release_approval", PROJECT)
+            .find(
+              (approval) =>
+                approval.packageId === item.id &&
+                approval.packageDigest === item.digest &&
+                approval.status === "APPROVED",
+            );
+          if (existingApproval) return json(res, 200, existingApproval);
+          const key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              PROJECT + ":release-approval:" + key,
+              hash(
+                JSON.stringify({
+                  packageId: item.id,
+                  packageDigest: item.digest,
+                  rehearsalId: rehearsal.id,
+                  reviewNote,
+                }),
+              ),
+              () =>
+                store.create("release_approval", PROJECT, {
+                  packageId: item.id,
+                  packageDigest: item.digest,
+                  rehearsalId: rehearsal.id,
+                  sourceRevisionId: item.manifest.source.revisionId,
+                  sourceSqlHash: item.manifest.source.sqlHash,
+                  reviewer: "local-engineer",
+                  decision: "APPROVED",
+                  status: "APPROVED",
+                  reviewNote,
+                  approvedAt: new Date().toISOString(),
+                  scope: "LOCAL_TEST_RELEASE",
+                  publicDeploymentApproved: false,
+                }),
+            );
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            get("release_approval", dedup.id),
+          );
         }
         if (
           kind === "delivery_package" &&
@@ -389,6 +521,220 @@ export function createV2Server(options = {}) {
                 );
             });
           return json(res, 202, verification);
+        }
+      }
+      if (path === "/api/v2/releases" && method === "POST") {
+        const body = await readBody(req),
+          approval = get(
+            "release_approval",
+            text(body.approvalId, 1, 80),
+          ),
+          item = get("delivery_package", approval.packageId),
+          spec = localScheduleSpec(body),
+          plan = validateDeliveryPackage(item, item.digest);
+        if (
+          approval.status !== "APPROVED" ||
+          approval.packageDigest !== item.digest ||
+          approval.sourceSqlHash !== item.manifest.source.sqlHash
+        )
+          throw fail(409, "审批记录未绑定当前不可变交付包");
+        if (approval.consumedByReleaseId) {
+          const existing = get("release", approval.consumedByReleaseId);
+          if (
+            existing.packageId === item.id &&
+            existing.packageDigest === item.digest &&
+            JSON.stringify(existing.scheduleSpec) === JSON.stringify(spec)
+          )
+            return json(res, 200, expose(existing));
+          throw fail(409, "该审批已绑定其他发布参数，不能重复使用");
+        }
+        const businessDay = plan.fixtures.context.businessDate,
+          calendarIndex = plan.calendar.tradingDays.indexOf(businessDay),
+          nextTradingDay = plan.calendar.tradingDays[calendarIndex + 1];
+        if (!nextTradingDay)
+          throw fail(422, "样例日历缺少业务日后的下一个交易日");
+        const businessScheduledFor =
+            nextTradingDay + "T" + plan.schedule.at + "+08:00",
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            PROJECT + ":release:" + key,
+            hash(
+              JSON.stringify({
+                approvalId: approval.id,
+                packageId: item.id,
+                packageDigest: item.digest,
+                spec,
+              }),
+            ),
+            () =>
+              store.create("release", PROJECT, {
+                approvalId: approval.id,
+                packageId: item.id,
+                packageDigest: item.digest,
+                sourceRevisionId: item.manifest.source.revisionId,
+                sourceSqlHash: item.manifest.source.sqlHash,
+                status: "DEPLOYING",
+                health: "PENDING",
+                environment: "local-scheduled-test",
+                adapter: "local-spark-v1",
+                scheduleSpec: spec,
+                businessScheduledFor,
+                publicDeployed: false,
+                fullLifecycleE2E: false,
+              }),
+          );
+        let release = get("release", dedup.id);
+        if (!dedup.replayed) {
+          try {
+            const parent = join(root, ".v2-artifacts", "releases");
+            mkdirSync(parent, { recursive: true });
+            const artifactDirectory = unpackDeliveryPackage(
+              item,
+              join(parent, release.id),
+              item.digest,
+            );
+            for (const previous of store.list("release", PROJECT)) {
+              if (
+                previous.id !== release.id &&
+                previous.status === "ACTIVE_LOCAL"
+              ) {
+                releaseScheduler.cancelRelease(
+                  previous.id,
+                  "已由新发布版本替代",
+                );
+                store.update("release", previous.id, PROJECT, {
+                  status: "SUPERSEDED_LOCAL",
+                  supersededByReleaseId: release.id,
+                  supersededAt: new Date().toISOString(),
+                });
+              }
+            }
+            release = store.update("release", release.id, PROJECT, {
+              status: "ACTIVE_LOCAL",
+              health: "OBSERVING",
+              artifactDirectory,
+              activatedAt: new Date().toISOString(),
+            });
+            store.update("release_approval", approval.id, PROJECT, {
+              consumedByReleaseId: release.id,
+              consumedAt: new Date().toISOString(),
+            });
+            const planned = plannedLocalRuns({
+              releaseId: release.id,
+              packageId: item.id,
+              packageDigest: item.digest,
+              businessScheduledFor,
+              spec,
+              nowMs: options.now?.() ?? Date.now(),
+              timeUnitMs: releaseTimeUnitMs,
+            });
+            for (const runData of planned) {
+              const run = store.create("release_run", PROJECT, runData);
+              releaseScheduler.schedule(run);
+            }
+          } catch (error) {
+            store.update("release", release.id, PROJECT, {
+              status: "FAILED_LOCAL",
+              error: error.message,
+              finishedAt: new Date().toISOString(),
+            });
+            throw error;
+          }
+        }
+        return json(res, dedup.replayed ? 200 : 201, expose(release));
+      }
+      const releaseRecord = path.match(
+        /^\/api\/v2\/(releases|release\/runs)\/([a-f0-9-]+)(?:\/(rollback))?$/,
+      );
+      if (releaseRecord) {
+        const kind =
+            releaseRecord[1] === "releases" ? "release" : "release_run",
+          item = get(kind, releaseRecord[2]);
+        if (method === "GET" && !releaseRecord[3])
+          return json(res, 200, expose(item));
+        if (
+          kind === "release" &&
+          releaseRecord[3] === "rollback" &&
+          method === "POST"
+        ) {
+          const body = await readBody(req),
+            target = get("release", text(body.targetReleaseId, 1, 80));
+          if (item.status !== "ACTIVE_LOCAL")
+            throw fail(409, "只能回滚当前生效的本机发布版本");
+          if (
+            target.id === item.id ||
+            !["SUPERSEDED_LOCAL", "ROLLED_BACK_LOCAL"].includes(
+              target.status,
+            ) ||
+            Number(target.successfulRunCount ?? 0) < 1
+          )
+            throw fail(409, "回滚目标必须是已有成功批次的历史发布版本");
+          const spec = localScheduleSpec({
+            triggerAfterSeconds: body.triggerAfterSeconds ?? 2,
+            intervalSeconds: body.intervalSeconds ?? 10,
+            runCount: 2,
+          });
+          releaseScheduler.cancelRelease(item.id, "当前版本已执行回滚");
+          store.update("release", item.id, PROJECT, {
+            status: "ROLLED_BACK_LOCAL",
+            rolledBackToReleaseId: target.id,
+            rolledBackAt: new Date().toISOString(),
+          });
+          const restored = store.update("release", target.id, PROJECT, {
+            status: "ACTIVE_LOCAL",
+            health: "OBSERVING",
+            restoredFromReleaseId: item.id,
+            restoredAt: new Date().toISOString(),
+          });
+          const resolvedAlertIds = [];
+          for (const alert of store.list("monitor_alert", PROJECT)) {
+            if (alert.releaseId === item.id && alert.status === "OPEN") {
+              resolvedAlertIds.push(alert.id);
+              store.update("monitor_alert", alert.id, PROJECT, {
+                status: "RESOLVED",
+                resolutionMode: "ROLLBACK",
+                recoveryReleaseId: restored.id,
+                resolvedAt: new Date().toISOString(),
+              });
+            }
+          }
+          const rollback = store.create("release_rollback", PROJECT, {
+            fromReleaseId: item.id,
+            toReleaseId: target.id,
+            actor: "local-engineer",
+            reason:
+              body.reason === undefined
+                ? "恢复到最近已验证版本"
+                : text(body.reason, 4, 500),
+            status: "SCHEDULED_FOR_VERIFICATION",
+            resolvedAlertIds,
+          });
+          store.create("monitor_event", PROJECT, {
+            type: "ROLLBACK_ACTIVATED",
+            releaseId: item.id,
+            recoveryReleaseId: restored.id,
+            rollbackId: rollback.id,
+            observedAt: new Date().toISOString(),
+            status: "RECOVERY_SCHEDULED",
+          });
+          const planned = plannedLocalRuns({
+            releaseId: restored.id,
+            packageId: restored.packageId,
+            packageDigest: restored.packageDigest,
+            businessScheduledFor: restored.businessScheduledFor,
+            spec,
+            nowMs: options.now?.() ?? Date.now(),
+            timeUnitMs: releaseTimeUnitMs,
+            triggerReason: "ROLLBACK_RECOVERY",
+          });
+          for (const runData of planned) {
+            const run = store.create("release_run", PROJECT, runData);
+            releaseScheduler.schedule(run);
+          }
+          return json(res, 202, {
+            rollback,
+            activeRelease: expose(restored),
+          });
         }
       }
       const record = path.match(
@@ -623,8 +969,9 @@ export function createV2Server(options = {}) {
   });
   server.on("close", () => {
     for (const c of controls.values()) c.abort();
+    releaseScheduler.shutdown();
   });
-  return { server, store, host };
+  return { server, store, host, releaseScheduler };
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { server, host } = createV2Server();
