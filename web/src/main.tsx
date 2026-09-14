@@ -51,6 +51,7 @@ import { DeliveryWorkbench } from "./DeliveryWorkbench";
 import { DataServicesWorkbench } from "./DataServicesWorkbench";
 import { IngestionWorkbench } from "./IngestionWorkbench";
 import { AssetWorkbench } from "./AssetWorkbench";
+import { QualityWorkbench } from "./QualityWorkbench";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 type Column = { name: string; type: string };
 type Context = {
@@ -1187,6 +1188,8 @@ function App() {
                 canWrite={Boolean(canWrite)}
                 initialAssetId={expanded ? `fixture:${expanded}` : undefined}
               />
+            ) : nav === "quality" ? (
+              <QualityWorkbench api={api} canWrite={Boolean(canWrite)} />
             ) : nav === "settings" ? (
               <>
                 <div className="settings-grid">

@@ -59,9 +59,14 @@ export const capabilities = [
     id: "quality",
     group: "治理与服务",
     name: "数据质量",
-    description: "规则、实际检测与异常处理",
-    stage: "M4",
-    features: ["规则配置", "真实检查", "告警关联"],
+    description: "版本化规则、实际检测、告警与恢复",
+    stage: "M4d",
+    features: [
+      "非空、唯一、范围、枚举与时效规则",
+      "实际资产行检查与结果摘要",
+      "失败告警、版本校准和恢复关联",
+      "Data Agent受治理规则建议",
+    ],
   },
   {
     id: "security",

@@ -483,3 +483,107 @@ export async function generateAssetInsight(
     mode: "LIVE_MODEL",
   };
 }
+
+export async function generateQualityPlan(
+  { message, assets, rules, signal },
+  env = process.env,
+  fetchImpl = fetch,
+) {
+  if (!env.DASHSCOPE_API_KEY) throw new ModelUnavailable();
+  const settings = modelSettings(env),
+    base = new URL(settings.baseUrl);
+  if (base.protocol !== "https:") throw new Error("模型 API 必须使用 HTTPS");
+  const prompt = JSON.stringify({
+    request: message,
+    executableAssets: assets.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      businessName: asset.businessName,
+      kind: asset.kind,
+      rowCount: asset.rowCount,
+      fields: (asset.fields ?? []).map(({ name, type, nullable }) => ({
+        name,
+        type,
+        nullable,
+      })),
+    })),
+    existingRulesAndSummaries: rules.map((rule) => ({
+      id: rule.id,
+      code: rule.code,
+      assetId: rule.assetId,
+      health: rule.health,
+      currentVersion: rule.currentVersion,
+      latestRun: rule.latestRun,
+    })),
+    contract: {
+      kind: "QUALITY_RULE",
+      supportedTypes: [
+        "NOT_NULL",
+        "UNIQUE",
+        "VALUE_RANGE",
+        "ALLOWED_VALUES",
+        "FRESHNESS_SECONDS",
+      ],
+      examples: {
+        VALUE_RANGE: { min: "0.00", max: "100000000.00" },
+        ALLOWED_VALUES: { values: ["股票", "债券", "基金"] },
+        FRESHNESS_SECONDS: { maxAgeSeconds: 300 },
+        NOT_NULL: {},
+        UNIQUE: {},
+      },
+      output:
+        "只返回JSON对象：kind,name,code,assetId,field,type,config,description,explanation。assetId和field必须来自给定资产。",
+    },
+  });
+  const response = await fetchImpl(
+    settings.baseUrl.replace(/\/$/, "") + "/chat/completions",
+    {
+      method: "POST",
+      redirect: "error",
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(60000)])
+        : AbortSignal.timeout(60000),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + env.DASHSCOPE_API_KEY,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        temperature: 0.1,
+        max_tokens: 1800,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是证券数据质量助手。只基于给定字段元数据和聚合质量结果生成一条规则草稿。不得读取或复述业务行、虚构资产/字段、执行规则、解除告警或改变规则。规则代码使用未出现的小写英文标识。不要输出推理过程。",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      "模型请求失败（" + response.status + "），请检查服务配置或额度",
+    );
+  const payload = await response.json();
+  let content = payload.choices?.[0]?.message?.content ?? "";
+  content = content
+    .replace(/^\s*```(?:json)?\s*/, "")
+    .replace(/\s*```\s*$/, "");
+  let plan;
+  try {
+    plan = JSON.parse(content);
+  } catch {
+    throw new Error("模型未返回可解析的质量规则方案");
+  }
+  const explanation = String(plan.explanation ?? "").slice(0, 1200);
+  delete plan.explanation;
+  return {
+    plan,
+    explanation,
+    model: settings.model,
+    usage: payload.usage ?? {},
+    mode: "LIVE_MODEL",
+  };
+}

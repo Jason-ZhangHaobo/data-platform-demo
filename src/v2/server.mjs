@@ -19,6 +19,7 @@ import {
   generateIngestionPlan,
   generateRealtimePlan,
   generateAssetInsight,
+  generateQualityPlan,
   modelSettings,
   ModelUnavailable,
 } from "./model.mjs";
@@ -50,6 +51,7 @@ import {
   StreamStateStore,
 } from "./realtime.mjs";
 import { AssetCatalogManager } from "./assets.mjs";
+import { QualityManager } from "./quality.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -211,6 +213,21 @@ export function createV2Server(options = {}) {
     (async (input) => {
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateAssetInsight(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
+  const quality = new QualityManager({
+    store,
+    assets,
+    project: PROJECT,
+    now: options.now,
+  });
+  const qualityPlanner =
+    options.qualityPlanner ??
+    (async (input) => {
+      const keyAtRequest = env.DASHSCOPE_API_KEY,
+        result = await generateQualityPlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
         modelVerifiedAt = new Date().toISOString();
       return result;
@@ -385,6 +402,11 @@ export function createV2Server(options = {}) {
             standardCount: assets.listStandards().length,
             lineageDerivation: "VERSION_BINDINGS",
             sqlColumnLineageParsed: false,
+            cloudVerified: false,
+          },
+          quality: {
+            ...quality.overview().counts,
+            executionScope: "LOCAL_ACTUAL_ROWS",
             cloudVerified: false,
           },
         });
@@ -910,6 +932,142 @@ export function createV2Server(options = {}) {
               () => assets.checkStandard(standard.id),
             );
           return json(res, dedup.replayed ? 200 : 201, get("standard_check", dedup.id));
+        }
+      }
+      if (path === "/api/v2/quality/overview" && method === "GET")
+        return json(res, 200, quality.overview());
+      if (path === "/api/v2/quality/rules" && method === "GET")
+        return json(res, 200, quality.listRules());
+      if (path === "/api/v2/quality/rules" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:quality-rule:${key}`,
+            hash(JSON.stringify(body)),
+            () => quality.createRule(body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          quality.detail(dedup.id),
+        );
+      }
+      if (path === "/api/v2/quality/agent/plans" && method === "GET")
+        return json(res, 200, store.list("quality_agent_plan", PROJECT));
+      if (path === "/api/v2/quality/agent/plans" && method === "POST") {
+        const body = await readBody(req),
+          message = text(body.message, 4, 2000);
+        if (!options.qualityPlanner && !modelSettings(env).configured)
+          throw new ModelUnavailable();
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:quality-agent-plan:${key}`,
+            hash(JSON.stringify({ message })),
+            () =>
+              store.create("quality_agent_plan", PROJECT, {
+                message,
+                status: "QUEUED",
+                mode: "LIVE_MODEL",
+                completionScope: "QUALITY_RULE_DESIGN",
+                fullLifecycleE2E: false,
+              }),
+          ),
+          task = get("quality_agent_plan", dedup.id);
+        if (!dedup.replayed)
+          schedule("quality_agent_plan", task, async (signal) => {
+            const context = quality.agentContext(),
+              generated = await qualityPlanner({
+                message,
+                ...context,
+                signal,
+              }),
+              proposal = quality.validateAgentPlan(generated.plan);
+            store.update("quality_agent_plan", task.id, PROJECT, {
+              status: "SUCCEEDED",
+              proposal,
+              explanation: generated.explanation,
+              model: generated.model,
+              usage: generated.usage,
+              finishedAt: new Date().toISOString(),
+            });
+          });
+        return json(res, 202, task);
+      }
+      const qualityAgentPlan = path.match(
+        /^\/api\/v2\/quality\/agent\/plans\/([a-f0-9-]+)(?:\/(apply|cancel))?$/,
+      );
+      if (qualityAgentPlan) {
+        const plan = get("quality_agent_plan", qualityAgentPlan[1]),
+          action = qualityAgentPlan[2];
+        if (method === "GET" && !action) return json(res, 200, plan);
+        if (method === "POST" && action === "cancel") {
+          await readBody(req);
+          if (!terminal.has(plan.status) && plan.status !== "APPLIED") {
+            store.update("quality_agent_plan", plan.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            controls.get(plan.id)?.abort();
+          }
+          return json(res, 200, get("quality_agent_plan", plan.id));
+        }
+        if (method === "POST" && action === "apply") {
+          await readBody(req);
+          if (plan.status === "APPLIED" && plan.ruleId)
+            return json(res, 200, quality.detail(plan.ruleId));
+          if (plan.status !== "SUCCEEDED" || !plan.proposal)
+            throw fail(409, "只有模型质量方案验证通过后才能创建规则草稿");
+          const proposal = quality.validateAgentPlan(plan.proposal),
+            rule = quality.createRule(proposal);
+          store.update("quality_agent_plan", plan.id, PROJECT, {
+            status: "APPLIED",
+            ruleId: rule.id,
+            appliedAt: new Date().toISOString(),
+          });
+          return json(res, 201, rule);
+        }
+      }
+      const qualityRuleRecord = path.match(
+        /^\/api\/v2\/quality\/rules\/([a-f0-9-]+)(?:\/(versions|run))?$/,
+      );
+      if (qualityRuleRecord) {
+        const rule = quality.detail(qualityRuleRecord[1]),
+          action = qualityRuleRecord[2];
+        if (method === "GET" && !action) return json(res, 200, rule);
+        if (method === "POST" && action === "versions") {
+          const body = await readBody(req),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:quality-rule-version:${rule.id}:${key}`,
+              hash(JSON.stringify(body)),
+              () => quality.createVersion(rule.id, body).currentVersion,
+            );
+          get("quality_rule_version", dedup.id);
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            quality.detail(rule.id),
+          );
+        }
+        if (method === "POST" && action === "run") {
+          await readBody(req);
+          const current = quality.detail(rule.id),
+            evidenceHash = assets.detail(rule.assetId).evidenceHash,
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:quality-run:${rule.id}:${key}`,
+              hash(
+                JSON.stringify({
+                  ruleId: rule.id,
+                  versionId: current.currentVersionId,
+                  configHash: current.currentVersion.configHash,
+                  evidenceHash,
+                }),
+              ),
+              () => quality.runRule(rule.id).run,
+            );
+          get("quality_run", dedup.id);
+          return json(res, dedup.replayed ? 200 : 201, quality.detail(rule.id));
         }
       }
       if (path === "/api/v2/settings/model-key" && method === "POST") {

@@ -204,6 +204,42 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     0,
   );
   assert.equal(requests[4].path, "/assets/landing%3Araw_positions/lineage");
+  assert.equal(
+    await runV2Cli(
+      [
+        "quality",
+        "create",
+        "--name",
+        "持仓市值范围",
+        "--code",
+        "holding_value_range",
+        "--asset-id",
+        "landing:raw_positions",
+        "--field",
+        "market_value",
+        "--type",
+        "value-range",
+        "--min",
+        "0.00",
+        "--max",
+        "5000.00",
+        "--description",
+        "受控范围规则",
+      ],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[5].path, "/quality/rules");
+  assert.deepEqual(requests[5].options.body.config, {
+    min: "0.00",
+    max: "5000.00",
+  });
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -265,6 +301,14 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "standard_check",
     "asset_agent_list",
     "asset_agent_create",
+    "quality_overview",
+    "quality_rule_list",
+    "quality_rule_create",
+    "quality_rule_version",
+    "quality_rule_run",
+    "quality_plan_list",
+    "quality_plan_create",
+    "quality_plan_apply",
   ])
     assert.ok(names.includes(required));
   assert.match(createApp.description, /明确确认/);

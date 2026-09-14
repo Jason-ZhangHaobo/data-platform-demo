@@ -98,6 +98,15 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET/POST /assets/agent/tasks | 列表或自然语言问题 | 真实模型基于资产摘要和版本边找数据、解释口径/影响 |
 | GET /assets/agent/tasks/:id | 无 | 受治理回答、资产引用、边界和用量 |
 | POST /assets/agent/tasks/:id/cancel | 空对象 | 取消资产问答并保留记录 |
+| GET /quality/overview | 无 | 规则健康、实际运行、开放/已恢复告警汇总 |
+| GET/POST /quality/rules | 列表或名称/代码/资产/字段/类型/配置 | 创建规则V1，不自动运行 |
+| GET /quality/rules/:id | 无 | 当前版本、历史版本、全部运行和告警 |
+| POST /quality/rules/:id/versions | 类型/配置/说明 + 幂等键 | 创建新配置版本并退役旧版本，不删除历史 |
+| POST /quality/rules/:id/run | 空对象 + 幂等键 | 在实际资产行检测；失败告警，通过可关联恢复 |
+| GET/POST /quality/agent/plans | 列表或自然语言需求 | 真实模型基于字段/聚合摘要生成规则方案 |
+| GET /quality/agent/plans/:id | 无 | 受治理提案、解释、模型与用量 |
+| POST /quality/agent/plans/:id/apply | 空对象 | 人工应用为未运行规则V1 |
+| POST /quality/agent/plans/:id/cancel | 空对象 | 取消生成并保留记录 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
@@ -107,6 +116,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 同步Agent返回completionScope=OFFLINE_SYNC_DESIGN、fullLifecycleE2E=false；模型不读取CSV业务行，成功只表示基于当前元数据的草稿方案通过后端校验。
 实时Agent返回completionScope=REALTIME_SYNC_DESIGN、fullLifecycleE2E=false；模型只读取源摘要和事件契约，成功或应用均不表示任务已启动、Kafka/Flink已连接或公网已部署。
 资产Agent返回completionScope=ASSET_DISCOVERY、fullLifecycleE2E=false；引用必须命中当前目录，模型不读取业务行或修改资产，回答只代表受治理发现与解释。
+质量Agent返回completionScope=QUALITY_RULE_DESIGN、fullLifecycleE2E=false；模型不读取业务行或无效样本，方案应用后运行数仍为0，不能代表数据质量已通过。
 服务重启会把正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 

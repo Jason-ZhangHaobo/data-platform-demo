@@ -51,6 +51,13 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan standards list
   shuzhan standards create --name 证券代码格式 --code security_code_format --asset-id landing:raw_positions --field security_code --semantic-type SECURITY_CODE --description "使用SEC前缀"
   shuzhan standards check --id STANDARD_ID
+  shuzhan quality overview|list
+  shuzhan quality create --name 名称 --code holding_value_range --asset-id landing:raw_positions --field market_value --type value-range --min 0.00 --max 5000.00 --description "持仓市值范围"
+  shuzhan quality version --id RULE_ID --type value-range --min 0.00 --max 10000.00 --description "校准范围"
+  shuzhan quality run --id RULE_ID
+  shuzhan quality plan --message "为证券代码生成非空规则"
+  shuzhan quality plans
+  shuzhan quality apply-plan --id PLAN_ID
 
 环境变量：
   SHUZHAN_V2_API_BASE_URL  默认 http://127.0.0.1:3100/api/v2
@@ -110,6 +117,33 @@ const mapping = (value) =>
       return [item.slice(0, separator), item.slice(separator + 1)];
     }),
   );
+const qualityType = (value) => {
+  const normalized = required({ value }, "value").replaceAll("-", "_").toUpperCase();
+  if (
+    ![
+      "NOT_NULL",
+      "UNIQUE",
+      "VALUE_RANGE",
+      "ALLOWED_VALUES",
+      "FRESHNESS_SECONDS",
+    ].includes(normalized)
+  )
+    throw new Error("--type不受支持");
+  return normalized;
+};
+const qualityConfig = (options, type) => {
+  if (["NOT_NULL", "UNIQUE"].includes(type)) return {};
+  if (type === "VALUE_RANGE")
+    return {
+      min: required(options, "min"),
+      max: required(options, "max"),
+    };
+  if (type === "ALLOWED_VALUES")
+    return { values: list(required(options, "values"), "--values") };
+  return {
+    maxAgeSeconds: Number(required(options, "max_age_seconds")),
+  };
+};
 
 export const V2_CLI_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
 
@@ -449,6 +483,54 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "standards" && action === "check")
       result = await client.request(
         `/standards/${encodeURIComponent(required(parsed.options, "id"))}/check`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "quality" && action === "overview")
+      result = await client.request("/quality/overview");
+    else if (resource === "quality" && action === "list")
+      result = await client.request("/quality/rules");
+    else if (resource === "quality" && action === "create") {
+      const type = qualityType(required(parsed.options, "type"));
+      result = await client.request("/quality/rules", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          code: required(parsed.options, "code"),
+          assetId: required(parsed.options, "asset_id"),
+          field: required(parsed.options, "field"),
+          type,
+          config: qualityConfig(parsed.options, type),
+          description: required(parsed.options, "description"),
+        },
+      });
+    } else if (resource === "quality" && action === "version") {
+      const type = qualityType(required(parsed.options, "type"));
+      result = await client.request(
+        `/quality/rules/${encodeURIComponent(required(parsed.options, "id"))}/versions`,
+        {
+          method: "POST",
+          body: {
+            type,
+            config: qualityConfig(parsed.options, type),
+            description: required(parsed.options, "description"),
+          },
+        },
+      );
+    } else if (resource === "quality" && action === "run")
+      result = await client.request(
+        `/quality/rules/${encodeURIComponent(required(parsed.options, "id"))}/run`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "quality" && action === "plan")
+      result = await client.request("/quality/agent/plans", {
+        method: "POST",
+        body: { message: required(parsed.options, "message") },
+      });
+    else if (resource === "quality" && action === "plans")
+      result = await client.request("/quality/agent/plans");
+    else if (resource === "quality" && action === "apply-plan")
+      result = await client.request(
+        `/quality/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
         { method: "POST", body: {} },
       );
     else throw new Error(`不支持的V2命令：${parsed.positionals.join(" ")}`);

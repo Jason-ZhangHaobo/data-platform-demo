@@ -423,6 +423,17 @@ export class AssetCatalogManager {
     };
   }
 
+  executionRows(id) {
+    const asset = this.#asset(id);
+    if (!asset.executableMetrics)
+      throw fail(
+        422,
+        "资产没有可执行的本机行数据",
+        "ASSET_ROWS_UNAVAILABLE",
+      );
+    return { asset, rows: this.#rows(asset) };
+  }
+
   #inventory() {
     const items = [],
       context = getContext("holdings-t1");

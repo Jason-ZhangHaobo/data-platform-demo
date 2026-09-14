@@ -54,6 +54,14 @@ export const V2_OPERATIONS = Object.freeze([
   "standard_check",
   "asset_agent_list",
   "asset_agent_create",
+  "quality_overview",
+  "quality_rule_list",
+  "quality_rule_create",
+  "quality_rule_version",
+  "quality_rule_run",
+  "quality_plan_list",
+  "quality_plan_create",
+  "quality_plan_apply",
 ]);
 
 export class V2ApiError extends Error {

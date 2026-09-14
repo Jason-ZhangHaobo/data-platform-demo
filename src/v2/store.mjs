@@ -94,6 +94,7 @@ export class MetadataStore {
       "ingestion_agent_plan",
       "realtime_agent_plan",
       "asset_agent_task",
+      "quality_agent_plan",
       "offline_sync_run",
       "stream_run",
       "release",
