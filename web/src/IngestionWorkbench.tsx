@@ -11,11 +11,13 @@ import {
   LoaderCircle,
   Network,
   Play,
+  Radio,
   RefreshCw,
   ScanSearch,
   Send,
   Table2,
 } from "lucide-react";
+import { RealtimeWorkbench } from "./RealtimeWorkbench";
 
 type Api = <T>(path: string, body?: unknown) => Promise<T>;
 type Column = {
@@ -137,6 +139,7 @@ export function IngestionWorkbench({
   canWrite: boolean;
   onModuleChange: (module: "sources" | "sync") => void;
 }) {
+  const [syncView, setSyncView] = useState<"offline" | "realtime">("offline");
   const [sources, setSources] = useState<Source[]>([]),
     [tasks, setTasks] = useState<SyncTask[]>([]),
     [plans, setPlans] = useState<AgentPlan[]>([]),
@@ -322,15 +325,22 @@ export function IngestionWorkbench({
     <div className="ingestion-workbench">
       <section className="ingestion-hero">
         <div>
-          <span className="eyebrow">INGESTION CONTROL PLANE · M4A</span>
-          <h2>从真实连接证据到可追溯同步</h2>
-          <p>源版本、元数据、字段映射、运行和落地结果逐层绑定；当前只读取仓库内虚构证券CSV。</p>
+          <span className="eyebrow">{activeModule === "sync" && syncView === "realtime" ? "STREAMING CONTROL PLANE · M4B" : "INGESTION CONTROL PLANE · M4A"}</span>
+          <h2>{activeModule === "sync" && syncView === "realtime" ? "从事件契约到可恢复实时处理" : "从真实连接证据到可追溯同步"}</h2>
+          <p>{activeModule === "sync" && syncView === "realtime" ? "实时源版本、任务配置、运行、Checkpoint、状态与告警逐层绑定；当前只处理仓库内虚构证券事件日志。" : "源版本、元数据、字段映射、运行和落地结果逐层绑定；当前只读取仓库内虚构证券CSV。"}</p>
         </div>
         <div className="ingestion-stats">
-          <div><strong>{sources.length}</strong><span>数据源</span></div>
-          <div><strong>{tasks.length}</strong><span>同步任务</span></div>
-          <div><strong>{successfulRuns.length}</strong><span>成功运行</span></div>
-          <div><strong>{targetRows.length}</strong><span>落地行</span></div>
+          {activeModule === "sync" && syncView === "realtime" ? <>
+            <div><strong>JSONL</strong><span>当前适配器</span></div>
+            <div><strong>CP</strong><span>断点恢复</span></div>
+            <div><strong>WM</strong><span>Watermark</span></div>
+            <div><strong>0</strong><span>云连接</span></div>
+          </> : <>
+            <div><strong>{sources.length}</strong><span>数据源</span></div>
+            <div><strong>{tasks.length}</strong><span>同步任务</span></div>
+            <div><strong>{successfulRuns.length}</strong><span>成功运行</span></div>
+            <div><strong>{targetRows.length}</strong><span>落地行</span></div>
+          </>}
         </div>
       </section>
       <div className="ingestion-tabs" role="tablist" aria-label="接入与同步">
@@ -344,11 +354,25 @@ export function IngestionWorkbench({
         </button>
         <button
           role="tab"
-          aria-selected={activeModule === "sync"}
-          className={activeModule === "sync" ? "active" : ""}
-          onClick={() => onModuleChange("sync")}
+          aria-selected={activeModule === "sync" && syncView === "offline"}
+          className={activeModule === "sync" && syncView === "offline" ? "active" : ""}
+          onClick={() => {
+            setSyncView("offline");
+            onModuleChange("sync");
+          }}
         >
           <GitBranch size={16} />离线同步
+        </button>
+        <button
+          role="tab"
+          aria-selected={activeModule === "sync" && syncView === "realtime"}
+          className={activeModule === "sync" && syncView === "realtime" ? "active" : ""}
+          onClick={() => {
+            setSyncView("realtime");
+            onModuleChange("sync");
+          }}
+        >
+          <Radio size={16} />实时同步
         </button>
       </div>
       {(notice || error) && (
@@ -424,6 +448,8 @@ export function IngestionWorkbench({
             <div><label>名称<input value={sourceName} onChange={(event) => setSourceName(event.target.value)} /></label><label>文件<select value={sourceFile} onChange={(event) => setSourceFile(event.target.value)}>{fixtureFiles.map(([file, label]) => <option value={file} key={file}>{label}</option>)}</select></label><button className="button" onClick={createSource} disabled={!canWrite || !!busy}>登记</button></div>
           </details>
         </>
+      ) : syncView === "realtime" ? (
+        <RealtimeWorkbench api={api} canWrite={canWrite} />
       ) : (
         <>
           <section className="ingestion-agent">
@@ -458,7 +484,7 @@ export function IngestionWorkbench({
           <section className="target-preview"><header><div><Table2 size={18} /><h3>raw_positions 实际落地结果</h3></div><span>{targetRows.length}行</span></header><div><table><thead><tr><th>持仓ID</th><th>客户</th><th>证券</th><th>类别</th><th>市值</th><th>交易日</th></tr></thead><tbody>{targetRows.map((row) => <tr key={String(row.position_id)}><td><code>{String(row.position_id)}</code></td><td>{String(row.client_id)}</td><td>{String(row.security_code)}</td><td>{String(row.asset_class)}</td><td>{String(row.market_value)}</td><td>{String(row.trade_date)}</td></tr>)}</tbody></table></div></section>
         </>
       )}
-      <footer className="ingestion-boundary"><FileSpreadsheet size={15} />真实读取仓库内虚构CSV并写入本机独立SQLite；不是用户上传、MySQL/CDC或公网接入。</footer>
+      <footer className="ingestion-boundary"><FileSpreadsheet size={15} />{syncView === "realtime" && activeModule === "sync" ? "真实读取仓库内虚构JSONL并写入本机独立状态库；不是Kafka/Flink、真实CDC或公网流计算。" : "真实读取仓库内虚构CSV并写入本机独立SQLite；不是用户上传、MySQL/CDC或公网接入。"}</footer>
     </div>
   );
 }

@@ -26,6 +26,14 @@
 
 ## 测试与待办
 
-9项针对性测试覆盖事件契约、真实fixture、Checkpoint失败恢复、重复事件、前缀冲突、停止、服务重启中断、路径/符号链接与V2 API公开只读边界；全量`npm run ci`为114/114，源码检查与两个前端构建通过。
+11项实时/Agent针对性测试覆盖事件契约、真实fixture、Checkpoint失败恢复、重复事件、前缀冲突、停止、服务重启中断、路径/符号链接、V2 API公开只读边界、Agent人工应用和模型输入边界；与5项接口回归组合运行16/16。全量`npm run ci`为116/116，源码检查与两个前端构建通过。
 
-当前尚未完成实时GUI、Data Agent、CLI/MCP和浏览器验收；也未连接Kafka/Flink、外部Schema Registry、真实CDC或生产Checkpoint存储。
+## Data Agent与多端证据
+
+- 真实模型方案`51b93236-d1e0-4b2c-a80e-0e434266a65a`使用`qwen3-coder-plus`，508 Token；只接收实时源摘要和固定事件契约，未发送事件行。
+- 后端把方案重新绑定源`30a21430-0cdc-48fd-808d-1b38a8de3d64`的V2版本并生成配置摘要`56e5fdf…ca7f`；人工应用为任务`c3d20a2b-c40a-478c-a3ac-e2638a43db5d`时运行数为0。
+- GUI显式启动后，运行`d445ee9a-8837-4476-8595-88d8f3ceb991`用265ms消费6行：5个唯一事件、1个重复、3个Checkpoint、3只证券最新状态，Watermark为`2026-09-14T09:30:02Z`。
+- `shuzhan` CLI与`shuzhan-mcp`覆盖实时源、版本、任务、启动/停止、恢复、状态、Checkpoint、监控和Agent方案，调用同一`/api/v2/streams`资源；旧V1命令不计入证据。
+- 工作台显示事件日志已连接，Kafka/Flink/公网未连接；有效1280与768宽度均无页面级横向溢出，窄屏仍可选择任务和启动。
+
+M4b本机范围已验收。仍未连接Kafka/Flink、外部Schema Registry、真实CDC或生产Checkpoint存储，也没有完成公网身份、隔离执行与多实例恢复；这些不能由本机事件日志证据替代。

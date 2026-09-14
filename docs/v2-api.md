@@ -1,6 +1,6 @@
 # V2 API 契约与实现边界
 
-更新：2026-09-14。基础地址为本地开发服务的 `/api/v2`。以下接口已实现；旧 CLI/MCP 仍使用旧版 API，不能用其测试证明 V2 多端一致。
+更新：2026-09-14。基础地址为本地开发服务的 `/api/v2`。以下接口已实现；`shuzhan`与`shuzhan-mcp`已对M3、M4a、M4b使用该契约，旧`dataplatform`命令仍是V1模拟，不能作为V2证据。
 
 ## 权限与请求
 
@@ -80,6 +80,10 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /streams/jobs/:id/state | 无 | 按证券读取实际最新状态 |
 | GET /streams/jobs/:id/checkpoints | 无 | offset、事件数、水位、前缀和状态摘要 |
 | GET /streams/monitor | 无 | 任务、吞吐/延迟、成功/失败与告警汇总，并披露Kafka/Flink未连接 |
+| GET/POST /streams/agent/plans | 列表或自然语言需求 | 后台真实模型实时方案，范围为REALTIME_SYNC_DESIGN |
+| GET /streams/agent/plans/:id | 方案状态 | 受治理提案、模型用量或明确失败 |
+| POST /streams/agent/plans/:id/apply | 空对象 | 人工应用已验证方案为READY任务，不自动启动 |
+| POST /streams/agent/plans/:id/cancel | 空对象 | 取消排队或运行中的方案并保留记录 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
@@ -87,6 +91,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 完整 E2E 要求理解需求至上线后监控的全部证据，定义及分阶段门槛见 PRD.md。
 数据服务Agent返回completionScope=DATA_SERVICE_DESIGN、fullLifecycleE2E=false；成功只表示方案引用和约束校验通过。
 同步Agent返回completionScope=OFFLINE_SYNC_DESIGN、fullLifecycleE2E=false；模型不读取CSV业务行，成功只表示基于当前元数据的草稿方案通过后端校验。
+实时Agent返回completionScope=REALTIME_SYNC_DESIGN、fullLifecycleE2E=false；模型只读取源摘要和事件契约，成功或应用均不表示任务已启动、Kafka/Flink已连接或公网已部署。
 服务重启会把正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 

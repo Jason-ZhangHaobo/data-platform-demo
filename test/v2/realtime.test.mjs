@@ -15,6 +15,7 @@ import {
   StreamStateStore,
   validateQuoteEvent,
 } from "../../src/v2/realtime.mjs";
+import { generateRealtimePlan } from "../../src/v2/model.mjs";
 import { PROJECT } from "../../src/v2/server.mjs";
 
 const fault =
@@ -283,4 +284,56 @@ test("stream source rejects paths and symlinks", () => {
   } finally {
     app.close();
   }
+});
+
+test("realtime model adapter receives source contract but never event rows", async () => {
+  let requestBody;
+  const generated = await generateRealtimePlan(
+    {
+      message: "为虚构证券行情创建Checkpoint实时同步草稿",
+      sources: [
+        {
+          id: "stream-source-id",
+          name: "虚构行情源",
+          adapter: "local-event-log-v1",
+          topic: "market.quotes.demo",
+          status: "READY",
+          currentRevisionId: "revision-id",
+          currentRevision: { revisionNumber: 1, lineCount: 6 },
+          eventRows: ["EVT-SHOULD-NOT-LEAK", "10.00"],
+        },
+      ],
+    },
+    { DASHSCOPE_API_KEY: "sk-test", V2_MODEL: "test-model" },
+    async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  kind: "REALTIME_SYNC",
+                  name: "行情快照实时同步",
+                  sourceId: "stream-source-id",
+                  targetTable: "realtime_quotes",
+                  checkpointEvery: 2,
+                  maxOutOfOrderSeconds: 2,
+                  explanation: "固定事件契约并设置Checkpoint",
+                }),
+              },
+            },
+          ],
+          usage: { total_tokens: 180 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    },
+  );
+  const sent = requestBody.messages[1].content;
+  assert.match(sent, /stream-source-id/);
+  assert.match(sent, /event_id/);
+  assert.doesNotMatch(sent, /EVT-SHOULD-NOT-LEAK/);
+  assert.equal(generated.plan.kind, "REALTIME_SYNC");
+  assert.equal(generated.mode, "LIVE_MODEL");
 });

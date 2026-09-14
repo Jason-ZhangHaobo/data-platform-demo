@@ -344,6 +344,29 @@ export class RealtimeManager {
   }
 
   createJob(input) {
+    return this.store.create(
+      "stream_job",
+      this.project,
+      this.#normalizeJob(input),
+    );
+  }
+
+  validateAgentPlan(value) {
+    if (
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      value.kind !== "REALTIME_SYNC"
+    )
+      throw fail(
+        422,
+        "Agent未返回可验证的实时同步方案",
+        "INVALID_REALTIME_PLAN",
+      );
+    return { kind: "REALTIME_SYNC", ...this.#normalizeJob(value) };
+  }
+
+  #normalizeJob(input) {
     const source = this.#source(text(input.sourceId, "实时源编号", 3, 80)),
       checkpointEvery = positiveInteger(
         input.checkpointEvery,
@@ -376,10 +399,10 @@ export class RealtimeManager {
         publicDeployed: false,
         fullLifecycleE2E: false,
       };
-    return this.store.create("stream_job", this.project, {
+    return {
       ...config,
       configHash: stableHash(config),
-    });
+    };
   }
 
   listJobs() {

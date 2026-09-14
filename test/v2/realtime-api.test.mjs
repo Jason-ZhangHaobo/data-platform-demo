@@ -16,13 +16,20 @@ const fault =
   '{"event_id":"EVT-Q-005","sequence":5,"security_code":"SEC-DEMO-002","event_time":"2026-09-14T09:30:04.000Z","price":"101.80","volume":220}\n';
 const recovered = fault.replace('"price":"-1.00"', '"price":"10.20"');
 
-async function start({ store, stateStore, fixtureRoot, local = true }) {
+async function start({
+  store,
+  stateStore,
+  fixtureRoot,
+  local = true,
+  realtimePlanner,
+}) {
   const app = createV2Server({
     store,
     streamStateStore: stateStore,
     streamFixtureRoot: fixtureRoot,
     realtimeEventDelayMs: 1,
     env: { V2_LOCAL_DEVELOPMENT: String(local) },
+    realtimePlanner,
   });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   return {
@@ -49,6 +56,14 @@ async function waitForJob(base, id, expected) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`实时任务未达到${expected}`);
+}
+async function waitForPlan(base, id, expected) {
+  for (let index = 0; index < 100; index++) {
+    const response = await request(base, `/streams/agent/plans/${id}`);
+    if (response.body.status === expected) return response.body;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`实时Agent方案未达到${expected}`);
 }
 
 test("V2 API records a failed stream checkpoint and resumes from a corrected revision", async () => {
@@ -210,6 +225,78 @@ test("V2 stream API rejects unsupported adapters and missing fixture paths", asy
     assert.equal(missing.status, 404);
     assert.equal(missing.body.code, "STREAM_FILE_NOT_FOUND");
     assert.equal(store.list("stream_source", "project-securities-lab").length, 0);
+  } finally {
+    await new Promise((resolve) => server.app.server.close(resolve));
+    stateStore.close();
+    store.close();
+  }
+});
+
+test("Data Agent creates a validated realtime draft only after governed apply", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuzhan-realtime-agent-api-")),
+    fixtureRoot = join(root, "streams"),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    stateStore = new StreamStateStore(":memory:");
+  mkdirSync(fixtureRoot, { recursive: true });
+  writeFileSync(join(fixtureRoot, "fault.jsonl"), fault);
+  const server = await start({
+    store,
+    stateStore,
+    fixtureRoot,
+    realtimePlanner: async ({ sources }) => ({
+      plan: {
+        kind: "REALTIME_SYNC",
+        name: "Agent行情同步草稿",
+        sourceId: sources[0].id,
+        targetTable: "agent_realtime_quotes",
+        checkpointEvery: 2,
+        maxOutOfOrderSeconds: 3,
+      },
+      explanation: "基于已登记事件契约生成，不自动启动",
+      model: "TEST_DOUBLE",
+      usage: { total_tokens: 120 },
+    }),
+  });
+  try {
+    const source = await request(
+        server.base,
+        "/streams/sources",
+        {
+          name: "Agent虚构行情源",
+          adapter: "local-event-log-v1",
+          topic: "market.quotes.demo",
+          fileName: "fault.jsonl",
+        },
+        "agent-stream-source",
+      ),
+      started = await request(
+        server.base,
+        "/streams/agent/plans",
+        { message: "为当前虚构行情源生成实时同步任务草稿" },
+        "agent-realtime-plan",
+      ),
+      complete = await waitForPlan(server.base, started.body.id, "SUCCEEDED");
+    assert.equal(source.status, 201);
+    assert.equal(started.status, 202);
+    assert.equal(complete.completionScope, "REALTIME_SYNC_DESIGN");
+    assert.equal(complete.fullLifecycleE2E, false);
+    assert.equal(complete.proposal.sourceRevisionId, source.body.currentRevisionId);
+    assert.equal(complete.proposal.status, "READY");
+    assert.equal(store.list("stream_job", "project-securities-lab").length, 0);
+    const applied = await request(
+      server.base,
+      `/streams/agent/plans/${complete.id}/apply`,
+      {},
+      "apply-agent-realtime-plan",
+    );
+    assert.equal(applied.status, 201);
+    assert.equal(applied.body.status, "READY");
+    assert.equal(applied.body.runs.length, 0);
+    assert.equal(
+      (await request(server.base, `/streams/agent/plans/${complete.id}`)).body
+        .status,
+      "APPLIED",
+    );
   } finally {
     await new Promise((resolve) => server.app.server.close(resolve));
     stateStore.close();

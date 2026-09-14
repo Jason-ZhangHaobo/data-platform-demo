@@ -17,6 +17,7 @@ import {
   generateSql,
   generateDataServicePlan,
   generateIngestionPlan,
+  generateRealtimePlan,
   modelSettings,
   ModelUnavailable,
 } from "./model.mjs";
@@ -186,6 +187,15 @@ export function createV2Server(options = {}) {
     now: options.now,
     eventDelayMs: options.realtimeEventDelayMs ?? 40,
   });
+  const realtimePlanner =
+    options.realtimePlanner ??
+    (async (input) => {
+      const keyAtRequest = env.DASHSCOPE_API_KEY,
+        result = await generateRealtimePlan(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
   const revision = (sql, contextId, source) =>
     store.create("revision", PROJECT, {
       sql,
@@ -534,6 +544,80 @@ export function createV2Server(options = {}) {
         return json(res, 200, ingestion.previewTarget(targetRows[1]));
       if (path === "/api/v2/streams/monitor" && method === "GET")
         return json(res, 200, realtime.monitor());
+      if (path === "/api/v2/streams/agent/plans" && method === "GET")
+        return json(res, 200, store.list("realtime_agent_plan", PROJECT));
+      if (path === "/api/v2/streams/agent/plans" && method === "POST") {
+        const body = await readBody(req),
+          message = text(body.message, 4, 2000);
+        if (!options.realtimePlanner && !modelSettings(env).configured)
+          throw new ModelUnavailable();
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:realtime-agent-plan:${key}`,
+            hash(JSON.stringify({ message })),
+            () =>
+              store.create("realtime_agent_plan", PROJECT, {
+                message,
+                status: "QUEUED",
+                mode: "LIVE_MODEL",
+                completionScope: "REALTIME_SYNC_DESIGN",
+                fullLifecycleE2E: false,
+              }),
+          ),
+          task = get("realtime_agent_plan", dedup.id);
+        if (!dedup.replayed)
+          schedule("realtime_agent_plan", task, async (signal) => {
+            const generated = await realtimePlanner({
+                message,
+                sources: realtime.listSources(),
+                signal,
+              }),
+              proposal = realtime.validateAgentPlan(generated.plan);
+            store.update("realtime_agent_plan", task.id, PROJECT, {
+              status: "SUCCEEDED",
+              proposal,
+              explanation: generated.explanation,
+              model: generated.model,
+              usage: generated.usage,
+              finishedAt: new Date().toISOString(),
+            });
+          });
+        return json(res, 202, task);
+      }
+      const realtimeAgentPlan = path.match(
+        /^\/api\/v2\/streams\/agent\/plans\/([a-f0-9-]+)(?:\/(apply|cancel))?$/,
+      );
+      if (realtimeAgentPlan) {
+        const plan = get("realtime_agent_plan", realtimeAgentPlan[1]),
+          action = realtimeAgentPlan[2];
+        if (method === "GET" && !action) return json(res, 200, plan);
+        if (method === "POST" && action === "cancel") {
+          await readBody(req);
+          if (!terminal.has(plan.status) && plan.status !== "APPLIED") {
+            store.update("realtime_agent_plan", plan.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            controls.get(plan.id)?.abort();
+          }
+          return json(res, 200, get("realtime_agent_plan", plan.id));
+        }
+        if (method === "POST" && action === "apply") {
+          await readBody(req);
+          if (plan.status === "APPLIED" && plan.streamJobId)
+            return json(res, 200, realtime.jobDetail(plan.streamJobId));
+          if (plan.status !== "SUCCEEDED" || !plan.proposal)
+            throw fail(409, "只有模型实时方案验证通过后才能创建草稿");
+          const proposal = realtime.validateAgentPlan(plan.proposal),
+            streamJob = realtime.createJob(proposal);
+          store.update("realtime_agent_plan", plan.id, PROJECT, {
+            status: "APPLIED",
+            streamJobId: streamJob.id,
+            appliedAt: new Date().toISOString(),
+          });
+          return json(res, 201, realtime.jobDetail(streamJob.id));
+        }
+      }
       if (path === "/api/v2/streams/sources" && method === "GET")
         return json(res, 200, realtime.listSources());
       if (path === "/api/v2/streams/sources" && method === "POST") {

@@ -27,6 +27,20 @@ export const V2_OPERATIONS = Object.freeze([
   "ingestion_plan_list",
   "ingestion_plan_create",
   "ingestion_plan_apply",
+  "stream_source_list",
+  "stream_source_create",
+  "stream_source_revision",
+  "stream_job_list",
+  "stream_job_create",
+  "stream_job_start",
+  "stream_job_stop",
+  "stream_job_recover",
+  "stream_job_state",
+  "stream_job_checkpoints",
+  "stream_monitor",
+  "realtime_plan_list",
+  "realtime_plan_create",
+  "realtime_plan_apply",
 ]);
 
 export class V2ApiError extends Error {

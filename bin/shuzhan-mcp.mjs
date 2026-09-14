@@ -29,6 +29,20 @@ const tools = [
   { name: "ingestion_plan_list", description: "列出受治理的同步Agent方案。", inputSchema: { type: "object", properties: {} } },
   { name: "ingestion_plan_create", description: "让真实模型基于现有元数据生成同步方案，不执行同步。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
   { name: "ingestion_plan_apply", description: "把已验证的同步Agent方案应用为READY草稿，不自动运行。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
+  { name: "stream_source_list", description: "列出本机合成实时源与不可变事件日志版本。", inputSchema: { type: "object", properties: {} } },
+  { name: "stream_source_create", description: "登记仓库合成目录中的JSONL实时源；当前不连接Kafka/Flink。", inputSchema: { type: "object", properties: { name: { type: "string" }, topic: { type: "string" }, fileName: { type: "string" } }, required: ["name", "topic", "fileName"] } },
+  { name: "stream_source_revision", description: "为实时源登记新的合成事件日志版本。", inputSchema: { type: "object", properties: { sourceId: { type: "string" }, fileName: { type: "string" } }, required: ["sourceId", "fileName"] } },
+  { name: "stream_job_list", description: "列出实时任务、运行、Checkpoint、状态和告警。", inputSchema: { type: "object", properties: {} } },
+  { name: "stream_job_create", description: "创建绑定源版本的实时任务草稿，不自动启动。", inputSchema: { type: "object", properties: { name: { type: "string" }, sourceId: { type: "string" }, targetTable: { type: "string" }, checkpointEvery: { type: "integer", minimum: 1, maximum: 100 }, maxOutOfOrderSeconds: { type: "integer", minimum: 0, maximum: 300 } }, required: ["name", "sourceId", "targetTable"] } },
+  { name: "stream_job_start", description: "启动本机事件日志实际逐事件处理。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
+  { name: "stream_job_stop", description: "停止当前运行中的实时任务并保留终止证据。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
+  { name: "stream_job_recover", description: "校验Checkpoint前缀后从指定修正版本断点恢复。", inputSchema: { type: "object", properties: { jobId: { type: "string" }, sourceRevisionId: { type: "string" } }, required: ["jobId", "sourceRevisionId"] } },
+  { name: "stream_job_state", description: "读取实时任务实际物化的最新证券状态。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
+  { name: "stream_job_checkpoints", description: "读取实时任务持久Checkpoint证据。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
+  { name: "stream_monitor", description: "读取延迟、吞吐、运行状态和告警；明确本机适配器边界。", inputSchema: { type: "object", properties: {} } },
+  { name: "realtime_plan_list", description: "列出受治理的实时同步Agent方案。", inputSchema: { type: "object", properties: {} } },
+  { name: "realtime_plan_create", description: "让真实模型基于实时源契约生成任务草稿，不读取事件行、不启动任务。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
+  { name: "realtime_plan_apply", description: "把已验证实时方案应用为READY草稿，不自动启动。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
 ];
 
 export const V2_MCP_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
@@ -131,6 +145,50 @@ async function callTool(name, args = {}) {
   if (name === "ingestion_plan_apply")
     return client.request(
       `/sync/agent/plans/${encodeURIComponent(args.planId)}/apply`,
+      { method: "POST", body: {} },
+    );
+  if (name === "stream_source_list") return client.request("/streams/sources");
+  if (name === "stream_source_create")
+    return client.request("/streams/sources", {
+      method: "POST",
+      body: { ...args, adapter: "local-event-log-v1" },
+    });
+  if (name === "stream_source_revision")
+    return client.request(
+      `/streams/sources/${encodeURIComponent(args.sourceId)}/revisions`,
+      { method: "POST", body: { fileName: args.fileName } },
+    );
+  if (name === "stream_job_list") return client.request("/streams/jobs");
+  if (name === "stream_job_create")
+    return client.request("/streams/jobs", { method: "POST", body: args });
+  if (["stream_job_start", "stream_job_stop"].includes(name))
+    return client.request(
+      `/streams/jobs/${encodeURIComponent(args.jobId)}/${name === "stream_job_start" ? "start" : "stop"}`,
+      { method: "POST", body: {} },
+    );
+  if (name === "stream_job_recover")
+    return client.request(
+      `/streams/jobs/${encodeURIComponent(args.jobId)}/recover`,
+      {
+        method: "POST",
+        body: { sourceRevisionId: args.sourceRevisionId },
+      },
+    );
+  if (["stream_job_state", "stream_job_checkpoints"].includes(name))
+    return client.request(
+      `/streams/jobs/${encodeURIComponent(args.jobId)}/${name === "stream_job_state" ? "state" : "checkpoints"}`,
+    );
+  if (name === "stream_monitor") return client.request("/streams/monitor");
+  if (name === "realtime_plan_list")
+    return client.request("/streams/agent/plans");
+  if (name === "realtime_plan_create")
+    return client.request("/streams/agent/plans", {
+      method: "POST",
+      body: { message: args.message },
+    });
+  if (name === "realtime_plan_apply")
+    return client.request(
+      `/streams/agent/plans/${encodeURIComponent(args.planId)}/apply`,
       { method: "POST", body: {} },
     );
   throw new Error(`未知V2 MCP工具：${name}`);

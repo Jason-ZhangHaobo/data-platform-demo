@@ -166,6 +166,31 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     position_id: "position_id",
     trade_date: "trade_date",
   });
+  assert.equal(
+    await runV2Cli(
+      [
+        "streams",
+        "create-job",
+        "--name",
+        "行情同步",
+        "--source-id",
+        "stream-source-id",
+        "--target-table",
+        "realtime_quotes",
+        "--checkpoint-every",
+        "3",
+      ],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[3].path, "/streams/jobs");
+  assert.equal(requests[3].options.body.checkpointEvery, 3);
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -200,6 +225,20 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "ingestion_plan_list",
     "ingestion_plan_create",
     "ingestion_plan_apply",
+    "stream_source_list",
+    "stream_source_create",
+    "stream_source_revision",
+    "stream_job_list",
+    "stream_job_create",
+    "stream_job_start",
+    "stream_job_stop",
+    "stream_job_recover",
+    "stream_job_state",
+    "stream_job_checkpoints",
+    "stream_monitor",
+    "realtime_plan_list",
+    "realtime_plan_create",
+    "realtime_plan_apply",
   ])
     assert.ok(names.includes(required));
   assert.match(createApp.description, /明确确认/);
@@ -226,6 +265,18 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
     );
     assert.equal(code, 0, cliError.join("\n"));
     assert.deepEqual(JSON.parse(cliOutput[0]), []);
+    const monitorCode = await runV2Cli(
+      ["streams", "monitor", "--base-url", baseUrl],
+      {},
+      {
+        output: (value) => cliOutput.push(value),
+        error: (value) => cliError.push(value),
+      },
+    );
+    assert.equal(monitorCode, 0, cliError.join("\n"));
+    const cliMonitor = JSON.parse(cliOutput[1]);
+    assert.equal(cliMonitor.adapter, "local-event-log-v1");
+    assert.equal(cliMonitor.kafkaConnected, false);
 
     const child = spawn(process.execPath, ["bin/shuzhan-mcp.mjs"], {
       cwd: process.cwd(),
@@ -241,7 +292,7 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
         jsonrpc: "2.0",
         id: 2,
         method: "tools/call",
-        params: { name: "dapi_list", arguments: {} },
+        params: { name: "stream_monitor", arguments: {} },
       }) + "\n",
     );
     const exit = await new Promise((resolve, reject) => {
@@ -250,7 +301,14 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
     });
     assert.equal(exit, 0, stderr);
     const response = JSON.parse(stdout.trim());
-    assert.deepEqual(response.result.structuredContent, []);
+    assert.equal(
+      response.result.structuredContent.adapter,
+      cliMonitor.adapter,
+    );
+    assert.deepEqual(
+      response.result.structuredContent.counts,
+      cliMonitor.counts,
+    );
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     businessStore.close();

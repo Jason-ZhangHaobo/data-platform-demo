@@ -28,6 +28,18 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan sync rows --table raw_positions
   shuzhan sync plan --message "同步需求"
   shuzhan sync apply-plan --id PLAN_ID
+  shuzhan streams sources
+  shuzhan streams create-source --name 名称 --topic market.quotes.demo --file quotes_fault.jsonl
+  shuzhan streams revision --source-id ID --file quotes_recovered.jsonl
+  shuzhan streams jobs
+  shuzhan streams create-job --name 名称 --source-id ID --target-table realtime_quotes [--checkpoint-every 2] [--max-out-of-order-seconds 2]
+  shuzhan streams start|stop --id JOB_ID
+  shuzhan streams recover --id JOB_ID --revision-id REVISION_ID
+  shuzhan streams state|checkpoints --id JOB_ID
+  shuzhan streams monitor
+  shuzhan streams plan --message "实时同步需求"
+  shuzhan streams plans
+  shuzhan streams apply-plan --id PLAN_ID
 
 环境变量：
   SHUZHAN_V2_API_BASE_URL  默认 http://127.0.0.1:3100/api/v2
@@ -268,6 +280,86 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "sync" && action === "apply-plan")
       result = await client.request(
         `/sync/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "streams" && action === "sources")
+      result = await client.request("/streams/sources");
+    else if (resource === "streams" && action === "create-source")
+      result = await client.request("/streams/sources", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          adapter: "local-event-log-v1",
+          topic: required(parsed.options, "topic"),
+          fileName: required(parsed.options, "file"),
+        },
+      });
+    else if (resource === "streams" && action === "revision")
+      result = await client.request(
+        `/streams/sources/${encodeURIComponent(required(parsed.options, "source_id"))}/revisions`,
+        {
+          method: "POST",
+          body: { fileName: required(parsed.options, "file") },
+        },
+      );
+    else if (resource === "streams" && action === "jobs")
+      result = await client.request("/streams/jobs");
+    else if (resource === "streams" && action === "create-job")
+      result = await client.request("/streams/jobs", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          sourceId: required(parsed.options, "source_id"),
+          targetTable: required(parsed.options, "target_table"),
+          ...(parsed.options.checkpoint_every
+            ? { checkpointEvery: Number(parsed.options.checkpoint_every) }
+            : {}),
+          ...(parsed.options.max_out_of_order_seconds
+            ? {
+                maxOutOfOrderSeconds: Number(
+                  parsed.options.max_out_of_order_seconds,
+                ),
+              }
+            : {}),
+        },
+      });
+    else if (
+      resource === "streams" &&
+      ["start", "stop"].includes(action)
+    )
+      result = await client.request(
+        `/streams/jobs/${encodeURIComponent(required(parsed.options, "id"))}/${action}`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "streams" && action === "recover")
+      result = await client.request(
+        `/streams/jobs/${encodeURIComponent(required(parsed.options, "id"))}/recover`,
+        {
+          method: "POST",
+          body: {
+            sourceRevisionId: required(parsed.options, "revision_id"),
+          },
+        },
+      );
+    else if (
+      resource === "streams" &&
+      ["state", "checkpoints"].includes(action)
+    )
+      result = await client.request(
+        `/streams/jobs/${encodeURIComponent(required(parsed.options, "id"))}/${action}`,
+      );
+    else if (resource === "streams" && action === "monitor")
+      result = await client.request("/streams/monitor");
+    else if (resource === "streams" && action === "plan")
+      result = await client.request("/streams/agent/plans", {
+        method: "POST",
+        body: { message: required(parsed.options, "message") },
+      });
+    else if (resource === "streams" && action === "plans")
+      result = await client.request("/streams/agent/plans");
+    else if (resource === "streams" && action === "apply-plan")
+      result = await client.request(
+        `/streams/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
         { method: "POST", body: {} },
       );
     else throw new Error(`不支持的V2命令：${parsed.positionals.join(" ")}`);
