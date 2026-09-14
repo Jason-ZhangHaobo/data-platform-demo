@@ -12,8 +12,13 @@ export const capabilities = [
     group: "数据接入",
     name: "数据同步",
     description: "离线全量/增量落地与后续实时同步",
-    stage: "M4a",
-    features: ["FULL与INCREMENTAL_UPSERT", "字段映射、主键与水位", "实时CDC与恢复（后续）"],
+    stage: "M4b",
+    features: [
+      "FULL与INCREMENTAL_UPSERT",
+      "字段映射、主键与水位",
+      "本机事件流、Checkpoint与断点恢复",
+      "Kafka/Flink生产适配（后续）",
+    ],
   },
   {
     id: "development",

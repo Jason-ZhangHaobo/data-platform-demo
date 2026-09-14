@@ -43,6 +43,10 @@ import {
   IngestionManager,
   LandingStore,
 } from "./ingestion.mjs";
+import {
+  RealtimeManager,
+  StreamStateStore,
+} from "./realtime.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -87,6 +91,12 @@ export function createV2Server(options = {}) {
       options.landingStore ??
       new LandingStore(
         options.store ? ":memory:" : join(root, ".data/v2-landing.sqlite"),
+      );
+  const ownsStreamStateStore = !options.streamStateStore,
+    streamStateStore =
+      options.streamStateStore ??
+      new StreamStateStore(
+        options.store ? ":memory:" : join(root, ".data/v2-stream-state.sqlite"),
       );
   const host = env.V2_HOST ?? "127.0.0.1",
     local = env.V2_LOCAL_DEVELOPMENT !== "false";
@@ -167,6 +177,15 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
+  const realtime = new RealtimeManager({
+    store,
+    stateStore: streamStateStore,
+    project: PROJECT,
+    fixtureRoot:
+      options.streamFixtureRoot ?? join(process.cwd(), "fixtures", "streams"),
+    now: options.now,
+    eventDelayMs: options.realtimeEventDelayMs ?? 40,
+  });
   const revision = (sql, contextId, source) =>
     store.create("revision", PROJECT, {
       sql,
@@ -321,6 +340,14 @@ export function createV2Server(options = {}) {
             offlineTaskCount: ingestion.listTasks().length,
             sourceType: "LOCAL_CSV",
             landingDriver: "sqlite",
+            cloudVerified: false,
+          },
+          realtime: {
+            sourceCount: realtime.listSources().length,
+            jobCount: realtime.listJobs().length,
+            adapter: "local-event-log-v1",
+            kafkaConnected: false,
+            flinkConnected: false,
             cloudVerified: false,
           },
         });
@@ -505,6 +532,115 @@ export function createV2Server(options = {}) {
       );
       if (targetRows && method === "GET")
         return json(res, 200, ingestion.previewTarget(targetRows[1]));
+      if (path === "/api/v2/streams/monitor" && method === "GET")
+        return json(res, 200, realtime.monitor());
+      if (path === "/api/v2/streams/sources" && method === "GET")
+        return json(res, 200, realtime.listSources());
+      if (path === "/api/v2/streams/sources" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:stream-source:${key}`,
+            hash(JSON.stringify(body)),
+            () => realtime.createSource(body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          realtime.sourceDetail(dedup.id),
+        );
+      }
+      const streamSourceRecord = path.match(
+        /^\/api\/v2\/streams\/sources\/([a-f0-9-]+)(?:\/(revisions))?$/,
+      );
+      if (streamSourceRecord) {
+        const source = realtime.sourceDetail(streamSourceRecord[1]),
+          action = streamSourceRecord[2];
+        if (method === "GET" && !action) return json(res, 200, source);
+        if (method === "POST" && action === "revisions") {
+          const body = await readBody(req),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:stream-revision:${source.id}:${key}`,
+              hash(JSON.stringify(body)),
+              () => realtime.createSourceRevision(source.id, body),
+            );
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            get("stream_source_revision", dedup.id),
+          );
+        }
+      }
+      if (path === "/api/v2/streams/jobs" && method === "GET")
+        return json(res, 200, realtime.listJobs());
+      if (path === "/api/v2/streams/jobs" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:stream-job:${key}`,
+            hash(JSON.stringify(body)),
+            () => realtime.createJob(body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          realtime.jobDetail(dedup.id),
+        );
+      }
+      const streamJobRecord = path.match(
+        /^\/api\/v2\/streams\/jobs\/([a-f0-9-]+)(?:\/(start|stop|recover|state|checkpoints))?$/,
+      );
+      if (streamJobRecord) {
+        const job = realtime.jobDetail(streamJobRecord[1]),
+          action = streamJobRecord[2];
+        if (method === "GET" && !action) return json(res, 200, job);
+        if (method === "GET" && action === "state")
+          return json(res, 200, job.state);
+        if (method === "GET" && action === "checkpoints")
+          return json(res, 200, job.checkpoints);
+        if (method === "POST" && action === "start") {
+          await readBody(req);
+          const requestKey = text(req.headers["idempotency-key"], 1, 100),
+            requestSignature = hash(
+              JSON.stringify({
+                jobId: job.id,
+                sourceRevisionId: job.sourceRevisionId,
+                action: "start",
+              }),
+            );
+          return json(
+            res,
+            202,
+            realtime.startJob(job.id, { requestKey, requestSignature }),
+          );
+        }
+        if (method === "POST" && action === "recover") {
+          const body = await readBody(req),
+            sourceRevisionId = text(body.sourceRevisionId, 1, 80),
+            requestKey = text(req.headers["idempotency-key"], 1, 100),
+            requestSignature = hash(
+              JSON.stringify({
+                jobId: job.id,
+                sourceRevisionId,
+                action: "recover",
+              }),
+            );
+          return json(
+            res,
+            202,
+            realtime.recoverJob(
+              job.id,
+              { sourceRevisionId },
+              { requestKey, requestSignature },
+            ),
+          );
+        }
+        if (method === "POST" && action === "stop") {
+          await readBody(req);
+          return json(res, 202, realtime.stopJob(job.id));
+        }
+      }
       if (path === "/api/v2/settings/model-key" && method === "POST") {
         const body = await readBody(req);
         const configured = await saveLocalModelKey(root, env, body.apiKey);
@@ -1435,8 +1571,10 @@ export function createV2Server(options = {}) {
   server.on("close", () => {
     for (const c of controls.values()) c.abort();
     releaseScheduler.shutdown();
+    realtime.shutdown();
     if (ownsBusinessStore) businessStore.close();
     if (ownsLandingStore) landingStore.close();
+    if (ownsStreamStateStore) streamStateStore.close();
   });
   return {
     server,
@@ -1447,6 +1585,8 @@ export function createV2Server(options = {}) {
     businessStore,
     ingestion,
     landingStore,
+    realtime,
+    streamStateStore,
   };
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

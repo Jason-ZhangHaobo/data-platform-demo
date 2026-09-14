@@ -70,6 +70,16 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET/POST /sync/agent/plans | 列表或自然语言需求 | 后台真实模型同步方案，范围为OFFLINE_SYNC_DESIGN |
 | GET /sync/agent/plans/:id | 方案状态 | 元数据约束提案、模型用量或明确失败 |
 | POST /sync/agent/plans/:id/apply | 空对象 | 人工应用已验证方案为READY任务，不自动运行 |
+| GET/POST /streams/sources | 列表或name/topic/fileName | 登记仅限合成目录的local-event-log-v1源 |
+| POST /streams/sources/:id/revisions | fileName + 幂等键 | 创建事件日志版本，保存行数和内容摘要 |
+| GET/POST /streams/jobs | 列表或源/目标/Checkpoint/乱序配置 | 创建版本绑定的实时任务 |
+| GET /streams/jobs/:id | 任务详情 | 全部运行、Checkpoint、最新状态和告警 |
+| POST /streams/jobs/:id/start | 空对象 + 幂等键 | 后台从offset0逐条处理，立即返回运行号 |
+| POST /streams/jobs/:id/recover | sourceRevisionId + 幂等键 | 校验Checkpoint前缀后从下一offset恢复 |
+| POST /streams/jobs/:id/stop | 空对象 | 中止本机处理并保留STOPPED运行 |
+| GET /streams/jobs/:id/state | 无 | 按证券读取实际最新状态 |
+| GET /streams/jobs/:id/checkpoints | 无 | offset、事件数、水位、前缀和状态摘要 |
+| GET /streams/monitor | 无 | 任务、吞吐/延迟、成功/失败与告警汇总，并披露Kafka/Flink未连接 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
