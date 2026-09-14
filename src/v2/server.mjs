@@ -13,7 +13,12 @@ import {
   validationContractId,
 } from "./context.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
-import { generateSql, modelSettings, ModelUnavailable } from "./model.mjs";
+import {
+  generateSql,
+  generateDataServicePlan,
+  modelSettings,
+  ModelUnavailable,
+} from "./model.mjs";
 import { capabilities } from "./capabilities.mjs";
 import { saveLocalModelKey } from "./model-credentials.mjs";
 import {
@@ -29,6 +34,10 @@ import {
   plannedLocalRuns,
   publicRelease,
 } from "./release-scheduler.mjs";
+import {
+  BusinessQueryStore,
+  DataServiceManager,
+} from "./data-services.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -62,6 +71,12 @@ export function createV2Server(options = {}) {
     root = options.root ?? process.cwd();
   const store =
     options.store ?? new MetadataStore(join(root, ".data/v2-platform.sqlite"));
+  const ownsBusinessStore = !options.businessStore,
+    businessStore =
+      options.businessStore ??
+      new BusinessQueryStore(
+        options.store ? ":memory:" : join(root, ".data/v2-business-services.sqlite"),
+      );
   const host = env.V2_HOST ?? "127.0.0.1",
     local = env.V2_LOCAL_DEVELOPMENT !== "false";
   if (local && !["127.0.0.1", "localhost", "::1"].includes(host))
@@ -107,6 +122,23 @@ export function createV2Server(options = {}) {
   });
   releaseScheduler.start();
   const expose = (item) => publicRelease(item, root);
+  const dataServices = new DataServiceManager({
+    store,
+    businessStore,
+    project: PROJECT,
+    releaseRunFor: (id) => store.get("release_run", id, PROJECT),
+    now: options.now,
+    executeDapi: options.dataServiceExecutor,
+  });
+  const servicePlanner =
+    options.servicePlanner ??
+    (async (input) => {
+      const keyAtRequest = env.DASHSCOPE_API_KEY,
+        result = await generateDataServicePlan(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
   const revision = (sql, contextId, source) =>
     store.create("revision", PROJECT, {
       sql,
@@ -223,7 +255,11 @@ export function createV2Server(options = {}) {
         const hostname = new URL("http://" + req.headers.host).hostname;
         if (!local || !["127.0.0.1", "localhost", "[::1]"].includes(hostname))
           throw fail(403, "当前公开模式只读；邀请认证与隔离执行尚未开放");
-        if (req.headers["x-shuzhan-client"] !== "workbench")
+        if (
+          !["workbench", "cli", "mcp"].includes(
+            req.headers["x-shuzhan-client"],
+          )
+        )
           throw fail(403, "缺少客户端校验");
       }
       if (path === "/api/v2/status" && method === "GET")
@@ -247,7 +283,26 @@ export function createV2Server(options = {}) {
             id: validationContractId,
             fixtureCount: contextIds.length,
           },
+          dataServices: {
+            serviceCount: dataServices.list().length,
+            businessDriver: "sqlite",
+            cloudVerified: false,
+          },
         });
+      const openService = path.match(
+        /^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/,
+      );
+      if (openService && method === "GET")
+        return json(
+          res,
+          200,
+          await dataServices.invoke(
+            openService[1] === "dapis" ? "DAPI" : "XAPI",
+            openService[2],
+            req.headers.authorization,
+            Object.fromEntries(url.searchParams),
+          ),
+        );
       if (path === "/api/v2/contexts" && method === "GET")
         return json(res, 200, contextIds.map(publicContext));
       if (path === "/api/v2/settings/model-key" && method === "POST") {
@@ -319,6 +374,215 @@ export function createV2Server(options = {}) {
           notice:
             "这里只展示本机发布批次与告警证据，不能作为公网、生产或完整Agent E2E验收。",
         });
+      }
+      if (path === "/api/v2/data-services/dapis" && method === "GET")
+        return json(res, 200, dataServices.list("DAPI"));
+      if (path === "/api/v2/data-services/xapis" && method === "GET")
+        return json(res, 200, dataServices.list("XAPI"));
+      if (path === "/api/v2/data-services/applications" && method === "GET")
+        return json(res, 200, dataServices.listApplications());
+      if (path === "/api/v2/data-services/calls" && method === "GET")
+        return json(
+          res,
+          200,
+          dataServices.listCalls(url.searchParams.get("service_id") ?? undefined),
+        );
+      if (path === "/api/v2/data-services/agent/plans" && method === "GET")
+        return json(res, 200, store.list("service_agent_plan", PROJECT));
+      if (path === "/api/v2/data-services/agent/plans" && method === "POST") {
+        const body = await readBody(req),
+          message = text(body.message, 4, 2000);
+        if (!options.servicePlanner && !modelSettings(env).configured)
+          throw new ModelUnavailable();
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          signature = hash(JSON.stringify({ message })),
+          dedup = store.deduplicate(
+            `${PROJECT}:service-agent-plan:${key}`,
+            signature,
+            () =>
+              store.create("service_agent_plan", PROJECT, {
+                message,
+                status: "QUEUED",
+                mode: "LIVE_MODEL",
+                completionScope: "DATA_SERVICE_DESIGN",
+                fullLifecycleE2E: false,
+              }),
+          ),
+          task = get("service_agent_plan", dedup.id);
+        if (!dedup.replayed)
+          schedule("service_agent_plan", task, async (signal) => {
+            const releaseRuns = store
+                .list("release_run", PROJECT)
+                .filter(
+                  (run) =>
+                    run.status === "SUCCEEDED" &&
+                    run.published === true &&
+                    run.schedulerTriggered === true &&
+                    run.validation?.passed,
+                ),
+              generated = await servicePlanner({
+                message,
+                services: dataServices.list(),
+                releaseRuns,
+                signal,
+              }),
+              proposal = dataServices.validateAgentPlan(generated.plan);
+            store.update("service_agent_plan", task.id, PROJECT, {
+              status: "SUCCEEDED",
+              proposal,
+              explanation: generated.explanation,
+              model: generated.model,
+              usage: generated.usage,
+              finishedAt: new Date().toISOString(),
+            });
+          });
+        return json(res, 202, task);
+      }
+      const serviceAgentPlan = path.match(
+        /^\/api\/v2\/data-services\/agent\/plans\/([a-f0-9-]+)(?:\/(apply|cancel))?$/,
+      );
+      if (serviceAgentPlan) {
+        const plan = get("service_agent_plan", serviceAgentPlan[1]),
+          action = serviceAgentPlan[2];
+        if (method === "GET" && !action) return json(res, 200, plan);
+        if (method === "POST" && action === "cancel") {
+          await readBody(req);
+          if (!terminal.has(plan.status) && plan.status !== "APPLIED") {
+            store.update("service_agent_plan", plan.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            controls.get(plan.id)?.abort();
+          }
+          return json(res, 200, get("service_agent_plan", plan.id));
+        }
+        if (method === "POST" && action === "apply") {
+          await readBody(req);
+          if (plan.status === "APPLIED" && plan.serviceId)
+            return json(res, 200, dataServices.detail(plan.serviceId));
+          if (plan.status !== "SUCCEEDED" || !plan.proposal)
+            throw fail(409, "只有模型方案验证通过后才能创建草稿");
+          const proposal = dataServices.validateAgentPlan(plan.proposal),
+            service =
+              proposal.serviceType === "DAPI"
+                ? dataServices.createDapi(proposal)
+                : dataServices.createXapi(proposal);
+          store.update("service_agent_plan", plan.id, PROJECT, {
+            status: "APPLIED",
+            serviceId: service.id,
+            appliedAt: new Date().toISOString(),
+          });
+          return json(res, 201, dataServices.detail(service.id));
+        }
+      }
+      if (
+        path === "/api/v2/data-services/applications" &&
+        method === "POST"
+      ) {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100);
+        let issued;
+        const dedup = store.deduplicate(
+          `${PROJECT}:service-application:${key}`,
+          hash(JSON.stringify(body)),
+          () => {
+            issued = dataServices.createApplication(body);
+            return issued.application;
+          },
+        );
+        if (dedup.replayed)
+          return json(res, 200, {
+            application: dataServices.application(dedup.id),
+            token: null,
+            tokenShownOnce: false,
+            notice:
+              "幂等请求已创建过应用，平台不保存明文令牌；如令牌丢失请撤销并新建应用。",
+          });
+        return json(res, 201, issued);
+      }
+      const applicationRecord = path.match(
+        /^\/api\/v2\/data-services\/applications\/([a-f0-9-]+)\/(revoke)$/,
+      );
+      if (applicationRecord && method === "POST") {
+        await readBody(req);
+        return json(
+          res,
+          200,
+          dataServices.revokeApplication(applicationRecord[1]),
+        );
+      }
+      if (
+        ["/api/v2/data-services/dapis", "/api/v2/data-services/xapis"].includes(
+          path,
+        ) &&
+        method === "POST"
+      ) {
+        const body = await readBody(req),
+          type = path.endsWith("dapis") ? "DAPI" : "XAPI",
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:data-service:${type}:${key}`,
+            hash(JSON.stringify(body)),
+            () =>
+              type === "DAPI"
+                ? dataServices.createDapi(body)
+                : dataServices.createXapi(body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          dataServices.detail(dedup.id),
+        );
+      }
+      const dataServiceRecord = path.match(
+        /^\/api\/v2\/data-services\/(dapis|xapis)\/([a-f0-9-]+)(?:\/(versions|test|publish|activate|openapi|calls))?$/,
+      );
+      if (dataServiceRecord) {
+        const type = dataServiceRecord[1] === "dapis" ? "DAPI" : "XAPI",
+          service = dataServices.detail(dataServiceRecord[2]),
+          action = dataServiceRecord[3];
+        if (service.serviceType !== type)
+          throw fail(404, "未找到当前类型的数据服务");
+        if (method === "GET" && !action) return json(res, 200, service);
+        if (method === "GET" && action === "openapi")
+          return json(
+            res,
+            200,
+            dataServices.openApi(
+              service.id,
+              `http://${req.headers.host ?? "127.0.0.1:3100"}`,
+            ),
+          );
+        if (method === "GET" && action === "calls")
+          return json(res, 200, dataServices.listCalls(service.id));
+        if (method === "POST" && action === "versions") {
+          const body = await readBody(req),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:${type.toLowerCase()}-version:${service.id}:${key}`,
+              hash(JSON.stringify(body)),
+              () =>
+                type === "DAPI"
+                  ? dataServices.createDapiVersion(service.id, body)
+                  : dataServices.createXapiVersion(service.id, body),
+            );
+          return json(res, dedup.replayed ? 200 : 201, get("data_service_version", dedup.id));
+        }
+        if (method === "POST" && action === "test")
+          return json(res, 200, await dataServices.test(service.id, await readBody(req)));
+        if (method === "POST" && action === "publish")
+          return json(res, 200, dataServices.publish(service.id));
+        if (method === "POST" && action === "activate") {
+          const body = await readBody(req);
+          return json(
+            res,
+            200,
+            dataServices.activate(
+              service.id,
+              text(body.versionId, 1, 80),
+            ),
+          );
+        }
       }
       if (path === "/api/v2/delivery/packages" && method === "POST") {
         const body = await readBody(req),
@@ -960,7 +1224,7 @@ export function createV2Server(options = {}) {
       json(res, error.status ?? 500, {
         message: error.status ? error.message : "处理失败，请检查服务日志",
         ...(typeof error.code === "string" &&
-        error.code.startsWith("MODEL_KEY_")
+        /^[A-Z][A-Z0-9_]{2,64}$/.test(error.code)
           ? { code: error.code }
           : {}),
       });
@@ -970,8 +1234,16 @@ export function createV2Server(options = {}) {
   server.on("close", () => {
     for (const c of controls.values()) c.abort();
     releaseScheduler.shutdown();
+    if (ownsBusinessStore) businessStore.close();
   });
-  return { server, store, host, releaseScheduler };
+  return {
+    server,
+    store,
+    host,
+    releaseScheduler,
+    dataServices,
+    businessStore,
+  };
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { server, host } = createV2Server();

@@ -65,9 +65,14 @@ export const capabilities = [
     id: "services",
     group: "治理与服务",
     name: "数据服务",
-    description: "开发发布 DAPI 与 XAPI",
+    description: "开发、测试、发布和治理 DAPI/XAPI",
     stage: "M3",
-    features: ["参数化查询 DAPI", "组合编排 XAPI", "授权、版本与调用监控"],
+    features: [
+      "真实发布结果的参数化DAPI",
+      "固定子版本的声明式XAPI",
+      "授权、限流、超时、OpenAPI与调用日志",
+      "Data Agent受治理方案",
+    ],
   },
   {
     id: "reports",

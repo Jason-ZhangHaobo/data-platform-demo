@@ -75,6 +75,18 @@ npm run v2:m1-eval
 
 进入[本机调度与发布](http://127.0.0.1:3100/v2/?module=schedules)可查看M2a文件演练、M2b摘要审批/计时发布以及M2c批次与恢复监控。页面中的“发布”仅为本机测试版本激活，接口保留`publicDeployed=false`。
 
+进入[本机数据服务](http://127.0.0.1:3100/v2/?module=services)可从成功发布批次创建DAPI、执行查询测试、发布版本、组合XAPI并查看调用日志。创建应用令牌会仅显示一次，平台列表不返回令牌或哈希。
+
+V2 CLI与MCP均使用同一个`/api/v2`：
+
+```bash
+npm run v2:cli -- services list --type dapi
+npm run v2:cli -- services openapi --type xapi --id <SERVICE_ID>
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"xapi_list","arguments":{}}}' | npm run v2:mcp --silent
+```
+
+外部调用令牌只通过`SHUZHAN_APP_TOKEN`环境变量提供给CLI/MCP，不放进命令参数或MCP工具参数。旧`dataplatform`命令仍是V1模拟接口。
+
 CI 的模型/执行器边界测试使用明确标注的 TEST_DOUBLE，不计入真实 Agent E2E 成功率。
 Spark 检查才运行真正引擎，生成 `.v2-artifacts/spark-acceptance.json`。
 后台版本/状态保存在独立 `.data/v2-platform.sqlite`，引擎输入输出在 `.v2-artifacts/`，均不提交 Git。

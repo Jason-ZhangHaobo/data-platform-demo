@@ -1,0 +1,212 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
+import {
+  V2Client,
+  V2ApiError,
+  V2_OPERATIONS,
+} from "../../src/v2/client.mjs";
+import { runV2Cli, V2_CLI_OPERATIONS } from "../../bin/shuzhan.mjs";
+import {
+  handleV2Mcp,
+  V2_MCP_OPERATIONS,
+  V2_MCP_TOOL_NAMES,
+} from "../../bin/shuzhan-mcp.mjs";
+import { MetadataStore } from "../../src/v2/store.mjs";
+import { BusinessQueryStore } from "../../src/v2/data-services.mjs";
+import { createV2Server } from "../../src/v2/server.mjs";
+
+test("shared V2 client sends scoped identity, idempotency and app authorization", async () => {
+  const requests = [],
+    client = new V2Client({
+      baseUrl: "https://v2.example/api/v2",
+      client: "cli",
+      projectId: "project-securities-lab",
+      fetchImpl: async (url, options) => {
+        requests.push({ url, options });
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+  await client.request("/data-services/dapis", {
+    method: "POST",
+    body: { name: "测试" },
+    idempotencyKey: "same-operation",
+  });
+  await client.request("/open/dapis/demo", {
+    authorization: "Bearer LOCAL_TEST_ONLY",
+  });
+  assert.equal(requests[0].url, "https://v2.example/api/v2/data-services/dapis");
+  assert.equal(requests[0].options.headers["X-Shuzhan-Client"], "cli");
+  assert.equal(
+    requests[0].options.headers["X-Project-Id"],
+    "project-securities-lab",
+  );
+  assert.equal(requests[0].options.headers["Idempotency-Key"], "same-operation");
+  assert.equal(requests[0].options.redirect, "error");
+  assert.equal(requests[1].options.headers.Authorization, "Bearer LOCAL_TEST_ONLY");
+  assert.equal("Idempotency-Key" in requests[1].options.headers, false);
+});
+
+test("shared V2 client preserves API status and diagnostic code", async () => {
+  const client = new V2Client({
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({ message: "超过限流", code: "RATE_LIMITED" }),
+        { status: 429, headers: { "Content-Type": "application/json" } },
+      ),
+  });
+  await assert.rejects(
+    client.request("/open/dapis/demo"),
+    (error) => {
+      assert.ok(error instanceof V2ApiError);
+      assert.equal(error.status, 429);
+      assert.equal(error.code, "RATE_LIMITED");
+      return true;
+    },
+  );
+});
+
+test("CLI covers the shared V2 operation contract without putting app tokens in argv", async () => {
+  assert.deepEqual(V2_CLI_OPERATIONS, V2_OPERATIONS);
+  const requests = [],
+    client = {
+      async request(path, options) {
+        requests.push({ path, options });
+        return { ok: true };
+      },
+    },
+    output = [];
+  assert.equal(
+    await runV2Cli(
+      [
+        "services",
+        "create-dapi",
+        "--name",
+        "客户资产",
+        "--slug",
+        "customer-assets",
+        "--source-run-id",
+        "run-id",
+        "--fields",
+        "client_id,total_assets",
+      ],
+      {},
+      { client, output: (value) => output.push(value), error: output.push },
+    ),
+    0,
+  );
+  assert.deepEqual(requests[0].options.body.fields, [
+    "client_id",
+    "total_assets",
+  ]);
+  assert.equal(
+    await runV2Cli(
+      [
+        "services",
+        "invoke",
+        "--type",
+        "dapi",
+        "--slug",
+        "customer-assets",
+        "--client-id",
+        "CLIENT-001",
+      ],
+      { SHUZHAN_APP_TOKEN: "SECRET_NOT_IN_ARGV" },
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(
+    requests[1].options.authorization,
+    "Bearer SECRET_NOT_IN_ARGV",
+  );
+  assert.equal(JSON.stringify(requests[1].path).includes("SECRET_NOT_IN_ARGV"), false);
+});
+
+test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
+  assert.deepEqual(V2_MCP_OPERATIONS, V2_OPERATIONS);
+  const listed = JSON.parse(
+      await handleV2Mcp({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    ),
+    names = listed.result.tools.map((tool) => tool.name),
+    createApp = listed.result.tools.find(
+      (tool) => tool.name === "service_application_create",
+    );
+  assert.deepEqual(names, V2_MCP_TOOL_NAMES);
+  for (const required of [
+    "dapi_create",
+    "xapi_create",
+    "data_service_test",
+    "data_service_publish",
+    "data_service_openapi",
+    "data_service_calls",
+    "service_application_create",
+    "service_application_revoke",
+    "data_service_invoke",
+  ])
+    assert.ok(names.includes(required));
+  assert.match(createApp.description, /明确确认/);
+});
+
+test("CLI and MCP reach the same live V2 API instead of legacy simulation routes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuzhan-v2-interfaces-")),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    businessStore = new BusinessQueryStore(":memory:"),
+    app = createV2Server({
+      store,
+      businessStore,
+      env: { V2_LOCAL_DEVELOPMENT: "true" },
+    });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}/api/v2`,
+    cliOutput = [],
+    cliError = [];
+  try {
+    const code = await runV2Cli(
+      ["services", "list", "--type", "dapi", "--base-url", baseUrl],
+      {},
+      { output: (value) => cliOutput.push(value), error: (value) => cliError.push(value) },
+    );
+    assert.equal(code, 0, cliError.join("\n"));
+    assert.deepEqual(JSON.parse(cliOutput[0]), []);
+
+    const child = spawn(process.execPath, ["bin/shuzhan-mcp.mjs"], {
+      cwd: process.cwd(),
+      env: { ...process.env, SHUZHAN_V2_API_BASE_URL: baseUrl },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "",
+      stderr = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.stdin.end(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "dapi_list", arguments: {} },
+      }) + "\n",
+    );
+    const exit = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    assert.equal(exit, 0, stderr);
+    const response = JSON.parse(stdout.trim());
+    assert.deepEqual(response.result.structuredContent, []);
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    businessStore.close();
+    store.close();
+  }
+});

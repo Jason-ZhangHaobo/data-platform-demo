@@ -42,11 +42,28 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /release/runs | 发布批次历史 | 计划/触发/完成时间、Spark、断言、日志摘要和状态 |
 | GET /release/runs/:id | 指定发布批次 | 同上；工作区路径被替换为占位符 |
 | GET /monitoring/overview | 本机发布监控 | 当前版本、全局计数、事件、开放/已恢复告警 |
+| GET/POST /data-services/dapis | 列表或创建DAPI草稿 | 草稿绑定真实成功发布批次、字段投影、超时和限流 |
+| GET/POST /data-services/xapis | 列表或创建XAPI草稿 | 声明式绑定2—5个已发布DAPI精确版本 |
+| GET /data-services/{dapis\|xapis}/:id | 服务与版本详情 | 当前、已发布及历史不可变版本 |
+| POST /data-services/{dapis\|xapis}/:id/versions | 新版本配置 + 幂等键 | 创建新草稿版本，不影响当前已发布版本 |
+| POST /data-services/{dapis\|xapis}/:id/test | clientId/page/pageSize | 实际业务SQLite查询或组合结果，保存结果摘要 |
+| POST /data-services/{dapis\|xapis}/:id/publish | 空对象 | 仅发布当前测试通过且摘要一致的版本 |
+| POST /data-services/{dapis\|xapis}/:id/activate | versionId | 切换到该服务已测试发布过的历史版本 |
+| GET /data-services/{dapis\|xapis}/:id/openapi | 当前或已发布版本 | OpenAPI 3.1、Bearer、参数及错误响应 |
+| GET /data-services/calls | 可选service_id | 版本、应用、参数、耗时、结果摘要及结果状态 |
+| GET/POST /data-services/applications | 列表或创建 | 列表不返回哈希；创建令牌仅显示一次 |
+| POST /data-services/applications/:id/revoke | 空对象 | 立即撤销应用令牌 |
+| GET /open/dapis/:slug | Bearer + client_id/page/page_size | 参数化业务查询、分页、限流、超时及调用ID |
+| GET /open/xapis/:slug | Bearer + client_id/page/page_size | 固定子版本组合结果及调用ID |
+| GET/POST /data-services/agent/plans | 列表或自然语言需求 | 后台真实模型方案，范围为DATA_SERVICE_DESIGN |
+| GET /data-services/agent/plans/:id | 方案状态 | 受治理提案、模型用量或明确失败 |
+| POST /data-services/agent/plans/:id/apply | 空对象 | 人工应用已验证方案为草稿，不自动发布 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
 即使 SUCCEEDED 也只代表代码阶段通过。旧记录缺少范围字段同样不能被计为完整 E2E。
 完整 E2E 要求理解需求至上线后监控的全部证据，定义及分阶段门槛见 PRD.md。
+数据服务Agent返回completionScope=DATA_SERVICE_DESIGN、fullLifecycleE2E=false；成功只表示方案引用和约束校验通过。
 服务重启会把正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 
@@ -74,6 +91,6 @@ Spark 3.5.7 只允许已登记的 accounts/positions/cash 合成数据视图、�
 ## 尚未开放
 
 真实用户认证、跨用户授权、云端元数据库/OSS、自动恢复、多实例队列、云端审批及发布绑定在后续门槛内。
-DAPI/XAPI 的发布和外部消费、官方交易日生产调度、V2 CLI/MCP 尚未实现。
+DAPI/XAPI本机发布与外部调用、V2 CLI/MCP已实现；官方交易日生产调度及公网数据服务尚未实现。
 M1验证包不能被称为已部署任务。M2a新增交付包包含实际被解析的部署清单，但仍是本机文件演练，未进行云端部署或发布；详见 [交付规范](m2a-delivery.md)。
 M2b/M2c已增加本机摘要审批、短周期墙上时钟发布、监控告警与回滚。其`published=true`仅表示本机测试版本生效，同时固定`publicDeployed=false`和`fullLifecycleE2E=false`；详见[本机发布报告](m2b-m2c-local-release.md)。

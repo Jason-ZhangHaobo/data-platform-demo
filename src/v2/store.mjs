@@ -90,6 +90,7 @@ export class MetadataStore {
       "run",
       "agent",
       "delivery_verification",
+      "service_agent_plan",
       "release",
       "release_run",
     ])

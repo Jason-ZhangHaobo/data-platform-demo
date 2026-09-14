@@ -48,6 +48,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { DeliveryWorkbench } from "./DeliveryWorkbench";
+import { DataServicesWorkbench } from "./DataServicesWorkbench";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 type Column = { name: string; type: string };
 type Context = {
@@ -1160,7 +1161,9 @@ function App() {
             </div>
             <h1>{active?.name}</h1>
             <p className="module-subtitle">{active?.description}</p>
-            {nav === "schedules" ? (
+            {nav === "services" ? (
+              <DataServicesWorkbench api={api} canWrite={Boolean(canWrite)} />
+            ) : nav === "schedules" ? (
               <DeliveryWorkbench
                 api={api}
                 runs={runs}

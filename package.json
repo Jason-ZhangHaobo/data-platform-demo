@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "bin": {
-    "dataplatform": "bin/dataplatform.mjs"
+    "dataplatform": "bin/dataplatform.mjs",
+    "shuzhan": "bin/shuzhan.mjs",
+    "shuzhan-mcp": "bin/shuzhan-mcp.mjs"
   },
   "type": "module",
   "description": "A securities data platform with a React workbench and a real Spark verification path.",
@@ -30,6 +32,8 @@
     "v2:spark-test": ".runtime/python/bin/python scripts/verify-spark.py",
     "v2:runtime-test": "node scripts/verify-runtime.mjs",
     "v2:package": "node bin/shuzhan-package.mjs",
+    "v2:cli": "node bin/shuzhan.mjs",
+    "v2:mcp": "node bin/shuzhan-mcp.mjs",
     "v2:bootstrap": "bash scripts/bootstrap-runtime.sh"
   },
   "engines": {
