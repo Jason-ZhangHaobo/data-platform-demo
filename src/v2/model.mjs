@@ -587,3 +587,96 @@ export async function generateQualityPlan(
     mode: "LIVE_MODEL",
   };
 }
+
+export async function generateSecurityPlan(
+  { message, personas, assets, policies, signal },
+  env = process.env,
+  fetchImpl = fetch,
+) {
+  if (!env.DASHSCOPE_API_KEY) throw new ModelUnavailable();
+  const settings = modelSettings(env),
+    base = new URL(settings.baseUrl);
+  if (base.protocol !== "https:") throw new Error("模型 API 必须使用 HTTPS");
+  const prompt = JSON.stringify({
+    request: message,
+    syntheticPersonas: personas.map(({ id, displayName, role, advisorId }) => ({
+      id,
+      displayName,
+      role,
+      advisorId,
+    })),
+    executableAssets: assets.map((asset) => ({
+      id: asset.id,
+      businessName: asset.businessName,
+      kind: asset.kind,
+      fields: (asset.fields ?? []).map(({ name, type }) => ({ name, type })),
+    })),
+    existingPolicies: policies.map((policy) => ({
+      id: policy.id,
+      code: policy.code,
+      assetId: policy.assetId,
+      roles: policy.roles,
+      rowScope: policy.rowScope,
+      fieldActions: policy.fieldActions,
+    })),
+    contract: {
+      kind: "SECURITY_POLICY",
+      rowScopes: ["ALL", "ADVISOR_CLIENTS", "DENY"],
+      fieldActions: ["ALLOW", "MASK_PARTIAL", "MASK_FULL", "HASH", "DENY"],
+      default: "未声明字段应DENY。财富顾问通常使用ADVISOR_CLIENTS。",
+      output:
+        "只返回JSON对象：kind,name,code,assetId,roles,rowScope,fieldActions,defaultAction,description,explanation。全部资产、角色和字段必须来自给定列表。",
+    },
+  });
+  const response = await fetchImpl(
+    settings.baseUrl.replace(/\/$/, "") + "/chat/completions",
+    {
+      method: "POST",
+      redirect: "error",
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(60000)])
+        : AbortSignal.timeout(60000),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + env.DASHSCOPE_API_KEY,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        temperature: 0.1,
+        max_tokens: 2200,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是证券数据安全策略助手。只根据合成身份、资产字段元数据和已有策略生成一条最小权限策略草稿。不得读取业务行、输出样例值、批准权限申请、执行查询、伪装公网认证或放宽未要求字段。不要输出推理过程。",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      "模型请求失败（" + response.status + "），请检查服务配置或额度",
+    );
+  const payload = await response.json();
+  let content = payload.choices?.[0]?.message?.content ?? "";
+  content = content
+    .replace(/^\s*```(?:json)?\s*/, "")
+    .replace(/\s*```\s*$/, "");
+  let plan;
+  try {
+    plan = JSON.parse(content);
+  } catch {
+    throw new Error("模型未返回可解析的安全策略方案");
+  }
+  const explanation = String(plan.explanation ?? "").slice(0, 1200);
+  delete plan.explanation;
+  return {
+    plan,
+    explanation,
+    model: settings.model,
+    usage: payload.usage ?? {},
+    mode: "LIVE_MODEL",
+  };
+}

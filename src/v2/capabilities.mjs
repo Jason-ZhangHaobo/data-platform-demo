@@ -72,9 +72,14 @@ export const capabilities = [
     id: "security",
     group: "治理与服务",
     name: "安全与脱敏",
-    description: "权限、脱敏与访问审计",
-    stage: "M4",
-    features: ["身份与行列策略", "脱敏规则", "权限申请与审计"],
+    description: "版本化行列策略、脱敏、申请审批与审计",
+    stage: "M4e",
+    features: [
+      "本机合成身份与最小权限策略",
+      "实际行范围、列动作和脱敏查询",
+      "临时授权申请与数据负责人审批",
+      "Data Agent受治理策略建议与无明文审计",
+    ],
   },
   {
     id: "services",

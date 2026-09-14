@@ -64,6 +64,19 @@ const tools = [
   { name: "quality_plan_list", description: "列出受治理质量Agent规则方案。", inputSchema: { type: "object", properties: {} } },
   { name: "quality_plan_create", description: "让真实模型基于字段元数据和聚合质量结果生成规则草稿，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
   { name: "quality_plan_apply", description: "把已验证质量方案应用为规则草稿，不自动运行或解除告警。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
+  { name: "security_overview", description: "读取本机合成身份、策略、申请、授权与审计汇总；不是公网认证。", inputSchema: { type: "object", properties: {} } },
+  { name: "security_persona_list", description: "列出本机虚构身份和角色。", inputSchema: { type: "object", properties: {} } },
+  { name: "security_policy_list", description: "列出版本化行列权限与脱敏策略。", inputSchema: { type: "object", properties: {} } },
+  { name: "security_policy_create", description: "创建绑定实际合成资产的最小权限策略，不自动查询。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, roles: { type: "array", items: { type: "string" } }, rowScope: { type: "string", enum: ["ALL", "ADVISOR_CLIENTS", "DENY"] }, defaultAction: { type: "string", enum: ["ALLOW", "MASK_PARTIAL", "MASK_FULL", "HASH", "DENY"] }, fieldActions: { type: "object", additionalProperties: { type: "string" } }, description: { type: "string" } }, required: ["name", "code", "assetId", "roles", "rowScope", "fieldActions", "description"] } },
+  { name: "security_policy_version", description: "创建安全策略新版本并保留旧版本。", inputSchema: { type: "object", properties: { policyId: { type: "string" }, roles: { type: "array", items: { type: "string" } }, rowScope: { type: "string" }, defaultAction: { type: "string" }, fieldActions: { type: "object" }, description: { type: "string" } }, required: ["policyId", "description"] } },
+  { name: "security_query", description: "以指定本机合成身份实际执行行过滤和列脱敏，并写审计。", inputSchema: { type: "object", properties: { assetId: { type: "string" }, actorId: { type: "string" } }, required: ["assetId", "actorId"] } },
+  { name: "security_request_list", description: "列出权限申请及审批状态。", inputSchema: { type: "object", properties: {} } },
+  { name: "security_request_create", description: "以本机合成身份申请临时READ_MASKED或READ_FULL访问。", inputSchema: { type: "object", properties: { actorId: { type: "string" }, assetId: { type: "string" }, scope: { type: "string", enum: ["READ_MASKED", "READ_FULL"] }, reason: { type: "string" } }, required: ["actorId", "assetId", "scope", "reason"] } },
+  { name: "security_request_review", description: "由user-data-owner审批权限申请并创建有期限授权。", inputSchema: { type: "object", properties: { actorId: { type: "string" }, requestId: { type: "string" }, decision: { type: "string", enum: ["APPROVE", "REJECT"] }, durationHours: { type: "integer", minimum: 1, maximum: 168 }, reviewNote: { type: "string" } }, required: ["actorId", "requestId", "decision", "reviewNote"] } },
+  { name: "security_audit_list", description: "列出不含业务行的安全决策审计。", inputSchema: { type: "object", properties: {} } },
+  { name: "security_plan_list", description: "列出受治理安全Agent策略方案。", inputSchema: { type: "object", properties: {} } },
+  { name: "security_plan_create", description: "让真实模型基于合成身份和字段元数据生成最小权限草稿，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
+  { name: "security_plan_apply", description: "把已验证安全方案应用为策略V1，不执行查询或审批。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
 ];
 
 export const V2_MCP_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
@@ -282,6 +295,52 @@ async function callTool(name, args = {}) {
   if (name === "quality_plan_apply")
     return client.request(
       `/quality/agent/plans/${encodeURIComponent(args.planId)}/apply`,
+      { method: "POST", body: {} },
+    );
+  if (name === "security_overview") return client.request("/security/overview");
+  if (name === "security_persona_list") return client.request("/security/personas");
+  if (name === "security_policy_list") return client.request("/security/policies");
+  if (name === "security_policy_create")
+    return client.request("/security/policies", { method: "POST", body: args });
+  if (name === "security_policy_version") {
+    const { policyId, ...body } = args;
+    return client.request(
+      `/security/policies/${encodeURIComponent(policyId)}/versions`,
+      { method: "POST", body },
+    );
+  }
+  if (name === "security_query")
+    return client.request(`/security/query/${encodeURIComponent(args.assetId)}`, {
+      method: "POST",
+      body: {},
+      actorId: args.actorId,
+    });
+  if (name === "security_request_list") return client.request("/security/requests");
+  if (name === "security_request_create") {
+    const { actorId, ...body } = args;
+    return client.request("/security/requests", {
+      method: "POST",
+      body,
+      actorId,
+    });
+  }
+  if (name === "security_request_review") {
+    const { actorId, requestId, ...body } = args;
+    return client.request(
+      `/security/requests/${encodeURIComponent(requestId)}/review`,
+      { method: "POST", body, actorId },
+    );
+  }
+  if (name === "security_audit_list") return client.request("/security/audits");
+  if (name === "security_plan_list") return client.request("/security/agent/plans");
+  if (name === "security_plan_create")
+    return client.request("/security/agent/plans", {
+      method: "POST",
+      body: { message: args.message },
+    });
+  if (name === "security_plan_apply")
+    return client.request(
+      `/security/agent/plans/${encodeURIComponent(args.planId)}/apply`,
       { method: "POST", body: {} },
     );
   throw new Error(`未知V2 MCP工具：${name}`);

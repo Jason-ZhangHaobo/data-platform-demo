@@ -20,6 +20,7 @@ import {
   generateRealtimePlan,
   generateAssetInsight,
   generateQualityPlan,
+  generateSecurityPlan,
   modelSettings,
   ModelUnavailable,
 } from "./model.mjs";
@@ -52,6 +53,7 @@ import {
 } from "./realtime.mjs";
 import { AssetCatalogManager } from "./assets.mjs";
 import { QualityManager } from "./quality.mjs";
+import { SecurityManager } from "./security.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -232,6 +234,21 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
+  const security = new SecurityManager({
+    store,
+    assets,
+    project: PROJECT,
+    now: options.now,
+  });
+  const securityPlanner =
+    options.securityPlanner ??
+    (async (input) => {
+      const keyAtRequest = env.DASHSCOPE_API_KEY,
+        result = await generateSecurityPlan(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
   const revision = (sql, contextId, source) =>
     store.create("revision", PROJECT, {
       sql,
@@ -407,6 +424,12 @@ export function createV2Server(options = {}) {
           quality: {
             ...quality.overview().counts,
             executionScope: "LOCAL_ACTUAL_ROWS",
+            cloudVerified: false,
+          },
+          security: {
+            ...security.overview().counts,
+            identityMode: "LOCAL_SYNTHETIC_HEADER",
+            publicAuthentication: false,
             cloudVerified: false,
           },
         });
@@ -1068,6 +1091,178 @@ export function createV2Server(options = {}) {
             );
           get("quality_run", dedup.id);
           return json(res, dedup.replayed ? 200 : 201, quality.detail(rule.id));
+        }
+      }
+      if (path === "/api/v2/security/overview" && method === "GET")
+        return json(res, 200, security.overview());
+      if (path === "/api/v2/security/personas" && method === "GET")
+        return json(res, 200, security.personas());
+      if (path === "/api/v2/security/policies" && method === "GET")
+        return json(res, 200, security.listPolicies());
+      if (path === "/api/v2/security/policies" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:security-policy:${key}`,
+            hash(JSON.stringify(body)),
+            () => security.createPolicy(body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          security.policyDetail(dedup.id),
+        );
+      }
+      const securityPolicyRecord = path.match(
+        /^\/api\/v2\/security\/policies\/([a-f0-9-]+)(?:\/(versions))?$/,
+      );
+      if (securityPolicyRecord) {
+        const policy = security.policyDetail(securityPolicyRecord[1]),
+          action = securityPolicyRecord[2];
+        if (method === "GET" && !action) return json(res, 200, policy);
+        if (method === "POST" && action === "versions") {
+          const body = await readBody(req),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:security-policy-version:${policy.id}:${key}`,
+              hash(JSON.stringify(body)),
+              () => security.createPolicyVersion(policy.id, body).currentVersion,
+            );
+          get("security_policy_version", dedup.id);
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            security.policyDetail(policy.id),
+          );
+        }
+      }
+      const securityQuery = path.match(
+        /^\/api\/v2\/security\/query\/([^/]+)$/,
+      );
+      if (securityQuery && method === "POST") {
+        await readBody(req);
+        const actorId = text(req.headers["x-actor-id"], 3, 80);
+        return json(
+          res,
+          200,
+          security.query(actorId, decodeURIComponent(securityQuery[1])),
+        );
+      }
+      if (path === "/api/v2/security/requests" && method === "GET")
+        return json(res, 200, security.listRequests());
+      if (path === "/api/v2/security/requests" && method === "POST") {
+        const body = await readBody(req),
+          actorId = text(req.headers["x-actor-id"], 3, 80),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:security-request:${actorId}:${key}`,
+            hash(JSON.stringify(body)),
+            () => security.createRequest(actorId, body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          get("access_request", dedup.id),
+        );
+      }
+      const securityRequestReview = path.match(
+        /^\/api\/v2\/security\/requests\/([a-f0-9-]+)\/review$/,
+      );
+      if (securityRequestReview && method === "POST") {
+        const body = await readBody(req),
+          actorId = text(req.headers["x-actor-id"], 3, 80),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:security-review:${securityRequestReview[1]}:${actorId}:${key}`,
+            hash(JSON.stringify(body)),
+            () =>
+              security.reviewRequest(
+                actorId,
+                securityRequestReview[1],
+                body,
+              ).request,
+          ),
+          reviewed = get("access_request", dedup.id),
+          grant = reviewed.grantId
+            ? get("security_grant", reviewed.grantId)
+            : undefined;
+        return json(res, dedup.replayed ? 200 : 201, { request: reviewed, grant });
+      }
+      if (path === "/api/v2/security/audits" && method === "GET")
+        return json(res, 200, security.listAudits());
+      if (path === "/api/v2/security/agent/plans" && method === "GET")
+        return json(res, 200, store.list("security_agent_plan", PROJECT));
+      if (path === "/api/v2/security/agent/plans" && method === "POST") {
+        const body = await readBody(req),
+          message = text(body.message, 4, 2000);
+        if (!options.securityPlanner && !modelSettings(env).configured)
+          throw new ModelUnavailable();
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:security-agent-plan:${key}`,
+            hash(JSON.stringify({ message })),
+            () =>
+              store.create("security_agent_plan", PROJECT, {
+                message,
+                status: "QUEUED",
+                mode: "LIVE_MODEL",
+                completionScope: "SECURITY_POLICY_DESIGN",
+                fullLifecycleE2E: false,
+              }),
+          ),
+          task = get("security_agent_plan", dedup.id);
+        if (!dedup.replayed)
+          schedule("security_agent_plan", task, async (signal) => {
+            const context = security.agentContext(),
+              generated = await securityPlanner({
+                message,
+                ...context,
+                signal,
+              }),
+              proposal = security.validateAgentPlan(generated.plan);
+            store.update("security_agent_plan", task.id, PROJECT, {
+              status: "SUCCEEDED",
+              proposal,
+              explanation: generated.explanation,
+              model: generated.model,
+              usage: generated.usage,
+              finishedAt: new Date().toISOString(),
+            });
+          });
+        return json(res, 202, task);
+      }
+      const securityAgentPlan = path.match(
+        /^\/api\/v2\/security\/agent\/plans\/([a-f0-9-]+)(?:\/(apply|cancel))?$/,
+      );
+      if (securityAgentPlan) {
+        const plan = get("security_agent_plan", securityAgentPlan[1]),
+          action = securityAgentPlan[2];
+        if (method === "GET" && !action) return json(res, 200, plan);
+        if (method === "POST" && action === "cancel") {
+          await readBody(req);
+          if (!terminal.has(plan.status) && plan.status !== "APPLIED") {
+            store.update("security_agent_plan", plan.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            controls.get(plan.id)?.abort();
+          }
+          return json(res, 200, get("security_agent_plan", plan.id));
+        }
+        if (method === "POST" && action === "apply") {
+          await readBody(req);
+          if (plan.status === "APPLIED" && plan.policyId)
+            return json(res, 200, security.policyDetail(plan.policyId));
+          if (plan.status !== "SUCCEEDED" || !plan.proposal)
+            throw fail(409, "只有模型安全方案验证通过后才能创建策略草稿");
+          const proposal = security.validateAgentPlan(plan.proposal),
+            policy = security.createPolicy(proposal);
+          store.update("security_agent_plan", plan.id, PROJECT, {
+            status: "APPLIED",
+            policyId: policy.id,
+            appliedAt: new Date().toISOString(),
+          });
+          return json(res, 201, policy);
         }
       }
       if (path === "/api/v2/settings/model-key" && method === "POST") {
@@ -1993,6 +2188,7 @@ export function createV2Server(options = {}) {
           ? { code: error.code }
           : {}),
         ...(typeof error.runId === "string" ? { runId: error.runId } : {}),
+        ...(typeof error.auditId === "string" ? { auditId: error.auditId } : {}),
       });
       if (!error.status) console.error(error.message);
     }
@@ -2016,6 +2212,9 @@ export function createV2Server(options = {}) {
     landingStore,
     realtime,
     streamStateStore,
+    assets,
+    quality,
+    security,
   };
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

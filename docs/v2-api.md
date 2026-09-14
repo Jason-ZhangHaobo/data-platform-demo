@@ -107,6 +107,19 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /quality/agent/plans/:id | 无 | 受治理提案、解释、模型与用量 |
 | POST /quality/agent/plans/:id/apply | 空对象 | 人工应用为未运行规则V1 |
 | POST /quality/agent/plans/:id/cancel | 空对象 | 取消生成并保留记录 |
+| GET /security/overview | 无 | 合成身份、策略、申请、授权和不含业务行的审计汇总 |
+| GET /security/personas | 无 | 四个本机虚构身份；authentication=LOCAL_SYNTHETIC_HEADER |
+| GET/POST /security/policies | 列表或资产/角色/行范围/字段动作 | 创建策略V1，不自动查询 |
+| GET /security/policies/:id | 无 | 当前及历史策略版本 |
+| POST /security/policies/:id/versions | 角色/范围/字段动作/说明 | 创建新策略版本并退役旧版本 |
+| POST /security/query/:assetId | 空对象；X-Actor-Id | 实际行级过滤、列脱敏或403拒绝，并写安全审计 |
+| GET/POST /security/requests | 列表或资产/范围/理由；X-Actor-Id | 创建PENDING临时访问申请，不立即授权 |
+| POST /security/requests/:id/review | 决定/时长/意见；DATA_OWNER身份头 | 审批并按需创建1—168小时授权 |
+| GET /security/audits | 无 | 允许/拒绝/申请/审批审计，不含业务行 |
+| GET/POST /security/agent/plans | 列表或自然语言需求 | 真实模型基于合成身份和字段摘要起草策略 |
+| GET /security/agent/plans/:id | 无 | 受治理方案、解释、模型与用量 |
+| POST /security/agent/plans/:id/apply | 空对象 | 人工应用为策略V1，不查询或审批 |
+| POST /security/agent/plans/:id/cancel | 空对象 | 取消生成并保留记录 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
@@ -117,6 +130,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 实时Agent返回completionScope=REALTIME_SYNC_DESIGN、fullLifecycleE2E=false；模型只读取源摘要和事件契约，成功或应用均不表示任务已启动、Kafka/Flink已连接或公网已部署。
 资产Agent返回completionScope=ASSET_DISCOVERY、fullLifecycleE2E=false；引用必须命中当前目录，模型不读取业务行或修改资产，回答只代表受治理发现与解释。
 质量Agent返回completionScope=QUALITY_RULE_DESIGN、fullLifecycleE2E=false；模型不读取业务行或无效样本，方案应用后运行数仍为0，不能代表数据质量已通过。
+安全Agent返回completionScope=SECURITY_POLICY_DESIGN、fullLifecycleE2E=false；模型不读取业务行、不执行查询或审批。`X-Actor-Id`仅验证本机策略语义，不能被视为认证凭据。
 服务重启会把正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 

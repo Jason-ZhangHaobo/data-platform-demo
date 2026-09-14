@@ -58,6 +58,15 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan quality plan --message "为证券代码生成非空规则"
   shuzhan quality plans
   shuzhan quality apply-plan --id PLAN_ID
+  shuzhan security overview|personas|policies|requests|audits
+  shuzhan security create-policy --name 名称 --code advisor_positions --asset-id landing:raw_positions --roles WEALTH_ADVISOR --row-scope ADVISOR_CLIENTS --actions position_id:MASK_FULL,client_id:MASK_PARTIAL,security_code:ALLOW,market_value:ALLOW --description "顾问最小权限"
+  shuzhan security version --id POLICY_ID --roles WEALTH_ADVISOR --row-scope ADVISOR_CLIENTS --actions client_id:HASH,security_code:ALLOW --description "策略V2"
+  shuzhan security query --asset-id landing:raw_positions --actor-id user-wealth-advisor
+  shuzhan security request --asset-id landing:raw_positions --scope READ_MASKED --reason "安全验收" --actor-id user-auditor
+  shuzhan security review --id REQUEST_ID --decision APPROVE --duration-hours 24 --note "仅限合成数据" --actor-id user-data-owner
+  shuzhan security plan --message "为财富顾问生成持仓最小权限策略"
+  shuzhan security plans
+  shuzhan security apply-plan --id PLAN_ID
 
 环境变量：
   SHUZHAN_V2_API_BASE_URL  默认 http://127.0.0.1:3100/api/v2
@@ -531,6 +540,98 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "quality" && action === "apply-plan")
       result = await client.request(
         `/quality/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "security" && action === "overview")
+      result = await client.request("/security/overview");
+    else if (resource === "security" && action === "personas")
+      result = await client.request("/security/personas");
+    else if (resource === "security" && action === "policies")
+      result = await client.request("/security/policies");
+    else if (resource === "security" && action === "create-policy")
+      result = await client.request("/security/policies", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          code: required(parsed.options, "code"),
+          assetId: required(parsed.options, "asset_id"),
+          roles: list(required(parsed.options, "roles"), "--roles"),
+          rowScope: required(parsed.options, "row_scope").toUpperCase(),
+          defaultAction: (parsed.options.default_action ?? "DENY").toUpperCase(),
+          fieldActions: Object.fromEntries(
+            Object.entries(
+              mapping(required(parsed.options, "actions")),
+            ).map(([field, value]) => [field, value.toUpperCase()]),
+          ),
+          description: required(parsed.options, "description"),
+        },
+      });
+    else if (resource === "security" && action === "version")
+      result = await client.request(
+        `/security/policies/${encodeURIComponent(required(parsed.options, "id"))}/versions`,
+        {
+          method: "POST",
+          body: {
+            roles: list(required(parsed.options, "roles"), "--roles"),
+            rowScope: required(parsed.options, "row_scope").toUpperCase(),
+            defaultAction: (parsed.options.default_action ?? "DENY").toUpperCase(),
+            fieldActions: Object.fromEntries(
+              Object.entries(
+                mapping(required(parsed.options, "actions")),
+              ).map(([field, value]) => [field, value.toUpperCase()]),
+            ),
+            description: required(parsed.options, "description"),
+          },
+        },
+      );
+    else if (resource === "security" && action === "query")
+      result = await client.request(
+        `/security/query/${encodeURIComponent(required(parsed.options, "asset_id"))}`,
+        {
+          method: "POST",
+          body: {},
+          actorId: required(parsed.options, "actor_id"),
+        },
+      );
+    else if (resource === "security" && action === "requests")
+      result = await client.request("/security/requests");
+    else if (resource === "security" && action === "request")
+      result = await client.request("/security/requests", {
+        method: "POST",
+        actorId: required(parsed.options, "actor_id"),
+        body: {
+          assetId: required(parsed.options, "asset_id"),
+          scope: required(parsed.options, "scope").toUpperCase(),
+          reason: required(parsed.options, "reason"),
+        },
+      });
+    else if (resource === "security" && action === "review")
+      result = await client.request(
+        `/security/requests/${encodeURIComponent(required(parsed.options, "id"))}/review`,
+        {
+          method: "POST",
+          actorId: required(parsed.options, "actor_id"),
+          body: {
+            decision: required(parsed.options, "decision").toUpperCase(),
+            reviewNote: required(parsed.options, "note"),
+            ...(parsed.options.duration_hours
+              ? { durationHours: Number(parsed.options.duration_hours) }
+              : {}),
+          },
+        },
+      );
+    else if (resource === "security" && action === "audits")
+      result = await client.request("/security/audits");
+    else if (resource === "security" && action === "plan")
+      result = await client.request("/security/agent/plans", {
+        method: "POST",
+        body: { message: required(parsed.options, "message") },
+      });
+    else if (resource === "security" && action === "plans")
+      result = await client.request("/security/agent/plans");
+    else if (resource === "security" && action === "apply-plan")
+      result = await client.request(
+        `/security/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
         { method: "POST", body: {} },
       );
     else throw new Error(`不支持的V2命令：${parsed.positionals.join(" ")}`);

@@ -52,6 +52,7 @@ import { DataServicesWorkbench } from "./DataServicesWorkbench";
 import { IngestionWorkbench } from "./IngestionWorkbench";
 import { AssetWorkbench } from "./AssetWorkbench";
 import { QualityWorkbench } from "./QualityWorkbench";
+import { SecurityWorkbench } from "./SecurityWorkbench";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 type Column = { name: string; type: string };
 type Context = {
@@ -160,7 +161,11 @@ const time = (s: string) =>
     hour: "2-digit",
     minute: "2-digit",
   });
-async function api<T>(path: string, body?: unknown): Promise<T> {
+async function api<T>(
+  path: string,
+  body?: unknown,
+  requestOptions: { actorId?: string } = {},
+): Promise<T> {
   let response: Response;
   try {
     response = await fetch("/api/v2" + path, {
@@ -169,6 +174,9 @@ async function api<T>(path: string, body?: unknown): Promise<T> {
       headers: {
         "Content-Type": "application/json",
         "X-Shuzhan-Client": "workbench",
+        ...(requestOptions.actorId
+          ? { "X-Actor-Id": requestOptions.actorId }
+          : {}),
         ...(body === undefined
           ? {}
           : { "Idempotency-Key": crypto.randomUUID() }),
@@ -1190,6 +1198,8 @@ function App() {
               />
             ) : nav === "quality" ? (
               <QualityWorkbench api={api} canWrite={Boolean(canWrite)} />
+            ) : nav === "security" ? (
+              <SecurityWorkbench api={api} canWrite={Boolean(canWrite)} />
             ) : nav === "settings" ? (
               <>
                 <div className="settings-grid">

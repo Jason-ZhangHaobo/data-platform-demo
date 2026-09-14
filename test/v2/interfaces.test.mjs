@@ -41,6 +41,11 @@ test("shared V2 client sends scoped identity, idempotency and app authorization"
   await client.request("/open/dapis/demo", {
     authorization: "Bearer LOCAL_TEST_ONLY",
   });
+  await client.request("/security/query/landing%3Araw_positions", {
+    method: "POST",
+    body: {},
+    actorId: "user-wealth-advisor",
+  });
   assert.equal(requests[0].url, "https://v2.example/api/v2/data-services/dapis");
   assert.equal(requests[0].options.headers["X-Shuzhan-Client"], "cli");
   assert.equal(
@@ -51,6 +56,10 @@ test("shared V2 client sends scoped identity, idempotency and app authorization"
   assert.equal(requests[0].options.redirect, "error");
   assert.equal(requests[1].options.headers.Authorization, "Bearer LOCAL_TEST_ONLY");
   assert.equal("Idempotency-Key" in requests[1].options.headers, false);
+  assert.equal(
+    requests[2].options.headers["X-Actor-Id"],
+    "user-wealth-advisor",
+  );
 });
 
 test("shared V2 client preserves API status and diagnostic code", async () => {
@@ -240,6 +249,27 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     min: "0.00",
     max: "5000.00",
   });
+  assert.equal(
+    await runV2Cli(
+      [
+        "security",
+        "query",
+        "--asset-id",
+        "landing:raw_positions",
+        "--actor-id",
+        "user-wealth-advisor",
+      ],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[6].path, "/security/query/landing%3Araw_positions");
+  assert.equal(requests[6].options.actorId, "user-wealth-advisor");
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -309,6 +339,19 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "quality_plan_list",
     "quality_plan_create",
     "quality_plan_apply",
+    "security_overview",
+    "security_persona_list",
+    "security_policy_list",
+    "security_policy_create",
+    "security_policy_version",
+    "security_query",
+    "security_request_list",
+    "security_request_create",
+    "security_request_review",
+    "security_audit_list",
+    "security_plan_list",
+    "security_plan_create",
+    "security_plan_apply",
   ])
     assert.ok(names.includes(required));
   assert.match(createApp.description, /明确确认/);

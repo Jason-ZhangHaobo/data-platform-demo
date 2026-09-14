@@ -5209,3 +5209,558 @@ kbd {
     justify-content: center;
   }
 }
+.security-workbench-v2 {
+  display: grid;
+  gap: 14px;
+  max-width: 1200px;
+  min-width: 0;
+  color: #344c3b;
+}
+.security-hero-v2 {
+  display: flex;
+  justify-content: space-between;
+  gap: 22px;
+  padding: 22px 23px;
+  border: 1px solid #d5e1d4;
+  border-radius: 11px;
+  background:
+    radial-gradient(circle at 88% 12%, #d8e8df 0, transparent 31%),
+    linear-gradient(135deg, #fbfdf9, #eef6f0);
+}
+.security-hero-v2 h2 {
+  margin: 6px 0 8px;
+  color: #294333;
+  font-size: 21px;
+}
+.security-hero-v2 p {
+  max-width: 690px;
+  margin: 0;
+  color: #5c725f;
+  font-size: 12px;
+  line-height: 1.75;
+}
+.security-kpis-v2 {
+  display: grid;
+  grid-template-columns: repeat(4, 72px);
+  align-content: center;
+  gap: 7px;
+}
+.security-kpis-v2 > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 6px;
+  padding: 9px 7px;
+  border: 1px solid #dae5dc;
+  border-radius: 7px;
+  background: #ffffffb8;
+  color: #32634b;
+}
+.security-kpis-v2 strong {
+  color: #285d45;
+  font-size: 17px;
+}
+.security-kpis-v2 span {
+  grid-column: 1/-1;
+  color: #748175;
+  font-size: 8px;
+}
+.security-local-boundary-v2 {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 13px;
+  border: 1px solid #ead2ad;
+  border-radius: 8px;
+  background: #fff8e9;
+  color: #80602d;
+}
+.security-local-boundary-v2 strong {
+  font-size: 10px;
+}
+.security-local-boundary-v2 p {
+  margin: 3px 0 0;
+  font-size: 9px;
+  line-height: 1.55;
+}
+.security-local-boundary-v2 code {
+  color: #70562e;
+  font-size: 9px;
+}
+.security-agent-v2,
+.security-policy-list-v2,
+.security-simulator-v2,
+.security-policy-detail-v2,
+.security-requests-v2,
+.security-audits-v2,
+.security-create-policy-v2 {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+.security-agent-v2 {
+  display: grid;
+  gap: 10px;
+  padding: 17px;
+  background: linear-gradient(135deg, #fff, #f1f7f1);
+}
+.security-agent-v2 > header,
+.security-policy-detail-v2 > header,
+.security-simulator-v2 > header,
+.security-requests-v2 > header,
+.security-audits-v2 > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.security-agent-v2 > header {
+  justify-content: flex-start;
+}
+.security-agent-icon-v2 {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 37px;
+  height: 37px;
+  border-radius: 9px;
+  background: #dfeee4;
+  color: #27664d;
+}
+.security-agent-v2 h3,
+.security-policy-list-v2 h3,
+.security-simulator-v2 h3,
+.security-policy-detail-v2 h3,
+.security-requests-v2 h3,
+.security-audits-v2 h3 {
+  margin: 4px 0 3px;
+  color: #304b38;
+  font-size: 15px;
+}
+.security-agent-v2 p,
+.security-policy-detail-v2 p {
+  margin: 0;
+  color: #687965;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.security-agent-compose-v2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+}
+.security-agent-compose-v2 textarea {
+  min-width: 0;
+  padding: 10px;
+  resize: vertical;
+  border: 1px solid #d2dfd1;
+  border-radius: 7px;
+  background: #fff;
+  color: #385341;
+  font: 11px/1.6 inherit;
+}
+.security-agent-result-v2 {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid #dae5dc;
+  border-radius: 7px;
+  background: #fff;
+}
+.security-agent-result-v2 strong,
+.security-agent-result-v2 code {
+  display: block;
+  color: #3b5942;
+  font-size: 10px;
+}
+.security-agent-result-v2 code {
+  margin-top: 4px;
+  color: #71806d;
+  font-size: 9px;
+}
+.security-agent-v2 > small {
+  color: #788574;
+  font-size: 9px;
+}
+.security-main-v2 {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+}
+.security-policy-list-v2 {
+  overflow: hidden;
+}
+.security-policy-list-v2 > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  background: #f9fbf8;
+}
+.security-policy-list-v2 > header > span,
+.security-requests-v2 > header > span,
+.security-audits-v2 > header > span {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #e7f1e9;
+  color: #32634a;
+  font-size: 10px;
+}
+.security-policy-list-v2 > button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 12px;
+  border-bottom: 1px solid #e8ede7;
+  color: #54705b;
+  text-align: left;
+}
+.security-policy-list-v2 > button.active {
+  background: #edf6ef;
+  box-shadow: inset 3px 0 #2d7254;
+}
+.security-policy-list-v2 button strong,
+.security-policy-list-v2 button code {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.security-policy-list-v2 button strong {
+  margin-bottom: 4px;
+  color: #38513e;
+  font-size: 11px;
+}
+.security-policy-list-v2 button code {
+  color: #71806d;
+  font-size: 8px;
+}
+.security-simulator-v2,
+.security-policy-detail-v2,
+.security-requests-v2,
+.security-audits-v2 {
+  padding: 17px;
+}
+.security-simulator-v2 > header,
+.security-requests-v2 > header,
+.security-audits-v2 > header {
+  color: #34654b;
+}
+.security-selector-v2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  margin: 13px 0;
+}
+.security-selector-v2 label,
+.security-request-create-v2 label,
+.security-create-policy-v2 label {
+  color: #687765;
+  font-size: 9px;
+}
+.security-selector-v2 select,
+.security-request-create-v2 select,
+.security-request-create-v2 input,
+.security-create-policy-v2 input,
+.security-create-policy-v2 select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: 5px;
+  padding: 8px;
+  border: 1px solid #d6e0d5;
+  border-radius: 6px;
+  background: #fbfcfa;
+  color: #3d5744;
+  font-size: 10px;
+}
+.security-query-proof-v2,
+.security-policy-proof-v2 {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 10px;
+}
+.security-query-proof-v2 > div,
+.security-policy-proof-v2 > div {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #dfe7df;
+  border-radius: 7px;
+  background: #fafcf9;
+}
+.security-query-proof-v2 span,
+.security-query-proof-v2 strong,
+.security-policy-proof-v2 span,
+.security-policy-proof-v2 strong,
+.security-policy-proof-v2 code {
+  display: block;
+}
+.security-query-proof-v2 span,
+.security-policy-proof-v2 span {
+  margin-bottom: 5px;
+  color: #788578;
+  font-size: 8px;
+}
+.security-query-proof-v2 strong,
+.security-policy-proof-v2 strong,
+.security-policy-proof-v2 code {
+  overflow: hidden;
+  color: #345a43;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.security-table-v2 {
+  max-height: 230px;
+  overflow: auto;
+  border: 1px solid #dfe6df;
+  border-radius: 7px;
+}
+.security-table-v2 table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+.security-table-v2 th,
+.security-table-v2 td {
+  padding: 8px 9px;
+  border-bottom: 1px solid #e8ede8;
+  color: #526754;
+  font-size: 9px;
+  text-align: left;
+}
+.security-table-v2 th {
+  background: #f8faf8;
+  color: #718073;
+  font-weight: 500;
+}
+.security-table-v2 th svg {
+  margin-left: 4px;
+  vertical-align: middle;
+  color: #9a7139;
+}
+.security-audit-line-v2 {
+  display: block;
+  margin-top: 8px;
+  color: #778477;
+  font-size: 8px;
+}
+.security-empty-v2 {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  padding: 34px 15px;
+  border: 1px dashed #d8e2d8;
+  border-radius: 7px;
+  color: #718274;
+  text-align: center;
+}
+.security-empty-v2 strong {
+  font-size: 11px;
+}
+.security-empty-v2 p {
+  margin: 0;
+  font-size: 9px;
+}
+.security-policy-detail-v2 > header {
+  margin-bottom: 12px;
+}
+.security-field-actions-v2 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+.security-field-actions-v2 > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  padding: 8px 9px;
+  border: 1px solid #e0e7e0;
+  border-radius: 6px;
+  background: #fafcf9;
+}
+.security-field-actions-v2 code,
+.security-field-actions-v2 span {
+  overflow: hidden;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.security-field-actions-v2 code {
+  color: #405f49;
+}
+.security-field-actions-v2 span {
+  color: #758274;
+}
+.security-lower-v2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.security-requests-v2 > header,
+.security-audits-v2 > header {
+  padding-bottom: 11px;
+  border-bottom: 1px solid #e2e8e2;
+}
+.security-requests-v2 header > div,
+.security-audits-v2 header > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.security-request-create-v2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px auto;
+  align-items: end;
+  gap: 8px;
+  padding: 11px 0;
+  border-bottom: 1px solid #e8ede8;
+}
+.security-request-create-v2 .wide {
+  grid-column: 1/3;
+}
+.security-requests-v2 > article,
+.security-audits-v2 > article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid #e8ede8;
+}
+.security-requests-v2 article strong,
+.security-requests-v2 article p,
+.security-requests-v2 article code,
+.security-audits-v2 article strong,
+.security-audits-v2 article p,
+.security-audits-v2 article code {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.security-requests-v2 article strong,
+.security-audits-v2 article strong {
+  color: #3d5944;
+  font-size: 9px;
+}
+.security-requests-v2 article p,
+.security-requests-v2 article code,
+.security-audits-v2 article p,
+.security-audits-v2 article code {
+  margin: 3px 0 0;
+  color: #748174;
+  font-size: 8px;
+}
+.security-requests-v2 article > div:last-child {
+  display: flex;
+  gap: 5px;
+}
+.security-create-policy-v2 summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 14px;
+  cursor: pointer;
+  color: #3e654c;
+  font-size: 10px;
+}
+.security-create-policy-v2 > div {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px;
+  padding: 2px 14px 12px;
+}
+.security-create-policy-v2 .wide {
+  grid-column: 1/-1;
+}
+.security-create-policy-v2 > small {
+  display: block;
+  padding: 0 14px 13px;
+  color: #758274;
+  font-size: 8px;
+}
+.security-boundary-v2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #748171;
+  font-size: 9px;
+}
+.status-pill.allow,
+.status-pill.approved {
+  color: #286445;
+  background: #e9f4e6;
+}
+.status-pill.deny,
+.status-pill.rejected {
+  color: #964d37;
+  background: #fff0e9;
+}
+.status-pill.pending {
+  color: #816329;
+  background: #fff2d9;
+}
+@media (max-width: 1000px) {
+  .security-main-v2,
+  .security-lower-v2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .security-policy-list-v2 {
+    max-height: 300px;
+    overflow: auto;
+  }
+  .security-create-policy-v2 > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 760px) {
+  .security-hero-v2 {
+    display: grid;
+  }
+  .security-kpis-v2 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .security-agent-compose-v2,
+  .security-agent-result-v2,
+  .security-selector-v2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .security-agent-result-v2 > .status-pill {
+    justify-self: start;
+  }
+  .security-query-proof-v2,
+  .security-policy-proof-v2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .security-field-actions-v2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .security-request-create-v2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .security-request-create-v2 .wide {
+    grid-column: 1;
+  }
+  .security-requests-v2 > article {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .security-requests-v2 article > div:last-child {
+    grid-column: 1/-1;
+  }
+}

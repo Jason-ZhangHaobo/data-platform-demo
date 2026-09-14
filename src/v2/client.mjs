@@ -62,6 +62,19 @@ export const V2_OPERATIONS = Object.freeze([
   "quality_plan_list",
   "quality_plan_create",
   "quality_plan_apply",
+  "security_overview",
+  "security_persona_list",
+  "security_policy_list",
+  "security_policy_create",
+  "security_policy_version",
+  "security_query",
+  "security_request_list",
+  "security_request_create",
+  "security_request_review",
+  "security_audit_list",
+  "security_plan_list",
+  "security_plan_create",
+  "security_plan_apply",
 ]);
 
 export class V2ApiError extends Error {
@@ -95,7 +108,14 @@ export class V2Client {
 
   async request(
     path,
-    { method = "GET", body, authorization, idempotencyKey, timeoutMs } = {},
+    {
+      method = "GET",
+      body,
+      authorization,
+      actorId,
+      idempotencyKey,
+      timeoutMs,
+    } = {},
   ) {
     if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//"))
       throw new Error("V2 API路径不合法");
@@ -113,6 +133,7 @@ export class V2Client {
             ? {}
             : { "Idempotency-Key": idempotencyKey ?? randomUUID() }),
           ...(authorization ? { Authorization: authorization } : {}),
+          ...(actorId ? { "X-Actor-Id": actorId } : {}),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
