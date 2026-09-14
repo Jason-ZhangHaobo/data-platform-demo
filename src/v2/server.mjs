@@ -416,6 +416,10 @@ export function createV2Server(options = {}) {
     } catch (error) {
       json(res, error.status ?? 500, {
         message: error.status ? error.message : "处理失败，请检查服务日志",
+        ...(typeof error.code === "string" &&
+        error.code.startsWith("MODEL_KEY_")
+          ? { code: error.code }
+          : {}),
       });
       if (!error.status) console.error(error.message);
     }

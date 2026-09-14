@@ -14,7 +14,11 @@ import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { MetadataStore } from "../../src/v2/store.mjs";
 import { referenceSql, getContext } from "../../src/v2/context.mjs";
 import { generateSql, ModelUnavailable } from "../../src/v2/model.mjs";
-import { saveLocalModelKey } from "../../src/v2/model-credentials.mjs";
+import {
+  saveLocalModelKey,
+  normalizeModelKey,
+} from "../../src/v2/model-credentials.mjs";
+import { parseEnv } from "node:util";
 
 async function setup(options = {}) {
   const path = join(
@@ -517,6 +521,85 @@ test("a successful SQL agent stage is never reported as full lifecycle E2E", asy
     );
     assert.equal(complete.body.completionScope, "SQL_DEVELOPMENT");
     assert.equal(complete.body.fullLifecycleE2E, false);
+  } finally {
+    await app.close();
+  }
+});
+test("long segmented model keys save unchanged and survive dotenv parsing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuzhan-long-key-")),
+    env = {};
+  const key =
+    "sk-ws-" + "LONG_TEST_ONLY_".repeat(50) + ".segment+test/encoded_value=~";
+  const saved = await saveLocalModelKey(root, env, key);
+  assert.equal(saved.connectionVerified, false);
+  assert.equal(env.DASHSCOPE_API_KEY, key);
+  assert.equal(
+    parseEnv(readFileSync(join(root, ".env.local"), "utf8")).DASHSCOPE_API_KEY,
+    key,
+  );
+  assert.equal(statSync(join(root, ".env.local")).mode & 0o777, 0o600);
+  assert.ok(!JSON.stringify(saved).includes(key));
+});
+test("a single pair of surrounding clipboard quotes is normalized", () => {
+  const key = "sk-" + "QUOTED_TEST_ONLY_".repeat(3);
+  assert.equal(normalizeModelKey('  "' + key + '" \n'), key);
+  assert.equal(normalizeModelKey(" '" + key + "' "), key);
+});
+test("model key input problems have specific non-secret diagnostics", () => {
+  const samples = [
+    ["", "MODEL_KEY_EMPTY"],
+    ["sk-TEST_ONLY_****MASKED", "MODEL_KEY_MASKED"],
+    ["sk-TEST_ONLY_...MASKED", "MODEL_KEY_MASKED"],
+    ["LTAI_CLOUD_ID_TEST_ONLY", "MODEL_KEY_WRONG_KIND"],
+    ["Bearer sk-HEADER_TEST_ONLY", "MODEL_KEY_PREFIX"],
+    ["sk-TEST_ONLY_\nV2_HOST=0.0.0.0", "MODEL_KEY_WHITESPACE"],
+    ["sk-TEST_ONLY_\u200bINVISIBLE", "MODEL_KEY_WHITESPACE"],
+    ['sk-TEST_ONLY_"EXTRA', "MODEL_KEY_CHARACTERS"],
+  ];
+  for (const [value, code] of samples) {
+    assert.throws(
+      () => normalizeModelKey(value),
+      (error) => {
+        assert.equal(error.status, 400);
+        assert.equal(error.code, code);
+        if (value) assert.ok(!error.message.includes(value));
+        return true;
+      },
+    );
+  }
+});
+test("key limit is an explicit transport bound rather than the legacy short-key cap", () => {
+  const key = "sk-" + "a".repeat(8189);
+  assert.equal(normalizeModelKey(key), key);
+  assert.throws(() => normalizeModelKey(key + "a"), {
+    status: 400,
+    code: "MODEL_KEY_TOO_LONG",
+  });
+});
+test("rejected input never replaces a previously saved credential", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuzhan-preserve-key-")),
+    env = {};
+  const key = "sk-" + "PRESERVE_TEST_ONLY_".repeat(3);
+  await saveLocalModelKey(root, env, key);
+  await assert.rejects(saveLocalModelKey(root, env, "sk-***MASKED"), {
+    code: "MODEL_KEY_MASKED",
+  });
+  assert.equal(env.DASHSCOPE_API_KEY, key);
+  assert.equal(
+    parseEnv(readFileSync(join(root, ".env.local"), "utf8")).DASHSCOPE_API_KEY,
+    key,
+  );
+});
+test("save API returns a diagnostic code without echoing a rejected key", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuzhan-key-feedback-"));
+  const app = await setup({ root });
+  try {
+    const value = "sk-DO_NOT_ECHO_****MASKED";
+    const response = await app.call("/settings/model-key", { apiKey: value });
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, "MODEL_KEY_MASKED");
+    assert.ok(!JSON.stringify(response.body).includes(value));
+    assert.equal(existsSync(join(root, ".env.local")), false);
   } finally {
     await app.close();
   }

@@ -142,16 +142,35 @@ const time = (s: string) =>
     minute: "2-digit",
   });
 async function api<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch("/api/v2" + path, {
-    method: body === undefined ? "GET" : "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
-      ...(body === undefined ? {} : { "Idempotency-Key": crypto.randomUUID() }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const value = await response.json();
+  let response: Response;
+  try {
+    response = await fetch("/api/v2" + path, {
+      signal: AbortSignal.timeout(15000),
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shuzhan-Client": "workbench",
+        ...(body === undefined
+          ? {}
+          : { "Idempotency-Key": crypto.randomUUID() }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (cause) {
+    if (cause instanceof Error && cause.name === "TimeoutError")
+      throw new Error(
+        "请求超时，操作结果尚未确认；输入内容已保留。请确认本机服务状态后再试。",
+      );
+    throw new Error(
+      "无法连接本机服务，输入内容已保留。请确认服务正在运行后再试。",
+    );
+  }
+  let value;
+  try {
+    value = await response.json();
+  } catch {
+    throw new Error("服务响应无法解析，操作结果尚未确认；输入内容已保留。");
+  }
   if (!response.ok) throw new Error(value.message ?? "请求失败");
   return value;
 }
@@ -1176,7 +1195,9 @@ function App() {
                         (status?.model.configured ? "succeeded" : "queued")
                       }
                     >
-                      {status?.model.configured ? "已配置，待实测" : "未配置"}
+                      {status?.model.configured
+                        ? "已保存，连接未验证"
+                        : "尚未保存密钥"}
                     </span>
                     <p>{status?.model.model}</p>
                     <code>DASHSCOPE_API_KEY</code>
@@ -1213,9 +1234,23 @@ function App() {
                       setModelSaveError("");
                       setModelSaved(false);
                       try {
-                        await api("/settings/model-key", { apiKey: modelKey });
+                        const saved = await api<{ configured: boolean }>(
+                          "/settings/model-key",
+                          { apiKey: modelKey },
+                        );
+                        if (!saved.configured)
+                          throw new Error(
+                            "服务未确认保存成功，输入内容已保留。",
+                          );
                         setModelKey("");
-                        setStatus(await api<Status>("/status"));
+                        setStatus((previous) =>
+                          previous
+                            ? {
+                                ...previous,
+                                model: { ...previous.model, configured: true },
+                              }
+                            : previous,
+                        );
                         setModelSaved(true);
                         setNotice("密钥已保存在本机；真实模型能力仍需实测");
                       } catch (e) {
@@ -1241,9 +1276,9 @@ function App() {
                       <button
                         className="button primary"
                         type="submit"
-                        disabled={busy || !canWrite || modelKey.length < 23}
+                        disabled={busy || !canWrite}
                       >
-                        保存到本机
+                        {busy ? "正在保存…" : "保存到本机"}
                       </button>
                     </div>
                     {modelSaveError && (
