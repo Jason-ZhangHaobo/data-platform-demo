@@ -62,7 +62,10 @@ export async function verifyDeliveryDirectory(
       : result.status === "SUCCEEDED"
         ? "FAILED"
         : result.status,
-    mode: "LOCAL_FILE_REHEARSAL",
+    mode:
+      plan.deployment.adapter === "remote-spark-worker-v1"
+        ? "CLOUD_ISOLATED_FILE_REHEARSAL"
+        : "LOCAL_FILE_REHEARSAL",
     published: false,
     schedulerTriggered: false,
     clockMode: "EXPLICIT_REHEARSAL_TIME",
@@ -96,7 +99,9 @@ export async function verifyDeliveryDirectory(
               : "BLOCKED",
     })),
     notice:
-      "已按调度/部署文件解析并执行本机演练；不是定时调度触发，也未发布上线。",
+      plan.deployment.adapter === "remote-spark-worker-v1"
+        ? "已按调度/部署文件交给隔离Worker演练；不是定时触发，也未发布上线。"
+        : "已按调度/部署文件解析并执行本机演练；不是定时调度触发，也未发布上线。",
   };
   if (!passed && !receipt.error)
     receipt.error = "运行、测试SQL、回归证据或引擎版本未满足交付清单";

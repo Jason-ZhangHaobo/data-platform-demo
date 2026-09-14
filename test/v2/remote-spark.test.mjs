@@ -15,7 +15,7 @@ const sharedSecret = "synthetic-test-secret-32-characters-long";
 const success = {
   status: "SUCCEEDED",
   engine: "Apache Spark",
-  engineVersion: "3.5.7",
+  engineVersion: "3.5.9",
   rows: [{ client_id: "CLIENT-001", total_assets: "1800.00" }],
   validation: { passed: true, regressions: [] },
   mainSqlExecuted: true,

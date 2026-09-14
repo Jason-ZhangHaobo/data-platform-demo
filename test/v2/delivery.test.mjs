@@ -86,6 +86,21 @@ test("delivery package binds verified SQL and contains executable test and confi
   assert.match(bundle.files["tests.sql"], /FROM __shuzhan_result/);
   assert.ok(!JSON.stringify(bundle).includes("DASHSCOPE_API_KEY"));
 });
+test("cloud delivery binds the verified Spark 3.5.9 Worker instead of historical 3.5.7", () => {
+  const value = source();
+  value.run.engineVersion = "3.5.9";
+  value.run.isolation = "FUNCTION_PROCESS";
+  const bundle = createDeliveryPackage(value),
+    plan = validateDeliveryPackage(bundle, bundle.digest);
+  assert.equal(plan.deployment.adapter, "remote-spark-worker-v1");
+  assert.equal(plan.deployment.environment, "cloud-isolated-rehearsal");
+  assert.equal(plan.deployment.runtime.version, "3.5.9");
+  assert.equal(plan.deployment.runtime.driverMemoryMiB, 2048);
+  assert.match(bundle.files["README.md"], /Spark 3\.5\.9/);
+
+  value.run.engineVersion = "3.5.7";
+  assert.throws(() => createDeliveryPackage(value), { status: 409 });
+});
 test("failed, stale, incomplete or mismatched source evidence cannot create packages", () => {
   for (const modify of [
     (s) => (s.run.status = "FAILED"),

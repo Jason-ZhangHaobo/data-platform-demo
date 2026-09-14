@@ -16,3 +16,4 @@ web-dist/
 __pycache__/
 *.py[cod]
 v2-function.zip
+v2-spark-worker.zip

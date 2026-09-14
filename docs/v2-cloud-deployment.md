@@ -58,3 +58,5 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 ## 仍然关闭的能力
 
 公网函数已有远程Spark客户端和Worker协议，但尚无通过真实云验收的Java/PySpark执行资源，所以`publicReady=false`必须保持。公开浏览和受邀控制面可以先灰度，任意代码/SQL执行不能因协议测试或页面可点击就开放；执行层完成后另做私网/函数鉴权、故障、超时、权限、成本和回滚验收。
+
+Worker运行时、Spark 3.5.9安全升级、大包构建和W0—W5门槛见[隔离Spark Worker](isolated-spark-worker.md)。

@@ -15,6 +15,8 @@ export const deliveryFiles = [
   "README.md",
 ];
 export const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+const supportedSparkVersions = new Set(["3.5.7", "3.5.8", "3.5.9"]);
+const cloudSparkVersions = new Set(["3.5.8", "3.5.9"]);
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
 const canonical = (value) =>
   JSON.stringify(
@@ -81,6 +83,7 @@ export function createDeliveryPackage({
   revision,
   name = "客户资产 T+1",
 }) {
+  const remoteExecution = run?.isolation === "FUNCTION_PROCESS";
   if (
     ![run?.id, run?.projectId, revision?.id, revision?.projectId].every(
       (value) =>
@@ -97,7 +100,8 @@ export function createDeliveryPackage({
     run.revisionId !== revision.id ||
     run.status !== "SUCCEEDED" ||
     run.engine !== "Apache Spark" ||
-    run.engineVersion !== "3.5.7" ||
+    !supportedSparkVersions.has(run.engineVersion) ||
+    (remoteExecution && !cloudSparkVersions.has(run.engineVersion)) ||
     !run.validation?.passed ||
     run.validation.contractId !== validationContractId ||
     run.revisionHash !== revision.hash ||
@@ -153,14 +157,16 @@ export function createDeliveryPackage({
   };
   const deployment = {
     schema: "shuzhan-deployment/v1",
-    adapter: "local-spark-v1",
-    environment: "local-rehearsal",
+    adapter: remoteExecution ? "remote-spark-worker-v1" : "local-spark-v1",
+    environment: remoteExecution
+      ? "cloud-isolated-rehearsal"
+      : "local-rehearsal",
     runtime: {
       engine: "Apache Spark",
-      version: "3.5.7",
+      version: run.engineVersion,
       timeoutSeconds: 90,
       parallelism: 1,
-      driverMemoryMiB: 768,
+      driverMemoryMiB: remoteExecution ? 2048 : 768,
     },
     entrypoint: "main.sql",
     tests: "tests.sql",
@@ -168,7 +174,9 @@ export function createDeliveryPackage({
     inputs: "fixtures.json",
     secretReferences: [],
     published: false,
-    notice: "本机文件演练；未创建云资源，未发布上线，不代表OS级沙箱。",
+    notice: remoteExecution
+      ? "隔离Worker文件演练；仍未发布上线，必须保留Worker运行与断言证据。"
+      : "本机文件演练；未创建云资源，未发布上线，不代表OS级沙箱。",
   };
   const files = {
     "main.sql": revision.sql,
@@ -185,10 +193,11 @@ export function createDeliveryPackage({
       revisionHash: revision.hash,
       engine: run.engine,
       engineVersion: run.engineVersion,
+      isolation: run.isolation ?? "LOCAL_PROCESS",
       report: run.validation,
     }),
     "README.md":
-      "# 本机交付包\n\n包含 SQL、实际执行的测试 SQL、调度、部署和样例交易日历。\n仅支持 local-spark-v1，未发布或适配 DataWorks/EMR。\n演练时间：2026-09-11T09:00:00+08:00，对应业务日2026-09-10。\n在配有 Node.js 24/Java17/Spark3.5.7 的本项目中使用 bin/shuzhan-package.mjs。\n散列只能校验与指定摘要一致，不构成生产审批或发布签名。\n",
+      `# ${remoteExecution ? "隔离Worker" : "本机"}交付包\n\n包含 SQL、实际执行的测试 SQL、调度、部署和样例交易日历。\n适配器 ${deployment.adapter}，Spark ${run.engineVersion}；当前只是演练，尚未发布或适配 DataWorks/EMR。\n演练时间：2026-09-11T09:00:00+08:00，对应业务日2026-09-10。\n散列只能校验与指定摘要一致，不构成生产审批或发布签名。\n`,
   };
   const manifest = {
     format: deliveryFormat,
@@ -288,7 +297,15 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     deployment = jsonFile(bundle, "deployment.json");
   const calendar = jsonFile(bundle, "calendar.json"),
     fixtures = jsonFile(bundle, "fixtures.json"),
-    proof = jsonFile(bundle, "validation.json");
+    proof = jsonFile(bundle, "validation.json"),
+    localTarget =
+      deployment.adapter === "local-spark-v1" &&
+      deployment.environment === "local-rehearsal" &&
+      deployment.runtime?.driverMemoryMiB === 768,
+    remoteTarget =
+      deployment.adapter === "remote-spark-worker-v1" &&
+      deployment.environment === "cloud-isolated-rehearsal" &&
+      deployment.runtime?.driverMemoryMiB === 2048;
   if (
     !keysExactly(schedule, [
       "schema",
@@ -326,21 +343,25 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       "notice",
     ]) ||
     deployment.schema !== "shuzhan-deployment/v1" ||
-    deployment.adapter !== "local-spark-v1" ||
-    deployment.environment !== "local-rehearsal" ||
+    (!localTarget && !remoteTarget) ||
     deployment.published !== false ||
     deployment.entrypoint !== "main.sql" ||
     deployment.tests !== "tests.sql" ||
     deployment.schedule !== "schedule.json" ||
     deployment.inputs !== "fixtures.json" ||
     !same(deployment.secretReferences, []) ||
-    !same(deployment.runtime, {
-      engine: "Apache Spark",
-      version: "3.5.7",
-      timeoutSeconds: 90,
-      parallelism: 1,
-      driverMemoryMiB: 768,
-    })
+    !keysExactly(deployment.runtime, [
+      "engine",
+      "version",
+      "timeoutSeconds",
+      "parallelism",
+      "driverMemoryMiB",
+    ]) ||
+    deployment.runtime.engine !== "Apache Spark" ||
+    !supportedSparkVersions.has(deployment.runtime.version) ||
+    (remoteTarget && !cloudSparkVersions.has(deployment.runtime.version)) ||
+    deployment.runtime.timeoutSeconds !== 90 ||
+    deployment.runtime.parallelism !== 1
   )
     throw fail(
       "部署清单包含未实现的目标、命令、资源配置或凭证；不会尝试云端部署",
@@ -353,6 +374,9 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
   if (
     proof.sourceRunId !== source.runId ||
     proof.revisionHash !== source.sqlHash ||
+    proof.engine !== deployment.runtime.engine ||
+    proof.engineVersion !== deployment.runtime.version ||
+    (remoteTarget && proof.isolation !== "FUNCTION_PROCESS") ||
     !proof.report?.passed ||
     proof.report.contractId !== validationContractId
   )
