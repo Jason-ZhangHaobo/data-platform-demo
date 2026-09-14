@@ -63,6 +63,14 @@ async function readySource(base, body, key) {
   assert.equal(metadata.body.status, "COLLECTED");
   return { source: source.body, tested: tested.body, metadata: metadata.body };
 }
+async function waitForAgentPlan(base, id, expected) {
+  for (let index = 0; index < 60; index++) {
+    const response = await request(base, `/sync/agent/plans/${id}`);
+    if (response.body.status === expected) return response.body;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`同步Agent方案未达到${expected}`);
+}
 
 test("V2 API executes CSV metadata, full sync, incremental UPSERT and stale-version failure", async () => {
   const root = mkdtempSync(join(tmpdir(), "shuzhan-ingestion-api-")),
@@ -293,6 +301,81 @@ test("V2 source API rejects credentials and path traversal before persistence", 
     assert.equal(traversal.status, 400);
     assert.equal(traversal.body.code, "INVALID_FILE_NAME");
     assert.equal(store.list("ingestion_source", "project-securities-lab").length, 0);
+  } finally {
+    await new Promise((resolve) => server.app.server.close(resolve));
+    landingStore.close();
+    store.close();
+  }
+});
+
+test("Data Agent creates an offline sync draft only after governed apply", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuzhan-ingestion-agent-api-")),
+    fixtureRoot = join(root, "fixtures"),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    landingStore = new LandingStore(":memory:");
+  mkdirSync(fixtureRoot, { recursive: true });
+  writeFileSync(join(fixtureRoot, "baseline.csv"), baseline);
+  const server = await start({
+    store,
+    landingStore,
+    fixtureRoot,
+    env: { V2_LOCAL_DEVELOPMENT: "true" },
+    ingestionPlanner: async ({ sources }) => ({
+      plan: {
+        kind: "OFFLINE_SYNC",
+        name: "Agent证券持仓同步",
+        sourceId: sources[0].id,
+        targetTable: "agent_raw_positions",
+        mode: "FULL",
+        mapping: identityPositionMapping,
+        keyFields: ["position_id"],
+        watermarkField: "trade_date",
+      },
+      explanation: "使用已采集元数据创建全量同步草稿",
+      model: "TEST_DOUBLE",
+      usage: { total_tokens: 100 },
+    }),
+  });
+  try {
+    await readySource(
+      server.base,
+      {
+        name: "Agent可用持仓源",
+        sourceType: "LOCAL_CSV",
+        fileName: "baseline.csv",
+      },
+      "agent-source",
+    );
+    const started = await request(
+        server.base,
+        "/sync/agent/plans",
+        { message: "为当前持仓源创建全量同步草稿" },
+        "agent-sync-plan",
+      ),
+      complete = await waitForAgentPlan(
+        server.base,
+        started.body.id,
+        "SUCCEEDED",
+      );
+    assert.equal(started.status, 202);
+    assert.equal(complete.completionScope, "OFFLINE_SYNC_DESIGN");
+    assert.equal(complete.fullLifecycleE2E, false);
+    assert.equal(complete.proposal.targetTable, "agent_raw_positions");
+    assert.equal(store.list("offline_sync_task", "project-securities-lab").length, 0);
+    const applied = await request(
+      server.base,
+      `/sync/agent/plans/${complete.id}/apply`,
+      {},
+      "apply-agent-sync-plan",
+    );
+    assert.equal(applied.status, 201);
+    assert.equal(applied.body.status, "READY");
+    assert.equal(applied.body.runs.length, 0);
+    assert.equal(
+      (await request(server.base, `/sync/agent/plans/${complete.id}`)).body
+        .status,
+      "APPLIED",
+    );
   } finally {
     await new Promise((resolve) => server.app.server.close(resolve));
     landingStore.close();

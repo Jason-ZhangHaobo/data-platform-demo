@@ -486,6 +486,29 @@ export class IngestionManager {
   }
 
   createTask(input) {
+    return this.store.create(
+      "offline_sync_task",
+      this.project,
+      this.#normalizeTask(input),
+    );
+  }
+
+  validateAgentPlan(value) {
+    if (
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      value.kind !== "OFFLINE_SYNC"
+    )
+      throw fail(
+        422,
+        "Agent未返回可验证的离线同步方案",
+        "INVALID_INGESTION_PLAN",
+      );
+    return { kind: "OFFLINE_SYNC", ...this.#normalizeTask(value) };
+  }
+
+  #normalizeTask(input) {
     const source = this.#source(text(input.sourceId, "数据源编号", 3, 80)),
       revision = this.#revision(source.currentRevisionId),
       metadata = this.store.get(
@@ -511,7 +534,7 @@ export class IngestionManager {
       !Object.values(mapping).includes(watermarkField)
     )
       throw fail(400, "水位字段必须存在于目标映射中", "INVALID_WATERMARK");
-    return this.store.create("offline_sync_task", this.project, {
+    const config = {
       name: text(input.name, "同步任务名称", 2, 80),
       sourceId: source.id,
       sourceRevisionId: revision.id,
@@ -522,6 +545,9 @@ export class IngestionManager {
       keyFields,
       watermarkField,
       status: "READY",
+    };
+    return {
+      ...config,
       configHash: stableHash({
         sourceRevisionId: revision.id,
         metadataVersionId: metadata.id,
@@ -531,7 +557,7 @@ export class IngestionManager {
         keyFields,
         watermarkField,
       }),
-    });
+    };
   }
 
   runTask(taskId, request = {}) {

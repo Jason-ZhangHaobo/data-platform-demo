@@ -18,6 +18,7 @@ import {
   parseCsv,
 } from "../../src/v2/ingestion.mjs";
 import { PROJECT } from "../../src/v2/server.mjs";
+import { generateIngestionPlan } from "../../src/v2/model.mjs";
 
 const header =
   "position_id,client_id,security_code,asset_class,industry,market_value,trade_date\n";
@@ -380,4 +381,69 @@ test("metadata collection detects a file changed after connection test", () => {
   } finally {
     app.close();
   }
+});
+
+test("ingestion model adapter receives metadata but never CSV row contents", async () => {
+  let request;
+  const generated = await generateIngestionPlan(
+    {
+      message: "生成增量持仓同步",
+      sources: [
+        {
+          id: "source-demo",
+          name: "证券持仓源",
+          sourceType: "LOCAL_CSV",
+          status: "READY",
+          currentRevisionId: "revision-demo",
+          currentMetadataId: "metadata-demo",
+          metadataVersions: [
+            {
+              id: "metadata-demo",
+              columns: [
+                { name: "position_id", type: "STRING", nullable: false },
+                { name: "trade_date", type: "DATE", nullable: false },
+              ],
+              rows: [{ secret: "CSV_ROW_NOT_SENT" }],
+            },
+          ],
+        },
+      ],
+    },
+    { DASHSCOPE_API_KEY: "TEST_ONLY" },
+    async (url, options) => {
+      request = { url, options };
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  kind: "OFFLINE_SYNC",
+                  name: "持仓增量同步",
+                  sourceId: "source-demo",
+                  targetTable: "raw_positions",
+                  mode: "INCREMENTAL_UPSERT",
+                  mapping: {
+                    position_id: "position_id",
+                    trade_date: "trade_date",
+                  },
+                  keyFields: ["position_id"],
+                  watermarkField: "trade_date",
+                  explanation: "使用持仓主键合并",
+                }),
+              },
+            },
+          ],
+          usage: { total_tokens: 100 },
+        }),
+      );
+    },
+  );
+  const payload = JSON.parse(request.options.body),
+    prompt = payload.messages[1].content;
+  assert.equal(request.options.headers.Authorization, "Bearer TEST_ONLY");
+  assert.equal(prompt.includes("CSV_ROW_NOT_SENT"), false);
+  assert.equal(generated.plan.kind, "OFFLINE_SYNC");
+  assert.equal(generated.explanation, "使用持仓主键合并");
+  assert.equal("explanation" in generated.plan, false);
 });

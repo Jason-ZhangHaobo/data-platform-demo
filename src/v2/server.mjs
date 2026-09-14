@@ -16,6 +16,7 @@ import { runSpark, runtimeConfig } from "./spark.mjs";
 import {
   generateSql,
   generateDataServicePlan,
+  generateIngestionPlan,
   modelSettings,
   ModelUnavailable,
 } from "./model.mjs";
@@ -157,6 +158,15 @@ export function createV2Server(options = {}) {
       options.fixtureRoot ?? join(process.cwd(), "fixtures", "sources"),
     now: options.now,
   });
+  const ingestionPlanner =
+    options.ingestionPlanner ??
+    (async (input) => {
+      const keyAtRequest = env.DASHSCOPE_API_KEY,
+        result = await generateIngestionPlan(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
   const revision = (sql, contextId, source) =>
     store.create("revision", PROJECT, {
       sql,
@@ -378,6 +388,80 @@ export function createV2Server(options = {}) {
       }
       if (path === "/api/v2/sync/tasks" && method === "GET")
         return json(res, 200, ingestion.listTasks());
+      if (path === "/api/v2/sync/agent/plans" && method === "GET")
+        return json(res, 200, store.list("ingestion_agent_plan", PROJECT));
+      if (path === "/api/v2/sync/agent/plans" && method === "POST") {
+        const body = await readBody(req),
+          message = text(body.message, 4, 2000);
+        if (!options.ingestionPlanner && !modelSettings(env).configured)
+          throw new ModelUnavailable();
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:ingestion-agent-plan:${key}`,
+            hash(JSON.stringify({ message })),
+            () =>
+              store.create("ingestion_agent_plan", PROJECT, {
+                message,
+                status: "QUEUED",
+                mode: "LIVE_MODEL",
+                completionScope: "OFFLINE_SYNC_DESIGN",
+                fullLifecycleE2E: false,
+              }),
+          ),
+          task = get("ingestion_agent_plan", dedup.id);
+        if (!dedup.replayed)
+          schedule("ingestion_agent_plan", task, async (signal) => {
+            const generated = await ingestionPlanner({
+                message,
+                sources: ingestion.listSources(),
+                signal,
+              }),
+              proposal = ingestion.validateAgentPlan(generated.plan);
+            store.update("ingestion_agent_plan", task.id, PROJECT, {
+              status: "SUCCEEDED",
+              proposal,
+              explanation: generated.explanation,
+              model: generated.model,
+              usage: generated.usage,
+              finishedAt: new Date().toISOString(),
+            });
+          });
+        return json(res, 202, task);
+      }
+      const ingestionAgentPlan = path.match(
+        /^\/api\/v2\/sync\/agent\/plans\/([a-f0-9-]+)(?:\/(apply|cancel))?$/,
+      );
+      if (ingestionAgentPlan) {
+        const plan = get("ingestion_agent_plan", ingestionAgentPlan[1]),
+          action = ingestionAgentPlan[2];
+        if (method === "GET" && !action) return json(res, 200, plan);
+        if (method === "POST" && action === "cancel") {
+          await readBody(req);
+          if (!terminal.has(plan.status) && plan.status !== "APPLIED") {
+            store.update("ingestion_agent_plan", plan.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            controls.get(plan.id)?.abort();
+          }
+          return json(res, 200, get("ingestion_agent_plan", plan.id));
+        }
+        if (method === "POST" && action === "apply") {
+          await readBody(req);
+          if (plan.status === "APPLIED" && plan.syncTaskId)
+            return json(res, 200, ingestion.taskDetail(plan.syncTaskId));
+          if (plan.status !== "SUCCEEDED" || !plan.proposal)
+            throw fail(409, "只有模型同步方案验证通过后才能创建草稿");
+          const proposal = ingestion.validateAgentPlan(plan.proposal),
+            syncTask = ingestion.createTask(proposal);
+          store.update("ingestion_agent_plan", plan.id, PROJECT, {
+            status: "APPLIED",
+            syncTaskId: syncTask.id,
+            appliedAt: new Date().toISOString(),
+          });
+          return json(res, 201, ingestion.taskDetail(syncTask.id));
+        }
+      }
       if (path === "/api/v2/sync/tasks" && method === "POST") {
         const body = await readBody(req),
           key = text(req.headers["idempotency-key"], 1, 100),

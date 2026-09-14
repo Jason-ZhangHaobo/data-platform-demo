@@ -131,6 +131,41 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     "Bearer SECRET_NOT_IN_ARGV",
   );
   assert.equal(JSON.stringify(requests[1].path).includes("SECRET_NOT_IN_ARGV"), false);
+  assert.equal(
+    await runV2Cli(
+      [
+        "sync",
+        "create",
+        "--name",
+        "持仓增量",
+        "--source-id",
+        "source-id",
+        "--target-table",
+        "raw_positions",
+        "--mode",
+        "incremental",
+        "--mapping",
+        "position_id:position_id,trade_date:trade_date",
+        "--keys",
+        "position_id",
+        "--watermark",
+        "trade_date",
+      ],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[2].path, "/sync/tasks");
+  assert.equal(requests[2].options.body.mode, "INCREMENTAL_UPSERT");
+  assert.deepEqual(requests[2].options.body.mapping, {
+    position_id: "position_id",
+    trade_date: "trade_date",
+  });
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -153,6 +188,18 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "service_application_create",
     "service_application_revoke",
     "data_service_invoke",
+    "source_list",
+    "source_create",
+    "source_test",
+    "source_metadata_collect",
+    "source_revision_create",
+    "sync_task_list",
+    "sync_task_create",
+    "sync_task_run",
+    "sync_target_rows",
+    "ingestion_plan_list",
+    "ingestion_plan_create",
+    "ingestion_plan_apply",
   ])
     assert.ok(names.includes(required));
   assert.match(createApp.description, /明确确认/);

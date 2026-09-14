@@ -49,6 +49,7 @@ import {
 import "./styles.css";
 import { DeliveryWorkbench } from "./DeliveryWorkbench";
 import { DataServicesWorkbench } from "./DataServicesWorkbench";
+import { IngestionWorkbench } from "./IngestionWorkbench";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 type Column = { name: string; type: string };
 type Context = {
@@ -1163,6 +1164,13 @@ function App() {
             <p className="module-subtitle">{active?.description}</p>
             {nav === "services" ? (
               <DataServicesWorkbench api={api} canWrite={Boolean(canWrite)} />
+            ) : nav === "sources" || nav === "sync" ? (
+              <IngestionWorkbench
+                api={api}
+                activeModule={nav}
+                canWrite={Boolean(canWrite)}
+                onModuleChange={setNav}
+              />
             ) : nav === "schedules" ? (
               <DeliveryWorkbench
                 api={api}
@@ -1172,7 +1180,7 @@ function App() {
                 canWrite={Boolean(canWrite)}
                 onBack={() => setNav("development")}
               />
-            ) : nav === "assets" || nav === "sources" ? (
+            ) : nav === "assets" ? (
               <>
                 <div className="module-summary">
                   <Database size={22} />

@@ -67,12 +67,16 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /sync/tasks/:id | 任务详情 | 配置摘要、状态、水位和全部成功/失败运行 |
 | POST /sync/tasks/:id/run | 空对象 + 幂等键 | 执行FULL或INCREMENTAL_UPSERT，返回实际读写与目标摘要 |
 | GET /sync/targets/:table/rows | 目标表 | 读取本机落地区实际行；仅用于当前合成验收 |
+| GET/POST /sync/agent/plans | 列表或自然语言需求 | 后台真实模型同步方案，范围为OFFLINE_SYNC_DESIGN |
+| GET /sync/agent/plans/:id | 方案状态 | 元数据约束提案、模型用量或明确失败 |
+| POST /sync/agent/plans/:id/apply | 空对象 | 人工应用已验证方案为READY任务，不自动运行 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
 即使 SUCCEEDED 也只代表代码阶段通过。旧记录缺少范围字段同样不能被计为完整 E2E。
 完整 E2E 要求理解需求至上线后监控的全部证据，定义及分阶段门槛见 PRD.md。
 数据服务Agent返回completionScope=DATA_SERVICE_DESIGN、fullLifecycleE2E=false；成功只表示方案引用和约束校验通过。
+同步Agent返回completionScope=OFFLINE_SYNC_DESIGN、fullLifecycleE2E=false；模型不读取CSV业务行，成功只表示基于当前元数据的草稿方案通过后端校验。
 服务重启会把正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 

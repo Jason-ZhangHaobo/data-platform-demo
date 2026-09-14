@@ -18,6 +18,16 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan apps list
   shuzhan apps create --name 名称 --service-ids ID,ID
   shuzhan apps revoke --id ID
+  shuzhan sources list
+  shuzhan sources create --name 名称 --file positions_baseline.csv
+  shuzhan sources test|metadata --id ID
+  shuzhan sources revision --id ID --file positions_schema_change.csv
+  shuzhan sync list
+  shuzhan sync create --name 名称 --source-id ID --target-table raw_positions --mode full|incremental --mapping from:to,... --keys position_id [--watermark trade_date]
+  shuzhan sync run --id ID
+  shuzhan sync rows --table raw_positions
+  shuzhan sync plan --message "同步需求"
+  shuzhan sync apply-plan --id PLAN_ID
 
 环境变量：
   SHUZHAN_V2_API_BASE_URL  默认 http://127.0.0.1:3100/api/v2
@@ -68,6 +78,15 @@ const steps = (value) =>
       throw new Error("--steps格式为alias:DAPI_ID,alias:DAPI_ID");
     return { alias: item.slice(0, separator), dapiId: item.slice(separator + 1) };
   });
+const mapping = (value) =>
+  Object.fromEntries(
+    list(value, "--mapping").map((item) => {
+      const separator = item.indexOf(":");
+      if (separator < 1 || separator === item.length - 1)
+        throw new Error("--mapping格式为源字段:目标字段,源字段:目标字段");
+      return [item.slice(0, separator), item.slice(separator + 1)];
+    }),
+  );
 
 export const V2_CLI_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
 
@@ -181,6 +200,74 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "apps" && action === "revoke")
       result = await client.request(
         `/data-services/applications/${encodeURIComponent(required(parsed.options, "id"))}/revoke`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "sources" && action === "list")
+      result = await client.request("/sources");
+    else if (resource === "sources" && action === "create")
+      result = await client.request("/sources", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          sourceType: "LOCAL_CSV",
+          fileName: required(parsed.options, "file"),
+        },
+      });
+    else if (
+      resource === "sources" &&
+      ["test", "metadata"].includes(action)
+    )
+      result = await client.request(
+        `/sources/${encodeURIComponent(required(parsed.options, "id"))}/${action}`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "sources" && action === "revision")
+      result = await client.request(
+        `/sources/${encodeURIComponent(required(parsed.options, "id"))}/revisions`,
+        {
+          method: "POST",
+          body: { fileName: required(parsed.options, "file") },
+        },
+      );
+    else if (resource === "sync" && action === "list")
+      result = await client.request("/sync/tasks");
+    else if (resource === "sync" && action === "create") {
+      const mode = required(parsed.options, "mode");
+      if (!["full", "incremental"].includes(mode))
+        throw new Error("--mode必须是full或incremental");
+      result = await client.request("/sync/tasks", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          sourceId: required(parsed.options, "source_id"),
+          targetTable: required(parsed.options, "target_table"),
+          mode: mode === "full" ? "FULL" : "INCREMENTAL_UPSERT",
+          mapping: mapping(required(parsed.options, "mapping")),
+          keyFields: list(required(parsed.options, "keys"), "--keys"),
+          ...(parsed.options.watermark
+            ? { watermarkField: parsed.options.watermark }
+            : {}),
+        },
+      });
+    } else if (resource === "sync" && action === "run")
+      result = await client.request(
+        `/sync/tasks/${encodeURIComponent(required(parsed.options, "id"))}/run`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "sync" && action === "rows")
+      result = await client.request(
+        `/sync/targets/${encodeURIComponent(required(parsed.options, "table"))}/rows`,
+      );
+    else if (resource === "sync" && action === "plan")
+      result = await client.request("/sync/agent/plans", {
+        method: "POST",
+        body: { message: required(parsed.options, "message") },
+      });
+    else if (resource === "sync" && action === "plans")
+      result = await client.request("/sync/agent/plans");
+    else if (resource === "sync" && action === "apply-plan")
+      result = await client.request(
+        `/sync/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
         { method: "POST", body: {} },
       );
     else throw new Error(`不支持的V2命令：${parsed.positionals.join(" ")}`);

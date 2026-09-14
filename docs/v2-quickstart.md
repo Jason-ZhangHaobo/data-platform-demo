@@ -87,6 +87,16 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"xapi_list"
 
 外部调用令牌只通过`SHUZHAN_APP_TOKEN`环境变量提供给CLI/MCP，不放进命令参数或MCP工具参数。旧`dataplatform`命令仍是V1模拟接口。
 
+进入[本机数据源](http://127.0.0.1:3100/v2/?module=sources)查看真实CSV连接、元数据和结构变化；进入[本机离线同步](http://127.0.0.1:3100/v2/?module=sync)查看字段映射、运行证据与落地结果。
+
+```bash
+npm run v2:cli -- sources list
+npm run v2:cli -- sync list
+npm run v2:cli -- sync rows --table raw_positions
+```
+
+MCP对应提供`source_*`、`sync_*`与`ingestion_plan_*`工具；它们与GUI/CLI使用同一`/api/v2`，当前只允许仓库内虚构CSV。
+
 CI 的模型/执行器边界测试使用明确标注的 TEST_DOUBLE，不计入真实 Agent E2E 成功率。
 Spark 检查才运行真正引擎，生成 `.v2-artifacts/spark-acceptance.json`。
 后台版本/状态保存在独立 `.data/v2-platform.sqlite`，引擎输入输出在 `.v2-artifacts/`，均不提交 Git。

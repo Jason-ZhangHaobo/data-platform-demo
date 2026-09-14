@@ -217,3 +217,88 @@ export async function generateDataServicePlan(
     mode: "LIVE_MODEL",
   };
 }
+
+export async function generateIngestionPlan(
+  { message, sources, signal },
+  env = process.env,
+  fetchImpl = fetch,
+) {
+  if (!env.DASHSCOPE_API_KEY) throw new ModelUnavailable();
+  const settings = modelSettings(env),
+    base = new URL(settings.baseUrl);
+  if (base.protocol !== "https:") throw new Error("模型 API 必须使用 HTTPS");
+  const prompt = JSON.stringify({
+    request: message,
+    availableSources: sources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      sourceType: source.sourceType,
+      status: source.status,
+      revisionId: source.currentRevisionId,
+      metadataVersionId: source.currentMetadataId,
+      columns:
+        source.metadataVersions
+          ?.find((item) => item.id === source.currentMetadataId)
+          ?.columns.map(({ name, type, nullable }) => ({ name, type, nullable })) ?? [],
+    })),
+    contract: {
+      kind: "OFFLINE_SYNC",
+      modes: ["FULL", "INCREMENTAL_UPSERT"],
+      target:
+        "targetTable使用小写字母/数字/下划线；mapping为源字段到目标字段；keyFields引用目标字段；watermarkField可选。",
+      output:
+        "仅返回JSON对象：kind,name,sourceId,targetTable,mode,mapping,keyFields,watermarkField,explanation。",
+    },
+  });
+  const response = await fetchImpl(
+    settings.baseUrl.replace(/\/$/, "") + "/chat/completions",
+    {
+      method: "POST",
+      redirect: "error",
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(60000)])
+        : AbortSignal.timeout(60000),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + env.DASHSCOPE_API_KEY,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        temperature: 0.1,
+        max_tokens: 2200,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是证券数据接入助手。只基于给定数据源和元数据生成一个离线同步草稿。不得虚构sourceId或字段，不得读取文件内容、输出凭证、执行同步或绕过版本检查。INCREMENTAL_UPSERT必须选择稳定业务主键。不要输出推理过程。",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      "模型请求失败（" + response.status + "），请检查服务配置或额度",
+    );
+  const payload = await response.json();
+  let content = payload.choices?.[0]?.message?.content ?? "";
+  content = content
+    .replace(/^\s*```(?:json)?\s*/, "")
+    .replace(/\s*```\s*$/, "");
+  let plan;
+  try {
+    plan = JSON.parse(content);
+  } catch {
+    throw new Error("模型未返回可解析的同步方案");
+  }
+  const explanation = String(plan.explanation ?? "").slice(0, 1200);
+  delete plan.explanation;
+  return {
+    plan,
+    explanation,
+    model: settings.model,
+    usage: payload.usage ?? {},
+    mode: "LIVE_MODEL",
+  };
+}

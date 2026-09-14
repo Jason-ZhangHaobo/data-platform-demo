@@ -15,6 +15,18 @@ export const V2_OPERATIONS = Object.freeze([
   "application_create",
   "application_revoke",
   "service_invoke",
+  "source_list",
+  "source_create",
+  "source_test",
+  "source_metadata",
+  "source_revision",
+  "sync_task_list",
+  "sync_task_create",
+  "sync_task_run",
+  "sync_target_rows",
+  "ingestion_plan_list",
+  "ingestion_plan_create",
+  "ingestion_plan_apply",
 ]);
 
 export class V2ApiError extends Error {

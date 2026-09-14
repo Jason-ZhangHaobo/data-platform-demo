@@ -91,6 +91,7 @@ export class MetadataStore {
       "agent",
       "delivery_verification",
       "service_agent_plan",
+      "ingestion_agent_plan",
       "offline_sync_run",
       "release",
       "release_run",
