@@ -252,7 +252,7 @@ test("V2 API executes CSV metadata, full sync, incremental UPSERT and stale-vers
           "public-source",
         )
       ).status,
-      403,
+      401,
     );
   } finally {
     await new Promise((resolve) => server.app.server.close(resolve));

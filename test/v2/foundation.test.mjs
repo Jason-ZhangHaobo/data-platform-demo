@@ -130,7 +130,7 @@ test("cross-project requests and foreign origins are rejected", async () => {
     await app.close();
   }
 });
-test("public read-only mode cannot create revisions", async () => {
+test("public anonymous mode cannot create revisions", async () => {
   const app = await setup({ env: { V2_LOCAL_DEVELOPMENT: "false" } });
   try {
     assert.equal(
@@ -140,7 +140,7 @@ test("public read-only mode cannot create revisions", async () => {
           contextId: "holdings-t1",
         })
       ).status,
-      403,
+      401,
     );
   } finally {
     await app.close();
@@ -464,7 +464,7 @@ test("model credentials cannot overwrite a symlink target", async () => {
   );
   assert.equal(readFileSync(target, "utf8"), "DO_NOT_CHANGE");
 });
-test("public mode rejects model setup before creating local credentials", async () => {
+test("public anonymous mode rejects model setup before creating local credentials", async () => {
   const root = mkdtempSync(join(tmpdir(), "shuzhan-public-key-"));
   const app = await setup({ root, env: { V2_LOCAL_DEVELOPMENT: "false" } });
   try {
@@ -474,7 +474,7 @@ test("public mode rejects model setup before creating local credentials", async 
           apiKey: "sk-" + "LOCAL_TEST_ONLY_".repeat(3),
         })
       ).status,
-      403,
+      401,
     );
     assert.equal(existsSync(join(root, ".env.local")), false);
   } finally {

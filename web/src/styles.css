@@ -6888,3 +6888,291 @@ kbd {
     flex-direction: column;
   }
 }
+.auth-session-button-v2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid #d6e1d2;
+  border-radius: 6px;
+  background: #fafcf8;
+  color: #45634b;
+  font-size: 10px;
+}
+.auth-overlay-v2 {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #17211bb3;
+  backdrop-filter: blur(5px);
+}
+.auth-dialog-v2 {
+  width: min(460px, 100%);
+  overflow: hidden;
+  border: 1px solid #d5e1d1;
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: 0 24px 70px #111c164d;
+  color: #344c3b;
+}
+.auth-dialog-v2 > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 22px 23px 17px;
+  background:
+    radial-gradient(circle at 90% 10%, #dbead6 0, transparent 35%),
+    linear-gradient(135deg, #fbfdf8, #eff6ec);
+}
+.auth-dialog-v2 h2 {
+  margin: 5px 0 5px;
+  color: #294333;
+  font-size: 21px;
+}
+.auth-dialog-v2 header p {
+  margin: 0;
+  color: #637563;
+  font-size: 10px;
+  line-height: 1.55;
+}
+.auth-dialog-v2 > header > button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: #617360;
+}
+.auth-tabs-v2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin: 15px 20px 0;
+  padding: 4px;
+  border: 1px solid #dfe6da;
+  border-radius: 8px;
+  background: #f7faf5;
+}
+.auth-tabs-v2 button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 6px;
+  color: #697a66;
+  font-size: 10px;
+}
+.auth-tabs-v2 button.active {
+  background: #fff;
+  color: #2f6b49;
+  box-shadow: 0 1px 4px #223d2912;
+}
+.auth-dialog-v2 form {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px 20px;
+}
+.auth-dialog-v2 form label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  color: #516a55;
+  font-size: 10px;
+}
+.auth-dialog-v2 form input {
+  grid-column: 1/-1;
+  width: 100%;
+  min-width: 0;
+  margin-top: 1px;
+  padding: 10px 11px;
+  border: 1px solid #d4dfd0;
+  border-radius: 7px;
+  background: #fbfcfa;
+  color: #354e3c;
+  font-size: 12px;
+}
+.auth-dialog-v2 form > small {
+  color: #748172;
+  font-size: 8px;
+  line-height: 1.55;
+}
+.auth-dialog-v2 form .button {
+  justify-content: center;
+  min-height: 39px;
+}
+.auth-error-v2 {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid #e7c9b8;
+  border-radius: 6px;
+  background: #fff3ed;
+  color: #984f37;
+  font-size: 9px;
+}
+.auth-dialog-v2 > footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  border-top: 1px solid #e3e9df;
+  background: #f9fbf8;
+  color: #70806d;
+  font-size: 8px;
+}
+.invitation-panel-v2 {
+  margin-bottom: 16px;
+  padding: 18px;
+  border: 1px solid #d7e3d3;
+  border-radius: 10px;
+  background: #fff;
+  color: #344c3b;
+}
+.invitation-panel-v2 > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 13px;
+}
+.invitation-panel-v2 h3 {
+  margin: 4px 0 3px;
+  color: #304b38;
+  font-size: 15px;
+}
+.invitation-panel-v2 header p {
+  margin: 0;
+  color: #6b7a68;
+  font-size: 9px;
+}
+.invitation-panel-v2 > header > span {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: #e8f2e5;
+  color: #35654a;
+  font-size: 10px;
+}
+.invitation-panel-v2 form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px auto;
+  align-items: end;
+  gap: 9px;
+}
+.invitation-panel-v2 label {
+  color: #687765;
+  font-size: 9px;
+}
+.invitation-panel-v2 input,
+.invitation-panel-v2 select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: 5px;
+  padding: 9px;
+  border: 1px solid #d6e0d2;
+  border-radius: 6px;
+  color: #3d5743;
+  font-size: 10px;
+}
+.invite-code-v2 {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  margin-top: 11px;
+  padding: 11px;
+  border: 1px solid #cde0c9;
+  border-radius: 7px;
+  background: #eef7eb;
+  color: #326649;
+}
+.invite-code-v2 strong,
+.invite-code-v2 code {
+  display: block;
+}
+.invite-code-v2 strong {
+  font-size: 9px;
+}
+.invite-code-v2 code {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #47664e;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.invite-code-v2 button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9px;
+}
+.invitation-list-v2 {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+.invitation-list-v2 article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid #e2e8df;
+  border-radius: 6px;
+}
+.invitation-list-v2 strong,
+.invitation-list-v2 code {
+  display: block;
+}
+.invitation-list-v2 strong {
+  color: #435d49;
+  font-size: 9px;
+}
+.invitation-list-v2 code {
+  margin-top: 3px;
+  color: #748173;
+  font-size: 8px;
+}
+.status-pill.redeemed {
+  color: #286445;
+  background: #e9f4e6;
+}
+.public-model-boundary-v2 {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid #d2e1cf;
+  border-radius: 7px;
+  background: #f1f8ee;
+  color: #35664a;
+}
+.public-model-boundary-v2 strong {
+  font-size: 10px;
+}
+.public-model-boundary-v2 p {
+  margin: 4px 0 0;
+  color: #637563;
+  font-size: 9px;
+}
+@media (max-width: 760px) {
+  .auth-session-button-v2 {
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .invitation-panel-v2 form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

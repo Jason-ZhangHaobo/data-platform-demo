@@ -180,7 +180,7 @@ test("V2 API records a failed stream checkpoint and resumes from a corrected rev
           "public-stream-job",
         )
       ).status,
-      403,
+      401,
     );
   } finally {
     await new Promise((resolve) => server.app.server.close(resolve));

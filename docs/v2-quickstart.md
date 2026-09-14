@@ -73,6 +73,10 @@ npm run v2:m1-eval
 
 该命令顺序运行20个真实模型+Spark场景，并把报告写入忽略提交的`.v2-artifacts/evaluations/`；会产生按量模型费用，普通CI不会自动运行。它只报告代码阶段，不能替代完整E2E。
 
+完整本机生命周期可执行`npm run v2:e2e:smoke`先跑1例，再执行`npm run v2:e2e`跑满20例。当前正式报告20/20，但每例包含3次Spark执行，复跑约需数分钟；不会再次调用模型，因为精确复用已冻结的真实M1产物。
+
+邀请认证回环预览使用`V2_PREVIEW_ADMIN_PASSWORD`启动`scripts/run-public-auth-preview.mjs`。该模式只用于UI/CSRF/角色测试，临时数据库随进程结束失效，绝不能作为公网地址分享。
+
 进入[本机调度与发布](http://127.0.0.1:3100/v2/?module=schedules)可查看M2a文件演练、M2b摘要审批/计时发布以及M2c批次与恢复监控。页面中的“发布”仅为本机测试版本激活，接口保留`publicDeployed=false`。
 
 进入[本机数据服务](http://127.0.0.1:3100/v2/?module=services)可从成功发布批次创建DAPI、执行查询测试、发布版本、组合XAPI并查看调用日志。创建应用令牌会仅显示一次，平台列表不返回令牌或哈希。

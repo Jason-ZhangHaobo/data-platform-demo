@@ -33,6 +33,9 @@
 - 运维隐私门：外部模型只可接收别名化事故和错误码，但默认`V2_ALLOW_EXTERNAL_OPS_CONTEXT=false`；没有用户对该类运维摘要的单独明确授权时，接口在创建任务前返回412。
 - 完整链路评测：冻结清单从原M1正式评测数据库导出真实Agent SQL、Spark结果与五场景断言，去除日志和本机路径；每例继续生成文件、实际演练、摘要审批、本机激活、两个墙上时钟Spark批次与健康监控。
 - 评测报告：运行中逐例写入`.v2-artifacts/full-lifecycle/<runId>/report.json`并更新`latest.json`；API/CLI/MCP和运维页只读展示，固定`deploymentScope=LOCAL_ACTUAL`、`publicDeployed=false`。
+- 邀请认证面：管理员生成一次性7天邀请码，只保存SHA-256；兑换后用户密码以scrypt保存。8小时会话令牌和CSRF令牌分别以哈希落库，浏览器使用HttpOnly会话Cookie和可读CSRF双提交Cookie。
+- 项目授权面：公开GET保持匿名只读；公网写请求同时校验来源、会话、CSRF、项目成员和API资源权限。ADMIN/ENGINEER/PRODUCT_MANAGER/VIEWER由后端映射能力，前端只根据相同权限改善禁用状态。
+- 公网秘密边界：模型Key页面入口在公网完全移除，服务端接口再次拒绝；启动管理员和模型凭证只允许云端秘密管理注入。回环认证预览可显式使用非Secure Cookie，非回环环境禁止该开关。
 
 ## 生命周期
 草稿生成/人工编辑 → 保存不可变版本 → 后台执行 → 独立验证 → 生成交付包 → 按文件演练 → 人工审批摘要 → 本机版本激活 → 计时批次 → 监控/告警/回滚 → DAPI物化与测试 → XAPI组合 → 应用授权调用。实时支线为源版本 → 人工或Agent任务草稿 → 显式启动 → 事件幂等/状态/Checkpoint → 故障告警 → 前缀校验后的断点恢复。

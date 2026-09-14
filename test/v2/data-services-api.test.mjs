@@ -229,7 +229,7 @@ test("V2 API exposes versioned DAPI/XAPI to an authorized external caller", asyn
           },
         })
       ).status,
-      403,
+      401,
     );
     await new Promise((resolve) => server.app.server.close(resolve));
     server = await listen({ store, businessStore, local: true });

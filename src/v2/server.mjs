@@ -58,6 +58,7 @@ import { QualityManager } from "./quality.mjs";
 import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
 import { OperationsManager } from "./operations.mjs";
+import { AuthManager } from "./auth.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -71,11 +72,12 @@ const text = (value, min = 1, max = 20000) => {
     throw fail(400, "提交内容长度不符合要求");
   return value.trim();
 };
-const json = (res, status, data) => {
+const json = (res, status, data, headers = {}) => {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
+    ...headers,
   });
   res.end(JSON.stringify(data));
 };
@@ -116,13 +118,27 @@ export function createV2Server(options = {}) {
         options.store ? ":memory:" : join(root, ".data/v2-reports.sqlite"),
       );
   const host = env.V2_HOST ?? "127.0.0.1",
-    local = env.V2_LOCAL_DEVELOPMENT !== "false";
+    local = env.V2_LOCAL_DEVELOPMENT !== "false",
+    insecurePublicCookies =
+      env.V2_ALLOW_INSECURE_PUBLIC_COOKIES === "true";
   if (local && !["127.0.0.1", "localhost", "::1"].includes(host))
     throw new Error("本地开发会话只能绑定回环地址");
+  if (
+    !local &&
+    insecurePublicCookies &&
+    !["127.0.0.1", "localhost", "::1"].includes(host)
+  )
+    throw new Error("非安全公网Cookie仅允许回环地址测试");
   if (env.V2_META_DRIVER && env.V2_META_DRIVER !== "sqlite")
     throw new Error(
       "云端 MySQL 元数据库尚未接入，本地启动不会回退或假报云端就绪",
     );
+  const auth = new AuthManager({
+    store,
+    project: PROJECT,
+    now: options.now,
+    env,
+  });
   const runtime = runtimeConfig(env, root),
     runner = options.runner ?? ((input) => runSpark(input, runtime));
   let modelVerifiedAt = null;
@@ -393,7 +409,13 @@ export function createV2Server(options = {}) {
       const origin = req.headers.origin;
       if (
         origin &&
-        !/^http:\/\/(localhost|127\.0\.0\.1):(3100|5173)$/.test(origin)
+        !(
+          (local &&
+            /^http:\/\/(localhost|127\.0\.0\.1):(3100|5173)$/.test(origin)) ||
+          (!local &&
+            typeof env.V2_PUBLIC_ORIGIN === "string" &&
+            origin === env.V2_PUBLIC_ORIGIN)
+        )
       )
         throw fail(403, "请求来源不允许");
       if (
@@ -402,20 +424,89 @@ export function createV2Server(options = {}) {
       )
         throw fail(403, "无权访问此项目");
       if (method !== "GET") {
-        const hostname = new URL("http://" + req.headers.host).hostname;
-        if (!local || !["127.0.0.1", "localhost", "[::1]"].includes(hostname))
-          throw fail(403, "当前公开模式只读；邀请认证与隔离执行尚未开放");
         if (
           !["workbench", "cli", "mcp"].includes(
             req.headers["x-shuzhan-client"],
           )
         )
           throw fail(403, "缺少客户端校验");
+        if (local) {
+          const hostname = new URL("http://" + req.headers.host).hostname;
+          if (!["127.0.0.1", "localhost", "[::1]"].includes(hostname))
+            throw fail(403, "本地开发写入只能使用回环地址");
+        } else if (
+          ![
+            "/api/v2/auth/login",
+            "/api/v2/auth/redeem",
+          ].includes(path)
+        )
+          auth.requireMutation(req.headers, path);
+      }
+      if (path === "/api/v2/auth/session" && method === "GET") {
+        const context = auth.sessionFromHeaders(req.headers);
+        return json(
+          res,
+          200,
+          context
+            ? {
+                authenticated: true,
+                user: context.user,
+                role: context.role,
+                permissions: context.permissions,
+                expiresAt: context.session.expiresAt,
+              }
+            : {
+                authenticated: false,
+                mode: local
+                  ? "LOCAL_DEVELOPMENT_BYPASS"
+                  : "INVITATION_SESSION",
+              },
+        );
+      }
+      if (
+        ["/api/v2/auth/login", "/api/v2/auth/redeem"].includes(path) &&
+        method === "POST"
+      ) {
+        const body = await readBody(req),
+          attemptKey = `${req.socket.remoteAddress ?? "unknown"}:${path}`,
+          result =
+            path.endsWith("/login")
+              ? auth.login(body, { attemptKey })
+              : auth.redeemInvitation(body, { attemptKey }),
+          response = auth.sessionResponse(
+            result,
+            !local && !insecurePublicCookies,
+          );
+        return json(res, 200, response.body, {
+          "Set-Cookie": response.cookies,
+        });
+      }
+      if (path === "/api/v2/auth/logout" && method === "POST") {
+        await readBody(req);
+        return json(res, 200, auth.logout(req.headers), {
+          "Set-Cookie": auth.clearCookie(
+            !local && !insecurePublicCookies,
+          ),
+        });
+      }
+      if (path === "/api/v2/auth/invitations" && method === "GET") {
+        const actor = auth.sessionFromHeaders(req.headers);
+        if (!actor) throw fail(401, "请先登录受邀账号");
+        return json(res, 200, auth.listInvitations(actor));
+      }
+      if (path === "/api/v2/auth/invitations" && method === "POST") {
+        const actor = auth.sessionFromHeaders(req.headers);
+        if (!actor) throw fail(401, "请先登录受邀账号");
+        return json(
+          res,
+          201,
+          auth.createInvitation(actor, await readBody(req)),
+        );
       }
       if (path === "/api/v2/status" && method === "GET")
         return json(res, 200, {
           projectId: PROJECT,
-          mode: local ? "LOCAL_DEVELOPMENT" : "PUBLIC_READONLY",
+          mode: local ? "LOCAL_DEVELOPMENT" : "PUBLIC_INVITATION",
           capabilities,
           model: {
             ...modelSettings(env),
@@ -483,6 +574,11 @@ export function createV2Server(options = {}) {
             health: operations.overview().health,
             scope: "LOCAL_CROSS_MODULE_OBSERVABILITY",
             publicDeployed: false,
+          },
+          authentication: {
+            ...auth.overview(),
+            mode: local ? "LOCAL_DEVELOPMENT_BYPASS" : "INVITATION_SESSION",
+            publicSessionEnforced: !local,
           },
         });
       const openService = path.match(
@@ -1627,6 +1723,8 @@ export function createV2Server(options = {}) {
         return json(res, 200, report);
       }
       if (path === "/api/v2/settings/model-key" && method === "POST") {
+        if (!local)
+          throw fail(403, "公网模式禁止通过页面写入模型密钥");
         const body = await readBody(req);
         const configured = await saveLocalModelKey(root, env, body.apiKey);
         modelVerifiedAt = null;
@@ -2580,6 +2678,7 @@ export function createV2Server(options = {}) {
     reports,
     reportStore,
     operations,
+    auth,
   };
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

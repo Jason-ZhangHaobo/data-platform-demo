@@ -4,14 +4,18 @@
 
 ## 权限与请求
 
-当前仅支持回环地址上的单项目开发会话，不是受邀用户登录系统。
-写请求要求 JSON 对象和 `X-Shuzhan-Client: workbench`；这一标记只用于本地请求来源防护，不能作为公网身份。
-公开只读模式拒绝全部写入。跨项目请求返回 403；未知记录返回 404；无效参数返回 400。
+本地开发仍只绑定回环地址并绕过登录。公网模式支持匿名只读与受邀会话；写请求要求JSON、已允许Origin、`X-Shuzhan-Client`、会话Cookie、CSRF和项目角色权限。客户端标记本身不是身份。
+匿名写入返回401；缺CSRF、跨项目或越权返回403；未知记录返回404；无效参数返回400。公网模型Key写入始终拒绝。
 SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携带 `Idempotency-Key`。
 
 | 方法与路径 | 输入 / 行为 | 输出 |
 |---|---|---|
 | GET /status | 配置状态，永不返回密钥 | 模块范围、Spark/模型/元数据状态 |
+| GET /auth/session | Cookie可选 | 当前受邀用户、角色、权限和过期时间；匿名返回authenticated=false |
+| POST /auth/login | 邮箱/密码 | 建立8小时会话，设置会话/CSRF Cookie；错误不区分用户是否存在 |
+| POST /auth/redeem | 一次性邀请码/显示名称/密码 | 创建受邀项目成员、使邀请码失效并登录 |
+| POST /auth/logout | Cookie + CSRF | 撤销服务端会话并清除两类Cookie |
+| GET/POST /auth/invitations | ADMIN会话；创建时邮箱/角色 | 列表不返回哈希；创建邀请码只显示一次、7天到期 |
 | POST /settings/model-key | 仅本地开发模式；apiKey | 保存到权限 0600 的 .env.local，只返回 configured；不自动调用模型 |
 | GET /contexts | 五组虚构证券输入 | 表结构、口径、参考 SQL；不含独立预期结果 |
 | POST /revisions | sql、contextId | 201；不可变版本、SHA-256 |

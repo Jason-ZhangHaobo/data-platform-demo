@@ -26,6 +26,8 @@ import {
   Layers3,
   ListChecks,
   LoaderCircle,
+  LogIn,
+  LogOut,
   Menu,
   MoreHorizontal,
   PanelRightClose,
@@ -55,6 +57,11 @@ import { QualityWorkbench } from "./QualityWorkbench";
 import { SecurityWorkbench } from "./SecurityWorkbench";
 import { ReportsWorkbench } from "./ReportsWorkbench";
 import { OperationsWorkbench } from "./OperationsWorkbench";
+import {
+  AuthDialog,
+  InvitationPanel,
+  type AuthSession,
+} from "./AuthDialog";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 type Column = { name: string; type: string };
 type Context = {
@@ -92,6 +99,13 @@ type Status = {
   spark: { available: boolean; engine: string; isolation: string };
   metadata: { driver: string; cloudVerified: boolean };
   publicReady: boolean;
+  authentication?: {
+    users: number;
+    pendingInvitations: number;
+    activeSessions: number;
+    mode: string;
+    publicSessionEnforced: boolean;
+  };
   capabilities: Capability[];
 };
 type Revision = {
@@ -171,6 +185,7 @@ async function api<T>(
   let response: Response;
   try {
     response = await fetch("/api/v2" + path, {
+      credentials: "same-origin",
       signal: AbortSignal.timeout(15000),
       method: body === undefined ? "GET" : "POST",
       headers: {
@@ -179,6 +194,9 @@ async function api<T>(
         ...(requestOptions.actorId
           ? { "X-Actor-Id": requestOptions.actorId }
           : {}),
+        ...(body === undefined || !cookieValue("shuzhan_csrf")
+          ? {}
+          : { "X-CSRF-Token": cookieValue("shuzhan_csrf") }),
         ...(body === undefined
           ? {}
           : { "Idempotency-Key": crypto.randomUUID() }),
@@ -203,6 +221,26 @@ async function api<T>(
   if (!response.ok) throw new Error(value.message ?? "请求失败");
   return value;
 }
+function cookieValue(name: string) {
+  return document.cookie
+    .split(";")
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(`${name}=`))
+    ?.slice(name.length + 1);
+}
+const navPermission: Record<string, string> = {
+  sources: "INGESTION",
+  sync: "INGESTION",
+  development: "DEVELOPMENT",
+  schedules: "DELIVERY",
+  assets: "ASSETS",
+  quality: "QUALITY",
+  security: "ADMIN",
+  services: "SERVICES",
+  reports: "REPORTS",
+  ops: "OPS",
+  settings: "ADMIN",
+};
 function App() {
   const [status, setStatus] = useState<Status>(),
     [contexts, setContexts] = useState<Context[]>([]),
@@ -233,6 +271,8 @@ function App() {
   const [deliverySourceId, setDeliverySourceId] = useState("");
   const [modelSaveError, setModelSaveError] = useState("");
   const [modelSaved, setModelSaved] = useState(false);
+  const [session, setSession] = useState<AuthSession>({ authenticated: false });
+  const [authOpen, setAuthOpen] = useState(false);
   sqlRef.current = sql;
   const modalRef = useRef<HTMLElement>(null);
   const context = contexts.find((c) => c.id === contextId),
@@ -250,12 +290,13 @@ function App() {
     window.history.replaceState(null, "", url);
   }, [nav, status]);
   const reload = async () => {
-    const [s, c, r, v, a] = await Promise.all([
+    const [s, c, r, v, a, authSession] = await Promise.all([
       api<Status>("/status"),
       api<Context[]>("/contexts"),
       api<Run[]>("/runs"),
       api<Revision[]>("/revisions"),
       api<AgentTask[]>("/agent/tasks"),
+      api<AuthSession>("/auth/session"),
     ]);
     setStatus(s);
     setContexts(c);
@@ -269,6 +310,7 @@ function App() {
     }
     setRun(r[0]);
     setAgentTask(a[0]);
+    setSession(authSession);
   };
   useEffect(() => {
     reload().catch((e) => setError(e.message));
@@ -420,7 +462,12 @@ function App() {
     setNotice("已切换输入数据，代码保留；重新运行以验证结果");
   };
   const dirty = sql !== original,
-    canWrite = status?.mode === "LOCAL_DEVELOPMENT";
+    canWrite = Boolean(
+      status?.mode === "LOCAL_DEVELOPMENT" ||
+        (session.authenticated &&
+          (session.permissions?.includes("*") ||
+            session.permissions?.includes(navPermission[nav]))),
+    );
   const runRevision = revisions.find(
     (revision) => revision.id === run?.revisionId,
   );
@@ -508,10 +555,22 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <span className="user-avatar">数</span>
+          <span className="user-avatar">
+            {session.user?.displayName?.slice(0, 1) ?? "数"}
+          </span>
           <div>
-            <strong>本地开发者</strong>
-            <small>合成数据 · 开发验证</small>
+            <strong>
+              {status?.mode === "LOCAL_DEVELOPMENT"
+                ? "本地开发者"
+                : session.user?.displayName ?? "公开访客"}
+            </strong>
+            <small>
+              {status?.mode === "LOCAL_DEVELOPMENT"
+                ? "合成数据 · 开发验证"
+                : session.authenticated
+                  ? `${session.role} · 受邀项目`
+                  : "合成数据 · 只读浏览"}
+            </small>
           </div>
           <button aria-label="查看运行设置" onClick={() => setNav("settings")}>
             <Settings2 size={16} />
@@ -528,12 +587,44 @@ function App() {
           <div className="top-actions">
             <span className="env-tag">
               <span />
-              本地验证
+              {status?.mode === "LOCAL_DEVELOPMENT"
+                ? "本地验证"
+                : session.authenticated
+                  ? "受邀会话"
+                  : "公开浏览"}
             </span>
+            {status?.mode !== "LOCAL_DEVELOPMENT" &&
+              (session.authenticated ? (
+                <button
+                  className="auth-session-button-v2"
+                  title="退出受邀会话"
+                  onClick={async () => {
+                    try {
+                      await api("/auth/logout", {});
+                      setSession({ authenticated: false });
+                      setNotice("已退出受邀会话，切换为公开只读浏览");
+                    } catch (cause) {
+                      setError((cause as Error).message);
+                    }
+                  }}
+                >
+                  <LogOut size={14} />
+                  {session.user?.displayName}
+                </button>
+              ) : (
+                <button
+                  className="auth-session-button-v2"
+                  onClick={() => setAuthOpen(true)}
+                >
+                  <LogIn size={14} />受邀用户登录
+                </button>
+              ))}
             <button title="帮助与验收标准" onClick={() => setNav("settings")}>
               <CircleHelp size={18} />
             </button>
-            <span className="top-avatar">数</span>
+            <span className="top-avatar">
+              {session.user?.displayName?.slice(0, 1) ?? "数"}
+            </span>
           </div>
         </header>
         {error && (
@@ -1258,11 +1349,14 @@ function App() {
                     <small>云端 MySQL 尚未验收</small>
                   </article>
                 </div>
+                {status?.mode !== "LOCAL_DEVELOPMENT" &&
+                  session.role === "ADMIN" && <InvitationPanel api={api} />}
                 <div className="definition-card">
                   <h3>连接真实模型服务</h3>
                   <p>
-                    在百炼北京地域获取本项目专用 API Key，然后在下方粘贴。
-                    仅保存密钥，不会自动调用收费模型；不要使用公司凭证。
+                    {status?.mode === "LOCAL_DEVELOPMENT"
+                      ? "在百炼北京地域获取本项目专用 API Key，然后在下方粘贴。仅保存密钥，不会自动调用收费模型；不要使用公司凭证。"
+                      : "公网部署的模型密钥只能由服务端秘密管理配置，浏览器与受邀用户均不能写入或读取。"}
                   </p>
                   <a
                     className="button"
@@ -1273,6 +1367,7 @@ function App() {
                     打开百炼 API Key 页面
                     <ArrowUpRight size={14} />
                   </a>
+                  {status?.mode === "LOCAL_DEVELOPMENT" ? (
                   <form
                     className="model-key-form"
                     onSubmit={async (event) => {
@@ -1350,6 +1445,17 @@ function App() {
                       Git。公网模式禁用此入口。
                     </small>
                   </form>
+                  ) : (
+                    <div className="public-model-boundary-v2">
+                      <ShieldCheck size={17} />
+                      <div>
+                        <strong>网页密钥入口已关闭</strong>
+                        <p>
+                          部署管理员在云端秘密管理中配置；项目成员只能看到“已配置/未配置”，不能看到或替换值。
+                        </p>
+                      </div>
+                    </div>
+                  )}
                   <p>
                     本地开发运行：npm run
                     v2:dev。公网写入将在邀请认证、隔离执行与预算验收后开放。
@@ -1401,7 +1507,9 @@ function App() {
             {status ? "服务已连接" : "正在连接服务"}
           </span>
           <span>经典中台 × Data Agent</span>
-          <span className="statusbar-right">合成证券数据 · 本地开发验证</span>
+          <span className="statusbar-right">
+            合成证券数据 · {status?.mode === "LOCAL_DEVELOPMENT" ? "本地开发验证" : session.authenticated ? "受邀项目会话" : "公开只读演示"}
+          </span>
         </footer>
       </main>
       {notice && (
@@ -1409,6 +1517,16 @@ function App() {
           <CheckCircle2 size={17} />
           {notice}
         </div>
+      )}
+      {authOpen && (
+        <AuthDialog
+          api={api}
+          onClose={() => setAuthOpen(false)}
+          onAuthenticated={(nextSession) => {
+            setSession(nextSession);
+            setNotice("受邀项目会话已建立");
+          }}
+        />
       )}
       {modal && (
         <div className="modal-overlay" onClick={() => setModal(null)}>
