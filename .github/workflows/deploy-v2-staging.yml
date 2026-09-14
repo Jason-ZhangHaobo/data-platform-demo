@@ -1,0 +1,183 @@
+name: Deploy V2 staging
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: v2-staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Verify and deploy V2 to the dedicated FC function
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: v2-staging
+    env:
+      ALIBABA_CLOUD_REGION_ID: cn-hangzhou
+      ALIYUN_ROLE_ARN: acs:ram::1170828584875736:role/dataplatform-github-staging-deploy-role
+      ALIYUN_OIDC_PROVIDER_ARN: acs:ram::1170828584875736:oidc-provider/github-actions-data-platform
+      FUNCTION_NAME: ${{ vars.V2_FUNCTION_NAME || 'dataplatform-v2-staging-api' }}
+      PUBLIC_URL: ${{ vars.V2_PUBLIC_URL }}
+      V2_PUBLIC_ORIGIN: ${{ vars.V2_PUBLIC_ORIGIN }}
+      OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
+      V2_MYSQL_HOST: ${{ secrets.V2_MYSQL_HOST }}
+      V2_MYSQL_PORT: ${{ secrets.V2_MYSQL_PORT }}
+      V2_MYSQL_USER: ${{ secrets.V2_MYSQL_USER }}
+      V2_MYSQL_PASSWORD: ${{ secrets.V2_MYSQL_PASSWORD }}
+      V2_MYSQL_DATABASE: ${{ secrets.V2_MYSQL_DATABASE }}
+      V2_BOOTSTRAP_ADMIN_EMAIL: ${{ secrets.V2_BOOTSTRAP_ADMIN_EMAIL }}
+      V2_BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.V2_BOOTSTRAP_ADMIN_PASSWORD }}
+      V2_BOOTSTRAP_ADMIN_NAME: ${{ secrets.V2_BOOTSTRAP_ADMIN_NAME }}
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install locked development dependencies
+        run: npm ci
+
+      - name: Run complete quality gate
+        run: npm run ci
+
+      - name: Build minimal Debian 12 function package
+        run: scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
+
+      - name: Verify package runtime and contents
+        run: |
+          mkdir -p /tmp/shuzhan-v2-runtime-check
+          unzip -q v2-function.zip runtime/node package.json -d /tmp/shuzhan-v2-runtime-check
+          chmod 0755 /tmp/shuzhan-v2-runtime-check/runtime/node
+          test "$(/tmp/shuzhan-v2-runtime-check/runtime/node -p 'process.platform + "/" + process.arch')" = "linux/x64"
+          /tmp/shuzhan-v2-runtime-check/runtime/node -e 'import("node:sqlite").then(() => process.stdout.write("node:sqlite ready\n"))'
+          unzip -l v2-function.zip | grep -q 'src/v2/cloud-server.mjs'
+          unzip -l v2-function.zip | grep -q 'web-dist/index.html'
+          unzip -l v2-function.zip | grep -q 'fixtures/sources/positions_baseline.csv'
+          ! unzip -l v2-function.zip | grep -E '(^|/)(\.env|\.env\.local|[^/]+\.(pem|key))$'
+
+      - name: Validate required deployment configuration
+        run: |
+          for name in PUBLIC_URL V2_PUBLIC_ORIGIN OSS_BUCKET V2_MYSQL_HOST V2_MYSQL_USER V2_MYSQL_PASSWORD V2_MYSQL_DATABASE V2_BOOTSTRAP_ADMIN_EMAIL V2_BOOTSTRAP_ADMIN_PASSWORD DASHSCOPE_API_KEY; do
+            test -n "${!name}" || { echo "Missing GitHub v2-staging configuration: $name" >&2; exit 1; }
+          done
+          case "$PUBLIC_URL" in https://*) ;; *) echo 'PUBLIC_URL must use HTTPS' >&2; exit 1 ;; esac
+          test "$V2_PUBLIC_ORIGIN" = "${PUBLIC_URL%/}" || { echo 'V2_PUBLIC_ORIGIN must equal PUBLIC_URL without trailing slash' >&2; exit 1; }
+
+      - name: Set up Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@v1
+        with:
+          version: "3.4.11"
+
+      - name: Configure Alibaba Cloud credentials with GitHub OIDC
+        uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ env.ALIYUN_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.ALIYUN_OIDC_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-staging
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+
+      - name: Require a dedicated pre-created staging function
+        run: |
+          umask 077
+          aliyun fc GetFunction --functionName "$FUNCTION_NAME" > current-v2-function.json
+          jq -e --arg name "$FUNCTION_NAME" '.functionName == $name' current-v2-function.json >/dev/null
+
+      - name: Update the dedicated V2 function
+        run: |
+          umask 077
+          base64 -w 0 v2-function.zip > v2-function.zip.b64
+          current_env="$(jq -c '.environmentVariables // {}' current-v2-function.json)"
+          jq -n \
+            --rawfile zip v2-function.zip.b64 \
+            --argjson current "$current_env" \
+            --arg public_origin "$V2_PUBLIC_ORIGIN" \
+            --arg bucket "$OSS_BUCKET" \
+            --arg mysql_host "$V2_MYSQL_HOST" \
+            --arg mysql_port "${V2_MYSQL_PORT:-3306}" \
+            --arg mysql_user "$V2_MYSQL_USER" \
+            --arg mysql_password "$V2_MYSQL_PASSWORD" \
+            --arg mysql_database "$V2_MYSQL_DATABASE" \
+            --arg admin_email "$V2_BOOTSTRAP_ADMIN_EMAIL" \
+            --arg admin_password "$V2_BOOTSTRAP_ADMIN_PASSWORD" \
+            --arg admin_name "${V2_BOOTSTRAP_ADMIN_NAME:-平台管理员}" \
+            --arg model_key "$DASHSCOPE_API_KEY" \
+            '$current + {
+              PORT:"9000",
+              V2_LOCAL_DEVELOPMENT:"false",
+              V2_PUBLIC_ORIGIN:$public_origin,
+              V2_MYSQL_HOST:$mysql_host,
+              V2_MYSQL_PORT:$mysql_port,
+              V2_MYSQL_USER:$mysql_user,
+              V2_MYSQL_PASSWORD:$mysql_password,
+              V2_MYSQL_DATABASE:$mysql_database,
+              V2_MYSQL_POOL_SIZE:"2",
+              V2_MYSQL_CONNECT_TIMEOUT_MS:"5000",
+              OSS_BUCKET:$bucket,
+              OSS_ENDPOINT:"oss-cn-hangzhou-internal.aliyuncs.com",
+              V2_OSS_STATE_OBJECT_KEY:"data-platform-v2/state/project-securities-lab.json",
+              V2_OSS_STATE_MAX_BYTES:"41943040",
+              V2_BOOTSTRAP_ADMIN_EMAIL:$admin_email,
+              V2_BOOTSTRAP_ADMIN_PASSWORD:$admin_password,
+              V2_BOOTSTRAP_ADMIN_NAME:$admin_name,
+              DASHSCOPE_API_KEY:$model_key,
+              V2_MODEL:"qwen3-coder-plus",
+              V2_MODEL_BASE_URL:"https://dashscope.aliyuncs.com/compatible-mode/v1"
+            } | {
+              code:{zipFile:$zip},
+              runtime:"custom.debian12",
+              handler:"not-used",
+              cpu:0.25,
+              memorySize:512,
+              diskSize:512,
+              timeout:120,
+              instanceConcurrency:1,
+              internetAccess:true,
+              environmentVariables:.,
+              customRuntimeConfig:{port:9000,command:["/code/runtime/node"],args:["src/v2/cloud-server.mjs"]},
+              vpcConfig:{vpcId:"vpc-bp1ndb4243ew96drhs8zv",vSwitchIds:["vsw-bp1e8fz4pfi0ed7kvp5zv"],securityGroupId:"sg-bp11iqykaweqpigltq44"}
+            }' > v2-function-update.json
+          aliyun fc UpdateFunction --functionName "$FUNCTION_NAME" --body-file v2-function-update.json > v2-function-result.json
+          jq -e --arg name "$FUNCTION_NAME" '.functionName == $name and .instanceConcurrency == 1 and .runtime == "custom.debian12"' v2-function-result.json >/dev/null
+
+      - name: Verify public persistence and fail-closed writes
+        run: |
+          status_file="$(mktemp)"
+          curl --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 3 \
+            "$PUBLIC_URL/api/v2/status" > "$status_file"
+          jq -e '
+            .mode == "PUBLIC_INVITATION" and
+            .metadata.driver == "mysql-project-snapshot-cas" and
+            .metadata.cloudVerified == true and
+            .persistence.mode == "single-instance-two-store-cas" and
+            .persistence.dataState.driver == "oss-json-snapshot-cas" and
+            .persistence.dataState.healthy == true and
+            .authentication.publicSessionEnforced == true and
+            .publicReady == false
+          ' "$status_file" >/dev/null
+          curl --fail --silent --show-error "$PUBLIC_URL/v2/" | grep -q '<title>数栈 · 智能数据工作台</title>'
+          write_status="$(curl --silent --output /tmp/anonymous-write.json --write-out '%{http_code}' \
+            -X POST "$PUBLIC_URL/api/v2/revisions" \
+            -H "Origin: $V2_PUBLIC_ORIGIN" \
+            -H 'Content-Type: application/json' \
+            -H 'X-Shuzhan-Client: workbench' \
+            -H 'Idempotency-Key: deployment-anonymous-write' \
+            --data '{"sql":"SELECT 1","contextId":"holdings-t1"}')"
+          test "$write_status" = "401"
+          jq -e '.code == "AUTHENTICATION_REQUIRED"' /tmp/anonymous-write.json >/dev/null
+
+      - name: Remove generated files containing deployment secrets
+        if: always()
+        run: |
+          rm -f v2-function.zip.b64 v2-function-update.json current-v2-function.json v2-function-result.json /tmp/anonymous-write.json
+          rm -rf /tmp/shuzhan-v2-runtime-check

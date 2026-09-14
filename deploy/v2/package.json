@@ -1,0 +1,12 @@
+{
+  "name": "shuzhan-v2-cloud-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "mysql2": "3.24.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -15,3 +15,4 @@ coverage/
 web-dist/
 __pycache__/
 *.py[cod]
+v2-function.zip

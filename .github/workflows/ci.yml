@@ -24,3 +24,10 @@ jobs:
         run: npm ci
       - name: Run quality gate
         run: npm run ci
+      - name: Verify deployable V2 Function Compute package
+        run: |
+          scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
+          unzip -q v2-function.zip runtime/node -d /tmp/shuzhan-v2-ci
+          chmod 0755 /tmp/shuzhan-v2-ci/runtime/node
+          test "$(/tmp/shuzhan-v2-ci/runtime/node -p 'process.platform + "/" + process.arch')" = "linux/x64"
+          /tmp/shuzhan-v2-ci/runtime/node -e 'import("node:sqlite").then(() => process.stdout.write("node:sqlite ready\n"))'

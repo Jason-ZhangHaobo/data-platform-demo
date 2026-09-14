@@ -20,6 +20,7 @@ const files = [
   ...(await filesUnder("bin")),
   ...(await filesUnder("test")),
   ...(await filesUnder("docs")),
+  ...(await filesUnder("deploy")),
   ...(await filesUnder(".github")),
   ...(await filesUnder("web")),
   ...(await filesUnder("fixtures")),
@@ -33,6 +34,11 @@ for (const file of files.filter((path) => path.endsWith(".mjs"))) {
   });
   if (checked.status !== 0)
     throw new Error(checked.stderr || `Syntax check failed: ${file}`);
+}
+for (const file of files.filter((path) => path.endsWith(".sh"))) {
+  const checked = spawnSync("bash", ["-n", file], { encoding: "utf8" });
+  if (checked.status !== 0)
+    throw new Error(checked.stderr || `Shell syntax check failed: ${file}`);
 }
 const forbidden = [
   /AKID[A-Za-z0-9]{12,}/,
