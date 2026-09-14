@@ -8,7 +8,7 @@
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
 | npm run ci | 最新 166/166 测试通过，源码检查、旧版构建、V2 TypeScript/Vite 构建通过 | 原159项全部保留；新增远程Spark协议6项及3.5.9云交付绑定1项 |
-| npm run v2:spark-test | 最新 35/35 通过 | 真正 Apache Spark 3.5.7；包含五场景、测试SQL真实执行、失败定位与假通过拦截；约22.9秒 |
+| npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；23.891秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
 | git diff --check | 通过 | 无差异空白错误 |
@@ -260,3 +260,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 云交付清单从实际远程运行读取3.5.9和`FUNCTION_PROCESS`，生成`remote-spark-worker-v1`；远程3.5.7即使断言通过也不能生成云包。
 - 大包构建限制Linux x64/Python3.10、最大480MiB、拒绝秘密文件与覆盖已有ZIP；GitHub手动构建产物只保留1天，后续通过私有OSS交给FC，不走Base64 API上传。
 - 本轮只完成构建配方和静态/单元门；GitHub工作流尚未实际运行，Java层ARN、FC私网/函数鉴权、真实Spark启动和费用均待云账号核验。详见[隔离Spark Worker](isolated-spark-worker.md)。
+- 项目隔离的本机PySpark/py4j随后按固定哈希升级到3.5.9/0.10.9.9；35项真实Spark用例在新版本全部通过，23.891秒。该本机升级不改变上述GitHub/FC待办。

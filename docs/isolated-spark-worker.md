@@ -34,6 +34,8 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 - 云交付包必须由实际3.5.9 Worker运行产生，并把引擎版本、`FUNCTION_PROCESS`隔离和2GiB内存写入版本化部署清单；
 - 远程运行如果报告3.5.7，交付包生成失败关闭；本机历史3.5.7包仍可复验，不被改写。
 
+同日已把项目隔离的本机运行时升级为Spark3.5.9/py4j0.10.9.9，并在新版本重新执行35项引擎、交叉口径与测试SQL用例，35/35通过、耗时23.891秒。该证据仍属于本机，不替代W1—W5云端门槛。
+
 官方依据：[Apache Spark 3.5.9发布](https://spark.apache.org/news/)、[Apache Spark下载与安全提示](https://spark.apache.org/downloads)、[PySpark 3.5.9 PyPI元数据](https://pypi.org/pypi/pyspark/3.5.9/json)。
 
 ## 构建包

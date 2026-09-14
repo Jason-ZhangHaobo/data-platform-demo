@@ -5,7 +5,7 @@
 
 ## 1. 启动
 
-验证环境：macOS arm64、Node.js 24.19.0、Python 3.12、Java 17、Spark 3.5.7。
+当前验证环境：macOS arm64、Node.js 24.19.0、Python 3.12、Java 17、Spark 3.5.9。2026-09-15之前的不可变运行证据仍记录当时的Spark 3.5.7。
 在本工作目录执行：
 
 ```bash
