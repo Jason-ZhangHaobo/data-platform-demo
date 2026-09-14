@@ -26,6 +26,13 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /agent/tasks | 历史委托 | 状态、尝试次数、用量和产物 |
 | GET /agent/tasks/:id | 指定委托 | 同上 |
 | POST /agent/tasks/:id/cancel | 取消委托及其执行 | CANCELLED |
+| GET /delivery/packages | 当前项目交付包摘要列表 | 不返回大段文件正文 |
+| POST /delivery/packages | sourceRunId、name + 幂等键 | 当前验证通过版本的不可变文件包；NOT_PUBLISHED |
+| GET /delivery/packages/:id | 交付包详情 | manifest、files、digest，可导出JSON |
+| POST /delivery/packages/:id/verify | scheduledFor + 幂等键 | 202；本机按文件演练编号，不发布 |
+| GET /delivery/verifications | 当前项目演练历史 | 文件摘要、状态与实际运行证据 |
+| GET /delivery/verifications/:id | 指定演练 | 同上 |
+| POST /delivery/verifications/:id/cancel | 取消排队/运行中的演练 | CANCELLED |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
@@ -59,4 +66,4 @@ Spark 3.5.7 只允许已登记的 accounts/positions/cash 合成数据视图、�
 
 真实用户认证、跨用户授权、云端元数据库/OSS、自动恢复、多实例队列、审批及发布绑定在后续门槛内。
 DAPI/XAPI 的发布和外部消费、版本回滚、交易日调度、V2 CLI/MCP 尚未实现。
-验证包不能被称为部署包或已发布任务。
+M1验证包不能被称为已部署任务。M2a新增交付包包含实际被解析的部署清单，但仍是本机文件演练，未进行云端部署或发布；详见 [交付规范](m2a-delivery.md)。

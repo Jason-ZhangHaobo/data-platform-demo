@@ -28,6 +28,7 @@
     "v2:test": "node --test test/v2/*.test.mjs",
     "v2:spark-test": ".runtime/python/bin/python scripts/verify-spark.py",
     "v2:runtime-test": "node scripts/verify-runtime.mjs",
+    "v2:package": "node bin/shuzhan-package.mjs",
     "v2:bootstrap": "bash scripts/bootstrap-runtime.sh"
   },
   "engines": {

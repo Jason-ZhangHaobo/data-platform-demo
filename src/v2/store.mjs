@@ -86,7 +86,7 @@ export class MetadataStore {
     }
   }
   interruptPending(project) {
-    for (const kind of ["run", "agent"])
+    for (const kind of ["run", "agent", "delivery_verification"])
       for (const item of this.list(kind, project))
         if (["QUEUED", "RUNNING"].includes(item.status))
           this.update(kind, item.id, project, {

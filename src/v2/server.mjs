@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -15,6 +16,13 @@ import { runSpark, runtimeConfig } from "./spark.mjs";
 import { generateSql, modelSettings, ModelUnavailable } from "./model.mjs";
 import { capabilities } from "./capabilities.mjs";
 import { saveLocalModelKey } from "./model-credentials.mjs";
+import {
+  createDeliveryPackage,
+  validateDeliveryPackage,
+  resolveDeliverySchedule,
+  unpackDeliveryPackage,
+} from "./delivery.mjs";
+import { verifyDeliveryDirectory } from "./delivery-runner.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -235,6 +243,154 @@ export function createV2Server(options = {}) {
         return json(res, 200, store.list("run", PROJECT));
       if (path === "/api/v2/agent/tasks" && method === "GET")
         return json(res, 200, store.list("agent", PROJECT));
+      if (path === "/api/v2/delivery/packages" && method === "GET")
+        return json(
+          res,
+          200,
+          store.list("delivery_package", PROJECT).map(({ files, ...item }) => ({
+            ...item,
+            fileNames: Object.keys(files),
+          })),
+        );
+      if (path === "/api/v2/delivery/verifications" && method === "GET")
+        return json(res, 200, store.list("delivery_verification", PROJECT));
+      if (path === "/api/v2/delivery/packages" && method === "POST") {
+        const body = await readBody(req),
+          sourceRun = get("run", text(body.sourceRunId, 1, 80));
+        const name =
+          body.name === undefined ? "客户资产 T+1" : text(body.name, 1, 80);
+        const bundle = createDeliveryPackage({
+          run: sourceRun,
+          revision: get("revision", sourceRun.revisionId),
+          name,
+        });
+        const key = text(req.headers["idempotency-key"], 1, 100);
+        const dedup = store.deduplicate(
+          PROJECT + ":delivery:" + key,
+          hash(
+            JSON.stringify({
+              sourceRunId: sourceRun.id,
+              name,
+              validationContractId,
+            }),
+          ),
+          () =>
+            store.create("delivery_package", PROJECT, {
+              ...bundle,
+              sourceRunId: sourceRun.id,
+              stage: "M2A",
+              published: false,
+            }),
+        );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          get("delivery_package", dedup.id),
+        );
+      }
+      const deliveryRecord = path.match(
+        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel))?$/,
+      );
+      if (deliveryRecord) {
+        const kind =
+          deliveryRecord[1] === "packages"
+            ? "delivery_package"
+            : "delivery_verification";
+        const item = get(kind, deliveryRecord[2]);
+        if (method === "GET" && !deliveryRecord[3]) return json(res, 200, item);
+        if (
+          kind === "delivery_verification" &&
+          deliveryRecord[3] === "cancel" &&
+          method === "POST"
+        ) {
+          if (!terminal.has(item.status)) {
+            store.update(kind, item.id, PROJECT, { status: "CANCELLED" });
+            controls.get(item.id)?.abort();
+          }
+          return json(res, 200, get(kind, item.id));
+        }
+        if (
+          kind === "delivery_package" &&
+          deliveryRecord[3] === "verify" &&
+          method === "POST"
+        ) {
+          const body = await readBody(req),
+            scheduledFor = text(body.scheduledFor, 1, 50);
+          const plan = validateDeliveryPackage(item, item.digest),
+            occurrence = resolveDeliverySchedule(plan, scheduledFor);
+          if (!occurrence.eligible) throw fail(422, "样例非交易日，未提交执行");
+          if (occurrence.businessDate !== plan.fixtures.context.businessDate)
+            throw fail(
+              422,
+              "T+1业务日与冻结输入不一致，请使用交付包中的样例演练时刻",
+            );
+          if (!options.deliveryRunner && !runtime.available)
+            throw fail(503, "Spark 尚未就绪");
+          const key = text(req.headers["idempotency-key"], 1, 100);
+          const dedup = store.deduplicate(
+            PROJECT + ":delivery-verify:" + key,
+            hash(
+              JSON.stringify({
+                packageId: item.id,
+                digest: item.digest,
+                scheduledFor,
+              }),
+            ),
+            () =>
+              store.create("delivery_verification", PROJECT, {
+                packageId: item.id,
+                packageDigest: item.digest,
+                scheduledFor,
+                status: "QUEUED",
+                scope: "M2A_LOCAL_FILE_REHEARSAL",
+                published: false,
+                fullLifecycleE2E: false,
+              }),
+          );
+          const verification = get("delivery_verification", dedup.id);
+          if (!dedup.replayed)
+            schedule("delivery_verification", verification, async (signal) => {
+              const parent = join(root, ".v2-artifacts", "delivery");
+              mkdirSync(parent, { recursive: true });
+              const directory = unpackDeliveryPackage(
+                item,
+                join(parent, verification.id),
+                item.digest,
+              );
+              const executeFiles =
+                options.deliveryRunner ??
+                ((input) => verifyDeliveryDirectory(input, { runtime }));
+              const result = await executeFiles({
+                directory,
+                expectedDigest: item.digest,
+                scheduledFor,
+                signal,
+              });
+              if (
+                !["SUCCEEDED", "FAILED", "VALIDATION_FAILED"].includes(
+                  result.status,
+                )
+              )
+                throw new Error("文件执行器返回无效状态");
+              if (
+                get("delivery_verification", verification.id).status !==
+                "CANCELLED"
+              )
+                store.update(
+                  "delivery_verification",
+                  verification.id,
+                  PROJECT,
+                  {
+                    ...result,
+                    published: false,
+                    fullLifecycleE2E: false,
+                    finishedAt: new Date().toISOString(),
+                  },
+                );
+            });
+          return json(res, 202, verification);
+        }
+      }
       const record = path.match(
         /^\/api\/v2\/(runs|revisions|agent\/tasks)\/([a-f0-9-]+)(?:\/(cancel|bundle))?$/,
       );

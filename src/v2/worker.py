@@ -1,5 +1,5 @@
 """Real Spark SQL runner for allowlisted synthetic fixtures. Local process != production isolation."""
-import json, os, sys, time
+import json, os, sys, time, hashlib
 from decimal import Decimal
 from pathlib import Path
 import sqlglot
@@ -18,7 +18,10 @@ def validate_sql(sql, context):
     if len(trees) != 1 or not isinstance(trees[0], exp.Select):
         raise ValueError("仅允许单条 SELECT/WITH 查询")
     tree=trees[0]
-    allowed={t["name"] for t in context["tables"]} | {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+    base_tables={t["name"] for t in context["tables"]}
+    aliases={cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+    if "__shuzhan_result" in aliases:raise ValueError("内部结果视图名称不可用作CTE别名")
+    allowed=base_tables | aliases
     for table in tree.find_all(exp.Table):
         if table.name not in allowed or table.db or table.catalog:
             raise ValueError("SQL 引用了未授权数据表")
@@ -62,6 +65,7 @@ def execute(spark, sql, context):
     frame=spark.sql(validated)
     data=frame.limit(1001).collect()
     if len(data)>1000: raise ValueError("查询结果超过 1000 行")
+    spark.createDataFrame(data,frame.schema).createOrReplaceTempView("__shuzhan_result")
     rows=[{k:format(v,"f") if isinstance(v,Decimal) else v for k,v in row.asDict().items()} for row in data]
     return {"rows":rows,"columns":[{"name":f.name,"type":f.dataType.simpleString()} for f in frame.schema.fields],"engine":"Apache Spark","engineVersion":spark.version}
 
@@ -82,8 +86,22 @@ def verify(rows,expected):
     if set(actual)!={r["client_id"] for r in expected}:issues.append("结果包含范围外客户或缺少客户")
     return {"passed":not issues,"issues":issues,"assertions":["客户范围","客户唯一性","持仓去重","现金独立聚合","金额精度","证券代码去重","输出契约"]}
 
-def execute_with_validation(spark,sql,context,validation_contexts=None):
+def execute_test_sql(spark,test_sql,context):
+    scope={"advisorId":context["advisorId"],"businessDate":context["businessDate"],"tables":[{"name":"__shuzhan_result"}]}
+    query=validate_sql(test_sql,scope)
+    frame=spark.sql(query)
+    values=frame.limit(2).collect()
+    passed=frame.columns==["passed"] and len(values)==1 and values[0]["passed"] is True
+    return {"passed":passed,"sqlHash":hashlib.sha256(test_sql.encode()).hexdigest(),"rowCount":len(values),"columns":frame.columns}
+
+def execute_with_validation(spark,sql,context,validation_contexts=None,test_sql=None):
     result=execute(spark,sql,context)
+    result["mainSqlExecuted"]=True
+    test_check=None
+    if test_sql is not None:
+        try:test_check=execute_test_sql(spark,test_sql,context)
+        except Exception as error:
+            test_check={"passed":False,"sqlHash":hashlib.sha256(test_sql.encode()).hexdigest(),"error":str(error)[:3000]}
     selected=verify(result["rows"],context["expected"])
     regressions=[{"contextId":context["id"],"name":context["name"],**selected}]
     if validation_contexts is not None and (not isinstance(validation_contexts,list) or len(validation_contexts)>5):
@@ -96,11 +114,13 @@ def execute_with_validation(spark,sql,context,validation_contexts=None):
         checked=verify(actual["rows"],check_context["expected"])
         regressions.append({"contextId":check_context["id"],"name":check_context["name"],**checked})
     issues=[check["name"]+"："+issue for check in regressions for issue in check["issues"]]
+    if test_check is not None and not test_check["passed"]:issues.append("tests.sql："+test_check.get("error","没有得到唯一的 passed=true 结果"))
     result["validation"]={
         "passed":not issues,"issues":issues,"assertions":selected["assertions"],
         "selectedPassed":selected["passed"],"scope":"SELECTED_AND_REGISTERED_FIXTURES","regressions":regressions,
     }
     result["status"]="SUCCEEDED" if result["validation"]["passed"] else "VALIDATION_FAILED"
+    if test_check is not None:result["testSqlValidation"]=test_check
     return result
 
 if __name__=="__main__":
@@ -109,7 +129,7 @@ if __name__=="__main__":
     try:
         validate_sql(payload["sql"],payload["context"])
         spark=create_spark();spark.sparkContext.setLogLevel("ERROR")
-        result=execute_with_validation(spark,payload["sql"],payload["context"],payload.get("validationContexts",[]))
+        result=execute_with_validation(spark,payload["sql"],payload["context"],payload.get("validationContexts",[]),payload.get("testSql"))
     except Exception as error:
         result={"status":"FAILED","error":str(error)[:5000],"engine":"Apache Spark"}
     finally:

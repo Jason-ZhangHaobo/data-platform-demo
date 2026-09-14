@@ -13,7 +13,7 @@ export function runtimeConfig(env = process.env, root = process.cwd()) {
   };
 }
 export function runSpark(
-  { sql, context, validationContexts = [], signal, timeoutMs = 90000 },
+  { sql, context, validationContexts = [], testSql, signal, timeoutMs = 90000 },
   config = runtimeConfig(),
 ) {
   if (signal?.aborted) return Promise.reject(new Error("运行已取消"));
@@ -30,7 +30,10 @@ export function runSpark(
   mkdirSync(directory, { recursive: true });
   const input = join(directory, "input.json"),
     output = join(directory, "output.json");
-  writeFileSync(input, JSON.stringify({ sql, context, validationContexts })); // Generated per-run input; never committed.
+  writeFileSync(
+    input,
+    JSON.stringify({ sql, context, validationContexts, testSql }),
+  ); // Generated per-run input; never committed.
   return new Promise((resolveResult, reject) => {
     const child = spawn(
       config.python,

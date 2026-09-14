@@ -27,9 +27,14 @@ export const capabilities = [
     id: "schedules",
     group: "开发交付",
     name: "调度与发布",
-    description: "工作流、依赖与版本交付",
-    stage: "M2",
-    features: ["DAG 与交易日历", "部署文件", "灰度与回滚"],
+    description: "已验证 SQL 的文件交付与本机演练",
+    stage: "M2a",
+    features: [
+      "版本化调度与部署文件",
+      "样例交易日历与DAG校验",
+      "本机文件演练",
+      "真实上线与回滚（M2b待实现）",
+    ],
   },
   {
     id: "assets",

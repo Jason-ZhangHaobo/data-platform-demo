@@ -47,6 +47,7 @@ import {
   Save,
 } from "lucide-react";
 import "./styles.css";
+import { DeliveryWorkbench } from "./DeliveryWorkbench";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 type Column = { name: string; type: string };
 type Context = {
@@ -215,6 +216,7 @@ function App() {
     [expanded, setExpanded] = useState("positions");
   const sqlRef = useRef(sql);
   const [modelKey, setModelKey] = useState("");
+  const [deliverySourceId, setDeliverySourceId] = useState("");
   const [modelSaveError, setModelSaveError] = useState("");
   const [modelSaved, setModelSaved] = useState(false);
   sqlRef.current = sql;
@@ -1042,6 +1044,23 @@ function App() {
                         {agentTask.error && (
                           <p className="validation-error">{agentTask.error}</p>
                         )}
+                        {agentTask.status === "SUCCEEDED" &&
+                          agentTask.validationContractId ===
+                            status?.validationContract?.id && (
+                            <button
+                              className="button"
+                              title="基于该委托已验证的代码版本，不包含未保存修改"
+                              onClick={() => {
+                                setDeliverySourceId(
+                                  agentTask.attempts.at(-1)?.runId ?? "",
+                                );
+                                setNav("schedules");
+                              }}
+                            >
+                              生成该版本交付包
+                              <ArrowRight size={15} />
+                            </button>
+                          )}
                         {agentTask.sql && !isPending(agentTask.status) && (
                           <button
                             className="button"
@@ -1141,7 +1160,16 @@ function App() {
             </div>
             <h1>{active?.name}</h1>
             <p className="module-subtitle">{active?.description}</p>
-            {nav === "assets" || nav === "sources" ? (
+            {nav === "schedules" ? (
+              <DeliveryWorkbench
+                api={api}
+                runs={runs}
+                contractId={status?.validationContract?.id}
+                sourceRunId={deliverySourceId}
+                canWrite={Boolean(canWrite)}
+                onBack={() => setNav("development")}
+              />
+            ) : nav === "assets" || nav === "sources" ? (
               <>
                 <div className="module-summary">
                   <Database size={22} />
