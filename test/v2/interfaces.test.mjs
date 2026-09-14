@@ -311,6 +311,19 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     0,
   );
   assert.equal(requests[8].path, "/operations/incidents/incident-id");
+  assert.equal(
+    await runV2Cli(
+      ["evaluations", "full-lifecycle"],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[9].path, "/evaluations/full-lifecycle/latest");
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -413,6 +426,7 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "ops_incident_resolve",
     "ops_diagnosis_list",
     "ops_diagnosis_create",
+    "full_lifecycle_evaluation_latest",
   ])
     assert.ok(names.includes(required));
   assert.match(createApp.description, /明确确认/);

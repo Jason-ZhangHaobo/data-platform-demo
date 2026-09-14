@@ -142,6 +142,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET/POST /operations/agent/diagnoses | 列表或诊断需求 | 默认外发门关闭；开启后只发送别名化聚合事故证据 |
 | GET /operations/agent/diagnoses/:id | 无 | 诊断、建议、证据引用、置信度和不可执行边界 |
 | POST /operations/agent/diagnoses/:id/cancel | 空对象 | 取消诊断并保留记录 |
+| GET /evaluations/full-lifecycle/latest | 无 | 最新20条本机完整链路、阶段证据、批次和阻塞/取消/救援；固定非公网 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；

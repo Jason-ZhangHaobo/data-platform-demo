@@ -1,0 +1,3201 @@
+{
+  "format": "shuzhan-frozen-code-evidence/v1",
+  "sourceEvaluationRunId": "a6ccf750-836d-4f1b-8e73-a66da710e1bb",
+  "sourceReportSha256": "8da9a47f1f1ebc081e7c781000a3f6b77c322cede18fac62092aaf1677b5a32b",
+  "caseSetDigest": "c97cce1aacd9d5ba02e8b188019e252445aeec6c7db501f5838179ca9de7aa7e",
+  "caseCount": 20,
+  "classification": "SYNTHETIC_SECURITIES_ONLY",
+  "logsIncluded": false,
+  "fullLifecycleE2E": false,
+  "generatedAt": "2026-09-14T17:47:16.533Z",
+  "cases": [
+    {
+      "caseId": "holdings-t1--build",
+      "contextId": "holdings-t1",
+      "category": "FROM_MINIMAL_DRAFT",
+      "requirement": "完成财富顾问名下客户的T+1资产加工。输出客户、持仓市值、可用现金、总资产和证券数量；金额保持两位小数。请根据表结构补全当前草稿。",
+      "seedSqlHash": "7c2e442650382d1e4649a1614003f55c0794040c49be1e7954363dcaa131b288",
+      "original": {
+        "agentTaskId": "ade041d3-4023-4df1-8beb-6b4d85f001eb",
+        "runId": "c4c4c029-a719-40ca-80f6-937735605f46",
+        "revisionId": "7f0af267-e8b3-42d6-83f3-3b779835787e",
+        "attemptCount": 1,
+        "usedTokens": 942,
+        "startedAt": "2026-09-14T05:40:47.245Z",
+        "finishedAt": "2026-09-14T05:41:05.413Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\ncash_agg AS (\n  SELECT \n    client_id,\n    SUM(available_cash) as total_available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n),\npositions_distinct AS (\n  SELECT DISTINCT\n    position_id,\n    client_id,\n    security_code,\n    market_value\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\nposition_stats AS (\n  SELECT \n    client_id,\n    SUM(COALESCE(market_value, 0)) as holding_market_value,\n    COUNT(DISTINCT security_code) as security_count\n  FROM positions_distinct\n  GROUP BY client_id\n)\nSELECT \n  ac.client_id,\n  COALESCE(ps.holding_market_value, 0) as holding_market_value,\n  COALESCE(ca.total_available_cash, 0) as available_cash,\n  COALESCE(ps.holding_market_value, 0) + COALESCE(ca.total_available_cash, 0) as total_assets,\n  COALESCE(ps.security_count, 0) as security_count\nFROM advisor_clients ac\nLEFT JOIN position_stats ps ON ac.client_id = ps.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "79d6b7d192d324e5ead25af0669f40d2a3b689212f9a0ef7df24157b7e0c4eb0",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 9203,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "holdings-t1--cash-dedup",
+      "contextId": "holdings-t1",
+      "category": "REPAIR_DUPLICATE_CASH",
+      "requirement": "调试当前客户资产SQL：现金不能因为多条持仓被重复累计，同一position_id的重复记录不能重复计入，但不同position_id即使金额相同也必须保留。",
+      "seedSqlHash": "36572638f3d7c73087a0ed2f06c8ca2e36efea05566c5ef5e7f7316aa187df27",
+      "original": {
+        "agentTaskId": "85c026dd-042a-48e0-b79a-611a8d81433b",
+        "runId": "46d04c23-dcc7-44b2-8da7-24273770c587",
+        "revisionId": "ca5301b3-8595-4ad1-a0d4-edfcc21acc09",
+        "attemptCount": 2,
+        "usedTokens": 2221,
+        "startedAt": "2026-09-14T05:41:05.416Z",
+        "finishedAt": "2026-09-14T05:41:42.335Z"
+      },
+      "code": {
+        "sql": "WITH distinct_positions AS (\n  SELECT DISTINCT position_id, client_id, security_code, market_value, trade_date\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\nposition_summary AS (\n  SELECT client_id,\n         SUM(COALESCE(market_value, 0)) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM distinct_positions\n  GROUP BY client_id\n),\ncash_summary AS (\n  SELECT client_id,\n         SUM(COALESCE(available_cash, 0)) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n)\nSELECT a.client_id,\n       COALESCE(ps.holding_market_value, 0) AS holding_market_value,\n       COALESCE(cs.available_cash, 0) AS available_cash,\n       COALESCE(ps.holding_market_value, 0) + COALESCE(cs.available_cash, 0) AS total_assets,\n       COALESCE(ps.security_count, 0) AS security_count\nFROM accounts a\nLEFT JOIN position_summary ps ON a.client_id = ps.client_id\nLEFT JOIN cash_summary cs ON a.client_id = cs.client_id\nWHERE a.advisor_id = '{{advisor_id}}'",
+        "sqlHash": "4b79088b3c5ed178a030c8cd0942cbd740c8140ba8eb5e86edf4e24b3296e977",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 8074,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "holdings-t1--cash-only",
+      "contextId": "holdings-t1",
+      "category": "REPAIR_CASH_ONLY_CLIENT",
+      "requirement": "修改当前资产加工代码：顾问名下只有现金、没有持仓的客户也必须出现，持仓市值和证券数量为0；仅统计指定交易日。",
+      "seedSqlHash": "e204a6a71f451c3a684738c9fc3fcc2d1c6dcde4c81f7c511bbce5e40ec53755",
+      "original": {
+        "agentTaskId": "9b43a741-5306-4f74-b888-d8a8fba5e1aa",
+        "runId": "291842e3-d598-48c6-8220-6ed17cae59b9",
+        "revisionId": "09cc93f5-0c7e-496e-b576-a2bdb3d948ba",
+        "attemptCount": 1,
+        "usedTokens": 1019,
+        "startedAt": "2026-09-14T05:41:42.336Z",
+        "finishedAt": "2026-09-14T05:41:58.678Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\nposition_agg AS (\n  SELECT client_id,\n         SUM(market_value) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM (\n    SELECT DISTINCT position_id, client_id, security_code, market_value\n    FROM positions\n    WHERE trade_date = '{{trade_date}}'\n  ) p_distinct\n  GROUP BY client_id\n),\ncash_agg AS (\n  SELECT client_id,\n         SUM(available_cash) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n)\nSELECT ac.client_id,\n       COALESCE(pa.holding_market_value, 0) AS holding_market_value,\n       COALESCE(ca.available_cash, 0) AS available_cash,\n       COALESCE(pa.holding_market_value, 0) + COALESCE(ca.available_cash, 0) AS total_assets,\n       COALESCE(pa.security_count, 0) AS security_count\nFROM advisor_clients ac\nLEFT JOIN position_agg pa ON ac.client_id = pa.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "93513be7f60dfbb887f3f23453eed3ad877ba3e181342d79aae308dfe569989b",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7891,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "holdings-t1--scope",
+      "contextId": "holdings-t1",
+      "category": "REPAIR_FIELD_AND_SCOPE",
+      "requirement": "运行提示positions没有advisor_id。请依据实际字段修复顾问范围关联，并同时补齐现金、去重和金额精度；不要扩大到顾问范围外客户。",
+      "seedSqlHash": "6021bc91edef35f2da94d1a55f02ef6129a64635611e6bb70463faf27b4c9326",
+      "original": {
+        "agentTaskId": "95893bde-f755-49b6-9a1d-6a43a4b87b99",
+        "runId": "0f2e2241-61c7-4906-ac8b-30360dfb6f80",
+        "revisionId": "7a93a1fb-d2e6-43d8-a2dd-0697caa4cc2d",
+        "attemptCount": 3,
+        "usedTokens": 3515,
+        "startedAt": "2026-09-14T05:41:58.679Z",
+        "finishedAt": "2026-09-14T05:42:41.010Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\nposition_values AS (\n  SELECT DISTINCT p.position_id, p.client_id, p.market_value, p.security_code\n  FROM positions p\n  JOIN advisor_clients ac ON p.client_id = ac.client_id\n  WHERE p.trade_date = '{{trade_date}}'\n),\ncash_agg AS (\n  SELECT ac.client_id, \n         SUM(COALESCE(c.available_cash, 0)) AS available_cash\n  FROM advisor_clients ac\n  LEFT JOIN cash c ON ac.client_id = c.client_id AND c.trade_date = '{{trade_date}}'\n  GROUP BY ac.client_id\n),\nholding_summary AS (\n  SELECT client_id,\n         SUM(COALESCE(market_value, 0)) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM position_values\n  GROUP BY client_id\n)\nSELECT ac.client_id,\n       COALESCE(hs.holding_market_value, 0) AS holding_market_value,\n       COALESCE(ca.available_cash, 0) AS available_cash,\n       COALESCE(hs.holding_market_value, 0) + COALESCE(ca.available_cash, 0) AS total_assets,\n       COALESCE(hs.security_count, 0) AS security_count\nFROM advisor_clients ac\nLEFT JOIN holding_summary hs ON ac.client_id = hs.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "8dab8c656aeda716c7782696df735ec22f36b9cee88521cb6e4b3394e02a7646",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 8032,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "cash-change--build",
+      "contextId": "cash-change",
+      "category": "FROM_MINIMAL_DRAFT",
+      "requirement": "完成财富顾问名下客户的T+1资产加工。输出客户、持仓市值、可用现金、总资产和证券数量；金额保持两位小数。请根据表结构补全当前草稿。",
+      "seedSqlHash": "7c2e442650382d1e4649a1614003f55c0794040c49be1e7954363dcaa131b288",
+      "original": {
+        "agentTaskId": "ed4da209-338e-4d0f-a3a5-1841e81f09fc",
+        "runId": "c44e3bab-c4d6-424c-a3ee-2787ff643c88",
+        "revisionId": "235c7f1d-c99f-4982-94fe-63ceaedb62b7",
+        "attemptCount": 1,
+        "usedTokens": 933,
+        "startedAt": "2026-09-14T05:42:41.011Z",
+        "finishedAt": "2026-09-14T05:42:57.935Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\ncash_agg AS (\n  SELECT \n    client_id,\n    SUM(available_cash) as total_available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n),\npositions_distinct AS (\n  SELECT DISTINCT\n    position_id,\n    client_id,\n    security_code,\n    market_value\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\nposition_stats AS (\n  SELECT \n    client_id,\n    SUM(market_value) as holding_market_value,\n    COUNT(DISTINCT security_code) as security_count\n  FROM positions_distinct\n  GROUP BY client_id\n)\nSELECT \n  ac.client_id,\n  COALESCE(ps.holding_market_value, 0) as holding_market_value,\n  COALESCE(ca.total_available_cash, 0) as available_cash,\n  COALESCE(ps.holding_market_value, 0) + COALESCE(ca.total_available_cash, 0) as total_assets,\n  COALESCE(ps.security_count, 0) as security_count\nFROM advisor_clients ac\nLEFT JOIN position_stats ps ON ac.client_id = ps.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "37e94ea3d9faf89fb7a1679835a0e30f2229a2b2e3e94a03d6bd6a8b732025f4",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7821,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "800.00",
+            "total_assets": "2300.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "cash-change--cash-dedup",
+      "contextId": "cash-change",
+      "category": "REPAIR_DUPLICATE_CASH",
+      "requirement": "调试当前客户资产SQL：现金不能因为多条持仓被重复累计，同一position_id的重复记录不能重复计入，但不同position_id即使金额相同也必须保留。",
+      "seedSqlHash": "36572638f3d7c73087a0ed2f06c8ca2e36efea05566c5ef5e7f7316aa187df27",
+      "original": {
+        "agentTaskId": "0942450f-0512-4182-9ed5-e1f3e297f5c5",
+        "runId": "0746b226-09c0-4190-a9ab-265367d5bc45",
+        "revisionId": "da62b8dc-938d-498d-8c4b-25f204e7e7b3",
+        "attemptCount": 2,
+        "usedTokens": 2176,
+        "startedAt": "2026-09-14T05:42:57.935Z",
+        "finishedAt": "2026-09-14T05:43:28.163Z"
+      },
+      "code": {
+        "sql": "WITH distinct_positions AS (\n  SELECT DISTINCT position_id, client_id, security_code, market_value, trade_date\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\nposition_agg AS (\n  SELECT client_id,\n         SUM(market_value) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM distinct_positions\n  GROUP BY client_id\n),\ncash_agg AS (\n  SELECT client_id, \n         SUM(available_cash) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n)\nSELECT a.client_id,\n       COALESCE(pa.holding_market_value, 0) AS holding_market_value,\n       COALESCE(ca.available_cash, 0) AS available_cash,\n       COALESCE(pa.holding_market_value, 0) + COALESCE(ca.available_cash, 0) AS total_assets,\n       COALESCE(pa.security_count, 0) AS security_count\nFROM accounts a\nLEFT JOIN position_agg pa ON a.client_id = pa.client_id\nLEFT JOIN cash_agg ca ON a.client_id = ca.client_id\nWHERE a.advisor_id = '{{advisor_id}}'",
+        "sqlHash": "d20d209f58d581cc3185d088b7b6e60cf4f80576dd5a90f92637abf5845a418f",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 8082,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "800.00",
+            "total_assets": "2300.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "cash-change--cash-only",
+      "contextId": "cash-change",
+      "category": "REPAIR_CASH_ONLY_CLIENT",
+      "requirement": "修改当前资产加工代码：顾问名下只有现金、没有持仓的客户也必须出现，持仓市值和证券数量为0；仅统计指定交易日。",
+      "seedSqlHash": "e204a6a71f451c3a684738c9fc3fcc2d1c6dcde4c81f7c511bbce5e40ec53755",
+      "original": {
+        "agentTaskId": "9a1b05eb-f71e-421a-889e-f8036ff64608",
+        "runId": "3fcd9c1b-a63a-4883-b45f-ec1b7173b09e",
+        "revisionId": "02f44b7e-ae90-49f3-a740-24c58d315f75",
+        "attemptCount": 3,
+        "usedTokens": 4950,
+        "startedAt": "2026-09-14T05:43:28.164Z",
+        "finishedAt": "2026-09-14T05:44:08.646Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\nclient_positions AS (\n  SELECT DISTINCT position_id, client_id, security_code, market_value, trade_date\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\naggregated_positions AS (\n  SELECT \n    ac.client_id,\n    COALESCE(SUM(cp.market_value), 0) AS holding_market_value,\n    COALESCE(COUNT(DISTINCT cp.security_code), 0) AS security_count\n  FROM advisor_clients ac\n  LEFT JOIN client_positions cp ON ac.client_id = cp.client_id\n  GROUP BY ac.client_id\n),\ncash_agg AS (\n  SELECT \n    client_id,\n    COALESCE(SUM(available_cash), 0) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n)\nSELECT \n  ap.client_id,\n  ap.holding_market_value,\n  COALESCE(ca.available_cash, 0) AS available_cash,\n  ap.holding_market_value + COALESCE(ca.available_cash, 0) AS total_assets,\n  ap.security_count\nFROM aggregated_positions ap\nLEFT JOIN cash_agg ca ON ap.client_id = ca.client_id",
+        "sqlHash": "39b0c7bd0d046c979eb3deb14e51474d134810f214304de4a5dec688855134da",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7697,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "800.00",
+            "total_assets": "2300.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "cash-change--scope",
+      "contextId": "cash-change",
+      "category": "REPAIR_FIELD_AND_SCOPE",
+      "requirement": "运行提示positions没有advisor_id。请依据实际字段修复顾问范围关联，并同时补齐现金、去重和金额精度；不要扩大到顾问范围外客户。",
+      "seedSqlHash": "6021bc91edef35f2da94d1a55f02ef6129a64635611e6bb70463faf27b4c9326",
+      "original": {
+        "agentTaskId": "6bfaed3a-c2a0-44f7-a819-10fb01a15e2c",
+        "runId": "bdc69317-37fe-4a9d-aca8-ff1bc84fbecc",
+        "revisionId": "5304066a-002b-4103-9401-4247d0e6e6e3",
+        "attemptCount": 2,
+        "usedTokens": 2235,
+        "startedAt": "2026-09-14T05:44:08.647Z",
+        "finishedAt": "2026-09-14T05:44:41.293Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT DISTINCT a.client_id\n  FROM accounts a\n  WHERE a.advisor_id = '{{advisor_id}}'\n),\nposition_values AS (\n  SELECT p.client_id,\n         SUM(p.market_value) AS holding_market_value,\n         COUNT(DISTINCT p.security_code) AS security_count\n  FROM (\n    SELECT DISTINCT position_id, client_id, security_code, market_value\n    FROM positions\n    WHERE trade_date = '{{trade_date}}'\n  ) p\n  JOIN advisor_clients ac ON p.client_id = ac.client_id\n  GROUP BY p.client_id\n),\ncash_values AS (\n  SELECT c.client_id,\n         SUM(c.available_cash) AS available_cash\n  FROM cash c\n  JOIN advisor_clients ac ON c.client_id = ac.client_id\n  WHERE c.trade_date = '{{trade_date}}'\n  GROUP BY c.client_id\n)\nSELECT ac.client_id,\n       COALESCE(pv.holding_market_value, 0) AS holding_market_value,\n       COALESCE(cv.available_cash, 0) AS available_cash,\n       COALESCE(pv.holding_market_value, 0) + COALESCE(cv.available_cash, 0) AS total_assets,\n       COALESCE(pv.security_count, 0) AS security_count\nFROM advisor_clients ac\nLEFT JOIN position_values pv ON ac.client_id = pv.client_id\nLEFT JOIN cash_values cv ON ac.client_id = cv.client_id",
+        "sqlHash": "7677f94a1130aeb8594cdf01689a29e05a2e8c5304e4ee2e848ead32700b3728",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 8139,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "800.00",
+            "total_assets": "2300.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "duplicate-position--build",
+      "contextId": "duplicate-position",
+      "category": "FROM_MINIMAL_DRAFT",
+      "requirement": "完成财富顾问名下客户的T+1资产加工。输出客户、持仓市值、可用现金、总资产和证券数量；金额保持两位小数。请根据表结构补全当前草稿。",
+      "seedSqlHash": "7c2e442650382d1e4649a1614003f55c0794040c49be1e7954363dcaa131b288",
+      "original": {
+        "agentTaskId": "49e85406-0809-4b58-9402-eaa41c91d0fd",
+        "runId": "6d5333fb-cd28-4950-bd66-6733c3f1b93d",
+        "revisionId": "899014c6-7e88-476e-8df5-3ed247923adb",
+        "attemptCount": 1,
+        "usedTokens": 945,
+        "startedAt": "2026-09-14T05:44:41.294Z",
+        "finishedAt": "2026-09-14T05:44:58.833Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT DISTINCT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\ncash_agg AS (\n  SELECT \n    client_id,\n    SUM(available_cash) AS total_available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n),\npositions_distinct AS (\n  SELECT DISTINCT\n    position_id,\n    client_id,\n    security_code,\n    market_value\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\npos_agg AS (\n  SELECT \n    client_id,\n    SUM(market_value) AS holding_market_value,\n    COUNT(DISTINCT security_code) AS security_count\n  FROM positions_distinct\n  GROUP BY client_id\n)\nSELECT \n  ac.client_id,\n  COALESCE(pa.holding_market_value, 0) AS holding_market_value,\n  COALESCE(ca.total_available_cash, 0) AS available_cash,\n  COALESCE(pa.holding_market_value, 0) + COALESCE(ca.total_available_cash, 0) AS total_assets,\n  COALESCE(pa.security_count, 0) AS security_count\nFROM advisor_clients ac\nLEFT JOIN pos_agg pa ON ac.client_id = pa.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "0f78dc2e1627a3bd09fa2a49a3c31310e32f16aa938383103c088d68928c529c",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7997,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "duplicate-position--cash-dedup",
+      "contextId": "duplicate-position",
+      "category": "REPAIR_DUPLICATE_CASH",
+      "requirement": "调试当前客户资产SQL：现金不能因为多条持仓被重复累计，同一position_id的重复记录不能重复计入，但不同position_id即使金额相同也必须保留。",
+      "seedSqlHash": "36572638f3d7c73087a0ed2f06c8ca2e36efea05566c5ef5e7f7316aa187df27",
+      "original": {
+        "agentTaskId": "1ef78add-a3df-4303-801c-240600ba213c",
+        "runId": "a4230743-db81-46ae-a57a-b5d79af03485",
+        "revisionId": "390b63e8-2ff2-4368-9613-0ad307ebbe9f",
+        "attemptCount": 2,
+        "usedTokens": 2221,
+        "startedAt": "2026-09-14T05:44:58.834Z",
+        "finishedAt": "2026-09-14T05:45:32.764Z"
+      },
+      "code": {
+        "sql": "WITH distinct_positions AS (\n  SELECT DISTINCT position_id, client_id, security_code, market_value, trade_date\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\nposition_summary AS (\n  SELECT client_id,\n         COALESCE(SUM(market_value), 0) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM distinct_positions\n  GROUP BY client_id\n),\ncash_summary AS (\n  SELECT client_id,\n         COALESCE(SUM(available_cash), 0) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n)\nSELECT a.client_id,\n       COALESCE(ps.holding_market_value, 0) AS holding_market_value,\n       COALESCE(cs.available_cash, 0) AS available_cash,\n       COALESCE(ps.holding_market_value, 0) + COALESCE(cs.available_cash, 0) AS total_assets,\n       COALESCE(ps.security_count, 0) AS security_count\nFROM accounts a\nLEFT JOIN position_summary ps ON a.client_id = ps.client_id\nLEFT JOIN cash_summary cs ON a.client_id = cs.client_id\nWHERE a.advisor_id = '{{advisor_id}}'",
+        "sqlHash": "6dd0d33d20f01ea4a94f02ec8ac85f979c2b34dd11607aa0a2ea692a7f4e150d",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 8213,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "duplicate-position--cash-only",
+      "contextId": "duplicate-position",
+      "category": "REPAIR_CASH_ONLY_CLIENT",
+      "requirement": "修改当前资产加工代码：顾问名下只有现金、没有持仓的客户也必须出现，持仓市值和证券数量为0；仅统计指定交易日。",
+      "seedSqlHash": "e204a6a71f451c3a684738c9fc3fcc2d1c6dcde4c81f7c511bbce5e40ec53755",
+      "original": {
+        "agentTaskId": "d1f78f50-3e85-464f-b3b2-ae88ea7eca30",
+        "runId": "30240e6a-f067-4591-b61a-8ed42972e6a3",
+        "revisionId": "ff37e214-f59a-4a8a-8d1d-4326365b8d64",
+        "attemptCount": 1,
+        "usedTokens": 1047,
+        "startedAt": "2026-09-14T05:45:32.766Z",
+        "finishedAt": "2026-09-14T05:45:48.493Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\nposition_agg AS (\n  SELECT client_id,\n         CAST(SUM(market_value) AS DECIMAL(18,2)) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM (\n    SELECT DISTINCT position_id, client_id, security_code, market_value\n    FROM positions\n    WHERE trade_date = '{{trade_date}}'\n  ) p_distinct\n  GROUP BY client_id\n),\ncash_agg AS (\n  SELECT client_id,\n         CAST(SUM(available_cash) AS DECIMAL(18,2)) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n)\nSELECT ac.client_id,\n       COALESCE(pa.holding_market_value, 0) AS holding_market_value,\n       COALESCE(ca.available_cash, 0) AS available_cash,\n       COALESCE(pa.holding_market_value, 0) + COALESCE(ca.available_cash, 0) AS total_assets,\n       COALESCE(pa.security_count, 0) AS security_count\nFROM advisor_clients ac\nLEFT JOIN position_agg pa ON ac.client_id = pa.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "e8fa4e1ef467217c426570e088b1b75098b4f61c6e260295550395bd0a7a3ed5",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7651,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(18,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(18,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(19,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "duplicate-position--scope",
+      "contextId": "duplicate-position",
+      "category": "REPAIR_FIELD_AND_SCOPE",
+      "requirement": "运行提示positions没有advisor_id。请依据实际字段修复顾问范围关联，并同时补齐现金、去重和金额精度；不要扩大到顾问范围外客户。",
+      "seedSqlHash": "6021bc91edef35f2da94d1a55f02ef6129a64635611e6bb70463faf27b4c9326",
+      "original": {
+        "agentTaskId": "ab3f57e9-4c37-43db-82f3-24d8257b006d",
+        "runId": "6d4673cc-4a1e-4610-8652-91136165c1f3",
+        "revisionId": "b8a40d61-58e9-43cf-9d91-7c81874aa214",
+        "attemptCount": 2,
+        "usedTokens": 2398,
+        "startedAt": "2026-09-14T05:45:48.493Z",
+        "finishedAt": "2026-09-14T05:46:14.490Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\nposition_values AS (\n  SELECT DISTINCT p.position_id, p.client_id, p.market_value, p.security_code\n  FROM positions p\n  JOIN advisor_clients ac ON p.client_id = ac.client_id\n  WHERE p.trade_date = '{{trade_date}}'\n),\ncash_agg AS (\n  SELECT c.client_id, \n         SUM(COALESCE(c.available_cash, 0)) AS total_available_cash\n  FROM cash c\n  JOIN advisor_clients ac ON c.client_id = ac.client_id\n  WHERE c.trade_date = '{{trade_date}}'\n  GROUP BY c.client_id\n),\nholding_summary AS (\n  SELECT client_id,\n         SUM(COALESCE(market_value, 0)) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM position_values\n  GROUP BY client_id\n)\nSELECT ac.client_id,\n       COALESCE(hs.holding_market_value, 0) AS holding_market_value,\n       COALESCE(ca.total_available_cash, 0) AS available_cash,\n       COALESCE(hs.holding_market_value, 0) + COALESCE(ca.total_available_cash, 0) AS total_assets,\n       COALESCE(hs.security_count, 0) AS security_count\nFROM advisor_clients ac\nLEFT JOIN holding_summary hs ON ac.client_id = hs.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "af1cbefb6bb28d5c0c6915739f8a3c34530fa2f8388d1d7523435f7f01a2740a",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7912,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "equal-value-positions--build",
+      "contextId": "equal-value-positions",
+      "category": "FROM_MINIMAL_DRAFT",
+      "requirement": "完成财富顾问名下客户的T+1资产加工。输出客户、持仓市值、可用现金、总资产和证券数量；金额保持两位小数。请根据表结构补全当前草稿。",
+      "seedSqlHash": "7c2e442650382d1e4649a1614003f55c0794040c49be1e7954363dcaa131b288",
+      "original": {
+        "agentTaskId": "21f43d8c-2d5d-4fb3-95c7-64eb7cba284c",
+        "runId": "7e194932-7f7f-4856-a3cc-fd7597bc07ff",
+        "revisionId": "e54d1c05-f740-445a-ae52-30fc29a3cc38",
+        "attemptCount": 2,
+        "usedTokens": 2230,
+        "startedAt": "2026-09-14T05:46:14.491Z",
+        "finishedAt": "2026-09-14T05:46:48.358Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\nposition_agg AS (\n  SELECT \n    p.client_id,\n    SUM(p.market_value) AS holding_market_value,\n    COUNT(DISTINCT p.security_code) AS security_count\n  FROM (\n    SELECT DISTINCT position_id, client_id, security_code, market_value\n    FROM positions\n    WHERE trade_date = '{{trade_date}}'\n  ) p\n  INNER JOIN advisor_clients ac ON p.client_id = ac.client_id\n  GROUP BY p.client_id\n),\ncash_agg AS (\n  SELECT \n    c.client_id,\n    SUM(c.available_cash) AS available_cash\n  FROM cash c\n  INNER JOIN advisor_clients ac ON c.client_id = ac.client_id\n  WHERE c.trade_date = '{{trade_date}}'\n  GROUP BY c.client_id\n)\nSELECT \n  ac.client_id,\n  COALESCE(pa.holding_market_value, 0) AS holding_market_value,\n  COALESCE(ca.available_cash, 0) AS available_cash,\n  COALESCE(pa.holding_market_value, 0) + COALESCE(ca.available_cash, 0) AS total_assets,\n  COALESCE(pa.security_count, 0) AS security_count\nFROM advisor_clients ac\nLEFT JOIN position_agg pa ON ac.client_id = pa.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "396cb761eadf974374a80164c1c42e507d5ce6eddbb7434fa017c678322f9a8b",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7906,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "2500.00",
+            "available_cash": "300.00",
+            "total_assets": "2800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "equal-value-positions--cash-dedup",
+      "contextId": "equal-value-positions",
+      "category": "REPAIR_DUPLICATE_CASH",
+      "requirement": "调试当前客户资产SQL：现金不能因为多条持仓被重复累计，同一position_id的重复记录不能重复计入，但不同position_id即使金额相同也必须保留。",
+      "seedSqlHash": "36572638f3d7c73087a0ed2f06c8ca2e36efea05566c5ef5e7f7316aa187df27",
+      "original": {
+        "agentTaskId": "98d53dae-9f07-479d-ae69-dd174587c09b",
+        "runId": "0b9ad8cd-761f-4682-8f97-9ccc4b5bf232",
+        "revisionId": "ccdf2e3c-47e9-49e9-a5ca-974346e93894",
+        "attemptCount": 2,
+        "usedTokens": 2208,
+        "startedAt": "2026-09-14T05:46:48.359Z",
+        "finishedAt": "2026-09-14T05:47:21.619Z"
+      },
+      "code": {
+        "sql": "WITH distinct_positions AS (\n  SELECT DISTINCT position_id, client_id, security_code, market_value, trade_date\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\nposition_summary AS (\n  SELECT client_id,\n         SUM(COALESCE(market_value, 0)) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM distinct_positions\n  GROUP BY client_id\n),\ncash_summary AS (\n  SELECT client_id, \n         SUM(COALESCE(available_cash, 0)) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n)\nSELECT a.client_id,\n       COALESCE(ps.holding_market_value, 0) AS holding_market_value,\n       COALESCE(cs.available_cash, 0) AS available_cash,\n       COALESCE(ps.holding_market_value, 0) + COALESCE(cs.available_cash, 0) AS total_assets,\n       COALESCE(ps.security_count, 0) AS security_count\nFROM accounts a\nLEFT JOIN position_summary ps ON a.client_id = ps.client_id\nLEFT JOIN cash_summary cs ON a.client_id = cs.client_id\nWHERE a.advisor_id = '{{advisor_id}}'",
+        "sqlHash": "77b2e68ef1a5cdd65dcc32701fd9bcd07368d45a54ebcfffe597f71b840ddb39",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7704,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "2500.00",
+            "available_cash": "300.00",
+            "total_assets": "2800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "equal-value-positions--cash-only",
+      "contextId": "equal-value-positions",
+      "category": "REPAIR_CASH_ONLY_CLIENT",
+      "requirement": "修改当前资产加工代码：顾问名下只有现金、没有持仓的客户也必须出现，持仓市值和证券数量为0；仅统计指定交易日。",
+      "seedSqlHash": "e204a6a71f451c3a684738c9fc3fcc2d1c6dcde4c81f7c511bbce5e40ec53755",
+      "original": {
+        "agentTaskId": "8247dcad-a280-493a-a040-b7886afde005",
+        "runId": "3d5e639d-e919-4a0a-baac-0d939957d52d",
+        "revisionId": "80c52a88-d23a-4250-a801-e80a2f9020b4",
+        "attemptCount": 1,
+        "usedTokens": 1036,
+        "startedAt": "2026-09-14T05:47:21.620Z",
+        "finishedAt": "2026-09-14T05:47:38.032Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\nposition_agg AS (\n  SELECT client_id,\n         SUM(market_value) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM (\n    SELECT DISTINCT position_id, client_id, security_code, market_value\n    FROM positions\n    WHERE trade_date = '{{trade_date}}'\n  ) p_distinct\n  GROUP BY client_id\n),\ncash_agg AS (\n  SELECT client_id,\n         SUM(available_cash) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n)\nSELECT ac.client_id,\n       COALESCE(pa.holding_market_value, 0) AS holding_market_value,\n       COALESCE(ca.available_cash, 0) AS available_cash,\n       COALESCE(pa.holding_market_value, 0) + COALESCE(ca.available_cash, 0) AS total_assets,\n       COALESCE(pa.security_count, 0) AS security_count\nFROM advisor_clients ac\nLEFT JOIN position_agg pa ON ac.client_id = pa.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "93513be7f60dfbb887f3f23453eed3ad877ba3e181342d79aae308dfe569989b",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7896,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "2500.00",
+            "available_cash": "300.00",
+            "total_assets": "2800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "equal-value-positions--scope",
+      "contextId": "equal-value-positions",
+      "category": "REPAIR_FIELD_AND_SCOPE",
+      "requirement": "运行提示positions没有advisor_id。请依据实际字段修复顾问范围关联，并同时补齐现金、去重和金额精度；不要扩大到顾问范围外客户。",
+      "seedSqlHash": "6021bc91edef35f2da94d1a55f02ef6129a64635611e6bb70463faf27b4c9326",
+      "original": {
+        "agentTaskId": "ce888eca-7905-4db8-b2c8-302f3d42c5a4",
+        "runId": "1ea0e9ce-e197-4024-93ce-39ad852384a0",
+        "revisionId": "446fb970-5e37-4d87-8f59-0e4064999f8d",
+        "attemptCount": 2,
+        "usedTokens": 2258,
+        "startedAt": "2026-09-14T05:47:38.033Z",
+        "finishedAt": "2026-09-14T05:48:12.489Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT DISTINCT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\nposition_values AS (\n  SELECT DISTINCT position_id, client_id, security_code, market_value\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n    AND client_id IN (SELECT client_id FROM advisor_clients)\n),\nholding_agg AS (\n  SELECT client_id,\n         SUM(COALESCE(market_value, 0)) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM position_values\n  GROUP BY client_id\n),\ncash_agg AS (\n  SELECT client_id,\n         SUM(COALESCE(available_cash, 0)) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n    AND client_id IN (SELECT client_id FROM advisor_clients)\n  GROUP BY client_id\n)\nSELECT ac.client_id,\n       COALESCE(ha.holding_market_value, 0) AS holding_market_value,\n       COALESCE(ca.available_cash, 0) AS available_cash,\n       COALESCE(ha.holding_market_value, 0) + COALESCE(ca.available_cash, 0) AS total_assets,\n       COALESCE(ha.security_count, 0) AS security_count\nFROM advisor_clients ac\nLEFT JOIN holding_agg ha ON ac.client_id = ha.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "23e00b934a9121072c5b7a751402768992f38de3a5f38a0e1be8c6c362458dcc",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 8309,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "2500.00",
+            "available_cash": "300.00",
+            "total_assets": "2800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "cash-only-client--build",
+      "contextId": "cash-only-client",
+      "category": "FROM_MINIMAL_DRAFT",
+      "requirement": "完成财富顾问名下客户的T+1资产加工。输出客户、持仓市值、可用现金、总资产和证券数量；金额保持两位小数。请根据表结构补全当前草稿。",
+      "seedSqlHash": "7c2e442650382d1e4649a1614003f55c0794040c49be1e7954363dcaa131b288",
+      "original": {
+        "agentTaskId": "358b7a20-50ee-4c8b-8c00-dfd306fe857d",
+        "runId": "4b362857-3119-4e2b-a29a-a79b9792313c",
+        "revisionId": "18c7eef3-9a8f-4243-8e65-f146731a4514",
+        "attemptCount": 1,
+        "usedTokens": 937,
+        "startedAt": "2026-09-14T05:48:12.491Z",
+        "finishedAt": "2026-09-14T05:48:28.819Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\ncash_agg AS (\n  SELECT \n    client_id,\n    SUM(available_cash) as total_available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n),\npositions_dedup AS (\n  SELECT DISTINCT\n    position_id,\n    client_id,\n    security_code,\n    market_value\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\nposition_stats AS (\n  SELECT \n    client_id,\n    SUM(market_value) as holding_market_value,\n    COUNT(DISTINCT security_code) as security_count\n  FROM positions_dedup\n  GROUP BY client_id\n)\nSELECT \n  ac.client_id,\n  COALESCE(ps.holding_market_value, 0) as holding_market_value,\n  COALESCE(ca.total_available_cash, 0) as available_cash,\n  COALESCE(ps.holding_market_value, 0) + COALESCE(ca.total_available_cash, 0) as total_assets,\n  COALESCE(ps.security_count, 0) as security_count\nFROM advisor_clients ac\nLEFT JOIN position_stats ps ON ac.client_id = ps.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "973478607396cd8579d18d46b31437f01834234f3d2480f85b128f83abf52018",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7622,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          },
+          {
+            "client_id": "CLIENT-004",
+            "holding_market_value": "0.00",
+            "available_cash": "100.00",
+            "total_assets": "100.00",
+            "security_count": 0
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "cash-only-client--cash-dedup",
+      "contextId": "cash-only-client",
+      "category": "REPAIR_DUPLICATE_CASH",
+      "requirement": "调试当前客户资产SQL：现金不能因为多条持仓被重复累计，同一position_id的重复记录不能重复计入，但不同position_id即使金额相同也必须保留。",
+      "seedSqlHash": "36572638f3d7c73087a0ed2f06c8ca2e36efea05566c5ef5e7f7316aa187df27",
+      "original": {
+        "agentTaskId": "0815916c-4f11-4c4a-a3d5-1a4de09874ad",
+        "runId": "ae38bc06-f58c-4e7e-a456-5daae721e525",
+        "revisionId": "a82a2b94-67c2-421a-a042-2966d291e2d3",
+        "attemptCount": 2,
+        "usedTokens": 2206,
+        "startedAt": "2026-09-14T05:48:28.820Z",
+        "finishedAt": "2026-09-14T05:49:00.267Z"
+      },
+      "code": {
+        "sql": "WITH distinct_positions AS (\n  SELECT DISTINCT position_id, client_id, security_code, market_value, trade_date\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\nposition_summary AS (\n  SELECT client_id,\n         SUM(COALESCE(market_value, 0)) AS holding_market_value,\n         COUNT(DISTINCT security_code) AS security_count\n  FROM distinct_positions\n  GROUP BY client_id\n),\ncash_summary AS (\n  SELECT client_id,\n         SUM(COALESCE(available_cash, 0)) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n)\nSELECT a.client_id,\n       COALESCE(ps.holding_market_value, 0) AS holding_market_value,\n       COALESCE(cs.available_cash, 0) AS available_cash,\n       COALESCE(ps.holding_market_value, 0) + COALESCE(cs.available_cash, 0) AS total_assets,\n       COALESCE(ps.security_count, 0) AS security_count\nFROM accounts a\nLEFT JOIN position_summary ps ON a.client_id = ps.client_id\nLEFT JOIN cash_summary cs ON a.client_id = cs.client_id\nWHERE a.advisor_id = '{{advisor_id}}'",
+        "sqlHash": "4b79088b3c5ed178a030c8cd0942cbd740c8140ba8eb5e86edf4e24b3296e977",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7604,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          },
+          {
+            "client_id": "CLIENT-004",
+            "holding_market_value": "0.00",
+            "available_cash": "100.00",
+            "total_assets": "100.00",
+            "security_count": 0
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "cash-only-client--cash-only",
+      "contextId": "cash-only-client",
+      "category": "REPAIR_CASH_ONLY_CLIENT",
+      "requirement": "修改当前资产加工代码：顾问名下只有现金、没有持仓的客户也必须出现，持仓市值和证券数量为0；仅统计指定交易日。",
+      "seedSqlHash": "e204a6a71f451c3a684738c9fc3fcc2d1c6dcde4c81f7c511bbce5e40ec53755",
+      "original": {
+        "agentTaskId": "8ec7e439-3297-4e8f-bb2d-8d47d4d1c019",
+        "runId": "b80250c8-ae5b-42bd-a468-ef56e81a3f83",
+        "revisionId": "0ca418f3-5c09-472a-84e4-e3c55933d869",
+        "attemptCount": 1,
+        "usedTokens": 1025,
+        "startedAt": "2026-09-14T05:49:00.268Z",
+        "finishedAt": "2026-09-14T05:49:16.604Z"
+      },
+      "code": {
+        "sql": "WITH distinct_positions AS (\n  SELECT DISTINCT position_id, client_id, security_code, market_value, trade_date\n  FROM positions\n  WHERE trade_date = '{{trade_date}}'\n),\nposition_agg AS (\n  SELECT a.client_id,\n         COALESCE(SUM(dp.market_value), 0) AS holding_market_value,\n         COALESCE(COUNT(DISTINCT dp.security_code), 0) AS security_count\n  FROM accounts a\n  LEFT JOIN distinct_positions dp ON a.client_id = dp.client_id\n  WHERE a.advisor_id = '{{advisor_id}}'\n  GROUP BY a.client_id\n),\ncash_agg AS (\n  SELECT client_id,\n         COALESCE(SUM(available_cash), 0) AS available_cash\n  FROM cash\n  WHERE trade_date = '{{trade_date}}'\n  GROUP BY client_id\n)\nSELECT pa.client_id,\n       pa.holding_market_value,\n       COALESCE(ca.available_cash, 0) AS available_cash,\n       pa.holding_market_value + COALESCE(ca.available_cash, 0) AS total_assets,\n       pa.security_count\nFROM position_agg pa\nLEFT JOIN cash_agg ca ON pa.client_id = ca.client_id",
+        "sqlHash": "cd9071cc41342a5f2c1f8d7ce278d10238d0d67627417dc1fcd9276ad29faabd",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 7785,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          },
+          {
+            "client_id": "CLIENT-004",
+            "holding_market_value": "0.00",
+            "available_cash": "100.00",
+            "total_assets": "100.00",
+            "security_count": 0
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    },
+    {
+      "caseId": "cash-only-client--scope",
+      "contextId": "cash-only-client",
+      "category": "REPAIR_FIELD_AND_SCOPE",
+      "requirement": "运行提示positions没有advisor_id。请依据实际字段修复顾问范围关联，并同时补齐现金、去重和金额精度；不要扩大到顾问范围外客户。",
+      "seedSqlHash": "6021bc91edef35f2da94d1a55f02ef6129a64635611e6bb70463faf27b4c9326",
+      "original": {
+        "agentTaskId": "0b0a385d-ea25-4d62-8ba9-3ee3cd81a8d2",
+        "runId": "a4d604b7-81b0-4ad7-8fd3-78d19daaef0a",
+        "revisionId": "fe1f6d36-4f01-4c30-b829-a9910ff8fd0b",
+        "attemptCount": 1,
+        "usedTokens": 1057,
+        "startedAt": "2026-09-14T05:49:16.605Z",
+        "finishedAt": "2026-09-14T05:49:34.145Z"
+      },
+      "code": {
+        "sql": "WITH advisor_clients AS (\n  SELECT client_id\n  FROM accounts\n  WHERE advisor_id = '{{advisor_id}}'\n),\nposition_values AS (\n  SELECT DISTINCT p.position_id, p.client_id, p.market_value, p.security_code\n  FROM positions p\n  JOIN advisor_clients ac ON p.client_id = ac.client_id\n  WHERE p.trade_date = '{{trade_date}}'\n),\ncash_agg AS (\n  SELECT c.client_id, \n         COALESCE(SUM(c.available_cash), 0) AS available_cash\n  FROM cash c\n  JOIN advisor_clients ac ON c.client_id = ac.client_id\n  WHERE c.trade_date = '{{trade_date}}'\n  GROUP BY c.client_id\n),\nholding_summary AS (\n  SELECT pv.client_id,\n         COALESCE(SUM(pv.market_value), 0) AS holding_market_value,\n         COALESCE(COUNT(DISTINCT pv.security_code), 0) AS security_count\n  FROM position_values pv\n  GROUP BY pv.client_id\n)\nSELECT ac.client_id,\n       COALESCE(hs.holding_market_value, 0) AS holding_market_value,\n       COALESCE(ca.available_cash, 0) AS available_cash,\n       COALESCE(hs.holding_market_value, 0) + COALESCE(ca.available_cash, 0) AS total_assets,\n       COALESCE(hs.security_count, 0) AS security_count\nFROM advisor_clients ac\nLEFT JOIN holding_summary hs ON ac.client_id = hs.client_id\nLEFT JOIN cash_agg ca ON ac.client_id = ca.client_id",
+        "sqlHash": "3afb47154a7d6db51d86846c1fd321e9f81d9da9d4a40bfb2a571f59166e5fe6",
+        "source": "LIVE_MODEL"
+      },
+      "execution": {
+        "engine": "Apache Spark",
+        "engineVersion": "3.5.7",
+        "durationMs": 8262,
+        "rows": [
+          {
+            "client_id": "CLIENT-001",
+            "holding_market_value": "1500.00",
+            "available_cash": "300.00",
+            "total_assets": "1800.00",
+            "security_count": 2
+          },
+          {
+            "client_id": "CLIENT-002",
+            "holding_market_value": "750.00",
+            "available_cash": "200.00",
+            "total_assets": "950.00",
+            "security_count": 1
+          },
+          {
+            "client_id": "CLIENT-004",
+            "holding_market_value": "0.00",
+            "available_cash": "100.00",
+            "total_assets": "100.00",
+            "security_count": 0
+          }
+        ],
+        "columns": [
+          {
+            "name": "client_id",
+            "type": "string"
+          },
+          {
+            "name": "holding_market_value",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "available_cash",
+            "type": "decimal(28,2)"
+          },
+          {
+            "name": "total_assets",
+            "type": "decimal(29,2)"
+          },
+          {
+            "name": "security_count",
+            "type": "bigint"
+          }
+        ],
+        "validation": {
+          "passed": true,
+          "issues": [],
+          "assertions": [
+            "客户范围",
+            "客户唯一性",
+            "持仓去重",
+            "现金独立聚合",
+            "金额精度",
+            "证券代码去重",
+            "输出契约"
+          ],
+          "selectedPassed": true,
+          "scope": "SELECTED_AND_REGISTERED_FIXTURES",
+          "regressions": [
+            {
+              "contextId": "cash-only-client",
+              "name": "客户资产 · 仅有现金客户",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "holdings-t1",
+              "name": "客户资产 T+1",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "cash-change",
+              "name": "客户资产 · 现金变更",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "duplicate-position",
+              "name": "客户资产 · 重复持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            },
+            {
+              "contextId": "equal-value-positions",
+              "name": "客户资产 · 同额不同持仓",
+              "passed": true,
+              "issues": [],
+              "assertions": [
+                "客户范围",
+                "客户唯一性",
+                "持仓去重",
+                "现金独立聚合",
+                "金额精度",
+                "证券代码去重",
+                "输出契约"
+              ]
+            }
+          ],
+          "contractId": "securities-assets-five-fixtures-2026-09-14"
+        },
+        "validationContractId": "securities-assets-five-fixtures-2026-09-14"
+      }
+    }
+  ]
+}

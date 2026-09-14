@@ -102,6 +102,25 @@ type DiagnosisTask = {
   model?: string;
   usage?: { total_tokens?: number };
 };
+type LifecycleReport = {
+  evaluationRunId: string;
+  frozenCaseCount: number;
+  completedCaseCount: number;
+  succeededCaseCount: number;
+  failedCaseCount: number;
+  localFullLifecycleRate: number;
+  targetMet: boolean;
+  totalScheduledBatches: number;
+  fullLifecycleE2E: boolean;
+  deploymentScope: string;
+  publicDeployed: boolean;
+  detourCounts: {
+    blocked: number;
+    cancelled: number;
+    failed: number;
+    rescued: number;
+  };
+};
 
 const labels: Record<string, string> = {
   HEALTHY: "健康",
@@ -136,7 +155,8 @@ export function OperationsWorkbench({ api, canWrite }: { api: Api; canWrite: boo
     [selectedIncidentId, setSelectedIncidentId] = useState(""),
     [detail, setDetail] = useState<IncidentDetail>(),
     [diagnoses, setDiagnoses] = useState<DiagnosisTask[]>([]),
-    [diagnosisTask, setDiagnosisTask] = useState<DiagnosisTask>();
+    [diagnosisTask, setDiagnosisTask] = useState<DiagnosisTask>(),
+    [lifecycle, setLifecycle] = useState<LifecycleReport>();
   const [busy, setBusy] = useState(""),
     [notice, setNotice] = useState(""),
     [error, setError] = useState("");
@@ -156,12 +176,16 @@ export function OperationsWorkbench({ api, canWrite }: { api: Api; canWrite: boo
     );
 
   const reload = async () => {
-    const [nextOverview, nextDiagnoses] = await Promise.all([
+    const [nextOverview, nextDiagnoses, nextLifecycle] = await Promise.all([
       api<Overview>("/operations/overview"),
       api<DiagnosisTask[]>("/operations/agent/diagnoses"),
+      api<LifecycleReport>("/evaluations/full-lifecycle/latest").catch(
+        () => undefined,
+      ),
     ]);
     setOverview(nextOverview);
     setDiagnoses(nextDiagnoses);
+    setLifecycle(nextLifecycle);
     const nextId =
       nextOverview.incidents.find((incident) => incident.id === selectedIncidentId)?.id ??
       nextOverview.incidents.find((incident) => incident.status !== "RESOLVED")?.id ??
@@ -270,6 +294,8 @@ export function OperationsWorkbench({ api, canWrite }: { api: Api; canWrite: boo
       {(notice || error) && <div className={error ? "ingestion-feedback error" : "ingestion-feedback"} role={error ? "alert" : "status"}>{error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}{error || notice}</div>}
 
       <section className="ops-toolbar-v2"><div><Radar size={17} /><span>已覆盖 {domainOrder.length} 个运行域 · {overview?.counts.activities ?? 0} 条活动 · {openDomains} 个域有历史失败</span></div><button className="button" onClick={refresh} disabled={!canWrite || !!busy}>{busy === "refresh" ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}扫描最新证据</button></section>
+
+      {lifecycle && <section className="ops-e2e-v2"><div className="ops-e2e-score-v2"><span>LOCAL FULL E2E</span><strong>{lifecycle.succeededCaseCount}/{lifecycle.frozenCaseCount}</strong><small>{(lifecycle.localFullLifecycleRate * 100).toFixed(0)}% · 目标≥85%</small></div><div><span className="eyebrow">COMPLETE LIFECYCLE EVALUATION</span><h3>需求 → 代码调试 → 调度部署 → 上线 → 监控</h3><p>20条均绑定原真实Agent代码证据、成功文件演练、摘要审批和两个墙上时钟Spark批次。</p><div className="ops-e2e-detours-v2"><span>{lifecycle.totalScheduledBatches}个上线批次</span><span>{lifecycle.detourCounts.blocked}次阻塞</span><span>{lifecycle.detourCounts.cancelled}次取消</span><span>{lifecycle.detourCounts.rescued}次救援</span></div></div><div className="ops-e2e-boundary-v2"><CheckCircle2 size={18} /><strong>{lifecycle.targetMet ? "本机门槛通过" : "门槛未通过"}</strong><span>{lifecycle.deploymentScope}</span><small>公网：未部署</small><code>{lifecycle.evaluationRunId.slice(0, 8)}</code></div></section>}
 
       <section className="ops-domains-v2">{domainOrder.map((domain) => { const count = overview?.domainCounts[domain] ?? { failures: 0, running: 0, succeeded: 0 }; return <article key={domain} className={count.failures ? "has-failure" : ""}><div><Activity size={15} /><strong>{domain}</strong></div><span>{count.succeeded}成功</span><span>{count.running}进行</span><span>{count.failures}失败</span></article>; })}</section>
 

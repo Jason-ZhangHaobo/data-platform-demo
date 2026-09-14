@@ -1603,6 +1603,29 @@ export function createV2Server(options = {}) {
           return json(res, 200, get("ops_agent_diagnosis", task.id));
         }
       }
+      if (
+        path === "/api/v2/evaluations/full-lifecycle/latest" &&
+        method === "GET"
+      ) {
+        let report;
+        try {
+          report = JSON.parse(
+            await readFile(
+              join(root, ".v2-artifacts", "full-lifecycle", "latest.json"),
+              "utf8",
+            ),
+          );
+        } catch {
+          throw fail(404, "尚无完整链路评测报告");
+        }
+        if (
+          report.format !== "shuzhan-full-lifecycle-evaluation/v1" ||
+          report.frozenCaseCount !== 20 ||
+          !Array.isArray(report.outcomes)
+        )
+          throw fail(409, "完整链路评测报告格式不合法");
+        return json(res, 200, report);
+      }
       if (path === "/api/v2/settings/model-key" && method === "POST") {
         const body = await readBody(req);
         const configured = await saveLocalModelKey(root, env, body.apiKey);

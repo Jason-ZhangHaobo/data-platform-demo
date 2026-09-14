@@ -97,6 +97,7 @@ const tools = [
   { name: "ops_incident_resolve", description: "仅用同资源、晚于失败的成功运行证据解除事故。", inputSchema: { type: "object", properties: { incidentId: { type: "string" }, actor: { type: "string" }, evidenceKind: { type: "string" }, evidenceId: { type: "string" }, note: { type: "string" } }, required: ["incidentId", "evidenceKind", "evidenceId", "note"] } },
   { name: "ops_diagnosis_list", description: "列出受治理运维Agent诊断。", inputSchema: { type: "object", properties: {} } },
   { name: "ops_diagnosis_create", description: "让真实模型基于事故与聚合证据诊断，不读取业务行、不执行处置。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
+  { name: "full_lifecycle_evaluation_latest", description: "读取最新20条本机完整链路评测、各阶段证据和失败/取消/救援记录；不是公网E2E。", inputSchema: { type: "object", properties: {} } },
 ];
 
 export const V2_MCP_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
@@ -430,6 +431,8 @@ async function callTool(name, args = {}) {
       method: "POST",
       body: { message: args.message },
     });
+  if (name === "full_lifecycle_evaluation_latest")
+    return client.request("/evaluations/full-lifecycle/latest");
   throw new Error(`未知V2 MCP工具：${name}`);
 }
 const response = (id, result) => JSON.stringify({ jsonrpc: "2.0", id, result });

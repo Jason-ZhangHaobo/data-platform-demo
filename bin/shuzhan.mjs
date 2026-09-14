@@ -82,6 +82,7 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan ops resolve --id INCIDENT_ID --evidence-kind offline_sync_run --evidence-id RUN_ID --note "新批次已成功"
   shuzhan ops diagnose --message "诊断当前事故"
   shuzhan ops diagnoses
+  shuzhan evaluations full-lifecycle
 
 环境变量：
   SHUZHAN_V2_API_BASE_URL  默认 http://127.0.0.1:3100/api/v2
@@ -768,6 +769,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       });
     else if (resource === "ops" && action === "diagnoses")
       result = await client.request("/operations/agent/diagnoses");
+    else if (resource === "evaluations" && action === "full-lifecycle")
+      result = await client.request("/evaluations/full-lifecycle/latest");
     else throw new Error(`不支持的V2命令：${parsed.positionals.join(" ")}`);
     out(JSON.stringify(result, null, 2));
     return 0;

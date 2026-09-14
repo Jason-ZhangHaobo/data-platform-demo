@@ -95,6 +95,7 @@ export const V2_OPERATIONS = Object.freeze([
   "ops_incident_resolve",
   "ops_diagnosis_list",
   "ops_diagnosis_create",
+  "full_lifecycle_evaluation_latest",
 ]);
 
 export class V2ApiError extends Error {
