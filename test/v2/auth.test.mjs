@@ -3,8 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { MetadataStore } from "../../src/v2/store.mjs";
-import { AuthManager } from "../../src/v2/auth.mjs";
+import {
+  AuthManager,
+  createPasswordHash,
+} from "../../src/v2/auth.mjs";
 import { PROJECT } from "../../src/v2/server.mjs";
 
 function setup() {
@@ -13,6 +17,82 @@ function setup() {
     auth = new AuthManager({ store, project: PROJECT, env: {} });
   return { store, auth, close: () => store.close() };
 }
+
+test("cloud bootstrap accepts a validated scrypt hash without retaining plaintext", () => {
+  const root = mkdtempSync(join(tmpdir(), "shuzhan-auth-hash-")),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    password = "CloudAdmin#Pass2026",
+    encoded = createPasswordHash(password),
+    auth = new AuthManager({
+      store,
+      project: PROJECT,
+      env: {
+        V2_BOOTSTRAP_ADMIN_EMAIL: "cloud-admin@example.test",
+        V2_BOOTSTRAP_ADMIN_PASSWORD_HASH: encoded,
+      },
+    });
+  try {
+    const login = auth.login({
+      email: "cloud-admin@example.test",
+      password,
+    });
+    assert.equal(login.role, "ADMIN");
+    assert.doesNotMatch(JSON.stringify(store.list("auth_user", PROJECT)), /CloudAdmin#Pass2026/);
+    const cli = spawnSync(
+      process.execPath,
+      ["bin/shuzhan-password-hash.mjs"],
+      { input: password + "\n", encoding: "utf8" },
+    );
+    assert.equal(cli.status, 0);
+    assert.match(cli.stdout.trim(), /^scrypt\$16384\$8\$1\$/);
+    assert.doesNotMatch(cli.stdout + cli.stderr, /CloudAdmin#Pass2026/);
+    const context = auth.sessionFromHeaders({
+        cookie: `shuzhan_session=${login.rawToken}`,
+      }),
+      changed = auth.changePassword(context, {
+        currentPassword: password,
+        newPassword: "RotatedAdmin#Pass2026",
+      });
+    assert.equal(
+      auth.sessionFromHeaders({
+        cookie: `shuzhan_session=${login.rawToken}`,
+      }),
+      undefined,
+    );
+    assert.equal(
+      auth.sessionFromHeaders({
+        cookie: `shuzhan_session=${changed.rawToken}`,
+      }).role,
+      "ADMIN",
+    );
+    assert.throws(
+      () =>
+        auth.login({
+          email: "cloud-admin@example.test",
+          password,
+        }),
+      { status: 401, code: "INVALID_LOGIN" },
+    );
+    assert.equal(
+      auth.login({
+        email: "cloud-admin@example.test",
+        password: "RotatedAdmin#Pass2026",
+      }).role,
+      "ADMIN",
+    );
+    assert.throws(
+      () =>
+        auth.bootstrapAdmin({
+          email: "broken@example.test",
+          displayName: "虚构管理员",
+          passwordHash: "scrypt$1$1$1$bad$bad",
+        }),
+      { status: 400, code: "INVALID_PASSWORD_HASH" },
+    );
+  } finally {
+    store.close();
+  }
+});
 
 test("single-use invitation creates a hashed-password member and revocable session", () => {
   const app = setup();

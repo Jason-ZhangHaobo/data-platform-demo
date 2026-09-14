@@ -63,10 +63,15 @@ export class AuthManager {
     this.project = project;
     this.now = now;
     this.attempts = new Map();
-    if (env.V2_BOOTSTRAP_ADMIN_EMAIL && env.V2_BOOTSTRAP_ADMIN_PASSWORD)
+    if (
+      env.V2_BOOTSTRAP_ADMIN_EMAIL &&
+      (env.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH ||
+        env.V2_BOOTSTRAP_ADMIN_PASSWORD)
+    )
       this.bootstrapAdmin({
         email: env.V2_BOOTSTRAP_ADMIN_EMAIL,
         password: env.V2_BOOTSTRAP_ADMIN_PASSWORD,
+        passwordHash: env.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH,
         displayName: env.V2_BOOTSTRAP_ADMIN_NAME ?? "平台管理员",
       });
   }
@@ -80,7 +85,9 @@ export class AuthManager {
     const user = this.store.create("auth_user", this.project, {
       email: address,
       displayName: text(input.displayName, "显示名称", 2, 50),
-      passwordHash: passwordHash(input.password),
+      passwordHash: input.passwordHash
+        ? validatePasswordHash(input.passwordHash)
+        : createPasswordHash(input.password),
       status: "ACTIVE",
       memberships: [{ projectId: this.project, role: "ADMIN" }],
       source: "BOOTSTRAP_ENV",
@@ -151,7 +158,7 @@ export class AuthManager {
     const user = this.store.create("auth_user", this.project, {
       email: invitation.email,
       displayName: text(input.displayName, "显示名称", 2, 50),
-      passwordHash: passwordHash(input.password),
+      passwordHash: createPasswordHash(input.password),
       status: "ACTIVE",
       memberships: [
         { projectId: this.project, role: invitation.role },
@@ -185,6 +192,26 @@ export class AuthManager {
     this.#clearAttempt(attemptKey);
     this.#audit("LOGIN_SUCCEEDED", user.id, {});
     return this.#createSession(user);
+  }
+
+  changePassword(context, input) {
+    const user = this.store.get("auth_user", context.user.id, this.project);
+    if (!user || !verifyPassword(input.currentPassword, user.passwordHash)) {
+      this.#audit("PASSWORD_CHANGE_REJECTED", context.user.id, {
+        reason: "CURRENT_PASSWORD_MISMATCH",
+      });
+      throw fail(401, "当前密码不正确", "CURRENT_PASSWORD_INVALID");
+    }
+    if (verifyPassword(input.newPassword, user.passwordHash))
+      throw fail(400, "新密码不能与当前密码相同", "PASSWORD_UNCHANGED");
+    const updated = this.store.update("auth_user", user.id, this.project, {
+      passwordHash: createPasswordHash(input.newPassword),
+      passwordChangedAt: new Date(this.now()).toISOString(),
+    });
+    this.#audit("PASSWORD_CHANGED", user.id, {
+      revokedPriorSessions: true,
+    });
+    return this.#createSession(updated);
   }
 
   sessionFromHeaders(headers = {}) {
@@ -361,11 +388,30 @@ export class AuthManager {
   }
 }
 
-function passwordHash(password) {
+export function createPasswordHash(password) {
   validatePassword(password);
   const salt = randomBytes(16),
     derived = scryptSync(password, salt, 64, SCRYPT);
   return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString("base64url")}$${derived.toString("base64url")}`;
+}
+
+function validatePasswordHash(encoded) {
+  if (typeof encoded !== "string")
+    throw fail(400, "密码哈希格式不合法", "INVALID_PASSWORD_HASH");
+  const [algorithm, n, r, p, salt, expected, extra] = encoded.split("$");
+  if (
+    algorithm !== "scrypt" ||
+    Number(n) !== SCRYPT.N ||
+    Number(r) !== SCRYPT.r ||
+    Number(p) !== SCRYPT.p ||
+    extra !== undefined ||
+    !/^[A-Za-z0-9_-]+$/.test(salt ?? "") ||
+    !/^[A-Za-z0-9_-]+$/.test(expected ?? "") ||
+    Buffer.from(salt, "base64url").length !== 16 ||
+    Buffer.from(expected, "base64url").length !== 64
+  )
+    throw fail(400, "密码哈希格式不合法", "INVALID_PASSWORD_HASH");
+  return encoded;
 }
 
 function verifyPassword(password, encoded) {
@@ -395,7 +441,12 @@ function verifyPassword(password, encoded) {
 }
 
 function validatePassword(value) {
-  if (typeof value !== "string" || value.length < 12 || value.length > 128)
+  if (
+    typeof value !== "string" ||
+    value.length < 12 ||
+    value.length > 128 ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  )
     throw fail(400, "密码长度必须为12—128个字符", "WEAK_PASSWORD");
   const categories = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((rule) =>
     rule.test(value),
@@ -455,6 +506,7 @@ function csrfCookie(token, secure) {
 
 function permissionForPath(path) {
   if (path === "/api/v2/auth/logout") return "SESSION";
+  if (path === "/api/v2/auth/password") return "SESSION";
   if (path.startsWith("/api/v2/auth/invitations")) return "ADMIN";
   if (path.includes("/security/requests/") && path.endsWith("/review"))
     return "ADMIN";

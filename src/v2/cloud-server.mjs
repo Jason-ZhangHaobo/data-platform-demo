@@ -17,6 +17,11 @@ import {
   ossArtifactConfigFromEnvironment,
 } from "./artifact-store.mjs";
 
+if (process.env.V2_BOOTSTRAP_ADMIN_PASSWORD)
+  throw new Error(
+    "云端禁止注入管理员明文密码，请仅配置V2_BOOTSTRAP_ADMIN_PASSWORD_HASH",
+  );
+
 const metadataBackend = await MySqlMetadataBackend.open(process.env),
   store = await ReplicatedMetadataStore.open({
     backend: metadataBackend,

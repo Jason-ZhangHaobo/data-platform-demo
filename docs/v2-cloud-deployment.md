@@ -38,11 +38,13 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 运行秘密：
 
 - `V2_MYSQL_HOST`、`V2_MYSQL_PORT`、`V2_MYSQL_USER`、`V2_MYSQL_PASSWORD`、`V2_MYSQL_DATABASE`
-- `V2_BOOTSTRAP_ADMIN_EMAIL`、`V2_BOOTSTRAP_ADMIN_PASSWORD`、`V2_BOOTSTRAP_ADMIN_NAME`
+- `V2_BOOTSTRAP_ADMIN_EMAIL`、`V2_BOOTSTRAP_ADMIN_PASSWORD_HASH`、`V2_BOOTSTRAP_ADMIN_NAME`；禁止保存管理员明文密码
 - `DASHSCOPE_API_KEY`
 - 可选隔离执行：变量`V2_SPARK_EXECUTOR_URL`与秘密`V2_SPARK_EXECUTOR_SECRET`；Worker未完成真实验收前保持为空
 
 秘密只进入GitHub受保护Environment和FC加密环境变量；仓库、日志和构建产物不保存值。函数角色负责注入临时OSS凭证，不创建或手填长期AccessKey。
+
+管理员哈希由用户在本机通过`npm run --silent v2:admin-hash`从stdin生成；不要把密码或哈希发到聊天。部署工作流不再接受`V2_BOOTSTRAP_ADMIN_PASSWORD`，云服务检测到该明文变量会拒绝启动。
 
 ## 首次云预检
 

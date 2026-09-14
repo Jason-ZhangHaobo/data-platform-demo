@@ -32,6 +32,7 @@
     "v2:e2e": "node scripts/run-full-lifecycle-evaluation.mjs",
     "v2:e2e:smoke": "V2_E2E_CASE_LIMIT=1 node scripts/run-full-lifecycle-evaluation.mjs",
     "v2:auth-preview": "node scripts/run-public-auth-preview.mjs",
+    "v2:admin-hash": "node bin/shuzhan-password-hash.mjs",
     "v2:spark-test": ".runtime/python/bin/python scripts/verify-spark.py",
     "v2:runtime-test": "node scripts/verify-runtime.mjs",
     "v2:package": "node bin/shuzhan-package.mjs",

@@ -130,3 +130,98 @@ export function InvitationPanel({ api }: { api: Api }) {
     </section>
   );
 }
+
+export function ChangePasswordPanel({
+  api,
+  onChanged,
+}: {
+  api: Api;
+  onChanged: (session: AuthSession) => void;
+}) {
+  const [currentPassword, setCurrentPassword] = useState(""),
+    [newPassword, setNewPassword] = useState(""),
+    [confirmation, setConfirmation] = useState(""),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [saved, setSaved] = useState(false);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError("");
+    setSaved(false);
+    if (newPassword !== confirmation) {
+      setError("两次输入的新密码不一致");
+      return;
+    }
+    setBusy(true);
+    try {
+      const session = await api<AuthSession>("/auth/password", {
+        currentPassword,
+        newPassword,
+      });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmation("");
+      setSaved(true);
+      onChanged({ ...session, authenticated: true });
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="password-panel-v2">
+      <header>
+        <div>
+          <span className="eyebrow">ACCOUNT SECURITY</span>
+          <h3>修改登录密码</h3>
+          <p>修改后撤销此前会话，并为当前浏览器签发新会话。</p>
+        </div>
+        <ShieldCheck size={22} />
+      </header>
+      <form onSubmit={submit}>
+        <label>
+          当前密码
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={currentPassword}
+            onChange={(event) => setCurrentPassword(event.target.value)}
+            required
+          />
+        </label>
+        <label>
+          新密码
+          <input
+            type="password"
+            autoComplete="new-password"
+            minLength={12}
+            maxLength={128}
+            value={newPassword}
+            onChange={(event) => setNewPassword(event.target.value)}
+            required
+          />
+        </label>
+        <label>
+          再次输入新密码
+          <input
+            type="password"
+            autoComplete="new-password"
+            minLength={12}
+            maxLength={128}
+            value={confirmation}
+            onChange={(event) => setConfirmation(event.target.value)}
+            required
+          />
+        </label>
+        <button className="button primary" type="submit" disabled={busy}>
+          {busy ? <LoaderCircle className="spin" size={14} /> : <KeyRound size={14} />}
+          {busy ? "正在更新…" : "更新密码并刷新会话"}
+        </button>
+      </form>
+      <small>12—128位，大小写字母、数字、符号至少三类；页面不保存密码。</small>
+      {error && <p role="alert" className="auth-error-v2">{error}</p>}
+      {saved && <p role="status" className="password-success-v2"><CheckCircle2 size={14} />密码已更新，旧会话已撤销。</p>}
+    </section>
+  );
+}

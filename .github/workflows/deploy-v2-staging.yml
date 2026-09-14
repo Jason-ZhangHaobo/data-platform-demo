@@ -32,7 +32,7 @@ jobs:
       V2_MYSQL_PASSWORD: ${{ secrets.V2_MYSQL_PASSWORD }}
       V2_MYSQL_DATABASE: ${{ secrets.V2_MYSQL_DATABASE }}
       V2_BOOTSTRAP_ADMIN_EMAIL: ${{ secrets.V2_BOOTSTRAP_ADMIN_EMAIL }}
-      V2_BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.V2_BOOTSTRAP_ADMIN_PASSWORD }}
+      V2_BOOTSTRAP_ADMIN_PASSWORD_HASH: ${{ secrets.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH }}
       V2_BOOTSTRAP_ADMIN_NAME: ${{ secrets.V2_BOOTSTRAP_ADMIN_NAME }}
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
       V2_SPARK_EXECUTOR_URL: ${{ vars.V2_SPARK_EXECUTOR_URL }}
@@ -69,7 +69,7 @@ jobs:
 
       - name: Validate required deployment configuration
         run: |
-          for name in PUBLIC_URL V2_PUBLIC_ORIGIN OSS_BUCKET V2_MYSQL_HOST V2_MYSQL_USER V2_MYSQL_PASSWORD V2_MYSQL_DATABASE V2_BOOTSTRAP_ADMIN_EMAIL V2_BOOTSTRAP_ADMIN_PASSWORD DASHSCOPE_API_KEY; do
+          for name in PUBLIC_URL V2_PUBLIC_ORIGIN OSS_BUCKET V2_MYSQL_HOST V2_MYSQL_USER V2_MYSQL_PASSWORD V2_MYSQL_DATABASE V2_BOOTSTRAP_ADMIN_EMAIL V2_BOOTSTRAP_ADMIN_PASSWORD_HASH DASHSCOPE_API_KEY; do
             test -n "${!name}" || { echo "Missing GitHub v2-staging configuration: $name" >&2; exit 1; }
           done
           case "$PUBLIC_URL" in https://*) ;; *) echo 'PUBLIC_URL must use HTTPS' >&2; exit 1 ;; esac
@@ -111,7 +111,7 @@ jobs:
             --arg mysql_password "$V2_MYSQL_PASSWORD" \
             --arg mysql_database "$V2_MYSQL_DATABASE" \
             --arg admin_email "$V2_BOOTSTRAP_ADMIN_EMAIL" \
-            --arg admin_password "$V2_BOOTSTRAP_ADMIN_PASSWORD" \
+            --arg admin_password_hash "$V2_BOOTSTRAP_ADMIN_PASSWORD_HASH" \
             --arg admin_name "${V2_BOOTSTRAP_ADMIN_NAME:-平台管理员}" \
             --arg model_key "$DASHSCOPE_API_KEY" \
             --arg spark_url "$V2_SPARK_EXECUTOR_URL" \
@@ -133,7 +133,7 @@ jobs:
               V2_OSS_STATE_MAX_BYTES:"41943040",
               V2_OSS_ARTIFACT_PREFIX:"data-platform-v2/artifacts",
               V2_BOOTSTRAP_ADMIN_EMAIL:$admin_email,
-              V2_BOOTSTRAP_ADMIN_PASSWORD:$admin_password,
+              V2_BOOTSTRAP_ADMIN_PASSWORD_HASH:$admin_password_hash,
               V2_BOOTSTRAP_ADMIN_NAME:$admin_name,
               DASHSCOPE_API_KEY:$model_key,
               V2_MODEL:"qwen3-coder-plus",

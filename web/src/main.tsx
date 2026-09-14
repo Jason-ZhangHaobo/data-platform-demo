@@ -59,6 +59,7 @@ import { ReportsWorkbench } from "./ReportsWorkbench";
 import { OperationsWorkbench } from "./OperationsWorkbench";
 import {
   AuthDialog,
+  ChangePasswordPanel,
   InvitationPanel,
   type AuthSession,
 } from "./AuthDialog";
@@ -1351,6 +1352,16 @@ function App() {
                 </div>
                 {status?.mode !== "LOCAL_DEVELOPMENT" &&
                   session.role === "ADMIN" && <InvitationPanel api={api} />}
+                {status?.mode !== "LOCAL_DEVELOPMENT" &&
+                  session.authenticated && (
+                    <ChangePasswordPanel
+                      api={api}
+                      onChanged={(next) => {
+                        setSession(next);
+                        setNotice("密码已更新，此前登录会话均已撤销");
+                      }}
+                    />
+                  )}
                 <div className="definition-card">
                   <h3>连接真实模型服务</h3>
                   <p>

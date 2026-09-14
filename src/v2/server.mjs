@@ -548,6 +548,17 @@ export function createV2Server(options = {}) {
           ),
         });
       }
+      if (path === "/api/v2/auth/password" && method === "POST") {
+        const actor = auth.requireMutation(req.headers, path),
+          result = auth.changePassword(actor, await readBody(req)),
+          changed = auth.sessionResponse(
+            result,
+            !local && !insecurePublicCookies,
+          );
+        return json(res, 200, changed.body, {
+          "Set-Cookie": changed.cookies,
+        });
+      }
       if (path === "/api/v2/auth/invitations" && method === "GET") {
         const actor = auth.sessionFromHeaders(req.headers);
         if (!actor) throw fail(401, "请先登录受邀账号");

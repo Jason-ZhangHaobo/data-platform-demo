@@ -113,6 +113,41 @@ test("public invitation sessions enforce CSRF and project role permissions", asy
       key: "public-model-key",
     });
     assert.equal(modelKey.status, 403);
+    const changedPassword = await request(base, "/auth/password", {
+      body: {
+        currentPassword: "StrongAdmin#2026",
+        newPassword: "RotatedAdmin#2026",
+      },
+      cookie: login.cookie,
+      csrf: login.body.csrfToken,
+      key: "change-admin-password",
+    });
+    assert.equal(changedPassword.status, 200);
+    assert.ok(changedPassword.cookie.includes("shuzhan_session="));
+    assert.equal(
+      (
+        await request(base, "/auth/login", {
+          body: {
+            email: "admin@example.test",
+            password: "StrongAdmin#2026",
+          },
+          key: "old-admin-password",
+        })
+      ).status,
+      401,
+    );
+    assert.equal(
+      (
+        await request(base, "/auth/login", {
+          body: {
+            email: "admin@example.test",
+            password: "RotatedAdmin#2026",
+          },
+          key: "new-admin-password",
+        })
+      ).status,
+      200,
+    );
     const session = await request(base, "/auth/session", {
       cookie: redeemed.cookie,
     });
