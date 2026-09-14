@@ -9,6 +9,7 @@ import {
   publicContext,
   contextIds,
   referenceSql,
+  validationContractId,
 } from "./context.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import { generateSql, modelSettings, ModelUnavailable } from "./model.mjs";
@@ -57,7 +58,16 @@ export function createV2Server(options = {}) {
     );
   const runtime = runtimeConfig(env, root),
     runner = options.runner ?? ((input) => runSpark(input, runtime));
-  const generator = options.generator ?? ((input) => generateSql(input, env));
+  let modelVerifiedAt = null;
+  const generator =
+    options.generator ??
+    (async (input) => {
+      const keyAtRequest = env.DASHSCOPE_API_KEY;
+      const result = await generateSql(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
   const controls = new Map();
   let queue = Promise.resolve();
   store.interruptPending(PROJECT);
@@ -109,6 +119,7 @@ export function createV2Server(options = {}) {
     const output = await runner({
       sql: rev.sql,
       context: getContext(rev.contextId),
+      validationContexts: contextIds.map(getContext),
       signal,
       timeoutMs: Number(env.V2_RUN_TIMEOUT_MS ?? 90000),
     });
@@ -117,6 +128,21 @@ export function createV2Server(options = {}) {
       throw new Error("执行器返回了无效状态");
     if (result.status === "SUCCEEDED" && !result.validation?.passed)
       throw new Error("缺少独立断言，不能标记成功");
+    if (!options.runner && result.status === "SUCCEEDED") {
+      const checks = result.validation?.regressions ?? [];
+      if (
+        checks.length !== contextIds.length ||
+        !contextIds.every((id) =>
+          checks.some((c) => c.contextId === id && c.passed),
+        )
+      )
+        throw new Error("缺少完整回归场景证据，不能标记成功");
+    }
+    if (result.validation)
+      result.validation = {
+        ...result.validation,
+        contractId: validationContractId,
+      };
     if (signal.aborted)
       return store.update("run", run.id, PROJECT, {
         status: "CANCELLED",
@@ -174,7 +200,11 @@ export function createV2Server(options = {}) {
           projectId: PROJECT,
           mode: local ? "LOCAL_DEVELOPMENT" : "PUBLIC_READONLY",
           capabilities,
-          model: modelSettings(env),
+          model: {
+            ...modelSettings(env),
+            connectionVerified: Boolean(modelVerifiedAt),
+            verifiedAt: modelVerifiedAt,
+          },
           spark: {
             available: options.runner ? true : runtime.available,
             engine: "Apache Spark",
@@ -182,12 +212,17 @@ export function createV2Server(options = {}) {
           },
           metadata: { driver: "sqlite", cloudVerified: false },
           publicReady: false,
+          validationContract: {
+            id: validationContractId,
+            fixtureCount: contextIds.length,
+          },
         });
       if (path === "/api/v2/contexts" && method === "GET")
         return json(res, 200, contextIds.map(publicContext));
       if (path === "/api/v2/settings/model-key" && method === "POST") {
         const body = await readBody(req);
         const configured = await saveLocalModelKey(root, env, body.apiKey);
+        modelVerifiedAt = null;
         store.create("settings_audit", PROJECT, {
           action: "MODEL_KEY_SET",
           actor: "local-engineer",
@@ -238,6 +273,9 @@ export function createV2Server(options = {}) {
               "validation.json": JSON.stringify(item.validation, null, 2),
             },
             releaseState: "NOT_PUBLISHED",
+            currentValidationContractId: validationContractId,
+            requiresRevalidation:
+              item.validation?.contractId !== validationContractId,
             notice: "这是代码与验证包。实际调度、部署和发布在 M2 实现。",
           });
         }
@@ -261,6 +299,7 @@ export function createV2Server(options = {}) {
           signature,
           () =>
             store.create("run", PROJECT, {
+              validationContractId,
               revisionId: rev.id,
               revisionHash: rev.hash,
               contextId: rev.contextId,
@@ -298,6 +337,7 @@ export function createV2Server(options = {}) {
               mode: "LIVE_MODEL",
               completionScope: "SQL_DEVELOPMENT",
               fullLifecycleE2E: false,
+              validationContractId,
               maxAttempts: 3,
             }),
         );
@@ -331,6 +371,7 @@ export function createV2Server(options = {}) {
               sql = generated.sql;
               const rev = revision(sql, context.id, "LIVE_MODEL");
               const run = store.create("run", PROJECT, {
+                validationContractId,
                 revisionId: rev.id,
                 revisionHash: rev.hash,
                 contextId: context.id,

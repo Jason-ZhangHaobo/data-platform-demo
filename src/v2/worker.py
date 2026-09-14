@@ -25,6 +25,10 @@ def validate_sql(sql, context):
     if tree.find(exp.Into) is not None:
         raise ValueError("禁止写入数据")
     for fn in tree.find_all(exp.Func):
+        # sqlglot models AND/OR as Func subclasses; these are boolean
+        # operators, not external function calls. Still inspect all children.
+        if isinstance(fn,(exp.And,exp.Or)):
+            continue
         name=(fn.name if isinstance(fn,exp.Anonymous) else fn.sql_name()).upper()
         if name not in FUNCTIONS:
             raise ValueError("不支持的 SQL 函数："+name)
@@ -78,15 +82,34 @@ def verify(rows,expected):
     if set(actual)!={r["client_id"] for r in expected}:issues.append("结果包含范围外客户或缺少客户")
     return {"passed":not issues,"issues":issues,"assertions":["客户范围","客户唯一性","持仓去重","现金独立聚合","金额精度","证券代码去重","输出契约"]}
 
+def execute_with_validation(spark,sql,context,validation_contexts=None):
+    result=execute(spark,sql,context)
+    selected=verify(result["rows"],context["expected"])
+    regressions=[{"contextId":context["id"],"name":context["name"],**selected}]
+    if validation_contexts is not None and (not isinstance(validation_contexts,list) or len(validation_contexts)>5):
+        raise ValueError("回归上下文数量不合法")
+    seen={context["id"]}
+    for check_context in validation_contexts or []:
+        if check_context["id"] in seen:continue
+        seen.add(check_context["id"])
+        actual=execute(spark,sql,check_context)
+        checked=verify(actual["rows"],check_context["expected"])
+        regressions.append({"contextId":check_context["id"],"name":check_context["name"],**checked})
+    issues=[check["name"]+"："+issue for check in regressions for issue in check["issues"]]
+    result["validation"]={
+        "passed":not issues,"issues":issues,"assertions":selected["assertions"],
+        "selectedPassed":selected["passed"],"scope":"SELECTED_AND_REGISTERED_FIXTURES","regressions":regressions,
+    }
+    result["status"]="SUCCEEDED" if result["validation"]["passed"] else "VALIDATION_FAILED"
+    return result
+
 if __name__=="__main__":
     payload=json.loads(Path(sys.argv[1]).read_text())
     started=time.monotonic();spark=None
     try:
         validate_sql(payload["sql"],payload["context"])
         spark=create_spark();spark.sparkContext.setLogLevel("ERROR")
-        result=execute(spark,payload["sql"],payload["context"])
-        result["validation"]=verify(result["rows"],payload["context"]["expected"])
-        result["status"]="SUCCEEDED" if result["validation"]["passed"] else "VALIDATION_FAILED"
+        result=execute_with_validation(spark,payload["sql"],payload["context"],payload.get("validationContexts",[]))
     except Exception as error:
         result={"status":"FAILED","error":str(error)[:5000],"engine":"Apache Spark"}
     finally:

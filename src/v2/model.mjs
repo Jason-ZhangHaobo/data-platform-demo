@@ -47,6 +47,18 @@ export async function generateSql(
     },
     currentSql,
     error,
+    executionContract: {
+      regressionFixtures: [
+        "标准数据",
+        "现金变更",
+        "重复持仓",
+        "同证券同金额但不同持仓",
+        "仅有现金客户",
+      ],
+      note: "同一 SQL 会在五套独立样例回归；不能只通过当前样例。仅去除同一个 position_id 的重复；不同 position_id 即使证券和金额相同也必须分别计入市值。现金先按客户独立聚合。没有持仓但有现金的客户也必须返回正确 client_id，持仓市值与证券数为0。advisor_id只存在于accounts表，需通过client_id关联。",
+      supportedSql:
+        "SELECT/WITH、JOIN、DISTINCT、GROUP BY、AND/OR、SUM/COUNT/COALESCE/CAST等常用函数；本期未开放ROW_NUMBER等窗口函数，可用包含position_id的DISTINCT子查询去重。",
+    },
   });
   const messages = [
     {

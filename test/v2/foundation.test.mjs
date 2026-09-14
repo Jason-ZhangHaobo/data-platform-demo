@@ -88,7 +88,7 @@ test("source contexts omit independent expected results", async () => {
   try {
     const r = await app.call("/contexts");
     assert.equal(r.status, 200);
-    assert.equal(r.body.length, 3);
+    assert.equal(r.body.length, 5);
     assert.ok(r.body.every((c) => !("expected" in c)));
   } finally {
     await app.close();
@@ -600,6 +600,42 @@ test("save API returns a diagnostic code without echoing a rejected key", async 
     assert.equal(response.body.code, "MODEL_KEY_MASKED");
     assert.ok(!JSON.stringify(response.body).includes(value));
     assert.equal(existsSync(join(root, ".env.local")), false);
+  } finally {
+    await app.close();
+  }
+});
+test("SQL execution receives the registered independent regression contexts", async () => {
+  let input;
+  const app = await setup({
+    runner: async (value) => {
+      input = value;
+      return result();
+    },
+  });
+  try {
+    const revision = (
+      await app.call("/revisions", {
+        sql: referenceSql,
+        contextId: "cash-change",
+      })
+    ).body;
+    const run = (await app.call("/runs", { revisionId: revision.id })).body;
+    await eventually(() => app.call("/runs/" + run.id), "SUCCEEDED");
+    assert.deepEqual(
+      input.validationContexts.map((context) => context.id),
+      [
+        "holdings-t1",
+        "cash-change",
+        "duplicate-position",
+        "equal-value-positions",
+        "cash-only-client",
+      ],
+    );
+    assert.equal(input.context.id, "cash-change");
+    assert.equal(
+      (await app.call("/status")).body.model.connectionVerified,
+      false,
+    );
   } finally {
     await app.close();
   }

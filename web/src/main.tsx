@@ -72,9 +72,15 @@ type Capability = {
   features: string[];
 };
 type Status = {
+  validationContract?: { id: string; fixtureCount: number };
   mode: string;
   projectId: string;
-  model: { configured: boolean; model: string };
+  model: {
+    configured: boolean;
+    model: string;
+    connectionVerified?: boolean;
+    verifiedAt?: string | null;
+  };
   spark: { available: boolean; engine: string; isolation: string };
   metadata: { driver: string; cloudVerified: boolean };
   publicReady: boolean;
@@ -89,6 +95,7 @@ type Revision = {
   source: string;
 };
 type Run = {
+  validationContractId?: string;
   id: string;
   status: string;
   revisionId: string;
@@ -99,11 +106,18 @@ type Run = {
   durationMs?: number;
   rows?: Record<string, string | number | null>[];
   columns?: Column[];
-  validation?: { passed: boolean; issues: string[]; assertions: string[] };
+  validation?: {
+    contractId?: string;
+    passed: boolean;
+    issues: string[];
+    assertions: string[];
+    regressions?: { contextId: string; name: string; passed: boolean }[];
+  };
   error?: string;
   log?: string;
 };
 type AgentTask = {
+  validationContractId?: string;
   id: string;
   status: string;
   message: string;
@@ -395,7 +409,11 @@ function App() {
     (revision) => revision.id === run?.revisionId,
   );
   const resultIsCurrent = Boolean(
-    run && run.contextId === contextId && runRevision?.sql === sql.trim(),
+    run &&
+      run.contextId === contextId &&
+      runRevision?.sql === sql.trim() &&
+      (!status?.validationContract ||
+        run.validationContractId === status.validationContract.id),
   );
   return (
     <div className="shell">
@@ -744,7 +762,9 @@ function App() {
                           · 批次 {run.id.slice(0, 8)}
                         </span>
                         {!resultIsCurrent && (
-                          <strong>代码或上下文已变更，请重新运行核验</strong>
+                          <strong>
+                            代码、上下文或验证范围已变更，请重新运行核验
+                          </strong>
                         )}
                       </div>
                     )}
@@ -824,6 +844,19 @@ function App() {
                               以下为本次核验范围，并非全部通过；具体问题见下方。
                             </p>
                           )}
+                          {run.validation.regressions?.map((check) => (
+                            <div key={check.contextId}>
+                              {check.passed ? (
+                                <CheckCircle2 size={15} />
+                              ) : (
+                                <AlertCircle size={15} />
+                              )}
+                              <span>
+                                {check.name} ·{" "}
+                                {check.passed ? "通过" : "未通过"}
+                              </span>
+                            </div>
+                          ))}
                           {run.validation.assertions.map((item) => (
                             <div key={item}>
                               {run.validation!.passed ? (
@@ -960,6 +993,13 @@ function App() {
                     </div>
                     {agentTask && (
                       <div className="agent-task">
+                        {status?.validationContract &&
+                          agentTask.validationContractId !==
+                            status.validationContract.id && (
+                            <p className="validation-error">
+                              该委托使用旧验证范围，需要重新核验。
+                            </p>
+                          )}
                         {isPending(agentTask.status) && (
                           <button
                             className="button"
@@ -1005,11 +1045,19 @@ function App() {
                         {agentTask.sql && !isPending(agentTask.status) && (
                           <button
                             className="button"
-                            onClick={() => {
+                            onClick={async () => {
                               setOriginal(sql);
                               setSql(agentTask.sql!);
                               setDiff(true);
                               setNotice("已打开 Agent 产物差异");
+                              const last = agentTask.attempts.at(-1);
+                              if (last)
+                                try {
+                                  setRun(await api<Run>("/runs/" + last.runId));
+                                  setTab("结果");
+                                } catch (error) {
+                                  setError((error as Error).message);
+                                }
                             }}
                           >
                             审阅生成代码
@@ -1196,7 +1244,9 @@ function App() {
                       }
                     >
                       {status?.model.configured
-                        ? "已保存，连接未验证"
+                        ? status.model.connectionVerified
+                          ? "连接已验证"
+                          : "已保存，连接未验证"
                         : "尚未保存密钥"}
                     </span>
                     <p>{status?.model.model}</p>
@@ -1247,7 +1297,12 @@ function App() {
                           previous
                             ? {
                                 ...previous,
-                                model: { ...previous.model, configured: true },
+                                model: {
+                                  ...previous.model,
+                                  configured: true,
+                                  connectionVerified: false,
+                                  verifiedAt: null,
+                                },
                               }
                             : previous,
                         );

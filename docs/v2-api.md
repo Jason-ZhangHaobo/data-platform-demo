@@ -13,7 +13,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 |---|---|---|
 | GET /status | 配置状态，永不返回密钥 | 模块范围、Spark/模型/元数据状态 |
 | POST /settings/model-key | 仅本地开发模式；apiKey | 保存到权限 0600 的 .env.local，只返回 configured；不自动调用模型 |
-| GET /contexts | 三组虚构证券输入 | 表结构、口径、参考 SQL；不含独立预期结果 |
+| GET /contexts | 五组虚构证券输入 | 表结构、口径、参考 SQL；不含独立预期结果 |
 | POST /revisions | sql、contextId | 201；不可变版本、SHA-256 |
 | GET /revisions | 当前项目版本列表 | 版本、代码、来源和时间 |
 | GET /revisions/:id | 指定版本 | 版本详情 |
@@ -40,6 +40,8 @@ Spark 3.5.7 只允许已登记的 accounts/positions/cash 合成数据视图、�
 后端先按上下文裁剪客户范围，再执行 SQL，不依赖 Agent 自觉写权限条件。
 执行串行、默认 90 秒超时、返回最多 1,000 行。本地进程不是生产沙箱。
 只有真实执行成功且独立业务断言通过，运行才是 SUCCEEDED。
+同一 SQL 在标准、现金变更、重复持仓、同额不同持仓、仅有现金客户五套输入上回归；任一失败，整体不得标为通过。
+任务/运行绑定 validationContractId；报告包含对应 contractId，范围升级后旧报告需要重验。验证包标记 requiresRevalidation，不覆盖原始历史结果。
 独立预期结果来自测试契约，不传给模型；新指标/新口径必须先补充对应契约和断言。
 
 模型适配器使用 HTTPS、禁止重定向、60 秒请求超时、每次委托最多三轮。
@@ -51,6 +53,7 @@ Spark 3.5.7 只允许已登记的 accounts/positions/cash 合成数据视图、�
 空输入、脱敏展示值、云账号 AccessKey ID、错误前缀、中间空白、非法字符及超限分别返回 MODEL_KEY_* 错误码。消息不包含用户输入。
 首尾一对普通引号可自动处理；不从整段 JSON、curl 命令或页面文字中猜测/提取密钥，不根据前缀推断套餐或自动切换服务地址。
 保存只证明本机持久化成功，不证明供应商鉴权、模型权限或 Base URL 已验证。既有凭证不会被格式错误的输入覆盖。
+当前服务成功取得真实模型 SQL 响应后，status.model.connectionVerified 才置 true。更换密钥或重启服务会重置；测试替身不用于证明连接成功。此标记不代表 SQL 业务正确或完整 E2E 完成。
 
 ## 尚未开放
 
