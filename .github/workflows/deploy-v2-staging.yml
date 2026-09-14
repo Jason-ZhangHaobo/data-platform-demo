@@ -131,6 +131,7 @@ jobs:
               OSS_ENDPOINT:"oss-cn-hangzhou-internal.aliyuncs.com",
               V2_OSS_STATE_OBJECT_KEY:"data-platform-v2/state/project-securities-lab.json",
               V2_OSS_STATE_MAX_BYTES:"41943040",
+              V2_OSS_ARTIFACT_PREFIX:"data-platform-v2/artifacts",
               V2_BOOTSTRAP_ADMIN_EMAIL:$admin_email,
               V2_BOOTSTRAP_ADMIN_PASSWORD:$admin_password,
               V2_BOOTSTRAP_ADMIN_NAME:$admin_name,

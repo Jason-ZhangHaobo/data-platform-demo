@@ -355,6 +355,19 @@ test("package APIs preserve idempotency and run only the selected immutable pack
       again = await call("/delivery/packages", { sourceRunId: run.id });
     assert.equal(first.status, 201);
     assert.equal(again.body.id, first.body.id);
+    assert.equal(first.body.artifact.driver, "local-immutable-file");
+    assert.equal(first.body.artifact.digest, first.body.digest);
+    assert.equal(
+      existsSync(
+        join(
+          root,
+          ".v2-artifacts",
+          "object-store",
+          first.body.artifact.key,
+        ),
+      ),
+      true,
+    );
     const path = "/delivery/packages/" + first.body.id + "/verify";
     assert.equal(
       (await call(path, { scheduledFor: "2026-09-12T09:00:00+08:00" })).status,

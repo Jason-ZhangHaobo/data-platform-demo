@@ -12,6 +12,10 @@ import {
 } from "./oss-data-state-backend.mjs";
 import { CloudStateCoordinator } from "./cloud-state-coordinator.mjs";
 import { createRemoteSparkRunner } from "./remote-spark.mjs";
+import {
+  OssImmutableArtifactStore,
+  ossArtifactConfigFromEnvironment,
+} from "./artifact-store.mjs";
 
 const metadataBackend = await MySqlMetadataBackend.open(process.env),
   store = await ReplicatedMetadataStore.open({
@@ -25,6 +29,9 @@ const metadataBackend = await MySqlMetadataBackend.open(process.env),
   reportStore = new ReportDataStore(),
   dataStateBackend = new OssDataStateBackend(
     ossDataStateConfigFromEnvironment(process.env),
+  ),
+  artifactStore = new OssImmutableArtifactStore(
+    ossArtifactConfigFromEnvironment(process.env),
   ),
   dataState = await ReplicatedDataState.open({
     backend: dataStateBackend,
@@ -62,6 +69,7 @@ const metadataBackend = await MySqlMetadataBackend.open(process.env),
     landingStore,
     streamStateStore,
     reportStore,
+    artifactStore,
     stateCoordinator,
     ...(runnerStatus.runner ? { runner: runnerStatus.runner } : {}),
     ...(runnerStatus.descriptor

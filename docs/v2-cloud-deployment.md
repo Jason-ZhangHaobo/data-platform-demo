@@ -33,6 +33,7 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 运行变量：
 
 - `V2_FUNCTION_NAME`、`V2_PUBLIC_URL`、`V2_PUBLIC_ORIGIN`、`V2_OSS_BUCKET`
+- OSS状态对象和不可变产物前缀由工作流固定为项目隔离路径，不接受页面输入
 
 运行秘密：
 

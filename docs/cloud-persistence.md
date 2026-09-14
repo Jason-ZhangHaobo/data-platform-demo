@@ -12,6 +12,7 @@
 |---|---|---|
 | 独立MySQL元数据库 | 控制面文档、代码/发布版本、运行证据、邀请/用户/会话、权限、审计、幂等记录 | `revision`条件UPDATE，陈旧版本返回409 |
 | 私有OSS状态对象 | 离线落地行、实时事件/最新状态/Checkpoint、DAPI业务快照、报表数据快照 | 首次`If-None-Match: *`，后续`If-Match: ETag` |
+| 私有OSS版本化产物 | SQL、测试SQL、DAG、日历、输入与部署清单 | 摘要寻址、`If-None-Match: *`、动作前完整性复核 |
 | 函数内存SQLite | 当前单实例的同步查询索引 | 由MySQL/OSS在冷启动时恢复，不作为持久化证据 |
 
 业务状态对象不包含密码、令牌、模型Key或公司数据。当前仅处理仓库内虚构证券数据。
@@ -33,6 +34,7 @@ MySQL与OSS之间没有分布式事务。若OSS成功而MySQL CAS失败，可能
 - `V2_MYSQL_HOST`、`V2_MYSQL_PORT`、`V2_MYSQL_USER`、`V2_MYSQL_PASSWORD`、`V2_MYSQL_DATABASE`
 - `V2_MYSQL_POOL_SIZE`、`V2_MYSQL_CONNECT_TIMEOUT_MS`、`V2_MYSQL_SSL`
 - `OSS_BUCKET`、`OSS_ENDPOINT`、`V2_OSS_STATE_OBJECT_KEY`、`V2_OSS_STATE_MAX_BYTES`
+- `V2_OSS_ARTIFACT_PREFIX`（默认`data-platform-v2/artifacts`）
 - `ALIBABA_CLOUD_ACCESS_KEY_ID`、`ALIBABA_CLOUD_ACCESS_KEY_SECRET`、`ALIBABA_CLOUD_SECURITY_TOKEN`（由FC角色临时注入，不手填长期AccessKey）
 
 默认OSS对象：`data-platform-v2/state/project-securities-lab.json`；默认上限40MiB。扩大数据量时不提高对象上限来掩盖架构问题，应改用真实业务数据库/湖存储。
@@ -41,6 +43,7 @@ MySQL与OSS之间没有分布式事务。若OSS成功而MySQL CAS失败，可能
 
 - 四类SQLite数据面全部写入后关闭并重建，离线行、实时事件/状态/Checkpoint、DAPI查询数据和报表快照均恢复。
 - 两个陈旧实例竞争时，MySQL与OSS CAS均拒绝覆盖胜出修订。
+- 交付包在元数据之外写入不可变对象；相同摘要同内容可重放，同摘要异内容被拒绝，审批/演练/发布前会重新读取核验。
 - HTTP链路创建虚构证券CSV源、测试连接、扫描元数据、创建并运行FULL同步；成功响应后模拟冷启动，运行记录与落地行同时存在。
 - 全量`npm run ci`为159/159，源码检查、旧版构建、V2 TypeScript/Vite构建通过。
 

@@ -59,6 +59,10 @@ import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
 import { OperationsManager } from "./operations.mjs";
 import { AuthManager } from "./auth.mjs";
+import {
+  LocalArtifactStore,
+  deliveryArtifactValue,
+} from "./artifact-store.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -135,6 +139,9 @@ export function createV2Server(options = {}) {
         options.store ? ":memory:" : join(root, ".data/v2-reports.sqlite"),
       );
   const persistence = options.stateCoordinator ?? store;
+  const artifactStore =
+    options.artifactStore ??
+    new LocalArtifactStore(join(root, ".v2-artifacts", "object-store"));
   const host = env.V2_HOST ?? "127.0.0.1",
     local = env.V2_LOCAL_DEVELOPMENT !== "false",
     insecurePublicCookies =
@@ -206,6 +213,25 @@ export function createV2Server(options = {}) {
   });
   releaseScheduler.start();
   const expose = (item) => publicRelease(item, root);
+  const ensureDeliveryArtifact = async (item) => {
+    const value = deliveryArtifactValue(item);
+    if (item.artifact) {
+      await artifactStore.verify(
+        item.artifact,
+        "delivery-package",
+        item.digest,
+        value,
+      );
+      return item.artifact;
+    }
+    const artifact = await artifactStore.put(
+      "delivery-package",
+      item.digest,
+      value,
+    );
+    store.update("delivery_package", item.id, PROJECT, { artifact });
+    return artifact;
+  };
   const dataServices = new DataServiceManager({
     store,
     businessStore,
@@ -654,6 +680,7 @@ export function createV2Server(options = {}) {
             mode: local ? "LOCAL_DEVELOPMENT_BYPASS" : "INVITATION_SESSION",
             publicSessionEnforced: !local,
           },
+          artifacts: artifactStore.status(),
         });
       }
       const openService = path.match(
@@ -2087,7 +2114,12 @@ export function createV2Server(options = {}) {
           run: sourceRun,
           revision: get("revision", sourceRun.revisionId),
           name,
-        });
+        }),
+          artifact = await artifactStore.put(
+            "delivery-package",
+            bundle.digest,
+            bundle,
+          );
         const key = text(req.headers["idempotency-key"], 1, 100);
         const dedup = store.deduplicate(
           PROJECT + ":delivery:" + key,
@@ -2101,6 +2133,7 @@ export function createV2Server(options = {}) {
           () =>
             store.create("delivery_package", PROJECT, {
               ...bundle,
+              artifact,
               sourceRunId: sourceRun.id,
               stage: "M2A",
               published: false,
@@ -2142,6 +2175,7 @@ export function createV2Server(options = {}) {
             packageDigest = text(body.packageDigest, 64, 64);
           if (packageDigest !== item.digest)
             throw fail(409, "审批摘要与当前交付包不一致");
+          await ensureDeliveryArtifact(item);
           validateDeliveryPackage(item, item.digest);
           const rehearsal = store
             .list("delivery_verification", PROJECT)
@@ -2206,6 +2240,7 @@ export function createV2Server(options = {}) {
         ) {
           const body = await readBody(req),
             scheduledFor = text(body.scheduledFor, 1, 50);
+          await ensureDeliveryArtifact(item);
           const plan = validateDeliveryPackage(item, item.digest),
             occurrence = resolveDeliverySchedule(plan, scheduledFor);
           if (!occurrence.eligible) throw fail(422, "样例非交易日，未提交执行");
@@ -2232,7 +2267,10 @@ export function createV2Server(options = {}) {
                 packageDigest: item.digest,
                 scheduledFor,
                 status: "QUEUED",
-                scope: "M2A_LOCAL_FILE_REHEARSAL",
+                scope:
+                  plan.deployment.adapter === "remote-spark-worker-v1"
+                    ? "M2A_CLOUD_ISOLATED_FILE_REHEARSAL"
+                    : "M2A_LOCAL_FILE_REHEARSAL",
                 published: false,
                 fullLifecycleE2E: false,
               }),
@@ -2289,6 +2327,7 @@ export function createV2Server(options = {}) {
           ),
           item = get("delivery_package", approval.packageId),
           spec = localScheduleSpec(body),
+          artifact = await ensureDeliveryArtifact(item),
           plan = validateDeliveryPackage(item, item.digest);
         if (
           approval.status !== "APPROVED" ||
@@ -2321,6 +2360,7 @@ export function createV2Server(options = {}) {
                 approvalId: approval.id,
                 packageId: item.id,
                 packageDigest: item.digest,
+                artifact,
                 spec,
               }),
             ),
@@ -2329,12 +2369,13 @@ export function createV2Server(options = {}) {
                 approvalId: approval.id,
                 packageId: item.id,
                 packageDigest: item.digest,
+                artifact,
                 sourceRevisionId: item.manifest.source.revisionId,
                 sourceSqlHash: item.manifest.source.sqlHash,
                 status: "DEPLOYING",
                 health: "PENDING",
-                environment: "local-scheduled-test",
-                adapter: "local-spark-v1",
+                environment: plan.deployment.environment,
+                adapter: plan.deployment.adapter,
                 scheduleSpec: spec,
                 businessScheduledFor,
                 publicDeployed: false,
@@ -2755,6 +2796,7 @@ export function createV2Server(options = {}) {
     reportStore,
     operations,
     auth,
+    artifactStore,
     stateCoordinator: options.stateCoordinator,
   };
 }
