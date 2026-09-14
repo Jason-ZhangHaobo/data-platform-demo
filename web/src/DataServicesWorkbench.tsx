@@ -646,11 +646,12 @@ export function DataServicesWorkbench({
                 </header>
                 {selected.serviceType === "DAPI" ? (
                   <>
-                    <pre>
-                      SELECT {(selected.currentVersion?.fields ?? []).join(", ")}\n
-                      FROM customer_assets\nWHERE snapshot_id = :snapshot_id\n
-                      AND (:client_id IS NULL OR client_id = :client_id)
-                    </pre>
+                    <pre>{`SELECT ${(selected.currentVersion?.fields ?? []).join(", ")}
+FROM customer_assets
+WHERE snapshot_id = :snapshot_id
+  AND (:client_id IS NULL OR client_id = :client_id)
+ORDER BY client_id
+LIMIT :limit OFFSET :offset`}</pre>
                     <small>
                       源发布批次 {selected.currentVersion?.sourceReleaseRunId?.slice(0, 8)} · 快照
                       {selected.currentVersion?.snapshotHash?.slice(0, 12)}
