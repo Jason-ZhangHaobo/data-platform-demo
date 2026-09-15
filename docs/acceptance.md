@@ -294,7 +294,8 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 新脚本只调用STS身份确认、RDS属性/网络/库/账号Describe、FC GetFunction、OSS GetBucketInfo和BSS账单总览，不含创建、更新、启停或删除命令。
 - 输出只包含规格/状态、目标库和账号的布尔存在性、环境变量键、账单金额及同VPC/单并发/预算交叉检查；原始响应在随机临时目录，退出自动删除。
 - 假CLI响应内放入账号、ARN、连接地址、Bucket、角色、VPC、函数/RDS名称及环境秘密值；测试确认最终JSON均不含这些诱饵，且报告权限0600。
-- 新增1项测试，全量CI 175/175；真实账号未执行，BSS或OSS权限不足会明确`UNAVAILABLE`，不会猜测为0或通过。详见[只读预检](aliyun-readonly-audit.md)。
+- 新增1项测试；随后使用本机官方CLI 3.5.0和浏览器OAuth完成真实只读执行。RDS为STOPPED、Serverless MySQL8、0.5—2 RCU、20GiB、自动暂停、1个内网/0个公网端点；暂停态库账号查询返回`InvalidDBInstanceStatus.NotSupport`，均保留null。
+- 2026-09账单税前0.59元、支付0元、未付0.59元，当前低于200元。官方ossutil 2.3.0安装包SHA-256核验通过；账号唯一Bucket候选为杭州/Standard/private/版本未配置，但FC仍返回AccessDenied，故尚不能证明函数绑定、同VPC、单并发和平台库就绪。全量CI当前181/181；详见[只读预检](aliyun-readonly-audit.md)。
 
 ## 2026-09-15：M4h数据契约闭环
 

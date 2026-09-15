@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -14,6 +15,7 @@ import { spawnSync } from "node:child_process";
 
 test("Alibaba Cloud read-only audit emits a sanitized decision record", () => {
   const bin = mkdtempSync(join(tmpdir(), "shuzhan-audit-bin-")),
+    home = mkdtempSync(join(tmpdir(), "shuzhan-audit-home-")),
     aliyun = join(bin, "aliyun"),
     ossutil = join(bin, "ossutil");
   writeFileSync(
@@ -25,7 +27,7 @@ case "$*" in
   *DescribeDBInstanceNetInfo*) printf '%s\n' '{"DBInstanceNetInfos":{"DBInstanceNetInfo":[{"IPType":"Intranet","ConnectionString":"SECRET-HOST"}]}}' ;;
   *DescribeDatabases*) printf '%s\n' '{"Databases":{"Database":[{"DBName":"business_demo"},{"DBName":"platform_meta"}]}}' ;;
   *DescribeAccounts*) printf '%s\n' '{"Accounts":{"DBInstanceAccount":[{"AccountName":"sync_writer"},{"AccountName":"platform_app"}]}}' ;;
-  *GetFunction*) printf '%s\n' '{"functionName":"private-function","runtime":"custom.debian12","cpu":0.25,"memorySize":512,"diskSize":512,"timeout":120,"instanceConcurrency":1,"internetAccess":true,"role":"SECRET-ROLE","vpcConfig":{"vpcId":"vpc-secret"},"environmentVariables":{"OSS_BUCKET":"SECRET-BUCKET","V2_MYSQL_PASSWORD":"DONT-LEAK"}}' ;;
+  *get-function*) [[ "$ALIBABA_CLOUD_SECURITY_TOKEN" == "SECRET-TOKEN" && "$ALIBABACLOUD_SECURITY_TOKEN" == "SECRET-TOKEN" ]] || exit 3; printf '%s\n' '{"functionName":"private-function","runtime":"custom.debian12","cpu":0.25,"memorySize":512,"diskSize":512,"timeout":120,"instanceConcurrency":1,"internetAccess":true,"role":"SECRET-ROLE","vpcConfig":{"vpcId":"vpc-secret"},"environmentVariables":{"OSS_BUCKET":"SECRET-BUCKET","V2_MYSQL_PASSWORD":"DONT-LEAK"}}' ;;
   *QueryBillOverview*) printf '%s\n' '{"Success":true,"Data":{"AccountID":"SECRET-ACCOUNT","AccountName":"SECRET-NAME","Items":{"Item":[{"Currency":"CNY","ProductCode":"rds","PretaxAmount":12.5,"PaymentAmount":10,"OutstandingAmount":2.5,"CashAmount":10}]}}}' ;;
   *) exit 2 ;;
 esac
@@ -41,15 +43,34 @@ printf '%s\n' '{"bucketInfo":{"name":"SECRET-BUCKET","location":"oss-cn-hangzhou
   );
   chmodSync(aliyun, 0o700);
   chmodSync(ossutil, 0o700);
+  const configRoot = join(home, ".aliyun");
+  mkdirSync(configRoot, { recursive: true });
+  writeFileSync(
+    join(configRoot, "config.json"),
+    JSON.stringify({
+      profiles: [
+        {
+          name: "AuditOAuth",
+          mode: "OAuth",
+          access_key_id: "SECRET-AK",
+          access_key_secret: "SECRET-SK",
+          sts_token: "SECRET-TOKEN",
+        },
+      ],
+    }),
+    { mode: 0o600 },
+  );
   const result = spawnSync("bash", ["scripts/aliyun-v2-readonly-audit.sh"], {
     cwd: process.cwd(),
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: home,
       PATH: `${bin}:${process.env.PATH}`,
       V2_AUDIT_RDS_INSTANCE_ID: "rm-secret",
       V2_AUDIT_FC_FUNCTION_NAME: "private-function",
       V2_AUDIT_BILLING_CYCLE: "2026-09",
+      V2_AUDIT_OAUTH_PROFILE: "AuditOAuth",
     },
   });
   assert.equal(result.status, 0, result.stderr);
@@ -64,6 +85,8 @@ printf '%s\n' '{"bucketInfo":{"name":"SECRET-BUCKET","location":"oss-cn-hangzhou
     assert.equal(audit.crossChecks.withinHardBudget, true);
     assert.equal(audit.bill.pretaxAmount, 12.5);
     assert.equal(audit.oss.acl, "private");
+    assert.equal(audit.function.errorCode, null);
+    assert.equal(audit.bill.errorCode, null);
     assert.deepEqual(audit.function.environmentKeys, [
       "OSS_BUCKET",
       "V2_MYSQL_PASSWORD",
@@ -76,6 +99,9 @@ printf '%s\n' '{"bucketInfo":{"name":"SECRET-BUCKET","location":"oss-cn-hangzhou
       "SECRET-ROLE",
       "SECRET-NAME",
       "DONT-LEAK",
+      "SECRET-AK",
+      "SECRET-SK",
+      "SECRET-TOKEN",
       "vpc-secret",
       "rm-secret",
       "private-function",
@@ -84,5 +110,6 @@ printf '%s\n' '{"bucketInfo":{"name":"SECRET-BUCKET","location":"oss-cn-hangzhou
   } finally {
     rmSync(output, { force: true });
     rmSync(bin, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   }
 });
