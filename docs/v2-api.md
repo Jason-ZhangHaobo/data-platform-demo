@@ -31,6 +31,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /agent/tasks | message、sql、contextId + 幂等键 | 202；真实模型任务编号；缺配置返回 503 |
 | GET /agent/tasks | 历史委托 | 状态、尝试次数、用量和产物 |
 | GET /agent/tasks/:id | 指定委托 | 同上 |
+| GET /agent/tasks/:id/journey | 只读指定委托 | 七阶段现有版本/运行/交付/审批/计时批次/监控证据与责任归属；固定非Agent自主E2E、非公网，不返回业务行或原始报错 |
 | POST /agent/tasks/:id/cancel | 取消委托及其执行 | CANCELLED |
 | GET /delivery/packages | 当前项目交付包摘要列表 | 不返回大段文件正文 |
 | POST /delivery/packages | sourceRunId、name + 幂等键 | 当前验证通过版本的不可变文件包；NOT_PUBLISHED |

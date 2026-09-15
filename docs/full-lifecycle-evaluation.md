@@ -42,3 +42,5 @@
 - 最新报告：`.v2-artifacts/full-lifecycle/latest.json`（本机忽略文件）；API为`GET /api/v2/evaluations/full-lifecycle/latest`。
 
 20条由4类客户资产开发意图×5套输入构成，覆盖现金变化、重复持仓、同额不同持仓、纯现金客户、字段/范围错误和多轮修正。它尚未覆盖不同输出契约、所有经典模块、权限型任务、跨模块Agent自主编排、公网认证、云隔离或生产SLA，因此100%不可外推为平台总体成功率。
+
+2026-09-15新增的`GET /agent/tasks/:id/journey`是单个实时委托的只读七阶段证据关联：代码Agent之外的交付包、演练、审批、计时发布和监控按实际人工/调度责任标注。即使本机证据完整，该接口也固定`agentIndependentE2E=false`且不计入本页冻结20例的成功分子；两种评测口径不可混用。

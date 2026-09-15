@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新186/186测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 原182项保留；新增FC短期STS脱敏SDK、云预检/预算与工作流保密门测试 |
+| npm run ci | 最新189/189测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 原186项保留；新增Agent七阶段证据旅程核心/API和动态回环Origin测试 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；23.891秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -325,3 +325,12 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 部署前读取`docs/evidence/`单个脱敏报告，要求当月且24小时内、账单税前小于200元、RDS运行/独立平台库账号、杭州私有OSS、专用函数同VPC/角色/并发1、ICP备案/域名归属/HTTPS，并用函数名/域名哈希对应目标。OIDC授权后还实时再读BSS账单，拒绝旧金额假设。
 - 当前真实报告运行预检明确拒绝：专用函数未验收、同VPC未验收、域名ICP备案未验收；本机或账单通过不能转写为公网已部署。
 - 官方FC 3.0 SDK只读诊断：本机OAuth配置0600且短期STS在SDK内部存在；实际GetFunction返回AccessDenied/缺SecurityToken类别，函数规格仍为UNAVAILABLE。测试仅输出规格、布尔或错误码，不输出账号、函数名、Bucket、地址、Key/Token。
+
+## 2026-09-15：代码Agent七阶段证据旅程
+
+- 现有Agent委托只覆盖SQL开发；新增只读`/agent/tasks/:id/journey`从同任务attempt、代码版本和Spark运行关联交付包、调度/部署文件、演练、摘要审批、墙上时钟批次、健康与告警，七阶段标明Agent/工程师/调度器责任。
+- 合成实测将成功模型+Spark任务依次接上不可变交付包、成功文件演练、审批、发布与两个计时批次；本机证据完整可显示，但`agentIndependentE2E=false`、`evaluatedAsFullLifecycle=false`、`publicDeployed=false`不改变。
+- 开放告警使当前监控阶段降为待完成；回滚的历史发布降为HISTORICAL。响应不含SQL、业务行或原始报错；CLI/MCP共用同一只读API，开发Agent面板可展开阶段和短证据ID。
+- 真实本机Qwen+Spark历史委托在独立3101端口展示需求/代码/调试3阶段完成、调度/部署/发布/监控4阶段待完成；责任归属为中文，摘要紧凑排列，第三阶段展开只显示运行ID与边界说明。`document.scrollWidth=innerWidth=1280`。
+- 首次3101页面白屏定位为本机Origin端口固定3100/5173导致同源请求403；改为当前监听回环端口后真实页面正常加载，外部来源仍403。独立3101只用于不干扰现有3100的验收，不是公网性能或多网络证据。
+- 全量189/189通过后，准确停止旧3100进程并恢复原端口；主工作台实际点击“查看/刷新七阶段证据”成功、`document.scrollWidth=innerWidth=1280`。V2 CLI和MCP均从同一历史任务读到7阶段、`agentIndependentE2E=false`、`publicDeployed=false`；临时3101服务随后关闭。

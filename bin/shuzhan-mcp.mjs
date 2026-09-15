@@ -5,6 +5,7 @@ import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 const tools = [
   { name: "v2_status", description: "读取数栈V2真实/本机/公网能力边界。", inputSchema: { type: "object", properties: {} } },
   { name: "budget_status", description: "读取当月模型估算、远程Spark用量、账号账单连接状态和预算门；未连接账号账单时不代表全站费用。", inputSchema: { type: "object", properties: {} } },
+  { name: "agent_journey", description: "只读串联代码Agent、交付包、审批、计时发布和监控证据；人工步骤不冒充Agent自主E2E。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
   { name: "release_runs_list", description: "列出真实调度发布批次及验证证据。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_list", description: "列出交付包摘要、源代码版本和发布状态，不返回文件正文。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_detail", description: "读取指定不可变交付包、文件与可信摘要。", inputSchema: { type: "object", properties: { packageId: { type: "string" } }, required: ["packageId"] } },
@@ -137,6 +138,8 @@ const typePath = (value) => {
 async function callTool(name, args = {}) {
   if (name === "v2_status") return client.request("/status");
   if (name === "budget_status") return client.request("/budget");
+  if (name === "agent_journey")
+    return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/journey`);
   if (name === "release_runs_list") return client.request("/release/runs");
   if (name === "delivery_package_list") return client.request("/delivery/packages");
   if (name === "delivery_package_detail")

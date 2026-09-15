@@ -48,6 +48,7 @@ async function setup(options = {}) {
   };
   return {
     call,
+    port: app.server.address().port,
     store,
     path,
     close: async () => {
@@ -124,6 +125,27 @@ test("cross-project requests and foreign origins are rejected", async () => {
           { Origin: "https://untrusted.example" },
         )
       ).status,
+      403,
+    );
+  } finally {
+    await app.close();
+  }
+});
+test("local browser origin follows the actual loopback listener port", async () => {
+  const app = await setup();
+  try {
+    const port = app.port;
+    assert.ok(port);
+    assert.equal(
+      (await app.call("/status", undefined, { Origin: `http://127.0.0.1:${port}` })).status,
+      200,
+    );
+    assert.equal(
+      (await app.call("/status", undefined, { Origin: "http://localhost:5173" })).status,
+      200,
+    );
+    assert.equal(
+      (await app.call("/status", undefined, { Origin: "https://untrusted.example" })).status,
       403,
     );
   } finally {

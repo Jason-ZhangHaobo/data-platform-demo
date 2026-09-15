@@ -189,6 +189,30 @@ type AgentTask = {
   revisionId?: string;
   attempts: { attempt: number; status: string; runId: string }[];
 };
+type AgentJourney = {
+  taskId: string;
+  stages: {
+    id: string;
+    label: string;
+    actor: string;
+    status: "SUCCEEDED" | "WAITING" | "FAILED" | "HISTORICAL" | "UNVERIFIED";
+    evidence: Record<string, string | number | boolean | undefined>;
+    note: string;
+  }[];
+  localEvidenceComplete: boolean;
+  agentIndependentE2E: boolean;
+  publicDeployed: boolean;
+  notice: string;
+};
+const journeyActors: Record<string, string> = {
+  ENGINEER_AND_AGENT: "工程师明确口径 · Agent读取上下文",
+  DATA_AGENT_THEN_ENGINEER: "Agent生成 · 工程师审阅",
+  DATA_AGENT_AND_SPARK: "Agent修正 · Spark执行",
+  ENGINEER_VIA_DELIVERY_API: "工程师或受控接口生成",
+  ENGINEER_AND_SPARK: "工程师确认 · Spark演练",
+  ENGINEER_APPROVAL_THEN_SCHEDULER: "工程师审批 · 调度器执行",
+  SCHEDULER_AND_ENGINEER: "调度器监控 · 工程师处置",
+};
 const icons: Record<string, React.ComponentType<{ size?: number }>> = {
   sources: Database,
   sync: GitBranch,
@@ -297,6 +321,7 @@ function App() {
     [run, setRun] = useState<Run>(),
     [revisions, setRevisions] = useState<Revision[]>([]);
   const [agentTask, setAgentTask] = useState<AgentTask>(),
+    [agentJourney, setAgentJourney] = useState<AgentJourney>(),
     [message, setMessage] = useState(""),
     [agentOpen, setAgentOpen] = useState(true);
   const [tab, setTab] = useState("结果"),
@@ -722,7 +747,7 @@ function App() {
                 03 核验结果
               </span>
               <ChevronRight size={12} />
-              <span title="M2：实际调度发布待实现">
+              <span title="M2：本机计时发布已验证；云端公网部署仍待验收">
                 04 发布交付 <small>M2</small>
               </span>
               <div className="journey-end">
@@ -1183,6 +1208,51 @@ function App() {
                             第 {a.attempt} 次 · {labels[a.status]}
                           </p>
                         ))}
+                        <button
+                          className="button agent-journey-refresh-v2"
+                          onClick={async () => {
+                            try {
+                              setAgentJourney(
+                                await api<AgentJourney>(
+                                  `/agent/tasks/${agentTask.id}/journey`,
+                                ),
+                              );
+                            } catch (cause) {
+                              setError((cause as Error).message);
+                            }
+                          }}
+                        >
+                          查看/刷新七阶段证据
+                          <ArrowRight size={13} />
+                        </button>
+                        {agentJourney?.taskId === agentTask.id && (
+                          <section className="agent-journey-v2" aria-label="Agent七阶段证据旅程">
+                            <header>
+                              <strong>从需求到监控</strong>
+                              <span>{agentJourney.localEvidenceComplete ? "本机证据完整" : "仍有待完成阶段"}</span>
+                            </header>
+                            <ol>
+                              {agentJourney.stages.map((item, index) => (
+                                <li key={item.id} className={item.status.toLowerCase()}>
+                                  <span>{index + 1}</span>
+                                  <details>
+                                    <summary>
+                                      <strong>{item.label}</strong>
+                                      <small>{item.status === "SUCCEEDED" ? "完成" : item.status === "HISTORICAL" ? "历史状态" : item.status === "FAILED" ? "失败" : item.status === "UNVERIFIED" ? "证据不足" : "待完成"} · {journeyActors[item.actor] ?? "责任待核对"}</small>
+                                    </summary>
+                                    <p>{item.note}</p>
+                                    <code>{Object.entries(item.evidence)
+                                      .filter(([key, value]) => /(?:Id|Hash|model)/.test(key) && typeof value === "string" && value)
+                                      .slice(0, 2)
+                                      .map(([key, value]) => `${key}:${String(value).slice(0, 12)}`)
+                                      .join(" · ")}</code>
+                                  </details>
+                                </li>
+                              ))}
+                            </ol>
+                            <footer>{agentJourney.notice}</footer>
+                          </section>
+                        )}
                         {agentTask.explanation && (
                           <p>{agentTask.explanation}</p>
                         )}

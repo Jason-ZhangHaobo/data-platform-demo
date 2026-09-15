@@ -60,6 +60,7 @@ import { ReportDataStore, ReportManager } from "./reports.mjs";
 import { OperationsManager } from "./operations.mjs";
 import { AuthManager } from "./auth.mjs";
 import { DataContractManager } from "./contracts.mjs";
+import { agentEvidenceJourney } from "./agent-journey.mjs";
 import {
   LocalArtifactStore,
   deliveryArtifactValue,
@@ -498,11 +499,24 @@ export function createV2Server(options = {}) {
       if (method !== "GET" && typeof persistence.flush === "function")
         res.metadataFlush = () => persistence.flush();
       const origin = req.headers.origin;
+      let localOriginAllowed = false;
+      if (local && typeof origin === "string") {
+        try {
+          const parsedOrigin = new URL(origin),
+            localPort = String(req.socket.localPort ?? env.V2_PORT ?? 3100);
+          localOriginAllowed =
+            origin === parsedOrigin.origin &&
+            parsedOrigin.protocol === "http:" &&
+            ["localhost", "127.0.0.1", "[::1]"].includes(parsedOrigin.hostname) &&
+            [localPort, "5173"].includes(parsedOrigin.port);
+        } catch {
+          localOriginAllowed = false;
+        }
+      }
       if (
         origin &&
         !(
-          (local &&
-            /^http:\/\/(localhost|127\.0\.0\.1):(3100|5173)$/.test(origin)) ||
+          localOriginAllowed ||
           (!local &&
             typeof env.V2_PUBLIC_ORIGIN === "string" &&
             origin === env.V2_PUBLIC_ORIGIN)
@@ -2661,7 +2675,7 @@ export function createV2Server(options = {}) {
         }
       }
       const record = path.match(
-        /^\/api\/v2\/(runs|revisions|agent\/tasks)\/([a-f0-9-]+)(?:\/(cancel|bundle))?$/,
+        /^\/api\/v2\/(runs|revisions|agent\/tasks)\/([a-f0-9-]+)(?:\/(cancel|bundle|journey))?$/,
       );
       if (record) {
         const kind = {
@@ -2671,6 +2685,12 @@ export function createV2Server(options = {}) {
           }[record[1]],
           item = get(kind, record[2]);
         if (method === "GET" && !record[3]) return json(res, 200, item);
+        if (method === "GET" && record[3] === "journey" && kind === "agent")
+          return json(
+            res,
+            200,
+            agentEvidenceJourney({ store, project: PROJECT, task: item }),
+          );
         if (
           method === "POST" &&
           record[3] === "cancel" &&

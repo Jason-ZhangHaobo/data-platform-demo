@@ -1076,6 +1076,119 @@ kbd {
   line-height: 1.8;
   color: #748c66;
 }
+.agent-journey-refresh-v2 {
+  margin-top: 10px;
+  width: 100%;
+  justify-content: space-between;
+}
+.agent-journey-v2 {
+  min-width: 0;
+  margin-top: 11px;
+  overflow: hidden;
+  border: 1px solid #d5e4d1;
+  border-radius: 8px;
+  background: linear-gradient(145deg, #fbfdf8, #fff);
+}
+.agent-journey-v2 > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid #e1eadc;
+}
+.agent-journey-v2 > header span {
+  color: #537456;
+  font-size: 9px;
+}
+.agent-journey-v2 ol {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.agent-journey-v2 li {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e6ede2;
+}
+.agent-journey-v2 li details {
+  min-width: 0;
+}
+.agent-journey-v2 li summary {
+  display: grid;
+  gap: 2px;
+  cursor: pointer;
+  list-style: none;
+}
+.agent-journey-v2 li summary::-webkit-details-marker {
+  display: none;
+}
+.agent-journey-v2 li summary:focus-visible {
+  outline: 2px solid #4c835e;
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.agent-journey-v2 li > span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #eef2ea;
+  color: #71816d;
+  font-size: 10px;
+}
+.agent-journey-v2 li.succeeded > span {
+  background: #dff0df;
+  color: #2c724d;
+}
+.agent-journey-v2 li.failed > span {
+  background: #ffe6db;
+  color: #a4543c;
+}
+.agent-journey-v2 li.historical > span {
+  background: #fff3da;
+  color: #88672b;
+}
+.agent-journey-v2 li.unverified > span {
+  background: #fff3da;
+  color: #88672b;
+}
+.agent-journey-v2 li strong,
+.agent-journey-v2 li small,
+.agent-journey-v2 li code {
+  display: block;
+}
+.agent-journey-v2 li strong {
+  color: #355841;
+  font-size: 10px;
+}
+.agent-journey-v2 li small {
+  margin-top: 2px;
+  color: #738773;
+  font-size: 8px;
+}
+.agent-journey-v2 li p {
+  margin: 5px 0;
+  font-size: 9px;
+}
+.agent-journey-v2 li code {
+  overflow: hidden;
+  color: #648065;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-journey-v2 > footer {
+  padding: 10px;
+  color: #697c6a;
+  font-size: 9px;
+  line-height: 1.55;
+}
 .statusbar {
   height: 25px;
   display: flex;
