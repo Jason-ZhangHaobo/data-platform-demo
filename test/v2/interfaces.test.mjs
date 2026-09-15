@@ -435,6 +435,29 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
   assert.deepEqual(requests[14].options.body, {});
 });
 
+test("CLI maps cross-module Agent understanding to the same V2 atomic route", async () => {
+  const requests = [],
+    client = {
+      async request(path, options) {
+        requests.push({ path, options });
+        return { ok: true };
+      },
+    },
+    output = [];
+  assert.equal(
+    await runV2Cli(
+      ["agent", "understand", "--message", "理解持仓字段后生成资产分析报表"],
+      {},
+      { client, output: (value) => output.push(value), error: (value) => output.push(value) },
+    ),
+    0,
+  );
+  assert.equal(requests[0].path, "/agent/intents");
+  assert.deepEqual(requests[0].options.body, {
+    message: "理解持仓字段后生成资产分析报表",
+  });
+});
+
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
   assert.deepEqual(V2_MCP_OPERATIONS, V2_OPERATIONS);
   const listed = JSON.parse(
@@ -447,6 +470,8 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
   assert.deepEqual(names, V2_MCP_TOOL_NAMES);
   for (const required of [
     "budget_status",
+    "agent_intent_list",
+    "agent_intent_create",
     "agent_journey",
     "agent_delivery_list",
     "agent_delivery_prepare",

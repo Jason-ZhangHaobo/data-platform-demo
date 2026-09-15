@@ -23,6 +23,7 @@ import {
   generateSecurityPlan,
   generateReportPlan,
   generateOpsDiagnosis,
+  generateAgentIntent,
   modelSettings,
   ModelUnavailable,
 } from "./model.mjs";
@@ -70,6 +71,10 @@ import {
   budgetAgentCreationPaths,
 } from "./budget.mjs";
 import { fullLifecycleContract, lifecycleStages } from "./lifecycle-evaluation.mjs";
+import {
+  publicAgentIntentDestinations,
+  validateAgentIntentRoute,
+} from "./agent-router.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -204,6 +209,16 @@ export function createV2Server(options = {}) {
       budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY;
       const result = await generateSql(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
+  const intentPlanner =
+    options.intentPlanner ??
+    (async (input) => {
+      budget.assertCanStartModel();
+      const keyAtRequest = env.DASHSCOPE_API_KEY,
+        result = await generateAgentIntent(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
         modelVerifiedAt = new Date().toISOString();
       return result;
@@ -1990,6 +2005,14 @@ export function createV2Server(options = {}) {
         return json(res, 200, store.list("run", PROJECT));
       if (path === "/api/v2/agent/tasks" && method === "GET")
         return json(res, 200, store.list("agent", PROJECT));
+      if (path === "/api/v2/agent/intents" && method === "GET") {
+        if (!local && !auth.sessionFromHeaders(req.headers))
+          throw Object.assign(
+            fail(401, "请先登录受邀账号查看Agent任务"),
+            { code: "AUTHENTICATION_REQUIRED" },
+          );
+        return json(res, 200, store.list("agent_intent", PROJECT));
+      }
       if (path === "/api/v2/delivery/packages" && method === "GET")
         return json(
           res,
@@ -3101,6 +3124,46 @@ export function createV2Server(options = {}) {
         if (!dedup.replayed)
           schedule("run", run, (signal) => execute(run, rev, signal));
         return json(res, 202, run);
+      }
+      if (method === "POST" && path === "/api/v2/agent/intents") {
+        const body = await readBody(req),
+          message = text(body.message, 4, 2000);
+        if (!options.intentPlanner && !modelSettings(env).configured)
+          throw new ModelUnavailable();
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          signature = hash(JSON.stringify({ message })),
+          dedup = store.deduplicate(
+            `${PROJECT}:agent-intent:${key}`,
+            signature,
+            () =>
+              store.create("agent_intent", PROJECT, {
+                message,
+                status: "QUEUED",
+                mode: "LIVE_MODEL",
+                completionScope: "CROSS_MODULE_INTENT_ROUTING",
+                execution: "NO_EXECUTION",
+                fullLifecycleE2E: false,
+                publicDeployed: false,
+              }),
+          ),
+          task = get("agent_intent", dedup.id);
+        if (!dedup.replayed)
+          schedule("agent_intent", task, async (signal) => {
+            const generated = await intentPlanner({
+                message,
+                destinations: publicAgentIntentDestinations(),
+                signal,
+              }),
+              route = validateAgentIntentRoute(generated.route);
+            store.update("agent_intent", task.id, PROJECT, {
+              status: "SUCCEEDED",
+              route,
+              model: generated.model,
+              usage: generated.usage,
+              finishedAt: new Date().toISOString(),
+            });
+          });
+        return json(res, 202, task);
       }
       if (method === "POST" && path === "/api/v2/agent/tasks") {
         const body = await readBody(req),

@@ -99,6 +99,7 @@ export class MetadataStore {
       "security_agent_plan",
       "report_agent_plan",
       "ops_agent_diagnosis",
+      "agent_intent",
       "offline_sync_run",
       "stream_run",
       "release",

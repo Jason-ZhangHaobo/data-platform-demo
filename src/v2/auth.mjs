@@ -34,6 +34,7 @@ const PERMISSIONS = Object.freeze({
   ADMIN: ["*"],
   ENGINEER: [
     "SESSION",
+    "AGENT",
     "DEVELOPMENT",
     "DELIVERY",
     "INGESTION",
@@ -47,6 +48,7 @@ const PERMISSIONS = Object.freeze({
   ],
   PRODUCT_MANAGER: [
     "SESSION",
+    "AGENT",
     "ASSETS",
     "SERVICES",
     "REPORTS",
@@ -512,6 +514,7 @@ function permissionForPath(path) {
     return "ADMIN";
   if (path.startsWith("/api/v2/security/requests")) return "ACCESS_REQUEST";
   if (path.startsWith("/api/v2/security")) return "ADMIN";
+  if (path.startsWith("/api/v2/agent/intents")) return "AGENT";
   if (path.startsWith("/api/v2/revisions") || path.startsWith("/api/v2/runs") || path.startsWith("/api/v2/agent"))
     return "DEVELOPMENT";
   if (path.startsWith("/api/v2/delivery") || path.startsWith("/api/v2/releases"))

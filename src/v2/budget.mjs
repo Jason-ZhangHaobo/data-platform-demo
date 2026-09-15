@@ -252,6 +252,7 @@ export class BudgetManager {
 }
 
 export const budgetAgentCreationPaths = new Set([
+  "/api/v2/agent/intents",
   "/api/v2/agent/tasks",
   "/api/v2/data-services/agent/plans",
   "/api/v2/sync/agent/plans",

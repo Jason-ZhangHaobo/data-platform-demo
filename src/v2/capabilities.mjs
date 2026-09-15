@@ -1,5 +1,17 @@
 export const capabilities = [
   {
+    id: "agent-center",
+    group: "智能协同",
+    name: "Data Agent",
+    description: "理解跨模块需求，推荐受治理的下一步",
+    stage: "M1—M4",
+    features: [
+      "受支持模块白名单路由",
+      "不传递业务行、凭证或内部地址",
+      "只推荐下一步，不自动执行高风险动作",
+    ],
+  },
+  {
     id: "sources",
     group: "数据接入",
     name: "数据源",

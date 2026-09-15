@@ -59,6 +59,7 @@ import { QualityWorkbench } from "./QualityWorkbench";
 import { SecurityWorkbench } from "./SecurityWorkbench";
 import { ReportsWorkbench } from "./ReportsWorkbench";
 import { OperationsWorkbench } from "./OperationsWorkbench";
+import { AgentCenter } from "./AgentCenter";
 import {
   AuthDialog,
   ChangePasswordPanel,
@@ -318,6 +319,7 @@ function cookieValue(name: string) {
     ?.slice(name.length + 1);
 }
 const navPermission: Record<string, string> = {
+  "agent-center": "AGENT",
   sources: "INGESTION",
   sync: "INGESTION",
   development: "DEVELOPMENT",
@@ -618,10 +620,10 @@ function App() {
           title="Data Agent"
           className={
             "agent-entry " +
-            (agentOpen && nav === "development" ? "active" : "")
+            (nav === "agent-center" ? "active" : "")
           }
           onClick={() => {
-            setNav("development");
+            setNav("agent-center");
             setAgentOpen(true);
           }}
         >
@@ -737,7 +739,17 @@ function App() {
             </button>
           </div>
         )}
-        {nav === "development" ? (
+        {nav === "agent-center" ? (
+          <AgentCenter
+            api={api}
+            canWrite={canWrite}
+            modelConfigured={Boolean(status?.model.configured)}
+            onOpenDestination={(destination) => {
+              setNav(destination);
+              setNotice("已进入对应专业模块；后续动作仍需模块内资源与权限校验");
+            }}
+          />
+        ) : nav === "development" ? (
           <>
             <div className="page-heading">
               <div>
