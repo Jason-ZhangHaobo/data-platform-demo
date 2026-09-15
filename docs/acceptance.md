@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新181/181测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 原175项保留；新增5项数据契约核心/API测试并扩展多端与模型隐私回归 |
+| npm run ci | 最新182/182测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 原175项保留；新增数据契约与RDS安全账号辅助测试，并扩展多端、模型隐私和OAuth审计回归 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；23.891秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -304,3 +304,9 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 删除`currency`被判破坏性，页面在未确认前禁用创建；确认后生成V3，复检PASSED并以恢复检查ID解除原告警。V1/V2、失败检查和确认记录均保留。
 - 未配置实际行或无法度量新鲜度时返回PARTIAL；只有完整PASSED可解除告警。BACKWARD新增必填字段同样判为破坏性。
 - GUI实际完成V1→V2失败→V3恢复；API、CLI、MCP共享6个契约操作。Node全量测试181/181，TypeScript/Vite构建通过。当前仍是本机合成范围，不是公网或生产契约中心。详见[M4h报告](m4h-data-contracts.md)。
+
+## 2026-09-15：真实RDS平台元数据库准备
+
+- 经用户批准短暂唤醒现有Serverless RDS；运行态确认`business_demo`和`sync_writer`仍存在，随后创建独立`platform_meta`并复核其状态Running，未新购实例。
+- 新增安全账号辅助脚本：两次隐藏输入且先本机校验；必要时自动唤醒AutoPause实例；固定创建Normal账号`platform_app`并只授`platform_meta` ReadWrite；已存在时拒绝覆盖，密码不写文件、不回显、不进入Shell历史。
+- 1项假CLI测试验证操作目标和输出脱敏，全量CI 182/182。真实账号创建仍等待用户完成当前macOS隐藏密码弹窗，未完成前不得把平台数据库记为可连接。
