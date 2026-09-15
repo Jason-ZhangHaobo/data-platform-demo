@@ -33,16 +33,39 @@ export function validateAgentIntentRoute(value) {
     throw fail("模型路由说明长度不合法");
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1)
     throw fail("模型路由置信度不合法");
+  const rawSteps = Array.isArray(value.steps)
+      ? value.steps
+      : [{ destinationId, objective: summary }],
+    steps = rawSteps.map((step) => {
+      const stepDestinationId = String(step?.destinationId ?? ""),
+        stepDestination = byId.get(stepDestinationId),
+        objective = String(step?.objective ?? "").trim();
+      if (!stepDestination || objective.length < 4 || objective.length > 240)
+        throw fail("模型跨模块建议步骤不合法");
+      return {
+        destinationId: stepDestinationId,
+        label: stepDestination.label,
+        risk: stepDestination.risk,
+        objective,
+      };
+    });
+  if (
+    steps.length < 1 ||
+    steps.length > 3 ||
+    steps[0].destinationId !== destinationId ||
+    new Set(steps.map((step) => step.destinationId)).size !== steps.length
+  )
+    throw fail("模型跨模块建议必须从主推荐开始，且最多三步不重复");
   return {
     destinationId,
     destination: { ...destination },
     summary,
     rationale,
     confidence,
+    steps,
     execution: "NO_EXECUTION",
-    requiresHumanReview: destination.risk !== "LOW",
+    requiresHumanReview: steps.some((step) => step.risk !== "LOW"),
     notice:
       "仅完成任务理解与模块推荐；不会执行同步、查询、审批、发布、发令牌或修改权限。",
   };
 }
-

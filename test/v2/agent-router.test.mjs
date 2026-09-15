@@ -31,6 +31,7 @@ test("cross-module intent route is whitelist-bound and cannot include execution"
   assert.equal(route.destination.id, "quality");
   assert.equal(route.execution, "NO_EXECUTION");
   assert.equal(route.requiresHumanReview, true);
+  assert.equal(route.steps.length, 1);
   assert.equal("sql" in route, false);
   assert.throws(
     () =>
@@ -43,6 +44,34 @@ test("cross-module intent route is whitelist-bound and cannot include execution"
     { status: 422 },
   );
   assert.equal(publicAgentIntentDestinations().some((item) => "credentials" in item), false);
+});
+
+test("cross-module intent can recommend a bounded sequence without auto-execution", () => {
+  const route = validateAgentIntentRoute({
+    destinationId: "assets",
+    summary: "解释持仓字段后设计资产分析报表",
+    rationale: "先确认资产口径，再设计依赖该口径的可视化报表。",
+    confidence: 0.93,
+    steps: [
+      { destinationId: "assets", objective: "解释客户持仓字段、血缘和资产统计口径" },
+      { destinationId: "reports", objective: "基于已确认口径设计财富顾问资产分析报表草稿" },
+    ],
+  });
+  assert.deepEqual(route.steps.map((step) => step.destinationId), ["assets", "reports"]);
+  assert.equal(route.requiresHumanReview, false);
+  assert.throws(
+    () => validateAgentIntentRoute({
+      destinationId: "assets",
+      summary: "重复模块不得通过",
+      rationale: "一个跨模块建议不能重复跳转同一模块。",
+      confidence: 0.9,
+      steps: [
+        { destinationId: "assets", objective: "解释资产字段和口径信息" },
+        { destinationId: "assets", objective: "再次执行相同的资产解释任务" },
+      ],
+    }),
+    { status: 422 },
+  );
 });
 
 test("intent API persists a live-model routing result without executing a downstream module", async () => {
