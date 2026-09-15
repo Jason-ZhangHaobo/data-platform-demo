@@ -235,6 +235,7 @@ export function createV2Server(options = {}) {
     if (!item) throw fail(404, "未找到当前项目的记录");
     return item;
   };
+  const publicAgentIntent = ({ submittedBy, ...item }) => item;
   const cloudReadiness = async () => {
     let report;
     try {
@@ -2039,12 +2040,21 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/agent/tasks" && method === "GET")
         return json(res, 200, store.list("agent", PROJECT));
       if (path === "/api/v2/agent/intents" && method === "GET") {
-        if (!local && !auth.sessionFromHeaders(req.headers))
+        const session = auth.sessionFromHeaders(req.headers);
+        if (!local && !session)
           throw Object.assign(
             fail(401, "请先登录受邀账号查看Agent任务"),
             { code: "AUTHENTICATION_REQUIRED" },
           );
-        return json(res, 200, store.list("agent_intent", PROJECT));
+        const items = store.list("agent_intent", PROJECT);
+        return json(
+          res,
+          200,
+          (local || session.role === "ADMIN"
+            ? items
+            : items.filter((item) => item.submittedBy === session.user.id)
+          ).map(publicAgentIntent),
+        );
       }
       if (path === "/api/v2/delivery/packages" && method === "GET")
         return json(
@@ -3074,7 +3084,7 @@ export function createV2Server(options = {}) {
               throw new Error("交付文件演练失败，已保存运行编号供工程师检查");
             }
           });
-        return json(res, 202, task);
+        return json(res, 202, publicAgentIntent(task));
       }
       const record = path.match(
         /^\/api\/v2\/(runs|revisions|agent\/tasks)\/([a-f0-9-]+)(?:\/(cancel|bundle|journey))?$/,
@@ -3160,7 +3170,9 @@ export function createV2Server(options = {}) {
       }
       if (method === "POST" && path === "/api/v2/agent/intents") {
         const body = await readBody(req),
-          message = text(body.message, 4, 2000);
+          message = text(body.message, 4, 2000),
+          session = auth.sessionFromHeaders(req.headers),
+          submittedBy = session?.user.id ?? "local-engineer";
         if (!options.intentPlanner && !modelSettings(env).configured)
           throw new ModelUnavailable();
         const key = text(req.headers["idempotency-key"], 1, 100),
@@ -3171,6 +3183,7 @@ export function createV2Server(options = {}) {
             () =>
               store.create("agent_intent", PROJECT, {
                 message,
+                submittedBy,
                 status: "QUEUED",
                 mode: "LIVE_MODEL",
                 completionScope: "CROSS_MODULE_INTENT_ROUTING",
@@ -3196,7 +3209,7 @@ export function createV2Server(options = {}) {
               finishedAt: new Date().toISOString(),
             });
           });
-        return json(res, 202, task);
+        return json(res, 202, publicAgentIntent(task));
       }
       if (method === "POST" && path === "/api/v2/agent/tasks") {
         const body = await readBody(req),

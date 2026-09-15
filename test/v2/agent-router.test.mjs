@@ -19,6 +19,26 @@ const waitFor = async (read, done, timeoutMs = 1500) => {
   }
   throw new Error("等待Agent意图任务超时");
 };
+const publicRequest = async (base, path, { body, cookie, csrf, key = "agent-router-public" } = {}) => {
+  const response = await fetch(base + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        Accept: "application/json",
+        Origin: "https://demo.example",
+        "X-Shuzhan-Client": "workbench",
+        ...(body === undefined ? {} : { "Content-Type": "application/json", "Idempotency-Key": key }),
+        ...(cookie ? { Cookie: cookie } : {}),
+        ...(csrf ? { "X-CSRF-Token": csrf } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+    cookies = response.headers.getSetCookie?.() ?? [];
+  return {
+    status: response.status,
+    body: await response.json(),
+    cookie: cookies.map((value) => value.split(";", 1)[0]).join("; "),
+  };
+};
 
 test("cross-module intent route is whitelist-bound and cannot include execution", () => {
   const route = validateAgentIntentRoute({
@@ -137,6 +157,52 @@ test("public anonymous callers cannot read cross-module intent history", async (
     );
     assert.equal(response.status, 401);
     assert.equal((await response.json()).code, "AUTHENTICATION_REQUIRED");
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    store.close();
+  }
+});
+
+test("public Agent intent history is isolated per member and viewer cannot submit", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuzhan-agent-router-roles-")),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    app = createV2Server({
+      root,
+      store,
+      env: {
+        V2_LOCAL_DEVELOPMENT: "false",
+        V2_PUBLIC_ORIGIN: "https://demo.example",
+        V2_BOOTSTRAP_ADMIN_EMAIL: "admin@example.test",
+        V2_BOOTSTRAP_ADMIN_PASSWORD: "StrongAdmin#2026",
+        V2_BOOTSTRAP_ADMIN_NAME: "虚构管理员",
+      },
+      intentPlanner: async () => ({
+        route: { destinationId: "reports", summary: "设计虚构证券资产报表", rationale: "请求属于报表设计。", confidence: 0.9 },
+        model: "TEST_ROUTER_MODEL",
+        usage: { total_tokens: 1 },
+      }),
+    });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
+  try {
+    const admin = await publicRequest(base, "/auth/login", { body: { email: "admin@example.test", password: "StrongAdmin#2026" }, key: "admin-login" });
+    const invite = async (email, role, key) => publicRequest(base, "/auth/invitations", { body: { email, role }, cookie: admin.cookie, csrf: admin.body.csrfToken, key });
+    const pmInvite = await invite("pm@example.test", "PRODUCT_MANAGER", "pm-invite"),
+      viewerInvite = await invite("viewer@example.test", "VIEWER", "viewer-invite"),
+      pm = await publicRequest(base, "/auth/redeem", { body: { inviteCode: pmInvite.body.inviteCode, displayName: "虚构产品经理", password: "Product#Pass2026" }, key: "pm-redeem" }),
+      viewer = await publicRequest(base, "/auth/redeem", { body: { inviteCode: viewerInvite.body.inviteCode, displayName: "虚构查看者", password: "Viewer#Pass2026" }, key: "viewer-redeem" });
+    const created = await publicRequest(base, "/agent/intents", { body: { message: "理解虚构持仓并设计报表" }, cookie: pm.cookie, csrf: pm.body.csrfToken, key: "pm-intent" });
+    assert.equal(created.status, 202);
+    const pmTasks = await waitFor(
+      () => publicRequest(base, "/agent/intents", { cookie: pm.cookie }).then((value) => value.body),
+      (value) => value.length === 1 && value[0].status === "SUCCEEDED",
+    );
+    assert.equal(pmTasks[0].submittedBy, undefined);
+    assert.deepEqual((await publicRequest(base, "/agent/intents", { cookie: viewer.cookie })).body, []);
+    const forbidden = await publicRequest(base, "/agent/intents", { body: { message: "查看者不能调用模型" }, cookie: viewer.cookie, csrf: viewer.body.csrfToken, key: "viewer-intent" });
+    assert.equal(forbidden.status, 403);
+    assert.equal(forbidden.body.code, "PROJECT_PERMISSION_DENIED");
+    assert.equal((await publicRequest(base, "/agent/intents", { cookie: admin.cookie })).body.length, 1);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     store.close();
