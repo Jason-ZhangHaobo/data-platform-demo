@@ -198,7 +198,22 @@ test("public Agent intent history is isolated per member and viewer cannot submi
       (value) => value.length === 1 && value[0].status === "SUCCEEDED",
     );
     assert.equal(pmTasks[0].submittedBy, undefined);
+    const handoff = await publicRequest(
+      base,
+      `/agent/intents/${pmTasks[0].id}/handoffs`,
+      { body: { destinationId: "reports" }, cookie: pm.cookie, csrf: pm.body.csrfToken, key: "pm-handoff" },
+    );
+    assert.equal(handoff.status, 201);
+    assert.equal(handoff.body.execution, "NO_EXECUTION");
+    assert.equal(handoff.body.submittedBy, undefined);
+    assert.equal(store.list("report_agent_plan", PROJECT).length, 0);
+    assert.equal(
+      (await publicRequest(base, `/agent/intents/${pmTasks[0].id}/handoffs`, { cookie: pm.cookie })).body.length,
+      1,
+    );
     assert.deepEqual((await publicRequest(base, "/agent/intents", { cookie: viewer.cookie })).body, []);
+    const forbiddenHandoffRead = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/handoffs`, { cookie: viewer.cookie });
+    assert.equal(forbiddenHandoffRead.status, 403);
     const forbidden = await publicRequest(base, "/agent/intents", { body: { message: "查看者不能调用模型" }, cookie: viewer.cookie, csrf: viewer.body.csrfToken, key: "viewer-intent" });
     assert.equal(forbidden.status, 403);
     assert.equal(forbidden.body.code, "PROJECT_PERMISSION_DENIED");

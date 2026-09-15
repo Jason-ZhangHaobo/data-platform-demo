@@ -5,6 +5,8 @@ export const V2_OPERATIONS = Object.freeze([
   "budget_status",
   "agent_intent_list",
   "agent_intent_create",
+  "agent_intent_handoff_list",
+  "agent_intent_handoff_create",
   "agent_journey",
   "agent_delivery_list",
   "agent_delivery_prepare",

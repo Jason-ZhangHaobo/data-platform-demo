@@ -456,6 +456,16 @@ test("CLI maps cross-module Agent understanding to the same V2 atomic route", as
   assert.deepEqual(requests[0].options.body, {
     message: "理解持仓字段后生成资产分析报表",
   });
+  assert.equal(
+    await runV2Cli(
+      ["agent", "handoff", "--id", "intent-id", "--destination", "reports"],
+      {},
+      { client, output: (value) => output.push(value), error: (value) => output.push(value) },
+    ),
+    0,
+  );
+  assert.equal(requests[1].path, "/agent/intents/intent-id/handoffs");
+  assert.deepEqual(requests[1].options.body, { destinationId: "reports" });
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -472,6 +482,8 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "budget_status",
     "agent_intent_list",
     "agent_intent_create",
+    "agent_intent_handoff_list",
+    "agent_intent_handoff_create",
     "agent_journey",
     "agent_delivery_list",
     "agent_delivery_prepare",

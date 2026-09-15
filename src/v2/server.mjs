@@ -236,6 +236,9 @@ export function createV2Server(options = {}) {
     return item;
   };
   const publicAgentIntent = ({ submittedBy, ...item }) => item;
+  const publicAgentHandoff = ({ submittedBy, ...item }) => item;
+  const mayReadAgentIntent = (item, session) =>
+    local || session?.role === "ADMIN" || item.submittedBy === session?.user.id;
   const cloudReadiness = async () => {
     let report;
     try {
@@ -2050,11 +2053,70 @@ export function createV2Server(options = {}) {
         return json(
           res,
           200,
-          (local || session.role === "ADMIN"
-            ? items
-            : items.filter((item) => item.submittedBy === session.user.id)
-          ).map(publicAgentIntent),
+          items.filter((item) => mayReadAgentIntent(item, session)).map(publicAgentIntent),
         );
+      }
+      const agentIntentHandoff = path.match(
+        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/handoffs$/,
+      );
+      if (agentIntentHandoff) {
+        const intent = get("agent_intent", agentIntentHandoff[1]),
+          session = auth.sessionFromHeaders(req.headers);
+        if (!local && !session)
+          throw Object.assign(fail(401, "请先登录受邀账号查看Agent交接"), {
+            code: "AUTHENTICATION_REQUIRED",
+          });
+        if (!mayReadAgentIntent(intent, session))
+          throw Object.assign(fail(403, "当前成员不能查看或交接该Agent任务"), {
+            code: "PROJECT_PERMISSION_DENIED",
+          });
+        if (method === "GET")
+          return json(
+            res,
+            200,
+            store
+              .list("agent_intent_handoff", PROJECT)
+              .filter((item) => item.intentId === intent.id)
+              .map(publicAgentHandoff),
+          );
+        if (method === "POST") {
+          if (intent.status !== "SUCCEEDED" || !intent.route)
+            throw fail(409, "只有已完成理解的Agent任务可以交接");
+          const body = await readBody(req),
+            destinationId = text(body.destinationId, 1, 80),
+            steps = intent.route.steps ?? [
+              {
+                destinationId: intent.route.destinationId,
+                objective: intent.route.summary,
+              },
+            ],
+            step = steps.find((item) => item.destinationId === destinationId);
+          if (!step)
+            throw fail(422, "只能交接到当前Agent推荐链路中的专业模块");
+          const key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:agent-intent-handoff:${intent.id}:${key}`,
+              hash(JSON.stringify({ destinationId, objective: step.objective })),
+              () =>
+                store.create("agent_intent_handoff", PROJECT, {
+                  intentId: intent.id,
+                  destinationId,
+                  objective: step.objective,
+                  status: "HANDED_OFF",
+                  submittedBy: session?.user.id ?? "local-engineer",
+                  scope: "SPECIALIST_AGENT_DRAFT_ONLY",
+                  execution: "NO_EXECUTION",
+                  fullLifecycleE2E: false,
+                  publicDeployed: false,
+                  handedOffAt: new Date().toISOString(),
+                }),
+            );
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            publicAgentHandoff(get("agent_intent_handoff", dedup.id)),
+          );
+        }
       }
       if (path === "/api/v2/delivery/packages" && method === "GET")
         return json(

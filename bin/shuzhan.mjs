@@ -9,6 +9,8 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan budget
   shuzhan agent intents
   shuzhan agent understand --message "理解需求并推荐中台模块"
+  shuzhan agent handoffs --id INTENT_ID
+  shuzhan agent handoff --id INTENT_ID --destination MODULE_ID
   shuzhan agent journey --id AGENT_TASK_ID
   shuzhan agent deliveries [--source-id AGENT_TASK_ID]
   shuzhan agent prepare-delivery --id AGENT_TASK_ID
@@ -247,6 +249,18 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         method: "POST",
         body: { message: required(parsed.options, "message") },
       });
+    else if (resource === "agent" && action === "handoffs")
+      result = await client.request(
+        `/agent/intents/${encodeURIComponent(required(parsed.options, "id"))}/handoffs`,
+      );
+    else if (resource === "agent" && action === "handoff")
+      result = await client.request(
+        `/agent/intents/${encodeURIComponent(required(parsed.options, "id"))}/handoffs`,
+        {
+          method: "POST",
+          body: { destinationId: required(parsed.options, "destination") },
+        },
+      );
     else if (resource === "agent" && action === "journey")
       result = await client.request(
         `/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/journey`,

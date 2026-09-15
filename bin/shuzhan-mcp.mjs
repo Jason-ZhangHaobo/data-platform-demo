@@ -7,6 +7,8 @@ const tools = [
   { name: "budget_status", description: "读取当月模型估算、远程Spark用量、账号账单连接状态和预算门；未连接账号账单时不代表全站费用。", inputSchema: { type: "object", properties: {} } },
   { name: "agent_intent_list", description: "读取跨模块 Data Agent 的任务理解与受治理路由结果。", inputSchema: { type: "object", properties: {} } },
   { name: "agent_intent_create", description: "理解需求并在受支持模块中推荐下一步；只做路由，不执行同步、查询、审批、发布、发令牌或改权限。", inputSchema: { type: "object", properties: { message: { type: "string", minLength: 4, maxLength: 2000 } }, required: ["message"] } },
+  { name: "agent_intent_handoff_list", description: "读取一个跨模块Agent意图的受控交接记录。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
+  { name: "agent_intent_handoff_create", description: "把一个已完成的Agent意图交接到其推荐链路中的专业模块；只记录交接并预填草稿，不执行下游任务。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, destinationId: { type: "string" } }, required: ["intentId", "destinationId"] } },
   { name: "agent_journey", description: "只读串联代码Agent、交付包、审批、计时发布和监控证据；人工步骤不冒充Agent自主E2E。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
   { name: "agent_delivery_list", description: "列出代码Agent的后台交付准备、不可变包与文件演练结果。", inputSchema: { type: "object", properties: { sourceAgentTaskId: { type: "string" } } } },
   { name: "agent_delivery_prepare", description: "对真实模型与Spark已核验代码自动生成调度/部署包并实际文件演练；不审批、不发布、不创建公网资源。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
@@ -152,6 +154,13 @@ async function callTool(name, args = {}) {
       method: "POST",
       body: { message: args.message },
     });
+  if (name === "agent_intent_handoff_list")
+    return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/handoffs`);
+  if (name === "agent_intent_handoff_create")
+    return client.request(
+      `/agent/intents/${encodeURIComponent(args.intentId)}/handoffs`,
+      { method: "POST", body: { destinationId: args.destinationId } },
+    );
   if (name === "agent_journey")
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/journey`);
   if (name === "agent_delivery_list")
