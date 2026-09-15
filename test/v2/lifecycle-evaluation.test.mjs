@@ -19,6 +19,7 @@ test("frozen code evidence retains all 20 real Agent and Spark cases without log
     validated.contract.sourceCodeEvaluationRunId,
     "a6ccf750-836d-4f1b-8e73-a66da710e1bb",
   );
+  assert.ok(lifecycleStages.includes("engineerReview"));
   assert.ok(
     evidence.cases.every(
       (item) =>
@@ -53,6 +54,11 @@ test("lifecycle rate requires every stage and all 20 retained outcomes", () => {
   assert.equal(summary.targetMet, true);
   assert.equal(summary.fullLifecycleE2E, false);
   outcomes[0].stages.postReleaseMonitoring.status = "PASSED";
+  outcomes[0].stages.engineerReview.status = "FAILED";
+  summary = summarizeLifecycleEvaluation(evidence, outcomes);
+  assert.equal(summary.succeededCaseCount, 19);
+  assert.equal(summary.fullLifecycleE2E, false);
+  outcomes[0].stages.engineerReview.status = "PASSED";
   outcomes[0].detours = [
     { status: "CANCELLED", rescued: true },
     { status: "BLOCKED", rescued: true },

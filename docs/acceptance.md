@@ -225,6 +225,11 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 报告接口、V2 CLI/MCP与运维页显示同一20/20、40批、阻塞/取消/救援信息；有效1280/768无页面横向溢出。
 - 该结论固定`deploymentScope=LOCAL_ACTUAL`、`publicDeployed=false`；仍不是公网、云隔离或生产E2E，且用例输出契约集中于客户资产。详见[完整链路报告](full-lifecycle-evaluation.md)。
 
+### 当前审阅契约复跑
+
+- 上述旧运行未包含独立`delivery_review`，在D-102后不再作为当前完整E2E依据。当前运行`f3e1e908-3d27-4622-a2cb-90b246f827bb`按七阶段契约重跑20/20：每例原冻结真实模型SQL先在当前Spark3.5.9实际执行、通过五场景回归，再生成包、文件演练、写入摘要/演练绑定的四项审阅记录、审批、两个墙上时钟批次和健康监控。
+- 当前报告：20成功、0失败、40调度批次、`targetMet=true`、`publicDeployed=false`；CLI读取同一报告并确认20条`engineerReview=PASSED`。评测器的`LOCAL_TEST_RELEASE`审阅用于验证不可绕过的技术流程，不是受邀用户的生产批准，也不构成Agent自主成功率。
+
 ## 2026-09-15：邀请认证与项目权限本机预览
 
 - 后端实现一次性7天邀请、scrypt密码哈希、8小时服务端会话、HttpOnly/SameSite Cookie、CSRF双提交、登录限流和ADMIN/ENGINEER/PRODUCT_MANAGER/VIEWER资源权限。

@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MetadataStore } from "../../src/v2/store.mjs";
 import { createV2Server } from "../../src/v2/server.mjs";
+import {
+  fullLifecycleContract,
+  lifecycleStages,
+} from "../../src/v2/lifecycle-evaluation.mjs";
 
 test("latest lifecycle report API exposes local scope without relabeling it public", async () => {
   const root = mkdtempSync(join(tmpdir(), "shuzhan-lifecycle-api-")),
@@ -15,6 +19,7 @@ test("latest lifecycle report API exposes local scope without relabeling it publ
     join(reportRoot, "latest.json"),
     JSON.stringify({
       format: "shuzhan-full-lifecycle-evaluation/v1",
+      contract: fullLifecycleContract,
       frozenCaseCount: 20,
       completedCaseCount: 20,
       succeededCaseCount: 20,
@@ -24,6 +29,9 @@ test("latest lifecycle report API exposes local scope without relabeling it publ
       publicDeployed: false,
       outcomes: Array.from({ length: 20 }, (_, index) => ({
         caseId: `case-${index + 1}`,
+        stages: Object.fromEntries(
+          lifecycleStages.map((stage) => [stage, { status: "PASSED" }]),
+        ),
       })),
     }),
   );
@@ -43,6 +51,7 @@ test("latest lifecycle report API exposes local scope without relabeling it publ
     assert.equal(body.deploymentScope, "LOCAL_ACTUAL");
     assert.equal(body.publicDeployed, false);
     assert.equal(body.outcomes.length, 20);
+    assert.equal(body.contract.id, fullLifecycleContract.id);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     store.close();

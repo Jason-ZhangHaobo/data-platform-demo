@@ -11,12 +11,13 @@ export const lifecycleStages = Object.freeze([
   "codeAndDebug",
   "scheduleFiles",
   "deploymentFiles",
+  "engineerReview",
   "localRelease",
   "postReleaseMonitoring",
 ]);
 
 export const fullLifecycleContract = Object.freeze({
-  id: "securities-full-lifecycle-20-cases-local-v1",
+  id: "securities-full-lifecycle-20-cases-local-v2",
   sourceCodeEvaluationRunId: "a6ccf750-836d-4f1b-8e73-a66da710e1bb",
   expectedCaseCount: 20,
   targetRate: 0.85,
@@ -24,7 +25,7 @@ export const fullLifecycleContract = Object.freeze({
   publicDeployed: false,
   stageNames: lifecycleStages,
   completionRule:
-    "每例必须同时具备原真实Agent需求/代码/调试证据、调度与部署文件、成功演练、摘要审批、本机版本激活、两个墙上时钟Spark批次和健康监控。",
+    "每例必须同时具备原真实Agent需求/代码/调试证据、调度与部署文件、成功演练、独立审阅记录、摘要审批、本机版本激活、两个墙上时钟Spark批次和健康监控。",
 });
 
 export function validateFrozenCodeEvidence(evidence) {

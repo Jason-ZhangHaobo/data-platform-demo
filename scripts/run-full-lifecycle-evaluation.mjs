@@ -162,24 +162,28 @@ try {
             sourceEvaluationRunId: evidence.sourceEvaluationRunId,
           },
         }),
-        run = store.create("run", PROJECT, {
-          validationContractId: item.execution.validationContractId,
-          revisionId: revision.id,
-          revisionHash: revision.hash,
-          contextId: item.contextId,
-          status: "SUCCEEDED",
-          rows: item.execution.rows,
-          columns: item.execution.columns,
-          engine: item.execution.engine,
-          engineVersion: item.execution.engineVersion,
-          mainSqlExecuted: true,
-          validation: item.execution.validation,
-          durationMs: item.execution.durationMs,
-          importedFrozenEvidence: true,
-          originalRunId: item.original.runId,
-          originalAgentTaskId: item.original.agentTaskId,
-          fullLifecycleE2E: false,
-        });
+        startedRun = await request(
+          "/runs",
+          { revisionId: revision.id },
+          key(item.caseId, "current-spark-run"),
+        ),
+        run = await waitFor(
+          () => request(`/runs/${startedRun.id}`),
+          (value) =>
+            ["SUCCEEDED", "FAILED", "VALIDATION_FAILED", "CANCELLED"].includes(
+              value.status,
+            ),
+          180000,
+          "当前Spark代码执行",
+        );
+      if (
+        run.status !== "SUCCEEDED" ||
+        run.engine !== "Apache Spark" ||
+        !run.mainSqlExecuted ||
+        !run.validation?.passed ||
+        run.validation.regressions?.some((check) => !check.passed)
+      )
+        throw new Error(`当前Spark代码执行未通过：${run.status}`);
       stages.codeAndDebug = {
         status: "PASSED",
         evidenceIds: [
@@ -192,6 +196,8 @@ try {
         attemptCount: item.original.attemptCount,
         regressionCount: item.execution.validation.regressions.length,
         importedFromFrozenLiveEvidence: true,
+        currentSparkRunId: run.id,
+        currentSparkVersion: run.engineVersion,
       };
 
       const packageItem = await request(
@@ -298,13 +304,39 @@ try {
       stages.deploymentFiles.actualSparkRehearsal = true;
       stages.deploymentFiles.rehearsalStatus = verification.status;
 
+      const review = await request(
+        `/delivery/packages/${packageItem.id}/review`,
+        {
+          packageDigest: packageItem.digest,
+          verificationId: verification.id,
+          reviewNote: `评测执行者确认${item.caseId}代码、断言、DAG/部署文件与本机合成数据范围`,
+          attestations: {
+            code: true,
+            assertions: true,
+            deliveryFiles: true,
+            localScope: true,
+          },
+        },
+        key(item.caseId, "review"),
+      );
+      stages.engineerReview = {
+        status: "PASSED",
+        evidenceIds: [review.id, verification.id],
+        packageDigest: review.packageDigest,
+        verificationId: review.verificationId,
+        reviewScope: review.scope,
+        evaluatorAttestation: true,
+        disclosure:
+          "这是冻结合成评测的执行者审阅记录，不是公网受邀用户的生产批准。",
+      };
+
       if (index === 10) {
         try {
           await request(
-            `/delivery/packages/${packageItem.id}/approve`,
-            {
-              packageDigest: "0".repeat(64),
-              reviewNote: "受控错误摘要审批",
+          `/delivery/packages/${packageItem.id}/approve`,
+          {
+            packageDigest: "0".repeat(64),
+            reviewId: review.id,
             },
             key(item.caseId, "blocked-approval"),
           );
@@ -342,7 +374,7 @@ try {
           `/delivery/packages/${packageItem.id}/approve`,
           {
             packageDigest: packageItem.digest,
-            reviewNote: `确认${item.caseId}代码、断言、DAG与本机部署边界`,
+            reviewId: review.id,
           },
           key(item.caseId, "approval"),
         ),
@@ -388,7 +420,7 @@ try {
         throw new Error("本机上线批次缺少实际Spark/调度/断言证据");
       stages.localRelease = {
         status: "PASSED",
-        evidenceIds: [approval.id, release.id, ...releaseRuns.map((value) => value.id)],
+        evidenceIds: [review.id, approval.id, release.id, ...releaseRuns.map((value) => value.id)],
         packageDigest: packageItem.digest,
         approvalBound: approval.packageDigest === packageItem.digest,
         schedulerTriggered: true,

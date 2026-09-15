@@ -69,6 +69,7 @@ import {
   BudgetManager,
   budgetAgentCreationPaths,
 } from "./budget.mjs";
+import { fullLifecycleContract, lifecycleStages } from "./lifecycle-evaluation.mjs";
 
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -1956,10 +1957,19 @@ export function createV2Server(options = {}) {
         }
         if (
           report.format !== "shuzhan-full-lifecycle-evaluation/v1" ||
+          report.contract?.id !== fullLifecycleContract.id ||
+          JSON.stringify(report.contract?.stageNames) !==
+            JSON.stringify(lifecycleStages) ||
           report.frozenCaseCount !== 20 ||
-          !Array.isArray(report.outcomes)
+          !Array.isArray(report.outcomes) ||
+          report.outcomes.some(
+            (outcome) =>
+              !lifecycleStages.every(
+                (stage) => outcome.stages?.[stage]?.status === "PASSED",
+              ),
+          )
         )
-          throw fail(409, "完整链路评测报告格式不合法");
+          throw fail(409, "完整链路评测报告不符合当前审阅与阶段契约");
         return json(res, 200, report);
       }
       if (path === "/api/v2/settings/model-key" && method === "POST") {
