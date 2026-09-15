@@ -77,6 +77,7 @@ test("Agent evidence journey separates model/Spark work from human release steps
       delivery = app.store.create("delivery_package", PROJECT, {
         ...bundle,
         sourceRunId: app.run.id,
+        agentDeliveryTaskId: "synthetic-delivery-task",
         stage: "M2A",
       }),
       rehearsal = app.store.create("delivery_verification", PROJECT, {
@@ -88,6 +89,7 @@ test("Agent evidence journey separates model/Spark work from human release steps
         mainSqlExecuted: true,
         testSqlValidation: { passed: true },
         validation: { passed: true },
+        agentDeliveryTaskId: "synthetic-delivery-task",
       }),
       approval = app.store.create("release_approval", PROJECT, {
         packageId: delivery.id,
@@ -123,6 +125,14 @@ test("Agent evidence journey separates model/Spark work from human release steps
     assert.equal(complete.publicDeployed, false);
     assert.equal(complete.evaluatedAsFullLifecycle, false);
     assert.equal(statusOf(complete, "PUBLISH"), "SUCCEEDED");
+    assert.equal(
+      complete.stages.find((item) => item.id === "SCHEDULE_FILE").actor,
+      "AGENT_DELIVERY_ORCHESTRATOR",
+    );
+    assert.equal(
+      complete.stages.find((item) => item.id === "DEPLOY_FILE").actor,
+      "AGENT_ORCHESTRATOR_AND_SPARK",
+    );
     assert.equal(statusOf(complete, "MONITOR"), "SUCCEEDED");
     assert.equal(complete.stages.find((item) => item.id === "DEPLOY_FILE").evidence.rehearsalId, rehearsal.id);
     const encoded = JSON.stringify(complete);

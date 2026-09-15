@@ -1189,6 +1189,60 @@ kbd {
   font-size: 9px;
   line-height: 1.55;
 }
+.agent-delivery-progress-v2 {
+  margin-top: 12px;
+  padding: 11px;
+  border: 1px solid #cfddc7;
+  border-radius: 8px;
+  background: linear-gradient(140deg, #f3f9ef, #fff);
+}
+.agent-delivery-progress-v2 > strong {
+  display: block;
+  color: #315841;
+  font-size: 12px;
+}
+.agent-delivery-progress-v2 > p {
+  margin: 6px 0 9px;
+  color: #5f7966;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.agent-delivery-progress-v2 > .button,
+.agent-delivery-status-v2 > .button {
+  width: 100%;
+  justify-content: space-between;
+}
+.agent-delivery-status-v2 {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 8px;
+}
+.agent-delivery-status-v2 small,
+.agent-delivery-status-v2 code {
+  color: #6d806b;
+  font-size: 9px;
+}
+.agent-delivery-status-v2 code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-delivery-status-v2 p {
+  margin: 0;
+  color: #9a533e;
+  font-size: 10px;
+}
+.monitor-context-v2 {
+  margin: 8px 0;
+  padding: 9px 11px;
+  border: 1px solid #eadbbd;
+  border-radius: 6px;
+  background: #fffaf0;
+  color: #80652f;
+  font-size: 11px;
+  line-height: 1.5;
+}
 .statusbar {
   height: 25px;
   display: flex;

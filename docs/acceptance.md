@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新189/189测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 原186项保留；新增Agent七阶段证据旅程核心/API和动态回环Origin测试 |
+| npm run ci | 最新195/195测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 原189项保留；新增Agent真实交付准备、匿名拒绝、取消、假回执、旧审批隔离与重启中断6项 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；23.891秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -334,3 +334,15 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 真实本机Qwen+Spark历史委托在独立3101端口展示需求/代码/调试3阶段完成、调度/部署/发布/监控4阶段待完成；责任归属为中文，摘要紧凑排列，第三阶段展开只显示运行ID与边界说明。`document.scrollWidth=innerWidth=1280`。
 - 首次3101页面白屏定位为本机Origin端口固定3100/5173导致同源请求403；改为当前监听回环端口后真实页面正常加载，外部来源仍403。独立3101只用于不干扰现有3100的验收，不是公网性能或多网络证据。
 - 全量189/189通过后，准确停止旧3100进程并恢复原端口；主工作台实际点击“查看/刷新七阶段证据”成功、`document.scrollWidth=innerWidth=1280`。V2 CLI和MCP均从同一历史任务读到7阶段、`agentIndependentE2E=false`、`publicDeployed=false`；临时3101服务随后关闭。
+
+## 2026-09-15：Agent受控交付准备与所选包监控隔离
+
+- 真实Qwen委托`4a412b2e…`生成虚构证券财富顾问T+1 SQL：一次调用，1317 Token；Spark3.5.9运行`4b8d0597…`约9.395秒，五套独立回归5/5。
+- 自动准备`c7a89142…`复用该已验证代码生成8文件不可变包`e5d7f494…`，包摘要`c61d82de…`、schedule/deployment/tests各自哈希可核对；按文件演练`9cd8b4e6…`再次用Spark3.5.9运行约9.345秒，main/tests与5回归真实通过，三DAG节点全SUCCEEDED且非测试替身。
+- 新包审批0、发布0；任务停在AWAITING_ENGINEER_REVIEW、`completionScope=DELIVERY_PREPARATION`、`agentIndependentE2E=false`、`fullLifecycleE2E=false`、`publicDeployed=false`。七阶段前五步完成，后两步仍待工程师/调度器。
+- GUI实际从Agent面板点击“审阅交付包再决定审批”进入调度工作台，准确选中`e5d7f494…`、显示文件与真实演练、明确“未审批发布”。未发布新包不再继承其他历史健康版本的M2c步骤或回滚按钮；所选历史包则显示历史而非当前监控。
+- 3100主服务加载新版后，真实Agent旅程显示前五阶段完成，调度文件责任为“Agent受控编排 · 工程师审阅”，文件演练为“Agent编排 · Spark真实演练”，审批/监控待完成；1280宽度无页面级横向溢出。开发面板同时显示“交付文件已准备”和审阅入口，不再把已有准备误写为“当前仅代码阶段”。
+- V2 CLI `agent delivery --id`与MCP `agent_delivery_detail`读取同一准备任务：SUCCEEDED、AWAITING_ENGINEER_REVIEW、`actualExecution=true`、`agentIndependentE2E=false`、`publicDeployed=false`。
+- 浏览器实际切换旧M2c告警包`37f8c246…`：显示“历史发布版本、非当前生效”，CRITICAL及旧失败批次均绑定本包，步骤4不标完成且不提供当前版本回滚操作；切回新Agent包`e5d7f494…`，步骤4仍未完成，监控提示本包未审批发布。
+- 新回归对同一源Spark运行先置入旧已审批包，再启动Agent交付准备；后台生成不同新包，旧审批仅绑定原包，新包审批数0，旧批准不能直接转移。
+- API/CLI/MCP同源；匿名公网创建401、假模型/假Spark失败关闭、取消后不能变成功、服务重启进行中准备转INTERRUPTED。全量CI最新194/194。详见[Agent交付报告](agent-delivery-preparation.md)。

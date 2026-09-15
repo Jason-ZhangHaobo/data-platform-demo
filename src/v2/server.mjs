@@ -2387,7 +2387,7 @@ export function createV2Server(options = {}) {
               422,
               "T+1业务日与冻结输入不一致，请使用交付包中的样例演练时刻",
             );
-          if (!options.deliveryRunner && !runtime.available)
+          if (!options.deliveryRunner && !options.runner && !runtime.available)
             throw fail(503, "Spark 尚未就绪");
           const key = text(req.headers["idempotency-key"], 1, 100);
           const dedup = store.deduplicate(
@@ -2673,6 +2673,227 @@ export function createV2Server(options = {}) {
             activeRelease: expose(restored),
           });
         }
+      }
+      if (path === "/api/v2/agent/deliveries" && method === "GET") {
+        const sourceId = url.searchParams.get("sourceAgentTaskId");
+        if (sourceId && !/^[a-f0-9-]{36}$/.test(sourceId))
+          throw fail(400, "代码Agent任务编号格式不合法");
+        return json(
+          res,
+          200,
+          store
+            .list("agent_delivery_task", PROJECT)
+            .filter((item) => !sourceId || item.sourceAgentTaskId === sourceId),
+        );
+      }
+      const agentDeliveryRecord = path.match(
+        /^\/api\/v2\/agent\/deliveries\/([a-f0-9-]+)(?:\/(cancel))?$/,
+      );
+      if (agentDeliveryRecord) {
+        const item = get("agent_delivery_task", agentDeliveryRecord[1]);
+        if (method === "GET" && !agentDeliveryRecord[2])
+          return json(res, 200, item);
+        if (method === "POST" && agentDeliveryRecord[2] === "cancel") {
+          await readBody(req);
+          if (!terminal.has(item.status)) {
+            store.update("agent_delivery_task", item.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            controls.get(item.id)?.abort();
+          }
+          return json(res, 200, get("agent_delivery_task", item.id));
+        }
+      }
+      const prepareAgentDelivery = path.match(
+        /^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/prepare-delivery$/,
+      );
+      if (prepareAgentDelivery && method === "POST") {
+        await readBody(req);
+        const agent = get("agent", prepareAgentDelivery[1]),
+          finalAttempt = agent.attempts?.at(-1);
+        if (agent.status !== "SUCCEEDED" || finalAttempt?.status !== "SUCCEEDED")
+          throw fail(409, "只有代码Agent与独立断言通过后才能准备交付");
+        const codeJourney = agentEvidenceJourney({ store, project: PROJECT, task: agent });
+        if (
+          codeJourney.stages.find((item) => item.id === "CODE")?.status !== "SUCCEEDED" ||
+          codeJourney.stages.find((item) => item.id === "DEBUG")?.status !== "SUCCEEDED"
+        )
+          throw fail(409, "缺少真实模型和Spark独立结果证据，不能委托交付准备");
+        if (!options.deliveryRunner && !options.runner && !runtime.available)
+          throw fail(503, "按文件Spark演练尚未就绪");
+        const run = get("run", finalAttempt.runId),
+          rev = get("revision", finalAttempt.revisionId);
+        createDeliveryPackage({ run, revision: rev });
+        const existing = store
+          .list("agent_delivery_task", PROJECT)
+          .find(
+            (item) =>
+              item.sourceAgentTaskId === agent.id &&
+              ["QUEUED", "RUNNING", "SUCCEEDED"].includes(item.status),
+          );
+        if (existing) return json(res, 200, existing);
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:agent-delivery:${agent.id}:${key}`,
+            hash(
+              JSON.stringify({
+                agentTaskId: agent.id,
+                runId: run.id,
+                revisionHash: rev.hash,
+              }),
+            ),
+            () =>
+              store.create("agent_delivery_task", PROJECT, {
+                sourceAgentTaskId: agent.id,
+                sourceRunId: run.id,
+                sourceRevisionId: rev.id,
+                sourceSqlHash: rev.hash,
+                status: "QUEUED",
+                stage: "QUEUED",
+                mode: "VERIFIED_ARTIFACT_ORCHESTRATION",
+                completionScope: "DELIVERY_PREPARATION",
+                fullLifecycleE2E: false,
+                agentIndependentE2E: false,
+                publicDeployed: false,
+              }),
+          ),
+          task = get("agent_delivery_task", dedup.id);
+        if (!dedup.replayed)
+          schedule("agent_delivery_task", task, async (signal) => {
+            if (signal.aborted) throw new Error("交付准备已取消");
+            const sourceRun = get("run", task.sourceRunId),
+              sourceRevision = get("revision", task.sourceRevisionId),
+              approvedPackageIds = new Set(
+                store
+                  .list("release_approval", PROJECT)
+                  .filter((item) => item.status === "APPROVED")
+                  .map((item) => item.packageId),
+              );
+            let packageItem = store
+              .list("delivery_package", PROJECT)
+              .find(
+                (item) =>
+                  item.sourceRunId === sourceRun.id &&
+                  item.manifest?.source?.revisionId === sourceRevision.id &&
+                  !approvedPackageIds.has(item.id) &&
+                  item.published !== true,
+              );
+            if (packageItem) {
+              await ensureDeliveryArtifact(packageItem);
+              packageItem = get("delivery_package", packageItem.id);
+              validateDeliveryPackage(packageItem, packageItem.digest);
+            } else {
+              const bundle = createDeliveryPackage({
+                  run: sourceRun,
+                  revision: sourceRevision,
+                  name: "客户资产 T+1 · Agent交付准备",
+                }),
+                artifact = await artifactStore.put(
+                  "delivery-package",
+                  bundle.digest,
+                  bundle,
+                );
+              if (signal.aborted) throw new Error("交付准备已取消");
+              packageItem = store.create("delivery_package", PROJECT, {
+                ...bundle,
+                artifact,
+                sourceRunId: sourceRun.id,
+                agentDeliveryTaskId: task.id,
+                stage: "M2A",
+                published: false,
+              });
+            }
+            store.update("agent_delivery_task", task.id, PROJECT, {
+              stage: "PACKAGE_READY",
+              packageId: packageItem.id,
+              packageDigest: packageItem.digest,
+            });
+            const plan = validateDeliveryPackage(packageItem, packageItem.digest),
+              scheduledFor = "2026-09-11T09:00:00+08:00",
+              occurrence = resolveDeliverySchedule(plan, scheduledFor);
+            if (
+              !occurrence.eligible ||
+              occurrence.businessDate !== plan.fixtures.context.businessDate
+            )
+              throw new Error("冻结交易日和交付输入不匹配，未执行演练");
+            if (signal.aborted) throw new Error("交付准备已取消");
+            const verification = store.create("delivery_verification", PROJECT, {
+              packageId: packageItem.id,
+              packageDigest: packageItem.digest,
+              scheduledFor,
+              agentDeliveryTaskId: task.id,
+              status: "RUNNING",
+              scope: "M2A_LOCAL_FILE_REHEARSAL",
+              published: false,
+              fullLifecycleE2E: false,
+            });
+            store.update("agent_delivery_task", task.id, PROJECT, {
+              stage: "FILE_REHEARSAL_RUNNING",
+              verificationId: verification.id,
+            });
+            try {
+              const parent = join(root, ".v2-artifacts", "agent-deliveries");
+              mkdirSync(parent, { recursive: true });
+              const directory = unpackDeliveryPackage(
+                  packageItem,
+                  join(parent, task.id),
+                  packageItem.digest,
+                ),
+                executeFiles =
+                  options.deliveryRunner ??
+                  ((input) => verifyDeliveryDirectory(input, { runtime, runner })),
+                receipt = await executeFiles({
+                  directory,
+                  expectedDigest: packageItem.digest,
+                  scheduledFor,
+                  signal,
+                });
+              if (signal.aborted || get("agent_delivery_task", task.id).status === "CANCELLED") {
+                store.update("delivery_verification", verification.id, PROJECT, {
+                  status: "CANCELLED",
+                  finishedAt: new Date().toISOString(),
+                });
+                return;
+              }
+              const actual =
+                receipt.status === "SUCCEEDED" &&
+                receipt.engine === "Apache Spark" &&
+                receipt.engineVersion === plan.deployment.runtime.version &&
+                receipt.mainSqlExecuted === true &&
+                receipt.validation?.passed === true &&
+                receipt.testSqlValidation?.passed === true &&
+                receipt.testSqlValidation.sqlHash === hash(packageItem.files["tests.sql"]) &&
+                receipt.testDouble !== true;
+              store.update("delivery_verification", verification.id, PROJECT, {
+                ...receipt,
+                status: actual ? "SUCCEEDED" : "FAILED",
+                published: false,
+                fullLifecycleE2E: false,
+                finishedAt: new Date().toISOString(),
+              });
+              if (!actual)
+                throw new Error("按文件演练未形成真实Spark与独立测试证据");
+              store.update("agent_delivery_task", task.id, PROJECT, {
+                status: "SUCCEEDED",
+                stage: "AWAITING_ENGINEER_REVIEW",
+                actualExecution: true,
+                verificationId: verification.id,
+                finishedAt: new Date().toISOString(),
+                notice:
+                  "已自动生成不可变文件并完成真实Spark演练；审批、发布和公网部署仍须工程师审阅，不计Agent自主完整E2E。",
+              });
+            } catch (error) {
+              if (get("delivery_verification", verification.id).status === "RUNNING")
+                store.update("delivery_verification", verification.id, PROJECT, {
+                  status: signal.aborted ? "CANCELLED" : "FAILED",
+                  errorCode: error.code ?? "FILE_REHEARSAL_FAILED",
+                  finishedAt: new Date().toISOString(),
+                });
+              throw new Error("交付文件演练失败，已保存运行编号供工程师检查");
+            }
+          });
+        return json(res, 202, task);
       }
       const record = path.match(
         /^\/api\/v2\/(runs|revisions|agent\/tasks)\/([a-f0-9-]+)(?:\/(cancel|bundle|journey))?$/,

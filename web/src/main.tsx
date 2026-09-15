@@ -33,6 +33,7 @@ import {
   MoreHorizontal,
   PanelRightClose,
   PanelRightOpen,
+  Package,
   Play,
   Plus,
   Search,
@@ -204,14 +205,38 @@ type AgentJourney = {
   publicDeployed: boolean;
   notice: string;
 };
+type AgentDeliveryTask = {
+  id: string;
+  sourceAgentTaskId: string;
+  sourceRunId: string;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED";
+  stage: string;
+  packageId?: string;
+  packageDigest?: string;
+  verificationId?: string;
+  actualExecution?: boolean;
+  error?: string;
+  notice?: string;
+  fullLifecycleE2E: boolean;
+  agentIndependentE2E: boolean;
+  publicDeployed: boolean;
+};
 const journeyActors: Record<string, string> = {
   ENGINEER_AND_AGENT: "工程师明确口径 · Agent读取上下文",
   DATA_AGENT_THEN_ENGINEER: "Agent生成 · 工程师审阅",
   DATA_AGENT_AND_SPARK: "Agent修正 · Spark执行",
   ENGINEER_VIA_DELIVERY_API: "工程师或受控接口生成",
+  AGENT_DELIVERY_ORCHESTRATOR: "Agent受控编排 · 工程师审阅",
   ENGINEER_AND_SPARK: "工程师确认 · Spark演练",
+  AGENT_ORCHESTRATOR_AND_SPARK: "Agent编排 · Spark真实演练",
   ENGINEER_APPROVAL_THEN_SCHEDULER: "工程师审批 · 调度器执行",
   SCHEDULER_AND_ENGINEER: "调度器监控 · 工程师处置",
+};
+const deliveryStageLabels: Record<string, string> = {
+  QUEUED: "等待串行执行",
+  PACKAGE_READY: "调度与部署文件已保存",
+  FILE_REHEARSAL_RUNNING: "按文件执行Spark测试",
+  AWAITING_ENGINEER_REVIEW: "真实演练通过 · 等待工程师审阅",
 };
 const icons: Record<string, React.ComponentType<{ size?: number }>> = {
   sources: Database,
@@ -322,6 +347,7 @@ function App() {
     [revisions, setRevisions] = useState<Revision[]>([]);
   const [agentTask, setAgentTask] = useState<AgentTask>(),
     [agentJourney, setAgentJourney] = useState<AgentJourney>(),
+    [agentDelivery, setAgentDelivery] = useState<AgentDeliveryTask>(),
     [message, setMessage] = useState(""),
     [agentOpen, setAgentOpen] = useState(true);
   const [tab, setTab] = useState("结果"),
@@ -355,12 +381,13 @@ function App() {
     window.history.replaceState(null, "", url);
   }, [nav, status]);
   const reload = async () => {
-    const [s, c, r, v, a, authSession] = await Promise.all([
+    const [s, c, r, v, a, d, authSession] = await Promise.all([
       api<Status>("/status"),
       api<Context[]>("/contexts"),
       api<Run[]>("/runs"),
       api<Revision[]>("/revisions"),
       api<AgentTask[]>("/agent/tasks"),
+      api<AgentDeliveryTask[]>("/agent/deliveries"),
       api<AuthSession>("/auth/session"),
     ]);
     setStatus(s);
@@ -375,13 +402,14 @@ function App() {
     }
     setRun(r[0]);
     setAgentTask(a[0]);
+    setAgentDelivery(d.find((item) => item.sourceAgentTaskId === a[0]?.id));
     setSession(authSession);
   };
   useEffect(() => {
     reload().catch((e) => setError(e.message));
   }, []);
   useEffect(() => {
-    if (!isPending(run?.status) && !isPending(agentTask?.status)) return;
+    if (!isPending(run?.status) && !isPending(agentTask?.status) && !isPending(agentDelivery?.status)) return;
     const interval = setInterval(async () => {
       try {
         if (run && isPending(run.status)) {
@@ -397,12 +425,18 @@ function App() {
             setRuns(await api<Run[]>("/runs"));
           }
         }
+        if (agentDelivery && isPending(agentDelivery.status)) {
+          const current = await api<AgentDeliveryTask>(`/agent/deliveries/${agentDelivery.id}`);
+          setAgentDelivery(current);
+          if (!isPending(current.status) && agentTask)
+            setAgentJourney(await api<AgentJourney>(`/agent/tasks/${agentTask.id}/journey`));
+        }
       } catch (e) {
         setError((e as Error).message);
       }
     }, 1400);
     return () => clearInterval(interval);
-  }, [run?.id, run?.status, agentTask?.id, agentTask?.status]);
+  }, [run?.id, run?.status, agentTask?.id, agentTask?.status, agentDelivery?.id, agentDelivery?.status]);
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
       if (e.key === "Escape") setModal(null);
@@ -496,6 +530,8 @@ function App() {
         contextId,
       });
       setAgentTask(task);
+      setAgentDelivery(undefined);
+      setAgentJourney(undefined);
       setMessage("");
     } catch (e) {
       setError((e as Error).message);
@@ -1253,6 +1289,49 @@ function App() {
                             <footer>{agentJourney.notice}</footer>
                           </section>
                         )}
+                        {agentTask.status === "SUCCEEDED" &&
+                          agentTask.validationContractId === status?.validationContract?.id && (
+                          <section className="agent-delivery-progress-v2" aria-label="Agent交付准备">
+                            <strong>{agentDelivery?.status === "SUCCEEDED" ? "交付文件已准备" : "下一步：交付文件准备"}</strong>
+                            <p>复用该委托已验证的代码版本，自动生成不可变调度/部署文件并实际按文件演练；不审批或发布。</p>
+                            {(!agentDelivery || agentDelivery.sourceAgentTaskId !== agentTask.id || agentDelivery.status === "FAILED" || agentDelivery.status === "INTERRUPTED") && (
+                              <button
+                                className="button primary"
+                                disabled={!canWrite || busy}
+                                onClick={async () => {
+                                  setBusy(true);
+                                  setError("");
+                                  try {
+                                    setAgentDelivery(await api<AgentDeliveryTask>(
+                                      `/agent/tasks/${agentTask.id}/prepare-delivery`,
+                                      {},
+                                    ));
+                                  } catch (cause) {
+                                    setError((cause as Error).message);
+                                  } finally {
+                                    setBusy(false);
+                                  }
+                                }}
+                              >
+                                <Package size={13} />Agent继续准备并演练
+                              </button>
+                            )}
+                            {agentDelivery?.sourceAgentTaskId === agentTask.id && (
+                              <div className="agent-delivery-status-v2" role="status">
+                                <span className={`status-pill ${agentDelivery.status.toLowerCase()}`}>{agentDelivery.status === "SUCCEEDED" ? "准备已验证" : labels[agentDelivery.status]}</span>
+                                <small>{deliveryStageLabels[agentDelivery.stage] ?? agentDelivery.stage}</small>
+                                {agentDelivery.packageDigest && <code>包摘要 {agentDelivery.packageDigest.slice(0, 12)}</code>}
+                                {agentDelivery.error && <p>{agentDelivery.error}</p>}
+                                {agentDelivery.status === "SUCCEEDED" && agentDelivery.actualExecution && (
+                                  <button className="button" onClick={() => {
+                                    setDeliverySourceId(agentDelivery.sourceRunId);
+                                    setNav("schedules");
+                                  }}>审阅交付包再决定审批<ArrowRight size={13} /></button>
+                                )}
+                              </div>
+                            )}
+                          </section>
+                        )}
                         {agentTask.explanation && (
                           <p>{agentTask.explanation}</p>
                         )}
@@ -1272,7 +1351,9 @@ function App() {
                                 setNav("schedules");
                               }}
                             >
-                              生成该版本交付包
+                              {agentDelivery?.sourceAgentTaskId === agentTask.id && agentDelivery.status === "SUCCEEDED"
+                                ? "查看经典手动交付流程"
+                                : "生成该版本交付包"}
                               <ArrowRight size={15} />
                             </button>
                           )}
@@ -1361,7 +1442,9 @@ function App() {
                   <small className="agent-footer">
                     生成 → 执行 → 核验 · 最多 3 次修正
                     <span className="agent-scope-note">
-                      当前仅代码阶段；完整 E2E 还需调度、部署、上线与监控
+                      {agentDelivery?.sourceAgentTaskId === agentTask?.id && agentDelivery?.status === "SUCCEEDED"
+                        ? "代码和交付文件已真实验证；审批、上线与监控仍待审阅"
+                        : "当前仅代码阶段；完整 E2E 还需调度、部署、上线与监控"}
                     </span>
                   </small>
                 </aside>

@@ -8,6 +8,10 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan status
   shuzhan budget
   shuzhan agent journey --id AGENT_TASK_ID
+  shuzhan agent deliveries [--source-id AGENT_TASK_ID]
+  shuzhan agent prepare-delivery --id AGENT_TASK_ID
+  shuzhan agent delivery --id DELIVERY_TASK_ID
+  shuzhan agent cancel-delivery --id DELIVERY_TASK_ID
   shuzhan release-runs list
   shuzhan delivery packages
   shuzhan delivery show --id PACKAGE_ID
@@ -235,6 +239,26 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "journey")
       result = await client.request(
         `/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/journey`,
+      );
+    else if (resource === "agent" && action === "deliveries") {
+      const sourceId = parsed.options.source_id;
+      result = await client.request(
+        `/agent/deliveries${sourceId ? `?sourceAgentTaskId=${encodeURIComponent(sourceId)}` : ""}`,
+      );
+    }
+    else if (resource === "agent" && action === "prepare-delivery")
+      result = await client.request(
+        `/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/prepare-delivery`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "agent" && action === "delivery")
+      result = await client.request(
+        `/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}`,
+      );
+    else if (resource === "agent" && action === "cancel-delivery")
+      result = await client.request(
+        `/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}/cancel`,
+        { method: "POST", body: {} },
       );
     else if (resource === "release-runs" && action === "list")
       result = await client.request("/release/runs");

@@ -32,6 +32,10 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /agent/tasks | 历史委托 | 状态、尝试次数、用量和产物 |
 | GET /agent/tasks/:id | 指定委托 | 同上 |
 | GET /agent/tasks/:id/journey | 只读指定委托 | 七阶段现有版本/运行/交付/审批/计时批次/监控证据与责任归属；固定非Agent自主E2E、非公网，不返回业务行或原始报错 |
+| POST /agent/tasks/:id/prepare-delivery | 空对象 + 幂等键 | 仅对真实模型+Spark独立断言成功任务返回后台交付准备编号；生成不可变调度/部署包并真实文件演练，不审批或发布 |
+| GET /agent/deliveries | 可选sourceAgentTaskId | 列出受控准备阶段、包摘要、演练与失败；不返回密码/业务行 |
+| GET /agent/deliveries/:id | 无 | 指定准备任务；成功阶段AWAITING_ENGINEER_REVIEW，范围DELIVERY_PREPARATION |
+| POST /agent/deliveries/:id/cancel | 空对象 | 取消排队/运行中的文件演练并保留包和运行状态，不会随后变成成功 |
 | POST /agent/tasks/:id/cancel | 取消委托及其执行 | CANCELLED |
 | GET /delivery/packages | 当前项目交付包摘要列表 | 不返回大段文件正文 |
 | POST /delivery/packages | sourceRunId、name + 幂等键 | 当前验证通过版本的不可变文件包；NOT_PUBLISHED |

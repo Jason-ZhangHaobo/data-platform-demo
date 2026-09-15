@@ -89,6 +89,7 @@ export class MetadataStore {
     for (const kind of [
       "run",
       "agent",
+      "agent_delivery_task",
       "delivery_verification",
       "service_agent_plan",
       "ingestion_agent_plan",

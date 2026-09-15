@@ -384,6 +384,20 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     0,
   );
   assert.equal(requests[12].path, "/agent/tasks/task-id/journey");
+  assert.equal(
+    await runV2Cli(
+      ["agent", "prepare-delivery", "--id", "task-id"],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[13].path, "/agent/tasks/task-id/prepare-delivery");
+  assert.deepEqual(requests[13].options.body, {});
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -399,6 +413,10 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
   for (const required of [
     "budget_status",
     "agent_journey",
+    "agent_delivery_list",
+    "agent_delivery_prepare",
+    "agent_delivery_detail",
+    "agent_delivery_cancel",
     "delivery_package_list",
     "delivery_package_detail",
     "delivery_package_create",
@@ -514,6 +532,11 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
   assert.match(createApp.description, /明确确认/);
   assert.match(
     listed.result.tools.find((tool) => tool.name === "release_approve")
+      .description,
+    /明确确认/,
+  );
+  assert.match(
+    listed.result.tools.find((tool) => tool.name === "agent_delivery_cancel")
       .description,
     /明确确认/,
   );

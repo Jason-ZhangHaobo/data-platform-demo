@@ -406,6 +406,19 @@ export function DeliveryWorkbench({
       )
     : undefined;
   const activeRelease = monitor?.activeRelease;
+  const selectedIsActive = Boolean(
+    selectedRelease?.id && selectedRelease.id === activeRelease?.id,
+  );
+  const selectedHealthy = Boolean(
+    selectedIsActive &&
+    selectedRelease?.health === "HEALTHY" &&
+    Number(selectedRelease?.successfulRunCount ?? 0) >= 2 &&
+    Number(selectedRelease?.openAlertCount ?? 0) === 0,
+  );
+  const selectedResolvedAlertCount =
+    monitor?.alerts.filter(
+      (item) => item.releaseId === selectedRelease?.id && item.status === "RESOLVED",
+    ).length ?? 0;
   const resolvedAlertCount =
     monitor?.alerts.filter((item) => item.status === "RESOLVED").length ?? 0;
   const m2cRecoveryVerified = Boolean(
@@ -701,7 +714,7 @@ export function DeliveryWorkbench({
                   "04",
                   "运行监控",
                   "两批、告警与恢复",
-                  m2cRecoveryVerified || selectedRelease?.health === "HEALTHY",
+                  selectedHealthy,
                 ],
               ].map(([number, title, subtitle, complete]) => (
                 <div
@@ -783,36 +796,41 @@ export function DeliveryWorkbench({
                   </div>
                   <Activity size={22} />
                 </header>
-                {!activeRelease ? (
-                  <p className="monitor-empty">发布本机版本后显示真实计时批次。</p>
+                {!selectedRelease ? (
+                  <p className="monitor-empty">当前所选交付包尚未审批发布；其他版本的健康度不能算作本包的上线后证据。</p>
                 ) : (
                   <>
+                    {!selectedIsActive && (
+                      <div className="monitor-context-v2" role="status">
+                        所选包对应历史发布版本，以下批次不代表当前生效版本。
+                      </div>
+                    )}
                     <div className="monitor-kpis">
                       <div>
                         <span>健康度</span>
-                        <strong>{activeRelease.health}</strong>
+                        <strong>{selectedRelease.health}</strong>
                       </div>
                       <div>
                         <span>成功批次</span>
-                        <strong>{activeRelease.successfulRunCount ?? 0}</strong>
+                        <strong>{selectedRelease.successfulRunCount ?? 0}</strong>
                       </div>
                       <div>
                         <span>开放告警</span>
-                        <strong>{activeRelease.openAlertCount ?? 0}</strong>
+                        <strong>{selectedRelease.openAlertCount ?? 0}</strong>
                       </div>
                       <div>
                         <span>已恢复告警</span>
-                        <strong>{resolvedAlertCount}</strong>
+                        <strong>{selectedResolvedAlertCount}</strong>
                       </div>
                     </div>
                     <small className="active-release-line">
-                      当前生效版本 {activeRelease.id.slice(0, 8)} · 历史失败批次
-                      {monitor?.counts.failed ?? 0}
-                      {m2cRecoveryVerified ? " · 回滚恢复已验证" : ""}
+                      所选包发布版本 {selectedRelease.id.slice(0, 8)} ·
+                      {selectedIsActive ? " 当前生效" : " 历史版本"}
+                      {selectedIsActive && m2cRecoveryVerified ? " · 回滚恢复已验证" : ""}
                     </small>
                     <div className="monitor-runs">
                       {monitor?.recentRuns
-                        .filter((item) => item.releaseId === activeRelease.id)
+                        .filter((item) => item.releaseId === selectedRelease.id)
                         .slice(0, 3)
                         .map((item) => (
                           <p key={item.id}>
@@ -834,10 +852,10 @@ export function DeliveryWorkbench({
                           </p>
                         ))}
                     </div>
-                    {rollbackTarget && (
+                    {selectedIsActive && rollbackTarget && (
                       <button
                         className="button rollback"
-                        onClick={() => rollback(activeRelease, rollbackTarget)}
+                        onClick={() => rollback(selectedRelease, rollbackTarget)}
                         disabled={!canWrite || !!busy}
                       >
                         <RotateCcw size={15} />

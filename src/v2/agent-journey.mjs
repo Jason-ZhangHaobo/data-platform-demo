@@ -36,6 +36,7 @@ export function agentEvidenceJourney({ store, project, task }) {
           item.manifest?.source?.revisionId === revision?.id,
       ),
     selectedPackage = packages[0];
+  const agentPreparedPackage = Boolean(selectedPackage?.agentDeliveryTaskId);
   let fileValid = false;
   if (selectedPackage) {
     try {
@@ -112,6 +113,7 @@ export function agentEvidenceJourney({ store, project, task }) {
       successfulBatches.length >= 2,
     monitorPassed =
       publishPassed && release?.health === "HEALTHY" && openAlerts.length === 0;
+  const agentPreparedRehearsal = Boolean(rehearsal?.agentDeliveryTaskId);
 
   const stages = [
     stage("REQUIREMENT", "理解需求与证券口径", "ENGINEER_AND_AGENT",
@@ -131,17 +133,23 @@ export function agentEvidenceJourney({ store, project, task }) {
         regressionCount: run?.validation?.regressions?.length ?? 0,
         issueCount: run?.validation?.issues?.length ?? 0 },
       "只读取运行状态、版本和计数，不返回业务行或原始报错。"),
-    stage("SCHEDULE_FILE", "调度文件与日历", "ENGINEER_VIA_DELIVERY_API",
+    stage("SCHEDULE_FILE", "调度文件与日历",
+      agentPreparedPackage ? "AGENT_DELIVERY_ORCHESTRATOR" : "ENGINEER_VIA_DELIVERY_API",
       fileValid && debugPassed ? "SUCCEEDED" : selectedPackage && !fileValid ? "FAILED" : "WAITING",
       { packageId: selectedPackage?.id, packageDigest: selectedPackage?.digest,
         scheduleHash: selectedPackage?.manifest?.files?.["schedule.json"]?.sha256 },
-      "由工程师或受控API生成；不是代码Agent独立完成。"),
-    stage("DEPLOY_FILE", "部署清单与按文件演练", "ENGINEER_AND_SPARK",
+      agentPreparedPackage
+        ? "Agent从已验证代码自动生成标准文件；工程师仍须审阅。"
+        : "由工程师或受控API生成；不是代码Agent独立完成。"),
+    stage("DEPLOY_FILE", "部署清单与按文件演练",
+      agentPreparedRehearsal ? "AGENT_ORCHESTRATOR_AND_SPARK" : "ENGINEER_AND_SPARK",
       deployPassed ? "SUCCEEDED" : selectedPackage && !fileValid ? "FAILED" : "WAITING",
       { packageId: selectedPackage?.id, deploymentHash:
         selectedPackage?.manifest?.files?.["deployment.json"]?.sha256,
         rehearsalId: rehearsal?.id },
-      "演练与真实云上线分开，不把配置文本冒充执行。"),
+      agentPreparedRehearsal
+        ? "Agent自动编排真实Spark文件演练；不自动批准或公网部署。"
+        : "演练与真实云上线分开，不把配置文本冒充执行。"),
     stage("PUBLISH", "审批版本与计时发布", "ENGINEER_APPROVAL_THEN_SCHEDULER",
       publishPassed ? "SUCCEEDED" : release && !currentlyActive ? "HISTORICAL" : "WAITING",
       { approvalId: approval?.id, releaseId: release?.id,
