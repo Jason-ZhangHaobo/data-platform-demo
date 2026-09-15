@@ -1,6 +1,6 @@
 # V2 阿里云部署说明
 
-日期：2026-09-15。状态：代码包与手动工作流已准备；Linux CI、真实资源预检和部署尚未执行。
+日期：2026-09-15。状态：代码包与受保护手动工作流已准备；真实RDS/OSS部分预检完成，V2专用FC/ICP备案与公网部署尚未验收。
 
 ## 为什么单独打包Node 24
 
@@ -28,13 +28,15 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 
 `.github/workflows/deploy-v2-staging.yml`只能手动触发，且使用独立GitHub Environment `v2-staging`。它不会修改现有V1函数；目标函数默认为`dataplatform-v2-staging-api`，必须先由账号内操作预创建。
 
-工作流顺序：全量CI → 构建/检查ZIP → 校验配置 → GitHub OIDC换取阿里云临时身份 → 确认独立函数存在 → 更新代码与配置 → 验证HTTPS状态、MySQL/OSS健康、公开页面和匿名写入401。
+工作流顺序：全量CI → 构建/检查ZIP → 校验配置及24小时内脱敏云审计/备案证据 → GitHub OIDC换取临时身份 → 实时账单小于200元 → 确认专用函数/VPC/并发/角色 → 以白名单新环境更新V2函数 → 验证HTTPS、MySQL/OSS健康、公开页面和匿名写入401。任一缺失即失败关闭。
 
 运行变量：
 
 - `V2_FUNCTION_NAME`、`V2_PUBLIC_URL`、`V2_PUBLIC_ORIGIN`、`V2_OSS_BUCKET`
+- `V2_DEPLOY_ROLE_ARN`、`V2_DEPLOY_OIDC_PROVIDER_ARN`、`V2_VPC_ID`、`V2_VSW_ID`、`V2_SECURITY_GROUP_ID`：只在受保护Environment提供，仓库工作流不写真实标识
+- `V2_AUDIT_EVIDENCE_FILE`：指向`docs/evidence/`内的单个脱敏JSON，必须当月、24小时内、对应专用函数和实际HTTPS域名哈希
 - OSS状态对象和不可变产物前缀由工作流固定为项目隔离路径，不接受页面输入
-- 可选的`V2_ACCOUNT_MONTHLY_SPEND_CNY`必须来自部署前账号账单核验；为空时预算状态明确未连接
+- `V2_ACCOUNT_MONTHLY_SPEND_CNY`不再由手填变量代入；工作流用OIDC临时身份实时查询BSS税前账单，达到200元就停止，并只把脱敏金额传给函数
 
 运行秘密：
 
@@ -57,7 +59,9 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 4. 独立FC函数运行时、VPC、角色、HTTP触发器、实例并发1和公网HTTPS URL；
 5. 以上资源在月度200元总预算内。
 
-预检不足时不触发部署。当前已打开阿里云Cloud Shell登录页，登录完成后优先通过CLI执行只读核验。
+`scripts/verify-v2-cloud-preflight.mjs`同时校验审计文件不含账号ID、函数名、Bucket名、连接地址、凭证或公司特有环境键；当期账单、RDS/OSS、V2专用函数、同VPC、备案/域名归属/HTTPS及目标哈希须全部为真。当前真实脱敏证据失败项是专用FC、同VPC和域名备案，工作流应保持不可部署。账单快照¥0.59仅是查询当时状态，不是未来费用承诺。
+
+官方FC SDK已用短期STS只读重试；内部凭证字段存在，但服务返回`AccessDenied`并提示缺SecurityToken。现阶段不以此推断函数不存在，不创建长期AccessKey，待FC访问边界诊断后再确认独立函数。仓库中的V1部署文件仍有历史个人测试资源标识；本次只清理V2工作流，公开推送前需另行审核当前树与历史记录，不静默改写Git历史。
 
 ## 仍然关闭的能力
 

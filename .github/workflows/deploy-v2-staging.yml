@@ -20,9 +20,13 @@ jobs:
       name: v2-staging
     env:
       ALIBABA_CLOUD_REGION_ID: cn-hangzhou
-      ALIYUN_ROLE_ARN: acs:ram::1170828584875736:role/dataplatform-github-staging-deploy-role
-      ALIYUN_OIDC_PROVIDER_ARN: acs:ram::1170828584875736:oidc-provider/github-actions-data-platform
-      FUNCTION_NAME: ${{ vars.V2_FUNCTION_NAME || 'dataplatform-v2-staging-api' }}
+      ALIYUN_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
+      ALIYUN_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+      FUNCTION_NAME: ${{ vars.V2_FUNCTION_NAME }}
+      V2_VPC_ID: ${{ vars.V2_VPC_ID }}
+      V2_VSW_ID: ${{ vars.V2_VSW_ID }}
+      V2_SECURITY_GROUP_ID: ${{ vars.V2_SECURITY_GROUP_ID }}
+      V2_AUDIT_EVIDENCE_FILE: ${{ vars.V2_AUDIT_EVIDENCE_FILE }}
       PUBLIC_URL: ${{ vars.V2_PUBLIC_URL }}
       V2_PUBLIC_ORIGIN: ${{ vars.V2_PUBLIC_ORIGIN }}
       OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
@@ -37,7 +41,6 @@ jobs:
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
       V2_SPARK_EXECUTOR_URL: ${{ vars.V2_SPARK_EXECUTOR_URL }}
       V2_SPARK_EXECUTOR_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
-      V2_ACCOUNT_MONTHLY_SPEND_CNY: ${{ vars.V2_ACCOUNT_MONTHLY_SPEND_CNY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -70,11 +73,14 @@ jobs:
 
       - name: Validate required deployment configuration
         run: |
-          for name in PUBLIC_URL V2_PUBLIC_ORIGIN OSS_BUCKET V2_MYSQL_HOST V2_MYSQL_USER V2_MYSQL_PASSWORD V2_MYSQL_DATABASE V2_BOOTSTRAP_ADMIN_EMAIL V2_BOOTSTRAP_ADMIN_PASSWORD_HASH DASHSCOPE_API_KEY; do
+          for name in PUBLIC_URL V2_PUBLIC_ORIGIN OSS_BUCKET V2_MYSQL_HOST V2_MYSQL_USER V2_MYSQL_PASSWORD V2_MYSQL_DATABASE V2_BOOTSTRAP_ADMIN_EMAIL V2_BOOTSTRAP_ADMIN_PASSWORD_HASH DASHSCOPE_API_KEY FUNCTION_NAME ALIYUN_ROLE_ARN ALIYUN_OIDC_PROVIDER_ARN V2_VPC_ID V2_VSW_ID V2_SECURITY_GROUP_ID V2_AUDIT_EVIDENCE_FILE; do
             test -n "${!name}" || { echo "Missing GitHub v2-staging configuration: $name" >&2; exit 1; }
           done
           case "$PUBLIC_URL" in https://*) ;; *) echo 'PUBLIC_URL must use HTTPS' >&2; exit 1 ;; esac
           test "$V2_PUBLIC_ORIGIN" = "${PUBLIC_URL%/}" || { echo 'V2_PUBLIC_ORIGIN must equal PUBLIC_URL without trailing slash' >&2; exit 1; }
+
+      - name: Require fresh sanitized budget, dedicated function and ICP evidence
+        run: node scripts/verify-v2-cloud-preflight.mjs "$V2_AUDIT_EVIDENCE_FILE"
 
       - name: Set up Alibaba Cloud CLI
         uses: aliyun/setup-aliyun-cli-action@v1
@@ -90,20 +96,39 @@ jobs:
           role-session-expiration: 1800
           audience: sts.aliyuncs.com
 
+      - name: Refresh account spending with the current Shanghai billing cycle
+        run: |
+          umask 077
+          bill_file="$(mktemp)"
+          trap 'rm -f "$bill_file"' EXIT
+          billing_cycle="$(TZ=Asia/Shanghai date +%Y-%m)"
+          aliyun bssopenapi QueryBillOverview --BillingCycle "$billing_cycle" > "$bill_file"
+          jq -e '.Success == true and (.Data.Items.Item | type == "array")' "$bill_file" >/dev/null
+          spend="$(jq -r '[.Data.Items.Item[].PretaxAmount | tonumber] | add // 0 | ((. * 100) | round / 100)' "$bill_file")"
+          jq -n --argjson spend "$spend" '$spend >= 0 and $spend < 200' | grep -qx true || {
+            echo 'Current account spend is unavailable or at the 200 CNY stop line' >&2
+            exit 1
+          }
+          echo "V2_ACCOUNT_MONTHLY_SPEND_CNY=$spend" >> "$GITHUB_ENV"
+
       - name: Require a dedicated pre-created staging function
         run: |
           umask 077
           aliyun fc GetFunction --functionName "$FUNCTION_NAME" > current-v2-function.json
-          jq -e --arg name "$FUNCTION_NAME" '.functionName == $name' current-v2-function.json >/dev/null
+          jq -e \
+            --arg name "$FUNCTION_NAME" \
+            --arg vpc "$V2_VPC_ID" \
+            --arg vsw "$V2_VSW_ID" \
+            --arg sg "$V2_SECURITY_GROUP_ID" \
+            '.functionName == $name and .instanceConcurrency == 1 and .vpcConfig.vpcId == $vpc and (.vpcConfig.vSwitchIds | index($vsw) != null) and .vpcConfig.securityGroupId == $sg and (.role | length > 0)' \
+            current-v2-function.json >/dev/null
 
       - name: Update the dedicated V2 function
         run: |
           umask 077
           base64 -w 0 v2-function.zip > v2-function.zip.b64
-          current_env="$(jq -c '.environmentVariables // {}' current-v2-function.json)"
           jq -n \
             --rawfile zip v2-function.zip.b64 \
-            --argjson current "$current_env" \
             --arg public_origin "$V2_PUBLIC_ORIGIN" \
             --arg bucket "$OSS_BUCKET" \
             --arg mysql_host "$V2_MYSQL_HOST" \
@@ -118,7 +143,10 @@ jobs:
             --arg spark_url "$V2_SPARK_EXECUTOR_URL" \
             --arg spark_secret "$V2_SPARK_EXECUTOR_SECRET" \
             --arg account_spend "$V2_ACCOUNT_MONTHLY_SPEND_CNY" \
-            '$current + {
+            --arg vpc_id "$V2_VPC_ID" \
+            --arg vsw_id "$V2_VSW_ID" \
+            --arg security_group_id "$V2_SECURITY_GROUP_ID" \
+            '{
               PORT:"9000",
               V2_LOCAL_DEVELOPMENT:"false",
               V2_PUBLIC_ORIGIN:$public_origin,
@@ -161,7 +189,7 @@ jobs:
               internetAccess:true,
               environmentVariables:.,
               customRuntimeConfig:{port:9000,command:["/code/runtime/node"],args:["src/v2/cloud-server.mjs"]},
-              vpcConfig:{vpcId:"vpc-bp1ndb4243ew96drhs8zv",vSwitchIds:["vsw-bp1e8fz4pfi0ed7kvp5zv"],securityGroupId:"sg-bp11iqykaweqpigltq44"}
+              vpcConfig:{vpcId:$vpc_id,vSwitchIds:[$vsw_id],securityGroupId:$security_group_id}
             }' > v2-function-update.json
           aliyun fc UpdateFunction --functionName "$FUNCTION_NAME" --body-file v2-function-update.json > v2-function-result.json
           jq -e --arg name "$FUNCTION_NAME" '.functionName == $name and .instanceConcurrency == 1 and .runtime == "custom.debian12"' v2-function-result.json >/dev/null

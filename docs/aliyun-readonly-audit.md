@@ -16,7 +16,7 @@
 
 ## 脱敏边界
 
-输出`shuzhan-aliyun-readonly-audit/v1` JSON只保留决策需要的状态：规格、数量、布尔存在性、环境变量键、金额和交叉检查。
+输出`shuzhan-aliyun-readonly-audit/v1` JSON只保留决策需要的状态：规格、数量、布尔存在性、已知V2环境键是否齐备、金额、目标函数/域名哈希和交叉检查。未知环境键列表不进入报告。
 
 明确不输出：账号ID/ARN、函数名、RDS实例ID、VPC/vSwitch/安全组ID、Bucket名、连接地址、数据库账号名列表、环境变量值、AccessKey、密码和Token。VPC ID只在进程内比较RDS/FC是否一致，写文件前删除。
 
@@ -50,11 +50,11 @@
 - 运行态确认`business_demo`和`sync_writer`仍存在；随后创建独立`platform_meta`和Normal账号`platform_app`，只授该库ReadWrite。最终库/账号各2个，`platformDatabaseReady=true`；密码由用户隐藏输入且不进入报告。
 - 2026-09税前金额与未付金额均为0.59元，支付0元；当前低于200元硬门。账单存在延迟，该快照不是未来费用承诺。
 - 账号仅有1个OSS Bucket；经官方ossutil 2.3.0和官方SHA-256校验后，在进程内选择该唯一候选。候选位于杭州、Standard、private，版本控制未配置；名称不进入报告。由于FC仍不可读，不能证明它就是函数当前引用的目标Bucket。
-- FC 3.0只读插件返回`AccessDenied`，保持`UNAVAILABLE`；同VPC、单并发和平台库就绪均不得填通过。
+- FC 3.0只读插件返回`AccessDenied`；随后官方Node SDK携带现有OAuth短期STS在官方区域Endpoint再查，仍返回AccessDenied/缺SecurityToken类别。无法证明专用函数、同VPC或单并发；不误报目标不存在。
 
 ## 仍需真实验证
 
-- FC OAuth插件的SecurityToken兼容或RAM读取权限；未解决前不能读取函数规格。
+- FC只读接口对OAuth短期STS的接入问题；已验证SDK内部有STS字段，未解决前不能读取函数规格。官方SDK临时安装在项目忽略的`.runtime`中，仓库只保留无秘密的只读脚本和脱敏测试。
 - FC可读后交叉核对函数环境引用与当前唯一OSS候选；在此之前不把“账号内唯一”写成“V2已绑定”。
 - 仍需由同VPC云函数使用`platform_app`完成真实建表、CAS、冷启动和错误恢复；控制面Describe通过不等于数据面连接通过。
 - Serverless试用/优惠到期后的价格不能仅由实例属性推导，必须结合账单和订单信息。

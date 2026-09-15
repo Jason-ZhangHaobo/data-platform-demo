@@ -69,6 +69,7 @@ printf '%s\n' '{"bucketInfo":{"name":"SECRET-BUCKET","location":"oss-cn-hangzhou
       PATH: `${bin}:${process.env.PATH}`,
       V2_AUDIT_RDS_INSTANCE_ID: "rm-secret",
       V2_AUDIT_FC_FUNCTION_NAME: "private-function",
+      V2_AUDIT_EXPECTED_DEDICATED_FUNCTION_NAME: "private-function",
       V2_AUDIT_BILLING_CYCLE: "2026-09",
       V2_AUDIT_OAUTH_PROFILE: "AuditOAuth",
     },
@@ -86,11 +87,11 @@ printf '%s\n' '{"bucketInfo":{"name":"SECRET-BUCKET","location":"oss-cn-hangzhou
     assert.equal(audit.bill.pretaxAmount, 12.5);
     assert.equal(audit.oss.acl, "private");
     assert.equal(audit.function.errorCode, null);
+    assert.equal(audit.function.dedicatedFunctionTarget, true);
+    assert.match(audit.function.targetHash, /^[a-f0-9]{64}$/);
     assert.equal(audit.bill.errorCode, null);
-    assert.deepEqual(audit.function.environmentKeys, [
-      "OSS_BUCKET",
-      "V2_MYSQL_PASSWORD",
-    ]);
+    assert.equal(audit.function.environmentKeyCount, 2);
+    assert.equal(audit.function.v2EnvironmentReady, false);
     for (const forbidden of [
       "SECRET-ACCOUNT",
       "SECRET-ARN",

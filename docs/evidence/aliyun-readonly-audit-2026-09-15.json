@@ -42,6 +42,7 @@
   "function": {
     "available": false,
     "errorCode": "AccessDenied",
+    "dedicatedFunctionTarget": false,
     "runtime": null,
     "cpu": null,
     "memoryMiB": null,
@@ -51,7 +52,8 @@
     "internetAccess": null,
     "roleConfigured": false,
     "vpcConfigured": false,
-    "environmentKeys": []
+    "environmentKeyCount": 0,
+    "v2EnvironmentReady": false
   },
   "oss": {
     "available": true,

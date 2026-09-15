@@ -4,6 +4,7 @@ set -euo pipefail
 audit_region="${V2_AUDIT_REGION:-cn-hangzhou}"
 audit_rds_id="${V2_AUDIT_RDS_INSTANCE_ID:-}"
 audit_function="${V2_AUDIT_FC_FUNCTION_NAME:-}"
+audit_dedicated_function="${V2_AUDIT_EXPECTED_DEDICATED_FUNCTION_NAME:-}"
 audit_bucket="${V2_AUDIT_OSS_BUCKET:-}"
 audit_cycle="${V2_AUDIT_BILLING_CYCLE:-$(TZ=Asia/Shanghai date +%Y-%m)}"
 audit_profile="${V2_AUDIT_OAUTH_PROFILE:-}"
@@ -34,6 +35,11 @@ if [[ "$#" -ne 0 ]]; then
   echo "The audit always creates a new protected JSON file under /tmp" >&2
   exit 1
 fi
+audit_is_dedicated=false
+if [[ -n "$audit_dedicated_function" && "$audit_function" == "$audit_dedicated_function" ]]; then
+  audit_is_dedicated=true
+fi
+audit_function_hash="$(printf '%s' "$audit_function" | shasum -a 256 | awk '{print $1}')"
 
 if [[ -n "$audit_profile" ]]; then
   if [[ ! "$audit_profile" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
@@ -158,6 +164,8 @@ jq -n \
   --arg generatedAt "$(TZ=Asia/Shanghai date -Iseconds)" \
   --arg region "$audit_region" \
   --arg billingCycle "$audit_cycle" \
+  --argjson dedicatedTarget "$audit_is_dedicated" \
+  --arg targetHash "$audit_function_hash" \
   --slurpfile identity "$audit_root/identity.json" \
   --slurpfile attr "$audit_root/rds_attribute.json" \
   --slurpfile network "$audit_root/rds_network.json" \
@@ -193,7 +201,12 @@ jq -n \
       storageGiB:attrItem.DBInstanceStorage,
       createTime:attrItem.CreateTime,
       expireTime:attrItem.ExpireTime,
-      serverless:attrItem.ServerlessConfig,
+      serverless:{
+        AutoPause:attrItem.ServerlessConfig.AutoPause,
+        ScaleMin:attrItem.ServerlessConfig.ScaleMin,
+        ScaleMax:attrItem.ServerlessConfig.ScaleMax,
+        SwitchForce:attrItem.ServerlessConfig.SwitchForce
+      },
       network:{
         endpointCount:(nets|length),
         intranet:(nets|map(select(((.IPType // .ConnectionStringType // "")|ascii_downcase) as $kind | ($kind|contains("intranet")) or ($kind|contains("private"))))|length),
@@ -218,6 +231,8 @@ jq -n \
     function:{
       available:($function[0].auditStatus != "UNAVAILABLE"),
       errorCode:$function[0].errorCode,
+      dedicatedFunctionTarget:$dedicatedTarget,
+      targetHash:$targetHash,
       runtime:$function[0].runtime,
       cpu:$function[0].cpu,
       memoryMiB:$function[0].memorySize,
@@ -227,7 +242,8 @@ jq -n \
       internetAccess:$function[0].internetAccess,
       roleConfigured:(($function[0].role // "")|length > 0),
       vpcConfigured:(($function[0].vpcConfig.vpcId // "")|length > 0),
-      environmentKeys:(($function[0].environmentVariables // {})|keys|sort),
+      environmentKeyCount:(($function[0].environmentVariables // {})|keys|length),
+      v2EnvironmentReady:(["V2_MYSQL_HOST","V2_MYSQL_USER","V2_MYSQL_PASSWORD","V2_MYSQL_DATABASE","OSS_BUCKET"]|all(. as $key | ($function[0].environmentVariables // {})|has($key))),
       _vpcId:$function[0].vpcConfig.vpcId
     },
     oss:{
