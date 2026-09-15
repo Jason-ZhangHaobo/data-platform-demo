@@ -72,6 +72,10 @@ import {
 } from "./budget.mjs";
 import { fullLifecycleContract, lifecycleStages } from "./lifecycle-evaluation.mjs";
 import {
+  evaluateCloudPreflight,
+  publicCloudReadiness,
+} from "./cloud-preflight.mjs";
+import {
   publicAgentIntentDestinations,
   validateAgentIntentRoute,
 } from "./agent-router.mjs";
@@ -230,6 +234,23 @@ export function createV2Server(options = {}) {
     const item = store.get(kind, id, PROJECT);
     if (!item) throw fail(404, "未找到当前项目的记录");
     return item;
+  };
+  const cloudReadiness = async () => {
+    let report;
+    try {
+      const source =
+        options.cloudReadinessEvidencePath ??
+        join(root, "docs", "evidence", "aliyun-readonly-audit-2026-09-15.json");
+      report = options.cloudReadinessEvidence ?? JSON.parse(await readFile(source, "utf8"));
+    } catch {
+      const result = evaluateCloudPreflight(undefined, Date.now(), {});
+      return publicCloudReadiness(undefined, result, false);
+    }
+    const result = evaluateCloudPreflight(report, Date.now(), {
+      functionName: env.V2_FUNCTION_NAME,
+      publicUrl: env.V2_PUBLIC_URL,
+    });
+    return publicCloudReadiness(report, result, true);
   };
   const releaseTimeUnitMs = Number(options.releaseTimeUnitMs ?? 1000);
   if (!Number.isSafeInteger(releaseTimeUnitMs) || releaseTimeUnitMs < 1)
@@ -762,6 +783,18 @@ export function createV2Server(options = {}) {
       }
       if (path === "/api/v2/budget" && method === "GET")
         return json(res, 200, budget.overview());
+      if (path === "/api/v2/cloud/readiness" && method === "GET") {
+        const session = auth.sessionFromHeaders(req.headers);
+        if (!local && !session)
+          throw Object.assign(fail(401, "请先登录管理员账号查看部署前置"), {
+            code: "AUTHENTICATION_REQUIRED",
+          });
+        if (!local && session.role !== "ADMIN")
+          throw Object.assign(fail(403, "仅项目管理员可查看部署前置"), {
+            code: "PROJECT_PERMISSION_DENIED",
+          });
+        return json(res, 200, await cloudReadiness());
+      }
       const openService = path.match(
         /^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/,
       );

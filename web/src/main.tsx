@@ -60,6 +60,7 @@ import { SecurityWorkbench } from "./SecurityWorkbench";
 import { ReportsWorkbench } from "./ReportsWorkbench";
 import { OperationsWorkbench } from "./OperationsWorkbench";
 import { AgentCenter } from "./AgentCenter";
+import { CloudReadinessPanel } from "./CloudReadinessPanel";
 import {
   AuthDialog,
   ChangePasswordPanel,
@@ -1734,6 +1735,7 @@ function App() {
                     计划约束：200 元/月以内 · 内地部署与域名备案 · 少量受邀用户
                   </small>
                 </div>
+                <CloudReadinessPanel api={api} />
               </>
             ) : (
               <>

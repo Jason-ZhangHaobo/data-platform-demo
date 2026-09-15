@@ -12,6 +12,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 |---|---|---|
 | GET /status | 配置状态，永不返回密钥 | 模块范围、Spark/模型/元数据/产物/预算状态 |
 | GET /budget | 无 | 当月模型估算、远程Spark次数/秒数、资源门和账号账单连接状态 |
+| GET /cloud/readiness | 本地开发或ADMIN会话 | 只返回脱敏部署门、失败项、生成时间和账单摘要；公开匿名拒绝，绝不返回资源标识或审计原文 |
 | GET /auth/session | Cookie可选 | 当前受邀用户、角色、权限和过期时间；匿名返回authenticated=false |
 | POST /auth/login | 邮箱/密码 | 建立8小时会话，设置会话/CSRF Cookie；错误不区分用户是否存在 |
 | POST /auth/redeem | 一次性邀请码/显示名称/密码 | 创建受邀项目成员、使邀请码失效并登录 |
