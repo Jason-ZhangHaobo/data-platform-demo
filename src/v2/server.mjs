@@ -77,6 +77,7 @@ import {
 } from "./cloud-preflight.mjs";
 import {
   publicAgentIntentDestinations,
+  validateAgentIntentMessage,
   validateAgentIntentRoute,
 } from "./agent-router.mjs";
 
@@ -235,7 +236,7 @@ export function createV2Server(options = {}) {
     if (!item) throw fail(404, "未找到当前项目的记录");
     return item;
   };
-  const publicAgentIntent = ({ submittedBy, ...item }) => item;
+  const publicAgentIntent = ({ submittedBy, message, ...item }) => item;
   const publicAgentHandoff = ({ submittedBy, ...item }) => item;
   const mayReadAgentIntent = (item, session) =>
     local || session?.role === "ADMIN" || item.submittedBy === session?.user.id;
@@ -3232,7 +3233,7 @@ export function createV2Server(options = {}) {
       }
       if (method === "POST" && path === "/api/v2/agent/intents") {
         const body = await readBody(req),
-          message = text(body.message, 4, 2000),
+          message = validateAgentIntentMessage(body.message),
           session = auth.sessionFromHeaders(req.headers),
           submittedBy = session?.user.id ?? "local-engineer";
         if (!options.intentPlanner && !modelSettings(env).configured)
@@ -3244,7 +3245,8 @@ export function createV2Server(options = {}) {
             signature,
             () =>
               store.create("agent_intent", PROJECT, {
-                message,
+                messageHash: hash(message),
+                messageLength: message.length,
                 submittedBy,
                 status: "QUEUED",
                 mode: "LIVE_MODEL",

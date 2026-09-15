@@ -7,6 +7,7 @@ import { MetadataStore } from "../../src/v2/store.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import {
   publicAgentIntentDestinations,
+  validateAgentIntentMessage,
   validateAgentIntentRoute,
 } from "../../src/v2/agent-router.mjs";
 
@@ -64,6 +65,18 @@ test("cross-module intent route is whitelist-bound and cannot include execution"
     { status: 422 },
   );
   assert.equal(publicAgentIntentDestinations().some((item) => "credentials" in item), false);
+});
+
+test("Agent intent input rejects secrets and only returns a safe task envelope", () => {
+  assert.equal(validateAgentIntentMessage("理解虚构证券持仓字段并设计报表"), "理解虚构证券持仓字段并设计报表");
+  assert.throws(
+    () => validateAgentIntentMessage("数据库 password=NotAllowed#2026"),
+    { status: 422 },
+  );
+  assert.throws(
+    () => validateAgentIntentMessage("连接 jdbc:mysql://private.example/db"),
+    { status: 422 },
+  );
 });
 
 test("cross-module intent can recommend a bounded sequence without auto-execution", () => {
@@ -134,6 +147,9 @@ test("intent API persists a live-model routing result without executing a downst
     assert.equal(completed.route.destinationId, "reports");
     assert.equal(completed.route.execution, "NO_EXECUTION");
     assert.equal(completed.fullLifecycleE2E, false);
+    assert.equal(completed.message, undefined);
+    assert.equal(typeof completed.messageHash, "string");
+    assert.equal(store.get("agent_intent", created.id, PROJECT).message, undefined);
     assert.equal(store.list("report_agent_plan", PROJECT).length, 0);
     assert.equal(store.list("report", PROJECT).length, 0);
   } finally {
@@ -198,6 +214,7 @@ test("public Agent intent history is isolated per member and viewer cannot submi
       (value) => value.length === 1 && value[0].status === "SUCCEEDED",
     );
     assert.equal(pmTasks[0].submittedBy, undefined);
+    assert.equal(pmTasks[0].message, undefined);
     const handoff = await publicRequest(
       base,
       `/agent/intents/${pmTasks[0].id}/handoffs`,

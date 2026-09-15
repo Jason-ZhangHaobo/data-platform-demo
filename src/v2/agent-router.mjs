@@ -15,6 +15,19 @@ export const agentIntentDestinations = Object.freeze([
 
 const byId = new Map(agentIntentDestinations.map((item) => [item.id, item]));
 
+export function validateAgentIntentMessage(value) {
+  if (typeof value !== "string" || value.trim().length < 4 || value.length > 2000)
+    throw fail("Agent任务描述长度不合法");
+  const message = value.trim();
+  if (
+    /(?:\b(?:access[_-]?key|secret|password|token)\b\s*[:=]|\bsk-[A-Za-z0-9_-]{8,}|jdbc:(?:mysql|postgresql):|oss:\/\/|aliyuncs\.com|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)/i.test(
+      message,
+    )
+  )
+    throw fail("Agent任务描述不得包含密钥、密码、令牌、连接串或私钥");
+  return message;
+}
+
 export const publicAgentIntentDestinations = () =>
   agentIntentDestinations.map(({ id, label, action, risk }) => ({ id, label, action, risk }));
 

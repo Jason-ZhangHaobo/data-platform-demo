@@ -31,7 +31,8 @@ type IntentRoute = {
 type IntentTask = {
   id: string;
   status: string;
-  message: string;
+  messageHash?: string;
+  messageLength?: number;
   route?: IntentRoute;
   model?: string;
   usage?: { total_tokens?: number };
