@@ -18,8 +18,10 @@ const tools = [
   { name: "delivery_verification_list", description: "列出交付包文件演练状态与证据。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_verification_detail", description: "读取指定文件演练的步骤和验证证据。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
   { name: "delivery_verification_cancel", description: "取消未完成的文件演练并保留记录；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
+  { name: "delivery_review_list", description: "列出按包摘要与文件演练绑定的工程师审阅记录。", inputSchema: { type: "object", properties: {} } },
+  { name: "delivery_review_create", description: "记录工程师已核对代码、断言、交付文件和本机范围；不审批、不发布。调用前必须完成实际审阅并取得明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, verificationId: { type: "string" }, reviewNote: { type: "string" }, attestations: { type: "object", properties: { code: { type: "boolean", const: true }, assertions: { type: "boolean", const: true }, deliveryFiles: { type: "boolean", const: true }, localScope: { type: "boolean", const: true } }, required: ["code", "assertions", "deliveryFiles", "localScope"], additionalProperties: false } }, required: ["packageId", "packageDigest", "verificationId", "reviewNote", "attestations"] } },
   { name: "release_approval_list", description: "列出绑定交付包摘要的发布审批记录。", inputSchema: { type: "object", properties: {} } },
-  { name: "release_approve", description: "审批已成功演练且摘要匹配的交付包；会授予本机发布资格，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, reviewNote: { type: "string" } }, required: ["packageId", "packageDigest", "reviewNote"] } },
+  { name: "release_approve", description: "审批已成功演练且已有摘要绑定审阅记录的交付包；会授予本机发布资格，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, reviewId: { type: "string" } }, required: ["packageId", "packageDigest", "reviewId"] } },
   { name: "release_list", description: "列出本机发布版本、健康度和调度状态。", inputSchema: { type: "object", properties: {} } },
   { name: "release_detail", description: "读取指定本机发布版本及批次摘要。", inputSchema: { type: "object", properties: { releaseId: { type: "string" } }, required: ["releaseId"] } },
   { name: "release_create", description: "消费一次审批并激活本机发布、安排两个墙上时钟批次；调用前必须取得用户明确确认，且不代表公网发布。", inputSchema: { type: "object", properties: { approvalId: { type: "string" }, triggerAfterSeconds: { type: "integer", minimum: 1, maximum: 30 }, intervalSeconds: { type: "integer", minimum: 1, maximum: 60 }, runCount: { type: "integer", minimum: 2, maximum: 5 } }, required: ["approvalId"] } },
@@ -187,6 +189,21 @@ async function callTool(name, args = {}) {
       `/delivery/verifications/${encodeURIComponent(args.verificationId)}/cancel`,
       { method: "POST", body: {} },
     );
+  if (name === "delivery_review_list")
+    return client.request("/delivery/reviews");
+  if (name === "delivery_review_create")
+    return client.request(
+      `/delivery/packages/${encodeURIComponent(args.packageId)}/review`,
+      {
+        method: "POST",
+        body: {
+          packageDigest: args.packageDigest,
+          verificationId: args.verificationId,
+          reviewNote: args.reviewNote,
+          attestations: args.attestations,
+        },
+      },
+    );
   if (name === "release_approval_list")
     return client.request("/release/approvals");
   if (name === "release_approve")
@@ -196,7 +213,7 @@ async function callTool(name, args = {}) {
         method: "POST",
         body: {
           packageDigest: args.packageDigest,
-          reviewNote: args.reviewNote,
+          reviewId: args.reviewId,
         },
       },
     );

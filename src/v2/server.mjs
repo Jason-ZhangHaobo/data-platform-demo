@@ -2283,8 +2283,10 @@ export function createV2Server(options = {}) {
           get("delivery_package", dedup.id),
         );
       }
+      if (path === "/api/v2/delivery/reviews" && method === "GET")
+        return json(res, 200, store.list("delivery_review", PROJECT));
       const deliveryRecord = path.match(
-        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|approve))?$/,
+        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|review|approve))?$/,
       );
       if (deliveryRecord) {
         const kind =
@@ -2306,6 +2308,99 @@ export function createV2Server(options = {}) {
         }
         if (
           kind === "delivery_package" &&
+          deliveryRecord[3] === "review" &&
+          method === "POST"
+        ) {
+          const body = await readBody(req),
+            packageDigest = text(body.packageDigest, 64, 64),
+            verificationId = text(body.verificationId, 1, 80),
+            reviewNote = text(body.reviewNote, 4, 500),
+            requiredAttestations = [
+              "code",
+              "assertions",
+              "deliveryFiles",
+              "localScope",
+            ],
+            attestations = body.attestations;
+          if (packageDigest !== item.digest)
+            throw fail(409, "审阅摘要与当前交付包不一致");
+          if (
+            !attestations ||
+            typeof attestations !== "object" ||
+            Array.isArray(attestations) ||
+            Object.keys(attestations).some(
+              (key) => !requiredAttestations.includes(key),
+            ) ||
+            !requiredAttestations.every((key) => attestations[key] === true)
+          )
+            throw fail(422, "需逐项确认代码、断言、交付文件和本机范围");
+          await ensureDeliveryArtifact(item);
+          validateDeliveryPackage(item, item.digest);
+          const rehearsal = get("delivery_verification", verificationId);
+          if (
+            rehearsal.packageId !== item.id ||
+            rehearsal.packageDigest !== item.digest ||
+            rehearsal.status !== "SUCCEEDED"
+          )
+            throw fail(409, "审阅必须绑定当前交付包的成功按文件演练");
+          const session = auth.sessionFromHeaders(req.headers),
+            reviewer = session
+              ? {
+                  id: session.user.id,
+                  displayName: session.user.displayName,
+                  role: session.role,
+                }
+              : {
+                  id: "local-engineer",
+                  displayName: "本机工程师",
+                  role: "LOCAL_DEVELOPMENT",
+                },
+            existingReview = store
+              .list("delivery_review", PROJECT)
+              .find(
+                (review) =>
+                  review.packageId === item.id &&
+                  review.packageDigest === item.digest &&
+                  review.verificationId === rehearsal.id &&
+                  review.reviewer?.id === reviewer.id &&
+                  review.status === "REVIEWED",
+              );
+          if (existingReview) return json(res, 200, existingReview);
+          const key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              PROJECT + ":delivery-review:" + key,
+              hash(
+                JSON.stringify({
+                  packageId: item.id,
+                  packageDigest: item.digest,
+                  verificationId: rehearsal.id,
+                  reviewerId: reviewer.id,
+                  reviewNote,
+                  attestations,
+                }),
+              ),
+              () =>
+                store.create("delivery_review", PROJECT, {
+                  packageId: item.id,
+                  packageDigest: item.digest,
+                  verificationId: rehearsal.id,
+                  reviewer,
+                  reviewNote,
+                  attestations,
+                  status: "REVIEWED",
+                  scope: "LOCAL_TEST_RELEASE",
+                  publicDeploymentApproved: false,
+                  reviewedAt: new Date().toISOString(),
+                }),
+            );
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            get("delivery_review", dedup.id),
+          );
+        }
+        if (
+          kind === "delivery_package" &&
           deliveryRecord[3] === "approve" &&
           method === "POST"
         ) {
@@ -2313,6 +2408,7 @@ export function createV2Server(options = {}) {
             packageDigest = text(body.packageDigest, 64, 64);
           if (packageDigest !== item.digest)
             throw fail(409, "审批摘要与当前交付包不一致");
+          const reviewId = text(body.reviewId, 1, 80);
           await ensureDeliveryArtifact(item);
           validateDeliveryPackage(item, item.digest);
           const rehearsal = store
@@ -2325,10 +2421,26 @@ export function createV2Server(options = {}) {
             );
           if (!rehearsal)
             throw fail(409, "交付包尚无成功的按文件演练，不能审批发布");
-          const reviewNote =
-            body.reviewNote === undefined
-              ? "已审阅代码版本、文件摘要和本机演练证据"
-              : text(body.reviewNote, 4, 500);
+          const review = get("delivery_review", reviewId);
+          if (
+            review.packageId !== item.id ||
+            review.packageDigest !== item.digest ||
+            review.verificationId !== rehearsal.id ||
+            review.status !== "REVIEWED"
+          )
+            throw fail(409, "审批必须引用当前包、摘要和演练一致的审阅记录");
+          const actor = auth.sessionFromHeaders(req.headers),
+            approver = actor
+              ? {
+                  id: actor.user.id,
+                  displayName: actor.user.displayName,
+                  role: actor.role,
+                }
+              : {
+                  id: "local-engineer",
+                  displayName: "本机工程师",
+                  role: "LOCAL_DEVELOPMENT",
+                };
           const existingApproval = store
             .list("release_approval", PROJECT)
             .find(
@@ -2346,7 +2458,8 @@ export function createV2Server(options = {}) {
                   packageId: item.id,
                   packageDigest: item.digest,
                   rehearsalId: rehearsal.id,
-                  reviewNote,
+                  reviewId: review.id,
+                  approverId: approver.id,
                 }),
               ),
               () =>
@@ -2356,10 +2469,12 @@ export function createV2Server(options = {}) {
                   rehearsalId: rehearsal.id,
                   sourceRevisionId: item.manifest.source.revisionId,
                   sourceSqlHash: item.manifest.source.sqlHash,
-                  reviewer: "local-engineer",
+                  reviewId: review.id,
+                  reviewer: approver.displayName,
+                  reviewedBy: review.reviewer,
                   decision: "APPROVED",
                   status: "APPROVED",
-                  reviewNote,
+                  reviewNote: review.reviewNote,
                   approvedAt: new Date().toISOString(),
                   scope: "LOCAL_TEST_RELEASE",
                   publicDeploymentApproved: false,

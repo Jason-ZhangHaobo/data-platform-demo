@@ -68,6 +68,22 @@ type Approval = {
   reviewNote: string;
   consumedByReleaseId?: string;
 };
+type Review = {
+  id: string;
+  packageId: string;
+  packageDigest: string;
+  verificationId: string;
+  status: string;
+  reviewedAt: string;
+  reviewer: { id: string; displayName: string; role: string };
+  reviewNote: string;
+  attestations: {
+    code: boolean;
+    assertions: boolean;
+    deliveryFiles: boolean;
+    localScope: boolean;
+  };
+};
 type Release = {
   id: string;
   packageId: string;
@@ -183,6 +199,16 @@ export function DeliveryWorkbench({
     [selected, setSelected] = useState<Bundle>();
   const [checks, setChecks] = useState<Verification[]>([]),
     [check, setCheck] = useState<Verification>();
+  const [reviews, setReviews] = useState<Review[]>([]),
+    [reviewNote, setReviewNote] = useState(
+      "已核对代码、独立断言、DAG与部署文件，确认仅限本机合成数据范围",
+    ),
+    [attestations, setAttestations] = useState({
+      code: false,
+      assertions: false,
+      deliveryFiles: false,
+      localScope: false,
+    });
   const [approvals, setApprovals] = useState<Approval[]>([]),
     [releases, setReleases] = useState<Release[]>([]),
     [monitor, setMonitor] = useState<MonitorOverview>();
@@ -199,11 +225,13 @@ export function DeliveryWorkbench({
     }
   };
   const loadLifecycle = async () => {
-    const [nextApprovals, nextReleases, nextMonitor] = await Promise.all([
+    const [nextReviews, nextApprovals, nextReleases, nextMonitor] = await Promise.all([
+      api<Review[]>("/delivery/reviews"),
       api<Approval[]>("/release/approvals"),
       api<Release[]>("/releases"),
       api<MonitorOverview>("/monitoring/overview"),
     ]);
+    setReviews(nextReviews);
     setApprovals(nextApprovals);
     setReleases(nextReleases);
     setMonitor(nextMonitor);
@@ -218,6 +246,7 @@ export function DeliveryWorkbench({
     Promise.all([
       api<Bundle[]>("/delivery/packages"),
       api<Verification[]>("/delivery/verifications"),
+      api<Review[]>("/delivery/reviews"),
       api<Approval[]>("/release/approvals"),
       api<Release[]>("/releases"),
       api<MonitorOverview>("/monitoring/overview"),
@@ -226,6 +255,7 @@ export function DeliveryWorkbench({
         async ([
           bundles,
           verifications,
+          initialReviews,
           initialApprovals,
           initialReleases,
           initialMonitor,
@@ -233,6 +263,7 @@ export function DeliveryWorkbench({
         if (!active) return;
         setPackages(bundles);
         setChecks(verifications);
+        setReviews(initialReviews);
         setApprovals(initialApprovals);
         setReleases(initialReleases);
         setMonitor(initialMonitor);
@@ -311,14 +342,32 @@ export function DeliveryWorkbench({
       setBusy("");
     }
   };
+  const review = async () => {
+    if (!selected || !check) return;
+    setBusy("review");
+    setError("");
+    try {
+      await api<Review>(`/delivery/packages/${selected.id}/review`, {
+        packageDigest: selected.digest,
+        verificationId: check.id,
+        reviewNote,
+        attestations,
+      });
+      await loadLifecycle();
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
   const approve = async () => {
-    if (!selected) return;
+    if (!selected || !selectedReview) return;
     setBusy("approve");
     setError("");
     try {
       await api<Approval>(`/delivery/packages/${selected.id}/approve`, {
         packageDigest: selected.digest,
-        reviewNote: "已审阅代码版本、独立断言、DAG、部署边界与演练结果",
+        reviewId: selectedReview.id,
       });
       await loadLifecycle();
     } catch (error) {
@@ -390,6 +439,15 @@ export function DeliveryWorkbench({
       ? JSON.stringify(selected.manifest, null, 2)
       : (selected.files?.[file] ?? "")
     : "";
+  const selectedReview = selected && check
+    ? reviews.find(
+        (item) =>
+          item.packageId === selected.id &&
+          item.packageDigest === selected.digest &&
+          item.verificationId === check.id &&
+          item.status === "REVIEWED",
+      )
+    : undefined;
   const selectedApproval = selected
     ? approvals.find(
         (item) =>
@@ -740,16 +798,66 @@ export function DeliveryWorkbench({
                   <ShieldCheck size={22} />
                 </header>
                 <p>
-                  审批只对当前包摘要生效。发布后 5 秒触发首批、间隔 15 秒触发第二批；
-                  页面刷新不会丢失批次记录。
+                  先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。发布后 5 秒触发首批、
+                  间隔 15 秒触发第二批；页面刷新不会丢失批次记录。
                 </p>
+                <fieldset className="delivery-review-checklist" disabled={!canWrite || !!selectedReview || !!busy}>
+                  <legend>工程师审阅确认（不会发布）</legend>
+                  {[
+                    ["code", "已核对生成 SQL 版本及业务口径"],
+                    ["assertions", "已核对独立断言与 Spark 演练结果"],
+                    ["deliveryFiles", "已核对 DAG、调度和部署文件摘要"],
+                    ["localScope", "确认本次仅为本机合成数据验证，非公网或生产发布"],
+                  ].map(([key, label]) => (
+                    <label key={key} className="delivery-review-check">
+                      <input
+                        type="checkbox"
+                        checked={attestations[key as keyof typeof attestations]}
+                        onChange={(event) =>
+                          setAttestations((current) => ({
+                            ...current,
+                            [key]: event.target.checked,
+                          }))
+                        }
+                      />
+                      {label}
+                    </label>
+                  ))}
+                  <textarea
+                    aria-label="审阅备注"
+                    value={reviewNote}
+                    maxLength={500}
+                    onChange={(event) => setReviewNote(event.target.value)}
+                    placeholder="说明已核对的口径或限制"
+                  />
+                </fieldset>
                 <div className="release-actions">
+                  <button
+                    className="button"
+                    onClick={review}
+                    disabled={
+                      !canWrite ||
+                      check?.status !== "SUCCEEDED" ||
+                      !!selectedReview ||
+                      !!busy ||
+                      reviewNote.trim().length < 4 ||
+                      !Object.values(attestations).every(Boolean)
+                    }
+                  >
+                    <FileCode2 size={15} />
+                    {busy === "review"
+                      ? "正在记录审阅…"
+                      : selectedReview
+                        ? "审阅已绑定"
+                        : "记录审阅"}
+                  </button>
                   <button
                     className="button"
                     onClick={approve}
                     disabled={
                       !canWrite ||
                       check?.status !== "SUCCEEDED" ||
+                      !selectedReview ||
                       !!selectedApproval ||
                       !!busy
                     }
@@ -785,6 +893,12 @@ export function DeliveryWorkbench({
                   <small className="release-proof-line">
                     审批 {selectedApproval.id.slice(0, 8)} · 包摘要
                     {selectedApproval.packageDigest.slice(0, 12)} · 仅本机测试
+                  </small>
+                )}
+                {selectedReview && !selectedApproval && (
+                  <small className="release-proof-line">
+                    审阅 {selectedReview.id.slice(0, 8)} · 演练
+                    {selectedReview.verificationId.slice(0, 8)} · 尚未审批
                   </small>
                 )}
               </article>

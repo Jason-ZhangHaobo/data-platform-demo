@@ -2293,6 +2293,41 @@ kbd {
   font-size: 12px;
   line-height: 1.7;
 }
+.delivery-review-checklist {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 11px;
+  border: 1px solid #dce7d7;
+  border-radius: 8px;
+  color: #50644e;
+  font-size: 11px;
+}
+.delivery-review-checklist legend {
+  padding: 0 5px;
+  color: #456343;
+  font-weight: 700;
+}
+.delivery-review-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  line-height: 1.45;
+}
+.delivery-review-check input {
+  margin: 2px 0 0;
+  accent-color: #2d7a50;
+}
+.delivery-review-checklist textarea {
+  min-height: 54px;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid #d6e1d1;
+  border-radius: 6px;
+  color: #35523d;
+  font: inherit;
+  line-height: 1.5;
+}
 .release-actions {
   display: flex;
   flex-wrap: wrap;

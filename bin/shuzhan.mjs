@@ -20,8 +20,10 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan delivery verifications
   shuzhan delivery verification --id VERIFICATION_ID
   shuzhan delivery cancel --id VERIFICATION_ID
+  shuzhan delivery reviews
+  shuzhan delivery review --id PACKAGE_ID --package-digest SHA256 --verification-id VERIFICATION_ID --note "已核对" --attest-code --attest-assertions --attest-delivery-files --attest-local-scope
   shuzhan releases approvals
-  shuzhan releases approve --package-id PACKAGE_ID --package-digest SHA256 --note "已审阅"
+  shuzhan releases approve --package-id PACKAGE_ID --package-digest SHA256 --review-id REVIEW_ID
   shuzhan releases list
   shuzhan releases show --id RELEASE_ID
   shuzhan releases publish --approval-id APPROVAL_ID [--trigger-after-seconds 5 --interval-seconds 15 --run-count 2]
@@ -297,6 +299,26 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         `/delivery/verifications/${encodeURIComponent(required(parsed.options, "id"))}/cancel`,
         { method: "POST", body: {} },
       );
+    else if (resource === "delivery" && action === "reviews")
+      result = await client.request("/delivery/reviews");
+    else if (resource === "delivery" && action === "review")
+      result = await client.request(
+        `/delivery/packages/${encodeURIComponent(required(parsed.options, "id"))}/review`,
+        {
+          method: "POST",
+          body: {
+            packageDigest: required(parsed.options, "package_digest"),
+            verificationId: required(parsed.options, "verification_id"),
+            reviewNote: required(parsed.options, "note"),
+            attestations: {
+              code: parsed.options.attest_code === true,
+              assertions: parsed.options.attest_assertions === true,
+              deliveryFiles: parsed.options.attest_delivery_files === true,
+              localScope: parsed.options.attest_local_scope === true,
+            },
+          },
+        },
+      );
     else if (resource === "releases" && action === "approvals")
       result = await client.request("/release/approvals");
     else if (resource === "releases" && action === "approve")
@@ -306,7 +328,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           method: "POST",
           body: {
             packageDigest: required(parsed.options, "package_digest"),
-            reviewNote: required(parsed.options, "note"),
+            reviewId: required(parsed.options, "review_id"),
           },
         },
       );

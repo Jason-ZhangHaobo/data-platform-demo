@@ -345,4 +345,11 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - V2 CLI `agent delivery --id`与MCP `agent_delivery_detail`读取同一准备任务：SUCCEEDED、AWAITING_ENGINEER_REVIEW、`actualExecution=true`、`agentIndependentE2E=false`、`publicDeployed=false`。
 - 浏览器实际切换旧M2c告警包`37f8c246…`：显示“历史发布版本、非当前生效”，CRITICAL及旧失败批次均绑定本包，步骤4不标完成且不提供当前版本回滚操作；切回新Agent包`e5d7f494…`，步骤4仍未完成，监控提示本包未审批发布。
 - 新回归对同一源Spark运行先置入旧已审批包，再启动Agent交付准备；后台生成不同新包，旧审批仅绑定原包，新包审批数0，旧批准不能直接转移。
+
+## 2026-09-15：M2b独立工程师审阅关口
+
+- 原审批只携带备注，不能独立证明工程师已经核对了哪些内容；现拆分为`delivery_review`。记录严格绑定交付包摘要与成功按文件演练编号，逐项确认代码、独立断言、DAG/部署文件和“仅本机合成数据”范围；不创建发布资格。
+- 审批请求必须引用同一包、摘要、演练均一致的`reviewId`。缺少审阅记录返回400；遗漏任一确认返回422；不同包或不同演练的审阅返回409。已有包摘要不变时可幂等读取同一审阅，变更代码仍必须重新生成包、演练和审阅。
+- GUI实测最新Agent准备包`e5d7f494…`：显示四项可访问复选框、审阅备注、独立“记录审阅”按钮，以及其后的审批与发布按钮。未作任何勾选、审阅、审批或发布；1280宽度`document.scrollWidth=innerWidth`。
+- API、CLI、MCP同源：CLI须显式传入四项`--attest-*`，MCP JSON Schema要求四项`true`并警示实际审阅和明确确认。该本机关口不改变`agentIndependentE2E=false`、`fullLifecycleE2E=false`或`publicDeployed=false`。
 - API/CLI/MCP同源；匿名公网创建401、假模型/假Spark失败关闭、取消后不能变成功、服务重启进行中准备转INTERRUPTED。全量CI最新194/194。详见[Agent交付报告](agent-delivery-preparation.md)。

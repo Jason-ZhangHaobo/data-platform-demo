@@ -1,6 +1,6 @@
 # V2 API 契约与实现边界
 
-更新：2026-09-15。基础地址为本地开发服务的 `/api/v2`。以下接口已实现；`shuzhan`与`shuzhan-mcp`使用该契约，旧`dataplatform`命令仍是V1模拟，不能作为V2证据。交付包、演练、审批、发布、回滚和监控已补齐CLI/MCP映射；危险动作的MCP说明要求显式确认。
+更新：2026-09-15。基础地址为本地开发服务的 `/api/v2`。以下接口已实现；`shuzhan`与`shuzhan-mcp`使用该契约，旧`dataplatform`命令仍是V1模拟，不能作为V2证据。交付包、演练、独立审阅、审批、发布、回滚和监控已补齐CLI/MCP映射；危险动作的MCP说明要求显式确认。
 
 ## 权限与请求
 
@@ -41,11 +41,13 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /delivery/packages | sourceRunId、name + 幂等键 | 当前验证通过版本的不可变文件包；NOT_PUBLISHED |
 | GET /delivery/packages/:id | 交付包详情 | manifest、files、digest，可导出JSON |
 | POST /delivery/packages/:id/verify | scheduledFor + 幂等键 | 202；本机按文件演练编号，不发布 |
+| GET /delivery/reviews | 本机工程师审阅记录 | 只读包摘要、演练编号、逐项确认与身份摘要；不返回业务行 |
+| POST /delivery/packages/:id/review | packageDigest、verificationId、reviewNote、四项确认 + 幂等键 | 只在当前包成功按文件演练后保存独立审阅记录；不审批、不发布 |
 | GET /delivery/verifications | 当前项目演练历史 | 文件摘要、状态与实际运行证据 |
 | GET /delivery/verifications/:id | 指定演练 | 同上 |
 | POST /delivery/verifications/:id/cancel | 取消排队/运行中的演练 | CANCELLED |
 | GET /release/approvals | 本机审批记录 | 包摘要、源SQL哈希、演练与审阅证据 |
-| POST /delivery/packages/:id/approve | packageDigest、reviewNote + 幂等键 | 只审批摘要匹配且成功演练的不可变包 |
+| POST /delivery/packages/:id/approve | packageDigest、reviewId + 幂等键 | 只审批摘要、成功演练和独立审阅记录三者一致的不可变包 |
 | GET /releases | 本机发布版本 | 状态、健康度、摘要、审批与批次计数；不返回本机绝对路径 |
 | POST /releases | approvalId、1—300秒短周期、2—3批 + 幂等键 | 激活本机版本并持久化计时计划；publicDeployed=false |
 | GET /releases/:id | 指定本机发布版本 | 版本、健康、源摘要及批次统计 |

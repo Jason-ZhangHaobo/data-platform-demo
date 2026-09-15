@@ -16,6 +16,8 @@ export const V2_OPERATIONS = Object.freeze([
   "delivery_verification_list",
   "delivery_verification_detail",
   "delivery_verification_cancel",
+  "delivery_review_list",
+  "delivery_review_create",
   "release_approval_list",
   "release_approve",
   "release_list",

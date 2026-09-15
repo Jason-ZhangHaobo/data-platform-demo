@@ -114,12 +114,25 @@ async function setup({ runner = success } = {}) {
     });
     return { item, rehearsal };
   };
+  const review = async (item, rehearsal, reviewNote = "已核对代码、断言、调度部署文件与本机范围") =>
+    call(`/delivery/packages/${item.id}/review`, {
+      packageDigest: item.digest,
+      verificationId: rehearsal.id,
+      reviewNote,
+      attestations: {
+        code: true,
+        assertions: true,
+        deliveryFiles: true,
+        localScope: true,
+      },
+    });
   return {
     root,
     store,
     app,
     call,
     seed,
+    review,
     close: async () => {
       await new Promise((resolve) => app.server.close(resolve));
       store.close();
@@ -160,7 +173,7 @@ test("approval binds a successful rehearsal and two actual timer batches establi
     },
   });
   try {
-    const { item } = testApp.seed("定时发布版本A");
+    const { item, rehearsal } = testApp.seed("定时发布版本A");
     assert.equal(
       (
         await testApp.call(`/delivery/packages/${item.id}/approve`, {
@@ -169,10 +182,37 @@ test("approval binds a successful rehearsal and two actual timer batches establi
       ).status,
       409,
     );
+    assert.equal(
+      (
+        await testApp.call(`/delivery/packages/${item.id}/approve`, {
+          packageDigest: item.digest,
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await testApp.call(`/delivery/packages/${item.id}/review`, {
+          packageDigest: item.digest,
+          verificationId: rehearsal.id,
+          reviewNote: "不完整审阅不得作为发布依据",
+          attestations: {
+            code: true,
+            assertions: false,
+            deliveryFiles: true,
+            localScope: true,
+          },
+        })
+      ).status,
+      422,
+    );
+    const review = (await testApp.review(item, rehearsal)).body;
+    assert.equal(review.status, "REVIEWED");
+    assert.equal(review.packageDigest, item.digest);
     const approval = (
       await testApp.call(`/delivery/packages/${item.id}/approve`, {
         packageDigest: item.digest,
-        reviewNote: "确认代码、断言、DAG与部署边界",
+        reviewId: review.id,
       })
     ).body;
     assert.equal(approval.status, "APPROVED");
@@ -227,10 +267,12 @@ test("failed scheduled batch opens an alert and later batches resolve it", async
     },
   });
   try {
-    const { item } = testApp.seed("故障恢复版本");
+    const { item, rehearsal } = testApp.seed("故障恢复版本"),
+      review = (await testApp.review(item, rehearsal)).body;
     const approval = (
       await testApp.call(`/delivery/packages/${item.id}/approve`, {
         packageDigest: item.digest,
+        reviewId: review.id,
       })
     ).body;
     const release = (
@@ -268,10 +310,12 @@ test("rollback restores only a previously healthy local release and schedules ve
   const testApp = await setup();
   try {
     const publish = async (name) => {
-      const { item } = testApp.seed(name),
+      const { item, rehearsal } = testApp.seed(name),
+        review = (await testApp.review(item, rehearsal)).body,
         approval = (
           await testApp.call(`/delivery/packages/${item.id}/approve`, {
             packageDigest: item.digest,
+            reviewId: review.id,
           })
         ).body;
       return (

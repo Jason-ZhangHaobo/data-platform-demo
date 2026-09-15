@@ -351,14 +351,20 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
   assert.equal(
     await runV2Cli(
       [
-        "releases",
-        "approve",
-        "--package-id",
+        "delivery",
+        "review",
+        "--id",
         "package-id",
         "--package-digest",
         "a".repeat(64),
+        "--verification-id",
+        "verification-id",
         "--note",
         "已审阅代码、断言与部署边界",
+        "--attest-code",
+        "--attest-assertions",
+        "--attest-delivery-files",
+        "--attest-local-scope",
       ],
       {},
       {
@@ -369,8 +375,37 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     ),
     0,
   );
-  assert.equal(requests[11].path, "/delivery/packages/package-id/approve");
+  assert.equal(requests[11].path, "/delivery/packages/package-id/review");
   assert.equal(requests[11].options.body.packageDigest, "a".repeat(64));
+  assert.deepEqual(requests[11].options.body.attestations, {
+    code: true,
+    assertions: true,
+    deliveryFiles: true,
+    localScope: true,
+  });
+  assert.equal(
+    await runV2Cli(
+      [
+        "releases",
+        "approve",
+        "--package-id",
+        "package-id",
+        "--package-digest",
+        "a".repeat(64),
+        "--review-id",
+        "review-id",
+      ],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[12].path, "/delivery/packages/package-id/approve");
+  assert.equal(requests[12].options.body.reviewId, "review-id");
   assert.equal(
     await runV2Cli(
       ["agent", "journey", "--id", "task-id"],
@@ -383,7 +418,7 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     ),
     0,
   );
-  assert.equal(requests[12].path, "/agent/tasks/task-id/journey");
+  assert.equal(requests[13].path, "/agent/tasks/task-id/journey");
   assert.equal(
     await runV2Cli(
       ["agent", "prepare-delivery", "--id", "task-id"],
@@ -396,8 +431,8 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     ),
     0,
   );
-  assert.equal(requests[13].path, "/agent/tasks/task-id/prepare-delivery");
-  assert.deepEqual(requests[13].options.body, {});
+  assert.equal(requests[14].path, "/agent/tasks/task-id/prepare-delivery");
+  assert.deepEqual(requests[14].options.body, {});
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -424,6 +459,8 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "delivery_verification_list",
     "delivery_verification_detail",
     "delivery_verification_cancel",
+    "delivery_review_list",
+    "delivery_review_create",
     "release_approval_list",
     "release_approve",
     "release_list",
@@ -597,6 +634,17 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
     assert.equal(deliveryCode, 0, cliError.join("\n"));
     const cliPackages = JSON.parse(cliOutput[3]);
     assert.deepEqual(cliPackages, []);
+    const reviewCode = await runV2Cli(
+      ["delivery", "reviews", "--base-url", baseUrl],
+      {},
+      {
+        output: (value) => cliOutput.push(value),
+        error: (value) => cliError.push(value),
+      },
+    );
+    assert.equal(reviewCode, 0, cliError.join("\n"));
+    const cliReviews = JSON.parse(cliOutput[4]);
+    assert.deepEqual(cliReviews, []);
 
     const child = spawn(process.execPath, ["bin/shuzhan-mcp.mjs"], {
       cwd: process.cwd(),
@@ -628,6 +676,13 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
           method: "tools/call",
           params: { name: "delivery_package_list", arguments: {} },
         }) +
+        "\n" +
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/call",
+          params: { name: "delivery_review_list", arguments: {} },
+        }) +
         "\n",
     );
     const exit = await new Promise((resolve, reject) => {
@@ -638,7 +693,8 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
     const responses = stdout.trim().split("\n").map((line) => JSON.parse(line)),
       response = responses.find((item) => item.id === 2),
       assetResponse = responses.find((item) => item.id === 3),
-      packageResponse = responses.find((item) => item.id === 4);
+      packageResponse = responses.find((item) => item.id === 4),
+      reviewResponse = responses.find((item) => item.id === 5);
     assert.equal(
       response.result.structuredContent.adapter,
       cliMonitor.adapter,
@@ -649,6 +705,7 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
     );
     assert.deepEqual(assetResponse.result.structuredContent, cliAssets);
     assert.deepEqual(packageResponse.result.structuredContent, cliPackages);
+    assert.deepEqual(reviewResponse.result.structuredContent, cliReviews);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     businessStore.close();
