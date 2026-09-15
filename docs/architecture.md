@@ -3,7 +3,7 @@
 
 ## 分层
 - React/TypeScript 工作台：项目导航、Monaco 编辑器、Agent、版本差异、结果/日志。
-- Node.js 模块化 /api/v2：上下文、版本、后台任务、运行和产物；M3、M4a、M4b已由GUI、V2 CLI和V2 MCP同源调用，后续模块随实现继续扩展同一契约。
+- Node.js 模块化 /api/v2：上下文、版本、后台任务、运行和产物；开发交付、DAPI/XAPI及M4经典模块均由GUI、V2 CLI和V2 MCP调用同一资源与权限契约，不在各端复制业务规则。
 - 元数据仓库：开发使用独立 SQLite；云端实现MySQL项目快照CAS，保存任务、版本、认证、权限与审计，业务行不进入该平台元数据快照。
 - 云端业务状态：函数内存SQLite仅作单实例查询索引；私有OSS对象以ETag CAS持久化离线落地行、实时事件/状态/Checkpoint、DAPI服务快照和报表快照，冷启动时校验格式、主键、外键与JSON后恢复。
 - 版本化产物：交付包按`data-platform-v2/artifacts/delivery-package/<digest>.json`保存私有OSS不可变对象，使用`If-None-Match: *`；相同内容幂等复用，同摘要不同内容拒绝。审批、文件演练和发布均在动作前核验OSS正文、大小和内容摘要；本机以相同接口写权限0600的不可变文件。

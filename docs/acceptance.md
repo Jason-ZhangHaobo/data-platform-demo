@@ -309,4 +309,12 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 
 - 经用户批准短暂唤醒现有Serverless RDS；运行态确认`business_demo`和`sync_writer`仍存在，随后创建独立`platform_meta`并复核其状态Running，未新购实例。
 - 新增安全账号辅助脚本：两次隐藏输入且先本机校验；必要时自动唤醒AutoPause实例；固定创建Normal账号`platform_app`并只授`platform_meta` ReadWrite；已存在时拒绝覆盖，密码不写文件、不回显、不进入Shell历史。
-- 1项假CLI测试验证操作目标和输出脱敏，全量CI 182/182。真实账号创建仍等待用户完成当前macOS隐藏密码弹窗，未完成前不得把平台数据库记为可连接。
+- 用户通过macOS隐藏弹窗完成密码输入；脚本必要时唤醒RDS，真实创建账号并授权。最终Describe显示`platform_app`为Normal/Available且`platform_meta` ReadWrite，`business_demo`/`sync_writer`仍在，`platformDatabaseReady=true`。
+- 1项假CLI测试验证操作目标和输出脱敏，全量CI 182/182。当前只完成RDS控制面，不代表本机或云函数已成功建立数据面连接。
+
+## 2026-09-15：M2交付发布多端契约补齐
+
+- 复核发现原V2 CLI/MCP只有发布批次读取，不能支撑工程师或Agent完成“交付包→演练→审批→发布→监控→回滚”，因此撤销此前笼统的多端完成假设。
+- 新增14项共享操作：交付包列表/详情/创建/演练，演练列表/详情/取消，审批列表/提交，发布列表/详情/创建/回滚及发布监控；CLI参数映射和MCP JSON Schema均调用现有`/api/v2`。
+- MCP对取消、审批、发布和回滚明确标注需用户确认；本机发布依然返回非公网边界。接口单测实际对比CLI/MCP读取同一空交付包列表，并验证创建和审批请求体。
+- 新CLI实际读取现有持久状态：3个M2A交付包，最新包摘要为64位且未发布；发布监控为成功8、失败2、开放告警0、当前HEALTHY，同时明确`LOCAL_RELEASE_MONITORING`、`publicDeployed=false`、`fullLifecycleE2E=false`。

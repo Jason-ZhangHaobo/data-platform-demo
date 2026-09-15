@@ -8,6 +8,20 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan status
   shuzhan budget
   shuzhan release-runs list
+  shuzhan delivery packages
+  shuzhan delivery show --id PACKAGE_ID
+  shuzhan delivery create --source-run-id RUN_ID --name "客户资产 T+1"
+  shuzhan delivery verify --id PACKAGE_ID --scheduled-for 2026-09-11T09:00:00+08:00
+  shuzhan delivery verifications
+  shuzhan delivery verification --id VERIFICATION_ID
+  shuzhan delivery cancel --id VERIFICATION_ID
+  shuzhan releases approvals
+  shuzhan releases approve --package-id PACKAGE_ID --package-digest SHA256 --note "已审阅"
+  shuzhan releases list
+  shuzhan releases show --id RELEASE_ID
+  shuzhan releases publish --approval-id APPROVAL_ID [--trigger-after-seconds 5 --interval-seconds 15 --run-count 2]
+  shuzhan releases rollback --id RELEASE_ID --target-release-id RELEASE_ID --reason "恢复稳定版本"
+  shuzhan releases monitor
   shuzhan services list [--type dapi|xapi]
   shuzhan services create-dapi --name 名称 --slug path --source-run-id ID [--fields a,b]
   shuzhan services create-xapi --name 名称 --slug path --steps alias:DAPI_ID,alias:DAPI_ID
@@ -219,6 +233,85 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request("/budget");
     else if (resource === "release-runs" && action === "list")
       result = await client.request("/release/runs");
+    else if (resource === "delivery" && action === "packages")
+      result = await client.request("/delivery/packages");
+    else if (resource === "delivery" && action === "show")
+      result = await client.request(
+        `/delivery/packages/${encodeURIComponent(required(parsed.options, "id"))}`,
+      );
+    else if (resource === "delivery" && action === "create")
+      result = await client.request("/delivery/packages", {
+        method: "POST",
+        body: {
+          sourceRunId: required(parsed.options, "source_run_id"),
+          name: required(parsed.options, "name"),
+        },
+      });
+    else if (resource === "delivery" && action === "verify")
+      result = await client.request(
+        `/delivery/packages/${encodeURIComponent(required(parsed.options, "id"))}/verify`,
+        {
+          method: "POST",
+          body: {
+            scheduledFor: required(parsed.options, "scheduled_for"),
+          },
+        },
+      );
+    else if (resource === "delivery" && action === "verifications")
+      result = await client.request("/delivery/verifications");
+    else if (resource === "delivery" && action === "verification")
+      result = await client.request(
+        `/delivery/verifications/${encodeURIComponent(required(parsed.options, "id"))}`,
+      );
+    else if (resource === "delivery" && action === "cancel")
+      result = await client.request(
+        `/delivery/verifications/${encodeURIComponent(required(parsed.options, "id"))}/cancel`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "releases" && action === "approvals")
+      result = await client.request("/release/approvals");
+    else if (resource === "releases" && action === "approve")
+      result = await client.request(
+        `/delivery/packages/${encodeURIComponent(required(parsed.options, "package_id"))}/approve`,
+        {
+          method: "POST",
+          body: {
+            packageDigest: required(parsed.options, "package_digest"),
+            reviewNote: required(parsed.options, "note"),
+          },
+        },
+      );
+    else if (resource === "releases" && action === "list")
+      result = await client.request("/releases");
+    else if (resource === "releases" && action === "show")
+      result = await client.request(
+        `/releases/${encodeURIComponent(required(parsed.options, "id"))}`,
+      );
+    else if (resource === "releases" && action === "publish")
+      result = await client.request("/releases", {
+        method: "POST",
+        body: {
+          approvalId: required(parsed.options, "approval_id"),
+          triggerAfterSeconds: Number(parsed.options.trigger_after_seconds ?? 5),
+          intervalSeconds: Number(parsed.options.interval_seconds ?? 15),
+          runCount: Number(parsed.options.run_count ?? 2),
+        },
+      });
+    else if (resource === "releases" && action === "rollback")
+      result = await client.request(
+        `/releases/${encodeURIComponent(required(parsed.options, "id"))}/rollback`,
+        {
+          method: "POST",
+          body: {
+            targetReleaseId: required(parsed.options, "target_release_id"),
+            triggerAfterSeconds: Number(parsed.options.trigger_after_seconds ?? 5),
+            intervalSeconds: Number(parsed.options.interval_seconds ?? 15),
+            reason: required(parsed.options, "reason"),
+          },
+        },
+      );
+    else if (resource === "releases" && action === "monitor")
+      result = await client.request("/monitoring/overview");
     else if (resource === "services" && action === "list") {
       const type = parsed.options.type;
       if (type) result = await client.request(`/data-services/${typePath(type)}`);

@@ -40,6 +40,7 @@ export const capabilities = [
       "本机文件演练",
       "摘要审批与本机计时发布",
       "批次监控、告警恢复与回滚",
+      "GUI/API/CLI/MCP同源交付与发布",
     ],
   },
   {

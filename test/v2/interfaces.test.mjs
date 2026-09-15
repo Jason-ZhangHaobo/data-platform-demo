@@ -324,6 +324,53 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     0,
   );
   assert.equal(requests[9].path, "/evaluations/full-lifecycle/latest");
+  assert.equal(
+    await runV2Cli(
+      [
+        "delivery",
+        "create",
+        "--source-run-id",
+        "run-id",
+        "--name",
+        "客户资产交付",
+      ],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[10].path, "/delivery/packages");
+  assert.deepEqual(requests[10].options.body, {
+    sourceRunId: "run-id",
+    name: "客户资产交付",
+  });
+  assert.equal(
+    await runV2Cli(
+      [
+        "releases",
+        "approve",
+        "--package-id",
+        "package-id",
+        "--package-digest",
+        "a".repeat(64),
+        "--note",
+        "已审阅代码、断言与部署边界",
+      ],
+      {},
+      {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      },
+    ),
+    0,
+  );
+  assert.equal(requests[11].path, "/delivery/packages/package-id/approve");
+  assert.equal(requests[11].options.body.packageDigest, "a".repeat(64));
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -338,6 +385,20 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
   assert.deepEqual(names, V2_MCP_TOOL_NAMES);
   for (const required of [
     "budget_status",
+    "delivery_package_list",
+    "delivery_package_detail",
+    "delivery_package_create",
+    "delivery_package_verify",
+    "delivery_verification_list",
+    "delivery_verification_detail",
+    "delivery_verification_cancel",
+    "release_approval_list",
+    "release_approve",
+    "release_list",
+    "release_detail",
+    "release_create",
+    "release_rollback",
+    "release_monitor",
     "dapi_create",
     "xapi_create",
     "data_service_test",
@@ -437,6 +498,11 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
   ])
     assert.ok(names.includes(required));
   assert.match(createApp.description, /明确确认/);
+  assert.match(
+    listed.result.tools.find((tool) => tool.name === "release_approve")
+      .description,
+    /明确确认/,
+  );
 });
 
 test("CLI and MCP reach the same live V2 API instead of legacy simulation routes", async () => {
@@ -483,6 +549,17 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
     assert.equal(assetCode, 0, cliError.join("\n"));
     const cliAssets = JSON.parse(cliOutput[2]);
     assert.ok(cliAssets.some((asset) => asset.id === "fixture:positions"));
+    const deliveryCode = await runV2Cli(
+      ["delivery", "packages", "--base-url", baseUrl],
+      {},
+      {
+        output: (value) => cliOutput.push(value),
+        error: (value) => cliError.push(value),
+      },
+    );
+    assert.equal(deliveryCode, 0, cliError.join("\n"));
+    const cliPackages = JSON.parse(cliOutput[3]);
+    assert.deepEqual(cliPackages, []);
 
     const child = spawn(process.execPath, ["bin/shuzhan-mcp.mjs"], {
       cwd: process.cwd(),
@@ -505,7 +582,14 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
           jsonrpc: "2.0",
           id: 3,
           method: "tools/call",
-          params: { name: "asset_list", arguments: {} },
+        params: { name: "asset_list", arguments: {} },
+      }) +
+        "\n" +
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 4,
+          method: "tools/call",
+          params: { name: "delivery_package_list", arguments: {} },
         }) +
         "\n",
     );
@@ -516,7 +600,8 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
     assert.equal(exit, 0, stderr);
     const responses = stdout.trim().split("\n").map((line) => JSON.parse(line)),
       response = responses.find((item) => item.id === 2),
-      assetResponse = responses.find((item) => item.id === 3);
+      assetResponse = responses.find((item) => item.id === 3),
+      packageResponse = responses.find((item) => item.id === 4);
     assert.equal(
       response.result.structuredContent.adapter,
       cliMonitor.adapter,
@@ -526,6 +611,7 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
       cliMonitor.counts,
     );
     assert.deepEqual(assetResponse.result.structuredContent, cliAssets);
+    assert.deepEqual(packageResponse.result.structuredContent, cliPackages);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     businessStore.close();

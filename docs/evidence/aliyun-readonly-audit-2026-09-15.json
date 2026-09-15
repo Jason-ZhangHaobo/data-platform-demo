@@ -1,13 +1,13 @@
 {
   "format": "shuzhan-aliyun-readonly-audit/v1",
-  "generatedAt": "2026-09-15T10:13:12+08:00",
+  "generatedAt": "2026-09-15T11:13:48+08:00",
   "region": "cn-hangzhou",
   "billingCycle": "2026-09",
   "identity": { "available": true },
   "rds": {
     "available": true,
     "errorCode": null,
-    "status": "STOPPED",
+    "status": "Running",
     "payType": "SERVERLESS",
     "engine": "MySQL",
     "engineVersion": "8.0",
@@ -25,18 +25,18 @@
     },
     "network": { "endpointCount": 1, "intranet": 1, "internet": 0 },
     "databases": {
-      "queryAvailable": false,
-      "errorCode": "InvalidDBInstanceStatus.NotSupport",
-      "count": 0,
-      "businessDemoExists": null,
-      "platformMetaExists": null
+      "queryAvailable": true,
+      "errorCode": null,
+      "count": 2,
+      "businessDemoExists": true,
+      "platformMetaExists": true
     },
     "accounts": {
-      "queryAvailable": false,
-      "errorCode": "InvalidDBInstanceStatus.NotSupport",
-      "count": 0,
-      "syncWriterExists": null,
-      "platformAppExists": null
+      "queryAvailable": true,
+      "errorCode": null,
+      "count": 2,
+      "syncWriterExists": true,
+      "platformAppExists": true
     }
   },
   "function": {
@@ -75,9 +75,9 @@
   },
   "crossChecks": {
     "sameVpc": false,
-    "rdsReady": false,
+    "rdsReady": true,
     "mysql8": true,
-    "platformDatabaseReady": false,
+    "platformDatabaseReady": true,
     "singleRequestConcurrency": false,
     "withinHardBudget": true
   }

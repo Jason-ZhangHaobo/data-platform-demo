@@ -6,6 +6,20 @@ const tools = [
   { name: "v2_status", description: "读取数栈V2真实/本机/公网能力边界。", inputSchema: { type: "object", properties: {} } },
   { name: "budget_status", description: "读取当月模型估算、远程Spark用量、账号账单连接状态和预算门；未连接账号账单时不代表全站费用。", inputSchema: { type: "object", properties: {} } },
   { name: "release_runs_list", description: "列出真实调度发布批次及验证证据。", inputSchema: { type: "object", properties: {} } },
+  { name: "delivery_package_list", description: "列出交付包摘要、源代码版本和发布状态，不返回文件正文。", inputSchema: { type: "object", properties: {} } },
+  { name: "delivery_package_detail", description: "读取指定不可变交付包、文件与可信摘要。", inputSchema: { type: "object", properties: { packageId: { type: "string" } }, required: ["packageId"] } },
+  { name: "delivery_package_create", description: "从真实Spark且独立断言通过的代码运行生成交付包；只生成文件，不审批或发布。", inputSchema: { type: "object", properties: { sourceRunId: { type: "string" }, name: { type: "string" } }, required: ["sourceRunId", "name"] } },
+  { name: "delivery_package_verify", description: "按包内DAG和样例交易日实际执行文件演练；不是发布。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, scheduledFor: { type: "string" } }, required: ["packageId", "scheduledFor"] } },
+  { name: "delivery_verification_list", description: "列出交付包文件演练状态与证据。", inputSchema: { type: "object", properties: {} } },
+  { name: "delivery_verification_detail", description: "读取指定文件演练的步骤和验证证据。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
+  { name: "delivery_verification_cancel", description: "取消未完成的文件演练并保留记录；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
+  { name: "release_approval_list", description: "列出绑定交付包摘要的发布审批记录。", inputSchema: { type: "object", properties: {} } },
+  { name: "release_approve", description: "审批已成功演练且摘要匹配的交付包；会授予本机发布资格，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, reviewNote: { type: "string" } }, required: ["packageId", "packageDigest", "reviewNote"] } },
+  { name: "release_list", description: "列出本机发布版本、健康度和调度状态。", inputSchema: { type: "object", properties: {} } },
+  { name: "release_detail", description: "读取指定本机发布版本及批次摘要。", inputSchema: { type: "object", properties: { releaseId: { type: "string" } }, required: ["releaseId"] } },
+  { name: "release_create", description: "消费一次审批并激活本机发布、安排两个墙上时钟批次；调用前必须取得用户明确确认，且不代表公网发布。", inputSchema: { type: "object", properties: { approvalId: { type: "string" }, triggerAfterSeconds: { type: "integer", minimum: 1, maximum: 30 }, intervalSeconds: { type: "integer", minimum: 1, maximum: 60 }, runCount: { type: "integer", minimum: 2, maximum: 5 } }, required: ["approvalId"] } },
+  { name: "release_rollback", description: "回滚到已有健康本机版本并安排恢复批次；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { releaseId: { type: "string" }, targetReleaseId: { type: "string" }, triggerAfterSeconds: { type: "integer", minimum: 1, maximum: 30 }, intervalSeconds: { type: "integer", minimum: 1, maximum: 60 }, reason: { type: "string" } }, required: ["releaseId", "targetReleaseId", "reason"] } },
+  { name: "release_monitor", description: "读取本机发布批次、告警、恢复和健康度；明确不是公网监控。", inputSchema: { type: "object", properties: {} } },
   { name: "dapi_list", description: "列出版本化DAPI。", inputSchema: { type: "object", properties: {} } },
   { name: "dapi_create", description: "从已验证发布批次创建DAPI草稿，不自动发布。", inputSchema: { type: "object", properties: { name: { type: "string" }, slug: { type: "string" }, sourceReleaseRunId: { type: "string" }, fields: { type: "array", items: { type: "string" } } }, required: ["name", "slug", "sourceReleaseRunId"] } },
   { name: "xapi_list", description: "列出版本化XAPI。", inputSchema: { type: "object", properties: {} } },
@@ -124,6 +138,73 @@ async function callTool(name, args = {}) {
   if (name === "v2_status") return client.request("/status");
   if (name === "budget_status") return client.request("/budget");
   if (name === "release_runs_list") return client.request("/release/runs");
+  if (name === "delivery_package_list") return client.request("/delivery/packages");
+  if (name === "delivery_package_detail")
+    return client.request(
+      `/delivery/packages/${encodeURIComponent(args.packageId)}`,
+    );
+  if (name === "delivery_package_create")
+    return client.request("/delivery/packages", {
+      method: "POST",
+      body: { sourceRunId: args.sourceRunId, name: args.name },
+    });
+  if (name === "delivery_package_verify")
+    return client.request(
+      `/delivery/packages/${encodeURIComponent(args.packageId)}/verify`,
+      { method: "POST", body: { scheduledFor: args.scheduledFor } },
+    );
+  if (name === "delivery_verification_list")
+    return client.request("/delivery/verifications");
+  if (name === "delivery_verification_detail")
+    return client.request(
+      `/delivery/verifications/${encodeURIComponent(args.verificationId)}`,
+    );
+  if (name === "delivery_verification_cancel")
+    return client.request(
+      `/delivery/verifications/${encodeURIComponent(args.verificationId)}/cancel`,
+      { method: "POST", body: {} },
+    );
+  if (name === "release_approval_list")
+    return client.request("/release/approvals");
+  if (name === "release_approve")
+    return client.request(
+      `/delivery/packages/${encodeURIComponent(args.packageId)}/approve`,
+      {
+        method: "POST",
+        body: {
+          packageDigest: args.packageDigest,
+          reviewNote: args.reviewNote,
+        },
+      },
+    );
+  if (name === "release_list") return client.request("/releases");
+  if (name === "release_detail")
+    return client.request(`/releases/${encodeURIComponent(args.releaseId)}`);
+  if (name === "release_create")
+    return client.request("/releases", {
+      method: "POST",
+      body: {
+        approvalId: args.approvalId,
+        triggerAfterSeconds: args.triggerAfterSeconds ?? 5,
+        intervalSeconds: args.intervalSeconds ?? 15,
+        runCount: args.runCount ?? 2,
+      },
+    });
+  if (name === "release_rollback")
+    return client.request(
+      `/releases/${encodeURIComponent(args.releaseId)}/rollback`,
+      {
+        method: "POST",
+        body: {
+          targetReleaseId: args.targetReleaseId,
+          triggerAfterSeconds: args.triggerAfterSeconds ?? 5,
+          intervalSeconds: args.intervalSeconds ?? 15,
+          reason: args.reason,
+        },
+      },
+    );
+  if (name === "release_monitor")
+    return client.request("/monitoring/overview");
   if (name === "dapi_list") return client.request("/data-services/dapis");
   if (name === "xapi_list") return client.request("/data-services/xapis");
   if (name === "dapi_create")

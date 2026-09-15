@@ -1,6 +1,6 @@
 # V2 云端持久化与冷启动恢复
 
-日期：2026-09-15。状态：代码与本机模拟云环境已验收；真实RDS已创建独立`platform_meta`库，最小权限账号正在等待用户隐藏输入密码；真实连接及公网部署待验证。
+日期：2026-09-15。状态：代码与本机模拟云环境已验收；真实RDS已创建独立`platform_meta`与最小权限`platform_app`，密码由用户隐藏输入；真实数据面连接及公网部署待验证。
 
 ## 目标
 
@@ -46,12 +46,12 @@ MySQL与OSS之间没有分布式事务。若OSS成功而MySQL CAS失败，可能
 - 交付包在元数据之外写入不可变对象；相同摘要同内容可重放，同摘要异内容被拒绝，审批/演练/发布前会重新读取核验。
 - HTTP链路创建虚构证券CSV源、测试连接、扫描元数据、创建并运行FULL同步；成功响应后模拟冷启动，运行记录与落地行同时存在。
 - 真实Serverless RDS只读核验确认业务库/账号仍在；随后在同一实例创建独立`platform_meta`且复核状态Running，未修改`business_demo`。
-- `create-platform-rds-account.sh`通过两次隐藏输入收取用户自选密码，必要时唤醒AutoPause实例，只创建Normal账号`platform_app`并只授予`platform_meta` ReadWrite；已用假CLI验证密码不进入输出或脚本。
+- `create-platform-rds-account.sh`通过两次隐藏输入收取用户自选密码，自动唤醒AutoPause实例，只创建Normal账号`platform_app`并只授予`platform_meta` ReadWrite；真实Describe复核账号Available且授权正确，假CLI验证密码不进入输出或脚本。
 - 最新全量`npm run ci`为182/182，源码检查、旧版构建、V2 TypeScript/Vite构建通过。
 
 ## 尚未验收
 
-- `platform_app`尚待用户在本机隐藏弹窗完成密码输入；之后仍需真实连接、表初始化、CAS和冷启动复核，以及内网地址/SSL配置。
+- 仍需在同VPC函数内注入用户掌握的密码，完成真实连接、表初始化、CAS和冷启动复核，以及内网地址/SSL配置；当前本机无公网端点，不能直接连接。
 - 真实OSS Bucket、FC服务角色的对象读写权限和ETag条件更新行为。
 - FC Node 24运行时/自带二进制、最大实例数1、HTTPS域名、冷启动时延及月度账单。
 - 多实例并发、跨区域灾备、对象版本保留/生命周期、事务性业务RDS适配。

@@ -46,8 +46,8 @@
 脱敏原始证据见[`evidence/aliyun-readonly-audit-2026-09-15.json`](evidence/aliyun-readonly-audit-2026-09-15.json)：
 
 - 身份与RDS属性、网络及BSS账单查询成功；没有记录账号ID、实例ID、地址或凭证。
-- RDS为`STOPPED`、Serverless MySQL 8.0、0.5—2 RCU、20GiB ESSD、`AutoPause=true`，只有1个内网端点、无公网端点。
-- 暂停状态下库/账号Describe返回`InvalidDBInstanceStatus.NotSupport`，所以`business_demo`、`platform_meta`、`sync_writer`、`platform_app`均记为`null/未验证`，不能误报为不存在。
+- 初次审计发现RDS为`STOPPED`；经明确批准短暂唤醒后，最终证据为Running、Serverless MySQL 8.0、0.5—2 RCU、20GiB ESSD、`AutoPause=true`，只有1个内网端点、无公网端点。
+- 运行态确认`business_demo`和`sync_writer`仍存在；随后创建独立`platform_meta`和Normal账号`platform_app`，只授该库ReadWrite。最终库/账号各2个，`platformDatabaseReady=true`；密码由用户隐藏输入且不进入报告。
 - 2026-09税前金额与未付金额均为0.59元，支付0元；当前低于200元硬门。账单存在延迟，该快照不是未来费用承诺。
 - 账号仅有1个OSS Bucket；经官方ossutil 2.3.0和官方SHA-256校验后，在进程内选择该唯一候选。候选位于杭州、Standard、private，版本控制未配置；名称不进入报告。由于FC仍不可读，不能证明它就是函数当前引用的目标Bucket。
 - FC 3.0只读插件返回`AccessDenied`，保持`UNAVAILABLE`；同VPC、单并发和平台库就绪均不得填通过。
@@ -56,7 +56,7 @@
 
 - FC OAuth插件的SecurityToken兼容或RAM读取权限；未解决前不能读取函数规格。
 - FC可读后交叉核对函数环境引用与当前唯一OSS候选；在此之前不把“账号内唯一”写成“V2已绑定”。
-- RDS需明确授权后恢复运行，才能复核业务库、平台库及两个最小权限账号；读取结果本身不能授权启机。
+- 仍需由同VPC云函数使用`platform_app`完成真实建表、CAS、冷启动和错误恢复；控制面Describe通过不等于数据面连接通过。
 - Serverless试用/优惠到期后的价格不能仅由实例属性推导，必须结合账单和订单信息。
 - 只读结果通过后，任何创建`platform_meta`、账号、V2函数或预算的写操作仍单独遵守审批边界。
 
