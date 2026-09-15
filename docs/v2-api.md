@@ -101,6 +101,11 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET/POST /standards | 列表或资产/字段/语义类型/说明 | 创建版本化数据标准 |
 | GET /standards/:id | 无 | 标准定义与全部实际检查 |
 | POST /standards/:id/check | 空对象 + 幂等键 | 在实际行上检查；无效值只返回SHA-256 |
+| GET/POST /contracts | 列表或名称/代码/资产/兼容策略/责任人/说明/SLO | 从当前资产字段与证据创建契约V1；代码唯一，不接受业务行 |
+| GET /contracts/:id | 无 | 当前及历史不可变版本、评估、检查、告警与版本绑定下游影响 |
+| POST /contracts/:id/assess | 可选fields + 幂等键 | 对当前版本评估结构差异、兼容性和下游影响；不自动改版本 |
+| POST /contracts/:id/versions | assessmentId/acknowledgeBreaking + 幂等键 | 只从未过期评估创建版本；破坏性变更必须明确确认 |
+| POST /contracts/:id/check | 空对象 + 幂等键 | 检查实际元数据/可用行、行通过率与新鲜度SLO；PASSED/PARTIAL/FAILED并关联告警恢复 |
 | GET/POST /assets/agent/tasks | 列表或自然语言问题 | 真实模型基于资产摘要和版本边找数据、解释口径/影响 |
 | GET /assets/agent/tasks/:id | 无 | 受治理回答、资产引用、边界和用量 |
 | POST /assets/agent/tasks/:id/cancel | 空对象 | 取消资产问答并保留记录 |

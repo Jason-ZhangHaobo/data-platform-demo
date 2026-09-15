@@ -519,7 +519,12 @@ function permissionForPath(path) {
   if (path.startsWith("/api/v2/sources") || path.startsWith("/api/v2/sync"))
     return "INGESTION";
   if (path.startsWith("/api/v2/streams")) return "REALTIME";
-  if (path.startsWith("/api/v2/assets") || path.startsWith("/api/v2/metrics") || path.startsWith("/api/v2/standards"))
+  if (
+    path.startsWith("/api/v2/assets") ||
+    path.startsWith("/api/v2/metrics") ||
+    path.startsWith("/api/v2/standards") ||
+    path.startsWith("/api/v2/contracts")
+  )
     return "ASSETS";
   if (path.startsWith("/api/v2/quality")) return "QUALITY";
   if (path.startsWith("/api/v2/data-services")) return "SERVICES";

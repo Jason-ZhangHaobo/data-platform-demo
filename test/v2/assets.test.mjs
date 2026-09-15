@@ -254,6 +254,21 @@ test("asset model adapter receives summaries and never business rows", async () 
           type: "FULL",
         },
       ],
+      contracts: [
+        {
+          id: "contract-positions-v1",
+          code: "positions_contract",
+          assetId: "landing:raw_positions",
+          compatibility: "BACKWARD",
+          schemaHash: "schema-evidence",
+          fields: [
+            { name: "market_value", type: "DECIMAL(18,2)", nullable: false },
+          ],
+          latestCheck: { status: "PASSED", missing: [], typeMismatch: [] },
+          downstreamCount: 1,
+          hiddenRows: [{ client_id: "CLIENT-CONTRACT-MUST-NOT-LEAK" }],
+        },
+      ],
     },
     { DASHSCOPE_API_KEY: "sk-test", V2_MODEL: "test-model" },
     async (_url, options) => {
@@ -280,6 +295,9 @@ test("asset model adapter receives summaries and never business rows", async () 
   );
   const sent = requestBody.messages[1].content;
   assert.match(sent, /landing:raw_positions/);
+  assert.match(sent, /positions_contract/);
+  assert.match(sent, /schema-evidence/);
   assert.doesNotMatch(sent, /CLIENT-SHOULD-NOT-LEAK/);
+  assert.doesNotMatch(sent, /CLIENT-CONTRACT-MUST-NOT-LEAK/);
   assert.equal(generated.insight.assetIds[0], "landing:raw_positions");
 });

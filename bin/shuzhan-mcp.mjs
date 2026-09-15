@@ -57,6 +57,12 @@ const tools = [
   { name: "standard_check", description: "在实际资产行上检查标准；无效值只返回哈希。", inputSchema: { type: "object", properties: { standardId: { type: "string" } }, required: ["standardId"] } },
   { name: "asset_agent_list", description: "列出受治理的数据资产Agent回答。", inputSchema: { type: "object", properties: {} } },
   { name: "asset_agent_create", description: "让真实模型基于资产摘要和版本绑定血缘找数据、解释口径与影响，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
+  { name: "contract_list", description: "列出版本化数据契约、兼容策略、检查、告警和下游影响。", inputSchema: { type: "object", properties: {} } },
+  { name: "contract_detail", description: "读取一个数据契约的全部不可变版本、评估和检查证据。", inputSchema: { type: "object", properties: { contractId: { type: "string" } }, required: ["contractId"] } },
+  { name: "contract_create", description: "从当前实际资产元数据创建契约V1，不修改源资产。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, compatibility: { type: "string", enum: ["BACKWARD", "FULL", "NONE"] }, owner: { type: "string" }, description: { type: "string" }, qualitySlo: { type: "object", properties: { minPassRate: { type: "number", minimum: 0.5, maximum: 1 }, maxFreshnessSeconds: { type: "integer", minimum: 1, maximum: 2678400 } } } }, required: ["name", "code", "assetId", "compatibility", "owner", "description"] } },
+  { name: "contract_assess", description: "评估提议字段相对当前契约的兼容性和下游影响，不自动创建版本。", inputSchema: { type: "object", properties: { contractId: { type: "string" }, fields: { type: "array", items: { type: "object", properties: { name: { type: "string" }, type: { type: "string" }, nullable: { type: "boolean" }, description: { type: "string" } }, required: ["name", "type", "nullable"], additionalProperties: false } } }, required: ["contractId"] } },
+  { name: "contract_version", description: "把已评估方案创建为新契约版本；不兼容变更必须明确acknowledgeBreaking。", inputSchema: { type: "object", properties: { contractId: { type: "string" }, assessmentId: { type: "string" }, acknowledgeBreaking: { type: "boolean" } }, required: ["contractId", "assessmentId", "acknowledgeBreaking"] } },
+  { name: "contract_check", description: "以当前真实资产元数据和可用实际行检查契约，失败产生告警。", inputSchema: { type: "object", properties: { contractId: { type: "string" } }, required: ["contractId"] } },
   { name: "quality_overview", description: "读取质量规则健康、运行和告警汇总。", inputSchema: { type: "object", properties: {} } },
   { name: "quality_rule_list", description: "列出版本化质量规则、运行与告警。", inputSchema: { type: "object", properties: {} } },
   { name: "quality_rule_create", description: "在有实际行的合成资产上创建质量规则，不自动运行。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, field: { type: "string" }, type: { type: "string", enum: ["NOT_NULL", "UNIQUE", "VALUE_RANGE", "ALLOWED_VALUES", "FRESHNESS_SECONDS"] }, config: { type: "object" }, description: { type: "string" } }, required: ["name", "code", "assetId", "field", "type", "config", "description"] } },
@@ -292,6 +298,32 @@ async function callTool(name, args = {}) {
       method: "POST",
       body: { message: args.message },
     });
+  if (name === "contract_list") return client.request("/contracts");
+  if (name === "contract_detail")
+    return client.request(
+      `/contracts/${encodeURIComponent(args.contractId)}`,
+    );
+  if (name === "contract_create")
+    return client.request("/contracts", { method: "POST", body: args });
+  if (name === "contract_assess") {
+    const { contractId, ...body } = args;
+    return client.request(
+      `/contracts/${encodeURIComponent(contractId)}/assess`,
+      { method: "POST", body },
+    );
+  }
+  if (name === "contract_version") {
+    const { contractId, ...body } = args;
+    return client.request(
+      `/contracts/${encodeURIComponent(contractId)}/versions`,
+      { method: "POST", body },
+    );
+  }
+  if (name === "contract_check")
+    return client.request(
+      `/contracts/${encodeURIComponent(args.contractId)}/check`,
+      { method: "POST", body: {} },
+    );
   if (name === "quality_overview") return client.request("/quality/overview");
   if (name === "quality_rule_list") return client.request("/quality/rules");
   if (name === "quality_rule_create")

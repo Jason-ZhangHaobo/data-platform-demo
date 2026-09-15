@@ -402,7 +402,7 @@ export async function generateRealtimePlan(
 }
 
 export async function generateAssetInsight(
-  { message, assets, lineage, signal },
+  { message, assets, lineage, contracts = [], signal },
   env = process.env,
   fetchImpl = fetch,
 ) {
@@ -427,11 +427,21 @@ export async function generateAssetInsight(
       to,
       type,
     })),
+    governedContracts: contracts.map((contract) => ({
+      id: contract.id,
+      code: contract.code,
+      assetId: contract.assetId,
+      compatibility: contract.compatibility,
+      schemaHash: contract.schemaHash,
+      fields: contract.fields,
+      latestCheck: contract.latestCheck,
+      downstreamCount: contract.downstreamCount,
+    })),
     contract: {
       output:
         "仅返回JSON对象：answer,assetIds,lineageFocusAssetId,caveats。assetIds只能引用给定id，最多8个。",
       caveat:
-        "血缘来自版本绑定，不得声称已完成Spark SQL字段级表达式解析；本机资产不得称为公网或生产资产。",
+        "血缘来自版本绑定，不得声称已完成Spark SQL字段级表达式解析；契约来自版本化定义和实际检查，不得把未检查契约说成通过；本机资产不得称为公网或生产资产。",
     },
   });
   const response = await fetchImpl(

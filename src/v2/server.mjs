@@ -59,6 +59,7 @@ import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
 import { OperationsManager } from "./operations.mjs";
 import { AuthManager } from "./auth.mjs";
+import { DataContractManager } from "./contracts.mjs";
 import {
   LocalArtifactStore,
   deliveryArtifactValue,
@@ -309,6 +310,12 @@ export function createV2Server(options = {}) {
     landingStore,
     stateStore: streamStateStore,
     dataServices,
+    project: PROJECT,
+    now: options.now,
+  });
+  const dataContracts = new DataContractManager({
+    store,
+    assets,
     project: PROJECT,
     now: options.now,
   });
@@ -677,6 +684,7 @@ export function createV2Server(options = {}) {
             assetCount: assets.listAssets().length,
             metricCount: assets.listMetrics().length,
             standardCount: assets.listStandards().length,
+            contractCount: dataContracts.list().length,
             lineageDerivation: "VERSION_BINDINGS",
             sqlColumnLineageParsed: false,
             cloudVerified: false,
@@ -1124,6 +1132,7 @@ export function createV2Server(options = {}) {
               generated = await assetPlanner({
                 message,
                 ...context,
+                contracts: dataContracts.agentContext(),
                 signal,
               }),
               insight = assets.validateAgentInsight(generated.insight);
@@ -1178,6 +1187,80 @@ export function createV2Server(options = {}) {
             );
           get("asset_annotation", dedup.id);
           return json(res, dedup.replayed ? 200 : 201, assets.detail(id));
+        }
+      }
+      if (path === "/api/v2/contracts" && method === "GET")
+        return json(res, 200, dataContracts.list());
+      if (path === "/api/v2/contracts" && method === "POST") {
+        const body = await readBody(req),
+          key = text(req.headers["idempotency-key"], 1, 100),
+          dedup = store.deduplicate(
+            `${PROJECT}:data-contract:${key}`,
+            hash(JSON.stringify(body)),
+            () => dataContracts.create(body),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          dataContracts.detail(dedup.id),
+        );
+      }
+      const contractRecord = path.match(
+        /^\/api\/v2\/contracts\/([a-f0-9-]+)(?:\/(assess|versions|check))?$/,
+      );
+      if (contractRecord) {
+        const id = contractRecord[1],
+          action = contractRecord[2];
+        if (method === "GET" && !action)
+          return json(res, 200, dataContracts.detail(id));
+        if (method === "POST" && action === "assess") {
+          const body = await readBody(req),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:contract-assessment:${id}:${key}`,
+              hash(JSON.stringify(body)),
+              () => dataContracts.assess(id, body),
+            );
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            get("data_contract_assessment", dedup.id),
+          );
+        }
+        if (method === "POST" && action === "versions") {
+          const body = await readBody(req),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:contract-version:${id}:${key}`,
+              hash(JSON.stringify(body)),
+              () => dataContracts.createVersion(id, body).currentVersion,
+            );
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            dataContracts.detail(id),
+          );
+        }
+        if (method === "POST" && action === "check") {
+          await readBody(req);
+          const contract = dataContracts.detail(id),
+            key = text(req.headers["idempotency-key"], 1, 100),
+            signature = hash(
+              JSON.stringify({
+                contractVersionId: contract.currentVersion.id,
+                assetEvidenceHash: assets.detail(contract.assetId).evidenceHash,
+              }),
+            ),
+            dedup = store.deduplicate(
+              `${PROJECT}:contract-check:${id}:${key}`,
+              signature,
+              () => dataContracts.check(id).check,
+            );
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            get("data_contract_check", dedup.id),
+          );
         }
       }
       if (path === "/api/v2/metrics" && method === "GET")
@@ -2831,6 +2914,7 @@ export function createV2Server(options = {}) {
     realtime,
     streamStateStore,
     assets,
+    dataContracts,
     quality,
     security,
     reports,

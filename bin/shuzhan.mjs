@@ -46,6 +46,12 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan assets annotate --id ASSET_ID --business-name 名称 --description 说明 --domain 财富管理 --owner 负责人 [--tags 持仓,T+1]
   shuzhan assets agent --message "找出持仓市值资产并解释来源"
   shuzhan assets agents
+  shuzhan contracts list
+  shuzhan contracts show --id CONTRACT_ID
+  shuzhan contracts create --name 名称 --code positions_contract --asset-id landing:raw_positions --compatibility BACKWARD --owner 负责人 --description "契约说明"
+  shuzhan contracts assess-current --id CONTRACT_ID
+  shuzhan contracts apply-version --id CONTRACT_ID --assessment-id ASSESSMENT_ID [--acknowledge-breaking]
+  shuzhan contracts check --id CONTRACT_ID
   shuzhan metrics list
   shuzhan metrics create --name 持仓市值 --code holding_market_value --asset-id landing:raw_positions --aggregation SUM --field market_value --group-by asset_class --definition "按资产类别汇总持仓，不含现金"
   shuzhan metrics run --id METRIC_ID
@@ -489,6 +495,52 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       });
     else if (resource === "assets" && action === "agents")
       result = await client.request("/assets/agent/tasks");
+    else if (resource === "contracts" && action === "list")
+      result = await client.request("/contracts");
+    else if (resource === "contracts" && action === "show")
+      result = await client.request(
+        `/contracts/${encodeURIComponent(required(parsed.options, "id"))}`,
+      );
+    else if (resource === "contracts" && action === "create")
+      result = await client.request("/contracts", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          code: required(parsed.options, "code"),
+          assetId: required(parsed.options, "asset_id"),
+          compatibility: required(parsed.options, "compatibility"),
+          owner: required(parsed.options, "owner"),
+          description: required(parsed.options, "description"),
+          qualitySlo: {
+            minPassRate: Number(parsed.options.min_pass_rate ?? 0.99),
+            maxFreshnessSeconds: Number(
+              parsed.options.max_freshness_seconds ?? 86400,
+            ),
+          },
+        },
+      });
+    else if (resource === "contracts" && action === "assess-current")
+      result = await client.request(
+        `/contracts/${encodeURIComponent(required(parsed.options, "id"))}/assess`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "contracts" && action === "apply-version")
+      result = await client.request(
+        `/contracts/${encodeURIComponent(required(parsed.options, "id"))}/versions`,
+        {
+          method: "POST",
+          body: {
+            assessmentId: required(parsed.options, "assessment_id"),
+            acknowledgeBreaking:
+              parsed.options.acknowledge_breaking === true,
+          },
+        },
+      );
+    else if (resource === "contracts" && action === "check")
+      result = await client.request(
+        `/contracts/${encodeURIComponent(required(parsed.options, "id"))}/check`,
+        { method: "POST", body: {} },
+      );
     else if (resource === "metrics" && action === "list")
       result = await client.request("/metrics");
     else if (resource === "metrics" && action === "create")
