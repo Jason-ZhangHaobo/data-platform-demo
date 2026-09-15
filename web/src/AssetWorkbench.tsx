@@ -153,10 +153,12 @@ export function AssetWorkbench({
   api,
   canWrite,
   initialAssetId,
+  handoffMessage,
 }: {
   api: Api;
   canWrite: boolean;
   initialAssetId?: string;
+  handoffMessage?: string;
 }) {
   const [assets, setAssets] = useState<Asset[]>([]),
     [metrics, setMetrics] = useState<Metric[]>([]),
@@ -174,6 +176,9 @@ export function AssetWorkbench({
       "找出可以计算财富顾问客户持仓市值的资产，解释它从哪里来、有哪些下游影响和当前证据边界",
     ),
     [agentTask, setAgentTask] = useState<AgentTask>();
+  useEffect(() => {
+    if (handoffMessage) setAgentMessage(handoffMessage);
+  }, [handoffMessage]);
   const [businessName, setBusinessName] = useState(""),
     [description, setDescription] = useState(""),
     [domain, setDomain] = useState("财富管理"),

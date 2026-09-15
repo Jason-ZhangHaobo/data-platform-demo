@@ -363,6 +363,7 @@ function App() {
   const sqlRef = useRef(sql);
   const [modelKey, setModelKey] = useState("");
   const [deliverySourceId, setDeliverySourceId] = useState("");
+  const [agentHandoff, setAgentHandoff] = useState<{ destination: string; message: string }>();
   const [modelSaveError, setModelSaveError] = useState("");
   const [modelSaved, setModelSaved] = useState(false);
   const [session, setSession] = useState<AuthSession>({ authenticated: false });
@@ -745,9 +746,10 @@ function App() {
             api={api}
             canWrite={canWrite}
             modelConfigured={Boolean(status?.model.configured)}
-            onOpenDestination={(destination) => {
+            onOpenDestination={(destination, handoffMessage) => {
+              if (handoffMessage) setAgentHandoff({ destination, message: handoffMessage });
               setNav(destination);
-              setNotice("已进入对应专业模块；后续动作仍需模块内资源与权限校验");
+              setNotice(handoffMessage ? "已带入专业Agent草稿；请在模块内审阅后再发起。" : "已进入对应专业模块；后续动作仍需模块内资源与权限校验");
             }}
           />
         ) : nav === "development" ? (
@@ -1494,13 +1496,14 @@ function App() {
                 api={api}
                 canWrite={Boolean(canWrite)}
                 initialAssetId={expanded ? `fixture:${expanded}` : undefined}
+                handoffMessage={agentHandoff?.destination === "assets" ? agentHandoff.message : undefined}
               />
             ) : nav === "quality" ? (
               <QualityWorkbench api={api} canWrite={Boolean(canWrite)} />
             ) : nav === "security" ? (
               <SecurityWorkbench api={api} canWrite={Boolean(canWrite)} />
             ) : nav === "reports" ? (
-              <ReportsWorkbench api={api} canWrite={Boolean(canWrite)} />
+              <ReportsWorkbench api={api} canWrite={Boolean(canWrite)} handoffMessage={agentHandoff?.destination === "reports" ? agentHandoff.message : undefined} />
             ) : nav === "ops" ? (
               <OperationsWorkbench api={api} canWrite={Boolean(canWrite)} />
             ) : nav === "settings" ? (

@@ -129,7 +129,7 @@ const pending = (status?: string) =>
 const colors = ["#2f7351", "#82a765", "#d3a555", "#5e8f8c", "#8c79a8", "#bb7962"];
 const numberValue = (value: string) => Number(value || 0);
 
-export function ReportsWorkbench({ api, canWrite }: { api: Api; canWrite: boolean }) {
+export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; canWrite: boolean; handoffMessage?: string }) {
   const [overview, setOverview] = useState<Overview>(),
     [assets, setAssets] = useState<Asset[]>([]),
     [plans, setPlans] = useState<AgentPlan[]>([]),
@@ -148,6 +148,9 @@ export function ReportsWorkbench({ api, canWrite }: { api: Api; canWrite: boolea
       "基于已就绪的证券持仓数据集，生成包含持仓市值、证券数量、资产类别分布和行业分布的聚合报表草稿，不运行、不导出",
     ),
     [agentPlan, setAgentPlan] = useState<AgentPlan>();
+  useEffect(() => {
+    if (handoffMessage) setAgentMessage(handoffMessage);
+  }, [handoffMessage]);
 
   const datasets = overview?.datasets ?? [],
     reports = overview?.reports ?? [],
