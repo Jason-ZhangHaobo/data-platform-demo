@@ -120,12 +120,12 @@ export function agentEvidenceJourney({ store, project, task }) {
       task.contextId && task.message ? "SUCCEEDED" : "WAITING",
       { contextId: task.contextId, requirementHash: digest(task.message ?? "") },
       "只证明已提交给代码Agent的已知上下文；未验证未知业务歧义。"),
-    stage("CODE", "生成并审阅SQL版本", "DATA_AGENT_THEN_ENGINEER",
+    stage("CODE", "生成SQL版本", "DATA_AGENT_THEN_ENGINEER",
       codePassed ? "SUCCEEDED" : task.status === "FAILED" ? "FAILED" :
         task.status === "SUCCEEDED" ? "UNVERIFIED" : "WAITING",
       { revisionId: revision?.id, sqlHash: revision?.hash, attemptCount: attempts.length,
         model: last?.model },
-      "代码Agent不会自动批准调度或发布。"),
+      "仅证明模型生成的版本通过后续运行；尚未记录工程师代码审阅。"),
     stage("DEBUG", "Spark调试与独立断言", "DATA_AGENT_AND_SPARK",
       debugPassed ? "SUCCEEDED" : run?.status === "SUCCEEDED" ? "UNVERIFIED" :
         run && run.status !== "RUNNING" ? "FAILED" : "WAITING",
@@ -175,6 +175,6 @@ export function agentEvidenceJourney({ store, project, task }) {
     evaluatedAsFullLifecycle: false,
     packageCandidateCount: packages.length,
     notice:
-      "该只读旅程串联现有证据和责任归属；代码Agent范围仍为SQL_DEVELOPMENT。人工交付/审批/发布不计Agent自主端到端完成率。",
+      "该只读旅程串联现有证据和责任归属；若交付包由Agent受控编排，可计入交付准备，但代码审阅、审批、发布和运维不计Agent自主端到端完成率。",
   };
 }

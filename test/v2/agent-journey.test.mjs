@@ -60,6 +60,8 @@ test("Agent evidence journey separates model/Spark work from human release steps
     const initial = agentEvidenceJourney({ store: app.store, project: PROJECT, task: app.task });
     assert.equal(initial.stages.length, 7);
     assert.equal(statusOf(initial, "CODE"), "SUCCEEDED");
+    assert.equal(initial.stages.find((item) => item.id === "CODE").label, "生成SQL版本");
+    assert.match(initial.stages.find((item) => item.id === "CODE").note, /尚未记录工程师代码审阅/);
     assert.equal(statusOf(initial, "DEBUG"), "SUCCEEDED");
     assert.equal(statusOf(initial, "SCHEDULE_FILE"), "WAITING");
     assert.equal(initial.agentIndependentE2E, false);
