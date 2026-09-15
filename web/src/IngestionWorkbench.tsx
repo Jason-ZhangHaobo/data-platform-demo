@@ -25,7 +25,7 @@ type Column = {
   ordinal: number;
   type: string;
   nullable: boolean;
-  distinctCount: number;
+  distinctCount?: number;
 };
 type Metadata = {
   id: string;
@@ -33,8 +33,8 @@ type Metadata = {
   status: string;
   classification: string;
   rowCount: number;
-  bytes: number;
-  contentHash: string;
+  bytes?: number;
+  contentHash?: string;
   schemaHash: string;
   columns: Column[];
   change: {
@@ -54,9 +54,11 @@ type Source = {
   currentRevision: {
     id: string;
     revisionNumber: number;
-    fileName: string;
+    fileName?: string;
+    tableName?: string;
+    connectionProfile?: string;
   };
-  revisions: { id: string; revisionNumber: number; fileName: string }[];
+  revisions: { id: string; revisionNumber: number; fileName?: string; tableName?: string }[];
   metadataVersions: Metadata[];
   tests: { id: string; status: string; rowCount?: number; durationMs: number }[];
 };
@@ -132,11 +134,13 @@ export function IngestionWorkbench({
   api,
   activeModule,
   canWrite,
+  serverMysqlConfigured,
   onModuleChange,
 }: {
   api: Api;
   activeModule: "sources" | "sync";
   canWrite: boolean;
+  serverMysqlConfigured: boolean;
   onModuleChange: (module: "sources" | "sync") => void;
 }) {
   const [syncView, setSyncView] = useState<"offline" | "realtime">("offline");
@@ -150,7 +154,9 @@ export function IngestionWorkbench({
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
   const [sourceName, setSourceName] = useState("证券持仓演示源"),
+    [sourceType, setSourceType] = useState<"LOCAL_CSV" | "SERVER_MYSQL">("LOCAL_CSV"),
     [sourceFile, setSourceFile] = useState("positions_baseline.csv"),
+    [serverTable, setServerTable] = useState("synthetic_positions"),
     [revisionFile, setRevisionFile] = useState("positions_schema_change.csv");
   const [taskName, setTaskName] = useState("证券持仓全量落地"),
     [taskMode, setTaskMode] = useState("FULL"),
@@ -234,8 +240,8 @@ export function IngestionWorkbench({
       async () => {
         const source = await api<Source>("/sources", {
           name: sourceName,
-          sourceType: "LOCAL_CSV",
-          fileName: sourceFile,
+          sourceType,
+          ...(sourceType === "LOCAL_CSV" ? { fileName: sourceFile } : { tableName: serverTable }),
         });
         setSelectedSourceId(source.id);
       },
@@ -390,7 +396,7 @@ export function IngestionWorkbench({
               {sources.map((source) => (
                 <button className={source.id === selectedSourceId ? "active" : ""} key={source.id} onClick={() => setSelectedSourceId(source.id)}>
                   <FileSpreadsheet size={17} />
-                  <div><strong>{source.name}</strong><code>{source.currentRevision.fileName}</code></div>
+                  <div><strong>{source.name}</strong><code>{source.currentRevision.fileName ?? source.currentRevision.tableName}</code></div>
                   <span className={"status-pill " + source.status.toLowerCase()}>{statusLabels[source.status] ?? source.status}</span>
                   <ChevronRight size={14} />
                 </button>
@@ -401,7 +407,7 @@ export function IngestionWorkbench({
               {selectedSource ? (
                 <>
                   <header className="source-detail-head">
-                    <div><span className="eyebrow">{selectedSource.sourceType} · REVISION {selectedSource.currentRevision.revisionNumber}</span><h3>{selectedSource.name}</h3><code>{selectedSource.currentRevision.fileName}</code></div>
+                    <div><span className="eyebrow">{selectedSource.sourceType} · REVISION {selectedSource.currentRevision.revisionNumber}</span><h3>{selectedSource.name}</h3><code>{selectedSource.currentRevision.fileName ?? selectedSource.currentRevision.tableName}</code></div>
                     <span className={"status-pill " + selectedSource.status.toLowerCase()}>{statusLabels[selectedSource.status] ?? selectedSource.status}</span>
                   </header>
                   <div className="source-actions">
@@ -413,7 +419,7 @@ export function IngestionWorkbench({
                       <div className="metadata-proof">
                         <div><span>实际行数</span><strong>{selectedMetadata.rowCount}</strong></div>
                         <div><span>字段数</span><strong>{selectedMetadata.columns.length}</strong></div>
-                        <div><span>内容摘要</span><code>{selectedMetadata.contentHash.slice(0, 12)}</code></div>
+                        <div><span>内容摘要</span><code>{selectedMetadata.contentHash?.slice(0, 12) ?? "元数据模式"}</code></div>
                         <div><span>结构摘要</span><code>{selectedMetadata.schemaHash.slice(0, 12)}</code></div>
                       </div>
                       {selectedMetadata.change.changed && (
@@ -421,31 +427,32 @@ export function IngestionWorkbench({
                       )}
                       <div className="metadata-table-wrap">
                         <table><thead><tr><th>#</th><th>字段</th><th>类型</th><th>可空</th><th>基数</th></tr></thead><tbody>
-                          {selectedMetadata.columns.map((column) => <tr key={column.name}><td>{column.ordinal + 1}</td><td><code>{column.name}</code></td><td>{column.type}</td><td>{column.nullable ? "是" : "否"}</td><td>{column.distinctCount}</td></tr>)}
+                          {selectedMetadata.columns.map((column) => <tr key={column.name}><td>{column.ordinal + 1}</td><td><code>{column.name}</code></td><td>{column.type}</td><td>{column.nullable ? "是" : "否"}</td><td>{column.distinctCount ?? "—"}</td></tr>)}
                         </tbody></table>
                       </div>
                     </>
                   ) : <div className="ingestion-empty"><ScanSearch size={26} /><p>连接测试后采集实际字段元数据。</p></div>}
-                  <div className="source-revision-bar">
+                  {selectedSource.sourceType === "LOCAL_CSV" && <div className="source-revision-bar">
                     <label>新数据源版本<select value={revisionFile} onChange={(event) => setRevisionFile(event.target.value)}>{fixtureFiles.map(([file, label]) => <option value={file} key={file}>{label}</option>)}</select></label>
                     <button className="button" onClick={createRevision} disabled={!canWrite || revisionFile === selectedSource.currentRevision.fileName || !!busy}><RefreshCw size={14} />创建新版本</button>
                     <small>{selectedSource.revisions.length}个不可变版本</small>
-                  </div>
+                  </div>}
                 </>
               ) : (
                 <section className="source-create">
-                  <header><Database size={22} /><div><span className="eyebrow">NEW SOURCE</span><h3>登记合成CSV数据源</h3></div></header>
+                  <header><Database size={22} /><div><span className="eyebrow">NEW SOURCE</span><h3>登记受限数据源</h3></div></header>
                   <label>数据源名称<input value={sourceName} onChange={(event) => setSourceName(event.target.value)} /></label>
-                  <label>仓库内文件<select value={sourceFile} onChange={(event) => setSourceFile(event.target.value)}>{fixtureFiles.map(([file, label]) => <option value={file} key={file}>{label}</option>)}</select></label>
+                  <label>连接类型<select value={sourceType} onChange={(event) => setSourceType(event.target.value as "LOCAL_CSV" | "SERVER_MYSQL")}><option value="LOCAL_CSV">仓库合成CSV</option><option value="SERVER_MYSQL" disabled={!serverMysqlConfigured}>服务端MySQL白名单表{serverMysqlConfigured ? "" : "（未配置）"}</option></select></label>
+                  {sourceType === "LOCAL_CSV" ? <label>仓库内文件<select value={sourceFile} onChange={(event) => setSourceFile(event.target.value)}>{fixtureFiles.map(([file, label]) => <option value={file} key={file}>{label}</option>)}</select></label> : <label>白名单表名<input value={serverTable} onChange={(event) => setServerTable(event.target.value)} /></label>}
                   <button className="button primary" onClick={createSource} disabled={!canWrite || !!busy}><Database size={15} />登记数据源</button>
-                  <small>不接受本机任意路径、上传文件或凭证。</small>
+                  <small>{sourceType === "LOCAL_CSV" ? "不接受本机任意路径、上传文件或凭证。" : "凭证只在服务端环境配置；首期仅测试连接和采集元数据，不开放同步执行。"}{!serverMysqlConfigured && " 当前服务器尚未配置MySQL白名单，因此该类型不可选。"}</small>
                 </section>
               )}
             </section>
           </div>
           <details className="source-add-more">
-            <summary>登记另一个合成CSV数据源</summary>
-            <div><label>名称<input value={sourceName} onChange={(event) => setSourceName(event.target.value)} /></label><label>文件<select value={sourceFile} onChange={(event) => setSourceFile(event.target.value)}>{fixtureFiles.map(([file, label]) => <option value={file} key={file}>{label}</option>)}</select></label><button className="button" onClick={createSource} disabled={!canWrite || !!busy}>登记</button></div>
+            <summary>登记另一个受限数据源</summary>
+            <div><label>名称<input value={sourceName} onChange={(event) => setSourceName(event.target.value)} /></label><label>类型<select value={sourceType} onChange={(event) => setSourceType(event.target.value as "LOCAL_CSV" | "SERVER_MYSQL")}><option value="LOCAL_CSV">仓库合成CSV</option><option value="SERVER_MYSQL" disabled={!serverMysqlConfigured}>服务端MySQL白名单表{serverMysqlConfigured ? "" : "（未配置）"}</option></select></label>{sourceType === "LOCAL_CSV" ? <label>文件<select value={sourceFile} onChange={(event) => setSourceFile(event.target.value)}>{fixtureFiles.map(([file, label]) => <option value={file} key={file}>{label}</option>)}</select></label> : <label>白名单表<input value={serverTable} onChange={(event) => setServerTable(event.target.value)} /></label>}<button className="button" onClick={createSource} disabled={!canWrite || !!busy}>登记</button></div>
           </details>
         </>
       ) : syncView === "realtime" ? (

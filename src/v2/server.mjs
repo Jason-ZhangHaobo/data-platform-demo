@@ -50,6 +50,7 @@ import {
   IngestionManager,
   LandingStore,
 } from "./ingestion.mjs";
+import { createServerMysqlSourceAdapter } from "./server-mysql-source.mjs";
 import {
   RealtimeManager,
   StreamStateStore,
@@ -311,12 +312,15 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
+  const serverMysqlAdapter =
+    options.serverMysqlAdapter ?? createServerMysqlSourceAdapter(env);
   const ingestion = new IngestionManager({
     store,
     landingStore,
     project: PROJECT,
     fixtureRoot:
       options.fixtureRoot ?? join(process.cwd(), "fixtures", "sources"),
+    serverMysqlAdapter,
     now: options.now,
   });
   const ingestionPlanner =
@@ -722,6 +726,13 @@ export function createV2Server(options = {}) {
             cloudVerified: Boolean(
               cloudReplication?.dataState.healthy,
             ),
+            serverMysql: {
+              configured: serverMysqlAdapter.configured === true,
+              allowTableCount: Array.isArray(serverMysqlAdapter.allowTables)
+                ? serverMysqlAdapter.allowTables.length
+                : 0,
+              credentialMode: "SERVER_ENV_ONLY",
+            },
           },
           realtime: {
             sourceCount: realtime.listSources().length,
@@ -841,11 +852,23 @@ export function createV2Server(options = {}) {
         if (method === "GET" && !action) return json(res, 200, source);
         if (method === "POST" && action === "test") {
           await readBody(req);
-          return json(res, 200, ingestion.testConnection(source.id));
+          return json(
+            res,
+            200,
+            source.sourceType === "SERVER_MYSQL"
+              ? await ingestion.testServerMysqlConnection(source.id)
+              : ingestion.testConnection(source.id),
+          );
         }
         if (method === "POST" && action === "metadata") {
           await readBody(req);
-          return json(res, 200, ingestion.collectMetadata(source.id));
+          return json(
+            res,
+            200,
+            source.sourceType === "SERVER_MYSQL"
+              ? await ingestion.collectServerMysqlMetadata(source.id)
+              : ingestion.collectMetadata(source.id),
+          );
         }
         if (method === "POST" && action === "revisions") {
           const body = await readBody(req),

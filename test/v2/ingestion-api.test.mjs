@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { MetadataStore } from "../../src/v2/store.mjs";
 import {
@@ -254,6 +254,72 @@ test("V2 API executes CSV metadata, full sync, incremental UPSERT and stale-vers
       ).status,
       401,
     );
+  } finally {
+    await new Promise((resolve) => server.app.server.close(resolve));
+    landingStore.close();
+    store.close();
+  }
+});
+
+test("V2 API exposes server MySQL connection and metadata without browser credentials or sync execution", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuzhan-ingestion-mysql-api-")),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    landingStore = new LandingStore(join(root, "landing.sqlite")),
+    server = await start({
+      store,
+      landingStore,
+      fixtureRoot: resolve("fixtures/sources"),
+      env: { V2_LOCAL_DEVELOPMENT: "true" },
+      serverMysqlAdapter: {
+        profileId: "server-mysql-synthetic",
+        allowTables: ["synthetic_positions"],
+        async probe(tableName) {
+          assert.equal(tableName, "synthetic_positions");
+          return { status: "CONNECTED", serverVersion: "8.0.synthetic" };
+        },
+        async describe(tableName) {
+          assert.equal(tableName, "synthetic_positions");
+          return {
+            tableName,
+            rowCount: 3,
+            columns: [
+              { name: "position_id", ordinal: 1, type: "VARCHAR", nullable: false },
+              { name: "market_value", ordinal: 2, type: "DECIMAL", nullable: false },
+            ],
+          };
+        },
+      },
+    });
+  try {
+    const source = await request(server.base, "/sources", {
+        name: "服务端虚构MySQL持仓",
+        sourceType: "SERVER_MYSQL",
+        tableName: "synthetic_positions",
+      }, "mysql-create"),
+      leaked = await request(server.base, "/sources", {
+        name: "禁止浏览器凭证",
+        sourceType: "SERVER_MYSQL",
+        tableName: "synthetic_positions",
+        password: "forbidden",
+      }, "mysql-leak");
+    assert.equal(source.status, 201);
+    assert.equal("password" in source.body, false);
+    assert.equal(leaked.status, 400);
+    const tested = await request(server.base, `/sources/${source.body.id}/test`, {}, "mysql-test"),
+      metadata = await request(server.base, `/sources/${source.body.id}/metadata`, {}, "mysql-metadata");
+    assert.equal(tested.body.serverVersion, "8.0.synthetic");
+    assert.equal(metadata.body.classification, "SERVER_MYSQL_METADATA_ONLY");
+    assert.equal(metadata.body.columns.length, 2);
+    const task = await request(server.base, "/sync/tasks", {
+      name: "不应执行MySQL同步",
+      sourceId: source.body.id,
+      targetTable: "mysql_positions_target",
+      mode: "FULL",
+      mapping: { position_id: "position_id" },
+      keyFields: ["position_id"],
+    }, "mysql-sync");
+    assert.equal(task.status, 409);
+    assert.equal(task.body.code, "MYSQL_SYNC_NOT_ENABLED");
   } finally {
     await new Promise((resolve) => server.app.server.close(resolve));
     landingStore.close();

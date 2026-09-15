@@ -322,11 +322,12 @@ const normalizeKeys = (keys, mapping) => {
 };
 
 export class IngestionManager {
-  constructor({ store, landingStore, project, fixtureRoot, now = () => Date.now() }) {
+  constructor({ store, landingStore, project, fixtureRoot, serverMysqlAdapter, now = () => Date.now() }) {
     this.store = store;
     this.landingStore = landingStore;
     this.project = project;
     this.fixtureRoot = realpathSync(fixtureRoot);
+    this.serverMysqlAdapter = serverMysqlAdapter;
     this.now = now;
   }
 
@@ -360,10 +361,15 @@ export class IngestionManager {
   }
 
   createSource(input) {
-    if (input.sourceType !== "LOCAL_CSV")
-      throw fail(422, "当前真实接入首版只支持LOCAL_CSV", "UNSUPPORTED_SOURCE");
-    if (input.credentialRef)
-      throw fail(400, "LOCAL_CSV不接受凭证或密码", "UNEXPECTED_CREDENTIAL");
+    if (!["LOCAL_CSV", "SERVER_MYSQL"].includes(input.sourceType))
+      throw fail(422, "当前真实接入只支持LOCAL_CSV或SERVER_MYSQL", "UNSUPPORTED_SOURCE");
+    if (input.credentialRef || input.password || input.host || input.user)
+      throw fail(400, "数据源不接受浏览器凭证或连接信息", "UNEXPECTED_CREDENTIAL");
+    if (input.sourceType === "SERVER_MYSQL") {
+      const tableName = identifier(input.tableName, "MySQL数据表");
+      if (!this.serverMysqlAdapter?.allowTables?.includes(tableName))
+        throw fail(422, "MySQL数据表不在服务端白名单中", "MYSQL_TABLE_NOT_ALLOWED");
+    }
     const name = text(input.name, "数据源名称", 2, 80);
     if (
       this.store
@@ -373,11 +379,13 @@ export class IngestionManager {
       throw fail(409, "数据源名称已存在", "DUPLICATE_SOURCE");
     const source = this.store.create("ingestion_source", this.project, {
         name,
-        sourceType: "LOCAL_CSV",
+        sourceType: input.sourceType,
         status: "NOT_TESTED",
-        classification: "SYNTHETIC_ONLY",
-      }),
-      revision = this.#createRevision(source, fileName(input.fileName));
+        classification: input.sourceType === "LOCAL_CSV" ? "SYNTHETIC_ONLY" : "SERVER_CONFIGURED_SYNTHETIC_ONLY",
+      });
+    const revision = input.sourceType === "LOCAL_CSV"
+      ? this.#createRevision(source, fileName(input.fileName))
+      : this.#createServerMysqlRevision(source, input);
     return this.store.update("ingestion_source", source.id, this.project, {
       currentRevisionId: revision.id,
     });
@@ -385,7 +393,9 @@ export class IngestionManager {
 
   createSourceRevision(sourceId, input) {
     const source = this.#source(sourceId),
-      revision = this.#createRevision(source, fileName(input.fileName));
+      revision = source.sourceType === "LOCAL_CSV"
+        ? this.#createRevision(source, fileName(input.fileName))
+        : this.#createServerMysqlRevision(source, input);
     this.store.update("ingestion_source", source.id, this.project, {
       currentRevisionId: revision.id,
       status: "NOT_TESTED",
@@ -399,6 +409,8 @@ export class IngestionManager {
     const source = this.#source(sourceId),
       revision = this.#revision(source.currentRevisionId),
       started = this.now();
+    if (source.sourceType !== "LOCAL_CSV")
+      throw fail(409, "SERVER_MYSQL请使用异步服务端连接测试", "SERVER_SOURCE_ASYNC_REQUIRED");
     try {
       const input = this.#read(revision.fileName),
         parsed = parseCsv(input.content),
@@ -439,6 +451,8 @@ export class IngestionManager {
     const source = this.#source(sourceId),
       revision = this.#revision(source.currentRevisionId),
       test = this.store.get("source_test", source.lastTestId, this.project);
+    if (source.sourceType !== "LOCAL_CSV")
+      throw fail(409, "SERVER_MYSQL请使用异步服务端元数据采集", "SERVER_SOURCE_ASYNC_REQUIRED");
     if (
       !test ||
       test.status !== "CONNECTED" ||
@@ -463,6 +477,78 @@ export class IngestionManager {
         rowCount: parsed.rows.length,
         bytes: input.bytes,
         contentHash: input.fileHash,
+        schemaHash: stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable }))),
+        columns,
+        change,
+        collectedAt: new Date(this.now()).toISOString(),
+      });
+    this.store.update("ingestion_source", source.id, this.project, {
+      status: change.changed ? "SCHEMA_CHANGED" : "READY",
+      currentMetadataId: metadata.id,
+    });
+    return metadata;
+  }
+
+  async testServerMysqlConnection(sourceId) {
+    const source = this.#source(sourceId),
+      revision = this.#revision(source.currentRevisionId),
+      started = this.now();
+    if (source.sourceType !== "SERVER_MYSQL")
+      throw fail(409, "当前数据源不是SERVER_MYSQL", "SOURCE_TYPE_MISMATCH");
+    if (!this.serverMysqlAdapter)
+      throw fail(503, "服务端MySQL数据源尚未配置", "MYSQL_SOURCE_NOT_CONFIGURED");
+    try {
+      const result = await this.serverMysqlAdapter.probe(revision.tableName),
+        test = this.store.create("source_test", this.project, {
+          sourceId: source.id,
+          revisionId: revision.id,
+          status: "CONNECTED",
+          sourceType: "SERVER_MYSQL",
+          tableName: revision.tableName,
+          serverVersion: result.serverVersion,
+          durationMs: this.now() - started,
+        });
+      this.store.update("ingestion_source", source.id, this.project, {
+        status: "CONNECTED",
+        lastTestId: test.id,
+        lastTestAt: new Date(this.now()).toISOString(),
+      });
+      return test;
+    } catch (error) {
+      const test = this.store.create("source_test", this.project, {
+        sourceId: source.id,
+        revisionId: revision.id,
+        status: "FAILED",
+        sourceType: "SERVER_MYSQL",
+        errorCode: error.code ?? "MYSQL_CONNECTION_FAILED",
+        durationMs: this.now() - started,
+      });
+      this.store.update("ingestion_source", source.id, this.project, { status: "FAILED", lastTestId: test.id });
+      throw error;
+    }
+  }
+
+  async collectServerMysqlMetadata(sourceId) {
+    const source = this.#source(sourceId),
+      revision = this.#revision(source.currentRevisionId),
+      test = this.store.get("source_test", source.lastTestId, this.project);
+    if (source.sourceType !== "SERVER_MYSQL")
+      throw fail(409, "当前数据源不是SERVER_MYSQL", "SOURCE_TYPE_MISMATCH");
+    if (!test || test.status !== "CONNECTED" || test.revisionId !== revision.id)
+      throw fail(409, "请先测试当前数据源版本", "SOURCE_TEST_REQUIRED");
+    if (!this.serverMysqlAdapter)
+      throw fail(503, "服务端MySQL数据源尚未配置", "MYSQL_SOURCE_NOT_CONFIGURED");
+    const described = await this.serverMysqlAdapter.describe(revision.tableName),
+      columns = described.columns.map((column) => ({ ...column, distinctCount: undefined })),
+      prior = this.store.list("source_metadata", this.project).find((item) => item.sourceId === source.id),
+      change = schemaChange(prior, columns),
+      metadata = this.store.create("source_metadata", this.project, {
+        sourceId: source.id,
+        revisionId: revision.id,
+        objectName: revision.tableName,
+        status: "COLLECTED",
+        classification: "SERVER_MYSQL_METADATA_ONLY",
+        rowCount: described.rowCount,
         schemaHash: stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable }))),
         columns,
         change,
@@ -522,6 +608,8 @@ export class IngestionManager {
         source.currentMetadataId,
         this.project,
       );
+    if (source.sourceType !== "LOCAL_CSV")
+      throw fail(409, "SERVER_MYSQL首期仅支持连接与元数据采集，尚未开放同步执行", "MYSQL_SYNC_NOT_ENABLED");
     if (!metadata || metadata.revisionId !== revision.id)
       throw fail(409, "请先采集当前数据源版本的元数据", "METADATA_REQUIRED");
     const mapping = normalizeMapping(input.mapping),
@@ -717,6 +805,25 @@ export class IngestionManager {
       revisionNumber: count + 1,
       fileName: name,
       sourceType: source.sourceType,
+    });
+  }
+
+  #createServerMysqlRevision(source, input) {
+    if (input.credentialRef || input.password || input.host || input.user)
+      throw fail(400, "SERVER_MYSQL只允许服务端配置，不接受浏览器凭证", "UNEXPECTED_CREDENTIAL");
+    const tableName = identifier(input.tableName, "MySQL数据表");
+    if (!this.serverMysqlAdapter?.allowTables?.includes(tableName))
+      throw fail(422, "MySQL数据表不在服务端白名单中", "MYSQL_TABLE_NOT_ALLOWED");
+    const count = this.store
+      .list("source_revision", this.project)
+      .filter((item) => item.sourceId === source.id).length;
+    return this.store.create("source_revision", this.project, {
+      sourceId: source.id,
+      revisionNumber: count + 1,
+      sourceType: "SERVER_MYSQL",
+      tableName,
+      connectionProfile: this.serverMysqlAdapter.profileId,
+      sourceConfigHash: stableHash({ profile: this.serverMysqlAdapter.profileId, tableName }),
     });
   }
 

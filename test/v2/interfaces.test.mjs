@@ -466,6 +466,20 @@ test("CLI maps cross-module Agent understanding to the same V2 atomic route", as
   );
   assert.equal(requests[1].path, "/agent/intents/intent-id/handoffs");
   assert.deepEqual(requests[1].options.body, { destinationId: "reports" });
+  assert.equal(
+    await runV2Cli(
+      ["sources", "create-server-mysql", "--name", "服务端虚构持仓", "--table", "synthetic_positions"],
+      {},
+      { client, output: (value) => output.push(value), error: (value) => output.push(value) },
+    ),
+    0,
+  );
+  assert.equal(requests[2].path, "/sources");
+  assert.deepEqual(requests[2].options.body, {
+    name: "服务端虚构持仓",
+    sourceType: "SERVER_MYSQL",
+    tableName: "synthetic_positions",
+  });
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -516,6 +530,7 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "data_service_invoke",
     "source_list",
     "source_create",
+    "source_server_mysql_create",
     "source_test",
     "source_metadata_collect",
     "source_revision_create",

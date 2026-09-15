@@ -33,7 +33,7 @@ const incremental =
   "POS-002,CLIENT-001,SEC-DEMO-002,债券,公共事业,550.00,2026-09-10\n" +
   "POS-005,CLIENT-002,SEC-DEMO-004,基金,多元金融,300.00,2026-09-10\n";
 
-function setup() {
+function setup({ serverMysqlAdapter } = {}) {
   const root = mkdtempSync(join(tmpdir(), "shuzhan-ingestion-")),
     fixtureRoot = join(root, "fixtures"),
     store = new MetadataStore(join(root, "platform.sqlite")),
@@ -53,6 +53,7 @@ function setup() {
     landingStore,
     project: PROJECT,
     fixtureRoot,
+    serverMysqlAdapter,
   });
   return {
     root,
@@ -145,6 +146,59 @@ test("source test and metadata scan record real file evidence and schema change"
     assert.deepEqual(next.change.added, ["currency"]);
     assert.equal(detail.status, "SCHEMA_CHANGED");
     assert.equal(detail.metadataVersions.length, 2);
+  } finally {
+    app.close();
+  }
+});
+
+test("server MySQL source uses a server-side allowlist and collects metadata without rows", async () => {
+  const calls = [],
+    app = setup({
+      serverMysqlAdapter: {
+        profileId: "server-mysql-synthetic",
+        allowTables: ["synthetic_positions"],
+        async probe(tableName) {
+          calls.push(["probe", tableName]);
+          return { status: "CONNECTED", serverVersion: "8.0.synthetic" };
+        },
+        async describe(tableName) {
+          calls.push(["describe", tableName]);
+          return {
+            tableName,
+            rowCount: 5,
+            columns: [
+              { name: "position_id", ordinal: 1, type: "VARCHAR", nullable: false },
+              { name: "market_value", ordinal: 2, type: "DECIMAL", nullable: false },
+            ],
+          };
+        },
+      },
+    });
+  try {
+    const source = app.manager.createSource({
+        name: "服务端虚构持仓MySQL",
+        sourceType: "SERVER_MYSQL",
+        tableName: "synthetic_positions",
+      }),
+      test = await app.manager.testServerMysqlConnection(source.id),
+      metadata = await app.manager.collectServerMysqlMetadata(source.id),
+      detail = app.manager.sourceDetail(source.id);
+    assert.equal(test.status, "CONNECTED");
+    assert.equal(test.serverVersion, "8.0.synthetic");
+    assert.equal(metadata.classification, "SERVER_MYSQL_METADATA_ONLY");
+    assert.equal(metadata.rowCount, 5);
+    assert.equal(metadata.columns.some((column) => "distinctCount" in column), true);
+    assert.deepEqual(calls, [["probe", "synthetic_positions"], ["describe", "synthetic_positions"]]);
+    assert.equal(detail.currentRevision.tableName, "synthetic_positions");
+    assert.equal(detail.currentRevision.connectionProfile, "server-mysql-synthetic");
+    assert.throws(
+      () => app.manager.createSource({ name: "泄露凭证", sourceType: "SERVER_MYSQL", tableName: "synthetic_positions", password: "forbidden" }),
+      { code: "UNEXPECTED_CREDENTIAL" },
+    );
+    assert.throws(
+      () => app.manager.createTask({ name: "不应同步服务端源", sourceId: source.id, targetTable: "mysql_target", mode: "FULL", mapping: { position_id: "position_id" }, keyFields: ["position_id"] }),
+      { code: "MYSQL_SYNC_NOT_ENABLED" },
+    );
   } finally {
     app.close();
   }

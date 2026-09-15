@@ -43,6 +43,7 @@ export const V2_OPERATIONS = Object.freeze([
   "service_invoke",
   "source_list",
   "source_create",
+  "source_server_mysql_create",
   "source_test",
   "source_metadata",
   "source_revision",

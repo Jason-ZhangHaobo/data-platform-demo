@@ -46,6 +46,7 @@ const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
   shuzhan apps revoke --id ID
   shuzhan sources list
   shuzhan sources create --name 名称 --file positions_baseline.csv
+  shuzhan sources create-server-mysql --name 名称 --table synthetic_positions
   shuzhan sources test|metadata --id ID
   shuzhan sources revision --id ID --file positions_schema_change.csv
   shuzhan sync list
@@ -484,6 +485,15 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           name: required(parsed.options, "name"),
           sourceType: "LOCAL_CSV",
           fileName: required(parsed.options, "file"),
+        },
+      });
+    else if (resource === "sources" && action === "create-server-mysql")
+      result = await client.request("/sources", {
+        method: "POST",
+        body: {
+          name: required(parsed.options, "name"),
+          sourceType: "SERVER_MYSQL",
+          tableName: required(parsed.options, "table"),
         },
       });
     else if (

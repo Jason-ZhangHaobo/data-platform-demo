@@ -45,6 +45,7 @@ const tools = [
   { name: "data_service_invoke", description: "使用服务器环境中的SHUZHAN_APP_TOKEN调用已授权服务；令牌不进入模型参数。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, slug: { type: "string" }, clientId: { type: "string" }, page: { type: "integer", minimum: 1 }, pageSize: { type: "integer", minimum: 1, maximum: 100 } }, required: ["type", "slug"] } },
   { name: "source_list", description: "列出V2真实数据源、版本、连接测试和元数据摘要。", inputSchema: { type: "object", properties: {} } },
   { name: "source_create", description: "登记仓库合成目录中的LOCAL_CSV源，不接受任意路径或凭证。", inputSchema: { type: "object", properties: { name: { type: "string" }, fileName: { type: "string" } }, required: ["name", "fileName"] } },
+  { name: "source_server_mysql_create", description: "登记服务端环境已配置且白名单允许的合成MySQL表；不接收主机、账号、密码或连接串，首期只支持连接与元数据采集。", inputSchema: { type: "object", properties: { name: { type: "string" }, tableName: { type: "string", pattern: "^[a-z][a-z0-9_]{0,62}$" } }, required: ["name", "tableName"] } },
   { name: "source_test", description: "真实读取当前CSV版本并记录连接证据。", inputSchema: { type: "object", properties: { sourceId: { type: "string" } }, required: ["sourceId"] } },
   { name: "source_metadata_collect", description: "基于已测试版本扫描字段类型、基数和结构变化。", inputSchema: { type: "object", properties: { sourceId: { type: "string" } }, required: ["sourceId"] } },
   { name: "source_revision_create", description: "为现有数据源创建新的合成CSV版本，不复用旧元数据。", inputSchema: { type: "object", properties: { sourceId: { type: "string" }, fileName: { type: "string" } }, required: ["sourceId", "fileName"] } },
@@ -314,6 +315,11 @@ async function callTool(name, args = {}) {
     return client.request("/sources", {
       method: "POST",
       body: { ...args, sourceType: "LOCAL_CSV" },
+    });
+  if (name === "source_server_mysql_create")
+    return client.request("/sources", {
+      method: "POST",
+      body: { name: args.name, sourceType: "SERVER_MYSQL", tableName: args.tableName },
     });
   if (["source_test", "source_metadata_collect"].includes(name))
     return client.request(

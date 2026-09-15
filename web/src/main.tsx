@@ -120,6 +120,9 @@ type Status = {
     cloudVerified: boolean;
     lastVerifiedAt?: string;
   };
+  ingestion?: {
+    serverMysql?: { configured: boolean; allowTableCount: number; credentialMode: string };
+  };
   publicReady: boolean;
   authentication?: {
     users: number;
@@ -1480,6 +1483,7 @@ function App() {
                 api={api}
                 activeModule={nav}
                 canWrite={Boolean(canWrite)}
+                serverMysqlConfigured={status?.ingestion?.serverMysql?.configured === true}
                 onModuleChange={setNav}
               />
             ) : nav === "schedules" ? (
