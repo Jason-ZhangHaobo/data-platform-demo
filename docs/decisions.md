@@ -118,6 +118,7 @@
 | D-113 | 工作流已实现，尚未触发云写入，2026-09-16 | 新增独立`provision-v2-staging.yml`，只接受手动触发；先验证当月账单低于200元、函数执行角色FC信任且无管理员级策略文本、vSwitch/安全组同VPC、目标函数明确不存在，再用Linux Node24包执行CreateFunction。若目标已存在或NotFound响应不确定则失败关闭；不删除、不更新旧函数。创建后仍需刷新脱敏审计、真实冷启动和公网部署门 |
 | D-114 | 本机配置校验已验收，2026-09-16 | 受保护部署变量与秘密统一由`scripts/verify-v2-staging-config.mjs`校验；只返回缺少的键名和固定错误码，不回显值。HTTPS公网地址、Origin一致性、函数名格式和部署角色/执行角色分离在进入任何云写入前失败关闭 |
 | D-115 | 本机完整质量门已验收，2026-09-16 | 最新`npm run ci`为209/209，包含新增V2配置门、工作流静态门和既有模块回归；该数字只证明当前代码/本机合成范围，不升级`publicDeployed`、隔离Spark或公网E2E结论 |
+| D-116 | 本机引擎与进程门复验，2026-09-16 | 当前Spark 3.5.9重新执行35/35通过，运行时取消/超时3/3通过；保留`SPARK_AND_ASSERTION_ACCEPTANCE_NOT_MODEL_E2E`和`LOCAL_PROCESS_LIFECYCLE_NOT_CLOUD_ISOLATION`边界，不把本机结果外推到云Worker |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。

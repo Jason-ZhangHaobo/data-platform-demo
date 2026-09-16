@@ -8,7 +8,7 @@
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
 | npm run ci | 最新209/209测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含受保护部署配置校验、独立FC预置工作流静态门和既有全量V2回归；不代表公网云资源已部署 |
-| npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；23.891秒。历史3.5.7证据未改写 |
+| npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
 | git diff --check | 通过 | 无差异空白错误 |
@@ -407,3 +407,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 新增 `verify-v2-staging-config.mjs` 与 2 项测试：缺少秘密、非 HTTPS、Origin 不一致或部署/执行角色相同均失败关闭；返回只含键名/固定错误码，不含任何配置值。空环境实跑返回18个缺失键并以非零状态退出；工作流静态门和 V2 构建均通过。
 - 本轮完整 `npm run ci` 在受控本机环境重新通过209/209；Cloud Shell、FC、RDS、OSS和公网状态未被该本机质量门覆盖。
 - 新增无值配置清单 [v2-staging-environment-template.md](v2-staging-environment-template.md)，区分 GitHub Variables 与 Secrets，并明确隔离 Worker 首期留空。
+- 本轮独立重跑 Spark/进程门：Spark 3.5.9 的 35/35 通过，取消/超时生命周期 3/3 通过；范围仍是本机引擎与进程，不升级为云隔离或公网 E2E。
