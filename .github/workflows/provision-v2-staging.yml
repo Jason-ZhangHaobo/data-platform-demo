@@ -112,7 +112,7 @@ jobs:
           aliyun ram GetRole --RoleName "$role_name" > "$role_file"
           jq -e 'tostring | test("fc|functioncompute"; "i")' "$role_file" >/dev/null
           aliyun ram ListPoliciesForRole --RoleName "$role_name" > "$policies_file"
-          ! jq -e 'tostring | test("AdministratorAccess|AliyunRAMFullAccess|AliyunAccountFullAccess"; "i")' "$policies_file" >/dev/null
+          ! jq -e 'tostring | test("AdministratorAccess|AliyunRAMFullAccess|AliyunAccountFullAccess|AliyunOSSFullAccess|AliyunRDSFullAccess|AliyunFCFullAccess|AliyunVPCFullAccess|AliyunECSFullAccess"; "i")' "$policies_file" >/dev/null
           aliyun vpc DescribeVSwitches --RegionId "$ALIBABA_CLOUD_REGION_ID" --VSwitchId "$V2_VSW_ID" > "$vsw_file"
           jq -e --arg vpc "$V2_VPC_ID" --arg vsw "$V2_VSW_ID" 'any(.VSwitches.VSwitch[]; (.VSwitchId == $vsw and .VpcId == $vpc))' "$vsw_file" >/dev/null
           aliyun ecs DescribeSecurityGroups --RegionId "$ALIBABA_CLOUD_REGION_ID" --SecurityGroupId "$V2_SECURITY_GROUP_ID" > "$sg_file"
@@ -207,11 +207,20 @@ jobs:
               vpcConfig:{vpcId:$vpc_id,vSwitchIds:[$vsw_id],securityGroupId:$security_group_id}
             }' > v2-function-create.json
           aliyun fc POST /2023-03-30/functions --region "$ALIBABA_CLOUD_REGION_ID" --body-file v2-function-create.json > v2-function-result.json
-          jq -e --arg name "$FUNCTION_NAME" --arg vpc "$V2_VPC_ID" --arg vsw "$V2_VSW_ID" --arg sg "$V2_SECURITY_GROUP_ID" \
-            '.functionName == $name and .runtime == "custom.debian12" and .instanceConcurrency == 1 and .role != null and .vpcConfig.vpcId == $vpc and (.vpcConfig.vSwitchIds | index($vsw) != null) and .vpcConfig.securityGroupId == $sg' \
-            v2-function-result.json >/dev/null
+          verified=false
+          for attempt in $(seq 1 12); do
+            if aliyun fc GET "/2023-03-30/functions/$FUNCTION_NAME" --region "$ALIBABA_CLOUD_REGION_ID" > v2-function-verified.json 2>/dev/null; then
+              verified=true
+              break
+            fi
+            sleep 5
+          done
+          test "$verified" = true
+          jq -e --arg name "$FUNCTION_NAME" --arg role "$V2_FUNCTION_ROLE_ARN" --arg vpc "$V2_VPC_ID" --arg vsw "$V2_VSW_ID" --arg sg "$V2_SECURITY_GROUP_ID" \
+            '.functionName == $name and .runtime == "custom.debian12" and .instanceConcurrency == 1 and .role == $role and .vpcConfig.vpcId == $vpc and (.vpcConfig.vSwitchIds | index($vsw) != null) and .vpcConfig.securityGroupId == $sg' \
+            v2-function-verified.json >/dev/null
 
       - name: Remove generated files containing deployment secrets
         if: always()
         run: |
-          rm -f v2-function.zip.b64 v2-function-create.json v2-function-result.json /tmp/shuzhan-v2-runtime-check
+          rm -f v2-function.zip.b64 v2-function-create.json v2-function-result.json v2-function-verified.json /tmp/shuzhan-v2-runtime-check
