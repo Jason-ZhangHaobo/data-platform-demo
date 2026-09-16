@@ -1,3 +1,6 @@
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 const required = [
   "V2_PUBLIC_URL",
   "V2_PUBLIC_ORIGIN",
@@ -45,7 +48,7 @@ export function validateV2StagingConfig(input = {}) {
   return { ok: missing.length === 0 && errors.length === 0, missing, errors };
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const result = validateV2StagingConfig();
   process.stdout.write(`${JSON.stringify(result)}\n`);
   if (!result.ok) process.exitCode = 1;
