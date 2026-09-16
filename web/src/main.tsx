@@ -121,6 +121,7 @@ type Status = {
     lastVerifiedAt?: string;
   };
   ingestion?: {
+    availableSourceTypes?: string[];
     serverMysql?: { configured: boolean; allowTableCount: number; credentialMode: string };
   };
   publicReady: boolean;
