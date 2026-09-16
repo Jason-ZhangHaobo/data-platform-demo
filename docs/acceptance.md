@@ -395,3 +395,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - GUI实测最新Agent准备包`e5d7f494…`：显示四项可访问复选框、审阅备注、独立“记录审阅”按钮，以及其后的审批与发布按钮。未作任何勾选、审阅、审批或发布；1280宽度`document.scrollWidth=innerWidth`。
 - API、CLI、MCP同源：CLI须显式传入四项`--attest-*`，MCP JSON Schema要求四项`true`并警示实际审阅和明确确认。该本机关口不改变`agentIndependentE2E=false`、`fullLifecycleE2E=false`或`publicDeployed=false`。
 - API/CLI/MCP同源；匿名公网创建401、假模型/假Spark失败关闭、取消后不能变成功、服务重启进行中准备转INTERRUPTED。全量CI最新194/194。详见[Agent交付报告](agent-delivery-preparation.md)。
+
+## 2026-09-16：独立 V2 FC 创建前置与 Linux 包门禁
+
+- 用户明确授权“创建独立 V2 FC 函数，严格按预算和最小权限部署”。先在 Cloud Shell 只读复核：7 个 RAM 角色、2 个 FC 信任角色、1 个 V2/部署命名候选；RDS 所在 VPC 有可用交换机和安全组；FC 函数仍为 3 个且无 V2 专用目标；RDS 保持 STOPPED。没有复用旧函数，也没有再次唤醒 RDS。
+- 分支凭证扫描未发现已跟踪的 API Key/AccessKey/密码值，已推送到独立分支。为便于 Linux 门禁，CI 增加手动触发入口；GitHub Linux x64 CI `35063000879`完成 Node24、`node:sqlite`、入口、网页和 fixtures 的构包校验。
+- 完整函数 ZIP 未额外上传为长期 Artifact；Cloud Shell 的系统为 glibc 2.27，官方 Node24 二进制要求 glibc 2.28，不能把 Node14/Node22 降级包当作 V2 交付。因此当前仍未创建占位函数或更新任何现有函数。
+- 创建门仍需同一受控 Linux Runner 内取得包并同时具备专用角色/同 VPC 绑定、云端 MySQL/OSS/管理员受保护配置及已备案 HTTPS 域名；这些条件未齐全前，`publicDeployed=false`和云就绪门失败是正确状态。

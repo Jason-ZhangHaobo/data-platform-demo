@@ -1,6 +1,6 @@
 # V2 阿里云部署说明
 
-日期：2026-09-15。状态：代码包与受保护手动工作流已准备；真实RDS/OSS部分预检完成，V2专用FC/ICP备案与公网部署尚未验收。
+日期：2026-09-16。状态：代码包与受保护手动工作流已准备；GitHub Linux x64手动CI已完成一次构建/Node24校验，真实RDS/OSS部分预检完成，V2专用FC/ICP备案与公网部署尚未验收。
 
 ## 为什么单独打包Node 24
 
@@ -22,7 +22,7 @@ V2使用`node:sqlite`作为本机和首个云试点的同步索引。阿里云FC
 - `deploy/v2/package-lock.json`锁定的mysql2及传递依赖；
 - 不包含`.env`、`.env.local`、PEM或Key文件。
 
-ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub主CI会在Linux实际构包并验证解释器平台、`node:sqlite`、入口、网页和fixtures。
+ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub主CI会在Linux实际构包并验证解释器平台、`node:sqlite`、入口、网页和fixtures；本次手动运行已通过，但不把完整包上传到额外Artifact，后续应使用受保护部署工作流在同一Runner内完成受控更新。
 
 ## 部署工作流
 
