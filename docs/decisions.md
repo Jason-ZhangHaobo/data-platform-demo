@@ -120,6 +120,7 @@
 | D-115 | 本机完整质量门已验收，2026-09-16 | 最新`npm run ci`为209/209，包含新增V2配置门、工作流静态门和既有模块回归；该数字只证明当前代码/本机合成范围，不升级`publicDeployed`、隔离Spark或公网E2E结论 |
 | D-116 | 本机引擎与进程门复验，2026-09-16 | 当前Spark 3.5.9重新执行35/35通过，运行时取消/超时3/3通过；保留`SPARK_AND_ASSERTION_ACCEPTANCE_NOT_MODEL_E2E`和`LOCAL_PROCESS_LIFECYCLE_NOT_CLOUD_ISOLATION`边界，不把本机结果外推到云Worker |
 | D-117 | 本机浏览器验收，2026-09-16 | 设置页侧栏覆盖全部经典模块与Data Agent；部署门只显示脱敏状态、账单摘要、待补齐数量和受保护配置入口，浏览器快照未出现账号、地址、资源ID或秘密。该证据仍是本机回环页面，不替代Safari/Chrome公网验收 |
+| D-118 | 远程CI已验收，2026-09-16 | 推送后的`codex/v2-foundation`在GitHub Linux Runner上运行CI `35075342577`并成功；该证据覆盖代码/测试/Node24包构建，不证明FC、RDS、OSS或公网已经部署 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。
