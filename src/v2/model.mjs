@@ -297,6 +297,7 @@ export async function generateIngestionPlan(
       id: source.id,
       name: source.name,
       sourceType: source.sourceType,
+      supportsOfflineSync: source.sourceType === "LOCAL_CSV",
       status: source.status,
       revisionId: source.currentRevisionId,
       metadataVersionId: source.currentMetadataId,
@@ -309,7 +310,7 @@ export async function generateIngestionPlan(
       kind: "OFFLINE_SYNC",
       modes: ["FULL", "INCREMENTAL_UPSERT"],
       target:
-        "targetTable使用小写字母/数字/下划线；mapping为源字段到目标字段；keyFields引用目标字段；watermarkField可选。",
+        "只能选择supportsOfflineSync=true的源；targetTable使用小写字母/数字/下划线；mapping为源字段到目标字段；keyFields引用目标字段；watermarkField可选。SERVER_MYSQL首期只支持连接和元数据采集，不得生成同步执行方案。",
       output:
         "仅返回JSON对象：kind,name,sourceId,targetTable,mode,mapping,keyFields,watermarkField,explanation。",
     },

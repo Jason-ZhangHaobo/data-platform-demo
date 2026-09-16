@@ -497,6 +497,7 @@ test("ingestion model adapter receives metadata but never CSV row contents", asy
     prompt = payload.messages[1].content;
   assert.equal(request.options.headers.Authorization, "Bearer TEST_ONLY");
   assert.equal(prompt.includes("CSV_ROW_NOT_SENT"), false);
+  assert.match(prompt, /supportsOfflineSync/);
   assert.equal(generated.plan.kind, "OFFLINE_SYNC");
   assert.equal(generated.explanation, "使用持仓主键合并");
   assert.equal("explanation" in generated.plan, false);
