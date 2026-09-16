@@ -49,6 +49,8 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 
 秘密只进入GitHub受保护Environment和FC加密环境变量；仓库、日志和构建产物不保存值。函数角色负责注入临时OSS凭证，不创建或手填长期AccessKey。
 
+配置入口：在 GitHub 仓库的 **Settings → Environments → v2-staging** 中填写上述变量和秘密（[直接打开环境设置](https://github.com/Jason-ZhangHaobo/data-platform-demo/settings/environments)）。`V2_DEPLOY_ROLE_ARN`只用于GitHub Actions的OIDC部署身份，`V2_FUNCTION_ROLE_ARN`只用于FC运行时临时凭证；两者必须不同。密码、管理员哈希和百炼Key只放Secrets，不要提交仓库或发到聊天。
+
 管理员哈希由用户在本机通过`npm run --silent v2:admin-hash`从stdin生成；不要把密码或哈希发到聊天。部署工作流不再接受`V2_BOOTSTRAP_ADMIN_PASSWORD`，云服务检测到该明文变量会拒绝启动。
 
 ## 首次云预检

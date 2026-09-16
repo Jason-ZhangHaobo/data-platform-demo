@@ -403,3 +403,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 完整函数 ZIP 未额外上传为长期 Artifact；Cloud Shell 的系统为 glibc 2.27，官方 Node24 二进制要求 glibc 2.28，不能把 Node14/Node22 降级包当作 V2 交付。因此当前仍未创建占位函数或更新任何现有函数。
 - 创建门仍需同一受控 Linux Runner 内取得包并同时具备专用角色/同 VPC 绑定、云端 MySQL/OSS/管理员受保护配置及已备案 HTTPS 域名；这些条件未齐全前，`publicDeployed=false`和云就绪门失败是正确状态。
 - 已新增手动 `provision-v2-staging.yml`：创建前检查账单、FC 执行角色信任与宽权限文本、同 VPC vSwitch/安全组和目标函数不存在；只构造 `CreateFunction`，不覆盖已有函数。工作流尚未触发，未产生云写入。
+- 设置页在受保护部署证据返回后提供 `v2-staging` 配置入口；该链接只在认证读取到部署状态时渲染，匿名公网请求仍先经过后端认证门。
