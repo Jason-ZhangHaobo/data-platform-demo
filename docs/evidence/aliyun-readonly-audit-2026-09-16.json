@@ -1,6 +1,6 @@
 {
   "format": "shuzhan-aliyun-readonly-audit/v1",
-  "generatedAt": "2026-09-16T10:56:12+08:00",
+  "generatedAt": "2026-09-16T11:46:12+08:00",
   "region": "cn-hangzhou",
   "billingCycle": "2026-09",
   "identity": { "available": true },
@@ -12,8 +12,8 @@
     "engineVersion": "8.0",
     "serverless": { "AutoPause": true, "ScaleMin": 0.5, "ScaleMax": 2, "SwitchForce": null },
     "network": { "endpointCount": 1, "intranet": 1, "internet": 0 },
-    "databases": { "queryAvailable": false, "errorCode": "INSTANCE_STOPPED", "count": null, "businessDemoExists": null, "platformMetaExists": null },
-    "accounts": { "queryAvailable": false, "errorCode": "INSTANCE_STOPPED", "count": null, "syncWriterExists": null, "platformAppExists": null }
+    "databases": { "queryAvailable": true, "count": 2, "businessDemoExists": true, "platformMetaExists": true, "observedWhileRunning": true },
+    "accounts": { "queryAvailable": true, "count": 2, "syncWriterExists": true, "platformAppExists": true, "platformAppStatus": "Available", "platformMetaPrivilege": "ReadWrite", "observedWhileRunning": true }
   },
   "function": {
     "available": false,
@@ -55,7 +55,7 @@
     "sameVpc": false,
     "rdsReady": false,
     "mysql8": true,
-    "platformDatabaseReady": false,
+    "platformDatabaseReady": true,
     "singleRequestConcurrency": false,
     "withinHardBudget": true
   }

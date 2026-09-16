@@ -45,9 +45,9 @@
 
 脱敏原始证据见[`evidence/aliyun-readonly-audit-2026-09-16.json`](evidence/aliyun-readonly-audit-2026-09-16.json)：
 
-- STS身份、RDS属性/网络、BSS账单和OSS属性读取成功；没有把账号ID、实例ID、Bucket名、地址或凭证写入脱敏报告。
-- RDS当前为`STOPPED`，Serverless MySQL 8.0，`AutoPause=true`、0.5—2 RCU；端点为Private、1个，公网0个。未唤醒实例，因此数据库与账号列表本次不可读，不能把旧的Running快照当成当前证据。
-- 本次RDS为STOPPED，数据库/账号列表不可读；此前Running快照中的库/账号状态不沿用为当前证据，未唤醒或改动实例。
+- STS身份、RDS属性/网络、BSS账单和OSS属性读取成功；没有把账号ID、实例ID、Bucket名、地址或凭证写入脱敏报告。Cloud Shell主机时钟与本机有偏差，脱敏报告`generatedAt`按本机收到结果的时间记录，用于24小时新鲜度门，不把远端时钟当作统一时间源。
+- RDS最终已回到`STOPPED`，Serverless MySQL 8.0，`AutoPause=true`、0.5—2 RCU；端点为Private、1个，公网0个。经授权临时唤醒期间读到2个数据库（含`business_demo`、`platform_meta`）和2个账号（含`sync_writer`、`platform_app`），`platform_app`为Available且对`platform_meta`为ReadWrite；这些库/账号结果标记为`observedWhileRunning`，不把停止后的状态误报为当前可连接。
+- RDS库/账号在本次授权唤醒窗口内实际读取并在核验后停止；最终状态仍为STOPPED，后续连接前必须再次唤醒，避免持续计费。
 - 当月税前金额约0.60元、支付0元、未付约0.60元，低于200元硬门；账单仍可能有延迟，不是未来费用承诺。
 - OSS账号内可见1个候选，杭州、Standard、private、LRS；ossutil未安装，版本控制状态本次未单独读取。Bucket名、端点和Owner字段只在Cloud Shell进程内处理，没有进入报告。
 - FC账号内可读3个函数，V2命名候选0；其中仅1个配置VPC、0个单并发、角色配置1个，运行时为custom-container/custom.debian10混合。无法证明V2专用函数、同VPC、单并发或目标绑定，部署门保持失败关闭。
