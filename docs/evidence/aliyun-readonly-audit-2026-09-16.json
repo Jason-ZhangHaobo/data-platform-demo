@@ -1,0 +1,62 @@
+{
+  "format": "shuzhan-aliyun-readonly-audit/v1",
+  "generatedAt": "2026-09-16T09:09:08+08:00",
+  "region": "cn-hangzhou",
+  "billingCycle": "2026-09",
+  "identity": { "available": true },
+  "rds": {
+    "available": true,
+    "status": "STOPPED",
+    "payType": "SERVERLESS",
+    "engine": "MySQL",
+    "engineVersion": "8.0",
+    "serverless": { "AutoPause": true, "ScaleMin": 0.5, "ScaleMax": 2, "SwitchForce": null },
+    "network": { "endpointCount": 1, "intranet": 1, "internet": 0 },
+    "databases": { "queryAvailable": false, "errorCode": "INSTANCE_STOPPED", "count": null, "businessDemoExists": null, "platformMetaExists": null },
+    "accounts": { "queryAvailable": false, "errorCode": "INSTANCE_STOPPED", "count": null, "syncWriterExists": null, "platformAppExists": null }
+  },
+  "function": {
+    "available": false,
+    "errorCode": "NO_DEDICATED_V2_TARGET",
+    "dedicatedFunctionTarget": false,
+    "targetHash": null,
+    "runtime": null,
+    "cpu": null,
+    "memoryMiB": null,
+    "diskMiB": null,
+    "timeoutSeconds": null,
+    "instanceConcurrency": null,
+    "internetAccess": null,
+    "roleConfigured": false,
+    "vpcConfigured": false,
+    "environmentKeyCount": null,
+    "v2EnvironmentReady": false
+  },
+  "oss": {
+    "available": true,
+    "errorCode": null,
+    "location": "oss-cn-hangzhou",
+    "storageClass": "Standard",
+    "acl": "private",
+    "versioning": null,
+    "bucketCount": 1,
+    "selectedByUniqueInventory": false
+  },
+  "bill": {
+    "available": true,
+    "errorCode": null,
+    "currency": "CNY",
+    "pretaxAmount": 0.6,
+    "paymentAmount": 0,
+    "outstandingAmount": 0.6,
+    "cashAmount": 0
+  },
+  "crossChecks": {
+    "sameVpc": false,
+    "rdsReady": false,
+    "mysql8": true,
+    "platformDatabaseReady": false,
+    "singleRequestConcurrency": false,
+    "withinHardBudget": true
+  }
+}

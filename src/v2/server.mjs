@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -244,10 +244,22 @@ export function createV2Server(options = {}) {
   const cloudReadiness = async () => {
     let report;
     try {
-      const source =
-        options.cloudReadinessEvidencePath ??
-        join(root, "docs", "evidence", "aliyun-readonly-audit-2026-09-15.json");
-      report = options.cloudReadinessEvidence ?? JSON.parse(await readFile(source, "utf8"));
+      if (options.cloudReadinessEvidence) report = options.cloudReadinessEvidence;
+      else {
+        const evidenceDirectory = join(root, "docs", "evidence"),
+          source =
+            options.cloudReadinessEvidencePath ??
+            join(
+              evidenceDirectory,
+              (
+                await readdir(evidenceDirectory)
+              )
+                .filter((name) => /^aliyun-readonly-audit-\d{4}-\d{2}-\d{2}\.json$/.test(name))
+                .sort()
+                .at(-1) ?? "aliyun-readonly-audit-missing.json",
+            );
+        report = JSON.parse(await readFile(source, "utf8"));
+      }
     } catch {
       const result = evaluateCloudPreflight(undefined, Date.now(), {});
       return publicCloudReadiness(undefined, result, false);
@@ -720,6 +732,10 @@ export function createV2Server(options = {}) {
             sourceCount: ingestion.listSources().length,
             offlineTaskCount: ingestion.listTasks().length,
             sourceType: "LOCAL_CSV",
+            availableSourceTypes: [
+              "LOCAL_CSV",
+              ...(serverMysqlAdapter.configured === true ? ["SERVER_MYSQL"] : []),
+            ],
             landingDriver: options.stateCoordinator
               ? "sqlite-index-with-oss-snapshot-cas"
               : "sqlite",
