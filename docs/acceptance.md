@@ -402,3 +402,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 分支凭证扫描未发现已跟踪的 API Key/AccessKey/密码值，已推送到独立分支。为便于 Linux 门禁，CI 增加手动触发入口；GitHub Linux x64 CI `35063000879`完成 Node24、`node:sqlite`、入口、网页和 fixtures 的构包校验。
 - 完整函数 ZIP 未额外上传为长期 Artifact；Cloud Shell 的系统为 glibc 2.27，官方 Node24 二进制要求 glibc 2.28，不能把 Node14/Node22 降级包当作 V2 交付。因此当前仍未创建占位函数或更新任何现有函数。
 - 创建门仍需同一受控 Linux Runner 内取得包并同时具备专用角色/同 VPC 绑定、云端 MySQL/OSS/管理员受保护配置及已备案 HTTPS 域名；这些条件未齐全前，`publicDeployed=false`和云就绪门失败是正确状态。
+- 已新增手动 `provision-v2-staging.yml`：创建前检查账单、FC 执行角色信任与宽权限文本、同 VPC vSwitch/安全组和目标函数不存在；只构造 `CreateFunction`，不覆盖已有函数。工作流尚未触发，未产生云写入。

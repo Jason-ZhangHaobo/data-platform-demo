@@ -1,0 +1,217 @@
+name: Provision V2 staging function
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: v2-staging-provision
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Create the dedicated V2 function only when absent
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: v2-staging
+    env:
+      ALIBABA_CLOUD_REGION_ID: cn-hangzhou
+      ALIYUN_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
+      ALIYUN_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+      FUNCTION_NAME: ${{ vars.V2_FUNCTION_NAME }}
+      V2_FUNCTION_ROLE_ARN: ${{ vars.V2_FUNCTION_ROLE_ARN }}
+      V2_VPC_ID: ${{ vars.V2_VPC_ID }}
+      V2_VSW_ID: ${{ vars.V2_VSW_ID }}
+      V2_SECURITY_GROUP_ID: ${{ vars.V2_SECURITY_GROUP_ID }}
+      V2_PUBLIC_URL: ${{ vars.V2_PUBLIC_URL }}
+      V2_PUBLIC_ORIGIN: ${{ vars.V2_PUBLIC_ORIGIN }}
+      OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
+      V2_MYSQL_HOST: ${{ secrets.V2_MYSQL_HOST }}
+      V2_MYSQL_PORT: ${{ secrets.V2_MYSQL_PORT }}
+      V2_MYSQL_USER: ${{ secrets.V2_MYSQL_USER }}
+      V2_MYSQL_PASSWORD: ${{ secrets.V2_MYSQL_PASSWORD }}
+      V2_MYSQL_DATABASE: ${{ secrets.V2_MYSQL_DATABASE }}
+      V2_BOOTSTRAP_ADMIN_EMAIL: ${{ secrets.V2_BOOTSTRAP_ADMIN_EMAIL }}
+      V2_BOOTSTRAP_ADMIN_PASSWORD_HASH: ${{ secrets.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH }}
+      V2_BOOTSTRAP_ADMIN_NAME: ${{ secrets.V2_BOOTSTRAP_ADMIN_NAME }}
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+      V2_SPARK_EXECUTOR_URL: ${{ vars.V2_SPARK_EXECUTOR_URL }}
+      V2_SPARK_EXECUTOR_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install locked development dependencies
+        run: npm ci
+
+      - name: Run complete quality gate
+        run: npm run ci
+
+      - name: Build and inspect the Linux x64 function package
+        run: |
+          scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
+          mkdir -p /tmp/shuzhan-v2-runtime-check
+          unzip -q v2-function.zip runtime/node package.json -d /tmp/shuzhan-v2-runtime-check
+          chmod 0755 /tmp/shuzhan-v2-runtime-check/runtime/node
+          test "$(/tmp/shuzhan-v2-runtime-check/runtime/node -p 'process.platform + "/" + process.arch')" = "linux/x64"
+          /tmp/shuzhan-v2-runtime-check/runtime/node -e 'import("node:sqlite").then(() => process.stdout.write("node:sqlite ready\n"))'
+          unzip -l v2-function.zip | grep -q 'src/v2/cloud-server.mjs'
+          unzip -l v2-function.zip | grep -q 'web-dist/index.html'
+          unzip -l v2-function.zip | grep -q 'fixtures/sources/positions_baseline.csv'
+          ! unzip -l v2-function.zip | grep -E '(^|/)(\.env|\.env\.local|[^/]+\.(pem|key))$'
+
+      - name: Validate protected configuration before any cloud write
+        run: |
+          for name in V2_PUBLIC_URL V2_PUBLIC_ORIGIN OSS_BUCKET V2_MYSQL_HOST V2_MYSQL_USER V2_MYSQL_PASSWORD V2_MYSQL_DATABASE V2_BOOTSTRAP_ADMIN_EMAIL V2_BOOTSTRAP_ADMIN_PASSWORD_HASH DASHSCOPE_API_KEY FUNCTION_NAME V2_FUNCTION_ROLE_ARN ALIYUN_ROLE_ARN ALIYUN_OIDC_PROVIDER_ARN V2_VPC_ID V2_VSW_ID V2_SECURITY_GROUP_ID; do
+            test -n "${!name}" || { echo "Missing v2-staging configuration: $name" >&2; exit 1; }
+          done
+          case "$V2_PUBLIC_URL" in https://*) ;; *) echo 'V2_PUBLIC_URL must use HTTPS' >&2; exit 1 ;; esac
+          test "$V2_PUBLIC_ORIGIN" = "${V2_PUBLIC_URL%/}" || { echo 'V2_PUBLIC_ORIGIN must equal V2_PUBLIC_URL without trailing slash' >&2; exit 1; }
+          test "$V2_FUNCTION_ROLE_ARN" != "$ALIYUN_ROLE_ARN" || { echo 'Deployment role and function execution role must be different' >&2; exit 1; }
+
+      - name: Set up Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@v1
+        with:
+          version: "3.4.11"
+
+      - name: Configure Alibaba Cloud credentials with GitHub OIDC
+        uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ env.ALIYUN_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.ALIYUN_OIDC_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-provision
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+
+      - name: Stop before provisioning if the current bill or role boundary is unsafe
+        run: |
+          set -euo pipefail
+          umask 077
+          bill_file="$(mktemp)"
+          role_file="$(mktemp)"
+          policies_file="$(mktemp)"
+          vpc_file="$(mktemp)"
+          vsw_file="$(mktemp)"
+          sg_file="$(mktemp)"
+          trap 'rm -f "$bill_file" "$role_file" "$policies_file" "$vpc_file" "$vsw_file" "$sg_file"' EXIT
+          billing_cycle="$(TZ=Asia/Shanghai date +%Y-%m)"
+          aliyun bssopenapi QueryBillOverview --BillingCycle "$billing_cycle" > "$bill_file"
+          jq -e '.Success == true and (.Data.Items.Item | type == "array")' "$bill_file" >/dev/null
+          spend="$(jq -r '[.Data.Items.Item[].PretaxAmount | tonumber] | add // 0 | ((. * 100) | round / 100)' "$bill_file")"
+          jq -e --argjson spend "$spend" '$spend >= 0 and $spend < 200' >/dev/null <<<'true'
+          role_name="${V2_FUNCTION_ROLE_ARN##*/}"
+          aliyun ram GetRole --RoleName "$role_name" > "$role_file"
+          jq -e 'tostring | test("fc|functioncompute"; "i")' "$role_file" >/dev/null
+          aliyun ram ListPoliciesForRole --RoleName "$role_name" > "$policies_file"
+          ! jq -e 'tostring | test("AdministratorAccess|AliyunRAMFullAccess|AliyunAccountFullAccess"; "i")' "$policies_file" >/dev/null
+          aliyun vpc DescribeVSwitches --RegionId "$ALIBABA_CLOUD_REGION_ID" --VSwitchId "$V2_VSW_ID" > "$vsw_file"
+          jq -e --arg vpc "$V2_VPC_ID" --arg vsw "$V2_VSW_ID" 'any(.VSwitches.VSwitch[]; (.VSwitchId == $vsw and .VpcId == $vpc))' "$vsw_file" >/dev/null
+          aliyun ecs DescribeSecurityGroups --RegionId "$ALIBABA_CLOUD_REGION_ID" --SecurityGroupId "$V2_SECURITY_GROUP_ID" > "$sg_file"
+          jq -e --arg vpc "$V2_VPC_ID" --arg sg "$V2_SECURITY_GROUP_ID" 'any(.SecurityGroups.SecurityGroup[]; (.SecurityGroupId == $sg and .VpcId == $vpc))' "$sg_file" >/dev/null
+          echo "V2_ACCOUNT_MONTHLY_SPEND_CNY=$spend" >> "$GITHUB_ENV"
+
+      - name: Require the target function to be absent (never overwrite)
+        run: |
+          set -euo pipefail
+          umask 077
+          response_file="$(mktemp)"
+          error_file="$(mktemp)"
+          trap 'rm -f "$response_file" "$error_file"' EXIT
+          if aliyun fc GET "/2023-03-30/functions/$FUNCTION_NAME" --region "$ALIBABA_CLOUD_REGION_ID" >"$response_file" 2>"$error_file"; then
+            echo 'The requested V2 function already exists; use the update workflow instead.' >&2
+            exit 1
+          fi
+          code="$(jq -r '.Code // .code // .ErrorCode // .error_code // empty' "$response_file" 2>/dev/null || true)"
+          test "$code" = "FunctionNotFound" || { echo 'Target lookup failed without a confirmed not-found response' >&2; exit 1; }
+
+      - name: Create the dedicated V2 function with minimum runtime settings
+        run: |
+          set -euo pipefail
+          umask 077
+          base64 -w 0 v2-function.zip > v2-function.zip.b64
+          jq -n \
+            --rawfile zip v2-function.zip.b64 \
+            --arg function_name "$FUNCTION_NAME" \
+            --arg role "$V2_FUNCTION_ROLE_ARN" \
+            --arg public_origin "$V2_PUBLIC_ORIGIN" \
+            --arg bucket "$OSS_BUCKET" \
+            --arg mysql_host "$V2_MYSQL_HOST" \
+            --arg mysql_port "${V2_MYSQL_PORT:-3306}" \
+            --arg mysql_user "$V2_MYSQL_USER" \
+            --arg mysql_password "$V2_MYSQL_PASSWORD" \
+            --arg mysql_database "$V2_MYSQL_DATABASE" \
+            --arg admin_email "$V2_BOOTSTRAP_ADMIN_EMAIL" \
+            --arg admin_password_hash "$V2_BOOTSTRAP_ADMIN_PASSWORD_HASH" \
+            --arg admin_name "${V2_BOOTSTRAP_ADMIN_NAME:-平台管理员}" \
+            --arg model_key "$DASHSCOPE_API_KEY" \
+            --arg spark_url "${V2_SPARK_EXECUTOR_URL:-}" \
+            --arg spark_secret "${V2_SPARK_EXECUTOR_SECRET:-}" \
+            --arg vpc_id "$V2_VPC_ID" \
+            --arg vsw_id "$V2_VSW_ID" \
+            --arg security_group_id "$V2_SECURITY_GROUP_ID" \
+            '{
+              functionName:$function_name,
+              description:"数栈V2证券数据平台专用试点函数",
+              code:{zipFile:$zip},
+              role:$role,
+              runtime:"custom.debian12",
+              handler:"not-used",
+              cpu:0.25,
+              memorySize:512,
+              diskSize:512,
+              timeout:120,
+              instanceConcurrency:1,
+              internetAccess:true,
+              environmentVariables:{
+                PORT:"9000",
+                V2_LOCAL_DEVELOPMENT:"false",
+                V2_PUBLIC_ORIGIN:$public_origin,
+                V2_MYSQL_HOST:$mysql_host,
+                V2_MYSQL_PORT:$mysql_port,
+                V2_MYSQL_USER:$mysql_user,
+                V2_MYSQL_PASSWORD:$mysql_password,
+                V2_MYSQL_DATABASE:$mysql_database,
+                V2_MYSQL_POOL_SIZE:"2",
+                V2_MYSQL_CONNECT_TIMEOUT_MS:"5000",
+                OSS_BUCKET:$bucket,
+                OSS_ENDPOINT:"oss-cn-hangzhou-internal.aliyuncs.com",
+                V2_OSS_STATE_OBJECT_KEY:"data-platform-v2/state/project-securities-lab.json",
+                V2_OSS_STATE_MAX_BYTES:"41943040",
+                V2_OSS_ARTIFACT_PREFIX:"data-platform-v2/artifacts",
+                V2_BOOTSTRAP_ADMIN_EMAIL:$admin_email,
+                V2_BOOTSTRAP_ADMIN_PASSWORD_HASH:$admin_password_hash,
+                V2_BOOTSTRAP_ADMIN_NAME:$admin_name,
+                DASHSCOPE_API_KEY:$model_key,
+                V2_MODEL:"qwen3-coder-plus",
+                V2_MODEL_BASE_URL:"https://dashscope.aliyuncs.com/compatible-mode/v1",
+                V2_SPARK_EXECUTOR_URL:$spark_url,
+                V2_SPARK_EXECUTOR_SECRET:$spark_secret,
+                V2_SPARK_EXECUTOR_TIMEOUT_MS:"120000",
+                V2_HARD_MONTHLY_BUDGET_CNY:"200",
+                V2_MODEL_MONTHLY_BUDGET_CNY:"50",
+                V2_MONTHLY_REMOTE_SPARK_SECONDS_LIMIT:"3600",
+                V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT:"200",
+                V2_REMOTE_SPARK_RESERVATION_SECONDS:"30",
+                V2_ACCOUNT_MONTHLY_SPEND_CNY:$ENV.V2_ACCOUNT_MONTHLY_SPEND_CNY
+              },
+              customRuntimeConfig:{port:9000,command:["/code/runtime/node"],args:["src/v2/cloud-server.mjs"]},
+              vpcConfig:{vpcId:$vpc_id,vSwitchIds:[$vsw_id],securityGroupId:$security_group_id}
+            }' > v2-function-create.json
+          aliyun fc POST /2023-03-30/functions --region "$ALIBABA_CLOUD_REGION_ID" --body-file v2-function-create.json > v2-function-result.json
+          jq -e --arg name "$FUNCTION_NAME" --arg vpc "$V2_VPC_ID" --arg vsw "$V2_VSW_ID" --arg sg "$V2_SECURITY_GROUP_ID" \
+            '.functionName == $name and .runtime == "custom.debian12" and .instanceConcurrency == 1 and .role != null and .vpcConfig.vpcId == $vpc and (.vpcConfig.vSwitchIds | index($vsw) != null) and .vpcConfig.securityGroupId == $sg' \
+            v2-function-result.json >/dev/null
+
+      - name: Remove generated files containing deployment secrets
+        if: always()
+        run: |
+          rm -f v2-function.zip.b64 v2-function-create.json v2-function-result.json /tmp/shuzhan-v2-runtime-check
