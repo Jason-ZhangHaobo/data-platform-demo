@@ -406,3 +406,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 设置页在受保护部署证据返回后提供 `v2-staging` 配置入口；该链接只在认证读取到部署状态时渲染，匿名公网请求仍先经过后端认证门。
 - 新增 `verify-v2-staging-config.mjs` 与 2 项测试：缺少秘密、非 HTTPS、Origin 不一致或部署/执行角色相同均失败关闭；返回只含键名/固定错误码，不含任何配置值。空环境实跑返回18个缺失键并以非零状态退出；工作流静态门和 V2 构建均通过。
 - 本轮完整 `npm run ci` 在受控本机环境重新通过209/209；Cloud Shell、FC、RDS、OSS和公网状态未被该本机质量门覆盖。
+- 新增无值配置清单 [v2-staging-environment-template.md](v2-staging-environment-template.md)，区分 GitHub Variables 与 Secrets，并明确隔离 Worker 首期留空。
