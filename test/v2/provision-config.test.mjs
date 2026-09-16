@@ -49,3 +49,8 @@ test("V2 staging config fails closed for missing secrets and unsafe URLs", () =>
     "EXECUTION_AND_DEPLOYMENT_ROLES_MUST_DIFFER",
   ]);
 });
+
+test("V2 provisioning mode can create a private function before domain filing", () => {
+  const result = validateV2StagingConfig({ ...base, V2_PROVISIONING_ONLY: "true" });
+  assert.deepEqual(result, { ok: true, missing: [], errors: [] });
+});

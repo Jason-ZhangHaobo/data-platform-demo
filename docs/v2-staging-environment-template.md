@@ -14,8 +14,8 @@
 | `V2_VSW_ID` | 同 VPC 交换机 |
 | `V2_SECURITY_GROUP_ID` | 同 VPC 安全组 |
 | `V2_OSS_BUCKET` | 杭州私有 OSS Bucket |
-| `V2_PUBLIC_URL` | 已备案且 HTTPS 的公网地址 |
-| `V2_PUBLIC_ORIGIN` | 与 `V2_PUBLIC_URL` 去掉末尾 `/` 后完全一致 |
+| `V2_PUBLIC_URL` | 已备案且 HTTPS 的公网地址；仅公网部署工作流必需，函数预置阶段可留空 |
+| `V2_PUBLIC_ORIGIN` | 与 `V2_PUBLIC_URL` 去掉末尾 `/` 后完全一致；仅公网部署工作流必需 |
 | `V2_AUDIT_EVIDENCE_FILE` | `docs/evidence/` 下当月脱敏审计文件路径 |
 | `V2_SPARK_EXECUTOR_URL` | 已完成真实隔离 Worker 验收后再填写；首期留空 |
 

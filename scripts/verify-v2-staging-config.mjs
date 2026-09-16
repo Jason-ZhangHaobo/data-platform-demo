@@ -2,8 +2,6 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const required = [
-  "V2_PUBLIC_URL",
-  "V2_PUBLIC_ORIGIN",
   "OSS_BUCKET",
   "V2_MYSQL_HOST",
   "V2_MYSQL_USER",
@@ -20,18 +18,22 @@ const required = [
   "V2_VSW_ID",
   "V2_SECURITY_GROUP_ID",
 ];
+const publicRequired = ["V2_PUBLIC_URL", "V2_PUBLIC_ORIGIN"];
 
 const functionNamePattern = /^[A-Za-z][A-Za-z0-9_-]{1,127}$/;
 
 export function validateV2StagingConfig(input = {}) {
-  const missing = required.filter((name) => {
+  const provisioningOnly = input.V2_PROVISIONING_ONLY === "true";
+  const requiredNames = provisioningOnly ? required : [...publicRequired, ...required];
+  const missing = requiredNames.filter((name) => {
     const value = input[name];
     return typeof value !== "string" || value.length === 0;
   });
   const errors = [];
-  if (typeof input.V2_PUBLIC_URL === "string" && !/^https:\/\//.test(input.V2_PUBLIC_URL))
+  if (!provisioningOnly && typeof input.V2_PUBLIC_URL === "string" && !/^https:\/\//.test(input.V2_PUBLIC_URL))
     errors.push("V2_PUBLIC_URL_MUST_USE_HTTPS");
   if (
+    !provisioningOnly &&
     typeof input.V2_PUBLIC_URL === "string" &&
     typeof input.V2_PUBLIC_ORIGIN === "string" &&
     input.V2_PUBLIC_ORIGIN !== input.V2_PUBLIC_URL.replace(/\/$/, "")
