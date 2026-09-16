@@ -408,3 +408,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 本轮完整 `npm run ci` 在受控本机环境重新通过209/209；Cloud Shell、FC、RDS、OSS和公网状态未被该本机质量门覆盖。
 - 新增无值配置清单 [v2-staging-environment-template.md](v2-staging-environment-template.md)，区分 GitHub Variables 与 Secrets，并明确隔离 Worker 首期留空。
 - 本轮独立重跑 Spark/进程门：Spark 3.5.9 的 35/35 通过，取消/超时生命周期 3/3 通过；范围仍是本机引擎与进程，不升级为云隔离或公网 E2E。
+- 本机设置页浏览器验收：侧栏完整显示 Data Agent、数据源、数据同步、数据开发、调度与发布、数据资产、数据质量、安全与脱敏、数据服务、数据报表、运维监控和平台设置；部署门显示账单摘要与6项待补齐，并显示 `配置 v2-staging` 入口。页面未渲染任何账号、地址、资源ID或秘密。
