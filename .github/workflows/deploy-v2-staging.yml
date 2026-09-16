@@ -27,6 +27,7 @@ jobs:
       V2_VSW_ID: ${{ vars.V2_VSW_ID }}
       V2_SECURITY_GROUP_ID: ${{ vars.V2_SECURITY_GROUP_ID }}
       V2_AUDIT_EVIDENCE_FILE: ${{ vars.V2_AUDIT_EVIDENCE_FILE }}
+      V2_PUBLIC_URL: ${{ vars.V2_PUBLIC_URL }}
       PUBLIC_URL: ${{ vars.V2_PUBLIC_URL }}
       V2_PUBLIC_ORIGIN: ${{ vars.V2_PUBLIC_ORIGIN }}
       OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
@@ -73,11 +74,8 @@ jobs:
 
       - name: Validate required deployment configuration
         run: |
-          for name in PUBLIC_URL V2_PUBLIC_ORIGIN OSS_BUCKET V2_MYSQL_HOST V2_MYSQL_USER V2_MYSQL_PASSWORD V2_MYSQL_DATABASE V2_BOOTSTRAP_ADMIN_EMAIL V2_BOOTSTRAP_ADMIN_PASSWORD_HASH DASHSCOPE_API_KEY FUNCTION_NAME ALIYUN_ROLE_ARN ALIYUN_OIDC_PROVIDER_ARN V2_VPC_ID V2_VSW_ID V2_SECURITY_GROUP_ID V2_AUDIT_EVIDENCE_FILE; do
-            test -n "${!name}" || { echo "Missing GitHub v2-staging configuration: $name" >&2; exit 1; }
-          done
-          case "$PUBLIC_URL" in https://*) ;; *) echo 'PUBLIC_URL must use HTTPS' >&2; exit 1 ;; esac
-          test "$V2_PUBLIC_ORIGIN" = "${PUBLIC_URL%/}" || { echo 'V2_PUBLIC_ORIGIN must equal PUBLIC_URL without trailing slash' >&2; exit 1; }
+          node scripts/verify-v2-staging-config.mjs
+          test -n "$V2_AUDIT_EVIDENCE_FILE" || { echo 'Missing GitHub v2-staging configuration: V2_AUDIT_EVIDENCE_FILE' >&2; exit 1; }
 
       - name: Require fresh sanitized budget, dedicated function and ICP evidence
         run: node scripts/verify-v2-cloud-preflight.mjs "$V2_AUDIT_EVIDENCE_FILE"
