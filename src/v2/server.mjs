@@ -2080,6 +2080,29 @@ export function createV2Server(options = {}) {
           items.filter((item) => mayReadAgentIntent(item, session)).map(publicAgentIntent),
         );
       }
+      const agentIntentTrace = path.match(
+        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/trace$/,
+      );
+      if (agentIntentTrace && method === "GET") {
+        const intent = get("agent_intent", agentIntentTrace[1]),
+          session = auth.sessionFromHeaders(req.headers);
+        if (!local && !session)
+          throw Object.assign(fail(401, "请先登录受邀账号查看Agent轨迹"), {
+            code: "AUTHENTICATION_REQUIRED",
+          });
+        if (!mayReadAgentIntent(intent, session))
+          throw Object.assign(fail(403, "当前成员不能查看该Agent轨迹"), {
+            code: "PROJECT_PERMISSION_DENIED",
+          });
+        return json(
+          res,
+          200,
+          store
+            .list("agent_intent_trace", PROJECT)
+            .filter((item) => item.intentId === intent.id)
+            .sort((a, b) => a.sequence - b.sequence),
+        );
+      }
       const agentIntentHandoff = path.match(
         /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/handoffs$/,
       );
@@ -2122,7 +2145,7 @@ export function createV2Server(options = {}) {
               `${PROJECT}:agent-intent-handoff:${intent.id}:${key}`,
               hash(JSON.stringify({ destinationId, objective: step.objective })),
               () =>
-                store.create("agent_intent_handoff", PROJECT, {
+            store.create("agent_intent_handoff", PROJECT, {
                   intentId: intent.id,
                   destinationId,
                   objective: step.objective,
@@ -2135,6 +2158,25 @@ export function createV2Server(options = {}) {
                   handedOffAt: new Date().toISOString(),
                 }),
             );
+          if (!dedup.replayed) {
+            const latestTrace = store
+              .list("agent_intent_trace", PROJECT)
+              .filter((item) => item.intentId === intent.id)
+              .sort((a, b) => a.sequence - b.sequence)
+              .at(-1);
+            store.create("agent_intent_trace", PROJECT, {
+              intentId: intent.id,
+              sequence: Number(latestTrace?.sequence ?? 0) + 1,
+              kind: "SPECIALIST_HANDOFF",
+              status: "RECORDED",
+              output: {
+                destinationId,
+                objectiveHash: hash(step.objective),
+              },
+              execution: "NO_EXECUTION",
+              observedAt: new Date().toISOString(),
+            });
+          }
           return json(
             res,
             dedup.replayed ? 200 : 201,
@@ -3294,6 +3336,25 @@ export function createV2Server(options = {}) {
               model: generated.model,
               usage: generated.usage,
               finishedAt: new Date().toISOString(),
+            });
+            store.create("agent_intent_trace", PROJECT, {
+              intentId: task.id,
+              sequence: 1,
+              kind: "MODEL_ROUTE",
+              status: "SUCCEEDED",
+              model: generated.model,
+              usage: generated.usage,
+              input: {
+                messageHash: task.messageHash,
+                messageLength: task.messageLength,
+              },
+              output: {
+                destinationId: route.destinationId,
+                stepCount: route.steps.length,
+                confidence: route.confidence,
+              },
+              execution: "NO_EXECUTION",
+              observedAt: new Date().toISOString(),
             });
           });
         return json(res, 202, publicAgentIntent(task));

@@ -480,6 +480,15 @@ test("CLI maps cross-module Agent understanding to the same V2 atomic route", as
     sourceType: "SERVER_MYSQL",
     tableName: "synthetic_positions",
   });
+  assert.equal(
+    await runV2Cli(
+      ["agent", "trace", "--id", "intent-id"],
+      {},
+      { client, output: (value) => output.push(value), error: (value) => output.push(value) },
+    ),
+    0,
+  );
+  assert.equal(requests[3].path, "/agent/intents/intent-id/trace");
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -498,6 +507,7 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "agent_intent_create",
     "agent_intent_handoff_list",
     "agent_intent_handoff_create",
+    "agent_intent_trace",
     "agent_journey",
     "agent_delivery_list",
     "agent_delivery_prepare",

@@ -3091,6 +3091,11 @@ kbd {
 .agent-route-steps-v2 p { margin: 3px 0 0; color: #687768; font-size: 10px; line-height: 1.4; }
 .agent-route-steps-v2 button { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; padding: 0; border: 0; color: #2c7650; background: transparent; font: inherit; font-size: 10px; cursor: pointer; }
 .agent-handoff-notice-v2 { display: block; margin-top: 10px; color: #397251; font-size: 10px; }
+.agent-trace-v2 { margin-top: 13px; padding-top: 11px; border-top: 1px solid #e3ebdf; color: #738174; font-size: 10px; }
+.agent-trace-v2 > span { display: block; margin-bottom: 7px; color: #4d6c53; font-weight: 700; }
+.agent-trace-v2 > div { display: flex; gap: 8px; align-items: center; margin-top: 5px; }
+.agent-trace-v2 strong { color: #56735b; }
+.agent-trace-v2 small { color: #788577; }
 .agent-route-steps-v2 li > svg { flex: 0 0 auto; color: #a1b09d; }
 .agent-center-catalog-v2 > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 17px; }
 .agent-center-catalog-v2 article { min-width: 0; padding: 15px; border: 1px solid #e1e8dd; border-radius: 9px; background: linear-gradient(135deg, #fff, #fbfcf9); }

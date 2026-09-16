@@ -40,6 +40,18 @@ type IntentTask = {
   createdAt: string;
   finishedAt?: string;
 };
+type IntentTrace = {
+  id: string;
+  sequence: number;
+  kind: "MODEL_ROUTE" | "SPECIALIST_HANDOFF";
+  status: string;
+  model?: string;
+  usage?: { total_tokens?: number };
+  input?: { messageHash?: string; messageLength?: number };
+  output?: { destinationId?: string; stepCount?: number; confidence?: number; objectiveHash?: string };
+  execution: "NO_EXECUTION";
+  observedAt: string;
+};
 
 const destinations: Destination[] = [
   { id: "development", label: "数据开发", action: "生成或修正 Spark SQL，并进入真实运行与断言", risk: "MEDIUM" },
@@ -73,6 +85,7 @@ export function AgentCenter({
     ),
     [tasks, setTasks] = useState<IntentTask[]>([]),
     [task, setTask] = useState<IntentTask>(),
+    [trace, setTrace] = useState<IntentTrace[]>([]),
     [busy, setBusy] = useState(false),
     [handoffNotice, setHandoffNotice] = useState(""),
     [error, setError] = useState("");
@@ -80,6 +93,8 @@ export function AgentCenter({
     const next = await api<IntentTask[]>("/agent/intents");
     setTasks(next);
     setTask(next[0]);
+    if (next[0])
+      setTrace(await api<IntentTrace[]>(`/agent/intents/${next[0].id}/trace`));
   };
   useEffect(() => {
     refresh().catch((cause) => setError((cause as Error).message));
@@ -98,6 +113,7 @@ export function AgentCenter({
       const created = await api<IntentTask>("/agent/intents", { message });
       setTask(created);
       setTasks((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+      setTrace([]);
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -113,6 +129,7 @@ export function AgentCenter({
         `/agent/intents/${task.id}/handoffs`,
         { destinationId },
       );
+      setTrace(await api<IntentTrace[]>(`/agent/intents/${task.id}/trace`));
       setHandoffNotice(`交接 ${record.id.slice(0, 8)} 已记录；请在专业模块内审阅后再发起。`);
       onOpenDestination(destinationId, objective);
     } catch (cause) {
@@ -152,7 +169,7 @@ export function AgentCenter({
       </section>
       {task && <section className="agent-center-result-v2">
         <header><div><span className="eyebrow">LATEST INTENT</span><h3>{pending(task.status) ? "正在理解任务…" : task.status === "SUCCEEDED" ? "推荐结果" : "未能形成推荐"}</h3></div><span className={`status-pill ${task.status.toLowerCase()}`}>{pending(task.status) ? <Clock3 size={13} /> : <CheckCircle2 size={13} />}{task.status}</span></header>
-        {route ? <><div className="agent-route-v2"><div><span>推荐起点</span><strong>{route.destination.label}</strong><small>{riskLabel[route.destination.risk]}</small></div><div><span>任务摘要</span><p>{route.summary}</p></div><div><span>为什么</span><p>{route.rationale}</p></div><div className="agent-route-action-v2"><small>置信度 {(route.confidence * 100).toFixed(0)}% · 不自动执行</small><button className="button" disabled={busy} onClick={() => handoff(route.destinationId, (route.steps ?? [{ objective: route.summary }])[0].objective)}><Compass size={15} />进入{route.destination.label}<ArrowRight size={14} /></button></div></div><ol className="agent-route-steps-v2">{(route.steps ?? [{ destinationId: route.destinationId, label: route.destination.label, risk: route.destination.risk, objective: route.summary }]).map((step, index, steps) => <li key={step.destinationId}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{step.label}</strong><small>{riskLabel[step.risk]}</small><p>{step.objective}</p><button aria-label={`带入${step.label}专业Agent`} disabled={busy} onClick={() => handoff(step.destinationId, step.objective)}>带入专业Agent <ArrowRight size={12} /></button></div>{index + 1 < steps.length && <ArrowRight size={15} />}</li>)}</ol>{handoffNotice && <small className="agent-handoff-notice-v2">{handoffNotice}</small>}</> : <p>{task.error ?? "等待模型返回受治理路由。"}</p>}
+        {route ? <><div className="agent-route-v2"><div><span>推荐起点</span><strong>{route.destination.label}</strong><small>{riskLabel[route.destination.risk]}</small></div><div><span>任务摘要</span><p>{route.summary}</p></div><div><span>为什么</span><p>{route.rationale}</p></div><div className="agent-route-action-v2"><small>置信度 {(route.confidence * 100).toFixed(0)}% · 不自动执行</small><button className="button" disabled={busy} onClick={() => handoff(route.destinationId, (route.steps ?? [{ objective: route.summary }])[0].objective)}><Compass size={15} />进入{route.destination.label}<ArrowRight size={14} /></button></div></div><ol className="agent-route-steps-v2">{(route.steps ?? [{ destinationId: route.destinationId, label: route.destination.label, risk: route.destination.risk, objective: route.summary }]).map((step, index, steps) => <li key={step.destinationId}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{step.label}</strong><small>{riskLabel[step.risk]}</small><p>{step.objective}</p><button aria-label={`带入${step.label}专业Agent`} disabled={busy} onClick={() => handoff(step.destinationId, step.objective)}>带入专业Agent <ArrowRight size={12} /></button></div>{index + 1 < steps.length && <ArrowRight size={15} />}</li>)}</ol>{trace.length > 0 && <div className="agent-trace-v2"><span>可观测轨迹</span>{trace.map((item) => <div key={item.id}><strong>{item.sequence}. {item.kind === "MODEL_ROUTE" ? "模型路由" : "专业Agent交接"}</strong><small>{item.output?.destinationId ?? "—"} · {item.execution} · {item.observedAt}</small></div>)}</div>}{handoffNotice && <small className="agent-handoff-notice-v2">{handoffNotice}</small>}</> : <p>{task.error ?? "等待模型返回受治理路由。"}</p>}
       </section>}
       <section className="agent-center-catalog-v2"><header><span className="eyebrow">SPECIALIST AGENTS</span><h3>可协同的专业模块</h3><p>路由不替代专业 Agent；进入模块后仍要基于实际资源、权限和运行证据生成草稿。</p></header><div>{destinations.map((item) => <article key={item.id}><div><strong>{item.label}</strong><span>{riskLabel[item.risk]}</span></div><p>{item.action}</p><button onClick={() => onOpenDestination(item.id)}>查看模块 <ArrowRight size={13} /></button></article>)}</div></section>
       <footer><ShieldCheck size={14} />不自动执行同步、查询、审批、发布、发令牌或权限变更；高风险动作必须进入对应模块并通过人工关口。</footer>

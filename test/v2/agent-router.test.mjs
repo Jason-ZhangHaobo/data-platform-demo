@@ -228,9 +228,15 @@ test("public Agent intent history is isolated per member and viewer cannot submi
       (await publicRequest(base, `/agent/intents/${pmTasks[0].id}/handoffs`, { cookie: pm.cookie })).body.length,
       1,
     );
+    const trace = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/trace`, { cookie: pm.cookie });
+    assert.equal(trace.status, 200);
+    assert.deepEqual(trace.body.map((item) => item.kind), ["MODEL_ROUTE", "SPECIALIST_HANDOFF"]);
+    assert.equal(JSON.stringify(trace.body).includes("理解虚构持仓并设计报表"), false);
     assert.deepEqual((await publicRequest(base, "/agent/intents", { cookie: viewer.cookie })).body, []);
     const forbiddenHandoffRead = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/handoffs`, { cookie: viewer.cookie });
     assert.equal(forbiddenHandoffRead.status, 403);
+    const forbiddenTraceRead = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/trace`, { cookie: viewer.cookie });
+    assert.equal(forbiddenTraceRead.status, 403);
     const forbidden = await publicRequest(base, "/agent/intents", { body: { message: "查看者不能调用模型" }, cookie: viewer.cookie, csrf: viewer.body.csrfToken, key: "viewer-intent" });
     assert.equal(forbidden.status, 403);
     assert.equal(forbidden.body.code, "PROJECT_PERMISSION_DENIED");
