@@ -1,0 +1,86 @@
+{
+  "format": "shuzhan-aliyun-readonly-audit/v1",
+  "generatedAt": "2026-09-15T11:13:48+08:00",
+  "region": "cn-hangzhou",
+  "billingCycle": "2026-09",
+  "identity": { "available": true },
+  "rds": {
+    "available": true,
+    "errorCode": null,
+    "status": "Running",
+    "payType": "SERVERLESS",
+    "engine": "MySQL",
+    "engineVersion": "8.0",
+    "category": "serverless_basic",
+    "instanceType": "Primary",
+    "storageType": "cloud_essd",
+    "storageGiB": 20,
+    "createTime": null,
+    "expireTime": "",
+    "serverless": {
+      "SwitchForce": false,
+      "ScaleMin": 0.5,
+      "ScaleMax": 2,
+      "AutoPause": true
+    },
+    "network": { "endpointCount": 1, "intranet": 1, "internet": 0 },
+    "databases": {
+      "queryAvailable": true,
+      "errorCode": null,
+      "count": 2,
+      "businessDemoExists": true,
+      "platformMetaExists": true
+    },
+    "accounts": {
+      "queryAvailable": true,
+      "errorCode": null,
+      "count": 2,
+      "syncWriterExists": true,
+      "platformAppExists": true
+    }
+  },
+  "function": {
+    "available": false,
+    "errorCode": "AccessDenied",
+    "dedicatedFunctionTarget": false,
+    "runtime": null,
+    "cpu": null,
+    "memoryMiB": null,
+    "diskMiB": null,
+    "timeoutSeconds": null,
+    "instanceConcurrency": null,
+    "internetAccess": null,
+    "roleConfigured": false,
+    "vpcConfigured": false,
+    "environmentKeyCount": 0,
+    "v2EnvironmentReady": false
+  },
+  "oss": {
+    "available": true,
+    "errorCode": null,
+    "location": "oss-cn-hangzhou",
+    "storageClass": "Standard",
+    "acl": "private",
+    "versioning": "UNCONFIGURED",
+    "bucketCount": 1,
+    "selectedByUniqueInventory": true
+  },
+  "bill": {
+    "available": true,
+    "errorCode": null,
+    "currency": "CNY",
+    "pretaxAmount": 0.59,
+    "paymentAmount": 0,
+    "outstandingAmount": 0.59,
+    "cashAmount": 0,
+    "products": ["cdt", "fc", "nas", "odps", "oss", "rds", "sfm"]
+  },
+  "crossChecks": {
+    "sameVpc": false,
+    "rdsReady": true,
+    "mysql8": true,
+    "platformDatabaseReady": true,
+    "singleRequestConcurrency": false,
+    "withinHardBudget": true
+  }
+}

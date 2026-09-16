@@ -6,7 +6,8 @@ This is a public learning repository. Never add company code, real user data, in
 
 - Keep all demo organizations, tables, users, and data fictional.
 - Preserve the module boundaries for sync tasks, data development, masking, and data assets.
-- The first release simulates data movement. Do not claim that records were really copied.
+- Legacy V1 simulates most workflows; keep that labeling. V2 must use real execution and independent assertions, as specified in docs/PRD.md.
+- Do not deploy the local V2 developer identity or process runner publicly. Invite authentication, isolated execution, cloud persistence and the monthly budget must pass their gates first.
 - User-facing copy is Simplified Chinese. Code, API fields, and commit messages use English.
 
 ## Engineering rules

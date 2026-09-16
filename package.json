@@ -3,12 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "bin": {
-    "dataplatform": "bin/dataplatform.mjs"
+    "dataplatform": "bin/dataplatform.mjs",
+    "shuzhan": "bin/shuzhan.mjs",
+    "shuzhan-mcp": "bin/shuzhan-mcp.mjs"
   },
   "type": "module",
-  "description": "A zero-dependency data platform demo for practicing the full delivery loop.",
+  "description": "A securities data platform with a React workbench and a real Spark verification path.",
   "dependencies": {
-    "mysql2": "^3.11.5"
+    "mysql2": "^3.11.5",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "@monaco-editor/react": "4.7.0",
+    "monaco-editor": "0.52.2",
+    "lucide-react": "0.468.0"
   },
   "scripts": {
     "dev": "PORT=3000 node --watch src/server/index.mjs",
@@ -16,9 +23,31 @@
     "start": "PORT=3000 node src/server/index.mjs",
     "lint": "node scripts/check-source.mjs",
     "test": "node --test",
-    "ci": "npm run lint && npm test && npm run build"
+    "ci": "npm run lint && npm test && npm run build && npm run v2:build",
+    "v2:dev": "node --env-file-if-exists=.env.local src/v2/server.mjs",
+    "v2:web": "vite --host 127.0.0.1 --port 5173",
+    "v2:build": "tsc --noEmit -p web/tsconfig.json && vite build",
+    "v2:test": "node --test test/v2/*.test.mjs",
+    "v2:m1-eval": "node --env-file-if-exists=.env.local scripts/run-m1-evaluation.mjs",
+    "v2:e2e": "node scripts/run-full-lifecycle-evaluation.mjs",
+    "v2:e2e:smoke": "V2_E2E_CASE_LIMIT=1 node scripts/run-full-lifecycle-evaluation.mjs",
+    "v2:auth-preview": "node scripts/run-public-auth-preview.mjs",
+    "v2:admin-hash": "node bin/shuzhan-password-hash.mjs",
+    "v2:spark-test": ".runtime/python/bin/python scripts/verify-spark.py",
+    "v2:runtime-test": "node scripts/verify-runtime.mjs",
+    "v2:package": "node bin/shuzhan-package.mjs",
+    "v2:cli": "node bin/shuzhan.mjs",
+    "v2:mcp": "node bin/shuzhan-mcp.mjs",
+    "v2:bootstrap": "bash scripts/bootstrap-runtime.sh"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "vite": "7.3.6",
+    "typescript": "5.9.2",
+    "@types/react": "19.1.10",
+    "@types/react-dom": "19.1.9",
+    "@types/node": "24.3.0"
   }
 }

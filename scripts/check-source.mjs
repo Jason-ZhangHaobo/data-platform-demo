@@ -6,28 +6,48 @@ async function filesUnder(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
+    if (entry.name === "__pycache__") continue;
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...await filesUnder(path)); else files.push(path);
+    if (entry.isDirectory()) files.push(...(await filesUnder(path)));
+    else files.push(path);
   }
   return files;
 }
 
 const files = [
-  ...await filesUnder("src"),
-  ...await filesUnder("scripts"),
-  ...await filesUnder("test"),
-  ...await filesUnder("docs"),
-  ...await filesUnder(".github"),
+  ...(await filesUnder("src")),
+  ...(await filesUnder("scripts")),
+  ...(await filesUnder("bin")),
+  ...(await filesUnder("test")),
+  ...(await filesUnder("docs")),
+  ...(await filesUnder("deploy")),
+  ...(await filesUnder(".github")),
+  ...(await filesUnder("web")),
+  ...(await filesUnder("fixtures")),
   "s.yaml",
   ".env.example",
+  ".env.v2.example",
 ];
 for (const file of files.filter((path) => path.endsWith(".mjs"))) {
-  const checked = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
-  if (checked.status !== 0) throw new Error(checked.stderr || `Syntax check failed: ${file}`);
+  const checked = spawnSync(process.execPath, ["--check", file], {
+    encoding: "utf8",
+  });
+  if (checked.status !== 0)
+    throw new Error(checked.stderr || `Syntax check failed: ${file}`);
 }
-const forbidden = [/AKID[A-Za-z0-9]{12,}/, /gh[pousr]_[A-Za-z0-9]{20,}/, /BEGIN (RSA |OPENSSH )?PRIVATE KEY/];
+for (const file of files.filter((path) => path.endsWith(".sh"))) {
+  const checked = spawnSync("bash", ["-n", file], { encoding: "utf8" });
+  if (checked.status !== 0)
+    throw new Error(checked.stderr || `Shell syntax check failed: ${file}`);
+}
+const forbidden = [
+  /AKID[A-Za-z0-9]{12,}/,
+  /gh[pousr]_[A-Za-z0-9]{20,}/,
+  /BEGIN (RSA |OPENSSH )?PRIVATE KEY/,
+];
 for (const file of files) {
   const content = await readFile(file, "utf8");
-  if (forbidden.some((pattern) => pattern.test(content))) throw new Error(`Possible secret found in ${file}`);
+  if (forbidden.some((pattern) => pattern.test(content)))
+    throw new Error(`Possible secret found in ${file}`);
 }
 console.log(`Source checks passed for ${files.length} files.`);

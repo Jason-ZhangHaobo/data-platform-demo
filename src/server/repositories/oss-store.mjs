@@ -11,7 +11,16 @@ export class StorageConflictError extends Error {
   }
 }
 
-export function createOssRequest({ method, bucket, key, endpoint, credentials, body, etag }) {
+export function createOssRequest({
+  method,
+  bucket,
+  key,
+  endpoint,
+  credentials,
+  body,
+  etag,
+  ifNoneMatch,
+}) {
   const date = new Date().toUTCString();
   const contentType = body === undefined ? "" : "application/json; charset=utf-8";
   const securityHeader = credentials.securityToken ? `x-oss-security-token:${credentials.securityToken}\n` : "";
@@ -25,6 +34,7 @@ export function createOssRequest({ method, bucket, key, endpoint, credentials, b
   if (contentType) headers["Content-Type"] = contentType;
   if (credentials.securityToken) headers["x-oss-security-token"] = credentials.securityToken;
   if (etag) headers["If-Match"] = etag;
+  if (ifNoneMatch) headers["If-None-Match"] = ifNoneMatch;
   const host = endpoint.replace(/^https?:\/\//, "").replace(/\/$/, "");
   return {
     url: `https://${bucket}.${host}/${encodeKey(key)}`,

@@ -1,12 +1,36 @@
 # 数栈 · 数据中台与 Data Agent
 
-一个使用虚构数据构建的数据中台与 Data Agent 全栈 Demo。第一版从离线同步任务管理开始，长期目标是让跨模块智能体服务数据集成、开发、脱敏、安全、资产、运维和分析全链路。
+使用虚构中国证券数据，验证“完整经典中台 + 深度融合 Data Agent”的实际工作流。
+
+## V2 当前交付
+
+新版需求基线已经生效；旧版保留对照，不覆盖进行中的用户改动，也未替换旧公网部署。
+
+- React / TypeScript / Monaco 代码工作台：分组导航、SQL 编辑/差异、版本、上下文、后台结果与日志。
+- 本地真实 Spark 3.5.9：证券资产计算、金额精度、现金独立聚合、持仓去重；35 项引擎/文件测试检查通过。历史3.5.7证据保持不变但不用于新云部署。
+- 独立本地平台元数据库保存不可变版本和运行记录，支持幂等提交、取消、重启中断标记。
+- 月度预算门汇总模型Token和远程Spark用量；默认模型50元、远程Spark 200次/3600秒、硬上限200元。账号账单未连接时明确不声称全站费用已受控。
+- 真实 Qwen 模型已接通；一次代码任务读取真实报错并自动修正后，通过同一 SQL 的五套数据核验。完整上线/监控 E2E 尚未实现，不据此声称 ≥85% 达标。见 [真实试跑报告](docs/m1-live-agent-report.md)。
+- M2a 可从已核验版本生成包含 SQL、测试、调度、部署和日历的交付包，UI/API 与 CLI 均完成真实本机文件演练。入口：[调度与交付](http://127.0.0.1:3100/v2/?module=schedules)，规范与证据见 [M2a文档](docs/m2a-delivery.md)。这不是定时器触发、云部署或上线。
+- 数据源、同步、调度、资产、质量、安全脱敏、DAPI/XAPI、报表、运维均有明确模块位置。规划入口不算功能已实现。
+
+```bash
+npm ci
+npm run v2:bootstrap
+npm run v2:build
+npm run v2:dev
+```
+
+打开 [本机新版工作台](http://127.0.0.1:3100/v2/)。这是本机地址，不是朋友可访问的公网地址。
+本地验证使用 Node.js 24；首次需要安装 Python/Spark/Java，详见 [V2 启动与模型配置](docs/v2-quickstart.md)。
+
+需求：[PRD](docs/PRD.md) · [决策](docs/decisions.md) · [路线图](docs/product-roadmap.md) · [验收证据](docs/acceptance.md) · [V2 API](docs/v2-api.md) · [成本核验](docs/v2-budget.md)。
 
 ## 默认业务上下文
 
 后续新增的用例、业务场景、PRD、代码示例、测试数据、验收用例和培训材料，默认围绕中国证券行业展开，包括券商经纪、财富管理、资产管理、基金、托管清算、行情参考、风险合规和审计等场景。全部机构、账户、证券代码和业务数据均为虚构；不执行真实交易、资金操作或监管报送。完整约束见[中国证券行业业务上下文](docs/business-context.md)。
 
-## 当前能力
+## 旧版 V1 对照能力（不作为 V2 验收证据）
 
 - 离线同步任务的创建、编辑、启用和停用。
 - 手动触发或停止模拟同步。
@@ -27,13 +51,13 @@
 
 > 本项目禁止接入公司代码、真实业务数据、内部地址和生产账号。
 
-## 本地启动
+## 旧版本地启动
 
 ```bash
 npm run dev
 ```
 
-打开 `http://localhost:3000`。第一版没有第三方依赖，不需要执行 `npm install`。
+打开 [旧版本机 Demo](http://localhost:3000)。当前仓库已经引入 V2 依赖，需要先执行 `npm ci`。
 
 ## 质量检查
 
@@ -41,7 +65,7 @@ npm run dev
 npm run ci
 ```
 
-## CLI 入口
+## 旧版 CLI 入口
 
 CLI 与 GUI、Data Agent 共享同一套 API、权限和审计。
 
@@ -53,7 +77,7 @@ node bin/dataplatform.mjs dev list
 node bin/dataplatform.mjs ops list
 ```
 
-## MCP 入口
+## 旧版 MCP 入口
 
 Data Agent 客户端可以通过 stdio 启动 MCP Server，发现并调用同一套 API 能力：
 
@@ -65,7 +89,7 @@ MCP 暴露数据资产检索、权限检查、Data Agent 计划/确认、SQL 任
 
 ## Staging 访问保护
 
-当前 staging 为公开验收 Demo，`REQUIRE_ACCESS_TOKEN=false`，方便朋友直接体验。需要恢复访问保护时，将 FC 环境变量切换为 `REQUIRE_ACCESS_TOKEN=true`，并保留 `DEMO_ACCESS_TOKEN` 在 GitHub Secret 和阿里云 FC 环境变量中，不要写入仓库。
+旧版支持 `REQUIRE_ACCESS_TOKEN` 演示访问保护；当前线上取值未在本轮核验。V2 不复用此开关作为用户登录认证，公网写入在邀请身份、隔离执行与预算门槛通过后开放。任何凭证不得写入仓库。
 
 ## 真实 CSV → MySQL
 
@@ -78,7 +102,7 @@ npm run build
 npm start
 ```
 
-默认服务端口是 `3000`。容器运行时使用 `9000`，与阿里云函数计算自定义容器保持一致。测试、构建和源码检查均使用 Node.js 内置能力，以减少供应链依赖。
+旧版默认端口为 `3000`，容器端口为 `9000`。V2 前端额外使用 TypeScript 与 Vite；旧部署产物尚未接入 V2 Spark 执行单元。
 
 ## 文档
 
@@ -92,9 +116,5 @@ npm start
 
 ## 路线图
 
-1. 发布 MVP 到阿里云杭州的测试和模拟生产环境。
-2. 第二次需求迭代增加 CSV 到 MySQL 的真实同步。
-3. 增加数据开发、数据脱敏和数据资产目录模块。
-4. 增加 Data Agent Lite，用自然语言路由同步、开发、脱敏和资产检索模块。
-5. 将各业务模块注册为 Agent Skills，并加入 ChatBI、知识库和主动运维。
-6. 在全流程完成后制作数据中台端到端讲解 PPT，沉淀复刻路线和团队培训材料。
+统一按 [V2 M0–M5 路线图](docs/product-roadmap.md) 推进。旧分期描述被取代。
+全流程 PPT 在约定范围完成或用户明确要求时生成，本轮未生成最终 PPT。

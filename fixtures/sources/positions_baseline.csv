@@ -1,0 +1,5 @@
+position_id,client_id,security_code,asset_class,industry,market_value,trade_date
+POS-001,CLIENT-001,SEC-DEMO-001,股票,金融,1000.00,2026-09-10
+POS-002,CLIENT-001,SEC-DEMO-002,债券,公共事业,500.00,2026-09-10
+POS-003,CLIENT-002,SEC-DEMO-001,股票,金融,750.00,2026-09-10
+POS-004,CLIENT-003,SEC-DEMO-003,股票,信息技术,9000.00,2026-09-10
