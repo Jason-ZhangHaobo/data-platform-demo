@@ -50,6 +50,10 @@ jobs:
         with:
           node-version: 24
 
+      - name: Validate protected configuration before any build or cloud access
+        run: |
+          node scripts/verify-v2-staging-config.mjs
+
       - name: Install locked development dependencies
         run: npm ci
 
@@ -68,10 +72,6 @@ jobs:
           unzip -l v2-function.zip | grep -q 'web-dist/index.html'
           unzip -l v2-function.zip | grep -q 'fixtures/sources/positions_baseline.csv'
           ! unzip -l v2-function.zip | grep -E '(^|/)(\.env|\.env\.local|[^/]+\.(pem|key))$'
-
-      - name: Validate protected configuration before any cloud write
-        run: |
-          node scripts/verify-v2-staging-config.mjs
 
       - name: Set up Alibaba Cloud CLI
         uses: aliyun/setup-aliyun-cli-action@v1

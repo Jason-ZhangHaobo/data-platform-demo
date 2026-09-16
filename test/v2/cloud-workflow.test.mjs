@@ -35,6 +35,7 @@ test("V2 provisioning workflow is create-only and budget/network gated", () => {
   assert.match(workflow, /spend < 200/);
   assert.match(workflow, /V2_FUNCTION_ROLE_ARN/);
   assert.match(workflow, /verify-v2-staging-config\.mjs/);
+  assert.ok(workflow.indexOf("verify-v2-staging-config.mjs") < workflow.indexOf("npm ci"));
   assert.match(workflow, /FunctionNotFound/);
   assert.match(workflow, /POST \/2023-03-30\/functions/);
   assert.match(workflow, /instanceConcurrency:1/);
