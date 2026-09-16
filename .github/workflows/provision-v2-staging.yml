@@ -71,12 +71,7 @@ jobs:
 
       - name: Validate protected configuration before any cloud write
         run: |
-          for name in V2_PUBLIC_URL V2_PUBLIC_ORIGIN OSS_BUCKET V2_MYSQL_HOST V2_MYSQL_USER V2_MYSQL_PASSWORD V2_MYSQL_DATABASE V2_BOOTSTRAP_ADMIN_EMAIL V2_BOOTSTRAP_ADMIN_PASSWORD_HASH DASHSCOPE_API_KEY FUNCTION_NAME V2_FUNCTION_ROLE_ARN ALIYUN_ROLE_ARN ALIYUN_OIDC_PROVIDER_ARN V2_VPC_ID V2_VSW_ID V2_SECURITY_GROUP_ID; do
-            test -n "${!name}" || { echo "Missing v2-staging configuration: $name" >&2; exit 1; }
-          done
-          case "$V2_PUBLIC_URL" in https://*) ;; *) echo 'V2_PUBLIC_URL must use HTTPS' >&2; exit 1 ;; esac
-          test "$V2_PUBLIC_ORIGIN" = "${V2_PUBLIC_URL%/}" || { echo 'V2_PUBLIC_ORIGIN must equal V2_PUBLIC_URL without trailing slash' >&2; exit 1; }
-          test "$V2_FUNCTION_ROLE_ARN" != "$ALIYUN_ROLE_ARN" || { echo 'Deployment role and function execution role must be different' >&2; exit 1; }
+          node scripts/verify-v2-staging-config.mjs
 
       - name: Set up Alibaba Cloud CLI
         uses: aliyun/setup-aliyun-cli-action@v1
