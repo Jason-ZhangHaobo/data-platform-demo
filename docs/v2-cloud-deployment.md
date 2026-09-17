@@ -45,6 +45,7 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 - `V2_MYSQL_HOST`、`V2_MYSQL_PORT`、`V2_MYSQL_USER`、`V2_MYSQL_PASSWORD`、`V2_MYSQL_DATABASE`
 - `V2_BOOTSTRAP_ADMIN_EMAIL`、`V2_BOOTSTRAP_ADMIN_PASSWORD_HASH`、`V2_BOOTSTRAP_ADMIN_NAME`；禁止保存管理员明文密码
 - `DASHSCOPE_API_KEY`
+- 可选单一秘密`JASONSECRETS`：使用白名单键组成的JSON对象或单行`KEY=VALUE`文本，可替代上述逐项Secrets；逐项Secrets与其同时存在时逐项值优先
 - 可选隔离执行：变量`V2_SPARK_EXECUTOR_URL`与秘密`V2_SPARK_EXECUTOR_SECRET`；Worker未完成真实验收前保持为空
 
 秘密只进入GitHub受保护Environment和FC加密环境变量；仓库、日志和构建产物不保存值。函数角色负责注入临时OSS凭证，不创建或手填长期AccessKey。

@@ -21,6 +21,8 @@
 
 ## Secrets
 
+可以逐项填写以下 Secrets，也可以只填写一个 `JASONSECRETS`，内容使用 JSON 对象或单行 `KEY=VALUE` 文本；工作流只读取白名单键并在 Runner 临时展开。若同一键同时存在，逐项 Secret 优先。无论哪种形式，秘密都不会写入仓库或日志。
+
 | 名称 | 作用 |
 |---|---|
 | `V2_MYSQL_HOST` / `V2_MYSQL_PORT` | 独立平台元数据库连接 |
@@ -31,5 +33,6 @@
 | `V2_BOOTSTRAP_ADMIN_NAME` | 管理员显示名 |
 | `DASHSCOPE_API_KEY` | 百炼模型 Key |
 | `V2_SPARK_EXECUTOR_SECRET` | 隔离 Worker 完成真实验收后再填写；首期留空 |
+| `JASONSECRETS` | 上述 Secrets 的受控 JSON/KEY=VALUE 包；可替代逐项 Secrets |
 
 工作流会先运行 `scripts/verify-v2-staging-config.mjs`，只返回缺失名称或固定错误码；角色、VPC、账单、函数是否存在等检查随后执行。任何一项失败都不会创建或更新 FC 函数。
