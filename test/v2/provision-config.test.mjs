@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { validateV2StagingConfig } from "../../scripts/verify-v2-staging-config.mjs";
 import { mergeSecretBundle, parseSecretBundle } from "../../scripts/export-v2-staging-secret-bundle.mjs";
 
@@ -75,4 +78,16 @@ test("JASONSECRETS rejects unknown keys and multiline values", () => {
     V2_MYSQL_USER: "user",
     V2_MYSQL_PASSWORD: "pass",
   });
+});
+
+test("staging config CLI reads process.env instead of validating an empty object", () => {
+  const env = {
+    ...process.env,
+    ...base,
+    V2_PROVISIONING_ONLY: "true",
+    JASONSECRETS: JSON.stringify({ V2_MYSQL_PASSWORD: "bundle-password" }),
+  };
+  const script = resolve(dirname(fileURLToPath(import.meta.url)), "../../scripts/verify-v2-staging-config.mjs");
+  const result = JSON.parse(execFileSync(process.execPath, [script], { env }).toString("utf8"));
+  assert.deepEqual(result, { ok: true, missing: [], errors: [] });
 });
