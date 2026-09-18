@@ -1,6 +1,6 @@
 # V2 阿里云部署说明
 
-日期：2026-09-16。状态：代码包与受保护手动工作流已准备；GitHub Linux x64手动CI已完成一次构建/Node24校验，真实RDS/OSS部分预检完成，V2专用FC/ICP备案与公网部署尚未验收。
+日期：2026-09-18。状态：代码包与受保护手动工作流已准备；GitHub Linux x64手动CI已完成构建/Node24校验，`JASONSECRETS` bundle兼容已实现，真实RDS/OSS部分预检完成，V2专用FC/ICP备案与公网部署尚未验收。
 
 ## 为什么单独打包Node 24
 
