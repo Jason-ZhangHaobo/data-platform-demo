@@ -1,13 +1,13 @@
 # V2 验收与运行证据
 
-日期：2026-09-15。分支 codex/v2-foundation，基于旧主线 daaa665。
+日期：2026-09-18。分支 codex/v2-config-fix，基于已合并 PR #60 的 main。
 当前交付覆盖 M0 基线、M1冻结范围、M2a文件交付以及M2b/M2c本机标杆链路，**不是 M0–M5 全部完成，也没有替换公网产品**。
 
 ## 自动检查
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新212/212测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含受保护部署配置校验、JASONSECRETS bundle、独立FC预置工作流静态门和既有全量V2回归；不代表公网云资源已部署 |
+| npm run ci | 最新213/213测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含受保护部署配置校验、JASONSECRETS bundle、独立FC预置工作流静态门和既有全量V2回归；不代表公网云资源已部署 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -407,12 +407,18 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 新增 `verify-v2-staging-config.mjs` 与 2 项测试：缺少秘密、非 HTTPS、Origin 不一致或部署/执行角色相同均失败关闭；返回只含键名/固定错误码，不含任何配置值。空环境实跑返回18个缺失键并以非零状态退出；工作流静态门和 V2 构建均通过。
 - 本轮完整 `npm run ci` 在受控本机环境重新通过209/209；Cloud Shell、FC、RDS、OSS和公网状态未被该本机质量门覆盖。
 - 新增无值配置清单 [v2-staging-environment-template.md](v2-staging-environment-template.md)，区分 GitHub Variables 与 Secrets，并明确隔离 Worker 首期留空。
-- 已创建 GitHub `v2-staging` 环境并实际写入9项已核验非秘密变量；环境 Secrets 目前仍为空，用户提到的 `JASONSECRETS` 未出现在仓库或环境列表。新增白名单 JSON/KEY=VALUE bundle 解析测试，逐项 Secret 优先且不回显值。
-- `JASONSECRETS` 兼容已接入预置/部署工作流：支持白名单 JSON 或单行 KEY=VALUE，逐项 Secret 优先；本轮完整 CI 212/212 通过。当前 GitHub 环境仍未出现该 Secret 名称，无法进入云端创建。
-- 增量 PR [#60](https://github.com/Jason-ZhangHaobo/data-platform-demo/pull/60) 已创建但尚未合并；其中包含上述 bundle 适配和预置阶段域名解耦，合并后默认分支才能固定使用最新工作流。
+- 已创建 GitHub `v2-staging` 环境并实际写入9项已核验非秘密变量；环境 Secret `JASONSECRETS` 已存在（只读取名称，不读取内容）。
+- `JASONSECRETS` 兼容已接入预置/部署工作流：支持白名单 JSON 或单行 KEY=VALUE，逐项 Secret 优先；本轮完整 CI 213/213 通过。
+- PR [#60](https://github.com/Jason-ZhangHaobo/data-platform-demo/pull/60) 已合并；配置门修复在增量 PR [#62](https://github.com/Jason-ZhangHaobo/data-platform-demo/pull/62) 中，尚未合并。
 - 已打开阿里云万网域名注册与 ICP 备案入口；因当前没有已备案 HTTPS 域名，域名购买、实名模板、主体备案和支付仍由用户完成。协作边界见 [domain-registration-checklist.md](domain-registration-checklist.md)。
 - 本轮独立重跑 Spark/进程门：Spark 3.5.9 的 35/35 通过，取消/超时生命周期 3/3 通过；范围仍是本机引擎与进程，不升级为云隔离或公网 E2E。
 - 本机设置页浏览器验收：侧栏完整显示 Data Agent、数据源、数据同步、数据开发、调度与发布、数据资产、数据质量、安全与脱敏、数据服务、数据报表、运维监控和平台设置；部署门显示账单摘要与6项待补齐，并显示 `配置 v2-staging` 入口。页面未渲染任何账号、地址、资源ID或秘密。
 - 分支推送后远程 GitHub Linux CI `35075342577` 已成功完成，验证 Node 24 FC 构包门、209 项测试、旧版构建和 V2 构建；该 CI 仍不执行阿里云写操作。
 - 最新快速失败工作流改动再次通过远程 GitHub Linux CI `35077273405`（34 秒）；配置缺失仍会在依赖安装/构包前失败。
 - 已创建不自动合并的 [Pull Request #59](https://github.com/Jason-ZhangHaobo/data-platform-demo/pull/59)，用于审阅并让新增 V2 FC 预置工作流进入默认分支；PR 本身不触发阿里云写入。
+
+## 2026-09-18：Secrets 到位与预置门修复
+
+- 只读核验确认 `v2-staging` 中存在名为 `JASONSECRETS` 的环境 Secret；不会读取、回显或写入其内容。
+- 首次预置运行 `35290798356` 在“配置校验”阶段失败关闭，未安装依赖、未构包、未连接阿里云、未创建函数；失败根因是 CLI 入口未把 `process.env` 传入校验函数。
+- 修复已放入增量 PR #62；本机配置测试8/8、完整 CI 213/213。PR 合并后再重跑预置，不把失败运行算作云端资源状态。

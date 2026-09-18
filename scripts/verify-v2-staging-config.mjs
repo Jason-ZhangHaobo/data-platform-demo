@@ -53,7 +53,7 @@ export function validateV2StagingConfig(input = {}) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const result = validateV2StagingConfig();
+  const result = validateV2StagingConfig(process.env);
   process.stdout.write(`${JSON.stringify(result)}\n`);
   if (!result.ok) process.exitCode = 1;
 }
