@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { validateV2StagingConfig } from "../../scripts/verify-v2-staging-config.mjs";
+import { mergeSecretBundle, parseSecretBundle } from "../../scripts/export-v2-staging-secret-bundle.mjs";
 
 const base = Object.fromEntries([
   "V2_PUBLIC_URL",
@@ -48,4 +49,30 @@ test("V2 staging config fails closed for missing secrets and unsafe URLs", () =>
     "V2_PUBLIC_ORIGIN_MISMATCH",
     "EXECUTION_AND_DEPLOYMENT_ROLES_MUST_DIFFER",
   ]);
+});
+
+test("V2 provisioning mode can create a private function before domain filing", () => {
+  const result = validateV2StagingConfig({ ...base, V2_PROVISIONING_ONLY: "true" });
+  assert.deepEqual(result, { ok: true, missing: [], errors: [] });
+});
+
+test("JASONSECRETS supports an allowlisted JSON bundle without exposing values", () => {
+  const bundle = JSON.stringify({ V2_MYSQL_PASSWORD: "hidden-password", DASHSCOPE_API_KEY: "hidden-key" });
+  assert.deepEqual(parseSecretBundle(bundle), {
+    V2_MYSQL_PASSWORD: "hidden-password",
+    DASHSCOPE_API_KEY: "hidden-key",
+  });
+  const merged = mergeSecretBundle({ V2_MYSQL_PASSWORD: "already-set", JASONSECRETS: bundle });
+  assert.equal(merged.V2_MYSQL_PASSWORD, "already-set");
+  assert.equal(merged.DASHSCOPE_API_KEY, "hidden-key");
+  assert.equal(JSON.stringify({ ok: true, loadedKeys: Object.keys(merged) }).includes("hidden"), false);
+});
+
+test("JASONSECRETS rejects unknown keys and multiline values", () => {
+  assert.throws(() => parseSecretBundle(JSON.stringify({ UNKNOWN: "x" })));
+  assert.throws(() => parseSecretBundle(JSON.stringify({ V2_MYSQL_PASSWORD: "line1\nline2" })));
+  assert.deepEqual(parseSecretBundle("V2_MYSQL_USER='user'\n# comment\nV2_MYSQL_PASSWORD=pass"), {
+    V2_MYSQL_USER: "user",
+    V2_MYSQL_PASSWORD: "pass",
+  });
 });

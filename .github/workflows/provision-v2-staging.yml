@@ -29,6 +29,7 @@ jobs:
       V2_SECURITY_GROUP_ID: ${{ vars.V2_SECURITY_GROUP_ID }}
       V2_PUBLIC_URL: ${{ vars.V2_PUBLIC_URL }}
       V2_PUBLIC_ORIGIN: ${{ vars.V2_PUBLIC_ORIGIN }}
+      V2_PROVISIONING_ONLY: "true"
       OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
       V2_MYSQL_HOST: ${{ secrets.V2_MYSQL_HOST }}
       V2_MYSQL_PORT: ${{ secrets.V2_MYSQL_PORT }}
@@ -41,6 +42,7 @@ jobs:
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
       V2_SPARK_EXECUTOR_URL: ${{ vars.V2_SPARK_EXECUTOR_URL }}
       V2_SPARK_EXECUTOR_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
+      JASONSECRETS: ${{ secrets.JASONSECRETS }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -49,6 +51,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      - name: Expand optional JASONSECRETS bundle
+        run: node scripts/export-v2-staging-secret-bundle.mjs
 
       - name: Validate protected configuration before any build or cloud access
         run: |

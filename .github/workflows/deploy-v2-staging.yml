@@ -42,6 +42,7 @@ jobs:
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
       V2_SPARK_EXECUTOR_URL: ${{ vars.V2_SPARK_EXECUTOR_URL }}
       V2_SPARK_EXECUTOR_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
+      JASONSECRETS: ${{ secrets.JASONSECRETS }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -50,6 +51,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      - name: Expand optional JASONSECRETS bundle
+        run: node scripts/export-v2-staging-secret-bundle.mjs
 
       - name: Install locked development dependencies
         run: npm ci

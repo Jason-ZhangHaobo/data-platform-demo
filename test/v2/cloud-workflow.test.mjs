@@ -16,6 +16,7 @@ test("V2 cloud deployment does not embed cloud IDs or inherit stale function sec
     assert.doesNotMatch(workflow, pattern);
   assert.match(workflow, /verify-v2-cloud-preflight\.mjs/);
   assert.match(workflow, /verify-v2-staging-config\.mjs/);
+  assert.match(workflow, /export-v2-staging-secret-bundle\.mjs/);
   assert.match(workflow, /V2_DEPLOY_ROLE_ARN/);
   assert.match(workflow, /V2_AUDIT_EVIDENCE_FILE/);
   assert.match(workflow, /QueryBillOverview/);
