@@ -210,6 +210,11 @@ export function createRemoteSparkWorker(options = {}) {
         res.off("close", cancel);
       }
     } catch (error) {
+      if (env.V2_SPARK_WORKER_DIAGNOSTICS === "true")
+        console.error(
+          "Spark Worker synthetic diagnostic: " +
+            String(error?.message ?? "unknown error").slice(-2000),
+        );
       if (!res.writableEnded)
         return response(res, error.status ?? 500, {
           message: error.status ? error.message : "Spark Worker执行失败",

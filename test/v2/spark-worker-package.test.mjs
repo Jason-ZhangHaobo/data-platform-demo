@@ -19,6 +19,7 @@ test("Spark Worker package builder normalizes timestamps and ZIP metadata", asyn
   assert.match(workflow, /Spark Worker inner SHA-256/);
   assert.match(workflow, /actions\/setup-java@v5/);
   assert.match(workflow, /smoke-v2-spark-worker-package\.mjs/);
+  assert.match(workflow, /Synthetic Spark Worker diagnostics/);
   const spark = await readFile(
     new URL("../../src/v2/spark.mjs", import.meta.url),
     "utf8",

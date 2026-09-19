@@ -71,6 +71,7 @@ jobs:
             V2_PYTHON="$(command -v python)" \
             V2_ARTIFACT_ROOT="$RUNNER_TEMP" \
             V2_RETAIN_SPARK_ARTIFACTS=false \
+            V2_SPARK_WORKER_DIAGNOSTICS=true \
             V2_SPARK_WORKER_SECRET="$worker_secret" \
             V2_SPARK_WORKER_RUN_TIMEOUT_MS=180000 \
             HOST=127.0.0.1 \
@@ -79,9 +80,14 @@ jobs:
           ) &
           worker_pid=$!
           trap 'kill "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true; rm -rf "$worker_root"; rm -f "$worker_log"' EXIT
-          V2_SPARK_SMOKE_URL=http://127.0.0.1:19090/v1/execute \
-          V2_SPARK_WORKER_SECRET="$worker_secret" \
-          node scripts/smoke-v2-spark-worker-package.mjs
+          if ! V2_SPARK_SMOKE_URL=http://127.0.0.1:19090/v1/execute \
+            V2_SPARK_WORKER_SECRET="$worker_secret" \
+            node scripts/smoke-v2-spark-worker-package.mjs; then
+            echo '::group::Synthetic Spark Worker diagnostics'
+            tail -n 80 "$worker_log"
+            echo '::endgroup::'
+            exit 1
+          fi
 
       - name: Upload short-lived package for controlled cloud validation
         uses: actions/upload-artifact@v6
