@@ -59,7 +59,7 @@ type IntentTrace = {
 };
 type Handoff = { id: string; destinationId: string; status: string; objective: string; specialistTaskId?: string; specialistTaskKind?: string };
 type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND" | "REVOKED"; risk: Risk; approvedAt: string; specialistTaskId?: string };
-type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistStatus?: string }[] };
+type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistTaskId?: string; specialistTaskKind?: string; specialistStatus?: string }[] };
 type SpecialistActivity = {
   destinationId: string;
   id: string;
@@ -190,7 +190,7 @@ export function AgentCenter({
     setHandoffs(nextHandoffs);
     const restored: Record<string, SpecialistActivity> = {};
     await Promise.all(
-      nextHandoffs
+      nextGraph.steps
         .filter((item) => item.specialistTaskId)
         .map(async (item) => {
           const getPath = specialistGetPath(item.destinationId, item.specialistTaskId!);
