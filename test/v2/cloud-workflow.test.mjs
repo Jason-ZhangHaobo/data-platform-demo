@@ -22,7 +22,13 @@ test("V2 cloud deployment does not embed cloud IDs or inherit stale function sec
   assert.match(workflow, /QueryBillOverview/);
   assert.match(workflow, /V2_VPC_ID/);
   assert.match(workflow, /V2_SECURITY_GROUP_ID/);
+  assert.match(workflow, /data-platform-demo\/v2\/state/);
+  assert.match(workflow, /data-platform-demo\/v2\/artifacts/);
   assert.match(workflow, /\.functionName == \$name and \.instanceConcurrency == 1/);
+  assert.match(workflow, /current-v2-concurrency\.json/);
+  assert.match(workflow, /\.reservedConcurrency == 1/);
+  assert.match(workflow, /current-v2-scaling\.json/);
+  assert.match(workflow, /\.minInstances == 0 and \.enableOnDemandScaling == true/);
 });
 
 test("V2 provisioning workflow is create-only and budget/network gated", () => {
@@ -44,4 +50,14 @@ test("V2 provisioning workflow is create-only and budget/network gated", () => {
   assert.match(workflow, /V2_VPC_ID/);
   assert.match(workflow, /V2_SECURITY_GROUP_ID/);
   assert.match(workflow, /v2-function-verified\.json/);
+  assert.match(workflow, /rm -rf \/tmp\/shuduo-v2-runtime-check/);
+  assert.doesNotMatch(workflow, /rm -f[^\n]*\/tmp\/shuduo-v2-runtime-check/);
+  assert.match(workflow, /data-platform-demo\/v2\/state/);
+  assert.match(workflow, /data-platform-demo\/v2\/artifacts/);
+  assert.match(workflow, /functions\/\$FUNCTION_NAME\/concurrency/);
+  assert.match(workflow, /\{reservedConcurrency:1\}/);
+  assert.match(workflow, /functions\/\$FUNCTION_NAME\/scaling-config/);
+  assert.match(workflow, /minInstances:0/);
+  assert.match(workflow, /\.reservedConcurrency == 1/);
+  assert.match(workflow, /\.minInstances == 0 and \.enableOnDemandScaling == true/);
 });
