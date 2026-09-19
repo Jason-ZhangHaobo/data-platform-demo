@@ -13,6 +13,7 @@ export const secretNames = [
   "V2_BOOTSTRAP_ADMIN_NAME",
   "DASHSCOPE_API_KEY",
   "V2_SPARK_EXECUTOR_SECRET",
+  "V2_SCHEDULER_TICK_SECRET",
 ];
 
 const keyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;

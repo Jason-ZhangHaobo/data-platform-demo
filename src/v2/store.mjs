@@ -85,7 +85,7 @@ export class MetadataStore {
       throw e;
     }
   }
-  interruptPending(project) {
+  interruptPending(project, { preserveDurableReleaseRuns = false } = {}) {
     for (const kind of [
       "run",
       "agent",
@@ -108,7 +108,14 @@ export class MetadataStore {
       for (const item of this.list(kind, project))
         if (
           ["QUEUED", "RUNNING", "DEPLOYING"].includes(item.status) &&
-          !(kind === "release_run" && item.status === "SCHEDULED")
+          !(kind === "release_run" && item.status === "SCHEDULED") &&
+          !(
+            preserveDurableReleaseRuns &&
+            kind === "release_run" &&
+            item.status === "RUNNING" &&
+            item.mode === "CLOUD_DURABLE_SCHEDULE" &&
+            typeof item.leaseExpiresAt === "string"
+          )
         )
           this.update(kind, item.id, project, {
             status: "INTERRUPTED",

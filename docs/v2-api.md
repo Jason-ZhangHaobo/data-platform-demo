@@ -165,6 +165,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /operations/agent/diagnoses/:id | 无 | 诊断、建议、证据引用、置信度和不可执行边界 |
 | POST /operations/agent/diagnoses/:id/cancel | 空对象 | 取消诊断并保留记录 |
 | GET /evaluations/full-lifecycle/latest | 无 | 最新20条本机完整链路、阶段证据、批次和阻塞/取消/救援；固定非公网 |
+| POST /internal/scheduler/tick | HMAC签名的`{limit}` | 外部持久调度驱动领取到期ACTIVE_CLOUD批次；不接受用户会话替代服务签名，默认关闭 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
@@ -178,7 +179,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 安全Agent返回completionScope=SECURITY_POLICY_DESIGN、fullLifecycleE2E=false；模型不读取业务行、不执行查询或审批。`X-Actor-Id`仅验证本机策略语义，不能被视为认证凭据。
 报表Agent返回completionScope=REPORT_DESIGN、fullLifecycleE2E=false；模型不读取数据集行，应用后运行数为0，不能代表报表结果已验证、导出或公网发布。
 运维Agent返回completionScope=OPS_DIAGNOSIS、executable=false、requiresHumanApproval=true；默认不允许把运维摘要发送外部模型。当前真实Qwen调用未获单独授权，因此M4g不能把测试替身记为真实Agent验收。
-服务重启会把正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。
+服务重启会把普通正在执行的任务标为 INTERRUPTED，保留记录，等待人工重跑；尚未触发的本机发布批次保留SCHEDULED并在服务恢复后重新装载，不能重复执行已经终态的批次。启用`DURABLE_TICK`后，云发布RUNNING批次保留租约；外部tick只在租约过期后恢复，领取状态必须先持久化，再执行Spark。
 重复键同输入返回原记录，不重复执行；同键不同输入返回 409。
 
 ## 真实执行边界
@@ -204,7 +205,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 
 ## 尚未开放
 
-真实用户认证、跨用户授权、云端元数据库/OSS、自动恢复、多实例队列、云端审批及发布绑定在后续门槛内。
+真实云连接、跨用户公网并发、多实例队列、云端审批及发布绑定仍在后续门槛内。MySQL/OSS持久化与持久调度代码已完成本机故障模型验收，但都不能替代真实云运行。
 DAPI/XAPI本机发布与外部调用、V2 CLI/MCP已实现；官方交易日生产调度及公网数据服务尚未实现。
 M1验证包不能被称为已部署任务。M2a新增交付包包含实际被解析的部署清单，但仍是本机文件演练，未进行云端部署或发布；详见 [交付规范](m2a-delivery.md)。
 M2b/M2c已增加本机摘要审批、短周期墙上时钟发布、监控告警与回滚。其`published=true`仅表示本机测试版本生效，同时固定`publicDeployed=false`和`fullLifecycleE2E=false`；详见[本机发布报告](m2b-m2c-local-release.md)。
