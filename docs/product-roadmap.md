@@ -83,7 +83,7 @@ M5复刻手册V1已形成：明确不是照搬本机代码，而是把统一原�
 
 云端持久调度核心已本机验收：到期ACTIVE_CLOUD批次由外部HMAC tick领取，先持久化租约再执行，过期租约可恢复，ACTIVE_LOCAL不被云tick改变；签名重放被拒绝，默认关闭的GitHub cron适配器不依赖FC进程存活。当前发布API尚未生成真实ACTIVE_CLOUD版本，FC冻结/真实Spark/告警恢复也未云端验收，因此不能把该核心标为调度上线。详见[云端持久调度](durable-cloud-scheduler.md)。
 
-Agent-first独立工作台第一版已实现：默认首页从数据开发切换为Data Agent，用户可在同一会话查看任务历史、上下文、跨域计划、风险、专业Agent活动、草稿应用和证据轨迹；经典模块成为可选接管入口。父意图已持久关联专业任务并可在历史会话恢复；REQUEST_APPROVAL步骤批准现为后端资源并由专业任务消费，PLAN_ONLY不能关联执行。当前仍需补齐统一工具Schema/补偿协议、自动推进低风险步骤并单独运行公网Agent-first E2E。详见[Agent-first产品蓝图](agent-first-product-blueprint.md)。
+Agent-first独立工作台第一版已实现：默认首页从数据开发切换为Data Agent，用户可在同一会话查看任务历史、上下文、跨域计划、风险、专业Agent活动、草稿应用和证据轨迹；经典模块成为可选接管入口。父意图已持久关联专业任务并可在历史会话恢复；REQUEST_APPROVAL批准由专业任务消费，PLAN_ONLY不能关联执行；统一任务图从现有证据投影各步骤完成度并供四端读取。当前仍需补齐统一工具Schema/补偿协议、自动推进低风险步骤并单独运行公网Agent-first E2E。详见[Agent-first产品蓝图](agent-first-product-blueprint.md)。
 
 ## 本轮M2a准备进展
 

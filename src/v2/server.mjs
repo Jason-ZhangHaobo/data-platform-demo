@@ -261,6 +261,75 @@ export function createV2Server(options = {}) {
   const publicAgentApproval = ({ submittedBy, ...item }) => item;
   const mayReadAgentIntent = (item, session) =>
     local || session?.role === "ADMIN" || item.submittedBy === session?.user.id;
+  const agentIntentGraph = (intent) => {
+    const steps = intent.route?.steps ?? (intent.route
+        ? [
+            {
+              destinationId: intent.route.destinationId,
+              label: intent.route.destination.label,
+              risk: intent.route.destination.risk,
+              objective: intent.route.summary,
+            },
+          ]
+        : []),
+      approvals = store
+        .list("agent_intent_approval", PROJECT)
+        .filter((item) => item.intentId === intent.id),
+      handoffs = store
+        .list("agent_intent_handoff", PROJECT)
+        .filter((item) => item.intentId === intent.id),
+      graphSteps = steps.map((step, index) => {
+        const approval = approvals
+            .filter((item) => item.destinationId === step.destinationId)
+            .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+            .at(-1),
+          handoff = handoffs
+            .filter((item) => item.destinationId === step.destinationId)
+            .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+            .at(-1),
+          specialist = handoff?.specialistTaskId && handoff?.specialistTaskKind
+            ? store.get(handoff.specialistTaskKind, handoff.specialistTaskId, PROJECT)
+            : undefined,
+          status = specialist?.status ?? handoff?.status ?? approval?.status ?? "PLANNED";
+        return {
+          sequence: index + 1,
+          destinationId: step.destinationId,
+          label: step.label,
+          risk: step.risk,
+          objectiveHash: hash(step.objective),
+          status,
+          ...(approval
+            ? { approvalId: approval.id, approvalStatus: approval.status }
+            : {}),
+          ...(handoff?.specialistTaskId
+            ? {
+                handoffId: handoff.id,
+                specialistTaskId: handoff.specialistTaskId,
+                specialistTaskKind: handoff.specialistTaskKind,
+                specialistStatus: specialist?.status ?? "MISSING",
+              }
+            : {}),
+          executionEvidence: specialist
+            ? "SPECIALIST_TASK_LINKED"
+            : "NO_SPECIALIST_EXECUTION",
+        };
+      }),
+      completedStatuses = new Set(["SUCCEEDED", "APPLIED"]);
+    return {
+      intentId: intent.id,
+      status: intent.status,
+      approvalMode: intent.approvalMode,
+      completionScope: "AGENT_ORCHESTRATION_GRAPH",
+      steps: graphSteps,
+      completedCount: graphSteps.filter((step) =>
+        completedStatuses.has(step.specialistStatus),
+      ).length,
+      totalCount: graphSteps.length,
+      agentIndependentE2E: false,
+      fullLifecycleE2E: false,
+      publicDeployed: false,
+    };
+  };
   const cloudReadiness = async () => {
     let report;
     try {
@@ -2280,6 +2349,22 @@ export function createV2Server(options = {}) {
             .filter((item) => item.intentId === intent.id)
             .sort((a, b) => a.sequence - b.sequence),
         );
+      }
+      const agentIntentGraphRoute = path.match(
+        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/graph$/,
+      );
+      if (agentIntentGraphRoute && method === "GET") {
+        const intent = get("agent_intent", agentIntentGraphRoute[1]),
+          session = auth.sessionFromHeaders(req.headers);
+        if (!local && !session)
+          throw Object.assign(fail(401, "请先登录受邀账号查看Agent任务图"), {
+            code: "AUTHENTICATION_REQUIRED",
+          });
+        if (!mayReadAgentIntent(intent, session))
+          throw Object.assign(fail(403, "当前成员不能查看该Agent任务图"), {
+            code: "PROJECT_PERMISSION_DENIED",
+          });
+        return json(res, 200, agentIntentGraph(intent));
       }
       const agentIntentApprovals = path.match(
         /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/approvals$/,

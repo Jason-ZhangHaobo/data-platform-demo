@@ -508,6 +508,15 @@ test("CLI maps cross-module Agent understanding to the same V2 atomic route", as
   );
   assert.equal(requests[5].path, "/agent/intents/intent-id/approvals");
   assert.deepEqual(requests[5].options.body, { destinationId: "reports" });
+  assert.equal(
+    await runV2Cli(
+      ["agent", "graph", "--id", "intent-id"],
+      {},
+      { client, output: (value) => output.push(value), error: (value) => output.push(value) },
+    ),
+    0,
+  );
+  assert.equal(requests[6].path, "/agent/intents/intent-id/graph");
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -526,6 +535,7 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "agent_intent_create",
     "agent_intent_approval_list",
     "agent_intent_approval_create",
+    "agent_intent_graph",
     "agent_intent_handoff_list",
     "agent_intent_handoff_create",
     "agent_intent_trace",

@@ -7,6 +7,7 @@ export const V2_OPERATIONS = Object.freeze([
   "agent_intent_create",
   "agent_intent_approval_list",
   "agent_intent_approval_create",
+  "agent_intent_graph",
   "agent_intent_handoff_list",
   "agent_intent_handoff_create",
   "agent_intent_trace",
