@@ -12,6 +12,7 @@ import {
   createOssRequest,
   ossConfigFromEnvironment,
 } from "../server/repositories/oss-store.mjs";
+import { requestOssWithRetry } from "./oss-request-retry.mjs";
 
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const allowedKinds = new Set(["delivery-package"]);
@@ -144,9 +145,10 @@ export class LocalArtifactStore {
 }
 
 export class OssImmutableArtifactStore {
-  constructor(config, fetchImpl = fetch) {
+  constructor(config, fetchImpl = fetch, retryOptions = {}) {
     this.config = config;
     this.fetchImpl = fetchImpl;
+    this.retryOptions = retryOptions;
     this.lastVerifiedAt = undefined;
   }
 
@@ -155,17 +157,23 @@ export class OssImmutableArtifactStore {
   }
 
   async request(method, key, body, ifNoneMatch) {
-    const request = createOssRequest({
-      ...this.config,
-      key,
-      method,
-      body,
-      ifNoneMatch,
-    });
-    return this.fetchImpl(request.url, {
-      ...request.options,
-      redirect: "error",
-    });
+    return requestOssWithRetry(
+      () => {
+        const request = createOssRequest({
+          ...this.config,
+          key,
+          method,
+          body,
+          ifNoneMatch,
+        });
+        return {
+          ...request,
+          options: { ...request.options, redirect: "error" },
+        };
+      },
+      this.fetchImpl,
+      this.retryOptions,
+    );
   }
 
   async read(key) {
