@@ -2568,6 +2568,18 @@ export function createV2Server(options = {}) {
             approvalId = body.approvalId === undefined
               ? undefined
               : text(body.approvalId, 1, 80);
+          if (!specialistTaskId) {
+            const existing = store
+              .list("agent_intent_handoff", PROJECT)
+              .find(
+                (item) =>
+                  item.intentId === intent.id &&
+                  item.destinationId === destinationId &&
+                  !item.specialistTaskId,
+              );
+            if (existing)
+              return json(res, 200, publicAgentHandoff(existing));
+          }
           if (specialistTaskId && !specialistTaskKind)
             throw fail(422, "当前专业能力不支持任务关联");
           if (

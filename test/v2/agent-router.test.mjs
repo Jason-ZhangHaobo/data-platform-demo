@@ -631,6 +631,13 @@ test("public Agent intent history is isolated per member and viewer cannot submi
     assert.equal(handoff.status, 201);
     assert.equal(handoff.body.execution, "NO_EXECUTION");
     assert.equal(handoff.body.submittedBy, undefined);
+    const handoffReplay = await publicRequest(
+      base,
+      `/agent/intents/${pmTasks[0].id}/handoffs`,
+      { body: { destinationId: "reports" }, cookie: pm.cookie, csrf: pm.body.csrfToken, key: "pm-handoff-retry" },
+    );
+    assert.equal(handoffReplay.status, 200);
+    assert.equal(handoffReplay.body.id, handoff.body.id);
     assert.equal(store.list("report_agent_plan", PROJECT).length, 0);
     assert.equal(
       (await publicRequest(base, `/agent/intents/${pmTasks[0].id}/handoffs`, { cookie: pm.cookie })).body.length,
