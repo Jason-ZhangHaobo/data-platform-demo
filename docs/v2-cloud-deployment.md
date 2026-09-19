@@ -28,9 +28,31 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 
 `.github/workflows/deploy-v2-staging.yml`只能手动触发，且使用独立GitHub Environment `v2-staging`。它不会修改现有V1函数；目标函数默认为`dataplatform-v2-staging-api`，可由同目录的预置工作流安全创建，也可由账号内操作预创建。
 
-独立预置使用`.github/workflows/provision-v2-staging.yml`。该工作流同样只能手动触发，先做账单、角色信任/管理员级策略文本、同VPC网络和目标不存在检查，然后调用FC 3.0 `CreateFunction`；发现同名函数、未确认NotFound或任何门禁失败时不写云资源。它不删除资源、不更新旧函数，也不把预置成功当成公网部署成功。
+独立预置使用`.github/workflows/provision-v2-staging.yml`。该工作流同样只能手动触发，先做账单、角色信任/管理员级策略文本、同VPC网络和目标不存在检查，然后调用FC 3.0 `CreateFunction`；发现同名函数、未确认NotFound或任何门禁失败时不写云资源。创建后必须把函数预留并发设为1、最小实例数设为0并再次读取验证；结合函数本身`instanceConcurrency=1`，试点最多同时运行一个实例且无请求时可缩至0。它不删除资源、不更新旧函数，也不把预置成功当成公网部署成功。
 
-工作流顺序：全量CI → 构建/检查ZIP → 校验配置及24小时内脱敏云审计/备案证据 → GitHub OIDC换取临时身份 → 实时账单小于200元 → 确认专用函数/VPC/并发/角色 → 以白名单新环境更新V2函数 → 验证HTTPS、MySQL/OSS健康、公开页面和匿名写入401。任一缺失即失败关闭。
+工作流顺序：全量CI → 构建/检查ZIP → 校验配置及24小时内脱敏云审计/备案证据 → GitHub OIDC换取临时身份 → 实时账单小于200元 → 确认专用函数/VPC/单实例上限/按需缩至0/角色 → 以白名单新环境更新V2函数 → 验证HTTPS、MySQL/OSS健康、公开页面和匿名写入401。任一缺失即失败关闭。
+
+### 部署角色最小权限
+
+`scripts/render-v2-deploy-policy.mjs`根据受保护环境中的账号、地域、函数运行角色、vSwitch和安全组生成策略，不在仓库保存真实标识。生成结果只包含：
+
+- 精确函数运行角色上的`ram:GetRole`、`ram:ListPoliciesForRole`和仅允许交给`fc.aliyuncs.com`的`ram:PassRole`；
+- 精确vSwitch上的`vpc:DescribeVSwitches`和精确安全组上的`ecs:DescribeSecurityGroups`；
+- 工作流实际使用的`fc:CreateFunction`、`fc:GetFunction`、`fc:UpdateFunction`、并发和弹性配置读写；不授予`fc:*`；
+- 预算读取仍由已存在的独立`bss:DescribeBillList`策略提供，不混入资源写策略。
+
+预览命令只输出策略模板，不调用云API：
+
+```bash
+ALIYUN_ACCOUNT_ID=... \
+ALIBABA_CLOUD_REGION_ID=cn-hangzhou \
+V2_FUNCTION_ROLE_ARN=... \
+V2_VSW_ID=... \
+V2_SECURITY_GROUP_ID=... \
+node scripts/render-v2-deploy-policy.mjs
+```
+
+当前最新预置运行`35298563745`已通过配置、CI、构包、OIDC和账单检查，随后被`ram:GetRole`拒绝；函数创建步骤没有执行。必须先用上述完整策略核对现有部署角色差异，经明确批准后一次修正，不能继续按单个报错猜权限并反复运行完整部署。
 
 运行变量：
 
@@ -61,7 +83,7 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 1. RDS规格、状态、到期/试用信息、VPC、内网地址及当前账单；
 2. 独立平台数据库和最小权限账号是否存在，不复用`business_demo`业务账号；
 3. 私有OSS Bucket地域、版本/生命周期和FC角色的对象权限；
-4. 独立FC函数运行时、VPC、角色、HTTP触发器、实例并发1和公网HTTPS URL；
+4. 独立FC函数运行时、VPC、角色、实例并发1、预留并发1、最小实例0和公网HTTPS URL；
 5. 以上资源在月度200元总预算内。
 
 `scripts/verify-v2-cloud-preflight.mjs`同时校验审计文件不含账号ID、函数名、Bucket名、连接地址、凭证或公司特有环境键；当期账单、RDS/OSS、V2专用函数、同VPC、备案/域名归属/HTTPS及目标哈希须全部为真。当前真实脱敏证据失败项是专用FC、同VPC和域名备案，工作流应保持不可部署。账单快照¥0.59仅是查询当时状态，不是未来费用承诺。

@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { validateV2StagingConfig } from "../../scripts/verify-v2-staging-config.mjs";
 import { mergeSecretBundle, parseSecretBundle } from "../../scripts/export-v2-staging-secret-bundle.mjs";
 
@@ -30,6 +32,13 @@ base.V2_PUBLIC_ORIGIN = "https://demo.example.cn";
 base.FUNCTION_NAME = "dataplatform-v2-staging-api";
 base.V2_FUNCTION_ROLE_ARN = "acs:ram::123456789012:role/v2-runtime";
 base.ALIYUN_ROLE_ARN = "acs:ram::123456789012:role/v2-deploy";
+base.V2_MYSQL_HOST = "rm-example.mysql.rds.aliyuncs.com";
+base.V2_MYSQL_USER = "platform_app";
+base.V2_MYSQL_PASSWORD = "Valid-Password-2026";
+base.V2_MYSQL_DATABASE = "platform_meta";
+base.V2_BOOTSTRAP_ADMIN_EMAIL = "admin@example.test";
+base.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH = `scrypt$16384$8$1$${Buffer.alloc(16, 1).toString("base64url")}$${Buffer.alloc(64, 2).toString("base64url")}`;
+base.DASHSCOPE_API_KEY = "sk-synthetic-value-for-tests";
 
 test("V2 staging config accepts complete protected input without exposing values", () => {
   const result = validateV2StagingConfig(base);
@@ -78,6 +87,42 @@ test("JASONSECRETS rejects unknown keys and multiline values", () => {
     V2_MYSQL_USER: "user",
     V2_MYSQL_PASSWORD: "pass",
   });
+});
+
+test("staging config rejects placeholders and invalid administrator hashes by key only", () => {
+  const result = validateV2StagingConfig({
+    ...base,
+    V2_MYSQL_HOST: "...",
+    V2_BOOTSTRAP_ADMIN_PASSWORD_HASH: "not-a-hash",
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.errors, [
+    "PLACEHOLDER_VALUE:V2_MYSQL_HOST",
+    "INVALID_VALUE:V2_BOOTSTRAP_ADMIN_PASSWORD_HASH",
+  ]);
+  assert.equal(JSON.stringify(result).includes("not-a-hash"), false);
+});
+
+test("bundle exporter masks values before writing the GitHub environment file", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "shuzhan-secret-export-")),
+    githubEnv = resolve(root, "github-env"),
+    secretValue = "Valid-Password-2026";
+  try {
+    const script = resolve(dirname(fileURLToPath(import.meta.url)), "../../scripts/export-v2-staging-secret-bundle.mjs"),
+      output = execFileSync(process.execPath, [script], {
+        env: {
+          ...process.env,
+          GITHUB_ACTIONS: "true",
+          GITHUB_ENV: githubEnv,
+          JASONSECRETS: JSON.stringify({ V2_MYSQL_PASSWORD: secretValue }),
+        },
+      }).toString("utf8");
+    assert.match(output, /::add-mask::/);
+    assert.equal(output.includes(secretValue), true);
+    assert.equal(readFileSync(githubEnv, "utf8"), `V2_MYSQL_PASSWORD=${secretValue}\n`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("staging config CLI reads process.env instead of validating an empty object", () => {
