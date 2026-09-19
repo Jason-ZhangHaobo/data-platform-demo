@@ -1156,8 +1156,9 @@ export function createV2Server(options = {}) {
                 message,
                 sources: ingestion.listSources(),
                 signal,
-              }),
-              proposal = ingestion.validateAgentPlan(generated.plan);
+              });
+            if (get("ingestion_agent_plan", task.id).status === "CANCELLED") return;
+            const proposal = ingestion.validateAgentPlan(generated.plan);
             store.update("ingestion_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
@@ -1280,8 +1281,9 @@ export function createV2Server(options = {}) {
                 message,
                 sources: realtime.listSources(),
                 signal,
-              }),
-              proposal = realtime.validateAgentPlan(generated.plan);
+              });
+            if (get("realtime_agent_plan", task.id).status === "CANCELLED") return;
+            const proposal = realtime.validateAgentPlan(generated.plan);
             store.update("realtime_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
@@ -1472,8 +1474,9 @@ export function createV2Server(options = {}) {
                 ...context,
                 contracts: dataContracts.agentContext(),
                 signal,
-              }),
-              insight = assets.validateAgentInsight(generated.insight);
+              });
+            if (get("asset_agent_task", task.id).status === "CANCELLED") return;
+            const insight = assets.validateAgentInsight(generated.insight);
             store.update("asset_agent_task", task.id, PROJECT, {
               status: "SUCCEEDED",
               insight,
@@ -1715,8 +1718,9 @@ export function createV2Server(options = {}) {
                 message,
                 ...context,
                 signal,
-              }),
-              proposal = quality.validateAgentPlan(generated.plan);
+              });
+            if (get("quality_agent_plan", task.id).status === "CANCELLED") return;
+            const proposal = quality.validateAgentPlan(generated.plan);
             store.update("quality_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
@@ -1930,8 +1934,9 @@ export function createV2Server(options = {}) {
                 message,
                 ...context,
                 signal,
-              }),
-              proposal = security.validateAgentPlan(generated.plan);
+              });
+            if (get("security_agent_plan", task.id).status === "CANCELLED") return;
+            const proposal = security.validateAgentPlan(generated.plan);
             store.update("security_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
@@ -2065,8 +2070,9 @@ export function createV2Server(options = {}) {
                 message,
                 ...context,
                 signal,
-              }),
-              proposal = reports.validateAgentPlan(generated.plan);
+              });
+            if (get("report_agent_plan", task.id).status === "CANCELLED") return;
+            const proposal = reports.validateAgentPlan(generated.plan);
             store.update("report_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
@@ -2230,8 +2236,9 @@ export function createV2Server(options = {}) {
                 message,
                 ...context,
                 signal,
-              }),
-              diagnosis = operations.validateAgentDiagnosis(
+              });
+            if (get("ops_agent_diagnosis", task.id).status === "CANCELLED") return;
+            const diagnosis = operations.validateAgentDiagnosis(
                 generated.diagnosis,
               );
             store.update("ops_agent_diagnosis", task.id, PROJECT, {
@@ -2765,8 +2772,9 @@ export function createV2Server(options = {}) {
                 services: dataServices.list(),
                 releaseRuns,
                 signal,
-              }),
-              proposal = dataServices.validateAgentPlan(generated.plan);
+              });
+            if (get("service_agent_plan", task.id).status === "CANCELLED") return;
+            const proposal = dataServices.validateAgentPlan(generated.plan);
             store.update("service_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
@@ -3889,6 +3897,11 @@ export function createV2Server(options = {}) {
                 signal,
                 remainingBudget,
               });
+              if (
+                signal.aborted ||
+                get("agent", task.id).status === "CANCELLED"
+              )
+                return;
               const reportedTokens = Number(generated.usage?.total_tokens);
               usedTokens +=
                 Number.isSafeInteger(reportedTokens) && reportedTokens > 0
