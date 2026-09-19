@@ -834,6 +834,32 @@ test("public Agent intent history is isolated per member and viewer cannot submi
       viewerInvite = await invite("viewer@example.test", "VIEWER", "viewer-invite"),
       pm = await publicRequest(base, "/auth/redeem", { body: { inviteCode: pmInvite.body.inviteCode, displayName: "虚构产品经理", password: "Product#Pass2026" }, key: "pm-redeem" }),
       viewer = await publicRequest(base, "/auth/redeem", { body: { inviteCode: viewerInvite.body.inviteCode, displayName: "虚构查看者", password: "Viewer#Pass2026" }, key: "viewer-redeem" });
+    const catalog = await publicRequest(base, "/agent/tools");
+    assert.equal(catalog.status, 200);
+    const pmValidation = await publicRequest(base, "/agent/tools/reports/validate", {
+      body: {
+        catalogVersion: catalog.body.version,
+        contractDigest: catalog.body.contractDigest,
+        input: { message: "设计虚构证券资产报表" },
+      },
+      cookie: pm.cookie,
+      csrf: pm.body.csrfToken,
+      key: "pm-agent-tool-validation",
+    });
+    assert.equal(pmValidation.status, 200);
+    assert.equal(pmValidation.body.execution, "NO_EXECUTION");
+    const viewerValidation = await publicRequest(base, "/agent/tools/reports/validate", {
+      body: {
+        catalogVersion: catalog.body.version,
+        contractDigest: catalog.body.contractDigest,
+        input: { message: "查看者不应校验执行输入" },
+      },
+      cookie: viewer.cookie,
+      csrf: viewer.body.csrfToken,
+      key: "viewer-agent-tool-validation",
+    });
+    assert.equal(viewerValidation.status, 403);
+    assert.equal(viewerValidation.body.code, "PROJECT_PERMISSION_DENIED");
     const created = await publicRequest(base, "/agent/intents", { body: { message: "理解虚构持仓并设计报表" }, cookie: pm.cookie, csrf: pm.body.csrfToken, key: "pm-intent" });
     assert.equal(created.status, 202);
     const pmTasks = await waitFor(
