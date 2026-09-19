@@ -147,6 +147,7 @@
 | D-142 | 最小权限实现修正，2026-09-20 | 官方授权表确认`DescribeVSwitches`仅支持`vswitch/*`，不能与“精确单交换机”策略同时成立；预置改用支持精确ARN的`vpc:DescribeVSwitchAttributes`并验证ID、VPC和Available状态。新增幂等策略应用器：只创建/附加固定自定义策略，既有同名策略内容不一致时失败关闭，不自动创建新版本或扩大权限。完整CI 233/233；真实RAM写入仍等待已登录Cloud Shell执行与复核 |
 | D-143 | 预置快速失败顺序，2026-09-20 | 受保护配置校验后立即完成CLI安装、OIDC换取临时身份以及账单/运行角色/精确网络权限检查，全部通过后才安装依赖、运行完整CI和构包。这样权限或云边界错误不会重复消耗完整构建时间；创建函数仍在质量门与包检查之后，写入范围未扩大。针对性9/9与完整CI 233/233通过，真实工作流待合并后验证 |
 | D-144 | CLI不存在判定修正，2026-09-20 | FC 3.0 CLI在404时可能将`FunctionNotFound`写入stderr纯文本，原工作流只读stdout JSON会把安全的“不存在”误判为未知错误。新增脱敏错误码提取器，仅从JSON固定字段或整行`ErrorCode/Code`读取受限字符错误码；未知内容归一为`UNKNOWN_ALIYUN_ERROR`，不打印RequestId、消息、函数名或端点。完整CI 236/236；真实目标不存在检查待云端运行验证 |
+| D-145 | 私有冷启动烟测边界，2026-09-20 | 域名备案前的MySQL/OSS冷启动验收使用FC同步Invoke API和专用`PRIVATE_STATUS_V1`事件；服务只在`V2_LOCAL_DEVELOPMENT=false`、`V2_PROVISIONING_ONLY=true`、`V2_PRIVATE_SMOKE_ENABLED=true`三条件同时成立时开放`/invoke`，只返回脱敏健康字段且不触发元数据flush。公开更新环境不包含两个预置开关。部署角色不新增`fc:InvokeFunction`，由已登录Cloud Shell主账号临时调用，避免为自动化扩大到全部FC函数的调用权限。完整CI 238/238；真实调用待函数创建后验证 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。

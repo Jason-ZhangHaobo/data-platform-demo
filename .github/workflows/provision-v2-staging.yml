@@ -173,6 +173,8 @@ jobs:
               environmentVariables:{
                 PORT:"9000",
                 V2_LOCAL_DEVELOPMENT:"false",
+                V2_PROVISIONING_ONLY:"true",
+                V2_PRIVATE_SMOKE_ENABLED:"true",
                 V2_PUBLIC_ORIGIN:$public_origin,
                 V2_MYSQL_HOST:$mysql_host,
                 V2_MYSQL_PORT:$mysql_port,

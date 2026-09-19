@@ -169,6 +169,10 @@ export function createV2Server(options = {}) {
     new LocalArtifactStore(join(root, ".v2-artifacts", "object-store"));
   const host = env.V2_HOST ?? "127.0.0.1",
     local = env.V2_LOCAL_DEVELOPMENT !== "false",
+    privateSmokeEnabled =
+      !local &&
+      env.V2_PROVISIONING_ONLY === "true" &&
+      env.V2_PRIVATE_SMOKE_ENABLED === "true",
     releaseSchedulerMode =
       options.releaseSchedulerMode ??
       env.V2_RELEASE_SCHEDULER_MODE ??
@@ -582,13 +586,42 @@ export function createV2Server(options = {}) {
     return { raw: body, parsed };
   };
   const readBody = async (req) => (await readJsonBody(req)).parsed;
+  const readPrivateSmokeBody = async (req) => {
+    if (!String(req.headers["content-type"]).startsWith("application/octet-stream"))
+      throw fail(415, "私有函数验收仅接受二进制事件载荷");
+    let body = "";
+    for await (const chunk of req) {
+      body += chunk;
+      if (Buffer.byteLength(body) > 1024) throw fail(413, "私有函数验收载荷过大");
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(body || "{}");
+    } catch {
+      throw fail(400, "私有函数验收载荷不是JSON");
+    }
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      Object.keys(parsed).length !== 1 ||
+      parsed.operation !== "PRIVATE_STATUS_V1"
+    )
+      throw fail(422, "私有函数验收操作不受支持");
+    return parsed;
+  };
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost"),
         path = url.pathname,
-        method = req.method;
+        method = req.method,
+        isPrivateSmokeInvoke = method === "POST" && path === "/invoke";
       if (typeof persistence.refresh === "function") await persistence.refresh();
-      if (method !== "GET" && typeof persistence.flush === "function")
+      if (
+        method !== "GET" &&
+        !isPrivateSmokeInvoke &&
+        typeof persistence.flush === "function"
+      )
         res.metadataFlush = () => persistence.flush();
       const origin = req.headers.origin;
       let localOriginAllowed = false;
@@ -620,6 +653,35 @@ export function createV2Server(options = {}) {
         req.headers["x-project-id"] !== PROJECT
       )
         throw fail(403, "无权访问此项目");
+      if (isPrivateSmokeInvoke) {
+        if (!privateSmokeEnabled) throw fail(404, "页面不存在");
+        await readPrivateSmokeBody(req);
+        const metadata =
+            typeof store.replicationStatus === "function"
+              ? store.replicationStatus()
+              : undefined,
+          replication =
+            typeof options.stateCoordinator?.replicationStatus === "function"
+              ? options.stateCoordinator.replicationStatus()
+              : undefined;
+        return json(res, 200, {
+          protocol: "shuduo-v2-private-smoke-v1",
+          mode: "PRIVATE_CONTROL_PLANE",
+          metadata: {
+            driver: metadata?.driver ?? "unavailable",
+            healthy: metadata?.healthy === true,
+          },
+          persistence: {
+            mode: replication?.mode ?? "unavailable",
+            healthy: replication?.healthy === true,
+            dataState: {
+              driver: replication?.dataState?.driver ?? "unavailable",
+              healthy: replication?.dataState?.healthy === true,
+            },
+          },
+          publicReady: false,
+        });
+      }
       const isSchedulerTick =
         method === "POST" && path === "/api/v2/internal/scheduler/tick";
       if (isSchedulerTick) {
