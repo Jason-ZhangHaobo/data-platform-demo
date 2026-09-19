@@ -8,6 +8,11 @@ export const secretNames = [
   "V2_MYSQL_USER",
   "V2_MYSQL_PASSWORD",
   "V2_MYSQL_DATABASE",
+  "V2_MYSQL_SOURCE_HOST",
+  "V2_MYSQL_SOURCE_PORT",
+  "V2_MYSQL_SOURCE_USER",
+  "V2_MYSQL_SOURCE_PASSWORD",
+  "V2_MYSQL_SOURCE_DATABASE",
   "V2_BOOTSTRAP_ADMIN_EMAIL",
   "V2_BOOTSTRAP_ADMIN_PASSWORD_HASH",
   "V2_BOOTSTRAP_ADMIN_NAME",
@@ -31,7 +36,20 @@ export function validateSecretValues(values = {}) {
     (!/^\d{1,5}$/.test(values.V2_MYSQL_PORT) || Number(values.V2_MYSQL_PORT) < 1 || Number(values.V2_MYSQL_PORT) > 65535)
   )
     errors.push("INVALID_VALUE:V2_MYSQL_PORT");
-  for (const key of ["V2_MYSQL_USER", "V2_MYSQL_DATABASE"])
+  if (
+    typeof values.V2_MYSQL_SOURCE_PORT === "string" &&
+    values.V2_MYSQL_SOURCE_PORT.length > 0 &&
+    (!/^\d{1,5}$/.test(values.V2_MYSQL_SOURCE_PORT) ||
+      Number(values.V2_MYSQL_SOURCE_PORT) < 1 ||
+      Number(values.V2_MYSQL_SOURCE_PORT) > 65535)
+  )
+    errors.push("INVALID_VALUE:V2_MYSQL_SOURCE_PORT");
+  for (const key of [
+    "V2_MYSQL_USER",
+    "V2_MYSQL_DATABASE",
+    "V2_MYSQL_SOURCE_USER",
+    "V2_MYSQL_SOURCE_DATABASE",
+  ])
     if (typeof values[key] === "string" && values[key].length > 0 && !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(values[key]))
       errors.push(`INVALID_VALUE:${key}`);
   if (
@@ -41,11 +59,23 @@ export function validateSecretValues(values = {}) {
   )
     errors.push("INVALID_VALUE:V2_MYSQL_HOST");
   if (
+    typeof values.V2_MYSQL_SOURCE_HOST === "string" &&
+    values.V2_MYSQL_SOURCE_HOST.length > 0 &&
+    (values.V2_MYSQL_SOURCE_HOST.length < 3 || /\s|:\/\//.test(values.V2_MYSQL_SOURCE_HOST))
+  )
+    errors.push("INVALID_VALUE:V2_MYSQL_SOURCE_HOST");
+  if (
     typeof values.V2_MYSQL_PASSWORD === "string" &&
     values.V2_MYSQL_PASSWORD.length > 0 &&
     (values.V2_MYSQL_PASSWORD.length < 8 || values.V2_MYSQL_PASSWORD.length > 256)
   )
     errors.push("INVALID_VALUE:V2_MYSQL_PASSWORD");
+  if (
+    typeof values.V2_MYSQL_SOURCE_PASSWORD === "string" &&
+    values.V2_MYSQL_SOURCE_PASSWORD.length > 0 &&
+    (values.V2_MYSQL_SOURCE_PASSWORD.length < 8 || values.V2_MYSQL_SOURCE_PASSWORD.length > 256)
+  )
+    errors.push("INVALID_VALUE:V2_MYSQL_SOURCE_PASSWORD");
   if (
     typeof values.V2_BOOTSTRAP_ADMIN_EMAIL === "string" &&
     values.V2_BOOTSTRAP_ADMIN_EMAIL.length > 0 &&

@@ -893,6 +893,8 @@ export function createV2Server(options = {}) {
             ),
             serverMysql: {
               configured: serverMysqlAdapter.configured === true,
+              supportsOfflineSync:
+                serverMysqlAdapter.supportsOfflineSync === true,
               allowTableCount: Array.isArray(serverMysqlAdapter.allowTables)
                 ? serverMysqlAdapter.allowTables.length
                 : 0,
@@ -1165,7 +1167,12 @@ export function createV2Server(options = {}) {
           return json(
             res,
             200,
-            ingestion.runTask(task.id, { requestKey, requestSignature }),
+            task.sourceType === "SERVER_MYSQL"
+              ? await ingestion.runServerMysqlTask(task.id, {
+                  requestKey,
+                  requestSignature,
+                })
+              : ingestion.runTask(task.id, { requestKey, requestSignature }),
           );
         }
       }

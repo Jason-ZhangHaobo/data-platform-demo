@@ -18,6 +18,8 @@
 | `V2_PUBLIC_ORIGIN` | 与 `V2_PUBLIC_URL` 去掉末尾 `/` 后完全一致；仅公网部署工作流必需 |
 | `V2_AUDIT_EVIDENCE_FILE` | `docs/evidence/` 下当月脱敏审计文件路径 |
 | `V2_SPARK_EXECUTOR_URL` | 已完成真实隔离 Worker 验收后再填写；首期留空 |
+| `V2_MYSQL_SOURCE_TABLE_ALLOWLIST` | 虚构业务库允许读取的表名逗号列表；真实同VPC验收前留空 |
+| `V2_MYSQL_SOURCE_SYNC_ENABLED` | 仅真实业务源权限/限额验收后设为`true`；默认留空或`false` |
 
 ## Secrets
 
@@ -28,6 +30,9 @@
 | `V2_MYSQL_HOST` / `V2_MYSQL_PORT` | 独立平台元数据库连接 |
 | `V2_MYSQL_USER` / `V2_MYSQL_PASSWORD` | `platform_app` 账号凭证 |
 | `V2_MYSQL_DATABASE` | `platform_meta` |
+| `V2_MYSQL_SOURCE_HOST` / `V2_MYSQL_SOURCE_PORT` | 独立虚构业务数据库连接，不复用平台元数据库用途 |
+| `V2_MYSQL_SOURCE_USER` / `V2_MYSQL_SOURCE_PASSWORD` | 仅白名单表SELECT的业务源只读账号 |
+| `V2_MYSQL_SOURCE_DATABASE` | 虚构业务数据库，例如`business_demo`；不得填写公司数据库 |
 | `V2_BOOTSTRAP_ADMIN_EMAIL` | 首个管理员邮箱 |
 | `V2_BOOTSTRAP_ADMIN_PASSWORD_HASH` | 本机生成的 scrypt 哈希，不是明文密码 |
 | `V2_BOOTSTRAP_ADMIN_NAME` | 管理员显示名 |

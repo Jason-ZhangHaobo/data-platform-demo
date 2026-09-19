@@ -185,7 +185,7 @@ test("server MySQL source uses a server-side allowlist and collects metadata wit
       detail = app.manager.sourceDetail(source.id);
     assert.equal(test.status, "CONNECTED");
     assert.equal(test.serverVersion, "8.0.synthetic");
-    assert.equal(metadata.classification, "SERVER_MYSQL_METADATA_ONLY");
+    assert.equal(metadata.classification, "SERVER_MYSQL_SCHEMA_SCAN");
     assert.equal(metadata.rowCount, 5);
     assert.equal(metadata.columns.some((column) => "distinctCount" in column), true);
     assert.deepEqual(calls, [["probe", "synthetic_positions"], ["describe", "synthetic_positions"]]);
@@ -199,6 +199,89 @@ test("server MySQL source uses a server-side allowlist and collects metadata wit
       () => app.manager.createTask({ name: "不应同步服务端源", sourceId: source.id, targetTable: "mysql_target", mode: "FULL", mapping: { position_id: "position_id" }, keyFields: ["position_id"] }),
       { code: "MYSQL_SYNC_NOT_ENABLED" },
     );
+  } finally {
+    app.close();
+  }
+});
+
+test("enabled server MySQL performs bounded FULL and snapshot-diff UPSERT without exposing rows", async () => {
+  let rows = [
+    { position_id: "POS-001", market_value: "1000.00", trade_date: "2026-09-10" },
+    { position_id: "POS-002", market_value: "500.00", trade_date: "2026-09-10" },
+  ];
+  const adapter = {
+      profileId: "server-mysql-synthetic",
+      allowTables: ["synthetic_positions"],
+      supportsOfflineSync: true,
+      async probe() {
+        return { status: "CONNECTED", serverVersion: "8.0.synthetic" };
+      },
+      async describe(tableName) {
+        return {
+          tableName,
+          rowCount: rows.length,
+          columns: [
+            { name: "position_id", ordinal: 1, type: "VARCHAR", nullable: false },
+            { name: "market_value", ordinal: 2, type: "DECIMAL", nullable: false },
+            { name: "trade_date", ordinal: 3, type: "DATE", nullable: false },
+          ],
+        };
+      },
+      async readRows() {
+        return { rows: structuredClone(rows), rowCount: rows.length, strategy: "BOUNDED_SNAPSHOT" };
+      },
+    },
+    app = setup({ serverMysqlAdapter: adapter });
+  try {
+    const source = app.manager.createSource({
+      name: "服务端虚构持仓同步",
+      sourceType: "SERVER_MYSQL",
+      tableName: "synthetic_positions",
+    });
+    await app.manager.testServerMysqlConnection(source.id);
+    const metadata = await app.manager.collectServerMysqlMetadata(source.id);
+    assert.equal(metadata.classification, "SERVER_MYSQL_SCHEMA_SCAN");
+    assert.equal(app.manager.sourceDetail(source.id).supportsOfflineSync, true);
+    const mapping = {
+        position_id: "position_id",
+        market_value: "market_value",
+        trade_date: "trade_date",
+      },
+      full = app.manager.createTask({
+        name: "MySQL持仓全量",
+        sourceId: source.id,
+        targetTable: "mysql_positions",
+        mode: "FULL",
+        mapping,
+        keyFields: ["position_id"],
+        watermarkField: "trade_date",
+      }),
+      fullRun = await app.manager.runServerMysqlTask(full.id);
+    assert.equal(fullRun.sourceStrategy, "BOUNDED_FULL_SNAPSHOT");
+    assert.equal(fullRun.inserted, 2);
+    assert.equal(fullRun.finalCount, 2);
+    assert.equal("rows" in fullRun, false);
+    rows = [
+      { position_id: "POS-001", market_value: "1100.00", trade_date: "2026-09-11" },
+      { position_id: "POS-002", market_value: "500.00", trade_date: "2026-09-10" },
+      { position_id: "POS-003", market_value: "300.00", trade_date: "2026-09-11" },
+    ];
+    const delta = app.manager.createTask({
+        name: "MySQL持仓快照差异",
+        sourceId: source.id,
+        targetTable: "mysql_positions",
+        mode: "INCREMENTAL_UPSERT",
+        mapping,
+        keyFields: ["position_id"],
+        watermarkField: "trade_date",
+      }),
+      deltaRun = await app.manager.runServerMysqlTask(delta.id);
+    assert.equal(deltaRun.sourceStrategy, "BOUNDED_SNAPSHOT_DIFF_UPSERT");
+    assert.equal(deltaRun.inserted, 1);
+    assert.equal(deltaRun.updated, 1);
+    assert.equal(deltaRun.finalCount, 3);
+    assert.equal(deltaRun.watermark, "2026-09-11");
+    assert.equal(app.manager.previewTarget("mysql_positions")[0].market_value, "1100.00");
   } finally {
     app.close();
   }
