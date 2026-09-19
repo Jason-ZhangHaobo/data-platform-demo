@@ -1,6 +1,6 @@
 # V2 隔离Spark Worker
 
-日期：2026-09-19。状态：协议、客户端、Worker服务和版本化交付已本机验收；W1 Linux大包已在GitHub Runner真实构建，Java启动、FC网络与真实运行待验证。
+日期：2026-09-20。状态：协议、客户端、Worker服务和版本化交付已本机验收；W1 Linux大包已在GitHub Runner真实构建并从包内运行Spark；W2云部署计划已按官方限制生成但尚未创建FC。
 
 ## 设计目标
 
@@ -41,7 +41,7 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 ## 构建包
 
-`scripts/build-v2-spark-worker-package.sh`要求Linux x64与Python3.10，安装哈希锁定依赖，复制最小Node Worker和Python执行器，拒绝秘密文件与覆盖已有ZIP。包最大480MiB；PySpark源码包约303MiB，不能通过FC API的Base64代码字段上传，应先放入私有OSS，再由FC代码位置引用。
+`scripts/build-v2-spark-worker-package.sh`要求Linux x64与Python3.10，安装哈希锁定依赖，复制最小Node Worker和Python执行器，拒绝秘密文件与覆盖已有ZIP。包最大480MiB；PySpark源码包约303MiB，不能通过FC API的Base64代码字段上传，应先放入私有OSS，再由FC代码位置引用。阿里云官方限制显示杭州通过OSS引用的ZIP上限为500MB，而API Base64请求体上限为100MB；FC 3.0 `InputCodeLocation`明确支持`ossBucketName`与`ossObjectName`。[FC配额与限制](https://help.aliyun.com/en/functioncompute/limits-of-usage)、[OSS代码位置结构](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-struct-inputcodelocation)
 
 手动GitHub工作流`.github/workflows/build-v2-spark-worker.yml`将：
 
@@ -51,11 +51,25 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 2026-09-19首次真实运行`35427706320`在GitHub Linux Runner完成Python3.10哈希依赖安装、协议测试、Spark3.5.9 JAR检查、秘密文件检查和短期Artifact上传。后续双构建证明了确定性ZIP，但包级真实执行进一步发现云requirements遗漏`sqlglot`。按PyPI wheel哈希补齐后，独立运行`35430365703`和`35430441817`均生成318,911,849字节的内部ZIP，SHA-256同为`2ba7c6f649396109d08cf33c0eb2dfd9d320c4c4a9f24ed702d6e2a753fc53e0`；两次均从解压后的包启动Java17/Python3.10 Worker，使用Spark3.5.9实际执行标杆证券SQL、测试SQL和5套独立回归并通过。W1的可复现性和Linux包级运行通过；该证据仍不是FC云健康W2。
 
+## W2部署计划（未部署）
+
+`scripts/render-v2-spark-worker-w2-plan.mjs`只生成脱敏、失败关闭的W2计划，不上传包或创建函数。它把包摘要固定为私有OSS精确对象`data-platform-demo/v2/spark-worker/<sha256>.zip`，要求单次禁止覆盖上传，并给出单独的最小权限差异：部署角色只新增该对象的`oss:GetObject`与`oss:PutObject`，没有List/Delete、Bucket管理或FC Invoke权限。
+
+官方公共层文档确认`custom.debian10`需要显式挂载并配置路径，不能把GitHub Runner上的系统Node/Python/Java误认为FC自带：
+
+- Node20：`acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3`，PATH前置`/opt/nodejs20/bin`；
+- Python3.10：`acs:fc:cn-hangzhou:official:layers/Python310/versions/3`，PATH前置`/opt/python3.10/bin`；
+- Java17：`acs:fc:cn-hangzhou:official:layers/Java17/versions/3`，`JAVA_HOME=/opt/java17`。
+
+依据：[官方公共层](https://help.aliyun.com/en/functioncompute/configure-common-layers-for-a-function-1)、[Node20层说明](https://github.com/awesome-fc/awesome-layers/blob/main/docs/Nodejs20/README.md)、[Python310层说明](https://github.com/awesome-fc/awesome-layers/blob/main/docs/Python310/README.md)、[Java17层说明](https://github.com/awesome-fc/awesome-layers/blob/main/docs/Java17/README.md)。
+
+W2仍使用Cloud Shell主账号做私有手工Invoke，不给GitHub部署角色增加`fc:InvokeFunction`。控制面自动调用Worker属于W3，需要另行诊断并批准控制面运行角色的最小Invoke权限，当前计划明确标记`authorized=false`。
+
 ## 目标FC规格（待账号核验）
 
 - 独立函数，不与V2控制面共进程；
-- Custom Debian 10，使用内置Node20和Python3.10；
-- Java17公共/自定义层的ARN和`JAVA_HOME`通过账号CLI核验后填写，不猜测路径；
+- Custom Debian 10，显式挂载官方Node20、Python3.10和Java17公共层；
+- Node/Python/Java路径使用官方层文档值，真实FC启动后仍须逐项核验；
 - 1 vCPU、2GiB内存、实例并发1、最大实例1、最小实例0；
 - 无公网出站需求；临时目录`/tmp`，运行后删除输入/输出；
 - Worker触发器不得匿名公网开放；控制面使用受保护调用路径；
@@ -69,7 +83,7 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 |---|---|---|
 | W0 协议 | HMAC、篡改、重放、白名单、大小、超时、错误结果 | 已本机验收 |
 | W1 Linux包 | Python3.10构建、哈希依赖、ZIP<480MiB、Spark3.5.9 JAR、包级真实SQL冒烟 | 已验收；双构建摘要及两次5套回归一致 |
-| W2 云健康 | Java/Python/Spark可启动，私网/函数鉴权，最小实例0 | 待真实FC |
+| W2 云健康 | Java/Python/Spark可启动，私网/函数鉴权，最小实例0 | 部署计划/精确权限差异已生成；待真实FC |
 | W3 单任务 | 标杆SQL+测试SQL+五回归真实执行，控制面保存结果 | 待真实FC |
 | W4 故障恢复 | 篡改、超时、取消、并发、Worker冷启动和失败重试 | 待真实FC |
 | W5 公网E2E | 受邀用户从需求到发布监控，至少20条且≥85% | 待公网评测 |

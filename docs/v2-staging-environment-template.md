@@ -18,6 +18,7 @@
 | `V2_PUBLIC_ORIGIN` | 与 `V2_PUBLIC_URL` 去掉末尾 `/` 后完全一致；仅公网部署工作流必需 |
 | `V2_AUDIT_EVIDENCE_FILE` | `docs/evidence/` 下当月脱敏审计文件路径 |
 | `V2_SPARK_EXECUTOR_URL` | 已完成真实隔离 Worker 验收后再填写；首期留空 |
+| `V2_SPARK_WORKER_FUNCTION_NAME` | 独立Spark Worker函数名；必须与`V2_FUNCTION_NAME`不同，W2获批部署前留空 |
 | `V2_MYSQL_SOURCE_TABLE_ALLOWLIST` | 虚构业务库允许读取的表名逗号列表；真实同VPC验收前留空 |
 | `V2_MYSQL_SOURCE_SYNC_ENABLED` | 仅真实业务源权限/限额验收后设为`true`；默认留空或`false` |
 
@@ -41,3 +42,5 @@
 | `JASONSECRETS` | 上述 Secrets 的受控 JSON/KEY=VALUE 包；可替代逐项 Secrets |
 
 工作流会先运行 `scripts/verify-v2-staging-config.mjs`，只返回缺失名称或固定错误码；角色、VPC、账单、函数是否存在等检查随后执行。任何一项失败都不会创建或更新 FC 函数。
+
+Worker W2计划把同一个`V2_SPARK_EXECUTOR_SECRET`仅在部署时映射为Worker环境的`V2_SPARK_WORKER_SECRET`，不要求保存第二份长期秘密。包SHA-256和字节数由受控Linux构建产生，不手填为环境变量。Worker的OSS上传和FC创建尚未获本轮新增授权，不能因计划生成器通过就运行部署。

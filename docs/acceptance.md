@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新265/265测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker构包门及既有全量V2回归；不代表公网云资源已部署 |
+| npm run ci | 最新268/268测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker W1构包与W2计划门及既有全量V2回归；不代表公网云资源已部署 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -494,3 +494,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 首次包内真实Spark冒烟`35429745886`失败；增加仅限合成CI的服务端诊断后，`35430026994`确认`worker.py`导入`sqlglot`失败。云requirements此前遗漏了执行器真实依赖，现按PyPI官方wheel摘要补齐`sqlglot==27.14.0`；修复后仍需重新完成真实SQL冒烟和双构建摘要验收。
 - 修复后运行`35430365703`与`35430441817`均成功：Apache Spark 3.5.9、`FUNCTION_PROCESS`、5套回归和测试SQL全部通过。两份内部ZIP均为318,911,849字节，SHA-256均为`2ba7c6f649396109d08cf33c0eb2dfd9d320c4c4a9f24ed702d6e2a753fc53e0`。
 - 因此W1“可复现Linux包+包内真实SQL运行”通过；W2仍需FC实际Java/Python路径、私网/函数鉴权、最小实例0、冷启动和成本验收。
+
+## 2026-09-20：隔离Spark Worker W2部署计划
+
+- 官方FC限制确认杭州通过OSS引用的ZIP上限500MB，Base64 API请求体上限100MB；W1的318,911,849字节包只能走私有OSS代码位置，不进入JSON/Base64。
+- 官方公共层说明确认Custom Debian需显式挂载Nodejs20、Python310、Java17 v3并配置`/opt`路径；修正了“内置Node/Python、只待Java层”的过时假设。
+- 新增失败关闭计划生成器：函数与控制面不同名、包摘要/字节、VPC/vSwitch/安全组、32字节以上共享密钥全部校验；输出不含真实秘密，固定1 vCPU/2GiB/10GiB磁盘、实例并发1、预留1、最小0、无公网出站。
+- 新增最小权限差异只包含精确包对象的`oss:GetObject`与`oss:PutObject`，没有List/Delete/FC Invoke；W3控制面Invoke明确为未授权。3项测试通过；本轮未上传OSS、未创建Worker、未产生W2云健康证据。
