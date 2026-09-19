@@ -48,6 +48,7 @@ jobs:
           unzip -tq v2-spark-worker.zip
           unzip -l v2-spark-worker.zip | grep -q 'src/v2/remote-spark-worker.mjs'
           unzip -l v2-spark-worker.zip | grep -q 'python/pyspark/jars/spark-sql_2.12-3.5.9.jar'
+          unzip -l v2-spark-worker.zip | grep -q 'python/sqlglot-27.14.0.dist-info/METADATA'
           ! unzip -l v2-spark-worker.zip | grep -E '(^|/)(\.env|\.env\.local|[^/]+\.(pem|key))$'
           test "$(wc -c < v2-spark-worker.zip)" -le 503316480
 

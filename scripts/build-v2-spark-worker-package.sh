@@ -52,6 +52,7 @@ if find "$stage" -type f \( -name '.env' -o -name '.env.local' -o -name '*.pem' 
 fi
 test -f "$stage/python/pyspark/jars/spark-sql_2.12-3.5.9.jar"
 test -f "$stage/python/py4j-0.10.9.9.dist-info/METADATA"
+test -f "$stage/python/sqlglot-27.14.0.dist-info/METADATA"
 
 # A versioned deployment package must be reproducible: pip and checkout times
 # are irrelevant to its identity. Normalize timestamps, drop ZIP extra fields,

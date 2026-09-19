@@ -31,6 +31,7 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 - 历史3.5.7只保留为本机既有证据，不打入新云Worker；
 - 新Worker锁定`pyspark==3.5.9`和`py4j==0.10.9.9`，requirements包含PyPI文件SHA-256；
+- Worker执行器实际依赖`sqlglot==27.14.0`做Spark SQL AST安全检查；首次包级冒烟暴露其未进入云requirements，现已按PyPI wheel SHA-256补齐，不能只检查Spark JAR便声称运行时完整；
 - 云交付包必须由实际3.5.9 Worker运行产生，并把引擎版本、`FUNCTION_PROCESS`隔离和2GiB内存写入版本化部署清单；
 - 远程运行如果报告3.5.7，交付包生成失败关闭；本机历史3.5.7包仍可复验，不被改写。
 
