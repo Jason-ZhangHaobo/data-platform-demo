@@ -35,8 +35,13 @@ test("independent workspace can start every specialist domain without mandatory 
     "/operations/agent/diagnoses",
   ])
     assert.ok(workspace.includes(path), `missing specialist path ${path}`);
-  assert.match(workspace, /在当前会话执行/);
+  assert.match(workspace, /批准并执行此步骤/);
   assert.match(workspace, /应用为草稿/);
   assert.match(workspace, /专业工作台/);
   assert.match(workspace, /specialistTaskId/);
+  assert.match(workspace, /\/agent\/intents\/\$\{task\.id\}\/approvals/);
+  assert.match(workspace, /approvalId/);
+  assert.match(workspace, /批准并执行此步骤/);
+  assert.match(workspace, /本次批准已绑定专业任务/);
+  assert.match(workspace, /linkPending/);
 });

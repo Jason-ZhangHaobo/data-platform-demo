@@ -9,6 +9,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo budget
   shuduo agent intents
   shuduo agent understand --message "理解需求并推荐中台模块"
+  shuduo agent approvals --id INTENT_ID
+  shuduo agent approve --id INTENT_ID --destination MODULE_ID
   shuduo agent handoffs --id INTENT_ID
   shuduo agent handoff --id INTENT_ID --destination MODULE_ID
   shuduo agent trace --id INTENT_ID
@@ -251,6 +253,18 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         method: "POST",
         body: { message: required(parsed.options, "message") },
       });
+    else if (resource === "agent" && action === "approvals")
+      result = await client.request(
+        `/agent/intents/${encodeURIComponent(required(parsed.options, "id"))}/approvals`,
+      );
+    else if (resource === "agent" && action === "approve")
+      result = await client.request(
+        `/agent/intents/${encodeURIComponent(required(parsed.options, "id"))}/approvals`,
+        {
+          method: "POST",
+          body: { destinationId: required(parsed.options, "destination") },
+        },
+      );
     else if (resource === "agent" && action === "handoffs")
       result = await client.request(
         `/agent/intents/${encodeURIComponent(required(parsed.options, "id"))}/handoffs`,

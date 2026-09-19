@@ -34,7 +34,8 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /agent/tasks/:id | 指定委托 | 同上 |
 | GET /agent/intents | 受邀用户的跨模块Agent意图记录 | 路由、风险、摘要和模型用量；公网匿名拒绝读取 |
 | POST /agent/intents | message + 幂等键 | 202；模型仅从白名单模块推荐下一步，固定NO_EXECUTION，不创建下游任务 |
-| GET/POST /agent/intents/:id/handoffs | 只读交接或destinationId + 幂等键 | 仅当前意图所有者或ADMIN可读取；只能交接到已推荐模块，记录草稿交接但不执行下游任务 |
+| GET/POST /agent/intents/:id/approvals | 读取批准或destinationId + 幂等键 | REQUEST_APPROVAL持久化目标摘要哈希与风险；PLAN_ONLY拒绝。批准不执行工具，批准者内部标识不返回 |
+| GET/POST /agent/intents/:id/handoffs | 只读交接或destinationId/专业任务/approvalId + 幂等键 | 已执行专业任务必须绑定同一步骤有效批准，绑定后批准转BOUND；无任务ID的草稿交接仍为NO_EXECUTION |
 | GET /agent/tasks/:id/journey | 只读指定委托 | 七阶段现有版本/运行/交付/审批/计时批次/监控证据与责任归属；固定非Agent自主E2E、非公网，不返回业务行或原始报错 |
 | POST /agent/tasks/:id/prepare-delivery | 空对象 + 幂等键 | 仅对真实模型+Spark独立断言成功任务返回后台交付准备编号；生成不可变调度/部署包并真实文件演练，不审批或发布 |
 | GET /agent/deliveries | 可选sourceAgentTaskId | 列出受控准备阶段、包摘要、演练与失败；不返回密码/业务行 |
