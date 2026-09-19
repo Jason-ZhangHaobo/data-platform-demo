@@ -370,6 +370,124 @@ test("request-approval intent persists and binds an exact step approval before s
     assert.equal(graph.steps[0].executionEvidence, "SPECIALIST_TASK_LINKED");
     assert.equal(graph.agentIndependentE2E, false);
     assert.equal(JSON.stringify(graph).includes("基于已登记资产设计"), false);
+    const parentCancel = await fetch(
+      base + `/agent/intents/${completed.id}/cancel`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "cancel-parent-with-child",
+        },
+        body: "{}",
+      },
+    );
+    assert.equal(parentCancel.status, 409);
+    assert.equal(
+      (await parentCancel.json()).code,
+      "AGENT_CHILD_TASKS_REQUIRE_SEPARATE_CONTROL",
+    );
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    store.close();
+  }
+});
+
+test("cancelling an unbound Agent intent revokes approvals and blocks later execution", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-cancel-")),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    app = createV2Server({
+      root,
+      store,
+      intentPlanner: async () => ({
+        route: {
+          destinationId: "quality",
+          summary: "设计虚构证券质量规则",
+          rationale: "先形成质量规则草稿。",
+          confidence: 0.9,
+        },
+        model: "TEST_ROUTER_MODEL",
+        usage: { total_tokens: 1 },
+      }),
+    });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
+  try {
+    const intent = await fetch(base + "/agent/intents", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shuduo-Client": "workbench",
+        "Idempotency-Key": "cancel-intent-create",
+      },
+      body: JSON.stringify({
+        message: "为虚构证券持仓设计质量规则",
+        approvalMode: "REQUEST_APPROVAL",
+      }),
+    }).then((response) => response.json());
+    const completed = await waitFor(
+      async () => (await fetch(base + "/agent/intents").then((value) => value.json()))[0],
+      (value) => value.id === intent.id && value.status === "SUCCEEDED",
+    );
+    const approval = await fetch(
+      base + `/agent/intents/${completed.id}/approvals`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "cancel-intent-approval",
+        },
+        body: JSON.stringify({ destinationId: "quality" }),
+      },
+    ).then((response) => response.json());
+    assert.equal(approval.status, "APPROVED");
+    const cancelledResponse = await fetch(
+        base + `/agent/intents/${completed.id}/cancel`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shuduo-Client": "workbench",
+            "Idempotency-Key": "cancel-intent-now",
+          },
+          body: "{}",
+        },
+      ),
+      cancelled = await cancelledResponse.json();
+    assert.equal(cancelledResponse.status, 200);
+    assert.equal(cancelled.status, "CANCELLED");
+    const approvals = await fetch(
+      base + `/agent/intents/${completed.id}/approvals`,
+    ).then((response) => response.json());
+    assert.equal(approvals[0].status, "REVOKED");
+    const graph = await fetch(base + `/agent/intents/${completed.id}/graph`).then(
+      (response) => response.json(),
+    );
+    assert.equal(graph.status, "CANCELLED");
+    assert.equal(graph.completedCount, 0);
+    assert.equal(graph.steps[0].approvalStatus, "REVOKED");
+    const blockedApproval = await fetch(
+      base + `/agent/intents/${completed.id}/approvals`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "cancelled-reapprove",
+        },
+        body: JSON.stringify({ destinationId: "quality" }),
+      },
+    );
+    assert.equal(blockedApproval.status, 409);
+    const trace = await fetch(base + `/agent/intents/${completed.id}/trace`).then(
+      (response) => response.json(),
+    );
+    assert.deepEqual(trace.map((item) => item.kind), [
+      "MODEL_ROUTE",
+      "STEP_APPROVAL",
+      "INTENT_CANCELLED",
+    ]);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     store.close();
@@ -463,6 +581,8 @@ test("public Agent intent history is isolated per member and viewer cannot submi
     assert.equal(forbiddenApprovalRead.status, 403);
     const forbiddenGraphRead = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/graph`, { cookie: viewer.cookie });
     assert.equal(forbiddenGraphRead.status, 403);
+    const forbiddenCancel = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/cancel`, { body: {}, cookie: viewer.cookie, csrf: viewer.body.csrfToken, key: "viewer-cancel-intent" });
+    assert.equal(forbiddenCancel.status, 403);
     const forbidden = await publicRequest(base, "/agent/intents", { body: { message: "查看者不能调用模型" }, cookie: viewer.cookie, csrf: viewer.body.csrfToken, key: "viewer-intent" });
     assert.equal(forbidden.status, 403);
     assert.equal(forbidden.body.code, "PROJECT_PERMISSION_DENIED");

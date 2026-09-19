@@ -2366,6 +2366,70 @@ export function createV2Server(options = {}) {
           });
         return json(res, 200, agentIntentGraph(intent));
       }
+      const agentIntentCancelRoute = path.match(
+        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/cancel$/,
+      );
+      if (agentIntentCancelRoute && method === "POST") {
+        const intent = get("agent_intent", agentIntentCancelRoute[1]),
+          session = auth.sessionFromHeaders(req.headers);
+        if (!local && !session)
+          throw Object.assign(fail(401, "请先登录受邀账号停止Agent任务"), {
+            code: "AUTHENTICATION_REQUIRED",
+          });
+        if (!mayReadAgentIntent(intent, session))
+          throw Object.assign(fail(403, "当前成员不能停止该Agent任务"), {
+            code: "PROJECT_PERMISSION_DENIED",
+          });
+        await readBody(req);
+        if (intent.status === "CANCELLED")
+          return json(res, 200, publicAgentIntent(intent));
+        if (!["QUEUED", "RUNNING", "SUCCEEDED"].includes(intent.status))
+          throw Object.assign(fail(409, "当前Agent任务状态不能停止"), {
+            code: "AGENT_INTENT_NOT_CANCELLABLE",
+          });
+        const linked = store
+          .list("agent_intent_handoff", PROJECT)
+          .filter(
+            (item) =>
+              item.intentId === intent.id &&
+              typeof item.specialistTaskId === "string",
+          );
+        if (linked.length > 0)
+          throw Object.assign(
+            fail(409, "已有专业Agent任务，必须按子任务分别检查或取消"),
+            { code: "AGENT_CHILD_TASKS_REQUIRE_SEPARATE_CONTROL" },
+          );
+        for (const approval of store
+          .list("agent_intent_approval", PROJECT)
+          .filter(
+            (item) =>
+              item.intentId === intent.id && item.status === "APPROVED",
+          ))
+          store.update("agent_intent_approval", approval.id, PROJECT, {
+            status: "REVOKED",
+            revokedAt: new Date().toISOString(),
+          });
+        const cancelled = store.update("agent_intent", intent.id, PROJECT, {
+          status: "CANCELLED",
+          cancelledAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        });
+        controls.get(intent.id)?.abort();
+        const latestTrace = store
+          .list("agent_intent_trace", PROJECT)
+          .filter((item) => item.intentId === intent.id)
+          .sort((a, b) => a.sequence - b.sequence)
+          .at(-1);
+        store.create("agent_intent_trace", PROJECT, {
+          intentId: intent.id,
+          sequence: Number(latestTrace?.sequence ?? 0) + 1,
+          kind: "INTENT_CANCELLED",
+          status: "CANCELLED",
+          execution: "NO_EXECUTION",
+          observedAt: new Date().toISOString(),
+        });
+        return json(res, 200, publicAgentIntent(cancelled));
+      }
       const agentIntentApprovals = path.match(
         /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/approvals$/,
       );
@@ -3731,8 +3795,9 @@ export function createV2Server(options = {}) {
                 message,
                 destinations: publicAgentIntentDestinations(),
                 signal,
-              }),
-              route = validateAgentIntentRoute(generated.route);
+              });
+            if (get("agent_intent", task.id).status === "CANCELLED") return;
+            const route = validateAgentIntentRoute(generated.route);
             store.update("agent_intent", task.id, PROJECT, {
               status: "SUCCEEDED",
               route,

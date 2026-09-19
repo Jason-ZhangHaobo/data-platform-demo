@@ -12,6 +12,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent approvals --id INTENT_ID
   shuduo agent approve --id INTENT_ID --destination MODULE_ID
   shuduo agent graph --id INTENT_ID
+  shuduo agent cancel-intent --id INTENT_ID
   shuduo agent handoffs --id INTENT_ID
   shuduo agent handoff --id INTENT_ID --destination MODULE_ID
   shuduo agent trace --id INTENT_ID
@@ -269,6 +270,11 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "graph")
       result = await client.request(
         `/agent/intents/${encodeURIComponent(required(parsed.options, "id"))}/graph`,
+      );
+    else if (resource === "agent" && action === "cancel-intent")
+      result = await client.request(
+        `/agent/intents/${encodeURIComponent(required(parsed.options, "id"))}/cancel`,
+        { method: "POST", body: {} },
       );
     else if (resource === "agent" && action === "handoffs")
       result = await client.request(
