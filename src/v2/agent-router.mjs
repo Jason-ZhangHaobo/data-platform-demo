@@ -35,7 +35,35 @@ export const agentSpecialistKinds = Object.freeze(
 
 export function publicAgentSpecialistTools() {
   return agentIntentDestinations.map((destination) => {
-    const tool = agentSpecialistTools[destination.id];
+    const tool = agentSpecialistTools[destination.id],
+      inputSchema = tool.createMode === "SQL_DEVELOPMENT"
+        ? {
+            type: "object",
+            properties: {
+              message: { type: "string", minLength: 4, maxLength: 2000 },
+              contextId: { type: "string", minLength: 1, maxLength: 80 },
+              sql: { type: "string", minLength: 1, maxLength: 20000 },
+            },
+            required: ["message", "contextId", "sql"],
+            additionalProperties: false,
+          }
+        : tool.createMode === "DELIVERY_FROM_DEVELOPMENT"
+          ? {
+              type: "object",
+              properties: {
+                sourceTaskId: { type: "string", minLength: 1, maxLength: 80 },
+              },
+              required: ["sourceTaskId"],
+              additionalProperties: false,
+            }
+          : {
+              type: "object",
+              properties: {
+                message: { type: "string", minLength: 4, maxLength: 2000 },
+              },
+              required: ["message"],
+              additionalProperties: false,
+            };
     return {
       id: destination.id,
       label: destination.label,
@@ -48,6 +76,18 @@ export function publicAgentSpecialistTools() {
         ? { requiresDestination: tool.requiresDestination }
         : {}),
       approvalRequired: true,
+      idempotencyKeyRequired: true,
+      inputSchema,
+      outputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          status: { type: "string" },
+          completionScope: { type: "string" },
+          fullLifecycleE2E: { type: "boolean", const: false },
+        },
+        required: ["id", "status"],
+      },
       childCancelPath:
         "/agent/intents/{intentId}/children/{destinationId}/cancel",
       executionBoundary:

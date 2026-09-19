@@ -161,6 +161,7 @@
 | D-156 | Agent重启中断体验，2026-09-20 | `interruptPending`覆盖父意图和全部专业Agent；界面将INTERRUPTED与运行中、失败、取消分开显示。专业步骤提供重新批准重试；父意图因隐私策略只存哈希/长度，不能自动重放，明确要求重新描述。刷新按任务图最新子任务恢复。完整CI保持262/262 |
 | D-157 | Agent专业工具目录V1，2026-09-20 | 将十域资源类型与创建/读取/应用/依赖边界集中到`agentSpecialistTools`，`agentSpecialistKinds`由其派生；`GET /agent/tools`返回脱敏`shuduo-agent-tools/v1`。GUI显示目录版本/数量，CLI/MCP提供发现命令。目录统一发现能力但不携带身份、业务行或执行授权。完整CI 263/263 |
 | D-158 | GUI由工具目录驱动，2026-09-20 | 独立工作台移除创建/详情/应用路径硬编码；首次加载必须先取得`shuduo-agent-tools/v1`，再恢复历史任务。创建模式、前置依赖、详情和应用路径均从目录解析，目录缺项失败关闭；任务恢复继续使用任务图最新绑定。完整CI保持263/263 |
+| D-159 | Agent工具输入输出Schema，2026-09-20 | 工具目录为MESSAGE、SQL_DEVELOPMENT和DELIVERY_FROM_DEVELOPMENT生成严格JSON Schema，禁止额外字段并声明幂等键必需；输出至少含id/status并固定fullLifecycleE2E不得由工具创建冒充。十域测试验证Schema与依赖，完整CI保持263/263 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。
