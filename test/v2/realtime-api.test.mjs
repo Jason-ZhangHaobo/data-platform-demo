@@ -42,7 +42,7 @@ async function request(base, path, body, key = "realtime-api") {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       "Idempotency-Key": key,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -67,7 +67,7 @@ async function waitForPlan(base, id, expected) {
 }
 
 test("V2 API records a failed stream checkpoint and resumes from a corrected revision", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-realtime-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-realtime-api-")),
     fixtureRoot = join(root, "streams"),
     store = new MetadataStore(join(root, "platform.sqlite")),
     stateStore = new StreamStateStore(join(root, "state.sqlite"));
@@ -190,7 +190,7 @@ test("V2 API records a failed stream checkpoint and resumes from a corrected rev
 });
 
 test("V2 stream API rejects unsupported adapters and missing fixture paths", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-realtime-api-deny-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-realtime-api-deny-")),
     fixtureRoot = join(root, "streams"),
     store = new MetadataStore(join(root, "platform.sqlite")),
     stateStore = new StreamStateStore(":memory:");
@@ -233,7 +233,7 @@ test("V2 stream API rejects unsupported adapters and missing fixture paths", asy
 });
 
 test("Data Agent creates a validated realtime draft only after governed apply", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-realtime-agent-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-realtime-agent-api-")),
     fixtureRoot = join(root, "streams"),
     store = new MetadataStore(join(root, "platform.sqlite")),
     stateStore = new StreamStateStore(":memory:");

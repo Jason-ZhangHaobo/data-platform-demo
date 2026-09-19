@@ -23,7 +23,7 @@ async function request(base, path, body, key = "reports-api") {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       "Idempotency-Key": key,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -40,7 +40,7 @@ async function waitForPlan(base, id) {
 }
 
 test("V2 report API materializes a snapshot, runs widgets, exports and applies Agent as draft", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-reports-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-reports-api-")),
     fixtureRoot = join(root, "sources"),
     streamRoot = join(root, "streams"),
     store = new MetadataStore(join(root, "platform.sqlite")),

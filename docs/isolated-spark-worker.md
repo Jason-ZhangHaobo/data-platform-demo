@@ -10,7 +10,7 @@
 
 ## 调用协议
 
-控制面发送`shuzhan-spark-execution/v1` JSON：请求ID、提交时间、SQL、一个主上下文、最多五个回归上下文和可选测试SQL。
+控制面发送`shuduo-spark-execution/v1` JSON：请求ID、提交时间、SQL、一个主上下文、最多五个回归上下文和可选测试SQL。
 
 应用层签名：
 

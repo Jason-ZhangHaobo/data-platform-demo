@@ -89,7 +89,7 @@ npm run v2:cli -- services openapi --type xapi --id <SERVICE_ID>
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"xapi_list","arguments":{}}}' | npm run v2:mcp --silent
 ```
 
-外部调用令牌只通过`SHUZHAN_APP_TOKEN`环境变量提供给CLI/MCP，不放进命令参数或MCP工具参数。旧`dataplatform`命令仍是V1模拟接口。
+外部调用令牌只通过`SHUDUO_APP_TOKEN`环境变量提供给CLI/MCP，不放进命令参数或MCP工具参数。旧`dataplatform`命令仍是V1模拟接口。
 
 进入[本机数据源](http://127.0.0.1:3100/v2/?module=sources)查看真实CSV连接、元数据和结构变化；进入[本机离线同步](http://127.0.0.1:3100/v2/?module=sync)查看字段映射、运行证据与落地结果。
 

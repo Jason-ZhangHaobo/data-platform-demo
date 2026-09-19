@@ -174,7 +174,7 @@ export function summarizeM1Evaluation(cases, outcomes) {
       0,
     );
   return {
-    format: "shuzhan-m1-evaluation/v1",
+    format: "shuduo-m1-evaluation/v1",
     contract: m1EvaluationContract,
     caseSetDigest: coverage.caseSetDigest,
     frozenCaseCount: cases.length,

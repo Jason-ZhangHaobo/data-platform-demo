@@ -10,7 +10,7 @@ import { contextIds, referenceSql, validationContractId } from "../../src/v2/con
 import { createDeliveryPackage, sha256 } from "../../src/v2/delivery.mjs";
 
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-agent-journey-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-journey-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     revision = store.create("revision", PROJECT, {
       sql: referenceSql,
@@ -167,7 +167,7 @@ test("Agent journey API exposes the same read-only evidence scope", async () => 
   try {
     const response = await fetch(
       `http://127.0.0.1:${server.server.address().port}/api/v2/agent/tasks/${app.task.id}/journey`,
-      { headers: { "X-Shuzhan-Client": "workbench" } },
+      { headers: { "X-Shuduo-Client": "workbench" } },
     );
     assert.equal(response.status, 200);
     const body = await response.json();

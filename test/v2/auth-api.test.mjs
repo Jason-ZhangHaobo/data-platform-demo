@@ -14,7 +14,7 @@ async function request(base, path, { body, cookie, csrf, key = "auth-api" } = {}
     headers: {
       Accept: "application/json",
       Origin: origin,
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       ...(body === undefined ? {} : { "Idempotency-Key": key }),
       ...(cookie ? { Cookie: cookie } : {}),
@@ -32,7 +32,7 @@ async function request(base, path, { body, cookie, csrf, key = "auth-api" } = {}
 }
 
 test("public invitation sessions enforce CSRF and project role permissions", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-auth-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-auth-api-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     app = createV2Server({
       root,
@@ -63,8 +63,8 @@ test("public invitation sessions enforce CSRF and project role permissions", asy
     });
     assert.equal(login.status, 200);
     assert.equal(login.body.role, "ADMIN");
-    assert.ok(login.cookie.includes("shuzhan_session="));
-    assert.ok(login.cookie.includes("shuzhan_csrf="));
+    assert.ok(login.cookie.includes("shuduo_session="));
+    assert.ok(login.cookie.includes("shuduo_csrf="));
     assert.ok(login.setCookies.every((value) => value.includes("Secure")));
     const noCsrf = await request(base, "/auth/invitations", {
       body: { email: "engineer@example.test", role: "ENGINEER" },
@@ -123,7 +123,7 @@ test("public invitation sessions enforce CSRF and project role permissions", asy
       key: "change-admin-password",
     });
     assert.equal(changedPassword.status, 200);
-    assert.ok(changedPassword.cookie.includes("shuzhan_session="));
+    assert.ok(changedPassword.cookie.includes("shuduo_session="));
     assert.equal(
       (
         await request(base, "/auth/login", {

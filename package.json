@@ -1,14 +1,14 @@
 {
-  "name": "data-platform-demo",
+  "name": "shuduo-data-platform",
   "version": "0.1.0",
   "private": true,
   "bin": {
     "dataplatform": "bin/dataplatform.mjs",
-    "shuzhan": "bin/shuzhan.mjs",
-    "shuzhan-mcp": "bin/shuzhan-mcp.mjs"
+    "shuduo": "bin/shuduo.mjs",
+    "shuduo-mcp": "bin/shuduo-mcp.mjs"
   },
   "type": "module",
-  "description": "A securities data platform with a React workbench and a real Spark verification path.",
+  "description": "Shuduo securities data platform with a React workbench and a real Spark verification path.",
   "dependencies": {
     "mysql2": "^3.11.5",
     "react": "19.1.1",
@@ -32,12 +32,12 @@
     "v2:e2e": "node scripts/run-full-lifecycle-evaluation.mjs",
     "v2:e2e:smoke": "V2_E2E_CASE_LIMIT=1 node scripts/run-full-lifecycle-evaluation.mjs",
     "v2:auth-preview": "node scripts/run-public-auth-preview.mjs",
-    "v2:admin-hash": "node bin/shuzhan-password-hash.mjs",
+    "v2:admin-hash": "node bin/shuduo-password-hash.mjs",
     "v2:spark-test": ".runtime/python/bin/python scripts/verify-spark.py",
     "v2:runtime-test": "node scripts/verify-runtime.mjs",
-    "v2:package": "node bin/shuzhan-package.mjs",
-    "v2:cli": "node bin/shuzhan.mjs",
-    "v2:mcp": "node bin/shuzhan-mcp.mjs",
+    "v2:package": "node bin/shuduo-package.mjs",
+    "v2:cli": "node bin/shuduo.mjs",
+    "v2:mcp": "node bin/shuduo-mcp.mjs",
     "v2:bootstrap": "bash scripts/bootstrap-runtime.sh"
   },
   "engines": {

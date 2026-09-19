@@ -14,8 +14,8 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
 test("Alibaba Cloud read-only audit emits a sanitized decision record", () => {
-  const bin = mkdtempSync(join(tmpdir(), "shuzhan-audit-bin-")),
-    home = mkdtempSync(join(tmpdir(), "shuzhan-audit-home-")),
+  const bin = mkdtempSync(join(tmpdir(), "shuduo-audit-bin-")),
+    home = mkdtempSync(join(tmpdir(), "shuduo-audit-home-")),
     aliyun = join(bin, "aliyun"),
     ossutil = join(bin, "ossutil");
   writeFileSync(

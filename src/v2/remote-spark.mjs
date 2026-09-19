@@ -6,7 +6,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 
-const PROTOCOL = "shuzhan-spark-execution/v1";
+const PROTOCOL = "shuduo-spark-execution/v1";
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
 
 const fail = (status, message, code) =>
@@ -169,9 +169,9 @@ export class RemoteSparkClient {
         headers: {
           "Content-Type": "application/json",
           "X-Project-Id": this.config.projectId,
-          "X-Shuzhan-Timestamp": timestamp,
-          "X-Shuzhan-Nonce": nonce,
-          "X-Shuzhan-Signature": signature,
+          "X-Shuduo-Timestamp": timestamp,
+          "X-Shuduo-Nonce": nonce,
+          "X-Shuduo-Signature": signature,
         },
         body,
         signal: controller.signal,

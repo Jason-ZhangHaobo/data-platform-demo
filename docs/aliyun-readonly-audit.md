@@ -16,7 +16,7 @@
 
 ## 脱敏边界
 
-输出`shuzhan-aliyun-readonly-audit/v1` JSON只保留决策需要的状态：规格、数量、布尔存在性、已知V2环境键是否齐备、金额、目标函数/域名哈希和交叉检查。未知环境键列表不进入报告。
+输出`shuduo-aliyun-readonly-audit/v1` JSON只保留决策需要的状态：规格、数量、布尔存在性、已知V2环境键是否齐备、金额、目标函数/域名哈希和交叉检查。未知环境键列表不进入报告。
 
 明确不输出：账号ID/ARN、函数名、RDS实例ID、VPC/vSwitch/安全组ID、Bucket名、连接地址、数据库账号名列表、环境变量值、AccessKey、密码和Token。VPC ID只在进程内比较RDS/FC是否一致，写文件前删除。
 

@@ -68,7 +68,7 @@ function edited(bundle, file, value) {
   return changed;
 }
 function folder(bundle) {
-  const parent = mkdtempSync(join(tmpdir(), "shuzhan-package-test-"));
+  const parent = mkdtempSync(join(tmpdir(), "shuduo-package-test-"));
   const directory = join(parent, "delivery");
   unpackDeliveryPackage(bundle, directory, bundle.digest);
   return directory;
@@ -83,7 +83,7 @@ test("delivery package binds verified SQL and contains executable test and confi
     plan.order.map((n) => n.kind),
     ["spark_sql", "sql_assertions", "record_evidence"],
   );
-  assert.match(bundle.files["tests.sql"], /FROM __shuzhan_result/);
+  assert.match(bundle.files["tests.sql"], /FROM __shuduo_result/);
   assert.ok(!JSON.stringify(bundle).includes("DASHSCOPE_API_KEY"));
 });
 test("cloud delivery binds the verified Spark 3.5.9 Worker instead of historical 3.5.7", () => {
@@ -197,7 +197,7 @@ test("unpacked files roundtrip through the CLI and existing directories are neve
   const command = spawnSync(
     process.execPath,
     [
-      "bin/shuzhan-package.mjs",
+      "bin/shuduo-package.mjs",
       "plan",
       directory,
       "--digest",
@@ -226,7 +226,7 @@ test("file mutations and symlinks are rejected by the directory loader", () => {
 test("extra package paths are rejected before writing files", () => {
   const bundle = build();
   bundle.files["../outside.txt"] = "do not write";
-  const parent = mkdtempSync(join(tmpdir(), "shuzhan-no-traversal-")),
+  const parent = mkdtempSync(join(tmpdir(), "shuduo-no-traversal-")),
     target = join(parent, "new");
   assert.throws(() => unpackDeliveryPackage(bundle, target, bundle.digest));
   assert.equal(existsSync(target), false);
@@ -317,7 +317,7 @@ test("non-trading days and mismatched business dates never invoke execution", as
   assert.equal(calls, 0);
 });
 test("package APIs preserve idempotency and run only the selected immutable package", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-delivery-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-delivery-api-")),
     store = new MetadataStore(join(root, "db.sqlite"));
   let calls = 0;
   const app = createV2Server({
@@ -337,7 +337,7 @@ test("package APIs preserve idempotency and run only the selected immutable pack
       method: body === undefined ? "GET" : "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shuzhan-Client": "workbench",
+        "X-Shuduo-Client": "workbench",
         "Idempotency-Key": "stable",
       },
       body: body === undefined ? undefined : JSON.stringify(body),

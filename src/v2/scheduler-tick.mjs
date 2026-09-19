@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
-const PROTOCOL = "shuzhan-scheduler-tick/v1";
+const PROTOCOL = "shuduo-scheduler-tick/v1";
 
 const validateSecret = (value) => {
   if (

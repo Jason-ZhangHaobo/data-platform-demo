@@ -9,7 +9,7 @@ audit_bucket="${V2_AUDIT_OSS_BUCKET:-}"
 audit_cycle="${V2_AUDIT_BILLING_CYCLE:-$(TZ=Asia/Shanghai date +%Y-%m)}"
 audit_profile="${V2_AUDIT_OAUTH_PROFILE:-}"
 audit_root="$(mktemp -d)"
-result_path="$(mktemp "${TMPDIR:-/tmp}/shuzhan-v2-readonly-audit.XXXXXX")"
+result_path="$(mktemp "${TMPDIR:-/tmp}/shuduo-v2-readonly-audit.XXXXXX")"
 aliyun_bin="$(command -v aliyun)"
 
 cleanup() {
@@ -183,7 +183,7 @@ jq -n \
   def accts: ($accounts[0].Accounts.DBInstanceAccount // []);
   def billItems: ($bill[0].Data.Items.Item // []);
   {
-    format:"shuzhan-aliyun-readonly-audit/v1",
+    format:"shuduo-aliyun-readonly-audit/v1",
     generatedAt:$generatedAt,
     region:$region,
     billingCycle:$billingCycle,

@@ -2,125 +2,125 @@
 import { fileURLToPath } from "node:url";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 
-const HELP = `数栈 V2 CLI · 与GUI/MCP共用 /api/v2
+const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
 
 用法：
-  shuzhan status
-  shuzhan budget
-  shuzhan agent intents
-  shuzhan agent understand --message "理解需求并推荐中台模块"
-  shuzhan agent handoffs --id INTENT_ID
-  shuzhan agent handoff --id INTENT_ID --destination MODULE_ID
-  shuzhan agent trace --id INTENT_ID
-  shuzhan agent journey --id AGENT_TASK_ID
-  shuzhan agent deliveries [--source-id AGENT_TASK_ID]
-  shuzhan agent prepare-delivery --id AGENT_TASK_ID
-  shuzhan agent delivery --id DELIVERY_TASK_ID
-  shuzhan agent cancel-delivery --id DELIVERY_TASK_ID
-  shuzhan release-runs list
-  shuzhan delivery packages
-  shuzhan delivery show --id PACKAGE_ID
-  shuzhan delivery create --source-run-id RUN_ID --name "客户资产 T+1"
-  shuzhan delivery verify --id PACKAGE_ID --scheduled-for 2026-09-11T09:00:00+08:00
-  shuzhan delivery verifications
-  shuzhan delivery verification --id VERIFICATION_ID
-  shuzhan delivery cancel --id VERIFICATION_ID
-  shuzhan delivery reviews
-  shuzhan delivery review --id PACKAGE_ID --package-digest SHA256 --verification-id VERIFICATION_ID --note "已核对" --attest-code --attest-assertions --attest-delivery-files --attest-local-scope
-  shuzhan releases approvals
-  shuzhan releases approve --package-id PACKAGE_ID --package-digest SHA256 --review-id REVIEW_ID
-  shuzhan releases list
-  shuzhan releases show --id RELEASE_ID
-  shuzhan releases publish --approval-id APPROVAL_ID [--trigger-after-seconds 5 --interval-seconds 15 --run-count 2]
-  shuzhan releases rollback --id RELEASE_ID --target-release-id RELEASE_ID --reason "恢复稳定版本"
-  shuzhan releases monitor
-  shuzhan services list [--type dapi|xapi]
-  shuzhan services create-dapi --name 名称 --slug path --source-run-id ID [--fields a,b]
-  shuzhan services create-xapi --name 名称 --slug path --steps alias:DAPI_ID,alias:DAPI_ID
-  shuzhan services test --type dapi|xapi --id ID [--client-id CLIENT-001]
-  shuzhan services publish --type dapi|xapi --id ID
-  shuzhan services openapi --type dapi|xapi --id ID
-  shuzhan services calls [--id ID]
-  shuzhan services invoke --type dapi|xapi --slug path [--client-id CLIENT-001]
-  shuzhan apps list
-  shuzhan apps create --name 名称 --service-ids ID,ID
-  shuzhan apps revoke --id ID
-  shuzhan sources list
-  shuzhan sources create --name 名称 --file positions_baseline.csv
-  shuzhan sources create-server-mysql --name 名称 --table synthetic_positions
-  shuzhan sources test|metadata --id ID
-  shuzhan sources revision --id ID --file positions_schema_change.csv
-  shuzhan sync list
-  shuzhan sync create --name 名称 --source-id ID --target-table raw_positions --mode full|incremental --mapping from:to,... --keys position_id [--watermark trade_date]
-  shuzhan sync run --id ID
-  shuzhan sync rows --table raw_positions
-  shuzhan sync plan --message "同步需求"
-  shuzhan sync apply-plan --id PLAN_ID
-  shuzhan streams sources
-  shuzhan streams create-source --name 名称 --topic market.quotes.demo --file quotes_fault.jsonl
-  shuzhan streams revision --source-id ID --file quotes_recovered.jsonl
-  shuzhan streams jobs
-  shuzhan streams create-job --name 名称 --source-id ID --target-table realtime_quotes [--checkpoint-every 2] [--max-out-of-order-seconds 2]
-  shuzhan streams start|stop --id JOB_ID
-  shuzhan streams recover --id JOB_ID --revision-id REVISION_ID
-  shuzhan streams state|checkpoints --id JOB_ID
-  shuzhan streams monitor
-  shuzhan streams plan --message "实时同步需求"
-  shuzhan streams plans
-  shuzhan streams apply-plan --id PLAN_ID
-  shuzhan assets list [--query 持仓] [--kind LANDING_TABLE]
-  shuzhan assets show|lineage|impact --id ASSET_ID
-  shuzhan assets annotate --id ASSET_ID --business-name 名称 --description 说明 --domain 财富管理 --owner 负责人 [--tags 持仓,T+1]
-  shuzhan assets agent --message "找出持仓市值资产并解释来源"
-  shuzhan assets agents
-  shuzhan contracts list
-  shuzhan contracts show --id CONTRACT_ID
-  shuzhan contracts create --name 名称 --code positions_contract --asset-id landing:raw_positions --compatibility BACKWARD --owner 负责人 --description "契约说明"
-  shuzhan contracts assess-current --id CONTRACT_ID
-  shuzhan contracts apply-version --id CONTRACT_ID --assessment-id ASSESSMENT_ID [--acknowledge-breaking]
-  shuzhan contracts check --id CONTRACT_ID
-  shuzhan metrics list
-  shuzhan metrics create --name 持仓市值 --code holding_market_value --asset-id landing:raw_positions --aggregation SUM --field market_value --group-by asset_class --definition "按资产类别汇总持仓，不含现金"
-  shuzhan metrics run --id METRIC_ID
-  shuzhan standards list
-  shuzhan standards create --name 证券代码格式 --code security_code_format --asset-id landing:raw_positions --field security_code --semantic-type SECURITY_CODE --description "使用SEC前缀"
-  shuzhan standards check --id STANDARD_ID
-  shuzhan quality overview|list
-  shuzhan quality create --name 名称 --code holding_value_range --asset-id landing:raw_positions --field market_value --type value-range --min 0.00 --max 5000.00 --description "持仓市值范围"
-  shuzhan quality version --id RULE_ID --type value-range --min 0.00 --max 10000.00 --description "校准范围"
-  shuzhan quality run --id RULE_ID
-  shuzhan quality plan --message "为证券代码生成非空规则"
-  shuzhan quality plans
-  shuzhan quality apply-plan --id PLAN_ID
-  shuzhan security overview|personas|policies|requests|audits
-  shuzhan security create-policy --name 名称 --code advisor_positions --asset-id landing:raw_positions --roles WEALTH_ADVISOR --row-scope ADVISOR_CLIENTS --actions position_id:MASK_FULL,client_id:MASK_PARTIAL,security_code:ALLOW,market_value:ALLOW --description "顾问最小权限"
-  shuzhan security version --id POLICY_ID --roles WEALTH_ADVISOR --row-scope ADVISOR_CLIENTS --actions client_id:HASH,security_code:ALLOW --description "策略V2"
-  shuzhan security query --asset-id landing:raw_positions --actor-id user-wealth-advisor
-  shuzhan security request --asset-id landing:raw_positions --scope READ_MASKED --reason "安全验收" --actor-id user-auditor
-  shuzhan security review --id REQUEST_ID --decision APPROVE --duration-hours 24 --note "仅限合成数据" --actor-id user-data-owner
-  shuzhan security plan --message "为财富顾问生成持仓最小权限策略"
-  shuzhan security plans
-  shuzhan security apply-plan --id PLAN_ID
-  shuzhan reports overview|datasets|list
-  shuzhan reports create-dataset --name 名称 --code holdings_dataset --asset-id landing:raw_positions --fields client_id,security_code,asset_class,industry,market_value,trade_date
-  shuzhan reports refresh-dataset --id DATASET_ID
-  shuzhan reports create --name 持仓结构报告 --code holdings_structure --dataset-id DATASET_ID --preset holdings --description "持仓指标与分布"
-  shuzhan reports version --id REPORT_ID --preset holdings --description "报表V2"
-  shuzhan reports run|export --id REPORT_ID
-  shuzhan reports plan --message "生成持仓结构报告"
-  shuzhan reports plans
-  shuzhan reports apply-plan --id PLAN_ID
-  shuzhan ops overview|refresh|incidents
-  shuzhan ops show --id INCIDENT_ID
-  shuzhan ops acknowledge --id INCIDENT_ID --note "已确认"
-  shuzhan ops resolve --id INCIDENT_ID --evidence-kind offline_sync_run --evidence-id RUN_ID --note "新批次已成功"
-  shuzhan ops diagnose --message "诊断当前事故"
-  shuzhan ops diagnoses
-  shuzhan evaluations full-lifecycle
+  shuduo status
+  shuduo budget
+  shuduo agent intents
+  shuduo agent understand --message "理解需求并推荐中台模块"
+  shuduo agent handoffs --id INTENT_ID
+  shuduo agent handoff --id INTENT_ID --destination MODULE_ID
+  shuduo agent trace --id INTENT_ID
+  shuduo agent journey --id AGENT_TASK_ID
+  shuduo agent deliveries [--source-id AGENT_TASK_ID]
+  shuduo agent prepare-delivery --id AGENT_TASK_ID
+  shuduo agent delivery --id DELIVERY_TASK_ID
+  shuduo agent cancel-delivery --id DELIVERY_TASK_ID
+  shuduo release-runs list
+  shuduo delivery packages
+  shuduo delivery show --id PACKAGE_ID
+  shuduo delivery create --source-run-id RUN_ID --name "客户资产 T+1"
+  shuduo delivery verify --id PACKAGE_ID --scheduled-for 2026-09-11T09:00:00+08:00
+  shuduo delivery verifications
+  shuduo delivery verification --id VERIFICATION_ID
+  shuduo delivery cancel --id VERIFICATION_ID
+  shuduo delivery reviews
+  shuduo delivery review --id PACKAGE_ID --package-digest SHA256 --verification-id VERIFICATION_ID --note "已核对" --attest-code --attest-assertions --attest-delivery-files --attest-local-scope
+  shuduo releases approvals
+  shuduo releases approve --package-id PACKAGE_ID --package-digest SHA256 --review-id REVIEW_ID
+  shuduo releases list
+  shuduo releases show --id RELEASE_ID
+  shuduo releases publish --approval-id APPROVAL_ID [--trigger-after-seconds 5 --interval-seconds 15 --run-count 2]
+  shuduo releases rollback --id RELEASE_ID --target-release-id RELEASE_ID --reason "恢复稳定版本"
+  shuduo releases monitor
+  shuduo services list [--type dapi|xapi]
+  shuduo services create-dapi --name 名称 --slug path --source-run-id ID [--fields a,b]
+  shuduo services create-xapi --name 名称 --slug path --steps alias:DAPI_ID,alias:DAPI_ID
+  shuduo services test --type dapi|xapi --id ID [--client-id CLIENT-001]
+  shuduo services publish --type dapi|xapi --id ID
+  shuduo services openapi --type dapi|xapi --id ID
+  shuduo services calls [--id ID]
+  shuduo services invoke --type dapi|xapi --slug path [--client-id CLIENT-001]
+  shuduo apps list
+  shuduo apps create --name 名称 --service-ids ID,ID
+  shuduo apps revoke --id ID
+  shuduo sources list
+  shuduo sources create --name 名称 --file positions_baseline.csv
+  shuduo sources create-server-mysql --name 名称 --table synthetic_positions
+  shuduo sources test|metadata --id ID
+  shuduo sources revision --id ID --file positions_schema_change.csv
+  shuduo sync list
+  shuduo sync create --name 名称 --source-id ID --target-table raw_positions --mode full|incremental --mapping from:to,... --keys position_id [--watermark trade_date]
+  shuduo sync run --id ID
+  shuduo sync rows --table raw_positions
+  shuduo sync plan --message "同步需求"
+  shuduo sync apply-plan --id PLAN_ID
+  shuduo streams sources
+  shuduo streams create-source --name 名称 --topic market.quotes.demo --file quotes_fault.jsonl
+  shuduo streams revision --source-id ID --file quotes_recovered.jsonl
+  shuduo streams jobs
+  shuduo streams create-job --name 名称 --source-id ID --target-table realtime_quotes [--checkpoint-every 2] [--max-out-of-order-seconds 2]
+  shuduo streams start|stop --id JOB_ID
+  shuduo streams recover --id JOB_ID --revision-id REVISION_ID
+  shuduo streams state|checkpoints --id JOB_ID
+  shuduo streams monitor
+  shuduo streams plan --message "实时同步需求"
+  shuduo streams plans
+  shuduo streams apply-plan --id PLAN_ID
+  shuduo assets list [--query 持仓] [--kind LANDING_TABLE]
+  shuduo assets show|lineage|impact --id ASSET_ID
+  shuduo assets annotate --id ASSET_ID --business-name 名称 --description 说明 --domain 财富管理 --owner 负责人 [--tags 持仓,T+1]
+  shuduo assets agent --message "找出持仓市值资产并解释来源"
+  shuduo assets agents
+  shuduo contracts list
+  shuduo contracts show --id CONTRACT_ID
+  shuduo contracts create --name 名称 --code positions_contract --asset-id landing:raw_positions --compatibility BACKWARD --owner 负责人 --description "契约说明"
+  shuduo contracts assess-current --id CONTRACT_ID
+  shuduo contracts apply-version --id CONTRACT_ID --assessment-id ASSESSMENT_ID [--acknowledge-breaking]
+  shuduo contracts check --id CONTRACT_ID
+  shuduo metrics list
+  shuduo metrics create --name 持仓市值 --code holding_market_value --asset-id landing:raw_positions --aggregation SUM --field market_value --group-by asset_class --definition "按资产类别汇总持仓，不含现金"
+  shuduo metrics run --id METRIC_ID
+  shuduo standards list
+  shuduo standards create --name 证券代码格式 --code security_code_format --asset-id landing:raw_positions --field security_code --semantic-type SECURITY_CODE --description "使用SEC前缀"
+  shuduo standards check --id STANDARD_ID
+  shuduo quality overview|list
+  shuduo quality create --name 名称 --code holding_value_range --asset-id landing:raw_positions --field market_value --type value-range --min 0.00 --max 5000.00 --description "持仓市值范围"
+  shuduo quality version --id RULE_ID --type value-range --min 0.00 --max 10000.00 --description "校准范围"
+  shuduo quality run --id RULE_ID
+  shuduo quality plan --message "为证券代码生成非空规则"
+  shuduo quality plans
+  shuduo quality apply-plan --id PLAN_ID
+  shuduo security overview|personas|policies|requests|audits
+  shuduo security create-policy --name 名称 --code advisor_positions --asset-id landing:raw_positions --roles WEALTH_ADVISOR --row-scope ADVISOR_CLIENTS --actions position_id:MASK_FULL,client_id:MASK_PARTIAL,security_code:ALLOW,market_value:ALLOW --description "顾问最小权限"
+  shuduo security version --id POLICY_ID --roles WEALTH_ADVISOR --row-scope ADVISOR_CLIENTS --actions client_id:HASH,security_code:ALLOW --description "策略V2"
+  shuduo security query --asset-id landing:raw_positions --actor-id user-wealth-advisor
+  shuduo security request --asset-id landing:raw_positions --scope READ_MASKED --reason "安全验收" --actor-id user-auditor
+  shuduo security review --id REQUEST_ID --decision APPROVE --duration-hours 24 --note "仅限合成数据" --actor-id user-data-owner
+  shuduo security plan --message "为财富顾问生成持仓最小权限策略"
+  shuduo security plans
+  shuduo security apply-plan --id PLAN_ID
+  shuduo reports overview|datasets|list
+  shuduo reports create-dataset --name 名称 --code holdings_dataset --asset-id landing:raw_positions --fields client_id,security_code,asset_class,industry,market_value,trade_date
+  shuduo reports refresh-dataset --id DATASET_ID
+  shuduo reports create --name 持仓结构报告 --code holdings_structure --dataset-id DATASET_ID --preset holdings --description "持仓指标与分布"
+  shuduo reports version --id REPORT_ID --preset holdings --description "报表V2"
+  shuduo reports run|export --id REPORT_ID
+  shuduo reports plan --message "生成持仓结构报告"
+  shuduo reports plans
+  shuduo reports apply-plan --id PLAN_ID
+  shuduo ops overview|refresh|incidents
+  shuduo ops show --id INCIDENT_ID
+  shuduo ops acknowledge --id INCIDENT_ID --note "已确认"
+  shuduo ops resolve --id INCIDENT_ID --evidence-kind offline_sync_run --evidence-id RUN_ID --note "新批次已成功"
+  shuduo ops diagnose --message "诊断当前事故"
+  shuduo ops diagnoses
+  shuduo evaluations full-lifecycle
 
 环境变量：
-  SHUZHAN_V2_API_BASE_URL  默认 http://127.0.0.1:3100/api/v2
-  SHUZHAN_APP_TOKEN        调用已发布服务；不建议通过命令参数传递令牌
+  SHUDUO_V2_API_BASE_URL  默认 http://127.0.0.1:3100/api/v2
+  SHUDUO_APP_TOKEN        调用已发布服务；不建议通过命令参数传递令牌
 
 旧 dataplatform 命令仍对应V1模拟接口，不能作为V2验收证据。`;
 
@@ -231,7 +231,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       new V2Client({
         baseUrl:
           parsed.options.base_url ??
-          env.SHUZHAN_V2_API_BASE_URL ??
+          env.SHUDUO_V2_API_BASE_URL ??
           "http://127.0.0.1:3100/api/v2",
         client: "cli",
       });
@@ -450,8 +450,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         `/data-services/calls${parsed.options.id ? `?service_id=${encodeURIComponent(parsed.options.id)}` : ""}`,
       );
     } else if (resource === "services" && action === "invoke") {
-      const token = env.SHUZHAN_APP_TOKEN;
-      if (!token) throw new Error("缺少环境变量 SHUZHAN_APP_TOKEN");
+      const token = env.SHUDUO_APP_TOKEN;
+      if (!token) throw new Error("缺少环境变量 SHUDUO_APP_TOKEN");
       const query = new URLSearchParams({
         page: "1",
         page_size: "20",

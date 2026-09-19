@@ -104,7 +104,7 @@ test("staging config rejects placeholders and invalid administrator hashes by ke
 });
 
 test("bundle exporter masks values before writing the GitHub environment file", () => {
-  const root = mkdtempSync(resolve(tmpdir(), "shuzhan-secret-export-")),
+  const root = mkdtempSync(resolve(tmpdir(), "shuduo-secret-export-")),
     githubEnv = resolve(root, "github-env"),
     secretValue = "Valid-Password-2026";
   try {

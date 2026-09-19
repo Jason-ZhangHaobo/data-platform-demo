@@ -9,7 +9,7 @@ import { contextIds, referenceSql, validationContractId } from "../../src/v2/con
 import { sha256, loadDeliveryDirectory, createDeliveryPackage } from "../../src/v2/delivery.mjs";
 
 async function setup(options = {}) {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-agent-delivery-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-delivery-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     revision = store.create("revision", PROJECT, {
       sql: referenceSql,
@@ -75,7 +75,7 @@ async function setup(options = {}) {
       method: body === undefined ? "GET" : "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shuzhan-Client": "workbench",
+        "X-Shuduo-Client": "workbench",
         "Idempotency-Key": key,
       },
       body: body === undefined ? undefined : JSON.stringify(body),

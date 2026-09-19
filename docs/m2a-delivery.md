@@ -65,9 +65,9 @@ M2a完成时适配器为local-spark-v1/Spark3.5.7；当前本机运行时已升�
 需要本项目源码，以及已安装的Node.js24、Java17、Python/Spark3.5.9。历史3.5.7包仍可在匹配版本中复验；交付包不打包这些运行时。
 
 ```bash
-node bin/shuzhan-package.mjs unpack bundle.json --output new-delivery-directory --digest <平台记录中的摘要>
-node bin/shuzhan-package.mjs plan new-delivery-directory --digest <同一摘要> --scheduled-for 2026-09-11T09:00:00+08:00
-node bin/shuzhan-package.mjs run new-delivery-directory --digest <同一摘要> --scheduled-for 2026-09-11T09:00:00+08:00
+node bin/shuduo-package.mjs unpack bundle.json --output new-delivery-directory --digest <平台记录中的摘要>
+node bin/shuduo-package.mjs plan new-delivery-directory --digest <同一摘要> --scheduled-for 2026-09-11T09:00:00+08:00
+node bin/shuduo-package.mjs run new-delivery-directory --digest <同一摘要> --scheduled-for 2026-09-11T09:00:00+08:00
 ```
 
 也可使用 npm run v2:package -- 后接相同参数。
@@ -89,6 +89,6 @@ run 从目录重新读取并验证文件，不直接复用界面里的 SQL 字�
 
 ## 2026-09-15多端接口补齐
 
-V2 CLI/MCP现提供交付包列表、详情、创建、按文件演练、演练列表/详情和取消，全部调用本页同一`/api/v2`资源。`shuzhan-package`继续用于下载后离线目录校验，不取代平台API。取消类MCP工具明确要求用户确认。
+V2 CLI/MCP现提供交付包列表、详情、创建、按文件演练、演练列表/详情和取消，全部调用本页同一`/api/v2`资源。`shuduo-package`继续用于下载后离线目录校验，不取代平台API。取消类MCP工具明确要求用户确认。
 
 随后新增的代码Agent受控交付准备不会改写本页历史M2a证据；新任务的真实Spark3.5.9包、文件演练和边界见[Agent交付准备报告](agent-delivery-preparation.md)。

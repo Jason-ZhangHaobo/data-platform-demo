@@ -11,14 +11,14 @@ import {
 } from "../../src/v2/lifecycle-evaluation.mjs";
 
 test("latest lifecycle report API exposes local scope without relabeling it public", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-lifecycle-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-lifecycle-api-")),
     reportRoot = join(root, ".v2-artifacts", "full-lifecycle"),
     store = new MetadataStore(join(root, "platform.sqlite"));
   mkdirSync(reportRoot, { recursive: true });
   writeFileSync(
     join(reportRoot, "latest.json"),
     JSON.stringify({
-      format: "shuzhan-full-lifecycle-evaluation/v1",
+      format: "shuduo-full-lifecycle-evaluation/v1",
       contract: fullLifecycleContract,
       frozenCaseCount: 20,
       completedCaseCount: 20,

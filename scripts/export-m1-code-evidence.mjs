@@ -92,7 +92,7 @@ try {
       };
     });
   const output = {
-    format: "shuzhan-frozen-code-evidence/v1",
+    format: "shuduo-frozen-code-evidence/v1",
     sourceEvaluationRunId: report.evaluationRunId,
     sourceReportSha256: createHash("sha256").update(reportSource).digest("hex"),
     caseSetDigest: coverage.caseSetDigest,

@@ -42,7 +42,7 @@ export class MySqlMetadataBackend {
 
   async load(project) {
     const empty = JSON.stringify({
-      format: "shuzhan-metadata-snapshot/v1",
+      format: "shuduo-metadata-snapshot/v1",
       projectId: project,
       documents: [],
       idempotency: [],

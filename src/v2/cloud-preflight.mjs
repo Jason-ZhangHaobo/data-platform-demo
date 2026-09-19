@@ -17,7 +17,7 @@ export function evaluateCloudPreflight(report, now = Date.now(), target = {}) {
     if (url.protocol === "https:" && !url.username && !url.password && !isIP(url.hostname) && url.hostname.includes(".") && url.hostname !== "localhost") publicHost = url.hostname.toLowerCase();
   } catch { /* Missing or malformed public URL closes the gate. */ }
   const checks = {
-    sanitizedFormat: report?.format === "shuzhan-aliyun-readonly-audit/v1",
+    sanitizedFormat: report?.format === "shuduo-aliyun-readonly-audit/v1",
     sanitizedEvidence: !hasSensitiveEvidence(report),
     region: report?.region === "cn-hangzhou",
     freshEvidence: Number.isFinite(Date.parse(report?.generatedAt)) && Date.parse(report.generatedAt) <= now && now - Date.parse(report.generatedAt) <= 24 * 60 * 60 * 1000,

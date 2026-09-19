@@ -34,7 +34,7 @@ export function validateFrozenCodeEvidence(evidence) {
     expected = new Map(cases.map((item) => [item.id, item]));
   if (
     !evidence ||
-    evidence.format !== "shuzhan-frozen-code-evidence/v1" ||
+    evidence.format !== "shuduo-frozen-code-evidence/v1" ||
     evidence.sourceEvaluationRunId !==
       fullLifecycleContract.sourceCodeEvaluationRunId ||
     evidence.caseSetDigest !== coverage.caseSetDigest ||
@@ -97,7 +97,7 @@ export function summarizeLifecycleEvaluation(evidence, outcomes) {
     detours = outcomes.flatMap((item) => item.detours ?? []),
     finalRate = completed ? succeeded / completed : 0;
   return {
-    format: "shuzhan-full-lifecycle-evaluation/v1",
+    format: "shuduo-full-lifecycle-evaluation/v1",
     contract: fullLifecycleContract,
     sourceEvidenceDigest: frozen.evidenceDigest,
     frozenCaseCount: evidence.cases.length,

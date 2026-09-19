@@ -24,6 +24,9 @@ const files = [
   ...(await filesUnder(".github")),
   ...(await filesUnder("web")),
   ...(await filesUnder("fixtures")),
+  "README.md",
+  "package.json",
+  "package-lock.json",
   "s.yaml",
   ".env.example",
   ".env.v2.example",
@@ -45,9 +48,15 @@ const forbidden = [
   /gh[pousr]_[A-Za-z0-9]{20,}/,
   /BEGIN (RSA |OPENSSH )?PRIVATE KEY/,
 ];
+const retiredBrand = [
+  new RegExp("\\u6570\\u6808", "u"),
+  new RegExp(["sh", "uz", "han"].join(""), "i"),
+];
 for (const file of files) {
   const content = await readFile(file, "utf8");
   if (forbidden.some((pattern) => pattern.test(content)))
     throw new Error(`Possible secret found in ${file}`);
+  if (retiredBrand.some((pattern) => pattern.test(content)))
+    throw new Error(`Retired product brand found in ${file}`);
 }
 console.log(`Source checks passed for ${files.length} files.`);

@@ -1,8 +1,8 @@
-# 数栈 V2：目标模式续接指令
+# 数舵 V2：目标模式续接指令
 
 核验日期：2026-09-19。本文件用于用户重设目标；不是完成声明，也不自动扩大云权限。
 
-继续现有数栈 V2 项目，不从零重建。项目目录为 `/Users/zhanghaobo/Documents/ChatGPT/数据中台产品经理能力打造/data-platform-v2`。先读取 AGENTS.md、docs/PRD.md、docs/decisions.md、docs/product-roadmap.md、docs/acceptance.md，并用当前代码、GitHub、运行记录修正过时描述。
+继续现有数舵 V2 项目，不从零重建。项目目录为 `/Users/zhanghaobo/Documents/ChatGPT/数据中台产品经理能力打造/data-platform-v2`。先读取 AGENTS.md、docs/PRD.md、docs/decisions.md、docs/product-roadmap.md、docs/acceptance.md，并用当前代码、GitHub、运行记录修正过时描述。
 
 ## 产品目标与边界
 

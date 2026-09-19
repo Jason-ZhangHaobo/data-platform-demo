@@ -610,7 +610,7 @@ export function DeliveryWorkbench({
                     null,
                     2,
                   ),
-                  "shuzhan-delivery-" + selected.id.slice(0, 8) + ".json",
+                  "shuduo-delivery-" + selected.id.slice(0, 8) + ".json",
                 )
               }
             >

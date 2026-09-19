@@ -7,12 +7,12 @@ import { MetadataStore } from "../../src/v2/store.mjs";
 import { BudgetManager } from "../../src/v2/budget.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { referenceSql } from "../../src/v2/context.mjs";
-import { runV2Cli } from "../../bin/shuzhan.mjs";
+import { runV2Cli } from "../../bin/shuduo.mjs";
 
 const fixedNow = Date.parse("2026-09-15T04:00:00.000Z");
 
 function setup(env = {}) {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-budget-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-budget-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     budget = new BudgetManager({
       store,
@@ -109,7 +109,7 @@ test("remote Spark guard uses both run count and actual seconds plus reservation
 });
 
 test("API rejects an Agent task before creation when the monthly model guard is closed", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-budget-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-budget-api-")),
     store = new MetadataStore(join(root, "platform.sqlite"));
   current(store, "service_agent_plan", {
     mode: "LIVE_MODEL",
@@ -156,7 +156,7 @@ test("API rejects an Agent task before creation when the monthly model guard is 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shuzhan-Client": "workbench",
+        "X-Shuduo-Client": "workbench",
         "Idempotency-Key": "budget-blocked-agent",
       },
       body: JSON.stringify({

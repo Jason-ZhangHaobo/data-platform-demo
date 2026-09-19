@@ -10,13 +10,13 @@ import {
 
 const digest = "a".repeat(64);
 const value = {
-  manifest: { format: "shuzhan-delivery/v1" },
+  manifest: { format: "shuduo-delivery/v1" },
   files: { "main.sql": "SELECT 1" },
   digest,
 };
 
 test("local artifact store is immutable and verifies the exact referenced bytes", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-artifacts-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-artifacts-")),
     store = new LocalArtifactStore(root),
     first = await store.put("delivery-package", digest, value),
     replay = await store.put("delivery-package", digest, value);

@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { getContext, contextIds, validationContractId } from "./context.mjs";
 
-export const deliveryFormat = "shuzhan-delivery/v1";
+export const deliveryFormat = "shuduo-delivery/v1";
 export const deliveryFiles = [
   "main.sql",
   "tests.sql",
@@ -74,7 +74,7 @@ export function createTestSql(expected) {
     expected.length +
     "\n  AND " +
     checks.join("\n  AND ") +
-    "\nTHEN true ELSE false END AS passed\nFROM __shuzhan_result\n"
+    "\nTHEN true ELSE false END AS passed\nFROM __shuduo_result\n"
   );
 }
 
@@ -128,7 +128,7 @@ export function createDeliveryPackage({
   const context = getContext(revision.contextId);
   if (!context) throw fail("输入上下文不存在");
   const calendar = {
-    schema: "shuzhan-calendar/v1",
+    schema: "shuduo-calendar/v1",
     kind: "SYNTHETIC_DEMO",
     timezone: "Asia/Shanghai",
     range: { start: "2026-09-10", end: "2026-09-14" },
@@ -146,7 +146,7 @@ export function createDeliveryPackage({
     { id: "evidence", kind: "record_evidence", dependsOn: ["validate"] },
   ];
   const schedule = {
-    schema: "shuzhan-schedule/v1",
+    schema: "shuduo-schedule/v1",
     timezone: "Asia/Shanghai",
     at: "09:00:00",
     calendar: "calendar.json",
@@ -156,7 +156,7 @@ export function createDeliveryPackage({
     nodes,
   };
   const deployment = {
-    schema: "shuzhan-deployment/v1",
+    schema: "shuduo-deployment/v1",
     adapter: remoteExecution ? "remote-spark-worker-v1" : "local-spark-v1",
     environment: remoteExecution
       ? "cloud-isolated-rehearsal"
@@ -318,7 +318,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       "nodes",
     ]) ||
     !keysExactly(schedule.businessDate, ["rule"]) ||
-    schedule.schema !== "shuzhan-schedule/v1" ||
+    schedule.schema !== "shuduo-schedule/v1" ||
     schedule.timezone !== "Asia/Shanghai" ||
     schedule.at !== "09:00:00" ||
     schedule.calendar !== "calendar.json" ||
@@ -342,7 +342,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       "published",
       "notice",
     ]) ||
-    deployment.schema !== "shuzhan-deployment/v1" ||
+    deployment.schema !== "shuduo-deployment/v1" ||
     (!localTarget && !remoteTarget) ||
     deployment.published !== false ||
     deployment.entrypoint !== "main.sql" ||
@@ -465,7 +465,7 @@ export function validateCalendar(calendar) {
       "notice",
     ]) ||
     !keysExactly(calendar.range, ["start", "end"]) ||
-    calendar?.schema !== "shuzhan-calendar/v1" ||
+    calendar?.schema !== "shuduo-calendar/v1" ||
     calendar.kind !== "SYNTHETIC_DEMO" ||
     calendar.timezone !== "Asia/Shanghai" ||
     !isDate(calendar.range?.start) ||

@@ -181,7 +181,7 @@ export class V2Client {
         signal: controller,
         headers: {
           Accept: "application/json",
-          "X-Shuzhan-Client": this.client,
+          "X-Shuduo-Client": this.client,
           "X-Project-Id": this.projectId,
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
           ...(method === "GET"

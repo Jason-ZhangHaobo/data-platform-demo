@@ -37,7 +37,7 @@ async function request(base, path, body, key = "ingestion-api") {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       "Idempotency-Key": key,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -73,7 +73,7 @@ async function waitForAgentPlan(base, id, expected) {
 }
 
 test("V2 API executes CSV metadata, full sync, incremental UPSERT and stale-version failure", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-ingestion-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-ingestion-api-")),
     fixtureRoot = join(root, "fixtures"),
     store = new MetadataStore(join(root, "platform.sqlite")),
     landingStore = new LandingStore(join(root, "landing.sqlite"));
@@ -262,7 +262,7 @@ test("V2 API executes CSV metadata, full sync, incremental UPSERT and stale-vers
 });
 
 test("V2 API exposes server MySQL connection and metadata without browser credentials or sync execution", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-ingestion-mysql-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-ingestion-mysql-api-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     landingStore = new LandingStore(join(root, "landing.sqlite")),
     server = await start({
@@ -328,7 +328,7 @@ test("V2 API exposes server MySQL connection and metadata without browser creden
 });
 
 test("V2 source API rejects credentials and path traversal before persistence", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-ingestion-api-deny-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-ingestion-api-deny-")),
     fixtureRoot = join(root, "fixtures"),
     store = new MetadataStore(join(root, "platform.sqlite")),
     landingStore = new LandingStore(":memory:");
@@ -375,7 +375,7 @@ test("V2 source API rejects credentials and path traversal before persistence", 
 });
 
 test("Data Agent creates an offline sync draft only after governed apply", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-ingestion-agent-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-ingestion-agent-api-")),
     fixtureRoot = join(root, "fixtures"),
     store = new MetadataStore(join(root, "platform.sqlite")),
     landingStore = new LandingStore(":memory:");

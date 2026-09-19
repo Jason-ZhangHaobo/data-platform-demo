@@ -9,7 +9,7 @@ import {
   identityPositionMapping,
 } from "../../src/v2/ingestion.mjs";
 import { createV2Server } from "../../src/v2/server.mjs";
-import { runV2Cli } from "../../bin/shuzhan.mjs";
+import { runV2Cli } from "../../bin/shuduo.mjs";
 
 const csv =
   "position_id,client_id,security_code,asset_class,industry,market_value,trade_date\n" +
@@ -21,7 +21,7 @@ async function request(base, path, body, key = crypto.randomUUID()) {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       "Idempotency-Key": key,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -30,7 +30,7 @@ async function request(base, path, body, key = crypto.randomUUID()) {
 }
 
 test("contract API assesses, versions and checks a real synthetic securities asset", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-contract-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-contract-api-")),
     fixtureRoot = join(root, "fixtures"),
     store = new MetadataStore(join(root, "platform.sqlite")),
     landingStore = new LandingStore(join(root, "landing.sqlite"));
@@ -170,7 +170,7 @@ test("contract API assesses, versions and checks a real synthetic securities ass
     assert.equal(
       await runV2Cli(
         ["contracts", "show", "--id", created.body.id],
-        { SHUZHAN_V2_API_BASE_URL: base },
+        { SHUDUO_V2_API_BASE_URL: base },
         { output: (value) => output.push(value), error: (value) => output.push(value) },
       ),
       0,

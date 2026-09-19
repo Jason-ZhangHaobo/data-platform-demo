@@ -24,7 +24,7 @@ test("mutation response waits for replicated metadata before returning success",
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shuzhan-Client": "workbench",
+        "X-Shuduo-Client": "workbench",
         "Idempotency-Key": "replicated-revision",
       },
       body: JSON.stringify({ sql: referenceSql, contextId: "holdings-t1" }),

@@ -18,7 +18,7 @@ async function request(base, path, body, key = "quality-api") {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       "Idempotency-Key": key,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -35,7 +35,7 @@ async function waitForPlan(base, id) {
 }
 
 test("V2 quality API retains failure, versioned recovery, alerts and Agent draft boundary", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-quality-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-quality-api-")),
     fixtureRoot = join(root, "sources"),
     streamRoot = join(root, "streams"),
     store = new MetadataStore(join(root, "platform.sqlite")),

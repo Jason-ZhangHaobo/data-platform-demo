@@ -22,7 +22,7 @@ import { parseEnv } from "node:util";
 
 async function setup(options = {}) {
   const path = join(
-    mkdtempSync(join(tmpdir(), "shuzhan-v2-test-")),
+    mkdtempSync(join(tmpdir(), "shuduo-v2-test-")),
     "metadata.sqlite",
   );
   const store = new MetadataStore(path);
@@ -38,7 +38,7 @@ async function setup(options = {}) {
       method: body === undefined ? "GET" : "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shuzhan-Client": "workbench",
+        "X-Shuduo-Client": "workbench",
         "Idempotency-Key": "test-request",
         ...headers,
       },
@@ -75,7 +75,7 @@ const eventually = async (read, expected) => {
 };
 
 test("versions remain immutable and metadata survives reopening", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "shuzhan-store-")), "db.sqlite");
+  const path = join(mkdtempSync(join(tmpdir(), "shuduo-store-")), "db.sqlite");
   let store = new MetadataStore(path);
   const rev = store.create("revision", PROJECT, { sql: referenceSql });
   assert.equal(store.get("revision", rev.id, "other-project"), undefined);
@@ -238,7 +238,7 @@ test("cancellation stops queued execution and cannot become a success", async ()
 });
 test("restart marks unfinished work interrupted instead of rerunning", () => {
   const store = new MetadataStore(
-    join(mkdtempSync(join(tmpdir(), "shuzhan-restart-")), "db"),
+    join(mkdtempSync(join(tmpdir(), "shuduo-restart-")), "db"),
   );
   const run = store.create("run", PROJECT, { status: "RUNNING" });
   store.interruptPending(PROJECT);
@@ -438,7 +438,7 @@ test("missing usage consumes the remaining budget instead of allowing more calls
   }
 });
 test("local model setup persists only in protected config without echoing the key", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-credentials-test-"));
+  const root = mkdtempSync(join(tmpdir(), "shuduo-credentials-test-"));
   writeFileSync(join(root, ".env.local"), "V2_PORT=3100\n");
   const key = "sk-" + "LOCAL_TEST_ONLY_".repeat(3);
   const app = await setup({ root });
@@ -464,7 +464,7 @@ test("local model setup persists only in protected config without echoing the ke
   }
 });
 test("model credentials reject line injection without writing a file", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-invalid-key-"));
+  const root = mkdtempSync(join(tmpdir(), "shuduo-invalid-key-"));
   await assert.rejects(
     saveLocalModelKey(
       root,
@@ -476,7 +476,7 @@ test("model credentials reject line injection without writing a file", async () 
   assert.equal(existsSync(join(root, ".env.local")), false);
 });
 test("model credentials cannot overwrite a symlink target", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-key-link-"));
+  const root = mkdtempSync(join(tmpdir(), "shuduo-key-link-"));
   const target = join(root, "protected-test.txt");
   writeFileSync(target, "DO_NOT_CHANGE");
   symlinkSync(target, join(root, ".env.local"));
@@ -487,7 +487,7 @@ test("model credentials cannot overwrite a symlink target", async () => {
   assert.equal(readFileSync(target, "utf8"), "DO_NOT_CHANGE");
 });
 test("public anonymous mode rejects model setup before creating local credentials", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-public-key-"));
+  const root = mkdtempSync(join(tmpdir(), "shuduo-public-key-"));
   const app = await setup({ root, env: { V2_LOCAL_DEVELOPMENT: "false" } });
   try {
     assert.equal(
@@ -504,7 +504,7 @@ test("public anonymous mode rejects model setup before creating local credential
   }
 });
 test("model setup trims only outer clipboard whitespace", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-trim-key-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-trim-key-")),
     env = {};
   const key = "sk-" + "LOCAL_TEST_ONLY_".repeat(3);
   await saveLocalModelKey(root, env, " \r\n" + key + "\n\t ");
@@ -548,7 +548,7 @@ test("a successful SQL agent stage is never reported as full lifecycle E2E", asy
   }
 });
 test("long segmented model keys save unchanged and survive dotenv parsing", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-long-key-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-long-key-")),
     env = {};
   const key =
     "sk-ws-" + "LONG_TEST_ONLY_".repeat(50) + ".segment+test/encoded_value=~";
@@ -599,7 +599,7 @@ test("key limit is an explicit transport bound rather than the legacy short-key 
   });
 });
 test("rejected input never replaces a previously saved credential", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-preserve-key-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-preserve-key-")),
     env = {};
   const key = "sk-" + "PRESERVE_TEST_ONLY_".repeat(3);
   await saveLocalModelKey(root, env, key);
@@ -613,7 +613,7 @@ test("rejected input never replaces a previously saved credential", async () => 
   );
 });
 test("save API returns a diagnostic code without echoing a rejected key", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-key-feedback-"));
+  const root = mkdtempSync(join(tmpdir(), "shuduo-key-feedback-"));
   const app = await setup({ root });
   try {
     const value = "sk-DO_NOT_ECHO_****MASKED";

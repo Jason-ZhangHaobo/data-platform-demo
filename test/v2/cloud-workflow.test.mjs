@@ -50,8 +50,8 @@ test("V2 provisioning workflow is create-only and budget/network gated", () => {
   assert.match(workflow, /V2_VPC_ID/);
   assert.match(workflow, /V2_SECURITY_GROUP_ID/);
   assert.match(workflow, /v2-function-verified\.json/);
-  assert.match(workflow, /rm -rf \/tmp\/shuzhan-v2-runtime-check/);
-  assert.doesNotMatch(workflow, /rm -f[^\n]*\/tmp\/shuzhan-v2-runtime-check/);
+  assert.match(workflow, /rm -rf \/tmp\/shuduo-v2-runtime-check/);
+  assert.doesNotMatch(workflow, /rm -f[^\n]*\/tmp\/shuduo-v2-runtime-check/);
   assert.match(workflow, /data-platform-demo\/v2\/state/);
   assert.match(workflow, /data-platform-demo\/v2\/artifacts/);
   assert.match(workflow, /functions\/\$FUNCTION_NAME\/concurrency/);

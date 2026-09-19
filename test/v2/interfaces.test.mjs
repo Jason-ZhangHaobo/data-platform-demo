@@ -9,12 +9,12 @@ import {
   V2ApiError,
   V2_OPERATIONS,
 } from "../../src/v2/client.mjs";
-import { runV2Cli, V2_CLI_OPERATIONS } from "../../bin/shuzhan.mjs";
+import { runV2Cli, V2_CLI_OPERATIONS } from "../../bin/shuduo.mjs";
 import {
   handleV2Mcp,
   V2_MCP_OPERATIONS,
   V2_MCP_TOOL_NAMES,
-} from "../../bin/shuzhan-mcp.mjs";
+} from "../../bin/shuduo-mcp.mjs";
 import { MetadataStore } from "../../src/v2/store.mjs";
 import { BusinessQueryStore } from "../../src/v2/data-services.mjs";
 import { createV2Server } from "../../src/v2/server.mjs";
@@ -47,7 +47,7 @@ test("shared V2 client sends scoped identity, idempotency and app authorization"
     actorId: "user-wealth-advisor",
   });
   assert.equal(requests[0].url, "https://v2.example/api/v2/data-services/dapis");
-  assert.equal(requests[0].options.headers["X-Shuzhan-Client"], "cli");
+  assert.equal(requests[0].options.headers["X-Shuduo-Client"], "cli");
   assert.equal(
     requests[0].options.headers["X-Project-Id"],
     "project-securities-lab",
@@ -126,7 +126,7 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
         "--client-id",
         "CLIENT-001",
       ],
-      { SHUZHAN_APP_TOKEN: "SECRET_NOT_IN_ARGV" },
+      { SHUDUO_APP_TOKEN: "SECRET_NOT_IN_ARGV" },
       {
         client,
         output: (value) => output.push(value),
@@ -642,7 +642,7 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
 });
 
 test("CLI and MCP reach the same live V2 API instead of legacy simulation routes", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-v2-interfaces-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-v2-interfaces-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     businessStore = new BusinessQueryStore(":memory:"),
     app = createV2Server({
@@ -708,9 +708,9 @@ test("CLI and MCP reach the same live V2 API instead of legacy simulation routes
     const cliReviews = JSON.parse(cliOutput[4]);
     assert.deepEqual(cliReviews, []);
 
-    const child = spawn(process.execPath, ["bin/shuzhan-mcp.mjs"], {
+    const child = spawn(process.execPath, ["bin/shuduo-mcp.mjs"], {
       cwd: process.cwd(),
-      env: { ...process.env, SHUZHAN_V2_API_BASE_URL: baseUrl },
+      env: { ...process.env, SHUDUO_V2_API_BASE_URL: baseUrl },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "",

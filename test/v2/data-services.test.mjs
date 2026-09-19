@@ -14,7 +14,7 @@ import { PROJECT } from "../../src/v2/server.mjs";
 import { generateDataServicePlan } from "../../src/v2/model.mjs";
 
 function setup(options = {}) {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-data-services-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-data-services-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     businessStore = new BusinessQueryStore(join(root, "business.sqlite")),
     releaseRun = store.create("release_run", PROJECT, {
@@ -109,7 +109,7 @@ test("DAPI uses a real scheduled release result, versioned tests and OpenAPI", a
         .description,
       "超过版本限流",
     );
-    assert.equal(spec["x-shuzhan-scope"], "LOCAL_TEST_ONLY");
+    assert.equal(spec["x-shuduo-scope"], "LOCAL_TEST_ONLY");
     const version2 = app.manager.createDapiVersion(service.id, {
       sourceReleaseRunId: app.releaseRun.id,
       fields: ["client_id", "holding_market_value"],

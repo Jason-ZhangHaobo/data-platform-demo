@@ -68,11 +68,11 @@ jobs:
       - name: Build and inspect the Linux x64 function package
         run: |
           scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
-          mkdir -p /tmp/shuzhan-v2-runtime-check
-          unzip -q v2-function.zip runtime/node package.json -d /tmp/shuzhan-v2-runtime-check
-          chmod 0755 /tmp/shuzhan-v2-runtime-check/runtime/node
-          test "$(/tmp/shuzhan-v2-runtime-check/runtime/node -p 'process.platform + "/" + process.arch')" = "linux/x64"
-          /tmp/shuzhan-v2-runtime-check/runtime/node -e 'import("node:sqlite").then(() => process.stdout.write("node:sqlite ready\n"))'
+          mkdir -p /tmp/shuduo-v2-runtime-check
+          unzip -q v2-function.zip runtime/node package.json -d /tmp/shuduo-v2-runtime-check
+          chmod 0755 /tmp/shuduo-v2-runtime-check/runtime/node
+          test "$(/tmp/shuduo-v2-runtime-check/runtime/node -p 'process.platform + "/" + process.arch')" = "linux/x64"
+          /tmp/shuduo-v2-runtime-check/runtime/node -e 'import("node:sqlite").then(() => process.stdout.write("node:sqlite ready\n"))'
           unzip -l v2-function.zip | grep -q 'src/v2/cloud-server.mjs'
           unzip -l v2-function.zip | grep -q 'web-dist/index.html'
           unzip -l v2-function.zip | grep -q 'fixtures/sources/positions_baseline.csv'
@@ -160,7 +160,7 @@ jobs:
             --arg security_group_id "$V2_SECURITY_GROUP_ID" \
             '{
               functionName:$function_name,
-              description:"数栈V2证券数据平台专用试点函数",
+              description:"数舵V2证券数据平台专用试点函数",
               code:{zipFile:$zip},
               role:$role,
               runtime:"custom.debian12",
@@ -243,4 +243,4 @@ jobs:
           rm -f v2-function.zip.b64 v2-function-create.json v2-function-result.json v2-function-verified.json
           rm -f v2-function-concurrency.json v2-function-concurrency-result.json v2-function-concurrency-verified.json
           rm -f v2-function-scaling.json v2-function-scaling-result.json v2-function-scaling-verified.json
-          rm -rf /tmp/shuzhan-v2-runtime-check
+          rm -rf /tmp/shuduo-v2-runtime-check

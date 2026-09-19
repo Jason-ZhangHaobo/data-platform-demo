@@ -91,11 +91,11 @@ test("remote Spark client sends a signed bounded request and validates evidence"
   assert.equal(
     verifySparkRequest({
       sharedSecret,
-      timestamp: captured.options.headers["X-Shuzhan-Timestamp"],
-      nonce: captured.options.headers["X-Shuzhan-Nonce"],
+      timestamp: captured.options.headers["X-Shuduo-Timestamp"],
+      nonce: captured.options.headers["X-Shuduo-Nonce"],
       body: captured.options.body,
-      signature: captured.options.headers["X-Shuzhan-Signature"],
-      now: Number(captured.options.headers["X-Shuzhan-Timestamp"]),
+      signature: captured.options.headers["X-Shuduo-Signature"],
+      now: Number(captured.options.headers["X-Shuduo-Timestamp"]),
     }),
     true,
   );
@@ -215,9 +215,9 @@ test("Spark worker accepts one valid signature and rejects replay or tampering",
     headers = {
       "Content-Type": "application/json",
       "X-Project-Id": "project-securities-lab",
-      "X-Shuzhan-Timestamp": timestamp,
-      "X-Shuzhan-Nonce": nonce,
-      "X-Shuzhan-Signature": signature,
+      "X-Shuduo-Timestamp": timestamp,
+      "X-Shuduo-Nonce": nonce,
+      "X-Shuduo-Signature": signature,
     };
   try {
     const accepted = await fetch(url, { method: "POST", headers, body });
@@ -228,7 +228,7 @@ test("Spark worker accepts one valid signature and rejects replay or tampering",
     assert.equal((await replayed.json()).code, "SPARK_NONCE_REPLAYED");
     const tampered = await fetch(url, {
       method: "POST",
-      headers: { ...headers, "X-Shuzhan-Nonce": "worker_nonce_synthetic_002" },
+      headers: { ...headers, "X-Shuduo-Nonce": "worker_nonce_synthetic_002" },
       body,
     });
     assert.equal(tampered.status, 401);
@@ -258,8 +258,8 @@ test("Spark worker accepts one valid signature and rejects replay or tampering",
         method: "POST",
         headers: {
           ...headers,
-          "X-Shuzhan-Nonce": invalidNonce,
-          "X-Shuzhan-Signature": invalidSignature,
+          "X-Shuduo-Nonce": invalidNonce,
+          "X-Shuduo-Signature": invalidSignature,
         },
         body: invalidBody,
       });

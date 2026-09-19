@@ -626,9 +626,9 @@ export function createV2Server(options = {}) {
             code: "DURABLE_SCHEDULER_NOT_CONFIGURED",
           });
         const { raw, parsed } = await readJsonBody(req),
-          timestamp = req.headers["x-shuzhan-timestamp"],
-          nonce = req.headers["x-shuzhan-nonce"],
-          signature = req.headers["x-shuzhan-signature"],
+          timestamp = req.headers["x-shuduo-timestamp"],
+          nonce = req.headers["x-shuduo-nonce"],
+          signature = req.headers["x-shuduo-signature"],
           nowMs = options.now?.() ?? Date.now();
         if (
           !verifySchedulerTick({
@@ -674,7 +674,7 @@ export function createV2Server(options = {}) {
       if (method !== "GET") {
         if (
           !["workbench", "cli", "mcp"].includes(
-            req.headers["x-shuzhan-client"],
+            req.headers["x-shuduo-client"],
           )
         )
           throw fail(403, "缺少客户端校验");
@@ -2138,7 +2138,7 @@ export function createV2Server(options = {}) {
           throw fail(404, "尚无完整链路评测报告");
         }
         if (
-          report.format !== "shuzhan-full-lifecycle-evaluation/v1" ||
+          report.format !== "shuduo-full-lifecycle-evaluation/v1" ||
           report.contract?.id !== fullLifecycleContract.id ||
           JSON.stringify(report.contract?.stageNames) !==
             JSON.stringify(lifecycleStages) ||
@@ -3353,7 +3353,7 @@ export function createV2Server(options = {}) {
             throw fail(409, "只有经过结果验证的运行可以导出验证包");
           const rev = get("revision", item.revisionId);
           return json(res, 200, {
-            format: "shuzhan-verification-bundle/v1",
+            format: "shuduo-verification-bundle/v1",
             revision: rev,
             validation: item.validation,
             engine: item.engine,
@@ -3659,7 +3659,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { server, host } = createV2Server();
   server.listen(Number(process.env.V2_PORT ?? 3100), host, () =>
     console.log(
-      "Shuzhan V2 ready on http://" +
+      "Shuduo V2 ready on http://" +
         host +
         ":" +
         (process.env.V2_PORT ?? 3100) +

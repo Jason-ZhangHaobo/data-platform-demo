@@ -34,7 +34,7 @@ const incremental =
   "POS-005,CLIENT-002,SEC-DEMO-004,基金,多元金融,300.00,2026-09-10\n";
 
 function setup({ serverMysqlAdapter } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-ingestion-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-ingestion-")),
     fixtureRoot = join(root, "fixtures"),
     store = new MetadataStore(join(root, "platform.sqlite")),
     landingStore = new LandingStore(join(root, "landing.sqlite"));

@@ -26,7 +26,7 @@ const publicRequest = async (base, path, { body, cookie, csrf, key = "agent-rout
       headers: {
         Accept: "application/json",
         Origin: "https://demo.example",
-        "X-Shuzhan-Client": "workbench",
+        "X-Shuduo-Client": "workbench",
         ...(body === undefined ? {} : { "Content-Type": "application/json", "Idempotency-Key": key }),
         ...(cookie ? { Cookie: cookie } : {}),
         ...(csrf ? { "X-CSRF-Token": csrf } : {}),
@@ -108,7 +108,7 @@ test("cross-module intent can recommend a bounded sequence without auto-executio
 });
 
 test("intent API persists a live-model routing result without executing a downstream module", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-agent-router-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-router-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     app = createV2Server({
       root,
@@ -132,7 +132,7 @@ test("intent API persists a live-model routing result without executing a downst
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Shuzhan-Client": "workbench",
+          "X-Shuduo-Client": "workbench",
           "Idempotency-Key": "agent-router-test",
         },
         body: JSON.stringify({ message: "理解持仓字段后生成财富分析报表" }),
@@ -159,7 +159,7 @@ test("intent API persists a live-model routing result without executing a downst
 });
 
 test("public anonymous callers cannot read cross-module intent history", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-agent-router-public-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-router-public-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     app = createV2Server({
       root,
@@ -180,7 +180,7 @@ test("public anonymous callers cannot read cross-module intent history", async (
 });
 
 test("public Agent intent history is isolated per member and viewer cannot submit", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-agent-router-roles-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-router-roles-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     app = createV2Server({
       root,
