@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mergeSecretBundle } from "./export-v2-staging-secret-bundle.mjs";
+import { mergeSecretBundle, validateSecretValues } from "./export-v2-staging-secret-bundle.mjs";
 
 const required = [
   "OSS_BUCKET",
@@ -32,6 +32,7 @@ export function validateV2StagingConfig(input = {}) {
     return typeof value !== "string" || value.length === 0;
   });
   const errors = [];
+  errors.push(...validateSecretValues(effectiveInput));
   if (!provisioningOnly && typeof effectiveInput.V2_PUBLIC_URL === "string" && !/^https:\/\//.test(effectiveInput.V2_PUBLIC_URL))
     errors.push("V2_PUBLIC_URL_MUST_USE_HTTPS");
   if (

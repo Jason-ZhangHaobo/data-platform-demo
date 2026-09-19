@@ -17,6 +17,76 @@ export const secretNames = [
 ];
 
 const keyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const placeholderPattern = /^(?:\.{3}|x{3,}|<[^>]+>|(?:change|replace)[-_ ]?me|example|todo|tbd|null|undefined)$/i;
+
+export function validateSecretValues(values = {}) {
+  const errors = [];
+  for (const [key, value] of Object.entries(values)) {
+    if (typeof value === "string" && placeholderPattern.test(value.trim()))
+      errors.push(`PLACEHOLDER_VALUE:${key}`);
+  }
+  if (
+    typeof values.V2_MYSQL_PORT === "string" &&
+    values.V2_MYSQL_PORT.length > 0 &&
+    (!/^\d{1,5}$/.test(values.V2_MYSQL_PORT) || Number(values.V2_MYSQL_PORT) < 1 || Number(values.V2_MYSQL_PORT) > 65535)
+  )
+    errors.push("INVALID_VALUE:V2_MYSQL_PORT");
+  for (const key of ["V2_MYSQL_USER", "V2_MYSQL_DATABASE"])
+    if (typeof values[key] === "string" && values[key].length > 0 && !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(values[key]))
+      errors.push(`INVALID_VALUE:${key}`);
+  if (
+    typeof values.V2_MYSQL_HOST === "string" &&
+    values.V2_MYSQL_HOST.length > 0 &&
+    (values.V2_MYSQL_HOST.length < 3 || /\s|:\/\//.test(values.V2_MYSQL_HOST))
+  )
+    errors.push("INVALID_VALUE:V2_MYSQL_HOST");
+  if (
+    typeof values.V2_MYSQL_PASSWORD === "string" &&
+    values.V2_MYSQL_PASSWORD.length > 0 &&
+    (values.V2_MYSQL_PASSWORD.length < 8 || values.V2_MYSQL_PASSWORD.length > 256)
+  )
+    errors.push("INVALID_VALUE:V2_MYSQL_PASSWORD");
+  if (
+    typeof values.V2_BOOTSTRAP_ADMIN_EMAIL === "string" &&
+    values.V2_BOOTSTRAP_ADMIN_EMAIL.length > 0 &&
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.V2_BOOTSTRAP_ADMIN_EMAIL)
+  )
+    errors.push("INVALID_VALUE:V2_BOOTSTRAP_ADMIN_EMAIL");
+  if (
+    typeof values.V2_BOOTSTRAP_ADMIN_NAME === "string" &&
+    values.V2_BOOTSTRAP_ADMIN_NAME.length > 0 &&
+    (values.V2_BOOTSTRAP_ADMIN_NAME.trim().length < 2 || values.V2_BOOTSTRAP_ADMIN_NAME.length > 50)
+  )
+    errors.push("INVALID_VALUE:V2_BOOTSTRAP_ADMIN_NAME");
+  if (typeof values.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH === "string") {
+    const [algorithm, n, r, p, salt, expected, extra] = values.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH.split("$");
+    if (values.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH.length > 0 && (
+      algorithm !== "scrypt" ||
+      Number(n) !== 16384 ||
+      Number(r) !== 8 ||
+      Number(p) !== 1 ||
+      extra !== undefined ||
+      !/^[A-Za-z0-9_-]+$/.test(salt ?? "") ||
+      !/^[A-Za-z0-9_-]+$/.test(expected ?? "") ||
+      Buffer.from(salt ?? "", "base64url").length !== 16 ||
+      Buffer.from(expected ?? "", "base64url").length !== 64
+    ))
+      errors.push("INVALID_VALUE:V2_BOOTSTRAP_ADMIN_PASSWORD_HASH");
+  }
+  if (
+    typeof values.DASHSCOPE_API_KEY === "string" &&
+    values.DASHSCOPE_API_KEY.length > 0 &&
+    (values.DASHSCOPE_API_KEY.length < 16 || /\s/.test(values.DASHSCOPE_API_KEY))
+  )
+    errors.push("INVALID_VALUE:DASHSCOPE_API_KEY");
+  if (
+    typeof values.V2_SPARK_EXECUTOR_SECRET === "string" &&
+    values.V2_SPARK_EXECUTOR_SECRET.length > 0 &&
+    values.V2_SPARK_EXECUTOR_SECRET.length < 16
+  )
+    errors.push("INVALID_VALUE:V2_SPARK_EXECUTOR_SECRET");
+  return [...new Set(errors)];
+}
 
 function parseDotenv(raw) {
   const values = {};
@@ -73,10 +143,20 @@ export function mergeSecretBundle(input = {}, raw = input.JASONSECRETS) {
 function run() {
   try {
     const bundle = parseSecretBundle(process.env.JASONSECRETS);
+    const errors = validateSecretValues(bundle);
+    if (errors.length > 0) {
+      process.stdout.write(JSON.stringify({ ok: false, error: "JASONSECRETS_VALUE_INVALID", errors }) + "\n");
+      process.exitCode = 1;
+      return;
+    }
     const target = process.env.GITHUB_ENV;
     if (target) {
       for (const [key, value] of Object.entries(bundle)) {
-        if (!process.env[key]) appendFileSync(target, `${key}=${value}\n`, { mode: 0o600 });
+        if (!process.env[key]) {
+          if (process.env.GITHUB_ACTIONS === "true")
+            process.stdout.write(`::add-mask::${value.replaceAll("%", "%25")}\n`);
+          appendFileSync(target, `${key}=${value}\n`, { mode: 0o600 });
+        }
       }
     }
     process.stdout.write(

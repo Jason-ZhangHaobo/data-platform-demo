@@ -124,6 +124,10 @@ jobs:
             --arg sg "$V2_SECURITY_GROUP_ID" \
             '.functionName == $name and .instanceConcurrency == 1 and .vpcConfig.vpcId == $vpc and (.vpcConfig.vSwitchIds | index($vsw) != null) and .vpcConfig.securityGroupId == $sg and (.role | length > 0)' \
             current-v2-function.json >/dev/null
+          aliyun fc GET "/2023-03-30/functions/$FUNCTION_NAME/concurrency" --region "$ALIBABA_CLOUD_REGION_ID" > current-v2-concurrency.json
+          jq -e '.reservedConcurrency == 1' current-v2-concurrency.json >/dev/null
+          aliyun fc GET "/2023-03-30/functions/$FUNCTION_NAME/scaling-config" --region "$ALIBABA_CLOUD_REGION_ID" > current-v2-scaling.json
+          jq -e '.minInstances == 0 and .enableOnDemandScaling == true' current-v2-scaling.json >/dev/null
 
       - name: Update the dedicated V2 function
         run: |
@@ -161,9 +165,9 @@ jobs:
               V2_MYSQL_CONNECT_TIMEOUT_MS:"5000",
               OSS_BUCKET:$bucket,
               OSS_ENDPOINT:"oss-cn-hangzhou-internal.aliyuncs.com",
-              V2_OSS_STATE_OBJECT_KEY:"data-platform-v2/state/project-securities-lab.json",
+              V2_OSS_STATE_OBJECT_KEY:"data-platform-demo/v2/state/project-securities-lab.json",
               V2_OSS_STATE_MAX_BYTES:"41943040",
-              V2_OSS_ARTIFACT_PREFIX:"data-platform-v2/artifacts",
+              V2_OSS_ARTIFACT_PREFIX:"data-platform-demo/v2/artifacts",
               V2_BOOTSTRAP_ADMIN_EMAIL:$admin_email,
               V2_BOOTSTRAP_ADMIN_PASSWORD_HASH:$admin_password_hash,
               V2_BOOTSTRAP_ADMIN_NAME:$admin_name,
@@ -225,5 +229,5 @@ jobs:
       - name: Remove generated files containing deployment secrets
         if: always()
         run: |
-          rm -f v2-function.zip.b64 v2-function-update.json current-v2-function.json v2-function-result.json /tmp/anonymous-write.json
+          rm -f v2-function.zip.b64 v2-function-update.json current-v2-function.json current-v2-concurrency.json current-v2-scaling.json v2-function-result.json /tmp/anonymous-write.json
           rm -rf /tmp/shuduo-v2-runtime-check
