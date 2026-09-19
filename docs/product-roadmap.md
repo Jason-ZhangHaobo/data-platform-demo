@@ -63,9 +63,9 @@ M4g核心本机验收：42条实际运行活动归一为5个事故，1个离线�
 
 V2云包与部署门已准备：独立最小依赖锁、Linux x64 Node24自带运行时包、70MiB上限、专用函数手动工作流、部署后MySQL/OSS/认证/匿名拒写检查。当前Mac只验证了脚本语法与非Linux失败关闭；必须在GitHub Linux CI构建并在阿里云只读核验后才能执行部署。详见[云部署说明](v2-cloud-deployment.md)。
 
-公网隔离Spark的控制面/Worker协议已实现并本机验收：启动健康探测、HTTPS限制、项目/时间戳/Nonce/正文HMAC、防重放、白名单表、2MiB默认上下行限制、120秒超时、取消和独立断言复核；加入3.5.9云交付绑定后全量CI 166/166。尚未打包PySpark/Java运行时或创建Worker函数，也未验证FC私网/函数鉴权和费用，因此公网执行仍保持关闭。
+公网隔离Spark的控制面/Worker协议已实现并本机验收：启动健康探测、HTTPS限制、项目/时间戳/Nonce/正文HMAC、防重放、白名单表、2MiB默认上下行限制、120秒超时、取消和独立断言复核；加入3.5.9云交付绑定后全量CI 166/166。W1已打包并从包内真实运行，W2计划显式挂载三种官方运行时层并使用私有OSS代码位置；尚未创建Worker函数或验证FC私网/函数鉴权和费用，因此公网执行仍保持关闭。
 
-Worker构建门已补充但尚未在Linux运行：云端从历史Spark3.5.7升级为3.5.9，PySpark/py4j下载哈希固定；大包经私有OSS部署，GitHub构建产物只保留1天。交付规范同时兼容不可变的本机3.5.7历史包和新的远程3.5.9包，远程3.5.7被拒绝。分级门槛见[隔离Spark Worker](isolated-spark-worker.md)。
+Worker构建门已在Linux双构建和包内Spark冒烟通过：云端从历史Spark3.5.7升级为3.5.9，PySpark/py4j/sqlglot哈希固定；大包经私有OSS部署，GitHub构建产物只保留1天。W2失败关闭计划已固定官方层、精确对象、实例边界与未授权W3 Invoke权限；真实OSS上传、FC创建和Cloud Shell烟测仍待执行。分级门槛见[隔离Spark Worker](isolated-spark-worker.md)。
 
 本机项目隔离运行时已实际升级到Spark3.5.9/py4j0.10.9.9；35/35真实Spark用例在新版本重新执行通过，耗时23.891秒。该结果证明本机兼容升级，不证明Linux云Worker包或FC隔离执行。
 
