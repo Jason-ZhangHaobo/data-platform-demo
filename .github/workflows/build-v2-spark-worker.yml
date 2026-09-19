@@ -45,6 +45,13 @@ jobs:
           ! unzip -l v2-spark-worker.zip | grep -E '(^|/)(\.env|\.env\.local|[^/]+\.(pem|key))$'
           test "$(wc -c < v2-spark-worker.zip)" -le 503316480
 
+      - name: Record the inner package digest
+        run: |
+          worker_digest="$(sha256sum v2-spark-worker.zip | cut -d' ' -f1)"
+          test "${#worker_digest}" = 64
+          echo "::notice title=Spark Worker inner SHA-256::$worker_digest"
+          echo "Spark Worker inner SHA-256: $worker_digest" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload short-lived package for controlled cloud validation
         uses: actions/upload-artifact@v6
         with:
