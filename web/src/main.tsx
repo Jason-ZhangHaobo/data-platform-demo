@@ -122,7 +122,7 @@ type Status = {
   };
   ingestion?: {
     availableSourceTypes?: string[];
-    serverMysql?: { configured: boolean; allowTableCount: number; credentialMode: string };
+    serverMysql?: { configured: boolean; supportsOfflineSync: boolean; allowTableCount: number; credentialMode: string };
   };
   publicReady: boolean;
   authentication?: {
@@ -1487,6 +1487,7 @@ function App() {
                 activeModule={nav}
                 canWrite={Boolean(canWrite)}
                 serverMysqlConfigured={status?.ingestion?.serverMysql?.configured === true}
+                serverMysqlSyncEnabled={status?.ingestion?.serverMysql?.supportsOfflineSync === true}
                 onModuleChange={setNav}
               />
             ) : nav === "schedules" ? (

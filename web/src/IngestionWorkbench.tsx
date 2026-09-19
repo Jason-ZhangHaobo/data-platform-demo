@@ -48,6 +48,7 @@ type Source = {
   id: string;
   name: string;
   sourceType: string;
+  supportsOfflineSync: boolean;
   status: string;
   currentRevisionId: string;
   currentMetadataId?: string;
@@ -135,12 +136,14 @@ export function IngestionWorkbench({
   activeModule,
   canWrite,
   serverMysqlConfigured,
+  serverMysqlSyncEnabled,
   onModuleChange,
 }: {
   api: Api;
   activeModule: "sources" | "sync";
   canWrite: boolean;
   serverMysqlConfigured: boolean;
+  serverMysqlSyncEnabled: boolean;
   onModuleChange: (module: "sources" | "sync") => void;
 }) {
   const [syncView, setSyncView] = useState<"offline" | "realtime">("offline");
@@ -196,7 +199,20 @@ export function IngestionWorkbench({
     setPlans(nextPlans);
     setTargetRows(nextRows);
     if (!selectedSourceId && nextSources[0]) setSelectedSourceId(nextSources[0].id);
-    if (!taskSourceId && nextSources[0]) setTaskSourceId(nextSources[0].id);
+    const firstSyncSource = nextSources.find(
+      (source) => source.currentMetadataId && source.supportsOfflineSync,
+    );
+    if (
+      firstSyncSource &&
+      (!taskSourceId ||
+        !nextSources.some(
+          (source) =>
+            source.id === taskSourceId &&
+            source.currentMetadataId &&
+            source.supportsOfflineSync,
+        ))
+    )
+      setTaskSourceId(firstSyncSource.id);
     if (!selectedTaskId && nextTasks[0]) setSelectedTaskId(nextTasks[0].id);
     if (!agentPlan && nextPlans[0]) setAgentPlan(nextPlans[0]);
   };
@@ -333,7 +349,7 @@ export function IngestionWorkbench({
         <div>
           <span className="eyebrow">{activeModule === "sync" && syncView === "realtime" ? "STREAMING CONTROL PLANE · M4B" : "INGESTION CONTROL PLANE · M4A"}</span>
           <h2>{activeModule === "sync" && syncView === "realtime" ? "从事件契约到可恢复实时处理" : "从真实连接证据到可追溯同步"}</h2>
-          <p>{activeModule === "sync" && syncView === "realtime" ? "实时源版本、任务配置、运行、Checkpoint、状态与告警逐层绑定；当前只处理仓库内虚构证券事件日志。" : `源版本、元数据、字段映射、运行和落地结果逐层绑定；当前以仓库虚构CSV为主${serverMysqlConfigured ? "，并可选择服务端MySQL白名单表做连接与元数据采集" : "，服务端MySQL白名单尚未配置"}。`}</p>
+          <p>{activeModule === "sync" && syncView === "realtime" ? "实时源版本、任务配置、运行、Checkpoint、状态与告警逐层绑定；当前只处理仓库内虚构证券事件日志。" : `源版本、元数据、字段映射、运行和落地结果逐层绑定；当前以仓库虚构CSV为主${serverMysqlConfigured ? serverMysqlSyncEnabled ? "，服务端MySQL已开放有界白名单同步" : "，服务端MySQL仅开放连接与元数据" : "，服务端MySQL白名单尚未配置"}。`}</p>
         </div>
         <div className="ingestion-stats">
           {activeModule === "sync" && syncView === "realtime" ? <>
@@ -408,7 +424,7 @@ export function IngestionWorkbench({
                 <>
                   <header className="source-detail-head">
                     <div><span className="eyebrow">{selectedSource.sourceType} · REVISION {selectedSource.currentRevision.revisionNumber}</span><h3>{selectedSource.name}</h3><code>{selectedSource.currentRevision.fileName ?? selectedSource.currentRevision.tableName}</code></div>
-                    <span className={"status-pill " + selectedSource.status.toLowerCase()}>{statusLabels[selectedSource.status] ?? selectedSource.status}</span>
+                    <div><span className={"status-pill " + selectedSource.status.toLowerCase()}>{statusLabels[selectedSource.status] ?? selectedSource.status}</span><small>{selectedSource.supportsOfflineSync ? "可创建离线同步" : "仅连接与元数据"}</small></div>
                   </header>
                   <div className="source-actions">
                     <button className="button" onClick={testSource} disabled={!canWrite || !!busy}>{busy === "test-source" ? <LoaderCircle className="spin" size={15} /> : <Network size={15} />}真实连接测试</button>
@@ -445,7 +461,7 @@ export function IngestionWorkbench({
                   <label>连接类型<select value={sourceType} onChange={(event) => setSourceType(event.target.value as "LOCAL_CSV" | "SERVER_MYSQL")}><option value="LOCAL_CSV">仓库合成CSV</option><option value="SERVER_MYSQL" disabled={!serverMysqlConfigured}>服务端MySQL白名单表{serverMysqlConfigured ? "" : "（未配置）"}</option></select></label>
                   {sourceType === "LOCAL_CSV" ? <label>仓库内文件<select value={sourceFile} onChange={(event) => setSourceFile(event.target.value)}>{fixtureFiles.map(([file, label]) => <option value={file} key={file}>{label}</option>)}</select></label> : <label>白名单表名<input value={serverTable} onChange={(event) => setServerTable(event.target.value)} /></label>}
                   <button className="button primary" onClick={createSource} disabled={!canWrite || !!busy}><Database size={15} />登记数据源</button>
-                  <small>{sourceType === "LOCAL_CSV" ? "不接受本机任意路径、上传文件或凭证。" : "凭证只在服务端环境配置；首期仅测试连接和采集元数据，不开放同步执行。"}{!serverMysqlConfigured && " 当前服务器尚未配置MySQL白名单，因此该类型不可选。"}</small>
+                  <small>{sourceType === "LOCAL_CSV" ? "不接受本机任意路径、上传文件或凭证。" : serverMysqlSyncEnabled ? "凭证只在服务端环境配置；可执行有界FULL和快照差异UPSERT，后者不是CDC。" : "凭证只在服务端环境配置；当前仅测试连接和采集元数据，不开放同步执行。"}{!serverMysqlConfigured && " 当前服务器尚未配置MySQL白名单，因此该类型不可选。"}</small>
                 </section>
               )}
             </section>
@@ -485,13 +501,13 @@ export function IngestionWorkbench({
           </div>
           <section className="sync-create-panel">
             <header><div><span className="eyebrow">MANUAL CONFIGURATION</span><h3>手动创建同步任务</h3></div><ArrowRight size={20} /></header>
-            <div><label>任务名称<input value={taskName} onChange={(event) => setTaskName(event.target.value)} /></label><label>已采集数据源<select value={taskSourceId} onChange={(event) => setTaskSourceId(event.target.value)}>{sources.filter((source) => source.currentMetadataId).map((source) => <option value={source.id} key={source.id}>{source.name} · V{source.currentRevision.revisionNumber}</option>)}</select></label><label>同步模式<select value={taskMode} onChange={(event) => setTaskMode(event.target.value)}><option value="FULL">FULL全量</option><option value="INCREMENTAL_UPSERT">增量UPSERT</option></select></label><label>目标表<input value={targetTable} onChange={(event) => setTargetTable(event.target.value)} /></label></div>
+            <div><label>任务名称<input value={taskName} onChange={(event) => setTaskName(event.target.value)} /></label><label>可同步数据源<select value={taskSourceId} onChange={(event) => setTaskSourceId(event.target.value)}>{sources.filter((source) => source.currentMetadataId && source.supportsOfflineSync).map((source) => <option value={source.id} key={source.id}>{source.name} · V{source.currentRevision.revisionNumber}</option>)}</select></label><label>同步模式<select value={taskMode} onChange={(event) => setTaskMode(event.target.value)}><option value="FULL">FULL全量</option><option value="INCREMENTAL_UPSERT">{sourceForTask?.sourceType === "SERVER_MYSQL" ? "快照差异UPSERT（非CDC）" : "增量UPSERT"}</option></select></label><label>目标表<input value={targetTable} onChange={(event) => setTargetTable(event.target.value)} /></label></div>
             <footer><span>{Object.keys(identityMapping(metadataForTask)).length}个字段同名映射 · position_id主键</span><button className="button" onClick={createTask} disabled={!canWrite || !metadataForTask || !!busy}>创建版本化任务</button></footer>
           </section>
           <section className="target-preview"><header><div><Table2 size={18} /><h3>raw_positions 实际落地结果</h3></div><span>{targetRows.length}行</span></header><div><table><thead><tr><th>持仓ID</th><th>客户</th><th>证券</th><th>类别</th><th>市值</th><th>交易日</th></tr></thead><tbody>{targetRows.map((row) => <tr key={String(row.position_id)}><td><code>{String(row.position_id)}</code></td><td>{String(row.client_id)}</td><td>{String(row.security_code)}</td><td>{String(row.asset_class)}</td><td>{String(row.market_value)}</td><td>{String(row.trade_date)}</td></tr>)}</tbody></table></div></section>
         </>
       )}
-      <footer className="ingestion-boundary"><FileSpreadsheet size={15} />{syncView === "realtime" && activeModule === "sync" ? "真实读取仓库内虚构JSONL并写入本机独立状态库；不是Kafka/Flink、真实CDC或公网流计算。" : `CSV源真实写入本机独立SQLite；SERVER_MYSQL仅做服务端白名单连接与元数据摘要${serverMysqlConfigured ? "，未开放同步执行" : "（当前未配置）"}；不是用户上传或公网接入。`}</footer>
+      <footer className="ingestion-boundary"><FileSpreadsheet size={15} />{syncView === "realtime" && activeModule === "sync" ? "真实读取仓库内虚构JSONL并写入本机独立状态库；不是Kafka/Flink、真实CDC或公网流计算。" : `CSV源真实写入独立落地区；SERVER_MYSQL${serverMysqlConfigured ? serverMysqlSyncEnabled ? "可执行有界FULL/快照差异UPSERT（非CDC）" : "仅做白名单连接与元数据摘要" : "尚未配置"}；真实同VPC业务源仍需云端验收。`}</footer>
     </div>
   );
 }
