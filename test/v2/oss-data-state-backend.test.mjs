@@ -75,3 +75,25 @@ test("OSS backend rejects a stale create without overwriting the winner", async 
   });
   assert.equal((await stale.load(PROJECT)).revision, 1);
 });
+
+test("OSS state CAS reconciles an ambiguous successful write after a lost response", async () => {
+  const remote = fakeOss(),
+    originalFetch = remote.fetch,
+    fetchWithLostResponse = async (url, options) => {
+      const response = await originalFetch(url, options);
+      if (options.method === "PUT" && response.ok && !fetchWithLostResponse.failed) {
+        fetchWithLostResponse.failed = true;
+        throw Object.assign(new TypeError("lost response"), { cause: { code: "ECONNRESET" } });
+      }
+      return response;
+    },
+    backend = new OssDataStateBackend(config, fetchWithLostResponse, {
+      attempts: 2,
+      delayMs: 100,
+      sleep: async () => undefined,
+    }),
+    payload = emptyDataState(PROJECT);
+  await backend.load(PROJECT);
+  assert.equal(await backend.compareAndSwap(PROJECT, 0, payload), 1);
+  assert.equal((await backend.load(PROJECT)).revision, 1);
+});

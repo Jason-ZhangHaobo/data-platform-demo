@@ -7,6 +7,10 @@ import {
   emptyDataState,
   validateDataState,
 } from "./data-state-replica.mjs";
+import {
+  requestOssWithRetry,
+  wasOssRequestRetried,
+} from "./oss-request-retry.mjs";
 
 const ENVELOPE_FORMAT = "shuduo-data-state-envelope/v1";
 const DEFAULT_MAX_BYTES = 40 * 1024 * 1024;
@@ -15,21 +19,26 @@ const unavailable = (message, code = "CLOUD_DATA_STATE_UNAVAILABLE") =>
   Object.assign(new Error(message), { status: 503, code });
 
 export class OssDataStateBackend {
-  constructor(config, fetchImpl = fetch) {
+  constructor(config, fetchImpl = fetch, retryOptions = {}) {
     this.config = config;
     this.fetchImpl = fetchImpl;
+    this.retryOptions = retryOptions;
     this.cached = new Map();
   }
 
   async request(method, body, etag, ifNoneMatch) {
-    const request = createOssRequest({
-      ...this.config,
-      method,
-      body,
-      etag,
-      ifNoneMatch,
-    });
-    return this.fetchImpl(request.url, request.options);
+    return requestOssWithRetry(
+      () =>
+        createOssRequest({
+          ...this.config,
+          method,
+          body,
+          etag,
+          ifNoneMatch,
+        }),
+      this.fetchImpl,
+      this.retryOptions,
+    );
   }
 
   async load(project) {
@@ -95,6 +104,15 @@ export class OssDataStateBackend {
       expectedRevision ? cached.etag : undefined,
       expectedRevision ? undefined : "*",
     );
+    if ([409, 412].includes(response.status) && wasOssRequestRetried(response)) {
+      const verified = await this.load(project);
+      if (
+        verified.revision === revision &&
+        JSON.stringify(verified.payload) === JSON.stringify(payload)
+      )
+        return revision;
+      throw cloudDataStateConflict();
+    }
     if ([409, 412].includes(response.status)) throw cloudDataStateConflict();
     if (!response.ok)
       throw unavailable(`OSS 业务状态保存失败（${response.status}）`);

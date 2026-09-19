@@ -119,3 +119,32 @@ test("OSS artifact store never accepts different content under an existing diges
     { status: 409, code: "ARTIFACT_DIGEST_CONFLICT" },
   );
 });
+
+test("OSS artifact create reconciles an ambiguous successful write after a lost response", async () => {
+  const remote = fakeOss(),
+    originalFetch = remote.fetch,
+    fetchWithLostResponse = async (url, options) => {
+      const response = await originalFetch(url, options);
+      if (options.method === "PUT" && response.ok && !fetchWithLostResponse.failed) {
+        fetchWithLostResponse.failed = true;
+        throw Object.assign(new TypeError("lost response"), { cause: { code: "ECONNRESET" } });
+      }
+      return response;
+    },
+    store = new OssImmutableArtifactStore(
+      {
+        bucket: "synthetic-private-bucket",
+        endpoint: "oss-cn-hangzhou-internal.aliyuncs.com",
+        prefix: "data-platform-v2/artifacts",
+        credentials: {
+          accessKeyId: "test-key-id",
+          accessKeySecret: "test-key-secret",
+        },
+      },
+      fetchWithLostResponse,
+      { attempts: 2, delayMs: 100, sleep: async () => undefined },
+    );
+  const created = await store.put("delivery-package", digest, value);
+  assert.equal(created.contentHash.length, 64);
+  assert.equal((await store.verify(created, "delivery-package", digest, value)).contentHash, created.contentHash);
+});
