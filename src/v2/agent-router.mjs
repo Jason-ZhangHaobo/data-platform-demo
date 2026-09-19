@@ -14,6 +14,30 @@ export const agentIntentDestinations = Object.freeze([
 ]);
 
 const byId = new Map(agentIntentDestinations.map((item) => [item.id, item]));
+export const agentSpecialistKinds = Object.freeze({
+  sources: "ingestion_agent_plan",
+  sync: "realtime_agent_plan",
+  development: "agent",
+  schedules: "agent_delivery_task",
+  assets: "asset_agent_task",
+  quality: "quality_agent_plan",
+  security: "security_agent_plan",
+  services: "service_agent_plan",
+  reports: "report_agent_plan",
+  ops: "ops_agent_diagnosis",
+});
+
+export const agentApprovalModes = Object.freeze([
+  "PLAN_ONLY",
+  "REQUEST_APPROVAL",
+]);
+
+export function validateAgentApprovalMode(value) {
+  const mode = value === undefined ? "REQUEST_APPROVAL" : String(value);
+  if (!agentApprovalModes.includes(mode))
+    throw fail("Agent审批模式不受支持");
+  return mode;
+}
 
 export function validateAgentIntentMessage(value) {
   if (typeof value !== "string" || value.trim().length < 4 || value.length > 2000)
@@ -64,11 +88,11 @@ export function validateAgentIntentRoute(value) {
     });
   if (
     steps.length < 1 ||
-    steps.length > 3 ||
+    steps.length > 8 ||
     steps[0].destinationId !== destinationId ||
     new Set(steps.map((step) => step.destinationId)).size !== steps.length
   )
-    throw fail("模型跨模块建议必须从主推荐开始，且最多三步不重复");
+    throw fail("模型跨模块建议必须从主推荐开始，且最多八步不重复");
   return {
     destinationId,
     destination: { ...destination },

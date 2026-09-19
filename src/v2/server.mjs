@@ -83,6 +83,8 @@ import {
 } from "./cloud-preflight.mjs";
 import {
   publicAgentIntentDestinations,
+  agentSpecialistKinds,
+  validateAgentApprovalMode,
   validateAgentIntentMessage,
   validateAgentIntentRoute,
 } from "./agent-router.mjs";
@@ -2246,15 +2248,29 @@ export function createV2Server(options = {}) {
             step = steps.find((item) => item.destinationId === destinationId);
           if (!step)
             throw fail(422, "只能交接到当前Agent推荐链路中的专业模块");
+          const specialistTaskId = body.specialistTaskId === undefined
+              ? undefined
+              : text(body.specialistTaskId, 1, 80),
+            specialistTaskKind = agentSpecialistKinds[destinationId];
+          if (specialistTaskId && !specialistTaskKind)
+            throw fail(422, "当前专业能力不支持任务关联");
+          if (
+            specialistTaskId &&
+            !store.get(specialistTaskKind, specialistTaskId, PROJECT)
+          )
+            throw fail(409, "专业Agent任务不存在或不属于当前项目");
           const key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               `${PROJECT}:agent-intent-handoff:${intent.id}:${key}`,
-              hash(JSON.stringify({ destinationId, objective: step.objective })),
+              hash(JSON.stringify({ destinationId, objective: step.objective, specialistTaskId })),
               () =>
             store.create("agent_intent_handoff", PROJECT, {
                   intentId: intent.id,
                   destinationId,
                   objective: step.objective,
+                  ...(specialistTaskId
+                    ? { specialistTaskId, specialistTaskKind }
+                    : {}),
                   status: "HANDED_OFF",
                   submittedBy: session?.user.id ?? "local-engineer",
                   scope: "SPECIALIST_AGENT_DRAFT_ONLY",
@@ -3405,12 +3421,13 @@ export function createV2Server(options = {}) {
       if (method === "POST" && path === "/api/v2/agent/intents") {
         const body = await readBody(req),
           message = validateAgentIntentMessage(body.message),
+          approvalMode = validateAgentApprovalMode(body.approvalMode),
           session = auth.sessionFromHeaders(req.headers),
           submittedBy = session?.user.id ?? "local-engineer";
         if (!options.intentPlanner && !modelSettings(env).configured)
           throw new ModelUnavailable();
         const key = text(req.headers["idempotency-key"], 1, 100),
-          signature = hash(JSON.stringify({ message })),
+          signature = hash(JSON.stringify({ message, approvalMode })),
           dedup = store.deduplicate(
             `${PROJECT}:agent-intent:${key}`,
             signature,
@@ -3418,6 +3435,7 @@ export function createV2Server(options = {}) {
               store.create("agent_intent", PROJECT, {
                 messageHash: hash(message),
                 messageLength: message.length,
+                approvalMode,
                 submittedBy,
                 status: "QUEUED",
                 mode: "LIVE_MODEL",
