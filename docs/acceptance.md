@@ -439,3 +439,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 运行暴露checkout/setup-node/setup-python/upload-artifact的Node20弃用提示；工作流已切换到官方Node24 major版本，必须再运行一次确认告警消失后才合并。
 - Node24 Action复验`35428122388`成功且只剩Ubuntu镜像迁移notice。两次GitHub Artifact外层摘要不同不能证明内部Worker ZIP不同；已撤回早先过度解释，不把封装摘要当构包摘要。
 - 构建脚本现固定所有文件时间戳、按字节序排序并用`zip -X`去除扩展属性；工作流显式记录内部ZIP SHA-256，双构建内部摘要一致性仍待远程复验。
+- 独立远程运行`35429097554`和`35429097543`均通过，内部ZIP大小均为318,395,161字节，SHA-256均为`15c13c309c39203bee1e2d94d59d39f69a594972fffcb928c2609d5fdb4d2f4a`。因此W1的Linux包完整性与可复现性验收通过；W2—W5保持未完成。
