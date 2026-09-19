@@ -51,14 +51,14 @@ type IntentTask = {
 type IntentTrace = {
   id: string;
   sequence: number;
-  kind: "MODEL_ROUTE" | "STEP_APPROVAL" | "SPECIALIST_HANDOFF";
+  kind: "MODEL_ROUTE" | "STEP_APPROVAL" | "SPECIALIST_HANDOFF" | "INTENT_CANCELLED";
   status: string;
   output?: { destinationId?: string; stepCount?: number; confidence?: number };
   execution: "NO_EXECUTION";
   observedAt: string;
 };
 type Handoff = { id: string; destinationId: string; status: string; objective: string; specialistTaskId?: string; specialistTaskKind?: string };
-type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND"; risk: Risk; approvedAt: string; specialistTaskId?: string };
+type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND" | "REVOKED"; risk: Risk; approvedAt: string; specialistTaskId?: string };
 type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistStatus?: string }[] };
 type SpecialistActivity = {
   destinationId: string;
@@ -163,6 +163,7 @@ export function AgentCenter({
     [activities, setActivities] = useState<Record<string, SpecialistActivity>>({}),
     [submittedMessages, setSubmittedMessages] = useState<Record<string, string>>({}),
     [busy, setBusy] = useState(false),
+    [cancelBusy, setCancelBusy] = useState(false),
     [error, setError] = useState("");
 
   const loadTask = async (selected?: IntentTask) => {
@@ -379,6 +380,24 @@ export function AgentCenter({
     }
   };
 
+  const cancelIntent = async () => {
+    if (!task) return;
+    setCancelBusy(true);
+    setError("");
+    try {
+      const cancelled = await api<IntentTask>(`/agent/intents/${task.id}/cancel`, {});
+      setTask(cancelled);
+      await loadTask(cancelled);
+      setTasks((items) =>
+        items.map((item) => (item.id === cancelled.id ? cancelled : item)),
+      );
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setCancelBusy(false);
+    }
+  };
+
   const applyDraft = async (step: RouteStep) => {
     const activity = activities[step.destinationId],
       applyPath = actionConfig[step.destinationId]?.applyPath?.(activity.id);
@@ -456,11 +475,12 @@ export function AgentCenter({
                     {activity && <div className="agent-os-activity-v2"><CircleDot size={12} /><span>{complete ? activity.applied ? "专业草稿已写入" : "专业Agent已完成" : activity.status === "FAILED" ? activity.error : "专业Agent执行中"}</span>{activity.id !== "preparing" && activity.id !== "failed" && <code>{activity.id.slice(0, 8)}</code>}</div>}
                     {approval && <div className="agent-os-activity-v2"><ShieldCheck size={12} /><span>{approval.status === "BOUND" ? "本次批准已绑定专业任务" : "步骤已批准，等待绑定任务"}</span><code>{approval.id.slice(0, 8)}</code></div>}
                     {artifactRows.length > 0 && <details className="agent-os-artifact-v2"><summary>查看专业Agent产物</summary><div>{artifactRows.map((row) => <section key={row.label}><span>{row.label}</span>{Array.isArray(row.value) ? <div className="agent-os-artifact-tags-v2">{row.value.map((item) => <code key={item}>{item}</code>)}</div> : <p>{row.value}</p>}</section>)}</div></details>}
-                    <div className="agent-os-step-actions-v2">{task.approvalMode !== "PLAN_ONLY" && (!activity || activity.status === "FAILED") && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured}><Wrench size={13} />{activity?.status === "FAILED" ? "重新批准并重试" : "批准并执行此步骤"}</button>}{canApply && !activity.applied && <button onClick={() => applyDraft(step)}><Check size={13} />应用为草稿</button>}{activity?.applied && <span className="agent-os-applied-v2"><Check size={12} />草稿已写入</span>}<button className="secondary" onClick={() => onOpenDestination(step.destinationId, step.objective)}><ExternalLink size={12} />专业工作台</button></div>
+                    <div className="agent-os-step-actions-v2">{task.status !== "CANCELLED" && task.approvalMode !== "PLAN_ONLY" && (!activity || activity.status === "FAILED") && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured}><Wrench size={13} />{activity?.status === "FAILED" ? "重新批准并重试" : "批准并执行此步骤"}</button>}{canApply && !activity.applied && <button onClick={() => applyDraft(step)}><Check size={13} />应用为草稿</button>}{activity?.applied && <span className="agent-os-applied-v2"><Check size={12} />草稿已写入</span>}<button className="secondary" onClick={() => onOpenDestination(step.destinationId, step.objective)}><ExternalLink size={12} />专业工作台</button></div>
                     {prepared && !activity && <small className="agent-os-prepared-v2">已准备专业Agent输入，尚未执行工具。</small>}
                   </div></li>;
                 })}</ol></div>
-                {trace.length > 0 && <details className="agent-os-trace-v2"><summary>查看执行轨迹与证据</summary>{trace.map((item) => <div key={item.id}><span>{item.sequence}</span><strong>{item.kind === "MODEL_ROUTE" ? "需求理解与规划" : item.kind === "STEP_APPROVAL" ? "人工批准专业步骤" : "专业Agent任务绑定"}</strong><small>{item.output?.destinationId ?? "—"} · {item.execution} · {new Date(item.observedAt).toLocaleTimeString("zh-CN")}</small></div>)}</details>}
+                <div className="agent-os-step-actions-v2">{task.status === "CANCELLED" ? <span className="agent-os-applied-v2"><Check size={12} />已停止后续编排</span> : <button className="secondary" onClick={cancelIntent} disabled={!canWrite || cancelBusy}><Clock3 size={12} />{cancelBusy ? "正在停止…" : "停止后续编排"}</button>}</div>
+                {trace.length > 0 && <details className="agent-os-trace-v2"><summary>查看执行轨迹与证据</summary>{trace.map((item) => <div key={item.id}><span>{item.sequence}</span><strong>{item.kind === "MODEL_ROUTE" ? "需求理解与规划" : item.kind === "STEP_APPROVAL" ? "人工批准专业步骤" : item.kind === "INTENT_CANCELLED" ? "停止后续编排" : "专业Agent任务绑定"}</strong><small>{item.output?.destinationId ?? "—"} · {item.execution} · {new Date(item.observedAt).toLocaleTimeString("zh-CN")}</small></div>)}</details>}
               </> : <p>{task.error ?? "Agent未能形成可执行计划。"}</p>}
             </div></article>
           </>}
