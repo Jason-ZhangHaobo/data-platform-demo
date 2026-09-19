@@ -13,15 +13,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Set up Python 3.10
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.10"
           cache: pip
@@ -45,7 +46,7 @@ jobs:
           test "$(wc -c < v2-spark-worker.zip)" -le 503316480
 
       - name: Upload short-lived package for controlled cloud validation
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: shuzhan-v2-spark-worker-${{ github.sha }}
           path: v2-spark-worker.zip

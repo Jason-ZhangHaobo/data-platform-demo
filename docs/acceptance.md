@@ -430,3 +430,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 签名入口绑定独立协议域、时间戳、Nonce和原始正文；错误签名401，同一Nonce重放409。Nonce短窗口写入元数据，模拟冷启动后仍可恢复。
 - 外部GitHub cron工作流由`V2_SCHEDULER_ENABLED`显式开启，默认跳过；当前没有域名、调度密钥、ACTIVE_CLOUD发布或真实云Spark，因此本轮只计核心和API本机验收，不计云调度或公网E2E。
 - 当前完整`npm run ci`为220/220，并完成旧版构建和V2 TypeScript/Vite构建；该数字只证明本机代码与故障模型，没有触发定时工作流或云资源。
+
+## 2026-09-19：隔离Spark Worker W1 Linux包
+
+- 手动工作流`35427706320`在GitHub Linux Runner于53秒内完成协议测试、Python3.10哈希依赖安装、Spark3.5.9 JAR检查、ZIP完整性/秘密文件/480MiB上限检查和短期Artifact上传。
+- 产物大小318,451,671字节，GitHub记录SHA-256为`a2becee6…c3133`，到期时间为2026-09-20；未下载到聊天、未提交Git、未上传OSS或部署FC。
+- 本次只将W1标为通过；Java17层、Worker进程健康、私网/函数鉴权、单任务、故障恢复与公网E2E仍分别属于W2—W5。
+- 运行暴露checkout/setup-node/setup-python/upload-artifact的Node20弃用提示；工作流已切换到官方Node24 major版本，必须再运行一次确认告警消失后才合并。
