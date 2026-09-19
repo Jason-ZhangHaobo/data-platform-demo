@@ -34,6 +34,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /agent/tasks/:id | 指定委托 | 同上 |
 | GET /agent/tools | 无 | `shuduo-agent-tools/v1`十域工具目录及完整契约SHA-256摘要：风险、创建/详情/应用路径、依赖、批准、子取消模板、严格输入/输出JSON Schema及幂等要求；不含凭证或授权 |
 | POST /agent/tools/:toolId/validate | `catalogVersion, contractDigest, input` | 在批准或创建任务前按当前目录做服务端契约预检；版本/摘要或输入不匹配失败关闭，固定`execution=NO_EXECUTION`，不创建任务 |
+| POST /agent/intents/:intentId/tools/:destinationId/invoke | `catalogVersion, contractDigest, approvalId, input` | 以当前推荐步骤和有效批准调用专业模块原子API并幂等绑定任务图；仍受模块权限/预算约束，响应只含任务信封，不应用草稿、不发布或授权 |
 | GET /agent/intents | 受邀用户的跨模块Agent意图记录 | 路由、风险、摘要和模型用量；公网匿名拒绝读取 |
 | POST /agent/intents | message + 幂等键 | 202；模型仅从白名单模块推荐下一步，固定NO_EXECUTION，不创建下游任务 |
 | GET/POST /agent/intents/:id/approvals | 读取批准或destinationId + 幂等键 | REQUEST_APPROVAL持久化目标摘要哈希与风险；PLAN_ONLY拒绝。批准不执行工具，批准者内部标识不返回 |

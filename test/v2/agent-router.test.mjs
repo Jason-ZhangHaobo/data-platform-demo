@@ -23,6 +23,7 @@ test("specialist tool catalog exposes ten governed versionable capabilities", ()
   assert.ok(tools.every((tool) => tool.createPath.startsWith("/")));
   assert.ok(tools.every((tool) => tool.detailPath.includes("{id}")));
   assert.ok(tools.every((tool) => tool.childCancelPath.includes("{intentId}")));
+  assert.ok(tools.every((tool) => tool.invokePath.includes("{destinationId}")));
   assert.ok(tools.every((tool) => tool.idempotencyKeyRequired === true));
   assert.ok(tools.every((tool) => tool.inputSchema.additionalProperties === false));
   assert.ok(tools.every((tool) => tool.outputSchema.required.includes("id")));
@@ -502,6 +503,131 @@ test("request-approval intent persists and binds an exact step approval before s
     assert.equal(
       (await completedChildCancel.json()).code,
       "AGENT_CHILD_TASK_NOT_CANCELLABLE",
+    );
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    store.close();
+  }
+});
+
+test("one governed Agent tool invocation creates and binds a specialist task idempotently", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-tool-invoke-")),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    objective = "基于已登记资产设计类别与行业分布报表",
+    app = createV2Server({
+      root,
+      store,
+      env: { V2_LOCAL_DEVELOPMENT: "true" },
+      intentPlanner: async () => ({
+        route: {
+          destinationId: "reports",
+          summary: "设计虚构证券资产报表",
+          rationale: "先由报表专业Agent形成受治理草稿。",
+          confidence: 0.9,
+          steps: [{ destinationId: "reports", objective }],
+        },
+        model: "TEST_ROUTER_MODEL",
+        usage: { total_tokens: 1 },
+      }),
+      reportPlanner: async () => ({
+        plan: {},
+        explanation: "测试只验证统一调用和任务绑定，不冒充有效报表方案",
+        model: "TEST_REPORT_MODEL",
+        usage: { total_tokens: 1 },
+      }),
+    });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
+  try {
+    const catalog = await fetch(base + "/agent/tools").then((value) =>
+        value.json(),
+      ),
+      created = await fetch(base + "/agent/intents", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "tool-invoke-intent",
+        },
+        body: JSON.stringify({
+          message: "根据虚构证券资产设计类别与行业报表",
+          approvalMode: "REQUEST_APPROVAL",
+        }),
+      }).then((response) => response.json()),
+      completed = await waitFor(
+        async () =>
+          (await fetch(base + "/agent/intents").then((value) => value.json()))[0],
+        (value) => value.id === created.id && value.status === "SUCCEEDED",
+      ),
+      approval = await fetch(
+        base + `/agent/intents/${completed.id}/approvals`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shuduo-Client": "workbench",
+            "Idempotency-Key": "tool-invoke-approval",
+          },
+          body: JSON.stringify({ destinationId: "reports" }),
+        },
+      ).then((response) => response.json()),
+      invoke = () =>
+        fetch(
+          base + `/agent/intents/${completed.id}/tools/reports/invoke`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shuduo-Client": "workbench",
+              "Idempotency-Key": "tool-invoke-specialist",
+            },
+            body: JSON.stringify({
+              catalogVersion: catalog.version,
+              contractDigest: catalog.contractDigest,
+              approvalId: approval.id,
+              input: { message: objective },
+            }),
+          },
+        );
+    const firstResponse = await invoke(),
+      first = await firstResponse.json();
+    assert.equal(firstResponse.status, 201);
+    assert.equal(first.toolId, "reports");
+    assert.equal(first.specialist.kind, "report_agent_plan");
+    assert.equal(first.specialist.fullLifecycleE2E, false);
+    assert.equal(first.specialist.publicDeployed, false);
+    assert.equal(first.handoff.approvalId, approval.id);
+    assert.equal(first.graph.steps[0].approvalStatus, "BOUND");
+    assert.equal(first.invocation.status, "BOUND");
+    const replayResponse = await invoke(),
+      replay = await replayResponse.json();
+    assert.equal(replayResponse.status, 200);
+    assert.equal(replay.specialist.id, first.specialist.id);
+    assert.equal(replay.invocation.id, first.invocation.id);
+    assert.equal(store.list("report_agent_plan", PROJECT).length, 1);
+    assert.equal(store.list("agent_intent_handoff", PROJECT).length, 1);
+    assert.equal(store.list("agent_tool_invocation", PROJECT).length, 1);
+    const mismatch = await fetch(
+      base + `/agent/intents/${completed.id}/tools/reports/invoke`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "tool-invoke-mismatch",
+        },
+        body: JSON.stringify({
+          catalogVersion: catalog.version,
+          contractDigest: catalog.contractDigest,
+          approvalId: approval.id,
+          input: { message: "换成没有获批的任务目标" },
+        }),
+      },
+    );
+    assert.equal(mismatch.status, 409);
+    assert.equal(
+      (await mismatch.json()).code,
+      "AGENT_TOOL_OBJECTIVE_MISMATCH",
     );
   } finally {
     await new Promise((resolve) => app.server.close(resolve));

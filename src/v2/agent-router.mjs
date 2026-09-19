@@ -96,6 +96,8 @@ export function publicAgentSpecialistTools() {
       },
       childCancelPath:
         "/agent/intents/{intentId}/children/{destinationId}/cancel",
+      invokePath:
+        "/agent/intents/{intentId}/tools/{destinationId}/invoke",
       executionBoundary:
         "创建专业任务不等于应用草稿、发布、授权或完整E2E。",
     };

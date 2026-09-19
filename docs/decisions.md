@@ -163,6 +163,7 @@
 | D-158 | GUI由工具目录驱动，2026-09-20 | 独立工作台移除创建/详情/应用路径硬编码；首次加载必须先取得`shuduo-agent-tools/v1`，再恢复历史任务。创建模式、前置依赖、详情和应用路径均从目录解析，目录缺项失败关闭；任务恢复继续使用任务图最新绑定。完整CI保持263/263 |
 | D-159 | Agent工具输入输出Schema，2026-09-20 | 工具目录为MESSAGE、SQL_DEVELOPMENT和DELIVERY_FROM_DEVELOPMENT生成严格JSON Schema，禁止额外字段并声明幂等键必需；输出至少含id/status并固定fullLifecycleE2E不得由工具创建冒充。十域测试验证Schema与依赖，完整CI保持263/263 |
 | D-160 | Agent工具契约摘要与服务端预检，2026-09-20 | `shuduo-agent-tools/v1`目录增加基于完整公开工具契约的SHA-256摘要；新增`POST /agent/tools/:id/validate`，严格校验目录版本、摘要、必填/额外字段及字符串边界，结果固定NO_EXECUTION。工作台在批准和创建专业任务前预检，旧目录客户端失败关闭；CLI/MCP提供同源预检。预检继承AGENT权限，PRODUCT_MANAGER可用、VIEWER拒绝，不把发现或预检冒充执行 |
+| D-161 | 统一Agent工具调用协议，2026-09-20 | 新增`POST /agent/intents/:intentId/tools/:destinationId/invoke`，只接受当前路由、目录摘要、严格输入和APPROVED步骤。服务端通过同一专业原子API再次执行模块权限、预算与幂等门，并用父意图/步骤/输入摘要建立持久`agent_tool_invocation`租约；任务已创建但handoff未完成时可复用同一原子任务继续绑定，处理中并发请求拒绝，不同输入冲突。GUI/CLI/MCP改用同一入口；响应只含子任务信封并固定非完整E2E，不应用草稿、不发布、不授权。完整CI 264/264 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。

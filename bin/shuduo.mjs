@@ -10,6 +10,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent intents
   shuduo agent tools
   shuduo agent validate-tool --tool MODULE_ID --catalog-version VERSION --contract-digest SHA256 --input-json '{"message":"任务目标"}'
+  shuduo agent invoke-tool --id INTENT_ID --tool MODULE_ID --approval-id APPROVAL_ID --catalog-version VERSION --contract-digest SHA256 --input-json '{"message":"已批准目标"}'
   shuduo agent understand --message "理解需求并推荐中台模块"
   shuduo agent approvals --id INTENT_ID
   shuduo agent approve --id INTENT_ID --destination MODULE_ID
@@ -281,6 +282,25 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           },
         },
       );
+    else if (resource === "agent" && action === "invoke-tool") {
+      const intentId = required(parsed.options, "id"),
+        toolId = required(parsed.options, "tool");
+      result = await client.request(
+        `/agent/intents/${encodeURIComponent(intentId)}/tools/${encodeURIComponent(toolId)}/invoke`,
+        {
+          method: "POST",
+          body: {
+            catalogVersion: required(parsed.options, "catalog_version"),
+            contractDigest: required(parsed.options, "contract_digest"),
+            approvalId: required(parsed.options, "approval_id"),
+            input: jsonObject(
+              required(parsed.options, "input_json"),
+              "--input-json",
+            ),
+          },
+        },
+      );
+    }
     else if (resource === "agent" && action === "understand")
       result = await client.request("/agent/intents", {
         method: "POST",
