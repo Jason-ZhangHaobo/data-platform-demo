@@ -45,7 +45,7 @@ if (
   throw new Error("V2_E2E_CASE_LIMIT必须为1—20");
 mkdirSync(artifactDirectory, { recursive: true });
 
-const tempRoot = mkdtempSync(join(tmpdir(), "shuzhan-full-e2e-")),
+const tempRoot = mkdtempSync(join(tmpdir(), "shuduo-full-e2e-")),
   store = new MetadataStore(join(tempRoot, "platform.sqlite")),
   app = createV2Server({
     root,
@@ -74,7 +74,7 @@ const request = async (path, body, idempotencyKey) => {
       method: body === undefined ? "GET" : "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shuzhan-Client": "workbench",
+        "X-Shuduo-Client": "workbench",
         ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -213,7 +213,7 @@ try {
         status:
           fileNames.includes("schedule.json") &&
           fileNames.includes("calendar.json") &&
-          packageItem.manifest?.format === "shuzhan-delivery/v1"
+          packageItem.manifest?.format === "shuduo-delivery/v1"
             ? "PASSED"
             : "FAILED",
         evidenceIds: [packageItem.id],

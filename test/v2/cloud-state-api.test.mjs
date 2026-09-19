@@ -37,7 +37,7 @@ async function post(base, path, body, key) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       "Idempotency-Key": key,
     },
     body: JSON.stringify(body),
@@ -46,7 +46,7 @@ async function post(base, path, body, key) {
 }
 
 test("successful sync API response is recoverable after a simulated cloud cold start", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-cloud-state-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-cloud-state-api-")),
     fixtureRoot = join(root, "fixtures"),
     metadataBackend = new MemorySnapshotBackend(),
     dataBackend = new MemoryDataStateBackend(),

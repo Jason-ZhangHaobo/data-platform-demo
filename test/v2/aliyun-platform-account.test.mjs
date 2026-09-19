@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
 test("platform RDS account helper hides input and grants only platform_meta", () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-platform-account-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-platform-account-")),
     fakeCli = join(root, "aliyun"),
     created = join(root, "created");
   writeFileSync(

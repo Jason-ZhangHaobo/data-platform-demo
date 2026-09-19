@@ -23,7 +23,7 @@ validateM1EvaluationCases(cases);
 mkdirSync(artifactDirectory, { recursive: true });
 
 const store = new MetadataStore(
-  join(mkdtempSync(join(tmpdir(), "shuzhan-m1-eval-")), "metadata.sqlite"),
+  join(mkdtempSync(join(tmpdir(), "shuduo-m1-eval-")), "metadata.sqlite"),
 );
 const app = createV2Server({ root, store, env: process.env });
 await new Promise((resolveListen) =>
@@ -40,7 +40,7 @@ const request = async (path, body, idempotencyKey) => {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),

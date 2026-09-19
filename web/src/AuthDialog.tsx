@@ -71,7 +71,7 @@ export function AuthDialog({
   return (
     <div className="auth-overlay-v2" onMouseDown={onClose}>
       <section className="auth-dialog-v2" role="dialog" aria-modal="true" aria-label="受邀用户登录" onMouseDown={(event) => event.stopPropagation()}>
-        <header><div><span className="eyebrow">INVITATION ACCESS</span><h2>{mode === "login" ? "登录数栈" : "兑换邀请"}</h2><p>公开浏览无需登录；创建和运行任务需要受邀项目成员。</p></div><button aria-label="关闭登录" onClick={onClose}><X size={18} /></button></header>
+        <header><div><span className="eyebrow">INVITATION ACCESS</span><h2>{mode === "login" ? "登录数舵" : "兑换邀请"}</h2><p>公开浏览无需登录；创建和运行任务需要受邀项目成员。</p></div><button aria-label="关闭登录" onClick={onClose}><X size={18} /></button></header>
         <div className="auth-tabs-v2" role="tablist"><button role="tab" aria-selected={mode === "login"} className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}><LogIn size={14} />已有账号</button><button role="tab" aria-selected={mode === "redeem"} className={mode === "redeem" ? "active" : ""} onClick={() => setMode("redeem")}><UserPlus size={14} />首次受邀</button></div>
         <form onSubmit={submit}>
           {mode === "login" ? <label><Mail size={14} />邮箱<input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></label> : <><label><KeyRound size={14} />一次性邀请码<input autoComplete="one-time-code" value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} required /></label><label><UserPlus size={14} />显示名称<input autoComplete="name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={50} required /></label></>}

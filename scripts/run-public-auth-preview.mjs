@@ -10,7 +10,7 @@ if (!password)
   throw new Error("请通过V2_PREVIEW_ADMIN_PASSWORD提供仅本次预览使用的强密码");
 const port = Number(process.env.V2_PREVIEW_PORT ?? 3200),
   origin = `http://127.0.0.1:${port}`,
-  tempRoot = mkdtempSync(join(tmpdir(), "shuzhan-public-auth-preview-")),
+  tempRoot = mkdtempSync(join(tmpdir(), "shuduo-public-auth-preview-")),
   store = new MetadataStore(join(tempRoot, "platform.sqlite")),
   app = createV2Server({
     root: resolve(process.cwd()),

@@ -37,7 +37,7 @@ async function request(base, path, options = {}) {
     method: options.body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       "Idempotency-Key": options.key ?? "data-services-api-test",
       ...options.headers,
     },
@@ -77,7 +77,7 @@ async function createAndPublishDapi(base, input, key) {
 }
 
 test("V2 API exposes versioned DAPI/XAPI to an authorized external caller", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-data-services-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-data-services-api-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     businessStore = new BusinessQueryStore(join(root, "business.sqlite")),
     releaseRun = store.create("release_run", PROJECT, {
@@ -257,7 +257,7 @@ test("V2 API exposes versioned DAPI/XAPI to an authorized external caller", asyn
 });
 
 test("V2 service API rejects unpublished data, missing app grants and invalid inputs", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-data-services-api-deny-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-data-services-api-deny-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     businessStore = new BusinessQueryStore(":memory:"),
     untriggered = store.create("release_run", PROJECT, {
@@ -293,7 +293,7 @@ test("V2 service API rejects unpublished data, missing app grants and invalid in
 });
 
 test("Data Agent plans a governed DAPI and only creates a draft after apply", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-service-agent-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-service-agent-api-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     businessStore = new BusinessQueryStore(":memory:"),
     releaseRun = store.create("release_run", PROJECT, {

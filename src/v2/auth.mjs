@@ -218,7 +218,7 @@ export class AuthManager {
 
   sessionFromHeaders(headers = {}) {
     const cookies = parseCookies(headers.cookie),
-      token = cookies.shuzhan_session;
+      token = cookies.shuduo_session;
     if (!token) return undefined;
     const session = this.store
       .list("auth_session", this.project)
@@ -302,8 +302,8 @@ export class AuthManager {
 
   clearCookie(secure) {
     return [
-      `shuzhan_session=; Path=/api/v2; HttpOnly; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`,
-      `shuzhan_csrf=; Path=/; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`,
+      `shuduo_session=; Path=/api/v2; HttpOnly; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`,
+      `shuduo_csrf=; Path=/; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`,
     ];
   }
 
@@ -499,11 +499,11 @@ function parseCookies(value) {
 }
 
 function sessionCookie(token, secure) {
-  return `shuzhan_session=${token}; Path=/api/v2; HttpOnly; SameSite=Strict; Max-Age=${SESSION_SECONDS}${secure ? "; Secure" : ""}`;
+  return `shuduo_session=${token}; Path=/api/v2; HttpOnly; SameSite=Strict; Max-Age=${SESSION_SECONDS}${secure ? "; Secure" : ""}`;
 }
 
 function csrfCookie(token, secure) {
-  return `shuzhan_csrf=${token}; Path=/; SameSite=Strict; Max-Age=${SESSION_SECONDS}${secure ? "; Secure" : ""}`;
+  return `shuduo_csrf=${token}; Path=/; SameSite=Strict; Max-Age=${SESSION_SECONDS}${secure ? "; Secure" : ""}`;
 }
 
 function permissionForPath(path) {

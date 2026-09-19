@@ -147,9 +147,9 @@ export function createRemoteSparkWorker(options = {}) {
         if (Buffer.byteLength(body, "utf8") > maxBodyBytes)
           throw fail(413, "Spark请求超过大小上限", "SPARK_REQUEST_TOO_LARGE");
       }
-      const timestamp = req.headers["x-shuzhan-timestamp"],
-        nonce = req.headers["x-shuzhan-nonce"],
-        signature = req.headers["x-shuzhan-signature"],
+      const timestamp = req.headers["x-shuduo-timestamp"],
+        nonce = req.headers["x-shuduo-nonce"],
+        signature = req.headers["x-shuduo-signature"],
         current = now();
       for (const [key, expiresAt] of nonces)
         if (expiresAt <= current) nonces.delete(key);
@@ -230,7 +230,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     port = Number(process.env.FC_CUSTOM_LISTEN_PORT ?? process.env.PORT ?? 9000),
     host = process.env.HOST ?? "0.0.0.0";
   app.server.listen(port, host, () =>
-    process.stdout.write(`Shuzhan isolated Spark worker ready on ${host}:${port}\n`),
+    process.stdout.write(`Shuduo isolated Spark worker ready on ${host}:${port}\n`),
   );
   const close = () => app.server.close(() => process.exit(0));
   process.on("SIGINT", close);

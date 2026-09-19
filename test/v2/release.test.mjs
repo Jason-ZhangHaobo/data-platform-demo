@@ -72,7 +72,7 @@ const waitFor = async (read, check, timeoutMs = 2000) => {
 };
 
 async function setup({ runner = success } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-release-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-release-api-")),
     store = new MetadataStore(join(root, "metadata.sqlite")),
     app = createV2Server({
       root,
@@ -92,7 +92,7 @@ async function setup({ runner = success } = {}) {
       method: body === undefined ? "GET" : "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shuzhan-Client": "workbench",
+        "X-Shuduo-Client": "workbench",
         "Idempotency-Key": `release-test-${sequence++}`,
       },
       body: body === undefined ? undefined : JSON.stringify(body),

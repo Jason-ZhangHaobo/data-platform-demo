@@ -285,13 +285,13 @@ async function api<T>(
       method: body === undefined ? "GET" : "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shuzhan-Client": "workbench",
+        "X-Shuduo-Client": "workbench",
         ...(requestOptions.actorId
           ? { "X-Actor-Id": requestOptions.actorId }
           : {}),
-        ...(body === undefined || !cookieValue("shuzhan_csrf")
+        ...(body === undefined || !cookieValue("shuduo_csrf")
           ? {}
-          : { "X-CSRF-Token": cookieValue("shuzhan_csrf") }),
+          : { "X-CSRF-Token": cookieValue("shuduo_csrf") }),
         ...(body === undefined
           ? {}
           : { "Idempotency-Key": crypto.randomUUID() }),
@@ -558,7 +558,7 @@ function App() {
       );
       const a = document.createElement("a");
       a.href = url;
-      a.download = "shuzhan-verification-" + run.id.slice(0, 8) + ".json";
+      a.download = "shuduo-verification-" + run.id.slice(0, 8) + ".json";
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -590,12 +590,12 @@ function App() {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <a className="brand" href="/v2/" aria-label="数栈工作台">
+        <a className="brand" href="/v2/" aria-label="数舵工作台">
           <span className="brand-symbol">
             <Layers3 size={22} />
           </span>
           <strong>
-            数栈<span>SHUZHAN</span>
+            数舵<span>SHUDUO</span>
           </strong>
           <small>V2</small>
         </a>

@@ -12,14 +12,14 @@ import {
 import { PROJECT } from "../../src/v2/server.mjs";
 
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-auth-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-auth-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     auth = new AuthManager({ store, project: PROJECT, env: {} });
   return { store, auth, close: () => store.close() };
 }
 
 test("cloud bootstrap accepts a validated scrypt hash without retaining plaintext", () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-auth-hash-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-auth-hash-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     password = "CloudAdmin#Pass2026",
     encoded = createPasswordHash(password),
@@ -40,14 +40,14 @@ test("cloud bootstrap accepts a validated scrypt hash without retaining plaintex
     assert.doesNotMatch(JSON.stringify(store.list("auth_user", PROJECT)), /CloudAdmin#Pass2026/);
     const cli = spawnSync(
       process.execPath,
-      ["bin/shuzhan-password-hash.mjs"],
+      ["bin/shuduo-password-hash.mjs"],
       { input: password + "\n", encoding: "utf8" },
     );
     assert.equal(cli.status, 0);
     assert.match(cli.stdout.trim(), /^scrypt\$16384\$8\$1\$/);
     assert.doesNotMatch(cli.stdout + cli.stderr, /CloudAdmin#Pass2026/);
     const context = auth.sessionFromHeaders({
-        cookie: `shuzhan_session=${login.rawToken}`,
+        cookie: `shuduo_session=${login.rawToken}`,
       }),
       changed = auth.changePassword(context, {
         currentPassword: password,
@@ -55,13 +55,13 @@ test("cloud bootstrap accepts a validated scrypt hash without retaining plaintex
       });
     assert.equal(
       auth.sessionFromHeaders({
-        cookie: `shuzhan_session=${login.rawToken}`,
+        cookie: `shuduo_session=${login.rawToken}`,
       }),
       undefined,
     );
     assert.equal(
       auth.sessionFromHeaders({
-        cookie: `shuzhan_session=${changed.rawToken}`,
+        cookie: `shuduo_session=${changed.rawToken}`,
       }).role,
       "ADMIN",
     );
@@ -107,7 +107,7 @@ test("single-use invitation creates a hashed-password member and revocable sessi
         password: "StrongAdmin#2026",
       }),
       admin = app.auth.sessionFromHeaders({
-        cookie: `shuzhan_session=${adminLogin.rawToken}`,
+        cookie: `shuduo_session=${adminLogin.rawToken}`,
       }),
       issued = app.auth.createInvitation(admin, {
         email: "engineer@example.test",
@@ -139,14 +139,14 @@ test("single-use invitation creates a hashed-password member and revocable sessi
     assert.match(engineer.passwordHash, /^scrypt\$/);
     assert.doesNotMatch(JSON.stringify(engineer), /Engineer#Pass2026/);
     const context = app.auth.sessionFromHeaders({
-      cookie: `shuzhan_session=${redeemed.rawToken}`,
+      cookie: `shuduo_session=${redeemed.rawToken}`,
     });
     assert.equal(context.user.email, "engineer@example.test");
     assert.ok(context.permissions.includes("DEVELOPMENT"));
     assert.equal(
       app.auth.requireMutation(
         {
-          cookie: `shuzhan_session=${redeemed.rawToken}`,
+          cookie: `shuduo_session=${redeemed.rawToken}`,
           "x-csrf-token": redeemed.csrfToken,
         },
         "/api/v2/revisions",
@@ -156,7 +156,7 @@ test("single-use invitation creates a hashed-password member and revocable sessi
     assert.throws(
       () =>
         app.auth.requireMutation(
-          { cookie: `shuzhan_session=${redeemed.rawToken}` },
+          { cookie: `shuduo_session=${redeemed.rawToken}` },
           "/api/v2/revisions",
         ),
       { status: 403, code: "CSRF_REQUIRED" },
@@ -165,17 +165,17 @@ test("single-use invitation creates a hashed-password member and revocable sessi
       () =>
         app.auth.requireMutation(
           {
-            cookie: `shuzhan_session=${redeemed.rawToken}`,
+            cookie: `shuduo_session=${redeemed.rawToken}`,
             "x-csrf-token": redeemed.csrfToken,
           },
           "/api/v2/auth/invitations",
         ),
       { status: 403, code: "PROJECT_PERMISSION_DENIED" },
     );
-    app.auth.logout({ cookie: `shuzhan_session=${redeemed.rawToken}` });
+    app.auth.logout({ cookie: `shuduo_session=${redeemed.rawToken}` });
     assert.equal(
       app.auth.sessionFromHeaders({
-        cookie: `shuzhan_session=${redeemed.rawToken}`,
+        cookie: `shuduo_session=${redeemed.rawToken}`,
       }),
       undefined,
     );

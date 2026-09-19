@@ -18,7 +18,7 @@ import {
 import { PROJECT } from "../../src/v2/server.mjs";
 
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-contracts-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-contracts-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     landingStore = new LandingStore(join(root, "landing.sqlite")),
     stateStore = new StreamStateStore(join(root, "stream.sqlite")),

@@ -20,7 +20,7 @@ const result = {
 };
 
 test("signed durable tick executes a due cloud run once and rejects replay", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-durable-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-durable-api-")),
     store = new MetadataStore(":memory:"),
     nowMs = Date.parse("2026-09-19T03:00:00.000Z"),
     secret = randomBytes(32).toString("base64url"),
@@ -69,14 +69,14 @@ test("signed durable tick executes a due cloud run once and rejects replay", asy
     headers = {
       "Content-Type": "application/json",
       "X-Project-Id": PROJECT,
-      "X-Shuzhan-Timestamp": timestamp,
-      "X-Shuzhan-Nonce": nonce,
-      "X-Shuzhan-Signature": signature,
+      "X-Shuduo-Timestamp": timestamp,
+      "X-Shuduo-Nonce": nonce,
+      "X-Shuduo-Signature": signature,
     };
   try {
     const invalid = await fetch(endpoint, {
       method: "POST",
-      headers: { ...headers, "X-Shuzhan-Signature": "v1=" + "0".repeat(64) },
+      headers: { ...headers, "X-Shuduo-Signature": "v1=" + "0".repeat(64) },
       body,
     });
     assert.equal(invalid.status, 401);

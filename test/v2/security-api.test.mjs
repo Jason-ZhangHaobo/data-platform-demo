@@ -19,7 +19,7 @@ async function request(base, path, body, key = "security-api", actorId) {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       "Idempotency-Key": key,
       ...(actorId ? { "X-Actor-Id": actorId } : {}),
     },
@@ -37,7 +37,7 @@ async function waitForPlan(base, id) {
 }
 
 test("V2 security API enforces masking, denial, approved grant and Agent no-execute boundary", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-security-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-security-api-")),
     fixtureRoot = join(root, "sources"),
     streamRoot = join(root, "streams"),
     store = new MetadataStore(join(root, "platform.sqlite")),

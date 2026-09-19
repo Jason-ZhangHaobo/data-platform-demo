@@ -66,11 +66,11 @@ jobs:
 
       - name: Verify package runtime and contents
         run: |
-          mkdir -p /tmp/shuzhan-v2-runtime-check
-          unzip -q v2-function.zip runtime/node package.json -d /tmp/shuzhan-v2-runtime-check
-          chmod 0755 /tmp/shuzhan-v2-runtime-check/runtime/node
-          test "$(/tmp/shuzhan-v2-runtime-check/runtime/node -p 'process.platform + "/" + process.arch')" = "linux/x64"
-          /tmp/shuzhan-v2-runtime-check/runtime/node -e 'import("node:sqlite").then(() => process.stdout.write("node:sqlite ready\n"))'
+          mkdir -p /tmp/shuduo-v2-runtime-check
+          unzip -q v2-function.zip runtime/node package.json -d /tmp/shuduo-v2-runtime-check
+          chmod 0755 /tmp/shuduo-v2-runtime-check/runtime/node
+          test "$(/tmp/shuduo-v2-runtime-check/runtime/node -p 'process.platform + "/" + process.arch')" = "linux/x64"
+          /tmp/shuduo-v2-runtime-check/runtime/node -e 'import("node:sqlite").then(() => process.stdout.write("node:sqlite ready\n"))'
           unzip -l v2-function.zip | grep -q 'src/v2/cloud-server.mjs'
           unzip -l v2-function.zip | grep -q 'web-dist/index.html'
           unzip -l v2-function.zip | grep -q 'fixtures/sources/positions_baseline.csv'
@@ -211,12 +211,12 @@ jobs:
             .authentication.publicSessionEnforced == true and
             .publicReady == false
           ' "$status_file" >/dev/null
-          curl --fail --silent --show-error "$PUBLIC_URL/v2/" | grep -q '<title>数栈 · 智能数据工作台</title>'
+          curl --fail --silent --show-error "$PUBLIC_URL/v2/" | grep -q '<title>数舵 · 智能数据工作台</title>'
           write_status="$(curl --silent --output /tmp/anonymous-write.json --write-out '%{http_code}' \
             -X POST "$PUBLIC_URL/api/v2/revisions" \
             -H "Origin: $V2_PUBLIC_ORIGIN" \
             -H 'Content-Type: application/json' \
-            -H 'X-Shuzhan-Client: workbench' \
+            -H 'X-Shuduo-Client: workbench' \
             -H 'Idempotency-Key: deployment-anonymous-write' \
             --data '{"sql":"SELECT 1","contextId":"holdings-t1"}')"
           test "$write_status" = "401"
@@ -226,4 +226,4 @@ jobs:
         if: always()
         run: |
           rm -f v2-function.zip.b64 v2-function-update.json current-v2-function.json v2-function-result.json /tmp/anonymous-write.json
-          rm -rf /tmp/shuzhan-v2-runtime-check
+          rm -rf /tmp/shuduo-v2-runtime-check

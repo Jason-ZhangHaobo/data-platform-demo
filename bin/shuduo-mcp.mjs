@@ -3,7 +3,7 @@ import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 
 const tools = [
-  { name: "v2_status", description: "读取数栈V2真实/本机/公网能力边界。", inputSchema: { type: "object", properties: {} } },
+  { name: "v2_status", description: "读取数舵V2真实/本机/公网能力边界。", inputSchema: { type: "object", properties: {} } },
   { name: "budget_status", description: "读取当月模型估算、远程Spark用量、账号账单连接状态和预算门；未连接账号账单时不代表全站费用。", inputSchema: { type: "object", properties: {} } },
   { name: "agent_intent_list", description: "读取跨模块 Data Agent 的任务理解与受治理路由结果。", inputSchema: { type: "object", properties: {} } },
   { name: "agent_intent_create", description: "理解需求并在受支持模块中推荐下一步；只做路由，不执行同步、查询、审批、发布、发令牌或改权限。", inputSchema: { type: "object", properties: { message: { type: "string", minLength: 4, maxLength: 2000 } }, required: ["message"] } },
@@ -43,7 +43,7 @@ const tools = [
   { name: "service_application_list", description: "列出调用应用与授权，不返回令牌或令牌哈希。", inputSchema: { type: "object", properties: {} } },
   { name: "service_application_create", description: "创建本机调用应用并仅显示一次令牌。该操作创建持久访问能力，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { name: { type: "string" }, serviceIds: { type: "array", items: { type: "string" } } }, required: ["name", "serviceIds"] } },
   { name: "service_application_revoke", description: "撤销本机调用应用。该操作会使令牌立即失效，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { applicationId: { type: "string" } }, required: ["applicationId"] } },
-  { name: "data_service_invoke", description: "使用服务器环境中的SHUZHAN_APP_TOKEN调用已授权服务；令牌不进入模型参数。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, slug: { type: "string" }, clientId: { type: "string" }, page: { type: "integer", minimum: 1 }, pageSize: { type: "integer", minimum: 1, maximum: 100 } }, required: ["type", "slug"] } },
+  { name: "data_service_invoke", description: "使用服务器环境中的SHUDUO_APP_TOKEN调用已授权服务；令牌不进入模型参数。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, slug: { type: "string" }, clientId: { type: "string" }, page: { type: "integer", minimum: 1 }, pageSize: { type: "integer", minimum: 1, maximum: 100 } }, required: ["type", "slug"] } },
   { name: "source_list", description: "列出V2真实数据源、版本、连接测试和元数据摘要。", inputSchema: { type: "object", properties: {} } },
   { name: "source_create", description: "登记仓库合成目录中的LOCAL_CSV源，不接受任意路径或凭证。", inputSchema: { type: "object", properties: { name: { type: "string" }, fileName: { type: "string" } }, required: ["name", "fileName"] } },
   { name: "source_server_mysql_create", description: "登记服务端环境已配置且白名单允许的合成MySQL表；不接收主机、账号、密码或连接串，首期只支持连接与元数据采集。", inputSchema: { type: "object", properties: { name: { type: "string" }, tableName: { type: "string", pattern: "^[a-z][a-z0-9_]{0,62}$" } }, required: ["name", "tableName"] } },
@@ -139,7 +139,7 @@ export const V2_MCP_TOOL_NAMES = Object.freeze(tools.map((tool) => tool.name));
 
 const client = new V2Client({
   baseUrl:
-    process.env.SHUZHAN_V2_API_BASE_URL ??
+    process.env.SHUDUO_V2_API_BASE_URL ??
     "http://127.0.0.1:3100/api/v2",
   client: "mcp",
 });
@@ -301,8 +301,8 @@ async function callTool(name, args = {}) {
       { method: "POST", body: {} },
     );
   if (name === "data_service_invoke") {
-    if (!process.env.SHUZHAN_APP_TOKEN)
-      throw new Error("MCP服务未配置SHUZHAN_APP_TOKEN");
+    if (!process.env.SHUDUO_APP_TOKEN)
+      throw new Error("MCP服务未配置SHUDUO_APP_TOKEN");
     const query = new URLSearchParams({
       page: String(args.page ?? 1),
       page_size: String(args.pageSize ?? 20),
@@ -310,7 +310,7 @@ async function callTool(name, args = {}) {
     });
     return client.request(
       `/open/${typePath(args.type)}/${encodeURIComponent(args.slug)}?${query}`,
-      { authorization: `Bearer ${process.env.SHUZHAN_APP_TOKEN}` },
+      { authorization: `Bearer ${process.env.SHUDUO_APP_TOKEN}` },
     );
   }
   if (name === "source_list") return client.request("/sources");
@@ -624,7 +624,7 @@ export async function handleV2Mcp(message) {
     return response(message.id, {
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "shuzhan-v2-mcp", version: "0.1.0" },
+      serverInfo: { name: "shuduo-v2-mcp", version: "0.1.0" },
     });
   if (message.method === "notifications/initialized") return undefined;
   if (message.method === "tools/list") return response(message.id, { tools });
@@ -648,7 +648,7 @@ export async function handleV2Mcp(message) {
   return errorResponse(message.id, -32601, `不支持的方法：${message.method}`);
 }
 
-if (process.argv[1] && process.argv[1].endsWith("shuzhan-mcp.mjs")) {
+if (process.argv[1] && process.argv[1].endsWith("shuduo-mcp.mjs")) {
   const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   for await (const line of input) {
     if (!line.trim()) continue;

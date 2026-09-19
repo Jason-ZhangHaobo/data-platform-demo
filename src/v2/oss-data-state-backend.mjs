@@ -8,7 +8,7 @@ import {
   validateDataState,
 } from "./data-state-replica.mjs";
 
-const ENVELOPE_FORMAT = "shuzhan-data-state-envelope/v1";
+const ENVELOPE_FORMAT = "shuduo-data-state-envelope/v1";
 const DEFAULT_MAX_BYTES = 40 * 1024 * 1024;
 
 const unavailable = (message, code = "CLOUD_DATA_STATE_UNAVAILABLE") =>

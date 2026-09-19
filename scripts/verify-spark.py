@@ -38,7 +38,7 @@ add("阻断未登记表",query="SELECT * FROM unregistered_data",expect="REJECTE
 add("阻断外部文件表",query="SELECT * FROM parquet.`/tmp/private`",expect="REJECTED")
 add("阻断反射调用",query="SELECT reflect('java.lang.Runtime','getRuntime')",expect="REJECTED")
 add("逻辑条件内反射仍被阻断",query="SELECT client_id FROM accounts WHERE client_id='CLIENT-001' OR reflect('java.lang.Runtime','getRuntime') IS NOT NULL",expect="REJECTED")
-add("内部结果视图不能经嵌套CTE被读取",query="WITH holder AS (WITH __shuzhan_result AS (SELECT 1 AS x) SELECT x FROM __shuzhan_result) SELECT * FROM __shuzhan_result",expect="REJECTED")
+add("内部结果视图不能经嵌套CTE被读取",query="WITH holder AS (WITH __shuduo_result AS (SELECT 1 AS x) SELECT x FROM __shuduo_result) SELECT * FROM __shuduo_result",expect="REJECTED")
 
 start=time.monotonic();spark=worker.create_spark();spark.sparkContext.setLogLevel("ERROR");results=[]
 try:
@@ -81,11 +81,11 @@ try:
   results.append({"name":name,"passed":passed,"expected":"MATRIX_PASS" if should_pass else "MATRIX_REJECT_FALSE_POSITIVE","detail":detail})
   print(("PASS " if passed else "FAIL ")+name,flush=True)
  for name,test_query,should_pass in [
-   ("交付测试SQL真实执行通过","SELECT COUNT(*) = 2 AND SUM(total_assets) = 2750 AS passed FROM __shuzhan_result",True),
-   ("交付测试SQL返回false阻止假通过","SELECT false AS passed FROM __shuzhan_result LIMIT 1",False),
-   ("交付测试SQL字符串true不能冒充布尔值","SELECT 'true' AS passed FROM __shuzhan_result LIMIT 1",False),
-   ("交付测试SQL错误返回结构被拒绝","SELECT true AS passed, 1 AS extra FROM __shuzhan_result LIMIT 1",False),
-   ("测试SQL报错仍保留主SQL成功证据","SELECT missing_field AS passed FROM __shuzhan_result",False),
+   ("交付测试SQL真实执行通过","SELECT COUNT(*) = 2 AND SUM(total_assets) = 2750 AS passed FROM __shuduo_result",True),
+   ("交付测试SQL返回false阻止假通过","SELECT false AS passed FROM __shuduo_result LIMIT 1",False),
+   ("交付测试SQL字符串true不能冒充布尔值","SELECT 'true' AS passed FROM __shuduo_result LIMIT 1",False),
+   ("交付测试SQL错误返回结构被拒绝","SELECT true AS passed, 1 AS extra FROM __shuduo_result LIMIT 1",False),
+   ("测试SQL报错仍保留主SQL成功证据","SELECT missing_field AS passed FROM __shuduo_result",False),
  ]:
   try:
    actual=worker.execute_with_validation(spark,sql,base,matrix,test_query)

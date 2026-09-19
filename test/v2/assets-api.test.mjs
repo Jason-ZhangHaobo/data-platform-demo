@@ -18,7 +18,7 @@ async function request(base, path, body, key = "asset-api") {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       "Idempotency-Key": key,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -35,7 +35,7 @@ async function waitForTask(base, id) {
 }
 
 test("V2 asset API searches lineage, executes metrics/standards and grounds Agent", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-assets-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-assets-api-")),
     fixtureRoot = join(root, "sources"),
     streamRoot = join(root, "streams"),
     store = new MetadataStore(join(root, "platform.sqlite")),

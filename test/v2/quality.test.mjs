@@ -23,7 +23,7 @@ const csv =
   "POS-003,CLIENT-002,SEC-DEMO-003,基金,多元金融,9000.00,2026-09-10\n";
 
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-quality-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-quality-")),
     fixtureRoot = join(root, "sources"),
     store = new MetadataStore(join(root, "platform.sqlite")),
     landingStore = new LandingStore(join(root, "landing.sqlite")),

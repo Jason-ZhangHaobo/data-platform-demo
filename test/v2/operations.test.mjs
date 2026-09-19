@@ -9,7 +9,7 @@ import { generateOpsDiagnosis } from "../../src/v2/model.mjs";
 import { PROJECT } from "../../src/v2/server.mjs";
 
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-ops-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-ops-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     operations = new OperationsManager({ store, project: PROJECT });
   return { store, operations, close: () => store.close() };

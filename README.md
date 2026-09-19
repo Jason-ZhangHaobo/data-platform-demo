@@ -1,4 +1,4 @@
-# 数栈 · 数据中台与 Data Agent
+# 数舵 · 数据中台与 Data Agent
 
 使用虚构中国证券数据，验证“完整经典中台 + 深度融合 Data Agent”的实际工作流。
 
@@ -23,6 +23,8 @@ npm run v2:dev
 
 打开 [本机新版工作台](http://127.0.0.1:3100/v2/)。这是本机地址，不是朋友可访问的公网地址。
 本地验证使用 Node.js 24；首次需要安装 Python/Spark/Java，详见 [V2 启动与模型配置](docs/v2-quickstart.md)。
+
+公网目标域名为`shuduoai.cn`，当前已购买但尚未备案、解析或部署；至少等待3天后才能提交ICP备案。在备案、HTTPS、身份、隔离执行和预算门全部验收前，该域名不作为可访问地址。进度与用户操作见[域名备案清单](docs/domain-registration-checklist.md)。
 
 需求：[PRD](docs/PRD.md) · [决策](docs/decisions.md) · [路线图](docs/product-roadmap.md) · [验收证据](docs/acceptance.md) · [V2 API](docs/v2-api.md) · [成本核验](docs/v2-budget.md)。
 
@@ -82,7 +84,7 @@ node bin/dataplatform.mjs ops list
 Data Agent 客户端可以通过 stdio 启动 MCP Server，发现并调用同一套 API 能力：
 
 ```bash
-DATA_PLATFORM_API_BASE_URL=https://dataplaging-api-qagxeaqdmd.cn-hangzhou.fcapp.run node bin/dataplatform-mcp.mjs
+DATA_PLATFORM_API_BASE_URL=https://<旧版演示地址> node bin/dataplatform-mcp.mjs
 ```
 
 MCP 暴露数据资产检索、权限检查、Data Agent 计划/确认、SQL 任务查询/校验/发布，以及运维告警查询/确认。确认工具必须在用户看到计划、SQL 或告警影响后明确确认才可调用。MCP 不提供自动结案工具，告警恢复仍需人类完成核验。

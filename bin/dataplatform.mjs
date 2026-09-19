@@ -2,7 +2,7 @@
 
 import { fileURLToPath } from "node:url";
 
-const HELP = `数栈 Data Platform CLI
+const HELP = `数舵 Data Platform CLI
 
 用法：
   dataplatform health [--base-url URL]

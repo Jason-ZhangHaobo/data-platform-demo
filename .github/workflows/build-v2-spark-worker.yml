@@ -93,7 +93,7 @@ jobs:
       - name: Upload short-lived package for controlled cloud validation
         uses: actions/upload-artifact@v6
         with:
-          name: shuzhan-v2-spark-worker-${{ github.sha }}
+          name: shuduo-v2-spark-worker-${{ github.sha }}
           path: v2-spark-worker.zip
           compression-level: 0
           retention-days: 1

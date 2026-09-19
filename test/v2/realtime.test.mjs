@@ -28,7 +28,7 @@ const fault =
 const recovered = fault.replace('"price":"-1.00"', '"price":"10.20"');
 
 function setup(options = {}) {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-realtime-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-realtime-")),
     fixtureRoot = join(root, "streams"),
     store = new MetadataStore(join(root, "platform.sqlite")),
     stateStore = new StreamStateStore(join(root, "state.sqlite"));

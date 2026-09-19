@@ -7,7 +7,7 @@ const now = Date.parse("2026-09-15T04:00:00Z");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const target = { functionName: "v2-personal-staging", publicUrl: "https://demo.example.cn" };
 const ready = () => ({
-  format: "shuzhan-aliyun-readonly-audit/v1",
+  format: "shuduo-aliyun-readonly-audit/v1",
   generatedAt: "2026-09-15T11:00:00+08:00",
   region: "cn-hangzhou",
   billingCycle: "2026-09",

@@ -20,7 +20,7 @@ def validate_sql(sql, context):
     tree=trees[0]
     base_tables={t["name"] for t in context["tables"]}
     aliases={cte.alias_or_name for cte in tree.find_all(exp.CTE)}
-    if "__shuzhan_result" in aliases:raise ValueError("内部结果视图名称不可用作CTE别名")
+    if "__shuduo_result" in aliases:raise ValueError("内部结果视图名称不可用作CTE别名")
     allowed=base_tables | aliases
     for table in tree.find_all(exp.Table):
         if table.name not in allowed or table.db or table.catalog:
@@ -39,7 +39,7 @@ def validate_sql(sql, context):
 
 def create_spark():
     from pyspark.sql import SparkSession
-    return (SparkSession.builder.master("local[1]").appName("ShuzhanSyntheticSQL")
+    return (SparkSession.builder.master("local[1]").appName("ShuduoSyntheticSQL")
       .config("spark.ui.enabled","false").config("spark.sql.shuffle.partitions","1")
       .config("spark.default.parallelism","1").config("spark.driver.memory","768m")
       .config("spark.driver.bindAddress","127.0.0.1").config("spark.driver.host","127.0.0.1")
@@ -65,7 +65,7 @@ def execute(spark, sql, context):
     frame=spark.sql(validated)
     data=frame.limit(1001).collect()
     if len(data)>1000: raise ValueError("查询结果超过 1000 行")
-    spark.createDataFrame(data,frame.schema).createOrReplaceTempView("__shuzhan_result")
+    spark.createDataFrame(data,frame.schema).createOrReplaceTempView("__shuduo_result")
     rows=[{k:format(v,"f") if isinstance(v,Decimal) else v for k,v in row.asDict().items()} for row in data]
     return {"rows":rows,"columns":[{"name":f.name,"type":f.dataType.simpleString()} for f in frame.schema.fields],"engine":"Apache Spark","engineVersion":spark.version}
 
@@ -87,7 +87,7 @@ def verify(rows,expected):
     return {"passed":not issues,"issues":issues,"assertions":["客户范围","客户唯一性","持仓去重","现金独立聚合","金额精度","证券代码去重","输出契约"]}
 
 def execute_test_sql(spark,test_sql,context):
-    scope={"advisorId":context["advisorId"],"businessDate":context["businessDate"],"tables":[{"name":"__shuzhan_result"}]}
+    scope={"advisorId":context["advisorId"],"businessDate":context["businessDate"],"tables":[{"name":"__shuduo_result"}]}
     query=validate_sql(test_sql,scope)
     frame=spark.sql(query)
     values=frame.limit(2).collect()

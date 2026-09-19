@@ -86,7 +86,7 @@ await stateCoordinator.flush();
 const port = Number(process.env.FC_CUSTOM_LISTEN_PORT ?? process.env.PORT ?? 9000),
   host = process.env.V2_HOST ?? process.env.HOST ?? "0.0.0.0";
 app.server.listen(port, host, () =>
-  process.stdout.write(`Shuzhan V2 cloud server ready on ${host}:${port}\n`),
+  process.stdout.write(`Shuduo V2 cloud server ready on ${host}:${port}\n`),
 );
 const close = () =>
   app.server.close(async () => {

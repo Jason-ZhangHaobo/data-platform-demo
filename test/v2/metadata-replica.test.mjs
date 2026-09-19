@@ -69,7 +69,7 @@ test("invited users and sessions persist in replicated cloud metadata", async ()
   const second = await ReplicatedMetadataStore.open({ backend, project: PROJECT }),
     restored = new AuthManager({ store: second, project: PROJECT, env: {} }),
     session = restored.sessionFromHeaders({
-      cookie: `shuzhan_session=${login.rawToken}`,
+      cookie: `shuduo_session=${login.rawToken}`,
     });
   assert.equal(session.user.email, "admin@example.test");
   assert.equal(session.role, "ADMIN");

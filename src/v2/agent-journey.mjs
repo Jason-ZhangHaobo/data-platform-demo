@@ -165,7 +165,7 @@ export function agentEvidenceJourney({ store, project, task }) {
       "需至少两个真实计时批次且当前健康，历史成功不冒充现行健康。"),
   ];
   return {
-    format: "shuzhan-agent-evidence-journey/v1",
+    format: "shuduo-agent-evidence-journey/v1",
     taskId: task.id,
     projectId: project,
     stages,

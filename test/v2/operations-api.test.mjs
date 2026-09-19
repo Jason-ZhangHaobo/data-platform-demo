@@ -11,7 +11,7 @@ async function request(base, path, body, key = "ops-api") {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shuzhan-Client": "workbench",
+      "X-Shuduo-Client": "workbench",
       "Idempotency-Key": key,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -28,7 +28,7 @@ async function waitForDiagnosis(base, id) {
 }
 
 test("V2 operations API correlates incidents, verifies recovery and grounds Agent diagnosis", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-ops-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-ops-api-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
     failure = store.create("offline_sync_run", "project-securities-lab", {
       taskId: "sync-task-api",
@@ -114,7 +114,7 @@ test("V2 operations API correlates incidents, verifies recovery and grounds Agen
 });
 
 test("operations context cannot reach an external model without explicit opt-in", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-ops-privacy-api-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-ops-privacy-api-")),
     store = new MetadataStore(join(root, "platform.sqlite"));
   store.create("offline_sync_run", "project-securities-lab", {
     taskId: "privacy-task",

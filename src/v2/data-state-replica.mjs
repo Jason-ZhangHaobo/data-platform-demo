@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-const FORMAT = "shuzhan-data-state/v1";
+const FORMAT = "shuduo-data-state/v1";
 const MAX_ROWS_PER_TABLE = 200_000;
 const MAX_STRING_BYTES = 2 * 1024 * 1024;
 

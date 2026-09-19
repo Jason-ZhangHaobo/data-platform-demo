@@ -10,7 +10,7 @@ import {
 } from "../../scripts/aliyun-v2-fc-readonly.mjs";
 
 test("FC SDK audit uses temporary OAuth STS but emits only sanitized readiness", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-fc-readonly-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-fc-readonly-")),
     configPath = join(root, "config.json"),
     bait = "SECRET-BUCKET-HOST-ACCOUNT-TOKEN";
   writeFileSync(
@@ -73,7 +73,7 @@ test("FC SDK audit uses temporary OAuth STS but emits only sanitized readiness",
 });
 
 test("FC audit rejects unsafe credential files and never exposes error text", async () => {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-fc-unsafe-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-fc-unsafe-")),
     configPath = join(root, "config.json");
   writeFileSync(configPath, "{}", { mode: 0o644 });
   try {

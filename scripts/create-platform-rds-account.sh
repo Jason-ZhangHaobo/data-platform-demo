@@ -5,7 +5,7 @@ umask 077
 
 script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 aliyun_cli="${V2_ALIYUN_CLI:-$script_root/.runtime/aliyun-cli/aliyun}"
-aliyun_profile="${V2_ALIYUN_PROFILE:-ShuzhanOAuth}"
+aliyun_profile="${V2_ALIYUN_PROFILE:-ShuduoOAuth}"
 rds_region="${V2_RDS_REGION:-cn-hangzhou}"
 rds_instance="${V2_RDS_INSTANCE_ID:-}"
 account_name="platform_app"
@@ -96,7 +96,7 @@ $aliyun_cli rds CreateAccount \
   --AccountName "$account_name" \
   --AccountPassword "$account_password" \
   --AccountType Normal \
-  --AccountDescription "数栈V2平台元数据最小权限账号" >/dev/null
+  --AccountDescription "数舵V2平台元数据最小权限账号" >/dev/null
 unset account_password account_password_repeat
 
 $aliyun_cli rds GrantAccountPrivilege \

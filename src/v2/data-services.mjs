@@ -653,8 +653,8 @@ export class DataServiceManager {
           bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "opaque" },
         },
       },
-      "x-shuzhan-scope": "LOCAL_TEST_ONLY",
-      "x-shuzhan-service-version-id": version.id,
+      "x-shuduo-scope": "LOCAL_TEST_ONLY",
+      "x-shuduo-service-version-id": version.id,
     };
   }
 

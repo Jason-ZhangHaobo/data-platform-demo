@@ -23,9 +23,9 @@ test("scheduler tick client creates a domain-separated signed HTTPS request", ()
   assert.equal(
     verifySchedulerTick({
       sharedSecret: secret,
-      timestamp: request.headers["X-Shuzhan-Timestamp"],
-      nonce: request.headers["X-Shuzhan-Nonce"],
-      signature: request.headers["X-Shuzhan-Signature"],
+      timestamp: request.headers["X-Shuduo-Timestamp"],
+      nonce: request.headers["X-Shuduo-Nonce"],
+      signature: request.headers["X-Shuduo-Signature"],
       body: request.body,
       now,
     }),
@@ -34,9 +34,9 @@ test("scheduler tick client creates a domain-separated signed HTTPS request", ()
   assert.equal(
     verifySchedulerTick({
       sharedSecret: secret,
-      timestamp: request.headers["X-Shuzhan-Timestamp"],
-      nonce: request.headers["X-Shuzhan-Nonce"],
-      signature: request.headers["X-Shuzhan-Signature"],
+      timestamp: request.headers["X-Shuduo-Timestamp"],
+      nonce: request.headers["X-Shuduo-Nonce"],
+      signature: request.headers["X-Shuduo-Signature"],
       body: '{"limit":1}',
       now,
     }),

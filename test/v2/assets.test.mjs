@@ -24,7 +24,7 @@ const events =
   '{"event_id":"EVT-Q-002","sequence":2,"security_code":"SEC-DEMO-002","event_time":"2026-09-14T09:30:01.000Z","price":"101.50","volume":200}\n';
 
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), "shuzhan-assets-")),
+  const root = mkdtempSync(join(tmpdir(), "shuduo-assets-")),
     sourceRoot = join(root, "sources"),
     streamRoot = join(root, "streams"),
     store = new MetadataStore(join(root, "platform.sqlite")),

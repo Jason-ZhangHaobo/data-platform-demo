@@ -132,7 +132,7 @@ export class ReplicatedMetadataStore extends MetadataStore {
 
   #snapshot() {
     return {
-      format: "shuzhan-metadata-snapshot/v1",
+      format: "shuduo-metadata-snapshot/v1",
       projectId: this.project,
       documents: this.db
         .prepare(
@@ -147,13 +147,13 @@ export class ReplicatedMetadataStore extends MetadataStore {
 
   #load(payload) {
     const value = payload ?? {
-      format: "shuzhan-metadata-snapshot/v1",
+      format: "shuduo-metadata-snapshot/v1",
       projectId: this.project,
       documents: [],
       idempotency: [],
     };
     if (
-      value.format !== "shuzhan-metadata-snapshot/v1" ||
+      value.format !== "shuduo-metadata-snapshot/v1" ||
       value.projectId !== this.project ||
       !Array.isArray(value.documents) ||
       !Array.isArray(value.idempotency)
@@ -199,7 +199,7 @@ export class MemorySnapshotBackend {
     const state = this.projects.get(project) ?? {
       revision: 0,
       payload: {
-        format: "shuzhan-metadata-snapshot/v1",
+        format: "shuduo-metadata-snapshot/v1",
         projectId: project,
         documents: [],
         idempotency: [],

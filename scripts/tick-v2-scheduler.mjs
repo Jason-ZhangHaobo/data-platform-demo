@@ -33,9 +33,9 @@ export function createSchedulerTickRequest(input = {}, now = Date.now()) {
     headers: {
       "Content-Type": "application/json",
       "X-Project-Id": input.projectId ?? "project-securities-lab",
-      "X-Shuzhan-Timestamp": timestamp,
-      "X-Shuzhan-Nonce": nonce,
-      "X-Shuzhan-Signature": signSchedulerTick({
+      "X-Shuduo-Timestamp": timestamp,
+      "X-Shuduo-Nonce": nonce,
+      "X-Shuduo-Signature": signSchedulerTick({
         sharedSecret,
         timestamp,
         nonce,
