@@ -156,6 +156,7 @@
 | D-151 | Agent父意图停止边界，2026-09-20 | 新增父意图`cancel`原子操作：停止排队/规划或尚未绑定子任务的计划，撤销APPROVED记录并写INTENT_CANCELLED轨迹；即使模型适配器忽略中止信号并迟到返回，也先检查持久状态，不得改回成功或生成路由。已有专业任务时返回`AGENT_CHILD_TASKS_REQUIRE_SEPARATE_CONTROL`，避免假取消。所有者/ADMIN边界及CSRF继续生效，GUI/API/CLI/MCP同源。完整CI 259/259 |
 | D-152 | Agent人工接管审计，2026-09-20 | 独立工作台“记录接管并打开工作台”先写无专业任务ID的NO_EXECUTION handoff，再跳转经典模块；同一意图/目标重复操作返回既有记录且不重复轨迹。接管不需要步骤执行批准，因为它不执行工具或变更资源；后续专业Agent任务仍必须消费批准。完整CI保持259/259 |
 | D-153 | 全专业域取消竞态，2026-09-20 | 集成、实时、资产、质量、安全、数据服务、报表和运维模型回调，以及SQL开发模型回调，均在写产物前重读CANCELLED状态。九类适配器故意忽略Abort并迟到返回的回归全部保持CANCELLED；SQL开发不创建revision/run，其他域不写proposal/insight/diagnosis。完整CI 261/261 |
+| D-154 | 统一专业子任务取消，2026-09-20 | 新增父任务图下的`children/:destination/cancel`，通过已审计handoff解析真实专业任务类型/ID，只取消QUEUED/RUNNING，父意图保持原状态并追加SPECIALIST_CANCELLED轨迹。完成态返回409，重复CANCELLED幂等；所有者/ADMIN与CSRF边界不变。GUI/API/CLI/MCP同源，完整CI 262/262 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。
