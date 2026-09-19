@@ -61,7 +61,7 @@ type Handoff = { id: string; destinationId: string; status: string; objective: s
 type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND" | "REVOKED"; risk: Risk; approvedAt: string; specialistTaskId?: string };
 type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistTaskId?: string; specialistTaskKind?: string; specialistStatus?: string }[] };
 type AgentTool = { id: string; label: string; risk: Risk; approvalRequired: boolean; createMode: string; createPath: string; detailPath: string; applyPath?: string; requiresDestination?: string };
-type AgentToolCatalog = { version: string; tools: AgentTool[] };
+type AgentToolCatalog = { version: "shuduo-agent-tools/v1"; contractDigest: string; tools: AgentTool[] };
 type SpecialistActivity = {
   destinationId: string;
   id: string;
@@ -239,6 +239,11 @@ export function AgentCenter({
     void (async () => {
       try {
         const catalog = await api<AgentToolCatalog>("/agent/tools");
+        if (
+          catalog.version !== "shuduo-agent-tools/v1" ||
+          !/^[a-f0-9]{64}$/.test(catalog.contractDigest)
+        )
+          throw new Error("专业Agent工具目录版本不兼容，请刷新或升级工作台");
         setToolCatalog(catalog);
         await refresh(undefined, catalog);
       } catch (cause) {
@@ -320,6 +325,30 @@ export function AgentCenter({
       [step.destinationId]: { destinationId: step.destinationId, id: "preparing", status: "QUEUED", getPath: "" },
     }));
     try {
+      const tool = requireTool(step.destinationId),
+        requiredActivity = tool.requiresDestination
+          ? activities[tool.requiresDestination]
+          : undefined;
+      if (
+        tool.requiresDestination &&
+        (!requiredActivity || requiredActivity.status !== "SUCCEEDED")
+      )
+        throw new Error("请先完成当前步骤要求的前置专业任务，再继续执行。");
+      const toolInput = tool.createMode === "SQL_DEVELOPMENT"
+          ? {
+              message: step.objective,
+              contextId,
+              sql: currentSql || "SELECT 1",
+            }
+          : tool.createMode === "DELIVERY_FROM_DEVELOPMENT"
+            ? { sourceTaskId: requiredActivity!.id }
+            : { message: step.objective };
+      if (!toolCatalog) throw new Error("专业Agent工具目录尚未加载");
+      await api(`/agent/tools/${encodeURIComponent(tool.id)}/validate`, {
+        catalogVersion: toolCatalog.version,
+        contractDigest: toolCatalog.contractDigest,
+        input: toolInput,
+      });
       const approval = task.approvalMode === "REQUEST_APPROVAL"
         ? await api<StepApproval>(`/agent/intents/${task.id}/approvals`, {
             destinationId: step.destinationId,
@@ -330,15 +359,6 @@ export function AgentCenter({
           approval,
           ...items.filter((item) => item.id !== approval.id),
         ]);
-      const tool = requireTool(step.destinationId),
-        requiredActivity = tool.requiresDestination
-          ? activities[tool.requiresDestination]
-          : undefined;
-      if (
-        tool.requiresDestination &&
-        (!requiredActivity || requiredActivity.status !== "SUCCEEDED")
-      )
-        throw new Error("请先完成当前步骤要求的前置专业任务，再继续执行。");
       let created: Record<string, unknown>;
       const pendingLink = activities[step.destinationId]?.linkPending
         ? activities[step.destinationId]
@@ -346,21 +366,14 @@ export function AgentCenter({
       if (pendingLink?.result) {
         created = pendingLink.result;
       } else if (tool.createMode === "SQL_DEVELOPMENT") {
-        created = await api<Record<string, unknown>>(tool.createPath, {
-          message: step.objective,
-          contextId,
-          sql: currentSql || "SELECT 1",
-        });
+        created = await api<Record<string, unknown>>(tool.createPath, toolInput);
       } else if (tool.createMode === "DELIVERY_FROM_DEVELOPMENT") {
-        const source = activities[tool.requiresDestination!];
         created = await api<Record<string, unknown>>(
-          tool.createPath.replace("{sourceTaskId}", encodeURIComponent(source.id)),
+          tool.createPath.replace("{sourceTaskId}", encodeURIComponent(requiredActivity!.id)),
           {},
         );
       } else {
-        created = await api<Record<string, unknown>>(tool.createPath, {
-          message: step.objective,
-        });
+        created = await api<Record<string, unknown>>(tool.createPath, toolInput);
       }
       const id = String(created.id),
         getPath = fillToolPath(tool.detailPath, id);

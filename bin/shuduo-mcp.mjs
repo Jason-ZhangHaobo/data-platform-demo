@@ -7,6 +7,7 @@ const tools = [
   { name: "budget_status", description: "读取当月模型估算、远程Spark用量、账号账单连接状态和预算门；未连接账号账单时不代表全站费用。", inputSchema: { type: "object", properties: {} } },
   { name: "agent_intent_list", description: "读取跨模块 Data Agent 的任务理解与受治理路由结果。", inputSchema: { type: "object", properties: {} } },
   { name: "agent_tool_list", description: "读取十个专业Agent域的版本化工具目录、风险、资源路径、前置依赖和批准边界。", inputSchema: { type: "object", properties: {} } },
+  { name: "agent_tool_validate", description: "按工具目录版本和摘要校验专业Agent输入；只做契约预检，不创建任务或批准。", inputSchema: { type: "object", properties: { toolId: { type: "string" }, catalogVersion: { type: "string" }, contractDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, input: { type: "object" } }, required: ["toolId", "catalogVersion", "contractDigest", "input"], additionalProperties: false } },
   { name: "agent_intent_create", description: "理解需求并在受支持模块中推荐下一步；只做路由，不执行同步、查询、审批、发布、发令牌或改权限。", inputSchema: { type: "object", properties: { message: { type: "string", minLength: 4, maxLength: 2000 } }, required: ["message"] } },
   { name: "agent_intent_approval_list", description: "读取一个Data Agent意图中已批准和已绑定的专业步骤；不返回批准者内部标识。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name: "agent_intent_approval_create", description: "批准REQUEST_APPROVAL任务中的一个精确专业步骤；只生成版本绑定批准，不执行专业任务。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, destinationId: { type: "string" } }, required: ["intentId", "destinationId"] } },
@@ -158,6 +159,18 @@ async function callTool(name, args = {}) {
   if (name === "budget_status") return client.request("/budget");
   if (name === "agent_intent_list") return client.request("/agent/intents");
   if (name === "agent_tool_list") return client.request("/agent/tools");
+  if (name === "agent_tool_validate")
+    return client.request(
+      `/agent/tools/${encodeURIComponent(args.toolId)}/validate`,
+      {
+        method: "POST",
+        body: {
+          catalogVersion: args.catalogVersion,
+          contractDigest: args.contractDigest,
+          input: args.input,
+        },
+      },
+    );
   if (name === "agent_intent_create")
     return client.request("/agent/intents", {
       method: "POST",

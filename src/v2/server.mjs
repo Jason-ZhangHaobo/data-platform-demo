@@ -83,8 +83,9 @@ import {
 } from "./cloud-preflight.mjs";
 import {
   publicAgentIntentDestinations,
-  publicAgentSpecialistTools,
+  publicAgentToolCatalog,
   agentSpecialistKinds,
+  validateAgentToolInput,
   validateAgentApprovalMode,
   validateAgentIntentMessage,
   validateAgentIntentRoute,
@@ -2322,10 +2323,31 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/agent/tasks" && method === "GET")
         return json(res, 200, store.list("agent", PROJECT));
       if (path === "/api/v2/agent/tools" && method === "GET")
-        return json(res, 200, {
-          version: "shuduo-agent-tools/v1",
-          tools: publicAgentSpecialistTools(),
-        });
+        return json(res, 200, publicAgentToolCatalog());
+      const agentToolValidation = path.match(
+        /^\/api\/v2\/agent\/tools\/([a-z-]+)\/validate$/,
+      );
+      if (agentToolValidation && method === "POST") {
+        const body = await readBody(req),
+          keys = Object.keys(body);
+        if (
+          keys.some(
+            (key) =>
+              !["catalogVersion", "contractDigest", "input"].includes(key),
+          )
+        )
+          throw Object.assign(fail(422, "工具校验请求包含未声明字段"), {
+            code: "AGENT_TOOL_VALIDATION_REQUEST_INVALID",
+          });
+        return json(
+          res,
+          200,
+          validateAgentToolInput(agentToolValidation[1], body.input, {
+            version: body.catalogVersion,
+            contractDigest: body.contractDigest,
+          }),
+        );
+      }
       if (path === "/api/v2/agent/intents" && method === "GET") {
         const session = auth.sessionFromHeaders(req.headers);
         if (!local && !session)

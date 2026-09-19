@@ -9,6 +9,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo budget
   shuduo agent intents
   shuduo agent tools
+  shuduo agent validate-tool --tool MODULE_ID --catalog-version VERSION --contract-digest SHA256 --input-json '{"message":"任务目标"}'
   shuduo agent understand --message "理解需求并推荐中台模块"
   shuduo agent approvals --id INTENT_ID
   shuduo agent approve --id INTENT_ID --destination MODULE_ID
@@ -153,6 +154,17 @@ const required = (options, key) => {
     throw new Error(`缺少 --${key.replaceAll("_", "-")}`);
   return options[key].trim();
 };
+const jsonObject = (value, name) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`${name}必须是JSON对象`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error(`${name}必须是JSON对象`);
+  return parsed;
+};
 const typePath = (value) => {
   if (!['dapi', 'xapi'].includes(value)) throw new Error("--type必须是dapi或xapi");
   return value + "s";
@@ -254,6 +266,21 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request("/agent/intents");
     else if (resource === "agent" && action === "tools")
       result = await client.request("/agent/tools");
+    else if (resource === "agent" && action === "validate-tool")
+      result = await client.request(
+        `/agent/tools/${encodeURIComponent(required(parsed.options, "tool"))}/validate`,
+        {
+          method: "POST",
+          body: {
+            catalogVersion: required(parsed.options, "catalog_version"),
+            contractDigest: required(parsed.options, "contract_digest"),
+            input: jsonObject(
+              required(parsed.options, "input_json"),
+              "--input-json",
+            ),
+          },
+        },
+      );
     else if (resource === "agent" && action === "understand")
       result = await client.request("/agent/intents", {
         method: "POST",
