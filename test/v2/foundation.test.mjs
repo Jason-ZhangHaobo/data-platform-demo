@@ -240,9 +240,21 @@ test("restart marks unfinished work interrupted instead of rerunning", () => {
   const store = new MetadataStore(
     join(mkdtempSync(join(tmpdir(), "shuduo-restart-")), "db"),
   );
-  const run = store.create("run", PROJECT, { status: "RUNNING" });
+  const run = store.create("run", PROJECT, { status: "RUNNING" }),
+    intent = store.create("agent_intent", PROJECT, { status: "RUNNING" }),
+    specialist = store.create("quality_agent_plan", PROJECT, {
+      status: "QUEUED",
+    });
   store.interruptPending(PROJECT);
   assert.equal(store.get("run", run.id, PROJECT).status, "INTERRUPTED");
+  assert.equal(
+    store.get("agent_intent", intent.id, PROJECT).status,
+    "INTERRUPTED",
+  );
+  assert.equal(
+    store.get("quality_agent_plan", specialist.id, PROJECT).status,
+    "INTERRUPTED",
+  );
   store.close();
 });
 test("agent repairs at most three times and does not mark bad results complete", async () => {

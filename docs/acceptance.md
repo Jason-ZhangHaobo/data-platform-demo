@@ -95,6 +95,7 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 九类专业Agent取消竞态回归：八个方案/诊断域及SQL开发的模型适配器均故意忽略Abort并迟到返回，终态全部保持CANCELLED；SQL开发没有revision/run，其他域没有proposal/insight/diagnosis写回。
 - 统一子任务取消实测将RUNNING质量Agent从父任务图取消，子任务CANCELLED、父意图仍SUCCEEDED、图和轨迹同步；已完成报表Agent取消返回409。GUI/API/CLI/MCP共享同一原子操作。
 - 工作台刷新现在只按统一任务图恢复每个步骤的最新专业任务，避免取消后重试存在多条handoff时由并行请求随机展示旧任务；历史handoff仍保留供审计。
+- 重启回归同时把RUNNING父意图和QUEUED质量Agent标为INTERRUPTED；工作台显示“服务重启后专业任务已中断”并允许重新批准重试，父意图提示因原文不持久化需新建任务，不再显示为执行中。
 - 当前第一版仍不等于完整自治：发布、授权、恢复和高成本操作不会自动执行；统一工具Schema/补偿协议和低风险自动推进尚未完成；公网Agent-first 20例评测尚未运行。
 - 本机浏览器实际从历史跨模块任务在同一Data Agent页面启动资产专业Agent和质量专业Agent，两个任务真实调用Qwen后完成；质量方案由用户点击“应用为草稿”写入现有质量资源，未自动运行规则。刷新页面后，新创建的资产专业任务状态、任务ID和安全资产回答从持久handoff引用恢复。
 - 1440×900下任务历史/对话/上下文三栏均显示，`document.scrollWidth=innerWidth=1440`；768×900下右侧检查器隐藏、任务历史改横向、输入框保留，`scrollWidth=innerWidth=768`。控制台错误/警告为0。
