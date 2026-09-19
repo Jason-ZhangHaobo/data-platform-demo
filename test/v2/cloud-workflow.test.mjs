@@ -47,6 +47,8 @@ test("V2 provisioning workflow is create-only and budget/network gated", () => {
   assert.ok(workflow.indexOf("Stop before build if the current bill or role boundary is unsafe") < workflow.indexOf("npm ci"));
   assert.ok(workflow.indexOf("DescribeVSwitchAttributes") < workflow.indexOf("npm ci"));
   assert.match(workflow, /FunctionNotFound/);
+  assert.match(workflow, /extract-aliyun-error-code\.mjs "\$response_file" "\$error_file"/);
+  assert.doesNotMatch(workflow, /\.Code \/\/ \.code \/\/ \.ErrorCode/);
   assert.match(workflow, /POST \/2023-03-30\/functions/);
   assert.match(workflow, /instanceConcurrency:1/);
   assert.match(workflow, /custom\.debian12/);

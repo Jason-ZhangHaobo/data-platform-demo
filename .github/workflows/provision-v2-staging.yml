@@ -129,7 +129,7 @@ jobs:
             echo 'The requested V2 function already exists; use the update workflow instead.' >&2
             exit 1
           fi
-          code="$(jq -r '.Code // .code // .ErrorCode // .error_code // empty' "$response_file" 2>/dev/null || true)"
+          code="$(node scripts/extract-aliyun-error-code.mjs "$response_file" "$error_file")"
           test "$code" = "FunctionNotFound" || { echo 'Target lookup failed without a confirmed not-found response' >&2; exit 1; }
 
       - name: Create the dedicated V2 function with minimum runtime settings

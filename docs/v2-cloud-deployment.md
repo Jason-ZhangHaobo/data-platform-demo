@@ -28,7 +28,7 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 
 `.github/workflows/deploy-v2-staging.yml`只能手动触发，且使用独立GitHub Environment `v2-staging`。它不会修改现有V1函数；目标函数默认为`dataplatform-v2-staging-api`，可由同目录的预置工作流安全创建，也可由账号内操作预创建。
 
-独立预置使用`.github/workflows/provision-v2-staging.yml`。该工作流同样只能手动触发，先做账单、角色信任/管理员级策略文本、同VPC网络和目标不存在检查，然后调用FC 3.0 `CreateFunction`；发现同名函数、未确认NotFound或任何门禁失败时不写云资源。创建后必须把函数预留并发设为1、最小实例数设为0并再次读取验证；结合函数本身`instanceConcurrency=1`，试点最多同时运行一个实例且无请求时可缩至0。它不删除资源、不更新旧函数，也不把预置成功当成公网部署成功。
+独立预置使用`.github/workflows/provision-v2-staging.yml`。该工作流同样只能手动触发，先做账单、角色信任/管理员级策略文本、同VPC网络和目标不存在检查，然后调用FC 3.0 `CreateFunction`；发现同名函数、未确认NotFound或任何门禁失败时不写云资源。CLI的404可能出现在stdout JSON或stderr文本，工作流通过`scripts/extract-aliyun-error-code.mjs`只提取受限字符错误码，未知响应固定失败且不打印原始消息。创建后必须把函数预留并发设为1、最小实例数设为0并再次读取验证；结合函数本身`instanceConcurrency=1`，试点最多同时运行一个实例且无请求时可缩至0。它不删除资源、不更新旧函数，也不把预置成功当成公网部署成功。
 
 预置顺序：受保护配置校验 → GitHub OIDC换取临时身份 → 实时账单、运行角色与精确网络只读门 → 全量CI → 构建/检查ZIP → 确认目标函数不存在 → 创建独立函数并复核单实例上限/按需缩至0。云权限或配置错误会在完整构建前快速失败，函数写入仍只发生在质量门和包检查全部通过之后。
 
