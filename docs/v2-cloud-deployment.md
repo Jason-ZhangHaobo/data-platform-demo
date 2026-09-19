@@ -97,6 +97,8 @@ node scripts/apply-v2-deploy-policy.mjs --apply
 4. 独立FC函数运行时、VPC、角色、实例并发1、预留并发1、最小实例0和公网HTTPS URL；
 5. 以上资源在月度200元总预算内。
 
+函数创建后、域名备案前，使用已登录Cloud Shell主账号调用FC同步Invoke API并提交`{"operation":"PRIVATE_STATUS_V1"}`。预置函数只有在非本机、`V2_PROVISIONING_ONLY=true`和`V2_PRIVATE_SMOKE_ENABLED=true`同时成立时接受该事件；响应只允许`shuduo-v2-private-smoke-v1`协议、MySQL/OSS驱动、健康布尔和固定`publicReady=false`。部署角色不增加`fc:InvokeFunction`，避免官方API要求的全部FC资源调用范围；公开更新使用新的环境白名单且不携带两个预置开关。
+
 `scripts/verify-v2-cloud-preflight.mjs`同时校验审计文件不含账号ID、函数名、Bucket名、连接地址、凭证或公司特有环境键；当期账单、RDS/OSS、V2专用函数、同VPC、备案/域名归属/HTTPS及目标哈希须全部为真。当前真实脱敏证据失败项是专用FC、同VPC和域名备案，工作流应保持不可部署。账单快照¥0.59仅是查询当时状态，不是未来费用承诺。
 
 官方FC SDK已用短期STS只读重试；内部凭证字段存在，但服务返回`AccessDenied`并提示缺SecurityToken。现阶段不以此推断函数不存在，不创建长期AccessKey，待FC访问边界诊断后再确认独立函数。仓库中的V1部署文件仍有历史个人测试资源标识；本次只清理V2工作流，公开推送前需另行审核当前树与历史记录，不静默改写Git历史。
