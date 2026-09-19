@@ -60,6 +60,7 @@ type IntentTrace = {
 type Handoff = { id: string; destinationId: string; status: string; objective: string; specialistTaskId?: string; specialistTaskKind?: string };
 type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND" | "REVOKED"; risk: Risk; approvedAt: string; specialistTaskId?: string };
 type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistTaskId?: string; specialistTaskKind?: string; specialistStatus?: string }[] };
+type AgentToolCatalog = { version: string; tools: { id: string; label: string; risk: Risk; approvalRequired: boolean }[] };
 type SpecialistActivity = {
   destinationId: string;
   id: string;
@@ -159,6 +160,7 @@ export function AgentCenter({
     [task, setTask] = useState<IntentTask>(),
     [trace, setTrace] = useState<IntentTrace[]>([]),
     [graph, setGraph] = useState<IntentGraph>(),
+    [toolCatalog, setToolCatalog] = useState<AgentToolCatalog>(),
     [approvals, setApprovals] = useState<StepApproval[]>([]),
     [handoffs, setHandoffs] = useState<Handoff[]>([]),
     [activities, setActivities] = useState<Record<string, SpecialistActivity>>({}),
@@ -225,6 +227,9 @@ export function AgentCenter({
     await loadTask(selected);
   };
   useEffect(() => {
+    api<AgentToolCatalog>("/agent/tools")
+      .then(setToolCatalog)
+      .catch((cause) => setError((cause as Error).message));
     refresh().catch((cause) => setError((cause as Error).message));
   }, []);
   useEffect(() => {
@@ -536,11 +541,11 @@ export function AgentCenter({
       </section>
 
       <aside className="agent-os-inspector-v2">
-        <header><strong>能力与上下文</strong><span>10个专业域</span></header>
+        <header><strong>能力与上下文</strong><span>{toolCatalog?.tools.length ?? 10}个专业域</span></header>
         <section><span className="agent-os-section-label-v2">当前上下文</span><div className="agent-os-context-card-v2"><Database size={16} /><div><strong>证券数据实验室</strong><small>虚构数据 · 项目权限继承</small></div></div><div className="agent-os-context-card-v2"><Code2 size={16} /><div><strong>{contextId}</strong><small>Spark SQL · 当前编辑版本</small></div></div></section>
         <section><span className="agent-os-section-label-v2">专业能力</span>{capabilityGroups.map((group) => { const Icon = group.icon; return <div className="agent-os-capability-v2" key={group.label}><div><Icon size={14} /><strong>{group.label}</strong></div>{group.ids.map((id) => <span key={id}>{byDestination.get(id)?.label}</span>)}</div>; })}</section>
         <section className="agent-os-governance-v2"><span className="agent-os-section-label-v2">治理边界</span><p><ShieldCheck size={14} />继承用户权限，不向模型发送凭证或业务明细。</p><p><Clock3 size={14} />长任务后台运行，状态与证据可恢复。</p><p><FileCheck2 size={14} />发布、授权和高成本操作必须确认。</p></section>
-        <footer><Activity size={13} />GUI / API / CLI / MCP 同源</footer>
+        <footer><Activity size={13} />GUI / API / CLI / MCP 同源 · {toolCatalog?.version ?? "工具目录加载中"}</footer>
       </aside>
     </div>
   );

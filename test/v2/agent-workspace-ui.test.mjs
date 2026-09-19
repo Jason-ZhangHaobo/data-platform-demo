@@ -55,4 +55,6 @@ test("independent workspace can start every specialist domain without mandatory 
   assert.match(workspace, /服务重启后专业任务已中断/);
   assert.match(workspace, /原始需求未持久化，请新建任务并重新描述目标/);
   assert.match(workspace, /retryable/);
+  assert.match(workspace, /api<AgentToolCatalog>\("\/agent\/tools"\)/);
+  assert.match(workspace, /toolCatalog\?\.version/);
 });

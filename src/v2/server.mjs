@@ -83,6 +83,7 @@ import {
 } from "./cloud-preflight.mjs";
 import {
   publicAgentIntentDestinations,
+  publicAgentSpecialistTools,
   agentSpecialistKinds,
   validateAgentApprovalMode,
   validateAgentIntentMessage,
@@ -2320,6 +2321,11 @@ export function createV2Server(options = {}) {
         return json(res, 200, store.list("run", PROJECT));
       if (path === "/api/v2/agent/tasks" && method === "GET")
         return json(res, 200, store.list("agent", PROJECT));
+      if (path === "/api/v2/agent/tools" && method === "GET")
+        return json(res, 200, {
+          version: "shuduo-agent-tools/v1",
+          tools: publicAgentSpecialistTools(),
+        });
       if (path === "/api/v2/agent/intents" && method === "GET") {
         const session = auth.sessionFromHeaders(req.headers);
         if (!local && !session)

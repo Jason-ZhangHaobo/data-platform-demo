@@ -14,18 +14,47 @@ export const agentIntentDestinations = Object.freeze([
 ]);
 
 const byId = new Map(agentIntentDestinations.map((item) => [item.id, item]));
-export const agentSpecialistKinds = Object.freeze({
-  sources: "ingestion_agent_plan",
-  sync: "realtime_agent_plan",
-  development: "agent",
-  schedules: "agent_delivery_task",
-  assets: "asset_agent_task",
-  quality: "quality_agent_plan",
-  security: "security_agent_plan",
-  services: "service_agent_plan",
-  reports: "report_agent_plan",
-  ops: "ops_agent_diagnosis",
+export const agentSpecialistTools = Object.freeze({
+  sources: { kind: "ingestion_agent_plan", createPath: "/sync/agent/plans", detailPath: "/sync/agent/plans/{id}", applyPath: "/sync/agent/plans/{id}/apply", createMode: "MESSAGE" },
+  sync: { kind: "realtime_agent_plan", createPath: "/streams/agent/plans", detailPath: "/streams/agent/plans/{id}", applyPath: "/streams/agent/plans/{id}/apply", createMode: "MESSAGE" },
+  development: { kind: "agent", createPath: "/agent/tasks", detailPath: "/agent/tasks/{id}", createMode: "SQL_DEVELOPMENT" },
+  schedules: { kind: "agent_delivery_task", createPath: "/agent/tasks/{sourceTaskId}/prepare-delivery", detailPath: "/agent/deliveries/{id}", createMode: "DELIVERY_FROM_DEVELOPMENT", requiresDestination: "development" },
+  assets: { kind: "asset_agent_task", createPath: "/assets/agent/tasks", detailPath: "/assets/agent/tasks/{id}", createMode: "MESSAGE" },
+  quality: { kind: "quality_agent_plan", createPath: "/quality/agent/plans", detailPath: "/quality/agent/plans/{id}", applyPath: "/quality/agent/plans/{id}/apply", createMode: "MESSAGE" },
+  security: { kind: "security_agent_plan", createPath: "/security/agent/plans", detailPath: "/security/agent/plans/{id}", applyPath: "/security/agent/plans/{id}/apply", createMode: "MESSAGE" },
+  services: { kind: "service_agent_plan", createPath: "/data-services/agent/plans", detailPath: "/data-services/agent/plans/{id}", applyPath: "/data-services/agent/plans/{id}/apply", createMode: "MESSAGE" },
+  reports: { kind: "report_agent_plan", createPath: "/reports/agent/plans", detailPath: "/reports/agent/plans/{id}", applyPath: "/reports/agent/plans/{id}/apply", createMode: "MESSAGE" },
+  ops: { kind: "ops_agent_diagnosis", createPath: "/operations/agent/diagnoses", detailPath: "/operations/agent/diagnoses/{id}", createMode: "MESSAGE" },
 });
+
+export const agentSpecialistKinds = Object.freeze(
+  Object.fromEntries(
+    Object.entries(agentSpecialistTools).map(([id, tool]) => [id, tool.kind]),
+  ),
+);
+
+export function publicAgentSpecialistTools() {
+  return agentIntentDestinations.map((destination) => {
+    const tool = agentSpecialistTools[destination.id];
+    return {
+      id: destination.id,
+      label: destination.label,
+      risk: destination.risk,
+      createMode: tool.createMode,
+      createPath: tool.createPath,
+      detailPath: tool.detailPath,
+      ...(tool.applyPath ? { applyPath: tool.applyPath } : {}),
+      ...(tool.requiresDestination
+        ? { requiresDestination: tool.requiresDestination }
+        : {}),
+      approvalRequired: true,
+      childCancelPath:
+        "/agent/intents/{intentId}/children/{destinationId}/cancel",
+      executionBoundary:
+        "创建专业任务不等于应用草稿、发布、授权或完整E2E。",
+    };
+  });
+}
 
 export const agentApprovalModes = Object.freeze([
   "PLAN_ONLY",

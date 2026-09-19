@@ -7,10 +7,23 @@ import { MetadataStore } from "../../src/v2/store.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import {
   publicAgentIntentDestinations,
+  publicAgentSpecialistTools,
   validateAgentApprovalMode,
   validateAgentIntentMessage,
   validateAgentIntentRoute,
 } from "../../src/v2/agent-router.mjs";
+
+test("specialist tool catalog exposes ten governed versionable capabilities", () => {
+  const tools = publicAgentSpecialistTools();
+  assert.equal(tools.length, 10);
+  assert.equal(new Set(tools.map((tool) => tool.id)).size, 10);
+  assert.ok(tools.every((tool) => tool.approvalRequired === true));
+  assert.ok(tools.every((tool) => tool.createPath.startsWith("/")));
+  assert.ok(tools.every((tool) => tool.detailPath.includes("{id}")));
+  assert.ok(tools.every((tool) => tool.childCancelPath.includes("{intentId}")));
+  assert.equal(tools.find((tool) => tool.id === "schedules").requiresDestination, "development");
+  assert.equal(tools.find((tool) => tool.id === "security").risk, "HIGH");
+});
 
 const waitFor = async (read, done, timeoutMs = 1500) => {
   const deadline = Date.now() + timeoutMs;
@@ -157,6 +170,10 @@ test("intent API persists a live-model routing result without executing a downst
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
   try {
+    const catalog = await fetch(base + "/agent/tools").then((value) => value.json());
+    assert.equal(catalog.version, "shuduo-agent-tools/v1");
+    assert.equal(catalog.tools.length, 10);
+    assert.equal(JSON.stringify(catalog).includes("credential"), false);
     const createdResponse = await fetch(base + "/agent/intents", {
         method: "POST",
         headers: {

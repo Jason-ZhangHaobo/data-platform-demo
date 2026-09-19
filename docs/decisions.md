@@ -159,6 +159,7 @@
 | D-154 | 统一专业子任务取消，2026-09-20 | 新增父任务图下的`children/:destination/cancel`，通过已审计handoff解析真实专业任务类型/ID，只取消QUEUED/RUNNING，父意图保持原状态并追加SPECIALIST_CANCELLED轨迹。完成态返回409，重复CANCELLED幂等；所有者/ADMIN与CSRF边界不变。GUI/API/CLI/MCP同源，完整CI 262/262 |
 | D-155 | Agent重试恢复选最新任务，2026-09-20 | 同一步骤可因取消/失败重新批准并产生多条历史handoff；界面恢复不再并行读取全部handoff后竞争覆盖，而是读取后端任务图已经选定的最新专业任务ID。历史记录继续保留，当前活动、完成数和取消控制与图一致。完整CI保持262/262 |
 | D-156 | Agent重启中断体验，2026-09-20 | `interruptPending`覆盖父意图和全部专业Agent；界面将INTERRUPTED与运行中、失败、取消分开显示。专业步骤提供重新批准重试；父意图因隐私策略只存哈希/长度，不能自动重放，明确要求重新描述。刷新按任务图最新子任务恢复。完整CI保持262/262 |
+| D-157 | Agent专业工具目录V1，2026-09-20 | 将十域资源类型与创建/读取/应用/依赖边界集中到`agentSpecialistTools`，`agentSpecialistKinds`由其派生；`GET /agent/tools`返回脱敏`shuduo-agent-tools/v1`。GUI显示目录版本/数量，CLI/MCP提供发现命令。目录统一发现能力但不携带身份、业务行或执行授权。完整CI 263/263 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。
