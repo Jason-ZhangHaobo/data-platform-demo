@@ -21,7 +21,18 @@ test("specialist tool catalog exposes ten governed versionable capabilities", ()
   assert.ok(tools.every((tool) => tool.createPath.startsWith("/")));
   assert.ok(tools.every((tool) => tool.detailPath.includes("{id}")));
   assert.ok(tools.every((tool) => tool.childCancelPath.includes("{intentId}")));
+  assert.ok(tools.every((tool) => tool.idempotencyKeyRequired === true));
+  assert.ok(tools.every((tool) => tool.inputSchema.additionalProperties === false));
+  assert.ok(tools.every((tool) => tool.outputSchema.required.includes("id")));
   assert.equal(tools.find((tool) => tool.id === "schedules").requiresDestination, "development");
+  assert.deepEqual(
+    tools.find((tool) => tool.id === "development").inputSchema.required,
+    ["message", "contextId", "sql"],
+  );
+  assert.deepEqual(
+    tools.find((tool) => tool.id === "schedules").inputSchema.required,
+    ["sourceTaskId"],
+  );
   assert.equal(tools.find((tool) => tool.id === "security").risk, "HIGH");
 });
 
