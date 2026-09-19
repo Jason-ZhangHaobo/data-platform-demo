@@ -351,6 +351,10 @@ export class IngestionManager {
         .filter((item) => item.sourceId === source.id);
     return {
       ...source,
+      supportsOfflineSync:
+        source.sourceType === "LOCAL_CSV" ||
+        (source.sourceType === "SERVER_MYSQL" &&
+          this.serverMysqlAdapter?.supportsOfflineSync === true),
       currentRevision: revisions.find(
         (revision) => revision.id === source.currentRevisionId,
       ),
@@ -547,7 +551,7 @@ export class IngestionManager {
         revisionId: revision.id,
         objectName: revision.tableName,
         status: "COLLECTED",
-        classification: "SERVER_MYSQL_METADATA_ONLY",
+        classification: "SERVER_MYSQL_SCHEMA_SCAN",
         rowCount: described.rowCount,
         schemaHash: stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable }))),
         columns,
@@ -608,7 +612,10 @@ export class IngestionManager {
         source.currentMetadataId,
         this.project,
       );
-    if (source.sourceType !== "LOCAL_CSV")
+    if (
+      source.sourceType === "SERVER_MYSQL" &&
+      this.serverMysqlAdapter?.supportsOfflineSync !== true
+    )
       throw fail(409, "SERVER_MYSQL首期仅支持连接与元数据采集，尚未开放同步执行", "MYSQL_SYNC_NOT_ENABLED");
     if (!metadata || metadata.revisionId !== revision.id)
       throw fail(409, "请先采集当前数据源版本的元数据", "METADATA_REQUIRED");
@@ -631,6 +638,7 @@ export class IngestionManager {
     const config = {
       name: text(input.name, "同步任务名称", 2, 80),
       sourceId: source.id,
+      sourceType: source.sourceType,
       sourceRevisionId: revision.id,
       metadataVersionId: metadata.id,
       targetTable: identifier(input.targetTable, "目标表"),
@@ -644,6 +652,7 @@ export class IngestionManager {
       ...config,
       configHash: stableHash({
         sourceRevisionId: revision.id,
+        sourceType: source.sourceType,
         metadataVersionId: metadata.id,
         targetTable: input.targetTable,
         mode,
@@ -695,6 +704,12 @@ export class IngestionManager {
     });
     try {
       const source = this.#source(task.sourceId);
+      if (source.sourceType === "SERVER_MYSQL")
+        throw fail(
+          409,
+          "SERVER_MYSQL请使用异步服务端同步执行",
+          "SERVER_SOURCE_ASYNC_REQUIRED",
+        );
       if (source.currentRevisionId !== task.sourceRevisionId)
         throw fail(
           409,
@@ -783,6 +798,142 @@ export class IngestionManager {
         fullLifecycleE2E: false,
         },
       );
+      this.store.update("offline_sync_task", task.id, this.project, {
+        status: "FAILED",
+        lastRunId: run.id,
+      });
+      throw Object.assign(error, { runId: run.id });
+    }
+  }
+
+  async runServerMysqlTask(taskId, request = {}) {
+    const task = this.#task(taskId),
+      source = this.#source(task.sourceId),
+      started = this.now();
+    if (source.sourceType !== "SERVER_MYSQL")
+      throw fail(409, "当前同步任务不是SERVER_MYSQL", "SOURCE_TYPE_MISMATCH");
+    if (this.serverMysqlAdapter?.supportsOfflineSync !== true)
+      throw fail(409, "服务端MySQL同步尚未启用", "MYSQL_SYNC_NOT_ENABLED");
+    if (request.requestKey) {
+      const prior = this.store
+        .list("offline_sync_run", this.project)
+        .find((run) => run.requestKey === request.requestKey);
+      if (prior) {
+        if (prior.requestSignature !== request.requestSignature)
+          throw fail(409, "相同幂等键不能用于不同同步请求", "SYNC_IDEMPOTENCY_CONFLICT");
+        if (["SUCCEEDED", "FAILED"].includes(prior.status))
+          return { ...prior, replayed: true };
+        throw fail(409, "该同步请求仍在运行或已中断，请先检查运行记录", "SYNC_RUN_UNCERTAIN");
+      }
+    }
+    const pending = this.store.create("offline_sync_run", this.project, {
+      taskId: task.id,
+      status: "RUNNING",
+      sourceType: "SERVER_MYSQL",
+      sourceRevisionId: task.sourceRevisionId,
+      metadataVersionId: task.metadataVersionId,
+      configHash: task.configHash,
+      requestKey: request.requestKey,
+      requestSignature: request.requestSignature,
+      startedAt: new Date(started).toISOString(),
+      actualExecution: true,
+      fullLifecycleE2E: false,
+    });
+    this.store.update("offline_sync_task", task.id, this.project, {
+      status: "RUNNING",
+      lastRunId: pending.id,
+    });
+    try {
+      if (source.currentRevisionId !== task.sourceRevisionId)
+        throw fail(409, "数据源版本已变化，请新建同步任务版本", "SOURCE_REVISION_STALE");
+      const metadata = this.store.get("source_metadata", task.metadataVersionId, this.project);
+      if (!metadata || source.currentMetadataId !== metadata.id)
+        throw fail(409, "元数据版本已变化，请重新配置同步任务", "METADATA_STALE");
+      const revision = this.#revision(task.sourceRevisionId),
+        described = await this.serverMysqlAdapter.describe(revision.tableName),
+        currentColumns = described.columns.map((column) => ({
+          ...column,
+          distinctCount: undefined,
+        })),
+        currentSchemaHash = stableHash(
+          currentColumns.map(({ name, type, nullable }) => ({ name, type, nullable })),
+        );
+      if (currentSchemaHash !== metadata.schemaHash)
+        throw fail(409, "MySQL表结构在元数据采集后发生变化", "SOURCE_CHANGED");
+      const snapshot = await this.serverMysqlAdapter.readRows(revision.tableName),
+        sourceKeyFields = task.keyFields.map(
+          (target) =>
+            Object.entries(task.mapping).find(([, mapped]) => mapped === target)?.[0],
+        ),
+        rows = snapshot.rows.slice().sort((left, right) =>
+          sourceKeyFields
+            .map((field) => String(left[field] ?? ""))
+            .join("\u0000")
+            .localeCompare(
+              sourceKeyFields
+                .map((field) => String(right[field] ?? ""))
+                .join("\u0000"),
+            ),
+        ),
+        sourceHash = stableHash(rows),
+        output = this.landingStore.sync({
+          targetTable: task.targetTable,
+          mode: task.mode,
+          rows,
+          mapping: task.mapping,
+          keyFields: task.keyFields,
+          sourceHash,
+          syncedAt: new Date(this.now()).toISOString(),
+        }),
+        sourceWatermarkField = task.watermarkField
+          ? Object.entries(task.mapping).find(([, target]) => target === task.watermarkField)?.[0]
+          : undefined,
+        watermark = sourceWatermarkField
+          ? rows
+              .map((row) => row[sourceWatermarkField])
+              .filter((value) => value !== null && value !== undefined)
+              .map(String)
+              .sort()
+              .at(-1)
+          : undefined,
+        run = this.store.update("offline_sync_run", pending.id, this.project, {
+          status: "SUCCEEDED",
+          sourceType: "SERVER_MYSQL",
+          sourceStrategy:
+            task.mode === "FULL"
+              ? "BOUNDED_FULL_SNAPSHOT"
+              : "BOUNDED_SNAPSHOT_DIFF_UPSERT",
+          sourceRevisionId: task.sourceRevisionId,
+          metadataVersionId: task.metadataVersionId,
+          configHash: task.configHash,
+          sourceHash,
+          ...output,
+          watermark,
+          durationMs: this.now() - started,
+          finishedAt: new Date(this.now()).toISOString(),
+          actualExecution: true,
+          fullLifecycleE2E: false,
+        });
+      this.store.update("offline_sync_task", task.id, this.project, {
+        status: "SUCCEEDED",
+        lastRunId: run.id,
+        watermark,
+      });
+      return run;
+    } catch (error) {
+      const run = this.store.update("offline_sync_run", pending.id, this.project, {
+        status: "FAILED",
+        sourceType: "SERVER_MYSQL",
+        sourceRevisionId: task.sourceRevisionId,
+        metadataVersionId: task.metadataVersionId,
+        configHash: task.configHash,
+        error: "服务端MySQL同步失败",
+        errorCode: error.code ?? "MYSQL_SYNC_FAILED",
+        durationMs: this.now() - started,
+        finishedAt: new Date(this.now()).toISOString(),
+        actualExecution: true,
+        fullLifecycleE2E: false,
+      });
       this.store.update("offline_sync_task", task.id, this.project, {
         status: "FAILED",
         lastRunId: run.id,

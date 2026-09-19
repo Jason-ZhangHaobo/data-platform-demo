@@ -308,7 +308,7 @@ test("V2 API exposes server MySQL connection and metadata without browser creden
     const tested = await request(server.base, `/sources/${source.body.id}/test`, {}, "mysql-test"),
       metadata = await request(server.base, `/sources/${source.body.id}/metadata`, {}, "mysql-metadata");
     assert.equal(tested.body.serverVersion, "8.0.synthetic");
-    assert.equal(metadata.body.classification, "SERVER_MYSQL_METADATA_ONLY");
+    assert.equal(metadata.body.classification, "SERVER_MYSQL_SCHEMA_SCAN");
     assert.equal(metadata.body.columns.length, 2);
     const task = await request(server.base, "/sync/tasks", {
       name: "不应执行MySQL同步",
@@ -320,6 +320,72 @@ test("V2 API exposes server MySQL connection and metadata without browser creden
     }, "mysql-sync");
     assert.equal(task.status, 409);
     assert.equal(task.body.code, "MYSQL_SYNC_NOT_ENABLED");
+  } finally {
+    await new Promise((resolve) => server.app.server.close(resolve));
+    landingStore.close();
+    store.close();
+  }
+});
+
+test("V2 API runs an explicitly enabled bounded server MySQL FULL sync", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuduo-ingestion-mysql-sync-api-")),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    landingStore = new LandingStore(join(root, "landing.sqlite")),
+    rows = [
+      { position_id: "POS-001", market_value: "1000.00" },
+      { position_id: "POS-002", market_value: "500.00" },
+    ],
+    server = await start({
+      store,
+      landingStore,
+      fixtureRoot: resolve("fixtures/sources"),
+      env: { V2_LOCAL_DEVELOPMENT: "true" },
+      serverMysqlAdapter: {
+        profileId: "server-mysql-synthetic",
+        allowTables: ["synthetic_positions"],
+        supportsOfflineSync: true,
+        async probe() {
+          return { status: "CONNECTED", serverVersion: "8.0.synthetic" };
+        },
+        async describe(tableName) {
+          return {
+            tableName,
+            rowCount: rows.length,
+            columns: [
+              { name: "position_id", ordinal: 1, type: "VARCHAR", nullable: false },
+              { name: "market_value", ordinal: 2, type: "DECIMAL", nullable: false },
+            ],
+          };
+        },
+        async readRows() {
+          return { rows, rowCount: rows.length, strategy: "BOUNDED_SNAPSHOT" };
+        },
+      },
+    });
+  try {
+    const source = await request(server.base, "/sources", {
+      name: "服务端虚构MySQL同步",
+      sourceType: "SERVER_MYSQL",
+      tableName: "synthetic_positions",
+    }, "mysql-sync-create-source");
+    await request(server.base, `/sources/${source.body.id}/test`, {}, "mysql-sync-test");
+    await request(server.base, `/sources/${source.body.id}/metadata`, {}, "mysql-sync-metadata");
+    const task = await request(server.base, "/sync/tasks", {
+        name: "服务端MySQL全量同步",
+        sourceId: source.body.id,
+        targetTable: "mysql_positions_api",
+        mode: "FULL",
+        mapping: { position_id: "position_id", market_value: "market_value" },
+        keyFields: ["position_id"],
+      }, "mysql-sync-create-task"),
+      run = await request(server.base, `/sync/tasks/${task.body.id}/run`, {}, "mysql-sync-run");
+    assert.equal(task.status, 201);
+    assert.equal(task.body.sourceType, "SERVER_MYSQL");
+    assert.equal(run.status, 200);
+    assert.equal(run.body.status, "SUCCEEDED");
+    assert.equal(run.body.sourceStrategy, "BOUNDED_FULL_SNAPSHOT");
+    assert.equal(run.body.finalCount, 2);
+    assert.equal("rows" in run.body, false);
   } finally {
     await new Promise((resolve) => server.app.server.close(resolve));
     landingStore.close();

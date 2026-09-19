@@ -36,6 +36,13 @@ jobs:
       V2_MYSQL_USER: ${{ secrets.V2_MYSQL_USER }}
       V2_MYSQL_PASSWORD: ${{ secrets.V2_MYSQL_PASSWORD }}
       V2_MYSQL_DATABASE: ${{ secrets.V2_MYSQL_DATABASE }}
+      V2_MYSQL_SOURCE_HOST: ${{ secrets.V2_MYSQL_SOURCE_HOST }}
+      V2_MYSQL_SOURCE_PORT: ${{ secrets.V2_MYSQL_SOURCE_PORT }}
+      V2_MYSQL_SOURCE_USER: ${{ secrets.V2_MYSQL_SOURCE_USER }}
+      V2_MYSQL_SOURCE_PASSWORD: ${{ secrets.V2_MYSQL_SOURCE_PASSWORD }}
+      V2_MYSQL_SOURCE_DATABASE: ${{ secrets.V2_MYSQL_SOURCE_DATABASE }}
+      V2_MYSQL_SOURCE_TABLE_ALLOWLIST: ${{ vars.V2_MYSQL_SOURCE_TABLE_ALLOWLIST }}
+      V2_MYSQL_SOURCE_SYNC_ENABLED: ${{ vars.V2_MYSQL_SOURCE_SYNC_ENABLED }}
       V2_BOOTSTRAP_ADMIN_EMAIL: ${{ secrets.V2_BOOTSTRAP_ADMIN_EMAIL }}
       V2_BOOTSTRAP_ADMIN_PASSWORD_HASH: ${{ secrets.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH }}
       V2_BOOTSTRAP_ADMIN_NAME: ${{ secrets.V2_BOOTSTRAP_ADMIN_NAME }}
@@ -148,6 +155,13 @@ jobs:
             --arg mysql_user "$V2_MYSQL_USER" \
             --arg mysql_password "$V2_MYSQL_PASSWORD" \
             --arg mysql_database "$V2_MYSQL_DATABASE" \
+            --arg mysql_source_host "${V2_MYSQL_SOURCE_HOST:-}" \
+            --arg mysql_source_port "${V2_MYSQL_SOURCE_PORT:-3306}" \
+            --arg mysql_source_user "${V2_MYSQL_SOURCE_USER:-}" \
+            --arg mysql_source_password "${V2_MYSQL_SOURCE_PASSWORD:-}" \
+            --arg mysql_source_database "${V2_MYSQL_SOURCE_DATABASE:-}" \
+            --arg mysql_source_tables "${V2_MYSQL_SOURCE_TABLE_ALLOWLIST:-}" \
+            --arg mysql_source_sync "${V2_MYSQL_SOURCE_SYNC_ENABLED:-false}" \
             --arg admin_email "$V2_BOOTSTRAP_ADMIN_EMAIL" \
             --arg admin_password_hash "$V2_BOOTSTRAP_ADMIN_PASSWORD_HASH" \
             --arg admin_name "${V2_BOOTSTRAP_ADMIN_NAME:-平台管理员}" \
@@ -185,6 +199,16 @@ jobs:
                 V2_MYSQL_CONNECT_TIMEOUT_MS:"5000",
                 V2_MYSQL_CONNECT_ATTEMPTS:"6",
                 V2_MYSQL_RETRY_DELAY_MS:"2000",
+                V2_MYSQL_SOURCE_HOST:$mysql_source_host,
+                V2_MYSQL_SOURCE_PORT:$mysql_source_port,
+                V2_MYSQL_SOURCE_USER:$mysql_source_user,
+                V2_MYSQL_SOURCE_PASSWORD:$mysql_source_password,
+                V2_MYSQL_SOURCE_DATABASE:$mysql_source_database,
+                V2_MYSQL_SOURCE_TABLE_ALLOWLIST:$mysql_source_tables,
+                V2_MYSQL_SOURCE_SYNC_ENABLED:$mysql_source_sync,
+                V2_MYSQL_SOURCE_MAX_ROWS:"5000",
+                V2_MYSQL_SOURCE_MAX_BYTES:"4194304",
+                V2_MYSQL_SOURCE_QUERY_TIMEOUT_MS:"15000",
                 OSS_BUCKET:$bucket,
                 OSS_ENDPOINT:"oss-cn-hangzhou-internal.aliyuncs.com",
                 V2_OSS_STATE_OBJECT_KEY:"data-platform-demo/v2/state/project-securities-lab.json",

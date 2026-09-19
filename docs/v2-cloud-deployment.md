@@ -77,6 +77,8 @@ node scripts/apply-v2-deploy-policy.mjs --apply
 
 - `V2_MYSQL_HOST`、`V2_MYSQL_PORT`、`V2_MYSQL_USER`、`V2_MYSQL_PASSWORD`、`V2_MYSQL_DATABASE`
 - MySQL非秘密运行边界由工作流固定为连接池2、连接超时5秒、最多6次瞬态重试和2秒基准退避；不从浏览器接收这些值
+- 可选独立业务源：`V2_MYSQL_SOURCE_HOST/PORT/USER/PASSWORD/DATABASE`；只允许放受保护Secrets或`JASONSECRETS`，不得复用平台账号职责
+- `V2_MYSQL_SOURCE_TABLE_ALLOWLIST`和`V2_MYSQL_SOURCE_SYNC_ENABLED`为受保护Variables；真实同VPC、只读权限和限额验收前保持空/false
 - `V2_BOOTSTRAP_ADMIN_EMAIL`、`V2_BOOTSTRAP_ADMIN_PASSWORD_HASH`、`V2_BOOTSTRAP_ADMIN_NAME`；禁止保存管理员明文密码
 - `DASHSCOPE_API_KEY`
 - 可选单一秘密`JASONSECRETS`：使用白名单键组成的JSON对象或单行`KEY=VALUE`文本，可替代上述逐项Secrets；逐项Secrets与其同时存在时逐项值优先

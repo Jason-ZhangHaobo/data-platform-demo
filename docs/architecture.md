@@ -26,6 +26,7 @@ Data Agent是默认一级入口，不隶属于数据开发或其他经典模块�
 - 多端客户端：React、`shuduo` CLI和`shuduo-mcp`共用`/api/v2`；共享客户端统一项目头、客户端身份、幂等键、超时和错误结构。
 - 接入控制面：数据源、源版本、连接测试、元数据版本、同步任务与运行证据保存在平台库；文件内容不写入平台文档。
 - 接入数据面：FULL/INCREMENTAL_UPSERT使用独立`v2-landing.sqlite`事务落地通用行；主键冲突整批回滚，内容摘要不包含运行时间等易变元数据。
+- 服务端MySQL接入面：独立业务源账号与平台元数据库账号分离；凭证和表白名单只由服务端注入。显式开关开启后可读取有界快照，FULL原子替换，INCREMENTAL_UPSERT按完整快照做主键差异合并；该模式不等于CDC或源端增量。运行前重新核对Schema摘要，业务行只进入LandingStore/私有OSS状态，不进入Agent提示或控制面响应。
 - 实时数据面：`v2-stream-state.sqlite`分别保存已处理事件、按证券最新状态和Checkpoint；Checkpoint绑定offset、源前缀、Watermark和状态摘要，恢复不能跳过被改写的历史。
 - 实时控制面：平台库保存源/版本、Agent方案、任务、运行、指标与告警；Agent只获得源摘要和固定事件契约，人工应用只生成READY任务。当前适配器仅`local-event-log-v1`，Kafka/Flink连接状态固定为未连接。
 - 资产目录面：运行时从Spark样例表、已采集源、离线落地表、实时状态表、已验证发布数据集和DAPI/XAPI版本自动投影目录；业务说明单独版本化，不覆盖底层证据。

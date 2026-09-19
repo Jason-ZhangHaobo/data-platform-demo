@@ -68,15 +68,23 @@ test("V2 provisioning mode can create a private function before domain filing", 
   assert.deepEqual(result, { ok: true, missing: [], errors: [] });
 });
 
-test("JASONSECRETS supports an allowlisted JSON bundle without exposing values", () => {
-  const bundle = JSON.stringify({ V2_MYSQL_PASSWORD: "hidden-password", DASHSCOPE_API_KEY: "hidden-key" });
+test("JASONSECRETS supports platform and optional source MySQL keys without exposing values", () => {
+  const bundle = JSON.stringify({
+    V2_MYSQL_PASSWORD: "hidden-password",
+    DASHSCOPE_API_KEY: "hidden-key",
+    V2_MYSQL_SOURCE_USER: "sync_reader",
+    V2_MYSQL_SOURCE_PASSWORD: "hidden-source-password",
+  });
   assert.deepEqual(parseSecretBundle(bundle), {
     V2_MYSQL_PASSWORD: "hidden-password",
     DASHSCOPE_API_KEY: "hidden-key",
+    V2_MYSQL_SOURCE_USER: "sync_reader",
+    V2_MYSQL_SOURCE_PASSWORD: "hidden-source-password",
   });
   const merged = mergeSecretBundle({ V2_MYSQL_PASSWORD: "already-set", JASONSECRETS: bundle });
   assert.equal(merged.V2_MYSQL_PASSWORD, "already-set");
   assert.equal(merged.DASHSCOPE_API_KEY, "hidden-key");
+  assert.equal(merged.V2_MYSQL_SOURCE_USER, "sync_reader");
   assert.equal(JSON.stringify({ ok: true, loadedKeys: Object.keys(merged) }).includes("hidden"), false);
 });
 
@@ -101,6 +109,25 @@ test("staging config rejects placeholders and invalid administrator hashes by ke
     "INVALID_VALUE:V2_BOOTSTRAP_ADMIN_PASSWORD_HASH",
   ]);
   assert.equal(JSON.stringify(result).includes("not-a-hash"), false);
+});
+
+test("staging config validates optional source MySQL secrets when present", () => {
+  const result = validateV2StagingConfig({
+    ...base,
+    V2_MYSQL_SOURCE_HOST: "https://not-a-host",
+    V2_MYSQL_SOURCE_PORT: "70000",
+    V2_MYSQL_SOURCE_USER: "bad-user",
+    V2_MYSQL_SOURCE_PASSWORD: "short",
+    V2_MYSQL_SOURCE_DATABASE: "bad-db",
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.errors, [
+    "INVALID_VALUE:V2_MYSQL_SOURCE_PORT",
+    "INVALID_VALUE:V2_MYSQL_SOURCE_USER",
+    "INVALID_VALUE:V2_MYSQL_SOURCE_DATABASE",
+    "INVALID_VALUE:V2_MYSQL_SOURCE_HOST",
+    "INVALID_VALUE:V2_MYSQL_SOURCE_PASSWORD",
+  ]);
 });
 
 test("bundle exporter masks values before writing the GitHub environment file", () => {
