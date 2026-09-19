@@ -59,6 +59,7 @@ type IntentTrace = {
 };
 type Handoff = { id: string; destinationId: string; status: string; objective: string; specialistTaskId?: string; specialistTaskKind?: string };
 type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND"; risk: Risk; approvedAt: string; specialistTaskId?: string };
+type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistStatus?: string }[] };
 type SpecialistActivity = {
   destinationId: string;
   id: string;
@@ -156,6 +157,7 @@ export function AgentCenter({
     [tasks, setTasks] = useState<IntentTask[]>([]),
     [task, setTask] = useState<IntentTask>(),
     [trace, setTrace] = useState<IntentTrace[]>([]),
+    [graph, setGraph] = useState<IntentGraph>(),
     [approvals, setApprovals] = useState<StepApproval[]>([]),
     [handoffs, setHandoffs] = useState<Handoff[]>([]),
     [activities, setActivities] = useState<Record<string, SpecialistActivity>>({}),
@@ -167,18 +169,21 @@ export function AgentCenter({
     if (!selected) {
       setTask(undefined);
       setTrace([]);
+      setGraph(undefined);
       setApprovals([]);
       setHandoffs([]);
       setActivities({});
       return;
     }
     setTask(selected);
-    const [nextTrace, nextApprovals, nextHandoffs] = await Promise.all([
+    const [nextTrace, nextGraph, nextApprovals, nextHandoffs] = await Promise.all([
       api<IntentTrace[]>(`/agent/intents/${selected.id}/trace`),
+      api<IntentGraph>(`/agent/intents/${selected.id}/graph`),
       api<StepApproval[]>(`/agent/intents/${selected.id}/approvals`),
       api<Handoff[]>(`/agent/intents/${selected.id}/handoffs`),
     ]);
     setTrace(nextTrace);
+    setGraph(nextGraph);
     setApprovals(nextApprovals);
     setHandoffs(nextHandoffs);
     const restored: Record<string, SpecialistActivity> = {};
@@ -241,6 +246,8 @@ export function AgentCenter({
               result: current,
             },
           }));
+          if (!pending(String(current.status ?? item.status)) && task?.id)
+            setGraph(await api<IntentGraph>(`/agent/intents/${task.id}/graph`));
         } catch (cause) {
           setActivities((all) => ({
             ...all,
@@ -256,6 +263,7 @@ export function AgentCenter({
     setTask(undefined);
     setMessage("");
     setTrace([]);
+    setGraph(undefined);
     setApprovals([]);
     setHandoffs([]);
     setActivities({});
@@ -270,6 +278,7 @@ export function AgentCenter({
       setTasks((current) => [created, ...current.filter((item) => item.id !== created.id)]);
       setTask(created);
       setTrace([]);
+      setGraph(undefined);
       setApprovals([]);
       setHandoffs([]);
       setActivities({});
@@ -354,6 +363,7 @@ export function AgentCenter({
         },
       }));
       setTrace(await api<IntentTrace[]>(`/agent/intents/${task.id}/trace`));
+      setGraph(await api<IntentGraph>(`/agent/intents/${task.id}/graph`));
       setApprovals(await api<StepApproval[]>(`/agent/intents/${task.id}/approvals`));
       setHandoffs(await api<Handoff[]>(`/agent/intents/${task.id}/handoffs`));
     } catch (cause) {
@@ -385,6 +395,8 @@ export function AgentCenter({
           applied: true,
         },
       }));
+      if (task?.id)
+        setGraph(await api<IntentGraph>(`/agent/intents/${task.id}/graph`));
     } catch (cause) {
       setActivities((all) => ({
         ...all,
@@ -396,7 +408,7 @@ export function AgentCenter({
   const route = task?.route,
     steps = route?.steps ?? (route ? [{ destinationId: route.destinationId, label: route.destination.label, risk: route.destination.risk, objective: route.summary }] : []),
     selectedMessage = task ? submittedMessages[task.id] : undefined,
-    completedCount = steps.filter((step) => succeeded(activities[step.destinationId]?.status)).length,
+    completedCount = graph?.completedCount ?? steps.filter((step) => succeeded(activities[step.destinationId]?.status)).length,
     taskTitle = (item: IntentTask) => item.route?.summary ?? (pending(item.status) ? "正在理解新任务" : "未完成的Agent任务"),
     capabilityGroups = useMemo(
       () => [
@@ -438,7 +450,7 @@ export function AgentCenter({
             <article className="agent-os-message-v2 assistant"><span className="agent-os-avatar-v2"><Bot size={16} /></span><div>
               {pending(task.status) ? <div className="agent-os-thinking-v2"><LoaderCircle className="spin" size={15} />正在理解目标、匹配上下文并规划跨域步骤…</div> : route ? <>
                 <p>{route.summary}</p><small>{route.rationale}</small>
-                <div className="agent-os-plan-v2"><header><div><FileCheck2 size={15} /><strong>执行计划</strong></div><span>{completedCount}/{steps.length} 已完成</span></header><ol>{steps.map((step, index) => {
+                <div className="agent-os-plan-v2"><header><div><FileCheck2 size={15} /><strong>执行计划</strong></div><span>{completedCount}/{graph?.totalCount ?? steps.length} 已完成 · {graph ? "持久任务图" : "加载中"}</span></header><ol>{steps.map((step, index) => {
                   const activity = activities[step.destinationId], approval = approvals.find((item) => item.destinationId === step.destinationId), prepared = handoffs.some((item) => item.destinationId === step.destinationId), canApply = activity?.status === "SUCCEEDED" && Boolean(actionConfig[step.destinationId]?.applyPath), artifactRows = activityArtifactRows(activity), complete = succeeded(activity?.status);
                   return <li key={step.destinationId} className={complete ? "complete" : activity?.status === "FAILED" ? "failed" : ""}><span>{complete ? <Check size={13} /> : String(index + 1).padStart(2, "0")}</span><div><div className="agent-os-step-title-v2"><strong>{step.label}</strong><small>{riskLabel[step.risk]}</small></div><p>{step.objective}</p>
                     {activity && <div className="agent-os-activity-v2"><CircleDot size={12} /><span>{complete ? activity.applied ? "专业草稿已写入" : "专业Agent已完成" : activity.status === "FAILED" ? activity.error : "专业Agent执行中"}</span>{activity.id !== "preparing" && activity.id !== "failed" && <code>{activity.id.slice(0, 8)}</code>}</div>}

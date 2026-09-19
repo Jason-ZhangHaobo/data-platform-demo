@@ -358,6 +358,18 @@ test("request-approval intent persists and binds an exact step approval before s
       "STEP_APPROVAL",
       "SPECIALIST_HANDOFF",
     ]);
+    const graph = await fetch(base + `/agent/intents/${completed.id}/graph`).then(
+      (response) => response.json(),
+    );
+    assert.equal(graph.completionScope, "AGENT_ORCHESTRATION_GRAPH");
+    assert.equal(graph.completedCount, 1);
+    assert.equal(graph.totalCount, 1);
+    assert.equal(graph.steps[0].status, "SUCCEEDED");
+    assert.equal(graph.steps[0].approvalStatus, "BOUND");
+    assert.equal(graph.steps[0].specialistTaskId, specialist.id);
+    assert.equal(graph.steps[0].executionEvidence, "SPECIALIST_TASK_LINKED");
+    assert.equal(graph.agentIndependentE2E, false);
+    assert.equal(JSON.stringify(graph).includes("基于已登记资产设计"), false);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     store.close();
@@ -449,6 +461,8 @@ test("public Agent intent history is isolated per member and viewer cannot submi
     assert.equal(forbiddenTraceRead.status, 403);
     const forbiddenApprovalRead = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/approvals`, { cookie: viewer.cookie });
     assert.equal(forbiddenApprovalRead.status, 403);
+    const forbiddenGraphRead = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/graph`, { cookie: viewer.cookie });
+    assert.equal(forbiddenGraphRead.status, 403);
     const forbidden = await publicRequest(base, "/agent/intents", { body: { message: "查看者不能调用模型" }, cookie: viewer.cookie, csrf: viewer.body.csrfToken, key: "viewer-intent" });
     assert.equal(forbidden.status, 403);
     assert.equal(forbidden.body.code, "PROJECT_PERMISSION_DENIED");
