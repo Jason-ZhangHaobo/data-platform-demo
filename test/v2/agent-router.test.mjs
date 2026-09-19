@@ -204,10 +204,9 @@ test("intent API persists a live-model routing result without executing a downst
         }),
       },
     );
-    assert.equal(linkedResponse.status, 201);
+    assert.equal(linkedResponse.status, 409);
     const linked = await linkedResponse.json();
-    assert.equal(linked.specialistTaskId, specialist.id);
-    assert.equal(linked.specialistTaskKind, "report_agent_plan");
+    assert.equal(linked.code, "PLAN_ONLY_EXECUTION_DENIED");
     const missingReference = await fetch(
       base + `/agent/intents/${completed.id}/handoffs`,
       {
@@ -224,6 +223,141 @@ test("intent API persists a live-model routing result without executing a downst
       },
     );
     assert.equal(missingReference.status, 409);
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    store.close();
+  }
+});
+
+test("request-approval intent persists and binds an exact step approval before specialist execution", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-approval-")),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    app = createV2Server({
+      root,
+      store,
+      intentPlanner: async () => ({
+        route: {
+          destinationId: "reports",
+          summary: "设计虚构证券资产报表",
+          rationale: "先由报表专业Agent形成受治理草稿。",
+          confidence: 0.9,
+          steps: [
+            {
+              destinationId: "reports",
+              objective: "基于已登记资产设计类别与行业分布报表",
+            },
+          ],
+        },
+        model: "TEST_ROUTER_MODEL",
+        usage: { total_tokens: 1 },
+      }),
+    });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
+  try {
+    const created = await fetch(base + "/agent/intents", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shuduo-Client": "workbench",
+        "Idempotency-Key": "approval-intent",
+      },
+      body: JSON.stringify({
+        message: "根据虚构证券资产设计类别与行业报表",
+        approvalMode: "REQUEST_APPROVAL",
+      }),
+    }).then((response) => response.json());
+    const completed = await waitFor(
+      async () => (await fetch(base + "/agent/intents").then((value) => value.json()))[0],
+      (value) => value.id === created.id && value.status === "SUCCEEDED",
+    );
+    const specialist = store.create("report_agent_plan", PROJECT, {
+      status: "SUCCEEDED",
+      completionScope: "REPORT_DESIGN",
+    });
+    const withoutApproval = await fetch(
+      base + `/agent/intents/${completed.id}/handoffs`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "approval-missing",
+        },
+        body: JSON.stringify({
+          destinationId: "reports",
+          specialistTaskId: specialist.id,
+        }),
+      },
+    );
+    assert.equal(withoutApproval.status, 409);
+    assert.equal((await withoutApproval.json()).code, "AGENT_STEP_APPROVAL_REQUIRED");
+    const approvalResponse = await fetch(
+        base + `/agent/intents/${completed.id}/approvals`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shuduo-Client": "workbench",
+            "Idempotency-Key": "approve-reports-step",
+          },
+          body: JSON.stringify({ destinationId: "reports" }),
+        },
+      ),
+      approval = await approvalResponse.json();
+    assert.equal(approvalResponse.status, 201);
+    assert.equal(approval.status, "APPROVED");
+    assert.equal(approval.submittedBy, undefined);
+    assert.equal(typeof approval.objectiveHash, "string");
+    const approvalReplayResponse = await fetch(
+        base + `/agent/intents/${completed.id}/approvals`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shuduo-Client": "workbench",
+            "Idempotency-Key": "approve-reports-step-retry",
+          },
+          body: JSON.stringify({ destinationId: "reports" }),
+        },
+      ),
+      approvalReplay = await approvalReplayResponse.json();
+    assert.equal(approvalReplayResponse.status, 200);
+    assert.equal(approvalReplay.id, approval.id);
+    assert.equal(store.list("agent_intent_approval", PROJECT).length, 1);
+    const handoffResponse = await fetch(
+        base + `/agent/intents/${completed.id}/handoffs`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shuduo-Client": "workbench",
+            "Idempotency-Key": "bind-approved-specialist",
+          },
+          body: JSON.stringify({
+            destinationId: "reports",
+            specialistTaskId: specialist.id,
+            approvalId: approval.id,
+          }),
+        },
+      ),
+      handoff = await handoffResponse.json();
+    assert.equal(handoffResponse.status, 201);
+    assert.equal(handoff.approvalId, approval.id);
+    const approvals = await fetch(
+      base + `/agent/intents/${completed.id}/approvals`,
+    ).then((response) => response.json());
+    assert.equal(approvals[0].status, "BOUND");
+    assert.equal(approvals[0].specialistTaskId, specialist.id);
+    assert.equal(approvals[0].submittedBy, undefined);
+    const trace = await fetch(base + `/agent/intents/${completed.id}/trace`).then(
+      (response) => response.json(),
+    );
+    assert.deepEqual(trace.map((item) => item.kind), [
+      "MODEL_ROUTE",
+      "STEP_APPROVAL",
+      "SPECIALIST_HANDOFF",
+    ]);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     store.close();
@@ -304,11 +438,17 @@ test("public Agent intent history is isolated per member and viewer cannot submi
     assert.equal(trace.status, 200);
     assert.deepEqual(trace.body.map((item) => item.kind), ["MODEL_ROUTE", "SPECIALIST_HANDOFF"]);
     assert.equal(JSON.stringify(trace.body).includes("理解虚构持仓并设计报表"), false);
+    assert.deepEqual(
+      (await publicRequest(base, `/agent/intents/${pmTasks[0].id}/approvals`, { cookie: pm.cookie })).body,
+      [],
+    );
     assert.deepEqual((await publicRequest(base, "/agent/intents", { cookie: viewer.cookie })).body, []);
     const forbiddenHandoffRead = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/handoffs`, { cookie: viewer.cookie });
     assert.equal(forbiddenHandoffRead.status, 403);
     const forbiddenTraceRead = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/trace`, { cookie: viewer.cookie });
     assert.equal(forbiddenTraceRead.status, 403);
+    const forbiddenApprovalRead = await publicRequest(base, `/agent/intents/${pmTasks[0].id}/approvals`, { cookie: viewer.cookie });
+    assert.equal(forbiddenApprovalRead.status, 403);
     const forbidden = await publicRequest(base, "/agent/intents", { body: { message: "查看者不能调用模型" }, cookie: viewer.cookie, csrf: viewer.body.csrfToken, key: "viewer-intent" });
     assert.equal(forbidden.status, 403);
     assert.equal(forbidden.body.code, "PROJECT_PERMISSION_DENIED");

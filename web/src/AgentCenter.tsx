@@ -51,13 +51,14 @@ type IntentTask = {
 type IntentTrace = {
   id: string;
   sequence: number;
-  kind: "MODEL_ROUTE" | "SPECIALIST_HANDOFF";
+  kind: "MODEL_ROUTE" | "STEP_APPROVAL" | "SPECIALIST_HANDOFF";
   status: string;
   output?: { destinationId?: string; stepCount?: number; confidence?: number };
   execution: "NO_EXECUTION";
   observedAt: string;
 };
 type Handoff = { id: string; destinationId: string; status: string; objective: string; specialistTaskId?: string; specialistTaskKind?: string };
+type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND"; risk: Risk; approvedAt: string; specialistTaskId?: string };
 type SpecialistActivity = {
   destinationId: string;
   id: string;
@@ -66,6 +67,7 @@ type SpecialistActivity = {
   result?: Record<string, unknown>;
   error?: string;
   applied?: boolean;
+  linkPending?: boolean;
 };
 
 const destinations: Destination[] = [
@@ -154,6 +156,7 @@ export function AgentCenter({
     [tasks, setTasks] = useState<IntentTask[]>([]),
     [task, setTask] = useState<IntentTask>(),
     [trace, setTrace] = useState<IntentTrace[]>([]),
+    [approvals, setApprovals] = useState<StepApproval[]>([]),
     [handoffs, setHandoffs] = useState<Handoff[]>([]),
     [activities, setActivities] = useState<Record<string, SpecialistActivity>>({}),
     [submittedMessages, setSubmittedMessages] = useState<Record<string, string>>({}),
@@ -164,16 +167,19 @@ export function AgentCenter({
     if (!selected) {
       setTask(undefined);
       setTrace([]);
+      setApprovals([]);
       setHandoffs([]);
       setActivities({});
       return;
     }
     setTask(selected);
-    const [nextTrace, nextHandoffs] = await Promise.all([
+    const [nextTrace, nextApprovals, nextHandoffs] = await Promise.all([
       api<IntentTrace[]>(`/agent/intents/${selected.id}/trace`),
+      api<StepApproval[]>(`/agent/intents/${selected.id}/approvals`),
       api<Handoff[]>(`/agent/intents/${selected.id}/handoffs`),
     ]);
     setTrace(nextTrace);
+    setApprovals(nextApprovals);
     setHandoffs(nextHandoffs);
     const restored: Record<string, SpecialistActivity> = {};
     await Promise.all(
@@ -250,6 +256,7 @@ export function AgentCenter({
     setTask(undefined);
     setMessage("");
     setTrace([]);
+    setApprovals([]);
     setHandoffs([]);
     setActivities({});
     setError("");
@@ -263,6 +270,7 @@ export function AgentCenter({
       setTasks((current) => [created, ...current.filter((item) => item.id !== created.id)]);
       setTask(created);
       setTrace([]);
+      setApprovals([]);
       setHandoffs([]);
       setActivities({});
       setMessage("");
@@ -281,13 +289,28 @@ export function AgentCenter({
       [step.destinationId]: { destinationId: step.destinationId, id: "preparing", status: "QUEUED", getPath: "" },
     }));
     try {
+      const approval = task.approvalMode === "REQUEST_APPROVAL"
+        ? await api<StepApproval>(`/agent/intents/${task.id}/approvals`, {
+            destinationId: step.destinationId,
+          })
+        : undefined;
+      if (approval)
+        setApprovals((items) => [
+          approval,
+          ...items.filter((item) => item.id !== approval.id),
+        ]);
       if (step.destinationId === "schedules") {
         const source = activities.development;
         if (!source || source.status !== "SUCCEEDED")
           throw new Error("请先在当前会话完成数据开发步骤，再准备调度与部署文件。");
       }
       let created: Record<string, unknown>;
-      if (step.destinationId === "development") {
+      const pendingLink = activities[step.destinationId]?.linkPending
+        ? activities[step.destinationId]
+        : undefined;
+      if (pendingLink?.result) {
+        created = pendingLink.result;
+      } else if (step.destinationId === "development") {
         created = await api<Record<string, unknown>>("/agent/tasks", {
           message: step.objective,
           contextId,
@@ -303,9 +326,21 @@ export function AgentCenter({
       }
       const id = String(created.id),
         getPath = specialistGetPath(step.destinationId, id);
+      setActivities((all) => ({
+        ...all,
+        [step.destinationId]: {
+          destinationId: step.destinationId,
+          id,
+          status: String(created.status ?? "QUEUED"),
+          getPath,
+          result: created,
+          linkPending: true,
+        },
+      }));
       await api(`/agent/intents/${task.id}/handoffs`, {
         destinationId: step.destinationId,
         specialistTaskId: id,
+        ...(approval ? { approvalId: approval.id } : {}),
       });
       setActivities((all) => ({
         ...all,
@@ -315,9 +350,11 @@ export function AgentCenter({
           status: String(created.status ?? "QUEUED"),
           getPath,
           result: created,
+          linkPending: false,
         },
       }));
       setTrace(await api<IntentTrace[]>(`/agent/intents/${task.id}/trace`));
+      setApprovals(await api<StepApproval[]>(`/agent/intents/${task.id}/approvals`));
       setHandoffs(await api<Handoff[]>(`/agent/intents/${task.id}/handoffs`));
     } catch (cause) {
       setActivities((all) => ({
@@ -325,6 +362,7 @@ export function AgentCenter({
         [step.destinationId]: {
           ...(all[step.destinationId] ?? { destinationId: step.destinationId, id: "failed", getPath: "" }),
           status: "FAILED",
+          linkPending: all[step.destinationId]?.linkPending,
           error: (cause as Error).message,
         },
       }));
@@ -401,15 +439,16 @@ export function AgentCenter({
               {pending(task.status) ? <div className="agent-os-thinking-v2"><LoaderCircle className="spin" size={15} />正在理解目标、匹配上下文并规划跨域步骤…</div> : route ? <>
                 <p>{route.summary}</p><small>{route.rationale}</small>
                 <div className="agent-os-plan-v2"><header><div><FileCheck2 size={15} /><strong>执行计划</strong></div><span>{completedCount}/{steps.length} 已完成</span></header><ol>{steps.map((step, index) => {
-                  const activity = activities[step.destinationId], prepared = handoffs.some((item) => item.destinationId === step.destinationId), canApply = activity?.status === "SUCCEEDED" && Boolean(actionConfig[step.destinationId]?.applyPath), artifactRows = activityArtifactRows(activity), complete = succeeded(activity?.status);
+                  const activity = activities[step.destinationId], approval = approvals.find((item) => item.destinationId === step.destinationId), prepared = handoffs.some((item) => item.destinationId === step.destinationId), canApply = activity?.status === "SUCCEEDED" && Boolean(actionConfig[step.destinationId]?.applyPath), artifactRows = activityArtifactRows(activity), complete = succeeded(activity?.status);
                   return <li key={step.destinationId} className={complete ? "complete" : activity?.status === "FAILED" ? "failed" : ""}><span>{complete ? <Check size={13} /> : String(index + 1).padStart(2, "0")}</span><div><div className="agent-os-step-title-v2"><strong>{step.label}</strong><small>{riskLabel[step.risk]}</small></div><p>{step.objective}</p>
                     {activity && <div className="agent-os-activity-v2"><CircleDot size={12} /><span>{complete ? activity.applied ? "专业草稿已写入" : "专业Agent已完成" : activity.status === "FAILED" ? activity.error : "专业Agent执行中"}</span>{activity.id !== "preparing" && activity.id !== "failed" && <code>{activity.id.slice(0, 8)}</code>}</div>}
+                    {approval && <div className="agent-os-activity-v2"><ShieldCheck size={12} /><span>{approval.status === "BOUND" ? "本次批准已绑定专业任务" : "步骤已批准，等待绑定任务"}</span><code>{approval.id.slice(0, 8)}</code></div>}
                     {artifactRows.length > 0 && <details className="agent-os-artifact-v2"><summary>查看专业Agent产物</summary><div>{artifactRows.map((row) => <section key={row.label}><span>{row.label}</span>{Array.isArray(row.value) ? <div className="agent-os-artifact-tags-v2">{row.value.map((item) => <code key={item}>{item}</code>)}</div> : <p>{row.value}</p>}</section>)}</div></details>}
-                    <div className="agent-os-step-actions-v2">{task.approvalMode !== "PLAN_ONLY" && (!activity || activity.status === "FAILED") && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured}><Wrench size={13} />{activity?.status === "FAILED" ? "重试此步骤" : "在当前会话执行"}</button>}{canApply && !activity.applied && <button onClick={() => applyDraft(step)}><Check size={13} />应用为草稿</button>}{activity?.applied && <span className="agent-os-applied-v2"><Check size={12} />草稿已写入</span>}<button className="secondary" onClick={() => onOpenDestination(step.destinationId, step.objective)}><ExternalLink size={12} />专业工作台</button></div>
+                    <div className="agent-os-step-actions-v2">{task.approvalMode !== "PLAN_ONLY" && (!activity || activity.status === "FAILED") && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured}><Wrench size={13} />{activity?.status === "FAILED" ? "重新批准并重试" : "批准并执行此步骤"}</button>}{canApply && !activity.applied && <button onClick={() => applyDraft(step)}><Check size={13} />应用为草稿</button>}{activity?.applied && <span className="agent-os-applied-v2"><Check size={12} />草稿已写入</span>}<button className="secondary" onClick={() => onOpenDestination(step.destinationId, step.objective)}><ExternalLink size={12} />专业工作台</button></div>
                     {prepared && !activity && <small className="agent-os-prepared-v2">已准备专业Agent输入，尚未执行工具。</small>}
                   </div></li>;
                 })}</ol></div>
-                {trace.length > 0 && <details className="agent-os-trace-v2"><summary>查看执行轨迹与证据</summary>{trace.map((item) => <div key={item.id}><span>{item.sequence}</span><strong>{item.kind === "MODEL_ROUTE" ? "需求理解与规划" : "专业Agent准备"}</strong><small>{item.output?.destinationId ?? "—"} · {item.execution} · {new Date(item.observedAt).toLocaleTimeString("zh-CN")}</small></div>)}</details>}
+                {trace.length > 0 && <details className="agent-os-trace-v2"><summary>查看执行轨迹与证据</summary>{trace.map((item) => <div key={item.id}><span>{item.sequence}</span><strong>{item.kind === "MODEL_ROUTE" ? "需求理解与规划" : item.kind === "STEP_APPROVAL" ? "人工批准专业步骤" : "专业Agent任务绑定"}</strong><small>{item.output?.destinationId ?? "—"} · {item.execution} · {new Date(item.observedAt).toLocaleTimeString("zh-CN")}</small></div>)}</details>}
               </> : <p>{task.error ?? "Agent未能形成可执行计划。"}</p>}
             </div></article>
           </>}

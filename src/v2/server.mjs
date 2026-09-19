@@ -258,6 +258,7 @@ export function createV2Server(options = {}) {
   };
   const publicAgentIntent = ({ submittedBy, message, ...item }) => item;
   const publicAgentHandoff = ({ submittedBy, ...item }) => item;
+  const publicAgentApproval = ({ submittedBy, ...item }) => item;
   const mayReadAgentIntent = (item, session) =>
     local || session?.role === "ADMIN" || item.submittedBy === session?.user.id;
   const cloudReadiness = async () => {
@@ -2280,6 +2281,100 @@ export function createV2Server(options = {}) {
             .sort((a, b) => a.sequence - b.sequence),
         );
       }
+      const agentIntentApprovals = path.match(
+        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/approvals$/,
+      );
+      if (agentIntentApprovals) {
+        const intent = get("agent_intent", agentIntentApprovals[1]),
+          session = auth.sessionFromHeaders(req.headers);
+        if (!local && !session)
+          throw Object.assign(fail(401, "请先登录受邀账号查看Agent批准"), {
+            code: "AUTHENTICATION_REQUIRED",
+          });
+        if (!mayReadAgentIntent(intent, session))
+          throw Object.assign(fail(403, "当前成员不能查看或批准该Agent任务"), {
+            code: "PROJECT_PERMISSION_DENIED",
+          });
+        if (method === "GET")
+          return json(
+            res,
+            200,
+            store
+              .list("agent_intent_approval", PROJECT)
+              .filter((item) => item.intentId === intent.id)
+              .map(publicAgentApproval),
+          );
+        if (method === "POST") {
+          if (intent.status !== "SUCCEEDED" || !intent.route)
+            throw fail(409, "只有已完成理解的Agent任务可以批准步骤");
+          if (intent.approvalMode !== "REQUEST_APPROVAL")
+            throw Object.assign(fail(409, "仅规划模式不能批准或执行专业步骤"), {
+              code: "PLAN_ONLY_EXECUTION_DENIED",
+            });
+          const body = await readBody(req),
+            destinationId = text(body.destinationId, 1, 80),
+            steps = intent.route.steps ?? [
+              {
+                destinationId: intent.route.destinationId,
+                objective: intent.route.summary,
+                risk: intent.route.destination.risk,
+              },
+            ],
+            step = steps.find((item) => item.destinationId === destinationId);
+          if (!step)
+            throw fail(422, "只能批准当前Agent推荐链路中的专业步骤");
+          const objectiveHash = hash(step.objective),
+            existing = store
+              .list("agent_intent_approval", PROJECT)
+              .find(
+                (item) =>
+                  item.intentId === intent.id &&
+                  item.destinationId === destinationId &&
+                  item.objectiveHash === objectiveHash &&
+                  item.status === "APPROVED",
+              );
+          if (existing) return json(res, 200, publicAgentApproval(existing));
+          const key = text(req.headers["idempotency-key"], 1, 100),
+            dedup = store.deduplicate(
+              `${PROJECT}:agent-intent-approval:${intent.id}:${key}`,
+              hash(JSON.stringify({ destinationId, objectiveHash })),
+              () =>
+                store.create("agent_intent_approval", PROJECT, {
+                  intentId: intent.id,
+                  destinationId,
+                  objectiveHash,
+                  risk: step.risk ?? "HIGH",
+                  status: "APPROVED",
+                  submittedBy: session?.user.id ?? "local-engineer",
+                  approvedAt: new Date().toISOString(),
+                  execution: "NO_EXECUTION",
+                  fullLifecycleE2E: false,
+                  publicDeployed: false,
+                }),
+            );
+          if (!dedup.replayed) {
+            const latestTrace = store
+              .list("agent_intent_trace", PROJECT)
+              .filter((item) => item.intentId === intent.id)
+              .sort((a, b) => a.sequence - b.sequence)
+              .at(-1);
+            store.create("agent_intent_trace", PROJECT, {
+              intentId: intent.id,
+              sequence: Number(latestTrace?.sequence ?? 0) + 1,
+              kind: "STEP_APPROVAL",
+              status: "APPROVED",
+              output: { destinationId, objectiveHash, risk: step.risk },
+              execution: "NO_EXECUTION",
+              observedAt: new Date().toISOString(),
+            });
+          }
+          return json(
+            res,
+            dedup.replayed ? 200 : 201,
+            publicAgentApproval(get("agent_intent_approval", dedup.id)),
+          );
+        }
+      }
       const agentIntentHandoff = path.match(
         /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/handoffs$/,
       );
@@ -2320,7 +2415,10 @@ export function createV2Server(options = {}) {
           const specialistTaskId = body.specialistTaskId === undefined
               ? undefined
               : text(body.specialistTaskId, 1, 80),
-            specialistTaskKind = agentSpecialistKinds[destinationId];
+            specialistTaskKind = agentSpecialistKinds[destinationId],
+            approvalId = body.approvalId === undefined
+              ? undefined
+              : text(body.approvalId, 1, 80);
           if (specialistTaskId && !specialistTaskKind)
             throw fail(422, "当前专业能力不支持任务关联");
           if (
@@ -2328,17 +2426,37 @@ export function createV2Server(options = {}) {
             !store.get(specialistTaskKind, specialistTaskId, PROJECT)
           )
             throw fail(409, "专业Agent任务不存在或不属于当前项目");
+          let approval;
+          if (specialistTaskId) {
+            if (intent.approvalMode !== "REQUEST_APPROVAL")
+              throw Object.assign(fail(409, "仅规划模式不能关联已执行的专业任务"), {
+                code: "PLAN_ONLY_EXECUTION_DENIED",
+              });
+            approval = approvalId
+              ? store.get("agent_intent_approval", approvalId, PROJECT)
+              : undefined;
+            if (
+              !approval ||
+              approval.intentId !== intent.id ||
+              approval.destinationId !== destinationId ||
+              approval.objectiveHash !== hash(step.objective) ||
+              approval.status !== "APPROVED"
+            )
+              throw Object.assign(fail(409, "专业Agent任务必须绑定当前步骤的有效批准"), {
+                code: "AGENT_STEP_APPROVAL_REQUIRED",
+              });
+          }
           const key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               `${PROJECT}:agent-intent-handoff:${intent.id}:${key}`,
-              hash(JSON.stringify({ destinationId, objective: step.objective, specialistTaskId })),
+              hash(JSON.stringify({ destinationId, objective: step.objective, specialistTaskId, approvalId })),
               () =>
             store.create("agent_intent_handoff", PROJECT, {
                   intentId: intent.id,
                   destinationId,
                   objective: step.objective,
                   ...(specialistTaskId
-                    ? { specialistTaskId, specialistTaskKind }
+                    ? { specialistTaskId, specialistTaskKind, approvalId }
                     : {}),
                   status: "HANDED_OFF",
                   submittedBy: session?.user.id ?? "local-engineer",
@@ -2350,6 +2468,13 @@ export function createV2Server(options = {}) {
                 }),
             );
           if (!dedup.replayed) {
+            if (approval)
+              store.update("agent_intent_approval", approval.id, PROJECT, {
+                status: "BOUND",
+                specialistTaskId,
+                specialistTaskKind,
+                boundAt: new Date().toISOString(),
+              });
             const latestTrace = store
               .list("agent_intent_trace", PROJECT)
               .filter((item) => item.intentId === intent.id)
