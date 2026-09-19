@@ -28,6 +28,12 @@ jobs:
           cache: pip
           cache-dependency-path: deploy/spark-worker/requirements.txt
 
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Install locked application dependencies
         run: npm ci
 
@@ -51,6 +57,31 @@ jobs:
           test "${#worker_digest}" = 64
           echo "::notice title=Spark Worker inner SHA-256::$worker_digest"
           echo "Spark Worker inner SHA-256: $worker_digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Execute a real Spark 3.5.9 securities smoke test from the package
+        run: |
+          set -euo pipefail
+          worker_root="$(mktemp -d)"
+          worker_log="$(mktemp)"
+          unzip -q v2-spark-worker.zip -d "$worker_root"
+          worker_secret="synthetic-worker-secret-0123456789abcdef"
+          (
+            cd "$worker_root"
+            PYTHONPATH="$worker_root/python" \
+            V2_PYTHON="$(command -v python)" \
+            V2_ARTIFACT_ROOT="$RUNNER_TEMP" \
+            V2_RETAIN_SPARK_ARTIFACTS=false \
+            V2_SPARK_WORKER_SECRET="$worker_secret" \
+            V2_SPARK_WORKER_RUN_TIMEOUT_MS=180000 \
+            HOST=127.0.0.1 \
+            PORT=19090 \
+            node src/v2/remote-spark-worker.mjs >"$worker_log" 2>&1
+          ) &
+          worker_pid=$!
+          trap 'kill "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true; rm -rf "$worker_root"; rm -f "$worker_log"' EXIT
+          V2_SPARK_SMOKE_URL=http://127.0.0.1:19090/v1/execute \
+          V2_SPARK_WORKER_SECRET="$worker_secret" \
+          node scripts/smoke-v2-spark-worker-package.mjs
 
       - name: Upload short-lived package for controlled cloud validation
         uses: actions/upload-artifact@v6
