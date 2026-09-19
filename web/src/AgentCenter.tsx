@@ -60,7 +60,8 @@ type IntentTrace = {
 type Handoff = { id: string; destinationId: string; status: string; objective: string; specialistTaskId?: string; specialistTaskKind?: string };
 type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND" | "REVOKED"; risk: Risk; approvedAt: string; specialistTaskId?: string };
 type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistTaskId?: string; specialistTaskKind?: string; specialistStatus?: string }[] };
-type AgentToolCatalog = { version: string; tools: { id: string; label: string; risk: Risk; approvalRequired: boolean }[] };
+type AgentTool = { id: string; label: string; risk: Risk; approvalRequired: boolean; createMode: string; createPath: string; detailPath: string; applyPath?: string; requiresDestination?: string };
+type AgentToolCatalog = { version: string; tools: AgentTool[] };
 type SpecialistActivity = {
   destinationId: string;
   id: string;
@@ -93,22 +94,8 @@ const riskLabel: Record<Risk, string> = {
   MEDIUM: "变更前审阅",
   HIGH: "人工批准关口",
 };
-const actionConfig: Record<string, { createPath?: string; applyPath?: (id: string) => string }> = {
-  sources: { createPath: "/sync/agent/plans", applyPath: (id) => `/sync/agent/plans/${id}/apply` },
-  sync: { createPath: "/streams/agent/plans", applyPath: (id) => `/streams/agent/plans/${id}/apply` },
-  assets: { createPath: "/assets/agent/tasks" },
-  quality: { createPath: "/quality/agent/plans", applyPath: (id) => `/quality/agent/plans/${id}/apply` },
-  security: { createPath: "/security/agent/plans", applyPath: (id) => `/security/agent/plans/${id}/apply` },
-  services: { createPath: "/data-services/agent/plans", applyPath: (id) => `/data-services/agent/plans/${id}/apply` },
-  reports: { createPath: "/reports/agent/plans", applyPath: (id) => `/reports/agent/plans/${id}/apply` },
-  ops: { createPath: "/operations/agent/diagnoses" },
-};
-const specialistGetPath = (destinationId: string, id: string) =>
-  destinationId === "development"
-    ? `/agent/tasks/${id}`
-    : destinationId === "schedules"
-      ? `/agent/deliveries/${id}`
-      : `${actionConfig[destinationId]?.createPath}/${id}`;
+const fillToolPath = (template: string, id: string) =>
+  template.replace("{id}", encodeURIComponent(id));
 const activityArtifactRows = (activity?: SpecialistActivity) => {
   if (!activity?.result) return [] as { label: string; value: string | string[] }[];
   const source = activity.result,
@@ -170,7 +157,23 @@ export function AgentCenter({
     [childCancelBusy, setChildCancelBusy] = useState(""),
     [error, setError] = useState("");
 
-  const loadTask = async (selected?: IntentTask) => {
+  const toolById = useMemo(
+    () => new Map((toolCatalog?.tools ?? []).map((tool) => [tool.id, tool])),
+    [toolCatalog],
+  );
+  const requireTool = (
+    destinationId: string,
+    catalog = toolCatalog,
+  ) => {
+    const tool = catalog?.tools.find((item) => item.id === destinationId);
+    if (!tool) throw new Error("专业Agent工具目录缺失或版本不匹配");
+    return tool;
+  };
+
+  const loadTask = async (
+    selected?: IntentTask,
+    catalog = toolCatalog,
+  ) => {
     if (!selected) {
       setTask(undefined);
       setTrace([]);
@@ -196,7 +199,10 @@ export function AgentCenter({
       nextGraph.steps
         .filter((item) => item.specialistTaskId)
         .map(async (item) => {
-          const getPath = specialistGetPath(item.destinationId, item.specialistTaskId!);
+          const getPath = fillToolPath(
+            requireTool(item.destinationId, catalog).detailPath,
+            item.specialistTaskId!,
+          );
           try {
             const result = await api<Record<string, unknown>>(getPath);
             restored[item.destinationId] = {
@@ -220,17 +226,25 @@ export function AgentCenter({
     );
     setActivities(restored);
   };
-  const refresh = async (preferredId?: string) => {
+  const refresh = async (
+    preferredId?: string,
+    catalog = toolCatalog,
+  ) => {
     const next = await api<IntentTask[]>("/agent/intents");
     setTasks(next);
     const selected = next.find((item) => item.id === (preferredId ?? task?.id)) ?? next[0];
-    await loadTask(selected);
+    await loadTask(selected, catalog);
   };
   useEffect(() => {
-    api<AgentToolCatalog>("/agent/tools")
-      .then(setToolCatalog)
-      .catch((cause) => setError((cause as Error).message));
-    refresh().catch((cause) => setError((cause as Error).message));
+    void (async () => {
+      try {
+        const catalog = await api<AgentToolCatalog>("/agent/tools");
+        setToolCatalog(catalog);
+        await refresh(undefined, catalog);
+      } catch (cause) {
+        setError((cause as Error).message);
+      }
+    })();
   }, []);
   useEffect(() => {
     if (!pending(task?.status)) return;
@@ -238,7 +252,7 @@ export function AgentCenter({
       refresh(task?.id).catch((cause) => setError((cause as Error).message));
     }, 1200);
     return () => clearInterval(timer);
-  }, [task?.id, task?.status]);
+  }, [task?.id, task?.status, toolCatalog?.version]);
   useEffect(() => {
     const pendingActivities = Object.values(activities).filter((item) => pending(item.status));
     if (!pendingActivities.length) return;
@@ -316,33 +330,40 @@ export function AgentCenter({
           approval,
           ...items.filter((item) => item.id !== approval.id),
         ]);
-      if (step.destinationId === "schedules") {
-        const source = activities.development;
-        if (!source || source.status !== "SUCCEEDED")
-          throw new Error("请先在当前会话完成数据开发步骤，再准备调度与部署文件。");
-      }
+      const tool = requireTool(step.destinationId),
+        requiredActivity = tool.requiresDestination
+          ? activities[tool.requiresDestination]
+          : undefined;
+      if (
+        tool.requiresDestination &&
+        (!requiredActivity || requiredActivity.status !== "SUCCEEDED")
+      )
+        throw new Error("请先完成当前步骤要求的前置专业任务，再继续执行。");
       let created: Record<string, unknown>;
       const pendingLink = activities[step.destinationId]?.linkPending
         ? activities[step.destinationId]
         : undefined;
       if (pendingLink?.result) {
         created = pendingLink.result;
-      } else if (step.destinationId === "development") {
-        created = await api<Record<string, unknown>>("/agent/tasks", {
+      } else if (tool.createMode === "SQL_DEVELOPMENT") {
+        created = await api<Record<string, unknown>>(tool.createPath, {
           message: step.objective,
           contextId,
           sql: currentSql || "SELECT 1",
         });
-      } else if (step.destinationId === "schedules") {
-        const source = activities.development;
-        created = await api<Record<string, unknown>>(`/agent/tasks/${source.id}/prepare-delivery`, {});
+      } else if (tool.createMode === "DELIVERY_FROM_DEVELOPMENT") {
+        const source = activities[tool.requiresDestination!];
+        created = await api<Record<string, unknown>>(
+          tool.createPath.replace("{sourceTaskId}", encodeURIComponent(source.id)),
+          {},
+        );
       } else {
-        const config = actionConfig[step.destinationId];
-        if (!config?.createPath) throw new Error("该能力正在接入独立Agent工具层。");
-        created = await api<Record<string, unknown>>(config.createPath, { message: step.objective });
+        created = await api<Record<string, unknown>>(tool.createPath, {
+          message: step.objective,
+        });
       }
       const id = String(created.id),
-        getPath = specialistGetPath(step.destinationId, id);
+        getPath = fillToolPath(tool.detailPath, id);
       setActivities((all) => ({
         ...all,
         [step.destinationId]: {
@@ -448,7 +469,10 @@ export function AgentCenter({
 
   const applyDraft = async (step: RouteStep) => {
     const activity = activities[step.destinationId],
-      applyPath = actionConfig[step.destinationId]?.applyPath?.(activity.id);
+      applyTemplate = toolById.get(step.destinationId)?.applyPath,
+      applyPath = activity && applyTemplate
+        ? fillToolPath(applyTemplate, activity.id)
+        : undefined;
     if (!activity || !applyPath) return;
     try {
       await api(applyPath, {});
@@ -518,7 +542,7 @@ export function AgentCenter({
               {pending(task.status) ? <div className="agent-os-thinking-v2"><LoaderCircle className="spin" size={15} />正在理解目标、匹配上下文并规划跨域步骤…</div> : route ? <>
                 <p>{route.summary}</p><small>{route.rationale}</small>
                 <div className="agent-os-plan-v2"><header><div><FileCheck2 size={15} /><strong>执行计划</strong></div><span>{completedCount}/{graph?.totalCount ?? steps.length} 已完成 · {graph ? "持久任务图" : "加载中"}</span></header><ol>{steps.map((step, index) => {
-                  const activity = activities[step.destinationId], approval = approvals.find((item) => item.destinationId === step.destinationId), prepared = handoffs.some((item) => item.destinationId === step.destinationId), canApply = activity?.status === "SUCCEEDED" && Boolean(actionConfig[step.destinationId]?.applyPath), artifactRows = activityArtifactRows(activity), complete = succeeded(activity?.status);
+                  const activity = activities[step.destinationId], approval = approvals.find((item) => item.destinationId === step.destinationId), prepared = handoffs.some((item) => item.destinationId === step.destinationId), canApply = activity?.status === "SUCCEEDED" && Boolean(toolById.get(step.destinationId)?.applyPath), artifactRows = activityArtifactRows(activity), complete = succeeded(activity?.status);
                   return <li key={step.destinationId} className={complete ? "complete" : retryable(activity?.status) ? "failed" : ""}><span>{complete ? <Check size={13} /> : String(index + 1).padStart(2, "0")}</span><div><div className="agent-os-step-title-v2"><strong>{step.label}</strong><small>{riskLabel[step.risk]}</small></div><p>{step.objective}</p>
                     {activity && <div className="agent-os-activity-v2"><CircleDot size={12} /><span>{complete ? activity.applied ? "专业草稿已写入" : "专业Agent已完成" : activity.status === "FAILED" ? activity.error : activity.status === "CANCELLED" ? "专业Agent已取消" : activity.status === "INTERRUPTED" ? "服务重启后专业任务已中断" : "专业Agent执行中"}</span>{activity.id !== "preparing" && activity.id !== "failed" && <code>{activity.id.slice(0, 8)}</code>}</div>}
                     {approval && <div className="agent-os-activity-v2"><ShieldCheck size={12} /><span>{approval.status === "BOUND" ? "本次批准已绑定专业任务" : "步骤已批准，等待绑定任务"}</span><code>{approval.id.slice(0, 8)}</code></div>}
