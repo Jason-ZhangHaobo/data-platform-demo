@@ -53,7 +53,14 @@ fi
 test -f "$stage/python/pyspark/jars/spark-sql_2.12-3.5.9.jar"
 test -f "$stage/python/py4j-0.10.9.9.dist-info/METADATA"
 
-(cd "$stage" && zip -qr "$output_path" .)
+# A versioned deployment package must be reproducible: pip and checkout times
+# are irrelevant to its identity. Normalize timestamps, drop ZIP extra fields,
+# and feed files in a stable byte-order so two clean Linux builds hash equally.
+find "$stage" -exec touch -h -t 198001010000 {} +
+(
+  cd "$stage"
+  LC_ALL=C find . -type f -print | LC_ALL=C sort | zip -X -q "$output_path" -@
+)
 archive_bytes="$(wc -c < "$output_path" | tr -d ' ')"
 if [[ "$archive_bytes" -gt 503316480 ]]; then
   echo "Spark Worker package exceeds the 480 MiB safety cap" >&2
