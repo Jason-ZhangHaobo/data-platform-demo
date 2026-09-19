@@ -163,6 +163,8 @@ jobs:
               V2_MYSQL_DATABASE:$mysql_database,
               V2_MYSQL_POOL_SIZE:"2",
               V2_MYSQL_CONNECT_TIMEOUT_MS:"5000",
+              V2_MYSQL_CONNECT_ATTEMPTS:"6",
+              V2_MYSQL_RETRY_DELAY_MS:"2000",
               OSS_BUCKET:$bucket,
               OSS_ENDPOINT:"oss-cn-hangzhou-internal.aliyuncs.com",
               V2_OSS_STATE_OBJECT_KEY:"data-platform-demo/v2/state/project-securities-lab.json",
