@@ -113,8 +113,8 @@ jobs:
           jq -e 'tostring | test("fc|functioncompute"; "i")' "$role_file" >/dev/null
           aliyun ram ListPoliciesForRole --RoleName "$role_name" > "$policies_file"
           ! jq -e 'tostring | test("AdministratorAccess|AliyunRAMFullAccess|AliyunAccountFullAccess|AliyunOSSFullAccess|AliyunRDSFullAccess|AliyunFCFullAccess|AliyunVPCFullAccess|AliyunECSFullAccess"; "i")' "$policies_file" >/dev/null
-          aliyun vpc DescribeVSwitches --RegionId "$ALIBABA_CLOUD_REGION_ID" --VSwitchId "$V2_VSW_ID" > "$vsw_file"
-          jq -e --arg vpc "$V2_VPC_ID" --arg vsw "$V2_VSW_ID" 'any(.VSwitches.VSwitch[]; (.VSwitchId == $vsw and .VpcId == $vpc))' "$vsw_file" >/dev/null
+          aliyun vpc DescribeVSwitchAttributes --RegionId "$ALIBABA_CLOUD_REGION_ID" --VSwitchId "$V2_VSW_ID" > "$vsw_file"
+          jq -e --arg vpc "$V2_VPC_ID" --arg vsw "$V2_VSW_ID" '.VSwitchId == $vsw and .VpcId == $vpc and .Status == "Available"' "$vsw_file" >/dev/null
           aliyun ecs DescribeSecurityGroups --RegionId "$ALIBABA_CLOUD_REGION_ID" --SecurityGroupId "$V2_SECURITY_GROUP_ID" > "$sg_file"
           jq -e --arg vpc "$V2_VPC_ID" --arg sg "$V2_SECURITY_GROUP_ID" 'any(.SecurityGroups.SecurityGroup[]; (.SecurityGroupId == $sg and .VpcId == $vpc))' "$sg_file" >/dev/null
           echo "V2_ACCOUNT_MONTHLY_SPEND_CNY=$spend" >> "$GITHUB_ENV"

@@ -37,7 +37,7 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 `scripts/render-v2-deploy-policy.mjs`根据受保护环境中的账号、地域、函数运行角色、vSwitch和安全组生成策略，不在仓库保存真实标识。生成结果只包含：
 
 - 精确函数运行角色上的`ram:GetRole`、`ram:ListPoliciesForRole`和仅允许交给`fc.aliyuncs.com`的`ram:PassRole`；
-- 精确vSwitch上的`vpc:DescribeVSwitches`和精确安全组上的`ecs:DescribeSecurityGroups`；
+- 精确vSwitch上的`vpc:DescribeVSwitchAttributes`和精确安全组上的`ecs:DescribeSecurityGroups`；列表接口`DescribeVSwitches`只支持`vswitch/*`，不用于本项目的最小权限门；
 - 工作流实际使用的`fc:CreateFunction`、`fc:GetFunction`、`fc:UpdateFunction`、并发和弹性配置读写；不授予`fc:*`；
 - 预算读取仍由已存在的独立`bss:DescribeBillList`策略提供，不混入资源写策略。
 
@@ -51,6 +51,15 @@ V2_VSW_ID=... \
 V2_SECURITY_GROUP_ID=... \
 node scripts/render-v2-deploy-policy.mjs
 ```
+
+获明确授权后，使用同一组非秘密变量加部署角色ARN执行幂等应用器：
+
+```bash
+V2_DEPLOY_ROLE_ARN=... \
+node scripts/apply-v2-deploy-policy.mjs --apply
+```
+
+应用器仅创建并附加固定名称的自定义策略；重复运行会复核默认版本正文和角色附加状态。若同名策略内容不同则返回`POLICY_DOCUMENT_MISMATCH`并停止，不自动覆盖、创建新版本或扩大权限。回滚仅需由管理员将该自定义策略从部署角色解绑；脚本本身不提供删除或解绑动作。FC 3.0文档规定本工作流使用的Create/Get/Update、并发和弹性配置接口只支持`Resource:"*"`，因此以精确动作清单而非`fc:*`限制范围；RAM角色、vSwitch和安全组继续精确到单个资源。
 
 当前最新预置运行`35298563745`已通过配置、CI、构包、OIDC和账单检查，随后被`ram:GetRole`拒绝；函数创建步骤没有执行。必须先用上述完整策略核对现有部署角色差异，经明确批准后一次修正，不能继续按单个报错猜权限并反复运行完整部署。
 
