@@ -21,7 +21,11 @@ test("independent workspace can start every specialist domain without mandatory 
   const workspace = await readFile(
     new URL("../../web/src/AgentCenter.tsx", import.meta.url),
     "utf8",
-  );
+  ),
+    catalog = await readFile(
+      new URL("../../src/v2/agent-router.mjs", import.meta.url),
+      "utf8",
+    );
   for (const path of [
     "/sync/agent/plans",
     "/streams/agent/plans",
@@ -34,7 +38,7 @@ test("independent workspace can start every specialist domain without mandatory 
     "/reports/agent/plans",
     "/operations/agent/diagnoses",
   ])
-    assert.ok(workspace.includes(path), `missing specialist path ${path}`);
+    assert.ok(catalog.includes(path), `missing specialist path ${path}`);
   assert.match(workspace, /批准并执行此步骤/);
   assert.match(workspace, /应用为草稿/);
   assert.match(workspace, /记录接管并打开工作台/);
@@ -57,4 +61,8 @@ test("independent workspace can start every specialist domain without mandatory 
   assert.match(workspace, /retryable/);
   assert.match(workspace, /api<AgentToolCatalog>\("\/agent\/tools"\)/);
   assert.match(workspace, /toolCatalog\?\.version/);
+  assert.match(workspace, /requireTool/);
+  assert.match(workspace, /tool\.createMode === "SQL_DEVELOPMENT"/);
+  assert.match(workspace, /tool\.createPath\.replace\("\{sourceTaskId\}"/);
+  assert.doesNotMatch(workspace, /const actionConfig/);
 });
