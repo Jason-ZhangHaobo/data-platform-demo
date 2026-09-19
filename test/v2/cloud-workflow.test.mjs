@@ -49,6 +49,9 @@ test("V2 provisioning workflow is create-only and budget/network gated", () => {
   assert.match(workflow, /custom\.debian12/);
   assert.match(workflow, /V2_VPC_ID/);
   assert.match(workflow, /V2_SECURITY_GROUP_ID/);
+  assert.match(workflow, /DescribeVSwitchAttributes/);
+  assert.doesNotMatch(workflow, /DescribeVSwitches/);
+  assert.match(workflow, /\.Status == "Available"/);
   assert.match(workflow, /v2-function-verified\.json/);
   assert.match(workflow, /rm -rf \/tmp\/shuduo-v2-runtime-check/);
   assert.doesNotMatch(workflow, /rm -f[^\n]*\/tmp\/shuduo-v2-runtime-check/);

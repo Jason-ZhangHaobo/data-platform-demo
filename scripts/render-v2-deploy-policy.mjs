@@ -39,7 +39,7 @@ export function renderV2DeployPolicy(input = {}) {
         },
         {
           Effect: "Allow",
-          Action: "vpc:DescribeVSwitches",
+          Action: "vpc:DescribeVSwitchAttributes",
           Resource: `acs:vpc:${regionId}:${accountId}:vswitch/${vSwitchId}`,
         },
         {

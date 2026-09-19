@@ -21,6 +21,7 @@ test("deployment policy scopes RAM, vSwitch and security-group access to exact r
   assert.equal(result.policy.Statement[1].Action, "ram:PassRole");
   assert.equal(result.policy.Statement[1].Resource, input.V2_FUNCTION_ROLE_ARN);
   assert.equal(result.policy.Statement[1].Condition.StringEquals["acs:Service"], "fc.aliyuncs.com");
+  assert.equal(result.policy.Statement[2].Action, "vpc:DescribeVSwitchAttributes");
   assert.equal(result.policy.Statement[2].Resource, "acs:vpc:cn-hangzhou:1234567890123456:vswitch/vsw-synthetic123");
   assert.equal(result.policy.Statement[3].Resource, "acs:ecs:cn-hangzhou:1234567890123456:securitygroup/sg-synthetic123");
 });
