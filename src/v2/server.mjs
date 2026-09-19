@@ -2437,6 +2437,83 @@ export function createV2Server(options = {}) {
         });
         return json(res, 200, publicAgentIntent(cancelled));
       }
+      const agentChildCancelRoute = path.match(
+        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/children\/([a-z-]+)\/cancel$/,
+      );
+      if (agentChildCancelRoute && method === "POST") {
+        const intent = get("agent_intent", agentChildCancelRoute[1]),
+          destinationId = agentChildCancelRoute[2],
+          session = auth.sessionFromHeaders(req.headers);
+        if (!local && !session)
+          throw Object.assign(fail(401, "请先登录受邀账号取消专业Agent任务"), {
+            code: "AUTHENTICATION_REQUIRED",
+          });
+        if (!mayReadAgentIntent(intent, session))
+          throw Object.assign(fail(403, "当前成员不能取消该专业Agent任务"), {
+            code: "PROJECT_PERMISSION_DENIED",
+          });
+        await readBody(req);
+        const handoff = store
+          .list("agent_intent_handoff", PROJECT)
+          .filter(
+            (item) =>
+              item.intentId === intent.id &&
+              item.destinationId === destinationId &&
+              item.specialistTaskId &&
+              item.specialistTaskKind,
+          )
+          .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+          .at(-1);
+        if (!handoff)
+          throw Object.assign(fail(404, "当前步骤没有可控制的专业Agent任务"), {
+            code: "AGENT_CHILD_TASK_NOT_FOUND",
+          });
+        const child = get(handoff.specialistTaskKind, handoff.specialistTaskId);
+        if (child.status === "CANCELLED")
+          return json(res, 200, {
+            child: {
+              id: child.id,
+              kind: handoff.specialistTaskKind,
+              status: child.status,
+            },
+            graph: agentIntentGraph(intent),
+          });
+        if (!["QUEUED", "RUNNING"].includes(child.status))
+          throw Object.assign(fail(409, "当前专业Agent任务已结束，不能取消"), {
+            code: "AGENT_CHILD_TASK_NOT_CANCELLABLE",
+          });
+        store.update(handoff.specialistTaskKind, child.id, PROJECT, {
+          status: "CANCELLED",
+          finishedAt: new Date().toISOString(),
+        });
+        controls.get(child.id)?.abort();
+        const latestTrace = store
+          .list("agent_intent_trace", PROJECT)
+          .filter((item) => item.intentId === intent.id)
+          .sort((a, b) => a.sequence - b.sequence)
+          .at(-1);
+        store.create("agent_intent_trace", PROJECT, {
+          intentId: intent.id,
+          sequence: Number(latestTrace?.sequence ?? 0) + 1,
+          kind: "SPECIALIST_CANCELLED",
+          status: "CANCELLED",
+          output: {
+            destinationId,
+            specialistTaskId: child.id,
+            specialistTaskKind: handoff.specialistTaskKind,
+          },
+          execution: "SPECIALIST_TASK_CANCELLED",
+          observedAt: new Date().toISOString(),
+        });
+        return json(res, 200, {
+          child: {
+            id: child.id,
+            kind: handoff.specialistTaskKind,
+            status: "CANCELLED",
+          },
+          graph: agentIntentGraph(intent),
+        });
+      }
       const agentIntentApprovals = path.match(
         /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/approvals$/,
       );

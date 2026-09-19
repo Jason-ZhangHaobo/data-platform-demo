@@ -387,6 +387,126 @@ test("request-approval intent persists and binds an exact step approval before s
       (await parentCancel.json()).code,
       "AGENT_CHILD_TASKS_REQUIRE_SEPARATE_CONTROL",
     );
+    const completedChildCancel = await fetch(
+      base + `/agent/intents/${completed.id}/children/reports/cancel`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "cancel-completed-child",
+        },
+        body: "{}",
+      },
+    );
+    assert.equal(completedChildCancel.status, 409);
+    assert.equal(
+      (await completedChildCancel.json()).code,
+      "AGENT_CHILD_TASK_NOT_CANCELLABLE",
+    );
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    store.close();
+  }
+});
+
+test("parent task graph cancels one running specialist child without cancelling the parent", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-child-cancel-")),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    app = createV2Server({
+      root,
+      store,
+      intentPlanner: async () => ({
+        route: {
+          destinationId: "quality",
+          summary: "设计虚构证券质量规则",
+          rationale: "由质量专业Agent形成规则草稿。",
+          confidence: 0.9,
+        },
+        model: "TEST_ROUTER_MODEL",
+        usage: { total_tokens: 1 },
+      }),
+    });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
+  try {
+    const created = await fetch(base + "/agent/intents", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shuduo-Client": "workbench",
+        "Idempotency-Key": "child-cancel-intent",
+      },
+      body: JSON.stringify({
+        message: "为虚构证券数据设计质量规则",
+        approvalMode: "REQUEST_APPROVAL",
+      }),
+    }).then((response) => response.json());
+    const completed = await waitFor(
+      async () => (await fetch(base + "/agent/intents").then((value) => value.json()))[0],
+      (value) => value.id === created.id && value.status === "SUCCEEDED",
+    );
+    const approval = await fetch(
+      base + `/agent/intents/${completed.id}/approvals`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "child-cancel-approval",
+        },
+        body: JSON.stringify({ destinationId: "quality" }),
+      },
+    ).then((response) => response.json());
+    const child = store.create("quality_agent_plan", PROJECT, {
+      status: "RUNNING",
+      completionScope: "QUALITY_RULE_DESIGN",
+    });
+    const handoff = await fetch(
+      base + `/agent/intents/${completed.id}/handoffs`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "child-cancel-handoff",
+        },
+        body: JSON.stringify({
+          destinationId: "quality",
+          specialistTaskId: child.id,
+          approvalId: approval.id,
+        }),
+      },
+    );
+    assert.equal(handoff.status, 201);
+    const cancelledResponse = await fetch(
+        base + `/agent/intents/${completed.id}/children/quality/cancel`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shuduo-Client": "workbench",
+            "Idempotency-Key": "child-cancel-now",
+          },
+          body: "{}",
+        },
+      ),
+      cancelled = await cancelledResponse.json();
+    assert.equal(cancelledResponse.status, 200);
+    assert.equal(cancelled.child.id, child.id);
+    assert.equal(cancelled.child.status, "CANCELLED");
+    assert.equal(cancelled.graph.status, "SUCCEEDED");
+    assert.equal(cancelled.graph.steps[0].specialistStatus, "CANCELLED");
+    assert.equal(store.get("agent_intent", completed.id, PROJECT).status, "SUCCEEDED");
+    const trace = await fetch(base + `/agent/intents/${completed.id}/trace`).then(
+      (response) => response.json(),
+    );
+    assert.deepEqual(trace.map((item) => item.kind), [
+      "MODEL_ROUTE",
+      "STEP_APPROVAL",
+      "SPECIALIST_HANDOFF",
+      "SPECIALIST_CANCELLED",
+    ]);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     store.close();
