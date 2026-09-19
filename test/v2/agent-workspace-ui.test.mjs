@@ -52,4 +52,7 @@ test("independent workspace can start every specialist domain without mandatory 
   assert.match(workspace, /INTENT_CANCELLED/);
   assert.match(workspace, /取消专业子任务/);
   assert.match(workspace, /SPECIALIST_CANCELLED/);
+  assert.match(workspace, /服务重启后专业任务已中断/);
+  assert.match(workspace, /原始需求未持久化，请新建任务并重新描述目标/);
+  assert.match(workspace, /retryable/);
 });
