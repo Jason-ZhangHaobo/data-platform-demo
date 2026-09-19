@@ -398,6 +398,22 @@ export function AgentCenter({
     }
   };
 
+  const openProfessionalWorkspace = async (step: RouteStep) => {
+    if (!task) return;
+    setError("");
+    try {
+      await api(`/agent/intents/${task.id}/handoffs`, {
+        destinationId: step.destinationId,
+      });
+      setTrace(await api<IntentTrace[]>(`/agent/intents/${task.id}/trace`));
+      setHandoffs(await api<Handoff[]>(`/agent/intents/${task.id}/handoffs`));
+      setGraph(await api<IntentGraph>(`/agent/intents/${task.id}/graph`));
+      onOpenDestination(step.destinationId, step.objective);
+    } catch (cause) {
+      setError((cause as Error).message);
+    }
+  };
+
   const applyDraft = async (step: RouteStep) => {
     const activity = activities[step.destinationId],
       applyPath = actionConfig[step.destinationId]?.applyPath?.(activity.id);
@@ -475,7 +491,7 @@ export function AgentCenter({
                     {activity && <div className="agent-os-activity-v2"><CircleDot size={12} /><span>{complete ? activity.applied ? "专业草稿已写入" : "专业Agent已完成" : activity.status === "FAILED" ? activity.error : "专业Agent执行中"}</span>{activity.id !== "preparing" && activity.id !== "failed" && <code>{activity.id.slice(0, 8)}</code>}</div>}
                     {approval && <div className="agent-os-activity-v2"><ShieldCheck size={12} /><span>{approval.status === "BOUND" ? "本次批准已绑定专业任务" : "步骤已批准，等待绑定任务"}</span><code>{approval.id.slice(0, 8)}</code></div>}
                     {artifactRows.length > 0 && <details className="agent-os-artifact-v2"><summary>查看专业Agent产物</summary><div>{artifactRows.map((row) => <section key={row.label}><span>{row.label}</span>{Array.isArray(row.value) ? <div className="agent-os-artifact-tags-v2">{row.value.map((item) => <code key={item}>{item}</code>)}</div> : <p>{row.value}</p>}</section>)}</div></details>}
-                    <div className="agent-os-step-actions-v2">{task.status !== "CANCELLED" && task.approvalMode !== "PLAN_ONLY" && (!activity || activity.status === "FAILED") && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured}><Wrench size={13} />{activity?.status === "FAILED" ? "重新批准并重试" : "批准并执行此步骤"}</button>}{canApply && !activity.applied && <button onClick={() => applyDraft(step)}><Check size={13} />应用为草稿</button>}{activity?.applied && <span className="agent-os-applied-v2"><Check size={12} />草稿已写入</span>}<button className="secondary" onClick={() => onOpenDestination(step.destinationId, step.objective)}><ExternalLink size={12} />专业工作台</button></div>
+                    <div className="agent-os-step-actions-v2">{task.status !== "CANCELLED" && task.approvalMode !== "PLAN_ONLY" && (!activity || activity.status === "FAILED") && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured}><Wrench size={13} />{activity?.status === "FAILED" ? "重新批准并重试" : "批准并执行此步骤"}</button>}{canApply && !activity.applied && <button onClick={() => applyDraft(step)}><Check size={13} />应用为草稿</button>}{activity?.applied && <span className="agent-os-applied-v2"><Check size={12} />草稿已写入</span>}<button className="secondary" onClick={() => openProfessionalWorkspace(step)}><ExternalLink size={12} />记录接管并打开工作台</button></div>
                     {prepared && !activity && <small className="agent-os-prepared-v2">已准备专业Agent输入，尚未执行工具。</small>}
                   </div></li>;
                 })}</ol></div>

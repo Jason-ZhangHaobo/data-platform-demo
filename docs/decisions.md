@@ -154,6 +154,7 @@
 | D-149 | Agent专业步骤批准资源，2026-09-20 | `REQUEST_APPROVAL`不再只是前端选择：后端持久化意图/模块/目标哈希/风险绑定的`agent_intent_approval`，专业任务交接必须引用有效APPROVED记录，绑定后转BOUND并写`STEP_APPROVAL → SPECIALIST_HANDOFF`轨迹。PLAN_ONLY关联已执行任务返回409；非所有者读取批准返回403。GUI在创建专业任务前批准，绑定失败可复用同一任务重试；CLI/MCP共享批准列表/创建原子API。完整CI 257/257，仍不自动应用草稿、运行、发布或授权 |
 | D-150 | Agent统一任务图，2026-09-20 | 新增只读`/agent/intents/:id/graph`，从现有意图、批准、交接和专业任务记录推导每步状态与完成数，不复制执行状态。图只含目标哈希和证据ID，遵守意图所有权/ADMIN边界；GUI使用该图显示完成度，CLI/MCP共享读取。专业任务存在才标`SPECIALIST_TASK_LINKED`，并固定`agentIndependentE2E=false`、`publicDeployed=false`。完整CI 257/257 |
 | D-151 | Agent父意图停止边界，2026-09-20 | 新增父意图`cancel`原子操作：停止排队/规划或尚未绑定子任务的计划，撤销APPROVED记录并写INTENT_CANCELLED轨迹；即使模型适配器忽略中止信号并迟到返回，也先检查持久状态，不得改回成功或生成路由。已有专业任务时返回`AGENT_CHILD_TASKS_REQUIRE_SEPARATE_CONTROL`，避免假取消。所有者/ADMIN边界及CSRF继续生效，GUI/API/CLI/MCP同源。完整CI 259/259 |
+| D-152 | Agent人工接管审计，2026-09-20 | 独立工作台“记录接管并打开工作台”先写无专业任务ID的NO_EXECUTION handoff，再跳转经典模块；同一意图/目标重复操作返回既有记录且不重复轨迹。接管不需要步骤执行批准，因为它不执行工具或变更资源；后续专业Agent任务仍必须消费批准。完整CI保持259/259 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。
