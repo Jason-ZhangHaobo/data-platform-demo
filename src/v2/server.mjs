@@ -37,11 +37,16 @@ import {
 } from "./delivery.mjs";
 import { verifyDeliveryDirectory } from "./delivery-runner.mjs";
 import {
+  DurableReleaseScheduler,
   LocalReleaseScheduler,
   localScheduleSpec,
   plannedLocalRuns,
   publicRelease,
 } from "./release-scheduler.mjs";
+import {
+  schedulerTickConfigFromEnvironment,
+  verifySchedulerTick,
+} from "./scheduler-tick.mjs";
 import {
   BusinessQueryStore,
   DataServiceManager,
@@ -162,8 +167,14 @@ export function createV2Server(options = {}) {
     new LocalArtifactStore(join(root, ".v2-artifacts", "object-store"));
   const host = env.V2_HOST ?? "127.0.0.1",
     local = env.V2_LOCAL_DEVELOPMENT !== "false",
+    releaseSchedulerMode =
+      options.releaseSchedulerMode ??
+      env.V2_RELEASE_SCHEDULER_MODE ??
+      (local ? "LOCAL_TIMER" : "DISABLED"),
     insecurePublicCookies =
       env.V2_ALLOW_INSECURE_PUBLIC_COOKIES === "true";
+  if (!new Set(["LOCAL_TIMER", "DURABLE_TICK", "DISABLED"]).has(releaseSchedulerMode))
+    throw new Error("发布调度模式不受支持");
   if (local && !["127.0.0.1", "localhost", "::1"].includes(host))
     throw new Error("本地开发会话只能绑定回环地址");
   if (
@@ -231,7 +242,9 @@ export function createV2Server(options = {}) {
     });
   const controls = new Map();
   let queue = Promise.resolve();
-  store.interruptPending(PROJECT);
+  store.interruptPending(PROJECT, {
+    preserveDurableReleaseRuns: releaseSchedulerMode === "DURABLE_TICK",
+  });
   const get = (kind, id) => {
     const item = store.get(kind, id, PROJECT);
     if (!item) throw fail(404, "未找到当前项目的记录");
@@ -276,7 +289,7 @@ export function createV2Server(options = {}) {
   const releaseRunner =
     options.releaseRunner ??
     ((input) => verifyDeliveryDirectory(input, { runtime, runner }));
-  const releaseScheduler = new LocalReleaseScheduler({
+  const schedulerOptions = {
     store,
     project: PROJECT,
     packageFor: (id) => store.get("delivery_package", id, PROJECT),
@@ -284,7 +297,25 @@ export function createV2Server(options = {}) {
     now: options.now,
     setTimer: options.setTimer,
     clearTimer: options.clearTimer,
+    persist: async () => {
+      if (typeof persistence.flush === "function") await persistence.flush();
+    },
+  };
+  const schedulerTickConfig = schedulerTickConfigFromEnvironment({
+    ...env,
+    V2_RELEASE_SCHEDULER_MODE: releaseSchedulerMode,
   });
+  const releaseScheduler =
+    releaseSchedulerMode === "LOCAL_TIMER"
+      ? new LocalReleaseScheduler(schedulerOptions)
+      : new DurableReleaseScheduler({
+          ...schedulerOptions,
+          refresh: async () => {
+            if (typeof persistence.refresh === "function")
+              await persistence.refresh();
+          },
+          leaseMs: schedulerTickConfig?.leaseMs ?? 300_000,
+        });
   releaseScheduler.start();
   const expose = (item) => publicRelease(item, root);
   const ensureDeliveryArtifact = async (item) => {
@@ -530,7 +561,7 @@ export function createV2Server(options = {}) {
       finishedAt: new Date().toISOString(),
     });
   };
-  const readBody = async (req) => {
+  const readJsonBody = async (req) => {
     if (!String(req.headers["content-type"]).startsWith("application/json"))
       throw fail(415, "使用 JSON 提交");
     let body = "";
@@ -546,8 +577,9 @@ export function createV2Server(options = {}) {
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
       throw fail(400, "请求必须是 JSON 对象");
-    return parsed;
+    return { raw: body, parsed };
   };
+  const readBody = async (req) => (await readJsonBody(req)).parsed;
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost"),
@@ -586,6 +618,59 @@ export function createV2Server(options = {}) {
         req.headers["x-project-id"] !== PROJECT
       )
         throw fail(403, "无权访问此项目");
+      const isSchedulerTick =
+        method === "POST" && path === "/api/v2/internal/scheduler/tick";
+      if (isSchedulerTick) {
+        if (releaseSchedulerMode !== "DURABLE_TICK" || !schedulerTickConfig)
+          throw Object.assign(fail(503, "持久调度入口未配置"), {
+            code: "DURABLE_SCHEDULER_NOT_CONFIGURED",
+          });
+        const { raw, parsed } = await readJsonBody(req),
+          timestamp = req.headers["x-shuzhan-timestamp"],
+          nonce = req.headers["x-shuzhan-nonce"],
+          signature = req.headers["x-shuzhan-signature"],
+          nowMs = options.now?.() ?? Date.now();
+        if (
+          !verifySchedulerTick({
+            sharedSecret: schedulerTickConfig.sharedSecret,
+            timestamp,
+            nonce,
+            body: raw,
+            signature,
+            now: nowMs,
+            maxSkewMs: schedulerTickConfig.maxSkewMs,
+          })
+        )
+          throw Object.assign(fail(401, "持久调度签名无效"), {
+            code: "SCHEDULER_TICK_SIGNATURE_INVALID",
+          });
+        const guard = store.list("scheduler_tick_guard", PROJECT)[0],
+          recent = (guard?.recent ?? []).filter(
+            (item) => Number(item.expiresAt) > nowMs,
+          );
+        if (recent.some((item) => item.nonce === nonce))
+          throw Object.assign(fail(409, "持久调度随机数已使用"), {
+            code: "SCHEDULER_TICK_REPLAYED",
+          });
+        const nextGuard = {
+          recent: [
+            ...recent,
+            { nonce, expiresAt: nowMs + schedulerTickConfig.maxSkewMs },
+          ].slice(-100),
+        };
+        if (guard)
+          store.update("scheduler_tick_guard", guard.id, PROJECT, nextGuard);
+        else store.create("scheduler_tick_guard", PROJECT, nextGuard);
+        if (typeof persistence.flush === "function") await persistence.flush();
+        const keys = Object.keys(parsed);
+        if (keys.some((key) => key !== "limit"))
+          throw fail(400, "持久调度请求字段不受支持");
+        return json(
+          res,
+          200,
+          await releaseScheduler.tick({ limit: parsed.limit ?? 1 }),
+        );
+      }
       if (method !== "GET") {
         if (
           !["workbench", "cli", "mcp"].includes(
@@ -811,6 +896,11 @@ export function createV2Server(options = {}) {
           },
           artifacts: artifactStore.status(),
           budget: budget.overview(),
+          scheduler: {
+            mode: releaseSchedulerMode,
+            durableTickConfigured: Boolean(schedulerTickConfig),
+            publicDeployed: false,
+          },
         });
       }
       if (path === "/api/v2/budget" && method === "GET")

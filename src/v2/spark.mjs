@@ -14,6 +14,7 @@ export function runtimeConfig(env = process.env, root = process.cwd()) {
   return {
     javaHome,
     python,
+    pythonPath: env.PYTHONPATH,
     root,
     artifactRoot: env.V2_ARTIFACT_ROOT ?? root,
     retainArtifacts: env.V2_RETAIN_SPARK_ARTIFACTS !== "false",
@@ -64,6 +65,7 @@ export function runSpark(
           SPARK_LOCAL_DIRS: directory,
           SPARK_LOCAL_IP: "127.0.0.1",
           PYSPARK_PYTHON: config.python,
+          ...(config.pythonPath ? { PYTHONPATH: config.pythonPath } : {}),
           OPENBLAS_NUM_THREADS: "1",
         },
         stdio: ["ignore", "pipe", "pipe"],

@@ -7,6 +7,15 @@ const terminal = new Set([
   "INTERRUPTED",
 ]);
 const MAX_TIMER_DELAY = 2_147_000_000;
+const durableProfile = (leaseMs) => ({
+  mode: "CLOUD_DURABLE_SCHEDULE",
+  clockMode: "EXTERNAL_DURABLE_TICK",
+  publicDeployed: false,
+  allowedReleaseStatuses: ["ACTIVE_CLOUD"],
+  leaseMs,
+  notice:
+    "由外部持久调度tick领取并执行；云资源和公网验收完成前不标记为公网发布。",
+});
 
 export function localScheduleSpec(input = {}) {
   const integer = (name, fallback, min, max) => {
@@ -89,6 +98,8 @@ export class LocalReleaseScheduler {
     now = () => Date.now(),
     setTimer = setTimeout,
     clearTimer = clearTimeout,
+    persist = async () => undefined,
+    resolveDirectory = async ({ release }) => release.artifactDirectory,
   }) {
     this.store = store;
     this.project = project;
@@ -97,6 +108,8 @@ export class LocalReleaseScheduler {
     this.now = now;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
+    this.persist = persist;
+    this.resolveDirectory = resolveDirectory;
     this.timers = new Map();
     this.controllers = new Map();
     this.queue = Promise.resolve();
@@ -119,7 +132,7 @@ export class LocalReleaseScheduler {
         return;
       }
       this.queue = this.queue
-        .then(() => this.#run(run.id))
+        .then(() => this.executeRun(run.id))
         .catch((error) => {
           if (!this.closed) console.error("本机发布调度失败：" + error.message);
         });
@@ -147,6 +160,11 @@ export class LocalReleaseScheduler {
     await this.queue;
   }
 
+  enqueue(runId, profile) {
+    this.queue = this.queue.then(() => this.executeRun(runId, profile));
+    return this.queue;
+  }
+
   shutdown() {
     this.closed = true;
     for (const timer of this.timers.values()) this.clearTimer(timer);
@@ -155,22 +173,24 @@ export class LocalReleaseScheduler {
     this.controllers.clear();
   }
 
-  async #run(id) {
+  async executeRun(id, profile = {}) {
     if (this.closed) return;
     const run = this.store.get("release_run", id, this.project);
     if (!run || run.status !== "SCHEDULED") return;
     const release = this.store.get("release", run.releaseId, this.project);
-    if (!release || release.status !== "ACTIVE_LOCAL") {
+    const allowedReleaseStatuses = profile.allowedReleaseStatuses ?? ["ACTIVE_LOCAL"];
+    if (!release || !allowedReleaseStatuses.includes(release.status)) {
       this.store.update("release_run", id, this.project, {
         status: "CANCELLED",
         error: "发布版本已不再生效",
         finishedAt: new Date(this.now()).toISOString(),
       });
+      await this.persist();
       return;
     }
     const packageItem = this.packageFor(run.packageId);
     if (!packageItem || packageItem.digest !== run.packageDigest) {
-      await this.#finishFailure(run, release, "发布包记录或摘要不一致");
+      await this.#finishFailure(run, release, "发布包记录或摘要不一致", profile);
       return;
     }
     const controller = new AbortController();
@@ -181,10 +201,25 @@ export class LocalReleaseScheduler {
       triggeredAt,
       startedAt: triggeredAt,
       schedulerTriggered: true,
+      mode: profile.mode ?? "LOCAL_SCHEDULED_RELEASE",
+      clockMode: profile.clockMode ?? "WALL_CLOCK_TIMER",
+      ...(profile.leaseMs
+        ? { leaseExpiresAt: new Date(this.now() + profile.leaseMs).toISOString() }
+        : {}),
     });
+    // A durable scheduler must persist the claim before any side effect. If the
+    // process dies afterwards, a later tick can recover the expired lease.
+    let claimPersisted = false;
     try {
+      await this.persist();
+      claimPersisted = true;
+      const directory = await this.resolveDirectory({
+        run,
+        release,
+        packageItem,
+      });
       const result = await this.runPackage({
-        directory: release.artifactDirectory,
+        directory,
         expectedDigest: run.packageDigest,
         scheduledFor: run.businessScheduledFor,
         signal: controller.signal,
@@ -194,37 +229,45 @@ export class LocalReleaseScheduler {
       const finished = this.store.update("release_run", id, this.project, {
         ...result,
         status: result.status,
-        mode: "LOCAL_SCHEDULED_RELEASE",
-        clockMode: "WALL_CLOCK_TIMER",
+        mode: profile.mode ?? "LOCAL_SCHEDULED_RELEASE",
+        clockMode: profile.clockMode ?? "WALL_CLOCK_TIMER",
         schedulerTriggered: true,
         published: true,
-        publicDeployed: false,
+        publicDeployed: profile.publicDeployed === true,
         fullLifecycleE2E: false,
+        leaseExpiresAt: null,
         finishedAt: new Date(this.now()).toISOString(),
         notice:
+          profile.notice ??
           "由本机墙上时钟调度器触发并执行；属于本机测试发布，不是公网或生产部署。",
       });
       await this.#recordMonitoring(finished, release);
+      await this.persist();
+      return finished;
     } catch (error) {
-      await this.#finishFailure(run, release, error.message);
+      if (!claimPersisted) throw error;
+      return this.#finishFailure(run, release, error.message, profile);
     } finally {
       this.controllers.delete(run.id);
     }
   }
 
-  async #finishFailure(run, release, message) {
+  async #finishFailure(run, release, message, profile = {}) {
     const failed = this.store.update("release_run", run.id, this.project, {
       status: "FAILED",
       error: String(message).slice(0, 3000),
-      mode: "LOCAL_SCHEDULED_RELEASE",
-      clockMode: "WALL_CLOCK_TIMER",
+      mode: profile.mode ?? "LOCAL_SCHEDULED_RELEASE",
+      clockMode: profile.clockMode ?? "WALL_CLOCK_TIMER",
       schedulerTriggered: true,
       published: true,
-      publicDeployed: false,
+      publicDeployed: profile.publicDeployed === true,
       fullLifecycleE2E: false,
+      leaseExpiresAt: null,
       finishedAt: new Date(this.now()).toISOString(),
     });
     await this.#recordMonitoring(failed, release);
+    await this.persist();
+    return failed;
   }
 
   async #recordMonitoring(run, release) {
@@ -291,5 +334,88 @@ export class LocalReleaseScheduler {
       openAlertCount,
       lastObservedAt: new Date(this.now()).toISOString(),
     });
+  }
+}
+
+export class DurableReleaseScheduler extends LocalReleaseScheduler {
+  constructor({ refresh = async () => undefined, leaseMs = 300_000, ...options }) {
+    if (!Number.isSafeInteger(leaseMs) || leaseMs < 30_000 || leaseMs > 900_000)
+      throw new Error("持久调度租约必须是30000—900000毫秒的整数");
+    super(options);
+    this.refresh = refresh;
+    this.leaseMs = leaseMs;
+    this.tickPromise = undefined;
+  }
+
+  // Durable runs are woken by an external cloud tick, never an in-process timer.
+  start() {}
+
+  schedule() {}
+
+  tick({ limit = 1 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10)
+      return Promise.reject(fail(400, "单次持久调度领取上限必须是1—10"));
+    if (this.closed) return Promise.reject(fail(503, "持久调度器已关闭"));
+    if (this.tickPromise) return this.tickPromise;
+    this.tickPromise = this.#tick(limit).finally(() => {
+      this.tickPromise = undefined;
+    });
+    return this.tickPromise;
+  }
+
+  async #tick(limit) {
+    await this.refresh();
+    const nowMs = this.now(),
+      nowIso = new Date(nowMs).toISOString();
+    let recovered = 0;
+    for (const run of this.store.list("release_run", this.project)) {
+      if (
+        run.status === "RUNNING" &&
+        run.mode === "CLOUD_DURABLE_SCHEDULE" &&
+        Number.isFinite(Date.parse(run.leaseExpiresAt)) &&
+        Date.parse(run.leaseExpiresAt) <= nowMs
+      ) {
+        recovered++;
+        this.store.update("release_run", run.id, this.project, {
+          status: "SCHEDULED",
+          schedulerTriggered: false,
+          leaseExpiresAt: null,
+          recoveredAt: nowIso,
+          recoveryCount: Number(run.recoveryCount ?? 0) + 1,
+        });
+      }
+    }
+    if (recovered) await this.persist();
+    const due = this.store
+      .list("release_run", this.project)
+      .filter(
+        (run) => {
+          const release = this.store.get("release", run.releaseId, this.project);
+          return (
+            run.status === "SCHEDULED" &&
+            release?.status === "ACTIVE_CLOUD" &&
+            Number.isFinite(Date.parse(run.scheduledTriggerAt)) &&
+            Date.parse(run.scheduledTriggerAt) <= nowMs
+          );
+        },
+      )
+      .sort(
+        (left, right) =>
+          Date.parse(left.scheduledTriggerAt) - Date.parse(right.scheduledTriggerAt) ||
+          left.id.localeCompare(right.id),
+      );
+    const executed = [];
+    for (const run of due.slice(0, limit)) {
+      const result = await this.enqueue(run.id, durableProfile(this.leaseMs));
+      if (result) executed.push({ id: result.id, status: result.status });
+    }
+    return {
+      mode: "CLOUD_DURABLE_SCHEDULE",
+      tickedAt: nowIso,
+      recovered,
+      due: due.length,
+      executed,
+      remaining: Math.max(0, due.length - executed.length),
+    };
   }
 }

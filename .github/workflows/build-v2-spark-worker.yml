@@ -13,19 +13,26 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Set up Python 3.10
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.10"
           cache: pip
           cache-dependency-path: deploy/spark-worker/requirements.txt
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
 
       - name: Install locked application dependencies
         run: npm ci
@@ -41,11 +48,50 @@ jobs:
           unzip -tq v2-spark-worker.zip
           unzip -l v2-spark-worker.zip | grep -q 'src/v2/remote-spark-worker.mjs'
           unzip -l v2-spark-worker.zip | grep -q 'python/pyspark/jars/spark-sql_2.12-3.5.9.jar'
+          unzip -l v2-spark-worker.zip | grep -q 'python/sqlglot-27.14.0.dist-info/METADATA'
           ! unzip -l v2-spark-worker.zip | grep -E '(^|/)(\.env|\.env\.local|[^/]+\.(pem|key))$'
           test "$(wc -c < v2-spark-worker.zip)" -le 503316480
 
+      - name: Record the inner package digest
+        run: |
+          worker_digest="$(sha256sum v2-spark-worker.zip | cut -d' ' -f1)"
+          test "${#worker_digest}" = 64
+          echo "::notice title=Spark Worker inner SHA-256::$worker_digest"
+          echo "Spark Worker inner SHA-256: $worker_digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Execute a real Spark 3.5.9 securities smoke test from the package
+        run: |
+          set -euo pipefail
+          worker_root="$(mktemp -d)"
+          worker_log="$(mktemp)"
+          unzip -q v2-spark-worker.zip -d "$worker_root"
+          worker_secret="synthetic-worker-secret-0123456789abcdef"
+          (
+            cd "$worker_root"
+            PYTHONPATH="$worker_root/python" \
+            V2_PYTHON="$(command -v python)" \
+            V2_ARTIFACT_ROOT="$RUNNER_TEMP" \
+            V2_RETAIN_SPARK_ARTIFACTS=false \
+            V2_SPARK_WORKER_DIAGNOSTICS=true \
+            V2_SPARK_WORKER_SECRET="$worker_secret" \
+            V2_SPARK_WORKER_RUN_TIMEOUT_MS=180000 \
+            HOST=127.0.0.1 \
+            PORT=19090 \
+            node src/v2/remote-spark-worker.mjs >"$worker_log" 2>&1
+          ) &
+          worker_pid=$!
+          trap 'kill "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true; rm -rf "$worker_root"; rm -f "$worker_log"' EXIT
+          if ! V2_SPARK_SMOKE_URL=http://127.0.0.1:19090/v1/execute \
+            V2_SPARK_WORKER_SECRET="$worker_secret" \
+            node scripts/smoke-v2-spark-worker-package.mjs; then
+            echo '::group::Synthetic Spark Worker diagnostics'
+            tail -n 80 "$worker_log"
+            echo '::endgroup::'
+            exit 1
+          fi
+
       - name: Upload short-lived package for controlled cloud validation
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: shuzhan-v2-spark-worker-${{ github.sha }}
           path: v2-spark-worker.zip

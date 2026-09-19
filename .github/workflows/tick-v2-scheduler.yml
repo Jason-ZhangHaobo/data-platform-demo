@@ -1,0 +1,41 @@
+name: Tick V2 durable scheduler
+
+on:
+  schedule:
+    # 01:00 UTC = 09:00 Asia/Shanghai; the benchmark schedule is weekdays T+1.
+    - cron: "0 1 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-durable-scheduler-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    name: Claim due V2 release runs
+    if: vars.V2_SCHEDULER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: v2-staging
+    env:
+      V2_PUBLIC_URL: ${{ vars.V2_PUBLIC_URL }}
+      V2_SCHEDULER_TICK_SECRET: ${{ secrets.V2_SCHEDULER_TICK_SECRET }}
+      JASONSECRETS: ${{ secrets.JASONSECRETS }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Expand optional JASONSECRETS bundle
+        run: node scripts/export-v2-staging-secret-bundle.mjs
+
+      - name: Invoke one signed durable scheduler tick
+        run: node scripts/tick-v2-scheduler.mjs

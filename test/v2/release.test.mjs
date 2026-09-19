@@ -16,6 +16,7 @@ import {
   validationContractId,
 } from "../../src/v2/context.mjs";
 import {
+  DurableReleaseScheduler,
   localScheduleSpec,
   plannedLocalRuns,
 } from "../../src/v2/release-scheduler.mjs";
@@ -162,6 +163,176 @@ test("local schedule configuration is bounded and creates wall-clock plans", () 
   assert.equal(runs[0].scheduledTriggerAt, "2026-09-14T00:00:02.000Z");
   assert.equal(runs[1].scheduledTriggerAt, "2026-09-14T00:00:05.000Z");
   assert.ok(runs.every((run) => run.schedulerTriggered === false));
+});
+
+test("durable scheduler persists a lease before executing one due cloud run", async () => {
+  const store = new MetadataStore(":memory:"),
+    nowMs = Date.parse("2026-09-19T01:00:00.000Z"),
+    item = store.create("delivery_package", PROJECT, {
+      digest: "a".repeat(64),
+    }),
+    release = store.create("release", PROJECT, {
+      status: "ACTIVE_CLOUD",
+      packageId: item.id,
+      packageDigest: item.digest,
+    }),
+    run = store.create("release_run", PROJECT, {
+      releaseId: release.id,
+      packageId: item.id,
+      packageDigest: item.digest,
+      status: "SCHEDULED",
+      scheduledTriggerAt: "2026-09-19T00:59:00.000Z",
+      businessScheduledFor: "2026-09-19T09:00:00+08:00",
+      schedulerTriggered: false,
+    });
+  const persisted = [];
+  let calls = 0,
+    refreshes = 0;
+  const scheduler = new DurableReleaseScheduler({
+    store,
+    project: PROJECT,
+    packageFor: (id) => store.get("delivery_package", id, PROJECT),
+    resolveDirectory: async () => "/synthetic/durable-release",
+    runPackage: async (input) => {
+      calls++;
+      assert.equal(input.directory, "/synthetic/durable-release");
+      assert.equal(store.get("release_run", run.id, PROJECT).status, "RUNNING");
+      assert.equal(persisted.at(-1), "RUNNING");
+      return success(input);
+    },
+    now: () => nowMs,
+    setTimer: () => {
+      throw new Error("durable scheduler must not create in-process timers");
+    },
+    persist: async () => {
+      persisted.push(store.get("release_run", run.id, PROJECT).status);
+    },
+    refresh: async () => {
+      refreshes++;
+    },
+  });
+  try {
+    scheduler.start();
+    scheduler.schedule(run);
+    const result = await scheduler.tick();
+    assert.equal(refreshes, 1);
+    assert.equal(calls, 1);
+    assert.equal(result.due, 1);
+    assert.deepEqual(result.executed, [{ id: run.id, status: "SUCCEEDED" }]);
+    assert.deepEqual(persisted, ["RUNNING", "SUCCEEDED"]);
+    const finished = store.get("release_run", run.id, PROJECT);
+    assert.equal(finished.mode, "CLOUD_DURABLE_SCHEDULE");
+    assert.equal(finished.clockMode, "EXTERNAL_DURABLE_TICK");
+    assert.equal(finished.leaseExpiresAt, null);
+    assert.equal(finished.publicDeployed, false);
+    assert.equal((await scheduler.tick()).executed.length, 0);
+  } finally {
+    scheduler.shutdown();
+    store.close();
+  }
+});
+
+test("durable scheduler recovers an expired lease but ignores local releases", async () => {
+  const store = new MetadataStore(":memory:"),
+    nowMs = Date.parse("2026-09-19T02:00:00.000Z"),
+    item = store.create("delivery_package", PROJECT, {
+      digest: "b".repeat(64),
+    }),
+    cloudRelease = store.create("release", PROJECT, {
+      status: "ACTIVE_CLOUD",
+      packageId: item.id,
+      packageDigest: item.digest,
+    }),
+    localRelease = store.create("release", PROJECT, {
+      status: "ACTIVE_LOCAL",
+      packageId: item.id,
+      packageDigest: item.digest,
+    }),
+    expired = store.create("release_run", PROJECT, {
+      releaseId: cloudRelease.id,
+      packageId: item.id,
+      packageDigest: item.digest,
+      status: "RUNNING",
+      mode: "CLOUD_DURABLE_SCHEDULE",
+      leaseExpiresAt: "2026-09-19T01:55:00.000Z",
+      scheduledTriggerAt: "2026-09-19T01:50:00.000Z",
+      businessScheduledFor: "2026-09-19T09:00:00+08:00",
+    }),
+    localRun = store.create("release_run", PROJECT, {
+      releaseId: localRelease.id,
+      packageId: item.id,
+      packageDigest: item.digest,
+      status: "SCHEDULED",
+      scheduledTriggerAt: "2026-09-19T01:50:00.000Z",
+      businessScheduledFor: "2026-09-19T09:00:00+08:00",
+    });
+  let calls = 0;
+  const scheduler = new DurableReleaseScheduler({
+    store,
+    project: PROJECT,
+    packageFor: (id) => store.get("delivery_package", id, PROJECT),
+    runPackage: async (input) => {
+      calls++;
+      return success(input);
+    },
+    now: () => nowMs,
+  });
+  try {
+    const result = await scheduler.tick();
+    assert.equal(result.recovered, 1);
+    assert.equal(result.due, 1);
+    assert.equal(calls, 1);
+    assert.equal(store.get("release_run", expired.id, PROJECT).status, "SUCCEEDED");
+    assert.equal(store.get("release_run", expired.id, PROJECT).recoveryCount, 1);
+    assert.equal(store.get("release_run", localRun.id, PROJECT).status, "SCHEDULED");
+  } finally {
+    scheduler.shutdown();
+    store.close();
+  }
+});
+
+test("durable scheduler never calls the runner when the lease cannot be persisted", async () => {
+  const store = new MetadataStore(":memory:"),
+    nowMs = Date.parse("2026-09-19T04:00:00.000Z"),
+    item = store.create("delivery_package", PROJECT, {
+      digest: "d".repeat(64),
+    }),
+    release = store.create("release", PROJECT, {
+      status: "ACTIVE_CLOUD",
+      packageId: item.id,
+      packageDigest: item.digest,
+    }),
+    run = store.create("release_run", PROJECT, {
+      releaseId: release.id,
+      packageId: item.id,
+      packageDigest: item.digest,
+      status: "SCHEDULED",
+      scheduledTriggerAt: "2026-09-19T03:59:00.000Z",
+      businessScheduledFor: "2026-09-19T09:00:00+08:00",
+    });
+  let calls = 0;
+  const scheduler = new DurableReleaseScheduler({
+    store,
+    project: PROJECT,
+    packageFor: (id) => store.get("delivery_package", id, PROJECT),
+    runPackage: async () => {
+      calls++;
+      return success({ scheduledFor: run.businessScheduledFor });
+    },
+    now: () => nowMs,
+    persist: async () => {
+      throw new Error("synthetic metadata outage");
+    },
+  });
+  try {
+    await assert.rejects(() => scheduler.tick(), /synthetic metadata outage/);
+    assert.equal(calls, 0);
+    assert.equal(scheduler.controllers.size, 0);
+    assert.equal(store.get("release_run", run.id, PROJECT).status, "RUNNING");
+  } finally {
+    scheduler.shutdown();
+    store.close();
+  }
 });
 
 test("approval binds a successful rehearsal and two actual timer batches establish health", async () => {
