@@ -100,6 +100,7 @@ export class MetadataStore {
       "report_agent_plan",
       "ops_agent_diagnosis",
       "agent_intent",
+      "agent_tool_invocation",
       "offline_sync_run",
       "stream_run",
       "release",
@@ -107,7 +108,9 @@ export class MetadataStore {
     ])
       for (const item of this.list(kind, project))
         if (
-          ["QUEUED", "RUNNING", "DEPLOYING"].includes(item.status) &&
+          (["QUEUED", "RUNNING", "DEPLOYING"].includes(item.status) ||
+            (kind === "agent_tool_invocation" &&
+              ["CLAIMED", "TASK_CREATED"].includes(item.status))) &&
           !(kind === "release_run" && item.status === "SCHEDULED") &&
           !(
             preserveDurableReleaseRuns &&

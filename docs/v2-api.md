@@ -38,9 +38,9 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /agent/intents | 受邀用户的跨模块Agent意图记录 | 路由、风险、摘要和模型用量；公网匿名拒绝读取 |
 | POST /agent/intents | message + 幂等键 | 202；模型仅从白名单模块推荐下一步，固定NO_EXECUTION，不创建下游任务 |
 | GET/POST /agent/intents/:id/approvals | 读取批准或destinationId + 幂等键 | REQUEST_APPROVAL持久化目标摘要哈希与风险；PLAN_ONLY拒绝。批准不执行工具，批准者内部标识不返回 |
-| GET /agent/intents/:id/graph | 无 | 从意图、批准、交接和专业任务只读投影统一步骤图、证据与完成数；不返回原始需求/业务行，不升级Agent自主E2E或公网状态 |
+| GET /agent/intents/:id/graph | 无 | 从意图、批准、工具调用租约、交接和专业任务只读投影统一步骤图、恢复状态、尝试号、证据与完成数；未绑定成功不计完成，不返回原始需求/业务行或升级Agent自主E2E/公网状态 |
 | POST /agent/intents/:id/cancel | 空对象 | 停止未绑定子任务的父意图并撤销未消费批准；已有专业子任务时409，须分别控制子任务 |
-| POST /agent/intents/:id/children/:destination/cancel | 空对象 | 从已绑定handoff解析并取消QUEUED/RUNNING专业任务；父意图不取消，完成态409，重复取消幂等 |
+| POST /agent/intents/:id/children/:destination/cancel | 空对象 | 从最新handoff或未绑定工具调用租约解析并取消QUEUED/RUNNING专业任务；父意图不取消，完成态409，重复取消幂等 |
 | GET/POST /agent/intents/:id/handoffs | 只读交接或destinationId/专业任务/approvalId + 幂等键 | 已执行专业任务必须绑定同一步骤有效批准，绑定后批准转BOUND；无任务ID的草稿交接仍为NO_EXECUTION |
 | GET /agent/tasks/:id/journey | 只读指定委托 | 七阶段现有版本/运行/交付/审批/计时批次/监控证据与责任归属；固定非Agent自主E2E、非公网，不返回业务行或原始报错 |
 | POST /agent/tasks/:id/prepare-delivery | 空对象 + 幂等键 | 仅对真实模型+Spark独立断言成功任务返回后台交付准备编号；生成不可变调度/部署包并真实文件演练，不审批或发布 |
