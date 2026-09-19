@@ -494,6 +494,78 @@ test("cancelling an unbound Agent intent revokes approvals and blocks later exec
   }
 });
 
+test("late model completion cannot overwrite a cancelled running Agent intent", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-cancel-race-")),
+    store = new MetadataStore(join(root, "platform.sqlite"));
+  let releasePlanner;
+  const plannerGate = new Promise((resolve) => {
+      releasePlanner = resolve;
+    }),
+    app = createV2Server({
+      root,
+      store,
+      intentPlanner: async () => {
+        await plannerGate;
+        return {
+          route: {
+            destinationId: "assets",
+            summary: "解释虚构证券资产",
+            rationale: "任务属于资产理解。",
+            confidence: 0.9,
+          },
+          model: "LATE_TEST_MODEL",
+          usage: { total_tokens: 1 },
+        };
+      },
+    });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
+  try {
+    const created = await fetch(base + "/agent/intents", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shuduo-Client": "workbench",
+        "Idempotency-Key": "cancel-race-create",
+      },
+      body: JSON.stringify({
+        message: "解释虚构证券资产口径",
+        approvalMode: "REQUEST_APPROVAL",
+      }),
+    }).then((response) => response.json());
+    await waitFor(
+      async () => (await fetch(base + "/agent/intents").then((value) => value.json()))[0],
+      (value) => value.id === created.id && value.status === "RUNNING",
+    );
+    const cancelled = await fetch(base + `/agent/intents/${created.id}/cancel`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shuduo-Client": "workbench",
+        "Idempotency-Key": "cancel-race-now",
+      },
+      body: "{}",
+    }).then((response) => response.json());
+    assert.equal(cancelled.status, "CANCELLED");
+    releasePlanner();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const final = store.get("agent_intent", created.id, PROJECT);
+    assert.equal(final.status, "CANCELLED");
+    assert.equal(final.route, undefined);
+    assert.deepEqual(
+      store
+        .list("agent_intent_trace", PROJECT)
+        .filter((item) => item.intentId === created.id)
+        .map((item) => item.kind),
+      ["INTENT_CANCELLED"],
+    );
+  } finally {
+    releasePlanner?.();
+    await new Promise((resolve) => app.server.close(resolve));
+    store.close();
+  }
+});
+
 test("public anonymous callers cannot read cross-module intent history", async () => {
   const root = mkdtempSync(join(tmpdir(), "shuduo-agent-router-public-")),
     store = new MetadataStore(join(root, "platform.sqlite")),
