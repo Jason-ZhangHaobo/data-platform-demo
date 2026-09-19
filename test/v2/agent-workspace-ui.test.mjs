@@ -47,6 +47,7 @@ test("independent workspace can start every specialist domain without mandatory 
   assert.match(workspace, /linkPending/);
   assert.match(workspace, /\/agent\/intents\/\$\{selected\.id\}\/graph/);
   assert.match(workspace, /持久任务图/);
+  assert.match(workspace, /nextGraph\.steps/);
   assert.match(workspace, /停止后续编排/);
   assert.match(workspace, /INTENT_CANCELLED/);
   assert.match(workspace, /取消专业子任务/);
