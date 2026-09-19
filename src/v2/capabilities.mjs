@@ -3,12 +3,13 @@ export const capabilities = [
     id: "agent-center",
     group: "智能协同",
     name: "Data Agent",
-    description: "理解跨模块需求，推荐受治理的下一步",
+    description: "独立对话工作台，跨域规划、调用工具并沉淀证据",
     stage: "M1—M4",
     features: [
-      "受支持模块白名单路由",
+      "独立全页面会话与任务历史",
+      "跨域多步计划与专业Agent编排",
       "不传递业务行、凭证或内部地址",
-      "只推荐下一步，不自动执行高风险动作",
+      "读操作、草稿、审批与执行分级治理",
     ],
   },
   {

@@ -344,7 +344,7 @@ function App() {
   const [nav, setNav] = useState(
       () =>
         new URLSearchParams(window.location.search).get("module") ??
-        "development",
+        "agent-center",
     ),
     [sql, setSql] = useState(""),
     [original, setOriginal] = useState(""),
@@ -750,6 +750,8 @@ function App() {
             api={api}
             canWrite={canWrite}
             modelConfigured={Boolean(status?.model.configured)}
+            contextId={contextId}
+            currentSql={sql}
             onOpenDestination={(destination, handoffMessage) => {
               if (handoffMessage) setAgentHandoff({ destination, message: handoffMessage });
               setNav(destination);

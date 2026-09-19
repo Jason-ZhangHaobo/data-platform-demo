@@ -7,6 +7,7 @@ import { MetadataStore } from "../../src/v2/store.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import {
   publicAgentIntentDestinations,
+  validateAgentApprovalMode,
   validateAgentIntentMessage,
   validateAgentIntentRoute,
 } from "../../src/v2/agent-router.mjs";
@@ -79,6 +80,16 @@ test("Agent intent input rejects secrets and only returns a safe task envelope",
   );
 });
 
+test("independent Agent workspace supports explicit approval modes", () => {
+  assert.equal(validateAgentApprovalMode(), "REQUEST_APPROVAL");
+  assert.equal(validateAgentApprovalMode("PLAN_ONLY"), "PLAN_ONLY");
+  assert.equal(
+    validateAgentApprovalMode("REQUEST_APPROVAL"),
+    "REQUEST_APPROVAL",
+  );
+  assert.throws(() => validateAgentApprovalMode("YOLO"), { status: 422 });
+});
+
 test("cross-module intent can recommend a bounded sequence without auto-execution", () => {
   const route = validateAgentIntentRoute({
     destinationId: "assets",
@@ -92,6 +103,24 @@ test("cross-module intent can recommend a bounded sequence without auto-executio
   });
   assert.deepEqual(route.steps.map((step) => step.destinationId), ["assets", "reports"]);
   assert.equal(route.requiresHumanReview, false);
+  const completeJourney = validateAgentIntentRoute({
+    destinationId: "sources",
+    summary: "完成证券数据接入、开发、发布和运维闭环",
+    rationale: "任务需要从数据接入开始并贯穿完整交付链路。",
+    confidence: 0.95,
+    steps: [
+      ["sources", "登记数据源并采集元数据"],
+      ["development", "生成并验证证券加工代码"],
+      ["quality", "配置并运行数据质量检查"],
+      ["security", "生成并审阅最小权限和脱敏策略"],
+      ["schedules", "生成调度部署文件并受控发布"],
+      ["services", "发布受治理的DAPI和XAPI"],
+      ["reports", "生成证券资产分析报表"],
+      ["ops", "监控批次并验证故障恢复"],
+    ].map(([destinationId, objective]) => ({ destinationId, objective })),
+  });
+  assert.equal(completeJourney.steps.length, 8);
+  assert.equal(completeJourney.requiresHumanReview, true);
   assert.throws(
     () => validateAgentIntentRoute({
       destinationId: "assets",
@@ -135,7 +164,10 @@ test("intent API persists a live-model routing result without executing a downst
           "X-Shuduo-Client": "workbench",
           "Idempotency-Key": "agent-router-test",
         },
-        body: JSON.stringify({ message: "理解持仓字段后生成财富分析报表" }),
+        body: JSON.stringify({
+          message: "理解持仓字段后生成财富分析报表",
+          approvalMode: "PLAN_ONLY",
+        }),
       }),
       created = await createdResponse.json();
     assert.equal(createdResponse.status, 202);
@@ -146,12 +178,52 @@ test("intent API persists a live-model routing result without executing a downst
     assert.equal(completed.id, created.id);
     assert.equal(completed.route.destinationId, "reports");
     assert.equal(completed.route.execution, "NO_EXECUTION");
+    assert.equal(completed.approvalMode, "PLAN_ONLY");
     assert.equal(completed.fullLifecycleE2E, false);
     assert.equal(completed.message, undefined);
     assert.equal(typeof completed.messageHash, "string");
     assert.equal(store.get("agent_intent", created.id, PROJECT).message, undefined);
     assert.equal(store.list("report_agent_plan", PROJECT).length, 0);
     assert.equal(store.list("report", PROJECT).length, 0);
+    const specialist = store.create("report_agent_plan", PROJECT, {
+      status: "SUCCEEDED",
+      completionScope: "REPORT_DESIGN",
+    });
+    const linkedResponse = await fetch(
+      base + `/agent/intents/${completed.id}/handoffs`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "agent-router-linked-specialist",
+        },
+        body: JSON.stringify({
+          destinationId: "reports",
+          specialistTaskId: specialist.id,
+        }),
+      },
+    );
+    assert.equal(linkedResponse.status, 201);
+    const linked = await linkedResponse.json();
+    assert.equal(linked.specialistTaskId, specialist.id);
+    assert.equal(linked.specialistTaskKind, "report_agent_plan");
+    const missingReference = await fetch(
+      base + `/agent/intents/${completed.id}/handoffs`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "agent-router-missing-specialist",
+        },
+        body: JSON.stringify({
+          destinationId: "reports",
+          specialistTaskId: "missing-specialist",
+        }),
+      },
+    );
+    assert.equal(missingReference.status, 409);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     store.close();
