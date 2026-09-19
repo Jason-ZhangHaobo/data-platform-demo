@@ -571,6 +571,39 @@ test("CLI maps cross-module Agent understanding to the same V2 atomic route", as
     contractDigest: "a".repeat(64),
     input: { message: "生成虚构证券持仓分析报表" },
   });
+  assert.equal(
+    await runV2Cli(
+      [
+        "agent",
+        "invoke-tool",
+        "--id",
+        "intent-id",
+        "--tool",
+        "reports",
+        "--approval-id",
+        "approval-id",
+        "--catalog-version",
+        "shuduo-agent-tools/v1",
+        "--contract-digest",
+        "b".repeat(64),
+        "--input-json",
+        '{"message":"生成虚构证券持仓分析报表"}',
+      ],
+      {},
+      { client, output: (value) => output.push(value), error: (value) => output.push(value) },
+    ),
+    0,
+  );
+  assert.equal(
+    requests[11].path,
+    "/agent/intents/intent-id/tools/reports/invoke",
+  );
+  assert.deepEqual(requests[11].options.body, {
+    catalogVersion: "shuduo-agent-tools/v1",
+    contractDigest: "b".repeat(64),
+    approvalId: "approval-id",
+    input: { message: "生成虚构证券持仓分析报表" },
+  });
 });
 
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
@@ -588,6 +621,7 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "agent_intent_list",
     "agent_tool_list",
     "agent_tool_validate",
+    "agent_tool_invoke",
     "agent_intent_create",
     "agent_intent_approval_list",
     "agent_intent_approval_create",

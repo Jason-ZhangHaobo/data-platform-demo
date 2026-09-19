@@ -60,8 +60,9 @@ type IntentTrace = {
 type Handoff = { id: string; destinationId: string; status: string; objective: string; specialistTaskId?: string; specialistTaskKind?: string };
 type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND" | "REVOKED"; risk: Risk; approvedAt: string; specialistTaskId?: string };
 type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistTaskId?: string; specialistTaskKind?: string; specialistStatus?: string }[] };
-type AgentTool = { id: string; label: string; risk: Risk; approvalRequired: boolean; createMode: string; createPath: string; detailPath: string; applyPath?: string; requiresDestination?: string };
+type AgentTool = { id: string; label: string; risk: Risk; approvalRequired: boolean; createMode: string; createPath: string; detailPath: string; applyPath?: string; requiresDestination?: string; invokePath: string };
 type AgentToolCatalog = { version: "shuduo-agent-tools/v1"; contractDigest: string; tools: AgentTool[] };
+type AgentToolInvocation = { specialist: { id: string; status: string; detailPath: string }; handoff: Handoff; graph: IntentGraph };
 type SpecialistActivity = {
   destinationId: string;
   id: string;
@@ -70,7 +71,6 @@ type SpecialistActivity = {
   result?: Record<string, unknown>;
   error?: string;
   applied?: boolean;
-  linkPending?: boolean;
 };
 
 const destinations: Destination[] = [
@@ -359,24 +359,21 @@ export function AgentCenter({
           approval,
           ...items.filter((item) => item.id !== approval.id),
         ]);
-      let created: Record<string, unknown>;
-      const pendingLink = activities[step.destinationId]?.linkPending
-        ? activities[step.destinationId]
-        : undefined;
-      if (pendingLink?.result) {
-        created = pendingLink.result;
-      } else if (tool.createMode === "SQL_DEVELOPMENT") {
-        created = await api<Record<string, unknown>>(tool.createPath, toolInput);
-      } else if (tool.createMode === "DELIVERY_FROM_DEVELOPMENT") {
-        created = await api<Record<string, unknown>>(
-          tool.createPath.replace("{sourceTaskId}", encodeURIComponent(requiredActivity!.id)),
-          {},
-        );
-      } else {
-        created = await api<Record<string, unknown>>(tool.createPath, toolInput);
-      }
-      const id = String(created.id),
-        getPath = fillToolPath(tool.detailPath, id);
+      if (!approval) throw new Error("当前审批模式不能调用专业Agent工具");
+      const invocation = await api<AgentToolInvocation>(
+          tool.invokePath
+            .replace("{intentId}", encodeURIComponent(task.id))
+            .replace("{destinationId}", encodeURIComponent(step.destinationId)),
+          {
+            catalogVersion: toolCatalog.version,
+            contractDigest: toolCatalog.contractDigest,
+            approvalId: approval.id,
+            input: toolInput,
+          },
+        ),
+        id = invocation.specialist.id,
+        getPath = invocation.specialist.detailPath,
+        created = invocation.specialist;
       setActivities((all) => ({
         ...all,
         [step.destinationId]: {
@@ -385,27 +382,10 @@ export function AgentCenter({
           status: String(created.status ?? "QUEUED"),
           getPath,
           result: created,
-          linkPending: true,
-        },
-      }));
-      await api(`/agent/intents/${task.id}/handoffs`, {
-        destinationId: step.destinationId,
-        specialistTaskId: id,
-        ...(approval ? { approvalId: approval.id } : {}),
-      });
-      setActivities((all) => ({
-        ...all,
-        [step.destinationId]: {
-          destinationId: step.destinationId,
-          id,
-          status: String(created.status ?? "QUEUED"),
-          getPath,
-          result: created,
-          linkPending: false,
         },
       }));
       setTrace(await api<IntentTrace[]>(`/agent/intents/${task.id}/trace`));
-      setGraph(await api<IntentGraph>(`/agent/intents/${task.id}/graph`));
+      setGraph(invocation.graph);
       setApprovals(await api<StepApproval[]>(`/agent/intents/${task.id}/approvals`));
       setHandoffs(await api<Handoff[]>(`/agent/intents/${task.id}/handoffs`));
     } catch (cause) {
@@ -414,7 +394,6 @@ export function AgentCenter({
         [step.destinationId]: {
           ...(all[step.destinationId] ?? { destinationId: step.destinationId, id: "failed", getPath: "" }),
           status: "FAILED",
-          linkPending: all[step.destinationId]?.linkPending,
           error: (cause as Error).message,
         },
       }));

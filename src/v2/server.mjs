@@ -682,6 +682,56 @@ export function createV2Server(options = {}) {
       throw fail(422, "私有函数验收操作不受支持");
     return parsed;
   };
+  const callAtomicApi = async (req, path, body, idempotencyKey) => {
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw Object.assign(fail(503, "专业Agent原子接口尚未就绪"), {
+        code: "AGENT_ATOMIC_API_UNAVAILABLE",
+      });
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Shuduo-Client": req.headers["x-shuduo-client"],
+      "Idempotency-Key": idempotencyKey,
+      ...(req.headers.cookie ? { Cookie: req.headers.cookie } : {}),
+      ...(req.headers["x-csrf-token"]
+        ? { "X-CSRF-Token": req.headers["x-csrf-token"] }
+        : {}),
+      ...(req.headers["x-project-id"]
+        ? { "X-Project-Id": req.headers["x-project-id"] }
+        : {}),
+    };
+    let response;
+    try {
+      response = await fetch(
+        `http://127.0.0.1:${address.port}/api/v2${path}`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          redirect: "error",
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+    } catch {
+      throw Object.assign(fail(503, "专业Agent原子接口暂时不可用"), {
+        code: "AGENT_ATOMIC_API_UNAVAILABLE",
+      });
+    }
+    let value;
+    try {
+      value = await response.json();
+    } catch {
+      throw Object.assign(fail(502, "专业Agent原子接口响应无法解析"), {
+        code: "AGENT_ATOMIC_API_INVALID_RESPONSE",
+      });
+    }
+    if (!response.ok)
+      throw Object.assign(
+        fail(response.status, value?.message ?? "专业Agent原子接口调用失败"),
+        ...(typeof value?.code === "string" ? [{ code: value.code }] : []),
+      );
+    return { status: response.status, body: value };
+  };
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost"),
@@ -2348,6 +2398,338 @@ export function createV2Server(options = {}) {
           }),
         );
       }
+      const agentToolInvocation = path.match(
+        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/tools\/([a-z-]+)\/invoke$/,
+      );
+      if (agentToolInvocation && method === "POST") {
+        const intent = get("agent_intent", agentToolInvocation[1]),
+          destinationId = agentToolInvocation[2],
+          session = auth.sessionFromHeaders(req.headers);
+        if (!local && !session)
+          throw Object.assign(fail(401, "请先登录受邀账号调用专业Agent"), {
+            code: "AUTHENTICATION_REQUIRED",
+          });
+        if (!mayReadAgentIntent(intent, session))
+          throw Object.assign(fail(403, "当前成员不能调用该专业Agent任务"), {
+            code: "PROJECT_PERMISSION_DENIED",
+          });
+        if (intent.status !== "SUCCEEDED" || !intent.route)
+          throw Object.assign(fail(409, "只有已完成理解的Agent任务可以调用工具"), {
+            code: "AGENT_INTENT_NOT_READY",
+          });
+        if (intent.approvalMode !== "REQUEST_APPROVAL")
+          throw Object.assign(fail(409, "仅规划模式不能调用专业Agent工具"), {
+            code: "PLAN_ONLY_EXECUTION_DENIED",
+          });
+        const body = await readBody(req),
+          keys = Object.keys(body);
+        if (
+          keys.some(
+            (key) =>
+              ![
+                "catalogVersion",
+                "contractDigest",
+                "approvalId",
+                "input",
+              ].includes(key),
+          )
+        )
+          throw Object.assign(fail(422, "工具调用请求包含未声明字段"), {
+            code: "AGENT_TOOL_INVOCATION_REQUEST_INVALID",
+          });
+        const catalog = publicAgentToolCatalog(),
+          tool = catalog.tools.find((item) => item.id === destinationId),
+          steps = intent.route.steps ?? [
+            {
+              destinationId: intent.route.destinationId,
+              objective: intent.route.summary,
+              risk: intent.route.destination.risk,
+            },
+          ],
+          step = steps.find((item) => item.destinationId === destinationId),
+          approvalId = text(body.approvalId, 1, 80),
+          approval = store.get("agent_intent_approval", approvalId, PROJECT),
+          boundHandoff = store
+            .list("agent_intent_handoff", PROJECT)
+            .find(
+              (item) =>
+                item.intentId === intent.id &&
+                item.destinationId === destinationId &&
+                item.approvalId === approvalId &&
+                item.specialistTaskId &&
+                item.specialistTaskKind,
+            );
+        text(req.headers["idempotency-key"], 1, 100);
+        if (!tool || !step)
+          throw Object.assign(fail(422, "只能调用当前Agent推荐链路中的专业工具"), {
+            code: "AGENT_TOOL_NOT_IN_ROUTE",
+          });
+        validateAgentToolInput(destinationId, body.input, {
+          version: body.catalogVersion,
+          contractDigest: body.contractDigest,
+        });
+        if (
+          !approval ||
+          approval.intentId !== intent.id ||
+          approval.destinationId !== destinationId ||
+          approval.objectiveHash !== hash(step.objective) ||
+          !(
+            approval.status === "APPROVED" ||
+            (approval.status === "BOUND" && boundHandoff)
+          )
+        )
+          throw Object.assign(fail(409, "工具调用必须绑定当前步骤的有效批准"), {
+            code: "AGENT_STEP_APPROVAL_REQUIRED",
+          });
+        if (
+          ["MESSAGE", "SQL_DEVELOPMENT"].includes(tool.createMode) &&
+          body.input.message !== step.objective
+        )
+          throw Object.assign(fail(409, "工具输入与已批准的步骤目标不一致"), {
+            code: "AGENT_TOOL_OBJECTIVE_MISMATCH",
+          });
+        if (tool.createMode === "DELIVERY_FROM_DEVELOPMENT") {
+          const sourceHandoff = store
+              .list("agent_intent_handoff", PROJECT)
+              .filter(
+                (item) =>
+                  item.intentId === intent.id &&
+                  item.destinationId === tool.requiresDestination &&
+                  item.specialistTaskId &&
+                  item.specialistTaskKind,
+              )
+              .sort((a, b) =>
+                String(a.createdAt).localeCompare(String(b.createdAt)),
+              )
+              .at(-1),
+            sourceTask = sourceHandoff?.specialistTaskId
+              ? store.get(
+                  sourceHandoff.specialistTaskKind,
+                  sourceHandoff.specialistTaskId,
+                  PROJECT,
+                )
+              : undefined;
+          if (
+            !sourceHandoff ||
+            sourceHandoff.specialistTaskId !== body.input.sourceTaskId ||
+            sourceTask?.status !== "SUCCEEDED"
+          )
+            throw Object.assign(fail(409, "交付准备必须引用当前任务图已完成的数据开发任务"), {
+              code: "AGENT_TOOL_DEPENDENCY_NOT_READY",
+            });
+        }
+        const toolInputHash = hash(JSON.stringify(body.input));
+        if (approval.status === "BOUND") {
+          if (
+            boundHandoff.toolCatalogVersion !== catalog.version ||
+            boundHandoff.toolContractDigest !== catalog.contractDigest
+          )
+            throw Object.assign(fail(409, "已绑定工具任务使用旧版工具契约"), {
+              code: "AGENT_TOOL_BOUND_CONTRACT_MISMATCH",
+            });
+          if (boundHandoff.toolInputHash !== toolInputHash)
+            throw Object.assign(fail(409, "已绑定工具任务不能改用其他输入重放"), {
+              code: "AGENT_TOOL_BOUND_INPUT_MISMATCH",
+            });
+          const specialist = get(
+              boundHandoff.specialistTaskKind,
+              boundHandoff.specialistTaskId,
+            ),
+            completedInvocation = store
+              .list("agent_tool_invocation", PROJECT)
+              .find((item) => item.handoffId === boundHandoff.id),
+            detailPath = tool.detailPath.replace(
+              "{id}",
+              encodeURIComponent(specialist.id),
+            );
+          return json(res, 200, {
+            catalogVersion: catalog.version,
+            contractDigest: catalog.contractDigest,
+            toolId: destinationId,
+            specialist: {
+              id: specialist.id,
+              kind: boundHandoff.specialistTaskKind,
+              status: specialist.status,
+              detailPath,
+              completionScope: specialist.completionScope,
+              fullLifecycleE2E: false,
+              publicDeployed: false,
+            },
+            handoff: publicAgentHandoff(boundHandoff),
+            graph: agentIntentGraph(intent),
+            invocation: completedInvocation
+              ? {
+                  id: completedInvocation.id,
+                  status: completedInvocation.status,
+                }
+              : undefined,
+          });
+        }
+        const invocationKey = `${intent.id}:${destinationId}:${approval.objectiveHash}`,
+          existingInvocation = store
+            .list("agent_tool_invocation", PROJECT)
+            .find((item) => item.invocationKey === invocationKey);
+        if (
+          existingInvocation &&
+          existingInvocation.toolInputHash !== toolInputHash
+        )
+          throw Object.assign(fail(409, "同一步骤已有不同输入的工具调用"), {
+            code: "AGENT_TOOL_INVOCATION_INPUT_CONFLICT",
+          });
+        if (
+          existingInvocation &&
+          (existingInvocation.toolCatalogVersion !== catalog.version ||
+            existingInvocation.toolContractDigest !== catalog.contractDigest)
+        )
+          throw Object.assign(fail(409, "未完成工具调用使用旧版工具契约"), {
+            code: "AGENT_TOOL_INVOCATION_CONTRACT_MISMATCH",
+          });
+        const nowMs = options.now?.() ?? Date.now();
+        if (
+          existingInvocation?.status === "CLAIMED" &&
+          nowMs - Date.parse(existingInvocation.claimedAt) < 30_000
+        )
+          throw Object.assign(fail(409, "专业Agent工具调用正在处理中"), {
+            code: "AGENT_TOOL_INVOCATION_IN_PROGRESS",
+          });
+        const invocation = existingInvocation
+          ? store.update(
+              "agent_tool_invocation",
+              existingInvocation.id,
+              PROJECT,
+              {
+                status:
+                  existingInvocation.status === "TASK_CREATED"
+                    ? "TASK_CREATED"
+                    : "CLAIMED",
+                claimedAt: new Date(nowMs).toISOString(),
+              },
+            )
+          : store.create("agent_tool_invocation", PROJECT, {
+              invocationKey,
+              intentId: intent.id,
+              destinationId,
+              approvalId: approval.id,
+              objectiveHash: approval.objectiveHash,
+              toolCatalogVersion: catalog.version,
+              toolContractDigest: catalog.contractDigest,
+              toolInputHash,
+              status: "CLAIMED",
+              claimedAt: new Date(nowMs).toISOString(),
+            });
+        if (typeof persistence.flush === "function")
+          await persistence.flush();
+        const createPath = tool.createPath.replace(
+            "{sourceTaskId}",
+            encodeURIComponent(body.input.sourceTaskId ?? ""),
+          ),
+          createBody =
+            tool.createMode === "DELIVERY_FROM_DEVELOPMENT" ? {} : body.input,
+          atomicKey = hash(invocationKey + ":" + toolInputHash);
+        let specialist;
+        if (invocation.specialistTaskId) {
+          specialist = get(
+            invocation.specialistTaskKind,
+            invocation.specialistTaskId,
+          );
+        } else {
+          try {
+            specialist = (
+              await callAtomicApi(
+                req,
+                createPath,
+                createBody,
+                `agent-tool-${atomicKey.slice(0, 48)}`,
+              )
+            ).body;
+          } catch (error) {
+            store.update("agent_tool_invocation", invocation.id, PROJECT, {
+              status: "FAILED",
+              failedAt: new Date().toISOString(),
+              errorCode:
+                typeof error.code === "string"
+                  ? error.code
+                  : "AGENT_ATOMIC_API_FAILED",
+            });
+            throw error;
+          }
+        }
+        if (
+          !specialist ||
+          typeof specialist.id !== "string" ||
+          typeof specialist.status !== "string" ||
+          specialist.fullLifecycleE2E === true
+        )
+          throw Object.assign(fail(502, "专业Agent返回了不受支持的资源"), {
+            code: "AGENT_TOOL_OUTPUT_INVALID",
+          });
+        store.update("agent_tool_invocation", invocation.id, PROJECT, {
+          status: "TASK_CREATED",
+          specialistTaskId: specialist.id,
+          specialistTaskKind: agentSpecialistKinds[destinationId],
+          taskCreatedAt: new Date().toISOString(),
+        });
+        if (typeof persistence.flush === "function")
+          await persistence.flush();
+        const handoffResponse = await callAtomicApi(
+            req,
+            `/agent/intents/${encodeURIComponent(intent.id)}/handoffs`,
+            {
+              destinationId,
+              specialistTaskId: specialist.id,
+              approvalId: approval.id,
+            },
+            `agent-handoff-${atomicKey.slice(0, 48)}`,
+          ),
+          recordedHandoff = store.update(
+            "agent_intent_handoff",
+            handoffResponse.body.id,
+            PROJECT,
+            {
+              toolCatalogVersion: catalog.version,
+              toolContractDigest: catalog.contractDigest,
+              toolInputHash,
+            },
+          ),
+          completedInvocation = store.update(
+            "agent_tool_invocation",
+            invocation.id,
+            PROJECT,
+            {
+              status: "BOUND",
+              handoffId: recordedHandoff.id,
+              boundAt: new Date().toISOString(),
+            },
+          ),
+          detailPath = tool.detailPath.replace(
+            "{id}",
+            encodeURIComponent(specialist.id),
+          );
+        return json(
+          res,
+          handoffResponse.status === 200 ? 200 : 201,
+          {
+            catalogVersion: catalog.version,
+            contractDigest: catalog.contractDigest,
+            toolId: destinationId,
+            specialist: {
+              id: specialist.id,
+              kind: agentSpecialistKinds[destinationId],
+              status: specialist.status,
+              detailPath,
+              completionScope: specialist.completionScope,
+              fullLifecycleE2E: false,
+              publicDeployed: false,
+            },
+            handoff: publicAgentHandoff(recordedHandoff),
+            graph: agentIntentGraph(intent),
+            invocation: {
+              id: completedInvocation.id,
+              status: completedInvocation.status,
+            },
+          },
+        );
+      }
       if (path === "/api/v2/agent/intents" && method === "GET") {
         const session = auth.sessionFromHeaders(req.headers);
         if (!local && !session)
@@ -2694,6 +3076,19 @@ export function createV2Server(options = {}) {
           }
           if (specialistTaskId && !specialistTaskKind)
             throw fail(422, "当前专业能力不支持任务关联");
+          if (specialistTaskId) {
+            const existing = store
+              .list("agent_intent_handoff", PROJECT)
+              .find(
+                (item) =>
+                  item.intentId === intent.id &&
+                  item.destinationId === destinationId &&
+                  item.specialistTaskId === specialistTaskId &&
+                  item.approvalId === approvalId,
+              );
+            if (existing)
+              return json(res, 200, publicAgentHandoff(existing));
+          }
           if (
             specialistTaskId &&
             !store.get(specialistTaskKind, specialistTaskId, PROJECT)

@@ -48,7 +48,7 @@ test("independent workspace can start every specialist domain without mandatory 
   assert.match(workspace, /approvalId/);
   assert.match(workspace, /批准并执行此步骤/);
   assert.match(workspace, /本次批准已绑定专业任务/);
-  assert.match(workspace, /linkPending/);
+  assert.doesNotMatch(workspace, /linkPending/);
   assert.match(workspace, /\/agent\/intents\/\$\{selected\.id\}\/graph/);
   assert.match(workspace, /持久任务图/);
   assert.match(workspace, /nextGraph\.steps/);
@@ -63,6 +63,8 @@ test("independent workspace can start every specialist domain without mandatory 
   assert.match(workspace, /toolCatalog\?\.version/);
   assert.match(workspace, /requireTool/);
   assert.match(workspace, /tool\.createMode === "SQL_DEVELOPMENT"/);
-  assert.match(workspace, /tool\.createPath\.replace\("\{sourceTaskId\}"/);
+  assert.match(workspace, /tool\.invokePath/);
+  assert.match(workspace, /contractDigest: toolCatalog\.contractDigest/);
+  assert.doesNotMatch(workspace, /tool\.createPath\.replace/);
   assert.doesNotMatch(workspace, /const actionConfig/);
 });
