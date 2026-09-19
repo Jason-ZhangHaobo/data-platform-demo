@@ -65,6 +65,9 @@ test("independent workspace can start every specialist domain without mandatory 
   assert.match(workspace, /tool\.createMode === "SQL_DEVELOPMENT"/);
   assert.match(workspace, /tool\.invokePath/);
   assert.match(workspace, /contractDigest: toolCatalog\.contractDigest/);
+  assert.match(workspace, /专业任务已创建，等待恢复任务图绑定/);
+  assert.match(workspace, /工具调用已中断或失败，可重新批准恢复/);
+  assert.match(workspace, /SPECIALIST_TASK_LINKED/);
   assert.doesNotMatch(workspace, /tool\.createPath\.replace/);
   assert.doesNotMatch(workspace, /const actionConfig/);
 });

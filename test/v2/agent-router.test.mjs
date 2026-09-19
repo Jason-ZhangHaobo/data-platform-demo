@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { MetadataStore } from "../../src/v2/store.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import {
@@ -628,6 +629,166 @@ test("one governed Agent tool invocation creates and binds a specialist task ide
     assert.equal(
       (await mismatch.json()).code,
       "AGENT_TOOL_OBJECTIVE_MISMATCH",
+    );
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+    store.close();
+  }
+});
+
+test("cold start exposes an interrupted tool invocation and resumes with a new specialist attempt", async () => {
+  const root = mkdtempSync(join(tmpdir(), "shuduo-agent-tool-recovery-")),
+    store = new MetadataStore(join(root, "platform.sqlite")),
+    objective = "基于已登记资产设计类别与行业分布报表",
+    hash = (value) => createHash("sha256").update(value).digest("hex"),
+    catalog = publicAgentToolCatalog(),
+    intent = store.create("agent_intent", PROJECT, {
+      status: "SUCCEEDED",
+      approvalMode: "REQUEST_APPROVAL",
+      route: {
+        destinationId: "reports",
+        destination: { id: "reports", label: "数据报表", risk: "LOW" },
+        summary: "设计虚构证券资产报表",
+        steps: [
+          {
+            destinationId: "reports",
+            label: "数据报表",
+            risk: "LOW",
+            objective,
+          },
+        ],
+      },
+    }),
+    approval = store.create("agent_intent_approval", PROJECT, {
+      intentId: intent.id,
+      destinationId: "reports",
+      objectiveHash: hash(objective),
+      status: "APPROVED",
+    }),
+    interruptedChild = store.create("report_agent_plan", PROJECT, {
+      message: objective,
+      status: "RUNNING",
+      completionScope: "REPORT_DESIGN",
+      fullLifecycleE2E: false,
+    }),
+    invocation = store.create("agent_tool_invocation", PROJECT, {
+      invocationKey: `${intent.id}:reports:${approval.objectiveHash}:${approval.id}`,
+      intentId: intent.id,
+      destinationId: "reports",
+      approvalId: approval.id,
+      objectiveHash: approval.objectiveHash,
+      toolCatalogVersion: catalog.version,
+      toolContractDigest: catalog.contractDigest,
+      toolInputHash: hash(JSON.stringify({ message: objective })),
+      status: "TASK_CREATED",
+      attempt: 1,
+      specialistTaskId: interruptedChild.id,
+      specialistTaskKind: "report_agent_plan",
+      claimedAt: new Date().toISOString(),
+    }),
+    app = createV2Server({
+      root,
+      store,
+      env: { V2_LOCAL_DEVELOPMENT: "true" },
+      reportPlanner: async () => ({
+        plan: {},
+        explanation: "恢复测试不冒充有效报表方案",
+        model: "TEST_REPORT_MODEL",
+        usage: { total_tokens: 1 },
+      }),
+    });
+  assert.equal(
+    store.get("agent_tool_invocation", invocation.id, PROJECT).status,
+    "INTERRUPTED",
+  );
+  assert.equal(
+    store.get("report_agent_plan", interruptedChild.id, PROJECT).status,
+    "INTERRUPTED",
+  );
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
+  try {
+    const before = await fetch(
+      base + `/agent/intents/${intent.id}/graph`,
+    ).then((response) => response.json());
+    assert.equal(before.completedCount, 0);
+    assert.equal(before.steps[0].invocationStatus, "INTERRUPTED");
+    assert.equal(before.steps[0].invocationRecovery, "RETRY_REQUIRED");
+    assert.equal(
+      before.steps[0].executionEvidence,
+      "SPECIALIST_TASK_AWAITING_LINK",
+    );
+    const recoveredResponse = await fetch(
+        base + `/agent/intents/${intent.id}/tools/reports/invoke`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shuduo-Client": "workbench",
+            "Idempotency-Key": "recover-interrupted-tool",
+          },
+          body: JSON.stringify({
+            catalogVersion: catalog.version,
+            contractDigest: catalog.contractDigest,
+            approvalId: approval.id,
+            input: { message: objective },
+          }),
+        },
+      ),
+      recovered = await recoveredResponse.json(),
+      saved = store.get("agent_tool_invocation", invocation.id, PROJECT);
+    assert.equal(recoveredResponse.status, 201);
+    assert.notEqual(recovered.specialist.id, interruptedChild.id);
+    assert.equal(saved.status, "BOUND");
+    assert.equal(saved.attempt, 2);
+    assert.deepEqual(saved.previousSpecialistTaskIds, [interruptedChild.id]);
+    assert.equal(recovered.graph.steps[0].executionEvidence, "SPECIALIST_TASK_LINKED");
+    const orphanChild = store.create("report_agent_plan", PROJECT, {
+        message: objective,
+        status: "RUNNING",
+        completionScope: "REPORT_DESIGN",
+        fullLifecycleE2E: false,
+      }),
+      orphanInvocationCreated = store.create("agent_tool_invocation", PROJECT, {
+        invocationKey: `${intent.id}:reports:orphan-recovery`,
+        intentId: intent.id,
+        destinationId: "reports",
+        approvalId: "orphan-approval",
+        objectiveHash: approval.objectiveHash,
+        toolCatalogVersion: catalog.version,
+        toolContractDigest: catalog.contractDigest,
+        toolInputHash: hash(JSON.stringify({ message: objective })),
+        status: "TASK_CREATED",
+        attempt: 1,
+        specialistTaskId: orphanChild.id,
+        specialistTaskKind: "report_agent_plan",
+        claimedAt: new Date().toISOString(),
+      }),
+      orphanInvocation = store.update(
+        "agent_tool_invocation",
+        orphanInvocationCreated.id,
+        PROJECT,
+        { createdAt: new Date(Date.now() + 1_000).toISOString() },
+      ),
+      cancelResponse = await fetch(
+        base + `/agent/intents/${intent.id}/children/reports/cancel`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shuduo-Client": "workbench",
+            "Idempotency-Key": "cancel-orphan-specialist",
+          },
+          body: "{}",
+        },
+      ),
+      cancelled = await cancelResponse.json();
+    assert.equal(cancelResponse.status, 200);
+    assert.equal(cancelled.child.id, orphanChild.id);
+    assert.equal(cancelled.child.status, "CANCELLED");
+    assert.equal(
+      store.get("agent_tool_invocation", orphanInvocation.id, PROJECT).status,
+      "CANCELLED",
     );
   } finally {
     await new Promise((resolve) => app.server.close(resolve));

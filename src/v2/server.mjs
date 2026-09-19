@@ -280,6 +280,9 @@ export function createV2Server(options = {}) {
       handoffs = store
         .list("agent_intent_handoff", PROJECT)
         .filter((item) => item.intentId === intent.id),
+      invocations = store
+        .list("agent_tool_invocation", PROJECT)
+        .filter((item) => item.intentId === intent.id),
       graphSteps = steps.map((step, index) => {
         const approval = approvals
             .filter((item) => item.destinationId === step.destinationId)
@@ -289,10 +292,41 @@ export function createV2Server(options = {}) {
             .filter((item) => item.destinationId === step.destinationId)
             .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
             .at(-1),
-          specialist = handoff?.specialistTaskId && handoff?.specialistTaskKind
-            ? store.get(handoff.specialistTaskKind, handoff.specialistTaskId, PROJECT)
+          invocation = invocations
+            .filter((item) => item.destinationId === step.destinationId)
+            .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+            .at(-1),
+          invocationIsNewer =
+            invocation &&
+            (!handoff ||
+              String(invocation.createdAt).localeCompare(
+                String(handoff.createdAt),
+              ) > 0),
+          specialistTaskId =
+            (invocationIsNewer ? invocation?.specialistTaskId : undefined) ??
+            handoff?.specialistTaskId,
+          specialistTaskKind =
+            (invocationIsNewer ? invocation?.specialistTaskKind : undefined) ??
+            handoff?.specialistTaskKind,
+          specialist = specialistTaskId && specialistTaskKind
+            ? store.get(specialistTaskKind, specialistTaskId, PROJECT)
             : undefined,
-          status = specialist?.status ?? handoff?.status ?? approval?.status ?? "PLANNED";
+          status =
+            specialist?.status ??
+            handoff?.status ??
+            invocation?.status ??
+            approval?.status ??
+            "PLANNED",
+          invocationRecovery =
+            invocation?.status === "TASK_CREATED"
+              ? "RETRY_BINDING"
+              : ["INTERRUPTED", "FAILED", "CANCELLED"].includes(
+                    invocation?.status,
+                  )
+                ? "RETRY_REQUIRED"
+                : invocation?.status === "CLAIMED"
+                  ? "WAIT"
+                  : "NONE";
         return {
           sequence: index + 1,
           destinationId: step.destinationId,
@@ -310,10 +344,28 @@ export function createV2Server(options = {}) {
                 specialistTaskKind: handoff.specialistTaskKind,
                 specialistStatus: specialist?.status ?? "MISSING",
               }
+            : specialistTaskId
+              ? {
+                  specialistTaskId,
+                  specialistTaskKind,
+                  specialistStatus: specialist?.status ?? "MISSING",
+                }
             : {}),
-          executionEvidence: specialist
+          ...(invocation
+            ? {
+                invocationId: invocation.id,
+                invocationStatus: invocation.status,
+                invocationAttempt: invocation.attempt ?? 1,
+                invocationRecovery,
+              }
+            : {}),
+          executionEvidence: !invocationIsNewer && handoff?.specialistTaskId
             ? "SPECIALIST_TASK_LINKED"
-            : "NO_SPECIALIST_EXECUTION",
+            : specialist
+              ? "SPECIALIST_TASK_AWAITING_LINK"
+              : invocation
+                ? "TOOL_INVOCATION_RECORDED"
+                : "NO_SPECIALIST_EXECUTION",
         };
       }),
       completedStatuses = new Set(["SUCCEEDED", "APPLIED"]);
@@ -323,8 +375,10 @@ export function createV2Server(options = {}) {
       approvalMode: intent.approvalMode,
       completionScope: "AGENT_ORCHESTRATION_GRAPH",
       steps: graphSteps,
-      completedCount: graphSteps.filter((step) =>
-        completedStatuses.has(step.specialistStatus),
+      completedCount: graphSteps.filter(
+        (step) =>
+          step.executionEvidence === "SPECIALIST_TASK_LINKED" &&
+          completedStatuses.has(step.specialistStatus),
       ).length,
       totalCount: graphSteps.length,
       agentIndependentE2E: false,
@@ -2565,7 +2619,7 @@ export function createV2Server(options = {}) {
               : undefined,
           });
         }
-        const invocationKey = `${intent.id}:${destinationId}:${approval.objectiveHash}`,
+        const invocationKey = `${intent.id}:${destinationId}:${approval.objectiveHash}:${approval.id}`,
           existingInvocation = store
             .list("agent_tool_invocation", PROJECT)
             .find((item) => item.invocationKey === invocationKey);
@@ -2592,7 +2646,16 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(409, "专业Agent工具调用正在处理中"), {
             code: "AGENT_TOOL_INVOCATION_IN_PROGRESS",
           });
-        const invocation = existingInvocation
+        const restarting = ["INTERRUPTED", "FAILED", "CANCELLED"].includes(
+            existingInvocation?.status,
+          ),
+          priorSpecialistIds = existingInvocation?.specialistTaskId
+            ? [
+                ...(existingInvocation.previousSpecialistTaskIds ?? []),
+                existingInvocation.specialistTaskId,
+              ]
+            : existingInvocation?.previousSpecialistTaskIds ?? [],
+          invocation = existingInvocation
           ? store.update(
               "agent_tool_invocation",
               existingInvocation.id,
@@ -2602,7 +2665,17 @@ export function createV2Server(options = {}) {
                   existingInvocation.status === "TASK_CREATED"
                     ? "TASK_CREATED"
                     : "CLAIMED",
+                attempt:
+                  Number(existingInvocation.attempt ?? 1) +
+                  (restarting ? 1 : 0),
                 claimedAt: new Date(nowMs).toISOString(),
+                ...(restarting
+                  ? {
+                      specialistTaskId: null,
+                      specialistTaskKind: null,
+                      previousSpecialistTaskIds: priorSpecialistIds,
+                    }
+                  : {}),
               },
             )
           : store.create("agent_tool_invocation", PROJECT, {
@@ -2615,6 +2688,7 @@ export function createV2Server(options = {}) {
               toolContractDigest: catalog.contractDigest,
               toolInputHash,
               status: "CLAIMED",
+              attempt: 1,
               claimedAt: new Date(nowMs).toISOString(),
             });
         if (typeof persistence.flush === "function")
@@ -2625,7 +2699,9 @@ export function createV2Server(options = {}) {
           ),
           createBody =
             tool.createMode === "DELIVERY_FROM_DEVELOPMENT" ? {} : body.input,
-          atomicKey = hash(invocationKey + ":" + toolInputHash);
+          atomicKey = hash(
+            invocationKey + ":" + toolInputHash + ":" + invocation.attempt,
+          );
         let specialist;
         if (invocation.specialistTaskId) {
           specialist = get(
@@ -2864,26 +2940,53 @@ export function createV2Server(options = {}) {
           });
         await readBody(req);
         const handoff = store
-          .list("agent_intent_handoff", PROJECT)
-          .filter(
-            (item) =>
-              item.intentId === intent.id &&
-              item.destinationId === destinationId &&
-              item.specialistTaskId &&
-              item.specialistTaskKind,
-          )
-          .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
-          .at(-1);
-        if (!handoff)
+            .list("agent_intent_handoff", PROJECT)
+            .filter(
+              (item) =>
+                item.intentId === intent.id &&
+                item.destinationId === destinationId &&
+                item.specialistTaskId &&
+                item.specialistTaskKind,
+            )
+            .sort((a, b) =>
+              String(a.createdAt).localeCompare(String(b.createdAt)),
+            )
+            .at(-1),
+          invocation = store
+            .list("agent_tool_invocation", PROJECT)
+            .filter(
+              (item) =>
+                item.intentId === intent.id &&
+                item.destinationId === destinationId &&
+                item.specialistTaskId &&
+                item.specialistTaskKind,
+            )
+            .sort((a, b) =>
+              String(a.createdAt).localeCompare(String(b.createdAt)),
+            )
+            .at(-1),
+          invocationIsNewer =
+            invocation &&
+            (!handoff ||
+              String(invocation.createdAt).localeCompare(
+                String(handoff.createdAt),
+              ) > 0),
+          specialistTaskId =
+            (invocationIsNewer ? invocation?.specialistTaskId : undefined) ??
+            handoff?.specialistTaskId,
+          specialistTaskKind =
+            (invocationIsNewer ? invocation?.specialistTaskKind : undefined) ??
+            handoff?.specialistTaskKind;
+        if (!specialistTaskId || !specialistTaskKind)
           throw Object.assign(fail(404, "当前步骤没有可控制的专业Agent任务"), {
             code: "AGENT_CHILD_TASK_NOT_FOUND",
           });
-        const child = get(handoff.specialistTaskKind, handoff.specialistTaskId);
+        const child = get(specialistTaskKind, specialistTaskId);
         if (child.status === "CANCELLED")
           return json(res, 200, {
             child: {
               id: child.id,
-              kind: handoff.specialistTaskKind,
+              kind: specialistTaskKind,
               status: child.status,
             },
             graph: agentIntentGraph(intent),
@@ -2892,10 +2995,15 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(409, "当前专业Agent任务已结束，不能取消"), {
             code: "AGENT_CHILD_TASK_NOT_CANCELLABLE",
           });
-        store.update(handoff.specialistTaskKind, child.id, PROJECT, {
+        store.update(specialistTaskKind, child.id, PROJECT, {
           status: "CANCELLED",
           finishedAt: new Date().toISOString(),
         });
+        if (invocationIsNewer && invocation)
+          store.update("agent_tool_invocation", invocation.id, PROJECT, {
+            status: "CANCELLED",
+            cancelledAt: new Date().toISOString(),
+          });
         controls.get(child.id)?.abort();
         const latestTrace = store
           .list("agent_intent_trace", PROJECT)
@@ -2910,7 +3018,7 @@ export function createV2Server(options = {}) {
           output: {
             destinationId,
             specialistTaskId: child.id,
-            specialistTaskKind: handoff.specialistTaskKind,
+            specialistTaskKind,
           },
           execution: "SPECIALIST_TASK_CANCELLED",
           observedAt: new Date().toISOString(),
@@ -2918,7 +3026,7 @@ export function createV2Server(options = {}) {
         return json(res, 200, {
           child: {
             id: child.id,
-            kind: handoff.specialistTaskKind,
+            kind: specialistTaskKind,
             status: "CANCELLED",
           },
           graph: agentIntentGraph(intent),
