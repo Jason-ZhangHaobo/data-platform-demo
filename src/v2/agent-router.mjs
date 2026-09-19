@@ -1,4 +1,10 @@
+import { createHash } from "node:crypto";
+
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
+const toolFail = (message, code = "AGENT_TOOL_INPUT_INVALID") =>
+  Object.assign(new Error(message), { status: 422, code });
+
+export const agentToolCatalogVersion = "shuduo-agent-tools/v1";
 
 export const agentIntentDestinations = Object.freeze([
   { id: "development", label: "数据开发", action: "生成或修正 Spark SQL，并进入真实运行与断言", risk: "MEDIUM" },
@@ -94,6 +100,71 @@ export function publicAgentSpecialistTools() {
         "创建专业任务不等于应用草稿、发布、授权或完整E2E。",
     };
   });
+}
+
+export function publicAgentToolCatalog() {
+  const tools = publicAgentSpecialistTools();
+  return {
+    version: agentToolCatalogVersion,
+    contractDigest: createHash("sha256")
+      .update(JSON.stringify(tools))
+      .digest("hex"),
+    tools,
+  };
+}
+
+export function validateAgentToolInput(
+  toolId,
+  input,
+  { version, contractDigest } = {},
+) {
+  const catalog = publicAgentToolCatalog();
+  if (version !== catalog.version)
+    throw toolFail(
+      "专业Agent工具目录版本不匹配，请刷新目录后重试",
+      "AGENT_TOOL_CATALOG_VERSION_MISMATCH",
+    );
+  if (contractDigest !== catalog.contractDigest)
+    throw toolFail(
+      "专业Agent工具目录摘要不匹配，请刷新目录后重试",
+      "AGENT_TOOL_CATALOG_DIGEST_MISMATCH",
+    );
+  const tool = catalog.tools.find((item) => item.id === toolId);
+  if (!tool)
+    throw toolFail("专业Agent工具不存在", "AGENT_TOOL_NOT_FOUND");
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw toolFail("专业Agent工具输入必须是对象");
+  const schema = tool.inputSchema,
+    allowed = new Set(Object.keys(schema.properties)),
+    unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length)
+    throw toolFail("专业Agent工具输入包含未声明字段");
+  for (const required of schema.required ?? []) {
+    if (!(required in input))
+      throw toolFail("专业Agent工具输入缺少必填字段");
+  }
+  for (const [name, value] of Object.entries(input)) {
+    const field = schema.properties[name];
+    if (field.type === "string") {
+      if (typeof value !== "string")
+        throw toolFail("专业Agent工具字段类型不合法");
+      if (
+        (field.minLength !== undefined && value.trim().length < field.minLength) ||
+        (field.maxLength !== undefined && value.length > field.maxLength)
+      )
+        throw toolFail("专业Agent工具字段长度不合法");
+    }
+    if (Object.hasOwn(field, "const") && value !== field.const)
+      throw toolFail("专业Agent工具字段固定值不匹配");
+  }
+  return {
+    valid: true,
+    toolId: tool.id,
+    catalogVersion: catalog.version,
+    contractDigest: catalog.contractDigest,
+    createMode: tool.createMode,
+    execution: "NO_EXECUTION",
+  };
 }
 
 export const agentApprovalModes = Object.freeze([

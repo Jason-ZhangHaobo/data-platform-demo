@@ -7,7 +7,9 @@ import { MetadataStore } from "../../src/v2/store.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import {
   publicAgentIntentDestinations,
+  publicAgentToolCatalog,
   publicAgentSpecialistTools,
+  validateAgentToolInput,
   validateAgentApprovalMode,
   validateAgentIntentMessage,
   validateAgentIntentRoute,
@@ -34,6 +36,33 @@ test("specialist tool catalog exposes ten governed versionable capabilities", ()
     ["sourceTaskId"],
   );
   assert.equal(tools.find((tool) => tool.id === "security").risk, "HIGH");
+  const catalog = publicAgentToolCatalog();
+  assert.equal(catalog.version, "shuduo-agent-tools/v1");
+  assert.match(catalog.contractDigest, /^[a-f0-9]{64}$/);
+  assert.deepEqual(
+    validateAgentToolInput(
+      "reports",
+      { message: "生成虚构证券持仓分析报表" },
+      { version: catalog.version, contractDigest: catalog.contractDigest },
+    ),
+    {
+      valid: true,
+      toolId: "reports",
+      catalogVersion: catalog.version,
+      contractDigest: catalog.contractDigest,
+      createMode: "MESSAGE",
+      execution: "NO_EXECUTION",
+    },
+  );
+  assert.throws(
+    () =>
+      validateAgentToolInput(
+        "reports",
+        { message: "生成虚构证券持仓分析报表", unexpected: true },
+        { version: catalog.version, contractDigest: catalog.contractDigest },
+      ),
+    { code: "AGENT_TOOL_INPUT_INVALID" },
+  );
 });
 
 const waitFor = async (read, done, timeoutMs = 1500) => {
@@ -183,8 +212,50 @@ test("intent API persists a live-model routing result without executing a downst
   try {
     const catalog = await fetch(base + "/agent/tools").then((value) => value.json());
     assert.equal(catalog.version, "shuduo-agent-tools/v1");
+    assert.match(catalog.contractDigest, /^[a-f0-9]{64}$/);
     assert.equal(catalog.tools.length, 10);
     assert.equal(JSON.stringify(catalog).includes("credential"), false);
+    const validToolResponse = await fetch(
+        base + "/agent/tools/reports/validate",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shuduo-Client": "workbench",
+            "Idempotency-Key": "agent-tool-validation",
+          },
+          body: JSON.stringify({
+            catalogVersion: catalog.version,
+            contractDigest: catalog.contractDigest,
+            input: { message: "生成虚构证券持仓分析报表" },
+          }),
+        },
+      ),
+      validTool = await validToolResponse.json();
+    assert.equal(validToolResponse.status, 200);
+    assert.equal(validTool.valid, true);
+    assert.equal(validTool.execution, "NO_EXECUTION");
+    const staleToolResponse = await fetch(
+      base + "/agent/tools/reports/validate",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shuduo-Client": "workbench",
+          "Idempotency-Key": "agent-tool-stale-validation",
+        },
+        body: JSON.stringify({
+          catalogVersion: catalog.version,
+          contractDigest: "0".repeat(64),
+          input: { message: "生成虚构证券持仓分析报表" },
+        }),
+      },
+    );
+    assert.equal(staleToolResponse.status, 422);
+    assert.equal(
+      (await staleToolResponse.json()).code,
+      "AGENT_TOOL_CATALOG_DIGEST_MISMATCH",
+    );
     const createdResponse = await fetch(base + "/agent/intents", {
         method: "POST",
         headers: {
