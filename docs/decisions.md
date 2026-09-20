@@ -188,6 +188,7 @@
 | D-183 | Python交付包独立于SQL并执行本机受限演练，2026-09-20 | 新格式以main.py、Python DAG、调度/部署清单、冻结输入和验证报告组成，不能被SQL包验证器接受。Agent schedules步骤可生成包并重新执行按文件CPython/五套断言，证据旅程将SCHEDULE_FILE和DEPLOY_FILE标记完成；包非公网，内存限制未验证时清单如实保留false。完整CI 321/321 |
 | D-184 | 发布链按包格式分派但审批与监控同源，2026-09-20 | 审阅、审批、release和scheduler先校验包格式，再分别调用SQL或Python验证器/解包器/文件执行器；审批统一绑定sourceCodeHash并兼容历史sourceSqlHash。Python发布真实触发两个本机计时批次并复用告警、恢复和回滚，但包/Release/Run继续固定publicDeployed=false，不向DAPI或云持久调度外推。完整CI 322/322 |
 | D-185 | DAPI按运行证据而非开发语言接收数据源，2026-09-20 | 发布批次只要满足统一调度/发布/验证门，并具备对应引擎执行证据，就可生成不可变业务快照。Spark要求SQL与测试SQL实际执行，CPython要求codeExecuted和版本合法；DAPI版本记录源引擎。授权、版本、XAPI、限流、超时和调用审计不按语言分叉，避免形成第二套服务体系。完整CI 324/324 |
+| D-186 | Python评测以失败驱动收紧契约而非放宽沙箱，2026-09-20 | 首次完整运行0/5暴露import/字符串金额/语法白名单问题；第二轮2/5暴露str/format/union和三次修正不足。执行器只增加纯内存str/format/set.union，继续禁止I/O/网络/进程/反射；错误只返回AST标识符，Python修正上限5次，模型格式错误仅在usage已知时预算内重试。最终独立运行`fadb4f5f…`为5/5、7次尝试、11812 Token、10批次、1次阻断救援；不删除先前失败结论，不与SQL混算。完整CI 328/328 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。

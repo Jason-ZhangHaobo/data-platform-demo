@@ -20,12 +20,13 @@ ALLOWED_NODES = {
     ast.keyword, ast.Pass, ast.Break, ast.Continue,
 }
 ALLOWED_CALLS = {
-    "abs", "Decimal", "dict", "enumerate", "len", "list", "max",
-    "min", "range", "round", "set", "sorted", "sum", "tuple", "zip",
+    "abs", "Decimal", "dict", "enumerate", "format", "len", "list",
+    "max", "min", "range", "round", "set", "sorted", "str", "sum",
+    "tuple", "zip",
 }
 ALLOWED_METHODS = {
     "add", "append", "copy", "get", "items", "keys", "setdefault",
-    "sort", "values",
+    "sort", "union", "values",
 }
 EXPECTED_FIELDS = {
     "client_id", "holding_market_value", "available_cash", "total_assets",
@@ -39,10 +40,11 @@ def bounded_range(*args):
     return value
 
 SAFE_BUILTINS = {
-    "abs": abs, "dict": dict, "enumerate": enumerate, "len": len,
-    "list": list, "max": max, "min": min, "range": bounded_range,
-    "round": round, "set": set, "sorted": sorted, "sum": sum,
-    "tuple": tuple, "zip": zip,
+    "abs": abs, "dict": dict, "enumerate": enumerate, "format": format,
+    "len": len, "list": list, "max": max, "min": min,
+    "range": bounded_range, "round": round, "set": set,
+    "sorted": sorted, "str": str, "sum": sum, "tuple": tuple,
+    "zip": zip,
 }
 
 def validate_code(code):
@@ -73,10 +75,12 @@ def validate_code(code):
             raise ValueError("Python代码不能访问内部名称")
         if isinstance(node, ast.Attribute):
             if node.attr.startswith("_") or node.attr not in ALLOWED_METHODS:
-                raise ValueError("Python代码调用了不允许的方法")
+                name = node.attr if node.attr.isidentifier() else "UNKNOWN"
+                raise ValueError("Python代码调用了不允许的方法：" + name[:80])
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id not in ALLOWED_CALLS:
-                raise ValueError("Python代码调用了不允许的函数")
+                name = node.func.id if node.func.id.isidentifier() else "UNKNOWN"
+                raise ValueError("Python代码调用了不允许的函数：" + name[:80])
             if not isinstance(node.func, (ast.Name, ast.Attribute)):
                 raise ValueError("Python代码调用形式不受支持")
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and len(node.value) > 2000:

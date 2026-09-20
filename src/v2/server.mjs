@@ -4906,7 +4906,7 @@ export function createV2Server(options = {}) {
                   : "SQL_DEVELOPMENT",
               fullLifecycleE2E: false,
               validationContractId,
-              maxAttempts: 3,
+              maxAttempts: language === "PYTHON" ? 5 : 3,
             }),
         );
         const task = get("agent", dedup.id);
@@ -4916,20 +4916,51 @@ export function createV2Server(options = {}) {
               let code = currentCode,
                 error,
                 usedTokens = 0;
-              for (let attempt = 1; attempt <= 3; attempt++) {
+              for (let attempt = 1; attempt <= 5; attempt++) {
                 if (signal.aborted) throw new Error("任务已取消");
                 const remainingBudget =
                   Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) - usedTokens;
                 if (remainingBudget < 1)
                   throw new Error("本次 Agent 已达到 Token 预算上限");
-                const generated = await pythonGenerator({
-                  message,
-                  context,
-                  currentCode: code,
-                  error,
-                  signal,
-                  remainingBudget,
-                });
+                let generated;
+                try {
+                  generated = await pythonGenerator({
+                    message,
+                    context,
+                    currentCode: code,
+                    error,
+                    signal,
+                    remainingBudget,
+                  });
+                } catch (cause) {
+                  if (cause.retryable !== true) throw cause;
+                  const reportedTokens = Number(cause.usage?.total_tokens);
+                  usedTokens +=
+                    Number.isSafeInteger(reportedTokens) && reportedTokens > 0
+                      ? reportedTokens
+                      : remainingBudget;
+                  const latest = get("agent", task.id),
+                    attempts = [
+                      ...latest.attempts,
+                      {
+                        attempt,
+                        status: "MODEL_OUTPUT_INVALID",
+                        model: cause.model,
+                        usage: cause.usage,
+                        error: cause.message,
+                      },
+                    ];
+                  store.update("agent", task.id, PROJECT, {
+                    attempts,
+                    usedTokens,
+                  });
+                  if (
+                    usedTokens >= Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000)
+                  )
+                    throw new Error("本次 Agent 已达到 Token 预算上限");
+                  error = cause.message;
+                  continue;
+                }
                 if (
                   signal.aborted ||
                   get("agent", task.id).status === "CANCELLED"
@@ -5014,7 +5045,7 @@ export function createV2Server(options = {}) {
               }
               store.update("agent", task.id, PROJECT, {
                 status: "FAILED",
-                error: "三次修正后仍未通过Python结果断言，请人工检查",
+                error: "五次修正后仍未通过Python结果断言，请人工检查",
                 finishedAt: new Date().toISOString(),
               });
               return;

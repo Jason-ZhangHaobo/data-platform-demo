@@ -115,6 +115,7 @@ DAPI：单表/参数化 SQL 数据查询 API。XAPI：组合查询或已登记�
 | FR-082 | Python调度与部署包首版 | 只有真实CPython、代码哈希一致、CPU/文件限制生效且五套断言通过的Python Agent任务才能生成`shuduo-python-delivery/v1`不可变包。包包含main.py、09:00/T+1串行调度、合成交易日历、部署清单、冻结输入和验证报告；DAG固定为python_transform→python_assertions→record_evidence。按文件演练必须重新读取包、解析交易日并执行受限Python，保留代码哈希、五套断言和资源限制证据。adapter固定`local-restricted-python-v1`、publicDeployed=false；不得声称云Python沙箱完成 |
 | FR-083 | Python本机受控发布与监控 | Python包通过按文件演练后，工程师须逐项确认代码、断言、交付文件和本机范围，审批绑定包摘要/演练/审阅记录。发布器按合成交易日历真实触发至少两个墙上时钟Python批次，逐批重新加载不可变包并执行受限CPython；成功/失败进入统一monitor_event、monitor_alert、健康聚合和回滚。发布状态固定ACTIVE_LOCAL、publicDeployed=false、agentIndependentE2E=false；云Worker、持久外部tick和公网验收未完成前不得升级范围 |
 | FR-084 | Python发布结果DAPI消费 | DAPI源批次允许Apache Spark或CPython，但必须为调度器真实触发、已发布、验证通过且非公网冒充的SUCCEEDED批次。Spark额外要求main.sql与tests.sql实际执行；CPython额外要求codeExecuted=true和合法引擎版本。创建版本时固化sourceEngine/sourceEngineVersion与不可变业务快照；随后复用同一参数约束、测试、版本切换、应用授权、限流、超时、OpenAPI和调用日志。手工Python运行、按文件演练或缺执行证据的批次不得成为DAPI数据源 |
+| FR-085 | Python完整链路独立评测 | Python不得复用SQL 20例成功率。冻结5个合成证券上下文，每例必须真实调用模型并依次通过需求理解、代码/调试、调度文件、部署文件、工程师审阅、本机发布、上线监控和DAPI授权消费八阶段；目标≥85%，5例离散门要求5/5。最多5次模型修正，格式错误只有带usage才可在预算内重试；所有失败、阻断、救援和Token保留。报告不得包含生成代码、业务行、令牌或日志，并固定agentIndependentE2E=false、publicDeployed=false |
 
 ## UI 与交互（用户补充，必须验收）
 - UI-001：专业、现代、有审美；统一间距、字体、图标、状态色、圆角和层次。

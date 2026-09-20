@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新324/324测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python双语言Agent开发、独立Python文件交付/本机审批/发布/监控及DAPI消费、十域工具目录V2/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、完整分页实时账单门、真实受保护配置格式门与逐项覆盖、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、持久调度、Spark Worker W1构包与W2计划/联合最小策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
+| npm run ci | 最新328/328测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python双语言Agent开发、独立Python文件交付/本机审批/发布/监控/DAPI消费及五例真实评测、十域工具目录V2/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、完整分页实时账单门、真实受保护配置格式门与逐项覆盖、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、持久调度、Spark Worker W1构包与W2计划/联合最小策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -602,3 +602,12 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - Python批次创建DAPI后生成不可变业务快照，版本保留`sourceEngine=CPython`和版本号；查询测试、发布、一次性应用令牌、参数过滤、限流、超时、OpenAPI与调用日志全部复用原服务能力。
 - 合成验收以Python发布批次创建“Python客户资产查询”，受邀应用通过Bearer令牌取得CLIENT-001总资产1800.00；手工/缺codeExecuted的Python批次继续返回`INVALID_RELEASE_RUN`。页面只列满足Spark或CPython专属证据的可用批次。
 - 全量CI通过324/324，源码检查和两套生产构建均通过。
+
+## 2026-09-20：Python五例真实模型完整链路评测
+
+- 新合同固定5个上下文和八阶段，Python与SQL分开计分。执行器报告代码/日志/业务行/令牌均不包含，只保留摘要、阶段状态、尝试数、Token、批次和阻断/救援计数；失败案例使进程非零退出。
+- 第一轮完整运行`92947751…`为0/5、15次模型尝试、24315 Token；主要错误为import、字符串金额直接相加、BitOr、del和未允许调用。第二轮`8bda79c3…`为2/5、17次尝试、31959 Token；失败集中于str/format/union与三次修正不足。两轮均保留为改进前证据，不挑成功样本。
+- 安全边界未开放I/O/网络/进程/反射；只增加纯内存`str`、`format`、`set.union`，返回被拒AST标识符而不回显代码。Python专属修正上限5次；模型非JSON只有带usage才预算内重试。
+- 最终运行`fadb4f5f-16bd-487f-a30e-4423ea33c575`为5/5、100%，共7次模型尝试、11812 Token、10个计时批次，保留1次错误摘要审批被阻断并救援。五例八阶段全部通过，`targetMet=true`；`agentIndependentE2E=false`、`publicDeployed=false`。
+- 脱敏提交证据为[`evidence/python-full-lifecycle-evaluation-2026-09-20.json`](evidence/python-full-lifecycle-evaluation-2026-09-20.json)，源报告SHA-256为`f8dafa904a5388f5d9d7441c0f67662c472d22c4216eb475301ec8c0b00f1789`。
+- 全量CI通过328/328，源码检查和两套生产构建均通过。
