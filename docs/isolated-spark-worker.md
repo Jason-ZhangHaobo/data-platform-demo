@@ -61,6 +61,8 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 函数创建后必须把GetFunction、GetConcurrencyConfig和GetScalingConfig原始响应送入`scripts/verify-v2-spark-worker-function.mjs`。验收同时核对Active/Successful状态、代码字节、Custom Debian、CPU/内存/磁盘/超时、三层ARN与路径、VPC绑定、Worker密钥摘要、无运行角色、无公网出站、实例并发1、预留1和最小实例0。输出只包含布尔检查；即使全部通过也固定`publicDeployed=false`、`controlPlaneConnected=false`，只能作为W2规格证据，不能代替真实Spark调用。
 
+FC同步Invoke事件进入Custom Runtime的`/invoke`，因此Worker新增默认关闭的私有事件适配器。`PRIVATE_HEALTH_V1`只返回协议、引擎、隔离与运行时布尔；`SIGNED_EXECUTE_V1`必须携带原始`shuduo-spark-execution/v1`正文及timestamp/nonce/signature，再由Worker内部转发到同一`/v1/execute`路径。项目、HMAC、时钟、防重放、白名单、大小、单任务和独立断言全部复用，不能通过私有事件绕过。适配器仅在`V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED=true`时存在，其他Content-Type或操作拒绝；W2完成后是否保留由W3调用方案决定。
+
 官方公共层文档确认`custom.debian10`需要显式挂载并配置路径，不能把GitHub Runner上的系统Node/Python/Java误认为FC自带：
 
 - Node20：`acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3`，PATH前置`/opt/nodejs20/bin`；

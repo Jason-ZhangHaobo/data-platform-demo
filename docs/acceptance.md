@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新277/277测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker W1构包与W2计划/OSS内容/私有性/FC规格证据门及既有全量V2回归；不代表公网云资源已部署 |
+| npm run ci | 最新279/279测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker W1构包与W2计划/OSS内容/私有性/FC规格/私有Invoke证据门及既有全量V2回归；不代表公网云资源已部署 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -504,3 +504,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 新增OSS HeadObject证据验证器：实际字节、SHA-256用户元数据和ETag全部匹配才通过；错误输出不回显对象名。验证器明确不证明Bucket私有性或历史禁止覆盖，3项回归覆盖截断、替换和脱敏；真实OSS仍未调用。
 - 新增OSS私有访问验证器：Bucket private ACL、Object private/default ACL、Bucket Policy `IsPublic=false`与Bucket Block Public Access=true四项合取；对象公共ACL或缺失策略/阻断证据均失败。3项测试通过且响应不含Owner/资源名；真实Cloud Shell只读命令仍未执行。
 - 新增Worker函数规格验收器：Active/Successful、代码字节、Custom Debian、三层与路径、资源/VPC、密钥、无运行角色/公网出站、实例并发/预留/缩零联合检查；错误秘密不回显，缺少并发或弹性响应失败。3项测试通过；真实函数尚不存在，因此不计W2云健康。
+- 新增FC Custom Runtime `/invoke`适配：默认关闭且只接受二进制事件；健康响应脱敏。签名执行事件内部复用同一`/v1/execute`，本机实测成功执行后同Nonce重放409；错误Content-Type 415。2项新增测试通过，但尚未通过真实FC Invoke API。

@@ -118,6 +118,7 @@ export function renderV2SparkWorkerW2Plan(input = {}) {
           V2_SPARK_WORKER_RUN_TIMEOUT_MS: "120000",
           V2_SPARK_WORKER_MAX_BODY_BYTES: "2097152",
           V2_SPARK_WORKER_MAX_SKEW_MS: "60000",
+          V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED: "true",
           V2_SPARK_WORKER_SECRET: "PROTECTED_SECRET_REFERENCE",
         },
       },
