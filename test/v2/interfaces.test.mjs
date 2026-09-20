@@ -554,7 +554,7 @@ test("CLI maps cross-module Agent understanding to the same V2 atomic route", as
         "--tool",
         "reports",
         "--catalog-version",
-        "shuduo-agent-tools/v1",
+        "shuduo-agent-tools/v2",
         "--contract-digest",
         "a".repeat(64),
         "--input-json",
@@ -567,7 +567,7 @@ test("CLI maps cross-module Agent understanding to the same V2 atomic route", as
   );
   assert.equal(requests[10].path, "/agent/tools/reports/validate");
   assert.deepEqual(requests[10].options.body, {
-    catalogVersion: "shuduo-agent-tools/v1",
+    catalogVersion: "shuduo-agent-tools/v2",
     contractDigest: "a".repeat(64),
     input: { message: "生成虚构证券持仓分析报表" },
   });
@@ -583,7 +583,7 @@ test("CLI maps cross-module Agent understanding to the same V2 atomic route", as
         "--approval-id",
         "approval-id",
         "--catalog-version",
-        "shuduo-agent-tools/v1",
+        "shuduo-agent-tools/v2",
         "--contract-digest",
         "b".repeat(64),
         "--input-json",
@@ -599,7 +599,7 @@ test("CLI maps cross-module Agent understanding to the same V2 atomic route", as
     "/agent/intents/intent-id/tools/reports/invoke",
   );
   assert.deepEqual(requests[11].options.body, {
-    catalogVersion: "shuduo-agent-tools/v1",
+    catalogVersion: "shuduo-agent-tools/v2",
     contractDigest: "b".repeat(64),
     approvalId: "approval-id",
     input: { message: "生成虚构证券持仓分析报表" },

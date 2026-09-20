@@ -184,6 +184,7 @@
 | D-179 | JASONSECRETS从名称检查升级为真实Runner校验，2026-09-20 | 新工作流不接触云API，只在受保护环境展开白名单bundle并检查平台库、管理员哈希、模型、Worker和调度秘密；可选业务源一旦出现任一项就要求五项完整。结果固定为键名/错误码/present布尔且明确`containsSecretValues=false`。只有该工作流真实成功后才能把现有Secret标为内容就绪。完整CI 315/315 |
 | D-180 | 首次真实受保护配置校验失败且日志边界需收紧，2026-09-20 | 运行`35489413863`在展开阶段失败，固定错误表明平台MySQL、管理员哈希和百炼Key为占位符或格式无效；未进入云API。GitHub会在作业env摘要显示普通Variables，虽然它们非秘密，仍不应在公开日志重复暴露，因此校验工作流改用合成非秘密配置，只读取和验证受保护Secrets。真实内容未通过前部署继续关闭 |
 | D-181 | 逐项Secret是真正的优先配置，2026-09-20 | 旧展开器会校验bundle中已被逐项Secret覆盖的占位值，违背“逐项优先”。修复后先移除所有已由进程环境提供的bundle键，只校验/写入剩余后备值；占位bundle不能覆盖或阻断正确逐项Secret。这样可逐项替换旧bundle而无需一次在聊天或日志搬运全部秘密。完整CI 316/316 |
+| D-182 | Agent工具目录V2统一SQL与Python代码开发，2026-09-20 | development工具从SQL专用升级为CODE_DEVELOPMENT，严格要求language=SPARK_SQL/PYTHON与code，契约摘要随版本变更。Python分支复用同一agent任务、批准、调用租约、取消和任务图，但产物写入python_revision/python_run并执行真实受限CPython及五套断言；证据旅程识别CPython。Python调度交付未实现，schedules步骤固定返回`PYTHON_DELIVERY_NOT_IMPLEMENTED`而不是生成SQL包。完整CI 318/318 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。

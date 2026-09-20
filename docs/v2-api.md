@@ -29,10 +29,10 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /runs/:id | 查询状态 | 同上 |
 | POST /runs/:id/cancel | 取消当前/排队运行 | 明确 CANCELLED；不会随后变为成功 |
 | GET /runs/:id/bundle | 仅允许已通过验证的运行 | SQL、结果、断言、引擎和版本；NOT_PUBLISHED |
-| POST /agent/tasks | message、sql、contextId + 幂等键 | 202；真实模型任务编号；缺配置返回 503 |
+| POST /agent/tasks | message、contextId、language=SPARK_SQL/PYTHON、code + 幂等键；旧SQL调用仍兼容sql字段 | 202；真实模型代码任务编号；SQL进入Spark，Python进入受限CPython与五套断言；缺配置/执行环境返回503 |
 | GET /agent/tasks | 历史委托 | 状态、尝试次数、用量和产物 |
 | GET /agent/tasks/:id | 指定委托 | 同上 |
-| GET /agent/tools | 无 | `shuduo-agent-tools/v1`十域工具目录及完整契约SHA-256摘要：风险、创建/详情/应用路径、依赖、批准、子取消模板、严格输入/输出JSON Schema及幂等要求；不含凭证或授权 |
+| GET /agent/tools | 无 | `shuduo-agent-tools/v2`十域工具目录及完整契约SHA-256摘要：风险、创建/详情/应用路径、依赖、批准、子取消模板、严格输入/输出JSON Schema及幂等要求；development使用CODE_DEVELOPMENT并显式绑定SPARK_SQL/PYTHON与当前代码；不含凭证或授权 |
 | POST /agent/tools/:toolId/validate | `catalogVersion, contractDigest, input` | 在批准或创建任务前按当前目录做服务端契约预检；版本/摘要或输入不匹配失败关闭，固定`execution=NO_EXECUTION`，不创建任务 |
 | POST /agent/intents/:intentId/tools/:destinationId/invoke | `catalogVersion, contractDigest, approvalId, input` | 以当前推荐步骤和有效批准调用专业模块原子API并幂等绑定任务图；仍受模块权限/预算约束，响应只含任务信封，不应用草稿、不发布或授权 |
 | GET/POST /python/revisions | POST:`code, contextId` | 列出或保存受限Python不可变版本；不执行代码，固定本机边界 |
@@ -47,7 +47,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /agent/intents/:id/children/:destination/cancel | 空对象 | 从最新handoff或未绑定工具调用租约解析并取消QUEUED/RUNNING专业任务；父意图不取消，完成态409，重复取消幂等 |
 | GET/POST /agent/intents/:id/handoffs | 只读交接或destinationId/专业任务/approvalId + 幂等键 | 已执行专业任务必须绑定同一步骤有效批准，绑定后批准转BOUND；无任务ID的草稿交接仍为NO_EXECUTION |
 | GET /agent/tasks/:id/journey | 只读指定委托 | 七阶段现有版本/运行/交付/审批/计时批次/监控证据与责任归属；固定非Agent自主E2E、非公网，不返回业务行或原始报错 |
-| POST /agent/tasks/:id/prepare-delivery | 空对象 + 幂等键 | 仅对真实模型+Spark独立断言成功任务返回后台交付准备编号；生成不可变调度/部署包并真实文件演练，不审批或发布 |
+| POST /agent/tasks/:id/prepare-delivery | 空对象 + 幂等键 | 当前仅对真实模型+Spark独立断言成功任务返回后台交付准备编号；Python返回`PYTHON_DELIVERY_NOT_IMPLEMENTED`，不生成SQL冒充包；SQL生成不可变调度/部署包并真实文件演练，不审批或发布 |
 | GET /agent/deliveries | 可选sourceAgentTaskId | 列出受控准备阶段、包摘要、演练与失败；不返回密码/业务行 |
 | GET /agent/deliveries/:id | 无 | 指定准备任务；成功阶段AWAITING_ENGINEER_REVIEW，范围DELIVERY_PREPARATION |
 | POST /agent/deliveries/:id/cancel | 空对象 | 取消排队/运行中的文件演练并保留包和运行状态，不会随后变成成功 |
@@ -179,7 +179,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /internal/scheduler/tick | HMAC签名的`{limit}` | 外部持久调度驱动领取到期ACTIVE_CLOUD批次；不接受用户会话替代服务签名，默认关闭 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
-当前 Agent 任务返回 completionScope=SQL_DEVELOPMENT、fullLifecycleE2E=false；
+当前代码 Agent 按语言返回 completionScope=SQL_DEVELOPMENT或PYTHON_DEVELOPMENT、fullLifecycleE2E=false；Python只到代码与独立断言，调度交付仍返回明确未实现边界；
 即使 SUCCEEDED 也只代表代码阶段通过。旧记录缺少范围字段同样不能被计为完整 E2E。
 完整 E2E 要求理解需求至上线后监控的全部证据，定义及分阶段门槛见 PRD.md。
 数据服务Agent返回completionScope=DATA_SERVICE_DESIGN、fullLifecycleE2E=false；成功只表示方案引用和约束校验通过。

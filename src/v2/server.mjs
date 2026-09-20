@@ -19,6 +19,7 @@ import {
 } from "./python.mjs";
 import {
   generateSql,
+  generatePython,
   generateDataServicePlan,
   generateIngestionPlan,
   generateRealtimePlan,
@@ -241,6 +242,16 @@ export function createV2Server(options = {}) {
       budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY;
       const result = await generateSql(input, env);
+      if (keyAtRequest === env.DASHSCOPE_API_KEY)
+        modelVerifiedAt = new Date().toISOString();
+      return result;
+    });
+  const pythonGenerator =
+    options.pythonGenerator ??
+    (async (input) => {
+      budget.assertCanStartModel();
+      const keyAtRequest = env.DASHSCOPE_API_KEY;
+      const result = await generatePython(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
         modelVerifiedAt = new Date().toISOString();
       return result;
@@ -629,6 +640,16 @@ export function createV2Server(options = {}) {
       source,
       hash: hash(sql),
       author: "local-engineer",
+    });
+  const pythonRevision = (code, contextId, source) =>
+    store.create("python_revision", PROJECT, {
+      language: "PYTHON",
+      code,
+      codeHash: hash(code),
+      contextId,
+      source,
+      executionScope: "LOCAL_RESTRICTED_PYTHON",
+      publicDeployed: false,
     });
   const schedule = (kind, item, work) => {
     const controller = new AbortController();
@@ -2658,7 +2679,7 @@ export function createV2Server(options = {}) {
             code: "AGENT_STEP_APPROVAL_REQUIRED",
           });
         if (
-          ["MESSAGE", "SQL_DEVELOPMENT"].includes(tool.createMode) &&
+          ["MESSAGE", "CODE_DEVELOPMENT"].includes(tool.createMode) &&
           body.input.message !== step.objective
         )
           throw Object.assign(fail(409, "工具输入与已批准的步骤目标不一致"), {
@@ -2688,11 +2709,23 @@ export function createV2Server(options = {}) {
           if (
             !sourceHandoff ||
             sourceHandoff.specialistTaskId !== body.input.sourceTaskId ||
-            sourceTask?.status !== "SUCCEEDED"
+            sourceTask?.status !== "SUCCEEDED" ||
+            sourceTask?.language === "PYTHON"
           )
-            throw Object.assign(fail(409, "交付准备必须引用当前任务图已完成的数据开发任务"), {
-              code: "AGENT_TOOL_DEPENDENCY_NOT_READY",
-            });
+            throw Object.assign(
+              fail(
+                409,
+                sourceTask?.language === "PYTHON"
+                  ? "受限Python已完成代码与断言，但Python调度交付尚未开放"
+                  : "交付准备必须引用当前任务图已完成的数据开发任务",
+              ),
+              {
+                code:
+                  sourceTask?.language === "PYTHON"
+                    ? "PYTHON_DELIVERY_NOT_IMPLEMENTED"
+                    : "AGENT_TOOL_DEPENDENCY_NOT_READY",
+              },
+            );
         }
         const toolInputHash = hash(JSON.stringify(body.input));
         if (approval.status === "BOUND") {
@@ -4246,6 +4279,14 @@ export function createV2Server(options = {}) {
         await readBody(req);
         const agent = get("agent", prepareAgentDelivery[1]),
           finalAttempt = agent.attempts?.at(-1);
+        if (agent.language === "PYTHON")
+          throw Object.assign(
+            fail(
+              409,
+              "受限Python已完成代码与断言；调度文件和部署包将在Python交付阶段开放",
+            ),
+            { code: "PYTHON_DELIVERY_NOT_IMPLEMENTED" },
+          );
         if (agent.status !== "SUCCEEDED" || finalAttempt?.status !== "SUCCEEDED")
           throw fail(409, "只有代码Agent与独立断言通过后才能准备交付");
         const codeJourney = agentEvidenceJourney({ store, project: PROJECT, task: agent });
@@ -4580,16 +4621,40 @@ export function createV2Server(options = {}) {
       if (method === "POST" && path === "/api/v2/agent/tasks") {
         const body = await readBody(req),
           message = text(body.message, 4, 2000),
-          currentSql = text(body.sql);
+          language =
+            body.language === undefined
+              ? "SPARK_SQL"
+              : text(body.language, 3, 20),
+          currentCode = text(body.code ?? body.sql, 1, 20_000);
+        if (!["SPARK_SQL", "PYTHON"].includes(language))
+          throw fail(422, "数据开发语言不受支持");
         const context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效上下文");
-        if (!options.generator && !modelSettings(env).configured)
+        if (
+          !(language === "PYTHON" ? options.pythonGenerator : options.generator) &&
+          !modelSettings(env).configured
+        )
           throw new ModelUnavailable();
-        if (!options.runner && !runtime.available)
+        if (
+          language === "SPARK_SQL" &&
+          !options.runner &&
+          !runtime.available
+        )
           throw fail(503, "请先准备 Spark 执行环境再运行 Agent");
+        if (
+          language === "PYTHON" &&
+          !options.pythonRunner &&
+          !pythonRuntime.available
+        )
+          throw fail(503, "请先准备受限Python执行环境再运行Agent");
         const key = text(req.headers["idempotency-key"], 1, 100),
           signature = hash(
-            JSON.stringify({ message, currentSql, contextId: context.id }),
+            JSON.stringify({
+              message,
+              language,
+              currentCode,
+              contextId: context.id,
+            }),
           );
         const dedup = store.deduplicate(
           PROJECT + ":agent:" + key,
@@ -4597,11 +4662,15 @@ export function createV2Server(options = {}) {
           () =>
             store.create("agent", PROJECT, {
               message,
+              language,
               contextId: context.id,
               status: "QUEUED",
               attempts: [],
               mode: "LIVE_MODEL",
-              completionScope: "SQL_DEVELOPMENT",
+              completionScope:
+                language === "PYTHON"
+                  ? "PYTHON_DEVELOPMENT"
+                  : "SQL_DEVELOPMENT",
               fullLifecycleE2E: false,
               validationContractId,
               maxAttempts: 3,
@@ -4610,7 +4679,114 @@ export function createV2Server(options = {}) {
         const task = get("agent", dedup.id);
         if (!dedup.replayed)
           schedule("agent", task, async (signal) => {
-            let sql = currentSql,
+            if (language === "PYTHON") {
+              let code = currentCode,
+                error,
+                usedTokens = 0;
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                if (signal.aborted) throw new Error("任务已取消");
+                const remainingBudget =
+                  Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) - usedTokens;
+                if (remainingBudget < 1)
+                  throw new Error("本次 Agent 已达到 Token 预算上限");
+                const generated = await pythonGenerator({
+                  message,
+                  context,
+                  currentCode: code,
+                  error,
+                  signal,
+                  remainingBudget,
+                });
+                if (
+                  signal.aborted ||
+                  get("agent", task.id).status === "CANCELLED"
+                )
+                  return;
+                const reportedTokens = Number(generated.usage?.total_tokens);
+                usedTokens +=
+                  Number.isSafeInteger(reportedTokens) && reportedTokens > 0
+                    ? reportedTokens
+                    : remainingBudget;
+                if (usedTokens > Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000))
+                  throw new Error("本次 Agent 已达到 Token 预算上限");
+                code = generated.code;
+                const rev = pythonRevision(code, context.id, "LIVE_MODEL"),
+                  run = store.create("python_run", PROJECT, {
+                    revisionId: rev.id,
+                    revisionHash: rev.codeHash,
+                    contextId: context.id,
+                    validationContractId,
+                    status: "RUNNING",
+                    startedAt: new Date().toISOString(),
+                    engine: "CPython",
+                    executionScope: "LOCAL_RESTRICTED_PYTHON",
+                    publicDeployed: false,
+                    agentTaskId: task.id,
+                  });
+                let completed;
+                try {
+                  const result = await pythonRunner({
+                    code,
+                    context,
+                    validationContexts: contextIds.map(getContext),
+                    signal,
+                    timeoutMs: Number(
+                      env.V2_PYTHON_RUN_TIMEOUT_MS ?? 10_000,
+                    ),
+                  });
+                  if (get("agent", task.id).status === "CANCELLED") return;
+                  completed = store.update("python_run", run.id, PROJECT, {
+                    ...result,
+                    finishedAt: new Date().toISOString(),
+                  });
+                } catch (cause) {
+                  store.update("python_run", run.id, PROJECT, {
+                    status: signal.aborted ? "CANCELLED" : "FAILED",
+                    error: cause.message,
+                    finishedAt: new Date().toISOString(),
+                  });
+                  throw cause;
+                }
+                const latest = get("agent", task.id),
+                  attempts = [
+                    ...latest.attempts,
+                    {
+                      attempt,
+                      runId: run.id,
+                      revisionId: rev.id,
+                      status: completed.status,
+                      model: generated.model,
+                      usage: generated.usage,
+                      explanation: generated.explanation,
+                    },
+                  ];
+                store.update("agent", task.id, PROJECT, {
+                  attempts,
+                  revisionId: rev.id,
+                  code,
+                  explanation: generated.explanation,
+                  usedTokens,
+                });
+                if (completed.status === "SUCCEEDED") {
+                  store.update("agent", task.id, PROJECT, {
+                    status: "SUCCEEDED",
+                    finishedAt: new Date().toISOString(),
+                  });
+                  return;
+                }
+                error =
+                  completed.error ??
+                  completed.validation?.issues?.join("；") ??
+                  "Python结果未通过独立断言";
+              }
+              store.update("agent", task.id, PROJECT, {
+                status: "FAILED",
+                error: "三次修正后仍未通过Python结果断言，请人工检查",
+                finishedAt: new Date().toISOString(),
+              });
+              return;
+            }
+            let sql = currentCode,
               error,
               usedTokens = 0;
             for (let attempt = 1; attempt <= 3; attempt++) {

@@ -60,7 +60,7 @@ import { SecurityWorkbench } from "./SecurityWorkbench";
 import { ReportsWorkbench } from "./ReportsWorkbench";
 import { OperationsWorkbench } from "./OperationsWorkbench";
 import { AgentCenter } from "./AgentCenter";
-import { PythonWorkbench } from "./PythonWorkbench";
+import { initialPythonCode, PythonWorkbench } from "./PythonWorkbench";
 import { CloudReadinessPanel } from "./CloudReadinessPanel";
 import {
   AuthDialog,
@@ -355,6 +355,7 @@ function App() {
         "agent-center",
     ),
     [sql, setSql] = useState(""),
+    [pythonCode, setPythonCode] = useState(initialPythonCode),
     [developmentLanguage, setDevelopmentLanguage] = useState<"SQL" | "PYTHON">("SQL"),
     [original, setOriginal] = useState(""),
     [diff, setDiff] = useState(false);
@@ -761,6 +762,9 @@ function App() {
             modelConfigured={Boolean(status?.model.configured)}
             contextId={contextId}
             currentSql={sql}
+            currentPythonCode={pythonCode}
+            developmentLanguage={developmentLanguage}
+            onDevelopmentLanguageChange={setDevelopmentLanguage}
             onOpenDestination={(destination, handoffMessage) => {
               if (handoffMessage) setAgentHandoff({ destination, message: handoffMessage });
               setNav(destination);
@@ -780,6 +784,8 @@ function App() {
                 contextId={contextId}
                 canWrite={canWrite}
                 available={status?.python?.available === true}
+                code={pythonCode}
+                onCodeChange={setPythonCode}
               />
             ) : (
               <>
