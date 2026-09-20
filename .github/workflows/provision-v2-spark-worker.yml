@@ -1,0 +1,192 @@
+name: Provision V2 Spark worker function
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: v2-spark-worker-provision
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Create the private Worker only after every W2 gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: v2-staging
+    env:
+      ALIBABA_CLOUD_REGION_ID: cn-hangzhou
+      V2_DEPLOY_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
+      V2_DEPLOY_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+      V2_FUNCTION_NAME: ${{ vars.V2_FUNCTION_NAME }}
+      V2_SPARK_WORKER_FUNCTION_NAME: ${{ vars.V2_SPARK_WORKER_FUNCTION_NAME }}
+      V2_OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
+      V2_SPARK_WORKER_PACKAGE_SHA256: ${{ vars.V2_SPARK_WORKER_PACKAGE_SHA256 }}
+      V2_SPARK_WORKER_PACKAGE_BYTES: ${{ vars.V2_SPARK_WORKER_PACKAGE_BYTES }}
+      V2_SPARK_WORKER_UPLOAD_RUN_ID: ${{ vars.V2_SPARK_WORKER_UPLOAD_RUN_ID }}
+      V2_SPARK_WORKER_UPLOAD_HEAD_SHA: ${{ vars.V2_SPARK_WORKER_UPLOAD_HEAD_SHA }}
+      V2_SPARK_WORKER_OSS_RECEIPT_FILE: ${{ vars.V2_SPARK_WORKER_OSS_RECEIPT_FILE }}
+      V2_VPC_ID: ${{ vars.V2_VPC_ID }}
+      V2_VSW_ID: ${{ vars.V2_VSW_ID }}
+      V2_SECURITY_GROUP_ID: ${{ vars.V2_SECURITY_GROUP_ID }}
+      V2_SPARK_WORKER_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
+      JASONSECRETS: ${{ secrets.JASONSECRETS }}
+      V2_HARD_MONTHLY_BUDGET_CNY: "200"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Expand optional JASONSECRETS bundle
+        run: node scripts/export-v2-staging-secret-bundle.mjs
+
+      - name: Validate immutable Worker identity and privacy receipt
+        run: |
+          set -euo pipefail
+          account_id="$(printf '%s' "$V2_DEPLOY_ROLE_ARN" | sed -nE 's#^acs:ram::([0-9]{12,20}):role/[a-z0-9-]{1,64}$#\1#p')"
+          test -n "$account_id"
+          test "$ALIBABA_CLOUD_REGION_ID" = cn-hangzhou
+          test "${#V2_SPARK_WORKER_SECRET}" -ge 32
+          export ALIYUN_ACCOUNT_ID="$account_id"
+          export V2_SPARK_WORKER_CODE_OBJECT="data-platform-demo/v2/spark-worker/$V2_SPARK_WORKER_PACKAGE_SHA256.zip"
+          printf 'ALIYUN_ACCOUNT_ID=%s\n' "$account_id" >> "$GITHUB_ENV"
+          printf 'V2_SPARK_WORKER_CODE_OBJECT=%s\n' "$V2_SPARK_WORKER_CODE_OBJECT" >> "$GITHUB_ENV"
+          node scripts/v2-spark-worker-oss-receipt.mjs --verify
+
+      - name: Set up Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@v1
+        with:
+          version: "3.4.11"
+
+      - name: Configure Alibaba Cloud credentials with GitHub OIDC
+        uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ env.V2_DEPLOY_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-spark-provision
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+
+      - name: Verify current monthly bill completely and below budget
+        run: |
+          set -euo pipefail
+          umask 077
+          bill_root="$(mktemp -d)"
+          trap 'rm -rf "$bill_root"' EXIT
+          billing_cycle="$(TZ=Asia/Shanghai date +%Y-%m)"
+          page=1
+          seen=0
+          total=1
+          while test "$seen" -lt "$total"; do
+            test "$page" -le 100
+            file="$bill_root/page-$page.json"
+            aliyun bssopenapi QueryBill \
+              --BillingCycle "$billing_cycle" \
+              --PageNum "$page" \
+              --PageSize 300 > "$file"
+            jq -e '.Success == true and (.Data.Items.Item | type == "array")' "$file" >/dev/null
+            count="$(jq '.Data.Items.Item | length' "$file")"
+            total="$(jq -r '.Data.TotalCount | tonumber' "$file")"
+            seen=$((seen + count))
+            page=$((page + 1))
+          done
+          mapfile -t bill_files < <(find "$bill_root" -type f -name 'page-*.json' -print | sort -V)
+          bill_result="$(node scripts/verify-v2-monthly-bill-pages.mjs "${bill_files[@]}")"
+          jq -e '.ok == true and .belowBudget == true' <<<"$bill_result" >/dev/null
+          spend="$(jq -r '.spendCny' <<<"$bill_result")"
+          printf 'V2_ACCOUNT_MONTHLY_SPEND_CNY=%s\n' "$spend" >> "$GITHUB_ENV"
+
+      - name: Verify network resources and require the Worker to be absent
+        run: |
+          set -euo pipefail
+          umask 077
+          vsw_file="$(mktemp)"
+          sg_file="$(mktemp)"
+          response_file="$(mktemp)"
+          error_file="$(mktemp)"
+          trap 'rm -f "$vsw_file" "$sg_file" "$response_file" "$error_file"' EXIT
+          aliyun vpc DescribeVSwitchAttributes \
+            --RegionId "$ALIBABA_CLOUD_REGION_ID" \
+            --VSwitchId "$V2_VSW_ID" > "$vsw_file"
+          jq -e --arg vpc "$V2_VPC_ID" --arg vsw "$V2_VSW_ID" \
+            '.VSwitchId == $vsw and .VpcId == $vpc and .Status == "Available"' "$vsw_file" >/dev/null
+          aliyun ecs DescribeSecurityGroups \
+            --RegionId "$ALIBABA_CLOUD_REGION_ID" \
+            --SecurityGroupId "$V2_SECURITY_GROUP_ID" > "$sg_file"
+          jq -e --arg vpc "$V2_VPC_ID" --arg sg "$V2_SECURITY_GROUP_ID" \
+            'any(.SecurityGroups.SecurityGroup[]; (.SecurityGroupId == $sg and .VpcId == $vpc))' "$sg_file" >/dev/null
+          if aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME" \
+            --region "$ALIBABA_CLOUD_REGION_ID" >"$response_file" 2>"$error_file"; then
+            echo 'The Worker already exists; this create-only workflow will not update it.' >&2
+            exit 1
+          fi
+          code="$(node scripts/extract-aliyun-error-code.mjs "$response_file" "$error_file")"
+          test "$code" = FunctionNotFound
+
+      - name: Create private Worker and fixed concurrency boundaries
+        run: |
+          set -euo pipefail
+          umask 077
+          private_root="$(mktemp -d)"
+          chmod 0700 "$private_root"
+          trap 'rm -rf "$private_root"' EXIT
+          body="$private_root/function.json"
+          V2_SPARK_WORKER_FUNCTION_BODY_FILE="$body" \
+            node scripts/render-v2-spark-worker-function.mjs >/dev/null
+          if ! aliyun fc POST /2023-03-30/functions \
+            --region "$ALIBABA_CLOUD_REGION_ID" \
+            --body-file "$body" > "$private_root/create.json" 2> "$private_root/create-error.txt"; then
+            code="$(node scripts/extract-aliyun-error-code.mjs "$private_root/create.json" "$private_root/create-error.txt")"
+            echo "::error title=Worker create failed::$code"
+            exit 1
+          fi
+          jq -n '{reservedConcurrency:1}' > "$private_root/concurrency.json"
+          if ! aliyun fc PUT "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/concurrency" \
+            --region "$ALIBABA_CLOUD_REGION_ID" \
+            --body-file "$private_root/concurrency.json" > "$private_root/concurrency-result.json" 2> "$private_root/concurrency-error.txt"; then
+            code="$(node scripts/extract-aliyun-error-code.mjs "$private_root/concurrency-result.json" "$private_root/concurrency-error.txt")"
+            echo "::error title=Worker concurrency failed::$code"
+            exit 1
+          fi
+          jq -n '{minInstances:0,enableOnDemandScaling:true,scheduledPolicies:[],horizontalScalingPolicies:[],enableMixMode:false,requestDispatchPolicy:"Balanced"}' \
+            > "$private_root/scaling.json"
+          if ! aliyun fc PUT "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/scaling-config" \
+            --region "$ALIBABA_CLOUD_REGION_ID" \
+            --body-file "$private_root/scaling.json" > "$private_root/scaling-result.json" 2> "$private_root/scaling-error.txt"; then
+            code="$(node scripts/extract-aliyun-error-code.mjs "$private_root/scaling-result.json" "$private_root/scaling-error.txt")"
+            echo "::error title=Worker scaling failed::$code"
+            exit 1
+          fi
+          verified=false
+          for attempt in $(seq 1 18); do
+            if aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME" \
+              --region "$ALIBABA_CLOUD_REGION_ID" > "$private_root/function-verified.json" 2>/dev/null; then
+              state="$(jq -r '.state + ":" + .lastUpdateStatus' "$private_root/function-verified.json")"
+              if test "$state" = Active:Successful; then verified=true; break; fi
+            fi
+            sleep 5
+          done
+          test "$verified" = true
+          aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/concurrency" \
+            --region "$ALIBABA_CLOUD_REGION_ID" > "$private_root/concurrency-verified.json"
+          aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/scaling-config" \
+            --region "$ALIBABA_CLOUD_REGION_ID" > "$private_root/scaling-verified.json"
+          jq -n \
+            --slurpfile function "$private_root/function-verified.json" \
+            --slurpfile concurrency "$private_root/concurrency-verified.json" \
+            --slurpfile scaling "$private_root/scaling-verified.json" \
+            '{function:$function[0],concurrency:$concurrency[0],scaling:$scaling[0]}' \
+            | node scripts/verify-v2-spark-worker-function.mjs
+
+      - name: Report the remaining private smoke gate
+        run: |
+          echo 'Worker configuration is verified. W2 remains incomplete until a Cloud Shell administrator performs the fixed PRIVATE_SPARK_SMOKE_V1 invoke.' >> "$GITHUB_STEP_SUMMARY"

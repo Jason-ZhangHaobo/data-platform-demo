@@ -105,6 +105,8 @@ DAPI：单表/参数化 SQL 数据查询 API。XAPI：组合查询或已登记�
 | FR-072 | 受限Python数据开发首版 | 数据开发支持与Spark SQL并列的Python模式，代码只能定义`transform(data, params)`，真实CPython隔离子进程执行虚构accounts/positions/cash行，并对五套上下文做独立结果断言。禁止import、文件/网络、反射、内部名称和未批准函数/方法；限制AST规模、range、CPU、文件、外部超时和取消。内存上限是否由宿主真正强制必须作为证据返回，公网模式要求为true，否则拒绝结果 |
 | FR-073 | Python版本与多端同源 | Python代码版本、运行、详情和取消使用`/api/v2/python`资源并绑定上下文、代码摘要和验证契约；服务重启将未完成运行标为INTERRUPTED。GUI提供语言切换、编辑、保存、运行、五场景结果和边界反馈；CLI从文件保存代码，MCP声明同一资源。首版固定`LOCAL_RESTRICTED_PYTHON`、`publicDeployed=false`，不冒充PySpark、任意包、云沙箱或生产Python |
 | FR-074 | Worker不可变上传门 | W2上传必须在受保护`v2-staging`环境用GitHub OIDC短期身份执行，重新构建并同时核对包SHA-256和字节数。只允许当前摘要对象的Head/Put/Get；已存在时只验证不覆盖，不存在时仅在错误码明确为NoSuchKey/NoSuchObject后使用`forbid-overwrite`、private ACL和摘要元数据上传。Head通过后必须下载对象并重新计算SHA-256/字节数，不能只信任可伪造的用户元数据。上传阶段不得创建FC；对象内容通过后仍须Cloud Shell完成Bucket ACL、Object ACL、Policy Status和Block Public Access四证，才能进入函数创建 |
+| FR-075 | Worker OSS短期收据 | Cloud Shell四项私有性核验必须与Head内容证据、当前包SHA/字节、内容地址对象键哈希、上传工作流Run ID和Head SHA绑定，生成不含Bucket/Object/Owner的六小时收据。函数创建工作流只读取`docs/evidence`下非符号链接的固定命名收据；过期、外部路径、包/运行不匹配、任一内容或私有性布尔为false均拒绝 |
+| FR-076 | Worker创建门 | 独立Worker函数只能由手动`v2-staging`工作流使用OIDC短期身份创建；创建前验证完整分页当月QueryBill且总额严格低于200元、同VPC交换机/安全组、函数明确不存在、当前OSS收据有效和共享密钥至少32字符。函数体由0600仅写一次文件生成，不回显秘密；固定无运行角色、无公网出站、1vCPU/2GiB/10GiB/180秒、三官方层、实例并发1、预留1、最小实例0。工作流不得更新/删除函数或调用Worker；创建后仍须Cloud Shell固定证券烟测 |
 
 ## UI 与交互（用户补充，必须验收）
 - UI-001：专业、现代、有审美；统一间距、字体、图标、状态色、圆角和层次。

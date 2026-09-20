@@ -19,6 +19,9 @@
 | `V2_AUDIT_EVIDENCE_FILE` | `docs/evidence/` 下当月脱敏审计文件路径 |
 | `V2_SPARK_EXECUTOR_URL` | 已完成真实隔离 Worker 验收后再填写；首期留空 |
 | `V2_SPARK_WORKER_FUNCTION_NAME` | 独立Spark Worker函数名；必须与`V2_FUNCTION_NAME`不同，W2获批部署前留空 |
+| `V2_SPARK_WORKER_PACKAGE_SHA256` / `V2_SPARK_WORKER_PACKAGE_BYTES` | 当前main双构建和包内烟测通过后的精确包身份；包变化时必须重新验证并更新策略 |
+| `V2_SPARK_WORKER_UPLOAD_RUN_ID` / `V2_SPARK_WORKER_UPLOAD_HEAD_SHA` | 成功执行不可变上传门的GitHub Run ID和提交SHA；只用于绑定短期OSS收据 |
+| `V2_SPARK_WORKER_OSS_RECEIPT_FILE` | 仓库`docs/evidence/v2-spark-worker-oss-receipt-*.json`相对路径；收据六小时有效且不得含资源名 |
 | `V2_MYSQL_SOURCE_TABLE_ALLOWLIST` | 虚构业务库允许读取的表名逗号列表；真实同VPC验收前留空 |
 | `V2_MYSQL_SOURCE_SYNC_ENABLED` | 仅真实业务源权限/限额验收后设为`true`；默认留空或`false` |
 
@@ -43,4 +46,4 @@
 
 工作流会先运行 `scripts/verify-v2-staging-config.mjs`，只返回缺失名称或固定错误码；角色、VPC、账单、函数是否存在等检查随后执行。任何一项失败都不会创建或更新 FC 函数。
 
-Worker W2计划把同一个`V2_SPARK_EXECUTOR_SECRET`仅在部署时映射为Worker环境的`V2_SPARK_WORKER_SECRET`，不要求保存第二份长期秘密。包SHA-256和字节数由受控Linux构建产生，不手填为环境变量。Worker的OSS上传和FC创建尚未获本轮新增授权，不能因计划生成器通过就运行部署。
+Worker W2计划把同一个`V2_SPARK_EXECUTOR_SECRET`仅在部署时映射为Worker环境的`V2_SPARK_WORKER_SECRET`，不要求保存第二份长期秘密。包SHA-256和字节数只能来自受控Linux构建，上传运行和短期收据变量只能在对应真实门通过后由Codex写入。用户已授权精确对象Get/Put和既定私有Worker边界；授权不等于策略、对象或函数已经创建，也不包含W3控制面Invoke。
