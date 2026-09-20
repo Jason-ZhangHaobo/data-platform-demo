@@ -77,7 +77,7 @@ W2新增FC私有Invoke适配：默认关闭，健康事件脱敏；签名执行�
 
 W2新增固定证券烟测：Cloud Shell只发送无参数操作名，Worker内部构造固定虚构数据并自签名，返回脱敏摘要；不向人工暴露共享密钥或开放任意SQL。当前包已在同一main提交双构建：318,914,420字节、SHA-256 `f5083be5…4118`一致，5套回归和tests.sql通过；W1重新验收，仍待W2真实云。
 
-W2精确对象权限已实现独立渲染/幂等应用器：只含当前摘要对象Get/Put，同名策略漂移失败关闭，无List/Delete/Invoke。该权限尚未获新增授权，当前只计代码准备，Cloud Shell不得执行apply。
+W2精确对象权限已实现独立渲染/幂等应用器：只含当前摘要对象Get/Put，同名策略漂移失败关闭，无List/Delete/Invoke。2026-09-20已获用户明确授权；当前因Cloud Shell会话过期尚未执行apply，不能计为策略已附加或W2已部署。
 
 经典数据开发新增受限Python首版：真实CPython子进程、版本/运行/取消、五套证券断言及GUI/API/CLI/MCP同源已实现；禁止import/文件/网络/反射并回传CPU/文件/内存限制证据。当前仅`LOCAL_RESTRICTED_PYTHON`，macOS地址空间上限未验证，云隔离、Python Agent生成、第三方包和调度交付仍待后续。
 
