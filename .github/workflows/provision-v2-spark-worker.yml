@@ -34,7 +34,6 @@ jobs:
       V2_VSW_ID: ${{ vars.V2_VSW_ID }}
       V2_SECURITY_GROUP_ID: ${{ vars.V2_SECURITY_GROUP_ID }}
       V2_SPARK_WORKER_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
-      JASONSECRETS: ${{ secrets.JASONSECRETS }}
       V2_HARD_MONTHLY_BUDGET_CNY: "200"
     steps:
       - name: Checkout repository
@@ -45,9 +44,6 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-
-      - name: Expand optional JASONSECRETS bundle
-        run: node scripts/export-v2-staging-secret-bundle.mjs
 
       - name: Validate immutable Worker identity and privacy receipt
         run: |
