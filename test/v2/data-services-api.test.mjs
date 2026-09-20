@@ -88,6 +88,8 @@ test("V2 API exposes versioned DAPI/XAPI to an authorized external caller", asyn
       schedulerTriggered: true,
       engine: "Apache Spark",
       engineVersion: "3.5.7",
+      mainSqlExecuted: true,
+      testSqlValidation: { passed: true },
       rows: getContext("holdings-t1").expected,
       validation: { passed: true },
     });
@@ -304,6 +306,8 @@ test("Data Agent plans a governed DAPI and only creates a draft after apply", as
       schedulerTriggered: true,
       engine: "Apache Spark",
       engineVersion: "3.5.7",
+      mainSqlExecuted: true,
+      testSqlValidation: { passed: true },
       rows: getContext().expected,
       validation: { passed: true },
     }),

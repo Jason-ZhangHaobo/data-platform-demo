@@ -25,6 +25,8 @@ function setup(options = {}) {
       schedulerTriggered: true,
       engine: "Apache Spark",
       engineVersion: "3.5.7",
+      mainSqlExecuted: true,
+      testSqlValidation: { passed: true },
       rows: getContext("holdings-t1").expected,
       validation: { passed: true },
     }),
@@ -124,6 +126,47 @@ test("DAPI uses a real scheduled release result, versioned tests and OpenAPI", a
     switched = app.manager.detail(service.id);
     assert.equal(switched.publishedVersion.id, version1.id);
     assert.equal(switched.currentVersionId, version1.id);
+  } finally {
+    app.close();
+  }
+});
+
+test("DAPI can snapshot a governed scheduled CPython release result", async () => {
+  const app = setup();
+  try {
+    const pythonRun = app.store.create("release_run", PROJECT, {
+        releaseId: "release-python-local",
+        status: "SUCCEEDED",
+        published: true,
+        publicDeployed: false,
+        schedulerTriggered: true,
+        engine: "CPython",
+        engineVersion: "3.12.14",
+        codeExecuted: true,
+        rows: getContext("holdings-t1").expected,
+        validation: { passed: true },
+      }),
+      service = await publishedDapi(app.manager, pythonRun, {
+        name: "Python客户资产查询",
+        slug: "python-customer-assets",
+        fields: ["client_id", "total_assets", "security_count"],
+      }),
+      detail = app.manager.detail(service.id),
+      application = app.manager.createApplication({
+        name: "Python结果验收应用",
+        serviceIds: [service.id],
+      }),
+      response = await app.manager.invoke(
+        "DAPI",
+        "python-customer-assets",
+        `Bearer ${application.token}`,
+        { client_id: "CLIENT-001", page: 1, page_size: 10 },
+      );
+    assert.equal(detail.publishedVersion.sourceEngine, "CPython");
+    assert.equal(detail.publishedVersion.sourceEngineVersion, "3.12.14");
+    assert.equal(response.data.length, 1);
+    assert.equal(response.data[0].total_assets, "1800.00");
+    assert.equal(response.localTestOnly, true);
   } finally {
     app.close();
   }
@@ -299,6 +342,7 @@ test("DAPI creation rejects simulated, untriggered or unverified runs", () => {
       { published: false },
       { schedulerTriggered: false },
       { engine: "SIMULATED" },
+      { engine: "CPython", engineVersion: "3.12.14", codeExecuted: false },
       { validation: { passed: false } },
     ]) {
       const run = app.store.create("release_run", PROJECT, {

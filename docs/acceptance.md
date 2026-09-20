@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新322/322测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python双语言Agent开发、独立Python文件交付与本机审批/发布/监控、十域工具目录V2/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、完整分页实时账单门、真实受保护配置格式门与逐项覆盖、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、持久调度、Spark Worker W1构包与W2计划/联合最小策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
+| npm run ci | 最新324/324测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python双语言Agent开发、独立Python文件交付/本机审批/发布/监控及DAPI消费、十域工具目录V2/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、完整分页实时账单门、真实受保护配置格式门与逐项覆盖、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、持久调度、Spark Worker W1构包与W2计划/联合最小策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -595,3 +595,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - Data Agent Python用例实际完成代码、调试、调度文件、部署文件、人工审阅、审批、两个计时批次和健康监控，`localEvidenceComplete=true`；同时固定`agentIndependentE2E=false`、`publicDeployed=false`，不计公网完整E2E。
 - 交付工作台按包格式显示main.sql/main.py、Spark/CPython、对应断言和代码摘要，并继续明确“不代表公网或生产上线”。
 - 全量CI通过322/322，源码检查和两套生产构建均通过。
+
+## 2026-09-20：Python发布结果接入DAPI
+
+- DAPI发布批次门从“固定Spark引擎”升级为“统一发布证据+语言专属执行证据”：Spark要求mainSqlExecuted与testSqlValidation通过；CPython要求codeExecuted与合法版本。两者都必须SUCCEEDED、published、schedulerTriggered、validation通过且`publicDeployed=false`。
+- Python批次创建DAPI后生成不可变业务快照，版本保留`sourceEngine=CPython`和版本号；查询测试、发布、一次性应用令牌、参数过滤、限流、超时、OpenAPI与调用日志全部复用原服务能力。
+- 合成验收以Python发布批次创建“Python客户资产查询”，受邀应用通过Bearer令牌取得CLIENT-001总资产1800.00；手工/缺codeExecuted的Python批次继续返回`INVALID_RELEASE_RUN`。页面只列满足Spark或CPython专属证据的可用批次。
+- 全量CI通过324/324，源码检查和两套生产构建均通过。

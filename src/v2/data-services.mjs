@@ -288,6 +288,8 @@ export class DataServiceManager {
       version = this.#createVersion(service, {
         sourceReleaseRunId: releaseRun.id,
         sourceReleaseId: releaseRun.releaseId,
+        sourceEngine: releaseRun.engine,
+        sourceEngineVersion: releaseRun.engineVersion,
         snapshotId: snapshot.id,
         snapshotHash: snapshot.contentHash,
         fields,
@@ -321,6 +323,8 @@ export class DataServiceManager {
       version = this.#createVersion(service, {
         sourceReleaseRunId: releaseRun.id,
         sourceReleaseId: releaseRun.releaseId,
+        sourceEngine: releaseRun.engine,
+        sourceEngineVersion: releaseRun.engineVersion,
         snapshotId: snapshot.id,
         snapshotHash: snapshot.contentHash,
         fields: normalizeFields(input.fields ?? prior.fields),
@@ -739,13 +743,21 @@ export class DataServiceManager {
   }
 
   #assertReleaseRun(run) {
+    const sparkEvidence =
+        run?.engine === "Apache Spark" &&
+        run.mainSqlExecuted === true &&
+        run.testSqlValidation?.passed === true,
+      pythonEvidence =
+        run?.engine === "CPython" &&
+        run.codeExecuted === true &&
+        /^\d+\.\d+(?:\.\d+)?$/.test(run.engineVersion ?? "");
     if (
       !run ||
       run.status !== "SUCCEEDED" ||
       run.published !== true ||
       run.schedulerTriggered !== true ||
       run.publicDeployed !== false ||
-      run.engine !== "Apache Spark" ||
+      (!sparkEvidence && !pythonEvidence) ||
       !run.validation?.passed ||
       !Array.isArray(run.rows)
     )
