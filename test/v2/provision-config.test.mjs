@@ -164,6 +164,7 @@ test("valid individual secrets override invalid bundle placeholders", () => {
       execFileSync(process.execPath, [script], {
         env: {
           ...process.env,
+          GITHUB_ACTIONS: "false",
           GITHUB_ENV: githubEnv,
           V2_MYSQL_PASSWORD: "Valid-Individual-Password-2026",
           JASONSECRETS: JSON.stringify({
