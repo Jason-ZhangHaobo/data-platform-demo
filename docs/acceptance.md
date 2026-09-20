@@ -618,3 +618,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 校验官方macOS ARM包摘要后，以本机HTTP服务和虚构凭证运行真实CLI：确认默认输出会把耗时追加到JSON和二进制结果。所有机器读取的上传/下载命令增加`--quiet`；修复后下载内容与原始字节一致。
 - 真实CLI集成测试覆盖首次上传、已有对象复核、权限拒绝；核验上传字节、private ACL、防覆盖头及下载摘要。全量CI在启用该可选集成测试时331/331通过，两套构建通过；无真实云凭证参与本机协议测试。
 - 私有Worker预置改为只使用单独的Worker Secret，不再展开含未就绪平台账号的整包秘密；控制面账号缺口继续由独立配置门处理。该变更不代表Worker已创建。
+
+## 2026-09-20：真实Worker对象与私有性四证
+
+- GitHub上传运行`35512771918`在main提交`6d025a938135452c2c8ededc43914062cb11a4e6`成功；重新构建、对象Head、下载后SHA-256及318,914,420字节均通过。
+- Cloud Shell以主账号只读核验实际对象；内容验证器确认字节、摘要元数据和ETag，隐私验证器确认Bucket ACL私有、对象ACL私有或继承、Bucket Policy不公开、Block Public Access启用。
+- Cloud Shell内置Node不支持`String.replaceAll`，PR #116改为兼容写法并加入ossutil数组Header回归；完整本机及远程CI通过后合并。该问题属于证据解析兼容，不改变摘要或私有性门槛。
+- 生成六小时脱敏收据[`v2-spark-worker-oss-receipt-20260920T150159Z.json`](evidence/v2-spark-worker-oss-receipt-20260920T150159Z.json)，绑定包摘要、对象键哈希、上传运行和提交，不含Bucket、对象路径、Owner或秘密。收据有效期内才允许执行create-only Worker工作流。

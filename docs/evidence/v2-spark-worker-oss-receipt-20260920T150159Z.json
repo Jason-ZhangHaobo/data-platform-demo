@@ -1,0 +1,25 @@
+{
+  "schema": "shuduo-spark-worker-oss-receipt/v1",
+  "packageSha256": "f5083be51f979d47486b1ce06344466c5326a003e360cd55b91143fe79414118",
+  "packageBytes": 318914420,
+  "objectKeyHash": "262cf745fd1fb855d6f84426ca9559c0d63fc1f8e8d92fb656f6f9920c63d599",
+  "uploadRun": {
+    "id": "35512771918",
+    "headSha": "6d025a938135452c2c8ededc43914062cb11a4e6"
+  },
+  "verifiedAt": "2026-09-20T15:01:59.556Z",
+  "validUntil": "2026-09-20T21:01:59.556Z",
+  "contentChecks": {
+    "sizeMatches": true,
+    "digestMetadataMatches": true,
+    "etagPresent": true
+  },
+  "privacyChecks": {
+    "bucketAclPrivate": true,
+    "objectAclPrivateOrInherited": true,
+    "bucketPolicyNotPublic": true,
+    "bucketPublicAccessBlocked": true
+  },
+  "publicAccessVerified": true,
+  "containsResourceNames": false
+}
