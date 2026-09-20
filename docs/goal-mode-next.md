@@ -21,6 +21,7 @@
 - 真实受保护配置运行`35489413863`失败，证明当前`JASONSECRETS`包含平台MySQL、管理员哈希和模型Key占位/无效值；没有云调用或写入。工作流日志未显示Secret值，但普通Variables被GitHub env摘要显示，后续校验已改用合成非秘密配置。修正Secret前不得触发预置/部署。
 - PR #106/#107已合并：真实Secret校验门和日志收紧进入main。第二次运行`35489946729`只显示合成云标识，仍确认相同bundle占位错误；逐项Secret覆盖bundle的优先级缺陷正在修复，便于按键安全替换。
 - PR #108已合并并修复逐项Secret优先级；本机百炼Key向公开仓库关联Environment传输被安全审批阻止，需用户明确授权且应先限制`v2-staging`仅main可部署。并行增量转向独立Data Agent受限Python开发，调度交付保持未实现边界。
+- PR #109已合并：独立Data Agent的受限Python代码生成、三次修正、真实执行、五套断言、工具目录V2与双语言UI进入main；当前增量补齐Python不可变调度/部署文件与按文件演练，云运行和正式发布仍保持未实现。
 - 官方授权复核后，预置网络查询由只支持`vswitch/*`的`DescribeVSwitches`改为精确资源的`DescribeVSwitchAttributes`；最小策略应用器已实现并失败关闭，真实RAM附加仍等待Cloud Shell重新登录后执行。
 - 本机分支codex/v2-config-fix的上游引用可能陈旧，先确认远程main与工作树，不重复rebase已squash合并的历史。
 

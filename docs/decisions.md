@@ -185,6 +185,7 @@
 | D-180 | 首次真实受保护配置校验失败且日志边界需收紧，2026-09-20 | 运行`35489413863`在展开阶段失败，固定错误表明平台MySQL、管理员哈希和百炼Key为占位符或格式无效；未进入云API。GitHub会在作业env摘要显示普通Variables，虽然它们非秘密，仍不应在公开日志重复暴露，因此校验工作流改用合成非秘密配置，只读取和验证受保护Secrets。真实内容未通过前部署继续关闭 |
 | D-181 | 逐项Secret是真正的优先配置，2026-09-20 | 旧展开器会校验bundle中已被逐项Secret覆盖的占位值，违背“逐项优先”。修复后先移除所有已由进程环境提供的bundle键，只校验/写入剩余后备值；占位bundle不能覆盖或阻断正确逐项Secret。这样可逐项替换旧bundle而无需一次在聊天或日志搬运全部秘密。完整CI 316/316 |
 | D-182 | Agent工具目录V2统一SQL与Python代码开发，2026-09-20 | development工具从SQL专用升级为CODE_DEVELOPMENT，严格要求language=SPARK_SQL/PYTHON与code，契约摘要随版本变更。Python分支复用同一agent任务、批准、调用租约、取消和任务图，但产物写入python_revision/python_run并执行真实受限CPython及五套断言；证据旅程识别CPython。Python调度交付未实现，schedules步骤固定返回`PYTHON_DELIVERY_NOT_IMPLEMENTED`而不是生成SQL包。完整CI 318/318 |
+| D-183 | Python交付包独立于SQL且只做本机受限演练，2026-09-20 | 新格式以main.py、Python DAG、调度/部署清单、冻结输入和验证报告组成，不能被SQL包验证器接受，也不能进入现有发布链。Agent schedules步骤可生成包并重新执行按文件CPython/五套断言，证据旅程将SCHEDULE_FILE和DEPLOY_FILE标记完成；包固定releaseEligible=false、非公网，内存限制未验证时清单如实保留false。云Python Worker、审批发布、批次和运维仍待后续。完整CI 321/321 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。

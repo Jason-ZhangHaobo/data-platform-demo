@@ -42,6 +42,12 @@ import {
 } from "./delivery.mjs";
 import { verifyDeliveryDirectory } from "./delivery-runner.mjs";
 import {
+  createPythonDeliveryPackage,
+  unpackPythonDeliveryPackage,
+  validatePythonDeliveryPackage,
+  verifyPythonDeliveryDirectory,
+} from "./python-delivery.mjs";
+import {
   DurableReleaseScheduler,
   LocalReleaseScheduler,
   localScheduleSpec,
@@ -486,6 +492,207 @@ export function createV2Server(options = {}) {
     );
     store.update("delivery_package", item.id, PROJECT, { artifact });
     return artifact;
+  };
+  const preparePythonAgentDelivery = async (agent, req, res) => {
+    const finalAttempt = agent.attempts?.at(-1);
+    if (agent.status !== "SUCCEEDED" || finalAttempt?.status !== "SUCCEEDED")
+      throw fail(409, "只有Python Agent与独立断言通过后才能准备交付");
+    const codeJourney = agentEvidenceJourney({
+      store,
+      project: PROJECT,
+      task: agent,
+    });
+    if (
+      codeJourney.stages.find((item) => item.id === "CODE")?.status !==
+        "SUCCEEDED" ||
+      codeJourney.stages.find((item) => item.id === "DEBUG")?.status !==
+        "SUCCEEDED"
+    )
+      throw fail(409, "缺少真实模型和CPython独立结果证据，不能准备交付");
+    if (!options.pythonDeliveryRunner && !options.pythonRunner && !pythonRuntime.available)
+      throw fail(503, "受限Python按文件演练尚未就绪");
+    const run = get("python_run", finalAttempt.runId),
+      rev = get("python_revision", finalAttempt.revisionId);
+    createPythonDeliveryPackage({ run, revision: rev });
+    const existing = store
+      .list("agent_delivery_task", PROJECT)
+      .find(
+        (item) =>
+          item.sourceAgentTaskId === agent.id &&
+          ["QUEUED", "RUNNING", "SUCCEEDED"].includes(item.status),
+      );
+    if (existing) return json(res, 200, existing);
+    const key = text(req.headers["idempotency-key"], 1, 100),
+      dedup = store.deduplicate(
+        `${PROJECT}:python-agent-delivery:${agent.id}:${key}`,
+        hash(
+          JSON.stringify({
+            agentTaskId: agent.id,
+            runId: run.id,
+            revisionHash: rev.codeHash,
+          }),
+        ),
+        () =>
+          store.create("agent_delivery_task", PROJECT, {
+            sourceAgentTaskId: agent.id,
+            sourceRunId: run.id,
+            sourceRevisionId: rev.id,
+            sourceCodeHash: rev.codeHash,
+            sourceLanguage: "PYTHON",
+            status: "QUEUED",
+            stage: "QUEUED",
+            mode: "VERIFIED_PYTHON_ARTIFACT_ORCHESTRATION",
+            completionScope: "PYTHON_DELIVERY_PREPARATION",
+            fullLifecycleE2E: false,
+            agentIndependentE2E: false,
+            publicDeployed: false,
+          }),
+      ),
+      task = get("agent_delivery_task", dedup.id);
+    if (!dedup.replayed)
+      schedule("agent_delivery_task", task, async (signal) => {
+        if (signal.aborted) throw new Error("Python交付准备已取消");
+        const sourceRun = get("python_run", task.sourceRunId),
+          sourceRevision = get("python_revision", task.sourceRevisionId);
+        let packageItem = store
+          .list("delivery_package", PROJECT)
+          .find(
+            (item) =>
+              item.sourceRunId === sourceRun.id &&
+              item.manifest?.source?.revisionId === sourceRevision.id &&
+              item.manifest?.format === "shuduo-python-delivery/v1" &&
+              item.published !== true,
+          );
+        if (packageItem) {
+          await ensureDeliveryArtifact(packageItem);
+          packageItem = get("delivery_package", packageItem.id);
+          validatePythonDeliveryPackage(packageItem, packageItem.digest);
+        } else {
+          const bundle = createPythonDeliveryPackage({
+              run: sourceRun,
+              revision: sourceRevision,
+              name: "客户资产 T+1 · Python Agent交付准备",
+            }),
+            artifact = await artifactStore.put(
+              "delivery-package",
+              bundle.digest,
+              bundle,
+            );
+          if (signal.aborted) throw new Error("Python交付准备已取消");
+          packageItem = store.create("delivery_package", PROJECT, {
+            ...bundle,
+            artifact,
+            sourceRunId: sourceRun.id,
+            sourceLanguage: "PYTHON",
+            agentDeliveryTaskId: task.id,
+            stage: "M2A_PYTHON",
+            published: false,
+            releaseEligible: false,
+          });
+        }
+        store.update("agent_delivery_task", task.id, PROJECT, {
+          stage: "PACKAGE_READY",
+          packageId: packageItem.id,
+          packageDigest: packageItem.digest,
+        });
+        const plan = validatePythonDeliveryPackage(
+            packageItem,
+            packageItem.digest,
+          ),
+          scheduledFor = "2026-09-11T09:00:00+08:00",
+          occurrence = resolveDeliverySchedule(plan, scheduledFor);
+        if (
+          !occurrence.eligible ||
+          occurrence.businessDate !== plan.fixtures.context.businessDate
+        )
+          throw new Error("冻结交易日和Python交付输入不匹配");
+        const verification = store.create("delivery_verification", PROJECT, {
+          packageId: packageItem.id,
+          packageDigest: packageItem.digest,
+          scheduledFor,
+          agentDeliveryTaskId: task.id,
+          status: "RUNNING",
+          scope: "M2A_LOCAL_PYTHON_FILE_REHEARSAL",
+          published: false,
+          publicDeployed: false,
+          fullLifecycleE2E: false,
+        });
+        store.update("agent_delivery_task", task.id, PROJECT, {
+          stage: "FILE_REHEARSAL_RUNNING",
+          verificationId: verification.id,
+        });
+        try {
+          const parent = join(root, ".v2-artifacts", "agent-deliveries"),
+            directory = join(parent, task.id);
+          mkdirSync(parent, { recursive: true });
+          unpackPythonDeliveryPackage(
+            packageItem,
+            directory,
+            packageItem.digest,
+          );
+          const executeFiles =
+              options.pythonDeliveryRunner ??
+              ((input) =>
+                verifyPythonDeliveryDirectory(input, {
+                  pythonRuntime,
+                  pythonRunner,
+                })),
+            receipt = await executeFiles({
+              directory,
+              expectedDigest: packageItem.digest,
+              scheduledFor,
+              signal,
+            });
+          if (
+            signal.aborted ||
+            get("agent_delivery_task", task.id).status === "CANCELLED"
+          ) {
+            store.update("delivery_verification", verification.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            return;
+          }
+          const actual =
+            receipt.status === "SUCCEEDED" &&
+            receipt.engine === "CPython" &&
+            receipt.engineVersion === plan.deployment.runtime.version &&
+            receipt.codeExecuted === true &&
+            receipt.codeHash === hash(packageItem.files["main.py"]) &&
+            receipt.validation?.passed === true &&
+            receipt.testDouble !== true;
+          store.update("delivery_verification", verification.id, PROJECT, {
+            ...receipt,
+            status: actual ? "SUCCEEDED" : "FAILED",
+            published: false,
+            publicDeployed: false,
+            fullLifecycleE2E: false,
+            finishedAt: new Date().toISOString(),
+          });
+          if (!actual)
+            throw new Error("按文件演练未形成真实CPython与独立断言证据");
+          store.update("agent_delivery_task", task.id, PROJECT, {
+            status: "SUCCEEDED",
+            stage: "AWAITING_ENGINEER_REVIEW",
+            actualExecution: true,
+            verificationId: verification.id,
+            finishedAt: new Date().toISOString(),
+            notice:
+              "已生成不可变Python调度/部署文件并完成本机受限CPython演练；云隔离、审批和发布仍待后续阶段。",
+          });
+        } catch (error) {
+          if (
+            get("delivery_verification", verification.id).status === "RUNNING"
+          )
+            store.update("delivery_verification", verification.id, PROJECT, {
+              status: signal.aborted ? "CANCELLED" : "FAILED",
+              errorCode: error.code ?? "PYTHON_FILE_REHEARSAL_FAILED",
+              finishedAt: new Date().toISOString(),
+            });
+          throw new Error("Python交付文件演练失败，已保存运行编号供检查");
+        }
+      });
+    return json(res, 202, publicAgentIntent(task));
   };
   const dataServices = new DataServiceManager({
     store,
@@ -2709,22 +2916,11 @@ export function createV2Server(options = {}) {
           if (
             !sourceHandoff ||
             sourceHandoff.specialistTaskId !== body.input.sourceTaskId ||
-            sourceTask?.status !== "SUCCEEDED" ||
-            sourceTask?.language === "PYTHON"
+            sourceTask?.status !== "SUCCEEDED"
           )
             throw Object.assign(
-              fail(
-                409,
-                sourceTask?.language === "PYTHON"
-                  ? "受限Python已完成代码与断言，但Python调度交付尚未开放"
-                  : "交付准备必须引用当前任务图已完成的数据开发任务",
-              ),
-              {
-                code:
-                  sourceTask?.language === "PYTHON"
-                    ? "PYTHON_DELIVERY_NOT_IMPLEMENTED"
-                    : "AGENT_TOOL_DEPENDENCY_NOT_READY",
-              },
+              fail(409, "交付准备必须引用当前任务图已完成的数据开发任务"),
+              { code: "AGENT_TOOL_DEPENDENCY_NOT_READY" },
             );
         }
         const toolInputHash = hash(JSON.stringify(body.input));
@@ -4280,13 +4476,7 @@ export function createV2Server(options = {}) {
         const agent = get("agent", prepareAgentDelivery[1]),
           finalAttempt = agent.attempts?.at(-1);
         if (agent.language === "PYTHON")
-          throw Object.assign(
-            fail(
-              409,
-              "受限Python已完成代码与断言；调度文件和部署包将在Python交付阶段开放",
-            ),
-            { code: "PYTHON_DELIVERY_NOT_IMPLEMENTED" },
-          );
+          return preparePythonAgentDelivery(agent, req, res);
         if (agent.status !== "SUCCEEDED" || finalAttempt?.status !== "SUCCEEDED")
           throw fail(409, "只有代码Agent与独立断言通过后才能准备交付");
         const codeJourney = agentEvidenceJourney({ store, project: PROJECT, task: agent });

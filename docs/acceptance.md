@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新318/318测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python双语言Agent开发、十域工具目录V2/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、完整分页实时账单门、真实受保护配置格式门与逐项覆盖、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、持久调度、Spark Worker W1构包与W2计划/联合最小策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
+| npm run ci | 最新321/321测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python双语言Agent开发与独立Python文件交付、十域工具目录V2/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、完整分页实时账单门、真实受保护配置格式门与逐项覆盖、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、持久调度、Spark Worker W1构包与W2计划/联合最小策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -576,6 +576,14 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 工具目录升级`shuduo-agent-tools/v2`：development输入从SQL专用改为CODE_DEVELOPMENT，要求message/contextId/language/code，language仅允许SPARK_SQL或PYTHON；契约摘要变化使旧客户端失败关闭。
 - 独立Agent工作台新增数据开发语言选择，当前Spark SQL/Python编辑代码与批准目标一起进入统一工具预检、调用租约、handoff和任务图；选择Python后接管工作台保持Python页签与同一编辑内容。
 - Python Agent最多三次调用真实模型适配器，只向模型发送字段结构、参数、口径、安全限制和上次错误，不发送独立预期行；每次创建python_revision/python_run并真实执行受限CPython与五套证券断言。成功任务固定`PYTHON_DEVELOPMENT`、`fullLifecycleE2E=false`。
-- 证据旅程正确识别CPython版本/运行和代码、调试里程碑；Python调度与部署尚未实现，交付步骤返回`PYTHON_DELIVERY_NOT_IMPLEMENTED`，不会误用SQL交付包。
+- 证据旅程正确识别CPython版本/运行和代码、调试里程碑；该基线之后已由独立Python包补齐调度/部署文件与按文件演练，仍不会误用SQL交付包。
 - 本机浏览器实际打开独立Data Agent：工具目录显示`shuduo-agent-tools/v2`和10个专业域；语言下拉可从Spark SQL切换到受限Python，编排上下文同步显示“受限Python · 当前编辑版本”，1280px视口`scrollWidth=innerWidth=1280`无页面横向溢出。该证据是本机页面，不替代公网Safari/Chrome验收。
 - 全量CI通过318/318，源码检查和两套生产构建均通过。
+
+## 2026-09-20：Python调度与部署文件首版
+
+- 新增`shuduo-python-delivery/v1`：`main.py`、`schedule.json`、`deployment.json`、`calendar.json`、`fixtures.json`、`validation.json`和README均进入摘要清单。源运行必须为真实CPython、代码哈希一致、CPU/文件限制生效且五套回归通过。
+- Python DAG固定为`python_transform → python_assertions → record_evidence`；交易时间固定样例北京时间09:00，按合成交易日历推导T+1业务日。任意代码、文件哈希、源证据或DAG篡改均失败关闭。
+- Agent交付编排会生成不可变包、写入私有Artifact Store、解包后重新执行main.py，并再次核对CPython版本、代码哈希和五套断言；成功后进入`AWAITING_ENGINEER_REVIEW`，证据旅程的调度文件与部署文件阶段为成功。
+- 部署adapter固定`local-restricted-python-v1`，清单明确内存限制是否实际生效；包`releaseEligible=false`、`publicDeployed=false`，当前SQL审批/发布链不能接收Python包。云Python Worker、正式审批、调度批次和运维尚未实现。
+- 全量CI通过321/321，源码检查和两套生产构建均通过。
