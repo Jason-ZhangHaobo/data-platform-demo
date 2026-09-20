@@ -26,3 +26,11 @@ test("unknown or unsafe error text is reduced to a fixed non-sensitive code", ()
   assert.equal(extractAliyunErrorCode("", "password=secret\nMessage: private endpoint"), "UNKNOWN_ALIYUN_ERROR");
   assert.equal(extractAliyunErrorCode("", "ErrorCode: bad/code"), "UNKNOWN_ALIYUN_ERROR");
 });
+
+test("extracts ossutil inline codes without disclosing messages or identifiers", () => {
+  for (const separator of [":", "="]) {
+    assert.equal(extractAliyunErrorCode("", `Error: operation error HeadObject: StatusCode${separator}403, ErrorCode${separator}AccessDenied, ErrorMessage: private, RequestId: hidden`), "AccessDenied");
+    assert.equal(extractAliyunErrorCode("", `StatusCode${separator}404, ErrorCode${separator}NoSuchKey`), "NoSuchKey");
+  }
+  assert.equal(extractAliyunErrorCode("ErrorCode=bad/code, Message: private"), "UNKNOWN_ALIYUN_ERROR");
+});
