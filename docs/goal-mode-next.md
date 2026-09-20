@@ -2,6 +2,8 @@
 
 核验日期：2026-09-19。本文件用于用户重设目标；不是完成声明，也不自动扩大云权限。
 
+2026-09-20续接更新（优先于下方历史快照）：`v2-staging`已实际限制为仅main分支部署；用户授权的百炼、Worker和调度Secrets已写入，平台库用户名/库名/端口及经Cloud Shell查询的私网主机也已配置。联合策略应用器已回读确认两个W2最小策略附加且文档一致。Cloud Shell可通过in-app终端继续操作，不再依赖Safari焦点。上传运行35506424014在对象步骤失败且旧流程未输出具体错误码；当前修复脱敏诊断，不能再把失败直接归因于权限。受保护配置运行35505053095还确认平台库密码、管理员邮箱/密码哈希存在占位值；不能据Secret名称存在宣布部署就绪。
+
 继续现有数舵 V2 项目，不从零重建。项目目录为 `/Users/zhanghaobo/Documents/ChatGPT/数据中台产品经理能力打造/data-platform-v2`。先读取 AGENTS.md、docs/PRD.md、docs/decisions.md、docs/product-roadmap.md、docs/acceptance.md，并用当前代码、GitHub、运行记录修正过时描述。
 
 ## 产品目标与边界
