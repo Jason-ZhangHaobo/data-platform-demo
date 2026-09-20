@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { renderV2SparkWorkerPackagePolicy } from "./render-v2-spark-worker-package-policy.mjs";
 
 const accountPattern = /^\d{12,20}$/;
 const functionPattern = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
@@ -54,10 +55,12 @@ export function renderV2SparkWorkerW2Plan(input = {}) {
     errors.push("INVALID:V2_SECURITY_GROUP_ID");
   if (typeof secret !== "string" || secret.length < 32 || secret.length > 512)
     errors.push("INVALID:V2_SPARK_WORKER_SECRET");
+  const packagePolicy = renderV2SparkWorkerPackagePolicy(input);
+  for (const error of packagePolicy.ok ? [] : packagePolicy.errors)
+    if (!errors.includes(error)) errors.push(error);
   if (errors.length) return { ok: false, errors };
 
   const objectName = `data-platform-demo/v2/spark-worker/${digest}.zip`,
-    objectArn = `acs:oss:*:${accountId}:${bucket}/${objectName}`,
     layer = (name) =>
       `acs:fc:${regionId}:official:layers/${name}/versions/3`;
   return {
@@ -75,16 +78,7 @@ export function renderV2SparkWorkerW2Plan(input = {}) {
         uploadMetadata: { "shuduo-sha256": digest },
         evidenceCommand: "ossutil api head-object --output-format json",
       },
-      deploymentPermissionDelta: {
-        Version: "1",
-        Statement: [
-          {
-            Effect: "Allow",
-            Action: ["oss:GetObject", "oss:PutObject"],
-            Resource: objectArn,
-          },
-        ],
-      },
+      deploymentPermissionDelta: packagePolicy.policy,
       function: {
         functionName,
         description: "数舵V2隔离Spark Worker（W2私有验证）",
