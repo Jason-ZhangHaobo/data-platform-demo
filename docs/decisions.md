@@ -182,6 +182,7 @@
 | D-177 | 已批准W2策略以单次幂等包应用，2026-09-20 | `DataPlatformV2DeployMinimal`与`DataPlatformV2SparkWorkerPackageMinimal`先联合验证输入，再依次创建/复用、附加和回读。任一同名正文漂移立即停止，不创建版本、不替换、不解绑或删除；结果不输出PolicyDocument、角色ARN或云错误原文。这样避免用户复制两段长命令，也不把既有批准扩大成其他RAM操作。完整CI 310/310 |
 | D-178 | 三条云部署链路统一使用QueryBill，2026-09-20 | `provision-v2-staging`、`deploy-v2-staging`和`provision-v2-spark-worker`不再调用`QueryBillOverview`或各自计算金额；统一脚本完整分页QueryBill并复用微单位验证器。这样工作流与已批准`bss:DescribeBillList`动作一致，未知云错误被缩减为固定码，避免权限名和API实现再次漂移。完整CI 312/312 |
 | D-179 | JASONSECRETS从名称检查升级为真实Runner校验，2026-09-20 | 新工作流不接触云API，只在受保护环境展开白名单bundle并检查平台库、管理员哈希、模型、Worker和调度秘密；可选业务源一旦出现任一项就要求五项完整。结果固定为键名/错误码/present布尔且明确`containsSecretValues=false`。只有该工作流真实成功后才能把现有Secret标为内容就绪。完整CI 315/315 |
+| D-180 | 首次真实受保护配置校验失败且日志边界需收紧，2026-09-20 | 运行`35489413863`在展开阶段失败，固定错误表明平台MySQL、管理员哈希和百炼Key为占位符或格式无效；未进入云API。GitHub会在作业env摘要显示普通Variables，虽然它们非秘密，仍不应在公开日志重复暴露，因此校验工作流改用合成非秘密配置，只读取和验证受保护Secrets。真实内容未通过前部署继续关闭 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。
