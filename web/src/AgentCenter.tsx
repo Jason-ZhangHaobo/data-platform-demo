@@ -61,7 +61,7 @@ type Handoff = { id: string; destinationId: string; status: string; objective: s
 type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND" | "REVOKED"; risk: Risk; approvedAt: string; specialistTaskId?: string };
 type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistTaskId?: string; specialistTaskKind?: string; specialistStatus?: string; invocationId?: string; invocationStatus?: string; invocationAttempt?: number; invocationRecovery?: "NONE" | "WAIT" | "RETRY_BINDING" | "RETRY_REQUIRED"; executionEvidence?: string }[] };
 type AgentTool = { id: string; label: string; risk: Risk; approvalRequired: boolean; createMode: string; createPath: string; detailPath: string; applyPath?: string; requiresDestination?: string; invokePath: string };
-type AgentToolCatalog = { version: "shuduo-agent-tools/v1"; contractDigest: string; tools: AgentTool[] };
+type AgentToolCatalog = { version: "shuduo-agent-tools/v2"; contractDigest: string; tools: AgentTool[] };
 type AgentToolInvocation = { specialist: { id: string; status: string; detailPath: string }; handoff: Handoff; graph: IntentGraph };
 type SpecialistActivity = {
   destinationId: string;
@@ -132,6 +132,9 @@ export function AgentCenter({
   modelConfigured,
   contextId,
   currentSql,
+  currentPythonCode,
+  developmentLanguage,
+  onDevelopmentLanguageChange,
   onOpenDestination,
 }: {
   api: Api;
@@ -139,6 +142,9 @@ export function AgentCenter({
   modelConfigured: boolean;
   contextId: string;
   currentSql: string;
+  currentPythonCode: string;
+  developmentLanguage: "SQL" | "PYTHON";
+  onDevelopmentLanguageChange: (language: "SQL" | "PYTHON") => void;
   onOpenDestination: (id: string, handoffMessage?: string) => void;
 }) {
   const [message, setMessage] = useState(""),
@@ -240,7 +246,7 @@ export function AgentCenter({
       try {
         const catalog = await api<AgentToolCatalog>("/agent/tools");
         if (
-          catalog.version !== "shuduo-agent-tools/v1" ||
+          catalog.version !== "shuduo-agent-tools/v2" ||
           !/^[a-f0-9]{64}$/.test(catalog.contractDigest)
         )
           throw new Error("专业Agent工具目录版本不兼容，请刷新或升级工作台");
@@ -334,11 +340,16 @@ export function AgentCenter({
         (!requiredActivity || requiredActivity.status !== "SUCCEEDED")
       )
         throw new Error("请先完成当前步骤要求的前置专业任务，再继续执行。");
-      const toolInput = tool.createMode === "SQL_DEVELOPMENT"
+      const toolInput = tool.createMode === "CODE_DEVELOPMENT"
           ? {
               message: step.objective,
               contextId,
-              sql: currentSql || "SELECT 1",
+              language:
+                developmentLanguage === "PYTHON" ? "PYTHON" : "SPARK_SQL",
+              code:
+                developmentLanguage === "PYTHON"
+                  ? currentPythonCode
+                  : currentSql || "SELECT 1",
             }
           : tool.createMode === "DELIVERY_FROM_DEVELOPMENT"
             ? { sourceTaskId: requiredActivity!.id }
@@ -552,14 +563,14 @@ export function AgentCenter({
         </div>
         <footer className="agent-os-composer-v2">
           <textarea aria-label="向数舵 Data Agent 描述目标" placeholder="描述你希望完成的目标，例如：接入持仓数据，生成T+1资产任务并发布服务…" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && canWrite && modelConfigured && !busy && message.trim().length >= 4) { event.preventDefault(); submit(); } }} maxLength={2000} />
-          <div><div className="agent-os-context-v2"><span>@ 证券数据实验室</span><span><Code2 size={11} />{contextId}</span><span>{approvalMode === "PLAN_ONLY" ? "只规划" : "请求批准"}</span></div><div className="agent-os-send-v2"><select aria-label="Agent审批模式" value={approvalMode} onChange={(event) => setApprovalMode(event.target.value as typeof approvalMode)}><option value="REQUEST_APPROVAL">请求批准</option><option value="PLAN_ONLY">仅规划</option></select><button aria-label="发送给Data Agent" onClick={submit} disabled={!canWrite || !modelConfigured || busy || message.trim().length < 4}>{busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button></div></div>
+          <div><div className="agent-os-context-v2"><span>@ 证券数据实验室</span><span><Code2 size={11} />{contextId}</span><span>{developmentLanguage === "PYTHON" ? "受限Python" : "Spark SQL"}</span><span>{approvalMode === "PLAN_ONLY" ? "只规划" : "请求批准"}</span></div><div className="agent-os-send-v2"><select aria-label="数据开发语言" value={developmentLanguage} onChange={(event) => onDevelopmentLanguageChange(event.target.value as "SQL" | "PYTHON")}><option value="SQL">Spark SQL</option><option value="PYTHON">受限Python</option></select><select aria-label="Agent审批模式" value={approvalMode} onChange={(event) => setApprovalMode(event.target.value as typeof approvalMode)}><option value="REQUEST_APPROVAL">请求批准</option><option value="PLAN_ONLY">仅规划</option></select><button aria-label="发送给Data Agent" onClick={submit} disabled={!canWrite || !modelConfigured || busy || message.trim().length < 4}>{busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button></div></div>
           <small>Agent可以调用所有经典中台能力；读操作、草稿、发布和权限变更按风险分级，生产上线仍需独立批准。</small>
         </footer>
       </section>
 
       <aside className="agent-os-inspector-v2">
         <header><strong>能力与上下文</strong><span>{toolCatalog?.tools.length ?? 10}个专业域</span></header>
-        <section><span className="agent-os-section-label-v2">当前上下文</span><div className="agent-os-context-card-v2"><Database size={16} /><div><strong>证券数据实验室</strong><small>虚构数据 · 项目权限继承</small></div></div><div className="agent-os-context-card-v2"><Code2 size={16} /><div><strong>{contextId}</strong><small>Spark SQL · 当前编辑版本</small></div></div></section>
+        <section><span className="agent-os-section-label-v2">当前上下文</span><div className="agent-os-context-card-v2"><Database size={16} /><div><strong>证券数据实验室</strong><small>虚构数据 · 项目权限继承</small></div></div><div className="agent-os-context-card-v2"><Code2 size={16} /><div><strong>{contextId}</strong><small>{developmentLanguage === "PYTHON" ? "受限Python" : "Spark SQL"} · 当前编辑版本</small></div></div></section>
         <section><span className="agent-os-section-label-v2">专业能力</span>{capabilityGroups.map((group) => { const Icon = group.icon; return <div className="agent-os-capability-v2" key={group.label}><div><Icon size={14} /><strong>{group.label}</strong></div>{group.ids.map((id) => <span key={id}>{byDestination.get(id)?.label}</span>)}</div>; })}</section>
         <section className="agent-os-governance-v2"><span className="agent-os-section-label-v2">治理边界</span><p><ShieldCheck size={14} />继承用户权限，不向模型发送凭证或业务明细。</p><p><Clock3 size={14} />长任务后台运行，状态与证据可恢复。</p><p><FileCheck2 size={14} />发布、授权和高成本操作必须确认。</p></section>
         <footer><Activity size={13} />GUI / API / CLI / MCP 同源 · {toolCatalog?.version ?? "工具目录加载中"}</footer>

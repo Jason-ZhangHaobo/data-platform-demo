@@ -40,7 +40,7 @@ type Run = {
   };
 };
 
-const initialCode = `def transform(data, params):
+export const initialPythonCode = `def transform(data, params):
     allowed = {row["client_id"] for row in data["accounts"] if row["advisor_id"] == params["advisor_id"]}
     holdings = {}
     securities = {}
@@ -70,14 +70,17 @@ export function PythonWorkbench({
   contextId,
   canWrite,
   available,
+  code,
+  onCodeChange,
 }: {
   api: Api;
   contextId: string;
   canWrite: boolean;
   available: boolean;
+  code: string;
+  onCodeChange: (code: string) => void;
 }) {
-  const [code, setCode] = useState(initialCode),
-    [revisions, setRevisions] = useState<Revision[]>([]),
+  const [revisions, setRevisions] = useState<Revision[]>([]),
     [runs, setRuns] = useState<Run[]>([]),
     [run, setRun] = useState<Run>(),
     [busy, setBusy] = useState(false),
@@ -169,7 +172,7 @@ export function PythonWorkbench({
       <div className="python-grid-v2">
         <section className="python-editor-card-v2">
           <header><FileCode2 size={14} /><strong>customer_assets.py</strong><span>{contextId}</span></header>
-          <div className="python-editor-v2"><Suspense fallback={<div className="editor-loading">准备Python编辑器…</div>}><PythonEditor value={code} onChange={setCode} /></Suspense></div>
+          <div className="python-editor-v2"><Suspense fallback={<div className="editor-loading">准备Python编辑器…</div>}><PythonEditor value={code} onChange={onCodeChange} /></Suspense></div>
           <footer>只允许 <code>transform(data, params)</code>；禁止import、文件、网络、反射和内部名称。</footer>
         </section>
         <aside className="python-result-v2">

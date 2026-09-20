@@ -9,10 +9,17 @@ const stage = (id, label, actor, status, evidence = {}, note = "") => ({
 export function agentEvidenceJourney({ store, project, task }) {
   const attempts = task.attempts ?? [],
     last = attempts.at(-1),
+    python = task.language === "PYTHON",
     revision = last?.revisionId
-      ? store.get("revision", last.revisionId, project)
+      ? store.get(
+          python ? "python_revision" : "revision",
+          last.revisionId,
+          project,
+        )
       : undefined,
-    run = last?.runId ? store.get("run", last.runId, project) : undefined,
+    run = last?.runId
+      ? store.get(python ? "python_run" : "run", last.runId, project)
+      : undefined,
     codePassed =
       task.status === "SUCCEEDED" &&
       task.mode === "LIVE_MODEL" &&
@@ -20,15 +27,17 @@ export function agentEvidenceJourney({ store, project, task }) {
       !last.model.includes("TEST_DOUBLE") &&
       last?.status === "SUCCEEDED" &&
       revision?.id === run?.revisionId &&
-      revision?.hash === run?.revisionHash,
+      (python ? revision?.codeHash : revision?.hash) === run?.revisionHash,
     debugPassed =
       codePassed &&
-      run.engine === "Apache Spark" &&
-      /^\d+\.\d+\.\d+$/.test(run.engineVersion ?? "") &&
+      run.engine === (python ? "CPython" : "Apache Spark") &&
+      (python
+        ? /^\d+\.\d+(?:\.\d+)?$/.test(run.engineVersion ?? "")
+        : /^\d+\.\d+\.\d+$/.test(run.engineVersion ?? "")) &&
       run.testDouble !== true &&
       run.validation?.passed === true &&
       run.validation.regressions?.every((item) => item.passed) === true,
-    packages = store
+    packages = python ? [] : store
       .list("delivery_package", project)
       .filter(
         (item) =>
@@ -120,13 +129,13 @@ export function agentEvidenceJourney({ store, project, task }) {
       task.contextId && task.message ? "SUCCEEDED" : "WAITING",
       { contextId: task.contextId, requirementHash: digest(task.message ?? "") },
       "只证明已提交给代码Agent的已知上下文；未验证未知业务歧义。"),
-    stage("CODE", "生成SQL版本", "DATA_AGENT_THEN_ENGINEER",
+    stage("CODE", python ? "生成受限Python版本" : "生成SQL版本", "DATA_AGENT_THEN_ENGINEER",
       codePassed ? "SUCCEEDED" : task.status === "FAILED" ? "FAILED" :
         task.status === "SUCCEEDED" ? "UNVERIFIED" : "WAITING",
-      { revisionId: revision?.id, sqlHash: revision?.hash, attemptCount: attempts.length,
+      { revisionId: revision?.id, codeHash: python ? revision?.codeHash : revision?.hash, attemptCount: attempts.length,
         model: last?.model },
       "仅证明模型生成的版本通过后续运行；尚未记录工程师代码审阅。"),
-    stage("DEBUG", "Spark调试与独立断言", "DATA_AGENT_AND_SPARK",
+    stage("DEBUG", python ? "CPython调试与独立断言" : "Spark调试与独立断言", python ? "DATA_AGENT_AND_RESTRICTED_PYTHON" : "DATA_AGENT_AND_SPARK",
       debugPassed ? "SUCCEEDED" : run?.status === "SUCCEEDED" ? "UNVERIFIED" :
         run && run.status !== "RUNNING" ? "FAILED" : "WAITING",
       { runId: run?.id, engineVersion: run?.engineVersion,
@@ -138,7 +147,9 @@ export function agentEvidenceJourney({ store, project, task }) {
       fileValid && debugPassed ? "SUCCEEDED" : selectedPackage && !fileValid ? "FAILED" : "WAITING",
       { packageId: selectedPackage?.id, packageDigest: selectedPackage?.digest,
         scheduleHash: selectedPackage?.manifest?.files?.["schedule.json"]?.sha256 },
-      agentPreparedPackage
+      python
+        ? "Python代码与断言已完成；调度文件属于后续Python交付阶段。"
+        : agentPreparedPackage
         ? "Agent从已验证代码自动生成标准文件；工程师仍须审阅。"
         : "由工程师或受控API生成；不是代码Agent独立完成。"),
     stage("DEPLOY_FILE", "部署清单与按文件演练",
@@ -147,7 +158,9 @@ export function agentEvidenceJourney({ store, project, task }) {
       { packageId: selectedPackage?.id, deploymentHash:
         selectedPackage?.manifest?.files?.["deployment.json"]?.sha256,
         rehearsalId: rehearsal?.id },
-      agentPreparedRehearsal
+      python
+        ? "Python部署清单和隔离云运行尚未实现，不以本机子进程冒充。"
+        : agentPreparedRehearsal
         ? "Agent自动编排真实Spark文件演练；不自动批准或公网部署。"
         : "演练与真实云上线分开，不把配置文本冒充执行。"),
     stage("PUBLISH", "审批版本与计时发布", "ENGINEER_APPROVAL_THEN_SCHEDULER",

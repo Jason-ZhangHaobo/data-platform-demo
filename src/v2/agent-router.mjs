@@ -4,10 +4,10 @@ const fail = (message) => Object.assign(new Error(message), { status: 422 });
 const toolFail = (message, code = "AGENT_TOOL_INPUT_INVALID") =>
   Object.assign(new Error(message), { status: 422, code });
 
-export const agentToolCatalogVersion = "shuduo-agent-tools/v1";
+export const agentToolCatalogVersion = "shuduo-agent-tools/v2";
 
 export const agentIntentDestinations = Object.freeze([
-  { id: "development", label: "数据开发", action: "生成或修正 Spark SQL，并进入真实运行与断言", risk: "MEDIUM" },
+  { id: "development", label: "数据开发", action: "生成或修正 Spark SQL/受限Python，并进入真实运行与断言", risk: "MEDIUM" },
   { id: "sources", label: "数据源与离线同步", action: "设计连接、元数据采集或离线同步草稿", risk: "MEDIUM" },
   { id: "sync", label: "实时同步", action: "设计受限实时任务草稿，不启动消费", risk: "MEDIUM" },
   { id: "assets", label: "数据资产与契约", action: "找数据、解释口径或评估版本影响", risk: "LOW" },
@@ -23,7 +23,7 @@ const byId = new Map(agentIntentDestinations.map((item) => [item.id, item]));
 export const agentSpecialistTools = Object.freeze({
   sources: { kind: "ingestion_agent_plan", createPath: "/sync/agent/plans", detailPath: "/sync/agent/plans/{id}", applyPath: "/sync/agent/plans/{id}/apply", createMode: "MESSAGE" },
   sync: { kind: "realtime_agent_plan", createPath: "/streams/agent/plans", detailPath: "/streams/agent/plans/{id}", applyPath: "/streams/agent/plans/{id}/apply", createMode: "MESSAGE" },
-  development: { kind: "agent", createPath: "/agent/tasks", detailPath: "/agent/tasks/{id}", createMode: "SQL_DEVELOPMENT" },
+  development: { kind: "agent", createPath: "/agent/tasks", detailPath: "/agent/tasks/{id}", createMode: "CODE_DEVELOPMENT" },
   schedules: { kind: "agent_delivery_task", createPath: "/agent/tasks/{sourceTaskId}/prepare-delivery", detailPath: "/agent/deliveries/{id}", createMode: "DELIVERY_FROM_DEVELOPMENT", requiresDestination: "development" },
   assets: { kind: "asset_agent_task", createPath: "/assets/agent/tasks", detailPath: "/assets/agent/tasks/{id}", createMode: "MESSAGE" },
   quality: { kind: "quality_agent_plan", createPath: "/quality/agent/plans", detailPath: "/quality/agent/plans/{id}", applyPath: "/quality/agent/plans/{id}/apply", createMode: "MESSAGE" },
@@ -42,15 +42,19 @@ export const agentSpecialistKinds = Object.freeze(
 export function publicAgentSpecialistTools() {
   return agentIntentDestinations.map((destination) => {
     const tool = agentSpecialistTools[destination.id],
-      inputSchema = tool.createMode === "SQL_DEVELOPMENT"
+      inputSchema = tool.createMode === "CODE_DEVELOPMENT"
         ? {
             type: "object",
             properties: {
               message: { type: "string", minLength: 4, maxLength: 2000 },
               contextId: { type: "string", minLength: 1, maxLength: 80 },
-              sql: { type: "string", minLength: 1, maxLength: 20000 },
+              language: {
+                type: "string",
+                enum: ["SPARK_SQL", "PYTHON"],
+              },
+              code: { type: "string", minLength: 1, maxLength: 20000 },
             },
-            required: ["message", "contextId", "sql"],
+            required: ["message", "contextId", "language", "code"],
             additionalProperties: false,
           }
         : tool.createMode === "DELIVERY_FROM_DEVELOPMENT"
@@ -158,6 +162,8 @@ export function validateAgentToolInput(
     }
     if (Object.hasOwn(field, "const") && value !== field.const)
       throw toolFail("专业Agent工具字段固定值不匹配");
+    if (Array.isArray(field.enum) && !field.enum.includes(value))
+      throw toolFail("专业Agent工具字段枚举值不合法");
   }
   return {
     valid: true,

@@ -62,7 +62,9 @@ test("independent workspace can start every specialist domain without mandatory 
   assert.match(workspace, /api<AgentToolCatalog>\("\/agent\/tools"\)/);
   assert.match(workspace, /toolCatalog\?\.version/);
   assert.match(workspace, /requireTool/);
-  assert.match(workspace, /tool\.createMode === "SQL_DEVELOPMENT"/);
+  assert.match(workspace, /tool\.createMode === "CODE_DEVELOPMENT"/);
+  assert.match(workspace, /aria-label="数据开发语言"/);
+  assert.match(workspace, /currentPythonCode/);
   assert.match(workspace, /tool\.invokePath/);
   assert.match(workspace, /contractDigest: toolCatalog\.contractDigest/);
   assert.match(workspace, /专业任务已创建，等待恢复任务图绑定/);

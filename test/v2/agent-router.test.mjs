@@ -31,7 +31,12 @@ test("specialist tool catalog exposes ten governed versionable capabilities", ()
   assert.equal(tools.find((tool) => tool.id === "schedules").requiresDestination, "development");
   assert.deepEqual(
     tools.find((tool) => tool.id === "development").inputSchema.required,
-    ["message", "contextId", "sql"],
+    ["message", "contextId", "language", "code"],
+  );
+  assert.deepEqual(
+    tools.find((tool) => tool.id === "development").inputSchema.properties
+      .language.enum,
+    ["SPARK_SQL", "PYTHON"],
   );
   assert.deepEqual(
     tools.find((tool) => tool.id === "schedules").inputSchema.required,
@@ -39,7 +44,7 @@ test("specialist tool catalog exposes ten governed versionable capabilities", ()
   );
   assert.equal(tools.find((tool) => tool.id === "security").risk, "HIGH");
   const catalog = publicAgentToolCatalog();
-  assert.equal(catalog.version, "shuduo-agent-tools/v1");
+  assert.equal(catalog.version, "shuduo-agent-tools/v2");
   assert.match(catalog.contractDigest, /^[a-f0-9]{64}$/);
   assert.deepEqual(
     validateAgentToolInput(
@@ -55,6 +60,33 @@ test("specialist tool catalog exposes ten governed versionable capabilities", ()
       createMode: "MESSAGE",
       execution: "NO_EXECUTION",
     },
+  );
+  assert.equal(
+    validateAgentToolInput(
+      "development",
+      {
+        message: "生成受限Python客户资产加工",
+        contextId: "holdings-t1",
+        language: "PYTHON",
+        code: "def transform(data, params):\n    return []",
+      },
+      { version: catalog.version, contractDigest: catalog.contractDigest },
+    ).createMode,
+    "CODE_DEVELOPMENT",
+  );
+  assert.throws(
+    () =>
+      validateAgentToolInput(
+        "development",
+        {
+          message: "生成不支持的代码",
+          contextId: "holdings-t1",
+          language: "SHELL",
+          code: "echo unsafe",
+        },
+        { version: catalog.version, contractDigest: catalog.contractDigest },
+      ),
+    { code: "AGENT_TOOL_INPUT_INVALID" },
   );
   assert.throws(
     () =>
@@ -213,7 +245,7 @@ test("intent API persists a live-model routing result without executing a downst
   const base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
   try {
     const catalog = await fetch(base + "/agent/tools").then((value) => value.json());
-    assert.equal(catalog.version, "shuduo-agent-tools/v1");
+    assert.equal(catalog.version, "shuduo-agent-tools/v2");
     assert.match(catalog.contractDigest, /^[a-f0-9]{64}$/);
     assert.equal(catalog.tools.length, 10);
     assert.equal(JSON.stringify(catalog).includes("credential"), false);

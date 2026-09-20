@@ -20,6 +20,7 @@
 - PR #63—#105已合并：部署可靠性、独立Data Agent、受控SERVER_MYSQL、任务图、父/子取消、竞态保护、接管/恢复、目录驱动GUI、严格工具Schema/摘要预检、角色边界、统一调用租约及冷启动恢复、统一QueryBill预算门、Spark Worker W2计划/证据门/当前W1/联合最小策略/不可变上传/短期收据/私有创建门，以及真实受限Python首版均进入main。W2精确对象Get/Put权限已获用户明确授权；当前等待有效Cloud Shell会话执行联合策略应用和四证核验，随后运行上传与私有FC创建门，不得把“已授权/已合并工作流”写成“已部署”。
 - 真实受保护配置运行`35489413863`失败，证明当前`JASONSECRETS`包含平台MySQL、管理员哈希和模型Key占位/无效值；没有云调用或写入。工作流日志未显示Secret值，但普通Variables被GitHub env摘要显示，后续校验已改用合成非秘密配置。修正Secret前不得触发预置/部署。
 - PR #106/#107已合并：真实Secret校验门和日志收紧进入main。第二次运行`35489946729`只显示合成云标识，仍确认相同bundle占位错误；逐项Secret覆盖bundle的优先级缺陷正在修复，便于按键安全替换。
+- PR #108已合并并修复逐项Secret优先级；本机百炼Key向公开仓库关联Environment传输被安全审批阻止，需用户明确授权且应先限制`v2-staging`仅main可部署。并行增量转向独立Data Agent受限Python开发，调度交付保持未实现边界。
 - 官方授权复核后，预置网络查询由只支持`vswitch/*`的`DescribeVSwitches`改为精确资源的`DescribeVSwitchAttributes`；最小策略应用器已实现并失败关闭，真实RAM附加仍等待Cloud Shell重新登录后执行。
 - 本机分支codex/v2-config-fix的上游引用可能陈旧，先确认远程main与工作树，不重复rebase已squash合并的历史。
 
