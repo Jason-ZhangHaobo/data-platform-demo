@@ -57,6 +57,8 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 `scripts/render-v2-spark-worker-w2-plan.mjs`只生成脱敏、失败关闭的W2计划，不上传包或创建函数。它把包摘要固定为私有OSS精确对象`data-platform-demo/v2/spark-worker/<sha256>.zip`，要求单次禁止覆盖上传，并给出单独的最小权限差异：部署角色只新增该对象的`oss:GetObject`与`oss:PutObject`，没有List/Delete、Bucket管理或FC Invoke权限。
 
+精确对象权限已拆成独立渲染器与幂等应用器：`render-v2-spark-worker-package-policy.mjs`和`apply-v2-spark-worker-package-policy.mjs`。固定策略名为`DataPlatformV2SparkWorkerPackageMinimal`；首次只创建并附加，已存在则核对默认版本正文，同名不同内容直接`POLICY_DOCUMENT_MISMATCH`，不自动覆盖、建版本、解绑或删除。当前脚本只是准备完成，用户尚未授权这项新增OSS写权限，不能执行`--apply`。
+
 上传后必须使用`scripts/verify-v2-spark-worker-oss-object.mjs`读取`ossutil api head-object --output-format json`证据，核对实际Content-Length、`x-oss-meta-shuduo-sha256`和ETag。验证器只输出对象键哈希和固定检查项，不输出Bucket/Object原值。HeadObject只能证明当前对象内容与元数据匹配，不能单独证明Bucket非公开或历史上从未覆盖，因此证据明确保留`publicAccessVerified=false`与`overwriteProtectionVerified=false`，这两项须由独立Bucket审计和上传日志补齐。[HeadObject命令与权限](https://help.aliyun.com/en/oss/developer-reference/head-object)
 
 `scripts/verify-v2-spark-worker-oss-privacy.mjs`独立核对四项访问证据：Bucket ACL必须private、Object ACL必须private/default、Bucket Policy Status必须`IsPublic=false`、Bucket级Block Public Access必须开启。任一证据缺失均失败关闭；输出不包含Owner、Bucket或Object名称。对象ACL优先于Bucket ACL，不能只查Bucket；Bucket Policy和Public Access Block也参与匿名访问决策。[Bucket ACL](https://help.aliyun.com/en/oss/developer-reference/get-bucket-acl)、[Object ACL](https://help.aliyun.com/en/oss/developer-reference/manage-the-acl-of-an-object)、[Bucket Policy公开状态](https://help.aliyun.com/en/oss/developer-reference/get-bucket-policy-status)、[Bucket公共访问阻断](https://help.aliyun.com/en/oss/developer-reference/get-bucket-public-access-block)
