@@ -69,6 +69,8 @@ Worker构建门已在Linux双构建和包内Spark冒烟通过：云端从历史S
 
 W2新增OSS对象证据门：上传后核对实际字节、摘要元数据和ETag，脱敏输出只保留对象键哈希；Bucket私有性和禁止覆盖历史仍须独立证据。该门未运行真实OSS，本轮不把验证器测试计作W2云健康。
 
+W2新增OSS私有访问四证门：Bucket/Object ACL、Bucket Policy公开状态和Bucket Public Access Block必须同时安全；缺失证据和任一公共状态均阻断。验证器仅本机测试，待Cloud Shell主账号真实读取后才可把`publicAccessVerified`置为true。
+
 本机项目隔离运行时已实际升级到Spark3.5.9/py4j0.10.9.9；35/35真实Spark用例在新版本重新执行通过，耗时23.891秒。该结果证明本机兼容升级，不证明Linux云Worker包或FC隔离执行。
 
 版本化交付产物已接入统一存储：本机权限0600不可变文件与云端OSS create-only对象共用接口；创建包先保存对象，审批、演练和发布前重新校验正文、大小、摘要和对象键，旧包按需迁移。3项新增产物测试使全量CI达到169/169；真实OSS写入/读取与生命周期仍待账号验收。
