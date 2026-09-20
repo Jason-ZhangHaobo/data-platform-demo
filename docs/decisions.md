@@ -180,6 +180,7 @@
 | D-175 | Worker OSS证据使用短期、脱敏、运行绑定收据，2026-09-20 | 内容与四项私有性必须同时通过并绑定包SHA/字节、对象键哈希、上传Run ID和Head SHA；收据只保留布尔检查且六小时过期，不包含Bucket/Object/Owner。验证器只接受`docs/evidence`下固定名称常规文件，阻断路径替换、陈旧或跨运行证据。完整CI 307/307 |
 | D-176 | Worker创建工作流不兼任调用和修复，2026-09-20 | 创建门完整分页调用QueryBill（授权动作为`bss:DescribeBillList`），用微单位合计并按分向上取整，负退款不冲减保守预算，非CNY拒绝。函数必须明确不存在；工作流创建后只设置并回读并发/弹性和规格，不Update/Delete/Invoke。中途失败不自动覆盖既有函数，交由Cloud Shell只读诊断，固定证券烟测仍独立。完整CI 307/307 |
 | D-177 | 已批准W2策略以单次幂等包应用，2026-09-20 | `DataPlatformV2DeployMinimal`与`DataPlatformV2SparkWorkerPackageMinimal`先联合验证输入，再依次创建/复用、附加和回读。任一同名正文漂移立即停止，不创建版本、不替换、不解绑或删除；结果不输出PolicyDocument、角色ARN或云错误原文。这样避免用户复制两段长命令，也不把既有批准扩大成其他RAM操作。完整CI 310/310 |
+| D-178 | 三条云部署链路统一使用QueryBill，2026-09-20 | `provision-v2-staging`、`deploy-v2-staging`和`provision-v2-spark-worker`不再调用`QueryBillOverview`或各自计算金额；统一脚本完整分页QueryBill并复用微单位验证器。这样工作流与已批准`bss:DescribeBillList`动作一致，未知云错误被缩减为固定码，避免权限名和API实现再次漂移。完整CI 312/312 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。

@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新310/310测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python开发、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker W1构包与W2计划/联合最小策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
+| npm run ci | 最新312/312测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python开发、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、完整分页实时账单门、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker W1构包与W2计划/联合最小策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -545,3 +545,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 应用范围固定为`DataPlatformV2DeployMinimal`和`DataPlatformV2SparkWorkerPackageMinimal`。两者分别复用已有幂等应用器，结果只返回策略名与创建/附加/验证布尔；不输出角色ARN、对象名、正文或错误原文。
 - 合成Runner验证仅调用Get/Create/Attach/List/GetVersion；不存在CreatePolicyVersion、Delete、Detach、OSS List/Delete或FC Invoke。真实Cloud Shell尚未执行，不能标记策略已附加。
 - 全量CI通过310/310，源码检查和两套生产构建均通过。
+
+## 2026-09-20：部署实时账单门统一
+
+- 新增`query-v2-monthly-spend.sh`：通过`QueryBill`逐页读取最多100页，调用同一微单位验证器检查页码、总记录数、币种和200元硬门；只在stdout输出两位小数金额。
+- 阿里云命令失败时，stderr原文保留在0600临时文件并在退出删除；工作流只得到`extract-aliyun-error-code`产生的固定错误码，不转发RequestID、产品明细或私有消息。
+- 控制面预置、控制面更新、Worker创建三条工作流全部改用统一脚本，源码测试明确拒绝`QueryBillOverview`回归。合成CLI验证两页账单得到保守金额3.01元，并验证NoPermission错误脱敏；真实OIDC账单尚未在本轮运行。
+- 全量CI通过312/312，源码检查和两套生产构建均通过。

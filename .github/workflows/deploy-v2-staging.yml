@@ -107,17 +107,8 @@ jobs:
 
       - name: Refresh account spending with the current Shanghai billing cycle
         run: |
-          umask 077
-          bill_file="$(mktemp)"
-          trap 'rm -f "$bill_file"' EXIT
-          billing_cycle="$(TZ=Asia/Shanghai date +%Y-%m)"
-          aliyun bssopenapi QueryBillOverview --BillingCycle "$billing_cycle" > "$bill_file"
-          jq -e '.Success == true and (.Data.Items.Item | type == "array")' "$bill_file" >/dev/null
-          spend="$(jq -r '[.Data.Items.Item[].PretaxAmount | tonumber] | add // 0 | ((. * 100) | round / 100)' "$bill_file")"
-          jq -n --argjson spend "$spend" '$spend >= 0 and $spend < 200' | grep -qx true || {
-            echo 'Current account spend is unavailable or at the 200 CNY stop line' >&2
-            exit 1
-          }
+          set -euo pipefail
+          spend="$(V2_HARD_MONTHLY_BUDGET_CNY=200 scripts/query-v2-monthly-spend.sh)"
           echo "V2_ACCOUNT_MONTHLY_SPEND_CNY=$spend" >> "$GITHUB_ENV"
 
       - name: Require a dedicated pre-created staging function

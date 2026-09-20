@@ -84,17 +84,12 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          bill_file="$(mktemp)"
           role_file="$(mktemp)"
           policies_file="$(mktemp)"
           vsw_file="$(mktemp)"
           sg_file="$(mktemp)"
-          trap 'rm -f "$bill_file" "$role_file" "$policies_file" "$vsw_file" "$sg_file"' EXIT
-          billing_cycle="$(TZ=Asia/Shanghai date +%Y-%m)"
-          aliyun bssopenapi QueryBillOverview --BillingCycle "$billing_cycle" > "$bill_file"
-          jq -e '.Success == true and (.Data.Items.Item | type == "array")' "$bill_file" >/dev/null
-          spend="$(jq -r '[.Data.Items.Item[].PretaxAmount | tonumber] | add // 0 | ((. * 100) | round / 100)' "$bill_file")"
-          jq -e --argjson spend "$spend" '$spend >= 0 and $spend < 200' >/dev/null <<<'true'
+          trap 'rm -f "$role_file" "$policies_file" "$vsw_file" "$sg_file"' EXIT
+          spend="$(V2_HARD_MONTHLY_BUDGET_CNY=200 scripts/query-v2-monthly-spend.sh)"
           role_name="${V2_FUNCTION_ROLE_ARN##*/}"
           aliyun ram GetRole --RoleName "$role_name" > "$role_file"
           jq -e 'tostring | test("fc|functioncompute"; "i")' "$role_file" >/dev/null

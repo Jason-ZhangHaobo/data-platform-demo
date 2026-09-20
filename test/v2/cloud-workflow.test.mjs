@@ -19,7 +19,8 @@ test("V2 cloud deployment does not embed cloud IDs or inherit stale function sec
   assert.match(workflow, /export-v2-staging-secret-bundle\.mjs/);
   assert.match(workflow, /V2_DEPLOY_ROLE_ARN/);
   assert.match(workflow, /V2_AUDIT_EVIDENCE_FILE/);
-  assert.match(workflow, /QueryBillOverview/);
+  assert.match(workflow, /query-v2-monthly-spend\.sh/);
+  assert.doesNotMatch(workflow, /QueryBillOverview/);
   assert.match(workflow, /V2_VPC_ID/);
   assert.match(workflow, /V2_SECURITY_GROUP_ID/);
   assert.match(workflow, /data-platform-demo\/v2\/state/);
@@ -40,8 +41,8 @@ test("V2 provisioning workflow is create-only and budget/network gated", () => {
   );
   assert.doesNotMatch(workflow, /UpdateFunction|DeleteFunction|DeleteService/);
   assert.match(workflow, /workflow_dispatch/);
-  assert.match(workflow, /QueryBillOverview/);
-  assert.match(workflow, /spend < 200/);
+  assert.match(workflow, /query-v2-monthly-spend\.sh/);
+  assert.doesNotMatch(workflow, /QueryBillOverview/);
   assert.match(workflow, /V2_FUNCTION_ROLE_ARN/);
   assert.match(workflow, /verify-v2-staging-config\.mjs/);
   assert.ok(workflow.indexOf("verify-v2-staging-config.mjs") < workflow.indexOf("npm ci"));

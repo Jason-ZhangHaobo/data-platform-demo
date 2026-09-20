@@ -108,6 +108,7 @@ DAPI：单表/参数化 SQL 数据查询 API。XAPI：组合查询或已登记�
 | FR-075 | Worker OSS短期收据 | Cloud Shell四项私有性核验必须与Head内容证据、当前包SHA/字节、内容地址对象键哈希、上传工作流Run ID和Head SHA绑定，生成不含Bucket/Object/Owner的六小时收据。函数创建工作流只读取`docs/evidence`下非符号链接的固定命名收据；过期、外部路径、包/运行不匹配、任一内容或私有性布尔为false均拒绝 |
 | FR-076 | Worker创建门 | 独立Worker函数只能由手动`v2-staging`工作流使用OIDC短期身份创建；创建前验证完整分页当月QueryBill且总额严格低于200元、同VPC交换机/安全组、函数明确不存在、当前OSS收据有效和共享密钥至少32字符。函数体由0600仅写一次文件生成，不回显秘密；固定无运行角色、无公网出站、1vCPU/2GiB/10GiB/180秒、三官方层、实例并发1、预留1、最小实例0。工作流不得更新/删除函数或调用Worker；创建后仍须Cloud Shell固定证券烟测 |
 | FR-077 | W2最小策略一键应用 | Cloud Shell只需一次运行幂等策略包：先同时验证部署策略与精确Worker对象策略全部输入，再依次创建或复用同正文策略、附加部署角色并回读验证。部署策略不得出现产品级`fc:*`，对象策略仅当前SHA对象Get/Put；整个策略包不得List/Delete OSS、Invoke Worker、替换策略版本、解绑或删除策略。输出只保留策略名和created/attached/verified布尔，不转发云错误原文 |
+| FR-078 | 统一实时账单门 | 控制面预置、更新和Worker创建必须调用同一脚本，以OIDC临时身份完整分页执行QueryBill（RAM动作为已批准的`bss:DescribeBillList`）。逐页验证账期/页号/总记录数，CNY金额按微单位汇总并向上取整到分，退款不降低保守支出；缺页、未知错误、非CNY或金额达到200元均停止。脚本stdout只返回规范金额，云错误只返回固定错误码，不使用未批准的`QueryBillOverview` |
 
 ## UI 与交互（用户补充，必须验收）
 - UI-001：专业、现代、有审美；统一间距、字体、图标、状态色、圆角和层次。
