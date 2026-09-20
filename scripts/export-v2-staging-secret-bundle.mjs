@@ -172,8 +172,12 @@ export function mergeSecretBundle(input = {}, raw = input.JASONSECRETS) {
 
 function run() {
   try {
-    const bundle = parseSecretBundle(process.env.JASONSECRETS);
-    const errors = validateSecretValues(bundle);
+    const bundle = parseSecretBundle(process.env.JASONSECRETS),
+      pendingBundle = Object.fromEntries(
+        Object.entries(bundle).filter(([key]) => !process.env[key]),
+      ),
+      overriddenKeys = Object.keys(bundle).filter((key) => process.env[key]),
+      errors = validateSecretValues(pendingBundle);
     if (errors.length > 0) {
       process.stdout.write(JSON.stringify({ ok: false, error: "JASONSECRETS_VALUE_INVALID", errors }) + "\n");
       process.exitCode = 1;
@@ -181,16 +185,19 @@ function run() {
     }
     const target = process.env.GITHUB_ENV;
     if (target) {
-      for (const [key, value] of Object.entries(bundle)) {
-        if (!process.env[key]) {
-          if (process.env.GITHUB_ACTIONS === "true")
-            process.stdout.write(`::add-mask::${value.replaceAll("%", "%25")}\n`);
-          appendFileSync(target, `${key}=${value}\n`, { mode: 0o600 });
-        }
+      for (const [key, value] of Object.entries(pendingBundle)) {
+        if (process.env.GITHUB_ACTIONS === "true")
+          process.stdout.write(`::add-mask::${value.replaceAll("%", "%25")}\n`);
+        appendFileSync(target, `${key}=${value}\n`, { mode: 0o600 });
       }
     }
     process.stdout.write(
-      JSON.stringify({ ok: true, bundlePresent: Object.keys(bundle).length > 0, loadedKeys: Object.keys(bundle) }) +
+      JSON.stringify({
+        ok: true,
+        bundlePresent: Object.keys(bundle).length > 0,
+        loadedKeys: Object.keys(pendingBundle),
+        overriddenKeys,
+      }) +
         "\n",
     );
   } catch {
