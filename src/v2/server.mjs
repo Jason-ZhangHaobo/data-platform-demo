@@ -442,9 +442,29 @@ export function createV2Server(options = {}) {
   const releaseTimeUnitMs = Number(options.releaseTimeUnitMs ?? 1000);
   if (!Number.isSafeInteger(releaseTimeUnitMs) || releaseTimeUnitMs < 1)
     throw new Error("本机发布调度时间单位不合法");
+  const isPythonDelivery = (item) =>
+      item?.manifest?.format === "shuduo-python-delivery/v1",
+    validateAnyDeliveryPackage = (item) =>
+      (isPythonDelivery(item)
+        ? validatePythonDeliveryPackage
+        : validateDeliveryPackage)(item, item.digest),
+    unpackAnyDeliveryPackage = (item, directory) =>
+      (isPythonDelivery(item)
+        ? unpackPythonDeliveryPackage
+        : unpackDeliveryPackage)(item, directory, item.digest);
   const releaseRunner =
     options.releaseRunner ??
-    ((input) => verifyDeliveryDirectory(input, { runtime, runner }));
+    (async (input) => {
+      const manifest = JSON.parse(
+        await readFile(join(input.directory, "manifest.json"), "utf8"),
+      );
+      return manifest.format === "shuduo-python-delivery/v1"
+        ? verifyPythonDeliveryDirectory(input, {
+            pythonRuntime,
+            pythonRunner,
+          })
+        : verifyDeliveryDirectory(input, { runtime, runner });
+    });
   const schedulerOptions = {
     store,
     project: PROJECT,
@@ -587,7 +607,8 @@ export function createV2Server(options = {}) {
             agentDeliveryTaskId: task.id,
             stage: "M2A_PYTHON",
             published: false,
-            releaseEligible: false,
+            releaseEligible: true,
+            publicReleaseEligible: false,
           });
         }
         store.update("agent_delivery_task", task.id, PROJECT, {
@@ -3983,7 +4004,7 @@ export function createV2Server(options = {}) {
           )
             throw fail(422, "需逐项确认代码、断言、交付文件和本机范围");
           await ensureDeliveryArtifact(item);
-          validateDeliveryPackage(item, item.digest);
+          validateAnyDeliveryPackage(item);
           const rehearsal = get("delivery_verification", verificationId);
           if (
             rehearsal.packageId !== item.id ||
@@ -4058,7 +4079,7 @@ export function createV2Server(options = {}) {
             throw fail(409, "审批摘要与当前交付包不一致");
           const reviewId = text(body.reviewId, 1, 80);
           await ensureDeliveryArtifact(item);
-          validateDeliveryPackage(item, item.digest);
+          validateAnyDeliveryPackage(item);
           const rehearsal = store
             .list("delivery_verification", PROJECT)
             .find(
@@ -4116,7 +4137,12 @@ export function createV2Server(options = {}) {
                   packageDigest: item.digest,
                   rehearsalId: rehearsal.id,
                   sourceRevisionId: item.manifest.source.revisionId,
-                  sourceSqlHash: item.manifest.source.sqlHash,
+                  sourceCodeHash:
+                    item.manifest.source.codeHash ??
+                    item.manifest.source.sqlHash,
+                  ...(item.manifest.source.sqlHash
+                    ? { sourceSqlHash: item.manifest.source.sqlHash }
+                    : {}),
                   reviewId: review.id,
                   reviewer: approver.displayName,
                   reviewedBy: review.reviewer,
@@ -4142,7 +4168,7 @@ export function createV2Server(options = {}) {
           const body = await readBody(req),
             scheduledFor = text(body.scheduledFor, 1, 50);
           await ensureDeliveryArtifact(item);
-          const plan = validateDeliveryPackage(item, item.digest),
+          const plan = validateAnyDeliveryPackage(item),
             occurrence = resolveDeliverySchedule(plan, scheduledFor);
           if (!occurrence.eligible) throw fail(422, "样例非交易日，未提交执行");
           if (occurrence.businessDate !== plan.fixtures.context.businessDate)
@@ -4150,8 +4176,19 @@ export function createV2Server(options = {}) {
               422,
               "T+1业务日与冻结输入不一致，请使用交付包中的样例演练时刻",
             );
-          if (!options.deliveryRunner && !options.runner && !runtime.available)
-            throw fail(503, "Spark 尚未就绪");
+          if (
+            isPythonDelivery(item)
+              ? !options.pythonDeliveryRunner &&
+                !options.pythonRunner &&
+                !pythonRuntime.available
+              : !options.deliveryRunner && !options.runner && !runtime.available
+          )
+            throw fail(
+              503,
+              isPythonDelivery(item)
+                ? "受限Python尚未就绪"
+                : "Spark尚未就绪",
+            );
           const key = text(req.headers["idempotency-key"], 1, 100);
           const dedup = store.deduplicate(
             PROJECT + ":delivery-verify:" + key,
@@ -4169,7 +4206,9 @@ export function createV2Server(options = {}) {
                 scheduledFor,
                 status: "QUEUED",
                 scope:
-                  plan.deployment.adapter === "remote-spark-worker-v1"
+                  isPythonDelivery(item)
+                    ? "M2A_LOCAL_PYTHON_FILE_REHEARSAL"
+                    : plan.deployment.adapter === "remote-spark-worker-v1"
                     ? "M2A_CLOUD_ISOLATED_FILE_REHEARSAL"
                     : "M2A_LOCAL_FILE_REHEARSAL",
                 published: false,
@@ -4181,14 +4220,14 @@ export function createV2Server(options = {}) {
             schedule("delivery_verification", verification, async (signal) => {
               const parent = join(root, ".v2-artifacts", "delivery");
               mkdirSync(parent, { recursive: true });
-              const directory = unpackDeliveryPackage(
+              const directory = unpackAnyDeliveryPackage(
                 item,
                 join(parent, verification.id),
-                item.digest,
               );
               const executeFiles =
-                options.deliveryRunner ??
-                ((input) => verifyDeliveryDirectory(input, { runtime, runner }));
+                (isPythonDelivery(item)
+                  ? options.pythonDeliveryRunner
+                  : options.deliveryRunner) ?? releaseRunner;
               const result = await executeFiles({
                 directory,
                 expectedDigest: item.digest,
@@ -4229,11 +4268,12 @@ export function createV2Server(options = {}) {
           item = get("delivery_package", approval.packageId),
           spec = localScheduleSpec(body),
           artifact = await ensureDeliveryArtifact(item),
-          plan = validateDeliveryPackage(item, item.digest);
+          plan = validateAnyDeliveryPackage(item);
         if (
           approval.status !== "APPROVED" ||
           approval.packageDigest !== item.digest ||
-          approval.sourceSqlHash !== item.manifest.source.sqlHash
+          (approval.sourceCodeHash ?? approval.sourceSqlHash) !==
+            (item.manifest.source.codeHash ?? item.manifest.source.sqlHash)
         )
           throw fail(409, "审批记录未绑定当前不可变交付包");
         if (approval.consumedByReleaseId) {
@@ -4272,7 +4312,11 @@ export function createV2Server(options = {}) {
                 packageDigest: item.digest,
                 artifact,
                 sourceRevisionId: item.manifest.source.revisionId,
-                sourceSqlHash: item.manifest.source.sqlHash,
+                sourceCodeHash:
+                  item.manifest.source.codeHash ?? item.manifest.source.sqlHash,
+                ...(item.manifest.source.sqlHash
+                  ? { sourceSqlHash: item.manifest.source.sqlHash }
+                  : {}),
                 status: "DEPLOYING",
                 health: "PENDING",
                 environment: plan.deployment.environment,
@@ -4288,10 +4332,9 @@ export function createV2Server(options = {}) {
           try {
             const parent = join(root, ".v2-artifacts", "releases");
             mkdirSync(parent, { recursive: true });
-            const artifactDirectory = unpackDeliveryPackage(
+            const artifactDirectory = unpackAnyDeliveryPackage(
               item,
               join(parent, release.id),
-              item.digest,
             );
             for (const previous of store.list("release", PROJECT)) {
               if (

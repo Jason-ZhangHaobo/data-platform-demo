@@ -95,7 +95,7 @@ W2两个已批准RAM策略新增联合幂等应用器：一次校验、应用、
 
 独立Data Agent的数据开发工具升级为V2双语言契约：工作台直接选择Spark SQL/受限Python；Python通过真实模型适配、不可变版本、受限子进程和五套断言形成可恢复专业任务，继续继承批准/幂等/取消/任务图。通用文件交付已在下一增量补齐；云Python Worker与正式发布仍明确阻断。
 
-Python交付首版已补齐通用文件阶段：独立`shuduo-python-delivery/v1`生成main.py、T+1调度、部署清单、冻结输入和验证报告，按文件重新执行受限CPython与五套断言；Agent任务图的调度/部署文件里程碑可取得真实本机证据。包不可进入SQL发布链，云Python Worker、审批发布、实际调度批次和运维仍未完成。
+Python交付首版已补齐通用文件和本机发布阶段：独立`shuduo-python-delivery/v1`生成main.py、T+1调度、部署清单、冻结输入和验证报告，按文件重新执行受限CPython与五套断言；工程师审阅/审批后，统一调度器真实触发两个Python批次并进入监控/告警/回滚。云Python Worker、外部持久调度、公网验收和Python结果DAPI仍未完成。
 
 经典数据开发新增受限Python首版：真实CPython子进程、版本/运行/取消、五套证券断言及GUI/API/CLI/MCP同源已实现；禁止import/文件/网络/反射并回传CPU/文件/内存限制证据。当前仅`LOCAL_RESTRICTED_PYTHON`，macOS地址空间上限未验证，云隔离、Python Agent生成、第三方包和调度交付仍待后续。
 

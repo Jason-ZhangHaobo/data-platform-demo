@@ -32,12 +32,14 @@ type Bundle = {
   files?: Record<string, string>;
   fileNames?: string[];
   manifest: {
+    format: string;
     name: string;
     releaseState: string;
     source: {
       runId: string;
       revisionId: string;
-      sqlHash: string;
+      sqlHash?: string;
+      codeHash?: string;
       contextId: string;
     };
     files: Record<string, { sha256: string; bytes: number }>;
@@ -54,6 +56,8 @@ type Verification = {
   mode?: string;
   occurrence?: { businessDate: string };
   engineVersion?: string;
+  engine?: string;
+  codeExecuted?: boolean;
   testSqlValidation?: { passed: boolean };
   validation?: { passed: boolean };
   workflowTrace?: { id: string; kind: string; status: string }[];
@@ -88,7 +92,8 @@ type Release = {
   id: string;
   packageId: string;
   packageDigest: string;
-  sourceSqlHash: string;
+  sourceSqlHash?: string;
+  sourceCodeHash?: string;
   approvalId: string;
   status: string;
   health: string;
@@ -492,6 +497,10 @@ export function DeliveryWorkbench({
           Number(item.successfulRunCount ?? 0) > 0,
       )
     : undefined;
+  const selectedIsPython =
+    selected?.manifest.format === "shuduo-python-delivery/v1";
+  const selectedSourceHash =
+    selected?.manifest.source.codeHash ?? selected?.manifest.source.sqlHash ?? "";
   return (
     <div className="delivery-workbench">
       <div className="delivery-notice">
@@ -500,7 +509,7 @@ export function DeliveryWorkbench({
           <strong>M2a–M2c · 从文件交付到本机发布监控</strong>
           <p>
             先按文件演练，再锁定摘要审批。本机发布由真实墙上时钟触发两个
-            Spark 批次并产生监控证据；全程不代表公网或生产上线。
+            真实运行批次并产生监控证据；SQL使用Spark，Python使用受限CPython；全程不代表公网或生产上线。
           </p>
         </div>
       </div>
@@ -514,7 +523,7 @@ export function DeliveryWorkbench({
         <summary>生成新交付包</summary>
         <div className="delivery-create">
           <div>
-            <label htmlFor="delivery-source">已通过当前验证的 SQL 运行</label>
+            <label htmlFor="delivery-source">已通过当前验证的 SQL 运行（Python包由Data Agent生成）</label>
             <select
               id="delivery-source"
               value={source}
@@ -555,9 +564,7 @@ export function DeliveryWorkbench({
           <Package size={32} />
           <h2>把已验证代码交付成可执行文件</h2>
           <p>
-            包含
-            main.sql、tests.sql、schedule.json、deployment.json、calendar.json、fixtures.json
-            和验证报告。
+            SQL包包含main.sql/tests.sql，Python包包含main.py；两者都绑定调度、部署、日历、冻结输入和验证报告。
           </p>
           <button className="button" onClick={onBack}>
             返回代码工作台
@@ -621,7 +628,7 @@ export function DeliveryWorkbench({
           <div className="delivery-source-proof">
             <span>
               源版本{" "}
-              <code>{selected.manifest.source.sqlHash.slice(0, 12)}</code>
+              <code>{selectedSourceHash.slice(0, 12)}</code>
             </span>
             <span>
               包摘要{" "}
@@ -680,10 +687,10 @@ export function DeliveryWorkbench({
               </h3>
               <ol>
                 <li>
-                  <span>1</span>执行 main.sql
+                  <span>1</span>执行 {selectedIsPython ? "main.py" : "main.sql"}
                 </li>
                 <li>
-                  <span>2</span>运行 tests.sql 与五场景核验
+                  <span>2</span>{selectedIsPython ? "执行受限Python五场景断言" : "运行 tests.sql 与五场景核验"}
                 </li>
                 <li>
                   <span>3</span>保存真实结果与文件摘要
@@ -748,7 +755,7 @@ export function DeliveryWorkbench({
                   )}
                   {check.status === "SUCCEEDED" && (
                     <p>
-                      测试 SQL 已实际执行 · Spark {check.engineVersion}
+                      {selectedIsPython ? "Python代码与五场景断言已实际执行 · CPython " : "测试 SQL 已实际执行 · Spark "}{check.engineVersion}
                       <br />
                       未触发云部署或发布
                     </p>
@@ -764,7 +771,7 @@ export function DeliveryWorkbench({
                 [
                   "02",
                   "文件演练",
-                  "Spark与独立断言",
+                  selectedIsPython ? "CPython与独立断言" : "Spark与独立断言",
                   check?.status === "SUCCEEDED",
                 ],
                 ["03", "审批发布", "摘要绑定与计时触发", !!selectedRelease],
@@ -804,8 +811,8 @@ export function DeliveryWorkbench({
                 <fieldset className="delivery-review-checklist" disabled={!canWrite || !!selectedReview || !!busy}>
                   <legend>工程师审阅确认（不会发布）</legend>
                   {[
-                    ["code", "已核对生成 SQL 版本及业务口径"],
-                    ["assertions", "已核对独立断言与 Spark 演练结果"],
+                    ["code", selectedIsPython ? "已核对生成Python版本及业务口径" : "已核对生成SQL版本及业务口径"],
+                    ["assertions", selectedIsPython ? "已核对独立断言与CPython演练结果" : "已核对独立断言与Spark演练结果"],
                     ["deliveryFiles", "已核对 DAG、调度和部署文件摘要"],
                     ["localScope", "确认本次仅为本机合成数据验证，非公网或生产发布"],
                   ].map(([key, label]) => (

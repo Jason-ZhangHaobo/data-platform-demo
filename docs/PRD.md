@@ -112,7 +112,8 @@ DAPI：单表/参数化 SQL 数据查询 API。XAPI：组合查询或已登记�
 | FR-079 | 受保护配置真实校验 | 独立手动工作流必须在`v2-staging`受保护环境实际读取逐项Secrets与`JASONSECRETS`，先逐值注册GitHub mask再写入临时Runner环境，然后校验平台MySQL、管理员固定参数scrypt哈希、模型Key、至少32字符Worker密钥、至少32字符调度签名密钥，以及可选业务源配置完整性。工作流不得申请OIDC或调用阿里云；输出只含缺失键、固定错误码和六类present布尔，不能回显任何值。Secret名称存在不算通过，只有真实工作流成功才计配置就绪 |
 | FR-080 | 逐项Secret覆盖bundle | `JASONSECRETS`只为缺少逐项环境值的白名单键提供后备。展开器必须先过滤已由逐项Secret提供的键，再校验和写入剩余bundle；旧bundle中的占位或失效值不能阻止正确逐项Secret生效，也不能覆盖它。输出只列loadedKeys和overriddenKeys名称，不返回值；bundle未知键、多行值以及真正会生效的无效后备值仍失败关闭 |
 | FR-081 | Data Agent受限Python开发 | 独立Data Agent工作台允许工程师选择Spark SQL或受限Python。开发工具V2必须把语言、上下文、当前代码和批准目标绑定到契约摘要与幂等调用；Python Agent最多三次生成/修正`transform(data, params)`，每次建立不可变Python版本、真实CPython运行和五套独立证券断言，支持取消/重启中断并保留尝试证据。模型只接收表字段和口径，不接收预期业务行。完成范围固定`PYTHON_DEVELOPMENT`且非公网，不能复用SQL交付包冒充 |
-| FR-082 | Python调度与部署包首版 | 只有真实CPython、代码哈希一致、CPU/文件限制生效且五套断言通过的Python Agent任务才能生成`shuduo-python-delivery/v1`不可变包。包包含main.py、09:00/T+1串行调度、合成交易日历、部署清单、冻结输入和验证报告；DAG固定为python_transform→python_assertions→record_evidence。按文件演练必须重新读取包、解析交易日并执行受限Python，保留代码哈希、五套断言和资源限制证据。首版adapter固定`local-restricted-python-v1`、releaseEligible=false、publicDeployed=false；不得批准发布或声称云Python沙箱完成 |
+| FR-082 | Python调度与部署包首版 | 只有真实CPython、代码哈希一致、CPU/文件限制生效且五套断言通过的Python Agent任务才能生成`shuduo-python-delivery/v1`不可变包。包包含main.py、09:00/T+1串行调度、合成交易日历、部署清单、冻结输入和验证报告；DAG固定为python_transform→python_assertions→record_evidence。按文件演练必须重新读取包、解析交易日并执行受限Python，保留代码哈希、五套断言和资源限制证据。adapter固定`local-restricted-python-v1`、publicDeployed=false；不得声称云Python沙箱完成 |
+| FR-083 | Python本机受控发布与监控 | Python包通过按文件演练后，工程师须逐项确认代码、断言、交付文件和本机范围，审批绑定包摘要/演练/审阅记录。发布器按合成交易日历真实触发至少两个墙上时钟Python批次，逐批重新加载不可变包并执行受限CPython；成功/失败进入统一monitor_event、monitor_alert、健康聚合和回滚。发布状态固定ACTIVE_LOCAL、publicDeployed=false、agentIndependentE2E=false；云Worker、持久外部tick和公网验收未完成前不得升级范围 |
 
 ## UI 与交互（用户补充，必须验收）
 - UI-001：专业、现代、有审美；统一间距、字体、图标、状态色、圆角和层次。
