@@ -516,6 +516,7 @@ function permissionForPath(path) {
   if (path.startsWith("/api/v2/security")) return "ADMIN";
   if (path.startsWith("/api/v2/agent/tools")) return "AGENT";
   if (path.startsWith("/api/v2/agent/intents")) return "AGENT";
+  if (path.startsWith("/api/v2/python")) return "DEVELOPMENT";
   if (path.startsWith("/api/v2/revisions") || path.startsWith("/api/v2/runs") || path.startsWith("/api/v2/agent"))
     return "DEVELOPMENT";
   if (path.startsWith("/api/v2/delivery") || path.startsWith("/api/v2/releases"))

@@ -23,6 +23,12 @@ const tools = [
   { name: "agent_delivery_prepare", description: "对真实模型与Spark已核验代码自动生成调度/部署包并实际文件演练；不审批、不发布、不创建公网资源。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
   { name: "agent_delivery_detail", description: "读取交付准备任务的阶段、包摘要、演练编号与明确失败。", inputSchema: { type: "object", properties: { deliveryTaskId: { type: "string" } }, required: ["deliveryTaskId"] } },
   { name: "agent_delivery_cancel", description: "取消未完成的交付准备并保留包/演练证据；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { deliveryTaskId: { type: "string" } }, required: ["deliveryTaskId"] } },
+  { name: "python_revision_list", description: "列出本机受限Python代码版本；不是云端Python沙箱。", inputSchema: { type: "object", properties: {} } },
+  { name: "python_revision_create", description: "保存只含transform(data, params)的受限Python版本，不自动执行。", inputSchema: { type: "object", properties: { code: { type: "string", minLength: 20, maxLength: 20000 }, contextId: { type: "string" } }, required: ["code", "contextId"] } },
+  { name: "python_run_list", description: "列出本机受限Python运行、五场景断言和失败证据。", inputSchema: { type: "object", properties: {} } },
+  { name: "python_run_create", description: "在隔离子进程中执行受限Python版本并做独立证券断言；当前仅本机范围。", inputSchema: { type: "object", properties: { revisionId: { type: "string" } }, required: ["revisionId"] } },
+  { name: "python_run_detail", description: "读取受限Python运行及验证证据。", inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },
+  { name: "python_run_cancel", description: "取消排队或运行中的Python子进程并保留记录；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },
   { name: "release_runs_list", description: "列出真实调度发布批次及验证证据。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_list", description: "列出交付包摘要、源代码版本和发布状态，不返回文件正文。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_detail", description: "读取指定不可变交付包、文件与可信摘要。", inputSchema: { type: "object", properties: { packageId: { type: "string" } }, required: ["packageId"] } },
@@ -234,6 +240,26 @@ async function callTool(name, args = {}) {
   if (name === "agent_delivery_cancel")
     return client.request(
       `/agent/deliveries/${encodeURIComponent(args.deliveryTaskId)}/cancel`,
+      { method: "POST", body: {} },
+    );
+  if (name === "python_revision_list")
+    return client.request("/python/revisions");
+  if (name === "python_revision_create")
+    return client.request("/python/revisions", {
+      method: "POST",
+      body: { code: args.code, contextId: args.contextId },
+    });
+  if (name === "python_run_list") return client.request("/python/runs");
+  if (name === "python_run_create")
+    return client.request("/python/runs", {
+      method: "POST",
+      body: { revisionId: args.revisionId },
+    });
+  if (name === "python_run_detail")
+    return client.request(`/python/runs/${encodeURIComponent(args.runId)}`);
+  if (name === "python_run_cancel")
+    return client.request(
+      `/python/runs/${encodeURIComponent(args.runId)}/cancel`,
       { method: "POST", body: {} },
     );
   if (name === "release_runs_list") return client.request("/release/runs");

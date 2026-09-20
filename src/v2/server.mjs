@@ -14,6 +14,10 @@ import {
 } from "./context.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import {
+  pythonRuntimeConfig,
+  runRestrictedPython,
+} from "./python.mjs";
+import {
   generateSql,
   generateDataServicePlan,
   generateIngestionPlan,
@@ -214,6 +218,7 @@ export function createV2Server(options = {}) {
       now: options.now,
     });
   const runtime = runtimeConfig(env, root);
+  const pythonRuntime = pythonRuntimeConfig(env, root);
   const runnerDescriptor = options.runnerDescriptor ?? options.runner?.descriptor ?? {
     engine: "Apache Spark",
     isolation: "LOCAL_PROCESS",
@@ -227,6 +232,8 @@ export function createV2Server(options = {}) {
       return rawRunner(input);
     };
   runner.descriptor = runnerDescriptor;
+  const pythonRunner =
+    options.pythonRunner ?? ((input) => runRestrictedPython(input, pythonRuntime));
   let modelVerifiedAt = null;
   const generator =
     options.generator ??
@@ -1023,6 +1030,14 @@ export function createV2Server(options = {}) {
               ? runnerDescriptor.publicWriteEnabled !== false
               : runtime.available,
             ...runnerDescriptor,
+          },
+          python: {
+            available: options.pythonRunner ? true : pythonRuntime.available,
+            engine: "CPython",
+            isolation: "LOCAL_RESTRICTED_PROCESS",
+            memoryLimitRequired: pythonRuntime.requireMemoryLimit,
+            cloudVerified: false,
+            publicWriteEnabled: false,
           },
           metadata:
             typeof store.replicationStatus === "function"
@@ -2424,6 +2439,113 @@ export function createV2Server(options = {}) {
         return json(res, 200, store.list("revision", PROJECT));
       if (path === "/api/v2/runs" && method === "GET")
         return json(res, 200, store.list("run", PROJECT));
+      if (path === "/api/v2/python/revisions" && method === "GET")
+        return json(res, 200, store.list("python_revision", PROJECT));
+      if (path === "/api/v2/python/revisions" && method === "POST") {
+        const body = await readBody(req),
+          code = text(body.code, 20, 20_000),
+          context = getContext(text(body.contextId, 1, 80));
+        if (!context) throw fail(400, "请选择有效Python数据上下文");
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          signature = hash(JSON.stringify({ code, contextId: context.id })),
+          dedup = store.deduplicate(
+            `${PROJECT}:python-revision:${key}`,
+            signature,
+            () =>
+              store.create("python_revision", PROJECT, {
+                language: "PYTHON",
+                code,
+                codeHash: hash(code),
+                contextId: context.id,
+                source: "ENGINEER",
+                executionScope: "LOCAL_RESTRICTED_PYTHON",
+                publicDeployed: false,
+              }),
+          );
+        return json(
+          res,
+          dedup.replayed ? 200 : 201,
+          get("python_revision", dedup.id),
+        );
+      }
+      if (path === "/api/v2/python/runs" && method === "GET")
+        return json(res, 200, store.list("python_run", PROJECT));
+      if (path === "/api/v2/python/runs" && method === "POST") {
+        if (!options.pythonRunner && !pythonRuntime.available)
+          throw fail(503, "Python运行环境尚未就绪");
+        const body = await readBody(req),
+          revision = get(
+            "python_revision",
+            text(body.revisionId, 1, 80),
+          ),
+          context = getContext(revision.contextId);
+        if (!context) throw fail(409, "Python版本绑定的数据上下文不存在");
+        const key = text(req.headers["idempotency-key"], 1, 100),
+          signature = hash(
+            JSON.stringify({
+              revisionId: revision.id,
+              codeHash: revision.codeHash,
+              contextId: revision.contextId,
+            }),
+          ),
+          dedup = store.deduplicate(
+            `${PROJECT}:python-run:${key}`,
+            signature,
+            () =>
+              store.create("python_run", PROJECT, {
+                revisionId: revision.id,
+                revisionHash: revision.codeHash,
+                contextId: revision.contextId,
+                validationContractId,
+                status: "QUEUED",
+                engine: "CPython",
+                executionScope: "LOCAL_RESTRICTED_PYTHON",
+                publicDeployed: false,
+              }),
+          ),
+          run = get("python_run", dedup.id);
+        if (!dedup.replayed)
+          schedule("python_run", run, async (signal) => {
+            const result = await pythonRunner({
+              code: revision.code,
+              context,
+              validationContexts: contextIds.map(getContext),
+              signal,
+              timeoutMs: Number(env.V2_PYTHON_RUN_TIMEOUT_MS ?? 10_000),
+            });
+            if (get("python_run", run.id).status === "CANCELLED") return;
+            if (
+              !["SUCCEEDED", "FAILED", "VALIDATION_FAILED"].includes(
+                result.status,
+              )
+            )
+              throw new Error("Python执行器返回了无效状态");
+            store.update("python_run", run.id, PROJECT, {
+              ...result,
+              finishedAt: new Date().toISOString(),
+            });
+          });
+        return json(res, dedup.replayed ? 200 : 202, run);
+      }
+      const pythonRunRoute = path.match(
+        /^\/api\/v2\/python\/runs\/([a-f0-9-]+)(?:\/(cancel))?$/,
+      );
+      if (pythonRunRoute) {
+        const run = get("python_run", pythonRunRoute[1]),
+          action = pythonRunRoute[2];
+        if (method === "GET" && !action) return json(res, 200, run);
+        if (method === "POST" && action === "cancel") {
+          await readBody(req);
+          if (!terminal.has(run.status)) {
+            store.update("python_run", run.id, PROJECT, {
+              status: "CANCELLED",
+              finishedAt: new Date().toISOString(),
+            });
+            controls.get(run.id)?.abort();
+          }
+          return json(res, 200, get("python_run", run.id));
+        }
+      }
       if (path === "/api/v2/agent/tasks" && method === "GET")
         return json(res, 200, store.list("agent", PROJECT));
       if (path === "/api/v2/agent/tools" && method === "GET")

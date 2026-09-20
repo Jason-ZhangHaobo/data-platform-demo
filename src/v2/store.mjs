@@ -88,6 +88,7 @@ export class MetadataStore {
   interruptPending(project, { preserveDurableReleaseRuns = false } = {}) {
     for (const kind of [
       "run",
+      "python_run",
       "agent",
       "agent_delivery_task",
       "delivery_verification",

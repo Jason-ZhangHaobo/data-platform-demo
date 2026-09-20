@@ -37,9 +37,14 @@ export const capabilities = [
     id: "development",
     group: "开发交付",
     name: "数据开发",
-    description: "SQL 编写、运行与结果核验",
+    description: "Spark SQL与受限Python编写、运行和结果核验",
     stage: "M1",
-    features: ["代码编辑与版本", "真实 Spark SQL", "独立结果断言"],
+    features: [
+      "代码编辑与版本",
+      "真实 Spark SQL",
+      "受限CPython子进程",
+      "独立结果断言",
+    ],
   },
   {
     id: "schedules",

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 
 const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
@@ -25,6 +26,12 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent prepare-delivery --id AGENT_TASK_ID
   shuduo agent delivery --id DELIVERY_TASK_ID
   shuduo agent cancel-delivery --id DELIVERY_TASK_ID
+  shuduo python revisions
+  shuduo python create --context holdings-t1 --file transform.py
+  shuduo python runs
+  shuduo python run --id REVISION_ID
+  shuduo python show --id RUN_ID
+  shuduo python cancel --id RUN_ID
   shuduo release-runs list
   shuduo delivery packages
   shuduo delivery show --id PACKAGE_ID
@@ -370,6 +377,32 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "cancel-delivery")
       result = await client.request(
         `/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}/cancel`,
+        { method: "POST", body: {} },
+      );
+    else if (resource === "python" && action === "revisions")
+      result = await client.request("/python/revisions");
+    else if (resource === "python" && action === "create")
+      result = await client.request("/python/revisions", {
+        method: "POST",
+        body: {
+          contextId: required(parsed.options, "context"),
+          code: readFileSync(required(parsed.options, "file"), "utf8"),
+        },
+      });
+    else if (resource === "python" && action === "runs")
+      result = await client.request("/python/runs");
+    else if (resource === "python" && action === "run")
+      result = await client.request("/python/runs", {
+        method: "POST",
+        body: { revisionId: required(parsed.options, "id") },
+      });
+    else if (resource === "python" && action === "show")
+      result = await client.request(
+        `/python/runs/${encodeURIComponent(required(parsed.options, "id"))}`,
+      );
+    else if (resource === "python" && action === "cancel")
+      result = await client.request(
+        `/python/runs/${encodeURIComponent(required(parsed.options, "id"))}/cancel`,
         { method: "POST", body: {} },
       );
     else if (resource === "release-runs" && action === "list")

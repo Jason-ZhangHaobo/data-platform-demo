@@ -60,6 +60,7 @@ import { SecurityWorkbench } from "./SecurityWorkbench";
 import { ReportsWorkbench } from "./ReportsWorkbench";
 import { OperationsWorkbench } from "./OperationsWorkbench";
 import { AgentCenter } from "./AgentCenter";
+import { PythonWorkbench } from "./PythonWorkbench";
 import { CloudReadinessPanel } from "./CloudReadinessPanel";
 import {
   AuthDialog,
@@ -107,6 +108,13 @@ type Status = {
     isolation: string;
     healthVerified?: boolean;
     publicWriteEnabled?: boolean;
+  };
+  python?: {
+    available: boolean;
+    isolation: string;
+    memoryLimitRequired: boolean;
+    cloudVerified: boolean;
+    publicWriteEnabled: boolean;
   };
   metadata: { driver: string; cloudVerified: boolean };
   persistence?: {
@@ -347,6 +355,7 @@ function App() {
         "agent-center",
     ),
     [sql, setSql] = useState(""),
+    [developmentLanguage, setDevelopmentLanguage] = useState<"SQL" | "PYTHON">("SQL"),
     [original, setOriginal] = useState(""),
     [diff, setDiff] = useState(false);
   const [runs, setRuns] = useState<Run[]>([]),
@@ -760,6 +769,20 @@ function App() {
           />
         ) : nav === "development" ? (
           <>
+            <div className="development-language-v2" role="tablist" aria-label="数据开发语言">
+              <button role="tab" aria-selected={developmentLanguage === "SQL"} className={developmentLanguage === "SQL" ? "active" : ""} onClick={() => setDevelopmentLanguage("SQL")}>Spark SQL</button>
+              <button role="tab" aria-selected={developmentLanguage === "PYTHON"} className={developmentLanguage === "PYTHON" ? "active" : ""} onClick={() => setDevelopmentLanguage("PYTHON")}>Python</button>
+              <span>{developmentLanguage === "SQL" ? "Apache Spark 3.5.9" : "受限CPython · 本机实际执行"}</span>
+            </div>
+            {developmentLanguage === "PYTHON" ? (
+              <PythonWorkbench
+                api={api}
+                contextId={contextId}
+                canWrite={canWrite}
+                available={status?.python?.available === true}
+              />
+            ) : (
+              <>
             <div className="page-heading">
               <div>
                 <div className="eyebrow">
@@ -1471,6 +1494,8 @@ function App() {
                 </aside>
               )}
             </div>
+              </>
+            )}
           </>
         ) : (
           <section className="module-page">
