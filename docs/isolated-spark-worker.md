@@ -1,6 +1,6 @@
 # V2 隔离Spark Worker
 
-日期：2026-09-20。状态：协议、客户端、Worker服务和版本化交付已本机验收；W1 Linux大包已在GitHub Runner真实构建并从包内运行Spark；W2云部署计划已按官方限制生成但尚未创建FC。
+日期：2026-09-20。状态：协议、客户端、Worker服务和版本化交付已本机验收；包含固定私有烟测的当前W1 Linux包已在GitHub Runner双构建并从包内运行Spark；W2云部署计划已按官方限制生成但尚未创建FC。
 
 ## 设计目标
 
@@ -51,6 +51,8 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 2026-09-19首次真实运行`35427706320`在GitHub Linux Runner完成Python3.10哈希依赖安装、协议测试、Spark3.5.9 JAR检查、秘密文件检查和短期Artifact上传。后续双构建证明了确定性ZIP，但包级真实执行进一步发现云requirements遗漏`sqlglot`。按PyPI wheel哈希补齐后，独立运行`35430365703`和`35430441817`均生成318,911,849字节的内部ZIP，SHA-256同为`2ba7c6f649396109d08cf33c0eb2dfd9d320c4c4a9f24ed702d6e2a753fc53e0`；两次均从解压后的包启动Java17/Python3.10 Worker，使用Spark3.5.9实际执行标杆证券SQL、测试SQL和5套独立回归并通过。W1的可复现性和Linux包级运行通过；该证据仍不是FC云健康W2。
 
+固定私有烟测模块合并后，默认分支`4df304f4…a0ab5`重新独立运行`35480737992`与`35481010884`：两次内部ZIP均为318,914,420字节，SHA-256均为`f5083be51f979d47486b1ce06344466c5326a003e360cd55b91143fe79414118`；两次包内Spark3.5.9实际烟测均为FUNCTION_PROCESS、5套回归通过、tests.sql通过。短期Artifact仅保留1天，当前W1重新通过；仍不等于OSS上传、FC创建或W2健康。
+
 ## W2部署计划（未部署）
 
 `scripts/render-v2-spark-worker-w2-plan.mjs`只生成脱敏、失败关闭的W2计划，不上传包或创建函数。它把包摘要固定为私有OSS精确对象`data-platform-demo/v2/spark-worker/<sha256>.zip`，要求单次禁止覆盖上传，并给出单独的最小权限差异：部署角色只新增该对象的`oss:GetObject`与`oss:PutObject`，没有List/Delete、Bucket管理或FC Invoke权限。
@@ -63,7 +65,7 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 FC同步Invoke事件进入Custom Runtime的`/invoke`，因此Worker新增默认关闭的私有事件适配器。`PRIVATE_HEALTH_V1`只返回协议、引擎、隔离与运行时布尔；`SIGNED_EXECUTE_V1`必须携带原始`shuduo-spark-execution/v1`正文及timestamp/nonce/signature，再由Worker内部转发到同一`/v1/execute`路径。项目、HMAC、时钟、防重放、白名单、大小、单任务和独立断言全部复用，不能通过私有事件绕过。适配器仅在`V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED=true`时存在，其他Content-Type或操作拒绝；W2完成后是否保留由W3调用方案决定。
 
-为避免把共享密钥交给人工Cloud Shell，`PRIVATE_SPARK_SMOKE_V1`只允许一个代码内固定的虚构证券用例：1个客户、2条持仓、1条现金，预期持仓150、现金25、总资产175、证券2。外部事件不能覆盖SQL、表、行或预期；Worker内部即时生成请求ID/时间/Nonce并用自身密钥签名，再进入同一执行路径。返回只含引擎版本、隔离、断言布尔和回归数，不返回行数据。新增模块会改变Worker ZIP内容，所以2026-09-19的W1摘要只保留历史证据；合并后必须重新双构建并包内烟测，未重跑前不得上传旧包进入W2。
+为避免把共享密钥交给人工Cloud Shell，`PRIVATE_SPARK_SMOKE_V1`只允许一个代码内固定的虚构证券用例：1个客户、2条持仓、1条现金，预期持仓150、现金25、总资产175、证券2。外部事件不能覆盖SQL、表、行或预期；Worker内部即时生成请求ID/时间/Nonce并用自身密钥签名，再进入同一执行路径。返回只含引擎版本、隔离、断言布尔和回归数，不返回行数据。新增模块已触发并完成当前W1重验；2026-09-19旧摘要只保留历史证据。
 
 官方公共层文档确认`custom.debian10`需要显式挂载并配置路径，不能把GitHub Runner上的系统Node/Python/Java误认为FC自带：
 
@@ -92,7 +94,7 @@ W2仍使用Cloud Shell主账号做私有手工Invoke，不给GitHub部署角色�
 | 等级 | 门槛 | 当前状态 |
 |---|---|---|
 | W0 协议 | HMAC、篡改、重放、白名单、大小、超时、错误结果 | 已本机验收 |
-| W1 Linux包 | Python3.10构建、哈希依赖、ZIP<480MiB、Spark3.5.9 JAR、包级真实SQL冒烟 | 历史包已验收；新增固定私有烟测模块后需重跑当前包摘要 |
+| W1 Linux包 | Python3.10构建、哈希依赖、ZIP<480MiB、Spark3.5.9 JAR、包级真实SQL冒烟 | 当前包已验收；双构建318,914,420字节且SHA-256一致 |
 | W2 云健康 | Java/Python/Spark可启动，私网/函数鉴权，最小实例0 | 部署计划/精确权限差异已生成；待真实FC |
 | W3 单任务 | 标杆SQL+测试SQL+五回归真实执行，控制面保存结果 | 待真实FC |
 | W4 故障恢复 | 篡改、超时、取消、并发、Worker冷启动和失败重试 | 待真实FC |
