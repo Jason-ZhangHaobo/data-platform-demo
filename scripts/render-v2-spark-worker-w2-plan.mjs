@@ -72,6 +72,8 @@ export function renderV2SparkWorkerW2Plan(input = {}) {
         ossObjectName: objectName,
         immutableUpload: true,
         uploadCommand: "ossutil api put-object --forbid-overwrite true",
+        uploadMetadata: { "shuduo-sha256": digest },
+        evidenceCommand: "ossutil api head-object --output-format json",
       },
       deploymentPermissionDelta: {
         Version: "1",

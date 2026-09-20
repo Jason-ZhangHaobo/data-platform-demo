@@ -55,6 +55,8 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 `scripts/render-v2-spark-worker-w2-plan.mjs`只生成脱敏、失败关闭的W2计划，不上传包或创建函数。它把包摘要固定为私有OSS精确对象`data-platform-demo/v2/spark-worker/<sha256>.zip`，要求单次禁止覆盖上传，并给出单独的最小权限差异：部署角色只新增该对象的`oss:GetObject`与`oss:PutObject`，没有List/Delete、Bucket管理或FC Invoke权限。
 
+上传后必须使用`scripts/verify-v2-spark-worker-oss-object.mjs`读取`ossutil api head-object --output-format json`证据，核对实际Content-Length、`x-oss-meta-shuduo-sha256`和ETag。验证器只输出对象键哈希和固定检查项，不输出Bucket/Object原值。HeadObject只能证明当前对象内容与元数据匹配，不能单独证明Bucket非公开或历史上从未覆盖，因此证据明确保留`publicAccessVerified=false`与`overwriteProtectionVerified=false`，这两项须由独立Bucket审计和上传日志补齐。[HeadObject命令与权限](https://help.aliyun.com/en/oss/developer-reference/head-object)
+
 官方公共层文档确认`custom.debian10`需要显式挂载并配置路径，不能把GitHub Runner上的系统Node/Python/Java误认为FC自带：
 
 - Node20：`acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3`，PATH前置`/opt/nodejs20/bin`；

@@ -166,6 +166,7 @@
 | D-161 | 统一Agent工具调用协议，2026-09-20 | 新增`POST /agent/intents/:intentId/tools/:destinationId/invoke`，只接受当前路由、目录摘要、严格输入和APPROVED步骤。服务端通过同一专业原子API再次执行模块权限、预算与幂等门，并用父意图/步骤/输入摘要建立持久`agent_tool_invocation`租约；任务已创建但handoff未完成时可复用同一原子任务继续绑定，处理中并发请求拒绝，不同输入冲突。GUI/CLI/MCP改用同一入口；响应只含子任务信封并固定非完整E2E，不应用草稿、不发布、不授权。完整CI 264/264 |
 | D-162 | 工具调用冷启动与孤儿任务恢复，2026-09-20 | `interruptPending`覆盖CLAIMED/TASK_CREATED调用租约；任务图区分调用已记录、专业任务待绑定和已绑定，不让未绑定成功增加完成数。恢复沿用同一批准与输入摘要但递增尝试，旧中断子任务ID保留；新批准的失败/取消重试使用独立调用租约。统一子任务取消可处理比旧handoff更新的未绑定专业任务，避免误取消上一轮任务。完整CI 265/265 |
 | D-163 | Spark Worker W2官方运行时与权限边界，2026-09-20 | 杭州OSS代码包上限500MB可容纳W1的318,911,849字节包，API Base64上限100MB故禁止内嵌。`custom.debian10`显式挂载官方Node20/Python310/Java17 v3层，路径取官方层说明。包按SHA-256写入单个私有OSS不可覆盖对象；新增权限方案仅为该对象Get/Put，无List/Delete。W2由Cloud Shell主账号私有烟测；控制面`fc:InvokeFunction`留到W3另行批准，不因计划通过声称已部署。完整CI 268/268 |
+| D-164 | Worker OSS上传证据不外推，2026-09-20 | W2上传使用`PutObject --forbid-overwrite`并写入SHA-256用户元数据；随后HeadObject核对字节、摘要元数据与ETag。验证器不返回Bucket/Object原值。HeadObject不证明历史无覆盖或对象不可公开，因此只标内容地址键成立，覆盖保护与公开访问保持未验证，等待上传日志和Bucket审计。完整CI 271/271 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。
