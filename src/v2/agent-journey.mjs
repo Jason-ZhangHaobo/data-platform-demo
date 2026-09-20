@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { validateDeliveryPackage } from "./delivery.mjs";
+import { validatePythonDeliveryPackage } from "./python-delivery.mjs";
 
 const digest = (value) => createHash("sha256").update(String(value)).digest("hex");
 const stage = (id, label, actor, status, evidence = {}, note = "") => ({
@@ -37,7 +38,7 @@ export function agentEvidenceJourney({ store, project, task }) {
       run.testDouble !== true &&
       run.validation?.passed === true &&
       run.validation.regressions?.every((item) => item.passed) === true,
-    packages = python ? [] : store
+    packages = store
       .list("delivery_package", project)
       .filter(
         (item) =>
@@ -49,7 +50,10 @@ export function agentEvidenceJourney({ store, project, task }) {
   let fileValid = false;
   if (selectedPackage) {
     try {
-      validateDeliveryPackage(selectedPackage, selectedPackage.digest);
+      (python ? validatePythonDeliveryPackage : validateDeliveryPackage)(
+        selectedPackage,
+        selectedPackage.digest,
+      );
       fileValid = true;
     } catch {
       // A broken package cannot earn a journey milestone.
@@ -63,10 +67,15 @@ export function agentEvidenceJourney({ store, project, task }) {
               item.packageId === selectedPackage.id &&
               item.packageDigest === selectedPackage.digest &&
               item.status === "SUCCEEDED" &&
-              item.mode === "LOCAL_FILE_REHEARSAL" &&
-              item.engine === "Apache Spark" &&
-              item.mainSqlExecuted === true &&
-              item.testSqlValidation?.passed === true &&
+              item.mode ===
+                (python
+                  ? "LOCAL_PYTHON_FILE_REHEARSAL"
+                  : "LOCAL_FILE_REHEARSAL") &&
+              item.engine === (python ? "CPython" : "Apache Spark") &&
+              (python
+                ? item.codeExecuted === true
+                : item.mainSqlExecuted === true &&
+                  item.testSqlValidation?.passed === true) &&
               item.validation?.passed === true &&
               item.testDouble !== true,
           )
@@ -147,9 +156,7 @@ export function agentEvidenceJourney({ store, project, task }) {
       fileValid && debugPassed ? "SUCCEEDED" : selectedPackage && !fileValid ? "FAILED" : "WAITING",
       { packageId: selectedPackage?.id, packageDigest: selectedPackage?.digest,
         scheduleHash: selectedPackage?.manifest?.files?.["schedule.json"]?.sha256 },
-      python
-        ? "Python代码与断言已完成；调度文件属于后续Python交付阶段。"
-        : agentPreparedPackage
+      agentPreparedPackage
         ? "Agent从已验证代码自动生成标准文件；工程师仍须审阅。"
         : "由工程师或受控API生成；不是代码Agent独立完成。"),
     stage("DEPLOY_FILE", "部署清单与按文件演练",
@@ -158,9 +165,7 @@ export function agentEvidenceJourney({ store, project, task }) {
       { packageId: selectedPackage?.id, deploymentHash:
         selectedPackage?.manifest?.files?.["deployment.json"]?.sha256,
         rehearsalId: rehearsal?.id },
-      python
-        ? "Python部署清单和隔离云运行尚未实现，不以本机子进程冒充。"
-        : agentPreparedRehearsal
+      agentPreparedRehearsal
         ? "Agent自动编排真实Spark文件演练；不自动批准或公网部署。"
         : "演练与真实云上线分开，不把配置文本冒充执行。"),
     stage("PUBLISH", "审批版本与计时发布", "ENGINEER_APPROVAL_THEN_SCHEDULER",

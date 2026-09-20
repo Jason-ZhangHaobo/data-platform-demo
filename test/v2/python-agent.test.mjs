@@ -116,10 +116,35 @@ test("Python Agent creates a model revision and passes five governed assertions"
     const delivery = await app.call(
       `/agent/tasks/${created.body.id}/prepare-delivery`,
       {},
-      "python-delivery-blocked",
+      "python-delivery-package",
     );
-    assert.equal(delivery.status, 409);
-    assert.equal(delivery.body.code, "PYTHON_DELIVERY_NOT_IMPLEMENTED");
+    assert.equal(delivery.status, 202);
+    const prepared = await eventually(
+      () => app.call(`/agent/deliveries/${delivery.body.id}`),
+      "SUCCEEDED",
+    );
+    assert.equal(prepared.body.completionScope, "PYTHON_DELIVERY_PREPARATION");
+    assert.equal(prepared.body.publicDeployed, false);
+    const packages = app.store.list("delivery_package", PROJECT),
+      verifications = app.store.list("delivery_verification", PROJECT);
+    assert.equal(packages.length, 1);
+    assert.equal(packages[0].manifest.format, "shuduo-python-delivery/v1");
+    assert.equal(packages[0].releaseEligible, false);
+    assert.equal(verifications[0].mode, "LOCAL_PYTHON_FILE_REHEARSAL");
+    const completedJourney = await app.call(
+      `/agent/tasks/${created.body.id}/journey`,
+    );
+    assert.equal(
+      completedJourney.body.stages.find((item) => item.id === "SCHEDULE_FILE")
+        .status,
+      "SUCCEEDED",
+    );
+    assert.equal(
+      completedJourney.body.stages.find((item) => item.id === "DEPLOY_FILE")
+        .status,
+      "SUCCEEDED",
+    );
+    assert.equal(completedJourney.body.localEvidenceComplete, false);
   } finally {
     await app.close();
   }
@@ -163,4 +188,3 @@ test("Python model adapter sends schema but never independent expected rows", as
   assert.match(JSON.stringify(request), /transform\(data, params\)/);
   assert.match(JSON.stringify(request), /禁止import/);
 });
-
