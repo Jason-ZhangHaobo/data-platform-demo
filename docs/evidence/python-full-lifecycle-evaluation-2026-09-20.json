@@ -1,0 +1,48 @@
+{
+  "format": "shuduo-python-full-lifecycle-evidence/v1",
+  "classification": "SYNTHETIC_SECURITIES_ONLY",
+  "logsIncluded": false,
+  "codeIncluded": false,
+  "businessRowsIncluded": false,
+  "evaluationRunId": "fadb4f5f-16bd-487f-a30e-4423ea33c575",
+  "sourceReportSha256": "f8dafa904a5388f5d9d7441c0f67662c472d22c4216eb475301ec8c0b00f1789",
+  "caseSetDigest": "38b7518c59d3320c80b7c64038ee330a8c776fcf30ebe6ff51767c1adac1cd8f",
+  "contractId": "securities-python-full-lifecycle-5-cases-local-v1",
+  "targetRate": 0.85,
+  "completedCaseCount": 5,
+  "succeededCaseCount": 5,
+  "failedCaseCount": 0,
+  "localFullLifecycleRate": 1,
+  "targetMet": true,
+  "totalModelAttempts": 7,
+  "totalReportedTokens": 11812,
+  "totalScheduledBatches": 10,
+  "detourCounts": {
+    "blocked": 1,
+    "cancelled": 0,
+    "failed": 0,
+    "rescued": 1
+  },
+  "stageNames": [
+    "requirementUnderstanding",
+    "codeAndDebug",
+    "scheduleFiles",
+    "deploymentFiles",
+    "engineerReview",
+    "localRelease",
+    "postReleaseMonitoring",
+    "dapiConsumption"
+  ],
+  "outcomes": [
+    { "caseId": "python--holdings-t1", "modelAttemptCount": 1, "scheduledBatchCount": 2, "allStagesPassed": true },
+    { "caseId": "python--cash-change", "modelAttemptCount": 1, "scheduledBatchCount": 2, "allStagesPassed": true },
+    { "caseId": "python--duplicate-position", "modelAttemptCount": 2, "scheduledBatchCount": 2, "allStagesPassed": true },
+    { "caseId": "python--equal-value-positions", "modelAttemptCount": 1, "scheduledBatchCount": 2, "allStagesPassed": true },
+    { "caseId": "python--cash-only-client", "modelAttemptCount": 2, "scheduledBatchCount": 2, "allStagesPassed": true }
+  ],
+  "fullLifecycleE2E": true,
+  "agentIndependentE2E": false,
+  "deploymentScope": "LOCAL_ACTUAL_RESTRICTED_PYTHON",
+  "publicDeployed": false,
+  "disclosure": "Python评测与SQL 20例分开计分；模型、受限CPython、文件、人工审批、计时批次、监控和DAPI为本机真实证据，不等于公网或生产E2E。"
+}

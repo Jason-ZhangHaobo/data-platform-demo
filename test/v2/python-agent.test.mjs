@@ -255,4 +255,64 @@ test("Python model adapter sends schema but never independent expected rows", as
   assert.equal(JSON.stringify(request).includes("expected"), false);
   assert.match(JSON.stringify(request), /transform\(data, params\)/);
   assert.match(JSON.stringify(request), /禁止import/);
+  assert.match(JSON.stringify(request), /Decimal已由运行时预置/);
+  assert.match(JSON.stringify(request), /禁止类型注解/);
+  assert.match(JSON.stringify(request), /bucket\[key\]/);
+});
+
+test("Python Agent retries a malformed model envelope only when usage is known", async () => {
+  let calls = 0;
+  const app = await setup({
+    pythonGenerator: async () => {
+      calls++;
+      if (calls === 1)
+        throw Object.assign(new Error("模型未返回可解析的Python产物，请重试或手动编辑"), {
+          retryable: true,
+          model: "TEST_PYTHON_MODEL",
+          usage: { total_tokens: 20 },
+        });
+      return {
+        code,
+        explanation: "第二次返回合法受限Python",
+        model: "TEST_PYTHON_MODEL",
+        usage: { total_tokens: 30 },
+      };
+    },
+    pythonRunner: async () => ({
+      status: "SUCCEEDED",
+      engine: "CPython",
+      engineVersion: "3.12.14",
+      rows: [],
+      validation: {
+        passed: true,
+        issues: [],
+        regressions: [
+          "holdings-t1",
+          "cash-change",
+          "duplicate-position",
+          "equal-value-positions",
+          "cash-only-client",
+        ].map((contextId) => ({ contextId, passed: true })),
+      },
+      resourceLimits: { cpu: true, addressSpace: true, fileSize: true },
+    }),
+  });
+  try {
+    const task = await app.call("/agent/tasks", {
+      message: "生成受限Python并处理一次模型格式错误",
+      language: "PYTHON",
+      code,
+      contextId: "holdings-t1",
+    });
+    const completed = await eventually(
+      () => app.call(`/agent/tasks/${task.body.id}`),
+      "SUCCEEDED",
+    );
+    assert.equal(calls, 2);
+    assert.equal(completed.body.attempts[0].status, "MODEL_OUTPUT_INVALID");
+    assert.equal(completed.body.attempts[1].status, "SUCCEEDED");
+    assert.equal(completed.body.usedTokens, 50);
+  } finally {
+    await app.close();
+  }
 });

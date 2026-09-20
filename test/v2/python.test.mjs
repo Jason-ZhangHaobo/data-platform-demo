@@ -92,6 +92,22 @@ test("restricted Python rejects imports and unsafe builtins before execution", a
   assert.equal(result.error.includes("/tmp/private"), false);
 });
 
+test("restricted Python names the rejected identifier without echoing code", async () => {
+  const result = await runRestrictedPython(
+    {
+      code: `def transform(data, params):
+    value = print(params.get("advisor_id"))
+    return []`,
+      context: getContext("holdings-t1"),
+      validationContexts: contextIds.map(getContext),
+    },
+    config(),
+  );
+  assert.equal(result.status, "FAILED");
+  assert.equal(result.error, "Python代码调用了不允许的函数：print");
+  assert.equal(result.error.includes("advisor_id"), false);
+});
+
 test("restricted Python marks incorrect business output as validation failure", async () => {
   const wrong = `def transform(data, params):
     return [{"client_id": "CLIENT-001", "holding_market_value": "1.00", "available_cash": "2.00", "total_assets": "3.00", "security_count": 1}]`;

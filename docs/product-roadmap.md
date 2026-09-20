@@ -99,6 +99,8 @@ Python交付首版已补齐通用文件和本机发布阶段：独立`shuduo-pyt
 
 Python发布结果已接入统一DAPI消费：只有调度器真实触发、发布且带CPython执行/断言证据的批次可冻结快照，DAPI版本记录源引擎并复用现有测试、OpenAPI、授权、限流、日志和XAPI编排。当前仍是本机端点，云Python Worker与公网外部消费者验收未完成。
 
+Python完整链路新增独立5例评测，不复用SQL 20例。改进前完整运行先后为0/5、2/5，保留失败原因；收紧模型契约、标识符反馈、纯内存白名单与5次预算内修正后，最终真实运行`fadb4f5f…`达到5/5、10个计时批次和DAPI消费，超过85%目标。该证据仍为LOCAL_ACTUAL_RESTRICTED_PYTHON，公网评测分母尚未执行。
+
 经典数据开发新增受限Python首版：真实CPython子进程、版本/运行/取消、五套证券断言及GUI/API/CLI/MCP同源已实现；禁止import/文件/网络/反射并回传CPU/文件/内存限制证据。当前仅`LOCAL_RESTRICTED_PYTHON`，macOS地址空间上限未验证，云隔离、Python Agent生成、第三方包和调度交付仍待后续。
 
 本机项目隔离运行时已实际升级到Spark3.5.9/py4j0.10.9.9；35/35真实Spark用例在新版本重新执行通过，耗时23.891秒。该结果证明本机兼容升级，不证明Linux云Worker包或FC隔离执行。
