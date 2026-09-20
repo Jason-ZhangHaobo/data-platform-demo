@@ -20,6 +20,9 @@ test("W2 upload workflow is OIDC-only, exact-object and overwrite-safe", async (
   assert.match(workflow, /--object-acl private/);
   assert.match(workflow, /--metadata "shuduo-sha256=/);
   assert.match(workflow, /verify-v2-spark-worker-oss-object\.mjs/);
+  assert.match(workflow, /ossutil api get-object/);
+  assert.match(workflow, /downloaded_sha="\$\(sha256sum/);
+  assert.match(workflow, /downloaded_bytes="\$\(wc -c/);
   assert.doesNotMatch(workflow, /DeleteObject|ossutil rm|oss:Delete|oss:List/);
   assert.doesNotMatch(workflow, /fc:InvokeFunction|\/invocations/);
 });
@@ -35,4 +38,3 @@ test("W2 upload workflow fails closed before a first write", async () => {
   assert.match(workflow, /Cloud Shell privacy gate before FC creation/);
   assert.doesNotMatch(workflow, /CreateFunction|POST \/2023-03-30\/functions/);
 });
-
