@@ -17,7 +17,10 @@ export function pythonRuntimeConfig(env = process.env, root = process.cwd()) {
     artifactRoot: env.V2_ARTIFACT_ROOT ?? root,
     retainArtifacts: env.V2_RETAIN_PYTHON_ARTIFACTS === "true",
     requireMemoryLimit: env.V2_PYTHON_REQUIRE_MEMORY_LIMIT === "true",
-    available: existsSync(python),
+    available:
+      existsSync(python) ||
+      (env.V2_ALLOW_PATH_PYTHON === "true" &&
+        /^[A-Za-z0-9._-]{1,80}$/.test(python)),
   };
 }
 

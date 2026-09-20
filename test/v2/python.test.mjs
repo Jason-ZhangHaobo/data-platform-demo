@@ -4,10 +4,12 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getContext, contextIds } from "../../src/v2/context.mjs";
-import { runRestrictedPython } from "../../src/v2/python.mjs";
+import {
+  pythonRuntimeConfig,
+  runRestrictedPython,
+} from "../../src/v2/python.mjs";
 
-const python =
-  process.env.V2_PYTHON ?? join(process.cwd(), ".runtime/python/bin/python");
+const python = process.env.V2_PYTHON ?? "python3";
 const config = () => ({
   python,
   root: process.cwd(),
@@ -42,6 +44,20 @@ const code = `def transform(data, params):
         cash = cash_totals.get(client_id, Decimal("0"))
         result.append({"client_id": client_id, "holding_market_value": holding, "available_cash": cash, "total_assets": holding + cash, "security_count": len(securities.get(client_id, set()))})
     return result`;
+
+test("PATH Python resolution is test-only and fails closed by default", () => {
+  assert.equal(
+    pythonRuntimeConfig({ V2_PYTHON: "python3" }, process.cwd()).available,
+    false,
+  );
+  assert.equal(
+    pythonRuntimeConfig(
+      { V2_PYTHON: "python3", V2_ALLOW_PATH_PYTHON: "true" },
+      process.cwd(),
+    ).available,
+    true,
+  );
+});
 
 test("restricted Python executes real customer-asset logic across five fixtures", async () => {
   const result = await runRestrictedPython(

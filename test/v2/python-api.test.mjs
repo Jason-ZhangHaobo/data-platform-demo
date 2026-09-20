@@ -40,9 +40,8 @@ async function setup() {
       store,
       env: {
         V2_LOCAL_DEVELOPMENT: "true",
-        V2_PYTHON:
-          process.env.V2_PYTHON ??
-          join(process.cwd(), ".runtime/python/bin/python"),
+        V2_PYTHON: process.env.V2_PYTHON ?? "python3",
+        V2_ALLOW_PATH_PYTHON: "true",
         V2_ARTIFACT_ROOT: root,
       },
     });
