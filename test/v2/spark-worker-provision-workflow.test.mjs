@@ -10,10 +10,7 @@ const workflowUrl = new URL(
 test("Worker provisioning requires a fresh OSS receipt and complete budget pages", async () => {
   const workflow = await readFile(workflowUrl, "utf8");
   assert.match(workflow, /v2-spark-worker-oss-receipt\.mjs --verify/);
-  assert.match(workflow, /bssopenapi QueryBill/);
-  assert.match(workflow, /--PageNum "\$page"/);
-  assert.match(workflow, /verify-v2-monthly-bill-pages\.mjs/);
-  assert.match(workflow, /\.belowBudget == true/);
+  assert.match(workflow, /query-v2-monthly-spend\.sh/);
   assert.doesNotMatch(workflow, /QueryBillOverview/);
   assert.doesNotMatch(workflow, /bssapi:QueryBillOverview/);
 });

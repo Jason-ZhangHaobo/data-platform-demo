@@ -79,30 +79,7 @@ jobs:
       - name: Verify current monthly bill completely and below budget
         run: |
           set -euo pipefail
-          umask 077
-          bill_root="$(mktemp -d)"
-          trap 'rm -rf "$bill_root"' EXIT
-          billing_cycle="$(TZ=Asia/Shanghai date +%Y-%m)"
-          page=1
-          seen=0
-          total=1
-          while test "$seen" -lt "$total"; do
-            test "$page" -le 100
-            file="$bill_root/page-$page.json"
-            aliyun bssopenapi QueryBill \
-              --BillingCycle "$billing_cycle" \
-              --PageNum "$page" \
-              --PageSize 300 > "$file"
-            jq -e '.Success == true and (.Data.Items.Item | type == "array")' "$file" >/dev/null
-            count="$(jq '.Data.Items.Item | length' "$file")"
-            total="$(jq -r '.Data.TotalCount | tonumber' "$file")"
-            seen=$((seen + count))
-            page=$((page + 1))
-          done
-          mapfile -t bill_files < <(find "$bill_root" -type f -name 'page-*.json' -print | sort -V)
-          bill_result="$(node scripts/verify-v2-monthly-bill-pages.mjs "${bill_files[@]}")"
-          jq -e '.ok == true and .belowBudget == true' <<<"$bill_result" >/dev/null
-          spend="$(jq -r '.spendCny' <<<"$bill_result")"
+          spend="$(scripts/query-v2-monthly-spend.sh)"
           printf 'V2_ACCOUNT_MONTHLY_SPEND_CNY=%s\n' "$spend" >> "$GITHUB_ENV"
 
       - name: Verify network resources and require the Worker to be absent

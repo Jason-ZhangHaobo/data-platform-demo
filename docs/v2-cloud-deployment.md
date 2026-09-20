@@ -30,9 +30,9 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 
 独立预置使用`.github/workflows/provision-v2-staging.yml`。该工作流同样只能手动触发，先做账单、角色信任/管理员级策略文本、同VPC网络和目标不存在检查，然后调用FC 3.0 `CreateFunction`；发现同名函数、未确认NotFound或任何门禁失败时不写云资源。CLI的404可能出现在stdout JSON或stderr文本，工作流通过`scripts/extract-aliyun-error-code.mjs`只提取受限字符错误码，未知响应固定失败且不打印原始消息。创建后必须把函数预留并发设为1、最小实例数设为0并再次读取验证；结合函数本身`instanceConcurrency=1`，试点最多同时运行一个实例且无请求时可缩至0。它不删除资源、不更新旧函数，也不把预置成功当成公网部署成功。
 
-预置顺序：受保护配置校验 → GitHub OIDC换取临时身份 → 实时账单、运行角色与精确网络只读门 → 全量CI → 构建/检查ZIP → 确认目标函数不存在 → 创建独立函数并复核单实例上限/按需缩至0。云权限或配置错误会在完整构建前快速失败，函数写入仍只发生在质量门和包检查全部通过之后。
+预置顺序：受保护配置校验 → GitHub OIDC换取临时身份 → QueryBill完整分页实时账单、运行角色与精确网络只读门 → 全量CI → 构建/检查ZIP → 确认目标函数不存在 → 创建独立函数并复核单实例上限/按需缩至0。云权限或配置错误会在完整构建前快速失败，函数写入仍只发生在质量门和包检查全部通过之后。
 
-公网更新顺序：全量CI → 构建/检查ZIP → 校验配置及24小时内脱敏云审计/备案证据 → GitHub OIDC换取临时身份 → 实时账单小于200元 → 确认专用函数/VPC/单实例上限/按需缩至0/角色 → 以白名单新环境更新V2函数 → 验证HTTPS、MySQL/OSS健康、公开页面和匿名写入401。任一缺失即失败关闭。
+公网更新顺序：全量CI → 构建/检查ZIP → 校验配置及24小时内脱敏云审计/备案证据 → GitHub OIDC换取临时身份 → QueryBill完整分页实时账单小于200元 → 确认专用函数/VPC/单实例上限/按需缩至0/角色 → 以白名单新环境更新V2函数 → 验证HTTPS、MySQL/OSS健康、公开页面和匿名写入401。任一缺失即失败关闭。
 
 ### 部署角色最小权限
 
@@ -41,7 +41,7 @@ ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub
 - 精确函数运行角色上的`ram:GetRole`、`ram:ListPoliciesForRole`和仅允许交给`fc.aliyuncs.com`的`ram:PassRole`；
 - 精确vSwitch上的`vpc:DescribeVSwitchAttributes`和精确安全组上的`ecs:DescribeSecurityGroups`；列表接口`DescribeVSwitches`只支持`vswitch/*`，不用于本项目的最小权限门；
 - 工作流实际使用的`fc:CreateFunction`、`fc:GetFunction`、`fc:UpdateFunction`、并发和弹性配置读写；不授予`fc:*`；
-- 预算读取仍由已存在的独立`bss:DescribeBillList`策略提供，不混入资源写策略。
+- 预算读取仍由已存在的独立`bss:DescribeBillList`策略提供，不混入资源写策略；三条部署链路统一调用`scripts/query-v2-monthly-spend.sh`，不再调用未批准的`QueryBillOverview`。
 
 预览命令只输出策略模板，不调用云API：
 
