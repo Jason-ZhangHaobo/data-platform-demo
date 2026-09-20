@@ -17,6 +17,11 @@ test("extracts supported JSON error fields from stdout or stderr", () => {
   assert.equal(extractAliyunErrorCode("", '{"error_code":"AccessDenied","message":"hidden"}'), "AccessDenied");
 });
 
+test("extracts only the bounded code from an OSS XML error", () => {
+  const error = "<Error><Code>NoSuchKey</Code><Message>private</Message><RequestId>hidden</RequestId></Error>";
+  assert.equal(extractAliyunErrorCode("", error), "NoSuchKey");
+});
+
 test("unknown or unsafe error text is reduced to a fixed non-sensitive code", () => {
   assert.equal(extractAliyunErrorCode("", "password=secret\nMessage: private endpoint"), "UNKNOWN_ALIYUN_ERROR");
   assert.equal(extractAliyunErrorCode("", "ErrorCode: bad/code"), "UNKNOWN_ALIYUN_ERROR");
