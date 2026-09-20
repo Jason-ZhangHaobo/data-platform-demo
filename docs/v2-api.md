@@ -47,7 +47,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /agent/intents/:id/children/:destination/cancel | 空对象 | 从最新handoff或未绑定工具调用租约解析并取消QUEUED/RUNNING专业任务；父意图不取消，完成态409，重复取消幂等 |
 | GET/POST /agent/intents/:id/handoffs | 只读交接或destinationId/专业任务/approvalId + 幂等键 | 已执行专业任务必须绑定同一步骤有效批准，绑定后批准转BOUND；无任务ID的草稿交接仍为NO_EXECUTION |
 | GET /agent/tasks/:id/journey | 只读指定委托 | 七阶段现有版本/运行/交付/审批/计时批次/监控证据与责任归属；固定非Agent自主E2E、非公网，不返回业务行或原始报错 |
-| POST /agent/tasks/:id/prepare-delivery | 空对象 + 幂等键 | 对真实模型+独立断言成功的SQL/Python任务返回后台交付准备编号；SQL生成Spark包，Python生成独立`shuduo-python-delivery/v1`并真实按文件受限CPython演练。两者均不审批或发布；Python包固定不可进入当前发布链 |
+| POST /agent/tasks/:id/prepare-delivery | 空对象 + 幂等键 | 对真实模型+独立断言成功的SQL/Python任务返回后台交付准备编号；SQL生成Spark包，Python生成独立`shuduo-python-delivery/v1`并真实按文件受限CPython演练。两者都停在工程师审阅，后续审批与本机发布必须显式操作 |
 | GET /agent/deliveries | 可选sourceAgentTaskId | 列出受控准备阶段、包摘要、演练与失败；不返回密码/业务行 |
 | GET /agent/deliveries/:id | 无 | 指定准备任务；成功阶段AWAITING_ENGINEER_REVIEW，范围DELIVERY_PREPARATION |
 | POST /agent/deliveries/:id/cancel | 空对象 | 取消排队/运行中的文件演练并保留包和运行状态，不会随后变成成功 |
@@ -70,7 +70,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /release/runs | 发布批次历史 | 计划/触发/完成时间、Spark、断言、日志摘要和状态 |
 | GET /release/runs/:id | 指定发布批次 | 同上；工作区路径被替换为占位符 |
 | GET /monitoring/overview | 本机发布监控 | 当前版本、全局计数、事件、开放/已恢复告警 |
-| GET/POST /data-services/dapis | 列表或创建DAPI草稿 | 草稿绑定真实成功发布批次、字段投影、超时和限流 |
+| GET/POST /data-services/dapis | 列表或创建DAPI草稿 | 草稿绑定真实成功调度发布批次；支持带SQL/测试SQL证据的Spark或带codeExecuted证据的CPython，版本固化源引擎、字段投影、超时和限流 |
 | GET/POST /data-services/xapis | 列表或创建XAPI草稿 | 声明式绑定2—5个已发布DAPI精确版本 |
 | GET /data-services/{dapis\|xapis}/:id | 服务与版本详情 | 当前、已发布及历史不可变版本 |
 | POST /data-services/{dapis\|xapis}/:id/versions | 新版本配置 + 幂等键 | 创建新草稿版本，不影响当前已发布版本 |

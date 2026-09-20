@@ -30,6 +30,9 @@ type ReleaseRun = {
   engineVersion?: string;
   rows?: Record<string, string | number>[];
   validation?: { passed: boolean };
+  mainSqlExecuted?: boolean;
+  testSqlValidation?: { passed: boolean };
+  codeExecuted?: boolean;
   createdAt: string;
 };
 type ServiceVersion = {
@@ -38,6 +41,8 @@ type ServiceVersion = {
   status: string;
   configHash: string;
   sourceReleaseRunId?: string;
+  sourceEngine?: string;
+  sourceEngineVersion?: string;
   snapshotHash?: string;
   fields?: string[];
   steps?: { alias: string; dapiId: string; dapiVersionId: string }[];
@@ -174,7 +179,10 @@ export function DataServicesWorkbench({
         run.status === "SUCCEEDED" &&
         run.published &&
         run.schedulerTriggered &&
-        run.engine === "Apache Spark" &&
+        ((run.engine === "Apache Spark" &&
+          run.mainSqlExecuted === true &&
+          run.testSqlValidation?.passed === true) ||
+          (run.engine === "CPython" && run.codeExecuted === true)) &&
         run.validation?.passed,
     ),
     publishedDapis = dapis.filter((item) => item.status === "PUBLISHED"),
@@ -572,7 +580,7 @@ export function DataServicesWorkbench({
                     {!eligibleRuns.length && <option>暂无可用批次</option>}
                     {eligibleRuns.map((run) => (
                       <option value={run.id} key={run.id}>
-                        {run.id.slice(0, 8)} · Spark {run.engineVersion}
+                        {run.id.slice(0, 8)} · {run.engine} {run.engineVersion}
                       </option>
                     ))}
                   </select>
@@ -653,7 +661,7 @@ WHERE snapshot_id = :snapshot_id
 ORDER BY client_id
 LIMIT :limit OFFSET :offset`}</pre>
                     <small>
-                      源发布批次 {selected.currentVersion?.sourceReleaseRunId?.slice(0, 8)} · 快照
+                      源发布批次 {selected.currentVersion?.sourceReleaseRunId?.slice(0, 8)} · {selected.currentVersion?.sourceEngine ?? "未知引擎"} {selected.currentVersion?.sourceEngineVersion ?? ""} · 快照
                       {selected.currentVersion?.snapshotHash?.slice(0, 12)}
                     </small>
                   </>

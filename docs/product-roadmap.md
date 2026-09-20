@@ -97,6 +97,8 @@ W2两个已批准RAM策略新增联合幂等应用器：一次校验、应用、
 
 Python交付首版已补齐通用文件和本机发布阶段：独立`shuduo-python-delivery/v1`生成main.py、T+1调度、部署清单、冻结输入和验证报告，按文件重新执行受限CPython与五套断言；工程师审阅/审批后，统一调度器真实触发两个Python批次并进入监控/告警/回滚。云Python Worker、外部持久调度、公网验收和Python结果DAPI仍未完成。
 
+Python发布结果已接入统一DAPI消费：只有调度器真实触发、发布且带CPython执行/断言证据的批次可冻结快照，DAPI版本记录源引擎并复用现有测试、OpenAPI、授权、限流、日志和XAPI编排。当前仍是本机端点，云Python Worker与公网外部消费者验收未完成。
+
 经典数据开发新增受限Python首版：真实CPython子进程、版本/运行/取消、五套证券断言及GUI/API/CLI/MCP同源已实现；禁止import/文件/网络/反射并回传CPU/文件/内存限制证据。当前仅`LOCAL_RESTRICTED_PYTHON`，macOS地址空间上限未验证，云隔离、Python Agent生成、第三方包和调度交付仍待后续。
 
 本机项目隔离运行时已实际升级到Spark3.5.9/py4j0.10.9.9；35/35真实Spark用例在新版本重新执行通过，耗时23.891秒。该结果证明本机兼容升级，不证明Linux云Worker包或FC隔离执行。

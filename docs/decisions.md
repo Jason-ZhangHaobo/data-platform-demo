@@ -187,6 +187,7 @@
 | D-182 | Agent工具目录V2统一SQL与Python代码开发，2026-09-20 | development工具从SQL专用升级为CODE_DEVELOPMENT，严格要求language=SPARK_SQL/PYTHON与code，契约摘要随版本变更。Python分支复用同一agent任务、批准、调用租约、取消和任务图，但产物写入python_revision/python_run并执行真实受限CPython及五套断言；证据旅程识别CPython。Python调度交付未实现，schedules步骤固定返回`PYTHON_DELIVERY_NOT_IMPLEMENTED`而不是生成SQL包。完整CI 318/318 |
 | D-183 | Python交付包独立于SQL并执行本机受限演练，2026-09-20 | 新格式以main.py、Python DAG、调度/部署清单、冻结输入和验证报告组成，不能被SQL包验证器接受。Agent schedules步骤可生成包并重新执行按文件CPython/五套断言，证据旅程将SCHEDULE_FILE和DEPLOY_FILE标记完成；包非公网，内存限制未验证时清单如实保留false。完整CI 321/321 |
 | D-184 | 发布链按包格式分派但审批与监控同源，2026-09-20 | 审阅、审批、release和scheduler先校验包格式，再分别调用SQL或Python验证器/解包器/文件执行器；审批统一绑定sourceCodeHash并兼容历史sourceSqlHash。Python发布真实触发两个本机计时批次并复用告警、恢复和回滚，但包/Release/Run继续固定publicDeployed=false，不向DAPI或云持久调度外推。完整CI 322/322 |
+| D-185 | DAPI按运行证据而非开发语言接收数据源，2026-09-20 | 发布批次只要满足统一调度/发布/验证门，并具备对应引擎执行证据，就可生成不可变业务快照。Spark要求SQL与测试SQL实际执行，CPython要求codeExecuted和版本合法；DAPI版本记录源引擎。授权、版本、XAPI、限流、超时和调用审计不按语言分叉，避免形成第二套服务体系。完整CI 324/324 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。

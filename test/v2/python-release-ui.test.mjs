@@ -15,3 +15,13 @@ test("delivery workbench explains SQL and Python release evidence without overcl
   assert.match(source, /source\.codeHash \?\? selected\?\.manifest\.source\.sqlHash/);
 });
 
+test("data service workbench accepts only governed Spark or CPython release evidence", async () => {
+  const source = await readFile(
+    new URL("../../web/src/DataServicesWorkbench.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /run\.engine === "CPython"/);
+  assert.match(source, /run\.codeExecuted === true/);
+  assert.match(source, /sourceEngineVersion/);
+  assert.match(source, /当前数据来自虚构证券发布批次/);
+});
