@@ -102,6 +102,8 @@ DAPI：单表/参数化 SQL 数据查询 API。XAPI：组合查询或已登记�
 | FR-069 | Worker FC私有Invoke适配 | Custom Runtime `/invoke`只在W2显式开关下接受二进制事件。健康事件仅返回脱敏运行时状态；执行事件必须封装原有Spark协议正文和完整HMAC头，再转交同一执行入口，继续执行项目、签名、时钟、Nonce、防重放、白名单、大小、单任务和独立断言校验。不得另建无签名的烟测执行路径；默认和错误Content-Type均拒绝 |
 | FR-070 | 固定W2证券烟测 | Cloud Shell无需获得Worker共享密钥，只能请求代码内固定的虚构证券用例。SQL、accounts/positions/cash行和预期结果不可由事件修改；Worker内部生成请求ID/时间/Nonce并用自身密钥签名后进入同一执行入口。响应不得返回业务行，只返回引擎/隔离/断言摘要。任何烟测代码变化必须重建并重新确认W1包摘要，旧包证据不得复用 |
 | FR-071 | Worker包精确权限应用 | Worker包上传权限必须是独立自定义策略，仅含当前SHA-256对象的`oss:GetObject`和`oss:PutObject`，不得包含List/Delete、Bucket管理、`oss:*`或FC Invoke。应用器首次创建并附加；已有同名策略必须核对正文完全相同，否则失败关闭，不自动修改、增加版本或删除。未取得新增权限明确批准前只允许预览 |
+| FR-072 | 受限Python数据开发首版 | 数据开发支持与Spark SQL并列的Python模式，代码只能定义`transform(data, params)`，真实CPython隔离子进程执行虚构accounts/positions/cash行，并对五套上下文做独立结果断言。禁止import、文件/网络、反射、内部名称和未批准函数/方法；限制AST规模、range、CPU、文件、外部超时和取消。内存上限是否由宿主真正强制必须作为证据返回，公网模式要求为true，否则拒绝结果 |
+| FR-073 | Python版本与多端同源 | Python代码版本、运行、详情和取消使用`/api/v2/python`资源并绑定上下文、代码摘要和验证契约；服务重启将未完成运行标为INTERRUPTED。GUI提供语言切换、编辑、保存、运行、五场景结果和边界反馈；CLI从文件保存代码，MCP声明同一资源。首版固定`LOCAL_RESTRICTED_PYTHON`、`publicDeployed=false`，不冒充PySpark、任意包、云沙箱或生产Python |
 
 ## UI 与交互（用户补充，必须验收）
 - UI-001：专业、现代、有审美；统一间距、字体、图标、状态色、圆角和层次。

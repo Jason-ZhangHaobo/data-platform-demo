@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
@@ -606,6 +606,55 @@ test("CLI maps cross-module Agent understanding to the same V2 atomic route", as
   });
 });
 
+test("CLI maps restricted Python development to the shared V2 API", async () => {
+  const requests = [],
+    client = {
+      async request(path, options) {
+        requests.push({ path, options });
+        return { ok: true };
+      },
+    },
+    root = mkdtempSync(join(tmpdir(), "shuduo-python-cli-")),
+    file = join(root, "transform.py"),
+    output = [];
+  writeFileSync(
+    file,
+    'def transform(data, params):\n    return []\n',
+  );
+  for (const argv of [
+    ["python", "revisions"],
+    ["python", "create", "--context", "holdings-t1", "--file", file],
+    ["python", "runs"],
+    ["python", "run", "--id", "revision-id"],
+    ["python", "show", "--id", "run-id"],
+    ["python", "cancel", "--id", "run-id"],
+  ])
+    assert.equal(
+      await runV2Cli(argv, {}, {
+        client,
+        output: (value) => output.push(value),
+        error: (value) => output.push(value),
+      }),
+      0,
+    );
+  assert.deepEqual(
+    requests.map((item) => item.path),
+    [
+      "/python/revisions",
+      "/python/revisions",
+      "/python/runs",
+      "/python/runs",
+      "/python/runs/run-id",
+      "/python/runs/run-id/cancel",
+    ],
+  );
+  assert.deepEqual(requests[1].options.body, {
+    contextId: "holdings-t1",
+    code: 'def transform(data, params):\n    return []\n',
+  });
+  assert.deepEqual(requests[3].options.body, { revisionId: "revision-id" });
+});
+
 test("MCP advertises the full V2 data-service surface with explicit credential cautions", async () => {
   assert.deepEqual(V2_MCP_OPERATIONS, V2_OPERATIONS);
   const listed = JSON.parse(
@@ -636,6 +685,12 @@ test("MCP advertises the full V2 data-service surface with explicit credential c
     "agent_delivery_prepare",
     "agent_delivery_detail",
     "agent_delivery_cancel",
+    "python_revision_list",
+    "python_revision_create",
+    "python_run_list",
+    "python_run_create",
+    "python_run_detail",
+    "python_run_cancel",
     "delivery_package_list",
     "delivery_package_detail",
     "delivery_package_create",
