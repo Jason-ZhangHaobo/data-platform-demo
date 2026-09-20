@@ -112,9 +112,11 @@ export function agentEvidenceJourney({ store, project, task }) {
         item.clockMode === "WALL_CLOCK_TIMER" &&
         item.packageDigest === selectedPackage.digest &&
         item.validation?.passed === true &&
-        item.engine === "Apache Spark" &&
-        item.mainSqlExecuted === true &&
-        item.testSqlValidation?.passed === true &&
+        item.engine === (python ? "CPython" : "Apache Spark") &&
+        (python
+          ? item.codeExecuted === true
+          : item.mainSqlExecuted === true &&
+            item.testSqlValidation?.passed === true) &&
         item.testDouble !== true,
     ),
     openAlerts = release

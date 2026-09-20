@@ -55,6 +55,7 @@ async function setup(options = {}) {
 
 test("Python Agent creates a model revision and passes five governed assertions", async () => {
   const app = await setup({
+    releaseTimeUnitMs: 5,
     pythonGenerator: async () => ({
       code,
       explanation: "按position_id去重并独立聚合现金",
@@ -129,7 +130,8 @@ test("Python Agent creates a model revision and passes five governed assertions"
       verifications = app.store.list("delivery_verification", PROJECT);
     assert.equal(packages.length, 1);
     assert.equal(packages[0].manifest.format, "shuduo-python-delivery/v1");
-    assert.equal(packages[0].releaseEligible, false);
+    assert.equal(packages[0].releaseEligible, true);
+    assert.equal(packages[0].publicReleaseEligible, false);
     assert.equal(verifications[0].mode, "LOCAL_PYTHON_FILE_REHEARSAL");
     const completedJourney = await app.call(
       `/agent/tasks/${created.body.id}/journey`,
@@ -145,6 +147,72 @@ test("Python Agent creates a model revision and passes five governed assertions"
       "SUCCEEDED",
     );
     assert.equal(completedJourney.body.localEvidenceComplete, false);
+    const review = await app.call(
+        `/delivery/packages/${packages[0].id}/review`,
+        {
+          packageDigest: packages[0].digest,
+          verificationId: verifications[0].id,
+          reviewNote: "已审阅Python代码、五套断言与本机范围",
+          attestations: {
+            code: true,
+            assertions: true,
+            deliveryFiles: true,
+            localScope: true,
+          },
+        },
+        "python-review",
+      ),
+      approval = await app.call(
+        `/delivery/packages/${packages[0].id}/approve`,
+        {
+          packageDigest: packages[0].digest,
+          reviewId: review.body.id,
+        },
+        "python-approval",
+      ),
+      release = await app.call(
+        "/releases",
+        {
+          approvalId: approval.body.id,
+          triggerAfterSeconds: 1,
+          intervalSeconds: 1,
+          runCount: 2,
+        },
+        "python-release",
+      );
+    assert.equal(review.status, 201);
+    assert.equal(approval.status, 201);
+    assert.equal(release.status, 201);
+    assert.equal(release.body.publicDeployed, false);
+    let releaseRuns = [];
+    for (let attempt = 0; attempt < 100; attempt++) {
+      releaseRuns = (await app.call("/release/runs")).body.filter(
+        (item) => item.releaseId === release.body.id,
+      );
+      if (
+        releaseRuns.length === 2 &&
+        releaseRuns.every((item) => item.status === "SUCCEEDED")
+      )
+        break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(releaseRuns.length, 2);
+    assert.equal(
+      releaseRuns.every(
+        (item) =>
+          item.status === "SUCCEEDED" &&
+          item.engine === "CPython" &&
+          item.schedulerTriggered === true,
+      ),
+      true,
+    );
+    const monitoring = await app.call("/monitoring/overview"),
+      finalJourney = await app.call(`/agent/tasks/${created.body.id}/journey`);
+    assert.equal(monitoring.body.counts.succeeded >= 2, true);
+    assert.equal(monitoring.body.counts.openAlerts, 0);
+    assert.equal(finalJourney.body.localEvidenceComplete, true);
+    assert.equal(finalJourney.body.agentIndependentE2E, false);
+    assert.equal(finalJourney.body.publicDeployed, false);
   } finally {
     await app.close();
   }
