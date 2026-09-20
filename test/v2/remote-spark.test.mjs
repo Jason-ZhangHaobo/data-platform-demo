@@ -9,6 +9,7 @@ import {
   verifySparkRequest,
 } from "../../src/v2/remote-spark.mjs";
 import { createRemoteSparkWorker } from "../../src/v2/remote-spark-worker.mjs";
+import { privateSparkSmokePayload } from "../../src/v2/spark-worker-private-smoke.mjs";
 import { getContext } from "../../src/v2/context.mjs";
 
 const sharedSecret = "synthetic-test-secret-32-characters-long";
@@ -20,6 +21,31 @@ const success = {
   validation: { passed: true, regressions: [] },
   mainSqlExecuted: true,
 };
+
+test("private FC smoke payload is fixed synthetic securities data", () => {
+  const payload = privateSparkSmokePayload({
+    requestId: "44444444-4444-4444-8444-444444444444",
+    submittedAt: "2026-09-20T00:00:00.000Z",
+  });
+  assert.equal(payload.protocol, remoteSparkProtocol);
+  assert.equal(payload.context.id, "fc-private-smoke");
+  assert.equal(payload.context.classification, "SYNTHETIC");
+  assert.deepEqual(
+    payload.context.tables.map((table) => table.name),
+    ["accounts", "positions", "cash"],
+  );
+  assert.deepEqual(payload.context.expected, [
+    {
+      client_id: "CLIENT-W2-001",
+      holding_market_value: "150.00",
+      available_cash: "25.00",
+      total_assets: "175.00",
+      security_count: 2,
+    },
+  ]);
+  assert.deepEqual(payload.validationContexts, []);
+  assert.equal("testSql" in payload, false);
+});
 
 test("remote Spark signatures bind timestamp, nonce and exact body", () => {
   const timestamp = "1789400000000",
@@ -271,6 +297,7 @@ test("Spark worker accepts one valid signature and rejects replay or tampering",
 });
 
 test("FC private invoke reuses the signed Spark protocol without an execution bypass", async () => {
+  let executedInput;
   const fixedNow = 1789400000000,
     app = createRemoteSparkWorker({
       env: {
@@ -278,7 +305,10 @@ test("FC private invoke reuses the signed Spark protocol without an execution by
         V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED: "true",
       },
       now: () => fixedNow,
-      runner: async () => success,
+      runner: async (input) => {
+        executedInput = input;
+        return success;
+      },
     });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const invokeUrl = `http://127.0.0.1:${app.server.address().port}/invoke`,
@@ -300,6 +330,23 @@ test("FC private invoke reuses the signed Spark protocol without an execution by
       runtimeAvailable: true,
       publicReady: false,
     });
+    const fixedResponse = await invoke({ operation: "PRIVATE_SPARK_SMOKE_V1" }),
+      fixed = await fixedResponse.json();
+    assert.equal(fixedResponse.status, 200);
+    assert.deepEqual(fixed, {
+      protocol: "shuduo-spark-private-smoke/v1",
+      status: "SUCCEEDED",
+      engine: "Apache Spark",
+      engineVersion: "3.5.9",
+      isolation: "FUNCTION_PROCESS",
+      validationPassed: true,
+      testSqlPassed: null,
+      regressionCount: 0,
+      publicReady: false,
+    });
+    assert.equal(executedInput.context.id, "fc-private-smoke");
+    assert.equal(executedInput.context.classification, "SYNTHETIC");
+    assert.equal(executedInput.validationContexts.length, 0);
     const payload = {
         protocol: remoteSparkProtocol,
         requestId: "33333333-3333-4333-8333-333333333333",

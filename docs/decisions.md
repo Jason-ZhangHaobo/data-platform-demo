@@ -170,6 +170,7 @@
 | D-165 | Worker OSS私有性四证合取，2026-09-20 | Bucket private ACL不足以覆盖对象ACL和Bucket Policy；W2要求Bucket ACL private、Object ACL private/default、Policy Status非公开、Bucket Block Public Access开启四项同时成立。验证器缺证失败关闭且不回显Owner或资源名；只读命令由Cloud Shell主账号执行，不给GitHub部署角色扩大Bucket审计权限。完整CI 274/274 |
 | D-166 | Worker FC创建成功不等于W2健康，2026-09-20 | GetFunction必须与并发、弹性响应联合验收，覆盖状态、代码字节、运行时/层/路径、资源、VPC、秘密、无角色/公网出站及1并发/1预留/最小0；任一缺失失败关闭。验证器使用摘要比较秘密且不回显环境或云ID；配置通过仍固定非公网、未连接控制面，后续必须私有Invoke真实Spark。完整CI 277/277 |
 | D-167 | FC私有Invoke复用同一Spark安全协议，2026-09-20 | Worker默认没有`/invoke`能力；W2开关开启后，健康事件只读脱敏状态，执行事件必须携带已签名原始正文并转发到同一`/v1/execute`，不复制或弱化执行校验。重放在私有Invoke中仍409，错误签名仍401；部署角色不因此获得Invoke权限，Cloud Shell主账号完成W2烟测。完整CI 279/279 |
+| D-168 | W2固定烟测不向人工暴露共享密钥，2026-09-20 | `PRIVATE_SPARK_SMOKE_V1`不接收SQL/数据/预期，只运行代码内固定的虚构客户资产用例；Worker内部签名并复用同一执行入口，外部只能得到脱敏断言摘要。新增模块进入Worker ZIP使旧W1摘要成为历史证据；必须重新双构建与包内烟测后才能上传W2，不能用旧摘要替代。完整CI 280/280 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。

@@ -100,6 +100,7 @@ DAPI：单表/参数化 SQL 数据查询 API。XAPI：组合查询或已登记�
 | FR-067 | Worker OSS私有访问证据 | W2创建函数前必须同时证明Bucket ACL为private、Object ACL为private/default、Bucket Policy Status不允许公共访问、Bucket级Block Public Access开启。对象ACL优先级、Bucket Policy和公共访问阻断缺一不可；证据只输出布尔状态，不返回Owner、Bucket或Object标识。任何公共或缺失状态均阻断Worker创建 |
 | FR-068 | Worker FC规格证据 | W2创建后必须联合核验函数Active/更新成功、代码大小、Custom Debian、三种官方层及路径、1vCPU/2GiB/10GiB/180秒、同VPC、无运行角色、无公网出站、Worker密钥一致、实例并发1、预留1和最小0。验证输出不得包含环境秘密或云资源ID；全部通过也只代表函数配置正确，控制面连接和Spark执行仍保持false |
 | FR-069 | Worker FC私有Invoke适配 | Custom Runtime `/invoke`只在W2显式开关下接受二进制事件。健康事件仅返回脱敏运行时状态；执行事件必须封装原有Spark协议正文和完整HMAC头，再转交同一执行入口，继续执行项目、签名、时钟、Nonce、防重放、白名单、大小、单任务和独立断言校验。不得另建无签名的烟测执行路径；默认和错误Content-Type均拒绝 |
+| FR-070 | 固定W2证券烟测 | Cloud Shell无需获得Worker共享密钥，只能请求代码内固定的虚构证券用例。SQL、accounts/positions/cash行和预期结果不可由事件修改；Worker内部生成请求ID/时间/Nonce并用自身密钥签名后进入同一执行入口。响应不得返回业务行，只返回引擎/隔离/断言摘要。任何烟测代码变化必须重建并重新确认W1包摘要，旧包证据不得复用 |
 
 ## UI 与交互（用户补充，必须验收）
 - UI-001：专业、现代、有审美；统一间距、字体、图标、状态色、圆角和层次。
