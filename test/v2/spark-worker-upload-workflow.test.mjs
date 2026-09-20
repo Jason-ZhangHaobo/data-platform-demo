@@ -55,7 +55,7 @@ test("upload errors identify the phase while suppressing raw cloud details and p
       const fake = `ossutil() {
         printf '%s\\n' "$2" >> calls
         if [ "$2" = head-object ]; then
-          printf '%s\\n' 'Error: StatusCode:403, ErrorCode:${headCode}, ErrorMessage: synthetic-private-secret' >&2
+          printf '%s\\n' 'Error: operation error HeadObject: Status Code:404, Code: ${headCode}., Message: synthetic-private-secret' >&2
         else
           printf '%s\\n' 'Error: StatusCode:403, ErrorCode:AccessDenied, ErrorMessage: synthetic-private-secret' >&2
         fi

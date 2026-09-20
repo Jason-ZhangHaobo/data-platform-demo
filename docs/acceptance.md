@@ -611,3 +611,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 最终运行`fadb4f5f-16bd-487f-a30e-4423ea33c575`为5/5、100%，共7次模型尝试、11812 Token、10个计时批次，保留1次错误摘要审批被阻断并救援。五例八阶段全部通过，`targetMet=true`；`agentIndependentE2E=false`、`publicDeployed=false`。
 - 脱敏提交证据为[`evidence/python-full-lifecycle-evaluation-2026-09-20.json`](evidence/python-full-lifecycle-evaluation-2026-09-20.json)，源报告SHA-256为`f8dafa904a5388f5d9d7441c0f67662c472d22c4216eb475301ec8c0b00f1789`。
 - 全量CI通过328/328，源码检查和两套生产构建均通过。
+
+## 2026-09-20：OSS上传工具真实协议校验
+
+- 固定版本ossutil 2.4.0返回`Error Code: NoSuchKey.`，旧错误提取器未识别该格式，首次上传因而退出；已补齐实测格式与失败阶段诊断，AccessDenied和未知错误仍禁止上传。
+- 校验官方macOS ARM包摘要后，以本机HTTP服务和虚构凭证运行真实CLI：确认默认输出会把耗时追加到JSON和二进制结果。所有机器读取的上传/下载命令增加`--quiet`；修复后下载内容与原始字节一致。
+- 真实CLI集成测试覆盖首次上传、已有对象复核、权限拒绝；核验上传字节、private ACL、防覆盖头及下载摘要。全量CI在启用该可选集成测试时331/331通过，两套构建通过；无真实云凭证参与本机协议测试。
+- 私有Worker预置改为只使用单独的Worker Secret，不再展开含未就绪平台账号的整包秘密；控制面账号缺口继续由独立配置门处理。该变更不代表Worker已创建。

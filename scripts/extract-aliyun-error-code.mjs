@@ -26,8 +26,8 @@ export function extractAliyunErrorCode(...texts) {
     const match = text.match(/(?:^|\n)(?:ErrorCode|Code):[ \t]*([A-Za-z][A-Za-z0-9_.-]{1,127})(?:[ \t]*\r?$)/m);
     if (match && safeCodePattern.test(match[1])) return match[1];
     // ossutil/Go SDK errors may put structured fields on one comma-separated line.
-    const inline = text.match(/\bErrorCode\s*[:=]\s*([A-Za-z][A-Za-z0-9_.-]{1,127})(?=\s*(?:,|\r?$))/m);
-    if (inline) return inline[1];
+    const inline = text.match(/\b(?:ErrorCode|Code)\s*[:=]\s*([A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)(?=\s*(?:[,\.\r\n]|$))/);
+    if (inline && safeCodePattern.test(inline[1])) return inline[1];
   }
   return "UNKNOWN_ALIYUN_ERROR";
 }

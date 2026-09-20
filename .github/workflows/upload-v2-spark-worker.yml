@@ -128,7 +128,7 @@ jobs:
             exit "$result"
           }
           trap finish_upload EXIT
-          if ossutil api head-object \
+          if ossutil api head-object --quiet \
             --bucket "$V2_OSS_BUCKET" \
             --key "$V2_SPARK_WORKER_CODE_OBJECT" \
             --output-format json >"$head_file" 2>"$head_error"; then
@@ -139,7 +139,7 @@ jobs:
             test "$code" = NoSuchKey || test "$code" = NoSuchObject
             phase=PUT_OBJECT
             diagnostic_file="$upload_file"
-            ossutil api put-object \
+            ossutil api put-object --quiet \
               --bucket "$V2_OSS_BUCKET" \
               --key "$V2_SPARK_WORKER_CODE_OBJECT" \
               --body file://v2-spark-worker.zip \
@@ -149,7 +149,7 @@ jobs:
               --output-format json >"$upload_file" 2>"$head_error"
             phase=HEAD_AFTER_UPLOAD
             diagnostic_file="$head_file"
-            ossutil api head-object \
+            ossutil api head-object --quiet \
               --bucket "$V2_OSS_BUCKET" \
               --key "$V2_SPARK_WORKER_CODE_OBJECT" \
               --output-format json >"$head_file" 2>"$head_error"
@@ -159,7 +159,7 @@ jobs:
           phase=DOWNLOAD_OBJECT
           diagnostic_file="$upload_file"
           : >"$upload_file"
-          ossutil api get-object \
+          ossutil api get-object --quiet \
             --bucket "$V2_OSS_BUCKET" \
             --key "$V2_SPARK_WORKER_CODE_OBJECT" >"$download_file" 2>"$head_error"
           phase=VERIFY_DOWNLOADED_BYTES

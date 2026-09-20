@@ -28,6 +28,9 @@ test("unknown or unsafe error text is reduced to a fixed non-sensitive code", ()
 });
 
 test("extracts ossutil inline codes without disclosing messages or identifiers", () => {
+  assert.equal(extractAliyunErrorCode("", "Error: operation error HeadObject: Error returned by Service.\nHttp Status Code: 404.\nError Code: NoSuchKey.\nRequest Id: hidden.\nMessage: private.\n"), "NoSuchKey");
+  assert.equal(extractAliyunErrorCode("", "Error: operation error HeadObject: Status Code: 404, Code: NoSuchKey., Request Id: hidden, Message: private"), "NoSuchKey");
+  assert.equal(extractAliyunErrorCode("", "Status Code: 403, Code: AccessDenied, Request Id: hidden"), "AccessDenied");
   for (const separator of [":", "="]) {
     assert.equal(extractAliyunErrorCode("", `Error: operation error HeadObject: StatusCode${separator}403, ErrorCode${separator}AccessDenied, ErrorMessage: private, RequestId: hidden`), "AccessDenied");
     assert.equal(extractAliyunErrorCode("", `StatusCode${separator}404, ErrorCode${separator}NoSuchKey`), "NoSuchKey");
