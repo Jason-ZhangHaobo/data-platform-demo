@@ -1,0 +1,62 @@
+name: Validate V2 protected configuration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Expand and validate names without cloud access
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: v2-staging
+    env:
+      FUNCTION_NAME: ${{ vars.V2_FUNCTION_NAME }}
+      V2_FUNCTION_ROLE_ARN: ${{ vars.V2_FUNCTION_ROLE_ARN }}
+      ALIYUN_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
+      ALIYUN_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+      V2_VPC_ID: ${{ vars.V2_VPC_ID }}
+      V2_VSW_ID: ${{ vars.V2_VSW_ID }}
+      V2_SECURITY_GROUP_ID: ${{ vars.V2_SECURITY_GROUP_ID }}
+      OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
+      V2_PUBLIC_URL: ${{ vars.V2_PUBLIC_URL }}
+      V2_PUBLIC_ORIGIN: ${{ vars.V2_PUBLIC_ORIGIN }}
+      V2_MYSQL_HOST: ${{ secrets.V2_MYSQL_HOST }}
+      V2_MYSQL_PORT: ${{ secrets.V2_MYSQL_PORT }}
+      V2_MYSQL_USER: ${{ secrets.V2_MYSQL_USER }}
+      V2_MYSQL_PASSWORD: ${{ secrets.V2_MYSQL_PASSWORD }}
+      V2_MYSQL_DATABASE: ${{ secrets.V2_MYSQL_DATABASE }}
+      V2_MYSQL_SOURCE_HOST: ${{ secrets.V2_MYSQL_SOURCE_HOST }}
+      V2_MYSQL_SOURCE_PORT: ${{ secrets.V2_MYSQL_SOURCE_PORT }}
+      V2_MYSQL_SOURCE_USER: ${{ secrets.V2_MYSQL_SOURCE_USER }}
+      V2_MYSQL_SOURCE_PASSWORD: ${{ secrets.V2_MYSQL_SOURCE_PASSWORD }}
+      V2_MYSQL_SOURCE_DATABASE: ${{ secrets.V2_MYSQL_SOURCE_DATABASE }}
+      V2_BOOTSTRAP_ADMIN_EMAIL: ${{ secrets.V2_BOOTSTRAP_ADMIN_EMAIL }}
+      V2_BOOTSTRAP_ADMIN_PASSWORD_HASH: ${{ secrets.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH }}
+      V2_BOOTSTRAP_ADMIN_NAME: ${{ secrets.V2_BOOTSTRAP_ADMIN_NAME }}
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+      V2_SPARK_EXECUTOR_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
+      V2_SCHEDULER_TICK_SECRET: ${{ secrets.V2_SCHEDULER_TICK_SECRET }}
+      JASONSECRETS: ${{ secrets.JASONSECRETS }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Expand bundle into the ephemeral masked environment
+        run: node scripts/export-v2-staging-secret-bundle.mjs
+
+      - name: Validate effective protected configuration
+        run: node scripts/verify-v2-protected-config.mjs
+
+      - name: State the non-cloud boundary
+        run: echo 'Protected configuration names and formats passed. No Alibaba Cloud API was called.' >> "$GITHUB_STEP_SUMMARY"
+

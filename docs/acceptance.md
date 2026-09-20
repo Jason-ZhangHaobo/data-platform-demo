@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新312/312测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python开发、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、完整分页实时账单门、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker W1构包与W2计划/联合最小策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
+| npm run ci | 最新315/315测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python开发、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、完整分页实时账单门、真实受保护配置格式门、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、持久调度、Spark Worker W1构包与W2计划/联合最小策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -552,3 +552,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 阿里云命令失败时，stderr原文保留在0600临时文件并在退出删除；工作流只得到`extract-aliyun-error-code`产生的固定错误码，不转发RequestID、产品明细或私有消息。
 - 控制面预置、控制面更新、Worker创建三条工作流全部改用统一脚本，源码测试明确拒绝`QueryBillOverview`回归。合成CLI验证两页账单得到保守金额3.01元，并验证NoPermission错误脱敏；真实OIDC账单尚未在本轮运行。
 - 全量CI通过312/312，源码检查和两套生产构建均通过。
+
+## 2026-09-20：受保护配置非云验证工作流
+
+- 新增`validate-v2-protected-config.yml`，只拥有仓库只读权限；没有`id-token: write`、阿里云凭证Action或`aliyun`调用。它在`v2-staging`实际读取逐项Secrets/JASONSECRETS，先由既有展开器逐值mask，再运行有效配置验证。
+- 新验证器在原控制面必填项之外要求至少32字符的`V2_SPARK_EXECUTOR_SECRET`和`V2_SCHEDULER_TICK_SECRET`；可选业务源五项只允许全缺省或全存在。输出只含missing/errors、六项present和`containsSecretValues=false`。
+- 合成完整配置、缺Worker密钥、短调度密钥、部分业务源和工作流无云权限检查均通过；真实GitHub受保护Secret尚未运行，因此当前仍不能声称JASONSECRETS内容完整。
+- 全量CI通过315/315，源码检查和两套生产构建均通过。

@@ -42,8 +42,11 @@
 | `V2_BOOTSTRAP_ADMIN_NAME` | 管理员显示名 |
 | `DASHSCOPE_API_KEY` | 百炼模型 Key |
 | `V2_SPARK_EXECUTOR_SECRET` | 隔离 Worker 完成真实验收后再填写；首期留空 |
+| `V2_SCHEDULER_TICK_SECRET` | 云调度Tick请求的域分离HMAC秘密，至少32字符；不得与Worker秘密复用 |
 | `JASONSECRETS` | 上述 Secrets 的受控 JSON/KEY=VALUE 包；可替代逐项 Secrets |
 
 工作流会先运行 `scripts/verify-v2-staging-config.mjs`，只返回缺失名称或固定错误码；角色、VPC、账单、函数是否存在等检查随后执行。任何一项失败都不会创建或更新 FC 函数。
+
+独立`validate-v2-protected-config.yml`不申请OIDC、不调用云API，可在部署前安全确认真实受保护内容；它额外要求Worker与调度密钥至少32字符，并检查可选业务源五项要么全部缺省、要么全部存在。只有该工作流成功才能把`JASONSECRETS`从“名称存在”升级为“内容格式已验收”。
 
 Worker W2计划把同一个`V2_SPARK_EXECUTOR_SECRET`仅在部署时映射为Worker环境的`V2_SPARK_WORKER_SECRET`，不要求保存第二份长期秘密。包SHA-256和字节数只能来自受控Linux构建，上传运行和短期收据变量只能在对应真实门通过后由Codex写入。用户已授权精确对象Get/Put和既定私有Worker边界；授权不等于策略、对象或函数已经创建，也不包含W3控制面Invoke。
