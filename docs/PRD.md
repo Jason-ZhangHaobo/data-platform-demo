@@ -110,6 +110,7 @@ DAPI：单表/参数化 SQL 数据查询 API。XAPI：组合查询或已登记�
 | FR-077 | W2最小策略一键应用 | Cloud Shell只需一次运行幂等策略包：先同时验证部署策略与精确Worker对象策略全部输入，再依次创建或复用同正文策略、附加部署角色并回读验证。部署策略不得出现产品级`fc:*`，对象策略仅当前SHA对象Get/Put；整个策略包不得List/Delete OSS、Invoke Worker、替换策略版本、解绑或删除策略。输出只保留策略名和created/attached/verified布尔，不转发云错误原文 |
 | FR-078 | 统一实时账单门 | 控制面预置、更新和Worker创建必须调用同一脚本，以OIDC临时身份完整分页执行QueryBill（RAM动作为已批准的`bss:DescribeBillList`）。逐页验证账期/页号/总记录数，CNY金额按微单位汇总并向上取整到分，退款不降低保守支出；缺页、未知错误、非CNY或金额达到200元均停止。脚本stdout只返回规范金额，云错误只返回固定错误码，不使用未批准的`QueryBillOverview` |
 | FR-079 | 受保护配置真实校验 | 独立手动工作流必须在`v2-staging`受保护环境实际读取逐项Secrets与`JASONSECRETS`，先逐值注册GitHub mask再写入临时Runner环境，然后校验平台MySQL、管理员固定参数scrypt哈希、模型Key、至少32字符Worker密钥、至少32字符调度签名密钥，以及可选业务源配置完整性。工作流不得申请OIDC或调用阿里云；输出只含缺失键、固定错误码和六类present布尔，不能回显任何值。Secret名称存在不算通过，只有真实工作流成功才计配置就绪 |
+| FR-080 | 逐项Secret覆盖bundle | `JASONSECRETS`只为缺少逐项环境值的白名单键提供后备。展开器必须先过滤已由逐项Secret提供的键，再校验和写入剩余bundle；旧bundle中的占位或失效值不能阻止正确逐项Secret生效，也不能覆盖它。输出只列loadedKeys和overriddenKeys名称，不返回值；bundle未知键、多行值以及真正会生效的无效后备值仍失败关闭 |
 
 ## UI 与交互（用户补充，必须验收）
 - UI-001：专业、现代、有审美；统一间距、字体、图标、状态色、圆角和层次。

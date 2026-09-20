@@ -152,6 +152,40 @@ test("bundle exporter masks values before writing the GitHub environment file", 
   }
 });
 
+test("valid individual secrets override invalid bundle placeholders", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "shuduo-secret-override-")),
+    githubEnv = resolve(root, "github-env"),
+    script = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../scripts/export-v2-staging-secret-bundle.mjs",
+    );
+  try {
+    const output = JSON.parse(
+      execFileSync(process.execPath, [script], {
+        env: {
+          ...process.env,
+          GITHUB_ACTIONS: "false",
+          GITHUB_ENV: githubEnv,
+          V2_MYSQL_PASSWORD: "Valid-Individual-Password-2026",
+          JASONSECRETS: JSON.stringify({
+            V2_MYSQL_PASSWORD: "change-me",
+            V2_SCHEDULER_TICK_SECRET:
+              "synthetic-scheduler-secret-32-characters",
+          }),
+        },
+      }).toString("utf8"),
+    );
+    assert.deepEqual(output.loadedKeys, ["V2_SCHEDULER_TICK_SECRET"]);
+    assert.deepEqual(output.overriddenKeys, ["V2_MYSQL_PASSWORD"]);
+    assert.equal(
+      readFileSync(githubEnv, "utf8"),
+      "V2_SCHEDULER_TICK_SECRET=synthetic-scheduler-secret-32-characters\n",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("staging config CLI reads process.env instead of validating an empty object", () => {
   const env = {
     ...process.env,
