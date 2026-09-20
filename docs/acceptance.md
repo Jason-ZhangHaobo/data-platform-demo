@@ -527,6 +527,6 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 ## 2026-09-20：W2不可变上传工作流
 
 - 新增`upload-v2-spark-worker.yml`，仅手动运行且使用`v2-staging`受保护环境与GitHub OIDC短期身份；不读取长期AccessKey。
-- 工作流在写云前重建包并核对当前SHA-256和318,914,420字节，安装官方ossutil 2.4.0 Linux amd64包并校验官方SHA-256。Head错误只有明确NoSuchKey/NoSuchObject才允许Put，上传固定`forbid-overwrite`、private ACL和摘要元数据；未知错误失败关闭。
+- 工作流在写云前重建包并核对当前SHA-256和318,914,420字节，安装官方ossutil 2.4.0 Linux amd64包并校验官方SHA-256。Head错误只有明确NoSuchKey/NoSuchObject才允许Put，上传固定`forbid-overwrite`、private ACL和摘要元数据；未知错误失败关闭。之后必须Get回对象重新计算SHA-256和字节数，避免仅信任可伪造元数据。
 - 工作流不包含Delete/List/FC Invoke或函数创建。对象内容验证通过后仍保留`publicAccessVerified=false`，待Cloud Shell四项私有性证据通过后才能进入Worker函数创建。
 - 全量CI在允许本机回环监听的环境通过296/296；沙箱内首次运行的`listen EPERM`属于执行环境限制，不记为产品回归。

@@ -115,7 +115,8 @@ jobs:
           head_file="$(mktemp)"
           head_error="$(mktemp)"
           upload_file="$(mktemp)"
-          trap 'rm -f "$head_file" "$head_error" "$upload_file" v2-spark-worker.zip' EXIT
+          download_file="$(mktemp)"
+          trap 'rm -f "$head_file" "$head_error" "$upload_file" "$download_file" v2-spark-worker.zip' EXIT
           if ossutil api head-object \
             --bucket "$V2_OSS_BUCKET" \
             --key "$V2_SPARK_WORKER_CODE_OBJECT" \
@@ -140,8 +141,14 @@ jobs:
             V2_SPARK_WORKER_HEAD_EVIDENCE_FILE="$head_file" \
               node scripts/verify-v2-spark-worker-oss-object.mjs
           fi
+          ossutil api get-object \
+            --bucket "$V2_OSS_BUCKET" \
+            --key "$V2_SPARK_WORKER_CODE_OBJECT" >"$download_file" 2>"$head_error"
+          downloaded_sha="$(sha256sum "$download_file" | cut -d' ' -f1)"
+          downloaded_bytes="$(wc -c < "$download_file" | tr -d ' ')"
+          test "$downloaded_sha" = "$V2_SPARK_WORKER_PACKAGE_SHA256"
+          test "$downloaded_bytes" = "$V2_SPARK_WORKER_PACKAGE_BYTES"
 
       - name: State the remaining W2 gate
         run: |
-          echo 'Object content is verified. Bucket policy, public-access block and object ACL still require the separate Cloud Shell privacy gate before FC creation.' >> "$GITHUB_STEP_SUMMARY"
-
+          echo 'Object bytes and SHA-256 are verified by download. Bucket policy, public-access block and object ACL still require the separate Cloud Shell privacy gate before FC creation.' >> "$GITHUB_STEP_SUMMARY"
