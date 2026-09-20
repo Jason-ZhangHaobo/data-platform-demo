@@ -59,6 +59,8 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 `scripts/verify-v2-spark-worker-oss-privacy.mjs`独立核对四项访问证据：Bucket ACL必须private、Object ACL必须private/default、Bucket Policy Status必须`IsPublic=false`、Bucket级Block Public Access必须开启。任一证据缺失均失败关闭；输出不包含Owner、Bucket或Object名称。对象ACL优先于Bucket ACL，不能只查Bucket；Bucket Policy和Public Access Block也参与匿名访问决策。[Bucket ACL](https://help.aliyun.com/en/oss/developer-reference/get-bucket-acl)、[Object ACL](https://help.aliyun.com/en/oss/developer-reference/manage-the-acl-of-an-object)、[Bucket Policy公开状态](https://help.aliyun.com/en/oss/developer-reference/get-bucket-policy-status)、[Bucket公共访问阻断](https://help.aliyun.com/en/oss/developer-reference/get-bucket-public-access-block)
 
+函数创建后必须把GetFunction、GetConcurrencyConfig和GetScalingConfig原始响应送入`scripts/verify-v2-spark-worker-function.mjs`。验收同时核对Active/Successful状态、代码字节、Custom Debian、CPU/内存/磁盘/超时、三层ARN与路径、VPC绑定、Worker密钥摘要、无运行角色、无公网出站、实例并发1、预留1和最小实例0。输出只包含布尔检查；即使全部通过也固定`publicDeployed=false`、`controlPlaneConnected=false`，只能作为W2规格证据，不能代替真实Spark调用。
+
 官方公共层文档确认`custom.debian10`需要显式挂载并配置路径，不能把GitHub Runner上的系统Node/Python/Java误认为FC自带：
 
 - Node20：`acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3`，PATH前置`/opt/nodejs20/bin`；

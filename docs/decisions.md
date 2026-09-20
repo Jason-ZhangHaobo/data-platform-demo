@@ -168,6 +168,7 @@
 | D-163 | Spark Worker W2官方运行时与权限边界，2026-09-20 | 杭州OSS代码包上限500MB可容纳W1的318,911,849字节包，API Base64上限100MB故禁止内嵌。`custom.debian10`显式挂载官方Node20/Python310/Java17 v3层，路径取官方层说明。包按SHA-256写入单个私有OSS不可覆盖对象；新增权限方案仅为该对象Get/Put，无List/Delete。W2由Cloud Shell主账号私有烟测；控制面`fc:InvokeFunction`留到W3另行批准，不因计划通过声称已部署。完整CI 268/268 |
 | D-164 | Worker OSS上传证据不外推，2026-09-20 | W2上传使用`PutObject --forbid-overwrite`并写入SHA-256用户元数据；随后HeadObject核对字节、摘要元数据与ETag。验证器不返回Bucket/Object原值。HeadObject不证明历史无覆盖或对象不可公开，因此只标内容地址键成立，覆盖保护与公开访问保持未验证，等待上传日志和Bucket审计。完整CI 271/271 |
 | D-165 | Worker OSS私有性四证合取，2026-09-20 | Bucket private ACL不足以覆盖对象ACL和Bucket Policy；W2要求Bucket ACL private、Object ACL private/default、Policy Status非公开、Bucket Block Public Access开启四项同时成立。验证器缺证失败关闭且不回显Owner或资源名；只读命令由Cloud Shell主账号执行，不给GitHub部署角色扩大Bucket审计权限。完整CI 274/274 |
+| D-166 | Worker FC创建成功不等于W2健康，2026-09-20 | GetFunction必须与并发、弹性响应联合验收，覆盖状态、代码字节、运行时/层/路径、资源、VPC、秘密、无角色/公网出站及1并发/1预留/最小0；任一缺失失败关闭。验证器使用摘要比较秘密且不回显环境或云ID；配置通过仍固定非公网、未连接控制面，后续必须私有Invoke真实Spark。完整CI 277/277 |
 
 ## 替代关系
 旧菜单、关键词路由、固定评分、模拟发布和静态权限标签不构成 V2 验收证据。
