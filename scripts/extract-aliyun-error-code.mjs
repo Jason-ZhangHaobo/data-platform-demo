@@ -19,6 +19,10 @@ export function extractAliyunErrorCode(...texts) {
     if (typeof text !== "string") continue;
     const jsonCode = codeFromJson(text.trim());
     if (jsonCode) return jsonCode;
+    const xmlMatch = text.match(
+      /<Code>\s*([A-Za-z][A-Za-z0-9_.-]{1,127})\s*<\/Code>/,
+    );
+    if (xmlMatch && safeCodePattern.test(xmlMatch[1])) return xmlMatch[1];
     const match = text.match(/(?:^|\n)(?:ErrorCode|Code):[ \t]*([A-Za-z][A-Za-z0-9_.-]{1,127})(?:[ \t]*\r?$)/m);
     if (match && safeCodePattern.test(match[1])) return match[1];
   }

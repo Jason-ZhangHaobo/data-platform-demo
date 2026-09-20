@@ -79,6 +79,8 @@ W2新增固定证券烟测：Cloud Shell只发送无参数操作名，Worker内�
 
 W2精确对象权限已实现独立渲染/幂等应用器：只含当前摘要对象Get/Put，同名策略漂移失败关闭，无List/Delete/Invoke。2026-09-20已获用户明确授权；当前因Cloud Shell会话过期尚未执行apply，不能计为策略已附加或W2已部署。
 
+W2不可变上传已新增独立手动工作流：受保护环境OIDC、当前main重构建、SHA/字节双绑定、锁定ossutil、明确NotFound后禁止覆盖Put及Head证据；上传与FC创建分离。该工作流尚未运行，且即使上传成功仍须Cloud Shell四项OSS私有性门，不能升级W2状态。
+
 经典数据开发新增受限Python首版：真实CPython子进程、版本/运行/取消、五套证券断言及GUI/API/CLI/MCP同源已实现；禁止import/文件/网络/反射并回传CPU/文件/内存限制证据。当前仅`LOCAL_RESTRICTED_PYTHON`，macOS地址空间上限未验证，云隔离、Python Agent生成、第三方包和调度交付仍待后续。
 
 本机项目隔离运行时已实际升级到Spark3.5.9/py4j0.10.9.9；35/35真实Spark用例在新版本重新执行通过，耗时23.891秒。该结果证明本机兼容升级，不证明Linux云Worker包或FC隔离执行。
