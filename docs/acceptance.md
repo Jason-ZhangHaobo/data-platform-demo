@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新296/296测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python开发、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker W1构包与W2计划/精确对象策略/不可变上传/OSS内容/私有性/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
+| npm run ci | 最新307/307测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、SQL/受限Python开发、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker W1构包与W2计划/精确对象策略/不可变上传/短期私有性收据/创建门/OSS内容/FC规格/私有Invoke及固定证券烟测门及既有全量V2回归；不代表公网云资源已部署 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -530,3 +530,11 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 工作流在写云前重建包并核对当前SHA-256和318,914,420字节，安装官方ossutil 2.4.0 Linux amd64包并校验官方SHA-256。Head错误只有明确NoSuchKey/NoSuchObject才允许Put，上传固定`forbid-overwrite`、private ACL和摘要元数据；未知错误失败关闭。之后必须Get回对象重新计算SHA-256和字节数，避免仅信任可伪造元数据。
 - 工作流不包含Delete/List/FC Invoke或函数创建。对象内容验证通过后仍保留`publicAccessVerified=false`，待Cloud Shell四项私有性证据通过后才能进入Worker函数创建。
 - 全量CI在允许本机回环监听的环境通过296/296；沙箱内首次运行的`listen EPERM`属于执行环境限制，不记为产品回归。
+
+## 2026-09-20：W2 OSS收据与Worker创建门
+
+- 新增收据生成/验证器：Head内容与Bucket/Object ACL、Policy Status、Block Public Access四证同时通过，绑定包SHA/字节、对象键哈希、上传Run ID/Head SHA；输出不含Bucket/Object/Owner且六小时过期。过期、跨运行、包变化、布尔篡改和外部/符号链接路径均失败关闭。
+- 新增函数体生成器：复用同一W2计划，秘密只进入0600的仅创建文件，stdout/stderr不回显；文件存在时拒绝覆盖。函数固定Custom Debian10、三官方层、无运行角色和公网出站、1vCPU/2GiB/10GiB/180秒、实例并发1。
+- 新增完整分页账单验证器：逐页核对账期/页码/记录数，CNY金额按微单位累加并向上取整到分；负退款不降低保守支出，非CNY、缺页和达到200元均拒绝。
+- 新增`provision-v2-spark-worker.yml`：收据、预算、同VPC网络和函数不存在全部通过才CreateFunction；随后设置预留1、最小实例0并回读联合规格验证。没有Update/Delete/Invoke，固定证券烟测仍待Cloud Shell执行。当前尚未运行真实工作流或创建云函数。
+- 全量CI通过307/307，源码检查和两套生产构建均通过。

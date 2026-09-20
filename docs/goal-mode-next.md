@@ -17,7 +17,7 @@
 - 验收记录为213项自动测试、35项Spark引擎测试；本机冻结评测20/20、40批次，含4次救援。不得外推为Agent独立成功率或公网E2E。
 - PR #59、#60、#62已合并。GitHub v2-staging已包含9项非秘密变量和JASONSECRETS；秘密存在不等于内容完整、无占位符或连接可用。
 - 最近预置运行35298563745失败，固定错误为RAM NoPermission、拒绝动作ram:GetRole，并出现清理目录错误；FC创建步骤未执行。先前“仍是BSS失败”的判断已被此证据推翻。
-- PR #63—#99已合并：部署可靠性、独立Data Agent、受控SERVER_MYSQL、任务图、父/子取消、竞态保护、接管/恢复、目录驱动GUI、严格工具Schema/摘要预检、角色边界、统一调用租约及冷启动恢复、Spark Worker W2计划/证据门/当前W1与精确对象策略应用器，以及真实受限Python首版均进入main。W2精确对象Get/Put权限已获用户明确授权；当前等待有效Cloud Shell会话执行应用、上传、私有FC创建与烟测，不得把“已授权”写成“已部署”。
+- PR #63—#102已合并：部署可靠性、独立Data Agent、受控SERVER_MYSQL、任务图、父/子取消、竞态保护、接管/恢复、目录驱动GUI、严格工具Schema/摘要预检、角色边界、统一调用租约及冷启动恢复、Spark Worker W2计划/证据门/当前W1/精确对象策略/不可变上传门，以及真实受限Python首版均进入main。W2精确对象Get/Put权限已获用户明确授权；当前等待有效Cloud Shell会话执行策略应用和四证核验，随后运行上传与私有FC创建门，不得把“已授权/已合并工作流”写成“已部署”。
 - 官方授权复核后，预置网络查询由只支持`vswitch/*`的`DescribeVSwitches`改为精确资源的`DescribeVSwitchAttributes`；最小策略应用器已实现并失败关闭，真实RAM附加仍等待Cloud Shell重新登录后执行。
 - 本机分支codex/v2-config-fix的上游引用可能陈旧，先确认远程main与工作树，不重复rebase已squash合并的历史。
 
