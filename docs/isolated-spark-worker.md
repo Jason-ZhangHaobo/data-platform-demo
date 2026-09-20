@@ -53,11 +53,13 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 固定私有烟测模块合并后，默认分支`4df304f4…a0ab5`重新独立运行`35480737992`与`35481010884`：两次内部ZIP均为318,914,420字节，SHA-256均为`f5083be51f979d47486b1ce06344466c5326a003e360cd55b91143fe79414118`；两次包内Spark3.5.9实际烟测均为FUNCTION_PROCESS、5套回归通过、tests.sql通过。短期Artifact仅保留1天，当前W1重新通过；仍不等于OSS上传、FC创建或W2健康。
 
+受限Python合并后的默认分支`11fff9c4…ba0c`再次运行`35485173329`：内部ZIP仍为318,914,420字节且SHA-256仍为`f5083be51f979d47486b1ce06344466c5326a003e360cd55b91143fe79414118`，包内真实Spark烟测与短期Artifact上传均通过。这证明PR #99未改变Worker交付包，允许继续绑定同一精确对象策略；仍不等于OSS或FC已写入。
+
 ## W2部署计划（未部署）
 
 `scripts/render-v2-spark-worker-w2-plan.mjs`只生成脱敏、失败关闭的W2计划，不上传包或创建函数。它把包摘要固定为私有OSS精确对象`data-platform-demo/v2/spark-worker/<sha256>.zip`，要求单次禁止覆盖上传，并给出单独的最小权限差异：部署角色只新增该对象的`oss:GetObject`与`oss:PutObject`，没有List/Delete、Bucket管理或FC Invoke权限。
 
-精确对象权限已拆成独立渲染器与幂等应用器：`render-v2-spark-worker-package-policy.mjs`和`apply-v2-spark-worker-package-policy.mjs`。固定策略名为`DataPlatformV2SparkWorkerPackageMinimal`；首次只创建并附加，已存在则核对默认版本正文，同名不同内容直接`POLICY_DOCUMENT_MISMATCH`，不自动覆盖、建版本、解绑或删除。当前脚本只是准备完成，用户尚未授权这项新增OSS写权限，不能执行`--apply`。
+精确对象权限已拆成独立渲染器与幂等应用器：`render-v2-spark-worker-package-policy.mjs`和`apply-v2-spark-worker-package-policy.mjs`。固定策略名为`DataPlatformV2SparkWorkerPackageMinimal`；首次只创建并附加，已存在则核对默认版本正文，同名不同内容直接`POLICY_DOCUMENT_MISMATCH`，不自动覆盖、建版本、解绑或删除。2026-09-20用户已明确授权应用该最小策略；Cloud Shell会话当前过期，因此策略尚未实际创建或附加，仍须以应用器的`verified=true`和RAM只读回查为准。
 
 上传后必须使用`scripts/verify-v2-spark-worker-oss-object.mjs`读取`ossutil api head-object --output-format json`证据，核对实际Content-Length、`x-oss-meta-shuduo-sha256`和ETag。验证器只输出对象键哈希和固定检查项，不输出Bucket/Object原值。HeadObject只能证明当前对象内容与元数据匹配，不能单独证明Bucket非公开或历史上从未覆盖，因此证据明确保留`publicAccessVerified=false`与`overwriteProtectionVerified=false`，这两项须由独立Bucket审计和上传日志补齐。[HeadObject命令与权限](https://help.aliyun.com/en/oss/developer-reference/head-object)
 
