@@ -7,7 +7,7 @@
 
 | 检查 | 结果 | 证据与范围 |
 |---|---|---|
-| npm run ci | 最新271/271测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker W1构包与W2计划/OSS证据门及既有全量V2回归；不代表公网云资源已部署 |
+| npm run ci | 最新274/274测试通过，源码检查、旧版构建、V2 TypeScript/Vite构建通过 | 包含独立Data Agent、十域工具目录/统一调用租约及冷启动恢复/持久步骤批准/任务图/九域取消竞态/统一子任务控制与父子边界、精确vSwitch、幂等最小权限应用、阿里云错误脱敏、私有FC烟测、RDS/OSS恢复和受控SERVER_MYSQL同步/UI边界、受保护部署配置、持久调度、Spark Worker W1构包与W2计划/OSS内容和私有性证据门及既有全量V2回归；不代表公网云资源已部署 |
 | npm run v2:spark-test | 最新 35/35 通过 | 真正Apache Spark 3.5.9；包含五场景、测试SQL真实执行、失败定位与假通过拦截；本轮约22.026秒。历史3.5.7证据未改写 |
 | npm run v2:runtime-test | 3/3 通过 | 提交前取消、超时终止子进程、运行中取消；非云端隔离证明 |
 | npm audit | 0 项已知漏洞 | Vite 更新为安全公告推荐的 7.3.6 后复查；不是绝对安全证明 |
@@ -502,3 +502,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 新增失败关闭计划生成器：函数与控制面不同名、包摘要/字节、VPC/vSwitch/安全组、32字节以上共享密钥全部校验；输出不含真实秘密，固定1 vCPU/2GiB/10GiB磁盘、实例并发1、预留1、最小0、无公网出站。
 - 新增最小权限差异只包含精确包对象的`oss:GetObject`与`oss:PutObject`，没有List/Delete/FC Invoke；W3控制面Invoke明确为未授权。3项测试通过；本轮未上传OSS、未创建Worker、未产生W2云健康证据。
 - 新增OSS HeadObject证据验证器：实际字节、SHA-256用户元数据和ETag全部匹配才通过；错误输出不回显对象名。验证器明确不证明Bucket私有性或历史禁止覆盖，3项回归覆盖截断、替换和脱敏；真实OSS仍未调用。
+- 新增OSS私有访问验证器：Bucket private ACL、Object private/default ACL、Bucket Policy `IsPublic=false`与Bucket Block Public Access=true四项合取；对象公共ACL或缺失策略/阻断证据均失败。3项测试通过且响应不含Owner/资源名；真实Cloud Shell只读命令仍未执行。

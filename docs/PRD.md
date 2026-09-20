@@ -97,6 +97,7 @@ DAPI：单表/参数化 SQL 数据查询 API。XAPI：组合查询或已登记�
 | FR-064 | Agent工具调用冷启动恢复 | 服务启动必须把CLAIMED或TASK_CREATED但尚未绑定的工具调用标为INTERRUPTED，并在任务图公开脱敏恢复状态、尝试次数和已创建子任务信封。用户重新批准恢复时保留旧中断证据并创建新专业尝试；已创建但未绑定的运行中子任务可通过统一子任务取消。未绑定专业任务即使SUCCEEDED也不能增加任务图完成数或应用草稿 |
 | FR-065 | 隔离Spark W2部署门 | 319MB级Worker包必须按摘要保存为私有OSS不可覆盖对象，并由FC代码位置引用，不得Base64内嵌。Custom Debian运行时显式绑定官方Node20/Python3.10/Java17层及固定路径；Worker独立函数、无公网出站、1并发/1预留/最小0。部署角色只获得精确对象Get/Put；W2手工私有调用与W3控制面Invoke权限分离，未真实创建、启动和烟测前保持未部署 |
 | FR-066 | Worker OSS代码证据 | 上传Worker包后必须通过HeadObject核对实际字节数、内容摘要元数据和ETag，输出仅保留对象键哈希与布尔检查。内容地址化对象名不能单独证明禁止覆盖或私有访问；必须分别保留上传禁止覆盖日志和Bucket/对象访问审计，未取得证据时对应状态固定UNVERIFIED，不得据此创建Worker或标记W2通过 |
+| FR-067 | Worker OSS私有访问证据 | W2创建函数前必须同时证明Bucket ACL为private、Object ACL为private/default、Bucket Policy Status不允许公共访问、Bucket级Block Public Access开启。对象ACL优先级、Bucket Policy和公共访问阻断缺一不可；证据只输出布尔状态，不返回Owner、Bucket或Object标识。任何公共或缺失状态均阻断Worker创建 |
 
 ## UI 与交互（用户补充，必须验收）
 - UI-001：专业、现代、有审美；统一间距、字体、图标、状态色、圆角和层次。
