@@ -269,3 +269,116 @@ test("Spark worker accepts one valid signature and rejects replay or tampering",
     await new Promise((resolve) => app.server.close(resolve));
   }
 });
+
+test("FC private invoke reuses the signed Spark protocol without an execution bypass", async () => {
+  const fixedNow = 1789400000000,
+    app = createRemoteSparkWorker({
+      env: {
+        V2_SPARK_WORKER_SECRET: sharedSecret,
+        V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED: "true",
+      },
+      now: () => fixedNow,
+      runner: async () => success,
+    });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const invokeUrl = `http://127.0.0.1:${app.server.address().port}/invoke`,
+    invoke = (event) =>
+      fetch(invokeUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: JSON.stringify(event),
+      });
+  try {
+    const healthResponse = await invoke({ operation: "PRIVATE_HEALTH_V1" }),
+      health = await healthResponse.json();
+    assert.equal(healthResponse.status, 200);
+    assert.deepEqual(health, {
+      protocol: "shuduo-spark-private-smoke/v1",
+      status: "ok",
+      engine: "Apache Spark",
+      isolation: "FUNCTION_PROCESS",
+      runtimeAvailable: true,
+      publicReady: false,
+    });
+    const payload = {
+        protocol: remoteSparkProtocol,
+        requestId: "33333333-3333-4333-8333-333333333333",
+        submittedAt: new Date(fixedNow).toISOString(),
+        sql: "SELECT client_id FROM accounts",
+        context: getContext("holdings-t1"),
+        validationContexts: [],
+      },
+      body = JSON.stringify(payload),
+      timestamp = String(fixedNow),
+      nonce = "private_invoke_nonce_001",
+      signature = signSparkRequest({
+        sharedSecret,
+        timestamp,
+        nonce,
+        body,
+      }),
+      event = {
+        operation: "SIGNED_EXECUTE_V1",
+        projectId: "project-securities-lab",
+        timestamp,
+        nonce,
+        signature,
+        body,
+      },
+      executedResponse = await invoke(event),
+      executed = await executedResponse.json();
+    assert.equal(executedResponse.status, 200);
+    assert.equal(executed.status, "SUCCEEDED");
+    assert.equal(executed.requestId, payload.requestId);
+    assert.equal(executed.validation.passed, true);
+    const replayResponse = await invoke(event);
+    assert.equal(replayResponse.status, 409);
+    assert.equal((await replayResponse.json()).code, "SPARK_NONCE_REPLAYED");
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+  }
+});
+
+test("FC private invoke is disabled by default and requires binary events", async () => {
+  const app = createRemoteSparkWorker({
+    env: { V2_SPARK_WORKER_SECRET: sharedSecret },
+    runner: async () => success,
+  });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const invokeUrl = `http://127.0.0.1:${app.server.address().port}/invoke`;
+  try {
+    const disabled = await fetch(invokeUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: JSON.stringify({ operation: "PRIVATE_HEALTH_V1" }),
+    });
+    assert.equal(disabled.status, 404);
+    const enabled = createRemoteSparkWorker({
+      env: {
+        V2_SPARK_WORKER_SECRET: sharedSecret,
+        V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED: "true",
+      },
+      runner: async () => success,
+    });
+    await new Promise((resolve) => enabled.server.listen(0, "127.0.0.1", resolve));
+    try {
+      const wrongType = await fetch(
+        `http://127.0.0.1:${enabled.server.address().port}/invoke`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operation: "PRIVATE_HEALTH_V1" }),
+        },
+      );
+      assert.equal(wrongType.status, 415);
+      assert.equal(
+        (await wrongType.json()).code,
+        "SPARK_PRIVATE_EVENT_REQUIRED",
+      );
+    } finally {
+      await new Promise((resolve) => enabled.server.close(resolve));
+    }
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+  }
+});

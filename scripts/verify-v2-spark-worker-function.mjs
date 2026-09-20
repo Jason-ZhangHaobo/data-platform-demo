@@ -89,7 +89,8 @@ export function verifyV2SparkWorkerFunction(input = {}, evidence = {}) {
         env.V2_RETAIN_SPARK_ARTIFACTS === "false" &&
         env.V2_SPARK_WORKER_RUN_TIMEOUT_MS === "120000" &&
         env.V2_SPARK_WORKER_MAX_BODY_BYTES === "2097152" &&
-        env.V2_SPARK_WORKER_MAX_SKEW_MS === "60000",
+        env.V2_SPARK_WORKER_MAX_SKEW_MS === "60000" &&
+        env.V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED === "true",
       protectedSecretMatches: equalSecret(
         env.V2_SPARK_WORKER_SECRET,
         expectedSecret,

@@ -122,11 +122,176 @@ export function createRemoteSparkWorker(options = {}) {
     now = options.now ?? Date.now,
     runtime = options.runtime ?? runtimeConfig(env),
     runner = options.runner ?? ((input) => runSpark(input, runtime)),
+    privateInvokeEnabled =
+      env.V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED === "true",
     nonces = new Map();
   let active = 0;
 
   const server = createServer(async (req, res) => {
     try {
+      if (req.method === "POST" && req.url === "/invoke") {
+        if (!privateInvokeEnabled)
+          throw fail(404, "接口不存在", "SPARK_WORKER_NOT_FOUND");
+        if (
+          !String(req.headers["content-type"]).startsWith(
+            "application/octet-stream",
+          )
+        )
+          throw fail(
+            415,
+            "私有Spark烟测只接受二进制事件载荷",
+            "SPARK_PRIVATE_EVENT_REQUIRED",
+          );
+        let eventBody = "";
+        for await (const chunk of req) {
+          eventBody += chunk;
+          if (Buffer.byteLength(eventBody, "utf8") > maxBodyBytes + 4096)
+            throw fail(
+              413,
+              "私有Spark烟测载荷过大",
+              "SPARK_PRIVATE_EVENT_TOO_LARGE",
+            );
+        }
+        let event;
+        try {
+          event = JSON.parse(eventBody || "{}");
+        } catch {
+          throw fail(
+            400,
+            "私有Spark烟测事件不是JSON",
+            "SPARK_PRIVATE_EVENT_INVALID",
+          );
+        }
+        const keys = Object.keys(event ?? {}),
+          allowed = new Set([
+            "operation",
+            "projectId",
+            "timestamp",
+            "nonce",
+            "signature",
+            "body",
+          ]);
+        if (
+          !event ||
+          typeof event !== "object" ||
+          Array.isArray(event) ||
+          keys.some((key) => !allowed.has(key))
+        )
+          throw fail(
+            422,
+            "私有Spark烟测事件格式不合法",
+            "SPARK_PRIVATE_EVENT_INVALID",
+          );
+        const address = server.address();
+        if (!address || typeof address === "string")
+          throw fail(
+            503,
+            "Spark Worker内部接口尚未就绪",
+            "SPARK_PRIVATE_FORWARD_UNAVAILABLE",
+          );
+        if (event.operation === "PRIVATE_HEALTH_V1") {
+          if (keys.length !== 1)
+            throw fail(
+              422,
+              "私有Spark健康事件字段不合法",
+              "SPARK_PRIVATE_EVENT_INVALID",
+            );
+          const healthResponse = await fetch(
+              `http://127.0.0.1:${address.port}/health`,
+              { signal: AbortSignal.timeout(5000), redirect: "error" },
+            ),
+            health = await healthResponse.json();
+          if (!healthResponse.ok)
+            throw fail(
+              503,
+              "Spark Worker健康检查失败",
+              "SPARK_PRIVATE_HEALTH_FAILED",
+            );
+          return response(res, 200, {
+            protocol: "shuduo-spark-private-smoke/v1",
+            status: health.status,
+            engine: health.engine,
+            isolation: health.isolation,
+            runtimeAvailable: health.runtimeAvailable === true,
+            publicReady: false,
+          });
+        }
+        if (
+          event.operation !== "SIGNED_EXECUTE_V1" ||
+          keys.length !== 6 ||
+          event.projectId !== PROJECT ||
+          typeof event.timestamp !== "string" ||
+          typeof event.nonce !== "string" ||
+          typeof event.signature !== "string" ||
+          typeof event.body !== "string" ||
+          Buffer.byteLength(event.body, "utf8") > maxBodyBytes
+        )
+          throw fail(
+            422,
+            "私有Spark执行事件格式不合法",
+            "SPARK_PRIVATE_EVENT_INVALID",
+          );
+        const controller = new AbortController(),
+          cancel = () => controller.abort(),
+          timer = setTimeout(
+            cancel,
+            integer(
+              env.V2_SPARK_WORKER_RUN_TIMEOUT_MS,
+              120_000,
+              1000,
+              300_000,
+              "Spark Worker运行超时",
+            ) + 5000,
+          );
+        res.on("close", cancel);
+        try {
+          const forwarded = await fetch(
+              `http://127.0.0.1:${address.port}/v1/execute`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Project-Id": event.projectId,
+                  "X-Shuduo-Timestamp": event.timestamp,
+                  "X-Shuduo-Nonce": event.nonce,
+                  "X-Shuduo-Signature": event.signature,
+                },
+                body: event.body,
+                signal: controller.signal,
+                redirect: "error",
+              },
+            ),
+            forwardedText = await forwarded.text();
+          if (Buffer.byteLength(forwardedText, "utf8") > maxBodyBytes)
+            throw fail(
+              502,
+              "私有Spark执行响应过大",
+              "SPARK_PRIVATE_RESPONSE_TOO_LARGE",
+            );
+          let value;
+          try {
+            value = JSON.parse(forwardedText);
+          } catch {
+            throw fail(
+              502,
+              "私有Spark执行响应无法解析",
+              "SPARK_PRIVATE_RESPONSE_INVALID",
+            );
+          }
+          return response(res, forwarded.status, value);
+        } catch (error) {
+          if (controller.signal.aborted)
+            throw fail(
+              504,
+              "私有Spark执行超时或已取消",
+              "SPARK_PRIVATE_FORWARD_TIMEOUT",
+            );
+          throw error;
+        } finally {
+          clearTimeout(timer);
+          res.off("close", cancel);
+        }
+      }
       if (req.method === "GET" && req.url === "/health")
         return response(res, 200, {
           status: "ok",
