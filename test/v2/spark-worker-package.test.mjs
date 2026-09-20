@@ -11,6 +11,7 @@ test("Spark Worker package builder normalizes timestamps and ZIP metadata", asyn
   assert.match(script, /LC_ALL=C find .* -type f -print \| LC_ALL=C sort/);
   assert.match(script, /zip -X -q/);
   assert.match(script, /sqlglot-27\.14\.0\.dist-info/);
+  assert.match(script, /spark-worker-private-smoke\.mjs/);
   assert.doesNotMatch(script, /zip -qr/);
   const workflow = await readFile(
     new URL("../../.github/workflows/build-v2-spark-worker.yml", import.meta.url),
@@ -21,6 +22,7 @@ test("Spark Worker package builder normalizes timestamps and ZIP metadata", asyn
   assert.match(workflow, /actions\/setup-java@v5/);
   assert.match(workflow, /smoke-v2-spark-worker-package\.mjs/);
   assert.match(workflow, /sqlglot-27\.14\.0\.dist-info/);
+  assert.match(workflow, /spark-worker-private-smoke\.mjs/);
   const requirements = await readFile(
     new URL("../../deploy/spark-worker/requirements.txt", import.meta.url),
     "utf8",

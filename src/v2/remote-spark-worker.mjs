@@ -1,10 +1,13 @@
 import { createServer } from "node:http";
+import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import {
   remoteSparkProtocol,
+  signSparkRequest,
   verifySparkRequest,
 } from "./remote-spark.mjs";
+import { privateSparkSmokePayload } from "./spark-worker-private-smoke.mjs";
 
 const PROJECT = "project-securities-lab";
 const allowedTables = new Set(["accounts", "positions", "cash"]);
@@ -216,15 +219,40 @@ export function createRemoteSparkWorker(options = {}) {
             publicReady: false,
           });
         }
+        const fixedSmoke = event.operation === "PRIVATE_SPARK_SMOKE_V1";
+        let executionEvent = event;
+        if (fixedSmoke && keys.length === 1) {
+          const timestamp = String(now()),
+            body = JSON.stringify(
+              privateSparkSmokePayload({
+                requestId: randomUUID(),
+                submittedAt: new Date(Number(timestamp)).toISOString(),
+              }),
+            ),
+            nonce = randomBytes(24).toString("base64url");
+          executionEvent = {
+            operation: "SIGNED_EXECUTE_V1",
+            projectId: PROJECT,
+            timestamp,
+            nonce,
+            signature: signSparkRequest({
+              sharedSecret,
+              timestamp,
+              nonce,
+              body,
+            }),
+            body,
+          };
+        }
         if (
-          event.operation !== "SIGNED_EXECUTE_V1" ||
-          keys.length !== 6 ||
-          event.projectId !== PROJECT ||
-          typeof event.timestamp !== "string" ||
-          typeof event.nonce !== "string" ||
-          typeof event.signature !== "string" ||
-          typeof event.body !== "string" ||
-          Buffer.byteLength(event.body, "utf8") > maxBodyBytes
+          executionEvent.operation !== "SIGNED_EXECUTE_V1" ||
+          Object.keys(executionEvent).length !== 6 ||
+          executionEvent.projectId !== PROJECT ||
+          typeof executionEvent.timestamp !== "string" ||
+          typeof executionEvent.nonce !== "string" ||
+          typeof executionEvent.signature !== "string" ||
+          typeof executionEvent.body !== "string" ||
+          Buffer.byteLength(executionEvent.body, "utf8") > maxBodyBytes
         )
           throw fail(
             422,
@@ -251,12 +279,12 @@ export function createRemoteSparkWorker(options = {}) {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
-                  "X-Project-Id": event.projectId,
-                  "X-Shuduo-Timestamp": event.timestamp,
-                  "X-Shuduo-Nonce": event.nonce,
-                  "X-Shuduo-Signature": event.signature,
+                  "X-Project-Id": executionEvent.projectId,
+                  "X-Shuduo-Timestamp": executionEvent.timestamp,
+                  "X-Shuduo-Nonce": executionEvent.nonce,
+                  "X-Shuduo-Signature": executionEvent.signature,
                 },
-                body: event.body,
+                body: executionEvent.body,
                 signal: controller.signal,
                 redirect: "error",
               },
@@ -278,6 +306,21 @@ export function createRemoteSparkWorker(options = {}) {
               "SPARK_PRIVATE_RESPONSE_INVALID",
             );
           }
+          if (fixedSmoke && forwarded.ok)
+            return response(res, 200, {
+              protocol: "shuduo-spark-private-smoke/v1",
+              status: value.status,
+              engine: value.engine,
+              engineVersion: value.engineVersion,
+              isolation: value.isolation,
+              validationPassed: value.validation?.passed === true,
+              testSqlPassed:
+                value.testSqlValidation === undefined
+                  ? null
+                  : value.testSqlValidation?.passed === true,
+              regressionCount: value.validation?.regressions?.length ?? 0,
+              publicReady: false,
+            });
           return response(res, forwarded.status, value);
         } catch (error) {
           if (controller.signal.aborted)

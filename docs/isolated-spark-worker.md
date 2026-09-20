@@ -63,6 +63,8 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 FC同步Invoke事件进入Custom Runtime的`/invoke`，因此Worker新增默认关闭的私有事件适配器。`PRIVATE_HEALTH_V1`只返回协议、引擎、隔离与运行时布尔；`SIGNED_EXECUTE_V1`必须携带原始`shuduo-spark-execution/v1`正文及timestamp/nonce/signature，再由Worker内部转发到同一`/v1/execute`路径。项目、HMAC、时钟、防重放、白名单、大小、单任务和独立断言全部复用，不能通过私有事件绕过。适配器仅在`V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED=true`时存在，其他Content-Type或操作拒绝；W2完成后是否保留由W3调用方案决定。
 
+为避免把共享密钥交给人工Cloud Shell，`PRIVATE_SPARK_SMOKE_V1`只允许一个代码内固定的虚构证券用例：1个客户、2条持仓、1条现金，预期持仓150、现金25、总资产175、证券2。外部事件不能覆盖SQL、表、行或预期；Worker内部即时生成请求ID/时间/Nonce并用自身密钥签名，再进入同一执行路径。返回只含引擎版本、隔离、断言布尔和回归数，不返回行数据。新增模块会改变Worker ZIP内容，所以2026-09-19的W1摘要只保留历史证据；合并后必须重新双构建并包内烟测，未重跑前不得上传旧包进入W2。
+
 官方公共层文档确认`custom.debian10`需要显式挂载并配置路径，不能把GitHub Runner上的系统Node/Python/Java误认为FC自带：
 
 - Node20：`acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3`，PATH前置`/opt/nodejs20/bin`；
@@ -90,7 +92,7 @@ W2仍使用Cloud Shell主账号做私有手工Invoke，不给GitHub部署角色�
 | 等级 | 门槛 | 当前状态 |
 |---|---|---|
 | W0 协议 | HMAC、篡改、重放、白名单、大小、超时、错误结果 | 已本机验收 |
-| W1 Linux包 | Python3.10构建、哈希依赖、ZIP<480MiB、Spark3.5.9 JAR、包级真实SQL冒烟 | 已验收；双构建摘要及两次5套回归一致 |
+| W1 Linux包 | Python3.10构建、哈希依赖、ZIP<480MiB、Spark3.5.9 JAR、包级真实SQL冒烟 | 历史包已验收；新增固定私有烟测模块后需重跑当前包摘要 |
 | W2 云健康 | Java/Python/Spark可启动，私网/函数鉴权，最小实例0 | 部署计划/精确权限差异已生成；待真实FC |
 | W3 单任务 | 标杆SQL+测试SQL+五回归真实执行，控制面保存结果 | 待真实FC |
 | W4 故障恢复 | 篡改、超时、取消、并发、Worker冷启动和失败重试 | 待真实FC |
