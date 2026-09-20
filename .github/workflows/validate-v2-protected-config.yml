@@ -14,16 +14,16 @@ jobs:
     environment:
       name: v2-staging
     env:
-      FUNCTION_NAME: ${{ vars.V2_FUNCTION_NAME }}
-      V2_FUNCTION_ROLE_ARN: ${{ vars.V2_FUNCTION_ROLE_ARN }}
-      ALIYUN_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
-      ALIYUN_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
-      V2_VPC_ID: ${{ vars.V2_VPC_ID }}
-      V2_VSW_ID: ${{ vars.V2_VSW_ID }}
-      V2_SECURITY_GROUP_ID: ${{ vars.V2_SECURITY_GROUP_ID }}
-      OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
-      V2_PUBLIC_URL: ${{ vars.V2_PUBLIC_URL }}
-      V2_PUBLIC_ORIGIN: ${{ vars.V2_PUBLIC_ORIGIN }}
+      FUNCTION_NAME: synthetic-v2-config-check
+      V2_FUNCTION_ROLE_ARN: acs:ram::1234567890123456:role/synthetic-runtime
+      ALIYUN_ROLE_ARN: acs:ram::1234567890123456:role/synthetic-deployer
+      ALIYUN_OIDC_PROVIDER_ARN: acs:ram::1234567890123456:oidc-provider/synthetic
+      V2_VPC_ID: vpc-synthetic123
+      V2_VSW_ID: vsw-synthetic123
+      V2_SECURITY_GROUP_ID: sg-synthetic123
+      OSS_BUCKET: synthetic-private-bucket
+      V2_PUBLIC_URL: https://synthetic.example.test
+      V2_PUBLIC_ORIGIN: https://synthetic.example.test
       V2_MYSQL_HOST: ${{ secrets.V2_MYSQL_HOST }}
       V2_MYSQL_PORT: ${{ secrets.V2_MYSQL_PORT }}
       V2_MYSQL_USER: ${{ secrets.V2_MYSQL_USER }}
@@ -59,4 +59,3 @@ jobs:
 
       - name: State the non-cloud boundary
         run: echo 'Protected configuration names and formats passed. No Alibaba Cloud API was called.' >> "$GITHUB_STEP_SUMMARY"
-

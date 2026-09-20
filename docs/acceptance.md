@@ -559,3 +559,8 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 新验证器在原控制面必填项之外要求至少32字符的`V2_SPARK_EXECUTOR_SECRET`和`V2_SCHEDULER_TICK_SECRET`；可选业务源五项只允许全缺省或全存在。输出只含missing/errors、六项present和`containsSecretValues=false`。
 - 合成完整配置、缺Worker密钥、短调度密钥、部分业务源和工作流无云权限检查均通过；真实GitHub受保护Secret尚未运行，因此当前仍不能声称JASONSECRETS内容完整。
 - 全量CI通过315/315，源码检查和两套生产构建均通过。
+
+### 首次真实运行结果
+
+- 默认分支运行`35489413863`确实读取了`v2-staging`的`JASONSECRETS`并在展开阶段失败，没有申请OIDC或调用阿里云。固定错误显示平台MySQL Host/User/Password、管理员邮箱/哈希和DASHSCOPE Key仍是占位符或格式无效；因此“Secret名称存在”已被实际证伪为“不代表配置可用”。
+- 日志没有输出Secret值；但GitHub自动列出了普通Environment Variables的值。它们不是秘密且此前已在环境设置中核验，仍不适合在公开日志重复。工作流随即改为合成非秘密配置，只验证受保护Secrets，并新增静态测试禁止`vars.V2_*`进入该作业。

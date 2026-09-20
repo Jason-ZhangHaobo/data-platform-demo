@@ -70,5 +70,6 @@ test("protected configuration workflow never requests cloud credentials", async 
   assert.match(workflow, /export-v2-staging-secret-bundle\.mjs/);
   assert.doesNotMatch(workflow, /id-token: write/);
   assert.doesNotMatch(workflow, /configure-aliyun-credentials|aliyun [a-z]/);
+  assert.doesNotMatch(workflow, /vars\.V2_/);
   assert.doesNotMatch(workflow, /\$\{\{ secrets\.[^}]+ \}\}.*echo/);
 });
