@@ -28,6 +28,18 @@ test("OSS Worker evidence requires exact size, digest metadata and ETag", () => 
   assert.equal(JSON.stringify(result).includes(input.V2_SPARK_WORKER_CODE_OBJECT), false);
 });
 
+test("OSS Worker evidence accepts the header arrays returned in Cloud Shell", () => {
+  const result = verifyV2SparkWorkerOssObject(input, {
+    Header: {
+      "Content-Length": [String(bytes)],
+      "X-Oss-Meta-Shuduo-Sha256": [digest],
+      Etag: ['"0123456789abcdef0123456789abcdef"'],
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.failed, []);
+});
+
 test("OSS Worker evidence fails closed for a truncated or substituted object", () => {
   const result = verifyV2SparkWorkerOssObject(input, {
     contentLength: bytes - 1,

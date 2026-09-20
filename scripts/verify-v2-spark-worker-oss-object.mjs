@@ -48,7 +48,7 @@ export function verifyV2SparkWorkerOssObject(input = {}, rawEvidence) {
       ]) ?? "",
     ).toLowerCase(),
     etag = String(findValue(rawEvidence, ["etag"]) ?? "")
-      .replaceAll('"', "")
+      .replace(/"/g, "")
       .trim(),
     checks = {
       sizeMatches:
