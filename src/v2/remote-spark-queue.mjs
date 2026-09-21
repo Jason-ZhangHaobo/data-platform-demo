@@ -1,4 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createOssRequest, ossConfigFromEnvironment } from "../server/repositories/oss-store.mjs";
+import { requestOssWithRetry } from "./oss-request-retry.mjs";
 
 export const remoteSparkQueueJobSchema = "shuduo-spark-queue-job/v1";
 export const remoteSparkQueueResultSchema = "shuduo-spark-queue-result/v1";
@@ -149,4 +151,102 @@ export class RemoteSparkQueueClient {
     }
     throw fail(504, "远程Spark队列执行超时", "REMOTE_SPARK_TIMEOUT");
   }
+}
+
+export class OssSparkQueueTransport {
+  constructor(config, fetchImpl = fetch, retryOptions = {}) {
+    this.config = config;
+    this.fetchImpl = fetchImpl;
+    this.retryOptions = retryOptions;
+  }
+
+  async #request(method, key, body, ifNoneMatch) {
+    return requestOssWithRetry(
+      () => {
+        const request = createOssRequest({
+          ...this.config,
+          method,
+          key,
+          body,
+          ifNoneMatch,
+        });
+        return { ...request, options: { ...request.options, redirect: "error" } };
+      },
+      this.fetchImpl,
+      this.retryOptions,
+    );
+  }
+
+  async read(key) {
+    const response = await this.#request("GET", key);
+    if (response.status === 404) return undefined;
+    if (!response.ok)
+      throw fail(503, "Spark队列对象读取失败", "SPARK_QUEUE_STORE_UNAVAILABLE");
+    const body = await response.text();
+    if (Buffer.byteLength(body, "utf8") > 2 * 1024 * 1024)
+      throw fail(413, "Spark队列对象超过上限", "SPARK_QUEUE_OBJECT_TOO_LARGE");
+    return body;
+  }
+
+  async create(key, body) {
+    if (Buffer.byteLength(body, "utf8") > 2 * 1024 * 1024)
+      throw fail(413, "Spark队列对象超过上限", "SPARK_QUEUE_OBJECT_TOO_LARGE");
+    const response = await this.#request("PUT", key, body, "*");
+    if ([409, 412].includes(response.status)) {
+      const existing = await this.read(key);
+      if (existing === body) return { created: false };
+      throw fail(409, "Spark队列对象冲突", "SPARK_QUEUE_OBJECT_CONFLICT");
+    }
+    if (!response.ok)
+      throw fail(503, "Spark队列对象保存失败", "SPARK_QUEUE_STORE_UNAVAILABLE");
+    return { created: true };
+  }
+}
+
+export function ossSparkQueueTransportFromEnvironment(env = process.env, fetchImpl = fetch, retryOptions = {}) {
+  return new OssSparkQueueTransport(ossConfigFromEnvironment(env), fetchImpl, retryOptions);
+}
+
+const queueKeys = (config, jobId) => ({
+  jobKey: `${config.jobPrefix}/${jobId}.json`,
+  resultKey: `${config.resultPrefix}/${jobId}.json`,
+  cancelKey: `${config.jobPrefix}/${jobId}.cancel.json`,
+});
+
+export async function consumeQueuedSparkJob({ jobKey, config, transport, runner, now = Date.now }) {
+  if (typeof jobKey !== "string" || !jobKey.startsWith(`${config.jobPrefix}/`) || !jobKey.endsWith(".json") || jobKey.endsWith(".cancel.json"))
+    throw fail(422, "Spark队列任务对象键不合法", "SPARK_QUEUE_JOB_KEY_INVALID");
+  const raw = await transport.read(jobKey);
+  if (raw === undefined)
+    throw fail(404, "Spark队列任务不存在", "SPARK_QUEUE_JOB_NOT_FOUND");
+  let job;
+  try { job = JSON.parse(raw); } catch { throw fail(422, "Spark队列任务不是JSON", "SPARK_QUEUE_JOB_INVALID"); }
+  const payload = verifyQueuedSparkJob(job, config, now()), keys = queueKeys(config, job.jobId);
+  const cancelled = await transport.read(keys.cancelKey);
+  let result;
+  if (cancelled !== undefined) {
+    let marker;
+    try { marker = JSON.parse(cancelled); } catch { marker = undefined; }
+    if (marker?.schema === "shuduo-spark-queue-cancel/v1" && marker.jobId === job.jobId)
+      result = { status: "CANCELLED", code: "REMOTE_SPARK_CANCELLED" };
+  }
+  if (!result) {
+    const controller = new AbortController();
+    result = await runner({
+      sql: payload.sql,
+      context: payload.context,
+      validationContexts: payload.validationContexts ?? [],
+      testSql: payload.testSql,
+      timeoutMs: config.timeoutMs,
+      signal: controller.signal,
+    });
+  }
+  const envelope = createQueuedSparkResult(job, result, config, now());
+  await transport.create(keys.resultKey, JSON.stringify(envelope));
+  return {
+    jobId: job.jobId,
+    resultKey: keys.resultKey,
+    status: result.status,
+    containsSecret: false,
+  };
 }

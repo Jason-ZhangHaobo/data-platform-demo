@@ -7,6 +7,7 @@ import {
   queueConfigFromEnvironment,
   verifyQueuedSparkJob,
   verifyQueuedSparkResult,
+  consumeQueuedSparkJob,
 } from "../../src/v2/remote-spark-queue.mjs";
 
 const config = queueConfigFromEnvironment({
@@ -41,4 +42,47 @@ test("queue client persists a cancellation marker and never returns an unsigned 
   const client = new RemoteSparkQueueClient(config, transport, { now: () => clock, wait: async () => { controller.abort(); clock += 300; } });
   await assert.rejects(client.execute({ ...input, signal: controller.signal }), { code: "REMOTE_SPARK_CANCELLED" });
   assert.equal([...objects.keys()].some((key) => key.endsWith(".cancel.json")), true);
+});
+
+test("Worker consumer executes only a signed create-only job and writes a bound result", async () => {
+  const objects = new Map(), queued = createQueuedSparkJob(input, config, {
+    now: 1789900000000,
+    requestId: "44444444-4444-4444-8444-444444444444",
+    nonce: "q".repeat(24),
+  });
+  objects.set(queued.jobKey, JSON.stringify(queued.job));
+  const transport = {
+    create: async (key, body) => { if (objects.has(key) && objects.get(key) !== body) throw new Error("conflict"); objects.set(key, body); },
+    read: async (key) => objects.get(key),
+  };
+  const consumed = await consumeQueuedSparkJob({
+    jobKey: queued.jobKey,
+    config,
+    transport,
+    now: () => 1789900000100,
+    runner: async (value) => ({ status: "SUCCEEDED", engine: "Apache Spark", observedSql: value.sql }),
+  });
+  assert.equal(consumed.status, "SUCCEEDED");
+  const stored = JSON.parse(objects.get(queued.resultKey));
+  assert.equal(verifyQueuedSparkResult(stored, queued.job.jobId, config).observedSql, "SELECT 1");
+  await assert.rejects(
+    consumeQueuedSparkJob({ jobKey: "other/job.json", config, transport, runner: async () => ({}) }),
+    { code: "SPARK_QUEUE_JOB_KEY_INVALID" },
+  );
+});
+
+test("Worker consumer honors a valid cancellation marker before running", async () => {
+  const objects = new Map(), queued = createQueuedSparkJob(input, config, {
+    now: 1789900000000,
+    requestId: "55555555-5555-4555-8555-555555555555",
+    nonce: "r".repeat(24),
+  });
+  objects.set(queued.jobKey, JSON.stringify(queued.job));
+  objects.set(queued.cancelKey, JSON.stringify({ schema: "shuduo-spark-queue-cancel/v1", jobId: queued.job.jobId }));
+  const transport = { create: async (key, body) => objects.set(key, body), read: async (key) => objects.get(key) };
+  const result = await consumeQueuedSparkJob({
+    jobKey: queued.jobKey, config, transport, now: () => 1789900000100,
+    runner: async () => { throw new Error("must not run"); },
+  });
+  assert.equal(result.status, "CANCELLED");
 });
