@@ -17,8 +17,10 @@ const role = "acs:ram::1234567890123456:role/shuduo-v2-runtime",
   evidence = {
     function: {
       functionName: input.V2_SPARK_WORKER_FUNCTION_NAME,
-      state: "Active",
-      lastUpdateStatus: "Successful",
+      state: null,
+      lastUpdateStatus: null,
+      lastUpdateStatusReasonCode: null,
+      lastUpdateStatusReason: null,
       codeSize: 318911849,
       runtime: "custom.debian10",
       cpu: 1,

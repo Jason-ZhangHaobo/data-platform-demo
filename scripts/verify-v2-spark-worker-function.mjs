@@ -60,8 +60,11 @@ export function verifyV2SparkWorkerFunction(input = {}, evidence = {}) {
     ),
     checks = {
       identityMatches: fn.functionName === expectedName,
-      stateActive: fn.state === "Active",
-      updateSuccessful: fn.lastUpdateStatus === "Successful",
+      stateActiveOrOmitted: fn.state == null || fn.state === "Active",
+      updateSuccessfulOrOmitted:
+        fn.lastUpdateStatus == null || fn.lastUpdateStatus === "Successful",
+      noUpdateFailureReason:
+        !fn.lastUpdateStatusReasonCode && !fn.lastUpdateStatusReason,
       codeSizeMatches: Number(fn.codeSize) === expectedBytes,
       runtimeMatches: fn.runtime === "custom.debian10",
       resourcesMatch:

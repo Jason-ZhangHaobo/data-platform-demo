@@ -16,8 +16,10 @@ const input = {
 const evidence = {
   function: {
     functionName: input.V2_SPARK_WORKER_FUNCTION_NAME,
-    state: "Active",
-    lastUpdateStatus: "Successful",
+    state: null,
+    lastUpdateStatus: null,
+    lastUpdateStatusReasonCode: null,
+    lastUpdateStatusReason: null,
     codeSize: 318911849,
     runtime: "custom.debian10",
     cpu: 1,
@@ -113,4 +115,22 @@ test("explicitly disabling on-demand capacity fails even with zero minimum insta
   });
   assert.equal(result.ok, false);
   assert.deepEqual(result.failed, ["onDemandAllowed", "scalesToZero"]);
+});
+
+test("an explicit FC update failure is rejected even when the optional state is absent", () => {
+  const result = verifyV2SparkWorkerFunction(input, {
+    ...evidence,
+    function: {
+      ...evidence.function,
+      lastUpdateStatus: "Failed",
+      lastUpdateStatusReasonCode: "InvalidConfiguration",
+      lastUpdateStatusReason: "synthetic private reason",
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.failed, [
+    "updateSuccessfulOrOmitted",
+    "noUpdateFailureReason",
+  ]);
+  assert.equal(JSON.stringify(result).includes("synthetic private reason"), false);
 });
