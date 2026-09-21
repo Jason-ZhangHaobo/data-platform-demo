@@ -11,6 +11,7 @@ const input = {
   ALIYUN_ACCOUNT_ID: "1234567890123456",
   ALIBABA_CLOUD_REGION_ID: "cn-hangzhou",
   V2_FUNCTION_NAME: "shuduo-v2-control",
+  V2_FUNCTION_ROLE_ARN: "acs:ram::1234567890123456:role/shuduo-v2-runtime",
   V2_SPARK_WORKER_FUNCTION_NAME: "shuduo-v2-spark-worker",
   V2_OSS_BUCKET: "shuduo-synthetic-staging",
   V2_SPARK_WORKER_PACKAGE_SHA256: "a".repeat(64),
@@ -29,7 +30,7 @@ test("Worker function body binds the private W2 plan and protected secret", () =
   assert.equal(body.runtime, "custom.debian10");
   assert.equal(body.internetAccess, false);
   assert.equal(body.instanceConcurrency, 1);
-  assert.equal(body.role, undefined);
+  assert.equal(body.role, input.V2_FUNCTION_ROLE_ARN);
   assert.equal(body.environmentVariables.V2_SPARK_WORKER_SECRET, secret);
   assert.deepEqual(body.customRuntimeConfig.command, ["/opt/nodejs20/bin/node"]);
 });
@@ -58,4 +59,3 @@ test("Worker body CLI writes once with mode 0600 and never echoes the secret", (
   assert.equal(readFileSync(file, "utf8"), original);
   writeFileSync(join(root, "kept.txt"), "safe");
 });
-

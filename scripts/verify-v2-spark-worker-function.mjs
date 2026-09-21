@@ -20,6 +20,7 @@ export function verifyV2SparkWorkerFunction(input = {}, evidence = {}) {
     expectedName = input.V2_SPARK_WORKER_FUNCTION_NAME?.trim(),
     expectedBytes = Number(input.V2_SPARK_WORKER_PACKAGE_BYTES),
     expectedSecret = input.V2_SPARK_WORKER_SECRET,
+    expectedRole = input.V2_FUNCTION_ROLE_ARN?.trim(),
     vpcId = input.V2_VPC_ID?.trim(),
     vSwitchId = input.V2_VSW_ID?.trim(),
     securityGroupId = input.V2_SECURITY_GROUP_ID?.trim(),
@@ -36,6 +37,8 @@ export function verifyV2SparkWorkerFunction(input = {}, evidence = {}) {
     expectedSecret.length > 512
   )
     errors.push("INVALID:V2_SPARK_WORKER_SECRET");
+  if (!/^acs:ram::\d{12,20}:role\/[a-z0-9-]{1,64}$/.test(expectedRole ?? ""))
+    errors.push("INVALID:V2_FUNCTION_ROLE_ARN");
   if (!vpcId?.startsWith("vpc-")) errors.push("INVALID:V2_VPC_ID");
   if (!vSwitchId?.startsWith("vsw-")) errors.push("INVALID:V2_VSW_ID");
   if (!securityGroupId?.startsWith("sg-"))
@@ -68,7 +71,7 @@ export function verifyV2SparkWorkerFunction(input = {}, evidence = {}) {
         Number(fn.timeout) === 180,
       singleConcurrency: Number(fn.instanceConcurrency) === 1,
       noInternetEgress: fn.internetAccess === false,
-      noRuntimeRole: !fn.role,
+      runtimeRoleMatches: fn.role === expectedRole,
       officialLayersMatch: sameStrings(
         (fn.layers ?? []).map(layerArn).filter(Boolean),
         expectedLayers,

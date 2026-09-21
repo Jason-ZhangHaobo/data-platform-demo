@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { renderV2SparkWorkerPackagePolicy } from "./render-v2-spark-worker-package-policy.mjs";
 
 const accountPattern = /^\d{12,20}$/;
+const roleArnPattern = /^acs:ram::(\d{12,20}):role\/[a-z0-9-]{1,64}$/;
 const functionPattern = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const bucketPattern = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 const resourceIdPattern = /^[a-z][a-z0-9-]{5,127}$/;
@@ -13,6 +14,7 @@ export function renderV2SparkWorkerW2Plan(input = {}) {
     regionId = input.ALIBABA_CLOUD_REGION_ID?.trim(),
     functionName = input.V2_SPARK_WORKER_FUNCTION_NAME?.trim(),
     controlFunctionName = input.V2_FUNCTION_NAME?.trim(),
+    runtimeRole = input.V2_FUNCTION_ROLE_ARN?.trim(),
     bucket = input.V2_OSS_BUCKET?.trim(),
     digest = input.V2_SPARK_WORKER_PACKAGE_SHA256?.trim(),
     packageBytes = Number(input.V2_SPARK_WORKER_PACKAGE_BYTES),
@@ -21,8 +23,12 @@ export function renderV2SparkWorkerW2Plan(input = {}) {
     securityGroupId = input.V2_SECURITY_GROUP_ID?.trim(),
     secret = input.V2_SPARK_WORKER_SECRET,
     errors = [];
+  const runtimeRoleMatch = roleArnPattern.exec(runtimeRole ?? "");
   if (!accountPattern.test(accountId ?? ""))
     errors.push("INVALID:ALIYUN_ACCOUNT_ID");
+  if (!runtimeRoleMatch) errors.push("INVALID:V2_FUNCTION_ROLE_ARN");
+  if (runtimeRoleMatch && accountId && runtimeRoleMatch[1] !== accountId)
+    errors.push("ACCOUNT_MISMATCH:V2_FUNCTION_ROLE_ARN");
   if (regionId !== "cn-hangzhou")
     errors.push("UNSUPPORTED:ALIBABA_CLOUD_REGION_ID");
   if (!functionPattern.test(functionName ?? ""))
@@ -83,6 +89,7 @@ export function renderV2SparkWorkerW2Plan(input = {}) {
         functionName,
         description: "数舵V2隔离Spark Worker（W2私有验证）",
         code: { ossBucketName: bucket, ossObjectName: objectName },
+        role: runtimeRole,
         runtime: "custom.debian10",
         handler: "not-used",
         cpu: 1,

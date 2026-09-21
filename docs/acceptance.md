@@ -625,3 +625,8 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - Cloud Shell以主账号只读核验实际对象；内容验证器确认字节、摘要元数据和ETag，隐私验证器确认Bucket ACL私有、对象ACL私有或继承、Bucket Policy不公开、Block Public Access启用。
 - Cloud Shell内置Node不支持`String.replaceAll`，PR #116改为兼容写法并加入ossutil数组Header回归；完整本机及远程CI通过后合并。该问题属于证据解析兼容，不改变摘要或私有性门槛。
 - 生成六小时脱敏收据[`v2-spark-worker-oss-receipt-20260920T150159Z.json`](evidence/v2-spark-worker-oss-receipt-20260920T150159Z.json)，绑定包摘要、对象键哈希、上传运行和提交，不含Bucket、对象路径、Owner或秘密。收据有效期内才允许执行create-only Worker工作流。
+
+## 2026-09-20：Worker首次创建参数诊断
+
+- 创建运行`35518651327`依次通过收据、OIDC、完整分页账单（¥38.70）、网络资源和函数不存在检查，只在CreateFunction返回`InvalidArgument`；函数未创建，未进入并发或弹性配置。
+- 请求体漏传已经预置且获PassRole授权的`V2_FUNCTION_ROLE_ARN`，与控制面创建请求和FC CreateFunction/VPC约束不一致。Worker改为传入并回读核验同一专用最小运行角色；控制面W3的`fc:InvokeFunction`仍未加入该角色。

@@ -20,6 +20,7 @@ test("Worker provisioning is create-only, private and leaves Invoke to Cloud She
   assert.match(workflow, /FunctionNotFound/);
   assert.match(workflow, /POST \/2023-03-30\/functions/);
   assert.match(workflow, /render-v2-spark-worker-function\.mjs/);
+  assert.match(workflow, /V2_FUNCTION_ROLE_ARN/);
   assert.match(workflow, /\{reservedConcurrency:1\}/);
   assert.match(workflow, /minInstances:0/);
   assert.match(workflow, /verify-v2-spark-worker-function\.mjs/);
