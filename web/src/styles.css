@@ -7854,6 +7854,19 @@ kbd {
   color: #637563;
   font-size: 9px;
 }
+.workbench-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 180px;
+  margin: 24px;
+  border: 1px dashed #c9d8c8;
+  border-radius: 12px;
+  background: #f8fbf6;
+  color: #54735d;
+  font-size: 13px;
+}
 @media (max-width: 760px) {
   .auth-session-button-v2 {
     max-width: 130px;
