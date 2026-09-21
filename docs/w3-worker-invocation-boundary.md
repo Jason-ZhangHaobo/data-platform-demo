@@ -35,4 +35,15 @@ Worker现已能解析官方原生OSS触发事件，只接受`ObjectCreated:PutOb
 
 该代码尚未接入云控制面，也没有创建OSS触发器、Worker专用角色或队列前缀权限；并且新增模块会改变Worker不可变包摘要，当前已验收的云Worker继续保持原包。因此不把它写成W3已完成。下一实现批次需要重新双构建、上传新包、创建专用角色和OSS触发器、真实事件执行、不可变结果、告警和恢复。
 
+## 已准备的失败关闭云变更计划
+
+`scripts/render-v2-w3-oss-trigger-plan.mjs` 只渲染计划，固定 `apply=false`，不调用阿里云。它要求未来 W3 包必须是一个不同于已验收 W2 包的新摘要，并要求 Worker 运行角色不同于控制面角色；否则立即失败。输出采用以下不可变边界：
+
+- Worker 角色仅能读取新包、签名任务和取消对象，并且仅能写签名结果对象；不含 `fc:InvokeFunction`、List、Delete 或宽泛 Bucket 权限。
+- 原生 OSS 触发器只接受 `oss:ObjectCreated:PutObject`，仅匹配 `data-platform-demo/v2/spark-queue/jobs/` 前缀和 `.json` 后缀；结果和取消前缀不匹配，避免自触发循环。
+- 控制面保持无 `fc:InvokeFunction` 权限；它只沿既有私有 OSS 数据面创建任务、写取消标记并读取签名结果。
+- 计划如实披露 `fc:CreateTrigger` 在官方 RAM 表中是账号级动作，因此在角色创建、`ram:PassRole`、Worker 更新和触发器创建前仍须一次明确审批；它不会把“代码已合并”转换为“已获得权限”。
+
+原生 OSS 触发器的 `invocationRole` 按官方文档使用事件源角色（通常为 `AliyunOSSEventNotificationRole`）；触发器配置要求独立的事件、前缀和后缀组合，并避免以 `/` 开头的前缀。实施时只可使用计划生成的固定组合并在创建后回读验证。[CreateTrigger 参数](https://help.aliyun.com/en/functioncompute/api-createtrigger)、[OSS 原生触发器规则](https://help.aliyun.com/en/functioncompute/fc-2-0/user-guide/configure-a-native-oss-trigger)、[事件源授权角色](https://help.aliyun.com/en/functioncompute/fc/grant-an-event-source-permissions-to-access-function-compute-1)。
+
 官方依据：[InvokeFunction](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-invokefunction)、[FC RAM授权表](https://help.aliyun.com/en/functioncompute/api-fc-2023-03-30-ram)、[Web函数Invoke转换](https://help.aliyun.com/en/functioncompute/web-functions)。
