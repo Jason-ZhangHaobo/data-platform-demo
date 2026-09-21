@@ -630,3 +630,8 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 
 - 创建运行`35518651327`依次通过收据、OIDC、完整分页账单（¥38.70）、网络资源和函数不存在检查，只在CreateFunction返回`InvalidArgument`；函数未创建，未进入并发或弹性配置。
 - 请求体漏传已经预置且获PassRole授权的`V2_FUNCTION_ROLE_ARN`，与控制面创建请求和FC CreateFunction/VPC约束不一致。Worker改为传入并回读核验同一专用最小运行角色；控制面W3的`fc:InvokeFunction`仍未加入该角色。
+
+## 2026-09-21：Worker收据刷新
+
+- 修复运行`35549237142`在任何云调用前被旧六小时收据正确阻断，唯一失败项为`timeWindowValid`；未重复查询账单、网络或创建函数。
+- Cloud Shell重新读取同一不可变对象与四项私有性状态，内容与隐私验证器再次全部通过。新脱敏收据为[`v2-spark-worker-oss-receipt-20260921T012956Z.json`](evidence/v2-spark-worker-oss-receipt-20260921T012956Z.json)，有效期固定六小时，旧收据继续作为历史证据保留。
