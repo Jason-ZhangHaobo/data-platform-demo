@@ -51,24 +51,27 @@ import {
   Save,
 } from "lucide-react";
 import "./styles.css";
-import { DeliveryWorkbench } from "./DeliveryWorkbench";
-import { DataServicesWorkbench } from "./DataServicesWorkbench";
-import { IngestionWorkbench } from "./IngestionWorkbench";
-import { AssetWorkbench } from "./AssetWorkbench";
-import { QualityWorkbench } from "./QualityWorkbench";
-import { SecurityWorkbench } from "./SecurityWorkbench";
-import { ReportsWorkbench } from "./ReportsWorkbench";
-import { OperationsWorkbench } from "./OperationsWorkbench";
-import { AgentCenter } from "./AgentCenter";
-import { initialPythonCode, PythonWorkbench } from "./PythonWorkbench";
-import { CloudReadinessPanel } from "./CloudReadinessPanel";
-import {
-  AuthDialog,
-  ChangePasswordPanel,
-  InvitationPanel,
-  type AuthSession,
-} from "./AuthDialog";
+import { initialPythonCode } from "./python-template";
+import type { AuthSession } from "./AuthDialog";
 const SqlEditor = lazy(() => import("./SqlEditor"));
+const DataServicesWorkbench = lazy(async () => ({ default: (await import("./DataServicesWorkbench")).DataServicesWorkbench }));
+const IngestionWorkbench = lazy(async () => ({ default: (await import("./IngestionWorkbench")).IngestionWorkbench }));
+const DeliveryWorkbench = lazy(async () => ({ default: (await import("./DeliveryWorkbench")).DeliveryWorkbench }));
+const AssetWorkbench = lazy(async () => ({ default: (await import("./AssetWorkbench")).AssetWorkbench }));
+const QualityWorkbench = lazy(async () => ({ default: (await import("./QualityWorkbench")).QualityWorkbench }));
+const SecurityWorkbench = lazy(async () => ({ default: (await import("./SecurityWorkbench")).SecurityWorkbench }));
+const ReportsWorkbench = lazy(async () => ({ default: (await import("./ReportsWorkbench")).ReportsWorkbench }));
+const OperationsWorkbench = lazy(async () => ({ default: (await import("./OperationsWorkbench")).OperationsWorkbench }));
+const AgentCenter = lazy(async () => ({ default: (await import("./AgentCenter")).AgentCenter }));
+const PythonWorkbench = lazy(async () => ({ default: (await import("./PythonWorkbench")).PythonWorkbench }));
+const CloudReadinessPanel = lazy(async () => ({ default: (await import("./CloudReadinessPanel")).CloudReadinessPanel }));
+const AuthDialog = lazy(async () => ({ default: (await import("./AuthDialog")).AuthDialog }));
+const ChangePasswordPanel = lazy(async () => ({ default: (await import("./AuthDialog")).ChangePasswordPanel }));
+const InvitationPanel = lazy(async () => ({ default: (await import("./AuthDialog")).InvitationPanel }));
+
+function WorkbenchLoading({ label = "正在加载工作台…" }: { label?: string }) {
+  return <div className="workbench-loading" role="status"><LoaderCircle className="spin" size={16} />{label}</div>;
+}
 type Column = { name: string; type: string };
 type Context = {
   id: string;
@@ -755,6 +758,7 @@ function App() {
             </button>
           </div>
         )}
+        <Suspense fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
         {nav === "agent-center" ? (
           <AgentCenter
             api={api}
@@ -1815,6 +1819,7 @@ function App() {
             )}
           </section>
         )}
+        </Suspense>
         <footer className="statusbar">
           <span>
             <span className={"connection-dot " + (status ? "online" : "")} />
@@ -1833,14 +1838,16 @@ function App() {
         </div>
       )}
       {authOpen && (
-        <AuthDialog
-          api={api}
-          onClose={() => setAuthOpen(false)}
-          onAuthenticated={(nextSession) => {
-            setSession(nextSession);
-            setNotice("受邀项目会话已建立");
-          }}
-        />
+        <Suspense fallback={<WorkbenchLoading label="正在加载登录入口…" />}>
+          <AuthDialog
+            api={api}
+            onClose={() => setAuthOpen(false)}
+            onAuthenticated={(nextSession) => {
+              setSession(nextSession);
+              setNotice("受邀项目会话已建立");
+            }}
+          />
+        </Suspense>
       )}
       {modal && (
         <div className="modal-overlay" onClick={() => setModal(null)}>
