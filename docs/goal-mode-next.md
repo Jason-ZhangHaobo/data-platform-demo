@@ -4,7 +4,7 @@
 
 2026-09-20续接更新（优先于下方历史快照）：`v2-staging`已实际限制为仅main分支部署；用户授权的百炼、Worker和调度Secrets已写入，平台库用户名/库名/端口及经Cloud Shell查询的私网主机也已配置。联合策略应用器已回读确认两个W2最小策略附加且文档一致。Cloud Shell可通过in-app终端继续操作，不再依赖Safari焦点。上传运行35506424014在对象步骤失败且旧流程未输出具体错误码；当前修复脱敏诊断，不能再把失败直接归因于权限。受保护配置运行35505053095还确认平台库密码、管理员邮箱/密码哈希存在占位值；不能据Secret名称存在宣布部署就绪。
 
-2026-09-20后续事实：PR #114/#115/#116已合并；上传运行`35512771918`成功。真实Cloud Shell内容与四项私有性验证均为ok，脱敏收据`docs/evidence/v2-spark-worker-oss-receipt-20260920T150159Z.json`已生成，下一步在有效期内创建私有Worker并执行固定证券烟测。平台库密码、管理员邮箱和密码哈希仍未提交，控制面受保护配置门仍阻断。
+2026-09-21后续事实：PR #114—#121已合并；上传运行`35512771918`成功。有界恢复运行`35556647182`通过，真实私有Worker已配置专用最小运行角色、预留并发1、最小实例0、无公网出站和同VPC。Cloud Shell健康与固定证券烟测均成功，Spark 3.5.9真实执行且`publicReady=false`。W2已完成；控制面W3 Invoke权限、平台库密码、管理员邮箱/密码哈希、控制面部署、备案和公网验收仍未完成。
 
 继续现有数舵 V2 项目，不从零重建。项目目录为 `/Users/zhanghaobo/Documents/ChatGPT/数据中台产品经理能力打造/data-platform-v2`。先读取 AGENTS.md、docs/PRD.md、docs/decisions.md、docs/product-roadmap.md、docs/acceptance.md，并用当前代码、GitHub、运行记录修正过时描述。
 

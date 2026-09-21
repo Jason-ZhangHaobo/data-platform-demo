@@ -503,7 +503,7 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 新增最小权限差异只包含精确包对象的`oss:GetObject`与`oss:PutObject`，没有List/Delete/FC Invoke；W3控制面Invoke明确为未授权。3项测试通过；本轮未上传OSS、未创建Worker、未产生W2云健康证据。
 - 新增OSS HeadObject证据验证器：实际字节、SHA-256用户元数据和ETag全部匹配才通过；错误输出不回显对象名。验证器明确不证明Bucket私有性或历史禁止覆盖，3项回归覆盖截断、替换和脱敏；真实OSS仍未调用。
 - 新增OSS私有访问验证器：Bucket private ACL、Object private/default ACL、Bucket Policy `IsPublic=false`与Bucket Block Public Access=true四项合取；对象公共ACL或缺失策略/阻断证据均失败。3项测试通过且响应不含Owner/资源名；真实Cloud Shell只读命令仍未执行。
-- 新增Worker函数规格验收器：Active/Successful、代码字节、Custom Debian、三层与路径、资源/VPC、密钥、无运行角色/公网出站、实例并发/预留/缩零联合检查；错误秘密不回显，缺少并发或弹性响应失败。3项测试通过；真实函数尚不存在，因此不计W2云健康。
+- 新增Worker函数规格验收器：健康或省略的可选状态、代码字节、Custom Debian、三层与路径、资源/VPC、专用最小运行角色、密钥、无公网出站、实例并发/预留/缩零联合检查；错误秘密不回显，缺少并发或弹性响应失败。最初仅为合成验证，真实结果见后续W2云验收记录。
 - 新增FC Custom Runtime `/invoke`适配：默认关闭且只接受二进制事件；健康响应脱敏。签名执行事件内部复用同一`/v1/execute`，本机实测成功执行后同Nonce重放409；错误Content-Type 415。2项新增测试通过，但尚未通过真实FC Invoke API。
 - 新增无参数`PRIVATE_SPARK_SMOKE_V1`：固定虚构客户资产SQL和独立预期，Worker内部生成签名后执行，响应不含行。测试核对持仓150、现金25、总资产175、证券2的固定契约；因为Worker ZIP新增模块，历史W1摘要不再代表当前代码包，须重跑双构建后才能进入W2。
 - 当前默认分支已完成重跑：`35480737992`与`35481010884`均成功，内部ZIP均318,914,420字节、SHA-256均`f5083be51f979d47486b1ce06344466c5326a003e360cd55b91143fe79414118`；两次包内Spark3.5.9均完成5套回归和tests.sql。当前W1恢复通过，但没有OSS/FC调用。
@@ -534,7 +534,7 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 ## 2026-09-20：W2 OSS收据与Worker创建门
 
 - 新增收据生成/验证器：Head内容与Bucket/Object ACL、Policy Status、Block Public Access四证同时通过，绑定包SHA/字节、对象键哈希、上传Run ID/Head SHA；输出不含Bucket/Object/Owner且六小时过期。过期、跨运行、包变化、布尔篡改和外部/符号链接路径均失败关闭。
-- 新增函数体生成器：复用同一W2计划，秘密只进入0600的仅创建文件，stdout/stderr不回显；文件存在时拒绝覆盖。函数固定Custom Debian10、三官方层、无运行角色和公网出站、1vCPU/2GiB/10GiB/180秒、实例并发1。
+- 新增函数体生成器：复用同一W2计划，秘密只进入0600的仅创建文件，stdout/stderr不回显；文件存在时拒绝覆盖。函数固定Custom Debian10、三官方层、专用最小运行角色、无公网出站、1vCPU/2GiB/10GiB/180秒、实例并发1。
 - 新增完整分页账单验证器：逐页核对账期/页码/记录数，CNY金额按微单位累加并向上取整到分；负退款不降低保守支出，非CNY、缺页和达到200元均拒绝。
 - 新增`provision-v2-spark-worker.yml`：收据、预算、同VPC网络和函数不存在全部通过才CreateFunction；随后设置预留1、最小实例0并回读联合规格验证。没有Update/Delete/Invoke，固定证券烟测仍待Cloud Shell执行。当前尚未运行真实工作流或创建云函数。
 - 全量CI通过307/307，源码检查和两套生产构建均通过。
@@ -642,3 +642,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - FC对未显式配置的按需弹性返回`enableOnDemandScaling=null`；函数层`disableOndemand`未开启且`minInstances=0`时仍允许按请求创建并缩至0。验收改为拒绝显式false，不再把官方默认null误判失败；PutScalingConfig只发送最小字段。
 - 新增独立修复工作流：新鲜OSS收据、实时账单、完整函数/并发/弹性证据均通过后，只允许补齐精确运行角色、预留并发1或最小实例0；任何代码、资源、层、网络、秘密或公网出站漂移都失败关闭。该流程无Create/Delete/Invoke。
 - 首次恢复运行`35554112124`在写入前读取到FC3对该函数返回可选`state`/`lastUpdateStatus`为空且无失败原因；函数代码、运行时、资源、层、VPC、密钥、公网出站、并发和弹性证据匹配。验收因此接受空状态与无失败原因的组合，仍拒绝显式Failed或任何失败原因码。
+
+## 2026-09-21：私有Spark Worker真实云验收
+
+- 有界恢复运行[`35556647182`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/35556647182)成功；新鲜OSS收据、实时账单、OIDC和完整半成品证据通过后，仅补齐专用最小运行角色，回读确认318,914,420字节代码、Custom Debian10、三官方层、1vCPU/2GiB/10GiB/180秒、同VPC、无公网出站、实例并发1、预留1、最小实例0和按需弹性未禁用。
+- Cloud Shell主账号同步Invoke健康事件成功：协议`shuduo-spark-private-smoke/v1`、Apache Spark、`FUNCTION_PROCESS`、`runtimeAvailable=true`、`publicReady=false`。部署角色和控制面均未获得Invoke权限。
+- 首次固定证券调用因Cloud Shell CLI默认等待时间超时；提高客户端读取超时至300秒后成功，函数端返回Spark 3.5.9、`SUCCEEDED`、`validationPassed=true`、`regressionCount=1`、`publicReady=false`。事件只含无参数操作名，SQL、虚构行和Worker共享密钥未进入人工命令。
+- W2隔离Worker至此通过真实云配置与固定业务执行验收。该结论不代表控制面已接入、Python云沙箱完成、公开URL可用或公网E2E达标；控制面最小Invoke属于W3。
