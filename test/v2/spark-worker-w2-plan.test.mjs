@@ -6,6 +6,7 @@ const input = {
   ALIYUN_ACCOUNT_ID: "1234567890123456",
   ALIBABA_CLOUD_REGION_ID: "cn-hangzhou",
   V2_FUNCTION_NAME: "shuduo-v2-control",
+  V2_FUNCTION_ROLE_ARN: "acs:ram::1234567890123456:role/shuduo-v2-runtime",
   V2_SPARK_WORKER_FUNCTION_NAME: "shuduo-v2-spark-worker",
   V2_OSS_BUCKET: "shuduo-synthetic-staging",
   V2_SPARK_WORKER_PACKAGE_SHA256: "a".repeat(64),
@@ -35,6 +36,7 @@ test("W2 plan binds one immutable OSS package and three official runtimes", () =
   assert.equal(plan.concurrency.reservedConcurrency, 1);
   assert.equal(plan.scaling.minInstances, 0);
   assert.equal(plan.function.internetAccess, false);
+  assert.equal(plan.function.role, input.V2_FUNCTION_ROLE_ARN);
   assert.equal(plan.futureControlPlanePermission.authorized, false);
   assert.equal(JSON.stringify(plan).includes(input.V2_SPARK_WORKER_SECRET), false);
 });

@@ -5,6 +5,7 @@ import { verifyV2SparkWorkerFunction } from "../../scripts/verify-v2-spark-worke
 const input = {
   ALIBABA_CLOUD_REGION_ID: "cn-hangzhou",
   V2_SPARK_WORKER_FUNCTION_NAME: "shuduo-v2-spark-worker",
+  V2_FUNCTION_ROLE_ARN: "acs:ram::1234567890123456:role/shuduo-v2-runtime",
   V2_SPARK_WORKER_PACKAGE_BYTES: "318911849",
   V2_SPARK_WORKER_SECRET: "synthetic-worker-secret-32-characters-long",
   V2_VPC_ID: "vpc-synthetic123",
@@ -25,7 +26,7 @@ const evidence = {
     timeout: 180,
     instanceConcurrency: 1,
     internetAccess: false,
-    role: "",
+    role: input.V2_FUNCTION_ROLE_ARN,
     layers: [
       { arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3" },
       { arn: "acs:fc:cn-hangzhou:official:layers/Python310/versions/3" },
