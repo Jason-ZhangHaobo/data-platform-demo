@@ -113,7 +113,7 @@ jobs:
           verified=false
           for attempt in $(seq 1 18); do
             aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME" --region "$ALIBABA_CLOUD_REGION_ID" >"$root/function-final.json"
-            if jq -e '.state == "Active" and .lastUpdateStatus == "Successful"' "$root/function-final.json" >/dev/null; then verified=true; break; fi
+            if jq -e '(.state == null or .state == "Active") and (.lastUpdateStatus == null or .lastUpdateStatus == "Successful") and (.lastUpdateStatusReasonCode == null) and (.lastUpdateStatusReason == null)' "$root/function-final.json" >/dev/null; then verified=true; break; fi
             sleep 5
           done
           test "$verified" = true
