@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { createOssRequest, ossConfigFromEnvironment } from "../server/repositories/oss-store.mjs";
+import { createOssRequest, ossConfigFromEnvironment } from "./oss-client.mjs";
 import { requestOssWithRetry } from "./oss-request-retry.mjs";
 
 export const remoteSparkQueueJobSchema = "shuduo-spark-queue-job/v1";

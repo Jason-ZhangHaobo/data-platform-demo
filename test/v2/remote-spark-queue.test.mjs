@@ -9,6 +9,7 @@ import {
   verifyQueuedSparkResult,
   consumeQueuedSparkJob,
 } from "../../src/v2/remote-spark-queue.mjs";
+import { createRemoteSparkWorker } from "../../src/v2/remote-spark-worker.mjs";
 
 const config = queueConfigFromEnvironment({
   V2_SPARK_EXECUTOR_TRANSPORT: "OSS_QUEUE",
@@ -85,4 +86,53 @@ test("Worker consumer honors a valid cancellation marker before running", async 
     runner: async () => { throw new Error("must not run"); },
   });
   assert.equal(result.status, "CANCELLED");
+});
+
+test("Worker accepts a native OSS event only for a signed queue job prefix", async () => {
+  const objects = new Map(), queued = createQueuedSparkJob(input, config, {
+    now: 1789900000000,
+    requestId: "66666666-6666-4666-8666-666666666666",
+    nonce: "s".repeat(24),
+  });
+  objects.set(queued.jobKey, JSON.stringify(queued.job));
+  const transport = {
+    config: { bucket: "synthetic-bucket" },
+    create: async (key, body) => objects.set(key, body),
+    read: async (key) => objects.get(key),
+  };
+  const app = createRemoteSparkWorker({
+    env: {
+      V2_SPARK_WORKER_SECRET: config.sharedSecret,
+      V2_SPARK_QUEUE_CONSUMER_ENABLED: "true",
+    },
+    queueConfig: config,
+    queueTransport: transport,
+    now: () => 1789900000100,
+    runner: async () => ({ status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", validation: { passed: true } }),
+  });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${app.server.address().port}/invoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: JSON.stringify({
+        events: [{
+          eventName: "ObjectCreated:PutObject",
+          eventSource: "acs:oss",
+          region: "cn-hangzhou",
+          oss: { bucket: { name: "synthetic-bucket" }, object: { key: queued.jobKey } },
+        }],
+      }),
+    });
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), {
+      protocol: "shuduo-spark-queue-trigger/v1",
+      status: "SUCCEEDED",
+      jobId: queued.job.jobId,
+      publicReady: false,
+    });
+    assert.equal(objects.has(queued.resultKey), true);
+  } finally {
+    await new Promise((resolve) => app.server.close(resolve));
+  }
 });
