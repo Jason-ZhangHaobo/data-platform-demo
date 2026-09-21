@@ -1,6 +1,14 @@
 # V2 隔离Spark Worker
 
-日期：2026-09-20。状态：协议、客户端、Worker服务和版本化交付已本机验收；包含固定私有烟测的当前W1 Linux包已在GitHub Runner双构建并从包内运行Spark；W2云部署计划已按官方限制生成但尚未创建FC。
+日期：2026-09-21。当前状态：W1 Linux 包、私有 OSS 对象四证、私有 Spark Worker 的函数规格，以及固定虚构证券烟测均已完成真实云验收。Worker 仍是私有执行单元，`publicReady=false`；控制面尚未接入。W3 不采用向控制面角色新增宽泛 `fc:InvokeFunction` 的方式：已合并签名 OSS 队列与 Worker 消费器代码，但新的 Worker 包、专用运行角色迁移和精确前缀 OSS 触发器尚未部署，不能将代码合并称为云端队列已可用。
+
+## 当前云验收与未完成边界
+
+- GitHub 上传运行 `35512771918` 已把经过 Linux 重构建核验的当前 W1 包写入私有 OSS；包为 318,914,420 字节，SHA-256 为 `f5083be51f979d47486b1ce06344466c5326a003e360cd55b91143fe79414118`。
+- 有界恢复运行 `35556647182` 已在不重建、不公开函数的前提下完成实际规格回读：Custom Debian 10、Node20/Python3.10/Java17 三层、1 vCPU/2 GiB/10 GiB/180 秒、同 VPC、无公网出站、实例并发 1、预留并发 1、最小实例 0。
+- Cloud Shell 主账号已完成 `PRIVATE_HEALTH_V1` 和无参数 `PRIVATE_SPARK_SMOKE_V1`。后者在 Spark 3.5.9 上真实执行固定虚构证券用例，返回 `SUCCEEDED` 与 `validationPassed=true`；它不暴露 SQL、业务行或共享密钥。
+- 当前函数角色仅证明精确匹配受保护配置的 `V2_FUNCTION_ROLE_ARN`。为了在 W3 缩小控制面与 Worker 的职责边界，仍需创建并迁移到独立 Worker 运行角色；在此之前不将“已有角色”描述为已完成的专用运行角色设计。
+- W3 的推荐通道是受签名保护、可恢复的私有 OSS 队列。实施它需要单独批准的角色/触发器/新内容地址包更新，并明确不向控制面角色授予 `fc:InvokeFunction`。这些云变更尚未执行。
 
 ## 设计目标
 
@@ -55,7 +63,7 @@ HMAC是应用层纵深防御，不足以单独抵御恶意流量带来的函数�
 
 受限Python合并后的默认分支`11fff9c4…ba0c`再次运行`35485173329`：内部ZIP仍为318,914,420字节且SHA-256仍为`f5083be51f979d47486b1ce06344466c5326a003e360cd55b91143fe79414118`，包内真实Spark烟测与短期Artifact上传均通过。这证明PR #99未改变Worker交付包，允许继续绑定同一精确对象策略；仍不等于OSS或FC已写入。
 
-## W2部署计划（未部署）
+## 历史 W2 部署计划与证据门
 
 `scripts/render-v2-spark-worker-w2-plan.mjs`只生成脱敏、失败关闭的W2计划，不上传包或创建函数。它把包摘要固定为私有OSS精确对象`data-platform-demo/v2/spark-worker/<sha256>.zip`，要求单次禁止覆盖上传，并给出单独的最小权限差异：部署角色只新增该对象的`oss:GetObject`与`oss:PutObject`，没有List/Delete、Bucket管理或FC Invoke权限。
 
@@ -79,7 +87,7 @@ FC同步Invoke事件进入Custom Runtime的`/invoke`，因此Worker新增默认�
 
 依据：[官方公共层](https://help.aliyun.com/en/functioncompute/configure-common-layers-for-a-function-1)、[Node20层说明](https://github.com/awesome-fc/awesome-layers/blob/main/docs/Nodejs20/README.md)、[Python310层说明](https://github.com/awesome-fc/awesome-layers/blob/main/docs/Python310/README.md)、[Java17层说明](https://github.com/awesome-fc/awesome-layers/blob/main/docs/Java17/README.md)。
 
-W2仍使用Cloud Shell主账号做私有手工Invoke，不给GitHub部署角色增加`fc:InvokeFunction`。控制面自动调用Worker属于W3，需要另行诊断并批准控制面运行角色的最小Invoke权限，当前计划明确标记`authorized=false`。
+W2 使用 Cloud Shell 主账号做私有手工 Invoke，未给 GitHub 部署角色或控制面角色增加 `fc:InvokeFunction`。W3 已完成调用边界调查：该 RAM 动作无法收窄到单个函数资源，因此不将其加入共享控制面角色；改用受签名保护的私有 OSS 队列与精确对象前缀触发器作为推荐设计。触发器、独立运行角色和新包更新尚未获云端实施批准。
 
 ## 目标FC规格（待账号核验）
 
@@ -99,8 +107,8 @@ W2仍使用Cloud Shell主账号做私有手工Invoke，不给GitHub部署角色�
 |---|---|---|
 | W0 协议 | HMAC、篡改、重放、白名单、大小、超时、错误结果 | 已本机验收 |
 | W1 Linux包 | Python3.10构建、哈希依赖、ZIP<480MiB、Spark3.5.9 JAR、包级真实SQL冒烟 | 当前包已验收；双构建318,914,420字节且SHA-256一致 |
-| W2 云健康 | Java/Python/Spark可启动，私网/函数鉴权，最小实例0 | 部署计划/精确权限差异已生成；待真实FC |
-| W3 单任务 | 标杆SQL+测试SQL+五回归真实执行，控制面保存结果 | 待真实FC |
+| W2 云健康 | Java/Python/Spark可启动，私网/函数鉴权，最小实例0 | 已真实云验收：私有函数规格、健康与固定证券烟测均通过；仍非公网、未接入控制面 |
+| W3 单任务 | 标杆SQL+测试SQL+五回归真实执行，控制面保存结果 | 签名 OSS 队列与 Worker 消费代码已合并；独立角色、精确前缀触发器、更新包与云端端到端执行待完成 |
 | W4 故障恢复 | 篡改、超时、取消、并发、Worker冷启动和失败重试 | 待真实FC |
 | W5 公网E2E | 受邀用户从需求到发布监控，至少20条且≥85% | 待公网评测 |
 

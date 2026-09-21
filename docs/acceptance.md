@@ -645,7 +645,7 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 
 ## 2026-09-21：私有Spark Worker真实云验收
 
-- 有界恢复运行[`35556647182`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/35556647182)成功；新鲜OSS收据、实时账单、OIDC和完整半成品证据通过后，仅补齐专用最小运行角色，回读确认318,914,420字节代码、Custom Debian10、三官方层、1vCPU/2GiB/10GiB/180秒、同VPC、无公网出站、实例并发1、预留1、最小实例0和按需弹性未禁用。
+- 有界恢复运行[`35556647182`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/35556647182)成功；新鲜OSS收据、实时账单、OIDC和完整半成品证据通过后，仅补齐受保护环境指定运行角色，回读确认318,914,420字节代码、Custom Debian10、三官方层、1vCPU/2GiB/10GiB/180秒、同VPC、无公网出站、实例并发1、预留1、最小实例0和按需弹性未禁用。该角色当前并非已单独验证的 Worker 专用角色；W3 前仍须迁移到独立最小运行角色。
 - Cloud Shell主账号同步Invoke健康事件成功：协议`shuduo-spark-private-smoke/v1`、Apache Spark、`FUNCTION_PROCESS`、`runtimeAvailable=true`、`publicReady=false`。部署角色和控制面均未获得Invoke权限。
 - 首次固定证券调用因Cloud Shell CLI默认等待时间超时；提高客户端读取超时至300秒后成功，函数端返回Spark 3.5.9、`SUCCEEDED`、`validationPassed=true`、`regressionCount=1`、`publicReady=false`。事件只含无参数操作名，SQL、虚构行和Worker共享密钥未进入人工命令。
 - W2隔离Worker至此通过真实云配置与固定业务执行验收。该结论不代表控制面已接入、Python云沙箱完成、公开URL可用或公网E2E达标；控制面最小Invoke属于W3。
