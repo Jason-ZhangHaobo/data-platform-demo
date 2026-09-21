@@ -34,6 +34,9 @@ cp "$repo_root/deploy/spark-worker/package.json" "$stage/package.json"
 cp \
   "$repo_root/src/v2/remote-spark-worker.mjs" \
   "$repo_root/src/v2/remote-spark.mjs" \
+  "$repo_root/src/v2/remote-spark-queue.mjs" \
+  "$repo_root/src/v2/oss-client.mjs" \
+  "$repo_root/src/v2/oss-request-retry.mjs" \
   "$repo_root/src/v2/spark-worker-private-smoke.mjs" \
   "$repo_root/src/v2/spark.mjs" \
   "$repo_root/src/v2/worker.py" \

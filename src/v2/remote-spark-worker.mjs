@@ -8,6 +8,11 @@ import {
   verifySparkRequest,
 } from "./remote-spark.mjs";
 import { privateSparkSmokePayload } from "./spark-worker-private-smoke.mjs";
+import {
+  consumeQueuedSparkJob,
+  ossSparkQueueTransportFromEnvironment,
+  queueConfigFromEnvironment,
+} from "./remote-spark-queue.mjs";
 
 const PROJECT = "project-securities-lab";
 const allowedTables = new Set(["accounts", "positions", "cash"]);
@@ -105,6 +110,23 @@ const response = (res, status, value) => {
   res.end(JSON.stringify(value));
 };
 
+export function queueJobKeyFromOssEvent(event, config, bucket) {
+  const item = event?.events?.[0],
+    rawKey = item?.oss?.object?.key;
+  if (
+    !event || typeof event !== "object" || !Array.isArray(event.events) ||
+    event.events.length !== 1 || item?.eventSource !== "acs:oss" ||
+    item?.eventName !== "ObjectCreated:PutObject" ||
+    item?.region !== "cn-hangzhou" || item?.oss?.bucket?.name !== bucket ||
+    typeof rawKey !== "string"
+  ) throw fail(422, "Spark队列OSS事件格式不合法", "SPARK_QUEUE_EVENT_INVALID");
+  let key;
+  try { key = decodeURIComponent(rawKey); } catch { throw fail(422, "Spark队列OSS对象键编码不合法", "SPARK_QUEUE_EVENT_INVALID"); }
+  if (!key.startsWith(`${config.jobPrefix}/`) || !key.endsWith(".json") || key.endsWith(".cancel.json"))
+    throw fail(422, "Spark队列OSS对象键不在许可范围", "SPARK_QUEUE_EVENT_INVALID");
+  return key;
+}
+
 export function createRemoteSparkWorker(options = {}) {
   const env = options.env ?? process.env,
     sharedSecret = validateSecret(env.V2_SPARK_WORKER_SECRET),
@@ -125,15 +147,25 @@ export function createRemoteSparkWorker(options = {}) {
     now = options.now ?? Date.now,
     runtime = options.runtime ?? runtimeConfig(env),
     runner = options.runner ?? ((input) => runSpark(input, runtime)),
-    privateInvokeEnabled =
-      env.V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED === "true",
+    privateInvokeEnabled = env.V2_SPARK_WORKER_PRIVATE_SMOKE_ENABLED === "true",
+    queueEnabled = env.V2_SPARK_QUEUE_CONSUMER_ENABLED === "true",
+    queueConfig = options.queueConfig ?? (queueEnabled
+      ? queueConfigFromEnvironment({
+          ...env,
+          V2_SPARK_EXECUTOR_TRANSPORT: "OSS_QUEUE",
+          V2_SPARK_EXECUTOR_SECRET: sharedSecret,
+        })
+      : undefined),
+    queueTransport = options.queueTransport ?? (queueConfig
+      ? ossSparkQueueTransportFromEnvironment(env)
+      : undefined),
     nonces = new Map();
   let active = 0;
 
   const server = createServer(async (req, res) => {
     try {
       if (req.method === "POST" && req.url === "/invoke") {
-        if (!privateInvokeEnabled)
+        if (!privateInvokeEnabled && !queueConfig)
           throw fail(404, "接口不存在", "SPARK_WORKER_NOT_FOUND");
         if (
           !String(req.headers["content-type"]).startsWith(
@@ -164,6 +196,26 @@ export function createRemoteSparkWorker(options = {}) {
             "私有Spark烟测事件不是JSON",
             "SPARK_PRIVATE_EVENT_INVALID",
           );
+        }
+        if (queueConfig && queueTransport && event?.events) {
+          const jobKey = queueJobKeyFromOssEvent(
+            event,
+            queueConfig,
+            queueTransport.config.bucket,
+          );
+          const queued = await consumeQueuedSparkJob({
+            jobKey,
+            config: queueConfig,
+            transport: queueTransport,
+            runner,
+            now,
+          });
+          return response(res, 202, {
+            protocol: "shuduo-spark-queue-trigger/v1",
+            status: queued.status,
+            jobId: queued.jobId,
+            publicReady: false,
+          });
         }
         const keys = Object.keys(event ?? {}),
           allowed = new Set([

@@ -31,6 +31,8 @@
 
 `remote-spark-queue.mjs`已经提供签名任务信封、结果签名、任务/结果/取消对象键、TTL、项目绑定、篡改拒绝和轮询超时，并复用已有OSS签名和有界重试实现create-only读写。Worker消费器只接受配置的任务前缀、校验任务签名后才执行，并将签名结果写回绑定结果键；有效取消标记会阻止运行。测试覆盖跨项目任务、伪造签名、跨任务结果替换、取消和非法对象键。
 
-该代码尚未接入云控制面，也没有创建OSS触发器、Worker专用角色或队列前缀权限；因此不把它写成W3已完成。下一实现批次需要把队列对象接入现有OSS签名客户端、Worker触发消费、不可变结果、告警和恢复。
+Worker现已能解析官方原生OSS触发事件，只接受`ObjectCreated:PutObject`、杭州、配置Bucket和任务前缀；然后读取签名任务、执行Spark并写回绑定结果。原有私有健康/固定烟测仍需显式开关，队列触发不允许任意HTTP执行。
+
+该代码尚未接入云控制面，也没有创建OSS触发器、Worker专用角色或队列前缀权限；并且新增模块会改变Worker不可变包摘要，当前已验收的云Worker继续保持原包。因此不把它写成W3已完成。下一实现批次需要重新双构建、上传新包、创建专用角色和OSS触发器、真实事件执行、不可变结果、告警和恢复。
 
 官方依据：[InvokeFunction](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-invokefunction)、[FC RAM授权表](https://help.aliyun.com/en/functioncompute/api-fc-2023-03-30-ram)、[Web函数Invoke转换](https://help.aliyun.com/en/functioncompute/web-functions)。
