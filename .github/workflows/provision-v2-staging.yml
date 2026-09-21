@@ -232,16 +232,9 @@ jobs:
           jq -n '{reservedConcurrency:1}' > v2-function-concurrency.json
           aliyun fc PUT "/2023-03-30/functions/$FUNCTION_NAME/concurrency" --region "$ALIBABA_CLOUD_REGION_ID" --body-file v2-function-concurrency.json > v2-function-concurrency-result.json
           jq -e '.reservedConcurrency == 1' v2-function-concurrency-result.json >/dev/null
-          jq -n '{
-            minInstances:0,
-            enableOnDemandScaling:true,
-            scheduledPolicies:[],
-            horizontalScalingPolicies:[],
-            enableMixMode:false,
-            requestDispatchPolicy:"Balanced"
-          }' > v2-function-scaling.json
+          jq -n '{minInstances:0}' > v2-function-scaling.json
           aliyun fc PUT "/2023-03-30/functions/$FUNCTION_NAME/scaling-config" --region "$ALIBABA_CLOUD_REGION_ID" --body-file v2-function-scaling.json > v2-function-scaling-result.json
-          jq -e '.minInstances == 0 and .enableOnDemandScaling == true' v2-function-scaling-result.json >/dev/null
+          jq -e '.minInstances == 0 and .enableOnDemandScaling != false' v2-function-scaling-result.json >/dev/null
           verified=false
           for attempt in $(seq 1 12); do
             if aliyun fc GET "/2023-03-30/functions/$FUNCTION_NAME" --region "$ALIBABA_CLOUD_REGION_ID" > v2-function-verified.json 2>/dev/null; then
@@ -257,7 +250,7 @@ jobs:
           aliyun fc GET "/2023-03-30/functions/$FUNCTION_NAME/concurrency" --region "$ALIBABA_CLOUD_REGION_ID" > v2-function-concurrency-verified.json
           jq -e '.reservedConcurrency == 1' v2-function-concurrency-verified.json >/dev/null
           aliyun fc GET "/2023-03-30/functions/$FUNCTION_NAME/scaling-config" --region "$ALIBABA_CLOUD_REGION_ID" > v2-function-scaling-verified.json
-          jq -e '.minInstances == 0 and .enableOnDemandScaling == true' v2-function-scaling-verified.json >/dev/null
+          jq -e '.minInstances == 0 and .enableOnDemandScaling != false' v2-function-scaling-verified.json >/dev/null
 
       - name: Remove generated files containing deployment secrets
         if: always()

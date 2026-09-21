@@ -72,6 +72,7 @@ export function verifyV2SparkWorkerFunction(input = {}, evidence = {}) {
       singleConcurrency: Number(fn.instanceConcurrency) === 1,
       noInternetEgress: fn.internetAccess === false,
       runtimeRoleMatches: fn.role === expectedRole,
+      onDemandAllowed: fn.disableOndemand !== true,
       officialLayersMatch: sameStrings(
         (fn.layers ?? []).map(layerArn).filter(Boolean),
         expectedLayers,
@@ -108,7 +109,7 @@ export function verifyV2SparkWorkerFunction(input = {}, evidence = {}) {
         Number(evidence.concurrency.reservedConcurrency) === 1,
       scalesToZero:
         Number(evidence.scaling.minInstances) === 0 &&
-        evidence.scaling.enableOnDemandScaling === true,
+        evidence.scaling.enableOnDemandScaling !== false,
     },
     failed = Object.entries(checks)
       .filter(([, passed]) => !passed)

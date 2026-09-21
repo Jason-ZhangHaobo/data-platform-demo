@@ -26,6 +26,7 @@ const evidence = {
     timeout: 180,
     instanceConcurrency: 1,
     internetAccess: false,
+    disableOndemand: null,
     role: input.V2_FUNCTION_ROLE_ARN,
     layers: [
       { arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3" },
@@ -57,7 +58,7 @@ const evidence = {
     },
   },
   concurrency: { reservedConcurrency: 1 },
-  scaling: { minInstances: 0, enableOnDemandScaling: true },
+  scaling: { minInstances: 0, enableOnDemandScaling: null },
 };
 
 test("W2 function evidence requires exact runtime, layers, bounds and secret", () => {
@@ -102,4 +103,14 @@ test("missing concurrency or scaling evidence fails before inspection", () => {
   });
   assert.equal(result.ok, false);
   assert.deepEqual(result.errors, ["INVALID:SPARK_WORKER_FUNCTION_EVIDENCE"]);
+});
+
+test("explicitly disabling on-demand capacity fails even with zero minimum instances", () => {
+  const result = verifyV2SparkWorkerFunction(input, {
+    ...evidence,
+    function: { ...evidence.function, disableOndemand: true },
+    scaling: { minInstances: 0, enableOnDemandScaling: false },
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.failed, ["onDemandAllowed", "scalesToZero"]);
 });

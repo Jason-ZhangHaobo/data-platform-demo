@@ -29,7 +29,7 @@ test("V2 cloud deployment does not embed cloud IDs or inherit stale function sec
   assert.match(workflow, /current-v2-concurrency\.json/);
   assert.match(workflow, /\.reservedConcurrency == 1/);
   assert.match(workflow, /current-v2-scaling\.json/);
-  assert.match(workflow, /\.minInstances == 0 and \.enableOnDemandScaling == true/);
+  assert.match(workflow, /\.minInstances == 0 and \.enableOnDemandScaling != false/);
   assert.doesNotMatch(workflow, /V2_PRIVATE_SMOKE_ENABLED/);
   assert.doesNotMatch(workflow, /V2_PROVISIONING_ONLY:\"true\"/);
 });
@@ -70,7 +70,7 @@ test("V2 provisioning workflow is create-only and budget/network gated", () => {
   assert.match(workflow, /functions\/\$FUNCTION_NAME\/scaling-config/);
   assert.match(workflow, /minInstances:0/);
   assert.match(workflow, /\.reservedConcurrency == 1/);
-  assert.match(workflow, /\.minInstances == 0 and \.enableOnDemandScaling == true/);
+  assert.match(workflow, /\.minInstances == 0 and \.enableOnDemandScaling != false/);
   assert.match(workflow, /V2_PROVISIONING_ONLY:\"true\"/);
   assert.match(workflow, /V2_PRIVATE_SMOKE_ENABLED:\"true\"/);
 });

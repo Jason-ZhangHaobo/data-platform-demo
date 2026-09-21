@@ -131,7 +131,7 @@ jobs:
             echo "::error title=Worker concurrency failed::$code"
             exit 1
           fi
-          jq -n '{minInstances:0,enableOnDemandScaling:true,scheduledPolicies:[],horizontalScalingPolicies:[],enableMixMode:false,requestDispatchPolicy:"Balanced"}' \
+          jq -n '{minInstances:0}' \
             > "$private_root/scaling.json"
           if ! aliyun fc PUT "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/scaling-config" \
             --region "$ALIBABA_CLOUD_REGION_ID" \
