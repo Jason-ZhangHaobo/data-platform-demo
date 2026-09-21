@@ -27,4 +27,10 @@
 
 如果选择方案A，必须单独明确接受账号级函数调用风险；策略、代码和回滚完成审阅后再附加。任一方案都先拆分Worker运行角色，避免控制面权限向Worker继承。
 
+## 已完成的本地队列基础
+
+`remote-spark-queue.mjs`已经提供签名任务信封、结果签名、任务/结果/取消对象键、TTL、项目绑定、篡改拒绝和轮询超时。测试覆盖跨项目任务、伪造签名、跨任务结果替换和取消标记。
+
+该代码尚未接入云控制面，也没有创建OSS触发器、Worker专用角色或队列前缀权限；因此不把它写成W3已完成。下一实现批次需要把队列对象接入现有OSS签名客户端、Worker触发消费、不可变结果、告警和恢复。
+
 官方依据：[InvokeFunction](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-invokefunction)、[FC RAM授权表](https://help.aliyun.com/en/functioncompute/api-fc-2023-03-30-ram)、[Web函数Invoke转换](https://help.aliyun.com/en/functioncompute/web-functions)。
