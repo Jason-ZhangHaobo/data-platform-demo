@@ -1,0 +1,134 @@
+name: Repair verified V2 Spark worker boundaries
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: v2-spark-worker-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Repair only verified incomplete Worker boundaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: v2-staging
+    env:
+      ALIBABA_CLOUD_REGION_ID: cn-hangzhou
+      V2_DEPLOY_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
+      V2_DEPLOY_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+      V2_FUNCTION_ROLE_ARN: ${{ vars.V2_FUNCTION_ROLE_ARN }}
+      V2_SPARK_WORKER_FUNCTION_NAME: ${{ vars.V2_SPARK_WORKER_FUNCTION_NAME }}
+      V2_SPARK_WORKER_PACKAGE_SHA256: ${{ vars.V2_SPARK_WORKER_PACKAGE_SHA256 }}
+      V2_SPARK_WORKER_PACKAGE_BYTES: ${{ vars.V2_SPARK_WORKER_PACKAGE_BYTES }}
+      V2_SPARK_WORKER_UPLOAD_RUN_ID: ${{ vars.V2_SPARK_WORKER_UPLOAD_RUN_ID }}
+      V2_SPARK_WORKER_UPLOAD_HEAD_SHA: ${{ vars.V2_SPARK_WORKER_UPLOAD_HEAD_SHA }}
+      V2_SPARK_WORKER_OSS_RECEIPT_FILE: ${{ vars.V2_SPARK_WORKER_OSS_RECEIPT_FILE }}
+      V2_VPC_ID: ${{ vars.V2_VPC_ID }}
+      V2_VSW_ID: ${{ vars.V2_VSW_ID }}
+      V2_SECURITY_GROUP_ID: ${{ vars.V2_SECURITY_GROUP_ID }}
+      V2_SPARK_WORKER_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
+      V2_HARD_MONTHLY_BUDGET_CNY: "200"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Verify fresh receipt and immutable identity
+        run: |
+          set -euo pipefail
+          account_id="$(printf '%s' "$V2_DEPLOY_ROLE_ARN" | sed -nE 's#^acs:ram::([0-9]{12,20}):role/[a-z0-9-]{1,64}$#\1#p')"
+          test -n "$account_id"
+          test "${#V2_SPARK_WORKER_SECRET}" -ge 32
+          export ALIYUN_ACCOUNT_ID="$account_id"
+          export V2_SPARK_WORKER_CODE_OBJECT="data-platform-demo/v2/spark-worker/$V2_SPARK_WORKER_PACKAGE_SHA256.zip"
+          printf 'ALIYUN_ACCOUNT_ID=%s\n' "$account_id" >> "$GITHUB_ENV"
+          printf 'V2_SPARK_WORKER_CODE_OBJECT=%s\n' "$V2_SPARK_WORKER_CODE_OBJECT" >> "$GITHUB_ENV"
+          node scripts/v2-spark-worker-oss-receipt.mjs --verify
+
+      - name: Set up Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@v1
+        with:
+          version: "3.4.11"
+
+      - name: Configure Alibaba Cloud credentials with GitHub OIDC
+        uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ env.V2_DEPLOY_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-spark-repair
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+
+      - name: Verify current monthly bill completely and below budget
+        run: scripts/query-v2-monthly-spend.sh >/dev/null
+
+      - name: Read and authorize only a bounded repair
+        run: |
+          set -euo pipefail
+          umask 077
+          private_root="$(mktemp -d)"
+          chmod 0700 "$private_root"
+          printf 'V2_WORKER_REPAIR_ROOT=%s\n' "$private_root" >> "$GITHUB_ENV"
+          aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME" --region "$ALIBABA_CLOUD_REGION_ID" >"$private_root/function.json"
+          aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/concurrency" --region "$ALIBABA_CLOUD_REGION_ID" >"$private_root/concurrency.json"
+          aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/scaling-config" --region "$ALIBABA_CLOUD_REGION_ID" >"$private_root/scaling.json"
+          jq -n --slurpfile function "$private_root/function.json" --slurpfile concurrency "$private_root/concurrency.json" --slurpfile scaling "$private_root/scaling.json" \
+            '{function:$function[0],concurrency:$concurrency[0],scaling:$scaling[0]}' \
+            | node scripts/verify-v2-spark-worker-repair.mjs
+
+      - name: Complete only the permitted runtime-role and capacity boundaries
+        run: |
+          set -euo pipefail
+          root="$V2_WORKER_REPAIR_ROOT"
+          current_role="$(jq -r '.role // ""' "$root/function.json")"
+          if test "$current_role" != "$V2_FUNCTION_ROLE_ARN"; then
+            jq -n --arg role "$V2_FUNCTION_ROLE_ARN" '{role:$role}' >"$root/role.json"
+            aliyun fc PUT "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME" --region "$ALIBABA_CLOUD_REGION_ID" --body-file "$root/role.json" >"$root/role-result.json"
+          fi
+          if ! jq -e '.reservedConcurrency == 1' "$root/concurrency.json" >/dev/null; then
+            jq -n '{reservedConcurrency:1}' >"$root/concurrency-update.json"
+            aliyun fc PUT "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/concurrency" --region "$ALIBABA_CLOUD_REGION_ID" --body-file "$root/concurrency-update.json" >"$root/concurrency-result.json"
+          fi
+          jq -e '.enableOnDemandScaling != false' "$root/scaling.json" >/dev/null
+          if ! jq -e '.minInstances == 0' "$root/scaling.json" >/dev/null; then
+            jq -n '{minInstances:0}' >"$root/scaling-update.json"
+            aliyun fc PUT "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/scaling-config" --region "$ALIBABA_CLOUD_REGION_ID" --body-file "$root/scaling-update.json" >"$root/scaling-result.json"
+          fi
+
+      - name: Verify the completed private Worker configuration
+        run: |
+          set -euo pipefail
+          root="$V2_WORKER_REPAIR_ROOT"
+          verified=false
+          for attempt in $(seq 1 18); do
+            aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME" --region "$ALIBABA_CLOUD_REGION_ID" >"$root/function-final.json"
+            if jq -e '.state == "Active" and .lastUpdateStatus == "Successful"' "$root/function-final.json" >/dev/null; then verified=true; break; fi
+            sleep 5
+          done
+          test "$verified" = true
+          aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/concurrency" --region "$ALIBABA_CLOUD_REGION_ID" >"$root/concurrency-final.json"
+          aliyun fc GET "/2023-03-30/functions/$V2_SPARK_WORKER_FUNCTION_NAME/scaling-config" --region "$ALIBABA_CLOUD_REGION_ID" >"$root/scaling-final.json"
+          jq -n --slurpfile function "$root/function-final.json" --slurpfile concurrency "$root/concurrency-final.json" --slurpfile scaling "$root/scaling-final.json" \
+            '{function:$function[0],concurrency:$concurrency[0],scaling:$scaling[0]}' \
+            | node scripts/verify-v2-spark-worker-function.mjs
+
+      - name: Remove files containing cloud responses
+        if: always()
+        run: |
+          if test -n "${V2_WORKER_REPAIR_ROOT:-}" && test -d "$V2_WORKER_REPAIR_ROOT"; then
+            rm -rf "$V2_WORKER_REPAIR_ROOT"
+          fi
+
+      - name: State the remaining private smoke gate
+        run: echo 'The exact Worker configuration is verified. A fixed private Cloud Shell smoke is still required; control-plane Invoke remains disabled.' >> "$GITHUB_STEP_SUMMARY"

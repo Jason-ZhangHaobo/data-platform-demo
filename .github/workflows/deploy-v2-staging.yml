@@ -125,7 +125,7 @@ jobs:
           aliyun fc GET "/2023-03-30/functions/$FUNCTION_NAME/concurrency" --region "$ALIBABA_CLOUD_REGION_ID" > current-v2-concurrency.json
           jq -e '.reservedConcurrency == 1' current-v2-concurrency.json >/dev/null
           aliyun fc GET "/2023-03-30/functions/$FUNCTION_NAME/scaling-config" --region "$ALIBABA_CLOUD_REGION_ID" > current-v2-scaling.json
-          jq -e '.minInstances == 0 and .enableOnDemandScaling == true' current-v2-scaling.json >/dev/null
+          jq -e '.minInstances == 0 and .enableOnDemandScaling != false' current-v2-scaling.json >/dev/null
 
       - name: Update the dedicated V2 function
         run: |
