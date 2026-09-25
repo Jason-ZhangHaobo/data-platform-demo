@@ -49,7 +49,13 @@ if find "$stage" -type f \( -name '.env' -o -name '.env.local' -o -name '*.pem' 
   exit 1
 fi
 
-(cd "$stage" && zip -qr "$output_path" .)
+# Checkout and install times must not change the identity of a versioned code
+# object. Normalize the staged tree and use stable path order and ZIP headers.
+find "$stage" -exec touch -h -t 198001010000 {} +
+(
+  cd "$stage"
+  LC_ALL=C find . -type f -print | LC_ALL=C sort | zip -X -q "$output_path" -@
+)
 
 archive_bytes="$(wc -c < "$output_path" | tr -d ' ')"
 if [[ "$archive_bytes" -gt 73400320 ]]; then
@@ -57,4 +63,4 @@ if [[ "$archive_bytes" -gt 73400320 ]]; then
   exit 1
 fi
 unzip -tq "$output_path" >/dev/null
-echo "Created $output_path ($archive_bytes bytes)"
+echo "Created $output_path ($archive_bytes bytes); deploy through private OSS"
