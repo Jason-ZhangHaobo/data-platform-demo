@@ -100,14 +100,14 @@ jobs:
           echo "V2_ACCOUNT_MONTHLY_SPEND_CNY=$spend" >> "$GITHUB_ENV"
 
       - name: Install locked development dependencies
-        run: npm ci
+        run: env -i HOME="$HOME" PATH="$PATH" CI=true npm ci
 
       - name: Run complete quality gate
-        run: npm run ci
+        run: env -i HOME="$HOME" PATH="$PATH" CI=true npm run ci
 
       - name: Build and inspect the Linux x64 function package
         run: |
-          scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
+          env -i HOME="$HOME" PATH="$PATH" CI=true scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
           mkdir -p /tmp/shuduo-v2-runtime-check
           unzip -q v2-function.zip runtime/node package.json -d /tmp/shuduo-v2-runtime-check
           chmod 0755 /tmp/shuduo-v2-runtime-check/runtime/node

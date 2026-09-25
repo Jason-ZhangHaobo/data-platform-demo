@@ -649,3 +649,9 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - Cloud Shell主账号同步Invoke健康事件成功：协议`shuduo-spark-private-smoke/v1`、Apache Spark、`FUNCTION_PROCESS`、`runtimeAvailable=true`、`publicReady=false`。部署角色和控制面均未获得Invoke权限。
 - 首次固定证券调用因Cloud Shell CLI默认等待时间超时；提高客户端读取超时至300秒后成功，函数端返回Spark 3.5.9、`SUCCEEDED`、`validationPassed=true`、`regressionCount=1`、`publicReady=false`。事件只含无参数操作名，SQL、虚构行和Worker共享密钥未进入人工命令。
 - W2隔离Worker至此通过真实云配置与固定业务执行验收。该结论不代表控制面已接入、Python云沙箱完成、公开URL可用或公网E2E达标；控制面最小Invoke属于W3。
+
+## 2026-09-25：控制面预置质量门隔离
+
+- 预置运行 [`36109590314`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36109590314) 已通过受保护配置、OIDC、当月账单和网络检查，随后在 `npm run ci` 的 6 个用例失败；函数创建步骤未执行。
+- 失败用例读取到了作业级管理员邮箱/哈希与 `JASONSECRETS` 等真实部署环境，导致合成管理员显示名校验失败、Secret exporter 用例的预期输出被覆盖。部署 Secret 不应进入测试或依赖安装子进程。
+- 预置流程现使用清洁子进程运行 `npm ci`、完整 CI 与 Linux 构包；真正创建函数的步骤仍在受保护作业中读取所需 Secret。本机按同一清洁环境运行完整 CI 为 353 通过、0 失败、1 跳过；远程修正和私有函数创建仍待主线运行验证。

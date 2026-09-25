@@ -47,6 +47,9 @@ test("V2 provisioning workflow is create-only and budget/network gated", () => {
   assert.match(workflow, /verify-v2-staging-config\.mjs/);
   assert.ok(workflow.indexOf("verify-v2-staging-config.mjs") < workflow.indexOf("npm ci"));
   assert.ok(workflow.indexOf("Configure Alibaba Cloud credentials with GitHub OIDC") < workflow.indexOf("npm ci"));
+  assert.match(workflow, /env -i HOME="\$HOME" PATH="\$PATH" CI=true npm ci/);
+  assert.match(workflow, /env -i HOME="\$HOME" PATH="\$PATH" CI=true npm run ci/);
+  assert.match(workflow, /env -i HOME="\$HOME" PATH="\$PATH" CI=true\s+scripts\/build-v2-fc-package\.sh/);
   assert.ok(workflow.indexOf("Stop before build if the current bill or network boundary is unsafe") < workflow.indexOf("npm ci"));
   assert.doesNotMatch(workflow, /aliyun ram (?:GetRole|ListPoliciesForRole)/);
   assert.match(workflow, /test "\$V2_FUNCTION_ROLE_ARN" != "\$ALIYUN_ROLE_ARN"/);
