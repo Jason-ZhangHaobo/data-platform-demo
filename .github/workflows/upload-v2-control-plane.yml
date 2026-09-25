@@ -1,0 +1,150 @@
+name: Upload V2 control plane package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: v2-control-package-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Upload one verified private code object
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: v2-staging
+    env:
+      ALIBABA_CLOUD_REGION_ID: cn-hangzhou
+      V2_DEPLOY_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
+      V2_DEPLOY_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+      V2_OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
+      V2_CONTROL_PACKAGE_SHA256: ${{ vars.V2_CONTROL_PACKAGE_SHA256 }}
+      V2_CONTROL_PACKAGE_BYTES: ${{ vars.V2_CONTROL_PACKAGE_BYTES }}
+      V2_CONTROL_PACKAGE_BUILD_RUN_ID: ${{ vars.V2_CONTROL_PACKAGE_BUILD_RUN_ID }}
+      V2_CONTROL_PACKAGE_BUILD_HEAD_SHA: ${{ vars.V2_CONTROL_PACKAGE_BUILD_HEAD_SHA }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Verify the successful pinned build run and exact object policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$V2_DEPLOY_ROLE_ARN" =~ ^acs:ram::([0-9]{12,20}):role/[a-z0-9-]{1,64}$ ]]
+          export ALIYUN_ACCOUNT_ID="${BASH_REMATCH[1]}"
+          test "$ALIBABA_CLOUD_REGION_ID" = cn-hangzhou
+          [[ "$V2_CONTROL_PACKAGE_BUILD_RUN_ID" =~ ^[0-9]{6,20}$ ]]
+          [[ "$V2_CONTROL_PACKAGE_BUILD_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]]
+          node scripts/render-v2-control-package-policy.mjs >/dev/null
+          run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$V2_CONTROL_PACKAGE_BUILD_RUN_ID")"
+          jq -e --arg sha "$V2_CONTROL_PACKAGE_BUILD_HEAD_SHA" \
+            '.head_sha == $sha and .head_branch == "main" and .conclusion == "success" and .name == "Build V2 control plane package"' \
+            <<<"$run_json" >/dev/null
+          printf 'V2_CONTROL_CODE_OBJECT=data-platform-demo/v2/control-plane/%s.zip\n' "$V2_CONTROL_PACKAGE_SHA256" >> "$GITHUB_ENV"
+
+      - name: Download only the pinned short-lived build artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: shuduo-v2-control-${{ vars.V2_CONTROL_PACKAGE_BUILD_HEAD_SHA }}
+          run-id: ${{ vars.V2_CONTROL_PACKAGE_BUILD_RUN_ID }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      - name: Verify downloaded ZIP bytes before any cloud write
+        run: |
+          set -euo pipefail
+          test -f v2-function.zip
+          test "$(sha256sum v2-function.zip | cut -d' ' -f1)" = "$V2_CONTROL_PACKAGE_SHA256"
+          test "$(wc -c < v2-function.zip | tr -d ' ')" = "$V2_CONTROL_PACKAGE_BYTES"
+          unzip -tq v2-function.zip
+
+      - name: Set up Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@v1
+        with:
+          version: "3.4.11"
+
+      - name: Configure Alibaba Cloud credentials with GitHub OIDC
+        id: aliyun
+        uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ env.V2_DEPLOY_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-control-upload
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+
+      - name: Refuse upload if the complete current bill meets the monthly limit
+        run: V2_HARD_MONTHLY_BUDGET_CNY=200 scripts/query-v2-monthly-spend.sh >/dev/null
+
+      - name: Install pinned ossutil 2.4.0
+        run: |
+          set -euo pipefail
+          tool_root="$RUNNER_TEMP/ossutil"
+          mkdir -p "$tool_root"
+          curl --fail --location --silent --show-error \
+            --output "$tool_root/ossutil.zip" \
+            https://gosspublic.alicdn.com/ossutil/v2/2.4.0/ossutil-2.4.0-linux-amd64.zip
+          echo '85edf66b2fb7238f5c7e25cab820cf29312319fe4935b7c86a6b8485eb434f3c  '"$tool_root/ossutil.zip" | sha256sum --check --status
+          unzip -q "$tool_root/ossutil.zip" -d "$tool_root"
+          chmod 0755 "$tool_root/ossutil-2.4.0-linux-amd64/ossutil"
+          printf '%s\n' "$tool_root/ossutil-2.4.0-linux-amd64" >> "$GITHUB_PATH"
+
+      - name: Upload create-only and verify the object by downloading its bytes
+        env:
+          OSS_ACCESS_KEY_ID: ${{ steps.aliyun.outputs.aliyun-access-key-id }}
+          OSS_ACCESS_KEY_SECRET: ${{ steps.aliyun.outputs.aliyun-access-key-secret }}
+          OSS_SESSION_TOKEN: ${{ steps.aliyun.outputs.aliyun-security-token }}
+          OSS_REGION: cn-hangzhou
+          OSS_ENDPOINT: https://oss-cn-hangzhou.aliyuncs.com
+        run: |
+          set -euo pipefail
+          umask 077
+          head_file="$(mktemp)"
+          error_file="$(mktemp)"
+          upload_file="$(mktemp)"
+          downloaded="$(mktemp)"
+          cleanup() { rm -f "$head_file" "$error_file" "$upload_file" "$downloaded" v2-function.zip; }
+          trap cleanup EXIT
+          if ossutil api head-object --quiet \
+            --bucket "$V2_OSS_BUCKET" --key "$V2_CONTROL_CODE_OBJECT" \
+            --output-format json >"$head_file" 2>"$error_file"; then
+            :
+          else
+            code="$(node scripts/extract-aliyun-error-code.mjs "$head_file" "$error_file")"
+            test "$code" = NoSuchKey || test "$code" = NoSuchObject
+            ossutil api put-object --quiet \
+              --bucket "$V2_OSS_BUCKET" --key "$V2_CONTROL_CODE_OBJECT" \
+              --body file://v2-function.zip \
+              --metadata "shuduo-sha256=$V2_CONTROL_PACKAGE_SHA256" \
+              --object-acl private --forbid-overwrite true \
+              --output-format json >"$upload_file" 2>"$error_file" || {
+                code="$(node scripts/extract-aliyun-error-code.mjs "$upload_file" "$error_file")"
+                echo "::error title=Control package upload failed::$code"
+                exit 1
+              }
+          fi
+          ossutil api get-object --quiet \
+            --bucket "$V2_OSS_BUCKET" --key "$V2_CONTROL_CODE_OBJECT" \
+            >"$downloaded" 2>"$error_file" || {
+              code="$(node scripts/extract-aliyun-error-code.mjs "$downloaded" "$error_file")"
+              echo "::error title=Control package readback failed::$code"
+              exit 1
+            }
+          test "$(sha256sum "$downloaded" | cut -d' ' -f1)" = "$V2_CONTROL_PACKAGE_SHA256"
+          test "$(wc -c < "$downloaded" | tr -d ' ')" = "$V2_CONTROL_PACKAGE_BYTES"
+
+      - name: Report the independent privacy gate
+        run: echo 'Package content is verified. Bucket policy, public-access block and object ACL must be checked independently before FC creation.' >> "$GITHUB_STEP_SUMMARY"

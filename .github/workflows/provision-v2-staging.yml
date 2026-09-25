@@ -31,6 +31,12 @@ jobs:
       V2_PUBLIC_ORIGIN: ${{ vars.V2_PUBLIC_ORIGIN }}
       V2_PROVISIONING_ONLY: "true"
       OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
+      V2_OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
+      V2_CONTROL_PACKAGE_SHA256: ${{ vars.V2_CONTROL_PACKAGE_SHA256 }}
+      V2_CONTROL_PACKAGE_BYTES: ${{ vars.V2_CONTROL_PACKAGE_BYTES }}
+      V2_CONTROL_PACKAGE_UPLOAD_RUN_ID: ${{ vars.V2_CONTROL_PACKAGE_UPLOAD_RUN_ID }}
+      V2_CONTROL_PACKAGE_UPLOAD_HEAD_SHA: ${{ vars.V2_CONTROL_PACKAGE_UPLOAD_HEAD_SHA }}
+      V2_CONTROL_PACKAGE_OSS_RECEIPT_FILE: ${{ vars.V2_CONTROL_PACKAGE_OSS_RECEIPT_FILE }}
       V2_MYSQL_HOST: ${{ secrets.V2_MYSQL_HOST }}
       V2_MYSQL_PORT: ${{ secrets.V2_MYSQL_PORT }}
       V2_MYSQL_USER: ${{ secrets.V2_MYSQL_USER }}
@@ -65,6 +71,16 @@ jobs:
       - name: Validate protected configuration before any build or cloud access
         run: |
           node scripts/verify-v2-staging-config.mjs
+
+      - name: Require fresh private code object receipt
+        run: |
+          set -euo pipefail
+          [[ "$ALIYUN_ROLE_ARN" =~ ^acs:ram::([0-9]{12,20}):role/[a-z0-9-]{1,64}$ ]]
+          export ALIYUN_ACCOUNT_ID="${BASH_REMATCH[1]}"
+          export V2_CONTROL_CODE_OBJECT="data-platform-demo/v2/control-plane/$V2_CONTROL_PACKAGE_SHA256.zip"
+          node scripts/v2-control-package-oss-receipt.mjs --verify
+          printf 'ALIYUN_ACCOUNT_ID=%s\n' "$ALIYUN_ACCOUNT_ID" >> "$GITHUB_ENV"
+          printf 'V2_CONTROL_CODE_OBJECT=%s\n' "$V2_CONTROL_CODE_OBJECT" >> "$GITHUB_ENV"
 
       - name: Set up Alibaba Cloud CLI
         uses: aliyun/setup-aliyun-cli-action@v1
@@ -108,6 +124,8 @@ jobs:
       - name: Build and inspect the Linux x64 function package
         run: |
           env -i HOME="$HOME" PATH="$PATH" CI=true scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
+          test "$(sha256sum v2-function.zip | cut -d' ' -f1)" = "$V2_CONTROL_PACKAGE_SHA256"
+          test "$(wc -c < v2-function.zip | tr -d ' ')" = "$V2_CONTROL_PACKAGE_BYTES"
           mkdir -p /tmp/shuduo-v2-runtime-check
           unzip -q v2-function.zip runtime/node package.json -d /tmp/shuduo-v2-runtime-check
           chmod 0755 /tmp/shuduo-v2-runtime-check/runtime/node
@@ -136,13 +154,12 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          base64 -w 0 v2-function.zip > v2-function.zip.b64
           jq -n \
-            --rawfile zip v2-function.zip.b64 \
             --arg function_name "$FUNCTION_NAME" \
             --arg role "$V2_FUNCTION_ROLE_ARN" \
             --arg public_origin "$V2_PUBLIC_ORIGIN" \
             --arg bucket "$OSS_BUCKET" \
+            --arg code_object "$V2_CONTROL_CODE_OBJECT" \
             --arg mysql_host "$V2_MYSQL_HOST" \
             --arg mysql_port "${V2_MYSQL_PORT:-3306}" \
             --arg mysql_user "$V2_MYSQL_USER" \
@@ -167,7 +184,7 @@ jobs:
             '{
               functionName:$function_name,
               description:"数舵V2证券数据平台专用试点函数",
-              code:{zipFile:$zip},
+              code:{ossBucketName:$bucket,ossObjectName:$code_object},
               role:$role,
               runtime:"custom.debian12",
               handler:"not-used",
@@ -253,7 +270,7 @@ jobs:
       - name: Remove generated files containing deployment secrets
         if: always()
         run: |
-          rm -f v2-function.zip.b64 v2-function-create.json v2-function-result.json v2-function-verified.json
+          rm -f v2-function-create.json v2-function-result.json v2-function-verified.json
           rm -f v2-function-concurrency.json v2-function-concurrency-result.json v2-function-concurrency-verified.json
           rm -f v2-function-scaling.json v2-function-scaling-result.json v2-function-scaling-verified.json
           rm -rf /tmp/shuduo-v2-runtime-check

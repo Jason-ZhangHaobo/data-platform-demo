@@ -26,6 +26,10 @@ ZIP超过70MiB即失败。GitHub Linux CI验证解释器平台、`node:sqlite`�
 
 2026-09-25预置运行`36110836235`已通过配置、账单、网络、完整CI、Linux构包与目标函数不存在检查，`CreateFunction`随后被网关以`ClientError.413 / Request Entity Too Large`拒绝；没有函数创建成功证据。阿里云FC 3.0的`InputCodeLocation`支持私有OSS代码位置。新增独立的无云权限构建工作流，仅生成短期Linux包及其真实SHA-256/字节数；后续需对这一摘要的精确OSS对象授权、禁止覆盖上传并核验内容与私有性，才能将创建请求改为`ossBucketName`/`ossObjectName`。旧的Base64创建流程在此之前不应重复触发。
 
+构建运行 [`36112268933`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36112268933) 在 main 提交 `7ebcd99f1d02aec9af0acae8c1d2555f5670e01a` 上两次生成 46,860,069 字节相同包，独立下载后 SHA-256 为 `b29bd3b20d512967d98c59ba8c35d10833eae65eb9ba5ce2a519cf1e84e68fae`。对应唯一目标是私有 Bucket 下 `data-platform-demo/v2/control-plane/<该SHA-256>.zip`。部署角色新增权限方案为单个对象的 `oss:GetObject` 和 `oss:PutObject`，无 List/Delete/Bucket 管理；固定策略名 `DataPlatformV2ControlPackageMinimal`。此权限尚未附加，上传流程尚未运行。
+
+`upload-v2-control-plane.yml`必须先验证上述成功构建运行及原始提交，下载仅保留一天的构建产物，并核对SHA-256/字节；当月完整账单小于¥200才可通过OIDC尝试上传。对象已存在时只读回验，缺失时使用 `forbid-overwrite` 与 private ACL 创建，随后从OSS下载并复核完整字节。Bucket ACL、对象ACL、Bucket Policy公开状态和Bucket级Block Public Access由独立只读审计确认；与对象Head、下载摘要、上传运行和提交绑定的六小时脱敏收据进入 `docs/evidence`。没有新鲜收据，预置和公网更新均在写入FC前停止。阿里云官方依据：[OSS代码位置字段](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-struct-inputcodelocation)、[CreateFunction 的OSS读取要求](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-createfunction)。
+
 ## 部署工作流
 
 `.github/workflows/deploy-v2-staging.yml`只能手动触发，且使用独立GitHub Environment `v2-staging`。它不会修改现有V1函数；目标函数默认为`dataplatform-v2-staging-api`，可由同目录的预置工作流安全创建，也可由账号内操作预创建。

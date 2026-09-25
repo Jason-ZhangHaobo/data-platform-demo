@@ -16,6 +16,9 @@ test("V2 cloud deployment does not embed cloud IDs or inherit stale function sec
     assert.doesNotMatch(workflow, pattern);
   assert.match(workflow, /verify-v2-cloud-preflight\.mjs/);
   assert.match(workflow, /verify-v2-staging-config\.mjs/);
+  assert.match(workflow, /v2-control-package-oss-receipt\.mjs --verify/);
+  assert.match(workflow, /code:\{ossBucketName:\$bucket,ossObjectName:\$code_object\}/);
+  assert.doesNotMatch(workflow, /code:\{zipFile:\$zip\}/);
   assert.match(workflow, /export-v2-staging-secret-bundle\.mjs/);
   assert.match(workflow, /V2_DEPLOY_ROLE_ARN/);
   assert.match(workflow, /V2_AUDIT_EVIDENCE_FILE/);
@@ -45,6 +48,9 @@ test("V2 provisioning workflow is create-only and budget/network gated", () => {
   assert.doesNotMatch(workflow, /QueryBillOverview/);
   assert.match(workflow, /V2_FUNCTION_ROLE_ARN/);
   assert.match(workflow, /verify-v2-staging-config\.mjs/);
+  assert.match(workflow, /v2-control-package-oss-receipt\.mjs --verify/);
+  assert.match(workflow, /code:\{ossBucketName:\$bucket,ossObjectName:\$code_object\}/);
+  assert.doesNotMatch(workflow, /code:\{zipFile:\$zip\}/);
   assert.ok(workflow.indexOf("verify-v2-staging-config.mjs") < workflow.indexOf("npm ci"));
   assert.ok(workflow.indexOf("Configure Alibaba Cloud credentials with GitHub OIDC") < workflow.indexOf("npm ci"));
   assert.match(workflow, /env -i HOME="\$HOME" PATH="\$PATH" CI=true npm ci/);

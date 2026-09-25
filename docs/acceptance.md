@@ -655,3 +655,9 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 预置运行 [`36109590314`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36109590314) 已通过受保护配置、OIDC、当月账单和网络检查，随后在 `npm run ci` 的 6 个用例失败；函数创建步骤未执行。
 - 失败用例读取到了作业级管理员邮箱/哈希与 `JASONSECRETS` 等真实部署环境，导致合成管理员显示名校验失败、Secret exporter 用例的预期输出被覆盖。部署 Secret 不应进入测试或依赖安装子进程。
 - 预置流程现使用清洁子进程运行 `npm ci`、完整 CI 与 Linux 构包；真正创建函数的步骤仍在受保护作业中读取所需 Secret。本机按同一清洁环境运行完整 CI 为 353 通过、0 失败、1 跳过；远程修正和私有函数创建仍待主线运行验证。
+
+## 2026-09-25：控制面代码包改用私有OSS
+
+- 主线运行 [`36110836235`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36110836235) 通过完整CI和Linux构包、确认目标函数不存在；随后内嵌ZIP的CreateFunction请求被网关以`ClientError.413 / Request Entity Too Large`拒绝。没有函数已创建证据，不能重跑相同Base64请求。
+- 无云权限的构建运行 [`36112268933`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36112268933) 双构建包大小均为46,860,069字节；下载短期Artifact独立计算 SHA-256 `b29bd3b20d512967d98c59ba8c35d10833eae65eb9ba5ce2a519cf1e84e68fae`，ZIP完整性验证通过。
+- 新上传、策略和FC流程按这一摘要生成精确OSS对象，只读/写单对象，禁止覆盖、私有ACL、下载回验和短期四证收据；代码与本机合成测试不等于策略已附加、对象已上传或FC已创建。
