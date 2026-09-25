@@ -124,7 +124,10 @@ jobs:
             :
           else
             code="$(node scripts/extract-aliyun-error-code.mjs "$head_file" "$error_file")"
-            test "$code" = NoSuchKey || test "$code" = NoSuchObject
+            if test "$code" != NoSuchKey && test "$code" != NoSuchObject; then
+              echo "::error title=Control package HEAD failed::$code"
+              exit 1
+            fi
             ossutil api put-object --quiet \
               --bucket "$V2_OSS_BUCKET" --key "$V2_CONTROL_CODE_OBJECT" \
               --body file://v2-function.zip \
