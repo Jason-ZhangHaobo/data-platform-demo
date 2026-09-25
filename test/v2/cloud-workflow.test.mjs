@@ -47,7 +47,10 @@ test("V2 provisioning workflow is create-only and budget/network gated", () => {
   assert.match(workflow, /verify-v2-staging-config\.mjs/);
   assert.ok(workflow.indexOf("verify-v2-staging-config.mjs") < workflow.indexOf("npm ci"));
   assert.ok(workflow.indexOf("Configure Alibaba Cloud credentials with GitHub OIDC") < workflow.indexOf("npm ci"));
-  assert.ok(workflow.indexOf("Stop before build if the current bill or role boundary is unsafe") < workflow.indexOf("npm ci"));
+  assert.ok(workflow.indexOf("Stop before build if the current bill or network boundary is unsafe") < workflow.indexOf("npm ci"));
+  assert.doesNotMatch(workflow, /aliyun ram (?:GetRole|ListPoliciesForRole)/);
+  assert.match(workflow, /test "\$V2_FUNCTION_ROLE_ARN" != "\$ALIYUN_ROLE_ARN"/);
+  assert.match(workflow, /test "\$\{BASH_REMATCH\[1\]\}" = "\$deploy_account"/);
   assert.ok(workflow.indexOf("DescribeVSwitchAttributes") < workflow.indexOf("npm ci"));
   assert.match(workflow, /FunctionNotFound/);
   assert.match(workflow, /extract-aliyun-error-code\.mjs "\$response_file" "\$error_file"/);
