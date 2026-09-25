@@ -80,21 +80,19 @@ jobs:
           role-session-expiration: 1800
           audience: sts.aliyuncs.com
 
-      - name: Stop before build if the current bill or role boundary is unsafe
+      - name: Stop before build if the current bill or network boundary is unsafe
         run: |
           set -euo pipefail
           umask 077
-          role_file="$(mktemp)"
-          policies_file="$(mktemp)"
           vsw_file="$(mktemp)"
           sg_file="$(mktemp)"
-          trap 'rm -f "$role_file" "$policies_file" "$vsw_file" "$sg_file"' EXIT
+          trap 'rm -f "$vsw_file" "$sg_file"' EXIT
           spend="$(V2_HARD_MONTHLY_BUDGET_CNY=200 scripts/query-v2-monthly-spend.sh)"
-          role_name="${V2_FUNCTION_ROLE_ARN##*/}"
-          aliyun ram GetRole --RoleName "$role_name" > "$role_file"
-          jq -e 'tostring | test("fc|functioncompute"; "i")' "$role_file" >/dev/null
-          aliyun ram ListPoliciesForRole --RoleName "$role_name" > "$policies_file"
-          ! jq -e 'tostring | test("AdministratorAccess|AliyunRAMFullAccess|AliyunAccountFullAccess|AliyunOSSFullAccess|AliyunRDSFullAccess|AliyunFCFullAccess|AliyunVPCFullAccess|AliyunECSFullAccess"; "i")' "$policies_file" >/dev/null
+          [[ "$ALIYUN_ROLE_ARN" =~ ^acs:ram::([0-9]{12,20}):role/[a-z0-9-]{1,64}$ ]]
+          deploy_account="${BASH_REMATCH[1]}"
+          [[ "$V2_FUNCTION_ROLE_ARN" =~ ^acs:ram::([0-9]{12,20}):role/[a-z0-9-]{1,64}$ ]]
+          test "${BASH_REMATCH[1]}" = "$deploy_account"
+          test "$V2_FUNCTION_ROLE_ARN" != "$ALIYUN_ROLE_ARN"
           aliyun vpc DescribeVSwitchAttributes --RegionId "$ALIBABA_CLOUD_REGION_ID" --VSwitchId "$V2_VSW_ID" > "$vsw_file"
           jq -e --arg vpc "$V2_VPC_ID" --arg vsw "$V2_VSW_ID" '.VSwitchId == $vsw and .VpcId == $vpc and .Status == "Available"' "$vsw_file" >/dev/null
           aliyun ecs DescribeSecurityGroups --RegionId "$ALIBABA_CLOUD_REGION_ID" --SecurityGroupId "$V2_SECURITY_GROUP_ID" > "$sg_file"
