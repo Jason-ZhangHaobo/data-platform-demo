@@ -22,7 +22,9 @@ V2使用`node:sqlite`作为本机和首个云试点的同步索引。阿里云FC
 - `deploy/v2/package-lock.json`锁定的mysql2及传递依赖；
 - 不包含`.env`、`.env.local`、PEM或Key文件。
 
-ZIP超过70MiB即失败，以避开FC API Base64后总请求100MB限制。GitHub主CI会在Linux实际构包并验证解释器平台、`node:sqlite`、入口、网页和fixtures；本次手动运行已通过，但不把完整包上传到额外Artifact，后续应使用受保护部署工作流在同一Runner内完成受控更新。
+ZIP超过70MiB即失败。GitHub Linux CI验证解释器平台、`node:sqlite`、入口、网页和fixtures；控制面构建工作流会双构建校验内部ZIP摘要一致，并仅保留一天的Artifact供精确OSS上传。70MiB包大小门不保证Base64请求不会触及实际网关限制，创建时改为从私有OSS代码对象引用。
+
+2026-09-25预置运行`36110836235`已通过配置、账单、网络、完整CI、Linux构包与目标函数不存在检查，`CreateFunction`随后被网关以`ClientError.413 / Request Entity Too Large`拒绝；没有函数创建成功证据。阿里云FC 3.0的`InputCodeLocation`支持私有OSS代码位置。新增独立的无云权限构建工作流，仅生成短期Linux包及其真实SHA-256/字节数；后续需对这一摘要的精确OSS对象授权、禁止覆盖上传并核验内容与私有性，才能将创建请求改为`ossBucketName`/`ossObjectName`。旧的Base64创建流程在此之前不应重复触发。
 
 ## 部署工作流
 

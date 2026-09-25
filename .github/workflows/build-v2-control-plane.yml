@@ -1,0 +1,61 @@
+name: Build V2 control plane package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build and inspect private FC code package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify code and web build
+        run: npm run ci
+
+      - name: Build immutable Linux package
+        run: |
+          set -euo pipefail
+          scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
+          scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function-repeat.zip"
+          test "$(sha256sum v2-function.zip | cut -d' ' -f1)" = "$(sha256sum v2-function-repeat.zip | cut -d' ' -f1)"
+          test "$(wc -c < v2-function.zip)" = "$(wc -c < v2-function-repeat.zip)"
+
+      - name: Verify package and record identity
+        run: |
+          set -euo pipefail
+          unzip -tq v2-function.zip
+          unzip -l v2-function.zip | grep -q 'runtime/node'
+          unzip -l v2-function.zip | grep -q 'src/v2/cloud-server.mjs'
+          unzip -l v2-function.zip | grep -q 'web-dist/index.html'
+          ! unzip -l v2-function.zip | grep -E '(^|/)(\.env|\.env\.local|[^/]+\.(pem|key))$'
+          digest="$(sha256sum v2-function.zip | cut -d' ' -f1)"
+          bytes="$(wc -c < v2-function.zip | tr -d ' ')"
+          test "${#digest}" = 64
+          test "$bytes" -gt 0
+          test "$bytes" -le 73400320
+          echo "V2 control package SHA-256: $digest" >> "$GITHUB_STEP_SUMMARY"
+          echo "V2 control package bytes: $bytes" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain one verified package briefly
+        uses: actions/upload-artifact@v6
+        with:
+          name: shuduo-v2-control-${{ github.sha }}
+          path: v2-function.zip
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
