@@ -31,6 +31,12 @@ jobs:
       PUBLIC_URL: ${{ vars.V2_PUBLIC_URL }}
       V2_PUBLIC_ORIGIN: ${{ vars.V2_PUBLIC_ORIGIN }}
       OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
+      V2_OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
+      V2_CONTROL_PACKAGE_SHA256: ${{ vars.V2_CONTROL_PACKAGE_SHA256 }}
+      V2_CONTROL_PACKAGE_BYTES: ${{ vars.V2_CONTROL_PACKAGE_BYTES }}
+      V2_CONTROL_PACKAGE_UPLOAD_RUN_ID: ${{ vars.V2_CONTROL_PACKAGE_UPLOAD_RUN_ID }}
+      V2_CONTROL_PACKAGE_UPLOAD_HEAD_SHA: ${{ vars.V2_CONTROL_PACKAGE_UPLOAD_HEAD_SHA }}
+      V2_CONTROL_PACKAGE_OSS_RECEIPT_FILE: ${{ vars.V2_CONTROL_PACKAGE_OSS_RECEIPT_FILE }}
       V2_MYSQL_HOST: ${{ secrets.V2_MYSQL_HOST }}
       V2_MYSQL_PORT: ${{ secrets.V2_MYSQL_PORT }}
       V2_MYSQL_USER: ${{ secrets.V2_MYSQL_USER }}
@@ -63,13 +69,13 @@ jobs:
         run: node scripts/export-v2-staging-secret-bundle.mjs
 
       - name: Install locked development dependencies
-        run: npm ci
+        run: env -i HOME="$HOME" PATH="$PATH" CI=true npm ci
 
       - name: Run complete quality gate
-        run: npm run ci
+        run: env -i HOME="$HOME" PATH="$PATH" CI=true npm run ci
 
       - name: Build minimal Debian 12 function package
-        run: scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
+        run: env -i HOME="$HOME" PATH="$PATH" CI=true scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
 
       - name: Verify package runtime and contents
         run: |
@@ -87,6 +93,17 @@ jobs:
         run: |
           node scripts/verify-v2-staging-config.mjs
           test -n "$V2_AUDIT_EVIDENCE_FILE" || { echo 'Missing GitHub v2-staging configuration: V2_AUDIT_EVIDENCE_FILE' >&2; exit 1; }
+
+      - name: Require matching private code object and fresh receipt
+        run: |
+          set -euo pipefail
+          [[ "$ALIYUN_ROLE_ARN" =~ ^acs:ram::([0-9]{12,20}):role/[a-z0-9-]{1,64}$ ]]
+          export ALIYUN_ACCOUNT_ID="${BASH_REMATCH[1]}"
+          export V2_CONTROL_CODE_OBJECT="data-platform-demo/v2/control-plane/$V2_CONTROL_PACKAGE_SHA256.zip"
+          node scripts/v2-control-package-oss-receipt.mjs --verify
+          test "$(sha256sum v2-function.zip | cut -d' ' -f1)" = "$V2_CONTROL_PACKAGE_SHA256"
+          test "$(wc -c < v2-function.zip | tr -d ' ')" = "$V2_CONTROL_PACKAGE_BYTES"
+          printf 'V2_CONTROL_CODE_OBJECT=%s\n' "$V2_CONTROL_CODE_OBJECT" >> "$GITHUB_ENV"
 
       - name: Require fresh sanitized budget, dedicated function and ICP evidence
         run: node scripts/verify-v2-cloud-preflight.mjs "$V2_AUDIT_EVIDENCE_FILE"
@@ -130,11 +147,10 @@ jobs:
       - name: Update the dedicated V2 function
         run: |
           umask 077
-          base64 -w 0 v2-function.zip > v2-function.zip.b64
           jq -n \
-            --rawfile zip v2-function.zip.b64 \
             --arg public_origin "$V2_PUBLIC_ORIGIN" \
             --arg bucket "$OSS_BUCKET" \
+            --arg code_object "$V2_CONTROL_CODE_OBJECT" \
             --arg mysql_host "$V2_MYSQL_HOST" \
             --arg mysql_port "${V2_MYSQL_PORT:-3306}" \
             --arg mysql_user "$V2_MYSQL_USER" \
@@ -201,7 +217,7 @@ jobs:
               V2_REMOTE_SPARK_RESERVATION_SECONDS:"30",
               V2_ACCOUNT_MONTHLY_SPEND_CNY:$account_spend
             } | {
-              code:{zipFile:$zip},
+              code:{ossBucketName:$bucket,ossObjectName:$code_object},
               runtime:"custom.debian12",
               handler:"not-used",
               cpu:0.25,
@@ -246,5 +262,5 @@ jobs:
       - name: Remove generated files containing deployment secrets
         if: always()
         run: |
-          rm -f v2-function.zip.b64 v2-function-update.json current-v2-function.json current-v2-concurrency.json current-v2-scaling.json v2-function-result.json /tmp/anonymous-write.json
+          rm -f v2-function-update.json current-v2-function.json current-v2-concurrency.json current-v2-scaling.json v2-function-result.json /tmp/anonymous-write.json
           rm -rf /tmp/shuduo-v2-runtime-check
