@@ -661,3 +661,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 主线运行 [`36110836235`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36110836235) 通过完整CI和Linux构包、确认目标函数不存在；随后内嵌ZIP的CreateFunction请求被网关以`ClientError.413 / Request Entity Too Large`拒绝。没有函数已创建证据，不能重跑相同Base64请求。
 - 无云权限的构建运行 [`36112268933`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36112268933) 双构建包大小均为46,860,069字节；下载短期Artifact独立计算 SHA-256 `b29bd3b20d512967d98c59ba8c35d10833eae65eb9ba5ce2a519cf1e84e68fae`，ZIP完整性验证通过。
 - 新上传、策略和FC流程按这一摘要生成精确OSS对象，只读/写单对象，禁止覆盖、私有ACL、下载回验和短期四证收据；代码与本机合成测试不等于策略已附加、对象已上传或FC已创建。
+
+## 2026-09-27：控制面代码对象已通过真实云核验
+
+- 用户明确批准 `DataPlatformV2ControlPackageMinimal`，仅含当前控制面摘要对象的GetObject/PutObject。Cloud Shell在正确账号内创建、附加策略；再次执行幂等回读验证现有策略正文相同，结果为created=false、attached=true、verified=true。
+- 构建36112268933第2次尝试恢复相同源码包；上传运行[36235762422](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36235762422)完成摘要/字节核对、预算门、私有禁止覆盖上传及下载回验。SHA-256与既定单对象授权一致，大小46,860,069字节。
+- Cloud Shell使用已有临时身份通过内置 `aliyun ossutil` 只读取得Head、Bucket ACL、Object ACL、Bucket Policy Status和Block Public Access，并再次下载核验完整字节；内容与四项私有性全部通过。
+- 六小时脱敏收据为[evidence/v2-control-oss-receipt-20260926T225628Z.json](evidence/v2-control-oss-receipt-20260926T225628Z.json)，本机验证包、对象键哈希、上传运行、内容、隐私和时间窗口全部通过；仅在有效窗口内允许控制面create-only预置。控制面连通、Worker接入、备案和公网仍待后续验收。
