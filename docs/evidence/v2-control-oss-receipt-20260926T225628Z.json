@@ -1,0 +1,26 @@
+{
+  "schema": "shuduo-v2-control-oss-receipt/v1",
+  "packageSha256": "b29bd3b20d512967d98c59ba8c35d10833eae65eb9ba5ce2a519cf1e84e68fae",
+  "packageBytes": 46860069,
+  "objectKeyHash": "03c5f5b42e1546c1432311b978bd10a8b240d90a733c798eb7b084c6ab53719b",
+  "uploadRun": {
+    "id": "36235762422",
+    "headSha": "3e2a5f065309dbcbbded8d41e3bcc5af53277e31"
+  },
+  "verifiedAt": "2026-09-26T22:56:28.079Z",
+  "validUntil": "2026-09-27T04:56:28.079Z",
+  "contentChecks": {
+    "sizeMatches": true,
+    "digestMetadataMatches": true,
+    "etagPresent": true,
+    "downloadedBytesVerified": true
+  },
+  "privacyChecks": {
+    "bucketAclPrivate": true,
+    "objectAclPrivateOrInherited": true,
+    "bucketPolicyNotPublic": true,
+    "bucketPublicAccessBlocked": true
+  },
+  "publicAccessVerified": true,
+  "containsResourceNames": false
+}
