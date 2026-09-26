@@ -668,3 +668,11 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 构建36112268933第2次尝试恢复相同源码包；上传运行[36235762422](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36235762422)完成摘要/字节核对、预算门、私有禁止覆盖上传及下载回验。SHA-256与既定单对象授权一致，大小46,860,069字节。
 - Cloud Shell使用已有临时身份通过内置 `aliyun ossutil` 只读取得Head、Bucket ACL、Object ACL、Bucket Policy Status和Block Public Access，并再次下载核验完整字节；内容与四项私有性全部通过。
 - 六小时脱敏收据为[evidence/v2-control-oss-receipt-20260926T225628Z.json](evidence/v2-control-oss-receipt-20260926T225628Z.json)，本机验证包、对象键哈希、上传运行、内容、隐私和时间窗口全部通过；仅在有效窗口内允许控制面create-only预置。控制面连通、Worker接入、备案和公网仍待后续验收。
+
+## 2026-09-27：控制面已创建，私有连接卡在数据库认证
+
+- 预置运行[36278428850](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36278428850)成功，包含质量、预算、代码摘要、CreateFunction、单实例并发与最小实例0回读；不再重跑create-only。
+- 私有PRIVATE_STATUS_V1返回CAExited；内联安全日志定位到Node24.21.0下MySqlMetadataBackend的ER_ACCESS_DENIED_ERROR。账号Available/Normal、指定平台库ReadWrite、私网端点/子网白名单、RDS Running/AutoPause和密码首尾空白/外层引号均逐项核验。
+- 对无触发器、私有预置函数短暂替换启动探针，仅执行SELECT 1；一次探针返回ETIMEDOUT，再次确认Running后返回1045/AUTHENTICATION_REJECTED，不凭超时码推断密码错误。探针每次finally恢复原启动配置并核对代码/环境/角色/网络/规格不变，没有重置密码或写业务数据。脱敏记录见[evidence/v2-control-private-smoke-20260927.json](evidence/v2-control-private-smoke-20260927.json)。
+- 用户确认记得原platform_app密码，选择安全页补填。新增mysql-only入口只写一个加密Secret；同步流程不碰管理员账号、数据库账号或代码包。配置同步、数据库连接、OSS应用持久化、公网验收分别记录，后面三者仍未通过。
+- 本次完整CI：368通过、0失败、1按条件跳过；源文件检查和两套构建均通过。安全页实际显示“数据库密码已加密保存，但同步任务未启动”；新工作流尚未进入main时没有假报同步成功，用户无需重复填写，后续由Codex触发同步。

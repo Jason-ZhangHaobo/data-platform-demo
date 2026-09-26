@@ -1,6 +1,14 @@
 # V2 阿里云部署说明
 
-日期：2026-09-18。状态：代码包与受保护手动工作流已准备；GitHub Linux x64手动CI已完成构建/Node24校验，`JASONSECRETS` bundle兼容已实现，真实RDS/OSS部分预检完成，V2专用FC/ICP备案与公网部署尚未验收。
+核验日期：2026-09-27。专用控制面已由运行[36278428850](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36278428850)创建并回读通过。Node24真实启动在MySQL认证处失败，私有只读探针确认1045/AUTHENTICATION_REJECTED；用户将只补填已有数据库密码。OSS应用持久化、Worker接入、ICP备案与公网部署仍未验收。历史失败记录不代表当前资源不存在。
+
+## 当前数据库连接修复入口
+
+`node scripts/start-v2-secure-config.mjs --mysql-only`启动回环安全页，只更新GitHub受保护环境的V2_MYSQL_PASSWORD并触发sync-v2-control-mysql-secret。其余已配置的管理员邮箱/哈希不变；页面明确区分保存、同步与实际连接成功。
+
+同步工作流仅main可用，与控制面预置/部署共享串行锁。使用现有OIDC权限，双读配置检查漂移，仅PUT environmentVariables中这一项，回读其余配置不变。不调用RDS重置，不写代码包/角色/网络/规格，不授予Invoke权限。双读不是云API原子CAS，期间禁止人工并发编辑；读回差异失败后人工检查，不自动覆盖式回滚。
+
+完成同步后仍需Cloud Shell主账号调用PRIVATE_STATUS_V1；仅配置成功不能宣布MySQL/OSS健康。实际诊断证据见[evidence/v2-control-private-smoke-20260927.json](evidence/v2-control-private-smoke-20260927.json)。
 
 ## 为什么单独打包Node 24
 
@@ -26,7 +34,7 @@ ZIP超过70MiB即失败。GitHub Linux CI验证解释器平台、`node:sqlite`�
 
 2026-09-25预置运行`36110836235`已通过配置、账单、网络、完整CI、Linux构包与目标函数不存在检查，`CreateFunction`随后被网关以`ClientError.413 / Request Entity Too Large`拒绝；没有函数创建成功证据。阿里云FC 3.0的`InputCodeLocation`支持私有OSS代码位置。新增独立的无云权限构建工作流，仅生成短期Linux包及其真实SHA-256/字节数；后续需对这一摘要的精确OSS对象授权、禁止覆盖上传并核验内容与私有性，才能将创建请求改为`ossBucketName`/`ossObjectName`。旧的Base64创建流程在此之前不应重复触发。
 
-构建运行 [`36112268933`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36112268933) 在 main 提交 `7ebcd99f1d02aec9af0acae8c1d2555f5670e01a` 上两次生成 46,860,069 字节相同包，独立下载后 SHA-256 为 `b29bd3b20d512967d98c59ba8c35d10833eae65eb9ba5ce2a519cf1e84e68fae`。对应唯一目标是私有 Bucket 下 `data-platform-demo/v2/control-plane/<该SHA-256>.zip`。部署角色新增权限方案为单个对象的 `oss:GetObject` 和 `oss:PutObject`，无 List/Delete/Bucket 管理；固定策略名 `DataPlatformV2ControlPackageMinimal`。此权限尚未附加，上传流程尚未运行。
+构建运行 [`36112268933`](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36112268933) 在 main 提交 `7ebcd99f1d02aec9af0acae8c1d2555f5670e01a` 上两次生成 46,860,069 字节相同包，独立下载后 SHA-256 为 `b29bd3b20d512967d98c59ba8c35d10833eae65eb9ba5ce2a519cf1e84e68fae`。对应唯一目标是私有 Bucket 下 `data-platform-demo/v2/control-plane/<该SHA-256>.zip`。策略 `DataPlatformV2ControlPackageMinimal` 仅允许此单对象Get/Put，无List/Delete/Bucket管理；2026-09-27已按用户授权附加并回读核验，上传36235762422、独立私有性四证及FC预置均成功。
 
 `upload-v2-control-plane.yml`必须先验证上述成功构建运行及原始提交，下载仅保留一天的构建产物，并核对SHA-256/字节；当月完整账单小于¥200才可通过OIDC尝试上传。对象已存在时只读回验，缺失时使用 `forbid-overwrite` 与 private ACL 创建，随后从OSS下载并复核完整字节。Bucket ACL、对象ACL、Bucket Policy公开状态和Bucket级Block Public Access由独立只读审计确认；与对象Head、下载摘要、上传运行和提交绑定的六小时脱敏收据进入 `docs/evidence`。没有新鲜收据，预置和公网更新均在写入FC前停止。阿里云官方依据：[OSS代码位置字段](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-struct-inputcodelocation)、[CreateFunction 的OSS读取要求](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-createfunction)。
 
@@ -69,7 +77,7 @@ node scripts/apply-v2-deploy-policy.mjs --apply
 
 应用器仅创建并附加固定名称的自定义策略；重复运行会复核默认版本正文和角色附加状态。若同名策略内容不同则返回`POLICY_DOCUMENT_MISMATCH`并停止，不自动覆盖、创建新版本或扩大权限。回滚仅需由管理员将该自定义策略从部署角色解绑；脚本本身不提供删除或解绑动作。FC 3.0文档规定本工作流使用的Create/Get/Update、并发和弹性配置接口只支持`Resource:"*"`，因此以精确动作清单而非`fc:*`限制范围；RAM角色、vSwitch和安全组继续精确到单个资源。
 
-2026-09-22运行`35717000151`在受保护配置与OIDC通过后，被`ram:GetRole`拒绝，函数创建步骤没有执行。2026-09-25改为使用已核验的运行角色证据与既有精确`ram:PassRole`边界，不再要求部署角色读取RAM角色详情；若创建时角色不符合FC信任或PassRole要求，FC仍会拒绝。此变更尚待GitHub主线运行验证。
+2026-09-22运行`35717000151`在受保护配置与OIDC通过后，被`ram:GetRole`拒绝，函数创建步骤没有执行。2026-09-25改为使用已核验的运行角色证据与既有精确`ram:PassRole`边界，不再要求部署角色读取RAM角色详情；2026-09-27控制面创建36278428850已通过该边界，无新增RAM读取授权。
 
 运行变量：
 
