@@ -32,8 +32,8 @@
   "costControl": {
     "autoPauseEnabled": true,
     "manualStopCode": "IncorrectDBInstanceType",
-    "lastObservedRdsState": "Running",
-    "pausedStateVerified": false,
+    "lastObservedRdsState": "STOPPED",
+    "pausedStateVerified": true,
     "additionalTestTrafficStopped": true
   },
   "containsResourceNames": false,

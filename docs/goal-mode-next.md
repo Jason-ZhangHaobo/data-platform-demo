@@ -18,7 +18,7 @@
 | GitHub与权限 | v2-staging仅main部署；用户已明确批准DataPlatformV2ControlPackageMinimal的单对象Get/Put，Cloud Shell已创建、附加并再次回读正文与绑定，通过。 |
 | 私有Spark Worker | W2恢复运行35556647182与固定证券Spark3.5.9烟测成功；控制面接入、云Python和公网E2E待完成。 |
 | 控制面 | 36278428850创建成功。2026-09-27对齐数据库密码后，PRIVATE_STATUS_V1实际返回MySQL元数据healthy=true、OSS数据状态healthy=true及publicReady=false。证据见evidence/v2-control-private-healthy-20260927.json；完整恢复/跨用户/Worker/公网仍待验收。 |
-| RDS费用边界 | 本次从STOPPED临时唤醒，验收后StopDBInstance返回IncorrectDBInstanceType；Serverless保留AutoPause=true，停止额外调用，未确认已经再次暂停。不要重复手动停止或改付费类型来规避。 |
+| RDS费用边界 | 本次从STOPPED临时唤醒，验收后手动Stop被IncorrectDBInstanceType拒绝；保留AutoPause=true并停止测试流量，随后只读确认已自动回到STOPPED。后续验证时按需唤醒，不重复手动停止或改变付费类型。 |
 | 代码包 | 双构建36112268933的第2次尝试已恢复相同包：46,860,069字节，SHA-256为b29bd3b20d512967d98c59ba8c35d10833eae65eb9ba5ce2a519cf1e84e68fae。上传36235762422通过真实下载回验，无需重复构建。 |
 | OSS创建门 | 当前代码对象已私有上传并用于成功创建。收据docs/evidence/v2-control-oss-receipt-20260926T225628Z.json有效至2026-09-27T04:56:28.079Z；不需重复创建/上传。未来代码更新仍须新鲜收据。 |
 | W3接入 | 签名OSS队列和Worker消费代码已合并；独立角色、精确前缀触发器、更新包、云端单任务及恢复尚未验收。 |

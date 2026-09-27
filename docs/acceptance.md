@@ -685,3 +685,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 原PRIVATE_STATUS_V1真实调用成功：协议shuduo-v2-private-smoke-v1、PRIVATE_CONTROL_PLANE；MySQL元数据healthy=true；OSS数据状态与双存储协调healthy=true；publicReady=false。此前1045至此解除。
 - 新健康记录为[evidence/v2-control-private-healthy-20260927.json](evidence/v2-control-private-healthy-20260927.json)。该结果只证明私有启动与初始持久化健康；多次冷启动/冲突恢复、云身份会话、Worker端到端及公网体验仍须独立验收。
 - 本次RDS原为STOPPED，重置前临时唤醒。验收后尝试恢复暂停被IncorrectDBInstanceType拒绝；Serverless自动暂停仍开启，停止额外测试流量，不能声称已恢复STOPPED。未修改付费类型、规格或自动暂停设置。
+- 随后最后一次只读Describe回证state=STOPPED、autoPause=true，确认已自动恢复暂停；此新证据更新前述“尚未确认暂停”的状态。连接健康指先前实际运行验收，不表示此后持续运行或公网开放。
