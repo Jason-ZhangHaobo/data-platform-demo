@@ -1,0 +1,68 @@
+{
+  "schema": "shuduo-domain-icp-precheck/v1",
+  "observedDate": "2026-09-27",
+  "domain": "shuduoai.cn",
+  "domainStatus": {
+    "realNameVerified": true,
+    "registrantType": "PERSONAL",
+    "normal": true,
+    "registrantUpdatePending": false,
+    "registrationDate": "2026-09-19",
+    "expirationDate": "2027-09-19",
+    "suffixAndRegistrarPrecheckPassed": true,
+    "filingIdentityMatchVerified": false
+  },
+  "filingAccountPrecheck": {
+    "eligible": false,
+    "qualifyingServerFound": false,
+    "availableServiceCodeFound": false,
+    "fcResourcePackageCount": 0,
+    "personalAccountSameAccountUseOnly": true,
+    "filingSubmitted": false
+  },
+  "existingDraft": {
+    "reusedInsteadOfDuplicated": true,
+    "previousProvince": "ZHEJIANG",
+    "observedProvince": "BEIJING",
+    "intendedProvince": "BEIJING",
+    "regionCorrectionRequested": true,
+    "regionCorrectionVerified": true,
+    "unconfirmedFormerCityAndDistrictCleared": true,
+    "personalInformationFormOpened": true,
+    "identityMaterialsSubmittedByAssistant": false
+  },
+  "proposedPurchase": {
+    "product": "FC_CU_ANNUAL_PACKAGE",
+    "units": 1200000,
+    "unit": "CU",
+    "validityMonths": 12,
+    "quantity": 1,
+    "quotedOneTimeCny": "126.00",
+    "quoteUrl": "https://common-buy.aliyun.com/?commodityCode=fc_cu_dp_cn",
+    "authorized": true,
+    "purchased": true,
+    "paymentPageReportsSuccess": true,
+    "paidCny": "126.00",
+    "accountBalanceDeductionCny": "0.00",
+    "availablePackageCountAfterPurchase": 1,
+    "availableUnitsVerified": 1200000,
+    "effectiveAt": "2026-09-27T01:00:00Z",
+    "expiresAt": "2027-09-27T01:00:00Z",
+    "postPurchaseEligibilityCheckCompleted": true,
+    "filingEligibilityVerifiedAfterPurchase": false
+  },
+  "budgetSnapshot": {
+    "billingCycle": "2026-09",
+    "recordCount": 11,
+    "fullPaginationVerified": true,
+    "proposedPurchaseCny": "126.00",
+    "monthlyBudgetCny": "200.00",
+    "beforePurchaseBelowBudget": true,
+    "indicativeSubtotalBelowBudget": true,
+    "accountBillingAmountRedacted": true,
+    "futureConsumptionIncluded": false
+  },
+  "containsIdentityDetails": false,
+  "containsAccountOrResourceIds": false,
+  "containsSecretValues": false
+}
