@@ -14,7 +14,7 @@
 
 | 事项 | 状态与证据 |
 |---|---|
-| 三项账号配置 | 原三项已保存，格式校验35716376131成功。但2026-09-27真实私网连接返回1045/AUTHENTICATION_REJECTED；用户记得数据库密码，选择只补填这一项。保留数舵登录信息，不重置RDS密码。 |
+| 三项账号配置 | 用户已在单项安全页补填数据库密码。PR138合并，同步36281171836成功且changed=false，说明与既有FC值一致；实际连接仍1045/AUTHENTICATION_REJECTED。管理员资料未改。等待明确批准是否将RDS平台账号密码重置为用户此次提交值；未获批准前不得重置。 |
 | GitHub与权限 | v2-staging仅main部署；用户已明确批准DataPlatformV2ControlPackageMinimal的单对象Get/Put，Cloud Shell已创建、附加并再次回读正文与绑定，通过。 |
 | 私有Spark Worker | W2恢复运行35556647182与固定证券Spark3.5.9烟测成功；控制面接入、云Python和公网E2E待完成。 |
 | 控制面 | 36278428850创建成功，配置/并发/弹性回读通过；Node24已启动至MySQL连接。私有烟测因数据库认证失败退出；不等于公网可用。证据见evidence/v2-control-private-smoke-20260927.json。 |
@@ -26,13 +26,13 @@
 
 ## 下一步严格顺序
 
-### P0：仅修复现有控制面的数据库连接凭证
+### P0：连接凭证已同步，等待数据库账号密码对齐授权
 
 1. 已批准并附加的DataPlatformV2ControlPackageMinimal只覆盖当前摘要对象，不能改成Bucket前缀或通配对象。
 2. 已恢复构建并上传成功；保持当前包和上传运行绑定，不重复构包、上传或索要账号配置。
-3. 控制面已存在且创建成功，不再运行create-only。用户通过 `node scripts/start-v2-secure-config.mjs --mysql-only` 的本机页面补填已有platform_app密码；只保存V2_MYSQL_PASSWORD。不要索要管理员邮箱/登录密码，不读取或猜测原密码，不重置数据库账号。
-4. 保存后手动工作流sync-v2-control-mysql-secret自动触发：受保护main/OIDC、两次配置读取、只替换该环境项、回读其余配置不变；不改包/角色/网络/规格，不调用RDS重置，也不调用模型。保存成功、同步成功、实际数据库连接成功必须分别确认。
-5. 同步后调用原PRIVATE_STATUS_V1，验证MySQL/OSS。若仍失败，读取安全错误证据再决定；绝不以工作流成功代替连接成功。只改凭证不需要重新构包或刷新代码对象收据。
+3. 控制面已存在且创建成功，不再运行create-only。单项安全页保存已完成，不再索要管理员资料或重复输入密码。同步36281171836回读成功、changed=false；原PRIVATE_STATUS_V1仍返回MySQL认证拒绝。
+4. 下一步仅需用户明确批准：是否把platform_app在RDS中的密码重置为刚提交并已存于FC/GitHub的值，不生成随机密码、不更改数舵登录账号。当前尚未批准。获批后只在Cloud Shell内存/受限临时文件传递已有值给精确实例/精确账号的ResetAccountPassword；禁止打印密码、额外授权或重置其他账号。
+5. 对齐后调用原PRIVATE_STATUS_V1验证MySQL/OSS；只改凭证不需要重构/上传代码包或刷新代码对象收据。保存、同步、账号对齐与真实连接分别判断。
 
 ### P1：完成私有控制面
 

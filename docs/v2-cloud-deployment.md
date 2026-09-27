@@ -1,6 +1,6 @@
 # V2 阿里云部署说明
 
-核验日期：2026-09-27。专用控制面已由运行[36278428850](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36278428850)创建并回读通过。Node24真实启动在MySQL认证处失败，私有只读探针确认1045/AUTHENTICATION_REJECTED；用户将只补填已有数据库密码。OSS应用持久化、Worker接入、ICP备案与公网部署仍未验收。历史失败记录不代表当前资源不存在。
+核验日期：2026-09-27。专用控制面已由运行[36278428850](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36278428850)创建并回读通过。用户已重新提交数据库密码，同步36281171836成功且changed=false；原私有启动仍返回MySQL认证失败。等待明确批准是否对齐RDS账号本身密码，不再重复输入。OSS应用持久化、Worker接入、ICP备案与公网部署仍未验收。历史失败记录不代表当前资源不存在。
 
 ## 当前数据库连接修复入口
 

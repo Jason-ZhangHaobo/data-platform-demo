@@ -676,3 +676,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 对无触发器、私有预置函数短暂替换启动探针，仅执行SELECT 1；一次探针返回ETIMEDOUT，再次确认Running后返回1045/AUTHENTICATION_REJECTED，不凭超时码推断密码错误。探针每次finally恢复原启动配置并核对代码/环境/角色/网络/规格不变，没有重置密码或写业务数据。脱敏记录见[evidence/v2-control-private-smoke-20260927.json](evidence/v2-control-private-smoke-20260927.json)。
 - 用户确认记得原platform_app密码，选择安全页补填。新增mysql-only入口只写一个加密Secret；同步流程不碰管理员账号、数据库账号或代码包。配置同步、数据库连接、OSS应用持久化、公网验收分别记录，后面三者仍未通过。
 - 本次完整CI：368通过、0失败、1按条件跳过；源文件检查和两套构建均通过。安全页实际显示“数据库密码已加密保存，但同步任务未启动”；新工作流尚未进入main时没有假报同步成功，用户无需重复填写，后续由Codex触发同步。
+- [PR138](https://github.com/Jason-ZhangHaobo/data-platform-demo/pull/138)远程CI36281045782通过后合并。同步运行[36281171836](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36281171836)成功，安全结果为changed=false/configurationVerified=true/databaseConnectionVerified=false，说明用户重新提交值与既有FC值相同。随后原私有启动仍ER_ACCESS_DENIED_ERROR，未通过MySQL/OSS可用性验收。没有再次要求填写；已请求是否允许对齐精确RDS账号密码，在得到明确批准前保持不变。

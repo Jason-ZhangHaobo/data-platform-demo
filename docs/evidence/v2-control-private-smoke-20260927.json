@@ -27,6 +27,16 @@
     "publicAccessCreated": false
   },
   "mysqlHealthy": false,
+  "credentialResubmission": {
+    "repairPullRequest": 138,
+    "syncRunId": "36281171836",
+    "syncSucceeded": true,
+    "changed": false,
+    "configurationVerified": true,
+    "databaseConnectionVerified": false,
+    "subsequentPrivateInvokeCode": "ER_ACCESS_DENIED_ERROR",
+    "databasePasswordResetAuthorized": false
+  },
   "ossApplicationPersistenceVerified": false,
   "publicReady": false,
   "containsResourceNames": false,
