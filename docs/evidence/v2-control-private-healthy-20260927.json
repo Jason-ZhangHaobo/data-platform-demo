@@ -1,0 +1,41 @@
+{
+  "schema": "shuduo-v2-control-private-health/v1",
+  "observedDate": "2026-09-27",
+  "provisionRunId": "36278428850",
+  "credentialSyncRunId": "36281171836",
+  "previousFailureEvidence": "v2-control-private-smoke-20260927.json",
+  "passwordAlignment": {
+    "explicitUserApproval": true,
+    "resetAccepted": true,
+    "onlyPlatformAccount": true,
+    "passwordSource": "ALREADY_SAVED_USER_VALUE",
+    "grantPreserved": true,
+    "functionConfigurationUnchanged": true,
+    "newIamPermissions": false
+  },
+  "privateInvoke": {
+    "protocol": "shuduo-v2-private-smoke-v1",
+    "mode": "PRIVATE_CONTROL_PLANE",
+    "metadata": { "driver": "mysql-project-snapshot-cas", "healthy": true },
+    "persistence": {
+      "mode": "single-instance-two-store-cas",
+      "healthy": true,
+      "dataState": { "driver": "oss-json-snapshot-cas", "healthy": true }
+    },
+    "publicReady": false
+  },
+  "scope": "PRIVATE_STARTUP_AND_PERSISTENCE_HEALTH",
+  "coldRestartRecoveryVerified": false,
+  "crossUserCloudAuthenticationVerified": false,
+  "workerControlPlaneIntegrationVerified": false,
+  "publicAccessVerified": false,
+  "costControl": {
+    "autoPauseEnabled": true,
+    "manualStopCode": "IncorrectDBInstanceType",
+    "lastObservedRdsState": "Running",
+    "pausedStateVerified": false,
+    "additionalTestTrafficStopped": true
+  },
+  "containsResourceNames": false,
+  "containsSecretValues": false
+}

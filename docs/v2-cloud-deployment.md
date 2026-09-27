@@ -1,6 +1,6 @@
 # V2 阿里云部署说明
 
-核验日期：2026-09-27。专用控制面已由运行[36278428850](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36278428850)创建并回读通过。用户已重新提交数据库密码，同步36281171836成功且changed=false；原私有启动仍返回MySQL认证失败。等待明确批准是否对齐RDS账号本身密码，不再重复输入。OSS应用持久化、Worker接入、ICP备案与公网部署仍未验收。历史失败记录不代表当前资源不存在。
+核验日期：2026-09-27。专用控制面已由运行[36278428850](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36278428850)创建并回读通过。用户明确批准后已对齐平台RDS账号密码，原私有调用返回MySQL元数据与OSS数据状态健康，1045问题已解除。冷启动恢复/并发冲突、跨用户云认证、Worker接入、ICP备案与公网部署仍未验收，publicReady继续为false。
 
 ## 当前数据库连接修复入口
 
@@ -8,7 +8,7 @@
 
 同步工作流仅main可用，与控制面预置/部署共享串行锁。使用现有OIDC权限，双读配置检查漂移，仅PUT environmentVariables中这一项，回读其余配置不变。不调用RDS重置，不写代码包/角色/网络/规格，不授予Invoke权限。双读不是云API原子CAS，期间禁止人工并发编辑；读回差异失败后人工检查，不自动覆盖式回滚。
 
-完成同步后仍需Cloud Shell主账号调用PRIVATE_STATUS_V1；仅配置成功不能宣布MySQL/OSS健康。实际诊断证据见[evidence/v2-control-private-smoke-20260927.json](evidence/v2-control-private-smoke-20260927.json)。
+完成同步后仍需Cloud Shell主账号调用PRIVATE_STATUS_V1；仅配置成功不能宣布MySQL/OSS健康。实际诊断证据见[evidence/v2-control-private-smoke-20260927.json](evidence/v2-control-private-smoke-20260927.json)，用户授权对齐数据库密码后的真实健康证据见[evidence/v2-control-private-healthy-20260927.json](evidence/v2-control-private-healthy-20260927.json)。无需再次重置或索要密码。
 
 ## 为什么单独打包Node 24
 
