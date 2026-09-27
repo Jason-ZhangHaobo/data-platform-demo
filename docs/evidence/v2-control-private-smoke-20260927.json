@@ -1,0 +1,34 @@
+{
+  "schema": "shuduo-v2-control-private-smoke/v1",
+  "observedDate": "2026-09-27",
+  "provisionRunId": "36278428850",
+  "provisionSucceeded": true,
+  "packageSha256": "b29bd3b20d512967d98c59ba8c35d10833eae65eb9ba5ce2a519cf1e84e68fae",
+  "packageBytes": 46860069,
+  "startup": { "succeeded": false, "fcCode": "CAExited", "applicationCode": "ER_ACCESS_DENIED_ERROR", "nodeVersion": "24.21.0" },
+  "databaseChecks": {
+    "running": true,
+    "autoPauseEnabled": true,
+    "accountAvailable": true,
+    "dedicatedDatabaseReadWrite": true,
+    "hostMatchesIntendedInstance": true,
+    "usesPrivateEndpoint": true,
+    "vSwitchCidrMatchesWhitelist": true,
+    "edgeWhitespaceDetected": false,
+    "outerQuoteDetected": false
+  },
+  "readOnlyProbe": {
+    "query": "SELECT 1 AS ok",
+    "probeBeforeRecheckingRunning": "ETIMEDOUT",
+    "afterRunningConfirmed": { "ok": false, "category": "AUTHENTICATION_REJECTED", "code": "ER_ACCESS_DENIED_ERROR", "errno": 1045 },
+    "runtimeRestored": true,
+    "configurationUnchanged": true,
+    "databasePasswordReset": false,
+    "publicAccessCreated": false
+  },
+  "mysqlHealthy": false,
+  "ossApplicationPersistenceVerified": false,
+  "publicReady": false,
+  "containsResourceNames": false,
+  "containsSecretValues": false
+}
