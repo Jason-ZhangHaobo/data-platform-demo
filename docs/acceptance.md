@@ -676,3 +676,13 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 对无触发器、私有预置函数短暂替换启动探针，仅执行SELECT 1；一次探针返回ETIMEDOUT，再次确认Running后返回1045/AUTHENTICATION_REJECTED，不凭超时码推断密码错误。探针每次finally恢复原启动配置并核对代码/环境/角色/网络/规格不变，没有重置密码或写业务数据。脱敏记录见[evidence/v2-control-private-smoke-20260927.json](evidence/v2-control-private-smoke-20260927.json)。
 - 用户确认记得原platform_app密码，选择安全页补填。新增mysql-only入口只写一个加密Secret；同步流程不碰管理员账号、数据库账号或代码包。配置同步、数据库连接、OSS应用持久化、公网验收分别记录，后面三者仍未通过。
 - 本次完整CI：368通过、0失败、1按条件跳过；源文件检查和两套构建均通过。安全页实际显示“数据库密码已加密保存，但同步任务未启动”；新工作流尚未进入main时没有假报同步成功，用户无需重复填写，后续由Codex触发同步。
+- [PR138](https://github.com/Jason-ZhangHaobo/data-platform-demo/pull/138)远程CI36281045782通过后合并。同步运行[36281171836](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36281171836)成功，安全结果为changed=false/configurationVerified=true/databaseConnectionVerified=false，说明用户重新提交值与既有FC值相同。随后原私有启动仍ER_ACCESS_DENIED_ERROR，未通过MySQL/OSS可用性验收。没有再次要求填写；已请求是否允许对齐精确RDS账号密码，在得到明确批准前保持不变。
+
+## 2026-09-27：获明确授权后数据库认证已解决
+
+- 用户明确允许将platform_app的数据库密码重置为刚在安全页提交的值。Cloud Shell核对云账号、私网端点、Normal平台账号及唯一platform_meta读写权限，仅对这一精确账号调用ResetAccountPassword；不改数舵登录资料、不改其他账号或RAM策略。
+- 已保存值只从FC配置经SDK内存传递给RDS，未进入命令行参数、聊天、日志或凭证文件。接口接受重置后，回读确认账号授权和控制面环境未变。
+- 原PRIVATE_STATUS_V1真实调用成功：协议shuduo-v2-private-smoke-v1、PRIVATE_CONTROL_PLANE；MySQL元数据healthy=true；OSS数据状态与双存储协调healthy=true；publicReady=false。此前1045至此解除。
+- 新健康记录为[evidence/v2-control-private-healthy-20260927.json](evidence/v2-control-private-healthy-20260927.json)。该结果只证明私有启动与初始持久化健康；多次冷启动/冲突恢复、云身份会话、Worker端到端及公网体验仍须独立验收。
+- 本次RDS原为STOPPED，重置前临时唤醒。验收后尝试恢复暂停被IncorrectDBInstanceType拒绝；Serverless自动暂停仍开启，停止额外测试流量，不能声称已恢复STOPPED。未修改付费类型、规格或自动暂停设置。
+- 随后最后一次只读Describe回证state=STOPPED、autoPause=true，确认已自动恢复暂停；此新证据更新前述“尚未确认暂停”的状态。连接健康指先前实际运行验收，不表示此后持续运行或公网开放。
