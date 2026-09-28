@@ -141,3 +141,30 @@ test("W3 IAM rejects an unsafe local CLI profile before contacting cloud", () =>
     else process.env.V2_ALIYUN_CLI_PROFILE = previous;
   }
 });
+
+test("W3 IAM retries only a transient read, not a timed-out write", () => {
+  const fake = cloud();
+  let readTimedOut = false;
+  const afterReadRetry = applyV2W3Iam(input, (args) => {
+    if (args[1] === "GetRole" && !readTimedOut) {
+      readTimedOut = true;
+      fake.calls.push("ram:GetRole:timeout");
+      return { ok: false, stdout: "", stderr: "context deadline exceeded" };
+    }
+    return fake.runner(args);
+  });
+  assert.equal(afterReadRetry.ok, true);
+  assert.equal(readTimedOut, true);
+  assert.equal(fake.calls.filter((item) => item === "ram:CreateRole").length, 2);
+
+  const next = cloud();
+  let timedOutWrites = 0;
+  assert.throws(() => applyV2W3Iam(input, (args) => {
+    if (args[1] === "CreateRole") {
+      timedOutWrites++;
+      return { ok: false, stdout: "", stderr: "context deadline exceeded" };
+    }
+    return next.runner(args);
+  }), /W3_CREATE_ROLE_FAILED/);
+  assert.equal(timedOutWrites, 1);
+});

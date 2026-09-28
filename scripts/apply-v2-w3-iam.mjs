@@ -29,6 +29,19 @@ const document = (value, code) => {
 };
 const isMissing = (response, type) =>
   new RegExp(`EntityNotExist(?:s)?\\.${type}`).test(`${response.stdout}\n${response.stderr}`);
+const readActions = new Set([
+  "GetCallerIdentity", "GetRole", "GetPolicy", "GetPolicyVersion", "ListPoliciesForRole",
+]);
+function retryTransientRead(runner, args) {
+  let response;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    response = runner(args);
+    if (response.ok || !readActions.has(args[1]) ||
+        !/context deadline exceeded|Client\.Timeout|i\/o timeout|TLS handshake timeout/i.test(response.stderr ?? ""))
+      return response;
+  }
+  return response;
+}
 
 function defaultRunner(args) {
   const profile = process.env.V2_ALIYUN_CLI_PROFILE;
@@ -74,8 +87,9 @@ export function validateV2W3IamInput(input = {}) {
 export function applyV2W3Iam(input = {}, runner = defaultRunner) {
   const checked = validateV2W3IamInput(input);
   if (!checked.ok) return { ok: false, errors: checked.errors };
+  const safeRunner = (args) => retryTransientRead(runner, args);
   const { plan, deployRoleName } = checked;
-  const identity = call(runner, ["sts", "GetCallerIdentity"], "W3_IDENTITY_FAILED");
+  const identity = call(safeRunner, ["sts", "GetCallerIdentity"], "W3_IDENTITY_FAILED");
   if (identity?.AccountId !== input.ALIYUN_ACCOUNT_ID.trim())
     throw new Error("W3_ACCOUNT_MISMATCH");
 
@@ -94,7 +108,7 @@ export function applyV2W3Iam(input = {}, runner = defaultRunner) {
 
   // Complete all read-only drift checks before the first write.
   for (const role of roles) {
-    role.current = getOptional(runner, ["ram", "GetRole", "--RoleName", role.name], "Role", "W3_GET_ROLE_FAILED")?.Role;
+    role.current = getOptional(safeRunner, ["ram", "GetRole", "--RoleName", role.name], "Role", "W3_GET_ROLE_FAILED")?.Role;
     if (role.kind === "existing" && role.current?.RoleName !== role.name)
       throw new Error("W3_EXISTING_ROLE_MISSING");
     if (role.kind === "new" && role.current &&
@@ -103,13 +117,13 @@ export function applyV2W3Iam(input = {}, runner = defaultRunner) {
       throw new Error("W3_ROLE_TRUST_MISMATCH");
   }
   for (const policy of policies) {
-    const existing = getOptional(runner,
+    const existing = getOptional(safeRunner,
       ["ram", "GetPolicy", "--PolicyType", "Custom", "--PolicyName", policy.name],
       "Policy", "W3_GET_POLICY_FAILED")?.Policy;
     if (existing) {
       const versionId = existing.DefaultVersion;
       if (!/^v\d+$/.test(versionId ?? "")) throw new Error("W3_POLICY_VERSION_INVALID");
-      const version = call(runner,
+      const version = call(safeRunner,
         ["ram", "GetPolicyVersion", "--PolicyType", "Custom", "--PolicyName", policy.name, "--VersionId", versionId],
         "W3_GET_POLICY_VERSION_FAILED");
       if (!same(document(version?.PolicyVersion?.PolicyDocument, "W3_POLICY_DOCUMENT_INVALID"), policy.body))
@@ -119,7 +133,7 @@ export function applyV2W3Iam(input = {}, runner = defaultRunner) {
   }
   for (const role of roles) {
     if (!role.current && role.kind === "new") continue;
-    const attached = call(runner, ["ram", "ListPoliciesForRole", "--RoleName", role.name], "W3_LIST_POLICIES_FAILED")?.Policies?.Policy;
+    const attached = call(safeRunner, ["ram", "ListPoliciesForRole", "--RoleName", role.name], "W3_LIST_POLICIES_FAILED")?.Policies?.Policy;
     if (!Array.isArray(attached)) throw new Error("W3_ROLE_POLICIES_INVALID");
     const permitted = policies.filter((p) => p.role === role.name).map((p) => p.name);
     if (role.kind === "new" && attached.some((p) => p.PolicyType !== "Custom" || !permitted.includes(p.PolicyName)))
@@ -128,44 +142,44 @@ export function applyV2W3Iam(input = {}, runner = defaultRunner) {
 
   const createdRoles = [], createdPolicies = [];
   for (const role of roles.filter((item) => item.kind === "new" && !item.current)) {
-    call(runner,
+    call(safeRunner,
       ["ram", "CreateRole", "--RoleName", role.name, "--Description", "Shuduo V2 W3 isolated private execution", "--AssumeRolePolicyDocument", JSON.stringify(role.trust)],
       "W3_CREATE_ROLE_FAILED");
     createdRoles.push(role.name);
   }
   for (const policy of policies.filter((item) => !item.exists)) {
-    call(runner,
+    call(safeRunner,
       ["ram", "CreatePolicy", "--PolicyName", policy.name, "--Description", "Shuduo V2 W3 fixed private boundary", "--PolicyDocument", JSON.stringify(policy.body)],
       "W3_CREATE_POLICY_FAILED");
     createdPolicies.push(policy.name);
   }
   for (const policy of policies) {
-    const current = call(runner, ["ram", "ListPoliciesForRole", "--RoleName", policy.role], "W3_LIST_POLICIES_FAILED")?.Policies?.Policy;
+    const current = call(safeRunner, ["ram", "ListPoliciesForRole", "--RoleName", policy.role], "W3_LIST_POLICIES_FAILED")?.Policies?.Policy;
     if (!Array.isArray(current)) throw new Error("W3_ROLE_POLICIES_INVALID");
     if (!current.some((p) => p.PolicyType === "Custom" && p.PolicyName === policy.name))
-      call(runner,
+      call(safeRunner,
         ["ram", "AttachPolicyToRole", "--PolicyType", "Custom", "--PolicyName", policy.name, "--RoleName", policy.role],
         "W3_ATTACH_POLICY_FAILED");
   }
 
   for (const role of roles.filter((item) => item.kind === "new")) {
-    const found = call(runner, ["ram", "GetRole", "--RoleName", role.name], "W3_VERIFY_ROLE_FAILED")?.Role;
+    const found = call(safeRunner, ["ram", "GetRole", "--RoleName", role.name], "W3_VERIFY_ROLE_FAILED")?.Role;
     if (found?.RoleName !== role.name ||
         !same(document(found.AssumeRolePolicyDocument, "W3_ROLE_TRUST_INVALID"), role.trust))
       throw new Error("W3_ROLE_TRUST_NOT_VERIFIED");
   }
   for (const policy of policies) {
-    const metadata = call(runner,
+    const metadata = call(safeRunner,
       ["ram", "GetPolicy", "--PolicyType", "Custom", "--PolicyName", policy.name],
       "W3_VERIFY_POLICY_FAILED")?.Policy;
     if (!/^v\d+$/.test(metadata?.DefaultVersion ?? ""))
       throw new Error("W3_POLICY_VERSION_INVALID");
-    const version = call(runner,
+    const version = call(safeRunner,
       ["ram", "GetPolicyVersion", "--PolicyType", "Custom", "--PolicyName", policy.name, "--VersionId", metadata.DefaultVersion],
       "W3_VERIFY_POLICY_VERSION_FAILED");
     if (!same(document(version?.PolicyVersion?.PolicyDocument, "W3_POLICY_DOCUMENT_INVALID"), policy.body))
       throw new Error("W3_POLICY_DOCUMENT_NOT_VERIFIED");
-    const attached = call(runner, ["ram", "ListPoliciesForRole", "--RoleName", policy.role], "W3_VERIFY_ATTACHMENT_FAILED")?.Policies?.Policy;
+    const attached = call(safeRunner, ["ram", "ListPoliciesForRole", "--RoleName", policy.role], "W3_VERIFY_ATTACHMENT_FAILED")?.Policies?.Policy;
     if (!Array.isArray(attached) || !attached.some((p) => p.PolicyType === "Custom" && p.PolicyName === policy.name))
       throw new Error("W3_POLICY_ATTACHMENT_NOT_VERIFIED");
   }
