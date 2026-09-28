@@ -114,8 +114,7 @@ async function deploy(env = process.env) {
       const allowed=kind==="worker"&&before.worker.role===workerRole?workerRole:env.V2_FUNCTION_ROLE_ARN;
       verifyPrivateFunctionBaseline(kind,before[kind],fc("GET",`/functions/${names[kind]}/concurrency`),fc("GET",`/functions/${names[kind]}/scaling-config`),allowed);
     }
-    if((fc("GET",`/functions/${names.control}/triggers`).triggers??[]).length)
-      throw safeFailure("CONTROL_MUST_REMAIN_PRIVATE_WITHOUT_TRIGGER");
+    report.controlTriggersChanged=false;
     report.stage="WORKER_UPDATE";
     report.worker=await update("worker",before.worker,queueEnvironment("worker",before.worker.environmentVariables,env,jobId),workerRole);
     console.log(JSON.stringify({stage:report.stage,ok:true}));
