@@ -81,7 +81,10 @@ async function deploy(env = process.env) {
     if (r.status !== 0) {
       const raw=`${r.stdout??""}\n${r.stderr??""}`;
       const diagnostic = raw.split("\n").find(line=>/^ERROR:/.test(line)&&!/(?:https?:|STS\.|CAIS|SecurityToken|AccessKey|Signature)/i.test(line));
-      report.callFailure = { exit:r.status, signal:r.signal, processCode:r.error?.code, timeout:/timeout|deadline/i.test(raw), diagnostic:diagnostic?.slice(0,200) };
+      let message=raw.match(/^Message:\s*(.+)$/m)?.[1];
+      if(message && /https?:|STS\.|CAIS|SecurityToken=|AccessKeySecret|Signature=|[A-Za-z0-9+/=]{100}/i.test(message))message=undefined;
+      if(message)message=message.replace(/acs:[^\s'";,]+/g,"[resource]").replace(/\b\d{12,20}\b/g,"[account]").slice(0,500);
+      report.callFailure = { exit:r.status, signal:r.signal, processCode:r.error?.code, timeout:/timeout|deadline/i.test(raw), diagnostic:diagnostic?.slice(0,200), message };
       throw safeFailure(`FC_${method}_${extractAliyunErrorCode(r.stdout ?? "", r.stderr ?? "")}`);
     }
     try { return JSON.parse(r.stdout); } catch { throw safeFailure("FC_RESPONSE_INVALID"); }
