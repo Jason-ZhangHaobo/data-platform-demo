@@ -15,6 +15,7 @@ const triggerName = "shuduo-v2-spark-queue-put-v1";
 const prefixes = { worker: "spark-worker", control: "control-plane" };
 const keyFor = (kind, pkg) => `data-platform-demo/v2/${prefixes[kind]}/${pkg.sha256}.zip`;
 const safeFailure = (message) => Object.assign(new Error(message), { code: message });
+export const isMissingTrigger = (code) => /(?:TriggerNotFound|ResourceNotFound|TriggerNotExist|NotFound\.Trigger)$/.test(code??"");
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map((key)=>[key,canonical(value[key])])) : value;
 const same = (a,b) => JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
@@ -120,11 +121,15 @@ async function deploy(env = process.env) {
     console.log(JSON.stringify({stage:report.stage,ok:true}));
     report.stage="OSS_TRIGGER";
     const trigger={triggerName,triggerType:"oss",invocationRole:triggerRole,sourceArn:`acs:oss:cn-hangzhou:${account}:${env.V2_OSS_BUCKET}`,qualifier:"LATEST",triggerConfig:JSON.stringify({events:["oss:ObjectCreated:PutObject"],filter:{key:{prefix:"data-platform-demo/v2/spark-queue/jobs/",suffix:".json"}}})};
-    const existing=fc("GET",`/functions/${names.worker}/triggers`).triggers??[];
-    if(existing.some(t=>t.triggerName!==triggerName))throw safeFailure("UNEXPECTED_WORKER_TRIGGER");
-    if(!existing.length)fc("POST",`/functions/${names.worker}/triggers`,trigger);
-    const actual=fc("GET",`/functions/${names.worker}/triggers/${triggerName}`);
+    let actual;
+    try { actual=fc("GET",`/functions/${names.worker}/triggers/${triggerName}`); }
+    catch(error) {
+      if(!isMissingTrigger(error.code))throw error;
+      fc("POST",`/functions/${names.worker}/triggers`,trigger);
+      actual=fc("GET",`/functions/${names.worker}/triggers/${triggerName}`);
+    }
     if(["triggerType","invocationRole","sourceArn","qualifier"].some(k=>actual[k]!==trigger[k])||!same(JSON.parse(actual.triggerConfig),JSON.parse(trigger.triggerConfig)))throw safeFailure("TRIGGER_NOT_VERIFIED");
+    delete report.callFailure;
     console.log(JSON.stringify({stage:report.stage,ok:true}));
     report.stage="SIGNED_QUEUE_SMOKE";
     const transportEnv={...env,OSS_BUCKET:env.V2_OSS_BUCKET,OSS_REGION:"cn-hangzhou",OSS_ENDPOINT:"https://oss-cn-hangzhou.aliyuncs.com",V2_SPARK_EXECUTOR_TRANSPORT:"OSS_QUEUE",V2_SPARK_QUEUE_TIMEOUT_MS:"300000"};
