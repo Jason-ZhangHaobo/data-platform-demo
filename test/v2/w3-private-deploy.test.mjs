@@ -23,6 +23,9 @@ test("W3 private deployment refuses public egress or expanded concurrency", () =
   verifyPrivateFunctionBaseline("worker",fn,capacity,scaling,"synthetic-role");
   assert.throws(()=>verifyPrivateFunctionBaseline("worker",{...fn,internetAccess:true},capacity,scaling,"synthetic-role"),/BASELINE/);
   assert.throws(()=>verifyPrivateFunctionBaseline("worker",fn,{reservedConcurrency:2},scaling,"synthetic-role"),/BASELINE/);
+  const control={...fn,functionName:"dataplatform-v2-staging-api",internetAccess:true,runtime:"custom.debian12"};
+  verifyPrivateFunctionBaseline("control",control,capacity,scaling,"synthetic-role");
+  assert.throws(()=>verifyPrivateFunctionBaseline("control",{...control,internetAccess:false},capacity,scaling,"synthetic-role"),/BASELINE/);
 });
 
 test("W3 rejects an invalid fixed smoke object identity", () => {
