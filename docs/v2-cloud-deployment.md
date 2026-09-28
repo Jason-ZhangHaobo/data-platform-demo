@@ -1,6 +1,8 @@
 # V2 阿里云部署说明
 
-核验日期：2026-09-27。专用控制面已由运行[36278428850](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36278428850)创建并回读通过。用户明确批准后已对齐平台RDS账号密码，原私有调用返回MySQL元数据与OSS数据状态健康，1045问题已解除。冷启动恢复/并发冲突、跨用户云认证、Worker接入、ICP备案与公网部署仍未验收，publicReady继续为false。
+更新日期：2026-09-28。专用控制面已由运行[36278428850](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36278428850)创建并回读通过。用户明确批准后已对齐平台RDS账号密码，私有调用返回MySQL元数据与OSS数据状态健康，1045问题已解除。W3队列改造仍是本机代码与测试，不是已部署云能力；冷启动恢复/并发冲突、跨用户云认证、Worker接入与公网部署仍未验收。用户报告ICP备案已提交管局审核，但未获批；publicReady继续为false。
+
+W3必须使用同一组固定OSS前缀：`jobs/`接收已签名任务，`cancellations/`存放已签名取消标记，`results/`存放Worker签名结果。控制面仅有这些前缀需要的Get/Put，Worker仅有包对象和三前缀所需的Get/Put。OSS触发器单独使用仅信任`oss.aliyuncs.com`的调用角色；官方FC3触发器调用权限仍可能是账户级`fc:InvokeFunction`，不能隐含放进控制面角色。部署前必须单独审阅精确策略、同账号信任、包摘要与回滚方案；此处不宣称新增IAM已获授权。就绪门要求新鲜、签名、Apache Spark 3.5.9且独立验证通过的Worker结果，最长7天；过期后写入口失败关闭，需重新执行受控烟测。OSS触发器可能重复投递，Worker对已有签名结果跳过重算；这并不承诺任意崩溃条件下严格一次执行。
 
 ## 当前数据库连接修复入口
 
