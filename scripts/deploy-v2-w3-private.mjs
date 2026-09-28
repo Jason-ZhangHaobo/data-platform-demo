@@ -69,6 +69,7 @@ async function deploy(env = process.env) {
   let bodyNumber = 0;
   const report = { publicDeployed: false, jobId, startedAt: new Date().toISOString(), stage: "PREFLIGHT" };
   function fc(method, path, body) {
+    report.lastOperation = { method, target: path.replace(/dataplatform-v2-staging-spark-worker/g,"worker").replace(/dataplatform-v2-staging-api/g,"control") };
     const args = ["fc", method, `/2023-03-30${path}`, "--region", "cn-hangzhou"];
     if (body !== undefined) {
       const file = join(root, `request-${++bodyNumber}.json`);
@@ -76,7 +77,12 @@ async function deploy(env = process.env) {
       args.push("--body-file", file);
     }
     const r = spawnSync("aliyun", args, { encoding: "utf8", timeout:45000, maxBuffer:8*1024*1024 });
-    if (r.status !== 0) throw safeFailure(`FC_${method}_${extractAliyunErrorCode(r.stdout ?? "", r.stderr ?? "")}`);
+    if (r.status !== 0) {
+      const raw=`${r.stdout??""}\n${r.stderr??""}`;
+      const diagnostic = raw.split("\n").find(line=>/^ERROR:/.test(line)&&!/(?:https?:|STS\.|CAIS|SecurityToken|AccessKey|Signature)/i.test(line));
+      report.callFailure = { exit:r.status, signal:r.signal, processCode:r.error?.code, timeout:/timeout|deadline/i.test(raw), diagnostic:diagnostic?.slice(0,200) };
+      throw safeFailure(`FC_${method}_${extractAliyunErrorCode(r.stdout ?? "", r.stderr ?? "")}`);
+    }
     try { return JSON.parse(r.stdout); } catch { throw safeFailure("FC_RESPONSE_INVALID"); }
   }
   const readFunction = (kind) => fc("GET", `/functions/${names[kind]}`);
