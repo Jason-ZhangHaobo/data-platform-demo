@@ -11,6 +11,10 @@ import {
 import { createRemoteSparkWorker } from "../../src/v2/remote-spark-worker.mjs";
 import { privateSparkSmokePayload } from "../../src/v2/spark-worker-private-smoke.mjs";
 import { getContext } from "../../src/v2/context.mjs";
+import {
+  createQueuedSparkResult,
+  queueConfigFromEnvironment,
+} from "../../src/v2/remote-spark-queue.mjs";
 
 const sharedSecret = "synthetic-test-secret-32-characters-long";
 const success = {
@@ -150,6 +154,43 @@ test("remote Spark configuration requires HTTPS and a nontrivial secret", () => 
     V2_SPARK_EXECUTOR_SECRET: sharedSecret,
   });
   assert.equal(runner.descriptor.isolation, "REMOTE_FUNCTION");
+});
+
+test("private OSS queue runner needs a fresh signed successful Worker result before enabling writes", async () => {
+  const readyJobId = "99999999-9999-4999-8999-999999999999";
+  const env = {
+    V2_SPARK_EXECUTOR_TRANSPORT: "OSS_QUEUE",
+    V2_SPARK_EXECUTOR_SECRET: sharedSecret,
+    V2_SPARK_QUEUE_READY_JOB_ID: readyJobId,
+    OSS_BUCKET: "synthetic-private-bucket",
+    OSS_ENDPOINT: "oss-cn-hangzhou-internal.aliyuncs.com",
+    ALIBABA_CLOUD_ACCESS_KEY_ID: "synthetic-access-id",
+    ALIBABA_CLOUD_ACCESS_KEY_SECRET: "synthetic-access-secret",
+  };
+  const config = queueConfigFromEnvironment(env);
+  const receipt = createQueuedSparkResult({ jobId: readyJobId }, success, config);
+  let requests = 0;
+  const runner = createRemoteSparkRunner(env, async (url, options) => {
+    requests += 1;
+    assert.match(String(url), /spark-queue\/results\/99999999-9999-4999-8999-999999999999\.json$/);
+    assert.equal(options.method, "GET");
+    return new Response(JSON.stringify(receipt), { status: 200 });
+  });
+  assert.equal(runner.descriptor.transport, "PRIVATE_OSS_QUEUE");
+  assert.equal(runner.descriptor.publicWriteEnabled, false);
+  assert.equal((await runner.verify()).runtimeAvailable, true);
+  assert.equal(requests, 1);
+  assert.equal(runner.descriptor.publicWriteEnabled, true);
+  assert.equal(runner.descriptor.verifiedAt, receipt.completedAt);
+  const missingProof = createRemoteSparkRunner({ ...env, V2_SPARK_QUEUE_READY_JOB_ID: undefined }, async () => assert.fail("must not call OSS"));
+  await assert.rejects(missingProof.verify(), { code: "REMOTE_SPARK_NOT_READY" });
+  assert.equal(missingProof.descriptor.publicWriteEnabled, false);
+  const tampered = createRemoteSparkRunner(env, async () => new Response(JSON.stringify({ ...receipt, signature: "v1=bad" }), { status: 200 }));
+  await assert.rejects(tampered.verify(), { code: "SPARK_QUEUE_RESULT_INVALID" });
+  assert.equal(tampered.descriptor.publicWriteEnabled, false);
+  const stale = createQueuedSparkResult({ jobId: readyJobId }, success, config, Date.now() - 8 * 24 * 60 * 60 * 1000);
+  const staleRunner = createRemoteSparkRunner(env, async () => new Response(JSON.stringify(stale), { status: 200 }));
+  await assert.rejects(staleRunner.verify(), { code: "REMOTE_SPARK_NOT_READY" });
 });
 
 test("remote Spark client rejects a success without independent validation", async () => {

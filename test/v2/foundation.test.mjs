@@ -236,6 +236,29 @@ test("cancellation stops queued execution and cannot become a success", async ()
     await app.close();
   }
 });
+test("a verified remote cancellation stays cancelled instead of becoming an invalid-result failure", async () => {
+  const app = await setup({
+    runner: async () => ({
+      status: "CANCELLED",
+      code: "REMOTE_SPARK_CANCELLED",
+      engine: "Apache Spark",
+    }),
+  });
+  try {
+    const rev = (
+      await app.call("/revisions", {
+        sql: referenceSql,
+        contextId: "holdings-t1",
+      })
+    ).body;
+    const run = (await app.call("/runs", { revisionId: rev.id })).body;
+    const done = await eventually(() => app.call("/runs/" + run.id), "CANCELLED");
+    assert.equal(done.body.code, "REMOTE_SPARK_CANCELLED");
+    assert.notEqual(done.body.error, "执行器返回了无效状态");
+  } finally {
+    await app.close();
+  }
+});
 test("restart marks unfinished work interrupted instead of rerunning", () => {
   const store = new MetadataStore(
     join(mkdtempSync(join(tmpdir(), "shuduo-restart-")), "db"),

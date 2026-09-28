@@ -919,8 +919,13 @@ export function createV2Server(options = {}) {
       timeoutMs: Number(env.V2_RUN_TIMEOUT_MS ?? 90000),
     });
     const { directory, ...result } = output;
-    if (!["SUCCEEDED", "FAILED", "VALIDATION_FAILED"].includes(result.status))
+    if (!["SUCCEEDED", "FAILED", "VALIDATION_FAILED", "CANCELLED"].includes(result.status))
       throw new Error("执行器返回了无效状态");
+    if (
+      result.status === "CANCELLED" &&
+      !["REMOTE_SPARK_CANCELLED", "REMOTE_SPARK_TIMEOUT"].includes(result.code)
+    )
+      throw new Error("执行器取消状态缺少可信原因");
     if (result.status === "SUCCEEDED" && !result.validation?.passed)
       throw new Error("缺少独立断言，不能标记成功");
     if (!options.runner && result.status === "SUCCEEDED") {

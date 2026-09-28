@@ -5,6 +5,11 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
+import {
+  RemoteSparkQueueClient,
+  ossSparkQueueTransportFromEnvironment,
+  queueConfigFromEnvironment,
+} from "./remote-spark-queue.mjs";
 
 const PROTOCOL = "shuduo-spark-execution/v1";
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
@@ -244,6 +249,27 @@ export function remoteSparkConfigFromEnvironment(env = process.env) {
 }
 
 export function createRemoteSparkRunner(env = process.env, fetchImpl = fetch) {
+  if (env.V2_SPARK_EXECUTOR_TRANSPORT === "OSS_QUEUE") {
+    const queue = queueConfigFromEnvironment(env),
+      client = new RemoteSparkQueueClient(queue, ossSparkQueueTransportFromEnvironment(env, fetchImpl)),
+      runner = (input) => client.execute(input);
+    runner.descriptor = {
+      engine: "Apache Spark",
+      isolation: "REMOTE_FUNCTION",
+      transport: "PRIVATE_OSS_QUEUE",
+      endpointConfigured: false,
+      healthVerified: false,
+      publicWriteEnabled: false,
+    };
+    runner.verify = async () => {
+      const status = await client.health();
+      runner.descriptor.healthVerified = true;
+      runner.descriptor.publicWriteEnabled = true;
+      runner.descriptor.verifiedAt = status.verifiedAt;
+      return status;
+    };
+    return runner;
+  }
   const config = remoteSparkConfigFromEnvironment(env);
   if (!config) return undefined;
   const client = new RemoteSparkClient(config, fetchImpl),

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { SPARK_QUEUE_PREFIXES } from "../src/v2/remote-spark-queue.mjs";
 
 const accountPattern = /^\d{12,20}$/;
 const roleArnPattern = /^acs:ram::(\d{12,20}):role\/([a-z0-9-]{1,64})$/;
@@ -9,9 +10,9 @@ const digestPattern = /^[a-f0-9]{64}$/;
 const MAX_HANGZHOU_ZIP_BYTES = 500 * 1024 * 1024;
 
 export const W3_QUEUE = Object.freeze({
-  jobsPrefix: "data-platform-demo/v2/spark-queue/jobs/",
-  resultsPrefix: "data-platform-demo/v2/spark-queue/results/",
-  cancellationsPrefix: "data-platform-demo/v2/spark-queue/cancellations/",
+  jobsPrefix: `${SPARK_QUEUE_PREFIXES.jobs}/`,
+  resultsPrefix: `${SPARK_QUEUE_PREFIXES.results}/`,
+  cancellationsPrefix: `${SPARK_QUEUE_PREFIXES.cancellations}/`,
   suffix: ".json",
   triggerName: "shuduo-v2-spark-queue-put-v1",
 });
@@ -39,6 +40,13 @@ export function renderV2W3OssTriggerPlan(input = {}) {
     nextDigest = input.V2_W3_SPARK_WORKER_PACKAGE_SHA256?.trim(),
     nextBytes = Number(input.V2_W3_SPARK_WORKER_PACKAGE_BYTES),
     errors = [];
+  for (const [name, expected] of [
+    ["V2_SPARK_QUEUE_JOB_PREFIX", SPARK_QUEUE_PREFIXES.jobs],
+    ["V2_SPARK_QUEUE_RESULT_PREFIX", SPARK_QUEUE_PREFIXES.results],
+    ["V2_SPARK_QUEUE_CANCELLATION_PREFIX", SPARK_QUEUE_PREFIXES.cancellations],
+  ])
+    if (input[name] !== undefined && input[name] !== expected)
+      errors.push(`UNSUPPORTED:${name}`);
   if (!accountPattern.test(accountId ?? ""))
     errors.push("INVALID:ALIYUN_ACCOUNT_ID");
   if (regionId !== "cn-hangzhou")
@@ -55,9 +63,13 @@ export function renderV2W3OssTriggerPlan(input = {}) {
     "V2_W3_SPARK_WORKER_RUNTIME_ROLE_ARN",
     errors,
   );
-  validRole(triggerRole, accountId, "V2_W3_OSS_TRIGGER_ROLE_ARN", errors);
+  const trigger = validRole(triggerRole, accountId, "V2_W3_OSS_TRIGGER_ROLE_ARN", errors);
   if (control && runtime && controlRole === workerRuntimeRole)
     errors.push("W3_WORKER_RUNTIME_ROLE_MUST_DIFFER_FROM_CONTROL_ROLE");
+  if (trigger && control && triggerRole === controlRole)
+    errors.push("W3_TRIGGER_ROLE_MUST_DIFFER_FROM_CONTROL_ROLE");
+  if (trigger && runtime && triggerRole === workerRuntimeRole)
+    errors.push("W3_TRIGGER_ROLE_MUST_DIFFER_FROM_WORKER_RUNTIME_ROLE");
   if (!functionPattern.test(workerFunction ?? ""))
     errors.push("INVALID:V2_SPARK_WORKER_FUNCTION_NAME");
   if (!bucketPattern.test(bucket ?? "")) errors.push("INVALID:V2_OSS_BUCKET");
@@ -87,12 +99,45 @@ export function renderV2W3OssTriggerPlan(input = {}) {
           objectArn(packageObject),
           objectArn(`${W3_QUEUE.jobsPrefix}*`),
           objectArn(`${W3_QUEUE.cancellationsPrefix}*`),
+          objectArn(`${W3_QUEUE.resultsPrefix}*`),
         ],
       },
       {
         Effect: "Allow",
         Action: "oss:PutObject",
         Resource: objectArn(`${W3_QUEUE.resultsPrefix}*`),
+      },
+    ],
+  };
+  const controlQueuePolicy = {
+    Version: "1",
+    Statement: [
+      {
+        Effect: "Allow",
+        Action: "oss:GetObject",
+        Resource: [
+          objectArn(`${W3_QUEUE.jobsPrefix}*`),
+          objectArn(`${W3_QUEUE.cancellationsPrefix}*`),
+          objectArn(`${W3_QUEUE.resultsPrefix}*`),
+        ],
+      },
+      {
+        Effect: "Allow",
+        Action: "oss:PutObject",
+        Resource: [
+          objectArn(`${W3_QUEUE.jobsPrefix}*`),
+          objectArn(`${W3_QUEUE.cancellationsPrefix}*`),
+        ],
+      },
+    ],
+  };
+  const triggerInvocationPolicy = {
+    Version: "1",
+    Statement: [
+      {
+        Effect: "Allow",
+        Action: "fc:InvokeFunction",
+        Resource: "*",
       },
     ],
   };
@@ -132,6 +177,20 @@ export function renderV2W3OssTriggerPlan(input = {}) {
       },
       queueOnlyPolicy: runtimePolicy,
     },
+    triggerInvocationRole: {
+      trustPolicy: {
+        Version: "1",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: "sts:AssumeRole",
+            Principal: { Service: ["oss.aliyuncs.com"] },
+          },
+        ],
+      },
+      invocationPolicy: triggerInvocationPolicy,
+      invokePermissionCannotBeFunctionScoped: true,
+    },
     ossTrigger: {
       triggerType: "oss",
       triggerName: W3_QUEUE.triggerName,
@@ -151,6 +210,7 @@ export function renderV2W3OssTriggerPlan(input = {}) {
     },
     controlPlane: {
       fcInvokePermission: false,
+      queueOnlyPolicy: controlQueuePolicy,
       requiredObjectCapabilities: {
         createOnlyJob: W3_QUEUE.jobsPrefix,
         writeCancellation: W3_QUEUE.cancellationsPrefix,
@@ -165,11 +225,13 @@ export function renderV2W3OssTriggerPlan(input = {}) {
       "fc:UpdateFunction",
       "fc:CreateTrigger",
       "fc:GetTrigger",
+      "fc:ListTriggers",
     ],
     resourceScoping: {
       queueObjects: "EXACT_PREFIXES_ONLY",
       fcCreateTrigger: "ACCOUNT_WIDE_ACTION_PER_OFFICIAL_RAM_TABLE",
       fcInvokeFunctionOnControlRole: "NOT_GRANTED",
+      fcInvokeFunctionOnOssTriggerRole: "ACCOUNT_WIDE_ACTION_ISOLATED_TO_OSS_ROLE",
     },
     verification: [
       "rebuild the Linux Worker package and verify digest and byte count",
