@@ -14,11 +14,15 @@ const input = {
     "acs:ram::1234567890123456:role/shuduo-spark-queue-runtime",
   V2_W3_OSS_TRIGGER_ROLE_ARN:
     "acs:ram::1234567890123456:role/aliyunosseventnotificationrole",
+  V2_FUNCTION_NAME: "shuduo-control-api",
   V2_SPARK_WORKER_FUNCTION_NAME: "shuduo-spark-worker",
   V2_OSS_BUCKET: "shuduo-private-artifacts",
   V2_SPARK_WORKER_PACKAGE_SHA256: "a".repeat(64),
   V2_W3_SPARK_WORKER_PACKAGE_SHA256: "b".repeat(64),
   V2_W3_SPARK_WORKER_PACKAGE_BYTES: "318914999",
+  V2_CONTROL_PACKAGE_SHA256: "c".repeat(64),
+  V2_W3_CONTROL_PACKAGE_SHA256: "d".repeat(64),
+  V2_W3_CONTROL_PACKAGE_BYTES: "46861622",
 };
 
 test("W3 OSS trigger plan is non-applying and excludes control Invoke permission", () => {
@@ -76,6 +80,16 @@ test("W3 OSS trigger plan is non-applying and excludes control Invoke permission
   assert.deepEqual(result.triggerInvocationRole.invocationPolicy.Statement, [
     { Effect: "Allow", Action: "fc:InvokeFunction", Resource: "*" },
   ]);
+  assert.deepEqual(result.packageUploadRole.exactObjectPolicy.Statement, [{
+    Effect: "Allow",
+    Action: ["oss:GetObject", "oss:PutObject"],
+    Resource: [
+      "acs:oss:*:1234567890123456:shuduo-private-artifacts/data-platform-demo/v2/spark-worker/" + "b".repeat(64) + ".zip",
+      "acs:oss:*:1234567890123456:shuduo-private-artifacts/data-platform-demo/v2/control-plane/" + "d".repeat(64) + ".zip",
+    ],
+  }]);
+  assert.equal(result.immutableControlPackage.bytes, 46861622);
+  assert.equal(result.immutableControlPackage.uploadMustBeCreateOnly, true);
   assert.equal(JSON.stringify(result).includes(input.V2_FUNCTION_ROLE_ARN), false);
   assert.equal(
     JSON.stringify(result).includes(input.V2_W3_SPARK_WORKER_RUNTIME_ROLE_ARN),
@@ -131,4 +145,18 @@ test("W3 plan rejects queue prefix overrides that would escape its permissions",
     V2_SPARK_QUEUE_CANCELLATION_PREFIX: "data-platform-demo/v2/spark-queue/jobs",
   });
   assert.deepEqual(result, { ok: false, errors: ["UNSUPPORTED:V2_SPARK_QUEUE_CANCELLATION_PREFIX"] });
+});
+
+test("W3 plan requires a new bounded control package and distinct functions", () => {
+  const result = renderV2W3OssTriggerPlan({
+    ...input,
+    V2_FUNCTION_NAME: input.V2_SPARK_WORKER_FUNCTION_NAME,
+    V2_W3_CONTROL_PACKAGE_SHA256: input.V2_CONTROL_PACKAGE_SHA256,
+    V2_W3_CONTROL_PACKAGE_BYTES: String(71 * 1024 * 1024),
+  });
+  assert.deepEqual(result.errors, [
+    "W3_WORKER_FUNCTION_MUST_DIFFER_FROM_CONTROL_FUNCTION",
+    "W3_CONTROL_PACKAGE_MUST_CHANGE",
+    "INVALID:V2_W3_CONTROL_PACKAGE_BYTES",
+  ]);
 });

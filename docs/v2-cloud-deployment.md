@@ -4,6 +4,8 @@
 
 W3必须使用同一组固定OSS前缀：`jobs/`接收已签名任务，`cancellations/`存放已签名取消标记，`results/`存放Worker签名结果。控制面仅有这些前缀需要的Get/Put，Worker仅有包对象和三前缀所需的Get/Put。OSS触发器单独使用仅信任`oss.aliyuncs.com`的调用角色；官方FC3触发器调用权限仍可能是账户级`fc:InvokeFunction`，不能隐含放进控制面角色。部署前必须单独审阅精确策略、同账号信任、包摘要与回滚方案；此处不宣称新增IAM已获授权。就绪门要求新鲜、签名、Apache Spark 3.5.9且独立验证通过的Worker结果，最长7天；过期后写入口失败关闭，需重新执行受控烟测。OSS触发器可能重复投递，Worker对已有签名结果跳过重算；这并不承诺任意崩溃条件下严格一次执行。
 
+2026-09-28两份新包的本地独立验证见[evidence/v2-w3-package-build-20260928.json](evidence/v2-w3-package-build-20260928.json)。`render-v2-w3-oss-trigger-plan.mjs`为纯计划，不执行云变更；它现在同时校验Worker和控制面新包的摘要/字节/与旧包不同，并给出仅两个新包对象的Get/Put上传策略。计划缺任一包、角色复用、函数同名或权限前缀漂移时失败关闭。短期GitHub构建Artifact不是持久OSS上传收据；实际更新仍需新鲜私有性证据和明确的W3云权限边界授权。
+
 ## 当前数据库连接修复入口
 
 `node scripts/start-v2-secure-config.mjs --mysql-only`启动回环安全页，只更新GitHub受保护环境的V2_MYSQL_PASSWORD并触发sync-v2-control-mysql-secret。其余已配置的管理员邮箱/哈希不变；页面明确区分保存、同步与实际连接成功。
