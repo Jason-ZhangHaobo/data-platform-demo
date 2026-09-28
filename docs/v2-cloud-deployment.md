@@ -6,6 +6,8 @@ W3必须使用同一组固定OSS前缀：`jobs/`接收已签名任务，`cancell
 
 2026-09-28两份新包的本地独立验证见[evidence/v2-w3-package-build-20260928.json](evidence/v2-w3-package-build-20260928.json)。`render-v2-w3-oss-trigger-plan.mjs`为纯计划，不执行云变更；它现在同时校验Worker和控制面新包的摘要/字节/与旧包不同，并给出仅两个新包对象的Get/Put上传策略。计划缺任一包、角色复用、函数同名或权限前缀漂移时失败关闭。短期GitHub构建Artifact不是持久OSS上传收据；实际更新仍需新鲜私有性证据和明确的W3云权限边界授权。
 
+W3 IAM独立应用器`scripts/apply-v2-w3-iam.mjs`默认仅校验输入，不写云。显式`--apply`还要求当次确认开关；执行时先只读核对账号、四个互不复用的角色、四份固定策略正文和角色既有绑定，遇到同名不同正文或新角色上的额外策略即停止。通过后仅创建缺失的两个独立角色、四份固定策略并附加至对应角色，再回读信任、策略正文和绑定。它不修改FC函数、不创建触发器、不开放DNS；任何中途失败均保留已创建对象供幂等续接，不做危险的自动删除回滚。用户已授权W3私有部署；通过浏览器执行权限写入时仍须遵守当次安全确认。
+
 ## 当前数据库连接修复入口
 
 `node scripts/start-v2-secure-config.mjs --mysql-only`启动回环安全页，只更新GitHub受保护环境的V2_MYSQL_PASSWORD并触发sync-v2-control-mysql-secret。其余已配置的管理员邮箱/哈希不变；页面明确区分保存、同步与实际连接成功。
