@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { queueEnvironment, verifyPrivateFunctionBaseline } from "../../scripts/deploy-v2-w3-private.mjs";
+import { isMissingTrigger, queueEnvironment, verifyPrivateFunctionBaseline } from "../../scripts/deploy-v2-w3-private.mjs";
 import { renderV2W3OssTriggerPlan } from "../../scripts/render-v2-w3-oss-trigger-plan.mjs";
 
 test("W3 queue configuration preserves existing credentials and refuses a mismatched shared key", () => {
@@ -31,4 +31,11 @@ test("W3 private deployment refuses public egress or expanded concurrency", () =
 test("W3 rejects an invalid fixed smoke object identity", () => {
   const result=renderV2W3OssTriggerPlan({V2_W3_SMOKE_JOB_ID:"../unrelated"});
   assert.ok(result.errors.includes("INVALID:V2_W3_SMOKE_JOB_ID"));
+});
+
+test("W3 creates a named trigger only after an explicit not-found response",()=>{
+  assert.equal(isMissingTrigger("FC_GET_TriggerNotFound"),true);
+  assert.equal(isMissingTrigger("FC_GET_AccessDenied"),false);
+  assert.equal(isMissingTrigger("FC_GET_UNKNOWN_ALIYUN_ERROR"),false);
+  assert.equal(isMissingTrigger("FC_GET_FunctionNotFound"),false);
 });
