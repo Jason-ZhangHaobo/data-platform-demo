@@ -8,7 +8,7 @@ W3必须使用同一组固定OSS前缀：`jobs/`接收已签名任务，`cancell
 
 W3 IAM独立应用器`scripts/apply-v2-w3-iam.mjs`默认仅校验输入，不写云。显式`--apply`还要求当次确认开关；执行时先只读核对账号、四个互不复用的角色、四份固定策略正文和角色既有绑定，遇到同名不同正文或新角色上的额外策略即停止。通过后仅创建缺失的两个独立角色、四份固定策略并附加至对应角色，再回读信任、策略正文和绑定。它不修改FC函数、不创建触发器、不开放DNS；任何中途失败均保留已创建对象供幂等续接，不做危险的自动删除回滚。用户已授权W3私有部署。Cloud Shell不稳定时可使用已核对为同一账号的本机OAuth配置，显式设置`ALIYUN_CLI`为已校验的官方CLI路径、`V2_ALIYUN_CLI_PROFILE`为目标配置名称；不复制或打印凭证，部署前仍需再次读取实时账单。
 
-本机OAuth CLI在真实预检中曾遇RAM读取瞬时网络超时。应用器只对`GetCallerIdentity`、`GetRole`、`GetPolicy`、`GetPolicyVersion`、`ListPoliciesForRole`的明确超时做最多3次尝试；Create/Attach写调用绝不自动重试。若写调用返回超时，必须先只读核对是否已生效，再决定是否以幂等脚本续接。CLI错误原文可能包含临时签名URL，不能直接贴入公开日志或聊天。
+本机OAuth CLI在真实预检中曾遇RAM读取瞬时网络超时和连接重置。应用器只对`GetCallerIdentity`、`GetRole`、`GetPolicy`、`GetPolicyVersion`、`ListPoliciesForRole`的非权限类失败做最多3次尝试；明确不存在、无权限和凭证/签名错误不重试。Create/Attach写调用绝不自动重试。若写调用返回超时，必须先只读核对是否已生效，再决定是否以幂等脚本续接。CLI错误原文可能包含临时签名URL，不能直接贴入公开日志或聊天。
 
 ## 当前数据库连接修复入口
 

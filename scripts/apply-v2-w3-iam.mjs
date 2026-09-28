@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { renderV2W3OssTriggerPlan } from "./render-v2-w3-oss-trigger-plan.mjs";
+import { extractAliyunErrorCode } from "./extract-aliyun-error-code.mjs";
 
 const rolePattern = /^acs:ram::(\d{12,20}):role\/([a-z0-9-]{1,64})$/;
 const policyNames = Object.freeze({
@@ -36,8 +37,11 @@ function retryTransientRead(runner, args) {
   let response;
   for (let attempt = 0; attempt < 3; attempt++) {
     response = runner(args);
-    if (response.ok || !readActions.has(args[1]) ||
-        !/context deadline exceeded|Client\.Timeout|i\/o timeout|TLS handshake timeout/i.test(response.stderr ?? ""))
+    if (response.ok || !readActions.has(args[1]))
+      return response;
+    const code = extractAliyunErrorCode(response.stdout ?? "", response.stderr ?? "");
+    if (/^EntityNotExist(?:s)?\./.test(code) ||
+        /^(?:NoPermission|Forbidden|InvalidAccessKeyId|InvalidSecurityToken|SignatureDoesNotMatch|Forbidden\.AccessDenied)$/.test(code))
       return response;
   }
   return response;
