@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isMissingTrigger, queueEnvironment, verifyPrivateFunctionBaseline } from "../../scripts/deploy-v2-w3-private.mjs";
+import { isMissingTrigger, queueEnvironment, redactCliFailure, verifyPrivateFunctionBaseline } from "../../scripts/deploy-v2-w3-private.mjs";
 import { renderV2W3OssTriggerPlan } from "../../scripts/render-v2-w3-oss-trigger-plan.mjs";
 
 test("W3 queue configuration preserves existing credentials and refuses a mismatched shared key", () => {
@@ -38,4 +38,12 @@ test("W3 creates a named trigger only after an explicit not-found response",()=>
   assert.equal(isMissingTrigger("FC_GET_AccessDenied"),false);
   assert.equal(isMissingTrigger("FC_GET_UNKNOWN_ALIYUN_ERROR"),false);
   assert.equal(isMissingTrigger("FC_GET_FunctionNotFound"),false);
+});
+
+test("W3 failure diagnostics redact literal and encoded credentials and signed URLs",()=>{
+  const secret="synthetic+token/with=value";
+  const text=`Message: missing oss:GetBucketEventNotification; ${secret}; ${encodeURIComponent(secret)}; https://example.invalid/?token=${encodeURIComponent(secret)}`;
+  const safe=redactCliFailure(text,[secret]);
+  assert.ok(safe.includes("oss:GetBucketEventNotification"));
+  assert.ok(!safe.includes(secret)&&!safe.includes(encodeURIComponent(secret))&&!safe.includes("https://"));
 });

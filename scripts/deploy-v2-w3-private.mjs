@@ -19,6 +19,12 @@ export const isMissingTrigger = (code) => /(?:TriggerNotFound|ResourceNotFound|T
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map((key)=>[key,canonical(value[key])])) : value;
 const same = (a,b) => JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
+export function redactCliFailure(text, values=[]) {
+  let out=String(text).replace(/\u001b\[[0-9;]*m/g,"");
+  for(const value of values.filter(v=>typeof v==="string"&&v.length>=4).sort((a,b)=>b.length-a.length))
+    for(const form of [value,encodeURIComponent(value)])out=out.split(form).join("[redacted]");
+  return out.replace(/https?:\/\/[^\s"<>]+/g,"[endpoint]").replace(/acs:[^\s'";,]+/g,"[resource]").replace(/\b\d{12,20}\b/g,"[account]").slice(0,1800);
+}
 
 export function verifyPrivateFunctionBaseline(kind, fn, capacity, scaling, expectedRole) {
   if (fn?.functionName !== names[kind] || fn.role !== expectedRole ||
@@ -69,6 +75,7 @@ async function deploy(env = process.env) {
   const root = mkdtempSync(join(tmpdir(), "shuduo-private-w3-"));
   let bodyNumber = 0;
   const report = { publicDeployed: false, jobId, startedAt: new Date().toISOString(), stage: "PREFLIGHT" };
+  const sensitive=new Set(Object.entries(env).filter(([k])=>/SECRET|TOKEN|PASSWORD|ACCESS_KEY/i.test(k)).map(([,v])=>v));
   function fc(method, path, body) {
     report.lastOperation = { method, target: path.replace(/dataplatform-v2-staging-spark-worker/g,"worker").replace(/dataplatform-v2-staging-api/g,"control") };
     const args = ["fc", method, `/2023-03-30${path}`, "--region", "cn-hangzhou"];
@@ -84,10 +91,14 @@ async function deploy(env = process.env) {
       let message=raw.match(/^Message:\s*(.+)$/m)?.[1];
       if(message && /https?:|STS\.|CAIS|SecurityToken=|AccessKeySecret|Signature=|[A-Za-z0-9+/=]{100}/i.test(message))message=undefined;
       if(message)message=message.replace(/acs:[^\s'";,]+/g,"[resource]").replace(/\b\d{12,20}\b/g,"[account]").slice(0,500);
-      report.callFailure = { exit:r.status, signal:r.signal, processCode:r.error?.code, timeout:/timeout|deadline/i.test(raw), diagnostic:diagnostic?.slice(0,200), message };
+      report.callFailure = { exit:r.status, signal:r.signal, processCode:r.error?.code, timeout:/context deadline|Client.Timeout|timed out/i.test(raw), diagnostic:diagnostic?.slice(0,200), message, detail:redactCliFailure(raw,[...sensitive]) };
       throw safeFailure(`FC_${method}_${extractAliyunErrorCode(r.stdout ?? "", r.stderr ?? "")}`);
     }
-    try { return JSON.parse(r.stdout); } catch { throw safeFailure("FC_RESPONSE_INVALID"); }
+    try {
+      const parsed=JSON.parse(r.stdout);
+      for(const [k,v]of Object.entries(parsed.environmentVariables??{}))if(/SECRET|TOKEN|PASSWORD|KEY/i.test(k))sensitive.add(v);
+      return parsed;
+    } catch { throw safeFailure("FC_RESPONSE_INVALID"); }
   }
   const readFunction = (kind) => fc("GET", `/functions/${names[kind]}`);
   async function update(kind, before, environmentVariables, role) {
