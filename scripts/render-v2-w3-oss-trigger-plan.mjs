@@ -8,6 +8,7 @@ const functionPattern = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const bucketPattern = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 const digestPattern = /^[a-f0-9]{64}$/;
 const MAX_HANGZHOU_ZIP_BYTES = 500 * 1024 * 1024;
+const MAX_CONTROL_ZIP_BYTES = 70 * 1024 * 1024;
 
 export const W3_QUEUE = Object.freeze({
   jobsPrefix: `${SPARK_QUEUE_PREFIXES.jobs}/`,
@@ -34,11 +35,15 @@ export function renderV2W3OssTriggerPlan(input = {}) {
     controlRole = input.V2_FUNCTION_ROLE_ARN?.trim(),
     workerRuntimeRole = input.V2_W3_SPARK_WORKER_RUNTIME_ROLE_ARN?.trim(),
     triggerRole = input.V2_W3_OSS_TRIGGER_ROLE_ARN?.trim(),
+    controlFunction = input.V2_FUNCTION_NAME?.trim(),
     workerFunction = input.V2_SPARK_WORKER_FUNCTION_NAME?.trim(),
     bucket = input.V2_OSS_BUCKET?.trim(),
     currentDigest = input.V2_SPARK_WORKER_PACKAGE_SHA256?.trim(),
     nextDigest = input.V2_W3_SPARK_WORKER_PACKAGE_SHA256?.trim(),
     nextBytes = Number(input.V2_W3_SPARK_WORKER_PACKAGE_BYTES),
+    currentControlDigest = input.V2_CONTROL_PACKAGE_SHA256?.trim(),
+    nextControlDigest = input.V2_W3_CONTROL_PACKAGE_SHA256?.trim(),
+    nextControlBytes = Number(input.V2_W3_CONTROL_PACKAGE_BYTES),
     errors = [];
   for (const [name, expected] of [
     ["V2_SPARK_QUEUE_JOB_PREFIX", SPARK_QUEUE_PREFIXES.jobs],
@@ -70,8 +75,12 @@ export function renderV2W3OssTriggerPlan(input = {}) {
     errors.push("W3_TRIGGER_ROLE_MUST_DIFFER_FROM_CONTROL_ROLE");
   if (trigger && runtime && triggerRole === workerRuntimeRole)
     errors.push("W3_TRIGGER_ROLE_MUST_DIFFER_FROM_WORKER_RUNTIME_ROLE");
+  if (!functionPattern.test(controlFunction ?? ""))
+    errors.push("INVALID:V2_FUNCTION_NAME");
   if (!functionPattern.test(workerFunction ?? ""))
     errors.push("INVALID:V2_SPARK_WORKER_FUNCTION_NAME");
+  if (controlFunction && workerFunction && controlFunction === workerFunction)
+    errors.push("W3_WORKER_FUNCTION_MUST_DIFFER_FROM_CONTROL_FUNCTION");
   if (!bucketPattern.test(bucket ?? "")) errors.push("INVALID:V2_OSS_BUCKET");
   if (!digestPattern.test(currentDigest ?? ""))
     errors.push("INVALID:V2_SPARK_WORKER_PACKAGE_SHA256");
@@ -79,16 +88,37 @@ export function renderV2W3OssTriggerPlan(input = {}) {
     errors.push("INVALID:V2_W3_SPARK_WORKER_PACKAGE_SHA256");
   if (currentDigest && nextDigest && currentDigest === nextDigest)
     errors.push("W3_WORKER_PACKAGE_MUST_CHANGE");
+  if (!digestPattern.test(currentControlDigest ?? ""))
+    errors.push("INVALID:V2_CONTROL_PACKAGE_SHA256");
+  if (!digestPattern.test(nextControlDigest ?? ""))
+    errors.push("INVALID:V2_W3_CONTROL_PACKAGE_SHA256");
+  if (currentControlDigest && nextControlDigest && currentControlDigest === nextControlDigest)
+    errors.push("W3_CONTROL_PACKAGE_MUST_CHANGE");
   if (
     !Number.isSafeInteger(nextBytes) ||
     nextBytes < 1 ||
     nextBytes > MAX_HANGZHOU_ZIP_BYTES
   )
     errors.push("INVALID:V2_W3_SPARK_WORKER_PACKAGE_BYTES");
+  if (
+    !Number.isSafeInteger(nextControlBytes) ||
+    nextControlBytes < 1 ||
+    nextControlBytes > MAX_CONTROL_ZIP_BYTES
+  )
+    errors.push("INVALID:V2_W3_CONTROL_PACKAGE_BYTES");
   if (errors.length) return { ok: false, errors };
 
   const packageObject = `data-platform-demo/v2/spark-worker/${nextDigest}.zip`;
+  const controlPackageObject = `data-platform-demo/v2/control-plane/${nextControlDigest}.zip`;
   const objectArn = (key) => `acs:oss:*:${accountId}:${bucket}/${key}`;
+  const packageUploadPolicy = {
+    Version: "1",
+    Statement: [{
+      Effect: "Allow",
+      Action: ["oss:GetObject", "oss:PutObject"],
+      Resource: [objectArn(packageObject), objectArn(controlPackageObject)],
+    }],
+  };
   const runtimePolicy = {
     Version: "1",
     Statement: [
@@ -154,6 +184,7 @@ export function renderV2W3OssTriggerPlan(input = {}) {
       controlRoleHash: hash(controlRole),
       workerRuntimeRoleHash: hash(workerRuntimeRole),
       triggerRoleHash: hash(triggerRole),
+      controlFunctionHash: hash(controlFunction),
       workerFunctionHash: hash(workerFunction),
       bucketHash: hash(bucket),
     },
@@ -162,6 +193,16 @@ export function renderV2W3OssTriggerPlan(input = {}) {
       bytes: nextBytes,
       ossObjectName: packageObject,
       uploadMustBeCreateOnly: true,
+    },
+    immutableControlPackage: {
+      sha256: nextControlDigest,
+      bytes: nextControlBytes,
+      ossObjectName: controlPackageObject,
+      uploadMustBeCreateOnly: true,
+    },
+    packageUploadRole: {
+      exactObjectPolicy: packageUploadPolicy,
+      noBucketListOrDelete: true,
     },
     workerRuntimeRole: {
       mustDifferFromControlRole: true,
@@ -222,6 +263,8 @@ export function renderV2W3OssTriggerPlan(input = {}) {
       "ram:CreatePolicy",
       "ram:AttachPolicyToRole",
       "ram:PassRole",
+      "oss:GetObject",
+      "oss:PutObject",
       "fc:UpdateFunction",
       "fc:CreateTrigger",
       "fc:GetTrigger",
@@ -234,14 +277,16 @@ export function renderV2W3OssTriggerPlan(input = {}) {
       fcInvokeFunctionOnOssTriggerRole: "ACCOUNT_WIDE_ACTION_ISOLATED_TO_OSS_ROLE",
     },
     verification: [
-      "rebuild the Linux Worker package and verify digest and byte count",
-      "upload the new package create-only and create a fresh private-OSS receipt",
+      "rebuild both Linux packages from one merged commit and verify their digests and byte counts",
+      "upload both new packages create-only and create fresh private-OSS receipts",
       "read back the Worker role and verify the queue-only policy",
       "read back one OSS trigger and require its event plus exact prefix and suffix",
       "submit one signed synthetic job, verify one signed result and reject tampering",
+      "update the control function only after a signed successful Worker smoke result",
       "verify cancellation, timeout, cold-start recovery and no control-role fc:InvokeFunction",
     ],
     rollback: [
+      "restore the previously verified control-plane code only after its immutable receipt is revalidated",
       "disable or delete only the named OSS trigger",
       "stop creating queue job objects",
       "restore the already verified Worker code only after its immutable receipt is revalidated",
