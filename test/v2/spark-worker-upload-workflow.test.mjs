@@ -11,7 +11,7 @@ const workflowUrl = new URL(
   import.meta.url,
 );
 
-test("W2 upload workflow is OIDC-only, exact-object and overwrite-safe", async () => {
+test("W3 Worker upload workflow is OIDC-only, exact-object and overwrite-safe", async () => {
   const workflow = await readFile(workflowUrl, "utf8");
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /id-token: write/);
@@ -19,6 +19,8 @@ test("W2 upload workflow is OIDC-only, exact-object and overwrite-safe", async (
   assert.match(workflow, /steps\.aliyun\.outputs\.aliyun-access-key-id/);
   assert.match(workflow, /V2_SPARK_WORKER_PACKAGE_SHA256/);
   assert.match(workflow, /V2_SPARK_WORKER_PACKAGE_BYTES/);
+  assert.match(workflow, /verify-v2-w3-build-evidence\.mjs worker/);
+  assert.match(workflow, /query-v2-monthly-spend\.sh/);
   assert.match(workflow, /sha256sum v2-spark-worker\.zip/);
   assert.match(workflow, /--forbid-overwrite true/);
   assert.match(workflow, /--object-acl private/);
@@ -31,7 +33,7 @@ test("W2 upload workflow is OIDC-only, exact-object and overwrite-safe", async (
   assert.doesNotMatch(workflow, /fc:InvokeFunction|\/invocations/);
 });
 
-test("W2 upload workflow fails closed before a first write", async () => {
+test("W3 Worker upload workflow fails closed before a first write", async () => {
   const workflow = await readFile(workflowUrl, "utf8"),
     guard = workflow.indexOf('test "$code" = NoSuchKey || test "$code" = NoSuchObject'),
     upload = workflow.indexOf("ossutil api put-object");
@@ -39,7 +41,7 @@ test("W2 upload workflow fails closed before a first write", async () => {
   assert.ok(upload > guard);
   assert.match(workflow, /85edf66b2fb7238f5c7e25cab820cf29312319fe4935b7c86a6b8485eb434f3c/);
   assert.match(workflow, /ossutil-2\.4\.0-linux-amd64\.zip/);
-  assert.match(workflow, /Cloud Shell privacy gate before FC creation/);
+  assert.match(workflow, /separate read-only privacy gate before FC update/);
   assert.doesNotMatch(workflow, /CreateFunction|POST \/2023-03-30\/functions/);
 });
 

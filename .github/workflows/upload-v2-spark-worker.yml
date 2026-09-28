@@ -56,12 +56,17 @@ jobs:
           test "$ALIBABA_CLOUD_REGION_ID" = cn-hangzhou
           test -n "$V2_OSS_BUCKET"
           test "${#V2_SPARK_WORKER_PACKAGE_SHA256}" = 64
-          test "$V2_SPARK_WORKER_PACKAGE_BYTES" = 318914420
+          node scripts/verify-v2-w3-build-evidence.mjs worker >/dev/null
           printf 'ALIYUN_ACCOUNT_ID=%s\n' "$account_id" >> "$GITHUB_ENV"
           printf 'V2_SPARK_WORKER_CODE_OBJECT=data-platform-demo/v2/spark-worker/%s.zip\n' "$V2_SPARK_WORKER_PACKAGE_SHA256" >> "$GITHUB_ENV"
 
       - name: Validate exact-object policy contract without applying it
         run: node scripts/render-v2-spark-worker-package-policy.mjs >/dev/null
+
+      - name: Set up Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@v1
+        with:
+          version: "3.4.11"
 
       - name: Configure Alibaba Cloud credentials with GitHub OIDC
         id: aliyun
@@ -72,6 +77,9 @@ jobs:
           role-session-name: github-actions-v2-spark-upload
           role-session-expiration: 1800
           audience: sts.aliyuncs.com
+
+      - name: Refuse upload if the complete current bill meets the monthly limit
+        run: V2_HARD_MONTHLY_BUDGET_CNY=200 scripts/query-v2-monthly-spend.sh >/dev/null
 
       - name: Install locked application dependencies
         run: npm ci
@@ -168,6 +176,6 @@ jobs:
           test "$downloaded_sha" = "$V2_SPARK_WORKER_PACKAGE_SHA256"
           test "$downloaded_bytes" = "$V2_SPARK_WORKER_PACKAGE_BYTES"
 
-      - name: State the remaining W2 gate
+      - name: State the remaining W3 gate
         run: |
-          echo 'Object bytes and SHA-256 are verified by download. Bucket policy, public-access block and object ACL still require the separate Cloud Shell privacy gate before FC creation.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'W3 Worker object bytes and SHA-256 are verified by download. Bucket policy, public-access block and object ACL still require a separate read-only privacy gate before FC update.' >> "$GITHUB_STEP_SUMMARY"

@@ -49,6 +49,7 @@ jobs:
           [[ "$V2_CONTROL_PACKAGE_BUILD_RUN_ID" =~ ^[0-9]{6,20}$ ]]
           [[ "$V2_CONTROL_PACKAGE_BUILD_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]]
           node scripts/render-v2-control-package-policy.mjs >/dev/null
+          node scripts/verify-v2-w3-build-evidence.mjs controlPlane >/dev/null
           run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$V2_CONTROL_PACKAGE_BUILD_RUN_ID")"
           jq -e --arg sha "$V2_CONTROL_PACKAGE_BUILD_HEAD_SHA" \
             '.head_sha == $sha and .head_branch == "main" and .conclusion == "success" and .name == "Build V2 control plane package"' \

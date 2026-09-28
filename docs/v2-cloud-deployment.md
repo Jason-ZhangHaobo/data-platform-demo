@@ -10,6 +10,8 @@ W3 IAM独立应用器`scripts/apply-v2-w3-iam.mjs`默认仅校验输入，不写
 
 本机OAuth CLI在真实预检中曾遇RAM读取瞬时网络超时和连接重置。应用器只对`GetCallerIdentity`、`GetRole`、`GetPolicy`、`GetPolicyVersion`、`ListPoliciesForRole`的非权限类失败做最多3次尝试；明确不存在、无权限和凭证/签名错误不重试。Create/Attach写调用绝不自动重试。若写调用返回超时，必须先只读核对是否已生效，再决定是否以幂等脚本续接。CLI错误原文可能包含临时签名URL，不能直接贴入公开日志或聊天。
 
+2026-09-28 IAM阶段已按上述规则完成：角色创建返回不明确时没有重试写入，独立只读核验后续接；两个独立角色和四份精确策略均已回读通过。下一门是新版代码包上传：`upload-v2-spark-worker.yml`与`upload-v2-control-plane.yml`均先用`verify-v2-w3-build-evidence.mjs`核对2026-09-28的内层ZIP身份、源码与构建运行，再通过OIDC读取实时完整账单，创建不可覆盖的私有OSS对象并下载回验。上传成功仍需Bucket/Object ACL、公开策略和阻断公开访问四证以及新鲜收据，之后才能更新FC。两函数与触发器目前仍旧未改动。
+
 ## 当前数据库连接修复入口
 
 `node scripts/start-v2-secure-config.mjs --mysql-only`启动回环安全页，只更新GitHub受保护环境的V2_MYSQL_PASSWORD并触发sync-v2-control-mysql-secret。其余已配置的管理员邮箱/哈希不变；页面明确区分保存、同步与实际连接成功。
