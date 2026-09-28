@@ -14,6 +14,8 @@ W3 IAM独立应用器`scripts/apply-v2-w3-iam.mjs`默认仅校验输入，不写
 
 首次新版包上传在GitHub Runner的OSS步骤长时间无回证，控制面运行达到20分钟上限被取消；期间新对象只读Head仍不存在。为防止再次空等，HEAD最多90秒，控制面PUT/GET各最多240秒、Worker PUT/GET各最多600秒；工作流只报告固定阶段、退出码与脱敏API错误码。超时后先只读Head与内容摘要确认状态，不自动重试不明写入。不要因工作流的前置步骤通过就认定包已经上传。
 
+W3函数和触发器更新还需要GitHub部署角色只对两个新角色的`ram:PassRole`，分别限制服务`fc.aliyuncs.com`与`oss.aliyuncs.com`；触发器管理仅`fc:CreateTrigger`、`fc:GetTrigger`、`fc:ListTriggers`。后者按FC3官方权限表必须`Resource:"*"`，脚本需固定现有Worker函数和唯一触发器名。不给部署角色`fc:InvokeFunction`、`fc:DeleteTrigger`、RAM管理或OSS桶管理权限。IAM应用器把这两份权限与前四份一起按同名同正文、回读绑定的规则幂等处理；未附加前不能开始函数/触发器更新。
+
 ## 当前数据库连接修复入口
 
 `node scripts/start-v2-secure-config.mjs --mysql-only`启动回环安全页，只更新GitHub受保护环境的V2_MYSQL_PASSWORD并触发sync-v2-control-mysql-secret。其余已配置的管理员邮箱/哈希不变；页面明确区分保存、同步与实际连接成功。

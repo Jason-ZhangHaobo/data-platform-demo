@@ -44,7 +44,10 @@ export function renderV2W3OssTriggerPlan(input = {}) {
     currentControlDigest = input.V2_CONTROL_PACKAGE_SHA256?.trim(),
     nextControlDigest = input.V2_W3_CONTROL_PACKAGE_SHA256?.trim(),
     nextControlBytes = Number(input.V2_W3_CONTROL_PACKAGE_BYTES),
+    smokeJobId = input.V2_W3_SMOKE_JOB_ID,
     errors = [];
+  if (smokeJobId !== undefined && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(smokeJobId))
+    errors.push("INVALID:V2_W3_SMOKE_JOB_ID");
   for (const [name, expected] of [
     ["V2_SPARK_QUEUE_JOB_PREFIX", SPARK_QUEUE_PREFIXES.jobs],
     ["V2_SPARK_QUEUE_RESULT_PREFIX", SPARK_QUEUE_PREFIXES.results],
@@ -171,6 +174,31 @@ export function renderV2W3OssTriggerPlan(input = {}) {
       },
     ],
   };
+  const deployPassRolePolicy = {
+    Version: "1",
+    Statement: [
+      {
+        Effect: "Allow",
+        Action: "ram:PassRole",
+        Resource: workerRuntimeRole,
+        Condition: { StringEquals: { "acs:Service": "fc.aliyuncs.com" } },
+      },
+      {
+        Effect: "Allow",
+        Action: "ram:PassRole",
+        Resource: triggerRole,
+        Condition: { StringEquals: { "acs:Service": "oss.aliyuncs.com" } },
+      },
+    ],
+  };
+  const deployTriggerPolicy = {
+    Version: "1",
+    Statement: [{
+      Effect: "Allow",
+      Action: ["fc:CreateTrigger", "fc:GetTrigger", "fc:ListTriggers"],
+      Resource: "*",
+    }],
+  };
   const triggerConfig = {
     events: ["oss:ObjectCreated:PutObject"],
     filter: { key: { prefix: W3_QUEUE.jobsPrefix, suffix: W3_QUEUE.suffix } },
@@ -203,6 +231,26 @@ export function renderV2W3OssTriggerPlan(input = {}) {
     packageUploadRole: {
       exactObjectPolicy: packageUploadPolicy,
       noBucketListOrDelete: true,
+    },
+    deploymentRole: {
+      passOnlyNewRolesPolicy: deployPassRolePolicy,
+      manageOnlyTriggerCreationAndReadPolicy: deployTriggerPolicy,
+      fcInvokePermission: false,
+      fcDeleteTriggerPermission: false,
+      ...(smokeJobId ? { exactSmokeObjectsPolicy: {
+        Version: "1",
+        Statement: [
+          { Effect: "Allow", Action: "oss:GetObject", Resource: [
+            objectArn(`${W3_QUEUE.jobsPrefix}${smokeJobId}.json`),
+            objectArn(`${W3_QUEUE.resultsPrefix}${smokeJobId}.json`),
+            objectArn(`${W3_QUEUE.cancellationsPrefix}${smokeJobId}.cancel.json`),
+          ] },
+          { Effect: "Allow", Action: "oss:PutObject", Resource: [
+            objectArn(`${W3_QUEUE.jobsPrefix}${smokeJobId}.json`),
+            objectArn(`${W3_QUEUE.cancellationsPrefix}${smokeJobId}.cancel.json`),
+          ] },
+        ],
+      } } : {}),
     },
     workerRuntimeRole: {
       mustDifferFromControlRole: true,

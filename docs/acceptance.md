@@ -720,3 +720,10 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 第三次应用通过只读预检，但创建角色响应失败。未重试写入；随后独立`GetRole`核对两个新角色均已创建，信任主体分别精确为FC与OSS，策略绑定均为空。再次以完整账单¥165.10通过预算门后，幂等应用返回`ok=true`：没有重复创建角色，新建四份精确策略并绑定至对应角色，回读信任/策略正文/绑定全部通过；控制面未获`fc:InvokeFunction`。此时只完成IAM，两个现有FC函数尚未更新，OSS触发器尚未创建，公网未开放。
 - W3包上传门在代码中绑定[两份已核验Linux包](evidence/v2-w3-package-build-20260928.json)的内层SHA-256、字节和队列源码摘要；Worker旧的固定字节检查替换为该证据校验，并增加完整实时账单门。新包仍待GitHub OIDC实际上传及独立OSS私有性复核。
 - GitHub OIDC上传运行[Worker 36386280199](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36386280199)和[控制面36386279969](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36386279969)均通过包/身份/预算前置，但分别在OSS传输步骤达到35/20分钟上限后被取消。期间本机OAuth只读对两份精确新对象均返回NoSuchKey，不能将工作流启动或进入上传步骤计为对象已存在。上传阶段增加有界超时与仅固定phase/error code的诊断，等待重新验证；两个FC函数和触发器仍未修改。
+- 为后续私有函数更新单独核对现有GitHub部署策略：`fc:UpdateFunction`已存在，`ram:PassRole`仅允许旧控制面运行角色；`fc:CreateTrigger`及读取触发器尚无。W3计划补两份独立策略：只允许传递新Worker运行角色给FC、传递新OSS触发角色给OSS；另仅允许Create/Get/List触发器。官方FC3这些触发器API无法按函数收窄，实际调用脚本必须固定函数和触发器名；不授予部署角色Invoke或Delete。此项为代码计划，云端附加仍待后续验收。
+
+## 2026-09-28：收敛上传故障与集中交付
+
+用户指出推进低效后，停止整包PUT的长时间重试。控制面通过旧包精确字节比较与服务器内复制完成上传，完整下载SHA-256一致；Worker通过902个不变ZIP条目核对与服务器内复制完成上传，仅传输约104KB。Worker服务端CRC64与本地完整包一致，但远端SHA-256仍待回证。两包私有性四项已实际验证；证据见[evidence/v2-w3-private-transfer-20260928.json](evidence/v2-w3-private-transfer-20260928.json)。提效原因与后续顺序见[w3-delivery-recovery.md](w3-delivery-recovery.md)。
+
+新增集中私有部署工作流：校验既有函数边界，使用FC原生CRC64校验更新Worker，创建唯一OSS触发器，执行一个固定签名证券任务并断言175.00后更新控制面。只给部署角色该烟测的三个精确OSS对象权限，不能伪造结果，也不给它Invoke或Delete。此时是准备和本机测试通过，实际云端结果须由工作流报告回证。

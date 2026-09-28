@@ -1,0 +1,23 @@
+{
+  "schema": "shuduo-w3-private-transfer/v1",
+  "verifiedAt": "2026-09-28T10:03:58.623Z",
+  "packages": {
+    "control": {
+      "sha256": "29b79d06b7e91f09015efa0265f8f3615f527dbcb58ed5199d42beac6f33b560",
+      "bytes": 46861622,
+      "crc64": "15301717687177484040",
+      "privacyChecks": {"bucketAclPrivate":true,"objectAclPrivateOrInherited":true,"bucketPolicyNotPublic":true,"bucketPublicAccessBlocked":true},
+      "downloadedSha256Verified": true,
+      "serverCrc64Verified": true
+    },
+    "worker": {
+      "sha256": "9960d075c160700057d87c2db51102973ce448cd2f01e6d6be2213300c8a9d9f",
+      "bytes": 318922243,
+      "crc64": "1470009037303003455",
+      "privacyChecks": {"bucketAclPrivate":true,"objectAclPrivateOrInherited":true,"bucketPolicyNotPublic":true,"bucketPublicAccessBlocked":true},
+      "downloadedSha256Verified": false,
+      "serverCrc64Verified": true
+    }
+  },
+  "publicDeployed": false
+}
