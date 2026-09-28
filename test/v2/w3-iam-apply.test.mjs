@@ -131,3 +131,13 @@ test("W3 IAM rejects a deploy role reused as the OSS Invoke role without contact
   const checked = validateV2W3IamInput({ ...input, V2_W3_OSS_TRIGGER_ROLE_ARN: input.V2_DEPLOY_ROLE_ARN });
   assert.deepEqual(checked.errors, ["W3_ALL_FOUR_ROLES_MUST_BE_DISTINCT"]);
 });
+
+test("W3 IAM rejects an unsafe local CLI profile before contacting cloud", () => {
+  const previous = process.env.V2_ALIYUN_CLI_PROFILE;
+  process.env.V2_ALIYUN_CLI_PROFILE = "other profile; command";
+  try { assert.throws(() => applyV2W3Iam(input), /W3_CLI_PROFILE_INVALID/); }
+  finally {
+    if (previous === undefined) delete process.env.V2_ALIYUN_CLI_PROFILE;
+    else process.env.V2_ALIYUN_CLI_PROFILE = previous;
+  }
+});
