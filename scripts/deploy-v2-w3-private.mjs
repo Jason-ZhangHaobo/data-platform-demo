@@ -21,7 +21,7 @@ const same = (a,b) => JSON.stringify(canonical(a))===JSON.stringify(canonical(b)
 
 export function verifyPrivateFunctionBaseline(kind, fn, capacity, scaling, expectedRole) {
   if (fn?.functionName !== names[kind] || fn.role !== expectedRole ||
-      fn.internetAccess !== false || Number(fn.instanceConcurrency) !== 1 ||
+      fn.internetAccess !== (kind === "control") || Number(fn.instanceConcurrency) !== 1 ||
       Number(capacity?.reservedConcurrency) !== 1 || Number(scaling?.minInstances) !== 0 ||
       scaling?.enableOnDemandScaling === false || !fn.vpcConfig?.vpcId ||
       !["custom.debian10", "custom.debian12"].includes(fn.runtime))
