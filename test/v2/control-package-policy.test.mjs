@@ -38,6 +38,10 @@ test("control package policy rejects missing identities and oversized objects", 
 
 test("control upload workflow binds one successful main build and never overwrites or deletes", () => {
   const workflow = readFileSync(".github/workflows/upload-v2-control-plane.yml", "utf8");
+  assert.match(workflow, /timeout 90s ossutil api head-object/);
+  assert.match(workflow, /timeout 240s ossutil api put-object/);
+  assert.match(workflow, /timeout 240s ossutil api get-object/);
+  assert.match(workflow, /Control upload failed phase=%s exit=%s code=%s/);
   assert.match(workflow, /\.head_sha == \$sha and \.head_branch == "main" and \.conclusion == "success"/);
   assert.match(workflow, /actions\/download-artifact@v6/);
   assert.match(workflow, /--forbid-overwrite true/);
