@@ -31,7 +31,10 @@ const isMissing = (response, type) =>
   new RegExp(`EntityNotExist(?:s)?\\.${type}`).test(`${response.stdout}\n${response.stderr}`);
 
 function defaultRunner(args) {
-  const result = spawnSync(process.env.ALIYUN_CLI || "aliyun", args, {
+  const profile = process.env.V2_ALIYUN_CLI_PROFILE;
+  if (profile && !/^[A-Za-z0-9_-]{1,64}$/.test(profile))
+    throw new Error("W3_CLI_PROFILE_INVALID");
+  const result = spawnSync(process.env.ALIYUN_CLI || "aliyun", profile ? [...args, "--profile", profile] : args, {
     encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024,
   });
