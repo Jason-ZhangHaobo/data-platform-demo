@@ -1,0 +1,30 @@
+{
+  "schema": "shuduo-v2-w3-package-build-evidence/v1",
+  "recordedAt": "2026-09-28T01:52:57Z",
+  "sourceCommit": "42f769db9c2e9f19b5b88f1fb5bf31d902550b04",
+  "sourceModuleSha256": "45d659d86f8409cf820565ca764c55e8034444982203a71302c37b8f16a2bb80",
+  "sourceModule": "src/v2/remote-spark-queue.mjs",
+  "worker": {
+    "buildRun": "https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36366416245",
+    "buildStatus": "success",
+    "innerZipSha256": "9960d075c160700057d87c2db51102973ce448cd2f01e6d6be2213300c8a9d9f",
+    "innerZipBytes": 318922243,
+    "zipIntegrityVerified": true,
+    "embeddedSourceModuleMatches": true,
+    "realSyntheticSparkSmokeInBuild": true
+  },
+  "controlPlane": {
+    "buildRun": "https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36366422767",
+    "buildStatus": "success",
+    "innerZipSha256": "29b79d06b7e91f09015efa0265f8f3615f527dbcb58ed5199d42beac6f33b560",
+    "innerZipBytes": 46861622,
+    "zipIntegrityVerified": true,
+    "embeddedSourceModuleMatches": true
+  },
+  "artifactRetentionDays": 1,
+  "cloudPackageUploaded": false,
+  "iamPolicyApplied": false,
+  "ossTriggerCreated": false,
+  "cloudQueueE2EVerified": false,
+  "publicDeployed": false
+}
