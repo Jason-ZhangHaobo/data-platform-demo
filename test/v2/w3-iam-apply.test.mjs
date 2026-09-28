@@ -32,7 +32,7 @@ function cloud() {
   ]), calls = [];
   const value = (args, flag) => args[args.indexOf(flag) + 1];
   const success = (data) => ({ ok: true, stdout: JSON.stringify(data), stderr: "" });
-  const missing = (type) => ({ ok: false, stdout: "", stderr: `EntityNotExist.${type}` });
+  const missing = (type) => ({ ok: false, stdout: "", stderr: `ErrorCode: EntityNotExist.${type}` });
   const runner = (args) => {
     const action = `${args[0]}:${args[1]}`;
     calls.push(action);
@@ -167,4 +167,28 @@ test("W3 IAM retries only a transient read, not a timed-out write", () => {
     return next.runner(args);
   }), /W3_CREATE_ROLE_FAILED/);
   assert.equal(timedOutWrites, 1);
+});
+
+test("W3 IAM retries an unknown read transport failure but not a permission denial", () => {
+  const fake = cloud();
+  let unknownFailures = 0;
+  const recovered = applyV2W3Iam(input, (args) => {
+    if (args[1] === "GetPolicy" && unknownFailures++ === 0)
+      return { ok: false, stdout: "", stderr: "read: connection reset by peer" };
+    return fake.runner(args);
+  });
+  assert.equal(recovered.ok, true);
+  assert.ok(unknownFailures >= 2);
+
+  const denied = cloud();
+  let attempts = 0;
+  assert.throws(() => applyV2W3Iam(input, (args) => {
+    if (args[1] === "GetPolicy") {
+      attempts++;
+      return { ok: false, stdout: "", stderr: "ErrorCode: NoPermission" };
+    }
+    return denied.runner(args);
+  }), /W3_GET_POLICY_FAILED/);
+  assert.equal(attempts, 1);
+  assert.equal(denied.calls.some((item) => item.startsWith("ram:Create")), false);
 });
