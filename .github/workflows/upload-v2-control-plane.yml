@@ -117,9 +117,18 @@ jobs:
           error_file="$(mktemp)"
           upload_file="$(mktemp)"
           downloaded="$(mktemp)"
-          cleanup() { rm -f "$head_file" "$error_file" "$upload_file" "$downloaded" v2-function.zip; }
+          phase=HEAD_OBJECT
+          cleanup() {
+            result=$?
+            if [ "$result" -ne 0 ]; then
+              code="$(node scripts/extract-aliyun-error-code.mjs "$head_file" "$error_file")" || code=UNKNOWN_ALIYUN_ERROR
+              printf '::error::Control upload failed phase=%s exit=%s code=%s\n' "$phase" "$result" "$code"
+            fi
+            rm -f "$head_file" "$error_file" "$upload_file" "$downloaded" v2-function.zip
+            exit "$result"
+          }
           trap cleanup EXIT
-          if ossutil api head-object --quiet \
+          if timeout 90s ossutil api head-object --quiet \
             --bucket "$V2_OSS_BUCKET" --key "$V2_CONTROL_CODE_OBJECT" \
             --output-format json >"$head_file" 2>"$error_file"; then
             :
@@ -129,7 +138,8 @@ jobs:
               echo "::error title=Control package HEAD failed::$code"
               exit 1
             fi
-            ossutil api put-object --quiet \
+            phase=PUT_OBJECT
+            timeout 240s ossutil api put-object --quiet \
               --bucket "$V2_OSS_BUCKET" --key "$V2_CONTROL_CODE_OBJECT" \
               --body file://v2-function.zip \
               --metadata "shuduo-sha256=$V2_CONTROL_PACKAGE_SHA256" \
@@ -140,13 +150,15 @@ jobs:
                 exit 1
               }
           fi
-          ossutil api get-object --quiet \
+          phase=DOWNLOAD_OBJECT
+          timeout 240s ossutil api get-object --quiet \
             --bucket "$V2_OSS_BUCKET" --key "$V2_CONTROL_CODE_OBJECT" \
             >"$downloaded" 2>"$error_file" || {
               code="$(node scripts/extract-aliyun-error-code.mjs "$downloaded" "$error_file")"
               echo "::error title=Control package readback failed::$code"
               exit 1
             }
+          phase=VERIFY_DOWNLOADED_BYTES
           test "$(sha256sum "$downloaded" | cut -d' ' -f1)" = "$V2_CONTROL_PACKAGE_SHA256"
           test "$(wc -c < "$downloaded" | tr -d ' ')" = "$V2_CONTROL_PACKAGE_BYTES"
 

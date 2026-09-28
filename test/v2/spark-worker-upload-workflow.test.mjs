@@ -21,6 +21,9 @@ test("W3 Worker upload workflow is OIDC-only, exact-object and overwrite-safe", 
   assert.match(workflow, /V2_SPARK_WORKER_PACKAGE_BYTES/);
   assert.match(workflow, /verify-v2-w3-build-evidence\.mjs worker/);
   assert.match(workflow, /query-v2-monthly-spend\.sh/);
+  assert.match(workflow, /timeout 90s ossutil api head-object/);
+  assert.match(workflow, /timeout 600s ossutil api put-object/);
+  assert.match(workflow, /timeout 600s ossutil api get-object/);
   assert.match(workflow, /sha256sum v2-spark-worker\.zip/);
   assert.match(workflow, /--forbid-overwrite true/);
   assert.match(workflow, /--object-acl private/);
@@ -54,7 +57,8 @@ test("upload errors identify the phase while suppressing raw cloud details and p
     try {
       await mkdir(join(directory, "scripts"));
       await copyFile(fileURLToPath(new URL("../../scripts/extract-aliyun-error-code.mjs", import.meta.url)), join(directory, "scripts/extract-aliyun-error-code.mjs"));
-      const fake = `ossutil() {
+      const fake = `timeout() { shift; "$@"; }
+      ossutil() {
         printf '%s\\n' "$2" >> calls
         if [ "$2" = head-object ]; then
           printf '%s\\n' 'Error: operation error HeadObject: Status Code:404, Code: ${headCode}., Message: synthetic-private-secret' >&2

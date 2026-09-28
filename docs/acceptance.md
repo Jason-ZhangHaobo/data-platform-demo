@@ -719,3 +719,4 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 - 第二次W3 IAM应用同样在只读`GetPolicy`阶段停止，仍未执行Create/Attach。四份拟建策略单独核查时三份明确不存在、一份瞬时连接类失败，重查明确不存在。只读重试扩展至未知连接错误，明确不存在/无权限/凭证与签名错误不重试；写接口仍只试一次。本机增加连接错误与权限拒绝分支测试，公共日志继续不保存原始CLI错误。
 - 第三次应用通过只读预检，但创建角色响应失败。未重试写入；随后独立`GetRole`核对两个新角色均已创建，信任主体分别精确为FC与OSS，策略绑定均为空。再次以完整账单¥165.10通过预算门后，幂等应用返回`ok=true`：没有重复创建角色，新建四份精确策略并绑定至对应角色，回读信任/策略正文/绑定全部通过；控制面未获`fc:InvokeFunction`。此时只完成IAM，两个现有FC函数尚未更新，OSS触发器尚未创建，公网未开放。
 - W3包上传门在代码中绑定[两份已核验Linux包](evidence/v2-w3-package-build-20260928.json)的内层SHA-256、字节和队列源码摘要；Worker旧的固定字节检查替换为该证据校验，并增加完整实时账单门。新包仍待GitHub OIDC实际上传及独立OSS私有性复核。
+- GitHub OIDC上传运行[Worker 36386280199](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36386280199)和[控制面36386279969](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/runs/36386279969)均通过包/身份/预算前置，但分别在OSS传输步骤达到35/20分钟上限后被取消。期间本机OAuth只读对两份精确新对象均返回NoSuchKey，不能将工作流启动或进入上传步骤计为对象已存在。上传阶段增加有界超时与仅固定phase/error code的诊断，等待重新验证；两个FC函数和触发器仍未修改。
