@@ -72,24 +72,28 @@ function cloud() {
   return { roles, policies, attached, calls, runner };
 }
 
-test("W3 IAM application first verifies identity and drift, then creates only four exact policies", () => {
+test("W3 IAM application first verifies identity and drift, then creates six scoped policies", () => {
   const fake = cloud();
   const result = applyV2W3Iam(input, fake.runner);
   assert.equal(result.ok, true);
   assert.deepEqual(result.createdRoles, ["shuduo-worker-runtime", "shuduo-oss-trigger"]);
-  assert.equal(result.createdPolicies.length, 4);
+  assert.equal(result.createdPolicies.length, 6);
   assert.equal(result.controlHasFcInvoke, false);
   assert.equal(result.cloudFunctionUpdated, false);
   assert.equal(result.ossTriggerCreated, false);
   assert.equal(fake.calls.filter((item) => item === "ram:CreateRole").length, 2);
-  assert.equal(fake.calls.filter((item) => item === "ram:CreatePolicy").length, 4);
-  assert.equal(fake.calls.filter((item) => item === "ram:AttachPolicyToRole").length, 4);
+  assert.equal(fake.calls.filter((item) => item === "ram:CreatePolicy").length, 6);
+  assert.equal(fake.calls.filter((item) => item === "ram:AttachPolicyToRole").length, 6);
   const again = applyV2W3Iam(input, fake.runner);
   assert.equal(again.ok, true);
   assert.deepEqual(again.createdRoles, []);
   assert.deepEqual(again.createdPolicies, []);
   assert.equal(fake.calls.filter((item) => item === "ram:CreateRole").length, 2);
-  assert.equal(fake.calls.filter((item) => item === "ram:CreatePolicy").length, 4);
+  assert.equal(fake.calls.filter((item) => item === "ram:CreatePolicy").length, 6);
+  assert.deepEqual(fake.policies.get("ShuduoV2W3PassRoles").Statement.map((statement) => statement.Condition.StringEquals["acs:Service"]),
+    ["fc.aliyuncs.com", "oss.aliyuncs.com"]);
+  assert.deepEqual(fake.policies.get("ShuduoV2W3TriggerManage").Statement[0].Action,
+    ["fc:CreateTrigger", "fc:GetTrigger", "fc:ListTriggers"]);
 });
 
 test("W3 IAM refuses an unexpected policy on a proposed isolated role before any write", () => {
@@ -130,6 +134,17 @@ test("W3 IAM rejects a role with matching trust but unexpected attached policy",
 test("W3 IAM rejects a deploy role reused as the OSS Invoke role without contacting cloud", () => {
   const checked = validateV2W3IamInput({ ...input, V2_W3_OSS_TRIGGER_ROLE_ARN: input.V2_DEPLOY_ROLE_ARN });
   assert.deepEqual(checked.errors, ["W3_ALL_FOUR_ROLES_MUST_BE_DISTINCT"]);
+});
+
+test("W3 smoke permission is restricted to one job and cannot forge its result", () => {
+  const fake=cloud(),jobId="11111111-2222-4333-8444-555555555555";
+  const result=applyV2W3Iam({...input,V2_W3_SMOKE_JOB_ID:jobId},fake.runner);
+  assert.equal(result.ok,true);
+  const policy=fake.policies.get("ShuduoV2W3SmokeExactObjects");
+  const writes=policy.Statement.find(s=>s.Action==="oss:PutObject").Resource;
+  assert.equal(writes.length,2);
+  assert.ok(writes.every(path=>path.endsWith(`${jobId}.json`)||path.endsWith(`${jobId}.cancel.json`)));
+  assert.ok(writes.every(path=>!path.includes("/results/")));
 });
 
 test("W3 IAM rejects an unsafe local CLI profile before contacting cloud", () => {

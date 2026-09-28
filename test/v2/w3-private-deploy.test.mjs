@@ -1,0 +1,31 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { queueEnvironment, verifyPrivateFunctionBaseline } from "../../scripts/deploy-v2-w3-private.mjs";
+import { renderV2W3OssTriggerPlan } from "../../scripts/render-v2-w3-oss-trigger-plan.mjs";
+
+test("W3 queue configuration preserves existing credentials and refuses a mismatched shared key", () => {
+  const secret="synthetic-shared-key-with-32-characters";
+  const env={V2_OSS_BUCKET:"synthetic-private-bucket",V2_SPARK_EXECUTOR_SECRET:secret};
+  const existing={V2_SPARK_WORKER_SECRET:secret,JAVA_HOME:"/opt/java17",V2_PYTHON:"/opt/python3.10/bin/python3"};
+  const next=queueEnvironment("worker",existing,env,"synthetic");
+  assert.equal(next.V2_SPARK_WORKER_SECRET,secret);
+  assert.equal(next.JAVA_HOME,existing.JAVA_HOME);
+  assert.equal(next.V2_SPARK_QUEUE_CONSUMER_ENABLED,"true");
+  assert.throws(()=>queueEnvironment("worker",{...existing,V2_SPARK_WORKER_SECRET:"wrong"},env,"synthetic"),/WORKER_SECRET_MISMATCH/);
+  const control=queueEnvironment("control",{V2_MYSQL_PASSWORD:"synthetic-db-password"},env,"synthetic-job");
+  assert.equal(control.V2_MYSQL_PASSWORD,"synthetic-db-password");
+  assert.equal(control.V2_SPARK_QUEUE_READY_JOB_ID,"synthetic-job");
+});
+
+test("W3 private deployment refuses public egress or expanded concurrency", () => {
+  const fn={functionName:"dataplatform-v2-staging-spark-worker",role:"synthetic-role",internetAccess:false,instanceConcurrency:1,vpcConfig:{vpcId:"synthetic-vpc"},runtime:"custom.debian10"};
+  const capacity={reservedConcurrency:1},scaling={minInstances:0};
+  verifyPrivateFunctionBaseline("worker",fn,capacity,scaling,"synthetic-role");
+  assert.throws(()=>verifyPrivateFunctionBaseline("worker",{...fn,internetAccess:true},capacity,scaling,"synthetic-role"),/BASELINE/);
+  assert.throws(()=>verifyPrivateFunctionBaseline("worker",fn,{reservedConcurrency:2},scaling,"synthetic-role"),/BASELINE/);
+});
+
+test("W3 rejects an invalid fixed smoke object identity", () => {
+  const result=renderV2W3OssTriggerPlan({V2_W3_SMOKE_JOB_ID:"../unrelated"});
+  assert.ok(result.errors.includes("INVALID:V2_W3_SMOKE_JOB_ID"));
+});

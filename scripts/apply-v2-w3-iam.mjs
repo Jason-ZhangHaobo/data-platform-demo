@@ -9,6 +9,8 @@ const policyNames = Object.freeze({
   control: "ShuduoV2W3ControlQueue",
   worker: "ShuduoV2W3WorkerQueue",
   trigger: "ShuduoV2W3OssInvoke",
+  passRoles: "ShuduoV2W3PassRoles",
+  triggerManage: "ShuduoV2W3TriggerManage",
 });
 const parse = (text, code) => {
   try { return JSON.parse(text); }
@@ -108,6 +110,9 @@ export function applyV2W3Iam(input = {}, runner = defaultRunner) {
     { name: policyNames.control, role: roles[1].name, body: plan.controlPlane.queueOnlyPolicy },
     { name: policyNames.worker, role: roles[2].name, body: plan.workerRuntimeRole.queueOnlyPolicy },
     { name: policyNames.trigger, role: roles[3].name, body: plan.triggerInvocationRole.invocationPolicy },
+    { name: policyNames.passRoles, role: deployRoleName, body: plan.deploymentRole.passOnlyNewRolesPolicy },
+    { name: policyNames.triggerManage, role: deployRoleName, body: plan.deploymentRole.manageOnlyTriggerCreationAndReadPolicy },
+    ...(plan.deploymentRole.exactSmokeObjectsPolicy ? [{ name: "ShuduoV2W3SmokeExactObjects", role: deployRoleName, body: plan.deploymentRole.exactSmokeObjectsPolicy }] : []),
   ];
 
   // Complete all read-only drift checks before the first write.

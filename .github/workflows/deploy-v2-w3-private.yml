@@ -1,0 +1,58 @@
+name: Deploy and verify W3 private Spark queue
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Enter W3_PRIVATE to apply the reviewed private deployment
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: v2-staging-control-mutation
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'W3_PRIVATE'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: v2-staging
+    env:
+      ALIBABA_CLOUD_REGION_ID: cn-hangzhou
+      V2_DEPLOY_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
+      V2_DEPLOY_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+      V2_FUNCTION_ROLE_ARN: ${{ vars.V2_FUNCTION_ROLE_ARN }}
+      V2_OSS_BUCKET: ${{ vars.V2_OSS_BUCKET }}
+      V2_W3_SMOKE_JOB_ID: ${{ vars.V2_W3_SMOKE_JOB_ID }}
+      V2_SPARK_EXECUTOR_SECRET: ${{ secrets.V2_SPARK_EXECUTOR_SECRET }}
+      V2_W3_PRIVATE_APPROVED: "true"
+      V2_HARD_MONTHLY_BUDGET_CNY: "200"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: aliyun/setup-aliyun-cli-action@v1
+        with:
+          version: "3.4.11"
+      - uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ env.V2_DEPLOY_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-w3-private
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+      - name: Verify complete current monthly bill
+        run: scripts/query-v2-monthly-spend.sh >/dev/null
+      - name: Update private Worker, verify signed real Spark result, then update control plane
+        run: node scripts/deploy-v2-w3-private.mjs
+      - name: Preserve sanitized private deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: shuduo-w3-private-result-${{ github.run_id }}
+          path: w3-private-result.json
+          retention-days: 7
+          if-no-files-found: ignore

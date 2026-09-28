@@ -80,6 +80,21 @@ test("W3 OSS trigger plan is non-applying and excludes control Invoke permission
   assert.deepEqual(result.triggerInvocationRole.invocationPolicy.Statement, [
     { Effect: "Allow", Action: "fc:InvokeFunction", Resource: "*" },
   ]);
+  assert.deepEqual(result.deploymentRole.passOnlyNewRolesPolicy.Statement.map((statement) => ({
+    action: statement.Action,
+    resource: statement.Resource,
+    service: statement.Condition.StringEquals["acs:Service"],
+  })), [
+    { action: "ram:PassRole", resource: input.V2_W3_SPARK_WORKER_RUNTIME_ROLE_ARN, service: "fc.aliyuncs.com" },
+    { action: "ram:PassRole", resource: input.V2_W3_OSS_TRIGGER_ROLE_ARN, service: "oss.aliyuncs.com" },
+  ]);
+  assert.equal(result.deploymentRole.fcInvokePermission, false);
+  assert.equal(result.deploymentRole.fcDeleteTriggerPermission, false);
+  assert.deepEqual(result.deploymentRole.manageOnlyTriggerCreationAndReadPolicy.Statement[0], {
+    Effect: "Allow",
+    Action: ["fc:CreateTrigger", "fc:GetTrigger", "fc:ListTriggers"],
+    Resource: "*",
+  });
   assert.deepEqual(result.packageUploadRole.exactObjectPolicy.Statement, [{
     Effect: "Allow",
     Action: ["oss:GetObject", "oss:PutObject"],
@@ -92,7 +107,7 @@ test("W3 OSS trigger plan is non-applying and excludes control Invoke permission
   assert.equal(result.immutableControlPackage.uploadMustBeCreateOnly, true);
   assert.equal(JSON.stringify(result).includes(input.V2_FUNCTION_ROLE_ARN), false);
   assert.equal(
-    JSON.stringify(result).includes(input.V2_W3_SPARK_WORKER_RUNTIME_ROLE_ARN),
+    JSON.stringify(result.redacted).includes(input.V2_W3_SPARK_WORKER_RUNTIME_ROLE_ARN),
     false,
   );
 });
