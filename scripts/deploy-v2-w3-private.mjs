@@ -148,7 +148,14 @@ async function deploy(env = process.env) {
     report.stage="SIGNED_QUEUE_SMOKE";
     const transportEnv={...env,OSS_BUCKET:env.V2_OSS_BUCKET,OSS_REGION:"cn-hangzhou",OSS_ENDPOINT:"https://oss-cn-hangzhou.aliyuncs.com",V2_SPARK_EXECUTOR_TRANSPORT:"OSS_QUEUE",V2_SPARK_QUEUE_TIMEOUT_MS:"300000"};
     const config=queueConfigFromEnvironment(transportEnv);
-    const transport=ossSparkQueueTransportFromEnvironment(transportEnv,(url,options)=>fetch(url,{...options,signal:AbortSignal.timeout(15000)}));
+    const transport=ossSparkQueueTransportFromEnvironment(transportEnv,async(url,options)=>{
+      const response=await fetch(url,{...options,signal:AbortSignal.timeout(15000)});
+      if(!response.ok&&response.status!==404){
+        const error=await response.clone().text();
+        report.queueHttp={method:options.method,status:response.status,objectKind:url.includes("/results/")?"result":url.includes("/jobs/")?"job":"cancellation",code:error.match(/<Code>([A-Za-z0-9_.-]+)<\/Code>/)?.[1]??"UNKNOWN_OSS_ERROR",message:redactCliFailure(error.match(/<Message>([^<]*)<\/Message>/)?.[1]??"",[...sensitive]),temporaryTokenConfigured:Boolean(transportEnv.ALIBABA_CLOUD_SECURITY_TOKEN)};
+      }
+      return response;
+    });
     const queued=createQueuedSparkJob(privateSparkSmokePayload({requestId:jobId,submittedAt:new Date().toISOString()}),config,{requestId:jobId});
     let result;
     const old=await transport.read(queued.resultKey);
