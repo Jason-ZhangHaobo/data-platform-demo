@@ -187,7 +187,7 @@ export function renderV2W3OssTriggerPlan(input = {}) {
         Effect: "Allow",
         Action: "ram:PassRole",
         Resource: triggerRole,
-        Condition: { StringEquals: { "acs:Service": "oss.aliyuncs.com" } },
+        Condition: { StringEquals: { "acs:Service": "fc.aliyuncs.com" } },
       },
     ],
   };
@@ -235,6 +235,10 @@ export function renderV2W3OssTriggerPlan(input = {}) {
     deploymentRole: {
       passOnlyNewRolesPolicy: deployPassRolePolicy,
       manageOnlyTriggerCreationAndReadPolicy: deployTriggerPolicy,
+      ossEventRegistrationPolicy: {
+        Version: "1",
+        Statement: [{ Effect: "Allow", Action: ["oss:ListBucket","oss:GetBucketEventNotification","oss:PutBucketEventNotification"], Resource: `acs:oss:*:${accountId}:${bucket}` }],
+      },
       fcInvokePermission: false,
       fcDeleteTriggerPermission: false,
       ...(smokeJobId ? { exactSmokeObjectsPolicy: {

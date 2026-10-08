@@ -1,0 +1,10 @@
+{
+  "verifiedAt": "2026-10-08T08:05:27.800Z",
+  "scope": "One ephemeral fictional object outside the jobs trigger prefix; no existing data modified",
+  "createOnly": { "firstPutStatus": 200, "duplicatePutStatus": 409, "originalPreserved": true, "passed": true },
+  "conditionalUpdate": { "staleEtagPutStatus": 400, "originalPreserved": true, "passed": false, "blockingIssue": "The existing OSS If-Match PUT path is not supported by the live service; cloud mutable state acceptance remains blocked" },
+  "cleanup": { "deleteStatus": 204, "onlyProbeObjectDeleted": true },
+  "budget": { "billingCycle": "2026-10", "spendCny": "0.18", "recordCount": 5, "completePagination": true, "limitCny": 200 },
+  "publicReady": false,
+  "documentation": "https://www.alibabacloud.com/help/en/oss/developer-reference/putobject"
+}

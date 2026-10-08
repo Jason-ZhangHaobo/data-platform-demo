@@ -86,7 +86,7 @@ test("W3 OSS trigger plan is non-applying and excludes control Invoke permission
     service: statement.Condition.StringEquals["acs:Service"],
   })), [
     { action: "ram:PassRole", resource: input.V2_W3_SPARK_WORKER_RUNTIME_ROLE_ARN, service: "fc.aliyuncs.com" },
-    { action: "ram:PassRole", resource: input.V2_W3_OSS_TRIGGER_ROLE_ARN, service: "oss.aliyuncs.com" },
+    { action: "ram:PassRole", resource: input.V2_W3_OSS_TRIGGER_ROLE_ARN, service: "fc.aliyuncs.com" },
   ]);
   assert.equal(result.deploymentRole.fcInvokePermission, false);
   assert.equal(result.deploymentRole.fcDeleteTriggerPermission, false);

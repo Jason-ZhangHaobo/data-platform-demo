@@ -14,7 +14,9 @@ export function createOssRequest({
 }) {
   const date = new Date().toUTCString();
   const contentType = body === undefined ? "" : "application/json; charset=utf-8";
-  const securityHeader = credentials.securityToken ? `x-oss-security-token:${credentials.securityToken}\n` : "";
+  const forbidOverwrite = method === "PUT" && ifNoneMatch === "*";
+  const securityHeader = (forbidOverwrite ? "x-oss-forbid-overwrite:true\n" : "") +
+    (credentials.securityToken ? `x-oss-security-token:${credentials.securityToken}\n` : "");
   const canonicalResource = `/${bucket}/${key}`;
   const stringToSign = `${method}\n\n${contentType}\n${date}\n${securityHeader}${canonicalResource}`;
   const signature = createHmac("sha1", credentials.accessKeySecret).update(stringToSign, "utf8").digest("base64");
@@ -22,7 +24,8 @@ export function createOssRequest({
   if (contentType) headers["Content-Type"] = contentType;
   if (credentials.securityToken) headers["x-oss-security-token"] = credentials.securityToken;
   if (etag) headers["If-Match"] = etag;
-  if (ifNoneMatch) headers["If-None-Match"] = ifNoneMatch;
+  if (forbidOverwrite) headers["x-oss-forbid-overwrite"] = "true";
+  else if (ifNoneMatch) headers["If-None-Match"] = ifNoneMatch;
   const host = endpoint.replace(/^https?:\/\//, "").replace(/\/$/, "");
   return { url: `https://${bucket}.${host}/${encodeKey(key)}`, options: { method, headers, body }, stringToSign };
 }
