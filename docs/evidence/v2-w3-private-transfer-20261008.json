@@ -1,18 +1,20 @@
 {
   "schema": "shuduo-w3-private-transfer/v1",
-  "verifiedAt": "2026-10-08T08:42:06.204Z",
-  "sourceCommit": "f0abdb8f6cdcd71d5fbe506bacefd4dcc9c61f8d",
-  "buildRuns": { "control": "37748978498", "worker": "37748973821" },
+  "verifiedAt": "2026-10-08T08:46:11.903Z",
+  "sourceCommits": { "control": "ff7cf0b20a25f5cdb450d661a2b9695de7c9f195", "worker": "f0abdb8f6cdcd71d5fbe506bacefd4dcc9c61f8d" },
+  "buildRuns": { "control": "37754578257", "worker": "37748973821" },
   "artifactArchiveSha256Verified": true,
   "packages": {
     "control": {
-      "sha256": "37e25fafc6eb68df6ddf218712f50e10730f1cc41a5a72d08ae44df6de439606",
-      "bytes": 46861697,
-      "crc64": "6894527678971283450",
+      "sha256": "0f3156352426e5c1672047e8c64c82b4cc32ecdc16579b51f433f5650a87f5b6",
+      "bytes": 46862063,
+      "crc64": "16421407507521913989",
+      "stateBackendSha256": "040fce5683a6f8a4b7764740748c6a0617ad99784426414a2dbe4e2fe45e69b5",
+      "verifiedAt": "2026-10-08T09:19:11.674Z",
       "privacyChecks": { "bucketAclPrivate": true, "objectAclPrivateOrInherited": true, "bucketPolicyNotPublic": true, "bucketPublicAccessBlocked": true },
       "downloadedSha256Verified": false,
       "serverCrc64Verified": true,
-      "uploadedBytes": 994144
+      "uploadedBytes": 994510
     },
     "worker": {
       "sha256": "fea9a282ad2de6e0549c1b942d60fb0fd4b13da675c8b639378c39702d85bf71",
@@ -25,5 +27,6 @@
     }
   },
   "publicDeployed": false,
-  "controlMutableStateVerified": false
+  "controlMutableStateVerified": true,
+  "controlBootVerified": false
 }
