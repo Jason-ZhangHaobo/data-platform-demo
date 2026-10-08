@@ -54,8 +54,8 @@ function fakeOss() {
           : new Response("", { status: 404 });
       }
       if (options.method === "PUT") {
-        if (options.headers["If-None-Match"] === "*" && objects.has(key))
-          return new Response("", { status: 412 });
+        if (options.headers["x-oss-forbid-overwrite"] === "true" && objects.has(key))
+          return new Response("", { status: 409 });
         const item = {
           body: options.body,
           etag: `\"etag-${objects.size + 1}\"`,
@@ -86,8 +86,8 @@ test("OSS artifact store uses create-only objects and verifies an existing repla
     first = await store.put("delivery-package", digest, value),
     replay = await store.put("delivery-package", digest, value);
   assert.equal(first.contentHash, replay.contentHash);
-  assert.equal(remote.calls[0].options.headers["If-None-Match"], "*");
-  assert.equal(remote.calls[1].options.headers["If-None-Match"], "*");
+  assert.equal(remote.calls[0].options.headers["x-oss-forbid-overwrite"], "true");
+  assert.equal(remote.calls[1].options.headers["x-oss-forbid-overwrite"], "true");
   assert.equal(remote.calls[2].options.method, "GET");
   const verified = await store.verify(
     replay,

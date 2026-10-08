@@ -120,6 +120,7 @@ test("API rejects an Agent task before creation when the monthly model guard is 
   const app = createV2Server({
     root,
     store,
+    now: () => fixedNow,
     env: {
       V2_LOCAL_DEVELOPMENT: "true",
       V2_MODEL_MONTHLY_BUDGET_CNY: "0.6",

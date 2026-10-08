@@ -36,7 +36,7 @@ function fakeOss() {
       }
       if (options.method !== "PUT") return new Response("", { status: 405 });
       if (
-        (options.headers["If-None-Match"] === "*" && body) ||
+        (options.headers["x-oss-forbid-overwrite"] === "true" && body) ||
         (options.headers["If-Match"] && options.headers["If-Match"] !== etag)
       )
         return new Response("", { status: 412 });
@@ -47,7 +47,7 @@ function fakeOss() {
   };
 }
 
-test("OSS backend creates with If-None-Match and updates with ETag CAS", async () => {
+test("OSS backend creates with the native forbid-overwrite header and updates with ETag CAS", async () => {
   const remote = fakeOss(),
     backend = new OssDataStateBackend(config, remote.fetch),
     initial = await backend.load(PROJECT),
@@ -55,7 +55,7 @@ test("OSS backend creates with If-None-Match and updates with ETag CAS", async (
   assert.equal(initial.revision, 0);
   assert.equal(await backend.compareAndSwap(PROJECT, 0, payload), 1);
   assert.equal(await backend.compareAndSwap(PROJECT, 1, payload), 2);
-  assert.equal(remote.requests[1].options.headers["If-None-Match"], "*");
+  assert.equal(remote.requests[1].options.headers["x-oss-forbid-overwrite"], "true");
   assert.equal(remote.requests[2].options.headers["If-Match"], '"etag-1"');
   assert.equal(remote.requests[1].options.headers.Authorization.includes("test-key-secret"), false);
   assert.equal((await backend.load(PROJECT)).revision, 2);

@@ -72,28 +72,31 @@ function cloud() {
   return { roles, policies, attached, calls, runner };
 }
 
-test("W3 IAM application first verifies identity and drift, then creates six scoped policies", () => {
+test("W3 IAM application first verifies identity and drift, then creates seven scoped policies", () => {
   const fake = cloud();
   const result = applyV2W3Iam(input, fake.runner);
   assert.equal(result.ok, true);
   assert.deepEqual(result.createdRoles, ["shuduo-worker-runtime", "shuduo-oss-trigger"]);
-  assert.equal(result.createdPolicies.length, 6);
+  assert.equal(result.createdPolicies.length, 7);
   assert.equal(result.controlHasFcInvoke, false);
   assert.equal(result.cloudFunctionUpdated, false);
   assert.equal(result.ossTriggerCreated, false);
   assert.equal(fake.calls.filter((item) => item === "ram:CreateRole").length, 2);
-  assert.equal(fake.calls.filter((item) => item === "ram:CreatePolicy").length, 6);
-  assert.equal(fake.calls.filter((item) => item === "ram:AttachPolicyToRole").length, 6);
+  assert.equal(fake.calls.filter((item) => item === "ram:CreatePolicy").length, 7);
+  assert.equal(fake.calls.filter((item) => item === "ram:AttachPolicyToRole").length, 7);
   const again = applyV2W3Iam(input, fake.runner);
   assert.equal(again.ok, true);
   assert.deepEqual(again.createdRoles, []);
   assert.deepEqual(again.createdPolicies, []);
   assert.equal(fake.calls.filter((item) => item === "ram:CreateRole").length, 2);
-  assert.equal(fake.calls.filter((item) => item === "ram:CreatePolicy").length, 6);
+  assert.equal(fake.calls.filter((item) => item === "ram:CreatePolicy").length, 7);
   assert.deepEqual(fake.policies.get("ShuduoV2W3PassRoles").Statement.map((statement) => statement.Condition.StringEquals["acs:Service"]),
-    ["fc.aliyuncs.com", "oss.aliyuncs.com"]);
+    ["fc.aliyuncs.com", "fc.aliyuncs.com"]);
   assert.deepEqual(fake.policies.get("ShuduoV2W3TriggerManage").Statement[0].Action,
     ["fc:CreateTrigger", "fc:GetTrigger", "fc:ListTriggers"]);
+  assert.deepEqual(fake.policies.get("ShuduoV2W3OssTriggerRegistration").Statement,[{
+    Effect:"Allow",Action:["oss:ListBucket","oss:GetBucketEventNotification","oss:PutBucketEventNotification"],Resource:`acs:oss:*:${account}:shuduo-private-artifacts`,
+  }]);
 });
 
 test("W3 IAM refuses an unexpected policy on a proposed isolated role before any write", () => {

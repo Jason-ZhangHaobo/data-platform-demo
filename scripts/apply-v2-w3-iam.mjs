@@ -112,6 +112,7 @@ export function applyV2W3Iam(input = {}, runner = defaultRunner) {
     { name: policyNames.trigger, role: roles[3].name, body: plan.triggerInvocationRole.invocationPolicy },
     { name: policyNames.passRoles, role: deployRoleName, body: plan.deploymentRole.passOnlyNewRolesPolicy },
     { name: policyNames.triggerManage, role: deployRoleName, body: plan.deploymentRole.manageOnlyTriggerCreationAndReadPolicy },
+    { name: "ShuduoV2W3OssTriggerRegistration", role: deployRoleName, body: plan.deploymentRole.ossEventRegistrationPolicy },
     ...(plan.deploymentRole.exactSmokeObjectsPolicy ? [{ name: "ShuduoV2W3SmokeExactObjects", role: deployRoleName, body: plan.deploymentRole.exactSmokeObjectsPolicy }] : []),
   ];
 
