@@ -1,0 +1,16 @@
+{
+  "runId": "37756777178",
+  "sourceCommit": "c91bf1a",
+  "startedAt": "2026-10-08T09:27:42.847Z",
+  "finishedAt": "2026-10-08T09:27:54.967Z",
+  "stage": "COMPLETED",
+  "ok": true,
+  "worker": { "changed": false, "crc64Verified": true, "environmentVerified": true },
+  "triggerVerified": true,
+  "smoke": { "status": "SUCCEEDED", "engineVersion": "3.5.9", "totalAssets": "175.00", "assertionsPassed": true, "reusedSignedResultFromRun": "37752654107" },
+  "control": { "changed": true, "crc64Verified": true, "environmentVerified": true },
+  "controlTriggersChanged": false,
+  "controlBootVerified": false,
+  "publicDeployed": false,
+  "note": "Successful private update/readback; a new control-plane startup and MySQL/OSS/runner integration still require separate acceptance."
+}

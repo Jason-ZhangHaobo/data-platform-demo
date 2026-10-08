@@ -1,0 +1,38 @@
+{
+  "schema": "shuduo-v2-control-private-health/v1",
+  "observedDate": "2026-10-08",
+  "recordedAt": "2026-10-08T10:00:41Z",
+  "deploymentRunId": "37756777178",
+  "functionReadback": {
+    "codeChecksum": "16421407507521913989",
+    "provisioningOnly": true,
+    "privateSmokeEnabled": true,
+    "transport": "OSS_QUEUE"
+  },
+  "privateInvoke": {
+    "cliExitCode": 0,
+    "protocol": "shuduo-v2-private-smoke-v1",
+    "mode": "PRIVATE_CONTROL_PLANE",
+    "metadata": { "driver": "mysql-project-snapshot-cas", "healthy": true },
+    "persistence": {
+      "mode": "single-instance-two-store-cas",
+      "healthy": true,
+      "dataState": { "driver": "oss-json-snapshot-cas", "healthy": true }
+    },
+    "publicReady": false
+  },
+  "controlBootVerified": true,
+  "controlToWorkerNewTaskVerified": false,
+  "crossUserCloudAuthenticationVerified": false,
+  "fullAgentLifecycleVerified": false,
+  "publicAccessVerified": false,
+  "diagnostic": {
+    "initialInvocation": "CLI_READ_TIMEOUT",
+    "resolvedBy": "Bounded CLI read timeout 150 seconds, connect timeout 10 seconds, retry count 0",
+    "cloudFunctionConfigurationChangedDuringProbe": false,
+    "credentialsReset": false,
+    "permissionsExpanded": false
+  },
+  "costControl": { "lastObservedRdsState": "Running", "autoPauseEnabled": true, "testInvocationsStopped": true, "pausedStateVerified": false },
+  "containsSecretValues": false
+}

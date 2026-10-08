@@ -1,0 +1,13 @@
+{
+  "runId": "37752654107",
+  "verifiedAt": "2026-10-08T08:52:37.017Z",
+  "worker": { "changed": true, "crc64Verified": true, "environmentVerified": true },
+  "triggerVerified": true,
+  "smoke": { "status": "SUCCEEDED", "engineVersion": "3.5.9", "totalAssets": "175.00", "assertionsPassed": true },
+  "jobId": "75b27696-b968-4a59-acc9-aae1e3da01f3",
+  "transport": "SIGNED_OSS_QUEUE",
+  "controlUpdated": false,
+  "deploymentGate": "CONTROL_MUTABLE_STATE_NOT_VERIFIED",
+  "note": "At this run the failing persistence probe correctly blocked control update after real Spark success. Later revision-backend verification is recorded separately.",
+  "publicDeployed": false
+}
