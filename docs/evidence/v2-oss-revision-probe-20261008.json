@@ -1,0 +1,11 @@
+{
+  "verifiedAt": "2026-10-08T09:04:22.844Z",
+  "implementationSha256": "040fce5683a6f8a4b7764740748c6a0617ad99784426414a2dbe4e2fe45e69b5",
+  "ok": true,
+  "createOnly": { "passed": true },
+  "conditionalUpdate": { "passed": true, "mechanism": "immutable-linked-revision-slots" },
+  "checks": ["stale-create-rejected", "stale-update-rejected", "cold-restart-restores-exact-changed-data", "second-writer-refreshes-winner"],
+  "fictionalValues": { "originalTotalAssets": "175.00", "updatedTotalAssets": "200.00" },
+  "cleanup": [{ "revision": "1.json", "status": 204 }, { "revision": "2.json", "status": 204 }],
+  "scope": "Real OSS transport and exact application backend, temporary synthetic state only; not a full control-plane or cross-user acceptance"
+}

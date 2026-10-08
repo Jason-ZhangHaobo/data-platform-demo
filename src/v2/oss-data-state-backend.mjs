@@ -11,9 +11,12 @@ import {
   requestOssWithRetry,
   wasOssRequestRetried,
 } from "./oss-request-retry.mjs";
+import { createHash } from "node:crypto";
 
 const ENVELOPE_FORMAT = "shuduo-data-state-envelope/v1";
 const DEFAULT_MAX_BYTES = 40 * 1024 * 1024;
+const stateHash = (state) => createHash("sha256")
+  .update(`${state.revision}\n${JSON.stringify(state.payload)}`).digest("hex");
 
 const unavailable = (message, code = "CLOUD_DATA_STATE_UNAVAILABLE") =>
   Object.assign(new Error(message), { status: 503, code });
@@ -26,11 +29,12 @@ export class OssDataStateBackend {
     this.cached = new Map();
   }
 
-  async request(method, body, etag, ifNoneMatch) {
+  async request(method, body, etag, ifNoneMatch, key = this.config.key) {
     return requestOssWithRetry(
       () =>
         createOssRequest({
           ...this.config,
+          key,
           method,
           body,
           etag,
@@ -42,6 +46,31 @@ export class OssDataStateBackend {
   }
 
   async load(project) {
+    let current = this.cached.get(project) ?? await this.loadLegacy(project);
+    // Immutable version slots use OSS atomic forbid-overwrite. The legacy
+    // snapshot remains read-only. Each successor proves its parent content.
+    for (let reads = 0; reads < 1024; reads += 1) {
+      const response = await this.request("GET", undefined, undefined, undefined,
+        this.revisionKey(current.revision + 1));
+      if (response.status === 404) {
+        this.cached.set(project, current);
+        return structuredClone(current);
+      }
+      const next = await this.readEnvelope(response, project);
+      if (next.revision !== current.revision + 1 || next.previousHash !== stateHash(current))
+        throw unavailable("OSS 状态版本链不连续", "CLOUD_DATA_STATE_INVALID_CHAIN");
+      current = { revision: next.revision, payload: next.payload };
+    }
+    throw unavailable("OSS 状态版本读取达到安全上限", "CLOUD_DATA_STATE_REVISION_LIMIT");
+  }
+
+  revisionKey(revision) {
+    if (!Number.isSafeInteger(revision) || revision < 1)
+      throw unavailable("OSS 状态版本号不合法", "CLOUD_DATA_STATE_INVALID");
+    return `${this.config.key}.revisions/${revision}.json`;
+  }
+
+  async loadLegacy(project) {
     const response = await this.request("GET");
     if (response.status === 404) {
       const initial = {
@@ -49,9 +78,13 @@ export class OssDataStateBackend {
         payload: emptyDataState(project),
         etag: undefined,
       };
-      this.cached.set(project, initial);
-      return structuredClone(initial);
+      return initial;
     }
+    const envelope = await this.readEnvelope(response, project);
+    return { revision: envelope.revision, payload: envelope.payload };
+  }
+
+  async readEnvelope(response, project) {
     if (!response.ok)
       throw unavailable(`OSS 业务状态读取失败（${response.status}）`);
     const contentLength = Number(response.headers.get("content-length") ?? 0);
@@ -73,16 +106,7 @@ export class OssDataStateBackend {
     )
       throw unavailable("OSS 业务状态信封格式不合法", "CLOUD_DATA_STATE_INVALID");
     validateDataState(envelope.payload, project);
-    const etag = response.headers.get("etag");
-    if (!etag)
-      throw unavailable("OSS 未返回并发控制标识", "CLOUD_DATA_STATE_NO_ETAG");
-    const current = {
-      revision: envelope.revision,
-      payload: envelope.payload,
-      etag,
-    };
-    this.cached.set(project, current);
-    return structuredClone(current);
+    return envelope;
   }
 
   async compareAndSwap(project, expectedRevision, payload) {
@@ -94,6 +118,7 @@ export class OssDataStateBackend {
       body = JSON.stringify({
         format: ENVELOPE_FORMAT,
         revision,
+        previousHash: stateHash(cached),
         payload,
       });
     if (Buffer.byteLength(body, "utf8") > this.config.maxBytes)
@@ -101,8 +126,9 @@ export class OssDataStateBackend {
     const response = await this.request(
       "PUT",
       body,
-      expectedRevision ? cached.etag : undefined,
-      expectedRevision ? undefined : "*",
+      undefined,
+      "*",
+      this.revisionKey(revision),
     );
     if ([409, 412].includes(response.status) && wasOssRequestRetried(response)) {
       const verified = await this.load(project);
@@ -116,13 +142,7 @@ export class OssDataStateBackend {
     if ([409, 412].includes(response.status)) throw cloudDataStateConflict();
     if (!response.ok)
       throw unavailable(`OSS 业务状态保存失败（${response.status}）`);
-    const etag = response.headers.get("etag");
-    if (etag) {
-      this.cached.set(project, { revision, payload: structuredClone(payload), etag });
-      return revision;
-    }
-    const verified = await this.load(project);
-    if (verified.revision !== revision) throw cloudDataStateConflict();
+    this.cached.set(project, { revision, payload: structuredClone(payload) });
     return revision;
   }
 

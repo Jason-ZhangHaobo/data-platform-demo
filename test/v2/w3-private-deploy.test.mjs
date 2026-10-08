@@ -50,9 +50,11 @@ test("W3 failure diagnostics redact literal and encoded credentials and signed U
 
 test("W3 control switch fails closed for failed or stale mutable-state evidence", () => {
   const now = Date.parse("2026-10-08T08:00:00Z");
-  const proof = { verifiedAt: new Date(now).toISOString(), createOnly: { passed: true }, conditionalUpdate: { passed: true } };
-  assertMutableStateAcceptance(proof, now);
-  assert.throws(() => assertMutableStateAcceptance({ ...proof, conditionalUpdate: { passed: false } }, now), /CONTROL_MUTABLE_STATE_NOT_VERIFIED/);
-  assert.throws(() => assertMutableStateAcceptance(proof, now + 7 * 3600000), /CONTROL_MUTABLE_STATE_NOT_VERIFIED/);
+  const hash = "a".repeat(64);
+  const proof = { verifiedAt: new Date(now).toISOString(), createOnly: { passed: true }, conditionalUpdate: { passed: true }, implementationSha256: hash };
+  assertMutableStateAcceptance(proof, now, hash);
+  assert.throws(() => assertMutableStateAcceptance({ ...proof, conditionalUpdate: { passed: false } }, now, hash), /CONTROL_MUTABLE_STATE_NOT_VERIFIED/);
+  assert.throws(() => assertMutableStateAcceptance(proof, now + 7 * 3600000, hash), /CONTROL_MUTABLE_STATE_NOT_VERIFIED/);
+  assert.throws(() => assertMutableStateAcceptance(proof, now, "b".repeat(64)), /CONTROL_MUTABLE_STATE_NOT_VERIFIED/);
   assert.throws(() => assertMutableStateAcceptance({}, now), /CONTROL_MUTABLE_STATE_NOT_VERIFIED/);
 });

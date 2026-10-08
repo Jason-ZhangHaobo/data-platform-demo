@@ -16,10 +16,11 @@ const prefixes = { worker: "spark-worker", control: "control-plane" };
 const keyFor = (kind, pkg) => `data-platform-demo/v2/${prefixes[kind]}/${pkg.sha256}.zip`;
 const safeFailure = (message) => Object.assign(new Error(message), { code: message });
 export const isMissingTrigger = (code) => /(?:TriggerNotFound|ResourceNotFound|TriggerNotExist|NotFound\.Trigger)$/.test(code??"");
-export function assertMutableStateAcceptance(proof, now = Date.now()) {
+export function assertMutableStateAcceptance(proof, now = Date.now(), implementationHash) {
   const age = now - Date.parse(proof?.verifiedAt);
   if (!Number.isFinite(age) || age < -300000 || age > 6 * 3600000 ||
-      proof?.conditionalUpdate?.passed !== true || proof?.createOnly?.passed !== true)
+      proof?.conditionalUpdate?.passed !== true || proof?.createOnly?.passed !== true ||
+      !/^[a-f0-9]{64}$/.test(implementationHash ?? "") || proof.implementationSha256 !== implementationHash)
     throw safeFailure("CONTROL_MUTABLE_STATE_NOT_VERIFIED");
 }
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
@@ -177,7 +178,7 @@ async function deploy(env = process.env) {
     console.log(JSON.stringify({stage:report.stage,...report.smoke}));
     // Do not switch the control plane after a known failing persistence probe.
     report.stage="CONTROL_PERSISTENCE_GATE";
-    assertMutableStateAcceptance(JSON.parse(readFileSync("docs/evidence/v2-oss-write-probe-20261008.json", "utf8")));
+    assertMutableStateAcceptance(JSON.parse(readFileSync("docs/evidence/v2-oss-revision-probe-20261008.json", "utf8")), Date.now(), transfer.packages.control.stateBackendSha256);
     report.stage="CONTROL_UPDATE";
     report.control=await update("control",before.control,queueEnvironment("control",before.control.environmentVariables,env,jobId),env.V2_FUNCTION_ROLE_ARN);
     report.stage="COMPLETED";report.ok=true;report.controlBootVerified=false;
