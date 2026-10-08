@@ -16,6 +16,12 @@ const prefixes = { worker: "spark-worker", control: "control-plane" };
 const keyFor = (kind, pkg) => `data-platform-demo/v2/${prefixes[kind]}/${pkg.sha256}.zip`;
 const safeFailure = (message) => Object.assign(new Error(message), { code: message });
 export const isMissingTrigger = (code) => /(?:TriggerNotFound|ResourceNotFound|TriggerNotExist|NotFound\.Trigger)$/.test(code??"");
+export function assertMutableStateAcceptance(proof, now = Date.now()) {
+  const age = now - Date.parse(proof?.verifiedAt);
+  if (!Number.isFinite(age) || age < -300000 || age > 6 * 3600000 ||
+      proof?.conditionalUpdate?.passed !== true || proof?.createOnly?.passed !== true)
+    throw safeFailure("CONTROL_MUTABLE_STATE_NOT_VERIFIED");
+}
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map((key)=>[key,canonical(value[key])])) : value;
 const same = (a,b) => JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
@@ -67,7 +73,7 @@ async function deploy(env = process.env) {
     throw safeFailure("W3_CONFIGURATION_INVALID");
   const workerRole = `acs:ram::${account}:role/shuduo-v2-spark-queue-runtime-role`;
   const triggerRole = `acs:ram::${account}:role/shuduo-v2-oss-trigger-role`;
-  const transfer = JSON.parse(readFileSync("docs/evidence/v2-w3-private-transfer-20260928.json", "utf8"));
+  const transfer = JSON.parse(readFileSync("docs/evidence/v2-w3-private-transfer-20261008.json", "utf8"));
   const age = Date.now() - Date.parse(transfer.verifiedAt);
   if (!Number.isFinite(age) || age < -300000 || age > 6 * 3600000 ||
       !Object.values(transfer.packages).every((p) => p.serverCrc64Verified && Object.values(p.privacyChecks).every(Boolean)))
@@ -169,6 +175,9 @@ async function deploy(env = process.env) {
     if(result?.status!=="SUCCEEDED"||result.engineVersion!=="3.5.9"||!result.mainSqlExecuted||result.validation?.passed!==true||String(result.rows?.[0]?.total_assets)!=="175.00")throw safeFailure("SPARK_QUEUE_SMOKE_NOT_VERIFIED");
     report.smoke={status:result.status,engineVersion:result.engineVersion,totalAssets:result.rows[0].total_assets,assertionsPassed:true};
     console.log(JSON.stringify({stage:report.stage,...report.smoke}));
+    // Do not switch the control plane after a known failing persistence probe.
+    report.stage="CONTROL_PERSISTENCE_GATE";
+    assertMutableStateAcceptance(JSON.parse(readFileSync("docs/evidence/v2-oss-write-probe-20261008.json", "utf8")));
     report.stage="CONTROL_UPDATE";
     report.control=await update("control",before.control,queueEnvironment("control",before.control.environmentVariables,env,jobId),env.V2_FUNCTION_ROLE_ARN);
     report.stage="COMPLETED";report.ok=true;report.controlBootVerified=false;
