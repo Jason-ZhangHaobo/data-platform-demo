@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isMissingTrigger, queueEnvironment, redactCliFailure, verifyPrivateFunctionBaseline } from "../../scripts/deploy-v2-w3-private.mjs";
+import { assertMutableStateAcceptance, isMissingTrigger, queueEnvironment, redactCliFailure, verifyPrivateFunctionBaseline } from "../../scripts/deploy-v2-w3-private.mjs";
 import { renderV2W3OssTriggerPlan } from "../../scripts/render-v2-w3-oss-trigger-plan.mjs";
 
 test("W3 queue configuration preserves existing credentials and refuses a mismatched shared key", () => {
@@ -46,4 +46,13 @@ test("W3 failure diagnostics redact literal and encoded credentials and signed U
   const safe=redactCliFailure(text,[secret]);
   assert.ok(safe.includes("oss:GetBucketEventNotification"));
   assert.ok(!safe.includes(secret)&&!safe.includes(encodeURIComponent(secret))&&!safe.includes("https://"));
+});
+
+test("W3 control switch fails closed for failed or stale mutable-state evidence", () => {
+  const now = Date.parse("2026-10-08T08:00:00Z");
+  const proof = { verifiedAt: new Date(now).toISOString(), createOnly: { passed: true }, conditionalUpdate: { passed: true } };
+  assertMutableStateAcceptance(proof, now);
+  assert.throws(() => assertMutableStateAcceptance({ ...proof, conditionalUpdate: { passed: false } }, now), /CONTROL_MUTABLE_STATE_NOT_VERIFIED/);
+  assert.throws(() => assertMutableStateAcceptance(proof, now + 7 * 3600000), /CONTROL_MUTABLE_STATE_NOT_VERIFIED/);
+  assert.throws(() => assertMutableStateAcceptance({}, now), /CONTROL_MUTABLE_STATE_NOT_VERIFIED/);
 });
