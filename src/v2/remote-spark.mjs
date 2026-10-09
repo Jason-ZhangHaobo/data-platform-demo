@@ -253,6 +253,12 @@ export function createRemoteSparkRunner(env = process.env, fetchImpl = fetch) {
     const queue = queueConfigFromEnvironment(env),
       client = new RemoteSparkQueueClient(queue, ossSparkQueueTransportFromEnvironment(env, fetchImpl)),
       runner = (input) => client.execute(input);
+    runner.durable = {
+      prepare: (input, requestId) => client.prepare(input, requestId),
+      submit: queued => client.submitPrepared(queued),
+      read: queued => client.readPreparedResult(queued),
+      cancel: queued => client.cancelPrepared(queued),
+    };
     runner.descriptor = {
       engine: "Apache Spark",
       isolation: "REMOTE_FUNCTION",

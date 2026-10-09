@@ -1,0 +1,52 @@
+{
+  "schema": "shuduo-private-application-evidence/v1",
+  "observedDate": "2026-10-09",
+  "deploymentRunId": "37867687484",
+  "buildRunId": "37866000578",
+  "implementationCommit": "2329b495d526e2d8d01ba2e3bbbd88e10c855215",
+  "scope": "PRIVATE_APPLICATION_API",
+  "authentication": "Temporary ENGINEER identity; ordinary application login, session and CSRF",
+  "cases": [
+    {
+      "caseId": "holdings-t1",
+      "revisionId": "04220404-2dc1-443a-8848-51c55b0869c5",
+      "runId": "7380aedb-a046-4122-9f34-e422bda702d4",
+      "status": "SUCCEEDED",
+      "engineVersion": "3.5.9",
+      "totalAssets": "1800.00",
+      "mainSqlExecuted": true,
+      "assertionsPassed": true,
+      "regressionCount": 5,
+      "rowsSha256": "1a5f7c42838d9166c43d83dbbd65bb9e84531937a052bd0fb4938d39724f9dbe",
+      "independentExpectedRowsHashMatches": true,
+      "separateInvocationRestoredResultMatches": true,
+      "initialResponseLost": true,
+      "recoveredViaApplicationApi": true,
+      "duplicateSubmissionReceiptAvailable": false
+    },
+    {
+      "caseId": "cash-change",
+      "revisionId": "39fe2090-fb98-423a-958e-30417f26e7f6",
+      "runId": "7e073b93-5885-4ed5-9662-f1e2c8784d13",
+      "status": "SUCCEEDED",
+      "engineVersion": "3.5.9",
+      "totalAssets": "2300.00",
+      "assertionsPassed": true,
+      "regressionCount": 5,
+      "rowsSha256": "01da3c61e4163d5d16ce18d7fdcf302549966f0fed534f01ba75543695b0e05c",
+      "independentExpectedRowsHashMatches": true,
+      "duplicateSubmissionDeduplicated": true,
+      "refreshedResultMatches": true,
+      "separateInvocationRestoredResultMatches": true,
+      "initialResponseLost": false
+    }
+  ],
+  "differenceCny": "500.00",
+  "budget": { "billingCycle": "2026-10", "spendCnyAtPreflight": "0.19", "completeRecordCount": 7, "limitCny": 200 },
+  "guiCloudInteractionVerified": false,
+  "coldControlProcessRestartVerified": false,
+  "backgroundCompletionAfterClientDisconnectVerified": false,
+  "fullAgentLifecycleVerified": false,
+  "publicDeployed": false,
+  "note": "Cloud Shell disconnected during the first response. Its completed task was read back instead of resubmitted. Client reconnection is not a control-process cold-restart proof. Both row hashes independently match the local fictional securities expected data."
+}

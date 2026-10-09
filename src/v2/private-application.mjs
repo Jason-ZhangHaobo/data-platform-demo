@@ -47,7 +47,8 @@ export async function callPrivateApplication(input, base, fetchImpl = fetch) {
 // This fixture driver runs only inside the existing IAM-protected private
 // invocation, with the same application authentication and task endpoints.
 export async function verifyPrivateApplicationTask(input, { base, store, project, fetchImpl = fetch, deadlineMs = 150000 }) {
-  if (input.operation !== "PRIVATE_APPLICATION_TASK_V1" || Object.keys(input).some(k => !["operation", "caseId"].includes(k)) ||
+  if (input.operation !== "PRIVATE_APPLICATION_TASK_V1" || Object.keys(input).some(k => !["operation", "caseId", "submitOnly"].includes(k)) ||
+      (input.submitOnly !== undefined && typeof input.submitOnly !== "boolean") ||
       !["holdings-t1", "cash-change"].includes(input.caseId))
     throw fail(422, "PRIVATE_APPLICATION_CASE_INVALID");
   const id = randomUUID(), password = "Synthetic!9" + randomBytes(24).toString("base64url"),
@@ -56,7 +57,7 @@ export async function verifyPrivateApplicationTask(input, { base, store, project
       email, displayName: "私有任务验收工程师", passwordHash: createPasswordHash(password),
       status: "ACTIVE", memberships: [{ projectId: project, role: "ENGINEER" }], source: "PRIVATE_ACCEPTANCE",
     });
-  let headers = {}, runId;
+  let headers = {}, runId, submissionOnlyCompleted = false;
   const call = async (method, path, body, overrides = {}) =>
     callPrivateApplication({ operation: "PRIVATE_APPLICATION_HTTP_V1", method, path, headers: { ...headers, ...overrides }, ...(body === undefined ? {} : { body }) }, base, fetchImpl);
   const requireStatus = (result, status) => {
@@ -69,10 +70,24 @@ export async function verifyPrivateApplicationTask(input, { base, store, project
     headers = { cookie: login.cookies.map(c => c.split(";")[0]).join("; "), "x-csrf-token": login.body.csrfToken, "x-project-id": project, "x-shuduo-client": "cli" };
     const revision = requireStatus(await call("POST", "/api/v2/revisions", { contextId: input.caseId, sql: referenceSql }), 201);
     const key = `private-task-${id}`;
+    const submittedAt = Date.now();
     const started = requireStatus(await call("POST", "/api/v2/runs", { revisionId: revision.id }, { "idempotency-key": key }), 202);
+    const submissionElapsedMs = Date.now() - submittedAt;
     runId = started.id;
     const replay = requireStatus(await call("POST", "/api/v2/runs", { revisionId: revision.id }, { "idempotency-key": key }), 202);
     if (replay.id !== runId) throw fail(502, "PRIVATE_APPLICATION_DUPLICATE_RUN");
+    if (input.submitOnly === true) {
+      if (started.stage !== "WAITING_FOR_WORKER_RESULT")
+        throw fail(502, "PRIVATE_APPLICATION_SUBMISSION_NOT_DURABLE");
+      submissionOnlyCompleted = true;
+      return {
+      protocol: "shuduo-private-application-submission/v1", acceptanceId: id,
+      caseId: input.caseId, revisionId: revision.id, revisionHash: revision.hash, runId,
+      status: "SUBMITTED", applicationRunStatus: started.status, submissionElapsedMs,
+      duplicateSubmissionDeduplicated: true, verificationPending: true,
+      scope: "PRIVATE_APPLICATION_API", fullAgentLifecycleVerified: false, publicDeployed: false,
+      };
+    }
     const deadline = Date.now() + deadlineMs;
     let result;
     while (Date.now() < deadline) {
@@ -97,7 +112,7 @@ export async function verifyPrivateApplicationTask(input, { base, store, project
       scope: "PRIVATE_APPLICATION_API", fullAgentLifecycleVerified: false, publicDeployed: false,
     };
   } finally {
-    if (runId) {
+    if (runId && !submissionOnlyCompleted) {
       try {
         const r = await call("GET", `/api/v2/runs/${runId}`);
         if (!["SUCCEEDED", "FAILED", "VALIDATION_FAILED", "CANCELLED"].includes(r.body?.status))

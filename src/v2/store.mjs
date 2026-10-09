@@ -113,6 +113,7 @@ export class MetadataStore {
             (kind === "agent_tool_invocation" &&
               ["CLAIMED", "TASK_CREATED"].includes(item.status))) &&
           !(kind === "release_run" && item.status === "SCHEDULED") &&
+          !(kind === "run" && item.mode === "DURABLE_REMOTE_SUBMISSION" && item.remoteSubmission?.prepared?.job?.jobId) &&
           !(
             preserveDurableReleaseRuns &&
             kind === "release_run" &&

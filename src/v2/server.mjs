@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { MetadataStore } from "./store.mjs";
 import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-application.mjs";
+import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import {
   getContext,
   publicContext,
@@ -240,6 +241,11 @@ export function createV2Server(options = {}) {
       return rawRunner(input);
     };
   runner.descriptor = runnerDescriptor;
+  const durableDevelopment = rawRunner.durable,
+    persistDevelopment = async () => { if (typeof persistence.flush === "function") await persistence.flush(); },
+    reconcileDevelopment = async run => durableDevelopment
+      ? reconcileDurableDevelopment(run, { runner: durableDevelopment, store, project: PROJECT, persist: persistDevelopment, contextIds, contractId: validationContractId })
+      : run;
   const pythonRunner =
     options.pythonRunner ?? ((input) => runRestrictedPython(input, pythonRuntime));
   let modelVerifiedAt = null;
@@ -2701,7 +2707,7 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/revisions" && method === "GET")
         return json(res, 200, store.list("revision", PROJECT));
       if (path === "/api/v2/runs" && method === "GET")
-        return json(res, 200, store.list("run", PROJECT));
+        return json(res, 200, await Promise.all(store.list("run", PROJECT).map(async run => publicDevelopmentRun(await reconcileDevelopment(run)))));
       if (path === "/api/v2/python/revisions" && method === "GET")
         return json(res, 200, store.list("python_revision", PROJECT));
       if (path === "/api/v2/python/revisions" && method === "POST") {
@@ -4726,8 +4732,8 @@ export function createV2Server(options = {}) {
             revisions: "revision",
             "agent/tasks": "agent",
           }[record[1]],
-          item = get(kind, record[2]);
-        if (method === "GET" && !record[3]) return json(res, 200, item);
+          item = kind === "run" ? await reconcileDevelopment(get(kind, record[2])) : get(kind, record[2]);
+        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? publicDevelopmentRun(item) : item);
         if (method === "GET" && record[3] === "journey" && kind === "agent")
           return json(
             res,
@@ -4740,10 +4746,14 @@ export function createV2Server(options = {}) {
           kind !== "revision"
         ) {
           if (!terminal.has(item.status)) {
+            if (kind === "run" && item.remoteSubmission) {
+              if (!durableDevelopment) throw fail(503, "云端执行器尚未就绪，取消请求未提交");
+              await durableDevelopment.cancel(item.remoteSubmission.prepared);
+            }
             store.update(kind, item.id, PROJECT, { status: "CANCELLED" });
             controls.get(item.id)?.abort();
           }
-          return json(res, 200, get(kind, item.id));
+          return json(res, 200, kind === "run" ? publicDevelopmentRun(get(kind, item.id)) : get(kind, item.id));
         }
         if (method === "GET" && record[3] === "bundle" && kind === "run") {
           if (item.status !== "SUCCEEDED")
@@ -4785,16 +4795,25 @@ export function createV2Server(options = {}) {
         const dedup = store.deduplicate(
           PROJECT + ":run:" + key,
           signature,
-          () =>
-            store.create("run", PROJECT, {
+          () => {
+            if (durableDevelopment) budget.assertCanStartRemoteSpark();
+            return store.create("run", PROJECT, {
               validationContractId,
               revisionId: rev.id,
               revisionHash: rev.hash,
               contextId: rev.contextId,
               status: "QUEUED",
-            }),
+            });
+          },
         );
         const run = get("run", dedup.id);
+        if (durableDevelopment) {
+          const submitted = await submitDurableDevelopment(run, rev, {
+            runner: durableDevelopment, store, project: PROJECT, persist: persistDevelopment,
+            context: getContext(rev.contextId), validationContexts: contextIds.map(getContext),
+          });
+          return json(res, 202, publicDevelopmentRun(submitted));
+        }
         if (!dedup.replayed)
           schedule("run", run, (signal) => execute(run, rev, signal));
         return json(res, 202, run);
