@@ -60,7 +60,7 @@ export async function reconcileDurableDevelopment(run, { runner, store, project,
   if (terminal.has(current.status)) return current;
   const receipt = Object.fromEntries([
     "status", "engine", "engineVersion", "mainSqlExecuted", "validation", "rows", "columns", "durationMs",
-    "stdout", "stderr", "code", "error", "isolation", "adapter", "mode", "remoteWorker",
+    "log", "stdout", "stderr", "code", "error", "isolation", "adapter", "mode", "remoteWorker",
   ].filter(key => result[key] !== undefined).map(key => [key, result[key]]));
   const updated = store.update("run", run.id, project, {
     ...receipt, stage: "COMPLETED", finishedAt: new Date().toISOString(),

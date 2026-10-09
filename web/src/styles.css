@@ -472,6 +472,19 @@ kbd {
 .work-area.with-agent {
   grid-template-columns: minmax(0, 1fr) 316px;
 }
+/* Keep execution results reachable when banners/header consume a short window. */
+.development-main {
+  overflow-y: auto;
+}
+.development-main .work-area {
+  min-height: 560px;
+  flex: 1 0 560px;
+}
+.development-main .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
 .studio {
   display: flex;
   flex-direction: column;

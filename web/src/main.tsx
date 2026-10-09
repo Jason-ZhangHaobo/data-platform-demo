@@ -52,6 +52,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { initialPythonCode } from "./python-template";
+import { developmentRunLog } from "./run-log";
 import type { AuthSession } from "./AuthDialog";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const DataServicesWorkbench = lazy(async () => ({ default: (await import("./DataServicesWorkbench")).DataServicesWorkbench }));
@@ -177,6 +178,11 @@ type Revision = {
   source: string;
 };
 type Run = {
+  stage?: string;
+  submittedAt?: string;
+  finishedAt?: string;
+  stdout?: string;
+  stderr?: string;
   validationContractId?: string;
   id: string;
   status: string;
@@ -710,7 +716,7 @@ function App() {
           </button>
         </div>
       </aside>
-      <main className="main">
+      <main className={"main" + (nav === "development" ? " development-main" : "")}>
         <header className="topbar">
           <div className="breadcrumb">
             <span>证券数据实验室</span>
@@ -1157,9 +1163,7 @@ function App() {
                       ))}
                     {tab === "日志" && (
                       <pre className="log-text">
-                        {run?.error ??
-                          run?.log ??
-                          "等待运行日志。模型未配置时不会生成模拟成功日志。"}
+                        {developmentRunLog(run)}
                       </pre>
                     )}
                     {tab === "运行记录" && (
