@@ -69,11 +69,17 @@ export function invokePrivate(payload, spawnImpl = spawn) {
   });
 }
 
-export function createPreviewServer({ origin, webRoot, invoke = invokePrivate, maxCalls = 200 }) {
+export function createPreviewServer({ origin, webRoot, invoke = invokePrivate, maxCalls = 200, localProxyPort }) {
   const expected = new URL(origin);
   if (origin !== expected.origin || expected.username || expected.password ||
       !(expected.protocol === "https:" || (expected.protocol === "http:" && ["127.0.0.1", "localhost"].includes(expected.hostname))))
     throw new Error("An exact HTTPS preview origin is required (HTTP loopback for local tests only)");
+  // Cloud Shell preserves the browser Origin but rewrites Host to loopback.
+  // Enable this only for the matching official preview origin and fixed port.
+  if (localProxyPort !== undefined && (![60000, 61000, 62000, 63000, 64000, 65000].includes(localProxyPort) ||
+      expected.protocol !== "https:" || expected.port ||
+      !new RegExp(`^${localProxyPort}-dot-[a-z0-9]+\\.shell\\.aliyuncs\\.com$`).test(expected.hostname)))
+    throw new Error("Loopback proxy requires a matching official Cloud Shell preview origin");
   let tail = Promise.resolve(), waiting = 0, calls = 0;
   const rootPromise = realpath(webRoot);
   const server = http.createServer(async (req, res) => {
@@ -83,11 +89,12 @@ export function createPreviewServer({ origin, webRoot, invoke = invokePrivate, m
       res.end(JSON.stringify(body));
     };
     try {
-      if (req.headers.host !== expected.host) throw error(403, "访问地址不匹配");
+      const trustedLocalProxy = localProxyPort !== undefined && req.headers.host === `127.0.0.1:${localProxyPort}` && req.headers["x-forwarded-proto"] === "https";
+      if (req.headers.host !== expected.host && !trustedLocalProxy) throw error(403, "访问地址不匹配");
       if (req.headers.origin && req.headers.origin !== origin) throw error(403, "拒绝跨站请求");
-      if (req.headers["sec-fetch-site"] === "cross-site") throw error(403, "拒绝跨站请求");
       const path = req.url || "/";
       if (path.startsWith("/api/")) {
+        if (req.headers["sec-fetch-site"] === "cross-site") throw error(403, "拒绝跨站请求");
         if (req.headers["x-shuduo-client"] !== "workbench") throw error(403, "仅允许工作台请求");
         if (req.method === "POST" && (req.headers.origin !== origin || !/^application\/json(?:;|$)/i.test(req.headers["content-type"] || ""))) throw error(403, "写入必须来自当前工作台");
         // Validate route before consuming any input or invoking the CLI.
@@ -136,7 +143,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (!args.includes("--origin")) throw new Error("Pass --origin with the verified account-restricted HTTPS Web Preview origin");
   const origin = option("--origin"), port = Number(args.includes("--port") ? option("--port") : 60000);
   if (![60000, 61000, 62000, 63000, 64000, 65000].includes(port)) throw new Error("Unsupported Cloud Shell preview port");
-  const server = createPreviewServer({ origin, webRoot: resolve(fileURLToPath(new URL("../web-dist", import.meta.url))) });
+  const server = createPreviewServer({ origin, localProxyPort: port, webRoot: resolve(fileURLToPath(new URL("../web-dist", import.meta.url))) });
+  // The managed preview gateway reaches the VM interface even though it sends
+  // a loopback Host. Host/Origin gates above remain mandatory on all requests.
   server.listen(port, "0.0.0.0", () => console.log("数舵私有预览已启动；45 分钟后自动停止，最多 200 次云端请求。不记录密码、Cookie 或请求正文。"));
   setTimeout(() => server.close(), 45 * 60 * 1000).unref();
 }

@@ -105,3 +105,21 @@ test("real anonymous pipe supports CLI-style /dev/stdin reopening on Linux", asy
   assert.equal((await closed)[0], 0, stderr);
   assert.equal(output, "synthetic-pipe-probe");
 });
+
+test("official Cloud Shell loopback Host is accepted without relaxing browser Origin", async t => {
+  const origin = "https://60000-dot-fixture.shell.aliyuncs.com";
+  const { request, calls } = await fixture(t, { origin, localProxyPort: 60000 });
+  const proxyHeaders = { host: "127.0.0.1:60000", "x-forwarded-proto": "https" };
+  assert.equal((await request("/v2/", { headers: { ...proxyHeaders, "sec-fetch-site": "cross-site" } })).status, 200);
+  assert.equal((await request("/api/v2/runs", { headers: proxyHeaders })).status, 200);
+  for (const extra of [{ host: "127.0.0.1:61000" }, { host: "localhost:60000" }, { "x-forwarded-proto": "http" }, { origin: "https://evil.invalid" }, { "sec-fetch-site": "cross-site" }])
+    assert.equal((await request("/api/v2/runs", { headers: { ...proxyHeaders, ...extra } })).status, 403);
+  assert.equal((await request("/api/v2/runs", { method: "POST", headers: { ...proxyHeaders, origin: "https://evil.invalid", "content-type": "application/json" }, body: "{}" })).status, 403);
+  assert.equal((await request("/api/v2/runs", { method: "POST", headers: { ...proxyHeaders, origin, "content-type": "application/json" }, body: "{}" })).status, 200);
+  assert.equal(calls.length, 2);
+});
+
+test("loopback proxy cannot be enabled for arbitrary hosts or mismatched ports", () => {
+  for (const origin of ["https://evil.invalid", "https://61000-dot-fixture.shell.aliyuncs.com", "https://60000-dot-fixture.shell.aliyuncs.com.evil.invalid", "http://127.0.0.1"])
+    assert.throws(() => createPreviewServer({ origin, webRoot: ".", localProxyPort: 60000 }), /matching official/);
+});
