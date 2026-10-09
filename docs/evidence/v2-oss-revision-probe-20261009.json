@@ -1,0 +1,10 @@
+{
+  "verifiedAt": "2026-10-09T00:47:58.432Z",
+  "implementationSha256": "040fce5683a6f8a4b7764740748c6a0617ad99784426414a2dbe4e2fe45e69b5",
+  "ok": true,
+  "createOnly": { "passed": true },
+  "conditionalUpdate": { "passed": true, "mechanism": "immutable-linked-revision-slots" },
+  "checks": ["stale-create-rejected", "stale-update-rejected", "cold-restart-restores-exact-changed-data", "second-writer-refreshes-winner"],
+  "cleanup": [{ "revision": "1.json", "status": 204 }, { "revision": "2.json", "status": 204 }],
+  "scope": "Fresh live evidence for the unchanged state backend; temporary fictional data only"
+}

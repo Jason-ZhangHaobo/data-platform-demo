@@ -74,7 +74,7 @@ async function deploy(env = process.env) {
     throw safeFailure("W3_CONFIGURATION_INVALID");
   const workerRole = `acs:ram::${account}:role/shuduo-v2-spark-queue-runtime-role`;
   const triggerRole = `acs:ram::${account}:role/shuduo-v2-oss-trigger-role`;
-  const transfer = JSON.parse(readFileSync("docs/evidence/v2-w3-private-transfer-20261008.json", "utf8"));
+  const transfer = JSON.parse(readFileSync("docs/evidence/v2-p1-private-transfer-20261009.json", "utf8"));
   const age = Date.now() - Date.parse(transfer.verifiedAt);
   if (!Number.isFinite(age) || age < -300000 || age > 6 * 3600000 ||
       !Object.values(transfer.packages).every((p) => p.serverCrc64Verified && Object.values(p.privacyChecks).every(Boolean)))
@@ -178,7 +178,7 @@ async function deploy(env = process.env) {
     console.log(JSON.stringify({stage:report.stage,...report.smoke}));
     // Do not switch the control plane after a known failing persistence probe.
     report.stage="CONTROL_PERSISTENCE_GATE";
-    assertMutableStateAcceptance(JSON.parse(readFileSync("docs/evidence/v2-oss-revision-probe-20261008.json", "utf8")), Date.now(), transfer.packages.control.stateBackendSha256);
+    assertMutableStateAcceptance(JSON.parse(readFileSync("docs/evidence/v2-oss-revision-probe-20261009.json", "utf8")), Date.now(), transfer.packages.control.stateBackendSha256);
     report.stage="CONTROL_UPDATE";
     report.control=await update("control",before.control,queueEnvironment("control",before.control.environmentVariables,env,jobId),env.V2_FUNCTION_ROLE_ARN);
     report.stage="COMPLETED";report.ok=true;report.controlBootVerified=false;
