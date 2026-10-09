@@ -25,6 +25,15 @@ jobs:
         run: npm ci
       - name: Run quality gate
         run: npm run ci
+      - name: Package account-restricted workbench preview
+        run: zip -qr "$RUNNER_TEMP/shuduo-private-preview.zip" web-dist scripts/run-v2-cloudshell-preview.mjs
+      - name: Retain credential-free private preview
+        uses: actions/upload-artifact@v6
+        with:
+          name: shuduo-private-preview-${{ github.sha }}
+          path: ${{ runner.temp }}/shuduo-private-preview.zip
+          retention-days: 1
+          if-no-files-found: error
       - name: Verify deployable V2 Function Compute package
         run: |
           scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"

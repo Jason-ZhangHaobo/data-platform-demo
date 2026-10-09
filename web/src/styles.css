@@ -300,6 +300,16 @@ kbd {
   height: 26px;
   font-size: 10px;
 }
+.notice-banner {
+  margin: 12px 24px;
+  padding: 12px 16px;
+  border: 1px solid #d8e4da;
+  border-radius: 10px;
+  background: #eef5ef;
+  color: #365745;
+  font-size: 13px;
+  line-height: 1.7;
+}
 .env-tag {
   display: flex;
   align-items: center;
