@@ -1,0 +1,50 @@
+{
+  "schema": "shuduo-private-workbench-preview/v1",
+  "recordedAt": "2026-10-09T06:16:46Z",
+  "sourceCommit": "7cb3857a8a7861f38091033e96b1cdb2af800b82",
+  "pullRequests": [157, 158],
+  "ciRuns": [37888893440, 37891569358],
+  "localCi": { "passed": 416, "failed": 0, "existingSkipped": 1 },
+  "proxySha256": "93b0c0dcfd90d7db9b89634bac34ec0042e4a39aa63074d68be0dddb29646044",
+  "previewArtifactId": "11597238824",
+  "previewArtifactSha256": "352d2e9f25c3a62c80f1bfb8ce0188b8cfac99cba4608d59d82b5061273126b3",
+  "artifactScope": "React frontend from PR157; separately digest-verified proxy fix from PR158",
+  "verified": {
+    "accountRestrictedConnectivityProbe": true,
+    "compiledHtmlAndAssetsServed": true,
+    "stdinPipeBridgeToRealFcStatus200": true,
+    "privateHttpProxyReadPersistedRun": true,
+    "applicationSessionRemainsUnauthenticatedWithoutLogin": true,
+    "browserTaskSubmission": false,
+    "browserRefreshRecovery": false,
+    "fullAgentLifecycle": false,
+    "publicDeployment": false
+  },
+  "restoredRun": {
+    "id": "a1a1ef3c-e4c4-4cca-916c-bd496e1dd51d",
+    "status": "SUCCEEDED",
+    "engineVersion": "3.5.9",
+    "mainSqlExecuted": true,
+    "totalAssets": "2300.00",
+    "validationPassed": true,
+    "regressionCount": 5,
+    "newExecutionCreatedByThisCheck": false
+  },
+  "failuresAndResolution": [
+    "Browser file upload stalled and failed after Cloud Shell expiry; abandoned, used bounded CLI artifact download with SHA256 verification.",
+    "Linux Node child stdin could not be reopened by CLI as /dev/stdin (ENXIO); reproduced, replaced with Python standard-library anonymous pipe, then real private FC returned 200.",
+    "Codex in-app browser blocked preview navigation; not bypassed.",
+    "User Safari preview landing was blank; official Cloud Shell entry then explicitly reported expired session. Official login page opened; awaiting user login."
+  ],
+  "boundaries": {
+    "newIamPermissions": false,
+    "newPublicFcTrigger": false,
+    "cloudCredentialsExported": false,
+    "databasePasswordChanged": false,
+    "previewCallLimit": 200,
+    "previewLifetimeMinutes": 45,
+    "cloudShellVmIsTemporary": true
+  },
+  "billing": { "month": "2026-10", "observedCny": "0.20", "completeRecordCount": 7, "budgetCny": 200, "notEndOfMonthGuarantee": true },
+  "next": "After Safari Cloud Shell login is restored, verify rendered workbench and normal application login, submit one new task, independently validate result and refresh recovery. Do not count this persisted-run read as a new task or full Agent E2E."
+}

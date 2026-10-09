@@ -1,6 +1,6 @@
 # 账号受限的云端工作台预览
 
-状态：2026-10-09，预览桥接代码及本地安全测试已完成；Cloud Shell Web Preview 连通性探针已成功。真实工作台的浏览器操作尚待验收，不计入完整 Agent E2E，也不是生产公网部署。
+状态：2026-10-09，预览桥接代码及本地安全测试已完成；Cloud Shell Web Preview 连通性探针已成功。Linux stdin 修复后，HTML/JS 与私有 HTTP 代理已实际读回既有 Spark 任务 2300.00、5 条断言通过。真实工作台的浏览器操作尚待验收：内置浏览器拦截导航，用户 Safari 的 Cloud Shell 会话过期，已打开官方登录页等待续期。详见 [验收记录](evidence/v2-cloudshell-preview-20261009.json)。不计入完整 Agent E2E，也不是生产公网部署。
 
 ## 目的与边界
 
