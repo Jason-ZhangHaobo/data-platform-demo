@@ -44,7 +44,21 @@
     "controlPlanePatchCloudDeployed": false,
     "historicalLogsBackfilled": false
   },
-  "layoutGap": "Short Safari window clipped the result area; development view now reserves a minimum work area and allows vertical scrolling. Browser verification of this UI patch is recorded separately.",
+  "previewUiPatchAcceptance": {
+    "sourceCommit": "eca15fff434c8b6a19ba9011edfc7e5633d7a844",
+    "pullRequest": 160,
+    "ciRunId": 37903377294,
+    "artifactId": "11603890593",
+    "artifactSha256": "93ccaf52a0de3ba6c7fbd9cc51e30cfe3a6b3c7382455f48d1b7e477d746a706",
+    "previewUpdatedFromVerifiedArtifact": true,
+    "sameAuthenticatedRunAfterUpdate": true,
+    "resultRowsVisiblyReachableByScrolling": true,
+    "actualMetadataDisplayedInLogTab": true,
+    "missingRawOutputExplicitlyLabeled": true,
+    "controlPlaneAndWorkerPackagesChanged": false,
+    "localCi": { "passed": 421, "failed": 0, "existingSkipped": 1 }
+  },
+  "layoutGap": "Fixed and visually verified in Safari: development work area has a minimum height and vertical scrolling; both real result rows are visible, not merely present in the accessibility tree.",
   "billing": { "month": "2026-10", "observedCnyBeforeTask": "0.20", "completeRecordCount": 7, "budgetCny": 200 },
   "limits": [
     "Application was used as the already configured administrator; cross-user/project negative matrix is not claimed.",
