@@ -16,6 +16,9 @@ PRIVATE_APPLICATION_TASK_V1是两个虚构证券用例的验收驱动。它生�
 python3 scripts/run-v2-private-application.py --case holdings-t1 --output p1-holdings.json
 python3 scripts/run-v2-private-application.py --case cash-change --output p1-cash.json
 python3 scripts/run-v2-private-application.py --restore-from p1-cash.json
+python3 scripts/run-v2-private-application.py --case cash-change --submit-only --output p1-detached.json
+# 计算完成后，通过一次新的调用读取结果：
+python3 scripts/run-v2-private-application.py --restore-from p1-detached.json
 ```
 
 脚本只输出非秘密验收摘要，完整结果保存在指定报告文件中。首次已提交任务若遭客户端断线，先通过HTTP适配入口GET原任务记录，不盲目再提交。脚本有有界超时且禁用自动调用重试。
@@ -31,4 +34,8 @@ python3 scripts/run-v2-private-application.py --restore-from p1-cash.json
 
 ## 尚未验收
 
-本次通过的是私有CLI/应用API任务链路。浏览器工作台直接操作云端任务、控制进程冷重启、断开客户端后的后台推进、超时/取消/恢复、跨用户权限，以及完整Agent七环节均需独立验收。验收驱动保持一次调用活动直至计算结束，不能据此宣称无人轮询时异步任务仍可靠运行。本次不计入完整Agent的20例与85%目标。
+本次通过的是私有CLI/应用API任务链路。前两份验收驱动保持一次调用活动直至计算结束。PR #156补充持久提交：先保存签名任务，再写入不可变队列对象并返回编号；后续查询验证Worker签名和完整证券断言，并持久化结果。
+
+实际独立任务a1a1ef3c-e4c4-4cca-916c-bd496e1dd51d的应用提交API耗时297毫秒，返回QUEUED。提交调用结束后，通过新的调用取得SUCCEEDED、资产2300.00、5个场景通过，完整行结果摘要与预期一致。部署运行37875475896成功，Worker没有重新构建或更新。此结果证明提交调用可以结束，不等同于已经强制终止云控制进程做故障恢复测试。
+
+浏览器工作台直接操作云端任务、云控制进程实际冷重启、更多超时/取消故障场景、跨用户权限，以及完整Agent七环节仍需独立验收。本次不计入完整Agent的20例与85%目标。
