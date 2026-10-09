@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { once, EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import http from "node:http";
-import { createPreviewServer, privatePayload, invokePrivate } from "../../scripts/run-v2-cloudshell-preview.mjs";
+import { spawn } from "node:child_process";
+import { createPreviewServer, privatePayload, invokePrivate, pipeBridge } from "../../scripts/run-v2-cloudshell-preview.mjs";
 
 async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), "shuduo-preview-"));
@@ -85,7 +86,7 @@ test("preview sanitizes transport errors and serializes cloud requests", async t
 test("CLI bridge carries secrets through stdin, not argv or shell expansion", async () => {
   let args, input;
   const result = await invokePrivate(privatePayload("POST", "/api/v2/auth/login", {}, { password: "SecretForTestOnly!" }), (command, argv, options) => {
-    assert.equal(command, "aliyun"); assert.equal(options.shell, undefined); args = argv;
+    assert.equal(command, "python3"); assert.equal(argv[2], "aliyun"); assert.equal(options.shell, undefined); assert.equal(options.detached, true); args = argv;
     const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
     child.stdin.on("data", chunk => { input = String(chunk); });
     child.stdin.on("finish", () => { child.stdout.write(JSON.stringify({ protocol: "shuduo-private-application-http/v1", status: 200, cookies: [], body: { authenticated: true } })); child.emit("close", 0); });
@@ -93,4 +94,14 @@ test("CLI bridge carries secrets through stdin, not argv or shell expansion", as
   });
   assert.ok(args.includes("/dev/stdin")); assert.doesNotMatch(args.join(" "), /SecretForTestOnly/);
   assert.match(input, /SecretForTestOnly/); assert.equal(result.body.authenticated, true);
+});
+
+test("real anonymous pipe supports CLI-style /dev/stdin reopening on Linux", async () => {
+  const child = spawn("python3", ["-c", pipeBridge, "python3", "-c", "import sys;sys.stdout.write(open('/dev/stdin').read())"], { stdio: ["pipe", "pipe", "pipe"] });
+  let output = "", stderr = "";
+  child.stdout.on("data", b => { output += b; }); child.stderr.on("data", b => { stderr += b; });
+  const closed = once(child, "close");
+  child.stdin.end("synthetic-pipe-probe");
+  assert.equal((await closed)[0], 0, stderr);
+  assert.equal(output, "synthetic-pipe-probe");
 });
