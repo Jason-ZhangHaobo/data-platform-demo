@@ -205,6 +205,54 @@ export class RemoteSparkQueueClient {
     };
   }
 
+  prepare(input, requestId) {
+    const queued = createQueuedSparkJob(input, this.config, { now: this.now(), requestId });
+    return { ...queued, serialized: JSON.stringify(queued.job) };
+  }
+
+  validatePrepared(queued, allowExpired = false) {
+    verifyQueuedSparkJob(queued?.job, this.config, this.now(), { allowExpired });
+    const keys = queueKeys(this.config, queued.job.jobId);
+    if (Object.entries(keys).some(([key, value]) => queued[key] !== value))
+      throw fail(422, "持久任务对象路径不合法", "SPARK_QUEUE_JOB_INVALID");
+    let serialized;
+    try { serialized = JSON.parse(queued.serialized); } catch { throw fail(422, "持久任务正文不合法", "SPARK_QUEUE_JOB_INVALID"); }
+    if (["schema", "jobId", "projectId", "timestamp", "nonce", "body", "signature", "expiresAt"].some(k => serialized[k] !== queued.job[k]) ||
+        !Number.isFinite(Date.parse(queued.job.expiresAt)))
+      throw fail(422, "持久任务正文与签名不一致", "SPARK_QUEUE_JOB_INVALID");
+  }
+
+  async submitPrepared(queued) {
+    this.validatePrepared(queued);
+    return this.transport.create(queued.jobKey, queued.serialized);
+  }
+
+  async readPreparedResult(queued) {
+    this.validatePrepared(queued, true);
+    const raw = await this.transport.read(queued.resultKey);
+    if (raw !== undefined) {
+      let envelope;
+      try { envelope = JSON.parse(raw); } catch { throw fail(502, "Spark队列结果不是JSON", "SPARK_QUEUE_RESULT_INVALID"); }
+      return verifyQueuedSparkResult(envelope, queued.job.jobId, this.config);
+    }
+    if (Date.parse(queued.job.expiresAt) <= this.now()) {
+      await this.cancelPrepared(queued, "DEADLINE");
+      throw fail(504, "云端任务已超时", "REMOTE_SPARK_TIMEOUT");
+    }
+    return undefined;
+  }
+
+  async cancelPrepared(queued, reason = "USER_CANCELLED") {
+    this.validatePrepared(queued, true);
+    const existing = await this.transport.read(queued.cancelKey);
+    if (existing !== undefined) {
+      verifyQueuedSparkCancellation(JSON.parse(existing), queued.job.jobId, this.config, this.now());
+      return;
+    }
+    await this.transport.create(queued.cancelKey,
+      JSON.stringify(createQueuedSparkCancellation(queued.job.jobId, this.config, this.now(), reason)));
+  }
+
   async execute(input) {
     if (input.signal?.aborted) throw fail(499, "远程Spark队列任务已取消", "REMOTE_SPARK_CANCELLED");
     const queued = createQueuedSparkJob(input, this.config, { now: this.now() });
