@@ -1,6 +1,6 @@
 # 账号受限的云端工作台预览
 
-状态：2026-10-09，预览桥接代码及本地安全测试已完成；Cloud Shell Web Preview 连通性探针已成功。Linux stdin 修复后，HTML/JS 与私有 HTTP 代理已实际读回既有 Spark 任务 2300.00、5 条断言通过。真实工作台的浏览器操作尚待验收：内置浏览器拦截导航，用户 Safari 的 Cloud Shell 会话过期，已打开官方登录页等待续期。详见 [验收记录](evidence/v2-cloudshell-preview-20261009.json)。不计入完整 Agent E2E，也不是生产公网部署。
+状态：2026-10-09，Safari 已真实显示私有工作台、可编辑 SQL、3 个版本和既有 Spark 任务 2300.00/950.00；验证页显示 5 条业务场景通过，刷新后批次与结果一致。已打开正常数舵登录弹窗，等待用户提供应用会话后验收新任务提交。阿里云登录恢复不等于数舵应用登录。详见 [验收记录](evidence/v2-cloudshell-preview-20261009.json)。不计入完整 Agent E2E，也不是生产公网部署。
 
 ## 目的与边界
 
@@ -25,7 +25,8 @@ node scripts/run-v2-cloudshell-preview.mjs --origin https://VERIFIED-PREVIEW-HOS
 
 ## 安全与体验验证
 
-- origin/Host 精确校验、跨站拒绝、写入 JSON + Origin 检查，应用自身 CSRF 校验不削弱。
+- origin/Host 精确校验、跨站 API 拒绝、写入 JSON + Origin 检查，应用自身 CSRF 校验不削弱。实际网关将 Host 改为 `127.0.0.1:60000`，保留 `X-Forwarded-Proto: https`。只对匹配端口的官方 `PORT-dot-ID.shell.aliyuncs.com` HTTPS origin 启用该精确适配，不接受任意代理 Host。
+- 网关从 VM 网络接口连接服务，所以进程监听 `0.0.0.0`，但所有请求仍经过 Host/Origin 限制及 Cloud Shell 的账号受限网关。不能因 Host 写作回环地址就把监听收窄到回环接口；该误配已通过“本机 HTML 200、浏览器网关连接失败”定位并修复。静态 HTML 允许从官方入口正常跳转，跨站 API 仍拒绝。
 - 仅固定函数、地域、操作及路径；不得接收任意函数名、Shell 命令、IAM 或数据库管理操作。
 - 只转发数舵会话 Cookie，不把阿里云账号 Cookie 发送给应用。
 - CLI 通过 `--body-file /dev/stdin` 接收正文，密码与会话不进入 argv、Shell 历史或临时文件。Linux 下 Node 子进程 stdin 为 socket，不能直接重新打开 `/dev/stdin`；由 Python 3 标准库转换为匿名管道，再交给 CLI。真实管道测试纳入 Linux CI。超时终止本次调用独立进程组。CLI 标准错误不回传页面，不记录请求正文。
@@ -35,4 +36,4 @@ node scripts/run-v2-cloudshell-preview.mjs --origin https://VERIFIED-PREVIEW-HOS
 
 ## 已知限制
 
-Cloud Shell 前置账号访问限制依据厂商文档，本项目没有声称完成跨阿里云账号隔离实测。实际预览的重定向、Host 传递、Cookie 和 Web Worker 行为仍须浏览器验收。未完成之前不能标记 P1 GUI 通过。首次加载受云端冷启动影响，不能用本地构建体积替代公网三秒性能验收。
+Cloud Shell 前置账号访问限制依据厂商文档，本项目没有声称完成跨阿里云账号隔离实测。Safari 重定向、前端渲染、编辑器载入、只读运行结果和刷新恢复已观察通过；实际登录 Cookie、授权新任务及跨用户隔离仍待验收。不能将只读页面通过写成完整 P1 GUI 通过。首次加载受云端冷启动影响，不能用本地构建体积替代公网三秒性能验收。

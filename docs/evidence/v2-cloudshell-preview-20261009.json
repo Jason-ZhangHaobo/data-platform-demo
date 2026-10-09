@@ -16,7 +16,7 @@
     "privateHttpProxyReadPersistedRun": true,
     "applicationSessionRemainsUnauthenticatedWithoutLogin": true,
     "browserTaskSubmission": false,
-    "browserRefreshRecovery": false,
+    "browserRefreshRecovery": true,
     "fullAgentLifecycle": false,
     "publicDeployment": false
   },
@@ -46,5 +46,31 @@
     "cloudShellVmIsTemporary": true
   },
   "billing": { "month": "2026-10", "observedCny": "0.20", "completeRecordCount": 7, "budgetCny": 200, "notEndOfMonthGuarantee": true },
-  "next": "After Safari Cloud Shell login is restored, verify rendered workbench and normal application login, submit one new task, independently validate result and refresh recovery. Do not count this persisted-run read as a new task or full Agent E2E."
+  "browserReadAcceptance": {
+    "browser": "Safari",
+    "cloudShellLoginRestored": true,
+    "renderedWorkbench": true,
+    "sqlEditorLoaded": true,
+    "revisionCount": 3,
+    "runPrefix": "a1a1ef3c",
+    "client001TotalAssets": "2300.00",
+    "client002TotalAssets": "950.00",
+    "businessRegressionLabelsPassed": 5,
+    "refreshRetainsSameRunAndResults": true,
+    "applicationAuthenticated": false,
+    "normalApplicationLoginDialogOpened": true,
+    "chromeVerified": false
+  },
+  "gatewayAdaptation": {
+    "proxySha256": "bc9883a7d8729ce90abf85d67a1138608143b00a2688d4ae167e4f0640034849",
+    "observedHost": "127.0.0.1:60000",
+    "observedForwardedProto": "https",
+    "forwardedHostAbsent": true,
+    "exactOfficialOriginAndMatchingPortRequired": true,
+    "crossSiteApiStillRejected": true,
+    "loopbackOnlyListenerRejectedByManagedGateway": true,
+    "vmInterfaceListenerWithHostAndOriginGatesVerified": true,
+    "localCi": { "passed": 418, "failed": 0, "existingSkipped": 1 }
+  },
+  "next": "Await normal Shuduo application login in the already-open Safari dialog. Then submit one new browser task and verify authorization, actual result and refresh recovery. Do not count this read-only existing-run acceptance as a new task or full Agent E2E."
 }
