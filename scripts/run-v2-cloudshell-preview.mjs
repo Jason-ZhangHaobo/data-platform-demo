@@ -12,6 +12,10 @@ const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const reads = new RegExp(`^/api/v2/(?:status|budget|contexts|auth/session|revisions|runs|(?:runs|revisions)/${uuid})$`);
 const writes = new RegExp(`^/api/v2/(?:auth/(?:login|logout)|revisions|runs|runs/${uuid}/cancel)$`);
 const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".ttf": "font/ttf" };
+// On Linux Node's child stdin is a socket: reopening /dev/stdin fails ENXIO.
+// Python reads that descriptor directly, then supplies a real anonymous pipe
+// to the CLI. Neither credentials nor request bodies are written to disk.
+export const pipeBridge = "import subprocess,sys; p=subprocess.Popen(sys.argv[1:],stdin=subprocess.PIPE); p.communicate(sys.stdin.buffer.read()); sys.exit(p.returncode)";
 
 export function privatePayload(method, path, headers, body) {
   if (!(method === "GET" ? reads : method === "POST" ? writes : /$a/).test(path))
@@ -35,11 +39,17 @@ export function invokePrivate(payload, spawnImpl = spawn) {
   return new Promise((resolveResult, reject) => {
     // /dev/stdin keeps passwords, session cookies and SQL out of process argv,
     // shell history and temporary files. No shell expansion is involved.
-    const child = spawnImpl("aliyun", ["fc", "POST", "/2023-03-30/functions/dataplatform-v2-staging-api/invocations",
+    const child = spawnImpl("python3", ["-c", pipeBridge, "aliyun", "fc", "POST", "/2023-03-30/functions/dataplatform-v2-staging-api/invocations",
       "--region", "cn-hangzhou", "--read-timeout", "140", "--connect-timeout", "10", "--retry-count", "0",
-      "--header", "Content-Type=application/octet-stream", "--body-file", "/dev/stdin"], { stdio: ["pipe", "pipe", "pipe"] });
+      "--header", "Content-Type=application/octet-stream", "--body-file", "/dev/stdin"], { stdio: ["pipe", "pipe", "pipe"], detached: true });
     let output = "", bytes = 0, finished = false;
-    const fail = () => { if (!finished) { finished = true; clearTimeout(timer); child.kill(); reject(error(502, "云端调用未确认，请查看任务历史后再试；不要重复提交")); } };
+    const fail = () => {
+      if (finished) return;
+      finished = true; clearTimeout(timer);
+      // Kill only this invocation's dedicated process group, including the CLI.
+      try { if (child.pid) process.kill(-child.pid, "SIGTERM"); else child.kill(); } catch { /* already exited */ }
+      reject(error(502, "云端调用未确认，请查看任务历史后再试；不要重复提交"));
+    };
     const timer = setTimeout(fail, 150000);
     child.on("error", fail);
     child.stdin.on("error", fail);

@@ -28,7 +28,7 @@ node scripts/run-v2-cloudshell-preview.mjs --origin https://VERIFIED-PREVIEW-HOS
 - origin/Host 精确校验、跨站拒绝、写入 JSON + Origin 检查，应用自身 CSRF 校验不削弱。
 - 仅固定函数、地域、操作及路径；不得接收任意函数名、Shell 命令、IAM 或数据库管理操作。
 - 只转发数舵会话 Cookie，不把阿里云账号 Cookie 发送给应用。
-- CLI 通过 `--body-file /dev/stdin` 接收正文，密码与会话不进入 argv、Shell 历史或临时文件。CLI 标准错误不回传页面，不记录请求正文。
+- CLI 通过 `--body-file /dev/stdin` 接收正文，密码与会话不进入 argv、Shell 历史或临时文件。Linux 下 Node 子进程 stdin 为 socket，不能直接重新打开 `/dev/stdin`；由 Python 3 标准库转换为匿名管道，再交给 CLI。真实管道测试纳入 Linux CI。超时终止本次调用独立进程组。CLI 标准错误不回传页面，不记录请求正文。
 - 静态文件仅限编译目录，禁止目录遍历、目录列表和逃逸软链接；API 不开启 CORS。
 - 云调用串行，等待队列最多 8，浏览器轮询不重叠。超时提示查看历史，不自动重发写入。
 - 安全测试：`node --test test/v2/cloudshell-preview.test.mjs`；完整门槛：`npm run ci`。
