@@ -4,6 +4,8 @@
 
 ## 最新续接快照（优先于下文历史基线）
 
+- 2026-10-09 工作台私有预览：已选择 Cloud Shell 账号受限 HTTPS Web Preview，连通性探针成功，应用会话接口返回正常未登录状态。新增固定 FC/API 白名单桥接及窄化 UI，保留原账号/CSRF，不导出云凭证。网页上传发生长时间挂起后已停止依赖此路径，改用 CI 小型前端产物与 CLI 下载。浏览器真实任务操作尚待验收，不能计作已交付公网应用。续接见 [cloudshell-workbench-preview.md](cloudshell-workbench-preview.md)。
+
 - 2026-10-09 P1私有应用API链路通过。PR #155/#156已合并，运行37875475896成功更新控制面；Worker保持原包。三份新应用任务分别取得1800.00、2300.00、2300.00，均由Spark 3.5.9实际计算并通过5个证券场景。
 - 最后一份任务的提交API在297毫秒内返回QUEUED；提交调用结束后，独立查询取得成功结果。原始调用不需要等待计算；签名提交先保存到元数据库，再发送队列，结果查询按签名与当前验证契约核对并持久化。内部签名任务不会出现在公开运行响应中。
 - 失联第一份响应从已完成任务恢复，没有重新创建同一任务。三份完整行结果摘要与独立预期一致。证据见[evidence/v2-private-application-20261009.json](evidence/v2-private-application-20261009.json)，调用说明见[private-application-entry.md](private-application-entry.md)。

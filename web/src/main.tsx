@@ -68,6 +68,8 @@ const CloudReadinessPanel = lazy(async () => ({ default: (await import("./CloudR
 const AuthDialog = lazy(async () => ({ default: (await import("./AuthDialog")).AuthDialog }));
 const ChangePasswordPanel = lazy(async () => ({ default: (await import("./AuthDialog")).ChangePasswordPanel }));
 const InvitationPanel = lazy(async () => ({ default: (await import("./AuthDialog")).InvitationPanel }));
+// This marker narrows the UI only; proxy and application authorize requests.
+const privatePreview = Boolean(document.querySelector('meta[name="shuduo-private-preview"]'));
 
 function WorkbenchLoading({ label = "正在加载工作台…" }: { label?: string }) {
   return <div className="workbench-loading" role="status"><LoaderCircle className="spin" size={16} />{label}</div>;
@@ -292,7 +294,7 @@ async function api<T>(
   try {
     response = await fetch("/api/v2" + path, {
       credentials: "same-origin",
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(privatePreview ? 180000 : 15000),
       method: body === undefined ? "GET" : "POST",
       headers: {
         "Content-Type": "application/json",
@@ -312,10 +314,10 @@ async function api<T>(
   } catch (cause) {
     if (cause instanceof Error && cause.name === "TimeoutError")
       throw new Error(
-        "请求超时，操作结果尚未确认；输入内容已保留。请确认本机服务状态后再试。",
+        "请求超时，操作结果尚未确认；输入内容已保留。请先查看运行历史，不要重复提交。",
       );
     throw new Error(
-      "无法连接本机服务，输入内容已保留。请确认服务正在运行后再试。",
+      "无法连接服务，输入内容已保留。请检查当前访问通道是否仍在运行。",
     );
   }
   let value;
@@ -354,7 +356,7 @@ function App() {
     [contextId, setContextId] = useState("holdings-t1");
   const [nav, setNav] = useState(
       () =>
-        new URLSearchParams(window.location.search).get("module") ??
+        (privatePreview ? "development" : new URLSearchParams(window.location.search).get("module")) ??
         "agent-center",
     ),
     [sql, setSql] = useState(""),
@@ -369,7 +371,7 @@ function App() {
     [agentJourney, setAgentJourney] = useState<AgentJourney>(),
     [agentDelivery, setAgentDelivery] = useState<AgentDeliveryTask>(),
     [message, setMessage] = useState(""),
-    [agentOpen, setAgentOpen] = useState(true);
+    [agentOpen, setAgentOpen] = useState(!privatePreview);
   const [tab, setTab] = useState("结果"),
     [modal, setModal] = useState<"versions" | "search" | null>(null),
     [query, setQuery] = useState("");
@@ -407,8 +409,8 @@ function App() {
       api<Context[]>("/contexts"),
       api<Run[]>("/runs"),
       api<Revision[]>("/revisions"),
-      api<AgentTask[]>("/agent/tasks"),
-      api<AgentDeliveryTask[]>("/agent/deliveries"),
+      privatePreview ? Promise.resolve(undefined) : api<AgentTask[]>("/agent/tasks"),
+      privatePreview ? Promise.resolve(undefined) : api<AgentDeliveryTask[]>("/agent/deliveries"),
       api<AuthSession>("/auth/session"),
     ]);
     setStatus(s);
@@ -422,8 +424,8 @@ function App() {
       if (v[0]) setContextId(v[0].contextId);
     }
     setRun(r[0]);
-    setAgentTask(a[0]);
-    setAgentDelivery(d.find((item) => item.sourceAgentTaskId === a[0]?.id));
+    setAgentTask(a?.[0]);
+    setAgentDelivery(d?.find((item) => item.sourceAgentTaskId === a?.[0]?.id));
     setSession(authSession);
   };
   useEffect(() => {
@@ -431,7 +433,10 @@ function App() {
   }, []);
   useEffect(() => {
     if (!isPending(run?.status) && !isPending(agentTask?.status) && !isPending(agentDelivery?.status)) return;
+    let polling = false;
     const interval = setInterval(async () => {
+      if (polling) return;
+      polling = true;
       try {
         if (run && isPending(run.status)) {
           const current = await api<Run>("/runs/" + run.id);
@@ -454,8 +459,10 @@ function App() {
         }
       } catch (e) {
         setError((e as Error).message);
+      } finally {
+        polling = false;
       }
-    }, 1400);
+    }, privatePreview ? 5000 : 1400);
     return () => clearInterval(interval);
   }, [run?.id, run?.status, agentTask?.id, agentTask?.status, agentDelivery?.id, agentDelivery?.status]);
   useEffect(() => {
@@ -563,7 +570,9 @@ function App() {
   const download = async () => {
     if (!run) return;
     try {
-      const bundle = await api<unknown>("/runs/" + run.id + "/bundle");
+      const bundle = privatePreview
+        ? { scope: "PRIVATE_RUN_RESULT_ONLY", run: await api<Run>("/runs/" + run.id) }
+        : await api<unknown>("/runs/" + run.id + "/bundle");
       const url = URL.createObjectURL(
         new Blob([JSON.stringify(bundle, null, 2)], {
           type: "application/json",
@@ -636,6 +645,7 @@ function App() {
         </button>
         <button
           aria-label="Data Agent"
+          disabled={privatePreview}
           title="Data Agent"
           className={
             "agent-entry " +
@@ -660,7 +670,8 @@ function App() {
                   const Icon = icons[cap.id] ?? Boxes;
                   return (
                     <button
-                      title={cap.name}
+                      title={privatePreview && cap.id !== "development" ? "此私有预览暂未接入；不代表模块已验收" : cap.name}
+                      disabled={privatePreview && cap.id !== "development"}
                       key={cap.id}
                       className={
                         "nav-link " + (nav === cap.id ? "selected" : "")
@@ -709,7 +720,7 @@ function App() {
           <div className="top-actions">
             <span className="env-tag">
               <span />
-              {status?.mode === "LOCAL_DEVELOPMENT"
+              {privatePreview ? "私有云端预览" : status?.mode === "LOCAL_DEVELOPMENT"
                 ? "本地验证"
                 : session.authenticated
                   ? "受邀会话"
@@ -749,6 +760,7 @@ function App() {
             </span>
           </div>
         </header>
+        {privatePreview && <div className="notice-banner" role="status">私有云端验收 · 仅接入 SQL 编辑、真实 Spark 运行和结果恢复；其他模块与完整 Agent 链路待接入。Cloud Shell 到期后入口失效，云端任务记录保留。</div>}
         {error && (
           <div role="alert" className="error-banner">
             <AlertCircle size={16} />
@@ -759,7 +771,7 @@ function App() {
           </div>
         )}
         <Suspense fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
-        {nav === "agent-center" ? (
+        {privatePreview && nav !== "development" ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <AgentCenter
             api={api}
             canWrite={canWrite}
@@ -779,7 +791,7 @@ function App() {
           <>
             <div className="development-language-v2" role="tablist" aria-label="数据开发语言">
               <button role="tab" aria-selected={developmentLanguage === "SQL"} className={developmentLanguage === "SQL" ? "active" : ""} onClick={() => setDevelopmentLanguage("SQL")}>Spark SQL</button>
-              <button role="tab" aria-selected={developmentLanguage === "PYTHON"} className={developmentLanguage === "PYTHON" ? "active" : ""} onClick={() => setDevelopmentLanguage("PYTHON")}>Python</button>
+              <button role="tab" disabled={privatePreview} title={privatePreview ? "云端 Python 尚未接入此预览" : undefined} aria-selected={developmentLanguage === "PYTHON"} className={developmentLanguage === "PYTHON" ? "active" : ""} onClick={() => setDevelopmentLanguage("PYTHON")}>Python</button>
               <span>{developmentLanguage === "SQL" ? "Apache Spark 3.5.9" : "受限CPython · 本机实际执行"}</span>
             </div>
             {developmentLanguage === "PYTHON" ? (
@@ -810,6 +822,7 @@ function App() {
                 </button>
                 <button
                   className="icon-button"
+                  disabled={privatePreview}
                   aria-label={agentOpen ? "收起 Agent" : "展开 Agent"}
                   onClick={() => setAgentOpen(!agentOpen)}
                 >
@@ -1840,6 +1853,7 @@ function App() {
       {authOpen && (
         <Suspense fallback={<WorkbenchLoading label="正在加载登录入口…" />}>
           <AuthDialog
+            allowRedeem={!privatePreview}
             api={api}
             onClose={() => setAuthOpen(false)}
             onAuthenticated={(nextSession) => {
