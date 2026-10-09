@@ -5,6 +5,7 @@ import { join, resolve, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { MetadataStore } from "./store.mjs";
+import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-application.mjs";
 import {
   getContext,
   publicContext,
@@ -979,7 +980,7 @@ export function createV2Server(options = {}) {
     let body = "";
     for await (const chunk of req) {
       body += chunk;
-      if (Buffer.byteLength(body) > 1024) throw fail(413, "私有函数验收载荷过大");
+      if (Buffer.byteLength(body) > 100000) throw fail(413, "私有函数验收载荷过大");
     }
     let parsed;
     try {
@@ -991,8 +992,8 @@ export function createV2Server(options = {}) {
       !parsed ||
       typeof parsed !== "object" ||
       Array.isArray(parsed) ||
-      Object.keys(parsed).length !== 1 ||
-      parsed.operation !== "PRIVATE_STATUS_V1"
+      !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1", "PRIVATE_APPLICATION_TASK_V1"].includes(parsed.operation) ||
+      (parsed.operation === "PRIVATE_STATUS_V1" && Object.keys(parsed).length !== 1)
     )
       throw fail(422, "私有函数验收操作不受支持");
     return parsed;
@@ -1092,7 +1093,15 @@ export function createV2Server(options = {}) {
         throw fail(403, "无权访问此项目");
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
-        await readPrivateSmokeBody(req);
+        const privateInput = await readPrivateSmokeBody(req);
+        if (privateInput.operation !== "PRIVATE_STATUS_V1") {
+          const address = server.address(), base = `http://127.0.0.1:${address.port}`;
+          const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
+            ? await verifyPrivateApplicationTask(privateInput, { base, store, project: PROJECT })
+            : await callPrivateApplication(privateInput, base);
+          await persistence.flush?.();
+          return json(res, 200, result);
+        }
         const metadata =
             typeof store.replicationStatus === "function"
               ? store.replicationStatus()
