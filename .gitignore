@@ -17,3 +17,9 @@ __pycache__/
 *.py[cod]
 v2-function.zip
 v2-spark-worker.zip
+# Machine-local operations and deployment evidence: never publish cloud identifiers.
+scripts/update-v2-control-code.py
+scripts/verify-v2-private-run-log.py
+test/v2/control-code-only.test.mjs
+docs/private-control-code-release.md
+docs/evidence/v2-control-log-release-20261009.json
