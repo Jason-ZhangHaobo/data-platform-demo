@@ -1,0 +1,54 @@
+{
+  "schema": "shuduo-private-browser-task-acceptance/v1",
+  "date": "2026-10-09",
+  "browser": "Safari",
+  "scope": "Authenticated private GUI SQL submission, real execution, independent result verification and refresh recovery",
+  "previewBaseCommit": "200be4950b059f6e80c5e77c2dc6af693f298c01",
+  "previewArtifactId": "11600871969",
+  "previewArtifactSha256": "d50203332bb9103cd08105b8a61100470ed78c69acd6618d5bbd2261bcf912e5",
+  "run": {
+    "id": "c9d9db39-7039-41a2-bd9a-7016133c92dd",
+    "revisionId": "c8c08afb-60fc-453e-96eb-b94906f3c82d",
+    "revisionHash": "e5efab3c7e75132e2f30ed6e7f88a3c6adc0fa38f7a5a779c0e6548e7f225004",
+    "contextId": "holdings-t1",
+    "status": "SUCCEEDED",
+    "engine": "Apache Spark",
+    "engineVersion": "3.5.9",
+    "mainSqlExecuted": true,
+    "durationMs": 21313,
+    "submittedAt": "2026-10-09T07:46:07.753Z",
+    "finishedAt": "2026-10-09T07:46:40.710Z",
+    "client001TotalAssets": "1800.00",
+    "client002TotalAssets": "950.00",
+    "regressionCount": 5,
+    "rowsSha256": "a6fb78f80e01ff7f449220e62cad06c4636def2d35a2186d711bb2a743493776"
+  },
+  "verified": {
+    "normalApplicationLogin": true,
+    "newTaskSubmittedThroughGui": true,
+    "revisionCountChangedFrom3To4": true,
+    "realWorkerExecution": true,
+    "exportedRowsDeepEqualIndependentFixtureExpected": true,
+    "fiveBusinessRegressionsVisible": true,
+    "refreshPreservesSessionRunAndResult": true,
+    "anonymousWriteRejectedWith401": true,
+    "cloudCredentialExported": false,
+    "browserFullAgentLifecycle": false,
+    "chromeAcceptance": false,
+    "publicDeployment": false
+  },
+  "logGap": {
+    "exportedRunContainsRawWorkerLog": false,
+    "cause": "Durable controller receipt field allowlist omitted Worker log; UI also did not present actual metadata or stdout/stderr when log was absent.",
+    "implementation": "Preserve signed Worker log in future reconciliations; show returned log/stdout/stderr and actual persisted metadata; explicitly state missing historical raw output.",
+    "controlPlanePatchCloudDeployed": false,
+    "historicalLogsBackfilled": false
+  },
+  "layoutGap": "Short Safari window clipped the result area; development view now reserves a minimum work area and allows vertical scrolling. Browser verification of this UI patch is recorded separately.",
+  "billing": { "month": "2026-10", "observedCnyBeforeTask": "0.20", "completeRecordCount": 7, "budgetCny": 200 },
+  "limits": [
+    "Application was used as the already configured administrator; cross-user/project negative matrix is not claimed.",
+    "Current preview is temporary Cloud Shell access, not durable public service.",
+    "This is one manual GUI SQL workflow, not one full seven-stage Agent evaluation."
+  ]
+}

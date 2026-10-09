@@ -59,6 +59,7 @@ test("task submission returns before a result exists and survives controller res
   q.objects.set(prepared.resultKey, JSON.stringify(createQueuedSparkResult(prepared.job, {
     status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", mainSqlExecuted: true,
     rows: getContext("holdings-t1").expected, durationMs: 1234,
+    log: "Synthetic signed worker output", stdout: "Synthetic stdout", stderr: "Synthetic stderr",
     validation: { passed: true, regressions: contextIds.map(contextId => ({ contextId, passed: true })) },
     id: "must-not-overwrite-run-id", revisionHash: "must-not-overwrite-revision",
   }, q.config)));
@@ -70,8 +71,13 @@ test("task submission returns before a result exists and survives controller res
     assert.equal(restored.body.id, run.body.id);
     assert.equal(restored.body.revisionHash, revision.hash);
     assert.equal(restored.body.rows[0].total_assets, "1800.00");
+    assert.equal(restored.body.log, "Synthetic signed worker output");
+    assert.equal(restored.body.stdout, "Synthetic stdout");
+    assert.equal(restored.body.stderr, "Synthetic stderr");
     assert.equal(restored.body.remoteSubmission, undefined);
-    assert.equal((await app.request("GET", `/runs/${run.body.id}`)).body.status, "SUCCEEDED");
+    const reread = (await app.request("GET", `/runs/${run.body.id}`)).body;
+    assert.equal(reread.status, "SUCCEEDED");
+    assert.equal(reread.log, restored.body.log);
   } finally { await app.close(); }
 });
 
