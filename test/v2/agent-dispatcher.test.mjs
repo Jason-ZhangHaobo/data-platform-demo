@@ -22,7 +22,7 @@ function fixture(t, store = new MetadataStore(":memory:")) {
   let dispatcher = build();
   t.after(() => store.close());
   return { store, owner, create, build, engine, get calls() { return calls; }, get dispatcher() { return dispatcher; },
-    tick: (requestId = randomUUID()) => dispatcher.tick({ requestId }), later: ms => clock += ms,
+    tick: (requestId = randomUUID()) => dispatcher.tick({ requestId }), later: ms => clock += ms, now: () => clock,
     step: fn => step = fn, persist: fn => persist = fn, restart: () => dispatcher = build() };
 }
 
@@ -59,7 +59,7 @@ test("driver rechecks owner permission, skips unknown model outcomes and respect
   f.store.update("auth_user", f.owner.id, PROJECT, { memberships: [{ projectId: PROJECT, role: "ENGINEER" }] });
   f.store.update("agent", task.id, PROJECT, { stage: "MODEL_OUTCOME_UNKNOWN", status: "INTERRUPTED" });
   assert.equal((await f.tick()).state, "IDLE"); assert.equal(f.calls, 0);
-  f.store.update("agent", task.id, PROJECT, { stage: "MODEL_IN_FLIGHT", status: "RUNNING", durable: { leaseExpiresAt: new Date(Date.now() + 90000).toISOString() } });
+  f.store.update("agent", task.id, PROJECT, { stage: "MODEL_IN_FLIGHT", status: "RUNNING", durable: { leaseExpiresAt: new Date(f.now() + 90000).toISOString() } });
   f.create(); assert.equal((await f.tick()).state, "BUSY"); assert.equal(f.calls, 0);
   f.later(90001); assert.equal((await f.tick()).state, "ADVANCED");
 });
