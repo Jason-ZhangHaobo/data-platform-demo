@@ -45,7 +45,8 @@ export async function reconcileDurableDevelopment(run, { runner, store, project,
       }
       return run;
     }
-    if (!terminal.has(result.status) || result.engine !== "Apache Spark" || result.engineVersion !== "3.5.9")
+    if (!terminal.has(result.status) || result.engine !== "Apache Spark" ||
+        (result.engineVersion !== undefined && result.engineVersion !== "3.5.9"))
       throw Object.assign(new Error("云端任务回执不合法"), { code: "REMOTE_SPARK_INVALID_RESULT" });
     if (result.status === "SUCCEEDED" &&
         (result.engine !== "Apache Spark" || result.engineVersion !== "3.5.9" ||

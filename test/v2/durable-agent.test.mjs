@@ -91,6 +91,15 @@ test("a repair task retains the bound failed-run context across restart and pass
   await assert.rejects(f.create({ sourceRunId, sourceError: "changed stored error" }), { status: 409 });
 });
 
+test("a signed Spark failure without a version is preserved for repair, never upgraded to success", async t => {
+  const f = setup(t); let task = await f.create(); await f.advance(task.id); task = await f.advance(task.id);
+  f.complete(task.id, { status: "FAILED", engineVersion: undefined, mainSqlExecuted: false, error: "UNRESOLVED_COLUMN: missing_col", validation: undefined });
+  task = await f.advance(task.id);
+  const failed = f.store.get("run", task.runId, PROJECT);
+  assert.equal(failed.status, "FAILED"); assert.equal(failed.engineVersion, undefined);
+  assert.match(failed.error, /UNRESOLVED_COLUMN/); assert.equal(task.stage, "READY_FOR_MODEL");
+});
+
 test("unknown queue submission reuses exact signed job and never repeats generation", async t => {
   const f = setup(t); let task = await f.create(); task = await f.advance(task.id); f.lose();
   await assert.rejects(f.advance(task.id), /lost response/);
