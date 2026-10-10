@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import { MetadataStore } from "./store.mjs";
 import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-application.mjs";
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
+import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
+import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import {
   getContext,
   publicContext,
@@ -289,6 +291,25 @@ export function createV2Server(options = {}) {
     if (!item) throw fail(404, "未找到当前项目的记录");
     return item;
   };
+  const durableAgent = env.V2_DURABLE_SQL_AGENT_ENABLED === "true"
+    ? createDurableSqlAgent({ store, project: PROJECT, runner: durableDevelopment, generator,
+      persist: persistDevelopment, getContext, contextIds, contractId: validationContractId,
+      assertModelBudget: () => budget.assertCanStartModel(), assertRunBudget: () => budget.assertCanStartRemoteSpark(),
+      tokenBudget: Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000), now: options.now ?? Date.now })
+    : undefined;
+  const mayReadDurableAgent = (task, session) => task.executionMode !== durableSqlAgentMode ||
+    local || session?.role === "ADMIN" || (session && task.submittedBy === session.user.id);
+  const requireDurableAgentOwner = (task, req) => {
+    if (!mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)))
+      throw fail(403, "无权操作此 Agent 任务");
+  };
+  const agentDriverMode = env.V2_AGENT_DRIVER_MODE ?? "DISABLED";
+  if (!["DISABLED", "PRIVATE_TICK"].includes(agentDriverMode)) throw new Error("Agent 后台推进模式不受支持");
+  if (agentDriverMode === "PRIVATE_TICK" && (!privateSmokeEnabled || !durableAgent))
+    throw new Error("Agent 后台推进需要私有调用边界与持久执行器");
+  const agentDispatcher = agentDriverMode === "PRIVATE_TICK"
+    ? createAgentDispatcher({ store, project: PROJECT, engine: durableAgent, persist: persistDevelopment, now: options.now ?? Date.now })
+    : undefined;
   const publicAgentIntent = ({ submittedBy, message, ...item }) => item;
   const publicAgentHandoff = ({ submittedBy, ...item }) => item;
   const publicAgentApproval = ({ submittedBy, ...item }) => item;
@@ -998,7 +1019,7 @@ export function createV2Server(options = {}) {
       !parsed ||
       typeof parsed !== "object" ||
       Array.isArray(parsed) ||
-      !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1", "PRIVATE_APPLICATION_TASK_V1"].includes(parsed.operation) ||
+      !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1", "PRIVATE_APPLICATION_TASK_V1", "PRIVATE_AGENT_TICK_V1"].includes(parsed.operation) ||
       (parsed.operation === "PRIVATE_STATUS_V1" && Object.keys(parsed).length !== 1)
     )
       throw fail(422, "私有函数验收操作不受支持");
@@ -1100,6 +1121,11 @@ export function createV2Server(options = {}) {
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = await readPrivateSmokeBody(req);
+        if (privateInput.operation === "PRIVATE_AGENT_TICK_V1") {
+          if (!agentDispatcher) throw Object.assign(fail(503, "Agent 后台推进尚未启用"), { code: "AGENT_DRIVER_DISABLED" });
+          if (Object.keys(privateInput).some(k => !["operation", "requestId"].includes(k))) throw fail(422, "Agent 后台推进字段不受支持");
+          return json(res, 200, await agentDispatcher.tick({ requestId: privateInput.requestId }));
+        }
         if (privateInput.operation !== "PRIVATE_STATUS_V1") {
           const address = server.address(), base = `http://127.0.0.1:${address.port}`;
           const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
@@ -2816,7 +2842,20 @@ export function createV2Server(options = {}) {
         }
       }
       if (path === "/api/v2/agent/tasks" && method === "GET")
-        return json(res, 200, store.list("agent", PROJECT));
+        return json(res, 200, store.list("agent", PROJECT)
+          .filter(task => mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)))
+          .map(publicDurableAgent));
+      const durableAdvance = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/advance$/);
+      if (durableAdvance && method === "POST") {
+        const task = get("agent", durableAdvance[1]);
+        requireDurableAgentOwner(task, req);
+        if (!durableAgent) throw fail(503, "持久 Agent 推进接口尚未启用");
+        const body = await readBody(req);
+        if (Object.keys(body).some(k => !["expectedVersion", "confirmModelRetry"].includes(k)) ||
+            (body.confirmModelRetry !== undefined && typeof body.confirmModelRetry !== "boolean"))
+          throw fail(422, "恢复请求包含无效字段");
+        return json(res, 200, await durableAgent.advance(task.id, body));
+      }
       if (path === "/api/v2/agent/tools" && method === "GET")
         return json(res, 200, publicAgentToolCatalog());
       const agentToolValidation = path.match(
@@ -3383,11 +3422,17 @@ export function createV2Server(options = {}) {
             },
             graph: agentIntentGraph(intent),
           });
-        if (!["QUEUED", "RUNNING"].includes(child.status))
+        const durableChild = specialistTaskKind === "agent" && child.executionMode === durableSqlAgentMode;
+        if (!durableChild && !["QUEUED", "RUNNING"].includes(child.status))
           throw Object.assign(fail(409, "当前专业Agent任务已结束，不能取消"), {
             code: "AGENT_CHILD_TASK_NOT_CANCELLABLE",
           });
-        store.update(specialistTaskKind, child.id, PROJECT, {
+        if (durableChild) {
+          requireDurableAgentOwner(child, req);
+          if (!durableAgent) throw fail(503, "持久 Agent 取消接口尚未启用");
+          if (!["QUEUED", "RUNNING", "INTERRUPTED"].includes(child.status)) throw fail(409, "任务已结束，不能取消");
+          await durableAgent.cancel(child.id);
+        } else store.update(specialistTaskKind, child.id, PROJECT, {
           status: "CANCELLED",
           finishedAt: new Date().toISOString(),
         });
@@ -4733,7 +4778,8 @@ export function createV2Server(options = {}) {
             "agent/tasks": "agent",
           }[record[1]],
           item = kind === "run" ? await reconcileDevelopment(get(kind, record[2])) : get(kind, record[2]);
-        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? publicDevelopmentRun(item) : item);
+        if (kind === "agent") requireDurableAgentOwner(item, req);
+        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? publicDevelopmentRun(item) : kind === "agent" ? publicDurableAgent(item) : item);
         if (method === "GET" && record[3] === "journey" && kind === "agent")
           return json(
             res,
@@ -4745,6 +4791,10 @@ export function createV2Server(options = {}) {
           record[3] === "cancel" &&
           kind !== "revision"
         ) {
+          if (kind === "agent" && item.executionMode === durableSqlAgentMode) {
+            if (!durableAgent) throw fail(503, "持久 Agent 取消接口尚未启用");
+            return json(res, 200, await durableAgent.cancel(item.id));
+          }
           if (!terminal.has(item.status)) {
             if (kind === "run" && item.remoteSubmission) {
               if (!durableDevelopment) throw fail(503, "云端执行器尚未就绪，取消请求未提交");
@@ -4896,6 +4946,13 @@ export function createV2Server(options = {}) {
           throw fail(422, "数据开发语言不受支持");
         const context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效上下文");
+        if (durableAgent && language === "SPARK_SQL") {
+          if (!options.generator && !modelSettings(env).configured) throw new ModelUnavailable();
+          const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
+            actorId: auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer",
+            idempotencyKey: text(req.headers["idempotency-key"], 1, 100) });
+          return json(res, 202, created);
+        }
         if (
           !(language === "PYTHON" ? options.pythonGenerator : options.generator) &&
           !modelSettings(env).configured

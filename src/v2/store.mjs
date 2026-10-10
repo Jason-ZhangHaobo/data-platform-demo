@@ -38,9 +38,11 @@ export class MetadataStore {
       .run(kind, item.id, project, JSON.stringify(item));
     return item;
   }
-  update(kind, id, project, patch) {
+  update(kind, id, project, patch, { expectedVersion } = {}) {
     const old = this.get(kind, id, project);
     if (!old) return undefined;
+    if (expectedVersion !== undefined && old.version !== expectedVersion)
+      throw Object.assign(new Error("记录已更新，请刷新后重试"), { status: 409, code: "STALE_DOCUMENT_VERSION" });
     const item = {
       ...old,
       ...patch,
@@ -114,6 +116,7 @@ export class MetadataStore {
               ["CLAIMED", "TASK_CREATED"].includes(item.status))) &&
           !(kind === "release_run" && item.status === "SCHEDULED") &&
           !(kind === "run" && item.mode === "DURABLE_REMOTE_SUBMISSION" && item.remoteSubmission?.prepared?.job?.jobId) &&
+          !(kind === "agent" && item.executionMode === "DURABLE_SQL_AGENT_V1") &&
           !(
             preserveDurableReleaseRuns &&
             kind === "release_run" &&

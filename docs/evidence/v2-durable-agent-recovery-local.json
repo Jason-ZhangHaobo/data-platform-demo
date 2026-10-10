@@ -1,0 +1,42 @@
+{
+  "schema": "shuduo-durable-agent-local-acceptance/v1",
+  "date": "2026-10-10",
+  "scope": "LOCAL_STATE_MACHINE_WITH_SYNTHETIC_MODEL_AND_QUEUE",
+  "featureDefault": "DISABLED",
+  "driver": "EXPLICIT_ADVANCE_POST",
+  "testFile": "test/v2/durable-agent.test.mjs",
+  "focusedTests": { "passed": 13, "failed": 0 },
+  "localFullCi": { "passed": 436, "failed": 0, "existingSkipped": 1, "includesLocalPrivateOperationsTests": true },
+  "observed": {
+    "inputsRevisionAndRunCheckpointsRecover": true,
+    "unknownSubmissionReusesSameSignedPayload": true,
+    "existingReceiptReadBeforeExpiredSubmissionRetry": true,
+    "modelNotCalledBeforeDurableReservation": true,
+    "expiredLeaseCannotStartModelAfterSlowPersist": true,
+    "unknownModelOutcomeRequiresExplicitRetry": true,
+    "lateResultsFencedAfterCancellation": true,
+    "modelTimeoutBudgetAndContextDriftFailClosed": true,
+    "replicatedSnapshotConflictPreventsCompetingCall": true,
+    "ownerCsrfProjectAndRequestVersionChecked": true,
+    "readRequestsDoNotStartModelOrSpark": true
+  },
+  "separateProcessTest": {
+    "terminationMethod": "process.exit without graceful store close",
+    "terminationPoints": ["after_generated_revision_checkpoint", "after_queue_acceptance_before_acknowledgement"],
+    "thirdProcessOutcome": "SUCCEEDED",
+    "syntheticModelCalls": 1,
+    "syntheticQueueCreateEvents": 1,
+    "persistedRevisions": 1,
+    "persistedRuns": 1
+  },
+  "notVerified": [
+    "real_model_generation_and_correction",
+    "real_cloud_function_restart_recovery",
+    "unattended_background_dispatch",
+    "GUI_CLI_MCP_recovery_controls",
+    "seven_stage_Agent_E2E",
+    "public_deployment"
+  ],
+  "paidModelCallsInFocusedSuite": 0,
+  "cloudResourcesModified": false
+}

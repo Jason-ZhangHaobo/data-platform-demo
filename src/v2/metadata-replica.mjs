@@ -42,8 +42,8 @@ export class ReplicatedMetadataStore extends MetadataStore {
     return result;
   }
 
-  update(kind, id, project, patch) {
-    const result = super.update(kind, id, project, patch);
+  update(kind, id, project, patch, options) {
+    const result = super.update(kind, id, project, patch, options);
     if (result) this.#markDirty();
     return result;
   }
