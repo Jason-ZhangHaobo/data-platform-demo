@@ -8,6 +8,8 @@ const paths = [
   /^\/api\/v2\/(runs|revisions)\/[a-f0-9-]{36}(?:\/cancel)?$/,
 ];
 const headerNames = new Set(["cookie", "x-csrf-token", "idempotency-key", "x-project-id", "x-shuduo-client"]);
+// Keep the model's bounded checkpoint inside the private function's 120s limit.
+export const privateApplicationTimeoutMs = path => /^\/api\/v2\/agent\/tasks\/[a-f0-9-]{36}\/advance$/.test(path) ? 105000 : 30000;
 
 export function validatePrivateApplicationRequest(input, { allowDurableAgent = false } = {}) {
   const agentPath = allowDurableAgent && (input?.method === "GET"
@@ -41,7 +43,7 @@ export async function callPrivateApplication(input, base, fetchImpl = fetch, opt
     headers: { "content-type": "application/json", "x-shuduo-client": "cli", ...request.headers },
     ...(request.method === "POST" ? { body: JSON.stringify(request.body) } : {}),
     redirect: "error",
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(privateApplicationTimeoutMs(request.path)),
   });
   const body = await response.json();
   return {
