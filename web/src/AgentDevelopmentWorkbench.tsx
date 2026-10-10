@@ -21,6 +21,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
   const [automatic, setAutomatic] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [retryConsent, setRetryConsent] = useState(false);
   const epoch = useRef(0), selectedId = useRef<string | undefined>(undefined);
+  const alive = useRef(true), manualRequest = useRef<{ revisionId: string; key: string } | undefined>(undefined);
   const pendingSubmission = useRef<{ payload: string; key: string } | undefined>(undefined);
   const context = contexts.find(c => c.id === contextId), dirty = draft !== baseline;
   const runPending = Boolean(run && !terminal(run.status));
@@ -31,12 +32,22 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
   }
   async function loadHistory() {
     if (!ready) return;
-    const list = await api<Task[]>("/agent/tasks"); setTasks(list);
-    const id = new URLSearchParams(location.search).get("task");
+    const list = await api<Task[]>("/agent/tasks"); if (!alive.current) return; setTasks(list);
+    const params = new URLSearchParams(location.search), id = params.get("task"), revisionId = params.get("revision"), runId = params.get("run");
+    if (!selectedId.current && revisionId && /^[a-f0-9-]{36}$/.test(revisionId)) {
+      const saved = await api<{ id: string; sql: string; contextId: string }>(`/revisions/${revisionId}`);
+      const actual = runId && /^[a-f0-9-]{36}$/.test(runId) ? await api<Run>(`/runs/${runId}`) : (await api<Run[]>("/runs")).find(r => r.revisionId === saved.id);
+      if (actual && actual.revisionId !== saved.id) throw new Error("运行与代码版本不匹配，请重新选择任务。");
+      if (!alive.current) return;
+      setTask(undefined); setContextId(saved.contextId); setDraft(saved.sql); setBaseline(saved.sql); setBaselineRevisionId(saved.id); setRun(actual);
+      rememberManual(saved.id, actual?.id);
+      setNotice(actual ? "已恢复手工保存的代码版本及其运行，没有重新提交。" : "已恢复保存的代码，尚未确认对应运行；没有自动重新提交。");
+      return;
+    }
     if (id && !selectedId.current && list.some(t => t.id === id)) await selectTask(id, false);
   }
   useEffect(() => { loadHistory().catch(e => setError(e.message)); }, [ready, canWrite]);
-  useEffect(() => () => { epoch.current++; }, []);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; }; }, []);
   useEffect(() => { onDirtyChange(dirty || Boolean(message.trim())); }, [dirty, message, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(""), 9000); return () => clearTimeout(timer); }, [notice]);
@@ -60,6 +71,13 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
   const rememberSelection = (id?: string) => {
     selectedId.current = id;
     const url = new URL(location.href); if (id) url.searchParams.set("task", id); else url.searchParams.delete("task");
+    url.searchParams.delete("revision"); url.searchParams.delete("run");
+    history.replaceState(null, "", url);
+  };
+  const rememberManual = (revisionId: string, runId?: string) => {
+    selectedId.current = undefined;
+    const url = new URL(location.href); url.searchParams.delete("task"); url.searchParams.set("revision", revisionId);
+    if (runId) url.searchParams.set("run", runId); else url.searchParams.delete("run");
     history.replaceState(null, "", url);
   };
   async function selectTask(id: string, protectDraft = true) {
@@ -69,7 +87,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
     rememberSelection(id);
     try {
       const current = await api<Task>(`/agent/tasks/${id}`);
-      if (selectedId.current !== id) return;
+      if (!alive.current || selectedId.current !== id) return;
       accept(current); setContextId(current.contextId);
       if (!keepDraft) { setDraft(current.sql ?? ""); setBaseline(current.sql ?? ""); setBaselineRevisionId(current.revisionId); setDiff(false); }
       setRun(current.runId ? await api<Run>(`/runs/${current.runId}`) : undefined);
@@ -123,6 +141,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
     if (pendingSubmission.current?.payload !== payload) pendingSubmission.current = { payload, key: crypto.randomUUID() };
     try {
       const created = await api<Task>("/agent/tasks", body, { idempotencyKey: pendingSubmission.current.key });
+      if (!alive.current) return;
       pendingSubmission.current = undefined; rememberSelection(created.id); accept(created); setRun(undefined); setMessage("");
       setNotice("需求已保存，将按已确认口径生成代码并执行独立校验。");
       void drive(created);
@@ -143,9 +162,13 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
     if (!draft.trim()) return;
     setBusy(true); setError("");
     try {
-      const revision = await api<{ id: string; sql: string }>("/revisions", { sql: draft, contextId });
-      setBaseline(revision.sql); setBaselineRevisionId(revision.id);
-      const actual = await api<Run>("/runs", { revisionId: revision.id });
+      const revision = !dirty && baselineRevisionId ? { id: baselineRevisionId, sql: baseline } : await api<{ id: string; sql: string }>("/revisions", { sql: draft, contextId });
+      if (!alive.current) return;
+      setBaseline(revision.sql); setBaselineRevisionId(revision.id); setTask(undefined); rememberManual(revision.id);
+      if (manualRequest.current?.revisionId !== revision.id) manualRequest.current = { revisionId: revision.id, key: crypto.randomUUID() };
+      const actual = await api<Run>("/runs", { revisionId: revision.id }, { idempotencyKey: manualRequest.current.key });
+      if (!alive.current) return;
+      manualRequest.current = undefined; rememberManual(revision.id, actual.id);
       setRun(actual); setTab("结果"); setNotice("人工修改已另存版本并提交Spark；不会改写原Agent任务的验证结论。");
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
@@ -175,6 +198,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
           {task && <><div className="agent-dev-message user"><small>你的需求 · {task.id.slice(0,8)}</small><p>{task.message}</p></div>
             <div className="agent-dev-message assistant"><strong>{automatic ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}{automatic && task.stage === "READY_FOR_MODEL" ? "正在请求模型生成或修正…" : stageText[task.stage ?? task.status] ?? task.status}</strong><p>{task.explanation || "需求已记录，将使用上方已确认的上下文和口径。"}</p>
               {task.error && <p className="agent-dev-error-text">{task.error}</p>}
+              {task.sourceRunId && <button className="button" disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${task.sourceRunId}`)); setTab("日志"); setNotice("这里是本次修正引用的原始失败批次；编辑器仍保留当前代码。"); } catch(e) { setError((e as Error).message); } }}>查看修正依据 · {task.sourceRunId.slice(0,8)}</button>}
               <ol className="agent-dev-attempts">{task.attempts.map(a => <li key={a.attempt}><span>第{a.attempt}次</span><strong>{a.status === "FAILED" ? "执行失败（记录保留）" : a.status === "GENERATED" ? "代码已生成" : stageText[a.status] ?? a.status}</strong>{a.model && <small>模型：{a.model}</small>}{a.runId && <button disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${a.runId}`)); setTab("日志"); setNotice("正在查看这次尝试的执行记录；编辑器保留最新代码，结果以批次所绑定版本为准。"); } catch(e) { setError((e as Error).message); } }}>查看第{a.attempt}次执行 · {a.runId.slice(0,8)}</button>}</li>)}</ol>
               <small>版本 {task.version} · 预算占用 {task.usedTokens ?? 0} Token（未知结果含预留）· 结论仅对应当前代码版本</small>
             </div>
@@ -188,7 +212,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
         </div>
         <form className="agent-dev-compose" onSubmit={e => { e.preventDefault(); void send(); }}><label htmlFor="agent-dev-message">{task ? "基于当前代码提出下一次修改" : "描述开发需求"}</label><textarea id="agent-dev-message" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} placeholder="例如：计算客户总资产，检查现金是否被重复累计…" disabled={working} /><div><small>本次将真实调用模型与隔离 Spark</small><button className="button primary" type="submit" disabled={!ready || !canWrite || working || runPending || message.trim().length < 4}><Send size={14} />按此口径生成并验证</button></div></form>
       </section>
-      <section className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : task?.revisionId ? `版本 ${task.revisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>
+      <section className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : baselineRevisionId ? `版本 ${baselineRevisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>
         <div className="agent-dev-editor"><Suspense fallback={<div className="agent-dev-empty">正在加载代码编辑器…</div>}><SqlEditor value={draft} original={codeOriginal} diff={diff} onChange={setDraft} readOnly={working} /></Suspense></div>
         <div className="agent-dev-code-actions"><small><Code2 size={14} />{automatic ? "Agent 处理中，可随时停止后接管" : "可直接编辑；修改后需重新验证"}</small>{runPending && !automatic && <button className="button" disabled={!canWrite || busy} onClick={async () => { if (!run) return; setBusy(true); try { setRun(await api<Run>(`/runs/${run.id}/cancel`, {})); setNotice("取消标记已保存；迟到结果不会覆盖已取消状态。"); } catch(e) { setError((e as Error).message); } finally { setBusy(false); } }}><Square size={13} />停止运行</button>}<button className="button" disabled={!canWrite || working || runPending || !draft.trim()} onClick={() => void runDraft()}><Play size={14} />保存并运行我的代码</button></div>
         <div className="agent-dev-result-tabs" role="tablist" aria-label="开发执行反馈">{["结果","校验","日志"].map(name => <button key={name} role="tab" aria-selected={tab === name} onClick={() => setTab(name)}>{name}</button>)}<span>{run ? `${stageText[run.status] ?? run.status} · ${run.id.slice(0,8)}` : "尚未执行"}</span></div>
