@@ -64,6 +64,7 @@ const SecurityWorkbench = lazy(async () => ({ default: (await import("./Security
 const ReportsWorkbench = lazy(async () => ({ default: (await import("./ReportsWorkbench")).ReportsWorkbench }));
 const OperationsWorkbench = lazy(async () => ({ default: (await import("./OperationsWorkbench")).OperationsWorkbench }));
 const AgentCenter = lazy(async () => ({ default: (await import("./AgentCenter")).AgentCenter }));
+const AgentDevelopmentWorkbench = lazy(async () => ({ default: (await import("./AgentDevelopmentWorkbench")).AgentDevelopmentWorkbench }));
 const PythonWorkbench = lazy(async () => ({ default: (await import("./PythonWorkbench")).PythonWorkbench }));
 const CloudReadinessPanel = lazy(async () => ({ default: (await import("./CloudReadinessPanel")).CloudReadinessPanel }));
 const AuthDialog = lazy(async () => ({ default: (await import("./AuthDialog")).AuthDialog }));
@@ -71,6 +72,7 @@ const ChangePasswordPanel = lazy(async () => ({ default: (await import("./AuthDi
 const InvitationPanel = lazy(async () => ({ default: (await import("./AuthDialog")).InvitationPanel }));
 // This marker narrows the UI only; proxy and application authorize requests.
 const privatePreview = Boolean(document.querySelector('meta[name="shuduo-private-preview"]'));
+const agentDevelopmentPreview = privatePreview && Boolean(document.querySelector('meta[name="shuduo-agent-development"]'));
 
 function WorkbenchLoading({ label = "正在加载工作台…" }: { label?: string }) {
   return <div className="workbench-loading" role="status"><LoaderCircle className="spin" size={16} />{label}</div>;
@@ -99,6 +101,7 @@ type Capability = {
   features: string[];
 };
 type Status = {
+  agentDevelopment?: { durableEnabled: boolean };
   validationContract?: { id: string; fixtureCount: number };
   mode: string;
   projectId: string;
@@ -294,13 +297,13 @@ const time = (s: string) =>
 async function api<T>(
   path: string,
   body?: unknown,
-  requestOptions: { actorId?: string } = {},
+  requestOptions: { actorId?: string; idempotencyKey?: string } = {},
 ): Promise<T> {
   let response: Response;
   try {
     response = await fetch("/api/v2" + path, {
       credentials: "same-origin",
-      signal: AbortSignal.timeout(privatePreview ? 180000 : 15000),
+      signal: AbortSignal.timeout(privatePreview || path.endsWith("/advance") ? 180000 : 15000),
       method: body === undefined ? "GET" : "POST",
       headers: {
         "Content-Type": "application/json",
@@ -313,7 +316,7 @@ async function api<T>(
           : { "X-CSRF-Token": cookieValue("shuduo_csrf") }),
         ...(body === undefined
           ? {}
-          : { "Idempotency-Key": crypto.randomUUID() }),
+          : { "Idempotency-Key": requestOptions.idempotencyKey ?? crypto.randomUUID() }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -360,9 +363,9 @@ function App() {
   const [status, setStatus] = useState<Status>(),
     [contexts, setContexts] = useState<Context[]>([]),
     [contextId, setContextId] = useState("holdings-t1");
-  const [nav, setNav] = useState(
+  const [nav, setNavState] = useState(
       () =>
-        (privatePreview ? "development" : new URLSearchParams(window.location.search).get("module")) ??
+        (privatePreview && !agentDevelopmentPreview ? "development" : new URLSearchParams(window.location.search).get("module")) ??
         "agent-center",
     ),
     [sql, setSql] = useState(""),
@@ -392,6 +395,12 @@ function App() {
   const [modelSaveError, setModelSaveError] = useState("");
   const [modelSaved, setModelSaved] = useState(false);
   const [session, setSession] = useState<AuthSession>({ authenticated: false });
+  const [agentWorkspaceMode, setAgentWorkspaceMode] = useState("development");
+  const [agentDraftDirty, setAgentDraftDirty] = useState(false);
+  const setNav = (next: string) => {
+    if (next !== nav && agentDraftDirty && !confirm("Agent 工作台有未保存的输入或代码，是否放弃并切换模块？")) return;
+    setNavState(next);
+  };
   const [authOpen, setAuthOpen] = useState(false);
   sqlRef.current = sql;
   const modalRef = useRef<HTMLElement>(null);
@@ -651,7 +660,7 @@ function App() {
         </button>
         <button
           aria-label="Data Agent"
-          disabled={privatePreview}
+          disabled={privatePreview && !agentDevelopmentPreview}
           title="Data Agent"
           className={
             "agent-entry " +
@@ -676,8 +685,8 @@ function App() {
                   const Icon = icons[cap.id] ?? Boxes;
                   return (
                     <button
-                      title={privatePreview && cap.id !== "development" ? "此私有预览暂未接入；不代表模块已验收" : cap.name}
-                      disabled={privatePreview && cap.id !== "development"}
+                      title={privatePreview && cap.id !== "development" && !(agentDevelopmentPreview && cap.id === "agent-center") ? "此私有预览暂未接入；不代表模块已验收" : cap.name}
+                      disabled={privatePreview && cap.id !== "development" && !(agentDevelopmentPreview && cap.id === "agent-center")}
                       key={cap.id}
                       className={
                         "nav-link " + (nav === cap.id ? "selected" : "")
@@ -766,7 +775,7 @@ function App() {
             </span>
           </div>
         </header>
-        {privatePreview && <div className="notice-banner" role="status">私有云端验收 · 仅接入 SQL 编辑、真实 Spark 运行和结果恢复；其他模块与完整 Agent 链路待接入。Cloud Shell 到期后入口失效，云端任务记录保留。</div>}
+        {privatePreview && <div className="notice-banner" role="status">私有云端试用 · {agentDevelopmentPreview ? "Agent 数据开发、SQL 编辑、真实运行与任务恢复" : "SQL 编辑、真实 Spark 运行和结果恢复"}；其他模块与完整交付链路待接入。临时访问通道到期后入口失效，已保存的云端任务记录保留。</div>}
         {error && (
           <div role="alert" className="error-banner">
             <AlertCircle size={16} />
@@ -777,7 +786,10 @@ function App() {
           </div>
         )}
         <Suspense fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
-        {privatePreview && nav !== "development" ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
+        {privatePreview && nav !== "development" && !(agentDevelopmentPreview && nav === "agent-center") ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
+          <>
+          {!privatePreview && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button><button role="tab" aria-selected={agentWorkspaceMode === "platform"} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button></div>}
+          {agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} ready={Boolean(status?.agentDevelopment?.durableEnabled)} loading={!status} privatePreview={privatePreview} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite}
@@ -792,7 +804,8 @@ function App() {
               setNav(destination);
               setNotice(handoffMessage ? "已带入专业Agent草稿；请在模块内审阅后再发起。" : "已进入对应专业模块；后续动作仍需模块内资源与权限校验");
             }}
-          />
+          />}
+          </>
         ) : nav === "development" ? (
           <>
             <div className="development-language-v2" role="tablist" aria-label="数据开发语言">

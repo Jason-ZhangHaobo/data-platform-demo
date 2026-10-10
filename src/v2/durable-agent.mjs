@@ -54,18 +54,21 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     await persist(); return saved;
   };
 
-  async function create({ message, currentSql, contextId, actorId, idempotencyKey }) {
+  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError }) {
     if (!getContext(contextId) || typeof message !== "string" || !message.trim() || message.length > 2000 ||
         typeof currentSql !== "string" || !currentSql.trim() || currentSql.length > 20000 ||
         typeof actorId !== "string" || !actorId || typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 100)
       throw fail(422, "DURABLE_AGENT_INPUT_INVALID", "持久任务输入不合法");
-    const signature = digest({ message, currentSql, contextId });
+    if ((sourceRunId !== undefined || sourceError !== undefined) &&
+        (typeof sourceRunId !== "string" || !/^[a-f0-9-]{36}$/.test(sourceRunId) || typeof sourceError !== "string" || !sourceError || sourceError.length > 8000))
+      throw fail(422, "DURABLE_AGENT_REPAIR_INVALID", "修正任务必须绑定有效失败批次及其错误");
+    const signature = digest({ message, currentSql, contextId, ...(sourceRunId ? { sourceRunId, sourceError } : {}) });
     const result = store.deduplicate(`${project}:durable-agent:${actorId}:${idempotencyKey}`, signature, () =>
-      store.create("agent", project, { message, sql: currentSql, language: "SPARK_SQL", contextId,
+      store.create("agent", project, { message, sql: currentSql, initialSql: currentSql, sourceRunId, language: "SPARK_SQL", contextId,
         submittedBy: actorId, status: "QUEUED", stage: "READY_FOR_MODEL", attempts: [], usedTokens: 0,
         maxAttempts, tokenBudget, requestTokenLimit, executionMode: durableSqlAgentMode, mode: "LIVE_MODEL",
         completionScope: "SQL_DEVELOPMENT", fullLifecycleE2E: false, validationContractId: contractId,
-        durable: { contextDigest: contextDigest(contextId) } }));
+        durable: { contextDigest: contextDigest(contextId), ...(sourceError ? { validationError: sourceError } : {}) } }));
     await persist(); return publicDurableAgent(get(result.id));
   }
 

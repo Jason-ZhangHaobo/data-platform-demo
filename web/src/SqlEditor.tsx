@@ -11,13 +11,16 @@ export default function SqlEditor({
   original,
   onChange,
   diff,
+  readOnly = false,
 }: {
   value: string;
   original: string;
   onChange: (v: string) => void;
   diff: boolean;
+  readOnly?: boolean;
 }) {
   const options = {
+    readOnly,
     fontSize: 13,
     lineHeight: 23,
     fontFamily: "'SFMono-Regular', Consolas, monospace",

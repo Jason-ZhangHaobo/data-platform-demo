@@ -63,7 +63,8 @@ export async function reconcileDurableDevelopment(run, { runner, store, project,
     "log", "stdout", "stderr", "code", "error", "isolation", "adapter", "mode", "remoteWorker",
   ].filter(key => result[key] !== undefined).map(key => [key, result[key]]));
   const updated = store.update("run", run.id, project, {
-    ...receipt, stage: "COMPLETED", finishedAt: new Date().toISOString(),
+    ...receipt, durationMs: typeof receipt.durationMs === "number" ? receipt.durationMs : undefined,
+    stage: "COMPLETED", finishedAt: new Date().toISOString(),
     ...(receipt.validation ? { validation: { ...receipt.validation, contractId } } : {}),
   });
   await persist();

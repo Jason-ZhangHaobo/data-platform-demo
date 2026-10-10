@@ -71,6 +71,23 @@ test("preview imposes a finite invocation allowance and never fabricates a succe
   assert.equal(calls.length, 1);
 });
 
+test("Agent preview opt-in allows only scoped SQL task lifecycle with original session and idempotency", async t => {
+  const { request, calls } = await fixture(t, { allowAgent: true });
+  assert.match(await (await request("/v2/")).text(), /shuduo-agent-development/);
+  assert.equal((await request("/")).headers.get("location"), "/v2/?module=agent-center");
+  assert.equal((await request("/api/v2/agent/tasks")).status, 200);
+  const id = "00000000-0000-4000-8000-000000000001";
+  const options = { method: "POST", headers: { origin: "https://preview.example.invalid", "content-type": "application/json", cookie: "aliyun_token=never; shuduo_session=owner; shuduo_csrf=csrf_123", "x-csrf-token": "csrf_123", "idempotency-key": "same-request" }, body: JSON.stringify({ expectedVersion: 3 }) };
+  assert.equal((await request(`/api/v2/agent/tasks/${id}/advance`, options)).status, 200);
+  assert.equal(calls.at(-1).headers["idempotency-key"], "same-request");
+  assert.equal(calls.at(-1).headers.cookie, "shuduo_session=owner; shuduo_csrf=csrf_123");
+  assert.equal(calls.at(-1).body.expectedVersion, 3);
+  assert.equal((await request("/api/v2/agent/tasks", { ...options, body: JSON.stringify({ language: "PYTHON" }) })).status, 422);
+  for (const path of ["/invoke", "/api/v2/internal/scheduler/tick", `/api/v2/agent/tasks/${id}/prepare-delivery`, `/api/v2/agent/tasks/${id}/journey`])
+    assert.equal((await request(path, options)).status, path === "/invoke" ? 405 : 404);
+  assert.equal(calls.length, 2);
+});
+
 test("preview sanitizes transport errors and serializes cloud requests", async t => {
   let active = 0, maximum = 0;
   const { request } = await fixture(t, { invoke: async () => {

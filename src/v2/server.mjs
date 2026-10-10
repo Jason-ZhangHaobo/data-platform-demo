@@ -1355,6 +1355,7 @@ export function createV2Server(options = {}) {
                   dataState: { driver: "sqlite", healthy: true },
                 },
           publicReady: false,
+          agentDevelopment: { durableEnabled: Boolean(durableAgent) },
           validationContract: {
             id: validationContractId,
             fixtureCount: contextIds.length,
@@ -4953,9 +4954,18 @@ export function createV2Server(options = {}) {
         if (!context) throw fail(400, "请选择有效上下文");
         if (durableAgent && language === "SPARK_SQL") {
           if (!options.generator && !modelSettings(env).configured) throw new ModelUnavailable();
+          let repair = {};
+          if (body.sourceRunId !== undefined) {
+            const source = get("run", text(body.sourceRunId, 36, 36)), revision = get("revision", source.revisionId);
+            if (!["FAILED", "VALIDATION_FAILED"].includes(source.status) || source.code === "REMOTE_SPARK_TIMEOUT" ||
+                source.engine !== "Apache Spark" || revision.contextId !== context.id || revision.sql.trim() !== currentCode.trim())
+              throw Object.assign(fail(409, "请先选择同一上下文、同一代码版本的失败运行；超时需先检查执行环境"), { code: "AGENT_REPAIR_SOURCE_MISMATCH" });
+            const sourceError = String(source.error || source.validation?.issues?.join("；") || "独立业务校验未通过").slice(0, 8000);
+            repair = { sourceRunId: source.id, sourceError };
+          }
           const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
             actorId: auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer",
-            idempotencyKey: text(req.headers["idempotency-key"], 1, 100) });
+            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair });
           return json(res, 202, created);
         }
         if (

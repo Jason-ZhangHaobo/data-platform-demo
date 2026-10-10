@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createV2Server } from "../../src/v2/server.mjs";
+import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { getContext } from "../../src/v2/context.mjs";
 import { validatePrivateApplicationRequest, callPrivateApplication } from "../../src/v2/private-application.mjs";
 
@@ -68,6 +68,21 @@ test("normal private app login and CSRF are required to create a durable Agent t
     assert.equal(task.body.usedTokens, 0); assert.equal(task.body.attempts.length, 0);
     assert.equal((await call("/api/v2/agent/tasks", body, headers)).body.id, task.body.id);
     assert.equal((await call("/api/v2/agent/tasks", { ...body, language: "PYTHON" }, headers)).code, "PRIVATE_AGENT_LANGUAGE_NOT_ENABLED");
+    const revision = service.app.store.create("revision", PROJECT, { sql: "SELECT missing_col FROM positions", contextId: "holdings-t1" });
+    const failed = service.app.store.create("run", PROJECT, { revisionId: revision.id, status: "FAILED", engine: "Apache Spark", error: "stored unresolved column missing_col" });
+    const repairBody = { ...body, sql: revision.sql, sourceRunId: failed.id, sourceError: "untrusted client override" };
+    const repairHeaders = { ...headers, "idempotency-key": "repair-fixture" };
+    const repaired = await call("/api/v2/agent/tasks", repairBody, repairHeaders);
+    assert.equal(repaired.status, 202); assert.equal(repaired.body.sourceRunId, failed.id);
+    assert.equal(service.app.store.get("agent", repaired.body.id, PROJECT).durable.validationError, failed.error);
+    for (const patch of [{ sql: "SELECT 2" }, { contextId: "cash-change" }])
+      assert.equal((await call("/api/v2/agent/tasks", { ...repairBody, ...patch }, repairHeaders)).body.code, "AGENT_REPAIR_SOURCE_MISMATCH");
+    service.app.store.update("run", failed.id, PROJECT, { code: "REMOTE_SPARK_TIMEOUT" });
+    assert.equal((await call("/api/v2/agent/tasks", repairBody, repairHeaders)).body.code, "AGENT_REPAIR_SOURCE_MISMATCH");
+    service.app.store.update("run", failed.id, PROJECT, { status: "SUCCEEDED", code: undefined });
+    assert.equal((await call("/api/v2/agent/tasks", repairBody, repairHeaders)).body.code, "AGENT_REPAIR_SOURCE_MISMATCH");
+    const outside = service.app.store.create("run", "other-project", { status: "FAILED", revisionId: revision.id });
+    assert.equal((await call("/api/v2/agent/tasks", { ...repairBody, sourceRunId: outside.id }, repairHeaders)).status, 404);
   } finally { await service.close(); }
 });
 
