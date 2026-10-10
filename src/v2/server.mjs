@@ -1135,7 +1135,7 @@ export function createV2Server(options = {}) {
           const address = server.address(), base = `http://127.0.0.1:${address.port}`;
           const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
             ? await verifyPrivateApplicationTask(privateInput, { base, store, project: PROJECT })
-            : await callPrivateApplication(privateInput, base);
+            : await callPrivateApplication(privateInput, base, undefined, { allowDurableAgent: Boolean(durableAgent) });
           await persistence.flush?.();
           return json(res, 200, result);
         }

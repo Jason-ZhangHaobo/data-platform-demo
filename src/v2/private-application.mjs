@@ -9,11 +9,14 @@ const paths = [
 ];
 const headerNames = new Set(["cookie", "x-csrf-token", "idempotency-key", "x-project-id", "x-shuduo-client"]);
 
-export function validatePrivateApplicationRequest(input) {
+export function validatePrivateApplicationRequest(input, { allowDurableAgent = false } = {}) {
+  const agentPath = allowDurableAgent && (input?.method === "GET"
+    ? /^\/api\/v2\/agent\/tasks(?:\/[a-f0-9-]{36})?$/
+    : /^\/api\/v2\/agent\/tasks(?:\/[a-f0-9-]{36}\/(?:advance|cancel))?$/).test(input?.path ?? "");
   if (!input || input.operation !== "PRIVATE_APPLICATION_HTTP_V1" ||
       Object.keys(input).some(k => !["operation", "method", "path", "headers", "body"].includes(k)) ||
       !["GET", "POST"].includes(input.method) || typeof input.path !== "string" ||
-      !paths.some(p => p.test(input.path)))
+      !(paths.some(p => p.test(input.path)) || agentPath))
     throw fail(422, "PRIVATE_APPLICATION_REQUEST_INVALID");
   const headers = input.headers ?? {};
   if (typeof headers !== "object" || Array.isArray(headers) ||
@@ -23,11 +26,14 @@ export function validatePrivateApplicationRequest(input) {
     throw fail(422, "PRIVATE_APPLICATION_REQUEST_INVALID");
   if (input.method === "POST" && (!input.body || typeof input.body !== "object" || Array.isArray(input.body)))
     throw fail(422, "PRIVATE_APPLICATION_REQUEST_INVALID");
+  if (agentPath && input.method === "POST" && input.path === "/api/v2/agent/tasks" &&
+      (input.body.language ?? "SPARK_SQL") !== "SPARK_SQL")
+    throw fail(422, "PRIVATE_AGENT_LANGUAGE_NOT_ENABLED");
   return { ...input, headers };
 }
 
-export async function callPrivateApplication(input, base, fetchImpl = fetch) {
-  const request = validatePrivateApplicationRequest(input), url = new URL(base);
+export async function callPrivateApplication(input, base, fetchImpl = fetch, options = {}) {
+  const request = validatePrivateApplicationRequest(input, options), url = new URL(base);
   if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port)
     throw fail(500, "PRIVATE_APPLICATION_TARGET_INVALID");
   const response = await fetchImpl(base + request.path, {

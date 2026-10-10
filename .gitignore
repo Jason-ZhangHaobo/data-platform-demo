@@ -23,3 +23,5 @@ scripts/verify-v2-private-run-log.py
 test/v2/control-code-only.test.mjs
 docs/private-control-code-release.md
 docs/evidence/v2-control-log-release-20261009.json
+docs/private-execution-state.md
+docs/evidence/v2-agent-private-recovery-20261010.json
