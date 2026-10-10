@@ -5,11 +5,16 @@ on:
   push:
     branches: [main]
     paths:
-      - "src/**"
+      # V1 runtime only. V2 has its own gated deployment workflows.
+      - "src/server/**"
+      - "src/shared/**"
+      - "src/client/**"
+      # V1 imports this shared OSS client from the V2 directory.
+      - "src/v2/oss-client.mjs"
       - "package.json"
       - "package-lock.json"
       - "s.yaml"
-      - ".github/workflows/deploy-staging.yml"
+      # Workflow-only edits are validated by CI; deploy explicitly when needed.
 
 permissions:
   id-token: write

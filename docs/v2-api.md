@@ -222,4 +222,6 @@ M1验证包不能被称为已部署任务。M2a新增交付包包含实际被解
 M2b/M2c已增加本机摘要审批、短周期墙上时钟发布、监控告警与回滚。其`published=true`仅表示本机测试版本生效，同时固定`publicDeployed=false`和`fullLifecycleE2E=false`；详见[本机发布报告](m2b-m2c-local-release.md)。
 ## 持久 SQL Agent 增量接口
 
+私有后台驱动另见[有界私有后台驱动](durable-agent-recovery.md#第二次增量有界私有后台驱动)：已有 IAM 私有事件入口可显式启用 `PRIVATE_AGENT_TICK_V1`，载荷仅 `operation` 与 UUID `requestId`。无新增公网接口；默认关闭，不替代未知模型结果的人工重试确认。
+
 默认关闭的 `V2_DURABLE_SQL_AGENT_ENABLED` 将 SQL Agent 创建改为检查点任务，新增 `POST /api/v2/agent/tasks/:id/advance`。请求必须携带 `expectedVersion`，可选 `confirmModelRetry`；GET 只读，未知模型结果不会自动重试。沿用身份/CSRF/开发权限，任务限制提交人或管理员操作。阶段、边界及本机测试见 [Agent 恢复合同](durable-agent-recovery.md)。本增量尚非云端或完整 Agent E2E 验收。

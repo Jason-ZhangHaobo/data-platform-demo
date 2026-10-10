@@ -8,6 +8,7 @@ import { MetadataStore } from "./store.mjs";
 import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-application.mjs";
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
+import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import {
   getContext,
   publicContext,
@@ -302,6 +303,13 @@ export function createV2Server(options = {}) {
     if (!mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)))
       throw fail(403, "无权操作此 Agent 任务");
   };
+  const agentDriverMode = env.V2_AGENT_DRIVER_MODE ?? "DISABLED";
+  if (!["DISABLED", "PRIVATE_TICK"].includes(agentDriverMode)) throw new Error("Agent 后台推进模式不受支持");
+  if (agentDriverMode === "PRIVATE_TICK" && (!privateSmokeEnabled || !durableAgent))
+    throw new Error("Agent 后台推进需要私有调用边界与持久执行器");
+  const agentDispatcher = agentDriverMode === "PRIVATE_TICK"
+    ? createAgentDispatcher({ store, project: PROJECT, engine: durableAgent, persist: persistDevelopment, now: options.now ?? Date.now })
+    : undefined;
   const publicAgentIntent = ({ submittedBy, message, ...item }) => item;
   const publicAgentHandoff = ({ submittedBy, ...item }) => item;
   const publicAgentApproval = ({ submittedBy, ...item }) => item;
@@ -1011,7 +1019,7 @@ export function createV2Server(options = {}) {
       !parsed ||
       typeof parsed !== "object" ||
       Array.isArray(parsed) ||
-      !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1", "PRIVATE_APPLICATION_TASK_V1"].includes(parsed.operation) ||
+      !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1", "PRIVATE_APPLICATION_TASK_V1", "PRIVATE_AGENT_TICK_V1"].includes(parsed.operation) ||
       (parsed.operation === "PRIVATE_STATUS_V1" && Object.keys(parsed).length !== 1)
     )
       throw fail(422, "私有函数验收操作不受支持");
@@ -1113,6 +1121,11 @@ export function createV2Server(options = {}) {
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = await readPrivateSmokeBody(req);
+        if (privateInput.operation === "PRIVATE_AGENT_TICK_V1") {
+          if (!agentDispatcher) throw Object.assign(fail(503, "Agent 后台推进尚未启用"), { code: "AGENT_DRIVER_DISABLED" });
+          if (Object.keys(privateInput).some(k => !["operation", "requestId"].includes(k))) throw fail(422, "Agent 后台推进字段不受支持");
+          return json(res, 200, await agentDispatcher.tick({ requestId: privateInput.requestId }));
+        }
         if (privateInput.operation !== "PRIVATE_STATUS_V1") {
           const address = server.address(), base = `http://127.0.0.1:${address.port}`;
           const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
