@@ -8,6 +8,7 @@ import { MetadataStore } from "./store.mjs";
 import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-application.mjs";
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
+import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport } from "./agent-development-workflow.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import { privateAgentRecovery } from "./private-agent-recovery.mjs";
 import {
@@ -304,6 +305,9 @@ export function createV2Server(options = {}) {
     if (!mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)))
       throw fail(403, "无权操作此 Agent 任务");
   };
+  const durableDelivery = durableAgent && durableDevelopment
+    ? createDurableAgentDelivery({ store, project: PROJECT, runner: durableDevelopment, artifactStore, persist: persistDevelopment, assertRunBudget: () => budget.assertCanStartRemoteSpark(), reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) })
+    : undefined;
   const agentDriverMode = env.V2_AGENT_DRIVER_MODE ?? "DISABLED";
   if (!["DISABLED", "PRIVATE_TICK"].includes(agentDriverMode)) throw new Error("Agent 后台推进模式不受支持");
   if (agentDriverMode === "PRIVATE_TICK" && (!privateSmokeEnabled || !durableAgent))
@@ -1355,7 +1359,7 @@ export function createV2Server(options = {}) {
                   dataState: { driver: "sqlite", healthy: true },
                 },
           publicReady: false,
-          agentDevelopment: { durableEnabled: Boolean(durableAgent) },
+          agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery), publishAvailable: local && releaseSchedulerMode === "LOCAL_TIMER" },
           validationContract: {
             id: validationContractId,
             fixtureCount: contextIds.length,
@@ -4331,6 +4335,8 @@ export function createV2Server(options = {}) {
         }
       }
       if (path === "/api/v2/releases" && method === "POST") {
+        if (!local || releaseSchedulerMode !== "LOCAL_TIMER")
+          throw fail(503, "当前发布接口仅支持已启用调度器的本机测试环境；云端发布尚未开放");
         const body = await readBody(req),
           approval = get(
             "release_approval",
@@ -4551,6 +4557,27 @@ export function createV2Server(options = {}) {
           });
         }
       }
+      const developmentWorkflow = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/workflow$/);
+      if (developmentWorkflow && method === "GET") {
+        const agent = get("agent", developmentWorkflow[1]);
+        requireDurableAgentOwner(agent, req);
+        const attempt = agent.attempts?.at(-1), revision = attempt?.revisionId ? get("revision", attempt.revisionId) : undefined,
+          run = attempt?.runId ? await reconcileDevelopment(get("run", attempt.runId)) : undefined;
+        let delivery = store.list("agent_delivery_task", PROJECT).find(t => t.sourceAgentTaskId === agent.id);
+        if (delivery?.mode === durableDeliveryMode && durableDelivery) {
+          await durableDelivery.reconcile(delivery.id);
+          delivery = get("agent_delivery_task", delivery.id);
+        }
+        const bundle = delivery?.packageId ? get("delivery_package", delivery.packageId) : undefined,
+          verification = delivery?.verificationId ? get("delivery_verification", delivery.verificationId) : undefined;
+        return json(res, 200, {
+          report: developmentVerificationReport(agent, run, revision),
+          delivery: publicDeliveryTask(delivery),
+          package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
+          verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: verification.validation, finishedAt: verification.finishedAt } : undefined,
+          publication: { available: local && releaseSchedulerMode === "LOCAL_TIMER", scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD", reason: local ? "审阅后可发布本机测试任务并观察实际计时批次。" : "云端定时执行与发布后监控尚未验收；交付演练通过后保留为待发布，不能视为上线。" },
+        });
+      }
       if (path === "/api/v2/agent/deliveries" && method === "GET") {
         const sourceId = url.searchParams.get("sourceAgentTaskId");
         if (sourceId && !/^[a-f0-9-]{36}$/.test(sourceId))
@@ -4560,14 +4587,28 @@ export function createV2Server(options = {}) {
           200,
           store
             .list("agent_delivery_task", PROJECT)
-            .filter((item) => !sourceId || item.sourceAgentTaskId === sourceId),
+            .filter((item) => (!sourceId || item.sourceAgentTaskId === sourceId) && mayReadDurableAgent(store.get("agent", item.sourceAgentTaskId, PROJECT) ?? {}, auth.sessionFromHeaders(req.headers)))
+            .map(publicDeliveryTask),
         );
       }
       const agentDeliveryRecord = path.match(
-        /^\/api\/v2\/agent\/deliveries\/([a-f0-9-]+)(?:\/(cancel))?$/,
+        /^\/api\/v2\/agent\/deliveries\/([a-f0-9-]+)(?:\/(cancel|advance))?$/,
       );
       if (agentDeliveryRecord) {
         const item = get("agent_delivery_task", agentDeliveryRecord[1]);
+        requireDurableAgentOwner(get("agent", item.sourceAgentTaskId), req);
+        if (item.mode === durableDeliveryMode) {
+          if (!durableDelivery) throw fail(503, "持久交付执行器尚未启用");
+          if (method === "GET" && !agentDeliveryRecord[2]) return json(res, 200, await durableDelivery.reconcile(item.id));
+          if (method === "POST" && agentDeliveryRecord[2] === "advance") {
+            const body = await readBody(req);
+            if (!Number.isSafeInteger(body.expectedVersion)) throw fail(422, "需提供当前交付版本");
+            return json(res, 200, await durableDelivery.advance(item.id, body.expectedVersion));
+          }
+          if (method === "POST" && agentDeliveryRecord[2] === "cancel") {
+            await readBody(req); return json(res, 200, await durableDelivery.cancel(item.id));
+          }
+        }
         if (method === "GET" && !agentDeliveryRecord[2])
           return json(res, 200, item);
         if (method === "POST" && agentDeliveryRecord[2] === "cancel") {
@@ -4589,6 +4630,12 @@ export function createV2Server(options = {}) {
         await readBody(req);
         const agent = get("agent", prepareAgentDelivery[1]),
           finalAttempt = agent.attempts?.at(-1);
+        requireDurableAgentOwner(agent, req);
+        if (agent.executionMode === durableSqlAgentMode) {
+          if (!durableDelivery) throw fail(503, "持久交付执行器尚未启用");
+          const key = text(req.headers["idempotency-key"], 1, 100);
+          return json(res, 202, await durableDelivery.create(agent, key));
+        }
         if (agent.language === "PYTHON")
           return preparePythonAgentDelivery(agent, req, res);
         if (agent.status !== "SUCCEEDED" || finalAttempt?.status !== "SUCCEEDED")

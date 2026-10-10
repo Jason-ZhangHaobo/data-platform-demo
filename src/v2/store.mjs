@@ -117,6 +117,7 @@ export class MetadataStore {
           !(kind === "release_run" && item.status === "SCHEDULED") &&
           !(kind === "run" && item.mode === "DURABLE_REMOTE_SUBMISSION" && item.remoteSubmission?.prepared?.job?.jobId) &&
           !(kind === "agent" && item.executionMode === "DURABLE_SQL_AGENT_V1") &&
+          !(["agent_delivery_task", "delivery_verification"].includes(kind) && item.mode === "DURABLE_AGENT_DELIVERY_V1") &&
           !(
             preserveDurableReleaseRuns &&
             kind === "release_run" &&

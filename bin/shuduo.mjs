@@ -22,9 +22,11 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent handoff --id INTENT_ID --destination MODULE_ID
   shuduo agent trace --id INTENT_ID
   shuduo agent journey --id AGENT_TASK_ID
+  shuduo agent workflow --id AGENT_TASK_ID
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-delivery --id AGENT_TASK_ID
   shuduo agent delivery --id DELIVERY_TASK_ID
+  shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION
   shuduo agent cancel-delivery --id DELIVERY_TASK_ID
   shuduo python revisions
   shuduo python create --context holdings-t1 --file transform.py
@@ -359,6 +361,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         `/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/journey`,
       );
+    else if (resource === "agent" && action === "workflow")
+      result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
     else if (resource === "agent" && action === "deliveries") {
       const sourceId = parsed.options.source_id;
       result = await client.request(
@@ -374,6 +378,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         `/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}`,
       );
+    else if (resource === "agent" && action === "advance-delivery")
+      result = await client.request(`/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}/advance`, { method: "POST", body: { expectedVersion: Number(required(parsed.options, "version")) } });
     else if (resource === "agent" && action === "cancel-delivery")
       result = await client.request(
         `/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}/cancel`,
