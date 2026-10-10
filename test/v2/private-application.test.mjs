@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { getContext } from "../../src/v2/context.mjs";
-import { validatePrivateApplicationRequest, callPrivateApplication } from "../../src/v2/private-application.mjs";
+import { validatePrivateApplicationRequest, callPrivateApplication, privateApplicationTimeoutMs } from "../../src/v2/private-application.mjs";
 
 test("private application rejects external targets, unlisted paths and injected headers", async () => {
   const good = { operation: "PRIVATE_APPLICATION_HTTP_V1", method: "GET", path: "/api/v2/status" };
@@ -18,6 +18,9 @@ test("private application rejects external targets, unlisted paths and injected 
 });
 
 test("private Agent transport is explicit, SQL-only and preserves ordinary authentication", async () => {
+  assert.equal(privateApplicationTimeoutMs("/api/v2/agent/tasks/00000000-0000-4000-8000-000000000001/advance"), 105000);
+  assert.equal(privateApplicationTimeoutMs("/api/v2/runs"), 30000);
+  assert.equal(privateApplicationTimeoutMs("/api/v2/agent/tasks"), 30000);
   const input = { operation: "PRIVATE_APPLICATION_HTTP_V1", method: "POST", path: "/api/v2/agent/tasks", body: { message: "虚构证券加工", sql: "SELECT 1" } };
   assert.throws(() => validatePrivateApplicationRequest(input), { code: "PRIVATE_APPLICATION_REQUEST_INVALID" });
   assert.equal(validatePrivateApplicationRequest(input, { allowDurableAgent: true }).path, input.path);
