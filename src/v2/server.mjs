@@ -3,12 +3,13 @@ import { readFile, readdir } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { MetadataStore } from "./store.mjs";
 import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-application.mjs";
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
+import { privateAgentRecovery } from "./private-agent-recovery.mjs";
 import {
   getContext,
   publicContext,
@@ -310,6 +311,7 @@ export function createV2Server(options = {}) {
   const agentDispatcher = agentDriverMode === "PRIVATE_TICK"
     ? createAgentDispatcher({ store, project: PROJECT, engine: durableAgent, persist: persistDevelopment, now: options.now ?? Date.now })
     : undefined;
+  const privateRuntimeBootId = randomUUID();
   const publicAgentIntent = ({ submittedBy, message, ...item }) => item;
   const publicAgentHandoff = ({ submittedBy, ...item }) => item;
   const publicAgentApproval = ({ submittedBy, ...item }) => item;
@@ -1019,7 +1021,7 @@ export function createV2Server(options = {}) {
       !parsed ||
       typeof parsed !== "object" ||
       Array.isArray(parsed) ||
-      !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1", "PRIVATE_APPLICATION_TASK_V1", "PRIVATE_AGENT_TICK_V1"].includes(parsed.operation) ||
+      !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1", "PRIVATE_APPLICATION_TASK_V1", "PRIVATE_AGENT_TICK_V1", "PRIVATE_AGENT_RECOVERY_V1"].includes(parsed.operation) ||
       (parsed.operation === "PRIVATE_STATUS_V1" && Object.keys(parsed).length !== 1)
     )
       throw fail(422, "私有函数验收操作不受支持");
@@ -1121,6 +1123,9 @@ export function createV2Server(options = {}) {
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = await readPrivateSmokeBody(req);
+        if (privateInput.operation === "PRIVATE_AGENT_RECOVERY_V1")
+          return json(res, 200, await privateAgentRecovery(privateInput, { store, project: PROJECT,
+            engine: durableAgent, persist: persistDevelopment, bootId: privateRuntimeBootId }));
         if (privateInput.operation === "PRIVATE_AGENT_TICK_V1") {
           if (!agentDispatcher) throw Object.assign(fail(503, "Agent 后台推进尚未启用"), { code: "AGENT_DRIVER_DISABLED" });
           if (Object.keys(privateInput).some(k => !["operation", "requestId"].includes(k))) throw fail(422, "Agent 后台推进字段不受支持");
