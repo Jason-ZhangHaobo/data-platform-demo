@@ -17,11 +17,31 @@ test("private application rejects external targets, unlisted paths and injected 
   await assert.rejects(callPrivateApplication(good, "http://evil.invalid:3000"), { code: "PRIVATE_APPLICATION_TARGET_INVALID" });
 });
 
-async function open(enabled = true) {
+test("private Agent transport is explicit, SQL-only and preserves ordinary authentication", async () => {
+  const input = { operation: "PRIVATE_APPLICATION_HTTP_V1", method: "POST", path: "/api/v2/agent/tasks", body: { message: "虚构证券加工", sql: "SELECT 1" } };
+  assert.throws(() => validatePrivateApplicationRequest(input), { code: "PRIVATE_APPLICATION_REQUEST_INVALID" });
+  assert.equal(validatePrivateApplicationRequest(input, { allowDurableAgent: true }).path, input.path);
+  assert.throws(() => validatePrivateApplicationRequest({ ...input, body: { ...input.body, language: "PYTHON" } }, { allowDurableAgent: true }), { code: "PRIVATE_AGENT_LANGUAGE_NOT_ENABLED" });
+  assert.throws(() => validatePrivateApplicationRequest({ ...input, path: "/api/v2/internal/scheduler/tick" }, { allowDurableAgent: true }), { code: "PRIVATE_APPLICATION_REQUEST_INVALID" });
+  let forwarded;
+  const response = await callPrivateApplication(input, "http://127.0.0.1:3100", async (url, options) => {
+    forwarded = { url, options };
+    return new Response(JSON.stringify({ code: "AUTHENTICATION_REQUIRED" }), { status: 401 });
+  }, { allowDurableAgent: true });
+  assert.equal(response.status, 401); assert.equal(response.body.code, "AUTHENTICATION_REQUIRED");
+  assert.equal(forwarded.options.headers.cookie, undefined);
+  assert.equal(forwarded.options.headers["x-csrf-token"], undefined);
+  assert.equal(forwarded.url, "http://127.0.0.1:3100/api/v2/agent/tasks");
+});
+
+async function open(enabled = true, durable = false) {
+  const runner = async ({ context }) => ({ status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", mainSqlExecuted: true, rows: context.expected, validation: { passed: true } });
+  if (durable) runner.durable = { prepare() {}, submit() {}, read() {}, cancel() {} };
   const app = createV2Server({
     root: mkdtempSync(join(tmpdir(), "shuduo-private-app-")),
-    env: { V2_LOCAL_DEVELOPMENT: "false", V2_PROVISIONING_ONLY: "true", V2_PRIVATE_SMOKE_ENABLED: String(enabled) },
-    runner: async ({ context }) => ({ status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", mainSqlExecuted: true, rows: context.expected, validation: { passed: true } }),
+    env: { V2_LOCAL_DEVELOPMENT: "false", V2_PROVISIONING_ONLY: "true", V2_PRIVATE_SMOKE_ENABLED: String(enabled), V2_DURABLE_SQL_AGENT_ENABLED: String(durable) },
+    runner,
+    ...(durable ? { generator: async () => { throw new Error("creation must not call a model"); } } : {}),
   });
   await new Promise(resolve => app.server.listen(0, "127.0.0.1", resolve));
   const invoke = async body => {
@@ -30,6 +50,26 @@ async function open(enabled = true) {
   };
   return { app, invoke, close: async () => { await new Promise(resolve => app.server.close(resolve)); app.store.close(); } };
 }
+
+test("normal private app login and CSRF are required to create a durable Agent task", async () => {
+  const service = await open(true, true);
+  const call = async (path, body, headers = {}) => (await service.invoke({ operation: "PRIVATE_APPLICATION_HTTP_V1", method: "POST", path, body, headers })).body;
+  try {
+    const body = { message: "理解虚构证券资产口径并编写SQL", sql: "SELECT 1 AS pending", contextId: "holdings-t1" };
+    assert.equal((await call("/api/v2/agent/tasks", body)).status, 401);
+    service.app.auth.bootstrapAdmin({ email: "recovery-owner@example.invalid", password: "SyntheticPassword!2026", displayName: "测试工程师" });
+    const login = await call("/api/v2/auth/login", { email: "recovery-owner@example.invalid", password: "SyntheticPassword!2026" });
+    assert.equal(login.status, 200);
+    const headers = { cookie: login.cookies.map(c => c.split(";")[0]).join("; "), "idempotency-key": "private-intake-test" };
+    assert.equal((await call("/api/v2/agent/tasks", body, headers)).status, 403);
+    headers["x-csrf-token"] = login.body.csrfToken;
+    const task = await call("/api/v2/agent/tasks", body, headers);
+    assert.equal(task.status, 202); assert.equal(task.body.stage, "READY_FOR_MODEL");
+    assert.equal(task.body.usedTokens, 0); assert.equal(task.body.attempts.length, 0);
+    assert.equal((await call("/api/v2/agent/tasks", body, headers)).body.id, task.body.id);
+    assert.equal((await call("/api/v2/agent/tasks", { ...body, language: "PYTHON" }, headers)).code, "PRIVATE_AGENT_LANGUAGE_NOT_ENABLED");
+  } finally { await service.close(); }
+});
 
 test("private application preserves ordinary authentication and CSRF checks", async () => {
   const app = await open();
