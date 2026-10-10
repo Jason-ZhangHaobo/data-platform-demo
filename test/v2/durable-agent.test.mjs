@@ -68,6 +68,7 @@ test("task, generated revision and queued run survive distinct store restarts", 
   assert.equal(f.engine.get(task.id).stage, "READY_FOR_MODEL");
   assert.equal(f.store.list("agent", PROJECT).find(a => a.mode === "LEGACY").status, "INTERRUPTED");
   task = await f.advance(task.id); const revisionId = task.revisionId;
+  assert.equal(task.initialSql, referenceSql);
   assert.equal(task.stage, "READY_FOR_RUN"); assert.equal(f.counts.model, 1);
   f.restart(); task = await f.advance(task.id); const runId = task.runId;
   assert.equal(task.stage, "WAITING_FOR_RUN"); assert.equal(f.counts.jobs, 1);
@@ -76,6 +77,27 @@ test("task, generated revision and queued run survive distinct store restarts", 
   assert.equal(task.fullLifecycleE2E, false); assert.equal(f.counts.model, 1); assert.equal(f.counts.jobs, 1);
   assert.equal((await f.advance(task.id)).status, "SUCCEEDED");
   assert.equal(f.store.get("run", runId, PROJECT).log, "synthetic worker log");
+  assert.equal(f.store.get("run", runId, PROJECT).durationMs, undefined, "budget reservation is not an observed execution duration");
+});
+
+test("a repair task retains the bound failed-run context across restart and passes it to generation", async t => {
+  let observed;
+  const f = setup(t, { generator: async input => { observed = input; return { sql: referenceSql, model: "TEST_DOUBLE", usage: { total_tokens: 20 } }; } });
+  const sourceRunId = "00000000-0000-4000-8000-000000000001";
+  const created = await f.create({ sourceRunId, sourceError: "stored unresolved column" });
+  f.restart(); await f.advance(created.id);
+  assert.equal(observed.error, "stored unresolved column");
+  assert.equal(f.engine.get(created.id).sourceRunId, sourceRunId);
+  await assert.rejects(f.create({ sourceRunId, sourceError: "changed stored error" }), { status: 409 });
+});
+
+test("a signed Spark failure without a version is preserved for repair, never upgraded to success", async t => {
+  const f = setup(t); let task = await f.create(); await f.advance(task.id); task = await f.advance(task.id);
+  f.complete(task.id, { status: "FAILED", engineVersion: undefined, mainSqlExecuted: false, error: "UNRESOLVED_COLUMN: missing_col", validation: undefined });
+  task = await f.advance(task.id);
+  const failed = f.store.get("run", task.runId, PROJECT);
+  assert.equal(failed.status, "FAILED"); assert.equal(failed.engineVersion, undefined);
+  assert.match(failed.error, /UNRESOLVED_COLUMN/); assert.equal(task.stage, "READY_FOR_MODEL");
 });
 
 test("unknown queue submission reuses exact signed job and never repeats generation", async t => {
