@@ -81,3 +81,5 @@ node scripts/run-v2-agent-driver.mjs
 新增 `PRIVATE_AGENT_RECOVERY_V1` 固定虚构证券 fixture，载荷仅接受 `action`（prepare/generate/read/finish）和 `requestId`。prepare幂等保存专用验收主体及任务；generate仅允许首次模型生成，不能确认未知模型结果或自动重试；read返回实例启动标识、任务/版本/批次摘要和独立结果匹配；finish仅在任务结束后停用该专用主体。没有登录密码、不接收任意SQL、不暴露进程终止接口。
 
 实际验收必须记录生成检查点，在受控配置切换后独立读取：启动标识必须改变，原任务、代码摘要、尝试次数和Token账本必须一致。再由私有后台tick继续同一任务，要求真实模型身份、Spark3.5.9、五套断言及独立金额结果均通过。仅实现入口不代表验收成功；该fixture不等同最终用户GUI或七阶段E2E验收。
+
+临时操作环境丢失本机验收编号时，`read`/`finish` 也可用互斥的 `taskId` 找回已经登记的专用验收记录；不能用它创建任务、调用模型或访问非验收任务。操作端必须将编号、检查点和日志留在可恢复的受保护位置并及时导出，不能只放 Cloud Shell `/tmp`。
