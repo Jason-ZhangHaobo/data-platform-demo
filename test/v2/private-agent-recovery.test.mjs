@@ -20,6 +20,13 @@ test("fixed private recovery fixture is idempotent, checkpointed, read-only on r
   await assert.rejects(invoke("finish"), { code: "RECOVERY_TASK_STILL_ACTIVE" });
   const generated = await invoke("generate"); assert.equal(calls, 1);
   const restored = await invoke("read", "runtime-b");
+  const byTask = await privateAgentRecovery({ operation: "PRIVATE_AGENT_RECOVERY_V1", action: "read", taskId: task.taskId },
+    { store, project, engine, persist: async () => {}, bootId: "runtime-b" });
+  assert.equal(byTask.requestId, requestId); assert.equal(byTask.taskId, task.taskId);
+  await assert.rejects(privateAgentRecovery({ operation: "PRIVATE_AGENT_RECOVERY_V1", action: "generate", taskId: task.taskId },
+    { store, project, engine }), { code: "PRIVATE_AGENT_RECOVERY_INVALID" });
+  await assert.rejects(privateAgentRecovery({ operation: "PRIVATE_AGENT_RECOVERY_V1", action: "read", taskId: randomUUID() },
+    { store, project, engine }), { code: "RECOVERY_FIXTURE_NOT_FOUND" });
   assert.equal(restored.differentRuntimeInstance, true); assert.equal(restored.revisionHash, generated.revisionHash);
   assert.equal(restored.taskVersion, generated.taskVersion); assert.equal(restored.realModel, false);
   await invoke("generate"); assert.equal(calls, 1);

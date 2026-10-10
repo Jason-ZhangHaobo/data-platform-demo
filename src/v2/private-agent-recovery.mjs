@@ -17,12 +17,14 @@ const normalized = rows => rows.map(row => ({ client_id: row.client_id,
 // No user SQL, credentials, URLs, arbitrary account changes or kill operation.
 export async function privateAgentRecovery(input, { store, project, engine, persist, bootId }) {
   if (!input || input.operation !== "PRIVATE_AGENT_RECOVERY_V1" ||
-      Object.keys(input).some(k => !["operation", "action", "requestId"].includes(k)) ||
+      Object.keys(input).some(k => !["operation", "action", "requestId", "taskId"].includes(k)) ||
       !["prepare", "generate", "read", "finish"].includes(input.action) ||
-      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(input.requestId ?? ""))
+      Boolean(input.requestId) === Boolean(input.taskId) ||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(input.requestId ?? input.taskId ?? "") ||
+      (input.taskId && !["read", "finish"].includes(input.action)))
     throw fail(422, "PRIVATE_AGENT_RECOVERY_INVALID");
   if (!engine) throw fail(503, "DURABLE_AGENT_DISABLED");
-  let record = store.list("agent_recovery_acceptance", project).find(r => r.requestId === input.requestId);
+  let record = store.list("agent_recovery_acceptance", project).find(r => input.taskId ? r.taskId === input.taskId : r.requestId === input.requestId);
   if (!record && input.action !== "prepare") throw fail(404, "RECOVERY_FIXTURE_NOT_FOUND");
   if (input.action === "prepare" && !record) {
     const receipt = store.deduplicate(`${project}:agent-recovery-fixture:${input.requestId}`, "v1", () => {
@@ -61,7 +63,7 @@ export async function privateAgentRecovery(input, { store, project, engine, pers
     store.update("auth_user", actor.id, project, { status: "DISABLED" });
     await persist();
   }
-  return { protocol: "shuduo-private-agent-recovery/v1", requestId: input.requestId, bootId,
+  return { protocol: "shuduo-private-agent-recovery/v1", requestId: record.requestId, bootId,
     initialBootId: record.initialBootId, differentRuntimeInstance: bootId !== record.initialBootId,
     taskId: task.id, taskVersion: task.version, stage: task.stage, status: task.status,
     revisionId: revision?.id, revisionHash: revision?.hash, runId: run?.id,
