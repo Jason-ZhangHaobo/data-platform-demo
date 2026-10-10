@@ -161,7 +161,7 @@ export class BudgetManager {
                 item.adapter === "remote-spark-worker-v1"),
           )),
       remoteSparkSeconds = remoteRuns.reduce(
-        (sum, item) => sum + Math.max(0, Number(item.durationMs ?? 0)) / 1000,
+        (sum, item) => sum + Math.max(0, Number(item.durationMs ?? item.reservedDurationMs ?? 0)) / 1000,
         0,
       );
     return {

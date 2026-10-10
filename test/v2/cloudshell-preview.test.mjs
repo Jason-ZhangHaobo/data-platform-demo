@@ -83,9 +83,12 @@ test("Agent preview opt-in allows only scoped SQL task lifecycle with original s
   assert.equal(calls.at(-1).headers.cookie, "shuduo_session=owner; shuduo_csrf=csrf_123");
   assert.equal(calls.at(-1).body.expectedVersion, 3);
   assert.equal((await request("/api/v2/agent/tasks", { ...options, body: JSON.stringify({ language: "PYTHON" }) })).status, 422);
-  for (const path of ["/invoke", "/api/v2/internal/scheduler/tick", `/api/v2/agent/tasks/${id}/prepare-delivery`, `/api/v2/agent/tasks/${id}/journey`])
+  assert.equal((await request(`/api/v2/agent/tasks/${id}/workflow`)).status, 200);
+  assert.equal((await request(`/api/v2/agent/tasks/${id}/prepare-delivery`, options)).status, 200);
+  assert.equal((await request(`/api/v2/agent/deliveries/${id}/advance`, options)).status, 200);
+  for (const path of ["/invoke", "/api/v2/internal/scheduler/tick", `/api/v2/releases`, `/api/v2/agent/tasks/${id}/journey`])
     assert.equal((await request(path, options)).status, path === "/invoke" ? 405 : 404);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 5);
 });
 
 test("preview sanitizes transport errors and serializes cloud requests", async t => {

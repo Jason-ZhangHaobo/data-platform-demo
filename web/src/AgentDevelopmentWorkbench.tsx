@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Bot, CheckCircle2, ChevronDown, Code2, FileCode2, GitCompareArrows, History, LoaderCircle, Play, Plus, RefreshCw, Send, Square, Undo2 } from "lucide-react";
 import { developmentRunLog } from "./run-log";
+import { AgentDeliveryPanel } from "./AgentDeliveryPanel";
 import "./agent-development.css";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 type Context = { id: string; name: string; definition: string; tables: { name: string; columns: [string, string][] }[] };
@@ -10,6 +11,7 @@ type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string
 const terminal = (s?: string) => Boolean(s && ["SUCCEEDED", "FAILED", "CANCELLED", "VALIDATION_FAILED"].includes(s));
 const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "可恢复", VALIDATION_FAILED: "业务断言未通过" };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
 export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, loading, privatePreview, onLogin, onDirtyChange }: {
   api: Api; contexts: Context[]; canWrite: boolean; ready: boolean; loading: boolean; privatePreview: boolean; onLogin: () => void; onDirtyChange: (dirty: boolean) => void;
@@ -176,7 +178,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
   const codeOriginal = dirty ? baseline : task?.initialSql ?? baseline;
   const resultFields = run?.rows?.[0] ? Object.keys(run.rows[0]) : [];
   return <section className="agent-dev" aria-label="Agent 数据开发工作台">
-    <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>客户资产 T+1 · 需求、代码与真实执行，在一个工作台完成。</p></div><button className="button" disabled={working} onClick={newTask}><Plus size={15} />新建任务</button></header>
+    <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>客户资产 T+1 · 需求、代码与真实执行，在一个工作台完成。</p></div><div className="agent-dev-header-actions">{task && <a className="button" href="#agent-delivery">核验与交付</a>}<button className="button" disabled={working} onClick={newTask}><Plus size={15} />新建任务</button></div></header>
     <div className="agent-dev-boundary"><span className="agent-dev-dot" />{privatePreview ? "私有试用" : "开发验证"} · 仅虚构证券数据与 Spark SQL。本页打开时自动推进；离开后检查点保留，已提交计算可继续，返回后可恢复。不是永久云调度。</div>
     {loading ? <div className="agent-dev-notice" role="status"><LoaderCircle size={14} className="spin" />正在连接服务并读取项目上下文…</div> : !ready && <div className="agent-dev-alert">当前服务尚未启用持久 Agent。请先完成受控部署；不会用模拟结果代替执行。</div>}
     {!loading && !canWrite && <div className="agent-dev-alert">需要有数据开发权限的账号才能提交任务。<button className="button" onClick={onLogin}>登录 / 查看账号</button></div>}
@@ -189,7 +191,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
       </aside>
       <section className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
         <div className="agent-dev-conversation">
-          <details className="agent-dev-context" open><summary>本次数据与业务口径 <ChevronDown size={14} /></summary>
+          <details className="agent-dev-context" open={!task}><summary>本次数据与业务口径 <ChevronDown size={14} /></summary>
             <label>验证数据<select aria-label="Agent 验证数据" disabled={working || Boolean(task) || Boolean(run && !terminal(run.status))} value={contextId} onChange={e => { setContextId(e.target.value); setRun(undefined); setBaselineRevisionId(undefined); }}>{contexts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
             <p>{context?.definition ?? "正在加载数据上下文…"}</p><div className="agent-dev-tables">{context?.tables.map(t => <details key={t.name}><summary>{t.name} · {t.columns.length}字段</summary><dl>{t.columns.map(([name,type]) => <div key={name}><dt>{name}</dt><dd>{type}</dd></div>)}</dl></details>)}</div>
             <small>输出：客户、持仓市值、可用现金、总资产、证券数量。其他指标请先补充并审阅口径，不默认纳入。</small>
@@ -207,7 +209,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
               {!terminal(task.status) && <button className="button primary" title={dirty ? "请先保存并运行修改，或撤销未保存修改" : undefined} disabled={!canWrite || working || dirty || (unknown && !retryConsent)} onClick={() => void drive(task, retryConsent)}><Play size={14} />{unknown ? "确认重试" : "继续任务"}</button>}
               {!terminal(task.status) && <button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button>}
             </div>
-            {task.status === "SUCCEEDED" && <p className="agent-dev-success"><CheckCircle2 size={16} />代码开发验证通过。调度、部署和上线不在本次完成范围。</p>}
+            {task.status === "SUCCEEDED" && <p className="agent-dev-success"><CheckCircle2 size={16} />代码已通过执行校验。继续查看下方核验报告，并准备调度与部署交付。</p>}
           </>}
         </div>
         <form className="agent-dev-compose" onSubmit={e => { e.preventDefault(); void send(); }}><label htmlFor="agent-dev-message">{task ? "基于当前代码提出下一次修改" : "描述开发需求"}</label><textarea id="agent-dev-message" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} placeholder="例如：计算客户总资产，检查现金是否被重复累计…" disabled={working} /><div><small>本次将真实调用模型与隔离 Spark</small><button className="button primary" type="submit" disabled={!ready || !canWrite || working || runPending || message.trim().length < 4}><Send size={14} />按此口径生成并验证</button></div></form>
@@ -219,11 +221,12 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
         <div className="agent-dev-results">{!run ? <div className="agent-dev-empty">执行后的真实结果、校验与日志会显示在这里。<br />不会预先填入报表结果。</div> : <>
           {run.error && <p className="agent-dev-error-text" role="alert">{run.error}</p>}
           {["FAILED", "VALIDATION_FAILED"].includes(run.status) && <button className="button" disabled={!ready || !canWrite || working || dirty || run.revisionId !== baselineRevisionId} title="仅修正与当前已保存代码一致的失败批次" onClick={() => void send("请依据这次失败运行的真实错误信息修正当前SQL，并重新执行独立业务校验。")}>让 Agent 修正并验证</button>}
-          {tab === "结果" && (resultFields.length ? <><div className="agent-dev-table-scroll"><table><thead><tr>{resultFields.map(k => <th key={k}>{k}</th>)}</tr></thead><tbody>{run.rows?.map((row,i) => <tr key={i}>{resultFields.map(k => <td key={k}>{String(row[k] ?? "—")}</td>)}</tr>)}</tbody></table></div><p>{run.engine} {run.engineVersion} · {run.rows?.length} 行 · 结果绑定版本 {run.revisionId?.slice(0,8)}</p></> : <p className="agent-dev-empty">{terminal(run.status) ? "本次未产生可展示的数据行。请查看校验和日志。" : "Spark 正在执行，结果完成后显示。"}</p>)}
+          {tab === "结果" && (resultFields.length ? <><div className="agent-dev-table-scroll"><table><thead><tr>{resultFields.map(k => <th key={k} title={k}>{resultFieldLabels[k] ?? k}</th>)}</tr></thead><tbody>{run.rows?.map((row,i) => <tr key={i}>{resultFields.map(k => <td key={k}>{String(row[k] ?? "—")}</td>)}</tr>)}</tbody></table></div><p>{run.engine} {run.engineVersion} · {run.rows?.length} 行 · 结果绑定版本 {run.revisionId?.slice(0,8)}</p></> : <p className="agent-dev-empty">{terminal(run.status) ? "本次未产生可展示的数据行。请查看校验和日志。" : "Spark 正在执行，结果完成后显示。"}</p>)}
           {tab === "校验" && <><h4>{run.validation?.passed ? "独立业务断言通过" : "校验尚未通过"}</h4>{run.validation?.issues?.map((x,i) => <p key={i}>{x}</p>)}{run.validation?.regressions?.map(r => <div className="agent-dev-check" key={r.contextId}><span>{r.name ?? r.contextId}</span><strong>{r.passed ? "通过" : "未通过"}</strong></div>)}</>}
           {tab === "日志" && <pre>{developmentRunLog(run)}</pre>}
         </>}</div>
       </section>
     </div>
+    {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite} codeBusy={working} />}
   </section>;
 }
