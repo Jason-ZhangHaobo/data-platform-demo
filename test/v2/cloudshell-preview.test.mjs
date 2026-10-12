@@ -111,9 +111,16 @@ test("CLI bridge carries secrets through stdin, not argv or shell expansion", as
     child.stdin.on("data", chunk => { input = String(chunk); });
     child.stdin.on("finish", () => { child.stdout.write(JSON.stringify({ protocol: "shuduo-private-application-http/v1", status: 200, cookies: [], body: { authenticated: true } })); child.emit("close", 0); });
     return child;
-  });
+  }, "synthetic-private-function");
+  assert.ok(args.includes("/2023-03-30/functions/synthetic-private-function/invocations"));
   assert.ok(args.includes("/dev/stdin")); assert.doesNotMatch(args.join(" "), /SecretForTestOnly/);
   assert.match(input, /SecretForTestOnly/); assert.equal(result.body.authenticated, true);
+});
+
+test("CLI bridge requires an explicit protected function identifier", async () => {
+  let spawned=false;
+  await assert.rejects(invokePrivate({},()=>{spawned=true;},"../invalid"), e=>e.status===503);
+  assert.equal(spawned,false);
 });
 
 test("real anonymous pipe supports CLI-style /dev/stdin reopening on Linux", async () => {

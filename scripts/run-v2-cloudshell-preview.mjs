@@ -11,8 +11,8 @@ const error = (status, message) => Object.assign(new Error(message), { status })
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const reads = new RegExp(`^/api/v2/(?:status|budget|contexts|auth/session|revisions|runs|(?:runs|revisions)/${uuid})$`);
 const writes = new RegExp(`^/api/v2/(?:auth/(?:login|logout)|revisions|runs|runs/${uuid}/cancel)$`);
-const agentReads = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}(?:/workflow)?)?|deliveries/${uuid})$`);
-const agentWrites = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}/(?:advance|cancel|prepare-delivery))?|deliveries/${uuid}/(?:advance|cancel))$`);
+const agentReads = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}(?:/(?:workflow|publication))?)?|deliveries/${uuid})$`);
+const agentWrites = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}/(?:advance|cancel|prepare-delivery|publication(?:/cancel)?))?|deliveries/${uuid}/(?:advance|cancel))$`);
 const routeAllowed = (method, path, allowAgent) => (method === "GET" ? reads : method === "POST" ? writes : /$a/).test(path) ||
   (allowAgent && (method === "GET" ? agentReads : method === "POST" ? agentWrites : /$a/).test(path));
 const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".ttf": "font/ttf" };
@@ -40,11 +40,13 @@ export function privatePayload(method, path, headers, body, { allowAgent = false
   return { operation: "PRIVATE_APPLICATION_HTTP_V1", method, path, headers: forwarded, ...(method === "POST" ? { body } : {}) };
 }
 
-export function invokePrivate(payload, spawnImpl = spawn) {
+export function invokePrivate(payload, spawnImpl = spawn, functionName = process.env.SHUDUO_PRIVATE_PREVIEW_FUNCTION) {
+  if (typeof functionName !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(functionName))
+    return Promise.reject(error(503, "请先配置已核验的私有函数名称"));
   return new Promise((resolveResult, reject) => {
     // /dev/stdin keeps passwords, session cookies and SQL out of process argv,
     // shell history and temporary files. No shell expansion is involved.
-    const child = spawnImpl("python3", ["-c", pipeBridge, "aliyun", "fc", "POST", "/2023-03-30/functions/dataplatform-v2-staging-api/invocations",
+    const child = spawnImpl("python3", ["-c", pipeBridge, "aliyun", "fc", "POST", `/2023-03-30/functions/${functionName}/invocations`,
       "--region", "cn-hangzhou", "--read-timeout", "140", "--connect-timeout", "10", "--retry-count", "0",
       "--header", "Content-Type=application/octet-stream", "--body-file", "/dev/stdin"], { stdio: ["pipe", "pipe", "pipe"], detached: true });
     let output = "", bytes = 0, finished = false;

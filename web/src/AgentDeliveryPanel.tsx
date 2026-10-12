@@ -10,8 +10,18 @@ type Workflow = {
   publication: { available: boolean; scope: string; reason: string };
 };
 type Release = { id: string; status: string; health: string };
+type Publication = { release?: Release; runs: {id:string; status:string; sequence:number; schedulerTriggered?:boolean; durationMs?:number; triggeredAt?:string; finishedAt?:string}[]; alerts:{id:string;status:string;message:string;recoveryRunId?:string}[]; events:{id:string;type:string;observedAt:string}[] };
 const complete = (status?: string) => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(status ?? "");
 const labels: Record<string,string> = { PACKAGE_READY: "调度与部署文件已生成", FILE_REHEARSAL_SUBMITTING: "正在提交文件演练", FILE_REHEARSAL_RUNNING: "Spark 正在按交付文件演练", AWAITING_ENGINEER_REVIEW: "演练通过，待审阅交付", FILE_REHEARSAL_FAILED: "文件演练需要处理", CANCELLED: "交付准备已停止" };
+const batchLabels: Record<string,string> = { SCHEDULED: "等待调度", RUNNING: "正在运行", SUCCEEDED: "独立核验通过", FAILED: "运行或核验失败", CANCELLED: "已停止" };
+function releaseLabel(release: Release) {
+  if (release.status === "CANCELLED") return "已停止";
+  if (release.status === "WAITING_SCHEDULER") return "已审阅，等待调度器";
+  if (release.health === "HEALTHY") return "两个测试批次通过，运行健康";
+  if (release.health === "CRITICAL") return "存在未解除运行告警";
+  if (release.health === "RECOVERED_WITH_FAILURE") return "后续批次已恢复，历史失败保留";
+  return "观察运行中";
+}
 function download(name: string, value: unknown) {
   const blob = new Blob([typeof value === "string" ? value : JSON.stringify(value, null, 2)], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob), link = document.createElement("a"); link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -19,6 +29,7 @@ function download(name: string, value: unknown) {
 export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canWrite, codeBusy }: { api: Api; taskId: string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; codeBusy: boolean }) {
   const [workflow, setWorkflow] = useState<Workflow>(), [busy, setBusy] = useState(false), [error, setError] = useState(""), [file, setFile] = useState("schedule.json"), [auto, setAuto] = useState(false);
   const [review, setReview] = useState(false), [confirmed, setConfirmed] = useState<Record<string,boolean>>({}), [release, setRelease] = useState<Release>(), [batches, setBatches] = useState<{ id: string; status: string; sequence: number; schedulerTriggered?: boolean }[]>([]);
+  const [publication,setPublication]=useState<Publication>();
   const epoch = useRef(0), alive = useRef(true), requestKey = useRef(crypto.randomUUID());
   const activeTask = useRef(taskId); activeTask.current = taskId;
   const load = async () => {
@@ -32,6 +43,7 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
   const verified = report?.status === "PASSED" && current;
   const working = busy || auto || codeBusy;
   const fileVerified = workflow?.verification?.status === "SUCCEEDED" && delivery?.status === "SUCCEEDED";
+  const cloud = workflow?.publication.scope === "PRIVATE_CLOUD_TEST";
   useEffect(() => { if (!workflow?.package?.digest || dirty || !current) { setReview(false); setConfirmed({}); } }, [workflow?.package?.digest, dirty, current]);
   async function drive(start: Delivery) {
     const token = ++epoch.current; setAuto(true); setError(""); let item = start;
@@ -60,6 +72,7 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
     setBusy(true); setError("");
     const bundle = workflow.package;
     try {
+      if(cloud){const result=await api<Publication>(`/agent/tasks/${taskId}/publication`,{packageDigest:bundle.digest,verificationId:delivery.verificationId,attestations:confirmed},{idempotencyKey:`agent-cloud-publication-${bundle.id}`});setPublication(result);setRelease(result.release);setBatches(result.runs);setReview(false);return;}
       const reviewed = await api<{ id: string }>(`/delivery/packages/${bundle.id}/review`, { packageDigest: bundle.digest, verificationId: delivery.verificationId, reviewNote: "工程师已在Agent工作台审阅代码、核验、交付文件和测试发布范围。", attestations: confirmed });
       const approved = await api<{ id: string }>(`/delivery/packages/${bundle.id}/approve`, { packageDigest: bundle.digest, reviewId: reviewed.id });
       const published = await api<Release>("/releases", { approvalId: approved.id, triggerAfterSeconds: 5, intervalSeconds: 30, runCount: 2 }, { idempotencyKey: `agent-workbench-release-${bundle.id}` });
@@ -67,12 +80,13 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
     } catch(e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   useEffect(() => {
+    if(cloud){let active=true;const read=async()=>{const value=await api<Publication>(`/agent/tasks/${taskId}/publication`);if(active){setPublication(value);setRelease(value.release);setBatches(value.runs);}};read().catch(e=>setError(e.message));const pending=publication?.runs.some(r=>!complete(r.status));const timer=release?.id&&pending?setInterval(()=>read().catch(e=>setError(e.message)),10000):undefined;return()=>{active=false;if(timer)clearInterval(timer);};}
     if (!release?.id) return; let active = true;
     const read = async () => { const [next, runs] = await Promise.all([api<Release>(`/releases/${release.id}`), api<{ id: string; status: string; sequence: number; releaseId: string; schedulerTriggered?: boolean }[]>("/release/runs")]); if (active) { setRelease(next); setBatches(runs.filter(r => r.releaseId === release.id)); } };
     read().catch(e => setError(e.message)); const timer = setInterval(() => read().catch(e => setError(e.message)), 5000);
     return () => { active = false; clearInterval(timer); };
-  }, [release?.id]);
-  const milestones = [{ name: "编写代码", done: Boolean(revisionId) }, { name: "核验结果", done: verified }, { name: "交付文件", done: Boolean(workflow?.package) && current }, { name: "文件演练", done: fileVerified && current }, { name: "审阅发布", done: Boolean(release) && current }, { name: "运行监控", done: release?.health === "HEALTHY" && current }];
+  }, [release?.id,cloud,taskId,publication?.runs.map(r=>r.status).join(",")]);
+  const milestones = [{ name: "编写代码", done: Boolean(revisionId) }, { name: "核验结果", done: verified }, { name: "交付文件", done: Boolean(workflow?.package) && current }, { name: "文件演练", done: fileVerified && current }, { name: "审阅发布", done: Boolean(release && release.status!=="WAITING_SCHEDULER" && release.status!=="CANCELLED") && batches.some(b=>b.status==="SUCCEEDED"&&b.schedulerTriggered) && current }, { name: "运行监控", done: release?.health === "HEALTHY" && current }];
   return <section id="agent-delivery" className="agent-delivery-panel" aria-label="核验与发布交付">
     <header><div><ShieldCheck size={17} /><strong>从开发到交付</strong></div><button className="icon-button" aria-label="刷新核验与交付" disabled={working} onClick={() => load().catch(e => setError(e.message))}><RefreshCw size={14} /></button></header>
     <ol className="agent-workflow-steps">{milestones.map((step,index) => <li key={step.name} className={step.done ? "done" : ""}>{step.done ? <CheckCircle2 size={15} /> : <Circle size={15} />}<span>{index+1}. {step.name}</span></li>)}</ol>
@@ -93,8 +107,8 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
       <div className="agent-publication-card"><div className="agent-workflow-title"><ShieldCheck size={16} /><h3>审阅发布与运行监控</h3></div><p>{workflow.publication.reason}</p>
         {workflow.publication.available && !release && <button className="button primary" disabled={!canWrite || !fileVerified || !verified || working} onClick={() => setReview(true)}>审阅并发布测试任务</button>}
         {!workflow.publication.available && <span className="agent-publication-gate">交付演练通过后进入“待发布”；云端上线尚待完成。</span>}
-        {review && <div className="agent-review-form">{[{id:"code",label:"已审阅当前SQL版本"},{id:"assertions",label:"已查看独立核验与文件演练"},{id:"deliveryFiles",label:"已审阅调度、部署和日历文件"},{id:"localScope",label:"仅发布本机测试任务：5秒后触发，共两批次"}].map(item => <label key={item.id}><input type="checkbox" checked={Boolean(confirmed[item.id])} onChange={e => setConfirmed(old => ({...old,[item.id]:e.target.checked}))} />{item.label}</label>)}<button className="button primary" disabled={working || Object.keys(confirmed).length !== 4 || !Object.values(confirmed).every(Boolean)} onClick={() => void publishLocal()}>确认并发布此版本</button></div>}
-        {release && <><strong>发布版本 {release.id.slice(0,8)} · {release.health === "HEALTHY" ? "运行健康" : "观察运行中"}</strong><ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batch.status} · {batch.schedulerTriggered ? "调度器已触发" : "等待计划时间"}</li>)}</ul></>}
+        {review && <div className="agent-review-form">{[{id:"code",label:"已审阅当前SQL版本"},{id:"assertions",label:"已查看独立核验与文件演练"},{id:"deliveryFiles",label:"已审阅调度、部署和日历文件"},{id:cloud?"cloudScope":"localScope",label:cloud?"仅发布冻结样例的两个云端测试批次，由受控定时器触发":"仅发布本机测试任务：5秒后触发，共两批次"}].map(item => <label key={item.id}><input type="checkbox" checked={Boolean(confirmed[item.id])} onChange={e => setConfirmed(old => ({...old,[item.id]:e.target.checked}))} />{item.label}</label>)}<button className="button primary" disabled={working || Object.keys(confirmed).length !== 4 || !Object.values(confirmed).every(Boolean)} onClick={() => void publishLocal()}>确认并发布此版本</button></div>}
+        {release && <><strong>发布版本 {release.id.slice(0,8)} · {releaseLabel(release)}</strong><ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batchLabels[batch.status] ?? batch.status} · {batch.schedulerTriggered ? "调度器已触发" : batch.status === "CANCELLED" ? "未再触发" : "等待计划时间"}</li>)}</ul>{publication?.alerts.map(alert=><p key={alert.id} role={alert.status==="OPEN"?"alert":undefined}>{alert.status==="OPEN"?"未解除告警":"已恢复"}：{alert.message}{alert.recoveryRunId?` · 恢复批次 ${alert.recoveryRunId.slice(0,8)}`:""}</p>)}{cloud&&release.status!=="CANCELLED"&&batches.some(batch=>!complete(batch.status))&&<button className="button" disabled={working||!canWrite} onClick={async()=>{setBusy(true);try{const next=await api<Publication>(`/agent/tasks/${taskId}/publication/cancel`,{});setPublication(next);setRelease(next.release);setBatches(next.runs);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}><Square size={14}/>停止后续云端批次</button>}{cloud&&<button className="button" onClick={()=>download(`publication-${release.id.slice(0,8)}.json`,publication)}><Download size={14}/>下载发布与监控记录</button>}</>}
       </div>
     </>}
   </section>;

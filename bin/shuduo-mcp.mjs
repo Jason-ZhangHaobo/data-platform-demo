@@ -20,6 +20,9 @@ const tools = [
   { name: "agent_intent_trace", description: "读取一个Agent意图的路由与专业模块交接轨迹摘要；不返回原始任务描述或业务数据。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name: "agent_journey", description: "只读串联代码Agent、交付包、审批、计时发布和监控证据；人工步骤不冒充Agent自主E2E。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
   { name: "agent_development_workflow", description: "读取同一Agent任务的独立结果核验报告、调度部署文件、文件演练和发布条件；读取不启动计算。", inputSchema: { type: "object", additionalProperties: false, properties: { taskId: { type: "string", format: "uuid" } }, required: ["taskId"] } },
+  { name: "agent_publication_detail", description: "读取当前任务的云端测试发布、实际批次、健康、告警及恢复记录。读取不会创建新的计算工作。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"}},required:["taskId"]} },
+  { name: "agent_publication_create", description: "审阅当前不可变包及成功演练后创建两个云端测试批次；须先逐项审阅，不得将草稿生成当作批准。驱动默认关闭。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},verificationId:{type:"string",format:"uuid"},attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"]} },
+  { name: "agent_publication_stop", description:"停止当前任务后续云端批次，保留已完成记录与审阅历史。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"}},required:["taskId"]} },
   { name: "agent_delivery_advance", description: "按当前版本推进原持久交付任务一个步骤；可提交真实Spark文件演练，不审批或发布。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 } }, required: ["deliveryTaskId", "expectedVersion"] } },
   { name: "agent_delivery_list", description: "列出代码Agent的后台交付准备、不可变包与文件演练结果。", inputSchema: { type: "object", properties: { sourceAgentTaskId: { type: "string" } } } },
   { name: "agent_delivery_prepare", description: "对真实模型与Spark已核验代码自动生成调度/部署包并实际文件演练；不审批、不发布、不创建公网资源。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
@@ -230,6 +233,9 @@ async function callTool(name, args = {}) {
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/journey`);
   if (name === "agent_development_workflow")
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/workflow`);
+  if(name==="agent_publication_detail")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/publication`);
+  if(name==="agent_publication_create")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/publication`,{method:"POST",body:{packageDigest:args.packageDigest,verificationId:args.verificationId,attestations:args.attestations}});
+  if(name==="agent_publication_stop")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/publication/cancel`,{method:"POST",body:{}});
   if (name === "agent_delivery_advance")
     return client.request(`/agent/deliveries/${encodeURIComponent(args.deliveryTaskId)}/advance`, { method: "POST", body: { expectedVersion: args.expectedVersion } });
   if (name === "agent_delivery_list")
