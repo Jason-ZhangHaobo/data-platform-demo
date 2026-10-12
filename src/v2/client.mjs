@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 export const V2_OPERATIONS = Object.freeze([
+  "data_service_sources",
+  "agent_development_workflow",
+  "agent_publication_detail",
+  "agent_publication_create",
+  "agent_publication_stop",
   "status",
   "budget_status",
   "agent_intent_list",

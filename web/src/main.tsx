@@ -73,6 +73,8 @@ const InvitationPanel = lazy(async () => ({ default: (await import("./AuthDialog
 // This marker narrows the UI only; proxy and application authorize requests.
 const privatePreview = Boolean(document.querySelector('meta[name="shuduo-private-preview"]'));
 const agentDevelopmentPreview = privatePreview && Boolean(document.querySelector('meta[name="shuduo-agent-development"]'));
+const privateServicesPreview=privatePreview && Boolean(document.querySelector('meta[name="shuduo-private-services"]'));
+const previewModuleAllowed=(id:string)=>!privatePreview || id==="development" || (agentDevelopmentPreview&&id==="agent-center") || (privateServicesPreview&&id==="data-services");
 
 function WorkbenchLoading({ label = "正在加载工作台…" }: { label?: string }) {
   return <div className="workbench-loading" role="status"><LoaderCircle className="spin" size={16} />{label}</div>;
@@ -685,8 +687,8 @@ function App() {
                   const Icon = icons[cap.id] ?? Boxes;
                   return (
                     <button
-                      title={privatePreview && cap.id !== "development" && !(agentDevelopmentPreview && cap.id === "agent-center") ? "此私有预览暂未接入；不代表模块已验收" : cap.name}
-                      disabled={privatePreview && cap.id !== "development" && !(agentDevelopmentPreview && cap.id === "agent-center")}
+                      title={!previewModuleAllowed(cap.id) ? "此私有预览暂未接入；不代表模块已验收" : cap.name}
+                      disabled={!previewModuleAllowed(cap.id)}
                       key={cap.id}
                       className={
                         "nav-link " + (nav === cap.id ? "selected" : "")
@@ -775,7 +777,7 @@ function App() {
             </span>
           </div>
         </header>
-        {privatePreview && <div className="notice-banner" role="status">私有云端试用 · {agentDevelopmentPreview ? "Agent 数据开发、SQL 编辑、真实运行与任务恢复" : "SQL 编辑、真实 Spark 运行和结果恢复"}；其他模块与完整交付链路待接入。临时访问通道到期后入口失效，已保存的云端任务记录保留。</div>}
+        {privatePreview && <div className="notice-banner" role="status">私有云端试用 · {agentDevelopmentPreview ? "Agent 数据开发、SQL 编辑、真实运行与任务恢复" : "SQL 编辑、真实 Spark 运行和结果恢复"}{privateServicesPreview ? "、发布结果的数据服务消费" : ""}；未开放模块不代表已验收。临时访问通道到期后入口失效，已保存的云端任务记录保留。</div>}
         {error && (
           <div role="alert" className="error-banner">
             <AlertCircle size={16} />
@@ -786,10 +788,10 @@ function App() {
           </div>
         )}
         <Suspense fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
-        {privatePreview && nav !== "development" && !(agentDevelopmentPreview && nav === "agent-center") ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
+        {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
-          {!privatePreview && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button><button role="tab" aria-selected={agentWorkspaceMode === "platform"} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button></div>}
-          {agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} ready={Boolean(status?.agentDevelopment?.durableEnabled)} loading={!status} privatePreview={privatePreview} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} /> :
+          {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{privateServicesPreview && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>setAgentWorkspaceMode("services")}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
+          {agentWorkspaceMode === "services" && privateServicesPreview ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={canWrite} privateCloud sourceAgentTaskId={new URLSearchParams(window.location.search).get("task")??undefined} /> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} ready={Boolean(status?.agentDevelopment?.durableEnabled)} loading={!status} privatePreview={privatePreview} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite}
@@ -1545,7 +1547,7 @@ function App() {
             <h1>{active?.name}</h1>
             <p className="module-subtitle">{active?.description}</p>
             {nav === "services" ? (
-              <DataServicesWorkbench api={api} canWrite={Boolean(canWrite)} />
+              <DataServicesWorkbench api={api} canWrite={Boolean(canWrite)} privateCloud={privateServicesPreview} />
             ) : nav === "sources" || nav === "sync" ? (
               <IngestionWorkbench
                 api={api}

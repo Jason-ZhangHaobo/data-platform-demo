@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AppWindow,
@@ -19,7 +19,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 
-type Api = <T>(path: string, body?: unknown) => Promise<T>;
+type Api = <T>(path: string, body?: unknown, options?: {idempotencyKey?:string}) => Promise<T>;
 type ReleaseRun = {
   id: string;
   releaseId: string;
@@ -40,6 +40,7 @@ type ServiceVersion = {
   versionNumber: number;
   status: string;
   configHash: string;
+  sourcePackageDigest?: string;
   sourceReleaseRunId?: string;
   sourceEngine?: string;
   sourceEngineVersion?: string;
@@ -147,9 +148,13 @@ const flowSteps: {
 export function DataServicesWorkbench({
   api,
   canWrite,
+  privateCloud = false,
+  sourceAgentTaskId,
 }: {
   api: Api;
   canWrite: boolean;
+  privateCloud?: boolean;
+  sourceAgentTaskId?: string;
 }) {
   const [releaseRuns, setReleaseRuns] = useState<ReleaseRun[]>([]),
     [dapis, setDapis] = useState<DataService[]>([]),
@@ -168,6 +173,7 @@ export function DataServicesWorkbench({
   const [testReceipt, setTestReceipt] = useState<TestReceipt>(),
     [openApi, setOpenApi] = useState<Record<string, unknown>>(),
     [issuedToken, setIssuedToken] = useState("");
+  const [tokenVisible,setTokenVisible]=useState(false),[issuedAppId,setIssuedAppId]=useState("");
   const [agentMessage, setAgentMessage] = useState(
       "基于已发布的持仓与现金DAPI，规划一个财富顾问客户资产组合XAPI",
     ),
@@ -189,16 +195,19 @@ export function DataServicesWorkbench({
     callsForSelected = selected
       ? calls.filter((item) => item.serviceId === selected.id)
       : calls;
+  const currentPublished=Boolean(selected?.currentVersion && selected.currentVersion.id===selected.publishedVersion?.id);
+  const requestKeys=useRef<Record<string,{signature:string;key:string}>>({});
+  const keyFor=(action:string,body:unknown)=>{const signature=JSON.stringify(body),old=requestKeys.current[action];if(old?.signature===signature)return old.key;const key=crypto.randomUUID();requestKeys.current[action]={signature,key};return key;};
 
   const reload = async () => {
     const [nextRuns, nextDapis, nextXapis, nextApps, nextCalls, nextPlans] =
       await Promise.all([
-        api<ReleaseRun[]>("/release/runs"),
+        api<ReleaseRun[]>(privateCloud ? "/data-services/sources" + (sourceAgentTaskId ? `?agent_task_id=${encodeURIComponent(sourceAgentTaskId)}` : "") : "/release/runs"),
         api<DataService[]>("/data-services/dapis"),
         api<DataService[]>("/data-services/xapis"),
         api<Application[]>("/data-services/applications"),
         api<ServiceCall[]>("/data-services/calls"),
-        api<ServiceAgentPlan[]>("/data-services/agent/plans"),
+        privateCloud ? Promise.resolve([] as ServiceAgentPlan[]) : api<ServiceAgentPlan[]>("/data-services/agent/plans"),
       ]);
     setReleaseRuns(nextRuns);
     setDapis(nextDapis);
@@ -218,6 +227,8 @@ export function DataServicesWorkbench({
   useEffect(() => {
     setTestReceipt(undefined);
     setOpenApi(undefined);
+    setIssuedToken("");
+    setTokenVisible(false);
   }, [selectedId]);
   useEffect(() => {
     if (!agentPlan || !["QUEUED", "RUNNING"].includes(agentPlan.status)) return;
@@ -279,14 +290,14 @@ export function DataServicesWorkbench({
     setBusy("create-dapi");
     setError("");
     try {
-      const created = await api<DataService>("/data-services/dapis", {
+      const body={
         name: dapiName,
         slug: dapiSlug,
         sourceReleaseRunId: sourceRunId,
         fields: fieldProfiles[profile],
         timeoutMs: 1500,
         rateLimitPerMinute: 60,
-      });
+      };const created = await api<DataService>("/data-services/dapis",body,{idempotencyKey:keyFor("dapi",body)});
       await reload();
       setSelectedId(created.id);
       setNotice("DAPI草稿已绑定真实发布批次，请先执行查询测试");
@@ -300,16 +311,19 @@ export function DataServicesWorkbench({
     setBusy("create-xapi");
     setError("");
     try {
-      const created = await api<DataService>("/data-services/xapis", {
+      const holdings=publishedDapis.find(s=>s.publishedVersion?.fields?.includes("holding_market_value")&&(!privateCloud||s.publishedVersion.sourceReleaseRunId===sourceRunId));
+      const cash=publishedDapis.find(s=>s.id!==holdings?.id&&s.publishedVersion?.fields?.includes("available_cash")&&(!privateCloud||s.publishedVersion.sourceReleaseRunId===sourceRunId));
+      if(!holdings||!cash)throw new Error("请先发布同一批次的持仓DAPI与现金DAPI");
+      const body={
         name: "财富顾问客户资产组合查询",
         slug: "advisor-asset-overview",
         steps: [
-          { alias: "positions", dapiId: publishedDapis[0].id },
-          { alias: "cash", dapiId: publishedDapis[1].id },
+          { alias: "positions", dapiId: holdings.id },
+          { alias: "cash", dapiId: cash.id },
         ],
         timeoutMs: 2500,
         rateLimitPerMinute: 30,
-      });
+      };const created=await api<DataService>("/data-services/xapis",body,{idempotencyKey:keyFor("xapi",body)});
       await reload();
       setSelectedId(created.id);
       setNotice("XAPI已锁定两个DAPI的已发布版本");
@@ -343,10 +357,10 @@ export function DataServicesWorkbench({
     try {
       await api(
         `/data-services/${selected.serviceType.toLowerCase()}s/${selected.id}/publish`,
-        {},
+        privateCloud ? {configHash:selected.currentVersion?.configHash} : {},
       );
       await reload();
-      setNotice("当前测试版本已发布，本机外部端点已生成");
+      setNotice(privateCloud ? "当前版本已发布到私有调用通道；不是公网生产接口" : "当前测试版本已发布，本机外部端点已生成");
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -382,10 +396,11 @@ export function DataServicesWorkbench({
       }>("/data-services/applications", {
         name: "证券财富分析演示系统",
         serviceIds: [selected.id],
-      });
+      },{idempotencyKey:keyFor("app:"+selected.id,{name:"证券财富分析演示系统",serviceIds:[selected.id]})});
       setIssuedToken(issued.token ?? "");
+      setIssuedAppId(issued.application.id);setTokenVisible(false);
       await reload();
-      setNotice("本机应用凭证已创建；令牌只显示这一次");
+      setNotice(`${privateCloud ? "私有查询" : "本机"}应用凭证已创建；令牌只显示这一次`);
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -439,7 +454,7 @@ export function DataServicesWorkbench({
           {error || notice}
         </div>
       )}
-      <section className="service-agent-studio">
+      {!privateCloud && <section className="service-agent-studio">
         <header>
           <div className="service-agent-icon">
             <Bot size={20} />
@@ -505,7 +520,8 @@ export function DataServicesWorkbench({
           </div>
         )}
         <small>{agentPlans.length}条方案记录 · 不自动发布、不创建调用凭证</small>
-      </section>
+      </section>}
+      {privateCloud && <div className="service-feedback" role="status">复用已经审阅并运行的版本创建接口，不重新调用模型或Spark。仅提供当前虚构证券资产契约的参数化快照查询；模型服务规划后续单独接入。</div>}
       <div className="service-layout">
         <aside className="service-catalog">
           <header>
@@ -513,7 +529,7 @@ export function DataServicesWorkbench({
               <span className="eyebrow">SERVICE CATALOG</span>
               <h3>服务目录</h3>
             </div>
-            <span>{services.length}</span>
+            <button className="button" disabled={!canWrite||!!busy} onClick={()=>{setSelectedId("");const hasHoldings=dapis.some(s=>s.currentVersion?.fields?.includes("holding_market_value"));setProfile(hasHoldings?"cash":"holdings");setDapiName(hasHoldings?"客户现金查询":"客户持仓查询");setDapiSlug(hasHoldings?"customer-cash":"customer-holdings");}}>新建 DAPI</button>
           </header>
           {services.length ? (
             services.map((service) => (
@@ -687,10 +703,10 @@ LIMIT :limit OFFSET :offset`}</pre>
                 <button
                   className="button primary"
                   onClick={publish}
-                  disabled={!canWrite || !testReceipt || selected.status === "PUBLISHED" || !!busy}
+                  disabled={!canWrite || !testReceipt || currentPublished || !!busy}
                 >
                   <Rocket size={15} />
-                  {selected.status === "PUBLISHED" ? "当前版本已发布" : "发布当前版本"}
+                  {currentPublished ? "当前版本已发布" : "发布当前版本"}
                 </button>
                 <button className="button" onClick={loadOpenApi} disabled={!!busy}>
                   <CodeXml size={15} />
@@ -720,7 +736,9 @@ LIMIT :limit OFFSET :offset`}</pre>
                   <ShieldCheck size={18} />
                   <div>
                     <strong>令牌仅显示一次</strong>
-                    <code>{issuedToken}</code>
+                    <code>{tokenVisible ? issuedToken : "已生成 · 默认隐藏"}</code>
+                    <button className="button" onClick={()=>setTokenVisible(!tokenVisible)}>{tokenVisible?"隐藏令牌":"显示一次性令牌"}</button>
+                    <button className="button" onClick={()=>{const blob=new Blob([issuedToken+"\n"],{type:"text/plain;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`shuduo-application-${issuedAppId.slice(0,8)}.token`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}}>下载本次调用凭据</button>
                     <small>只存哈希；请勿提交Git或发送到聊天。</small>
                   </div>
                 </section>
@@ -729,7 +747,7 @@ LIMIT :limit OFFSET :offset`}</pre>
                 <section className="service-openapi">
                   <header>
                     <h4>OpenAPI 3.1</h4>
-                    <span>本机测试范围</span>
+                    <span>{privateCloud ? "私有云测试范围" : "本机测试范围"}</span>
                   </header>
                   <pre>{JSON.stringify(openApi, null, 2)}</pre>
                 </section>
@@ -775,17 +793,18 @@ LIMIT :limit OFFSET :offset`}</pre>
               <span>{call.durationMs}ms</span>
             </div>
           ))}
-          {!callsForSelected.length && (
+            {!callsForSelected.length && (
             <div className="service-no-calls">
               <Clock3 size={16} />
               发布并授权后，外部调用证据显示在这里。
             </div>
-          )}
+            )}
+          {applications.filter(app=>!selected||app.serviceIds.includes(selected.id)).map(app=><div key={app.id}><span>{app.name} · {app.status==="ACTIVE"?"有效":"已撤销"}</span><button className="button" disabled={!canWrite||app.status!=="ACTIVE"||!!busy} onClick={async()=>{setBusy("revoke");try{await api(`/data-services/applications/${app.id}/revoke`,{});for(const id of app.serviceIds)delete requestKeys.current["app:"+id];setIssuedToken("");await reload();setNotice("凭证已撤销，旧令牌不能继续调用");}catch(e){setError((e as Error).message);}finally{setBusy("");}}}>撤销凭证</button></div>)}
         </article>
       </section>
       <footer className="service-boundary">
         <AppWindow size={15} />
-        当前数据来自虚构证券发布批次；业务查询库与平台元数据库分离。本机端点不是公网服务。
+        当前数据来自虚构证券发布批次；业务查询库与平台元数据库分离。{privateCloud ? "接口查询已发布结果的不可变快照，不在每次调用时重跑Spark；当前仅私有通道。" : "本机端点不是公网服务。"}
       </footer>
     </div>
   );

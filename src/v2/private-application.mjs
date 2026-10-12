@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createPasswordHash } from "./auth.mjs";
 import { referenceSql } from "./context.mjs";
+import { privateServiceRoute } from "./private-service-routes.mjs";
 
 const fail = (status, code) => Object.assign(new Error(code), { status, code });
 const paths = [
@@ -11,18 +12,19 @@ const headerNames = new Set(["cookie", "x-csrf-token", "idempotency-key", "x-pro
 // Keep the model's bounded checkpoint inside the private function's 120s limit.
 export const privateApplicationTimeoutMs = path => /^\/api\/v2\/agent\/tasks\/[a-f0-9-]{36}\/advance$/.test(path) ? 105000 : 30000;
 
-export function validatePrivateApplicationRequest(input, { allowDurableAgent = false } = {}) {
+export function validatePrivateApplicationRequest(input, { allowDurableAgent = false, allowDataServices = false } = {}) {
+  const servicePath=allowDataServices && privateServiceRoute(input?.method,input?.path);
   const agentPath = allowDurableAgent && (input?.method === "GET"
     ? /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}(?:\/(?:workflow|publication))?)?|deliveries\/[a-f0-9-]{36})$/
     : /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}\/(?:advance|cancel|prepare-delivery|publication(?:\/cancel)?))?|deliveries\/[a-f0-9-]{36}\/(?:advance|cancel))$/).test(input?.path ?? "");
   if (!input || input.operation !== "PRIVATE_APPLICATION_HTTP_V1" ||
       Object.keys(input).some(k => !["operation", "method", "path", "headers", "body"].includes(k)) ||
       !["GET", "POST"].includes(input.method) || typeof input.path !== "string" ||
-      !(paths.some(p => p.test(input.path)) || agentPath))
+      !(paths.some(p => p.test(input.path)) || agentPath || servicePath))
     throw fail(422, "PRIVATE_APPLICATION_REQUEST_INVALID");
   const headers = input.headers ?? {};
   if (typeof headers !== "object" || Array.isArray(headers) ||
-      Object.entries(headers).some(([k, v]) => !headerNames.has(k) || typeof v !== "string" || v.length > 4096 || /[\r\n]/.test(v)))
+      Object.entries(headers).some(([k, v]) => (!headerNames.has(k) && !(k==="authorization" && servicePath && input.path.startsWith("/api/v2/open/"))) || typeof v !== "string" || v.length > 4096 || /[\r\n]/.test(v)))
     throw fail(422, "PRIVATE_APPLICATION_HEADERS_INVALID");
   if (input.method === "GET" && input.body !== undefined)
     throw fail(422, "PRIVATE_APPLICATION_REQUEST_INVALID");
