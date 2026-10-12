@@ -216,6 +216,25 @@ export class BusinessQueryStore {
     const value=this.db.prepare("SELECT id,content_hash,row_count FROM service_snapshots WHERE id=?").get(id);
     return value ? {id:value.id,contentHash:value.content_hash,rowCount:value.row_count} : undefined;
   }
+
+  snapshotEvidence(id) {
+    const snapshot = this.snapshot(id);
+    if (!snapshot) return undefined;
+    // The materialization contract permits at most 1,000 rows. Reading one
+    // extra detects corrupt restores without allowing an unbounded scan.
+    const rows = this.db.prepare(
+      `SELECT ${assetFields.join(',')} FROM customer_assets WHERE snapshot_id=? LIMIT 1001`,
+    ).all(id).map(row => ({ ...row }));
+    rows.sort((a, b) => a.client_id.localeCompare(b.client_id));
+    const computedHash = serviceHash(rows);
+    return {
+      ...snapshot,
+      actualRowCount: rows.length,
+      computedHash,
+      integrityVerified: snapshot.rowCount >= 1 && snapshot.rowCount <= 1000 &&
+        rows.length === snapshot.rowCount && computedHash === snapshot.contentHash,
+    };
+  }
 }
 
 export class DataServiceManager {
@@ -240,7 +259,8 @@ export class DataServiceManager {
     this.executeDapi =
       executeDapi ??
       ((version, input) => {
-        if(this.businessStore.snapshot(version.snapshotId)?.contentHash!==version.snapshotHash)
+        const snapshot = this.businessStore.snapshotEvidence(version.snapshotId);
+        if(!snapshot?.integrityVerified || snapshot.contentHash!==version.snapshotHash)
           throw fail(409,"服务结果快照缺失或摘要不一致，不能以空结果冒充恢复成功","SOURCE_SNAPSHOT_UNAVAILABLE");
         return this.businessStore.queryAssets(
           version.snapshotId,

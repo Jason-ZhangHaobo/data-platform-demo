@@ -94,6 +94,11 @@ type TestReceipt = {
     pagination: { total: number };
   };
 };
+type RecoveryReport = {
+  bootId: string; healthy: boolean; fingerprint: string; checkedAt: string;
+  state: { serviceId: string; calls: unknown[]; applications: {id:string;status:string}[];
+    evidence: {verified:boolean;snapshot?:{actualRowCount:number;integrityVerified:boolean}|null}[] };
+};
 type ServiceAgentPlan = {
   id: string;
   message: string;
@@ -174,6 +179,8 @@ export function DataServicesWorkbench({
     [openApi, setOpenApi] = useState<Record<string, unknown>>(),
     [issuedToken, setIssuedToken] = useState("");
   const [tokenVisible,setTokenVisible]=useState(false),[issuedAppId,setIssuedAppId]=useState("");
+  const [recoveryReport,setRecoveryReport]=useState<RecoveryReport>();
+  const activeServiceRef=useRef(selectedId);activeServiceRef.current=selectedId;
   const [agentMessage, setAgentMessage] = useState(
       "基于已发布的持仓与现金DAPI，规划一个财富顾问客户资产组合XAPI",
     ),
@@ -229,6 +236,7 @@ export function DataServicesWorkbench({
     setOpenApi(undefined);
     setIssuedToken("");
     setTokenVisible(false);
+    setRecoveryReport(undefined);
   }, [selectedId]);
   useEffect(() => {
     if (!agentPlan || !["QUEUED", "RUNNING"].includes(agentPlan.status)) return;
@@ -406,6 +414,18 @@ export function DataServicesWorkbench({
     } finally {
       setBusy("");
     }
+  };
+  const loadRecovery = async () => {
+    if(!selected)return;
+    const serviceId=selected.id;
+    setBusy("recovery");setError("");
+    try {
+      const report=await api<RecoveryReport>(`/data-services/${selected.serviceType.toLowerCase()}s/${serviceId}/recovery`);
+      if(activeServiceRef.current!==serviceId)return;
+      setRecoveryReport(report);
+      setNotice("已读取当前后端实例的恢复对照；仍需重建后比较启动标识与状态摘要");
+    }catch(cause){if(activeServiceRef.current===serviceId)setError((cause as Error).message);}
+    finally{setBusy("");}
   };
 
   return (
@@ -712,6 +732,7 @@ LIMIT :limit OFFSET :offset`}</pre>
                   <CodeXml size={15} />
                   OpenAPI
                 </button>
+                {privateCloud && <button className="button" onClick={loadRecovery} disabled={!!busy}><Activity size={15}/>恢复对照</button>}
                 <button
                   className="button"
                   onClick={createApplication}
@@ -721,6 +742,17 @@ LIMIT :limit OFFSET :offset`}</pre>
                   创建调用凭证
                 </button>
               </div>
+              {recoveryReport && <section className="service-definition" aria-label="服务恢复对照">
+                <header><h4>当前实例恢复对照</h4><span>{recoveryReport.healthy ? "快照及来源完整" : "快照缺失或漂移"}</span></header>
+                <div className="service-version-grid">
+                  <div><span>后端启动标识</span><code>{recoveryReport.bootId.slice(0,12)}</code></div>
+                  <div><span>状态摘要</span><code>{recoveryReport.fingerprint.slice(0,12)}</code></div>
+                  <div><span>持久调用</span><strong>{recoveryReport.state.calls.length}</strong></div>
+                  <div><span>已撤销应用</span><strong>{recoveryReport.state.applications.filter(a=>a.status==="REVOKED").length}</strong></div>
+                </div>
+                <p>这是一份只读检查，不代表已经通过冷启动验收。重建后端后须确认启动标识改变、状态摘要与原记录一致；刷新浏览器或重启临时代理不能代替。</p>
+                <button className="button" onClick={()=>{const blob=new Blob([JSON.stringify(recoveryReport,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`service-recovery-${recoveryReport.state.serviceId.slice(0,8)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}}>下载恢复对照</button>
+              </section>}
               {testReceipt && (
                 <section className="service-test-result">
                   <CheckCircle2 size={18} />

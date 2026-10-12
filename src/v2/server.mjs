@@ -765,7 +765,7 @@ export function createV2Server(options = {}) {
     now: options.now,
     executeDapi: options.dataServiceExecutor,
   });
-  const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, persist: persistDevelopment }) : undefined;
+  const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, persist: persistDevelopment }) : undefined;
   const servicePlanner =
     options.servicePlanner ??
     (async (input) => {

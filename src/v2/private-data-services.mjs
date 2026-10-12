@@ -1,12 +1,13 @@
 import { DataServiceManager, serviceHash, verifiedPrivateServiceSource } from "./data-services.mjs";
 import { privateServiceRoute } from "./private-service-routes.mjs";
+import { privateServiceRecovery } from "./private-service-recovery.mjs";
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(new Error(message),{status,code});
 
 // One shared allowlist for the private transport, temporary preview and router.
 export { privateServiceRoute } from "./private-service-routes.mjs";
 
-export function createPrivateDataServices({store,businessStore,project,auth,now,origin,persist=async()=>{}}) {
+export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,persist=async()=>{}}) {
   const get=(kind,id)=>store.get(kind,id,project);
   const source=id=>{
     const run=get("release_run",id),release=run&&get("release",run.releaseId),bundle=run&&get("delivery_package",run.packageId),approval=release&&get("release_approval",release.approvalId);
@@ -54,8 +55,14 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       const type=path.endsWith("dapis")?"DAPI":"XAPI",b=await readBody(req);checkInput(a,type,b);
       const d=dedup(type,b,()=>{const s=type==="DAPI"?manager.createDapi(b):manager.createXapi(b);return store.update("data_service",s.id,project,{createdBy:owner,scope:"PRIVATE_CLOUD_TEST"});});return {status:d.replayed?200:201,body:manager.detail(d.id)};
     }
-    const match=path.match(new RegExp(`^/api/v2/data-services/(dapis|xapis)/(${uuid})(?:/(versions|test|publish|activate|openapi|calls))?$`));
+    const match=path.match(new RegExp(`^/api/v2/data-services/(dapis|xapis)/(${uuid})(?:/(versions|test|publish|activate|openapi|calls|recovery))?$`));
     if(match){const type=match[1]==="dapis"?"DAPI":"XAPI",s=service(a,match[2]),action=match[3];if(s.serviceType!==type)throw fail(404,"服务类型不匹配");
+      if(method==="GET" && action==="recovery")return {status:200,body:privateServiceRecovery({
+        service:s,bootId,businessStore,source,ownedService:id=>service(a,id),
+        getVersion:id=>get("data_service_version",id),
+        applications:manager.listApplications().filter(app=>owned(a,app)&&app.serviceIds.includes(s.id)),
+        calls:manager.listCalls(s.id),
+      })};
       if(method==="GET")return {status:200,body:action==="openapi"?manager.openApi(s.id,origin??"/"):action==="calls"?manager.listCalls(s.id):s};
       const b=await readBody(req);
       if(action==="versions"){checkInput(a,type,b,true);const d=dedup(`${type}:${s.id}:version`,b,()=>type==="DAPI"?manager.createDapiVersion(s.id,b):manager.createXapiVersion(s.id,b));return {status:d.replayed?200:201,body:get("data_service_version",d.id)};}

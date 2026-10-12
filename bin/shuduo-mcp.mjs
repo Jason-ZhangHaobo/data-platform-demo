@@ -59,6 +59,7 @@ const tools = [
   { name: "data_service_publish", description: "发布已有成功测试证据的当前版本。调用前应向用户展示服务、版本摘要和端点；私有云必须提交审阅过的configHash。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" },configHash:{type:"string",pattern:"^[a-f0-9]{64}$"} }, required: ["type", "serviceId"] } },
   {name:"data_service_sources",description:"只读列出本人或项目管理员可访问的真实已核验云端发布批次，不返回结果行或原始日志。",inputSchema:{type:"object",additionalProperties:false,properties:{agentTaskId:{type:"string",format:"uuid"}}}},
   { name: "data_service_openapi", description: "读取指定DAPI/XAPI的OpenAPI 3.1文档。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" } }, required: ["type", "serviceId"] } },
+  { name: "data_service_recovery", description: "使用当前平台身份读取私有服务启动标识、快照完整性和恢复对照；不执行计算、不发凭证，单份报告不代表冷启动验收。", inputSchema: { type: "object", additionalProperties: false, properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string", format: "uuid" } }, required: ["type", "serviceId"] } },
   { name: "data_service_calls", description: "读取数据服务调用日志，可按服务过滤。", inputSchema: { type: "object", properties: { serviceId: { type: "string" } } } },
   { name: "service_application_list", description: "列出调用应用与授权，不返回令牌或令牌哈希。", inputSchema: { type: "object", properties: {} } },
   { name: "service_application_create", description: "创建本机调用应用并仅显示一次令牌。该操作创建持久访问能力，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { name: { type: "string" }, serviceIds: { type: "array", items: { type: "string" } } }, required: ["name", "serviceIds"] } },
@@ -365,11 +366,11 @@ async function callTool(name, args = {}) {
   if(name==="data_service_sources")return client.request("/data-services/sources"+(args.agentTaskId?`?agent_task_id=${encodeURIComponent(args.agentTaskId)}`:""));
   if (name === "xapi_create")
     return client.request("/data-services/xapis", { method: "POST", body: args });
-  if (["data_service_test", "data_service_publish", "data_service_openapi"].includes(name)) {
-    const action = { data_service_test: "test", data_service_publish: "publish", data_service_openapi: "openapi" }[name],
+  if (["data_service_test", "data_service_publish", "data_service_openapi", "data_service_recovery"].includes(name)) {
+    const action = { data_service_test: "test", data_service_publish: "publish", data_service_openapi: "openapi", data_service_recovery: "recovery" }[name],
       path = `/data-services/${typePath(args.type)}/${encodeURIComponent(args.serviceId)}/${action}`;
     return client.request(path, {
-      ...(action === "openapi"
+      ...(["openapi", "recovery"].includes(action)
         ? {}
         : {
             method: "POST",
