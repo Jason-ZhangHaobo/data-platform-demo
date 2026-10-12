@@ -74,7 +74,7 @@ const InvitationPanel = lazy(async () => ({ default: (await import("./AuthDialog
 const privatePreview = Boolean(document.querySelector('meta[name="shuduo-private-preview"]'));
 const agentDevelopmentPreview = privatePreview && Boolean(document.querySelector('meta[name="shuduo-agent-development"]'));
 const privateServicesPreview=privatePreview && Boolean(document.querySelector('meta[name="shuduo-private-services"]'));
-const previewModuleAllowed=(id:string)=>!privatePreview || id==="development" || (agentDevelopmentPreview&&id==="agent-center") || (privateServicesPreview&&id==="data-services");
+const previewModuleAllowed=(id:string)=>!privatePreview || id==="development" || (agentDevelopmentPreview&&id==="agent-center") || (privateServicesPreview&&id==="services");
 
 function WorkbenchLoading({ label = "正在加载工作台…" }: { label?: string }) {
   return <div className="workbench-loading" role="status"><LoaderCircle className="spin" size={16} />{label}</div>;
@@ -1547,7 +1547,7 @@ function App() {
             <h1>{active?.name}</h1>
             <p className="module-subtitle">{active?.description}</p>
             {nav === "services" ? (
-              <DataServicesWorkbench api={api} canWrite={Boolean(canWrite)} privateCloud={privateServicesPreview} />
+              <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={Boolean(canWrite)} privateCloud={privateServicesPreview} />
             ) : nav === "sources" || nav === "sync" ? (
               <IngestionWorkbench
                 api={api}
