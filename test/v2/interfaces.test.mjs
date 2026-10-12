@@ -10,6 +10,14 @@ import {
   V2_OPERATIONS,
 } from "../../src/v2/client.mjs";
 import { runV2Cli, V2_CLI_OPERATIONS } from "../../bin/shuduo.mjs";
+test("recovery CLI uses the same read-only versioned API",async()=>{
+  const seen=[];const id='00000000-0000-4000-8000-000000000001';
+  const code=await runV2Cli(['services','recovery','--type','xapi','--id',id],{},
+    {client:{request:async(path,options)=>{seen.push({path,options});return{healthy:true};}},output:()=>{},error:()=>{}});
+  assert.equal(code,0);assert.equal(seen.length,1);
+  assert.equal(seen[0].path,`/data-services/xapis/${id}/recovery`);
+  assert.equal(seen[0].options?.method,undefined);assert.equal(seen[0].options?.body,undefined);
+});
 import {
   handleV2Mcp,
   V2_MCP_OPERATIONS,

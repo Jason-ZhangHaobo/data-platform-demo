@@ -61,6 +61,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services publish --type dapi|xapi --id ID [--config-hash SHA256]
   shuduo services sources [--agent-task-id ID]
   shuduo services openapi --type dapi|xapi --id ID
+  shuduo services recovery --type dapi|xapi --id ID
   shuduo services calls [--id ID]
   shuduo services invoke --type dapi|xapi --slug path [--client-id CLIENT-001]
   shuduo apps list
@@ -562,11 +563,11 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       });
     } else if (
       resource === "services" &&
-      ["test", "publish", "openapi"].includes(action)
+      ["test", "publish", "openapi", "recovery"].includes(action)
     ) {
       const path = `/data-services/${typePath(required(parsed.options, "type"))}/${encodeURIComponent(required(parsed.options, "id"))}/${action}`;
       result = await client.request(path, {
-        ...(action === "openapi"
+        ...(["openapi", "recovery"].includes(action)
           ? {}
           : {
               method: "POST",

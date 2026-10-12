@@ -86,6 +86,36 @@ test('snapshot querying does not depend on a live compute worker and concurrent 
   assert.deepEqual(outcomes.map(r=>r.status).sort(),[200,200,429]);
   const docs=(await f.call(`/data-services/dapis/${d.id}/openapi`,undefined,f.a)).body;assert.equal(docs['x-shuduo-scope'],'PRIVATE_CLOUD_TEST');assert.equal(docs.servers[0].url,'/');
 });
+test('private query rejects altered snapshot rows even when the stored hash was not changed',async t=>{
+  const f=await setup(t,{offlineCompute:true}),d=await f.create('integrity-query',['client_id','total_assets']);
+  const app=await f.call('/data-services/applications',{name:'快照完整性测试',serviceIds:[d.id]},f.a,'integrity-client');
+  const version=f.s.get('data_service_version',d.publishedVersionId,PROJECT);
+  f.app.businessStore.db.prepare('UPDATE customer_assets SET total_assets=? WHERE snapshot_id=? AND client_id=?').run('9999.00',version.snapshotId,'CLIENT-001');
+  const response=await f.call('/open/dapis/integrity-query?client_id=CLIENT-001',undefined,{authorization:'Bearer '+app.body.token});
+  assert.equal(response.status,409);
+  assert.equal(response.body.code,'SOURCE_SNAPSHOT_UNAVAILABLE');
+});
+test('service recovery evidence is owned, read-only, data-free and detects snapshot loss',async t=>{
+  const f=await setup(t,{offlineCompute:true}),d=await f.create('recovery-owned',['client_id','total_assets']);
+  const path=`/data-services/dapis/${d.id}/recovery`;
+  assert.equal(privateServiceRoute('GET','/api/v2'+path),true);
+  assert.equal(privateServiceRoute('POST','/api/v2'+path),false);
+  assert.equal(privateServiceRoute('GET','/api/v2'+path+'?sql=SELECT%201'),false);
+  assert.equal((await f.call(path)).status,401);assert.equal((await f.call(path,undefined,f.b)).status,403);
+  const beforeDocuments=f.s.list('data_service',PROJECT).length;
+  const report=(await f.call(path,undefined,f.a)).body;
+  assert.equal(report.healthy,true);assert.match(report.bootId,/^[a-f0-9-]{36}$/);
+  assert.match(report.fingerprint,/^[a-f0-9]{64}$/);
+  assert.equal(report.state.evidence[0].snapshot.actualRowCount,2);
+  assert.ok(!JSON.stringify(report).includes('CLIENT-001'));
+  assert.ok(!JSON.stringify(report).includes('tokenHash'));
+  assert.equal(f.s.list('data_service',PROJECT).length,beforeDocuments);
+  assert.equal((await f.call(path,undefined,f.a)).body.fingerprint,report.fingerprint);
+  f.app.businessStore.db.exec('DELETE FROM customer_assets; DELETE FROM service_snapshots;');
+  const missing=(await f.call(path,undefined,f.a)).body;
+  assert.equal(missing.healthy,false);assert.equal(missing.state.evidence[0].snapshot,null);
+  assert.equal(missing.state.evidence[0].code,'SOURCE_SNAPSHOT_UNAVAILABLE');
+});
 test('standalone Python client sends only application authorization and verifies real query response',async t=>{
   const f=await setup(t),d=await f.create('python-client-query',['client_id','total_assets']);
   const app=await f.call('/data-services/applications',{name:'独立Python查询客户端',serviceIds:[d.id]},f.a,'python-client');
