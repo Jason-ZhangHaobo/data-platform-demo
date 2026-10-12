@@ -9,6 +9,8 @@ import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
 import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport } from "./agent-development-workflow.mjs";
+import { createCloudPublication } from "./cloud-publication.mjs";
+import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import { privateAgentRecovery } from "./private-agent-recovery.mjs";
 import {
@@ -308,6 +310,9 @@ export function createV2Server(options = {}) {
   const durableDelivery = durableAgent && durableDevelopment
     ? createDurableAgentDelivery({ store, project: PROJECT, runner: durableDevelopment, artifactStore, persist: persistDevelopment, assertRunBudget: () => budget.assertCanStartRemoteSpark(), reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) })
     : undefined;
+  const privatePublicationConfig = privateReleaseConfig(env);
+  if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery)) throw new Error("私有发布须使用已启用的私有持久执行边界");
+  const cloudPublication = durableDelivery ? createCloudPublication({ store, project: PROJECT, runner: durableDevelopment, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) }) : undefined;
   const agentDriverMode = env.V2_AGENT_DRIVER_MODE ?? "DISABLED";
   if (!["DISABLED", "PRIVATE_TICK"].includes(agentDriverMode)) throw new Error("Agent 后台推进模式不受支持");
   if (agentDriverMode === "PRIVATE_TICK" && (!privateSmokeEnabled || !durableAgent))
@@ -1008,7 +1013,8 @@ export function createV2Server(options = {}) {
   };
   const readBody = async (req) => (await readJsonBody(req)).parsed;
   const readPrivateSmokeBody = async (req) => {
-    if (!String(req.headers["content-type"]).startsWith("application/octet-stream"))
+    const binaryPayload = String(req.headers["content-type"]).startsWith("application/octet-stream");
+    if (!binaryPayload && !(privatePublicationConfig && String(req.headers["content-type"]).startsWith("application/json")))
       throw fail(415, "私有函数验收仅接受二进制事件载荷");
     let body = "";
     for await (const chunk of req) {
@@ -1021,6 +1027,9 @@ export function createV2Server(options = {}) {
     } catch {
       throw fail(400, "私有函数验收载荷不是JSON");
     }
+    if (parsed && typeof parsed === "object" && ("triggerName" in parsed || "payload" in parsed))
+      return { operation: "PRIVATE_RELEASE_TIMER_V1", ...validatePrivateReleaseTimer(parsed, privatePublicationConfig, options.now?.() ?? Date.now()) };
+    if (!binaryPayload) throw fail(415, "普通私有调用只接受二进制载荷");
     if (
       !parsed ||
       typeof parsed !== "object" ||
@@ -1127,6 +1136,10 @@ export function createV2Server(options = {}) {
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = await readPrivateSmokeBody(req);
+        if (privateInput.operation === "PRIVATE_RELEASE_TIMER_V1") {
+          if (!cloudPublication || !privatePublicationConfig) throw fail(503,"私有发布调度未启用");
+          return json(res,200,await cloudPublication.tick(privateInput));
+        }
         if (privateInput.operation === "PRIVATE_AGENT_RECOVERY_V1")
           return json(res, 200, await privateAgentRecovery(privateInput, { store, project: PROJECT,
             engine: durableAgent, persist: persistDevelopment, bootId: privateRuntimeBootId }));
@@ -1359,7 +1372,7 @@ export function createV2Server(options = {}) {
                   dataState: { driver: "sqlite", healthy: true },
                 },
           publicReady: false,
-          agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery), publishAvailable: local && releaseSchedulerMode === "LOCAL_TIMER" },
+          agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER") },
           validationContract: {
             id: validationContractId,
             fixtureCount: contextIds.length,
@@ -4574,9 +4587,22 @@ export function createV2Server(options = {}) {
           report: developmentVerificationReport(agent, run, revision),
           delivery: publicDeliveryTask(delivery),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
-          verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: verification.validation, finishedAt: verification.finishedAt } : undefined,
-          publication: { available: local && releaseSchedulerMode === "LOCAL_TIMER", scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD", reason: local ? "审阅后可发布本机测试任务并观察实际计时批次。" : "云端定时执行与发布后监控尚未验收；交付演练通过后保留为待发布，不能视为上线。" },
+          verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: verification.validation, finishedAt: verification.finishedAt } : undefined,
+          publication: { available: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER"), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
+      }
+      const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel))?$/);
+      if (privatePublication) {
+        const agent = get("agent", privatePublication[1]); requireDurableAgentOwner(agent,req);
+        if(agent.executionMode!==durableSqlAgentMode)throw fail(422,"云端发布仅支持持久SQL Agent任务");
+        if (!cloudPublication) throw fail(503,"云端发布执行器尚未配置");
+        if (method==="GET" && !privatePublication[2]) return json(res,200,await cloudPublication.detail(agent.id));
+        if (method==="POST" && privatePublication[2]==="cancel") { await readBody(req); return json(res,200,await cloudPublication.cancel(agent.id)); }
+        if (method==="POST" && !privatePublication[2]) {
+          const body=await readBody(req);
+          if(Object.keys(body).some(k=>!["packageDigest","verificationId","attestations"].includes(k)))throw fail(422,"发布请求包含未支持字段");
+          return json(res,202,await cloudPublication.publish({agent,packageDigest:text(body.packageDigest,64,64),verificationId:text(body.verificationId,1,80),attestations:body.attestations,actorId:auth.sessionFromHeaders(req.headers)?.user.id,idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
+        }
       }
       if (path === "/api/v2/agent/deliveries" && method === "GET") {
         const sourceId = url.searchParams.get("sourceAgentTaskId");

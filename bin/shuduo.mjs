@@ -27,6 +27,9 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent prepare-delivery --id AGENT_TASK_ID
   shuduo agent delivery --id DELIVERY_TASK_ID
   shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION
+  shuduo agent publication --id AGENT_TASK_ID
+  shuduo agent publish --id AGENT_TASK_ID --file REVIEW_JSON
+  shuduo agent stop-publication --id AGENT_TASK_ID
   shuduo agent cancel-delivery --id DELIVERY_TASK_ID
   shuduo python revisions
   shuduo python create --context holdings-t1 --file transform.py
@@ -363,6 +366,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "agent" && action === "workflow")
       result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
+    else if (resource === "agent" && action === "publication")
+      result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/publication`);
+    else if (resource === "agent" && action === "publish")
+      result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/publication`,{method:"POST",body:JSON.parse(readFileSync(required(parsed.options,"file"),"utf8"))});
+    else if (resource === "agent" && action === "stop-publication")
+      result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/publication/cancel`,{method:"POST",body:{}});
     else if (resource === "agent" && action === "deliveries") {
       const sourceId = parsed.options.source_id;
       result = await client.request(
