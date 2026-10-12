@@ -62,6 +62,9 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services sources [--agent-task-id ID]
   shuduo services openapi --type dapi|xapi --id ID
   shuduo services recovery --type dapi|xapi --id ID
+  shuduo services show|history --type dapi|xapi --id ID
+  shuduo services new-version --type dapi|xapi --id ID [--source-run-id ID] [--fields client_id,total_assets] [--rate-limit 60] [--timeout 1500]
+  shuduo services activate --type dapi|xapi --id ID --version-id VERSION --expected-version LIVE_VERSION --config-hash SHA256 --request-id KEY --confirm
   shuduo services calls [--id ID]
   shuduo services invoke --type dapi|xapi --slug path [--client-id CLIENT-001]
   shuduo apps list
@@ -574,9 +577,22 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
               body:
                 action === "test"
                   ? { clientId: parsed.options.client_id, page: 1, pageSize: 20 }
-                  : parsed.options.config_hash ? {configHash:parsed.options.config_hash} : {},
+                  : {configHash:required(parsed.options,"config_hash")},
             }),
       });
+    } else if(resource === "services" && ["show","history"].includes(action)){
+      result=await client.request(`/data-services/${typePath(required(parsed.options,"type"))}/${encodeURIComponent(required(parsed.options,"id"))}${action==="history"?"/history":""}`);
+    } else if(resource === "services" && action==="new-version"){
+      const type=required(parsed.options,"type");
+      const body={...(type==="dapi"?{sourceReleaseRunId:required(parsed.options,"source_run_id")}:{}),
+        ...(parsed.options.fields?{fields:list(parsed.options.fields,"--fields")} : {}),
+        ...(parsed.options.rate_limit?{rateLimitPerMinute:Number(parsed.options.rate_limit)}:{}),
+        ...(parsed.options.timeout?{timeoutMs:Number(parsed.options.timeout)}:{})};
+      result=await client.request(`/data-services/${typePath(type)}/${encodeURIComponent(required(parsed.options,"id"))}/versions`,{method:"POST",body});
+    } else if(resource === "services" && action==="activate"){
+      if(parsed.options.confirm!==true)throw new Error("切换/回滚会影响查询端点，需审阅线上版本与目标摘要并提供--confirm");
+      result=await client.request(`/data-services/${typePath(required(parsed.options,"type"))}/${encodeURIComponent(required(parsed.options,"id"))}/activate`,{method:"POST",idempotencyKey:required(parsed.options,"request_id"),body:{
+        versionId:required(parsed.options,"version_id"),expectedPublishedVersionId:required(parsed.options,"expected_version"),configHash:required(parsed.options,"config_hash")}});
     } else if (resource === "services" && action === "calls") {
       result = await client.request(
         `/data-services/calls${parsed.options.id ? `?service_id=${encodeURIComponent(parsed.options.id)}` : ""}`,

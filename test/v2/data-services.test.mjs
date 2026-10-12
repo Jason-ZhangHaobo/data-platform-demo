@@ -275,6 +275,10 @@ test("XAPI pins published DAPI versions and composes holdings with cash", async 
     });
     assert.equal(xapiVersion2.versionNumber, 2);
     assert.equal(xapiVersion2.steps.length, 2);
+    assert.throws(()=>app.manager.createXapi({name:'错误版本提示',slug:'invalid-version-hint',steps:[
+      {alias:'positions',dapiId:holdings.id,dapiVersionId:'unreviewed-other-version'},
+      {alias:'cash',dapiId:cash.id},
+    ]}),{code:'STALE_SERVICE_VERSION'});
     await app.manager.test(xapi.id, { clientId: "CLIENT-001" });
     const published = app.manager.publish(xapi.id).service,
       issued = app.manager.createApplication({

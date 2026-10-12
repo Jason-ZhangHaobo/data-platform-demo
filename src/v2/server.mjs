@@ -11,6 +11,7 @@ import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "
 import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport } from "./agent-development-workflow.mjs";
 import { createCloudPublication } from "./cloud-publication.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
+import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import { privateAgentRecovery } from "./private-agent-recovery.mjs";
@@ -3962,7 +3963,7 @@ export function createV2Server(options = {}) {
         );
       }
       const dataServiceRecord = path.match(
-        /^\/api\/v2\/data-services\/(dapis|xapis)\/([a-f0-9-]+)(?:\/(versions|test|publish|activate|openapi|calls))?$/,
+        /^\/api\/v2\/data-services\/(dapis|xapis)\/([a-f0-9-]+)(?:\/(versions|test|publish|activate|openapi|calls|history))?$/,
       );
       if (dataServiceRecord) {
         const type = dataServiceRecord[1] === "dapis" ? "DAPI" : "XAPI",
@@ -3982,6 +3983,8 @@ export function createV2Server(options = {}) {
           );
         if (method === "GET" && action === "calls")
           return json(res, 200, dataServices.listCalls(service.id));
+        if (method === "GET" && action === "history")
+          return json(res,200,store.list('service_version_switch',PROJECT).filter(r=>r.serviceId===service.id));
         if (method === "POST" && action === "versions") {
           const body = await readBody(req),
             key = text(req.headers["idempotency-key"], 1, 100),
@@ -3998,16 +4001,15 @@ export function createV2Server(options = {}) {
         if (method === "POST" && action === "test")
           return json(res, 200, await dataServices.test(service.id, await readBody(req)));
         if (method === "POST" && action === "publish")
-          return json(res, 200, dataServices.publish(service.id));
+          return json(res, 200, publishServiceReviewed(dataServices,service.id,await readBody(req)));
         if (method === "POST" && action === "activate") {
           const body = await readBody(req);
           return json(
             res,
             200,
-            dataServices.activate(
-              service.id,
-              text(body.versionId, 1, 80),
-            ),
+            activateServiceReviewed({manager:dataServices,store,project:PROJECT,serviceId:service.id,
+              actorId:auth.sessionFromHeaders(req.headers)?.user.id ?? 'local-engineer',
+              key:req.headers['idempotency-key'],body}),
           );
         }
       }

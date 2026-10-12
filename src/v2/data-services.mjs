@@ -21,6 +21,15 @@ const canonical = (value) =>
   );
 export const serviceHash = (value) =>
   createHash("sha256").update(canonical(value)).digest("hex");
+export function serviceVersionConfigValid(version) {
+  if(!version || !['DAPI','XAPI'].includes(version.serviceType))return false;
+  const keys=version.serviceType==='DAPI'?
+    ['sourceReleaseRunId','sourceReleaseId','sourceEngine','sourceEngineVersion','sourcePackageDigest','scope','snapshotId','snapshotHash','fields','timeoutMs','rateLimitPerMinute','parameterSchema','queryTemplate']:
+    ['steps','scope','joinKey','timeoutMs','rateLimitPerMinute','parameterSchema'];
+  const config={serviceType:version.serviceType};
+  for(const key of keys)if(Object.hasOwn(version,key))config[key]=version[key];
+  try{return serviceHash(config)===version.configHash;}catch{return false;}
+}
 const text = (value, name, min = 1, max = 100) => {
   if (
     typeof value !== "string" ||
@@ -551,6 +560,14 @@ export class DataServiceManager {
         "当前版本尚无通过的真实查询测试，不能发布",
         "SERVICE_TEST_REQUIRED",
       );
+    const dataVersions=version.serviceType==='DAPI'?[version]:version.steps.map(step=>this.#version(step.dapiVersionId));
+    for(const dataVersion of dataVersions){
+      const snapshot=this.businessStore.snapshotEvidence(dataVersion.snapshotId);
+      if(!snapshot?.integrityVerified || snapshot.contentHash!==dataVersion.snapshotHash)
+        throw fail(409,'已测试快照当前缺失或变化，不能发布','SOURCE_SNAPSHOT_UNAVAILABLE');
+    }
+    if(service.publishedVersionId===version.id && version.status==='PUBLISHED')
+      return {service,version,test,replayed:true};
     if (service.publishedVersionId) {
       const prior = this.#version(service.publishedVersionId);
       if (prior.id !== version.id)
@@ -775,6 +792,8 @@ export class DataServiceManager {
     const version = this.store.get("data_service_version", id, this.project);
     if (!version)
       throw fail(404, "未找到数据服务版本", "VERSION_NOT_FOUND");
+    if(!serviceVersionConfigValid(version))
+      throw fail(409,'不可变版本配置与摘要不一致，不能执行或切换','SERVICE_VERSION_CORRUPT');
     return version;
   }
 
@@ -848,6 +867,8 @@ export class DataServiceManager {
       const dapi = this.#service(dapiId, "DAPI");
       if (dapi.status !== "PUBLISHED" || !dapi.publishedVersionId)
         throw fail(409, "XAPI只能绑定已发布DAPI版本", "UNPUBLISHED_STEP");
+      if(step.dapiVersionId!==undefined && step.dapiVersionId!==dapi.publishedVersionId)
+        throw fail(409,'指定DAPI版本已变化，请重新审阅；不会静默替换为最新版','STALE_SERVICE_VERSION');
       aliases.add(alias);
       serviceIds.add(dapiId);
       return {

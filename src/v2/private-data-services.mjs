@@ -1,6 +1,7 @@
 import { DataServiceManager, serviceHash, verifiedPrivateServiceSource } from "./data-services.mjs";
 import { privateServiceRoute } from "./private-service-routes.mjs";
 import { privateServiceRecovery } from "./private-service-recovery.mjs";
+import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(new Error(message),{status,code});
 
@@ -55,8 +56,9 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       const type=path.endsWith("dapis")?"DAPI":"XAPI",b=await readBody(req);checkInput(a,type,b);
       const d=dedup(type,b,()=>{const s=type==="DAPI"?manager.createDapi(b):manager.createXapi(b);return store.update("data_service",s.id,project,{createdBy:owner,scope:"PRIVATE_CLOUD_TEST"});});return {status:d.replayed?200:201,body:manager.detail(d.id)};
     }
-    const match=path.match(new RegExp(`^/api/v2/data-services/(dapis|xapis)/(${uuid})(?:/(versions|test|publish|activate|openapi|calls|recovery))?$`));
+    const match=path.match(new RegExp(`^/api/v2/data-services/(dapis|xapis)/(${uuid})(?:/(versions|test|publish|activate|openapi|calls|recovery|history))?$`));
     if(match){const type=match[1]==="dapis"?"DAPI":"XAPI",s=service(a,match[2]),action=match[3];if(s.serviceType!==type)throw fail(404,"服务类型不匹配");
+      if(method==="GET" && action==="history")return {status:200,body:store.list("service_version_switch",project).filter(r=>r.serviceId===s.id)};
       if(method==="GET" && action==="recovery")return {status:200,body:privateServiceRecovery({
         service:s,bootId,businessStore,source,ownedService:id=>service(a,id),
         getVersion:id=>get("data_service_version",id),
@@ -67,8 +69,10 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       const b=await readBody(req);
       if(action==="versions"){checkInput(a,type,b,true);const d=dedup(`${type}:${s.id}:version`,b,()=>type==="DAPI"?manager.createDapiVersion(s.id,b):manager.createXapiVersion(s.id,b));return {status:d.replayed?200:201,body:get("data_service_version",d.id)};}
       if(action==="test")return {status:200,body:await manager.test(s.id,b)};
-      if(action==="publish"){bodyKeys(b,["configHash"]);if(b.configHash!==s.currentVersion.configHash)throw fail(409,"服务配置已经变更，请重新审阅测试","STALE_SERVICE_VERSION");return {status:200,body:manager.publish(s.id)};}
-      if(action==="activate"){bodyKeys(b,["versionId"]);return {status:200,body:manager.activate(s.id,b.versionId)};}
+      if(action==="publish")return {status:200,body:publishServiceReviewed(manager,s.id,b)};
+      if(action==="activate"){
+        return {status:200,body:activateServiceReviewed({manager,store,project,serviceId:s.id,actorId:owner,key,body:b})};
+      }
     }
     throw fail(404,"接口不存在");
   }

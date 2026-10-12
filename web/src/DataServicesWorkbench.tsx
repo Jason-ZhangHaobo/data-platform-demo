@@ -88,16 +88,20 @@ type TestReceipt = {
     rowCount: number;
     resultHash: string;
     durationMs: number;
+    versionId: string;
+    configHash: string;
   };
   response: {
     data: Record<string, unknown>[];
     pagination: { total: number };
   };
 };
+type VersionSwitchReceipt = {id:string;fromVersionId:string;toVersionId:string;targetConfigHash:string;createdAt:string};
+type VersionReview = {serviceId:string;type:"DAPI"|"XAPI";versionId:string;configHash:string;expectedPublishedVersionId:string;targetNumber:number;liveNumber:number;accepted:boolean};
 type RecoveryReport = {
   bootId: string; healthy: boolean; fingerprint: string; checkedAt: string;
   state: { serviceId: string; calls: unknown[]; applications: {id:string;status:string}[];
-    evidence: {verified:boolean;snapshot?:{actualRowCount:number;integrityVerified:boolean}|null}[] };
+    evidence: {verified:boolean;code?:string;snapshot?:{actualRowCount:number;integrityVerified:boolean}|null}[] };
 };
 type ServiceAgentPlan = {
   id: string;
@@ -180,6 +184,8 @@ export function DataServicesWorkbench({
     [issuedToken, setIssuedToken] = useState("");
   const [tokenVisible,setTokenVisible]=useState(false),[issuedAppId,setIssuedAppId]=useState("");
   const [recoveryReport,setRecoveryReport]=useState<RecoveryReport>();
+  const [showVersionEditor,setShowVersionEditor]=useState(false),[versionProfile,setVersionProfile]=useState<keyof typeof fieldProfiles>("full"),[versionRate,setVersionRate]=useState("60"),[versionTimeout,setVersionTimeout]=useState("1500");
+  const [versionReview,setVersionReview]=useState<VersionReview>(),[switchHistory,setSwitchHistory]=useState<VersionSwitchReceipt[]>([]);
   const activeServiceRef=useRef(selectedId);activeServiceRef.current=selectedId;
   const [agentMessage, setAgentMessage] = useState(
       "基于已发布的持仓与现金DAPI，规划一个财富顾问客户资产组合XAPI",
@@ -203,6 +209,9 @@ export function DataServicesWorkbench({
       ? calls.filter((item) => item.serviceId === selected.id)
       : calls;
   const currentPublished=Boolean(selected?.currentVersion && selected.currentVersion.id===selected.publishedVersion?.id);
+  const versionContext=`${selectedId}:${selected?.currentVersion?.id??""}`;
+  const activeVersionRef=useRef(versionContext);activeVersionRef.current=versionContext;
+  const currentTestValid=Boolean(selected?.currentVersion && testReceipt?.test.status==="PASSED" && testReceipt.test.versionId===selected.currentVersion.id && testReceipt.test.configHash===selected.currentVersion.configHash);
   const requestKeys=useRef<Record<string,{signature:string;key:string}>>({});
   const keyFor=(action:string,body:unknown)=>{const signature=JSON.stringify(body),old=requestKeys.current[action];if(old?.signature===signature)return old.key;const key=crypto.randomUUID();requestKeys.current[action]={signature,key};return key;};
 
@@ -237,7 +246,9 @@ export function DataServicesWorkbench({
     setIssuedToken("");
     setTokenVisible(false);
     setRecoveryReport(undefined);
-  }, [selectedId]);
+    setVersionReview(undefined);setShowVersionEditor(false);setSwitchHistory([]);
+    if(selected?.currentVersion){setVersionRate(String(selected.currentVersion.rateLimitPerMinute));setVersionTimeout(String(selected.currentVersion.timeoutMs));setVersionProfile(selected.currentVersion.fields?.includes("holding_market_value") ? selected.currentVersion.fields.includes("available_cash")?"full":"holdings":"cash");}
+  }, [selectedId, selected?.currentVersion?.id]);
   useEffect(() => {
     if (!agentPlan || !["QUEUED", "RUNNING"].includes(agentPlan.status)) return;
     const timer = setInterval(async () => {
@@ -343,6 +354,7 @@ export function DataServicesWorkbench({
   };
   const testService = async () => {
     if (!selected) return;
+    const context=versionContext;
     setBusy("test");
     setError("");
     try {
@@ -350,6 +362,7 @@ export function DataServicesWorkbench({
         `/data-services/${selected.serviceType.toLowerCase()}s/${selected.id}/test`,
         { clientId: "CLIENT-001", page: 1, pageSize: 20 },
       );
+      if(activeVersionRef.current!==context)return;
       setTestReceipt(receipt);
       setNotice("实际业务查询已通过，结果摘要已绑定当前版本");
     } catch (cause) {
@@ -359,13 +372,13 @@ export function DataServicesWorkbench({
     }
   };
   const publish = async () => {
-    if (!selected) return;
+    if (!selected || !currentTestValid) return;
     setBusy("publish");
     setError("");
     try {
       await api(
         `/data-services/${selected.serviceType.toLowerCase()}s/${selected.id}/publish`,
-        privateCloud ? {configHash:selected.currentVersion?.configHash} : {},
+        {configHash:selected.currentVersion?.configHash},
       );
       await reload();
       setNotice(privateCloud ? "当前版本已发布到私有调用通道；不是公网生产接口" : "当前测试版本已发布，本机外部端点已生成");
@@ -426,6 +439,31 @@ export function DataServicesWorkbench({
       setNotice("已读取当前后端实例的恢复对照；仍需重建后比较启动标识与状态摘要");
     }catch(cause){if(activeServiceRef.current===serviceId)setError((cause as Error).message);}
     finally{setBusy("");}
+  };
+  const createVersion = async () => {
+    if(!selected?.currentVersion)return;
+    const resource=selected,prior=selected.currentVersion;
+    setBusy("new-version");setError("");
+    try{
+      const body={...(resource.serviceType==="DAPI"?{sourceReleaseRunId:prior.sourceReleaseRunId,fields:fieldProfiles[versionProfile]}:{}),rateLimitPerMinute:Number(versionRate),timeoutMs:Number(versionTimeout)};
+      await api(`/data-services/${resource.serviceType.toLowerCase()}s/${resource.id}/versions`,body,{idempotencyKey:keyFor("version:"+resource.id,body)});
+      await reload();setNotice("已创建不可变新草稿；原线上版本继续服务，新版本仍须实际测试与审阅发布");
+    }catch(cause){setError((cause as Error).message);}finally{setBusy("");}
+  };
+  const loadSwitchHistory = async () => {
+    if(!selected)return;const resource=selected;setBusy("history");setError("");
+    try{const rows=await api<VersionSwitchReceipt[]>(`/data-services/${resource.serviceType.toLowerCase()}s/${resource.id}/history`);if(activeServiceRef.current===resource.id)setSwitchHistory(rows);}
+    catch(cause){setError((cause as Error).message);}finally{setBusy("");}
+  };
+  const activateVersion = async () => {
+    if(!versionReview?.accepted)return;const review=versionReview;
+    setBusy("activate");setError("");
+    try{
+      const body={versionId:review.versionId,expectedPublishedVersionId:review.expectedPublishedVersionId,configHash:review.configHash};
+      const result=await api<{receipt:VersionSwitchReceipt;targetStillActive:boolean}>(`/data-services/${review.type.toLowerCase()}s/${review.serviceId}/activate`,body,{idempotencyKey:keyFor("activate:"+review.serviceId,body)});
+      await reload();setVersionReview(undefined);
+      setNotice(result.targetStillActive?`版本切换已记录回执 ${result.receipt.id.slice(0,8)}；没有重新运行模型或Spark` : "原切换请求已处理，但线上版本后来已改变；请查看版本历史，不会重复回滚");
+    }catch(cause){setError((cause as Error).message);}finally{setBusy("");}
   };
 
   return (
@@ -667,7 +705,7 @@ export function DataServicesWorkbench({
               </section>
               <div className="service-version-grid">
                 <div>
-                  <span>当前版本</span>
+                  <span>{currentPublished?"线上版本":"当前草稿"}</span>
                   <strong>V{selected.currentVersion?.versionNumber}</strong>
                 </div>
                 <div>
@@ -683,6 +721,7 @@ export function DataServicesWorkbench({
                   <code>{selected.currentVersion?.configHash.slice(0, 12)}</code>
                 </div>
               </div>
+              {!currentPublished && selected.publishedVersion && <div className="service-contract-preview"><span>线上 V{selected.publishedVersion.versionNumber}</span><small>查询端点仍使用原发布版本；当前草稿尚未上线。</small></div>}
               <section className="service-definition">
                 <header>
                   <h4>{selected.serviceType === "DAPI" ? "查询定义" : "组合编排"}</h4>
@@ -723,7 +762,7 @@ LIMIT :limit OFFSET :offset`}</pre>
                 <button
                   className="button primary"
                   onClick={publish}
-                  disabled={!canWrite || !testReceipt || currentPublished || !!busy}
+                  disabled={!canWrite || !currentTestValid || currentPublished || !!busy}
                 >
                   <Rocket size={15} />
                   {currentPublished ? "当前版本已发布" : "发布当前版本"}
@@ -742,8 +781,35 @@ LIMIT :limit OFFSET :offset`}</pre>
                   创建调用凭证
                 </button>
               </div>
+              <section className="service-definition" aria-label="版本治理">
+                <header><h4>版本历史与受控切换</h4><button className="button" disabled={!canWrite||!!busy} onClick={()=>setShowVersionEditor(!showVersionEditor)}>新建版本</button></header>
+                {showVersionEditor && <div className="service-create-panel">
+                  <small>{selected.serviceType==="DAPI"?"复用当前已核验发布批次，不重新计算业务数据。":"保留原固定DAPI子版本，不跟随它们的最新版本。"}</small>
+                  <div className="service-form-grid">
+                    {selected.serviceType==="DAPI" && <label>返回字段模板<select value={versionProfile} onChange={e=>setVersionProfile(e.target.value as keyof typeof fieldProfiles)}><option value="holdings">持仓市值与证券数量</option><option value="cash">现金与总资产</option><option value="full">完整客户资产</option></select></label>}
+                    <label>每分钟限流<input type="number" min={1} max={600} value={versionRate} onChange={e=>setVersionRate(e.target.value)}/></label>
+                    <label>查询超时（毫秒）<input type="number" min={100} max={5000} value={versionTimeout} onChange={e=>setVersionTimeout(e.target.value)}/></label>
+                  </div>
+                  <button className="button" disabled={!canWrite||!!busy} onClick={createVersion}>保存新版本草稿</button>
+                </div>}
+                {selected.versions.map(v=><div key={v.id} className="service-contract-preview">
+                  <span>V{v.versionNumber} {v.id===selected.publishedVersion?.id?"线上":v.status==="DRAFT"?"草稿":"历史"}</span><code>{v.configHash.slice(0,12)}</code>
+                  {v.id!==selected.publishedVersion?.id && ["PUBLISHED","RETIRED"].includes(v.status) && selected.publishedVersion && <button className="button" disabled={!canWrite||!!busy} onClick={()=>setVersionReview({serviceId:selected.id,type:selected.serviceType,versionId:v.id,configHash:v.configHash,expectedPublishedVersionId:selected.publishedVersion!.id,targetNumber:v.versionNumber,liveNumber:selected.publishedVersion!.versionNumber,accepted:false})}>审阅切换到 V{v.versionNumber}</button>}
+                </div>)}
+                {versionReview && <div className="service-create-panel" role="group" aria-label="版本切换审阅">
+                  <strong>线上 V{versionReview.liveNumber} → 目标 V{versionReview.targetNumber}</strong>
+                  <code>目标摘要 {versionReview.configHash.slice(0,16)}</code>
+                  <small>切换影响本服务查询端点；固定引用它的XAPI仍使用原子版本。线上版本变化后旧审阅将被拒绝。</small>
+                  <label><input type="checkbox" checked={versionReview.accepted} onChange={e=>setVersionReview({...versionReview,accepted:e.target.checked})}/>我已核对线上版本、目标摘要及查询影响</label>
+                  <button className="button primary" disabled={!canWrite||!versionReview.accepted||!!busy} onClick={activateVersion}>确认切换版本</button>
+                  <button className="button" disabled={!!busy} onClick={()=>setVersionReview(undefined)}>取消审阅</button>
+                </div>}
+                <button className="button" disabled={!!busy} onClick={loadSwitchHistory}>查看切换回执</button>
+                {switchHistory.map(r=><small key={r.id}>回执 {r.id.slice(0,8)} · {r.fromVersionId.slice(0,8)} → {r.toVersionId.slice(0,8)} · {new Date(r.createdAt).toLocaleString()}</small>)}
+              </section>
               {recoveryReport && <section className="service-definition" aria-label="服务恢复对照">
-                <header><h4>当前实例恢复对照</h4><span>{recoveryReport.healthy ? "快照及来源完整" : "快照缺失或漂移"}</span></header>
+                <header><h4>当前实例恢复对照</h4><span>{recoveryReport.healthy ? "快照及来源完整" : "数据或版本校验未通过"}</span></header>
+                {recoveryReport.state.evidence.filter(e=>!e.verified).map((e,i)=><small key={i}>{e.code==="SERVICE_VERSION_CORRUPT"?"不可变版本配置与摘要不一致":e.code==="VERSION_NOT_FOUND"?"固定子版本缺失":"来源或实际数据快照缺失、漂移"}</small>)}
                 <div className="service-version-grid">
                   <div><span>后端启动标识</span><code>{recoveryReport.bootId.slice(0,12)}</code></div>
                   <div><span>状态摘要</span><code>{recoveryReport.fingerprint.slice(0,12)}</code></div>
