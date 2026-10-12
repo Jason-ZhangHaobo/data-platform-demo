@@ -28,6 +28,8 @@ GUI、`shuduo agent workflow`、`shuduo agent advance-delivery --version …`和
 
 每次事件最多提交一个新批次。两个独立验证批次均完成且没有未解除告警后才判健康；失败留下告警，后续真实成功才能关联恢复，历史失败保留。已完成的两个批次明确标记测试完成，不暗示持续生产调度。首次云端激活需核对具体触发器、日期/频率、清理、费用和原权限边界；通用代码及本机合成测试不代表云端验收。
 
+临时驱动关闭后，已有发布编号、完成批次和健康记录仍能只读恢复；界面不得把已完成发布重新标成“待发布”，也不能自动重启下一批次。完整发布编号用于GUI/API/CLI/MCP关联，不是认证凭证。
+
 规范依据：[FC定时事件与Cron](https://help.aliyun.com/zh/functioncompute/time-triggers)。日期限定Cron在测试后仍需清理；应用的过期签名阻止窗口外派发，但不能代替移除触发器。
 
 导出的`shuduo-delivery-package.json`可用现有`shuduo-package unpack`解包，摘要从包记录取得。它是版本产物，不能把下载行为视为上线。
