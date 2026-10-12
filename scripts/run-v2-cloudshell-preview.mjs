@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { readFile, realpath } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { privateServiceRoute } from "../src/v2/private-service-routes.mjs";
 
 const error = (status, message) => Object.assign(new Error(message), { status });
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
@@ -13,18 +14,22 @@ const reads = new RegExp(`^/api/v2/(?:status|budget|contexts|auth/session|revisi
 const writes = new RegExp(`^/api/v2/(?:auth/(?:login|logout)|revisions|runs|runs/${uuid}/cancel)$`);
 const agentReads = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}(?:/(?:workflow|publication))?)?|deliveries/${uuid})$`);
 const agentWrites = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}/(?:advance|cancel|prepare-delivery|publication(?:/cancel)?))?|deliveries/${uuid}/(?:advance|cancel))$`);
-const routeAllowed = (method, path, allowAgent) => (method === "GET" ? reads : method === "POST" ? writes : /$a/).test(path) ||
-  (allowAgent && (method === "GET" ? agentReads : method === "POST" ? agentWrites : /$a/).test(path));
+const routeAllowed = (method, path, allowAgent, allowDataServices) => (method === "GET" ? reads : method === "POST" ? writes : /$a/).test(path) ||
+  (allowAgent && (method === "GET" ? agentReads : method === "POST" ? agentWrites : /$a/).test(path)) || (allowDataServices && privateServiceRoute(method,path));
 const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".ttf": "font/ttf" };
 // On Linux Node's child stdin is a socket: reopening /dev/stdin fails ENXIO.
 // Python reads that descriptor directly, then supplies a real anonymous pipe
 // to the CLI. Neither credentials nor request bodies are written to disk.
 export const pipeBridge = "import subprocess,sys; p=subprocess.Popen(sys.argv[1:],stdin=subprocess.PIPE); p.communicate(sys.stdin.buffer.read()); sys.exit(p.returncode)";
 
-export function privatePayload(method, path, headers, body, { allowAgent = false } = {}) {
-  if (!routeAllowed(method, path, allowAgent))
+export function privatePayload(method, path, headers, body, { allowAgent = false, allowDataServices = false } = {}) {
+  if (!routeAllowed(method, path, allowAgent, allowDataServices))
     throw error(404, "此接口尚未接入私有预览");
   const forwarded = { "x-shuduo-client": "workbench" };
+  if(allowDataServices && method==="GET" && path.startsWith("/api/v2/open/") && headers.authorization) {
+    if(typeof headers.authorization!=="string" || headers.authorization.length>4096 || /[\r\n]/.test(headers.authorization))throw error(400,"应用认证头无效");
+    forwarded.authorization=headers.authorization;
+  }
   for (const key of ["x-csrf-token", "idempotency-key", "x-project-id"]) {
     if (headers[key]) {
       if (typeof headers[key] !== "string" || headers[key].length > 4096 || /[\r\n]/.test(headers[key])) throw error(400, "请求头无效");
@@ -76,7 +81,7 @@ export function invokePrivate(payload, spawnImpl = spawn, functionName = process
   });
 }
 
-export function createPreviewServer({ origin, webRoot, invoke = invokePrivate, maxCalls = 200, localProxyPort, allowAgent = false }) {
+export function createPreviewServer({ origin, webRoot, invoke = invokePrivate, maxCalls = 200, localProxyPort, allowAgent = false, allowDataServices = false }) {
   const expected = new URL(origin);
   if (origin !== expected.origin || expected.username || expected.password ||
       !(expected.protocol === "https:" || (expected.protocol === "http:" && ["127.0.0.1", "localhost"].includes(expected.hostname))))
@@ -102,17 +107,18 @@ export function createPreviewServer({ origin, webRoot, invoke = invokePrivate, m
       const path = req.url || "/";
       if (path.startsWith("/api/")) {
         if (req.headers["sec-fetch-site"] === "cross-site") throw error(403, "拒绝跨站请求");
-        if (req.headers["x-shuduo-client"] !== "workbench") throw error(403, "仅允许工作台请求");
+        const applicationQuery=allowDataServices && req.method==="GET" && path.startsWith("/api/v2/open/") && privateServiceRoute(req.method,path);
+        if (!applicationQuery && req.headers["x-shuduo-client"] !== "workbench") throw error(403, "仅允许工作台请求");
         if (req.method === "POST" && (req.headers.origin !== origin || !/^application\/json(?:;|$)/i.test(req.headers["content-type"] || ""))) throw error(403, "写入必须来自当前工作台");
         // Validate route before consuming any input or invoking the CLI.
-        if (!routeAllowed(req.method, path, allowAgent)) throw error(404, "此接口尚未接入私有预览");
+        if (!routeAllowed(req.method, path, allowAgent, allowDataServices)) throw error(404, "此接口尚未接入私有预览");
         let body;
         if (req.method === "POST") {
           let size = 0, chunks = [];
           for await (const chunk of req) { size += chunk.length; if (size > 64000) throw error(413, "请求内容过大"); chunks.push(chunk); }
           try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { throw error(400, "JSON 格式无效"); }
         }
-        const payload = privatePayload(req.method, path, req.headers, body, { allowAgent });
+        const payload = privatePayload(req.method, path, req.headers, body, { allowAgent, allowDataServices });
         if (waiting >= 8 || calls >= maxCalls) throw error(429, "本次预览调用额度已达上限，请稍后核查后重启预览");
         waiting++; calls++;
         const action = tail.then(() => invoke(payload));
@@ -132,7 +138,7 @@ export function createPreviewServer({ origin, webRoot, invoke = invokePrivate, m
       const file = await realpath(resolve(root, pathname === "/v2/" ? "index.html" : pathname.slice(4)));
       if (!file.startsWith(root + sep)) throw error(403, "文件路径不允许");
       let content = await readFile(file);
-      if (pathname === "/v2/") content = Buffer.from(content.toString().replace("<head>", '<head><meta name="shuduo-private-preview" content="true">' + (allowAgent ? '<meta name="shuduo-agent-development" content="true">' : "")));
+      if (pathname === "/v2/") content = Buffer.from(content.toString().replace("<head>", '<head><meta name="shuduo-private-preview" content="true">' + (allowAgent ? '<meta name="shuduo-agent-development" content="true">' : "") + (allowDataServices ? '<meta name="shuduo-private-services" content="true">' : "")));
       res.writeHead(200, { "Content-Type": types[extname(file)] || "application/octet-stream", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" });
       res.end(req.method === "HEAD" ? undefined : content);
     } catch (cause) {
@@ -150,7 +156,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (!args.includes("--origin")) throw new Error("Pass --origin with the verified account-restricted HTTPS Web Preview origin");
   const origin = option("--origin"), port = Number(args.includes("--port") ? option("--port") : 60000);
   if (![60000, 61000, 62000, 63000, 64000, 65000].includes(port)) throw new Error("Unsupported Cloud Shell preview port");
-  const server = createPreviewServer({ origin, localProxyPort: port, allowAgent: args.includes("--agent-development"), webRoot: resolve(fileURLToPath(new URL("../web-dist", import.meta.url))) });
+  const server = createPreviewServer({ origin, localProxyPort: port, allowAgent: args.includes("--agent-development"), allowDataServices:args.includes("--data-services"), webRoot: resolve(fileURLToPath(new URL("../web-dist", import.meta.url))) });
   // The managed preview gateway reaches the VM interface even though it sends
   // a loopback Host. Host/Origin gates above remain mandatory on all requests.
   server.listen(port, "0.0.0.0", () => console.log("数舵私有预览已启动；45 分钟后自动停止，最多 200 次云端请求。不记录密码、Cookie 或请求正文。"));

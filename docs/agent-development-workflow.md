@@ -30,6 +30,18 @@ GUI、`shuduo agent workflow`、`shuduo agent advance-delivery --version …`和
 
 临时驱动关闭后，已有发布编号、完成批次和健康记录仍能只读恢复；界面不得把已完成发布重新标成“待发布”，也不能自动重启下一批次。完整发布编号用于GUI/API/CLI/MCP关联，不是认证凭证。
 
+## 发布结果的数据服务消费（默认关闭）
+
+私有数据服务由`V2_PRIVATE_DATA_SERVICES_ENABLED`显式开启，必须处于原IAM保护的私有边界，不创建公网触发器。`GET /api/v2/data-services/sources`仅返回本人或项目管理员可使用的已完成健康云发布批次摘要，支持`agent_task_id`过滤；不返回输入、结果行或原始日志。
+
+首版沿用DAPI/XAPI生命周期API，保存版本、源发布批次、包摘要和真实结果快照摘要。服务管理使用正常邀请身份、项目权限、资源所有者与CSRF；请求幂等键包含操作者。发布提交审阅过的`configHash`且须有同版本成功测试。编辑新草稿不切断旧发布端点。私有XAPI固定同一源批次的子DAPI版本，拒绝混合来源；通用多数据集编排后续另扩。
+
+`GET /api/v2/open/dapis/:slug`和`…/xapis/:slug`使用只授予指定服务的独立应用Bearer令牌，不借用工程师Cookie或模型密钥。查询只接受客户编号与分页参数，运行不可变结果快照的参数化查询，不重新调用模型或Spark。数据面快照缺失或摘要不一致时失败，不能返回预设值或伪装为空结果。应用令牌只回显一次、持久化只存哈希，可撤销；调用与限流记录持久保存，私有单并发边界下串行判断限流。
+
+独立客户端为`scripts/query-v2-data-service.py`：从权限0600的令牌文件读取，禁用重定向，仅GET查询；stdout不含令牌。通过私有通道的调用不等于公网外部系统已接入。OpenAPI标记`PRIVATE_CLOUD_TEST`，正式域名、HTTPS与网络验收仍单独完成。
+
+GUI在独立Agent工作台提供“发布结果→接口交付”，经典数据服务模块也可使用同一组件与API。`shuduo services sources`、MCP `data_service_sources`共用元数据读取；私有发布通过CLI `--config-hash`或MCP `configHash`绑定版本。首版界面使用明确的字段契约模板创建草稿，不冒充新的模型语义规划。
+
 规范依据：[FC定时事件与Cron](https://help.aliyun.com/zh/functioncompute/time-triggers)。日期限定Cron在测试后仍需清理；应用的过期签名阻止窗口外派发，但不能代替移除触发器。
 
 导出的`shuduo-delivery-package.json`可用现有`shuduo-package unpack`解包，摘要从包记录取得。它是版本产物，不能把下载行为视为上线。

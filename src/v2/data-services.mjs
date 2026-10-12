@@ -2,6 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { validateDeliveryPackage, sha256 } from "./delivery.mjs";
+import { contextIds } from "./context.mjs";
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -77,11 +79,14 @@ const normalizeFields = (value) => {
     throw fail(400, "返回字段不在客户资产输出契约内", "INVALID_FIELDS");
   return fields.includes("client_id") ? fields : ["client_id", ...fields];
 };
-const normalizeQuery = (value = {}) => ({
+const normalizeQuery = (value = {}) => {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(k => !["clientId", "client_id", "page", "pageSize", "page_size"].includes(k)))
+    throw fail(400, "查询只接受客户编号和分页参数", "INVALID_QUERY");
+  return ({
   clientId: clientId(value.clientId ?? value.client_id),
   page: integer(value.page, "页码", 1, 1, 10000),
   pageSize: integer(value.pageSize ?? value.page_size, "每页数量", 20, 1, 100),
-});
+}); };
 const publicApp = (app) => {
   if (!app) return app;
   const { tokenHash, ...safe } = app;
@@ -206,6 +211,11 @@ export class BusinessQueryStore {
   close() {
     this.db.close();
   }
+
+  snapshot(id) {
+    const value=this.db.prepare("SELECT id,content_hash,row_count FROM service_snapshots WHERE id=?").get(id);
+    return value ? {id:value.id,contentHash:value.content_hash,rowCount:value.row_count} : undefined;
+  }
 }
 
 export class DataServiceManager {
@@ -214,6 +224,8 @@ export class DataServiceManager {
     businessStore,
     project,
     releaseRunFor,
+    scope = "LOCAL_TEST_ONLY",
+    verifySource,
     now = () => Date.now(),
     executeDapi,
   }) {
@@ -221,15 +233,20 @@ export class DataServiceManager {
     this.businessStore = businessStore;
     this.project = project;
     this.releaseRunFor = releaseRunFor;
+    if (!["LOCAL_TEST_ONLY", "PRIVATE_CLOUD_TEST"].includes(scope)) throw new Error("Unsupported service scope");
+    this.scope = scope;
+    this.verifySource = verifySource;
     this.now = now;
     this.executeDapi =
       executeDapi ??
-      ((version, input) =>
-        this.businessStore.queryAssets(
+      ((version, input) => {
+        if(this.businessStore.snapshot(version.snapshotId)?.contentHash!==version.snapshotHash)
+          throw fail(409,"服务结果快照缺失或摘要不一致，不能以空结果冒充恢复成功","SOURCE_SNAPSHOT_UNAVAILABLE");
+        return this.businessStore.queryAssets(
           version.snapshotId,
           input,
           version.fields,
-        ));
+        ); });
   }
 
   list(type) {
@@ -290,6 +307,8 @@ export class DataServiceManager {
         sourceReleaseId: releaseRun.releaseId,
         sourceEngine: releaseRun.engine,
         sourceEngineVersion: releaseRun.engineVersion,
+        ...(releaseRun.packageDigest ? { sourcePackageDigest: releaseRun.packageDigest } : {}),
+        scope: this.scope,
         snapshotId: snapshot.id,
         snapshotHash: snapshot.contentHash,
         fields,
@@ -325,6 +344,8 @@ export class DataServiceManager {
         sourceReleaseId: releaseRun.releaseId,
         sourceEngine: releaseRun.engine,
         sourceEngineVersion: releaseRun.engineVersion,
+        ...(releaseRun.packageDigest ? { sourcePackageDigest: releaseRun.packageDigest } : {}),
+        scope: this.scope,
         snapshotId: snapshot.id,
         snapshotHash: snapshot.contentHash,
         fields: normalizeFields(input.fields ?? prior.fields),
@@ -347,7 +368,7 @@ export class DataServiceManager {
       });
     this.store.update("data_service", service.id, this.project, {
       currentVersionId: version.id,
-      status: "DRAFT",
+      status: service.publishedVersionId ? "PUBLISHED" : "DRAFT",
     });
     return version;
   }
@@ -373,6 +394,7 @@ export class DataServiceManager {
       }),
       version = this.#createVersion(service, {
         steps,
+        scope: this.scope,
         joinKey: "client_id",
         timeoutMs,
         rateLimitPerMinute,
@@ -392,6 +414,7 @@ export class DataServiceManager {
       prior = this.#version(service.currentVersionId),
       version = this.#createVersion(service, {
         steps: input.steps === undefined ? prior.steps : this.#steps(input.steps),
+        scope: this.scope,
         joinKey: "client_id",
         timeoutMs: integer(
           input.timeoutMs,
@@ -411,7 +434,7 @@ export class DataServiceManager {
       });
     this.store.update("data_service", service.id, this.project, {
       currentVersionId: version.id,
-      status: "DRAFT",
+      status: service.publishedVersionId ? "PUBLISHED" : "DRAFT",
     });
     return version;
   }
@@ -574,7 +597,7 @@ export class DataServiceManager {
       if (service.status !== "PUBLISHED")
         throw fail(409, "应用只能授权已发布的数据服务", "UNPUBLISHED_GRANT");
     }
-    const token = "sz_local_" + randomBytes(24).toString("base64url"),
+    const token = (this.scope === "PRIVATE_CLOUD_TEST" ? "sz_private_" : "sz_local_") + randomBytes(24).toString("base64url"),
       app = this.store.create("service_app", this.project, {
         name,
         status: "ACTIVE",
@@ -582,7 +605,7 @@ export class DataServiceManager {
         tokenHash: serviceHash(token),
         tokenPrefix: token.slice(0, 17),
         createdBy: "local-engineer",
-        scope: "LOCAL_TEST_ONLY",
+        scope: this.scope,
       });
     return { application: publicApp(app), token, tokenShownOnce: true };
   }
@@ -629,7 +652,7 @@ export class DataServiceManager {
       info: {
         title: service.name,
         version: String(version.versionNumber),
-        description: "虚构证券数据服务；当前本机测试，不代表公网可用。",
+        description: this.scope === "PRIVATE_CLOUD_TEST" ? "虚构证券发布结果的私有云快照查询，不是公网生产服务。" : "虚构证券数据服务；当前本机测试，不代表公网可用。",
       },
       servers: [{ url: origin }],
       paths: {
@@ -657,7 +680,7 @@ export class DataServiceManager {
           bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "opaque" },
         },
       },
-      "x-shuduo-scope": "LOCAL_TEST_ONLY",
+      "x-shuduo-scope": this.scope,
       "x-shuduo-service-version-id": version.id,
     };
   }
@@ -705,7 +728,9 @@ export class DataServiceManager {
           versionId: version.id,
         },
         callId: call.id,
-        localTestOnly: true,
+        localTestOnly: this.scope === "LOCAL_TEST_ONLY",
+        scope: this.scope,
+        publicDeployed: false,
       };
     } catch (error) {
       if (!error.logged)
@@ -743,6 +768,10 @@ export class DataServiceManager {
   }
 
   #assertReleaseRun(run) {
+    if (this.scope === "PRIVATE_CLOUD_TEST") {
+      if (typeof this.verifySource !== "function") throw fail(409,"缺少私有来源核验器","INVALID_RELEASE_PROVENANCE");
+      this.verifySource(run);
+    }
     const sparkEvidence =
         run?.engine === "Apache Spark" &&
         run.mainSqlExecuted === true &&
@@ -763,7 +792,7 @@ export class DataServiceManager {
     )
       throw fail(
         409,
-        "DAPI只能绑定已由本机调度器真实执行并验证通过的发布批次",
+        "DAPI只能绑定已由调度器真实执行并验证通过的发布批次",
         "INVALID_RELEASE_RUN",
       );
   }
@@ -789,7 +818,7 @@ export class DataServiceManager {
       throw fail(400, "XAPI必须编排2—5个已发布DAPI", "INVALID_STEPS");
     const aliases = new Set(),
       serviceIds = new Set();
-    return value.map((step) => {
+    const steps = value.map((step) => {
       const alias = text(step?.alias, "步骤别名", 2, 30),
         dapiId = text(step?.dapiId, "DAPI编号", 3, 80);
       if (!/^[a-z][a-z0-9_]*$/.test(alias) || aliases.has(alias))
@@ -807,6 +836,12 @@ export class DataServiceManager {
         dapiVersionId: dapi.publishedVersionId,
       };
     });
+    if (this.scope === "PRIVATE_CLOUD_TEST") {
+      const versions=steps.map(s=>this.#version(s.dapiVersionId));
+      if (versions.some(v=>v.scope!==this.scope || !v.sourcePackageDigest || v.sourceReleaseRunId!==versions[0].sourceReleaseRunId || v.snapshotHash!==versions[0].snapshotHash || v.sourcePackageDigest!==versions[0].sourcePackageDigest))
+        throw fail(409,"私有XAPI必须组合同一已核验发布批次的DAPI版本","MIXED_SOURCE_VERSIONS");
+    }
+    return steps;
   }
 
   async #execute(version, query) {
@@ -870,12 +905,13 @@ export class DataServiceManager {
     if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
       throw fail(401, "需要应用Bearer令牌", "TOKEN_REQUIRED");
     const token = authorization.slice(7);
-    if (!/^sz_local_[A-Za-z0-9_-]{32}$/.test(token))
+    const prefix=this.scope === "PRIVATE_CLOUD_TEST" ? "sz_private_" : "sz_local_";
+    if (!new RegExp(`^${prefix}[A-Za-z0-9_-]{32}$`).test(token))
       throw fail(401, "应用令牌无效", "TOKEN_INVALID");
     const tokenHash = serviceHash(token),
       app = this.store
         .list("service_app", this.project)
-        .find((item) => item.tokenHash === tokenHash && item.status === "ACTIVE");
+        .find((item) => item.tokenHash === tokenHash && item.status === "ACTIVE" && item.scope === this.scope);
     if (!app) throw fail(401, "应用令牌无效", "TOKEN_INVALID");
     if (!app.serviceIds.includes(serviceId))
       throw fail(403, "应用未获当前数据服务授权", "SERVICE_FORBIDDEN");
@@ -899,3 +935,12 @@ export class DataServiceManager {
 }
 
 export const dataServiceFields = Object.freeze([...assetFields]);
+
+// Validate stored, already executed output. Never rerun Spark or substitute fixtures.
+export function verifiedPrivateServiceSource({run,release,bundle,approval}) {
+  if (!run || !release || !bundle || !approval || run.publicDeployed!==false || release.publicDeployed!==false || release.scope!=="PRIVATE_CLOUD_TEST" || approval.packageId!==bundle.id) throw fail(409,"缺少发布来源证据","INVALID_RELEASE_PROVENANCE");
+  const plan=validateDeliveryPackage(bundle,bundle.digest);
+  if (run.mode!=="DURABLE_PRIVATE_RELEASE_V1" || release.mode!==run.mode || run.releaseId!==release.id || release.status!=="COMPLETED_CLOUD_TEST" || release.health!=="HEALTHY" || run.status!=="SUCCEEDED" || !run.published || !run.schedulerTriggered || run.clockMode!=="FC_TIMER" || run.packageId!==bundle.id || release.packageId!==bundle.id || run.packageDigest!==bundle.digest || release.packageDigest!==bundle.digest || release.sourceCodeHash!==plan.source.sqlHash || approval.id!==release.approvalId || approval.status!=="APPROVED" || approval.packageDigest!==bundle.digest || run.engine!=="Apache Spark" || run.engineVersion!==plan.deployment.runtime.version || run.mainSqlExecuted!==true || run.testSqlValidation?.passed!==true || run.testSqlValidation.sqlHash!==sha256(bundle.files["tests.sql"]) || run.validation?.passed!==true || !contextIds.every(id=>run.validation.regressions?.some(c=>c.contextId===id&&c.passed)) || !Array.isArray(run.rows) || run.testDouble===true)
+    throw fail(409,"发布版本、实际执行与独立断言证据不一致","INVALID_RELEASE_PROVENANCE");
+  return run;
+}

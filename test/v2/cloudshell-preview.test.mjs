@@ -122,6 +122,14 @@ test("CLI bridge requires an explicit protected function identifier", async () =
   await assert.rejects(invokePrivate({},()=>{spawned=true;},"../invalid"), e=>e.status===503);
   assert.equal(spawned,false);
 });
+test("private service preview admits an independent bearer-only client but does not widen management routes", async t=>{
+  const {request,calls}=await fixture(t,{allowDataServices:true});
+  const response=await request('/api/v2/open/dapis/customer-assets?client_id=CLIENT-001',{headers:{authorization:'Bearer synthetic-query-token','x-shuduo-client':''}});
+  assert.equal(response.status,200);assert.equal(calls[0].headers.authorization,'Bearer synthetic-query-token');assert.equal(calls[0].headers.cookie,undefined);
+  assert.equal((await request('/api/v2/data-services/agent/plans')).status,404);
+  assert.equal((await request('/api/v2/open/dapis/customer-assets?sql=SELECT%201')).status,404);
+  assert.ok(!JSON.stringify(privatePayload('GET','/api/v2/data-services/sources',{authorization:'never-forward'},{},{allowDataServices:true})).includes('never-forward'));
+});
 
 test("real anonymous pipe supports CLI-style /dev/stdin reopening on Linux", async () => {
   const child = spawn("python3", ["-c", pipeBridge, "python3", "-c", "import sys;sys.stdout.write(open('/dev/stdin').read())"], { stdio: ["pipe", "pipe", "pipe"] });

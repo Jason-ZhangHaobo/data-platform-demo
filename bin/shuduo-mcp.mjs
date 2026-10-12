@@ -56,7 +56,8 @@ const tools = [
   { name: "xapi_list", description: "列出版本化XAPI。", inputSchema: { type: "object", properties: {} } },
   { name: "xapi_create", description: "声明式编排2—5个已发布DAPI版本，不自动发布。", inputSchema: { type: "object", properties: { name: { type: "string" }, slug: { type: "string" }, steps: { type: "array", items: { type: "object", properties: { alias: { type: "string" }, dapiId: { type: "string" } }, required: ["alias", "dapiId"], additionalProperties: false } } }, required: ["name", "slug", "steps"] } },
   { name: "data_service_test", description: "实际执行当前DAPI/XAPI版本并保存测试证据。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" }, clientId: { type: "string" } }, required: ["type", "serviceId"] } },
-  { name: "data_service_publish", description: "发布已有成功测试证据的当前版本。调用前应向用户展示服务、版本摘要和端点。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" } }, required: ["type", "serviceId"] } },
+  { name: "data_service_publish", description: "发布已有成功测试证据的当前版本。调用前应向用户展示服务、版本摘要和端点；私有云必须提交审阅过的configHash。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" },configHash:{type:"string",pattern:"^[a-f0-9]{64}$"} }, required: ["type", "serviceId"] } },
+  {name:"data_service_sources",description:"只读列出本人或项目管理员可访问的真实已核验云端发布批次，不返回结果行或原始日志。",inputSchema:{type:"object",additionalProperties:false,properties:{agentTaskId:{type:"string",format:"uuid"}}}},
   { name: "data_service_openapi", description: "读取指定DAPI/XAPI的OpenAPI 3.1文档。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" } }, required: ["type", "serviceId"] } },
   { name: "data_service_calls", description: "读取数据服务调用日志，可按服务过滤。", inputSchema: { type: "object", properties: { serviceId: { type: "string" } } } },
   { name: "service_application_list", description: "列出调用应用与授权，不返回令牌或令牌哈希。", inputSchema: { type: "object", properties: {} } },
@@ -361,6 +362,7 @@ async function callTool(name, args = {}) {
   if (name === "xapi_list") return client.request("/data-services/xapis");
   if (name === "dapi_create")
     return client.request("/data-services/dapis", { method: "POST", body: args });
+  if(name==="data_service_sources")return client.request("/data-services/sources"+(args.agentTaskId?`?agent_task_id=${encodeURIComponent(args.agentTaskId)}`:""));
   if (name === "xapi_create")
     return client.request("/data-services/xapis", { method: "POST", body: args });
   if (["data_service_test", "data_service_publish", "data_service_openapi"].includes(name)) {
@@ -374,7 +376,7 @@ async function callTool(name, args = {}) {
             body:
               action === "test"
                 ? { clientId: args.clientId, page: 1, pageSize: 20 }
-                : {},
+                : args.configHash ? {configHash:args.configHash} : {},
           }),
     });
   }

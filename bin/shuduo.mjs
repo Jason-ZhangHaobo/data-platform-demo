@@ -58,7 +58,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services create-dapi --name 名称 --slug path --source-run-id ID [--fields a,b]
   shuduo services create-xapi --name 名称 --slug path --steps alias:DAPI_ID,alias:DAPI_ID
   shuduo services test --type dapi|xapi --id ID [--client-id CLIENT-001]
-  shuduo services publish --type dapi|xapi --id ID
+  shuduo services publish --type dapi|xapi --id ID [--config-hash SHA256]
+  shuduo services sources [--agent-task-id ID]
   shuduo services openapi --type dapi|xapi --id ID
   shuduo services calls [--id ID]
   shuduo services invoke --type dapi|xapi --slug path [--client-id CLIENT-001]
@@ -521,6 +522,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "releases" && action === "monitor")
       result = await client.request("/monitoring/overview");
+    else if (resource === "services" && action === "sources") result=await client.request("/data-services/sources"+(parsed.options.agent_task_id?`?agent_task_id=${encodeURIComponent(parsed.options.agent_task_id)}`:""));
     else if (resource === "services" && action === "list") {
       const type = parsed.options.type;
       if (type) result = await client.request(`/data-services/${typePath(type)}`);
@@ -571,7 +573,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
               body:
                 action === "test"
                   ? { clientId: parsed.options.client_id, page: 1, pageSize: 20 }
-                  : {},
+                  : parsed.options.config_hash ? {configHash:parsed.options.config_hash} : {},
             }),
       });
     } else if (resource === "services" && action === "calls") {

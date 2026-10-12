@@ -10,6 +10,7 @@ import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelop
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
 import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport } from "./agent-development-workflow.mjs";
 import { createCloudPublication } from "./cloud-publication.mjs";
+import { createPrivateDataServices } from "./private-data-services.mjs";
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import { privateAgentRecovery } from "./private-agent-recovery.mjs";
@@ -311,6 +312,8 @@ export function createV2Server(options = {}) {
     ? createDurableAgentDelivery({ store, project: PROJECT, runner: durableDevelopment, artifactStore, persist: persistDevelopment, assertRunBudget: () => budget.assertCanStartRemoteSpark(), reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) })
     : undefined;
   const privatePublicationConfig = privateReleaseConfig(env);
+  const privateDataServicesEnabled=env.V2_PRIVATE_DATA_SERVICES_ENABLED==="true";
+  if(privateDataServicesEnabled && !privateSmokeEnabled)throw new Error("私有数据服务只能在受保护的私有边界启用");
   if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery)) throw new Error("私有发布须使用已启用的私有持久执行边界");
   const cloudPublication = durableDelivery ? createCloudPublication({ store, project: PROJECT, runner: durableDevelopment, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) }) : undefined;
   const agentDriverMode = env.V2_AGENT_DRIVER_MODE ?? "DISABLED";
@@ -762,6 +765,7 @@ export function createV2Server(options = {}) {
     now: options.now,
     executeDapi: options.dataServiceExecutor,
   });
+  const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, persist: persistDevelopment }) : undefined;
   const servicePlanner =
     options.servicePlanner ??
     (async (input) => {
@@ -1152,7 +1156,7 @@ export function createV2Server(options = {}) {
           const address = server.address(), base = `http://127.0.0.1:${address.port}`;
           const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
             ? await verifyPrivateApplicationTask(privateInput, { base, store, project: PROJECT })
-            : await callPrivateApplication(privateInput, base, undefined, { allowDurableAgent: Boolean(durableAgent) });
+            : await callPrivateApplication(privateInput, base, undefined, { allowDurableAgent: Boolean(durableAgent), allowDataServices: privateDataServicesEnabled });
           await persistence.flush?.();
           return json(res, 200, result);
         }
@@ -1378,6 +1382,8 @@ export function createV2Server(options = {}) {
             fixtureCount: contextIds.length,
           },
           dataServices: {
+            privateEnabled: privateDataServicesEnabled,
+            scope: privateDataServicesEnabled ? "PRIVATE_CLOUD_TEST" : "LOCAL_TEST_ONLY",
             serviceCount: dataServices.list().length,
             businessDriver: options.stateCoordinator
               ? "sqlite-index-with-oss-snapshot-cas"
@@ -1491,6 +1497,11 @@ export function createV2Server(options = {}) {
             code: "PROJECT_PERMISSION_DENIED",
           });
         return json(res, 200, await cloudReadiness());
+      }
+      if (privateSmokeEnabled && (path.startsWith("/api/v2/data-services/") || path.startsWith("/api/v2/open/"))) {
+        if(!privateServices)throw fail(503,"私有数据服务尚未启用");
+        if(typeof persistence.flush==="function")res.metadataFlush=()=>persistence.flush();
+        const result=await privateServices.handle(req,url,readBody);return json(res,result.status,result.body);
       }
       const openService = path.match(
         /^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/,

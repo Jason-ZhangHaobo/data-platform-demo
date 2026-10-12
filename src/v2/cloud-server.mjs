@@ -80,7 +80,14 @@ const metadataBackend = await MySqlMetadataBackend.open(process.env),
     ...(runnerStatus.descriptor
       ? { runnerDescriptor: runnerStatus.descriptor }
       : {}),
-    env,
+    env: {
+      ...env,
+      // Query saved results independently; do not replace an unavailable
+      // remote executor with local or simulated computation.
+      ...(env.V2_PRIVATE_DATA_SERVICES_ENABLED === "true" && !runnerStatus.runner
+        ? { V2_DURABLE_SQL_AGENT_ENABLED: "false" }
+        : {}),
+    },
   });
 await stateCoordinator.flush();
 const port = Number(process.env.FC_CUSTOM_LISTEN_PORT ?? process.env.PORT ?? 9000),
