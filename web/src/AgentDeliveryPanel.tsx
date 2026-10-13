@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Circle, Download, FileText, LoaderCircle, Package, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { agentJourney } from "./agent-journey";
+import type { TaskConsumption } from "./agent-journey";
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type Delivery = { id: string; version: number; status: string; stage: string; mode?: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string; error?: string };
 type Workflow = {
@@ -31,21 +32,32 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
   const [workflow, setWorkflow] = useState<Workflow>(), [busy, setBusy] = useState(false), [error, setError] = useState(""), [file, setFile] = useState("schedule.json"), [auto, setAuto] = useState(false);
   const [review, setReview] = useState(false), [confirmed, setConfirmed] = useState<Record<string,boolean>>({}), [release, setRelease] = useState<Release>(), [batches, setBatches] = useState<{ id: string; status: string; sequence: number; schedulerTriggered?: boolean }[]>([]);
   const [publication,setPublication]=useState<Publication>();
+  const [consumption,setConsumption]=useState<TaskConsumption>(),[consumptionError,setConsumptionError]=useState("");
+  const consumptionEpoch=useRef(0),workflowEpoch=useRef(0);
   const epoch = useRef(0), alive = useRef(true), requestKey = useRef(crypto.randomUUID());
   const activeTask = useRef(taskId); activeTask.current = taskId;
   const load = async () => {
-    const id = taskId, value = await api<Workflow>(`/agent/tasks/${id}/workflow`);
-    if (alive.current && activeTask.current === id) setWorkflow(value); return value;
+    const id = taskId, sequence=++workflowEpoch.current, value = await api<Workflow>(`/agent/tasks/${id}/workflow`);
+    if (alive.current && activeTask.current === id && sequence===workflowEpoch.current) setWorkflow(value); return value;
+  };
+  const readConsumption=async(value=workflow)=>{
+    const id=taskId,digest=value?.package?.digest,sequence=++consumptionEpoch.current;
+    if(!digest || value?.publication.scope!=="PRIVATE_CLOUD_TEST")return;
+    try{
+      const result=await api<TaskConsumption>(`/data-services/task-evidence?agent_task_id=${encodeURIComponent(id)}&package_digest=${encodeURIComponent(digest)}`);
+      if(alive.current&&activeTask.current===id&&sequence===consumptionEpoch.current){setConsumption(result);setConsumptionError("");}
+    }catch(e){if(alive.current&&activeTask.current===id&&sequence===consumptionEpoch.current){setConsumption(undefined);setConsumptionError(`消费对照尚未确认：${(e as Error).message}。不会新增调用或凭证。`);}}
   };
   useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; }; }, []);
   useEffect(() => { if (!codeBusy) load().catch(e => setError(e.message)); }, [taskId, revisionId, runId, codeBusy]);
   const report = workflow?.report, delivery = workflow?.delivery;
-  const journey = agentJourney({ taskId, revisionId, runId, dirty, report, delivery, bundle: workflow?.package, verification: workflow?.verification, release, batches, alerts: publication?.alerts, events: publication?.events });
+  const journey = agentJourney({ taskId, revisionId, runId, dirty, report, delivery, bundle: workflow?.package, verification: workflow?.verification, release, batches, alerts: publication?.alerts, events: publication?.events, consumption });
   const current = journey.current;
   const verified = journey.steps.find(step => step.id === "validation")?.state === "DONE";
   const working = busy || auto || codeBusy;
   const fileVerified = journey.fileVerified;
   const cloud = workflow?.publication.scope === "PRIVATE_CLOUD_TEST";
+  useEffect(()=>{setConsumption(undefined);setConsumptionError("");void readConsumption();return()=>{consumptionEpoch.current++;};},[taskId,workflow?.package?.digest,cloud]);
   useEffect(() => { setReview(false); setConfirmed({}); }, [workflow?.package?.digest, workflow?.verification?.id, dirty, current]);
   async function drive(start: Delivery) {
     const token = ++epoch.current; setAuto(true); setError(""); let item = start;
@@ -89,7 +101,7 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
     return () => { active = false; clearInterval(timer); };
   }, [release?.id,cloud,taskId,publication?.runs.map(r=>r.status).join(",")]);
   return <section id="agent-delivery" className="agent-delivery-panel" aria-label="核验与发布交付">
-    <header><div><ShieldCheck size={17} /><strong>从开发到交付</strong></div><button className="icon-button" aria-label="刷新核验与交付" disabled={working} onClick={() => load().catch(e => setError(e.message))}><RefreshCw size={14} /></button></header>
+    <header><div><ShieldCheck size={17} /><strong>从开发到交付</strong></div><button className="icon-button" aria-label="刷新核验与交付" disabled={working} onClick={async()=>{try{await readConsumption(await load());}catch(e){setError((e as Error).message);}}}><RefreshCw size={14} /></button></header>
     <div className="agent-journey-summary"><div><span className="eyebrow">TASK JOURNEY · {taskId.slice(0,8)}</span><h3>下一步：{journey.next.label}</h3><p>{journey.next.detail}</p></div><a className="button" href={`#${journey.next.target}`}>查看下一步</a></div>
     <ol className="agent-workflow-steps agent-journey-steps" aria-label="完整任务链路">{journey.steps.map((step,index) => <li key={step.id} className={step.state.toLowerCase()}><a href={`#${step.target}`}>{step.state === "DONE" ? <CheckCircle2 size={15} /> : <Circle size={15} />}<span>{index+1}. {step.label}</span><strong>{({DONE:"证据通过",PENDING:"待完成",ATTENTION:"需要处理",STALE:"修改后待核验"})[step.state]}</strong></a><small>{step.detail}</small></li>)}</ol>
     <small>这是当前任务的证据导航，不是自主E2E评分；私有测试发布不等于公网或生产上线。</small>
@@ -113,7 +125,11 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
         {review && <div className="agent-review-form">{[{id:"code",label:"已审阅当前SQL版本"},{id:"assertions",label:"已查看独立核验与文件演练"},{id:"deliveryFiles",label:"已审阅调度、部署和日历文件"},{id:cloud?"cloudScope":"localScope",label:cloud?"仅发布冻结样例的两个云端测试批次，由受控定时器触发":"仅发布本机测试任务：5秒后触发，共两批次"}].map(item => <label key={item.id}><input type="checkbox" checked={Boolean(confirmed[item.id])} onChange={e => setConfirmed(old => ({...old,[item.id]:e.target.checked}))} />{item.label}</label>)}<button className="button primary" disabled={working || Object.keys(confirmed).length !== 4 || !Object.values(confirmed).every(Boolean)} onClick={() => void publishLocal()}>确认并发布此版本</button></div>}
         {release && <><strong>发布版本 {release.id.slice(0,8)} · {releaseLabel(release)}</strong><p className="agent-publication-id">发布编号：{release.id}</p><ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batchLabels[batch.status] ?? batch.status} · {batch.schedulerTriggered ? "调度器已触发" : batch.status === "CANCELLED" ? "未再触发" : "等待计划时间"}</li>)}</ul>{publication?.alerts.map(alert=><p key={alert.id} role={alert.status==="OPEN"?"alert":undefined}>{alert.status==="OPEN"?"未解除告警":"已恢复"}：{alert.message}{alert.recoveryRunId?` · 恢复批次 ${alert.recoveryRunId.slice(0,8)}`:""}</p>)}{cloud&&release.status!=="CANCELLED"&&batches.some(batch=>!complete(batch.status))&&<button className="button" disabled={working||!canWrite} onClick={async()=>{setBusy(true);try{const next=await api<Publication>(`/agent/tasks/${taskId}/publication/cancel`,{});setPublication(next);setRelease(next.release);setBatches(next.runs);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}><Square size={14}/>停止后续云端批次</button>}{cloud&&<button className="button" onClick={()=>download(`publication-${release.id.slice(0,8)}.json`,publication)}><Download size={14}/>下载发布与监控记录</button>}</>}
       </div>
-      <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务的接口开发、测试与授权。选择实际发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>{onOpenServices ? <><button className="button" disabled={dirty || working || handoffBlocked} onClick={onOpenServices}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>
+      <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务的接口开发、测试与授权。选择实际发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
+        {consumptionError&&<p role="status">{consumptionError}</p>}
+        {consumption&&<><p>{consumption.notice}</p><small>对照时间：{consumption.checkedAt}；这是历史消费记录，不是实时授权保证。</small>{!current&&<p>编辑器或当前查看的批次已变化；下面证据仅供原版本参考。</p>}<ul>{consumption.services.map(s=><li key={s.serviceId}><strong>{s.serviceType} · {s.name}</strong> · 版本 {s.versionId.slice(0,8)} · {s.status==="VERIFIED"?"历史消费证据对照通过":s.status==="NEEDS_ATTENTION"?"需要处理":"待实际授权调用"}<p>{s.notice}</p>{s.call&&<small>调用 {s.call.callId.slice(0,8)} · {s.call.rowCount}行 · 摘要 {s.call.resultHash.slice(0,12)} · {s.call.applicationStatus==="REVOKED"?"应用已撤销，历史记录保留":"对照时应用有效"}</small>}</li>)}</ul>{consumption.truncated&&<p>证据数量超过本次上限，不能标记整个消费阶段完成。</p>}<button className="button" onClick={()=>download(`consumption-${taskId.slice(0,8)}.json`,consumption)}><Download size={14}/>下载消费对照证据</button></>}
+        {cloud&&workflow.package&&<button className="button" disabled={working} onClick={()=>void readConsumption()}>刷新消费证据</button>}
+        {onOpenServices ? <><button className="button" disabled={dirty || working || handoffBlocked} onClick={onOpenServices}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>
     </>}
   </section>;
 }

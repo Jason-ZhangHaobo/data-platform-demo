@@ -23,6 +23,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent trace --id INTENT_ID
   shuduo agent journey --id AGENT_TASK_ID
   shuduo agent workflow --id AGENT_TASK_ID
+  shuduo services task-evidence --task-id AGENT_TASK_ID --package-digest SHA256
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-delivery --id AGENT_TASK_ID
   shuduo agent delivery --id DELIVERY_TASK_ID
@@ -527,6 +528,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "releases" && action === "monitor")
       result = await client.request("/monitoring/overview");
     else if (resource === "services" && action === "sources") result=await client.request("/data-services/sources"+(parsed.options.agent_task_id?`?agent_task_id=${encodeURIComponent(parsed.options.agent_task_id)}`:""));
+    else if (resource === "services" && action === "task-evidence") {
+      result=await client.request(`/data-services/task-evidence?agent_task_id=${encodeURIComponent(required(parsed.options,"task_id"))}&package_digest=${encodeURIComponent(required(parsed.options,"package_digest"))}`);
+    }
     else if (resource === "services" && action === "list") {
       const type = parsed.options.type;
       if (type) result = await client.request(`/data-services/${typePath(type)}`);

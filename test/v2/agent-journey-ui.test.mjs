@@ -39,3 +39,11 @@ test("healthy label alone does not prove monitored publication or all scheduled 
   const changes=[f=>{f.release.packageDigest="old";},f=>{f.release.sourceRevisionId="old";},f=>{f.release.status="CANCELLED";},f=>{f.batches=[];},f=>{f.batches.pop();},f=>{f.batches[1].id=f.batches[0].id;},f=>{f.batches[1].schedulerTriggered=false;},f=>{f.alerts=[{status:"OPEN"}];},f=>{f.events=[];},f=>{f.events[1].packageDigest="old";}];
   for(const mutate of changes){const f=fixture();mutate(f);assert.notEqual(stage(f,"monitoring"),"DONE");}
 });
+test('consumption stages bind task, package, current version, receipt and complete composition',()=>{
+  const consumption={protocol:'shuduo-private-task-consumption/v1',taskId:'synthetic-task',packageDigest:'digest-one',scope:'PRIVATE_CLOUD_TEST',status:'VERIFIED',truncated:false,services:[{serviceType:'XAPI',status:'VERIFIED',fullAssetComposition:true,versionId:'x-version',call:{verified:true,versionId:'x-version',rowCount:2}}]};
+  assert.equal(stage({...fixture(),consumption},'services'),'DONE');
+  assert.equal(agentJourney({...fixture(),consumption}).next.id,'evidence');
+  for(const patch of [{taskId:'foreign'},{packageDigest:'old'},{truncated:true},{status:'PENDING'},{services:[]},{scope:'LOCAL_TEST_ONLY'}])assert.notEqual(stage({...fixture(),consumption:{...consumption,...patch}},'services'),'DONE');
+  assert.notEqual(stage({...fixture(),dirty:true,consumption},'services'),'DONE');
+  assert.notEqual(stage({...fixture(),consumption:{...consumption,services:[{...consumption.services[0],call:{verified:true,versionId:'old',rowCount:2}}]}},'services'),'DONE');
+});

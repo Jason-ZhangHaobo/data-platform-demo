@@ -680,6 +680,20 @@ export class DataServiceManager {
       .filter((item) => !serviceId || item.serviceId === serviceId);
   }
 
+  // Recheck an existing successful receipt without invoking an application,
+  // consuming rate limits, recording another call or returning business rows.
+  async recheckCall(serviceId, callId) {
+    const service = this.#service(serviceId),
+      call = this.store.get("service_call", callId, this.project);
+    if (!call || !call.parameters || typeof call.parameters!=="object" || call.serviceId !== service.id || call.serviceVersionId !== service.publishedVersionId || call.outcome !== "SUCCEEDED" || call.statusCode !== 200 || !Number.isSafeInteger(call.rowCount) || call.rowCount < 1 || !/^[a-f0-9]{64}$/.test(call.resultHash ?? ""))
+      throw fail(409, "当前发布版本尚无可对照的非空成功调用", "CONSUMPTION_RECEIPT_UNAVAILABLE");
+    const version = this.#version(call.serviceVersionId);
+    const response = await this.#execute({ ...version, timeoutMs: Math.min(version.timeoutMs, 1000) }, normalizeQuery(call.parameters));
+    return { callId: call.id, versionId: version.id, rowCount: call.rowCount,
+      resultHash: call.resultHash,
+      verified: response.data.length === call.rowCount && serviceHash(response.data) === call.resultHash };
+  }
+
   openApi(serviceId, origin = "http://127.0.0.1:3100") {
     const service = this.#service(serviceId),
       version = this.#version(service.publishedVersionId ?? service.currentVersionId),
