@@ -91,6 +91,10 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   assert.equal((await call(`/agent/tasks/${agent.id}/prepare-delivery`,{}, {cookie:a.cookie})).status,403);
   assert.equal((await call(`/agent/tasks/${agent.id}/prepare-delivery`,{},b)).status,403);
   const started=await call(`/agent/tasks/${agent.id}/prepare-delivery`,{},a);assert.equal(started.status,202);
+  const oldRevision=store.create("revision",PROJECT,{sql:"SELECT 1",hash:sha256("SELECT 1"),contextId:"cash-change"});
+  store.create("agent_delivery_task",PROJECT,{sourceAgentTaskId:agent.id,sourceRevisionId:oldRevision.id,sourceRunId:run.id,status:"SUCCEEDED",stage:"AWAITING_ENGINEER_REVIEW"});
+  const currentWorkflow=await call(`/agent/tasks/${agent.id}/workflow`,undefined,a);
+  assert.equal(currentWorkflow.body.delivery.id,started.body.id,"a newer historical delivery cannot replace current source evidence");
   assert.equal((await call(`/agent/deliveries/${started.body.id}`,undefined,b)).status,403);
   assert.equal((await call(`/agent/deliveries/${started.body.id}/advance`,{expectedVersion:started.body.version},b)).status,403);
   assert.equal((await call("/releases",{},a)).status,503);assert.equal(store.list("release",PROJECT).length,0);
