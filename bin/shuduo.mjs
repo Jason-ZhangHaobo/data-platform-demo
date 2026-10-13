@@ -271,6 +271,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           env.SHUDUO_V2_API_BASE_URL ??
           "http://127.0.0.1:3100/api/v2",
         client: "cli",
+        sessionFile: env.SHUDUO_V2_SESSION_FILE,
       });
   try {
     if (!resource || resource === "help" || parsed.options.help) {

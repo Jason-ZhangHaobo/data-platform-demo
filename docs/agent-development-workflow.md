@@ -13,6 +13,14 @@
 
 此导航是用户体验与证据投影，不是自主E2E评分。公开代码、合成界面测试、本机进程、私有云及公网验收各自记录，不能互相替代。
 
+### CLI与MCP的邀请身份
+
+本机POSIX客户端可用`node bin/shuduo-session.mjs login --base-url API_BASE --email EMAIL --file SESSION_FILE`正常登录已有邀请账号，密码只从标准输入读取，不放参数、环境变量、聊天或MCP工具参数。文件仅存会话Cookie、CSRF及服务端有效期，不存密码；新文件0600、不得覆盖已有文件。用户须在自己的终端安全输入密码。MCP不提供收集密码的工具。
+
+`SHUDUO_V2_SESSION_FILE`由CLI和MCP共用。每次调用检查当前用户所有的普通文件、非符号链接、权限、精确API地址/项目及有效期；非本机HTTP不能传凭证。管理写入携带CSRF，拒绝额外actor覆盖；应用Bearer查询不读取或携带管理Cookie。角色、权限和撤销仍由服务端判断，本机文件的有效期不能证明服务器登录仍有效。
+
+`node bin/shuduo-session.mjs status --file SESSION_FILE --base-url API_BASE`只检查本机范围，不宣称服务器认证。私有FC仍须原IAM受控通道；此会话文件不能绕过云端IAM、开放公网或授予新权限。本机真实邀请API及CLI/MCP进程验证与真实私有云管理身份验收分别记录。此增量仅修改本机客户端，不为当前控制面包重新构建/上传。
+
 ### 任务消费证据（私有只读）
 
 `GET /api/v2/data-services/task-evidence?agent_task_id=UUID&package_digest=SHA256`继承正常项目身份和任务所有者/管理员限制；应用Bearer不能代替管理身份。GUI、`shuduo services task-evidence --task-id … --package-digest …`和MCP `data_service_task_evidence`共享此合同，私有CLI/MCP的真实管理身份连接仍须独立验收。

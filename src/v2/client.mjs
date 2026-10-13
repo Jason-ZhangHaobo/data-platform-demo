@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readSessionCredential } from "./session-credential.mjs";
 
 export const V2_OPERATIONS = Object.freeze([
   "data_service_sources",
@@ -165,6 +166,7 @@ export class V2Client {
     projectId = "project-securities-lab",
     fetchImpl = fetch,
     timeoutMs = 15000,
+    sessionFile,
   } = {}) {
     const parsed = new URL(baseUrl);
     if (!["http:", "https:"].includes(parsed.protocol))
@@ -176,6 +178,7 @@ export class V2Client {
     this.projectId = projectId;
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
+    this.sessionFile = sessionFile;
   }
 
   async request(
@@ -191,6 +194,9 @@ export class V2Client {
   ) {
     if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//"))
       throw new Error("V2 API路径不合法");
+    const session=this.sessionFile&&!authorization?readSessionCredential(this.sessionFile,this.baseUrl,this.projectId):undefined;
+    if(authorization&&actorId)throw Error('APPLICATION_ACTOR_OVERRIDE_FORBIDDEN');
+    if(session){const target=new URL(this.baseUrl+path),base=new URL(this.baseUrl);if(target.origin!==base.origin||!target.pathname.startsWith(base.pathname+'/'))throw Error('SESSION_REQUEST_SCOPE_INVALID');if(actorId)throw Error('SESSION_ACTOR_OVERRIDE_FORBIDDEN');}
     const controller = AbortSignal.timeout(timeoutMs ?? this.timeoutMs),
       response = await this.fetchImpl(this.baseUrl + path, {
         method,
@@ -205,6 +211,7 @@ export class V2Client {
             ? {}
             : { "Idempotency-Key": idempotencyKey ?? randomUUID() }),
           ...(authorization ? { Authorization: authorization } : {}),
+          ...(session ? {Cookie:session.cookie,...(method==='GET'?{}:{'X-CSRF-Token':session.csrfToken})}:{}),
           ...(actorId ? { "X-Actor-Id": actorId } : {}),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
