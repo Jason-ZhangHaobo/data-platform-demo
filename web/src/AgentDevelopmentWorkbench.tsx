@@ -13,8 +13,8 @@ const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
-export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, loading, privatePreview, onLogin, onDirtyChange }: {
-  api: Api; contexts: Context[]; canWrite: boolean; ready: boolean; loading: boolean; privatePreview: boolean; onLogin: () => void; onDirtyChange: (dirty: boolean) => void;
+export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, loading, privatePreview, onLogin, onDirtyChange, onOpenServices }: {
+  api: Api; contexts: Context[]; canWrite: boolean; ready: boolean; loading: boolean; privatePreview: boolean; onLogin: () => void; onDirtyChange: (dirty: boolean) => void; onOpenServices?: () => void;
 }) {
   const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState("holdings-t1");
   const [message, setMessage] = useState(""), [draft, setDraft] = useState(""), [baseline, setBaseline] = useState("");
@@ -85,16 +85,18 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
   async function selectTask(id: string, protectDraft = true) {
     const keepDraft = selectedId.current === id && dirty;
     if (protectDraft && dirty && !keepDraft && !confirm("当前代码有未保存修改，是否放弃修改并切换任务？")) return;
-    epoch.current++; setAutomatic(false); setBusy(true); setError("");
+    const selectionEpoch = ++epoch.current; setAutomatic(false); setBusy(true); setError("");
     rememberSelection(id);
     try {
       const current = await api<Task>(`/agent/tasks/${id}`);
-      if (!alive.current || selectedId.current !== id) return;
+      if (!alive.current || selectedId.current !== id || epoch.current !== selectionEpoch) return;
       accept(current); setContextId(current.contextId);
       if (!keepDraft) { setDraft(current.sql ?? ""); setBaseline(current.sql ?? ""); setBaselineRevisionId(current.revisionId); setDiff(false); }
-      setRun(current.runId ? await api<Run>(`/runs/${current.runId}`) : undefined);
+      const actual = current.runId ? await api<Run>(`/runs/${current.runId}`) : undefined;
+      if (!alive.current || selectedId.current !== id || epoch.current !== selectionEpoch) return;
+      setRun(actual);
       setNotice(keepDraft ? "服务端状态已刷新，未保存的编辑已保留；运行结果仍对应原代码版本。" : "已恢复服务端任务；读取历史不会重新调用模型。点击继续才会推进。");
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) { if (alive.current && epoch.current === selectionEpoch) setError((e as Error).message); } finally { if (alive.current && epoch.current === selectionEpoch) setBusy(false); }
   }
   function newTask() {
     if (dirty && !confirm("当前代码有未保存修改，是否放弃并新建任务？")) return;
@@ -189,7 +191,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
         {!tasks.length && <p className="agent-dev-empty">还没有委托。<br />从一个明确的证券业务需求开始。</p>}
         {tasks.map(t => <button disabled={working} className={t.id === task?.id ? "selected" : ""} key={t.id} onClick={() => void selectTask(t.id)}><strong>{t.message}</strong><span>{stageText[t.stage ?? t.status] ?? t.status}</span><small>{t.id.slice(0,8)}</small></button>)}
       </aside>
-      <section className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
+      <section id="agent-requirement" className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
         <div className="agent-dev-conversation">
           <details className="agent-dev-context" open={!task}><summary>本次数据与业务口径 <ChevronDown size={14} /></summary>
             <label>验证数据<select aria-label="Agent 验证数据" disabled={working || Boolean(task) || Boolean(run && !terminal(run.status))} value={contextId} onChange={e => { setContextId(e.target.value); setRun(undefined); setBaselineRevisionId(undefined); }}>{contexts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
@@ -214,7 +216,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
         </div>
         <form className="agent-dev-compose" onSubmit={e => { e.preventDefault(); void send(); }}><label htmlFor="agent-dev-message">{task ? "基于当前代码提出下一次修改" : "描述开发需求"}</label><textarea id="agent-dev-message" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} placeholder="例如：计算客户总资产，检查现金是否被重复累计…" disabled={working} /><div><small>本次将真实调用模型与隔离 Spark</small><button className="button primary" type="submit" disabled={!ready || !canWrite || working || runPending || message.trim().length < 4}><Send size={14} />按此口径生成并验证</button></div></form>
       </section>
-      <section className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : baselineRevisionId ? `版本 ${baselineRevisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>
+      <section id="agent-code" className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : baselineRevisionId ? `版本 ${baselineRevisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>
         <div className="agent-dev-editor"><Suspense fallback={<div className="agent-dev-empty">正在加载代码编辑器…</div>}><SqlEditor value={draft} original={codeOriginal} diff={diff} onChange={setDraft} readOnly={working} /></Suspense></div>
         <div className="agent-dev-code-actions"><small><Code2 size={14} />{automatic ? "Agent 处理中，可随时停止后接管" : "可直接编辑；修改后需重新验证"}</small>{runPending && !automatic && <button className="button" disabled={!canWrite || busy} onClick={async () => { if (!run) return; setBusy(true); try { setRun(await api<Run>(`/runs/${run.id}/cancel`, {})); setNotice("取消标记已保存；迟到结果不会覆盖已取消状态。"); } catch(e) { setError((e as Error).message); } finally { setBusy(false); } }}><Square size={13} />停止运行</button>}<button className="button" disabled={!canWrite || working || runPending || !draft.trim()} onClick={() => void runDraft()}><Play size={14} />保存并运行我的代码</button></div>
         <div className="agent-dev-result-tabs" role="tablist" aria-label="开发执行反馈">{["结果","校验","日志"].map(name => <button key={name} role="tab" aria-selected={tab === name} onClick={() => setTab(name)}>{name}</button>)}<span>{run ? `${stageText[run.status] ?? run.status} · ${run.id.slice(0,8)}` : "尚未执行"}</span></div>
@@ -227,6 +229,6 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
         </>}</div>
       </section>
     </div>
-    {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite} codeBusy={working} />}
+    {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite} codeBusy={working} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())} />}
   </section>;
 }

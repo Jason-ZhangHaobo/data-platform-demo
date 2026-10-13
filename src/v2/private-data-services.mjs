@@ -9,7 +9,7 @@ const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(
 export { privateServiceRoute } from "./private-service-routes.mjs";
 
 export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,persist=async()=>{}}) {
-  const get=(kind,id)=>store.get(kind,id,project);
+  const get=(kind,id)=>typeof id==="string"?store.get(kind,id,project):undefined;
   const source=id=>{
     const run=get("release_run",id),release=run&&get("release",run.releaseId),bundle=run&&get("delivery_package",run.packageId),approval=release&&get("release_approval",release.approvalId);
     return verifiedPrivateServiceSource({run,release,bundle,approval});

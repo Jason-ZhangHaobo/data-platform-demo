@@ -78,6 +78,14 @@ test('draft edits preserve live endpoint and XAPI rejects mixing different relea
   assert.equal((await f.call(`/data-services/dapis/${c.id}/publish`,{configHash:v.body.configHash},f.a)).status,200);
   const x=await f.call('/data-services/xapis',{name:'混合版本错误',slug:'mixed-source',steps:[{alias:'holdings',dapiId:h.id},{alias:'cash',dapiId:c.id}]},f.a,'mixed');assert.equal(x.status,409);assert.equal(x.body.code,'MIXED_SOURCE_VERSIONS');
 });
+test('source discovery skips incomplete historical release links instead of breaking healthy sources',async t=>{
+  const f=await setup(t,{offlineCompute:true});
+  const incomplete=f.s.create('release',PROJECT,{mode:'DURABLE_PRIVATE_RELEASE_V1',scope:'PRIVATE_CLOUD_TEST'});
+  f.s.create('release_run',PROJECT,{releaseId:incomplete.id,status:'SUCCEEDED'});
+  f.s.create('release_run',PROJECT,{status:'SUCCEEDED'});
+  const sources=await f.call('/data-services/sources',undefined,f.a);
+  assert.equal(sources.status,200);assert.equal(sources.body.length,1);assert.equal(sources.body[0].id,f.run.id);
+});
 test('snapshot querying does not depend on a live compute worker and concurrent calls respect the limit',async t=>{
   const f=await setup(t,{offlineCompute:true}),d=await f.create('isolated-query',['client_id','total_assets']);
   const app=await f.call('/data-services/applications',{name:'只读查询测试应用',serviceIds:[d.id]},f.a,'isolated');

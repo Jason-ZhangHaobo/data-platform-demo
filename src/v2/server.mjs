@@ -4589,7 +4589,7 @@ export function createV2Server(options = {}) {
         requireDurableAgentOwner(agent, req);
         const attempt = agent.attempts?.at(-1), revision = attempt?.revisionId ? get("revision", attempt.revisionId) : undefined,
           run = attempt?.runId ? await reconcileDevelopment(get("run", attempt.runId)) : undefined;
-        let delivery = store.list("agent_delivery_task", PROJECT).find(t => t.sourceAgentTaskId === agent.id);
+        let delivery = store.list("agent_delivery_task", PROJECT).find(t => t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision?.id && t.sourceRunId === run?.id);
         if (delivery?.mode === durableDeliveryMode && durableDelivery) {
           await durableDelivery.reconcile(delivery.id);
           delivery = get("agent_delivery_task", delivery.id);
