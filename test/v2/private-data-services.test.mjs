@@ -32,6 +32,56 @@ async function setup(t,{offlineCompute=false}={}) {
   return{app,s,agent,bundle,release,run,a,b,base,call,create,flushes:()=>flushes};
 }
 
+test('task consumption reads existing authorized calls without issuing tokens or mutating logs',async t=>{
+  const f=await setup(t,{offlineCompute:true});
+  const h=await f.create('evidence-holdings',['client_id','holding_market_value','security_count']),c=await f.create('evidence-cash',['client_id','available_cash','total_assets']);
+  const made=await f.call('/data-services/xapis',{name:'证券客户资产组合',slug:'evidence-overview',steps:[{alias:'holdings',dapiId:h.id},{alias:'cash',dapiId:c.id}]},f.a,'evidence-xapi');
+  assert.equal(made.status,201);const x=made.body;
+  assert.equal((await f.call(`/data-services/xapis/${x.id}/test`,{},f.a)).status,200);
+  assert.equal((await f.call(`/data-services/xapis/${x.id}/publish`,{configHash:x.currentVersion.configHash},f.a)).status,200);
+  const path=`/data-services/task-evidence?agent_task_id=${f.agent.id}&package_digest=${f.bundle.digest}`;
+  assert.equal((await f.call(path)).status,401);assert.equal((await f.call(path,undefined,f.b)).status,403);
+  assert.equal((await f.call('/data-services/task-evidence',undefined,f.a)).status,422);
+  const pending=await f.call(path,undefined,f.a);assert.equal(pending.status,200);assert.equal(pending.body.status,'PENDING');
+  assert.equal(pending.body.services.length,3);assert.equal(f.s.list('service_call',PROJECT).length,0,'query tests are not consumption');
+  const issue=await f.call('/data-services/applications',{name:'合成消费测试',serviceIds:[x.id]},f.a,'evidence-app');
+  const actual=await f.call('/open/xapis/evidence-overview?client_id=CLIENT-001',undefined,{authorization:'Bearer '+issue.body.token});
+  assert.equal(actual.status,200);assert.equal(actual.body.data[0].cash.total_assets,'2300.00');
+  const before=JSON.stringify(f.s.list('service_call',PROJECT)),apps=JSON.stringify(f.s.list('service_app',PROJECT)),flushes=f.flushes();
+  const proof=await f.call(path,undefined,f.a);assert.equal(proof.status,200);assert.equal(proof.body.status,'VERIFIED');
+  const entry=proof.body.services.find(s=>s.serviceId===x.id);assert.equal(entry.call.callId,actual.body.callId);assert.equal(entry.call.verified,true);
+  assert.equal(proof.body.externalSystemVerified,false);assert.equal(proof.body.agentIndependentE2E,false);
+  assert.equal(JSON.stringify(f.s.list('service_call',PROJECT)),before);assert.equal(JSON.stringify(f.s.list('service_app',PROJECT)),apps);assert.equal(f.flushes(),flushes);
+  const text=JSON.stringify(proof.body);for(const secret of [issue.body.token,'tokenHash','tokenPrefix','CLIENT-001','parameters','"rows"'])assert.ok(!text.includes(secret),secret);
+  assert.equal((await f.call(path,undefined,{authorization:'Bearer '+issue.body.token})).status,401);
+  assert.equal((await f.call(`/data-services/applications/${issue.body.application.id}/revoke`,{},f.a)).status,200);
+  const history=await f.call(path,undefined,f.a);assert.equal(history.body.status,'VERIFIED');assert.equal(history.body.services.find(s=>s.serviceId===x.id).call.applicationStatus,'REVOKED');
+  assert.equal((await f.call('/open/xapis/evidence-overview',undefined,{authorization:'Bearer '+issue.body.token})).status,401);
+  const h2=await f.call(`/data-services/dapis/${h.id}/versions`,{sourceReleaseRunId:f.run.id,fields:['client_id','holding_market_value','security_count'],rateLimitPerMinute:45},f.a,'evidence-h2');
+  assert.equal(h2.status,201);await f.call(`/data-services/dapis/${h.id}/test`,{},f.a);
+  assert.equal((await f.call(`/data-services/dapis/${h.id}/publish`,{configHash:h2.body.configHash},f.a)).status,200);
+  assert.equal((await f.call(path,undefined,f.a)).body.status,'VERIFIED','XAPI consumption retains its frozen child version after DAPI upgrade');
+  f.s.update('service_call',actual.body.callId,PROJECT,{resultHash:'f'.repeat(64)});
+  const tampered=await f.call(path,undefined,f.a);assert.equal(tampered.body.status,'PENDING');assert.equal(tampered.body.services.find(s=>s.serviceId===x.id).code,'CONSUMPTION_RESULT_MISMATCH');
+  f.s.update('service_call',actual.body.callId,PROJECT,{resultHash:entry.call.resultHash});
+  const x2=await f.call(`/data-services/xapis/${x.id}/versions`,{steps:[{alias:'holdings',dapiId:h.id},{alias:'cash',dapiId:c.id}]},f.a,'evidence-x2');
+  assert.equal(x2.status,201);await f.call(`/data-services/xapis/${x.id}/test`,{},f.a);
+  assert.equal((await f.call(`/data-services/xapis/${x.id}/publish`,{configHash:x2.body.configHash},f.a)).status,200);
+  assert.equal((await f.call(path,undefined,f.a)).body.status,'PENDING','new XAPI version cannot borrow previous consumer receipt');
+  const otherPackage=await f.call(path.replace(f.bundle.digest,'a'.repeat(64)),undefined,f.a);assert.equal(otherPackage.body.services.length,0);assert.equal(otherPackage.body.status,'PENDING');
+});
+test('task consumption rejects damaged snapshots and changed immutable service versions',async t=>{
+  const f=await setup(t,{offlineCompute:true}),d=await f.create('damaged-evidence',['client_id','total_assets']);
+  const issue=await f.call('/data-services/applications',{name:'合成损坏检测',serviceIds:[d.id]},f.a,'damage-app');
+  assert.equal((await f.call('/open/dapis/damaged-evidence',undefined,{authorization:'Bearer '+issue.body.token})).status,200);
+  const version=f.s.get('data_service_version',d.publishedVersionId,PROJECT);
+  f.app.businessStore.db.prepare('UPDATE customer_assets SET total_assets=? WHERE snapshot_id=? AND client_id=?').run('9999.00',version.snapshotId,'CLIENT-001');
+  const proof=await f.call(`/data-services/task-evidence?agent_task_id=${f.agent.id}&package_digest=${f.bundle.digest}`,undefined,f.a);
+  assert.equal(proof.status,200);assert.equal(proof.body.services[0].status,'NEEDS_ATTENTION');assert.equal(proof.body.services[0].code,'SOURCE_SNAPSHOT_UNAVAILABLE');
+  f.s.update('data_service_version',version.id,PROJECT,{fields:['client_id']});
+  const changed=await f.call(`/data-services/task-evidence?agent_task_id=${f.agent.id}&package_digest=${f.bundle.digest}`,undefined,f.a);
+  assert.equal(changed.body.services[0].code,'SERVICE_VERSION_CORRUPT');
+});
 test('private transport uses exact read/write routes and limits bearer forwarding to queries',()=>{
   const good={operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2/open/dapis/customer-assets?client_id=CLIENT-001',headers:{authorization:'Bearer synthetic'}};
   assert.throws(()=>validatePrivateApplicationRequest(good));assert.equal(validatePrivateApplicationRequest(good,{allowDataServices:true}).path,good.path);

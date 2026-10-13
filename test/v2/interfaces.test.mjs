@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import {
   V2Client,
   V2ApiError,
@@ -17,6 +18,19 @@ test("recovery CLI uses the same read-only versioned API",async()=>{
   assert.equal(code,0);assert.equal(seen.length,1);
   assert.equal(seen[0].path,`/data-services/xapis/${id}/recovery`);
   assert.equal(seen[0].options?.method,undefined);assert.equal(seen[0].options?.body,undefined);
+});
+test('task evidence CLI and MCP map exact read-only task and package scope',async t=>{
+  const seen=[],id='00000000-0000-4000-8000-000000000001',digest='a'.repeat(64);
+  const code=await runV2Cli(['services','task-evidence','--task-id',id,'--package-digest',digest],{}, {client:{request:async(path,options)=>{seen.push({path,options});return{};}},output:()=>{},error:()=>{}});
+  assert.equal(code,0);assert.equal(seen[0].path,`/data-services/task-evidence?agent_task_id=${id}&package_digest=${digest}`);assert.equal(seen[0].options,undefined);
+  const server=createServer((req,res)=>{seen.push({path:req.url.replace('/api/v2',''),method:req.method});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({protocol:'synthetic-mcp-route'}));});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));});
+  const child=spawn(process.execPath,['bin/shuduo-mcp.mjs'],{env:{...process.env,SHUDUO_V2_API_BASE_URL:`http://127.0.0.1:${server.address().port}/api/v2`},stdio:['pipe','pipe','pipe']});
+  t.after(()=>child.kill());let stdout='',stderr='';child.stdout.on('data',c=>stdout+=c);child.stderr.on('data',c=>stderr+=c);
+  child.stdin.end(JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'data_service_task_evidence',arguments:{agentTaskId:id,packageDigest:digest}}})+'\n');
+  const exit=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{child.kill();reject(new Error('MCP mapping deadline'));},5000);child.once('error',e=>{clearTimeout(timer);reject(e);});child.once('close',code=>{clearTimeout(timer);resolve(code);});});
+  assert.equal(exit,0,stderr);const result=JSON.parse(stdout);assert.equal(result.error,undefined);
+  assert.equal(seen[1].path,seen[0].path);assert.equal(seen[1].method,'GET');
 });
 test('CLI activation needs explicit confirmation and stable request id with reviewed versions',async()=>{
   const seen=[],id='00000000-0000-4000-8000-000000000001',hash='a'.repeat(64);

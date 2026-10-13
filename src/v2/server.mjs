@@ -1501,7 +1501,7 @@ export function createV2Server(options = {}) {
       }
       if (privateSmokeEnabled && (path.startsWith("/api/v2/data-services/") || path.startsWith("/api/v2/open/"))) {
         if(!privateServices)throw fail(503,"私有数据服务尚未启用");
-        if(typeof persistence.flush==="function")res.metadataFlush=()=>persistence.flush();
+        if(typeof persistence.flush==="function" && (method!=="GET" || path.startsWith("/api/v2/open/")))res.metadataFlush=()=>persistence.flush();
         const result=await privateServices.handle(req,url,readBody);return json(res,result.status,result.body);
       }
       const openService = path.match(

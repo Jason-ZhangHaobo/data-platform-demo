@@ -2,6 +2,7 @@ import { DataServiceManager, serviceHash, verifiedPrivateServiceSource } from ".
 import { privateServiceRoute } from "./private-service-routes.mjs";
 import { privateServiceRecovery } from "./private-service-recovery.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
+import { privateTaskConsumption } from "./private-task-consumption.mjs";
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(new Error(message),{status,code});
 
@@ -34,6 +35,15 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     if(open){if(queries>=8)throw fail(429,"私有查询队列已满","PRIVATE_SERVICE_QUEUE_FULL");queries++;const query=queryTail.then(async()=>{try{return {status:200,body:await manager.invoke(open[1]==="dapis"?"DAPI":"XAPI",open[2],req.headers.authorization,Object.fromEntries(url.searchParams))};}finally{await persist();}});queryTail=query.catch(()=>{});try{return await query;}finally{queries--;}}
     const a=actor(req),owner=a.user.id;
     if(method==="POST")auth.requireMutation(req.headers,path);
+    if(method==="GET" && path.endsWith("/task-evidence")){
+      const taskId=url.searchParams.get("agent_task_id"),packageDigest=url.searchParams.get("package_digest");
+      if(!new RegExp(`^${uuid}$`).test(taskId??"") || !/^[a-f0-9]{64}$/.test(packageDigest??""))throw fail(422,"需提供任务编号与确切包摘要","INVALID_CONSUMPTION_INPUT");
+      const task=get("agent",taskId);
+      if(!task || (a.role!=="ADMIN" && task.submittedBy!==owner))throw fail(403,"无权读取此任务消费证据");
+      return {status:200,body:await privateTaskConsumption({taskId,packageDigest,
+        services:manager.list().filter(s=>owned(a,s)),ownedService:id=>service(a,id),getVersion:id=>get("data_service_version",id),source,getRelease:id=>get("release",id),
+        application:id=>get("service_app",id),calls:id=>manager.listCalls(id),recheckCall:(id,callId)=>manager.recheckCall(id,callId)})};
+    }
     if(path.endsWith("/sources")){
       const taskId=url.searchParams.get("agent_task_id");if(taskId&&!new RegExp(`^${uuid}$`).test(taskId))throw fail(422,"任务编号无效");
       const rows=[];for(const r of store.list("release_run",project)){try {const run=source(r.id);sourceOwner(a,run);const release=get("release",run.releaseId);if(taskId&&release.sourceAgentTaskId!==taskId)continue;rows.push({id:run.id,releaseId:run.releaseId,sourceAgentTaskId:release.sourceAgentTaskId,status:run.status,published:run.published,schedulerTriggered:run.schedulerTriggered,engine:run.engine,engineVersion:run.engineVersion,mainSqlExecuted:run.mainSqlExecuted,testSqlValidation:{passed:true},validation:{passed:true},packageDigest:run.packageDigest,sequence:run.sequence,createdAt:run.createdAt,rowCount:run.rows.length});}catch(e){if(![403,409,422].includes(e.status))throw e;}}

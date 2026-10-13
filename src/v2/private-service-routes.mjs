@@ -6,6 +6,7 @@ export function privateServiceRoute(method,path) {
   let allowed=[];
   if(method==="GET" && /^\/api\/v2\/open\/(dapis|xapis)\/[a-z][a-z0-9-]{2,47}$/.test(p))allowed=["client_id","clientId","page","page_size","pageSize"];
   else if(method==="GET" && p==="/api/v2/data-services/sources")allowed=["agent_task_id"];
+  else if(method==="GET" && p==="/api/v2/data-services/task-evidence")allowed=["agent_task_id","package_digest"];
   else if(method==="GET" && p==="/api/v2/data-services/calls")allowed=["service_id"];
   else if(["GET","POST"].includes(method) && /^\/api\/v2\/data-services\/(dapis|xapis|applications)$/.test(p))allowed=[];
   else if(method==="POST" && new RegExp(`^/api/v2/data-services/applications/${uuid}/revoke$`).test(p))allowed=[];
