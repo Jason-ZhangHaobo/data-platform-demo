@@ -1,4 +1,4 @@
-import { serviceHash } from './data-services.mjs';
+import { serviceHash, serviceVersionConfigValid } from './data-services.mjs';
 
 // Read-only evidence: never rematerializes data, issues tokens or runs compute.
 export function privateServiceRecovery({ service, bootId, businessStore,
@@ -18,6 +18,7 @@ export function privateServiceRecovery({ service, bootId, businessStore,
     const base = { versionId: version.id, configHash: version.configHash,
       serviceId: version.serviceId, serviceType: version.serviceType };
     if (version.missing) return { ...base, verified: false, code: 'VERSION_NOT_FOUND' };
+    if(!serviceVersionConfigValid(version))return {...base,verified:false,code:'SERVICE_VERSION_CORRUPT'};
     if (version.serviceType !== 'DAPI') return { ...base, verified: true };
     const snapshot = businessStore.snapshotEvidence(version.snapshotId);
     let provenanceVerified = false;

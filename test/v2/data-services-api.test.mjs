@@ -70,7 +70,7 @@ async function createAndPublishDapi(base, input, key) {
   const published = await request(
     base,
     `/api/v2/data-services/dapis/${created.body.id}/publish`,
-    { key: `${key}-publish`, body: {} },
+    { key: `${key}-publish`, body: {configHash:created.body.currentVersion.configHash} },
   );
   assert.equal(published.body.service.status, "PUBLISHED");
   return published.body.service;
@@ -138,7 +138,7 @@ test("V2 API exposes versioned DAPI/XAPI to an authorized external caller", asyn
     const publishedXapi = await request(
       server.base,
       `/api/v2/data-services/xapis/${xapi.body.id}/publish`,
-      { key: "publish-asset-xapi", body: {} },
+      { key: "publish-asset-xapi", body: {configHash:xapi.body.currentVersion.configHash} },
     );
     assert.equal(publishedXapi.body.version.status, "PUBLISHED");
     const issued = await request(

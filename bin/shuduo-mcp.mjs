@@ -56,7 +56,11 @@ const tools = [
   { name: "xapi_list", description: "列出版本化XAPI。", inputSchema: { type: "object", properties: {} } },
   { name: "xapi_create", description: "声明式编排2—5个已发布DAPI版本，不自动发布。", inputSchema: { type: "object", properties: { name: { type: "string" }, slug: { type: "string" }, steps: { type: "array", items: { type: "object", properties: { alias: { type: "string" }, dapiId: { type: "string" } }, required: ["alias", "dapiId"], additionalProperties: false } } }, required: ["name", "slug", "steps"] } },
   { name: "data_service_test", description: "实际执行当前DAPI/XAPI版本并保存测试证据。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" }, clientId: { type: "string" } }, required: ["type", "serviceId"] } },
-  { name: "data_service_publish", description: "发布已有成功测试证据的当前版本。调用前应向用户展示服务、版本摘要和端点；私有云必须提交审阅过的configHash。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" },configHash:{type:"string",pattern:"^[a-f0-9]{64}$"} }, required: ["type", "serviceId"] } },
+  { name: "data_service_publish", description: "发布已有成功测试证据的当前版本。调用前应向用户展示服务、版本摘要和端点；必须提交审阅过的configHash。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" },configHash:{type:"string",pattern:"^[a-f0-9]{64}$"} }, required: ["type", "serviceId", "configHash"] } },
+  { name: "data_service_detail", description: "读取指定服务当前草稿、线上版本与不可变版本列表。", inputSchema: { type:"object",additionalProperties:false,properties:{type:{type:"string",enum:["dapi","xapi"]},serviceId:{type:"string",format:"uuid"}},required:["type","serviceId"]}},
+  { name: "data_service_history", description: "只读版本切换/回滚回执，不包含调用密钥。", inputSchema: { type:"object",additionalProperties:false,properties:{type:{type:"string",enum:["dapi","xapi"]},serviceId:{type:"string",format:"uuid"}},required:["type","serviceId"]}},
+  { name: "data_service_new_version", description: "创建新草稿，不测试、发布或改变已有线上端点；XAPI未传steps时保留原固定子版本。", inputSchema:{type:"object",additionalProperties:false,properties:{type:{type:"string",enum:["dapi","xapi"]},serviceId:{type:"string",format:"uuid"},input:{type:"object",additionalProperties:false,properties:{sourceReleaseRunId:{type:"string",format:"uuid"},fields:{type:"array",items:{type:"string"}},timeoutMs:{type:"integer",minimum:100,maximum:5000},rateLimitPerMinute:{type:"integer",minimum:1,maximum:600},steps:{type:"array",items:{type:"object"}}}}},required:["type","serviceId","input"]}},
+  { name: "data_service_activate", description: "审阅后切换到已测试发布的目标版本，或回滚；必须确认当前线上版本和目标摘要，恢复原requestId。失败或重放不重复改变端点。", inputSchema:{type:"object",additionalProperties:false,properties:{type:{type:"string",enum:["dapi","xapi"]},serviceId:{type:"string",format:"uuid"},versionId:{type:"string",format:"uuid"},expectedPublishedVersionId:{type:"string",format:"uuid"},configHash:{type:"string",pattern:"^[a-f0-9]{64}$"},requestId:{type:"string",minLength:1,maxLength:100},confirm:{type:"boolean",const:true}},required:["type","serviceId","versionId","expectedPublishedVersionId","configHash","requestId","confirm"]}},
   {name:"data_service_sources",description:"只读列出本人或项目管理员可访问的真实已核验云端发布批次，不返回结果行或原始日志。",inputSchema:{type:"object",additionalProperties:false,properties:{agentTaskId:{type:"string",format:"uuid"}}}},
   { name: "data_service_openapi", description: "读取指定DAPI/XAPI的OpenAPI 3.1文档。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" } }, required: ["type", "serviceId"] } },
   { name: "data_service_recovery", description: "使用当前平台身份读取私有服务启动标识、快照完整性和恢复对照；不执行计算、不发凭证，单份报告不代表冷启动验收。", inputSchema: { type: "object", additionalProperties: false, properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string", format: "uuid" } }, required: ["type", "serviceId"] } },
@@ -364,9 +368,17 @@ async function callTool(name, args = {}) {
   if (name === "dapi_create")
     return client.request("/data-services/dapis", { method: "POST", body: args });
   if(name==="data_service_sources")return client.request("/data-services/sources"+(args.agentTaskId?`?agent_task_id=${encodeURIComponent(args.agentTaskId)}`:""));
+  if(["data_service_detail","data_service_history"].includes(name))return client.request(`/data-services/${typePath(args.type)}/${encodeURIComponent(args.serviceId)}${name==="data_service_history"?"/history":""}`);
+  if(name==="data_service_new_version")return client.request(`/data-services/${typePath(args.type)}/${encodeURIComponent(args.serviceId)}/versions`,{method:"POST",body:args.input});
+  if(name==="data_service_activate"){
+    if(args.confirm!==true)throw new Error("必须先确认版本切换/回滚范围");
+    if(typeof args.requestId!=="string"||!args.requestId||args.requestId.length>100)throw new Error("必须提供原版本切换requestId");
+    return client.request(`/data-services/${typePath(args.type)}/${encodeURIComponent(args.serviceId)}/activate`,{method:"POST",idempotencyKey:args.requestId,body:{versionId:args.versionId,expectedPublishedVersionId:args.expectedPublishedVersionId,configHash:args.configHash}});
+  }
   if (name === "xapi_create")
     return client.request("/data-services/xapis", { method: "POST", body: args });
   if (["data_service_test", "data_service_publish", "data_service_openapi", "data_service_recovery"].includes(name)) {
+    if(name==="data_service_publish"&&!/^[a-f0-9]{64}$/.test(args.configHash??""))throw new Error("发布必须携带审阅过的configHash");
     const action = { data_service_test: "test", data_service_publish: "publish", data_service_openapi: "openapi", data_service_recovery: "recovery" }[name],
       path = `/data-services/${typePath(args.type)}/${encodeURIComponent(args.serviceId)}/${action}`;
     return client.request(path, {

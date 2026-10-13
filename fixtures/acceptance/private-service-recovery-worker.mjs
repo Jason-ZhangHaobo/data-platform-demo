@@ -15,7 +15,7 @@ import { createDeliveryPackage, sha256 } from '../../src/v2/delivery.mjs';
 import { getContext, contextIds, referenceSql, validationContractId } from '../../src/v2/context.mjs';
 
 const [phase,root]=process.argv.slice(2);
-assert.ok(['seed','resume','missing','corrupt'].includes(phase));
+assert.ok(['seed','resume','missing','corrupt','version-seed','version-resume'].includes(phase));
 assert.ok(basename(root).startsWith('shuduo-service-restart-'));
 assert.ok(lstatSync(root).isDirectory() && !lstatSync(root).isSymbolicLink());
 class FileCas {
@@ -47,7 +47,7 @@ const call=async(path,body,headers={},key=path)=>{
 };
 try {
   let state;
-  if(phase==='seed'){
+  if(['seed','version-seed'].includes(phase)){
     const owner=app.auth.bootstrapAdmin({email:'restart-owner@example.invalid',password:'SyntheticPassword!2026',displayName:'合成恢复工程师'});
     const agent=metadata.create('agent',PROJECT,{submittedBy:owner.id});
     const revision=metadata.create('revision',PROJECT,{sql:referenceSql,hash:sha256(referenceSql),contextId:'cash-change'});
@@ -75,14 +75,23 @@ try {
     assert.equal((await call(url,undefined,{authorization:'Bearer '+revoked.token})).status,200);
     assert.equal((await call(`/data-services/applications/${revoked.application.id}/revoke`,{},auth)).status,200);
     assert.equal((await call(url,undefined,{authorization:'Bearer '+active.token})).status,200);
+    let switchState={};
+    if(phase==='version-seed'){
+      const v2=await call(`/data-services/dapis/${h.id}/versions`,{sourceReleaseRunId:run.id,fields:['client_id','holding_market_value','security_count'],rateLimitPerMinute:45},auth,'restart-v2');assert.equal(v2.status,201);
+      assert.equal((await call(`/data-services/dapis/${h.id}/test`,{},auth)).status,200);
+      assert.equal((await call(`/data-services/dapis/${h.id}/publish`,{configHash:v2.body.configHash},auth)).status,200);
+      const review={versionId:h.currentVersion.id,expectedPublishedVersionId:v2.body.id,configHash:h.currentVersion.configHash};
+      const switched=await call(`/data-services/dapis/${h.id}/activate`,review,auth,'persistent-rollback');assert.equal(switched.status,200);
+      switchState={switchedServiceId:h.id,switchReview:review,receiptId:switched.body.receipt.id};
+    }
     const proof=await call(`/data-services/xapis/${x.body.id}/recovery`,undefined,auth);assert.equal(proof.status,200);assert.equal(proof.body.healthy,true);
-    state={auth,serviceId:x.body.id,revokedToken:revoked.token,activeToken:active.token,proof:proof.body};
+    state={auth,serviceId:x.body.id,revokedToken:revoked.token,activeToken:active.token,proof:proof.body,...switchState};
     writeFileSync(join(root,'client-state.json'),JSON.stringify(state),{mode:0o600});
     process.stdout.write(JSON.stringify({scope:'LOCAL_PROCESS_RESTART_FILE_CAS',syntheticInputs:true,pid:process.pid,proof:proof.body})+'\n');
   }else{
     state=JSON.parse(readFileSync(join(root,'client-state.json')));
     const proof=await call(`/data-services/xapis/${state.serviceId}/recovery`,undefined,state.auth);assert.equal(proof.status,200);
-    if(phase==='resume'){
+    if(['resume','version-resume'].includes(phase)){
       assert.equal(proof.body.healthy,true);assert.notEqual(proof.body.bootId,state.proof.bootId);
       assert.equal(proof.body.fingerprint,state.proof.fingerprint);
       assert.equal((await call('/open/xapis/restart-overview?client_id=CLIENT-001',undefined,{authorization:'Bearer '+state.revokedToken})).status,401);
@@ -90,11 +99,20 @@ try {
       const replay=await call('/data-services/applications',{name:'合成恢复查询应用',serviceIds:[state.serviceId]},state.auth,'rate-app');assert.equal(replay.body.token,null);
       assert.equal(metadata.list('data_service',PROJECT).length,3);
       assert.equal(metadata.list('service_app',PROJECT).length,2);
+      if(phase==='version-resume'){
+        const history=await call(`/data-services/dapis/${state.switchedServiceId}/history`,undefined,state.auth);
+        assert.equal(history.status,200);assert.equal(history.body.length,1);assert.equal(history.body[0].id,state.receiptId);
+        const replay=await call(`/data-services/dapis/${state.switchedServiceId}/activate`,state.switchReview,state.auth,'persistent-rollback');
+        assert.equal(replay.status,200);assert.equal(replay.body.replayed,true);assert.equal(replay.body.receipt.id,state.receiptId);
+        assert.equal(replay.body.service.publishedVersion.id,state.switchReview.versionId);
+        assert.equal(metadata.list('service_version_switch',PROJECT).length,1);
+      }
     }else{
       assert.equal(proof.body.healthy,false);
       const r=await call(`/data-services/xapis/${state.serviceId}/test`,{},state.auth);assert.equal(r.status,409);assert.equal(r.body.code,'SOURCE_SNAPSHOT_UNAVAILABLE');
     }
-    process.stdout.write(JSON.stringify({scope:'LOCAL_PROCESS_RESTART_FILE_CAS',syntheticInputs:true,pid:process.pid,proof:proof.body,revokedRejected:phase==='resume',rateCounterRestored:phase==='resume',idempotencyRestored:phase==='resume'})+'\n');
+    const restored=['resume','version-resume'].includes(phase);
+    process.stdout.write(JSON.stringify({scope:'LOCAL_PROCESS_RESTART_FILE_CAS',syntheticInputs:true,pid:process.pid,proof:proof.body,revokedRejected:restored,rateCounterRestored:restored,idempotencyRestored:restored,switchReceiptRestored:phase==='version-resume'})+'\n');
   }
 }finally{
   app.server.closeAllConnections();await new Promise(r=>app.server.close(r));

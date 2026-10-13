@@ -41,3 +41,10 @@ for(const kind of ['missing','corrupt'])test(`new process rejects ${kind} busine
   const after=await run(kind,root);assert.equal(after.proof.healthy,false);
   assert.ok(after.proof.state.evidence.some(v=>v.code==='SOURCE_SNAPSHOT_UNAVAILABLE'));
 });
+test('rollback receipt and original request identity survive a different backend process',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'shuduo-service-restart-'));
+  const before=await run('version-seed',root),after=await run('version-resume',root);
+  assert.notEqual(before.pid,after.pid);assert.notEqual(before.proof.bootId,after.proof.bootId);
+  assert.equal(before.proof.fingerprint,after.proof.fingerprint);
+  assert.equal(after.switchReceiptRestored,true);
+});

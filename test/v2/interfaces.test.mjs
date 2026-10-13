@@ -18,6 +18,15 @@ test("recovery CLI uses the same read-only versioned API",async()=>{
   assert.equal(seen[0].path,`/data-services/xapis/${id}/recovery`);
   assert.equal(seen[0].options?.method,undefined);assert.equal(seen[0].options?.body,undefined);
 });
+test('CLI activation needs explicit confirmation and stable request id with reviewed versions',async()=>{
+  const seen=[],id='00000000-0000-4000-8000-000000000001',hash='a'.repeat(64);
+  const opts={client:{request:async(path,options)=>{seen.push({path,options});return{targetStillActive:true};}},output:()=>{},error:()=>{}};
+  const args=['services','activate','--type','dapi','--id',id,'--version-id',id,'--expected-version',id,'--config-hash',hash,'--request-id','reviewed-request'];
+  assert.equal(await runV2Cli(args,{},opts),1);assert.equal(seen.length,0);
+  assert.equal(await runV2Cli([...args,'--confirm'],{},opts),0);
+  assert.equal(seen[0].options.idempotencyKey,'reviewed-request');
+  assert.equal(seen[0].options.body.expectedPublishedVersionId,id);assert.equal(seen[0].options.body.configHash,hash);
+});
 import {
   handleV2Mcp,
   V2_MCP_OPERATIONS,
