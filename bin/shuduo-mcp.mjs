@@ -168,6 +168,7 @@ const client = new V2Client({
     process.env.SHUDUO_V2_API_BASE_URL ??
     "http://127.0.0.1:3100/api/v2",
   client: "mcp",
+  sessionFile: process.env.SHUDUO_V2_SESSION_FILE,
 });
 const typePath = (value) => {
   if (!['dapi', 'xapi'].includes(value)) throw new Error("type必须是dapi或xapi");
