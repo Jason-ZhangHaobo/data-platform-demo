@@ -14,6 +14,10 @@ import { createPrivateDataServices } from "./private-data-services.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
+import { createAgentEventDriver, agentEventConfigFromEnvironment } from "./agent-event-driver.mjs";
+import { createAgentWakeOssTransport } from "./agent-wake-oss-transport.mjs";
+import { ossConfigFromEnvironment } from "./oss-client.mjs";
+import { queueConfigFromEnvironment } from "./remote-spark-queue.mjs";
 import { privateAgentRecovery } from "./private-agent-recovery.mjs";
 import {
   getContext,
@@ -318,12 +322,24 @@ export function createV2Server(options = {}) {
   if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery)) throw new Error("私有发布须使用已启用的私有持久执行边界");
   const cloudPublication = durableDelivery ? createCloudPublication({ store, project: PROJECT, runner: durableDevelopment, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) }) : undefined;
   const agentDriverMode = env.V2_AGENT_DRIVER_MODE ?? "DISABLED";
-  if (!["DISABLED", "PRIVATE_TICK"].includes(agentDriverMode)) throw new Error("Agent 后台推进模式不受支持");
-  if (agentDriverMode === "PRIVATE_TICK" && (!privateSmokeEnabled || !durableAgent))
+  if (!["DISABLED", "PRIVATE_TICK", "OSS_EVENTS"].includes(agentDriverMode)) throw new Error("Agent 后台推进模式不受支持");
+  if (agentDriverMode !== "DISABLED" && (!privateSmokeEnabled || !durableAgent))
     throw new Error("Agent 后台推进需要私有调用边界与持久执行器");
-  const agentDispatcher = agentDriverMode === "PRIVATE_TICK"
+  const agentDispatcher = agentDriverMode !== "DISABLED"
     ? createAgentDispatcher({ store, project: PROJECT, engine: durableAgent, persist: persistDevelopment, now: options.now ?? Date.now })
     : undefined;
+  const agentEventConfig = agentEventConfigFromEnvironment(env);
+  const agentWakeTransport = agentEventConfig ? options.agentWakeTransport ?? (()=>{
+    const oss=ossConfigFromEnvironment(env);
+    return createAgentWakeOssTransport({...oss,credentialsProvider:async()=>ossConfigFromEnvironment(env).credentials,
+      wakePrefix:agentEventConfig.wakePrefix,resultPrefix:agentEventConfig.resultPrefix});
+  })() : undefined;
+  const agentEventDriver = agentEventConfig ? createAgentEventDriver({store,project:PROJECT,dispatcher:agentDispatcher,
+    transport:agentWakeTransport,config:agentEventConfig,queueConfig:queueConfigFromEnvironment(env),persist:persistDevelopment,now:options.now ?? Date.now}) : undefined;
+  const exposeDurableTask = task => {
+    const background=agentEventDriver&&task.executionMode===durableSqlAgentMode?agentEventDriver.status(task.id):undefined;
+    return {...publicDurableAgent(task),...(background&&background.status!=="INACTIVE"?{background}:{})};
+  };
   const privateRuntimeBootId = randomUUID();
   const publicAgentIntent = ({ submittedBy, message, ...item }) => item;
   const publicAgentHandoff = ({ submittedBy, ...item }) => item;
@@ -1019,7 +1035,7 @@ export function createV2Server(options = {}) {
   const readBody = async (req) => (await readJsonBody(req)).parsed;
   const readPrivateSmokeBody = async (req) => {
     const binaryPayload = String(req.headers["content-type"]).startsWith("application/octet-stream");
-    if (!binaryPayload && !(privatePublicationConfig && String(req.headers["content-type"]).startsWith("application/json")))
+    if (!binaryPayload && !((privatePublicationConfig || agentEventDriver) && String(req.headers["content-type"]).startsWith("application/json")))
       throw fail(415, "私有函数验收仅接受二进制事件载荷");
     let body = "";
     for await (const chunk of req) {
@@ -1032,6 +1048,7 @@ export function createV2Server(options = {}) {
     } catch {
       throw fail(400, "私有函数验收载荷不是JSON");
     }
+    if (agentEventDriver && parsed && Array.isArray(parsed.events)) return {operation:"PRIVATE_AGENT_OBJECT_EVENT_V1",event:parsed};
     if (parsed && typeof parsed === "object" && ("triggerName" in parsed || "payload" in parsed))
       return { operation: "PRIVATE_RELEASE_TIMER_V1", ...validatePrivateReleaseTimer(parsed, privatePublicationConfig, options.now?.() ?? Date.now()) };
     if (!binaryPayload) throw fail(415, "普通私有调用只接受二进制载荷");
@@ -1141,6 +1158,7 @@ export function createV2Server(options = {}) {
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = await readPrivateSmokeBody(req);
+        if(privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1")return json(res,200,await agentEventDriver.consume(privateInput.event));
         if (privateInput.operation === "PRIVATE_RELEASE_TIMER_V1") {
           if (!cloudPublication || !privatePublicationConfig) throw fail(503,"私有发布调度未启用");
           return json(res,200,await cloudPublication.tick(privateInput));
@@ -1149,6 +1167,7 @@ export function createV2Server(options = {}) {
           return json(res, 200, await privateAgentRecovery(privateInput, { store, project: PROJECT,
             engine: durableAgent, persist: persistDevelopment, bootId: privateRuntimeBootId }));
         if (privateInput.operation === "PRIVATE_AGENT_TICK_V1") {
+          if(agentEventDriver)throw Object.assign(fail(403,"事件模式禁止无任务范围的后台轮询"),{code:"AGENT_UNSCOPED_TICK_DENIED"});
           if (!agentDispatcher) throw Object.assign(fail(503, "Agent 后台推进尚未启用"), { code: "AGENT_DRIVER_DISABLED" });
           if (Object.keys(privateInput).some(k => !["operation", "requestId"].includes(k))) throw fail(422, "Agent 后台推进字段不受支持");
           return json(res, 200, await agentDispatcher.tick({ requestId: privateInput.requestId }));
@@ -1377,7 +1396,7 @@ export function createV2Server(options = {}) {
                   dataState: { driver: "sqlite", healthy: true },
                 },
           publicReady: false,
-          agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER") },
+          agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery), eventBackgroundAvailable:Boolean(agentEventDriver), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER") },
           validationContract: {
             id: validationContractId,
             fixtureCount: contextIds.length,
@@ -2879,17 +2898,34 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/agent/tasks" && method === "GET")
         return json(res, 200, store.list("agent", PROJECT)
           .filter(task => mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)))
-          .map(publicDurableAgent));
+          .map(exposeDurableTask));
+      const backgroundRoute=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/background(?:\/(cancel))?$/);
+      if(backgroundRoute){
+        const task=get("agent",backgroundRoute[1]);requireDurableAgentOwner(task,req);
+        if(!agentEventDriver)throw Object.assign(fail(503,"云端事件后台未启用"),{code:"AGENT_EVENT_DRIVER_DISABLED"});
+        if(method==="GET"&&!backgroundRoute[2])return json(res,200,agentEventDriver.status(task.id));
+        if(method==="POST"){
+          const body=await readBody(req),actor=auth.sessionFromHeaders(req.headers)?.user.id;
+          if(backgroundRoute[2]){
+            if(Object.keys(body).length)throw fail(422,"停止后台请求不接受额外字段");
+            return json(res,200,await agentEventDriver.cancel(task.id,actor));
+          }
+          if(Object.keys(body).some(k=>!["expectedVersion","maxEvents","durationMs"].includes(k)))throw fail(422,"后台请求字段不受支持");
+          return json(res,202,await agentEventDriver.enable(task.id,actor,body));
+        }
+      }
       const durableAdvance = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/advance$/);
       if (durableAdvance && method === "POST") {
         const task = get("agent", durableAdvance[1]);
         requireDurableAgentOwner(task, req);
         if (!durableAgent) throw fail(503, "持久 Agent 推进接口尚未启用");
+        if(agentEventDriver?.status(task.id).status==="ACTIVE")throw Object.assign(fail(409,"请先停止云后台推进，再人工接管"),{code:"AGENT_BACKGROUND_TAKEOVER_REQUIRED"});
         const body = await readBody(req);
         if (Object.keys(body).some(k => !["expectedVersion", "confirmModelRetry"].includes(k)) ||
             (body.confirmModelRetry !== undefined && typeof body.confirmModelRetry !== "boolean"))
           throw fail(422, "恢复请求包含无效字段");
-        return json(res, 200, await durableAgent.advance(task.id, body));
+        await durableAgent.advance(task.id, body);
+        return json(res, 200, exposeDurableTask(get("agent",task.id)));
       }
       if (path === "/api/v2/agent/tools" && method === "GET")
         return json(res, 200, publicAgentToolCatalog());
@@ -4871,7 +4907,7 @@ export function createV2Server(options = {}) {
           }[record[1]],
           item = kind === "run" ? await reconcileDevelopment(get(kind, record[2])) : get(kind, record[2]);
         if (kind === "agent") requireDurableAgentOwner(item, req);
-        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? publicDevelopmentRun(item) : kind === "agent" ? publicDurableAgent(item) : item);
+        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? publicDevelopmentRun(item) : kind === "agent" ? exposeDurableTask(item) : item);
         if (method === "GET" && record[3] === "journey" && kind === "agent")
           return json(
             res,
@@ -5034,6 +5070,8 @@ export function createV2Server(options = {}) {
               ? "SPARK_SQL"
               : text(body.language, 3, 20),
           currentCode = text(body.code ?? body.sql, 1, 20_000);
+        if(body.background!==undefined && typeof body.background!=="boolean")throw fail(422,"后台选项必须为布尔值");
+        if(body.background && (!agentEventDriver || language!=="SPARK_SQL"))throw Object.assign(fail(503,"此环境未启用Spark SQL事件后台"),{code:"AGENT_EVENT_DRIVER_DISABLED"});
         if (!["SPARK_SQL", "PYTHON"].includes(language))
           throw fail(422, "数据开发语言不受支持");
         const context = getContext(text(body.contextId, 1, 80));
@@ -5052,7 +5090,11 @@ export function createV2Server(options = {}) {
           const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
             actorId: auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer",
             idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair });
-          return json(res, 202, created);
+          if(body.background){
+            const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version});
+            return json(res,202,{...created,background});
+          }
+          return json(res, 202, exposeDurableTask(get("agent",created.id)));
         }
         if (
           !(language === "PYTHON" ? options.pythonGenerator : options.generator) &&

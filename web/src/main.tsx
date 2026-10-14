@@ -103,7 +103,7 @@ type Capability = {
   features: string[];
 };
 type Status = {
-  agentDevelopment?: { durableEnabled: boolean };
+  agentDevelopment?: { durableEnabled: boolean; eventBackgroundAvailable?: boolean };
   validationContract?: { id: string; fixtureCount: number };
   mode: string;
   projectId: string;
@@ -791,7 +791,7 @@ function App() {
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{privateServicesPreview && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>setAgentWorkspaceMode("services")}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
-          {agentWorkspaceMode === "services" && privateServicesPreview ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={canWrite} privateCloud sourceAgentTaskId={new URLSearchParams(window.location.search).get("task")??undefined} /> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} ready={Boolean(status?.agentDevelopment?.durableEnabled)} loading={!status} privatePreview={privatePreview} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={privateServicesPreview ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
+          {agentWorkspaceMode === "services" && privateServicesPreview ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={canWrite} privateCloud sourceAgentTaskId={new URLSearchParams(window.location.search).get("task")??undefined} /> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} ready={Boolean(status?.agentDevelopment?.durableEnabled)} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} loading={!status} privatePreview={privatePreview} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={privateServicesPreview ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite}

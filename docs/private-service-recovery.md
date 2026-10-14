@@ -24,6 +24,10 @@
 - MCP：`data_service_recovery`，输入`type`与`serviceId`。认证仍由服务端执行；管理端会话接入不可用时应返回401，不降级为应用令牌或虚构身份。
 - 离线对照：`node scripts/compare-v2-service-recovery.mjs before.json after.json`。输出明确是`REPORT_COMPARISON_ONLY`；即使通过也不单独证明FC冷启动。
 
+私有预览的恢复/消费导出使用`GET /api/v2/evidence-export`原生附件适配：恢复只接受`kind=recovery&type=dapi|xapi&id=UUID`；消费只接受`kind=consumption&id=UUID&digest=SHA256`。映射到既有只读管理API，仍执行原项目身份校验，不能下载任意文件或使用应用Bearer替代管理会话。来源/协议不匹配返回错误，不带附件头；成功文件使用JSON、禁止缓存、固定文件名与实际字节SHA-256。
+
+GUI请求下载不等于已保存；须检查浏览器实际文件、JSON内容及来源。下载事件未捕获也不代表失败，先检查精确文件及时间，避免监测漏报引发重复修复或重跑计算。自然空闲回收的实例变化可与报告形成恢复证据，但不升级为强制终止、在途任务抢占或完整Agent自主E2E验收。
+
 ## 数据完整性
 
 物化契约最多1000个客户。查询和恢复报告都重新读取该快照的实际行、排序并计算正文摘要，且检查行数与版本绑定的摘要。缺快照、缺行、额外行或内容漂移返回409`SOURCE_SNAPSHOT_UNAVAILABLE`，不能因为元数据中的旧哈希仍一致就返回被改动结果，也不自动用参考数据补回。

@@ -1509,6 +1509,10 @@ kbd {
   backdrop-filter: blur(3px);
   z-index: 100;
 }
+
+.evidence-download { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 8px; max-width: 100%; }
+.evidence-download > small { max-width: 60ch; overflow-wrap: anywhere; color: var(--muted, #66776f); }
+.evidence-download > a { text-decoration: none; }
 .modal {
   background: #fbfdf8;
   border: 1px solid #d5dfce;

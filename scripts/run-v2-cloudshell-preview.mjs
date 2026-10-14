@@ -6,17 +6,48 @@ import { spawn } from "node:child_process";
 import { readFile, realpath } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { privateServiceRoute } from "../src/v2/private-service-routes.mjs";
 
 const error = (status, message) => Object.assign(new Error(message), { status });
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const reads = new RegExp(`^/api/v2/(?:status|budget|contexts|auth/session|revisions|runs|(?:runs|revisions)/${uuid})$`);
 const writes = new RegExp(`^/api/v2/(?:auth/(?:login|logout)|revisions|runs|runs/${uuid}/cancel)$`);
-const agentReads = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}(?:/(?:workflow|publication))?)?|deliveries/${uuid})$`);
-const agentWrites = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}/(?:advance|cancel|prepare-delivery|publication(?:/cancel)?))?|deliveries/${uuid}/(?:advance|cancel))$`);
+const agentReads = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}(?:/(?:workflow|publication|background))?)?|deliveries/${uuid})$`);
+const agentWrites = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}/(?:advance|cancel|prepare-delivery|publication(?:/cancel)?|background(?:/cancel)?))?|deliveries/${uuid}/(?:advance|cancel))$`);
 const routeAllowed = (method, path, allowAgent, allowDataServices) => (method === "GET" ? reads : method === "POST" ? writes : /$a/).test(path) ||
   (allowAgent && (method === "GET" ? agentReads : method === "POST" ? agentWrites : /$a/).test(path)) || (allowDataServices && privateServiceRoute(method,path));
 const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".ttf": "font/ttf" };
+
+// Native same-origin attachments avoid unsupported blob downloads in embedded
+// browsers. This is only a transport adapter: normal backend authorization is
+// still mandatory, and callers cannot select an arbitrary URL or file path.
+export function privateEvidenceExport(path) {
+  if (!path.startsWith("/api/v2/evidence-export")) return undefined;
+  const u = new URL(path, "http://127.0.0.1"), keys = [...u.searchParams.keys()];
+  if (path.length > 700 || u.pathname !== "/api/v2/evidence-export" || /[#\\]/.test(path) || new Set(keys).size !== keys.length) throw error(422, "导出参数无效");
+  const id = u.searchParams.get("id"), kind = u.searchParams.get("kind");
+  if (!new RegExp(`^${uuid}$`).test(id || "")) throw error(422, "导出编号无效");
+  if (kind === "recovery" && keys.length === 3 && keys.every(k => ["kind", "type", "id"].includes(k)) && ["dapi", "xapi"].includes(u.searchParams.get("type"))) {
+    return { kind, id, path: `/api/v2/data-services/${u.searchParams.get("type")}s/${id}/recovery`, name: `service-recovery-${id.slice(0, 8)}.json` };
+  }
+  const digest = u.searchParams.get("digest");
+  if (kind === "consumption" && keys.length === 3 && keys.every(k => ["kind", "id", "digest"].includes(k)) && /^[a-f0-9]{64}$/.test(digest || "")) {
+    return { kind, id, digest, path: `/api/v2/data-services/task-evidence?agent_task_id=${id}&package_digest=${digest}`, name: `consumption-${id.slice(0, 8)}.json` };
+  }
+  throw error(422, "导出范围无效");
+}
+
+export function exportedEvidence(result, request) {
+  const body = result.body;
+  const valid = body?.scope === "PRIVATE_CLOUD_TEST" && body.publicDeployed === false && (request.kind === "recovery"
+    ? body.protocol === "shuduo-private-service-recovery/v1" && body.state?.serviceId === request.id
+    : body.protocol === "shuduo-private-task-consumption/v1" && body.taskId === request.id && body.packageDigest === request.digest);
+  if (!valid) throw error(502, "报告来源与导出请求不一致，未生成文件");
+  const text = JSON.stringify(body, null, 2) + "\n";
+  if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw error(413, "报告超过导出上限");
+  return { text, sha256: createHash("sha256").update(text).digest("hex") };
+}
 // On Linux Node's child stdin is a socket: reopening /dev/stdin fails ENXIO.
 // Python reads that descriptor directly, then supplies a real anonymous pipe
 // to the CLI. Neither credentials nor request bodies are written to disk.
@@ -107,18 +138,20 @@ export function createPreviewServer({ origin, webRoot, invoke = invokePrivate, m
       const path = req.url || "/";
       if (path.startsWith("/api/")) {
         if (req.headers["sec-fetch-site"] === "cross-site") throw error(403, "拒绝跨站请求");
+        const exportRequest = allowDataServices && req.method === "GET" ? privateEvidenceExport(path) : undefined;
+        const backendPath = exportRequest?.path || path;
         const applicationQuery=allowDataServices && req.method==="GET" && path.startsWith("/api/v2/open/") && privateServiceRoute(req.method,path);
-        if (!applicationQuery && req.headers["x-shuduo-client"] !== "workbench") throw error(403, "仅允许工作台请求");
+        if (!applicationQuery && !exportRequest && req.headers["x-shuduo-client"] !== "workbench") throw error(403, "仅允许工作台请求");
         if (req.method === "POST" && (req.headers.origin !== origin || !/^application\/json(?:;|$)/i.test(req.headers["content-type"] || ""))) throw error(403, "写入必须来自当前工作台");
         // Validate route before consuming any input or invoking the CLI.
-        if (!routeAllowed(req.method, path, allowAgent, allowDataServices)) throw error(404, "此接口尚未接入私有预览");
+        if (!routeAllowed(req.method, backendPath, allowAgent, allowDataServices)) throw error(404, "此接口尚未接入私有预览");
         let body;
         if (req.method === "POST") {
           let size = 0, chunks = [];
           for await (const chunk of req) { size += chunk.length; if (size > 64000) throw error(413, "请求内容过大"); chunks.push(chunk); }
           try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { throw error(400, "JSON 格式无效"); }
         }
-        const payload = privatePayload(req.method, path, req.headers, body, { allowAgent, allowDataServices });
+        const payload = privatePayload(req.method, backendPath, req.headers, body, { allowAgent, allowDataServices });
         if (waiting >= 8 || calls >= maxCalls) throw error(429, "本次预览调用额度已达上限，请稍后核查后重启预览");
         waiting++; calls++;
         const action = tail.then(() => invoke(payload));
@@ -126,6 +159,12 @@ export function createPreviewServer({ origin, webRoot, invoke = invokePrivate, m
         try {
           const result = await action;
           const cookies = result.cookies.filter(c => typeof c === "string" && /^shuduo_(session|csrf)=/.test(c) && !/[\r\n]/.test(c));
+          if (exportRequest && result.status === 200) {
+            const exported = exportedEvidence(result, exportRequest);
+            res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Disposition": `attachment; filename="${exportRequest.name}"`, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Shuduo-Evidence-Sha256": exported.sha256, ...(cookies.length ? { "Set-Cookie": cookies } : {}) });
+            res.end(exported.text);
+            return;
+          }
           send(result.status, result.body, cookies);
         } finally { waiting--; }
         return;
