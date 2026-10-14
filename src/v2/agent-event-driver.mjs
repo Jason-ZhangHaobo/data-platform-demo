@@ -42,7 +42,7 @@ export function parseAgentObjectEvent(event,config) {
 
 // No process timer, idle polling, publication or user-controlled command. Each
 // event can claim only its opted-in task and one durable development boundary.
-export function createAgentEventDriver({store,project,dispatcher,transport,config,queueConfig,persist,now=Date.now}) {
+export function createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist,now=Date.now}) {
   if(!dispatcher || !transport?.create || !transport?.read || config?.project!==project || queueConfig?.projectId!==project)
     throw fail(503,"AGENT_EVENT_DEPENDENCY_INVALID");
   const getTask=id=>{
@@ -111,6 +111,20 @@ export function createAgentEventDriver({store,project,dispatcher,transport,confi
     if(!g)return{protocol:agentEventProtocol,taskId,status:"INACTIVE"};
     return stop(g,"CANCELLED","USER_STOPPED_BACKGROUND");
   }
+  async function resume(taskId,actorId,{expectedVersion,confirmModelRetry=false}={}) {
+    const task=getTask(taskId);
+    if(task.submittedBy!==actorId || !ownerAllowed(task))throw fail(403,"AGENT_BACKGROUND_OWNER_REQUIRED");
+    let g=store.list("agent_background",project).find(x=>x.taskId===taskId);
+    if(!g || !["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(g.status))throw fail(409,"AGENT_BACKGROUND_REVIEW_REQUIRED");
+    if(g.contextDigest!==task.durable.contextDigest)throw fail(409,"AGENT_BACKGROUND_CONTEXT_CHANGED");
+    if(g.consumedEvents>=g.maxEvents)throw fail(409,"AGENT_BACKGROUND_EVENT_LIMIT");
+    if(!engine?.prepareResume)throw fail(503,"AGENT_BACKGROUND_RESUME_UNAVAILABLE");
+    await engine.prepareResume(taskId,{expectedVersion,confirmModelRetry});
+    // No limit/count reset. The review renews only a bounded execution window.
+    g=patch(g,{status:"ACTIVE",state:"QUEUED",code:undefined,expiresAt:now()+15*60000,
+      review:{actorId,taskVersion:expectedVersion,reviewedAt:new Date(now()).toISOString(),confirmModelRetry}});
+    await persist();return schedule(g,getTask(taskId));
+  }
   const status=taskId=>{
     const g=store.list("agent_background",project).find(x=>x.taskId===taskId);
     return g?view(g):{protocol:agentEventProtocol,taskId,status:"INACTIVE",cloudDriverVerified:false};
@@ -125,7 +139,8 @@ export function createAgentEventDriver({store,project,dispatcher,transport,confi
     let envelope;try{envelope=JSON.parse(raw);}catch{throw fail(422,"AGENT_WAKE_INVALID");}
     const b=envelope?.body;
     if(!b || b.wakeId!==wake.id || b.grantId!==g.id || b.taskId!==g.taskId || b.taskVersion!==wake.taskVersion || b.projectId!==project ||
-      b.expiresAt!==g.expiresAt || b.protocol!=="shuduo-agent-wake/v1" || !equal(envelope.signature,signature(b,config.secret)))throw fail(401,"AGENT_WAKE_SIGNATURE_INVALID");
+      b.protocol!=="shuduo-agent-wake/v1" || !equal(envelope.signature,signature(b,config.secret)))throw fail(401,"AGENT_WAKE_SIGNATURE_INVALID");
+    if(b.expiresAt!==g.expiresAt)return{protocol:agentEventProtocol,state:"IGNORED_SUPERSEDED"};
     if(wake.status==="DONE"){
       const current=getTask(g.taskId);
       if(ready.has(current.stage)){
@@ -178,5 +193,5 @@ export function createAgentEventDriver({store,project,dispatcher,transport,confi
     const object=parseAgentObjectEvent(event,config);
     return object.kind==="WAKE"?consumeWake(object):consumeResult(object);
   }
-  return{enable,cancel,status,consume};
+  return{enable,resume,cancel,status,consume};
 }

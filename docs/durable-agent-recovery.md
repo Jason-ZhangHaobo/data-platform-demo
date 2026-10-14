@@ -123,3 +123,10 @@ node scripts/run-v2-cloudshell-preview.mjs --origin <已核验的官方私有预
 ```
 
 工作台的真实验收应覆盖正常生成、手工失败批次修正、任务刷新、失败历史回看、停止、未知结果确认、草稿保护及窄屏布局；合成界面测试与真实模型/执行器测试必须分开记录。
+## 模型诊断与审阅恢复补充
+
+模型尝试的 `diagnostic` 记录固定分类 `code`、阶段 `phase`、`elapsedMs`、`requestMayHaveBeenSent`，以及存在时的 `httpStatus`/允许列出的 `networkCode`。不包含响应正文、URL、异常消息、输入或密钥。没有历史诊断的旧尝试不能补猜根因；请求发送与实际计费也不能由错误状态推定。
+
+原任务后台暂停后，提交 `POST /api/v2/agent/tasks/:id/background/resume`，正文为 `{expectedVersion, confirmModelRetry}`。后端核验所有者、有效项目权限、上下文摘要、尝试/Token/事件上限；未知模型结果必须明确确认。恢复仅持久化审阅与重新排队，模型由后续云事件推进。恢复窗口15分钟，原次数和预留不清零，不能恢复已完成任务，旧窗口事件不执行。
+
+CLI：`shuduo agent resume-background --id <task-id> --version <version> --confirm`；未知结果另加 `--confirm-model-retry`。MCP：`agent_background_resume` 使用相同版本与确认字段。界面须展示诊断、剩余边界和显式恢复动作；新诊断不改变未知结果不自动付费重试的规则。

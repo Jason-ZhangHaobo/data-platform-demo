@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { reconcileDurableDevelopment } from "./durable-development.mjs";
+import { safeModelDiagnostic, modelFailure as diagnosticFailure } from "./model-diagnostics.mjs";
 
 export const durableSqlAgentMode = "DURABLE_SQL_AGENT_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -45,9 +46,10 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     await persist(); return publicDurableAgent(saved);
   };
   const replaceAttempt = (task, patch) => task.attempts.map((a, i) => i === task.attempts.length - 1 ? { ...a, ...patch } : a);
-  const markUnknown = async task => {
+  const markUnknown = async (task, diagnostic = safeModelDiagnostic(diagnosticFailure("MODEL_INTERRUPTED", "LEASE"))) => {
     const saved = change(task, { status: "INTERRUPTED", stage: "MODEL_OUTCOME_UNKNOWN",
-      attempts: replaceAttempt(task, { status: "MODEL_OUTCOME_UNKNOWN", usageEstimated: true }),
+      attempts: replaceAttempt(task, { status: "MODEL_OUTCOME_UNKNOWN", usageEstimated: true,
+        diagnostic: { ...diagnostic, recordedAt: stamp() } }),
       error: "模型调用结果未确认；已保留预算预留，不会自动重复调用。确认后可在剩余额度内重试。",
       durable: { ...task.durable, leaseToken: undefined, leaseExpiresAt: undefined } });
     active.get(task.id)?.abort();
@@ -95,6 +97,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     const watchdog = setTimeout(() => controller.abort(), Math.max(1, Math.min(modelLeaseMs, Date.parse(task.durable.leaseExpiresAt) - now())));
     watchdog.unref?.();
     let generated;
+    const modelStarted = now();
     try {
       const work = Promise.resolve().then(() => {
         if (controller.signal.aborted || now() >= Date.parse(task.durable.leaseExpiresAt) || !ownedLease(task.id, token)) throw new Error("Model step no longer owned");
@@ -103,8 +106,10 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
           remainingBudget: reserved, signal: controller.signal });
       });
       generated = await Promise.race([work, interrupted]);
-    } catch {
-      if (ownedLease(task.id, token)) await markUnknown(get(task.id));
+    } catch (error) {
+      if (ownedLease(task.id, token)) await markUnknown(get(task.id), safeModelDiagnostic(
+        controller.signal.aborted ? diagnosticFailure("MODEL_INTERRUPTED", "LEASE", { elapsedMs: now() - modelStarted }) : error,
+        now() - modelStarted));
       return publicDurableAgent(get(task.id));
     } finally {
       clearTimeout(watchdog);
@@ -210,6 +215,28 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     throw fail(409, "AGENT_STAGE_INVALID", "无法自动推进当前阶段");
   }
 
+  // Review only: persist a new checkpoint, never call a model from this endpoint.
+  async function prepareResume(id, { expectedVersion, confirmModelRetry = false } = {}) {
+    const task = get(id);
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion !== task.version)
+      throw fail(409, "STALE_AGENT_VERSION", "任务已变化，请刷新后审阅");
+    if (typeof confirmModelRetry !== "boolean") throw fail(422, "AGENT_RETRY_CONFIRMATION_INVALID", "重试确认必须为布尔值");
+    if (task.durable.contextDigest !== contextDigest(task.contextId))
+      throw fail(409, "AGENT_CONTEXT_CHANGED", "上下文已变化，不能沿用旧任务批准");
+    if (!["MODEL_OUTCOME_UNKNOWN", "READY_FOR_MODEL", "READY_FOR_RUN", "WAITING_FOR_RUN"].includes(task.stage) || terminal.has(task.status))
+      throw fail(409, "AGENT_STAGE_INVALID", "当前步骤不可恢复后台");
+    if (task.stage === "MODEL_OUTCOME_UNKNOWN" && !confirmModelRetry)
+      throw fail(409, "AGENT_RETRY_CONFIRMATION_REQUIRED", "请审阅未知调用和预算后明确确认重试");
+    if (["MODEL_OUTCOME_UNKNOWN", "READY_FOR_MODEL"].includes(task.stage)) {
+      if (task.attempts.length >= task.maxAttempts || task.usedTokens >= task.tokenBudget)
+        throw fail(409, "AGENT_RETRY_LIMIT", "原任务尝试次数或预算已耗尽");
+      assertModelBudget();
+    }
+    const saved = change(task, { ...(task.stage === "MODEL_OUTCOME_UNKNOWN" ? { status: "QUEUED", stage: "READY_FOR_MODEL" } : {}),
+      durable: { ...task.durable, resumeReview: { version: task.version, reviewedAt: stamp(), confirmModelRetry } } });
+    await persist(); return publicDurableAgent(saved);
+  }
+
   async function cancel(id) {
     let task = get(id);
     if (terminal.has(task.status)) return publicDurableAgent(task);
@@ -222,5 +249,5 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     }
     return finish(get(id), "CANCELLED", "用户取消任务");
   }
-  return { create, advance, cancel, get: id => publicDurableAgent(get(id)) };
+  return { create, advance, prepareResume, cancel, get: id => publicDurableAgent(get(id)) };
 }

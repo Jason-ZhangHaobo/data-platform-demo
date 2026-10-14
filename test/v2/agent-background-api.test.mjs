@@ -42,6 +42,12 @@ test("background HTTP admission uses invitation owner and CSRF; old tasks are no
   const owner=app.store.list("auth_user",PROJECT).find(u=>u.email==="background-owner@example.invalid");
   app.store.update("agent",id,PROJECT,{submittedBy:owner.id});
   const stopped=await call(path+"/cancel",{},headers);assert.equal(stopped.status,200);assert.equal(stopped.body.status,"CANCELLED");
+  const currentVersion=app.store.get("agent",id,PROJECT).version;
+  assert.equal((await call(path+"/resume",{expectedVersion:currentVersion},noCsrf)).status,403);
+  assert.equal((await call(path+"/resume",{expectedVersion:currentVersion,maxEvents:100},headers)).status,422);
+  const resumed=await call(path+"/resume",{expectedVersion:currentVersion},headers);
+  assert.equal(resumed.status,202);assert.equal(resumed.body.status,"ACTIVE");assert.equal(models,0);
+  assert.equal((await call(path+"/resume",{expectedVersion:currentVersion},headers)).status,409);
   const invoke=await fetch(base+"/invoke",{method:"POST",headers:{"content-type":"application/octet-stream"},body:JSON.stringify({operation:"PRIVATE_AGENT_TICK_V1",requestId:randomUUID()})});
   assert.equal(invoke.status,403);assert.equal(models,0);
   assert.equal((await call("/api/v2/status",undefined,headers)).body.agentDevelopment.eventBackgroundAvailable,true);
@@ -51,6 +57,6 @@ test("UI/API/CLI/MCP expose explicit bounded background controls, not a hidden p
   const ui=readFileSync("web/src/AgentDevelopmentWorkbench.tsx","utf8"),client=readFileSync("src/v2/client.mjs","utf8"),cli=readFileSync("bin/shuduo.mjs","utf8"),mcp=readFileSync("bin/shuduo-mcp.mjs","utf8");
   assert.match(ui,/background:backgroundConsent/);assert.match(ui,/current\.background\?\.status===\"ACTIVE\"/);assert.match(ui,/停止后台自动推进/);
   assert.match(ui,/cloud|云端事件后台/);assert.match(cli,/enable-background/);assert.match(cli,/options\.confirm!==true/);
-  for(const name of ["agent_background_status","agent_background_enable","agent_background_cancel"]){assert.ok(client.includes(name));assert.ok(mcp.includes(name));}
+  for(const name of ["agent_background_status","agent_background_enable","agent_background_resume","agent_background_cancel"]){assert.ok(client.includes(name));assert.ok(mcp.includes(name));}
   assert.match(mcp,/args\.confirm!==true/);assert.notEqual(AGENT_WAKE_PREFIX,SPARK_QUEUE_PREFIXES.results);
 });

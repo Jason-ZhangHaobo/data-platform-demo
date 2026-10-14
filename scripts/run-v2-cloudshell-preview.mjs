@@ -14,7 +14,7 @@ const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const reads = new RegExp(`^/api/v2/(?:status|budget|contexts|auth/session|revisions|runs|(?:runs|revisions)/${uuid})$`);
 const writes = new RegExp(`^/api/v2/(?:auth/(?:login|logout)|revisions|runs|runs/${uuid}/cancel)$`);
 const agentReads = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}(?:/(?:workflow|publication|background))?)?|deliveries/${uuid})$`);
-const agentWrites = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}/(?:advance|cancel|prepare-delivery|publication(?:/cancel)?|background(?:/cancel)?))?|deliveries/${uuid}/(?:advance|cancel))$`);
+const agentWrites = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}/(?:advance|cancel|prepare-delivery|publication(?:/cancel)?|background(?:/(?:cancel|resume))?))?|deliveries/${uuid}/(?:advance|cancel))$`);
 const routeAllowed = (method, path, allowAgent, allowDataServices) => (method === "GET" ? reads : method === "POST" ? writes : /$a/).test(path) ||
   (allowAgent && (method === "GET" ? agentReads : method === "POST" ? agentWrites : /$a/).test(path)) || (allowDataServices && privateServiceRoute(method,path));
 const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".ttf": "font/ttf" };

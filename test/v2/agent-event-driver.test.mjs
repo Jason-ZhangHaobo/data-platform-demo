@@ -17,7 +17,7 @@ const queueConfig={projectId:project,sharedSecret:"synthetic-worker-key-".repeat
 const event=key=>({events:[{eventName:"ObjectCreated:PutObject",eventSource:"acs:oss",eventVersion:"1.0",eventTime:new Date().toISOString(),oss:{bucket:{name:config.bucket,ownerIdentity:config.accountId},object:{key}}}]});
 function fixture(t){
   const root=mkdtempSync(join(tmpdir(),"shuduo-events-")),path=join(root,"meta.sqlite");
-  let store=new MetadataStore(path),clock=Date.now(),models=0,submitted=0,blocked=false,persist=async()=>{},engine,driver;
+  let store=new MetadataStore(path),clock=Date.now(),models=0,submitted=0,blocked=false,modelError,persist=async()=>{},engine,driver;
   const objects=new Map(),events=[];
   const transport={read:async key=>objects.get(key),create:async(key,body)=>{
     if(blocked)throw Object.assign(new Error("synthetic ACK unknown"),{code:"TEST_ACK_UNKNOWN"});
@@ -30,15 +30,15 @@ function fixture(t){
     read:async prepared=>{const raw=objects.get(prepared.resultKey);return raw?JSON.parse(raw).result:undefined;},cancel:async()=>{}};
   const build=()=>{
     engine=createDurableSqlAgent({store,project,runner,persist:()=>persist(),getContext,contextIds,contractId:validationContractId,now:()=>clock,
-      generator:async()=>{models++;return{sql:referenceSql,model:"TEST_DOUBLE",usage:{total_tokens:20}};}});
+      generator:async()=>{models++;if(modelError)throw modelError;return{sql:referenceSql,model:"TEST_DOUBLE",usage:{total_tokens:20}};}});
     const dispatcher=createAgentDispatcher({store,project,engine,persist:()=>persist(),now:()=>clock});
-    driver=createAgentEventDriver({store,project,dispatcher,transport,config,queueConfig,persist:()=>persist(),now:()=>clock});
+    driver=createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist:()=>persist(),now:()=>clock});
   };
   build();t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
   const create=()=>engine.create({message:"虚构财富客户资产T+1",currentSql:referenceSql,contextId:"holdings-t1",actorId:owner.id,idempotencyKey:randomUUID()});
   return{get store(){return store;},get engine(){return engine;},get driver(){return driver;},owner,objects,events,create,
     get models(){return models;},get submitted(){return submitted;},now:()=>clock,later:ms=>clock+=ms,
-    restart:()=>{store.close();store=new MetadataStore(path);build();},persist:fn=>persist=fn,blockPut:v=>blocked=v,
+    restart:()=>{store.close();store=new MetadataStore(path);build();},persist:fn=>persist=fn,blockPut:v=>blocked=v,modelFault:e=>modelError=e,
     worker:(taskId,status="SUCCEEDED")=>{
       const task=store.get("agent",taskId,project),run=store.get("run",task.runId,project),prepared=run.remoteSubmission.prepared;
       const result={status,engine:"Apache Spark",engineVersion:"3.5.9",mainSqlExecuted:true,rows:[],validation:{passed:status==="SUCCEEDED",regressions:contextIds.map(contextId=>({contextId,passed:status==="SUCCEEDED"}))}};
@@ -56,6 +56,45 @@ test("event chain progresses without browser or CLI driver, survives reopen, wai
   await f.driver.consume(f.events[2]);assert.equal(f.store.get("agent",task.id,project).status,"SUCCEEDED");
   assert.equal(f.driver.status(task.id).status,"COMPLETED");assert.equal(f.models,1);assert.equal(f.submitted,1);
   await f.driver.consume(f.events[0]);await f.driver.consume(callback);assert.equal(f.models,1);assert.equal(f.events.length,3);
+});
+test("reviewed original-task resume preserves reservations and counts; stale review and old wakes cannot run",async t=>{
+  const f=fixture(t),task=await f.create();f.modelFault(new Error("SECRET_PROVIDER_DETAIL"));
+  await f.driver.enable(task.id,f.owner.id,{expectedVersion:task.version});await f.driver.consume(f.events[0]);
+  const paused=f.engine.get(task.id);assert.equal(paused.stage,"MODEL_OUTCOME_UNKNOWN");
+  assert.equal(f.driver.status(task.id).status,"NEEDS_CONFIRMATION");assert.equal(paused.usedTokens,12000);
+  assert.equal(paused.attempts[0].diagnostic.code,"MODEL_STEP_ERROR");assert.ok(!JSON.stringify(paused).includes("SECRET_PROVIDER_DETAIL"));
+  await assert.rejects(f.driver.resume(task.id,f.owner.id,{expectedVersion:paused.version}),{code:"AGENT_RETRY_CONFIRMATION_REQUIRED"});
+  await assert.rejects(f.driver.resume(task.id,"foreign",{expectedVersion:paused.version,confirmModelRetry:true}),{code:"AGENT_BACKGROUND_OWNER_REQUIRED"});
+  await assert.rejects(f.driver.resume(task.id,f.owner.id,{expectedVersion:task.version,confirmModelRetry:true}),{code:"STALE_AGENT_VERSION"});
+  f.later(16*60000);f.restart();f.modelFault(undefined);
+  await f.driver.resume(task.id,f.owner.id,{expectedVersion:paused.version,confirmModelRetry:true});
+  assert.equal(f.models,1,"review only enqueues; does not call model");assert.equal(f.driver.status(task.id).consumedEvents,1);
+  assert.equal(f.engine.get(task.id).usedTokens,12000);assert.equal(f.engine.get(task.id).attempts.length,1);
+  assert.equal((await f.driver.consume(f.events[0])).state,"IGNORED_SUPERSEDED");
+  await f.driver.consume(f.events[1]);assert.equal(f.models,2);assert.equal(f.engine.get(task.id).usedTokens,12020);
+  assert.equal(f.engine.get(task.id).attempts.length,2);assert.equal(f.driver.status(task.id).consumedEvents,2);
+  await f.driver.consume(f.events[1]);assert.equal(f.models,2);
+});
+test("resume cannot reset caps, bypass revoked ownership, or restart a completed task",async t=>{
+  const f=fixture(t),task=await f.create();await f.driver.enable(task.id,f.owner.id,{expectedVersion:task.version,maxEvents:1});
+  await f.driver.consume(f.events[0]);
+  await assert.rejects(f.driver.resume(task.id,f.owner.id,{expectedVersion:f.engine.get(task.id).version}),{code:"AGENT_BACKGROUND_EVENT_LIMIT"});
+  const g=fixture(t),other=await g.create();await g.driver.enable(other.id,g.owner.id,{expectedVersion:other.version});await g.driver.cancel(other.id,g.owner.id);
+  g.store.update("agent",other.id,project,{status:"SUCCEEDED",stage:"SUCCEEDED"});
+  await assert.rejects(g.driver.resume(other.id,g.owner.id,{expectedVersion:g.engine.get(other.id).version}),{code:"AGENT_STAGE_INVALID"});
+  g.store.update("auth_user",g.owner.id,project,{status:"DISABLED"});
+  await assert.rejects(g.driver.resume(other.id,g.owner.id,{expectedVersion:g.engine.get(other.id).version}),{code:"AGENT_BACKGROUND_OWNER_REQUIRED"});
+});
+test("three failed attempts exhaust the original task; resume never creates a fourth",async t=>{
+  const f=fixture(t),task=await f.create();f.modelFault(new Error("synthetic unknown"));
+  await f.driver.enable(task.id,f.owner.id,{expectedVersion:task.version});
+  for(let i=0;i<3;i++){
+    await f.driver.consume(f.events[i]);
+    if(i<2){f.later(1000);await f.driver.resume(task.id,f.owner.id,{expectedVersion:f.engine.get(task.id).version,confirmModelRetry:true});}
+  }
+  assert.equal(f.models,3);assert.equal(f.engine.get(task.id).usedTokens,32000);
+  await assert.rejects(f.driver.resume(task.id,f.owner.id,{expectedVersion:f.engine.get(task.id).version,confirmModelRetry:true}),{code:"AGENT_RETRY_LIMIT"});
+  assert.equal(f.events.length,3);assert.equal(f.models,3);
 });
 test("event scope cannot pick another pending task, revoked owners or expired grants cannot execute",async t=>{
   const f=fixture(t),other=await f.create(),task=await f.create();await f.driver.enable(task.id,f.owner.id,{expectedVersion:task.version,durationMs:60000});

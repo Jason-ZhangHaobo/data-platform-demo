@@ -1,3 +1,5 @@
+import { modelFailure } from "./model-diagnostics.mjs";
+
 export class ModelUnavailable extends Error {
   constructor() {
     super(
@@ -84,7 +86,10 @@ export async function generateSql(
   env = process.env,
   fetchImpl = fetch,
 ) {
-  if (!env.DASHSCOPE_API_KEY) throw new ModelUnavailable();
+  const started = Date.now();
+  let phase = "PREPARE", failureCode = "MODEL_CONFIG_INVALID", httpStatus;
+  try {
+  if (!env.DASHSCOPE_API_KEY) { failureCode = "MODEL_KEY_MISSING"; throw new ModelUnavailable(); }
   const settings = modelSettings(env),
     base = new URL(settings.baseUrl);
   if (base.protocol !== "https:") throw new Error("模型 API 必须使用 HTTPS");
@@ -137,9 +142,12 @@ export async function generateSql(
   const estimatedInput =
     Buffer.byteLength(JSON.stringify(messages), "utf8") + 256;
   const limit = Math.min(outputLimit, inputBudget - estimatedInput);
-  if (limit < 256)
+  if (limit < 256) {
+    failureCode = "MODEL_CONTEXT_BUDGET";
     throw new Error("上下文超过本次预算，请缩小代码与元数据范围");
+  }
   const deadline = AbortSignal.timeout(60000);
+  phase = "REQUEST"; failureCode = "MODEL_TRANSPORT_ERROR";
   const response = await fetchImpl(
     settings.baseUrl.replace(/\/$/, "") + "/chat/completions",
     {
@@ -158,10 +166,14 @@ export async function generateSql(
       }),
     },
   );
-  if (!response.ok)
+  phase = "RESPONSE"; httpStatus = response.status;
+  if (!response.ok) {
+    failureCode = "MODEL_HTTP_ERROR";
     throw new Error(
       "模型请求失败（" + response.status + "），请检查服务配置或额度",
     );
+  }
+  phase = "PARSE"; failureCode = "MODEL_RESPONSE_INVALID";
   const payload = await response.json();
   let content = payload.choices?.[0]?.message?.content ?? "";
   content = content
@@ -186,6 +198,14 @@ export async function generateSql(
     usage: payload.usage ?? {},
     mode: "LIVE_MODEL",
   };
+  } catch (cause) {
+    if (cause?.name === "TimeoutError") failureCode = "MODEL_TIMEOUT";
+    else if (signal?.aborted || cause?.name === "AbortError") failureCode = "MODEL_INTERRUPTED";
+    const failure = modelFailure(failureCode, phase, { httpStatus, elapsedMs: Date.now() - started, networkCode: cause?.cause?.code ?? cause?.code });
+    if (cause instanceof ModelUnavailable) { Object.setPrototypeOf(failure, ModelUnavailable.prototype); failure.status = 503; }
+    if (failureCode === "MODEL_INTERRUPTED") failure.name = "AbortError";
+    throw failure;
+  }
 }
 
 export async function generatePython(
