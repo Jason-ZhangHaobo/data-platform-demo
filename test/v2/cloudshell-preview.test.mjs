@@ -7,7 +7,8 @@ import { once, EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { createPreviewServer, privatePayload, invokePrivate, pipeBridge } from "../../scripts/run-v2-cloudshell-preview.mjs";
+import { createHash } from "node:crypto";
+import { createPreviewServer, privatePayload, invokePrivate, pipeBridge, privateEvidenceExport } from "../../scripts/run-v2-cloudshell-preview.mjs";
 
 async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), "shuduo-preview-"));
@@ -27,6 +28,45 @@ async function fixture(t, options = {}) {
   });
   return { root, calls, request };
 }
+
+const exportId = "11111111-1111-4111-8111-111111111111";
+const recoveryExportPath = `/api/v2/evidence-export?kind=recovery&type=xapi&id=${exportId}`;
+test("native evidence attachment keeps normal auth, actual bytes and exact report identity", async t => {
+  const calls = [], report = {protocol:"shuduo-private-service-recovery/v1",scope:"PRIVATE_CLOUD_TEST",publicDeployed:false,state:{serviceId:exportId},healthy:true};
+  const {request} = await fixture(t,{allowDataServices:true,invoke:async payload=>{
+    calls.push(payload);
+    return payload.headers.cookie?.includes("shuduo_session=owner") ? {status:200,body:report,cookies:[]} : {status:401,body:{code:"AUTH_REQUIRED"},cookies:[]};
+  }});
+  const denied = await request(recoveryExportPath,{headers:{"x-shuduo-client":"",authorization:"Bearer application"}});
+  assert.equal(denied.status,401); assert.equal(denied.headers.get("content-disposition"),null);
+  const good = await request(recoveryExportPath,{headers:{"x-shuduo-client":"",cookie:"aliyun_token=never; shuduo_session=owner"}});
+  assert.equal(good.status,200); assert.match(good.headers.get("content-disposition"),/^attachment; filename="service-recovery-11111111.json"$/);
+  const bytes = await good.text(); assert.deepEqual(JSON.parse(bytes),report);
+  assert.equal(good.headers.get("x-shuduo-evidence-sha256"),createHash("sha256").update(bytes).digest("hex"));
+  assert.equal(good.headers.get("cache-control"),"no-store");
+  assert.equal(calls[1].path,`/api/v2/data-services/xapis/${exportId}/recovery`);
+  assert.equal(calls[1].headers.cookie,"shuduo_session=owner"); assert.equal(calls[0].headers.authorization,undefined);
+  const count=calls.length;
+  for(const headers of [{host:"evil.invalid"},{origin:"https://evil.invalid"},{"sec-fetch-site":"cross-site"}])assert.equal((await request(recoveryExportPath,{headers})).status,403);
+  assert.equal(calls.length,count);
+});
+test("native export refuses arbitrary routes, duplicate params, wrong scope and substituted report", async t=>{
+  for(const path of [recoveryExportPath+"&id="+exportId,recoveryExportPath+"&url=https://evil.invalid",recoveryExportPath.replace("xapi","../secrets"),recoveryExportPath.replace(exportId,"not-uuid"),recoveryExportPath+"#fragment"])assert.throws(()=>privateEvidenceExport(path));
+  for(const body of [{protocol:"other"}, {protocol:"shuduo-private-service-recovery/v1",scope:"PRIVATE_CLOUD_TEST",publicDeployed:false,state:{serviceId:"foreign"}}]){
+    const {request}=await fixture(t,{allowDataServices:true,invoke:async()=>({status:200,body,cookies:[]})});
+    const response=await request(recoveryExportPath);assert.equal(response.status,502);assert.equal(response.headers.get("content-disposition"),null);
+  }
+  const {request,calls}=await fixture(t);
+  assert.equal((await request(recoveryExportPath)).status,404);assert.equal(calls.length,0);
+});
+test("consumption attachment binds the same task and package and never invokes compute",async t=>{
+  const digest="a".repeat(64),path=`/api/v2/evidence-export?kind=consumption&id=${exportId}&digest=${digest}`,calls=[];
+  const {request}=await fixture(t,{allowDataServices:true,invoke:async payload=>{calls.push(payload);return{status:200,body:{protocol:"shuduo-private-task-consumption/v1",scope:"PRIVATE_CLOUD_TEST",publicDeployed:false,taskId:exportId,packageDigest:digest},cookies:[]};}});
+  const response=await request(path);assert.equal(response.status,200);
+  assert.equal(calls[0].method,"GET");assert.equal(calls[0].path,`/api/v2/data-services/task-evidence?agent_task_id=${exportId}&package_digest=${digest}`);
+  assert.equal((await response.json()).taskId,exportId);
+  assert.throws(()=>privateEvidenceExport(path.replace(digest,"invalid")));
+});
 
 test("preview serves only compiled files and explicitly marks the narrowed UI", async t => {
   const { root, request, calls } = await fixture(t);

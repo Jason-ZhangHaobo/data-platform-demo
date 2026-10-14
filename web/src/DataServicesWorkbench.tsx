@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { EvidenceDownload } from "./EvidenceDownload";
 import {
   Activity,
   AppWindow,
@@ -817,7 +818,7 @@ LIMIT :limit OFFSET :offset`}</pre>
                   <div><span>已撤销应用</span><strong>{recoveryReport.state.applications.filter(a=>a.status==="REVOKED").length}</strong></div>
                 </div>
                 <p>这是一份只读检查，不代表已经通过冷启动验收。重建后端后须确认启动标识改变、状态摘要与原记录一致；刷新浏览器或重启临时代理不能代替。</p>
-                <button className="button" onClick={()=>{const blob=new Blob([JSON.stringify(recoveryReport,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`service-recovery-${recoveryReport.state.serviceId.slice(0,8)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}}>下载恢复对照</button>
+                <EvidenceDownload name={`service-recovery-${recoveryReport.state.serviceId.slice(0,8)}.json`} value={recoveryReport} request={{kind:"recovery",type:selected.serviceType.toLowerCase() as "dapi"|"xapi",id:recoveryReport.state.serviceId}}>下载恢复对照</EvidenceDownload>
               </section>}
               {testReceipt && (
                 <section className="service-test-result">

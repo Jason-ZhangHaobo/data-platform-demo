@@ -50,6 +50,27 @@ test("failed/slow persistence prevents side effects; expired claims recover afte
   assert.equal((await f.tick()).state, "LEASE_EXPIRED"); assert.equal(f.calls, 1);
 });
 
+test("same request reclaims an expired unfinished receipt without changing task scope",async t=>{
+  const f=fixture(t),task=f.create(),id=randomUUID();
+  f.persist(async()=>{throw Error("synthetic persisted claim failure");});
+  await assert.rejects(f.dispatcher.tick({requestId:id,taskId:task.id}));assert.equal(f.calls,0);
+  f.persist(async()=>{});f.later(120001);f.restart();
+  const result=await f.dispatcher.tick({requestId:id,taskId:task.id});assert.equal(result.state,"ADVANCED");assert.equal(f.calls,1);
+  assert.deepEqual(await f.dispatcher.tick({requestId:id,taskId:task.id}),result);assert.equal(f.calls,1);
+  await assert.rejects(f.dispatcher.tick({requestId:id,taskId:randomUUID()}),{code:"AGENT_TICK_TASK_MISMATCH"});
+});
+
+test("lost model-step ACK restores its checkpoint rather than running Spark under the old event",async t=>{
+  const f=fixture(t),task=f.create(),requestId=randomUUID();
+  f.persist(async()=>{throw Error("synthetic stopped before tick ACK");});
+  await assert.rejects(f.dispatcher.tick({requestId,taskId:task.id}));
+  f.store.update("agent",task.id,PROJECT,{status:"RUNNING",stage:"READY_FOR_RUN",revisionId:"already-durable"});
+  f.persist(async()=>{});f.later(120001);f.restart();
+  const recovered=await f.dispatcher.tick({requestId,taskId:task.id});
+  assert.equal(recovered.recoveredCheckpoint,true);assert.equal(recovered.stage,"READY_FOR_RUN");assert.equal(f.calls,0);
+  assert.deepEqual(await f.dispatcher.tick({requestId,taskId:task.id}),recovered);
+});
+
 test("driver rechecks owner permission, skips unknown model outcomes and respects live leases", async t => {
   const f = fixture(t); const task = f.create();
   f.store.update("auth_user", f.owner.id, PROJECT, { status: "DISABLED" });

@@ -28,6 +28,9 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent prepare-delivery --id AGENT_TASK_ID
   shuduo agent delivery --id DELIVERY_TASK_ID
   shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION
+  shuduo agent background --id TASK_ID
+  shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm
+  shuduo agent stop-background --id TASK_ID --confirm
   shuduo agent publication --id AGENT_TASK_ID
   shuduo agent publish --id AGENT_TASK_ID --file REVIEW_JSON
   shuduo agent stop-publication --id AGENT_TASK_ID
@@ -396,6 +399,15 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "agent" && action === "advance-delivery")
       result = await client.request(`/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}/advance`, { method: "POST", body: { expectedVersion: Number(required(parsed.options, "version")) } });
+    else if(resource==="agent"&&action==="background")result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background`);
+    else if(resource==="agent"&&action==="enable-background"){
+      if(parsed.options.confirm!==true)throw new Error("云后台可能调用模型和Spark，须先确认范围并提供--confirm");
+      result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background`,{method:"POST",body:{expectedVersion:Number(required(parsed.options,"version"))}});
+    }
+    else if(resource==="agent"&&action==="stop-background"){
+      if(parsed.options.confirm!==true)throw new Error("停止后续云后台推进须提供--confirm");
+      result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background/cancel`,{method:"POST",body:{}});
+    }
     else if (resource === "agent" && action === "cancel-delivery")
       result = await client.request(
         `/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}/cancel`,

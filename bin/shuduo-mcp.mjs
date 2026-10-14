@@ -3,6 +3,9 @@ import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 
 const tools = [
+  {name:"agent_background_status",description:"读取原任务的有界云后台状态；不会推进任务或调用模型。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"}},required:["taskId"]}},
+  {name:"agent_background_enable",description:"委托原任务的云端事件后台，15分钟/最多20事件，不自动发布。可能调用真实模型和Spark；必须先取得用户对任务与预算的明确确认。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},expectedVersion:{type:"integer",minimum:1},confirm:{type:"boolean",const:true}},required:["taskId","expectedVersion","confirm"]}},
+  {name:"agent_background_cancel",description:"停止指定任务后续后台推进，已提交计算及检查点保留；须确认，不删除记录。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},confirm:{type:"boolean",const:true}},required:["taskId","confirm"]}},
   { name: "v2_status", description: "读取数舵V2真实/本机/公网能力边界。", inputSchema: { type: "object", properties: {} } },
   { name: "budget_status", description: "读取当月模型估算、远程Spark用量、账号账单连接状态和预算门；未连接账号账单时不代表全站费用。", inputSchema: { type: "object", properties: {} } },
   { name: "agent_intent_list", description: "读取跨模块 Data Agent 的任务理解与受治理路由结果。", inputSchema: { type: "object", properties: {} } },
@@ -241,6 +244,15 @@ async function callTool(name, args = {}) {
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/journey`);
   if (name === "agent_development_workflow")
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/workflow`);
+  if(name==="agent_background_status")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background`);
+  if(name==="agent_background_enable"){
+    if(args.confirm!==true)throw new Error("必须先确认云后台任务与预算范围");
+    return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background`,{method:"POST",body:{expectedVersion:args.expectedVersion}});
+  }
+  if(name==="agent_background_cancel"){
+    if(args.confirm!==true)throw new Error("必须先确认停止后台推进");
+    return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background/cancel`,{method:"POST",body:{}});
+  }
   if(name==="agent_publication_detail")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/publication`);
   if(name==="agent_publication_create")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/publication`,{method:"POST",body:{packageDigest:args.packageDigest,verificationId:args.verificationId,attestations:args.attestations}});
   if(name==="agent_publication_stop")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/publication/cancel`,{method:"POST",body:{}});

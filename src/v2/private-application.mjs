@@ -15,8 +15,8 @@ export const privateApplicationTimeoutMs = path => /^\/api\/v2\/agent\/tasks\/[a
 export function validatePrivateApplicationRequest(input, { allowDurableAgent = false, allowDataServices = false } = {}) {
   const servicePath=allowDataServices && privateServiceRoute(input?.method,input?.path);
   const agentPath = allowDurableAgent && (input?.method === "GET"
-    ? /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}(?:\/(?:workflow|publication))?)?|deliveries\/[a-f0-9-]{36})$/
-    : /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}\/(?:advance|cancel|prepare-delivery|publication(?:\/cancel)?))?|deliveries\/[a-f0-9-]{36}\/(?:advance|cancel))$/).test(input?.path ?? "");
+    ? /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}(?:\/(?:workflow|publication|background))?)?|deliveries\/[a-f0-9-]{36})$/
+    : /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}\/(?:advance|cancel|prepare-delivery|publication(?:\/cancel)?|background(?:\/cancel)?))?|deliveries\/[a-f0-9-]{36}\/(?:advance|cancel))$/).test(input?.path ?? "");
   if (!input || input.operation !== "PRIVATE_APPLICATION_HTTP_V1" ||
       Object.keys(input).some(k => !["operation", "method", "path", "headers", "body"].includes(k)) ||
       !["GET", "POST"].includes(input.method) || typeof input.path !== "string" ||

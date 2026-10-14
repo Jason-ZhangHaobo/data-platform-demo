@@ -23,28 +23,45 @@ export function createAgentDispatcher({ store, project, engine, persist, now = D
     return store.get("agent_dispatch_state", item.id, project);
   };
 
-  async function tick({ requestId } = {}) {
+  async function tick({ requestId, taskId } = {}) {
     if (typeof requestId !== "string" || !/^[a-f0-9-]{36}$/.test(requestId)) throw fail(422, "AGENT_TICK_REQUEST_INVALID");
+    if (taskId !== undefined && (typeof taskId !== "string" || !/^[a-f0-9-]{36}$/.test(taskId))) throw fail(422, "AGENT_TICK_TASK_INVALID");
     const prior = store.list("agent_tick", project).find(t => t.requestId === requestId);
-    if (prior) return prior.result ?? response("IN_PROGRESS", { requestId });
+    if (prior && taskId !== undefined && prior.taskId !== taskId) throw fail(409, "AGENT_TICK_TASK_MISMATCH");
+    if (prior?.result) return prior.result;
+    if (prior && prior.startedAt + leaseMs > now()) return response("IN_PROGRESS", { requestId });
     const guard = store.deduplicate(`${project}:agent-dispatch-guard`, "v1",
       () => store.create("agent_dispatch_guard", project, { expiresAt: 0 }));
     const currentGuard = store.get("agent_dispatch_guard", guard.id, project);
     if (currentGuard.expiresAt > now()) return response("BUSY");
+    // Model output may already be durably linked while the tick ACK was lost.
+    // Recover that receipt; do not consume the following Spark boundary under
+    // the old request id (or silently undercount the event budget).
+    const priorTask=prior&&store.get("agent",prior.taskId,project);
+    if(priorTask && Number.isSafeInteger(prior.taskVersion) && priorTask.version!==prior.taskVersion && priorTask.stage==="READY_FOR_RUN"){
+      const recovered=response("ADVANCED",{requestId,taskId:priorTask.id,status:priorTask.status,stage:priorTask.stage,recoveredCheckpoint:true});
+      store.update("agent_tick",prior.id,project,{result:recovered,finishedAt:now()},{expectedVersion:prior.version});
+      await persist();return recovered;
+    }
     const tasks = store.list("agent", project).filter(t => t.executionMode === durableSqlAgentMode &&
+      (!taskId || t.id === taskId) && (!prior || t.id === prior.taskId) &&
       ["QUEUED", "RUNNING", "INTERRUPTED"].includes(t.status) && t.stage !== "MODEL_OUTCOME_UNKNOWN");
     // Respect an in-flight model lease, including one started by a manual call.
     if (tasks.some(t => t.stage === "MODEL_IN_FLIGHT" && Date.parse(t.durable.leaseExpiresAt) > now()))
       return response("BUSY");
     const candidates = tasks.map(task => ({ task, state: checkpoint(task) }))
-      .filter(({ task, state }) => state.nextAt <= now() &&
+      .filter(({ task, state }) => (state.nextAt <= now() || (taskId && state.failures === 0)) &&
         (state.failures < 3 || state.taskVersion !== task.version) && (allowed(task) || task.stage === "CANCELLING"))
       .sort((a, b) => a.state.lastAt - b.state.lastAt || a.task.createdAt.localeCompare(b.task.createdAt));
     if (!candidates.length) return response("IDLE", { pending: tasks.length });
     const { task, state } = candidates[0], token = randomUUID();
-    const receipt = store.deduplicate(`${project}:agent-tick:${requestId}`, "v1", () => {
+    let receipt;
+    if (prior) {
       store.update("agent_dispatch_guard", guard.id, project, { token, expiresAt: now() + leaseMs }, { expectedVersion: currentGuard.version });
-      return store.create("agent_tick", project, { requestId, taskId: task.id, startedAt: now(), token });
+      receipt = store.update("agent_tick", prior.id, project, { startedAt: now(), token, taskVersion:task.version }, { expectedVersion: prior.version });
+    } else receipt = store.deduplicate(`${project}:agent-tick:${requestId}`, "v1", () => {
+      store.update("agent_dispatch_guard", guard.id, project, { token, expiresAt: now() + leaseMs }, { expectedVersion: currentGuard.version });
+      return store.create("agent_tick", project, { requestId, taskId: task.id, taskVersion:task.version, startedAt: now(), token });
     });
     await persist(); // No model or queue side effects until the claim is durable.
     const owns = () => {
