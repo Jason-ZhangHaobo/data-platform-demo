@@ -4,6 +4,7 @@ import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 
 const tools = [
   {name:"agent_background_status",description:"读取原任务的有界云后台状态；不会推进任务或调用模型。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"}},required:["taskId"]}},
+  {name:"agent_background_resume",description:"审阅后恢复原任务15分钟后台；保留原预算和次数。未知模型结果可能已收费，必须明确确认重试。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},expectedVersion:{type:"integer",minimum:1},confirm:{type:"boolean",const:true},confirmModelRetry:{type:"boolean"}},required:["taskId","expectedVersion","confirm"]}},
   {name:"agent_background_enable",description:"委托原任务的云端事件后台，15分钟/最多20事件，不自动发布。可能调用真实模型和Spark；必须先取得用户对任务与预算的明确确认。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},expectedVersion:{type:"integer",minimum:1},confirm:{type:"boolean",const:true}},required:["taskId","expectedVersion","confirm"]}},
   {name:"agent_background_cancel",description:"停止指定任务后续后台推进，已提交计算及检查点保留；须确认，不删除记录。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},confirm:{type:"boolean",const:true}},required:["taskId","confirm"]}},
   { name: "v2_status", description: "读取数舵V2真实/本机/公网能力边界。", inputSchema: { type: "object", properties: {} } },
@@ -248,6 +249,10 @@ async function callTool(name, args = {}) {
   if(name==="agent_background_enable"){
     if(args.confirm!==true)throw new Error("必须先确认云后台任务与预算范围");
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background`,{method:"POST",body:{expectedVersion:args.expectedVersion}});
+  }
+  if(name==="agent_background_resume"){
+    if(args.confirm!==true)throw new Error("必须先审阅原任务与剩余预算");
+    return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background/resume`,{method:"POST",body:{expectedVersion:args.expectedVersion,confirmModelRetry:args.confirmModelRetry??false}});
   }
   if(name==="agent_background_cancel"){
     if(args.confirm!==true)throw new Error("必须先确认停止后台推进");

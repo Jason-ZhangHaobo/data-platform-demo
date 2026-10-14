@@ -334,7 +334,7 @@ export function createV2Server(options = {}) {
     return createAgentWakeOssTransport({...oss,credentialsProvider:async()=>ossConfigFromEnvironment(env).credentials,
       wakePrefix:agentEventConfig.wakePrefix,resultPrefix:agentEventConfig.resultPrefix});
   })() : undefined;
-  const agentEventDriver = agentEventConfig ? createAgentEventDriver({store,project:PROJECT,dispatcher:agentDispatcher,
+  const agentEventDriver = agentEventConfig ? createAgentEventDriver({store,project:PROJECT,dispatcher:agentDispatcher,engine:durableAgent,
     transport:agentWakeTransport,config:agentEventConfig,queueConfig:queueConfigFromEnvironment(env),persist:persistDevelopment,now:options.now ?? Date.now}) : undefined;
   const exposeDurableTask = task => {
     const background=agentEventDriver&&task.executionMode===durableSqlAgentMode?agentEventDriver.status(task.id):undefined;
@@ -2899,14 +2899,18 @@ export function createV2Server(options = {}) {
         return json(res, 200, store.list("agent", PROJECT)
           .filter(task => mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)))
           .map(exposeDurableTask));
-      const backgroundRoute=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/background(?:\/(cancel))?$/);
+      const backgroundRoute=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/background(?:\/(cancel|resume))?$/);
       if(backgroundRoute){
         const task=get("agent",backgroundRoute[1]);requireDurableAgentOwner(task,req);
         if(!agentEventDriver)throw Object.assign(fail(503,"云端事件后台未启用"),{code:"AGENT_EVENT_DRIVER_DISABLED"});
         if(method==="GET"&&!backgroundRoute[2])return json(res,200,agentEventDriver.status(task.id));
         if(method==="POST"){
           const body=await readBody(req),actor=auth.sessionFromHeaders(req.headers)?.user.id;
-          if(backgroundRoute[2]){
+          if(backgroundRoute[2]==="resume"){
+            if(Object.keys(body).some(k=>!["expectedVersion","confirmModelRetry"].includes(k)))throw fail(422,"恢复后台请求字段不受支持");
+            return json(res,202,await agentEventDriver.resume(task.id,actor,body));
+          }
+          if(backgroundRoute[2]==="cancel"){
             if(Object.keys(body).length)throw fail(422,"停止后台请求不接受额外字段");
             return json(res,200,await agentEventDriver.cancel(task.id,actor));
           }

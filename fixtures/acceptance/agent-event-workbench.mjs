@@ -8,6 +8,7 @@ import {createPreviewServer} from "../../scripts/run-v2-cloudshell-preview.mjs";
 import {createQueuedSparkJob} from "../../src/v2/remote-spark-queue.mjs";
 import {referenceSql} from "../../src/v2/context.mjs";
 import {AGENT_WAKE_PREFIX} from "../../src/v2/agent-event-driver.mjs";
+import {modelFailure} from "../../src/v2/model-diagnostics.mjs";
 const root=mkdtempSync(join(tmpdir(),"shuduo-event-ui-")),port=3194,origin=`http://127.0.0.1:${port}`,objects=new Map();
 let app,models=0,submissions=0;
 const queueConfig={projectId:"project-securities-lab",sharedSecret:"synthetic-worker-secret-".repeat(3),jobPrefix:"data-platform-demo/v2/spark-queue/jobs",
@@ -19,7 +20,7 @@ const invoke=async payload=>{
 const runner=async()=>{throw Error("UI fixture never executes Spark");};
 runner.durable={prepare:(input,id)=>{const q=createQueuedSparkJob(input,queueConfig,{requestId:id});return{...q,serialized:JSON.stringify(q.job)};},
   submit:async queued=>{if(!objects.has(queued.jobKey)){objects.set(queued.jobKey,queued.serialized);submissions++;}},read:async()=>undefined,cancel:async()=>{}};
-app=createV2Server({root,runner,generator:async()=>{models++;return{sql:referenceSql,explanation:"本机UI测试模型替身，不代表真实模型质量或Spark执行。",model:"TEST_DOUBLE",usage:{total_tokens:20}};},
+app=createV2Server({root,runner,generator:async()=>{models++;if(process.env.V2_QA_FIRST_MODEL_FAILURE==="true"&&models===1)throw modelFailure("MODEL_HTTP_ERROR","RESPONSE",{httpStatus:429,elapsedMs:80});return{sql:referenceSql,explanation:"本机UI测试模型替身，不代表真实模型质量或Spark执行。",model:"TEST_DOUBLE",usage:{total_tokens:20}};},
   env:{V2_LOCAL_DEVELOPMENT:"false",V2_PROVISIONING_ONLY:"true",V2_PRIVATE_SMOKE_ENABLED:"true",V2_DURABLE_SQL_AGENT_ENABLED:"true",V2_AGENT_DRIVER_MODE:"OSS_EVENTS",
     OSS_BUCKET:"fictional-securities-test",V2_AGENT_EVENT_ACCOUNT_ID:"111122223333",V2_SCHEDULER_TICK_SECRET:"synthetic-wake-secret-".repeat(3),V2_SPARK_EXECUTOR_SECRET:queueConfig.sharedSecret,V2_SPARK_EXECUTOR_TRANSPORT:"OSS_QUEUE"},
   agentWakeTransport:{read:async key=>objects.get(key),create:async(key,body)=>{

@@ -30,6 +30,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION
   shuduo agent background --id TASK_ID
   shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm
+  shuduo agent resume-background --id TASK_ID --version CURRENT_VERSION --confirm [--confirm-model-retry]
   shuduo agent stop-background --id TASK_ID --confirm
   shuduo agent publication --id AGENT_TASK_ID
   shuduo agent publish --id AGENT_TASK_ID --file REVIEW_JSON
@@ -403,6 +404,10 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if(resource==="agent"&&action==="enable-background"){
       if(parsed.options.confirm!==true)throw new Error("云后台可能调用模型和Spark，须先确认范围并提供--confirm");
       result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background`,{method:"POST",body:{expectedVersion:Number(required(parsed.options,"version"))}});
+    }
+    else if(resource==="agent"&&action==="resume-background"){
+      if(parsed.options.confirm!==true)throw new Error("恢复原任务须审阅剩余次数与预算并提供--confirm；未知模型结果另须--confirm-model-retry");
+      result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background/resume`,{method:"POST",body:{expectedVersion:Number(required(parsed.options,"version")),confirmModelRetry:parsed.options["confirm-model-retry"]===true}});
     }
     else if(resource==="agent"&&action==="stop-background"){
       if(parsed.options.confirm!==true)throw new Error("停止后续云后台推进须提供--confirm");

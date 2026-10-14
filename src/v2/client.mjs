@@ -4,6 +4,7 @@ import { readSessionCredential } from "./session-credential.mjs";
 export const V2_OPERATIONS = Object.freeze([
   "agent_background_status",
   "agent_background_enable",
+  "agent_background_resume",
   "agent_background_cancel",
   "data_service_sources",
   "data_service_task_evidence",
