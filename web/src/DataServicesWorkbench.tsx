@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EvidenceDownload } from "./EvidenceDownload";
+import { compositionChoices } from "./service-composition";
 import {
   Activity,
   AppWindow,
@@ -177,9 +178,12 @@ export function DataServicesWorkbench({
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
   const [dapiName, setDapiName] = useState("客户持仓查询"),
-    [dapiSlug, setDapiSlug] = useState("customer-holdings"),
+    [dapiSlug, setDapiSlug] = useState(sourceAgentTaskId?`customer-holdings-${sourceAgentTaskId.slice(0,8)}`:"customer-holdings"),
     [profile, setProfile] = useState<keyof typeof fieldProfiles>("holdings"),
     [sourceRunId, setSourceRunId] = useState("");
+  const [xapiName,setXapiName]=useState("财富顾问客户资产组合查询"),
+    [xapiSlug,setXapiSlug]=useState(sourceAgentTaskId?`advisor-assets-${sourceAgentTaskId.slice(0,8)}`:"advisor-asset-overview"),
+    [holdingsVersionId,setHoldingsVersionId]=useState(""),[cashVersionId,setCashVersionId]=useState("");
   const [testReceipt, setTestReceipt] = useState<TestReceipt>(),
     [openApi, setOpenApi] = useState<Record<string, unknown>>(),
     [issuedToken, setIssuedToken] = useState("");
@@ -209,6 +213,7 @@ export function DataServicesWorkbench({
     callsForSelected = selected
       ? calls.filter((item) => item.serviceId === selected.id)
       : calls;
+  const composition=compositionChoices(dapis,{privateCloud,sourceRunId,holdingsVersionId,cashVersionId});
   const currentPublished=Boolean(selected?.currentVersion && selected.currentVersion.id===selected.publishedVersion?.id);
   const versionContext=`${selectedId}:${selected?.currentVersion?.id??""}`;
   const activeVersionRef=useRef(versionContext);activeVersionRef.current=versionContext;
@@ -331,15 +336,14 @@ export function DataServicesWorkbench({
     setBusy("create-xapi");
     setError("");
     try {
-      const holdings=publishedDapis.find(s=>s.publishedVersion?.fields?.includes("holding_market_value")&&(!privateCloud||s.publishedVersion.sourceReleaseRunId===sourceRunId));
-      const cash=publishedDapis.find(s=>s.id!==holdings?.id&&s.publishedVersion?.fields?.includes("available_cash")&&(!privateCloud||s.publishedVersion.sourceReleaseRunId===sourceRunId));
+      const {holdings,cash}=composition;
       if(!holdings||!cash)throw new Error("请先发布同一批次的持仓DAPI与现金DAPI");
       const body={
-        name: "财富顾问客户资产组合查询",
-        slug: "advisor-asset-overview",
+        name: xapiName.trim(),
+        slug: xapiSlug.trim(),
         steps: [
-          { alias: "positions", dapiId: holdings.id },
-          { alias: "cash", dapiId: cash.id },
+          { alias: "positions", dapiId: holdings.id, dapiVersionId:holdings.publishedVersion!.id },
+          { alias: "cash", dapiId: cash.id, dapiVersionId:cash.publishedVersion!.id },
         ],
         timeoutMs: 2500,
         rateLimitPerMinute: 30,
@@ -588,7 +592,7 @@ export function DataServicesWorkbench({
               <span className="eyebrow">SERVICE CATALOG</span>
               <h3>服务目录</h3>
             </div>
-            <button className="button" disabled={!canWrite||!!busy} onClick={()=>{setSelectedId("");const hasHoldings=dapis.some(s=>s.currentVersion?.fields?.includes("holding_market_value"));setProfile(hasHoldings?"cash":"holdings");setDapiName(hasHoldings?"客户现金查询":"客户持仓查询");setDapiSlug(hasHoldings?"customer-cash":"customer-holdings");}}>新建 DAPI</button>
+            <button className="button" disabled={!canWrite||!!busy} onClick={()=>{setSelectedId("");const hasHoldings=dapis.some(s=>s.currentVersion?.fields?.includes("holding_market_value")&&(!privateCloud||s.currentVersion.sourceReleaseRunId===sourceRunId));setProfile(hasHoldings?"cash":"holdings");setDapiName(hasHoldings?"客户现金查询":"客户持仓查询");setDapiSlug((hasHoldings?"customer-cash":"customer-holdings")+(sourceAgentTaskId?`-${sourceAgentTaskId.slice(0,8)}`:""));}}>新建 DAPI</button>
           </header>
           {services.length ? (
             services.map((service) => (
@@ -864,13 +868,19 @@ LIMIT :limit OFFSET :offset`}</pre>
               <p>把两个已发布DAPI按客户编号组合，固定其版本。</p>
             </div>
           </header>
+          <div className="service-composition-form">
+            <label>XAPI名称<input value={xapiName} maxLength={100} disabled={!!busy} onChange={e=>setXapiName(e.target.value)}/></label>
+            <label>XAPI路径标识<input value={xapiSlug} maxLength={48} disabled={!!busy} onChange={e=>setXapiSlug(e.target.value)}/></label>
+            <label>持仓DAPI版本<select value={composition.holdings?.publishedVersion?.id??""} disabled={!!busy} onChange={e=>{setHoldingsVersionId(e.target.value);setCashVersionId("");}}><option value="">请选择已发布版本</option>{composition.holdingsOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
+            <label>现金DAPI版本<select value={composition.cash?.publishedVersion?.id??""} disabled={!!busy} onChange={e=>setCashVersionId(e.target.value)}><option value="">请选择已发布版本</option>{composition.cashOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
+          </div>
           <button
             className="button"
             onClick={createXapi}
-            disabled={!canWrite || publishedDapis.length < 2 || !!xapis.length || !!busy}
+            disabled={!canWrite || !composition.holdings || !composition.cash || !xapiName.trim() || !/^[a-z][a-z0-9-]{2,47}$/.test(xapiSlug.trim()) || !!busy}
           >
             <Network size={15} />
-            {xapis.length ? "组合服务已创建" : "创建持仓+现金XAPI"}
+            创建持仓+现金XAPI
           </button>
           <small>需要至少两个已发布DAPI；首版采用声明式编排。</small>
         </article>
