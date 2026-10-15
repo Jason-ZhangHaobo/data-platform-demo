@@ -9,9 +9,12 @@ export class ModelUnavailable extends Error {
   }
 }
 export function modelSettings(env = process.env) {
+  const model = env.V2_MODEL ?? "qwen3.7-plus";
   return {
     configured: Boolean(env.DASHSCOPE_API_KEY),
-    model: env.V2_MODEL ?? "qwen3-coder-plus",
+    model,
+    requestOptions: /^qwen3\.7-plus(?:-\d{4}-\d{2}-\d{2})?$/.test(model)
+      ? { enable_thinking: false, response_format: { type: "json_object" } } : {},
     baseUrl:
       env.V2_MODEL_BASE_URL ??
       "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -45,6 +48,7 @@ export async function generateAgentIntent(
       },
       body: JSON.stringify({
         model: settings.model,
+        ...settings.requestOptions,
         temperature: 0,
         max_tokens: 1400,
         messages: [
@@ -160,6 +164,7 @@ export async function generateSql(
       },
       body: JSON.stringify({
         model: settings.model,
+        ...settings.requestOptions,
         temperature: 0.1,
         max_tokens: limit,
         messages,
@@ -316,6 +321,7 @@ export async function generatePython(
         retryable: true,
         usage: payload.usage ?? {},
         model: settings.model,
+        ...settings.requestOptions,
       },
     );
   }
@@ -393,6 +399,7 @@ export async function generateDataServicePlan(
       },
       body: JSON.stringify({
         model: settings.model,
+        ...settings.requestOptions,
         temperature: 0.1,
         max_tokens: 1800,
         messages: [
@@ -479,6 +486,7 @@ export async function generateIngestionPlan(
       },
       body: JSON.stringify({
         model: settings.model,
+        ...settings.requestOptions,
         temperature: 0.1,
         max_tokens: 2200,
         messages: [
@@ -577,6 +585,7 @@ export async function generateRealtimePlan(
       },
       body: JSON.stringify({
         model: settings.model,
+        ...settings.requestOptions,
         temperature: 0.1,
         max_tokens: 1600,
         messages: [
@@ -673,6 +682,7 @@ export async function generateAssetInsight(
       },
       body: JSON.stringify({
         model: settings.model,
+        ...settings.requestOptions,
         temperature: 0.1,
         max_tokens: 1800,
         messages: [
@@ -774,6 +784,7 @@ export async function generateQualityPlan(
       },
       body: JSON.stringify({
         model: settings.model,
+        ...settings.requestOptions,
         temperature: 0.1,
         max_tokens: 1800,
         messages: [
@@ -867,6 +878,7 @@ export async function generateSecurityPlan(
       },
       body: JSON.stringify({
         model: settings.model,
+        ...settings.requestOptions,
         temperature: 0.1,
         max_tokens: 2200,
         messages: [
@@ -959,6 +971,7 @@ export async function generateReportPlan(
       },
       body: JSON.stringify({
         model: settings.model,
+        ...settings.requestOptions,
         temperature: 0.1,
         max_tokens: 2400,
         messages: [
@@ -1068,6 +1081,7 @@ export async function generateOpsDiagnosis(
       },
       body: JSON.stringify({
         model: settings.model,
+        ...settings.requestOptions,
         temperature: 0.1,
         max_tokens: 2000,
         messages: [
@@ -1105,7 +1119,8 @@ export async function generateOpsDiagnosis(
     : diagnosis.evidenceIds;
   return {
     diagnosis,
-    model: settings.model,
+        model: settings.model,
+        ...settings.requestOptions,
     usage: payload.usage ?? {},
     mode: "LIVE_MODEL",
   };

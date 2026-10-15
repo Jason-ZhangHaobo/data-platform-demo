@@ -59,7 +59,7 @@ test("monthly model estimate uses reported input/output tokens and conservative 
 });
 
 test("model and account budget guards fail before another paid request", () => {
-  const model = setup({ V2_MODEL_MONTHLY_BUDGET_CNY: "0.6" });
+  const model = setup({ V2_MODEL_MONTHLY_BUDGET_CNY: "0.6", V2_MODEL: "qwen3-coder-plus" });
   try {
     current(model.store, "report_agent_plan", {
       mode: "LIVE_MODEL",
@@ -124,6 +124,7 @@ test("API rejects an Agent task before creation when the monthly model guard is 
     env: {
       V2_LOCAL_DEVELOPMENT: "true",
       V2_MODEL_MONTHLY_BUDGET_CNY: "0.6",
+      V2_MODEL: "qwen3-coder-plus",
     },
     generator: async () => {
       generatorCalls++;
@@ -174,4 +175,15 @@ test("API rejects an Agent task before creation when the monthly model guard is 
     await new Promise((resolve) => app.server.close(resolve));
     store.close();
   }
+});
+test("Qwen 3.7 estimates preserve historical unknown reservations and guard the new request",()=>{
+  const app=setup({V2_MODEL:"qwen3.7-plus",V2_MODEL_MONTHLY_BUDGET_CNY:"0.3"});
+  try{
+    current(app.store,"agent",{mode:"LIVE_MODEL",attempts:[{model:"qwen3.7-plus",usage:{prompt_tokens:10000,completion_tokens:3000,total_tokens:13000}}]});
+    assert.equal(app.budget.overview().model.estimatedCostCny,0.044);
+    app.budget.assertCanStartModel();
+    current(app.store,"agent",{mode:"LIVE_MODEL",attempts:[{model:"unconfirmed",usage:{total_tokens:12000}}]});
+    assert.equal(app.budget.overview().model.estimatedCostCny,2.444);
+    assert.throws(()=>app.budget.assertCanStartModel(),{code:"MONTHLY_MODEL_BUDGET_EXCEEDED"});
+  }finally{app.close();}
 });

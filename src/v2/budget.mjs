@@ -52,8 +52,10 @@ const coderPrice = (inputTokens) => {
 const modelCost = (model, usage, fallbackTokens) => {
   const measured = tokens(usage),
     total = measured.total || fallbackTokens;
-  if (String(model ?? "").startsWith("qwen3-coder-plus")) {
-    const price = coderPrice(measured.input || total);
+  if (String(model ?? "").startsWith("qwen3-coder-plus") || /^qwen3\.7-plus(?:-\d{4}-\d{2}-\d{2})?$/.test(String(model))) {
+    const price = String(model).startsWith("qwen3.7-plus")
+      ? ((measured.input || total) <= 256000 ? { input: 2, output: 8 } : { input: 6, output: 24 })
+      : coderPrice(measured.input || total);
     if (!measured.input && !measured.output)
       return (total * price.output) / 1_000_000;
     const inferredOutput = measured.output || Math.max(0, total - measured.input);
@@ -205,7 +207,7 @@ export class BudgetManager {
     const status = this.overview();
     this.#assertAccount(status);
     const projected = modelCost(
-      this.env.V2_MODEL ?? "qwen3-coder-plus",
+      this.env.V2_MODEL ?? "qwen3.7-plus",
       {},
       this.fallbackTokens,
     );
