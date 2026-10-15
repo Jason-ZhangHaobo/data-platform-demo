@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { agentJourney } from "../../web/src/agent-journey.ts";
+import { agentJourney, deliveryStageText } from "../../web/src/agent-journey.ts";
 import { contextIds } from "../../src/v2/context.mjs";
 
 const fixture = () => ({
@@ -14,6 +14,15 @@ const fixture = () => ({
   events: [1,2].map(i=>({type:"BATCH_SUCCEEDED",releaseId:"release-one",releaseRunId:`batch-${i}`,packageDigest:"digest-one"})),
 });
 const stage = (e,id) => agentJourney(e).steps.find(step=>step.id===id).state;
+
+test("delivery summary follows only the current reviewed package and preserves stopped releases", () => {
+  const f=fixture();
+  assert.equal(deliveryStageText("AWAITING_ENGINEER_REVIEW",agentJourney(f).publicationCurrent,f.release.status),"交付文件已演练并完成发布审阅");
+  for(const change of [{dirty:true},{revisionId:"new-code"},{bundle:{...f.bundle,digest:"new-package"}}]) {
+    assert.equal(deliveryStageText("AWAITING_ENGINEER_REVIEW",agentJourney({...f,...change}).publicationCurrent,f.release.status),"演练通过，待审阅交付");
+  }
+  for(const status of ["CANCELLED","ROLLED_BACK"])assert.equal(deliveryStageText("AWAITING_ENGINEER_REVIEW",true,status),"交付文件已演练；发布已停止");
+});
 
 test("journey shows actual evidence stages and never claims unverified service consumption or E2E", () => {
   const f=fixture(), journey=agentJourney(f);
