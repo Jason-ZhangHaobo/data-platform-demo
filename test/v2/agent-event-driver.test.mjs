@@ -144,6 +144,8 @@ test("event configuration defaults off and fails closed for incomplete or overla
   const derived=agentEventConfigFromEnvironment({V2_AGENT_DRIVER_MODE:"OSS_EVENTS",OSS_BUCKET:config.bucket,V2_AGENT_EVENT_ACCOUNT_ID:config.accountId,V2_SPARK_EXECUTOR_SECRET:secret});
   assert.match(derived.secret,/^[a-f0-9]{64}$/);assert.notEqual(derived.secret,secret);
   assert.equal(derived.secret,agentEventConfigFromEnvironment({V2_AGENT_DRIVER_MODE:"OSS_EVENTS",OSS_BUCKET:config.bucket,V2_AGENT_EVENT_ACCOUNT_ID:config.accountId,V2_SCHEDULER_TICK_SECRET:secret}).secret);
+  const withRelease=agentEventConfigFromEnvironment({V2_AGENT_DRIVER_MODE:"OSS_EVENTS",OSS_BUCKET:config.bucket,V2_AGENT_EVENT_ACCOUNT_ID:config.accountId,V2_SPARK_EXECUTOR_SECRET:secret,V2_SCHEDULER_TICK_SECRET:"synthetic-release-signer-".repeat(3)});
+  assert.equal(withRelease.secret,derived.secret,"enabling or rotating the independent release signer must not invalidate queued Agent wakes");
 });
 test("OSS adapter signs exact safe prefixes, rejects redirects and verifies immutable unknown-ACK retries",async()=>{
   const calls=[],data=new Map(),transport=createAgentWakeOssTransport({bucket:config.bucket,endpoint:"oss-cn-hangzhou-internal.aliyuncs.com",wakePrefix:config.wakePrefix,resultPrefix:config.resultPrefix,

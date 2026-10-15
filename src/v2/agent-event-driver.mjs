@@ -17,7 +17,9 @@ export function agentEventConfigFromEnvironment(env) {
   if (env.V2_AGENT_DRIVER_MODE !== "OSS_EVENTS") return undefined;
   const config = {bucket:env.OSS_BUCKET,accountId:env.V2_AGENT_EVENT_ACCOUNT_ID,project:env.V2_PROJECT_ID ?? "project-securities-lab",
     wakePrefix:AGENT_WAKE_PREFIX,resultPrefix:env.V2_SPARK_QUEUE_RESULT_PREFIX ?? SPARK_QUEUE_PREFIXES.results};
-  const master=env.V2_SCHEDULER_TICK_SECRET || env.V2_SPARK_EXECUTOR_SECRET;
+  // Release signing can be enabled/rotated independently of queued Agent wakes.
+  // Keep the existing queue signer as the stable source when both are present.
+  const master=env.V2_SPARK_EXECUTOR_SECRET || env.V2_SCHEDULER_TICK_SECRET;
   if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(config.bucket ?? "") || !/^\d{12,20}$/.test(config.accountId ?? "") ||
     typeof master !== "string" || master.length<32 || master.length>512 || /\s/.test(master) ||
     config.resultPrefix!==SPARK_QUEUE_PREFIXES.results || config.project!=="project-securities-lab") throw fail(503,"AGENT_EVENT_CONFIG_INVALID");
