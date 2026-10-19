@@ -7,18 +7,19 @@ import {join} from "node:path";
 import {createV2Server,PROJECT} from "../../src/v2/server.mjs";
 import {AGENT_WAKE_PREFIX} from "../../src/v2/agent-event-driver.mjs";
 import {SPARK_QUEUE_PREFIXES} from "../../src/v2/remote-spark-queue.mjs";
+import {createFcIngress} from "../../src/v2/fc-ingress.mjs";
 
 test("background HTTP admission uses invitation owner and CSRF; old tasks are not implicitly opted in",async t=>{
   const root=mkdtempSync(join(tmpdir(),"shuduo-background-api-")),objects=new Map();let models=0;
   const runner=async()=>{};runner.durable={prepare(){},submit(){},read(){},cancel(){}};
   const env={V2_LOCAL_DEVELOPMENT:"false",V2_PROVISIONING_ONLY:"true",V2_PRIVATE_SMOKE_ENABLED:"true",V2_DURABLE_SQL_AGENT_ENABLED:"true",V2_AGENT_DRIVER_MODE:"OSS_EVENTS",
     OSS_BUCKET:"fictional-securities-test",V2_AGENT_EVENT_ACCOUNT_ID:"111122223333",V2_SCHEDULER_TICK_SECRET:"synthetic-wake-secret-".repeat(3),V2_SPARK_EXECUTOR_SECRET:"synthetic-worker-secret-".repeat(3),V2_SPARK_EXECUTOR_TRANSPORT:"OSS_QUEUE"};
-  const app=createV2Server({root,runner,env,generator:async()=>{models++;throw Error("not used by admission");},agentWakeTransport:{create:async(key,body)=>objects.set(key,body),read:async key=>objects.get(key)}});
+  const app=createV2Server({root,runner,env,ingress:createFcIngress(),generator:async()=>{models++;throw Error("not used by admission");},agentWakeTransport:{create:async(key,body)=>objects.set(key,body),read:async key=>objects.get(key)}});
   await new Promise(r=>app.server.listen(0,"127.0.0.1",r));
   t.after(async()=>{app.server.closeAllConnections();await new Promise(r=>app.server.close(r));app.store.close();rmSync(root,{recursive:true,force:true});});
   const base=`http://127.0.0.1:${app.server.address().port}`;
   const call=async(path,body,headers={})=>{
-    const r=await fetch(base+"/invoke",{method:"POST",headers:{"content-type":"application/octet-stream"},body:JSON.stringify({operation:"PRIVATE_APPLICATION_HTTP_V1",method:body===undefined?"GET":"POST",path,...(body===undefined?{}:{body}),headers})});
+    const r=await fetch(base+"/invoke",{method:"POST",headers:{"content-type":"application/octet-stream","x-fc-control-path":"/invoke"},body:JSON.stringify({operation:"PRIVATE_APPLICATION_HTTP_V1",method:body===undefined?"GET":"POST",path,...(body===undefined?{}:{body}),headers})});
     return (await r.json());
   };
   app.auth.bootstrapAdmin({email:"background-owner@example.invalid",password:"SyntheticPassword!2026",displayName:"虚构证券工程师"});
@@ -42,13 +43,18 @@ test("background HTTP admission uses invitation owner and CSRF; old tasks are no
   const owner=app.store.list("auth_user",PROJECT).find(u=>u.email==="background-owner@example.invalid");
   app.store.update("agent",id,PROJECT,{submittedBy:owner.id});
   const stopped=await call(path+"/cancel",{},headers);assert.equal(stopped.status,200);assert.equal(stopped.body.status,"CANCELLED");
+  const event={events:[{eventName:"ObjectCreated:PutObject",eventSource:"acs:oss",eventVersion:"1.0",eventTime:new Date().toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key:[...objects.keys()][0]}}}]};
+  const publicEvent=await fetch(base+"/invoke",{method:"POST",headers:{"content-type":"application/json","x-fc-control-path":"/http-invoke"},body:JSON.stringify(event)});
+  assert.equal(publicEvent.status,404);
+  const privateEvent=await fetch(base+"/invoke",{method:"POST",headers:{"content-type":"application/json","x-fc-control-path":"/invoke"},body:JSON.stringify(event)});
+  assert.equal(privateEvent.status,200);assert.equal(models,0);
   const currentVersion=app.store.get("agent",id,PROJECT).version;
   assert.equal((await call(path+"/resume",{expectedVersion:currentVersion},noCsrf)).status,403);
   assert.equal((await call(path+"/resume",{expectedVersion:currentVersion,maxEvents:100},headers)).status,422);
   const resumed=await call(path+"/resume",{expectedVersion:currentVersion},headers);
   assert.equal(resumed.status,202);assert.equal(resumed.body.status,"ACTIVE");assert.equal(models,0);
   assert.equal((await call(path+"/resume",{expectedVersion:currentVersion},headers)).status,409);
-  const invoke=await fetch(base+"/invoke",{method:"POST",headers:{"content-type":"application/octet-stream"},body:JSON.stringify({operation:"PRIVATE_AGENT_TICK_V1",requestId:randomUUID()})});
+  const invoke=await fetch(base+"/invoke",{method:"POST",headers:{"content-type":"application/octet-stream","x-fc-control-path":"/invoke"},body:JSON.stringify({operation:"PRIVATE_AGENT_TICK_V1",requestId:randomUUID()})});
   assert.equal(invoke.status,403);assert.equal(models,0);
   assert.equal((await call("/api/v2/status",undefined,headers)).body.agentDevelopment.eventBackgroundAvailable,true);
 });

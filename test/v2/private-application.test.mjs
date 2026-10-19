@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { getContext } from "../../src/v2/context.mjs";
+import { createFcIngress } from "../../src/v2/fc-ingress.mjs";
 import { validatePrivateApplicationRequest, callPrivateApplication, privateApplicationTimeoutMs } from "../../src/v2/private-application.mjs";
 
 test("private application rejects external targets, unlisted paths and injected headers", async () => {
@@ -41,6 +42,7 @@ async function open(enabled = true, durable = false) {
   const runner = async ({ context }) => ({ status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", mainSqlExecuted: true, rows: context.expected, validation: { passed: true } });
   if (durable) runner.durable = { prepare() {}, submit() {}, read() {}, cancel() {} };
   const app = createV2Server({
+    ingress: createFcIngress(),
     root: mkdtempSync(join(tmpdir(), "shuduo-private-app-")),
     env: { V2_LOCAL_DEVELOPMENT: "false", V2_PROVISIONING_ONLY: "true", V2_PRIVATE_SMOKE_ENABLED: String(enabled), V2_DURABLE_SQL_AGENT_ENABLED: String(durable) },
     runner,
@@ -48,7 +50,7 @@ async function open(enabled = true, durable = false) {
   });
   await new Promise(resolve => app.server.listen(0, "127.0.0.1", resolve));
   const invoke = async body => {
-    const response = await fetch(`http://127.0.0.1:${app.server.address().port}/invoke`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: JSON.stringify(body) });
+    const response = await fetch(`http://127.0.0.1:${app.server.address().port}/invoke`, { method: "POST", headers: { "Content-Type": "application/octet-stream", "x-fc-control-path": "/invoke" }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() };
   };
   return { app, invoke, close: async () => { await new Promise(resolve => app.server.close(resolve)); app.store.close(); } };

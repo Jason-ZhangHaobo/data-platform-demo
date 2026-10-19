@@ -1069,6 +1069,7 @@ export function createV2Server(options = {}) {
         code: "AGENT_ATOMIC_API_UNAVAILABLE",
       });
     const headers = {
+      ...options.ingress?.internalHeaders,
       "Content-Type": "application/json",
       "X-Shuduo-Client": req.headers["x-shuduo-client"],
       "Idempotency-Key": idempotencyKey,
@@ -1114,6 +1115,7 @@ export function createV2Server(options = {}) {
   };
   const server = createServer(async (req, res) => {
     try {
+      options.ingress?.assertRequest(req);
       const url = new URL(req.url, "http://localhost"),
         path = url.pathname,
         method = req.method,
@@ -1175,8 +1177,8 @@ export function createV2Server(options = {}) {
         if (privateInput.operation !== "PRIVATE_STATUS_V1") {
           const address = server.address(), base = `http://127.0.0.1:${address.port}`;
           const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
-            ? await verifyPrivateApplicationTask(privateInput, { base, store, project: PROJECT })
-            : await callPrivateApplication(privateInput, base, undefined, { allowDurableAgent: Boolean(durableAgent), allowDurableAgentRead: privateDataServicesEnabled, allowDataServices: privateDataServicesEnabled });
+            ? await verifyPrivateApplicationTask(privateInput, { base, store, project: PROJECT, internalHeaders: options.ingress?.internalHeaders })
+            : await callPrivateApplication(privateInput, base, undefined, { internalHeaders: options.ingress?.internalHeaders, allowDurableAgent: Boolean(durableAgent), allowDurableAgentRead: privateDataServicesEnabled, allowDataServices: privateDataServicesEnabled });
           await persistence.flush?.();
           return json(res, 200, result);
         }
@@ -1191,6 +1193,7 @@ export function createV2Server(options = {}) {
         return json(res, 200, {
           protocol: "shuduo-v2-private-smoke-v1",
           mode: "PRIVATE_CONTROL_PLANE",
+          ...(options.ingress ? { ingress: options.ingress.status } : {}),
           metadata: {
             driver: metadata?.driver ?? "unavailable",
             healthy: metadata?.healthy === true,
