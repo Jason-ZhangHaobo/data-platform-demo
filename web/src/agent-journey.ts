@@ -1,6 +1,7 @@
 export type JourneyState = "DONE" | "PENDING" | "ATTENTION" | "STALE";
 export type JourneyStep = { id: string; label: string; state: JourneyState; detail: string; target: string };
-export function deliveryStageText(stage: string, publicationCurrent: boolean, releaseStatus?: string): string {
+export function deliveryStageText(stage: string, publicationCurrent: boolean, releaseStatus?: string, current = true): string {
+  if (!current) return "原版本交付记录；当前修改待核验";
   if (publicationCurrent) return ["CANCELLED", "ROLLED_BACK"].includes(releaseStatus ?? "")
     ? "交付文件已演练；发布已停止"
     : "交付文件已演练并完成发布审阅";
