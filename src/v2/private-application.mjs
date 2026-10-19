@@ -42,7 +42,7 @@ export async function callPrivateApplication(input, base, fetchImpl = fetch, opt
     throw fail(500, "PRIVATE_APPLICATION_TARGET_INVALID");
   const response = await fetchImpl(base + request.path, {
     method: request.method,
-    headers: { "content-type": "application/json", "x-shuduo-client": "cli", ...request.headers },
+    headers: { "content-type": "application/json", "x-shuduo-client": "cli", ...request.headers, ...options.internalHeaders },
     ...(request.method === "POST" ? { body: JSON.stringify(request.body) } : {}),
     redirect: "error",
     signal: AbortSignal.timeout(privateApplicationTimeoutMs(request.path)),
@@ -56,7 +56,7 @@ export async function callPrivateApplication(input, base, fetchImpl = fetch, opt
 
 // This fixture driver runs only inside the existing IAM-protected private
 // invocation, with the same application authentication and task endpoints.
-export async function verifyPrivateApplicationTask(input, { base, store, project, fetchImpl = fetch, deadlineMs = 150000 }) {
+export async function verifyPrivateApplicationTask(input, { base, store, project, fetchImpl = fetch, deadlineMs = 150000, internalHeaders }) {
   if (input.operation !== "PRIVATE_APPLICATION_TASK_V1" || Object.keys(input).some(k => !["operation", "caseId", "submitOnly"].includes(k)) ||
       (input.submitOnly !== undefined && typeof input.submitOnly !== "boolean") ||
       !["holdings-t1", "cash-change"].includes(input.caseId))
@@ -69,7 +69,7 @@ export async function verifyPrivateApplicationTask(input, { base, store, project
     });
   let headers = {}, runId, submissionOnlyCompleted = false;
   const call = async (method, path, body, overrides = {}) =>
-    callPrivateApplication({ operation: "PRIVATE_APPLICATION_HTTP_V1", method, path, headers: { ...headers, ...overrides }, ...(body === undefined ? {} : { body }) }, base, fetchImpl);
+    callPrivateApplication({ operation: "PRIVATE_APPLICATION_HTTP_V1", method, path, headers: { ...headers, ...overrides }, ...(body === undefined ? {} : { body }) }, base, fetchImpl, { internalHeaders });
   const requireStatus = (result, status) => {
     if (result.status !== status) throw fail(502, result.body?.code ?? "PRIVATE_APPLICATION_API_FAILED");
     return result.body;
