@@ -12,9 +12,9 @@ const headerNames = new Set(["cookie", "x-csrf-token", "idempotency-key", "x-pro
 // Keep the model's bounded checkpoint inside the private function's 120s limit.
 export const privateApplicationTimeoutMs = path => /^\/api\/v2\/agent\/tasks\/[a-f0-9-]{36}\/advance$/.test(path) ? 105000 : 30000;
 
-export function validatePrivateApplicationRequest(input, { allowDurableAgent = false, allowDataServices = false } = {}) {
+export function validatePrivateApplicationRequest(input, { allowDurableAgent = false, allowDurableAgentRead = false, allowDataServices = false } = {}) {
   const servicePath=allowDataServices && privateServiceRoute(input?.method,input?.path);
-  const agentPath = allowDurableAgent && (input?.method === "GET"
+  const agentPath = (allowDurableAgent || (allowDurableAgentRead && input?.method === "GET")) && (input?.method === "GET"
     ? /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}(?:\/(?:workflow|publication|background))?)?|deliveries\/[a-f0-9-]{36})$/
     : /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}\/(?:advance|cancel|prepare-delivery|publication(?:\/cancel)?|background(?:\/(?:cancel|resume))?))?|deliveries\/[a-f0-9-]{36}\/(?:advance|cancel))$/).test(input?.path ?? "");
   if (!input || input.operation !== "PRIVATE_APPLICATION_HTTP_V1" ||

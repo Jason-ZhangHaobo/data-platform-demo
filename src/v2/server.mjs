@@ -294,7 +294,7 @@ export function createV2Server(options = {}) {
   const controls = new Map();
   let queue = Promise.resolve();
   store.interruptPending(PROJECT, {
-    preserveDurableReleaseRuns: releaseSchedulerMode === "DURABLE_TICK",
+    preserveDurableReleaseRuns: releaseSchedulerMode === "DURABLE_TICK" || env.V2_EXECUTION_UNAVAILABLE === "true",
   });
   const get = (kind, id) => {
     const item = store.get(kind, id, PROJECT);
@@ -1176,7 +1176,7 @@ export function createV2Server(options = {}) {
           const address = server.address(), base = `http://127.0.0.1:${address.port}`;
           const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
             ? await verifyPrivateApplicationTask(privateInput, { base, store, project: PROJECT })
-            : await callPrivateApplication(privateInput, base, undefined, { allowDurableAgent: Boolean(durableAgent), allowDataServices: privateDataServicesEnabled });
+            : await callPrivateApplication(privateInput, base, undefined, { allowDurableAgent: Boolean(durableAgent), allowDurableAgentRead: privateDataServicesEnabled, allowDataServices: privateDataServicesEnabled });
           await persistence.flush?.();
           return json(res, 200, result);
         }
@@ -1278,6 +1278,9 @@ export function createV2Server(options = {}) {
         )
           auth.requireMutation(req.headers, path);
       }
+      if (method === "POST" && env.V2_EXECUTION_UNAVAILABLE === "true" &&
+          (budgetAgentCreationPaths.has(path) || path === "/api/v2/runs" || path === "/api/v2/python/runs" || path.startsWith("/api/v2/agent/")))
+        throw Object.assign(fail(503, "远程执行器尚未就绪；已保存结果仍可读取"), { code: "REMOTE_SPARK_NOT_READY" });
       if (method === "POST" && budgetAgentCreationPaths.has(path))
         budget.assertCanStartModel();
       if (path === "/api/v2/auth/session" && method === "GET") {

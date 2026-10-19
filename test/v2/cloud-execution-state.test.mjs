@@ -1,0 +1,53 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {cloudExecutionState} from '../../src/v2/cloud-execution-state.mjs';
+import {createV2Server,PROJECT} from '../../src/v2/server.mjs';
+import {validatePrivateApplicationRequest} from '../../src/v2/private-application.mjs';
+
+const env=()=>({V2_LOCAL_DEVELOPMENT:'false',V2_ALLOW_INSECURE_PUBLIC_COOKIES:'true',V2_PROVISIONING_ONLY:'true',V2_PRIVATE_SMOKE_ENABLED:'true',V2_PRIVATE_DATA_SERVICES_ENABLED:'true',V2_DURABLE_SQL_AGENT_ENABLED:'true',V2_AGENT_DRIVER_MODE:'OSS_EVENTS',V2_PRIVATE_RELEASE_ENABLED:'true',V2_RELEASE_SCHEDULER_MODE:'DURABLE_TICK'});
+test('unavailable remote execution disables dependent drivers without changing auth or persisted configuration',async()=>{
+ const original=env(),before={...original};
+ const state=cloudExecutionState(original,undefined,{errorCode:'REMOTE_SPARK_NOT_READY',publicWriteEnabled:true});
+ assert.deepEqual(original,before);
+ for(const key of ['V2_PROVISIONING_ONLY','V2_PRIVATE_SMOKE_ENABLED','V2_PRIVATE_DATA_SERVICES_ENABLED'])assert.equal(state.env[key],'true');
+ assert.equal(state.env.V2_AGENT_DRIVER_MODE,'DISABLED');assert.equal(state.env.V2_PRIVATE_RELEASE_ENABLED,'false');
+ assert.equal(state.env.V2_RELEASE_SCHEDULER_MODE,'DISABLED');assert.equal(state.env.V2_DURABLE_SQL_AGENT_ENABLED,'false');
+ assert.equal(state.descriptor.publicWriteEnabled,false);assert.equal(state.descriptor.healthVerified,false);
+ await assert.rejects(state.runner({}),e=>e.status===503&&e.code==='REMOTE_SPARK_NOT_READY');
+ const runner=async()=>{};assert.equal(cloudExecutionState(original,runner,{}).runner,runner);
+ assert.equal(cloudExecutionState(original,runner,{}).env,original);
+});
+test('saved agent reads are allowed in private recovery without admitting agent writes',()=>{
+ const input={operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2/agent/tasks',headers:{}};
+ assert.equal(validatePrivateApplicationRequest(input,{allowDurableAgentRead:true}).path,input.path);
+ assert.throws(()=>validatePrivateApplicationRequest(input),/PRIVATE_APPLICATION_REQUEST_INVALID/);
+ assert.throws(()=>validatePrivateApplicationRequest({...input,method:'POST',body:{}},{allowDurableAgentRead:true}),/PRIVATE_APPLICATION_REQUEST_INVALID/);
+});
+test('private query startup survives unavailable worker while auth and execution denial remain effective',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'shuduo-worker-offline-'));
+ const state=cloudExecutionState(env(),undefined,{errorCode:'REMOTE_SPARK_NOT_READY'});
+ const app=createV2Server({root,env:state.env,runner:state.runner,runnerDescriptor:state.descriptor});
+ await new Promise(r=>app.server.listen(0,'127.0.0.1',r));
+ t.after(async()=>{app.server.closeAllConnections();await new Promise(r=>app.server.close(r));app.store.close();rmSync(root,{recursive:true,force:true});});
+ const base='http://127.0.0.1:'+app.server.address().port;
+ const invoke=async input=>{const response=await fetch(base+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream'},body:JSON.stringify(input)});return{status:response.status,body:await response.json()};};
+ const health=await invoke({operation:'PRIVATE_STATUS_V1'});assert.equal(health.status,200);assert.equal(health.body.publicReady,false);
+ const status=await invoke({operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2/status',headers:{}});
+ assert.equal(status.status,200);assert.equal(status.body.status,200);assert.equal(status.body.body.agentDevelopment.eventBackgroundAvailable,false);
+ const owner=app.auth.bootstrapAdmin({email:'offline-owner@example.invalid',password:'SyntheticOnly!2026',displayName:'合成工程师'});
+ const saved=app.store.create('agent',PROJECT,{executionMode:'DURABLE_SQL_AGENT_V1',submittedBy:owner.id,status:'SUCCEEDED'});
+ const noAuth=await invoke({operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2/agent/tasks',headers:{}});
+ assert.equal(noAuth.body.status,200);assert.deepEqual(noAuth.body.body,[]);
+ const login=await invoke({operation:'PRIVATE_APPLICATION_HTTP_V1',method:'POST',path:'/api/v2/auth/login',headers:{},body:{email:'offline-owner@example.invalid',password:'SyntheticOnly!2026'}});
+ assert.equal(login.body.status,200);
+ const headers={cookie:login.body.cookies.map(c=>c.split(';')[0]).join('; '),'x-csrf-token':login.body.body.csrfToken,'idempotency-key':'offline-run-check'};
+ const history=await invoke({operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2/agent/tasks',headers});
+ assert.equal(history.body.status,200);assert.equal(history.body.body[0].id,saved.id);
+ const run=await invoke({operation:'PRIVATE_APPLICATION_HTTP_V1',method:'POST',path:'/api/v2/runs',headers,body:{revisionId:'synthetic'}});
+ assert.equal(run.body.status,503);assert.equal(run.body.body.code,'REMOTE_SPARK_NOT_READY');assert.equal(app.store.list('run',PROJECT).length,0);
+ const denied=await invoke({operation:'PRIVATE_APPLICATION_HTTP_V1',method:'POST',path:'/api/v2/agent/tasks',headers:{},body:{message:'synthetic'}});
+ assert.equal(denied.status,422);
+});
