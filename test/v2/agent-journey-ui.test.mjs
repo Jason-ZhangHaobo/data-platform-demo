@@ -19,7 +19,8 @@ test("delivery summary follows only the current reviewed package and preserves s
   const f=fixture();
   assert.equal(deliveryStageText("AWAITING_ENGINEER_REVIEW",agentJourney(f).publicationCurrent,f.release.status),"交付文件已演练并完成发布审阅");
   for(const change of [{dirty:true},{revisionId:"new-code"},{bundle:{...f.bundle,digest:"new-package"}}]) {
-    assert.equal(deliveryStageText("AWAITING_ENGINEER_REVIEW",agentJourney({...f,...change}).publicationCurrent,f.release.status),"演练通过，待审阅交付");
+    const journey=agentJourney({...f,...change});
+    assert.equal(deliveryStageText("AWAITING_ENGINEER_REVIEW",journey.publicationCurrent,f.release.status,journey.current),change.bundle?"演练通过，待审阅交付":"原版本交付记录；当前修改待核验");
   }
   for(const status of ["CANCELLED","ROLLED_BACK"])assert.equal(deliveryStageText("AWAITING_ENGINEER_REVIEW",true,status),"交付文件已演练；发布已停止");
 });
