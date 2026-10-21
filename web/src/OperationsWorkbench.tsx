@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {LifecycleEvaluationPanel,type LifecycleReport} from "./LifecycleEvaluationPanel";
 import {
   Activity,
   AlertTriangle,
@@ -102,26 +103,6 @@ type DiagnosisTask = {
   model?: string;
   usage?: { total_tokens?: number };
 };
-type LifecycleReport = {
-  evaluationRunId: string;
-  frozenCaseCount: number;
-  completedCaseCount: number;
-  succeededCaseCount: number;
-  failedCaseCount: number;
-  localFullLifecycleRate: number;
-  targetMet: boolean;
-  totalScheduledBatches: number;
-  fullLifecycleE2E: boolean;
-  deploymentScope: string;
-  publicDeployed: boolean;
-  detourCounts: {
-    blocked: number;
-    cancelled: number;
-    failed: number;
-    rescued: number;
-  };
-};
-
 const labels: Record<string, string> = {
   HEALTHY: "健康",
   DEGRADED: "降级",
@@ -157,6 +138,8 @@ export function OperationsWorkbench({ api, canWrite }: { api: Api; canWrite: boo
     [diagnoses, setDiagnoses] = useState<DiagnosisTask[]>([]),
     [diagnosisTask, setDiagnosisTask] = useState<DiagnosisTask>(),
     [lifecycle, setLifecycle] = useState<LifecycleReport>();
+  const [lifecycleError,setLifecycleError] = useState(""),[lifecycleLoading,setLifecycleLoading] = useState(true);
+  const lifecycleRead = useRef(0);
   const [busy, setBusy] = useState(""),
     [notice, setNotice] = useState(""),
     [error, setError] = useState("");
@@ -176,25 +159,32 @@ export function OperationsWorkbench({ api, canWrite }: { api: Api; canWrite: boo
     );
 
   const reload = async () => {
+    const readId=++lifecycleRead.current;
+    setLifecycle(undefined);setLifecycleError("");setLifecycleLoading(true);
+    try {
     const [nextOverview, nextDiagnoses, nextLifecycle] = await Promise.all([
       api<Overview>("/operations/overview"),
       api<DiagnosisTask[]>("/operations/agent/diagnoses"),
-      api<LifecycleReport>("/evaluations/full-lifecycle/latest").catch(
-        () => undefined,
+      api<LifecycleReport>("/evaluations/full-lifecycle/latest").then(report=>({report,error:""})).catch(
+        cause => ({report:undefined,error:(cause as Error).message || "读取失败，请稍后重试"}),
       ),
     ]);
+    if(readId!==lifecycleRead.current)return;
     setOverview(nextOverview);
     setDiagnoses(nextDiagnoses);
-    setLifecycle(nextLifecycle);
+    setLifecycle(nextLifecycle.report);setLifecycleError(nextLifecycle.error);
     const nextId =
       nextOverview.incidents.find((incident) => incident.id === selectedIncidentId)?.id ??
       nextOverview.incidents.find((incident) => incident.status !== "RESOLVED")?.id ??
       nextOverview.incidents[0]?.id;
     if (nextId && nextId !== selectedIncidentId) setSelectedIncidentId(nextId);
     if (!diagnosisTask && nextDiagnoses[0]) setDiagnosisTask(nextDiagnoses[0]);
+    } catch(cause) {if(readId===lifecycleRead.current)throw cause;}
+    finally {if(readId===lifecycleRead.current)setLifecycleLoading(false);}
   };
   useEffect(() => {
     reload().catch((cause) => setError((cause as Error).message));
+    return ()=>{lifecycleRead.current++;};
   }, []);
   useEffect(() => {
     if (!selectedIncidentId) return;
@@ -295,7 +285,7 @@ export function OperationsWorkbench({ api, canWrite }: { api: Api; canWrite: boo
 
       <section className="ops-toolbar-v2"><div><Radar size={17} /><span>已覆盖 {domainOrder.length} 个运行域 · {overview?.counts.activities ?? 0} 条活动 · {openDomains} 个域有历史失败</span></div><button className="button" onClick={refresh} disabled={!canWrite || !!busy}>{busy === "refresh" ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}扫描最新证据</button></section>
 
-      {lifecycle && <section className="ops-e2e-v2"><div className="ops-e2e-score-v2"><span>LOCAL FULL E2E</span><strong>{lifecycle.succeededCaseCount}/{lifecycle.frozenCaseCount}</strong><small>{(lifecycle.localFullLifecycleRate * 100).toFixed(0)}% · 目标≥85%</small></div><div><span className="eyebrow">COMPLETE LIFECYCLE EVALUATION</span><h3>需求 → 代码调试 → 调度部署 → 审阅 → 上线 → 监控</h3><p>20条均绑定原真实Agent代码证据、当前Spark文件演练、四项审阅记录、摘要审批和两个墙上时钟Spark批次。</p><div className="ops-e2e-detours-v2"><span>{lifecycle.totalScheduledBatches}个上线批次</span><span>{lifecycle.detourCounts.blocked}次阻塞</span><span>{lifecycle.detourCounts.cancelled}次取消</span><span>{lifecycle.detourCounts.rescued}次救援</span></div></div><div className="ops-e2e-boundary-v2"><CheckCircle2 size={18} /><strong>{lifecycle.targetMet ? "本机门槛通过" : "门槛未通过"}</strong><span>{lifecycle.deploymentScope}</span><small>公网：未部署</small><code>{lifecycle.evaluationRunId.slice(0, 8)}</code></div></section>}
+      <LifecycleEvaluationPanel report={lifecycle} error={lifecycleError} loading={lifecycleLoading}/>
 
       <section className="ops-domains-v2">{domainOrder.map((domain) => { const count = overview?.domainCounts[domain] ?? { failures: 0, running: 0, succeeded: 0 }; return <article key={domain} className={count.failures ? "has-failure" : ""}><div><Activity size={15} /><strong>{domain}</strong></div><span>{count.succeeded}成功</span><span>{count.running}进行</span><span>{count.failures}失败</span></article>; })}</section>
 

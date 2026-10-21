@@ -103,7 +103,7 @@ import {
   BudgetManager,
   budgetAgentCreationPaths,
 } from "./budget.mjs";
-import { fullLifecycleContract, lifecycleStages } from "./lifecycle-evaluation.mjs";
+import { verifyLifecycleReport } from "./lifecycle-evaluation.mjs";
 import {
   evaluateCloudPreflight,
   publicCloudReadiness,
@@ -2763,22 +2763,12 @@ export function createV2Server(options = {}) {
         } catch {
           throw fail(404, "尚无完整链路评测报告");
         }
-        if (
-          report.format !== "shuduo-full-lifecycle-evaluation/v1" ||
-          report.contract?.id !== fullLifecycleContract.id ||
-          JSON.stringify(report.contract?.stageNames) !==
-            JSON.stringify(lifecycleStages) ||
-          report.frozenCaseCount !== 20 ||
-          !Array.isArray(report.outcomes) ||
-          report.outcomes.some(
-            (outcome) =>
-              !lifecycleStages.every(
-                (stage) => outcome.stages?.[stage]?.status === "PASSED",
-              ),
-          )
-        )
-          throw fail(409, "完整链路评测报告不符合当前审阅与阶段契约");
-        return json(res, 200, report);
+        try {
+          const evidence = JSON.parse(await readFile(join(root, "fixtures", "e2e", "m1-code-evidence.json"), "utf8"));
+          return json(res, 200, verifyLifecycleReport(evidence, report));
+        } catch {
+          throw fail(409, "评测报告证据缺失、契约过期或汇总不一致，请保留原报告并重新核验");
+        }
       }
       if (path === "/api/v2/settings/model-key" && method === "POST") {
         if (!local)
