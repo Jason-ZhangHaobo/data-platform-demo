@@ -45,6 +45,13 @@ test('prior attempts remain counted across recovery and insufficient total budge
  const no=await runHttpAcceptance(blocked.config,blocked.adapter,blocked.options);assert.equal(no.failure,'INSUFFICIENT_REMAINING_READ_BUDGET');assert.equal(no.requests,6);assert.equal(no.newRequests,0);assert.equal(calls,0);assert.equal(blocked.creates(),0);
  for(const value of ['-1','21','1.5','abc',''])assert.throws(()=>acceptanceConfig({...env,V2_HTTP_PREVIOUS_READS:value}));
 });
+test('recreation requires a separate explicit flag, the original identifier, and carried usage',()=>{
+ assert.throws(()=>acceptanceConfig({...env,V2_HTTP_RESTORE_RUN_ID:'98765',V2_HTTP_PREVIOUS_READS:'3'}),/TRIGGER_RESTORE_NOT_AUTHORIZED/);
+ assert.throws(()=>acceptanceConfig({...env,V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE'}),/TRIGGER_RESTORE_NOT_AUTHORIZED/);
+ assert.throws(()=>acceptanceConfig({...env,V2_HTTP_RESTORE_RUN_ID:'98765',V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE',V2_HTTP_PREVIOUS_READS:'0'}),/TRIGGER_RESTORE_NOT_AUTHORIZED/);
+ const c=acceptanceConfig({...env,V2_HTTP_RESTORE_RUN_ID:'98765',V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE',V2_HTTP_PREVIOUS_READS:'3'});
+ assert.equal(c.triggerName,'shuduo-http-boundary-98765');assert.equal(c.previousReads,3);assert.equal(c.restoreRunId,'98765');
+});
 test('failure evidence distinguishes CLI service denial, transport and parsing without response text or secrets',async()=>{
  const args=['fc','POST','/2023-03-30/functions/private-name/invocations'];
  const error=Object.assign(Error('SYNTHETIC_SECRET'),{status:2,stderr:JSON.stringify({error:{code:'AccessDenied',message:'SYNTHETIC_SECRET'}})});
@@ -95,6 +102,15 @@ test('bad authentication or leaked private protocol cannot pass; cleanup still e
   const f=fixture(options),r=await runHttpAcceptance(f.config,f.adapter,f.options);
   assert.equal(r.passed,false);assert.equal(r.cleanup.triggerAbsent,true);assert.equal(f.creates(),1);
  }
+});
+test('documented unsigned header rejection is accepted only with exact evidence; signed requests still require application denial',async()=>{
+ const f=fixture(),probe=f.adapter.probe;f.adapter.probe=async(url,p)=>p.signed===false?{status:400,code:'MissingRequiredHeader',authenticationRejected:true}:probe(url,p);
+ assert.equal((await runHttpAcceptance(f.config,f.adapter,f.options)).passed,true);
+ for(const value of [{status:400,code:'UNCONFIRMED',authenticationRejected:true},{status:400,code:'MissingRequiredHeader',authenticationRejected:false},{status:400,code:'InvalidArgument',authenticationRejected:true}]){
+  const g=fixture();g.adapter.probe=async()=>value;assert.equal((await runHttpAcceptance(g.config,g.adapter,g.options)).passed,false);
+ }
+ const signed=fixture();signed.adapter.probe=async()=>({status:400,code:'MissingRequiredHeader',authenticationRejected:true});
+ const result=await runHttpAcceptance(signed.config,signed.adapter,signed.options);assert.equal(result.passed,false);assert.equal(result.phase,'HTTP_signed-baseline');
 });
 test('unknown delete is read back; remaining trigger is never falsely reported removed',async()=>{
  const ok=fixture({unknownDelete:true}),r=await runHttpAcceptance(ok.config,ok.adapter,ok.options);assert.equal(r.cleanup.triggerAbsent,true);

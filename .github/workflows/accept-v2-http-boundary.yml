@@ -31,6 +31,19 @@ on:
         description: Base64 DER RSA public key for encrypted private evidence
         required: true
         type: string
+      restore_trigger_from_run:
+        description: Original acceptance run ID whose exact trigger may be recreated once; requires separate explicit approval
+        required: false
+        type: string
+        default: ''
+      restore_authorization:
+        description: Do not recreate a removed trigger without explicit user approval
+        required: true
+        type: choice
+        options:
+          - NOT_AUTHORIZED
+          - RECREATE_SAME_TRIGGER_ONCE
+        default: NOT_AUTHORIZED
 permissions:
   contents: read
   id-token: write
@@ -54,6 +67,8 @@ jobs:
       V2_HTTP_ACCEPTANCE_AUTHORIZED: ${{ inputs.authorization }}
       V2_HTTP_AUTHORIZATION_EXPIRES_AT: ${{ inputs.authorization_expires_at }}
       V2_HTTP_PREVIOUS_READS: ${{ inputs.previous_read_requests }}
+      V2_HTTP_RESTORE_RUN_ID: ${{ inputs.restore_trigger_from_run }}
+      V2_HTTP_RESTORE_AUTHORIZED: ${{ inputs.restore_authorization }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
