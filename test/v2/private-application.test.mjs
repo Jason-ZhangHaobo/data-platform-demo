@@ -8,6 +8,12 @@ import { getContext } from "../../src/v2/context.mjs";
 import { createFcIngress } from "../../src/v2/fc-ingress.mjs";
 import { validatePrivateApplicationRequest, callPrivateApplication, privateApplicationTimeoutMs } from "../../src/v2/private-application.mjs";
 
+test("private save recovery allows only exact read paths and preserves header boundaries",()=>{
+  const input={operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:"/api/v2/revisions/requests/fixture-save-1",headers:{cookie:"synthetic-session"}};
+  assert.equal(validatePrivateApplicationRequest(input).path,input.path);
+  for(const bad of [{...input,method:"POST",body:{}},{...input,body:{}},{...input,path:input.path+"?other=1"},{...input,path:input.path+"/extra"},{...input,path:"/api/v2/revisions/requests/../secret"},{...input,headers:{authorization:"Bearer synthetic"}}])assert.throws(()=>validatePrivateApplicationRequest(bad));
+});
+
 test("private application rejects external targets, unlisted paths and injected headers", async () => {
   const good = { operation: "PRIVATE_APPLICATION_HTTP_V1", method: "GET", path: "/api/v2/status" };
   assert.equal(validatePrivateApplicationRequest(good).path, good.path);

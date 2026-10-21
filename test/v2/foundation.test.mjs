@@ -193,8 +193,9 @@ test("background runs deduplicate and reject reused keys for different revisions
       await app.call("/revisions", {
         sql: referenceSql + "\n",
         contextId: "cash-change",
-      })
+      }, { "Idempotency-Key": "second-revision-request" })
     ).body;
+    assert.ok(next.id, "a different code save requires its own request key");
     assert.equal(
       (await app.call("/runs", { revisionId: next.id })).status,
       409,

@@ -407,6 +407,8 @@ test("approval binds a successful rehearsal and two actual timer batches establi
     assert.equal(calls, 2);
     assert.equal(overview.activeRelease.health, "HEALTHY");
     assert.equal(overview.counts.openAlerts, 0);
+    assert.equal(overview.recentEvents.length, 2);
+    assert.ok(overview.recentEvents.every(event => event.releaseId === release.id && event.packageDigest === item.digest));
     assert.ok(
       overview.recentRuns.every(
         (run) =>

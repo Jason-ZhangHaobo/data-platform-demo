@@ -64,7 +64,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
   };
   async function create(agent, key) {
     const { run, revision } = source(agent);
-    const existing = store.list("agent_delivery_task", project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id && t.sourceSqlHash === revision.hash && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
+    const existing = store.list("agent_delivery_task", project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision.id && t.sourceRunId === run.id && t.sourceSqlHash === revision.hash && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
     if (existing) return publicDeliveryTask(existing);
     const bundle = createDeliveryPackage({ run, revision, name: "客户资产 T+1 · Agent交付" });
     const artifact = await artifactStore.put("delivery-package", bundle.digest, bundle);

@@ -1,19 +1,58 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { agentJourney, deliveryStageText } from "../../web/src/agent-journey.ts";
+import { agentJourney, deliveryStageText, publicationEvidenceText, verificationPresentation } from "../../web/src/agent-journey.ts";
 import { contextIds } from "../../src/v2/context.mjs";
+import { deliveryFiles } from "../../src/v2/delivery.mjs";
 
 const fixture = () => ({
   taskId: "synthetic-task", revisionId: "revision-one", runId: "run-one", dirty: false,
   report: { taskId: "synthetic-task", revisionId: "revision-one", runId: "run-one", status: "PASSED", checks: ["revision", "execution", "results", "regressions"].map(id => ({id, passed:true})) },
   delivery: { status: "SUCCEEDED", packageId: "package-one", packageDigest: "digest-one", verificationId: "verification-one", sourceRevisionId:"revision-one",sourceRunId:"run-one" },
-  bundle: { id: "package-one", digest: "digest-one", files: Object.fromEntries(["main.sql", "tests.sql", "schedule.json", "deployment.json"].map(name => [name, "synthetic fixture"])) },
+  bundle: { id: "package-one", digest: "digest-one", files: Object.fromEntries(deliveryFiles.map(name => [name, "synthetic fixture"])) },
   verification: { id: "verification-one", status: "SUCCEEDED", mainSqlExecuted: true, testSqlValidation: {passed:true}, validation: {passed:true, regressions:contextIds.map(contextId=>({contextId,passed:true}))} },
   release: { id: "release-one", packageId: "package-one", packageDigest: "digest-one", sourceRevisionId: "revision-one", status: "COMPLETED_CLOUD_TEST", health: "HEALTHY", runCount: 2 },
   batches: [1,2].map(i => ({id:`batch-${i}`, status:"SUCCEEDED", schedulerTriggered:true})), alerts: [],
   events: [1,2].map(i=>({type:"BATCH_SUCCEEDED",releaseId:"release-one",releaseRunId:`batch-${i}`,packageDigest:"digest-one"})),
 });
 const stage = (e,id) => agentJourney(e).steps.find(step=>step.id===id).state;
+
+test("unconfirmed evidence reads revoke current verification and publication readiness", () => {
+  const f = fixture();
+  const j = agentJourney({...f, evidenceReadable:false});
+  assert.equal(j.current, false);
+  assert.equal(j.fileVerified, false);
+  assert.equal(j.publicationCurrent, false);
+  for (const id of ["validation", "files", "publication", "monitoring", "services"])
+    assert.notEqual(j.steps.find(s => s.id === id).state, "DONE");
+  assert.equal(agentJourney({...f, evidenceReadable:true}).fileVerified, true);
+});
+
+test("old or unread reports cannot show current green checks and retry does not request computation", () => {
+  for (const state of ["LOADING", "ERROR"]) {
+    assert.equal(verificationPresentation(true, true, state).currentChecks, false);
+    assert.notEqual(verificationPresentation(true, true, state).title, "核验通过");
+  }
+  assert.equal(verificationPresentation(false, true, "READY").title, "原版本报告");
+  assert.equal(verificationPresentation(false, true, "READY").currentChecks, false);
+  assert.match(verificationPresentation(true, true, "ERROR").detail, /不重新运行模型或 Spark/);
+  assert.equal(verificationPresentation(true, false, "READY").title, "需要处理");
+  assert.equal(verificationPresentation(true, true, "READY").title, "核验通过");
+});
+
+test("publication card uses the same evidence gate as journey, not a healthy status label", () => {
+  const f = fixture();
+  const label = e => {
+    const j = agentJourney(e);
+    return publicationEvidenceText(e.release, j.publicationCurrent, j.steps.find(s => s.id === "monitoring").state === "DONE");
+  };
+  assert.match(label(f), /监控证据核对通过/);
+  for (const change of [{batches:[]}, {events:[]}, {alerts:[{status:"OPEN"}]}])
+    assert.match(label({...f,...change}), /证据尚未齐备/);
+  assert.match(label({...f, dirty:true}), /历史发布/);
+  assert.match(label({...f, release:{...f.release, status:"ROLLED_BACK"}}), /已回滚/);
+  assert.match(label({...f, release:{...f.release, status:"CANCELLED"}}), /已停止/);
+  assert.match(label({...f, release:{...f.release, health:"CRITICAL"}}), /运行异常/);
+});
 
 test("delivery summary follows only the current reviewed package and preserves stopped releases", () => {
   const f=fixture();
@@ -44,10 +83,24 @@ test("dirty, foreign task and historical run cannot inherit verified delivery or
 test("file rehearsal needs files, bound receipt, actual main SQL, tests and every business fixture", () => {
   const changes=[f=>{delete f.bundle.files["schedule.json"];},f=>{f.delivery.packageDigest="old";},f=>{f.delivery.verificationId="other";},f=>{f.verification.mainSqlExecuted=false;},f=>{f.verification.validation.regressions.pop();},f=>{f.report.checks.pop();}];
   for(const mutate of changes){const f=fixture();mutate(f);assert.equal(agentJourney(f).fileVerified,false);}
+  for (const name of deliveryFiles) {
+    const f=fixture(); delete f.bundle.files[name];
+    assert.equal(agentJourney(f).fileVerified,false,`missing ${name}`);
+  }
 });
 test("healthy label alone does not prove monitored publication or all scheduled batches", () => {
   const changes=[f=>{f.release.packageDigest="old";},f=>{f.release.sourceRevisionId="old";},f=>{f.release.status="CANCELLED";},f=>{f.batches=[];},f=>{f.batches.pop();},f=>{f.batches[1].id=f.batches[0].id;},f=>{f.batches[1].schedulerTriggered=false;},f=>{f.alerts=[{status:"OPEN"}];},f=>{f.events=[];},f=>{f.events[1].packageDigest="old";}];
   for(const mutate of changes){const f=fixture();mutate(f);assert.notEqual(stage(f,"monitoring"),"DONE");}
+  assert.notEqual(stage({...fixture(),publicationReadable:false},"monitoring"),"DONE");
+  assert.equal(stage({...fixture(),publicationReadable:false},"validation"),"DONE","monitoring read failure does not discard code evidence");
+});
+test("actual local rollback, replacement and failure states cannot retain completed publication",()=>{
+  for(const status of ["ROLLED_BACK_LOCAL","SUPERSEDED_LOCAL","FAILED_LOCAL"]){
+    const f=fixture();f.release.status=status;
+    assert.notEqual(stage(f,"publication"),"DONE");assert.notEqual(stage(f,"monitoring"),"DONE");
+    assert.equal(deliveryStageText("AWAITING_ENGINEER_REVIEW",true,status),"交付文件已演练；发布已停止");
+    assert.doesNotMatch(publicationEvidenceText(f.release,true,true),/核对通过/);
+  }
 });
 test('consumption stages bind task, package, current version, receipt and complete composition',()=>{
   const consumption={protocol:'shuduo-private-task-consumption/v1',taskId:'synthetic-task',packageDigest:'digest-one',scope:'PRIVATE_CLOUD_TEST',status:'VERIFIED',truncated:false,services:[{serviceType:'XAPI',status:'VERIFIED',fullAssetComposition:true,versionId:'x-version',call:{verified:true,versionId:'x-version',rowCount:2}}]};
