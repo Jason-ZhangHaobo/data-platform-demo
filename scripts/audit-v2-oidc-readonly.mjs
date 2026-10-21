@@ -20,9 +20,10 @@ export function recipientKey(encoded) {
   return key;
 }
 export function classifyAuditError(error) {
+  if (['TRIGGER_PAGE_INCOMPLETE', 'TRIGGER_RESPONSE_UNCONFIRMED', 'WRONG_FUNCTION'].includes(error?.safeCode)) return error.safeCode;
   const text = `${error?.stdout ?? ''}\n${error?.stderr ?? ''}\n${error?.message ?? ''}`;
   if (/missing parameter SecurityToken/i.test(text)) return 'MISSING_SECURITY_TOKEN';
-  if (/AccessDenied|Forbidden|not authorized/i.test(text)) return 'ACCESS_DENIED';
+  if (/AccessDenied|Forbidden|not authorized|PermissionDenied|没有权限|无权限/i.test(text)) return 'ACCESS_DENIED';
   if (/Expired|InvalidSecurityToken/i.test(text)) return 'CREDENTIAL_UNAVAILABLE';
   if (/FunctionNotFound|ResourceNotFound/i.test(text)) return 'RESOURCE_NOT_FOUND';
   if (error?.signal || error?.code === 'ETIMEDOUT') return 'BOUNDED_TIMEOUT';
@@ -47,14 +48,33 @@ export function runReadAudit(config, call) {
       driverMode: ['DISABLED', 'PRIVATE_TICK', 'OSS_EVENTS'].includes(env.V2_AGENT_DRIVER_MODE) ? env.V2_AGENT_DRIVER_MODE : 'UNCONFIRMED',
       credentialsPresent: { mysql: Boolean(env.V2_MYSQL_PASSWORD), model: Boolean(env.DASHSCOPE_API_KEY), worker: Boolean(env.V2_SPARK_EXECUTOR_SECRET) } };
   } catch (e) { report.function = { state: classifyAuditError(e) }; return report; }
+  let triggerShape;
   try {
-    const result = call(['fc', 'GET', path + '/triggers']);
-    if (result.nextToken || !Array.isArray(result.triggers) || result.triggers.length > 20) throw fail('TRIGGER_RESPONSE_UNCONFIRMED');
-    report.triggers = { state: 'VERIFIED', items: result.triggers.map(t => ({
-      nameHash: createHash('sha256').update(String(t.triggerName)).digest('hex'),
+    const items = [], seenTokens = new Set(), seenNames = new Set();
+    let nextToken;
+    for (let page = 0; page < 3; page++) {
+      const result = call(['fc', 'GET', path + '/triggers' + (nextToken ? '?nextToken=' + encodeURIComponent(nextToken) : '')]);
+      triggerShape = { object: Boolean(result && typeof result === 'object'), array: Array.isArray(result),
+        hasTriggerArray: Array.isArray(result?.triggers), hasNextToken: Boolean(result?.nextToken),
+        hasErrorCode: Boolean(result?.Code || result?.code || result?.ErrorCode),
+        triggerCount: Array.isArray(result?.triggers) ? result.triggers.length : null };
+      if (triggerShape.hasErrorCode) throw new Error(String(result.Code ?? result.code ?? result.ErrorCode));
+      if (!Array.isArray(result?.triggers) || items.length + result.triggers.length > 20) throw fail('TRIGGER_RESPONSE_UNCONFIRMED');
+      for (const t of result.triggers) {
+        if (!t || typeof t.triggerName !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(t.triggerName)) throw fail('TRIGGER_RESPONSE_UNCONFIRMED');
+        if (seenNames.has(t.triggerName)) throw fail('TRIGGER_PAGE_INCOMPLETE');
+        seenNames.add(t.triggerName); items.push(t);
+      }
+      nextToken = result.nextToken;
+      if (!nextToken) break;
+      if (typeof nextToken !== 'string' || nextToken.length > 1024 || seenTokens.has(nextToken) || page === 2) throw fail('TRIGGER_PAGE_INCOMPLETE');
+      seenTokens.add(nextToken);
+    }
+    report.triggers = { state: 'VERIFIED', items: items.map(t => ({
+      nameHash: createHash('sha256').update(t.triggerName).digest('hex'),
       type: ['oss', 'http', 'timer'].includes(t.triggerType) ? t.triggerType : 'OTHER',
     })) };
-  } catch (e) { report.triggers = { state: classifyAuditError(e) }; }
+  } catch (e) { report.triggers = { state: classifyAuditError(e), ...(triggerShape ? { responseShape: triggerShape } : { commandFailed: true, exitStatus: Number.isInteger(e?.status) ? e.status : null }) }; }
   return report;
 }
 export function sealReport(report, key, provenance) {

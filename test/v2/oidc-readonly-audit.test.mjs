@@ -39,10 +39,27 @@ test('evidence is recipient encrypted, provenance bound and tamper evident',()=>
   assert.throws(()=>open(sealed.aad+' '));assert.throws(()=>recipientKey('not a key'));
   const weak=generateKeyPairSync('rsa',{modulusLength:2048});assert.throws(()=>recipientKey(weak.publicKey.export({type:'spki',format:'der'}).toString('base64')));
 });
+test('trigger diagnostics distinguish service denial, incomplete pages and unexpected response shapes without raw values',()=>{
+  const evaluate=result=>{let n=0;return runReadAudit(config,()=>++n===1?identity:n===2?{functionName:'synthetic-control'}:result).triggers;};
+  assert.equal(evaluate({Code:'AccessDenied',Message:'synthetic-private-detail'}).state,'ACCESS_DENIED');
+  const page=evaluate({nextToken:'synthetic-private-token',triggers:[]});assert.equal(page.state,'TRIGGER_PAGE_INCOMPLETE');assert.equal(page.responseShape.hasNextToken,true);
+  const unknown=evaluate({privateField:'synthetic-private-detail'});assert.equal(unknown.state,'TRIGGER_RESPONSE_UNCONFIRMED');assert.equal(unknown.responseShape.hasTriggerArray,false);
+  for(const value of [page,unknown,evaluate(null)])assert(!JSON.stringify(value).includes('synthetic-private-'));
+});
 test('workflow is main-only, reuses existing OIDC role and never loads application secrets',()=>{
   const w=readFileSync('.github/workflows/audit-v2-oidc-readonly.yml','utf8');
   assert.match(w,/github.ref == 'refs\/heads\/main'/);assert.match(w,/environment: v2-staging/);
   assert.match(w,/vars.V2_DEPLOY_ROLE_ARN/);assert.match(w,/role-session-expiration: 900/);
   assert.doesNotMatch(w,/secrets\.|npm |deploy-v2|InvokeFunction|CreateTrigger|DeleteTrigger/);
   assert.match(w,/path: v2-readonly-audit.sealed.json/);assert.match(w,/retention-days: 1/);
+});
+test('pagination follows only bounded same-function GETs and never labels a partial list complete',()=>{
+  const calls=[];const r=runReadAudit(config,args=>{
+    calls.push(args);if(calls.length===1)return identity;if(calls.length===2)return{functionName:'synthetic-control'};
+    return calls.length===3?{triggers:[{triggerName:'synthetic-one',triggerType:'oss'}],nextToken:'a+/='}:{triggers:[{triggerName:'synthetic-two',triggerType:'oss'}]};
+  });
+  assert.equal(r.triggers.state,'VERIFIED');assert.equal(r.triggers.items.length,2);
+  assert.equal(calls[3][2],'/2023-03-30/functions/synthetic-control/triggers?nextToken=a%2B%2F%3D');
+  let n=0;const bounded=runReadAudit(config,()=>++n===1?identity:n===2?{functionName:'synthetic-control'}:{triggers:[],nextToken:String(n)});
+  assert.equal(n,5);assert.equal(bounded.triggers.state,'TRIGGER_PAGE_INCOMPLETE');
 });
