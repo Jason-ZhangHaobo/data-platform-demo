@@ -25,4 +25,5 @@ docs/private-control-code-release.md
 docs/evidence/v2-control-log-release-20261009.json
 docs/private-execution-state.md
 v2-readonly-audit.sealed.json
+v2-http-acceptance.sealed.json
 docs/evidence/v2-agent-private-recovery-20261010.json
