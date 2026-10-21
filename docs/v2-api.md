@@ -176,6 +176,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /operations/agent/diagnoses/:id | 无 | 诊断、建议、证据引用、置信度和不可执行边界 |
 | POST /operations/agent/diagnoses/:id/cancel | 空对象 | 取消诊断并保留记录 |
 | GET /evaluations/full-lifecycle/latest | 无 | v2报告/v3契约：重新核对冻结源摘要、七阶段关联、同版双批及监控时序；固定20例分母，保留失败/未执行/救援；旧契约或证据不一致409，缺报告404；历史回放不计Agent自主E2E |
+| GET /agent/requests/:requestId | 原创建请求编号 | 按当前创建者找回原Agent任务；读取不重发需求，本机/受邀持久命名空间分别隔离，匿名403、缺失404 |
 | POST /internal/scheduler/tick | HMAC签名的`{limit}` | 外部持久调度驱动领取到期ACTIVE_CLOUD批次；不接受用户会话替代服务签名，默认关闭 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。

@@ -1404,7 +1404,7 @@ export function createV2Server(options = {}) {
                   dataState: { driver: "sqlite", healthy: true },
                 },
           publicReady: false,
-          agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery), eventBackgroundAvailable:Boolean(agentEventDriver), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER") },
+          agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery), eventBackgroundAvailable:Boolean(agentEventDriver), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER"), sqlMaxAttempts:3, sqlTokenBudget:Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) },
           validationContract: {
             id: validationContractId,
             fixtureCount: contextIds.length,
@@ -2892,6 +2892,17 @@ export function createV2Server(options = {}) {
           }
           return json(res, 200, get("python_run", run.id));
         }
+      }
+      const agentRequestLookup=path.match(/^\/api\/v2\/agent\/requests\/([A-Za-z0-9_-]{1,100})$/);
+      if(agentRequestLookup&&method==="GET"){
+        const session=auth.sessionFromHeaders(req.headers);
+        if(!local&&!session)throw fail(403,"请先以原任务创建者身份登录");
+        const actorId=session?.user.id??"local-engineer",key=agentRequestLookup[1];
+        const id=store.deduplicatedId(`${PROJECT}:durable-agent:${actorId}:${key}`)??(local?store.deduplicatedId(`${PROJECT}:agent:${key}`):undefined);
+        const task=id?store.get("agent",id,PROJECT):undefined;
+        if(!task)throw fail(404,"未找到当前身份的原创建请求");
+        requireDurableAgentOwner(task,req);
+        return json(res,200,exposeDurableTask(task));
       }
       if (path === "/api/v2/agent/tasks" && method === "GET")
         return json(res, 200, store.list("agent", PROJECT)
