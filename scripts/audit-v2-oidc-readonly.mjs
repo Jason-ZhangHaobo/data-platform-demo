@@ -1,0 +1,84 @@
+import { execFileSync } from 'node:child_process';
+import { createCipheriv, createHash, createPublicKey, publicEncrypt, randomBytes, constants } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const fail = code => Object.assign(new Error(code), { safeCode: code });
+export function auditConfig(env) {
+  const role = /^acs:ram::(\d{12,20}):role\/([a-z0-9-]{1,64})$/.exec(env.V2_DEPLOY_ROLE_ARN ?? '');
+  const provider = /^acs:ram::(\d{12,20}):oidc-provider\/[A-Za-z0-9_-]{1,64}$/.exec(env.V2_DEPLOY_OIDC_PROVIDER_ARN ?? '');
+  if (!role || !provider || provider[1] !== role[1] || !/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(env.V2_FUNCTION_NAME ?? '') || env.ALIBABA_CLOUD_REGION_ID !== 'cn-hangzhou')
+    throw fail('AUDIT_CONFIG_INVALID');
+  return { account: role[1], role: role[2], functionName: env.V2_FUNCTION_NAME, region: env.ALIBABA_CLOUD_REGION_ID };
+}
+export function recipientKey(encoded) {
+  if (typeof encoded !== 'string' || encoded.length > 1500 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw fail('AUDIT_RECIPIENT_INVALID');
+  let key;
+  try { key = createPublicKey({ key: Buffer.from(encoded, 'base64'), type: 'spki', format: 'der' }); } catch { throw fail('AUDIT_RECIPIENT_INVALID'); }
+  if (key.asymmetricKeyType !== 'rsa' || key.asymmetricKeyDetails.modulusLength < 3072) throw fail('AUDIT_RECIPIENT_INVALID');
+  return key;
+}
+export function classifyAuditError(error) {
+  const text = `${error?.stdout ?? ''}\n${error?.stderr ?? ''}\n${error?.message ?? ''}`;
+  if (/missing parameter SecurityToken/i.test(text)) return 'MISSING_SECURITY_TOKEN';
+  if (/AccessDenied|Forbidden|not authorized/i.test(text)) return 'ACCESS_DENIED';
+  if (/Expired|InvalidSecurityToken/i.test(text)) return 'CREDENTIAL_UNAVAILABLE';
+  if (/FunctionNotFound|ResourceNotFound/i.test(text)) return 'RESOURCE_NOT_FOUND';
+  if (error?.signal || error?.code === 'ETIMEDOUT') return 'BOUNDED_TIMEOUT';
+  return 'READ_UNCONFIRMED';
+}
+export function runReadAudit(config, call) {
+  const report = { scope: 'READ_ONLY_NO_INVOCATION', identity: 'NOT_CHECKED', function: { state: 'NOT_CHECKED' }, triggers: { state: 'NOT_CHECKED' }, cloudWrites: 0, modelCalls: 0, sparkRuns: 0, writePermissionsVerified: false };
+  let identity;
+  try { identity = call(['sts', 'GetCallerIdentity']); } catch (e) { report.identity = classifyAuditError(e); return report; }
+  if (String(identity.AccountId) !== config.account || !String(identity.Arn ?? '').startsWith(`acs:ram::${config.account}:assumed-role/${config.role}/`)) {
+    report.identity = 'IDENTITY_MISMATCH'; return report;
+  }
+  report.identity = 'VERIFIED';
+  const path = `/2023-03-30/functions/${config.functionName}`;
+  try {
+    const f = call(['fc', 'GET', path]);
+    if (f.functionName !== config.functionName) throw fail('WRONG_FUNCTION');
+    const env = f.environmentVariables ?? {};
+    report.function = { state: 'VERIFIED', codeChecksum: String(f.codeChecksum ?? ''), codeSize: f.codeSize,
+      runtime: f.runtime, cpu: f.cpu, memorySize: f.memorySize, concurrency: f.instanceConcurrency,
+      publicHttpEnabled: env.V2_FC_PUBLIC_HTTP_ENABLED === 'true', privateSmokeEnabled: env.V2_PRIVATE_SMOKE_ENABLED === 'true',
+      driverMode: ['DISABLED', 'PRIVATE_TICK', 'OSS_EVENTS'].includes(env.V2_AGENT_DRIVER_MODE) ? env.V2_AGENT_DRIVER_MODE : 'UNCONFIRMED',
+      credentialsPresent: { mysql: Boolean(env.V2_MYSQL_PASSWORD), model: Boolean(env.DASHSCOPE_API_KEY), worker: Boolean(env.V2_SPARK_EXECUTOR_SECRET) } };
+  } catch (e) { report.function = { state: classifyAuditError(e) }; return report; }
+  try {
+    const result = call(['fc', 'GET', path + '/triggers']);
+    if (result.nextToken || !Array.isArray(result.triggers) || result.triggers.length > 20) throw fail('TRIGGER_RESPONSE_UNCONFIRMED');
+    report.triggers = { state: 'VERIFIED', items: result.triggers.map(t => ({
+      nameHash: createHash('sha256').update(String(t.triggerName)).digest('hex'),
+      type: ['oss', 'http', 'timer'].includes(t.triggerType) ? t.triggerType : 'OTHER',
+    })) };
+  } catch (e) { report.triggers = { state: classifyAuditError(e) }; }
+  return report;
+}
+export function sealReport(report, key, provenance) {
+  const aes = randomBytes(32), iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', aes, iv);
+  const aad = JSON.stringify({ protocol: 'shuduo-read-audit/v1', ...provenance });
+  cipher.setAAD(Buffer.from(aad));
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(report), 'utf8'), cipher.final()]);
+  const wrappedKey = publicEncrypt({ key, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, aes);
+  aes.fill(0);
+  return { aad, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), wrappedKey: wrappedKey.toString('base64'), ciphertext: ciphertext.toString('base64') };
+}
+export function auditMain(env = process.env) {
+  // Validate before obtaining a cloud response. No model/database secrets needed.
+  const config = auditConfig(env), key = recipientKey(env.V2_AUDIT_RECIPIENT_KEY);
+  if (!env.ALIBABA_CLOUD_ACCESS_KEY_ID || !env.ALIBABA_CLOUD_ACCESS_KEY_SECRET || !env.ALIBABA_CLOUD_SECURITY_TOKEN) throw fail('OIDC_STS_REQUIRED');
+  const call = args => JSON.parse(execFileSync('aliyun', [...args, '--region', config.region, '--connect-timeout', '5', '--read-timeout', '12', '--retry-count', '0'], {
+    encoding: 'utf8', timeout: 25000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...env, ALIBABA_CLOUD_IGNORE_PROFILE: 'TRUE', ALIBABA_CLOUD_PROFILE_MODE: 'StsToken' },
+  }));
+  const report = { ...runReadAudit(config, call), checkedAt: new Date().toISOString() };
+  const sealed = sealReport(report, key, { sourceRevision: env.GITHUB_SHA, runId: env.GITHUB_RUN_ID });
+  writeFileSync('v2-readonly-audit.sealed.json', JSON.stringify(sealed) + '\n', { mode: 0o600 });
+  process.stdout.write('Encrypted read audit saved; no invocation or mutation performed.\n');
+}
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try { auditMain(); } catch (e) { process.stderr.write((e.safeCode ?? 'AUDIT_UNCONFIRMED') + '\n'); process.exitCode = 1; }
+}

@@ -1,0 +1,60 @@
+name: Audit V2 OIDC read-only access
+on:
+  workflow_dispatch:
+    inputs:
+      recipient_public_key:
+        description: Base64 DER RSA public key for encrypted local evidence (3072 bits or stronger)
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: v2-staging-control-mutation
+  cancel-in-progress: false
+jobs:
+  audit:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: v2-staging
+    env:
+      ALIBABA_CLOUD_REGION_ID: cn-hangzhou
+      V2_DEPLOY_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
+      V2_DEPLOY_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+      V2_FUNCTION_NAME: ${{ vars.V2_FUNCTION_NAME }}
+      V2_AUDIT_RECIPIENT_KEY: ${{ inputs.recipient_public_key }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Validate target and public recipient before credentials
+        run: |
+          node --input-type=module <<'NODE'
+          import {auditConfig,recipientKey} from './scripts/audit-v2-oidc-readonly.mjs';
+          const config = auditConfig(process.env);
+          recipientKey(process.env.V2_AUDIT_RECIPIENT_KEY);
+          for (const value of [config.account, config.role, config.functionName, process.env.V2_DEPLOY_ROLE_ARN, process.env.V2_DEPLOY_OIDC_PROVIDER_ARN])
+            process.stdout.write(`::add-mask::${value}\n`);
+          NODE
+      - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5
+        with:
+          version: "3.5.1"
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ env.V2_DEPLOY_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-read-audit
+          role-session-expiration: 900
+          audience: sts.aliyuncs.com
+      - name: Read identity and the configured function only
+        run: node scripts/audit-v2-oidc-readonly.mjs
+      - name: Retain encrypted evidence only
+        uses: actions/upload-artifact@v6
+        with:
+          name: shuduo-read-audit-${{ github.run_id }}
+          path: v2-readonly-audit.sealed.json
+          retention-days: 1
+          if-no-files-found: error
