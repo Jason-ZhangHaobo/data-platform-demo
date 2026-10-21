@@ -22,6 +22,11 @@ on:
         description: UTC expiry of the independently attached temporary policy (YYYY-MM-DDTHH:mm:ssZ)
         required: true
         type: string
+      previous_read_requests:
+        description: Verified earlier read attempts in this authorization scope; never reset after failure
+        required: true
+        type: string
+        default: '0'
       recipient_public_key:
         description: Base64 DER RSA public key for encrypted private evidence
         required: true
@@ -48,6 +53,7 @@ jobs:
       V2_AUDIT_RECIPIENT_KEY: ${{ inputs.recipient_public_key }}
       V2_HTTP_ACCEPTANCE_AUTHORIZED: ${{ inputs.authorization }}
       V2_HTTP_AUTHORIZATION_EXPIRES_AT: ${{ inputs.authorization_expires_at }}
+      V2_HTTP_PREVIOUS_READS: ${{ inputs.previous_read_requests }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
