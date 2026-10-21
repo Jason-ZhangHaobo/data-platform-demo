@@ -40,11 +40,13 @@ export function auditErrorDetails(error) {
     } catch {}
   }
   const text = texts.join('\n');
-  const transport = /timeout|timed out|context deadline/i.test(text) ? 'TIMEOUT'
+  const cliArgumentRejected = /unknown flag|flag provided but not defined|unrecognized option|unknown command/i.test(text);
+  const networkTimeoutObserved = /\b(?:i\/o timeout|timed out|context deadline exceeded|timeout awaiting|(?:read|request|connect(?:ion)?) timeout)\b/i.test(text);
+  const transport = cliArgumentRejected ? 'CLI_ARGUMENT'
+    : networkTimeoutObserved ? 'TIMEOUT'
     : /no such host|name resolution|connection reset|connection refused|TLS handshake|unexpected EOF/i.test(text) ? 'NETWORK'
-    : /unknown flag|flag provided but not defined|unrecognized option|unknown command/i.test(text) ? 'CLI_ARGUMENT'
     : 'UNCLASSIFIED';
-  return { serviceCode, transport, exitStatus: Number.isInteger(error?.status) ? error.status : null };
+  return { serviceCode, transport, cliArgumentRejected, networkTimeoutObserved, exitStatus: Number.isInteger(error?.status) ? error.status : null };
 }
 export function classifyAuditError(error) {
   if (['TRIGGER_PAGE_INCOMPLETE', 'TRIGGER_RESPONSE_UNCONFIRMED', 'WRONG_FUNCTION'].includes(error?.safeCode)) return error.safeCode;
@@ -117,14 +119,22 @@ export function sealReport(report, key, provenance) {
   aes.fill(0);
   return { aad, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), wrappedKey: wrappedKey.toString('base64'), ciphertext: ciphertext.toString('base64') };
 }
+export function auditReadDeadline(args) {
+  return args[0] === 'fc' && args[1] === 'GET' && /\/triggers(?:\?|$)/.test(args[2] ?? '')
+    ? { readSeconds: 40, processMs: 50000 }
+    : { readSeconds: 12, processMs: 25000 };
+}
 export function auditMain(env = process.env) {
   // Validate before obtaining a cloud response. No model/database secrets needed.
   const config = auditConfig(env), key = recipientKey(env.V2_AUDIT_RECIPIENT_KEY);
   if (!env.ALIBABA_CLOUD_ACCESS_KEY_ID || !env.ALIBABA_CLOUD_ACCESS_KEY_SECRET || !env.ALIBABA_CLOUD_SECURITY_TOKEN) throw fail('OIDC_STS_REQUIRED');
-  const call = args => JSON.parse(execFileSync('aliyun', [...args, '--region', config.region, '--connect-timeout', '5', '--read-timeout', '12', '--retry-count', '0'], {
-    encoding: 'utf8', timeout: 25000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...env, ALIBABA_CLOUD_IGNORE_PROFILE: 'TRUE', ALIBABA_CLOUD_PROFILE_MODE: 'StsToken' },
-  }));
+  const call = args => {
+    const deadline = auditReadDeadline(args);
+    return JSON.parse(execFileSync('aliyun', [...args, '--region', config.region, '--connect-timeout', '5', '--read-timeout', String(deadline.readSeconds), '--retry-count', '0'], {
+      encoding: 'utf8', timeout: deadline.processMs, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...env, ALIBABA_CLOUD_IGNORE_PROFILE: 'TRUE', ALIBABA_CLOUD_PROFILE_MODE: 'StsToken' },
+    }));
+  };
   const report = { ...runReadAudit(config, call), checkedAt: new Date().toISOString() };
   const sealed = sealReport(report, key, { sourceRevision: env.GITHUB_SHA, runId: env.GITHUB_RUN_ID });
   writeFileSync('v2-readonly-audit.sealed.json', JSON.stringify(sealed) + '\n', { mode: 0o600 });

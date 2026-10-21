@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, privateDecrypt, constants, createDecipheriv } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { auditConfig, recipientKey, runReadAudit, classifyAuditError, auditErrorDetails, sealReport } from '../../scripts/audit-v2-oidc-readonly.mjs';
+import { auditConfig, recipientKey, runReadAudit, classifyAuditError, auditErrorDetails, auditReadDeadline, sealReport } from '../../scripts/audit-v2-oidc-readonly.mjs';
 const env = { V2_DEPLOY_ROLE_ARN: 'acs:ram::111122223333:role/synthetic-deployer', V2_DEPLOY_OIDC_PROVIDER_ARN: 'acs:ram::111122223333:oidc-provider/synthetic', V2_FUNCTION_NAME: 'synthetic-control', ALIBABA_CLOUD_REGION_ID: 'cn-hangzhou' };
 const identity = { AccountId: '111122223333', Arn: 'acs:ram::111122223333:assumed-role/synthetic-deployer/session' };
 const config = auditConfig(env);
@@ -74,6 +74,16 @@ test('CLI failures retain bounded service codes and transport categories, never 
   }
   assert.equal(classifyAuditError({stderr:'dial tcp: context deadline exceeded',status:1}),'BOUNDED_TIMEOUT');
   assert.equal(classifyAuditError({stderr:'unknown flag: synthetic-option',status:1}),'CLI_ARGUMENT_REJECTED');
+  assert.equal(classifyAuditError({stderr:'unknown flag: --read-timeout',status:1}),'CLI_ARGUMENT_REJECTED');
+  assert.equal(classifyAuditError({stderr:'flag provided but not defined: --connect-timeout',status:1}),'CLI_ARGUMENT_REJECTED');
+  assert.equal(auditErrorDetails({stderr:'usage: --read-timeout 12'}).networkTimeoutObserved,false);
   assert.equal(classifyAuditError({stderr:'connection reset by peer',status:1}),'TRANSPORT_UNAVAILABLE');
   assert.equal(auditErrorDetails({stderr:JSON.stringify({error:{code:'bad/code',message:secret}})}).serviceCode,'UNKNOWN_ALIYUN_ERROR');
+});
+test('only trigger-list reads get a longer single-attempt deadline',()=>{
+  assert.deepEqual(auditReadDeadline(['fc','GET','/2023-03-30/functions/synthetic/triggers']),{readSeconds:40,processMs:50000});
+  assert.deepEqual(auditReadDeadline(['fc','GET','/2023-03-30/functions/synthetic/triggers?nextToken=a']),{readSeconds:40,processMs:50000});
+  for(const args of [['sts','GetCallerIdentity'],['fc','GET','/2023-03-30/functions/synthetic'],['fc','POST','/2023-03-30/functions/synthetic/triggers']])
+    assert.deepEqual(auditReadDeadline(args),{readSeconds:12,processMs:25000});
+  const source=readFileSync('scripts/audit-v2-oidc-readonly.mjs','utf8');assert.match(source,/'--retry-count', '0'/);
 });
