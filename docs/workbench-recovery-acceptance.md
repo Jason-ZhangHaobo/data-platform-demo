@@ -6,6 +6,8 @@
 
 | 场景 | 必须观察到的结果 | 主要测试入口 |
 |---|---|---|
+| 本机就绪与历史读取 | 本机模型/Spark已配置时允许提交，不误用云端持久开关；模型不可用时仍可读取历史。私有云仍要求持久模式 | `test/v2/agent-submission.test.mjs` |
+| 创建Agent回执丢失与刷新 | POST前保留仅含UUID的恢复链接；刷新仅查原创建请求，不自动调用模型。仅原页仍保留内容时提供显式同内容/同编号重试，先查询后决定是否提交 | `test/v2/agent-submission.test.mjs`、`test/v2/agent-submission-component.test.mjs`、`test/v2/agent-request-recovery.test.mjs` |
 | 修改代码、切换旧批次、核验读取失败 | 不继承旧绿色结论，保留记录，禁止依赖未确认结果发布 | `test/v2/agent-journey-ui.test.mjs` |
 | 文件缺失、空文件、附加文件 | 八份必需文件齐全才可计交付完整；附加文件不替代缺失项 | `test/v2/delivery-presentation.test.mjs` |
 | 文件预览和版本审阅 | 纯文本转义、完整版本标识、明确范围、精确四项确认；渲染不调用发布 | `test/v2/delivery-components.test.mjs` |

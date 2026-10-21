@@ -3,6 +3,8 @@ import { Bot, CheckCircle2, ChevronDown, Code2, FileCode2, GitCompareArrows, His
 import { developmentRunLog } from "./run-log";
 import { AgentDeliveryPanel } from "./AgentDeliveryPanel";
 import { manualRunLocation, manualRunRecovery, manualSaveLocation, manualSaveRequest } from "./manual-run-recovery";
+import {agentSubmissionRequest,agentSubmissionLocation,createAgentSubmission,agentTaskReceiptValid} from "./agent-submission";
+import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
 import "./agent-development.css";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const ManualDeliveryWorkbench = lazy(async () => ({default:(await import("./DeliveryWorkbench")).DeliveryWorkbench}));
@@ -11,13 +13,13 @@ type Task = { id: string; version: number; status: string; stage?: string; execu
 type Run = { id: string; status: string; createdAt?: string; validationContractId?: string; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type SavedRevision = {id:string;sql:string;contextId:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
-const terminal = (s?: string) => Boolean(s && ["SUCCEEDED", "FAILED", "CANCELLED", "VALIDATION_FAILED"].includes(s));
-const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "可恢复", VALIDATION_FAILED: "业务断言未通过" };
+const terminal = (s?: string) => Boolean(s && ["SUCCEEDED", "FAILED", "CANCELLED", "VALIDATION_FAILED","INTERRUPTED"].includes(s));
+const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "执行中断，记录保留", VALIDATION_FAILED: "业务断言未通过" };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
-export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, loading, privatePreview, backgroundAvailable=false, onLogin, onDirtyChange, onOpenServices }: {
-  api: Api; contexts: Context[]; canWrite: boolean; ready: boolean; loading: boolean; privatePreview: boolean; backgroundAvailable?:boolean; onLogin: () => void; onDirtyChange: (dirty: boolean) => void; onOpenServices?: () => void;
+export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanWrite, ready, readinessReason, loading, privatePreview, backgroundAvailable=false, onLogin, onDirtyChange, onOpenServices }: {
+  api: Api; contexts: Context[]; canWrite: boolean; ready: boolean; readinessReason?:string; loading: boolean; privatePreview: boolean; backgroundAvailable?:boolean; onLogin: () => void; onDirtyChange: (dirty: boolean) => void; onOpenServices?: () => void;
 }) {
   const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState("holdings-t1");
   const [message, setMessage] = useState(""), [draft, setDraft] = useState(""), [baseline, setBaseline] = useState("");
@@ -32,7 +34,15 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
   const [backgroundConsent,setBackgroundConsent]=useState(true);
   const epoch = useRef(0), selectedId = useRef<string | undefined>(undefined);
   const alive = useRef(true), manualRequest = useRef<{ revisionId: string; key: string } | undefined>(undefined);
-  const pendingSubmission = useRef<{ payload: string; key: string } | undefined>(undefined);
+  const [pendingAgentKey,setPendingAgentKey]=useState<string|undefined>(()=>typeof window==="undefined"?undefined:agentSubmissionRequest(window.location.href));
+  const canWrite=originalCanWrite&&!pendingAgentKey;
+  const submission=useRef<ReturnType<typeof createAgentSubmission<Task>>|undefined>(undefined);
+  function submissionController(){
+    if(!submission.current||submission.current.snapshot().closed)submission.current=createAgentSubmission<Task>({api,initialKey:agentSubmissionRequest(location.href),onPending:key=>{
+      setPendingAgentKey(key);if(key)history.replaceState(null,"",agentSubmissionLocation(location.href,key));
+    }});
+    return submission.current;
+  }
   const context = contexts.find(c => c.id === contextId), dirty = draft !== baseline;
   const runPending = Boolean(run && !terminal(run.status));
   const working = automatic || busy, durable = task?.executionMode === "DURABLE_SQL_AGENT_V1";
@@ -41,10 +51,10 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
     setTask(current); setTasks(old => [current, ...old.filter(t => t.id !== current.id)]);
   }
   async function loadHistory() {
+    if(agentSubmissionRequest(location.href)){await recoverAgentSubmission();return;}
     const saveKey=manualSaveRequest(location.href);
     if (saveKey) { setPendingSaveKey(saveKey); await recoverSavedRevision(saveKey); return; }
-    if (!ready && !manualRunRecovery(location.href).revisionId) return;
-    const list = ready ? await api<Task[]>("/agent/tasks") : []; if (!alive.current) return; setTasks(list);
+    const list = await api<Task[]>("/agent/tasks"); if (!alive.current) return; setTasks(list);
     const params = new URLSearchParams(location.search), id = params.get("task"), { revisionId, runId, requestKey, originTaskId: origin } = manualRunRecovery(location.href);
     if (!selectedId.current && revisionId && /^[a-f0-9-]{36}$/.test(revisionId)) {
       const saved = await api<SavedRevision>(`/revisions/${revisionId}`);
@@ -61,16 +71,16 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
     }
     if (id && !selectedId.current && list.some(t => t.id === id)) await selectTask(id, false);
   }
-  useEffect(() => { loadHistory().catch(e => setError(e.message)); }, [ready, canWrite]);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; }; }, []);
-  useEffect(() => { onDirtyChange(dirty || Boolean(message.trim()) || manualUnconfirmed || Boolean(pendingSaveKey)); }, [dirty, message, manualUnconfirmed, pendingSaveKey, onDirtyChange]);
+  useEffect(() => { loadHistory().catch(e => setError(e.message)); }, [ready, originalCanWrite]);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; submission.current?.close(); }; }, []);
+  useEffect(() => { onDirtyChange(dirty || Boolean(message.trim()) || manualUnconfirmed || Boolean(pendingSaveKey) || Boolean(pendingAgentKey)); }, [dirty, message, manualUnconfirmed, pendingSaveKey, pendingAgentKey, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(""), 9000); return () => clearTimeout(timer); }, [notice]);
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (dirty || message.trim() || manualUnconfirmed || pendingSaveKey) { event.preventDefault(); event.returnValue = ""; } };
+    const warn = (event: BeforeUnloadEvent) => { if (dirty || message.trim() || manualUnconfirmed || pendingSaveKey || pendingAgentKey) { event.preventDefault(); event.returnValue = ""; } };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty, message, manualUnconfirmed, pendingSaveKey]);
+  }, [dirty, message, manualUnconfirmed, pendingSaveKey,pendingAgentKey]);
   useEffect(() => { setManualDeliveryOpen(false); }, [run?.id, baselineRevisionId]);
   useEffect(() => { setRetryConsent(false); }, [task?.id, task?.stage]);
   useEffect(() => {
@@ -90,6 +100,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
     url.searchParams.delete("revision"); url.searchParams.delete("run");
     url.searchParams.delete("run_request"); url.searchParams.delete("origin_task");
     url.searchParams.delete("save_request"); setPendingSaveKey(undefined); revisionRequest.current=undefined;
+    url.searchParams.delete("agent_request");setPendingAgentKey(undefined);
     manualRequest.current = undefined; setManualUnconfirmed(false); setOriginTaskId(undefined);
     setManualDeliveryOpen(false);
     history.replaceState(null, "", url);
@@ -100,7 +111,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
     history.replaceState(null, "", url);
   };
   async function selectTask(id: string, protectDraft = true) {
-    if (manualUnconfirmed || pendingSaveKey) { setNotice("请先确认原保存或运行请求，再切换任务；不会丢弃未确认请求。"); return; }
+    if (manualUnconfirmed || pendingSaveKey || pendingAgentKey) { setNotice("请先确认原提交、保存或运行请求，再切换任务；不会丢弃未确认请求。"); return; }
     const keepDraft = selectedId.current === id && dirty;
     if (protectDraft && dirty && !keepDraft && !confirm("当前代码有未保存修改，是否放弃修改并切换任务？")) return;
     const selectionEpoch = ++epoch.current; setAutomatic(false); setBusy(true); setError("");
@@ -117,7 +128,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
     } catch (e) { if (alive.current && epoch.current === selectionEpoch) setError((e as Error).message); } finally { if (alive.current && epoch.current === selectionEpoch) setBusy(false); }
   }
   function newTask() {
-    if (manualUnconfirmed || pendingSaveKey) { setNotice("请先确认原保存或运行请求，再新建任务。"); return; }
+    if (manualUnconfirmed || pendingSaveKey || pendingAgentKey) { setNotice("请先确认原提交、保存或运行请求，再新建任务。"); return; }
     if (dirty && !confirm("当前代码有未保存修改，是否放弃并新建任务？")) return;
     epoch.current++; setAutomatic(false); rememberSelection(); setTask(undefined); setRun(undefined);
     setDraft(""); setBaseline(""); setBaselineRevisionId(undefined); setMessage(""); setError(""); setNotice(""); setDiff(false);
@@ -160,22 +171,48 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
       if (token === epoch.current) { setError((e as Error).message + " 请先刷新任务确认状态，不要重复新建。"); }
     } finally { if (token === epoch.current) { setAutomatic(false); setRetryConsent(false); } }
   }
+  async function acceptSubmissionReceipt(current:Task,key:string,token:number,continueOriginal:boolean){
+    if(!alive.current||epoch.current!==token||agentSubmissionRequest(location.href)!==key)return;
+    if(!agentTaskReceiptValid(current))throw Error("任务回执不完整或语言不匹配，保留原提交编号");
+    submissionController().acknowledge(key);rememberSelection(current.id);accept(current);setContextId(current.contextId);setRun(undefined);setBaselineRevisionId(current.revisionId);
+    const saved=current.sql??current.initialSql;
+    if(saved!==undefined){setDraft(previous=>!continueOriginal&&previous!==baseline?previous:saved);setBaseline(saved);}
+    setMessage(previous=>previous.trim()===current.message.trim()?"":previous);
+    if(continueOriginal){
+      setBusy(false);
+      setNotice(current.background?.status==="ACTIVE"?"需求已保存并委托云端事件后台；发布仍须审阅。":"需求已保存，将按已确认口径生成代码并执行独立校验。");
+      void drive(current);return;
+    }
+    if(current.runId){
+      const actual=await api<Run>(`/runs/${current.runId}`);
+      if(!alive.current||epoch.current!==token||selectedId.current!==current.id)return;
+      setRun(actual);
+    }
+    setNotice(current.status==="INTERRUPTED"?"原任务与已有版本已找回，执行中断记录保留；不会自动重跑模型。":"已找回原任务及已有执行结果，未保存的编辑保留；查询没有重新发起模型或计算。需要推进时请审阅后点击继续任务。");
+  }
+  async function recoverAgentSubmission(retry=false){
+    if(retry&&!originalCanWrite)return;
+    const key=agentSubmissionRequest(location.href)??pendingAgentKey;if(!key)return;
+    const token=++epoch.current;setAutomatic(false);setPendingAgentKey(key);setBusy(true);setError("");
+    try{
+      const controller=submissionController();
+      const current=await (retry?controller.retry():controller.recover());
+      await acceptSubmissionReceipt(current,key,token,false);
+    }catch(cause){if(alive.current&&epoch.current===token)setError((cause as Error).message+(agentSubmissionRequest(location.href)?" 原提交编号保留，请用原账号继续查询；不会自动新建任务。":" 原任务已找回，执行结果读取尚未确认，请刷新原任务。"));}
+    finally{if(alive.current&&epoch.current===token)setBusy(false);}
+  }
   async function send(overrideMessage?: string) {
     const requestMessage = (overrideMessage ?? message).trim();
-    if (!canWrite || working || manualUnconfirmed || pendingSaveKey || runPending || requestMessage.length < 4 || !context) return;
+    if (!ready || !canWrite || working || manualUnconfirmed || pendingSaveKey || pendingAgentKey || runPending || requestMessage.length < 4 || !context) return;
+    const token=++epoch.current;
     setBusy(true); setError("");
     const repairSource = run && ["FAILED", "VALIDATION_FAILED"].includes(run.status) && !dirty && run.revisionId === baselineRevisionId ? run.id : undefined;
     const body = { message: requestMessage, sql: draft.trim() || "SELECT 1 AS pending", contextId, ...(backgroundAvailable?{background:backgroundConsent}:{}), ...(repairSource ? { sourceRunId: repairSource } : {}) };
-    const payload = JSON.stringify(body);
-    if (pendingSubmission.current?.payload !== payload) pendingSubmission.current = { payload, key: crypto.randomUUID() };
     try {
-      const created = await api<Task>("/agent/tasks", body, { idempotencyKey: pendingSubmission.current.key });
-      if (!alive.current) return;
-      pendingSubmission.current = undefined; rememberSelection(created.id); accept(created); setRun(undefined); setMessage("");
-      setNotice(created.background?.status==="ACTIVE"?"需求已保存并委托云端事件后台；关闭页面不影响已获准步骤，发布仍须审阅。":"需求已保存，将按已确认口径生成代码并执行独立校验。");
-      void drive(created);
-    } catch (e) { setError((e as Error).message + " 输入和幂等编号已保留，请先刷新历史核对。"); }
-    finally { setBusy(false); }
+      const controller=submissionController(),created=await controller.submit(body),key=controller.snapshot().key;
+      if(key)await acceptSubmissionReceipt(created,key,token,true);
+    } catch (e) { if(alive.current&&epoch.current===token)setError((e as Error).message + " 输入仍在本页，原编号已保留在恢复链接中，请先查询原任务。"); }
+    finally { if(alive.current&&epoch.current===token)setBusy(false); }
   }
   async function stop() {
     epoch.current++; setAutomatic(false); setBusy(true); setError(""); setNotice("停止请求已发送；当前调用返回前不会继续发起下一步骤。");
@@ -188,7 +225,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
     finally { setBusy(false); }
   }
   async function runDraft() {
-    if (!draft.trim() || !canWrite || working || runPending || manualUnconfirmed || pendingSaveKey) return;
+    if (!draft.trim() || !canWrite || working || runPending || manualUnconfirmed || pendingSaveKey || pendingAgentKey) return;
     setBusy(true); setError("");
     try {
       let revision: {id:string;sql:string};
@@ -259,23 +296,24 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
   const codeOriginal = dirty ? baseline : task?.initialSql ?? baseline;
   const resultFields = run?.rows?.[0] ? Object.keys(run.rows[0]) : [];
   return <section className="agent-dev" aria-label="Agent 数据开发工作台">
-    <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>客户资产 T+1 · 需求、代码与真实执行，在一个工作台完成。</p></div><div className="agent-dev-header-actions">{task && <a className="button" href="#agent-delivery">核验与交付</a>}<button className="button" disabled={working} onClick={newTask}><Plus size={15} />新建任务</button></div></header>
+    <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>客户资产 T+1 · 需求、代码与真实执行，在一个工作台完成。</p></div><div className="agent-dev-header-actions">{task && <a className="button" href="#agent-delivery">核验与交付</a>}<button className="button" disabled={working||Boolean(pendingAgentKey)} onClick={newTask}><Plus size={15} />新建任务</button></div></header>
     <div className="agent-dev-boundary"><span className="agent-dev-dot" />{privatePreview ? "私有试用" : "开发验证"} · 仅虚构证券数据与 Spark SQL。{backgroundAvailable?"可委托云端事件后台；浏览器只展示进度，不负责触发计算。每个委托有时限、事件与模型预算，发布仍须人工审阅。":"本页打开时自动推进；离开后检查点保留，已提交计算可继续，返回后可恢复。不是永久云调度。"}</div>
-    {loading ? <div className="agent-dev-notice" role="status"><LoaderCircle size={14} className="spin" />正在连接服务并读取项目上下文…</div> : !ready && <div className="agent-dev-alert">当前服务尚未启用持久 Agent。请先完成受控部署；不会用模拟结果代替执行。</div>}
-    {!loading && !canWrite && <div className="agent-dev-alert">需要有数据开发权限的账号才能提交任务。<button className="button" onClick={onLogin}>登录 / 查看账号</button></div>}
+    {loading ? <div className="agent-dev-notice" role="status"><LoaderCircle size={14} className="spin" />正在连接服务并读取项目上下文…</div> : !ready && <div className="agent-dev-alert">{readinessReason??"模型或执行环境尚未就绪；历史任务仍可查询。"}</div>}
+    {!loading && !originalCanWrite && <div className="agent-dev-alert">需要有数据开发权限的账号才能提交任务。<button className="button" onClick={onLogin}>登录 / 查看账号</button></div>}
     {error && <div className="agent-dev-alert error" role="alert">{error}<button onClick={() => setError("")} aria-label="关闭错误提示">×</button></div>}
     {notice && <div className="agent-dev-notice" role="status">{notice}</div>}
+    {pendingAgentKey&&<AgentSubmissionRecovery requestKey={pendingAgentKey} recoveryHref={agentSubmissionLocation(location.href,pendingAgentKey).href} canRetry={originalCanWrite&&Boolean(submission.current?.snapshot().canRetry)} busy={working} onRead={()=>void recoverAgentSubmission()} onRetry={()=>void recoverAgentSubmission(true)}/>}
     {pendingSaveKey && <div className="agent-dev-alert" role="alert"><div><strong>代码保存结果待确认</strong><p>只查询当前账号的原保存编号，不运行模型或 Spark。恢复链接不含代码；若服务端未收到保存且本页已关闭，需重新填写代码。同编号不同内容会被拒绝，不覆盖原记录。</p></div><div><button className="button" disabled={working} onClick={() => void recoverSavedRevision()}>查询原保存记录</button><button className="button" disabled={!canWrite || working || (!revisionRequest.current && !draft.trim())} onClick={() => void retrySavedRevision()}>{revisionRequest.current ? "按原编号重试保存" : "按原编号保存填写内容"}</button></div></div>}
     {manualUnconfirmed && <div className="agent-dev-alert" role="alert"><div><strong>手工运行结果待确认</strong><p>原提交编号已保留在恢复链接中。按原编号重试，不创建新的重试编号；未保存代码不会被覆盖。</p></div><button className="button" disabled={!canWrite || working} onClick={() => void resumeManualRun()}>按原编号重试提交</button></div>}
     <div className="agent-dev-grid">
       <aside className="agent-dev-history"><header><span><History size={15} />任务历史</span><button className="icon-button" aria-label="刷新任务历史" onClick={() => loadHistory().catch(e => setError(e.message))}><RefreshCw size={14} /></button></header>
         {!tasks.length && <p className="agent-dev-empty">还没有委托。<br />从一个明确的证券业务需求开始。</p>}
-        {tasks.map(t => <button disabled={working} className={t.id === task?.id ? "selected" : ""} key={t.id} onClick={() => void selectTask(t.id)}><strong>{t.message}</strong><span>{stageText[t.stage ?? t.status] ?? t.status}</span><small>{t.id.slice(0,8)}</small></button>)}
+        {tasks.map(t => <button disabled={working||Boolean(pendingAgentKey)} className={t.id === task?.id ? "selected" : ""} key={t.id} onClick={() => void selectTask(t.id)}><strong>{t.message}</strong><span>{stageText[t.stage ?? t.status] ?? t.status}</span><small>{t.id.slice(0,8)}</small></button>)}
       </aside>
       <section id="agent-requirement" className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
         <div className="agent-dev-conversation">
           <details className="agent-dev-context" open={!task}><summary>本次数据与业务口径 <ChevronDown size={14} /></summary>
-            <label>验证数据<select aria-label="Agent 验证数据" disabled={working || Boolean(task) || Boolean(run && !terminal(run.status))} value={contextId} onChange={e => { setContextId(e.target.value); setRun(undefined); setBaselineRevisionId(undefined); }}>{contexts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+            <label>验证数据<select aria-label="Agent 验证数据" disabled={working || Boolean(task) || Boolean(pendingAgentKey) || Boolean(run && !terminal(run.status))} value={contextId} onChange={e => { setContextId(e.target.value); setRun(undefined); setBaselineRevisionId(undefined); }}>{contexts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
             <p>{context?.definition ?? "正在加载数据上下文…"}</p><div className="agent-dev-tables">{context?.tables.map(t => <details key={t.name}><summary>{t.name} · {t.columns.length}字段</summary><dl>{t.columns.map(([name,type]) => <div key={name}><dt>{name}</dt><dd>{type}</dd></div>)}</dl></details>)}</div>
             <small>输出：客户、持仓市值、可用现金、总资产、证券数量。其他指标请先补充并审阅口径，不默认纳入。</small>
           </details>
@@ -314,7 +352,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite, ready, load
         </>}</div>
       </section>
     </div>
-    {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite} codeBusy={working} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())} />}
+    {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />}
     {!task && baselineRevisionId && <section className="agent-delivery-panel" aria-label="人工接管与交付"><h3>人工接管记录</h3><p>当前代码由工程师保存；原 Agent 的失败和验证结论不改写，也不计作 Agent 自主完成。</p><small>代码版本：{baselineRevisionId}{run ? ` · 运行批次：${run.id}` : " · 运行尚未确认"}</small>
       {originTaskId && <button className="button" disabled={working || manualUnconfirmed || Boolean(message.trim())} onClick={() => void selectTask(originTaskId)}>返回原 Agent 任务</button>}
       {privatePreview ? <p>当前私有试用尚未接入人工版本的云交付；不会自动借用原 Agent 的批准或发布。代码与批次保留，可继续人工检查。</p> : <><button className="button" disabled={working || dirty || manualUnconfirmed || Boolean(message.trim()) || run?.status !== "SUCCEEDED" || run.revisionId !== baselineRevisionId || !run.validationContractId} onClick={() => setManualDeliveryOpen(true)}>打开本机人工交付流程</button><small>在本页继续生成包、文件演练和审阅；服务端仍核验实际执行与来源。不是自动批准或云端上线。</small>
