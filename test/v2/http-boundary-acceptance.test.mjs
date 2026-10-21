@@ -52,6 +52,12 @@ test('a queued run with too little permission lifetime cannot create an endpoint
  const f=fixture(),r=await runHttpAcceptance(f.config,f.adapter,{...f.options,now:()=>f.config.authorizationExpiresAt-599999});
  assert.equal(r.failure,'AUTHORIZATION_WINDOW_TOO_SHORT');assert.equal(f.creates(),0);assert.equal(r.requests,0);
 });
+test('slow preflight cannot consume the cleanup window and then create a trigger',async()=>{
+ const f=fixture();let now=Date.UTC(2026,9,21);const bill=f.adapter.billPages;
+ f.adapter.billPages=async cycle=>{now+=21*60000;return bill(cycle);};
+ const r=await runHttpAcceptance(f.config,f.adapter,{...f.options,now:()=>now});
+ assert.equal(r.failure,'AUTHORIZATION_WINDOW_TOO_SHORT');assert.equal(f.creates(),0);assert.equal(r.requests,0);
+});
 test('unknown create is reconciled and deleted without retrying create',async()=>{
  const f=fixture({unknownCreate:true}),r=await runHttpAcceptance(f.config,f.adapter,f.options);
  assert.equal(r.passed,false);assert.equal(f.creates(),1);assert.equal(r.cleanup.triggerAbsent,true);assert.deepEqual(f.remaining(),f.original);

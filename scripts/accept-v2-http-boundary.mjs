@@ -83,9 +83,11 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
     const bill=verifyV2MonthlyBillPages(await adapter.billPages(cycle),199);
     requireThat(bill.ok && bill.billingCycle===cycle,'BUDGET_NOT_VERIFIED');
     report.billingCycle=cycle;report.billCnyBefore=bill.spendCny;report.reservedCny=1;
+    requireThat(config.authorizationExpiresAt-now()>=600000,'AUTHORIZATION_WINDOW_TOO_SHORT');
     report.requests++;
     const baseline=await adapter.privateStatus();
     requireThat(baseline?.ingress?.mode==='FC_CONTROL_PATH' && baseline.ingress.publicHttpEnabled===false,'PRIVATE_CONTROL_BASELINE_FAILED');
+    requireThat(config.authorizationExpiresAt-now()>=600000,'AUTHORIZATION_WINDOW_TOO_SHORT');
     checkpoint={targetHash:targetHash(config),triggerName:config.triggerName,functionHash:functionHash(before),originalTriggersHash:triggerHash(original),startedAt:now(),requests:report.requests};
     save(checkpoint); // Must be durable before the first resource mutation.
     await adapter.fc('POST','/triggers',{triggerName:config.triggerName,triggerType:'http',qualifier:'LATEST',description,triggerConfig:JSON.stringify(triggerConfiguration)});
@@ -94,7 +96,7 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
     const endpoint=new URL(created.httpTrigger?.urlInternet ?? '');
     requireThat(endpoint.protocol==='https:' && endpoint.hostname.endsWith(`.${config.region}.fcapp.run`) && !endpoint.username && !endpoint.password && !endpoint.port && endpoint.pathname==='/' && !endpoint.search && !endpoint.hash,'TRIGGER_ENDPOINT_INVALID');
     for (const probe of boundaryCases) {
-      requireThat(report.requests<20 && now()-checkpoint.startedAt<600000 && now()<config.authorizationExpiresAt-180000,'ACCEPTANCE_LIMIT_REACHED');
+      requireThat(report.requests<20 && now()-checkpoint.startedAt<600000 && now()<config.authorizationExpiresAt-300000,'ACCEPTANCE_LIMIT_REACHED');
       checkpoint.requests=++report.requests; save(checkpoint);
       const value=await adapter.probe(endpoint.origin,probe);
       const result={id:probe.id,status:value.status,code:typeof value.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(value.code)?value.code:'UNCONFIRMED',responseHash:value.responseHash,bytes:value.bytes};
