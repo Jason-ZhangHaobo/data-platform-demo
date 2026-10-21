@@ -23,7 +23,10 @@ function fixture(options={}){
  const review={id:randomUUID(),status:'REVIEWED',packageId:bundle.id,packageDigest:bundle.digest,verificationId:verification.id,scope:'LOCAL_TEST_RELEASE',attestations:{code:true,assertions:true,deliveryFiles:true,localScope:true}};
  const approval={id:randomUUID(),status:'APPROVED',packageId:bundle.id,packageDigest:bundle.digest,reviewId:review.id};
  const release={id:randomUUID(),status:'ACTIVE_LOCAL',health:'HEALTHY',successfulRunCount:2,packageId:bundle.id,packageDigest:bundle.digest,sourceRevisionId:revision.id,approvalId:approval.id,activatedAt:time(10)};
- const batches=[0,1].map(index=>({...run,id:randomUUID(),releaseId:release.id,packageId:bundle.id,packageDigest:bundle.digest,schedulerTriggered:true,clockMode:'WALL_CLOCK_TIMER',testSqlValidation:{passed:true,sqlHash:sha256(bundle.files['tests.sql'])},scheduledTriggerAt:time(11+index*2),startedAt:time(11+index*2),finishedAt:time(12+index*2)}));
+ const {contractId,...rawValidation}=run.validation;
+ const batches=[0,1].map(index=>({...run,id:randomUUID(),releaseId:release.id,packageId:bundle.id,packageDigest:bundle.digest,source:bundle.manifest.source,
+  fileHashes:Object.fromEntries(Object.entries(bundle.manifest.files).map(([name,value])=>[name,value.sha256])),validation:rawValidation,
+  schedulerTriggered:true,clockMode:'WALL_CLOCK_TIMER',testSqlValidation:{passed:true,sqlHash:sha256(bundle.files['tests.sql'])},scheduledTriggerAt:time(11+index*2),startedAt:time(11+index*2),finishedAt:time(12+index*2)}));
  const events=batches.map(batch=>({id:randomUUID(),releaseId:release.id,releaseRunId:batch.id,packageDigest:bundle.digest,type:'BATCH_SUCCEEDED',observedAt:batch.finishedAt}));
  let agentCreated=false,deliveryCreated=false,reviewed=false;
  const adapter={testDouble:true,request:async(path,body)=>{
@@ -79,6 +82,7 @@ test('historical tasks, missing review attestations and wrong-batch evidence can
  const old=fixture();old.task.createdAt='2025-01-01T00:00:00.000Z';assert.equal((await advance(old)).errorCode,'HISTORICAL_TASK_REJECTED');assert.equal(old.mutations.length,1);
  const wrong=fixture();const state=await advance(wrong);wrong.reviewNow();wrong.review.attestations.code=false;assert.equal((await advance(wrong,state)).errorCode,'ENGINEER_REVIEW_NOT_BOUND');
  const batch=fixture();const next=await advance(batch);batch.reviewNow();batch.batches[0].packageDigest='0'.repeat(64);assert.equal((await advance(batch,next)).errorCode,'PUBLISHED_BATCH_EVIDENCE_INCOMPLETE');
+ const source=fixture();const sourceState=await advance(source);source.reviewNow();source.batches[0].source={...source.batches[0].source,runId:'other-source'};assert.equal((await advance(source,sourceState)).errorCode,'PUBLISHED_BATCH_EVIDENCE_INCOMPLETE');
 });
 
 test('unknown durable model outcomes pause on the original task without retry consent',async()=>{
