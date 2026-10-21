@@ -7,6 +7,7 @@ import { MetadataStore } from "../../src/v2/store.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { referenceSql, getContext, contextIds } from "../../src/v2/context.mjs";
 import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult } from "../../src/v2/remote-spark-queue.mjs";
+import { manualRunLocation, manualRunRecovery } from "../../web/src/manual-run-recovery.ts";
 
 function queue() {
   const objects = new Map(); let creates = 0, loseResponse = false;
@@ -42,6 +43,28 @@ async function start(app) {
   const run = await app.request("POST", "/runs", { revisionId: revision.body.id });
   return { revision: revision.body, run };
 }
+
+test("manual submission recovery URL survives a lost response and restart without a second job", async () => {
+  const path=join(mkdtempSync(join(tmpdir(),"shuduo-manual-recovery-")),"store.sqlite"), q=queue();
+  let app=await open(path,q.runner);
+  try {
+    const revision=(await app.request("POST","/revisions",{sql:referenceSql,contextId:"holdings-t1"})).body;
+    const key=crypto.randomUUID(), originTaskId=crypto.randomUUID();
+    const link=manualRunLocation("http://127.0.0.1/v2/?module=agent-center",{revisionId:revision.id,requestKey:key,originTaskId});
+    q.lose();
+    const first=await app.request("POST","/runs",{revisionId:revision.id},key);
+    assert.equal(first.status,500);assert.equal(q.creates,1);
+    const original=app.store.list("run",PROJECT)[0];
+    await app.close();app=await open(path,q.runner);
+    const restored=manualRunRecovery(link.href);
+    assert.equal(restored.requestKey,key);assert.equal(restored.originTaskId,originTaskId);
+    const replay=await app.request("POST","/runs",{revisionId:restored.revisionId},restored.requestKey);
+    assert.equal(replay.status,202);assert.equal(replay.body.id,original.id);assert.equal(q.creates,1);
+    assert.equal(app.store.list("run",PROJECT).length,1);
+    assert.equal(app.store.list("revision",PROJECT).length,1);
+    assert.equal(app.store.list("release",PROJECT).length,0);
+  } finally { await app.close(); }
+});
 
 test("task submission returns before a result exists and survives controller restart", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "shuduo-durable-")), "store.sqlite"), q = queue();

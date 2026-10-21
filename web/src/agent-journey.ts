@@ -1,8 +1,29 @@
+import { deliveryFilePresentation } from "./delivery-presentation.ts";
+import { publicationStopped } from "./publication-read.ts";
 export type JourneyState = "DONE" | "PENDING" | "ATTENTION" | "STALE";
 export type JourneyStep = { id: string; label: string; state: JourneyState; detail: string; target: string };
+export type EvidenceReadState = "LOADING" | "READY" | "ERROR";
+export function verificationPresentation(current: boolean, verified: boolean, readState: EvidenceReadState) {
+  if (readState === "ERROR") return { title: "读取未确认", detail: "无法读取最新核验记录；已有报告仅供参考。重试只读取记录，不重新运行模型或 Spark。", currentChecks: false };
+  if (readState === "LOADING") return { title: "正在核对记录", detail: "正在读取当前任务与版本的证据；读取完成前不能审阅发布。", currentChecks: false };
+  if (!current) return { title: "原版本报告", detail: "报告与当前代码或批次不一致；请运行当前代码后重新核验，原报告保留供对照。", currentChecks: false };
+  return { title: verified ? "核验通过" : "需要处理", detail: verified ? "当前版本的独立核验通过，可继续准备交付文件。" : "请先处理未通过的检查项，再重新核验；SQL 跑通不等于结果正确。", currentChecks: true };
+}
+export function publicationEvidenceText(release: { status: string; health: string }, current: boolean, monitored: boolean): string {
+  if (!current) return "历史发布记录 · 不代表当前版本上线";
+  if (release.status === "CANCELLED") return "已停止后续批次";
+  if (["ROLLED_BACK", "ROLLED_BACK_LOCAL"].includes(release.status)) return "已回滚 · 历史记录保留";
+  if (release.status === "SUPERSEDED_LOCAL") return "已被新版本替代 · 历史记录保留";
+  if (["FAILED", "FAILED_LOCAL"].includes(release.status)) return "发布失败 · 请检查发布记录";
+  if (monitored) return "计划批次与监控证据核对通过 · 仅本次测试范围";
+  if (release.health === "CRITICAL") return "存在运行异常 · 请检查批次与告警";
+  if (release.status === "WAITING_SCHEDULER") return "已审阅 · 等待调度器实际执行";
+  if (release.health === "RECOVERED_WITH_FAILURE") return "后续批次已恢复 · 历史失败保留";
+  return "发布记录已保存 · 批次或监控证据尚未齐备";
+}
 export function deliveryStageText(stage: string, publicationCurrent: boolean, releaseStatus?: string, current = true): string {
   if (!current) return "原版本交付记录；当前修改待核验";
-  if (publicationCurrent) return ["CANCELLED", "ROLLED_BACK"].includes(releaseStatus ?? "")
+  if (publicationCurrent) return publicationStopped(releaseStatus)
     ? "交付文件已演练；发布已停止"
     : "交付文件已演练并完成发布审阅";
   const labels: Record<string, string> = { PACKAGE_READY: "调度与部署文件已生成", FILE_REHEARSAL_SUBMITTING: "正在提交文件演练", FILE_REHEARSAL_RUNNING: "Spark 正在按交付文件演练", AWAITING_ENGINEER_REVIEW: "演练通过，待审阅交付", FILE_REHEARSAL_FAILED: "文件演练需要处理", CANCELLED: "交付准备已停止" };
@@ -16,7 +37,7 @@ export type TaskConsumption = {
     call?: { callId: string; versionId: string; verified: boolean; resultHash: string; rowCount: number; applicationId: string; applicationStatus: string; finishedAt: string } }[];
 };
 type Evidence = {
-  taskId: string; revisionId?: string; runId?: string; dirty: boolean;
+  taskId: string; revisionId?: string; runId?: string; dirty: boolean; evidenceReadable?: boolean; publicationReadable?: boolean;
   report?: { taskId?: string; revisionId?: string; runId?: string; status: string; checks: { id: string; passed: boolean }[] };
   delivery?: { status: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string };
   bundle?: { id: string; digest: string; files: Record<string, string> };
@@ -30,15 +51,15 @@ type Evidence = {
 
 // A display projection, not a replacement for server-side approval or an E2E score.
 export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: JourneyStep; current: boolean; fileVerified: boolean; publicationCurrent: boolean } {
-  const current = !e.dirty && Boolean(e.revisionId && e.runId && e.report?.taskId === e.taskId && e.report.revisionId === e.revisionId && e.report.runId === e.runId);
+  const current = e.evidenceReadable !== false && !e.dirty && Boolean(e.revisionId && e.runId && e.report?.taskId === e.taskId && e.report.revisionId === e.revisionId && e.report.runId === e.runId);
   const required = ["revision", "execution", "results", "regressions"];
   const verified = current && e.report?.status === "PASSED" && required.every(id => e.report?.checks.some(c => c.id === id && c.passed === true));
-  const files = Boolean(current && e.bundle && e.delivery?.sourceRevisionId === e.revisionId && e.delivery?.sourceRunId === e.runId && e.delivery?.packageId === e.bundle.id && e.delivery.packageDigest === e.bundle.digest && ["main.sql", "tests.sql", "schedule.json", "deployment.json"].every(name => e.bundle?.files[name]?.trim()));
+  const files = Boolean(current && e.bundle && e.delivery?.sourceRevisionId === e.revisionId && e.delivery?.sourceRunId === e.runId && e.delivery?.packageId === e.bundle.id && e.delivery.packageDigest === e.bundle.digest && deliveryFilePresentation(e.bundle.files, "").missing.length === 0);
   const fileVerified = Boolean(verified && files && e.delivery?.status === "SUCCEEDED" && e.delivery.verificationId === e.verification?.id && e.verification?.status === "SUCCEEDED" && e.verification.mainSqlExecuted === true && e.verification.testSqlValidation?.passed === true && e.verification.validation?.passed === true && ["holdings-t1", "duplicate-position", "cash-change", "equal-value-positions", "cash-only-client"].every(id => e.verification?.validation?.regressions?.some(c => c.contextId === id && c.passed)));
   const publicationCurrent = Boolean(fileVerified && e.release?.packageId === e.bundle?.id && e.release?.packageDigest === e.bundle?.digest && e.release?.sourceRevisionId === e.revisionId);
-  const stopped = ["CANCELLED", "ROLLED_BACK"].includes(e.release?.status ?? "");
+  const stopped = publicationStopped(e.release?.status);
   const batches = e.batches ?? [];
-  const executed = publicationCurrent && !stopped && batches.some(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true);
+  const executed = e.publicationReadable !== false && publicationCurrent && !stopped && batches.some(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true);
   const healthy = executed && e.release?.health === "HEALTHY" && Number.isSafeInteger(e.release.runCount) && e.release.runCount! > 0 && batches.length === e.release.runCount && new Set(batches.map(b => b.id)).size === batches.length && batches.every(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true && e.events?.some(event => event.type === "BATCH_SUCCEEDED" && event.releaseId === e.release?.id && event.releaseRunId === b.id && event.packageDigest === e.bundle?.digest)) && !(e.alerts ?? []).some(a => a.status === "OPEN");
   const state = (done: boolean, failed = false): JourneyState => e.dirty ? "STALE" : done ? "DONE" : failed ? "ATTENTION" : "PENDING";
   const consumptionCurrent = current && e.consumption?.protocol === "shuduo-private-task-consumption/v1" && e.consumption.taskId === e.taskId && e.consumption.packageDigest === e.bundle?.digest && e.consumption.scope === "PRIVATE_CLOUD_TEST";

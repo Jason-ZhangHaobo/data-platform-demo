@@ -276,6 +276,7 @@ export class LocalReleaseScheduler {
       type: success ? "BATCH_SUCCEEDED" : "BATCH_FAILED",
       releaseId: release.id,
       releaseRunId: run.id,
+      packageDigest: run.packageDigest,
       observedAt: new Date(this.now()).toISOString(),
       status: run.status,
       durationMs: run.durationMs ?? null,

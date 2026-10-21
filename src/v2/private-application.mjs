@@ -14,13 +14,14 @@ export const privateApplicationTimeoutMs = path => /^\/api\/v2\/agent\/tasks\/[a
 
 export function validatePrivateApplicationRequest(input, { allowDurableAgent = false, allowDurableAgentRead = false, allowDataServices = false } = {}) {
   const servicePath=allowDataServices && privateServiceRoute(input?.method,input?.path);
+  const saveRecoveryRead=input?.method === "GET" && /^\/api\/v2\/revisions\/requests\/[A-Za-z0-9_-]{1,100}$/.test(input?.path ?? "");
   const agentPath = (allowDurableAgent || (allowDurableAgentRead && input?.method === "GET")) && (input?.method === "GET"
     ? /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}(?:\/(?:workflow|publication|background))?)?|deliveries\/[a-f0-9-]{36})$/
     : /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}\/(?:advance|cancel|prepare-delivery|publication(?:\/cancel)?|background(?:\/(?:cancel|resume))?))?|deliveries\/[a-f0-9-]{36}\/(?:advance|cancel))$/).test(input?.path ?? "");
   if (!input || input.operation !== "PRIVATE_APPLICATION_HTTP_V1" ||
       Object.keys(input).some(k => !["operation", "method", "path", "headers", "body"].includes(k)) ||
       !["GET", "POST"].includes(input.method) || typeof input.path !== "string" ||
-      !(paths.some(p => p.test(input.path)) || agentPath || servicePath))
+      !(paths.some(p => p.test(input.path)) || agentPath || servicePath || saveRecoveryRead))
     throw fail(422, "PRIVATE_APPLICATION_REQUEST_INVALID");
   const headers = input.headers ?? {};
   if (typeof headers !== "object" || Array.isArray(headers) ||

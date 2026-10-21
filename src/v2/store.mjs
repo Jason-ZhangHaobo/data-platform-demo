@@ -62,6 +62,9 @@ export class MetadataStore {
       });
     return item;
   }
+  deduplicatedId(key) {
+    return this.db.prepare("SELECT result_id FROM idempotency WHERE key=?").get(key)?.result_id;
+  }
   deduplicate(key, signature, create) {
     this.db.exec("BEGIN IMMEDIATE");
     try {

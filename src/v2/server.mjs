@@ -10,6 +10,8 @@ import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelop
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
 import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport } from "./agent-development-workflow.mjs";
 import { createCloudPublication } from "./cloud-publication.mjs";
+import { localTaskPublication } from "./local-task-publication.mjs";
+import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
@@ -4653,6 +4655,7 @@ export function createV2Server(options = {}) {
       const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel))?$/);
       if (privatePublication) {
         const agent = get("agent", privatePublication[1]); requireDurableAgentOwner(agent,req);
+        if (local && method === "GET" && !privatePublication[2]) return json(res,200,localTaskPublication(store,PROJECT,agent));
         if(agent.executionMode!==durableSqlAgentMode)throw fail(422,"云端发布仅支持持久SQL Agent任务");
         if (!cloudPublication) throw fail(503,"云端发布执行器尚未配置");
         if (method==="GET" && !privatePublication[2]) return json(res,200,await cloudPublication.detail(agent.id));
@@ -4741,6 +4744,8 @@ export function createV2Server(options = {}) {
           .find(
             (item) =>
               item.sourceAgentTaskId === agent.id &&
+              item.sourceRevisionId === rev.id &&
+              item.sourceRunId === run.id &&
               ["QUEUED", "RUNNING", "SUCCEEDED"].includes(item.status),
           );
         if (existing) return json(res, 200, existing);
@@ -4966,12 +4971,34 @@ export function createV2Server(options = {}) {
           });
         }
       }
+      const manualRevisionRequest = path.match(/^\/api\/v2\/revisions\/requests\/([A-Za-z0-9_-]{1,100})$/);
+      if (method === "GET" && manualRevisionRequest) {
+        const actor = local ? "local-engineer" : auth.sessionFromHeaders(req.headers)?.user.id;
+        if (!actor) throw fail(401,"请先登录以查询原保存请求");
+        const saved=savedManualRevision({store,project:PROJECT,actor,key:manualRevisionRequest[1]});
+        if (!saved) return json(res,200,{status:"NOT_FOUND",notice:"当前身份尚未查到这个保存请求；未创建版本或运行。"});
+        await persistDevelopment(); // Confirm pending durable metadata before saying the save is recovered.
+        return json(res,200,{status:"SAVED",revision:saved});
+      }
       if (method === "POST" && path === "/api/v2/revisions") {
         const body = await readBody(req),
           sql = text(body.sql),
           contextId = text(body.contextId, 1, 80);
         if (!getContext(contextId)) throw fail(400, "请选择有效上下文");
-        return json(res, 201, revision(sql, contextId, "MANUAL"));
+        if (Object.keys(body).some(key=>!["sql","contextId","originAgentTaskId"].includes(key))) throw fail(400,"代码保存包含未支持字段");
+        const session=auth.sessionFromHeaders(req.headers), actor=local ? "local-engineer" : session?.user.id;
+        if (!actor) throw fail(401,"请先登录后保存代码");
+        const originAgentTaskId=body.originAgentTaskId === undefined ? undefined : text(body.originAgentTaskId,1,80);
+        if (originAgentTaskId) {
+          const origin=get("agent",originAgentTaskId);
+          requireDurableAgentOwner(origin,req);
+          if (!local && session?.role !== "ADMIN" && origin.submittedBy !== actor) throw fail(403,"无权引用该人工接管来源");
+          if (origin.contextId !== contextId) throw fail(409,"接管来源与代码业务口径不一致");
+        }
+        const key=req.headers["idempotency-key"] === undefined ? undefined : text(req.headers["idempotency-key"],1,100);
+        if (key && !/^[A-Za-z0-9_-]+$/.test(key)) throw fail(400,"代码保存请求编号不合法");
+        const result=saveManualRevision({store,project:PROJECT,actor,key,sql,contextId,originAgentTaskId});
+        return json(res,result.replayed ? 200 : 201,result.revision);
       }
       if (method === "POST" && path === "/api/v2/runs") {
         const body = await readBody(req),

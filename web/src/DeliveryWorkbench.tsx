@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { manualDeliveryPackages } from "./manual-run-recovery";
 import {
   Activity,
   ArrowDownToLine,
@@ -186,6 +187,7 @@ export function DeliveryWorkbench({
   sourceRunId,
   canWrite,
   onBack,
+  lockSource = false,
 }: {
   api: Api;
   runs: Run[];
@@ -193,6 +195,7 @@ export function DeliveryWorkbench({
   sourceRunId?: string;
   canWrite: boolean;
   onBack: () => void;
+  lockSource?: boolean;
 }) {
   const eligible = runs.filter(
     (run) =>
@@ -221,6 +224,7 @@ export function DeliveryWorkbench({
     [busy, setBusy] = useState(""),
     [error, setError] = useState("");
   const ticket = useRef(0);
+  const scopedBundles = (bundles: Bundle[]) => manualDeliveryPackages(bundles, sourceRunId, lockSource);
   const loadPackage = async (id: string) => {
     const request = ++ticket.current;
     const bundle = await api<Bundle>("/delivery/packages/" + id);
@@ -266,15 +270,16 @@ export function DeliveryWorkbench({
           initialMonitor,
         ]) => {
         if (!active) return;
-        setPackages(bundles);
+        const visibleBundles = scopedBundles(bundles);
+        setPackages(visibleBundles);
         setChecks(verifications);
         setReviews(initialReviews);
         setApprovals(initialApprovals);
         setReleases(initialReleases);
         setMonitor(initialMonitor);
-        if (bundles[0]) {
+        if (visibleBundles[0]) {
           const bundle = await api<Bundle>(
-            "/delivery/packages/" + bundles[0].id,
+            "/delivery/packages/" + visibleBundles[0].id,
           );
           if (active) {
             setSelected(bundle);
@@ -323,7 +328,7 @@ export function DeliveryWorkbench({
       });
       setSelected(bundle);
       setCheck(undefined);
-      setPackages(await api<Bundle[]>("/delivery/packages"));
+      setPackages(scopedBundles(await api<Bundle[]>("/delivery/packages")));
     } catch (error) {
       setError((error as Error).message);
     } finally {
@@ -528,7 +533,7 @@ export function DeliveryWorkbench({
               id="delivery-source"
               value={source}
               onChange={(event) => setSource(event.target.value)}
-              disabled={!eligible.length || !!busy}
+              disabled={lockSource || !eligible.length || !!busy}
             >
               {!eligible.length && (
                 <option value="">尚无可用运行，请先完成代码验证</option>

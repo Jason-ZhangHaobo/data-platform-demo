@@ -101,6 +101,26 @@ const waitFor = async (call, id, status) => {
   throw new Error(`交付准备未达到${status}`);
 };
 
+test("HTTP delivery preparation cannot reuse another revision or run of the same task", async () => {
+  for (const change of [{sourceRevisionId:"historical-revision"}, {sourceRunId:"historical-run"}]) {
+    const app = await setup();
+    try {
+      const historical = app.store.create("agent_delivery_task", PROJECT, {
+        sourceAgentTaskId: app.agent.id, sourceRevisionId: app.revision.id,
+        sourceRunId: app.run.id, status:"SUCCEEDED", ...change,
+      });
+      const result = await app.call(`/agent/tasks/${app.agent.id}/prepare-delivery`, {}, "current-source");
+      assert.equal(result.status, 202);
+      assert.notEqual(result.body.id, historical.id);
+      assert.equal(result.body.sourceRevisionId, app.revision.id);
+      assert.equal(result.body.sourceRunId, app.run.id);
+      await waitFor(app.call, result.body.id, "FAILED"); // explicit test-double rejection
+      assert.equal(app.store.get("agent_delivery_task",historical.id,PROJECT).status,"SUCCEEDED");
+      assert.equal(app.store.list("release",PROJECT).length,0);
+    } finally { await app.close(); }
+  }
+});
+
 test("Agent delivery preparation rejects test-double rehearsal without approval or fake E2E", async () => {
   const app = await setup();
   try {

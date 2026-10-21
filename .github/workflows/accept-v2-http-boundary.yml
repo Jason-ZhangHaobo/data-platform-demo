@@ -1,0 +1,98 @@
+name: One-shot V2 signed HTTP boundary acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      authorization:
+        description: Explicitly authorized one temporary signed trigger, at most 20 reads, no model or Spark
+        required: true
+        type: choice
+        options:
+          - NOT_AUTHORIZED
+          - ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS
+        default: NOT_AUTHORIZED
+      expected_code_checksum:
+        description: Previously verified deployed function checksum (no deployment is performed)
+        required: true
+        type: string
+      expected_source_revision:
+        description: Exact main commit whose CI has passed; refuse a moved or unreviewed revision
+        required: true
+        type: string
+      authorization_expires_at:
+        description: UTC expiry of the independently attached temporary policy (YYYY-MM-DDTHH:mm:ssZ)
+        required: true
+        type: string
+      recipient_public_key:
+        description: Base64 DER RSA public key for encrypted private evidence
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: v2-staging-control-mutation
+  cancel-in-progress: false
+jobs:
+  accept:
+    if: github.ref == 'refs/heads/main' && inputs.authorization == 'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: v2-staging
+    env:
+      ALIBABA_CLOUD_REGION_ID: cn-hangzhou
+      V2_DEPLOY_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
+      V2_DEPLOY_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+      V2_FUNCTION_NAME: ${{ vars.V2_FUNCTION_NAME }}
+      V2_EXPECTED_CODE_CHECKSUM: ${{ inputs.expected_code_checksum }}
+      V2_ACCEPTANCE_SOURCE_REVISION: ${{ inputs.expected_source_revision }}
+      V2_AUDIT_RECIPIENT_KEY: ${{ inputs.recipient_public_key }}
+      V2_HTTP_ACCEPTANCE_AUTHORIZED: ${{ inputs.authorization }}
+      V2_HTTP_AUTHORIZATION_EXPIRES_AT: ${{ inputs.authorization_expires_at }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Validate scope before credentials
+        run: |
+          node --input-type=module <<'NODE'
+          import {acceptanceConfig} from './scripts/accept-v2-http-boundary.mjs';
+          import {recipientKey} from './scripts/audit-v2-oidc-readonly.mjs';
+          const config=acceptanceConfig(process.env);
+          recipientKey(process.env.V2_AUDIT_RECIPIENT_KEY);
+          for(const value of [config.account,config.role,config.functionName,process.env.V2_DEPLOY_ROLE_ARN,process.env.V2_DEPLOY_OIDC_PROVIDER_ARN])process.stdout.write(`::add-mask::${value}\n`);
+          NODE
+      - name: Install pinned official signing SDK before obtaining credentials
+        run: python3 -m pip install --disable-pip-version-check --quiet alibabacloud-openapi-util==0.2.4 alibabacloud-tea==0.3.8 alibabacloud-tea-util==0.3.14
+      - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5
+        with:
+          version: '3.5.1'
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ env.V2_DEPLOY_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-http-acceptance
+          role-session-expiration: 900
+          audience: sts.aliyuncs.com
+      - name: Run the bounded acceptance once
+        timeout-minutes: 8
+        run: node scripts/accept-v2-http-boundary.mjs
+      - name: Always reconcile and remove the exact temporary trigger
+        if: always()
+        timeout-minutes: 3
+        run: node scripts/accept-v2-http-boundary.mjs --cleanup
+      - name: Seal checkpoint and results without exposing response bodies
+        if: always()
+        run: node scripts/accept-v2-http-boundary.mjs --seal
+      - name: Retain encrypted acceptance evidence only
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: shuduo-http-acceptance-${{ github.run_id }}
+          path: v2-http-acceptance.sealed.json
+          retention-days: 1
+          if-no-files-found: error

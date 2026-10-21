@@ -31,6 +31,28 @@ test("verification report rejects duplicate client rows, wrong amounts and stale
   assert.equal(developmentVerificationReport(f.agent,f.run,{...f.revision,sql:"SELECT 1"}).status,"NEEDS_ATTENTION");
 });
 
+test("delivery reuse binds the exact revision and run, not just unchanged SQL", async t => {
+  const f = fixture(t);
+  const first = await f.engine.create(f.agent, "original-delivery");
+  assert.equal((await f.engine.create(f.agent, "duplicate-click")).id, first.id);
+  const rerun = f.store.create("run", f.project, {...f.run, id: undefined});
+  // Store.create owns generated ids; never overwrite original records.
+  assert.notEqual(rerun.id, f.run.id);
+  const rerunAgent = {...f.agent, attempts:[{...f.agent.attempts[0], runId:rerun.id}]};
+  const next = await f.engine.create(rerunAgent, "new-run-delivery");
+  assert.notEqual(next.id, first.id);
+  assert.equal(f.store.get("agent_delivery_task", next.id, f.project).sourceRunId, rerun.id);
+  assert.equal((await f.engine.create(rerunAgent, "same-new-run")).id, next.id);
+  const revision = f.store.create("revision", f.project, {...f.revision, id:undefined});
+  const revisedRun = f.store.create("run", f.project, {...f.run, id:undefined, revisionId:revision.id});
+  const revisedAgent = {...f.agent, attempts:[{...f.agent.attempts[0], revisionId:revision.id, runId:revisedRun.id}]};
+  const revised = await f.engine.create(revisedAgent, "new-revision-delivery");
+  assert.notEqual(revised.id, first.id);
+  assert.notEqual(revised.id, next.id);
+  assert.equal(f.store.get("agent_delivery_task", first.id, f.project).sourceRunId, f.run.id);
+  assert.equal(f.submits.length, 0, "preparing a version does not execute Spark or publish");
+});
+
 test("durable delivery persists files before submission and restores the same job after an unconfirmed submit", async t => {
   const f=fixture(t), task=await f.engine.create(f.agent,"create-once");
   assert.equal(f.submits.length,0); assert.equal((await f.engine.create(f.agent,"another-key")).id,task.id);
@@ -87,6 +109,8 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   const a=await login("owner@example.invalid"),b=await login("other@example.invalid");
   assert.equal((await call(`/agent/tasks/${agent.id}/workflow`)).status,403);
   assert.equal((await call(`/agent/tasks/${agent.id}/workflow`,undefined,b)).status,403);
+  assert.equal((await call(`/agent/tasks/${agent.id}/publication`)).status,403);
+  assert.equal((await call(`/agent/tasks/${agent.id}/publication`,undefined,b)).status,403);
   const report=await call(`/agent/tasks/${agent.id}/workflow`,undefined,a);assert.equal(report.status,200);assert.equal(report.body.report.status,"PASSED");assert.equal(report.body.publication.available,false);
   assert.equal((await call(`/agent/tasks/${agent.id}/prepare-delivery`,{}, {cookie:a.cookie})).status,403);
   assert.equal((await call(`/agent/tasks/${agent.id}/prepare-delivery`,{},b)).status,403);
