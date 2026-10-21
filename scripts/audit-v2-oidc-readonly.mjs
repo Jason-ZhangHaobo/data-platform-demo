@@ -3,6 +3,7 @@ import { createCipheriv, createHash, createPublicKey, publicEncrypt, randomBytes
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { extractAliyunErrorCode } from './extract-aliyun-error-code.mjs';
 
 const fail = code => Object.assign(new Error(code), { safeCode: code });
 export function auditConfig(env) {
@@ -19,14 +20,44 @@ export function recipientKey(encoded) {
   if (key.asymmetricKeyType !== 'rsa' || key.asymmetricKeyDetails.modulusLength < 3072) throw fail('AUDIT_RECIPIENT_INVALID');
   return key;
 }
+export function auditErrorDetails(error) {
+  const texts = [String(error?.stdout ?? ''), String(error?.stderr ?? '')];
+  let serviceCode = extractAliyunErrorCode(...texts);
+  // Some CLI releases wrap errors in an envelope. Inspect code fields only;
+  // never retain messages, suggestions, requests, headers or raw responses.
+  for (const text of texts) {
+    if (serviceCode !== 'UNKNOWN_ALIYUN_ERROR') break;
+    try {
+      const queue = [{ value: JSON.parse(text), depth: 0 }];
+      for (let i = 0; i < queue.length && i < 12; i++) {
+        const { value, depth } = queue[i];
+        if (!value || typeof value !== 'object') continue;
+        const code = [value.Code, value.code, value.ErrorCode, value.error_code].find(v => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{1,127}$/.test(v));
+        if (code) { serviceCode = code; break; }
+        if (depth < 2) for (const name of ['error','Error','data','Data','response'])
+          if (value[name] && typeof value[name] === 'object') queue.push({value:value[name],depth:depth+1});
+      }
+    } catch {}
+  }
+  const text = texts.join('\n');
+  const transport = /timeout|timed out|context deadline/i.test(text) ? 'TIMEOUT'
+    : /no such host|name resolution|connection reset|connection refused|TLS handshake|unexpected EOF/i.test(text) ? 'NETWORK'
+    : /unknown flag|flag provided but not defined|unrecognized option|unknown command/i.test(text) ? 'CLI_ARGUMENT'
+    : 'UNCLASSIFIED';
+  return { serviceCode, transport, exitStatus: Number.isInteger(error?.status) ? error.status : null };
+}
 export function classifyAuditError(error) {
   if (['TRIGGER_PAGE_INCOMPLETE', 'TRIGGER_RESPONSE_UNCONFIRMED', 'WRONG_FUNCTION'].includes(error?.safeCode)) return error.safeCode;
   const text = `${error?.stdout ?? ''}\n${error?.stderr ?? ''}\n${error?.message ?? ''}`;
+  const detail = auditErrorDetails(error);
   if (/missing parameter SecurityToken/i.test(text)) return 'MISSING_SECURITY_TOKEN';
-  if (/AccessDenied|Forbidden|not authorized|PermissionDenied|没有权限|无权限/i.test(text)) return 'ACCESS_DENIED';
+  if (/AccessDenied|Forbidden|not authorized|PermissionDenied|没有权限|无权限/i.test(text) || /NoPermission|NoPrivilege|Unauthorized|NotAuthorized|OperationDenied|InsufficientPermission/i.test(detail.serviceCode)) return 'ACCESS_DENIED';
   if (/Expired|InvalidSecurityToken/i.test(text)) return 'CREDENTIAL_UNAVAILABLE';
   if (/FunctionNotFound|ResourceNotFound/i.test(text)) return 'RESOURCE_NOT_FOUND';
   if (error?.signal || error?.code === 'ETIMEDOUT') return 'BOUNDED_TIMEOUT';
+  if (detail.transport === 'TIMEOUT') return 'BOUNDED_TIMEOUT';
+  if (detail.transport === 'NETWORK') return 'TRANSPORT_UNAVAILABLE';
+  if (detail.transport === 'CLI_ARGUMENT') return 'CLI_ARGUMENT_REJECTED';
   return 'READ_UNCONFIRMED';
 }
 export function runReadAudit(config, call) {
@@ -74,7 +105,7 @@ export function runReadAudit(config, call) {
       nameHash: createHash('sha256').update(t.triggerName).digest('hex'),
       type: ['oss', 'http', 'timer'].includes(t.triggerType) ? t.triggerType : 'OTHER',
     })) };
-  } catch (e) { report.triggers = { state: classifyAuditError(e), ...(triggerShape ? { responseShape: triggerShape } : { commandFailed: true, exitStatus: Number.isInteger(e?.status) ? e.status : null }) }; }
+  } catch (e) { report.triggers = { state: classifyAuditError(e), ...(triggerShape ? { responseShape: triggerShape } : { commandFailed: true, ...auditErrorDetails(e) }) }; }
   return report;
 }
 export function sealReport(report, key, provenance) {
