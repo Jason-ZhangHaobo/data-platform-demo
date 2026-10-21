@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {acceptanceConfig,boundaryCases,runHttpAcceptance,cleanupAcceptance} from '../../scripts/accept-v2-http-boundary.mjs';
+import {acceptanceConfig,boundaryCases,runHttpAcceptance,cleanupAcceptance,commandFailure,inlineBodyArguments} from '../../scripts/accept-v2-http-boundary.mjs';
 const env={GITHUB_REF:'refs/heads/main',GITHUB_ACTIONS:'true',GITHUB_RUN_ID:'12345',GITHUB_SHA:'a'.repeat(40),V2_DEPLOY_ROLE_ARN:'acs:ram::111111111111:role/fixture-role',V2_DEPLOY_OIDC_PROVIDER_ARN:'acs:ram::111111111111:oidc-provider/fixture-provider',V2_FUNCTION_NAME:'fixture-control',ALIBABA_CLOUD_REGION_ID:'cn-hangzhou',V2_EXPECTED_CODE_CHECKSUM:'123456',V2_HTTP_ACCEPTANCE_AUTHORIZED:'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS',V2_HTTP_AUTHORIZATION_EXPIRES_AT:'2026-10-21T00:30:00Z'};
 function fixture(options={}){
  env.V2_ACCEPTANCE_SOURCE_REVISION=env.GITHUB_SHA;
@@ -36,7 +36,35 @@ test('acceptance requires main, exact role config, explicit scope and expected d
 test('happy path uses one trigger and 15 bounded read invocations, restores original state, omits secrets',async()=>{
  const f=fixture(),r=await runHttpAcceptance(f.config,f.adapter,f.options);
  assert.equal(r.passed,true);assert.equal(r.requests,15);assert.equal(r.results.length,14);assert.equal(f.creates(),1);assert.deepEqual(f.remaining(),f.original);assert.equal(r.cleanup.triggerAbsent,true);assert.equal(r.modelCalls,0);assert.equal(r.sparkRuns,0);assert(!JSON.stringify(r).includes('SYNTHETIC_SECRET'));assert(!JSON.stringify(f.checkpoint()).includes('SYNTHETIC_SECRET'));
- const recovery=await runHttpAcceptance(f.config,f.adapter,f.options);assert.equal(recovery.recoveryOnly,true);assert.equal(f.creates(),1);assert.equal(recovery.requests,0);
+ const recovery=await runHttpAcceptance(f.config,f.adapter,f.options);assert.equal(recovery.recoveryOnly,true);assert.equal(f.creates(),1);assert.equal(recovery.requests,15);assert.equal(recovery.newRequests,0);
+});
+test('prior attempts remain counted across recovery and insufficient total budget stops before invocation',async()=>{
+ const f=fixture();f.config.previousReads=1;
+ const r=await runHttpAcceptance(f.config,f.adapter,f.options);assert.equal(r.passed,true);assert.equal(r.priorRequests,1);assert.equal(r.requests,16);assert.equal(r.newRequests,15);
+ const blocked=fixture();blocked.config.previousReads=6;let calls=0;blocked.adapter.privateStatus=async()=>{calls++;};
+ const no=await runHttpAcceptance(blocked.config,blocked.adapter,blocked.options);assert.equal(no.failure,'INSUFFICIENT_REMAINING_READ_BUDGET');assert.equal(no.requests,6);assert.equal(no.newRequests,0);assert.equal(calls,0);assert.equal(blocked.creates(),0);
+ for(const value of ['-1','21','1.5','abc',''])assert.throws(()=>acceptanceConfig({...env,V2_HTTP_PREVIOUS_READS:value}));
+});
+test('failure evidence distinguishes CLI service denial, transport and parsing without response text or secrets',async()=>{
+ const args=['fc','POST','/2023-03-30/functions/private-name/invocations'];
+ const error=Object.assign(Error('SYNTHETIC_SECRET'),{status:2,stderr:JSON.stringify({error:{code:'AccessDenied',message:'SYNTHETIC_SECRET'}})});
+ const classified=commandFailure(args,error);assert.equal(classified.safeDiagnostic.serviceCode,'AccessDenied');assert.equal(classified.safeDiagnostic.operation,'PRIVATE_STATUS');assert.equal(classified.safeDiagnostic.jsonParsingFailed,false);
+ const parsing=commandFailure(args,new SyntaxError('private response'), 'PRIVATE_RESPONSE');assert.equal(parsing.safeDiagnostic.jsonParsingFailed,true);assert.equal(parsing.safeDiagnostic.responseBytes,16);
+ const eof=commandFailure(args,{status:2,stderr:JSON.stringify({message:'request to fixture.example failed: EOF'})});assert.equal(eof.safeDiagnostic.transport,'NETWORK');
+ const confirm=commandFailure(args,{status:1,stderr:'confirmation required before this call'});assert.equal(confirm.safeDiagnostic.cliConfirmationRequired,true);
+ assert.equal(commandFailure(args,{code:'ETIMEDOUT'}).safeDiagnostic.processTimeout,true);
+ assert(!JSON.stringify(classified.safeDiagnostic).includes('SYNTHETIC_SECRET'));assert(!JSON.stringify(parsing.safeDiagnostic).includes('PRIVATE_RESPONSE'));assert(!JSON.stringify(classified.safeDiagnostic).includes('private-name'));
+ const f=fixture();f.adapter.privateStatus=async()=>{throw classified;};const r=await runHttpAcceptance(f.config,f.adapter,f.options);
+ assert.equal(r.phase,'PRIVATE_STATUS_BASELINE');assert.equal(r.failureDiagnostic.serviceCode,'AccessDenied');assert.equal(r.requests,1);assert.equal(f.creates(),0);
+});
+test('inline CLI bodies permit only the fixed secret-free status and temporary trigger payloads',async()=>{
+ const call=['fc','POST','/2023-03-30/functions/fixture/invocations'];
+ assert.deepEqual(inlineBodyArguments(call,{operation:'PRIVATE_STATUS_V1'}),['--body','{"operation":"PRIVATE_STATUS_V1"}']);
+ assert.deepEqual(inlineBodyArguments(['fc','GET','/fixture'],undefined),[]);
+ for(const body of [{operation:'PRIVATE_APPLICATION_TASK_V1'},{operation:'PRIVATE_STATUS_V1',secret:'DO_NOT_PASS'},'arbitrary'])assert.throws(()=>inlineBodyArguments(call,body),/INLINE_BODY_NOT_ALLOWLISTED/);
+ assert.throws(()=>inlineBodyArguments(['fc','PUT','/functions/fixture'],{environmentVariables:{SECRET:'DO_NOT_PASS'}}),/INLINE_BODY_NOT_ALLOWLISTED/);
+ const f=fixture(),fc=f.adapter.fc;f.adapter.fc=async(method,path,body)=>{if(method==='POST')assert.equal(inlineBodyArguments(['fc',method,path],body)[0],'--body');return fc(method,path,body);};
+ assert.equal((await runHttpAcceptance(f.config,f.adapter,f.options)).passed,true);
 });
 test('budget, code and existing-trigger drift stop before creating or invoking',async()=>{
  for(const change of ['budget','code','trigger','identity']){

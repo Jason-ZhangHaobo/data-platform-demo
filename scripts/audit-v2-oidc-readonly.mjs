@@ -44,7 +44,7 @@ export function auditErrorDetails(error) {
   const networkTimeoutObserved = /\b(?:i\/o timeout|timed out|context deadline exceeded|timeout awaiting|(?:read|request|connect(?:ion)?) timeout)\b/i.test(text);
   const transport = cliArgumentRejected ? 'CLI_ARGUMENT'
     : networkTimeoutObserved ? 'TIMEOUT'
-    : /no such host|name resolution|connection reset|connection refused|TLS handshake|unexpected EOF/i.test(text) ? 'NETWORK'
+    : /no such host|name resolution|connection reset|connection refused|TLS handshake|unexpected EOF|request to \S{1,300} failed:\s*EOF\b/i.test(text) ? 'NETWORK'
     : 'UNCLASSIFIED';
   return { serviceCode, transport, cliArgumentRejected, networkTimeoutObserved, exitStatus: Number.isInteger(error?.status) ? error.status : null };
 }

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { auditConfig, recipientKey, sealReport } from './audit-v2-oidc-readonly.mjs';
+import { auditConfig, recipientKey, sealReport, auditErrorDetails } from './audit-v2-oidc-readonly.mjs';
 import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
 
 const fail = code => Object.assign(new Error(code), { safeCode:code });
@@ -24,7 +24,24 @@ export function acceptanceConfig(env) {
   requireThat(/^\d{1,30}$/.test(env.V2_EXPECTED_CODE_CHECKSUM ?? ''),'EXPECTED_CODE_REQUIRED');
   requireThat(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT ?? '') && Number.isFinite(Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT)),'AUTHORIZATION_EXPIRY_REQUIRED');
   requireThat(env.V2_HTTP_ACCEPTANCE_AUTHORIZED === 'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS','EXPLICIT_ACCEPTANCE_SCOPE_REQUIRED');
-  return {...auditConfig(env),expectedChecksum:env.V2_EXPECTED_CODE_CHECKSUM,triggerName:`shuduo-http-boundary-${env.GITHUB_RUN_ID}`,authorizationExpiresAt:Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT)};
+  const previousReads=Number(env.V2_HTTP_PREVIOUS_READS ?? '0');
+  requireThat(/^(0|[1-9]\d?)$/.test(env.V2_HTTP_PREVIOUS_READS ?? '0') && previousReads<=20,'PRIOR_READ_COUNT_INVALID');
+  return {...auditConfig(env),expectedChecksum:env.V2_EXPECTED_CODE_CHECKSUM,triggerName:`shuduo-http-boundary-${env.GITHUB_RUN_ID}`,authorizationExpiresAt:Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT),previousReads};
+}
+export function commandFailure(args,error,output='') {
+  const operation=args[0]==='sts'?'IDENTITY_READ':args[0]==='bssopenapi'?'BILL_READ':args[1]==='GET'?'FC_READ':args[1]==='DELETE'?'DELETE_TRIGGER':args[2]?.endsWith('/invocations')?'PRIVATE_STATUS':'CREATE_TRIGGER';
+  const detail=String(error?.stdout ?? '')+'\n'+String(error?.stderr ?? '');
+  return Object.assign(fail('CLOUD_REQUEST_UNCONFIRMED'),{safeDiagnostic:{operation,...auditErrorDetails(error),jsonParsingFailed:error instanceof SyntaxError,responseBytes:Buffer.byteLength(output),processTimeout:error?.code==='ETIMEDOUT',cliConfirmationRequired:/requires confirmation|confirmation required|--yes.*confirm|confirm.*--yes/i.test(detail)}});
+}
+export function inlineBodyArguments(args,body) {
+  if(body===undefined)return [];
+  const status=args[0]==='fc' && args[1]==='POST' && args[2]?.endsWith('/invocations') && canonical(body)===canonical({operation:'PRIVATE_STATUS_V1'});
+  let trigger=false;
+  try {trigger=args[0]==='fc' && args[1]==='POST' && args[2]?.endsWith('/triggers') && Object.keys(body).sort().join(',')==='description,qualifier,triggerConfig,triggerName,triggerType' && /^shuduo-http-boundary-\d{1,20}$/.test(body.triggerName) && body.triggerType==='http' && body.qualifier==='LATEST' && body.description===description && canonical(JSON.parse(body.triggerConfig))===canonical(triggerConfiguration);} catch {}
+  requireThat(status||trigger,'INLINE_BODY_NOT_ALLOWLISTED');
+  // Only these fixed, credential-free payloads may appear in argv. Never use
+  // this transport for function environments, credentials or arbitrary bodies.
+  return ['--body',JSON.stringify(body)];
 }
 export const boundaryCases = Object.freeze([
   {id:'unsigned',method:'GET',path:'/api/v2/status',signed:false},
@@ -67,12 +84,15 @@ export async function cleanupAcceptance(config, adapter, checkpoint) {
 }
 export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{},load=()=>undefined}={}) {
   let checkpoint=load();
-  const report={scope:'SIGNED_HTTP_BOUNDARY_ONLY',passed:false,requests:0,results:[],modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,cleanup:{triggerAbsent:false}};
+  const report={scope:'SIGNED_HTTP_BOUNDARY_ONLY',passed:false,priorRequests:config.previousReads,requests:config.previousReads,newRequests:0,results:[],modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,cleanup:{triggerAbsent:false}};
   try {
+    report.phase='IDENTITY';
     const identity=await adapter.identity();
     verifyIdentity(config,identity);
-    if (checkpoint) { report.recoveryOnly=true;report.cleanup=await cleanupAcceptance(config,adapter,checkpoint);return report; }
+    if (checkpoint) { report.recoveryOnly=true;report.priorRequests=report.requests=checkpoint.requests;report.cleanup=await cleanupAcceptance(config,adapter,checkpoint);return report; }
+    requireThat(report.requests+boundaryCases.length+1<=20,'INSUFFICIENT_REMAINING_READ_BUDGET');
     requireThat(config.authorizationExpiresAt-now()>=600000,'AUTHORIZATION_WINDOW_TOO_SHORT');
+    report.phase='FUNCTION_AND_TRIGGER_READ';
     const before=await adapter.fc('GET',''), env=before.environmentVariables ?? {};
     requireThat(before.functionName===config.functionName && String(before.codeChecksum)===config.expectedChecksum,'FUNCTION_CODE_DRIFT');
     requireThat(env.V2_FC_PUBLIC_HTTP_ENABLED!=='true' && env.V2_PROVISIONING_ONLY==='true' && env.V2_PRIVATE_SMOKE_ENABLED==='true','PRIVATE_GATE_DRIFT');
@@ -80,16 +100,18 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
     const original=await checkedList(adapter,config);
     requireThat(original.length===2 && original.every(t=>t.triggerType==='oss'),'ORIGINAL_TRIGGER_BOUNDARY_CHANGED');
     const cycle=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date(now()));
+    report.phase='BILLING';
     const bill=verifyV2MonthlyBillPages(await adapter.billPages(cycle),199);
     requireThat(bill.ok && bill.billingCycle===cycle,'BUDGET_NOT_VERIFIED');
     report.billingCycle=cycle;report.billCnyBefore=bill.spendCny;report.reservedCny=1;
     requireThat(config.authorizationExpiresAt-now()>=600000,'AUTHORIZATION_WINDOW_TOO_SHORT');
-    report.requests++;
+    report.phase='PRIVATE_STATUS_BASELINE';report.requests++;report.newRequests++;
     const baseline=await adapter.privateStatus();
     requireThat(baseline?.ingress?.mode==='FC_CONTROL_PATH' && baseline.ingress.publicHttpEnabled===false,'PRIVATE_CONTROL_BASELINE_FAILED');
     requireThat(config.authorizationExpiresAt-now()>=600000,'AUTHORIZATION_WINDOW_TOO_SHORT');
     checkpoint={targetHash:targetHash(config),triggerName:config.triggerName,functionHash:functionHash(before),originalTriggersHash:triggerHash(original),startedAt:now(),requests:report.requests};
     save(checkpoint); // Must be durable before the first resource mutation.
+    report.phase='CREATE_TRIGGER';
     await adapter.fc('POST','/triggers',{triggerName:config.triggerName,triggerType:'http',qualifier:'LATEST',description,triggerConfig:JSON.stringify(triggerConfiguration)});
     const created=(await checkedList(adapter,config)).find(t=>t.triggerName===config.triggerName);
     requireThat(created && ownsTrigger(created,config),'CREATED_TRIGGER_UNCONFIRMED');
@@ -97,15 +119,15 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
     requireThat(endpoint.protocol==='https:' && endpoint.hostname.endsWith(`.${config.region}.fcapp.run`) && !endpoint.username && !endpoint.password && !endpoint.port && endpoint.pathname==='/' && !endpoint.search && !endpoint.hash,'TRIGGER_ENDPOINT_INVALID');
     for (const probe of boundaryCases) {
       requireThat(report.requests<20 && now()-checkpoint.startedAt<600000 && now()<config.authorizationExpiresAt-300000,'ACCEPTANCE_LIMIT_REACHED');
-      checkpoint.requests=++report.requests; save(checkpoint);
+      report.phase='HTTP_'+probe.id;report.newRequests++;checkpoint.requests=++report.requests; save(checkpoint);
       const value=await adapter.probe(endpoint.origin,probe);
       const result={id:probe.id,status:value.status,code:typeof value.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(value.code)?value.code:'UNCONFIRMED',responseHash:value.responseHash,bytes:value.bytes};
       report.results.push(result);
       requireThat(value.privateProtocol!==true,'PRIVATE_OPERATION_EXPOSED');
       requireThat(probe.signed===false ? [401,403].includes(value.status) : value.status===404 && value.code==='INGRESS_DENIED','HTTP_BOUNDARY_NOT_VERIFIED');
     }
-    report.passed=true;
-  } catch(e) { report.failure=e.safeCode ?? 'ACCEPTANCE_UNCONFIRMED'; }
+    report.passed=true;report.phase='HTTP_CHECKS_COMPLETE';
+  } catch(e) { report.failure=e.safeCode ?? 'ACCEPTANCE_UNCONFIRMED';if(e.safeDiagnostic)report.failureDiagnostic=e.safeDiagnostic; }
   finally {
     if (checkpoint && !report.recoveryOnly) {
       try { report.cleanup=await cleanupAcceptance(config,adapter,checkpoint); }
@@ -119,13 +141,14 @@ const directory='.runtime/http-boundary-acceptance';
 const checkpointPath=`${directory}/checkpoint.json`, reportPath=`${directory}/report.json`;
 function adapterFor(config,env) {
   const call=(args,body) => {
+    let output='';
     try {
-      const out=execFileSync('aliyun',[...args,'--region',config.region,'--connect-timeout','5','--read-timeout','40','--retry-count','0',...(body===undefined?[]:['--body-file','/dev/stdin'])],{
-        input:body===undefined?undefined:JSON.stringify(body),encoding:'utf8',timeout:50000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe'],
+      output=execFileSync('aliyun',[...args,'--region',config.region,'--connect-timeout','5','--read-timeout','40','--retry-count','0',...inlineBodyArguments(args,body)],{
+        encoding:'utf8',timeout:50000,maxBuffer:2*1024*1024,stdio:['ignore','pipe','pipe'],
         env:{...env,ALIBABA_CLOUD_IGNORE_PROFILE:'TRUE',ALIBABA_CLOUD_PROFILE_MODE:'StsToken'},
       });
-      let value=JSON.parse(out||'{}');if(typeof value==='string')value=JSON.parse(value);return value;
-    } catch {throw fail('CLOUD_REQUEST_UNCONFIRMED');}
+      let value=JSON.parse(output||'{}');if(typeof value==='string')value=JSON.parse(value);return value;
+    } catch(e) {if(e.safeCode)throw e;throw commandFailure(args,e,output);}
   };
   const base=`/2023-03-30/functions/${config.functionName}`;
   return {
