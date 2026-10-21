@@ -23,6 +23,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent trace --id INTENT_ID
   shuduo agent journey --id AGENT_TASK_ID
   shuduo agent workflow --id AGENT_TASK_ID
+  shuduo agent request --request-id ORIGINAL_REQUEST_ID
   shuduo services task-evidence --task-id AGENT_TASK_ID --package-digest SHA256
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-delivery --id AGENT_TASK_ID
@@ -375,6 +376,11 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         `/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/journey`,
       );
+    else if (resource === "agent" && action === "request") {
+      const key=required(parsed.options,"request_id");
+      if(!/^[A-Za-z0-9_-]{1,100}$/.test(key))throw Error("原请求编号格式不合法");
+      result=await client.request(`/agent/requests/${encodeURIComponent(key)}`);
+    }
     else if (resource === "agent" && action === "workflow")
       result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
     else if (resource === "agent" && action === "publication")

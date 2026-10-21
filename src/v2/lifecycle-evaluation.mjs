@@ -83,7 +83,9 @@ const references = (stage, ids) => Array.isArray(stage?.evidenceIds) &&
 const sha256 = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const timestamp = value => typeof value === "string" && Number.isFinite(Date.parse(value));
 
-export function inspectLifecycleOutcome(definition, outcome) {
+export function inspectLifecycleOutcome(definition, outcome, {modelEvidenceMode="FROZEN_REPLAY"}={}) {
+  if(!["FROZEN_REPLAY","LIVE_NEW_TASK"].includes(modelEvidenceMode))throw new Error("代码证据模式不受支持");
+  const fresh=modelEvidenceMode==="LIVE_NEW_TASK";
   const stages = outcome?.stages ?? {}, issues = [];
   const check = (stage, condition) => {
     if (stages[stage]?.status !== "PASSED" || !condition) issues.push(stage);
@@ -100,8 +102,9 @@ export function inspectLifecycleOutcome(definition, outcome) {
     requirement?.requirementSha256 === hash(definition.requirement) && requirement?.liveModel === true);
   check("codeAndDebug", references(code, [definition.original.revisionId, definition.original.runId, code?.currentRevisionId, code?.currentSparkRunId]) &&
     code?.sqlHash === definition.code.sqlHash && code?.attemptCount === definition.original.attemptCount &&
-    code?.regressionCount === 5 && code?.importedFromFrozenLiveEvidence === true &&
-    /^\d+\.\d+(?:\.\d+)?$/.test(code?.currentSparkVersion ?? "") && code?.currentSparkRunId !== definition.original.runId);
+    code?.regressionCount === 5 && code?.importedFromFrozenLiveEvidence === !fresh &&
+    /^\d+\.\d+(?:\.\d+)?$/.test(code?.currentSparkVersion ?? "") &&
+    (fresh?code?.currentSparkRunId===definition.original.runId&&code?.currentRevisionId===definition.original.revisionId:code?.currentSparkRunId !== definition.original.runId));
   check("scheduleFiles", sha256(digest) && references(schedule, [packageId]) &&
     Array.isArray(schedule?.files) &&
     ["schedule.json", "calendar.json", "manifest"].every(name => schedule?.files?.includes(name)));
@@ -110,7 +113,8 @@ export function inspectLifecycleOutcome(definition, outcome) {
     Array.isArray(deployment?.files) &&
     deployment?.rehearsalStatus === "SUCCEEDED" && ["deployment.json", "main.sql", "tests.sql"].every(name => deployment?.files?.includes(name)));
   check("engineerReview", review?.packageDigest === digest && sha256(digest) &&
-    references(review, [review?.reviewId, verificationId]) && review?.evaluatorAttestation === true && review?.reviewScope === "LOCAL_TEST_RELEASE");
+    references(review, [review?.reviewId, verificationId]) && review?.reviewScope === "LOCAL_TEST_RELEASE" &&
+    (fresh ? review?.evaluatorAttestation===false&&["code","assertions","deliveryFiles","localScope"].every(id=>review?.attestations?.[id]===true) : review?.evaluatorAttestation===true));
   const batches = release?.batches;
   const batchIds = Array.isArray(batches) ? batches.map(batch => batch?.id) : [];
   const validBatches = Array.isArray(batches) && batches.length === 2 && new Set(batchIds).size === 2 &&
