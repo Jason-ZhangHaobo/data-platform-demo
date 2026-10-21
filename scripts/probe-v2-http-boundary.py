@@ -4,8 +4,29 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import sys
+from email.utils import format_datetime
 from urllib.parse import urlsplit, parse_qsl
+
+
+def response_evidence(status, raw):
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    code = next((parsed[key] for key in ('errorCode', 'ErrorCode', 'code', 'Code') if isinstance(parsed.get(key), str)), '')
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.-]{0,79}', code):
+        code = 'UNCONFIRMED'
+    message = next((parsed[key] for key in ('errorMessage', 'ErrorMessage', 'message', 'Message') if isinstance(parsed.get(key), str)), '')
+    # FC documents HTTP 400 for MissingRequiredHeader. Recognize only the
+    # missing Authorization header, never a generic 400 or malformed request.
+    missing_authorization = bool(re.fullmatch(r'''required HTTP header ["'`]?Authorization["'`]? was not specified\.?''', message.strip(), re.IGNORECASE))
+    return {'status': status, 'code': code, 'bytes': len(raw), 'responseHash': hashlib.sha256(raw).hexdigest(),
+            'authenticationRejected': status == 400 and code == 'MissingRequiredHeader' and missing_authorization,
+            'privateProtocol': b'shuduo-v2-private-smoke' in raw}
 
 
 def main():
@@ -22,6 +43,11 @@ def main():
         raise ValueError('INVALID_PROBE')
     body = b'{"operation":"PRIVATE_STATUS_V1"}' if method == 'POST' else b''
     headers = {'host': endpoint.hostname, 'content-type': 'application/octet-stream', 'content-length': str(len(body))}
+    if probe.get('signed', True) is False:
+        # Supply valid timestamps but deliberately omit credentials/signature,
+        # so the negative control does not merely fail for a missing date.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        headers.update({'date': format_datetime(now, usegmt=True), 'x-acs-date': now.strftime('%Y-%m-%dT%H:%M:%SZ')})
     if probe.get('signed', True):
         aid, secret, token = (os.environ[name] for name in ('ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_SECURITY_TOKEN'))
         headers.update({'x-acs-date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'x-acs-security-token': token})
@@ -41,16 +67,7 @@ def main():
         raw = response.read(65537)
         if len(raw) > 65536:
             raise ValueError('RESPONSE_TOO_LARGE')
-        try:
-            parsed = json.loads(raw)
-        except (ValueError, UnicodeDecodeError):
-            parsed = {}
-        if not isinstance(parsed, dict):
-            parsed = {}
-        code = parsed.get('code', parsed.get('Code', ''))
-        if not isinstance(code, str) or not 0 < len(code) <= 80 or not all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789' for c in code):
-            code = 'UNCONFIRMED'
-        print(json.dumps({'status': response.status, 'code': code, 'bytes': len(raw), 'responseHash': hashlib.sha256(raw).hexdigest(), 'privateProtocol': parsed.get('protocol') == 'shuduo-v2-private-smoke/v1' or b'shuduo-v2-private-smoke' in raw}))
+        print(json.dumps(response_evidence(response.status, raw)))
     finally:
         connection.close()
 

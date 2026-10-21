@@ -1,6 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
+test('gateway evidence recognizes documented missing Authorization, not arbitrary HTTP 400 or date errors',()=>{
+ const source=String.raw`
+import json, runpy
+evidence=runpy.run_path('scripts/probe-v2-http-boundary.py',run_name='fixture')['response_evidence']
+for code_key, message_key in [('errorCode','errorMessage'),('ErrorCode','ErrorMessage'),('code','message'),('Code','Message')]:
+    value=evidence(400,json.dumps({code_key:'MissingRequiredHeader',message_key:'required HTTP header "Authorization" was not specified'}).encode())
+    assert value['authenticationRejected'] is True and value['code']=='MissingRequiredHeader'
+    assert 'message' not in value and 'errorMessage' not in value
+for status, code, message in [(400,'InvalidArgument','required HTTP header Authorization was not specified'),(400,'MissingRequiredHeader','required HTTP header Date was not specified'),(400,'MissingRequiredHeader','SYNTHETIC_SECRET'),(500,'MissingRequiredHeader','required HTTP header Authorization was not specified')]:
+    value=evidence(status,json.dumps({'errorCode':code,'errorMessage':message}).encode())
+    assert value['authenticationRejected'] is False
+    assert 'SYNTHETIC_SECRET' not in json.dumps(value)
+assert evidence(400,b'not json')['authenticationRejected'] is False
+assert evidence(200,b'shuduo-v2-private-smoke/v1')['privateProtocol'] is True
+print('GATEWAY_ERROR_CLASSIFICATION_PASS')
+`;
+ assert.equal(execFileSync('python3',['-c',source],{encoding:'utf8',timeout:10000,stdio:['ignore','pipe','pipe']}).trim(),'GATEWAY_ERROR_CLASSIFICATION_PASS');
+});
 test('wire probe preserves raw path and duplicate headers, signs with STS and never logs a response body',()=>{
  const source=String.raw`
 import contextlib, io, json, os, runpy, sys, types

@@ -26,7 +26,9 @@ export function acceptanceConfig(env) {
   requireThat(env.V2_HTTP_ACCEPTANCE_AUTHORIZED === 'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS','EXPLICIT_ACCEPTANCE_SCOPE_REQUIRED');
   const previousReads=Number(env.V2_HTTP_PREVIOUS_READS ?? '0');
   requireThat(/^(0|[1-9]\d?)$/.test(env.V2_HTTP_PREVIOUS_READS ?? '0') && previousReads<=20,'PRIOR_READ_COUNT_INVALID');
-  return {...auditConfig(env),expectedChecksum:env.V2_EXPECTED_CODE_CHECKSUM,triggerName:`shuduo-http-boundary-${env.GITHUB_RUN_ID}`,authorizationExpiresAt:Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT),previousReads};
+  const restoreRunId=env.V2_HTTP_RESTORE_RUN_ID ?? '',restoreAuthorized=env.V2_HTTP_RESTORE_AUTHORIZED==='RECREATE_SAME_TRIGGER_ONCE';
+  requireThat(restoreRunId ? /^\d{1,20}$/.test(restoreRunId)&&restoreAuthorized&&previousReads>0 : !restoreAuthorized,'TRIGGER_RESTORE_NOT_AUTHORIZED');
+  return {...auditConfig(env),expectedChecksum:env.V2_EXPECTED_CODE_CHECKSUM,triggerName:`shuduo-http-boundary-${restoreRunId || env.GITHUB_RUN_ID}`,authorizationExpiresAt:Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT),previousReads,restoreRunId:restoreRunId || undefined};
 }
 export function commandFailure(args,error,output='') {
   const operation=args[0]==='sts'?'IDENTITY_READ':args[0]==='bssopenapi'?'BILL_READ':args[1]==='GET'?'FC_READ':args[1]==='DELETE'?'DELETE_TRIGGER':args[2]?.endsWith('/invocations')?'PRIVATE_STATUS':'CREATE_TRIGGER';
@@ -84,7 +86,7 @@ export async function cleanupAcceptance(config, adapter, checkpoint) {
 }
 export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{},load=()=>undefined}={}) {
   let checkpoint=load();
-  const report={scope:'SIGNED_HTTP_BOUNDARY_ONLY',passed:false,priorRequests:config.previousReads,requests:config.previousReads,newRequests:0,results:[],modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,cleanup:{triggerAbsent:false}};
+  const report={scope:'SIGNED_HTTP_BOUNDARY_ONLY',passed:false,restoreRunId:config.restoreRunId,priorRequests:config.previousReads,requests:config.previousReads,newRequests:0,results:[],modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,cleanup:{triggerAbsent:false}};
   try {
     report.phase='IDENTITY';
     const identity=await adapter.identity();
@@ -121,10 +123,10 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
       requireThat(report.requests<20 && now()-checkpoint.startedAt<600000 && now()<config.authorizationExpiresAt-300000,'ACCEPTANCE_LIMIT_REACHED');
       report.phase='HTTP_'+probe.id;report.newRequests++;checkpoint.requests=++report.requests; save(checkpoint);
       const value=await adapter.probe(endpoint.origin,probe);
-      const result={id:probe.id,status:value.status,code:typeof value.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(value.code)?value.code:'UNCONFIRMED',responseHash:value.responseHash,bytes:value.bytes};
+      const result={id:probe.id,status:value.status,code:typeof value.code==='string'&&/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(value.code)?value.code:'UNCONFIRMED',authenticationRejected:value.authenticationRejected===true,responseHash:value.responseHash,bytes:value.bytes};
       report.results.push(result);
       requireThat(value.privateProtocol!==true,'PRIVATE_OPERATION_EXPOSED');
-      requireThat(probe.signed===false ? [401,403].includes(value.status) : value.status===404 && value.code==='INGRESS_DENIED','HTTP_BOUNDARY_NOT_VERIFIED');
+      requireThat(probe.signed===false ? [401,403].includes(value.status) || (value.status===400 && value.code==='MissingRequiredHeader' && value.authenticationRejected===true) : value.status===404 && value.code==='INGRESS_DENIED','HTTP_BOUNDARY_NOT_VERIFIED');
     }
     report.passed=true;report.phase='HTTP_CHECKS_COMPLETE';
   } catch(e) { report.failure=e.safeCode ?? 'ACCEPTANCE_UNCONFIRMED';if(e.safeDiagnostic)report.failureDiagnostic=e.safeDiagnostic; }
