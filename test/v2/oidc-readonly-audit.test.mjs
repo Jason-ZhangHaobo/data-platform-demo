@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, privateDecrypt, constants, createDecipheriv } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { auditConfig, recipientKey, runReadAudit, classifyAuditError, sealReport } from '../../scripts/audit-v2-oidc-readonly.mjs';
+import { auditConfig, recipientKey, runReadAudit, classifyAuditError, auditErrorDetails, sealReport } from '../../scripts/audit-v2-oidc-readonly.mjs';
 const env = { V2_DEPLOY_ROLE_ARN: 'acs:ram::111122223333:role/synthetic-deployer', V2_DEPLOY_OIDC_PROVIDER_ARN: 'acs:ram::111122223333:oidc-provider/synthetic', V2_FUNCTION_NAME: 'synthetic-control', ALIBABA_CLOUD_REGION_ID: 'cn-hangzhou' };
 const identity = { AccountId: '111122223333', Arn: 'acs:ram::111122223333:assumed-role/synthetic-deployer/session' };
 const config = auditConfig(env);
@@ -62,4 +62,18 @@ test('pagination follows only bounded same-function GETs and never labels a part
   assert.equal(calls[3][2],'/2023-03-30/functions/synthetic-control/triggers?nextToken=a%2B%2F%3D');
   let n=0;const bounded=runReadAudit(config,()=>++n===1?identity:n===2?{functionName:'synthetic-control'}:{triggers:[],nextToken:String(n)});
   assert.equal(n,5);assert.equal(bounded.triggers.state,'TRIGGER_PAGE_INCOMPLETE');
+});
+test('CLI failures retain bounded service codes and transport categories, never raw details',()=>{
+  const secret='synthetic-secret-must-not-appear';
+  for(const stderr of [
+    `ERROR: SDK.ServerError\nErrorCode: NoPermission\nMessage: ${secret}`,
+    JSON.stringify({error:{code:'NoPermission',message:secret}}),
+    JSON.stringify({data:{Error:{Code:'NoPermission',Message:secret}}}),
+  ]){
+    const e={stderr,status:1};assert.equal(auditErrorDetails(e).serviceCode,'NoPermission');assert.equal(classifyAuditError(e),'ACCESS_DENIED');assert(!JSON.stringify(auditErrorDetails(e)).includes(secret));
+  }
+  assert.equal(classifyAuditError({stderr:'dial tcp: context deadline exceeded',status:1}),'BOUNDED_TIMEOUT');
+  assert.equal(classifyAuditError({stderr:'unknown flag: synthetic-option',status:1}),'CLI_ARGUMENT_REJECTED');
+  assert.equal(classifyAuditError({stderr:'connection reset by peer',status:1}),'TRANSPORT_UNAVAILABLE');
+  assert.equal(auditErrorDetails({stderr:JSON.stringify({error:{code:'bad/code',message:secret}})}).serviceCode,'UNKNOWN_ALIYUN_ERROR');
 });
