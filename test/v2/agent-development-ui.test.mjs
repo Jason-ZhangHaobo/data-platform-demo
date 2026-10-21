@@ -9,7 +9,11 @@ test("development workspace declares bounded scope and preserves explicit recove
   assert.match(ui, /expectedVersion: current\.version/);
   assert.match(ui, /MODEL_OUTCOME_UNKNOWN" && !confirmRetry/);
   assert.match(ui, /confirmModelRetry: true/);
-  assert.match(ui, /idempotencyKey: pendingSubmission\.current\.key/);
+  // The creation path is delegated to the tested submission controller;
+  // key/body preservation and unknown replies have behavioral coverage in
+  // agent-submission.test.mjs instead of depending on the old ref name.
+  assert.match(ui, /controller\.submit\(body\)/);
+  assert.doesNotMatch(ui, /api\s*<Task>\s*\(\s*["']\/agent\/tasks["']/);
   assert.match(ui, /beforeunload/);
   assert.match(ui, /token !== epoch\.current/);
   assert.doesNotMatch(ui, /localStorage|sessionStorage/);

@@ -53,6 +53,7 @@ import {
 import "./styles.css";
 import { initialPythonCode } from "./python-template";
 import { developmentRunLog } from "./run-log";
+import {agentDevelopmentReadiness} from "./agent-submission";
 import type { AuthSession } from "./AuthDialog";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const DataServicesWorkbench = lazy(async () => ({ default: (await import("./DataServicesWorkbench")).DataServicesWorkbench }));
@@ -337,7 +338,7 @@ async function api<T>(
   } catch {
     throw new Error("服务响应无法解析，操作结果尚未确认；输入内容已保留。");
   }
-  if (!response.ok) throw new Error(value.message ?? "请求失败");
+  if (!response.ok) throw Object.assign(new Error(value?.message ?? "请求失败"),{status:response.status,...(typeof value?.code==="string"&&/^[A-Z0-9_]{1,80}$/.test(value.code)?{code:value.code}:{})});
   return value;
 }
 function cookieValue(name: string) {
@@ -791,7 +792,7 @@ function App() {
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{privateServicesPreview && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>setAgentWorkspaceMode("services")}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
-          {agentWorkspaceMode === "services" && privateServicesPreview ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={canWrite} privateCloud sourceAgentTaskId={new URLSearchParams(window.location.search).get("task")??undefined} /> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} ready={Boolean(status?.agentDevelopment?.durableEnabled)} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} loading={!status} privatePreview={privatePreview} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={privateServicesPreview ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
+          {agentWorkspaceMode === "services" && privateServicesPreview ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={canWrite} privateCloud sourceAgentTaskId={new URLSearchParams(window.location.search).get("task")??undefined} /> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} ready={agentDevelopmentReadiness(status).ready} readinessReason={agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} loading={!status} privatePreview={privatePreview} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={privateServicesPreview ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite}
