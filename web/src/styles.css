@@ -7112,6 +7112,22 @@ kbd {
   color: #2e6044;
   font-size: 10px;
 }
+.ops-e2e-v2.pending {
+  border-color: #e3d7c1;
+  background: #fbf8f2;
+}
+.ops-e2e-v2.pending .ops-e2e-boundary-v2,
+.ops-e2e-v2.pending .ops-e2e-boundary-v2 strong,
+.ops-e2e-v2.pending .ops-e2e-score-v2 strong {
+  color: #87632e;
+}
+.ops-e2e-v2 details {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ops-e2e-v2 summary { cursor: pointer; }
 .ops-domains-v2 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

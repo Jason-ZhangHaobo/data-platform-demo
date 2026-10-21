@@ -12,6 +12,7 @@ import {
   lifecycleStages,
   summarizeLifecycleEvaluation,
   validateFrozenCodeEvidence,
+  inspectLifecycleOutcome,
 } from "../src/v2/lifecycle-evaluation.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), ".."),
@@ -181,6 +182,7 @@ try {
         run.engine !== "Apache Spark" ||
         !run.mainSqlExecuted ||
         !run.validation?.passed ||
+        run.validation.regressions?.length !== 5 ||
         run.validation.regressions?.some((check) => !check.passed)
       )
         throw new Error(`当前Spark代码执行未通过：${run.status}`);
@@ -194,9 +196,10 @@ try {
         ],
         sqlHash: revision.hash,
         attemptCount: item.original.attemptCount,
-        regressionCount: item.execution.validation.regressions.length,
+        regressionCount: run.validation.regressions.length,
         importedFromFrozenLiveEvidence: true,
         currentSparkRunId: run.id,
+        currentRevisionId: revision.id,
         currentSparkVersion: run.engineVersion,
       };
 
@@ -233,6 +236,7 @@ try {
             ? "PASSED"
             : "FAILED",
         evidenceIds: [packageItem.id],
+        packageDigest: packageItem.digest,
         files: fileNames.filter((name) =>
           ["deployment.json", "main.sql", "tests.sql"].includes(name),
         ),
@@ -324,6 +328,7 @@ try {
         evidenceIds: [review.id, verification.id],
         packageDigest: review.packageDigest,
         verificationId: review.verificationId,
+        reviewId: review.id,
         reviewScope: review.scope,
         evaluatorAttestation: true,
         disclosure:
@@ -414,7 +419,8 @@ try {
             value.schedulerTriggered !== true ||
             value.clockMode !== "WALL_CLOCK_TIMER" ||
             value.engine !== "Apache Spark" ||
-            !value.validation?.passed,
+            !value.validation?.passed || value.validation.regressions?.length !== 5 ||
+            value.validation.regressions.some(check => !check.passed),
         )
       )
         throw new Error("本机上线批次缺少实际Spark/调度/断言证据");
@@ -422,10 +428,16 @@ try {
         status: "PASSED",
         evidenceIds: [review.id, approval.id, release.id, ...releaseRuns.map((value) => value.id)],
         packageDigest: packageItem.digest,
+        approvalId: approval.id,
         approvalBound: approval.packageDigest === packageItem.digest,
         schedulerTriggered: true,
         actualSparkBatchCount: releaseRuns.length,
+        batches: releaseRuns.map(value => ({id:value.id,releaseId:value.releaseId,packageId:value.packageId,
+          packageDigest:value.packageDigest,status:value.status,engine:value.engine,schedulerTriggered:value.schedulerTriggered,
+          clockMode:value.clockMode,validationPassed:value.validation?.passed === true,
+          scheduledTriggerAt:value.scheduledTriggerAt,startedAt:value.startedAt,finishedAt:value.finishedAt})),
         deploymentScope: "LOCAL_ACTUAL",
+        activatedAt: healthy.activatedAt,
       };
       stages.postReleaseMonitoring = {
         status:
@@ -439,13 +451,14 @@ try {
         health: healthy.health,
         successfulRunCount: healthy.successfulRunCount,
         openAlertCount: healthy.openAlertCount,
+        successfulEvents: monitorEvents.filter(event => event.type === "BATCH_SUCCEEDED").map(event => ({
+          id:event.id,type:event.type,releaseId:event.releaseId,releaseRunId:event.releaseRunId,packageDigest:event.packageDigest,observedAt:event.observedAt,
+        })),
       };
       outcome.scheduledBatchCount = releaseRuns.length;
-      outcome.localFullLifecycleE2E = lifecycleStages.every(
-        (stage) => stages[stage].status === "PASSED",
-      );
       outcome.packageId = packageItem.id;
       outcome.releaseId = release.id;
+      outcome.localFullLifecycleE2E = inspectLifecycleOutcome(item,{...outcome,localFullLifecycleE2E:true}).passed;
     } catch (error) {
       outcome.error = error.message;
       const firstNotRun = lifecycleStages.find(
@@ -467,6 +480,8 @@ try {
     );
   }
   const summary = persist();
+  const scopePassed=requestedLimit===evidence.cases.length ? summary.targetMet : outcomes.every(outcome=>outcome.localFullLifecycleE2E);
+  if (!scopePassed) process.exitCode=1;
   process.stdout.write(
     JSON.stringify(
       {
