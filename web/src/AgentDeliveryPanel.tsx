@@ -57,7 +57,7 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
   };
   const readConsumption=async(value=workflow)=>{
     const id=taskId,digest=value?.package?.digest,sequence=++consumptionEpoch.current;
-    if(!digest || value?.publication.scope!=="PRIVATE_CLOUD_TEST")return;
+    if(!digest || !["PRIVATE_CLOUD_TEST","LOCAL_TEST_RELEASE"].includes(value?.publication.scope??""))return;
     try{
       const result=await api<TaskConsumption>(`/data-services/task-evidence?agent_task_id=${encodeURIComponent(id)}&package_digest=${encodeURIComponent(digest)}`);
       if(alive.current&&activeTask.current===id&&sequence===consumptionEpoch.current){setConsumption(result);setConsumptionError("");}
@@ -167,7 +167,7 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
         {consumptionError&&<p role="status">{consumptionError}</p>}
         {journey.steps.find(step=>step.id==="services")?.state==="DONE"&&<p role="status">组合接口的消费证据已通过。DAPI的单独授权调用记录独立展示，不影响已通过的XAPI组合查询。</p>}
         {consumption&&<><p>{consumption.notice}</p><small>对照时间：{consumption.checkedAt}；这是历史消费记录，不是实时授权保证。</small>{!current&&<p>编辑器或当前查看的批次已变化；下面证据仅供原版本参考。</p>}<ul>{consumption.services.map(s=><li key={s.serviceId}><strong>{s.serviceType} · {s.name}</strong> · 版本 {s.versionId.slice(0,8)} · {s.status==="VERIFIED"?"历史消费证据对照通过":s.status==="NEEDS_ATTENTION"?"需要处理":"待实际授权调用"}<p>{s.notice}</p>{s.call&&<small>调用 {s.call.callId.slice(0,8)} · {s.call.rowCount}行 · 摘要 {s.call.resultHash.slice(0,12)} · {s.call.applicationStatus==="REVOKED"?"应用已撤销，历史记录保留":"对照时应用有效"}</small>}</li>)}</ul>{consumption.truncated&&<p>证据数量超过本次上限，不能标记整个消费阶段完成。</p>}<EvidenceDownload name={`consumption-${taskId.slice(0,8)}.json`} value={consumption} request={{kind:"consumption",id:taskId,digest:consumption.packageDigest}}>下载消费对照证据</EvidenceDownload></>}
-        {cloud&&workflow.package&&<button className="button" disabled={working} onClick={()=>void readConsumption()}>刷新消费证据</button>}
+        {workflow.package&&<button className="button" disabled={working} onClick={()=>void readConsumption()}>刷新消费证据</button>}
         {onOpenServices ? <><button className="button" disabled={dirty || working || handoffBlocked} onClick={onOpenServices}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>
     </>}
   </section>;
