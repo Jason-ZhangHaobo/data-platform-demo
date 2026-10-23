@@ -6,7 +6,6 @@ import json
 import os
 import re
 import sys
-from email.utils import format_datetime
 from urllib.parse import urlsplit, parse_qsl
 
 
@@ -24,7 +23,20 @@ def response_evidence(status, raw):
     # FC documents HTTP 400 for MissingRequiredHeader. Recognize only the
     # missing Authorization header, never a generic 400 or malformed request.
     missing_authorization = bool(re.fullmatch(r'''required HTTP header ["'`]?Authorization["'`]? was not specified\.?''', message.strip(), re.IGNORECASE))
+    # Fixed diagnostic categories only; never persist a message, header value,
+    # URL, credential or a private application body. Categories do not relax
+    # the acceptance predicate for InvalidArgument responses.
+    diagnostic = 'UNCLASSIFIED'
+    if re.search(r'(invalid|malformed|incorrect|parse|format).{0,50}(date|timestamp)|(date|timestamp).{0,50}(invalid|malformed|incorrect|parse|format)', message, re.IGNORECASE):
+        diagnostic = 'INVALID_TIMESTAMP'
+    elif re.search(r'(signature|signedheaders).{0,50}(invalid|mismatch|incorrect)|(invalid|mismatch|incorrect).{0,50}(signature|signedheaders)', message, re.IGNORECASE):
+        diagnostic = 'INVALID_SIGNATURE'
+    elif code == 'MissingRequiredHeader':
+        diagnostic = 'MISSING_AUTHORIZATION' if missing_authorization else 'OTHER_REQUIRED_HEADER'
+    elif re.search(r'(header|request|body).{0,50}(too (?:large|long)|exceed)', message, re.IGNORECASE):
+        diagnostic = 'REQUEST_LIMIT'
     return {'status': status, 'code': code, 'bytes': len(raw), 'responseHash': hashlib.sha256(raw).hexdigest(),
+            'gatewayCategory': diagnostic,
             'authenticationRejected': status == 400 and code == 'MissingRequiredHeader' and missing_authorization,
             'privateProtocol': b'shuduo-v2-private-smoke' in raw}
 
@@ -46,10 +58,10 @@ def main():
     body = b'{"operation":"PRIVATE_STATUS_V1"}' if method == 'POST' else b''
     headers = {'host': endpoint.hostname, 'content-type': 'application/octet-stream', 'content-length': str(len(body))}
     if probe.get('signed', True) is False:
-        # Supply valid timestamps but deliberately omit credentials/signature,
-        # so the negative control does not merely fail for a missing date.
+        # Match the official ACS3 HTTP-trigger request shape: x-acs-date only.
+        # Do not mix the legacy Date header with the modern timestamp scheme.
         now = datetime.datetime.now(datetime.timezone.utc)
-        headers.update({'date': format_datetime(now, usegmt=True), 'x-acs-date': now.strftime('%Y-%m-%dT%H:%M:%SZ')})
+        headers['x-acs-date'] = now.strftime('%Y-%m-%dT%H:%M:%SZ')
     if probe.get('signed', True):
         aid, secret, token = (os.environ[name] for name in ('ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_SECURITY_TOKEN'))
         headers.update({'x-acs-date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'x-acs-security-token': token})
@@ -57,7 +69,10 @@ def main():
         request.method = method
         request.pathname = path.split('?', 1)[0]
         request.query = dict(parse_qsl(path.split('?', 1)[1] if '?' in path else ''))
-        request.headers = headers.copy()
+        # Use the official HTTP-trigger signing input, separate from transport
+        # Host/content headers. OpenAPI control-plane calls use a different,
+        # fully hashed request construction in their dedicated transport.
+        request.headers = {name: headers[name] for name in ('x-acs-date', 'x-acs-security-token')}
         headers['authorization'] = Signer.get_authorization(request, 'ACS3-HMAC-SHA256', '', aid, secret)
     connection = http.client.HTTPSConnection(endpoint.hostname, timeout=40)
     try:

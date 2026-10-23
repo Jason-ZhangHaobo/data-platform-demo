@@ -125,9 +125,10 @@ test('cleanup refuses a mismatched target or a changed trigger and never edits o
  assert.equal(f.calls.filter(c=>c.method==='DELETE').length,count);
 });
 test('deadline and request budget are checked before continuing probes',async()=>{
- const f=fixture();let time=Date.UTC(2026,9,21);f.adapter.probe=async()=>{time+=600001;return{status:401,code:'UNCONFIRMED'};};
+ const f=fixture();let time=Date.UTC(2026,9,21);f.adapter.probe=async()=>{time+=600001;return{status:404,code:'INGRESS_DENIED'};};
  const r=await runHttpAcceptance(f.config,f.adapter,{...f.options,now:()=>time});assert.equal(r.failure,'ACCEPTANCE_LIMIT_REACHED');assert.equal(r.requests,2);assert.equal(r.cleanup.triggerAbsent,true);
  assert.equal(boundaryCases.length,14);assert(boundaryCases.every(p=>['GET','POST'].includes(p.method)));
+ assert.equal(boundaryCases[0].id,'signed-baseline');
 });
 test('workflow has default denial, protected environment, no app secrets and unconditional cleanup/sealing',()=>{
  const text=readFileSync('.github/workflows/accept-v2-http-boundary.yml','utf8');
@@ -140,6 +141,8 @@ test('the same trigger may be held only for the explicitly authorized domain bat
  const ready=await runHttpAcceptance(valid.config,valid.adapter,{...valid.options,deferForDomain:true});
  assert.equal(ready.passed,true);assert.equal(ready.requests,18);assert.equal(ready.cleanup.deferredForSameDomainBatch,true);assert.equal(valid.creates(),1);assert.equal(valid.remaining().length,3);
  assert.equal((await cleanupAcceptance(valid.config,valid.adapter,valid.checkpoint())).triggerAbsent,true);assert.deepEqual(valid.remaining(),valid.original);
+ const remaining=fixture();remaining.config.domainBindingAuthorization=valid.config.domainBindingAuthorization;remaining.config.previousReads=5;
+ const last=await runHttpAcceptance(remaining.config,remaining.adapter,{...remaining.options,deferForDomain:true});assert.equal(last.passed,true);assert.equal(last.requests,20);assert.equal(last.newRequests,15);await cleanupAcceptance(remaining.config,remaining.adapter,remaining.checkpoint());
  const bad=fixture({badProbe:true});bad.config.domainBindingAuthorization=valid.config.domainBindingAuthorization;
  const failed=await runHttpAcceptance(bad.config,bad.adapter,{...bad.options,deferForDomain:true});assert.equal(failed.passed,false);assert.equal(failed.cleanup.triggerAbsent,true);assert.deepEqual(bad.remaining(),bad.original);
 });
