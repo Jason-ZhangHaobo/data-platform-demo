@@ -42,6 +42,7 @@ class Response:
         assert size == 65537
         return b'{"code":"INGRESS_DENIED","privateField":"DO_NOT_PRINT_BODY"}'
 class Connection:
+    sock = types.SimpleNamespace(getpeercert=lambda binary_form: b'synthetic-leaf', version=lambda: 'TLSv1.3')
     def __init__(self, host, timeout):
         assert host == 'fixture.cn-hangzhou.fcapp.run' and timeout == 40
         captured['headers'] = []
@@ -58,6 +59,7 @@ output=io.StringIO()
 with contextlib.redirect_stdout(output): namespace['main']()
 value=json.loads(output.getvalue())
 assert value['status']==404 and value['code']=='INGRESS_DENIED'
+assert value['tlsVersion']=='TLSv1.3' and len(value['certificateSha256'])==64
 assert captured['path']=='/./invoke' and captured['signed_path']=='/./invoke'
 assert len([x for x in captured['headers'] if x[0]=='x-fc-control-path'])==2
 assert captured['closed']

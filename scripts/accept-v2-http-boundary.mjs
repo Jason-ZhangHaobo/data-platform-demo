@@ -11,7 +11,7 @@ const requireThat = (condition,code) => { if (!condition) throw fail(code); };
 const canonical = value => JSON.stringify(value && typeof value === 'object' ? Array.isArray(value) ? value.map(v=>JSON.parse(canonical(v))) : Object.fromEntries(Object.keys(value).sort().map(k=>[k,JSON.parse(canonical(value[k]))])) : value ?? null);
 const digest = value => createHash('sha256').update(canonical(value)).digest('hex');
 const functionFields = ['codeChecksum','codeSize','environmentVariables','runtime','handler','role','timeout','cpu','memorySize','diskSize','instanceConcurrency','internetAccess','vpcConfig','customRuntimeConfig','layers','nasConfig','ossMountConfig','logConfig'];
-const functionHash = value => digest(Object.fromEntries(functionFields.map(k=>[k,value[k] ?? null])));
+export const functionHash = value => digest(Object.fromEntries(functionFields.map(k=>[k,value[k] ?? null])));
 const triggerHash = list => digest([...list].sort((a,b)=>a.triggerName.localeCompare(b.triggerName)));
 export const triggerConfiguration = Object.freeze({authType:'function',methods:['GET','POST'],disableURLInternet:false});
 const description = 'Temporary signed read-only boundary acceptance; remove after this run';
@@ -61,13 +61,13 @@ export const boundaryCases = Object.freeze([
   {id:'query-path',method:'POST',path:'/invoke?operation=PRIVATE_STATUS_V1'},
   {id:'internal-scheduler',method:'POST',path:'/api/v2/internal/scheduler/tick'},
 ]);
-const checkedList = async (adapter, config) => {
+export const checkedList = async (adapter, config) => {
   const result=await adapter.fc('GET','/triggers');
   requireThat(Array.isArray(result?.triggers) && !result.nextToken && result.triggers.length<=3,'TRIGGER_LIST_UNCONFIRMED');
   requireThat(new Set(result.triggers.map(t=>t.triggerName)).size===result.triggers.length,'DUPLICATE_TRIGGER_RECORD');
   return result.triggers;
 };
-const ownsTrigger = (trigger,config) => {
+export const ownsTrigger = (trigger,config) => {
   let parsed;try { parsed=typeof trigger.triggerConfig==='string'?JSON.parse(trigger.triggerConfig):trigger.triggerConfig; } catch {return false;}
   return trigger.triggerName===config.triggerName && trigger.triggerType==='http' && trigger.qualifier==='LATEST' && trigger.description===description && Object.entries(triggerConfiguration).every(([k,v])=>canonical(parsed?.[k])===canonical(v));
 };
@@ -84,11 +84,12 @@ export async function cleanupAcceptance(config, adapter, checkpoint) {
   requireThat(functionHash(await adapter.fc('GET',''))===checkpoint.functionHash,'FUNCTION_CHANGED');
   return {triggerAbsent:true,originalTriggersUnchanged:true,functionUnchanged:true};
 }
-export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{},load=()=>undefined}={}) {
+export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{},load=()=>undefined,deferForDomain=false}={}) {
   let checkpoint=load();
   const report={scope:'SIGNED_HTTP_BOUNDARY_ONLY',passed:false,restoreRunId:config.restoreRunId,priorRequests:config.previousReads,requests:config.previousReads,newRequests:0,results:[],modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,cleanup:{triggerAbsent:false}};
   try {
     report.phase='IDENTITY';
+    requireThat(!deferForDomain||config.domainBindingAuthorization==='ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED','DOMAIN_HOLD_NOT_AUTHORIZED');
     const identity=await adapter.identity();
     verifyIdentity(config,identity);
     if (checkpoint) { report.recoveryOnly=true;report.priorRequests=report.requests=checkpoint.requests;report.cleanup=await cleanupAcceptance(config,adapter,checkpoint);return report; }
@@ -131,7 +132,8 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
     report.passed=true;report.phase='HTTP_CHECKS_COMPLETE';
   } catch(e) { report.failure=e.safeCode ?? 'ACCEPTANCE_UNCONFIRMED';if(e.safeDiagnostic)report.failureDiagnostic=e.safeDiagnostic; }
   finally {
-    if (checkpoint && !report.recoveryOnly) {
+    if(checkpoint&&report.passed&&deferForDomain)report.cleanup={deferredForSameDomainBatch:true};
+    else if (checkpoint && !report.recoveryOnly) {
       try { report.cleanup=await cleanupAcceptance(config,adapter,checkpoint); }
       catch(e) { report.cleanup={triggerAbsent:false,code:e.safeCode ?? 'CLEANUP_UNCONFIRMED'};report.passed=false; }
     }
@@ -141,7 +143,7 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
 
 const directory='.runtime/http-boundary-acceptance';
 const checkpointPath=`${directory}/checkpoint.json`, reportPath=`${directory}/report.json`;
-function adapterFor(config,env) {
+export function adapterFor(config,env) {
   const call=(args,body) => {
     let output='';
     try {
