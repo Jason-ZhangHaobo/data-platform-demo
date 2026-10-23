@@ -1,0 +1,107 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {execFileSync} from 'node:child_process';
+import {generateKeyPairSync} from 'node:crypto';
+import {DOMAIN_BINDING_AUTHORIZATION,verifyCertificateMaterial,domainBindingPlan,domainTemporaryStatements,domainConfigurationMatches,runDomainBinding} from '../../scripts/v2-domain-binding-plan.mjs';
+
+function materialFixture(){
+ const directory=mkdtempSync(join(tmpdir(),'shuduo-domain-plan-'));
+ try{
+  writeFileSync(join(directory,'test.conf'),'[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=shuduoai.cn\n[ext]\nsubjectAltName=DNS:shuduoai.cn\n',{mode:0o600});
+  execFileSync('openssl',['req','-new','-x509','-newkey','rsa:2048','-nodes','-days','2','-config',join(directory,'test.conf'),'-keyout',join(directory,'key.pem'),'-out',join(directory,'cert.pem')],{stdio:'ignore',timeout:10000});
+  return{certificate:readFileSync(join(directory,'cert.pem'),'utf8'),privateKey:readFileSync(join(directory,'key.pem'),'utf8')};
+ }finally{rmSync(directory,{recursive:true,force:true});}
+}
+// Only synthetic, locally generated material. Never read project certificates.
+const material=materialFixture(),now=Date.now();
+const certificate=verifyCertificateMaterial(material,now);
+const input={authorization:DOMAIN_BINDING_AUTHORIZATION,domainName:'shuduoai.cn',operationId:'a'.repeat(32),sourceRevision:'b'.repeat(40),expiresAt:new Date(now+1800000).toISOString(),region:'cn-hangzhou',roleArn:'acs:ram::111122223333:role/fixture-deploy',providerArn:'acs:ram::111122223333:oidc-provider/fixture',functionName:'fixture-control',certificate};
+const plan=domainBindingPlan(input,now);
+function fixture(options={}){
+ let state=options.existing?{domainName:'unrelated'}:null,checkpoint,calls=[];
+ const adapter={
+  preflight:async()=>({defaultBoundaryVerified:true,publicApplicationEnabled:false,sameSignedTriggerPresent:true,functionUnchanged:true,budgetVerified:true,dnsExact:true,...options.preflight}),
+  get:async()=>{calls.push('GET');return options.readDenied?{status:403,code:'AccessDenied'}:state?{status:200,value:structuredClone(state)}:{status:404,code:'DomainNameNotFound'};},
+  create:async body=>{assert.equal(checkpoint.phase,'CREATE_REQUESTED');calls.push('CREATE');state={...structuredClone(body),accountId:plan.target.account};if(options.unknownCreate)throw Error('SYNTHETIC_PRIVATE_EXCEPTION');},
+  delete:async()=>{calls.push('DELETE');if(!options.deleteUnapplied)state=null;if(options.unknownDelete||options.deleteUnapplied)throw Error('SYNTHETIC_PRIVATE_EXCEPTION');},
+  verifyDomain:async limit=>{calls.push('VERIFY');assert.equal(limit,20);if(options.drift)state.routeConfig.routes[0].functionName='foreign';return{tlsVerified:true,boundaryVerified:true,privateOperationExposed:false,requests:14,...options.verification};},
+ };
+ const storage={load:async()=>checkpoint,save:async value=>{checkpoint=structuredClone(value);},now:()=>now};
+ return{adapter,storage,calls,state:()=>state,checkpoint:()=>checkpoint};
+}
+
+test('binding plan has fixed HTTPS signed routes, exact rollback scope and no certificate material',()=>{
+ assert.equal(plan.desired.authConfig.authType,'function');assert.equal(plan.desired.protocol,'HTTPS');assert.equal(plan.publicApplicationEnabled,false);
+ assert.deepEqual(plan.desired.routeConfig.routes.map(r=>r.path),['/','/v2/*','/api/v2/*']);
+ assert(plan.desired.routeConfig.routes.every(r=>r.functionName==='fixture-control'&&r.qualifier==='LATEST'));
+ assert.equal(plan.dns.type,'CNAME');assert.equal(plan.limits.newBusinessDnsRecords,1);
+ const statements=domainTemporaryStatements(plan);
+ assert.equal(statements[1].Resource,'acs:fc:cn-hangzhou:111122223333:custom-domains/shuduoai.cn');
+ assert.deepEqual(statements[1].Action,['fc:DeleteCustomDomain']);
+ assert(!statements[0].Action.includes('fc:UpdateCustomDomain'));assert(!JSON.stringify(plan).includes('PRIVATE KEY'));
+ assert(statements.every(s=>s.Condition.DateLessThan['acs:CurrentTime']===input.expiresAt));
+});
+test('plan rejects unapproved, other-domain, foreign identity and invalid lifetime inputs',()=>{
+ for(const patch of [{authorization:'yes'},{domainName:'other.invalid'},{region:'cn-beijing'},{operationId:'../escape'},{sourceRevision:'main'},{expiresAt:new Date(now-1).toISOString()},{expiresAt:new Date(now+3600001).toISOString()},{providerArn:'acs:ram::999900001111:oidc-provider/fixture'},{certificate:{...certificate,domain:'other.invalid'}}])assert.throws(()=>domainBindingPlan({...input,...patch},now));
+});
+test('certificate verification checks domain, expiry, size and matching private key without logging raw errors',()=>{
+ assert.equal(certificate.domain,'shuduoai.cn');assert.match(certificate.leafSha256,/^[a-f0-9]{64}$/);
+ const wrong=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs1',format:'pem'});
+ assert.throws(()=>verifyCertificateMaterial({...material,privateKey:wrong},now),/CERTIFICATE_KEY_MISMATCH/);
+ assert.throws(()=>verifyCertificateMaterial(material,Date.parse(certificate.validTo)),/CERTIFICATE_NOT_CURRENT/);
+ assert.throws(()=>verifyCertificateMaterial({...material,certificate:'x'.repeat(20481)},now),/CERTIFICATE_SIZE_INVALID/);
+ assert.throws(()=>verifyCertificateMaterial({certificate:'PRIVATE_SECRET',privateKey:'PRIVATE_SECRET'},now),/CERTIFICATE_MATERIAL_INVALID/);
+});
+test('known success retains one signed binding and exposes only sanitized evidence',async()=>{
+ const f=fixture(),report=await runDomainBinding(plan,material,f.adapter,f.storage);
+ assert.equal(report.passed,true);assert.equal(report.createRequests,1);assert.equal(report.domainRequests,14);assert.equal(report.domainRetained,true);
+ assert.equal(f.checkpoint().phase,'VERIFIED_RETAINED');assert.equal(f.calls.filter(v=>v==='CREATE').length,1);assert(!f.calls.includes('DELETE'));
+ assert(!JSON.stringify([report,f.checkpoint()]).includes('PRIVATE KEY'));
+ const before=f.calls.length,resumed=await runDomainBinding(plan,material,f.adapter,f.storage);
+ assert.equal(resumed.recoveryOnly,true);assert.equal(resumed.retainedPreviously,true);assert.equal(resumed.passed,false);assert.deepEqual(f.calls.slice(before),['GET']);
+});
+test('read denial, existing configuration and missing preconditions never create or delete',async()=>{
+ for(const options of [{existing:true},{readDenied:true},...['defaultBoundaryVerified','sameSignedTriggerPresent','functionUnchanged','budgetVerified','dnsExact'].map(k=>({preflight:{[k]:false}})),{preflight:{publicApplicationEnabled:true}}]){
+  const f=fixture(options),report=await runDomainBinding(plan,material,f.adapter,f.storage);
+  assert.equal(report.passed,false);assert.equal(report.createRequests,0);assert(!f.calls.includes('CREATE'));assert(!f.calls.includes('DELETE'));
+ }
+});
+test('lost create receipt is reconciled without a second create',async()=>{
+ const f=fixture({unknownCreate:true}),report=await runDomainBinding(plan,material,f.adapter,f.storage);
+ assert.equal(report.passed,true);assert.equal(f.calls.filter(v=>v==='CREATE').length,1);assert.equal(f.checkpoint().createResponseUnknown,true);
+ assert(!JSON.stringify(report).includes('SYNTHETIC_PRIVATE_EXCEPTION'));
+});
+test('TLS, boundary, leak and probe-budget failures roll back only the created binding',async()=>{
+ for(const verification of [{tlsVerified:false},{boundaryVerified:false},{privateOperationExposed:true},{requests:21},{requests:0}]){
+  const f=fixture({verification}),report=await runDomainBinding(plan,material,f.adapter,f.storage);
+  assert.equal(report.passed,false);assert.equal(report.rollback.domainAbsent,true);assert.equal(f.calls.filter(v=>v==='DELETE').length,1);assert.equal(f.state(),null);
+ }
+});
+test('unknown delete is read back; an unapplied deletion is not blindly retried on resume',async()=>{
+ const ok=fixture({verification:{tlsVerified:false},unknownDelete:true}),report=await runDomainBinding(plan,material,ok.adapter,ok.storage);
+ assert.equal(report.rollback.domainAbsent,true);
+ const bad=fixture({verification:{tlsVerified:false},deleteUnapplied:true}),first=await runDomainBinding(plan,material,bad.adapter,bad.storage);
+ assert.equal(first.cleanupFailure,'DOMAIN_ROLLBACK_NOT_CONFIRMED');
+ const next=await runDomainBinding(plan,material,bad.adapter,bad.storage);
+ assert.equal(next.recoveryOnly,true);assert.equal(bad.calls.filter(v=>v==='DELETE').length,1);assert.equal(bad.calls.filter(v=>v==='CREATE').length,1);
+});
+test('ownership, route, certificate and authentication drift cannot be silently deleted',async()=>{
+ const f=fixture({drift:true}),report=await runDomainBinding(plan,material,f.adapter,f.storage);
+ assert.equal(report.passed,false);assert.equal(report.cleanupFailure,'DOMAIN_DRIFT_DO_NOT_DELETE');assert(!f.calls.includes('DELETE'));
+ const good=fixture();await runDomainBinding(plan,material,good.adapter,good.storage);
+ for(const change of [v=>v.accountId='999900001111',v=>v.authConfig.authType='anonymous',v=>v.protocol='HTTP,HTTPS',v=>v.certConfig.certName='another-owner',v=>v.certConfig.certificate='invalid',v=>v.routeConfig.routes.push({path:'/*'}),v=>v.corsConfig={allowOrigins:['*']},v=>v.wafConfig={enableWAF:true}]){
+  const value=structuredClone(good.state());change(value);assert.equal(domainConfigurationMatches(value,plan),false);
+ }
+ good.state().authConfig.authType='anonymous';const resumed=await runDomainBinding(plan,material,good.adapter,good.storage);
+ assert.equal(resumed.failure,'RETAINED_DOMAIN_NOT_CONFIRMED');assert(!good.calls.includes('DELETE'));
+});
+test('durable checkpoint and remaining cleanup window are required before mutation',async()=>{
+ const f=fixture();await assert.rejects(runDomainBinding(plan,material,f.adapter,{}),/DOMAIN_DURABLE_CHECKPOINT_REQUIRED/);
+ const report=await runDomainBinding(plan,material,f.adapter,{...f.storage,now:()=>Date.parse(plan.expiresAt)-299999});
+ assert.equal(report.failure,'DOMAIN_WINDOW_TOO_SHORT');assert.equal(report.createRequests,0);
+ const lost=fixture(),failed=await runDomainBinding(plan,material,lost.adapter,{...lost.storage,save:async()=>{throw Error('disk unavailable');}});
+ assert.equal(failed.passed,false);assert.equal(failed.createRequests,0);assert(!lost.calls.includes('CREATE'));
+});
