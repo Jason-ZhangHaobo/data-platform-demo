@@ -112,6 +112,17 @@ test('documented unsigned header rejection is accepted only with exact evidence;
  const signed=fixture();signed.adapter.probe=async()=>({status:400,code:'MissingRequiredHeader',authenticationRejected:true});
  const result=await runHttpAcceptance(signed.config,signed.adapter,signed.options);assert.equal(result.passed,false);assert.equal(result.phase,'HTTP_signed-baseline');
 });
+test('only classified empty-authorization InvalidArgument is accepted for the unsigned negative control',async()=>{
+ const f=fixture(),probe=f.adapter.probe;
+ f.adapter.probe=async(url,p)=>p.signed===false?{status:400,code:'InvalidArgument',gatewayCategory:'EMPTY_AUTHORIZATION',authenticationRejected:true}:probe(url,p);
+ assert.equal((await runHttpAcceptance(f.config,f.adapter,f.options)).passed,true);
+ for(const patch of [{gatewayCategory:'UNCLASSIFIED'},{authenticationRejected:false}]){
+  const g=fixture(),original=g.adapter.probe;g.adapter.probe=async(url,p)=>p.signed===false?{status:400,code:'InvalidArgument',gatewayCategory:'EMPTY_AUTHORIZATION',authenticationRejected:true,...patch}:original(url,p);
+  assert.equal((await runHttpAcceptance(g.config,g.adapter,g.options)).passed,false);
+ }
+ const signed=fixture();signed.adapter.probe=async()=>({status:400,code:'InvalidArgument',gatewayCategory:'EMPTY_AUTHORIZATION',authenticationRejected:true});
+ assert.equal((await runHttpAcceptance(signed.config,signed.adapter,signed.options)).passed,false);
+});
 test('unknown delete is read back; remaining trigger is never falsely reported removed',async()=>{
  const ok=fixture({unknownDelete:true}),r=await runHttpAcceptance(ok.config,ok.adapter,ok.options);assert.equal(r.cleanup.triggerAbsent,true);
  const bad=fixture({deleteFails:true}),failed=await runHttpAcceptance(bad.config,bad.adapter,bad.options);assert.equal(failed.passed,false);assert.equal(failed.cleanup.triggerAbsent,false);assert.equal(bad.calls.filter(c=>c.method==='DELETE').length,1);

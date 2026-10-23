@@ -9,6 +9,8 @@ test('custom domain probes require trusted TLS fingerprint plus exact signed app
  assert.equal(domainProbeAccepted(good,domainProbes[1],'a'.repeat(64)),true);
  for(const patch of [{certificateSha256:'b'.repeat(64)},{tlsVersion:'TLSv1.0'},{status:200},{status:403,code:'AccessDenied'},{privateProtocol:true}])assert.equal(domainProbeAccepted({...good,...patch},domainProbes[1],'a'.repeat(64)),false);
  assert.equal(domainProbeAccepted({...good,status:401},domainProbes[0],'a'.repeat(64)),true);
+ assert.equal(domainProbeAccepted({...good,status:400,code:'InvalidArgument',gatewayCategory:'EMPTY_AUTHORIZATION',authenticationRejected:true},domainProbes[0],'a'.repeat(64)),true);
+ assert.equal(domainProbeAccepted({...good,status:400,code:'InvalidArgument',gatewayCategory:'UNCLASSIFIED',authenticationRejected:true},domainProbes[0],'a'.repeat(64)),false);
  assert.equal(domainProbeAccepted({...good,code:'DomainRouteNotFound'},domainProbes.at(-1),'a'.repeat(64)),true);
  assert.equal(domainProbes.length,8);assert(domainProbes.length<=20);
  assert.throws(()=>httpsConfig({}),/HTTPS_SCOPE_NOT_AUTHORIZED/);
