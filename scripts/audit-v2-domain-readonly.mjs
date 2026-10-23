@@ -24,14 +24,13 @@ export function runDomainReadAudit(config,call,now=Date.now) {
   if(now()>=config.expiresAt)throw fail('DOMAIN_AUDIT_WINDOW_EXPIRED');
   report.domainRequests=1;
   const value=call(['fc','GET',`/2023-03-30/custom-domains/${config.domainName}`]);
-  if(value.domainName!==config.domainName||String(value.accountId)!==config.account)throw fail('DOMAIN_RESPONSE_MISMATCH');
-  const routes=value.routeConfig?.routes;
-  if(!Array.isArray(routes)||routes.length>100)throw fail('DOMAIN_ROUTES_UNCONFIRMED');
-  report.domain={state:'CONFIGURED',protocol:['HTTP','HTTPS','HTTP,HTTPS'].includes(value.protocol)?value.protocol:'UNCONFIRMED',hasCertificate:Boolean(value.certConfig?.certificate),routeCount:routes.length,allRoutesTargetConfiguredFunction:routes.length>0&&routes.every(r=>r.functionName===config.functionName)};
+  if(value.ok!==true||value.status!==200||!Number.isSafeInteger(value.routeCount)||value.routeCount<0||value.routeCount>100||typeof value.hasCertificate!=='boolean'||typeof value.allRoutesTargetConfiguredFunction!=='boolean')throw fail('DOMAIN_RESPONSE_MISMATCH');
+  report.domain={state:'CONFIGURED',protocol:['HTTP','HTTPS','HTTP,HTTPS'].includes(value.protocol)?value.protocol:'UNCONFIRMED',hasCertificate:value.hasCertificate,routeCount:value.routeCount,allRoutesTargetConfiguredFunction:value.allRoutesTargetConfiguredFunction};
  }catch(error){
   const details=auditErrorDetails(error);
-  if(report.domainRequests===1&&['CustomDomainNotFound','ResourceNotFound.CustomDomain'].includes(details.serviceCode))report.domain={state:'NOT_CONFIGURED'};
-  else report.domain={state:error.safeCode??classifyAuditError(error)};
+  const diagnostic={serviceCode:details.serviceCode,transport:details.transport,...(Number.isInteger(error.status)&&error.status>=0&&error.status<=599?{httpStatus:error.status}:{})};
+  if(report.domainRequests===1&&['CustomDomainNotFound','DomainNameNotFound','DomainNotFound','ResourceNotFound.CustomDomain'].includes(details.serviceCode))report.domain={state:'NOT_CONFIGURED',...diagnostic};
+  else report.domain={state:error.safeCode??classifyAuditError(error),...diagnostic};
  }
  report.passed=report.identity==='VERIFIED'&&['CONFIGURED','NOT_CONFIGURED'].includes(report.domain.state);
  return report;
@@ -46,7 +45,14 @@ export function domainAuditMain(env=process.env,args=process.argv.slice(2)) {
   return;
  }
  if(args.length||!env.ALIBABA_CLOUD_ACCESS_KEY_ID||!env.ALIBABA_CLOUD_ACCESS_KEY_SECRET||!env.ALIBABA_CLOUD_SECURITY_TOKEN)throw fail('OIDC_STS_REQUIRED');
- const call=params=>JSON.parse(execFileSync('aliyun',[...params,'--region',config.region,'--connect-timeout','5','--read-timeout','20','--retry-count','0'],{encoding:'utf8',timeout:30000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe'],env:{...env,ALIBABA_CLOUD_IGNORE_PROFILE:'TRUE',ALIBABA_CLOUD_PROFILE_MODE:'StsToken'}}));
+ const call=params=>{
+  if(params[0]==='fc'){
+   const value=JSON.parse(execFileSync('python3',[fileURLToPath(new URL('./read-v2-domain-signed.py',import.meta.url))],{input:JSON.stringify({domainName:config.domainName,account:config.account,functionName:config.functionName,region:config.region}),encoding:'utf8',timeout:30000,maxBuffer:65536,stdio:['pipe','pipe','pipe'],env}));
+   if(value.ok!==true)throw {status:value.status,stderr:JSON.stringify({Code:value.code})};
+   return value;
+  }
+  return JSON.parse(execFileSync('aliyun',[...params,'--region',config.region,'--connect-timeout','5','--read-timeout','20','--retry-count','0'],{encoding:'utf8',timeout:30000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe'],env:{...env,ALIBABA_CLOUD_IGNORE_PROFILE:'TRUE',ALIBABA_CLOUD_PROFILE_MODE:'StsToken'}}));
+ };
  const report={...runDomainReadAudit(config,call),checkedAt:new Date().toISOString()};
  const envelope=sealReport(report,key,{scope:'DOMAIN_READ_ONLY',sourceRevision:env.GITHUB_SHA,runId:env.GITHUB_RUN_ID});
  writeFileSync('v2-domain-audit.sealed.json',JSON.stringify(envelope)+'\n',{mode:0o600});

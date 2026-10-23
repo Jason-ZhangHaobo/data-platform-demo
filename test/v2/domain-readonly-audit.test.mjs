@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
 import {domainAuditConfig,runDomainReadAudit} from '../../scripts/audit-v2-domain-readonly.mjs';
 const now=Date.parse('2026-10-23T02:00:00Z');
 const target={domainName:'shuduoai.cn',region:'cn-hangzhou',roleArn:'acs:ram::111122223333:role/synthetic-deployer',providerArn:'acs:ram::111122223333:oidc-provider/synthetic',functionName:'synthetic-control'};
@@ -12,10 +13,15 @@ test('domain audit requires fixed target, main SHA and a live one-hour approval 
 });
 test('one domain read excludes all certificate bodies, identifiers, paths and raw responses',()=>{
  const calls=[],secret='synthetic-private-certificate-never-retain';
- const report=runDomainReadAudit(config,args=>{calls.push(args);return calls.length===1?identity:{domainName:target.domainName,accountId:identity.AccountId,protocol:'HTTPS',certConfig:{certificate:secret,privateKey:secret},routeConfig:{routes:[{functionName:target.functionName,path:secret}]}};},()=>now);
+ const report=runDomainReadAudit(config,args=>{calls.push(args);return calls.length===1?identity:{ok:true,status:200,protocol:'HTTPS',hasCertificate:true,routeCount:1,allRoutesTargetConfiguredFunction:true,ignoredPrivateField:secret};},()=>now);
  assert.equal(report.passed,true);assert.equal(report.domainRequests,1);assert.equal(report.domain.hasCertificate,true);assert.equal(report.domain.allRoutesTargetConfiguredFunction,true);
  assert.deepEqual(calls,[['sts','GetCallerIdentity'],['fc','GET','/2023-03-30/custom-domains/shuduoai.cn']]);
  assert(!JSON.stringify(report).includes(secret));assert(!JSON.stringify(report).includes(target.functionName));assert(!JSON.stringify(report).includes(identity.AccountId));assert.equal(report.cloudWrites,0);
+});
+test('signed HTTP response projection removes PEMs and retains only safe failure codes',()=>{
+ const source=`import importlib.util,json\nspec=importlib.util.spec_from_file_location('domain','scripts/read-v2-domain-signed.py')\nm=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)\nt={'domainName':'shuduoai.cn','account':'111122223333','functionName':'synthetic-control'}\nv={'domainName':t['domainName'],'accountId':t['account'],'protocol':'HTTPS','certConfig':{'certificate':'PRIVATE_PEM','privateKey':'PRIVATE_KEY'},'routeConfig':{'routes':[{'functionName':'synthetic-control'}]}}\nprint(json.dumps([m.response_evidence(200,json.dumps(v).encode(),t),m.response_evidence(404,b'{"ErrorCode":"DomainNameNotFound","Message":"PRIVATE_KEY"}',t)]))`;
+ const raw=execFileSync('python3',['-c',source],{encoding:'utf8'}),[ok,missing]=JSON.parse(raw);
+ assert.equal(ok.hasCertificate,true);assert.equal(ok.allRoutesTargetConfiguredFunction,true);assert.equal(missing.code,'DomainNameNotFound');assert.equal(missing.status,404);assert(!raw.includes('PRIVATE_'));assert(!raw.includes('111122223333'));
 });
 test('missing domain is a verified absence, while access errors are not absence and never retry',()=>{
  for(const code of ['CustomDomainNotFound','AccessDenied']){
