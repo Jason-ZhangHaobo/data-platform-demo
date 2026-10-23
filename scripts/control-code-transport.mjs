@@ -29,7 +29,8 @@ export function privateOssRequest({bucket,region,credentials,key='',query='',bod
  check(method!=='PUT'||(!query&&Buffer.isBuffer(body)&&key),'OSS_WRITE_INVALID');
  check(credentials.accessKeyId&&credentials.accessKeySecret&&credentials.securityToken,'OSS_STS_REQUIRED');
  const date=new Date().toUTCString(),contentType=body?'application/zip':'';
- const extras={'x-oss-security-token':credentials.securityToken,...(method==='PUT'?{'x-oss-forbid-overwrite':'true','x-oss-object-acl':'private'}:{})};
+ // Inherit the verified private bucket ACL; do not request ACL mutation rights.
+ const extras={'x-oss-security-token':credentials.securityToken,...(method==='PUT'?{'x-oss-forbid-overwrite':'true'}:{})};
  const canonical=Object.keys(extras).sort().map(k=>`${k}:${extras[k]}\n`).join('');
  const resource=`/${bucket}/${key}${query?'?'+query:''}`,signature=createHmac('sha1',credentials.accessKeySecret).update(`${method}\n\n${contentType}\n${date}\n${canonical}${resource}`).digest('base64');
  return{url:`https://${bucket}.oss-${region}.aliyuncs.com/${key.split('/').map(encodeURIComponent).join('/')}${query?'?'+query:''}`,options:{method,redirect:'error',signal:AbortSignal.timeout(120000),headers:{Date:date,Authorization:`OSS ${credentials.accessKeyId}:${signature}`,...extras,...(contentType?{'Content-Type':contentType}:{})},...(body?{body}:{})}};
@@ -42,6 +43,7 @@ export function deploymentInput(env,now=Date.now()){
  check(issued<=now&&config.expiresAt>now&&config.expiresAt-issued<=3600000,'CONTROL_WINDOW_INVALID');
  check(m.roleArn===`acs:ram::${config.account}:role/${config.role}`&&new RegExp(`^acs:ram::${config.account}:oidc-provider/[A-Za-z0-9_-]{1,64}$`).test(m.providerArn),'CONTROL_ROLE_INVALID');
  check(/^\d{6,20}$/.test(m.buildRunId??'')&&/^\d{6,20}$/.test(m.artifactId??''),'BUILD_ID_INVALID');
+ check(m.objectAclReadApproved===true,'OBJECT_ACL_READ_APPROVAL_REQUIRED');
  const privacy=m.bucketPrivacy;
  check(privacy?.bucketHash===digest(config.bucket)&&privacy.aclPrivate===true&&privacy.policyNotPublic===true&&privacy.publicAccessBlocked===true&&Date.parse(privacy.checkedAt)<=now&&now-Date.parse(privacy.checkedAt)<3600000,'CURRENT_BUCKET_PRIVACY_REQUIRED');
  check(Number.isFinite(m.unsettledReservedCny)&&m.unsettledReservedCny>=2,'UNSETTLED_RESERVE_REQUIRED');

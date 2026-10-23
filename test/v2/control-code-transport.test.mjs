@@ -7,12 +7,12 @@ import {boundedBytes,codeDownloadUrl,controlCloudAdapter,deploymentInput,private
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const now=Date.UTC(2026,9,24),old=Buffer.from('old-code'),next=Buffer.from('new-code');
 const raw={authorization:'P0A_PRIVATE_CODE_ONLY',operationId:'a'.repeat(32),applicationSource:'b'.repeat(40),operatorSource:'c'.repeat(40),account:'111122223333',role:'fixture-role',functionName:'fixture-control',bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:11,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:hash(old),bytes:old.length,crc64:'123'},candidate:{sha256:hash(next),bytes:next.length}};
-const target={config:raw,roleArn:'acs:ram::111122223333:role/fixture-role',providerArn:'acs:ram::111122223333:oidc-provider/fixture',buildRunId:'12345678',artifactId:'12345679',authorizedAt:new Date(now).toISOString(),bucketPrivacy:{bucketHash:hash(raw.bucket),aclPrivate:true,policyNotPublic:true,publicAccessBlocked:true,checkedAt:new Date(now).toISOString()},unsettledReservedCny:2};
+const target={config:raw,roleArn:'acs:ram::111122223333:role/fixture-role',providerArn:'acs:ram::111122223333:oidc-provider/fixture',buildRunId:'12345678',artifactId:'12345679',authorizedAt:new Date(now).toISOString(),bucketPrivacy:{bucketHash:hash(raw.bucket),aclPrivate:true,policyNotPublic:true,publicAccessBlocked:true,checkedAt:new Date(now).toISOString()},unsettledReservedCny:2,objectAclReadApproved:true};
 const environment={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_SHA:raw.operatorSource,V2_CONTROL_OPERATOR_SHA:raw.operatorSource,V2_CONTROL_UPDATE_APPROVED:'P0A_PRIVATE_CODE_ONLY',V2_CONTROL_UPDATE_TARGET:JSON.stringify(target)};
 test('deployment input requires protected main, original scope, matching identity and fresh privacy',()=>{
  assert.equal(deploymentInput(environment,now).config.issuedAt,now);
  for(const patch of [{GITHUB_REF:'refs/heads/other'},{V2_CONTROL_UPDATE_APPROVED:'yes'},{GITHUB_SHA:'f'.repeat(40)},{V2_CONTROL_UPDATE_TARGET:'{}'}])assert.throws(()=>deploymentInput({...environment,...patch},now));
- for(const patch of [{unsettledReservedCny:0},{roleArn:'acs:ram::999922223333:role/fixture-role'},{bucketPrivacy:{...target.bucketPrivacy,publicAccessBlocked:false}},{bucketPrivacy:{...target.bucketPrivacy,bucketHash:'f'.repeat(64)}}])assert.throws(()=>deploymentInput({...environment,V2_CONTROL_UPDATE_TARGET:JSON.stringify({...target,...patch})},now));
+ for(const patch of [{objectAclReadApproved:false},{unsettledReservedCny:0},{roleArn:'acs:ram::999922223333:role/fixture-role'},{bucketPrivacy:{...target.bucketPrivacy,publicAccessBlocked:false}},{bucketPrivacy:{...target.bucketPrivacy,bucketHash:'f'.repeat(64)}}])assert.throws(()=>deploymentInput({...environment,V2_CONTROL_UPDATE_TARGET:JSON.stringify({...target,...patch})},now));
  assert.throws(()=>deploymentInput(environment,now+3600000));
 });
 test('rollback download is HTTPS-only to the expected regional OSS, with byte bounds',async()=>{
@@ -22,10 +22,10 @@ test('rollback download is HTTPS-only to the expected regional OSS, with byte bo
  await assert.rejects(boundedBytes(new Response(next),2),/TOO_LARGE/);
  await assert.rejects(boundedBytes(new Response('error',{status:403}),100),/NOT_CONFIRMED/);
 });
-test('object writes are create-only private binary requests, and scaling excludes runtime counters',()=>{
+test('object writes are create-only binary requests without ACL mutation, and scaling excludes runtime counters',()=>{
  const credentials={accessKeyId:'fixture-id',accessKeySecret:'fixture-key',securityToken:'fixture-token'};
  const r=privateOssRequest({bucket:'fixture-private',region:'cn-hangzhou',key:'code/fixture.zip',credentials,method:'PUT',body:next});
- assert.equal(r.options.headers['x-oss-object-acl'],'private');assert.equal(r.options.headers['x-oss-forbid-overwrite'],'true');assert.equal(r.options.redirect,'error');assert.equal(r.options.body,next);assert(!r.url.includes('fixture-token'));
+ assert.equal(r.options.headers['x-oss-object-acl'],undefined);assert.equal(r.options.headers['x-oss-forbid-overwrite'],'true');assert.equal(r.options.redirect,'error');assert.equal(r.options.body,next);assert(!r.url.includes('fixture-token'));
  assert.throws(()=>privateOssRequest({bucket:'fixture-private',region:'cn-hangzhou',credentials,key:'code',method:'DELETE'}));
  const a=scalingConfiguration({minInstances:0,currentInstances:0,enableOnDemandScaling:true}),b=scalingConfiguration({minInstances:0,currentInstances:1,enableOnDemandScaling:true});assert.deepEqual(a,b);
  assert.notDeepEqual(a,scalingConfiguration({minInstances:1,enableOnDemandScaling:true}));
