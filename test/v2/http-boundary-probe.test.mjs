@@ -17,6 +17,12 @@ assert evidence(400,b'not json')['authenticationRejected'] is False
 assert evidence(400,b'{"code":"InvalidArgument","message":"invalid date format: SYNTHETIC_SECRET"}')['gatewayCategory']=='INVALID_TIMESTAMP'
 assert evidence(400,b'{"code":"InvalidArgument","message":"signature mismatch SYNTHETIC_SECRET"}')['gatewayCategory']=='INVALID_SIGNATURE'
 assert evidence(400,b'{"code":"InvalidArgument","message":"SYNTHETIC_SECRET"}')['gatewayCategory']=='UNCLASSIFIED'
+for quote in ("''",'""'):
+    empty=evidence(400,json.dumps({'ErrorCode':'InvalidArgument','ErrorMessage':'invalid authorization '+quote}).encode())
+    assert empty['authenticationRejected'] is True and empty['gatewayCategory']=='EMPTY_AUTHORIZATION'
+for message in ("invalid authorization 'nonempty'",'invalid authorization',"invalid authorization '' other reason",'invalid date format'):
+    assert evidence(400,json.dumps({'ErrorCode':'InvalidArgument','ErrorMessage':message}).encode())['authenticationRejected'] is False
+assert evidence(500,b'{"code":"InvalidArgument","message":"invalid authorization \'\'"}')['authenticationRejected'] is False
 assert evidence(200,b'shuduo-v2-private-smoke/v1')['privateProtocol'] is True
 print('GATEWAY_ERROR_CLASSIFICATION_PASS')
 `;

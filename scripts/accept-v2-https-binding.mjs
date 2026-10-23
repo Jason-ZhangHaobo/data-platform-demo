@@ -24,7 +24,7 @@ export const domainProbes=Object.freeze([
 ]);
 export function domainProbeAccepted(value,probe,leafSha256){
  if(value?.privateProtocol===true||value?.certificateSha256!==leafSha256||!['TLSv1.2','TLSv1.3'].includes(value?.tlsVersion))return false;
- if(probe.signed===false)return [401,403].includes(value.status)||(value.status===400&&value.code==='MissingRequiredHeader'&&value.authenticationRejected===true);
+ if(probe.signed===false)return [401,403].includes(value.status)||(value.status===400&&value.authenticationRejected===true&&(value.code==='MissingRequiredHeader'||(value.code==='InvalidArgument'&&value.gatewayCategory==='EMPTY_AUTHORIZATION')));
  if(probe.unmapped)return value.status===404&&value.code==='DomainRouteNotFound';
  return value.status===404&&value.code==='INGRESS_DENIED';
 }

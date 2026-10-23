@@ -44,11 +44,14 @@ def response_evidence(status, raw, include_diagnostic=False, secrets=()):
     # FC documents HTTP 400 for MissingRequiredHeader. Recognize only the
     # missing Authorization header, never a generic 400 or malformed request.
     missing_authorization = bool(re.fullmatch(r'''required HTTP header ["'`]?Authorization["'`]? was not specified\.?''', message.strip(), re.IGNORECASE))
-    # Fixed diagnostic categories only; never persist a message, header value,
-    # URL, credential or a private application body. Categories do not relax
-    # the acceptance predicate for InvalidArgument responses.
+    empty_authorization = bool(re.fullmatch(r'''invalid authorization (?:''|"")\.?''', message.strip(), re.IGNORECASE))
+    # Default evidence is categorical; opt-in details are separately redacted.
+    # InvalidArgument is an auth rejection only for the exact empty-auth form,
+    # never merely because a diagnostic category exists.
     diagnostic = 'UNCLASSIFIED'
-    if re.search(r'(invalid|malformed|incorrect|parse|format).{0,50}(date|timestamp)|(date|timestamp).{0,50}(invalid|malformed|incorrect|parse|format)', message, re.IGNORECASE):
+    if code == 'InvalidArgument' and empty_authorization:
+        diagnostic = 'EMPTY_AUTHORIZATION'
+    elif re.search(r'(invalid|malformed|incorrect|parse|format).{0,50}(date|timestamp)|(date|timestamp).{0,50}(invalid|malformed|incorrect|parse|format)', message, re.IGNORECASE):
         diagnostic = 'INVALID_TIMESTAMP'
     elif re.search(r'(signature|signedheaders).{0,50}(invalid|mismatch|incorrect)|(invalid|mismatch|incorrect).{0,50}(signature|signedheaders)', message, re.IGNORECASE):
         diagnostic = 'INVALID_SIGNATURE'
@@ -58,7 +61,7 @@ def response_evidence(status, raw, include_diagnostic=False, secrets=()):
         diagnostic = 'REQUEST_LIMIT'
     result = {'status': status, 'code': code, 'bytes': len(raw), 'responseHash': hashlib.sha256(raw).hexdigest(),
             'gatewayCategory': diagnostic,
-            'authenticationRejected': status == 400 and code == 'MissingRequiredHeader' and missing_authorization,
+            'authenticationRejected': status == 400 and ((code == 'MissingRequiredHeader' and missing_authorization) or (code == 'InvalidArgument' and empty_authorization)),
             'privateProtocol': b'shuduo-v2-private-smoke' in raw}
     if include_diagnostic:
         result['gatewayDiagnostic'] = gateway_diagnostic(status, parsed, secrets)

@@ -124,10 +124,10 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
       requireThat(report.requests<20 && now()-checkpoint.startedAt<600000 && now()<config.authorizationExpiresAt-300000,'ACCEPTANCE_LIMIT_REACHED');
       report.phase='HTTP_'+probe.id;report.newRequests++;checkpoint.requests=++report.requests; save(checkpoint);
       const value=await adapter.probe(endpoint.origin,probe);
-      const result={id:probe.id,status:value.status,code:typeof value.code==='string'&&/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(value.code)?value.code:'UNCONFIRMED',gatewayCategory:['INVALID_TIMESTAMP','INVALID_SIGNATURE','MISSING_AUTHORIZATION','OTHER_REQUIRED_HEADER','REQUEST_LIMIT'].includes(value.gatewayCategory)?value.gatewayCategory:'UNCLASSIFIED',authenticationRejected:value.authenticationRejected===true,responseHash:value.responseHash,bytes:value.bytes};
+      const result={id:probe.id,status:value.status,code:typeof value.code==='string'&&/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(value.code)?value.code:'UNCONFIRMED',gatewayCategory:['INVALID_TIMESTAMP','INVALID_SIGNATURE','MISSING_AUTHORIZATION','EMPTY_AUTHORIZATION','OTHER_REQUIRED_HEADER','REQUEST_LIMIT'].includes(value.gatewayCategory)?value.gatewayCategory:'UNCLASSIFIED',authenticationRejected:value.authenticationRejected===true,responseHash:value.responseHash,bytes:value.bytes};
       report.results.push(result);
       requireThat(value.privateProtocol!==true,'PRIVATE_OPERATION_EXPOSED');
-      requireThat(probe.signed===false ? [401,403].includes(value.status) || (value.status===400 && value.code==='MissingRequiredHeader' && value.authenticationRejected===true) : value.status===404 && value.code==='INGRESS_DENIED','HTTP_BOUNDARY_NOT_VERIFIED');
+      requireThat(probe.signed===false ? [401,403].includes(value.status) || (value.status===400 && value.authenticationRejected===true && (value.code==='MissingRequiredHeader'||(value.code==='InvalidArgument'&&value.gatewayCategory==='EMPTY_AUTHORIZATION'))) : value.status===404 && value.code==='INGRESS_DENIED','HTTP_BOUNDARY_NOT_VERIFIED');
     }
     report.passed=true;report.phase='HTTP_CHECKS_COMPLETE';
   } catch(e) { report.failure=e.safeCode ?? 'ACCEPTANCE_UNCONFIRMED';if(e.safeDiagnostic)report.failureDiagnostic=e.safeDiagnostic; }
