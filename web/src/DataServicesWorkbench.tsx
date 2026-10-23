@@ -160,13 +160,16 @@ export function DataServicesWorkbench({
   api,
   canWrite,
   privateCloud = false,
+  cloudAccess = "private-preview",
   sourceAgentTaskId,
 }: {
   api: Api;
   canWrite: boolean;
   privateCloud?: boolean;
+  cloudAccess?: "private-preview" | "invited";
   sourceAgentTaskId?: string;
 }) {
+  const cloudScopeLabel = cloudAccess === "invited" ? "受邀云测试范围" : "私有云测试范围";
   const [releaseRuns, setReleaseRuns] = useState<ReleaseRun[]>([]),
     [dapis, setDapis] = useState<DataService[]>([]),
     [xapis, setXapis] = useState<DataService[]>([]),
@@ -386,7 +389,7 @@ export function DataServicesWorkbench({
         {configHash:selected.currentVersion?.configHash},
       );
       await reload();
-      setNotice(privateCloud ? "当前版本已发布到私有调用通道；不是公网生产接口" : "当前测试版本已发布，本机外部端点已生成");
+      setNotice(privateCloud ? `${cloudScopeLabel}：当前版本已发布，仍需应用授权调用；不代表生产验收完成` : "当前测试版本已发布，本机外部端点已生成");
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -426,7 +429,7 @@ export function DataServicesWorkbench({
       setIssuedToken(issued.token ?? "");
       setIssuedAppId(issued.application.id);setTokenVisible(false);
       await reload();
-      setNotice(`${privateCloud ? "私有查询" : "本机"}应用凭证已创建；令牌只显示这一次`);
+      setNotice(`${privateCloud ? cloudScopeLabel : "本机"}应用凭证已创建；令牌只显示这一次`);
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -850,7 +853,7 @@ LIMIT :limit OFFSET :offset`}</pre>
                 <section className="service-openapi">
                   <header>
                     <h4>OpenAPI 3.1</h4>
-                    <span>{privateCloud ? "私有云测试范围" : "本机测试范围"}</span>
+                    <span>{privateCloud ? cloudScopeLabel : "本机测试范围"}</span>
                   </header>
                   <pre>{JSON.stringify(openApi, null, 2)}</pre>
                 </section>
@@ -913,7 +916,7 @@ LIMIT :limit OFFSET :offset`}</pre>
       </section>
       <footer className="service-boundary">
         <AppWindow size={15} />
-        当前数据来自虚构证券发布批次；业务查询库与平台元数据库分离。{privateCloud ? "接口查询已发布结果的不可变快照，不在每次调用时重跑Spark；当前仅私有通道。" : "本机端点不是公网服务。"}
+        当前数据来自虚构证券发布批次；业务查询库与平台元数据库分离。{privateCloud ? `${cloudScopeLabel}：接口查询已发布结果的不可变快照，不在每次调用时重跑Spark；访问仍受应用授权限制，不代表生产验收完成。` : "本机端点不是公网服务。"}
       </footer>
     </div>
   );

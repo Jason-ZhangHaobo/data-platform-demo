@@ -13,6 +13,17 @@ test("private save recovery allows only exact read paths and preserves header bo
   assert.equal(validatePrivateApplicationRequest(input).path,input.path);
   for(const bad of [{...input,method:"POST",body:{}},{...input,body:{}},{...input,path:input.path+"?other=1"},{...input,path:input.path+"/extra"},{...input,path:"/api/v2/revisions/requests/../secret"},{...input,headers:{authorization:"Bearer synthetic"}}])assert.throws(()=>validatePrivateApplicationRequest(bad));
 });
+test("private Agent creation lookup is an explicitly enabled read, never an execution route",async()=>{
+  const input={operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:"/api/v2/agent/requests/fixture-agent-1",headers:{cookie:"synthetic-session"}};
+  assert.throws(()=>validatePrivateApplicationRequest(input));
+  for(const options of [{allowDurableAgent:true},{allowDurableAgentRead:true}])assert.equal(validatePrivateApplicationRequest(input,options).path,input.path);
+  for(const change of [{method:"POST",body:{}},{body:{}},{path:input.path+"/advance"},{path:input.path+"?other=1"},{path:"/api/v2/agent/requests/"+"a".repeat(101)},{headers:{authorization:"Bearer synthetic"}}])assert.throws(()=>validatePrivateApplicationRequest({...input,...change},{allowDurableAgentRead:true}));
+  const response=await callPrivateApplication(input,"http://127.0.0.1:3100",async(url,options)=>{
+    assert.equal(url,"http://127.0.0.1:3100/api/v2/agent/requests/fixture-agent-1");assert.equal(options.method,"GET");assert.equal(options.headers.cookie,"synthetic-session");
+    return new Response(JSON.stringify({message:"原身份无权读取"}),{status:403});
+  },{allowDurableAgentRead:true});
+  assert.equal(response.status,403);
+});
 
 test("private application rejects external targets, unlisted paths and injected headers", async () => {
   const good = { operation: "PRIVATE_APPLICATION_HTTP_V1", method: "GET", path: "/api/v2/status" };
@@ -77,6 +88,11 @@ test("normal private app login and CSRF are required to create a durable Agent t
     const task = await call("/api/v2/agent/tasks", body, headers);
     assert.equal(task.status, 202); assert.equal(task.body.stage, "READY_FOR_MODEL");
     assert.equal(task.body.usedTokens, 0); assert.equal(task.body.attempts.length, 0);
+    const lookupPath="/api/v2/agent/requests/private-intake-test";
+    const recovered=await service.invoke({operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:lookupPath,headers:{cookie:headers.cookie}});
+    assert.equal(recovered.body.status,200);assert.equal(recovered.body.body.id,task.body.id);assert.equal(recovered.body.body.attempts.length,0);
+    const denied=await service.invoke({operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:lookupPath});
+    assert([401,403].includes(denied.body.status));assert(!JSON.stringify(denied).includes(task.body.id));
     assert.equal((await call("/api/v2/agent/tasks", body, headers)).body.id, task.body.id);
     assert.equal((await call("/api/v2/agent/tasks", { ...body, language: "PYTHON" }, headers)).code, "PRIVATE_AGENT_LANGUAGE_NOT_ENABLED");
     const revision = service.app.store.create("revision", PROJECT, { sql: "SELECT missing_col FROM positions", contextId: "holdings-t1" });

@@ -18,8 +18,8 @@ const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
-export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanWrite, ready, readinessReason, loading, privatePreview, backgroundAvailable=false, onLogin, onDirtyChange, onOpenServices }: {
-  api: Api; contexts: Context[]; canWrite: boolean; ready: boolean; readinessReason?:string; loading: boolean; privatePreview: boolean; backgroundAvailable?:boolean; onLogin: () => void; onDirtyChange: (dirty: boolean) => void; onOpenServices?: () => void;
+export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanWrite, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, onLogin, onDirtyChange, onOpenServices }: {
+  api: Api; contexts: Context[]; canWrite: boolean; ready: boolean; readinessReason?:string; loading: boolean; privatePreview: boolean; runtimeMode?: "LOCAL_DEVELOPMENT" | "PUBLIC_INVITATION"; backgroundAvailable?:boolean; onLogin: () => void; onDirtyChange: (dirty: boolean) => void; onOpenServices?: () => void;
 }) {
   const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState("holdings-t1");
   const [message, setMessage] = useState(""), [draft, setDraft] = useState(""), [baseline, setBaseline] = useState("");
@@ -44,6 +44,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     return submission.current;
   }
   const context = contexts.find(c => c.id === contextId), dirty = draft !== baseline;
+  const localManualDelivery = runtimeMode === "LOCAL_DEVELOPMENT" && !privatePreview;
   const runPending = Boolean(run && !terminal(run.status));
   const working = automatic || busy, durable = task?.executionMode === "DURABLE_SQL_AGENT_V1";
   const unknown = task?.stage === "MODEL_OUTCOME_UNKNOWN";
@@ -297,7 +298,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   const resultFields = run?.rows?.[0] ? Object.keys(run.rows[0]) : [];
   return <section className="agent-dev" aria-label="Agent 数据开发工作台">
     <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>客户资产 T+1 · 需求、代码与真实执行，在一个工作台完成。</p></div><div className="agent-dev-header-actions">{task && <a className="button" href="#agent-delivery">核验与交付</a>}<button className="button" disabled={working||Boolean(pendingAgentKey)} onClick={newTask}><Plus size={15} />新建任务</button></div></header>
-    <div className="agent-dev-boundary"><span className="agent-dev-dot" />{privatePreview ? "私有试用" : "开发验证"} · 仅虚构证券数据与 Spark SQL。{backgroundAvailable?"可委托云端事件后台；浏览器只展示进度，不负责触发计算。每个委托有时限、事件与模型预算，发布仍须人工审阅。":"本页打开时自动推进；离开后检查点保留，已提交计算可继续，返回后可恢复。不是永久云调度。"}</div>
+    <div className="agent-dev-boundary"><span className="agent-dev-dot" />{privatePreview ? "私有试用" : runtimeMode === "PUBLIC_INVITATION" ? "受邀云端验证" : runtimeMode === "LOCAL_DEVELOPMENT" ? "本机开发验证" : "环境待确认"} · 仅虚构证券数据与 Spark SQL。{backgroundAvailable?"可委托云端事件后台；浏览器只展示进度，不负责触发计算。每个委托有时限、事件与模型预算，发布仍须人工审阅。":"本页打开时自动推进；离开后检查点保留，已提交计算可继续，返回后可恢复。不是永久云调度。"}</div>
     {loading ? <div className="agent-dev-notice" role="status"><LoaderCircle size={14} className="spin" />正在连接服务并读取项目上下文…</div> : !ready && <div className="agent-dev-alert">{readinessReason??"模型或执行环境尚未就绪；历史任务仍可查询。"}</div>}
     {!loading && !originalCanWrite && <div className="agent-dev-alert">需要有数据开发权限的账号才能提交任务。<button className="button" onClick={onLogin}>登录 / 查看账号</button></div>}
     {error && <div className="agent-dev-alert error" role="alert">{error}<button onClick={() => setError("")} aria-label="关闭错误提示">×</button></div>}
@@ -355,7 +356,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />}
     {!task && baselineRevisionId && <section className="agent-delivery-panel" aria-label="人工接管与交付"><h3>人工接管记录</h3><p>当前代码由工程师保存；原 Agent 的失败和验证结论不改写，也不计作 Agent 自主完成。</p><small>代码版本：{baselineRevisionId}{run ? ` · 运行批次：${run.id}` : " · 运行尚未确认"}</small>
       {originTaskId && <button className="button" disabled={working || manualUnconfirmed || Boolean(message.trim())} onClick={() => void selectTask(originTaskId)}>返回原 Agent 任务</button>}
-      {privatePreview ? <p>当前私有试用尚未接入人工版本的云交付；不会自动借用原 Agent 的批准或发布。代码与批次保留，可继续人工检查。</p> : <><button className="button" disabled={working || dirty || manualUnconfirmed || Boolean(message.trim()) || run?.status !== "SUCCEEDED" || run.revisionId !== baselineRevisionId || !run.validationContractId} onClick={() => setManualDeliveryOpen(true)}>打开本机人工交付流程</button><small>在本页继续生成包、文件演练和审阅；服务端仍核验实际执行与来源。不是自动批准或云端上线。</small>
+      {!localManualDelivery ? <p>当前环境尚未接入人工版本的云交付；不会回退本机交付，也不会借用原 Agent 的批准或发布。代码与批次保留，可继续人工检查。</p> : <><button className="button" disabled={working || dirty || manualUnconfirmed || Boolean(message.trim()) || run?.status !== "SUCCEEDED" || run.revisionId !== baselineRevisionId || !run.validationContractId} onClick={() => setManualDeliveryOpen(true)}>打开本机人工交付流程</button><small>在本页继续生成包、文件演练和审阅；服务端仍核验实际执行与来源。不是自动批准或云端上线。</small>
       {manualDeliveryOpen && run?.validationContractId && run.revisionId === baselineRevisionId && <Suspense fallback={<p role="status">正在加载人工交付流程…</p>}><ManualDeliveryWorkbench key={run.id} api={api} runs={[{id:run.id,status:run.status,revisionId:baselineRevisionId,contextId,createdAt:run.createdAt ?? "",validationContractId:run.validationContractId}]} sourceRunId={run.id} contractId={run.validationContractId} lockSource canWrite={canWrite && !working && !dirty && !manualUnconfirmed && !message.trim()} onBack={() => setManualDeliveryOpen(false)} /></Suspense>}</>}
     </section>}
   </section>;
