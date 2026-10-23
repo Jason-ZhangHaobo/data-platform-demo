@@ -38,6 +38,12 @@
 - `scripts/accept-v2-https-binding.mjs`与`transport-v2-domain-signed.py`：仅固定域名/操作，PEM通过stdin而非命令参数传递，响应投影删除私钥。域名探测核对可信TLS连接的实际叶证书指纹；计划通过不代替真实连接。
 - `test/v2/https-binding-workflow.test.mjs`及既有线级HTTP回归覆盖阶段顺序、相同入口延续、精确鉴权拒绝和敏感响应剔除。
 
+## 独立定向诊断
+
+无法归类的网关错误先使用独立的`diagnose-v2-http-gateway`工作流，不直接重跑完整接入。该入口须另获明确授权，限制为三个固定GET：签名基线、未签名且带现代时间头、未签名且不带时间头；不调用内部状态执行接口，不修改DNS、域名或业务函数。历史计数保留，`boundaryAccepted`始终为false，取得诊断资料不等于安全验收通过。
+
+默认探测不保留错误说明。显式诊断模式仅保留有界、脱敏的网关错误字段，删除凭证、URL、账号长标识和邮箱，不保留完整响应正文，且只导出加密Artifact；普通作业日志不输出诊断内容。原临时入口清理、函数/OSS触发器不变和权限撤销仍须有回执。
+
 ## 官方依据
 
 - [CreateCustomDomain](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-createcustomdomain)

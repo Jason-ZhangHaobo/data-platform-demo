@@ -12,7 +12,7 @@ const canonical = value => JSON.stringify(value && typeof value === 'object' ? A
 const digest = value => createHash('sha256').update(canonical(value)).digest('hex');
 const functionFields = ['codeChecksum','codeSize','environmentVariables','runtime','handler','role','timeout','cpu','memorySize','diskSize','instanceConcurrency','internetAccess','vpcConfig','customRuntimeConfig','layers','nasConfig','ossMountConfig','logConfig'];
 export const functionHash = value => digest(Object.fromEntries(functionFields.map(k=>[k,value[k] ?? null])));
-const triggerHash = list => digest([...list].sort((a,b)=>a.triggerName.localeCompare(b.triggerName)));
+export const triggerHash = list => digest([...list].sort((a,b)=>a.triggerName.localeCompare(b.triggerName)));
 export const triggerConfiguration = Object.freeze({authType:'function',methods:['GET','POST'],disableURLInternet:false});
 const description = 'Temporary signed read-only boundary acceptance; remove after this run';
 const targetHash = config => digest([config.account,config.region,config.functionName]);
