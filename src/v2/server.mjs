@@ -1369,6 +1369,11 @@ export function createV2Server(options = {}) {
         return json(res, 200, {
           projectId: PROJECT,
           mode: local ? "LOCAL_DEVELOPMENT" : "PUBLIC_INVITATION",
+          site: {
+            registeredName: String(env.V2_SITE_REGISTERED_NAME ?? "").trim().slice(0, 80),
+            icpNumber: String(env.V2_SITE_ICP_NUMBER ?? "").trim().slice(0, 80),
+            icpUrl: "https://beian.miit.gov.cn/",
+          },
           capabilities,
           model: {
             ...modelSettings(env),

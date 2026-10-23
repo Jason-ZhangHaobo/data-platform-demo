@@ -104,6 +104,7 @@ type Capability = {
   features: string[];
 };
 type Status = {
+  site?: { registeredName: string; icpNumber: string; icpUrl: string };
   agentDevelopment?: { durableEnabled: boolean; eventBackgroundAvailable?: boolean };
   validationContract?: { id: string; fixtureCount: number };
   mode: string;
@@ -1863,6 +1864,12 @@ function App() {
             合成证券数据 · {status?.mode === "LOCAL_DEVELOPMENT" ? "本地开发验证" : session.authenticated ? "受邀项目会话" : "公开只读演示"}
           </span>
         </footer>
+        {status?.site?.icpNumber && (
+          <footer className="site-registration" aria-label="网站备案信息">
+            {status.site.registeredName && <span>{status.site.registeredName} · 数舵</span>}
+            <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">{status.site.icpNumber}</a>
+          </footer>
+        )}
       </main>
       {notice && (
         <div role="status" className="toast">
