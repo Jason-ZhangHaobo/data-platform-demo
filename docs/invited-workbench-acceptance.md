@@ -33,3 +33,7 @@
 - 此策略不开放公网、不创建业务任务，不执行模型或Spark，也不代替IAM清理和真实云端验收。
 
 `test/v2/control-code-update.test.mjs`覆盖故障、恢复、范围绑定和实际回环HTTP合同。HTTP合同使用真实应用路由与权限检查，但云持久化和FC写操作仍是替身，不应称为真实云部署验证。
+
+执行接线为`scripts/control-code-transport.mjs`与`update-v2-control-code.yml`：只允许受保护main和明确阶段批准，目标通过临时加密Secret传入并在获取OIDC前遮罩；下载原构包Artifact并核对摘要/大小，签名下载旧代码仅允许对应地域OSS且强制HTTPS。对象只允许两个精确包、create-only私有写入及字节回读/ACL验证，桶隐私须有当前受保护预检证据。CLI禁止自动重试，恢复不重新提交未知写入，最终只上传加密证据。工作流不管理IAM，临时权限及Secret由受保护本机协调过程回收。
+
+官方接口依据：[取得旧代码](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-getfunctioncode)、[并发配置](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-getconcurrencyconfig)、[弹性配置](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-getscalingconfig)。弹性配置比较排除当前实例数等运行态字段，保留配置策略，避免正常缩扩实例被误当成配置改写。

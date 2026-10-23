@@ -116,6 +116,7 @@ export async function runControlCodeUpdate(config,adapter,{load,save,now=Date.no
   cp.phase='VERIFIED';await write();report.passed=true;
  }catch(error){
   report.failure=error.safeCode??'CONTROL_UPDATE_UNCONFIRMED';
+  if(error.safeDiagnostic)report.failureDiagnostic=error.safeDiagnostic;
   if(checkpointValidated&&mayNeedRollback&&cp?.phase!=='VERIFIED'){
    try{await rollback();}catch(e){report.rollbackFailure=e.safeCode??'ROLLBACK_UNCONFIRMED';}
   }
