@@ -50,6 +50,7 @@ import {
 } from "./model.mjs";
 import { capabilities } from "./capabilities.mjs";
 import { saveLocalModelKey } from "./model-credentials.mjs";
+import { safeModelDiagnostic } from "./model-diagnostics.mjs";
 import {
   createDeliveryPackage,
   validateDeliveryPackage,
@@ -5330,14 +5331,38 @@ export function createV2Server(options = {}) {
                 Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) - usedTokens;
               if (remainingBudget < 1)
                 throw new Error("本次 Agent 已达到 Token 预算上限");
-              const generated = await generator({
-                message,
-                context,
-                currentSql: sql,
-                error,
-                signal,
-                remainingBudget,
-              });
+              let generated;
+              const modelStartedAt = Date.now();
+              try {
+                generated = await generator({
+                  message,
+                  context,
+                  currentSql: sql,
+                  error,
+                  signal,
+                  remainingBudget,
+                });
+              } catch (cause) {
+                const diagnostic = safeModelDiagnostic(cause, Date.now() - modelStartedAt);
+                // An unknown provider outcome consumes the remaining reservation;
+                // neither lookup nor page reload should silently retry it.
+                const reservedTokens = diagnostic.requestMayHaveBeenSent ? remainingBudget : 0;
+                usedTokens += reservedTokens;
+                store.update("agent", task.id, PROJECT, {
+                  attempts: [...get("agent", task.id).attempts, {
+                    attempt,
+                    status: "FAILED",
+                    diagnostic,
+                    ...(diagnostic.requestMayHaveBeenSent ? {
+                      model: modelSettings(env).model,
+                      usage: { total_tokens: reservedTokens },
+                      usageEstimated: true,
+                    } : {}),
+                  }],
+                  usedTokens,
+                });
+                throw cause;
+              }
               if (
                 signal.aborted ||
                 get("agent", task.id).status === "CANCELLED"
