@@ -9,7 +9,28 @@ import sys
 from urllib.parse import urlsplit, parse_qsl
 
 
-def response_evidence(status, raw):
+def gateway_diagnostic(status, parsed, secrets=()):
+    """Opt-in, bounded gateway error detail for encrypted diagnostic evidence."""
+    allowed = {'errorCode', 'ErrorCode', 'code', 'Code', 'errorMessage', 'ErrorMessage', 'message', 'Message', 'RequestId', 'requestId', 'requestID'}
+    if status not in (400, 401, 403) or not set(parsed).issubset(allowed):
+        return None
+    message = next((parsed[k] for k in ('errorMessage', 'ErrorMessage', 'message', 'Message') if isinstance(parsed.get(k), str)), '')
+    if not message or 'PRIVATE KEY' in message or 'shuduo-v2-private-smoke' in message:
+        return None
+    for value in secrets:
+        if value:
+            message = message.replace(value, '[REDACTED]')
+    message = re.sub(r'https?://[^\s<>"\']+|acs:[^\s<>"\']+', '[RESOURCE]', message, flags=re.I)
+    message = re.sub(r'[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '[EMAIL]', message)
+    message = re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b|\b\d{12,}\b|[A-Za-z0-9_+/=-]{32,}', '[IDENTIFIER]', message)
+    message = re.sub(r'(?i)\b(password|secret|token|accesskeyid|accesskeysecret)\s*[:=]\s*[^\s,;]+', r'\1=[REDACTED]', message)
+    message = re.sub(r'[\x00-\x1f\x7f]', ' ', message)
+    request_id = next((parsed[k] for k in ('RequestId', 'requestId', 'requestID') if isinstance(parsed.get(k), str)), '')
+    return {'message': message[:512], 'truncated': len(message) > 512,
+            'requestIdHash': hashlib.sha256(request_id.encode()).hexdigest() if request_id else None}
+
+
+def response_evidence(status, raw, include_diagnostic=False, secrets=()):
     try:
         parsed = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
@@ -35,10 +56,13 @@ def response_evidence(status, raw):
         diagnostic = 'MISSING_AUTHORIZATION' if missing_authorization else 'OTHER_REQUIRED_HEADER'
     elif re.search(r'(header|request|body).{0,50}(too (?:large|long)|exceed)', message, re.IGNORECASE):
         diagnostic = 'REQUEST_LIMIT'
-    return {'status': status, 'code': code, 'bytes': len(raw), 'responseHash': hashlib.sha256(raw).hexdigest(),
+    result = {'status': status, 'code': code, 'bytes': len(raw), 'responseHash': hashlib.sha256(raw).hexdigest(),
             'gatewayCategory': diagnostic,
             'authenticationRejected': status == 400 and code == 'MissingRequiredHeader' and missing_authorization,
             'privateProtocol': b'shuduo-v2-private-smoke' in raw}
+    if include_diagnostic:
+        result['gatewayDiagnostic'] = gateway_diagnostic(status, parsed, secrets)
+    return result
 
 
 def main():
@@ -46,6 +70,9 @@ def main():
     from Tea.request import TeaRequest
     data = json.load(sys.stdin)
     endpoint, probe = urlsplit(data['url']), data['probe']
+    diagnose = data.get('diagnosticAuthorization') == 'THREE_READONLY_GATEWAY_PROBES' and os.environ.get('V2_HTTP_DIAGNOSTIC_AUTHORIZED') == 'THREE_READONLY_GATEWAY_PROBES'
+    if probe.get('timestampMode') is not None and not (diagnose and probe.get('signed') is False and probe['timestampMode'] == 'omit'):
+        raise ValueError('TIMESTAMP_DIAGNOSTIC_NOT_AUTHORIZED')
     custom_domain = (data.get('domainAuthorization') == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED'
                      and endpoint.hostname == 'shuduoai.cn')
     if (endpoint.scheme != 'https' or not endpoint.hostname or not (endpoint.hostname.endswith('.cn-hangzhou.fcapp.run') or custom_domain)
@@ -61,7 +88,8 @@ def main():
         # Match the official ACS3 HTTP-trigger request shape: x-acs-date only.
         # Do not mix the legacy Date header with the modern timestamp scheme.
         now = datetime.datetime.now(datetime.timezone.utc)
-        headers['x-acs-date'] = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+        if probe.get('timestampMode') != 'omit':
+            headers['x-acs-date'] = now.strftime('%Y-%m-%dT%H:%M:%SZ')
     if probe.get('signed', True):
         aid, secret, token = (os.environ[name] for name in ('ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_SECURITY_TOKEN'))
         headers.update({'x-acs-date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'x-acs-security-token': token})
@@ -86,7 +114,8 @@ def main():
         raw = response.read(65537)
         if len(raw) > 65536:
             raise ValueError('RESPONSE_TOO_LARGE')
-        print(json.dumps({**response_evidence(response.status, raw), **tls}))
+        secrets = tuple(os.environ.get(name, '') for name in ('ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_SECURITY_TOKEN'))
+        print(json.dumps({**response_evidence(response.status, raw, diagnose, secrets), **tls}))
     finally:
         connection.close()
 
