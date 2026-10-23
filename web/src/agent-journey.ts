@@ -62,7 +62,10 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
   const executed = e.publicationReadable !== false && publicationCurrent && !stopped && batches.some(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true);
   const healthy = executed && e.release?.health === "HEALTHY" && Number.isSafeInteger(e.release.runCount) && e.release.runCount! > 0 && batches.length === e.release.runCount && new Set(batches.map(b => b.id)).size === batches.length && batches.every(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true && e.events?.some(event => event.type === "BATCH_SUCCEEDED" && event.releaseId === e.release?.id && event.releaseRunId === b.id && event.packageDigest === e.bundle?.digest)) && !(e.alerts ?? []).some(a => a.status === "OPEN");
   const state = (done: boolean, failed = false): JourneyState => e.dirty ? "STALE" : done ? "DONE" : failed ? "ATTENTION" : "PENDING";
-  const consumptionCurrent = current && e.consumption?.protocol === "shuduo-private-task-consumption/v1" && e.consumption.taskId === e.taskId && e.consumption.packageDigest === e.bundle?.digest && e.consumption.scope === "PRIVATE_CLOUD_TEST";
+  const consumptionScopeMatches = e.release?.status === "ACTIVE_LOCAL"
+    ? e.consumption?.protocol === "shuduo-local-task-consumption/v1" && e.consumption.scope === "LOCAL_TEST_ONLY"
+    : e.consumption?.protocol === "shuduo-private-task-consumption/v1" && e.consumption.scope === "PRIVATE_CLOUD_TEST";
+  const consumptionCurrent = current && consumptionScopeMatches && e.consumption?.taskId === e.taskId && e.consumption.packageDigest === e.bundle?.digest;
   const consumed = Boolean(healthy && consumptionCurrent && !e.consumption?.truncated && e.consumption?.status === "VERIFIED" && e.consumption.services.some(s => s.serviceType === "XAPI" && s.status === "VERIFIED" && s.fullAssetComposition === true && s.call?.verified === true && s.call.versionId === s.versionId && s.call.rowCount > 0));
   const steps: JourneyStep[] = [
     { id: "requirement", label: "需求与口径", state: "DONE", detail: "需求已记录；按已登记证券口径执行，不代表模型已理解任意需求。", target: "agent-requirement" },

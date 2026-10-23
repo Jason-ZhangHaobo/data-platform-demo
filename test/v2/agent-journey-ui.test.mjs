@@ -110,3 +110,10 @@ test('consumption stages bind task, package, current version, receipt and comple
   assert.notEqual(stage({...fixture(),dirty:true,consumption},'services'),'DONE');
   assert.notEqual(stage({...fixture(),consumption:{...consumption,services:[{...consumption.services[0],call:{verified:true,versionId:'old',rowCount:2}}]}},'services'),'DONE');
 });
+test('local consumption can complete the same task journey but cannot claim a cloud release',()=>{
+  const f=fixture();f.release.status='ACTIVE_LOCAL';
+  const consumption={protocol:'shuduo-local-task-consumption/v1',taskId:f.taskId,packageDigest:f.bundle.digest,scope:'LOCAL_TEST_ONLY',status:'VERIFIED',truncated:false,services:[{serviceType:'XAPI',status:'VERIFIED',fullAssetComposition:true,versionId:'local-x',call:{verified:true,versionId:'local-x',rowCount:2}}]};
+  assert.equal(stage({...f,consumption},'services'),'DONE');
+  assert.notEqual(stage({...fixture(),consumption},'services'),'DONE');
+  assert.notEqual(stage({...f,consumption:{...consumption,protocol:'shuduo-private-task-consumption/v1',scope:'PRIVATE_CLOUD_TEST'}},'services'),'DONE');
+});

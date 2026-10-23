@@ -3,7 +3,8 @@ import { serviceVersionConfigValid } from "./data-services.mjs";
 const assetFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 // Private, owner-authorized projection of persisted calls. No tokens, rows,
 // parameters, rematerialization, model invocation or new consumer calls.
-export async function privateTaskConsumption({ taskId, packageDigest, services, ownedService, getVersion, source, getRelease, application, calls, recheckCall }) {
+export async function privateTaskConsumption({ taskId, packageDigest, services, ownedService, getVersion, source, getRelease, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
+  if (!["PRIVATE_CLOUD_TEST", "LOCAL_TEST_ONLY"].includes(scope)) throw new Error("Unsupported consumption scope");
   const entries = [], limit = 20;
   let matchingCount = 0;
   for (const service of services) {
@@ -42,7 +43,7 @@ export async function privateTaskConsumption({ taskId, packageDigest, services, 
       const successful = calls(service.id).filter(c => c.serviceVersionId === root.id && c.outcome === "SUCCEEDED" && c.statusCode === 200 && c.rowCount > 0).sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt)));
       const call = successful.find(c => {
         const app = application(c.applicationId);
-        return app?.scope === "PRIVATE_CLOUD_TEST" && app.serviceIds?.includes(service.id) && ["ACTIVE", "REVOKED"].includes(app.status);
+        return app?.scope === scope && app.serviceIds?.includes(service.id) && ["ACTIVE", "REVOKED"].includes(app.status);
       });
       if (call) {
         const proof = await recheckCall(service.id, call.id);
@@ -60,8 +61,8 @@ export async function privateTaskConsumption({ taskId, packageDigest, services, 
   }
   const truncated = matchingCount > limit;
   const verified = !truncated && entries.some(e => e.status === "VERIFIED" && e.fullAssetComposition === true);
-  return { protocol: "shuduo-private-task-consumption/v1", taskId, packageDigest,
-    scope: "PRIVATE_CLOUD_TEST", status: verified ? "VERIFIED" : "PENDING", checkedAt: new Date().toISOString(),
+  return { protocol: scope === "LOCAL_TEST_ONLY" ? "shuduo-local-task-consumption/v1" : "shuduo-private-task-consumption/v1", taskId, packageDigest,
+    scope, status: verified ? "VERIFIED" : "PENDING", checkedAt: new Date().toISOString(),
     services: entries, matchingCount, truncated, publicDeployed: false, externalSystemVerified: false, agentIndependentE2E: false,
     notice: "持久授权调用与现有快照的只读对照；不新增调用、不消耗限流，不等同外部客户端独立断言或自主E2E验收。" };
 }
