@@ -44,6 +44,8 @@ jobs:
           package-manager-cache: false
       - name: Validate and mask the fixed target before credentials
         run: node scripts/audit-v2-domain-readonly.mjs --prepare
+      - name: Install the already pinned official signing SDK before credentials
+        run: python3 -m pip install --disable-pip-version-check --quiet alibabacloud-openapi-util==0.2.4 alibabacloud-tea==0.3.8 alibabacloud-tea-util==0.3.14
       - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5
         with:
           version: "3.5.1"
