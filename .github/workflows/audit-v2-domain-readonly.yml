@@ -1,0 +1,66 @@
+name: Audit V2 domain read-only
+on:
+  workflow_dispatch:
+    inputs:
+      authorization:
+        description: Enter ONE_DOMAIN_READ_MAX_TWO after explicit approval
+        required: true
+        type: string
+      expected_source_revision:
+        description: Reviewed main SHA
+        required: true
+        type: string
+      authorization_expires_at:
+        description: Approved window ends within one hour
+        required: true
+        type: string
+      recipient_public_key:
+        description: Base64 DER RSA public key for encrypted evidence
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: v2-staging-control-mutation
+  cancel-in-progress: false
+jobs:
+  audit:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: v2-staging
+    env:
+      V2_DOMAIN_READ_TARGET: ${{ secrets.V2_DOMAIN_READ_TARGET }}
+      V2_DOMAIN_READ_AUTHORIZATION: ${{ inputs.authorization }}
+      V2_DOMAIN_SOURCE_SHA: ${{ inputs.expected_source_revision }}
+      V2_DOMAIN_READ_EXPIRES_AT: ${{ inputs.authorization_expires_at }}
+      V2_AUDIT_RECIPIENT_KEY: ${{ inputs.recipient_public_key }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Validate and mask the fixed target before credentials
+        run: node scripts/audit-v2-domain-readonly.mjs --prepare
+      - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5
+        with:
+          version: "3.5.1"
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ env.V2_DOMAIN_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.V2_DOMAIN_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-domain-read
+          role-session-expiration: 900
+          audience: sts.aliyuncs.com
+      - name: Read the one approved domain
+        run: node scripts/audit-v2-domain-readonly.mjs
+      - name: Retain only encrypted minimal evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: shuduo-domain-read-${{ github.run_id }}
+          path: v2-domain-audit.sealed.json
+          retention-days: 1
+          if-no-files-found: error
