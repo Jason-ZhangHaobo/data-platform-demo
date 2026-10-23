@@ -1286,6 +1286,28 @@ kbd {
 .statusbar-right {
   margin-left: auto;
 }
+.site-registration {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px 16px;
+  padding: 10px 20px;
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64756b;
+  background: #fafcf6;
+}
+.site-registration a {
+  color: inherit;
+  text-decoration: none;
+}
+.site-registration a:hover,
+.site-registration a:focus-visible {
+  color: #166b50;
+  text-decoration: underline;
+}
 .error-banner {
   display: flex;
   gap: 8px;
