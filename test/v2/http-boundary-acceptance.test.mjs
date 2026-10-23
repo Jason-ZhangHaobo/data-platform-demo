@@ -133,3 +133,13 @@ test('workflow has default denial, protected environment, no app secrets and unc
  const text=readFileSync('.github/workflows/accept-v2-http-boundary.yml','utf8');
  assert.match(text,/default: NOT_AUTHORIZED/);assert.match(text,/environment: v2-staging/);assert.match(text,/refs\/heads\/main/);assert.match(text,/cancel-in-progress: false/);assert.equal((text.match(/if: always\(\)/g)||[]).length,3);assert.match(text,/--cleanup/);assert.match(text,/--seal/);assert(!text.includes('secrets.'));assert.match(text,/path: v2-http-acceptance\.sealed\.json/);
 });
+test('the same trigger may be held only for the explicitly authorized domain batch after all checks pass',async()=>{
+ const denied=fixture(),blocked=await runHttpAcceptance(denied.config,denied.adapter,{...denied.options,deferForDomain:true});
+ assert.equal(blocked.failure,'DOMAIN_HOLD_NOT_AUTHORIZED');assert.equal(denied.creates(),0);
+ const valid=fixture();valid.config.domainBindingAuthorization='ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED';valid.config.previousReads=3;
+ const ready=await runHttpAcceptance(valid.config,valid.adapter,{...valid.options,deferForDomain:true});
+ assert.equal(ready.passed,true);assert.equal(ready.requests,18);assert.equal(ready.cleanup.deferredForSameDomainBatch,true);assert.equal(valid.creates(),1);assert.equal(valid.remaining().length,3);
+ assert.equal((await cleanupAcceptance(valid.config,valid.adapter,valid.checkpoint())).triggerAbsent,true);assert.deepEqual(valid.remaining(),valid.original);
+ const bad=fixture({badProbe:true});bad.config.domainBindingAuthorization=valid.config.domainBindingAuthorization;
+ const failed=await runHttpAcceptance(bad.config,bad.adapter,{...bad.options,deferForDomain:true});assert.equal(failed.passed,false);assert.equal(failed.cleanup.triggerAbsent,true);assert.deepEqual(bad.remaining(),bad.original);
+});

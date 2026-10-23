@@ -1,0 +1,88 @@
+name: One-shot V2 signed HTTPS binding
+on:
+  workflow_dispatch:
+    inputs:
+      authorization:
+        description: Explicit approval for one signed HTTPS binding batch
+        required: true
+        type: choice
+        options: [NOT_AUTHORIZED, ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED]
+        default: NOT_AUTHORIZED
+      expected_source_revision:
+        description: Reviewed main SHA whose CI has passed
+        required: true
+        type: string
+      recipient_public_key:
+        description: Base64 DER RSA public key for encrypted evidence
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: v2-staging-control-mutation
+  cancel-in-progress: false
+jobs:
+  accept:
+    if: github.ref == 'refs/heads/main' && inputs.authorization == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: v2-staging
+    env:
+      V2_HTTPS_BINDING_INPUT: ${{ secrets.V2_HTTPS_BINDING_INPUT }}
+      V2_HTTPS_AUTHORIZATION: ${{ inputs.authorization }}
+      V2_HTTPS_SOURCE_SHA: ${{ inputs.expected_source_revision }}
+      V2_AUDIT_RECIPIENT_KEY: ${{ inputs.recipient_public_key }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Validate approved scope and mask target before credentials
+        run: node scripts/accept-v2-https-binding.mjs --prepare
+      - name: Install the existing pinned official signing SDK
+        run: python3 -m pip install --disable-pip-version-check --quiet alibabacloud-openapi-util==0.2.4 alibabacloud-tea==0.3.8 alibabacloud-tea-util==0.3.14
+      - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5
+        with:
+          version: '3.5.1'
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ env.V2_HTTPS_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.V2_HTTPS_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-https-binding
+          role-session-expiration: 3600
+          audience: sts.aliyuncs.com
+      - name: Verify default boundary and retain the same temporary signed trigger
+        timeout-minutes: 8
+        run: node scripts/accept-v2-https-binding.mjs --boundary
+      - name: Seal default-boundary proof before DNS handoff
+        run: node scripts/accept-v2-https-binding.mjs --handoff
+      - name: Export encrypted proof for the approved local DNS operator
+        uses: actions/upload-artifact@v6
+        with:
+          name: shuduo-https-ready-${{ github.run_id }}
+          path: v2-https-handoff.sealed.json
+          retention-days: 1
+          if-no-files-found: error
+      - name: Await exact DNS then create and verify the signed HTTPS binding
+        timeout-minutes: 12
+        run: node scripts/accept-v2-https-binding.mjs --bind
+      - name: Always clean the temporary trigger and roll back failed domain changes
+        if: always()
+        timeout-minutes: 4
+        run: node scripts/accept-v2-https-binding.mjs --cleanup
+      - name: Seal final evidence
+        if: always()
+        run: node scripts/accept-v2-https-binding.mjs --seal
+      - name: Retain only encrypted final evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: shuduo-https-binding-${{ github.run_id }}
+          path: v2-https-binding.sealed.json
+          retention-days: 1
+          if-no-files-found: error

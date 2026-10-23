@@ -1,0 +1,148 @@
+// Side-effect-free plan and adapter-driven state machine. No cloud transport,
+// credential loading or automatic invocation is installed by importing this file.
+import {createHash,X509Certificate,createPrivateKey,createPublicKey} from 'node:crypto';
+import {auditConfig} from './audit-v2-oidc-readonly.mjs';
+
+const fail=code=>Object.assign(new Error(code),{safeCode:code});
+const check=(value,code)=>{if(!value)throw fail(code);};
+const canonical=value=>JSON.stringify(value&&typeof value==='object'
+  ?Array.isArray(value)?value.map(v=>JSON.parse(canonical(v)))
+    :Object.fromEntries(Object.keys(value).sort().map(k=>[k,JSON.parse(canonical(value[k]))])):value??null);
+const digest=value=>createHash('sha256').update(canonical(value)).digest('hex');
+export const DOMAIN_BINDING_AUTHORIZATION='ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED';
+
+export function verifyCertificateMaterial({certificate,privateKey},now=Date.now()){
+  try{
+    check(typeof certificate==='string'&&Buffer.byteLength(certificate)<=20480,'CERTIFICATE_SIZE_INVALID');
+    check(typeof privateKey==='string'&&Buffer.byteLength(privateKey)<=4096,'PRIVATE_KEY_SIZE_INVALID');
+    const leaf=new X509Certificate(certificate),key=createPrivateKey(privateKey);
+    check(leaf.checkHost('shuduoai.cn')==='shuduoai.cn'&&leaf.subjectAltName==='DNS:shuduoai.cn','CERTIFICATE_DOMAIN_MISMATCH');
+    check(Date.parse(leaf.validFrom)<=now&&Date.parse(leaf.validTo)>now+86400000,'CERTIFICATE_NOT_CURRENT');
+    check(leaf.publicKey.export({type:'spki',format:'der'}).equals(createPublicKey(key).export({type:'spki',format:'der'})),'CERTIFICATE_KEY_MISMATCH');
+    return{leafSha256:createHash('sha256').update(leaf.raw).digest('hex'),validTo:new Date(leaf.validTo).toISOString(),domain:'shuduoai.cn'};
+  }catch(error){throw fail(error.safeCode??'CERTIFICATE_MATERIAL_INVALID');}
+}
+
+export function domainBindingPlan(input,now=Date.now()){
+  check(input?.authorization===DOMAIN_BINDING_AUTHORIZATION,'DOMAIN_BINDING_NOT_AUTHORIZED');
+  check(input.domainName==='shuduoai.cn','DOMAIN_TARGET_INVALID');
+  check(/^[a-f0-9]{32}$/.test(input.operationId??''),'DOMAIN_OPERATION_ID_INVALID');
+  const expiresAt=Date.parse(input.expiresAt);
+  check(Number.isFinite(expiresAt)&&expiresAt-now>=600000&&expiresAt-now<=3600000,'DOMAIN_AUTHORIZATION_WINDOW_INVALID');
+  check(/^[a-f0-9]{40}$/.test(input.sourceRevision??''),'DOMAIN_SOURCE_INVALID');
+  const target=auditConfig({V2_DEPLOY_ROLE_ARN:input.roleArn,V2_DEPLOY_OIDC_PROVIDER_ARN:input.providerArn,V2_FUNCTION_NAME:input.functionName,ALIBABA_CLOUD_REGION_ID:input.region});
+  check(/^[a-f0-9]{64}$/.test(input.certificate?.leafSha256??'')&&input.certificate.domain===input.domainName&&Date.parse(input.certificate.validTo)>expiresAt,'DOMAIN_CERTIFICATE_EVIDENCE_INVALID');
+  const routes=[{path:'/',methods:['GET']},{path:'/v2/*',methods:['GET']},{path:'/api/v2/*',methods:['GET','POST']}]
+    .map(route=>({...route,functionName:target.functionName,qualifier:'LATEST'}));
+  const desired={domainName:input.domainName,protocol:'HTTPS',authConfig:{authType:'function',authInfo:'{}'},
+    tlsConfig:{minVersion:'TLSv1.2',maxVersion:'TLSv1.3'},routeConfig:{routes},
+    certName:`shuduo-bind-${input.operationId}`,certificateSha256:input.certificate.leafSha256};
+  return{version:1,operationId:input.operationId,sourceRevision:input.sourceRevision,expiresAt:input.expiresAt,
+    target:{...target,domainName:input.domainName},desired,desiredHash:digest(desired),
+    dns:{rr:'@',type:'CNAME',value:`${target.account}.${target.region}.fc.aliyuncs.com`,ttl:600},
+    limits:{newDomainCreates:1,newBusinessDnsRecords:1,domainProbes:20,reservedCny:1,monthlyCny:200},
+    publicApplicationEnabled:false,automaticRenewalConfigured:false};
+}
+
+export function domainTemporaryStatements(plan){
+  const condition={DateLessThan:{'acs:CurrentTime':plan.expiresAt}};
+  return[
+    {Effect:'Allow',Action:['fc:GetCustomDomain','fc:CreateCustomDomain','fc:InvokeFunction','fc:DeleteTrigger'],Resource:'*',Condition:condition},
+    {Effect:'Allow',Action:['fc:DeleteCustomDomain'],Resource:`acs:fc:${plan.target.region}:${plan.target.account}:custom-domains/${plan.target.domainName}`,Condition:condition},
+  ];
+}
+
+function projection(value){
+  // Never retain a returned privateKey, raw certificate, auth tokens or response.
+  let certificateSha256;
+  try{certificateSha256=createHash('sha256').update(new X509Certificate(value?.certConfig?.certificate).raw).digest('hex');}catch{}
+  return{domainName:value?.domainName,protocol:value?.protocol,
+    authConfig:value?.authConfig,tlsConfig:value?.tlsConfig,routeConfig:value?.routeConfig,
+    certName:value?.certConfig?.certName,certificateSha256};
+}
+
+export function domainConfigurationMatches(value,plan){
+  if(String(value?.accountId)!==plan.target.account)return false;
+  // Server-added defaults are allowed only when they do not relax the policy.
+  const actual=projection(value),expected=plan.desired;
+  return actual.domainName===expected.domainName&&actual.protocol==='HTTPS'
+    &&actual.authConfig?.authType==='function'&&(!actual.authConfig.authInfo||actual.authConfig.authInfo==='{}')
+    &&actual.tlsConfig?.minVersion==='TLSv1.2'&&actual.tlsConfig.maxVersion==='TLSv1.3'
+    &&(!actual.tlsConfig.cipherSuites||actual.tlsConfig.cipherSuites.length===0)
+    &&canonical(actual.routeConfig)===canonical(expected.routeConfig)
+    &&actual.certName===expected.certName&&actual.certificateSha256===expected.certificateSha256
+    &&(!value.wafConfig||value.wafConfig.enableWAF===false)
+    &&(!value.corsConfig||canonical(value.corsConfig)==='{}');
+}
+
+const absent=value=>value?.status===404&&value?.code==='DomainNameNotFound';
+const present=value=>value?.status===200&&value?.value&&typeof value.value==='object';
+function validateCheckpoint(plan,checkpoint){
+  check(checkpoint?.operationId===plan.operationId&&checkpoint.desiredHash===plan.desiredHash
+    &&checkpoint.domainName===plan.target.domainName&&checkpoint.baselineAbsent===true,'DOMAIN_CHECKPOINT_MISMATCH');
+}
+
+export async function rollbackDomainBinding(plan,adapter,checkpoint,{save}={}){
+  validateCheckpoint(plan,checkpoint);
+  check(typeof save==='function','DOMAIN_DURABLE_CHECKPOINT_REQUIRED');
+  const current=await adapter.get();
+  if(absent(current)){checkpoint.phase='ROLLED_BACK';await save(checkpoint);return{domainAbsent:true,deleted:false};}
+  check(present(current)&&domainConfigurationMatches(current.value,plan),'DOMAIN_DRIFT_DO_NOT_DELETE');
+  // Unknown delete outcome is read back once, never blindly repeated on resume.
+  if(!checkpoint.deleteRequested){
+    checkpoint.deleteRequested=true;await save(checkpoint);
+    try{await adapter.delete();}catch{checkpoint.deleteResponseUnknown=true;await save(checkpoint);}
+  }
+  check(absent(await adapter.get()),'DOMAIN_ROLLBACK_NOT_CONFIRMED');
+  checkpoint.phase='ROLLED_BACK';await save(checkpoint);
+  return{domainAbsent:true,deleted:true};
+}
+
+export async function runDomainBinding(plan,material,adapter,{load,save,now=Date.now}={}){
+  check(typeof load==='function'&&typeof save==='function','DOMAIN_DURABLE_CHECKPOINT_REQUIRED');
+  let checkpoint=await load();
+  const report={scope:'SIGNED_HTTPS_DOMAIN_BINDING',passed:false,createRequests:0,publicApplicationEnabled:false,modelCalls:0,sparkRuns:0};
+  try{
+    check(plan?.version===1&&plan.desiredHash===digest(plan.desired),'DOMAIN_PLAN_INVALID');
+    check(verifyCertificateMaterial(material,now()).leafSha256===plan.desired.certificateSha256,'DOMAIN_CERTIFICATE_CHANGED');
+    if(checkpoint){
+      validateCheckpoint(plan,checkpoint);report.recoveryOnly=true;
+      if(checkpoint.phase==='VERIFIED_RETAINED'){
+        const retained=await adapter.get();
+        check(present(retained)&&domainConfigurationMatches(retained.value,plan),'RETAINED_DOMAIN_NOT_CONFIRMED');
+        // Do not claim acceptance or re-run probes from a prior retained receipt.
+        report.retainedPreviously=true;return report;
+      }
+      report.rollback=await rollbackDomainBinding(plan,adapter,checkpoint,{save});return report;
+    }
+    check(Date.parse(plan.expiresAt)-now()>=300000,'DOMAIN_WINDOW_TOO_SHORT');
+    const readiness=await adapter.preflight();
+    check(readiness?.defaultBoundaryVerified===true&&readiness.publicApplicationEnabled===false
+      &&readiness.sameSignedTriggerPresent===true&&readiness.functionUnchanged===true
+      &&readiness.budgetVerified===true&&readiness.dnsExact===true,'DOMAIN_PREFLIGHT_NOT_VERIFIED');
+    check(absent(await adapter.get()),'DOMAIN_ALREADY_PRESENT_OR_UNCONFIRMED');
+    checkpoint={operationId:plan.operationId,desiredHash:plan.desiredHash,domainName:plan.target.domainName,baselineAbsent:true,phase:'CREATE_REQUESTED',startedAt:now()};
+    await save(checkpoint);
+    check(Date.parse(plan.expiresAt)-now()>=300000,'DOMAIN_WINDOW_TOO_SHORT');
+    report.createRequests=1;
+    const body={domainName:plan.desired.domainName,protocol:plan.desired.protocol,authConfig:plan.desired.authConfig,
+      tlsConfig:plan.desired.tlsConfig,routeConfig:plan.desired.routeConfig,
+      certConfig:{certName:plan.desired.certName,certificate:material.certificate,privateKey:material.privateKey}};
+    try{await adapter.create(body);}catch{checkpoint.createResponseUnknown=true;await save(checkpoint);}
+    const current=await adapter.get();
+    check(present(current)&&domainConfigurationMatches(current.value,plan),'DOMAIN_CREATE_NOT_CONFIRMED');
+    checkpoint.phase='CREATED_VERIFIED';await save(checkpoint);
+    const acceptance=await adapter.verifyDomain(plan.limits.domainProbes);
+    check(acceptance?.tlsVerified===true&&acceptance.boundaryVerified===true&&acceptance.privateOperationExposed===false
+      &&Number.isSafeInteger(acceptance.requests)&&acceptance.requests>0&&acceptance.requests<=20,'DOMAIN_ACCEPTANCE_NOT_VERIFIED');
+    // Detect external changes before retaining an object created by this run.
+    const latest=await adapter.get();
+    check(present(latest)&&domainConfigurationMatches(latest.value,plan),'DOMAIN_CHANGED_DURING_ACCEPTANCE');
+    checkpoint.phase='VERIFIED_RETAINED';await save(checkpoint);
+    report.passed=true;report.domainRequests=acceptance.requests;report.domainRetained=true;
+  }catch(error){
+    report.failure=error.safeCode??'DOMAIN_OPERATION_UNCONFIRMED';
+    if(checkpoint&&checkpoint.phase!=='VERIFIED_RETAINED'){try{report.rollback=await rollbackDomainBinding(plan,adapter,checkpoint,{save});}catch(cleanup){report.cleanupFailure=cleanup.safeCode??'DOMAIN_ROLLBACK_UNCONFIRMED';}}
+  }
+  return report;
+}

@@ -34,7 +34,9 @@ def main():
     from Tea.request import TeaRequest
     data = json.load(sys.stdin)
     endpoint, probe = urlsplit(data['url']), data['probe']
-    if (endpoint.scheme != 'https' or not endpoint.hostname.endswith('.cn-hangzhou.fcapp.run')
+    custom_domain = (data.get('domainAuthorization') == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED'
+                     and endpoint.hostname == 'shuduoai.cn')
+    if (endpoint.scheme != 'https' or not endpoint.hostname or not (endpoint.hostname.endswith('.cn-hangzhou.fcapp.run') or custom_domain)
             or endpoint.username or endpoint.password or endpoint.port or endpoint.path not in ('', '/')
             or endpoint.query or endpoint.fragment):
         raise ValueError('INVALID_ENDPOINT')
@@ -63,11 +65,13 @@ def main():
         for key, value in list(headers.items()) + probe.get('headers', []):
             connection.putheader(key, value)
         connection.endheaders(body)
+        tls = {'certificateSha256': hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest(),
+               'tlsVersion': connection.sock.version()}
         response = connection.getresponse()
         raw = response.read(65537)
         if len(raw) > 65536:
             raise ValueError('RESPONSE_TOO_LARGE')
-        print(json.dumps(response_evidence(response.status, raw)))
+        print(json.dumps({**response_evidence(response.status, raw), **tls}))
     finally:
         connection.close()
 
