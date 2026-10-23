@@ -31,14 +31,14 @@ export function domainProbeAccepted(value,probe,leafSha256){
 export function httpsConfig(env,now=Date.now()){
  check(env.GITHUB_ACTIONS==='true'&&env.GITHUB_REF==='refs/heads/main'&&env.GITHUB_SHA===env.V2_HTTPS_SOURCE_SHA&&env.V2_HTTPS_AUTHORIZATION===DOMAIN_BINDING_AUTHORIZATION,'HTTPS_SCOPE_NOT_AUTHORIZED');
  let input;try{input=JSON.parse(env.V2_HTTPS_BINDING_INPUT);}catch{throw fail('HTTPS_INPUT_INVALID');}
- check(input.sourceRevision===env.GITHUB_SHA&&input.domainName==='shuduoai.cn'&&input.priorRequests===3&&/^\d{1,20}$/.test(input.restoreRunId??''),'HTTPS_TARGET_MISMATCH');
+ check(input.sourceRevision===env.GITHUB_SHA&&input.domainName==='shuduoai.cn'&&[3,5].includes(input.priorRequests)&&/^\d{1,20}$/.test(input.restoreRunId??''),'HTTPS_TARGET_MISMATCH');
  const start=Date.parse(input.authorizedAt),end=Date.parse(input.expiresAt);
  check(Number.isFinite(start)&&start<=now&&end-start>0&&end-start<=3600000,'HTTPS_PERMISSION_WINDOW_INVALID');
  const material={certificate:input.certificate,privateKey:input.privateKey};
  const plan=domainBindingPlan({...input,authorization:DOMAIN_BINDING_AUTHORIZATION,certificate:verifyCertificateMaterial(material,now)},start);
  const cloudEnv={...env,ALIBABA_CLOUD_REGION_ID:input.region,V2_DEPLOY_ROLE_ARN:input.roleArn,V2_DEPLOY_OIDC_PROVIDER_ARN:input.providerArn,V2_FUNCTION_NAME:input.functionName,
   V2_EXPECTED_CODE_CHECKSUM:input.expectedChecksum,V2_ACCEPTANCE_SOURCE_REVISION:input.sourceRevision,V2_HTTP_ACCEPTANCE_AUTHORIZED:'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS',
-  V2_HTTP_AUTHORIZATION_EXPIRES_AT:input.expiresAt,V2_HTTP_PREVIOUS_READS:'3',V2_HTTP_RESTORE_RUN_ID:input.restoreRunId,V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE'};
+  V2_HTTP_AUTHORIZATION_EXPIRES_AT:input.expiresAt,V2_HTTP_PREVIOUS_READS:String(input.priorRequests),V2_HTTP_RESTORE_RUN_ID:input.restoreRunId,V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE'};
  const config={...acceptanceConfig(cloudEnv),domainBindingAuthorization:DOMAIN_BINDING_AUTHORIZATION};
  return{plan,material,config,cloudEnv,roleArn:input.roleArn,providerArn:input.providerArn};
 }
@@ -66,7 +66,7 @@ export async function httpsBindingMain(env=process.env,mode=process.argv[2]){
  mkdirSync(dir,{recursive:true,mode:0o700});
  if(mode==='--seal'||mode==='--handoff'){
   const report={scope:'SIGNED_HTTPS_DOMAIN_BINDING',operationId:plan.operationId,targetHash:plan.desiredHash,domain:read('domain'),boundary:read('boundary'),httpCheckpoint:read('http-checkpoint'),domainCheckpoint:read('domain-checkpoint'),cleanup:read('cleanup')};
-  if(mode==='--handoff')check(report.boundary?.passed===true&&report.boundary.cleanup?.deferredForSameDomainBatch===true&&report.httpCheckpoint?.requests===18,'BOUNDARY_HANDOFF_NOT_READY');
+  if(mode==='--handoff')check(report.boundary?.passed===true&&report.boundary.cleanup?.deferredForSameDomainBatch===true&&report.boundary.priorRequests===config.previousReads&&report.httpCheckpoint?.requests===config.previousReads+15&&report.httpCheckpoint.requests<=20,'BOUNDARY_HANDOFF_NOT_READY');
   report.passed=report.domain?.passed===true&&report.boundary?.passed===true&&report.cleanup?.triggerAbsent===true&&report.cleanup.functionUnchanged===true&&report.cleanup.originalTriggersUnchanged===true&&!report.cleanup?.domainRollbackFailure;
   writeFileSync(mode==='--handoff'?'v2-https-handoff.sealed.json':'v2-https-binding.sealed.json',JSON.stringify(sealReport(report,key,{protocol:'shuduo-https-binding/v1',sourceRevision:env.GITHUB_SHA,runId:env.GITHUB_RUN_ID}))+'\n',{mode:0o600});return;
  }

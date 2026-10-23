@@ -14,6 +14,9 @@ for status, code, message in [(400,'InvalidArgument','required HTTP header Autho
     assert value['authenticationRejected'] is False
     assert 'SYNTHETIC_SECRET' not in json.dumps(value)
 assert evidence(400,b'not json')['authenticationRejected'] is False
+assert evidence(400,b'{"code":"InvalidArgument","message":"invalid date format: SYNTHETIC_SECRET"}')['gatewayCategory']=='INVALID_TIMESTAMP'
+assert evidence(400,b'{"code":"InvalidArgument","message":"signature mismatch SYNTHETIC_SECRET"}')['gatewayCategory']=='INVALID_SIGNATURE'
+assert evidence(400,b'{"code":"InvalidArgument","message":"SYNTHETIC_SECRET"}')['gatewayCategory']=='UNCLASSIFIED'
 assert evidence(200,b'shuduo-v2-private-smoke/v1')['privateProtocol'] is True
 print('GATEWAY_ERROR_CLASSIFICATION_PASS')
 `;
@@ -21,13 +24,14 @@ print('GATEWAY_ERROR_CLASSIFICATION_PASS')
 });
 test('wire probe preserves raw path and duplicate headers, signs with STS and never logs a response body',()=>{
  const source=String.raw`
-import contextlib, io, json, os, runpy, sys, types
+import contextlib, io, json, os, runpy, sys, types, re
 captured = {}
 class Signer:
     @staticmethod
     def get_authorization(request, method, payload, aid, secret):
         assert method == 'ACS3-HMAC-SHA256'
         assert request.headers['x-acs-security-token'] == 'synthetic-token'
+        assert set(request.headers) == {'x-acs-date','x-acs-security-token'}
         assert aid == 'synthetic-key' and secret == 'synthetic-secret'
         captured['signed_path'] = request.pathname
         return 'synthetic-signature'
@@ -48,7 +52,7 @@ class Connection:
         captured['headers'] = []
     def putrequest(self, method, path, **options): captured['path'] = path
     def putheader(self, name, value): captured['headers'].append((name,value))
-    def endheaders(self, body): assert json.loads(body) == {'operation':'PRIVATE_STATUS_V1'}
+    def endheaders(self, body): assert body in (b'',b'{"operation":"PRIVATE_STATUS_V1"}')
     def getresponse(self): return Response()
     def close(self): captured['closed'] = True
 namespace = runpy.run_path('scripts/probe-v2-http-boundary.py',run_name='fixture')
@@ -64,6 +68,11 @@ assert captured['path']=='/./invoke' and captured['signed_path']=='/./invoke'
 assert len([x for x in captured['headers'] if x[0]=='x-fc-control-path'])==2
 assert captured['closed']
 assert 'synthetic-token' not in output.getvalue() and 'DO_NOT_PRINT_BODY' not in output.getvalue()
+sys.stdin=io.StringIO(json.dumps({'url':'https://fixture.cn-hangzhou.fcapp.run','probe':{'method':'GET','path':'/api/v2/status','signed':False}}))
+with contextlib.redirect_stdout(io.StringIO()): namespace['main']()
+unsigned=dict(captured['headers'])
+assert 'date' not in unsigned and 'authorization' not in unsigned and 'x-acs-security-token' not in unsigned
+assert re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ',unsigned['x-acs-date'])
 print('WIRE_PROBE_SYNTHETIC_PASS')
 `;
  const result=execFileSync('python3',['-c',source],{encoding:'utf8',timeout:10000,stdio:['ignore','pipe','pipe']});
