@@ -5,7 +5,8 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {generateKeyPairSync} from 'node:crypto';
-import {DOMAIN_BINDING_AUTHORIZATION,verifyCertificateMaterial,domainBindingPlan,domainTemporaryStatements,domainConfigurationMatches,runDomainBinding} from '../../scripts/v2-domain-binding-plan.mjs';
+import {DOMAIN_BINDING_AUTHORIZATION,P0B_SIGNED_ACCESS_AUTHORIZATION,verifyCertificateMaterial,domainBindingPlan,domainTemporaryStatements,domainConfigurationMatches,runDomainBinding} from '../../scripts/v2-domain-binding-plan.mjs';
+import {httpsConfig} from '../../scripts/accept-v2-https-binding.mjs';
 
 function materialFixture(){
  const directory=mkdtempSync(join(tmpdir(),'shuduo-domain-plan-'));
@@ -27,7 +28,7 @@ function fixture(options={}){
   get:async()=>{calls.push('GET');return options.readDenied?{status:403,code:'AccessDenied'}:state?{status:200,value:structuredClone(state)}:{status:404,code:'DomainNameNotFound'};},
   create:async body=>{assert.equal(checkpoint.phase,'CREATE_REQUESTED');calls.push('CREATE');state={...structuredClone(body),accountId:plan.target.account};if(options.unknownCreate)throw Error('SYNTHETIC_PRIVATE_EXCEPTION');},
   delete:async()=>{calls.push('DELETE');if(!options.deleteUnapplied)state=null;if(options.unknownDelete||options.deleteUnapplied)throw Error('SYNTHETIC_PRIVATE_EXCEPTION');},
-  verifyDomain:async limit=>{calls.push('VERIFY');assert.equal(limit,20);if(options.drift)state.routeConfig.routes[0].functionName='foreign';return{tlsVerified:true,boundaryVerified:true,privateOperationExposed:false,requests:14,...options.verification};},
+  verifyDomain:async limit=>{calls.push('VERIFY');assert.equal(limit,options.expectedLimit??20);if(options.drift)state.routeConfig.routes[0].functionName='foreign';return{tlsVerified:true,boundaryVerified:true,privateOperationExposed:false,requests:options.expectedRequests??14,...options.verification};},
  };
  const storage={load:async()=>checkpoint,save:async value=>{checkpoint=structuredClone(value);},now:()=>now};
  return{adapter,storage,calls,state:()=>state,checkpoint:()=>checkpoint};
@@ -46,6 +47,18 @@ test('binding plan has fixed HTTPS signed routes, exact rollback scope and no ce
 });
 test('plan rejects unapproved, other-domain, foreign identity and invalid lifetime inputs',()=>{
  for(const patch of [{authorization:'yes'},{domainName:'other.invalid'},{region:'cn-beijing'},{operationId:'../escape'},{sourceRevision:'main'},{expiresAt:new Date(now-1).toISOString()},{expiresAt:new Date(now+3600001).toISOString()},{providerArn:'acs:ram::999900001111:oidc-provider/fixture'},{certificate:{...certificate,domain:'other.invalid'}}])assert.throws(()=>domainBindingPlan({...input,...patch},now));
+});
+test('P0-B plan and configuration preserve historical usage and fixed cumulative limits',async()=>{
+ const stage=domainBindingPlan({...input,authorization:P0B_SIGNED_ACCESS_AUTHORIZATION},now);
+ assert.equal(stage.limits.historicalRequests,17);assert.equal(stage.limits.defaultNewRequests,15);assert.equal(stage.limits.domainProbes,8);assert.equal(stage.limits.allRequests,40);assert.equal(stage.limits.domainMetadataReads,10);assert.equal(stage.limits.reservedCny,2);
+ const f=fixture({expectedLimit:8,expectedRequests:8});assert.equal((await runDomainBinding(stage,material,f.adapter,f.storage)).passed,true);
+ const excess=fixture({expectedLimit:8,expectedRequests:9});assert.equal((await runDomainBinding(stage,material,excess.adapter,excess.storage)).passed,false);assert.equal(excess.state(),null);
+ const changed=fixture();assert.equal((await runDomainBinding({...stage,limits:{...stage.limits,domainProbes:20}},material,changed.adapter,changed.storage)).failure,'DOMAIN_PROBE_SCOPE_CHANGED');assert.equal(changed.calls.length,0);
+ const body={...input,...material,expiresAt:input.expiresAt.replace(/\.\d{3}Z$/,'Z'),priorRequests:17,restoreRunId:'98765',priorControlRunId:'12345678',priorControlAcceptanceDigest:'d'.repeat(64),expectedChecksum:'123456',authorizedAt:new Date(now).toISOString().replace(/\.\d{3}Z$/,'Z')};
+ const env={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_RUN_ID:'12345679',GITHUB_SHA:input.sourceRevision,V2_HTTPS_SOURCE_SHA:input.sourceRevision,V2_HTTPS_AUTHORIZATION:P0B_SIGNED_ACCESS_AUTHORIZATION,V2_HTTPS_BINDING_INPUT:JSON.stringify(body)};
+ const parsed=httpsConfig(env,now);assert.equal(parsed.config.previousReads,17);assert.equal(parsed.config.maxRequests,32);assert.equal(parsed.plan.limits.domainProbes,8);
+ for(const patch of [{priorRequests:0},{priorRequests:5},{priorControlRunId:''},{priorControlAcceptanceDigest:''}])assert.throws(()=>httpsConfig({...env,V2_HTTPS_BINDING_INPUT:JSON.stringify({...body,...patch})},now));
+ assert.throws(()=>httpsConfig({...env,V2_HTTPS_AUTHORIZATION:DOMAIN_BINDING_AUTHORIZATION},now));
 });
 test('certificate verification checks domain, expiry, size and matching private key without logging raw errors',()=>{
  assert.equal(certificate.domain,'shuduoai.cn');assert.match(certificate.leafSha256,/^[a-f0-9]{64}$/);

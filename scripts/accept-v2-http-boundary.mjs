@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditConfig, recipientKey, sealReport, auditErrorDetails } from './audit-v2-oidc-readonly.mjs';
 import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
+import { P0B_SIGNED_ACCESS_AUTHORIZATION } from './v2-domain-binding-plan.mjs';
 
 const fail = code => Object.assign(new Error(code), { safeCode:code });
 const requireThat = (condition,code) => { if (!condition) throw fail(code); };
@@ -23,12 +24,15 @@ export function acceptanceConfig(env) {
   requireThat(env.V2_ACCEPTANCE_SOURCE_REVISION===env.GITHUB_SHA,'REVIEWED_SOURCE_MISMATCH');
   requireThat(/^\d{1,30}$/.test(env.V2_EXPECTED_CODE_CHECKSUM ?? ''),'EXPECTED_CODE_REQUIRED');
   requireThat(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT ?? '') && Number.isFinite(Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT)),'AUTHORIZATION_EXPIRY_REQUIRED');
-  requireThat(env.V2_HTTP_ACCEPTANCE_AUTHORIZED === 'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS','EXPLICIT_ACCEPTANCE_SCOPE_REQUIRED');
+  const p0bSignedStage=env.V2_HTTP_ACCEPTANCE_AUTHORIZED===P0B_SIGNED_ACCESS_AUTHORIZATION;
+  requireThat(p0bSignedStage ? env.V2_HTTPS_AUTHORIZATION===P0B_SIGNED_ACCESS_AUTHORIZATION : env.V2_HTTP_ACCEPTANCE_AUTHORIZED === 'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS','EXPLICIT_ACCEPTANCE_SCOPE_REQUIRED');
   const previousReads=Number(env.V2_HTTP_PREVIOUS_READS ?? '0');
   requireThat(/^(0|[1-9]\d?)$/.test(env.V2_HTTP_PREVIOUS_READS ?? '0') && previousReads<=20,'PRIOR_READ_COUNT_INVALID');
+  requireThat(!p0bSignedStage||previousReads===17,'P0B_HISTORY_MUST_BE_17');
   const restoreRunId=env.V2_HTTP_RESTORE_RUN_ID ?? '',restoreAuthorized=env.V2_HTTP_RESTORE_AUTHORIZED==='RECREATE_SAME_TRIGGER_ONCE';
   requireThat(restoreRunId ? /^\d{1,20}$/.test(restoreRunId)&&restoreAuthorized&&previousReads>0 : !restoreAuthorized,'TRIGGER_RESTORE_NOT_AUTHORIZED');
-  return {...auditConfig(env),expectedChecksum:env.V2_EXPECTED_CODE_CHECKSUM,triggerName:`shuduo-http-boundary-${restoreRunId || env.GITHUB_RUN_ID}`,authorizationExpiresAt:Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT),previousReads,restoreRunId:restoreRunId || undefined};
+  requireThat(!p0bSignedStage||Boolean(restoreRunId),'P0B_SAME_TRIGGER_REQUIRED');
+  return {...auditConfig(env),expectedChecksum:env.V2_EXPECTED_CODE_CHECKSUM,triggerName:`shuduo-http-boundary-${restoreRunId || env.GITHUB_RUN_ID}`,authorizationExpiresAt:Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT),previousReads,restoreRunId:restoreRunId || undefined,p0bSignedStage,maxRequests:p0bSignedStage?32:20};
 }
 export function commandFailure(args,error,output='') {
   const operation=args[0]==='sts'?'IDENTITY_READ':args[0]==='bssopenapi'?'BILL_READ':args[1]==='GET'?'FC_READ':args[1]==='DELETE'?'DELETE_TRIGGER':args[2]?.endsWith('/invocations')?'PRIVATE_STATUS':'CREATE_TRIGGER';
@@ -86,14 +90,16 @@ export async function cleanupAcceptance(config, adapter, checkpoint) {
 }
 export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{},load=()=>undefined,deferForDomain=false}={}) {
   let checkpoint=load();
+  const maxRequests=config.p0bSignedStage?32:20,reservedCny=config.p0bSignedStage?2:1;
   const report={scope:'SIGNED_HTTP_BOUNDARY_ONLY',passed:false,restoreRunId:config.restoreRunId,priorRequests:config.previousReads,requests:config.previousReads,newRequests:0,results:[],modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,cleanup:{triggerAbsent:false}};
   try {
+    requireThat(!config.p0bSignedStage||(config.previousReads===17&&config.maxRequests===32&&Boolean(config.restoreRunId)),'P0B_SCOPE_CHANGED');
     report.phase='IDENTITY';
     requireThat(!deferForDomain||config.domainBindingAuthorization==='ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED','DOMAIN_HOLD_NOT_AUTHORIZED');
     const identity=await adapter.identity();
     verifyIdentity(config,identity);
     if (checkpoint) { report.recoveryOnly=true;report.priorRequests=report.requests=checkpoint.requests;report.cleanup=await cleanupAcceptance(config,adapter,checkpoint);return report; }
-    requireThat(report.requests+boundaryCases.length+1<=20,'INSUFFICIENT_REMAINING_READ_BUDGET');
+    requireThat(report.requests+boundaryCases.length+1<=maxRequests,'INSUFFICIENT_REMAINING_READ_BUDGET');
     requireThat(config.authorizationExpiresAt-now()>=600000,'AUTHORIZATION_WINDOW_TOO_SHORT');
     report.phase='FUNCTION_AND_TRIGGER_READ';
     const before=await adapter.fc('GET',''), env=before.environmentVariables ?? {};
@@ -104,9 +110,11 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
     requireThat(original.length===2 && original.every(t=>t.triggerType==='oss'),'ORIGINAL_TRIGGER_BOUNDARY_CHANGED');
     const cycle=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date(now()));
     report.phase='BILLING';
-    const bill=verifyV2MonthlyBillPages(await adapter.billPages(cycle),199);
+    const unsettledReservedCny=config.p0bSignedStage?4:0;
+    const bill=verifyV2MonthlyBillPages(await adapter.billPages(cycle),200-reservedCny-unsettledReservedCny);
     requireThat(bill.ok && bill.billingCycle===cycle,'BUDGET_NOT_VERIFIED');
-    report.billingCycle=cycle;report.billCnyBefore=bill.spendCny;report.reservedCny=1;
+    report.billingCycle=cycle;report.billCnyBefore=bill.spendCny;report.reservedCny=reservedCny;
+    if(config.p0bSignedStage)report.unsettledReservedCny=unsettledReservedCny;
     requireThat(config.authorizationExpiresAt-now()>=600000,'AUTHORIZATION_WINDOW_TOO_SHORT');
     report.phase='PRIVATE_STATUS_BASELINE';report.requests++;report.newRequests++;
     const baseline=await adapter.privateStatus();
@@ -121,7 +129,7 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
     const endpoint=new URL(created.httpTrigger?.urlInternet ?? '');
     requireThat(endpoint.protocol==='https:' && endpoint.hostname.endsWith(`.${config.region}.fcapp.run`) && !endpoint.username && !endpoint.password && !endpoint.port && endpoint.pathname==='/' && !endpoint.search && !endpoint.hash,'TRIGGER_ENDPOINT_INVALID');
     for (const probe of boundaryCases) {
-      requireThat(report.requests<20 && now()-checkpoint.startedAt<600000 && now()<config.authorizationExpiresAt-300000,'ACCEPTANCE_LIMIT_REACHED');
+      requireThat(report.requests<maxRequests && now()-checkpoint.startedAt<600000 && now()<config.authorizationExpiresAt-300000,'ACCEPTANCE_LIMIT_REACHED');
       report.phase='HTTP_'+probe.id;report.newRequests++;checkpoint.requests=++report.requests; save(checkpoint);
       const value=await adapter.probe(endpoint.origin,probe);
       const result={id:probe.id,status:value.status,code:typeof value.code==='string'&&/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(value.code)?value.code:'UNCONFIRMED',gatewayCategory:['INVALID_TIMESTAMP','INVALID_SIGNATURE','MISSING_AUTHORIZATION','EMPTY_AUTHORIZATION','OTHER_REQUIRED_HEADER','REQUEST_LIMIT'].includes(value.gatewayCategory)?value.gatewayCategory:'UNCLASSIFIED',authenticationRejected:value.authenticationRejected===true,responseHash:value.responseHash,bytes:value.bytes};

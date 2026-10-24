@@ -6,7 +6,7 @@ on:
         description: Explicit approval for one signed HTTPS binding batch
         required: true
         type: choice
-        options: [NOT_AUTHORIZED, ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED]
+        options: [NOT_AUTHORIZED, ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED, P0B_SIGNED_HTTPS_17_PLUS_23]
         default: NOT_AUTHORIZED
       expected_source_revision:
         description: Reviewed main SHA whose CI has passed
@@ -24,9 +24,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   accept:
-    if: github.ref == 'refs/heads/main' && inputs.authorization == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED'
+    if: github.ref == 'refs/heads/main' && (inputs.authorization == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED' || inputs.authorization == 'P0B_SIGNED_HTTPS_17_PLUS_23')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.authorization == 'P0B_SIGNED_HTTPS_17_PLUS_23' && 40 || 30 }}
     environment: v2-staging
     env:
       V2_HTTPS_BINDING_INPUT: ${{ secrets.V2_HTTPS_BINDING_INPUT }}
@@ -69,7 +69,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
       - name: Await exact DNS then create and verify the signed HTTPS binding
-        timeout-minutes: 12
+        timeout-minutes: ${{ inputs.authorization == 'P0B_SIGNED_HTTPS_17_PLUS_23' && 18 || 12 }}
         run: node scripts/accept-v2-https-binding.mjs --bind
       - name: Always clean the temporary trigger and roll back failed domain changes
         if: always()

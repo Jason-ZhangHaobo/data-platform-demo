@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {acceptanceConfig,boundaryCases,runHttpAcceptance,cleanupAcceptance,commandFailure,inlineBodyArguments} from '../../scripts/accept-v2-http-boundary.mjs';
+import {P0B_SIGNED_ACCESS_AUTHORIZATION} from '../../scripts/v2-domain-binding-plan.mjs';
 const env={GITHUB_REF:'refs/heads/main',GITHUB_ACTIONS:'true',GITHUB_RUN_ID:'12345',GITHUB_SHA:'a'.repeat(40),V2_DEPLOY_ROLE_ARN:'acs:ram::111111111111:role/fixture-role',V2_DEPLOY_OIDC_PROVIDER_ARN:'acs:ram::111111111111:oidc-provider/fixture-provider',V2_FUNCTION_NAME:'fixture-control',ALIBABA_CLOUD_REGION_ID:'cn-hangzhou',V2_EXPECTED_CODE_CHECKSUM:'123456',V2_HTTP_ACCEPTANCE_AUTHORIZED:'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS',V2_HTTP_AUTHORIZATION_EXPIRES_AT:'2026-10-21T00:30:00Z'};
 function fixture(options={}){
  env.V2_ACCEPTANCE_SOURCE_REVISION=env.GITHUB_SHA;
@@ -51,6 +52,15 @@ test('recreation requires a separate explicit flag, the original identifier, and
  assert.throws(()=>acceptanceConfig({...env,V2_HTTP_RESTORE_RUN_ID:'98765',V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE',V2_HTTP_PREVIOUS_READS:'0'}),/TRIGGER_RESTORE_NOT_AUTHORIZED/);
  const c=acceptanceConfig({...env,V2_HTTP_RESTORE_RUN_ID:'98765',V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE',V2_HTTP_PREVIOUS_READS:'3'});
  assert.equal(c.triggerName,'shuduo-http-boundary-98765');assert.equal(c.previousReads,3);assert.equal(c.restoreRunId,'98765');
+});
+test('new P0-B scope preserves seventeen historical calls and only permits fifteen new default checks',async()=>{
+ const f=fixture(),stage={...env,V2_HTTP_ACCEPTANCE_AUTHORIZED:P0B_SIGNED_ACCESS_AUTHORIZATION,V2_HTTPS_AUTHORIZATION:P0B_SIGNED_ACCESS_AUTHORIZATION,V2_HTTP_PREVIOUS_READS:'17',V2_HTTP_RESTORE_RUN_ID:'98765',V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE'};
+ const config=acceptanceConfig(stage);assert.equal(config.maxRequests,32);Object.assign(f.config,config);
+ const report=await runHttpAcceptance(f.config,f.adapter,f.options);
+ assert.equal(report.passed,true);assert.equal(report.priorRequests,17);assert.equal(report.newRequests,15);assert.equal(report.requests,32);assert.equal(report.reservedCny,2);assert.equal(f.creates(),1);assert.equal(report.cleanup.triggerAbsent,true);
+ const recovered=await runHttpAcceptance(f.config,f.adapter,f.options);assert.equal(recovered.requests,32);assert.equal(recovered.newRequests,0);assert.equal(f.creates(),1);
+ for(const patch of [{V2_HTTPS_AUTHORIZATION:undefined},{V2_HTTP_PREVIOUS_READS:'0'},{V2_HTTP_PREVIOUS_READS:'5'},{V2_HTTP_PREVIOUS_READS:'16'},{V2_HTTP_PREVIOUS_READS:'18'},{V2_HTTP_RESTORE_RUN_ID:''}])assert.throws(()=>acceptanceConfig({...stage,...patch}));
+ const wrong=fixture();Object.assign(wrong.config,config,{maxRequests:33});const denied=await runHttpAcceptance(wrong.config,wrong.adapter,wrong.options);assert.equal(denied.failure,'P0B_SCOPE_CHANGED');assert.equal(wrong.calls.length,0);
 });
 test('failure evidence distinguishes CLI service denial, transport and parsing without response text or secrets',async()=>{
  const args=['fc','POST','/2023-03-30/functions/private-name/invocations'];

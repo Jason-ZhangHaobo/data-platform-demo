@@ -10,6 +10,7 @@ const canonical=value=>JSON.stringify(value&&typeof value==='object'
     :Object.fromEntries(Object.keys(value).sort().map(k=>[k,JSON.parse(canonical(value[k]))])):value??null);
 const digest=value=>createHash('sha256').update(canonical(value)).digest('hex');
 export const DOMAIN_BINDING_AUTHORIZATION='ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED';
+export const P0B_SIGNED_ACCESS_AUTHORIZATION='P0B_SIGNED_HTTPS_17_PLUS_23';
 
 export function verifyCertificateMaterial({certificate,privateKey},now=Date.now()){
   try{
@@ -24,7 +25,8 @@ export function verifyCertificateMaterial({certificate,privateKey},now=Date.now(
 }
 
 export function domainBindingPlan(input,now=Date.now()){
-  check(input?.authorization===DOMAIN_BINDING_AUTHORIZATION,'DOMAIN_BINDING_NOT_AUTHORIZED');
+  check([DOMAIN_BINDING_AUTHORIZATION,P0B_SIGNED_ACCESS_AUTHORIZATION].includes(input?.authorization),'DOMAIN_BINDING_NOT_AUTHORIZED');
+  const p0b=input.authorization===P0B_SIGNED_ACCESS_AUTHORIZATION;
   check(input.domainName==='shuduoai.cn','DOMAIN_TARGET_INVALID');
   check(/^[a-f0-9]{32}$/.test(input.operationId??''),'DOMAIN_OPERATION_ID_INVALID');
   const expiresAt=Date.parse(input.expiresAt);
@@ -37,10 +39,10 @@ export function domainBindingPlan(input,now=Date.now()){
   const desired={domainName:input.domainName,protocol:'HTTPS',authConfig:{authType:'function',authInfo:'{}'},
     tlsConfig:{minVersion:'TLSv1.2',maxVersion:'TLSv1.3'},routeConfig:{routes},
     certName:`shuduo-bind-${input.operationId}`,certificateSha256:input.certificate.leafSha256};
-  return{version:1,operationId:input.operationId,sourceRevision:input.sourceRevision,expiresAt:input.expiresAt,
+  return{version:1,requestScope:input.authorization,operationId:input.operationId,sourceRevision:input.sourceRevision,expiresAt:input.expiresAt,
     target:{...target,domainName:input.domainName},desired,desiredHash:digest(desired),
     dns:{rr:'@',type:'CNAME',value:`${target.account}.${target.region}.fc.aliyuncs.com`,ttl:600},
-    limits:{newDomainCreates:1,newBusinessDnsRecords:1,domainProbes:20,reservedCny:1,monthlyCny:200},
+    limits:{newDomainCreates:1,newBusinessDnsRecords:1,domainProbes:p0b?8:20,reservedCny:p0b?2:1,monthlyCny:200,...(p0b?{historicalRequests:17,defaultNewRequests:15,allRequests:40,domainMetadataReads:10}: {})},
     publicApplicationEnabled:false,automaticRenewalConfigured:false};
 }
 
@@ -104,6 +106,8 @@ export async function runDomainBinding(plan,material,adapter,{load,save,now=Date
   const report={scope:'SIGNED_HTTPS_DOMAIN_BINDING',passed:false,createRequests:0,publicApplicationEnabled:false,modelCalls:0,sparkRuns:0};
   try{
     check(plan?.version===1&&plan.desiredHash===digest(plan.desired),'DOMAIN_PLAN_INVALID');
+    const probeLimit=plan.requestScope===P0B_SIGNED_ACCESS_AUTHORIZATION?8:20;
+    check(plan.limits?.domainProbes===probeLimit,'DOMAIN_PROBE_SCOPE_CHANGED');
     check(verifyCertificateMaterial(material,now()).leafSha256===plan.desired.certificateSha256,'DOMAIN_CERTIFICATE_CHANGED');
     if(checkpoint){
       validateCheckpoint(plan,checkpoint);report.recoveryOnly=true;
@@ -134,7 +138,7 @@ export async function runDomainBinding(plan,material,adapter,{load,save,now=Date
     checkpoint.phase='CREATED_VERIFIED';await save(checkpoint);
     const acceptance=await adapter.verifyDomain(plan.limits.domainProbes);
     check(acceptance?.tlsVerified===true&&acceptance.boundaryVerified===true&&acceptance.privateOperationExposed===false
-      &&Number.isSafeInteger(acceptance.requests)&&acceptance.requests>0&&acceptance.requests<=20,'DOMAIN_ACCEPTANCE_NOT_VERIFIED');
+      &&Number.isSafeInteger(acceptance.requests)&&acceptance.requests>0&&acceptance.requests<=probeLimit,'DOMAIN_ACCEPTANCE_NOT_VERIFIED');
     // Detect external changes before retaining an object created by this run.
     const latest=await adapter.get();
     check(present(latest)&&domainConfigurationMatches(latest.value,plan),'DOMAIN_CHANGED_DURING_ACCEPTANCE');
