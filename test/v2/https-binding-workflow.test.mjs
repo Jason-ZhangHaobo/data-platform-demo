@@ -2,15 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
-import {httpsConfig,domainProbes,domainProbeAccepted} from '../../scripts/accept-v2-https-binding.mjs';
+import {httpsConfig,domainProbes,domainProbeAccepted,nextDomainMetadataCount} from '../../scripts/accept-v2-https-binding.mjs';
 
 test('custom domain probes require trusted TLS fingerprint plus exact signed application denial',()=>{
  const good={status:404,code:'INGRESS_DENIED',privateProtocol:false,certificateSha256:'a'.repeat(64),tlsVersion:'TLSv1.3'};
- assert.equal(domainProbeAccepted(good,domainProbes[1],'a'.repeat(64)),true);
- for(const patch of [{certificateSha256:'b'.repeat(64)},{tlsVersion:'TLSv1.0'},{status:200},{status:403,code:'AccessDenied'},{privateProtocol:true}])assert.equal(domainProbeAccepted({...good,...patch},domainProbes[1],'a'.repeat(64)),false);
- assert.equal(domainProbeAccepted({...good,status:401},domainProbes[0],'a'.repeat(64)),true);
- assert.equal(domainProbeAccepted({...good,status:400,code:'InvalidArgument',gatewayCategory:'EMPTY_AUTHORIZATION',authenticationRejected:true},domainProbes[0],'a'.repeat(64)),true);
- assert.equal(domainProbeAccepted({...good,status:400,code:'InvalidArgument',gatewayCategory:'UNCLASSIFIED',authenticationRejected:true},domainProbes[0],'a'.repeat(64)),false);
+ const signed=domainProbes.find(p=>p.id==='signed-baseline'),unsigned=domainProbes.find(p=>p.id==='unsigned');assert.equal(domainProbes[0],signed);
+ assert.equal(domainProbeAccepted(good,signed,'a'.repeat(64)),true);
+ for(const patch of [{certificateSha256:'b'.repeat(64)},{tlsVersion:'TLSv1.0'},{status:200},{status:403,code:'AccessDenied'},{privateProtocol:true}])assert.equal(domainProbeAccepted({...good,...patch},signed,'a'.repeat(64)),false);
+ assert.equal(domainProbeAccepted({...good,status:401},unsigned,'a'.repeat(64)),true);
+ assert.equal(domainProbeAccepted({...good,status:400,code:'InvalidArgument',gatewayCategory:'EMPTY_AUTHORIZATION',authenticationRejected:true},unsigned,'a'.repeat(64)),true);
+ assert.equal(domainProbeAccepted({...good,status:400,code:'InvalidArgument',gatewayCategory:'UNCLASSIFIED',authenticationRejected:true},unsigned,'a'.repeat(64)),false);
  assert.equal(domainProbeAccepted({...good,code:'DomainRouteNotFound'},domainProbes.at(-1),'a'.repeat(64)),true);
  assert.equal(domainProbes.length,8);assert(domainProbes.length<=20);
  assert.throws(()=>httpsConfig({}),/HTTPS_SCOPE_NOT_AUTHORIZED/);
@@ -28,4 +29,12 @@ test('HTTPS workflow gates DNS handoff on completed boundary proof and always cl
  assert.equal((workflow.match(/if: always\(\)/g)||[]).length,3);assert.match(workflow,/--cleanup/);assert.match(workflow,/--seal/);
  assert.doesNotMatch(workflow,/vars\.|DASHSCOPE|MYSQL|JASONSECRETS|npm run|UpdateFunction/);
  assert.match(workflow,/secrets.V2_HTTPS_BINDING_INPUT/);assert.match(workflow,/path: v2-https-binding.sealed.json/);
+});
+test('P0-B metadata calls have fixed independent limits and reject corrupt stored counts',()=>{
+ let counts={get:0,create:0,delete:0};
+ for(let n=0;n<10;n++)counts=nextDomainMetadataCount(counts,'get');
+ assert.throws(()=>nextDomainMetadataCount(counts,'get'),/LIMIT_REACHED/);
+ counts=nextDomainMetadataCount(counts,'create');counts=nextDomainMetadataCount(counts,'delete');assert.deepEqual(counts,{get:10,create:1,delete:1});
+ for(const operation of ['create','delete','update'])assert.throws(()=>nextDomainMetadataCount(counts,operation));
+ for(const patch of [{get:-1},{create:2},{delete:'0'},{get:1.5}])assert.throws(()=>nextDomainMetadataCount({...counts,...patch},'get'));
 });

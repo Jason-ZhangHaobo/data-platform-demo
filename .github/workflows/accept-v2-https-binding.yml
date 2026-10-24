@@ -6,7 +6,7 @@ on:
         description: Explicit approval for one signed HTTPS binding batch
         required: true
         type: choice
-        options: [NOT_AUTHORIZED, ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED]
+        options: [NOT_AUTHORIZED, ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED, P0B_SIGNED_HTTPS_17_PLUS_23]
         default: NOT_AUTHORIZED
       expected_source_revision:
         description: Reviewed main SHA whose CI has passed
@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   accept:
-    if: github.ref == 'refs/heads/main' && inputs.authorization == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED'
+    if: github.ref == 'refs/heads/main' && (inputs.authorization == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED' || inputs.authorization == 'P0B_SIGNED_HTTPS_17_PLUS_23')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: v2-staging
