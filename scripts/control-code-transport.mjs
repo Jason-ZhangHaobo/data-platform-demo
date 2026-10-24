@@ -58,7 +58,10 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
   try{
    const text=exec('aliyun',[...args,'--region',config.region,'--connect-timeout','5','--read-timeout','40','--retry-count','0',...(body===undefined?[]:['--body',JSON.stringify(body)])],{encoding:'utf8',timeout:50000,maxBuffer:2*1024*1024,stdio:['ignore','pipe','pipe'],env:{...env,ALIBABA_CLOUD_IGNORE_PROFILE:'TRUE',ALIBABA_CLOUD_PROFILE_MODE:'StsToken'}});
    let v=JSON.parse(text||'{}');if(typeof v==='string')v=JSON.parse(v);return v;
-  }catch(e){throw Object.assign(new Error('CONTROL_CLOUD_REQUEST_UNCONFIRMED'),{safeCode:'CONTROL_CLOUD_REQUEST_UNCONFIRMED',safeDiagnostic:{operation:args[0]==='fc'?`FC_${args[1]}`:args[0]==='sts'?'IDENTITY':'BILL',...auditErrorDetails(e)}});}
+  }catch(e){
+   const suffix=(args[2]??'').slice(base.length),operation=({GET:{'':'FC_GET_FUNCTION','/triggers':'FC_LIST_TRIGGERS','/concurrency':'FC_GET_CONCURRENCY','/scaling-config':'FC_GET_SCALING','/code':'FC_GET_CODE'},PUT:{'':'FC_UPDATE_CODE'},POST:{'/invocations':'FC_INVOKE'}})[args[1]]?.[suffix];
+   throw Object.assign(new Error('CONTROL_CLOUD_REQUEST_UNCONFIRMED'),{safeCode:'CONTROL_CLOUD_REQUEST_UNCONFIRMED',safeDiagnostic:{operation:args[0]==='fc'?(operation??'FC_UNKNOWN'):args[0]==='sts'?'IDENTITY':'BILL',...auditErrorDetails(e),cliPathRejected:/can not find api by path/i.test(String(e.stderr??'')+String(e.stdout??''))}});
+  }
  };
  const credentials={accessKeyId:env.ALIBABA_CLOUD_ACCESS_KEY_ID,accessKeySecret:env.ALIBABA_CLOUD_ACCESS_KEY_SECRET,securityToken:env.ALIBABA_CLOUD_SECURITY_TOKEN};
  const oss=(pkg,method='GET',body,query='')=>{
@@ -73,8 +76,8 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
    let f;
    for(let n=0;n<8;n++){f=call(['fc','GET',base]);if(!['InProgress','Pending'].includes(f.lastUpdateStatus))break;check(n<7,'FUNCTION_UPDATE_STILL_PENDING');await new Promise(r=>setTimeout(r,1500));}
    check(f.functionName===config.functionName&&f.lastUpdateStatus!=='Failed','FUNCTION_READ_NOT_READY');
-   const triggers=call(['fc','GET',base+'/triggers?limit=100']);check(Array.isArray(triggers.triggers)&&!triggers.nextToken,'TRIGGER_LIST_INCOMPLETE');
-   return{function:f,triggers:triggers.triggers,concurrency:call(['fc','GET',base+'/concurrency']),scaling:scalingConfiguration(call(['fc','GET',base+'/scaling-config?qualifier=LATEST']))};
+   const triggers=call(['fc','GET',base+'/triggers','--limit','100']);check(Array.isArray(triggers.triggers)&&!triggers.nextToken,'TRIGGER_LIST_INCOMPLETE');
+   return{function:f,triggers:triggers.triggers,concurrency:call(['fc','GET',base+'/concurrency']),scaling:scalingConfiguration(call(['fc','GET',base+'/scaling-config','--qualifier','LATEST']))};
   },
   budget:()=>{
    const cycle=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date()),pages=[];
@@ -83,7 +86,7 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
   },
   recoverRollback:async pkg=>{
    check(counters.codeReads<2,'CODE_DOWNLOAD_LIMIT');counters.codeReads++;await save();
-   const result=call(['fc','GET',base+'/code?qualifier=LATEST']);check(String(result.checksum)===pkg.crc64,'CURRENT_CODE_CHECKSUM_MISMATCH');
+   const result=call(['fc','GET',base+'/code','--qualifier','LATEST']);check(String(result.checksum)===pkg.crc64,'CURRENT_CODE_CHECKSUM_MISMATCH');
    const response=await fetchImpl(codeDownloadUrl(result.url),{redirect:'error',signal:AbortSignal.timeout(120000)});
    rollbackBytes=await boundedBytes(response,pkg.bytes);verify(rollbackBytes,pkg);await saveBackup(rollbackBytes);
    return{sha256:pkg.sha256,bytes:pkg.bytes,codeChecksum:pkg.crc64,safelyRetained:true};

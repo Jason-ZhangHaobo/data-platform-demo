@@ -38,4 +38,6 @@
 
 对象创建不发送ACL修改头，默认继承已经核验的私有Bucket；写后仍必须读取对象ACL核验。`oss:GetObjectAcl`是独立只读权限，不由`oss:GetObject`隐含授权，须获两个精确对象的明确补充批准后才可执行；不申请`PutObjectAcl`或全桶权限。依据：[官方GetObjectACL权限说明](https://help.aliyun.com/zh/oss/developer-reference/get-object-acl)。
 
+CLI的ROA路径不拼接查询字符串：列触发器用`--limit`，读代码/弹性配置用`--qualifier`独立传参。回归覆盖实际构造的参数列表，诊断区分函数读取、触发器列表、并发、弹性和旧包读取；CLI路径拒绝单独标记，不能作为网络或权限错误原样重试。本机CLI dry-run仅验证命令形状，不代表云调用成功。
+
 官方接口依据：[取得旧代码](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-getfunctioncode)、[并发配置](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-getconcurrencyconfig)、[弹性配置](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-getscalingconfig)。弹性配置比较排除当前实例数等运行态字段，保留配置策略，避免正常缩扩实例被误当成配置改写。

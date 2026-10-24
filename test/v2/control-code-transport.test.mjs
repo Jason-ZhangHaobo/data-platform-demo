@@ -35,7 +35,7 @@ function fixture({unknownPut=false,corrupt=false,acl='private'}={}){
  let saved,backup,stored,puts=0;const commands=[];
  const adapter=controlCloudAdapter(config,metadata,{env:{ALIBABA_CLOUD_ACCESS_KEY_ID:'fixture-id',ALIBABA_CLOUD_ACCESS_KEY_SECRET:'fixture-secret',ALIBABA_CLOUD_SECURITY_TOKEN:'fixture-token'},candidateBytes:next,
   loadTransport:()=>saved,saveTransport:v=>{saved=structuredClone(v);},saveBackup:b=>{backup=b;},
-  exec:(program,args)=>{commands.push(args);assert.equal(program,'aliyun');assert(args.includes('--retry-count'));if(args[2]?.includes('/code?'))return JSON.stringify({checksum:'123',url:'https://fixture-code.oss-cn-hangzhou.aliyuncs.com/rollback'});return '{}';},
+  exec:(program,args)=>{commands.push(args);assert.equal(program,'aliyun');assert(args.includes('--retry-count'));if(args[0]==='fc')assert(!args[2].includes('?'));if(args[2]?.endsWith('/code'))return JSON.stringify({checksum:'123',url:'https://fixture-code.oss-cn-hangzhou.aliyuncs.com/rollback'});if(args[2]?.endsWith('/triggers'))return JSON.stringify({triggers:[]});return JSON.stringify({functionName:'fixture-control'});},
   fetchImpl:async(url,options)=>{
    assert.equal(options.redirect,'error');
    if(url.includes('/rollback'))return new Response(old);
@@ -60,4 +60,12 @@ test('protected workflow uses secret metadata and existing pinned package, never
  const yaml=readFileSync(new URL('../../.github/workflows/update-v2-control-code.yml',import.meta.url),'utf8');
  for(const text of ["github.ref == 'refs/heads/main'",'P0A_PRIVATE_CODE_ONLY','secrets.V2_CONTROL_UPDATE_TARGET','artifact-ids:','--recover','--seal','v2-staging-control-mutation'])assert(yaml.includes(text));
  for(const text of ['vars.','deploy-v2-w3','build-v2-fc-package','CreateTrigger','workflow_call'])assert(!yaml.includes(text));
+});
+test('ROA query parameters are separate CLI flags and failures identify the exact read operation',async()=>{
+ const f=fixture();await f.adapter.readState();await f.adapter.recoverRollback(f.config.previous);
+ for(const [suffix,flag,value] of [['/triggers','--limit','100'],['/scaling-config','--qualifier','LATEST'],['/code','--qualifier','LATEST']]){
+  const args=f.commands.find(a=>a[2]?.endsWith(suffix));assert(args);assert.equal(args[args.indexOf(flag)+1],value);assert(!args[2].includes('?'));
+ }
+ const c=f.config,a=controlCloudAdapter(c,target,{env:{},loadTransport:()=>undefined,saveTransport:()=>{},exec:()=>{throw Object.assign(Error('not retained'),{status:3,stderr:'ERROR: can not find api by path synthetic'});}});
+ await assert.rejects(a.readState(),e=>e.safeDiagnostic.operation==='FC_GET_FUNCTION'&&e.safeDiagnostic.cliPathRejected===true&&!JSON.stringify(e.safeDiagnostic).includes('synthetic'));
 });
