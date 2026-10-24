@@ -2,7 +2,7 @@ import {execFileSync} from 'node:child_process';
 import {appendFileSync,existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {resolveCname} from 'node:dns/promises';
+import {Resolver,resolveCname,resolveNs,resolve4} from 'node:dns/promises';
 import {acceptanceConfig,adapterFor,runHttpAcceptance,cleanupAcceptance,functionHash,checkedList,ownsTrigger} from './accept-v2-http-boundary.mjs';
 import {recipientKey,sealReport} from './audit-v2-oidc-readonly.mjs';
 import {DOMAIN_BINDING_AUTHORIZATION,P0B_SIGNED_ACCESS_AUTHORIZATION,verifyCertificateMaterial,domainBindingPlan,runDomainBinding,rollbackDomainBinding} from './v2-domain-binding-plan.mjs';
@@ -54,12 +54,25 @@ function transport(env,operation,body){
  try{return JSON.parse(execFileSync('python3',['scripts/transport-v2-domain-signed.py'],{input:JSON.stringify({authorization:DOMAIN_BINDING_AUTHORIZATION,domainName:'shuduoai.cn',operation,body}),env,encoding:'utf8',timeout:30000,maxBuffer:1048576,stdio:['pipe','pipe','pipe']}));}
  catch{throw fail('DOMAIN_TRANSPORT_UNCONFIRMED');}
 }
-async function waitExactDns(plan){
- for(let attempt=0;attempt<24;attempt++){
-  check(Date.now()<Date.parse(plan.expiresAt)-300000,'HTTPS_WINDOW_EXPIRED');
-  try{const values=await resolveCname(plan.target.domainName);check(values.length===1&&values[0].replace(/\.$/,'').toLowerCase()===plan.dns.value,'DNS_TARGET_CONFLICT');return true;}
-  catch(error){if(!['ENOTFOUND','ENODATA','EAI_AGAIN','ETIMEOUT','ESERVFAIL'].includes(error.code))throw error;}
-  await new Promise(r=>setTimeout(r,10000));
+export async function waitExactDns(plan,{now=Date.now,lookupNs=resolveNs,lookup4=resolve4,publicLookup=resolveCname,resolverFactory=()=>new Resolver({timeout:1500,tries:1}),wait=ms=>new Promise(r=>setTimeout(r,ms))}={}){
+ const stage=plan.requestScope===P0B_SIGNED_ACCESS_AUTHORIZATION;
+ const exact=values=>check(Array.isArray(values)&&values.length===1&&values[0].replace(/\.$/,'').toLowerCase()===plan.dns.value,'DNS_TARGET_CONFLICT');
+ const pending=error=>['ENOTFOUND','ENODATA','EAI_AGAIN','ETIMEOUT','ESERVFAIL'].includes(error.code);
+ check(now()<Date.parse(plan.expiresAt)-300000,'HTTPS_WINDOW_EXPIRED');
+ const authorities=[];
+ if(stage){
+  const names=await lookupNs(plan.target.domainName);check(Array.isArray(names)&&names.length>0&&names.length<=4,'DNS_AUTHORITY_NOT_VERIFIED');
+  for(const name of names){const addresses=await lookup4(name);check(addresses.length>0,'DNS_AUTHORITY_NOT_VERIFIED');const resolver=resolverFactory();resolver.setServers([addresses[0]]);authorities.push(resolver);}
+ }
+ for(let attempt=0;attempt<(stage?72:24);attempt++){
+  check(now()<Date.parse(plan.expiresAt)-300000,'HTTPS_WINDOW_EXPIRED');
+  let published=true;
+  for(const resolver of authorities){try{exact(await resolver.resolveCname(plan.target.domainName));}catch(error){if(!pending(error))throw error;published=false;}}
+  // Do not poll the recursive resolver before publication: an early negative
+  // answer may be cached longer than the handoff. Actual public DNS is still
+  // required, and TLS probes never override DNS or connect to a substituted IP.
+  if(published){try{exact(await publicLookup(plan.target.domainName));return true;}catch(error){if(!pending(error))throw error;}}
+  await wait(10000);
  }
  throw fail('DNS_HANDOFF_NOT_OBSERVED');
 }

@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
-import {httpsConfig,domainProbes,domainProbeAccepted,nextDomainMetadataCount} from '../../scripts/accept-v2-https-binding.mjs';
+import {httpsConfig,domainProbes,domainProbeAccepted,nextDomainMetadataCount,waitExactDns} from '../../scripts/accept-v2-https-binding.mjs';
+import {P0B_SIGNED_ACCESS_AUTHORIZATION} from '../../scripts/v2-domain-binding-plan.mjs';
 
 test('custom domain probes require trusted TLS fingerprint plus exact signed application denial',()=>{
  const good={status:404,code:'INGRESS_DENIED',privateProtocol:false,certificateSha256:'a'.repeat(64),tlsVersion:'TLSv1.3'};
@@ -37,4 +38,16 @@ test('P0-B metadata calls have fixed independent limits and reject corrupt store
  counts=nextDomainMetadataCount(counts,'create');counts=nextDomainMetadataCount(counts,'delete');assert.deepEqual(counts,{get:10,create:1,delete:1});
  for(const operation of ['create','delete','update'])assert.throws(()=>nextDomainMetadataCount(counts,operation));
  for(const patch of [{get:-1},{create:2},{delete:'0'},{get:1.5}])assert.throws(()=>nextDomainMetadataCount({...counts,...patch},'get'));
+});
+test('P0-B waits for authoritative publication without priming recursive negative caches',async()=>{
+ const start=Date.now(),plan={requestScope:P0B_SIGNED_ACCESS_AUTHORIZATION,expiresAt:new Date(start+3600000).toISOString(),target:{domainName:'shuduoai.cn'},dns:{value:'fixture.example.invalid'}};
+ let elapsed=0,authorityCalls=0,publicCalls=0;
+ const options={now:()=>start+elapsed,lookupNs:async()=>['ns-a.example.invalid','ns-b.example.invalid'],lookup4:async()=>['192.0.2.10'],resolverFactory:()=>({setServers:()=>{},resolveCname:async()=>{authorityCalls++;if(elapsed===0)throw Object.assign(Error('not published'),{code:'ENODATA'});return[plan.dns.value];}}),publicLookup:async()=>{publicCalls++;assert(elapsed>=10000);if(publicCalls===1)throw Object.assign(Error('old cache'),{code:'ENODATA'});return[plan.dns.value];},wait:async ms=>{elapsed+=ms;}};
+ assert.equal(await waitExactDns(plan,options),true);assert.equal(publicCalls,2);assert.equal(authorityCalls,6);assert.equal(elapsed,20000);
+});
+test('authoritative readiness cannot bypass a public DNS conflict or the cleanup deadline',async()=>{
+ const start=Date.now(),plan={requestScope:P0B_SIGNED_ACCESS_AUTHORIZATION,expiresAt:new Date(start+3600000).toISOString(),target:{domainName:'shuduoai.cn'},dns:{value:'fixture.example.invalid'}};
+ const options={now:()=>start,lookupNs:async()=>['ns.example.invalid'],lookup4:async()=>['192.0.2.10'],resolverFactory:()=>({setServers:()=>{},resolveCname:async()=>[plan.dns.value]}),publicLookup:async()=>['foreign.example.invalid'],wait:async()=>assert.fail('conflict must not retry')};
+ await assert.rejects(waitExactDns(plan,options),/DNS_TARGET_CONFLICT/);
+ await assert.rejects(waitExactDns({...plan,expiresAt:new Date(start+299999).toISOString()},{...options,lookupNs:async()=>assert.fail('expired before lookup')}),/HTTPS_WINDOW_EXPIRED/);
 });
