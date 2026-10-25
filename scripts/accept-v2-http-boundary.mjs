@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditConfig, recipientKey, sealReport, auditErrorDetails } from './audit-v2-oidc-readonly.mjs';
 import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
-import { P0B_SIGNED_ACCESS_AUTHORIZATION } from './v2-domain-binding-plan.mjs';
+import { signedAccessLimits } from './v2-domain-binding-plan.mjs';
 
 const fail = code => Object.assign(new Error(code), { safeCode:code });
 const requireThat = (condition,code) => { if (!condition) throw fail(code); };
@@ -24,15 +24,16 @@ export function acceptanceConfig(env) {
   requireThat(env.V2_ACCEPTANCE_SOURCE_REVISION===env.GITHUB_SHA,'REVIEWED_SOURCE_MISMATCH');
   requireThat(/^\d{1,30}$/.test(env.V2_EXPECTED_CODE_CHECKSUM ?? ''),'EXPECTED_CODE_REQUIRED');
   requireThat(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT ?? '') && Number.isFinite(Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT)),'AUTHORIZATION_EXPIRY_REQUIRED');
-  const p0bSignedStage=env.V2_HTTP_ACCEPTANCE_AUTHORIZED===P0B_SIGNED_ACCESS_AUTHORIZATION;
-  requireThat(p0bSignedStage ? env.V2_HTTPS_AUTHORIZATION===P0B_SIGNED_ACCESS_AUTHORIZATION : env.V2_HTTP_ACCEPTANCE_AUTHORIZED === 'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS','EXPLICIT_ACCEPTANCE_SCOPE_REQUIRED');
+  const stage=signedAccessLimits(env.V2_HTTP_ACCEPTANCE_AUTHORIZED),p0bSignedStage=Boolean(stage);
+  requireThat(p0bSignedStage ? env.V2_HTTPS_AUTHORIZATION===env.V2_HTTP_ACCEPTANCE_AUTHORIZED : env.V2_HTTP_ACCEPTANCE_AUTHORIZED === 'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS','EXPLICIT_ACCEPTANCE_SCOPE_REQUIRED');
   const previousReads=Number(env.V2_HTTP_PREVIOUS_READS ?? '0');
-  requireThat(/^(0|[1-9]\d?)$/.test(env.V2_HTTP_PREVIOUS_READS ?? '0') && previousReads<=20,'PRIOR_READ_COUNT_INVALID');
-  requireThat(!p0bSignedStage||previousReads===17,'P0B_HISTORY_MUST_BE_17');
+  requireThat(/^(0|[1-9]\d?)$/.test(env.V2_HTTP_PREVIOUS_READS ?? '0') && previousReads<=(stage?.historical??20),'PRIOR_READ_COUNT_INVALID');
+  requireThat(!p0bSignedStage||previousReads===stage.historical,'P0B_HISTORY_MISMATCH');
+  if(stage?.resume)requireThat([env.V2_HTTP_PRIOR_FUNCTION_HASH,env.V2_HTTP_PRIOR_TRIGGERS_HASH].every(v=>/^[a-f0-9]{64}$/.test(v??'')),'P0B_PRIOR_BASELINE_REQUIRED');
   const restoreRunId=env.V2_HTTP_RESTORE_RUN_ID ?? '',restoreAuthorized=env.V2_HTTP_RESTORE_AUTHORIZED==='RECREATE_SAME_TRIGGER_ONCE';
   requireThat(restoreRunId ? /^\d{1,20}$/.test(restoreRunId)&&restoreAuthorized&&previousReads>0 : !restoreAuthorized,'TRIGGER_RESTORE_NOT_AUTHORIZED');
   requireThat(!p0bSignedStage||Boolean(restoreRunId),'P0B_SAME_TRIGGER_REQUIRED');
-  return {...auditConfig(env),expectedChecksum:env.V2_EXPECTED_CODE_CHECKSUM,triggerName:`shuduo-http-boundary-${restoreRunId || env.GITHUB_RUN_ID}`,authorizationExpiresAt:Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT),previousReads,restoreRunId:restoreRunId || undefined,p0bSignedStage,maxRequests:p0bSignedStage?32:20};
+  return {...auditConfig(env),expectedChecksum:env.V2_EXPECTED_CODE_CHECKSUM,triggerName:`shuduo-http-boundary-${restoreRunId || env.GITHUB_RUN_ID}`,authorizationExpiresAt:Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT),previousReads,restoreRunId:restoreRunId || undefined,p0bSignedStage,requestScope:env.V2_HTTP_ACCEPTANCE_AUTHORIZED,maxRequests:stage?.defaultMax??20,...(stage?.resume?{priorFunctionHash:env.V2_HTTP_PRIOR_FUNCTION_HASH,priorOriginalTriggersHash:env.V2_HTTP_PRIOR_TRIGGERS_HASH}:{})};
 }
 export function commandFailure(args,error,output='') {
   const operation=args[0]==='sts'?'IDENTITY_READ':args[0]==='bssopenapi'?'BILL_READ':args[1]==='GET'?'FC_READ':args[1]==='DELETE'?'DELETE_TRIGGER':args[2]?.endsWith('/invocations')?'PRIVATE_STATUS':'CREATE_TRIGGER';
@@ -90,10 +91,10 @@ export async function cleanupAcceptance(config, adapter, checkpoint) {
 }
 export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{},load=()=>undefined,deferForDomain=false}={}) {
   let checkpoint=load();
-  const maxRequests=config.p0bSignedStage?32:20,reservedCny=config.p0bSignedStage?2:1;
+  const stage=signedAccessLimits(config.requestScope),maxRequests=stage?.defaultMax??20,reservedCny=config.p0bSignedStage?2:1;
   const report={scope:'SIGNED_HTTP_BOUNDARY_ONLY',passed:false,restoreRunId:config.restoreRunId,priorRequests:config.previousReads,requests:config.previousReads,newRequests:0,results:[],modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,cleanup:{triggerAbsent:false}};
   try {
-    requireThat(!config.p0bSignedStage||(config.previousReads===17&&config.maxRequests===32&&Boolean(config.restoreRunId)),'P0B_SCOPE_CHANGED');
+    requireThat(Boolean(stage)===config.p0bSignedStage&&(!stage||(config.previousReads===stage.historical&&config.maxRequests===stage.defaultMax&&Boolean(config.restoreRunId))),'P0B_SCOPE_CHANGED');
     report.phase='IDENTITY';
     requireThat(!deferForDomain||config.domainBindingAuthorization==='ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED','DOMAIN_HOLD_NOT_AUTHORIZED');
     const identity=await adapter.identity();
@@ -108,9 +109,10 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
     requireThat(before.cpu===0.25 && before.memorySize===512 && before.instanceConcurrency===1 && before.timeout<=120,'CAPACITY_DRIFT');
     const original=await checkedList(adapter,config);
     requireThat(original.length===2 && original.every(t=>t.triggerType==='oss'),'ORIGINAL_TRIGGER_BOUNDARY_CHANGED');
+    if(stage?.resume)requireThat(functionHash(before)===config.priorFunctionHash&&triggerHash(original)===config.priorOriginalTriggersHash,'P0B_PRIOR_BASELINE_DRIFT');
     const cycle=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date(now()));
     report.phase='BILLING';
-    const unsettledReservedCny=config.p0bSignedStage?4:0;
+    const unsettledReservedCny=stage?.unsettledReservedCny??0;
     const bill=verifyV2MonthlyBillPages(await adapter.billPages(cycle),200-reservedCny-unsettledReservedCny);
     requireThat(bill.ok && bill.billingCycle===cycle,'BUDGET_NOT_VERIFIED');
     report.billingCycle=cycle;report.billCnyBefore=bill.spendCny;report.reservedCny=reservedCny;
