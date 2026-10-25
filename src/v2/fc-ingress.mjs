@@ -10,7 +10,7 @@ const deny = () => {
 // Only for an FC-managed listener, never an internet-facing Node server.
 // FC supplies x-fc-control-path. Header overwrite/rejection must be verified
 // through the actual FC edge before enabling public HTTP traffic.
-export function createFcIngress({ publicHttpEnabled = false } = {}) {
+export function createFcIngress({ publicHttpEnabled = false, publicReadOnly = false } = {}) {
   const token = randomBytes(32).toString("hex");
   const internalHeaders = Object.freeze({ [internalHeader]: token });
   const matches = value => typeof value === "string" &&
@@ -18,7 +18,8 @@ export function createFcIngress({ publicHttpEnabled = false } = {}) {
     timingSafeEqual(Buffer.from(value), Buffer.from(token));
   return Object.freeze({
     internalHeaders,
-    status: Object.freeze({ mode: "FC_CONTROL_PATH", publicHttpEnabled: publicHttpEnabled === true }),
+    status: Object.freeze({ mode: "FC_CONTROL_PATH", publicHttpEnabled: publicHttpEnabled === true,
+      ...(publicReadOnly ? { publicReadOnly: true } : {}) }),
     assertRequest(req) {
       const target = req.url;
       // Reject alternative spellings BEFORE URL normalization or decoding.
@@ -42,6 +43,10 @@ export function createFcIngress({ publicHttpEnabled = false } = {}) {
       const api = path.startsWith("/api/v2/"),
         page = path === "/" || path === "/v2" || path.startsWith("/v2/");
       if (!((api && ["GET", "POST"].includes(req.method)) || (page && req.method === "GET"))) deny();
+      if (publicReadOnly && req.method !== "GET" &&
+          !["/api/v2/auth/login", "/api/v2/auth/logout"].includes(path))
+        throw Object.assign(new Error("当前入口为只读验收模式，仅支持已有账号登录、查看和退出；任务执行与发布尚未开放"),
+          { status: 403, code: "PUBLIC_READ_ONLY" });
     },
   });
 }

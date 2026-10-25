@@ -53,9 +53,9 @@ test("process hop requires an unforgeable per-instance token, loopback and no FC
   assert.throws(() => validatePrivateApplicationRequest({ operation: "PRIVATE_APPLICATION_HTTP_V1", method: "GET", path: own.url, headers: gate.internalHeaders }), /PRIVATE_APPLICATION_HEADERS_INVALID/);
 });
 
-async function open(t, publicHttpEnabled) {
+async function open(t, publicHttpEnabled, publicReadOnly = false) {
   const root = mkdtempSync(join(tmpdir(), "shuduo-ingress-"));
-  const ingress = createFcIngress({ publicHttpEnabled });
+  const ingress = createFcIngress({ publicHttpEnabled, publicReadOnly });
   let refreshes = 0;
   const app = createV2Server({ root, ingress,
     stateCoordinator: { refresh: async () => { refreshes++; }, flush: async () => {} },
@@ -113,5 +113,42 @@ test("public HTTP keeps login and CSRF enforcement; private forwarding credentia
 
 test("cloud bootstrap always installs the FC boundary with public HTTP opt-in", () => {
   const source = readFileSync(new URL("../../src/v2/cloud-server.mjs", import.meta.url), "utf8");
-  assert.match(source, /ingress: createFcIngress\(\{ publicHttpEnabled: env\.V2_FC_PUBLIC_HTTP_ENABLED === "true" \}\)/);
+  assert.match(source, /publicHttpEnabled: env\.V2_FC_PUBLIC_HTTP_ENABLED === "true"/);
+  assert.match(source, /publicReadOnly: env\.V2_FC_PUBLIC_READ_ONLY !== "false"/);
+});
+
+test("read-only public gate rejects every business write before persistence without disabling private events", async t => {
+  const { call, refreshes } = await open(t, true, true);
+  for (const path of ["/api/v2/agent/tasks", "/api/v2/runs", "/api/v2/revisions", "/api/v2/releases", "/api/v2/auth/invitations", "/api/v2/auth/redeem", "/api/v2/auth/password", "/api/v2/services/applications"]) {
+    const result = await call(path, "POST", httpHeaders, {});
+    assert.equal(result.status, 403);
+    assert.equal(result.body.code, "PUBLIC_READ_ONLY");
+  }
+  assert.equal(refreshes(), 0);
+  const status = await call("/invoke", "POST", eventHeaders, { operation: "PRIVATE_STATUS_V1" });
+  assert.equal(status.status, 200);
+  assert.equal(status.body.ingress.publicReadOnly, true);
+  const session = await call("/api/v2/auth/session", "GET", httpHeaders);
+  assert.equal(session.body.readOnly, true);
+  assert.equal(session.body.authenticated, false);
+});
+
+test("read-only public login keeps original role, narrows presentation permissions and permits logout", async t => {
+  const { app, call } = await open(t, true, true);
+  const credentials = { email: "readonly-owner@example.invalid", password: "SyntheticOnly!2026", displayName: "虚构管理员" };
+  app.auth.bootstrapAdmin(credentials);
+  const login = await call("/api/v2/auth/login", "POST", httpHeaders, credentials);
+  assert.equal(login.status, 200);
+  assert.equal(login.body.readOnly, true);
+  assert.equal(login.body.role, "ADMIN");
+  assert.deepEqual(login.body.permissions, ["SESSION"]);
+  const cookie = login.headers["set-cookie"].map(value => value.split(";")[0]).join("; ");
+  const headers = { ...httpHeaders, cookie, "x-csrf-token": login.body.csrfToken };
+  assert.deepEqual((await call("/api/v2/auth/session", "GET", headers)).body.permissions, ["SESSION"]);
+  assert.equal((await call("/api/v2/revisions", "POST", headers, {})).body.code, "PUBLIC_READ_ONLY");
+  const forwarded = await call("/invoke", "POST", eventHeaders, { operation: "PRIVATE_APPLICATION_HTTP_V1", method: "GET", path: "/api/v2/auth/session", headers: { cookie } });
+  assert.deepEqual(forwarded.body.body.permissions, ["*"]);
+  assert.equal(forwarded.body.body.readOnly, undefined);
+  assert.equal((await call("/api/v2/auth/logout", "POST", headers, {})).status, 200);
+  assert.equal((await call("/api/v2/auth/session", "GET", headers)).body.authenticated, false);
 });

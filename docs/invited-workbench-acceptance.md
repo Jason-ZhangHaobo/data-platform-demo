@@ -18,6 +18,17 @@
 
 ## 验证与发布门
 
+### 先只读验收，再开放计算
+
+- 云启动将`V2_FC_PUBLIC_READ_ONLY`默认视为开启（仅显式`false`可关闭），但它不代替默认关闭的`V2_FC_PUBLIC_HTTP_ENABLED`。设置开关、创建长期入口和更改域名认证都需独立阶段批准。
+- 只读模式只允许公网GET及现有账号的登录/退出POST。任务创建、运行、审阅发布、API发布/授权、邀请创建/兑换、改密等POST均在访问持久层前返回`403 PUBLIC_READ_ONLY`，管理员也不能绕过。
+- 公网登录和会话查询返回`readOnly:true`及仅`SESSION`展示权限，保留数据库中的原角色。工作台显示只读横幅，禁用写操作、隐藏邀请/改密入口；退出后仍保留只读标记。私有签名事件及进程内受控转发继续执行原权限，不受此公网模式影响。
+- 定向验收见`test/v2/fc-ingress.test.mjs`、`test/v2/auth-readonly-ui.test.mjs`，结合持久认证回归。实际组件静态输出不是浏览器视觉验收；仍需正式HTTPS真实登录、退出和拒绝操作证据。
+- 正式接入计划复用原域名/证书/DNS，新增一个HTTP触发器，拟设`disableURLInternet:true`关闭默认公网URL；域名认证改为应用层受邀会话，保留原HTTPS/TLS/路由及私有隔离。必须真实验证默认URL拒绝和域名路由，不能只以配置回读成功判定。
+- 不调用模型/Spark、不新增业务账号或重置原密码；已有管理员在正式页面自行登录。私有证据、阶段请求上限、预算预留、元数据/变更次数及回滚记录只保存在受保护位置；旧一次性授权不适用。
+
+官方依据：[HTTP触发器字段](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-struct-httptriggerconfig)、[更新域名及权限](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-updatecustomdomain)。`UpdateCustomDomain`与`CreateTrigger`的官方授权表均为`Resource:*`，必须向用户说明平台粒度限制，不能宣称IAM已限制到单域名；执行器目标限制、短时凭证和结束撤权只能作为额外控制，不等价于资源级IAM限制。
+
 `test/v2/workbench-environment.test.mjs`验证模式、服务权限、两处实际接线及真实组件静态渲染；`test/v2/private-application.test.mjs`覆盖实际本机HTTP代理的原请求读取和未登录拒绝。这些测试不替代浏览器点击、视觉布局或云端业务验收。
 
 冻结流程：比较本机/main/已部署业务文件 → 集中修复必要接线 → 定向与完整CI → 固定main SHA构包 → 记录包摘要/字节及回滚依据 → 获得阶段授权 → 私有部署与验收。无源码变化不重复构包；没有可验证的回滚产物不更新云函数。
