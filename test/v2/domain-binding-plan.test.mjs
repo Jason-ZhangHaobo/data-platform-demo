@@ -47,14 +47,27 @@ test('binding plan has fixed HTTPS signed routes, exact rollback scope and no ce
 });
 test('TLS configuration sends an explicit strong allowlist and rejects missing or broadened readback',async()=>{
  assert.deepEqual(plan.desired.tlsConfig.cipherSuites,DOMAIN_TLS_CIPHER_SUITES);
- assert.equal(new Set(DOMAIN_TLS_CIPHER_SUITES).size,6);
- assert(DOMAIN_TLS_CIPHER_SUITES.every(s=>/^(TLS_ECDHE_(RSA|ECDSA)_WITH_AES_(128_GCM_SHA256|256_GCM_SHA384)|TLS_AES_(128_GCM_SHA256|256_GCM_SHA384))$/.test(s)));
+ assert.equal(new Set(DOMAIN_TLS_CIPHER_SUITES).size,4);
+ assert(DOMAIN_TLS_CIPHER_SUITES.every(s=>/^TLS_ECDHE_(RSA|ECDSA)_WITH_AES_(128_GCM_SHA256|256_GCM_SHA384)$/.test(s)));
+ assert.equal(plan.desired.tlsConfig.minVersion,'TLSv1.2');assert.equal(plan.desired.tlsConfig.maxVersion,'TLSv1.3');
  const f=fixture();await runDomainBinding(plan,material,f.adapter,f.storage);
  const reordered=structuredClone(f.state());reordered.tlsConfig.cipherSuites.reverse();assert.equal(domainConfigurationMatches(reordered,plan),true);
- for(const suites of [undefined,[],['TLS_RSA_WITH_RC4_128_SHA'],[...DOMAIN_TLS_CIPHER_SUITES,'TLS_RSA_WITH_AES_128_CBC_SHA'],[...DOMAIN_TLS_CIPHER_SUITES,DOMAIN_TLS_CIPHER_SUITES[0]],DOMAIN_TLS_CIPHER_SUITES.slice(1)]){
+ for(const suites of [undefined,[],['TLS_RSA_WITH_RC4_128_SHA'],[...DOMAIN_TLS_CIPHER_SUITES,'TLS_RSA_WITH_AES_128_CBC_SHA'],[...DOMAIN_TLS_CIPHER_SUITES,'TLS_AES_128_GCM_SHA256'],[...DOMAIN_TLS_CIPHER_SUITES,'TLS_AES_256_GCM_SHA384'],[...DOMAIN_TLS_CIPHER_SUITES,DOMAIN_TLS_CIPHER_SUITES[0]],DOMAIN_TLS_CIPHER_SUITES.slice(1)]){
   const changed=structuredClone(f.state());changed.tlsConfig.cipherSuites=suites;assert.equal(domainConfigurationMatches(changed,plan),false);
  }
  const changed=structuredClone(f.state());changed.tlsConfig.minVersion='TLSv1.1';assert.equal(domainConfigurationMatches(changed,plan),false);
+});
+test('FC configurable cipher allowlist matches the pinned official ITLSConfig schema without downgrading TLS',()=>{
+ // Offline, synthetic projection of the public enum at the documented commit;
+ // this checks API configuration, not a live handshake or cloud acceptance.
+ const officialEnum=new Set([
+  'TLS_RSA_WITH_RC4_128_SHA','TLS_RSA_WITH_3DES_EDE_CBC_SHA','TLS_RSA_WITH_AES_128_CBC_SHA','TLS_RSA_WITH_AES_256_CBC_SHA','TLS_RSA_WITH_AES_128_CBC_SHA256','TLS_RSA_WITH_AES_128_GCM_SHA256','TLS_RSA_WITH_AES_256_GCM_SHA384',
+  'TLS_ECDHE_ECDSA_WITH_RC4_128_SHA','TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA','TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA','TLS_ECDHE_RSA_WITH_RC4_128_SHA','TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA','TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA','TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA',
+  'TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256','TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256','TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256','TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256','TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384','TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384','TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305','TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305',
+ ]);
+ assert(DOMAIN_TLS_CIPHER_SUITES.every(v=>officialEnum.has(v)));
+ for(const value of ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384'])assert.equal(officialEnum.has(value),false);
+ assert.equal(plan.desired.tlsConfig.maxVersion,'TLSv1.3');assert.equal(plan.desired.authConfig.authType,'function');assert.equal(plan.publicApplicationEnabled,false);
 });
 test('rejected create retains only bounded diagnostic fields and does not retry a write',async()=>{
  const f=fixture({rejectedCreate:{status:400,code:'InvalidArgument',category:'INVALID_CIPHER_SUITES',message:'DO_NOT_EXPORT',body:material}});
