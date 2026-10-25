@@ -48,6 +48,7 @@ export function httpsConfig(env,now=Date.now()){
  const cloudEnv={...env,ALIBABA_CLOUD_REGION_ID:input.region,V2_DEPLOY_ROLE_ARN:input.roleArn,V2_DEPLOY_OIDC_PROVIDER_ARN:input.providerArn,V2_FUNCTION_NAME:input.functionName,
   V2_EXPECTED_CODE_CHECKSUM:input.expectedChecksum,V2_ACCEPTANCE_SOURCE_REVISION:input.sourceRevision,V2_HTTP_ACCEPTANCE_AUTHORIZED:p0bSignedStage?env.V2_HTTPS_AUTHORIZATION:'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS',
   V2_HTTP_PRIOR_FUNCTION_HASH:input.priorFunctionHash,V2_HTTP_PRIOR_TRIGGERS_HASH:input.priorOriginalTriggersHash,
+  V2_HTTP_PRIOR_HTTPS_RUN_ID:input.priorHttpsRunId,V2_HTTP_PRIOR_HTTPS_DIGEST:input.priorHttpsAcceptanceDigest,
   V2_HTTP_AUTHORIZATION_EXPIRES_AT:input.expiresAt,V2_HTTP_PREVIOUS_READS:String(input.priorRequests),V2_HTTP_RESTORE_RUN_ID:input.restoreRunId,V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE'};
  const config={...acceptanceConfig(cloudEnv),domainBindingAuthorization:DOMAIN_BINDING_AUTHORIZATION};
  return{plan,material,config,cloudEnv,roleArn:input.roleArn,providerArn:input.providerArn};
@@ -88,12 +89,16 @@ export async function httpsBindingMain(env=process.env,mode=process.argv[2]){
  }
  mkdirSync(dir,{recursive:true,mode:0o700});
  if(mode==='--seal'||mode==='--handoff'){
+  const stage=signedAccessLimits(plan.requestScope);
   const report={scope:'SIGNED_HTTPS_DOMAIN_BINDING',operationId:plan.operationId,targetHash:plan.desiredHash,domain:read('domain'),boundary:read('boundary'),httpCheckpoint:read('http-checkpoint'),domainCheckpoint:read('domain-checkpoint'),cleanup:read('cleanup')};
-  if(mode==='--handoff')check(report.boundary?.passed===true&&report.boundary.cleanup?.deferredForSameDomainBatch===true&&report.boundary.priorRequests===config.previousReads&&report.httpCheckpoint?.requests===config.previousReads+15&&report.httpCheckpoint.requests<=config.maxRequests,'BOUNDARY_HANDOFF_NOT_READY');
-  report.passed=report.domain?.passed===true&&report.boundary?.passed===true&&report.cleanup?.triggerAbsent===true&&report.cleanup.functionUnchanged===true&&report.cleanup.originalTriggersUnchanged===true&&!report.cleanup?.domainRollbackFailure;
+  const reusedBoundaryValid=!stage?.reuseDefault||(report.boundary?.scope==='SIGNED_DOMAIN_PREPARATION_ONLY'&&report.boundary.defaultBoundaryReused===true&&report.boundary.newRequests===0&&report.boundary.results?.length===0&&report.boundary.priorBoundaryEvidence?.runId===config.priorHttpsRunId&&report.boundary.priorBoundaryEvidence.digest===config.priorHttpsAcceptanceDigest);
+  if(mode==='--handoff'){
+   check(report.boundary?.passed===true&&report.boundary.cleanup?.deferredForSameDomainBatch===true&&report.boundary.priorRequests===config.previousReads&&report.httpCheckpoint?.requests===config.previousReads+(stage?.defaultNew??15)&&report.httpCheckpoint.requests<=config.maxRequests,'BOUNDARY_HANDOFF_NOT_READY');
+   check(reusedBoundaryValid,'REUSED_BOUNDARY_HANDOFF_MISMATCH');
+  }
+  report.passed=report.domain?.passed===true&&report.boundary?.passed===true&&reusedBoundaryValid&&report.cleanup?.triggerAbsent===true&&report.cleanup.functionUnchanged===true&&report.cleanup.originalTriggersUnchanged===true&&!report.cleanup?.domainRollbackFailure;
   if(config.p0bSignedStage){
-   const stage=signedAccessLimits(plan.requestScope);
-   report.requestBudget={historical:stage.historical,defaultNewLimit:15,domainNewLimit:8,cumulativeLimit:stage.totalMax};
+   report.requestBudget={historical:stage.historical,defaultNewLimit:stage.defaultNew,domainNewLimit:8,cumulativeLimit:stage.totalMax};
    report.domainRequests=read('probe-count')?.requests??0;report.cumulativeRequests=(report.boundary?.requests??stage.historical)+report.domainRequests;
    report.domainApiCounts=read('domain-api-count')??{get:0,create:0,delete:0};
    check(report.cumulativeRequests<=stage.totalMax&&report.domainRequests<=8,'P0B_REPORTED_LIMIT_EXCEEDED');

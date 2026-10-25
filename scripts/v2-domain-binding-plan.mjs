@@ -12,28 +12,33 @@ const digest=value=>createHash('sha256').update(canonical(value)).digest('hex');
 export const DOMAIN_BINDING_AUTHORIZATION='ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED';
 export const P0B_SIGNED_ACCESS_AUTHORIZATION='P0B_SIGNED_HTTPS_17_PLUS_23';
 export const P0B_SIGNED_RESUME_AUTHORIZATION='P0B_SIGNED_HTTPS_RESUME_32_PLUS_23';
+export const P0B_DOMAIN_REMAINING_AUTHORIZATION='P0B_SIGNED_DOMAIN_47_PLUS_8';
 export function signedAccessLimits(authorization){
-  if(authorization===P0B_SIGNED_ACCESS_AUTHORIZATION)return{historical:17,defaultMax:32,totalMax:40,unsettledReservedCny:4,resume:false};
-  if(authorization===P0B_SIGNED_RESUME_AUTHORIZATION)return{historical:32,defaultMax:47,totalMax:55,unsettledReservedCny:6,resume:true};
+  if(authorization===P0B_SIGNED_ACCESS_AUTHORIZATION)return{historical:17,defaultNew:15,defaultMax:32,totalMax:40,unsettledReservedCny:4,resume:false};
+  if(authorization===P0B_SIGNED_RESUME_AUTHORIZATION)return{historical:32,defaultNew:15,defaultMax:47,totalMax:55,unsettledReservedCny:6,resume:true};
+  if(authorization===P0B_DOMAIN_REMAINING_AUTHORIZATION)return{historical:47,defaultNew:0,defaultMax:47,totalMax:55,unsettledReservedCny:8,resume:true,reuseDefault:true};
 }
 // Call only after authenticating/decrypting the original evidence envelope.
 // A failed first batch is not permission to retry; this validates provenance
 // and counters for the separately approved, exactly-once continuation.
-export function verifySignedHttpsResume(prior,expected){
+export function verifySignedHttpsResume(prior,expected,authorization=P0B_SIGNED_RESUME_AUTHORIZATION){
+  check([P0B_SIGNED_RESUME_AUTHORIZATION,P0B_DOMAIN_REMAINING_AUTHORIZATION].includes(authorization),'HTTPS_PRIOR_SCOPE_INVALID');
+  const remaining=authorization===P0B_DOMAIN_REMAINING_AUTHORIZATION,history=remaining?32:17,total=history+15;
   check(/^[a-f0-9]{32}$/.test(expected?.operationId??'')&&[expected?.desiredHash,expected?.httpTargetHash].every(v=>/^[a-f0-9]{64}$/.test(v??''))
     &&/^shuduo-http-boundary-\d{1,20}$/.test(expected?.triggerName??''),'HTTPS_PRIOR_EXPECTATION_INVALID');
   check(prior?.scope==='SIGNED_HTTPS_DOMAIN_BINDING'&&prior.passed===false
     &&prior.operationId===expected.operationId&&prior.targetHash===expected.desiredHash,'HTTPS_PRIOR_TARGET_MISMATCH');
   const b=prior.boundary,c=prior.httpCheckpoint,d=prior.domain,dc=prior.domainCheckpoint;
   check(c?.targetHash===expected.httpTargetHash&&c.triggerName===expected.triggerName
-    &&c.requests===32&&/^[a-f0-9]{64}$/.test(c.functionHash??'')&&/^[a-f0-9]{64}$/.test(c.originalTriggersHash??''),'HTTPS_PRIOR_CHECKPOINT_MISMATCH');
-  check(b?.passed===true&&b.priorRequests===17&&b.requests===32&&b.newRequests===15
+    &&c.requests===total&&/^[a-f0-9]{64}$/.test(c.functionHash??'')&&/^[a-f0-9]{64}$/.test(c.originalTriggersHash??''),'HTTPS_PRIOR_CHECKPOINT_MISMATCH');
+  check(b?.passed===true&&b.priorRequests===history&&b.requests===total&&b.newRequests===15
     &&b.modelCalls===0&&b.sparkRuns===0&&b.publicApplicationEnabled===false
     &&b.cleanup?.deferredForSameDomainBatch===true&&Array.isArray(b.results)&&b.results.length===14
     &&new Set(b.results.map(v=>v.id)).size===14,'HTTPS_PRIOR_BOUNDARY_MISMATCH');
-  check(canonical(prior.requestBudget)===canonical({historical:17,defaultNewLimit:15,domainNewLimit:8,cumulativeLimit:40})
-    &&prior.domainRequests===0&&prior.cumulativeRequests===32,'HTTPS_PRIOR_USAGE_MISMATCH');
-  check(d?.passed===false&&d.createRequests===1&&d.failure==='DOMAIN_CREATE_NOT_CONFIRMED'
+  check(canonical(prior.requestBudget)===canonical({historical:history,defaultNewLimit:15,domainNewLimit:8,cumulativeLimit:total+8})
+    &&prior.domainRequests===0&&prior.cumulativeRequests===total,'HTTPS_PRIOR_USAGE_MISMATCH');
+  if(remaining)check(d?.createResponse?.status===400&&d.createResponse.code==='InvalidArgument'&&d.createResponse.category==='INVALID_CIPHER_SUITES','HTTPS_PRIOR_REJECTION_MISMATCH');
+  check(d?.passed===false&&d.createRequests===1&&d.failure===(remaining?'DOMAIN_CREATE_REJECTED':'DOMAIN_CREATE_NOT_CONFIRMED')
     &&d.modelCalls===0&&d.sparkRuns===0&&d.publicApplicationEnabled===false
     &&d.rollback?.domainAbsent===true&&d.rollback.deleted===false&&Array.isArray(d.probes)&&d.probes.length===0
     &&dc?.phase==='ROLLED_BACK'&&dc.baselineAbsent===true&&dc.operationId===prior.operationId
@@ -43,7 +48,7 @@ export function verifySignedHttpsResume(prior,expected){
     &&prior.cleanup.domainRollback.deleted===false&&!prior.cleanup.domainRollbackFailure,'HTTPS_PRIOR_CLEANUP_UNCONFIRMED');
   const counts=prior.domainApiCounts;
   check(Number.isInteger(counts?.get)&&counts.get>=3&&counts.get<=10&&counts.create===1&&counts.delete===0,'HTTPS_PRIOR_METADATA_MISMATCH');
-  return{priorRequests:32,priorFunctionHash:c.functionHash,priorOriginalTriggersHash:c.originalTriggersHash};
+  return{priorRequests:total,priorFunctionHash:c.functionHash,priorOriginalTriggersHash:c.originalTriggersHash};
 }
 // FC's configurable cipherSuites enum is separate from its TLS 1.3 support.
 // Keep TLS 1.3 enabled through maxVersion, but do not put TLS_AES_* (TLS 1.3)
@@ -85,7 +90,7 @@ export function domainBindingPlan(input,now=Date.now()){
   return{version:1,requestScope:input.authorization,operationId:input.operationId,sourceRevision:input.sourceRevision,expiresAt:input.expiresAt,
     target:{...target,domainName:input.domainName},desired,desiredHash:digest(desired),
     dns:{rr:'@',type:'CNAME',value:`${target.account}.${target.region}.fc.aliyuncs.com`,ttl:600},
-    limits:{newDomainCreates:1,newBusinessDnsRecords:1,domainProbes:p0b?8:20,reservedCny:p0b?2:1,monthlyCny:200,...(p0b?{historicalRequests:stage.historical,defaultNewRequests:15,allRequests:stage.totalMax,domainMetadataReads:10}: {})},
+    limits:{newDomainCreates:1,newBusinessDnsRecords:1,domainProbes:p0b?8:20,reservedCny:p0b?2:1,monthlyCny:200,...(p0b?{historicalRequests:stage.historical,defaultNewRequests:stage.defaultNew,allRequests:stage.totalMax,domainMetadataReads:10}: {})},
     publicApplicationEnabled:false,automaticRenewalConfigured:false};
 }
 
