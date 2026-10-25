@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {generateKeyPairSync} from 'node:crypto';
-import {DOMAIN_BINDING_AUTHORIZATION,P0B_SIGNED_ACCESS_AUTHORIZATION,verifyCertificateMaterial,domainBindingPlan,domainTemporaryStatements,domainConfigurationMatches,runDomainBinding} from '../../scripts/v2-domain-binding-plan.mjs';
+import {DOMAIN_BINDING_AUTHORIZATION,P0B_SIGNED_ACCESS_AUTHORIZATION,DOMAIN_TLS_CIPHER_SUITES,verifyCertificateMaterial,domainBindingPlan,domainTemporaryStatements,domainConfigurationMatches,runDomainBinding} from '../../scripts/v2-domain-binding-plan.mjs';
 import {httpsConfig} from '../../scripts/accept-v2-https-binding.mjs';
 
 function materialFixture(){
@@ -26,7 +26,7 @@ function fixture(options={}){
  const adapter={
   preflight:async()=>({defaultBoundaryVerified:true,publicApplicationEnabled:false,sameSignedTriggerPresent:true,functionUnchanged:true,budgetVerified:true,dnsExact:true,...options.preflight}),
   get:async()=>{calls.push('GET');return options.readDenied?{status:403,code:'AccessDenied'}:state?{status:200,value:structuredClone(state)}:{status:404,code:'DomainNameNotFound'};},
-  create:async body=>{assert.equal(checkpoint.phase,'CREATE_REQUESTED');calls.push('CREATE');state={...structuredClone(body),accountId:plan.target.account};if(options.unknownCreate)throw Error('SYNTHETIC_PRIVATE_EXCEPTION');},
+  create:async body=>{assert.equal(checkpoint.phase,'CREATE_REQUESTED');calls.push('CREATE');if(options.rejectedCreate)return options.rejectedCreate;state={...structuredClone(body),accountId:plan.target.account};if(options.unknownCreate)throw Error('SYNTHETIC_PRIVATE_EXCEPTION');return{status:200};},
   delete:async()=>{calls.push('DELETE');if(!options.deleteUnapplied)state=null;if(options.unknownDelete||options.deleteUnapplied)throw Error('SYNTHETIC_PRIVATE_EXCEPTION');},
   verifyDomain:async limit=>{calls.push('VERIFY');assert.equal(limit,options.expectedLimit??20);if(options.drift)state.routeConfig.routes[0].functionName='foreign';return{tlsVerified:true,boundaryVerified:true,privateOperationExposed:false,requests:options.expectedRequests??14,...options.verification};},
  };
@@ -44,6 +44,27 @@ test('binding plan has fixed HTTPS signed routes, exact rollback scope and no ce
  assert.deepEqual(statements[1].Action,['fc:DeleteCustomDomain']);
  assert(!statements[0].Action.includes('fc:UpdateCustomDomain'));assert(!JSON.stringify(plan).includes('PRIVATE KEY'));
  assert(statements.every(s=>s.Condition.DateLessThan['acs:CurrentTime']===input.expiresAt));
+});
+test('TLS configuration sends an explicit strong allowlist and rejects missing or broadened readback',async()=>{
+ assert.deepEqual(plan.desired.tlsConfig.cipherSuites,DOMAIN_TLS_CIPHER_SUITES);
+ assert.equal(new Set(DOMAIN_TLS_CIPHER_SUITES).size,6);
+ assert(DOMAIN_TLS_CIPHER_SUITES.every(s=>/^(TLS_ECDHE_(RSA|ECDSA)_WITH_AES_(128_GCM_SHA256|256_GCM_SHA384)|TLS_AES_(128_GCM_SHA256|256_GCM_SHA384))$/.test(s)));
+ const f=fixture();await runDomainBinding(plan,material,f.adapter,f.storage);
+ const reordered=structuredClone(f.state());reordered.tlsConfig.cipherSuites.reverse();assert.equal(domainConfigurationMatches(reordered,plan),true);
+ for(const suites of [undefined,[],['TLS_RSA_WITH_RC4_128_SHA'],[...DOMAIN_TLS_CIPHER_SUITES,'TLS_RSA_WITH_AES_128_CBC_SHA'],[...DOMAIN_TLS_CIPHER_SUITES,DOMAIN_TLS_CIPHER_SUITES[0]],DOMAIN_TLS_CIPHER_SUITES.slice(1)]){
+  const changed=structuredClone(f.state());changed.tlsConfig.cipherSuites=suites;assert.equal(domainConfigurationMatches(changed,plan),false);
+ }
+ const changed=structuredClone(f.state());changed.tlsConfig.minVersion='TLSv1.1';assert.equal(domainConfigurationMatches(changed,plan),false);
+});
+test('rejected create retains only bounded diagnostic fields and does not retry a write',async()=>{
+ const f=fixture({rejectedCreate:{status:400,code:'InvalidArgument',category:'INVALID_CIPHER_SUITES',message:'DO_NOT_EXPORT',body:material}});
+ const r=await runDomainBinding(plan,material,f.adapter,f.storage);
+ assert.equal(r.failure,'DOMAIN_CREATE_REJECTED');assert.deepEqual(r.createResponse,{status:400,code:'InvalidArgument',category:'INVALID_CIPHER_SUITES'});
+ assert.equal(r.rollback.domainAbsent,true);assert.equal(f.calls.filter(v=>v==='CREATE').length,1);assert(!f.calls.includes('VERIFY'));assert(!f.calls.includes('DELETE'));
+ assert(!JSON.stringify(r).includes('DO_NOT_EXPORT'));assert(!JSON.stringify(r).includes('PRIVATE KEY'));
+ const resumed=await runDomainBinding(plan,material,f.adapter,f.storage);assert.equal(resumed.recoveryOnly,true);assert.equal(f.calls.filter(v=>v==='CREATE').length,1);
+ const invalid=fixture({rejectedCreate:{status:'400',code:'InvalidArgument\nDO_NOT_EXPORT',category:'DO_NOT_EXPORT'}});
+ const bad=await runDomainBinding(plan,material,invalid.adapter,invalid.storage);assert.deepEqual(bad.createResponse,{status:0,code:'UNCONFIRMED',category:'UNCLASSIFIED'});assert.equal(bad.failure,'DOMAIN_CREATE_NOT_CONFIRMED');
 });
 test('plan rejects unapproved, other-domain, foreign identity and invalid lifetime inputs',()=>{
  for(const patch of [{authorization:'yes'},{domainName:'other.invalid'},{region:'cn-beijing'},{operationId:'../escape'},{sourceRevision:'main'},{expiresAt:new Date(now-1).toISOString()},{expiresAt:new Date(now+3600001).toISOString()},{providerArn:'acs:ram::999900001111:oidc-provider/fixture'},{certificate:{...certificate,domain:'other.invalid'}}])assert.throws(()=>domainBindingPlan({...input,...patch},now));

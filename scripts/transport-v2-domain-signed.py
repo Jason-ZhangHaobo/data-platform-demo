@@ -19,6 +19,12 @@ def safe_response(status, raw, operation):
     code = next((value[k] for k in ('code', 'Code', 'errorCode', 'ErrorCode')
                  if isinstance(value.get(k), str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_.-]{0,99}', value[k])), '')
     result = {'status': status, 'code': code or 'UNCONFIRMED'}
+    # Fixed diagnostic category only; never export a provider message, which
+    # can echo certificate material, credentials or request parameters.
+    message = next((value[k] for k in ('message', 'Message', 'errorMessage', 'ErrorMessage')
+                    if isinstance(value.get(k), str)), '')
+    if code == 'InvalidArgument' and re.search(r'\bcipherSuites\b', message, re.I):
+        result['category'] = 'INVALID_CIPHER_SUITES'
     if status == 200 and operation == 'get':
         result['value'] = {k: value[k] for k in ('domainName', 'accountId', 'protocol', 'routeConfig', 'tlsConfig', 'wafConfig', 'corsConfig') if k in value}
         auth = value.get('authConfig') or {}

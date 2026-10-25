@@ -29,11 +29,13 @@ DNS交接先等待权威服务器发布精确CNAME，再确认普通公网递归
 - 不申请 `UpdateCustomDomain`；遇到已有域名、DNS 冲突或外部配置变化即停止，不自动接管、更新或删除。
 - 证书私钥仅由本机受保护目录通过临时加密 Secret 交付到已核验的 FC TLS 配置。不得出现在命令参数、日志、报告、Git 或 Artifact 中；临时 Secret 在结束后删除。本机原私钥保留用于管理证书。
 - 证书主体、SAN、有效期和私钥匹配必须校验；签发验收中的受信任链检查以及实际 HTTPS 信任链检查不能由“证书文件存在”代替。
+- TLS版本限定1.2—1.3，同时显式发送受支持的六个AES-GCM套件（TLS1.2的ECDHE-RSA/ECDSA各两项、TLS1.3两项）。不省略`cipherSuites`，不选择包含旧弱算法的“全部套件”。回读允许顺序变化，但必须与申请的套件集合严格相同；缺失、增加、重复或降级均拒绝。该配置遵循下方官方TLS列表，仍须以实际云回读及可信连接验收，不能仅凭本机测试宣称兼容。
 
 ## 可恢复及错误边界
 
 - 操作编号、期望配置摘要、基线不存在证据必须在首个写请求前持久保存；无法写检查点就不创建资源。
 - 创建响应未知，按原域名和唯一证书配置名称回读。内容完全匹配才继续，不发第二次创建请求。
+- 创建返回明确错误且回读确认不存在时，保留`DOMAIN_CREATE_REJECTED`及限定HTTP状态、错误码、固定诊断类别，不吞掉创建回执再笼统报告失败。提供方完整错误文本、证书、私钥和输入参数不得写入证据；失败仍计入原创建次数，不自动重试。
 - 删除响应未知，只回读。未证实删除时保留失败状态，恢复不盲目再删。
 - 恢复成功保留的配置只读核验，不重建、不重新计算验收次数，也不冒充新的验收成功。
 - HTTP探测先验证签名正向基线能到达应用，再测试未签名拒绝；时间头按官方ACS3示例只使用`x-acs-date`，不混入旧`Date`。普通`InvalidArgument`不算鉴权通过；仅未签名负向对照的400、该错误码以及精确空认证错误格式同时匹配，才识别为认证拒绝。非空认证、日期错误、含额外说明的模糊消息与签名请求的400都不得继承该结论。
@@ -61,3 +63,4 @@ DNS交接先等待权威服务器发布精确CNAME，再确认普通公网递归
 - [DeleteCustomDomain](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-deletecustomdomain)
 - [域名配置及 CNAME](https://help.aliyun.com/zh/functioncompute/configure-custom-domain-names)
 - [权限认证类型](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-struct-authconfig)
+- [TLSConfig字段](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-struct-tlsconfig)

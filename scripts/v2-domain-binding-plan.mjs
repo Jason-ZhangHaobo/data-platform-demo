@@ -11,6 +11,13 @@ const canonical=value=>JSON.stringify(value&&typeof value==='object'
 const digest=value=>createHash('sha256').update(canonical(value)).digest('hex');
 export const DOMAIN_BINDING_AUTHORIZATION='ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED';
 export const P0B_SIGNED_ACCESS_AUTHORIZATION='P0B_SIGNED_HTTPS_17_PLUS_23';
+// RFC names supported by FC. Do not rely on an omitted list or enable the
+// console's "all suites" default, which also includes weak legacy suites.
+export const DOMAIN_TLS_CIPHER_SUITES=Object.freeze([
+  'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256','TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384',
+  'TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256','TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384',
+  'TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384',
+]);
 
 export function verifyCertificateMaterial({certificate,privateKey},now=Date.now()){
   try{
@@ -37,7 +44,7 @@ export function domainBindingPlan(input,now=Date.now()){
   const routes=[{path:'/',methods:['GET']},{path:'/v2/*',methods:['GET']},{path:'/api/v2/*',methods:['GET','POST']}]
     .map(route=>({...route,functionName:target.functionName,qualifier:'LATEST'}));
   const desired={domainName:input.domainName,protocol:'HTTPS',authConfig:{authType:'function',authInfo:'{}'},
-    tlsConfig:{minVersion:'TLSv1.2',maxVersion:'TLSv1.3'},routeConfig:{routes},
+    tlsConfig:{minVersion:'TLSv1.2',maxVersion:'TLSv1.3',cipherSuites:[...DOMAIN_TLS_CIPHER_SUITES]},routeConfig:{routes},
     certName:`shuduo-bind-${input.operationId}`,certificateSha256:input.certificate.leafSha256};
   return{version:1,requestScope:input.authorization,operationId:input.operationId,sourceRevision:input.sourceRevision,expiresAt:input.expiresAt,
     target:{...target,domainName:input.domainName},desired,desiredHash:digest(desired),
@@ -70,7 +77,8 @@ export function domainConfigurationMatches(value,plan){
   return actual.domainName===expected.domainName&&actual.protocol==='HTTPS'
     &&actual.authConfig?.authType==='function'&&(!actual.authConfig.authInfo||actual.authConfig.authInfo==='{}')
     &&actual.tlsConfig?.minVersion==='TLSv1.2'&&actual.tlsConfig.maxVersion==='TLSv1.3'
-    &&(!actual.tlsConfig.cipherSuites||actual.tlsConfig.cipherSuites.length===0)
+    &&Array.isArray(actual.tlsConfig.cipherSuites)&&Array.isArray(expected.tlsConfig.cipherSuites)
+    &&canonical([...actual.tlsConfig.cipherSuites].sort())===canonical([...expected.tlsConfig.cipherSuites].sort())
     &&canonical(actual.routeConfig)===canonical(expected.routeConfig)
     &&actual.certName===expected.certName&&actual.certificateSha256===expected.certificateSha256
     &&(!value.wafConfig||value.wafConfig.enableWAF===false)
@@ -132,8 +140,16 @@ export async function runDomainBinding(plan,material,adapter,{load,save,now=Date
     const body={domainName:plan.desired.domainName,protocol:plan.desired.protocol,authConfig:plan.desired.authConfig,
       tlsConfig:plan.desired.tlsConfig,routeConfig:plan.desired.routeConfig,
       certConfig:{certName:plan.desired.certName,certificate:material.certificate,privateKey:material.privateKey}};
-    try{await adapter.create(body);}catch{checkpoint.createResponseUnknown=true;await save(checkpoint);}
+    try{
+      const response=await adapter.create(body);
+      // The transport already excludes PEM and error messages. Project again
+      // here so even a faulty adapter cannot persist credentials in evidence.
+      report.createResponse={status:Number.isInteger(response?.status)&&response.status>=100&&response.status<=599?response.status:0,
+        code:typeof response?.code==='string'&&/^[A-Za-z][A-Za-z0-9_.-]{0,99}$/.test(response.code)?response.code:'UNCONFIRMED',
+        category:response?.category==='INVALID_CIPHER_SUITES'?'INVALID_CIPHER_SUITES':'UNCLASSIFIED'};
+    }catch{checkpoint.createResponseUnknown=true;await save(checkpoint);}
     const current=await adapter.get();
+    if(absent(current)&&report.createResponse?.status>=400)throw fail('DOMAIN_CREATE_REJECTED');
     check(present(current)&&domainConfigurationMatches(current.value,plan),'DOMAIN_CREATE_NOT_CONFIRMED');
     checkpoint.phase='CREATED_VERIFIED';await save(checkpoint);
     const acceptance=await adapter.verifyDomain(plan.limits.domainProbes);

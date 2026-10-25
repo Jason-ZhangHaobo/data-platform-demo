@@ -22,6 +22,11 @@ test('domain transport projection removes private key and raw errors for all res
  const raw=execFileSync('python3',['-c',source],{encoding:'utf8'}),values=JSON.parse(raw);
  assert(!raw.includes('DO_NOT_EXPORT'));assert.equal(values[0].value.certConfig.certificate,'PUBLIC_SYNTHETIC_CERT');assert.equal(values[1].value,undefined);assert.equal(values[2].code,'AccessDenied');
 });
+test('invalid cipher configuration becomes a fixed safe category without copying error text',()=>{
+ const source=`import importlib.util,json\ns=importlib.util.spec_from_file_location('d','scripts/transport-v2-domain-signed.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\nprint(json.dumps([m.safe_response(400,json.dumps(v).encode(),'create') for v in [{'code':'InvalidArgument','message':'cipherSuites is invalid DO_NOT_EXPORT'},{'Code':'InvalidArgument','Message':'cipherSuites DO_NOT_EXPORT'},{'code':'AccessDenied','message':'cipherSuites DO_NOT_EXPORT'},{'code':'InvalidArgument','message':'another field DO_NOT_EXPORT'}]]))`;
+ const raw=execFileSync('python3',['-c',source],{encoding:'utf8'}),values=JSON.parse(raw);
+ assert(!raw.includes('DO_NOT_EXPORT'));assert.equal(values[0].category,'INVALID_CIPHER_SUITES');assert.equal(values[1].category,'INVALID_CIPHER_SUITES');assert.equal(values[2].category,undefined);assert.equal(values[3].category,undefined);
+});
 test('HTTPS workflow gates DNS handoff on completed boundary proof and always cleans/seals',()=>{
  const workflow=readFileSync('.github/workflows/accept-v2-https-binding.yml','utf8');
  assert.match(workflow,/default: NOT_AUTHORIZED/);assert.match(workflow,/refs\/heads\/main/);assert.match(workflow,/environment: v2-staging/);assert.match(workflow,/cancel-in-progress: false/);
