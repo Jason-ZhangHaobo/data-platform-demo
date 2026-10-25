@@ -57,6 +57,9 @@ const PERMISSIONS = Object.freeze({
   VIEWER: ["SESSION"],
 });
 const SESSION_SECONDS = 8 * 60 * 60;
+const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+const ATTEMPT_LIMIT = 5;
+const UNKNOWN_ATTEMPT_BUCKETS = 128;
 const SCRYPT = Object.freeze({ N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
 
 export class AuthManager {
@@ -64,7 +67,6 @@ export class AuthManager {
     this.store = store;
     this.project = project;
     this.now = now;
-    this.attempts = new Map();
     if (
       env.V2_BOOTSTRAP_ADMIN_EMAIL &&
       (env.V2_BOOTSTRAP_ADMIN_PASSWORD_HASH ||
@@ -137,8 +139,25 @@ export class AuthManager {
       .map(publicInvitation);
   }
 
-  redeemInvitation(input, context = {}) {
-    this.#checkAttempt(context.attemptKey ?? "redeem");
+  // HTTP authentication must persist the attempt BEFORE testing a credential.
+  // A CAS loser or unavailable database must not get a password oracle/session.
+  async authenticate(operation, input, { persist } = {}) {
+    const attempt = this.#reserveAttempt(operation, input);
+    const flush = persist ?? (() => this.store.flush?.());
+    await flush();
+    const result = operation === "login"
+      ? this.#login(input, attempt)
+      : this.#redeemInvitation(input, attempt);
+    await flush();
+    return result;
+  }
+
+  // Synchronous entry points are for local callers; cloud HTTP uses authenticate.
+  redeemInvitation(input) {
+    return this.#redeemInvitation(input, this.#reserveAttempt("redeem", input));
+  }
+
+  #redeemInvitation(input, attempt) {
     const code = text(input.inviteCode, "邀请码", 20, 160),
       invitation = this.store
         .list("auth_invitation", this.project)
@@ -148,7 +167,6 @@ export class AuthManager {
       invitation.status !== "PENDING" ||
       Date.parse(invitation.expiresAt) <= this.now()
     ) {
-      this.#recordFailure(context.attemptKey ?? "redeem");
       throw fail(401, "邀请码无效或已过期", "INVALID_INVITATION");
     }
     if (
@@ -173,25 +191,26 @@ export class AuthManager {
       redeemedBy: user.id,
       redeemedAt: new Date(this.now()).toISOString(),
     });
-    this.#clearAttempt(context.attemptKey ?? "redeem");
+    this.#clearAttempt(attempt);
     this.#audit("INVITATION_REDEEMED", user.id, {
       invitationId: invitation.id,
     });
     return this.#createSession(user);
   }
 
-  login(input, context = {}) {
-    const address = email(input.email),
-      attemptKey = context.attemptKey ?? `login:${address}`;
-    this.#checkAttempt(attemptKey);
+  login(input) {
+    return this.#login(input, this.#reserveAttempt("login", input));
+  }
+
+  #login(input, attempt) {
+    const address = email(input.email);
     const user = this.store
       .list("auth_user", this.project)
       .find((item) => item.email === address && item.status === "ACTIVE");
     if (!user || !verifyPassword(input.password, user.passwordHash)) {
-      this.#recordFailure(attemptKey);
       throw fail(401, "邮箱或密码不正确", "INVALID_LOGIN");
     }
-    this.#clearAttempt(attemptKey);
+    this.#clearAttempt(attempt);
     this.#audit("LOGIN_SUCCEEDED", user.id, {});
     return this.#createSession(user);
   }
@@ -359,24 +378,52 @@ export class AuthManager {
       throw fail(403, "当前项目角色无权执行该操作", "PROJECT_PERMISSION_DENIED");
   }
 
-  #checkAttempt(key) {
-    const state = this.attempts.get(key);
-    if (state && state.resetAt > this.now() && state.count >= 5)
-      throw fail(429, "登录尝试过多，请稍后再试", "AUTH_RATE_LIMITED");
-    if (state && state.resetAt <= this.now()) this.attempts.delete(key);
+  #reserveAttempt(operation, input) {
+    let identity, registered;
+    if (operation === "login") {
+      identity = email(input.email);
+      registered = this.store.list("auth_user", this.project)
+        .find((item) => item.email === identity);
+    } else if (operation === "redeem") {
+      identity = hash(text(input.inviteCode, "邀请码", 20, 160));
+      registered = this.store.list("auth_invitation", this.project)
+        .find((item) => item.codeHash === identity);
+    } else {
+      throw fail(400, "不支持的认证操作", "INVALID_AUTH_OPERATION");
+    }
+    // Registered identities have independent quotas. Unknown identities share a
+    // bounded set of slots, so random emails/codes cannot grow metadata forever.
+    // Never trust caller IP/forwarding headers as a way to reset an account quota.
+    const bucket = registered
+      ? `registered:${registered.id}`
+      : `unknown:${parseInt(hash(identity).slice(0, 8), 16) % UNKNOWN_ATTEMPT_BUCKETS}`;
+    const keyHash = hash(`${operation}:${bucket}`);
+    const prior = this.store.list("auth_attempt", this.project)
+      .find((item) => item.keyHash === keyHash);
+    const now = this.now();
+    if (prior && (!Number.isSafeInteger(prior.count) || prior.count < 0 ||
+      !Number.isSafeInteger(prior.resetAt)))
+      throw fail(503, "认证保护状态异常，请稍后重试", "AUTH_ATTEMPT_STATE_INVALID");
+    const active = prior && prior.resetAt > now;
+    if (active && prior.count >= ATTEMPT_LIMIT)
+      throw fail(429, "认证尝试过多，请在15分钟窗口结束后再试", "AUTH_RATE_LIMITED");
+    const data = {
+      keyHash,
+      count: active ? prior.count + 1 : 1,
+      resetAt: active ? prior.resetAt : now + ATTEMPT_WINDOW_MS,
+    };
+    return prior
+      ? this.store.update("auth_attempt", prior.id, this.project, data, { expectedVersion: prior.version })
+      : this.store.create("auth_attempt", this.project, data);
   }
 
-  #recordFailure(key) {
-    const prior = this.attempts.get(key),
-      count = prior && prior.resetAt > this.now() ? prior.count + 1 : 1;
-    this.attempts.set(key, {
-      count,
-      resetAt: this.now() + 15 * 60 * 1000,
-    });
-  }
-
-  #clearAttempt(key) {
-    this.attempts.delete(key);
+  #clearAttempt(attempt) {
+    const current = this.store.get("auth_attempt", attempt.id, this.project);
+    // Do not erase another in-flight attempt. A single successful login resets
+    // its own window only if no newer reservation has been made.
+    if (current?.version === attempt.version)
+      this.store.update("auth_attempt", current.id, this.project,
+        { count: 0, resetAt: 0 }, { expectedVersion: attempt.version });
   }
 
   #audit(action, actorId, data) {

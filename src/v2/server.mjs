@@ -1123,6 +1123,7 @@ export function createV2Server(options = {}) {
       const url = new URL(req.url, "http://localhost"),
         path = url.pathname,
         method = req.method,
+        publicReadOnly = options.ingress?.status.publicReadOnly === true && req.headers["x-fc-control-path"] === "/http-invoke",
         isPrivateSmokeInvoke = method === "POST" && path === "/invoke";
       if (typeof persistence.refresh === "function") await persistence.refresh();
       if (
@@ -1300,11 +1301,13 @@ export function createV2Server(options = {}) {
                 authenticated: true,
                 user: context.user,
                 role: context.role,
-                permissions: context.permissions,
+                permissions: publicReadOnly ? ["SESSION"] : context.permissions,
+                ...(publicReadOnly ? { readOnly: true } : {}),
                 expiresAt: context.session.expiresAt,
               }
             : {
                 authenticated: false,
+                ...(publicReadOnly ? { readOnly: true } : {}),
                 mode: local
                   ? "LOCAL_DEVELOPMENT_BYPASS"
                   : "INVITATION_SESSION",
@@ -1316,15 +1319,15 @@ export function createV2Server(options = {}) {
         method === "POST"
       ) {
         const body = await readBody(req),
-          attemptKey = `${req.socket.remoteAddress ?? "unknown"}:${path}`,
-          result =
-            path.endsWith("/login")
-              ? auth.login(body, { attemptKey })
-              : auth.redeemInvitation(body, { attemptKey }),
+          result = await auth.authenticate(
+            path.endsWith("/login") ? "login" : "redeem", body,
+            { persist: () => persistence.flush?.() },
+          ),
           response = auth.sessionResponse(
             result,
             !local && !insecurePublicCookies,
           );
+        if (publicReadOnly) response.body = { ...response.body, permissions: ["SESSION"], readOnly: true };
         return json(res, 200, response.body, {
           "Set-Cookie": response.cookies,
         });

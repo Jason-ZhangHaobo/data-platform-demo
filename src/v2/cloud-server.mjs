@@ -82,7 +82,10 @@ const metadataBackend = await MySqlMetadataBackend.open(process.env),
     runner: execution.runner,
     runnerDescriptor: execution.descriptor,
     env: execution.env,
-    ingress: createFcIngress({ publicHttpEnabled: env.V2_FC_PUBLIC_HTTP_ENABLED === "true" }),
+    ingress: createFcIngress({
+      publicHttpEnabled: env.V2_FC_PUBLIC_HTTP_ENABLED === "true",
+      publicReadOnly: env.V2_FC_PUBLIC_READ_ONLY !== "false",
+    }),
   });
 await stateCoordinator.flush();
 const port = Number(process.env.FC_CUSTOM_LISTEN_PORT ?? process.env.PORT ?? 9000),

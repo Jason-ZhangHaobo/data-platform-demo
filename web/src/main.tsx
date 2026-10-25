@@ -724,7 +724,7 @@ function App() {
               {status?.mode === "LOCAL_DEVELOPMENT"
                 ? "合成数据 · 开发验证"
                 : session.authenticated
-                  ? `${session.role} · 受邀项目`
+                  ? `${session.role} · ${session.readOnly ? "只读验收" : "受邀项目"}`
                   : "合成数据 · 只读浏览"}
             </small>
           </div>
@@ -743,7 +743,7 @@ function App() {
           <div className="top-actions">
             <span className="env-tag">
               <span />
-              {privatePreview ? "私有云端预览" : status?.mode === "LOCAL_DEVELOPMENT"
+              {session.readOnly ? "只读验收" : privatePreview ? "私有云端预览" : status?.mode === "LOCAL_DEVELOPMENT"
                 ? "本地验证"
                 : session.authenticated
                   ? "受邀会话"
@@ -757,7 +757,7 @@ function App() {
                   onClick={async () => {
                     try {
                       await api("/auth/logout", {});
-                      setSession({ authenticated: false });
+                      setSession({ authenticated: false, readOnly: session.readOnly });
                       setNotice("已退出受邀会话，切换为公开只读浏览");
                     } catch (cause) {
                       setError((cause as Error).message);
@@ -783,6 +783,7 @@ function App() {
             </span>
           </div>
         </header>
+        {session.readOnly && <div className="notice-banner" role="status">只读验收入口 · 已有账号可登录查看已保存结果；创建、运行、发布及新邀请暂未开放。不会因登录自动运行模型或 Spark。</div>}
         {privatePreview && <div className="notice-banner" role="status">私有云端试用 · {agentDevelopmentPreview ? "Agent 数据开发、SQL 编辑、真实运行与任务恢复" : "SQL 编辑、真实 Spark 运行和结果恢复"}{privateServicesPreview ? "、发布结果的数据服务消费" : ""}；未开放模块不代表已验收。临时访问通道到期后入口失效，已保存的云端任务记录保留。</div>}
         {error && (
           <div role="alert" className="error-banner">
@@ -797,7 +798,7 @@ function App() {
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>setAgentWorkspaceMode("services")}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
-          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} sourceAgentTaskId={new URLSearchParams(window.location.search).get("task")??undefined} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} ready={agentDevelopmentReadiness(status).ready} readinessReason={agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} loading={!status} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
+          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} sourceAgentTaskId={new URLSearchParams(window.location.search).get("task")??undefined} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} ready={agentDevelopmentReadiness(status).ready} readinessReason={agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly} loading={!status} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite}
@@ -1694,9 +1695,9 @@ function App() {
                     </small>
                   </article>
                 </div>
-                {status?.mode !== "LOCAL_DEVELOPMENT" &&
+                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly &&
                   session.role === "ADMIN" && <InvitationPanel api={api} />}
-                {status?.mode !== "LOCAL_DEVELOPMENT" &&
+                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly &&
                   session.authenticated && (
                     <ChangePasswordPanel
                       api={api}
@@ -1884,7 +1885,8 @@ function App() {
       {authOpen && (
         <Suspense fallback={<WorkbenchLoading label="正在加载登录入口…" />}>
           <AuthDialog
-            allowRedeem={!privatePreview}
+            allowRedeem={!privatePreview && !session.readOnly}
+            readOnly={session.readOnly}
             api={api}
             onClose={() => setAuthOpen(false)}
             onAuthenticated={(nextSession) => {
