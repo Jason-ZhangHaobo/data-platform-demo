@@ -37,7 +37,7 @@ DNS交接先等待权威服务器发布精确CNAME，再确认普通公网递归
 - 不申请 `UpdateCustomDomain`；遇到已有域名、DNS 冲突或外部配置变化即停止，不自动接管、更新或删除。
 - 证书私钥仅由本机受保护目录通过临时加密 Secret 交付到已核验的 FC TLS 配置。不得出现在命令参数、日志、报告、Git 或 Artifact 中；临时 Secret 在结束后删除。本机原私钥保留用于管理证书。
 - 证书主体、SAN、有效期和私钥匹配必须校验；签发验收中的受信任链检查以及实际 HTTPS 信任链检查不能由“证书文件存在”代替。
-- TLS版本限定1.2—1.3，同时显式发送受支持的六个AES-GCM套件（TLS1.2的ECDHE-RSA/ECDSA各两项、TLS1.3两项）。不省略`cipherSuites`，不选择包含旧弱算法的“全部套件”。回读允许顺序变化，但必须与申请的套件集合严格相同；缺失、增加、重复或降级均拒绝。该配置遵循下方官方TLS列表，仍须以实际云回读及可信连接验收，不能仅凭本机测试宣称兼容。
+- TLS版本限定1.2—1.3，`cipherSuites`仅发送官方组件`ITLSConfig`枚举支持的四个ECDHE/AES-GCM套件（RSA/ECDSA各两项）。`TLS_AES_128_GCM_SHA256`和`TLS_AES_256_GCM_SHA384`属于TLS1.3支持表，但不在该可配置字段枚举中，不能混填；TLS1.3通过`maxVersion`保留。不省略套件，不选择包含弱算法的“全部套件”。回读允许顺序变化，但必须与申请集合严格相同；缺失、增加、重复或降级均拒绝。Schema对齐仍不替代实际云回读和可信TLS连接验收。
 
 ## 可恢复及错误边界
 
@@ -72,3 +72,4 @@ DNS交接先等待权威服务器发布精确CNAME，再确认普通公网递归
 - [域名配置及 CNAME](https://help.aliyun.com/zh/functioncompute/configure-custom-domain-names)
 - [权限认证类型](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-struct-authconfig)
 - [TLSConfig字段](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-struct-tlsconfig)
+- [官方域名组件ITLSConfig Schema固定版本](https://github.com/devsapp/fc3-domain/blob/48f49d18eb809959e63b29f7906f5d32761066bc/src/schema.json)

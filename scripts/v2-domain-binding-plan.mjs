@@ -45,12 +45,14 @@ export function verifySignedHttpsResume(prior,expected){
   check(Number.isInteger(counts?.get)&&counts.get>=3&&counts.get<=10&&counts.create===1&&counts.delete===0,'HTTPS_PRIOR_METADATA_MISMATCH');
   return{priorRequests:32,priorFunctionHash:c.functionHash,priorOriginalTriggersHash:c.originalTriggersHash};
 }
-// RFC names supported by FC. Do not rely on an omitted list or enable the
-// console's "all suites" default, which also includes weak legacy suites.
+// FC's configurable cipherSuites enum is separate from its TLS 1.3 support.
+// Keep TLS 1.3 enabled through maxVersion, but do not put TLS_AES_* (TLS 1.3)
+// names into this list: the official fc3-domain ITLSConfig enum excludes them.
+// https://github.com/devsapp/fc3-domain/blob/48f49d18eb809959e63b29f7906f5d32761066bc/src/schema.json
+// Never fall back to "all suites", which includes weak legacy algorithms.
 export const DOMAIN_TLS_CIPHER_SUITES=Object.freeze([
   'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256','TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384',
   'TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256','TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384',
-  'TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384',
 ]);
 
 export function verifyCertificateMaterial({certificate,privateKey},now=Date.now()){
