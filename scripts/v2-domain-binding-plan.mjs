@@ -11,6 +11,40 @@ const canonical=value=>JSON.stringify(value&&typeof value==='object'
 const digest=value=>createHash('sha256').update(canonical(value)).digest('hex');
 export const DOMAIN_BINDING_AUTHORIZATION='ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED';
 export const P0B_SIGNED_ACCESS_AUTHORIZATION='P0B_SIGNED_HTTPS_17_PLUS_23';
+export const P0B_SIGNED_RESUME_AUTHORIZATION='P0B_SIGNED_HTTPS_RESUME_32_PLUS_23';
+export function signedAccessLimits(authorization){
+  if(authorization===P0B_SIGNED_ACCESS_AUTHORIZATION)return{historical:17,defaultMax:32,totalMax:40,unsettledReservedCny:4,resume:false};
+  if(authorization===P0B_SIGNED_RESUME_AUTHORIZATION)return{historical:32,defaultMax:47,totalMax:55,unsettledReservedCny:6,resume:true};
+}
+// Call only after authenticating/decrypting the original evidence envelope.
+// A failed first batch is not permission to retry; this validates provenance
+// and counters for the separately approved, exactly-once continuation.
+export function verifySignedHttpsResume(prior,expected){
+  check(/^[a-f0-9]{32}$/.test(expected?.operationId??'')&&[expected?.desiredHash,expected?.httpTargetHash].every(v=>/^[a-f0-9]{64}$/.test(v??''))
+    &&/^shuduo-http-boundary-\d{1,20}$/.test(expected?.triggerName??''),'HTTPS_PRIOR_EXPECTATION_INVALID');
+  check(prior?.scope==='SIGNED_HTTPS_DOMAIN_BINDING'&&prior.passed===false
+    &&prior.operationId===expected.operationId&&prior.targetHash===expected.desiredHash,'HTTPS_PRIOR_TARGET_MISMATCH');
+  const b=prior.boundary,c=prior.httpCheckpoint,d=prior.domain,dc=prior.domainCheckpoint;
+  check(c?.targetHash===expected.httpTargetHash&&c.triggerName===expected.triggerName
+    &&c.requests===32&&/^[a-f0-9]{64}$/.test(c.functionHash??'')&&/^[a-f0-9]{64}$/.test(c.originalTriggersHash??''),'HTTPS_PRIOR_CHECKPOINT_MISMATCH');
+  check(b?.passed===true&&b.priorRequests===17&&b.requests===32&&b.newRequests===15
+    &&b.modelCalls===0&&b.sparkRuns===0&&b.publicApplicationEnabled===false
+    &&b.cleanup?.deferredForSameDomainBatch===true&&Array.isArray(b.results)&&b.results.length===14
+    &&new Set(b.results.map(v=>v.id)).size===14,'HTTPS_PRIOR_BOUNDARY_MISMATCH');
+  check(canonical(prior.requestBudget)===canonical({historical:17,defaultNewLimit:15,domainNewLimit:8,cumulativeLimit:40})
+    &&prior.domainRequests===0&&prior.cumulativeRequests===32,'HTTPS_PRIOR_USAGE_MISMATCH');
+  check(d?.passed===false&&d.createRequests===1&&d.failure==='DOMAIN_CREATE_NOT_CONFIRMED'
+    &&d.modelCalls===0&&d.sparkRuns===0&&d.publicApplicationEnabled===false
+    &&d.rollback?.domainAbsent===true&&d.rollback.deleted===false&&Array.isArray(d.probes)&&d.probes.length===0
+    &&dc?.phase==='ROLLED_BACK'&&dc.baselineAbsent===true&&dc.operationId===prior.operationId
+    &&dc.desiredHash===prior.targetHash&&dc.domainName==='shuduoai.cn','HTTPS_PRIOR_DOMAIN_NOT_ABSENT');
+  check(prior.cleanup?.triggerAbsent===true&&prior.cleanup.originalTriggersUnchanged===true
+    &&prior.cleanup.functionUnchanged===true&&prior.cleanup.domainRollback?.domainAbsent===true
+    &&prior.cleanup.domainRollback.deleted===false&&!prior.cleanup.domainRollbackFailure,'HTTPS_PRIOR_CLEANUP_UNCONFIRMED');
+  const counts=prior.domainApiCounts;
+  check(Number.isInteger(counts?.get)&&counts.get>=3&&counts.get<=10&&counts.create===1&&counts.delete===0,'HTTPS_PRIOR_METADATA_MISMATCH');
+  return{priorRequests:32,priorFunctionHash:c.functionHash,priorOriginalTriggersHash:c.originalTriggersHash};
+}
 // RFC names supported by FC. Do not rely on an omitted list or enable the
 // console's "all suites" default, which also includes weak legacy suites.
 export const DOMAIN_TLS_CIPHER_SUITES=Object.freeze([
@@ -32,8 +66,8 @@ export function verifyCertificateMaterial({certificate,privateKey},now=Date.now(
 }
 
 export function domainBindingPlan(input,now=Date.now()){
-  check([DOMAIN_BINDING_AUTHORIZATION,P0B_SIGNED_ACCESS_AUTHORIZATION].includes(input?.authorization),'DOMAIN_BINDING_NOT_AUTHORIZED');
-  const p0b=input.authorization===P0B_SIGNED_ACCESS_AUTHORIZATION;
+  const stage=signedAccessLimits(input?.authorization),p0b=Boolean(stage);
+  check(input?.authorization===DOMAIN_BINDING_AUTHORIZATION||p0b,'DOMAIN_BINDING_NOT_AUTHORIZED');
   check(input.domainName==='shuduoai.cn','DOMAIN_TARGET_INVALID');
   check(/^[a-f0-9]{32}$/.test(input.operationId??''),'DOMAIN_OPERATION_ID_INVALID');
   const expiresAt=Date.parse(input.expiresAt);
@@ -49,7 +83,7 @@ export function domainBindingPlan(input,now=Date.now()){
   return{version:1,requestScope:input.authorization,operationId:input.operationId,sourceRevision:input.sourceRevision,expiresAt:input.expiresAt,
     target:{...target,domainName:input.domainName},desired,desiredHash:digest(desired),
     dns:{rr:'@',type:'CNAME',value:`${target.account}.${target.region}.fc.aliyuncs.com`,ttl:600},
-    limits:{newDomainCreates:1,newBusinessDnsRecords:1,domainProbes:p0b?8:20,reservedCny:p0b?2:1,monthlyCny:200,...(p0b?{historicalRequests:17,defaultNewRequests:15,allRequests:40,domainMetadataReads:10}: {})},
+    limits:{newDomainCreates:1,newBusinessDnsRecords:1,domainProbes:p0b?8:20,reservedCny:p0b?2:1,monthlyCny:200,...(p0b?{historicalRequests:stage.historical,defaultNewRequests:15,allRequests:stage.totalMax,domainMetadataReads:10}: {})},
     publicApplicationEnabled:false,automaticRenewalConfigured:false};
 }
 
@@ -114,7 +148,7 @@ export async function runDomainBinding(plan,material,adapter,{load,save,now=Date
   const report={scope:'SIGNED_HTTPS_DOMAIN_BINDING',passed:false,createRequests:0,publicApplicationEnabled:false,modelCalls:0,sparkRuns:0};
   try{
     check(plan?.version===1&&plan.desiredHash===digest(plan.desired),'DOMAIN_PLAN_INVALID');
-    const probeLimit=plan.requestScope===P0B_SIGNED_ACCESS_AUTHORIZATION?8:20;
+    const probeLimit=signedAccessLimits(plan.requestScope)?8:20;
     check(plan.limits?.domainProbes===probeLimit,'DOMAIN_PROBE_SCOPE_CHANGED');
     check(verifyCertificateMaterial(material,now()).leafSha256===plan.desired.certificateSha256,'DOMAIN_CERTIFICATE_CHANGED');
     if(checkpoint){

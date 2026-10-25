@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {generateKeyPairSync} from 'node:crypto';
-import {DOMAIN_BINDING_AUTHORIZATION,P0B_SIGNED_ACCESS_AUTHORIZATION,DOMAIN_TLS_CIPHER_SUITES,verifyCertificateMaterial,domainBindingPlan,domainTemporaryStatements,domainConfigurationMatches,runDomainBinding} from '../../scripts/v2-domain-binding-plan.mjs';
+import {DOMAIN_BINDING_AUTHORIZATION,P0B_SIGNED_ACCESS_AUTHORIZATION,P0B_SIGNED_RESUME_AUTHORIZATION,DOMAIN_TLS_CIPHER_SUITES,signedAccessLimits,verifySignedHttpsResume,verifyCertificateMaterial,domainBindingPlan,domainTemporaryStatements,domainConfigurationMatches,runDomainBinding} from '../../scripts/v2-domain-binding-plan.mjs';
 import {httpsConfig} from '../../scripts/accept-v2-https-binding.mjs';
 
 function materialFixture(){
@@ -80,6 +80,32 @@ test('P0-B plan and configuration preserve historical usage and fixed cumulative
  const parsed=httpsConfig(env,now);assert.equal(parsed.config.previousReads,17);assert.equal(parsed.config.maxRequests,32);assert.equal(parsed.plan.limits.domainProbes,8);
  for(const patch of [{priorRequests:0},{priorRequests:5},{priorControlRunId:''},{priorControlAcceptanceDigest:''}])assert.throws(()=>httpsConfig({...env,V2_HTTPS_BINDING_INPUT:JSON.stringify({...body,...patch})},now));
  assert.throws(()=>httpsConfig({...env,V2_HTTPS_AUTHORIZATION:DOMAIN_BINDING_AUTHORIZATION},now));
+});
+test('resume uses a distinct authorization, complete predecessor references and a fixed 55-call cap',async()=>{
+ const stage=domainBindingPlan({...input,authorization:P0B_SIGNED_RESUME_AUTHORIZATION},now);
+ assert.equal(stage.limits.historicalRequests,32);assert.equal(stage.limits.allRequests,55);assert.equal(stage.limits.domainProbes,8);assert.equal(stage.limits.newDomainCreates,1);
+ assert.equal(signedAccessLimits('P0B_SIGNED_HTTPS_RESUME_AGAIN'),undefined);
+ const f=fixture({expectedLimit:8,expectedRequests:8});assert.equal((await runDomainBinding(stage,material,f.adapter,f.storage)).passed,true);
+ const body={...input,...material,priorRequests:32,restoreRunId:'98765',priorControlRunId:'12345678',priorControlAcceptanceDigest:'d'.repeat(64),priorHttpsRunId:'12345679',priorHttpsAcceptanceDigest:'e'.repeat(64),priorFunctionHash:'f'.repeat(64),priorOriginalTriggersHash:'a'.repeat(64),expectedChecksum:'123456',authorizedAt:new Date(now).toISOString().replace(/\.\d{3}Z$/,'Z'),expiresAt:input.expiresAt.replace(/\.\d{3}Z$/,'Z')};
+ const env={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_RUN_ID:'12345680',GITHUB_SHA:input.sourceRevision,V2_HTTPS_SOURCE_SHA:input.sourceRevision,V2_HTTPS_AUTHORIZATION:P0B_SIGNED_RESUME_AUTHORIZATION,V2_HTTPS_BINDING_INPUT:JSON.stringify(body)};
+ const c=httpsConfig(env,now);assert.equal(c.config.previousReads,32);assert.equal(c.config.maxRequests,47);assert.equal(c.config.priorFunctionHash,body.priorFunctionHash);
+ for(const patch of [{priorRequests:17},{priorHttpsRunId:''},{priorHttpsRunId:env.GITHUB_RUN_ID},{priorHttpsAcceptanceDigest:''},{priorFunctionHash:''},{priorOriginalTriggersHash:''}])assert.throws(()=>httpsConfig({...env,V2_HTTPS_BINDING_INPUT:JSON.stringify({...body,...patch})},now));
+ for(const authorization of [DOMAIN_BINDING_AUTHORIZATION,P0B_SIGNED_ACCESS_AUTHORIZATION])assert.throws(()=>httpsConfig({...env,V2_HTTPS_AUTHORIZATION:authorization},now));
+});
+test('authenticated predecessor must prove exact usage, same target and completed rollback',()=>{
+ const expected={operationId:'a'.repeat(32),desiredHash:'b'.repeat(64),httpTargetHash:'c'.repeat(64),triggerName:'shuduo-http-boundary-98765'};
+ const prior={scope:'SIGNED_HTTPS_DOMAIN_BINDING',passed:false,operationId:expected.operationId,targetHash:expected.desiredHash,
+  boundary:{passed:true,priorRequests:17,requests:32,newRequests:15,modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,cleanup:{deferredForSameDomainBatch:true},results:Array.from({length:14},(_,id)=>({id:String(id)}))},
+  httpCheckpoint:{targetHash:expected.httpTargetHash,triggerName:expected.triggerName,requests:32,functionHash:'d'.repeat(64),originalTriggersHash:'e'.repeat(64)},
+  requestBudget:{historical:17,defaultNewLimit:15,domainNewLimit:8,cumulativeLimit:40},domainRequests:0,cumulativeRequests:32,
+  domain:{passed:false,createRequests:1,failure:'DOMAIN_CREATE_NOT_CONFIRMED',modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,rollback:{domainAbsent:true,deleted:false},probes:[]},
+  domainCheckpoint:{phase:'ROLLED_BACK',baselineAbsent:true,operationId:expected.operationId,desiredHash:expected.desiredHash,domainName:'shuduoai.cn'},
+  cleanup:{triggerAbsent:true,originalTriggersUnchanged:true,functionUnchanged:true,domainRollback:{domainAbsent:true,deleted:false}},domainApiCounts:{get:4,create:1,delete:0}};
+ assert.deepEqual(verifySignedHttpsResume(prior,expected),{priorRequests:32,priorFunctionHash:'d'.repeat(64),priorOriginalTriggersHash:'e'.repeat(64)});
+ for(const change of [v=>v.passed=true,v=>v.targetHash='f'.repeat(64),v=>v.boundary.priorRequests=0,v=>v.boundary.newRequests=14,v=>v.boundary.modelCalls=1,v=>v.boundary.results.pop(),v=>v.httpCheckpoint.triggerName='foreign',v=>v.httpCheckpoint.requests=31,v=>v.domainRequests=1,v=>v.cumulativeRequests=0,v=>v.requestBudget.cumulativeLimit=55,v=>v.domain.failure='OTHER',v=>v.domain.probes.push({}),v=>v.domainCheckpoint.phase='CREATED_VERIFIED',v=>v.cleanup.triggerAbsent=false,v=>v.cleanup.functionUnchanged=false,v=>v.cleanup.domainRollback.domainAbsent=false,v=>v.domainApiCounts.create=2,v=>v.domainApiCounts.get=11]){
+  const bad=structuredClone(prior);change(bad);assert.throws(()=>verifySignedHttpsResume(bad,expected));
+ }
+ assert.throws(()=>verifySignedHttpsResume(prior,{}));
 });
 test('certificate verification checks domain, expiry, size and matching private key without logging raw errors',()=>{
  assert.equal(certificate.domain,'shuduoai.cn');assert.match(certificate.leafSha256,/^[a-f0-9]{64}$/);

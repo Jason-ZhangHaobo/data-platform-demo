@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {acceptanceConfig,boundaryCases,runHttpAcceptance,cleanupAcceptance,commandFailure,inlineBodyArguments} from '../../scripts/accept-v2-http-boundary.mjs';
-import {P0B_SIGNED_ACCESS_AUTHORIZATION} from '../../scripts/v2-domain-binding-plan.mjs';
+import {acceptanceConfig,boundaryCases,runHttpAcceptance,cleanupAcceptance,commandFailure,inlineBodyArguments,functionHash,triggerHash} from '../../scripts/accept-v2-http-boundary.mjs';
+import {P0B_SIGNED_ACCESS_AUTHORIZATION,P0B_SIGNED_RESUME_AUTHORIZATION} from '../../scripts/v2-domain-binding-plan.mjs';
 const env={GITHUB_REF:'refs/heads/main',GITHUB_ACTIONS:'true',GITHUB_RUN_ID:'12345',GITHUB_SHA:'a'.repeat(40),V2_DEPLOY_ROLE_ARN:'acs:ram::111111111111:role/fixture-role',V2_DEPLOY_OIDC_PROVIDER_ARN:'acs:ram::111111111111:oidc-provider/fixture-provider',V2_FUNCTION_NAME:'fixture-control',ALIBABA_CLOUD_REGION_ID:'cn-hangzhou',V2_EXPECTED_CODE_CHECKSUM:'123456',V2_HTTP_ACCEPTANCE_AUTHORIZED:'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS',V2_HTTP_AUTHORIZATION_EXPIRES_AT:'2026-10-21T00:30:00Z'};
 function fixture(options={}){
  env.V2_ACCEPTANCE_SOURCE_REVISION=env.GITHUB_SHA;
@@ -61,6 +61,18 @@ test('new P0-B scope preserves seventeen historical calls and only permits fifte
  const recovered=await runHttpAcceptance(f.config,f.adapter,f.options);assert.equal(recovered.requests,32);assert.equal(recovered.newRequests,0);assert.equal(f.creates(),1);
  for(const patch of [{V2_HTTPS_AUTHORIZATION:undefined},{V2_HTTP_PREVIOUS_READS:'0'},{V2_HTTP_PREVIOUS_READS:'5'},{V2_HTTP_PREVIOUS_READS:'16'},{V2_HTTP_PREVIOUS_READS:'18'},{V2_HTTP_RESTORE_RUN_ID:''}])assert.throws(()=>acceptanceConfig({...stage,...patch}));
  const wrong=fixture();Object.assign(wrong.config,config,{maxRequests:33});const denied=await runHttpAcceptance(wrong.config,wrong.adapter,wrong.options);assert.equal(denied.failure,'P0B_SCOPE_CHANGED');assert.equal(wrong.calls.length,0);
+});
+test('one HTTPS resume preserves thirty-two calls and refuses mixed scopes or baseline drift',async()=>{
+ const f=fixture(),stage={...env,V2_HTTP_ACCEPTANCE_AUTHORIZED:P0B_SIGNED_RESUME_AUTHORIZATION,V2_HTTPS_AUTHORIZATION:P0B_SIGNED_RESUME_AUTHORIZATION,V2_HTTP_PREVIOUS_READS:'32',V2_HTTP_RESTORE_RUN_ID:'98765',V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE',V2_HTTP_PRIOR_FUNCTION_HASH:functionHash(f.f),V2_HTTP_PRIOR_TRIGGERS_HASH:triggerHash(f.original)};
+ const config=acceptanceConfig(stage);Object.assign(f.config,config);assert.equal(config.maxRequests,47);
+ const r=await runHttpAcceptance(f.config,f.adapter,f.options);assert.equal(r.passed,true);assert.equal(r.requests,47);assert.equal(r.priorRequests,32);assert.equal(r.newRequests,15);assert.equal(r.unsettledReservedCny,6);assert.equal(f.creates(),1);
+ const recovered=await runHttpAcceptance(f.config,f.adapter,f.options);assert.equal(recovered.requests,47);assert.equal(recovered.newRequests,0);assert.equal(f.creates(),1);
+ for(const patch of [{V2_HTTP_PREVIOUS_READS:'17'},{V2_HTTP_PREVIOUS_READS:'0'},{V2_HTTP_PREVIOUS_READS:'33'},{V2_HTTPS_AUTHORIZATION:P0B_SIGNED_ACCESS_AUTHORIZATION},{V2_HTTP_ACCEPTANCE_AUTHORIZED:P0B_SIGNED_ACCESS_AUTHORIZATION},{V2_HTTP_PRIOR_FUNCTION_HASH:''},{V2_HTTP_PRIOR_TRIGGERS_HASH:'not-a-digest'}])assert.throws(()=>acceptanceConfig({...stage,...patch}));
+ for(const patch of [{priorFunctionHash:'f'.repeat(64)},{priorOriginalTriggersHash:'f'.repeat(64)},{maxRequests:55}]){
+  const bad=fixture();Object.assign(bad.config,config,patch);let calls=0;bad.adapter.privateStatus=async()=>{calls++;};const denied=await runHttpAcceptance(bad.config,bad.adapter,bad.options);assert.equal(denied.passed,false);assert.equal(denied.newRequests,0);assert.equal(calls,0);assert.equal(bad.creates(),0);
+ }
+ const budget=fixture();Object.assign(budget.config,config);budget.adapter.billPages=async cycle=>[{Success:true,Data:{BillingCycle:cycle,PageNum:1,PageSize:300,TotalCount:1,Items:{Item:[{Currency:'CNY',PretaxAmount:'192.50'}]}}}];
+ const denied=await runHttpAcceptance(budget.config,budget.adapter,budget.options);assert.equal(denied.failure,'BUDGET_NOT_VERIFIED');assert.equal(denied.newRequests,0);assert.equal(budget.creates(),0);
 });
 test('failure evidence distinguishes CLI service denial, transport and parsing without response text or secrets',async()=>{
  const args=['fc','POST','/2023-03-30/functions/private-name/invocations'];
