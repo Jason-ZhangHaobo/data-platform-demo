@@ -6,11 +6,11 @@ import {join} from 'node:path';
 import {createV2Server,PROJECT} from '../../src/v2/server.mjs';
 import {MetadataStore} from '../../src/v2/store.mjs';
 import {createFcIngress} from '../../src/v2/fc-ingress.mjs';
-import {codeUpdateConfig,codeUpdateProbes,runControlCodeUpdate} from '../../scripts/control-code-update.mjs';
+import {codeUpdateConfig,codeUpdateProbes,runControlCodeUpdate,INVITED_READONLY_CODE_SCOPE} from '../../scripts/control-code-update.mjs';
 const now=Date.UTC(2026,9,23,15);
 const input={authorization:'P0A_PRIVATE_CODE_ONLY',operationId:'a'.repeat(32),applicationSource:'b'.repeat(40),operatorSource:'c'.repeat(40),account:'111122223333',role:'fixture-deploy',functionName:'fixture-control',bucket:'fixture-private-bucket',region:'cn-hangzhou',expiresAt:new Date(now+3600000).toISOString(),previousInvocations:11,previous:{sha256:'d'.repeat(64),bytes:4000,crc64:'123'},candidate:{sha256:'e'.repeat(64),bytes:4100}};
 function fixture(options={}){
- const config=codeUpdateConfig(input,now);let checkpoint,updates=[],calls=[],receipts=[],recoveries=0;
+ const config=codeUpdateConfig({...input,...options.config},now);let checkpoint,updates=[],calls=[],receipts=[],recoveries=0;
  let state={function:{functionName:'fixture-control',codeChecksum:'123',codeSize:4000,runtime:'custom.debian12',cpu:0.25,memorySize:512,instanceConcurrency:1,timeout:120,environmentVariables:{V2_PROVISIONING_ONLY:'true',V2_PRIVATE_SMOKE_ENABLED:'true',SYNTHETIC_SECRET:'must-not-retain'}},triggers:[{triggerName:'wake',triggerType:'oss'},{triggerName:'result',triggerType:'oss'}],concurrency:{reservedConcurrency:1},scaling:{minInstances:0}};
  const status=()=>({protocol:'shuduo-v2-private-smoke-v1',ingress:{mode:'FC_CONTROL_PATH',publicHttpEnabled:false},metadata:{healthy:true},persistence:{healthy:true,dataState:{healthy:true}},publicReady:false});
  const adapter={
@@ -50,6 +50,29 @@ test('successful private update changes only code, preserves history, and uses s
  assert.deepEqual(f.receipts,['previous','candidate']);assert.equal(f.recoveries(),1);assert.equal(f.checkpoint().phase,'VERIFIED');assert.equal(r.modelCalls,0);assert.equal(r.sparkRuns,0);assert.equal(r.publicEnabled,false);
  assert(!JSON.stringify([r,f.checkpoint(),f.updates]).includes('must-not-retain'));
  const prior=f.calls.length;const second=await runControlCodeUpdate(f.config,f.adapter,f.storage);assert.equal(second.passed,true);assert.equal(second.reusedVerifiedResult,true);assert.equal(f.calls.length,prior);assert.equal(f.updates.length,1);
+});
+test('invited opening has a separate code-only scope, preserves 55 historical calls and never opens HTTP',async()=>{
+ const f=fixture({config:{authorization:INVITED_READONLY_CODE_SCOPE,previousInvocations:55}});
+ assert.equal(f.config.maxInvocations,6);assert.equal(f.config.maxUpdateAttempts,1);assert.equal(f.config.maxConfigurationReads,30);
+ const r=await runControlCodeUpdate(f.config,f.adapter,f.storage);
+ assert.equal(r.passed,true);assert.equal(r.requestScope,INVITED_READONLY_CODE_SCOPE);assert.equal(r.newInvocations,6);assert.equal(r.cumulativeInvocations,61);
+ assert.equal(r.publicEnabled,false);assert.equal(r.modelCalls,0);assert.equal(r.sparkRuns,0);
+ assert.equal(f.state().function.environmentVariables.V2_FC_PUBLIC_HTTP_ENABLED,undefined);
+ assert.equal(f.updates.length,1);
+ for(const authorization of ['P0A_PRIVATE_CODE_ONLY',INVITED_READONLY_CODE_SCOPE])
+  assert.throws(()=>codeUpdateConfig({...input,authorization,previousInvocations:authorization===INVITED_READONLY_CODE_SCOPE?11:55},now));
+ for(const change of [{maxInvocations:60},{maxConfigurationReads:31},{maxUpdateAttempts:2}])
+  await assert.rejects(runControlCodeUpdate({...f.config,...change},f.adapter,f.storage),/CONFIG_CHANGED/);
+ const count=f.calls.length;
+ await assert.rejects(runControlCodeUpdate(f.config,f.adapter,{...f.storage,now:()=>f.config.expiresAt}),/UPDATE_WINDOW_EXPIRED/);
+ assert.equal(f.calls.length,count);
+});
+test('an old code-update checkpoint cannot be relabeled as the invited opening grant',async()=>{
+ const old=fixture();await runControlCodeUpdate(old.config,old.adapter,old.storage);
+ const fresh=fixture({config:{authorization:INVITED_READONLY_CODE_SCOPE,previousInvocations:55}});
+ fresh.setCheckpoint(old.checkpoint());
+ const r=await runControlCodeUpdate(fresh.config,fresh.adapter,fresh.storage);
+ assert.equal(r.failure,'UPDATE_CHECKPOINT_MISMATCH');assert.equal(fresh.updates.length,0);assert.equal(fresh.calls.length,0);
 });
 test('missing rollback bytes, failed privacy or budget gates stop before code changes',async()=>{
  for(const options of [{backupMissing:true},{notPrivate:true},{overBudget:true}]){const f=fixture(options),r=await runControlCodeUpdate(f.config,f.adapter,f.storage);assert.equal(r.passed,false);assert.equal(f.updates.length,0);assert.equal(f.calls.length,0);}

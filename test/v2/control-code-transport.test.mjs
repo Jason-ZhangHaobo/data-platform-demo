@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {codeUpdateConfig} from '../../scripts/control-code-update.mjs';
+import {codeUpdateConfig,INVITED_READONLY_CODE_SCOPE} from '../../scripts/control-code-update.mjs';
 import {boundedBytes,codeDownloadUrl,controlCloudAdapter,deploymentInput,privateOssRequest,scalingConfiguration} from '../../scripts/control-code-transport.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const now=Date.UTC(2026,9,24),old=Buffer.from('old-code'),next=Buffer.from('new-code');
@@ -14,6 +14,13 @@ test('deployment input requires protected main, original scope, matching identit
  for(const patch of [{GITHUB_REF:'refs/heads/other'},{V2_CONTROL_UPDATE_APPROVED:'yes'},{GITHUB_SHA:'f'.repeat(40)},{V2_CONTROL_UPDATE_TARGET:'{}'}])assert.throws(()=>deploymentInput({...environment,...patch},now));
  for(const patch of [{objectAclReadApproved:false},{unsettledReservedCny:0},{roleArn:'acs:ram::999922223333:role/fixture-role'},{bucketPrivacy:{...target.bucketPrivacy,publicAccessBlocked:false}},{bucketPrivacy:{...target.bucketPrivacy,bucketHash:'f'.repeat(64)}}])assert.throws(()=>deploymentInput({...environment,V2_CONTROL_UPDATE_TARGET:JSON.stringify({...target,...patch})},now));
  assert.throws(()=>deploymentInput(environment,now+3600000));
+});
+test('new code refresh requires matching explicit workflow and manifest scopes',()=>{
+ const config={...raw,authorization:INVITED_READONLY_CODE_SCOPE,previousInvocations:55};
+ const env={...environment,V2_CONTROL_UPDATE_APPROVED:INVITED_READONLY_CODE_SCOPE,V2_CONTROL_UPDATE_TARGET:JSON.stringify({...target,config})};
+ assert.equal(deploymentInput(env,now).config.maxInvocations,6);
+ assert.throws(()=>deploymentInput({...env,V2_CONTROL_UPDATE_APPROVED:'P0A_PRIVATE_CODE_ONLY'},now),/SCOPE_MISMATCH/);
+ assert.throws(()=>deploymentInput({...environment,V2_CONTROL_UPDATE_APPROVED:INVITED_READONLY_CODE_SCOPE},now),/SCOPE_MISMATCH/);
 });
 test('rollback download is HTTPS-only to the expected regional OSS, with byte bounds',async()=>{
  assert.equal(codeDownloadUrl('http://fixture-code.oss-cn-hangzhou.aliyuncs.com/code?signature=synthetic'),'https://fixture-code.oss-cn-hangzhou.aliyuncs.com/code?signature=synthetic');
@@ -30,12 +37,12 @@ test('object writes are create-only binary requests without ACL mutation, and sc
  const a=scalingConfiguration({minInstances:0,currentInstances:0,enableOnDemandScaling:true}),b=scalingConfiguration({minInstances:0,currentInstances:1,enableOnDemandScaling:true});assert.deepEqual(a,b);
  assert.notDeepEqual(a,scalingConfiguration({minInstances:1,enableOnDemandScaling:true}));
 });
-function fixture({unknownPut=false,corrupt=false,acl='private'}={}){
- const config=codeUpdateConfig(raw,now),metadata={...target,bucketPrivacy:{...target.bucketPrivacy,checkedAt:new Date().toISOString()}};
- let saved,backup,stored,puts=0;const commands=[];
- const adapter=controlCloudAdapter(config,metadata,{env:{ALIBABA_CLOUD_ACCESS_KEY_ID:'fixture-id',ALIBABA_CLOUD_ACCESS_KEY_SECRET:'fixture-secret',ALIBABA_CLOUD_SECURITY_TOKEN:'fixture-token'},candidateBytes:next,
+function fixture({unknownPut=false,corrupt=false,acl='private',opening=false,checkpoint}={}){
+ const config=codeUpdateConfig({...raw,...(opening?{authorization:INVITED_READONLY_CODE_SCOPE,previousInvocations:55}:{})},now),metadata={...target,bucketPrivacy:{...target.bucketPrivacy,checkedAt:new Date().toISOString()}};
+ let saved=checkpoint,backup,stored,puts=0;const commands=[],initialConfigurationReads=checkpoint?.configurationReads??0;
+ const adapter=controlCloudAdapter(config,metadata,{now:()=>now,env:{ALIBABA_CLOUD_ACCESS_KEY_ID:'fixture-id',ALIBABA_CLOUD_ACCESS_KEY_SECRET:'fixture-secret',ALIBABA_CLOUD_SECURITY_TOKEN:'fixture-token'},candidateBytes:next,
   loadTransport:()=>saved,saveTransport:v=>{saved=structuredClone(v);},saveBackup:b=>{backup=b;},
-  exec:(program,args)=>{commands.push(args);assert.equal(program,'aliyun');assert(args.includes('--retry-count'));if(args[0]==='fc')assert(!args[2].includes('?'));if(args[2]?.endsWith('/code'))return JSON.stringify({checksum:'123',url:'https://fixture-code.oss-cn-hangzhou.aliyuncs.com/rollback'});if(args[2]?.endsWith('/triggers'))return JSON.stringify({triggers:[]});return JSON.stringify({functionName:'fixture-control'});},
+  exec:(program,args)=>{commands.push(args);if(opening&&args[0]==='fc'&&args[1]==='GET')assert.equal(saved.configurationReads,commands.filter(a=>a[0]==='fc'&&a[1]==='GET').length+initialConfigurationReads);assert.equal(program,'aliyun');assert(args.includes('--retry-count'));if(args[0]==='fc')assert(!args[2].includes('?'));if(args[2]?.endsWith('/code'))return JSON.stringify({checksum:'123',url:'https://fixture-code.oss-cn-hangzhou.aliyuncs.com/rollback'});if(args[2]?.endsWith('/triggers'))return JSON.stringify({triggers:[]});return JSON.stringify({functionName:'fixture-control'});},
   fetchImpl:async(url,options)=>{
    assert.equal(options.redirect,'error');
    if(url.includes('/rollback'))return new Response(old);
@@ -44,8 +51,33 @@ function fixture({unknownPut=false,corrupt=false,acl='private'}={}){
    return stored?new Response(stored,{headers:{'x-oss-hash-crc64ecma':'456'}}):new Response('<Error><Code>NoSuchKey</Code></Error>',{status:404});
   },
  });
- return{config,adapter,commands,backup:()=>backup,puts:()=>puts};
+ return{config,adapter,commands,backup:()=>backup,puts:()=>puts,checkpoint:()=>saved};
 }
+test('opening metadata reads are durably reserved and do not reset across transport restart',async()=>{
+ const f=fixture({opening:true});await f.adapter.readState();await f.adapter.recoverRollback(f.config.previous);
+ assert.equal(f.checkpoint().configurationReads,5);
+ const next=fixture({opening:true,checkpoint:structuredClone(f.checkpoint())});await next.adapter.readState();
+ assert.equal(next.checkpoint().configurationReads,9);
+ const exhausted=fixture({opening:true,checkpoint:{codeReads:0,puts:[],configurationReads:30}});
+ await assert.rejects(exhausted.adapter.readState(),/CONFIGURATION_READ_LIMIT/);assert.equal(exhausted.commands.length,0);
+ assert.throws(()=>fixture({opening:true,checkpoint:{codeReads:0,puts:[]}}),/READ_CHECKPOINT_INVALID/);
+});
+test('opening refuses a code update after preflight consumes the rollback read reserve',async()=>{
+ const f=fixture({opening:true});for(let i=0;i<3;i++)await f.adapter.readState();
+ const count=f.commands.length;
+ assert.throws(()=>f.adapter.updateCode({code:{ossBucketName:f.config.bucket,ossObjectName:f.config.candidate.key,checksum:'456'}}),/RECOVERY_READ_RESERVE_REQUIRED/);
+ assert.equal(f.commands.length,count);
+ f.adapter.updateCode({code:{ossBucketName:f.config.bucket,ossObjectName:f.config.previous.key,checksum:'123'}});
+ assert.equal(f.commands.length,count+1);
+});
+test('opening transport performs no call after the original deadline',async()=>{
+ const config=codeUpdateConfig({...raw,authorization:INVITED_READONLY_CODE_SCOPE,previousInvocations:55},now);
+ let calls=0;
+ const adapter=controlCloudAdapter(config,target,{now:()=>config.expiresAt,saveTransport:()=>{},exec:()=>{calls++;},fetchImpl:()=>{calls++;}});
+ await assert.rejects(adapter.readState(),/CONTROL_WINDOW_EXPIRED/);
+ assert.throws(()=>adapter.identity(),/CONTROL_WINDOW_EXPIRED/);
+ assert.equal(calls,0);
+});
 test('transport downloads exact rollback bytes and reconciles one unknown create-only upload',async()=>{
  const f=fixture({unknownPut:true}),backup=await f.adapter.recoverRollback(f.config.previous);assert(backup.safelyRetained);assert.deepEqual(f.backup(),old);
  const receipt=await f.adapter.ensurePackage('candidate',f.config.candidate);assert.equal(receipt.sha256,hash(next));assert.equal(receipt.privateVerified,true);assert.equal(f.puts(),1);
@@ -58,7 +90,7 @@ test('transport refuses other objects, public ACLs, corrupted bytes and non-code
 });
 test('protected workflow uses secret metadata and existing pinned package, never W3 or another build',()=>{
  const yaml=readFileSync(new URL('../../.github/workflows/update-v2-control-code.yml',import.meta.url),'utf8');
- for(const text of ["github.ref == 'refs/heads/main'",'P0A_PRIVATE_CODE_ONLY','secrets.V2_CONTROL_UPDATE_TARGET','artifact-ids:','--recover','--seal','v2-staging-control-mutation'])assert(yaml.includes(text));
+ for(const text of ["github.ref == 'refs/heads/main'",'P0A_PRIVATE_CODE_ONLY','INVITED_READ_ONLY_CODE_REFRESH','secrets.V2_CONTROL_UPDATE_TARGET','artifact-ids:','--recover','--seal','v2-staging-control-mutation'])assert(yaml.includes(text));
  for(const text of ['vars.','deploy-v2-w3','build-v2-fc-package','CreateTrigger','workflow_call'])assert(!yaml.includes(text));
 });
 test('ROA query parameters are separate CLI flags and failures identify the exact read operation',async()=>{
