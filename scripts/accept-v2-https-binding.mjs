@@ -6,7 +6,7 @@ import {X509Certificate,createHash} from 'node:crypto';
 import {Resolver,resolveCname,resolveNs,resolve4} from 'node:dns/promises';
 import {acceptanceConfig,adapterFor,runHttpAcceptance,cleanupAcceptance,functionHash,checkedList,ownsTrigger} from './accept-v2-http-boundary.mjs';
 import {recipientKey,sealReport} from './audit-v2-oidc-readonly.mjs';
-import {DOMAIN_BINDING_AUTHORIZATION,signedAccessLimits,verifyCertificateMaterial,domainBindingPlan,runDomainBinding,rollbackDomainBinding} from './v2-domain-binding-plan.mjs';
+import {DOMAIN_BINDING_AUTHORIZATION,signedAccessLimits,verifyCertificateMaterial,domainBindingPlan,domainConfigurationMatches,runDomainBinding,rollbackDomainBinding} from './v2-domain-binding-plan.mjs';
 
 const fail=code=>Object.assign(new Error(code),{safeCode:code});
 const check=(value,code)=>{if(!value)throw fail(code);};
@@ -16,8 +16,8 @@ const save=(name,value)=>writeFileSync(`${dir}/${name}.json`,JSON.stringify(valu
 export function domainReadbackShape(value,plan){
  const v=value?.value??{},expected=plan.desired,shape=x=>x===null?'null':Array.isArray(x)?{type:'array',length:x.length}:x&&typeof x==='object'?Object.fromEntries(Object.entries(x).map(([k,y])=>[k,shape(y)])):typeof x;
  let certificateMatches=false;try{certificateMatches=createHash('sha256').update(new X509Certificate(v.certConfig?.certificate).raw).digest('hex')===expected.certificateSha256;}catch{}
- return{status:value?.status,code:value?.code,rootKeys:Object.keys(v),accountMatches:String(v.accountId)===plan.target.account,domainMatches:v.domainName===expected.domainName,protocol:['HTTP','HTTPS','HTTP,HTTPS'].includes(v.protocol)?v.protocol:'UNCONFIRMED',authType:['anonymous','function','jwt'].includes(v.authConfig?.authType)?v.authConfig.authType:'UNCONFIRMED',authInfoEmpty:[undefined,null,'','{}'].includes(v.authConfig?.authInfo),certNameMatches:v.certConfig?.certName===expected.certName,certificateMatches,
-  tls:{minVersion:/^TLSv1\.[0-3]$/.test(v.tlsConfig?.minVersion??'')?v.tlsConfig.minVersion:'UNCONFIRMED',maxVersion:/^TLSv1\.[0-3]$/.test(v.tlsConfig?.maxVersion??'')?v.tlsConfig.maxVersion:'UNCONFIRMED',cipherSuites:Array.isArray(v.tlsConfig?.cipherSuites)?v.tlsConfig.cipherSuites.map(s=>/^TLS_[A-Z0-9_]{1,80}$/.test(s)?s:'UNEXPECTED'):[]},routeConfigKeys:Object.keys(v.routeConfig??{}),routes:(v.routeConfig?.routes??[]).map(r=>({path:expected.routeConfig.routes.some(e=>e.path===r.path)?r.path:'UNEXPECTED',methods:Array.isArray(r.methods)?r.methods.map(m=>['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'].includes(m)?m:'UNEXPECTED'):[],qualifierMatches:r.qualifier==='LATEST',functionMatches:r.functionName===plan.target.functionName,keys:Object.keys(r),rewriteConfig:shape(r.rewriteConfig)})),cors:shape(v.corsConfig),waf:shape(v.wafConfig),wafEnabled:v.wafConfig?.enableWAF};
+ return{status:value?.status,code:value?.code,configurationMatches:domainConfigurationMatches(v,plan),rootKeys:Object.keys(v),accountMatches:String(v.accountId)===plan.target.account,domainMatches:v.domainName===expected.domainName,protocol:['HTTP','HTTPS','HTTP,HTTPS'].includes(v.protocol)?v.protocol:'UNCONFIRMED',authType:['anonymous','function','jwt'].includes(v.authConfig?.authType)?v.authConfig.authType:'UNCONFIRMED',authInfoEmpty:[undefined,null,'','{}'].includes(v.authConfig?.authInfo),certNameMatches:v.certConfig?.certName===expected.certName,certificateMatches,
+  tls:{minVersion:/^TLSv1\.[0-3]$/.test(v.tlsConfig?.minVersion??'')?v.tlsConfig.minVersion:'UNCONFIRMED',maxVersion:/^TLSv1\.[0-3]$/.test(v.tlsConfig?.maxVersion??'')?v.tlsConfig.maxVersion:'UNCONFIRMED',cipherSuites:Array.isArray(v.tlsConfig?.cipherSuites)?v.tlsConfig.cipherSuites.map(s=>/^TLS_[A-Z0-9_]{1,80}$/.test(s)?s:'UNEXPECTED'):[]},routeConfigKeys:Object.keys(v.routeConfig??{}),routes:(v.routeConfig?.routes??[]).map(r=>({path:expected.routeConfig.routes.some(e=>e.path===r.path)?r.path:'UNEXPECTED',methods:Array.isArray(r.methods)?r.methods.map(m=>['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'].includes(m)?m:'UNEXPECTED'):[],qualifierMatches:r.qualifier==='LATEST',functionMatches:r.functionName===plan.target.functionName,accountIdState:r.accountId===undefined?'absent':r.accountId===null?'null':r.accountId===''?'empty':String(r.accountId)===plan.target.account?'same':'foreign',keys:Object.keys(r),rewriteConfig:shape(r.rewriteConfig)})),cors:shape(v.corsConfig),waf:shape(v.wafConfig),wafEnabled:v.wafConfig?.enableWAF};
 }
 export const domainProbes=Object.freeze([
  {id:'signed-baseline',method:'GET',path:'/api/v2/status'},
@@ -141,6 +141,7 @@ export async function httpsBindingMain(env=process.env,mode=process.argv[2]){
  const domain={get:()=>domainCall('get'),create:body=>domainCall('create',body),delete:()=>domainCall('delete')};
  if(recoveryMode!=='NONE'){
   check(read('domain-checkpoint')&&read('domain-api-count'),'RECOVERY_CHECKPOINT_REQUIRED');
+  if(recoveryMode==='ROLLBACK_EXISTING'){const get=domain.get;domain.get=async()=>{const v=await get();if(v?.status===200)save('inspection',domainReadbackShape(v,plan));return v;};}
   if(mode==='--inspect-existing'){
    check(recoveryMode==='INSPECT_EXISTING'&&!read('inspection'),'RECOVERY_INSPECTION_NOT_ALLOWED');
    const value=await domain.get();save('inspection',domainReadbackShape(value,plan));check(value?.status===200,'RECOVERY_READ_NOT_CONFIRMED');return;

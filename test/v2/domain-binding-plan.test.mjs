@@ -61,7 +61,8 @@ test('server-added same-account route metadata and null rewrites do not hide rea
  const f=fixture();await runDomainBinding(plan,material,f.adapter,f.storage);
  const returned=structuredClone(f.state());returned.routeConfig.routes.forEach(r=>{r.accountId=plan.target.account;r.rewriteConfig=null;});
  assert.equal(domainConfigurationMatches(returned,plan),true);
- for(const change of [r=>r.accountId='999900001111',r=>r.accountId=null,r=>r.rewriteConfig={},r=>r.rewriteConfig={equalRules:[{match:'/',replacement:'/invoke'}]},r=>r.unknown=true,r=>r.functionName='foreign',r=>r.methods.push('DELETE'),r=>r.qualifier='foreign']){
+ for(const empty of [null,'',undefined]){const omitted=structuredClone(returned);omitted.routeConfig.routes.forEach(r=>r.accountId=empty);assert.equal(domainConfigurationMatches(omitted,plan),true);omitted.accountId='999900001111';assert.equal(domainConfigurationMatches(omitted,plan),false);}
+ for(const change of [r=>r.accountId='999900001111',r=>r.accountId=' ',r=>r.accountId=0,r=>r.rewriteConfig={},r=>r.rewriteConfig={equalRules:[{match:'/',replacement:'/invoke'}]},r=>r.unknown=true,r=>r.functionName='foreign',r=>r.methods.push('DELETE'),r=>r.qualifier='foreign']){
   const changed=structuredClone(returned);change(changed.routeConfig.routes[0]);assert.equal(domainConfigurationMatches(changed,plan),false);
  }
  const extra=structuredClone(returned);extra.routeConfig.rewriteConfig=null;assert.equal(domainConfigurationMatches(extra,plan),false);
