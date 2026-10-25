@@ -4,9 +4,11 @@ import {execFileSync} from 'node:child_process';
 import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {createHash} from 'node:crypto';
 import {DOMAIN_BINDING_AUTHORIZATION,domainBindingPlan,verifyCertificateMaterial} from '../../scripts/v2-domain-binding-plan.mjs';
-import {prepareInvitedReadonlyConfig,verifyInvitedReadonlyConfig,readonlyEntryRollbackRequests} from '../../scripts/invited-readonly-config.mjs';
+import {prepareInvitedReadonlyConfig,verifyInvitedReadonlyConfig,readonlyEntryRollbackRequests,readonlyConfigIntegrity} from '../../scripts/invited-readonly-config.mjs';
 import {codeUpdateProbes,INVITED_READONLY_CODE_SCOPE} from '../../scripts/control-code-update.mjs';
+import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyEntryProbes,readonlyEntryProbeAccepted,runReadonlyEntry} from '../../scripts/invited-readonly-entry.mjs';
 
 // Disposable self-signed fixture only; never load project certificate material.
 const dir=mkdtempSync(join(tmpdir(),'readonly-domain-fixture-'));
@@ -23,7 +25,7 @@ function fixture(){
  domain.routeConfig.routes.forEach(r=>{r.accountId=null;r.rewriteConfig=null;});
  const state={function:{functionName:'fixture-control',codeChecksum:'123456',codeSize:4000,runtime:'custom.debian12',cpu:0.25,memorySize:512,instanceConcurrency:1,customDNS:{searches:['synthetic.invalid']},environmentVariables:{V2_LOCAL_DEVELOPMENT:'false',V2_PROVISIONING_ONLY:'true',V2_PRIVATE_SMOKE_ENABLED:'true',V2_DURABLE_SQL_AGENT_ENABLED:'true',SYNTHETIC_SECRET:'not-a-real-secret'}},triggers:[{triggerName:'wake',triggerType:'oss'},{triggerName:'result',triggerType:'oss'}],concurrency:{reservedConcurrency:1},scaling:{minInstances:0}};
  const expectedCode={applicationSource:'d'.repeat(40),sha256:'e'.repeat(64),bytes:4000};
- const privateCodeEvidence={report:{operationId:'c'.repeat(32),scope:'PRIVATE_CONTROL_CODE_ONLY',requestScope:INVITED_READONLY_CODE_SCOPE,passed:true,applicationSource:expectedCode.applicationSource,newInvocations:6,cumulativeInvocations:61,publicEnabled:false,modelCalls:0,sparkRuns:0},checkpoint:{operationId:'c'.repeat(32),phase:'VERIFIED',candidateSha:expectedCode.sha256,candidateReceipt:{sha256:expectedCode.sha256,bytes:4000,crc64:'123456'},probes:codeUpdateProbes.map(p=>({id:p.id,passed:true}))}};
+ const privateCodeEvidence={report:{operationId:'c'.repeat(32),scope:'PRIVATE_CONTROL_CODE_ONLY',requestScope:INVITED_READONLY_CODE_SCOPE,passed:true,applicationSource:expectedCode.applicationSource,newInvocations:6,cumulativeInvocations:61,publicEnabled:false,modelCalls:0,sparkRuns:0},checkpoint:{operationId:'c'.repeat(32),phase:'VERIFIED',candidateSha:expectedCode.sha256,candidateReceipt:{sha256:expectedCode.sha256,bytes:4000,crc64:'123456'},probes:codeUpdateProbes.map(p=>({id:p.id,passed:true}))},transport:{configurationReads:17}};
  const change=prepareInvitedReadonlyConfig({state,domain,retainedPlan,operationId:'c'.repeat(32),expectedCode,privateCodeEvidence});
  const opened={state:structuredClone(state),domain:structuredClone(domain)};
  opened.state.function={...opened.state.function,...structuredClone(change.functionBody)};
@@ -77,4 +79,192 @@ test('owned full-entry rollback closes the gate first, restores only auth and re
  assert.throws(()=>readonlyEntryRollbackRequests(tampered,f.opened),/DO_NOT_OVERWRITE/);
  const partial=structuredClone(f.opened);partial.state.triggers.pop();
  assert.throws(()=>readonlyEntryRollbackRequests(f.change,partial),/DO_NOT_OVERWRITE/);
+});
+test('recomputing a plain digest is not authority to widen the prepared request bodies',()=>{
+ const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v??null);
+ for(const mutate of [c=>c.functionBody.environmentVariables.V2_FC_PUBLIC_READ_ONLY='false',c=>c.functionBody.environmentVariables.SYNTHETIC_SECRET='overwrite',c=>c.triggerBody.triggerConfig=JSON.stringify({authType:'anonymous',disableURLInternet:false,methods:['GET','POST']}),c=>c.domainBody.protocol='HTTP',c=>c.retainedPlan.target.domainName='foreign.example.invalid']){
+  const change=fixture().change;mutate(change);
+  const {changeHash,...definition}=change;change.changeHash=createHash('sha256').update(canonical(definition)).digest('hex');
+  assert.equal(readonlyConfigIntegrity(change),false);
+ }
+});
+
+function executionFixture(options={}){
+ const f=fixture(),plan=readonlyEntryPlan({authorization:READONLY_ENTRY_SCOPE,operationId:f.change.operationId,operatorSource:'f'.repeat(40),webIndexSha256:'1'.repeat(64),issuedAt:new Date(now).toISOString(),expiresAt:new Date(now+3600000).toISOString(),seed:{newRequests:6,configurationReads:25}},now);
+ let cloud={state:structuredClone(f.state),domain:structuredClone(f.domain)},checkpoint;
+ const calls=[],snapshots=[];
+ const storage={now:()=>now,load:async()=>checkpoint,save:async cp=>{checkpoint=structuredClone(cp);snapshots.push({checkpoint:structuredClone(cp),cloud:structuredClone(cloud)});}};
+ const record=name=>{
+  calls.push(name);
+  if(name.startsWith('read')||name==='listTriggers')assert.equal(checkpoint.configurationReads,25+calls.filter(n=>n.startsWith('read')||n==='listTriggers').length+(options.readOffset??0));
+  else if(name!=='probe')assert.equal(checkpoint.writes[name],true,'marker must be saved before cloud write');
+ };
+ const write=(name,apply)=>async body=>{
+  record(name);
+  if(options.unapplied===name)throw Error('synthetic lost request');
+  apply(body);
+  if(options.unknown===name)throw Error('synthetic lost response');
+ };
+ const adapter={
+  readFunction:async()=>{record('readFunction');return structuredClone(cloud.state.function);},
+  readDomain:async()=>{record('readDomain');return structuredClone(cloud.domain);},
+  listTriggers:async()=>{record('listTriggers');return structuredClone(cloud.state.triggers);},
+  readConcurrency:async()=>{record('readConcurrency');return structuredClone(cloud.state.concurrency);},
+  readScaling:async()=>{record('readScaling');return structuredClone(cloud.state.scaling);},
+  createTrigger:write('createTrigger',body=>cloud.state.triggers.push(structuredClone(body))),
+  updateDomain:write('updateDomain',body=>{cloud.domain={...cloud.domain,...body};}),
+  openFunction:write('openFunction',body=>{cloud.state.function={...cloud.state.function,...body};}),
+  closeFunction:write('closeFunction',body=>{cloud.state.function={...cloud.state.function,...body};}),
+  restoreDomain:write('restoreDomain',body=>{cloud.domain={...cloud.domain,...body};}),
+  deleteTrigger:write('deleteTrigger',name=>{cloud.state.triggers=cloud.state.triggers.filter(t=>t.triggerName!==name);}),
+  probe:async probe=>{
+   record('probe');assert.equal(checkpoint.newRequests,6+calls.filter(n=>n==='probe').length+(options.probeOffset??0));
+   const value={tlsTrusted:true,endpointMatched:true,certificateMatched:true,hasSetCookie:false,status:200};
+   if(probe.id==='default-disabled')value.status=403;
+   if(probe.id==='entry-html'){value.contentType='text/html; charset=utf-8';value.bodySha256=plan.webIndexSha256;}
+   if(probe.id==='anonymous-session')value.body={authenticated:false,readOnly:true};
+   if(['readonly-agent','readonly-publish'].includes(probe.id)){value.status=403;value.body={code:'PUBLIC_READ_ONLY'};}
+   if(probe.id==='private-internal'){value.status=404;value.body={code:'INGRESS_DENIED'};}
+   if(probe.id==='unmapped-invoke'){value.status=404;value.serviceCode='DomainRouteNotFound';}
+   if(probe.id==='foreign-origin'){value.status=403;value.body={message:'请求来源不允许'};}
+   if(probe.id==='invalid-login'){value.status=401;value.body={code:'INVALID_LOGIN'};}
+   if(options.badProbe===probe.id){
+    if(options.foreignDomain)cloud.domain.certConfig.certName='external-change';
+    if(options.foreignFunction)cloud.state.function.environmentVariables.EXTERNAL_SETTING='do-not-overwrite';
+    value.tlsTrusted=false;
+    if(options.unexpectedWrite){value.status=200;value.tlsTrusted=true;value.body={};}
+   }
+   return value;
+  },
+ };
+ return{...f,plan,storage,adapter,calls,snapshots,checkpoint:()=>checkpoint,cloud:()=>cloud,restore:snapshot=>{checkpoint=structuredClone(snapshot.checkpoint);cloud=structuredClone(snapshot.cloud);},mutate:fn=>fn(cloud)};
+}
+test('entry sequence preserves the whole-stage ledger and keeps only the intended read-only configuration',async()=>{
+ const f=executionFixture(),r=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+ assert.equal(r.passed,true);assert.equal(r.entryRetained,true);assert.equal(r.invitedUserAccepted,false);
+ assert.equal(r.configurationReads,39);assert.equal(r.newRequests,15);assert.equal(r.cumulativeRequests,70);
+ assert.equal(f.calls.filter(n=>n==='createTrigger').length,1);assert.equal(f.calls.filter(n=>n==='openFunction').length,1);
+ assert.equal(verifyInvitedReadonlyConfig(f.change,f.cloud()),true);
+ assert.equal(f.calls.indexOf('createTrigger')<f.calls.indexOf('updateDomain'),true);
+ assert.equal(f.calls.indexOf('updateDomain')<f.calls.indexOf('openFunction'),true);
+ assert.equal(r.externalCleanupRequired,true);
+ assert(!JSON.stringify(r).includes('not-a-real-secret'));
+ // Even the synthetic normal path already exceeds the old 30-read proposal,
+ // before outer IAM cleanup. No old grant may silently receive the new limit.
+ assert.ok(r.configurationReads>30);
+ assert.throws(()=>readonlyEntryPlan({...f.plan,authorization:'INVITED_READ_ONLY_OPENING'},now),/NEW_GRANT_REQUIRED/);
+ assert.throws(()=>readonlyEntryPlan({...f.plan,issuedAt:new Date(f.plan.issuedAt).toISOString(),expiresAt:new Date(f.plan.expiresAt).toISOString(),seed:{newRequests:6,configurationReads:0}},now),/SEED_INVALID/);
+ await assert.rejects(runReadonlyEntry({...f.plan,limits:{...f.plan.limits,configurationReads:30}},f.change,f.adapter,f.storage),/PLAN_CHANGED/);
+});
+test('lost write responses are reconciled, never repeated when the change was actually applied',async()=>{
+ for(const unknown of ['createTrigger','updateDomain','openFunction']){
+  const f=executionFixture({unknown}),r=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+  assert.equal(r.passed,true);assert.equal(f.calls.filter(n=>n===unknown).length,1);assert.equal(f.checkpoint().unknownWrites[unknown],true);
+ }
+});
+test('an unapplied or unknown create is not retried and does not delete an unrelated resource',async()=>{
+ const f=executionFixture({unapplied:'createTrigger'}),r=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+ assert.equal(r.failure,'READONLY_TRIGGER_CREATE_UNCONFIRMED');assert.equal(r.rollback.triggerAbsent,true);assert.equal(r.phase,'ROLLED_BACK');
+ assert.equal(f.calls.filter(n=>n==='createTrigger').length,1);assert.equal(f.calls.includes('deleteTrigger'),false);
+ const count=f.calls.length,again=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+ assert.equal(again.previouslyRolledBack,true);assert.equal(f.calls.length,count);
+});
+test('failed acceptance closes only the owned entry and restores signed access without touching DNS or certificates',async()=>{
+ const f=executionFixture({badProbe:'readonly-agent'}),r=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+ assert.equal(r.passed,false);assert.equal(r.failureAt,'readonly-agent');assert.equal(r.phase,'ROLLED_BACK');
+ assert.deepEqual(r.rollback,{functionRestored:true,domainRestored:true,triggerAbsent:true,issues:[],entryClosed:true});
+ assert.equal(f.cloud().domain.certConfig.certName,f.domain.certConfig.certName);
+ assert.equal(f.cloud().domain.authConfig.authType,'function');
+ assert.equal(f.cloud().state.triggers.length,2);
+ assert.equal(f.calls.indexOf('closeFunction')<f.calls.indexOf('restoreDomain'),true);
+ assert.equal(f.calls.indexOf('restoreDomain')<f.calls.indexOf('deleteTrigger'),true);
+ const unexpected=executionFixture({badProbe:'readonly-agent',unexpectedWrite:true});
+ const bad=await runReadonlyEntry(unexpected.plan,unexpected.change,unexpected.adapter,unexpected.storage);
+ assert.equal(bad.passed,false);assert.equal(bad.possibleUnexpectedWrite,true);
+ assert.equal(bad.modelCalls,undefined);assert.equal(bad.modelCallsRequested,0);
+});
+test('foreign changes are not overwritten and do not prevent independent containment',async()=>{
+ for(const options of [{foreignDomain:true},{foreignFunction:true}]){
+  const f=executionFixture({...options,badProbe:'readonly-agent'}),r=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+  assert.equal(r.phase,'NEEDS_ATTENTION');assert.equal(r.rollback.entryClosed,true);assert.equal(r.rollback.triggerAbsent,true);
+  if(options.foreignDomain){assert.equal(f.calls.includes('restoreDomain'),false);assert.equal(f.cloud().domain.certConfig.certName,'external-change');assert.equal(r.rollback.functionRestored,true);}
+  if(options.foreignFunction){assert.equal(f.calls.includes('closeFunction'),false);assert.equal(f.cloud().state.function.environmentVariables.EXTERNAL_SETTING,'do-not-overwrite');assert.equal(r.rollback.domainRestored,true);}
+ }
+});
+test('failed cleanup is retried only by observation, never as a second unconfirmed write',async()=>{
+ const f=executionFixture({badProbe:'readonly-agent',unapplied:'closeFunction'}),r=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+ assert.equal(r.phase,'NEEDS_ATTENTION');assert.equal(r.rollback.functionRestored,false);assert.equal(r.rollback.entryClosed,true);
+ const again=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+ assert.equal(again.phase,'NEEDS_ATTENTION');assert.equal(f.calls.filter(n=>n==='closeFunction').length,1);
+ assert.equal(f.calls.filter(n=>n==='deleteTrigger').length,1);
+});
+test('corrupt checkpoints and expired grants perform no resource requests',async()=>{
+ const f=executionFixture();await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+ const good={checkpoint:structuredClone(f.checkpoint()),cloud:structuredClone(f.cloud())};
+ for(const mutate of [cp=>cp.changeHash='0'.repeat(64),cp=>cp.newRequests=6,cp=>cp.writes={openFunction:true},cp=>cp.probes.pop()]){
+  f.restore(good);mutate(f.checkpoint());const count=f.calls.length;
+  const r=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+  assert.equal(r.passed,false);assert.equal(f.calls.length,count);
+ }
+ f.restore(good);const count=f.calls.length;
+ await assert.rejects(runReadonlyEntry(f.plan,f.change,f.adapter,{...f.storage,now:()=>f.plan.expiresAt}),/WINDOW_EXPIRED/);
+ assert.equal(f.calls.length,count);
+});
+test('successful retained entry is never torn down by a later readback failure',async()=>{
+ const f=executionFixture();await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+ f.mutate(cloud=>cloud.domain.certConfig.certName='later-owner-change');
+ const r=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
+ assert.equal(r.failure,'READONLY_RETAINED_ENTRY_DRIFT');assert.equal(f.calls.includes('closeFunction'),false);assert.equal(f.calls.includes('deleteTrigger'),false);
+});
+test('resume after a confirmed create preserves counters and never creates the trigger twice',async()=>{
+ const first=executionFixture();await runReadonlyEntry(first.plan,first.change,first.adapter,first.storage);
+ const point=first.snapshots.find(s=>s.cloud.state.triggers.length===3&&s.checkpoint.writes.createTrigger&&!s.checkpoint.writes.updateDomain);
+ assert.ok(point);
+ const resumed=executionFixture({readOffset:point.checkpoint.configurationReads-25,probeOffset:point.checkpoint.newRequests-6});
+ resumed.restore(point);
+ const r=await runReadonlyEntry(resumed.plan,resumed.change,resumed.adapter,resumed.storage);
+ assert.equal(r.passed,true);assert.equal(resumed.calls.includes('createTrigger'),false);
+ assert.equal(resumed.calls.filter(n=>n==='updateDomain').length,1);
+ assert.equal(resumed.calls.filter(n=>n==='openFunction').length,1);
+ assert.equal(r.cumulativeRequests,70);assert.ok(r.configurationReads>point.checkpoint.configurationReads);
+});
+test('resume may re-read one interrupted GET but never repeats an unconfirmed POST probe',async()=>{
+ const first=executionFixture();await runReadonlyEntry(first.plan,first.change,first.adapter,first.storage);
+ for(const id of ['default-disabled','readonly-agent']){
+  const point=first.snapshots.find(s=>s.checkpoint.probeAttempts[id]===1&&!s.checkpoint.probes.some(p=>p.id===id));
+  assert.ok(point);
+  const resumed=executionFixture({readOffset:point.checkpoint.configurationReads-25,probeOffset:point.checkpoint.newRequests-6});
+  resumed.restore(point);
+  const r=await runReadonlyEntry(resumed.plan,resumed.change,resumed.adapter,resumed.storage);
+  if(id==='default-disabled'){
+   assert.equal(r.passed,true);assert.equal(resumed.checkpoint().probeAttempts[id],2);assert.equal(r.cumulativeRequests,71);
+  }else{
+   assert.equal(r.failure,'READONLY_PROBE_OUTCOME_UNKNOWN');assert.equal(r.phase,'ROLLED_BACK');
+   assert.equal(resumed.calls.includes('probe'),false);assert.equal(r.rollback.entryClosed,true);
+  }
+ }
+});
+test('exhausted metadata budget never issues an extra read or unverified cleanup write',async()=>{
+ const first=executionFixture();await runReadonlyEntry(first.plan,first.change,first.adapter,first.storage);
+ const point={checkpoint:structuredClone(first.checkpoint()),cloud:structuredClone(first.cloud())};
+ point.checkpoint.phase='ACTIVE';point.checkpoint.configurationReads=80;
+ const resumed=executionFixture();resumed.restore(point);
+ const r=await runReadonlyEntry(resumed.plan,resumed.change,resumed.adapter,resumed.storage);
+ assert.equal(r.passed,false);assert.equal(r.configurationReads,80);assert.equal(r.rollback.entryClosed,false);
+ assert.deepEqual(resumed.calls,[]);assert.equal(r.phase,'NEEDS_ATTENTION');
+});
+test('HTTP success alone cannot pass HTML, identity, TLS or application-error acceptance',()=>{
+ const f=executionFixture(),base={tlsTrusted:true,endpointMatched:true,certificateMatched:true,hasSetCookie:false,status:200};
+ const cases=[
+  ['entry-html',{...base,contentType:'text/html',bodySha256:'2'.repeat(64)}],
+  ['entry-html',{...base,contentType:'text/html',bodySha256:f.plan.webIndexSha256,attachment:true}],
+  ['anonymous-session',{...base,body:{authenticated:true,readOnly:true}}],
+  ['anonymous-session',{...base,body:{authenticated:false,readOnly:false}}],
+  ['readonly-agent',{...base,status:403,body:{code:'ACCESS_DENIED'}}],
+  ['invalid-login',{...base,status:401,body:{code:'GATEWAY_UNAUTHORIZED'}}],
+  ['default-disabled',{...base,status:403,tlsTrusted:false}],
+  ['default-disabled',{...base,status:403,endpointMatched:false}],
+  ['private-internal',{...base,status:404,body:{code:'INGRESS_DENIED'},hasSetCookie:true}],
+ ];
+ for(const [id,response] of cases)assert.equal(readonlyEntryProbeAccepted(response,readonlyEntryProbes.find(p=>p.id===id),f.plan),false);
 });

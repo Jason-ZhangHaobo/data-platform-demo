@@ -20,6 +20,8 @@ export function prepareInvitedReadonlyConfig({state,domain,retainedPlan,operatio
  check(/^[a-f0-9]{40}$/.test(expectedCode?.applicationSource??'')&&/^[a-f0-9]{64}$/.test(expectedCode?.sha256??'')&&Number.isSafeInteger(expectedCode?.bytes),'READONLY_EXPECTED_CODE_INVALID');
  check(report?.passed===true&&report.operationId===operationId&&report.scope==='PRIVATE_CONTROL_CODE_ONLY'&&report.requestScope===INVITED_READONLY_CODE_SCOPE&&report.applicationSource===expectedCode.applicationSource&&report.newInvocations===6&&report.cumulativeInvocations===61&&report.publicEnabled===false&&report.modelCalls===0&&report.sparkRuns===0,'READONLY_PRIVATE_CODE_EVIDENCE_REQUIRED');
  check(cp?.phase==='VERIFIED'&&cp.operationId===operationId&&cp.candidateSha===expectedCode.sha256&&receipt?.sha256===expectedCode.sha256&&receipt.bytes===expectedCode.bytes&&/^\d{1,30}$/.test(receipt.crc64??'')&&String(fn?.codeChecksum)===receipt.crc64&&fn.codeSize===receipt.bytes&&same(cp.probes,codeUpdateProbes.map(p=>({id:p.id,passed:true}))),'READONLY_DEPLOYED_CODE_NOT_VERIFIED');
+ const codeConfigurationReads=privateCodeEvidence?.transport?.configurationReads;
+ check(Number.isSafeInteger(codeConfigurationReads)&&codeConfigurationReads>=17&&codeConfigurationReads<=30,'READONLY_PRIVATE_CODE_USAGE_REQUIRED');
  check(fn?.functionName===retainedPlan.target.functionName&&fn.runtime==='custom.debian12'&&fn.instanceConcurrency===1&&fn.cpu===0.25&&fn.memorySize===512,'READONLY_FUNCTION_BOUNDARY_MISMATCH');
  check(env?.V2_LOCAL_DEVELOPMENT==='false'&&env.V2_PROVISIONING_ONLY==='true'&&env.V2_PRIVATE_SMOKE_ENABLED==='true'&&env.V2_FC_PUBLIC_HTTP_ENABLED!=='true','READONLY_PRIVATE_BASELINE_REQUIRED');
  check(Array.isArray(state.triggers)&&state.triggers.length===2&&state.triggers.every(t=>t.triggerType==='oss')&&state.concurrency?.reservedConcurrency===1&&state.scaling?.minInstances===0,'READONLY_RESOURCE_BOUNDARY_MISMATCH');
@@ -29,7 +31,7 @@ export function prepareInvitedReadonlyConfig({state,domain,retainedPlan,operatio
  const triggerBody={triggerName:'shuduo-invited-readonly',triggerType:'http',qualifier:'LATEST',description:`shuduo-readonly-${operationId}`,triggerConfig:JSON.stringify({authType:'anonymous',disableURLInternet:true,methods:['GET','POST']})};
  const expectedState={...structuredClone(state),function:{...structuredClone(fn),...functionBody}};
  const change={
-  operationId,expectedCode:structuredClone(expectedCode),retainedPlan:structuredClone(retainedPlan),baselineHash:stateHash(state),openedHash:stateHash(expectedState),originalTriggers:structuredClone(state.triggers),
+  operationId,expectedCode:structuredClone(expectedCode),codeConfigurationReads,retainedPlan:structuredClone(retainedPlan),baselineHash:stateHash(state),openedHash:stateHash(expectedState),originalTriggers:structuredClone(state.triggers),resourceConfiguration:{concurrency:structuredClone(state.concurrency),scaling:structuredClone(state.scaling)},
   // Request bodies contain the pre-existing environment. Only use them in
   // memory/protected encrypted checkpoints, never public summaries or Git.
   functionBody,domainBody:{authConfig:{authType:'anonymous',authInfo:'{}'}},triggerBody,
@@ -47,20 +49,42 @@ function ownedHttpTrigger(value,expected){
  return config.authType==='anonymous'&&config.disableURLInternet===true&&Array.isArray(config.methods)&&same([...config.methods].sort(),['GET','POST'])&&[undefined,null,'','{}'].includes(config.authConfig);
 }
 
-export function verifyInvitedReadonlyConfig(change,{state,domain}){
+export function readonlyConfigIntegrity(change){
  if(!change||typeof change!=='object')return false;
  const {changeHash,...definition}=change;
- if(hash(definition)!==changeHash)return false;
- if(!Array.isArray(state?.triggers))return false;
- const own=state.triggers.filter(t=>t.triggerName===change.triggerBody.triggerName);
- if(own.length!==1||!ownedHttpTrigger(own[0],change.triggerBody))return false;
- const original=state.triggers.filter(t=>t.triggerName!==change.triggerBody.triggerName);
- if(!same([...original].sort((a,b)=>a.triggerName.localeCompare(b.triggerName)),[...change.originalTriggers].sort((a,b)=>a.triggerName.localeCompare(b.triggerName))))return false;
- if(stateHash({...state,triggers:original})!==change.openedHash)return false;
- if(domain?.authConfig?.authType!=='anonymous'||![undefined,null,'','{}'].includes(domain.authConfig.authInfo)||Object.keys(domain.authConfig).some(k=>!['authType','authInfo'].includes(k)))return false;
+ if(hash(definition)!==changeHash||change.retainedPlan?.target?.domainName!=='shuduoai.cn')return false;
+ const before=change.rollbackFunctionBody?.environmentVariables,after=change.functionBody?.environmentVariables;
+ if(!before||!after||Object.keys(change.functionBody).join()!=='environmentVariables'||Object.keys(change.rollbackFunctionBody).join()!=='environmentVariables')return false;
+ const patch={V2_FC_PUBLIC_HTTP_ENABLED:'true',V2_FC_PUBLIC_READ_ONLY:'true',V2_PUBLIC_URL:'https://shuduoai.cn/v2/',V2_PUBLIC_ORIGIN:'https://shuduoai.cn'};
+ if(!same(after,{...before,...patch})||before.V2_LOCAL_DEVELOPMENT!=='false'||before.V2_PROVISIONING_ONLY!=='true'||before.V2_PRIVATE_SMOKE_ENABLED!=='true'||before.V2_FC_PUBLIC_HTTP_ENABLED==='true')return false;
+ if(!same(change.domainBody,{authConfig:{authType:'anonymous',authInfo:'{}'}})||!same(change.rollbackDomainBody,{authConfig:{authType:'function',authInfo:'{}'}}))return false;
+ return same(change.triggerBody,{triggerName:'shuduo-invited-readonly',triggerType:'http',qualifier:'LATEST',description:`shuduo-readonly-${change.operationId}`,triggerConfig:JSON.stringify({authType:'anonymous',disableURLInternet:true,methods:['GET','POST']})});
+}
+export function readonlyFunctionState(change,fn){
+ if(!readonlyConfigIntegrity(change))return 'FOREIGN';
+ const actual=stateHash({function:fn,triggers:change.originalTriggers,...change.resourceConfiguration});
+ return actual===change.baselineHash?'BASELINE':actual===change.openedHash?'OPENED':'FOREIGN';
+}
+export function readonlyTriggerState(change,triggers){
+ if(!readonlyConfigIntegrity(change)||!Array.isArray(triggers))return 'FOREIGN';
+ const own=triggers.filter(t=>t.triggerName===change.triggerBody.triggerName);
+ const original=triggers.filter(t=>t.triggerName!==change.triggerBody.triggerName);
+ if(!same([...original].sort((a,b)=>a.triggerName.localeCompare(b.triggerName)),[...change.originalTriggers].sort((a,b)=>a.triggerName.localeCompare(b.triggerName))))return 'FOREIGN';
+ if(!own.length)return 'ABSENT';
+ return own.length===1&&ownedHttpTrigger(own[0],change.triggerBody)?'OWNED':'FOREIGN';
+}
+export function readonlyDomainState(change,domain){
+ if(!readonlyConfigIntegrity(change))return 'FOREIGN';
+ if(domainConfigurationMatches(domain,change.retainedPlan))return 'BASELINE';
+ if(domain?.authConfig?.authType!=='anonymous'||![undefined,null,'','{}'].includes(domain.authConfig.authInfo)||Object.keys(domain.authConfig).some(k=>!['authType','authInfo'].includes(k)))return 'FOREIGN';
  // Reuse the already-tested certificate/TLS/route/ownership checks. Only the
  // authentication mode is intentionally different from the retained binding.
- return domainConfigurationMatches({...domain,authConfig:{authType:'function',authInfo:'{}'}},change.retainedPlan);
+ return domainConfigurationMatches({...domain,authConfig:{authType:'function',authInfo:'{}'}},change.retainedPlan)?'OPENED':'FOREIGN';
+}
+export function verifyInvitedReadonlyConfig(change,{state,domain}){
+ if(!readonlyConfigIntegrity(change)||readonlyTriggerState(change,state?.triggers)!=='OWNED')return false;
+ if(stateHash({...state,triggers:change.originalTriggers})!==change.openedHash)return false;
+ return readonlyDomainState(change,domain)==='OPENED';
 }
 
 export function readonlyEntryRollbackRequests(change,current){
