@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
-import {httpsConfig,domainProbes,domainProbeAccepted,nextDomainMetadataCount,waitExactDns} from '../../scripts/accept-v2-https-binding.mjs';
+import {httpsConfig,domainProbes,domainProbeAccepted,nextDomainMetadataCount,waitExactDns,domainReadbackShape} from '../../scripts/accept-v2-https-binding.mjs';
 import {P0B_SIGNED_ACCESS_AUTHORIZATION} from '../../scripts/v2-domain-binding-plan.mjs';
 
 test('custom domain probes require trusted TLS fingerprint plus exact signed application denial',()=>{
@@ -35,6 +35,18 @@ test('HTTPS workflow gates DNS handoff on completed boundary proof and always cl
  assert.equal((workflow.match(/if: always\(\)/g)||[]).length,3);assert.match(workflow,/--cleanup/);assert.match(workflow,/--seal/);
  assert.doesNotMatch(workflow,/vars\.|DASHSCOPE|MYSQL|JASONSECRETS|npm run|UpdateFunction/);
  assert.match(workflow,/secrets.V2_HTTPS_BINDING_INPUT/);assert.match(workflow,/path: v2-https-binding.sealed.json/);
+});
+test('cleanup recovery is default-off and does not enter create, handoff or probe steps',()=>{
+ const w=readFileSync('.github/workflows/accept-v2-https-binding.yml','utf8');
+ assert.match(w,/options: \[NONE, INSPECT_EXISTING, ROLLBACK_EXISTING\]/);assert.match(w,/default: NONE/);
+ for(const name of ['Prepare signed ingress within the approved scope','Seal default-boundary proof before DNS handoff','Export encrypted proof for the approved local DNS operator','Await exact DNS then create and verify the signed HTTPS binding'])assert(w.includes(`name: ${name}\n        if: inputs.recovery_mode == 'NONE'`));
+ assert.match(w,/--restore-recovery/);assert.match(w,/--inspect-existing/);
+});
+test('readback diagnosis describes mismatched structure without retaining credentials or target values',()=>{
+ const plan={target:{account:'111122223333',functionName:'PRIVATE_FUNCTION'},desired:{domainName:'shuduoai.cn',certName:'PRIVATE_CERT_NAME',certificateSha256:'a'.repeat(64),routeConfig:{routes:[{path:'/v2/*'}]}}};
+ const result=domainReadbackShape({status:200,code:'UNCONFIRMED',value:{accountId:'111122223333',domainName:'shuduoai.cn',protocol:'HTTPS',authConfig:{authType:'function',authInfo:'PRIVATE_AUTH'},certConfig:{certName:'PRIVATE_CERT_NAME',certificate:'PRIVATE_CERTIFICATE',privateKey:'PRIVATE_KEY'},tlsConfig:{minVersion:'TLSv1.2',maxVersion:'TLSv1.3',cipherSuites:['TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256'],secret:'PRIVATE_TLS'},routeConfig:{routes:[{path:'/v2/*',methods:['GET'],qualifier:'LATEST',functionName:'PRIVATE_FUNCTION',rewriteConfig:null}]},corsConfig:null,wafConfig:{enableWAF:false}}},plan);
+ assert.equal(result.accountMatches,true);assert.equal(result.certNameMatches,true);assert.equal(result.certificateMatches,false);assert.equal(result.authInfoEmpty,false);assert.equal(result.routes[0].rewriteConfig,'null');assert.equal(result.routes[0].functionMatches,true);
+ assert(!JSON.stringify(result).includes('PRIVATE_'));assert(!JSON.stringify(result).includes('111122223333'));
 });
 test('P0-B metadata calls have fixed independent limits and reject corrupt stored counts',()=>{
  let counts={get:0,create:0,delete:0};
