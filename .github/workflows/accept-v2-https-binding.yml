@@ -6,7 +6,7 @@ on:
         description: Explicit approval for one signed HTTPS binding batch
         required: true
         type: choice
-        options: [NOT_AUTHORIZED, ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED, P0B_SIGNED_HTTPS_17_PLUS_23, P0B_SIGNED_HTTPS_RESUME_32_PLUS_23]
+        options: [NOT_AUTHORIZED, ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED, P0B_SIGNED_HTTPS_17_PLUS_23, P0B_SIGNED_HTTPS_RESUME_32_PLUS_23, P0B_SIGNED_DOMAIN_47_PLUS_8]
         default: NOT_AUTHORIZED
       expected_source_revision:
         description: Reviewed main SHA whose CI has passed
@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   accept:
-    if: github.ref == 'refs/heads/main' && (inputs.authorization == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED' || inputs.authorization == 'P0B_SIGNED_HTTPS_17_PLUS_23' || inputs.authorization == 'P0B_SIGNED_HTTPS_RESUME_32_PLUS_23')
+    if: github.ref == 'refs/heads/main' && (inputs.authorization == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED' || inputs.authorization == 'P0B_SIGNED_HTTPS_17_PLUS_23' || inputs.authorization == 'P0B_SIGNED_HTTPS_RESUME_32_PLUS_23' || inputs.authorization == 'P0B_SIGNED_DOMAIN_47_PLUS_8')
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.authorization == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED' && 30 || 40 }}
     environment: v2-staging
@@ -56,7 +56,7 @@ jobs:
           role-session-name: github-actions-v2-https-binding
           role-session-expiration: 3600
           audience: sts.aliyuncs.com
-      - name: Verify default boundary and retain the same temporary signed trigger
+      - name: Prepare signed ingress within the approved scope
         timeout-minutes: 8
         run: node scripts/accept-v2-https-binding.mjs --boundary
       - name: Seal default-boundary proof before DNS handoff

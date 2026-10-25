@@ -30,10 +30,11 @@ export function acceptanceConfig(env) {
   requireThat(/^(0|[1-9]\d?)$/.test(env.V2_HTTP_PREVIOUS_READS ?? '0') && previousReads<=(stage?.historical??20),'PRIOR_READ_COUNT_INVALID');
   requireThat(!p0bSignedStage||previousReads===stage.historical,'P0B_HISTORY_MISMATCH');
   if(stage?.resume)requireThat([env.V2_HTTP_PRIOR_FUNCTION_HASH,env.V2_HTTP_PRIOR_TRIGGERS_HASH].every(v=>/^[a-f0-9]{64}$/.test(v??'')),'P0B_PRIOR_BASELINE_REQUIRED');
+  if(stage?.reuseDefault)requireThat(/^\d{1,20}$/.test(env.V2_HTTP_PRIOR_HTTPS_RUN_ID??'')&&env.V2_HTTP_PRIOR_HTTPS_RUN_ID!==env.GITHUB_RUN_ID&&/^[a-f0-9]{64}$/.test(env.V2_HTTP_PRIOR_HTTPS_DIGEST??''),'P0B_PRIOR_HTTPS_REFERENCE_REQUIRED');
   const restoreRunId=env.V2_HTTP_RESTORE_RUN_ID ?? '',restoreAuthorized=env.V2_HTTP_RESTORE_AUTHORIZED==='RECREATE_SAME_TRIGGER_ONCE';
   requireThat(restoreRunId ? /^\d{1,20}$/.test(restoreRunId)&&restoreAuthorized&&previousReads>0 : !restoreAuthorized,'TRIGGER_RESTORE_NOT_AUTHORIZED');
   requireThat(!p0bSignedStage||Boolean(restoreRunId),'P0B_SAME_TRIGGER_REQUIRED');
-  return {...auditConfig(env),expectedChecksum:env.V2_EXPECTED_CODE_CHECKSUM,triggerName:`shuduo-http-boundary-${restoreRunId || env.GITHUB_RUN_ID}`,authorizationExpiresAt:Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT),previousReads,restoreRunId:restoreRunId || undefined,p0bSignedStage,requestScope:env.V2_HTTP_ACCEPTANCE_AUTHORIZED,maxRequests:stage?.defaultMax??20,...(stage?.resume?{priorFunctionHash:env.V2_HTTP_PRIOR_FUNCTION_HASH,priorOriginalTriggersHash:env.V2_HTTP_PRIOR_TRIGGERS_HASH}:{})};
+  return {...auditConfig(env),expectedChecksum:env.V2_EXPECTED_CODE_CHECKSUM,triggerName:`shuduo-http-boundary-${restoreRunId || env.GITHUB_RUN_ID}`,authorizationExpiresAt:Date.parse(env.V2_HTTP_AUTHORIZATION_EXPIRES_AT),previousReads,restoreRunId:restoreRunId || undefined,p0bSignedStage,requestScope:env.V2_HTTP_ACCEPTANCE_AUTHORIZED,maxRequests:stage?.defaultMax??20,...(stage?.resume?{priorFunctionHash:env.V2_HTTP_PRIOR_FUNCTION_HASH,priorOriginalTriggersHash:env.V2_HTTP_PRIOR_TRIGGERS_HASH}:{}),...(stage?.reuseDefault?{priorHttpsRunId:env.V2_HTTP_PRIOR_HTTPS_RUN_ID,priorHttpsAcceptanceDigest:env.V2_HTTP_PRIOR_HTTPS_DIGEST}:{})};
 }
 export function commandFailure(args,error,output='') {
   const operation=args[0]==='sts'?'IDENTITY_READ':args[0]==='bssopenapi'?'BILL_READ':args[1]==='GET'?'FC_READ':args[1]==='DELETE'?'DELETE_TRIGGER':args[2]?.endsWith('/invocations')?'PRIVATE_STATUS':'CREATE_TRIGGER';
@@ -92,15 +93,16 @@ export async function cleanupAcceptance(config, adapter, checkpoint) {
 export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{},load=()=>undefined,deferForDomain=false}={}) {
   let checkpoint=load();
   const stage=signedAccessLimits(config.requestScope),maxRequests=stage?.defaultMax??20,reservedCny=config.p0bSignedStage?2:1;
-  const report={scope:'SIGNED_HTTP_BOUNDARY_ONLY',passed:false,restoreRunId:config.restoreRunId,priorRequests:config.previousReads,requests:config.previousReads,newRequests:0,results:[],modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,cleanup:{triggerAbsent:false}};
+  const report={scope:stage?.reuseDefault?'SIGNED_DOMAIN_PREPARATION_ONLY':'SIGNED_HTTP_BOUNDARY_ONLY',passed:false,restoreRunId:config.restoreRunId,priorRequests:config.previousReads,requests:config.previousReads,newRequests:0,results:[],modelCalls:0,sparkRuns:0,publicApplicationEnabled:false,cleanup:{triggerAbsent:false}};
   try {
     requireThat(Boolean(stage)===config.p0bSignedStage&&(!stage||(config.previousReads===stage.historical&&config.maxRequests===stage.defaultMax&&Boolean(config.restoreRunId))),'P0B_SCOPE_CHANGED');
     report.phase='IDENTITY';
     requireThat(!deferForDomain||config.domainBindingAuthorization==='ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED','DOMAIN_HOLD_NOT_AUTHORIZED');
+    requireThat(!stage?.reuseDefault||deferForDomain,'DOMAIN_ONLY_REQUIRES_HELD_INGRESS');
     const identity=await adapter.identity();
     verifyIdentity(config,identity);
     if (checkpoint) { report.recoveryOnly=true;report.priorRequests=report.requests=checkpoint.requests;report.cleanup=await cleanupAcceptance(config,adapter,checkpoint);return report; }
-    requireThat(report.requests+boundaryCases.length+1<=maxRequests,'INSUFFICIENT_REMAINING_READ_BUDGET');
+    requireThat(report.requests+(stage?.defaultNew??boundaryCases.length+1)<=maxRequests,'INSUFFICIENT_REMAINING_READ_BUDGET');
     requireThat(config.authorizationExpiresAt-now()>=600000,'AUTHORIZATION_WINDOW_TOO_SHORT');
     report.phase='FUNCTION_AND_TRIGGER_READ';
     const before=await adapter.fc('GET',''), env=before.environmentVariables ?? {};
@@ -118,9 +120,15 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
     report.billingCycle=cycle;report.billCnyBefore=bill.spendCny;report.reservedCny=reservedCny;
     if(config.p0bSignedStage)report.unsettledReservedCny=unsettledReservedCny;
     requireThat(config.authorizationExpiresAt-now()>=600000,'AUTHORIZATION_WINDOW_TOO_SHORT');
-    report.phase='PRIVATE_STATUS_BASELINE';report.requests++;report.newRequests++;
-    const baseline=await adapter.privateStatus();
-    requireThat(baseline?.ingress?.mode==='FC_CONTROL_PATH' && baseline.ingress.publicHttpEnabled===false,'PRIVATE_CONTROL_BASELINE_FAILED');
+    if(stage?.reuseDefault){
+      requireThat(/^\d{1,20}$/.test(config.priorHttpsRunId??'')&&/^[a-f0-9]{64}$/.test(config.priorHttpsAcceptanceDigest??''),'P0B_PRIOR_HTTPS_REFERENCE_REQUIRED');
+      report.priorBoundaryEvidence={runId:config.priorHttpsRunId,digest:config.priorHttpsAcceptanceDigest};
+      report.defaultBoundaryReused=true;
+    }else{
+      report.phase='PRIVATE_STATUS_BASELINE';report.requests++;report.newRequests++;
+      const baseline=await adapter.privateStatus();
+      requireThat(baseline?.ingress?.mode==='FC_CONTROL_PATH' && baseline.ingress.publicHttpEnabled===false,'PRIVATE_CONTROL_BASELINE_FAILED');
+    }
     requireThat(config.authorizationExpiresAt-now()>=600000,'AUTHORIZATION_WINDOW_TOO_SHORT');
     checkpoint={targetHash:targetHash(config),triggerName:config.triggerName,functionHash:functionHash(before),originalTriggersHash:triggerHash(original),startedAt:now(),requests:report.requests};
     save(checkpoint); // Must be durable before the first resource mutation.
@@ -130,7 +138,7 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
     requireThat(created && ownsTrigger(created,config),'CREATED_TRIGGER_UNCONFIRMED');
     const endpoint=new URL(created.httpTrigger?.urlInternet ?? '');
     requireThat(endpoint.protocol==='https:' && endpoint.hostname.endsWith(`.${config.region}.fcapp.run`) && !endpoint.username && !endpoint.password && !endpoint.port && endpoint.pathname==='/' && !endpoint.search && !endpoint.hash,'TRIGGER_ENDPOINT_INVALID');
-    for (const probe of boundaryCases) {
+    for (const probe of stage?.reuseDefault?[]:boundaryCases) {
       requireThat(report.requests<maxRequests && now()-checkpoint.startedAt<600000 && now()<config.authorizationExpiresAt-300000,'ACCEPTANCE_LIMIT_REACHED');
       report.phase='HTTP_'+probe.id;report.newRequests++;checkpoint.requests=++report.requests; save(checkpoint);
       const value=await adapter.probe(endpoint.origin,probe);
@@ -139,7 +147,7 @@ export async function runHttpAcceptance(config,adapter,{now=Date.now,save=()=>{}
       requireThat(value.privateProtocol!==true,'PRIVATE_OPERATION_EXPOSED');
       requireThat(probe.signed===false ? [401,403].includes(value.status) || (value.status===400 && value.authenticationRejected===true && (value.code==='MissingRequiredHeader'||(value.code==='InvalidArgument'&&value.gatewayCategory==='EMPTY_AUTHORIZATION'))) : value.status===404 && value.code==='INGRESS_DENIED','HTTP_BOUNDARY_NOT_VERIFIED');
     }
-    report.passed=true;report.phase='HTTP_CHECKS_COMPLETE';
+    report.passed=true;report.phase=stage?.reuseDefault?'PRIOR_BOUNDARY_REVALIDATED':'HTTP_CHECKS_COMPLETE';
   } catch(e) { report.failure=e.safeCode ?? 'ACCEPTANCE_UNCONFIRMED';if(e.safeDiagnostic)report.failureDiagnostic=e.safeDiagnostic; }
   finally {
     if(checkpoint&&report.passed&&deferForDomain)report.cleanup={deferredForSameDomainBatch:true};

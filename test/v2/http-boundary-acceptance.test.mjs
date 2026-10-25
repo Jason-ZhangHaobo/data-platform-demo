@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {acceptanceConfig,boundaryCases,runHttpAcceptance,cleanupAcceptance,commandFailure,inlineBodyArguments,functionHash,triggerHash} from '../../scripts/accept-v2-http-boundary.mjs';
-import {P0B_SIGNED_ACCESS_AUTHORIZATION,P0B_SIGNED_RESUME_AUTHORIZATION} from '../../scripts/v2-domain-binding-plan.mjs';
+import {P0B_SIGNED_ACCESS_AUTHORIZATION,P0B_SIGNED_RESUME_AUTHORIZATION,P0B_DOMAIN_REMAINING_AUTHORIZATION} from '../../scripts/v2-domain-binding-plan.mjs';
 const env={GITHUB_REF:'refs/heads/main',GITHUB_ACTIONS:'true',GITHUB_RUN_ID:'12345',GITHUB_SHA:'a'.repeat(40),V2_DEPLOY_ROLE_ARN:'acs:ram::111111111111:role/fixture-role',V2_DEPLOY_OIDC_PROVIDER_ARN:'acs:ram::111111111111:oidc-provider/fixture-provider',V2_FUNCTION_NAME:'fixture-control',ALIBABA_CLOUD_REGION_ID:'cn-hangzhou',V2_EXPECTED_CODE_CHECKSUM:'123456',V2_HTTP_ACCEPTANCE_AUTHORIZED:'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS',V2_HTTP_AUTHORIZATION_EXPIRES_AT:'2026-10-21T00:30:00Z'};
 function fixture(options={}){
  env.V2_ACCEPTANCE_SOURCE_REVISION=env.GITHUB_SHA;
@@ -73,6 +73,21 @@ test('one HTTPS resume preserves thirty-two calls and refuses mixed scopes or ba
  }
  const budget=fixture();Object.assign(budget.config,config);budget.adapter.billPages=async cycle=>[{Success:true,Data:{BillingCycle:cycle,PageNum:1,PageSize:300,TotalCount:1,Items:{Item:[{Currency:'CNY',PretaxAmount:'192.50'}]}}}];
  const denied=await runHttpAcceptance(budget.config,budget.adapter,budget.options);assert.equal(denied.failure,'BUDGET_NOT_VERIFIED');assert.equal(denied.newRequests,0);assert.equal(budget.creates(),0);
+});
+test('remaining-domain scope revalidates prior evidence without any default invocation or probe',async()=>{
+ const f=fixture(),stage={...env,V2_HTTP_ACCEPTANCE_AUTHORIZED:P0B_DOMAIN_REMAINING_AUTHORIZATION,V2_HTTPS_AUTHORIZATION:P0B_DOMAIN_REMAINING_AUTHORIZATION,V2_HTTP_PREVIOUS_READS:'47',V2_HTTP_RESTORE_RUN_ID:'98765',V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE',V2_HTTP_PRIOR_FUNCTION_HASH:functionHash(f.f),V2_HTTP_PRIOR_TRIGGERS_HASH:triggerHash(f.original),V2_HTTP_PRIOR_HTTPS_RUN_ID:'12344',V2_HTTP_PRIOR_HTTPS_DIGEST:'d'.repeat(64)};
+ const config={...acceptanceConfig(stage),domainBindingAuthorization:'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED'};Object.assign(f.config,config);
+ f.adapter.privateStatus=async()=>assert.fail('must not repeat private invocation');f.adapter.probe=async()=>assert.fail('must not repeat default HTTP probes');
+ const r=await runHttpAcceptance(f.config,f.adapter,{...f.options,deferForDomain:true});
+ assert.equal(r.passed,true);assert.equal(r.scope,'SIGNED_DOMAIN_PREPARATION_ONLY');assert.equal(r.phase,'PRIOR_BOUNDARY_REVALIDATED');assert.equal(r.defaultBoundaryReused,true);assert.equal(r.requests,47);assert.equal(r.newRequests,0);assert.equal(r.results.length,0);assert.equal(r.unsettledReservedCny,8);assert.equal(f.creates(),1);
+ assert.deepEqual(r.priorBoundaryEvidence,{runId:'12344',digest:'d'.repeat(64)});assert.equal(r.cleanup.deferredForSameDomainBatch,true);
+ const recovered=await runHttpAcceptance(f.config,f.adapter,{...f.options,deferForDomain:true});assert.equal(recovered.newRequests,0);assert.equal(recovered.requests,47);assert.equal(recovered.cleanup.triggerAbsent,true);assert.equal(f.creates(),1);
+ for(const patch of [{V2_HTTP_PREVIOUS_READS:'32'},{V2_HTTP_PREVIOUS_READS:'48'},{V2_HTTP_PRIOR_HTTPS_RUN_ID:''},{V2_HTTP_PRIOR_HTTPS_RUN_ID:env.GITHUB_RUN_ID},{V2_HTTP_PRIOR_HTTPS_DIGEST:''},{V2_HTTPS_AUTHORIZATION:P0B_SIGNED_RESUME_AUTHORIZATION}])assert.throws(()=>acceptanceConfig({...stage,...patch}));
+ for(const patch of [{priorFunctionHash:'f'.repeat(64)},{priorOriginalTriggersHash:'f'.repeat(64)},{maxRequests:55},{priorHttpsAcceptanceDigest:''}]){
+  const bad=fixture();Object.assign(bad.config,config,patch);bad.adapter.privateStatus=async()=>assert.fail('no invoke');bad.adapter.probe=async()=>assert.fail('no probe');
+  const denied=await runHttpAcceptance(bad.config,bad.adapter,{...bad.options,deferForDomain:true});assert.equal(denied.passed,false);assert.equal(denied.newRequests,0);assert.equal(bad.creates(),0);
+ }
+ const standalone=fixture();Object.assign(standalone.config,config);const denied=await runHttpAcceptance(standalone.config,standalone.adapter,standalone.options);assert.equal(denied.failure,'DOMAIN_ONLY_REQUIRES_HELD_INGRESS');assert.equal(standalone.creates(),0);
 });
 test('failure evidence distinguishes CLI service denial, transport and parsing without response text or secrets',async()=>{
  const args=['fc','POST','/2023-03-30/functions/private-name/invocations'];
