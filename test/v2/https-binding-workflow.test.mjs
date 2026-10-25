@@ -46,6 +46,7 @@ test('readback diagnosis describes mismatched structure without retaining creden
  const plan={target:{account:'111122223333',functionName:'PRIVATE_FUNCTION'},desired:{domainName:'shuduoai.cn',certName:'PRIVATE_CERT_NAME',certificateSha256:'a'.repeat(64),routeConfig:{routes:[{path:'/v2/*'}]}}};
  const result=domainReadbackShape({status:200,code:'UNCONFIRMED',value:{accountId:'111122223333',domainName:'shuduoai.cn',protocol:'HTTPS',authConfig:{authType:'function',authInfo:'PRIVATE_AUTH'},certConfig:{certName:'PRIVATE_CERT_NAME',certificate:'PRIVATE_CERTIFICATE',privateKey:'PRIVATE_KEY'},tlsConfig:{minVersion:'TLSv1.2',maxVersion:'TLSv1.3',cipherSuites:['TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256'],secret:'PRIVATE_TLS'},routeConfig:{routes:[{path:'/v2/*',methods:['GET'],qualifier:'LATEST',functionName:'PRIVATE_FUNCTION',rewriteConfig:null}]},corsConfig:null,wafConfig:{enableWAF:false}}},plan);
  assert.equal(result.accountMatches,true);assert.equal(result.certNameMatches,true);assert.equal(result.certificateMatches,false);assert.equal(result.authInfoEmpty,false);assert.equal(result.routes[0].rewriteConfig,'null');assert.equal(result.routes[0].functionMatches,true);
+ assert.equal(result.routes[0].accountIdState,'absent');assert.equal(result.configurationMatches,false);
  assert(!JSON.stringify(result).includes('PRIVATE_'));assert(!JSON.stringify(result).includes('111122223333'));
 });
 test('P0-B metadata calls have fixed independent limits and reject corrupt stored counts',()=>{
