@@ -114,6 +114,12 @@ test('domain-only scope carries forty-seven calls and permits only eight new dom
  const c=httpsConfig(env,now);assert.equal(c.config.previousReads,47);assert.equal(c.config.maxRequests,47);assert.equal(c.config.priorHttpsRunId,body.priorHttpsRunId);assert.equal(c.config.priorHttpsAcceptanceDigest,body.priorHttpsAcceptanceDigest);
  for(const authorization of [DOMAIN_BINDING_AUTHORIZATION,P0B_SIGNED_ACCESS_AUTHORIZATION,P0B_SIGNED_RESUME_AUTHORIZATION])assert.throws(()=>httpsConfig({...env,V2_HTTPS_AUTHORIZATION:authorization},now));
  for(const patch of [{priorRequests:32},{priorRequests:0},{priorHttpsRunId:''},{priorHttpsAcceptanceDigest:''}])assert.throws(()=>httpsConfig({...env,V2_HTTPS_BINDING_INPUT:JSON.stringify({...body,...patch})},now));
+ const recovery={originalRunId:'12345679',originalEvidenceDigest:'a'.repeat(64),expectedDesiredHash:stage.desiredHash,checkpoint:{operationId:stage.operationId,desiredHash:stage.desiredHash,domainName:'shuduoai.cn',baselineAbsent:true,phase:'CREATE_REQUESTED'},counts:{get:5,create:1,delete:0}};
+ for(const mode of ['INSPECT_EXISTING','ROLLBACK_EXISTING']){
+  const recoveryEnv={...env,V2_HTTPS_RECOVERY_MODE:mode,V2_HTTPS_BINDING_INPUT:JSON.stringify({...body,recovery})};assert.equal(httpsConfig(recoveryEnv,now).recoveryMode,mode);
+  for(const change of [v=>v.checkpoint.operationId='b'.repeat(32),v=>v.checkpoint.baselineAbsent=false,v=>v.expectedDesiredHash='c'.repeat(64),v=>v.counts.get=10,v=>v.counts.create=0,v=>v.counts.delete=1,v=>v.originalEvidenceDigest='',v=>v.originalRunId=env.GITHUB_RUN_ID]){const bad=structuredClone(recovery);change(bad);assert.throws(()=>httpsConfig({...recoveryEnv,V2_HTTPS_BINDING_INPUT:JSON.stringify({...body,recovery:bad})},now));}
+ }
+ assert.throws(()=>httpsConfig({...env,V2_HTTPS_RECOVERY_MODE:'CREATE_AGAIN'},now));
 });
 test('authenticated predecessor must prove exact usage, same target and completed rollback',()=>{
  const expected={operationId:'a'.repeat(32),desiredHash:'b'.repeat(64),httpTargetHash:'c'.repeat(64),triggerName:'shuduo-http-boundary-98765'};

@@ -2,6 +2,7 @@ import {execFileSync} from 'node:child_process';
 import {appendFileSync,existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {X509Certificate,createHash} from 'node:crypto';
 import {Resolver,resolveCname,resolveNs,resolve4} from 'node:dns/promises';
 import {acceptanceConfig,adapterFor,runHttpAcceptance,cleanupAcceptance,functionHash,checkedList,ownsTrigger} from './accept-v2-http-boundary.mjs';
 import {recipientKey,sealReport} from './audit-v2-oidc-readonly.mjs';
@@ -12,6 +13,12 @@ const check=(value,code)=>{if(!value)throw fail(code);};
 const dir='.runtime/https-binding-acceptance';
 const read=name=>existsSync(`${dir}/${name}.json`)?JSON.parse(readFileSync(`${dir}/${name}.json`,'utf8')):undefined;
 const save=(name,value)=>writeFileSync(`${dir}/${name}.json`,JSON.stringify(value)+'\n',{mode:0o600});
+export function domainReadbackShape(value,plan){
+ const v=value?.value??{},expected=plan.desired,shape=x=>x===null?'null':Array.isArray(x)?{type:'array',length:x.length}:x&&typeof x==='object'?Object.fromEntries(Object.entries(x).map(([k,y])=>[k,shape(y)])):typeof x;
+ let certificateMatches=false;try{certificateMatches=createHash('sha256').update(new X509Certificate(v.certConfig?.certificate).raw).digest('hex')===expected.certificateSha256;}catch{}
+ return{status:value?.status,code:value?.code,rootKeys:Object.keys(v),accountMatches:String(v.accountId)===plan.target.account,domainMatches:v.domainName===expected.domainName,protocol:['HTTP','HTTPS','HTTP,HTTPS'].includes(v.protocol)?v.protocol:'UNCONFIRMED',authType:['anonymous','function','jwt'].includes(v.authConfig?.authType)?v.authConfig.authType:'UNCONFIRMED',authInfoEmpty:[undefined,null,'','{}'].includes(v.authConfig?.authInfo),certNameMatches:v.certConfig?.certName===expected.certName,certificateMatches,
+  tls:{minVersion:/^TLSv1\.[0-3]$/.test(v.tlsConfig?.minVersion??'')?v.tlsConfig.minVersion:'UNCONFIRMED',maxVersion:/^TLSv1\.[0-3]$/.test(v.tlsConfig?.maxVersion??'')?v.tlsConfig.maxVersion:'UNCONFIRMED',cipherSuites:Array.isArray(v.tlsConfig?.cipherSuites)?v.tlsConfig.cipherSuites.map(s=>/^TLS_[A-Z0-9_]{1,80}$/.test(s)?s:'UNEXPECTED'):[]},routeConfigKeys:Object.keys(v.routeConfig??{}),routes:(v.routeConfig?.routes??[]).map(r=>({path:expected.routeConfig.routes.some(e=>e.path===r.path)?r.path:'UNEXPECTED',methods:Array.isArray(r.methods)?r.methods.map(m=>['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'].includes(m)?m:'UNEXPECTED'):[],qualifierMatches:r.qualifier==='LATEST',functionMatches:r.functionName===plan.target.functionName,keys:Object.keys(r),rewriteConfig:shape(r.rewriteConfig)})),cors:shape(v.corsConfig),waf:shape(v.wafConfig),wafEnabled:v.wafConfig?.enableWAF};
+}
 export const domainProbes=Object.freeze([
  {id:'signed-baseline',method:'GET',path:'/api/v2/status'},
  {id:'unsigned',method:'GET',path:'/api/v2/status',signed:false},
@@ -45,13 +52,21 @@ export function httpsConfig(env,now=Date.now()){
  check(Number.isFinite(start)&&start<=now&&end-start>0&&end-start<=3600000,'HTTPS_PERMISSION_WINDOW_INVALID');
  const material={certificate:input.certificate,privateKey:input.privateKey};
  const plan=domainBindingPlan({...input,authorization:env.V2_HTTPS_AUTHORIZATION,certificate:verifyCertificateMaterial(material,now)},start);
+ const recoveryMode=env.V2_HTTPS_RECOVERY_MODE??'NONE';
+ check(['NONE','INSPECT_EXISTING','ROLLBACK_EXISTING'].includes(recoveryMode),'HTTPS_RECOVERY_MODE_INVALID');
+ if(recoveryMode!=='NONE'){
+  const r=input.recovery,c=r?.checkpoint,n=r?.counts;
+  check(stage?.reuseDefault===true&&/^[a-f0-9]{64}$/.test(r?.originalEvidenceDigest??'')&&/^\d{1,20}$/.test(r?.originalRunId??'')&&r.originalRunId!==env.GITHUB_RUN_ID
+   &&r.expectedDesiredHash===plan.desiredHash&&c?.operationId===plan.operationId&&c.desiredHash===plan.desiredHash&&c.domainName==='shuduoai.cn'&&c.baselineAbsent===true
+   &&Number.isInteger(n?.get)&&n.get>=4&&n.get<=(recoveryMode==='ROLLBACK_EXISTING'?8:9)&&n.create===1&&n.delete===0&&end-now>=180000,'HTTPS_RECOVERY_SCOPE_INVALID');
+ }
  const cloudEnv={...env,ALIBABA_CLOUD_REGION_ID:input.region,V2_DEPLOY_ROLE_ARN:input.roleArn,V2_DEPLOY_OIDC_PROVIDER_ARN:input.providerArn,V2_FUNCTION_NAME:input.functionName,
   V2_EXPECTED_CODE_CHECKSUM:input.expectedChecksum,V2_ACCEPTANCE_SOURCE_REVISION:input.sourceRevision,V2_HTTP_ACCEPTANCE_AUTHORIZED:p0bSignedStage?env.V2_HTTPS_AUTHORIZATION:'ONE_TEMPORARY_SIGNED_TRIGGER_MAX_20_READS',
   V2_HTTP_PRIOR_FUNCTION_HASH:input.priorFunctionHash,V2_HTTP_PRIOR_TRIGGERS_HASH:input.priorOriginalTriggersHash,
   V2_HTTP_PRIOR_HTTPS_RUN_ID:input.priorHttpsRunId,V2_HTTP_PRIOR_HTTPS_DIGEST:input.priorHttpsAcceptanceDigest,
   V2_HTTP_AUTHORIZATION_EXPIRES_AT:input.expiresAt,V2_HTTP_PREVIOUS_READS:String(input.priorRequests),V2_HTTP_RESTORE_RUN_ID:input.restoreRunId,V2_HTTP_RESTORE_AUTHORIZED:'RECREATE_SAME_TRIGGER_ONCE'};
  const config={...acceptanceConfig(cloudEnv),domainBindingAuthorization:DOMAIN_BINDING_AUTHORIZATION};
- return{plan,material,config,cloudEnv,roleArn:input.roleArn,providerArn:input.providerArn};
+ return{plan,material,config,cloudEnv,roleArn:input.roleArn,providerArn:input.providerArn,recoveryMode,recovery:input.recovery};
 }
 function transport(env,operation,body){
  try{return JSON.parse(execFileSync('python3',['scripts/transport-v2-domain-signed.py'],{input:JSON.stringify({authorization:DOMAIN_BINDING_AUTHORIZATION,domainName:'shuduoai.cn',operation,body}),env,encoding:'utf8',timeout:30000,maxBuffer:1048576,stdio:['pipe','pipe','pipe']}));}
@@ -81,14 +96,23 @@ export async function waitExactDns(plan,{now=Date.now,lookupNs=resolveNs,lookup4
 }
 
 export async function httpsBindingMain(env=process.env,mode=process.argv[2]){
- const {plan,material,config,cloudEnv,roleArn,providerArn}=httpsConfig(env),key=recipientKey(env.V2_AUDIT_RECIPIENT_KEY);
+ const {plan,material,config,cloudEnv,roleArn,providerArn,recoveryMode,recovery}=httpsConfig(env),key=recipientKey(env.V2_AUDIT_RECIPIENT_KEY);
  if(mode==='--prepare'){
   check(env.GITHUB_ENV,'GITHUB_ENV_REQUIRED');
   for(const value of [plan.target.account,plan.target.role,plan.target.functionName,roleArn,providerArn])process.stdout.write(`::add-mask::${value}\n`);
   appendFileSync(env.GITHUB_ENV,`V2_HTTPS_ROLE_ARN=${roleArn}\nV2_HTTPS_PROVIDER_ARN=${providerArn}\n`);return;
  }
  mkdirSync(dir,{recursive:true,mode:0o700});
+ if(mode==='--restore-recovery'){
+  check(recoveryMode!=='NONE'&&!read('domain-checkpoint')&&!read('domain-api-count'),'HTTPS_RECOVERY_ALREADY_RESTORED');
+  save('domain-checkpoint',recovery.checkpoint);save('domain-api-count',recovery.counts);return;
+ }
  if(mode==='--seal'||mode==='--handoff'){
+  if(recoveryMode!=='NONE'){
+   check(mode==='--seal','RECOVERY_NO_HANDOFF');
+   const report={scope:'SIGNED_DOMAIN_CLEANUP_RECOVERY',operationId:plan.operationId,targetHash:plan.desiredHash,recoveryMode,originalRunId:recovery.originalRunId,originalEvidenceDigest:recovery.originalEvidenceDigest,inspection:read('inspection'),cleanup:read('cleanup'),domainApiCounts:read('domain-api-count')??recovery.counts,domainCheckpoint:read('domain-checkpoint'),domainRequests:0,newRequests:0,cumulativeRequests:47,modelCalls:0,sparkRuns:0,publicApplicationEnabled:false};
+   writeFileSync('v2-https-binding.sealed.json',JSON.stringify(sealReport(report,key,{protocol:'shuduo-https-binding/v1',sourceRevision:env.GITHUB_SHA,runId:env.GITHUB_RUN_ID}))+'\n',{mode:0o600});return;
+  }
   const stage=signedAccessLimits(plan.requestScope);
   const report={scope:'SIGNED_HTTPS_DOMAIN_BINDING',operationId:plan.operationId,targetHash:plan.desiredHash,domain:read('domain'),boundary:read('boundary'),httpCheckpoint:read('http-checkpoint'),domainCheckpoint:read('domain-checkpoint'),cleanup:read('cleanup')};
   const reusedBoundaryValid=!stage?.reuseDefault||(report.boundary?.scope==='SIGNED_DOMAIN_PREPARATION_ONLY'&&report.boundary.defaultBoundaryReused===true&&report.boundary.newRequests===0&&report.boundary.results?.length===0&&report.boundary.priorBoundaryEvidence?.runId===config.priorHttpsRunId&&report.boundary.priorBoundaryEvidence.digest===config.priorHttpsAcceptanceDigest);
@@ -115,6 +139,19 @@ export async function httpsBindingMain(env=process.env,mode=process.argv[2]){
   return transport(cloudEnv,operation,body);
  };
  const domain={get:()=>domainCall('get'),create:body=>domainCall('create',body),delete:()=>domainCall('delete')};
+ if(recoveryMode!=='NONE'){
+  check(read('domain-checkpoint')&&read('domain-api-count'),'RECOVERY_CHECKPOINT_REQUIRED');
+  if(mode==='--inspect-existing'){
+   check(recoveryMode==='INSPECT_EXISTING'&&!read('inspection'),'RECOVERY_INSPECTION_NOT_ALLOWED');
+   const value=await domain.get();save('inspection',domainReadbackShape(value,plan));check(value?.status===200,'RECOVERY_READ_NOT_CONFIRMED');return;
+  }
+  if(mode==='--cleanup'){
+   if(recoveryMode==='INSPECT_EXISTING'){save('cleanup',{inspectionOnly:true,noDomainMutation:true});return;}
+   const cleanup={};try{cleanup.domainRollback=await rollbackDomainBinding(plan,domain,read('domain-checkpoint'),{save:cp=>save('domain-checkpoint',cp)});}catch(error){cleanup.failure=error.safeCode??'RECOVERY_ROLLBACK_UNCONFIRMED';}
+   save('cleanup',cleanup);check(cleanup.domainRollback?.domainAbsent===true,'RECOVERY_ROLLBACK_NOT_CONFIRMED');return;
+  }
+  throw fail('RECOVERY_OPERATION_NOT_ALLOWED');
+ }
  if(mode==='--boundary'){
   check(!read('boundary'),'BOUNDARY_ALREADY_EXECUTED');
   const result=await runHttpAcceptance(config,http,{load:()=>read('http-checkpoint'),save:cp=>save('http-checkpoint',cp),deferForDomain:true});

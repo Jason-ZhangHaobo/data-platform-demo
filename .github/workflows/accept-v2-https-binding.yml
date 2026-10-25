@@ -16,6 +16,12 @@ on:
         description: Base64 DER RSA public key for encrypted evidence
         required: true
         type: string
+      recovery_mode:
+        description: Existing operation readback or rollback only, within its original approval
+        required: true
+        type: choice
+        options: [NONE, INSPECT_EXISTING, ROLLBACK_EXISTING]
+        default: NONE
 permissions:
   contents: read
   id-token: write
@@ -33,6 +39,7 @@ jobs:
       V2_HTTPS_AUTHORIZATION: ${{ inputs.authorization }}
       V2_HTTPS_SOURCE_SHA: ${{ inputs.expected_source_revision }}
       V2_AUDIT_RECIPIENT_KEY: ${{ inputs.recipient_public_key }}
+      V2_HTTPS_RECOVERY_MODE: ${{ inputs.recovery_mode }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -57,11 +64,14 @@ jobs:
           role-session-expiration: 3600
           audience: sts.aliyuncs.com
       - name: Prepare signed ingress within the approved scope
+        if: inputs.recovery_mode == 'NONE'
         timeout-minutes: 8
         run: node scripts/accept-v2-https-binding.mjs --boundary
       - name: Seal default-boundary proof before DNS handoff
+        if: inputs.recovery_mode == 'NONE'
         run: node scripts/accept-v2-https-binding.mjs --handoff
       - name: Export encrypted proof for the approved local DNS operator
+        if: inputs.recovery_mode == 'NONE'
         uses: actions/upload-artifact@v6
         with:
           name: shuduo-https-ready-${{ github.run_id }}
@@ -69,8 +79,15 @@ jobs:
           retention-days: 1
           if-no-files-found: error
       - name: Await exact DNS then create and verify the signed HTTPS binding
+        if: inputs.recovery_mode == 'NONE'
         timeout-minutes: ${{ inputs.authorization == 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED' && 12 || 18 }}
         run: node scripts/accept-v2-https-binding.mjs --bind
+      - name: Restore only the original cleanup checkpoint and counters
+        if: inputs.recovery_mode != 'NONE'
+        run: node scripts/accept-v2-https-binding.mjs --restore-recovery
+      - name: Read existing binding for cleanup diagnosis
+        if: inputs.recovery_mode == 'INSPECT_EXISTING'
+        run: node scripts/accept-v2-https-binding.mjs --inspect-existing
       - name: Always clean the temporary trigger and roll back failed domain changes
         if: always()
         timeout-minutes: 4
