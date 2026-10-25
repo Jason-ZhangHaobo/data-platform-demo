@@ -5,7 +5,7 @@ on:
       authorization:
         required: true
         type: choice
-        options: [NOT_AUTHORIZED, P0A_PRIVATE_CODE_ONLY]
+        options: [NOT_AUTHORIZED, P0A_PRIVATE_CODE_ONLY, INVITED_READ_ONLY_CODE_REFRESH]
         default: NOT_AUTHORIZED
       expected_source_revision:
         required: true
@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   update:
-    if: github.ref == 'refs/heads/main' && inputs.authorization == 'P0A_PRIVATE_CODE_ONLY'
+    if: github.ref == 'refs/heads/main' && (inputs.authorization == 'P0A_PRIVATE_CODE_ONLY' || inputs.authorization == 'INVITED_READ_ONLY_CODE_REFRESH')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: v2-staging

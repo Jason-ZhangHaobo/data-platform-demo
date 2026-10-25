@@ -9,6 +9,14 @@ const hash=v=>createHash('sha256').update(canonical(v)).digest('hex');
 const fields=['functionName','runtime','handler','role','timeout','cpu','memorySize','diskSize','instanceConcurrency','internetAccess','vpcConfig','customRuntimeConfig','layers','nasConfig','ossMountConfig','logConfig','environmentVariables'];
 export const codeUpdateBoundaryHash=state=>hash({function:Object.fromEntries(fields.map(k=>[k,state.function?.[k]??null])),triggers:[...(state.triggers??[])].sort((a,b)=>a.triggerName.localeCompare(b.triggerName)),concurrency:state.concurrency,scaling:state.scaling});
 const codeMatches=(f,p)=>String(f?.codeChecksum)===p.crc64&&Number(f?.codeSize)===p.bytes;
+export const INVITED_READONLY_CODE_SCOPE='INVITED_READ_ONLY_CODE_REFRESH';
+export function codeUpdateLimits(authorization){
+ if(authorization==='P0A_PRIVATE_CODE_ONLY')return{previousInvocations:11,maxInvocations:8,maxUpdateAttempts:2,maxRollbackAttempts:1};
+ // A separate code-only substep of the proposed opening grant. This is not
+ // permission to open HTTP or reset the 55 historical acceptance requests.
+ if(authorization===INVITED_READONLY_CODE_SCOPE)return{previousInvocations:55,maxInvocations:6,maxUpdateAttempts:1,maxRollbackAttempts:1,maxConfigurationReads:30};
+ throw fail('CODE_UPDATE_NOT_AUTHORIZED');
+}
 export const codeUpdateProbes=Object.freeze([
  {id:'private-status',body:{operation:'PRIVATE_STATUS_V1'}},
  {id:'application-status',body:{operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2/status'}},
@@ -17,14 +25,14 @@ export const codeUpdateProbes=Object.freeze([
  {id:'anonymous-services',body:{operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2/data-services/sources'}},
 ]);
 export function codeUpdateConfig(input,now=Date.now()){
- check(input?.authorization==='P0A_PRIVATE_CODE_ONLY','CODE_UPDATE_NOT_AUTHORIZED');
+ const limits=codeUpdateLimits(input?.authorization);
  check(/^[a-f0-9]{32}$/.test(input.operationId??'')&&/^[a-f0-9]{40}$/.test(input.applicationSource??'')&&/^[a-f0-9]{40}$/.test(input.operatorSource??''),'CODE_UPDATE_IDENTITY_INVALID');
  check(/^\d{12,20}$/.test(input.account??'')&&/^[a-z0-9-]{1,64}$/.test(input.role??'')&&/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(input.functionName??'')&&/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(input.bucket??'')&&input.region==='cn-hangzhou','CODE_UPDATE_TARGET_INVALID');
- const expiresAt=Date.parse(input.expiresAt);check(Number.isFinite(expiresAt)&&expiresAt-now>=300000&&expiresAt-now<=3600000&&input.previousInvocations===11,'CODE_UPDATE_LIMITS_INVALID');
+ const expiresAt=Date.parse(input.expiresAt);check(Number.isFinite(expiresAt)&&expiresAt-now>=300000&&expiresAt-now<=3600000&&input.previousInvocations===limits.previousInvocations,'CODE_UPDATE_LIMITS_INVALID');
  for(const p of [input.previous,input.candidate])check(/^[a-f0-9]{64}$/.test(p?.sha256??'')&&Number.isSafeInteger(p.bytes)&&p.bytes>0&&p.bytes<=73400320,'CODE_PACKAGE_INVALID');
  check(input.previous.sha256!==input.candidate.sha256&&/^\d{1,30}$/.test(input.previous.crc64??''),'ROLLBACK_IDENTITY_INVALID');
- return{authorization:'P0A_PRIVATE_CODE_ONLY',operationId:input.operationId,applicationSource:input.applicationSource,operatorSource:input.operatorSource,account:input.account,role:input.role,functionName:input.functionName,bucket:input.bucket,region:input.region,issuedAt:now,expiresAt,
-  previous:{sha256:input.previous.sha256,bytes:input.previous.bytes,crc64:input.previous.crc64,key:controlPackageObject(input.previous.sha256)},candidate:{sha256:input.candidate.sha256,bytes:input.candidate.bytes,key:controlPackageObject(input.candidate.sha256)},previousInvocations:11,maxInvocations:8,maxUpdateAttempts:2,maxRollbackAttempts:1};
+ return{authorization:input.authorization,operationId:input.operationId,applicationSource:input.applicationSource,operatorSource:input.operatorSource,account:input.account,role:input.role,functionName:input.functionName,bucket:input.bucket,region:input.region,issuedAt:now,expiresAt,
+  previous:{sha256:input.previous.sha256,bytes:input.previous.bytes,crc64:input.previous.crc64,key:controlPackageObject(input.previous.sha256)},candidate:{sha256:input.candidate.sha256,bytes:input.candidate.bytes,key:controlPackageObject(input.candidate.sha256)},...limits};
 }
 function verifiedReceipt(receipt,pkg){
  check(receipt?.sha256===pkg.sha256&&receipt.bytes===pkg.bytes&&receipt.objectKey===pkg.key&&/^\d{1,30}$/.test(receipt.crc64??'')&&receipt.readbackVerified===true&&receipt.privateVerified===true&&receipt.immutable===true,'CODE_OBJECT_NOT_VERIFIED');
@@ -41,14 +49,15 @@ function assertProbe(id,value){
  }
 }
 export async function runControlCodeUpdate(config,adapter,{load,save,now=Date.now}={}){
- check(config?.authorization==='P0A_PRIVATE_CODE_ONLY','CODE_UPDATE_NOT_AUTHORIZED');
+ codeUpdateLimits(config?.authorization);
  check(Number.isSafeInteger(config.issuedAt)&&config.issuedAt<=now()&&Number.isSafeInteger(config.expiresAt),'CODE_UPDATE_LIMITS_INVALID');
  const normalized=codeUpdateConfig({...config,expiresAt:new Date(config.expiresAt).toISOString()},config.issuedAt);
  check(canonical(config)===canonical(normalized),'CODE_UPDATE_CONFIG_CHANGED');
  config=normalized;
+ if(config.authorization===INVITED_READONLY_CODE_SCOPE)check(now()<config.expiresAt-60000,'UPDATE_WINDOW_EXPIRED');
  check(typeof load==='function'&&typeof save==='function','DURABLE_UPDATE_CHECKPOINT_REQUIRED');
  let cp=structuredClone(await load()),checkpointValidated=false,mayNeedRollback=false;
- const report={scope:'PRIVATE_CONTROL_CODE_ONLY',passed:false,applicationSource:config.applicationSource,operatorSource:config.operatorSource,modelCalls:0,sparkRuns:0,publicEnabled:false};
+ const report={scope:'PRIVATE_CONTROL_CODE_ONLY',requestScope:config.authorization,passed:false,applicationSource:config.applicationSource,operatorSource:config.operatorSource,modelCalls:0,sparkRuns:0,publicEnabled:false};
  const withinWindow=()=>check(now()<config.expiresAt-60000,'UPDATE_WINDOW_EXPIRED');
  const write=async()=>save(structuredClone(cp));
  const inspect=async()=>{const s=await adapter.readState();check(codeUpdateBoundaryHash(s)===cp.boundaryHash,'PROTECTED_STATE_DRIFT');return s;};

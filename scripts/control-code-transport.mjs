@@ -4,7 +4,7 @@ import {execFileSync} from 'node:child_process';
 import {readFileSync,writeFileSync,existsSync,mkdirSync,renameSync,appendFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {codeUpdateConfig,codeUpdateProbes,runControlCodeUpdate} from './control-code-update.mjs';
+import {codeUpdateConfig,codeUpdateLimits,codeUpdateProbes,runControlCodeUpdate,INVITED_READONLY_CODE_SCOPE} from './control-code-update.mjs';
 import {auditErrorDetails,recipientKey,sealReport} from './audit-v2-oidc-readonly.mjs';
 import {verifyV2MonthlyBillPages} from './verify-v2-monthly-bill-pages.mjs';
 const check=(v,c)=>{if(!v)throw Object.assign(new Error(c),{safeCode:c});};
@@ -36,8 +36,10 @@ export function privateOssRequest({bucket,region,credentials,key='',query='',bod
  return{url:`https://${bucket}.oss-${region}.aliyuncs.com/${key.split('/').map(encodeURIComponent).join('/')}${query?'?'+query:''}`,options:{method,redirect:'error',signal:AbortSignal.timeout(120000),headers:{Date:date,Authorization:`OSS ${credentials.accessKeyId}:${signature}`,...extras,...(contentType?{'Content-Type':contentType}:{})},...(body?{body}:{})}};
 }
 export function deploymentInput(env,now=Date.now()){
- check(env.GITHUB_ACTIONS==='true'&&env.GITHUB_REF==='refs/heads/main'&&env.V2_CONTROL_UPDATE_APPROVED==='P0A_PRIVATE_CODE_ONLY','PROTECTED_UPDATE_REQUIRED');
+ check(env.GITHUB_ACTIONS==='true'&&env.GITHUB_REF==='refs/heads/main','PROTECTED_UPDATE_REQUIRED');
+ codeUpdateLimits(env.V2_CONTROL_UPDATE_APPROVED);
  let m;try{m=JSON.parse(env.V2_CONTROL_UPDATE_TARGET);}catch{check(false,'CONTROL_TARGET_INVALID');}
+ check(m.config?.authorization===env.V2_CONTROL_UPDATE_APPROVED,'CONTROL_APPROVAL_SCOPE_MISMATCH');
  check(m.config?.operatorSource===env.GITHUB_SHA&&env.V2_CONTROL_OPERATOR_SHA===env.GITHUB_SHA,'OPERATOR_SOURCE_MISMATCH');
  const issued=Date.parse(m.authorizedAt),config=codeUpdateConfig(m.config,issued);
  check(issued<=now&&config.expiresAt>now&&config.expiresAt-issued<=3600000,'CONTROL_WINDOW_INVALID');
@@ -49,12 +51,22 @@ export function deploymentInput(env,now=Date.now()){
  check(Number.isFinite(m.unsettledReservedCny)&&m.unsettledReservedCny>=2,'UNSETTLED_RESERVE_REQUIRED');
  return{config,metadata:m};
 }
-export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=fetch,exec=execFileSync,saveTransport,loadTransport,candidateBytes,saveBackup}={}){
+export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=fetch,exec=execFileSync,saveTransport,loadTransport,candidateBytes,saveBackup,now=Date.now}={}){
  const base=`/2023-03-30/functions/${config.functionName}`;
- let counters=loadTransport?.()??{codeReads:0,puts:[]};
+ const openingScope=config.authorization===INVITED_READONLY_CODE_SCOPE;
+ if(openingScope)check(typeof saveTransport==='function','DURABLE_TRANSPORT_CHECKPOINT_REQUIRED');
+ let counters=loadTransport?.()??{codeReads:0,puts:[],...(openingScope?{configurationReads:0}:{})};
  check(Number.isInteger(counters.codeReads)&&counters.codeReads>=0&&counters.codeReads<=2&&Array.isArray(counters.puts)&&counters.puts.length<=2&&new Set(counters.puts).size===counters.puts.length&&counters.puts.every(v=>[config.previous.sha256,config.candidate.sha256].includes(v)),'TRANSPORT_CHECKPOINT_INVALID');
+ if(openingScope)check(Number.isInteger(counters.configurationReads)&&counters.configurationReads>=0&&counters.configurationReads<=config.maxConfigurationReads,'CONFIGURATION_READ_CHECKPOINT_INVALID');
  const save=()=>saveTransport(structuredClone(counters));
  const call=(args,body)=>{
+  if(openingScope)check(now()<config.expiresAt,'CONTROL_WINDOW_EXPIRED');
+  if(openingScope&&args[0]==='fc'&&args[1]==='GET'){
+   check(counters.configurationReads<config.maxConfigurationReads,'CONFIGURATION_READ_LIMIT');
+   counters.configurationReads++;
+   // CLI dispatch is synchronous: counters must be durably written before it.
+   const saved=save();check(!saved||typeof saved.then!=='function','SYNCHRONOUS_TRANSPORT_CHECKPOINT_REQUIRED');
+  }
   try{
    const text=exec('aliyun',[...args,'--region',config.region,'--connect-timeout','5','--read-timeout','40','--retry-count','0',...(body===undefined?[]:['--body',JSON.stringify(body)])],{encoding:'utf8',timeout:50000,maxBuffer:2*1024*1024,stdio:['ignore','pipe','pipe'],env:{...env,ALIBABA_CLOUD_IGNORE_PROFILE:'TRUE',ALIBABA_CLOUD_PROFILE_MODE:'StsToken'}});
    let v=JSON.parse(text||'{}');if(typeof v==='string')v=JSON.parse(v);return v;
@@ -65,6 +77,7 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
  };
  const credentials={accessKeyId:env.ALIBABA_CLOUD_ACCESS_KEY_ID,accessKeySecret:env.ALIBABA_CLOUD_ACCESS_KEY_SECRET,securityToken:env.ALIBABA_CLOUD_SECURITY_TOKEN};
  const oss=(pkg,method='GET',body,query='')=>{
+  if(openingScope)check(now()<config.expiresAt,'CONTROL_WINDOW_EXPIRED');
   check([config.previous.key,config.candidate.key].includes(pkg.key),'OSS_OBJECT_OUTSIDE_SCOPE');
   const request=privateOssRequest({bucket:config.bucket,region:config.region,credentials,key:pkg.key,method,body,query});return fetchImpl(request.url,request.options);
  };
@@ -74,7 +87,8 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
   identity:()=>call(['sts','GetCallerIdentity']),
   readState:async()=>{
    let f;
-   for(let n=0;n<8;n++){f=call(['fc','GET',base]);if(!['InProgress','Pending'].includes(f.lastUpdateStatus))break;check(n<7,'FUNCTION_UPDATE_STILL_PENDING');await new Promise(r=>setTimeout(r,1500));}
+   const attempts=openingScope?3:8;
+   for(let n=0;n<attempts;n++){f=call(['fc','GET',base]);if(!['InProgress','Pending'].includes(f.lastUpdateStatus))break;check(n<attempts-1,'FUNCTION_UPDATE_STILL_PENDING');await new Promise(r=>setTimeout(r,1500));}
    check(f.functionName===config.functionName&&f.lastUpdateStatus!=='Failed','FUNCTION_READ_NOT_READY');
    const triggers=call(['fc','GET',base+'/triggers','--limit','100']);check(Array.isArray(triggers.triggers)&&!triggers.nextToken,'TRIGGER_LIST_INCOMPLETE');
    return{function:f,triggers:triggers.triggers,concurrency:call(['fc','GET',base+'/concurrency']),scaling:scalingConfiguration(call(['fc','GET',base+'/scaling-config','--qualifier','LATEST']))};
@@ -109,6 +123,8 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
   },
   updateCode:body=>{
    check(Object.keys(body).join(',')==='code'&&Object.keys(body.code).sort().join(',')==='checksum,ossBucketName,ossObjectName'&&body.code.ossBucketName===config.bucket&&[config.previous.key,config.candidate.key].includes(body.code.ossObjectName)&&/^\d{1,30}$/.test(body.code.checksum),'CODE_UPDATE_BODY_INVALID');
+   if(openingScope&&body.code.ossObjectName===config.candidate.key)
+    check(counters.configurationReads<=9,'CODE_UPDATE_RECOVERY_READ_RESERVE_REQUIRED');
    return call(['fc','PUT',base],body);
   },
   invoke:body=>{check(codeUpdateProbes.some(p=>JSON.stringify(p.body)===JSON.stringify(body)),'INVOKE_BODY_OUTSIDE_SCOPE');return call(['fc','POST',base+'/invocations','--header','Content-Type=application/octet-stream'],body);},
