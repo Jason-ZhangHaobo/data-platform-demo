@@ -209,8 +209,10 @@ export class MemorySnapshotBackend {
   }
 
   async compareAndSwap(project, expectedRevision, payload) {
-    const current = await this.load(project);
-    if (current.revision !== expectedRevision) throw conflict();
+    // Match the atomic conditional UPDATE used by MySQL. Awaiting load() here
+    // let two test replicas accept the same revision and hid real CAS conflicts.
+    const revision = this.projects.get(project)?.revision ?? 0;
+    if (revision !== expectedRevision) throw conflict();
     const next = expectedRevision + 1;
     this.projects.set(project, {
       revision: next,

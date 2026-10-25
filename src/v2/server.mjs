@@ -1316,11 +1316,10 @@ export function createV2Server(options = {}) {
         method === "POST"
       ) {
         const body = await readBody(req),
-          attemptKey = `${req.socket.remoteAddress ?? "unknown"}:${path}`,
-          result =
-            path.endsWith("/login")
-              ? auth.login(body, { attemptKey })
-              : auth.redeemInvitation(body, { attemptKey }),
+          result = await auth.authenticate(
+            path.endsWith("/login") ? "login" : "redeem", body,
+            { persist: () => persistence.flush?.() },
+          ),
           response = auth.sessionResponse(
             result,
             !local && !insecurePublicCookies,
