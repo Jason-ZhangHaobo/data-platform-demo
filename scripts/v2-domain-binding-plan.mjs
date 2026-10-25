@@ -115,12 +115,23 @@ export function domainConfigurationMatches(value,plan){
   if(String(value?.accountId)!==plan.target.account)return false;
   // Server-added defaults are allowed only when they do not relax the policy.
   const actual=projection(value),expected=plan.desired;
+  // FC returns accountId and an explicit null rewriteConfig on each route.
+  // These are safe only for the same account and with no rewrite rules. Do
+  // not erase foreign ownership, unknown fields or non-null transformations.
+  let routes;
+  if(actual.routeConfig&&Object.keys(actual.routeConfig).length===1&&Array.isArray(actual.routeConfig.routes)){
+    const allowed=new Set(['path','methods','functionName','qualifier','accountId','rewriteConfig']);
+    if(actual.routeConfig.routes.every(r=>r&&typeof r==='object'&&!Array.isArray(r)&&Object.keys(r).every(k=>allowed.has(k))
+      &&(r.accountId===undefined||String(r.accountId)===plan.target.account)&&(r.rewriteConfig===undefined||r.rewriteConfig===null))){
+      routes={routes:actual.routeConfig.routes.map(({path,methods,functionName,qualifier})=>({path,methods,functionName,qualifier}))};
+    }
+  }
   return actual.domainName===expected.domainName&&actual.protocol==='HTTPS'
     &&actual.authConfig?.authType==='function'&&(!actual.authConfig.authInfo||actual.authConfig.authInfo==='{}')
     &&actual.tlsConfig?.minVersion==='TLSv1.2'&&actual.tlsConfig.maxVersion==='TLSv1.3'
     &&Array.isArray(actual.tlsConfig.cipherSuites)&&Array.isArray(expected.tlsConfig.cipherSuites)
     &&canonical([...actual.tlsConfig.cipherSuites].sort())===canonical([...expected.tlsConfig.cipherSuites].sort())
-    &&canonical(actual.routeConfig)===canonical(expected.routeConfig)
+    &&routes!==undefined&&canonical(routes)===canonical(expected.routeConfig)
     &&actual.certName===expected.certName&&actual.certificateSha256===expected.certificateSha256
     &&(!value.wafConfig||value.wafConfig.enableWAF===false)
     &&(!value.corsConfig||canonical(value.corsConfig)==='{}');

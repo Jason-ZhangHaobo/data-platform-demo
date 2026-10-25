@@ -57,6 +57,18 @@ test('TLS configuration sends an explicit strong allowlist and rejects missing o
  }
  const changed=structuredClone(f.state());changed.tlsConfig.minVersion='TLSv1.1';assert.equal(domainConfigurationMatches(changed,plan),false);
 });
+test('server-added same-account route metadata and null rewrites do not hide real drift',async()=>{
+ const f=fixture();await runDomainBinding(plan,material,f.adapter,f.storage);
+ const returned=structuredClone(f.state());returned.routeConfig.routes.forEach(r=>{r.accountId=plan.target.account;r.rewriteConfig=null;});
+ assert.equal(domainConfigurationMatches(returned,plan),true);
+ for(const change of [r=>r.accountId='999900001111',r=>r.accountId=null,r=>r.rewriteConfig={},r=>r.rewriteConfig={equalRules:[{match:'/',replacement:'/invoke'}]},r=>r.unknown=true,r=>r.functionName='foreign',r=>r.methods.push('DELETE'),r=>r.qualifier='foreign']){
+  const changed=structuredClone(returned);change(changed.routeConfig.routes[0]);assert.equal(domainConfigurationMatches(changed,plan),false);
+ }
+ const extra=structuredClone(returned);extra.routeConfig.rewriteConfig=null;assert.equal(domainConfigurationMatches(extra,plan),false);
+ const recovery=fixture({verification:{tlsVerified:false}}),get=recovery.adapter.get;
+ recovery.adapter.get=async()=>{const value=await get();value.value?.routeConfig?.routes.forEach(r=>{r.accountId=plan.target.account;r.rewriteConfig=null;});return value;};
+ const r=await runDomainBinding(plan,material,recovery.adapter,recovery.storage);assert.equal(r.passed,false);assert.equal(r.rollback.domainAbsent,true);assert.equal(recovery.calls.filter(v=>v==='DELETE').length,1);
+});
 test('FC configurable cipher allowlist matches the pinned official ITLSConfig schema without downgrading TLS',()=>{
  // Offline, synthetic projection of the public enum at the documented commit;
  // this checks API configuration, not a live handshake or cloud acceptance.
