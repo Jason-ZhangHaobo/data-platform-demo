@@ -47,14 +47,14 @@ export function readonlyRuntimeObservation(value,error){
  const metadataHealthy=value?.metadata?.healthy===true,persistenceHealthy=value?.persistence?.healthy===true&&value?.persistence?.dataState?.healthy===true;
  const ready=!error&&protocolVerified&&publicHttpEnabled===true&&publicReadOnly===true&&metadataHealthy&&persistenceHealthy;
  const code=String(error?.safeDiagnostic?.serviceCode??'');
- const errorCategory=ready?'NONE':error?/AccessDenied|Forbidden|NoPermission/.test(code)?'PERMISSION':/SecurityToken|Signature|AccessKey|Unauthorized/.test(code)?'AUTHENTICATION':error.safeDiagnostic?.transport==='TIMEOUT'?'TIMEOUT':'TRANSPORT':protocolVerified?'NOT_READY':'APPLICATION';
+ const errorCategory=ready?'NONE':error?/AccessDenied|Forbidden|NoPermission/.test(code)?'PERMISSION':/SecurityToken|Signature|AccessKey|Unauthorized/.test(code)?'AUTHENTICATION':error.safeDiagnostic?.cliArgumentRejected===true||error.safeDiagnostic?.transport==='CLI_ARGUMENT'||/InvalidArgument|InvalidParameter|MissingParameter/.test(code)?'INPUT':error.safeDiagnostic?.transport==='TIMEOUT'?'TIMEOUT':'TRANSPORT':protocolVerified?'NOT_READY':'APPLICATION';
  return{ready,transportConfirmed:!error,protocolVerified,publicHttpEnabled,publicReadOnly,metadataHealthy,persistenceHealthy,errorCategory};
 }
 function validRuntimeObservation(value){
  return value&&Object.keys(value).sort().join()===['ready','transportConfirmed','protocolVerified','publicHttpEnabled','publicReadOnly','metadataHealthy','persistenceHealthy','errorCategory'].sort().join()
   &&['ready','transportConfirmed','protocolVerified','metadataHealthy','persistenceHealthy'].every(k=>typeof value[k]==='boolean')
   &&['publicHttpEnabled','publicReadOnly'].every(k=>value[k]===null||typeof value[k]==='boolean')
-  &&['NONE','PERMISSION','AUTHENTICATION','TIMEOUT','TRANSPORT','NOT_READY','APPLICATION'].includes(value.errorCategory)
+  &&['NONE','PERMISSION','AUTHENTICATION','INPUT','TIMEOUT','TRANSPORT','NOT_READY','APPLICATION'].includes(value.errorCategory)
   &&value.ready===(value.transportConfirmed&&value.protocolVerified&&value.publicHttpEnabled===true&&value.publicReadOnly===true&&value.metadataHealthy&&value.persistenceHealthy)
   &&(value.errorCategory==='NONE')===value.ready;
 }
