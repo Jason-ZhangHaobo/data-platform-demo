@@ -1132,11 +1132,11 @@ export function createV2Server(options = {}) {
   };
   const server = createServer(async (req, res) => {
     try {
-      options.ingress?.assertRequest(req);
+      const ingressChannel = options.ingress?.assertRequest(req);
       const url = new URL(req.url, "http://localhost"),
         path = url.pathname,
         method = req.method,
-        publicReadOnly = options.ingress?.status.publicReadOnly === true && req.headers["x-fc-control-path"] === "/http-invoke",
+        publicReadOnly = options.ingress?.status.publicReadOnly === true && ingressChannel === "HTTP",
         isPrivateSmokeInvoke = method === "POST" && path === "/invoke";
       if (typeof persistence.refresh === "function") await persistence.refresh();
       if (

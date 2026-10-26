@@ -13,8 +13,9 @@ const deny = (ingressReason) => {
 };
 
 // Only for an FC-managed listener, never an internet-facing Node server.
-// FC supplies x-fc-control-path. Header overwrite/rejection must be verified
-// through the actual FC edge before enabling public HTTP traffic.
+// Event invocations require the FC control marker and exact private path.
+// Custom-domain HTTP may have no marker. It is admitted only to explicit
+// public routes; absence of a marker can never grant private-event access.
 export function createFcIngress({ publicHttpEnabled = false, publicReadOnly = false } = {}) {
   const token = randomBytes(32).toString("hex");
   const internalHeaders = Object.freeze({ [internalHeader]: token });
@@ -42,9 +43,9 @@ export function createFcIngress({ publicHttpEnabled = false, publicReadOnly = fa
       // CSRF, project and role checks still run on the forwarded request.
       if (control === undefined && matches(req.headers[internalHeader]) &&
           ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket?.remoteAddress) &&
-          path.startsWith("/api/v2/") && path !== "/api/v2/internal" && !path.startsWith("/api/v2/internal/")) return;
-      if (control === "/invoke" && req.method === "POST" && target === "/invoke") return;
-      if (control !== "/http-invoke") deny(control === undefined ? "CONTROL_MISSING" : control === "/invoke" ? "CONTROL_EVENT_ROUTE" : control === "/initialize" ? "CONTROL_INITIALIZE" : "CONTROL_UNRECOGNIZED");
+          path.startsWith("/api/v2/") && path !== "/api/v2/internal" && !path.startsWith("/api/v2/internal/")) return "INTERNAL";
+      if (control === "/invoke" && req.method === "POST" && target === "/invoke") return "EVENT";
+      if (control !== undefined && control !== "/http-invoke") deny(control === "/invoke" ? "CONTROL_EVENT_ROUTE" : control === "/initialize" ? "CONTROL_INITIALIZE" : "CONTROL_UNRECOGNIZED");
       if (publicHttpEnabled !== true) deny("HTTP_DISABLED");
       if (path.startsWith("/api/v2/internal/") || path === "/api/v2/internal") deny("INTERNAL_PATH");
       const api = path.startsWith("/api/v2/"),
@@ -54,6 +55,7 @@ export function createFcIngress({ publicHttpEnabled = false, publicReadOnly = fa
           !["/api/v2/auth/login", "/api/v2/auth/logout"].includes(path))
         throw Object.assign(new Error("当前入口为只读验收模式，仅支持已有账号登录、查看和退出；任务执行与发布尚未开放"),
           { status: 403, code: "PUBLIC_READ_ONLY" });
+      return "HTTP";
     },
   });
 }

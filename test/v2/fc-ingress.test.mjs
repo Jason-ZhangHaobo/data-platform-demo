@@ -28,7 +28,7 @@ test("FC ingress is fail-closed; event marker only admits exact POST /invoke", (
 
 test("ingress diagnostics distinguish failure causes without reflecting request contents", async t => {
   const enabled = createFcIngress({ publicHttpEnabled: true });
-  for (const [req, reason] of [[stub('/v2/', undefined, 'GET'), 'CONTROL_MISSING'],
+  for (const [req, reason] of [[stub('/invoke', undefined, 'POST'), 'ROUTE_METHOD'],
     [stub('/v2/', 'secret-not-an-allowed-marker', 'GET'), 'CONTROL_UNRECOGNIZED'],
     [stub('/api/v2/internal/scheduler/tick', '/http-invoke'), 'INTERNAL_PATH']]) {
     assert.throws(() => enabled.assertRequest(req), e => e.code === 'INGRESS_DENIED' && e.ingressReason === reason && !JSON.stringify(e).includes('secret-not-an-allowed-marker'));
@@ -111,7 +111,7 @@ test("actual HTTP server blocks private fixture/forwarding before persistence an
 test("public HTTP keeps login and CSRF enforcement; private forwarding credentials are not reflected", async t => {
   const { app, call, ingress } = await open(t, true);
   app.auth.bootstrapAdmin({ email: "synthetic-owner@example.invalid", password: "SyntheticOnly!2026", displayName: "虚构管理员" });
-  assert.equal((await call("/api/v2/auth/session", "GET")).status, 404);
+  assert.equal((await call("/api/v2/auth/session", "GET")).body.authenticated, false);
   const guest = await call("/api/v2/auth/session", "GET", httpHeaders);
   assert.equal(guest.status, 200); assert.equal(guest.body.authenticated, false);
   assert.equal((await call("/api/v2/revisions", "POST", httpHeaders, {})).status, 401);
@@ -147,17 +147,35 @@ test("read-only public gate rejects every business write before persistence with
   assert.equal(session.body.authenticated, false);
 });
 
+test("unmarked custom-domain HTTP remains public and read-only, never a private event or trusted hop", async t => {
+  const { call, refreshes } = await open(t, true, true);
+  for (const path of ['/invoke', '/invoke?x=1', '/invoke/', '/%69nvoke', '/api/v2/internal', '/api/v2/internal/scheduler/tick']) {
+    const denied = await call(path, 'POST', {'content-type':'application/octet-stream'}, {operation:'PRIVATE_STATUS_V1'});
+    assert.equal(denied.status,404);assert.equal(denied.body.code,'INGRESS_DENIED');
+  }
+  for(const path of ['/api/v2/agent/tasks','/api/v2/runs','/api/v2/releases','/api/v2/auth/invitations']) {
+    const denied=await call(path,'POST',{'content-type':'application/json','x-shuduo-process-hop':'guessed'},{});
+    assert.equal(denied.status,403);assert.equal(denied.body.code,'PUBLIC_READ_ONLY');
+  }
+  assert.equal(refreshes(),0);
+  const session=await call('/api/v2/auth/session','GET');
+  assert.equal(session.status,200);assert.equal(session.body.authenticated,false);assert.equal(session.body.readOnly,true);
+  const spoofed=await call('/api/v2/status','POST',eventHeaders,{operation:'PRIVATE_STATUS_V1'});
+  assert.equal(spoofed.status,404);assert.equal(spoofed.body.ingressReason,'CONTROL_EVENT_ROUTE');
+});
+
 test("read-only public login keeps original role, narrows presentation permissions and permits logout", async t => {
   const { app, call } = await open(t, true, true);
   const credentials = { email: "readonly-owner@example.invalid", password: "SyntheticOnly!2026", displayName: "虚构管理员" };
   app.auth.bootstrapAdmin(credentials);
-  const login = await call("/api/v2/auth/login", "POST", httpHeaders, credentials);
+  const {['x-fc-control-path']:unused,...unmarkedHeaders}=httpHeaders;
+  const login = await call("/api/v2/auth/login", "POST", unmarkedHeaders, credentials);
   assert.equal(login.status, 200);
   assert.equal(login.body.readOnly, true);
   assert.equal(login.body.role, "ADMIN");
   assert.deepEqual(login.body.permissions, ["SESSION"]);
   const cookie = login.headers["set-cookie"].map(value => value.split(";")[0]).join("; ");
-  const headers = { ...httpHeaders, cookie, "x-csrf-token": login.body.csrfToken };
+  const headers = { ...unmarkedHeaders, cookie, "x-csrf-token": login.body.csrfToken };
   assert.deepEqual((await call("/api/v2/auth/session", "GET", headers)).body.permissions, ["SESSION"]);
   assert.equal((await call("/api/v2/revisions", "POST", headers, {})).body.code, "PUBLIC_READ_ONLY");
   const forwarded = await call("/invoke", "POST", eventHeaders, { operation: "PRIVATE_APPLICATION_HTTP_V1", method: "GET", path: "/api/v2/auth/session", headers: { cookie } });
