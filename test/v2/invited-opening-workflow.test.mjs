@@ -34,6 +34,23 @@ test('runtime scope requires the completed entry rollback and cannot reuse the f
   const metadata=structuredClone(f.metadata);mutate(metadata);assert.throws(()=>openingWorkflowInput({...f.env,V2_INVITED_OPENING_TARGET:JSON.stringify(metadata)},now));
  }
 });
+test('authorized runtime continuation binds all counters to completed predecessor evidence',()=>{
+ const f=fixture('runtime'),history={historicalRequests:83,historicalConfigurationReads:210};
+ f.metadata.config.history=history;f.metadata.config.previousInvocations=history.historicalRequests;
+ Object.assign(f.metadata.openingUsage,history);
+ Object.assign(f.metadata.priorOpening,{configurationReads:history.historicalConfigurationReads,cumulativeRequests:history.historicalRequests});
+ const input=()=>openingWorkflowInput({...f.env,V2_INVITED_OPENING_TARGET:JSON.stringify(f.metadata)},now);
+ assert.deepEqual(input().config.history,history);
+ let cp;const usage=createOpeningUsage({authorization:READONLY_RUNTIME_SCOPE,history,operationId:f.config.operationId,operatorSource:f.config.operatorSource,issuedAt:now,expiresAt:now+3600000,load:()=>cp,save:v=>{cp=v},now:()=>now});
+ usage.reserve('PRIVATE_PROBE');usage.reserve('FC_READ');
+ assert.equal(usage.counts().cumulativeRequests,84);assert.equal(usage.counts().cumulativeConfigurationReads,211);
+ f.metadata.priorOpening.cumulativeRequests--;assert.throws(input,/PRIOR_CLEANUP/);
+ f.metadata.priorOpening.cumulativeRequests++;
+ f.metadata.openingUsage.historicalRequests--;assert.throws(input,/CHECKPOINT_MISMATCH/);
+ for(const invalid of [{...history,historicalRequests:-1},{...history,historicalRequests:1.5},{...history,historicalConfigurationReads:0},{...history,extra:1}])
+  assert.throws(()=>createOpeningUsage({authorization:READONLY_RUNTIME_SCOPE,history:invalid}),/CONTINUATION_HISTORY/);
+ assert.throws(()=>createOpeningUsage({authorization:READONLY_FILING_SCOPE,history}),/CONTINUATION_HISTORY/);
+});
 test('filing repair input requires new scope, preserved history and original rollback/cleanup evidence',()=>{
  const f=fixture(true);assert.equal(openingWorkflowInput(f.env,now).config.previousInvocations,61);
  for(const mutate of [m=>m.priorOpening.codeRestored=false,m=>m.priorOpening.configurationReads=0,m=>m.openingUsage.historicalConfigurationReads=0,m=>m.config.previousInvocations=55,m=>m.publicSite.OTHER='not-approved']){

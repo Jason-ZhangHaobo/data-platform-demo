@@ -10,8 +10,8 @@ const writes=['CODE_WRITE','ENTRY_WRITE','RAM_WRITE'];
 const names=[...reads,...probes,...writes,'OBJECT_GET','OBJECT_PUT'];
 const sum=(usage,keys)=>keys.reduce((total,key)=>total+usage[key],0);
 
-export function createOpeningUsage({authorization,operationId,operatorSource,issuedAt,expiresAt,load,save,now=Date.now}){
- const scope=openingScope(authorization);
+export function createOpeningUsage({authorization,history,operationId,operatorSource,issuedAt,expiresAt,load,save,now=Date.now}){
+ const scope=openingScope(authorization,history);
  check(/^[a-f0-9]{32}$/.test(operationId??'')&&/^[a-f0-9]{40}$/.test(operatorSource??''),'OPENING_USAGE_IDENTITY_INVALID');
  check(Number.isSafeInteger(issuedAt)&&Number.isSafeInteger(expiresAt)&&issuedAt<=now()&&expiresAt>issuedAt&&expiresAt-issuedAt<=3600000,'OPENING_USAGE_WINDOW_INVALID');
  check(typeof load==='function'&&typeof save==='function','OPENING_USAGE_STORAGE_REQUIRED');

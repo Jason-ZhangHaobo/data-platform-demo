@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { ingressDenialReasons } from "./fc-ingress.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
@@ -5521,6 +5522,8 @@ export function createV2Server(options = {}) {
         /^[A-Z][A-Z0-9_]{2,64}$/.test(error.code)
           ? { code: error.code }
           : {}),
+        ...(error.code === "INGRESS_DENIED" && ingressDenialReasons.includes(error.ingressReason)
+          ? { ingressReason: error.ingressReason } : {}),
         ...(typeof error.runId === "string" ? { runId: error.runId } : {}),
         ...(typeof error.auditId === "string" ? { auditId: error.auditId } : {}),
       }).finally(() => {

@@ -14,7 +14,7 @@ const check=(value,code)=>{if(!value)throw Object.assign(new Error(code),{safeCo
 const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 export async function runInvitedOpening({config,metadata,retainedPlan,webIndexSha256},{env,storage,usage,now=Date.now,exec=execFileSync,codeOptions={},entryOptions={},cleanupOnly=false}){
- const scope=openingScope(env?.V2_READONLY_OPENING_APPROVED);
+ const scope=openingScope(env?.V2_READONLY_OPENING_APPROVED,config.history);
  check(env?.GITHUB_ACTIONS==='true'&&env.GITHUB_REF==='refs/heads/main'&&env.GITHUB_SHA===config.operatorSource,'OPENING_PROTECTED_MAIN_REQUIRED');
  check(config.authorization===scope.codeAuthorization,'OPENING_CODE_SCOPE_REQUIRED');
  check(typeof storage?.load==='function'&&typeof storage?.save==='function'&&typeof usage?.reserve==='function','OPENING_STORAGE_REQUIRED');
@@ -68,10 +68,10 @@ export async function runInvitedOpening({config,metadata,retainedPlan,webIndexSh
    const leaf=new X509Certificate(response.value?.certConfig?.certificate);
    check(Date.parse(leaf.validFrom)<=now()&&Date.parse(leaf.validTo)>config.expiresAt,'OPENING_CERTIFICATE_WINDOW_INVALID');
    const cp=storage.load('code');
-   stage.change=prepareInvitedReadonlyConfig({state:finalCodeState,domain:response.value,retainedPlan,operationId:config.operationId,authorization:scope.authorization,publicSite:site,
+   stage.change=prepareInvitedReadonlyConfig({state:finalCodeState,domain:response.value,retainedPlan,operationId:config.operationId,authorization:scope.authorization,history:config.history,publicSite:site,
     expectedCode:{applicationSource:config.applicationSource,sha256:config.candidate.sha256,bytes:config.candidate.bytes},
     privateCodeEvidence:{report:{...report.code,operationId:config.operationId},checkpoint:cp,transport:storage.load('transport')}});
-   stage.entryPlan=readonlyEntryPlan({authorization:scope.authorization,publicSite:site,operationId:config.operationId,operatorSource:config.operatorSource,webIndexSha256,
+   stage.entryPlan=readonlyEntryPlan({authorization:scope.authorization,history:config.history,publicSite:site,operationId:config.operationId,operatorSource:config.operatorSource,webIndexSha256,
     issuedAt:new Date(config.issuedAt).toISOString(),expiresAt:new Date(config.expiresAt).toISOString(),seed:usage.counts()},now());
    saveStage();
   }else{

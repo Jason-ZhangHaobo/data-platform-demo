@@ -48,8 +48,8 @@ function fixture(){
 // provider responses. These are integration doubles, not live cloud evidence.
 function openingStageFixture(options={}){
  const f=fixture(),old=Buffer.alloc(4000,1),next=Buffer.alloc(4100,2),hash=value=>createHash('sha256').update(value).digest('hex');
- const scope=options.runtime?READONLY_RUNTIME_SCOPE:options.repair?READONLY_FILING_SCOPE:READONLY_ENTRY_SCOPE,info=openingScope(scope);
- const config=codeUpdateConfig({authorization:info.codeAuthorization,operationId:'c'.repeat(32),applicationSource:'d'.repeat(40),operatorSource:'f'.repeat(40),account:retainedPlan.target.account,role:retainedPlan.target.role,functionName:retainedPlan.target.functionName,bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:info.historicalRequests,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:hash(old),bytes:old.length,crc64:'123456'},candidate:{sha256:hash(next),bytes:next.length}},now);
+ const scope=options.runtime?READONLY_RUNTIME_SCOPE:options.repair?READONLY_FILING_SCOPE:READONLY_ENTRY_SCOPE,info=openingScope(scope,options.history);
+ const config=codeUpdateConfig({authorization:info.codeAuthorization,history:options.history,operationId:'c'.repeat(32),applicationSource:'d'.repeat(40),operatorSource:'f'.repeat(40),account:retainedPlan.target.account,role:retainedPlan.target.role,functionName:retainedPlan.target.functionName,bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:info.historicalRequests,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:hash(old),bytes:old.length,crc64:'123456'},candidate:{sha256:hash(next),bytes:next.length}},now);
  const state=structuredClone(f.state),domain=structuredClone(f.domain),documents={},objects=new Map(),calls=[];
  state.function.timeout=120;
  const publicSite={icpNumber:'测试ICP备00000000号-1',registeredName:'虚构知识站'};
@@ -57,7 +57,7 @@ function openingStageFixture(options={}){
  const metadata={publicSite,unsettledReservedCny:12,bucketPrivacy:{checkedAt:new Date().toISOString()}};
  if(options.fromObject)objects.set(`https://${config.bucket}.oss-cn-hangzhou.aliyuncs.com/${config.previous.key}`,old);
  const storage={load:name=>documents[name],save:(name,value)=>{documents[name]=structuredClone(value);}};
- const usage=createOpeningUsage({authorization:scope,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>documents.usage,save:value=>storage.save('usage',value),now:()=>now});
+ const usage=createOpeningUsage({authorization:scope,history:options.history,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>documents.usage,save:value=>storage.save('usage',value),now:()=>now});
  for(let i=0;i<12;i++)usage.reserve('RAM_READ');
  const env={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_SHA:config.operatorSource,V2_READONLY_OPENING_APPROVED:scope,V2_CONTROL_ROLE_ARN:`acs:ram::${config.account}:role/${config.role}`,ALIBABA_CLOUD_ACCESS_KEY_ID:'fictional-id',ALIBABA_CLOUD_ACCESS_KEY_SECRET:'fictional-key',ALIBABA_CLOUD_SECURITY_TOKEN:'fictional-token'};
  let runtimeCalls=0;
@@ -155,6 +155,16 @@ test('runtime proof precedes HTTP acceptance and preserves both historical total
  assert.equal(f.documents['code-report'].cumulativeInvocations,75);assert(!JSON.stringify(r.entry.runtimeObservations).includes('fixture-secret'));
  const calls=f.calls.length;f.documents.entry.runtimeAttempts=0;
  const corrupt=await f.run();assert.equal(corrupt.entry.failure,'READONLY_RUNTIME_CHECKPOINT_INVALID');assert.equal(f.calls.length,calls);
+});
+test('continued maintenance carries predecessor counts through code, entry and shared evidence',async()=>{
+ const history={historicalRequests:83,historicalConfigurationReads:210};
+ const f=openingStageFixture({runtime:true,history,fromObject:true}),r=await f.run();
+ assert.equal(r.executionPassed,true,JSON.stringify(r));
+ assert.equal(r.cumulativeRequests,history.historicalRequests+r.newRequests);
+ assert.equal(r.cumulativeConfigurationReads,history.historicalConfigurationReads+r.configurationReads);
+ assert.equal(f.documents['code-report'].cumulativeInvocations,89);
+ assert.deepEqual(f.documents.stage.entryPlan.history,history);
+ assert.deepEqual(f.documents.stage.change.history,history);
 });
 test('two identical unready runtime replies stop before any HTTP request and restore the entry and code',async()=>{
  const f=openingStageFixture({runtime:true,missingFiling:true,fromObject:true,runtimeReplies:[{ingress:{publicHttpEnabled:false}}]}),r=await f.run();

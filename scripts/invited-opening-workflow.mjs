@@ -16,9 +16,9 @@ const names=['binding','usage','stage','transport','code','entry','code-report',
 const reads=new Set(['IDENTITY','BILL_PAGE','FC_READ','DOMAIN_READ','OSS_METADATA','RAM_READ']);
 
 export function openingWorkflowInput(env,now=Date.now(),sealOnly=false){
- const scope=openingScope(env.V2_READONLY_OPENING_APPROVED);
  check(env.GITHUB_RUN_ATTEMPT==='1'&&/^\d{6,20}$/.test(env.GITHUB_RUN_ID??''),'OPENING_NO_AUTOMATIC_RERUN');
  let metadata;try{metadata=JSON.parse(env.V2_INVITED_OPENING_TARGET);}catch{check(false,'OPENING_TARGET_INVALID');}
+ const scope=openingScope(env.V2_READONLY_OPENING_APPROVED,metadata.config?.history);
  const stamp=Date.parse(metadata.authorizedAt);
  check(stamp<=now,'OPENING_START_INVALID');
  const privacyAt=Date.parse(metadata.bucketPrivacy?.checkedAt);
@@ -31,7 +31,7 @@ export function openingWorkflowInput(env,now=Date.now(),sealOnly=false){
  check(metadata.retainedPlan.target.account===config.account&&metadata.retainedPlan.target.role===config.role&&metadata.retainedPlan.target.functionName===config.functionName&&metadata.retainedPlan.target.region===config.region,'OPENING_FROZEN_TARGET_MISMATCH');
  const seed=metadata.openingUsage;
  check(seed&&seed.operationId===config.operationId&&seed.operatorSource===config.operatorSource&&seed.issuedAt===config.issuedAt&&seed.expiresAt===config.expiresAt&&seed.phase==='ACTIVE','OPENING_OWNER_LEDGER_REQUIRED');
- const usage=createOpeningUsage({authorization:scope.authorization,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>seed,save:()=>{},now:()=>stamp});
+ const usage=createOpeningUsage({authorization:scope.authorization,history:config.history,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>seed,save:()=>{},now:()=>stamp});
  check(usage.counts().configurationReads<=16&&usage.counts().configurationReads>=1&&usage.counts().newRequests===0,'OPENING_PREFLIGHT_TOO_EXPENSIVE');
  check(typeof metadata.publicSite?.icpNumber==='string'&&metadata.publicSite.icpNumber.length<=100&&typeof metadata.publicSite?.registeredName==='string'&&metadata.publicSite.registeredName.length<=100,'OPENING_PUBLIC_SITE_REQUIRED');
  check(metadata.recipientKeySha256===hash(Buffer.from(env.V2_AUDIT_RECIPIENT_KEY??'','base64')),'OPENING_RECIPIENT_CHANGED');
@@ -79,7 +79,7 @@ export async function openingWorkflowMain(env=process.env,mode=process.argv[2],{
  const prior=store.load('binding');
  if(prior)check(JSON.stringify(prior)===JSON.stringify(binding),'OPENING_WORKFLOW_BINDING_CHANGED');
  else{check(mode==='--prepare','OPENING_PREPARE_REQUIRED');store.save('binding',binding);}
- const usage=createOpeningUsage({authorization:env.V2_READONLY_OPENING_APPROVED,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>store.load('usage')??metadata.openingUsage,save:value=>store.save('usage',value),now});
+ const usage=createOpeningUsage({authorization:env.V2_READONLY_OPENING_APPROVED,history:config.history,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>store.load('usage')??metadata.openingUsage,save:value=>store.save('usage',value),now});
  if(mode==='--prepare'){
   check(!prior,'OPENING_PREPARE_ALREADY_RUN');check(env.GITHUB_ENV,'GITHUB_ENV_REQUIRED');
   // One exchange through the already-pinned Action/credentials 2.4.4. Its
