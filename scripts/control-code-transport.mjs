@@ -17,11 +17,18 @@ export function codeDownloadUrl(raw){
  u.protocol='https:';return u.href;
 }
 export async function boundedBytes(response,limit){
- check(response.ok&&response.body,'OBJECT_READ_NOT_CONFIRMED');
+ if(!response.ok||!response.body)throw Object.assign(new Error('OBJECT_READ_NOT_CONFIRMED'),{safeCode:'OBJECT_READ_NOT_CONFIRMED',safeDiagnostic:await safeOssFailure(response)});
  const advertised=response.headers.get('content-length');check(advertised===null||Number(advertised)<=limit,'OBJECT_TOO_LARGE');
  const chunks=[];let bytes=0;
  for await(const chunk of response.body){bytes+=chunk.length;check(bytes<=limit,'OBJECT_TOO_LARGE');chunks.push(Buffer.from(chunk));}
  return Buffer.concat(chunks);
+}
+export async function safeOssFailure(response){
+ let text='';const reader=response.body?.getReader?.();
+ if(reader){try{while(text.length<4096){const part=await reader.read();if(part.done)break;text+=Buffer.from(part.value).toString('utf8').slice(0,4096-text.length);}}finally{await reader.cancel().catch(()=>{});reader.releaseLock();}}
+ const code=/<Code>([A-Za-z][A-Za-z0-9.]{0,79})<\/Code>/.exec(text)?.[1];
+ const known=['NoSuchKey','NoSuchObject','AccessDenied','SignatureDoesNotMatch','InvalidAccessKeyId','SecurityTokenExpired','InvalidSecurityToken','RequestTimeTooSkewed','RequestTimeout','InternalError','ServiceUnavailable','EntityTooLarge','FileAlreadyExists'];
+ return{httpStatus:Number.isInteger(response.status)?response.status:0,serviceCode:known.includes(code)?code:'UNCLASSIFIED_OSS_ERROR'};
 }
 export function privateOssRequest({bucket,region,credentials,key='',query='',body,method='GET'}){
  check(region==='cn-hangzhou'&&/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket),'OSS_TARGET_INVALID');
@@ -82,7 +89,12 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
   if(openingScope)check(now()<config.expiresAt,'CONTROL_WINDOW_EXPIRED');
   check([config.previous.key,config.candidate.key].includes(pkg.key),'OSS_OBJECT_OUTSIDE_SCOPE');
   beforeRequest(query?'OSS_METADATA':method==='PUT'?'OBJECT_PUT':'OBJECT_GET');
-  const request=privateOssRequest({bucket:config.bucket,region:config.region,credentials,key:pkg.key,method,body,query});return fetchImpl(request.url,request.options);
+  const request=privateOssRequest({bucket:config.bucket,region:config.region,credentials,key:pkg.key,method,body,query});
+  // A single bounded large upload can cross regions. Never restart it blindly;
+  // leave five minutes for reconciliation/cleanup even with slow transport.
+  const timeoutMs=Math.min(method==='PUT'?300000:120000,config.expiresAt-now()-300000);
+  check(timeoutMs>0,'CONTROL_TRANSFER_CLEANUP_RESERVE');
+  return fetchImpl(request.url,{...request.options,signal:AbortSignal.timeout(timeoutMs)});
  };
  const verify=(bytes,p)=>check(bytes.length===p.bytes&&digest(bytes)===p.sha256,'PACKAGE_BYTES_MISMATCH');
  let rollbackBytes;
@@ -126,10 +138,14 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
     const raw=await response.text();check(raw.length<65536&&/<Code>NoSuch(?:Key|Object)<\/Code>/.test(raw),'OBJECT_ABSENCE_NOT_CONFIRMED');
     check(!counters.puts.includes(pkg.sha256),'PREVIOUS_PUT_REQUIRES_RECONCILIATION');counters.puts.push(pkg.sha256);await save();
     // An unknown PUT is reconciled by GET, never retried as a second write.
-    try{const put=await oss(pkg,'PUT',bytes);await put.body?.cancel();}catch{}
+    try{const put=await oss(pkg,'PUT',bytes);counters.lastPut=put.ok?{httpStatus:put.status,serviceCode:'OK'}:await safeOssFailure(put);await put.body?.cancel().catch(()=>{});}
+    catch(error){counters.lastPut={httpStatus:0,serviceCode:error.name==='TimeoutError'?'TRANSPORT_TIMEOUT':'TRANSPORT_UNCONFIRMED'};}
+    await save();
     response=await oss(pkg);
    }
-   const crc64=response.headers.get('x-oss-hash-crc64ecma'),downloaded=await boundedBytes(response,pkg.bytes);verify(downloaded,pkg);
+   const crc64=response.headers.get('x-oss-hash-crc64ecma');let downloaded;
+   try{downloaded=await boundedBytes(response,pkg.bytes);}catch(error){if(error.safeDiagnostic)error.safeDiagnostic={...error.safeDiagnostic,operation:'GET_PACKAGE',...(counters.lastPut?{precedingPut:counters.lastPut}:{})};throw error;}
+   verify(downloaded,pkg);
    const aclResponse=await oss(pkg,'GET',undefined,'acl');check(aclResponse.ok,'OBJECT_ACL_UNCONFIRMED');const acl=await aclResponse.text();
    check(acl.length<65536&&/<Grant>(private|default)<\/Grant>/.test(acl),'OBJECT_NOT_PRIVATE');
    check(Date.now()-Date.parse(metadata.bucketPrivacy.checkedAt)<3600000,'BUCKET_PRIVACY_EXPIRED');
