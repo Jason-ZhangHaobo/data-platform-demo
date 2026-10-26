@@ -58,6 +58,35 @@ export function readonlyEntryProbeAccepted(result,probe,plan){
  }
 }
 
+export function readonlyProbeDiagnostic(result,probe,plan){
+ // Record enough to distinguish edge rejection, stale application gates and
+ // content mismatch, but never retain bodies, cookies, headers or PEM.
+ const status=Number.isInteger(result?.status)&&result.status>=100&&result.status<=599?result.status:0;
+ const expectedStatus=({'default-disabled':403,'entry-html':200,'anonymous-session':200,'readonly-agent':403,'readonly-publish':403,'private-internal':404,'unmapped-invoke':404,'foreign-origin':403,'invalid-login':401,'filing-display':200})[probe.id];
+ const reasons=[];
+ if(result?.tlsTrusted!==true)reasons.push('TLS_NOT_VERIFIED');
+ if(result?.endpointMatched!==true)reasons.push('ENDPOINT_NOT_VERIFIED');
+ if(probe.target==='domain'&&result?.certificateMatched!==true)reasons.push('CERTIFICATE_NOT_MATCHED');
+ if(result?.hasSetCookie===true)reasons.push('UNEXPECTED_COOKIE');
+ if(result?.privateProtocol===true)reasons.push('PRIVATE_PROTOCOL_EXPOSED');
+ if(status!==expectedStatus)reasons.push('HTTP_STATUS_MISMATCH');
+ const type=String(result?.contentType??'').split(';')[0].trim().toLowerCase();
+ if(probe.id==='entry-html'){
+  if(!String(result?.contentType??'').startsWith('text/html'))reasons.push('CONTENT_TYPE_MISMATCH');
+  if(result?.bodySha256!==plan.webIndexSha256)reasons.push('HTML_DIGEST_MISMATCH');
+  if(result?.attachment===true)reasons.push('ATTACHMENT_RESPONSE');
+ }
+ if(!readonlyEntryProbeAccepted(result,probe,plan)&&!reasons.length)reasons.push('APPLICATION_CONTRACT_MISMATCH');
+ const code=result?.body?.code??result?.serviceCode;
+ const knownCodes=['INGRESS_DENIED','PUBLIC_READ_ONLY','INVALID_LOGIN','DomainRouteNotFound','FunctionNotFound','AccessDenied','FunctionAccessDenied','FunctionNotReady','ServiceUnavailable','InternalServerError'];
+ return{probeId:probe.id,status,expectedStatus,reasons,tlsTrusted:result?.tlsTrusted===true,endpointMatched:result?.endpointMatched===true,certificateMatched:result?.certificateMatched===true,
+  contentType:['text/html','application/json','text/plain','application/octet-stream'].includes(type)?type:type?'OTHER':'MISSING',
+  bytes:Number.isSafeInteger(result?.bytes)&&result.bytes>=0&&result.bytes<=65536?result.bytes:null,
+  bodySha256:/^[a-f0-9]{64}$/.test(result?.bodySha256??'')?result.bodySha256:null,
+  ...(probe.id==='entry-html'?{expectedBodySha256:plan.webIndexSha256}:{}),
+  applicationCode:knownCodes.includes(code)?code:typeof code==='string'?'OTHER':'MISSING'};
+}
+
 export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.now,beginCleanup=()=>{},rollbackOnly=false}={}){
  check(typeof load==='function'&&typeof save==='function','READONLY_ENTRY_CHECKPOINT_REQUIRED');
  check(readonlyConfigIntegrity(change)&&change.operationId===plan?.operationId,'READONLY_ENTRY_CHANGE_INVALID');
@@ -202,7 +231,12 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
    const result=await adapter.probe(structuredClone(probe));
    if(['readonly-agent','readonly-publish'].includes(probe.id)&&result?.status>=200&&result.status<300)
     report.possibleUnexpectedWrite=true;
-   check(readonlyEntryProbeAccepted(result,probe,plan),'READONLY_ENTRY_PROBE_REJECTED');
+   if(!readonlyEntryProbeAccepted(result,probe,plan)){
+    cp.failedProbe=readonlyProbeDiagnostic(result,probe,plan);
+    report.failureDiagnostic=structuredClone(cp.failedProbe);
+    await persist();
+    check(false,'READONLY_ENTRY_PROBE_REJECTED');
+   }
    cp.probes.push({id:probe.id,status:result.status,accepted:true});await persist();
   }
   check(verifyInvitedReadonlyConfig(change,await readAll()),'READONLY_FINAL_CONFIGURATION_DRIFT');

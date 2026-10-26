@@ -17,7 +17,7 @@ import {codeUpdateProbes,INVITED_READONLY_CODE_SCOPE} from '../../scripts/contro
 import {codeUpdateConfig} from '../../scripts/control-code-update.mjs';
 import {createOpeningUsage} from '../../scripts/invited-opening-usage.mjs';
 import {runInvitedOpening} from '../../scripts/invited-opening-stage.mjs';
-import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyEntryProbes,readonlyProbesFor,readonlyEntryProbeAccepted,runReadonlyEntry} from '../../scripts/invited-readonly-entry.mjs';
+import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyEntryProbes,readonlyProbesFor,readonlyEntryProbeAccepted,readonlyProbeDiagnostic,runReadonlyEntry} from '../../scripts/invited-readonly-entry.mjs';
 import {READONLY_FILING_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE} from '../../scripts/invited-opening-scopes.mjs';
 
 // Disposable self-signed fixture only; never load project certificate material.
@@ -320,6 +320,7 @@ test('an unapplied or unknown create is not retried and does not delete an unrel
 test('failed acceptance closes only the owned entry and restores signed access without touching DNS or certificates',async()=>{
  const f=executionFixture({badProbe:'readonly-agent'}),r=await runReadonlyEntry(f.plan,f.change,f.adapter,f.storage);
  assert.equal(r.passed,false);assert.equal(r.failureAt,'readonly-agent');assert.equal(r.phase,'ROLLED_BACK');
+ assert.deepEqual(r.failureDiagnostic,f.checkpoint().failedProbe);assert(r.failureDiagnostic.reasons.includes('TLS_NOT_VERIFIED'));
  assert.deepEqual(r.rollback,{functionRestored:true,domainRestored:true,triggerAbsent:true,issues:[],entryClosed:true});
  assert.equal(f.cloud().domain.certConfig.certName,f.domain.certConfig.certName);
  assert.equal(f.cloud().domain.authConfig.authType,'function');
@@ -330,6 +331,15 @@ test('failed acceptance closes only the owned entry and restores signed access w
  const bad=await runReadonlyEntry(unexpected.plan,unexpected.change,unexpected.adapter,unexpected.storage);
  assert.equal(bad.passed,false);assert.equal(bad.possibleUnexpectedWrite,true);
  assert.equal(bad.modelCalls,undefined);assert.equal(bad.modelCallsRequested,0);
+});
+test('failed homepage evidence identifies status and content mismatch without copying response secrets',()=>{
+ const probe=readonlyEntryProbes.find(p=>p.id==='entry-html'),plan={webIndexSha256:'a'.repeat(64)};
+ const response={status:404,tlsTrusted:true,endpointMatched:true,certificateMatched:true,contentType:'application/json; charset=utf-8',bytes:40,bodySha256:'b'.repeat(64),body:{code:'INGRESS_DENIED',message:'secret-fixture-do-not-copy'},headers:{authorization:'secret-fixture-do-not-copy'},certificate:'secret-fixture-do-not-copy'};
+ const d=readonlyProbeDiagnostic(response,probe,plan);
+ assert.deepEqual(d.reasons,['HTTP_STATUS_MISMATCH','CONTENT_TYPE_MISMATCH','HTML_DIGEST_MISMATCH']);assert.equal(d.applicationCode,'INGRESS_DENIED');assert.equal(d.status,404);
+ assert(!JSON.stringify(d).includes('secret-fixture'));assert.equal(d.bodySha256,'b'.repeat(64));
+ const unexpected=readonlyProbeDiagnostic({...response,body:{code:'secret-fixture-do-not-copy'},contentType:'secret-fixture-do-not-copy',bodySha256:'secret-fixture-do-not-copy'},probe,plan);
+ assert.equal(unexpected.applicationCode,'OTHER');assert.equal(unexpected.contentType,'OTHER');assert.equal(unexpected.bodySha256,null);assert(!JSON.stringify(unexpected).includes('secret-fixture'));
 });
 test('foreign changes are not overwritten and do not prevent independent containment',async()=>{
  for(const options of [{foreignDomain:true},{foreignFunction:true}]){
