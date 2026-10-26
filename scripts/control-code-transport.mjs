@@ -4,7 +4,7 @@ import {execFileSync} from 'node:child_process';
 import {readFileSync,writeFileSync,existsSync,mkdirSync,renameSync,appendFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {codeUpdateConfig,codeUpdateLimits,codeUpdateProbes,runControlCodeUpdate,INVITED_READONLY_CODE_SCOPE} from './control-code-update.mjs';
+import {codeUpdateConfig,codeUpdateLimits,codeUpdateProbes,runControlCodeUpdate,INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE} from './control-code-update.mjs';
 import {auditErrorDetails,recipientKey,sealReport} from './audit-v2-oidc-readonly.mjs';
 import {verifyV2MonthlyBillPages} from './verify-v2-monthly-bill-pages.mjs';
 const check=(v,c)=>{if(!v)throw Object.assign(new Error(c),{safeCode:c});};
@@ -53,7 +53,7 @@ export function deploymentInput(env,now=Date.now()){
 }
 export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=fetch,exec=execFileSync,saveTransport,loadTransport,candidateBytes,saveBackup,now=Date.now,beforeRequest=()=>{},rollbackFromVerifiedObject=false}={}){
  const base=`/2023-03-30/functions/${config.functionName}`;
- const openingScope=config.authorization===INVITED_READONLY_CODE_SCOPE;
+ const openingScope=[INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE].includes(config.authorization);
  check(!rollbackFromVerifiedObject||openingScope,'ROLLBACK_OBJECT_SCOPE_INVALID');
  if(openingScope)check(typeof saveTransport==='function','DURABLE_TRANSPORT_CHECKPOINT_REQUIRED');
  let counters=loadTransport?.()??{codeReads:0,puts:[],...(openingScope?{configurationReads:0}:{})};

@@ -1,7 +1,8 @@
 // Pure, narrowly scoped configuration diff. No credential loading, network,
 // IAM, DNS/certificate operations, automatic deployment or approval inference.
 import { createHash } from 'node:crypto';
-import { codeUpdateBoundaryHash, codeUpdateProbes, INVITED_READONLY_CODE_SCOPE } from './control-code-update.mjs';
+import { codeUpdateBoundaryHash, codeUpdateProbes } from './control-code-update.mjs';
+import {READONLY_ENTRY_SCOPE,openingScope,publicSitePatch} from './invited-opening-scopes.mjs';
 import { domainConfigurationMatches } from './v2-domain-binding-plan.mjs';
 const check=(value,code)=>{if(!value)throw Object.assign(new Error(code),{safeCode:code});};
 const canonical=value=>JSON.stringify(value&&typeof value==='object'?Array.isArray(value)?value.map(v=>JSON.parse(canonical(v))):Object.fromEntries(Object.keys(value).sort().map(k=>[k,JSON.parse(canonical(value[k]))])):value??null);
@@ -9,7 +10,8 @@ const hash=value=>createHash('sha256').update(canonical(value)).digest('hex');
 const stateHash=state=>hash({protected:codeUpdateBoundaryHash(state),checksum:String(state.function?.codeChecksum),bytes:Number(state.function?.codeSize),extra:Object.fromEntries(['customDNS','disableOndemand','instanceLifecycleConfig','invocationRestriction'].map(k=>[k,state.function?.[k]??null]))});
 const same=(a,b)=>canonical(a)===canonical(b);
 
-export function prepareInvitedReadonlyConfig({state,domain,retainedPlan,operationId,expectedCode,privateCodeEvidence}){
+export function prepareInvitedReadonlyConfig({state,domain,retainedPlan,operationId,expectedCode,privateCodeEvidence,authorization=READONLY_ENTRY_SCOPE,publicSite}){
+ const scope=openingScope(authorization),filingPatch=scope.filingRepair?publicSitePatch(publicSite):{};
  check(/^[a-f0-9]{32}$/.test(operationId??''),'READONLY_OPERATION_INVALID');
  check(retainedPlan?.target?.domainName==='shuduoai.cn'&&domainConfigurationMatches(domain,retainedPlan),'RETAINED_SIGNED_DOMAIN_NOT_VERIFIED');
  const fn=state?.function,env=fn?.environmentVariables;
@@ -18,7 +20,7 @@ export function prepareInvitedReadonlyConfig({state,domain,retainedPlan,operatio
  // Old code does not implement the read-only flag: setting that flag alone is
  // never a safe way to open the prior application version.
  check(/^[a-f0-9]{40}$/.test(expectedCode?.applicationSource??'')&&/^[a-f0-9]{64}$/.test(expectedCode?.sha256??'')&&Number.isSafeInteger(expectedCode?.bytes),'READONLY_EXPECTED_CODE_INVALID');
- check(report?.passed===true&&report.operationId===operationId&&report.scope==='PRIVATE_CONTROL_CODE_ONLY'&&report.requestScope===INVITED_READONLY_CODE_SCOPE&&report.applicationSource===expectedCode.applicationSource&&report.newInvocations===6&&report.cumulativeInvocations===61&&report.publicEnabled===false&&report.modelCalls===0&&report.sparkRuns===0,'READONLY_PRIVATE_CODE_EVIDENCE_REQUIRED');
+ check(report?.passed===true&&report.operationId===operationId&&report.scope==='PRIVATE_CONTROL_CODE_ONLY'&&report.requestScope===scope.codeAuthorization&&report.applicationSource===expectedCode.applicationSource&&report.newInvocations===6&&report.cumulativeInvocations===scope.historicalRequests+6&&report.publicEnabled===false&&report.modelCalls===0&&report.sparkRuns===0,'READONLY_PRIVATE_CODE_EVIDENCE_REQUIRED');
  check(cp?.phase==='VERIFIED'&&cp.operationId===operationId&&cp.candidateSha===expectedCode.sha256&&receipt?.sha256===expectedCode.sha256&&receipt.bytes===expectedCode.bytes&&/^\d{1,30}$/.test(receipt.crc64??'')&&String(fn?.codeChecksum)===receipt.crc64&&fn.codeSize===receipt.bytes&&same(cp.probes,codeUpdateProbes.map(p=>({id:p.id,passed:true}))),'READONLY_DEPLOYED_CODE_NOT_VERIFIED');
  const codeConfigurationReads=privateCodeEvidence?.transport?.configurationReads;
  const minimumCodeReads=privateCodeEvidence?.transport?.rollbackSource==='VERIFIED_PRIVATE_OBJECT'?16:17;
@@ -28,16 +30,16 @@ export function prepareInvitedReadonlyConfig({state,domain,retainedPlan,operatio
  check(Array.isArray(state.triggers)&&state.triggers.length===2&&state.triggers.every(t=>t.triggerType==='oss')&&state.concurrency?.reservedConcurrency===1&&state.scaling?.minInstances===0,'READONLY_RESOURCE_BOUNDARY_MISMATCH');
  check(/^\d{1,30}$/.test(String(fn.codeChecksum))&&Number.isSafeInteger(fn.codeSize)&&fn.codeSize>0,'READONLY_CODE_IDENTITY_REQUIRED');
  const origin='https://shuduoai.cn';
- const functionBody={environmentVariables:{...env,V2_FC_PUBLIC_HTTP_ENABLED:'true',V2_FC_PUBLIC_READ_ONLY:'true',V2_PUBLIC_URL:`${origin}/v2/`,V2_PUBLIC_ORIGIN:origin}};
+ const functionBody={environmentVariables:{...env,...filingPatch,V2_FC_PUBLIC_HTTP_ENABLED:'true',V2_FC_PUBLIC_READ_ONLY:'true',V2_PUBLIC_URL:`${origin}/v2/`,V2_PUBLIC_ORIGIN:origin}};
  const triggerBody={triggerName:'shuduo-invited-readonly',triggerType:'http',qualifier:'LATEST',description:`shuduo-readonly-${operationId}`,triggerConfig:JSON.stringify({authType:'anonymous',disableURLInternet:true,methods:['GET','POST']})};
  const expectedState={...structuredClone(state),function:{...structuredClone(fn),...functionBody}};
  const change={
-  operationId,expectedCode:structuredClone(expectedCode),codeConfigurationReads,retainedPlan:structuredClone(retainedPlan),baselineHash:stateHash(state),openedHash:stateHash(expectedState),originalTriggers:structuredClone(state.triggers),resourceConfiguration:{concurrency:structuredClone(state.concurrency),scaling:structuredClone(state.scaling)},
+  authorization,...(scope.filingRepair?{publicSite:structuredClone(publicSite)}:{}),operationId,expectedCode:structuredClone(expectedCode),codeConfigurationReads,retainedPlan:structuredClone(retainedPlan),baselineHash:stateHash(state),openedHash:stateHash(expectedState),originalTriggers:structuredClone(state.triggers),resourceConfiguration:{concurrency:structuredClone(state.concurrency),scaling:structuredClone(state.scaling)},
   // Request bodies contain the pre-existing environment. Only use them in
   // memory/protected encrypted checkpoints, never public summaries or Git.
   functionBody,domainBody:{authConfig:{authType:'anonymous',authInfo:'{}'}},triggerBody,
   rollbackFunctionBody:{environmentVariables:structuredClone(env)},rollbackDomainBody:{authConfig:{authType:'function',authInfo:'{}'}},
-  summary:{scope:'INVITED_READONLY_CONFIG_PREPARATION',changedEnvironmentKeys:['V2_FC_PUBLIC_HTTP_ENABLED','V2_FC_PUBLIC_READ_ONLY','V2_PUBLIC_URL','V2_PUBLIC_ORIGIN'],dnsChanges:0,certificateChanges:0,capacityChanges:0,originalTriggerChanges:0,newHttpTriggers:1,modelCalls:0,sparkRuns:0,applied:false},
+  summary:{scope:'INVITED_READONLY_CONFIG_PREPARATION',changedEnvironmentKeys:['V2_FC_PUBLIC_HTTP_ENABLED','V2_FC_PUBLIC_READ_ONLY','V2_PUBLIC_URL','V2_PUBLIC_ORIGIN',...Object.keys(filingPatch)],dnsChanges:0,certificateChanges:0,capacityChanges:0,originalTriggerChanges:0,newHttpTriggers:1,modelCalls:0,sparkRuns:0,applied:false},
  };
  return{...change,changeHash:hash(change)};
 }
@@ -52,11 +54,12 @@ function ownedHttpTrigger(value,expected){
 
 export function readonlyConfigIntegrity(change){
  if(!change||typeof change!=='object')return false;
+ let scope,filingPatch;try{scope=openingScope(change.authorization??READONLY_ENTRY_SCOPE);filingPatch=scope.filingRepair?publicSitePatch(change.publicSite):{};}catch{return false;}
  const {changeHash,...definition}=change;
  if(hash(definition)!==changeHash||change.retainedPlan?.target?.domainName!=='shuduoai.cn')return false;
  const before=change.rollbackFunctionBody?.environmentVariables,after=change.functionBody?.environmentVariables;
  if(!before||!after||Object.keys(change.functionBody).join()!=='environmentVariables'||Object.keys(change.rollbackFunctionBody).join()!=='environmentVariables')return false;
- const patch={V2_FC_PUBLIC_HTTP_ENABLED:'true',V2_FC_PUBLIC_READ_ONLY:'true',V2_PUBLIC_URL:'https://shuduoai.cn/v2/',V2_PUBLIC_ORIGIN:'https://shuduoai.cn'};
+ const patch={...filingPatch,V2_FC_PUBLIC_HTTP_ENABLED:'true',V2_FC_PUBLIC_READ_ONLY:'true',V2_PUBLIC_URL:'https://shuduoai.cn/v2/',V2_PUBLIC_ORIGIN:'https://shuduoai.cn'};
  if(!same(after,{...before,...patch})||before.V2_LOCAL_DEVELOPMENT!=='false'||before.V2_PROVISIONING_ONLY!=='true'||before.V2_PRIVATE_SMOKE_ENABLED!=='true'||before.V2_FC_PUBLIC_HTTP_ENABLED==='true')return false;
  if(!same(change.domainBody,{authConfig:{authType:'anonymous',authInfo:'{}'}})||!same(change.rollbackDomainBody,{authConfig:{authType:'function',authInfo:'{}'}}))return false;
  return same(change.triggerBody,{triggerName:'shuduo-invited-readonly',triggerType:'http',qualifier:'LATEST',description:`shuduo-readonly-${change.operationId}`,triggerConfig:JSON.stringify({authType:'anonymous',disableURLInternet:true,methods:['GET','POST']})});

@@ -2,6 +2,8 @@
 // module has no credentials, file writes, network calls or automatic execution.
 import {createHash} from 'node:crypto';
 import {controlPackageObject} from './render-v2-control-package-policy.mjs';
+import {INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE} from './invited-opening-scopes.mjs';
+export {INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE};
 const fail=code=>Object.assign(new Error(code),{safeCode:code});
 const check=(v,c)=>{if(!v)throw fail(c);};
 const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v??null);
@@ -9,12 +11,12 @@ const hash=v=>createHash('sha256').update(canonical(v)).digest('hex');
 const fields=['functionName','runtime','handler','role','timeout','cpu','memorySize','diskSize','instanceConcurrency','internetAccess','vpcConfig','customRuntimeConfig','layers','nasConfig','ossMountConfig','logConfig','environmentVariables'];
 export const codeUpdateBoundaryHash=state=>hash({function:Object.fromEntries(fields.map(k=>[k,state.function?.[k]??null])),triggers:[...(state.triggers??[])].sort((a,b)=>a.triggerName.localeCompare(b.triggerName)),concurrency:state.concurrency,scaling:state.scaling});
 const codeMatches=(f,p)=>String(f?.codeChecksum)===p.crc64&&Number(f?.codeSize)===p.bytes;
-export const INVITED_READONLY_CODE_SCOPE='INVITED_READ_ONLY_CODE_REFRESH';
 export function codeUpdateLimits(authorization){
  if(authorization==='P0A_PRIVATE_CODE_ONLY')return{previousInvocations:11,maxInvocations:8,maxUpdateAttempts:2,maxRollbackAttempts:1};
  // A separate code-only substep of the proposed opening grant. This is not
  // permission to open HTTP or reset the 55 historical acceptance requests.
  if(authorization===INVITED_READONLY_CODE_SCOPE)return{previousInvocations:55,maxInvocations:6,maxUpdateAttempts:1,maxRollbackAttempts:1,maxConfigurationReads:30};
+ if(authorization===INVITED_READONLY_FILING_CODE_SCOPE)return{previousInvocations:61,maxInvocations:6,maxUpdateAttempts:1,maxRollbackAttempts:1,maxConfigurationReads:30};
  throw fail('CODE_UPDATE_NOT_AUTHORIZED');
 }
 export const codeUpdateProbes=Object.freeze([
@@ -54,8 +56,9 @@ export async function runControlCodeUpdate(config,adapter,{load,save,now=Date.no
  const normalized=codeUpdateConfig({...config,expiresAt:new Date(config.expiresAt).toISOString()},config.issuedAt);
  check(canonical(config)===canonical(normalized),'CODE_UPDATE_CONFIG_CHANGED');
  config=normalized;
- check(!rollbackOnly||config.authorization===INVITED_READONLY_CODE_SCOPE,'OUTER_ROLLBACK_SCOPE_INVALID');
- if(config.authorization===INVITED_READONLY_CODE_SCOPE)check(now()<config.expiresAt-60000,'UPDATE_WINDOW_EXPIRED');
+ const opening=[INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE].includes(config.authorization);
+ check(!rollbackOnly||opening,'OUTER_ROLLBACK_SCOPE_INVALID');
+ if(opening)check(now()<config.expiresAt-60000,'UPDATE_WINDOW_EXPIRED');
  check(typeof load==='function'&&typeof save==='function','DURABLE_UPDATE_CHECKPOINT_REQUIRED');
  let cp=structuredClone(await load()),checkpointValidated=false,mayNeedRollback=false;
  const report={scope:'PRIVATE_CONTROL_CODE_ONLY',requestScope:config.authorization,passed:false,applicationSource:config.applicationSource,operatorSource:config.operatorSource,modelCalls:0,sparkRuns:0,publicEnabled:false};

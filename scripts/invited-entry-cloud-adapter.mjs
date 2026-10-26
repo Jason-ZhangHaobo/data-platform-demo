@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto';
 import {auditErrorDetails} from './audit-v2-oidc-readonly.mjs';
 import {scalingConfiguration} from './control-code-transport.mjs';
 import {readonlyConfigIntegrity,readonlyTriggerState} from './invited-readonly-config.mjs';
-import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyEntryProbes} from './invited-readonly-entry.mjs';
+import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyProbesFor} from './invited-readonly-entry.mjs';
 
 const check=(value,code)=>{if(!value)throw Object.assign(new Error(code),{safeCode:code});};
 const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v??null);
@@ -21,8 +21,8 @@ export function readonlyDefaultEndpoint(raw,region='cn-hangzhou'){
  return url.origin;
 }
 
-export async function readReadonlyHttpsProbe(endpoint,probe,certificateSha256,{request=httpsRequest,timeoutMs=20000}={}){
- const known=readonlyEntryProbes.find(p=>p.id===probe?.id);
+export async function readReadonlyHttpsProbe(endpoint,probe,certificateSha256,{request=httpsRequest,timeoutMs=20000,authorization=READONLY_ENTRY_SCOPE}={}){
+ const known=readonlyProbesFor(authorization).find(p=>p.id===probe?.id);
  check(known&&same(probe,known),'READONLY_PROBE_OUTSIDE_SCOPE');
  const origin=probe.target==='domain'?'https://shuduoai.cn':readonlyDefaultEndpoint(endpoint);
  check(endpoint===origin&&/^[a-f0-9]{64}$/.test(certificateSha256??''),'READONLY_PROBE_TARGET_INVALID');
@@ -50,6 +50,7 @@ export async function readReadonlyHttpsProbe(endpoint,probe,certificateSha256,{r
      ...(typeof parsed?.readOnly==='boolean'?{readOnly:parsed.readOnly}:{}),
      ...(code?{code}:{}),
      ...(parsed?.message==='请求来源不允许'?{message:parsed.message}:{}),
+     ...(probe.id==='filing-display'?{site:{icpNumber:typeof parsed?.site?.icpNumber==='string'?parsed.site.icpNumber.slice(0,100):null,registeredName:typeof parsed?.site?.registeredName==='string'?parsed.site.registeredName.slice(0,100):null}}:{}),
     };
     settled=true;clearTimeout(timer);
     resolve({status:res.statusCode,tlsTrusted,endpointMatched:tlsTrusted,certificateMatched:matched,hasSetCookie:Boolean(res.headers['set-cookie']),privateProtocol:raw.includes(Buffer.from('shuduo-v2-private-smoke'))||String(parsed?.protocol??'').startsWith('shuduo-private-'),attachment:/attachment/i.test(String(res.headers['content-disposition']??'')),contentType:String(res.headers['content-type']??'').slice(0,100),bodySha256:sha(raw),serviceCode:code,body,bytes});
@@ -65,7 +66,7 @@ export function createReadonlyEntryCloudAdapter({plan,change,env=process.env,exe
  check(readonlyConfigIntegrity(change)&&plan.operationId===change.operationId,'READONLY_TRANSPORT_CHANGE_INVALID');
  const normalized=readonlyEntryPlan({...plan,issuedAt:new Date(plan.issuedAt).toISOString(),expiresAt:new Date(plan.expiresAt).toISOString()},plan.issuedAt);
  check(same(plan,normalized),'READONLY_TRANSPORT_PLAN_INVALID');
- check(env.GITHUB_ACTIONS==='true'&&env.GITHUB_REF==='refs/heads/main'&&env.GITHUB_SHA===plan.operatorSource&&env.V2_READONLY_OPENING_APPROVED===READONLY_ENTRY_SCOPE,'READONLY_PROTECTED_TRANSPORT_REQUIRED');
+ check(env.GITHUB_ACTIONS==='true'&&env.GITHUB_REF==='refs/heads/main'&&env.GITHUB_SHA===plan.operatorSource&&env.V2_READONLY_OPENING_APPROVED===plan.authorization,'READONLY_PROTECTED_TRANSPORT_REQUIRED');
  check(env.ALIBABA_CLOUD_ACCESS_KEY_ID&&env.ALIBABA_CLOUD_ACCESS_KEY_SECRET&&env.ALIBABA_CLOUD_SECURITY_TOKEN,'READONLY_STS_REQUIRED');
  const target=change.retainedPlan.target,base='/2023-03-30/functions/'+target.functionName;
  check(target.region==='cn-hangzhou'&&/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(target.functionName)&&/^\d{12,20}$/.test(target.account??''),'READONLY_TRANSPORT_TARGET_INVALID');
@@ -90,7 +91,7 @@ export function createReadonlyEntryCloudAdapter({plan,change,env=process.env,exe
   active();
   beforeRequest(body?'ENTRY_WRITE':'DOMAIN_READ');
   try{
-   const raw=exec('python3',['scripts/transport-v2-domain-signed.py'],{input:JSON.stringify({authorization:READONLY_ENTRY_SCOPE,domainName:'shuduoai.cn',operation:body?'update':'get',...(body?{body}:{})}),encoding:'utf8',timeout:Math.min(30000,Math.max(1,plan.expiresAt-now())),maxBuffer:1048576,stdio:['pipe','pipe','pipe'],env:cliEnv});
+   const raw=exec('python3',['scripts/transport-v2-domain-signed.py'],{input:JSON.stringify({authorization:plan.authorization,domainName:'shuduoai.cn',operation:body?'update':'get',...(body?{body}:{})}),encoding:'utf8',timeout:Math.min(30000,Math.max(1,plan.expiresAt-now())),maxBuffer:1048576,stdio:['pipe','pipe','pipe'],env:cliEnv});
    const result=JSON.parse(raw);
    if(result.status!==200)throw Object.assign(new Error('READONLY_DOMAIN_REQUEST_UNCONFIRMED'),{safeDiagnostic:{operation:body?'DOMAIN_UPDATE':'DOMAIN_GET',httpStatus:Number.isInteger(result.status)?result.status:0,serviceCode:typeof result.code==='string'&&/^[A-Za-z][A-Za-z0-9_.-]{0,99}$/.test(result.code)?result.code:'UNCONFIRMED',category:result.status===403?'PERMISSION':result.status===401?'AUTHENTICATION':result.status===400?'INPUT':'TRANSPORT'}});
    return body?{status:200}:result.value;
@@ -120,7 +121,7 @@ export function createReadonlyEntryCloudAdapter({plan,change,env=process.env,exe
    const endpoint=probe.target==='domain'?'https://shuduoai.cn':defaultEndpoint;
    check(endpoint,'READONLY_DEFAULT_URL_NOT_VERIFIED');
    beforeRequest('HTTP_PROBE');
-   return readReadonlyHttpsProbe(endpoint,probe,change.retainedPlan.desired.certificateSha256,{request,timeoutMs:Math.min(20000,Math.max(1,plan.expiresAt-now()))});
+   return readReadonlyHttpsProbe(endpoint,probe,change.retainedPlan.desired.certificateSha256,{request,authorization:plan.authorization,timeoutMs:Math.min(20000,Math.max(1,plan.expiresAt-now()))});
   },
  };
 }

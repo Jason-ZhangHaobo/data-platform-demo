@@ -35,8 +35,8 @@ def safe_response(status, raw, operation):
 
 
 def request_shape(data):
-    opening = data.get('authorization') == 'INVITED_READ_ONLY_OPENING_V2'
-    if data.get('authorization') not in ('ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED', 'INVITED_READ_ONLY_OPENING_V2') or data.get('domainName') != 'shuduoai.cn':
+    opening = data.get('authorization') in ('INVITED_READ_ONLY_OPENING_V2', 'INVITED_READ_ONLY_FILING_REPAIR')
+    if data.get('authorization') not in ('ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED', 'INVITED_READ_ONLY_OPENING_V2', 'INVITED_READ_ONLY_FILING_REPAIR') or data.get('domainName') != 'shuduoai.cn':
         raise ValueError('INVALID_TARGET')
     operation = data.get('operation')
     if operation not in (('get', 'update') if opening else ('get', 'create', 'delete')):
