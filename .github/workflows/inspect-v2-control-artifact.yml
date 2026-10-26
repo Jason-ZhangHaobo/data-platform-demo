@@ -1,0 +1,51 @@
+name: Inspect existing V2 control artifact
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        required: true
+        type: string
+      build_run_id:
+        required: true
+        type: string
+      artifact_id:
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_revision }}
+          path: .artifact-source
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@v6
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: .artifact-package
+      - name: Inspect without executing or rebuilding the package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V2_INSPECT_SOURCE: ${{ inputs.source_revision }}
+          V2_INSPECT_BUILD: ${{ inputs.build_run_id }}
+          V2_INSPECT_ARTIFACT: ${{ inputs.artifact_id }}
+        run: node scripts/inspect-control-artifact.mjs
+      - uses: actions/upload-artifact@v6
+        with:
+          name: control-artifact-inspection-${{ github.run_id }}
+          path: control-artifact-inspection.json
+          retention-days: 1
+          if-no-files-found: error
