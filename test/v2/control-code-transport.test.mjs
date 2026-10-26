@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {codeUpdateConfig,INVITED_READONLY_CODE_SCOPE} from '../../scripts/control-code-update.mjs';
 import {INVITED_READONLY_RUNTIME_CODE_SCOPE} from '../../scripts/invited-opening-scopes.mjs';
-import {boundedBytes,codeDownloadUrl,controlCloudAdapter,deploymentInput,privateOssRequest,scalingConfiguration} from '../../scripts/control-code-transport.mjs';
+import {boundedBytes,codeDownloadUrl,controlCloudAdapter,deploymentInput,privateOssRequest,scalingConfiguration,safeOssFailure} from '../../scripts/control-code-transport.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const now=Date.UTC(2026,9,24),old=Buffer.from('old-code'),next=Buffer.from('new-code');
 const raw={authorization:'P0A_PRIVATE_CODE_ONLY',operationId:'a'.repeat(32),applicationSource:'b'.repeat(40),operatorSource:'c'.repeat(40),account:'111122223333',role:'fixture-role',functionName:'fixture-control',bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:11,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:hash(old),bytes:old.length,crc64:'123'},candidate:{sha256:hash(next),bytes:next.length}};
@@ -39,6 +39,12 @@ test('rollback download is HTTPS-only to the expected regional OSS, with byte bo
  assert.deepEqual(await boundedBytes(new Response(next),next.length),next);
  await assert.rejects(boundedBytes(new Response(next),2),/TOO_LARGE/);
  await assert.rejects(boundedBytes(new Response('error',{status:403}),100),/NOT_CONFIRMED/);
+});
+test('OSS errors keep only status and allowlisted code, never response credentials or arbitrary XML text',async()=>{
+ const response=new Response('<Error><Code>AccessDenied</Code><Message>synthetic-secret-never-retain</Message></Error>',{status:403});
+ assert.deepEqual(await safeOssFailure(response),{httpStatus:403,serviceCode:'AccessDenied'});
+ await assert.rejects(boundedBytes(new Response('<Error><Code>NoSuchKey</Code><RequestId>private-fixture</RequestId></Error>',{status:404}),100),e=>e.safeCode==='OBJECT_READ_NOT_CONFIRMED'&&e.safeDiagnostic.serviceCode==='NoSuchKey'&&!JSON.stringify(e).includes('private-fixture'));
+ assert.equal((await safeOssFailure(new Response('<Code>PrivateAccountValue</Code>',{status:400}))).serviceCode,'UNCLASSIFIED_OSS_ERROR');
 });
 test('object writes are create-only binary requests without ACL mutation, and scaling excludes runtime counters',()=>{
  const credentials={accessKeyId:'fixture-id',accessKeySecret:'fixture-key',securityToken:'fixture-token'};
