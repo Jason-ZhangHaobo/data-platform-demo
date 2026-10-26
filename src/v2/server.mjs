@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { publicCapabilityStatus } from "./public-status.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
@@ -260,7 +261,7 @@ export function createV2Server(options = {}) {
   const durableDevelopment = rawRunner.durable,
     persistDevelopment = async () => { if (typeof persistence.flush === "function") await persistence.flush(); },
     reconcileDevelopment = async run => durableDevelopment
-      ? reconcileDurableDevelopment(run, { runner: durableDevelopment, store, project: PROJECT, persist: persistDevelopment, contextIds, contractId: validationContractId })
+      ? reconcileDurableDevelopment(run, { runner: durableDevelopment, store, project: PROJECT, persist: persistDevelopment, contextIds, contractId: validationContractId, allowSubmit: false })
       : run;
   const pythonRunner =
     options.pythonRunner ?? ((input) => runRestrictedPython(input, pythonRuntime));
@@ -311,8 +312,18 @@ export function createV2Server(options = {}) {
       assertModelBudget: () => budget.assertCanStartModel(), assertRunBudget: () => budget.assertCanStartRemoteSpark(),
       tokenBudget: Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000), now: options.now ?? Date.now })
     : undefined;
-  const mayReadDurableAgent = (task, session) => task.executionMode !== durableSqlAgentMode ||
-    local || session?.role === "ADMIN" || (session && task.submittedBy === session.user.id);
+  const mayReadDurableAgent = (task, session) =>
+    local || session?.role === "ADMIN" || Boolean(session && task?.submittedBy === session.user.id);
+  const mayReadRevision = (item, session) =>
+    local || session?.role === "ADMIN" || Boolean(session && item?.author === session.user.id);
+  const mayReadRun = (item, session, kind = "revision") =>
+    (local || session?.role === "ADMIN") || Boolean(session && mayReadRevision(store.get(kind, item.revisionId, PROJECT), session) &&
+      (!item.agentTaskId || mayReadDurableAgent(store.get("agent", item.agentTaskId, PROJECT), session)));
+  const requireDevelopmentOwner = (kind, item, req) => {
+    const session = auth.sessionFromHeaders(req.headers);
+    if (!(kind === "revision" || kind === "python_revision" ? mayReadRevision(item, session) : mayReadRun(item, session, kind === "python_run" ? "python_revision" : "revision")))
+      throw Object.assign(fail(403, "无权读取或操作此开发记录"), { code: "DEVELOPMENT_ACCESS_DENIED" });
+  };
   const requireDurableAgentOwner = (task, req) => {
     if (!mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)))
       throw fail(403, "无权操作此 Agent 任务");
@@ -925,21 +936,22 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
-  const revision = (sql, contextId, source) =>
+  const revision = (sql, contextId, source, author = "local-engineer") =>
     store.create("revision", PROJECT, {
       sql,
       contextId,
       source,
       hash: hash(sql),
-      author: "local-engineer",
+      author,
     });
-  const pythonRevision = (code, contextId, source) =>
+  const pythonRevision = (code, contextId, source, author = "local-engineer") =>
     store.create("python_revision", PROJECT, {
       language: "PYTHON",
       code,
       codeHash: hash(code),
       contextId,
       source,
+      author,
       executionScope: "LOCAL_RESTRICTED_PYTHON",
       publicDeployed: false,
     });
@@ -1366,11 +1378,12 @@ export function createV2Server(options = {}) {
         );
       }
       if (path === "/api/v2/status" && method === "GET") {
+        const mayReadAdminStatus = local || auth.sessionFromHeaders(req.headers)?.role === "ADMIN";
         const cloudReplication =
           typeof options.stateCoordinator?.replicationStatus === "function"
             ? options.stateCoordinator.replicationStatus()
             : undefined;
-        return json(res, 200, {
+        const status = {
           projectId: PROJECT,
           mode: local ? "LOCAL_DEVELOPMENT" : "PUBLIC_INVITATION",
           site: {
@@ -1509,21 +1522,28 @@ export function createV2Server(options = {}) {
             publicDeployed: false,
           },
           authentication: {
-            ...auth.overview(),
+            ...(mayReadAdminStatus ? auth.overview() : {}),
             mode: local ? "LOCAL_DEVELOPMENT_BYPASS" : "INVITATION_SESSION",
             publicSessionEnforced: !local,
           },
           artifacts: artifactStore.status(),
-          budget: budget.overview(),
+          ...(mayReadAdminStatus ? { budget: budget.overview() } : {}),
           scheduler: {
             mode: releaseSchedulerMode,
             durableTickConfigured: Boolean(schedulerTickConfig),
             publicDeployed: false,
           },
-        });
+        };
+        return json(res, 200, mayReadAdminStatus ? status : publicCapabilityStatus(status));
       }
-      if (path === "/api/v2/budget" && method === "GET")
+      if (path === "/api/v2/budget" && method === "GET") {
+        if (!local) {
+          const actor = auth.sessionFromHeaders(req.headers);
+          if (!actor) throw Object.assign(fail(401, "请先登录管理员账号查看费用与用量"), { code: "AUTHENTICATION_REQUIRED" });
+          if (actor.role !== "ADMIN") throw Object.assign(fail(403, "仅项目管理员可查看费用与用量"), { code: "PROJECT_PERMISSION_DENIED" });
+        }
         return json(res, 200, budget.overview());
+      }
       if (path === "/api/v2/cloud/readiness" && method === "GET") {
         const session = auth.sessionFromHeaders(req.headers);
         if (!local && !session)
@@ -1555,6 +1575,11 @@ export function createV2Server(options = {}) {
             Object.fromEntries(url.searchParams),
           ),
         );
+      if (!local && method === "GET" && path.startsWith("/api/v2/") && !["/api/v2/contexts", "/api/v2/agent/tools"].includes(path) && !auth.sessionFromHeaders(req.headers)) {
+        const emptyLists = new Set(["/api/v2/revisions", "/api/v2/runs", "/api/v2/python/revisions", "/api/v2/python/runs", "/api/v2/agent/tasks", "/api/v2/agent/deliveries"]);
+        if (emptyLists.has(path)) return json(res, 200, []);
+        throw Object.assign(fail(401, "请先登录受邀账号查看项目数据"), { code: "AUTHENTICATION_REQUIRED" });
+      }
       if (path === "/api/v2/contexts" && method === "GET")
         return json(res, 200, contextIds.map(publicContext));
       if (path === "/api/v2/sources" && method === "GET")
@@ -2793,23 +2818,26 @@ export function createV2Server(options = {}) {
         return json(res, 200, configured);
       }
       if (path === "/api/v2/revisions" && method === "GET")
-        return json(res, 200, store.list("revision", PROJECT));
+        return json(res, 200, store.list("revision", PROJECT).filter(item => mayReadRevision(item, auth.sessionFromHeaders(req.headers))));
       if (path === "/api/v2/runs" && method === "GET")
-        return json(res, 200, await Promise.all(store.list("run", PROJECT).map(async run => publicDevelopmentRun(await reconcileDevelopment(run)))));
+        return json(res, 200, await Promise.all(store.list("run", PROJECT).filter(item => mayReadRun(item, auth.sessionFromHeaders(req.headers))).map(async run => publicDevelopmentRun(await reconcileDevelopment(run)))));
       if (path === "/api/v2/python/revisions" && method === "GET")
-        return json(res, 200, store.list("python_revision", PROJECT));
+        return json(res, 200, store.list("python_revision", PROJECT).filter(item => mayReadRevision(item, auth.sessionFromHeaders(req.headers))));
       if (path === "/api/v2/python/revisions" && method === "POST") {
         const body = await readBody(req),
           code = text(body.code, 20, 20_000),
           context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效Python数据上下文");
-        const key = text(req.headers["idempotency-key"], 1, 100),
-          signature = hash(JSON.stringify({ code, contextId: context.id })),
+        const key = text(req.headers["idempotency-key"], 1, 100);
+        const existingPythonRevision = store.deduplicatedId(`${PROJECT}:python-revision:${key}`);
+        if (existingPythonRevision) requireDevelopmentOwner("python_revision", get("python_revision", existingPythonRevision), req);
+        const signature = hash(JSON.stringify({ code, contextId: context.id })),
           dedup = store.deduplicate(
             `${PROJECT}:python-revision:${key}`,
             signature,
             () =>
               store.create("python_revision", PROJECT, {
+                author: local ? "local-engineer" : auth.sessionFromHeaders(req.headers).user.id,
                 language: "PYTHON",
                 code,
                 codeHash: hash(code),
@@ -2819,14 +2847,12 @@ export function createV2Server(options = {}) {
                 publicDeployed: false,
               }),
           );
-        return json(
-          res,
-          dedup.replayed ? 200 : 201,
-          get("python_revision", dedup.id),
-        );
+        const saved = get("python_revision", dedup.id);
+        requireDevelopmentOwner("python_revision", saved, req);
+        return json(res, dedup.replayed ? 200 : 201, saved);
       }
       if (path === "/api/v2/python/runs" && method === "GET")
-        return json(res, 200, store.list("python_run", PROJECT));
+        return json(res, 200, store.list("python_run", PROJECT).filter(item => mayReadRun(item, auth.sessionFromHeaders(req.headers), "python_revision")));
       if (path === "/api/v2/python/runs" && method === "POST") {
         if (!options.pythonRunner && !pythonRuntime.available)
           throw fail(503, "Python运行环境尚未就绪");
@@ -2836,6 +2862,7 @@ export function createV2Server(options = {}) {
             text(body.revisionId, 1, 80),
           ),
           context = getContext(revision.contextId);
+        requireDevelopmentOwner("python_revision", revision, req);
         if (!context) throw fail(409, "Python版本绑定的数据上下文不存在");
         const key = text(req.headers["idempotency-key"], 1, 100),
           signature = hash(
@@ -2890,6 +2917,7 @@ export function createV2Server(options = {}) {
       if (pythonRunRoute) {
         const run = get("python_run", pythonRunRoute[1]),
           action = pythonRunRoute[2];
+        requireDevelopmentOwner("python_run", run, req);
         if (method === "GET" && !action) return json(res, 200, run);
         if (method === "POST" && action === "cancel") {
           await readBody(req);
@@ -4939,7 +4967,9 @@ export function createV2Server(options = {}) {
             revisions: "revision",
             "agent/tasks": "agent",
           }[record[1]],
-          item = kind === "run" ? await reconcileDevelopment(get(kind, record[2])) : get(kind, record[2]);
+          original = get(kind, record[2]);
+        if (kind !== "agent") requireDevelopmentOwner(kind, original, req);
+        const item = kind === "run" ? await reconcileDevelopment(original) : original;
         if (kind === "agent") requireDurableAgentOwner(item, req);
         if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? publicDevelopmentRun(item) : kind === "agent" ? exposeDurableTask(item) : item);
         if (method === "GET" && record[3] === "journey" && kind === "agent")
@@ -5022,6 +5052,7 @@ export function createV2Server(options = {}) {
       if (method === "POST" && path === "/api/v2/runs") {
         const body = await readBody(req),
           rev = get("revision", text(body.revisionId, 1, 80));
+        requireDevelopmentOwner("revision", rev, req);
         if (!options.runner && !runtime.available)
           throw fail(503, "Spark 尚未就绪，请运行 npm run v2:bootstrap");
         const key = text(req.headers["idempotency-key"], 1, 100),
@@ -5137,6 +5168,7 @@ export function createV2Server(options = {}) {
           let repair = {};
           if (body.sourceRunId !== undefined) {
             const source = get("run", text(body.sourceRunId, 36, 36)), revision = get("revision", source.revisionId);
+            requireDevelopmentOwner("run", source, req);
             if (!["FAILED", "VALIDATION_FAILED"].includes(source.status) || source.code === "REMOTE_SPARK_TIMEOUT" ||
                 source.engine !== "Apache Spark" || revision.contextId !== context.id || revision.sql.trim() !== currentCode.trim())
               throw Object.assign(fail(409, "请先选择同一上下文、同一代码版本的失败运行；超时需先检查执行环境"), { code: "AGENT_REPAIR_SOURCE_MISMATCH" });
@@ -5178,11 +5210,14 @@ export function createV2Server(options = {}) {
               contextId: context.id,
             }),
           );
+        const existingAgent = store.deduplicatedId(PROJECT + ":agent:" + key);
+        if (existingAgent) requireDurableAgentOwner(get("agent", existingAgent), req);
         const dedup = store.deduplicate(
           PROJECT + ":agent:" + key,
           signature,
           () =>
             store.create("agent", PROJECT, {
+              submittedBy: local ? "local-engineer" : auth.sessionFromHeaders(req.headers).user.id,
               message,
               language,
               contextId: context.id,
@@ -5199,6 +5234,7 @@ export function createV2Server(options = {}) {
             }),
         );
         const task = get("agent", dedup.id);
+        requireDurableAgentOwner(task, req);
         if (!dedup.replayed)
           schedule("agent", task, async (signal) => {
             if (language === "PYTHON") {
@@ -5263,7 +5299,7 @@ export function createV2Server(options = {}) {
                 if (usedTokens > Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000))
                   throw new Error("本次 Agent 已达到 Token 预算上限");
                 code = generated.code;
-                const rev = pythonRevision(code, context.id, "LIVE_MODEL"),
+                const rev = pythonRevision(code, context.id, "LIVE_MODEL", task.submittedBy),
                   run = store.create("python_run", PROJECT, {
                     revisionId: rev.id,
                     revisionHash: rev.codeHash,
@@ -5393,7 +5429,7 @@ export function createV2Server(options = {}) {
               if (usedTokens > Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000))
                 throw new Error("本次 Agent 已达到 Token 预算上限");
               sql = generated.sql;
-              const rev = revision(sql, context.id, "LIVE_MODEL");
+              const rev = revision(sql, context.id, "LIVE_MODEL", task.submittedBy);
               const run = store.create("run", PROJECT, {
                 validationContractId,
                 revisionId: rev.id,

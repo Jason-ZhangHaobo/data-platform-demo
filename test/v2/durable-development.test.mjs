@@ -104,7 +104,7 @@ test("task submission returns before a result exists and survives controller res
   } finally { await app.close(); }
 });
 
-test("lost submission response resumes the identical persisted job without a duplicate event", async () => {
+test("lost submission response stays read-only on GET and resumes only through the original explicit submission", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "shuduo-durable-")), "store.sqlite"), q = queue();
   let app = await open(path, q.runner); q.lose();
   const { run } = await start(app);
@@ -117,6 +117,11 @@ test("lost submission response resumes the identical persisted job without a dup
     assert.equal((await app.request("GET", `/runs/${saved.id}`)).body.status, "QUEUED");
     assert.equal(q.creates, 1);
     assert.equal([...q.objects.values()][0], before);
+    assert.equal(app.store.get("run", saved.id, PROJECT).remoteSubmission.submitted, false);
+    const resumed = await app.request("POST", "/runs", { revisionId: saved.revisionId });
+    assert.equal(resumed.status, 202);
+    assert.equal(resumed.body.id, saved.id);
+    assert.equal(q.creates, 1);
     assert.equal(app.store.get("run", saved.id, PROJECT).remoteSubmission.submitted, true);
   } finally { await app.close(); }
 });

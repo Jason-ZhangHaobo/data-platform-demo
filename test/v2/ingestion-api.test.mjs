@@ -238,7 +238,7 @@ test("V2 API executes CSV metadata, full sync, incremental UPSERT and stale-vers
       fixtureRoot,
       env: { V2_LOCAL_DEVELOPMENT: "false" },
     });
-    assert.equal((await request(server.base, "/sources")).status, 200);
+    assert.equal((await request(server.base, "/sources")).status, 401);
     assert.equal(
       (
         await request(

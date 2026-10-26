@@ -107,9 +107,9 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   const call=async(path,body,headers={})=>{const r=await fetch(base+path,{method:body===undefined?"GET":"POST",headers:{"content-type":"application/json","x-shuduo-client":"workbench","idempotency-key":"http-case",...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});return{status:r.status,body:await r.json(),cookies:r.headers.getSetCookie()};};
   const login=async email=>{const r=await call("/auth/login",{email,password});return{cookie:r.cookies.map(c=>c.split(";")[0]).join("; "),"x-csrf-token":r.body.csrfToken};};
   const a=await login("owner@example.invalid"),b=await login("other@example.invalid");
-  assert.equal((await call(`/agent/tasks/${agent.id}/workflow`)).status,403);
+  assert.equal((await call(`/agent/tasks/${agent.id}/workflow`)).status,401);
   assert.equal((await call(`/agent/tasks/${agent.id}/workflow`,undefined,b)).status,403);
-  assert.equal((await call(`/agent/tasks/${agent.id}/publication`)).status,403);
+  assert.equal((await call(`/agent/tasks/${agent.id}/publication`)).status,401);
   assert.equal((await call(`/agent/tasks/${agent.id}/publication`,undefined,b)).status,403);
   const report=await call(`/agent/tasks/${agent.id}/workflow`,undefined,a);assert.equal(report.status,200);assert.equal(report.body.report.status,"PASSED");assert.equal(report.body.publication.available,false);
   assert.equal((await call(`/agent/tasks/${agent.id}/prepare-delivery`,{}, {cookie:a.cookie})).status,403);

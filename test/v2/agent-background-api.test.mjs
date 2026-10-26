@@ -35,7 +35,7 @@ test("background HTTP admission uses invitation owner and CSRF; old tasks are no
   assert.equal(opted.status,202);assert.equal(opted.body.background.status,"ACTIVE");assert.equal(models,0);assert.equal(objects.size,1);
   assert.ok([...objects.keys()][0].startsWith(AGENT_WAKE_PREFIX+"/"));
   const id=opted.body.id,path=`/api/v2/agent/tasks/${id}/background`;
-  assert.equal((await call(path,undefined)).status,403);
+  assert.equal((await call(path,undefined)).status,401);
   assert.equal((await call(`/api/v2/agent/tasks/${id}/advance`,{expectedVersion:opted.body.version},headers)).status,409);
   const foreign=app.store.create("auth_user",PROJECT,{status:"ACTIVE",memberships:[{projectId:PROJECT,role:"ENGINEER"}]});
   app.store.update("agent",id,PROJECT,{submittedBy:foreign.id});

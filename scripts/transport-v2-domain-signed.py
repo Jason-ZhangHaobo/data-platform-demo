@@ -34,20 +34,23 @@ def safe_response(status, raw, operation):
     return result
 
 
-def main():
-    from alibabacloud_openapi_util.client import Client as Signer
-    from Tea.request import TeaRequest
-    data = json.load(sys.stdin)
-    if data.get('authorization') != 'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED' or data.get('domainName') != 'shuduoai.cn':
+def request_shape(data):
+    opening = data.get('authorization') == 'INVITED_READ_ONLY_OPENING_V2'
+    if data.get('authorization') not in ('ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED', 'INVITED_READ_ONLY_OPENING_V2') or data.get('domainName') != 'shuduoai.cn':
         raise ValueError('INVALID_TARGET')
     operation = data.get('operation')
-    if operation not in ('get', 'create', 'delete'):
+    if operation not in (('get', 'update') if opening else ('get', 'create', 'delete')):
         raise ValueError('INVALID_OPERATION')
-    method = {'get': 'GET', 'create': 'POST', 'delete': 'DELETE'}[operation]
-    action = {'get': 'GetCustomDomain', 'create': 'CreateCustomDomain', 'delete': 'DeleteCustomDomain'}[operation]
+    method = {'get': 'GET', 'create': 'POST', 'delete': 'DELETE', 'update': 'PUT'}[operation]
+    action = {'get': 'GetCustomDomain', 'create': 'CreateCustomDomain', 'delete': 'DeleteCustomDomain', 'update': 'UpdateCustomDomain'}[operation]
     path = '/2023-03-30/custom-domains' + ('' if operation == 'create' else '/shuduoai.cn')
     body = data.get('body')
-    if operation == 'create':
+    if operation == 'update':
+        if body not in ({'authConfig': {'authType': 'anonymous', 'authInfo': '{}'}},
+                        {'authConfig': {'authType': 'function', 'authInfo': '{}'}}):
+            raise ValueError('INVALID_AUTH_ONLY_UPDATE')
+        payload = json.dumps(body, separators=(',', ':')).encode()
+    elif operation == 'create':
         if (not isinstance(body, dict) or body.get('domainName') != 'shuduoai.cn' or body.get('protocol') != 'HTTPS'
                 or body.get('authConfig') != {'authType': 'function', 'authInfo': '{}'}):
             raise ValueError('INVALID_CREATE')
@@ -58,6 +61,13 @@ def main():
         if body is not None:
             raise ValueError('BODY_NOT_ALLOWED')
         payload = b''
+    return operation, method, action, path, payload
+
+
+def main():
+    from alibabacloud_openapi_util.client import Client as Signer
+    from Tea.request import TeaRequest
+    operation, method, action, path, payload = request_shape(json.load(sys.stdin))
     host = 'fcv3.cn-hangzhou.aliyuncs.com'
     payload_hash = hashlib.sha256(payload).hexdigest()
     headers = {'host': host, 'content-type': 'application/json', 'x-acs-action': action, 'x-acs-version': '2023-03-30',

@@ -149,9 +149,9 @@ type Status = {
   };
   publicReady: boolean;
   authentication?: {
-    users: number;
-    pendingInvitations: number;
-    activeSessions: number;
+    users?: number;
+    pendingInvitations?: number;
+    activeSessions?: number;
     mode: string;
     publicSessionEnforced: boolean;
   };
@@ -366,6 +366,7 @@ const navPermission: Record<string, string> = {
   settings: "ADMIN",
 };
 function App() {
+  const authEpoch = useRef(0);
   const [status, setStatus] = useState<Status>(),
     [contexts, setContexts] = useState<Context[]>([]),
     [contextId, setContextId] = useState("holdings-t1");
@@ -403,6 +404,14 @@ function App() {
   const [session, setSession] = useState<AuthSession>({ authenticated: false });
   const [agentWorkspaceMode, setAgentWorkspaceMode] = useState("development");
   const [agentDraftDirty, setAgentDraftDirty] = useState(false);
+  const clearPersonalView = () => {
+    setRuns([]); setRun(undefined); setRevisions([]);
+    setAgentTask(undefined); setAgentDelivery(undefined); setAgentJourney(undefined); setAgentHandoff(undefined);
+    setSql(""); sqlRef.current = ""; setOriginal(""); setPythonCode(initialPythonCode);
+    setMessage(""); setDeliverySourceId(""); setAgentDraftDirty(false);
+    // Opaque recovery IDs in the URL remain; the backend requires the original
+    // owner. Do not discard the only reference to an unconfirmed submission.
+  };
   const setNav = (next: string) => {
     if (next !== nav && agentDraftDirty && !confirm("Agent 工作台有未保存的输入或代码，是否放弃并切换模块？")) return;
     setNavState(next);
@@ -425,6 +434,7 @@ function App() {
     window.history.replaceState(null, "", url);
   }, [nav, status]);
   const reload = async () => {
+    const epoch = authEpoch.current;
     const [s, c, r, v, a, d, authSession] = await Promise.all([
       api<Status>("/status"),
       api<Context[]>("/contexts"),
@@ -434,6 +444,7 @@ function App() {
       privatePreview ? Promise.resolve(undefined) : api<AgentDeliveryTask[]>("/agent/deliveries"),
       api<AuthSession>("/auth/session"),
     ]);
+    if (epoch !== authEpoch.current) return;
     setStatus(s);
     setContexts(c);
     setRuns(r);
@@ -755,10 +766,15 @@ function App() {
                   className="auth-session-button-v2"
                   title="退出受邀会话"
                   onClick={async () => {
+                    if ((dirty || agentDraftDirty) && !confirm("退出会清空本页未保存的输入，已保存任务和恢复链接不会丢失。确认退出？")) return;
                     try {
                       await api("/auth/logout", {});
+                      authEpoch.current++;
+                      setStatus(undefined);
+                      clearPersonalView();
                       setSession({ authenticated: false, readOnly: session.readOnly });
                       setNotice("已退出受邀会话，切换为公开只读浏览");
+                      void reload().catch((cause) => setError(cause.message));
                     } catch (cause) {
                       setError((cause as Error).message);
                     }
@@ -794,7 +810,7 @@ function App() {
             </button>
           </div>
         )}
-        <Suspense fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
+        <Suspense key={session.user?.id ?? "public-visitor"} fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>setAgentWorkspaceMode("services")}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
@@ -1669,6 +1685,7 @@ function App() {
                   <article>
                     <CircleDollarSign size={23} />
                     <h3>月度预算门</h3>
+                    {(status?.mode === "LOCAL_DEVELOPMENT" || (session.authenticated && session.role === "ADMIN")) && status?.budget ? <>
                     <span
                       className={`status-pill ${status?.budget?.enforced === "ALLOW" ? "succeeded" : "failed"}`}
                     >
@@ -1693,6 +1710,7 @@ function App() {
                         ? "账号账单尚未接入，不能证明全站费用"
                         : `账号已核验 ¥${status?.budget?.account.observedSpendCny}`}
                     </small>
+                    </> : <p>费用与用量仅项目管理员可见；未读取到数据时不展示金额。</p>}
                   </article>
                 </div>
                 {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly &&
@@ -1702,8 +1720,11 @@ function App() {
                     <ChangePasswordPanel
                       api={api}
                       onChanged={(next) => {
+                        authEpoch.current++;
+                        setStatus(undefined);
                         setSession(next);
                         setNotice("密码已更新，此前登录会话均已撤销");
+                        void reload().catch((cause) => setError(cause.message));
                       }}
                     />
                   )}
@@ -1890,8 +1911,12 @@ function App() {
             api={api}
             onClose={() => setAuthOpen(false)}
             onAuthenticated={(nextSession) => {
+              authEpoch.current++;
+              setStatus(undefined);
+              if (session.user?.id && session.user.id !== nextSession.user?.id) clearPersonalView();
               setSession(nextSession);
               setNotice("受邀项目会话已建立");
+              void reload().catch((cause) => setError(cause.message));
             }}
           />
         </Suspense>
