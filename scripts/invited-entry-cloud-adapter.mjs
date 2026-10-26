@@ -61,7 +61,7 @@ export async function readReadonlyHttpsProbe(endpoint,probe,certificateSha256,{r
  });
 }
 
-export function createReadonlyEntryCloudAdapter({plan,change,env=process.env,exec=execFileSync,request=httpsRequest,now=Date.now}){
+export function createReadonlyEntryCloudAdapter({plan,change,env=process.env,exec=execFileSync,request=httpsRequest,now=Date.now,beforeRequest=()=>{}}){
  check(readonlyConfigIntegrity(change)&&plan.operationId===change.operationId,'READONLY_TRANSPORT_CHANGE_INVALID');
  const normalized=readonlyEntryPlan({...plan,issuedAt:new Date(plan.issuedAt).toISOString(),expiresAt:new Date(plan.expiresAt).toISOString()},plan.issuedAt);
  check(same(plan,normalized),'READONLY_TRANSPORT_PLAN_INVALID');
@@ -75,6 +75,7 @@ export function createReadonlyEntryCloudAdapter({plan,change,env=process.env,exe
  const cliEnv={...env,ALIBABA_CLOUD_IGNORE_PROFILE:'TRUE',ALIBABA_CLOUD_PROFILE_MODE:'StsToken'};
  const call=(method,suffix='',body,query=[])=>{
   active();
+  beforeRequest(method==='GET'?'FC_READ':'ENTRY_WRITE');
   const directory=body===undefined?undefined:mkdtempSync(join(tmpdir(),'shuduo-entry-body-'));
   try{
    const args=['fc',method,base+suffix,...query,'--region',target.region,'--connect-timeout','5','--read-timeout','30','--retry-count','0'];
@@ -87,6 +88,7 @@ export function createReadonlyEntryCloudAdapter({plan,change,env=process.env,exe
  };
  const domain=body=>{
   active();
+  beforeRequest(body?'ENTRY_WRITE':'DOMAIN_READ');
   try{
    const raw=exec('python3',['scripts/transport-v2-domain-signed.py'],{input:JSON.stringify({authorization:READONLY_ENTRY_SCOPE,domainName:'shuduoai.cn',operation:body?'update':'get',...(body?{body}:{})}),encoding:'utf8',timeout:Math.min(30000,Math.max(1,plan.expiresAt-now())),maxBuffer:1048576,stdio:['pipe','pipe','pipe'],env:cliEnv});
    const result=JSON.parse(raw);
@@ -117,6 +119,7 @@ export function createReadonlyEntryCloudAdapter({plan,change,env=process.env,exe
    active();
    const endpoint=probe.target==='domain'?'https://shuduoai.cn':defaultEndpoint;
    check(endpoint,'READONLY_DEFAULT_URL_NOT_VERIFIED');
+   beforeRequest('HTTP_PROBE');
    return readReadonlyHttpsProbe(endpoint,probe,change.retainedPlan.desired.certificateSha256,{request,timeoutMs:Math.min(20000,Math.max(1,plan.expiresAt-now()))});
   },
  };

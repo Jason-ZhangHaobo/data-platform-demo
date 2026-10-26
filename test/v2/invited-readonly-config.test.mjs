@@ -5,6 +5,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,statSync,existsS
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
+import {EventEmitter} from 'node:events';
 import {createServer as createHttpsServer,request as realHttpsRequest} from 'node:https';
 import {createV2Server} from '../../src/v2/server.mjs';
 import {MetadataStore} from '../../src/v2/store.mjs';
@@ -13,6 +14,9 @@ import {createReadonlyEntryCloudAdapter,readReadonlyHttpsProbe,readonlyDefaultEn
 import {DOMAIN_BINDING_AUTHORIZATION,domainBindingPlan,verifyCertificateMaterial} from '../../scripts/v2-domain-binding-plan.mjs';
 import {prepareInvitedReadonlyConfig,verifyInvitedReadonlyConfig,readonlyEntryRollbackRequests,readonlyConfigIntegrity} from '../../scripts/invited-readonly-config.mjs';
 import {codeUpdateProbes,INVITED_READONLY_CODE_SCOPE} from '../../scripts/control-code-update.mjs';
+import {codeUpdateConfig} from '../../scripts/control-code-update.mjs';
+import {createOpeningUsage} from '../../scripts/invited-opening-usage.mjs';
+import {runInvitedOpening} from '../../scripts/invited-opening-stage.mjs';
 import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyEntryProbes,readonlyEntryProbeAccepted,runReadonlyEntry} from '../../scripts/invited-readonly-entry.mjs';
 
 // Disposable self-signed fixture only; never load project certificate material.
@@ -38,6 +42,108 @@ function fixture(){
  opened.domain.authConfig=structuredClone(change.domainBody.authConfig);
  return{state,domain,change,opened,expectedCode,privateCodeEvidence};
 }
+
+// Exercise both actual CLI adapters and the whole sequence with deterministic
+// provider responses. These are integration doubles, not live cloud evidence.
+function openingStageFixture(options={}){
+ const f=fixture(),old=Buffer.alloc(4000,1),next=Buffer.alloc(4100,2),hash=value=>createHash('sha256').update(value).digest('hex');
+ const config=codeUpdateConfig({authorization:INVITED_READONLY_CODE_SCOPE,operationId:'c'.repeat(32),applicationSource:'d'.repeat(40),operatorSource:'f'.repeat(40),account:retainedPlan.target.account,role:retainedPlan.target.role,functionName:retainedPlan.target.functionName,bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:55,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:hash(old),bytes:old.length,crc64:'123456'},candidate:{sha256:hash(next),bytes:next.length}},now);
+ const state=structuredClone(f.state),domain=structuredClone(f.domain),documents={},objects=new Map(),calls=[];
+ state.function.timeout=120;
+ const publicSite={icpNumber:'测试ICP备00000000号-1',registeredName:'虚构知识站'};
+ if(!options.missingFiling)Object.assign(state.function.environmentVariables,{V2_SITE_ICP_NUMBER:publicSite.icpNumber,V2_SITE_REGISTERED_NAME:publicSite.registeredName});
+ const metadata={publicSite,unsettledReservedCny:12,bucketPrivacy:{checkedAt:new Date().toISOString()}};
+ const storage={load:name=>documents[name],save:(name,value)=>{documents[name]=structuredClone(value);}};
+ const usage=createOpeningUsage({authorization:READONLY_ENTRY_SCOPE,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>documents.usage,save:value=>storage.save('usage',value),now:()=>now});
+ for(let i=0;i<12;i++)usage.reserve('RAM_READ');
+ const env={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_SHA:config.operatorSource,V2_READONLY_OPENING_APPROVED:READONLY_ENTRY_SCOPE,V2_CONTROL_ROLE_ARN:`acs:ram::${config.account}:role/${config.role}`,ALIBABA_CLOUD_ACCESS_KEY_ID:'fictional-id',ALIBABA_CLOUD_ACCESS_KEY_SECRET:'fictional-key',ALIBABA_CLOUD_SECURITY_TOKEN:'fictional-token'};
+ const exec=(program,args,opts)=>{
+  if(program==='python3'){
+   const data=JSON.parse(opts.input);calls.push(`domain:${data.operation}`);
+   if(data.operation==='update'){assert.deepEqual(Object.keys(data.body),['authConfig']);Object.assign(domain,data.body);}
+   return JSON.stringify({status:200,value:structuredClone(domain)});
+  }
+  assert.equal(program,'aliyun');calls.push(args.slice(0,3).join(' '));
+  if(args[0]==='sts')return JSON.stringify({AccountId:config.account,Arn:`acs:ram::${config.account}:assumed-role/${config.role}/fixture`});
+  if(args[0]==='bssopenapi')return JSON.stringify({Success:true,Data:{BillingCycle:args[args.indexOf('--BillingCycle')+1],PageNum:1,PageSize:300,TotalCount:1,Items:{Item:[{Currency:'CNY',PretaxAmount:'1.50'}]}}});
+  const [product,method,path]=args;
+  let body;if(args.includes('--body'))body=JSON.parse(args[args.indexOf('--body')+1]);
+  if(args.includes('--body-file'))body=JSON.parse(readFileSync(args[args.indexOf('--body-file')+1],'utf8'));
+  assert.equal(product,'fc');
+  if(method==='GET'){
+   if(path.endsWith('/code'))return JSON.stringify({checksum:'123456',url:'https://fixture-private.oss-cn-hangzhou.aliyuncs.com/rollback'});
+   if(path.endsWith('/triggers'))return JSON.stringify({triggers:state.triggers});
+   if(path.endsWith('/concurrency'))return JSON.stringify(state.concurrency);
+   if(path.endsWith('/scaling-config'))return JSON.stringify(state.scaling);
+   return JSON.stringify(state.function);
+  }
+  if(method==='PUT'){
+   if(body.code){state.function.codeChecksum=body.code.checksum;state.function.codeSize=body.code.checksum==='123456'?old.length:next.length;calls.push('CODE:'+body.code.checksum);}
+   else{state.function.environmentVariables=body.environmentVariables;calls.push(body.environmentVariables.V2_FC_PUBLIC_HTTP_ENABLED==='true'?'OPEN':'CLOSE');}
+  }else if(method==='POST'&&path.endsWith('/triggers')){
+   state.triggers.push({...body,httpTrigger:{urlInternet:'https://fictional.cn-hangzhou.fcapp.run/'}});
+  }else if(method==='DELETE')state.triggers=state.triggers.filter(t=>!path.endsWith('/'+t.triggerName));
+  else if(method==='POST'&&path.endsWith('/invocations')){
+   if(body.operation==='PRIVATE_STATUS_V1')return JSON.stringify({protocol:'shuduo-v2-private-smoke-v1',ingress:{mode:'FC_CONTROL_PATH',publicHttpEnabled:false},metadata:{healthy:true},persistence:{healthy:true,dataState:{healthy:true}},publicReady:false});
+   const value=body.path==='/api/v2/status'?{status:200,body:{mode:'PUBLIC_INVITATION',publicReady:false,authentication:{publicSessionEnforced:true},spark:{isolation:'REMOTE_FUNCTION'}}}:body.path==='/api/v2/auth/session'?{status:200,body:{authenticated:false}}:{status:401,body:{}};
+   return JSON.stringify({protocol:'shuduo-private-application-http/v1',...value});
+  }else throw Error('Unexpected CLI operation');
+  return '{}';
+ };
+ const fetchImpl=async(url,request)=>{
+  calls.push('OSS:'+request.method);
+  if(url.endsWith('/rollback'))return new Response(old);
+  if(url.endsWith('?acl'))return new Response('<AccessControlPolicy><Grant>private</Grant></AccessControlPolicy>');
+  if(request.method==='PUT'){objects.set(url,request.body);return new Response('');}
+  if(!objects.has(url))return new Response('<Error><Code>NoSuchKey</Code></Error>',{status:404});
+  const data=objects.get(url);return new Response(data,{headers:{'x-oss-hash-crc64ecma':data.equals(old)?'123456':'654321'}});
+ };
+ const request=(url,opts,callback)=>{
+  const req=new EventEmitter();req.destroy=()=>{};
+  req.end=()=>queueMicrotask(()=>{
+   calls.push('HTTP:'+url.pathname);
+   const res=new EventEmitter();res.destroy=()=>{};
+   const key=url.hostname.includes('fcapp.run')?'default-disabled':readonlyEntryProbes.find(p=>p.path===url.pathname)?.id;
+   const body=key==='anonymous-session'?{authenticated:false,readOnly:true}:['readonly-agent','readonly-publish'].includes(key)?{code:'PUBLIC_READ_ONLY'}:key==='private-internal'?{code:'INGRESS_DENIED'}:key==='unmapped-invoke'?{code:'DomainRouteNotFound'}:opts.headers.Origin==='https://foreign.example.invalid'?{message:'请求来源不允许'}:{code:'INVALID_LOGIN'};
+   const bytes=key==='entry-html'?Buffer.from('fixture-html'):Buffer.from(JSON.stringify(body));
+   res.statusCode=key==='entry-html'||key==='anonymous-session'?200:key==='private-internal'||key==='unmapped-invoke'?404:key==='invalid-login'?401:403;
+   if(url.pathname==='/api/v2/auth/login')res.statusCode=opts.headers.Origin==='https://foreign.example.invalid'?403:401;
+   if(options.badProbe&&key==='entry-html'){res.statusCode=503;if(options.foreignFunction)state.function.environmentVariables.FOREIGN_CHANGE='preserve';}
+   res.headers={'content-type':key==='entry-html'?'text/html':'application/json'};
+   res.socket={authorized:true,getProtocol:()=> 'TLSv1.3',getPeerCertificate:()=>({raw:Buffer.from(material.certificate.split('\n').filter(line=>line&&!line.startsWith('-----')).join(''),'base64')})};
+   callback(res);res.emit('data',bytes);res.emit('end');
+  });return req;
+ };
+ const input={config,metadata,retainedPlan,webIndexSha256:hash('fixture-html')};
+ const runtime={env,storage,usage,now:()=>now,exec,codeOptions:{candidateBytes:next,fetchImpl,saveBackup:()=>{}},entryOptions:{request}};
+ return{state,documents,calls,usage,run:()=>runInvitedOpening(input,runtime)};
+}
+test('whole opening shares code/entry/metadata counts and does not repeat accepted probes after restart',async()=>{
+ const f=openingStageFixture(),result=await f.run();
+ assert.equal(result.executionPassed,true,JSON.stringify(result));assert.equal(result.externalCleanupRequired,true);assert.equal(result.invitedUserAccepted,false);
+ assert.equal(result.configurationReads,48);assert.equal(result.newRequests,15);assert.equal(result.cumulativeRequests,70);
+ assert.equal(f.documents.transport.configurationReads,17);assert.equal(f.documents.usage.usage.OSS_METADATA,2);
+ const count=f.calls.filter(c=>c.startsWith('HTTP:')).length;
+ const again=await f.run();assert.equal(again.executionPassed,true,JSON.stringify(again));assert.equal(again.newRequests,15);
+ assert.equal(f.calls.filter(c=>c.startsWith('HTTP:')).length,count);assert.equal(f.calls.filter(c=>c==='CODE:654321').length,1);
+});
+test('whole opening closes its entry before restoring the old code when HTTPS verification fails',async()=>{
+ const f=openingStageFixture({badProbe:true}),result=await f.run();
+ assert.equal(result.executionPassed,false);assert.equal(result.codeRollback?.rollbackVerified,true,JSON.stringify(result));
+ assert.equal(f.state.function.codeChecksum,'123456');assert.notEqual(f.state.function.environmentVariables.V2_FC_PUBLIC_HTTP_ENABLED,'true');assert.equal(f.state.triggers.length,2);
+ assert(f.calls.indexOf('CLOSE')<f.calls.indexOf('CODE:123456'));assert.equal(f.documents.code.rollbackAttempts,1);
+ assert(result.configurationReads<=80);assert.equal(f.documents.usage.phase,'CLEANUP');
+});
+test('whole opening preserves foreign changes and refuses old-code rollback while entry restoration is incomplete',async()=>{
+ const f=openingStageFixture({badProbe:true,foreignFunction:true}),result=await f.run();
+ assert.equal(result.codeRollbackDeferred,'ENTRY_NOT_FULLY_RESTORED');assert.equal(f.state.function.codeChecksum,'654321');
+ assert.equal(f.state.function.environmentVariables.FOREIGN_CHANGE,'preserve');assert(!f.calls.includes('CODE:123456'));
+});
+test('missing filing display closes before entry creation and restores only the owned code update',async()=>{
+ const f=openingStageFixture({missingFiling:true}),result=await f.run();
+ assert.equal(result.failure,'OPENING_FILING_DISPLAY_NOT_CONFIGURED');assert.equal(result.codeRollback?.rollbackVerified,true);
+ assert(!f.calls.includes('OPEN'));assert(!f.calls.some(c=>c.startsWith('domain:update')));assert.equal(f.state.triggers.length,2);
+});
 test('preparation changes only four environment keys, domain authentication and one default-URL-disabled trigger',()=>{
  const f=fixture();
  assert.deepEqual(Object.keys(f.change.functionBody),['environmentVariables']);

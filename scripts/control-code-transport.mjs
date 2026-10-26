@@ -51,7 +51,7 @@ export function deploymentInput(env,now=Date.now()){
  check(Number.isFinite(m.unsettledReservedCny)&&m.unsettledReservedCny>=2,'UNSETTLED_RESERVE_REQUIRED');
  return{config,metadata:m};
 }
-export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=fetch,exec=execFileSync,saveTransport,loadTransport,candidateBytes,saveBackup,now=Date.now}={}){
+export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=fetch,exec=execFileSync,saveTransport,loadTransport,candidateBytes,saveBackup,now=Date.now,beforeRequest=()=>{}}={}){
  const base=`/2023-03-30/functions/${config.functionName}`;
  const openingScope=config.authorization===INVITED_READONLY_CODE_SCOPE;
  if(openingScope)check(typeof saveTransport==='function','DURABLE_TRANSPORT_CHECKPOINT_REQUIRED');
@@ -61,6 +61,7 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
  const save=()=>saveTransport(structuredClone(counters));
  const call=(args,body)=>{
   if(openingScope)check(now()<config.expiresAt,'CONTROL_WINDOW_EXPIRED');
+  beforeRequest(args[0]==='sts'?'IDENTITY':args[0]==='bssopenapi'?'BILL_PAGE':args[1]==='GET'?'FC_READ':args[1]==='POST'?'PRIVATE_PROBE':'CODE_WRITE');
   if(openingScope&&args[0]==='fc'&&args[1]==='GET'){
    check(counters.configurationReads<config.maxConfigurationReads,'CONFIGURATION_READ_LIMIT');
    counters.configurationReads++;
@@ -79,6 +80,7 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
  const oss=(pkg,method='GET',body,query='')=>{
   if(openingScope)check(now()<config.expiresAt,'CONTROL_WINDOW_EXPIRED');
   check([config.previous.key,config.candidate.key].includes(pkg.key),'OSS_OBJECT_OUTSIDE_SCOPE');
+  beforeRequest(query?'OSS_METADATA':method==='PUT'?'OBJECT_PUT':'OBJECT_GET');
   const request=privateOssRequest({bucket:config.bucket,region:config.region,credentials,key:pkg.key,method,body,query});return fetchImpl(request.url,request.options);
  };
  const verify=(bytes,p)=>check(bytes.length===p.bytes&&digest(bytes)===p.sha256,'PACKAGE_BYTES_MISMATCH');
@@ -101,6 +103,7 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
   recoverRollback:async pkg=>{
    check(counters.codeReads<2,'CODE_DOWNLOAD_LIMIT');counters.codeReads++;await save();
    const result=call(['fc','GET',base+'/code','--qualifier','LATEST']);check(String(result.checksum)===pkg.crc64,'CURRENT_CODE_CHECKSUM_MISMATCH');
+   beforeRequest('OBJECT_GET');
    const response=await fetchImpl(codeDownloadUrl(result.url),{redirect:'error',signal:AbortSignal.timeout(120000)});
    rollbackBytes=await boundedBytes(response,pkg.bytes);verify(rollbackBytes,pkg);await saveBackup(rollbackBytes);
    return{sha256:pkg.sha256,bytes:pkg.bytes,codeChecksum:pkg.crc64,safelyRetained:true};

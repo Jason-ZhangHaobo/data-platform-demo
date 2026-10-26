@@ -48,12 +48,13 @@ function assertProbe(id,value){
   else check([401,403].includes(value?.status),'UNAUTHENTICATED_READ_NOT_REJECTED');
  }
 }
-export async function runControlCodeUpdate(config,adapter,{load,save,now=Date.now}={}){
+export async function runControlCodeUpdate(config,adapter,{load,save,now=Date.now,rollbackOnly=false,beginCleanup=()=>{}}={}){
  codeUpdateLimits(config?.authorization);
  check(Number.isSafeInteger(config.issuedAt)&&config.issuedAt<=now()&&Number.isSafeInteger(config.expiresAt),'CODE_UPDATE_LIMITS_INVALID');
  const normalized=codeUpdateConfig({...config,expiresAt:new Date(config.expiresAt).toISOString()},config.issuedAt);
  check(canonical(config)===canonical(normalized),'CODE_UPDATE_CONFIG_CHANGED');
  config=normalized;
+ check(!rollbackOnly||config.authorization===INVITED_READONLY_CODE_SCOPE,'OUTER_ROLLBACK_SCOPE_INVALID');
  if(config.authorization===INVITED_READONLY_CODE_SCOPE)check(now()<config.expiresAt-60000,'UPDATE_WINDOW_EXPIRED');
  check(typeof load==='function'&&typeof save==='function','DURABLE_UPDATE_CHECKPOINT_REQUIRED');
  let cp=structuredClone(await load()),checkpointValidated=false,mayNeedRollback=false;
@@ -67,6 +68,7 @@ export async function runControlCodeUpdate(config,adapter,{load,save,now=Date.no
  };
  const codeBody=pkg=>({code:{ossBucketName:config.bucket,ossObjectName:pkg.key,checksum:pkg.crc64}});
  const rollback=async()=>{
+  await beginCleanup();
   const current=await inspect();
   if(codeMatches(current.function,config.previous)){report.originalCodePresent=true;if(cp.rollbackRequested){report.rollbackVerified=true;cp.phase='ROLLED_BACK';await write();}return;}
   check(cp.candidateReceipt&&codeMatches(current.function,cp.candidateReceipt),'FOREIGN_CODE_DO_NOT_ROLLBACK');
@@ -79,6 +81,7 @@ export async function runControlCodeUpdate(config,adapter,{load,save,now=Date.no
  };
  try{
   const identity=await adapter.identity();check(String(identity.AccountId)===config.account&&String(identity.Arn??'').startsWith(`acs:ram::${config.account}:assumed-role/${config.role}/`),'UPDATE_IDENTITY_MISMATCH');
+  check(!rollbackOnly||cp,'OUTER_ROLLBACK_CHECKPOINT_REQUIRED');
   if(cp){
    check(cp.configHash===hash(config)&&cp.operationId===config.operationId&&cp.targetHash===hash([config.account,config.region,config.functionName,config.bucket])&&cp.candidateSha===config.candidate.sha256&&cp.previousSha===config.previous.sha256,'UPDATE_CHECKPOINT_MISMATCH');
    check(Number.isSafeInteger(cp.invocations)&&cp.invocations>=0&&cp.invocations<=config.maxInvocations&&Number.isSafeInteger(cp.updateAttempts)&&cp.updateAttempts>=0&&cp.updateAttempts<=config.maxUpdateAttempts&&Number.isSafeInteger(cp.rollbackAttempts)&&cp.rollbackAttempts>=0&&cp.rollbackAttempts<=config.maxRollbackAttempts&&Array.isArray(cp.probes)&&cp.probes.length<=codeUpdateProbes.length&&cp.probes.every((p,i)=>p.id===codeUpdateProbes[i].id&&p.passed===true),'UPDATE_CHECKPOINT_INVALID');
@@ -91,6 +94,13 @@ export async function runControlCodeUpdate(config,adapter,{load,save,now=Date.no
    check(!cp.rollbackRequested||(cp.updateRequested&&cp.rollbackAttempts===1),'UPDATE_CHECKPOINT_INVALID');
    checkpointValidated=true;mayNeedRollback=cp.updateRequested===true;
    report.recovery=true;
+   // The entry stage may fail after code verification succeeded. Use the same
+   // original checkpoint and one rollback allowance; never relabel VERIFIED as
+   // UPDATED or create a second operation to gain another write.
+   if(rollbackOnly){
+    check(cp.updateRequested&&cp.previousReceipt&&cp.candidateReceipt,'OUTER_ROLLBACK_NOT_READY');
+    await rollback();return report;
+   }
    if(cp.phase==='VERIFIED'){
     const s=await inspect();check(cp.candidateReceipt&&codeMatches(s.function,cp.candidateReceipt)&&cp.probes?.length===codeUpdateProbes.length,'VERIFIED_UPDATE_DRIFT');
     report.passed=true;report.reusedVerifiedResult=true;return report;

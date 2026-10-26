@@ -52,7 +52,7 @@ export function readonlyEntryProbeAccepted(result,probe,plan){
  }
 }
 
-export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.now}={}){
+export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.now,beginCleanup=()=>{}}={}){
  check(typeof load==='function'&&typeof save==='function','READONLY_ENTRY_CHECKPOINT_REQUIRED');
  check(readonlyConfigIntegrity(change)&&change.operationId===plan?.operationId,'READONLY_ENTRY_CHANGE_INVALID');
  check(plan.seed?.configurationReads>=change.codeConfigurationReads,'READONLY_ENTRY_PRIOR_USAGE_MISSING');
@@ -90,6 +90,7 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
   return{state:{function:fn,triggers,concurrency,scaling},domain};
  };
  const rollback=async()=>{
+  await beginCleanup();
   cleanup=true;cp.phase='ROLLING_BACK';await persist();
   const result={functionRestored:false,domainRestored:false,triggerAbsent:false,issues:[]};
   // Reconcile each resource independently. A foreign domain must not prevent
