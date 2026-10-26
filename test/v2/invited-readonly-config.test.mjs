@@ -171,6 +171,12 @@ test('runtime retries require changed evidence, are capped at three, and do not 
  assert.equal(failed.entry.failure,'READONLY_RUNTIME_NOT_READY');assert.equal(failed.entry.runtimeAttempts,3);assert.equal(exhausted.calls.filter(c=>c==='RUNTIME_STATUS').length,3);
  assert(!exhausted.calls.some(c=>c.startsWith('HTTP:')));assert.equal(failed.codeRollback?.rollbackVerified,true);
 });
+test('runtime diagnostics distinguish malformed input, credentials, permission and transport without copying exception text',()=>{
+ for(const [safeDiagnostic,category] of [[{serviceCode:'InvalidArgument'},'INPUT'],[{transport:'CLI_ARGUMENT',cliArgumentRejected:true},'INPUT'],[{serviceCode:'InvalidSecurityToken'},'AUTHENTICATION'],[{serviceCode:'AccessDenied'},'PERMISSION'],[{transport:'TIMEOUT'},'TIMEOUT'],[{transport:'NETWORK'},'TRANSPORT']]){
+  const error=Object.assign(Error('fixture-secret-must-not-leak'),{safeDiagnostic:{...safeDiagnostic,raw:'fixture-secret-must-not-leak'}});
+  const result=readonlyRuntimeObservation(undefined,error);assert.equal(result.errorCategory,category);assert.equal(result.ready,false);assert(!JSON.stringify(result).includes('fixture-secret'));
+ }
+});
 test('a mismatched public filing response rolls back the six-key environment and original code',async()=>{
  const f=openingStageFixture({repair:true,missingFiling:true,fromObject:true,wrongFilingResponse:true}),result=await f.run();
  assert.equal(result.executionPassed,false);assert.equal(result.entry.failureAt,'filing-display');assert.equal(result.codeRollback?.rollbackVerified,true);
