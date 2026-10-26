@@ -167,7 +167,7 @@ test("V2 API records a failed stream checkpoint and resumes from a corrected rev
       fixtureRoot,
       local: false,
     });
-    assert.equal((await request(server.base, "/streams/monitor")).status, 200);
+    assert.equal((await request(server.base, "/streams/monitor")).status, 401);
     assert.equal(
       (
         await request(

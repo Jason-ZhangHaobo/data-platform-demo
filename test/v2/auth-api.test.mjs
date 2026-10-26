@@ -168,7 +168,8 @@ test("public invitation sessions enforce CSRF and project role permissions", asy
     const status = await request(base, "/status");
     assert.equal(status.body.mode, "PUBLIC_INVITATION");
     assert.equal(status.body.authentication.publicSessionEnforced, true);
-    assert.equal(status.body.authentication.users, 2);
+    assert.equal(Object.hasOwn(status.body.authentication, "users"), false);
+    assert.equal(Object.hasOwn(status.body, "budget"), false);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     store.close();

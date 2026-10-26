@@ -47,7 +47,7 @@ test('invited request lookup is scoped to the creator and rejects anonymous or a
  const task=store.deduplicate(`${PROJECT}:durable-agent:${owner.id}:original-agent-request`,'fixture',()=>store.create('agent',PROJECT,{executionMode:'DURABLE_SQL_AGENT_V1',submittedBy:owner.id,status:'QUEUED',attempts:[]}));
  const login=async email=>(await call(base,'/auth/login',{email,password})).cookies.map(value=>value.split(';')[0]).join('; ');
  try{
-  assert.equal((await call(base,'/agent/requests/original-agent-request')).status,403);
+  assert.equal((await call(base,'/agent/requests/original-agent-request')).status,401);
   const ownerCookie=await login('owner@example.invalid'),otherCookie=await login('other@example.invalid');
   assert.equal((await call(base,'/agent/requests/original-agent-request',undefined,ownerCookie)).body.id,task.id);
   assert.equal((await call(base,'/agent/requests/original-agent-request',undefined,otherCookie)).status,404);

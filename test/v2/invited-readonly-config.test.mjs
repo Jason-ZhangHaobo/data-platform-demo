@@ -1,10 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,statSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
+import {createServer as createHttpsServer,request as realHttpsRequest} from 'node:https';
+import {createV2Server} from '../../src/v2/server.mjs';
+import {MetadataStore} from '../../src/v2/store.mjs';
+import {createFcIngress} from '../../src/v2/fc-ingress.mjs';
+import {createReadonlyEntryCloudAdapter,readReadonlyHttpsProbe,readonlyDefaultEndpoint} from '../../scripts/invited-entry-cloud-adapter.mjs';
 import {DOMAIN_BINDING_AUTHORIZATION,domainBindingPlan,verifyCertificateMaterial} from '../../scripts/v2-domain-binding-plan.mjs';
 import {prepareInvitedReadonlyConfig,verifyInvitedReadonlyConfig,readonlyEntryRollbackRequests,readonlyConfigIntegrity} from '../../scripts/invited-readonly-config.mjs';
 import {codeUpdateProbes,INVITED_READONLY_CODE_SCOPE} from '../../scripts/control-code-update.mjs';
@@ -267,4 +272,103 @@ test('HTTP success alone cannot pass HTML, identity, TLS or application-error ac
   ['private-internal',{...base,status:404,body:{code:'INGRESS_DENIED'},hasSetCookie:true}],
  ];
  for(const [id,response] of cases)assert.equal(readonlyEntryProbeAccepted(response,readonlyEntryProbes.find(p=>p.id===id),f.plan),false);
+});
+function transportFixture(){
+ const f=executionFixture(),commands=[],bodyFiles=[];
+ const env={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_SHA:f.plan.operatorSource,V2_READONLY_OPENING_APPROVED:READONLY_ENTRY_SCOPE,V2_CONTROL_ROLE_ARN:'acs:ram::111122223333:role/fixture-deploy',ALIBABA_CLOUD_ACCESS_KEY_ID:'fixture-id',ALIBABA_CLOUD_ACCESS_KEY_SECRET:'fixture-secret',ALIBABA_CLOUD_SECURITY_TOKEN:'fixture-session'};
+ const exec=(program,args,options)=>{
+  commands.push({program,args,input:options.input});
+  assert.equal(options.env.ALIBABA_CLOUD_IGNORE_PROFILE,'TRUE');
+  if(program==='python3'){
+   const input=JSON.parse(options.input);assert.equal(input.domainName,'shuduoai.cn');
+   return JSON.stringify(input.operation==='get'?{status:200,value:f.domain}:{status:200});
+  }
+  assert.equal(program,'aliyun');assert(!args[2].includes('?'));
+  assert.equal(args[args.indexOf('--retry-count')+1],'0');
+  assert(!args.includes('--body'));
+  if(args.includes('--body-file')){
+   const path=args[args.indexOf('--body-file')+1];
+   assert.equal(statSync(path).mode&0o777,0o600);
+   assert(!args.join(' ').includes('not-a-real-secret'));
+   bodyFiles.push({path,body:JSON.parse(readFileSync(path,'utf8'))});
+  }
+  if(args[2].endsWith('/triggers'))return JSON.stringify({triggers:[...f.state.triggers,{...f.change.triggerBody,httpTrigger:{urlInternet:'https://fixture-default.cn-hangzhou.fcapp.run/'}}]});
+  return JSON.stringify(f.state.function);
+ };
+ return{...f,env,exec,commands,bodyFiles};
+}
+test('cloud adapter restricts targets and passes environment secrets only through a disposable 0600 body file',async()=>{
+ const f=transportFixture(),adapter=createReadonlyEntryCloudAdapter({plan:f.plan,change:f.change,env:f.env,exec:f.exec,now:()=>now});
+ adapter.openFunction(f.change.functionBody);
+ assert.deepEqual(f.bodyFiles[0].body,f.change.functionBody);assert.equal(existsSync(f.bodyFiles[0].path),false);
+ adapter.closeFunction(f.change.rollbackFunctionBody);adapter.createTrigger(f.change.triggerBody);adapter.updateDomain(f.change.domainBody);adapter.restoreDomain(f.change.rollbackDomainBody);
+ await adapter.readFunction();await adapter.listTriggers();await adapter.readDomain();await adapter.readScaling();
+ const count=f.commands.length;
+ assert.throws(()=>adapter.openFunction({environmentVariables:{V2_LOCAL_DEVELOPMENT:'true'}}),/OUTSIDE_SCOPE/);
+ assert.throws(()=>adapter.deleteTrigger('foreign-trigger'),/OUTSIDE_SCOPE/);
+ assert.equal(f.commands.length,count);
+ for(const patch of [{GITHUB_REF:'refs/heads/other'},{V2_READONLY_OPENING_APPROVED:'yes'},{V2_CONTROL_ROLE_ARN:'foreign-role'},{ALIBABA_CLOUD_SECURITY_TOKEN:''}])
+  assert.throws(()=>createReadonlyEntryCloudAdapter({plan:f.plan,change:f.change,env:{...f.env,...patch},exec:f.exec,now:()=>now}));
+ const expired=createReadonlyEntryCloudAdapter({plan:f.plan,change:f.change,env:f.env,exec:f.exec,now:()=>f.plan.expiresAt});
+ assert.throws(()=>expired.readFunction(),/EXPIRED/);assert.equal(f.commands.length,count);
+});
+test('default URLs and probe definitions reject redirects, foreign endpoints and arbitrary actions',async()=>{
+ assert.equal(readonlyDefaultEndpoint('https://fixture-default.cn-hangzhou.fcapp.run/'),'https://fixture-default.cn-hangzhou.fcapp.run');
+ for(const value of ['http://fixture.cn-hangzhou.fcapp.run','https://fixture.cn-beijing.fcapp.run','https://fixture.cn-hangzhou.fcapp.run.evil.invalid','https://u:p@fixture.cn-hangzhou.fcapp.run','https://fixture.cn-hangzhou.fcapp.run/other','https://fixture.cn-hangzhou.fcapp.run/?token=x'])
+  assert.throws(()=>readonlyDefaultEndpoint(value));
+ let requests=0;
+ await assert.rejects(readReadonlyHttpsProbe('https://shuduoai.cn',{...readonlyEntryProbes[2],path:'/invoke'},'1'.repeat(64),{request:()=>{requests++;}}),/OUTSIDE_SCOPE/);
+ assert.equal(requests,0);
+});
+test('Python domain transport isolates legacy create/delete from V2 authentication-only updates',()=>{
+ execFileSync('python3',['-c',String.raw`
+import importlib.util
+spec = importlib.util.spec_from_file_location('transport', 'scripts/transport-v2-domain-signed.py')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+base = {'authorization':'INVITED_READ_ONLY_OPENING_V2','domainName':'shuduoai.cn'}
+for auth in ('anonymous','function'):
+    op, method, action, path, body = mod.request_shape(dict(base, operation='update', body={'authConfig':{'authType':auth,'authInfo':'{}'}}))
+    assert method == 'PUT' and action == 'UpdateCustomDomain' and path.endswith('/shuduoai.cn')
+for change in ({'operation':'create'}, {'operation':'delete'}, {'operation':'update','body':{'protocol':'HTTP'}}, {'operation':'update','body':{'authConfig':{'authType':'jwt','authInfo':'{}'}}}):
+    try:
+        mod.request_shape(dict(base, **change))
+        raise AssertionError('scope bypass')
+    except ValueError:
+        pass
+try:
+    mod.request_shape({'authorization':'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED','domainName':'shuduoai.cn','operation':'update','body':{'authConfig':{'authType':'anonymous','authInfo':'{}'}}})
+    raise AssertionError('old scope widened')
+except ValueError:
+    pass
+`],{timeout:10000,stdio:'pipe'});
+});
+test('actual loopback TLS and application responses satisfy the fixed read-only contracts without cloud credentials',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'shuduo-tls-app-'));
+ mkdirSync(join(root,'web-dist'));
+ const html=Buffer.from('<!doctype html><title>数舵 合成传输测试</title>');
+ writeFileSync(join(root,'web-dist/index.html'),html);
+ const store=new MetadataStore(':memory:'),app=createV2Server({root,store,cloudReadinessEvidence:{format:'SYNTHETIC_ONLY'},ingress:createFcIngress({publicHttpEnabled:true,publicReadOnly:true}),env:{V2_LOCAL_DEVELOPMENT:'false',V2_PUBLIC_ORIGIN:'https://shuduoai.cn'}});
+ // Explicitly simulated FC header, valid local test certificate. This is not
+ // a real FC edge, public DNS, or publicly trusted certificate acceptance.
+ const tls=createHttpsServer({key:material.privateKey,cert:material.certificate},(req,res)=>{
+  req.headers['x-fc-control-path']='/http-invoke';req.rawHeaders.push('X-Fc-Control-Path','/http-invoke');
+  app.server.emit('request',req,res);
+ });
+ await new Promise(resolve=>tls.listen(0,'127.0.0.1',resolve));
+ t.after(async()=>{tls.closeAllConnections();await new Promise(resolve=>tls.close(resolve));await new Promise(resolve=>app.server.close(()=>resolve()));store.close();rmSync(root,{recursive:true,force:true});});
+ let requests=0;
+ const request=(url,options,callback)=>{
+  requests++;assert.equal(url.hostname,'shuduoai.cn');assert.equal(options.rejectUnauthorized,true);
+  assert.equal(options.headers.Authorization,undefined);assert.equal(options.headers.Cookie,undefined);
+  // Test-only mapping and CA, never exposed by production input/config.
+  return realHttpsRequest({hostname:'127.0.0.1',port:tls.address().port,servername:'shuduoai.cn',path:url.pathname,ca:material.certificate,...options},callback);
+ };
+ const plan={webIndexSha256:createHash('sha256').update(html).digest('hex')};
+ for(const id of ['entry-html','anonymous-session','readonly-agent','readonly-publish','private-internal','foreign-origin','invalid-login']){
+  const probe=readonlyEntryProbes.find(p=>p.id===id),result=await readReadonlyHttpsProbe('https://shuduoai.cn',probe,certificate.leafSha256,{request,timeoutMs:5000});
+  assert.equal(readonlyEntryProbeAccepted(result,probe,plan),true,id);
+  assert.equal(result.tlsTrusted,true);assert.equal(result.certificateMatched,true);
+ }
+ assert.equal(requests,7);assert.equal(store.list('agent','project-securities-lab').length,0);assert.equal(store.list('run','project-securities-lab').length,0);
 });

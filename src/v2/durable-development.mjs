@@ -28,13 +28,13 @@ export async function submitDurableDevelopment(run, revision, { runner, store, p
   return current;
 }
 
-export async function reconcileDurableDevelopment(run, { runner, store, project, persist, contextIds, contractId }) {
+export async function reconcileDurableDevelopment(run, { runner, store, project, persist, contextIds, contractId, allowSubmit = true }) {
   if (!run.remoteSubmission || terminal.has(run.status)) return run;
   let result;
   try {
     result = await runner.read(run.remoteSubmission.prepared);
     if (!result) {
-      if (!run.remoteSubmission.submitted) {
+      if (!run.remoteSubmission.submitted && allowSubmit) {
         await runner.submit(run.remoteSubmission.prepared);
         const submitted = store.update("run", run.id, project, {
           remoteSubmission: { ...run.remoteSubmission, submitted: true },

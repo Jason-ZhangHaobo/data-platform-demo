@@ -183,7 +183,7 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
    check(attempts===0||(attempts===1&&probe.method==='GET'),'READONLY_PROBE_OUTCOME_UNKNOWN');
    cp.probeAttempts[probe.id]=attempts+1;
    await reserve('newRequests');
-   const result=await adapter.probe(probe);
+   const result=await adapter.probe(structuredClone(probe));
    if(['readonly-agent','readonly-publish'].includes(probe.id)&&result?.status>=200&&result.status<300)
     report.possibleUnexpectedWrite=true;
    check(readonlyEntryProbeAccepted(result,probe,plan),'READONLY_ENTRY_PROBE_REJECTED');
