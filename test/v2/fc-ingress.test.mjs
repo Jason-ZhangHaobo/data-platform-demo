@@ -26,6 +26,20 @@ test("FC ingress is fail-closed; event marker only admits exact POST /invoke", (
   rejected(() => gate.assertRequest(stub("/v2/", "/http-invoke", "GET")));
 });
 
+test("ingress diagnostics distinguish failure causes without reflecting request contents", async t => {
+  const enabled = createFcIngress({ publicHttpEnabled: true });
+  for (const [req, reason] of [[stub('/v2/', undefined, 'GET'), 'CONTROL_MISSING'],
+    [stub('/v2/', 'secret-not-an-allowed-marker', 'GET'), 'CONTROL_UNRECOGNIZED'],
+    [stub('/api/v2/internal/scheduler/tick', '/http-invoke'), 'INTERNAL_PATH']]) {
+    assert.throws(() => enabled.assertRequest(req), e => e.code === 'INGRESS_DENIED' && e.ingressReason === reason && !JSON.stringify(e).includes('secret-not-an-allowed-marker'));
+  }
+  const { call, refreshes } = await open(t, false);
+  const response = await call('/v2/', 'GET', httpHeaders);
+  assert.equal(response.status, 404);
+  assert.deepEqual(response.body, { message: '访问入口不可用', code: 'INGRESS_DENIED', ingressReason: 'HTTP_DISABLED' });
+  assert.equal(refreshes(), 0);
+});
+
 test("public routes cannot reach private operations by normalization, forwarded headers or duplicates", () => {
   const gate = createFcIngress({ publicHttpEnabled: true });
   for (const path of ["/", "/v2/", "/v2/assets/index-abc.js", "/api/v2/auth/session", "/v2/?module=agent-center", "/api/v2/contexts?q=%E8%AF%81"])

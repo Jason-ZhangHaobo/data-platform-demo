@@ -2,7 +2,7 @@
 // module has no credentials, file writes, network calls or automatic execution.
 import {createHash} from 'node:crypto';
 import {controlPackageObject} from './render-v2-control-package-policy.mjs';
-import {INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE,INVITED_READONLY_RUNTIME_CODE_SCOPE} from './invited-opening-scopes.mjs';
+import {INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE,INVITED_READONLY_RUNTIME_CODE_SCOPE,READONLY_RUNTIME_SCOPE,openingScope} from './invited-opening-scopes.mjs';
 export {INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE,INVITED_READONLY_RUNTIME_CODE_SCOPE};
 const fail=code=>Object.assign(new Error(code),{safeCode:code});
 const check=(v,c)=>{if(!v)throw fail(c);};
@@ -11,7 +11,8 @@ const hash=v=>createHash('sha256').update(canonical(v)).digest('hex');
 const fields=['functionName','runtime','handler','role','timeout','cpu','memorySize','diskSize','instanceConcurrency','internetAccess','vpcConfig','customRuntimeConfig','layers','nasConfig','ossMountConfig','logConfig','environmentVariables'];
 export const codeUpdateBoundaryHash=state=>hash({function:Object.fromEntries(fields.map(k=>[k,state.function?.[k]??null])),triggers:[...(state.triggers??[])].sort((a,b)=>a.triggerName.localeCompare(b.triggerName)),concurrency:state.concurrency,scaling:state.scaling});
 const codeMatches=(f,p)=>String(f?.codeChecksum)===p.crc64&&Number(f?.codeSize)===p.bytes;
-export function codeUpdateLimits(authorization){
+export function codeUpdateLimits(authorization,history){
+ if(history!==undefined){check(authorization===INVITED_READONLY_RUNTIME_CODE_SCOPE,'CODE_UPDATE_HISTORY_SCOPE_INVALID');return{...codeUpdateLimits(authorization),previousInvocations:openingScope(READONLY_RUNTIME_SCOPE,history).historicalRequests};}
  if(authorization==='P0A_PRIVATE_CODE_ONLY')return{previousInvocations:11,maxInvocations:8,maxUpdateAttempts:2,maxRollbackAttempts:1};
  // A separate code-only substep of the proposed opening grant. This is not
  // permission to open HTTP or reset the 55 historical acceptance requests.
@@ -28,13 +29,13 @@ export const codeUpdateProbes=Object.freeze([
  {id:'anonymous-services',body:{operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2/data-services/sources'}},
 ]);
 export function codeUpdateConfig(input,now=Date.now()){
- const limits=codeUpdateLimits(input?.authorization);
+ const limits=codeUpdateLimits(input?.authorization,input?.history);
  check(/^[a-f0-9]{32}$/.test(input.operationId??'')&&/^[a-f0-9]{40}$/.test(input.applicationSource??'')&&/^[a-f0-9]{40}$/.test(input.operatorSource??''),'CODE_UPDATE_IDENTITY_INVALID');
  check(/^\d{12,20}$/.test(input.account??'')&&/^[a-z0-9-]{1,64}$/.test(input.role??'')&&/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(input.functionName??'')&&/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(input.bucket??'')&&input.region==='cn-hangzhou','CODE_UPDATE_TARGET_INVALID');
  const expiresAt=Date.parse(input.expiresAt);check(Number.isFinite(expiresAt)&&expiresAt-now>=300000&&expiresAt-now<=3600000&&input.previousInvocations===limits.previousInvocations,'CODE_UPDATE_LIMITS_INVALID');
  for(const p of [input.previous,input.candidate])check(/^[a-f0-9]{64}$/.test(p?.sha256??'')&&Number.isSafeInteger(p.bytes)&&p.bytes>0&&p.bytes<=73400320,'CODE_PACKAGE_INVALID');
  check(input.previous.sha256!==input.candidate.sha256&&/^\d{1,30}$/.test(input.previous.crc64??''),'ROLLBACK_IDENTITY_INVALID');
- return{authorization:input.authorization,operationId:input.operationId,applicationSource:input.applicationSource,operatorSource:input.operatorSource,account:input.account,role:input.role,functionName:input.functionName,bucket:input.bucket,region:input.region,issuedAt:now,expiresAt,
+ return{authorization:input.authorization,...(input.history?{history:structuredClone(input.history)}:{}),operationId:input.operationId,applicationSource:input.applicationSource,operatorSource:input.operatorSource,account:input.account,role:input.role,functionName:input.functionName,bucket:input.bucket,region:input.region,issuedAt:now,expiresAt,
   previous:{sha256:input.previous.sha256,bytes:input.previous.bytes,crc64:input.previous.crc64,key:controlPackageObject(input.previous.sha256)},candidate:{sha256:input.candidate.sha256,bytes:input.candidate.bytes,key:controlPackageObject(input.candidate.sha256)},...limits};
 }
 function verifiedReceipt(receipt,pkg){

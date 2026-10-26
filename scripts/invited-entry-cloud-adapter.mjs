@@ -11,6 +11,7 @@ import {scalingConfiguration} from './control-code-transport.mjs';
 import {readonlyConfigIntegrity,readonlyTriggerState} from './invited-readonly-config.mjs';
 import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyProbesFor} from './invited-readonly-entry.mjs';
 import {openingScope} from './invited-opening-scopes.mjs';
+import {ingressDenialReasons} from '../src/v2/fc-ingress.mjs';
 
 const check=(value,code)=>{if(!value)throw Object.assign(new Error(code),{safeCode:code});};
 const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v??null);
@@ -50,6 +51,7 @@ export async function readReadonlyHttpsProbe(endpoint,probe,certificateSha256,{r
      ...(typeof parsed?.authenticated==='boolean'?{authenticated:parsed.authenticated}:{}),
      ...(typeof parsed?.readOnly==='boolean'?{readOnly:parsed.readOnly}:{}),
      ...(code?{code}:{}),
+     ...(code==='INGRESS_DENIED'&&ingressDenialReasons.includes(parsed?.ingressReason)?{ingressReason:parsed.ingressReason}:{}),
      ...(parsed?.message==='请求来源不允许'?{message:parsed.message}:{}),
      ...(probe.id==='filing-display'?{site:{icpNumber:typeof parsed?.site?.icpNumber==='string'?parsed.site.icpNumber.slice(0,100):null,registeredName:typeof parsed?.site?.registeredName==='string'?parsed.site.registeredName.slice(0,100):null}}:{}),
     };

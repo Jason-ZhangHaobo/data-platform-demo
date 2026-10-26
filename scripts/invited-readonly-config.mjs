@@ -10,8 +10,8 @@ const hash=value=>createHash('sha256').update(canonical(value)).digest('hex');
 const stateHash=state=>hash({protected:codeUpdateBoundaryHash(state),checksum:String(state.function?.codeChecksum),bytes:Number(state.function?.codeSize),extra:Object.fromEntries(['customDNS','disableOndemand','instanceLifecycleConfig','invocationRestriction'].map(k=>[k,state.function?.[k]??null]))});
 const same=(a,b)=>canonical(a)===canonical(b);
 
-export function prepareInvitedReadonlyConfig({state,domain,retainedPlan,operationId,expectedCode,privateCodeEvidence,authorization=READONLY_ENTRY_SCOPE,publicSite}){
- const scope=openingScope(authorization),filingPatch=scope.filingRepair?publicSitePatch(publicSite):{};
+export function prepareInvitedReadonlyConfig({state,domain,retainedPlan,operationId,expectedCode,privateCodeEvidence,authorization=READONLY_ENTRY_SCOPE,history,publicSite}){
+ const scope=openingScope(authorization,history),filingPatch=scope.filingRepair?publicSitePatch(publicSite):{};
  check(/^[a-f0-9]{32}$/.test(operationId??''),'READONLY_OPERATION_INVALID');
  check(retainedPlan?.target?.domainName==='shuduoai.cn'&&domainConfigurationMatches(domain,retainedPlan),'RETAINED_SIGNED_DOMAIN_NOT_VERIFIED');
  const fn=state?.function,env=fn?.environmentVariables;
@@ -34,7 +34,7 @@ export function prepareInvitedReadonlyConfig({state,domain,retainedPlan,operatio
  const triggerBody={triggerName:'shuduo-invited-readonly',triggerType:'http',qualifier:'LATEST',description:`shuduo-readonly-${operationId}`,triggerConfig:JSON.stringify({authType:'anonymous',disableURLInternet:true,methods:['GET','POST']})};
  const expectedState={...structuredClone(state),function:{...structuredClone(fn),...functionBody}};
  const change={
-  authorization,...(scope.filingRepair?{publicSite:structuredClone(publicSite)}:{}),operationId,expectedCode:structuredClone(expectedCode),codeConfigurationReads,retainedPlan:structuredClone(retainedPlan),baselineHash:stateHash(state),openedHash:stateHash(expectedState),originalTriggers:structuredClone(state.triggers),resourceConfiguration:{concurrency:structuredClone(state.concurrency),scaling:structuredClone(state.scaling)},
+  authorization,...(history?{history:structuredClone(history)}:{}),...(scope.filingRepair?{publicSite:structuredClone(publicSite)}:{}),operationId,expectedCode:structuredClone(expectedCode),codeConfigurationReads,retainedPlan:structuredClone(retainedPlan),baselineHash:stateHash(state),openedHash:stateHash(expectedState),originalTriggers:structuredClone(state.triggers),resourceConfiguration:{concurrency:structuredClone(state.concurrency),scaling:structuredClone(state.scaling)},
   // Request bodies contain the pre-existing environment. Only use them in
   // memory/protected encrypted checkpoints, never public summaries or Git.
   functionBody,domainBody:{authConfig:{authType:'anonymous',authInfo:'{}'}},triggerBody,
@@ -54,7 +54,7 @@ function ownedHttpTrigger(value,expected){
 
 export function readonlyConfigIntegrity(change){
  if(!change||typeof change!=='object')return false;
- let scope,filingPatch;try{scope=openingScope(change.authorization??READONLY_ENTRY_SCOPE);filingPatch=scope.filingRepair?publicSitePatch(change.publicSite):{};}catch{return false;}
+ let scope,filingPatch;try{scope=openingScope(change.authorization??READONLY_ENTRY_SCOPE,change.history);filingPatch=scope.filingRepair?publicSitePatch(change.publicSite):{};}catch{return false;}
  const {changeHash,...definition}=change;
  if(hash(definition)!==changeHash||change.retainedPlan?.target?.domainName!=='shuduoai.cn')return false;
  const before=change.rollbackFunctionBody?.environmentVariables,after=change.functionBody?.environmentVariables;
