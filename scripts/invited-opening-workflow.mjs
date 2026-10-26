@@ -5,8 +5,7 @@ import {join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {deploymentInput} from './control-code-transport.mjs';
-import {INVITED_READONLY_CODE_SCOPE} from './control-code-update.mjs';
-import {READONLY_ENTRY_SCOPE} from './invited-readonly-entry.mjs';
+import {openingScope,publicSitePatch} from './invited-opening-scopes.mjs';
 import {createOpeningUsage} from './invited-opening-usage.mjs';
 import {runInvitedOpening} from './invited-opening-stage.mjs';
 import {recipientKey,sealReport} from './audit-v2-oidc-readonly.mjs';
@@ -17,14 +16,14 @@ const names=['binding','usage','stage','transport','code','entry','code-report',
 const reads=new Set(['IDENTITY','BILL_PAGE','FC_READ','DOMAIN_READ','OSS_METADATA','RAM_READ']);
 
 export function openingWorkflowInput(env,now=Date.now(),sealOnly=false){
- check(env.V2_READONLY_OPENING_APPROVED===READONLY_ENTRY_SCOPE,'OPENING_NEW_GRANT_REQUIRED');
+ const scope=openingScope(env.V2_READONLY_OPENING_APPROVED);
  check(env.GITHUB_RUN_ATTEMPT==='1'&&/^\d{6,20}$/.test(env.GITHUB_RUN_ID??''),'OPENING_NO_AUTOMATIC_RERUN');
  let metadata;try{metadata=JSON.parse(env.V2_INVITED_OPENING_TARGET);}catch{check(false,'OPENING_TARGET_INVALID');}
  const stamp=Date.parse(metadata.authorizedAt);
  check(stamp<=now,'OPENING_START_INVALID');
  const privacyAt=Date.parse(metadata.bucketPrivacy?.checkedAt);
  check(Number.isFinite(privacyAt)&&privacyAt<=now,'OPENING_PRIVACY_TIME_INVALID');
- const mapped={...env,V2_CONTROL_UPDATE_APPROVED:INVITED_READONLY_CODE_SCOPE,V2_CONTROL_UPDATE_TARGET:JSON.stringify(metadata),V2_CONTROL_OPERATOR_SHA:env.V2_OPENING_OPERATOR_SHA};
+ const mapped={...env,V2_CONTROL_UPDATE_APPROVED:scope.codeAuthorization,V2_CONTROL_UPDATE_TARGET:JSON.stringify(metadata),V2_CONTROL_OPERATOR_SHA:env.V2_OPENING_OPERATOR_SHA};
  // Sealing after expiry performs no cloud operation. Validate the immutable
  // manifest at its real privacy-check instant, not before that check occurred.
  const result=deploymentInput(mapped,sealOnly?Math.max(stamp,privacyAt):now),{config}=result;
@@ -32,10 +31,15 @@ export function openingWorkflowInput(env,now=Date.now(),sealOnly=false){
  check(metadata.retainedPlan.target.account===config.account&&metadata.retainedPlan.target.role===config.role&&metadata.retainedPlan.target.functionName===config.functionName&&metadata.retainedPlan.target.region===config.region,'OPENING_FROZEN_TARGET_MISMATCH');
  const seed=metadata.openingUsage;
  check(seed&&seed.operationId===config.operationId&&seed.operatorSource===config.operatorSource&&seed.issuedAt===config.issuedAt&&seed.expiresAt===config.expiresAt&&seed.phase==='ACTIVE','OPENING_OWNER_LEDGER_REQUIRED');
- const usage=createOpeningUsage({authorization:READONLY_ENTRY_SCOPE,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>seed,save:()=>{},now:()=>stamp});
+ const usage=createOpeningUsage({authorization:scope.authorization,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>seed,save:()=>{},now:()=>stamp});
  check(usage.counts().configurationReads<=16&&usage.counts().configurationReads>=1&&usage.counts().newRequests===0,'OPENING_PREFLIGHT_TOO_EXPENSIVE');
  check(typeof metadata.publicSite?.icpNumber==='string'&&metadata.publicSite.icpNumber.length<=100&&typeof metadata.publicSite?.registeredName==='string'&&metadata.publicSite.registeredName.length<=100,'OPENING_PUBLIC_SITE_REQUIRED');
  check(metadata.recipientKeySha256===hash(Buffer.from(env.V2_AUDIT_RECIPIENT_KEY??'','base64')),'OPENING_RECIPIENT_CHANGED');
+ if(scope.filingRepair){
+  publicSitePatch(metadata.publicSite);
+  const prior=metadata.priorOpening;
+  check(prior?.configurationReads===58&&prior.cumulativeRequests===61&&prior.codeRestored===true&&prior.permissionRevoked===true&&prior.secretRemoved===true&&/^\d{6,20}$/.test(prior.runId??'')&&/^[a-f0-9]{40}$/.test(prior.sourceRevision??'')&&/^[a-f0-9]{64}$/.test(prior.sealedSha256??''),'OPENING_PRIOR_CLEANUP_REQUIRED');
+ }
  return{...result,key:recipientKey(env.V2_AUDIT_RECIPIENT_KEY)};
 }
 
@@ -75,7 +79,7 @@ export async function openingWorkflowMain(env=process.env,mode=process.argv[2],{
  const prior=store.load('binding');
  if(prior)check(JSON.stringify(prior)===JSON.stringify(binding),'OPENING_WORKFLOW_BINDING_CHANGED');
  else{check(mode==='--prepare','OPENING_PREPARE_REQUIRED');store.save('binding',binding);}
- const usage=createOpeningUsage({authorization:READONLY_ENTRY_SCOPE,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>store.load('usage')??metadata.openingUsage,save:value=>store.save('usage',value),now});
+ const usage=createOpeningUsage({authorization:env.V2_READONLY_OPENING_APPROVED,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>store.load('usage')??metadata.openingUsage,save:value=>store.save('usage',value),now});
  if(mode==='--prepare'){
   check(!prior,'OPENING_PREPARE_ALREADY_RUN');check(env.GITHUB_ENV,'GITHUB_ENV_REQUIRED');
   // One exchange through the already-pinned Action/credentials 2.4.4. Its

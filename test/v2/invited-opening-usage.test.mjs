@@ -2,9 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createOpeningUsage} from '../../scripts/invited-opening-usage.mjs';
 import {READONLY_ENTRY_SCOPE} from '../../scripts/invited-readonly-entry.mjs';
+import {READONLY_FILING_SCOPE} from '../../scripts/invited-opening-scopes.mjs';
 const time=Date.UTC(2026,9,26);
 const input={authorization:READONLY_ENTRY_SCOPE,operationId:'a'.repeat(32),operatorSource:'b'.repeat(40),issuedAt:time,expiresAt:time+3600000};
 function fixture(){let cp;const options={...input,load:()=>cp,save:v=>{cp=structuredClone(v);},now:()=>time};return{options,get:()=>cp,set:v=>{cp=v;},open:()=>createOpeningUsage(options)};}
+test('new filing grant retains both historical counters and cannot adopt the old 55-request grant ledger',()=>{
+ let cp;const options={...input,authorization:READONLY_FILING_SCOPE,load:()=>cp,save:v=>{cp=v;},now:()=>time};
+ const u=createOpeningUsage(options);u.reserve('FC_READ');u.reserve('HTTP_PROBE');
+ assert.deepEqual(u.counts(),{configurationReads:1,newRequests:1,cumulativeRequests:62,cumulativeConfigurationReads:59});
+ cp.historicalRequests=55;assert.throws(()=>createOpeningUsage(options),/CHECKPOINT_MISMATCH/);
+});
 test('all metadata readers share one write-ahead ledger, preserving 55 historical requests on restart',()=>{
  const f=fixture(),usage=f.open();
  for(const name of ['IDENTITY','BILL_PAGE','FC_READ','DOMAIN_READ','OSS_METADATA','RAM_READ'])usage.reserve(name);

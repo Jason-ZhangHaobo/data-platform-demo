@@ -5,7 +5,7 @@ on:
       authorization:
         required: true
         type: choice
-        options: [NOT_AUTHORIZED, INVITED_READ_ONLY_OPENING_V2]
+        options: [NOT_AUTHORIZED, INVITED_READ_ONLY_OPENING_V2, INVITED_READ_ONLY_FILING_REPAIR]
         default: NOT_AUTHORIZED
       expected_source_revision:
         required: true
@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   open:
-    if: github.ref == 'refs/heads/main' && inputs.authorization == 'INVITED_READ_ONLY_OPENING_V2'
+    if: github.ref == 'refs/heads/main' && (inputs.authorization == 'INVITED_READ_ONLY_OPENING_V2' || inputs.authorization == 'INVITED_READ_ONLY_FILING_REPAIR')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: v2-staging

@@ -17,7 +17,8 @@ import {codeUpdateProbes,INVITED_READONLY_CODE_SCOPE} from '../../scripts/contro
 import {codeUpdateConfig} from '../../scripts/control-code-update.mjs';
 import {createOpeningUsage} from '../../scripts/invited-opening-usage.mjs';
 import {runInvitedOpening} from '../../scripts/invited-opening-stage.mjs';
-import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyEntryProbes,readonlyEntryProbeAccepted,runReadonlyEntry} from '../../scripts/invited-readonly-entry.mjs';
+import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyEntryProbes,readonlyProbesFor,readonlyEntryProbeAccepted,runReadonlyEntry} from '../../scripts/invited-readonly-entry.mjs';
+import {READONLY_FILING_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE} from '../../scripts/invited-opening-scopes.mjs';
 
 // Disposable self-signed fixture only; never load project certificate material.
 const dir=mkdtempSync(join(tmpdir(),'readonly-domain-fixture-'));
@@ -47,7 +48,8 @@ function fixture(){
 // provider responses. These are integration doubles, not live cloud evidence.
 function openingStageFixture(options={}){
  const f=fixture(),old=Buffer.alloc(4000,1),next=Buffer.alloc(4100,2),hash=value=>createHash('sha256').update(value).digest('hex');
- const config=codeUpdateConfig({authorization:INVITED_READONLY_CODE_SCOPE,operationId:'c'.repeat(32),applicationSource:'d'.repeat(40),operatorSource:'f'.repeat(40),account:retainedPlan.target.account,role:retainedPlan.target.role,functionName:retainedPlan.target.functionName,bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:55,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:hash(old),bytes:old.length,crc64:'123456'},candidate:{sha256:hash(next),bytes:next.length}},now);
+ const scope=options.repair?READONLY_FILING_SCOPE:READONLY_ENTRY_SCOPE;
+ const config=codeUpdateConfig({authorization:options.repair?INVITED_READONLY_FILING_CODE_SCOPE:INVITED_READONLY_CODE_SCOPE,operationId:'c'.repeat(32),applicationSource:'d'.repeat(40),operatorSource:'f'.repeat(40),account:retainedPlan.target.account,role:retainedPlan.target.role,functionName:retainedPlan.target.functionName,bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:options.repair?61:55,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:hash(old),bytes:old.length,crc64:'123456'},candidate:{sha256:hash(next),bytes:next.length}},now);
  const state=structuredClone(f.state),domain=structuredClone(f.domain),documents={},objects=new Map(),calls=[];
  state.function.timeout=120;
  const publicSite={icpNumber:'测试ICP备00000000号-1',registeredName:'虚构知识站'};
@@ -55,9 +57,9 @@ function openingStageFixture(options={}){
  const metadata={publicSite,unsettledReservedCny:12,bucketPrivacy:{checkedAt:new Date().toISOString()}};
  if(options.fromObject)objects.set(`https://${config.bucket}.oss-cn-hangzhou.aliyuncs.com/${config.previous.key}`,old);
  const storage={load:name=>documents[name],save:(name,value)=>{documents[name]=structuredClone(value);}};
- const usage=createOpeningUsage({authorization:READONLY_ENTRY_SCOPE,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>documents.usage,save:value=>storage.save('usage',value),now:()=>now});
+ const usage=createOpeningUsage({authorization:scope,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>documents.usage,save:value=>storage.save('usage',value),now:()=>now});
  for(let i=0;i<12;i++)usage.reserve('RAM_READ');
- const env={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_SHA:config.operatorSource,V2_READONLY_OPENING_APPROVED:READONLY_ENTRY_SCOPE,V2_CONTROL_ROLE_ARN:`acs:ram::${config.account}:role/${config.role}`,ALIBABA_CLOUD_ACCESS_KEY_ID:'fictional-id',ALIBABA_CLOUD_ACCESS_KEY_SECRET:'fictional-key',ALIBABA_CLOUD_SECURITY_TOKEN:'fictional-token'};
+ const env={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_SHA:config.operatorSource,V2_READONLY_OPENING_APPROVED:scope,V2_CONTROL_ROLE_ARN:`acs:ram::${config.account}:role/${config.role}`,ALIBABA_CLOUD_ACCESS_KEY_ID:'fictional-id',ALIBABA_CLOUD_ACCESS_KEY_SECRET:'fictional-key',ALIBABA_CLOUD_SECURITY_TOKEN:'fictional-token'};
  const exec=(program,args,opts)=>{
   if(program==='python3'){
    const data=JSON.parse(opts.input);calls.push(`domain:${data.operation}`);
@@ -104,10 +106,10 @@ function openingStageFixture(options={}){
   req.end=()=>queueMicrotask(()=>{
    calls.push('HTTP:'+url.pathname);
    const res=new EventEmitter();res.destroy=()=>{};
-   const key=url.hostname.includes('fcapp.run')?'default-disabled':readonlyEntryProbes.find(p=>p.path===url.pathname)?.id;
-   const body=key==='anonymous-session'?{authenticated:false,readOnly:true}:['readonly-agent','readonly-publish'].includes(key)?{code:'PUBLIC_READ_ONLY'}:key==='private-internal'?{code:'INGRESS_DENIED'}:key==='unmapped-invoke'?{code:'DomainRouteNotFound'}:opts.headers.Origin==='https://foreign.example.invalid'?{message:'请求来源不允许'}:{code:'INVALID_LOGIN'};
+   const key=url.hostname.includes('fcapp.run')?'default-disabled':readonlyProbesFor(scope).find(p=>p.path===url.pathname)?.id;
+   const body=key==='filing-display'?{site:{icpNumber:options.wrongFilingResponse?'wrong-fixture':state.function.environmentVariables.V2_SITE_ICP_NUMBER,registeredName:state.function.environmentVariables.V2_SITE_REGISTERED_NAME}}:key==='anonymous-session'?{authenticated:false,readOnly:true}:['readonly-agent','readonly-publish'].includes(key)?{code:'PUBLIC_READ_ONLY'}:key==='private-internal'?{code:'INGRESS_DENIED'}:key==='unmapped-invoke'?{code:'DomainRouteNotFound'}:opts.headers.Origin==='https://foreign.example.invalid'?{message:'请求来源不允许'}:{code:'INVALID_LOGIN'};
    const bytes=key==='entry-html'?Buffer.from('fixture-html'):Buffer.from(JSON.stringify(body));
-   res.statusCode=key==='entry-html'||key==='anonymous-session'?200:key==='private-internal'||key==='unmapped-invoke'?404:key==='invalid-login'?401:403;
+   res.statusCode=['entry-html','anonymous-session','filing-display'].includes(key)?200:key==='private-internal'||key==='unmapped-invoke'?404:key==='invalid-login'?401:403;
    if(url.pathname==='/api/v2/auth/login')res.statusCode=opts.headers.Origin==='https://foreign.example.invalid'?403:401;
    if(options.badProbe&&key==='entry-html'){res.statusCode=503;if(options.foreignFunction)state.function.environmentVariables.FOREIGN_CHANGE='preserve';}
    res.headers={'content-type':key==='entry-html'?'text/html':'application/json'};
@@ -126,6 +128,32 @@ test('opening workflow reuses the exact private rollback object without GetFunct
  assert(!f.calls.some(c=>c.includes('/functions/')&&c.endsWith('/code')));
  const before=f.calls.length,cleanup=await f.run({cleanupOnly:true});
  assert.equal(cleanup.previouslyRetained,true);assert.equal(f.calls.length,before);
+});
+test('filing repair grant preserves 58 reads and 61 probes, changes only two public fields and verifies the displayed values',async()=>{
+ const f=openingStageFixture({repair:true,missingFiling:true,fromObject:true}),result=await f.run();
+ assert.equal(result.executionPassed,true,JSON.stringify(result));assert.equal(result.newRequests,16);assert.equal(result.cumulativeRequests,77);assert.equal(result.cumulativeConfigurationReads,58+result.configurationReads);
+ assert.equal(f.documents.code['invocations'],6);assert.equal(f.documents['code-report'].cumulativeInvocations,67);
+ assert.deepEqual(f.documents.stage.filingInspection,{icp:'MISSING',registeredName:'MISSING'});
+ assert.equal(f.state.function.environmentVariables.V2_SITE_ICP_NUMBER,'测试ICP备00000000号-1');
+ assert.equal(f.state.function.environmentVariables.SYNTHETIC_SECRET,'not-a-real-secret');
+ assert.equal(f.documents.entry.probes.at(-1).id,'filing-display');
+});
+test('a mismatched public filing response rolls back the six-key environment and original code',async()=>{
+ const f=openingStageFixture({repair:true,missingFiling:true,fromObject:true,wrongFilingResponse:true}),result=await f.run();
+ assert.equal(result.executionPassed,false);assert.equal(result.entry.failureAt,'filing-display');assert.equal(result.codeRollback?.rollbackVerified,true);
+ assert.equal(f.state.function.environmentVariables.V2_SITE_ICP_NUMBER,undefined);assert.equal(f.state.function.environmentVariables.V2_SITE_REGISTERED_NAME,undefined);assert.equal(f.state.function.codeChecksum,'123456');
+});
+test('filing authorization cannot change secrets, add a third environment field, or reuse old private-code proof',()=>{
+ const f=fixture(),site={icpNumber:'测试ICP备00000000号-1',registeredName:'虚构知识站'};
+ const input={...f,authorization:READONLY_FILING_SCOPE,publicSite:site,retainedPlan,operationId:'c'.repeat(32)};
+ assert.throws(()=>prepareInvitedReadonlyConfig(input),/PRIVATE_CODE_EVIDENCE_REQUIRED/);
+ f.privateCodeEvidence.report.requestScope=INVITED_READONLY_FILING_CODE_SCOPE;f.privateCodeEvidence.report.cumulativeInvocations=67;
+ const change=prepareInvitedReadonlyConfig({...input,privateCodeEvidence:f.privateCodeEvidence});
+ const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v??null);
+ for(const key of ['SYNTHETIC_SECRET','OTHER_FIELD']){
+  const bad=structuredClone(change);bad.functionBody.environmentVariables[key]='not-approved';const {changeHash,...definition}=bad;bad.changeHash=createHash('sha256').update(canonical(definition)).digest('hex');assert.equal(readonlyConfigIntegrity(bad),false);
+ }
+ assert.throws(()=>prepareInvitedReadonlyConfig({...input,privateCodeEvidence:f.privateCodeEvidence,publicSite:{...site,extra:'not-approved'}}),/PUBLIC_SITE_INVALID/);
 });
 test('whole opening shares code/entry/metadata counts and does not repeat accepted probes after restart',async()=>{
  const f=openingStageFixture(),result=await f.run();
@@ -461,6 +489,14 @@ for change in ({'operation':'create'}, {'operation':'delete'}, {'operation':'upd
         raise AssertionError('scope bypass')
     except ValueError:
         pass
+repair = dict(base, authorization='INVITED_READ_ONLY_FILING_REPAIR')
+assert mod.request_shape(dict(repair, operation='get'))[1] == 'GET'
+for op in ('create', 'delete'):
+    try:
+        mod.request_shape(dict(repair, operation=op))
+        raise AssertionError('repair scope widened')
+    except ValueError:
+        pass
 try:
     mod.request_shape({'authorization':'ONE_SIGNED_DOMAIN_BINDING_KEEP_BUSINESS_CLOSED','domainName':'shuduoai.cn','operation':'update','body':{'authConfig':{'authType':'anonymous','authInfo':'{}'}}})
     raise AssertionError('old scope widened')
@@ -473,7 +509,8 @@ test('actual loopback TLS and application responses satisfy the fixed read-only 
  mkdirSync(join(root,'web-dist'));
  const html=Buffer.from('<!doctype html><title>数舵 合成传输测试</title>');
  writeFileSync(join(root,'web-dist/index.html'),html);
- const store=new MetadataStore(':memory:'),app=createV2Server({root,store,cloudReadinessEvidence:{format:'SYNTHETIC_ONLY'},ingress:createFcIngress({publicHttpEnabled:true,publicReadOnly:true}),env:{V2_LOCAL_DEVELOPMENT:'false',V2_PUBLIC_ORIGIN:'https://shuduoai.cn'}});
+ const publicSite={icpNumber:'测试ICP备00000000号-1',registeredName:'虚构知识站'};
+ const store=new MetadataStore(':memory:'),app=createV2Server({root,store,cloudReadinessEvidence:{format:'SYNTHETIC_ONLY'},ingress:createFcIngress({publicHttpEnabled:true,publicReadOnly:true}),env:{V2_LOCAL_DEVELOPMENT:'false',V2_PUBLIC_ORIGIN:'https://shuduoai.cn',V2_SITE_ICP_NUMBER:publicSite.icpNumber,V2_SITE_REGISTERED_NAME:publicSite.registeredName}});
  // Explicitly simulated FC header, valid local test certificate. This is not
  // a real FC edge, public DNS, or publicly trusted certificate acceptance.
  const tls=createHttpsServer({key:material.privateKey,cert:material.certificate},(req,res)=>{
@@ -495,5 +532,8 @@ test('actual loopback TLS and application responses satisfy the fixed read-only 
   assert.equal(readonlyEntryProbeAccepted(result,probe,plan),true,id);
   assert.equal(result.tlsTrusted,true);assert.equal(result.certificateMatched,true);
  }
- assert.equal(requests,7);assert.equal(store.list('agent','project-securities-lab').length,0);assert.equal(store.list('run','project-securities-lab').length,0);
+ const probe=readonlyProbesFor(READONLY_FILING_SCOPE).find(p=>p.id==='filing-display');
+ const result=await readReadonlyHttpsProbe('https://shuduoai.cn',probe,certificate.leafSha256,{request,timeoutMs:5000,authorization:READONLY_FILING_SCOPE});
+ assert.equal(readonlyEntryProbeAccepted(result,probe,{...plan,publicSite}),true);
+ assert.equal(requests,8);assert.equal(store.list('agent','project-securities-lab').length,0);assert.equal(store.list('run','project-securities-lab').length,0);
 });

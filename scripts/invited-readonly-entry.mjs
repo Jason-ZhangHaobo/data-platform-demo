@@ -3,8 +3,9 @@
 // environment/cookie/certificate material. This file never loads credentials.
 import {createHash} from 'node:crypto';
 import {readonlyConfigIntegrity,readonlyFunctionState,readonlyDomainState,readonlyTriggerState,verifyInvitedReadonlyConfig} from './invited-readonly-config.mjs';
+import {READONLY_ENTRY_SCOPE,READONLY_FILING_SCOPE,openingScope,publicSitePatch} from './invited-opening-scopes.mjs';
+export {READONLY_ENTRY_SCOPE,READONLY_FILING_SCOPE};
 
-export const READONLY_ENTRY_SCOPE='INVITED_READ_ONLY_OPENING_V2';
 const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v??null);
 const hash=v=>createHash('sha256').update(canonical(v)).digest('hex');
 const check=(value,code)=>{if(!value)throw Object.assign(new Error(code),{safeCode:code});};
@@ -20,19 +21,23 @@ export const readonlyEntryProbes=Object.freeze([
  {id:'foreign-origin',target:'domain',method:'POST',path:'/api/v2/auth/login',headers:{Origin:'https://foreign.example.invalid'},body:{}},
  {id:'invalid-login',target:'domain',method:'POST',path:'/api/v2/auth/login',body:{email:'readonly-probe@example.invalid',password:'SyntheticWrong#2026'}},
 ]);
+export function readonlyProbesFor(authorization){
+ return openingScope(authorization).filingRepair?[...readonlyEntryProbes,{id:'filing-display',target:'domain',method:'GET',path:'/api/v2/status'}]:readonlyEntryProbes;
+}
 
 // Proposed revised allowance: must receive a NEW explicit human grant. The
 // earlier 30-read card and old signed-domain grants cannot activate this scope.
 export function readonlyEntryPlan(input,now=Date.now()){
- check(input?.authorization===READONLY_ENTRY_SCOPE,'READONLY_ENTRY_NEW_GRANT_REQUIRED');
+ let scope;try{scope=openingScope(input?.authorization);}catch{check(false,'READONLY_ENTRY_NEW_GRANT_REQUIRED');}
+ if(scope.filingRepair)publicSitePatch(input.publicSite);
  check(/^[a-f0-9]{32}$/.test(input.operationId??'')&&/^[a-f0-9]{40}$/.test(input.operatorSource??'')&&/^[a-f0-9]{64}$/.test(input.webIndexSha256??''),'READONLY_ENTRY_IDENTITY_INVALID');
  const issuedAt=Date.parse(input.issuedAt),expiresAt=Date.parse(input.expiresAt);
  check(Number.isFinite(issuedAt)&&issuedAt<=now&&Number.isFinite(expiresAt)&&expiresAt-issuedAt<=3600000&&expiresAt-now>=300000,'READONLY_ENTRY_WINDOW_INVALID');
  const seed=input.seed;
  check(seed?.newRequests===6&&Number.isSafeInteger(seed.configurationReads)&&seed.configurationReads>=17&&seed.configurationReads<=46,'READONLY_ENTRY_SEED_INVALID');
- return{authorization:READONLY_ENTRY_SCOPE,operationId:input.operationId,operatorSource:input.operatorSource,webIndexSha256:input.webIndexSha256,issuedAt,expiresAt,
+ return{authorization:scope.authorization,...(scope.filingRepair?{publicSite:structuredClone(input.publicSite)}:{}),operationId:input.operationId,operatorSource:input.operatorSource,webIndexSha256:input.webIndexSha256,issuedAt,expiresAt,
   seed:{newRequests:6,configurationReads:seed.configurationReads},
-  limits:{historicalRequests:55,newRequests:60,configurationReads:80,cleanupReadReserve:20,eachEntryWrite:1,incrementalCny:2,monthlyCny:200}};
+  limits:{historicalRequests:scope.historicalRequests,...(scope.filingRepair?{historicalConfigurationReads:58}:{}),newRequests:60,configurationReads:80,cleanupReadReserve:20,eachEntryWrite:1,incrementalCny:2,monthlyCny:200}};
 }
 
 export function readonlyEntryProbeAccepted(result,probe,plan){
@@ -48,6 +53,7 @@ export function readonlyEntryProbeAccepted(result,probe,plan){
   case 'unmapped-invoke':return result.status===404&&result.serviceCode==='DomainRouteNotFound';
   case 'foreign-origin':return result.status===403&&body?.message==='请求来源不允许';
   case 'invalid-login':return result.status===401&&body?.code==='INVALID_LOGIN';
+  case 'filing-display':return result.status===200&&body?.site?.icpNumber===plan.publicSite?.icpNumber&&body?.site?.registeredName===plan.publicSite?.registeredName;
   default:return false;
  }
 }
@@ -58,6 +64,9 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
  check(plan.seed?.configurationReads>=change.codeConfigurationReads,'READONLY_ENTRY_PRIOR_USAGE_MISSING');
  const normalized=readonlyEntryPlan({...plan,issuedAt:new Date(plan.issuedAt).toISOString(),expiresAt:new Date(plan.expiresAt).toISOString()},plan.issuedAt);
  check(canonical(plan)===canonical(normalized),'READONLY_ENTRY_PLAN_CHANGED');
+ check((change.authorization??READONLY_ENTRY_SCOPE)===plan.authorization,'READONLY_ENTRY_SCOPE_CHANGED');
+ if(openingScope(plan.authorization).filingRepair)check(canonical(change.publicSite)===canonical(plan.publicSite),'READONLY_ENTRY_PUBLIC_SITE_CHANGED');
+ const probes=readonlyProbesFor(plan.authorization);
  check(now()<plan.expiresAt,'READONLY_ENTRY_WINDOW_EXPIRED');
  let cp=structuredClone(await load()),validated=false,cleanup=false,retainedOnEntry=false,lastAction;
  const report={scope:'INVITED_READONLY_ENTRY',passed:false,entryRetained:false,invitedUserAccepted:false,modelCallsRequested:0,sparkRunsRequested:0,externalCleanupRequired:true};
@@ -135,15 +144,15 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
    check(cp.version===1&&cp.planHash===hash(plan)&&cp.changeHash===change.changeHash,'READONLY_ENTRY_CHECKPOINT_MISMATCH');
    check(Number.isSafeInteger(cp.configurationReads)&&cp.configurationReads>=plan.seed.configurationReads&&cp.configurationReads<=plan.limits.configurationReads&&Number.isSafeInteger(cp.newRequests)&&cp.newRequests>=plan.seed.newRequests&&cp.newRequests<=plan.limits.newRequests,'READONLY_ENTRY_COUNTER_INVALID');
    check(cp.writes&&cp.unknownWrites&&Object.keys(cp.writes).every(k=>writes.includes(k)&&cp.writes[k]===true)&&Object.keys(cp.unknownWrites).every(k=>cp.writes[k]&&cp.unknownWrites[k]===true),'READONLY_ENTRY_WRITES_INVALID');
-   check(['ACTIVE','VERIFIED','ROLLING_BACK','ROLLED_BACK','NEEDS_ATTENTION'].includes(cp.phase)&&Array.isArray(cp.probes)&&cp.probes.length<=readonlyEntryProbes.length&&cp.probes.every((p,i)=>p.id===readonlyEntryProbes[i].id&&p.accepted===true),'READONLY_ENTRY_PHASE_INVALID');
+   check(['ACTIVE','VERIFIED','ROLLING_BACK','ROLLED_BACK','NEEDS_ATTENTION'].includes(cp.phase)&&Array.isArray(cp.probes)&&cp.probes.length<=probes.length&&cp.probes.every((p,i)=>p.id===probes[i].id&&p.accepted===true),'READONLY_ENTRY_PHASE_INVALID');
    check(cp.probeAttempts&&Object.entries(cp.probeAttempts).every(([id,count])=>{
-    const index=readonlyEntryProbes.findIndex(p=>p.id===id),probe=readonlyEntryProbes[index];
+    const index=probes.findIndex(p=>p.id===id),probe=probes[index];
     return index>=0&&index<=cp.probes.length&&Number.isSafeInteger(count)&&count>=1&&count<=(probe.method==='GET'?2:1);
    })&&cp.probes.every(p=>cp.probeAttempts[p.id]>=1),'READONLY_ENTRY_PROBE_LEDGER_INVALID');
    check(cp.newRequests===plan.seed.newRequests+Object.values(cp.probeAttempts).reduce((a,b)=>a+b,0),'READONLY_ENTRY_COUNTER_INVALID');
    for(const [later,earlier] of [['updateDomain','createTrigger'],['openFunction','updateDomain'],['closeFunction','openFunction'],['restoreDomain','updateDomain'],['deleteTrigger','createTrigger']])
     check(!cp.writes[later]||cp.writes[earlier],'READONLY_ENTRY_WRITE_ORDER_INVALID');
-   if(cp.phase==='VERIFIED')check(cp.probes.length===readonlyEntryProbes.length&&cp.writes.openFunction&&!cp.writes.closeFunction&&!cp.writes.restoreDomain&&!cp.writes.deleteTrigger,'READONLY_ENTRY_VERIFIED_CHECKPOINT_INVALID');
+   if(cp.phase==='VERIFIED')check(cp.probes.length===probes.length&&cp.writes.openFunction&&!cp.writes.closeFunction&&!cp.writes.restoreDomain&&!cp.writes.deleteTrigger,'READONLY_ENTRY_VERIFIED_CHECKPOINT_INVALID');
   }else{
    check(plan.limits.configurationReads-plan.seed.configurationReads>=34,'READONLY_ENTRY_BUDGET_TOO_SMALL');
    cp={version:1,planHash:hash(plan),changeHash:change.changeHash,phase:'ACTIVE',newRequests:plan.seed.newRequests,configurationReads:plan.seed.configurationReads,writes:{},unknownWrites:{},probes:[],probeAttempts:{}};
@@ -184,7 +193,7 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
    await writeOnce('openFunction',change.functionBody);
    check(readonlyFunctionState(change,await read('readFunction'))==='OPENED','READONLY_FUNCTION_OPEN_UNCONFIRMED');
   }
-  for(const probe of readonlyEntryProbes.slice(cp.probes.length)){
+  for(const probe of probes.slice(cp.probes.length)){
    lastAction=probe.id;
    const attempts=cp.probeAttempts[probe.id]??0;
    check(attempts===0||(attempts===1&&probe.method==='GET'),'READONLY_PROBE_OUTCOME_UNKNOWN');
