@@ -2,10 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createOpeningUsage} from '../../scripts/invited-opening-usage.mjs';
 import {READONLY_ENTRY_SCOPE} from '../../scripts/invited-readonly-entry.mjs';
-import {READONLY_FILING_SCOPE} from '../../scripts/invited-opening-scopes.mjs';
+import {READONLY_FILING_SCOPE,READONLY_RUNTIME_SCOPE} from '../../scripts/invited-opening-scopes.mjs';
 const time=Date.UTC(2026,9,26);
 const input={authorization:READONLY_ENTRY_SCOPE,operationId:'a'.repeat(32),operatorSource:'b'.repeat(40),issuedAt:time,expiresAt:time+3600000};
 function fixture(){let cp;const options={...input,load:()=>cp,save:v=>{cp=structuredClone(v);},now:()=>time};return{options,get:()=>cp,set:v=>{cp=v;},open:()=>createOpeningUsage(options)};}
+test('runtime and HTTP probes share twenty new requests while preserving 131 metadata and 69 probe history',()=>{
+ let cp;const options={...input,authorization:READONLY_RUNTIME_SCOPE,load:()=>cp,save:value=>{cp=value;},now:()=>time};const usage=createOpeningUsage(options);
+ for(let i=0;i<9;i++)usage.reserve('PRIVATE_PROBE');for(let i=0;i<11;i++)usage.reserve('HTTP_PROBE');
+ usage.reserve('FC_READ');assert.deepEqual(usage.counts(),{configurationReads:1,newRequests:20,cumulativeRequests:89,cumulativeConfigurationReads:132});
+ assert.throws(()=>usage.reserve('PRIVATE_PROBE'),/REQUEST_LIMIT/);assert.throws(()=>createOpeningUsage({...options,authorization:READONLY_FILING_SCOPE}),/CHECKPOINT_MISMATCH/);
+});
 test('new filing grant retains both historical counters and cannot adopt the old 55-request grant ledger',()=>{
  let cp;const options={...input,authorization:READONLY_FILING_SCOPE,load:()=>cp,save:v=>{cp=v;},now:()=>time};
  const u=createOpeningUsage(options);u.reserve('FC_READ');u.reserve('HTTP_PROBE');

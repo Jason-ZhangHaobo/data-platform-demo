@@ -8,11 +8,12 @@ import {openingWorkflowInput,openingWorkflowStore,workflowOpeningUsage,openingWo
 import {createOpeningUsage} from '../../scripts/invited-opening-usage.mjs';
 import {READONLY_ENTRY_SCOPE} from '../../scripts/invited-readonly-entry.mjs';
 import {INVITED_READONLY_CODE_SCOPE} from '../../scripts/control-code-update.mjs';
-import {READONLY_FILING_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE} from '../../scripts/invited-opening-scopes.mjs';
+import {READONLY_FILING_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE,READONLY_RUNTIME_SCOPE,INVITED_READONLY_RUNTIME_CODE_SCOPE} from '../../scripts/invited-opening-scopes.mjs';
 const now=Date.UTC(2026,9,26),hash=b=>createHash('sha256').update(b).digest('hex'),bytes=Buffer.from('fictional-new-package');
 const key=generateKeyPairSync('rsa',{modulusLength:3072});
 const publicKey=key.publicKey.export({type:'spki',format:'der'}).toString('base64');
 function fixture(repair=false){
+ const runtime=repair==='runtime';
  let seed;
  const config={authorization:INVITED_READONLY_CODE_SCOPE,operationId:'a'.repeat(32),applicationSource:'b'.repeat(40),operatorSource:'c'.repeat(40),account:'111122223333',role:'fixture-role',functionName:'fixture-control',bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:55,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:'d'.repeat(64),bytes:4000,crc64:'123'},candidate:{sha256:hash(bytes),bytes:bytes.length}};
  const usage=createOpeningUsage({authorization:READONLY_ENTRY_SCOPE,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:now,expiresAt:now+3600000,load:()=>undefined,save:v=>{seed=v;},now:()=>now});
@@ -20,13 +21,19 @@ function fixture(repair=false){
  const metadata={config,authorizedAt:new Date(now).toISOString(),roleArn:`acs:ram::${config.account}:role/${config.role}`,providerArn:`acs:ram::${config.account}:oidc-provider/fixture`,buildRunId:'12345678',artifactId:'12345679',objectAclReadApproved:true,unsettledReservedCny:12,bucketPrivacy:{bucketHash:hash(config.bucket),aclPrivate:true,policyNotPublic:true,publicAccessBlocked:true,checkedAt:new Date(now).toISOString()},retainedPlan:{target:{domainName:'shuduoai.cn',account:config.account,role:config.role,functionName:config.functionName,region:config.region}},webIndexSha256:'e'.repeat(64),openingUsage:seed,publicSite:{icpNumber:'测试备案号',registeredName:'虚构站点'}};
  metadata.recipientKeySha256=hash(Buffer.from(publicKey,'base64'));
  if(repair){
-  config.authorization=INVITED_READONLY_FILING_CODE_SCOPE;config.previousInvocations=61;
-  metadata.openingUsage={...metadata.openingUsage,authorization:READONLY_FILING_SCOPE,historicalRequests:61,historicalConfigurationReads:58};
-  metadata.priorOpening={runId:'12345677',sourceRevision:'f'.repeat(40),sealedSha256:'e'.repeat(64),configurationReads:58,cumulativeRequests:61,codeRestored:true,permissionRevoked:true,secretRemoved:true};
+  config.authorization=runtime?INVITED_READONLY_RUNTIME_CODE_SCOPE:INVITED_READONLY_FILING_CODE_SCOPE;config.previousInvocations=runtime?69:61;
+  metadata.openingUsage={...metadata.openingUsage,authorization:runtime?READONLY_RUNTIME_SCOPE:READONLY_FILING_SCOPE,historicalRequests:runtime?69:61,historicalConfigurationReads:runtime?131:58};
+  metadata.priorOpening={runId:'12345677',sourceRevision:'f'.repeat(40),sealedSha256:'e'.repeat(64),configurationReads:runtime?131:58,cumulativeRequests:runtime?69:61,codeRestored:true,permissionRevoked:true,secretRemoved:true,...(runtime?{entryRestored:true}:{})};
  }
- const env={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_SHA:config.operatorSource,GITHUB_RUN_ID:'12345680',GITHUB_RUN_ATTEMPT:'1',V2_READONLY_OPENING_APPROVED:repair?READONLY_FILING_SCOPE:READONLY_ENTRY_SCOPE,V2_OPENING_OPERATOR_SHA:config.operatorSource,V2_AUDIT_RECIPIENT_KEY:publicKey,V2_INVITED_OPENING_TARGET:JSON.stringify(metadata)};
+ const env={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_SHA:config.operatorSource,GITHUB_RUN_ID:'12345680',GITHUB_RUN_ATTEMPT:'1',V2_READONLY_OPENING_APPROVED:runtime?READONLY_RUNTIME_SCOPE:repair?READONLY_FILING_SCOPE:READONLY_ENTRY_SCOPE,V2_OPENING_OPERATOR_SHA:config.operatorSource,V2_AUDIT_RECIPIENT_KEY:publicKey,V2_INVITED_OPENING_TARGET:JSON.stringify(metadata)};
  return{config,metadata,env};
 }
+test('runtime scope requires the completed entry rollback and cannot reuse the filing grant history',()=>{
+ const f=fixture('runtime');assert.equal(openingWorkflowInput(f.env,now).config.previousInvocations,69);
+ for(const mutate of [m=>m.priorOpening.entryRestored=false,m=>m.priorOpening.configurationReads=58,m=>m.openingUsage.historicalRequests=61,m=>m.openingUsage.historicalConfigurationReads=58]){
+  const metadata=structuredClone(f.metadata);mutate(metadata);assert.throws(()=>openingWorkflowInput({...f.env,V2_INVITED_OPENING_TARGET:JSON.stringify(metadata)},now));
+ }
+});
 test('filing repair input requires new scope, preserved history and original rollback/cleanup evidence',()=>{
  const f=fixture(true);assert.equal(openingWorkflowInput(f.env,now).config.previousInvocations,61);
  for(const mutate of [m=>m.priorOpening.codeRestored=false,m=>m.priorOpening.configurationReads=0,m=>m.openingUsage.historicalConfigurationReads=0,m=>m.config.previousInvocations=55,m=>m.publicSite.OTHER='not-approved']){

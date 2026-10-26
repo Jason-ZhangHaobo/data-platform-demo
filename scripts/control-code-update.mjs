@@ -2,8 +2,8 @@
 // module has no credentials, file writes, network calls or automatic execution.
 import {createHash} from 'node:crypto';
 import {controlPackageObject} from './render-v2-control-package-policy.mjs';
-import {INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE} from './invited-opening-scopes.mjs';
-export {INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE};
+import {INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE,INVITED_READONLY_RUNTIME_CODE_SCOPE} from './invited-opening-scopes.mjs';
+export {INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE,INVITED_READONLY_RUNTIME_CODE_SCOPE};
 const fail=code=>Object.assign(new Error(code),{safeCode:code});
 const check=(v,c)=>{if(!v)throw fail(c);};
 const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v??null);
@@ -17,6 +17,7 @@ export function codeUpdateLimits(authorization){
  // permission to open HTTP or reset the 55 historical acceptance requests.
  if(authorization===INVITED_READONLY_CODE_SCOPE)return{previousInvocations:55,maxInvocations:6,maxUpdateAttempts:1,maxRollbackAttempts:1,maxConfigurationReads:30};
  if(authorization===INVITED_READONLY_FILING_CODE_SCOPE)return{previousInvocations:61,maxInvocations:6,maxUpdateAttempts:1,maxRollbackAttempts:1,maxConfigurationReads:30};
+ if(authorization===INVITED_READONLY_RUNTIME_CODE_SCOPE)return{previousInvocations:69,maxInvocations:6,maxUpdateAttempts:1,maxRollbackAttempts:1,maxConfigurationReads:30};
  throw fail('CODE_UPDATE_NOT_AUTHORIZED');
 }
 export const codeUpdateProbes=Object.freeze([
@@ -56,7 +57,7 @@ export async function runControlCodeUpdate(config,adapter,{load,save,now=Date.no
  const normalized=codeUpdateConfig({...config,expiresAt:new Date(config.expiresAt).toISOString()},config.issuedAt);
  check(canonical(config)===canonical(normalized),'CODE_UPDATE_CONFIG_CHANGED');
  config=normalized;
- const opening=[INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE].includes(config.authorization);
+ const opening=[INVITED_READONLY_CODE_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE,INVITED_READONLY_RUNTIME_CODE_SCOPE].includes(config.authorization);
  check(!rollbackOnly||opening,'OUTER_ROLLBACK_SCOPE_INVALID');
  if(opening)check(now()<config.expiresAt-60000,'UPDATE_WINDOW_EXPIRED');
  check(typeof load==='function'&&typeof save==='function','DURABLE_UPDATE_CHECKPOINT_REQUIRED');
