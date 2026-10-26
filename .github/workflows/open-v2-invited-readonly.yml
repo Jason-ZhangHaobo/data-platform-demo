@@ -1,0 +1,80 @@
+name: Open V2 invited read-only workbench
+on:
+  workflow_dispatch:
+    inputs:
+      authorization:
+        required: true
+        type: choice
+        options: [NOT_AUTHORIZED, INVITED_READ_ONLY_OPENING_V2]
+        default: NOT_AUTHORIZED
+      expected_source_revision:
+        required: true
+        type: string
+      recipient_public_key:
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+concurrency:
+  group: v2-staging-control-mutation
+  cancel-in-progress: false
+jobs:
+  open:
+    if: github.ref == 'refs/heads/main' && inputs.authorization == 'INVITED_READ_ONLY_OPENING_V2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: v2-staging
+    env:
+      V2_INVITED_OPENING_TARGET: ${{ secrets.V2_INVITED_OPENING_TARGET }}
+      V2_READONLY_OPENING_APPROVED: ${{ inputs.authorization }}
+      V2_OPENING_OPERATOR_SHA: ${{ inputs.expected_source_revision }}
+      V2_AUDIT_RECIPIENT_KEY: ${{ inputs.recipient_public_key }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Validate frozen scope, reserve identity request and mask targets
+        run: node scripts/invited-opening-workflow.mjs --prepare
+      - uses: actions/download-artifact@v6
+        with:
+          artifact-ids: ${{ env.V2_OPENING_ARTIFACT_ID }}
+          run-id: ${{ env.V2_OPENING_BUILD_RUN }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+      - name: Install existing pinned signing SDK
+        run: python3 -m pip install --disable-pip-version-check --quiet alibabacloud-openapi-util==0.2.4 alibabacloud-tea==0.3.8 alibabacloud-tea-util==0.3.14
+      - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5
+        with:
+          version: '3.5.1'
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        timeout-minutes: 1
+        with:
+          role-to-assume: ${{ env.V2_CONTROL_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.V2_OPENING_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-invited-opening
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+      - name: Verify private code and open only the approved read-only entry
+        timeout-minutes: 12
+        run: node scripts/invited-opening-workflow.mjs --run
+      - name: Restore only interrupted owned changes, never restart acceptance
+        if: always()
+        timeout-minutes: 4
+        run: node scripts/invited-opening-workflow.mjs --cleanup
+      - name: Seal checkpoints and cumulative usage for owner cleanup
+        if: always()
+        run: node scripts/invited-opening-workflow.mjs --seal
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: shuduo-invited-opening-${{ github.run_id }}
+          path: v2-invited-opening.sealed.json
+          retention-days: 1
+          if-no-files-found: error
