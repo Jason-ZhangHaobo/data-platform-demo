@@ -8,7 +8,8 @@ import {runControlCodeUpdate} from './control-code-update.mjs';
 import {openingScope,publicSitePatch} from './invited-opening-scopes.mjs';
 import {prepareInvitedReadonlyConfig} from './invited-readonly-config.mjs';
 import {readonlyEntryPlan,runReadonlyEntry} from './invited-readonly-entry.mjs';
-import {createReadonlyEntryCloudAdapter} from './invited-entry-cloud-adapter.mjs';
+import {createReadonlyEntryCloudAdapter,readReadonlyHttpsProbe,readonlyDefaultEndpoint} from './invited-entry-cloud-adapter.mjs';
+import {repairReadonlyBrowser} from './readonly-browser-repair.mjs';
 
 const check=(value,code)=>{if(!value)throw Object.assign(new Error(code),{safeCode:code});};
 const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -30,6 +31,22 @@ export async function runInvitedOpening({config,metadata,retainedPlan,webIndexSh
  const report={scope:scope.authorization,executionPassed:false,invitedUserAccepted:false,externalCleanupRequired:true,modelCallsRequested:0,sparkRunsRequested:0};
  const beginCleanup=()=>usage.beginCleanup();
  const adapter=controlCloudAdapter(config,metadata,{...codeOptions,exec,env,now,beforeRequest:name=>usage.reserve(name),loadTransport:()=>storage.load('transport'),saveTransport:value=>storage.save('transport',value)});
+ if(config.readonlyConcurrencyRepair){
+  const change=metadata.retainedReadonlyChange;
+  let defaultEndpoint;
+  const originalRead=adapter.readState;
+  adapter.readState=async()=>{const state=await originalRead();const trigger=state.triggers.find(t=>t.triggerName===change?.triggerBody?.triggerName);defaultEndpoint=readonlyDefaultEndpoint(trigger?.httpTrigger?.urlInternet);return state;};
+  adapter.readDomain=async()=>{
+   check(now()<config.expiresAt,'OPENING_WINDOW_EXPIRED');usage.reserve('DOMAIN_READ');
+   const raw=exec('python3',['scripts/transport-v2-domain-signed.py'],{input:JSON.stringify({authorization:scope.authorization,domainName:'shuduoai.cn',operation:'get'}),encoding:'utf8',timeout:30000,maxBuffer:1048576,stdio:['pipe','pipe','pipe'],env});
+   const value=JSON.parse(raw);check(value.status===200,'OPENING_DOMAIN_READ_UNCONFIRMED');return value.value;
+  };
+  adapter.probe=probe=>{check(now()<config.expiresAt,'OPENING_WINDOW_EXPIRED');usage.reserve('HTTP_PROBE');return readReadonlyHttpsProbe(probe.target==='domain'?'https://shuduoai.cn':defaultEndpoint,probe,retainedPlan.desired.certificateSha256,{...entryOptions,authorization:scope.authorization});};
+  const result=await repairReadonlyBrowser({config,change,webIndexSha256,publicSite:metadata.publicSite},adapter,{now,load:()=>storage.load('code'),save:v=>storage.save('code',v),rollbackOnly:cleanupOnly,beginCleanup});
+  storage.save('code-report',result);
+  if(result.executionPassed)storage.save('entry',{phase:'VERIFIED',scope:'RETAINED_READONLY_BROWSER_REPAIR',probes:result.probes,entryRoutingChanged:false});
+  Object.assign(report,result,usage.counts());storage.save('stage-report',report);return report;
+ }
  const readState=adapter.readState;
  adapter.readState=async()=>{
   finalCodeState=await readState();

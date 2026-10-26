@@ -58,7 +58,7 @@ export class CloudStateCoordinator {
       metadata: this.metadata.replicationStatus(),
       dataState: this.dataState.replicationStatus(),
       consistencyBoundary:
-        "OSS data state is persisted before MySQL metadata; FC concurrency must remain 1 during the pilot.",
+        "OSS data state precedes MySQL metadata; keep one instance and serialize stateful requests. Static assets do not enter persistence.",
     };
   }
 

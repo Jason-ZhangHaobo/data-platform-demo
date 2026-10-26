@@ -136,7 +136,9 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
    return{sha256:pkg.sha256,bytes:pkg.bytes,objectKey:pkg.key,crc64,readbackVerified:true,privateVerified:true,immutable:true};
   },
   updateCode:body=>{
-   check(Object.keys(body).join(',')==='code'&&Object.keys(body.code).sort().join(',')==='checksum,ossBucketName,ossObjectName'&&body.code.ossBucketName===config.bucket&&[config.previous.key,config.candidate.key].includes(body.code.ossObjectName)&&/^\d{1,30}$/.test(body.code.checksum),'CODE_UPDATE_BODY_INVALID');
+   const expectedKeys=config.readonlyConcurrencyRepair?'code,instanceConcurrency':'code';
+   check(Object.keys(body).sort().join(',')===expectedKeys&&Object.keys(body.code).sort().join(',')==='checksum,ossBucketName,ossObjectName'&&body.code.ossBucketName===config.bucket&&[config.previous.key,config.candidate.key].includes(body.code.ossObjectName)&&/^\d{1,30}$/.test(body.code.checksum),'CODE_UPDATE_BODY_INVALID');
+   if(config.readonlyConcurrencyRepair)check(body.instanceConcurrency===(body.code.ossObjectName===config.candidate.key?8:1),'READONLY_CONCURRENCY_TARGET_INVALID');
    if(openingScope&&body.code.ossObjectName===config.candidate.key)
     check(counters.configurationReads<=9,'CODE_UPDATE_RECOVERY_READ_RESERVE_REQUIRED');
    return call(['fc','PUT',base],body);

@@ -30,12 +30,13 @@ export const codeUpdateProbes=Object.freeze([
 ]);
 export function codeUpdateConfig(input,now=Date.now()){
  const limits=codeUpdateLimits(input?.authorization,input?.history);
+ if(input.readonlyConcurrencyRepair!==undefined)check(input.readonlyConcurrencyRepair===true&&input.authorization===INVITED_READONLY_RUNTIME_CODE_SCOPE&&input.history,'READONLY_CONCURRENCY_SCOPE_INVALID');
  check(/^[a-f0-9]{32}$/.test(input.operationId??'')&&/^[a-f0-9]{40}$/.test(input.applicationSource??'')&&/^[a-f0-9]{40}$/.test(input.operatorSource??''),'CODE_UPDATE_IDENTITY_INVALID');
  check(/^\d{12,20}$/.test(input.account??'')&&/^[a-z0-9-]{1,64}$/.test(input.role??'')&&/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(input.functionName??'')&&/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(input.bucket??'')&&input.region==='cn-hangzhou','CODE_UPDATE_TARGET_INVALID');
  const expiresAt=Date.parse(input.expiresAt);check(Number.isFinite(expiresAt)&&expiresAt-now>=300000&&expiresAt-now<=3600000&&input.previousInvocations===limits.previousInvocations,'CODE_UPDATE_LIMITS_INVALID');
  for(const p of [input.previous,input.candidate])check(/^[a-f0-9]{64}$/.test(p?.sha256??'')&&Number.isSafeInteger(p.bytes)&&p.bytes>0&&p.bytes<=73400320,'CODE_PACKAGE_INVALID');
  check(input.previous.sha256!==input.candidate.sha256&&/^\d{1,30}$/.test(input.previous.crc64??''),'ROLLBACK_IDENTITY_INVALID');
- return{authorization:input.authorization,...(input.history?{history:structuredClone(input.history)}:{}),operationId:input.operationId,applicationSource:input.applicationSource,operatorSource:input.operatorSource,account:input.account,role:input.role,functionName:input.functionName,bucket:input.bucket,region:input.region,issuedAt:now,expiresAt,
+ return{authorization:input.authorization,...(input.readonlyConcurrencyRepair?{readonlyConcurrencyRepair:true}:{}),...(input.history?{history:structuredClone(input.history)}:{}),operationId:input.operationId,applicationSource:input.applicationSource,operatorSource:input.operatorSource,account:input.account,role:input.role,functionName:input.functionName,bucket:input.bucket,region:input.region,issuedAt:now,expiresAt,
   previous:{sha256:input.previous.sha256,bytes:input.previous.bytes,crc64:input.previous.crc64,key:controlPackageObject(input.previous.sha256)},candidate:{sha256:input.candidate.sha256,bytes:input.candidate.bytes,key:controlPackageObject(input.candidate.sha256)},...limits};
 }
 function verifiedReceipt(receipt,pkg){

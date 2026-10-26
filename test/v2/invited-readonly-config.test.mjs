@@ -19,6 +19,7 @@ import {createOpeningUsage} from '../../scripts/invited-opening-usage.mjs';
 import {runInvitedOpening} from '../../scripts/invited-opening-stage.mjs';
 import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyEntryProbes,readonlyProbesFor,readonlyEntryProbeAccepted,readonlyProbeDiagnostic,readonlyRuntimeObservation,runReadonlyEntry} from '../../scripts/invited-readonly-entry.mjs';
 import {READONLY_FILING_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE,READONLY_RUNTIME_SCOPE,openingScope} from '../../scripts/invited-opening-scopes.mjs';
+import {repairReadonlyBrowser} from '../../scripts/readonly-browser-repair.mjs';
 
 // Disposable self-signed fixture only; never load project certificate material.
 const dir=mkdtempSync(join(tmpdir(),'readonly-domain-fixture-'));
@@ -43,6 +44,22 @@ function fixture(){
  opened.domain.authConfig=structuredClone(change.domainBody.authConfig);
  return{state,domain,change,opened,expectedCode,privateCodeEvidence};
 }
+
+test('retained read-only repair changes only code and 1-to-8 concurrency and rolls both back on failed HTTP',async()=>{
+ for(const failProbe of [false,true]){
+  const f=fixture(),state=structuredClone(f.opened.state);state.function.timeout=120;let cp;const writes=[],history={historicalRequests:90,historicalConfigurationReads:220};
+  const config=codeUpdateConfig({authorization:openingScope(READONLY_RUNTIME_SCOPE).codeAuthorization,history,readonlyConcurrencyRepair:true,operationId:'8'.repeat(32),operatorSource:'9'.repeat(40),applicationSource:'7'.repeat(40),account:retainedPlan.target.account,role:retainedPlan.target.role,functionName:retainedPlan.target.functionName,bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:90,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:f.expectedCode.sha256,bytes:4000,crc64:'123456'},candidate:{sha256:'6'.repeat(64),bytes:4100}},now);
+  // Keep the fixture's environment/size consistent with its retained change.
+  delete state.function.timeout;
+  const adapter={identity:async()=>({AccountId:config.account,Arn:`acs:ram::${config.account}:assumed-role/${config.role}/fixture`}),readState:async()=>structuredClone(state),readDomain:async()=>structuredClone(f.opened.domain),budget:async()=>({complete:true,currentCycle:true,observedCny:1,unsettledReservedCny:2}),recoverRollback:async()=>({safelyRetained:true,sha256:config.previous.sha256}),ensurePackage:async(kind,p)=>({...p,objectKey:p.key,crc64:kind==='previous'?'123456':'456789',readbackVerified:true,privateVerified:true,immutable:true}),updateCode:async body=>{writes.push(structuredClone(body));assert.deepEqual(Object.keys(body),['code','instanceConcurrency']);state.function.codeChecksum=body.code.checksum;state.function.codeSize=body.instanceConcurrency===8?4100:4000;state.function.instanceConcurrency=body.instanceConcurrency;},invoke:async()=>({protocol:'shuduo-v2-private-smoke-v1',httpHandling:{mode:'SERIAL_STATEFUL_PARALLEL_STATIC_V1'},ingress:{publicHttpEnabled:true,publicReadOnly:true},metadata:{healthy:true},persistence:{healthy:true,dataState:{healthy:true}}}),probe:async probe=>{
+    const status=probe.id==='entry-html'?failProbe?503:200:probe.id==='anonymous-session'?200:['private-internal','unmapped-invoke'].includes(probe.id)?404:probe.id==='invalid-login'?401:403;
+    const body=probe.id==='anonymous-session'?{authenticated:false,readOnly:true}:probe.id==='foreign-origin'?{message:'请求来源不允许'}:{code:probe.id==='invalid-login'?'INVALID_LOGIN':probe.id==='private-internal'?'INGRESS_DENIED':'PUBLIC_READ_ONLY'};
+    return{status,body,tlsTrusted:true,endpointMatched:true,certificateMatched:true,contentType:'text/html',bodySha256:'a'.repeat(64),serviceCode:probe.id==='unmapped-invoke'?'DomainRouteNotFound':undefined};
+  }};
+  const r=await repairReadonlyBrowser({config,change:f.change,webIndexSha256:'a'.repeat(64),publicSite:{}},adapter,{load:()=>cp,save:v=>{cp=v},now:()=>now});
+  assert.equal(r.executionPassed,!failProbe,JSON.stringify(r));assert.equal(state.function.instanceConcurrency,failProbe?1:8);assert.equal(writes.length,failProbe?2:1);assert.equal(state.function.environmentVariables.V2_FC_PUBLIC_READ_ONLY,'true');assert.deepEqual(state.triggers,f.opened.state.triggers);
+ }
+});
 
 // Exercise both actual CLI adapters and the whole sequence with deterministic
 // provider responses. These are integration doubles, not live cloud evidence.

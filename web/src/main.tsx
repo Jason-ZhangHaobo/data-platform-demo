@@ -1,5 +1,6 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { WorkbenchBoundary } from "./WorkbenchBoundary";
 import {
   Activity,
   ArrowDownToLine,
@@ -2009,4 +2010,4 @@ function App() {
     </div>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(<WorkbenchBoundary><App /></WorkbenchBoundary>);

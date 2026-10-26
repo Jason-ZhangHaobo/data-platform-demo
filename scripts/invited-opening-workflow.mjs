@@ -8,6 +8,7 @@ import {deploymentInput} from './control-code-transport.mjs';
 import {openingScope,publicSitePatch} from './invited-opening-scopes.mjs';
 import {createOpeningUsage} from './invited-opening-usage.mjs';
 import {runInvitedOpening} from './invited-opening-stage.mjs';
+import {readonlyConfigIntegrity} from './invited-readonly-config.mjs';
 import {recipientKey,sealReport} from './audit-v2-oidc-readonly.mjs';
 
 const check=(value,code)=>{if(!value)throw Object.assign(new Error(code),{safeCode:code});};
@@ -38,7 +39,9 @@ export function openingWorkflowInput(env,now=Date.now(),sealOnly=false){
  if(scope.filingRepair){
   publicSitePatch(metadata.publicSite);
   const prior=metadata.priorOpening;
-  check(prior?.configurationReads===scope.historicalConfigurationReads&&prior.cumulativeRequests===scope.historicalRequests&&prior.codeRestored===true&&prior.permissionRevoked===true&&prior.secretRemoved===true&&(!scope.runtimeVerification||prior.entryRestored===true)&&/^\d{6,20}$/.test(prior.runId??'')&&/^[a-f0-9]{40}$/.test(prior.sourceRevision??'')&&/^[a-f0-9]{64}$/.test(prior.sealedSha256??''),'OPENING_PRIOR_CLEANUP_REQUIRED');
+  const predecessorReady=config.readonlyConcurrencyRepair?prior?.codeVerified===true&&prior.entryRetained===true:prior?.codeRestored===true&&(!scope.runtimeVerification||prior.entryRestored===true);
+  check(prior?.configurationReads===scope.historicalConfigurationReads&&prior.cumulativeRequests===scope.historicalRequests&&predecessorReady&&prior.permissionRevoked===true&&prior.secretRemoved===true&&/^\d{6,20}$/.test(prior.runId??'')&&/^[a-f0-9]{40}$/.test(prior.sourceRevision??'')&&/^[a-f0-9]{64}$/.test(prior.sealedSha256??''),'OPENING_PRIOR_CLEANUP_REQUIRED');
+  if(config.readonlyConcurrencyRepair)check(readonlyConfigIntegrity(metadata.retainedReadonlyChange)&&metadata.retainedReadonlyChange.expectedCode.sha256===config.previous.sha256&&JSON.stringify(metadata.retainedReadonlyChange.publicSite)===JSON.stringify(metadata.publicSite),'OPENING_RETAINED_CONFIG_REQUIRED');
  }
  return{...result,key:recipientKey(env.V2_AUDIT_RECIPIENT_KEY)};
 }
