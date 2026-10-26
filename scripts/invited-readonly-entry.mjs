@@ -52,7 +52,7 @@ export function readonlyEntryProbeAccepted(result,probe,plan){
  }
 }
 
-export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.now,beginCleanup=()=>{}}={}){
+export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.now,beginCleanup=()=>{},rollbackOnly=false}={}){
  check(typeof load==='function'&&typeof save==='function','READONLY_ENTRY_CHECKPOINT_REQUIRED');
  check(readonlyConfigIntegrity(change)&&change.operationId===plan?.operationId,'READONLY_ENTRY_CHANGE_INVALID');
  check(plan.seed?.configurationReads>=change.codeConfigurationReads,'READONLY_ENTRY_PRIOR_USAGE_MISSING');
@@ -130,6 +130,7 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
   await persist();return result;
  };
  try{
+  check(!rollbackOnly||cp,'READONLY_CLEANUP_CHECKPOINT_REQUIRED');
   if(cp){
    check(cp.version===1&&cp.planHash===hash(plan)&&cp.changeHash===change.changeHash,'READONLY_ENTRY_CHECKPOINT_MISMATCH');
    check(Number.isSafeInteger(cp.configurationReads)&&cp.configurationReads>=plan.seed.configurationReads&&cp.configurationReads<=plan.limits.configurationReads&&Number.isSafeInteger(cp.newRequests)&&cp.newRequests>=plan.seed.newRequests&&cp.newRequests<=plan.limits.newRequests,'READONLY_ENTRY_COUNTER_INVALID');
@@ -152,6 +153,11 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
   retainedOnEntry=cp.phase==='VERIFIED';
   if(cp.phase==='ROLLED_BACK'){report.rollback=cp.rollback;report.previouslyRolledBack=true;return report;}
   if(['ROLLING_BACK','NEEDS_ATTENTION'].includes(cp.phase)){report.rollback=await rollback();return report;}
+  if(rollbackOnly){
+   if(retainedOnEntry){report.entryRetained=true;report.previouslyRetained=true;return report;}
+   if(Object.keys(cp.writes).length)report.rollback=await rollback();
+   return report;
+  }
   const current=await readAll();
   if(cp.phase==='VERIFIED'){
    check(verifyInvitedReadonlyConfig(change,current),'READONLY_RETAINED_ENTRY_DRIFT');

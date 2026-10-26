@@ -53,6 +53,7 @@ function openingStageFixture(options={}){
  const publicSite={icpNumber:'测试ICP备00000000号-1',registeredName:'虚构知识站'};
  if(!options.missingFiling)Object.assign(state.function.environmentVariables,{V2_SITE_ICP_NUMBER:publicSite.icpNumber,V2_SITE_REGISTERED_NAME:publicSite.registeredName});
  const metadata={publicSite,unsettledReservedCny:12,bucketPrivacy:{checkedAt:new Date().toISOString()}};
+ if(options.fromObject)objects.set(`https://${config.bucket}.oss-cn-hangzhou.aliyuncs.com/${config.previous.key}`,old);
  const storage={load:name=>documents[name],save:(name,value)=>{documents[name]=structuredClone(value);}};
  const usage=createOpeningUsage({authorization:READONLY_ENTRY_SCOPE,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>documents.usage,save:value=>storage.save('usage',value),now:()=>now});
  for(let i=0;i<12;i++)usage.reserve('RAM_READ');
@@ -115,9 +116,17 @@ function openingStageFixture(options={}){
   });return req;
  };
  const input={config,metadata,retainedPlan,webIndexSha256:hash('fixture-html')};
- const runtime={env,storage,usage,now:()=>now,exec,codeOptions:{candidateBytes:next,fetchImpl,saveBackup:()=>{}},entryOptions:{request}};
- return{state,documents,calls,usage,run:()=>runInvitedOpening(input,runtime)};
+ const runtime={env,storage,usage,now:()=>now,exec,codeOptions:{candidateBytes:next,fetchImpl,saveBackup:()=>{},rollbackFromVerifiedObject:options.fromObject===true},entryOptions:{request}};
+ return{state,documents,calls,usage,run:(extra={})=>runInvitedOpening(input,{...runtime,...extra})};
 }
+test('opening workflow reuses the exact private rollback object without GetFunctionCode permission',async()=>{
+ const f=openingStageFixture({fromObject:true}),result=await f.run();
+ assert.equal(result.executionPassed,true,JSON.stringify(result));assert.equal(result.configurationReads,47);
+ assert.equal(f.documents.transport.configurationReads,16);assert.equal(f.documents.transport.rollbackSource,'VERIFIED_PRIVATE_OBJECT');
+ assert(!f.calls.some(c=>c.includes('/functions/')&&c.endsWith('/code')));
+ const before=f.calls.length,cleanup=await f.run({cleanupOnly:true});
+ assert.equal(cleanup.previouslyRetained,true);assert.equal(f.calls.length,before);
+});
 test('whole opening shares code/entry/metadata counts and does not repeat accepted probes after restart',async()=>{
  const f=openingStageFixture(),result=await f.run();
  assert.equal(result.executionPassed,true,JSON.stringify(result));assert.equal(result.externalCleanupRequired,true);assert.equal(result.invitedUserAccepted,false);
@@ -338,6 +347,16 @@ test('resume after a confirmed create preserves counters and never creates the t
  assert.equal(resumed.calls.filter(n=>n==='updateDomain').length,1);
  assert.equal(resumed.calls.filter(n=>n==='openFunction').length,1);
  assert.equal(r.cumulativeRequests,70);assert.ok(r.configurationReads>point.checkpoint.configurationReads);
+});
+test('workflow cleanup of an interrupted entry never resumes opening or launches probes',async()=>{
+ const first=executionFixture();await runReadonlyEntry(first.plan,first.change,first.adapter,first.storage);
+ const point=first.snapshots.find(s=>s.cloud.state.triggers.length===3&&s.checkpoint.writes.createTrigger&&!s.checkpoint.writes.updateDomain);
+ const f=executionFixture({readOffset:point.checkpoint.configurationReads-25,probeOffset:0});f.restore(point);
+ const result=await runReadonlyEntry(f.plan,f.change,f.adapter,{...f.storage,rollbackOnly:true});
+ assert.equal(result.phase,'ROLLED_BACK');assert.equal(result.rollback.triggerAbsent,true);
+ assert(!f.calls.includes('createTrigger'));assert(!f.calls.includes('updateDomain'));assert(!f.calls.includes('openFunction'));assert(!f.calls.includes('probe'));
+ const empty=executionFixture(),none=await runReadonlyEntry(empty.plan,empty.change,empty.adapter,{...empty.storage,rollbackOnly:true});
+ assert.equal(none.failure,'READONLY_CLEANUP_CHECKPOINT_REQUIRED');assert.equal(empty.calls.length,0);
 });
 test('resume may re-read one interrupted GET but never repeats an unconfirmed POST probe',async()=>{
  const first=executionFixture();await runReadonlyEntry(first.plan,first.change,first.adapter,first.storage);

@@ -51,9 +51,10 @@ export function deploymentInput(env,now=Date.now()){
  check(Number.isFinite(m.unsettledReservedCny)&&m.unsettledReservedCny>=2,'UNSETTLED_RESERVE_REQUIRED');
  return{config,metadata:m};
 }
-export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=fetch,exec=execFileSync,saveTransport,loadTransport,candidateBytes,saveBackup,now=Date.now,beforeRequest=()=>{}}={}){
+export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=fetch,exec=execFileSync,saveTransport,loadTransport,candidateBytes,saveBackup,now=Date.now,beforeRequest=()=>{},rollbackFromVerifiedObject=false}={}){
  const base=`/2023-03-30/functions/${config.functionName}`;
  const openingScope=config.authorization===INVITED_READONLY_CODE_SCOPE;
+ check(!rollbackFromVerifiedObject||openingScope,'ROLLBACK_OBJECT_SCOPE_INVALID');
  if(openingScope)check(typeof saveTransport==='function','DURABLE_TRANSPORT_CHECKPOINT_REQUIRED');
  let counters=loadTransport?.()??{codeReads:0,puts:[],...(openingScope?{configurationReads:0}:{})};
  check(Number.isInteger(counters.codeReads)&&counters.codeReads>=0&&counters.codeReads<=2&&Array.isArray(counters.puts)&&counters.puts.length<=2&&new Set(counters.puts).size===counters.puts.length&&counters.puts.every(v=>[config.previous.sha256,config.candidate.sha256].includes(v)),'TRANSPORT_CHECKPOINT_INVALID');
@@ -102,6 +103,16 @@ export function controlCloudAdapter(config,metadata,{env=process.env,fetchImpl=f
   },
   recoverRollback:async pkg=>{
    check(counters.codeReads<2,'CODE_DOWNLOAD_LIMIT');counters.codeReads++;await save();
+   if(rollbackFromVerifiedObject){
+    // runControlCodeUpdate has just matched the live FC checksum/size to this
+    // previous package. Reuse that exact immutable private object instead of
+    // requesting the broader GetFunctionCode permission or a signed export URL.
+    const response=await oss(pkg);
+    check(String(response.headers.get('x-oss-hash-crc64ecma'))===pkg.crc64,'ROLLBACK_OBJECT_CHECKSUM_MISMATCH');
+    rollbackBytes=await boundedBytes(response,pkg.bytes);verify(rollbackBytes,pkg);await saveBackup(rollbackBytes);
+    counters.rollbackSource='VERIFIED_PRIVATE_OBJECT';await save();
+    return{sha256:pkg.sha256,bytes:pkg.bytes,codeChecksum:pkg.crc64,safelyRetained:true};
+   }
    const result=call(['fc','GET',base+'/code','--qualifier','LATEST']);check(String(result.checksum)===pkg.crc64,'CURRENT_CODE_CHECKSUM_MISMATCH');
    beforeRequest('OBJECT_GET');
    const response=await fetchImpl(codeDownloadUrl(result.url),{redirect:'error',signal:AbortSignal.timeout(120000)});

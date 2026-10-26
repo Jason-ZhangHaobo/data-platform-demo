@@ -12,7 +12,7 @@ import {createReadonlyEntryCloudAdapter} from './invited-entry-cloud-adapter.mjs
 const check=(value,code)=>{if(!value)throw Object.assign(new Error(code),{safeCode:code});};
 const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-export async function runInvitedOpening({config,metadata,retainedPlan,webIndexSha256},{env,storage,usage,now=Date.now,exec=execFileSync,codeOptions={},entryOptions={}}){
+export async function runInvitedOpening({config,metadata,retainedPlan,webIndexSha256},{env,storage,usage,now=Date.now,exec=execFileSync,codeOptions={},entryOptions={},cleanupOnly=false}){
  check(env?.GITHUB_ACTIONS==='true'&&env.GITHUB_REF==='refs/heads/main'&&env.GITHUB_SHA===config.operatorSource&&env.V2_READONLY_OPENING_APPROVED===READONLY_ENTRY_SCOPE,'OPENING_PROTECTED_MAIN_REQUIRED');
  check(config.authorization===INVITED_READONLY_CODE_SCOPE,'OPENING_CODE_SCOPE_REQUIRED');
  check(typeof storage?.load==='function'&&typeof storage?.save==='function'&&typeof usage?.reserve==='function','OPENING_STORAGE_REQUIRED');
@@ -33,7 +33,14 @@ export async function runInvitedOpening({config,metadata,retainedPlan,webIndexSh
  const saveStage=()=>storage.save('stage',structuredClone(stage));
  let codeVerified=storage.load('code')?.phase==='VERIFIED';
  try{
-  if(!stage.change){
+  if(cleanupOnly){
+   const entry=storage.load('entry');
+   if(entry?.phase==='VERIFIED'){
+    report.entryRetained=true;report.previouslyRetained=true;return report;
+   }
+   beginCleanup();
+   check(stage.change&&entry,'OPENING_RECOVER_CODE_ONLY');
+  }else if(!stage.change){
    check(originalUsage.phase==='ACTIVE','OPENING_CLEANUP_ONLY');
    report.code=await runControlCodeUpdate(config,adapter,codeStorage);
    codeVerified=report.code.passed===true;
@@ -64,7 +71,7 @@ export async function runInvitedOpening({config,metadata,retainedPlan,webIndexSh
    check(originalUsage.phase!=='CLEANUP'||['ROLLING_BACK','ROLLED_BACK','NEEDS_ATTENTION'].includes(cp?.phase),'OPENING_CLEANUP_ONLY');
   }
   const entry=createReadonlyEntryCloudAdapter({...entryOptions,plan:stage.entryPlan,change:stage.change,exec,env,now,beforeRequest:name=>usage.reserve(name)});
-  report.entry=await runReadonlyEntry(stage.entryPlan,stage.change,entry,{now,load:()=>storage.load('entry'),save:value=>storage.save('entry',value),beginCleanup});
+  report.entry=await runReadonlyEntry(stage.entryPlan,stage.change,entry,{now,load:()=>storage.load('entry'),save:value=>storage.save('entry',value),beginCleanup,rollbackOnly:cleanupOnly});
   storage.save('entry-report',report.entry);
   report.executionPassed=report.entry.passed===true;
   report.entryRetained=report.entry.entryRetained===true;
@@ -77,7 +84,8 @@ export async function runInvitedOpening({config,metadata,retainedPlan,webIndexSh
   const entry=storage.load('entry'),rollback=entry?.rollback;
   const noEntryWrites=!entry||Object.keys(entry.writes??{}).length===0;
   const entryRestored=rollback?.functionRestored===true&&rollback.domainRestored===true&&rollback.triggerAbsent===true;
-  if(codeVerified&&entry?.phase!=='VERIFIED'&&(noEntryWrites||entryRestored)){
+  const code=storage.load('code'),mayRestore=codeVerified||(cleanupOnly&&code?.updateRequested===true);
+  if(mayRestore&&entry?.phase!=='VERIFIED'&&(noEntryWrites||entryRestored)){
    try{beginCleanup();report.codeRollback=await runControlCodeUpdate(config,adapter,{...codeStorage,rollbackOnly:true});}
    catch(cleanup){report.codeRollbackFailure=cleanup.safeCode??'OPENING_CODE_ROLLBACK_UNCONFIRMED';}
   }else if(codeVerified&&entry?.phase!=='VERIFIED')report.codeRollbackDeferred='ENTRY_NOT_FULLY_RESTORED';
