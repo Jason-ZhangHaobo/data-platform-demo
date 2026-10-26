@@ -90,6 +90,32 @@ test('unconfirmed rollback never issues a second rollback write on recovery',asy
  const f=fixture({badProbe:true,rollbackUnapplied:true}),r=await runControlCodeUpdate(f.config,f.adapter,f.storage);assert.equal(r.rollbackFailure,'ROLLBACK_NOT_CONFIRMED');assert.equal(f.updates.length,2);
  const again=await runControlCodeUpdate(f.config,f.adapter,f.storage);assert.equal(again.passed,false);assert.equal(f.updates.length,2);
 });
+test('outer opening failure restores previously verified code using the original single rollback allowance',async()=>{
+ const f=fixture({config:{authorization:INVITED_READONLY_CODE_SCOPE,previousInvocations:55}});
+ assert.equal((await runControlCodeUpdate(f.config,f.adapter,f.storage)).passed,true);
+ const original=structuredClone(f.checkpoint()),calls=f.calls.length;
+ let cleanup=0;
+ const r=await runControlCodeUpdate(f.config,f.adapter,{...f.storage,rollbackOnly:true,beginCleanup:()=>{cleanup++;}});
+ assert.equal(r.rollbackVerified,true);assert.equal(r.passed,false);assert.equal(cleanup,1);
+ assert.equal(f.updates.length,2);assert.equal(f.calls.length,calls);assert.equal(f.checkpoint().phase,'ROLLED_BACK');
+ assert.equal(f.checkpoint().configHash,original.configHash);assert.equal(f.checkpoint().rollbackAttempts,1);
+ const replay=await runControlCodeUpdate(f.config,f.adapter,{...f.storage,rollbackOnly:true});
+ assert.equal(replay.rollbackVerified,true);assert.equal(f.updates.length,2);assert.equal(f.calls.length,calls);
+});
+test('outer rollback cannot initialize a new update, overwrite an open entry or gain another rollback',async()=>{
+ const config={authorization:INVITED_READONLY_CODE_SCOPE,previousInvocations:55};
+ const empty=fixture({config}),a=await runControlCodeUpdate(empty.config,empty.adapter,{...empty.storage,rollbackOnly:true});
+ assert.equal(a.failure,'OUTER_ROLLBACK_CHECKPOINT_REQUIRED');assert.equal(empty.updates.length,0);assert.equal(empty.calls.length,0);
+ const f=fixture({config});await runControlCodeUpdate(f.config,f.adapter,f.storage);
+ f.state().function.environmentVariables.V2_FC_PUBLIC_HTTP_ENABLED='true';
+ const b=await runControlCodeUpdate(f.config,f.adapter,{...f.storage,rollbackOnly:true});
+ assert.equal(b.failure,'PROTECTED_STATE_DRIFT');assert.equal(f.updates.length,1);
+ const lost=fixture({config,rollbackUnapplied:true});await runControlCodeUpdate(lost.config,lost.adapter,lost.storage);
+ await runControlCodeUpdate(lost.config,lost.adapter,{...lost.storage,rollbackOnly:true});
+ const c=await runControlCodeUpdate(lost.config,lost.adapter,{...lost.storage,rollbackOnly:true});
+ assert.equal(c.passed,false);assert.equal(lost.updates.length,2);assert.equal(lost.checkpoint().rollbackAttempts,1);
+ const old=fixture();await assert.rejects(runControlCodeUpdate(old.config,old.adapter,{...old.storage,rollbackOnly:true}),/OUTER_ROLLBACK_SCOPE_INVALID/);
+});
 test('foreign code or protected configuration drift cannot be overwritten by rollback',async()=>{
  for(const options of [{driftAfterUpdate:true},{badProbe:true,foreignCodeOnProbe:true}]){const f=fixture(options),r=await runControlCodeUpdate(f.config,f.adapter,f.storage);assert.equal(r.passed,false);assert.equal(f.updates.length,1);assert.match(r.rollbackFailure,/DRIFT|FOREIGN/);}
 });
