@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {codeUpdateConfig,INVITED_READONLY_CODE_SCOPE} from '../../scripts/control-code-update.mjs';
+import {INVITED_READONLY_RUNTIME_CODE_SCOPE} from '../../scripts/invited-opening-scopes.mjs';
 import {boundedBytes,codeDownloadUrl,controlCloudAdapter,deploymentInput,privateOssRequest,scalingConfiguration} from '../../scripts/control-code-transport.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const now=Date.UTC(2026,9,24),old=Buffer.from('old-code'),next=Buffer.from('new-code');
@@ -21,6 +22,16 @@ test('new code refresh requires matching explicit workflow and manifest scopes',
  assert.equal(deploymentInput(env,now).config.maxInvocations,6);
  assert.throws(()=>deploymentInput({...env,V2_CONTROL_UPDATE_APPROVED:'P0A_PRIVATE_CODE_ONLY'},now),/SCOPE_MISMATCH/);
  assert.throws(()=>deploymentInput({...environment,V2_CONTROL_UPDATE_APPROVED:INVITED_READONLY_CODE_SCOPE},now),/SCOPE_MISMATCH/);
+});
+test('retained read-only repair allows only atomic candidate/8 and original/1 updates',()=>{
+ const history={historicalRequests:90,historicalConfigurationReads:220};
+ const config=codeUpdateConfig({...raw,authorization:INVITED_READONLY_RUNTIME_CODE_SCOPE,history,readonlyConcurrencyRepair:true,previousInvocations:90},now);
+ let calls=0;const adapter=controlCloudAdapter(config,target,{now:()=>now,env:{},saveTransport:()=>{},exec:()=>{calls++;return '{}';}});
+ const body=(p,n)=>({code:{ossBucketName:config.bucket,ossObjectName:p.key,checksum:p.crc64??'456'},instanceConcurrency:n});
+ adapter.updateCode(body(config.candidate,8));adapter.updateCode(body(config.previous,1));assert.equal(calls,2);
+ for(const b of [body(config.candidate,16),body(config.candidate,1),body(config.previous,8),{...body(config.candidate,8),memorySize:1024}])assert.throws(()=>adapter.updateCode(b));
+ assert.equal(calls,2);
+ assert.throws(()=>codeUpdateConfig({...raw,readonlyConcurrencyRepair:true},now),/CONCURRENCY_SCOPE/);
 });
 test('rollback download is HTTPS-only to the expected regional OSS, with byte bounds',async()=>{
  assert.equal(codeDownloadUrl('http://fixture-code.oss-cn-hangzhou.aliyuncs.com/code?signature=synthetic'),'https://fixture-code.oss-cn-hangzhou.aliyuncs.com/code?signature=synthetic');

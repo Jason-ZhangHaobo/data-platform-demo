@@ -1,5 +1,7 @@
 import { createServer } from "node:http";
 import { ingressDenialReasons } from "./fc-ingress.mjs";
+import { createRequestLane } from "./request-lane.mjs";
+import { serveV2Static } from "./static-response.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
@@ -1130,7 +1132,8 @@ export function createV2Server(options = {}) {
       );
     return { status: response.status, body: value };
   };
-  const server = createServer(async (req, res) => {
+  const statefulRequests = createRequestLane();
+  const handleRequest = async (req, res) => {
     try {
       const ingressChannel = options.ingress?.assertRequest(req);
       const url = new URL(req.url, "http://localhost"),
@@ -1138,13 +1141,6 @@ export function createV2Server(options = {}) {
         method = req.method,
         publicReadOnly = options.ingress?.status.publicReadOnly === true && ingressChannel === "HTTP",
         isPrivateSmokeInvoke = method === "POST" && path === "/invoke";
-      if (typeof persistence.refresh === "function") await persistence.refresh();
-      if (
-        method !== "GET" &&
-        !isPrivateSmokeInvoke &&
-        typeof persistence.flush === "function"
-      )
-        res.metadataFlush = () => persistence.flush();
       const origin = req.headers.origin;
       let localOriginAllowed = false;
       if (local && typeof origin === "string") {
@@ -1175,6 +1171,11 @@ export function createV2Server(options = {}) {
         req.headers["x-project-id"] !== PROJECT
       )
         throw fail(403, "无权访问此项目");
+      if (method === "GET" && !path.startsWith("/api/v2"))
+        return await serveV2Static(res, root, path);
+      if (typeof persistence.refresh === "function") await persistence.refresh();
+      if (method !== "GET" && !isPrivateSmokeInvoke && typeof persistence.flush === "function")
+        res.metadataFlush = () => persistence.flush();
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = await readPrivateSmokeBody(req);
@@ -1210,6 +1211,7 @@ export function createV2Server(options = {}) {
               : undefined;
         return json(res, 200, {
           protocol: "shuduo-v2-private-smoke-v1",
+          ...(options.ingress ? { httpHandling: { mode: "SERIAL_STATEFUL_PARALLEL_STATIC_V1" } } : {}),
           mode: "PRIVATE_CONTROL_PLANE",
           ...(options.ingress ? { ingress: options.ingress.status } : {}),
           metadata: {
@@ -5491,30 +5493,7 @@ export function createV2Server(options = {}) {
       }
       if (path.startsWith("/api/v2")) throw fail(404, "接口不存在");
       if (method !== "GET") throw fail(405, "请求方法不支持");
-      const relative = decodeURIComponent(path).replace(/^\/v2\/?/, "");
-      const base = resolve(root, "web-dist"),
-        file = resolve(base, relative || "index.html");
-      if (file !== base && !file.startsWith(base + "/"))
-        throw fail(404, "页面不存在");
-      let content;
-      try {
-        content = await readFile(file);
-      } catch {
-        if (extname(file)) throw fail(404, "静态资源不存在");
-        content = await readFile(join(base, "index.html"));
-      }
-      res.writeHead(200, {
-        "Content-Type":
-          {
-            ".js": "text/javascript",
-            ".css": "text/css",
-            ".html": "text/html",
-            ".svg": "image/svg+xml",
-          }[extname(file)] ?? "text/html",
-        "X-Content-Type-Options": "nosniff",
-        "Cache-Control": "no-cache",
-      });
-      res.end(content);
+      return await serveV2Static(res, root, path);
     } catch (error) {
       return json(res, error.status ?? 500, {
         message: error.status ? error.message : "处理失败，请检查服务日志",
@@ -5530,6 +5509,22 @@ export function createV2Server(options = {}) {
         if (!error.status) console.error(error.message);
       });
     }
+  };
+  const server = createServer((req, res) => {
+    let channel;
+    try { channel = options.ingress?.assertRequest(req); }
+    catch { void handleRequest(req, res).catch(() => {}); return; }
+    const staticRequest = req.method === "GET" && (req.url === "/" || /^\/v2(?:[/?]|$)/.test(req.url));
+    if (!options.ingress || channel === "INTERNAL" || staticRequest) { void handleRequest(req, res).catch(() => {}); return; }
+    const controller = new AbortController(), onClose = () => controller.abort();
+    res.once("close", onClose);
+    void statefulRequests.run(() => handleRequest(req, res), { signal: controller.signal })
+      .catch(error => { if (!res.destroyed && !res.writableEnded) {
+        const notStarted = error.code === "REQUEST_LANE_BUSY";
+        if (notStarted) res.setHeader("Retry-After", "1");
+        void json(res, 503, { code: notStarted ? "REQUEST_LANE_BUSY" : "REQUEST_OUTCOME_UNCONFIRMED", message: notStarted ? "服务忙，请稍后重试；本次操作未执行" : "操作结果尚未确认，请查看原任务状态，不要重复提交" }).catch(() => {});
+      } })
+      .finally(() => res.removeListener("close", onClose));
   });
   server.on("close", () => {
     for (const c of controls.values()) c.abort();
