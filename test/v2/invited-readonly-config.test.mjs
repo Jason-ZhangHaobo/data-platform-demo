@@ -17,8 +17,8 @@ import {codeUpdateProbes,INVITED_READONLY_CODE_SCOPE} from '../../scripts/contro
 import {codeUpdateConfig} from '../../scripts/control-code-update.mjs';
 import {createOpeningUsage} from '../../scripts/invited-opening-usage.mjs';
 import {runInvitedOpening} from '../../scripts/invited-opening-stage.mjs';
-import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyEntryProbes,readonlyProbesFor,readonlyEntryProbeAccepted,readonlyProbeDiagnostic,runReadonlyEntry} from '../../scripts/invited-readonly-entry.mjs';
-import {READONLY_FILING_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE} from '../../scripts/invited-opening-scopes.mjs';
+import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyEntryProbes,readonlyProbesFor,readonlyEntryProbeAccepted,readonlyProbeDiagnostic,readonlyRuntimeObservation,runReadonlyEntry} from '../../scripts/invited-readonly-entry.mjs';
+import {READONLY_FILING_SCOPE,INVITED_READONLY_FILING_CODE_SCOPE,READONLY_RUNTIME_SCOPE,openingScope} from '../../scripts/invited-opening-scopes.mjs';
 
 // Disposable self-signed fixture only; never load project certificate material.
 const dir=mkdtempSync(join(tmpdir(),'readonly-domain-fixture-'));
@@ -48,8 +48,8 @@ function fixture(){
 // provider responses. These are integration doubles, not live cloud evidence.
 function openingStageFixture(options={}){
  const f=fixture(),old=Buffer.alloc(4000,1),next=Buffer.alloc(4100,2),hash=value=>createHash('sha256').update(value).digest('hex');
- const scope=options.repair?READONLY_FILING_SCOPE:READONLY_ENTRY_SCOPE;
- const config=codeUpdateConfig({authorization:options.repair?INVITED_READONLY_FILING_CODE_SCOPE:INVITED_READONLY_CODE_SCOPE,operationId:'c'.repeat(32),applicationSource:'d'.repeat(40),operatorSource:'f'.repeat(40),account:retainedPlan.target.account,role:retainedPlan.target.role,functionName:retainedPlan.target.functionName,bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:options.repair?61:55,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:hash(old),bytes:old.length,crc64:'123456'},candidate:{sha256:hash(next),bytes:next.length}},now);
+ const scope=options.runtime?READONLY_RUNTIME_SCOPE:options.repair?READONLY_FILING_SCOPE:READONLY_ENTRY_SCOPE,info=openingScope(scope);
+ const config=codeUpdateConfig({authorization:info.codeAuthorization,operationId:'c'.repeat(32),applicationSource:'d'.repeat(40),operatorSource:'f'.repeat(40),account:retainedPlan.target.account,role:retainedPlan.target.role,functionName:retainedPlan.target.functionName,bucket:'fixture-private',region:'cn-hangzhou',previousInvocations:info.historicalRequests,expiresAt:new Date(now+3600000).toISOString(),previous:{sha256:hash(old),bytes:old.length,crc64:'123456'},candidate:{sha256:hash(next),bytes:next.length}},now);
  const state=structuredClone(f.state),domain=structuredClone(f.domain),documents={},objects=new Map(),calls=[];
  state.function.timeout=120;
  const publicSite={icpNumber:'测试ICP备00000000号-1',registeredName:'虚构知识站'};
@@ -60,6 +60,7 @@ function openingStageFixture(options={}){
  const usage=createOpeningUsage({authorization:scope,operationId:config.operationId,operatorSource:config.operatorSource,issuedAt:config.issuedAt,expiresAt:config.expiresAt,load:()=>documents.usage,save:value=>storage.save('usage',value),now:()=>now});
  for(let i=0;i<12;i++)usage.reserve('RAM_READ');
  const env={GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_SHA:config.operatorSource,V2_READONLY_OPENING_APPROVED:scope,V2_CONTROL_ROLE_ARN:`acs:ram::${config.account}:role/${config.role}`,ALIBABA_CLOUD_ACCESS_KEY_ID:'fictional-id',ALIBABA_CLOUD_ACCESS_KEY_SECRET:'fictional-key',ALIBABA_CLOUD_SECURITY_TOKEN:'fictional-token'};
+ let runtimeCalls=0;
  const exec=(program,args,opts)=>{
   if(program==='python3'){
    const data=JSON.parse(opts.input);calls.push(`domain:${data.operation}`);
@@ -87,7 +88,15 @@ function openingStageFixture(options={}){
    state.triggers.push({...body,httpTrigger:{urlInternet:'https://fictional.cn-hangzhou.fcapp.run/'}});
   }else if(method==='DELETE')state.triggers=state.triggers.filter(t=>!path.endsWith('/'+t.triggerName));
   else if(method==='POST'&&path.endsWith('/invocations')){
-   if(body.operation==='PRIVATE_STATUS_V1')return JSON.stringify({protocol:'shuduo-v2-private-smoke-v1',ingress:{mode:'FC_CONTROL_PATH',publicHttpEnabled:false},metadata:{healthy:true},persistence:{healthy:true,dataState:{healthy:true}},publicReady:false});
+   if(body.operation==='PRIVATE_STATUS_V1'){
+    const opened=state.function.environmentVariables.V2_FC_PUBLIC_HTTP_ENABLED==='true';let reply={};
+    if(opened){
+     assert.equal(documents.entry.runtimeAttempts,runtimeCalls+1);assert.equal(documents.usage.usage.PRIVATE_PROBE,6+runtimeCalls+1);
+     const replies=options.runtimeReplies??[{}];reply=replies[Math.min(runtimeCalls,replies.length-1)];runtimeCalls++;calls.push('RUNTIME_STATUS');
+     if(reply instanceof Error)throw reply;
+    }
+    return JSON.stringify({protocol:reply.protocol??'shuduo-v2-private-smoke-v1',ingress:{mode:'FC_CONTROL_PATH',publicHttpEnabled:opened,publicReadOnly:true,...reply.ingress},metadata:{healthy:true,...reply.metadata},persistence:{healthy:true,dataState:{healthy:true},...reply.persistence},publicReady:false,unexpected:'fixture-secret-must-not-leak'});
+   }
    const value=body.path==='/api/v2/status'?{status:200,body:{mode:'PUBLIC_INVITATION',publicReady:false,authentication:{publicSessionEnforced:true},spark:{isolation:'REMOTE_FUNCTION'}}}:body.path==='/api/v2/auth/session'?{status:200,body:{authenticated:false}}:{status:401,body:{}};
    return JSON.stringify({protocol:'shuduo-private-application-http/v1',...value});
   }else throw Error('Unexpected CLI operation');
@@ -137,6 +146,30 @@ test('filing repair grant preserves 58 reads and 61 probes, changes only two pub
  assert.equal(f.state.function.environmentVariables.V2_SITE_ICP_NUMBER,'测试ICP备00000000号-1');
  assert.equal(f.state.function.environmentVariables.SYNTHETIC_SECRET,'not-a-real-secret');
  assert.equal(f.documents.entry.probes.at(-1).id,'filing-display');
+});
+test('runtime proof precedes HTTP acceptance and preserves both historical totals',async()=>{
+ const f=openingStageFixture({runtime:true,missingFiling:true,fromObject:true}),r=await f.run();
+ assert.equal(r.executionPassed,true,JSON.stringify(r));assert.equal(r.entry.runtimeReady,true);assert.equal(r.entry.runtimeAttempts,1);
+ assert(f.calls.indexOf('RUNTIME_STATUS')<f.calls.findIndex(c=>c.startsWith('HTTP:')));
+ assert.equal(r.newRequests,17);assert.equal(r.cumulativeRequests,86);assert.equal(r.cumulativeConfigurationReads,131+r.configurationReads);
+ assert.equal(f.documents['code-report'].cumulativeInvocations,75);assert(!JSON.stringify(r.entry.runtimeObservations).includes('fixture-secret'));
+ const calls=f.calls.length;f.documents.entry.runtimeAttempts=0;
+ const corrupt=await f.run();assert.equal(corrupt.entry.failure,'READONLY_RUNTIME_CHECKPOINT_INVALID');assert.equal(f.calls.length,calls);
+});
+test('two identical unready runtime replies stop before any HTTP request and restore the entry and code',async()=>{
+ const f=openingStageFixture({runtime:true,missingFiling:true,fromObject:true,runtimeReplies:[{ingress:{publicHttpEnabled:false}}]}),r=await f.run();
+ assert.equal(r.entry.failure,'READONLY_RUNTIME_NO_PROGRESS');assert.equal(r.entry.failureAt,'runtime-status');assert.equal(r.entry.runtimeAttempts,2);
+ assert(!f.calls.some(c=>c.startsWith('HTTP:')));assert.equal(r.codeRollback?.rollbackVerified,true);assert.equal(f.state.function.codeChecksum,'123456');assert.equal(f.state.triggers.length,2);
+ assert.equal(r.newRequests,8);assert.equal(r.cumulativeRequests,77);assert.equal(r.entry.failureDiagnostic.observations.length,2);
+});
+test('runtime retries require changed evidence, are capped at three, and do not copy private errors',async()=>{
+ const f=openingStageFixture({runtime:true,fromObject:true,runtimeReplies:[{metadata:{healthy:false}},{ingress:{publicReadOnly:false}},{}]}),r=await f.run();
+ assert.equal(r.executionPassed,true,JSON.stringify(r));assert.equal(r.entry.runtimeAttempts,3);assert.equal(r.newRequests,19);assert.equal(r.cumulativeRequests,88);
+ const e=Object.assign(Error('fixture-secret-must-not-leak'),{safeDiagnostic:{serviceCode:'AccessDenied',transport:'UNCLASSIFIED',raw:'fixture-secret-must-not-leak'}});
+ const observation=readonlyRuntimeObservation({unexpected:'fixture-secret-must-not-leak'},e);assert.equal(observation.errorCategory,'PERMISSION');assert(!JSON.stringify(observation).includes('fixture-secret'));
+ const exhausted=openingStageFixture({runtime:true,fromObject:true,runtimeReplies:[{metadata:{healthy:false}},{ingress:{publicReadOnly:false}},{protocol:'not-the-application'},{}]}),failed=await exhausted.run();
+ assert.equal(failed.entry.failure,'READONLY_RUNTIME_NOT_READY');assert.equal(failed.entry.runtimeAttempts,3);assert.equal(exhausted.calls.filter(c=>c==='RUNTIME_STATUS').length,3);
+ assert(!exhausted.calls.some(c=>c.startsWith('HTTP:')));assert.equal(failed.codeRollback?.rollbackVerified,true);
 });
 test('a mismatched public filing response rolls back the six-key environment and original code',async()=>{
  const f=openingStageFixture({repair:true,missingFiling:true,fromObject:true,wrongFilingResponse:true}),result=await f.run();
@@ -469,6 +502,7 @@ test('cloud adapter restricts targets and passes environment secrets only throug
  const count=f.commands.length;
  assert.throws(()=>adapter.openFunction({environmentVariables:{V2_LOCAL_DEVELOPMENT:'true'}}),/OUTSIDE_SCOPE/);
  assert.throws(()=>adapter.deleteTrigger('foreign-trigger'),/OUTSIDE_SCOPE/);
+ assert.throws(()=>adapter.probeRuntime(),/NEW_SCOPE_REQUIRED/);
  assert.equal(f.commands.length,count);
  for(const patch of [{GITHUB_REF:'refs/heads/other'},{V2_READONLY_OPENING_APPROVED:'yes'},{V2_CONTROL_ROLE_ARN:'foreign-role'},{ALIBABA_CLOUD_SECURITY_TOKEN:''}])
   assert.throws(()=>createReadonlyEntryCloudAdapter({plan:f.plan,change:f.change,env:{...f.env,...patch},exec:f.exec,now:()=>now}));

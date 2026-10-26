@@ -38,7 +38,7 @@ export function openingWorkflowInput(env,now=Date.now(),sealOnly=false){
  if(scope.filingRepair){
   publicSitePatch(metadata.publicSite);
   const prior=metadata.priorOpening;
-  check(prior?.configurationReads===58&&prior.cumulativeRequests===61&&prior.codeRestored===true&&prior.permissionRevoked===true&&prior.secretRemoved===true&&/^\d{6,20}$/.test(prior.runId??'')&&/^[a-f0-9]{40}$/.test(prior.sourceRevision??'')&&/^[a-f0-9]{64}$/.test(prior.sealedSha256??''),'OPENING_PRIOR_CLEANUP_REQUIRED');
+  check(prior?.configurationReads===scope.historicalConfigurationReads&&prior.cumulativeRequests===scope.historicalRequests&&prior.codeRestored===true&&prior.permissionRevoked===true&&prior.secretRemoved===true&&(!scope.runtimeVerification||prior.entryRestored===true)&&/^\d{6,20}$/.test(prior.runId??'')&&/^[a-f0-9]{40}$/.test(prior.sourceRevision??'')&&/^[a-f0-9]{64}$/.test(prior.sealedSha256??''),'OPENING_PRIOR_CLEANUP_REQUIRED');
  }
  return{...result,key:recipientKey(env.V2_AUDIT_RECIPIENT_KEY)};
 }

@@ -10,6 +10,7 @@ import {auditErrorDetails} from './audit-v2-oidc-readonly.mjs';
 import {scalingConfiguration} from './control-code-transport.mjs';
 import {readonlyConfigIntegrity,readonlyTriggerState} from './invited-readonly-config.mjs';
 import {READONLY_ENTRY_SCOPE,readonlyEntryPlan,readonlyProbesFor} from './invited-readonly-entry.mjs';
+import {openingScope} from './invited-opening-scopes.mjs';
 
 const check=(value,code)=>{if(!value)throw Object.assign(new Error(code),{safeCode:code});};
 const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v??null);
@@ -76,7 +77,7 @@ export function createReadonlyEntryCloudAdapter({plan,change,env=process.env,exe
  const cliEnv={...env,ALIBABA_CLOUD_IGNORE_PROFILE:'TRUE',ALIBABA_CLOUD_PROFILE_MODE:'StsToken'};
  const call=(method,suffix='',body,query=[])=>{
   active();
-  beforeRequest(method==='GET'?'FC_READ':'ENTRY_WRITE');
+  beforeRequest(method==='GET'?'FC_READ':suffix==='/invocations'?'PRIVATE_PROBE':'ENTRY_WRITE');
   const directory=body===undefined?undefined:mkdtempSync(join(tmpdir(),'shuduo-entry-body-'));
   try{
    const args=['fc',method,base+suffix,...query,'--region',target.region,'--connect-timeout','5','--read-timeout','30','--retry-count','0'];
@@ -116,6 +117,10 @@ export function createReadonlyEntryCloudAdapter({plan,change,env=process.env,exe
   closeFunction:body=>{exact(body,change.rollbackFunctionBody);return call('PUT','',body);},
   restoreDomain:body=>{exact(body,change.rollbackDomainBody);return domain(body);},
   deleteTrigger:name=>{check(name===change.triggerBody.triggerName,'READONLY_TRIGGER_OUTSIDE_SCOPE');return call('DELETE','/triggers/'+name);},
+  probeRuntime:()=>{
+   check(openingScope(plan.authorization).runtimeVerification,'READONLY_RUNTIME_NEW_SCOPE_REQUIRED');
+   return call('POST','/invocations',{operation:'PRIVATE_STATUS_V1'},['--header','Content-Type=application/octet-stream']);
+  },
   probe:probe=>{
    active();
    const endpoint=probe.target==='domain'?'https://shuduoai.cn':defaultEndpoint;

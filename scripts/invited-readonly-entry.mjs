@@ -37,7 +37,26 @@ export function readonlyEntryPlan(input,now=Date.now()){
  check(seed?.newRequests===6&&Number.isSafeInteger(seed.configurationReads)&&seed.configurationReads>=17&&seed.configurationReads<=46,'READONLY_ENTRY_SEED_INVALID');
  return{authorization:scope.authorization,...(scope.filingRepair?{publicSite:structuredClone(input.publicSite)}:{}),operationId:input.operationId,operatorSource:input.operatorSource,webIndexSha256:input.webIndexSha256,issuedAt,expiresAt,
   seed:{newRequests:6,configurationReads:seed.configurationReads},
-  limits:{historicalRequests:scope.historicalRequests,...(scope.filingRepair?{historicalConfigurationReads:58}:{}),newRequests:60,configurationReads:80,cleanupReadReserve:20,eachEntryWrite:1,incrementalCny:2,monthlyCny:200}};
+  limits:{historicalRequests:scope.historicalRequests,...(scope.filingRepair?{historicalConfigurationReads:scope.historicalConfigurationReads}:{}),newRequests:scope.requestLimit,...(scope.runtimeVerification?{maxRuntimeProbes:3,runtimeProbeDelayMs:1000}:{}),configurationReads:80,cleanupReadReserve:20,eachEntryWrite:1,incrementalCny:2,monthlyCny:200}};
+}
+
+export function readonlyRuntimeObservation(value,error){
+ const flag=v=>typeof v==='boolean'?v:null;
+ const protocolVerified=value?.protocol==='shuduo-v2-private-smoke-v1';
+ const publicHttpEnabled=flag(value?.ingress?.publicHttpEnabled),publicReadOnly=flag(value?.ingress?.publicReadOnly);
+ const metadataHealthy=value?.metadata?.healthy===true,persistenceHealthy=value?.persistence?.healthy===true&&value?.persistence?.dataState?.healthy===true;
+ const ready=!error&&protocolVerified&&publicHttpEnabled===true&&publicReadOnly===true&&metadataHealthy&&persistenceHealthy;
+ const code=String(error?.safeDiagnostic?.serviceCode??'');
+ const errorCategory=ready?'NONE':error?/AccessDenied|Forbidden|NoPermission/.test(code)?'PERMISSION':/SecurityToken|Signature|AccessKey|Unauthorized/.test(code)?'AUTHENTICATION':error.safeDiagnostic?.transport==='TIMEOUT'?'TIMEOUT':'TRANSPORT':protocolVerified?'NOT_READY':'APPLICATION';
+ return{ready,transportConfirmed:!error,protocolVerified,publicHttpEnabled,publicReadOnly,metadataHealthy,persistenceHealthy,errorCategory};
+}
+function validRuntimeObservation(value){
+ return value&&Object.keys(value).sort().join()===['ready','transportConfirmed','protocolVerified','publicHttpEnabled','publicReadOnly','metadataHealthy','persistenceHealthy','errorCategory'].sort().join()
+  &&['ready','transportConfirmed','protocolVerified','metadataHealthy','persistenceHealthy'].every(k=>typeof value[k]==='boolean')
+  &&['publicHttpEnabled','publicReadOnly'].every(k=>value[k]===null||typeof value[k]==='boolean')
+  &&['NONE','PERMISSION','AUTHENTICATION','TIMEOUT','TRANSPORT','NOT_READY','APPLICATION'].includes(value.errorCategory)
+  &&value.ready===(value.transportConfirmed&&value.protocolVerified&&value.publicHttpEnabled===true&&value.publicReadOnly===true&&value.metadataHealthy&&value.persistenceHealthy)
+  &&(value.errorCategory==='NONE')===value.ready;
 }
 
 export function readonlyEntryProbeAccepted(result,probe,plan){
@@ -87,7 +106,7 @@ export function readonlyProbeDiagnostic(result,probe,plan){
   applicationCode:knownCodes.includes(code)?code:typeof code==='string'?'OTHER':'MISSING'};
 }
 
-export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.now,beginCleanup=()=>{},rollbackOnly=false}={}){
+export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.now,beginCleanup=()=>{},rollbackOnly=false,wait=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}){
  check(typeof load==='function'&&typeof save==='function','READONLY_ENTRY_CHECKPOINT_REQUIRED');
  check(readonlyConfigIntegrity(change)&&change.operationId===plan?.operationId,'READONLY_ENTRY_CHANGE_INVALID');
  check(plan.seed?.configurationReads>=change.codeConfigurationReads,'READONLY_ENTRY_PRIOR_USAGE_MISSING');
@@ -95,7 +114,7 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
  check(canonical(plan)===canonical(normalized),'READONLY_ENTRY_PLAN_CHANGED');
  check((change.authorization??READONLY_ENTRY_SCOPE)===plan.authorization,'READONLY_ENTRY_SCOPE_CHANGED');
  if(openingScope(plan.authorization).filingRepair)check(canonical(change.publicSite)===canonical(plan.publicSite),'READONLY_ENTRY_PUBLIC_SITE_CHANGED');
- const probes=readonlyProbesFor(plan.authorization);
+ const scope=openingScope(plan.authorization),probes=readonlyProbesFor(plan.authorization);
  check(now()<plan.expiresAt,'READONLY_ENTRY_WINDOW_EXPIRED');
  let cp=structuredClone(await load()),validated=false,cleanup=false,retainedOnEntry=false,lastAction;
  const report={scope:'INVITED_READONLY_ENTRY',passed:false,entryRetained:false,invitedUserAccepted:false,modelCallsRequested:0,sparkRunsRequested:0,externalCleanupRequired:true};
@@ -178,13 +197,17 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
     const index=probes.findIndex(p=>p.id===id),probe=probes[index];
     return index>=0&&index<=cp.probes.length&&Number.isSafeInteger(count)&&count>=1&&count<=(probe.method==='GET'?2:1);
    })&&cp.probes.every(p=>cp.probeAttempts[p.id]>=1),'READONLY_ENTRY_PROBE_LEDGER_INVALID');
-   check(cp.newRequests===plan.seed.newRequests+Object.values(cp.probeAttempts).reduce((a,b)=>a+b,0),'READONLY_ENTRY_COUNTER_INVALID');
+   if(scope.runtimeVerification){
+    check(Number.isSafeInteger(cp.runtimeAttempts)&&cp.runtimeAttempts>=0&&cp.runtimeAttempts<=plan.limits.maxRuntimeProbes&&Array.isArray(cp.runtimeObservations)&&cp.runtimeObservations.length<=cp.runtimeAttempts&&cp.runtimeAttempts-cp.runtimeObservations.length<=1&&cp.runtimeObservations.every(validRuntimeObservation)&&typeof cp.runtimeReady==='boolean'&&cp.runtimeReady===(cp.runtimeObservations.at(-1)?.ready===true),'READONLY_RUNTIME_CHECKPOINT_INVALID');
+    check(!Object.keys(cp.probeAttempts).length||cp.runtimeReady,'READONLY_RUNTIME_PROOF_REQUIRED');
+   }else check(cp.runtimeAttempts===undefined&&cp.runtimeObservations===undefined&&cp.runtimeReady===undefined,'READONLY_RUNTIME_NEW_SCOPE_REQUIRED');
+   check(cp.newRequests===plan.seed.newRequests+Object.values(cp.probeAttempts).reduce((a,b)=>a+b,0)+(cp.runtimeAttempts??0),'READONLY_ENTRY_COUNTER_INVALID');
    for(const [later,earlier] of [['updateDomain','createTrigger'],['openFunction','updateDomain'],['closeFunction','openFunction'],['restoreDomain','updateDomain'],['deleteTrigger','createTrigger']])
     check(!cp.writes[later]||cp.writes[earlier],'READONLY_ENTRY_WRITE_ORDER_INVALID');
-   if(cp.phase==='VERIFIED')check(cp.probes.length===probes.length&&cp.writes.openFunction&&!cp.writes.closeFunction&&!cp.writes.restoreDomain&&!cp.writes.deleteTrigger,'READONLY_ENTRY_VERIFIED_CHECKPOINT_INVALID');
+   if(cp.phase==='VERIFIED')check(cp.probes.length===probes.length&&(!scope.runtimeVerification||cp.runtimeReady)&&cp.writes.openFunction&&!cp.writes.closeFunction&&!cp.writes.restoreDomain&&!cp.writes.deleteTrigger,'READONLY_ENTRY_VERIFIED_CHECKPOINT_INVALID');
   }else{
    check(plan.limits.configurationReads-plan.seed.configurationReads>=34,'READONLY_ENTRY_BUDGET_TOO_SMALL');
-   cp={version:1,planHash:hash(plan),changeHash:change.changeHash,phase:'ACTIVE',newRequests:plan.seed.newRequests,configurationReads:plan.seed.configurationReads,writes:{},unknownWrites:{},probes:[],probeAttempts:{}};
+   cp={version:1,planHash:hash(plan),changeHash:change.changeHash,phase:'ACTIVE',newRequests:plan.seed.newRequests,configurationReads:plan.seed.configurationReads,writes:{},unknownWrites:{},probes:[],probeAttempts:{},...(scope.runtimeVerification?{runtimeAttempts:0,runtimeObservations:[],runtimeReady:false}:{})};
    await persist();
   }
   validated=true;
@@ -222,6 +245,23 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
    await writeOnce('openFunction',change.functionBody);
    check(readonlyFunctionState(change,await read('readFunction'))==='OPENED','READONLY_FUNCTION_OPEN_UNCONFIRMED');
   }
+  if(scope.runtimeVerification&&!cp.runtimeReady){
+   lastAction='runtime-status';
+   check(cp.runtimeAttempts===cp.runtimeObservations.length,'READONLY_RUNTIME_OUTCOME_UNKNOWN');
+   while(cp.runtimeAttempts<plan.limits.maxRuntimeProbes&&!cp.runtimeReady){
+    cp.runtimeAttempts++;await reserve('newRequests');
+    let value,error;try{value=await adapter.probeRuntime();}catch(e){error=e;}
+    const observation=readonlyRuntimeObservation(value,error);
+    cp.runtimeObservations.push(observation);cp.runtimeReady=observation.ready;await persist();
+    if(cp.runtimeReady)break;
+    report.failureDiagnostic={stage:'RUNTIME_READINESS',attempts:cp.runtimeAttempts,observations:structuredClone(cp.runtimeObservations)};
+    const previous=cp.runtimeObservations.at(-2);
+    check(!previous||canonical(previous)!==canonical(observation),'READONLY_RUNTIME_NO_PROGRESS');
+    if(cp.runtimeAttempts<plan.limits.maxRuntimeProbes)await wait(plan.limits.runtimeProbeDelayMs);
+   }
+   check(cp.runtimeReady,'READONLY_RUNTIME_NOT_READY');
+   delete report.failureDiagnostic;
+  }
   for(const probe of probes.slice(cp.probes.length)){
    lastAction=probe.id;
    const attempts=cp.probeAttempts[probe.id]??0;
@@ -251,6 +291,7 @@ export async function runReadonlyEntry(plan,change,adapter,{load,save,now=Date.n
   if(cp&&validated){
    report.newRequests=cp.newRequests;report.cumulativeRequests=plan.limits.historicalRequests+cp.newRequests;
    report.configurationReads=cp.configurationReads;report.entryWriteRequests={...cp.writes};report.phase=cp.phase;
+   if(scope.runtimeVerification){report.runtimeAttempts=cp.runtimeAttempts;report.runtimeReady=cp.runtimeReady;report.runtimeObservations=structuredClone(cp.runtimeObservations);}
   }
  }
  return report;

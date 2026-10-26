@@ -24,16 +24,16 @@ export function createOpeningUsage({authorization,operationId,operatorSource,iss
  if(cp){
   check(Object.entries(binding).every(([key,value])=>cp[key]===value)&&cp.version===1&&cp.historicalRequests===scope.historicalRequests&&(cp.historicalConfigurationReads??0)===scope.historicalConfigurationReads,'OPENING_USAGE_CHECKPOINT_MISMATCH');
   check(['ACTIVE','CLEANUP'].includes(cp.phase)&&cp.usage&&Object.keys(cp.usage).sort().join()===names.slice().sort().join()&&names.every(key=>Number.isSafeInteger(cp.usage[key])&&cp.usage[key]>=0),'OPENING_USAGE_CHECKPOINT_INVALID');
-  check(sum(cp.usage,reads)<=80&&sum(cp.usage,probes)<=60&&cp.usage.OBJECT_GET<=8&&cp.usage.OBJECT_PUT<=2,'OPENING_USAGE_LIMIT_INVALID');
+  check(sum(cp.usage,reads)<=80&&sum(cp.usage,probes)<=scope.requestLimit&&cp.usage.OBJECT_GET<=8&&cp.usage.OBJECT_PUT<=2,'OPENING_USAGE_LIMIT_INVALID');
   cp=structuredClone(cp);
- }else persist({...binding,version:1,historicalRequests:scope.historicalRequests,...(scope.filingRepair?{historicalConfigurationReads:58}:{}),phase:'ACTIVE',usage:Object.fromEntries(names.map(name=>[name,0]))});
+ }else persist({...binding,version:1,historicalRequests:scope.historicalRequests,...(scope.filingRepair?{historicalConfigurationReads:scope.historicalConfigurationReads}:{}),phase:'ACTIVE',usage:Object.fromEntries(names.map(name=>[name,0]))});
  const active=()=>{check(!poisoned,'OPENING_USAGE_STORAGE_UNCONFIRMED');check(now()<expiresAt,'OPENING_USAGE_EXPIRED');};
  return{
   reserve(name){
    active();check(names.includes(name),'OPENING_USAGE_KIND_INVALID');
    const configurationReads=sum(cp.usage,reads),newRequests=sum(cp.usage,probes);
    if(reads.includes(name))check(configurationReads<(cp.phase==='CLEANUP'?80:60),'OPENING_CONFIGURATION_READ_LIMIT');
-   if(probes.includes(name))check(cp.phase==='ACTIVE'&&newRequests<60,'OPENING_APPLICATION_REQUEST_LIMIT');
+   if(probes.includes(name))check(cp.phase==='ACTIVE'&&newRequests<scope.requestLimit,'OPENING_APPLICATION_REQUEST_LIMIT');
    if(writes.includes(name)&&cp.phase==='ACTIVE')check(now()<expiresAt-300000,'OPENING_CLEANUP_TIME_RESERVE');
    // Individual engines enforce exact target and one-write limits. These
    // bounds additionally stop unbounded binary transfers at the shared layer.
@@ -43,6 +43,6 @@ export function createOpeningUsage({authorization,operationId,operatorSource,iss
   },
   beginCleanup(){active();if(cp.phase!=='CLEANUP')persist({...structuredClone(cp),phase:'CLEANUP'});},
   snapshot:()=>structuredClone(cp),
-  counts:()=>({configurationReads:sum(cp.usage,reads),newRequests:sum(cp.usage,probes),cumulativeRequests:scope.historicalRequests+sum(cp.usage,probes),...(scope.filingRepair?{cumulativeConfigurationReads:58+sum(cp.usage,reads)}:{})}),
+  counts:()=>({configurationReads:sum(cp.usage,reads),newRequests:sum(cp.usage,probes),cumulativeRequests:scope.historicalRequests+sum(cp.usage,probes),...(scope.filingRepair?{cumulativeConfigurationReads:scope.historicalConfigurationReads+sum(cp.usage,reads)}:{})}),
  };
 }
