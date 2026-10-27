@@ -12,7 +12,8 @@ const clean = item => { const { remoteSubmission, submittedBy, rows, log, stdout
 // Bounded cloud test releases. The driver is external and must be authenticated;
 // reads reconcile existing receipts but never submit a new Spark job.
 export function createCloudPublication({ store, project, runner, artifactStore, persist, enabled = false,
-  assertBudget = () => {}, now = Date.now, reservationSeconds = 30 }) {
+  assertBudget = () => {}, assertPublicationScope = () => {}, assertExecutionScope = () => {},
+  singleRelease = false, now = Date.now, reservationSeconds = 30 }) {
   if (!Number.isFinite(reservationSeconds) || reservationSeconds < 1 || reservationSeconds > 300) throw new Error("发布计算预留无效");
   const get = (kind, id) => { const item = store.get(kind, id, project); if (!item) throw fail(404, "未找到当前项目发布记录"); return item; };
   const stamp = () => new Date(now()).toISOString();
@@ -21,6 +22,8 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
   const passes = (receipt, item, plan) => receipt?.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) && receipt.validation?.passed === true && contextIds.every(id => receipt.validation.regressions?.some(c => c.contextId === id && c.passed));
   async function publish({ agent, packageDigest, verificationId, attestations, actorId, idempotencyKey }) {
     if (!enabled) throw fail(503, "云端发布驱动尚未配置");
+    const publicationScope = { agentId: agent.id, packageDigest, verificationId };
+    assertPublicationScope(publicationScope);
     const required = ["code", "assertions", "deliveryFiles", "cloudScope"];
     if (!attestations || Object.keys(attestations).length !== required.length || !required.every(key => attestations[key] === true) || !actorId || !idempotencyKey)
       throw fail(422, "请逐项审阅代码、核验、交付文件和云端测试范围");
@@ -29,7 +32,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const item = get("delivery_package", delivery.packageId), verification = get("delivery_verification", verificationId), plan = await ensure(item), last = agent.attempts?.at(-1);
     if (last?.status!=="SUCCEEDED" || !last?.model || /TEST_DOUBLE|unconfirmed/.test(last.model) || item.digest !== packageDigest || item.digest !== delivery.packageDigest || item.manifest.source.revisionId !== last?.revisionId || item.sourceRunId !== last?.runId || verification.packageId !== item.id || verification.packageDigest !== item.digest || !passes(verification, item, plan))
       throw fail(409, "审阅必须绑定当前代码、包摘要和真实演练");
-    const existing = store.list("release", project).find(r => r.mode === cloudPublicationMode && r.sourceAgentTaskId === agent.id && r.packageDigest === item.digest && !["CANCELLED", "ROLLED_BACK"].includes(r.status));
+    const existing = store.list("release", project).find(r => r.mode === cloudPublicationMode && r.sourceAgentTaskId === agent.id && r.packageDigest === item.digest && (singleRelease || !["CANCELLED", "ROLLED_BACK"].includes(r.status)));
     if (existing) return detail(agent.id);
     const index = plan.calendar.tradingDays.indexOf(plan.fixtures.context.businessDate), nextDay = plan.calendar.tradingDays[index + 1];
     if (!nextDay) throw fail(422, "日历缺少下一交易日");
@@ -37,10 +40,13 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if (!occurrence.eligible || occurrence.businessDate !== plan.fixtures.context.businessDate) throw fail(422, "调度文件与冻结数据日期不一致");
     const confirmed = Object.fromEntries(required.map(key => [key,true]));
     const signature = hash(JSON.stringify({ agentId: agent.id, packageDigest, verificationId, actorId, attestations: confirmed }));
+    // Artifact verification yields; an approval window may close before records
+    // are created. Re-check without changing the reviewed package or its scope.
+    assertPublicationScope(publicationScope);
     const created = store.deduplicate(`${project}:cloud-publication:${actorId}:${idempotencyKey}`, signature, () => {
       const review = store.create("delivery_review", project, { packageId: item.id, packageDigest, verificationId, status: "REVIEWED", scope: "PRIVATE_CLOUD_TEST", submittedBy: actorId, attestations: confirmed, reviewedAt: stamp() });
       const approval = store.create("release_approval", project, { packageId: item.id, packageDigest, rehearsalId: verificationId, reviewId: review.id, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, status: "APPROVED", scope: "PRIVATE_CLOUD_TEST", submittedBy: actorId, approvedAt: stamp() });
-      const release = store.create("release", project, { mode: cloudPublicationMode, sourceAgentTaskId: agent.id, submittedBy: actorId, reviewId: review.id, approvalId: approval.id, packageId: item.id, packageDigest, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, businessScheduledFor, status: "WAITING_SCHEDULER", health: "PENDING", scope: "PRIVATE_CLOUD_TEST", runCount: 2, publicDeployed: false, fullLifecycleE2E: false });
+      const release = store.create("release", project, { mode: cloudPublicationMode, sourceAgentTaskId: agent.id, submittedBy: actorId, reviewId: review.id, approvalId: approval.id, packageId: item.id, packageDigest, verificationId, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, businessScheduledFor, status: "WAITING_SCHEDULER", health: "PENDING", scope: "PRIVATE_CLOUD_TEST", runCount: 2, publicDeployed: false, fullLifecycleE2E: false });
       for (let sequence = 1; sequence <= 2; sequence++) store.create("release_run", project, { mode: cloudPublicationMode, releaseId: release.id, packageId: item.id, packageDigest, sequence, businessScheduledFor, status: "SCHEDULED", schedulerTriggered: false, scheduledTriggerAt: new Date(now() + (sequence - 1) * 60000).toISOString(), published: false, publicDeployed: false });
       return release;
     });
@@ -92,12 +98,16 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       // Re-read both records before claiming or submitting the frozen job.
       if (terminal.has(current.status) || get("release", release.id).status === "CANCELLED") return { releaseId: release.id, cancelled: true };
       if (!current.remoteSubmission) {
+        assertExecutionScope(get("release", release.id));
         assertBudget(); const prepared = runner.prepare({ sql: item.files["main.sql"], testSql: item.files["tests.sql"], context: plan.fixtures.context, validationContexts: plan.fixtures.validationContexts }, current.id);
         current = patch("release_run", current, { status: "RUNNING", stage: "SUBMITTING", isolation: "FUNCTION_PROCESS", reservedDurationMs: reservationSeconds*1000, schedulerTriggered: true, clockMode: "FC_TIMER", triggerName, triggeredAt: stamp(), remoteSubmission: { prepared, submitted: false }, published: true });
         patch("release",get("release",release.id),{status:"RUNNING_CLOUD_TEST",health:get("release",release.id).health==="CRITICAL"?"CRITICAL":"OBSERVING"});
         await persist();
       }
       if (terminal.has(get("release_run", current.id).status) || get("release", release.id).status === "CANCELLED") return { releaseId: release.id, cancelled: true };
+      // Persisting the claim can cross the approved deadline. Unknown-submit
+      // retries must pass the same fresh scope check before touching the queue.
+      assertExecutionScope(get("release", release.id));
       await runner.submit(current.remoteSubmission.prepared);
       current = get("release_run", current.id);
       if (!terminal.has(current.status) && get("release", release.id).status !== "CANCELLED") {

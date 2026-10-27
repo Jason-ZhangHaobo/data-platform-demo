@@ -12,6 +12,13 @@ import {
 } from "lucide-react";
 
 type Api = <T>(path: string, body?: unknown) => Promise<T>;
+export type PublicationTarget = {
+  taskId: string;
+  packageDigest: string;
+  verificationId: string;
+  startsAt: string;
+  expiresAt: string;
+};
 export type AuthSession = {
   authenticated: boolean;
   mode?: string;
@@ -28,6 +35,12 @@ export type AuthSession = {
   developmentOnly?: boolean;
   developmentStartsAt?: string;
   developmentExpiresAt?: string;
+  publicationOnly?: boolean;
+  publicationTaskId?: string;
+  publicationPackageDigest?: string;
+  publicationVerificationId?: string;
+  publicationStartsAt?: string;
+  publicationExpiresAt?: string;
 };
 type Invitation = {
   id: string;
@@ -43,12 +56,14 @@ export function AuthDialog({
   onAuthenticated,
   allowRedeem = true,
   readOnly = false,
+  publicationOnly = false,
 }: {
   api: Api;
   onClose: () => void;
   onAuthenticated: (session: AuthSession) => void;
   allowRedeem?: boolean;
   readOnly?: boolean;
+  publicationOnly?: boolean;
 }) {
   const [mode, setMode] = useState<"login" | "redeem">("login"),
     [email, setEmail] = useState(""),
@@ -57,8 +72,10 @@ export function AuthDialog({
     [password, setPassword] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  useEffect(() => { if (!allowRedeem || readOnly || publicationOnly) setMode("login"); }, [allowRedeem, readOnly, publicationOnly]);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (mode === "redeem" && (!allowRedeem || readOnly || publicationOnly)) return;
     setBusy(true);
     setError("");
     try {
@@ -79,8 +96,8 @@ export function AuthDialog({
   return (
     <div className="auth-overlay-v2" onMouseDown={onClose}>
       <section className="auth-dialog-v2" role="dialog" aria-modal="true" aria-label="受邀用户登录" onMouseDown={(event) => event.stopPropagation()}>
-        <header><div><span className="eyebrow">INVITATION ACCESS</span><h2>{mode === "login" ? "登录数舵" : "兑换邀请"}</h2><p>{readOnly ? "当前为只读验收：已有账号可登录查看；创建、运行、发布及新邀请尚未开放。" : "公开浏览无需登录；创建和运行任务需要受邀项目成员。"}</p></div><button aria-label="关闭登录" onClick={onClose}><X size={18} /></button></header>
-        <div className="auth-tabs-v2" role="tablist"><button role="tab" aria-selected={mode === "login"} className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}><LogIn size={14} />已有账号</button><button disabled={!allowRedeem || readOnly} title={!allowRedeem || readOnly ? "当前入口仅支持已有账号登录" : undefined} role="tab" aria-selected={mode === "redeem"} className={mode === "redeem" ? "active" : ""} onClick={() => setMode("redeem")}><UserPlus size={14} />首次受邀</button></div>
+        <header><div><span className="eyebrow">INVITATION ACCESS</span><h2>{mode === "login" ? "登录数舵" : "兑换邀请"}</h2><p>{publicationOnly ? "受邀发布试点：仅指定已有账号可审阅指定交付包；不开放代码开发、新邀请或账号管理。" : readOnly ? "当前为只读验收：已有账号可登录查看；创建、运行、发布及新邀请尚未开放。" : "公开浏览无需登录；创建和运行任务需要受邀项目成员。"}</p></div><button aria-label="关闭登录" onClick={onClose}><X size={18} /></button></header>
+        <div className="auth-tabs-v2" role="tablist"><button role="tab" aria-selected={mode === "login"} className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}><LogIn size={14} />已有账号</button>{!publicationOnly && <button disabled={!allowRedeem || readOnly} title={!allowRedeem || readOnly ? "当前入口仅支持已有账号登录" : undefined} role="tab" aria-selected={mode === "redeem"} className={mode === "redeem" ? "active" : ""} onClick={() => setMode("redeem")}><UserPlus size={14} />首次受邀</button>}</div>
         <form onSubmit={submit}>
           {mode === "login" ? <label><Mail size={14} />邮箱<input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></label> : <><label><KeyRound size={14} />一次性邀请码<input autoComplete="one-time-code" value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} required /></label><label><UserPlus size={14} />显示名称<input autoComplete="name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={50} required /></label></>}
           <label><ShieldCheck size={14} />密码<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} maxLength={128} required /></label>

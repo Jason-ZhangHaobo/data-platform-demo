@@ -1,5 +1,21 @@
 # V2 API 契约与实现边界
 
+## 指定版本受邀发布增量（2026-10-27）
+
+以下为已实现的范围控制，不声明任何实际环境已开放。设置 `V2_FC_PUBLIC_WRITE_SCOPE=PUBLICATION_ONLY` 时，必须同时配置 `V2_LOCAL_DEVELOPMENT=false`、既有 `V2_BOOTSTRAP_ADMIN_EMAIL`、`V2_PUBLIC_PUBLICATION_TASK_ID`、`V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST`、`V2_PUBLIC_PUBLICATION_VERIFICATION_ID` 和 `V2_PUBLIC_PUBLICATION_STARTS_AT/EXPIRES_AT`（最多两小时）。实际执行仍要求原持久化、隔离Worker、预算和签名定时器条件通过；不因设置scope取得身份或跳过CSRF。
+
+- 会话仅对指定管理员返回批准目标与 `SESSION/DELIVERY` 写能力；匿名及其他账号不返回任务、包或演练标识，保持只读。
+- `GET /agent/tasks/:id/workflow` 与 `GET /agent/tasks/:id/publication` 仍受原项目/记录访问控制。只读取已有结果，不能提交新Spark。
+- `POST /agent/tasks/:id/publication`：请求为 `packageDigest, verificationId, attestations` 和 `Idempotency-Key`，四项确认是 `code/assertions/deliveryFiles/cloudScope=true`。必须匹配指定任务、当前真实演练与最新成功SQL；创建审阅、批准和一个发布记录，**本请求不提交Spark**。
+- `POST /agent/tasks/:id/publication/cancel`：仅停止同一允许目标。发布记录持久化 `verificationId`；取消/回滚后换幂等键仍返回原记录，不重置两批额度。
+- 签名定时事件才可推进两个固定批次；准备及提交时再次检查任务、摘要、演练和期限。两个批次使用同一冻结业务日期，仅为有界样例验收，不是连续两交易日或永久生产调度。窗口结束不启动新计算，原迟到结果可继续对账。
+- 发布scope关闭模型与开发计算、其他模块写、邀请及凭证管理。私有内部API转发也受限；旧私有任务验收及Agent推进操作拒绝。合法状态读取、签名发布定时事件保留，非发布模式原行为不变。
+- GUI将 `canPublish` 与开发写权限分开，并核对当前任务/包/演练、显示期限和完整来源编号。仅看文件不会勾选审阅；修改来源或确认读取失败时不能提交。
+
+验证：完整本机819项（818通过、1既有跳过），新增HTTP/持久SQLite与队列替身测试、虚构账号界面操作。实际部署、云Spark、定时器与外部消费证据不由这些测试替代，须读取受保护执行记录。
+
+## 基础契约与历史实现范围
+
 更新：2026-09-15。基础地址为本地开发服务的 `/api/v2`。以下接口已实现；`shuduo`与`shuduo-mcp`使用该契约，旧`dataplatform`命令仍是V1模拟，不能作为V2证据。交付包、演练、独立审阅、审批、发布、回滚和监控已补齐CLI/MCP映射；危险动作的MCP说明要求显式确认。
 
 ## 权限与请求
