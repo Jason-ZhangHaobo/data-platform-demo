@@ -379,6 +379,18 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   }
 }
 
+// A sealed plan can authenticate yet fail its execution guards (for example,
+// the job started after expiry). Preserve the two bootstrap reads, not a false
+// accepted-plan checkpoint. Never erase a counter after any subsequent IO.
+export function markUnacceptedPilotFailure(report) {
+  const zero = ['configWrites', 'objectGets', 'objectPuts', 'activeHttp', 'triggerCreates', 'triggerDeletes', 'permissionProbes', 'modelCalls', 'sparkRuns'];
+  if (report.cumulativeUsage !== undefined || typeof report.failure !== 'string' ||
+      !['identityReads', 'configReads'].every(key => Number.isSafeInteger(report[key]) && report[key] >= 0 && report[key] <= 1) ||
+      !zero.every(key => report[key] === 0)) return false;
+  report.scope = 'UNVERIFIED'; report.planVerified = false; report.phase = 'PRE_PLAN_FAILED';
+  return true;
+}
+
 async function main(env = process.env) {
   const config = auditConfig(env), recipient = recipientKey(env.V2_AUDIT_RECIPIENT_KEY), dir = mkdtempSync(join(tmpdir(), 'shuduo-dev-pilot-'));
   const report = { scope: 'UNVERIFIED', phase: 'STARTED', planVerified: false, mode: env.V2_PILOT_MODE,
@@ -405,8 +417,8 @@ async function main(env = process.env) {
     plan = openReadinessProof(env.V2_PILOT_PLAN, before.environmentVariables?.V2_SPARK_EXECUTOR_SECRET);
     check(['INVITED_DEVELOPMENT_PILOT_V1', publicationScope].includes(plan.scope) && plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
       (plan.scope === publicationScope ? publicationModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
-    report.scope = plan.scope; report.planVerified = true; save();
     check(plan.issuedAt <= Date.now() && plan.deadline > Date.now() && plan.deadline - plan.issuedAt <= 3600000, 'PLAN_EXPIRED');
+    report.scope = plan.scope; report.planVerified = true; save();
     const credentials = { accessKeyId: env.ALIBABA_CLOUD_ACCESS_KEY_ID, accessKeySecret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET, securityToken: env.ALIBABA_CLOUD_SECURITY_TOKEN };
     const bucket = before.environmentVariables.OSS_BUCKET;
     if (plan.scope === publicationScope) {
@@ -498,7 +510,7 @@ async function main(env = process.env) {
     }
   } catch (e) {
     report.failure = e.safeCode ?? 'PILOT_OPERATION_UNCONFIRMED'; process.exitCode = 1;
-    if (!report.planVerified) report.phase = 'PRE_PLAN_FAILED';
+    markUnacceptedPilotFailure(report);
     if (plan?.mode === 'deploy' && report.phase === 'UPDATE_REQUESTED' && baseline && candidate) {
       try {
         const current = read();

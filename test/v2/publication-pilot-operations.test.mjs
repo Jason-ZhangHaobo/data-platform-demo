@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { runPublicationPilotOperation } from '../../scripts/deploy-development-pilot.mjs';
+import { runPublicationPilotOperation, markUnacceptedPilotFailure } from '../../scripts/deploy-development-pilot.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
 import { publicationPilotTimerNames } from '../../scripts/publication-pilot-timers.mjs';
 const sha = value => createHash('sha256').update(value).digest('hex');
@@ -304,8 +304,40 @@ test('pre-plan failures have an explicitly zero-write sealed report contract for
   const source = readFileSync(new URL('../../scripts/deploy-development-pilot.mjs', import.meta.url), 'utf8');
   assert.match(source, /scope: 'UNVERIFIED', phase: 'STARTED', planVerified: false, mode: env\.V2_PILOT_MODE/);
   assert.match(source, /triggerCreates: 0, triggerDeletes: 0, permissionProbes: 0, modelCalls: 0, sparkRuns: 0/);
-  assert.match(source, /if \(!report\.planVerified\) report\.phase = 'PRE_PLAN_FAILED'/);
+  assert.match(source, /markUnacceptedPilotFailure\(report\)/);
   assert.match(source, /sourceRevision: env\.GITHUB_SHA, runId: env\.GITHUB_RUN_ID/);
+});
+
+test('expired or invalid initial publication plans retain only bootstrap reads in PRE_PLAN_FAILED', async () => {
+  for (const change of [{ deadline: Date.parse('2026-10-27T07:59:59Z') }, { maxSparkRuns: 3 }, { priorUsage: undefined }]) {
+    const f = fixture(), report = { scope: 'INVITED_PUBLICATION_PILOT_V1', phase: 'STARTED', planVerified: true, mode: 'stage',
+      identityReads: 1, configReads: 1, configWrites: 0, objectGets: 0, objectPuts: 0, activeHttp: 0,
+      triggerCreates: 0, triggerDeletes: 0, permissionProbes: 0, modelCalls: 0, sparkRuns: 0 };
+    let ioCalls = 0;
+    try {
+      await runPublicationPilotOperation({ ...f.basePlan, mode: 'stage', ...change }, f.baseline, report,
+        { now: () => Date.parse('2026-10-27T08:00:00Z'), command: () => { ioCalls++; }, save: () => { ioCalls++; } });
+      assert.fail('guard must reject');
+    } catch (error) { report.failure = error.safeCode; }
+    const originalFailure = report.failure;
+    assert.equal(markUnacceptedPilotFailure(report), true); assert.equal(ioCalls, 0);
+    assert.equal(report.scope, 'UNVERIFIED'); assert.equal(report.phase, 'PRE_PLAN_FAILED');
+    assert.equal(report.planVerified, false); assert.equal(report.mode, 'stage');
+    assert.equal(report.identityReads, 1); assert.equal(report.configReads, 1);
+    assert.equal(report.failure, originalFailure); assert.equal(report.cumulativeUsage, undefined);
+  }
+});
+
+test('pre-plan normalization never discards accepted usage, additional reads, probes or writes', () => {
+  const base = { scope: 'INVITED_PUBLICATION_PILOT_V1', phase: 'STARTED', planVerified: true, mode: 'stage', failure: 'SYNTHETIC_FAILURE',
+    identityReads: 1, configReads: 1, configWrites: 0, objectGets: 0, objectPuts: 0, activeHttp: 0,
+    triggerCreates: 0, triggerDeletes: 0, permissionProbes: 0, modelCalls: 0, sparkRuns: 0 };
+  for (const change of [{ cumulativeUsage: {} }, { configReads: 2 }, { identityReads: 2 }, { configReads: undefined },
+    ...['configWrites', 'objectGets', 'objectPuts', 'activeHttp', 'triggerCreates', 'triggerDeletes', 'permissionProbes', 'modelCalls', 'sparkRuns'].map(key => ({ [key]: 1 })),
+    { objectPuts: undefined }]) {
+    const report = { ...base, ...change }, original = structuredClone(report);
+    assert.equal(markUnacceptedPilotFailure(report), false); assert.deepEqual(report, original);
+  }
 });
 
 test('workflow downloads frozen code only for deploy or stage and preserves encrypted evidence', () => {
