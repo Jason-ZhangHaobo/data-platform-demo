@@ -16,7 +16,8 @@ function fixture() {
   const proof = { scope: 'shuduo-spark-ready-refresh/v1', issuedAt: now, expiresAt: now + 600000, boundaryDigest: functionDigest(control), oldReadyJobId: config.readyJobId, job: queued.job, envelope };
   return { control, config, proof };
 }
-const runtime = { publicReady: false, readOnlyObserved: true, spark: { available: true, healthVerified: true, publicWriteEnabled: true, verifiedAt: new Date(now - 10000).toISOString() } };
+// Match the real anonymous projection: verifiedAt is intentionally absent.
+const runtime = { publicReady: false, readOnlyObserved: true, spark: { available: true, healthVerified: true, publicWriteEnabled: true } };
 
 test('proof transport authenticates encrypted private evidence and rejects tampering', () => {
   const { control, proof } = fixture(), secret = control.environmentVariables.V2_SPARK_EXECUTOR_SECRET;
