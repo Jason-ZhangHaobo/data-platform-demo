@@ -5,7 +5,7 @@ on:
       mode:
         required: true
         type: choice
-        options: [deploy, close, rollback]
+        options: [deploy, stage, activate, timers, cleanup-timers, close, rollback]
       encrypted_plan:
         required: true
         type: string
@@ -55,7 +55,7 @@ jobs:
           for(const value of [c.account,c.role,c.functionName,process.env.V2_DEPLOY_ROLE_ARN,process.env.V2_DEPLOY_OIDC_PROVIDER_ARN,process.env.V2_PILOT_PLAN])if(value)console.log(`::add-mask::${value}`);
           NODE
       - uses: actions/download-artifact@v6
-        if: inputs.mode == 'deploy'
+        if: inputs.mode == 'deploy' || inputs.mode == 'stage'
         with:
           run-id: ${{ inputs.build_run_id }}
           artifact-ids: ${{ inputs.artifact_id }}
