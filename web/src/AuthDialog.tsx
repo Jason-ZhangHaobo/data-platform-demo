@@ -25,6 +25,9 @@ export type AuthSession = {
   permissions?: string[];
   expiresAt?: string;
   readOnly?: boolean;
+  developmentOnly?: boolean;
+  developmentStartsAt?: string;
+  developmentExpiresAt?: string;
 };
 type Invitation = {
   id: string;

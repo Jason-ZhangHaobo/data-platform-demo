@@ -801,6 +801,7 @@ function App() {
           </div>
         </header>
         {session.readOnly && <div className="notice-banner" role="status">只读验收入口 · 已有账号可登录查看已保存结果；创建、运行、发布及新邀请暂未开放。不会因登录自动运行模型或 Spark。</div>}
+        {session.developmentOnly && !session.readOnly && <div className="notice-banner" role="status">受邀开发试点 · 仅限一条新 Agent 任务、SQL 编辑运行及交付文件准备；历史任务只读，发布、全平台规划、邀请和接口凭证管理关闭。窗口截止 {session.developmentExpiresAt ? new Date(session.developmentExpiresAt).toLocaleString("zh-CN") : "未确认"}，到期停止新计算并保留结果。</div>}
         {privatePreview && <div className="notice-banner" role="status">私有云端试用 · {agentDevelopmentPreview ? "Agent 数据开发、SQL 编辑、真实运行与任务恢复" : "SQL 编辑、真实 Spark 运行和结果恢复"}{privateServicesPreview ? "、发布结果的数据服务消费" : ""}；未开放模块不代表已验收。临时访问通道到期后入口失效，已保存的云端任务记录保留。</div>}
         {error && (
           <div role="alert" className="error-banner">
@@ -818,7 +819,7 @@ function App() {
           {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} sourceAgentTaskId={new URLSearchParams(window.location.search).get("task")??undefined} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} ready={agentDevelopmentReadiness(status).ready} readinessReason={agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly} loading={!status} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
           <AgentCenter
             api={api}
-            canWrite={canWrite}
+            canWrite={canWrite && !session.developmentOnly}
             modelConfigured={Boolean(status?.model.configured)}
             contextId={contextId}
             currentSql={sql}
@@ -1714,9 +1715,9 @@ function App() {
                     </> : <p>费用与用量仅项目管理员可见；未读取到数据时不展示金额。</p>}
                   </article>
                 </div>
-                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly &&
+                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly &&
                   session.role === "ADMIN" && <InvitationPanel api={api} />}
-                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly &&
+                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly &&
                   session.authenticated && (
                     <ChangePasswordPanel
                       api={api}
@@ -1907,7 +1908,7 @@ function App() {
       {authOpen && (
         <Suspense fallback={<WorkbenchLoading label="正在加载登录入口…" />}>
           <AuthDialog
-            allowRedeem={!privatePreview && !session.readOnly}
+            allowRedeem={!privatePreview && !session.readOnly && !session.developmentOnly}
             readOnly={session.readOnly}
             api={api}
             onClose={() => setAuthOpen(false)}

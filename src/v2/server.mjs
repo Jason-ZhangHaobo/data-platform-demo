@@ -3,6 +3,7 @@ import { ingressDenialReasons } from "./fc-ingress.mjs";
 import { createRequestLane } from "./request-lane.mjs";
 import { serveV2Static } from "./static-response.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
+import { publicDevelopmentConfig, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow } from "./public-development-access.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
@@ -261,7 +262,13 @@ export function createV2Server(options = {}) {
       return rawRunner(input);
     };
   runner.descriptor = runnerDescriptor;
-  const durableDevelopment = rawRunner.durable,
+  const developmentAccess = publicDevelopmentConfig(env);
+  const durableDevelopment = !rawRunner.durable || !developmentAccess ? rawRunner.durable : {
+    prepare: (...args) => rawRunner.durable.prepare(...args),
+    submit: (...args) => { assertDevelopmentExecutionWindow(developmentAccess, options.now?.() ?? Date.now()); return rawRunner.durable.submit(...args); },
+    read: (...args) => rawRunner.durable.read(...args),
+    cancel: (...args) => rawRunner.durable.cancel(...args),
+  },
     persistDevelopment = async () => { if (typeof persistence.flush === "function") await persistence.flush(); },
     reconcileDevelopment = async run => durableDevelopment
       ? reconcileDurableDevelopment(run, { runner: durableDevelopment, store, project: PROJECT, persist: persistDevelopment, contextIds, contractId: validationContractId, allowSubmit: false })
@@ -269,7 +276,7 @@ export function createV2Server(options = {}) {
   const pythonRunner =
     options.pythonRunner ?? ((input) => runRestrictedPython(input, pythonRuntime));
   let modelVerifiedAt = null;
-  const generator =
+  const rawGenerator =
     options.generator ??
     (async (input) => {
       budget.assertCanStartModel();
@@ -279,6 +286,7 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
+  const generator = async input => { assertDevelopmentExecutionWindow(developmentAccess, options.now?.() ?? Date.now()); return rawGenerator(input); };
   const pythonGenerator =
     options.pythonGenerator ??
     (async (input) => {
@@ -1174,6 +1182,19 @@ export function createV2Server(options = {}) {
       if (method === "GET" && !path.startsWith("/api/v2"))
         return await serveV2Static(res, root, path);
       if (typeof persistence.refresh === "function") await persistence.refresh();
+      const developmentSessionView = ingressChannel === "HTTP" && !publicReadOnly
+        ? developmentSession(developmentAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) : undefined;
+      if (ingressChannel === "HTTP" && !publicReadOnly)
+        assertDevelopmentMutation(developmentAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
+      if (ingressChannel === "HTTP" && developmentAccess && method === "POST") {
+        const taskPath = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\//);
+        const deliveryPath = path.match(/^\/api\/v2\/agent\/deliveries\/([a-f0-9-]{36})\//);
+        const runPath = path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\//);
+        const session = auth.sessionFromHeaders(req.headers);
+        if (taskPath) assertDevelopmentRecord(developmentAccess, session, store.get('agent', taskPath[1], PROJECT));
+        if (deliveryPath) { const task = store.get('agent_delivery_task', deliveryPath[1], PROJECT); assertDevelopmentRecord(developmentAccess, session, store.get('agent', task?.sourceAgentTaskId ?? '', PROJECT)); }
+        if (runPath) { const run = store.get('run', runPath[1], PROJECT); assertDevelopmentRecord(developmentAccess, session, store.get('revision', run?.revisionId ?? '', PROJECT)); }
+      }
       if (method !== "GET" && !isPrivateSmokeInvoke && typeof persistence.flush === "function")
         res.metadataFlush = () => persistence.flush();
       if (isPrivateSmokeInvoke) {
@@ -1317,12 +1338,12 @@ export function createV2Server(options = {}) {
                 user: context.user,
                 role: context.role,
                 permissions: publicReadOnly ? ["SESSION"] : context.permissions,
-                ...(publicReadOnly ? { readOnly: true } : {}),
+                ...(publicReadOnly ? { readOnly: true } : developmentSessionView ?? {}),
                 expiresAt: context.session.expiresAt,
               }
             : {
                 authenticated: false,
-                ...(publicReadOnly ? { readOnly: true } : {}),
+                ...(publicReadOnly ? { readOnly: true } : developmentSessionView ?? {}),
                 mode: local
                   ? "LOCAL_DEVELOPMENT_BYPASS"
                   : "INVITATION_SESSION",
@@ -1343,6 +1364,7 @@ export function createV2Server(options = {}) {
             !local && !insecurePublicCookies,
           );
         if (publicReadOnly) response.body = { ...response.body, permissions: ["SESSION"], readOnly: true };
+        else if (ingressChannel === "HTTP" && developmentAccess) response.body = { ...response.body, ...developmentSession(developmentAccess, { user: response.body.user, role: response.body.role }, options.now?.() ?? Date.now()) };
         return json(res, 200, response.body, {
           "Set-Cookie": response.cookies,
         });
@@ -2965,7 +2987,8 @@ export function createV2Server(options = {}) {
             return json(res,200,await agentEventDriver.cancel(task.id,actor));
           }
           if(Object.keys(body).some(k=>!["expectedVersion","maxEvents","durationMs"].includes(k)))throw fail(422,"后台请求字段不受支持");
-          return json(res,202,await agentEventDriver.enable(task.id,actor,body));
+          const window = ingressChannel === 'HTTP' ? developmentBackgroundWindow(developmentAccess, options.now?.() ?? Date.now(), body) : {};
+          return json(res,202,await agentEventDriver.enable(task.id,actor,{...body,...window}));
         }
       }
       const durableAdvance = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/advance$/);
@@ -5044,6 +5067,7 @@ export function createV2Server(options = {}) {
         if (originAgentTaskId) {
           const origin=get("agent",originAgentTaskId);
           requireDurableAgentOwner(origin,req);
+          if (ingressChannel === 'HTTP') assertDevelopmentRecord(developmentAccess, session, origin);
           if (!local && session?.role !== "ADMIN" && origin.submittedBy !== actor) throw fail(403,"无权引用该人工接管来源");
           if (origin.contextId !== contextId) throw fail(409,"接管来源与代码业务口径不一致");
         }
@@ -5056,6 +5080,7 @@ export function createV2Server(options = {}) {
         const body = await readBody(req),
           rev = get("revision", text(body.revisionId, 1, 80));
         requireDevelopmentOwner("revision", rev, req);
+        if (ingressChannel === 'HTTP') assertDevelopmentRecord(developmentAccess, auth.sessionFromHeaders(req.headers), rev);
         if (!options.runner && !runtime.available)
           throw fail(503, "Spark 尚未就绪，请运行 npm run v2:bootstrap");
         const key = text(req.headers["idempotency-key"], 1, 100),
@@ -5166,6 +5191,8 @@ export function createV2Server(options = {}) {
           throw fail(422, "数据开发语言不受支持");
         const context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效上下文");
+        if (ingressChannel === "HTTP") assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, options.now?.() ?? Date.now());
+        const backgroundWindow = body.background && ingressChannel === 'HTTP' ? developmentBackgroundWindow(developmentAccess, options.now?.() ?? Date.now()) : {};
         if (durableAgent && language === "SPARK_SQL") {
           if (!options.generator && !modelSettings(env).configured) throw new ModelUnavailable();
           let repair = {};
@@ -5182,7 +5209,7 @@ export function createV2Server(options = {}) {
             actorId: auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer",
             idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair });
           if(body.background){
-            const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version});
+            const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version,...backgroundWindow});
             return json(res,202,{...created,background});
           }
           return json(res, 202, exposeDurableTask(get("agent",created.id)));
