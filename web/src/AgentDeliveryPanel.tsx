@@ -4,7 +4,8 @@ import { agentJourney, deliveryStageText, publicationEvidenceText, verificationP
 import type { EvidenceReadState, TaskConsumption } from "./agent-journey";
 import { EvidenceDownload } from "./EvidenceDownload";
 import { DeliveryFilePreview } from "./DeliveryFilePreview";
-import { AgentPublicationReview } from "./AgentPublicationReview";
+import { AgentPublicationReview, publicationTargetMatches } from "./AgentPublicationReview";
+import type { PublicationTarget } from "./AuthDialog";
 import { reviewAttestationsComplete } from "./delivery-presentation";
 import { createPublicationReader, publicationPollNeeded } from "./publication-read";
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
@@ -16,7 +17,7 @@ type Workflow = {
   verification?: { id: string; status: string; engine?: string; engineVersion?: string; mainSqlExecuted?: boolean; durationMs?: number; error?: string; testSqlValidation?: { passed: boolean }; validation?: { passed: boolean; regressions?: { contextId: string; passed: boolean }[] } };
   publication: { available: boolean; scope: string; reason: string };
 };
-type Release = { id: string; status: string; health: string; packageId?: string; packageDigest?: string; sourceRevisionId?: string; runCount?: number };
+type Release = { id: string; status: string; health: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number };
 type Publication = { release?: Release; runs: {id:string; status:string; sequence:number; schedulerTriggered?:boolean; durationMs?:number; triggeredAt?:string; finishedAt?:string}[]; alerts:{id:string;status:string;message:string;recoveryRunId?:string}[]; events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[] };
 const complete = (status?: string) => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(status ?? "");
 const batchLabels: Record<string,string> = { SCHEDULED: "等待调度", RUNNING: "正在运行", SUCCEEDED: "独立核验通过", FAILED: "运行或核验失败", CANCELLED: "已停止" };
@@ -26,10 +27,11 @@ function download(name: string, value: unknown) {
   try { document.body.appendChild(link); link.click(); }
   finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
 }
-export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canWrite, codeBusy, onOpenServices, handoffBlocked = false }: { api: Api; taskId: string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; codeBusy: boolean; onOpenServices?: () => void; handoffBlocked?: boolean }) {
+export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, codeBusy, onOpenServices, handoffBlocked = false }: { api: Api; taskId: string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; codeBusy: boolean; onOpenServices?: () => void; handoffBlocked?: boolean }) {
   const [workflow, setWorkflow] = useState<Workflow>(), [busy, setBusy] = useState(false), [error, setError] = useState(""), [auto, setAuto] = useState(false);
   const [review, setReview] = useState(false), [confirmed, setConfirmed] = useState<Record<string,boolean>>({}), [release, setRelease] = useState<Release>(), [batches, setBatches] = useState<{ id: string; status: string; sequence: number; schedulerTriggered?: boolean }[]>([]);
   const [publication,setPublication]=useState<Publication>();
+  const [publicationClock,setPublicationClock]=useState(Date.now);
   const [publicationRead, setPublicationRead] = useState<EvidenceReadState>("LOADING");
   const [publicationError, setPublicationError] = useState("");
   const publicationReader = useRef<ReturnType<typeof createPublicationReader<Publication>> | undefined>(undefined);
@@ -74,10 +76,24 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
   const working = busy || auto || codeBusy;
   const fileVerified = journey.fileVerified;
   const cloud = workflow?.publication.scope === "PRIVATE_CLOUD_TEST";
+  const targetMatches = publicationTargetMatches(publicationTarget, { taskId, packageDigest: workflow?.package?.digest, verificationId: workflow?.verification?.id }, publicationClock)
+    && (!publicationTarget || delivery?.verificationId === publicationTarget.verificationId);
+  const publicationWritable = Boolean((canPublish ?? canWrite) && targetMatches);
+  const cancellationWritable = publicationWritable && (!publicationTarget || Boolean(release && publicationTargetMatches(publicationTarget,
+    {taskId:release.sourceAgentTaskId ?? "",packageDigest:release.packageDigest,verificationId:release.verificationId},publicationClock)));
+  useEffect(() => {
+    if (!publicationTarget) return;
+    setPublicationClock(Date.now());
+    const timer=setInterval(()=>setPublicationClock(Date.now()),1000);
+    return()=>clearInterval(timer);
+  },[publicationTarget?.taskId,publicationTarget?.packageDigest,publicationTarget?.verificationId,publicationTarget?.startsAt,publicationTarget?.expiresAt]);
+  useEffect(() => { if (!publicationWritable) { setReview(false);setConfirmed({}); } }, [publicationWritable]);
+  useEffect(() => { if (!canWrite || publicationTarget) { epoch.current++;setAuto(false); } }, [canWrite,publicationTarget?.taskId]);
   useEffect(()=>{setConsumption(undefined);setConsumptionError("");void readConsumption();return()=>{consumptionEpoch.current++;};},[taskId,workflow?.package?.digest,cloud]);
   useEffect(() => { setReview(false); setConfirmed({}); }, [workflow?.package?.digest, workflow?.verification?.id, dirty, current, publicationRead]);
   useEffect(() => { requestKey.current = crypto.randomUUID(); }, [taskId, revisionId, runId]);
   async function drive(start: Delivery) {
+    if (!canWrite || publicationTarget) return;
     const token = ++epoch.current; setAuto(true); setError(""); let item = start;
     try {
       for (let i = 0; i < 40 && token === epoch.current && !complete(item.status); i++) {
@@ -90,17 +106,17 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
     finally { if (token === epoch.current) setAuto(false); }
   }
   async function prepare() {
-    if (!verified || !canWrite || working) return; setBusy(true); setError("");
+    if (!verified || !canWrite || publicationTarget || working) return; setBusy(true); setError("");
     try { const started = await api<Delivery>(`/agent/tasks/${taskId}/prepare-delivery`, {}, { idempotencyKey: requestKey.current }); await load(); void drive(started); }
     catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   async function stop() {
-    if (!delivery) return; epoch.current++; setAuto(false); setBusy(true);
+    if (!delivery || !canWrite || publicationTarget) return; epoch.current++; setAuto(false); setBusy(true);
     try { await api(`/agent/deliveries/${delivery.id}/cancel`, {}); await load(); }
     catch(e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   async function publishLocal() {
-    if (!canWrite || working || publicationRead !== "READY" || !workflow?.package || !delivery?.verificationId || !verified || !fileVerified || !workflow.publication.available || !reviewAttestationsComplete(confirmed, cloud)) return;
+    if (!publicationWritable || working || publicationRead !== "READY" || !workflow?.package || !delivery?.verificationId || !verified || !fileVerified || !workflow.publication.available || !reviewAttestationsComplete(confirmed, cloud)) return;
     setBusy(true); setError("");
     const bundle = workflow.package;
     try {
@@ -140,21 +156,26 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
         {!delivery && <button className="button primary" disabled={!canWrite || !verified || working} onClick={() => void prepare()}><Play size={14} />生成交付并演练</button>}
         {delivery && <><strong className="agent-delivery-stage">{auto && <LoaderCircle size={14} className="spin" />}{deliveryStageText(delivery.stage, journey.publicationCurrent, release?.status, journey.current)}</strong>{delivery.error && <p role="alert">{delivery.error}</p>}<div className="agent-delivery-actions">{!complete(delivery.status) && <><button className="button primary" disabled={!canWrite || !verified || working} onClick={() => void drive(delivery)}>继续交付准备</button><button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button></>}{["FAILED","CANCELLED"].includes(delivery.status) && <button className="button" disabled={!canWrite || !verified || working} onClick={() => { requestKey.current=crypto.randomUUID(); void prepare(); }}>重新准备并演练</button>}{workflow.package && <button className="button" onClick={() => download("shuduo-delivery-package.json", workflow.package)}><Download size={14} />下载版本化交付包</button>}</div></>}
         {workflow.package && <DeliveryFilePreview key={workflow.package.digest} bundle={workflow.package} current={current} onDownload={download} />}
-        {workflow.verification && <><p className={fileVerified ? "passed" : ""}>文件演练：{fileVerified ? "主SQL、测试SQL与五场景回归全部通过" : workflow.verification.status} · {workflow.verification.engine} {workflow.verification.engineVersion}</p><button className="button" onClick={() => download(`delivery-evidence-${workflow.package?.id.slice(0,8) ?? taskId.slice(0,8)}.json`, { schema: "shuduo-delivery-evidence/v1", report: workflow.report, delivery: workflow.delivery, package: workflow.package ? { id: workflow.package.id, digest: workflow.package.digest, manifest: workflow.package.manifest } : undefined, verification: workflow.verification, publication: workflow.publication, exportedAt: new Date().toISOString() })}><Download size={14} />下载演练证据</button></>}
+        {workflow.verification && <><p className={fileVerified ? "passed" : ""}>文件演练：{fileVerified ? "主SQL、测试SQL与五场景回归全部通过" : workflow.verification.status} · {workflow.verification.engine} {workflow.verification.engineVersion}</p>
+          <dl className="delivery-review-source" aria-label="交付演练来源"><dt>文件演练编号</dt><dd>{workflow.verification.id}</dd><dt>源代码版本</dt><dd>{delivery?.sourceRevisionId ?? "未确认"}</dd><dt>源运行批次</dt><dd>{delivery?.sourceRunId ?? "未确认"}</dd></dl>
+          <small>以上编号属于当前读取的交付演练，不代表已经批准或发布；未开放发布时仍可核对来源。</small>
+          <button className="button" onClick={() => download(`delivery-evidence-${workflow.package?.id.slice(0,8) ?? taskId.slice(0,8)}.json`, { schema: "shuduo-delivery-evidence/v1", report: workflow.report, delivery: workflow.delivery, package: workflow.package ? { id: workflow.package.id, digest: workflow.package.digest, manifest: workflow.package.manifest } : undefined, verification: workflow.verification, publication: workflow.publication, exportedAt: new Date().toISOString() })}><Download size={14} />下载演练证据</button></>}
       </div>
       <div id="agent-publication" className="agent-publication-card"><div className="agent-workflow-title"><ShieldCheck size={16} /><h3>审阅发布与运行监控</h3></div><p>{!workflow.publication.available && release ? "发布记录已保留；临时调度入口已关闭，不会继续启动批次。新发布需按预算和权限重新启用。" : workflow.publication.reason}</p>{release && !journey.publicationCurrent && <p role="status">这是保留的发布记录，尚未核对为当前编辑版本的上线证据。</p>}
+        {publicationTarget && <p role="status">{publicationWritable ? "本任务、包摘要和演练编号与受邀发布范围一致。请逐项审阅，不会自动批准。" : "当前任务或版本不在有效发布范围内，或窗口已关闭；只保留查看，不发布或停止其他任务。"} 同一冻结业务日期的两个样例批次，不是两个交易日或生产调度；不修改原代码或重新演练文件。</p>}
         <div className="agent-delivery-actions"><button className="button" disabled={working || publicationRead === "LOADING"} onClick={() => void refreshPublication()}><RefreshCw size={14} />刷新发布与监控</button><small>只读取原任务，不会重新发布或运行计算。</small></div>
         {publicationRead !== "READY" && <p role={publicationRead === "ERROR" ? "alert" : "status"}>{publicationRead === "ERROR" ? `发布与监控读取未确认：${publicationError}。已读取的历史记录保留，暂不能判断当前健康或再次发布。` : "正在恢复原任务的发布、批次与告警记录…"}</p>}
         {publicationRead === "READY" && !release && <p>当前任务尚未找到发布记录；交付演练通过并完成审阅后才能发布。</p>}
-        {workflow.publication.available && (!release || !journey.publicationCurrent) && <button className="button primary" disabled={!canWrite || !fileVerified || !verified || working || publicationRead !== "READY"} onClick={() => setReview(true)}>审阅并发布测试任务</button>}
+        {workflow.publication.available && (!release || !journey.publicationCurrent) && <button className="button primary" disabled={!publicationWritable || !fileVerified || !verified || working || publicationRead !== "READY"} onClick={() => { if (publicationWritable) setReview(true); }}>审阅并发布测试任务</button>}
         {!workflow.publication.available && !release && <span className="agent-publication-gate">交付演练通过后进入“待发布”；云端上线尚待完成。</span>}
-        {review && workflow.package && <AgentPublicationReview cloud={cloud} packageDigest={workflow.package.digest} revisionId={delivery?.sourceRevisionId} runId={delivery?.sourceRunId} verificationId={delivery?.verificationId} confirmed={confirmed} disabled={!canWrite || working || publicationRead !== "READY" || !verified || !fileVerified || !workflow.publication.available} onConfirm={(id, checked) => setConfirmed(old => ({...old, [id]:checked}))} onPublish={() => void publishLocal()} onCancel={() => { setReview(false); setConfirmed({}); }} />}
+        {review && workflow.package && <AgentPublicationReview cloud={cloud} packageDigest={workflow.package.digest} revisionId={delivery?.sourceRevisionId} runId={delivery?.sourceRunId} verificationId={delivery?.verificationId} confirmed={confirmed} disabled={!publicationWritable || working || publicationRead !== "READY" || !verified || !fileVerified || !workflow.publication.available} onConfirm={(id, checked) => setConfirmed(old => ({...old, [id]:checked}))} onPublish={() => void publishLocal()} onCancel={() => { setReview(false); setConfirmed({}); }} />}
         {release && <>
           <strong>发布版本 {release.id.slice(0,8)} · {publicationRead === "READY" ? releaseLabel(release) : "上次读取的记录 · 当前状态未确认"}</strong>
           <p className="agent-publication-id">发布编号：{release.id}</p>
           <ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batchLabels[batch.status] ?? batch.status} · {batch.schedulerTriggered ? "调度器已触发" : batch.status === "CANCELLED" ? "未再触发" : "等待计划时间"}<small>批次编号：{batch.id}</small></li>)}</ul>
           {publication?.alerts.map(alert => <p key={alert.id} role={alert.status === "OPEN" ? "alert" : undefined}>{alert.status === "OPEN" ? "未解除告警" : "已恢复"}：{alert.message}{alert.recoveryRunId ? ` · 恢复批次 ${alert.recoveryRunId.slice(0,8)}` : ""}</p>)}
-          {cloud && release.status !== "CANCELLED" && batches.some(batch => !complete(batch.status)) && <button className="button" disabled={working || !canWrite || publicationRead !== "READY"} onClick={async () => {
+          {cloud && release.status !== "CANCELLED" && batches.some(batch => !complete(batch.status)) && <button className="button" disabled={working || !cancellationWritable || publicationRead !== "READY"} onClick={async () => {
+            if (!cancellationWritable) return;
             setBusy(true);
             try { acceptPublicationWrite(await api<Publication>(`/agent/tasks/${taskId}/publication/cancel`,{})); }
             catch(e) { setError((e as Error).message); publicationReader.current?.invalidate(); await refreshPublication(); }

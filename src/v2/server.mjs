@@ -4,6 +4,7 @@ import { createRequestLane } from "./request-lane.mjs";
 import { serveV2Static } from "./static-response.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
 import { publicDevelopmentConfig, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow } from "./public-development-access.mjs";
+import { publicPublicationConfig, publicationSession, assertPublicationMutation, assertPublicationTarget, assertPublicationExecutionWindow } from "./public-publication-access.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
@@ -262,10 +263,15 @@ export function createV2Server(options = {}) {
       return rawRunner(input);
     };
   runner.descriptor = runnerDescriptor;
+  const publicationAccess = publicPublicationConfig(env);
   const developmentAccess = publicDevelopmentConfig(env);
-  const durableDevelopment = !rawRunner.durable || !developmentAccess ? rawRunner.durable : {
-    prepare: (...args) => rawRunner.durable.prepare(...args),
-    submit: (...args) => { assertDevelopmentExecutionWindow(developmentAccess, options.now?.() ?? Date.now()); return rawRunner.durable.submit(...args); },
+  const assertDevelopmentExecution = () => {
+    if (publicationAccess) throw Object.assign(fail(403, "本次仅允许审阅发布既有交付包，不启动模型或新的开发计算。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
+    assertDevelopmentExecutionWindow(developmentAccess, options.now?.() ?? Date.now());
+  };
+  const durableDevelopment = !rawRunner.durable || (!developmentAccess && !publicationAccess) ? rawRunner.durable : {
+    prepare: (...args) => { assertDevelopmentExecution(); return rawRunner.durable.prepare(...args); },
+    submit: (...args) => { assertDevelopmentExecution(); return rawRunner.durable.submit(...args); },
     read: (...args) => rawRunner.durable.read(...args),
     cancel: (...args) => rawRunner.durable.cancel(...args),
   },
@@ -286,7 +292,7 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
-  const generator = async input => { assertDevelopmentExecutionWindow(developmentAccess, options.now?.() ?? Date.now()); return rawGenerator(input); };
+  const generator = async input => { assertDevelopmentExecution(); return rawGenerator(input); };
   const pythonGenerator =
     options.pythonGenerator ??
     (async (input) => {
@@ -346,7 +352,9 @@ export function createV2Server(options = {}) {
   const privateDataServicesEnabled=env.V2_PRIVATE_DATA_SERVICES_ENABLED==="true";
   if(privateDataServicesEnabled && !privateSmokeEnabled)throw new Error("私有数据服务只能在受保护的私有边界启用");
   if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery)) throw new Error("私有发布须使用已启用的私有持久执行边界");
-  const cloudPublication = durableDelivery ? createCloudPublication({ store, project: PROJECT, runner: durableDevelopment, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) }) : undefined;
+  const cloudPublication = durableDelivery ? createCloudPublication({ store, project: PROJECT, runner: publicationAccess ? rawRunner.durable : durableDevelopment, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30), singleRelease: Boolean(publicationAccess),
+    assertPublicationScope: target => assertPublicationTarget(publicationAccess, target, options.now?.() ?? Date.now()),
+    assertExecutionScope: release => assertPublicationExecutionWindow(publicationAccess, release, options.now?.() ?? Date.now()) }) : undefined;
   const agentDriverMode = env.V2_AGENT_DRIVER_MODE ?? "DISABLED";
   if (!["DISABLED", "PRIVATE_TICK", "OSS_EVENTS"].includes(agentDriverMode)) throw new Error("Agent 后台推进模式不受支持");
   if (agentDriverMode !== "DISABLED" && (!privateSmokeEnabled || !durableAgent))
@@ -1183,9 +1191,14 @@ export function createV2Server(options = {}) {
         return await serveV2Static(res, root, path);
       if (typeof persistence.refresh === "function") await persistence.refresh();
       const developmentSessionView = ingressChannel === "HTTP" && !publicReadOnly
-        ? developmentSession(developmentAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) : undefined;
-      if (ingressChannel === "HTTP" && !publicReadOnly)
+        ? publicationSession(publicationAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? developmentSession(developmentAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) : undefined;
+      if (ingressChannel === "HTTP" && !publicReadOnly) {
         assertDevelopmentMutation(developmentAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
+      }
+      // The rollout scope also constrains trusted internal application forwarding;
+      // only the separately authenticated event envelope bypasses this API gate.
+      if (!isPrivateSmokeInvoke)
+        assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
       if (ingressChannel === "HTTP" && developmentAccess && method === "POST") {
         const taskPath = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\//);
         const deliveryPath = path.match(/^\/api\/v2\/agent\/deliveries\/([a-f0-9-]{36})\//);
@@ -1200,6 +1213,10 @@ export function createV2Server(options = {}) {
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = await readPrivateSmokeBody(req);
+        // This rollout permits only the reviewed publication. Legacy private
+        // acceptance and Agent drivers can mutate records before API forwarding.
+        if (publicationAccess && !["PRIVATE_STATUS_V1", "PRIVATE_RELEASE_TIMER_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
+          throw Object.assign(fail(403, "本次仅允许指定交付包发布、签名调度与状态读取；其他私有任务和验收操作未开放。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
         if(privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1")return json(res,200,await agentEventDriver.consume(privateInput.event));
         if (privateInput.operation === "PRIVATE_RELEASE_TIMER_V1") {
           if (!cloudPublication || !privatePublicationConfig) throw fail(503,"私有发布调度未启用");
@@ -1364,6 +1381,7 @@ export function createV2Server(options = {}) {
             !local && !insecurePublicCookies,
           );
         if (publicReadOnly) response.body = { ...response.body, permissions: ["SESSION"], readOnly: true };
+        else if (ingressChannel === "HTTP" && publicationAccess) response.body = { ...response.body, ...publicationSession(publicationAccess, { user: response.body.user, role: response.body.role }, options.now?.() ?? Date.now()) };
         else if (ingressChannel === "HTTP" && developmentAccess) response.body = { ...response.body, ...developmentSession(developmentAccess, { user: response.body.user, role: response.body.role }, options.now?.() ?? Date.now()) };
         return json(res, 200, response.body, {
           "Set-Cookie": response.cookies,
@@ -4728,11 +4746,19 @@ export function createV2Server(options = {}) {
       const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel))?$/);
       if (privatePublication) {
         const agent = get("agent", privatePublication[1]); requireDurableAgentOwner(agent,req);
+        if (method === "POST") assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
         if (local && method === "GET" && !privatePublication[2]) return json(res,200,localTaskPublication(store,PROJECT,agent));
         if(agent.executionMode!==durableSqlAgentMode)throw fail(422,"云端发布仅支持持久SQL Agent任务");
         if (!cloudPublication) throw fail(503,"云端发布执行器尚未配置");
         if (method==="GET" && !privatePublication[2]) return json(res,200,await cloudPublication.detail(agent.id));
-        if (method==="POST" && privatePublication[2]==="cancel") { await readBody(req); return json(res,200,await cloudPublication.cancel(agent.id)); }
+        if (method==="POST" && privatePublication[2]==="cancel") {
+          await readBody(req);
+          if (publicationAccess) {
+            const { release } = await cloudPublication.detail(agent.id);
+            assertPublicationTarget(publicationAccess, { agentId: agent.id, packageDigest: release?.packageDigest, verificationId: release?.verificationId }, options.now?.() ?? Date.now());
+          }
+          return json(res,200,await cloudPublication.cancel(agent.id));
+        }
         if (method==="POST" && !privatePublication[2]) {
           const body=await readBody(req);
           if(Object.keys(body).some(k=>!["packageDigest","verificationId","attestations"].includes(k)))throw fail(422,"发布请求包含未支持字段");

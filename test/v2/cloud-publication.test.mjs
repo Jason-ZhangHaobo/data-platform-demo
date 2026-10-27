@@ -38,6 +38,7 @@ test("cloud publication stays disabled and rejects missing review, stale digest 
 test("two external ticks submit stable jobs and a third produces healthy monitoring without browser advancement",async t=>{
   const f=await fixture(t),created=await f.engine.publish(f.input),id=created.release.id;
   assert.equal(created.release.status,"WAITING_SCHEDULER");assert.equal(f.submits.length,0);assert.equal((await f.engine.publish(f.input)).release.id,id);
+  assert.equal(created.release.verificationId,f.verification.id);
   await f.engine.tick(event(f,id,1));let run=f.store.list("release_run",f.project).find(r=>r.status==="RUNNING");f.receipts.set(run.id,f.receipt(run.remoteSubmission.prepared));
   f.advance();await f.engine.tick(event(f,id,2));run=f.store.list("release_run",f.project).find(r=>r.status==="RUNNING");f.receipts.set(run.id,f.receipt(run.remoteSubmission.prepared));
   f.advance();const third=event(f,id,3);await f.engine.tick(third);const result=await f.engine.detail(f.agent.id);
@@ -62,6 +63,68 @@ test("cancellation during artifact verification cannot resurrect or submit a sch
   await f.engine.tick(event(f,id,1));
   assert.equal(f.submits.length,0);assert.equal((await f.engine.detail(f.agent.id)).release.status,"CANCELLED");
   assert.ok(f.store.list("release_run",f.project).every(r=>r.status==="CANCELLED"));
+});
+test("publication scope receives the exact reviewed binding and rejects before creating approval records",async t=>{
+  const f=await fixture(t),seen=[];
+  const engine=createCloudPublication({...f.options,assertPublicationScope:scope=>{seen.push(scope);throw Object.assign(Error("publication scope denied"),{status:403});}});
+  await assert.rejects(engine.publish(f.input),e=>e.status===403);
+  assert.deepEqual(seen,[{agentId:f.agent.id,packageDigest:f.item.digest,verificationId:f.verification.id}]);
+  for(const kind of ["release","release_run","delivery_review","release_approval"])assert.equal(f.store.list(kind,f.project).length,0);
+  assert.equal(f.submits.length,0);
+});
+test("single-release scope cannot create another release or batch after cancellation with a different key",async t=>{
+  const f=await fixture(t),engine=createCloudPublication({...f.options,singleRelease:true}),created=await engine.publish(f.input),id=created.release.id;
+  await engine.tick(event(f,id,1));assert.equal(f.submits.length,1);
+  await engine.cancel(f.agent.id);
+  const originalRuns=f.store.list("release_run",f.project).map(r=>({id:r.id,status:r.status,jobId:r.remoteSubmission?.prepared?.job?.jobId}));
+  const retried=await engine.publish({...f.input,idempotencyKey:"different-key-cannot-renew"});
+  assert.equal(retried.release.id,id);assert.equal(retried.release.status,"CANCELLED");
+  assert.equal(f.store.list("release",f.project).length,1);assert.equal(f.store.list("release_run",f.project).length,2);
+  assert.deepEqual(f.store.list("release_run",f.project).map(r=>({id:r.id,status:r.status,jobId:r.remoteSubmission?.prepared?.job?.jobId})),originalRuns);
+  await assert.rejects(engine.tick(event(f,id,2)),e=>e.status===409);assert.equal(f.submits.length,1);
+  f.store.update("release",id,f.project,{status:"ROLLED_BACK"});
+  assert.equal((await engine.publish({...f.input,idempotencyKey:"another-key-cannot-renew"})).release.id,id);
+  assert.equal(f.store.list("release",f.project).length,1);assert.equal(f.store.list("release_run",f.project).length,2);assert.equal(f.submits.length,1);
+});
+test("a publication window closing during artifact verification creates no release",async t=>{
+  const f=await fixture(t),deadline=f.now()+30000,verify=f.options.artifactStore.verify.bind(f.options.artifactStore);
+  f.options.artifactStore.verify=async(...args)=>{await verify(...args);f.advance();};
+  const engine=createCloudPublication({...f.options,assertPublicationScope:()=>{if(f.now()>=deadline)throw Error("publication window closed");}});
+  await assert.rejects(engine.publish(f.input),/publication window closed/);
+  assert.equal(f.store.list("release",f.project).length,0);assert.equal(f.submits.length,0);
+});
+test("execution scope rejection occurs before Spark preparation or submission",async t=>{
+  const f=await fixture(t),id=(await f.engine.publish(f.input)).release.id,seen=[];let preparations=0;
+  const engine=createCloudPublication({...f.options,runner:{...f.options.runner,prepare:()=>{preparations++;throw Error("must not prepare");}},assertExecutionScope:release=>{seen.push(release);throw Error("release scope denied");}});
+  await assert.rejects(engine.tick(event(f,id,1)),/release scope denied/);
+  assert.equal(preparations,0);assert.equal(f.submits.length,0);assert.equal(seen.length,1);
+  assert.equal(seen[0].id,id);assert.equal(seen[0].verificationId,f.verification.id);
+  assert.ok(f.store.list("release_run",f.project).every(r=>r.status==="SCHEDULED"&&!r.remoteSubmission));
+});
+test("a window expiring while the prepared job is persisted prevents submit and preserves its original job",async t=>{
+  const f=await fixture(t),id=(await f.engine.publish(f.input)).release.id,deadline=f.now()+30000,seen=[];
+  const engine=createCloudPublication({...f.options,persist:async()=>{await f.options.persist();if(f.store.list("release_run",f.project).some(r=>r.remoteSubmission))f.advance();},assertExecutionScope:release=>{seen.push({id:release.id,version:release.version});if(f.now()>=deadline)throw Error("execution window closed");}});
+  await assert.rejects(engine.tick(event(f,id,1)),/execution window closed/);
+  const run=f.store.list("release_run",f.project).find(r=>r.remoteSubmission);
+  assert.ok(run);assert.equal(run.remoteSubmission.prepared.job.jobId,run.id);assert.equal(run.remoteSubmission.submitted,false);
+  assert.equal(f.submits.length,0);assert.equal(seen.length,2);assert.ok(seen[1].version>seen[0].version);
+  await assert.rejects(engine.tick(event(f,id,2)),/execution window closed/);
+  assert.equal(f.submits.length,0);assert.equal(f.store.list("release_run",f.project).filter(r=>r.remoteSubmission).length,1);
+});
+test("execution scope checks the latest release binding after persistence before submit",async t=>{
+  const f=await fixture(t),id=(await f.engine.publish(f.input)).release.id;
+  const engine=createCloudPublication({...f.options,persist:async()=>{await f.options.persist();if(f.store.list("release_run",f.project).some(r=>r.remoteSubmission))f.store.update("release",id,f.project,{verificationId:"changed-verification"});},assertExecutionScope:release=>{if(release.id!==id||release.verificationId!==f.verification.id)throw Error("release scope changed");}});
+  await assert.rejects(engine.tick(event(f,id,1)),/release scope changed/);assert.equal(f.submits.length,0);
+});
+test("expired execution scope still permits reading an already submitted result without another Spark job",async t=>{
+  const f=await fixture(t),id=(await f.engine.publish(f.input)).release.id,deadline=f.now()+30000;let scopeCalls=0;
+  const engine=createCloudPublication({...f.options,assertExecutionScope:()=>{scopeCalls++;if(f.now()>=deadline)throw Error("execution window closed");}});
+  await engine.tick(event(f,id,1));const run=f.store.list("release_run",f.project).find(r=>r.status==="RUNNING");
+  assert.equal(f.submits.length,1);f.advance();f.receipts.set(run.id,f.receipt(run.remoteSubmission.prepared));
+  const callsBeforeRead=scopeCalls,view=await engine.detail(f.agent.id);
+  assert.equal(view.runs.find(r=>r.id===run.id).status,"SUCCEEDED");assert.equal(view.events.length,1);
+  assert.equal(scopeCalls,callsBeforeRead);assert.equal(f.submits.length,1);
+  await assert.rejects(engine.tick(event(f,id,2)),/execution window closed/);assert.equal(f.submits.length,1);
 });
 test("timer validates exact trigger, time, release binding, expiry and signature",()=>{
   const time=Date.parse("2026-10-12T01:00:00Z"),secret="synthetic-timer-secret-"+"a".repeat(40),name="shuduo-release-test-1",nonce="n".repeat(24),body=JSON.stringify({releaseId:"00000000-0000-4000-8000-000000000001",triggerName:name,expiresAt:time+300000});
