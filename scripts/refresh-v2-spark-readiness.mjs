@@ -81,7 +81,9 @@ export async function refreshReadiness({ proof, control, api, verifyRuntime, wai
   const verified = validateReadinessProof(proof, control, now());
   // Runner capability is not ingress authorization: it becomes true when
   // Spark verifies. Read-only access is checked using the actual session API.
-  const ready = r => r?.spark?.available === true && r.spark.healthVerified === true && r.spark.verifiedAt === verified.completedAt && r.readOnlyObserved === true && r.publicReady === false;
+  // Anonymous capability projection intentionally omits internal verifiedAt.
+  // New pointer identity is verified via FC config, not inferred from that API.
+  const ready = r => r?.spark?.available === true && r.spark.healthVerified === true && r.readOnlyObserved === true && r.publicReady === false;
   const path = `/2023-03-30/functions/${control.functionName}`;
   check(functionDigest(await api('GET', path)) === functionDigest(control), 'CONTROL_CHANGED_BEFORE_WRITE');
   const desired = { ...control.environmentVariables, [keyName]: verified.readyJobId };
