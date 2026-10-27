@@ -1,0 +1,84 @@
+name: Deploy bounded V2 development pilot
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        required: true
+        type: choice
+        options: [deploy, close, rollback]
+      encrypted_plan:
+        required: true
+        type: string
+      recipient_public_key:
+        required: true
+        type: string
+      build_run_id:
+        required: false
+        type: string
+      artifact_id:
+        required: false
+        type: string
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+concurrency:
+  group: v2-staging-control-mutation
+  cancel-in-progress: false
+jobs:
+  pilot:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    environment: v2-staging
+    env:
+      ALIBABA_CLOUD_REGION_ID: cn-hangzhou
+      V2_DEPLOY_ROLE_ARN: ${{ vars.V2_DEPLOY_ROLE_ARN }}
+      V2_DEPLOY_OIDC_PROVIDER_ARN: ${{ vars.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+      V2_FUNCTION_NAME: ${{ vars.V2_FUNCTION_NAME }}
+      V2_PILOT_PLAN: ${{ inputs.encrypted_plan }}
+      V2_PILOT_MODE: ${{ inputs.mode }}
+      V2_PILOT_BUILD_RUN: ${{ inputs.build_run_id }}
+      V2_PILOT_ARTIFACT_ID: ${{ inputs.artifact_id }}
+      V2_AUDIT_RECIPIENT_KEY: ${{ inputs.recipient_public_key }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Validate and mask the existing deployment target
+        run: |
+          node --input-type=module <<'NODE'
+          import {auditConfig,recipientKey} from './scripts/audit-v2-oidc-readonly.mjs';
+          const c=auditConfig(process.env);recipientKey(process.env.V2_AUDIT_RECIPIENT_KEY);
+          for(const value of [c.account,c.role,c.functionName,process.env.V2_DEPLOY_ROLE_ARN,process.env.V2_DEPLOY_OIDC_PROVIDER_ARN,process.env.V2_PILOT_PLAN])if(value)console.log(`::add-mask::${value}`);
+          NODE
+      - uses: actions/download-artifact@v6
+        if: inputs.mode == 'deploy'
+        with:
+          run-id: ${{ inputs.build_run_id }}
+          artifact-ids: ${{ inputs.artifact_id }}
+          github-token: ${{ github.token }}
+          path: .candidate
+          merge-multiple: true
+      - uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5
+        with:
+          version: "3.5.1"
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ env.V2_DEPLOY_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.V2_DEPLOY_OIDC_PROVIDER_ARN }}
+          role-session-name: github-actions-v2-development-pilot
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+      - name: Apply only the authenticated frozen pilot plan
+        run: node scripts/deploy-development-pilot.mjs
+      - name: Retain encrypted evidence only
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: shuduo-development-pilot-${{ github.run_id }}
+          path: v2-development-pilot.sealed.json
+          retention-days: 1
+          if-no-files-found: error
