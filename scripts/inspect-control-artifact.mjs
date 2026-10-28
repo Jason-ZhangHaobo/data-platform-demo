@@ -23,7 +23,7 @@ export async function inspectControlArtifact(env=process.env){
  const names=execFileSync('unzip',['-Z1',path],{encoding:'utf8'}).trim().split('\n');
  check(!names.some(n=>/(^|\/)(\.env(?:\..*)?|[^/]+\.(?:pem|key))$/.test(n)||n.startsWith('/')||n.split('/').includes('..')),'UNSAFE_PACKAGE');
  const extract=name=>execFileSync('unzip',['-p',path,name],{maxBuffer:10000000});
- const sources=['fc-ingress','server','cloud-server','public-status','auth','private-application','request-lane','static-response','cloud-state-coordinator','public-development-access','public-publication-access','cloud-publication','private-release-timer'].map(n=>`src/v2/${n}.mjs`);
+ const sources=['fc-ingress','server','cloud-server','public-status','auth','private-application','request-lane','static-response','cloud-state-coordinator','public-development-access','public-publication-access','cloud-publication','private-release-timer','public-service-access','private-data-services','data-services','private-task-consumption'].map(n=>`src/v2/${n}.mjs`);
  for(const name of sources)check(sha(extract(name))===sha(readFileSync(resolve('.artifact-source',name))),'SOURCE_MISMATCH');
  const index=extract('web-dist/index.html');
  const report={protocol:'shuduo-control-artifact-inspection/v1',operatorSource:env.GITHUB_SHA,inspectionRunId:env.GITHUB_RUN_ID,applicationSource:identity.source,buildRunId:identity.buildRunId,artifactId:identity.artifactId,artifactDigest:artifact.digest,sha256:sha(bytes),bytes:bytes.length,webIndexSha256:sha(index),webIndexBytes:index.length,sourceChecks:sources.length,zipValid:true,sensitivePaths:0};

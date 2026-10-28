@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EvidenceDownload } from "./EvidenceDownload";
 import { compositionChoices } from "./service-composition";
+import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
+import type { ConsumptionScope } from "./service-consumption-scope";
 import {
   Activity,
   AppWindow,
@@ -36,6 +38,8 @@ type ReleaseRun = {
   testSqlValidation?: { passed: boolean };
   codeExecuted?: boolean;
   createdAt: string;
+  sourceAgentTaskId?: string;
+  packageDigest?: string;
 };
 type ServiceVersion = {
   id: string;
@@ -58,6 +62,7 @@ type DataService = {
   slug: string;
   serviceType: "DAPI" | "XAPI";
   status: string;
+  pilotId?: string;
   endpoint?: string;
   currentVersion?: ServiceVersion;
   publishedVersion?: ServiceVersion;
@@ -70,6 +75,8 @@ type Application = {
   serviceIds: string[];
   tokenPrefix: string;
   scope: string;
+  pilotId?: string;
+  expiresAt?: string;
 };
 type ServiceCall = {
   id: string;
@@ -158,17 +165,23 @@ const flowSteps: {
 
 export function DataServicesWorkbench({
   api,
-  canWrite,
+  canWrite: originalCanWrite,
   privateCloud = false,
   cloudAccess = "private-preview",
   sourceAgentTaskId,
+  consumptionScope,
 }: {
   api: Api;
   canWrite: boolean;
   privateCloud?: boolean;
   cloudAccess?: "private-preview" | "invited";
   sourceAgentTaskId?: string;
+  consumptionScope?: ConsumptionScope;
 }) {
+  const scopePlan=consumptionPlanAvailable(consumptionScope)?consumptionScope.plan:undefined;
+  const scopeKey=JSON.stringify(consumptionScope??null);
+  const [scopeClock,setScopeClock]=useState(Date.now);
+  const canWrite=originalCanWrite&&(!consumptionScope||privateCloud&&consumptionWindowOpen(consumptionScope,scopeClock));
   const cloudScopeLabel = cloudAccess === "invited" ? "受邀云测试范围" : "私有云测试范围";
   const [releaseRuns, setReleaseRuns] = useState<ReleaseRun[]>([]),
     [dapis, setDapis] = useState<DataService[]>([]),
@@ -180,12 +193,13 @@ export function DataServicesWorkbench({
     [busy, setBusy] = useState(""),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
-  const [dapiName, setDapiName] = useState("客户持仓查询"),
-    [dapiSlug, setDapiSlug] = useState(sourceAgentTaskId?`customer-holdings-${sourceAgentTaskId.slice(0,8)}`:"customer-holdings"),
+  const [plannedDapiIndex,setPlannedDapiIndex]=useState(0);
+  const [dapiName, setDapiName] = useState(scopePlan?.dapis[0]?.name??"客户持仓查询"),
+    [dapiSlug, setDapiSlug] = useState(scopePlan?.dapis[0]?.slug??(sourceAgentTaskId?`customer-holdings-${sourceAgentTaskId.slice(0,8)}`:"customer-holdings")),
     [profile, setProfile] = useState<keyof typeof fieldProfiles>("holdings"),
-    [sourceRunId, setSourceRunId] = useState("");
-  const [xapiName,setXapiName]=useState("财富顾问客户资产组合查询"),
-    [xapiSlug,setXapiSlug]=useState(sourceAgentTaskId?`advisor-assets-${sourceAgentTaskId.slice(0,8)}`:"advisor-asset-overview"),
+    [sourceRunId, setSourceRunId] = useState(scopePlan?.sourceReleaseRunId??"");
+  const [xapiName,setXapiName]=useState(scopePlan?.xapi.name??"财富顾问客户资产组合查询"),
+    [xapiSlug,setXapiSlug]=useState(scopePlan?.xapi.slug??(sourceAgentTaskId?`advisor-assets-${sourceAgentTaskId.slice(0,8)}`:"advisor-asset-overview")),
     [holdingsVersionId,setHoldingsVersionId]=useState(""),[cashVersionId,setCashVersionId]=useState("");
   const [testReceipt, setTestReceipt] = useState<TestReceipt>(),
     [openApi, setOpenApi] = useState<Record<string, unknown>>(),
@@ -199,7 +213,7 @@ export function DataServicesWorkbench({
       "基于已发布的持仓与现金DAPI，规划一个财富顾问客户资产组合XAPI",
     ),
     [agentPlan, setAgentPlan] = useState<ServiceAgentPlan>();
-  const services = useMemo(() => [...dapis, ...xapis], [dapis, xapis]),
+  const services = useMemo(() => consumptionServices([...dapis, ...xapis],consumptionScope), [dapis, xapis, scopeKey]),
     selected = services.find((item) => item.id === selectedId),
     eligibleRuns = releaseRuns.filter(
       (run) =>
@@ -210,13 +224,23 @@ export function DataServicesWorkbench({
           run.mainSqlExecuted === true &&
           run.testSqlValidation?.passed === true) ||
           (run.engine === "CPython" && run.codeExecuted === true)) &&
-        run.validation?.passed,
+        run.validation?.passed && (!consumptionScope || Boolean(scopePlan&&run.id===scopePlan.sourceReleaseRunId&&run.sourceAgentTaskId===scopePlan.taskId&&run.packageDigest===scopePlan.packageDigest)),
     ),
     publishedDapis = dapis.filter((item) => item.status === "PUBLISHED"),
     callsForSelected = selected
       ? calls.filter((item) => item.serviceId === selected.id)
-      : calls;
-  const composition=compositionChoices(dapis,{privateCloud,sourceRunId,holdingsVersionId,cashVersionId});
+      : calls.filter(item=>!consumptionScope||services.some(s=>s.id===item.serviceId));
+  const scopedDapis=services.filter(s=>s.serviceType==="DAPI"),scopedXapis=services.filter(s=>s.serviceType==="XAPI");
+  const scopedApplications=consumptionScope?applications.filter(a=>scopePlan&&a.pilotId===consumptionScope.pilotId&&a.name===scopePlan.applicationName&&a.serviceIds.length>0&&a.serviceIds.every(id=>services.some(s=>s.id===id))):applications;
+  const plannedDapi=scopePlan?.dapis[plannedDapiIndex];
+  const nextPlannedDapi=scopePlan?.dapis.findIndex(d=>!dapis.some(s=>s.slug===d.slug))??-1;
+  const dapiAlreadyExists=Boolean(consumptionScope&&plannedDapi&&dapis.some(s=>s.slug===plannedDapi.slug));
+  const xapiAlreadyExists=Boolean(consumptionScope&&scopePlan&&xapis.some(s=>s.slug===scopePlan.xapi.slug));
+  const appAlreadyExists=Boolean(consumptionScope&&applications.some(a=>a.pilotId===consumptionScope.pilotId||scopePlan&&a.name===scopePlan.applicationName));
+  const scopeConflict=Boolean(consumptionScope&&scopePlan&&[...dapis,...xapis].some(s=>[...scopePlan.dapis.map(d=>d.slug),scopePlan.xapi.slug].includes(s.slug)&&!services.some(allowed=>allowed.id===s.id)));
+  let plannedXapiBody: ReturnType<typeof consumptionXapiInput> | undefined,plannedApplicationBody: ReturnType<typeof consumptionApplicationInput> | undefined;
+  if(consumptionScope&&scopePlan){try{plannedXapiBody=consumptionXapiInput(consumptionScope,services);}catch{/* Wait for both approved DAPI versions. */}try{plannedApplicationBody=consumptionApplicationInput(consumptionScope,services);}catch{/* Wait for the approved three-service set. */}}
+  const composition=compositionChoices(scopedDapis,{privateCloud,sourceRunId,holdingsVersionId,cashVersionId});
   const currentPublished=Boolean(selected?.currentVersion && selected.currentVersion.id===selected.publishedVersion?.id);
   const versionContext=`${selectedId}:${selected?.currentVersion?.id??""}`;
   const activeVersionRef=useRef(versionContext);activeVersionRef.current=versionContext;
@@ -232,7 +256,7 @@ export function DataServicesWorkbench({
         api<DataService[]>("/data-services/xapis"),
         api<Application[]>("/data-services/applications"),
         api<ServiceCall[]>("/data-services/calls"),
-        privateCloud ? Promise.resolve([] as ServiceAgentPlan[]) : api<ServiceAgentPlan[]>("/data-services/agent/plans"),
+        privateCloud || consumptionScope ? Promise.resolve([] as ServiceAgentPlan[]) : api<ServiceAgentPlan[]>("/data-services/agent/plans"),
       ]);
     setReleaseRuns(nextRuns);
     setDapis(nextDapis);
@@ -241,14 +265,18 @@ export function DataServicesWorkbench({
     setCalls(nextCalls);
     setAgentPlans(nextPlans);
     if (!agentPlan && nextPlans[0]) setAgentPlan(nextPlans[0]);
-    if (!sourceRunId && nextRuns.find((run) => run.status === "SUCCEEDED"))
+    if(scopePlan)setSourceRunId(scopePlan.sourceReleaseRunId);
+    else if (!sourceRunId && nextRuns.find((run) => run.status === "SUCCEEDED"))
       setSourceRunId(nextRuns.find((run) => run.status === "SUCCEEDED")!.id);
-    if (!selectedId && [...nextDapis, ...nextXapis][0])
-      setSelectedId([...nextDapis, ...nextXapis][0].id);
+    const nextServices=consumptionServices([...nextDapis,...nextXapis],consumptionScope);
+    if (!selectedId && nextServices[0])setSelectedId(nextServices[0].id);
+    else if(consumptionScope&&selectedId&&!nextServices.some(s=>s.id===selectedId))setSelectedId("");
   };
   useEffect(() => {
     reload().catch((cause) => setError(cause.message));
-  }, []);
+  }, [scopeKey]);
+  useEffect(()=>{if(!consumptionScope)return;setScopeClock(Date.now());const timer=setInterval(()=>setScopeClock(Date.now()),1000);return()=>clearInterval(timer);},[scopeKey]);
+  useEffect(()=>{if(!canWrite){setIssuedToken("");setTokenVisible(false);}if(consumptionScope){setShowVersionEditor(false);setVersionReview(undefined);}},[canWrite,scopeKey]);
   useEffect(() => {
     setTestReceipt(undefined);
     setOpenApi(undefined);
@@ -276,6 +304,7 @@ export function DataServicesWorkbench({
   }, [agentPlan?.id, agentPlan?.status]);
 
   const planWithAgent = async () => {
+    if(!canWrite||consumptionScope)return;
     setBusy("agent");
     setError("");
     try {
@@ -291,7 +320,7 @@ export function DataServicesWorkbench({
     }
   };
   const applyAgentPlan = async () => {
-    if (!agentPlan) return;
+    if (!agentPlan || !canWrite || consumptionScope) return;
     setBusy("agent-apply");
     setError("");
     try {
@@ -315,10 +344,11 @@ export function DataServicesWorkbench({
   };
 
   const createDapi = async () => {
+    if(!canWrite||!eligibleRuns.length||dapiAlreadyExists)return;
     setBusy("create-dapi");
     setError("");
     try {
-      const body={
+      const body=consumptionScope?consumptionDapiInput(consumptionScope,plannedDapiIndex):{
         name: dapiName,
         slug: dapiSlug,
         sourceReleaseRunId: sourceRunId,
@@ -336,17 +366,18 @@ export function DataServicesWorkbench({
     }
   };
   const createXapi = async () => {
+    if(!canWrite||xapiAlreadyExists)return;
     setBusy("create-xapi");
     setError("");
     try {
       const {holdings,cash}=composition;
-      if(!holdings||!cash)throw new Error("请先发布同一批次的持仓DAPI与现金DAPI");
-      const body={
+      if(!consumptionScope&&(!holdings||!cash))throw new Error("请先发布同一批次的持仓DAPI与现金DAPI");
+      const body=consumptionScope?consumptionXapiInput(consumptionScope,services):{
         name: xapiName.trim(),
         slug: xapiSlug.trim(),
         steps: [
-          { alias: "positions", dapiId: holdings.id, dapiVersionId:holdings.publishedVersion!.id },
-          { alias: "cash", dapiId: cash.id, dapiVersionId:cash.publishedVersion!.id },
+          { alias: "positions", dapiId: holdings!.id, dapiVersionId:holdings!.publishedVersion!.id },
+          { alias: "cash", dapiId: cash!.id, dapiVersionId:cash!.publishedVersion!.id },
         ],
         timeoutMs: 2500,
         rateLimitPerMinute: 30,
@@ -361,7 +392,7 @@ export function DataServicesWorkbench({
     }
   };
   const testService = async () => {
-    if (!selected) return;
+    if (!selected || !canWrite) return;
     const context=versionContext;
     setBusy("test");
     setError("");
@@ -380,7 +411,7 @@ export function DataServicesWorkbench({
     }
   };
   const publish = async () => {
-    if (!selected || !currentTestValid) return;
+    if (!selected || !currentTestValid || !canWrite) return;
     setBusy("publish");
     setError("");
     try {
@@ -413,19 +444,17 @@ export function DataServicesWorkbench({
     }
   };
   const createApplication = async () => {
-    if (!selected) return;
+    if (!selected || !canWrite || appAlreadyExists || consumptionScope&&!plannedApplicationBody) return;
     setBusy("application");
     setError("");
     setIssuedToken("");
     try {
+      const body=consumptionScope?consumptionApplicationInput(consumptionScope,services):{name:"证券财富分析演示系统",serviceIds:[selected.id]};
       const issued = await api<{
         application: Application;
         token: string | null;
         tokenShownOnce: boolean;
-      }>("/data-services/applications", {
-        name: "证券财富分析演示系统",
-        serviceIds: [selected.id],
-      },{idempotencyKey:keyFor("app:"+selected.id,{name:"证券财富分析演示系统",serviceIds:[selected.id]})});
+      }>("/data-services/applications", body,{idempotencyKey:keyFor(consumptionScope?"scoped-app":"app:"+selected.id,body)});
       setIssuedToken(issued.token ?? "");
       setIssuedAppId(issued.application.id);setTokenVisible(false);
       await reload();
@@ -449,7 +478,7 @@ export function DataServicesWorkbench({
     finally{setBusy("");}
   };
   const createVersion = async () => {
-    if(!selected?.currentVersion)return;
+    if(!selected?.currentVersion||!canWrite||consumptionScope)return;
     const resource=selected,prior=selected.currentVersion;
     setBusy("new-version");setError("");
     try{
@@ -464,7 +493,7 @@ export function DataServicesWorkbench({
     catch(cause){setError((cause as Error).message);}finally{setBusy("");}
   };
   const activateVersion = async () => {
-    if(!versionReview?.accepted)return;const review=versionReview;
+    if(!versionReview?.accepted||!canWrite||consumptionScope)return;const review=versionReview;
     setBusy("activate");setError("");
     try{
       const body={versionId:review.versionId,expectedPublishedVersionId:review.expectedPublishedVersionId,configHash:review.configHash};
@@ -486,19 +515,21 @@ export function DataServicesWorkbench({
         </div>
         <div className="service-stats">
           <div>
-            <strong>{dapis.length}</strong>
+            <strong>{scopedDapis.length}</strong>
             <span>DAPI</span>
           </div>
           <div>
-            <strong>{xapis.length}</strong>
+            <strong>{scopedXapis.length}</strong>
             <span>XAPI</span>
           </div>
           <div>
-            <strong>{calls.length}</strong>
+            <strong>{consumptionScope?calls.filter(c=>services.some(s=>s.id===c.serviceId)).length:calls.length}</strong>
             <span>调用</span>
           </div>
         </div>
       </section>
+      {consumptionScope&&<section className="service-feedback" role="status" aria-label="接口消费试点范围"><div><strong>仅本次冻结接口计划 · 不重新计算业务数据</strong><p>{canWrite?"允许手动创建、测试、发布本计划接口，并创建及撤销唯一测试应用。":"当前消费窗口未开放、已到期或计划不可用；保持只读，不发行凭证。"} 不开放模型规划、代码开发、业务批次发布或接口版本切换。</p>{scopePlan&&<><p>源任务：{scopePlan.taskId}<br/>源发布批次：{scopePlan.sourceReleaseRunId}<br/>包摘要：{scopePlan.packageDigest}</p><small>接口：{scopePlan.dapis.map(d=>d.name).join("、")}、{scopePlan.xapi.name}。应用：{scopePlan.applicationName}；只授权直接查询持仓和组合资产，现金接口未单独授权。</small></>}<p>截止：{consumptionScope.expiresAt?new Date(consumptionScope.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}):"未确认"}（北京时间）。凭证到期后失效，历史调用证据保留。</p></div></section>}
+      {scopeConflict&&<div className="service-feedback error" role="alert">发现同名服务不属于本次试点或其版本配置与计划不符；不会混入、覆盖或更新旧服务，请先核对来源。</div>}
       <div className="service-flow" aria-label="数据服务生命周期">
         {flowSteps.map(({ Icon: FlowIcon, number, title, description }) => {
           return (
@@ -520,7 +551,7 @@ export function DataServicesWorkbench({
           {error || notice}
         </div>
       )}
-      {!privateCloud && <section className="service-agent-studio">
+      {!privateCloud && !consumptionScope && <section className="service-agent-studio">
         <header>
           <div className="service-agent-icon">
             <Bot size={20} />
@@ -595,7 +626,7 @@ export function DataServicesWorkbench({
               <span className="eyebrow">SERVICE CATALOG</span>
               <h3>服务目录</h3>
             </div>
-            <button className="button" disabled={!canWrite||!!busy} onClick={()=>{setSelectedId("");const hasHoldings=dapis.some(s=>s.currentVersion?.fields?.includes("holding_market_value")&&(!privateCloud||s.currentVersion.sourceReleaseRunId===sourceRunId));setProfile(hasHoldings?"cash":"holdings");setDapiName(hasHoldings?"客户现金查询":"客户持仓查询");setDapiSlug((hasHoldings?"customer-cash":"customer-holdings")+(sourceAgentTaskId?`-${sourceAgentTaskId.slice(0,8)}`:""));}}>新建 DAPI</button>
+            <button className="button" disabled={!canWrite||!!busy||Boolean(consumptionScope&&nextPlannedDapi<0)} onClick={()=>{if(!canWrite)return;setSelectedId("");if(consumptionScope){if(nextPlannedDapi>=0)setPlannedDapiIndex(nextPlannedDapi);return;}const hasHoldings=dapis.some(s=>s.currentVersion?.fields?.includes("holding_market_value")&&(!privateCloud||s.currentVersion.sourceReleaseRunId===sourceRunId));setProfile(hasHoldings?"cash":"holdings");setDapiName(hasHoldings?"客户现金查询":"客户持仓查询");setDapiSlug((hasHoldings?"customer-cash":"customer-holdings")+(sourceAgentTaskId?`-${sourceAgentTaskId.slice(0,8)}`:""));}}>新建 DAPI</button>
           </header>
           {services.length ? (
             services.map((service) => (
@@ -636,11 +667,13 @@ export function DataServicesWorkbench({
                 </div>
                 <Braces size={22} />
               </header>
+              {scopePlan&&<label>本次计划中的DAPI<select aria-label="选择已批准DAPI定义" disabled={!!busy} value={plannedDapiIndex} onChange={event=>setPlannedDapiIndex(Number(event.target.value))}>{scopePlan.dapis.map((d,index)=><option key={d.slug} value={index}>{d.name}{dapis.some(s=>s.slug===d.slug)?" · 已登记":""}</option>)}</select></label>}
               <div className="service-form-grid">
                 <label>
                   服务名称
                   <input
-                    value={dapiName}
+                    value={plannedDapi?.name??dapiName}
+                    readOnly={Boolean(consumptionScope)}
                     maxLength={80}
                     onChange={(event) => setDapiName(event.target.value)}
                   />
@@ -648,7 +681,8 @@ export function DataServicesWorkbench({
                 <label>
                   服务路径
                   <input
-                    value={dapiSlug}
+                    value={plannedDapi?.slug??dapiSlug}
+                    readOnly={Boolean(consumptionScope)}
                     maxLength={48}
                     onChange={(event) => setDapiSlug(event.target.value)}
                   />
@@ -656,7 +690,8 @@ export function DataServicesWorkbench({
                 <label>
                   已验证发布批次
                   <select
-                    value={sourceRunId}
+                    value={scopePlan?.sourceReleaseRunId??sourceRunId}
+                    disabled={Boolean(consumptionScope)}
                     onChange={(event) => setSourceRunId(event.target.value)}
                   >
                     {!eligibleRuns.length && <option>暂无可用批次</option>}
@@ -669,7 +704,7 @@ export function DataServicesWorkbench({
                 </label>
                 <label>
                   返回字段模板
-                  <select
+                  {consumptionScope?<code>{plannedDapi?.fields.join(", ")??"计划尚未核对"}</code>:<select
                     value={profile}
                     onChange={(event) =>
                       setProfile(event.target.value as keyof typeof fieldProfiles)
@@ -678,17 +713,17 @@ export function DataServicesWorkbench({
                     <option value="holdings">持仓市值与证券数量</option>
                     <option value="cash">现金与总资产</option>
                     <option value="full">完整客户资产</option>
-                  </select>
+                  </select>}
                 </label>
               </div>
               <div className="service-contract-preview">
                 <span>GET</span>
-                <code>/api/v2/open/dapis/{dapiSlug}</code>
+                <code>/api/v2/open/dapis/{plannedDapi?.slug??dapiSlug}</code>
                 <small>client_id · page · page_size</small>
               </div>
               <button
                 className="button primary"
-                disabled={!canWrite || !eligibleRuns.length || !!busy}
+                disabled={!canWrite || !eligibleRuns.length || dapiAlreadyExists || !!busy}
                 onClick={createDapi}
               >
                 {busy === "create-dapi" ? (
@@ -698,6 +733,7 @@ export function DataServicesWorkbench({
                 )}
                 创建DAPI草稿
               </button>
+              {plannedDapi&&<small>固定超时 {plannedDapi.timeoutMs}ms · 固定限流 {plannedDapi.rateLimitPerMinute}/min；本次不允许改名、改路径、换字段或换源批次。</small>}
             </section>
           ) : (
             <>
@@ -783,15 +819,17 @@ LIMIT :limit OFFSET :offset`}</pre>
                 <button
                   className="button"
                   onClick={createApplication}
-                  disabled={!canWrite || selected.status !== "PUBLISHED" || !!busy}
+                  disabled={!canWrite || selected.status !== "PUBLISHED" || !!busy || appAlreadyExists || Boolean(consumptionScope&&!plannedApplicationBody)}
                 >
                   <KeyRound size={15} />
-                  创建调用凭证
+                  {consumptionScope?appAlreadyExists?"本次应用已发行，不再补发":"创建唯一测试凭证":"创建调用凭证"}
                 </button>
               </div>
+              {consumptionScope&&<p>三项接口均发布后，仅发放1个测试应用：直接查询持仓DAPI和XAPI组合资产；现金DAPI未单独授权，用于检验越权拒绝。到期或撤销后不能再补发。</p>}
               <section className="service-definition" aria-label="版本治理">
-                <header><h4>版本历史与受控切换</h4><button className="button" disabled={!canWrite||!!busy} onClick={()=>setShowVersionEditor(!showVersionEditor)}>新建版本</button></header>
-                {showVersionEditor && <div className="service-create-panel">
+                <header><h4>版本历史与受控切换</h4>{!consumptionScope&&<button className="button" disabled={!canWrite||!!busy} onClick={()=>setShowVersionEditor(!showVersionEditor)}>新建版本</button>}</header>
+                {consumptionScope&&<small>本次只使用计划内首次发布的固定版本；新建版本与切换入口关闭。</small>}
+                {!consumptionScope&&showVersionEditor && <div className="service-create-panel">
                   <small>{selected.serviceType==="DAPI"?"复用当前已核验发布批次，不重新计算业务数据。":"保留原固定DAPI子版本，不跟随它们的最新版本。"}</small>
                   <div className="service-form-grid">
                     {selected.serviceType==="DAPI" && <label>返回字段模板<select value={versionProfile} onChange={e=>setVersionProfile(e.target.value as keyof typeof fieldProfiles)}><option value="holdings">持仓市值与证券数量</option><option value="cash">现金与总资产</option><option value="full">完整客户资产</option></select></label>}
@@ -802,9 +840,9 @@ LIMIT :limit OFFSET :offset`}</pre>
                 </div>}
                 {selected.versions.map(v=><div key={v.id} className="service-contract-preview">
                   <span>V{v.versionNumber} {v.id===selected.publishedVersion?.id?"线上":v.status==="DRAFT"?"草稿":"历史"}</span><code>{v.configHash.slice(0,12)}</code>
-                  {v.id!==selected.publishedVersion?.id && ["PUBLISHED","RETIRED"].includes(v.status) && selected.publishedVersion && <button className="button" disabled={!canWrite||!!busy} onClick={()=>setVersionReview({serviceId:selected.id,type:selected.serviceType,versionId:v.id,configHash:v.configHash,expectedPublishedVersionId:selected.publishedVersion!.id,targetNumber:v.versionNumber,liveNumber:selected.publishedVersion!.versionNumber,accepted:false})}>审阅切换到 V{v.versionNumber}</button>}
+                  {!consumptionScope&&v.id!==selected.publishedVersion?.id && ["PUBLISHED","RETIRED"].includes(v.status) && selected.publishedVersion && <button className="button" disabled={!canWrite||!!busy} onClick={()=>setVersionReview({serviceId:selected.id,type:selected.serviceType,versionId:v.id,configHash:v.configHash,expectedPublishedVersionId:selected.publishedVersion!.id,targetNumber:v.versionNumber,liveNumber:selected.publishedVersion!.versionNumber,accepted:false})}>审阅切换到 V{v.versionNumber}</button>}
                 </div>)}
-                {versionReview && <div className="service-create-panel" role="group" aria-label="版本切换审阅">
+                {!consumptionScope&&versionReview && <div className="service-create-panel" role="group" aria-label="版本切换审阅">
                   <strong>线上 V{versionReview.liveNumber} → 目标 V{versionReview.targetNumber}</strong>
                   <code>目标摘要 {versionReview.configHash.slice(0,16)}</code>
                   <small>切换影响本服务查询端点；固定引用它的XAPI仍使用原子版本。线上版本变化后旧审阅将被拒绝。</small>
@@ -872,27 +910,28 @@ LIMIT :limit OFFSET :offset`}</pre>
             </div>
           </header>
           <div className="service-composition-form">
-            <label>XAPI名称<input value={xapiName} maxLength={100} disabled={!!busy} onChange={e=>setXapiName(e.target.value)}/></label>
-            <label>XAPI路径标识<input value={xapiSlug} maxLength={48} disabled={!!busy} onChange={e=>setXapiSlug(e.target.value)}/></label>
-            <label>持仓DAPI版本<select value={composition.holdings?.publishedVersion?.id??""} disabled={!!busy} onChange={e=>{setHoldingsVersionId(e.target.value);setCashVersionId("");}}><option value="">请选择已发布版本</option>{composition.holdingsOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
-            <label>现金DAPI版本<select value={composition.cash?.publishedVersion?.id??""} disabled={!!busy} onChange={e=>setCashVersionId(e.target.value)}><option value="">请选择已发布版本</option>{composition.cashOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
+            <label>XAPI名称<input value={scopePlan?.xapi.name??xapiName} maxLength={100} readOnly={Boolean(consumptionScope)} disabled={!!busy} onChange={e=>setXapiName(e.target.value)}/></label>
+            <label>XAPI路径标识<input value={scopePlan?.xapi.slug??xapiSlug} maxLength={48} readOnly={Boolean(consumptionScope)} disabled={!!busy} onChange={e=>setXapiSlug(e.target.value)}/></label>
+            <label>持仓DAPI版本<select value={composition.holdings?.publishedVersion?.id??""} disabled={!!busy||Boolean(consumptionScope)} onChange={e=>{setHoldingsVersionId(e.target.value);setCashVersionId("");}}><option value="">请选择已发布版本</option>{composition.holdingsOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
+            <label>现金DAPI版本<select value={composition.cash?.publishedVersion?.id??""} disabled={!!busy||Boolean(consumptionScope)} onChange={e=>setCashVersionId(e.target.value)}><option value="">请选择已发布版本</option>{composition.cashOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
           </div>
           <button
             className="button"
             onClick={createXapi}
-            disabled={!canWrite || !composition.holdings || !composition.cash || !xapiName.trim() || !/^[a-z][a-z0-9-]{2,47}$/.test(xapiSlug.trim()) || !!busy}
+            disabled={!canWrite || (consumptionScope ? !plannedXapiBody || xapiAlreadyExists : !composition.holdings || !composition.cash || !xapiName.trim() || !/^[a-z][a-z0-9-]{2,47}$/.test(xapiSlug.trim())) || !!busy}
           >
             <Network size={15} />
             创建持仓+现金XAPI
           </button>
           <small>需要至少两个已发布DAPI；首版采用声明式编排。</small>
+          {scopePlan&&<small>固定编排：{scopePlan.xapi.steps.map(s=>`${s.alias} → ${s.dapiSlug}`).join("；")}；{scopePlan.xapi.timeoutMs}ms、{scopePlan.xapi.rateLimitPerMinute}/min。</small>}
         </article>
         <article className="service-observability">
           <header>
             <Activity size={19} />
             <div>
               <h3>调用与授权</h3>
-              <p>{applications.length}个应用 · {callsForSelected.length}条当前服务调用</p>
+              <p>{scopedApplications.length}个应用 · {callsForSelected.length}条当前服务调用</p>
             </div>
           </header>
           {callsForSelected.slice(0, 5).map((call) => (
@@ -911,7 +950,7 @@ LIMIT :limit OFFSET :offset`}</pre>
               发布并授权后，外部调用证据显示在这里。
             </div>
             )}
-          {applications.filter(app=>!selected||app.serviceIds.includes(selected.id)).map(app=><div key={app.id}><span>{app.name} · {app.status==="ACTIVE"?"有效":"已撤销"}</span><button className="button" disabled={!canWrite||app.status!=="ACTIVE"||!!busy} onClick={async()=>{setBusy("revoke");try{await api(`/data-services/applications/${app.id}/revoke`,{});for(const id of app.serviceIds)delete requestKeys.current["app:"+id];setIssuedToken("");await reload();setNotice("凭证已撤销，旧令牌不能继续调用");}catch(e){setError((e as Error).message);}finally{setBusy("");}}}>撤销凭证</button></div>)}
+          {scopedApplications.filter(app=>consumptionScope||!selected||app.serviceIds.includes(selected.id)).map(app=><div key={app.id}><span>{app.name} · {applicationStatusText(serviceApplicationStatus(app,scopeClock))}{app.expiresAt&&<small>到期：{new Date(app.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}</small>}</span><button className="button" disabled={!canWrite||serviceApplicationStatus(app,scopeClock)!=="ACTIVE"||!!busy} onClick={async()=>{if(!canWrite||!scopedApplications.some(a=>a.id===app.id))return;setBusy("revoke");try{await api(`/data-services/applications/${app.id}/revoke`,{});for(const id of app.serviceIds)delete requestKeys.current["app:"+id];setIssuedToken("");await reload();setNotice("凭证已撤销，旧令牌不能继续调用");}catch(e){setError((e as Error).message);}finally{setBusy("");}}}>撤销凭证</button></div>)}
         </article>
       </section>
       <footer className="service-boundary">

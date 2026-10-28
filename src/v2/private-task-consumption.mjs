@@ -43,7 +43,7 @@ export async function privateTaskConsumption({ taskId, packageDigest, services, 
       const successful = calls(service.id).filter(c => c.serviceVersionId === root.id && c.outcome === "SUCCEEDED" && c.statusCode === 200 && c.rowCount > 0).sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt)));
       const call = successful.find(c => {
         const app = application(c.applicationId);
-        return app?.scope === scope && app.serviceIds?.includes(service.id) && ["ACTIVE", "REVOKED"].includes(app.status);
+        return app?.scope === scope && app.serviceIds?.includes(service.id) && ["ACTIVE", "REVOKED", "EXPIRED"].includes(app.status);
       });
       if (call) {
         const proof = await recheckCall(service.id, call.id);

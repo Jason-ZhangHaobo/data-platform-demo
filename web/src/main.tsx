@@ -57,6 +57,8 @@ import { developmentRunLog } from "./run-log";
 import {agentDevelopmentReadiness} from "./agent-submission";
 import {workbenchEnvironment,mayWriteServices} from "./workbench-environment";
 import type { AuthSession, PublicationTarget } from "./AuthDialog";
+import { consumptionWindowOpen } from "./service-consumption-scope";
+import type { ConsumptionScope } from "./service-consumption-scope";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const DataServicesWorkbench = lazy(async () => ({ default: (await import("./DataServicesWorkbench")).DataServicesWorkbench }));
 const IngestionWorkbench = lazy(async () => ({ default: (await import("./IngestionWorkbench")).IngestionWorkbench }));
@@ -405,11 +407,11 @@ function App() {
   const [session, setSession] = useState<AuthSession>({ authenticated: false });
   const [publicationClock, setPublicationClock] = useState(Date.now);
   useEffect(() => {
-    if (!session.publicationOnly) return;
+    if (!session.publicationOnly && !session.consumptionOnly) return;
     setPublicationClock(Date.now());
     const timer = setInterval(() => setPublicationClock(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [session.publicationOnly, session.publicationStartsAt, session.publicationExpiresAt]);
+  }, [session.publicationOnly, session.publicationStartsAt, session.publicationExpiresAt, session.consumptionOnly, session.consumptionStartsAt, session.consumptionExpiresAt]);
   const [agentWorkspaceMode, setAgentWorkspaceMode] = useState("development");
   const [agentDraftDirty, setAgentDraftDirty] = useState(false);
   const clearPersonalView = () => {
@@ -638,7 +640,7 @@ function App() {
   };
   const dirty = sql !== original,
     canWrite = Boolean(
-      !session.readOnly && !session.publicationOnly && (status?.mode === "LOCAL_DEVELOPMENT" ||
+      !session.readOnly && !session.publicationOnly && !session.consumptionOnly && (status?.mode === "LOCAL_DEVELOPMENT" ||
         (session.authenticated &&
           (session.permissions?.includes("*") ||
             session.permissions?.includes(navPermission[nav])))),
@@ -649,12 +651,15 @@ function App() {
   } : undefined;
   const publicationWindowOpen = Boolean(publicationTarget && publicationClock >= Date.parse(publicationTarget.startsAt) && publicationClock < Date.parse(publicationTarget.expiresAt));
   const canPublish = session.publicationOnly
-    ? Boolean(session.authenticated && !session.readOnly && !session.developmentOnly && session.permissions?.includes("DELIVERY") && publicationWindowOpen)
-    : canWrite && !session.developmentOnly;
+    ? Boolean(session.authenticated && !session.readOnly && !session.developmentOnly && !session.consumptionOnly && session.permissions?.includes("DELIVERY") && publicationWindowOpen)
+    : canWrite && !session.developmentOnly && !session.consumptionOnly;
   const publicationTaskHref = session.publicationTaskId && /^[a-f0-9-]{36}$/.test(session.publicationTaskId)
     ? `/v2/?module=agent-center&task=${encodeURIComponent(session.publicationTaskId)}#agent-publication` : undefined;
   const workbench = workbenchEnvironment(status,{privatePreview,privateServicesPreview});
-  const servicesCanWrite = !session.readOnly && !session.publicationOnly && workbench.servicesAvailable && mayWriteServices(status,session);
+  const consumptionScope: ConsumptionScope | undefined = session.consumptionOnly ? {pilotId:session.consumptionPilotId,taskId:session.consumptionTaskId,plan:session.consumptionPlan,startsAt:session.consumptionStartsAt,expiresAt:session.consumptionExpiresAt} : undefined;
+  const servicesCanWrite = !session.readOnly && !session.publicationOnly && !session.developmentOnly && workbench.servicesAvailable && mayWriteServices(status,session) && (!session.consumptionOnly || consumptionWindowOpen(consumptionScope,publicationClock));
+  const consumptionTaskHref = session.consumptionTaskId && /^[a-f0-9-]{36}$/.test(session.consumptionTaskId)
+    ? `/v2/?module=services&task=${encodeURIComponent(session.consumptionTaskId)}` : undefined;
   const runRevision = revisions.find(
     (revision) => revision.id === run?.revisionId,
   );
@@ -757,7 +762,7 @@ function App() {
               {status?.mode === "LOCAL_DEVELOPMENT"
                 ? "合成数据 · 开发验证"
                 : session.authenticated
-                  ? `${session.role} · ${session.publicationOnly ? "受邀发布试点" : session.readOnly ? "只读验收" : "受邀项目"}`
+                  ? `${session.role} · ${session.consumptionOnly ? "受邀接口消费" : session.publicationOnly ? "受邀发布试点" : session.readOnly ? "只读验收" : "受邀项目"}`
                   : "合成数据 · 只读浏览"}
             </small>
           </div>
@@ -776,7 +781,7 @@ function App() {
           <div className="top-actions">
             <span className="env-tag">
               <span />
-              {session.publicationOnly ? "受邀发布试点" : session.readOnly ? "只读验收" : privatePreview ? "私有云端预览" : status?.mode === "LOCAL_DEVELOPMENT"
+              {session.consumptionOnly ? "受邀接口消费" : session.publicationOnly ? "受邀发布试点" : session.readOnly ? "只读验收" : privatePreview ? "私有云端预览" : status?.mode === "LOCAL_DEVELOPMENT"
                 ? "本地验证"
                 : session.authenticated
                   ? "受邀会话"
@@ -794,7 +799,7 @@ function App() {
                       authEpoch.current++;
                       setStatus(undefined);
                       clearPersonalView();
-                      setSession({ authenticated: false, readOnly: session.readOnly, developmentOnly: session.developmentOnly, publicationOnly: session.publicationOnly });
+                      setSession({ authenticated: false, readOnly: session.readOnly, developmentOnly: session.developmentOnly, publicationOnly: session.publicationOnly, consumptionOnly: session.consumptionOnly });
                       setNotice("已退出受邀会话，切换为公开只读浏览");
                       void reload().catch((cause) => setError(cause.message));
                     } catch (cause) {
@@ -824,6 +829,7 @@ function App() {
         {session.readOnly && <div className="notice-banner" role="status">只读验收入口 · 已有账号可登录查看已保存结果；创建、运行、发布及新邀请暂未开放。不会因登录自动运行模型或 Spark。</div>}
         {session.developmentOnly && !session.readOnly && <div className="notice-banner" role="status">受邀开发试点 · 仅限一条新 Agent 任务、SQL 编辑运行及交付文件准备；历史任务只读，发布、全平台规划、邀请和接口凭证管理关闭。窗口截止 {session.developmentExpiresAt ? new Date(session.developmentExpiresAt).toLocaleString("zh-CN") : "未确认"}，到期停止新计算并保留结果。</div>}
         {session.publicationOnly && <div className="notice-banner" role="status"><div><strong>受邀发布试点 · 仅指定交付包的两个样例批次</strong><p>代码、需求和交付文件只读，不重新调用模型或演练；同一冻结业务日期运行两批，不代表两个交易日或生产调度。{canPublish ? "请核对下方指定版本并逐项审阅。" : "当前发布窗口未开放、已结束或此账号无发布权限；已有结果仍可查看。"}</p><small>窗口：{session.publicationStartsAt ? new Date(session.publicationStartsAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"} — {session.publicationExpiresAt ? new Date(session.publicationExpiresAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；邀请码、改密及其他模块写入保持关闭。</small>{publicationTaskHref && <a className="button" href={publicationTaskHref}>查看指定任务与审阅范围</a>}</div></div>}
+        {session.consumptionOnly && <div className="notice-banner" role="status"><div><strong>受邀接口消费试点 · 同任务2个DAPI、1个XAPI、1个测试应用</strong><p>仅按冻结计划开发、测试和发布接口，不修改代码、不运行模型或Spark、不重新发布业务批次；版本新增/切换、其他模块、邀请和改密继续关闭。{servicesCanWrite ? "请进入指定任务的接口交付。" : "当前窗口未开放、已结束或此账号无权限；已保存证据仍可查看。"}</p><small>窗口：{session.consumptionStartsAt ? new Date(session.consumptionStartsAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"} — {session.consumptionExpiresAt ? new Date(session.consumptionExpiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；测试凭证到期失效，历史调用记录保留。</small>{consumptionTaskHref&&<a className="button" href={consumptionTaskHref}>打开指定任务的接口交付</a>}</div></div>}
         {privatePreview && <div className="notice-banner" role="status">私有云端试用 · {agentDevelopmentPreview ? "Agent 数据开发、SQL 编辑、真实运行与任务恢复" : "SQL 编辑、真实 Spark 运行和结果恢复"}{privateServicesPreview ? "、发布结果的数据服务消费" : ""}；未开放模块不代表已验收。临时访问通道到期后入口失效，已保存的云端任务记录保留。</div>}
         {error && (
           <div role="alert" className="error-banner">
@@ -838,7 +844,7 @@ function App() {
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>setAgentWorkspaceMode("services")}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
-          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} sourceAgentTaskId={new URLSearchParams(window.location.search).get("task")??undefined} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={agentDevelopmentReadiness(status).ready} readinessReason={agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly} loading={!status} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
+          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={session.consumptionOnly ? session.consumptionTaskId : new URLSearchParams(window.location.search).get("task")??undefined} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={agentDevelopmentReadiness(status).ready} readinessReason={agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} loading={!status} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite && !session.developmentOnly}
@@ -1601,7 +1607,7 @@ function App() {
             <h1>{active?.name}</h1>
             <p className="module-subtitle">{active?.description}</p>
             {nav === "services" ? (
-              workbench.servicesAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}</div>
+              workbench.servicesAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={session.consumptionOnly ? session.consumptionTaskId : undefined} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}</div>
             ) : nav === "sources" || nav === "sync" ? (
               <IngestionWorkbench
                 api={api}
@@ -1744,9 +1750,9 @@ function App() {
                     </> : <p>费用与用量仅项目管理员可见；未读取到数据时不展示金额。</p>}
                   </article>
                 </div>
-                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly && !session.publicationOnly &&
+                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&
                   session.role === "ADMIN" && <InvitationPanel api={api} />}
-                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly && !session.publicationOnly &&
+                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&
                   session.authenticated && (
                     <ChangePasswordPanel
                       api={api}
@@ -1937,9 +1943,10 @@ function App() {
       {authOpen && (
         <Suspense fallback={<WorkbenchLoading label="正在加载登录入口…" />}>
           <AuthDialog
-            allowRedeem={!privatePreview && !session.readOnly && !session.developmentOnly && !session.publicationOnly}
+            allowRedeem={!privatePreview && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly}
             readOnly={session.readOnly}
             publicationOnly={session.publicationOnly}
+            consumptionOnly={session.consumptionOnly}
             api={api}
             onClose={() => setAuthOpen(false)}
             onAuthenticated={(nextSession) => {

@@ -3,19 +3,21 @@ import { privateServiceRoute } from "./private-service-routes.mjs";
 import { privateServiceRecovery } from "./private-service-recovery.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateTaskConsumption } from "./private-task-consumption.mjs";
+import { createServicePilotGuard, assertServiceMutation } from "./public-service-access.mjs";
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(new Error(message),{status,code});
 
 // One shared allowlist for the private transport, temporary preview and router.
 export { privateServiceRoute } from "./private-service-routes.mjs";
 
-export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,persist=async()=>{}}) {
+export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,pilotConfig,persist=async()=>{}}) {
   const get=(kind,id)=>typeof id==="string"?store.get(kind,id,project):undefined;
   const source=id=>{
     const run=get("release_run",id),release=run&&get("release",run.releaseId),bundle=run&&get("delivery_package",run.packageId),approval=release&&get("release_approval",release.approvalId);
     return verifiedPrivateServiceSource({run,release,bundle,approval});
   };
   const manager=new DataServiceManager({store,businessStore,project,scope:"PRIVATE_CLOUD_TEST",releaseRunFor:source,verifySource:run=>source(run?.id),now});
+  const pilot = pilotConfig ? createServicePilotGuard({config:pilotConfig,store,project,source,detail:id=>manager.detail(id),now}) : undefined;
   const actor=req=>{const a=auth.sessionFromHeaders(req.headers);if(!a)throw fail(401,"请先登录受邀账号","AUTHENTICATION_REQUIRED");return a;};
   const owned=(a,item)=>Boolean(item && item.scope==="PRIVATE_CLOUD_TEST" && (a.role==="ADMIN" || item.createdBy===a.user.id));
   const requireOwned=(a,item)=>{if(!owned(a,item))throw fail(403,"无权管理其他用户的数据服务");return item;};
@@ -32,8 +34,9 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     const method=req.method,path=url.pathname;
     if(!privateServiceRoute(method,url.pathname+url.search))throw fail(404,"私有数据服务接口未开放");
     const open=path.match(/^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/);
-    if(open){if(queries>=8)throw fail(429,"私有查询队列已满","PRIVATE_SERVICE_QUEUE_FULL");queries++;const query=queryTail.then(async()=>{try{return {status:200,body:await manager.invoke(open[1]==="dapis"?"DAPI":"XAPI",open[2],req.headers.authorization,Object.fromEntries(url.searchParams))};}finally{await persist();}});queryTail=query.catch(()=>{});try{return await query;}finally{queries--;}}
+    if(open){if(queries>=8)throw fail(429,"私有查询队列已满","PRIVATE_SERVICE_QUEUE_FULL");queries++;const query=queryTail.then(async()=>{try{return {status:200,body:await manager.invoke(open[1]==="dapis"?"DAPI":"XAPI",open[2],req.headers.authorization,Object.fromEntries(url.searchParams),{assertAccess:pilot?({service,application})=>{pilot.assertService(service);pilot.assertApplication(application);}:undefined})};}finally{await persist();}});queryTail=query.catch(()=>{});try{return await query;}finally{queries--;}}
     const a=actor(req),owner=a.user.id;
+    assertServiceMutation(pilotConfig,a,method,path,now?.()??Date.now());
     if(method==="POST")auth.requireMutation(req.headers,path);
     if(method==="GET" && path.endsWith("/task-evidence")){
       const taskId=url.searchParams.get("agent_task_id"),packageDigest=url.searchParams.get("package_digest");
@@ -42,7 +45,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       if(!task || (a.role!=="ADMIN" && task.submittedBy!==owner))throw fail(403,"无权读取此任务消费证据");
       return {status:200,body:await privateTaskConsumption({taskId,packageDigest,
         services:manager.list().filter(s=>owned(a,s)),ownedService:id=>service(a,id),getVersion:id=>get("data_service_version",id),source,getRelease:id=>get("release",id),
-        application:id=>get("service_app",id),calls:id=>manager.listCalls(id),recheckCall:(id,callId)=>manager.recheckCall(id,callId)})};
+        application:id=>get("service_app",id)?manager.application(id):undefined,calls:id=>manager.listCalls(id),recheckCall:(id,callId)=>manager.recheckCall(id,callId)})};
     }
     if(path.endsWith("/sources")){
       const taskId=url.searchParams.get("agent_task_id");if(taskId&&!new RegExp(`^${uuid}$`).test(taskId))throw fail(422,"任务编号无效");
@@ -56,18 +59,19 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     const dedup=(namespace,b,create)=>{if(typeof key!=="string"||key.length<1||key.length>100)throw fail(422,"缺少幂等键");return store.deduplicate(`${project}:private-service:${owner}:${namespace}:${key}`,serviceHash(b),create);};
     if(method==="POST" && path.endsWith("/applications")){
       const b=bodyKeys(await readBody(req),["name","serviceIds"]);if(!Array.isArray(b.serviceIds))throw fail(422,"授权服务列表无效");for(const id of b.serviceIds)service(a,id);
-      let issued;const record=dedup("app",b,()=>{issued=manager.createApplication(b);return store.update("service_app",issued.application.id,project,{createdBy:owner});});
+      let issued;const record=dedup("app",b,()=>{pilot?.assertApplicationCreate(b);issued=manager.createApplication(b,{expiresAt:pilot?.applicationTags.expiresAt});return store.update("service_app",issued.application.id,project,{createdBy:owner,...pilot?.applicationTags});});
       if(record.replayed)return {status:200,body:{application:manager.application(record.id),token:null,tokenShownOnce:false}};
       return {status:201,body:{...issued,application:manager.application(record.id)}};
     }
     const app=path.match(new RegExp(`^/api/v2/data-services/applications/(${uuid})/revoke$`));
-    if(app){requireOwned(a,manager.application(app[1]));bodyKeys(await readBody(req),[]);return {status:200,body:manager.revokeApplication(app[1])};}
+    if(app){const application=requireOwned(a,manager.application(app[1]));pilot?.assertApplication(application);bodyKeys(await readBody(req),[]);return {status:200,body:manager.revokeApplication(app[1])};}
     if(method==="POST" && /\/data-services\/(dapis|xapis)$/.test(path)){
       const type=path.endsWith("dapis")?"DAPI":"XAPI",b=await readBody(req);checkInput(a,type,b);
-      const d=dedup(type,b,()=>{const s=type==="DAPI"?manager.createDapi(b):manager.createXapi(b);return store.update("data_service",s.id,project,{createdBy:owner,scope:"PRIVATE_CLOUD_TEST"});});return {status:d.replayed?200:201,body:manager.detail(d.id)};
+      const d=dedup(type,b,()=>{pilot?.assertCreate(type,b);const s=type==="DAPI"?manager.createDapi(b):manager.createXapi(b);return store.update("data_service",s.id,project,{createdBy:owner,scope:"PRIVATE_CLOUD_TEST",...pilot?.recordTags});});return {status:d.replayed?200:201,body:manager.detail(d.id)};
     }
     const match=path.match(new RegExp(`^/api/v2/data-services/(dapis|xapis)/(${uuid})(?:/(versions|test|publish|activate|openapi|calls|recovery|history))?$`));
     if(match){const type=match[1]==="dapis"?"DAPI":"XAPI",s=service(a,match[2]),action=match[3];if(s.serviceType!==type)throw fail(404,"服务类型不匹配");
+      if(method!=="GET")pilot?.assertService(s);
       if(method==="GET" && action==="history")return {status:200,body:store.list("service_version_switch",project).filter(r=>r.serviceId===s.id)};
       if(method==="GET" && action==="recovery")return {status:200,body:privateServiceRecovery({
         service:s,bootId,businessStore,source,ownedService:id=>service(a,id),
@@ -77,6 +81,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       })};
       if(method==="GET")return {status:200,body:action==="openapi"?manager.openApi(s.id,origin??"/"):action==="calls"?manager.listCalls(s.id):s};
       const b=await readBody(req);
+      assertServiceMutation(pilotConfig,a,method,path,now?.()??Date.now());
       if(action==="versions"){checkInput(a,type,b,true);const d=dedup(`${type}:${s.id}:version`,b,()=>type==="DAPI"?manager.createDapiVersion(s.id,b):manager.createXapiVersion(s.id,b));return {status:d.replayed?200:201,body:get("data_service_version",d.id)};}
       if(action==="test")return {status:200,body:await manager.test(s.id,b)};
       if(action==="publish")return {status:200,body:publishServiceReviewed(manager,s.id,b)};

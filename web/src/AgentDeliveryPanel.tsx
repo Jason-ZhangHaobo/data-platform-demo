@@ -6,6 +6,7 @@ import { EvidenceDownload } from "./EvidenceDownload";
 import { DeliveryFilePreview } from "./DeliveryFilePreview";
 import { AgentPublicationReview, publicationTargetMatches } from "./AgentPublicationReview";
 import type { PublicationTarget } from "./AuthDialog";
+import { applicationStatusText } from "./service-consumption-scope";
 import { reviewAttestationsComplete } from "./delivery-presentation";
 import { createPublicationReader, publicationPollNeeded } from "./publication-read";
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
@@ -187,7 +188,7 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
       <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务的接口开发、测试与授权。选择实际发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
         {consumptionError&&<p role="status">{consumptionError}</p>}
         {journey.steps.find(step=>step.id==="services")?.state==="DONE"&&<p role="status">组合接口的消费证据已通过。DAPI的单独授权调用记录独立展示，不影响已通过的XAPI组合查询。</p>}
-        {consumption&&<><p>{consumption.notice}</p><small>对照时间：{consumption.checkedAt}；这是历史消费记录，不是实时授权保证。</small>{!current&&<p>编辑器或当前查看的批次已变化；下面证据仅供原版本参考。</p>}<ul>{consumption.services.map(s=><li key={s.serviceId}><strong>{s.serviceType} · {s.name}</strong> · 版本 {s.versionId.slice(0,8)} · {s.status==="VERIFIED"?"历史消费证据对照通过":s.status==="NEEDS_ATTENTION"?"需要处理":"待实际授权调用"}<p>{s.notice}</p>{s.call&&<small>调用 {s.call.callId.slice(0,8)} · {s.call.rowCount}行 · 摘要 {s.call.resultHash.slice(0,12)} · {s.call.applicationStatus==="REVOKED"?"应用已撤销，历史记录保留":"对照时应用有效"}</small>}</li>)}</ul>{consumption.truncated&&<p>证据数量超过本次上限，不能标记整个消费阶段完成。</p>}<EvidenceDownload name={`consumption-${taskId.slice(0,8)}.json`} value={consumption} request={{kind:"consumption",id:taskId,digest:consumption.packageDigest}}>下载消费对照证据</EvidenceDownload></>}
+        {consumption&&<><p>{consumption.notice}</p><small>对照时间：{consumption.checkedAt}；这是历史消费记录，不是实时授权保证。</small>{!current&&<p>编辑器或当前查看的批次已变化；下面证据仅供原版本参考。</p>}<ul>{consumption.services.map(s=><li key={s.serviceId}><strong>{s.serviceType} · {s.name}</strong> · 版本 {s.versionId.slice(0,8)} · {s.status==="VERIFIED"?"历史消费证据对照通过":s.status==="NEEDS_ATTENTION"?"需要处理":"待实际授权调用"}<p>{s.notice}</p>{s.call&&<small>调用 {s.call.callId.slice(0,8)} · {s.call.rowCount}行 · 摘要 {s.call.resultHash.slice(0,12)} · {applicationStatusText(s.call.applicationStatus,true)}</small>}</li>)}</ul>{consumption.truncated&&<p>证据数量超过本次上限，不能标记整个消费阶段完成。</p>}<EvidenceDownload name={`consumption-${taskId.slice(0,8)}.json`} value={consumption} request={{kind:"consumption",id:taskId,digest:consumption.packageDigest}}>下载消费对照证据</EvidenceDownload></>}
         {workflow.package&&<button className="button" disabled={working} onClick={()=>void readConsumption()}>刷新消费证据</button>}
         {onOpenServices ? <><button className="button" disabled={dirty || working || handoffBlocked} onClick={onOpenServices}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>
     </>}
