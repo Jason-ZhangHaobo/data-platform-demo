@@ -79,10 +79,11 @@ export function restoredPilotEnvironment(current, baseline, activated, candidate
 }
 
 const publicationScope = 'INVITED_PUBLICATION_PILOT_V1';
-const publicationModes = ['stage', 'activate', 'timers', 'cleanup-timers', 'close', 'rollback'];
+const publicationModes = ['stage', 'resume-stage', 'activate', 'timers', 'cleanup-timers', 'close', 'rollback'];
 const publicationUsageKeys = ['configReads', 'activeHttp', 'configWrites', 'objectGets', 'objectPuts', 'triggerCreates', 'triggerDeletes', 'permissionProbes'];
-const stableFunction = value => (!Object.hasOwn(value, 'state') && !Object.hasOwn(value, 'lastUpdateStatus')) ||
-  (value.state === 'Active' && value.lastUpdateStatus === 'Successful');
+// FC 3.0 can return explicit null for these optional lifecycle fields.
+const stableFunction = value => (value.state == null || value.state === 'Active') &&
+  (value.lastUpdateStatus == null || value.lastUpdateStatus === 'Successful');
 const pendingFunction = value => value.lastUpdateStatus === 'InProgress' || ['Pending', 'Creating', 'Updating'].includes(value.state);
 const canonical = value => JSON.stringify(value && typeof value === 'object' ? Array.isArray(value)
   ? value.map(item => JSON.parse(canonical(item)))
@@ -105,7 +106,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const now = io.now ?? Date.now, wait = io.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   check(plan.scope === publicationScope && publicationModes.includes(plan.mode) && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 &&
     plan.maxIncrementCny === 5 && plan.monthlyCny === 200 && plan.priorReserveCny === 32 &&
-    plan.maxReads === 120 && plan.maxProbes === 40 && plan.normalReadLimit === 80 && plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12 &&
+    plan.maxReads === 120 && plan.maxProbes === 40 && plan.normalReadLimit === 84 && plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12 &&
     isDeepStrictEqual(plan.triggerNames, publicationPilotTimerNames), 'PUBLICATION_PILOT_SCOPE_INVALID');
   check(Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) && plan.issuedAt <= now() && plan.deadline > now() &&
     plan.deadline - plan.issuedAt <= 3600000, 'PLAN_EXPIRED');
@@ -120,7 +121,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const path = `/2023-03-30/functions/${plan.controlName}`;
   Object.assign(report, { scope: plan.scope, mode: plan.mode, issuedAt: plan.issuedAt, deadline: plan.deadline,
     priorUsage: structuredClone(plan.priorUsage), cumulativeUsage: usage, target: plan.target, releaseId: plan.releaseId, previous: plan.previous,
-    baseline: plan.mode === 'stage' ? before : plan.baseline, candidate: plan.candidate,
+    baseline: ['stage', 'resume-stage'].includes(plan.mode) ? before : plan.baseline, candidate: plan.candidate,
     permissionProbe: plan.permissionProbe, activated: plan.activated, timerRecords: structuredClone(plan.timerRecords ?? []), timerPreparedAt: plan.timerPreparedAt });
   const save = () => {
     report.runUsage = Object.fromEntries(publicationUsageKeys.map(key => [key, usage[key] - plan.priorUsage[key]]));
@@ -140,7 +141,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       const current = await read();
       const known = [expected, report.baseline, stagedSnapshot(), ...(report.activated ? [openedSnapshot()] : [])];
       check(known.some(snapshot => same(current, snapshot)), stableFunction(current) ? 'PILOT_FOREIGN_CONFIGURATION' : 'UPDATE_UNRECOGNIZED_PENDING');
-      if (stableFunction(current)) { check(same(current, expected), 'UPDATE_NOT_RECONCILED'); return current; }
+      if (stableFunction(current) && same(current, expected)) return current;
+      if (stableFunction(current)) { check(n < 5, 'UPDATE_NOT_RECONCILED'); await wait(3000); continue; }
       check(pendingFunction(current), 'UPDATE_NOT_SUCCESSFUL');
       check(n < 5, 'UPDATE_PENDING'); await wait(3000);
     }
@@ -269,33 +271,44 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   };
   save(); assertBaseline();
   try {
-    if (plan.mode !== 'stage') {
+    if (!['stage', 'resume-stage'].includes(plan.mode)) {
       check(plan.stagedDigest === functionDigest(stagedSnapshot()), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
       report.staged = stagedSnapshot();
       check(usage.permissionProbes === 1 && plan.permissionProbe?.name === plan.triggerNames[0] &&
         plan.permissionProbe.outcome === 'TRIGGER_NOT_FOUND' && plan.permissionProbe.confirmedAbsent === true && plan.permissionProbe.provesExistingDeletion === false,
       'PUBLICATION_DELETE_PERMISSION_NOT_CONFIRMED');
     }
-    if (plan.mode === 'stage') {
-      check(plan.priorUsage.configWrites === 0 && plan.priorUsage.triggerCreates === 0 && plan.priorUsage.objectPuts === 0, 'PUBLICATION_STAGE_ALREADY_ATTEMPTED');
+    if (['stage', 'resume-stage'].includes(plan.mode)) {
+      const resume = plan.mode === 'resume-stage', checkpoint = plan.stageCheckpoint;
+      check(plan.priorUsage.configWrites === 0 && plan.priorUsage.triggerCreates === 0 &&
+        (resume ? plan.priorUsage.objectPuts === 1 && plan.priorUsage.permissionProbes === 1 &&
+          checkpoint?.phase === 'STARTED' && checkpoint.failure === 'UPDATE_NOT_SUCCESSFUL' && checkpoint.configWrites === 0 &&
+          checkpoint.objectPuts === 1 && checkpoint.permissionProbes === 1 && checkpoint.updateResponseUnknown !== true &&
+          /^\d+$/.test(checkpoint.runId ?? '') && /^[a-f0-9]{64}$/.test(checkpoint.reportDigest ?? '') &&
+          plan.permissionProbe?.outcome === 'TRIGGER_NOT_FOUND' && plan.permissionProbe.confirmedAbsent === true &&
+          /^\d+$/.test(plan.candidate.crc64 ?? '') : plan.priorUsage.objectPuts === 0), 'PUBLICATION_STAGE_ALREADY_ATTEMPTED');
       check(same(before, report.baseline), 'PILOT_BASELINE_CHANGED');
       check(plan.bucketPrivacy?.bucketHash === sha(before.environmentVariables.OSS_BUCKET) && plan.bucketPrivacy.aclPrivate === true && plan.bucketPrivacy.policyNotPublic === true && plan.bucketPrivacy.publicAccessBlocked === true &&
         Date.parse(plan.bucketPrivacy.checkedAt) <= now() && now() - Date.parse(plan.bucketPrivacy.checkedAt) < 3600000, 'PRIVATE_BUCKET_REQUIRED');
-      await probeMissingTimerDeletion(); // Fail before code, environment, release or timer creation.
+      if (!resume) await probeMissingTimerDeletion(); // A recorded successful probe is not repeated.
       await bill();
       for (const suffix of ['/concurrency', '/scaling-config']) {
         const value = await call('configReads', ['fc', 'GET', path + suffix, ...(suffix === '/scaling-config' ? ['--qualifier', 'LATEST'] : [])]);
         check(suffix === '/concurrency' ? value.reservedConcurrency === 1 : value.minInstances === 0, 'EXISTING_CAPACITY_MISMATCH');
       }
-      const bytes = await io.readCandidate(); check(bytes.length === plan.candidate.bytes && sha(bytes) === plan.candidate.sha256, 'CANDIDATE_NOT_FROZEN');
-      report.previous = await verifyObject(plan.previous); report.candidate = await verifyObject(plan.candidate, bytes); save();
+      if (resume) {
+        report.previous = plan.previous; report.candidate = await verifyObject(plan.candidate);
+      } else {
+        const bytes = await io.readCandidate(); check(bytes.length === plan.candidate.bytes && sha(bytes) === plan.candidate.sha256, 'CANDIDATE_NOT_FROZEN');
+        report.previous = await verifyObject(plan.previous); report.candidate = await verifyObject(plan.candidate, bytes);
+      }
+      save();
       await settle(report.baseline);
       report.phase = 'STAGE_REQUESTED'; save();
       try { await put({ code: packageBody(report.candidate) }); } catch { report.updateResponseUnknown = true; save(); }
       report.staged = await settle(stagedSnapshot()); await runtime(false); report.phase = 'STAGED';
     } else if (plan.mode === 'activate') {
       check(plan.phase === 'STAGED' && same(before, stagedSnapshot()), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
-      await settle(stagedSnapshot());
       await bill();
       report.activated = publicationPilotEnvironment(report.baseline, plan, now());
       await settle(stagedSnapshot());
@@ -350,25 +363,26 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     save(); return report;
   } catch (error) {
     report.failure = error.safeCode ?? 'PUBLICATION_OPERATION_UNCONFIRMED'; save();
-    cleanupReading = true; // Up to 28 reads remain for cloud recovery; owner retains its last 12.
+    cleanupReading = true; // Reserve 24 reads for cloud recovery and 12 for owner cleanup.
     // Preparation failures do not mutate the function. Once an activation or
     // timer write has begun, restore only a matching snapshot, never foreign state.
     if (plan.mode === 'timers' && report.timerRecords.length) {
       try { await cleanupTimers(); } catch (cleanup) { report.timerCleanupFailure = cleanup.safeCode ?? 'TIMER_CLEANUP_UNCONFIRMED'; save(); }
     }
-    if ((plan.mode === 'stage' && report.phase === 'STAGE_REQUESTED') || (plan.mode === 'activate' && report.phase === 'ACTIVATION_REQUESTED') || plan.mode === 'timers') {
+    const staging = ['stage', 'resume-stage'].includes(plan.mode);
+    if ((staging && report.phase === 'STAGE_REQUESTED') || (plan.mode === 'activate' && report.phase === 'ACTIVATION_REQUESTED') || plan.mode === 'timers') {
       try {
-        let current = await read(); const restore = plan.mode === 'stage' ? report.baseline : stagedSnapshot();
-        report.rollbackTarget = plan.mode === 'stage' ? 'ORIGINAL_READONLY' : 'STAGED_READONLY';
+        let current = await read(); const restore = staging ? report.baseline : stagedSnapshot();
+        report.rollbackTarget = staging ? 'ORIGINAL_READONLY' : 'STAGED_READONLY';
         if (!stableFunction(current)) {
-          const pendingTarget = plan.mode === 'stage' ? stagedSnapshot() : openedSnapshot();
+          const pendingTarget = staging ? stagedSnapshot() : openedSnapshot();
           current = await settle(pendingTarget); // Never call a pending old snapshot a completed rollback.
         }
         if (same(current, restore) && stableFunction(current)) report.rollback = 'ALREADY_BASELINE';
         else {
-          check(same(current, plan.mode === 'stage' ? stagedSnapshot() : openedSnapshot()), 'PILOT_FOREIGN_CONFIGURATION');
+          check(same(current, staging ? stagedSnapshot() : openedSnapshot()), 'PILOT_FOREIGN_CONFIGURATION');
           report.rollbackRequested = true; save();
-          try { await put({ environmentVariables: restore.environmentVariables, ...(plan.mode === 'stage' ? { code: packageBody(plan.previous) } : {}) }); }
+          try { await put({ environmentVariables: restore.environmentVariables, ...(staging ? { code: packageBody(plan.previous) } : {}) }); }
           catch { report.rollbackResponseUnknown = true; save(); }
           await settle(restore); report.rollback = 'VERIFIED';
         }
