@@ -142,6 +142,7 @@ const fieldProfiles = {
     "security_count",
   ],
 };
+const fieldScopeNotice = "结果字段含义继承所选发布口径，不当然等于客户全资产；选择全部字段不会补入原口径之外的资产。";
 const labels: Record<string, string> = {
   DRAFT: "草稿",
   PUBLISHED: "已发布",
@@ -711,11 +712,12 @@ export function DataServicesWorkbench({
                     }
                   >
                     <option value="holdings">持仓市值与证券数量</option>
-                    <option value="cash">现金与总资产</option>
-                    <option value="full">完整客户资产</option>
+                    <option value="cash">现金与口径合计</option>
+                    <option value="full">全部结果字段</option>
                   </select>}
                 </label>
               </div>
+              {!consumptionScope&&<small>{fieldScopeNotice}</small>}
               <div className="service-contract-preview">
                 <span>GET</span>
                 <code>/api/v2/open/dapis/{plannedDapi?.slug??dapiSlug}</code>
@@ -832,10 +834,11 @@ LIMIT :limit OFFSET :offset`}</pre>
                 {!consumptionScope&&showVersionEditor && <div className="service-create-panel">
                   <small>{selected.serviceType==="DAPI"?"复用当前已核验发布批次，不重新计算业务数据。":"保留原固定DAPI子版本，不跟随它们的最新版本。"}</small>
                   <div className="service-form-grid">
-                    {selected.serviceType==="DAPI" && <label>返回字段模板<select value={versionProfile} onChange={e=>setVersionProfile(e.target.value as keyof typeof fieldProfiles)}><option value="holdings">持仓市值与证券数量</option><option value="cash">现金与总资产</option><option value="full">完整客户资产</option></select></label>}
+                    {selected.serviceType==="DAPI" && <label>返回字段模板<select value={versionProfile} onChange={e=>setVersionProfile(e.target.value as keyof typeof fieldProfiles)}><option value="holdings">持仓市值与证券数量</option><option value="cash">现金与口径合计</option><option value="full">全部结果字段</option></select></label>}
                     <label>每分钟限流<input type="number" min={1} max={600} value={versionRate} onChange={e=>setVersionRate(e.target.value)}/></label>
                     <label>查询超时（毫秒）<input type="number" min={100} max={5000} value={versionTimeout} onChange={e=>setVersionTimeout(e.target.value)}/></label>
                   </div>
+                  {selected.serviceType==="DAPI"&&<small>{fieldScopeNotice}</small>}
                   <button className="button" disabled={!canWrite||!!busy} onClick={createVersion}>保存新版本草稿</button>
                 </div>}
                 {selected.versions.map(v=><div key={v.id} className="service-contract-preview">

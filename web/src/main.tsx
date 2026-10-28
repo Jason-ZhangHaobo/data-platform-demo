@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { WorkbenchBoundary } from "./WorkbenchBoundary";
+import {validationFamilyForContextId} from "./validation-family";
 import {
   Activity,
   ArrowDownToLine,
@@ -218,6 +219,7 @@ type Run = {
 };
 type AgentTask = {
   validationContractId?: string;
+  contextId?:string;
   id: string;
   status: string;
   message: string;
@@ -666,9 +668,10 @@ function App() {
   const resultIsCurrent = Boolean(
     run &&
       run.contextId === contextId &&
+      validationFamilyForContextId(run.contextId) &&
       runRevision?.sql === sql.trim() &&
       (!status?.validationContract ||
-        run.validationContractId === status.validationContract.id),
+        run.validationContractId === validationFamilyForContextId(run.contextId)?.id),
   );
   return (
     <div className="shell">
@@ -1346,7 +1349,7 @@ function App() {
                       <div className="agent-task">
                         {status?.validationContract &&
                           agentTask.validationContractId !==
-                            status.validationContract.id && (
+                            validationFamilyForContextId(agentTask.contextId??contextId)?.id && (
                             <p className="validation-error">
                               该委托使用旧验证范围，需要重新核验。
                             </p>
@@ -1435,7 +1438,7 @@ function App() {
                           </section>
                         )}
                         {agentTask.status === "SUCCEEDED" &&
-                          agentTask.validationContractId === status?.validationContract?.id && (
+                          agentTask.validationContractId === validationFamilyForContextId(agentTask.contextId??contextId)?.id && (
                           <section className="agent-delivery-progress-v2" aria-label="Agent交付准备">
                             <strong>{agentDelivery?.status === "SUCCEEDED" ? "交付文件已准备" : "下一步：交付文件准备"}</strong>
                             <p>复用该委托已验证的代码版本，自动生成不可变调度/部署文件并实际按文件演练；不审批或发布。</p>
@@ -1485,7 +1488,7 @@ function App() {
                         )}
                         {agentTask.status === "SUCCEEDED" &&
                           agentTask.validationContractId ===
-                            status?.validationContract?.id && (
+                            validationFamilyForContextId(agentTask.contextId??contextId)?.id && (
                             <button
                               className="button"
                               title="基于该委托已验证的代码版本，不包含未保存修改"
@@ -1621,7 +1624,6 @@ function App() {
               <DeliveryWorkbench
                 api={api}
                 runs={runs}
-                contractId={status?.validationContract?.id}
                 sourceRunId={deliverySourceId}
                 canWrite={Boolean(canWrite)}
                 onBack={() => setNav("development")}

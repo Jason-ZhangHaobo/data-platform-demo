@@ -39,6 +39,15 @@ test("old or unread reports cannot show current green checks and retry does not 
   assert.equal(verificationPresentation(true, true, "READY").title, "核验通过");
 });
 
+test("an in-flight report asks to await the existing receipt, not repair or resubmit", () => {
+  const pending = verificationPresentation(true, false, "READY", "PENDING");
+  assert.equal(pending.title, "等待执行核验");
+  assert.match(pending.detail, /刷新只读取原记录，不重复提交模型或 Spark/);
+  assert.equal(verificationPresentation(false, false, "READY", "PENDING").title, "原版本报告");
+  assert.equal(verificationPresentation(true, false, "ERROR", "PENDING").title, "读取未确认");
+  assert.equal(verificationPresentation(true, false, "READY", "NEEDS_ATTENTION").title, "需要处理");
+});
+
 test("publication card uses the same evidence gate as journey, not a healthy status label", () => {
   const f = fixture();
   const label = e => {

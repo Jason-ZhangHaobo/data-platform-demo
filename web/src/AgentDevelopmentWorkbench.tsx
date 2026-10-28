@@ -6,10 +6,11 @@ import { manualRunLocation, manualRunRecovery, manualSaveLocation, manualSaveReq
 import {agentSubmissionRequest,agentSubmissionLocation,createAgentSubmission,agentTaskReceiptValid} from "./agent-submission";
 import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
 import type { PublicationTarget } from "./AuthDialog";
+import type {ValidationFamily} from "./validation-family";
 import "./agent-development.css";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const ManualDeliveryWorkbench = lazy(async () => ({default:(await import("./DeliveryWorkbench")).DeliveryWorkbench}));
-type Context = { id: string; name: string; definition: string; tables: { name: string; columns: [string, string][] }[] };
+type Context = { id: string; name: string; definition: string; validationFamily?:ValidationFamily; tables: { name: string; columns: [string, string][] }[] };
 type Task = { id: string; version: number; status: string; stage?: string; executionMode?: string; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
 type Run = { id: string; status: string; createdAt?: string; validationContractId?: string; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
@@ -45,6 +46,10 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     return submission.current;
   }
   const context = contexts.find(c => c.id === contextId), dirty = draft !== baseline;
+  const scopedLabels=context?.validationFamily?.id==="securities-stock-cash-five-fixtures-v1"?context.validationFamily.metricLabels:undefined;
+  const resultLabel=(field:string)=>scopedLabels?.[field]
+    ? scopedLabels[field]+(["holding_market_value","available_cash","total_assets"].includes(field)?"（元）":"")
+    :resultFieldLabels[field]??field;
   const localManualDelivery = runtimeMode === "LOCAL_DEVELOPMENT" && !privatePreview;
   const runPending = Boolean(run && !terminal(run.status));
   const working = automatic || busy, durable = task?.executionMode === "DURABLE_SQL_AGENT_V1";
@@ -302,7 +307,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   const codeOriginal = dirty ? baseline : task?.initialSql ?? baseline;
   const resultFields = run?.rows?.[0] ? Object.keys(run.rows[0]) : [];
   return <section className="agent-dev" aria-label="Agent 数据开发工作台">
-    <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>客户资产 T+1 · 需求、代码与真实执行，在一个工作台完成。</p></div><div className="agent-dev-header-actions">{task && <a className="button" href="#agent-delivery">核验与交付</a>}<button className="button" disabled={!canWrite||working||Boolean(pendingAgentKey)} onClick={newTask}><Plus size={15} />新建任务</button></div></header>
+    <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>{scopedLabels?context?.validationFamily?.name:"客户资产 T+1"} · 需求、代码与真实执行，在一个工作台完成。</p></div><div className="agent-dev-header-actions">{task && <a className="button" href="#agent-delivery">核验与交付</a>}<button className="button" disabled={!canWrite||working||Boolean(pendingAgentKey)} onClick={newTask}><Plus size={15} />新建任务</button></div></header>
     <div className="agent-dev-boundary"><span className="agent-dev-dot" />{publicationTarget ? "受邀发布试点 · 开发只读" : readOnly ? "只读验收" : privatePreview ? "私有试用" : runtimeMode === "PUBLIC_INVITATION" ? "受邀云端验证" : runtimeMode === "LOCAL_DEVELOPMENT" ? "本机开发验证" : "环境待确认"} · 仅虚构证券数据与 Spark SQL。{publicationTarget ? "本页仅查看原代码与核验记录；只有指定交付包可以在下方审阅后进入两个冻结样例批次，不新建任务或修改代码。" : readOnly ? "仅查看历史任务与已保存结果；本页不会推进任务或提交计算。" : backgroundAvailable?"可委托云端事件后台；浏览器只展示进度，不负责触发计算。每个委托有时限、事件与模型预算，发布仍须人工审阅。":"本页打开时自动推进；离开后检查点保留，已提交计算可继续，返回后可恢复。不是永久云调度。"}</div>
     {loading ? <div className="agent-dev-notice" role="status"><LoaderCircle size={14} className="spin" />正在连接服务并读取项目上下文…</div> : !ready && !publicationTarget && <div className="agent-dev-alert">{readinessReason??"模型或执行环境尚未就绪；历史任务仍可查询。"}</div>}
     {!loading && !originalCanWrite && !readOnly && <div className="agent-dev-alert">需要有数据开发权限的账号才能提交任务。<button className="button" onClick={onLogin}>登录 / 查看账号</button></div>}
@@ -319,11 +324,12 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
       <section id="agent-requirement" className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
         <div className="agent-dev-conversation">
           <details className="agent-dev-context" open={!task}><summary>本次数据与业务口径 <ChevronDown size={14} /></summary>
-            <label>验证数据<select aria-label="Agent 验证数据" disabled={working || Boolean(task) || Boolean(pendingAgentKey) || Boolean(run && !terminal(run.status))} value={contextId} onChange={e => { setContextId(e.target.value); setRun(undefined); setBaselineRevisionId(undefined); }}>{contexts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+            <label>业务口径与验证数据<select aria-label="Agent 验证数据" disabled={working || Boolean(task) || Boolean(pendingAgentKey) || Boolean(run && !terminal(run.status))} value={contextId} onChange={e => { setContextId(e.target.value); setRun(undefined); setBaselineRevisionId(undefined); }}>{contexts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+            {context?.validationFamily&&<small>已登记口径 · {context.validationFamily.name} · V{context.validationFamily.definitionVersion}</small>}
             <p>{context?.definition ?? "正在加载数据上下文…"}</p><div className="agent-dev-tables">{context?.tables.map(t => <details key={t.name}><summary>{t.name} · {t.columns.length}字段</summary><dl>{t.columns.map(([name,type]) => <div key={name}><dt>{name}</dt><dd>{type}</dd></div>)}</dl></details>)}</div>
-            <small>输出：客户、持仓市值、可用现金、总资产、证券数量。其他指标请先补充并审阅口径，不默认纳入。</small>
+            <small>输出：{scopedLabels?["client_id","holding_market_value","available_cash","total_assets","security_count"].map(resultLabel).join("、"):"客户、持仓市值、可用现金、总资产、证券数量"}。其他指标请先补充并审阅口径，不默认纳入。</small>
           </details>
-          {!task && <div className="agent-dev-intro"><h3>先说清楚你想得到什么。</h3><p>我会引用当前表结构编写 SQL，交给 Spark 执行，并依据独立断言修正错误。代码和失败记录始终可见。</p><button onClick={() => setMessage("请计算T+1客户资产，确保现金不重复累计、持仓按position_id去重，并包含只有现金的客户。")}>试试：生成客户资产加工 SQL <Send size={13} /></button></div>}
+          {!task && <div className="agent-dev-intro"><h3>先说清楚你想得到什么。</h3><p>我会引用当前表结构编写 SQL，交给 Spark 执行，并依据独立断言修正错误。代码和失败记录始终可见。</p><button onClick={() => setMessage(scopedLabels?`请按已选择的“${context?.name}”口径编写Spark SQL。${context?.definition}`:"请计算T+1客户资产，确保现金不重复累计、持仓按position_id去重，并包含只有现金的客户。")}>试试：生成{scopedLabels?"当前口径":"客户资产"}加工 SQL <Send size={13} /></button></div>}
           {task && <><div className="agent-dev-message user"><small>你的需求 · {task.id.slice(0,8)}</small><p>{task.message}</p></div>
             <div className="agent-dev-message assistant"><strong>{automatic ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}{automatic && task.stage === "READY_FOR_MODEL" ? "正在请求模型生成或修正…" : stageText[task.stage ?? task.status] ?? task.status}</strong><p>{task.explanation || "需求已记录，将使用上方已确认的上下文和口径。"}</p>
               {task.error && <p className="agent-dev-error-text">{task.error}</p>}
@@ -352,13 +358,13 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
         <div className="agent-dev-results">{!run ? <div className="agent-dev-empty">执行后的真实结果、校验与日志会显示在这里。<br />不会预先填入报表结果。</div> : <>
           {run.error && <p className="agent-dev-error-text" role="alert">{run.error}</p>}
           {["FAILED", "VALIDATION_FAILED"].includes(run.status) && <button className="button" disabled={!ready || !canWrite || working || dirty || run.revisionId !== baselineRevisionId} title="仅修正与当前已保存代码一致的失败批次" onClick={() => void send("请依据这次失败运行的真实错误信息修正当前SQL，并重新执行独立业务校验。")}>让 Agent 修正并验证</button>}
-          {tab === "结果" && (resultFields.length ? <><div className="agent-dev-table-scroll"><table><thead><tr>{resultFields.map(k => <th key={k} title={k}>{resultFieldLabels[k] ?? k}</th>)}</tr></thead><tbody>{run.rows?.map((row,i) => <tr key={i}>{resultFields.map(k => <td key={k}>{String(row[k] ?? "—")}</td>)}</tr>)}</tbody></table></div><p>{run.engine} {run.engineVersion} · {run.rows?.length} 行 · 结果绑定版本 {run.revisionId?.slice(0,8)}</p></> : <p className="agent-dev-empty">{terminal(run.status) ? "本次未产生可展示的数据行。请查看校验和日志。" : "Spark 正在执行，结果完成后显示。"}</p>)}
+          {tab === "结果" && (resultFields.length ? <><div className="agent-dev-table-scroll"><table><thead><tr>{resultFields.map(k => <th key={k} title={k}>{resultLabel(k)}</th>)}</tr></thead><tbody>{run.rows?.map((row,i) => <tr key={i}>{resultFields.map(k => <td key={k}>{String(row[k] ?? "—")}</td>)}</tr>)}</tbody></table></div><p>{run.engine} {run.engineVersion} · {run.rows?.length} 行 · 结果绑定版本 {run.revisionId?.slice(0,8)}</p></> : <p className="agent-dev-empty">{terminal(run.status) ? "本次未产生可展示的数据行。请查看校验和日志。" : "Spark 正在执行，结果完成后显示。"}</p>)}
           {tab === "校验" && <><h4>{run.validation?.passed ? "独立业务断言通过" : "校验尚未通过"}</h4>{run.validation?.issues?.map((x,i) => <p key={i}>{x}</p>)}{run.validation?.regressions?.map(r => <div className="agent-dev-check" key={r.contextId}><span>{r.name ?? r.contextId}</span><strong>{r.passed ? "通过" : "未通过"}</strong></div>)}</>}
           {tab === "日志" && <pre>{developmentRunLog(run)}</pre>}
         </>}</div>
       </section>
     </div>
-    {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} canPublish={canPublish} publicationTarget={publicationTarget} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />}
+    {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} contextId={task.contextId} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} canPublish={canPublish} publicationTarget={publicationTarget} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />}
     {!task && baselineRevisionId && <section className="agent-delivery-panel" aria-label="人工接管与交付"><h3>人工接管记录</h3><p>当前代码由工程师保存；原 Agent 的失败和验证结论不改写，也不计作 Agent 自主完成。</p><small>代码版本：{baselineRevisionId}{run ? ` · 运行批次：${run.id}` : " · 运行尚未确认"}</small>
       {originTaskId && <button className="button" disabled={working || manualUnconfirmed || Boolean(message.trim())} onClick={() => void selectTask(originTaskId)}>返回原 Agent 任务</button>}
       {!localManualDelivery ? <p>当前环境尚未接入人工版本的云交付；不会回退本机交付，也不会借用原 Agent 的批准或发布。代码与批次保留，可继续人工检查。</p> : <><button className="button" disabled={working || dirty || manualUnconfirmed || Boolean(message.trim()) || run?.status !== "SUCCEEDED" || run.revisionId !== baselineRevisionId || !run.validationContractId} onClick={() => setManualDeliveryOpen(true)}>打开本机人工交付流程</button><small>在本页继续生成包、文件演练和审阅；服务端仍核验实际执行与来源。不是自动批准或云端上线。</small>

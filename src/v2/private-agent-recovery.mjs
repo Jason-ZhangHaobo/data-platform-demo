@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { getContext, contextIds } from "./context.mjs";
+import { getContext, validationFamilyForContext } from "./context.mjs";
+import { validationMatchesFamily } from "./delivery.mjs";
 
 const fail = (status, code) => Object.assign(new Error(code), { status, code });
 const hash = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -50,12 +51,17 @@ export async function privateAgentRecovery(input, { store, project, engine, pers
   const revision = task.revisionId && store.get("revision", task.revisionId, project);
   const run = task.runId && store.get("run", task.runId, project);
   let independentResultMatches = false;
-  try { independentResultMatches = Array.isArray(run?.rows) && hash(normalized(run.rows)) === hash(normalized(getContext("holdings-t1").expected)); } catch {}
+  try { independentResultMatches = Array.isArray(run?.rows) && hash(normalized(run.rows)) === hash(normalized(getContext(task.contextId).expected)); } catch {}
   const realModel = task.attempts.length > 0 && task.attempts.every(a => typeof a.model === "string" &&
     !/test|mock|synthetic|unconfirmed/i.test(a.model) && a.usageEstimated === false);
+  const family = validationFamilyForContext(task.contextId);
   const verified = task.status === "SUCCEEDED" && realModel && independentResultMatches &&
+    Boolean(revision && run) && revision.contextId === task.contextId && run.revisionId === revision.id && run.revisionHash === revision.hash &&
+    (run.contextId === undefined || run.contextId === task.contextId) &&
+    (task.validationContractId === undefined || task.validationContractId === family?.id) &&
+    (run.validationContractId === undefined || run.validationContractId === family?.id) &&
     run?.engine === "Apache Spark" && run.engineVersion === "3.5.9" && run.mainSqlExecuted === true &&
-    run.validation?.passed === true && contextIds.every(id => run.validation.regressions?.some(r => r.contextId === id && r.passed));
+    validationMatchesFamily(run.validation, family);
   if (input.action === "finish") {
     if (!["SUCCEEDED", "FAILED", "CANCELLED"].includes(task.status)) throw fail(409, "RECOVERY_TASK_STILL_ACTIVE");
     const actor = store.get("auth_user", record.actorId, project);
