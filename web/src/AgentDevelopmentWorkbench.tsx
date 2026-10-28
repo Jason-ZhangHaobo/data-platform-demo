@@ -5,6 +5,7 @@ import { AgentDeliveryPanel } from "./AgentDeliveryPanel";
 import { manualRunLocation, manualRunRecovery, manualSaveLocation, manualSaveRequest } from "./manual-run-recovery";
 import {agentSubmissionRequest,agentSubmissionLocation,createAgentSubmission,agentTaskReceiptValid} from "./agent-submission";
 import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
+import {initialAgentTaskId,loadHistoryAfterTarget,mergeTaskHistory} from "./agent-history-loading";
 import type { PublicationTarget } from "./AuthDialog";
 import type {ValidationFamily} from "./validation-family";
 import "./agent-development.css";
@@ -29,13 +30,17 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   const [baselineRevisionId, setBaselineRevisionId] = useState<string>();
   const [automatic, setAutomatic] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [retryConsent, setRetryConsent] = useState(false);
-  const [manualUnconfirmed, setManualUnconfirmed] = useState(false), [originTaskId, setOriginTaskId] = useState<string>();
+  const initialManual=typeof window==="undefined"?undefined:manualRunRecovery(window.location.href);
+  const [manualUnconfirmed, setManualUnconfirmed] = useState(()=>Boolean(initialManual?.requestKey)), [originTaskId, setOriginTaskId] = useState<string>();
   const [manualDeliveryOpen, setManualDeliveryOpen] = useState(false);
-  const [pendingSaveKey, setPendingSaveKey] = useState<string>();
+  const [pendingSaveKey, setPendingSaveKey] = useState<string|undefined>(()=>typeof window==="undefined"?undefined:manualSaveRequest(window.location.href));
   const revisionRequest = useRef<{key:string;sql:string;contextId:string;originAgentTaskId?:string} | undefined>(undefined);
   const [backgroundConsent,setBackgroundConsent]=useState(true);
+  const [historyState,setHistoryState]=useState<"loading"|"loaded"|"deferred"|"error">("loading"),[historyError,setHistoryError]=useState("");
+  const historyFlight=useRef<Promise<void>|undefined>(undefined),startupStarted=useRef(false);
+  const restoredManual=useRef<string|undefined>(undefined),draftRef=useRef(draft);draftRef.current=draft;
   const epoch = useRef(0), selectedId = useRef<string | undefined>(undefined);
-  const alive = useRef(true), manualRequest = useRef<{ revisionId: string; key: string } | undefined>(undefined);
+  const alive = useRef(true), manualRequest = useRef<{ revisionId: string; key: string } | undefined>(initialManual?.revisionId&&initialManual.requestKey?{revisionId:initialManual.revisionId,key:initialManual.requestKey}:undefined);
   const [pendingAgentKey,setPendingAgentKey]=useState<string|undefined>(()=>typeof window==="undefined"?undefined:agentSubmissionRequest(window.location.href));
   const canWrite=originalCanWrite&&!readOnly&&!publicationTarget&&!pendingAgentKey;
   const submission=useRef<ReturnType<typeof createAgentSubmission<Task>>|undefined>(undefined);
@@ -57,30 +62,48 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   function accept(current: Task) {
     setTask(current); setTasks(old => [current, ...old.filter(t => t.id !== current.id)]);
   }
-  async function loadHistory() {
-    if(agentSubmissionRequest(location.href)){await recoverAgentSubmission();return;}
+  function loadHistory() {
+    if(historyFlight.current)return historyFlight.current;
+    const pending=loadHistoryOnce().catch(e=>{if(alive.current){setHistoryError((e as Error).message);setHistoryState("error");}}).finally(()=>{if(historyFlight.current===pending)historyFlight.current=undefined;});
+    historyFlight.current=pending;return pending;
+  }
+  async function loadHistoryOnce() {
+    setHistoryError("");setHistoryState("loading");
+    if(agentSubmissionRequest(location.href)){await recoverAgentSubmission();if(alive.current)setHistoryState("deferred");return;}
     const saveKey=manualSaveRequest(location.href);
-    if (saveKey) { setPendingSaveKey(saveKey); await recoverSavedRevision(saveKey); return; }
-    const list = await api<Task[]>("/agent/tasks"); if (!alive.current) return; setTasks(list);
-    const params = new URLSearchParams(location.search), id = params.get("task"), { revisionId, runId, requestKey, originTaskId: origin } = manualRunRecovery(location.href);
-    if (!selectedId.current && revisionId && /^[a-f0-9-]{36}$/.test(revisionId)) {
+    if (saveKey) { setPendingSaveKey(saveKey); await recoverSavedRevision(saveKey); if(alive.current)setHistoryState("deferred"); return; }
+    const { revisionId, runId, requestKey, originTaskId: origin } = manualRunRecovery(location.href);
+    const manualTarget=!selectedId.current&&revisionId&&/^[a-f0-9-]{36}$/.test(revisionId),manualKey=JSON.stringify([revisionId,runId,requestKey]);
+    if (manualTarget && restoredManual.current!==manualKey && !dirty) {
+      const recoveryEpoch=epoch.current,draftAtStart=draftRef.current;
       const saved = await api<SavedRevision>(`/revisions/${revisionId}`);
       const actual = runId ? await api<Run>(`/runs/${runId}`) : requestKey ? undefined : (await api<Run[]>("/runs")).find(r => r.revisionId === saved.id);
       if (actual && actual.revisionId !== saved.id) throw new Error("运行与代码版本不匹配，请重新选择任务。");
-      if (!alive.current) return;
+      if (!alive.current || epoch.current!==recoveryEpoch || selectedId.current) return;
+      if(draftRef.current!==draftAtStart){setHistoryState("deferred");setNotice("读取期间的编辑已保留；没有用已保存版本覆盖当前代码。");return;}
       setTask(undefined); setContextId(saved.contextId); setDraft(saved.sql); setBaseline(saved.sql); setBaselineRevisionId(saved.id); setRun(actual);
       manualRequest.current = requestKey ? {revisionId:saved.id, key:requestKey} : undefined;
       const persistedOrigin = saved.manualProvenance?.originAgentTaskId ?? origin;
       setManualUnconfirmed(Boolean(requestKey)); setOriginTaskId(persistedOrigin);
       rememberManual(saved.id, actual?.id, requestKey, persistedOrigin);
       setNotice(requestKey ? "原提交结果未确认，恢复编号已保留；不会自动重跑，也不会用其他批次替代原请求。" : actual ? "已恢复手工保存的代码版本及其运行，没有重新提交。" : "已恢复保存的代码，尚未确认对应运行；没有自动重新提交。");
+      setHistoryState("deferred");
       return;
     }
-    if (id && !selectedId.current && list.some(t => t.id === id)) await selectTask(id, false);
+    const id=manualTarget?undefined:initialAgentTaskId(location.href);
+    await loadHistoryAfterTarget<Task>({
+      restoreTarget:id&&(!selectedId.current||(!task&&selectedId.current===id))?()=>selectTask(id,false):undefined,
+      readHistory:()=>api<Task[]>("/agent/tasks"),isCurrent:()=>alive.current,
+      acceptHistory:list=>{setTasks(old=>mergeTaskHistory(list,old.find(item=>item.id===selectedId.current)));setHistoryState("loaded");},
+      onHistoryError:e=>{setHistoryError((e as Error).message);setHistoryState("error");},
+    });
   }
-  useEffect(() => { loadHistory().catch(e => setError(e.message)); }, [ready, originalCanWrite]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; submission.current?.close(); }; }, []);
-  useEffect(() => { if (readOnly || !originalCanWrite || publicationTarget) { epoch.current++; setAutomatic(false); } }, [readOnly, originalCanWrite, publicationTarget?.taskId]);
+  useEffect(() => { if (readOnly || !originalCanWrite || publicationTarget) { epoch.current++; setAutomatic(false); setBusy(false); } }, [readOnly, originalCanWrite, publicationTarget?.taskId]);
+  // The parent mounts this view only after identity/capabilities are confirmed.
+  // Initialize its read/write epoch above before starting the first task read.
+  // Context or worker readiness updates must not refetch the same task/history.
+  useEffect(() => { if(startupStarted.current)return;startupStarted.current=true;void loadHistory(); }, []);
   useEffect(() => { onDirtyChange(dirty || Boolean(message.trim()) || manualUnconfirmed || Boolean(pendingSaveKey) || Boolean(pendingAgentKey)); }, [dirty, message, manualUnconfirmed, pendingSaveKey, pendingAgentKey, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(""), 9000); return () => clearTimeout(timer); }, [notice]);
@@ -115,6 +138,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   };
   const rememberManual = (revisionId: string, runId?: string, requestKey?: string, origin = originTaskId) => {
     selectedId.current = undefined;
+    restoredManual.current=JSON.stringify([revisionId,runId,requestKey]);
     const url = manualRunLocation(location.href, {revisionId, runId, requestKey, originTaskId:origin});
     history.replaceState(null, "", url);
   };
@@ -310,7 +334,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>{scopedLabels?context?.validationFamily?.name:"客户资产 T+1"} · 需求、代码与真实执行，在一个工作台完成。</p></div><div className="agent-dev-header-actions">{task && <a className="button" href="#agent-delivery">核验与交付</a>}<button className="button" disabled={!canWrite||working||Boolean(pendingAgentKey)} onClick={newTask}><Plus size={15} />新建任务</button></div></header>
     <div className="agent-dev-boundary"><span className="agent-dev-dot" />{publicationTarget ? "受邀发布试点 · 开发只读" : readOnly ? "只读验收" : privatePreview ? "私有试用" : runtimeMode === "PUBLIC_INVITATION" ? "受邀云端验证" : runtimeMode === "LOCAL_DEVELOPMENT" ? "本机开发验证" : "环境待确认"} · 仅虚构证券数据与 Spark SQL。{publicationTarget ? "本页仅查看原代码与核验记录；只有指定交付包可以在下方审阅后进入两个冻结样例批次，不新建任务或修改代码。" : readOnly ? "仅查看历史任务与已保存结果；本页不会推进任务或提交计算。" : backgroundAvailable?"可委托云端事件后台；浏览器只展示进度，不负责触发计算。每个委托有时限、事件与模型预算，发布仍须人工审阅。":"本页打开时自动推进；离开后检查点保留，已提交计算可继续，返回后可恢复。不是永久云调度。"}</div>
     {loading ? <div className="agent-dev-notice" role="status"><LoaderCircle size={14} className="spin" />正在连接服务并读取项目上下文…</div> : !ready && !publicationTarget && <div className="agent-dev-alert">{readinessReason??"模型或执行环境尚未就绪；历史任务仍可查询。"}</div>}
-    {!loading && !originalCanWrite && !readOnly && <div className="agent-dev-alert">需要有数据开发权限的账号才能提交任务。<button className="button" onClick={onLogin}>登录 / 查看账号</button></div>}
+    {!loading && ready && !originalCanWrite && !readOnly && <div className="agent-dev-alert">需要有数据开发权限的账号才能提交任务。<button className="button" onClick={onLogin}>登录 / 查看账号</button></div>}
     {error && <div className="agent-dev-alert error" role="alert">{error}<button onClick={() => setError("")} aria-label="关闭错误提示">×</button></div>}
     {notice && <div className="agent-dev-notice" role="status">{notice}</div>}
     {pendingAgentKey&&<AgentSubmissionRecovery requestKey={pendingAgentKey} recoveryHref={agentSubmissionLocation(location.href,pendingAgentKey).href} canRetry={originalCanWrite&&Boolean(submission.current?.snapshot().canRetry)} busy={working} onRead={()=>void recoverAgentSubmission()} onRetry={()=>void recoverAgentSubmission(true)}/>}
@@ -318,7 +342,10 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     {manualUnconfirmed && <div className="agent-dev-alert" role="alert"><div><strong>手工运行结果待确认</strong><p>原提交编号已保留在恢复链接中。按原编号重试，不创建新的重试编号；未保存代码不会被覆盖。</p></div><button className="button" disabled={!canWrite || working} onClick={() => void resumeManualRun()}>按原编号重试提交</button></div>}
     <div className="agent-dev-grid">
       <aside className="agent-dev-history"><header><span><History size={15} />任务历史</span><button className="icon-button" aria-label="刷新任务历史" onClick={() => loadHistory().catch(e => setError(e.message))}><RefreshCw size={14} /></button></header>
-        {!tasks.length && <p className="agent-dev-empty">还没有委托。<br />从一个明确的证券业务需求开始。</p>}
+        {historyState==="loading"&&<p className="agent-dev-empty" role="status">正在读取任务历史；当前任务会优先显示。</p>}
+        {historyState==="error"&&<p className="agent-dev-error-text" role="alert">任务历史暂未加载：{historyError} 已读取的任务与编辑内容保留，可点击刷新重试。</p>}
+        {historyState==="deferred"&&!tasks.length&&<p className="agent-dev-empty">已优先恢复原请求或代码；需要历史时可点击刷新。</p>}
+        {historyState==="loaded"&&!tasks.length&&<p className="agent-dev-empty">还没有委托。<br />从一个明确的证券业务需求开始。</p>}
         {tasks.map(t => <button disabled={working||Boolean(pendingAgentKey)} className={t.id === task?.id ? "selected" : ""} key={t.id} onClick={() => void selectTask(t.id)}><strong>{t.message}</strong><span>{stageText[t.stage ?? t.status] ?? t.status}</span><small>{t.id.slice(0,8)}</small></button>)}
       </aside>
       <section id="agent-requirement" className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
