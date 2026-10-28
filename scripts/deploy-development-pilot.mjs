@@ -104,7 +104,7 @@ function servicePilotBaseline(before, plan, now) {
   const e = before?.environmentVariables;
   const preStaged = validatePilotPackageTransport(plan);
   check(plan?.scope === 'INVITED_SERVICE_CONSUMPTION_PILOT_V1' && plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 &&
-    plan.maxIncrementCny === 2 && plan.monthlyCny === 200 && plan.priorReserveCny === (preStaged ? 39 : 37), 'SERVICE_PILOT_SCOPE_INVALID');
+    plan.maxIncrementCny === 2 && plan.monthlyCny === 200 && (preStaged ? [39, 41].includes(plan.priorReserveCny) : plan.priorReserveCny === 37), 'SERVICE_PILOT_SCOPE_INVALID');
   check(!['triggerNames', 'timerRecords', 'timerPreparedAt', 'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint'].some(key => Object.hasOwn(plan, key)), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
   check(Number.isSafeInteger(now) && Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) &&
     plan.issuedAt <= now && plan.deadline > now && plan.deadline - plan.issuedAt <= 3600000, 'DEPLOYMENT_WINDOW_INVALID');
@@ -184,7 +184,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   if (preStaged && (plan.mode !== 'stage' || Object.hasOwn(plan, 'preStagedObjectDigest')))
     check(plan.preStagedObjectDigest === preStagedObjectDigest, 'PILOT_PRESTAGED_CHECKPOINT_CHANGED');
   check((serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
-    (serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && plan.priorReserveCny === (preStaged ? 39 : 37)
+    (serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && (preStaged ? [39, 41].includes(plan.priorReserveCny) : plan.priorReserveCny === 37)
       : plan.scope === publicationScope && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32) && plan.monthlyCny === 200 &&
     plan.maxReads === 120 && plan.maxProbes === 40 && plan.normalReadLimit === 84 && plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12 &&
     (serviceOnly || isDeepStrictEqual(plan.triggerNames, publicationPilotTimerNames)), serviceOnly ? 'SERVICE_PILOT_SCOPE_INVALID' : 'PUBLICATION_PILOT_SCOPE_INVALID');

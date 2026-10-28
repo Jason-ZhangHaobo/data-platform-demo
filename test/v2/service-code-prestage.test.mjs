@@ -96,3 +96,14 @@ test('inconsistent unknown-upload and verified checkpoints are rejected before I
   assert.equal(f.calls.length,before);
  }
 });
+
+test('a separately approved third attempt retains both failed-batch reserves without enlarging PUT allowance',async()=>{
+ const f=fixture();f.plan.attemptNumber=3;f.plan.priorReserveCny=41;
+ const result=await f.run();assert.equal(result.receipt.putAttempts,1);assert.equal(f.calls.filter(c=>c.kind==='PUT').length,1);
+ for(const reserve of [39,40,40.5,42]){
+  const g=fixture();g.plan.attemptNumber=3;g.plan.priorReserveCny=reserve;
+  await assert.rejects(g.run(),/BUDGET_INVALID/);assert.equal(g.calls.length,0);
+ }
+ const g=fixture();g.plan.attemptNumber=3;g.plan.priorReserveCny=41;g.plan.billCny=157;
+ await assert.rejects(g.run(),/BUDGET_INVALID/);assert.equal(g.calls.length,0);
+});
