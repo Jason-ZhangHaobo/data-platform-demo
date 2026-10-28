@@ -1218,7 +1218,7 @@ export function createV2Server(options = {}) {
       )
         throw fail(403, "无权访问此项目");
       if (method === "GET" && !path.startsWith("/api/v2"))
-        return await serveV2Static(res, root, path);
+        return await serveV2Static(res, root, path, req.headers["accept-encoding"]);
       if (typeof persistence.refresh === "function") await persistence.refresh();
       const developmentSessionView = ingressChannel === "HTTP" && !publicReadOnly
         ? serviceSession(serviceAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? publicationSession(publicationAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? developmentSession(developmentAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) : undefined;
@@ -5583,7 +5583,7 @@ export function createV2Server(options = {}) {
       }
       if (path.startsWith("/api/v2")) throw fail(404, "接口不存在");
       if (method !== "GET") throw fail(405, "请求方法不支持");
-      return await serveV2Static(res, root, path);
+      return await serveV2Static(res, root, path, req.headers["accept-encoding"]);
     } catch (error) {
       return json(res, error.status ?? 500, {
         message: error.status ? error.message : "处理失败，请检查服务日志",

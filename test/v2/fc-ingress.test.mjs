@@ -4,6 +4,7 @@ import { request } from "node:http";
 import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { createFcIngress } from "../../src/v2/fc-ingress.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { validatePrivateApplicationRequest } from "../../src/v2/private-application.mjs";
@@ -133,14 +134,17 @@ test("cloud bootstrap always installs the FC boundary with public HTTP opt-in", 
 
 test("static assets never refresh storage and remain available while stateful requests serialize",async t=>{
  const root=mkdtempSync(join(tmpdir(),'shuduo-static-lane-'));mkdirSync(join(root,'web-dist','assets'),{recursive:true});
- writeFileSync(join(root,'web-dist','index.html'),'<html>fixture</html>');writeFileSync(join(root,'web-dist','assets','test-12345678.js'),'export default 1;');
+ const assetSource='export default 1;'+ '\n// fictional securities'.repeat(100);
+ writeFileSync(join(root,'web-dist','index.html'),'<html>fixture</html>');writeFileSync(join(root,'web-dist','assets','test-12345678.js'),assetSource);
+ writeFileSync(join(root,'web-dist','assets','test-12345678.js.gz'),gzipSync(assetSource));
  let active=0,max=0,calls=0,unlock;const blocked=new Promise(r=>{unlock=r});
  const app=createV2Server({root,ingress:createFcIngress({publicHttpEnabled:true,publicReadOnly:true}),env:{V2_LOCAL_DEVELOPMENT:'false',V2_PROVISIONING_ONLY:'true',V2_PRIVATE_SMOKE_ENABLED:'true'},stateCoordinator:{refresh:async()=>{calls++;active++;max=Math.max(max,active);await blocked;active--;},flush:async()=>{}}});
  await new Promise(r=>app.server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${app.server.address().port}`;
  t.after(async()=>{unlock();app.server.closeAllConnections();await new Promise(r=>app.server.close(r));app.store.close();rmSync(root,{recursive:true,force:true});});
  const requests=[fetch(base+'/api/v2/auth/session'),fetch(base+'/api/v2/auth/session')];
  while(calls===0)await new Promise(r=>setImmediate(r));
- const asset=await fetch(base+'/v2/assets/test-12345678.js');assert.equal(asset.status,200);assert.equal(await asset.text(),'export default 1;');assert.match(asset.headers.get('cache-control'),/immutable/);assert.equal(calls,1);
+ const asset=await fetch(base+'/v2/assets/test-12345678.js',{headers:{'accept-encoding':'gzip'}});assert.equal(asset.status,200);assert.equal(await asset.text(),assetSource);assert.equal(asset.headers.get('content-encoding'),'gzip');assert.match(asset.headers.get('cache-control'),/immutable/);assert.equal(calls,1);
+ const rawAsset=await fetch(base+'/v2/assets/test-12345678.js',{headers:{'accept-encoding':'identity'}});assert.equal(await rawAsset.text(),assetSource);assert.equal(rawAsset.headers.get('content-encoding'),null);assert.equal(calls,1);
  const page=await fetch(base+'/v2/');assert.equal(page.status,200);assert.equal(page.headers.get('cache-control'),'no-cache');assert.equal(calls,1);
  unlock();for(const r of await Promise.all(requests)){assert.equal(r.status,200);assert.equal((await r.json()).readOnly,true);}assert.equal(calls,2);assert.equal(max,1);
 });
