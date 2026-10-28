@@ -369,7 +369,9 @@ test('pre-plan normalization never discards accepted usage, additional reads, pr
 test('workflow downloads frozen code only for deploy or stage and preserves encrypted evidence', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/deploy-v2-development-pilot.yml', import.meta.url), 'utf8');
   assert.match(workflow, /options: \[deploy, stage, resume-stage, activate, timers, cleanup-timers, close, rollback\]/);
-  assert.match(workflow, /if: inputs\.mode == 'deploy' \|\| inputs\.mode == 'stage'/);
+  assert.match(workflow, /if: \(inputs\.mode == 'deploy' \|\| inputs\.mode == 'stage'\) && !inputs\.pre_staged/);
+  assert.match(workflow, /pre_staged:\s+required: false\s+type: boolean\s+default: false/);
+  assert.match(workflow, /V2_PILOT_PRE_STAGED: \$\{\{ inputs\.pre_staged \}\}/);
   assert.match(workflow, /if: github\.ref == 'refs\/heads\/main'/);
   assert.match(workflow, /path: v2-development-pilot\.sealed\.json/);
   assert.match(workflow, /cancel-in-progress: false/);
