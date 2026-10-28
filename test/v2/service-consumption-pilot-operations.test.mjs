@@ -359,7 +359,7 @@ test('pre-staged receipt schema, candidate identity, original time and inherited
   await f.step('stage'); assert.equal(f.report.phase, 'STAGED');
 });
 
-test('pre-staged receipt cannot change during activation or restoration, and reserved cost stays exactly 39', async () => {
+test('pre-staged receipt cannot change during activation or restoration, and unapproved reserves are rejected', async () => {
   for (const mode of ['activate', 'close', 'rollback']) {
     const f = preStagedFixture(1); await f.step('stage'); if (mode !== 'activate') await f.step('activate');
     const count = f.calls.length, changed = { ...f.basePlan.preStagedObject, verifiedAt: new Date(f.basePlan.issuedAt).toISOString() };
@@ -387,6 +387,17 @@ test('pre-staged rollback and unknown updates remain read-only for objects witho
   await assert.rejects(g.step('close'), /RESTORE_ALREADY_ATTEMPTED/);
   assert.equal(g.calls.filter(call => call.args?.[1] === 'PUT').length, count);
   assert.equal(g.report.cumulativeUsage.objectPuts, 1); assert.equal(g.report.runUsage.objectPuts, 0);
+});
+
+test('pre-staged recovery retains the larger failed-transfer reserve through stage and close',async()=>{
+ const f=preStagedFixture(1);f.basePlan.priorReserveCny=41;
+ const history=structuredClone(f.basePlan.historyUsage);
+ await f.step('stage');await f.step('activate');await f.step('close');
+ assert.equal(f.report.phase,'CLOSED_READONLY');assert.deepEqual(f.report.historyUsage,history);
+ assert.equal(f.calls.some(c=>c.method==='PUT'),false);assert.equal(f.report.cumulativeUsage.objectPuts,1);
+ const g=preStagedFixture(1);g.basePlan.priorReserveCny=41;g.controls.bill='157';
+ await assert.rejects(g.step('stage'),/BUDGET_NOT_VERIFIED/);
+ assert.equal(g.report.cumulativeUsage.configWrites,0);
 });
 
 test('workflow pre_staged flag strictly matches the decrypted transport and is never accepted for another scope', () => {

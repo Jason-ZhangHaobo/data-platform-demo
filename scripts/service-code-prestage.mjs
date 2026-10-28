@@ -17,7 +17,7 @@ const diagnostic = error => error?.name === 'TimeoutError' || error?.code === 'E
     : 'TRANSFER_UNCONFIRMED';
 
 export function validateServicePrestagePlan(plan, bytes, now=Date.now()) {
-  check(plan?.protocol === 'SERVICE_CODE_PRESTAGE_V1' && plan.authorized === true && plan.attemptNumber === 2 &&
+  check(plan?.protocol === 'SERVICE_CODE_PRESTAGE_V1' && plan.authorized === true && [2, 3].includes(plan.attemptNumber) &&
     typeof plan.operationId === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(plan.operationId) &&
     sha(plan.approvalDigest) && sha(plan.closedAttemptDigest), 'APPROVED_PRESTAGE_REQUIRED');
   check(plan.candidate && Object.keys(plan.candidate).sort().join(',') === 'bytes,sha256' && sha(plan.candidate.sha256) &&
@@ -25,7 +25,7 @@ export function validateServicePrestagePlan(plan, bytes, now=Date.now()) {
     Buffer.isBuffer(bytes) && bytes.length === plan.candidate.bytes && hash(bytes) === plan.candidate.sha256, 'EXACT_LOCAL_PACKAGE_REQUIRED');
   check(Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) && plan.issuedAt <= now &&
     plan.deadline > now && plan.deadline - plan.issuedAt <= 1200000, 'PRESTAGE_WINDOW_INVALID');
-  check(plan.maxPuts === 1 && plan.maxObjectReads === 3 && plan.maxAclReads === 2 && plan.priorReserveCny === 39 &&
+  check(plan.maxPuts === 1 && plan.maxObjectReads === 3 && plan.maxAclReads === 2 && plan.priorReserveCny === (plan.attemptNumber === 3 ? 41 : 39) &&
     plan.maxIncrementCny === 2 && plan.monthlyCny === 200 && Number.isFinite(plan.billCny) && plan.billCny >= 0 &&
     plan.billCny + plan.priorReserveCny + plan.maxIncrementCny < 200, 'PRESTAGE_BUDGET_INVALID');
   check(plan.bucketPrivacy?.aclPrivate === true && plan.bucketPrivacy.policyNotPublic === true && plan.bucketPrivacy.publicAccessBlocked === true &&
