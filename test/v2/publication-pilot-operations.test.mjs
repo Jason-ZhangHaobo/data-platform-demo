@@ -29,7 +29,7 @@ function fixture() {
   const calls = [], controls = {};
   const basePlan = { scope: 'INVITED_PUBLICATION_PILOT_V1', controlName: baseline.functionName,
     maxModelCalls: 0, maxSparkRuns: 2, maxIncrementCny: 5, monthlyCny: 200, priorReserveCny: 32,
-    maxReads: 120, maxProbes: 40, normalReadLimit: 80, readLimit: 108, ownerCleanupReadReserve: 12, issuedAt: now - 1000, deadline: now + 3500000,
+    maxReads: 120, maxProbes: 40, normalReadLimit: 84, readLimit: 108, ownerCleanupReadReserve: 12, issuedAt: now - 1000, deadline: now + 3500000,
     baselineDigest: functionDigest(baseline), previous, candidate, triggerNames: [...publicationPilotTimerNames],
     schedulerSecret: 'synthetic-new-release-signing-key-only-123456789',
     target: { taskId: '00000000-0000-4000-8000-000000000001', packageDigest: 'a'.repeat(64) },
@@ -285,13 +285,39 @@ test('only known old or new pending snapshots are awaited; a stuck async update 
   assert.equal(g.report.cumulativeUsage.configWrites, 1);
 });
 
-test('normal operations stop at 80 reads but cleanup keeps its 28-read reserve and owner keeps 12', async () => {
+test('nullable lifecycle fields retain strict snapshot verification', async () => {
+  for (const lifecycle of [{state:null,lastUpdateStatus:null},{state:'Active',lastUpdateStatus:null},{state:null,lastUpdateStatus:'Successful'}]) {
+    const f=fixture(); f.controls.readSnapshots=[{...f.baseline,...lifecycle}];
+    const staged=await f.step('stage'); assert.equal(staged.phase,'STAGED');
+    assert.equal(staged.cumulativeUsage.configWrites,1);
+  }
+  const g=fixture();g.controls.readSnapshots=[{...g.baseline,state:'Active',lastUpdateStatus:'Failed'}];
+  await assert.rejects(g.step('stage'),/UPDATE_NOT_SUCCESSFUL/);assert.equal(g.report.cumulativeUsage.configWrites,0);
+});
+
+test('a zero-function-write stage failure resumes the verified object without re-upload or permission re-probe', async () => {
+  const f=fixture();f.controls.readSnapshots=[{...f.baseline,state:'Active',lastUpdateStatus:'Failed'}];
+  await assert.rejects(f.step('stage'),/UPDATE_NOT_SUCCESSFUL/);
+  const failed=structuredClone(f.report);
+  const staged=await f.step('resume-stage',{stageCheckpoint:{runId:'12345',reportDigest:'b'.repeat(64),phase:failed.phase,
+    failure:failed.failure,configWrites:failed.cumulativeUsage.configWrites,objectPuts:failed.cumulativeUsage.objectPuts,
+    permissionProbes:failed.cumulativeUsage.permissionProbes}});
+  assert.equal(staged.phase,'STAGED');assert.equal(staged.cumulativeUsage.objectPuts,1);
+  assert.equal(staged.cumulativeUsage.permissionProbes,1);assert.equal(staged.cumulativeUsage.configWrites,1);
+  assert.equal(f.calls.filter(c=>c.method==='PUT').length,1);
+  assert.equal(f.calls.filter(c=>c.permissionProbe&&c.args?.[1]==='DELETE').length,1);
+  assert.ok(staged.cumulativeUsage.configReads>failed.cumulativeUsage.configReads);
+  const g=fixture();await g.step('stage');
+  await assert.rejects(g.step('resume-stage',{stageCheckpoint:{runId:'12345',reportDigest:'b'.repeat(64),phase:'STARTED',failure:'UPDATE_NOT_SUCCESSFUL',configWrites:0,objectPuts:1,permissionProbes:1}}),/READONLY_PUBLICATION_BASELINE_REQUIRED/);
+});
+
+test('normal operations stop at 84 reads but cleanup keeps its 24-read reserve and owner keeps 12', async () => {
   const f = fixture();
-  await assert.rejects(f.step('stage', { priorUsage: { ...f.basePlan.priorUsage, configReads: 79 } }), /USAGE_LIMIT/);
+  await assert.rejects(f.step('stage', { priorUsage: { ...f.basePlan.priorUsage, configReads: 83 } }), /USAGE_LIMIT/);
   assert.equal(f.calls.length, 0);
   const g = fixture(); await g.open();
-  const closed = await g.step('close', { priorUsage: { ...g.report.cumulativeUsage, configReads: 80 } });
-  assert.equal(closed.phase, 'CLOSED_READONLY'); assert.ok(closed.cumulativeUsage.configReads > 80);
+  const closed = await g.step('close', { priorUsage: { ...g.report.cumulativeUsage, configReads: 84 } });
+  assert.equal(closed.phase, 'CLOSED_READONLY'); assert.ok(closed.cumulativeUsage.configReads > 84);
   assert.ok(closed.cumulativeUsage.configReads <= 108); assert.equal(closed.timersAbsenceVerified, true);
 });
 
@@ -342,7 +368,7 @@ test('pre-plan normalization never discards accepted usage, additional reads, pr
 
 test('workflow downloads frozen code only for deploy or stage and preserves encrypted evidence', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/deploy-v2-development-pilot.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /options: \[deploy, stage, activate, timers, cleanup-timers, close, rollback\]/);
+  assert.match(workflow, /options: \[deploy, stage, resume-stage, activate, timers, cleanup-timers, close, rollback\]/);
   assert.match(workflow, /if: inputs\.mode == 'deploy' \|\| inputs\.mode == 'stage'/);
   assert.match(workflow, /if: github\.ref == 'refs\/heads\/main'/);
   assert.match(workflow, /path: v2-development-pilot\.sealed\.json/);
