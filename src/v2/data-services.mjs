@@ -96,9 +96,11 @@ const normalizeQuery = (value = {}) => {
   page: integer(value.page, "页码", 1, 1, 10000),
   pageSize: integer(value.pageSize ?? value.page_size, "每页数量", 20, 1, 100),
 }); };
-const publicApp = (app) => {
+const publicApp = (app, now = Date.now()) => {
   if (!app) return app;
   const { tokenHash, ...safe } = app;
+  if (safe.status === "ACTIVE" && Object.hasOwn(safe, "expiresAt") &&
+      (!Number.isFinite(Date.parse(safe.expiresAt)) || now >= Date.parse(safe.expiresAt))) safe.status = "EXPIRED";
   return safe;
 };
 
@@ -619,7 +621,7 @@ export class DataServiceManager {
     });
   }
 
-  createApplication(input) {
+  createApplication(input, { expiresAt } = {}) {
     const name = text(input.name, "应用名称", 2, 80),
       serviceIds = input.serviceIds;
     if (
@@ -634,6 +636,10 @@ export class DataServiceManager {
       if (service.status !== "PUBLISHED")
         throw fail(409, "应用只能授权已发布的数据服务", "UNPUBLISHED_GRANT");
     }
+    if (expiresAt !== undefined && (typeof expiresAt !== "string" ||
+        !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= this.now() ||
+        Date.parse(expiresAt) - this.now() > 2 * 3600000))
+      throw fail(400, "临时应用有效期必须在未来两小时内", "APPLICATION_EXPIRY_INVALID");
     const token = (this.scope === "PRIVATE_CLOUD_TEST" ? "sz_private_" : "sz_local_") + randomBytes(24).toString("base64url"),
       app = this.store.create("service_app", this.project, {
         name,
@@ -643,12 +649,13 @@ export class DataServiceManager {
         tokenPrefix: token.slice(0, 17),
         createdBy: "local-engineer",
         scope: this.scope,
+        ...(expiresAt === undefined ? {} : { expiresAt }),
       });
-    return { application: publicApp(app), token, tokenShownOnce: true };
+    return { application: publicApp(app, this.now()), token, tokenShownOnce: true };
   }
 
   listApplications() {
-    return this.store.list("service_app", this.project).map(publicApp);
+    return this.store.list("service_app", this.project).map(app => publicApp(app, this.now()));
   }
 
   application(id) {
@@ -658,19 +665,19 @@ export class DataServiceManager {
       this.project,
     );
     if (!app) throw fail(404, "未找到调用应用", "APPLICATION_NOT_FOUND");
-    return publicApp(app);
+    return publicApp(app, this.now());
   }
 
   revokeApplication(id) {
     const app = this.store.get("service_app", id, this.project);
     if (!app) throw fail(404, "未找到调用应用", "APPLICATION_NOT_FOUND");
-    if (app.status === "REVOKED") return publicApp(app);
+    if (app.status === "REVOKED") return publicApp(app, this.now());
     return publicApp(
       this.store.update("service_app", app.id, this.project, {
         status: "REVOKED",
         revokedAt: new Date(this.now()).toISOString(),
         revokedBy: "local-engineer",
-      }),
+      }), this.now(),
     );
   }
 
@@ -736,7 +743,7 @@ export class DataServiceManager {
     };
   }
 
-  async invoke(type, path, authorization, input = {}) {
+  async invoke(type, path, authorization, input = {}, { assertAccess } = {}) {
     const service = this.store
       .list("data_service", this.project)
       .find((item) => item.slug === path && item.serviceType === type);
@@ -762,6 +769,7 @@ export class DataServiceManager {
     }
     const started = this.now();
     try {
+      assertAccess?.({service,application:app,version});
       const response = await this.#execute(version, query),
         call = this.#callLog(service, version, app, query, started, {
           outcome: "SUCCEEDED",
@@ -777,6 +785,7 @@ export class DataServiceManager {
           slug: service.slug,
           version: version.versionNumber,
           versionId: version.id,
+          ...(version.serviceType === "XAPI" ? { steps: version.steps.map(({ alias, dapiId, dapiVersionId }) => ({ alias, dapiId, dapiVersionId })) } : {}),
         },
         callId: call.id,
         localTestOnly: this.scope === "LOCAL_TEST_ONLY",
@@ -968,6 +977,9 @@ export class DataServiceManager {
         .list("service_app", this.project)
         .find((item) => item.tokenHash === tokenHash && item.status === "ACTIVE" && item.scope === this.scope);
     if (!app) throw fail(401, "应用令牌无效", "TOKEN_INVALID");
+    if (Object.hasOwn(app, "expiresAt") &&
+        (!Number.isFinite(Date.parse(app.expiresAt)) || this.now() >= Date.parse(app.expiresAt)))
+      throw fail(401, "应用令牌已到期", "TOKEN_EXPIRED");
     if (!app.serviceIds.includes(serviceId))
       throw fail(403, "应用未获当前数据服务授权", "SERVICE_FORBIDDEN");
     return app;

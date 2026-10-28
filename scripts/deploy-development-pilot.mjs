@@ -13,6 +13,7 @@ import { privateOssRequest, boundedBytes, safeOssFailure } from './control-code-
 import { controlPackageObject } from './render-v2-control-package-policy.mjs';
 import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
 import { publicationPilotTimers, publicationPilotTimerNames } from './publication-pilot-timers.mjs';
+import { publicServiceConfig } from '../src/v2/public-service-access.mjs';
 
 const check = (v, code) => { if (!v) throw Object.assign(new Error(code), { safeCode: code }); };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -73,13 +74,60 @@ export function publicationPilotEnvironment(before, plan, now = Date.now()) {
     V2_PRIVATE_RELEASE_ENABLED: 'true', V2_PRIVATE_RELEASE_TRIGGER_NAMES: plan.triggerNames.join(','), V2_SCHEDULER_TICK_SECRET: plan.schedulerSecret,
     V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: String(runLimit), V2_ACCOUNT_MONTHLY_SPEND_CNY: String(plan.billCny) };
 }
+// Service consumption reuses an already-published snapshot. This scope carries
+// no scheduler authority and must not change compute budgets or runtime drivers.
+function servicePilotBaseline(before, plan, now) {
+  const e = before?.environmentVariables;
+  check(plan?.scope === 'INVITED_SERVICE_CONSUMPTION_PILOT_V1' && plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 &&
+    plan.maxIncrementCny === 2 && plan.monthlyCny === 200 && plan.priorReserveCny === 37, 'SERVICE_PILOT_SCOPE_INVALID');
+  check(!['triggerNames', 'timerRecords', 'timerPreparedAt', 'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint'].some(key => Object.hasOwn(plan, key)), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
+  check(Number.isSafeInteger(now) && Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) &&
+    plan.issuedAt <= now && plan.deadline > now && plan.deadline - plan.issuedAt <= 3600000, 'DEPLOYMENT_WINDOW_INVALID');
+  check(before?.runtime === 'custom.debian12' && before.cpu === 0.25 && before.memorySize === 512 && before.instanceConcurrency === 8 &&
+    typeof before.functionName === 'string' && /^dataplatform-v2-[a-z0-9-]{1,60}$/.test(before.functionName) && plan.controlName === before.functionName &&
+    e?.V2_LOCAL_DEVELOPMENT === 'false' && e.V2_PROVISIONING_ONLY === 'true' && e.V2_PRIVATE_SMOKE_ENABLED === 'true' &&
+    e.V2_PRIVATE_DATA_SERVICES_ENABLED === 'true' && e.V2_FC_PUBLIC_HTTP_ENABLED === 'true' && e.V2_FC_PUBLIC_READ_ONLY === 'true' &&
+    !e.V2_FC_PUBLIC_WRITE_SCOPE && e.V2_PRIVATE_RELEASE_ENABLED !== 'true' &&
+    typeof e.V2_BOOTSTRAP_ADMIN_EMAIL === 'string' && e.V2_BOOTSTRAP_ADMIN_EMAIL.length <= 160 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.V2_BOOTSTRAP_ADMIN_EMAIL) &&
+    typeof e.OSS_BUCKET === 'string' && /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(e.OSS_BUCKET), 'READONLY_SERVICE_BASELINE_REQUIRED');
+  check(functionDigest(before) === plan.baselineDigest && typeof plan.previous?.crc64 === 'string' && /^\d+$/.test(plan.previous.crc64) &&
+    String(before.codeChecksum) === plan.previous.crc64 && Number.isSafeInteger(plan.previous.bytes) && plan.previous.bytes > 0 &&
+    before.codeSize === plan.previous.bytes, 'PILOT_BASELINE_CHANGED');
+  check([plan.previous, plan.candidate].every(pkg => pkg && typeof pkg.sha256 === 'string' && /^[a-f0-9]{64}$/.test(pkg.sha256) &&
+    Number.isSafeInteger(pkg.bytes) && pkg.bytes > 0 && pkg.bytes <= 67108864 &&
+    (pkg.crc64 === undefined || (typeof pkg.crc64 === 'string' && /^\d+$/.test(pkg.crc64)))) &&
+    plan.previous.sha256 !== plan.candidate.sha256, 'SERVICE_EXACT_CODE_OBJECTS_REQUIRED');
+  const target = plan.target;
+  check(target && typeof target === 'object' && !Array.isArray(target) && Object.keys(target).length === 3 &&
+    ['taskId', 'sourceReleaseRunId'].every(key => typeof target[key] === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(target[key])) &&
+    typeof target.packageDigest === 'string' && /^[a-f0-9]{64}$/.test(target.packageDigest) &&
+    ['taskId', 'packageDigest', 'sourceReleaseRunId'].every(key => target[key] === plan.servicePlan?.[key]), 'SERVICE_TARGET_INVALID');
+  const next = { ...e, V2_FC_PUBLIC_READ_ONLY: 'false', V2_FC_PUBLIC_WRITE_SCOPE: 'SERVICE_CONSUMPTION_ONLY',
+    V2_PUBLIC_SERVICE_PLAN: JSON.stringify(plan.servicePlan), V2_PUBLIC_SERVICE_STARTS_AT: new Date(now).toISOString(),
+    V2_PUBLIC_SERVICE_EXPIRES_AT: new Date(now + 2 * 3600000).toISOString(), V2_ACCOUNT_MONTHLY_SPEND_CNY: String(plan.billCny) };
+  try { check(publicServiceConfig(next)?.scope === 'SERVICE_CONSUMPTION_ONLY', 'SERVICE_PLAN_INVALID'); }
+  catch { check(false, 'SERVICE_PLAN_INVALID'); }
+  return next;
+}
+export function serviceConsumptionPilotEnvironment(before, plan, now = Date.now()) {
+  const next = servicePilotBaseline(before, plan, now), e = before.environmentVariables, usage = plan.usage;
+  check(usage?.month === new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit' }).format(new Date(now)) &&
+    Date.parse(usage.checkedAt) <= now && now - Date.parse(usage.checkedAt) < 3600000 && Number.isSafeInteger(usage.sparkRuns) && usage.sparkRuns >= 0 &&
+    Number.isFinite(usage.modelCny) && usage.modelCny >= 0, 'CURRENT_USAGE_REQUIRED');
+  check(Number.isFinite(plan.billCny) && plan.billCny >= 0 && plan.billCny + plan.priorReserveCny + plan.maxIncrementCny < plan.monthlyCny, 'PILOT_BUDGET_INVALID');
+  check(plan.bucketPrivacy?.bucketHash === sha(e.OSS_BUCKET) && plan.bucketPrivacy.aclPrivate === true && plan.bucketPrivacy.policyNotPublic === true &&
+    plan.bucketPrivacy.publicAccessBlocked === true && Date.parse(plan.bucketPrivacy.checkedAt) <= now && now - Date.parse(plan.bucketPrivacy.checkedAt) < 3600000, 'PRIVATE_BUCKET_REQUIRED');
+  return next;
+}
 export function restoredPilotEnvironment(current, baseline, activated, candidate) {
   check(same(current, { ...baseline, environmentVariables: activated, codeChecksum: candidate.crc64, codeSize: candidate.bytes }), 'PILOT_FOREIGN_CONFIGURATION');
   return { ...baseline.environmentVariables };
 }
 
 const publicationScope = 'INVITED_PUBLICATION_PILOT_V1';
+const serviceConsumptionScope = 'INVITED_SERVICE_CONSUMPTION_PILOT_V1';
 const publicationModes = ['stage', 'resume-stage', 'activate', 'timers', 'cleanup-timers', 'close', 'rollback'];
+const serviceConsumptionModes = ['stage', 'activate', 'close', 'rollback'];
 const publicationUsageKeys = ['configReads', 'activeHttp', 'configWrites', 'objectGets', 'objectPuts', 'triggerCreates', 'triggerDeletes', 'permissionProbes'];
 // FC 3.0 can return explicit null for these optional lifecycle fields.
 const stableFunction = value => (value.state == null || value.state === 'Active') &&
@@ -100,18 +148,26 @@ function assertPilotTimer(actual, record) {
     [actual.sourceArn, actual.invocationRole].every(value => value === undefined || value === null || value === ''), 'PUBLICATION_TIMER_OWNERSHIP_MISMATCH');
 }
 
-// Narrow IO seam for this one publication batch. Callers must authenticate the
-// sealed plan and protected-main identity first; tests use synthetic IO only.
+// Shared narrow IO seam for one publication or service-consumption batch.
+// Callers authenticate the sealed plan and protected-main identity first;
+// tests use synthetic IO only. Service mode never enters timer operations.
 export async function runPublicationPilotOperation(plan, before, report, io) {
   const now = io.now ?? Date.now, wait = io.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
-  check(plan.scope === publicationScope && publicationModes.includes(plan.mode) && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 &&
-    plan.maxIncrementCny === 5 && plan.monthlyCny === 200 && plan.priorReserveCny === 32 &&
+  const serviceOnly = plan.scope === serviceConsumptionScope;
+  check((serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
+    (serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && plan.priorReserveCny === 37
+      : plan.scope === publicationScope && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32) && plan.monthlyCny === 200 &&
     plan.maxReads === 120 && plan.maxProbes === 40 && plan.normalReadLimit === 84 && plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12 &&
-    isDeepStrictEqual(plan.triggerNames, publicationPilotTimerNames), 'PUBLICATION_PILOT_SCOPE_INVALID');
+    (serviceOnly || isDeepStrictEqual(plan.triggerNames, publicationPilotTimerNames)), serviceOnly ? 'SERVICE_PILOT_SCOPE_INVALID' : 'PUBLICATION_PILOT_SCOPE_INVALID');
+  if (serviceOnly) check(!['triggerNames', 'timerRecords', 'timerPreparedAt', 'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint'].some(key => Object.hasOwn(plan, key)), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
   check(Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) && plan.issuedAt <= now() && plan.deadline > now() &&
     plan.deadline - plan.issuedAt <= 3600000, 'PLAN_EXPIRED');
   check(plan.controlName === before.functionName && /^dataplatform-v2-[a-z0-9-]{1,60}$/.test(plan.controlName), 'PUBLICATION_TARGET_INVALID');
   check(plan.priorUsage && publicationUsageKeys.every(key => Number.isSafeInteger(plan.priorUsage[key]) && plan.priorUsage[key] >= 0), 'PUBLICATION_USAGE_HISTORY_REQUIRED');
+  if (serviceOnly) {
+    check(plan.historyUsage && publicationUsageKeys.every(key => Number.isSafeInteger(plan.historyUsage[key]) && plan.historyUsage[key] >= 0), 'SERVICE_PRIOR_BATCH_HISTORY_REQUIRED');
+    check(['triggerCreates', 'triggerDeletes', 'permissionProbes'].every(key => plan.priorUsage[key] === 0), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
+  }
   const usage = { ...plan.priorUsage };
   let cleanupReading = ['cleanup-timers', 'close', 'rollback'].includes(plan.mode);
   // GetCallerIdentity and the function GET needed to open the plan are already
@@ -122,18 +178,25 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   Object.assign(report, { scope: plan.scope, mode: plan.mode, issuedAt: plan.issuedAt, deadline: plan.deadline,
     priorUsage: structuredClone(plan.priorUsage), cumulativeUsage: usage, target: plan.target, releaseId: plan.releaseId, previous: plan.previous,
     baseline: ['stage', 'resume-stage'].includes(plan.mode) ? before : plan.baseline, candidate: plan.candidate,
-    permissionProbe: plan.permissionProbe, activated: plan.activated, timerRecords: structuredClone(plan.timerRecords ?? []), timerPreparedAt: plan.timerPreparedAt });
+    activated: plan.activated,
+    ...(serviceOnly && ['close', 'rollback'].includes(plan.mode) && plan.phase === 'RESTORE_REQUESTED' ? { phase: 'RESTORE_REQUESTED' } : {}),
+    ...(serviceOnly ? { servicePlanDigest: sha(canonical(plan.servicePlan)), historyUsage: structuredClone(plan.historyUsage) }
+      : { permissionProbe: plan.permissionProbe, timerRecords: structuredClone(plan.timerRecords ?? []), timerPreparedAt: plan.timerPreparedAt }) });
   const save = () => {
     report.runUsage = Object.fromEntries(publicationUsageKeys.map(key => [key, usage[key] - plan.priorUsage[key]]));
     io.save(report);
   };
   const spend = kind => {
     check(now() < plan.deadline, 'PLAN_EXPIRED');
+    if (serviceOnly) check(!['triggerCreates', 'triggerDeletes', 'permissionProbes'].includes(kind), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
     const limit = { configReads: cleanupReading ? plan.readLimit : plan.normalReadLimit, activeHttp: 40, configWrites: 4, objectPuts: 1, triggerCreates: 4, triggerDeletes: 4, permissionProbes: 1 }[kind];
     check(limit === undefined || usage[kind] < limit, 'PUBLICATION_USAGE_LIMIT');
     usage[kind]++; report[kind] = (report[kind] ?? 0) + 1; save();
   };
-  const call = (kind, args, body) => { spend(kind); return io.command(args, body); };
+  const call = (kind, args, body) => {
+    if (serviceOnly) check(!args.some(arg => typeof arg === 'string' && arg.includes('/triggers')), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
+    spend(kind); return io.command(args, body);
+  };
   const read = () => call('configReads', ['fc', 'GET', path]);
   const put = body => call('configWrites', ['fc', 'PUT', path], body);
   const settle = async expected => {
@@ -154,23 +217,26 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       pages.push(page); if (n * 300 >= Number(page.Data?.TotalCount)) break;
     }
     const verified = verifyV2MonthlyBillPages(pages, 200);
-    check(verified.ok && verified.billingCycle === cycle && Number(verified.spendCny) + 32 + 5 < 200, 'MONTHLY_BUDGET_NOT_VERIFIED');
+    check(verified.ok && verified.billingCycle === cycle && Number(verified.spendCny) + plan.priorReserveCny + plan.maxIncrementCny < 200, 'MONTHLY_BUDGET_NOT_VERIFIED');
     plan.billCny = Number(verified.spendCny); report.bill = verified; save();
   };
-  const runtime = async publication => {
+  const runtime = async opened => {
     for (let n = 0; n < 3; n++) {
       spend('activeHttp'); const access = await io.http('/api/v2/auth/session');
       spend('activeHttp'); const status = await io.http('/api/v2/status');
       const ready = access.status === 200 && access.body.authenticated === false && access.body.readOnly === true &&
-        (publication ? access.body.publicationOnly === true && access.body.publicationExpiresAt === report.activated.V2_PUBLIC_PUBLICATION_EXPIRES_AT
-          : access.body.publicationOnly !== true && access.body.developmentOnly !== true) && status.status === 200 &&
-        (!publication || (status.body.spark?.healthVerified === true && status.body.agentDevelopment?.durableEnabled === true));
+        (opened ? serviceOnly ? access.body.consumptionOnly === true && access.body.publicationOnly !== true && access.body.developmentOnly !== true &&
+            access.body.consumptionExpiresAt === report.activated.V2_PUBLIC_SERVICE_EXPIRES_AT
+          : access.body.publicationOnly === true && access.body.publicationExpiresAt === report.activated.V2_PUBLIC_PUBLICATION_EXPIRES_AT
+          : access.body.publicationOnly !== true && access.body.developmentOnly !== true && access.body.consumptionOnly !== true) && status.status === 200 &&
+        (!opened || serviceOnly || (status.body.spark?.healthVerified === true && status.body.agentDevelopment?.durableEnabled === true));
       report.runtime = { ready, readOnlyAnonymous: access.body.readOnly, publicationOnly: access.body.publicationOnly === true,
-        sparkReady: status.body.spark?.healthVerified === true, expiresAt: access.body.publicationExpiresAt }; save();
+        consumptionOnly: access.body.consumptionOnly === true, sparkReady: status.body.spark?.healthVerified === true,
+        expiresAt: serviceOnly ? access.body.consumptionExpiresAt : access.body.publicationExpiresAt }; save();
       if (ready) return;
       if (n < 2) await wait(3000);
     }
-    check(false, publication ? 'PILOT_RUNTIME_NOT_VERIFIED' : 'READONLY_RESTORE_NOT_VERIFIED');
+    check(false, opened ? 'PILOT_RUNTIME_NOT_VERIFIED' : 'READONLY_RESTORE_NOT_VERIFIED');
   };
   const object = async (pkg, method = 'GET', bytes, query = '') => {
     check(now() < plan.deadline - 60000 && [plan.previous.sha256, plan.candidate.sha256].includes(pkg.sha256), 'OBJECT_OUTSIDE_WINDOW_OR_SCOPE');
@@ -197,6 +263,13 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const openedSnapshot = () => ({ ...stagedSnapshot(), environmentVariables: report.activated });
   const assertBaseline = () => {
     const b = report.baseline, e = b?.environmentVariables;
+    if (serviceOnly) {
+      // Fresh usage/privacy is required before new staging or opening. Closing
+      // an exact known snapshot must not depend on a stale billing observation.
+      (['close', 'rollback'].includes(plan.mode) ? servicePilotBaseline : serviceConsumptionPilotEnvironment)(b, plan, now());
+      if (plan.mode !== 'stage') check(plan.servicePlanDigest === report.servicePlanDigest, 'SERVICE_PLAN_CHECKPOINT_MISMATCH');
+      return;
+    }
     check(b && functionDigest(b) === plan.baselineDigest && b.functionName === plan.controlName && b.runtime === 'custom.debian12' && b.cpu === 0.25 && b.memorySize === 512 && b.instanceConcurrency === 8 &&
       String(b.codeChecksum) === plan.previous.crc64 && b.codeSize === plan.previous.bytes && e?.V2_LOCAL_DEVELOPMENT === 'false' && e.V2_PROVISIONING_ONLY === 'true' && e.V2_PRIVATE_SMOKE_ENABLED === 'true' &&
       e.V2_FC_PUBLIC_HTTP_ENABLED === 'true' && e.V2_FC_PUBLIC_READ_ONLY === 'true' && !e.V2_FC_PUBLIC_WRITE_SCOPE && e.V2_PRIVATE_RELEASE_ENABLED !== 'true' && e.V2_DURABLE_SQL_AGENT_ENABLED === 'true' && e.V2_AGENT_DRIVER_MODE === 'OSS_EVENTS', 'READONLY_PUBLICATION_BASELINE_REQUIRED');
@@ -204,6 +277,14 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   };
   const assertOpened = current => {
     const e = report.activated;
+    if (serviceOnly) {
+      const startsAt = Date.parse(e?.V2_PUBLIC_SERVICE_STARTS_AT);
+      check(typeof e?.V2_ACCOUNT_MONTHLY_SPEND_CNY === 'string' && e.V2_ACCOUNT_MONTHLY_SPEND_CNY.trim() !== '' &&
+        Number.isFinite(Number(e.V2_ACCOUNT_MONTHLY_SPEND_CNY)) && Number(e.V2_ACCOUNT_MONTHLY_SPEND_CNY) >= 0, 'SERVICE_ACTIVE_SNAPSHOT_MISMATCH');
+      const expected = servicePilotBaseline(report.baseline, { ...plan, billCny: Number(e.V2_ACCOUNT_MONTHLY_SPEND_CNY) }, startsAt);
+      check(isDeepStrictEqual(e, expected) && same(current, openedSnapshot()), 'SERVICE_ACTIVE_SNAPSHOT_MISMATCH');
+      return;
+    }
     check(e && e.V2_FC_PUBLIC_WRITE_SCOPE === 'PUBLICATION_ONLY' && e.V2_PUBLIC_PUBLICATION_TASK_ID === plan.target.taskId &&
       e.V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST === plan.target.packageDigest && e.V2_PUBLIC_PUBLICATION_VERIFICATION_ID === plan.target.verificationId &&
       e.V2_SCHEDULER_TICK_SECRET === plan.schedulerSecret && e.V2_PRIVATE_RELEASE_TRIGGER_NAMES === plan.triggerNames.join(',') &&
@@ -274,7 +355,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     if (!['stage', 'resume-stage'].includes(plan.mode)) {
       check(plan.stagedDigest === functionDigest(stagedSnapshot()), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
       report.staged = stagedSnapshot();
-      check(usage.permissionProbes === 1 && plan.permissionProbe?.name === plan.triggerNames[0] &&
+      if (!serviceOnly) check(usage.permissionProbes === 1 && plan.permissionProbe?.name === plan.triggerNames[0] &&
         plan.permissionProbe.outcome === 'TRIGGER_NOT_FOUND' && plan.permissionProbe.confirmedAbsent === true && plan.permissionProbe.provesExistingDeletion === false,
       'PUBLICATION_DELETE_PERMISSION_NOT_CONFIRMED');
     }
@@ -290,7 +371,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       check(same(before, report.baseline), 'PILOT_BASELINE_CHANGED');
       check(plan.bucketPrivacy?.bucketHash === sha(before.environmentVariables.OSS_BUCKET) && plan.bucketPrivacy.aclPrivate === true && plan.bucketPrivacy.policyNotPublic === true && plan.bucketPrivacy.publicAccessBlocked === true &&
         Date.parse(plan.bucketPrivacy.checkedAt) <= now() && now() - Date.parse(plan.bucketPrivacy.checkedAt) < 3600000, 'PRIVATE_BUCKET_REQUIRED');
-      if (!resume) await probeMissingTimerDeletion(); // A recorded successful probe is not repeated.
+      if (!resume && !serviceOnly) await probeMissingTimerDeletion(); // Service consumption carries no trigger authority.
       await bill();
       for (const suffix of ['/concurrency', '/scaling-config']) {
         const value = await call('configReads', ['fc', 'GET', path + suffix, ...(suffix === '/scaling-config' ? ['--qualifier', 'LATEST'] : [])]);
@@ -310,7 +391,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     } else if (plan.mode === 'activate') {
       check(plan.phase === 'STAGED' && same(before, stagedSnapshot()), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
       await bill();
-      report.activated = publicationPilotEnvironment(report.baseline, plan, now());
+      report.activated = (serviceOnly ? serviceConsumptionPilotEnvironment : publicationPilotEnvironment)(report.baseline, plan, now());
       await settle(stagedSnapshot());
       report.phase = 'ACTIVATION_REQUESTED'; save();
       try { await put({ environmentVariables: report.activated }); } catch { report.updateResponseUnknown = true; save(); }
@@ -345,19 +426,28 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       await cleanupTimers(); report.phase = 'TIMERS_CLEANED';
     } else {
       const staged = stagedSnapshot();
-      check(same(before, staged) || (report.activated && same(before, openedSnapshot())), 'PILOT_FOREIGN_CONFIGURATION');
-      if (report.timerRecords.length) await cleanupTimers();
-      else check(usage.triggerCreates === 0, 'PUBLICATION_TIMER_CHECKPOINT_REQUIRED');
-      const listed = await listTimers(); check(!listed.some(t => plan.triggerNames.includes(t.triggerName)), 'PUBLICATION_TIMERS_NOT_CLEANED');
+      const restoredAfterUnknown = serviceOnly && plan.phase === 'RESTORE_REQUESTED' &&
+        same(before, plan.mode === 'rollback' ? report.baseline : staged);
+      if (serviceOnly && plan.phase === 'RESTORE_REQUESTED') check(restoredAfterUnknown, 'SERVICE_RESTORE_ALREADY_ATTEMPTED');
+      check(restoredAfterUnknown || same(before, staged) || (report.activated && same(before, openedSnapshot())), 'PILOT_FOREIGN_CONFIGURATION');
+      if (serviceOnly) {
+        if (!restoredAfterUnknown && !same(before, staged)) assertOpened(before);
+      } else {
+        if (report.timerRecords.length) await cleanupTimers();
+        else check(usage.triggerCreates === 0, 'PUBLICATION_TIMER_CHECKPOINT_REQUIRED');
+        const listed = await listTimers(); check(!listed.some(t => plan.triggerNames.includes(t.triggerName)), 'PUBLICATION_TIMERS_NOT_CLEANED');
+      }
       if (plan.mode === 'rollback') await verifyObject(plan.previous);
       report.phase = 'RESTORE_REQUESTED'; save();
-      if (plan.mode === 'rollback' || !same(before, staged)) {
+      if (!restoredAfterUnknown && (plan.mode === 'rollback' || !same(before, staged))) {
         try { await put({ environmentVariables: report.baseline.environmentVariables, ...(plan.mode === 'rollback' ? { code: packageBody(plan.previous) } : {}) }); }
         catch { report.restoreResponseUnknown = true; save(); }
       } else { report.readOnlyAlreadyRestored = true; save(); }
       await settle(plan.mode === 'rollback' ? report.baseline : staged); await runtime(false);
-      check(!(await listTimers()).some(timer => plan.triggerNames.includes(timer.triggerName)), 'PUBLICATION_TIMERS_NOT_CLEANED');
-      report.timersAbsenceVerified = true;
+      if (!serviceOnly) {
+        check(!(await listTimers()).some(timer => plan.triggerNames.includes(timer.triggerName)), 'PUBLICATION_TIMERS_NOT_CLEANED');
+        report.timersAbsenceVerified = true;
+      }
       report.phase = plan.mode === 'rollback' ? 'ROLLED_BACK' : 'CLOSED_READONLY';
     }
     save(); return report;
@@ -429,13 +519,13 @@ async function main(env = process.env) {
     check(String(id.AccountId) === config.account && String(id.Arn).startsWith(`acs:ram::${config.account}:assumed-role/${config.role}/`), 'IDENTITY_MISMATCH');
     const before = read(); report.initial = before;
     plan = openReadinessProof(env.V2_PILOT_PLAN, before.environmentVariables?.V2_SPARK_EXECUTOR_SECRET);
-    check(['INVITED_DEVELOPMENT_PILOT_V1', publicationScope].includes(plan.scope) && plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
-      (plan.scope === publicationScope ? publicationModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
+    check(['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, serviceConsumptionScope].includes(plan.scope) && plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
+      (plan.scope === publicationScope ? publicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
     check(plan.issuedAt <= Date.now() && plan.deadline > Date.now() && plan.deadline - plan.issuedAt <= 3600000, 'PLAN_EXPIRED');
     report.scope = plan.scope; report.planVerified = true; save();
     const credentials = { accessKeyId: env.ALIBABA_CLOUD_ACCESS_KEY_ID, accessKeySecret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET, securityToken: env.ALIBABA_CLOUD_SECURITY_TOKEN };
     const bucket = before.environmentVariables.OSS_BUCKET;
-    if (plan.scope === publicationScope) {
+    if ([publicationScope, serviceConsumptionScope].includes(plan.scope)) {
       await runPublicationPilotOperation(plan, before, report, {
         save,
         command: (args, body) => {

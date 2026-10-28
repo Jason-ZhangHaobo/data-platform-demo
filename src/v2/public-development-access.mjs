@@ -11,7 +11,7 @@ const routes = [
 const fail = (code, message) => Object.assign(new Error(message), { status: 403, code });
 export function publicDevelopmentConfig(env) {
   const scope = env.V2_FC_PUBLIC_WRITE_SCOPE;
-  if (scope === undefined || scope === '' || scope === 'PUBLICATION_ONLY') return undefined;
+  if (scope === undefined || scope === '' || scope === 'PUBLICATION_ONLY' || scope === 'SERVICE_CONSUMPTION_ONLY') return undefined;
   const startsAt = Date.parse(env.V2_PUBLIC_DEVELOPMENT_STARTS_AT),
     expiresAt = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT),
     email = String(env.V2_BOOTSTRAP_ADMIN_EMAIL ?? '').trim().toLowerCase();

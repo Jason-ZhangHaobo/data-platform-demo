@@ -5,6 +5,7 @@ import { serveV2Static } from "./static-response.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
 import { publicDevelopmentConfig, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow } from "./public-development-access.mjs";
 import { publicPublicationConfig, publicationSession, assertPublicationMutation, assertPublicationTarget, assertPublicationExecutionWindow } from "./public-publication-access.mjs";
+import { publicServiceConfig, serviceSession, assertServiceMutation } from "./public-service-access.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
@@ -174,6 +175,10 @@ const terminal = new Set([
 export function createV2Server(options = {}) {
   const env = options.env ?? process.env,
     root = options.root ?? process.cwd();
+  if (env.V2_FC_PUBLIC_WRITE_SCOPE === "SERVICE_CONSUMPTION_ONLY" &&
+      (env.V2_LOCAL_DEVELOPMENT !== "false" || env.V2_PROVISIONING_ONLY !== "true" ||
+       env.V2_PRIVATE_SMOKE_ENABLED !== "true" || env.V2_PRIVATE_DATA_SERVICES_ENABLED !== "true"))
+    throw new Error("PUBLIC_SERVICE_BACKEND_REQUIRED");
   const store =
     options.store ?? new MetadataStore(join(root, ".data/v2-platform.sqlite"));
   const ownsBusinessStore = !options.businessStore,
@@ -264,12 +269,14 @@ export function createV2Server(options = {}) {
     };
   runner.descriptor = runnerDescriptor;
   const publicationAccess = publicPublicationConfig(env);
+  const serviceAccess = publicServiceConfig(env);
   const developmentAccess = publicDevelopmentConfig(env);
   const assertDevelopmentExecution = () => {
+    if (serviceAccess) throw Object.assign(fail(403, "本次仅开放既有发布结果的接口交付，不启动模型或 Spark。"), { code: "PUBLIC_SERVICE_SCOPE_DENIED" });
     if (publicationAccess) throw Object.assign(fail(403, "本次仅允许审阅发布既有交付包，不启动模型或新的开发计算。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
     assertDevelopmentExecutionWindow(developmentAccess, options.now?.() ?? Date.now());
   };
-  const durableDevelopment = !rawRunner.durable || (!developmentAccess && !publicationAccess) ? rawRunner.durable : {
+  const durableDevelopment = !rawRunner.durable || (!developmentAccess && !publicationAccess && !serviceAccess) ? rawRunner.durable : {
     prepare: (...args) => { assertDevelopmentExecution(); return rawRunner.durable.prepare(...args); },
     submit: (...args) => { assertDevelopmentExecution(); return rawRunner.durable.submit(...args); },
     read: (...args) => rawRunner.durable.read(...args),
@@ -816,7 +823,7 @@ export function createV2Server(options = {}) {
     now: options.now,
     executeDapi: options.dataServiceExecutor,
   });
-  const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, persist: persistDevelopment }) : undefined;
+  const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment }) : undefined;
   const servicePlanner =
     options.servicePlanner ??
     (async (input) => {
@@ -1191,7 +1198,7 @@ export function createV2Server(options = {}) {
         return await serveV2Static(res, root, path);
       if (typeof persistence.refresh === "function") await persistence.refresh();
       const developmentSessionView = ingressChannel === "HTTP" && !publicReadOnly
-        ? publicationSession(publicationAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? developmentSession(developmentAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) : undefined;
+        ? serviceSession(serviceAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? publicationSession(publicationAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? developmentSession(developmentAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) : undefined;
       if (ingressChannel === "HTTP" && !publicReadOnly) {
         assertDevelopmentMutation(developmentAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
       }
@@ -1199,6 +1206,8 @@ export function createV2Server(options = {}) {
       // only the separately authenticated event envelope bypasses this API gate.
       if (!isPrivateSmokeInvoke)
         assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
+      if (!isPrivateSmokeInvoke)
+        assertServiceMutation(serviceAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
       if (ingressChannel === "HTTP" && developmentAccess && method === "POST") {
         const taskPath = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\//);
         const deliveryPath = path.match(/^\/api\/v2\/agent\/deliveries\/([a-f0-9-]{36})\//);
@@ -1213,6 +1222,8 @@ export function createV2Server(options = {}) {
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = await readPrivateSmokeBody(req);
+        if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
+          throw Object.assign(fail(403, "本次仅开放既有发布结果的接口交付；计算与调度保持关闭。"), { code: "PUBLIC_SERVICE_SCOPE_DENIED" });
         // This rollout permits only the reviewed publication. Legacy private
         // acceptance and Agent drivers can mutate records before API forwarding.
         if (publicationAccess && !["PRIVATE_STATUS_V1", "PRIVATE_RELEASE_TIMER_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
@@ -1381,6 +1392,7 @@ export function createV2Server(options = {}) {
             !local && !insecurePublicCookies,
           );
         if (publicReadOnly) response.body = { ...response.body, permissions: ["SESSION"], readOnly: true };
+        else if (ingressChannel === "HTTP" && serviceAccess) response.body = { ...response.body, ...serviceSession(serviceAccess, { user: response.body.user, role: response.body.role }, options.now?.() ?? Date.now()) };
         else if (ingressChannel === "HTTP" && publicationAccess) response.body = { ...response.body, ...publicationSession(publicationAccess, { user: response.body.user, role: response.body.role }, options.now?.() ?? Date.now()) };
         else if (ingressChannel === "HTTP" && developmentAccess) response.body = { ...response.body, ...developmentSession(developmentAccess, { user: response.body.user, role: response.body.role }, options.now?.() ?? Date.now()) };
         return json(res, 200, response.body, {
