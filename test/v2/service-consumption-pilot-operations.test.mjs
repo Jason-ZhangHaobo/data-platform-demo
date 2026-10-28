@@ -3,8 +3,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { runPublicationPilotOperation, serviceConsumptionPilotEnvironment } from '../../scripts/deploy-development-pilot.mjs';
+import { runPublicationPilotOperation, serviceConsumptionPilotEnvironment, validatePilotPackageTransport } from '../../scripts/deploy-development-pilot.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
+import { runServiceCodePrestage } from '../../scripts/service-code-prestage.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const failure = safeCode => Object.assign(new Error(safeCode), { safeCode });
@@ -43,7 +44,7 @@ function fixture() {
   const calls = [], controls = {}, objects = new Map([[previous.sha256, previousBytes]]);
   const io = {
     now: () => now, wait: async () => {}, save: report => { saved = structuredClone(report); },
-    readCandidate: async () => candidateBytes,
+    readCandidate: async () => { calls.push({ candidateRead: true }); assert.notEqual(controls.forbidCandidateRead, true); return candidateBytes; },
     command: async (args, body) => {
       assert.deepEqual(saved.cumulativeUsage, activeReport.cumulativeUsage, 'reserve before every effect');
       assert.ok(!args.some(arg => String(arg).includes('/triggers')), 'service operations cannot inspect or mutate timers');
@@ -76,6 +77,7 @@ function fixture() {
       assert.deepEqual(saved.cumulativeUsage, activeReport.cumulativeUsage);
       assert.ok([previous.sha256, candidate.sha256].includes(pkg.sha256));
       calls.push({ object: pkg.sha256, method, query });
+      if (controls.forbidObjectPut) assert.equal(method, 'GET');
       if (query === 'acl') return new Response(`<AccessControlPolicy><AccessControlList><Grant>${controls.publicObject ? 'public-read' : 'private'}</Grant></AccessControlList></AccessControlPolicy>`);
       if (method === 'PUT') {
         if (!controls.unappliedUpload) objects.set(pkg.sha256, bytes);
@@ -83,7 +85,7 @@ function fixture() {
         return new Response('', { status: 200 });
       }
       if (!objects.has(pkg.sha256)) return new Response('', { status: 404 });
-      return new Response(objects.get(pkg.sha256), { headers: { 'x-oss-hash-crc64ecma': pkg.crc64 } });
+      return new Response(objects.get(pkg.sha256), { headers: { 'x-oss-hash-crc64ecma': controls.wrongCrc && pkg.sha256 === candidate.sha256 ? '9999' : pkg.crc64 } });
     },
     http: async path => {
       assert.deepEqual(saved.cumulativeUsage, activeReport.cumulativeUsage); calls.push({ http: path });
@@ -100,15 +102,28 @@ function fixture() {
     const plan = { ...structuredClone(lastPlan ?? basePlan), mode,
       ...(lastReport ? { phase: lastReport.phase, baseline: lastReport.baseline, servicePlanDigest: lastReport.servicePlanDigest,
         stagedDigest: lastReport.staged && functionDigest(lastReport.staged), candidate: lastReport.candidate,
-        activated: lastReport.activated, priorUsage: lastReport.cumulativeUsage } : {}), ...changes };
+        activated: lastReport.activated, priorUsage: lastReport.cumulativeUsage,
+        ...(lastReport.preStagedObjectDigest ? { preStagedObjectDigest: lastReport.preStagedObjectDigest } : {}) } : {}), ...changes };
     const report = { phase: 'STARTED', configReads: 1, identityReads: 1, configWrites: 0, objectGets: 0, objectPuts: 0,
       activeHttp: 0, triggerCreates: 0, triggerDeletes: 0, permissionProbes: 0, modelCalls: 0, sparkRuns: 0 };
     activeReport = report; lastPlan = plan; lastReport = report;
     await runPublicationPilotOperation(plan, structuredClone(current), report, io); return report;
   }
-  return { step, open: async () => { await step('stage'); return step('activate'); }, basePlan, baseline, calls, controls, previous, candidate,
+  return { step, open: async () => { await step('stage'); return step('activate'); }, basePlan, baseline, calls, controls, previous, candidate, candidateBytes, objects,
     get now() { return now; }, get current() { return current; }, get report() { return lastReport; }, get plan() { return lastPlan; },
     advance: ms => { now += ms; } };
+}
+
+function preStagedFixture(putAttempts = 0) {
+  const f = fixture();
+  f.basePlan.packageTransport = 'PRESTAGED_READ_ONLY_V1';
+  f.basePlan.priorReserveCny = 39;
+  f.basePlan.preStagedObject = { protocol: 'VERIFIED_PRIVATE_CODE_OBJECT_V1', ...f.candidate,
+    verifiedAt: new Date(f.basePlan.issuedAt - 1000).toISOString(), putAttempts };
+  f.basePlan.priorUsage.objectPuts = putAttempts;
+  f.objects.set(f.candidate.sha256, f.candidateBytes);
+  f.controls.forbidCandidateRead = true; f.controls.forbidObjectPut = true;
+  return f;
 }
 
 test('service environment changes only the exact service window and bill without increasing compute quotas', () => {
@@ -293,4 +308,115 @@ test('unknown restoration is only reconciled from the original checkpoint and is
   const restored = await g.step('rollback');
   assert.equal(restored.phase, 'ROLLED_BACK'); assert.equal(restored.readOnlyAlreadyRestored, true);
   assert.equal(g.calls.filter(call => call.args?.[1] === 'PUT').length, 3);
+});
+
+test('pre-staged transport verifies the exact object pair and closes without artifact reads or any object PUT', async () => {
+  for (const putAttempts of [0, 1]) {
+    const f = preStagedFixture(putAttempts), history = structuredClone(f.basePlan.historyUsage);
+    const staged = await f.step('stage');
+    assert.equal(staged.phase, 'STAGED'); assert.equal(staged.objectPuts, 0); assert.equal(staged.runUsage.objectPuts, 0);
+    assert.equal(staged.cumulativeUsage.objectPuts, putAttempts);
+    assert.equal(staged.packageTransport, 'PRESTAGED_READ_ONLY_V1');
+    assert.deepEqual(staged.preStagedObject, f.basePlan.preStagedObject); assert.match(staged.preStagedObjectDigest, /^[a-f0-9]{64}$/);
+    assert.deepEqual(f.calls.filter(call => call.object).map(call => [call.object, call.method, call.query]), [
+      [f.previous.sha256, 'GET', ''], [f.previous.sha256, 'GET', 'acl'], [f.candidate.sha256, 'GET', ''], [f.candidate.sha256, 'GET', 'acl'],
+    ]);
+    assert.equal(staged.cumulativeUsage.objectGets, 4);
+    await f.step('activate'); const closed = await f.step('close');
+    assert.equal(closed.phase, 'CLOSED_READONLY'); assert.deepEqual(f.current.environmentVariables, f.baseline.environmentVariables);
+    assert.equal(f.current.codeChecksum, f.candidate.crc64); assert.equal(closed.cumulativeUsage.objectPuts, putAttempts);
+    assert.equal(closed.objectPuts, 0); assert.equal(closed.runUsage.objectPuts, 0); assert.deepEqual(closed.historyUsage, history);
+    assert.equal(closed.preStagedObjectDigest, staged.preStagedObjectDigest);
+    assert.ok(!f.calls.some(call => call.candidateRead || call.object && call.method !== 'GET'));
+  }
+});
+
+test('missing or corrupt pre-staged bytes, wrong CRC and public ACL never trigger a download, replacement PUT or function write', async () => {
+  for (const mutate of [f => f.objects.delete(f.candidate.sha256), f => f.objects.set(f.candidate.sha256, Buffer.alloc(f.candidate.bytes, 120)),
+    f => { f.controls.wrongCrc = true; }, f => { f.controls.publicObject = true; }]) {
+    const f = preStagedFixture(1); mutate(f); await assert.rejects(f.step('stage'));
+    assert.equal(f.report.cumulativeUsage.configWrites, 0); assert.equal(f.report.cumulativeUsage.objectPuts, 1);
+    assert.equal(f.report.runUsage.objectPuts, 0); assert.deepEqual(f.current, f.baseline);
+    assert.ok(!f.calls.some(call => call.candidateRead || call.object && call.method !== 'GET'));
+    assert.ok(f.report.cumulativeUsage.configReads > f.basePlan.priorUsage.configReads);
+  }
+});
+
+test('pre-staged receipt schema, candidate identity, original time and inherited upload count are mandatory before IO', async () => {
+  const mutations = [p => { p.packageTransport = 'UNKNOWN'; }, p => { p.packageTransport = null; }, p => { p.preStagedObject = undefined; },
+    p => { p.preStagedObject.protocol = 'UNVERIFIED'; }, p => { p.preStagedObject.extra = true; }, p => { delete p.preStagedObject.verifiedAt; },
+    p => { p.preStagedObject.sha256 = 'a'.repeat(64); }, p => { p.preStagedObject.bytes++; }, p => { p.preStagedObject.bytes = String(p.candidate.bytes); },
+    p => { p.preStagedObject.crc64 = '9999'; }, p => { delete p.candidate.crc64; }, p => { p.preStagedObject.putAttempts = 2; },
+    p => { p.preStagedObject.putAttempts = '1'; }, p => { p.preStagedObject.verifiedAt = 'invalid'; },
+    p => { p.preStagedObject.verifiedAt = new Date(p.issuedAt + 1).toISOString(); },
+    p => { p.preStagedObject.verifiedAt = new Date(p.issuedAt - 3600001).toISOString(); },
+    p => { p.priorUsage.objectPuts = 0; }, p => { p.preStagedObjectDigest = 'a'.repeat(64); }, p => { p.packageTransport = undefined; }];
+  for (const mutate of mutations) {
+    const f = preStagedFixture(1), changed = structuredClone(f.basePlan); mutate(changed);
+    await assert.rejects(f.step('stage', changed)); assert.equal(f.calls.length, 0);
+  }
+  const f = preStagedFixture(0); f.basePlan.preStagedObject.verifiedAt = new Date(f.basePlan.issuedAt - 3600000).toISOString();
+  await f.step('stage'); assert.equal(f.report.phase, 'STAGED');
+});
+
+test('pre-staged receipt cannot change during activation or restoration, and reserved cost stays exactly 39', async () => {
+  for (const mode of ['activate', 'close', 'rollback']) {
+    const f = preStagedFixture(1); await f.step('stage'); if (mode !== 'activate') await f.step('activate');
+    const count = f.calls.length, changed = { ...f.basePlan.preStagedObject, verifiedAt: new Date(f.basePlan.issuedAt).toISOString() };
+    await assert.rejects(f.step(mode, { preStagedObject: changed }), /PRESTAGED_CHECKPOINT_CHANGED/);
+    assert.equal(f.calls.length, count);
+  }
+  for (const reserve of [37, 38, 40]) {
+    const f = preStagedFixture(); await assert.rejects(f.step('stage', { priorReserveCny: reserve }), /SCOPE_INVALID/); assert.equal(f.calls.length, 0);
+  }
+  const f = preStagedFixture(); f.controls.bill = '159'; await assert.rejects(f.step('stage'), /BUDGET_NOT_VERIFIED/);
+  assert.equal(f.report.cumulativeUsage.configWrites, 0); assert.equal(f.report.cumulativeUsage.objectPuts, 0);
+  const legacy = fixture(); legacy.controls.bill = '159'; await legacy.step('stage'); assert.equal(legacy.report.phase, 'STAGED');
+});
+
+test('pre-staged rollback and unknown updates remain read-only for objects without requiring later fresh usage', async () => {
+  const f = preStagedFixture(1); f.controls.lostUpdate = true; await f.open();
+  assert.equal(f.report.updateResponseUnknown, true); f.advance(1000);
+  const rolledBack = await f.step('rollback', { usage: { ...f.basePlan.usage, checkedAt: new Date(f.now - 3600000).toISOString() },
+    bucketPrivacy: { ...f.basePlan.bucketPrivacy, checkedAt: new Date(f.now - 3600000).toISOString() }, billCny: 159 });
+  assert.equal(rolledBack.phase, 'ROLLED_BACK'); assert.deepEqual(f.current, f.baseline);
+  assert.equal(rolledBack.cumulativeUsage.objectPuts, 1); assert.equal(rolledBack.runUsage.objectPuts, 0);
+  assert.ok(!f.calls.some(call => call.candidateRead || call.object && call.method !== 'GET'));
+  const g = preStagedFixture(1); await g.open(); g.controls.unappliedUpdate = true;
+  await assert.rejects(g.step('close'), /UPDATE_NOT_RECONCILED/); const count = g.calls.filter(call => call.args?.[1] === 'PUT').length;
+  await assert.rejects(g.step('close'), /RESTORE_ALREADY_ATTEMPTED/);
+  assert.equal(g.calls.filter(call => call.args?.[1] === 'PUT').length, count);
+  assert.equal(g.report.cumulativeUsage.objectPuts, 1); assert.equal(g.report.runUsage.objectPuts, 0);
+});
+
+test('workflow pre_staged flag strictly matches the decrypted transport and is never accepted for another scope', () => {
+  const f = preStagedFixture(); assert.equal(validatePilotPackageTransport(f.basePlan, 'true'), true);
+  assert.throws(() => validatePilotPackageTransport(f.basePlan, 'false'), /INPUT_MISMATCH/);
+  for (const value of ['TRUE', '', null, true, 1]) assert.throws(() => validatePilotPackageTransport(f.basePlan, value), /INPUT_MISMATCH/);
+  const legacy = fixture(); assert.equal(validatePilotPackageTransport(legacy.basePlan, 'false'), false);
+  assert.throws(() => validatePilotPackageTransport(legacy.basePlan, 'true'), /INPUT_MISMATCH/);
+  for (const scope of ['INVITED_DEVELOPMENT_PILOT_V1', 'INVITED_PUBLICATION_PILOT_V1'])
+    assert.throws(() => validatePilotPackageTransport({ ...f.basePlan, scope }, 'true'), /TRANSPORT_INVALID/);
+});
+
+test('actual local pre-stage receipt carries its upload into cloud verification and safe close without retransmission', async () => {
+  const f=fixture(),localCalls=[];let saved;
+  const local=await runServiceCodePrestage({plan:{protocol:'SERVICE_CODE_PRESTAGE_V1',authorized:true,attemptNumber:2,
+    operationId:'00000000-0000-4000-8000-000000000071',approvalDigest:'a'.repeat(64),closedAttemptDigest:'b'.repeat(64),
+    candidate:{sha256:f.candidate.sha256,bytes:f.candidate.bytes},issuedAt:f.now,deadline:f.now+600000,
+    maxPuts:1,maxObjectReads:3,maxAclReads:2,priorReserveCny:39,maxIncrementCny:2,monthlyCny:200,billCny:3.25,
+    bucketPrivacy:f.basePlan.bucketPrivacy},bytes:f.candidateBytes,now:()=>f.now,io:{
+      save:async state=>{saved=structuredClone(state);},
+      readObject:async pkg=>{localCalls.push('GET');return f.objects.has(pkg.sha256)?{status:200,bytes:f.objects.get(pkg.sha256),crc64:f.candidate.crc64}:{status:404,serviceCode:'NoSuchKey'};},
+      putObject:async(pkg,bytes,options)=>{assert.equal(saved.putAttempts,1);assert.equal(options.forbidOverwrite,true);localCalls.push('PUT');f.objects.set(pkg.sha256,Buffer.from(bytes));throw Object.assign(Error('synthetic lost response'),{name:'TimeoutError'});},
+      readAcl:async()=>{localCalls.push('ACL');return{status:200,grant:'private'};},
+    }});
+  assert.deepEqual(localCalls,['GET','PUT','GET','ACL']);assert.deepEqual(local.checkpoint.failures,['TRANSFER_TIMEOUT']);
+  f.basePlan.packageTransport='PRESTAGED_READ_ONLY_V1';f.basePlan.preStagedObject=local.receipt;f.basePlan.priorReserveCny=39;
+  f.basePlan.issuedAt=f.now;f.basePlan.priorUsage={...f.basePlan.priorUsage,configReads:f.basePlan.priorUsage.configReads+3,objectGets:3,objectPuts:1};
+  f.controls.forbidObjectPut=true;f.controls.forbidCandidateRead=true;
+  const history=structuredClone(f.basePlan.historyUsage);await f.step('stage');await f.step('activate');const closed=await f.step('close');
+  assert.equal(closed.phase,'CLOSED_READONLY');assert.equal(closed.cumulativeUsage.objectPuts,1);
+  assert.equal(closed.runUsage.objectPuts,0);assert.deepEqual(closed.historyUsage,history);
+  assert.ok(!f.calls.some(call=>call.candidateRead||call.object&&call.method!=='GET'));
 });

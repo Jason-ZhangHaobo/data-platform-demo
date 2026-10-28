@@ -18,7 +18,30 @@ import { publicServiceConfig } from '../src/v2/public-service-access.mjs';
 const check = (v, code) => { if (!v) throw Object.assign(new Error(code), { safeCode: code }); };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const same = (a, b) => isDeepStrictEqual(functionSnapshot(a), functionSnapshot(b));
+// This receipt authorizes only GET-based verification, never a replacement PUT.
+export function validatePilotPackageTransport(plan, workflowPreStaged) {
+  const preStaged = plan?.packageTransport === 'PRESTAGED_READ_ONLY_V1';
+  check(plan && (plan.packageTransport === undefined || preStaged) &&
+    (!preStaged || plan.scope === 'INVITED_SERVICE_CONSUMPTION_PILOT_V1'), 'PILOT_PACKAGE_TRANSPORT_INVALID');
+  if (workflowPreStaged !== undefined) check(['true', 'false'].includes(workflowPreStaged) &&
+    (workflowPreStaged === 'true') === preStaged, 'PILOT_PRESTAGED_INPUT_MISMATCH');
+  if (!preStaged) {
+    check(!Object.hasOwn(plan, 'preStagedObject') && !Object.hasOwn(plan, 'preStagedObjectDigest'), 'PILOT_PRESTAGED_RECEIPT_UNEXPECTED');
+    return false;
+  }
+  const receipt = plan.preStagedObject, keys = ['protocol', 'sha256', 'bytes', 'crc64', 'verifiedAt', 'putAttempts'];
+  check(receipt && typeof receipt === 'object' && !Array.isArray(receipt) && Object.keys(receipt).length === keys.length &&
+    keys.every(key => Object.hasOwn(receipt, key)) && receipt.protocol === 'VERIFIED_PRIVATE_CODE_OBJECT_V1' &&
+    typeof receipt.sha256 === 'string' && /^[a-f0-9]{64}$/.test(receipt.sha256) && receipt.sha256 === plan.candidate?.sha256 &&
+    Number.isSafeInteger(receipt.bytes) && receipt.bytes > 0 && receipt.bytes <= 67108864 && receipt.bytes === plan.candidate?.bytes &&
+    typeof receipt.crc64 === 'string' && /^\d+$/.test(receipt.crc64) && receipt.crc64 === plan.candidate?.crc64 &&
+    [0, 1].includes(receipt.putAttempts) && Number.isSafeInteger(plan.issuedAt) && typeof receipt.verifiedAt === 'string' &&
+    Number.isFinite(Date.parse(receipt.verifiedAt)) && Date.parse(receipt.verifiedAt) <= plan.issuedAt &&
+    plan.issuedAt - Date.parse(receipt.verifiedAt) <= 3600000, 'PILOT_PRESTAGED_RECEIPT_INVALID');
+  return true;
+}
 export function pilotEnvironment(before, plan, now = Date.now()) {
+  validatePilotPackageTransport(plan);
   const e = before.environmentVariables, usage = plan.usage;
   check(plan.scope === 'INVITED_DEVELOPMENT_PILOT_V1' && plan.maxModelCalls === 3 && plan.maxSparkRuns === 4 && plan.maxIncrementCny === 5 && plan.monthlyCny === 200, 'PILOT_SCOPE_INVALID');
   check(plan.issuedAt <= now && plan.deadline > now && plan.deadline - plan.issuedAt <= 3600000, 'DEPLOYMENT_WINDOW_INVALID');
@@ -40,6 +63,7 @@ export function pilotEnvironment(before, plan, now = Date.now()) {
 // Pure plan validation only. Publication execution and timer IO remain separate;
 // no existing development-pilot authority or environment is implicitly reused.
 export function publicationPilotEnvironment(before, plan, now = Date.now()) {
+  validatePilotPackageTransport(plan);
   const e = before?.environmentVariables, usage = plan?.usage;
   const expectedTriggerNames = Array.from({ length: 4 }, (_, i) => `shuduo-release-pilot-20261027-${i + 1}`);
   check(plan?.scope === 'INVITED_PUBLICATION_PILOT_V1' && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.monthlyCny === 200 && plan.priorReserveCny === 32, 'PUBLICATION_PILOT_SCOPE_INVALID');
@@ -78,8 +102,9 @@ export function publicationPilotEnvironment(before, plan, now = Date.now()) {
 // no scheduler authority and must not change compute budgets or runtime drivers.
 function servicePilotBaseline(before, plan, now) {
   const e = before?.environmentVariables;
+  const preStaged = validatePilotPackageTransport(plan);
   check(plan?.scope === 'INVITED_SERVICE_CONSUMPTION_PILOT_V1' && plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 &&
-    plan.maxIncrementCny === 2 && plan.monthlyCny === 200 && plan.priorReserveCny === 37, 'SERVICE_PILOT_SCOPE_INVALID');
+    plan.maxIncrementCny === 2 && plan.monthlyCny === 200 && plan.priorReserveCny === (preStaged ? 39 : 37), 'SERVICE_PILOT_SCOPE_INVALID');
   check(!['triggerNames', 'timerRecords', 'timerPreparedAt', 'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint'].some(key => Object.hasOwn(plan, key)), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
   check(Number.isSafeInteger(now) && Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) &&
     plan.issuedAt <= now && plan.deadline > now && plan.deadline - plan.issuedAt <= 3600000, 'DEPLOYMENT_WINDOW_INVALID');
@@ -154,8 +179,12 @@ function assertPilotTimer(actual, record) {
 export async function runPublicationPilotOperation(plan, before, report, io) {
   const now = io.now ?? Date.now, wait = io.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const serviceOnly = plan.scope === serviceConsumptionScope;
+  const preStaged = validatePilotPackageTransport(plan);
+  const preStagedObjectDigest = preStaged ? sha(canonical(plan.preStagedObject)) : undefined;
+  if (preStaged && (plan.mode !== 'stage' || Object.hasOwn(plan, 'preStagedObjectDigest')))
+    check(plan.preStagedObjectDigest === preStagedObjectDigest, 'PILOT_PRESTAGED_CHECKPOINT_CHANGED');
   check((serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
-    (serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && plan.priorReserveCny === 37
+    (serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && plan.priorReserveCny === (preStaged ? 39 : 37)
       : plan.scope === publicationScope && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32) && plan.monthlyCny === 200 &&
     plan.maxReads === 120 && plan.maxProbes === 40 && plan.normalReadLimit === 84 && plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12 &&
     (serviceOnly || isDeepStrictEqual(plan.triggerNames, publicationPilotTimerNames)), serviceOnly ? 'SERVICE_PILOT_SCOPE_INVALID' : 'PUBLICATION_PILOT_SCOPE_INVALID');
@@ -164,6 +193,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     plan.deadline - plan.issuedAt <= 3600000, 'PLAN_EXPIRED');
   check(plan.controlName === before.functionName && /^dataplatform-v2-[a-z0-9-]{1,60}$/.test(plan.controlName), 'PUBLICATION_TARGET_INVALID');
   check(plan.priorUsage && publicationUsageKeys.every(key => Number.isSafeInteger(plan.priorUsage[key]) && plan.priorUsage[key] >= 0), 'PUBLICATION_USAGE_HISTORY_REQUIRED');
+  if (preStaged) check(plan.priorUsage.objectPuts === plan.preStagedObject.putAttempts, 'PILOT_PRESTAGED_PUT_HISTORY_CHANGED');
   if (serviceOnly) {
     check(plan.historyUsage && publicationUsageKeys.every(key => Number.isSafeInteger(plan.historyUsage[key]) && plan.historyUsage[key] >= 0), 'SERVICE_PRIOR_BATCH_HISTORY_REQUIRED');
     check(['triggerCreates', 'triggerDeletes', 'permissionProbes'].every(key => plan.priorUsage[key] === 0), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
@@ -179,6 +209,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     priorUsage: structuredClone(plan.priorUsage), cumulativeUsage: usage, target: plan.target, releaseId: plan.releaseId, previous: plan.previous,
     baseline: ['stage', 'resume-stage'].includes(plan.mode) ? before : plan.baseline, candidate: plan.candidate,
     activated: plan.activated,
+    ...(preStaged ? { packageTransport: plan.packageTransport, preStagedObject: structuredClone(plan.preStagedObject), preStagedObjectDigest } : {}),
     ...(serviceOnly && ['close', 'rollback'].includes(plan.mode) && plan.phase === 'RESTORE_REQUESTED' ? { phase: 'RESTORE_REQUESTED' } : {}),
     ...(serviceOnly ? { servicePlanDigest: sha(canonical(plan.servicePlan)), historyUsage: structuredClone(plan.historyUsage) }
       : { permissionProbe: plan.permissionProbe, timerRecords: structuredClone(plan.timerRecords ?? []), timerPreparedAt: plan.timerPreparedAt }) });
@@ -188,6 +219,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   };
   const spend = kind => {
     check(now() < plan.deadline, 'PLAN_EXPIRED');
+    if (preStaged) check(kind !== 'objectPuts', 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
     if (serviceOnly) check(!['triggerCreates', 'triggerDeletes', 'permissionProbes'].includes(kind), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
     const limit = { configReads: cleanupReading ? plan.readLimit : plan.normalReadLimit, activeHttp: 40, configWrites: 4, objectPuts: 1, triggerCreates: 4, triggerDeletes: 4, permissionProbes: 1 }[kind];
     check(limit === undefined || usage[kind] < limit, 'PUBLICATION_USAGE_LIMIT');
@@ -239,6 +271,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     check(false, opened ? 'PILOT_RUNTIME_NOT_VERIFIED' : 'READONLY_RESTORE_NOT_VERIFIED');
   };
   const object = async (pkg, method = 'GET', bytes, query = '') => {
+    if (preStaged) check(method === 'GET' && bytes === undefined, 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
     check(now() < plan.deadline - 60000 && [plan.previous.sha256, plan.candidate.sha256].includes(pkg.sha256), 'OBJECT_OUTSIDE_WINDOW_OR_SCOPE');
     if (method === 'GET') spend('configReads');
     spend(method === 'PUT' ? 'objectPuts' : 'objectGets');
@@ -367,7 +400,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
           checkpoint.objectPuts === 1 && checkpoint.permissionProbes === 1 && checkpoint.updateResponseUnknown !== true &&
           /^\d+$/.test(checkpoint.runId ?? '') && /^[a-f0-9]{64}$/.test(checkpoint.reportDigest ?? '') &&
           plan.permissionProbe?.outcome === 'TRIGGER_NOT_FOUND' && plan.permissionProbe.confirmedAbsent === true &&
-          /^\d+$/.test(plan.candidate.crc64 ?? '') : plan.priorUsage.objectPuts === 0), 'PUBLICATION_STAGE_ALREADY_ATTEMPTED');
+          /^\d+$/.test(plan.candidate.crc64 ?? '') : preStaged ? plan.priorUsage.objectPuts === plan.preStagedObject.putAttempts : plan.priorUsage.objectPuts === 0), 'PUBLICATION_STAGE_ALREADY_ATTEMPTED');
       check(same(before, report.baseline), 'PILOT_BASELINE_CHANGED');
       check(plan.bucketPrivacy?.bucketHash === sha(before.environmentVariables.OSS_BUCKET) && plan.bucketPrivacy.aclPrivate === true && plan.bucketPrivacy.policyNotPublic === true && plan.bucketPrivacy.publicAccessBlocked === true &&
         Date.parse(plan.bucketPrivacy.checkedAt) <= now() && now() - Date.parse(plan.bucketPrivacy.checkedAt) < 3600000, 'PRIVATE_BUCKET_REQUIRED');
@@ -377,7 +410,9 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
         const value = await call('configReads', ['fc', 'GET', path + suffix, ...(suffix === '/scaling-config' ? ['--qualifier', 'LATEST'] : [])]);
         check(suffix === '/concurrency' ? value.reservedConcurrency === 1 : value.minInstances === 0, 'EXISTING_CAPACITY_MISMATCH');
       }
-      if (resume) {
+      if (preStaged) {
+        report.previous = await verifyObject(plan.previous); report.candidate = await verifyObject(plan.candidate);
+      } else if (resume) {
         report.previous = plan.previous; report.candidate = await verifyObject(plan.candidate);
       } else {
         const bytes = await io.readCandidate(); check(bytes.length === plan.candidate.bytes && sha(bytes) === plan.candidate.sha256, 'CANDIDATE_NOT_FROZEN');
@@ -519,6 +554,7 @@ async function main(env = process.env) {
     check(String(id.AccountId) === config.account && String(id.Arn).startsWith(`acs:ram::${config.account}:assumed-role/${config.role}/`), 'IDENTITY_MISMATCH');
     const before = read(); report.initial = before;
     plan = openReadinessProof(env.V2_PILOT_PLAN, before.environmentVariables?.V2_SPARK_EXECUTOR_SECRET);
+    const preStaged = validatePilotPackageTransport(plan, env.V2_PILOT_PRE_STAGED ?? 'false');
     check(['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, serviceConsumptionScope].includes(plan.scope) && plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
       (plan.scope === publicationScope ? publicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
     check(plan.issuedAt <= Date.now() && plan.deadline > Date.now() && plan.deadline - plan.issuedAt <= 3600000, 'PLAN_EXPIRED');
@@ -534,10 +570,12 @@ async function main(env = process.env) {
           return command([...args, '--body-file', file]);
         },
         readCandidate: () => {
+          check(!preStaged, 'PILOT_PRESTAGED_CANDIDATE_READ_FORBIDDEN');
           check(env.V2_PILOT_BUILD_RUN === plan.buildRunId && env.V2_PILOT_ARTIFACT_ID === plan.artifactId, 'ARTIFACT_BINDING_INVALID');
           return readFileSync('.candidate/v2-function.zip');
         },
         object: (pkg, method, bytes, query) => {
+          if (preStaged) check(method === 'GET' && bytes === undefined, 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
           const request = privateOssRequest({ bucket, region: config.region, credentials, key: controlPackageObject(pkg.sha256), method, body: bytes, query });
           return fetch(request.url, { ...request.options, signal: AbortSignal.timeout(method === 'PUT' ? 300000 : 120000) });
         },

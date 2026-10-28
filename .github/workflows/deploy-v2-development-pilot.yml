@@ -18,6 +18,10 @@ on:
       artifact_id:
         required: false
         type: string
+      pre_staged:
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -40,6 +44,7 @@ jobs:
       V2_PILOT_MODE: ${{ inputs.mode }}
       V2_PILOT_BUILD_RUN: ${{ inputs.build_run_id }}
       V2_PILOT_ARTIFACT_ID: ${{ inputs.artifact_id }}
+      V2_PILOT_PRE_STAGED: ${{ inputs.pre_staged }}
       V2_AUDIT_RECIPIENT_KEY: ${{ inputs.recipient_public_key }}
     steps:
       - uses: actions/checkout@v7
@@ -55,7 +60,7 @@ jobs:
           for(const value of [c.account,c.role,c.functionName,process.env.V2_DEPLOY_ROLE_ARN,process.env.V2_DEPLOY_OIDC_PROVIDER_ARN,process.env.V2_PILOT_PLAN])if(value)console.log(`::add-mask::${value}`);
           NODE
       - uses: actions/download-artifact@v6
-        if: inputs.mode == 'deploy' || inputs.mode == 'stage'
+        if: (inputs.mode == 'deploy' || inputs.mode == 'stage') && !inputs.pre_staged
         with:
           run-id: ${{ inputs.build_run_id }}
           artifact-ids: ${{ inputs.artifact_id }}
