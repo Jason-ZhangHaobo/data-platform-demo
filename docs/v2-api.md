@@ -13,6 +13,10 @@
 
 这些是协议与本机回归范围，实际部署、真实模型/Spark、恢复和完整E2E须另验。
 
+操作层复用环境-only的`INVITED_DEVELOPMENT_RECOVERY_WINDOW_V1`，可选`resumeExistingTask`采用`TARGET_TASK_FRESH_WINDOW_V1`：绑定目标UUID、已结束的旧窗口、保留尝试、独立批准及代码阶段已用读取/探测数；摘要写入`binding.taskResumeDigest`，不能替换任务或清零计数。该分支为零新任务、最多两次后续模型和四次Spark；环境仍最多四次写入（含恢复），代码包不由此脚本上传或修改。旧新任务模式和其原额度保持不变。
+
+前置只读代码更新使用独立的`TARGET_TASK_CODE_CONTINUATION_V1`描述，绑定同一批准、候选、前序、完整历史和保留费用。该阶段仍零计算、零业务开窗；不混用旧预算修复描述，也不接收环境开窗字段。环境阶段从总额扣除代码阶段实际用量；缺乏真实闭合记录与人审来源时，不得凭这些协议名执行。
+
 ## 指定版本受邀发布增量（2026-10-27）
 
 以下为已实现的范围控制，不声明任何实际环境已开放。设置 `V2_FC_PUBLIC_WRITE_SCOPE=PUBLICATION_ONLY` 时，必须同时配置 `V2_LOCAL_DEVELOPMENT=false`、既有 `V2_BOOTSTRAP_ADMIN_EMAIL`、`V2_PUBLIC_PUBLICATION_TASK_ID`、`V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST`、`V2_PUBLIC_PUBLICATION_VERIFICATION_ID` 和 `V2_PUBLIC_PUBLICATION_STARTS_AT/EXPIRES_AT`（最多两小时）。实际执行仍要求原持久化、隔离Worker、预算和签名定时器条件通过；不因设置scope取得身份或跳过CSRF。

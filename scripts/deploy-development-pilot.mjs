@@ -179,6 +179,8 @@ const readonlyCodeModes = ['stage', 'rollback'];
 export function validateReadonlyCodeRefreshPlan(plan) {
   const binding = plan?.readonlyCodeRefresh;
   const continuation = plan?.budgetFixContinuation;
+  const taskContinuation = plan?.targetTaskCodeContinuation;
+  check(!(continuation !== undefined && taskContinuation !== undefined), 'READONLY_CODE_CONTINUATION_AMBIGUOUS');
   if (continuation !== undefined) {
     const fields = ['protocol', 'approvalDigest', 'predecessorDigest', 'historyUsageDigest', 'candidateSha256', 'previousReserveCny'];
     check(continuation && !Array.isArray(continuation) && Object.keys(continuation).length === fields.length &&
@@ -188,14 +190,24 @@ export function validateReadonlyCodeRefreshPlan(plan) {
       continuation.historyUsageDigest === binding?.historyUsageDigest && continuation.candidateSha256 === plan.candidate?.sha256 &&
       continuation.previousReserveCny === 52, 'BUDGET_FIX_CONTINUATION_INVALID');
   }
+  if (taskContinuation !== undefined) {
+    const fields = ['protocol', 'taskId', 'approvalDigest', 'predecessorDigest', 'historyUsageDigest', 'candidateSha256', 'previousReserveCny'];
+    check(taskContinuation && !Array.isArray(taskContinuation) && Object.keys(taskContinuation).length === fields.length && fields.every(k => Object.hasOwn(taskContinuation,k)) &&
+      taskContinuation.protocol === 'TARGET_TASK_CODE_CONTINUATION_V1' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(taskContinuation.taskId ?? '') &&
+      ['approvalDigest','predecessorDigest','historyUsageDigest','candidateSha256'].every(k => /^[a-f0-9]{64}$/.test(taskContinuation[k] ?? '')) &&
+      taskContinuation.approvalDigest === binding?.approvalDigest && taskContinuation.predecessorDigest === binding?.predecessorDigest &&
+      taskContinuation.historyUsageDigest === binding?.historyUsageDigest && taskContinuation.candidateSha256 === plan.candidate?.sha256 &&
+      Number.isFinite(taskContinuation.previousReserveCny) && taskContinuation.previousReserveCny >= 0 && taskContinuation.previousReserveCny === plan.priorReserveCny &&
+      binding?.taskResumeDigest === timerHash(taskContinuation), 'TARGET_TASK_CODE_CONTINUATION_INVALID');
+  }
   const keys = ['protocol', 'predecessorDigest', 'approvalDigest', 'historyUsageDigest',
-    'previousSha256', 'candidateSha256', 'applicationSource', 'buildRunId', 'artifactId'];
+    'previousSha256', 'candidateSha256', 'applicationSource', 'buildRunId', 'artifactId', ...(taskContinuation ? ['taskResumeDigest'] : [])];
   check(plan?.scope === readonlyCodeRefreshScope && readonlyCodeModes.includes(plan.mode) &&
-    plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === (continuation ? 5 : 2) &&
-    plan.monthlyCny === 200 && plan.priorReserveCny === (continuation ? 52 : 45),
+    plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === (continuation || taskContinuation ? 5 : 2) &&
+    plan.monthlyCny === 200 && plan.priorReserveCny === (taskContinuation ? taskContinuation.previousReserveCny : continuation ? 52 : 45),
   'READONLY_CODE_SCOPE_INVALID');
   check(!['target', 'servicePlan', 'servicePlanDigest', 'triggerNames', 'timerRecords', 'timerPreparedAt',
-    'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint', 'activated', 'cloudTransferContinuation']
+    'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint', 'activated', 'cloudTransferContinuation', 'resumeExistingTask']
     .some(key => Object.hasOwn(plan, key)), 'READONLY_CODE_EXTRA_AUTHORITY_FORBIDDEN');
   check(binding && typeof binding === 'object' && !Array.isArray(binding) &&
     Object.keys(binding).length === keys.length && keys.every(key => Object.hasOwn(binding, key)) &&
@@ -271,7 +283,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const now = io.now ?? Date.now, wait = io.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const serviceOnly = plan.scope === serviceConsumptionScope;
   const codeOnly = plan.scope === readonlyCodeRefreshScope, noTimers = serviceOnly || codeOnly;
-  const budgetFix = codeOnly && plan.budgetFixContinuation !== undefined;
+  const extendedCode = codeOnly && (plan.budgetFixContinuation !== undefined || plan.targetTaskCodeContinuation !== undefined);
   const preStaged = validatePilotPackageTransport(plan);
   const preStagedObjectDigest = preStaged ? sha(canonical(plan.preStagedObject)) : undefined;
   if (preStaged && (plan.mode !== 'stage' || Object.hasOwn(plan, 'preStagedObjectDigest')))
@@ -279,7 +291,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   check((codeOnly ? readonlyCodeModes : serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
     (codeOnly ? validateReadonlyCodeRefreshPlan(plan) : serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && validateServicePilotReserve(plan, preStaged)
       : plan.scope === publicationScope && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32) && plan.monthlyCny === 200 &&
-    plan.maxReads === (budgetFix ? 102 : 120) && plan.maxProbes === 40 && plan.normalReadLimit === (budgetFix ? 72 : 84) &&
+    plan.maxReads === (extendedCode ? 102 : 120) && plan.maxProbes === 40 && plan.normalReadLimit === (extendedCode ? 72 : 84) &&
     (codeOnly ? Number.isSafeInteger(plan.ownerCleanupReadReserve) && plan.ownerCleanupReadReserve >= 18 && plan.ownerCleanupReadReserve <= 32 &&
       plan.readLimit === plan.maxReads - plan.ownerCleanupReadReserve && plan.readLimit >= plan.normalReadLimit
       : plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12) &&
@@ -308,7 +320,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     ...(preStaged ? { packageTransport: plan.packageTransport, preStagedObject: structuredClone(plan.preStagedObject), preStagedObjectDigest } : {}),
     ...(noTimers && ['close', 'rollback'].includes(plan.mode) && plan.phase === 'RESTORE_REQUESTED' ? { phase: 'RESTORE_REQUESTED' } : {}),
     ...(codeOnly ? { readonlyCodeRefresh: structuredClone(plan.readonlyCodeRefresh), historyUsage: structuredClone(plan.historyUsage),
-      ...(budgetFix ? { budgetFixContinuation: structuredClone(plan.budgetFixContinuation) } : {}) }
+      ...(plan.budgetFixContinuation ? { budgetFixContinuation: structuredClone(plan.budgetFixContinuation) } : {}),
+      ...(plan.targetTaskCodeContinuation ? { targetTaskCodeContinuation: structuredClone(plan.targetTaskCodeContinuation) } : {}) }
       : serviceOnly ? { servicePlanDigest: sha(canonical(plan.servicePlan)), historyUsage: structuredClone(plan.historyUsage),
       ...(plan.cloudTransferContinuation ? { cloudTransferContinuation: structuredClone(plan.cloudTransferContinuation) } : {}) }
       : { permissionProbe: plan.permissionProbe, timerRecords: structuredClone(plan.timerRecords ?? []), timerPreparedAt: plan.timerPreparedAt }) });

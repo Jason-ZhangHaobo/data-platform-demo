@@ -23,6 +23,15 @@ function fixture() {
     usage:{month:'2026-10',checkedAt:stamp,sparkRuns:8,modelCny:2.1},billCny:10,
     modelPricing:{model:'fictional-coder',available:true,checkedAt:stamp,maxBatchCny:1,evidenceDigest:hash('e')} };
 }
+function targetedFixture() {
+  const p=fixture();
+  p.resumeExistingTask={protocol:'TARGET_TASK_FRESH_WINDOW_V1',taskId:uuid(1),originalStartsAt:new Date(time-7200000).toISOString(),
+    originalDeadline:new Date(time-3600000).toISOString(),retainedAttempts:1,approvalDigest:p.binding.approvalDigest,priorCodeReads:30,priorCodeHttp:2,
+    codeStageIssuedAt:stamp,codeStageClosedAt:stamp};
+  p.binding={...p.binding,protocol:'DEVELOPMENT_TASK_RESUME_CONTINUATION_V1',taskResumeDigest:recoveryDigest(p.resumeExistingTask)};
+  p.maxNewTasks=0;p.maxModelCalls=2;p.maxReads=130;p.maxProbes=58;
+  return p;
+}
 function harness(plan, options={}) {
   let current = structuredClone(options.current ?? plan.baseline), clock=time;
   const calls=[], writes=[], snapshots=[];
@@ -42,7 +51,8 @@ function harness(plan, options={}) {
       if(options.httpError)throw new TypeError('fixture-network');
       assert.ok(['/api/v2/auth/session','/api/v2/status'].includes(endpoint));
       const open=current.environmentVariables.V2_FC_PUBLIC_WRITE_SCOPE==='DEVELOPMENT_ONLY';
-      return endpoint.endsWith('/session')?{status:200,body:{authenticated:false,readOnly:true,developmentOnly:open,developmentExpiresAt:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT}}
+      return endpoint.endsWith('/session')?{status:200,body:{authenticated:false,readOnly:true,developmentOnly:open,developmentExpiresAt:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT,
+        ...(open&&current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID?{developmentTaskOnly:options.targetFlag!==false,...(options.leakTargetId?{developmentTaskId:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID}:{})}:{} )}}
         :{status:200,body:{spark:{healthVerified:options.health!==false},agentDevelopment:{durableEnabled:true,eventBackgroundAvailable:true}}};
     }};
   return {io,report,calls,writes,snapshots,current:()=>current,setClock:v=>clock=v};
@@ -133,4 +143,57 @@ test('workflow supports only environment lifecycle without artifact fetch; exist
   assert.match(workflow,/activate, recycle, timers/);assert.match(workflow,/inputs.mode == 'deploy' \|\| inputs.mode == 'stage'/);
   assert.match(source,/plan.scope === developmentRecoveryScope \? 7200000 : 3600000/);
   assert.match(source,/runDevelopmentRecoveryOperation\(plan, before, report/);
+});
+
+test('targeted fresh window binds one old task, preserves both histories and subtracts prior code-stage reads',async()=>{
+  const p=targetedFixture(),h=harness(p);await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
+  assert.equal(h.report.phase,'OPENED');assert.equal(h.writes.length,1);
+  const active=h.report.activated;
+  assert.equal(active.V2_PUBLIC_DEVELOPMENT_TASK_ID,p.resumeExistingTask.taskId);
+  assert.equal(active.V2_PUBLIC_DEVELOPMENT_STARTS_AT,stamp,'newly reviewed window, never copied from the old task window');
+  assert.equal(active.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT,new Date(p.deadline).toISOString());
+  assert.equal(h.current().codeChecksum,p.baseline.codeChecksum);assert.deepEqual(h.current().vpcConfig,p.baseline.vpcConfig);
+  assert.deepEqual(h.report.resumeExistingTask,p.resumeExistingTask);assert.deepEqual(h.report.historyUsage,p.historyUsage);
+  assert.ok(h.report.cumulativeUsage.configReads+p.resumeExistingTask.priorCodeReads<=160);
+  assert.ok(h.report.cumulativeUsage.activeHttp+p.resumeExistingTask.priorCodeHttp<=60);
+  assert.equal(h.report.modelCalls,0);assert.equal(h.report.sparkRuns,0);
+});
+test('targeted continuation rejects stale-window extensions, new-task authority, mismatched approval, reset limits and target tampering',()=>{
+  const changes=[p=>p.resumeExistingTask.protocol='ORIGINAL_TASK_WINDOW_CONTINUATION_V1',p=>p.resumeExistingTask.originalDeadline=new Date(time+1).toISOString(),
+    p=>p.resumeExistingTask.originalStartsAt=p.resumeExistingTask.originalDeadline,p=>p.resumeExistingTask.retainedAttempts=0,
+    p=>p.resumeExistingTask.approvalDigest=hash('9'),p=>p.resumeExistingTask.taskId=uuid(9),p=>p.binding.taskResumeDigest=hash('9'),
+    p=>p.binding.protocol='DEVELOPMENT_RECOVERY_CONTINUATION_V1',p=>p.resumeExistingTask.extra=true,p=>p.maxNewTasks=1,p=>p.maxModelCalls=3,
+    p=>p.maxReads=160,p=>p.maxProbes=60,p=>p.resumeExistingTask.priorCodeReads=0,p=>p.resumeExistingTask.priorCodeHttp=0,
+    p=>p.resumeExistingTask.priorCodeReads=-1,p=>p.resumeExistingTask.priorCodeHttp='2',p=>p.baseline.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID=uuid(9),
+    p=>p.issuedAt-=1000,p=>p.resumeExistingTask.codeStageIssuedAt=new Date(time-1000).toISOString(),p=>p.resumeExistingTask.codeStageClosedAt=new Date(time+1).toISOString()];
+  for(const change of changes){const p=targetedFixture();change(p);assert.throws(()=>validateDevelopmentRecoveryPlan(p,time));}
+});
+test('targeted reload requires a settled boundary from the exact allowed task; closing restores original read-only state',async()=>{
+  const p=targetedFixture(),h=harness(p);await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
+  const reload={...p,mode:'recycle',phase:'OPENED',activated:h.report.activated,priorUsage:h.report.cumulativeUsage,recoveryNonce:'f'.repeat(32),
+    phaseBoundary:{taskId:p.resumeExistingTask.taskId,revisionId:uuid(2),runId:uuid(3),bootId:uuid(4),contextId:p.contextId,status:'VERIFIED',modelPending:false,sparkPending:false,evidenceDigest:hash('f')}};
+  for(const change of [p=>p.phaseBoundary.taskId=uuid(9),p=>p.phaseBoundary.modelPending=true,p=>p.phaseBoundary.sparkPending=true]){
+    const invalid=structuredClone(reload);change(invalid);const r=harness(invalid,{current:h.current()});
+    await assert.rejects(runDevelopmentRecoveryOperation(invalid,h.current(),r.report,r.io));assert.equal(r.calls.length,0);
+  }
+  const r=harness(reload,{current:h.current()});await runDevelopmentRecoveryOperation(reload,h.current(),r.report,r.io);
+  assert.equal(r.report.reloaded.V2_PUBLIC_DEVELOPMENT_TASK_ID,p.resumeExistingTask.taskId);
+  assert.equal(r.report.reloaded.V2_PUBLIC_DEVELOPMENT_STARTS_AT,stamp);assert.equal(r.report.cumulativeUsage.configWrites,2);
+  const closing={...reload,mode:'close',phase:r.report.phase,reloaded:r.report.reloaded,priorUsage:r.report.cumulativeUsage},c=harness(closing,{current:r.current()});
+  c.setClock(p.deadline+1000);await runDevelopmentRecoveryOperation(closing,r.current(),c.report,c.io);
+  assert.deepEqual(c.current(),p.baseline);assert.equal(c.report.phase,'CLOSED_READONLY');assert.equal(c.writes.length,1);
+});
+test('targeted runtime probe refuses an old application or anonymous task-ID disclosure and restores once',async()=>{
+  for(const options of [{targetFlag:false},{leakTargetId:true}]){
+    const p=targetedFixture(),h=harness(p,options);
+    await assert.rejects(runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io),/RECOVERY_RUNTIME_UNCONFIRMED/);
+    assert.equal(h.writes.length,2);assert.equal(h.report.restoration,'VERIFIED');assert.deepEqual(h.current(),p.baseline);
+  }
+});
+test('targeted unknown environment write is reconciled once, and a depleted phase budget cannot borrow cleanup reads',async()=>{
+  const p=targetedFixture(),h=harness(p,{unknown:true});await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
+  assert.equal(h.writes.length,1);assert.equal(h.report.updateResponseUnknown,true);assert.equal(h.report.phase,'OPENED');
+  const depleted=targetedFixture();depleted.priorUsage.configReads=depleted.maxReads-20;
+  const d=harness(depleted);await assert.rejects(runDevelopmentRecoveryOperation(depleted,depleted.baseline,d.report,d.io),/RECOVERY_USAGE_LIMIT/);
+  assert.equal(d.writes.length,0);assert.equal(d.calls.length,0);
 });
