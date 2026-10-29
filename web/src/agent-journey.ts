@@ -57,6 +57,10 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
   const current = e.evidenceReadable !== false && !e.dirty && Boolean(e.revisionId && e.runId && e.report?.taskId === e.taskId && e.report.revisionId === e.revisionId && e.report.runId === e.runId&&(!e.contextId||e.report.contextId===e.contextId));
   const required = ["revision", "execution", "results", "regressions"];
   const verified = current && Boolean(family) && e.report?.status === "PASSED" && (e.report.validationContractId===undefined||e.report.validationContractId===family?.id) && required.every(id => e.report?.checks.some(c => c.id === id && c.passed === true));
+  const codeExecuted = current && Boolean(family) && (e.report?.validationContractId===undefined||e.report.validationContractId===family?.id) &&
+    ["PASSED", "NEEDS_ATTENTION"].includes(e.report?.status ?? "") &&
+    ["revision", "execution"].every(id => e.report?.checks.some(check => check.id === id && check.passed === true));
+  const codeFailed = current && e.report?.status === "NEEDS_ATTENTION" && !codeExecuted;
   const files = Boolean(current && e.bundle && e.delivery?.sourceRevisionId === e.revisionId && e.delivery?.sourceRunId === e.runId && e.delivery?.packageId === e.bundle.id && e.delivery.packageDigest === e.bundle.digest && deliveryFilePresentation(e.bundle.files, "").missing.length === 0);
   const fileVerified = Boolean(verified && files && e.delivery?.status === "SUCCEEDED" && e.delivery.verificationId === e.verification?.id && e.verification?.status === "SUCCEEDED" && e.verification.mainSqlExecuted === true && e.verification.testSqlValidation?.passed === true && regressionsMatchFamily(e.verification.validation,family));
   const publicationCurrent = Boolean(fileVerified && e.release?.packageId === e.bundle?.id && e.release?.packageDigest === e.bundle?.digest && e.release?.sourceRevisionId === e.revisionId);
@@ -72,7 +76,7 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
   const consumed = Boolean(healthy && consumptionCurrent && !e.consumption?.truncated && e.consumption?.status === "VERIFIED" && e.consumption.services.some(s => s.serviceType === "XAPI" && s.status === "VERIFIED" && s.fullAssetComposition === true && s.call?.verified === true && s.call.versionId === s.versionId && s.call.rowCount > 0));
   const steps: JourneyStep[] = [
     { id: "requirement", label: "需求与口径", state: "DONE", detail: "需求已记录；按已登记证券口径执行，不代表模型已理解任意需求。", target: "agent-requirement" },
-    { id: "code", label: "代码与调试", state: state(Boolean(e.revisionId)), detail: e.dirty ? "未保存修改不继承旧结论。" : e.revisionId ? `代码版本 ${e.revisionId.slice(0, 8)}` : "等待生成代码，可随时人工接管。", target: "agent-code" },
+    { id: "code", label: "代码与调试", state: state(codeExecuted, codeFailed), detail: e.dirty ? "未保存修改不继承旧结论。" : codeExecuted ? `代码版本 ${e.revisionId!.slice(0, 8)} 已完成实际执行；业务正确性另见独立结果核验。` : codeFailed ? "当前代码执行尚未通过，请查看报错并修正。" : e.revisionId ? `代码版本 ${e.revisionId.slice(0, 8)} 已生成，等待核对执行与调试回执。` : "等待生成代码，可随时人工接管。", target: "agent-code" },
     { id: "validation", label: "独立结果核验", state: state(verified, current && e.report?.status === "NEEDS_ATTENTION"), detail: verified ? "版本、真实执行、结果和五场景断言通过。" : "查看未通过项；SQL跑通不等于完整核验。", target: "agent-verification" },
     { id: "files", label: "调度与部署文件", state: state(fileVerified, e.delivery?.status === "FAILED"), detail: fileVerified ? "同一版本的交付文件演练通过。" : files ? "文件已生成，仍需实际演练。" : "核验通过后准备版本化交付。", target: "agent-files" },
     { id: "publication", label: "审阅与发布", state: state(executed, stopped), detail: executed ? `当前交付包已由调度器执行 · ${e.release?.id.slice(0, 8)}` : e.release && !publicationCurrent ? "保留历史发布，不替当前版本证明上线。" : "需审阅确切版本；不会自动代批。", target: "agent-publication" },
