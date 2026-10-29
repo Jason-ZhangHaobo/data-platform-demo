@@ -171,6 +171,64 @@ export function restoredPilotEnvironment(current, baseline, activated, candidate
   return { ...baseline.environmentVariables };
 }
 
+export const readonlyCodeRefreshScope = 'INVITED_READONLY_CODE_PILOT_V1';
+const readonlyCodeModes = ['stage', 'rollback'];
+// A new, independently approved code refresh is not another development,
+// publication or service-consumption grant. It never opens a business window.
+export function validateReadonlyCodeRefreshPlan(plan) {
+  const binding = plan?.readonlyCodeRefresh;
+  const keys = ['protocol', 'predecessorDigest', 'approvalDigest', 'historyUsageDigest',
+    'previousSha256', 'candidateSha256', 'applicationSource', 'buildRunId', 'artifactId'];
+  check(plan?.scope === readonlyCodeRefreshScope && readonlyCodeModes.includes(plan.mode) &&
+    plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 &&
+    plan.monthlyCny === 200 && plan.priorReserveCny === 45,
+  'READONLY_CODE_SCOPE_INVALID');
+  check(!['target', 'servicePlan', 'servicePlanDigest', 'triggerNames', 'timerRecords', 'timerPreparedAt',
+    'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint', 'activated', 'cloudTransferContinuation']
+    .some(key => Object.hasOwn(plan, key)), 'READONLY_CODE_EXTRA_AUTHORITY_FORBIDDEN');
+  check(binding && typeof binding === 'object' && !Array.isArray(binding) &&
+    Object.keys(binding).length === keys.length && keys.every(key => Object.hasOwn(binding, key)) &&
+    binding.protocol === 'READONLY_CODE_REFRESH_CONTINUATION_V1' &&
+    ['predecessorDigest', 'approvalDigest', 'historyUsageDigest', 'previousSha256', 'candidateSha256']
+      .every(key => /^[a-f0-9]{64}$/.test(binding[key] ?? '')) &&
+    binding.previousSha256 === plan.previous?.sha256 && binding.candidateSha256 === plan.candidate?.sha256 &&
+    binding.previousSha256 !== binding.candidateSha256 &&
+    /^[a-f0-9]{40}$/.test(binding.applicationSource ?? '') && binding.applicationSource === plan.applicationSource &&
+    ['buildRunId', 'artifactId'].every(key => /^\d{6,20}$/.test(binding[key] ?? '') && binding[key] === plan[key]) &&
+    plan.historyUsage && !Array.isArray(plan.historyUsage) &&
+    Object.keys(plan.historyUsage).length === publicationUsageKeys.length &&
+    publicationUsageKeys.every(key => Number.isSafeInteger(plan.historyUsage[key]) && plan.historyUsage[key] >= 0) &&
+    binding.historyUsageDigest === timerHash(plan.historyUsage), 'READONLY_CODE_CONTINUATION_INVALID');
+  check(plan.priorUsage && publicationUsageKeys.every(key => Number.isSafeInteger(plan.priorUsage[key]) && plan.priorUsage[key] >= 0) &&
+    ['triggerCreates', 'triggerDeletes', 'permissionProbes'].every(key => plan.priorUsage[key] === 0) &&
+    plan.priorUsage.objectPuts <= 1 && plan.priorUsage.configWrites <= 2,
+  'READONLY_CODE_USAGE_INVALID');
+  if (plan.mode === 'rollback') check(['STAGED', 'RESTORE_REQUESTED'].includes(plan.phase) &&
+    plan.priorUsage.configWrites === (plan.phase === 'RESTORE_REQUESTED' ? 2 : 1), 'READONLY_CODE_ROLLBACK_CHECKPOINT_REQUIRED');
+  return true;
+}
+function readonlyCodeBaseline(before, plan, now) {
+  const e = before?.environmentVariables;
+  check(before?.runtime === 'custom.debian12' && before.cpu === 0.25 && before.memorySize === 512 &&
+    before.instanceConcurrency === 8 && Number.isFinite(before.timeout) && before.timeout <= 120 &&
+    e?.V2_LOCAL_DEVELOPMENT === 'false' && e.V2_PROVISIONING_ONLY === 'true' &&
+    e.V2_PRIVATE_SMOKE_ENABLED === 'true' && e.V2_FC_PUBLIC_HTTP_ENABLED === 'true' &&
+    e.V2_FC_PUBLIC_READ_ONLY === 'true' && !e.V2_FC_PUBLIC_WRITE_SCOPE && e.V2_PRIVATE_RELEASE_ENABLED !== 'true' &&
+    typeof e.V2_BOOTSTRAP_ADMIN_EMAIL === 'string' && e.V2_BOOTSTRAP_ADMIN_EMAIL.length <= 160 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.V2_BOOTSTRAP_ADMIN_EMAIL) &&
+    /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(e.OSS_BUCKET ?? ''), 'READONLY_CODE_BASELINE_REQUIRED');
+  check(before.functionName === plan.controlName && functionDigest(before) === plan.baselineDigest &&
+    [plan.previous, plan.candidate].every(pkg => pkg && /^[a-f0-9]{64}$/.test(pkg.sha256 ?? '') &&
+      Number.isSafeInteger(pkg.bytes) && pkg.bytes > 0 && pkg.bytes <= 73400320 &&
+      (pkg.crc64 === undefined || (typeof pkg.crc64 === 'string' && /^\d+$/.test(pkg.crc64)))) &&
+    typeof plan.previous.crc64 === 'string' && /^\d+$/.test(plan.previous.crc64) &&
+    String(before.codeChecksum) === plan.previous.crc64 && before.codeSize === plan.previous.bytes,
+  'READONLY_CODE_BASELINE_CHANGED');
+  if (plan.mode === 'stage') check(plan.bucketPrivacy?.bucketHash === sha(e.OSS_BUCKET) &&
+    plan.bucketPrivacy.aclPrivate === true && plan.bucketPrivacy.policyNotPublic === true &&
+    plan.bucketPrivacy.publicAccessBlocked === true && Date.parse(plan.bucketPrivacy.checkedAt) <= now &&
+    now - Date.parse(plan.bucketPrivacy.checkedAt) < 3600000, 'PRIVATE_BUCKET_REQUIRED');
+}
+
 const publicationScope = 'INVITED_PUBLICATION_PILOT_V1';
 const serviceConsumptionScope = 'INVITED_SERVICE_CONSUMPTION_PILOT_V1';
 const publicationModes = ['stage', 'resume-stage', 'activate', 'timers', 'cleanup-timers', 'close', 'rollback'];
@@ -201,15 +259,16 @@ function assertPilotTimer(actual, record) {
 export async function runPublicationPilotOperation(plan, before, report, io) {
   const now = io.now ?? Date.now, wait = io.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const serviceOnly = plan.scope === serviceConsumptionScope;
+  const codeOnly = plan.scope === readonlyCodeRefreshScope, noTimers = serviceOnly || codeOnly;
   const preStaged = validatePilotPackageTransport(plan);
   const preStagedObjectDigest = preStaged ? sha(canonical(plan.preStagedObject)) : undefined;
   if (preStaged && (plan.mode !== 'stage' || Object.hasOwn(plan, 'preStagedObjectDigest')))
     check(plan.preStagedObjectDigest === preStagedObjectDigest, 'PILOT_PRESTAGED_CHECKPOINT_CHANGED');
-  check((serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
-    (serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && validateServicePilotReserve(plan, preStaged)
+  check((codeOnly ? readonlyCodeModes : serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
+    (codeOnly ? validateReadonlyCodeRefreshPlan(plan) : serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && validateServicePilotReserve(plan, preStaged)
       : plan.scope === publicationScope && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32) && plan.monthlyCny === 200 &&
     plan.maxReads === 120 && plan.maxProbes === 40 && plan.normalReadLimit === 84 && plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12 &&
-    (serviceOnly || isDeepStrictEqual(plan.triggerNames, publicationPilotTimerNames)), serviceOnly ? 'SERVICE_PILOT_SCOPE_INVALID' : 'PUBLICATION_PILOT_SCOPE_INVALID');
+    (noTimers || isDeepStrictEqual(plan.triggerNames, publicationPilotTimerNames)), codeOnly ? 'READONLY_CODE_SCOPE_INVALID' : serviceOnly ? 'SERVICE_PILOT_SCOPE_INVALID' : 'PUBLICATION_PILOT_SCOPE_INVALID');
   if (serviceOnly) check(!['triggerNames', 'timerRecords', 'timerPreparedAt', 'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint'].some(key => Object.hasOwn(plan, key)), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
   check(Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) && plan.issuedAt <= now() && plan.deadline > now() &&
     plan.deadline - plan.issuedAt <= 3600000, 'PLAN_EXPIRED');
@@ -232,8 +291,9 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     baseline: ['stage', 'resume-stage'].includes(plan.mode) ? before : plan.baseline, candidate: plan.candidate,
     activated: plan.activated,
     ...(preStaged ? { packageTransport: plan.packageTransport, preStagedObject: structuredClone(plan.preStagedObject), preStagedObjectDigest } : {}),
-    ...(serviceOnly && ['close', 'rollback'].includes(plan.mode) && plan.phase === 'RESTORE_REQUESTED' ? { phase: 'RESTORE_REQUESTED' } : {}),
-    ...(serviceOnly ? { servicePlanDigest: sha(canonical(plan.servicePlan)), historyUsage: structuredClone(plan.historyUsage),
+    ...(noTimers && ['close', 'rollback'].includes(plan.mode) && plan.phase === 'RESTORE_REQUESTED' ? { phase: 'RESTORE_REQUESTED' } : {}),
+    ...(codeOnly ? { readonlyCodeRefresh: structuredClone(plan.readonlyCodeRefresh), historyUsage: structuredClone(plan.historyUsage) }
+      : serviceOnly ? { servicePlanDigest: sha(canonical(plan.servicePlan)), historyUsage: structuredClone(plan.historyUsage),
       ...(plan.cloudTransferContinuation ? { cloudTransferContinuation: structuredClone(plan.cloudTransferContinuation) } : {}) }
       : { permissionProbe: plan.permissionProbe, timerRecords: structuredClone(plan.timerRecords ?? []), timerPreparedAt: plan.timerPreparedAt }) });
   const save = () => {
@@ -243,17 +303,20 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const spend = kind => {
     check(now() < plan.deadline, 'PLAN_EXPIRED');
     if (preStaged) check(kind !== 'objectPuts', 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
-    if (serviceOnly) check(!['triggerCreates', 'triggerDeletes', 'permissionProbes'].includes(kind), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
-    const limit = { configReads: cleanupReading ? plan.readLimit : plan.normalReadLimit, activeHttp: 40, configWrites: 4, objectPuts: 1, triggerCreates: 4, triggerDeletes: 4, permissionProbes: 1 }[kind];
+    if (noTimers) check(!['triggerCreates', 'triggerDeletes', 'permissionProbes'].includes(kind), codeOnly ? 'READONLY_CODE_EXTRA_AUTHORITY_FORBIDDEN' : 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
+    const limit = { configReads: cleanupReading ? plan.readLimit : plan.normalReadLimit, activeHttp: 40, configWrites: codeOnly ? 2 : 4, objectPuts: 1, triggerCreates: 4, triggerDeletes: 4, permissionProbes: 1 }[kind];
     check(limit === undefined || usage[kind] < limit, 'PUBLICATION_USAGE_LIMIT');
     usage[kind]++; report[kind] = (report[kind] ?? 0) + 1; save();
   };
   const call = (kind, args, body) => {
-    if (serviceOnly) check(!args.some(arg => typeof arg === 'string' && arg.includes('/triggers')), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
+    if (noTimers) check(!args.some(arg => typeof arg === 'string' && arg.includes('/triggers')), codeOnly ? 'READONLY_CODE_EXTRA_AUTHORITY_FORBIDDEN' : 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
     spend(kind); return io.command(args, body);
   };
   const read = () => call('configReads', ['fc', 'GET', path]);
-  const put = body => call('configWrites', ['fc', 'PUT', path], body);
+  const put = body => {
+    if (codeOnly) check(body && Object.keys(body).length === 1 && Object.hasOwn(body, 'code'), 'READONLY_CODE_ENVIRONMENT_WRITE_FORBIDDEN');
+    return call('configWrites', ['fc', 'PUT', path], body);
+  };
   const settle = async expected => {
     for (let n = 0; n < 6; n++) {
       const current = await read();
@@ -296,6 +359,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const object = async (pkg, method = 'GET', bytes, query = '') => {
     if (preStaged) check(method === 'GET' && bytes === undefined, 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
     check(now() < plan.deadline - 60000 && [plan.previous.sha256, plan.candidate.sha256].includes(pkg.sha256), 'OBJECT_OUTSIDE_WINDOW_OR_SCOPE');
+    if (codeOnly && method === 'PUT') check(pkg.sha256 === plan.candidate.sha256, 'READONLY_CODE_ROLLBACK_PUT_FORBIDDEN');
     if (method === 'GET') spend('configReads');
     spend(method === 'PUT' ? 'objectPuts' : 'objectGets');
     return io.object(pkg, method, bytes, query);
@@ -319,6 +383,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const openedSnapshot = () => ({ ...stagedSnapshot(), environmentVariables: report.activated });
   const assertBaseline = () => {
     const b = report.baseline, e = b?.environmentVariables;
+    if (codeOnly) { readonlyCodeBaseline(b, plan, now()); return; }
     if (serviceOnly) {
       // Fresh usage/privacy is required before new staging or opening. Closing
       // an exact known snapshot must not depend on a stale billing observation.
@@ -411,7 +476,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     if (!['stage', 'resume-stage'].includes(plan.mode)) {
       check(plan.stagedDigest === functionDigest(stagedSnapshot()), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
       report.staged = stagedSnapshot();
-      if (!serviceOnly) check(usage.permissionProbes === 1 && plan.permissionProbe?.name === plan.triggerNames[0] &&
+      if (!noTimers) check(usage.permissionProbes === 1 && plan.permissionProbe?.name === plan.triggerNames[0] &&
         plan.permissionProbe.outcome === 'TRIGGER_NOT_FOUND' && plan.permissionProbe.confirmedAbsent === true && plan.permissionProbe.provesExistingDeletion === false,
       'PUBLICATION_DELETE_PERMISSION_NOT_CONFIRMED');
     }
@@ -427,7 +492,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       check(same(before, report.baseline), 'PILOT_BASELINE_CHANGED');
       check(plan.bucketPrivacy?.bucketHash === sha(before.environmentVariables.OSS_BUCKET) && plan.bucketPrivacy.aclPrivate === true && plan.bucketPrivacy.policyNotPublic === true && plan.bucketPrivacy.publicAccessBlocked === true &&
         Date.parse(plan.bucketPrivacy.checkedAt) <= now() && now() - Date.parse(plan.bucketPrivacy.checkedAt) < 3600000, 'PRIVATE_BUCKET_REQUIRED');
-      if (!resume && !serviceOnly) await probeMissingTimerDeletion(); // Service consumption carries no trigger authority.
+      if (!resume && !noTimers) await probeMissingTimerDeletion(); // No timer authority in service or code-only mode.
       await bill();
       for (const suffix of ['/concurrency', '/scaling-config']) {
         const value = await call('configReads', ['fc', 'GET', path + suffix, ...(suffix === '/scaling-config' ? ['--qualifier', 'LATEST'] : [])]);
@@ -484,11 +549,12 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       await cleanupTimers(); report.phase = 'TIMERS_CLEANED';
     } else {
       const staged = stagedSnapshot();
-      const restoredAfterUnknown = serviceOnly && plan.phase === 'RESTORE_REQUESTED' &&
+      const restoredAfterUnknown = noTimers && plan.phase === 'RESTORE_REQUESTED' &&
         same(before, plan.mode === 'rollback' ? report.baseline : staged);
-      if (serviceOnly && plan.phase === 'RESTORE_REQUESTED') check(restoredAfterUnknown, 'SERVICE_RESTORE_ALREADY_ATTEMPTED');
+      if (noTimers && plan.phase === 'RESTORE_REQUESTED') check(restoredAfterUnknown, codeOnly ? 'READONLY_CODE_RESTORE_ALREADY_ATTEMPTED' : 'SERVICE_RESTORE_ALREADY_ATTEMPTED');
       check(restoredAfterUnknown || same(before, staged) || (report.activated && same(before, openedSnapshot())), 'PILOT_FOREIGN_CONFIGURATION');
-      if (serviceOnly) {
+      if (codeOnly) check(stableFunction(before), 'READONLY_CODE_ROLLBACK_NOT_SETTLED');
+      if (noTimers) {
         if (!restoredAfterUnknown && !same(before, staged)) assertOpened(before);
       } else {
         if (report.timerRecords.length) await cleanupTimers();
@@ -498,11 +564,11 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       if (plan.mode === 'rollback') await verifyObject(plan.previous);
       report.phase = 'RESTORE_REQUESTED'; save();
       if (!restoredAfterUnknown && (plan.mode === 'rollback' || !same(before, staged))) {
-        try { await put({ environmentVariables: report.baseline.environmentVariables, ...(plan.mode === 'rollback' ? { code: packageBody(plan.previous) } : {}) }); }
+          try { await put({ ...(!codeOnly ? { environmentVariables: report.baseline.environmentVariables } : {}), ...(plan.mode === 'rollback' ? { code: packageBody(plan.previous) } : {}) }); }
         catch { report.restoreResponseUnknown = true; save(); }
       } else { report.readOnlyAlreadyRestored = true; save(); }
       await settle(plan.mode === 'rollback' ? report.baseline : staged); await runtime(false);
-      if (!serviceOnly) {
+      if (!noTimers) {
         check(!(await listTimers()).some(timer => plan.triggerNames.includes(timer.triggerName)), 'PUBLICATION_TIMERS_NOT_CLEANED');
         report.timersAbsenceVerified = true;
       }
@@ -530,7 +596,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
         else {
           check(same(current, staging ? stagedSnapshot() : openedSnapshot()), 'PILOT_FOREIGN_CONFIGURATION');
           report.rollbackRequested = true; save();
-          try { await put({ environmentVariables: restore.environmentVariables, ...(staging ? { code: packageBody(plan.previous) } : {}) }); }
+          try { await put({ ...(!codeOnly ? { environmentVariables: restore.environmentVariables } : {}), ...(staging ? { code: packageBody(plan.previous) } : {}) }); }
           catch { report.rollbackResponseUnknown = true; save(); }
           await settle(restore); report.rollback = 'VERIFIED';
         }
@@ -578,13 +644,13 @@ async function main(env = process.env) {
     const before = read(); report.initial = before;
     plan = openReadinessProof(env.V2_PILOT_PLAN, before.environmentVariables?.V2_SPARK_EXECUTOR_SECRET);
     const preStaged = validatePilotPackageTransport(plan, env.V2_PILOT_PRE_STAGED ?? 'false');
-    check(['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, serviceConsumptionScope].includes(plan.scope) && plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
-      (plan.scope === publicationScope ? publicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
+    check(['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope) && plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
+      (plan.scope === publicationScope ? publicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
     check(plan.issuedAt <= Date.now() && plan.deadline > Date.now() && plan.deadline - plan.issuedAt <= 3600000, 'PLAN_EXPIRED');
     report.scope = plan.scope; report.planVerified = true; save();
     const credentials = { accessKeyId: env.ALIBABA_CLOUD_ACCESS_KEY_ID, accessKeySecret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET, securityToken: env.ALIBABA_CLOUD_SECURITY_TOKEN };
     const bucket = before.environmentVariables.OSS_BUCKET;
-    if ([publicationScope, serviceConsumptionScope].includes(plan.scope)) {
+    if ([publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) {
       await runPublicationPilotOperation(plan, before, report, {
         save,
         command: (args, body) => {
