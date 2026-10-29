@@ -25,11 +25,13 @@ test("read-only login explains its scope and disables invite redemption", () => 
 
 test("workbench retains read-only status after logout and hides account mutation panels", () => {
   const main = readFileSync(new URL("../../web/src/main.tsx", import.meta.url), "utf8");
-  assert.match(main, /setSession\(\{ authenticated: false, readOnly: session.readOnly, developmentOnly: session.developmentOnly, publicationOnly: session.publicationOnly, consumptionOnly: session.consumptionOnly \}\)/);
+  assert.match(main, /setSession\(\{ authenticated: false, readOnly: session.readOnly, developmentOnly: session.developmentOnly, developmentTaskOnly: session.developmentTaskOnly, publicationOnly: session.publicationOnly, consumptionOnly: session.consumptionOnly \}\)/);
   assert.match(main, /!session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&\s+session.role === "ADMIN" && <InvitationPanel/);
   assert.match(main, /!session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&\s+session.authenticated && \(\s+<ChangePasswordPanel/);
   assert.match(main, /allowRedeem=\{!privatePreview && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly\}/);
-  assert.match(main, /受邀开发试点 · 仅限一条新 Agent 任务/);
+  assert.match(main, /受邀开发试点 ·/);
+  assert.match(main, /仅限一条新 Agent 任务/);
+  assert.match(main, /session.developmentTaskOnly \? "仅续接指定既有任务/);
   assert.match(main, /只读验收入口 · 已有账号可登录查看已保存结果/);
   const workbench = readFileSync(new URL("../../web/src/AgentDevelopmentWorkbench.tsx", import.meta.url), "utf8");
   assert.match(main, /backgroundAvailable=\{Boolean\(status\?\.agentDevelopment\?\.eventBackgroundAvailable\)\} readOnly=\{session.readOnly \|\| session.publicationOnly \|\| session.consumptionOnly\}/);
@@ -60,7 +62,8 @@ test("publication permission cannot enable development or other module writes", 
   assert.match(main, /同一冻结业务日期运行两批，不代表两个交易日或生产调度/);
   const workbench = readFileSync(new URL("../../web/src/AgentDevelopmentWorkbench.tsx", import.meta.url), "utf8");
   assert.match(workbench, /canWrite=originalCanWrite&&!readOnly&&!publicationTarget/);
-  assert.match(workbench, /readOnly=\{readOnly\|\|Boolean\(publicationTarget\)\|\|working\}/);
+  assert.match(workbench, /readOnly=\{readOnly\|\|!scopeEditable\|\|Boolean\(publicationTarget\)\|\|working\}/);
+  assert.match(workbench, /scopeEditable=mayEditScopedTask\(taskOnly,targetTaskId,task\?\.id,originTaskId\)/);
   assert.match(workbench, /canPublish=\{canPublish\} publicationTarget=\{publicationTarget\}/);
   const panel = readFileSync(new URL("../../web/src/AgentDeliveryPanel.tsx", import.meta.url), "utf8");
   assert.match(panel, /publicationTargetMatches\(publicationTarget, \{ taskId, packageDigest: workflow\?\.package\?\.digest, verificationId: workflow\?\.verification\?\.id \}/);

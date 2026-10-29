@@ -11,15 +11,16 @@ import {createAgentEventDriver,AGENT_WAKE_PREFIX,agentEventConfigFromEnvironment
 import {createAgentWakeOssTransport} from "../../src/v2/agent-wake-oss-transport.mjs";
 import {createQueuedSparkJob,createQueuedSparkResult,SPARK_QUEUE_PREFIXES} from "../../src/v2/remote-spark-queue.mjs";
 import {referenceSql,getContext,contextIds,validationContractId} from "../../src/v2/context.mjs";
+import {publicDevelopmentConfig,developmentBackgroundWindow,developmentBackgroundBoundary,assertDevelopmentBackgroundScope} from '../../src/v2/public-development-access.mjs';
 const project="project-securities-lab",secret="synthetic-test-secret-".repeat(3);
 const config={bucket:"fictional-securities-test",accountId:"111122223333",project,secret,wakePrefix:AGENT_WAKE_PREFIX,resultPrefix:SPARK_QUEUE_PREFIXES.results};
 const queueConfig={projectId:project,sharedSecret:"synthetic-worker-key-".repeat(3),jobPrefix:SPARK_QUEUE_PREFIXES.jobs,resultPrefix:SPARK_QUEUE_PREFIXES.results,cancellationPrefix:SPARK_QUEUE_PREFIXES.cancellations,timeoutMs:180000};
 const event=key=>({events:[{eventName:"ObjectCreated:PutObject",eventSource:"acs:oss",eventVersion:"1.0",eventTime:new Date().toISOString(),oss:{bucket:{name:config.bucket,ownerIdentity:config.accountId},object:{key}}}]});
 function fixture(t){
   const root=mkdtempSync(join(tmpdir(),"shuduo-events-")),path=join(root,"meta.sqlite");
-  let store=new MetadataStore(path),clock=Date.now(),models=0,submitted=0,blocked=false,modelError,persist=async()=>{},engine,driver;
+  let store=new MetadataStore(path),clock=Date.now(),models=0,submitted=0,blocked=false,modelError,persist=async()=>{},engine,driver,scope=()=>{},reads=0;
   const objects=new Map(),events=[];
-  const transport={read:async key=>objects.get(key),create:async(key,body)=>{
+  const transport={read:async key=>{reads++;return objects.get(key);},create:async(key,body)=>{
     if(blocked)throw Object.assign(new Error("synthetic ACK unknown"),{code:"TEST_ACK_UNKNOWN"});
     if(objects.has(key)){assert.equal(objects.get(key),body);return;}
     objects.set(key,body);events.push(event(key));
@@ -32,12 +33,12 @@ function fixture(t){
     engine=createDurableSqlAgent({store,project,runner,persist:()=>persist(),getContext,contextIds,contractId:validationContractId,now:()=>clock,
       generator:async()=>{models++;if(modelError)throw modelError;return{sql:referenceSql,model:"TEST_DOUBLE",usage:{total_tokens:20}};}});
     const dispatcher=createAgentDispatcher({store,project,engine,persist:()=>persist(),now:()=>clock});
-    driver=createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist:()=>persist(),now:()=>clock});
+    driver=createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist:()=>persist(),now:()=>clock,assertExecutionScope:(...args)=>scope(...args)});
   };
   build();t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
   const create=()=>engine.create({message:"虚构财富客户资产T+1",currentSql:referenceSql,contextId:"holdings-t1",actorId:owner.id,idempotencyKey:randomUUID()});
   return{get store(){return store;},get engine(){return engine;},get driver(){return driver;},owner,objects,events,create,
-    get models(){return models;},get submitted(){return submitted;},now:()=>clock,later:ms=>clock+=ms,
+    get models(){return models;},get submitted(){return submitted;},get reads(){return reads;},scope:fn=>scope=fn,now:()=>clock,later:ms=>clock+=ms,
     restart:()=>{store.close();store=new MetadataStore(path);build();},persist:fn=>persist=fn,blockPut:v=>blocked=v,modelFault:e=>modelError=e,
     worker:(taskId,status="SUCCEEDED")=>{
       const task=store.get("agent",taskId,project),run=store.get("run",task.runId,project),prepared=run.remoteSubmission.prepared;
@@ -158,4 +159,49 @@ test("OSS adapter signs exact safe prefixes, rejects redirects and verifies immu
   assert.equal(calls[0].options.headers["x-oss-forbid-overwrite"],"true");assert.match(calls[0].options.headers.Authorization,/^OSS TEST_ID:/);assert.equal(calls[0].options.redirect,"error");
   await assert.rejects(transport.create(`${SPARK_QUEUE_PREFIXES.results}/${randomUUID()}.json`,"{}"),{code:"AGENT_WAKE_OBJECT_DENIED"});
   await assert.rejects(transport.read(".env"),{code:"AGENT_WAKE_OBJECT_DENIED"});
+});
+
+test('explicit old-task review binds a fresh window without resetting attempts, reservations or event counters',async t=>{
+  const f=fixture(t),task=await f.create(),foreign=await f.create();
+  f.store.update('auth_user',f.owner.id,project,{email:'owner@example.invalid',memberships:[{projectId:project,role:'ADMIN'}]});
+  await f.driver.enable(task.id,f.owner.id,{expectedVersion:task.version,maxEvents:2});
+  await f.driver.enable(foreign.id,f.owner.id,{expectedVersion:foreign.version});
+  f.modelFault(Error('synthetic provider interrupted'));await f.driver.consume(f.events[0]);
+  const paused=f.engine.get(task.id),oldGrant=f.store.list('agent_background',project).find(g=>g.taskId===task.id);
+  assert.equal(paused.usedTokens,12000);assert.equal(oldGrant.consumedEvents,1);
+  f.later(2*3600000);
+  const window=publicDevelopmentConfig({V2_LOCAL_DEVELOPMENT:'false',V2_DURABLE_SQL_AGENT_ENABLED:'true',V2_FC_PUBLIC_WRITE_SCOPE:'DEVELOPMENT_ONLY',V2_BOOTSTRAP_ADMIN_EMAIL:'owner@example.invalid',V2_PUBLIC_DEVELOPMENT_TASK_ID:task.id,V2_PUBLIC_DEVELOPMENT_STARTS_AT:new Date(f.now()).toISOString(),V2_PUBLIC_DEVELOPMENT_EXPIRES_AT:new Date(f.now()+5*60000).toISOString()});
+  f.scope((current,boundary)=>assertDevelopmentBackgroundScope(window,current,f.store.get('auth_user',current.submittedBy,project),project,boundary,f.now()));
+  const foreignSnapshot=structuredClone(f.store.list('agent_background',project).find(g=>g.taskId===foreign.id)),reads=f.reads;
+  assert.equal((await f.driver.consume(f.events[1])).state,'SCOPE_DENIED');
+  assert.equal(f.reads,reads,'foreign wake must not even read OSS');
+  assert.deepEqual(f.store.get('agent_background',foreignSnapshot.id,project),foreignSnapshot);
+  const review={expectedVersion:paused.version,developmentBoundary:developmentBackgroundBoundary(window,task.id,f.now()),...developmentBackgroundWindow(window,f.now())};
+  await assert.rejects(f.driver.resume(task.id,f.owner.id,review),{code:'AGENT_RETRY_CONFIRMATION_REQUIRED'});
+  await assert.rejects(f.driver.resume(task.id,f.owner.id,{...review,expectedVersion:paused.version-1,confirmModelRetry:true}),{code:'STALE_AGENT_VERSION'});
+  const renewed=await f.driver.resume(task.id,f.owner.id,{...review,confirmModelRetry:true});
+  assert.equal(renewed.consumedEvents,1);assert.equal(renewed.maxEvents,2);assert.equal(renewed.expiresAt,window.expiresAt);
+  const resumed=f.engine.get(task.id);assert.equal(resumed.createdAt,paused.createdAt);assert.equal(resumed.usedTokens,12000);assert.deepEqual(resumed.attempts,paused.attempts);
+  assert.equal(f.store.list('agent_background',project).find(g=>g.taskId===task.id).id,oldGrant.id);
+  f.restart();f.modelFault(undefined);
+  await f.driver.consume(f.events.at(-1));assert.equal(f.models,2);
+  assert.equal(f.engine.get(task.id).attempts.length,2);assert.equal(f.engine.get(task.id).usedTokens,12020);
+  assert.equal(f.driver.status(task.id).code,'AGENT_BACKGROUND_EVENT_LIMIT');assert.equal(f.submitted,0);
+  await f.driver.consume(f.events[0]);assert.equal(f.models,2,'old wake does not start another model call');
+  assert.equal(f.store.list('agent',project).length,2,'only the two original fixture tasks exist');
+});
+
+test('closing or replacing the public window makes queued events inert without mutating another task',async t=>{
+  const f=fixture(t),task=await f.create();
+  f.store.update('auth_user',f.owner.id,project,{email:'owner@example.invalid',memberships:[{projectId:project,role:'ADMIN'}]});
+  let window=publicDevelopmentConfig({V2_LOCAL_DEVELOPMENT:'false',V2_DURABLE_SQL_AGENT_ENABLED:'true',V2_FC_PUBLIC_WRITE_SCOPE:'DEVELOPMENT_ONLY',V2_BOOTSTRAP_ADMIN_EMAIL:'owner@example.invalid',V2_PUBLIC_DEVELOPMENT_TASK_ID:task.id,V2_PUBLIC_DEVELOPMENT_STARTS_AT:new Date(f.now()-1000).toISOString(),V2_PUBLIC_DEVELOPMENT_EXPIRES_AT:new Date(f.now()+60000).toISOString()});
+  f.scope((current,boundary)=>assertDevelopmentBackgroundScope(window,current,f.store.get('auth_user',current.submittedBy,project),project,boundary,f.now()));
+  await f.driver.enable(task.id,f.owner.id,{expectedVersion:task.version,...developmentBackgroundWindow(window,f.now()),developmentBoundary:developmentBackgroundBoundary(window,task.id,f.now())});
+  const before=structuredClone(f.store.get('agent',task.id,project)),grant=structuredClone(f.store.list('agent_background',project)[0]);
+  f.later(60000);
+  assert.equal((await f.driver.consume(f.events[0])).code,'PUBLIC_DEVELOPMENT_CLOSED');
+  window=undefined;
+  assert.equal((await f.driver.consume(f.events[0])).code,'PUBLIC_DEVELOPMENT_BACKGROUND_SCOPE_CHANGED');
+  assert.deepEqual(f.store.get('agent',task.id,project),before);assert.deepEqual(f.store.get('agent_background',grant.id,project),grant);
+  assert.equal(f.reads,0);assert.equal(f.models,0);assert.equal(f.submitted,0);
 });

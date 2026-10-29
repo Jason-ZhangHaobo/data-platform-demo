@@ -1,5 +1,18 @@
 # V2 API 契约与实现边界
 
+## 指定旧任务的开发续接（2026-10-29，默认关闭）
+
+`DEVELOPMENT_ONLY`可选`V2_PUBLIC_DEVELOPMENT_TASK_ID`，严格UUID、既有持久Spark SQL任务、原指定管理员及最多两小时的新窗口。没有该项时保留一条新任务模式。原身份、项目、CSRF、版本和预算校验不变；不能用配置本身替代实际授权。
+
+- 会话对获准账号返回`developmentTaskOnly:true`与`developmentTaskId`；匿名/其他账号不返回编号。窗口结束只读。
+- `POST /agent/tasks`在指定模式拒绝新建/派生；只允许指定`:id`的`advance/cancel/prepare-delivery/background`及其`cancel/resume`。交付任务必须有同目标来源，不能只靠路由UUID或同一用户判断。
+- `POST /agent/tasks/:id/background/resume`仅接收`expectedVersion,confirmModelRetry`。后台窗口及目标由服务端生成，客户端传`durationMs`或`developmentBoundary`拒绝。最多15分钟且不超过新窗口，不重置原次数与费用预留；未知模型结果必须显式确认。
+- `POST /revisions`必须指定目标`originAgentTaskId`且口径一致，服务端保存人工来源。`POST /runs`仅接受目标当前/历史尝试关联版本或可信人工版本。人工运行不改写原Agent结论。
+- 旧窗口绑定的后台事件返回`SCOPE_DENIED`，不触发计算、不改变其他任务/计数；状态可带`scopeBlocked:true`提示重新审阅。关闭开发范围后旧委托仍不能执行。原私有验收、无范围tick及内部转发不能绕过指定任务边界。
+- `PUBLIC_DEVELOPMENT_TARGET_ONLY`表示不在指定任务范围；`PUBLIC_DEVELOPMENT_BACKGROUND_SCOPE_CHANGED`表示后台委托不属于当前窗口；`PUBLIC_DEVELOPMENT_CLOSED`表示当前窗口或身份不可执行。GET仍按原访问控制读取，不自动重新提交。
+
+这些是协议与本机回归范围，实际部署、真实模型/Spark、恢复和完整E2E须另验。
+
 ## 指定版本受邀发布增量（2026-10-27）
 
 以下为已实现的范围控制，不声明任何实际环境已开放。设置 `V2_FC_PUBLIC_WRITE_SCOPE=PUBLICATION_ONLY` 时，必须同时配置 `V2_LOCAL_DEVELOPMENT=false`、既有 `V2_BOOTSTRAP_ADMIN_EMAIL`、`V2_PUBLIC_PUBLICATION_TASK_ID`、`V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST`、`V2_PUBLIC_PUBLICATION_VERIFICATION_ID` 和 `V2_PUBLIC_PUBLICATION_STARTS_AT/EXPIRES_AT`（最多两小时）。实际执行仍要求原持久化、隔离Worker、预算和签名定时器条件通过；不因设置scope取得身份或跳过CSRF。

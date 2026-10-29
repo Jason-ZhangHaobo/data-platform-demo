@@ -44,7 +44,7 @@ export function parseAgentObjectEvent(event,config) {
 
 // No process timer, idle polling, publication or user-controlled command. Each
 // event can claim only its opted-in task and one durable development boundary.
-export function createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist,now=Date.now}) {
+export function createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist,now=Date.now,assertExecutionScope=()=>{}}) {
   if(!dispatcher || !transport?.create || !transport?.read || config?.project!==project || queueConfig?.projectId!==project)
     throw fail(503,"AGENT_EVENT_DEPENDENCY_INVALID");
   const getTask=id=>{
@@ -62,7 +62,17 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
     cloudDriverVerified:false,publicationAutomatic:false});
   const patch=(g,value)=>store.update("agent_background",g.id,project,value,{expectedVersion:g.version});
   const stop=async(g,status,code)=>{g=patch(g,{status,state:status,code});await persist();return view(g);};
+  // Rollout denial is read-only: do not consume foreign events, change their
+  // grants or send/read OSS objects. A new window requires a fresh review.
+  const scoped=(task,g)=>{
+    try{assertExecutionScope(task,g?.developmentBoundary);}
+    catch(error){
+      if(!String(error.code??'').startsWith('PUBLIC_DEVELOPMENT_'))throw error;
+      return {protocol:agentEventProtocol,state:'SCOPE_DENIED',code:error.code};
+    }
+  };
   const live=async(g,task)=>{
+    const denied=scoped(task,g);if(denied)return denied;
     if(g.expiresAt<=now())return stop(g,"EXPIRED","AGENT_BACKGROUND_DEADLINE");
     if(!ownerAllowed(task))return stop(g,"PAUSED","AGENT_OWNER_PERMISSION_REVOKED");
     if(task.durable.contextDigest!==g.contextDigest)return stop(g,"PAUSED","AGENT_BACKGROUND_CONTEXT_CHANGED");
@@ -95,47 +105,54 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
       return view(g,"UNCONFIRMED");
     }
   }
-  async function enable(taskId,actorId,{expectedVersion,maxEvents=20,durationMs=15*60000}={}) {
+  async function enable(taskId,actorId,{expectedVersion,maxEvents=20,durationMs=15*60000,developmentBoundary}={}) {
     const task=getTask(taskId);
     if(task.submittedBy!==actorId || !ownerAllowed(task))throw fail(403,"AGENT_BACKGROUND_OWNER_REQUIRED");
     if(expectedVersion!==task.version)throw fail(409,"STALE_AGENT_VERSION");
+    assertExecutionScope(task,developmentBoundary);
     if(!Number.isSafeInteger(maxEvents)||maxEvents<1||maxEvents>20||!Number.isSafeInteger(durationMs)||durationMs<60000||durationMs>30*60000)
       throw fail(422,"AGENT_BACKGROUND_LIMIT_INVALID");
     let g=store.list("agent_background",project).find(x=>x.taskId===taskId);
     if(g && g.status!=="ACTIVE")throw fail(409,"AGENT_BACKGROUND_REVIEW_REQUIRED");
+    if(g)assertExecutionScope(task,g.developmentBoundary);
     if(!g)g=store.create("agent_background",project,{taskId,actorId,status:"ACTIVE",state:"QUEUED",contextDigest:task.durable.contextDigest,
-      expiresAt:now()+durationMs,maxEvents,consumedEvents:0,scope:"SQL_DEVELOPMENT",publicationAutomatic:false});
+      expiresAt:now()+durationMs,maxEvents,consumedEvents:0,scope:"SQL_DEVELOPMENT",publicationAutomatic:false,...(developmentBoundary?{developmentBoundary}:{})});
     await persist();return schedule(g,task);
   }
-  async function cancel(taskId,actorId) {
+  async function cancel(taskId,actorId,{developmentBoundary}={}) {
     const task=getTask(taskId),g=grantFor(taskId);
     if(task.submittedBy!==actorId)throw fail(403,"AGENT_BACKGROUND_OWNER_REQUIRED");
+    assertExecutionScope(task,developmentBoundary??g?.developmentBoundary);
     if(!g)return{protocol:agentEventProtocol,taskId,status:"INACTIVE"};
     return stop(g,"CANCELLED","USER_STOPPED_BACKGROUND");
   }
-  async function resume(taskId,actorId,{expectedVersion,confirmModelRetry=false}={}) {
+  async function resume(taskId,actorId,{expectedVersion,confirmModelRetry=false,durationMs=15*60000,developmentBoundary}={}) {
     const task=getTask(taskId);
     if(task.submittedBy!==actorId || !ownerAllowed(task))throw fail(403,"AGENT_BACKGROUND_OWNER_REQUIRED");
+    assertExecutionScope(task,developmentBoundary);
+    if(!Number.isSafeInteger(durationMs)||durationMs<60000||durationMs>15*60000)throw fail(422,"AGENT_BACKGROUND_LIMIT_INVALID");
     let g=store.list("agent_background",project).find(x=>x.taskId===taskId);
-    if(!g || !["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(g.status))throw fail(409,"AGENT_BACKGROUND_REVIEW_REQUIRED");
+    const expiredOrRebound=g?.status==='ACTIVE'&&(g.expiresAt<=now()||scoped(task,g));
+    if(!g || !["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(g.status)&&!expiredOrRebound)throw fail(409,"AGENT_BACKGROUND_REVIEW_REQUIRED");
     if(g.contextDigest!==task.durable.contextDigest)throw fail(409,"AGENT_BACKGROUND_CONTEXT_CHANGED");
     if(g.consumedEvents>=g.maxEvents)throw fail(409,"AGENT_BACKGROUND_EVENT_LIMIT");
     if(!engine?.prepareResume)throw fail(503,"AGENT_BACKGROUND_RESUME_UNAVAILABLE");
     await engine.prepareResume(taskId,{expectedVersion,confirmModelRetry});
     // No limit/count reset. The review renews only a bounded execution window.
-    g=patch(g,{status:"ACTIVE",state:"QUEUED",code:undefined,expiresAt:now()+15*60000,
+    g=patch(g,{status:"ACTIVE",state:"QUEUED",code:undefined,expiresAt:now()+durationMs,developmentBoundary,
       review:{actorId,taskVersion:expectedVersion,reviewedAt:new Date(now()).toISOString(),confirmModelRetry}});
     await persist();return schedule(g,getTask(taskId));
   }
   const status=taskId=>{
     const g=store.list("agent_background",project).find(x=>x.taskId===taskId);
-    return g?view(g):{protocol:agentEventProtocol,taskId,status:"INACTIVE",cloudDriverVerified:false};
+    return g?{...view(g),...(scoped(getTask(taskId),g)?{scopeBlocked:true}:{})}:{protocol:agentEventProtocol,taskId,status:"INACTIVE",cloudDriverVerified:false};
   };
   async function consumeWake(object) {
     const wake=store.get("agent_wake",object.id,project);
     if(!wake)return{protocol:agentEventProtocol,state:"IGNORED_UNREGISTERED"};
     let g=store.get("agent_background",wake.grantId,project);
     if(!g || g.status!=="ACTIVE")return{protocol:agentEventProtocol,state:"INACTIVE"};
+    const denied=scoped(getTask(g.taskId),g);if(denied)return denied;
     const raw=await transport.read(object.key);
     if(typeof raw!=="string"||Buffer.byteLength(raw)>16384||hash(raw)!==wake.bodyHash)throw fail(401,"AGENT_WAKE_BODY_MISMATCH");
     let envelope;try{envelope=JSON.parse(raw);}catch{throw fail(422,"AGENT_WAKE_INVALID");}

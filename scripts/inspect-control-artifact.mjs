@@ -6,7 +6,7 @@ import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const check=(v,c)=>{if(!v)throw Error(c);};
 const sha=b=>createHash('sha256').update(b).digest('hex');
-export const controlArtifactSources=Object.freeze(['fc-ingress','server','cloud-server','public-status','auth','private-application','request-lane','static-response','cloud-state-coordinator','public-development-access','public-publication-access','cloud-publication','private-release-timer','public-service-access','private-data-services','data-services','private-task-consumption','budget','durable-agent','model-diagnostics'].map(n=>`src/v2/${n}.mjs`));
+export const controlArtifactSources=Object.freeze(['fc-ingress','server','cloud-server','public-status','auth','private-application','request-lane','static-response','cloud-state-coordinator','public-development-access','public-publication-access','cloud-publication','private-release-timer','public-service-access','private-data-services','data-services','private-task-consumption','budget','durable-agent','model-diagnostics','agent-event-driver','agent-development-workflow'].map(n=>`src/v2/${n}.mjs`));
 export function validateArtifactIdentity(run,artifact,{source,buildRunId,artifactId}){
  check(/^[a-f0-9]{40}$/.test(source)&&/^\d+$/.test(buildRunId)&&/^\d+$/.test(artifactId),'IDENTITY_INVALID');
  check(String(run.id)===buildRunId&&run.name==='Build V2 control plane package'&&run.head_sha===source&&run.conclusion==='success'&&run.status==='completed','BUILD_NOT_VERIFIED');

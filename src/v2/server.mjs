@@ -3,7 +3,7 @@ import { ingressDenialReasons } from "./fc-ingress.mjs";
 import { createRequestLane } from "./request-lane.mjs";
 import { serveV2Static } from "./static-response.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
-import { publicDevelopmentConfig, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow } from "./public-development-access.mjs";
+import { publicDevelopmentConfig, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow, assertDevelopmentTargetTask, developmentBackgroundBoundary, assertDevelopmentBackgroundScope } from "./public-development-access.mjs";
 import { publicPublicationConfig, publicationSession, assertPublicationMutation, assertPublicationTarget, assertPublicationExecutionWindow } from "./public-publication-access.mjs";
 import { publicServiceConfig, serviceSession, assertServiceMutation } from "./public-service-access.mjs";
 import { readFile, readdir } from "node:fs/promises";
@@ -279,14 +279,40 @@ export function createV2Server(options = {}) {
   const publicationAccess = publicPublicationConfig(env);
   const serviceAccess = publicServiceConfig(env);
   const developmentAccess = publicDevelopmentConfig(env);
+  const developmentNow = () => options.now?.() ?? Date.now();
+  const assertTargetTask = task => assertDevelopmentTargetTask(developmentAccess, task,
+    store.get('auth_user', task?.submittedBy ?? '', PROJECT), PROJECT, developmentNow());
+  const assertScopedRecord = (session, item) => assertDevelopmentRecord(developmentAccess, session, item, {
+    task: developmentAccess?.taskId ? store.get('agent', developmentAccess.taskId, PROJECT) : undefined, now: developmentNow(),
+  });
+  const targetDenied = () => Object.assign(fail(403, '当前窗口只允许指定任务及其已关联的代码和交付文件。'), {code:'PUBLIC_DEVELOPMENT_TARGET_ONLY'});
+  const assertTargetRun = (id, input) => {
+    if (!developmentAccess?.taskId) return;
+    const task = store.get('agent', developmentAccess.taskId, PROJECT);
+    assertTargetTask(task);
+    const run = store.get('run', id, PROJECT);
+    if (run) {
+      const revision = store.get('revision', run.revisionId, PROJECT), owner = store.get('auth_user', task.submittedBy, PROJECT);
+      assertScopedRecord({user:owner,role:'ADMIN'},revision);
+      if (run.revisionHash !== revision.hash || run.agentTaskId && run.agentTaskId !== task.id ||
+          input && (input.sql !== revision.sql || input.context?.id !== revision.contextId)) throw targetDenied();
+      return;
+    }
+    const verification = store.get('delivery_verification', id, PROJECT),
+      delivery = store.get('agent_delivery_task', verification?.agentDeliveryTaskId ?? '', PROJECT),
+      bundle = store.get('delivery_package', delivery?.packageId ?? '', PROJECT);
+    if (!verification || delivery?.sourceAgentTaskId !== task.id || delivery.submittedBy !== task.submittedBy ||
+        verification.packageId !== bundle?.id || verification.packageDigest !== bundle?.digest || delivery.packageDigest !== bundle?.digest ||
+        input && (input.sql !== bundle?.files?.['main.sql'] || input.testSql !== bundle?.files?.['tests.sql'])) throw targetDenied();
+  };
   const assertDevelopmentExecution = () => {
     if (serviceAccess) throw Object.assign(fail(403, "本次仅开放既有发布结果的接口交付，不启动模型或 Spark。"), { code: "PUBLIC_SERVICE_SCOPE_DENIED" });
     if (publicationAccess) throw Object.assign(fail(403, "本次仅允许审阅发布既有交付包，不启动模型或新的开发计算。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
     assertDevelopmentExecutionWindow(developmentAccess, options.now?.() ?? Date.now());
   };
   const durableDevelopment = !rawRunner.durable || (!developmentAccess && !publicationAccess && !serviceAccess) ? rawRunner.durable : {
-    prepare: (...args) => { assertDevelopmentExecution(); return rawRunner.durable.prepare(...args); },
-    submit: (...args) => { assertDevelopmentExecution(); return rawRunner.durable.submit(...args); },
+    prepare: (input, id) => { assertDevelopmentExecution(); assertTargetRun(id, input); return rawRunner.durable.prepare(input, id); },
+    submit: prepared => { assertDevelopmentExecution(); assertTargetRun(prepared?.job?.jobId); return rawRunner.durable.submit(prepared); },
     read: (...args) => rawRunner.durable.read(...args),
     cancel: (...args) => rawRunner.durable.cancel(...args),
   },
@@ -311,7 +337,11 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
-  const generator = async input => { assertDevelopmentExecution(); return rawGenerator(input); };
+  const generator = async input => {
+    assertDevelopmentExecution();
+    if (developmentAccess?.taskId) assertTargetTask(store.get('agent', input?.modelBudgetReservation?.taskId ?? '', PROJECT));
+    return rawGenerator(input);
+  };
   const pythonGenerator =
     options.pythonGenerator ??
     (async (input) => {
@@ -355,6 +385,7 @@ export function createV2Server(options = {}) {
     ? createDurableSqlAgent({ store, project: PROJECT, runner: durableDevelopment, generator,
       persist: persistDevelopment, getContext, contextIds, contractId: validationContractId, resolveValidationFamily:validationFamilyForContext,
       assertModelBudget: () => budget.assertCanStartModel(), assertRunBudget: () => budget.assertCanStartRemoteSpark(),
+      assertExecutionScope: assertTargetTask,
       tokenBudget: Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000), now: options.now ?? Date.now })
     : undefined;
   const mayReadDurableAgent = (task, session) =>
@@ -374,7 +405,7 @@ export function createV2Server(options = {}) {
       throw fail(403, "无权操作此 Agent 任务");
   };
   const durableDelivery = durableAgent && durableDevelopment
-    ? createDurableAgentDelivery({ store, project: PROJECT, runner: durableDevelopment, artifactStore, persist: persistDevelopment, assertRunBudget: () => budget.assertCanStartRemoteSpark(), reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) })
+    ? createDurableAgentDelivery({ store, project: PROJECT, runner: durableDevelopment, artifactStore, persist: persistDevelopment, assertRunBudget: () => budget.assertCanStartRemoteSpark(), assertExecutionScope: assertTargetTask, reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) })
     : undefined;
   const privatePublicationConfig = privateReleaseConfig(env);
   const privateDataServicesEnabled=env.V2_PRIVATE_DATA_SERVICES_ENABLED==="true";
@@ -397,7 +428,8 @@ export function createV2Server(options = {}) {
       wakePrefix:agentEventConfig.wakePrefix,resultPrefix:agentEventConfig.resultPrefix});
   })() : undefined;
   const agentEventDriver = agentEventConfig ? createAgentEventDriver({store,project:PROJECT,dispatcher:agentDispatcher,engine:durableAgent,
-    transport:agentWakeTransport,config:agentEventConfig,queueConfig:queueConfigFromEnvironment(env),persist:persistDevelopment,now:options.now ?? Date.now}) : undefined;
+    transport:agentWakeTransport,config:agentEventConfig,queueConfig:queueConfigFromEnvironment(env),persist:persistDevelopment,now:options.now ?? Date.now,
+    assertExecutionScope:(task,boundary)=>assertDevelopmentBackgroundScope(developmentAccess,task,store.get('auth_user',task?.submittedBy??'',PROJECT),PROJECT,boundary,developmentNow())}) : undefined;
   const exposeDurableTask = task => {
     const background=agentEventDriver&&task.executionMode===durableSqlAgentMode?agentEventDriver.status(task.id):undefined;
     return {...publicDurableAgent(task),...(background&&background.status!=="INACTIVE"?{background}:{})};
@@ -1236,15 +1268,17 @@ export function createV2Server(options = {}) {
         const deliveryPath = path.match(/^\/api\/v2\/agent\/deliveries\/([a-f0-9-]{36})\//);
         const runPath = path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\//);
         const session = auth.sessionFromHeaders(req.headers);
-        if (taskPath) assertDevelopmentRecord(developmentAccess, session, store.get('agent', taskPath[1], PROJECT));
-        if (deliveryPath) { const task = store.get('agent_delivery_task', deliveryPath[1], PROJECT); assertDevelopmentRecord(developmentAccess, session, store.get('agent', task?.sourceAgentTaskId ?? '', PROJECT)); }
-        if (runPath) { const run = store.get('run', runPath[1], PROJECT); assertDevelopmentRecord(developmentAccess, session, store.get('revision', run?.revisionId ?? '', PROJECT)); }
+        if (taskPath) assertScopedRecord(session, store.get('agent', taskPath[1], PROJECT));
+        if (deliveryPath) { const task = store.get('agent_delivery_task', deliveryPath[1], PROJECT); assertScopedRecord(session, store.get('agent', task?.sourceAgentTaskId ?? '', PROJECT)); }
+        if (runPath) { const run = store.get('run', runPath[1], PROJECT); assertScopedRecord(session, store.get('revision', run?.revisionId ?? '', PROJECT)); }
       }
       if (method !== "GET" && !isPrivateSmokeInvoke && typeof persistence.flush === "function")
         res.metadataFlush = () => persistence.flush();
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = await readPrivateSmokeBody(req);
+        if (developmentAccess?.taskId && !['PRIVATE_STATUS_V1','PRIVATE_AGENT_OBJECT_EVENT_V1'].includes(privateInput.operation))
+          throw targetDenied();
         if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
           throw Object.assign(fail(403, "本次仅开放既有发布结果的接口交付；计算与调度保持关闭。"), { code: "PUBLIC_SERVICE_SCOPE_DENIED" });
         // This rollout permits only the reviewed publication. Legacy private
@@ -3033,15 +3067,18 @@ export function createV2Server(options = {}) {
           const body=await readBody(req),actor=auth.sessionFromHeaders(req.headers)?.user.id;
           if(backgroundRoute[2]==="resume"){
             if(Object.keys(body).some(k=>!["expectedVersion","confirmModelRetry"].includes(k)))throw fail(422,"恢复后台请求字段不受支持");
-            return json(res,202,await agentEventDriver.resume(task.id,actor,body));
+            const window = developmentBackgroundWindow(developmentAccess, developmentNow());
+            return json(res,202,await agentEventDriver.resume(task.id,actor,{...body,...window,
+              developmentBoundary:developmentBackgroundBoundary(developmentAccess,task.id,developmentNow())}));
           }
           if(backgroundRoute[2]==="cancel"){
             if(Object.keys(body).length)throw fail(422,"停止后台请求不接受额外字段");
-            return json(res,200,await agentEventDriver.cancel(task.id,actor));
+            return json(res,200,await agentEventDriver.cancel(task.id,actor,{developmentBoundary:developmentBackgroundBoundary(developmentAccess,task.id,developmentNow())}));
           }
           if(Object.keys(body).some(k=>!["expectedVersion","maxEvents","durationMs"].includes(k)))throw fail(422,"后台请求字段不受支持");
           const window = ingressChannel === 'HTTP' ? developmentBackgroundWindow(developmentAccess, options.now?.() ?? Date.now(), body) : {};
-          return json(res,202,await agentEventDriver.enable(task.id,actor,{...body,...window}));
+          return json(res,202,await agentEventDriver.enable(task.id,actor,{...body,...window,
+            developmentBoundary:developmentBackgroundBoundary(developmentAccess,task.id,developmentNow())}));
         }
       }
       const durableAdvance = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/advance$/);
@@ -5127,10 +5164,11 @@ export function createV2Server(options = {}) {
         const session=auth.sessionFromHeaders(req.headers), actor=local ? "local-engineer" : session?.user.id;
         if (!actor) throw fail(401,"请先登录后保存代码");
         const originAgentTaskId=body.originAgentTaskId === undefined ? undefined : text(body.originAgentTaskId,1,80);
+        if (developmentAccess?.taskId && originAgentTaskId !== developmentAccess.taskId) throw targetDenied();
         if (originAgentTaskId) {
           const origin=get("agent",originAgentTaskId);
           requireDurableAgentOwner(origin,req);
-          if (ingressChannel === 'HTTP') assertDevelopmentRecord(developmentAccess, session, origin);
+          if (ingressChannel === 'HTTP') assertScopedRecord(session, origin);
           if (!local && session?.role !== "ADMIN" && origin.submittedBy !== actor) throw fail(403,"无权引用该人工接管来源");
           if (origin.contextId !== contextId) throw fail(409,"接管来源与代码业务口径不一致");
         }
@@ -5143,7 +5181,7 @@ export function createV2Server(options = {}) {
         const body = await readBody(req),
           rev = get("revision", text(body.revisionId, 1, 80));
         requireDevelopmentOwner("revision", rev, req);
-        if (ingressChannel === 'HTTP') assertDevelopmentRecord(developmentAccess, auth.sessionFromHeaders(req.headers), rev);
+        if (ingressChannel === 'HTTP') assertScopedRecord(auth.sessionFromHeaders(req.headers), rev);
         if (!options.runner && !runtime.available)
           throw fail(503, "Spark 尚未就绪，请运行 npm run v2:bootstrap");
         const key = text(req.headers["idempotency-key"], 1, 100),
@@ -5272,7 +5310,8 @@ export function createV2Server(options = {}) {
             actorId: auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer",
             idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair });
           if(body.background){
-            const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version,...backgroundWindow});
+            const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version,...backgroundWindow,
+              developmentBoundary:developmentBackgroundBoundary(developmentAccess,created.id,developmentNow())});
             return json(res,202,{...created,background});
           }
           return json(res, 202, exposeDurableTask(get("agent",created.id)));

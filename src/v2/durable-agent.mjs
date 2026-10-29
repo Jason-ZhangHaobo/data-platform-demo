@@ -20,7 +20,7 @@ export function publicDurableAgent(task) {
 // One explicit POST advances one durable boundary. GET never starts paid work.
 // A background dispatcher is intentionally not implied by this implementation.
 export function createDurableSqlAgent({ store, project, runner, generator, persist,
-  getContext, contextIds, contractId, resolveValidationFamily, assertModelBudget = () => {}, assertRunBudget = () => {},
+  getContext, contextIds, contractId, resolveValidationFamily, assertModelBudget = () => {}, assertRunBudget = () => {}, assertExecutionScope = () => {},
   tokenBudget = 32000, requestTokenLimit = 12000, maxAttempts = 3,
   now = Date.now, modelLeaseMs = 90000 }) {
   for (const value of [tokenBudget, requestTokenLimit, maxAttempts, modelLeaseMs])
@@ -64,6 +64,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   };
 
   async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError }) {
+    assertExecutionScope(undefined);
     if (!getContext(contextId) || typeof message !== "string" || !message.trim() || message.length > 2000 ||
         typeof currentSql !== "string" || !currentSql.trim() || currentSql.length > 20000 ||
         typeof actorId !== "string" || !actorId || typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 100)
@@ -209,6 +210,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     if (task.version !== expectedVersion)
       throw fail(409, "STALE_AGENT_VERSION", "任务已推进，请刷新后再操作");
     if (terminal.has(task.status)) return publicDurableAgent(task);
+    assertExecutionScope(task);
     if (task.durable.contextDigest !== contextDigest(task.contextId))
       throw fail(409, "AGENT_CONTEXT_CHANGED", "任务上下文或验证契约已变化，请审阅后创建新任务");
     if (task.stage === "MODEL_IN_FLIGHT") {
@@ -229,6 +231,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   // Review only: persist a new checkpoint, never call a model from this endpoint.
   async function prepareResume(id, { expectedVersion, confirmModelRetry = false } = {}) {
     const task = get(id);
+    assertExecutionScope(task);
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion !== task.version)
       throw fail(409, "STALE_AGENT_VERSION", "任务已变化，请刷新后审阅");
     if (typeof confirmModelRetry !== "boolean") throw fail(422, "AGENT_RETRY_CONFIRMATION_INVALID", "重试确认必须为布尔值");
@@ -251,6 +254,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   async function cancel(id) {
     let task = get(id);
     if (terminal.has(task.status)) return publicDurableAgent(task);
+    assertExecutionScope(task);
     task = change(task, { stage: "CANCELLING", durable: { ...task.durable, leaseToken: undefined, leaseExpiresAt: undefined } });
     await persist(); active.get(id)?.abort();
     const run = task.runId && store.get("run", task.runId, project);

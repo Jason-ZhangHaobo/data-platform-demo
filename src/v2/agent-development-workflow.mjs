@@ -45,7 +45,7 @@ export function developmentVerificationReport(task, run, revision) {
 }
 
 // Each POST crosses one durable boundary; GET only reads a signed Worker receipt.
-export function createDurableAgentDelivery({ store, project, runner, artifactStore, persist, assertRunBudget = () => {}, reservationSeconds = 30 }) {
+export function createDurableAgentDelivery({ store, project, runner, artifactStore, persist, assertRunBudget = () => {}, assertExecutionScope = () => {}, reservationSeconds = 30 }) {
   if (!Number.isFinite(reservationSeconds) || reservationSeconds < 1 || reservationSeconds > 300) throw new Error("交付计算预留无效");
   const get = id => {
     const item = store.get("agent_delivery_task", id, project);
@@ -68,6 +68,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     return { item, plan };
   };
   async function create(agent, key) {
+    assertExecutionScope(agent);
     const { run, revision } = source(agent);
     const existing = store.list("agent_delivery_task", project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision.id && t.sourceRunId === run.id && t.sourceSqlHash === revision.hash && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
     if (existing) return publicDeliveryTask(existing);
@@ -102,6 +103,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
   async function advance(id, expectedVersion) {
     let task = get(id);
     if (terminal.has(task.status)) return publicDeliveryTask(task);
+    assertExecutionScope(store.get("agent", task.sourceAgentTaskId, project));
     if (expectedVersion !== task.version) throw fail(409, "交付任务已更新，请刷新后继续");
     const { item, plan } = await bundleFor(task);
     if (!task.remoteSubmission) {
@@ -125,6 +127,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
   }
   async function cancel(id) {
     let task = get(id); if (terminal.has(task.status)) return publicDeliveryTask(task);
+    assertExecutionScope(store.get("agent", task.sourceAgentTaskId, project));
     task = change(task, { status: "CANCELLED", stage: "CANCELLED", finishedAt: new Date().toISOString() });
     if (task.verificationId) store.update("delivery_verification", task.verificationId, project, { status: "CANCELLED", finishedAt: task.finishedAt });
     await persist();

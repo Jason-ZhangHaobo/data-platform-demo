@@ -34,6 +34,8 @@ export type AuthSession = {
   expiresAt?: string;
   readOnly?: boolean;
   developmentOnly?: boolean;
+  developmentTaskOnly?: boolean;
+  developmentTaskId?: string;
   developmentStartsAt?: string;
   developmentExpiresAt?: string;
   publicationOnly?: boolean;
