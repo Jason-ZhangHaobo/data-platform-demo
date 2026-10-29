@@ -147,6 +147,44 @@ function codeFixture() {
     applicationSource:p.applicationSource,buildRunId:p.buildRunId,artifactId:p.artifactId};
   return f;
 }
+function targetCodeFixture() {
+  const f=codeFixture(),p=f.basePlan;
+  p.priorReserveCny=64;p.maxIncrementCny=5;p.maxReads=102;p.normalReadLimit=72;p.readLimit=84;
+  p.targetTaskCodeContinuation={protocol:'TARGET_TASK_CODE_CONTINUATION_V1',taskId:'00000000-0000-4000-8000-000000000001',
+    approvalDigest:p.readonlyCodeRefresh.approvalDigest,predecessorDigest:p.readonlyCodeRefresh.predecessorDigest,
+    historyUsageDigest:p.readonlyCodeRefresh.historyUsageDigest,candidateSha256:p.candidate.sha256,previousReserveCny:p.priorReserveCny};
+  p.readonlyCodeRefresh.taskResumeDigest=canonicalHash(p.targetTaskCodeContinuation);
+  return f;
+}
+
+test('targeted-task code refresh binds the independent review, original history and retained reserve but never opens development',async()=>{
+  const f=targetCodeFixture(),p=f.basePlan,r=await f.step('stage');
+  assert.equal(r.phase,'STAGED');assert.deepEqual(r.targetTaskCodeContinuation,p.targetTaskCodeContinuation);
+  assert.deepEqual(r.historyUsage,p.historyUsage);assert.deepEqual(f.current.environmentVariables,f.baseline.environmentVariables);
+  assert.equal(r.modelCalls,0);assert.equal(r.sparkRuns,0);assert.equal(r.cumulativeUsage.objectPuts,1);assert.equal(r.cumulativeUsage.configWrites,1);
+  for(const call of f.calls.filter(c=>c.args?.[1]==='PUT'))assert.deepEqual(Object.keys(call.body),['code']);
+  assert.equal(f.current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID,undefined);
+  assert.ok(!f.calls.some(c=>c.args?.some(v=>/triggers|custom-domains|\/invoke/.test(v))));
+});
+test('targeted code marker cannot replace the frozen candidate, erase reserve, mix old grants or add execution authority',async()=>{
+  const changes=[p=>p.targetTaskCodeContinuation=undefined,p=>p.targetTaskCodeContinuation.taskId='00000000-0000-4000-8000-000000000002',
+    p=>p.targetTaskCodeContinuation.approvalDigest='d'.repeat(64),p=>p.targetTaskCodeContinuation.previousReserveCny=45,p=>p.priorReserveCny=45,
+    p=>p.targetTaskCodeContinuation.candidateSha256=p.previous.sha256,p=>p.readonlyCodeRefresh.taskResumeDigest='d'.repeat(64),
+    p=>p.targetTaskCodeContinuation.extra=true,p=>p.budgetFixContinuation={},p=>p.resumeExistingTask={},p=>p.maxModelCalls=1,p=>p.maxSparkRuns=1,
+    p=>p.maxReads=103,p=>p.normalReadLimit=73,p=>p.ownerCleanupReadReserve=17];
+  for(const change of changes){const f=targetCodeFixture(),p=structuredClone(f.basePlan);change(p);await assert.rejects(f.step('stage',p));assert.equal(f.calls.length,0);}
+  const f=targetCodeFixture();f.controls.bill='135';await assert.rejects(f.step('stage'),/MONTHLY_BUDGET_NOT_VERIFIED/);
+  assert.equal(f.calls.filter(c=>c.method==='PUT'||c.args?.[1]==='PUT').length,0);
+});
+test('targeted code refresh reconciles a lost update and uses only its original rollback allowance',async()=>{
+  const f=targetCodeFixture();f.controls.lostUpdate=true;await f.step('stage');
+  assert.equal(f.report.cumulativeUsage.configWrites,1);assert.equal(f.report.cumulativeUsage.objectPuts,1);
+  await f.step('rollback');assert.equal(f.report.phase,'ROLLED_BACK');assert.deepEqual(f.current,f.baseline);
+  assert.equal(f.report.cumulativeUsage.configWrites,2);assert.deepEqual(f.report.targetTaskCodeContinuation,f.basePlan.targetTaskCodeContinuation);
+  const writes=f.calls.filter(c=>c.args?.[1]==='PUT').length;
+  await assert.rejects(f.step('rollback'));
+  assert.equal(f.calls.filter(c=>c.args?.[1]==='PUT').length,writes);
+});
 
 test('budget-fix continuation binds a new approval and preserves all predecessor history without reopening business writes',async()=>{
  const f=codeFixture(),p=f.basePlan;
