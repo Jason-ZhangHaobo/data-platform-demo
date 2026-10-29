@@ -29,6 +29,8 @@ export async function submitDurableDevelopment(run, revision, { runner, store, p
 }
 
 export async function reconcileDurableDevelopment(run, { runner, store, project, persist, contextIds, contractId, allowSubmit = true }) {
+  if(run.validationContractId!==undefined&&run.validationContractId!==contractId)
+    throw Object.assign(new Error("运行批次与业务口径验证契约不一致"),{code:"REMOTE_SPARK_CONTRACT_MISMATCH"});
   if (!run.remoteSubmission || terminal.has(run.status)) return run;
   let result;
   try {
@@ -48,10 +50,14 @@ export async function reconcileDurableDevelopment(run, { runner, store, project,
     if (!terminal.has(result.status) || result.engine !== "Apache Spark" ||
         (result.engineVersion !== undefined && result.engineVersion !== "3.5.9"))
       throw Object.assign(new Error("云端任务回执不合法"), { code: "REMOTE_SPARK_INVALID_RESULT" });
+    if(result.validation?.contractId!==undefined&&result.validation.contractId!==contractId)
+      throw Object.assign(new Error("云端回执声明了不同的业务口径验证契约"),{code:"REMOTE_SPARK_INVALID_RESULT"});
     if (result.status === "SUCCEEDED" &&
         (result.engine !== "Apache Spark" || result.engineVersion !== "3.5.9" ||
          result.mainSqlExecuted !== true || result.testDouble === true || result.validation?.passed !== true ||
-         !contextIds.every(id => result.validation?.regressions?.some(c => c.contextId === id && c.passed))))
+         !Array.isArray(result.validation?.regressions)||result.validation.regressions.length!==contextIds.length||
+         new Set(result.validation.regressions.map(c=>c?.contextId)).size!==contextIds.length||
+         !contextIds.every(id => result.validation.regressions.some(c => c?.contextId === id && c.passed === true))))
       throw Object.assign(new Error("云端任务缺少完整独立验证"), { code: "REMOTE_SPARK_INVALID_RESULT" });
   } catch (error) {
     if (error.code !== "REMOTE_SPARK_TIMEOUT") throw error;

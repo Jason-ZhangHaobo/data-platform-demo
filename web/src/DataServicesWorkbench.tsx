@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { EvidenceDownload } from "./EvidenceDownload";
+import { EvidenceDownload, requestTextDownload } from "./EvidenceDownload";
 import { compositionChoices } from "./service-composition";
 import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
 import type { ConsumptionScope } from "./service-consumption-scope";
@@ -142,6 +142,7 @@ const fieldProfiles = {
     "security_count",
   ],
 };
+const fieldScopeNotice = "结果字段含义继承所选发布口径，不当然等于客户全资产；选择全部字段不会补入原口径之外的资产。";
 const labels: Record<string, string> = {
   DRAFT: "草稿",
   PUBLISHED: "已发布",
@@ -711,11 +712,12 @@ export function DataServicesWorkbench({
                     }
                   >
                     <option value="holdings">持仓市值与证券数量</option>
-                    <option value="cash">现金与总资产</option>
-                    <option value="full">完整客户资产</option>
+                    <option value="cash">现金与口径合计</option>
+                    <option value="full">全部结果字段</option>
                   </select>}
                 </label>
               </div>
+              {!consumptionScope&&<small>{fieldScopeNotice}</small>}
               <div className="service-contract-preview">
                 <span>GET</span>
                 <code>/api/v2/open/dapis/{plannedDapi?.slug??dapiSlug}</code>
@@ -832,10 +834,11 @@ LIMIT :limit OFFSET :offset`}</pre>
                 {!consumptionScope&&showVersionEditor && <div className="service-create-panel">
                   <small>{selected.serviceType==="DAPI"?"复用当前已核验发布批次，不重新计算业务数据。":"保留原固定DAPI子版本，不跟随它们的最新版本。"}</small>
                   <div className="service-form-grid">
-                    {selected.serviceType==="DAPI" && <label>返回字段模板<select value={versionProfile} onChange={e=>setVersionProfile(e.target.value as keyof typeof fieldProfiles)}><option value="holdings">持仓市值与证券数量</option><option value="cash">现金与总资产</option><option value="full">完整客户资产</option></select></label>}
+                    {selected.serviceType==="DAPI" && <label>返回字段模板<select value={versionProfile} onChange={e=>setVersionProfile(e.target.value as keyof typeof fieldProfiles)}><option value="holdings">持仓市值与证券数量</option><option value="cash">现金与口径合计</option><option value="full">全部结果字段</option></select></label>}
                     <label>每分钟限流<input type="number" min={1} max={600} value={versionRate} onChange={e=>setVersionRate(e.target.value)}/></label>
                     <label>查询超时（毫秒）<input type="number" min={100} max={5000} value={versionTimeout} onChange={e=>setVersionTimeout(e.target.value)}/></label>
                   </div>
+                  {selected.serviceType==="DAPI"&&<small>{fieldScopeNotice}</small>}
                   <button className="button" disabled={!canWrite||!!busy} onClick={createVersion}>保存新版本草稿</button>
                 </div>}
                 {selected.versions.map(v=><div key={v.id} className="service-contract-preview">
@@ -882,7 +885,10 @@ LIMIT :limit OFFSET :offset`}</pre>
                     <strong>令牌仅显示一次</strong>
                     <code>{tokenVisible ? issuedToken : "已生成 · 默认隐藏"}</code>
                     <button className="button" onClick={()=>setTokenVisible(!tokenVisible)}>{tokenVisible?"隐藏令牌":"显示一次性令牌"}</button>
-                    <button className="button" onClick={()=>{const blob=new Blob([issuedToken+"\n"],{type:"text/plain;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`shuduo-application-${issuedAppId.slice(0,8)}.token`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}}>下载本次调用凭据</button>
+                    <button className="button" onClick={()=>{
+                      try { requestTextDownload(`shuduo-application-${issuedAppId.slice(0,8)}.token`,issuedToken+"\n","text/plain;charset=utf-8"); setNotice("已请求保存本次凭据，请核对浏览器下载列表；未确认下载时可使用本卡的显示/隐藏入口，不会补发应用。请勿发送或公开令牌。"); }
+                      catch { setError("未确认保存，本次令牌仍在卡片中保留；可使用显示/隐藏入口安全保存，不会补发应用。"); }
+                    }}>下载本次调用凭据</button>
                     <small>只存哈希；请勿提交Git或发送到聊天。</small>
                   </div>
                 </section>

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { getContext, contextIds, validationContractId } from "./context.mjs";
+import { getContext, validationContractId, validationFamilyForContext } from "./context.mjs";
 
 export const deliveryFormat = "shuduo-delivery/v1";
 export const deliveryFiles = [
@@ -15,6 +15,15 @@ export const deliveryFiles = [
   "README.md",
 ];
 export const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+// Worker receipts historically omit contractId. When present it must match;
+// the independently selected family still requires its exact five cases.
+export function validationMatchesFamily(validation, family, { requireContract = false } = {}) {
+  const ids = family?.contextIds, checks = validation?.regressions;
+  return Boolean(family && Array.isArray(ids) && ids.length === 5 && new Set(ids).size === 5 && validation?.passed === true &&
+    (requireContract ? validation.contractId === family.id : validation.contractId === undefined || validation.contractId === family.id) &&
+    Array.isArray(checks) && checks.length === ids.length && new Set(checks.map(check => check?.contextId)).size === ids.length &&
+    ids.every(id => checks.some(check => check?.contextId === id && check.passed === true)));
+}
 const supportedSparkVersions = new Set(["3.5.7", "3.5.8", "3.5.9"]);
 const cloudSparkVersions = new Set(["3.5.8", "3.5.9"]);
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
@@ -81,9 +90,12 @@ export function createTestSql(expected) {
 export function createDeliveryPackage({
   run,
   revision,
-  name = "客户资产 T+1",
+  name,
 }) {
   const remoteExecution = run?.isolation === "FUNCTION_PROCESS";
+  const family = validationFamilyForContext(revision?.contextId);
+  if (name === undefined || (family?.id !== validationContractId && name === "客户资产 T+1"))
+    name = family?.id === validationContractId ? "客户资产 T+1" : "股票持仓＋可用现金 T+1（非客户全资产）";
   if (
     ![run?.id, run?.projectId, revision?.id, revision?.projectId].every(
       (value) =>
@@ -102,8 +114,10 @@ export function createDeliveryPackage({
     run.engine !== "Apache Spark" ||
     !supportedSparkVersions.has(run.engineVersion) ||
     (remoteExecution && !cloudSparkVersions.has(run.engineVersion)) ||
-    !run.validation?.passed ||
-    run.validation.contractId !== validationContractId ||
+    !family || !run.validation?.passed ||
+    run.validation.contractId !== family.id ||
+    (run.contextId !== undefined && run.contextId !== revision.contextId) ||
+    (run.validationContractId !== undefined && run.validationContractId !== family.id) ||
     run.revisionHash !== revision.hash ||
     sha256(revision.sql) !== revision.hash
   )
@@ -114,11 +128,7 @@ export function createDeliveryPackage({
       { status: 409 },
     );
   if (
-    !contextIds.every((id) =>
-      run.validation.regressions?.some(
-        (check) => check.contextId === id && check.passed,
-      ),
-    )
+    !validationMatchesFamily(run.validation, family, { requireContract: true })
   )
     throw Object.assign(new Error("缺少五场景验证证据，请先重新运行 SQL"), {
       status: 409,
@@ -186,7 +196,7 @@ export function createDeliveryPackage({
     "calendar.json": encoded(calendar),
     "fixtures.json": encoded({
       context,
-      validationContexts: contextIds.map(getContext),
+      validationContexts: family.contextIds.map(getContext),
     }),
     "validation.json": encoded({
       sourceRunId: run.id,
@@ -208,7 +218,7 @@ export function createDeliveryPackage({
       projectId: run.projectId,
       sqlHash: revision.hash,
       contextId: context.id,
-      validationContractId,
+      validationContractId: family.id,
     },
     files: Object.fromEntries(
       deliveryFiles.map((file) => [
@@ -267,6 +277,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
   }
   if (total > 750000) throw fail("交付包超过本机演练大小限制");
   const source = bundle.manifest.source;
+  const family = validationFamilyForContext(source?.contextId);
   if (
     !keysExactly(bundle.manifest, [
       "format",
@@ -289,7 +300,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
   if (
     !source ||
     source.sqlHash !== sha256(bundle.files["main.sql"]) ||
-    source.validationContractId !== validationContractId ||
+    !family || source.validationContractId !== family.id ||
     bundle.manifest.releaseState !== "NOT_PUBLISHED"
   )
     throw fail("源代码或验证契约已过期，需要重新生成交付包");
@@ -368,7 +379,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     );
   if (
     !same(fixtures.context, getContext(source.contextId)) ||
-    !same(fixtures.validationContexts, contextIds.map(getContext))
+    !same(fixtures.validationContexts, family.contextIds.map(getContext))
   )
     throw fail("演练输入不是当前已登记的合成数据契约");
   if (
@@ -377,8 +388,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     proof.engine !== deployment.runtime.engine ||
     proof.engineVersion !== deployment.runtime.version ||
     (remoteTarget && proof.isolation !== "FUNCTION_PROCESS") ||
-    !proof.report?.passed ||
-    proof.report.contractId !== validationContractId
+    !validationMatchesFamily(proof.report, family, { requireContract: true })
   )
     throw fail("源验证报告与代码或契约不一致");
   validateCalendar(calendar);

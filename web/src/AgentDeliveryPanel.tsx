@@ -12,7 +12,7 @@ import { createPublicationReader, publicationPollNeeded } from "./publication-re
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type Delivery = { id: string; version: number; status: string; stage: string; mode?: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string; error?: string };
 type Workflow = {
-  report: { taskId: string; status: string; summary: string; definition?: string; checks: { id: string; label: string; passed: boolean }[]; revisionId?: string; runId?: string; rowCount: number; engine?: string; engineVersion?: string; notice: string };
+  report: { taskId: string; contextId?:string; validationContractId?:string; status: string; summary: string; definition?: string; checks: { id: string; label: string; passed: boolean }[]; revisionId?: string; runId?: string; rowCount: number; engine?: string; engineVersion?: string; notice: string };
   delivery?: Delivery;
   package?: { id: string; digest: string; manifest: unknown; files: Record<string,string> };
   verification?: { id: string; status: string; engine?: string; engineVersion?: string; mainSqlExecuted?: boolean; durationMs?: number; error?: string; testSqlValidation?: { passed: boolean }; validation?: { passed: boolean; regressions?: { contextId: string; passed: boolean }[] } };
@@ -28,7 +28,7 @@ function download(name: string, value: unknown) {
   try { document.body.appendChild(link); link.click(); }
   finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
 }
-export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, codeBusy, onOpenServices, handoffBlocked = false }: { api: Api; taskId: string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; codeBusy: boolean; onOpenServices?: () => void; handoffBlocked?: boolean }) {
+export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, codeBusy, onOpenServices, handoffBlocked = false }: { api: Api; taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; codeBusy: boolean; onOpenServices?: () => void; handoffBlocked?: boolean }) {
   const [workflow, setWorkflow] = useState<Workflow>(), [busy, setBusy] = useState(false), [error, setError] = useState(""), [auto, setAuto] = useState(false);
   const [review, setReview] = useState(false), [confirmed, setConfirmed] = useState<Record<string,boolean>>({}), [release, setRelease] = useState<Release>(), [batches, setBatches] = useState<{ id: string; status: string; sequence: number; schedulerTriggered?: boolean }[]>([]);
   const [publication,setPublication]=useState<Publication>();
@@ -69,10 +69,10 @@ export function AgentDeliveryPanel({ api, taskId, revisionId, runId, dirty, canW
   useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; }; }, []);
   useEffect(() => { if (!codeBusy) void load().catch(() => {}); }, [taskId, revisionId, runId, codeBusy]);
   const report = workflow?.report, delivery = workflow?.delivery;
-  const journey = agentJourney({ taskId, revisionId, runId, dirty, evidenceReadable: evidenceRead === "READY", publicationReadable: publicationRead === "READY", report, delivery, bundle: workflow?.package, verification: workflow?.verification, release, batches, alerts: publication?.alerts, events: publication?.events, consumption });
+  const journey = agentJourney({ taskId, contextId, revisionId, runId, dirty, evidenceReadable: evidenceRead === "READY", publicationReadable: publicationRead === "READY", report, delivery, bundle: workflow?.package, verification: workflow?.verification, release, batches, alerts: publication?.alerts, events: publication?.events, consumption });
   const current = journey.current;
   const verified = journey.steps.find(step => step.id === "validation")?.state === "DONE";
-  const reportView = verificationPresentation(current, verified, evidenceRead);
+  const reportView = verificationPresentation(current, verified, evidenceRead, report?.status);
   const releaseLabel = (value: Release) => publicationEvidenceText(value, journey.publicationCurrent, journey.steps.some(step => step.id === "monitoring" && step.state === "DONE"));
   const working = busy || auto || codeBusy;
   const fileVerified = journey.fileVerified;

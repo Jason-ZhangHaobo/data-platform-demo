@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { validateDeliveryPackage } from "./delivery.mjs";
+import { validateDeliveryPackage, validationMatchesFamily } from "./delivery.mjs";
 import { validatePythonDeliveryPackage } from "./python-delivery.mjs";
+import { validationContractId, validationFamilyForContext } from "./context.mjs";
 
 const digest = (value) => createHash("sha256").update(String(value)).digest("hex");
 const stage = (id, label, actor, status, evidence = {}, note = "") => ({
@@ -21,6 +22,7 @@ export function agentEvidenceJourney({ store, project, task }) {
     run = last?.runId
       ? store.get(python ? "python_run" : "run", last.runId, project)
       : undefined,
+    family = validationFamilyForContext(task.contextId ?? revision?.contextId),
     codePassed =
       task.status === "SUCCEEDED" &&
       task.mode === "LIVE_MODEL" &&
@@ -28,6 +30,8 @@ export function agentEvidenceJourney({ store, project, task }) {
       !last.model.includes("TEST_DOUBLE") &&
       last?.status === "SUCCEEDED" &&
       revision?.id === run?.revisionId &&
+      (task.contextId === undefined || revision?.contextId === task.contextId) &&
+      (run?.contextId === undefined || run.contextId === revision?.contextId) &&
       (python ? revision?.codeHash : revision?.hash) === run?.revisionHash,
     debugPassed =
       codePassed &&
@@ -36,17 +40,25 @@ export function agentEvidenceJourney({ store, project, task }) {
         ? /^\d+\.\d+(?:\.\d+)?$/.test(run.engineVersion ?? "")
         : /^\d+\.\d+\.\d+$/.test(run.engineVersion ?? "")) &&
       run.testDouble !== true &&
-      run.validation?.passed === true &&
-      run.validation.regressions?.every((item) => item.passed) === true,
+      (task.validationContractId === undefined || task.validationContractId === family?.id) &&
+      (run.validationContractId === undefined || run.validationContractId === family?.id) &&
+      validationMatchesFamily(run.validation, family, { requireContract: !python }),
     packages = store
       .list("delivery_package", project)
       .filter(
         (item) =>
           item.sourceRunId === run?.id &&
-          item.manifest?.source?.revisionId === revision?.id,
+          item.manifest?.source?.revisionId === revision?.id &&
+          item.manifest.source.contextId === revision?.contextId &&
+          item.manifest.source.validationContractId === family?.id,
       ),
     selectedPackage = packages[0];
   const agentPreparedPackage = Boolean(selectedPackage?.agentDeliveryTaskId);
+  // Historical local milestones stored only passed:true. Preserve those legacy
+  // records, but new families (and explicit reports) must prove their five cases.
+  const milestoneValidationPassed = validation => family?.id === validationContractId &&
+    validation?.regressions === undefined && validation?.contractId === undefined
+      ? validation?.passed === true : validationMatchesFamily(validation, family);
   let fileValid = false;
   if (selectedPackage) {
     try {
@@ -76,7 +88,7 @@ export function agentEvidenceJourney({ store, project, task }) {
                 ? item.codeExecuted === true
                 : item.mainSqlExecuted === true &&
                   item.testSqlValidation?.passed === true) &&
-              item.validation?.passed === true &&
+              milestoneValidationPassed(item.validation) &&
               item.testDouble !== true,
           )
       : undefined,
@@ -111,7 +123,7 @@ export function agentEvidenceJourney({ store, project, task }) {
         item.schedulerTriggered === true &&
         item.clockMode === "WALL_CLOCK_TIMER" &&
         item.packageDigest === selectedPackage.digest &&
-        item.validation?.passed === true &&
+        milestoneValidationPassed(item.validation) &&
         item.engine === (python ? "CPython" : "Apache Spark") &&
         (python
           ? item.codeExecuted === true

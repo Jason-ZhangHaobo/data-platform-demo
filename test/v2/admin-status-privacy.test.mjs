@@ -41,7 +41,13 @@ test('public fees and identity statistics require an actual administrator sessio
 
 test('identity changes discard private view state and cannot be overwritten by an earlier reload',()=>{
  const main=readFileSync('web/src/main.tsx','utf8');
- assert.match(main,/if \(epoch !== authEpoch.current\) return/);
+ // Core and module requests now share the behavior-tested epoch/generation
+ // guard; checking the old inline return would reject the equivalent wiring.
+ assert.match(main,/const current = \(\) => startupReadCurrent\(\{ authEpoch: epoch, coreRequest: request \}, \{ authEpoch: authEpoch.current, coreRequest: coreRequest.current \}\)/);
+ assert.match(main,/loadStartupCore<Status, AuthSession>\(\{ read: api, isCurrent: current,/);
+ assert.match(main,/loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>\(\{ read: api, module, privatePreview, isCurrent: current,/);
+ assert.match(main,/const currentView = \(\) => active && startupReadCurrent\(identity, \{ authEpoch: authEpoch.current,/);
+ assert.match(main,/acceptedEpoch = \+\+authEpoch.current; clearPersonalView\(\)/);
  assert.match(main,/await api\("\/auth\/logout", \{\}\);\s+authEpoch.current\+\+;\s+setStatus\(undefined\);\s+clearPersonalView\(\)/);
  assert.match(main,/setRuns\(\[\]\); setRun\(undefined\); setRevisions\(\[\]\)/);
  assert.match(main,/<Suspense key=\{session.user\?\.id \?\? "public-visitor"\}/);

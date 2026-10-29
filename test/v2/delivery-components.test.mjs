@@ -15,6 +15,7 @@ async function component(name, exportName = name) {
   for (const dependency of ['react', 'react/jsx-runtime', 'lucide-react']) source = source.replaceAll(`from "${dependency}"`, `from ${JSON.stringify(import.meta.resolve(dependency))}`);
   source = source.replaceAll('from "./delivery-presentation"', `from ${JSON.stringify(new URL('../../web/src/delivery-presentation.ts', import.meta.url).href)}`);
   source = source.replaceAll('from "./manual-run-recovery"', `from ${JSON.stringify(new URL('../../web/src/manual-run-recovery.ts', import.meta.url).href)}`);
+  source = source.replaceAll('from "./delivery-source"', `from ${JSON.stringify(new URL('../../web/src/delivery-source.ts', import.meta.url).href)}`);
   return (await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`))[exportName];
 }
 const FilePreview = await component('DeliveryFilePreview');
@@ -23,7 +24,8 @@ const publicationTargetMatches = await component('AgentPublicationReview', 'publ
 const ManualDelivery = await component('DeliveryWorkbench');
 const bundle = {id:'fictional-package',digest:'fictional-digest',files:Object.fromEntries(deliveryFiles.map(name=>[name,'fictional content']))};
 test('actual embedded manual delivery locks the source selector and does not execute on render',()=>{
-  const html=renderToStaticMarkup(React.createElement(ManualDelivery,{api:()=>{throw Error('must not call on render');},runs:[{id:'manual-run',status:'SUCCEEDED',revisionId:'manual-revision',contextId:'holdings-t1',validationContractId:'contract',createdAt:'2026-01-01'}],contractId:'contract',sourceRunId:'manual-run',lockSource:true,canWrite:false,onBack:()=>{}}));
+  const contractId='securities-assets-five-fixtures-2026-09-14';
+  const html=renderToStaticMarkup(React.createElement(ManualDelivery,{api:()=>{throw Error('must not call on render');},runs:[{id:'manual-run',status:'SUCCEEDED',revisionId:'manual-revision',contextId:'holdings-t1',validationContractId:contractId,createdAt:'2026-01-01'}],contractId,sourceRunId:'manual-run',lockSource:true,canWrite:false,onBack:()=>{}}));
   assert.match(html,/<select[^>]*id="delivery-source"[^>]*disabled=""/);
   assert.match(html,/manual-run/);
 });

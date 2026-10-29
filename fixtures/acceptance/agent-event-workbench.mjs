@@ -6,10 +6,12 @@ import {join,resolve} from "node:path";
 import {createV2Server} from "../../src/v2/server.mjs";
 import {createPreviewServer} from "../../scripts/run-v2-cloudshell-preview.mjs";
 import {createQueuedSparkJob} from "../../src/v2/remote-spark-queue.mjs";
-import {referenceSql} from "../../src/v2/context.mjs";
+import {referenceSql,referenceSqlForContext} from "../../src/v2/context.mjs";
 import {AGENT_WAKE_PREFIX} from "../../src/v2/agent-event-driver.mjs";
 import {modelFailure} from "../../src/v2/model-diagnostics.mjs";
-const root=mkdtempSync(join(tmpdir(),"shuduo-event-ui-")),port=3194,origin=`http://127.0.0.1:${port}`,objects=new Map();
+const port=Number(process.env.V2_QA_PORT??3194);
+if(!Number.isSafeInteger(port)||port<1024||port>65535)throw Error("LOCAL_UI_PORT_INVALID");
+const root=mkdtempSync(join(tmpdir(),"shuduo-event-ui-")),origin=`http://127.0.0.1:${port}`,objects=new Map();
 let app,models=0,submissions=0;
 const queueConfig={projectId:"project-securities-lab",sharedSecret:"synthetic-worker-secret-".repeat(3),jobPrefix:"data-platform-demo/v2/spark-queue/jobs",
   resultPrefix:"data-platform-demo/v2/spark-queue/results",cancellationPrefix:"data-platform-demo/v2/spark-queue/cancellations",timeoutMs:180000};
@@ -18,10 +20,12 @@ const invoke=async payload=>{
   if(!r.ok)throw Error("LOCAL_UI_EVENT_REJECTED");return r.json();
 };
 const runner=async()=>{throw Error("UI fixture never executes Spark");};
+runner.descriptor={engine:"Apache Spark",isolation:"REMOTE_FUNCTION",transport:"SYNTHETIC_UI_QUEUE",publicWriteEnabled:true};
 runner.durable={prepare:(input,id)=>{const q=createQueuedSparkJob(input,queueConfig,{requestId:id});return{...q,serialized:JSON.stringify(q.job)};},
   submit:async queued=>{if(!objects.has(queued.jobKey)){objects.set(queued.jobKey,queued.serialized);submissions++;}},read:async()=>undefined,cancel:async()=>{}};
-app=createV2Server({root,runner,generator:async()=>{models++;if(process.env.V2_QA_FIRST_MODEL_FAILURE==="true"&&models===1)throw modelFailure("MODEL_HTTP_ERROR","RESPONSE",{httpStatus:429,elapsedMs:80});return{sql:referenceSql,explanation:"本机UI测试模型替身，不代表真实模型质量或Spark执行。",model:"TEST_DOUBLE",usage:{total_tokens:20}};},
+app=createV2Server({root,runner,generator:async input=>{models++;if(process.env.V2_QA_FIRST_MODEL_FAILURE==="true"&&models===1)throw modelFailure("MODEL_HTTP_ERROR","RESPONSE",{httpStatus:429,elapsedMs:80});return{sql:referenceSqlForContext(input.context.id)??referenceSql,explanation:"本机UI测试模型替身，不代表真实模型质量或Spark执行。",model:"TEST_DOUBLE",usage:{total_tokens:20}};},
   env:{V2_LOCAL_DEVELOPMENT:"false",V2_PROVISIONING_ONLY:"true",V2_PRIVATE_SMOKE_ENABLED:"true",V2_DURABLE_SQL_AGENT_ENABLED:"true",V2_AGENT_DRIVER_MODE:"OSS_EVENTS",
+    DASHSCOPE_API_KEY:"synthetic-ui-key-not-valid",V2_MODEL:"SYNTHETIC_UI_MODEL",
     OSS_BUCKET:"fictional-securities-test",V2_AGENT_EVENT_ACCOUNT_ID:"111122223333",V2_SCHEDULER_TICK_SECRET:"synthetic-wake-secret-".repeat(3),V2_SPARK_EXECUTOR_SECRET:queueConfig.sharedSecret,V2_SPARK_EXECUTOR_TRANSPORT:"OSS_QUEUE"},
   agentWakeTransport:{read:async key=>objects.get(key),create:async(key,body)=>{
     if(objects.has(key)){if(objects.get(key)!==body)throw Error("immutable fixture conflict");return;}

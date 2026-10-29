@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { manualDeliveryPackages } from "./manual-run-recovery";
+import { deliverySourceSelection } from "./delivery-source";
 import {
   Activity,
   ArrowDownToLine,
@@ -21,9 +22,10 @@ type Api = <T>(path: string, body?: unknown) => Promise<T>;
 type Run = {
   id: string;
   status: string;
-  contextId: string;
+  contextId?: string;
   revisionId: string;
   validationContractId?: string;
+  validation?: { contractId?: string };
   createdAt: string;
 };
 type Bundle = {
@@ -197,14 +199,13 @@ export function DeliveryWorkbench({
   onBack: () => void;
   lockSource?: boolean;
 }) {
-  const eligible = runs.filter(
-    (run) =>
-      run.status === "SUCCEEDED" && run.validationContractId === contractId,
-  );
-  const [source, setSource] = useState(""),
+  const [currentSource, setSource] = useState(""),
     [name, setName] = useState("客户资产 T+1");
-  const [packages, setPackages] = useState<Bundle[]>([]),
-    [selected, setSelected] = useState<Bundle>();
+  const { eligible, source, locked: sourceLocked, issue: sourceIssue } = deliverySourceSelection(runs, { contractId, sourceRunId, lockSource, currentSource });
+  const [loadedPackages, setPackages] = useState<Bundle[]>([]),
+    [loadedPackage, setSelected] = useState<Bundle>();
+  const packages = manualDeliveryPackages(loadedPackages, sourceRunId, sourceLocked);
+  const selected = sourceLocked && (!source || loadedPackage?.manifest.source.runId !== sourceRunId) ? undefined : loadedPackage;
   const [checks, setChecks] = useState<Verification[]>([]),
     [check, setCheck] = useState<Verification>();
   const [reviews, setReviews] = useState<Review[]>([]),
@@ -224,7 +225,7 @@ export function DeliveryWorkbench({
     [busy, setBusy] = useState(""),
     [error, setError] = useState("");
   const ticket = useRef(0);
-  const scopedBundles = (bundles: Bundle[]) => manualDeliveryPackages(bundles, sourceRunId, lockSource);
+  const scopedBundles = (bundles: Bundle[]) => manualDeliveryPackages(bundles, sourceRunId, sourceLocked);
   const loadPackage = async (id: string) => {
     const request = ++ticket.current;
     const bundle = await api<Bundle>("/delivery/packages/" + id);
@@ -246,12 +247,13 @@ export function DeliveryWorkbench({
     setMonitor(nextMonitor);
   };
   useEffect(() => {
-    if (sourceRunId && eligible.some((run) => run.id === sourceRunId))
-      setSource(sourceRunId);
-    else if (!source && eligible[0]) setSource(eligible[0].id);
-  }, [sourceRunId, runs, contractId]);
+    if (!sourceLocked && !currentSource && source) setSource(source);
+  }, [sourceLocked, currentSource, source]);
   useEffect(() => {
     let active = true;
+    ++ticket.current;
+    setSelected(undefined);
+    setCheck(undefined);
     Promise.all([
       api<Bundle[]>("/delivery/packages"),
       api<Verification[]>("/delivery/verifications"),
@@ -294,7 +296,7 @@ export function DeliveryWorkbench({
     return () => {
       active = false;
     };
-  }, []);
+  }, [sourceRunId, lockSource]);
   useEffect(() => {
     if (!check || !pending(check.status)) return;
     const timer = setInterval(async () => {
@@ -319,6 +321,10 @@ export function DeliveryWorkbench({
     return () => clearInterval(timer);
   }, [monitor?.counts.scheduled, monitor?.counts.running]);
   const create = async () => {
+    if (!source || !eligible.some(run => run.id === source)) {
+      setError(sourceIssue || "请先选择已通过其业务口径验证的运行。");
+      return;
+    }
     setBusy("create");
     setError("");
     try {
@@ -533,17 +539,18 @@ export function DeliveryWorkbench({
               id="delivery-source"
               value={source}
               onChange={(event) => setSource(event.target.value)}
-              disabled={lockSource || !eligible.length || !!busy}
+              disabled={sourceLocked || !eligible.length || !!busy}
             >
-              {!eligible.length && (
-                <option value="">尚无可用运行，请先完成代码验证</option>
+              {!source && (
+                <option value="">{eligible.length ? "请明确选择已验证运行" : "尚无可用运行，请先完成代码验证"}</option>
               )}
               {eligible.map((run) => (
                 <option key={run.id} value={run.id}>
-                  {run.contextId} · 批次 {run.id.slice(0, 8)}
+                  {run.contextId ?? "原客户资产口径"} · 批次 {run.id.slice(0, 8)}
                 </option>
               ))}
             </select>
+            {sourceIssue && <p role="status">{sourceIssue}</p>}
           </div>
           <div>
             <label htmlFor="delivery-name">交付名称</label>

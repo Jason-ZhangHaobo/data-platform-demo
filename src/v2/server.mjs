@@ -33,6 +33,8 @@ import {
   getContext,
   publicContext,
   contextIds,
+  allContextIds,
+  validationFamilyForContext,
   referenceSql,
   validationContractId,
 } from "./context.mjs";
@@ -130,6 +132,12 @@ import {
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const fail = (status, message) => Object.assign(new Error(message), { status });
+const validationFamily = contextId => {
+  const family=validationFamilyForContext(contextId);
+  if(!family)throw fail(409,"代码或运行绑定的业务口径版本不存在");
+  return family;
+};
+const validationContextsFor = contextId => validationFamily(contextId).contextIds.map(getContext);
 const text = (value, min = 1, max = 20000) => {
   if (
     typeof value !== "string" ||
@@ -283,9 +291,13 @@ export function createV2Server(options = {}) {
     cancel: (...args) => rawRunner.durable.cancel(...args),
   },
     persistDevelopment = async () => { if (typeof persistence.flush === "function") await persistence.flush(); },
-    reconcileDevelopment = async run => durableDevelopment
-      ? reconcileDurableDevelopment(run, { runner: durableDevelopment, store, project: PROJECT, persist: persistDevelopment, contextIds, contractId: validationContractId, allowSubmit: false })
-      : run;
+    reconcileDevelopment = async run => {
+      const family = validationFamilyForRun(run);
+      return durableDevelopment
+        ? reconcileDurableDevelopment(run, { runner: durableDevelopment, store, project: PROJECT, persist: persistDevelopment,
+          contextIds: family.contextIds, contractId: family.id, allowSubmit: false })
+        : run;
+    };
   const pythonRunner =
     options.pythonRunner ?? ((input) => runRestrictedPython(input, pythonRuntime));
   let modelVerifiedAt = null;
@@ -330,9 +342,18 @@ export function createV2Server(options = {}) {
     if (!item) throw fail(404, "未找到当前项目的记录");
     return item;
   };
+  function validationFamilyForRun(run) {
+    // Older persisted runs only carry the context on their immutable revision.
+    // Missing duplicate metadata may be read, but conflicting metadata must not
+    // silently select another family's independent assertions.
+    const revision = get("revision", run.revisionId);
+    if (run.contextId !== undefined && run.contextId !== revision.contextId)
+      throw fail(409, "运行批次与代码绑定的业务口径不一致");
+    return validationFamily(revision.contextId);
+  }
   const durableAgent = env.V2_DURABLE_SQL_AGENT_ENABLED === "true"
     ? createDurableSqlAgent({ store, project: PROJECT, runner: durableDevelopment, generator,
-      persist: persistDevelopment, getContext, contextIds, contractId: validationContractId,
+      persist: persistDevelopment, getContext, contextIds, contractId: validationContractId, resolveValidationFamily:validationFamilyForContext,
       assertModelBudget: () => budget.assertCanStartModel(), assertRunBudget: () => budget.assertCanStartRemoteSpark(),
       tokenBudget: Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000), now: options.now ?? Date.now })
     : undefined;
@@ -1013,10 +1034,12 @@ export function createV2Server(options = {}) {
       });
   };
   const execute = async (run, rev, signal) => {
+    const family=validationFamily(rev.contextId);
+    if(run.validationContractId!==family.id)throw fail(409,"运行与代码业务口径验证契约不一致");
     const output = await runner({
       sql: rev.sql,
       context: getContext(rev.contextId),
-      validationContexts: contextIds.map(getContext),
+      validationContexts: validationContextsFor(rev.contextId),
       signal,
       timeoutMs: Number(env.V2_RUN_TIMEOUT_MS ?? 90000),
     });
@@ -1033,8 +1056,8 @@ export function createV2Server(options = {}) {
     if (!options.runner && result.status === "SUCCEEDED") {
       const checks = result.validation?.regressions ?? [];
       if (
-        checks.length !== contextIds.length ||
-        !contextIds.every((id) =>
+        checks.length !== family.contextIds.length ||
+        !family.contextIds.every((id) =>
           checks.some((c) => c.contextId === id && c.passed),
         )
       )
@@ -1043,7 +1066,7 @@ export function createV2Server(options = {}) {
     if (result.validation)
       result.validation = {
         ...result.validation,
-        contractId: validationContractId,
+        contractId: family.id,
       };
     if (signal.aborted)
       return store.update("run", run.id, PROJECT, {
@@ -1195,7 +1218,7 @@ export function createV2Server(options = {}) {
       )
         throw fail(403, "无权访问此项目");
       if (method === "GET" && !path.startsWith("/api/v2"))
-        return await serveV2Static(res, root, path);
+        return await serveV2Static(res, root, path, req.headers["accept-encoding"]);
       if (typeof persistence.refresh === "function") await persistence.refresh();
       const developmentSessionView = ingressChannel === "HTTP" && !publicReadOnly
         ? serviceSession(serviceAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? publicationSession(publicationAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? developmentSession(developmentAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) : undefined;
@@ -1636,7 +1659,7 @@ export function createV2Server(options = {}) {
         throw Object.assign(fail(401, "请先登录受邀账号查看项目数据"), { code: "AUTHENTICATION_REQUIRED" });
       }
       if (path === "/api/v2/contexts" && method === "GET")
-        return json(res, 200, contextIds.map(publicContext));
+        return json(res, 200, allContextIds.map(publicContext));
       if (path === "/api/v2/sources" && method === "GET")
         return json(res, 200, ingestion.listSources());
       if (path === "/api/v2/sources" && method === "POST") {
@@ -2935,7 +2958,7 @@ export function createV2Server(options = {}) {
                 revisionId: revision.id,
                 revisionHash: revision.codeHash,
                 contextId: revision.contextId,
-                validationContractId,
+                validationContractId:validationFamily(revision.contextId).id,
                 status: "QUEUED",
                 engine: "CPython",
                 executionScope: "LOCAL_RESTRICTED_PYTHON",
@@ -2948,7 +2971,7 @@ export function createV2Server(options = {}) {
             const result = await pythonRunner({
               code: revision.code,
               context,
-              validationContexts: contextIds.map(getContext),
+              validationContexts: validationContextsFor(context.id),
               signal,
               timeoutMs: Number(env.V2_PYTHON_RUN_TIMEOUT_MS ?? 10_000),
             });
@@ -4166,12 +4189,14 @@ export function createV2Server(options = {}) {
       }
       if (path === "/api/v2/delivery/packages" && method === "POST") {
         const body = await readBody(req),
-          sourceRun = get("run", text(body.sourceRunId, 1, 80));
+          sourceRun = get("run", text(body.sourceRunId, 1, 80)),
+          sourceRevision = get("revision", sourceRun.revisionId),
+          family = validationFamilyForRun(sourceRun);
         const name =
           body.name === undefined ? "客户资产 T+1" : text(body.name, 1, 80);
         const bundle = createDeliveryPackage({
           run: sourceRun,
-          revision: get("revision", sourceRun.revisionId),
+          revision: sourceRevision,
           name,
         }),
           artifact = await artifactStore.put(
@@ -4186,7 +4211,7 @@ export function createV2Server(options = {}) {
             JSON.stringify({
               sourceRunId: sourceRun.id,
               name,
-              validationContractId,
+              validationContractId: family.id,
             }),
           ),
           () =>
@@ -5077,9 +5102,9 @@ export function createV2Server(options = {}) {
               "validation.json": JSON.stringify(item.validation, null, 2),
             },
             releaseState: "NOT_PUBLISHED",
-            currentValidationContractId: validationContractId,
+            currentValidationContractId: validationFamily(rev.contextId).id,
             requiresRevalidation:
-              item.validation?.contractId !== validationContractId,
+              item.validation?.contractId !== validationFamily(rev.contextId).id,
             notice: "这是代码与验证包。实际调度、部署和发布在 M2 实现。",
           });
         }
@@ -5129,7 +5154,7 @@ export function createV2Server(options = {}) {
           () => {
             if (durableDevelopment) budget.assertCanStartRemoteSpark();
             return store.create("run", PROJECT, {
-              validationContractId,
+              validationContractId:validationFamily(rev.contextId).id,
               revisionId: rev.id,
               revisionHash: rev.hash,
               contextId: rev.contextId,
@@ -5141,7 +5166,7 @@ export function createV2Server(options = {}) {
         if (durableDevelopment) {
           const submitted = await submitDurableDevelopment(run, rev, {
             runner: durableDevelopment, store, project: PROJECT, persist: persistDevelopment,
-            context: getContext(rev.contextId), validationContexts: contextIds.map(getContext),
+            context: getContext(rev.contextId), validationContexts: validationContextsFor(rev.contextId),
           });
           return json(res, 202, publicDevelopmentRun(submitted));
         }
@@ -5297,7 +5322,7 @@ export function createV2Server(options = {}) {
                   ? "PYTHON_DEVELOPMENT"
                   : "SQL_DEVELOPMENT",
               fullLifecycleE2E: false,
-              validationContractId,
+              validationContractId:validationFamily(context.id).id,
               maxAttempts: language === "PYTHON" ? 5 : 3,
             }),
         );
@@ -5372,7 +5397,7 @@ export function createV2Server(options = {}) {
                     revisionId: rev.id,
                     revisionHash: rev.codeHash,
                     contextId: context.id,
-                    validationContractId,
+                    validationContractId:validationFamily(context.id).id,
                     status: "RUNNING",
                     startedAt: new Date().toISOString(),
                     engine: "CPython",
@@ -5385,7 +5410,7 @@ export function createV2Server(options = {}) {
                   const result = await pythonRunner({
                     code,
                     context,
-                    validationContexts: contextIds.map(getContext),
+                    validationContexts: validationContextsFor(context.id),
                     signal,
                     timeoutMs: Number(
                       env.V2_PYTHON_RUN_TIMEOUT_MS ?? 10_000,
@@ -5499,7 +5524,7 @@ export function createV2Server(options = {}) {
               sql = generated.sql;
               const rev = revision(sql, context.id, "LIVE_MODEL", task.submittedBy);
               const run = store.create("run", PROJECT, {
-                validationContractId,
+                validationContractId:validationFamily(context.id).id,
                 revisionId: rev.id,
                 revisionHash: rev.hash,
                 contextId: context.id,
@@ -5558,7 +5583,7 @@ export function createV2Server(options = {}) {
       }
       if (path.startsWith("/api/v2")) throw fail(404, "接口不存在");
       if (method !== "GET") throw fail(405, "请求方法不支持");
-      return await serveV2Static(res, root, path);
+      return await serveV2Static(res, root, path, req.headers["accept-encoding"]);
     } catch (error) {
       return json(res, error.status ?? 500, {
         message: error.status ? error.message : "处理失败，请检查服务日志",

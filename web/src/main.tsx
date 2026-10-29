@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { WorkbenchBoundary } from "./WorkbenchBoundary";
+import {validationFamilyForContextId} from "./validation-family";
 import {
   Activity,
   ArrowDownToLine,
@@ -59,6 +60,8 @@ import {workbenchEnvironment,mayWriteServices} from "./workbench-environment";
 import type { AuthSession, PublicationTarget } from "./AuthDialog";
 import { consumptionWindowOpen } from "./service-consumption-scope";
 import type { ConsumptionScope } from "./service-consumption-scope";
+import { loadModuleStartup, loadStartupCore, moduleStartupPaths, startupReadCurrent } from "./startup-loading";
+import type { StartupReadState } from "./startup-loading";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const DataServicesWorkbench = lazy(async () => ({ default: (await import("./DataServicesWorkbench")).DataServicesWorkbench }));
 const IngestionWorkbench = lazy(async () => ({ default: (await import("./IngestionWorkbench")).IngestionWorkbench }));
@@ -218,6 +221,7 @@ type Run = {
 };
 type AgentTask = {
   validationContractId?: string;
+  contextId?:string;
   id: string;
   status: string;
   message: string;
@@ -370,6 +374,11 @@ const navPermission: Record<string, string> = {
 };
 function App() {
   const authEpoch = useRef(0);
+  const coreRequest = useRef(0), inputRequest = useRef(0);
+  const [coreReadState, setCoreReadState] = useState<StartupReadState>("LOADING"),
+    [coreError, setCoreError] = useState(""), [confirmedCoreEpoch, setConfirmedCoreEpoch] = useState(-1),
+    [confirmedCoreRequest, setConfirmedCoreRequest] = useState(0);
+  const [moduleRead, setModuleRead] = useState<{ module: string; epoch: number; core: number; state: StartupReadState; error: string }>({ module: "", epoch: -1, core: 0, state: "LOADING", error: "" });
   const [status, setStatus] = useState<Status>(),
     [contexts, setContexts] = useState<Context[]>([]),
     [contextId, setContextId] = useState("holdings-t1");
@@ -413,8 +422,12 @@ function App() {
     return () => clearInterval(timer);
   }, [session.publicationOnly, session.publicationStartsAt, session.publicationExpiresAt, session.consumptionOnly, session.consumptionStartsAt, session.consumptionExpiresAt]);
   const [agentWorkspaceMode, setAgentWorkspaceMode] = useState("development");
+  const inputModule = nav === "agent-center" && agentWorkspaceMode === "services" ? "services" : nav;
+  const inputModuleRef = useRef(inputModule); inputModuleRef.current = inputModule;
   const [agentDraftDirty, setAgentDraftDirty] = useState(false);
   const clearPersonalView = () => {
+    inputRequest.current++; setContexts([]);
+    setModuleRead({ module: inputModuleRef.current, epoch: authEpoch.current, core: coreRequest.current, state: "LOADING", error: "" });
     setRuns([]); setRun(undefined); setRevisions([]);
     setAgentTask(undefined); setAgentDelivery(undefined); setAgentJourney(undefined); setAgentHandoff(undefined);
     setSql(""); sqlRef.current = ""; setOriginal(""); setPythonCode(initialPythonCode);
@@ -444,69 +457,79 @@ function App() {
     window.history.replaceState(null, "", url);
   }, [nav, status]);
   const reload = async () => {
-    const epoch = authEpoch.current;
-    const [s, c, r, v, a, d, authSession] = await Promise.all([
-      api<Status>("/status"),
-      api<Context[]>("/contexts"),
-      api<Run[]>("/runs"),
-      api<Revision[]>("/revisions"),
-      privatePreview ? Promise.resolve(undefined) : api<AgentTask[]>("/agent/tasks"),
-      privatePreview ? Promise.resolve(undefined) : api<AgentDeliveryTask[]>("/agent/deliveries"),
-      api<AuthSession>("/auth/session"),
-    ]);
-    if (epoch !== authEpoch.current) return;
-    setStatus(s);
-    setContexts(c);
-    setRuns(r);
-    setRevisions(v);
-    if (!sqlRef.current) {
-      const initial = v[0]?.sql ?? c[0].referenceSql;
-      setSql(initial);
-      setOriginal(initial);
-      if (v[0]) setContextId(v[0].contextId);
-    }
-    setRun(r[0]);
-    setAgentTask(a?.[0]);
-    setAgentDelivery(d?.find((item) => item.sourceAgentTaskId === a?.[0]?.id));
-    setSession(authSession);
+    const epoch = authEpoch.current, request = ++coreRequest.current;
+    inputRequest.current++; setCoreReadState("LOADING"); setCoreError("");
+    const current = () => startupReadCurrent({ authEpoch: epoch, coreRequest: request }, { authEpoch: authEpoch.current, coreRequest: coreRequest.current });
+    try {
+      await loadStartupCore<Status, AuthSession>({ read: api, isCurrent: current, accept: ({ status: nextStatus, session: nextSession }) => {
+        let acceptedEpoch = epoch;
+        if (session.user?.id && session.user.id !== nextSession.user?.id) { acceptedEpoch = ++authEpoch.current; clearPersonalView(); }
+        setStatus(nextStatus); setSession(nextSession); setConfirmedCoreEpoch(acceptedEpoch); setConfirmedCoreRequest(request); setCoreReadState("READY");
+      } });
+    } catch (cause) { if (current()) { setCoreReadState("ERROR"); setCoreError((cause as Error).message); } }
+  };
+  const reloadModule = async () => {
+    if (coreReadState !== "READY" || confirmedCoreEpoch !== authEpoch.current || confirmedCoreRequest !== coreRequest.current) return;
+    const epoch = authEpoch.current, core = coreRequest.current, module = inputModuleRef.current, request = ++inputRequest.current;
+    const current = () => startupReadCurrent({ authEpoch: epoch, coreRequest: core, moduleRequest: request, module }, { authEpoch: authEpoch.current, coreRequest: coreRequest.current, moduleRequest: inputRequest.current, module: inputModuleRef.current });
+    setModuleRead({ module, epoch, core, state: "LOADING", error: "" });
+    try {
+      await loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>({ read: api, module, privatePreview, isCurrent: current, accept: ({ contexts: c, runs: r, revisions: v, agents: a, deliveries: d }) => {
+        if (c) setContexts(c);
+        if (r) setRuns(r);
+        if (module === "development") {
+          setRevisions(v ?? []);
+          if (!sqlRef.current) { const initial = v?.[0]?.sql ?? c?.[0]?.referenceSql ?? ""; setSql(initial); setOriginal(initial); if (v?.[0]) setContextId(v[0].contextId); }
+          setRun(r?.[0]); setAgentTask(a?.[0]); setAgentDelivery(d?.find(item => item.sourceAgentTaskId === a?.[0]?.id));
+        }
+        setModuleRead({ module, epoch, core, state: "READY", error: "" });
+      } });
+    } catch (cause) { if (current()) setModuleRead({ module, epoch, core, state: "ERROR", error: (cause as Error).message }); }
   };
   useEffect(() => {
     reload().catch((e) => setError(e.message));
   }, []);
+  useEffect(() => { void reloadModule(); }, [inputModule, coreReadState, confirmedCoreEpoch, confirmedCoreRequest, session.user?.id]);
   useEffect(() => {
+    if (inputModule !== "development" || coreReadState !== "READY" || confirmedCoreEpoch !== authEpoch.current) return;
+    if (moduleRead.module !== "development" || moduleRead.epoch !== authEpoch.current || moduleRead.core !== coreRequest.current || moduleRead.state !== "READY") return;
     if (!isPending(run?.status) && !isPending(agentTask?.status) && !isPending(agentDelivery?.status)) return;
-    let polling = false;
+    let polling = false, active = true;
+    const identity = { authEpoch: authEpoch.current, coreRequest: coreRequest.current, moduleRequest: inputRequest.current, module: "development" };
+    const currentView = () => active && startupReadCurrent(identity, { authEpoch: authEpoch.current, coreRequest: coreRequest.current, moduleRequest: inputRequest.current, module: inputModuleRef.current });
     const interval = setInterval(async () => {
       if (polling) return;
       polling = true;
       try {
         if (run && isPending(run.status)) {
           const current = await api<Run>("/runs/" + run.id);
+          if (!currentView()) return;
           setRun(current);
-          if (!isPending(current.status)) setRuns(await api<Run[]>("/runs"));
+          if (!isPending(current.status)) { const next = await api<Run[]>("/runs"); if (!currentView()) return; setRuns(next); }
         }
         if (agentTask && isPending(agentTask.status)) {
           const current = await api<AgentTask>("/agent/tasks/" + agentTask.id);
+          if (!currentView()) return;
           setAgentTask(current);
           if (!isPending(current.status)) {
-            setRevisions(await api<Revision[]>("/revisions"));
-            setRuns(await api<Run[]>("/runs"));
+            const revisions = await api<Revision[]>("/revisions"); if (!currentView()) return; setRevisions(revisions);
+            const runs = await api<Run[]>("/runs"); if (!currentView()) return; setRuns(runs);
           }
         }
         if (agentDelivery && isPending(agentDelivery.status)) {
           const current = await api<AgentDeliveryTask>(`/agent/deliveries/${agentDelivery.id}`);
+          if (!currentView()) return;
           setAgentDelivery(current);
-          if (!isPending(current.status) && agentTask)
-            setAgentJourney(await api<AgentJourney>(`/agent/tasks/${agentTask.id}/journey`));
+          if (!isPending(current.status) && agentTask) { const journey = await api<AgentJourney>(`/agent/tasks/${agentTask.id}/journey`); if (!currentView()) return; setAgentJourney(journey); }
         }
       } catch (e) {
-        setError((e as Error).message);
+        if (currentView()) setError((e as Error).message);
       } finally {
         polling = false;
       }
     }, privatePreview ? 5000 : 1400);
-    return () => clearInterval(interval);
-  }, [run?.id, run?.status, agentTask?.id, agentTask?.status, agentDelivery?.id, agentDelivery?.status]);
+    return () => { active = false; clearInterval(interval); };
+  }, [inputModule, coreReadState, confirmedCoreEpoch, confirmedCoreRequest, session.user?.id, moduleRead.module, moduleRead.epoch, moduleRead.core, moduleRead.state, run?.id, run?.status, agentTask?.id, agentTask?.status, agentDelivery?.id, agentDelivery?.status]);
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
       if (e.key === "Escape") setModal(null);
@@ -638,18 +661,29 @@ function App() {
     setRun(undefined);
     setNotice("已切换输入数据，代码保留；重新运行以验证结果");
   };
+  const coreReady = coreReadState === "READY" && confirmedCoreEpoch === authEpoch.current && confirmedCoreRequest === coreRequest.current;
+  const coreSnapshotKnown = Boolean(status) && confirmedCoreEpoch === authEpoch.current;
+  const moduleInputsRequired = moduleStartupPaths(inputModule, privatePreview).length > 0;
+  const moduleInputsReady = moduleRead.module === inputModule && moduleRead.epoch === authEpoch.current && moduleRead.core === coreRequest.current && moduleRead.state === "READY";
+  const needsContexts = inputModule === "development" || inputModule === "agent-center";
+  const contextsReady = moduleInputsReady && contexts.length > 0;
+  const startupWritable = coreReady && (!moduleInputsRequired || moduleInputsReady) && (!needsContexts || contextsReady);
+  const moduleInputError = moduleRead.module === inputModule && moduleRead.epoch === authEpoch.current && moduleRead.core === coreRequest.current && moduleRead.state === "ERROR" ? moduleRead.error : "";
+  const contextReadinessReason = !coreReady ? "身份与服务状态尚未确认；暂不提交开发请求。" : !moduleInputsReady
+    ? moduleInputError ? "业务上下文读取失败，请点击上方重新读取；原任务与代码保留。" : "正在读取业务上下文；确认表结构与口径前不提交开发任务。"
+    : !contexts.length ? "当前项目没有可用业务上下文，不能生成或运行；已保存任务仍可读取。" : undefined;
   const dirty = sql !== original,
     canWrite = Boolean(
       !session.readOnly && !session.publicationOnly && !session.consumptionOnly && (status?.mode === "LOCAL_DEVELOPMENT" ||
         (session.authenticated &&
           (session.permissions?.includes("*") ||
             session.permissions?.includes(navPermission[nav])))),
-    );
+    ) && startupWritable;
   const publicationTarget: PublicationTarget | undefined = session.publicationOnly ? {
     taskId: session.publicationTaskId ?? "", packageDigest: session.publicationPackageDigest ?? "",
     verificationId: session.publicationVerificationId ?? "", startsAt: session.publicationStartsAt ?? "", expiresAt: session.publicationExpiresAt ?? "",
   } : undefined;
-  const publicationWindowOpen = Boolean(publicationTarget && publicationClock >= Date.parse(publicationTarget.startsAt) && publicationClock < Date.parse(publicationTarget.expiresAt));
+  const publicationWindowOpen = coreReady && Boolean(publicationTarget && publicationClock >= Date.parse(publicationTarget.startsAt) && publicationClock < Date.parse(publicationTarget.expiresAt));
   const canPublish = session.publicationOnly
     ? Boolean(session.authenticated && !session.readOnly && !session.developmentOnly && !session.consumptionOnly && session.permissions?.includes("DELIVERY") && publicationWindowOpen)
     : canWrite && !session.developmentOnly && !session.consumptionOnly;
@@ -657,7 +691,7 @@ function App() {
     ? `/v2/?module=agent-center&task=${encodeURIComponent(session.publicationTaskId)}#agent-publication` : undefined;
   const workbench = workbenchEnvironment(status,{privatePreview,privateServicesPreview});
   const consumptionScope: ConsumptionScope | undefined = session.consumptionOnly ? {pilotId:session.consumptionPilotId,taskId:session.consumptionTaskId,plan:session.consumptionPlan,startsAt:session.consumptionStartsAt,expiresAt:session.consumptionExpiresAt} : undefined;
-  const servicesCanWrite = !session.readOnly && !session.publicationOnly && !session.developmentOnly && workbench.servicesAvailable && mayWriteServices(status,session) && (!session.consumptionOnly || consumptionWindowOpen(consumptionScope,publicationClock));
+  const servicesCanWrite = !session.readOnly && !session.publicationOnly && !session.developmentOnly && workbench.servicesAvailable && mayWriteServices(status,session) && (!session.consumptionOnly || consumptionWindowOpen(consumptionScope,publicationClock)) && coreReady;
   const consumptionTaskHref = session.consumptionTaskId && /^[a-f0-9-]{36}$/.test(session.consumptionTaskId)
     ? `/v2/?module=services&task=${encodeURIComponent(session.consumptionTaskId)}` : undefined;
   const runRevision = revisions.find(
@@ -666,9 +700,10 @@ function App() {
   const resultIsCurrent = Boolean(
     run &&
       run.contextId === contextId &&
+      validationFamilyForContextId(run.contextId) &&
       runRevision?.sql === sql.trim() &&
       (!status?.validationContract ||
-        run.validationContractId === status.validationContract.id),
+        run.validationContractId === validationFamilyForContextId(run.contextId)?.id),
   );
   return (
     <div className="shell">
@@ -754,12 +789,12 @@ function App() {
           </span>
           <div>
             <strong>
-              {status?.mode === "LOCAL_DEVELOPMENT"
+              {!coreReady ? "身份待核验" : status?.mode === "LOCAL_DEVELOPMENT"
                 ? "本地开发者"
                 : session.user?.displayName ?? "公开访客"}
             </strong>
             <small>
-              {status?.mode === "LOCAL_DEVELOPMENT"
+              {!coreReady ? "连接未确认 · 暂停写入" : status?.mode === "LOCAL_DEVELOPMENT"
                 ? "合成数据 · 开发验证"
                 : session.authenticated
                   ? `${session.role} · ${session.consumptionOnly ? "受邀接口消费" : session.publicationOnly ? "受邀发布试点" : session.readOnly ? "只读验收" : "受邀项目"}`
@@ -781,7 +816,7 @@ function App() {
           <div className="top-actions">
             <span className="env-tag">
               <span />
-              {session.consumptionOnly ? "受邀接口消费" : session.publicationOnly ? "受邀发布试点" : session.readOnly ? "只读验收" : privatePreview ? "私有云端预览" : status?.mode === "LOCAL_DEVELOPMENT"
+              {!coreReady ? "身份待核验" : session.consumptionOnly ? "受邀接口消费" : session.publicationOnly ? "受邀发布试点" : session.readOnly ? "只读验收" : privatePreview ? "私有云端预览" : status?.mode === "LOCAL_DEVELOPMENT"
                 ? "本地验证"
                 : session.authenticated
                   ? "受邀会话"
@@ -813,6 +848,7 @@ function App() {
               ) : (
                 <button
                   className="auth-session-button-v2"
+                  disabled={!coreReady}
                   onClick={() => setAuthOpen(true)}
                 >
                   <LogIn size={14} />受邀用户登录
@@ -826,6 +862,8 @@ function App() {
             </span>
           </div>
         </header>
+        {coreReadState !== "READY" && <div className={coreReadState === "ERROR" ? "error-banner" : "notice-banner"} role={coreReadState === "ERROR" ? "alert" : "status"}><div><strong>{coreReadState === "ERROR" ? "服务或身份读取未确认" : "正在确认服务与身份"}</strong><p>{coreReadState === "ERROR" ? coreError : "先确认当前会话与服务能力；不会等待其他模块历史列表，也不会自动提交任务。"}{coreSnapshotKnown ? " 已有视图保留，当前暂停写入。" : " 尚不能判断为匿名、空任务或可写状态。"}</p></div>{coreReadState === "ERROR" && <button className="button" onClick={() => void reload()}>重新读取服务与身份</button>}</div>}
+        {coreReady && moduleInputsRequired && (!moduleInputsReady || needsContexts && !contexts.length) && <div className={moduleInputError ? "error-banner" : "notice-banner"} role={moduleInputError ? "alert" : "status"}><div><strong>{moduleInputError ? "当前模块数据读取失败" : moduleInputsReady ? "没有可用业务上下文" : "正在读取当前模块所需数据"}</strong><p>{moduleInputError || (needsContexts ? "表结构与业务口径未确认前，开发按钮保持禁用；已保存任务可继续读取。" : "历史列表尚未确认，不把加载中显示为空结果。")}</p></div>{(moduleInputError || moduleInputsReady) && <button className="button" disabled={!coreReady} onClick={() => void reloadModule()}>重新读取当前模块</button>}</div>}
         {session.readOnly && <div className="notice-banner" role="status">只读验收入口 · 已有账号可登录查看已保存结果；创建、运行、发布及新邀请暂未开放。不会因登录自动运行模型或 Spark。</div>}
         {session.developmentOnly && !session.readOnly && <div className="notice-banner" role="status">受邀开发试点 · 仅限一条新 Agent 任务、SQL 编辑运行及交付文件准备；历史任务只读，发布、全平台规划、邀请和接口凭证管理关闭。窗口截止 {session.developmentExpiresAt ? new Date(session.developmentExpiresAt).toLocaleString("zh-CN") : "未确认"}，到期停止新计算并保留结果。</div>}
         {session.publicationOnly && <div className="notice-banner" role="status"><div><strong>受邀发布试点 · 仅指定交付包的两个样例批次</strong><p>代码、需求和交付文件只读，不重新调用模型或演练；同一冻结业务日期运行两批，不代表两个交易日或生产调度。{canPublish ? "请核对下方指定版本并逐项审阅。" : "当前发布窗口未开放、已结束或此账号无发布权限；已有结果仍可查看。"}</p><small>窗口：{session.publicationStartsAt ? new Date(session.publicationStartsAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"} — {session.publicationExpiresAt ? new Date(session.publicationExpiresAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；邀请码、改密及其他模块写入保持关闭。</small>{publicationTaskHref && <a className="button" href={publicationTaskHref}>查看指定任务与审阅范围</a>}</div></div>}
@@ -840,11 +878,11 @@ function App() {
             </button>
           </div>
         )}
-        <Suspense key={session.user?.id ?? "public-visitor"} fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
+        {!coreSnapshotKnown ? <WorkbenchLoading label={coreReadState === "ERROR" ? "工作台等待身份与服务重新核验，未加载任何个人任务。" : "正在确认当前身份，随后加载所选工作台…"} /> : <Suspense key={session.user?.id ?? "public-visitor"} fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>setAgentWorkspaceMode("services")}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
-          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={session.consumptionOnly ? session.consumptionTaskId : new URLSearchParams(window.location.search).get("task")??undefined} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={agentDevelopmentReadiness(status).ready} readinessReason={agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} loading={!status} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
+          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={session.consumptionOnly ? session.consumptionTaskId : new URLSearchParams(window.location.search).get("task")??undefined} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite && !session.developmentOnly}
@@ -1346,7 +1384,7 @@ function App() {
                       <div className="agent-task">
                         {status?.validationContract &&
                           agentTask.validationContractId !==
-                            status.validationContract.id && (
+                            validationFamilyForContextId(agentTask.contextId??contextId)?.id && (
                             <p className="validation-error">
                               该委托使用旧验证范围，需要重新核验。
                             </p>
@@ -1435,7 +1473,7 @@ function App() {
                           </section>
                         )}
                         {agentTask.status === "SUCCEEDED" &&
-                          agentTask.validationContractId === status?.validationContract?.id && (
+                          agentTask.validationContractId === validationFamilyForContextId(agentTask.contextId??contextId)?.id && (
                           <section className="agent-delivery-progress-v2" aria-label="Agent交付准备">
                             <strong>{agentDelivery?.status === "SUCCEEDED" ? "交付文件已准备" : "下一步：交付文件准备"}</strong>
                             <p>复用该委托已验证的代码版本，自动生成不可变调度/部署文件并实际按文件演练；不审批或发布。</p>
@@ -1485,7 +1523,7 @@ function App() {
                         )}
                         {agentTask.status === "SUCCEEDED" &&
                           agentTask.validationContractId ===
-                            status?.validationContract?.id && (
+                            validationFamilyForContextId(agentTask.contextId??contextId)?.id && (
                             <button
                               className="button"
                               title="基于该委托已验证的代码版本，不包含未保存修改"
@@ -1621,7 +1659,6 @@ function App() {
               <DeliveryWorkbench
                 api={api}
                 runs={runs}
-                contractId={status?.validationContract?.id}
                 sourceRunId={deliverySourceId}
                 canWrite={Boolean(canWrite)}
                 onBack={() => setNav("development")}
@@ -1750,9 +1787,9 @@ function App() {
                     </> : <p>费用与用量仅项目管理员可见；未读取到数据时不展示金额。</p>}
                   </article>
                 </div>
-                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&
+                {coreReady && status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&
                   session.role === "ADMIN" && <InvitationPanel api={api} />}
-                {status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&
+                {coreReady && status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&
                   session.authenticated && (
                     <ChangePasswordPanel
                       api={api}
@@ -1916,15 +1953,15 @@ function App() {
             )}
           </section>
         )}
-        </Suspense>
+        </Suspense>}
         <footer className="statusbar">
           <span>
-            <span className={"connection-dot " + (status ? "online" : "")} />
-            {status ? "服务已连接" : "正在连接服务"}
+            <span className={"connection-dot " + (coreReady ? "online" : "")} />
+            {coreReady ? "服务与身份已确认" : coreReadState === "ERROR" ? "连接未确认" : "正在连接服务"}
           </span>
           <span>经典中台 × Data Agent</span>
           <span className="statusbar-right">
-            合成证券数据 · {status?.mode === "LOCAL_DEVELOPMENT" ? "本地开发验证" : session.authenticated ? "受邀项目会话" : "公开只读演示"}
+            合成证券数据 · {!coreReady ? "身份状态待核验" : status?.mode === "LOCAL_DEVELOPMENT" ? "本地开发验证" : session.authenticated ? "受邀项目会话" : "公开只读演示"}
           </span>
         </footer>
         {status?.site?.icpNumber && (
@@ -1944,7 +1981,7 @@ function App() {
         <Suspense fallback={<WorkbenchLoading label="正在加载登录入口…" />}>
           <AuthDialog
             allowRedeem={!privatePreview && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly}
-            readOnly={session.readOnly}
+            readOnly={session.readOnly || !coreReady}
             publicationOnly={session.publicationOnly}
             consumptionOnly={session.consumptionOnly}
             api={api}

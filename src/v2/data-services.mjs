@@ -2,8 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { validateDeliveryPackage, sha256 } from "./delivery.mjs";
-import { contextIds } from "./context.mjs";
+import { validateDeliveryPackage, sha256, validationMatchesFamily } from "./delivery.mjs";
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -1007,7 +1006,7 @@ export const dataServiceFields = Object.freeze([...assetFields]);
 export function verifiedPrivateServiceSource({run,release,bundle,approval}) {
   if (!run || !release || !bundle || !approval || run.publicDeployed!==false || release.publicDeployed!==false || release.scope!=="PRIVATE_CLOUD_TEST" || approval.packageId!==bundle.id) throw fail(409,"缺少发布来源证据","INVALID_RELEASE_PROVENANCE");
   const plan=validateDeliveryPackage(bundle,bundle.digest);
-  if (run.mode!=="DURABLE_PRIVATE_RELEASE_V1" || release.mode!==run.mode || run.releaseId!==release.id || release.status!=="COMPLETED_CLOUD_TEST" || release.health!=="HEALTHY" || run.status!=="SUCCEEDED" || !run.published || !run.schedulerTriggered || run.clockMode!=="FC_TIMER" || run.packageId!==bundle.id || release.packageId!==bundle.id || run.packageDigest!==bundle.digest || release.packageDigest!==bundle.digest || release.sourceCodeHash!==plan.source.sqlHash || approval.id!==release.approvalId || approval.status!=="APPROVED" || approval.packageDigest!==bundle.digest || run.engine!=="Apache Spark" || run.engineVersion!==plan.deployment.runtime.version || run.mainSqlExecuted!==true || run.testSqlValidation?.passed!==true || run.testSqlValidation.sqlHash!==sha256(bundle.files["tests.sql"]) || run.validation?.passed!==true || !contextIds.every(id=>run.validation.regressions?.some(c=>c.contextId===id&&c.passed)) || !Array.isArray(run.rows) || run.testDouble===true)
+  if (run.mode!=="DURABLE_PRIVATE_RELEASE_V1" || release.mode!==run.mode || run.releaseId!==release.id || release.status!=="COMPLETED_CLOUD_TEST" || release.health!=="HEALTHY" || run.status!=="SUCCEEDED" || !run.published || !run.schedulerTriggered || run.clockMode!=="FC_TIMER" || run.packageId!==bundle.id || release.packageId!==bundle.id || run.packageDigest!==bundle.digest || release.packageDigest!==bundle.digest || release.sourceCodeHash!==plan.source.sqlHash || approval.id!==release.approvalId || approval.status!=="APPROVED" || approval.packageDigest!==bundle.digest || run.engine!=="Apache Spark" || run.engineVersion!==plan.deployment.runtime.version || run.mainSqlExecuted!==true || run.testSqlValidation?.passed!==true || run.testSqlValidation.sqlHash!==sha256(bundle.files["tests.sql"]) || !validationMatchesFamily(run.validation,{id:plan.source.validationContractId,contextIds:plan.fixtures.validationContexts.map(context=>context.id)}) || !Array.isArray(run.rows) || run.testDouble===true)
     throw fail(409,"发布版本、实际执行与独立断言证据不一致","INVALID_RELEASE_PROVENANCE");
   return run;
 }

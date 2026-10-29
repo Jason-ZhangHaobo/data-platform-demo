@@ -20,7 +20,7 @@ export function publicDurableAgent(task) {
 // One explicit POST advances one durable boundary. GET never starts paid work.
 // A background dispatcher is intentionally not implied by this implementation.
 export function createDurableSqlAgent({ store, project, runner, generator, persist,
-  getContext, contextIds, contractId, assertModelBudget = () => {}, assertRunBudget = () => {},
+  getContext, contextIds, contractId, resolveValidationFamily, assertModelBudget = () => {}, assertRunBudget = () => {},
   tokenBudget = 32000, requestTokenLimit = 12000, maxAttempts = 3,
   now = Date.now, modelLeaseMs = 90000 }) {
   for (const value of [tokenBudget, requestTokenLimit, maxAttempts, modelLeaseMs])
@@ -36,7 +36,14 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     return task;
   };
   const change = (task, patch) => store.update("agent", task.id, project, patch, { expectedVersion: task.version });
-  const contextDigest = id => digest({ context: getContext(id), validation: contextIds.map(getContext), contractId });
+  const validationFamily = id => {
+    const family=resolveValidationFamily?resolveValidationFamily(id):{id:contractId,contextIds};
+    if(!family||typeof family.id!=="string"||!family.id||!Array.isArray(family.contextIds)||family.contextIds.length<1||family.contextIds.length>5||
+      new Set(family.contextIds).size!==family.contextIds.length||!family.contextIds.includes(id)||family.contextIds.some(key=>!getContext(key)))
+      throw fail(409,"AGENT_VALIDATION_FAMILY_INVALID","业务口径或验证用例族不可用，请复核后再执行");
+    return family;
+  };
+  const contextDigest = id => {const family=validationFamily(id);return digest({context:getContext(id),validation:family.contextIds.map(getContext),contractId:family.id});};
   const ownedLease = (id, token) => {
     const task = get(id);
     return task.stage === "MODEL_IN_FLIGHT" && task.durable.leaseToken === token && !terminal.has(task.status);
@@ -64,12 +71,13 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     if ((sourceRunId !== undefined || sourceError !== undefined) &&
         (typeof sourceRunId !== "string" || !/^[a-f0-9-]{36}$/.test(sourceRunId) || typeof sourceError !== "string" || !sourceError || sourceError.length > 8000))
       throw fail(422, "DURABLE_AGENT_REPAIR_INVALID", "修正任务必须绑定有效失败批次及其错误");
+    const family=validationFamily(contextId);
     const signature = digest({ message, currentSql, contextId, ...(sourceRunId ? { sourceRunId, sourceError } : {}) });
     const result = store.deduplicate(`${project}:durable-agent:${actorId}:${idempotencyKey}`, signature, () =>
       store.create("agent", project, { message, sql: currentSql, initialSql: currentSql, sourceRunId, language: "SPARK_SQL", contextId,
         submittedBy: actorId, status: "QUEUED", stage: "READY_FOR_MODEL", attempts: [], usedTokens: 0,
         maxAttempts, tokenBudget, requestTokenLimit, executionMode: durableSqlAgentMode, mode: "LIVE_MODEL",
-        completionScope: "SQL_DEVELOPMENT", fullLifecycleE2E: false, validationContractId: contractId,
+        completionScope: "SQL_DEVELOPMENT", fullLifecycleE2E: false, validationContractId: family.id,
         durable: { contextDigest: contextDigest(contextId), ...(sourceError ? { validationError: sourceError } : {}) } }));
     await persist(); return publicDurableAgent(get(result.id));
   }
@@ -148,6 +156,8 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   }
 
   async function runStep(task) {
+    const family=validationFamily(task.contextId);
+    if(task.validationContractId!==family.id)throw fail(409,"AGENT_VALIDATION_CONTRACT_CHANGED","任务绑定的业务口径版本与当前验证契约不一致");
     if (task.stage === "READY_FOR_RUN") {
       const rev = store.get("revision", task.revisionId, project);
       if (!rev) throw fail(409, "AGENT_REVISION_MISSING", "任务代码版本缺失");
@@ -155,9 +165,9 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
         digest({ revisionId: rev.id, hash: rev.hash }), () => {
           assertRunBudget();
           const run = store.create("run", project, { status: "QUEUED", revisionId: rev.id,
-            revisionHash: rev.hash, contextId: task.contextId, validationContractId: contractId,
+            revisionHash: rev.hash, contextId: task.contextId, validationContractId: family.id,
             agentTaskId: task.id, mode: "DURABLE_REMOTE_SUBMISSION", isolation: "FUNCTION_PROCESS", durationMs: 30000 });
-          const prepared = runner.prepare({ sql: rev.sql, context: getContext(task.contextId), validationContexts: contextIds.map(getContext) }, run.id);
+          const prepared = runner.prepare({ sql: rev.sql, context: getContext(task.contextId), validationContexts: family.contextIds.map(getContext) }, run.id);
           if (prepared?.job?.jobId !== run.id) throw new Error("持久运行标识不一致");
           store.update("run", run.id, project, { stage: "SUBMITTING", remoteSubmission: { prepared, submitted: false } });
           change(task, { stage: "WAITING_FOR_RUN", runId: run.id,
@@ -171,7 +181,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     if (!run || run.agentTaskId !== task.id) throw fail(409, "AGENT_RUN_LINK_INVALID", "运行批次关联不一致");
     // Reconcile reads an existing receipt before considering a resubmission.
     // This also recovers a completed job after its submission deadline elapsed.
-    run = await reconcileDurableDevelopment(run, { runner, store, project, persist, contextIds, contractId });
+    run = await reconcileDurableDevelopment(run, { runner, store, project, persist, contextIds:family.contextIds, contractId:family.id });
     task = get(task.id);
     if (terminal.has(task.status) || task.stage === "CANCELLING") return publicDurableAgent(task);
     if (["QUEUED", "RUNNING"].includes(run.status)) return publicDurableAgent(task);

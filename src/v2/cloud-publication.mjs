@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
-import { validateDeliveryPackage, resolveDeliverySchedule } from "./delivery.mjs";
+import { validateDeliveryPackage, resolveDeliverySchedule, validationMatchesFamily } from "./delivery.mjs";
 import { deliveryArtifactValue } from "./artifact-store.mjs";
-import { contextIds } from "./context.mjs";
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -19,7 +18,8 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
   const stamp = () => new Date(now()).toISOString();
   const patch = (kind, item, values) => store.update(kind, item.id, project, values, { expectedVersion: item.version });
   const ensure = async item => { await artifactStore.verify(item.artifact, "delivery-package", item.digest, deliveryArtifactValue(item)); return validateDeliveryPackage(item, item.digest); };
-  const passes = (receipt, item, plan) => receipt?.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) && receipt.validation?.passed === true && contextIds.every(id => receipt.validation.regressions?.some(c => c.contextId === id && c.passed));
+  const passes = (receipt, item, plan) => receipt?.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) &&
+    validationMatchesFamily(receipt.validation, { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) });
   async function publish({ agent, packageDigest, verificationId, attestations, actorId, idempotencyKey }) {
     if (!enabled) throw fail(503, "云端发布驱动尚未配置");
     const publicationScope = { agentId: agent.id, packageDigest, verificationId };

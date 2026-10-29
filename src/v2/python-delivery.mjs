@@ -7,13 +7,14 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-  contextIds,
   getContext,
   validationContractId,
+  validationFamilyForContext,
 } from "./context.mjs";
 import {
   resolveDeliverySchedule,
   validateCalendar,
+  validationMatchesFamily,
 } from "./delivery.mjs";
 import { pythonRuntimeConfig, runRestrictedPython } from "./python.mjs";
 
@@ -59,8 +60,11 @@ const calendar = () => ({
 export function createPythonDeliveryPackage({
   run,
   revision,
-  name = "客户资产 T+1 · Python",
+  name,
 }) {
+  const family = validationFamilyForContext(revision?.contextId);
+  if (name === undefined || (family?.id !== validationContractId && name === "客户资产 T+1 · Python"))
+    name = family?.id === validationContractId ? "客户资产 T+1 · Python" : "股票持仓＋可用现金（非客户全资产）· Python";
   if (
     !run ||
     !revision ||
@@ -69,7 +73,8 @@ export function createPythonDeliveryPackage({
     run.status !== "SUCCEEDED" ||
     run.engine !== "CPython" ||
     !/^\d+\.\d+(?:\.\d+)?$/.test(run.engineVersion ?? "") ||
-    run.validationContractId !== validationContractId ||
+    !family || run.validationContractId !== family.id ||
+    (run.contextId !== undefined && run.contextId !== revision.contextId) ||
     run.validation?.passed !== true ||
     run.revisionHash !== revision.codeHash ||
     pythonSha256(revision.code) !== revision.codeHash ||
@@ -81,11 +86,7 @@ export function createPythonDeliveryPackage({
       { status: 409 },
     );
   if (
-    !contextIds.every((id) =>
-      run.validation.regressions?.some(
-        (check) => check.contextId === id && check.passed,
-      ),
-    )
+    !validationMatchesFamily(run.validation, family)
   )
     throw Object.assign(new Error("缺少五场景Python验证证据"), {
       status: 409,
@@ -142,7 +143,7 @@ export function createPythonDeliveryPackage({
       "calendar.json": encoded(taskCalendar),
       "fixtures.json": encoded({
         context,
-        validationContexts: contextIds.map(getContext),
+        validationContexts: family.contextIds.map(getContext),
       }),
       "validation.json": encoded({
         sourceRunId: run.id,
@@ -164,7 +165,7 @@ export function createPythonDeliveryPackage({
         projectId: run.projectId,
         codeHash: revision.codeHash,
         contextId: context.id,
-        validationContractId,
+        validationContractId: family.id,
       },
       files: Object.fromEntries(
         pythonDeliveryFiles.map((file) => [
@@ -220,9 +221,10 @@ export function validatePythonDeliveryPackage(bundle, expectedDigest) {
     taskCalendar = jsonFile(bundle, "calendar.json"),
     fixtures = jsonFile(bundle, "fixtures.json"),
     proof = jsonFile(bundle, "validation.json");
+  const family = validationFamilyForContext(source?.contextId);
   if (
-    source.codeHash !== pythonSha256(bundle.files["main.py"]) ||
-    source.validationContractId !== validationContractId ||
+    !source || !family || source.codeHash !== pythonSha256(bundle.files["main.py"]) ||
+    source.validationContractId !== family.id ||
     bundle.manifest.releaseState !== "NOT_PUBLISHED" ||
     schedule.schema !== "shuduo-schedule/v1" ||
     schedule.timezone !== "Asia/Shanghai" ||
@@ -265,12 +267,12 @@ export function validatePythonDeliveryPackage(bundle, expectedDigest) {
     throw fail("Python DAG必须按执行、断言、证据顺序运行");
   if (
     !same(fixtures.context, getContext(source.contextId)) ||
-    !same(fixtures.validationContexts, contextIds.map(getContext)) ||
+    !same(fixtures.validationContexts, family.contextIds.map(getContext)) ||
     proof.sourceRunId !== source.runId ||
     proof.revisionHash !== source.codeHash ||
     proof.engine !== "CPython" ||
     proof.engineVersion !== deployment.runtime.version ||
-    proof.report?.passed !== true
+    !validationMatchesFamily(proof.report, family)
   )
     throw fail("Python输入或源验证证据与清单不一致");
   validateCalendar(taskCalendar);
@@ -422,4 +424,3 @@ export async function verifyPythonDeliveryDirectory(
   );
   return receipt;
 }
-

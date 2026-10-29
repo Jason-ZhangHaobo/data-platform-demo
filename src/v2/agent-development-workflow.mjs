@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { createDeliveryPackage, validateDeliveryPackage, resolveDeliverySchedule } from "./delivery.mjs";
-import { getContext, contextIds, validationContractId } from "./context.mjs";
+import { createDeliveryPackage, validateDeliveryPackage, resolveDeliverySchedule, validationMatchesFamily } from "./delivery.mjs";
+import { getContext, validationContractId, validationFamilyForContext } from "./context.mjs";
 import { deliveryArtifactValue } from "./artifact-store.mjs";
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
@@ -15,6 +15,7 @@ export function publicDeliveryTask(task) {
 
 export function developmentVerificationReport(task, run, revision) {
   const context = getContext(task.contextId), expected = context?.expected ?? [];
+  const family = validationFamilyForContext(task.contextId), legacy = family?.id === validationContractId;
   const rows = run?.rows ?? [], fields = ["holding_market_value", "available_cash", "total_assets", "security_count"];
   const numericEqual = (a, b) => a !== null && a !== undefined && String(a).trim() !== "" && Number.isFinite(Number(a)) && Number(a) === Number(b);
   const resultsMatch = rows.length === expected.length && expected.every(want => {
@@ -22,19 +23,23 @@ export function developmentVerificationReport(task, run, revision) {
     return matches.length === 1 && fields.every(field => numericEqual(matches[0][field], want[field]));
   });
   const checks = [
-    { id: "revision", label: "结果对应当前代码版本", passed: Boolean(revision && run?.revisionId === revision.id && run.revisionHash === revision.hash && hash(revision.sql) === revision.hash) },
+    { id: "revision", label: "结果对应当前代码版本", passed: Boolean(revision && revision.contextId === task.contextId &&
+      (run?.contextId === undefined || run.contextId === task.contextId) && run?.revisionId === revision.id && run.revisionHash === revision.hash && hash(revision.sql) === revision.hash) },
     { id: "execution", label: "Spark 实际执行完成", passed: run?.status === "SUCCEEDED" && run.engine === "Apache Spark" && run.mainSqlExecuted === true && run.testDouble !== true },
     { id: "results", label: "客户、金额与证券数量匹配独立预期", passed: resultsMatch },
-    { id: "regressions", label: "重复持仓、现金变化及现金客户等五场景通过", passed: run?.validation?.passed === true && run.validation.contractId === validationContractId && contextIds.every(id => run.validation.regressions?.some(check => check.contextId === id && check.passed)) },
+    { id: "regressions", label: legacy ? "重复持仓、现金变化及现金客户等五场景通过" : "股票持仓、现金变化及现金客户等五场景通过", passed:
+      (task.validationContractId === undefined || task.validationContractId === family?.id) &&
+      (run?.validationContractId === undefined || run.validationContractId === family?.id) &&
+      validationMatchesFamily(run?.validation, family, { requireContract: true }) },
   ];
   const passed = checks.every(check => check.passed);
   return {
     schema: "shuduo-development-verification/v1", taskId: task.id, revisionId: revision?.id,
     revisionHash: revision?.hash, runId: run?.id, contextId: task.contextId,
     status: passed ? "PASSED" : !run || ![...terminal, "VALIDATION_FAILED"].includes(run.status) ? "PENDING" : "NEEDS_ATTENTION",
-    summary: passed ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "尚未形成完整核验结论，请先查看未通过项。",
+    summary: passed ? legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
     definition: context?.definition, checks, rowCount: rows.length, engine: run?.engine, engineVersion: run?.engineVersion,
-    finishedAt: run?.finishedAt, validationContractId, completionScope: "KNOWN_SECURITIES_CONTRACT",
+    finishedAt: run?.finishedAt, validationContractId: family?.id, validationFamily: family, completionScope: "KNOWN_SECURITIES_CONTRACT",
     notice: "核验仅覆盖所选数据与已登记口径；新增指标需要新的独立预期。",
   };
 }
@@ -66,7 +71,8 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const { run, revision } = source(agent);
     const existing = store.list("agent_delivery_task", project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision.id && t.sourceRunId === run.id && t.sourceSqlHash === revision.hash && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
     if (existing) return publicDeliveryTask(existing);
-    const bundle = createDeliveryPackage({ run, revision, name: "客户资产 T+1 · Agent交付" });
+    const family = validationFamilyForContext(revision.contextId);
+    const bundle = createDeliveryPackage({ run, revision, name: family?.id === validationContractId ? "客户资产 T+1 · Agent交付" : "股票持仓＋可用现金（非客户全资产）· Agent交付" });
     const artifact = await artifactStore.put("delivery-package", bundle.digest, bundle);
     const dedup = store.deduplicate(`${project}:durable-delivery:${agent.id}:${key}`, hash(JSON.stringify({ runId: run.id, revisionHash: revision.hash })), () => {
       const task = store.create("agent_delivery_task", project, { mode: durableDeliveryMode, sourceAgentTaskId: agent.id, sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: agent.submittedBy, status: "QUEUED", stage: "PACKAGE_READY", packageDigest: bundle.digest, completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
@@ -84,7 +90,8 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     catch (error) { if (error.code !== "REMOTE_SPARK_TIMEOUT") throw error; receipt = { status: "FAILED", error: "交付文件演练超时" }; }
     if (!receipt) return publicDeliveryTask(task);
     task = get(id); if (terminal.has(task.status)) return publicDeliveryTask(task);
-    const passed = receipt.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) && receipt.validation?.passed === true && contextIds.every(id => receipt.validation.regressions?.some(c => c.contextId === id && c.passed));
+    const family = { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) };
+    const passed = receipt.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) && validationMatchesFamily(receipt.validation, family);
     const verification = store.get("delivery_verification", task.verificationId, project);
     // Whitelist receipt fields; a Worker cannot overwrite package/source identifiers.
     const result = Object.fromEntries(["engine", "engineVersion", "mainSqlExecuted", "testSqlValidation", "validation", "rows", "columns", "log", "durationMs", "error", "testDouble"].filter(k => receipt[k] !== undefined).map(k => [k, receipt[k]]));
