@@ -23,9 +23,16 @@ const month = now => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai
 const fresh = (at, now) => Number.isFinite(Date.parse(at)) && Date.parse(at) <= now && now - Date.parse(at) < 3600000;
 
 export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
+  const resumed=plan?.resumeExistingTask;
+  if(resumed!==undefined)check(sameKeys(resumed,['protocol','taskId','originalStartsAt','originalDeadline','retainedAttempts','approvalDigest','priorCodeReads','priorCodeHttp'])&&
+    resumed.protocol==='ORIGINAL_TASK_WINDOW_CONTINUATION_V1'&&uuid(resumed.taskId)&&resumed.retainedAttempts===1&&
+    resumed.approvalDigest===plan.binding?.approvalDigest&&Date.parse(resumed.originalStartsAt)===plan.issuedAt&&Date.parse(resumed.originalDeadline)===plan.deadline&&
+    Number.isSafeInteger(resumed.priorCodeReads)&&resumed.priorCodeReads>=0&&resumed.priorCodeReads<=78&&
+    Number.isSafeInteger(resumed.priorCodeHttp)&&resumed.priorCodeHttp>=0&&resumed.priorCodeHttp<=48,'ORIGINAL_TASK_CONTINUATION_INVALID');
   check(plan?.scope === developmentRecoveryScope && developmentRecoveryModes.includes(plan.mode) &&
-    plan.contextId === 'stock-cash-t1' && plan.maxNewTasks === 1 && plan.maxModelCalls === 3 && plan.maxSparkRuns === 4 &&
-    plan.maxIncrementCny === 5 && plan.monthlyCny === 200 && plan.maxReads === 120 && plan.maxProbes === 60 && plan.maxWrites === 4,
+    plan.contextId === 'stock-cash-t1' && plan.maxNewTasks === (resumed?0:1) && plan.maxModelCalls === (resumed?2:3) && plan.maxSparkRuns === 4 &&
+    plan.maxIncrementCny === 5 && plan.monthlyCny === 200 && plan.maxReads === (resumed?102-resumed.priorCodeReads:120) &&
+    plan.maxProbes === (resumed?54-resumed.priorCodeHttp:60) && plan.maxWrites === (resumed?3:4),
   'RECOVERY_SCOPE_INVALID');
   check(!['candidate', 'previous', 'packageTransport', 'preStagedObject', 'buildRunId', 'artifactId', 'servicePlan', 'target',
     'triggerNames', 'timerRecords', 'schedulerSecret', 'permissionProbe', 'releaseId'].some(k => Object.hasOwn(plan, k)), 'RECOVERY_EXTRA_AUTHORITY_FORBIDDEN');
@@ -41,7 +48,7 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
     b.historyDigest === recoveryDigest(plan.historyUsage), 'RECOVERY_CONTINUATION_INVALID');
   check(sameKeys(plan.priorUsage, recoveryUsageKeys) && recoveryUsageKeys.every(k => Number.isSafeInteger(plan.priorUsage[k]) && plan.priorUsage[k] >= 0) &&
     ['objectGets', 'objectPuts', 'triggerCreates', 'triggerDeletes', 'permissionProbes'].every(k => plan.priorUsage[k] === 0) &&
-    plan.priorUsage.configReads <= 120 && plan.priorUsage.activeHttp <= 60 && plan.priorUsage.configWrites <= 4, 'RECOVERY_USAGE_INVALID');
+    plan.priorUsage.configReads <= plan.maxReads && plan.priorUsage.activeHttp <= plan.maxProbes && plan.priorUsage.configWrites <= plan.maxWrites, 'RECOVERY_USAGE_INVALID');
   const f = plan.baseline, e = f?.environmentVariables, pkg = plan.application;
   check(f?.functionName === plan.controlName && /^dataplatform-v2-[a-z0-9-]{1,60}$/.test(plan.controlName ?? '') &&
     functionDigest(f) === plan.baselineDigest && f.runtime === 'custom.debian12' && f.cpu === 0.25 && f.memorySize === 512 &&
@@ -57,8 +64,9 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
     'RECOVERY_ACTIVATION_CHECKPOINT_INVALID');
   else {
     const a = plan.activated, starts = Date.parse(a?.V2_PUBLIC_DEVELOPMENT_STARTS_AT);
-    check(Number.isFinite(starts) && starts >= plan.issuedAt && starts < plan.deadline &&
-      isDeepStrictEqual(a, developmentRecoveryEnvironment(plan, starts)), 'RECOVERY_ACTIVE_SNAPSHOT_INVALID');
+    const checked=resumed?Date.parse(plan.activationCheckedAt):starts;
+    check(Number.isFinite(starts) && starts >= plan.issuedAt && starts < plan.deadline && Number.isFinite(checked)&&checked<=now&&
+      isDeepStrictEqual(a, developmentRecoveryEnvironment(plan, checked)), 'RECOVERY_ACTIVE_SNAPSHOT_INVALID');
     if (plan.reloaded !== undefined) check(isDeepStrictEqual(plan.reloaded, { ...a, V2_RECOVERY_PILOT_NONCE: plan.recoveryNonce }) &&
       /^[a-f0-9]{32}$/.test(plan.recoveryNonce ?? ''), 'RECOVERY_RELOAD_SNAPSHOT_INVALID');
     if (plan.mode === 'recycle') {
@@ -87,7 +95,7 @@ export function developmentRecoveryEnvironment(plan, now = Date.now()) {
     e.V2_MODEL_MONTHLY_BUDGET_CNY.trim() !== '' && Number.isFinite(Number(e.V2_MODEL_MONTHLY_BUDGET_CNY)) &&
     Number(e.V2_MODEL_MONTHLY_BUDGET_CNY) >= model, 'RECOVERY_EXISTING_QUOTA_INSUFFICIENT');
   const env = { ...e, V2_FC_PUBLIC_READ_ONLY: 'false', V2_FC_PUBLIC_WRITE_SCOPE: 'DEVELOPMENT_ONLY',
-    V2_PUBLIC_DEVELOPMENT_STARTS_AT: new Date(now).toISOString(), V2_PUBLIC_DEVELOPMENT_EXPIRES_AT: new Date(plan.deadline).toISOString(),
+    V2_PUBLIC_DEVELOPMENT_STARTS_AT: plan.resumeExistingTask?.originalStartsAt??new Date(now).toISOString(), V2_PUBLIC_DEVELOPMENT_EXPIRES_AT: new Date(plan.deadline).toISOString(),
     V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: String(runs), V2_MODEL_MONTHLY_BUDGET_CNY: String(model),
     V2_ACCOUNT_MONTHLY_SPEND_CNY: String(plan.billCny) };
   publicDevelopmentConfig(env);
@@ -100,17 +108,18 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
   const usage = { ...plan.priorUsage };
   usage.configReads += (report.configReads ?? 0) + (report.identityReads ?? 0);
   const cleanup = ['close', 'rollback'].includes(plan.mode), path = `/2023-03-30/functions/${plan.controlName}`;
+  const normalReadLimit=plan.resumeExistingTask?plan.maxReads-12:100;
   let restoring = cleanup;
   const expected = e => ({ ...plan.baseline, environmentVariables: e });
   Object.assign(report, { scope: plan.scope, mode: plan.mode, issuedAt: plan.issuedAt, deadline: plan.deadline, binding: plan.binding,
     baseline: plan.baseline, baselineDigest: plan.baselineDigest, application: plan.application, historyUsage: plan.historyUsage,
     priorUsage: plan.priorUsage, cumulativeUsage: usage, activated: plan.activated, reloaded: plan.reloaded,
-    phaseBoundary: plan.phaseBoundary, recoveryNonce: plan.recoveryNonce, modelCalls: 0, sparkRuns: 0 });
+    phaseBoundary: plan.phaseBoundary, recoveryNonce: plan.recoveryNonce, activationCheckedAt:plan.activationCheckedAt,modelCalls: 0, sparkRuns: 0 });
   const save = () => { report.runUsage = Object.fromEntries(recoveryUsageKeys.map(k => [k, usage[k] - plan.priorUsage[k]])); io.save(report); };
   const spend = kind => {
     check(restoring || now() < plan.deadline, 'RECOVERY_WINDOW_EXPIRED');
-    check(usage.configReads <= (restoring ? 120 : 100) && usage.activeHttp <= 60 && usage.configWrites <= 4, 'RECOVERY_USAGE_LIMIT');
-    check(usage[kind] < ({ configReads: restoring ? 120 : 100, activeHttp: 60, configWrites: restoring ? 4 : 2 })[kind], 'RECOVERY_USAGE_LIMIT');
+    check(usage.configReads <= (restoring ? plan.maxReads : normalReadLimit) && usage.activeHttp <= plan.maxProbes && usage.configWrites <= plan.maxWrites, 'RECOVERY_USAGE_LIMIT');
+    check(usage[kind] < ({ configReads: restoring ? plan.maxReads : normalReadLimit, activeHttp: plan.maxProbes, configWrites: restoring ? plan.maxWrites : 2 })[kind], 'RECOVERY_USAGE_LIMIT');
     usage[kind]++; report[kind] = (report[kind] ?? 0) + 1; save();
   };
   const read = () => { spend('configReads'); return io.command(['fc', 'GET', path]); };
@@ -159,6 +168,7 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
       const bill = verifyV2MonthlyBillPages(pages, 200);
       check(bill.ok && bill.billingCycle === cycle && Number(bill.spendCny) + plan.priorReserveCny + 5 < 200, 'RECOVERY_BUDGET_INVALID');
       plan.billCny = Number(bill.spendCny); report.bill = bill;
+      report.activationCheckedAt=new Date(now()).toISOString();
       report.activated = developmentRecoveryEnvironment(plan, now());
     } else if (plan.mode === 'recycle') {
       check(same(before, expected(plan.activated)), 'RECOVERY_ACTIVE_CHANGED');
