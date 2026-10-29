@@ -44,7 +44,11 @@ function fixture(options = {}) {
   let current = structuredClone(baseline), lastPlan, lastReport, activeReport, saved;
   const calls = [], controls = {}, objects = new Map([[previous.sha256, previousBytes]]);
   const io = {
-    now: () => now, wait: async () => {}, save: report => { if (controls.saveFailure) throw failure('SYNTHETIC_SAVE_FAILED'); saved = structuredClone(report); },
+    now: () => now, wait: async () => {}, save: report => {
+      if (controls.saveFailure) throw failure('SYNTHETIC_SAVE_FAILED');
+      if (controls.runtimeSaveTypeError && report.phase === 'STAGE_REQUESTED' && report.activeHttp > 0) throw new TypeError('SYNTHETIC_RUNTIME_SAVE_FAILED');
+      saved = structuredClone(report);
+    },
     readCandidate: async () => { calls.push({ candidateRead: true }); assert.notEqual(controls.forbidCandidateRead, true); return candidateBytes; },
     command: async (args, body) => {
       assert.deepEqual(saved.cumulativeUsage, activeReport.cumulativeUsage, 'reserve before every effect');
@@ -90,6 +94,8 @@ function fixture(options = {}) {
     },
     http: async path => {
       assert.deepEqual(saved.cumulativeUsage, activeReport.cumulativeUsage); calls.push({ http: path });
+      if (controls.runtimeHardError) throw controls.runtimeHardError;
+      if (controls.runtimeTransientErrors > 0) { controls.runtimeTransientErrors--; throw new TypeError('synthetic-private-message-must-not-be-logged'); }
       if (controls.badRuntime) return { status: 503, body: {} };
       if (path.endsWith('/status')) return { status: controls.badStatus ? 503 : 200,
         body: { spark: { healthVerified: false }, agentDevelopment: { durableEnabled: false } } };
@@ -134,7 +140,7 @@ function codeFixture() {
     vpcConfig:{vpcId:'vpc-synthetic',vSwitchIds:['vsw-synthetic'],securityGroupId:'sg-synthetic'},
     logConfig:{project:'synthetic-logs',logstore:'synthetic-control'},layers:['synthetic-layer']}}),p=f.basePlan;
   delete p.target; delete p.servicePlan;
-  p.scope=readonlyCodeRefreshScope;p.priorReserveCny=45;p.applicationSource='e'.repeat(40);
+  p.scope=readonlyCodeRefreshScope;p.priorReserveCny=45;p.applicationSource='e'.repeat(40);p.ownerCleanupReadReserve=18;p.readLimit=102;
   p.buildRunId='12345678';p.artifactId='23456789';
   p.readonlyCodeRefresh={protocol:'READONLY_CODE_REFRESH_CONTINUATION_V1',predecessorDigest:'b'.repeat(64),approvalDigest:'c'.repeat(64),
     historyUsageDigest:canonicalHash(p.historyUsage),previousSha256:p.previous.sha256,candidateSha256:p.candidate.sha256,
@@ -159,7 +165,7 @@ test('code-only refresh preserves the entire public read-only configuration and 
 test('code-only scope refuses larger compute, spend, history or resource authority before IO',async()=>{
   const mutations=[p=>p.maxModelCalls=1,p=>p.maxSparkRuns=1,p=>p.maxIncrementCny=3,p=>p.monthlyCny=201,
     p=>p.priorReserveCny=43,p=>p.priorReserveCny=27,p=>p.maxReads=121,p=>p.maxProbes=41,
-    p=>p.normalReadLimit=85,p=>p.readLimit=109,p=>p.ownerCleanupReadReserve=11,
+    p=>p.normalReadLimit=85,p=>p.readLimit=103,p=>p.ownerCleanupReadReserve=17,
     p=>p.readonlyCodeRefresh.approvalDigest='',p=>p.readonlyCodeRefresh.predecessorDigest='not-a-proof',
     p=>p.historyUsage.objectPuts--,p=>delete p.historyUsage.permissionProbes,p=>p.historyUsage.extra=1,
     p=>p.readonlyCodeRefresh.historyUsageDigest='d'.repeat(64),p=>p.readonlyCodeRefresh.applicationSource='d'.repeat(40),
@@ -254,6 +260,37 @@ test('code-only persistence failure stops before any external effect',async()=>{
   const f=codeFixture();f.controls.saveFailure=true;await assert.rejects(f.step('stage'),/SYNTHETIC_SAVE_FAILED/);
   assert.equal(f.calls.length,0);
   const valid=codeFixture();assert.equal(validateReadonlyCodeRefreshPlan({...valid.basePlan,mode:'stage'}),true);
+});
+
+test('code-only transient read failures are bounded and never replay the verified code update',async()=>{
+  const f=codeFixture();f.controls.runtimeTransientErrors=2;const r=await f.step('stage');
+  assert.equal(r.phase,'STAGED');assert.equal(r.runtimeReadFailures.length,2);assert.equal(r.runtime.ready,true);
+  assert.equal(r.cumulativeUsage.activeHttp,4);assert.equal(r.cumulativeUsage.configWrites,1);
+  assert.ok(r.runtimeReadFailures.every(e=>e.kind==='TRANSPORT'));
+  assert.doesNotMatch(JSON.stringify(r),/synthetic-private-message-must-not-be-logged/);
+});
+
+test('exhausted code-only runtime retries preserve failure and use only the one rollback allowance',async()=>{
+  const f=codeFixture();f.controls.runtimeTransientErrors=3;
+  await assert.rejects(f.step('stage'),/READONLY_RUNTIME_TRANSPORT_UNCONFIRMED/);
+  assert.equal(f.report.runtimeReadFailures.length,3);assert.equal(f.report.cumulativeUsage.activeHttp,3);
+  assert.equal(f.report.cumulativeUsage.configWrites,2);assert.equal(f.report.rollback,'VERIFIED');
+  assert.equal(f.report.runtime.ready,false);assert.deepEqual(f.current,f.baseline);
+});
+
+test('permission, input and persistence errors cannot borrow code-only transport retries',async()=>{
+  const f=codeFixture();f.controls.runtimeHardError=failure('SYNTHETIC_PERMISSION_DENIED');
+  await assert.rejects(f.step('stage'),/SYNTHETIC_PERMISSION_DENIED/);
+  assert.equal(f.report.cumulativeUsage.activeHttp,1);assert.equal(f.report.runtimeReadFailures,undefined);
+  const old=fixture();old.controls.runtimeTransientErrors=1;await assert.rejects(old.step('stage'));
+  assert.equal(old.report.runtimeReadFailures,undefined,'legacy grants must not silently change retry semantics');
+});
+
+test('a persistence TypeError before a runtime read is never reclassified as retryable transport',async()=>{
+  const f=codeFixture();f.controls.runtimeSaveTypeError=true;
+  await assert.rejects(f.step('stage'),/SYNTHETIC_RUNTIME_SAVE_FAILED/);
+  assert.equal(f.calls.filter(c=>c.http).length,0);assert.equal(f.report.runtimeReadFailures,undefined);
+  assert.equal(f.report.cumulativeUsage.activeHttp,1,'the reserved failed checkpoint is not erased');
 });
 
 test('service environment changes only the exact service window and bill without increasing compute quotas', () => {

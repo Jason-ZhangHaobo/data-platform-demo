@@ -267,7 +267,10 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   check((codeOnly ? readonlyCodeModes : serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
     (codeOnly ? validateReadonlyCodeRefreshPlan(plan) : serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && validateServicePilotReserve(plan, preStaged)
       : plan.scope === publicationScope && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32) && plan.monthlyCny === 200 &&
-    plan.maxReads === 120 && plan.maxProbes === 40 && plan.normalReadLimit === 84 && plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12 &&
+    plan.maxReads === 120 && plan.maxProbes === 40 && plan.normalReadLimit === 84 &&
+    (codeOnly ? Number.isSafeInteger(plan.ownerCleanupReadReserve) && plan.ownerCleanupReadReserve >= 18 && plan.ownerCleanupReadReserve <= 32 &&
+      plan.readLimit === plan.maxReads - plan.ownerCleanupReadReserve && plan.readLimit >= plan.normalReadLimit
+      : plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12) &&
     (noTimers || isDeepStrictEqual(plan.triggerNames, publicationPilotTimerNames)), codeOnly ? 'READONLY_CODE_SCOPE_INVALID' : serviceOnly ? 'SERVICE_PILOT_SCOPE_INVALID' : 'PUBLICATION_PILOT_SCOPE_INVALID');
   if (serviceOnly) check(!['triggerNames', 'timerRecords', 'timerPreparedAt', 'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint'].some(key => Object.hasOwn(plan, key)), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
   check(Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) && plan.issuedAt <= now() && plan.deadline > now() &&
@@ -340,8 +343,26 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   };
   const runtime = async opened => {
     for (let n = 0; n < 3; n++) {
-      spend('activeHttp'); const access = await io.http('/api/v2/auth/session');
-      spend('activeHttp'); const status = await io.http('/api/v2/status');
+      let access, status, readFailure, failureEndpoint;
+      spend('activeHttp');
+      try { access = await io.http('/api/v2/auth/session'); }
+      catch (error) { readFailure = error; failureEndpoint = '/api/v2/auth/session'; }
+      if (!readFailure) {
+        spend('activeHttp');
+        try { status = await io.http('/api/v2/status'); }
+        catch (error) { readFailure = error; failureEndpoint = '/api/v2/status'; }
+      }
+      if (readFailure) {
+        const error = readFailure;
+        const transport = ['TypeError', 'AbortError', 'TimeoutError'].includes(error.name);
+        const format = error.name === 'SyntaxError' || error.safeCode === 'PUBLICATION_HTTP_RESPONSE_INVALID';
+        if (!codeOnly || (!transport && !format)) throw error;
+        report.runtimeReadFailures = [...(report.runtimeReadFailures ?? []), { attempt: n + 1, endpoint: failureEndpoint,
+          kind: transport ? 'TRANSPORT' : 'RESPONSE', code: transport ? 'READONLY_RUNTIME_TRANSPORT_UNCONFIRMED' : 'READONLY_RUNTIME_RESPONSE_INVALID' }];
+        report.runtime = { ready: false }; save();
+        if (n < 2) { await wait(3000); continue; }
+        check(false, report.runtimeReadFailures.at(-1).code);
+      }
       const ready = access.status === 200 && access.body.authenticated === false && access.body.readOnly === true &&
         (opened ? serviceOnly ? access.body.consumptionOnly === true && access.body.publicationOnly !== true && access.body.developmentOnly !== true &&
             access.body.consumptionExpiresAt === report.activated.V2_PUBLIC_SERVICE_EXPIRES_AT
