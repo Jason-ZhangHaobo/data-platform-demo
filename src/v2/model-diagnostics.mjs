@@ -3,7 +3,7 @@ const trusted = new WeakMap();
 const phases = new Set(["PREPARE", "REQUEST", "RESPONSE", "PARSE", "LEASE"]);
 const codes = new Set(["MODEL_KEY_MISSING", "MODEL_CONFIG_INVALID", "MODEL_CONTEXT_BUDGET",
   "MODEL_HTTP_ERROR", "MODEL_TIMEOUT", "MODEL_TRANSPORT_ERROR", "MODEL_RESPONSE_INVALID",
-  "MODEL_INTERRUPTED", "MODEL_STEP_ERROR", "MONTHLY_MODEL_BUDGET_EXCEEDED", "MONTHLY_HARD_BUDGET_EXCEEDED"]);
+  "MODEL_INTERRUPTED", "MODEL_STEP_ERROR", "MODEL_RESERVATION_INVALID", "MONTHLY_MODEL_BUDGET_EXCEEDED", "MONTHLY_HARD_BUDGET_EXCEEDED"]);
 const networkCodes = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT",
   "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "CERT_HAS_EXPIRED", "UNABLE_TO_VERIFY_LEAF_SIGNATURE"]);
 
@@ -24,7 +24,7 @@ export function modelFailure(code, phase, { httpStatus, elapsedMs = 0, networkCo
 
 export function safeModelDiagnostic(error, elapsedMs = 0) {
   if (trusted.has(error)) return { ...trusted.get(error) };
-  if (["MONTHLY_MODEL_BUDGET_EXCEEDED", "MONTHLY_HARD_BUDGET_EXCEEDED"].includes(error?.code))
+  if (["MONTHLY_MODEL_BUDGET_EXCEEDED", "MONTHLY_HARD_BUDGET_EXCEEDED", "MODEL_RESERVATION_INVALID"].includes(error?.code))
     return { code: error.code, phase: "PREPARE", requestMayHaveBeenSent: false, elapsedMs: Math.max(0, Math.floor(elapsedMs)) };
   return { code: "MODEL_STEP_ERROR", phase: "REQUEST", requestMayHaveBeenSent: true,
     elapsedMs: Math.max(0, Math.floor(elapsedMs)) };
