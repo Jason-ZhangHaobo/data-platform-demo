@@ -100,11 +100,33 @@ export function publicationPilotEnvironment(before, plan, now = Date.now()) {
 }
 // Service consumption reuses an already-published snapshot. This scope carries
 // no scheduler authority and must not change compute budgets or runtime drivers.
+export function validateServicePilotReserve(plan, preStaged = validatePilotPackageTransport(plan)) {
+  const continuation = plan?.cloudTransferContinuation;
+  if (continuation === undefined)
+    return preStaged ? [39, 41].includes(plan.priorReserveCny) : plan.priorReserveCny === 37;
+  const keys = ['protocol','attemptNumber','previousAttemptNumber','previousPhase','closedAttemptDigest','approvalDigest',
+    'historyUsageDigest','candidateSha256','buildRunId','artifactId','previousReserveCny','failedAttemptReserveCny','maxPuts'];
+  check(!preStaged && plan.scope === 'INVITED_SERVICE_CONSUMPTION_PILOT_V1' &&
+    continuation && typeof continuation === 'object' && !Array.isArray(continuation) &&
+    Object.keys(continuation).length === keys.length && keys.every(key => Object.hasOwn(continuation, key)) &&
+    continuation.protocol === 'SERVICE_CLOUD_TRANSFER_CONTINUATION_V1' && continuation.attemptNumber === 4 &&
+    continuation.previousAttemptNumber === 3 && continuation.previousPhase === 'CLOSED_BEFORE_ACTIVATION' &&
+    ['closedAttemptDigest','approvalDigest','historyUsageDigest'].every(key => /^[a-f0-9]{64}$/.test(continuation[key] ?? '')) &&
+    plan.historyUsage && publicationUsageKeys.every(key => Number.isSafeInteger(plan.historyUsage[key]) && plan.historyUsage[key] >= 0) &&
+    continuation.historyUsageDigest === timerHash(plan.historyUsage) &&
+    continuation.candidateSha256 === plan.candidate?.sha256 && /^[a-f0-9]{64}$/.test(continuation.candidateSha256 ?? '') &&
+    continuation.buildRunId === plan.buildRunId && /^\d+$/.test(continuation.buildRunId ?? '') &&
+    continuation.artifactId === plan.artifactId && /^\d+$/.test(continuation.artifactId ?? '') &&
+    continuation.previousReserveCny === 41 && continuation.failedAttemptReserveCny === 2 && continuation.maxPuts === 1 &&
+    plan.priorReserveCny === continuation.previousReserveCny + continuation.failedAttemptReserveCny,
+    'SERVICE_CLOUD_TRANSFER_CONTINUATION_INVALID');
+  return true;
+}
 function servicePilotBaseline(before, plan, now) {
   const e = before?.environmentVariables;
   const preStaged = validatePilotPackageTransport(plan);
   check(plan?.scope === 'INVITED_SERVICE_CONSUMPTION_PILOT_V1' && plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 &&
-    plan.maxIncrementCny === 2 && plan.monthlyCny === 200 && (preStaged ? [39, 41].includes(plan.priorReserveCny) : plan.priorReserveCny === 37), 'SERVICE_PILOT_SCOPE_INVALID');
+    plan.maxIncrementCny === 2 && plan.monthlyCny === 200 && validateServicePilotReserve(plan, preStaged), 'SERVICE_PILOT_SCOPE_INVALID');
   check(!['triggerNames', 'timerRecords', 'timerPreparedAt', 'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint'].some(key => Object.hasOwn(plan, key)), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
   check(Number.isSafeInteger(now) && Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) &&
     plan.issuedAt <= now && plan.deadline > now && plan.deadline - plan.issuedAt <= 3600000, 'DEPLOYMENT_WINDOW_INVALID');
@@ -184,7 +206,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   if (preStaged && (plan.mode !== 'stage' || Object.hasOwn(plan, 'preStagedObjectDigest')))
     check(plan.preStagedObjectDigest === preStagedObjectDigest, 'PILOT_PRESTAGED_CHECKPOINT_CHANGED');
   check((serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
-    (serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && (preStaged ? [39, 41].includes(plan.priorReserveCny) : plan.priorReserveCny === 37)
+    (serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && validateServicePilotReserve(plan, preStaged)
       : plan.scope === publicationScope && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32) && plan.monthlyCny === 200 &&
     plan.maxReads === 120 && plan.maxProbes === 40 && plan.normalReadLimit === 84 && plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12 &&
     (serviceOnly || isDeepStrictEqual(plan.triggerNames, publicationPilotTimerNames)), serviceOnly ? 'SERVICE_PILOT_SCOPE_INVALID' : 'PUBLICATION_PILOT_SCOPE_INVALID');
@@ -211,7 +233,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     activated: plan.activated,
     ...(preStaged ? { packageTransport: plan.packageTransport, preStagedObject: structuredClone(plan.preStagedObject), preStagedObjectDigest } : {}),
     ...(serviceOnly && ['close', 'rollback'].includes(plan.mode) && plan.phase === 'RESTORE_REQUESTED' ? { phase: 'RESTORE_REQUESTED' } : {}),
-    ...(serviceOnly ? { servicePlanDigest: sha(canonical(plan.servicePlan)), historyUsage: structuredClone(plan.historyUsage) }
+    ...(serviceOnly ? { servicePlanDigest: sha(canonical(plan.servicePlan)), historyUsage: structuredClone(plan.historyUsage),
+      ...(plan.cloudTransferContinuation ? { cloudTransferContinuation: structuredClone(plan.cloudTransferContinuation) } : {}) }
       : { permissionProbe: plan.permissionProbe, timerRecords: structuredClone(plan.timerRecords ?? []), timerPreparedAt: plan.timerPreparedAt }) });
   const save = () => {
     report.runUsage = Object.fromEntries(publicationUsageKeys.map(key => [key, usage[key] - plan.priorUsage[key]]));

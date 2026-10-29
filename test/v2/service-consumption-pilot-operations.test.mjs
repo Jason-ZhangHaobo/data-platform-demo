@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { runPublicationPilotOperation, serviceConsumptionPilotEnvironment, validatePilotPackageTransport } from '../../scripts/deploy-development-pilot.mjs';
+import { runPublicationPilotOperation, serviceConsumptionPilotEnvironment, validatePilotPackageTransport, validateServicePilotReserve } from '../../scripts/deploy-development-pilot.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
 import { runServiceCodePrestage } from '../../scripts/service-code-prestage.mjs';
 
@@ -398,6 +398,50 @@ test('pre-staged recovery retains the larger failed-transfer reserve through sta
  const g=preStagedFixture(1);g.basePlan.priorReserveCny=41;g.controls.bill='157';
  await assert.rejects(g.step('stage'),/BUDGET_NOT_VERIFIED/);
  assert.equal(g.report.cumulativeUsage.configWrites,0);
+});
+
+function cloudTransferFixture() {
+  const f = fixture(), p = f.basePlan;
+  p.priorReserveCny = 43;
+  p.buildRunId = '101'; p.artifactId = '202';
+  const sorted = Object.fromEntries(Object.entries(p.historyUsage).sort(([a],[b]) => a.localeCompare(b)));
+  p.cloudTransferContinuation = { protocol:'SERVICE_CLOUD_TRANSFER_CONTINUATION_V1',attemptNumber:4,previousAttemptNumber:3,
+    previousPhase:'CLOSED_BEFORE_ACTIVATION',closedAttemptDigest:'a'.repeat(64),approvalDigest:'b'.repeat(64),
+    historyUsageDigest:sha(JSON.stringify(sorted)),candidateSha256:p.candidate.sha256,buildRunId:p.buildRunId,artifactId:p.artifactId,
+    previousReserveCny:41,failedAttemptReserveCny:2,maxPuts:1 };
+  return f;
+}
+test('explicit cloud transfer preserves failed-batch reserves and history through stage, open and close', async () => {
+  const f = cloudTransferFixture(), history = structuredClone(f.basePlan.historyUsage), proof = structuredClone(f.basePlan.cloudTransferContinuation);
+  await f.step('stage'); await f.step('activate'); await f.step('close');
+  assert.equal(f.report.phase,'CLOSED_READONLY');
+  assert.deepEqual(f.report.historyUsage,history); assert.deepEqual(f.report.cloudTransferContinuation,proof);
+  assert.equal(f.report.cumulativeUsage.objectPuts,1);
+  assert.equal(f.calls.filter(c=>c.method==='PUT').length,1);
+  const g = cloudTransferFixture(); g.controls.bill='155';
+  await assert.rejects(g.step('stage'),/BUDGET_NOT_VERIFIED/);
+  assert.equal(g.report.cumulativeUsage.configWrites,0);
+});
+test('cloud transfer cannot lower reserves, erase history, cross artifacts, add writes or masquerade as pre-staged', async () => {
+  for (const mutate of [
+    p=>{delete p.cloudTransferContinuation;},p=>{p.priorReserveCny=37;},p=>{p.historyUsage.objectPuts=0;},
+    p=>{p.cloudTransferContinuation.approvalDigest='';},p=>{p.cloudTransferContinuation.closedAttemptDigest='bad';},
+    p=>{p.cloudTransferContinuation.maxPuts=2;},p=>{p.cloudTransferContinuation.attemptNumber=5;},
+    p=>{p.cloudTransferContinuation.previousPhase='RUNNING';},p=>{p.cloudTransferContinuation.artifactId='999';},
+    p=>{p.cloudTransferContinuation.candidateSha256='f'.repeat(64);},p=>{p.cloudTransferContinuation.extra=true;},
+  ]) {
+    const f=cloudTransferFixture(); mutate(f.basePlan);
+    await assert.rejects(f.step('stage'),/SCOPE_INVALID|CONTINUATION_INVALID/); assert.equal(f.calls.length,0);
+  }
+  const f=cloudTransferFixture(); assert.throws(()=>validateServicePilotReserve(f.basePlan,true),/CONTINUATION_INVALID/);
+});
+test('a lost cloud upload is only read back, never uploaded again, and keeps the new continuation proof', async () => {
+  const f=cloudTransferFixture(); f.controls.lostUpload=true;
+  await f.step('stage'); assert.equal(f.report.phase,'STAGED');
+  assert.equal(f.calls.filter(c=>c.method==='PUT').length,1);
+  const g=cloudTransferFixture();g.controls.unappliedUpload=true;
+  await assert.rejects(g.step('stage'));
+  assert.equal(g.calls.filter(c=>c.method==='PUT').length,1);assert.equal(g.report.cumulativeUsage.configWrites,0);
 });
 
 test('workflow pre_staged flag strictly matches the decrypted transport and is never accepted for another scope', () => {
