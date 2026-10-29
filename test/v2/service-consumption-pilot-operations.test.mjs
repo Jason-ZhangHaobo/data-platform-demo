@@ -148,6 +148,19 @@ function codeFixture() {
   return f;
 }
 
+test('budget-fix continuation binds a new approval and preserves all predecessor history without reopening business writes',async()=>{
+ const f=codeFixture(),p=f.basePlan;
+ p.priorReserveCny=52;p.maxIncrementCny=5;p.maxReads=102;p.normalReadLimit=72;p.readLimit=84;
+ p.budgetFixContinuation={protocol:'BUDGET_FIX_CODE_CONTINUATION_V1',approvalDigest:p.readonlyCodeRefresh.approvalDigest,
+   predecessorDigest:p.readonlyCodeRefresh.predecessorDigest,historyUsageDigest:p.readonlyCodeRefresh.historyUsageDigest,
+   candidateSha256:p.candidate.sha256,previousReserveCny:52};
+ const r=await f.step('stage');assert.equal(r.phase,'STAGED');assert.deepEqual(r.budgetFixContinuation,p.budgetFixContinuation);
+ assert.equal(r.modelCalls,0);assert.equal(r.sparkRuns,0);assert.deepEqual(f.current.environmentVariables,f.baseline.environmentVariables);
+ for(const change of [v=>delete v.budgetFixContinuation,v=>v.budgetFixContinuation.approvalDigest='a'.repeat(64),
+   v=>v.budgetFixContinuation.previousReserveCny=45,v=>v.budgetFixContinuation.extra=true,v=>v.maxModelCalls=1,
+   v=>v.maxSparkRuns=1,v=>v.priorReserveCny=45]){const altered=structuredClone(p);change(altered);assert.throws(()=>validateReadonlyCodeRefreshPlan(altered));}
+});
+
 test('code-only refresh preserves the entire public read-only configuration and authenticates both immutable objects',async()=>{
   const f=codeFixture(),before=structuredClone(f.baseline),r=await f.step('stage');
   assert.equal(r.phase,'STAGED');assert.equal(r.scope,readonlyCodeRefreshScope);assert.equal(r.runtime.ready,true);
