@@ -24,7 +24,8 @@ export function publicDevelopmentConfig(env) {
       (env.V2_DURABLE_SQL_AGENT_ENABLED !== 'true' && env.V2_EXECUTION_UNAVAILABLE !== 'true') ||
       (taskId !== undefined && taskId !== '' && (typeof taskId !== 'string' || !uuid.test(taskId))))
     throw Error('PUBLIC_DEVELOPMENT_CONFIG_INVALID');
-  return Object.freeze({ scope, startsAt, expiresAt, email, executionAvailable: env.V2_EXECUTION_UNAVAILABLE !== 'true', ...(taskId ? {taskId} : {}) });
+  return Object.freeze({ scope, startsAt, expiresAt, email,
+    executionAvailable: env.V2_EXECUTION_UNAVAILABLE !== 'true' && env.V2_FC_PUBLIC_READ_ONLY !== 'true', ...(taskId ? {taskId} : {}) });
 }
 export function developmentSession(config, session, now = Date.now()) {
   if (!config) return undefined;

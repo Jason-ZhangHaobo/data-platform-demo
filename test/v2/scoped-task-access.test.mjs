@@ -20,6 +20,10 @@ test('existing-task scope is optional and fail-closed; private task ID is not di
     assert.equal(view.developmentTaskOnly,true);assert.equal(view.developmentTaskId,undefined);assert.equal(view.readOnly,true);
   }
   assert.equal(developmentSession(config,session,config.expiresAt).developmentTaskId,undefined);
+  const closed=publicDevelopmentConfig({...env,V2_FC_PUBLIC_READ_ONLY:'true'});
+  assert.equal(developmentSession(closed,session,now).readOnly,true);
+  assert.equal(developmentSession(closed,session,now).developmentTaskId,undefined);
+  assert.throws(()=>assertDevelopmentBackgroundScope(closed,task,owner,project,developmentBackgroundBoundary(config,id,now),now),{code:'PUBLIC_DEVELOPMENT_CLOSED'});
 });
 test('the fresh window permits only the explicit old task, no new or derived task, publishing or credential changes',()=>{
   for(const suffix of ['advance','cancel','prepare-delivery','background','background/cancel','background/resume']){
