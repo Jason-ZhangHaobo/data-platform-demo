@@ -304,7 +304,7 @@ export function createV2Server(options = {}) {
   const rawGenerator =
     options.generator ??
     (async (input) => {
-      budget.assertCanStartModel();
+      budget.assertCanStartModel(input.modelBudgetReservation);
       const keyAtRequest = env.DASHSCOPE_API_KEY;
       const result = await generateSql(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)

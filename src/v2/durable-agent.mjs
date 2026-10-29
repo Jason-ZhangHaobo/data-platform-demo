@@ -111,7 +111,8 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
         if (controller.signal.aborted || now() >= Date.parse(task.durable.leaseExpiresAt) || !ownedLease(task.id, token)) throw new Error("Model step no longer owned");
         return generator({ message: task.message, context: getContext(task.contextId),
           currentSql: task.sql, error: task.durable.validationError,
-          remainingBudget: reserved, signal: controller.signal });
+          remainingBudget: reserved, signal: controller.signal,
+          modelBudgetReservation: { taskId: task.id, attempt: task.attempts.length, leaseToken: token } });
       });
       generated = await Promise.race([work, interrupted]);
     } catch (error) {
