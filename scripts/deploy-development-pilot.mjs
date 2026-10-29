@@ -178,11 +178,21 @@ const readonlyCodeModes = ['stage', 'rollback'];
 // publication or service-consumption grant. It never opens a business window.
 export function validateReadonlyCodeRefreshPlan(plan) {
   const binding = plan?.readonlyCodeRefresh;
+  const continuation = plan?.budgetFixContinuation;
+  if (continuation !== undefined) {
+    const fields = ['protocol', 'approvalDigest', 'predecessorDigest', 'historyUsageDigest', 'candidateSha256', 'previousReserveCny'];
+    check(continuation && !Array.isArray(continuation) && Object.keys(continuation).length === fields.length &&
+      fields.every(k => Object.hasOwn(continuation, k)) && continuation.protocol === 'BUDGET_FIX_CODE_CONTINUATION_V1' &&
+      ['approvalDigest', 'predecessorDigest', 'historyUsageDigest', 'candidateSha256'].every(k => /^[a-f0-9]{64}$/.test(continuation[k] ?? '')) &&
+      continuation.approvalDigest === binding?.approvalDigest && continuation.predecessorDigest === binding?.predecessorDigest &&
+      continuation.historyUsageDigest === binding?.historyUsageDigest && continuation.candidateSha256 === plan.candidate?.sha256 &&
+      continuation.previousReserveCny === 52, 'BUDGET_FIX_CONTINUATION_INVALID');
+  }
   const keys = ['protocol', 'predecessorDigest', 'approvalDigest', 'historyUsageDigest',
     'previousSha256', 'candidateSha256', 'applicationSource', 'buildRunId', 'artifactId'];
   check(plan?.scope === readonlyCodeRefreshScope && readonlyCodeModes.includes(plan.mode) &&
-    plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 &&
-    plan.monthlyCny === 200 && plan.priorReserveCny === 45,
+    plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === (continuation ? 5 : 2) &&
+    plan.monthlyCny === 200 && plan.priorReserveCny === (continuation ? 52 : 45),
   'READONLY_CODE_SCOPE_INVALID');
   check(!['target', 'servicePlan', 'servicePlanDigest', 'triggerNames', 'timerRecords', 'timerPreparedAt',
     'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint', 'activated', 'cloudTransferContinuation']
@@ -261,6 +271,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const now = io.now ?? Date.now, wait = io.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const serviceOnly = plan.scope === serviceConsumptionScope;
   const codeOnly = plan.scope === readonlyCodeRefreshScope, noTimers = serviceOnly || codeOnly;
+  const budgetFix = codeOnly && plan.budgetFixContinuation !== undefined;
   const preStaged = validatePilotPackageTransport(plan);
   const preStagedObjectDigest = preStaged ? sha(canonical(plan.preStagedObject)) : undefined;
   if (preStaged && (plan.mode !== 'stage' || Object.hasOwn(plan, 'preStagedObjectDigest')))
@@ -268,7 +279,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   check((codeOnly ? readonlyCodeModes : serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
     (codeOnly ? validateReadonlyCodeRefreshPlan(plan) : serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && validateServicePilotReserve(plan, preStaged)
       : plan.scope === publicationScope && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32) && plan.monthlyCny === 200 &&
-    plan.maxReads === 120 && plan.maxProbes === 40 && plan.normalReadLimit === 84 &&
+    plan.maxReads === (budgetFix ? 102 : 120) && plan.maxProbes === 40 && plan.normalReadLimit === (budgetFix ? 72 : 84) &&
     (codeOnly ? Number.isSafeInteger(plan.ownerCleanupReadReserve) && plan.ownerCleanupReadReserve >= 18 && plan.ownerCleanupReadReserve <= 32 &&
       plan.readLimit === plan.maxReads - plan.ownerCleanupReadReserve && plan.readLimit >= plan.normalReadLimit
       : plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12) &&
@@ -296,7 +307,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     activated: plan.activated,
     ...(preStaged ? { packageTransport: plan.packageTransport, preStagedObject: structuredClone(plan.preStagedObject), preStagedObjectDigest } : {}),
     ...(noTimers && ['close', 'rollback'].includes(plan.mode) && plan.phase === 'RESTORE_REQUESTED' ? { phase: 'RESTORE_REQUESTED' } : {}),
-    ...(codeOnly ? { readonlyCodeRefresh: structuredClone(plan.readonlyCodeRefresh), historyUsage: structuredClone(plan.historyUsage) }
+    ...(codeOnly ? { readonlyCodeRefresh: structuredClone(plan.readonlyCodeRefresh), historyUsage: structuredClone(plan.historyUsage),
+      ...(budgetFix ? { budgetFixContinuation: structuredClone(plan.budgetFixContinuation) } : {}) }
       : serviceOnly ? { servicePlanDigest: sha(canonical(plan.servicePlan)), historyUsage: structuredClone(plan.historyUsage),
       ...(plan.cloudTransferContinuation ? { cloudTransferContinuation: structuredClone(plan.cloudTransferContinuation) } : {}) }
       : { permissionProbe: plan.permissionProbe, timerRecords: structuredClone(plan.timerRecords ?? []), timerPreparedAt: plan.timerPreparedAt }) });
