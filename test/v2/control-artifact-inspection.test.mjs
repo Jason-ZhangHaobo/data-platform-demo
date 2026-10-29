@@ -12,10 +12,10 @@ test('remote inspection requires a successful source-matched original build and 
  const workflow=readFileSync(new URL('../../.github/workflows/inspect-v2-control-artifact.yml',import.meta.url),'utf8');
  for(const banned of ['id-token:','secrets.','environment:','aliyun','build-v2-fc-package'])assert(!workflow.includes(banned));
 });
-test('readonly artifact source checks cover budget accounting, durable ownership and safe diagnostics',()=>{
+test('readonly artifact source checks cover budget accounting, durable ownership, event scope and delivery',()=>{
  const prior=['fc-ingress','server','cloud-server','public-status','auth','private-application','request-lane','static-response','cloud-state-coordinator','public-development-access','public-publication-access','cloud-publication','private-release-timer','public-service-access','private-data-services','data-services','private-task-consumption'];
- assert.deepEqual(controlArtifactSources,[...prior,'budget','durable-agent','model-diagnostics'].map(name=>`src/v2/${name}.mjs`));
- assert.equal(new Set(controlArtifactSources).size,20);assert.equal(Object.isFrozen(controlArtifactSources),true);
+ assert.deepEqual(controlArtifactSources,[...prior,'budget','durable-agent','model-diagnostics','agent-event-driver','agent-development-workflow'].map(name=>`src/v2/${name}.mjs`));
+ assert.equal(new Set(controlArtifactSources).size,22);assert.equal(Object.isFrozen(controlArtifactSources),true);
  const source=readFileSync(new URL('../../scripts/inspect-control-artifact.mjs',import.meta.url),'utf8');
  assert.match(source,/sha\(extract\(name\)\)===sha\(readFileSync\(resolve\('\.artifact-source',name\)\)\)/);
  assert.ok(!source.includes('execFileSync(extract('),'package source is inspected, never executed');
