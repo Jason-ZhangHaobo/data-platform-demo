@@ -5,7 +5,7 @@ on:
       mode:
         required: true
         type: choice
-        options: [deploy, stage, resume-stage, activate, timers, cleanup-timers, close, rollback]
+        options: [deploy, stage, resume-stage, activate, recycle, timers, cleanup-timers, close, rollback]
       encrypted_plan:
         required: true
         type: string

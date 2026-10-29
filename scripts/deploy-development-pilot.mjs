@@ -14,6 +14,7 @@ import { controlPackageObject } from './render-v2-control-package-policy.mjs';
 import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
 import { publicationPilotTimers, publicationPilotTimerNames } from './publication-pilot-timers.mjs';
 import { publicServiceConfig } from '../src/v2/public-service-access.mjs';
+import { developmentRecoveryScope, developmentRecoveryModes, runDevelopmentRecoveryOperation } from './development-recovery-window.mjs';
 
 const check = (v, code) => { if (!v) throw Object.assign(new Error(code), { safeCode: code }); };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -665,10 +666,29 @@ async function main(env = process.env) {
     const before = read(); report.initial = before;
     plan = openReadinessProof(env.V2_PILOT_PLAN, before.environmentVariables?.V2_SPARK_EXECUTOR_SECRET);
     const preStaged = validatePilotPackageTransport(plan, env.V2_PILOT_PRE_STAGED ?? 'false');
-    check(['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope) && plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
-      (plan.scope === publicationScope ? publicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
-    check(plan.issuedAt <= Date.now() && plan.deadline > Date.now() && plan.deadline - plan.issuedAt <= 3600000, 'PLAN_EXPIRED');
+    check(['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope, developmentRecoveryScope].includes(plan.scope) && plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
+      (plan.scope === developmentRecoveryScope ? developmentRecoveryModes : plan.scope === publicationScope ? publicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
+    check(plan.issuedAt <= Date.now() && (plan.deadline > Date.now() || (plan.scope === developmentRecoveryScope && ['close', 'rollback'].includes(plan.mode))) &&
+      plan.deadline - plan.issuedAt <= (plan.scope === developmentRecoveryScope ? 7200000 : 3600000), 'PLAN_EXPIRED');
     report.scope = plan.scope; report.planVerified = true; save();
+    if (plan.scope === developmentRecoveryScope) {
+      await runDevelopmentRecoveryOperation(plan, before, report, {
+        save,
+        command: (args, body) => {
+          if (body === undefined) return command(args);
+          const file = join(dir, 'recovery-environment.json'); writeFileSync(file, JSON.stringify(body), { mode: 0o600 });
+          return command([...args, '--body-file', file]);
+        },
+        http: async endpoint => {
+          check(['/api/v2/auth/session', '/api/v2/status'].includes(endpoint), 'PUBLICATION_HTTP_SCOPE_INVALID');
+          const response = await fetch('https://shuduoai.cn' + endpoint, { redirect: 'error', signal: AbortSignal.timeout(30000) });
+          check(/json/i.test(response.headers.get('content-type') ?? ''), 'PUBLICATION_HTTP_RESPONSE_INVALID');
+          return { status: response.status, body: await response.json() };
+        },
+      });
+      console.log(JSON.stringify({ phase: report.phase, ok: true, encryptedEvidence: true, modelCalls: 0, sparkRuns: 0 }));
+      return;
+    }
     const credentials = { accessKeyId: env.ALIBABA_CLOUD_ACCESS_KEY_ID, accessKeySecret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET, securityToken: env.ALIBABA_CLOUD_SECURITY_TOKEN };
     const bucket = before.environmentVariables.OSS_BUCKET;
     if ([publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) {
