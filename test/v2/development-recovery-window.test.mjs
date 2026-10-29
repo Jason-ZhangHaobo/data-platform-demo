@@ -53,6 +53,17 @@ async function opened() {
     recoveryNonce:'f'.repeat(32),phaseBoundary:{taskId:uuid(1),revisionId:uuid(2),runId:uuid(3),bootId:uuid(4),contextId:'stock-cash-t1',status:'VERIFIED',modelPending:false,sparkPending:false,evidenceDigest:hash('f')}}};
 }
 
+test('original-task continuation preserves its original window, used attempts and remaining counters',async()=>{
+ const p=fixture();p.issuedAt=time-3600000;p.deadline=time+3600000;p.maxNewTasks=0;p.maxModelCalls=2;p.maxWrites=3;p.maxReads=82;p.maxProbes=48;
+ p.resumeExistingTask={protocol:'ORIGINAL_TASK_WINDOW_CONTINUATION_V1',taskId:uuid(9),originalStartsAt:new Date(p.issuedAt).toISOString(),
+   originalDeadline:new Date(p.deadline).toISOString(),retainedAttempts:1,approvalDigest:p.binding.approvalDigest,priorCodeReads:20,priorCodeHttp:6};
+ const h=harness(p);await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
+ assert.equal(h.report.activated.V2_PUBLIC_DEVELOPMENT_STARTS_AT,p.resumeExistingTask.originalStartsAt);
+ const closing={...p,mode:'close',phase:'OPENED',activated:h.report.activated,activationCheckedAt:h.report.activationCheckedAt,priorUsage:h.report.cumulativeUsage};
+ const c=harness(closing,{current:h.current()});await runDevelopmentRecoveryOperation(closing,h.current(),c.report,c.io);assert.equal(c.report.phase,'CLOSED_READONLY');
+ for(const change of [q=>q.maxNewTasks=1,q=>q.maxModelCalls=3,q=>q.resumeExistingTask.retainedAttempts=0,q=>q.resumeExistingTask.originalDeadline=new Date(q.deadline+1).toISOString(),
+   q=>q.resumeExistingTask.approvalDigest='f'.repeat(64),q=>q.maxReads=120]){const q=structuredClone(p);change(q);assert.throws(()=>validateDevelopmentRecoveryPlan(q,time));}
+});
 test('environment-only opening preserves code, identity and all unrelated fields; fresh complete bill',async()=>{
   const p=fixture(),h=harness(p);await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
   assert.equal(h.report.phase,'OPENED');assert.equal(h.writes.length,1);assert.equal(h.report.modelCalls,0);assert.equal(h.report.sparkRuns,0);
