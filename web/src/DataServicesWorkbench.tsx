@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { EvidenceDownload } from "./EvidenceDownload";
+import { EvidenceDownload, requestTextDownload } from "./EvidenceDownload";
 import { compositionChoices } from "./service-composition";
 import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
 import type { ConsumptionScope } from "./service-consumption-scope";
@@ -885,7 +885,10 @@ LIMIT :limit OFFSET :offset`}</pre>
                     <strong>令牌仅显示一次</strong>
                     <code>{tokenVisible ? issuedToken : "已生成 · 默认隐藏"}</code>
                     <button className="button" onClick={()=>setTokenVisible(!tokenVisible)}>{tokenVisible?"隐藏令牌":"显示一次性令牌"}</button>
-                    <button className="button" onClick={()=>{const blob=new Blob([issuedToken+"\n"],{type:"text/plain;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`shuduo-application-${issuedAppId.slice(0,8)}.token`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}}>下载本次调用凭据</button>
+                    <button className="button" onClick={()=>{
+                      try { requestTextDownload(`shuduo-application-${issuedAppId.slice(0,8)}.token`,issuedToken+"\n","text/plain;charset=utf-8"); setNotice("已请求保存本次凭据，请核对浏览器下载列表；未确认下载时可使用本卡的显示/隐藏入口，不会补发应用。请勿发送或公开令牌。"); }
+                      catch { setError("未确认保存，本次令牌仍在卡片中保留；可使用显示/隐藏入口安全保存，不会补发应用。"); }
+                    }}>下载本次调用凭据</button>
                     <small>只存哈希；请勿提交Git或发送到聊天。</small>
                   </div>
                 </section>

@@ -1535,6 +1535,11 @@ kbd {
 .evidence-download { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 8px; max-width: 100%; }
 .evidence-download > small { max-width: 60ch; overflow-wrap: anywhere; color: var(--muted, #66776f); }
 .evidence-download > a { text-decoration: none; }
+.evidence-download .evidence-text { width: 100%; min-width: 0; border: 1px solid var(--border, #d5dfce); border-radius: 8px; padding: 10px 12px; background: #f8faf5; box-sizing: border-box; }
+.evidence-text > summary { cursor: pointer; color: var(--muted, #66776f); font-size: 12px; }
+.evidence-text > p { max-width: 70ch; color: var(--muted, #66776f); font-size: 12px; line-height: 1.6; }
+.evidence-download .evidence-text > pre { width: 100%; max-height: 22rem; margin: 8px 0 0; box-sizing: border-box; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink, #263b31); background: #fff; border: 1px solid var(--border, #d5dfce); border-radius: 6px; font: 11px/1.6 monospace; }
+.evidence-text > summary:focus-visible, .evidence-text > pre:focus-visible { outline: 2px solid #176d51; outline-offset: 3px; }
 .modal {
   background: #fbfdf8;
   border: 1px solid #d5dfce;
