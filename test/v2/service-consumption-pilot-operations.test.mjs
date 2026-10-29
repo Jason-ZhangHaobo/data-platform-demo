@@ -3,13 +3,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { runPublicationPilotOperation, serviceConsumptionPilotEnvironment, validatePilotPackageTransport, validateServicePilotReserve } from '../../scripts/deploy-development-pilot.mjs';
+import { runPublicationPilotOperation, serviceConsumptionPilotEnvironment, validatePilotPackageTransport, validateServicePilotReserve,
+  readonlyCodeRefreshScope, validateReadonlyCodeRefreshPlan } from '../../scripts/deploy-development-pilot.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
 import { runServiceCodePrestage } from '../../scripts/service-code-prestage.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const failure = safeCode => Object.assign(new Error(safeCode), { safeCode });
-function fixture() {
+function fixture(options = {}) {
   let now = Date.parse('2026-10-28T08:00:00Z');
   const previousBytes = Buffer.from('synthetic previous read-only service package');
   const candidateBytes = Buffer.from('synthetic reviewed service-consumption package');
@@ -22,7 +23,7 @@ function fixture() {
       V2_DURABLE_SQL_AGENT_ENABLED: 'false', V2_AGENT_DRIVER_MODE: 'OSS_EVENTS', V2_PRIVATE_RELEASE_ENABLED: 'false',
       V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: '0', V2_MODEL_MONTHLY_BUDGET_CNY: '0', V2_BOOTSTRAP_ADMIN_EMAIL: 'owner@example.invalid',
       OSS_BUCKET: 'synthetic-private-bucket', V2_SPARK_EXECUTOR_SECRET: 'synthetic-existing-queue-secret-only',
-      V2_SCHEDULER_TICK_SECRET: 'synthetic-existing-signing-secret-only', ORIGINAL_VALUE: 'preserve-me' } };
+      V2_SCHEDULER_TICK_SECRET: 'synthetic-existing-signing-secret-only', ORIGINAL_VALUE: 'preserve-me' }, ...options.extraBaseline };
   const target = { taskId: '00000000-0000-4000-8000-000000000011', packageDigest: 'a'.repeat(64),
     sourceReleaseRunId: '00000000-0000-4000-8000-000000000012' };
   const basePlan = { scope: 'INVITED_SERVICE_CONSUMPTION_PILOT_V1', controlName: baseline.functionName,
@@ -43,7 +44,11 @@ function fixture() {
   let current = structuredClone(baseline), lastPlan, lastReport, activeReport, saved;
   const calls = [], controls = {}, objects = new Map([[previous.sha256, previousBytes]]);
   const io = {
-    now: () => now, wait: async () => {}, save: report => { saved = structuredClone(report); },
+    now: () => now, wait: async () => {}, save: report => {
+      if (controls.saveFailure) throw failure('SYNTHETIC_SAVE_FAILED');
+      if (controls.runtimeSaveTypeError && report.phase === 'STAGE_REQUESTED' && report.activeHttp > 0) throw new TypeError('SYNTHETIC_RUNTIME_SAVE_FAILED');
+      saved = structuredClone(report);
+    },
     readCandidate: async () => { calls.push({ candidateRead: true }); assert.notEqual(controls.forbidCandidateRead, true); return candidateBytes; },
     command: async (args, body) => {
       assert.deepEqual(saved.cumulativeUsage, activeReport.cumulativeUsage, 'reserve before every effect');
@@ -89,6 +94,8 @@ function fixture() {
     },
     http: async path => {
       assert.deepEqual(saved.cumulativeUsage, activeReport.cumulativeUsage); calls.push({ http: path });
+      if (controls.runtimeHardError) throw controls.runtimeHardError;
+      if (controls.runtimeTransientErrors > 0) { controls.runtimeTransientErrors--; throw new TypeError('synthetic-private-message-must-not-be-logged'); }
       if (controls.badRuntime) return { status: 503, body: {} };
       if (path.endsWith('/status')) return { status: controls.badStatus ? 503 : 200,
         body: { spark: { healthVerified: false }, agentDevelopment: { durableEnabled: false } } };
@@ -100,9 +107,10 @@ function fixture() {
   };
   async function step(mode, changes = {}) {
     const plan = { ...structuredClone(lastPlan ?? basePlan), mode,
-      ...(lastReport ? { phase: lastReport.phase, baseline: lastReport.baseline, servicePlanDigest: lastReport.servicePlanDigest,
+      ...(lastReport ? { phase: lastReport.phase, baseline: lastReport.baseline,
+        ...(lastReport.servicePlanDigest ? { servicePlanDigest: lastReport.servicePlanDigest } : {}),
         stagedDigest: lastReport.staged && functionDigest(lastReport.staged), candidate: lastReport.candidate,
-        activated: lastReport.activated, priorUsage: lastReport.cumulativeUsage,
+        ...(lastReport.activated ? { activated: lastReport.activated } : {}), priorUsage: lastReport.cumulativeUsage,
         ...(lastReport.preStagedObjectDigest ? { preStagedObjectDigest: lastReport.preStagedObjectDigest } : {}) } : {}), ...changes };
     const report = { phase: 'STARTED', configReads: 1, identityReads: 1, configWrites: 0, objectGets: 0, objectPuts: 0,
       activeHttp: 0, triggerCreates: 0, triggerDeletes: 0, permissionProbes: 0, modelCalls: 0, sparkRuns: 0 };
@@ -125,6 +133,165 @@ function preStagedFixture(putAttempts = 0) {
   f.controls.forbidCandidateRead = true; f.controls.forbidObjectPut = true;
   return f;
 }
+
+const canonicalHash = value => sha(JSON.stringify(Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]))));
+function codeFixture() {
+  const f=fixture({extraBaseline:{role:'acs:ram::111122223333:role/synthetic-control-runtime',
+    vpcConfig:{vpcId:'vpc-synthetic',vSwitchIds:['vsw-synthetic'],securityGroupId:'sg-synthetic'},
+    logConfig:{project:'synthetic-logs',logstore:'synthetic-control'},layers:['synthetic-layer']}}),p=f.basePlan;
+  delete p.target; delete p.servicePlan;
+  p.scope=readonlyCodeRefreshScope;p.priorReserveCny=45;p.applicationSource='e'.repeat(40);p.ownerCleanupReadReserve=18;p.readLimit=102;
+  p.buildRunId='12345678';p.artifactId='23456789';
+  p.readonlyCodeRefresh={protocol:'READONLY_CODE_REFRESH_CONTINUATION_V1',predecessorDigest:'b'.repeat(64),approvalDigest:'c'.repeat(64),
+    historyUsageDigest:canonicalHash(p.historyUsage),previousSha256:p.previous.sha256,candidateSha256:p.candidate.sha256,
+    applicationSource:p.applicationSource,buildRunId:p.buildRunId,artifactId:p.artifactId};
+  return f;
+}
+
+test('code-only refresh preserves the entire public read-only configuration and authenticates both immutable objects',async()=>{
+  const f=codeFixture(),before=structuredClone(f.baseline),r=await f.step('stage');
+  assert.equal(r.phase,'STAGED');assert.equal(r.scope,readonlyCodeRefreshScope);assert.equal(r.runtime.ready,true);
+  assert.deepEqual(f.current,{...before,codeChecksum:f.candidate.crc64,codeSize:f.candidate.bytes});
+  assert.deepEqual(r.historyUsage,f.basePlan.historyUsage);assert.deepEqual(r.readonlyCodeRefresh,f.basePlan.readonlyCodeRefresh);
+  assert.equal(r.cumulativeUsage.configWrites,1);assert.equal(r.cumulativeUsage.objectPuts,1);
+  for(const key of ['triggerCreates','triggerDeletes','permissionProbes'])assert.equal(r.cumulativeUsage[key],0);
+  assert.equal(r.modelCalls,0);assert.equal(r.sparkRuns,0);
+  for(const call of f.calls.filter(c=>c.args?.[1]==='PUT'))assert.deepEqual(Object.keys(call.body),['code']);
+  assert.equal(f.calls.filter(c=>c.object===f.previous.sha256&&c.method==='PUT').length,0);
+  assert.equal(f.calls.filter(c=>c.args?.some(a=>a.includes('/triggers'))).length,0);
+  assert.equal(Object.hasOwn(r,'timerRecords'),false);assert.equal(Object.hasOwn(r,'servicePlanDigest'),false);
+});
+
+test('code-only scope refuses larger compute, spend, history or resource authority before IO',async()=>{
+  const mutations=[p=>p.maxModelCalls=1,p=>p.maxSparkRuns=1,p=>p.maxIncrementCny=3,p=>p.monthlyCny=201,
+    p=>p.priorReserveCny=43,p=>p.priorReserveCny=27,p=>p.maxReads=121,p=>p.maxProbes=41,
+    p=>p.normalReadLimit=85,p=>p.readLimit=103,p=>p.ownerCleanupReadReserve=17,
+    p=>p.readonlyCodeRefresh.approvalDigest='',p=>p.readonlyCodeRefresh.predecessorDigest='not-a-proof',
+    p=>p.historyUsage.objectPuts--,p=>delete p.historyUsage.permissionProbes,p=>p.historyUsage.extra=1,
+    p=>p.readonlyCodeRefresh.historyUsageDigest='d'.repeat(64),p=>p.readonlyCodeRefresh.applicationSource='d'.repeat(40),
+    p=>p.readonlyCodeRefresh.candidateSha256=p.previous.sha256,p=>p.readonlyCodeRefresh.previousSha256=p.candidate.sha256,
+    p=>p.readonlyCodeRefresh.buildRunId='different',p=>p.artifactId='another',p=>p.readonlyCodeRefresh.extra=true,
+    p=>p.candidate.bytes=73400321,p=>p.candidate.crc64=5678,p=>p.candidate.sha256='../outside',
+    p=>p.baselineDigest='f'.repeat(64),p=>p.deadline=p.issuedAt+3600001];
+  for(const mutate of mutations){const f=codeFixture(),p=structuredClone(f.basePlan);mutate(p);
+    await assert.rejects(f.step('stage',p));assert.equal(f.calls.length,0);}
+});
+
+test('code-only grant has no activation, business target, credentials or timer mode even when empty',async()=>{
+  for(const mode of ['activate','close','timers','cleanup-timers','resume-stage','deploy']){
+    const f=codeFixture();await assert.rejects(f.step(mode));assert.equal(f.calls.length,0);
+  }
+  for(const key of ['target','servicePlan','servicePlanDigest','triggerNames','timerRecords','timerPreparedAt','schedulerSecret',
+    'permissionProbe','releaseId','stageCheckpoint','activated','cloudTransferContinuation']){
+    const f=codeFixture();await assert.rejects(f.step('stage',{[key]:undefined}),/EXTRA_AUTHORITY_FORBIDDEN/);assert.equal(f.calls.length,0);
+  }
+  for(const key of ['triggerCreates','triggerDeletes','permissionProbes']){
+    const f=codeFixture();await assert.rejects(f.step('stage',{priorUsage:{...f.basePlan.priorUsage,[key]:1}}));assert.equal(f.calls.length,0);
+  }
+});
+
+test('code-only refresh rejects an open or drifted baseline, wrong capacity and a non-private object',async()=>{
+  for(const change of [f=>f.current.environmentVariables.V2_FC_PUBLIC_READ_ONLY='false',
+    f=>f.current.environmentVariables.V2_FC_PUBLIC_WRITE_SCOPE='DEVELOPMENT_ONLY',
+    f=>f.current.cpu=1,f=>f.current.memorySize=1024,f=>f.current.instanceConcurrency=1,
+    f=>f.basePlan.bucketPrivacy.aclPrivate=false]){
+    const f=codeFixture();change(f);await assert.rejects(f.step('stage'));assert.equal(f.calls.length,0);
+  }
+  for(const change of [f=>f.controls.reservedConcurrency=2,f=>f.controls.minInstances=1,f=>f.controls.publicObject=true]){
+    const f=codeFixture();change(f);await assert.rejects(f.step('stage'));assert.equal(f.calls.filter(c=>c.args?.[1]==='PUT').length,0);
+  }
+});
+
+test('code-only refresh checks a complete bill including the retained reserve and never uses a former low reserve',async()=>{
+  const f=codeFixture();f.controls.bill='153.00';await assert.rejects(f.step('stage'),/MONTHLY_BUDGET_NOT_VERIFIED/);
+  assert.equal(f.calls.filter(c=>c.method==='PUT'||c.args?.[1]==='PUT').length,0);
+  assert.ok(f.report.cumulativeUsage.configReads>f.basePlan.priorUsage.configReads);
+});
+
+test('lost upload and update responses read back the same candidate without a second write',async()=>{
+  for(const key of ['lostUpload','lostUpdate']){
+    const f=codeFixture();f.controls[key]=true;const r=await f.step('stage');
+    assert.equal(r.phase,'STAGED');assert.equal(r.cumulativeUsage.objectPuts,1);assert.equal(r.cumulativeUsage.configWrites,1);
+    assert.equal(f.calls.filter(c=>c.method==='PUT').length,1);
+  }
+  const f=codeFixture();f.controls.unappliedUpload=true;await assert.rejects(f.step('stage'));
+  assert.equal(f.report.cumulativeUsage.objectPuts,1);assert.equal(f.report.cumulativeUsage.configWrites,0);
+  await assert.rejects(f.step('stage'));assert.equal(f.calls.filter(c=>c.method==='PUT').length,1);
+});
+
+test('verified existing candidate is reused and a missing rollback object never receives PUT',async()=>{
+  const f=codeFixture();f.objects.set(f.candidate.sha256,f.candidateBytes);const r=await f.step('stage');
+  assert.equal(r.phase,'STAGED');assert.equal(r.cumulativeUsage.objectPuts,0);
+  const missing=codeFixture();missing.objects.delete(missing.previous.sha256);await assert.rejects(missing.step('stage'));
+  assert.equal(missing.calls.filter(c=>c.method==='PUT'||c.args?.[1]==='PUT').length,0);
+});
+
+test('code-only rollback writes only the verified old code once, not environment or another service window',async()=>{
+  const f=codeFixture();await f.step('stage');f.controls.lostUpdate=true;
+  const r=await f.step('rollback');assert.equal(r.phase,'ROLLED_BACK');assert.deepEqual(f.current,f.baseline);
+  assert.equal(r.restoreResponseUnknown,true);assert.equal(r.cumulativeUsage.configWrites,2);
+  for(const call of f.calls.filter(c=>c.args?.[1]==='PUT'))assert.deepEqual(Object.keys(call.body),['code']);
+  const count=f.calls.length;await assert.rejects(f.step('rollback'));assert.equal(f.calls.length,count);
+});
+
+test('unknown rollback is reconciled read-only and cannot reissue an unapplied update',async()=>{
+  const f=codeFixture();await f.step('stage');f.controls.unappliedUpdate=true;
+  await assert.rejects(f.step('rollback'));assert.equal(f.report.phase,'RESTORE_REQUESTED');
+  const writes=f.calls.filter(c=>c.args?.[1]==='PUT').length;
+  await assert.rejects(f.step('rollback'),/RESTORE_ALREADY_ATTEMPTED/);
+  assert.equal(f.calls.filter(c=>c.args?.[1]==='PUT').length,writes);
+  Object.assign(f.current,structuredClone(f.baseline));f.controls.unappliedUpdate=false;
+  const r=await f.step('rollback');assert.equal(r.phase,'ROLLED_BACK');assert.equal(r.readOnlyAlreadyRestored,true);
+  assert.equal(f.calls.filter(c=>c.args?.[1]==='PUT').length,writes);
+});
+
+test('failed runtime verification restores only code and never mistakes pending or foreign state for rollback success',async()=>{
+  const f=codeFixture();f.controls.badRuntime=true;await assert.rejects(f.step('stage'));
+  assert.equal(f.report.rollback,'VERIFIED');assert.deepEqual(f.current,f.baseline);
+  assert.equal(f.report.runtime.ready,false);assert.equal(f.report.cumulativeUsage.configWrites,2);
+  for(const c of f.calls.filter(c=>c.args?.[1]==='PUT'))assert.deepEqual(Object.keys(c.body),['code']);
+  const pending=codeFixture();pending.controls.stuckPendingAfterUpdate=true;await assert.rejects(pending.step('stage'));
+  assert.notEqual(pending.report.rollback,'ALREADY_BASELINE');assert.equal(pending.report.rollbackFailure,'UPDATE_PENDING');
+  const foreign=codeFixture();foreign.controls.readSnapshots=[{...foreign.baseline,cpu:1}];await assert.rejects(foreign.step('stage'),/FOREIGN_CONFIGURATION/);
+  assert.equal(foreign.calls.filter(c=>c.args?.[1]==='PUT').length,0);
+});
+
+test('code-only persistence failure stops before any external effect',async()=>{
+  const f=codeFixture();f.controls.saveFailure=true;await assert.rejects(f.step('stage'),/SYNTHETIC_SAVE_FAILED/);
+  assert.equal(f.calls.length,0);
+  const valid=codeFixture();assert.equal(validateReadonlyCodeRefreshPlan({...valid.basePlan,mode:'stage'}),true);
+});
+
+test('code-only transient read failures are bounded and never replay the verified code update',async()=>{
+  const f=codeFixture();f.controls.runtimeTransientErrors=2;const r=await f.step('stage');
+  assert.equal(r.phase,'STAGED');assert.equal(r.runtimeReadFailures.length,2);assert.equal(r.runtime.ready,true);
+  assert.equal(r.cumulativeUsage.activeHttp,4);assert.equal(r.cumulativeUsage.configWrites,1);
+  assert.ok(r.runtimeReadFailures.every(e=>e.kind==='TRANSPORT'));
+  assert.doesNotMatch(JSON.stringify(r),/synthetic-private-message-must-not-be-logged/);
+});
+
+test('exhausted code-only runtime retries preserve failure and use only the one rollback allowance',async()=>{
+  const f=codeFixture();f.controls.runtimeTransientErrors=3;
+  await assert.rejects(f.step('stage'),/READONLY_RUNTIME_TRANSPORT_UNCONFIRMED/);
+  assert.equal(f.report.runtimeReadFailures.length,3);assert.equal(f.report.cumulativeUsage.activeHttp,3);
+  assert.equal(f.report.cumulativeUsage.configWrites,2);assert.equal(f.report.rollback,'VERIFIED');
+  assert.equal(f.report.runtime.ready,false);assert.deepEqual(f.current,f.baseline);
+});
+
+test('permission, input and persistence errors cannot borrow code-only transport retries',async()=>{
+  const f=codeFixture();f.controls.runtimeHardError=failure('SYNTHETIC_PERMISSION_DENIED');
+  await assert.rejects(f.step('stage'),/SYNTHETIC_PERMISSION_DENIED/);
+  assert.equal(f.report.cumulativeUsage.activeHttp,1);assert.equal(f.report.runtimeReadFailures,undefined);
+  const old=fixture();old.controls.runtimeTransientErrors=1;await assert.rejects(old.step('stage'));
+  assert.equal(old.report.runtimeReadFailures,undefined,'legacy grants must not silently change retry semantics');
+});
+
+test('a persistence TypeError before a runtime read is never reclassified as retryable transport',async()=>{
+  const f=codeFixture();f.controls.runtimeSaveTypeError=true;
+  await assert.rejects(f.step('stage'),/SYNTHETIC_RUNTIME_SAVE_FAILED/);
+  assert.equal(f.calls.filter(c=>c.http).length,0);assert.equal(f.report.runtimeReadFailures,undefined);
+  assert.equal(f.report.cumulativeUsage.activeHttp,1,'the reserved failed checkpoint is not erased');
+});
 
 test('service environment changes only the exact service window and bill without increasing compute quotas', () => {
   const f = fixture(), original = structuredClone(f.baseline), plan = structuredClone(f.basePlan);
