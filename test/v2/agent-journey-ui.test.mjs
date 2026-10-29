@@ -16,13 +16,45 @@ const fixture = () => ({
 });
 const stage = (e,id) => agentJourney(e).steps.find(step=>step.id===id).state;
 
+test("generated or pending code cannot be a completed code-and-debug milestone", () => {
+  const f=fixture();
+  for(const evidence of [{taskId:f.taskId,revisionId:f.revisionId,dirty:false},
+    {...f,report:{...f.report,status:"PENDING"}},
+    {...f,evidenceReadable:false},
+    {...f,report:{...f.report,checks:[]}}]) {
+    assert.equal(stage(evidence,"code"),"PENDING");
+    assert.match(agentJourney(evidence).steps.find(s=>s.id==="code").detail,/等待核对执行与调试回执/);
+  }
+});
+
+test("code execution requires the current task, revision, run and registered family", () => {
+  for(const change of [{taskId:"foreign-task"},{revisionId:"different-code"},{runId:"different-run"},{contextId:"unknown-family"}])
+    assert.notEqual(stage({...fixture(),...change},"code"),"DONE");
+  const f=fixture();f.report.validationContractId="foreign-contract";
+  assert.notEqual(stage(f,"code"),"DONE");
+});
+
+test("failed execution needs attention and cannot inherit a generated revision's green state", () => {
+  const f=fixture();f.report.status="NEEDS_ATTENTION";f.report.checks=f.report.checks.map(c=>c.id==="execution"?{...c,passed:false}:c);
+  assert.equal(stage(f,"code"),"ATTENTION");
+  assert.match(agentJourney(f).steps.find(s=>s.id==="code").detail,/执行尚未通过/);
+});
+
+test("completed execution is separate from business correctness and does not advance failed assertions", () => {
+  const f=fixture();f.report.status="NEEDS_ATTENTION";f.report.checks=f.report.checks.map(c=>c.id==="results"?{...c,passed:false}:c);
+  assert.equal(stage(f,"code"),"DONE");
+  assert.match(agentJourney(f).steps.find(s=>s.id==="code").detail,/业务正确性另见独立结果核验/);
+  assert.equal(stage(f,"validation"),"ATTENTION");
+  assert.equal(agentJourney(f).next.id,"validation");
+});
+
 test("unconfirmed evidence reads revoke current verification and publication readiness", () => {
   const f = fixture();
   const j = agentJourney({...f, evidenceReadable:false});
   assert.equal(j.current, false);
   assert.equal(j.fileVerified, false);
   assert.equal(j.publicationCurrent, false);
-  for (const id of ["validation", "files", "publication", "monitoring", "services"])
+  for (const id of ["code", "validation", "files", "publication", "monitoring", "services"])
     assert.notEqual(j.steps.find(s => s.id === id).state, "DONE");
   assert.equal(agentJourney({...f, evidenceReadable:true}).fileVerified, true);
 });
