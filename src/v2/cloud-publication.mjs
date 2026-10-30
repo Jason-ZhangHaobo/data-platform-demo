@@ -28,7 +28,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if (!attestations || Object.keys(attestations).length !== required.length || !required.every(key => attestations[key] === true) || !actorId || !idempotencyKey)
       throw fail(422, "请逐项审阅代码、核验、交付文件和云端测试范围");
     const delivery = store.list("agent_delivery_task", project).find(t => t.sourceAgentTaskId === agent.id && t.verificationId === verificationId && t.status === "SUCCEEDED" && t.actualExecution === true);
-    if (!delivery || agent.status !== "SUCCEEDED" || agent.executionMode !== "DURABLE_SQL_AGENT_V1" || agent.mode !== "LIVE_MODEL") throw fail(409, "源任务或文件演练尚未通过");
+    if (!delivery || delivery.sourceKind === "MANUAL" || agent.status !== "SUCCEEDED" || agent.executionMode !== "DURABLE_SQL_AGENT_V1" || agent.mode !== "LIVE_MODEL") throw fail(409, "源任务或文件演练尚未通过；人工版本需要独立的发布审阅");
     const item = get("delivery_package", delivery.packageId), verification = get("delivery_verification", verificationId), plan = await ensure(item), last = agent.attempts?.at(-1);
     if (last?.status!=="SUCCEEDED" || !last?.model || /TEST_DOUBLE|unconfirmed/.test(last.model) || item.digest !== packageDigest || item.digest !== delivery.packageDigest || item.manifest.source.revisionId !== last?.revisionId || item.sourceRunId !== last?.runId || verification.packageId !== item.id || verification.packageDigest !== item.digest || !passes(verification, item, plan))
       throw fail(409, "审阅必须绑定当前代码、包摘要和真实演练");

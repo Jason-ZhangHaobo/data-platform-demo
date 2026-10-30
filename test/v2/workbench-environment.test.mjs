@@ -35,8 +35,8 @@ test('service write affordance uses SERVICES permission, not the parent Agent pe
  assert.equal(mayWriteServices(cloud,{authenticated:false,permissions:['*']}),false);
  assert.equal(mayWriteServices(undefined,{authenticated:true,permissions:['*']}),false);
 });
-test('real app wires both service entry points to the same backend and keeps cloud manual delivery closed',()=>{
- const app=readFileSync('web/src/main.tsx','utf8'),agent=readFileSync('web/src/AgentDevelopmentWorkbench.tsx','utf8');
+test('real app keeps local delivery separate and routes verified manual cloud sources through their run',()=>{
+ const app=readFileSync('web/src/main.tsx','utf8'),agent=readFileSync('web/src/AgentDevelopmentWorkbench.tsx','utf8'),panel=readFileSync('web/src/AgentDeliveryPanel.tsx','utf8');
  assert.match(app,/workbenchEnvironment\(status,\{privatePreview,privateServicesPreview\}\)/);
  assert.equal((app.match(/privateCloud=\{workbench.cloudServices\}/g)||[]).length,2);
  assert.equal((app.match(/canWrite=\{servicesCanWrite\}/g)||[]).length,2);
@@ -44,8 +44,17 @@ test('real app wires both service entry points to the same backend and keeps clo
  assert.match(app,/runtimeMode=\{workbench.runtimeMode\}/);
  assert.doesNotMatch(app,/privateCloud=\{privateServicesPreview\}/);
  assert.match(agent,/runtimeMode === "LOCAL_DEVELOPMENT" && !privatePreview/);
- assert.match(agent,/!localManualDelivery \?/);
- assert.match(agent,/不会回退本机交付/);
+ assert.match(agent,/!localManualDelivery \? originTaskId && run\?\.id \? <AgentDeliveryPanel/);
+ assert.match(agent,/manual api=\{api\} taskId=\{originTaskId\}/);
+ assert.match(agent,/canWrite=\{canWrite&&!manualUnconfirmed&&!pendingSaveKey\} canPublish=\{false\}/);
+ assert.match(agent,/!task && !dirty && mayReuseManualRevision/);
+ assert.match(agent,/originAgentTaskId:origin/);
+ assert.match(agent,/打开本机人工交付流程/);
+ assert.match(panel,/manual \? `\/runs\/\$\{runId\}\/prepare-delivery`/);
+ assert.match(panel,/if \(manual\) \{ setPublicationRead\("READY"\)/);
+ assert.match(panel,/const refreshPublication = \(\) => \{ if \(manual\) return;/);
+ assert.match(panel,/\{!manual && <div className="agent-delivery-actions"><button[\s\S]*?刷新发布与监控/);
+ assert.match(panel,/!manual && \(canPublish \?\? canWrite\)/);
 });
 
 const compile = (name) => {

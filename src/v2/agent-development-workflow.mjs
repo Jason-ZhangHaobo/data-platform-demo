@@ -44,6 +44,23 @@ export function developmentVerificationReport(task, run, revision) {
   };
 }
 
+export function manualCloudDeliverySource({store, project, runId, actorId, requireVerified = true}) {
+  const run = store.get("run", runId, project), revision = store.get("revision", run?.revisionId ?? "", project),
+    provenance = revision?.manualProvenance, agent = store.get("agent", provenance?.originAgentTaskId ?? "", project);
+  if (!actorId || !agent || agent.executionMode !== "DURABLE_SQL_AGENT_V1" || agent.language !== "SPARK_SQL" ||
+      agent.submittedBy !== actorId || revision?.author !== actorId || revision.source !== "MANUAL" ||
+      provenance?.kind !== "ENGINEER_EDIT" || provenance.actorId !== actorId || provenance.agentIndependentE2E !== false ||
+      revision.contextId !== agent.contextId || run?.contextId !== revision.contextId || run.revisionHash !== revision.hash ||
+      hash(revision.sql) !== revision.hash)
+    throw fail(403, "人工交付必须属于当前工程师、原任务与同一已保存代码版本");
+  const report = {...developmentVerificationReport(agent, run, revision), sourceKind: "MANUAL", agentIndependentE2E: false,
+    originAgentStatus: agent.status, notice: "此核验属于工程师接管版本；原 Agent 的失败、尝试及预算记录保持不变，不计为自主完成。"};
+  if (requireVerified && (report.status !== "PASSED" || run.engineVersion !== "3.5.9" || run.isolation !== "FUNCTION_PROCESS" ||
+      run.mode !== "DURABLE_REMOTE_SUBMISSION" && run.adapter !== "remote-spark-worker-v1"))
+    throw fail(409, "请先完成此人工版本的云端隔离 Spark 执行与五场景独立核验");
+  return {agent, revision, run, report};
+}
+
 // Each POST crosses one durable boundary; GET only reads a signed Worker receipt.
 export function createDurableAgentDelivery({ store, project, runner, artifactStore, persist, assertRunBudget = () => {}, assertExecutionScope = () => {}, reservationSeconds = 30 }) {
   if (!Number.isFinite(reservationSeconds) || reservationSeconds < 1 || reservationSeconds > 300) throw new Error("交付计算预留无效");
@@ -65,8 +82,52 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       throw fail(409, "交付文件与已核验源版本不一致");
     await artifactStore.verify(item.artifact, "delivery-package", item.digest, deliveryArtifactValue(item));
     const plan = validateDeliveryPackage(item, task.packageDigest);
+    if (task.sourceKind === "MANUAL" && (plan.source.attribution?.kind !== "ENGINEER_ASSISTED" ||
+        plan.source.attribution.originAgentTaskId !== task.sourceAgentTaskId || plan.source.attribution.actorId !== task.submittedBy ||
+        plan.source.attribution.agentIndependentE2E !== false)) throw fail(409, "人工交付来源与不可变清单不一致");
     return { item, plan };
   };
+  const assertTaskScope = task => {
+    const agent = store.get("agent", task.sourceAgentTaskId, project);
+    assertExecutionScope(agent);
+    if (task.sourceKind === "MANUAL") {
+      const source = manualCloudDeliverySource({store, project, runId: task.sourceRunId, actorId: task.submittedBy});
+      if (source.agent.id !== task.sourceAgentTaskId || source.revision.id !== task.sourceRevisionId || source.revision.hash !== task.sourceSqlHash)
+        throw fail(409, "人工交付来源已变化");
+    }
+  };
+  async function persistManualArtifact(task) {
+    const item = store.get("delivery_package", task.packageId, project);
+    if (item?.artifact) return task;
+    assertTaskScope(task);
+    if (!item || item.digest !== task.packageDigest) throw fail(409, "人工交付包检查点不完整");
+    validateDeliveryPackage(item, task.packageDigest);
+    const artifact = await artifactStore.put("delivery-package", item.digest, deliveryArtifactValue(item));
+    task = get(task.id);
+    if (terminal.has(task.status)) return task;
+    assertTaskScope(task);
+    store.update("delivery_package", item.id, project, {artifact});
+    task = change(task, {stage: "PACKAGE_READY"}); await persist(); return task;
+  }
+  async function createManual({runId, actorId, key}) {
+    const {agent, revision, run} = manualCloudDeliverySource({store, project, runId, actorId});
+    assertExecutionScope(agent);
+    if (typeof key !== "string" || !key || key.length > 100) throw fail(422, "人工交付缺少有效幂等编号");
+    const existing = store.list("agent_delivery_task", project).find(t => t.sourceKind === "MANUAL" && t.sourceAgentTaskId === agent.id &&
+      t.sourceRunId === run.id && t.sourceRevisionId === revision.id && t.sourceSqlHash === revision.hash && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
+    const dedup = store.deduplicate(`${project}:manual-cloud-delivery:${actorId}:${key}`, hash(JSON.stringify({runId: run.id, revisionHash: revision.hash, origin: agent.id})), () => {
+      if (existing) return existing;
+      const bundle = createDeliveryPackage({run, revision, name: "工程师接管 · 已核验证券加工交付"});
+      const task = store.create("agent_delivery_task", project, {mode: durableDeliveryMode, sourceKind: "MANUAL", sourceAgentTaskId: agent.id,
+        sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: actorId, status: "QUEUED", stage: "PACKAGE_PERSISTING",
+        packageDigest: bundle.digest, completionScope: "MANUAL_DELIVERY_PREPARATION", agentIndependentE2E: false, fullLifecycleE2E: false, publicDeployed: false});
+      const item = store.create("delivery_package", project, {...bundle, sourceRunId: run.id, agentDeliveryTaskId: task.id, sourceKind: "MANUAL", agentIndependentE2E: false, stage: "M2A", published: false});
+      return change(task, {packageId: item.id});
+    });
+    await persist(); // Persist the exact package before OSS; an unknown PUT resumes its digest.
+    const task = get(dedup.id);
+    return publicDeliveryTask(terminal.has(task.status) ? task : await persistManualArtifact(task));
+  }
   async function create(agent, key) {
     assertExecutionScope(agent);
     const { run, revision } = source(agent);
@@ -103,8 +164,14 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
   async function advance(id, expectedVersion) {
     let task = get(id);
     if (terminal.has(task.status)) return publicDeliveryTask(task);
-    assertExecutionScope(store.get("agent", task.sourceAgentTaskId, project));
+    assertTaskScope(task);
     if (expectedVersion !== task.version) throw fail(409, "交付任务已更新，请刷新后继续");
+    if (task.sourceKind === "MANUAL") task = await persistManualArtifact(task);
+    if (terminal.has(task.status)) return publicDeliveryTask(task);
+    if (task.sourceKind === "MANUAL" && task.remoteSubmission && !task.remoteSubmission.submitted) {
+      await reconcile(task.id); task = get(task.id);
+      if (terminal.has(task.status)) return publicDeliveryTask(task);
+    }
     const { item, plan } = await bundleFor(task);
     if (!task.remoteSubmission) {
       assertRunBudget();
@@ -134,5 +201,5 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     if (task.remoteSubmission) await runner.cancel(task.remoteSubmission.prepared);
     return publicDeliveryTask(task);
   }
-  return { create, advance, reconcile, cancel, bundleFor };
+  return { create, createManual, advance, reconcile, cancel, bundleFor };
 }

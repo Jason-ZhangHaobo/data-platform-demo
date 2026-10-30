@@ -15,7 +15,7 @@ import { MetadataStore } from "./store.mjs";
 import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-application.mjs";
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
-import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport } from "./agent-development-workflow.mjs";
+import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource } from "./agent-development-workflow.mjs";
 import { createCloudPublication } from "./cloud-publication.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
 import { localTaskConsumption } from "./local-task-consumption.mjs";
@@ -4795,6 +4795,31 @@ export function createV2Server(options = {}) {
             activeRelease: expose(restored),
           });
         }
+      }
+      const manualCloudWorkflow = path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\/(workflow|prepare-delivery)$/);
+      if (manualCloudWorkflow && (method === "GET" && manualCloudWorkflow[2] === "workflow" || method === "POST" && manualCloudWorkflow[2] === "prepare-delivery")) {
+        const actorId = auth.sessionFromHeaders(req.headers)?.user.id;
+        if (!actorId) throw fail(401, "请先登录查看人工交付");
+        const run = get("run", manualCloudWorkflow[1]); requireDevelopmentOwner("run", run, req);
+        await reconcileDevelopment(run);
+        const source = manualCloudDeliverySource({store, project: PROJECT, runId: run.id, actorId, requireVerified: method === "POST"});
+        if (method === "POST") {
+          if (Object.keys(await readBody(req)).length) throw fail(422, "人工交付仅使用当前已核验批次，不接受替换来源");
+          if (!durableDelivery || !durableDevelopment) throw fail(503, "云端隔离交付尚未启用");
+          assertScopedRecord(auth.sessionFromHeaders(req.headers), source.revision);
+          return json(res, 202, await durableDelivery.createManual({runId: run.id, actorId, key: text(req.headers["idempotency-key"], 1, 100)}));
+        }
+        let delivery = store.list("agent_delivery_task", PROJECT).find(t => t.sourceKind === "MANUAL" && t.sourceAgentTaskId === source.agent.id &&
+          t.sourceRevisionId === source.revision.id && t.sourceRunId === run.id && t.submittedBy === actorId);
+        if (delivery && durableDelivery) { await durableDelivery.reconcile(delivery.id); delivery = get("agent_delivery_task", delivery.id); }
+        const bundle = delivery?.packageId ? get("delivery_package", delivery.packageId) : undefined,
+          verification = delivery?.verificationId ? get("delivery_verification", delivery.verificationId) : undefined;
+        return json(res, 200, {report: source.report, delivery: publicDeliveryTask(delivery),
+          package: bundle ? {id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files} : undefined,
+          verification: verification ? {id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion,
+            mainSqlExecuted: verification.mainSqlExecuted, testSqlValidation: verification.testSqlValidation, validation: verification.validation,
+            durationMs: verification.durationMs, error: verification.error, finishedAt: verification.finishedAt} : undefined,
+          publication: {available: false, scope: "PRIVATE_CLOUD_TEST", reason: "人工版本的云发布尚未开放。交付文件与演练结果已保留，后续需要针对当前包建立独立审阅与发布流程。"}});
       }
       const developmentWorkflow = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/workflow$/);
       if (developmentWorkflow && method === "GET") {

@@ -40,3 +40,25 @@ test("Qwen 3.7 SQL protocol explicitly disables thinking and binds JSON output w
   assert.deepEqual(modelSettings({V2_MODEL:"qwen3-coder-plus"}).requestOptions,{});
   assert.equal(modelSettings({V2_MODEL:"qwen3.7-plus-2026-05-26"}).requestOptions.enable_thinking,false);
 });
+
+test("SQL repair carries grain and rejoin constraints without independent answers or fixture rows",async()=>{
+  const context=getContext("stock-cash-t1"),currentSql="SELECT SUM(market_value) FROM positions";
+  const error="重复持仓场景：holding_market_value 结果不符";
+  let request,calls=0;
+  await generateSql({message:"股票持仓与现金加工",context,currentSql,error,remainingBudget:12000},env,async(_url,options)=>{
+    calls++;request=JSON.parse(options.body);
+    return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({sql:currentSql,explanation:"合成请求契约测试，不代表生成正确"})}}],usage:{total_tokens:800}}));
+  });
+  const prompt=JSON.parse(request.messages[1].content),contract=prompt.executionContract;
+  assert.equal(prompt.currentSql,currentSql);assert.equal(prompt.error,error);assert.equal(calls,1);
+  assert.match(contract.grainReview.join("\n"),/position_id.*JOIN 原始 positions/);
+  assert.match(contract.grainReview.join("\n"),/SUM\(DISTINCT market_value\)/);
+  assert.match(contract.repairReview,/真实错误和当前 SQL/);
+  assert.match(prompt.context.definition,/仅统计 asset_class = '股票'/);
+  assert.deepEqual(prompt.context.tables,context.tables.map(({name,columns})=>({name,columns})));
+  assert.equal(Object.hasOwn(prompt.context,"expected"),false);
+  assert.equal(Object.hasOwn(prompt.context,"referenceSql"),false);
+  assert.equal(request.messages[1].content.includes('"rows"'),false);
+  assert.equal(request.messages[1].content.includes('"total_assets":"1300.00"'),false);
+  assert.ok(request.max_tokens>=256&&request.max_tokens<=6000);
+});

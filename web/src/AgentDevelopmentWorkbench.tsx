@@ -2,7 +2,7 @@ import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Bot, CheckCircle2, ChevronDown, Code2, FileCode2, GitCompareArrows, History, LoaderCircle, Play, Plus, RefreshCw, Send, Square, Undo2 } from "lucide-react";
 import { developmentRunLog } from "./run-log";
 import { AgentDeliveryPanel } from "./AgentDeliveryPanel";
-import { manualRunLocation, manualRunRecovery, manualSaveLocation, manualSaveRequest } from "./manual-run-recovery";
+import { manualRunLocation, manualRunRecovery, manualSaveLocation, manualSaveRequest, acknowledgedManualDraft, mayReuseManualRevision } from "./manual-run-recovery";
 import {agentSubmissionRequest,agentSubmissionLocation,createAgentSubmission,agentTaskReceiptValid} from "./agent-submission";
 import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
 import {initialAgentTaskId,loadHistoryAfterTarget,mergeTaskHistory} from "./agent-history-loading";
@@ -16,7 +16,7 @@ type Context = { id: string; name: string; definition: string; validationFamily?
 type Task = { id: string; version: number; status: string; stage?: string; executionMode?: string; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
 type Run = { id: string; status: string; createdAt?: string; validationContractId?: string; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
-type SavedRevision = {id:string;sql:string;contextId:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
+type SavedRevision = {id:string;sql:string;contextId:string;source?:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
 const terminal = (s?: string) => Boolean(s && ["SUCCEEDED", "FAILED", "CANCELLED", "VALIDATION_FAILED","INTERRUPTED"].includes(s));
 const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "执行中断，记录保留", VALIDATION_FAILED: "业务断言未通过" };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -36,6 +36,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   const [manualDeliveryOpen, setManualDeliveryOpen] = useState(false);
   const [pendingSaveKey, setPendingSaveKey] = useState<string|undefined>(()=>typeof window==="undefined"?undefined:manualSaveRequest(window.location.href));
   const revisionRequest = useRef<{key:string;sql:string;contextId:string;originAgentTaskId?:string} | undefined>(undefined);
+  const confirmedManualRevision = useRef<SavedRevision | undefined>(undefined);
   const [backgroundConsent,setBackgroundConsent]=useState(true);
   const [historyState,setHistoryState]=useState<"loading"|"loaded"|"deferred"|"error">("loading"),[historyError,setHistoryError]=useState("");
   const historyFlight=useRef<Promise<void>|undefined>(undefined),startupStarted=useRef(false);
@@ -84,6 +85,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
       if (!alive.current || epoch.current!==recoveryEpoch || selectedId.current) return;
       if(draftRef.current!==draftAtStart){setHistoryState("deferred");setNotice("读取期间的编辑已保留；没有用已保存版本覆盖当前代码。");return;}
       setTask(undefined); setContextId(saved.contextId); setDraft(saved.sql); setBaseline(saved.sql); setBaselineRevisionId(saved.id); setRun(actual);
+      confirmedManualRevision.current = saved;
       manualRequest.current = requestKey ? {revisionId:saved.id, key:requestKey} : undefined;
       const persistedOrigin = saved.manualProvenance?.originAgentTaskId ?? origin;
       setManualUnconfirmed(Boolean(requestKey)); setOriginTaskId(persistedOrigin);
@@ -263,10 +265,11 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   }
   async function runDraft() {
     if (!draft.trim() || !canWrite || working || runPending || manualUnconfirmed || pendingSaveKey || pendingAgentKey) return;
+    const submittedSql = draft, saveEpoch = epoch.current;
     setBusy(true); setError("");
     try {
-      let revision: {id:string;sql:string};
-      if (!dirty && baselineRevisionId) revision={id:baselineRevisionId,sql:baseline};
+      let revision: SavedRevision;
+      if (!task && !dirty && mayReuseManualRevision(confirmedManualRevision.current, {id:baselineRevisionId,sql:baseline,contextId,originAgentTaskId:originTaskId})) revision=confirmedManualRevision.current!;
       else {
         const key=crypto.randomUUID(), origin=task?.id ?? originTaskId;
         revisionRequest.current={key,sql:draft,contextId,originAgentTaskId:origin};
@@ -275,7 +278,10 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
         revision=await api<SavedRevision>("/revisions",{sql:draft,contextId,...(origin ? {originAgentTaskId:origin} : {})},{idempotencyKey:key});
         setPendingSaveKey(undefined); revisionRequest.current=undefined;
       }
-      if (!alive.current) return;
+      if (!alive.current || epoch.current !== saveEpoch) return;
+      acknowledgedManualDraft(submittedSql, submittedSql, revision.sql);
+      setDraft(current => acknowledgedManualDraft(current, submittedSql, revision.sql));
+      confirmedManualRevision.current = revision;
       const origin = task?.id ?? originTaskId;
       setOriginTaskId(origin); setBaseline(revision.sql); setBaselineRevisionId(revision.id); setTask(undefined); setRun(undefined);
       if (manualRequest.current?.revisionId !== revision.id) manualRequest.current = { revisionId: revision.id, key: crypto.randomUUID() };
@@ -310,6 +316,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
       if (!alive.current || manualSaveRequest(location.href) !== key) return;
       if (result.status !== "SAVED" || !result.revision) { setNotice("尚未查到原保存记录，保留编号与输入；可稍后再次查询。不会自动创建版本或执行。"); return; }
       const saved=result.revision, pending=revisionRequest.current;
+      confirmedManualRevision.current = saved;
       setDraft(current => !current || current === pending?.sql ? saved.sql : current);
       setBaseline(saved.sql);setBaselineRevisionId(saved.id);setContextId(saved.contextId);setTask(undefined);setRun(undefined);
       const origin=saved.manualProvenance?.originAgentTaskId;
@@ -397,7 +404,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} contextId={task.contextId} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} canPublish={canPublish} publicationTarget={publicationTarget} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />}
     {!task && baselineRevisionId && <section className="agent-delivery-panel" aria-label="人工接管与交付"><h3>人工接管记录</h3><p>当前代码由工程师保存；原 Agent 的失败和验证结论不改写，也不计作 Agent 自主完成。</p><small>代码版本：{baselineRevisionId}{run ? ` · 运行批次：${run.id}` : " · 运行尚未确认"}</small>
       {originTaskId && <button className="button" disabled={working || manualUnconfirmed || Boolean(message.trim())} onClick={() => void selectTask(originTaskId)}>返回原 Agent 任务</button>}
-      {!localManualDelivery ? <p>当前环境尚未接入人工版本的云交付；不会回退本机交付，也不会借用原 Agent 的批准或发布。代码与批次保留，可继续人工检查。</p> : <><button className="button" disabled={working || dirty || manualUnconfirmed || Boolean(message.trim()) || run?.status !== "SUCCEEDED" || run.revisionId !== baselineRevisionId || !run.validationContractId} onClick={() => setManualDeliveryOpen(true)}>打开本机人工交付流程</button><small>在本页继续生成包、文件演练和审阅；服务端仍核验实际执行与来源。不是自动批准或云端上线。</small>
+      {!localManualDelivery ? originTaskId && run?.id ? <AgentDeliveryPanel key={`manual-${baselineRevisionId}-${run.id}`} manual api={api} taskId={originTaskId} contextId={contextId} revisionId={baselineRevisionId} runId={run.id} dirty={dirty} canWrite={canWrite&&!manualUnconfirmed&&!pendingSaveKey} canPublish={false} codeBusy={working||runPending} handoffBlocked={Boolean(message.trim())} /> : <p>先保存并运行关联原任务的人工版本；真实 Spark 与独立核验通过后，可继续准备云端交付。</p> : <><button className="button" disabled={working || dirty || manualUnconfirmed || Boolean(message.trim()) || run?.status !== "SUCCEEDED" || run.revisionId !== baselineRevisionId || !run.validationContractId} onClick={() => setManualDeliveryOpen(true)}>打开本机人工交付流程</button><small>在本页继续生成包、文件演练和审阅；服务端仍核验实际执行与来源。不是自动批准或云端上线。</small>
       {manualDeliveryOpen && run?.validationContractId && run.revisionId === baselineRevisionId && <Suspense fallback={<p role="status">正在加载人工交付流程…</p>}><ManualDeliveryWorkbench key={run.id} api={api} runs={[{id:run.id,status:run.status,revisionId:baselineRevisionId,contextId,createdAt:run.createdAt ?? "",validationContractId:run.validationContractId}]} sourceRunId={run.id} contractId={run.validationContractId} lockSource canWrite={canWrite && !working && !dirty && !manualUnconfirmed && !message.trim()} onBack={() => setManualDeliveryOpen(false)} /></Suspense>}</>}
     </section>}
   </section>;
