@@ -26,7 +26,8 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
   const resumed = plan?.resumeExistingTask;
   if (resumed !== undefined) {
     check(sameKeys(resumed, ['protocol', 'taskId', 'originalStartsAt', 'originalDeadline', 'retainedAttempts', 'approvalDigest', 'priorCodeReads', 'priorCodeHttp', 'codeStageIssuedAt', 'codeStageClosedAt']) &&
-      resumed.protocol === 'TARGET_TASK_FRESH_WINDOW_V1' && uuid(resumed.taskId) && resumed.retainedAttempts === 1 &&
+      resumed.protocol === 'TARGET_TASK_FRESH_WINDOW_V1' && uuid(resumed.taskId) &&
+      Number.isSafeInteger(resumed.retainedAttempts) && resumed.retainedAttempts >= 1 && resumed.retainedAttempts <= 3 &&
       resumed.approvalDigest === plan.binding?.approvalDigest &&
       Number.isFinite(Date.parse(resumed.originalStartsAt)) && Number.isFinite(Date.parse(resumed.originalDeadline)) &&
       Date.parse(resumed.originalStartsAt) < Date.parse(resumed.originalDeadline) &&
@@ -40,7 +41,8 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
     'TARGET_TASK_WINDOW_INVALID');
   }
   check(plan?.scope === developmentRecoveryScope && developmentRecoveryModes.includes(plan.mode) &&
-    plan.contextId === 'stock-cash-t1' && plan.maxNewTasks === (resumed ? 0 : 1) && plan.maxModelCalls === (resumed ? 2 : 3) && plan.maxSparkRuns === 4 &&
+    plan.contextId === 'stock-cash-t1' && plan.maxNewTasks === (resumed ? 0 : 1) && plan.maxModelCalls === (resumed ? 3 - resumed.retainedAttempts : 3) &&
+    (resumed ? Number.isSafeInteger(plan.maxSparkRuns) && plan.maxSparkRuns >= 1 && plan.maxSparkRuns <= 4 : plan.maxSparkRuns === 4) &&
     plan.maxIncrementCny === 5 && plan.monthlyCny === 200 && plan.maxReads === (resumed ? 160 - resumed.priorCodeReads : 120) &&
     plan.maxProbes === (resumed ? 60 - resumed.priorCodeHttp : 60) && plan.maxWrites === 4,
   'RECOVERY_SCOPE_INVALID');
@@ -94,21 +96,24 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
 }
 
 export function developmentRecoveryEnvironment(plan, now = Date.now()) {
-  const e = plan.baseline?.environmentVariables, u = plan.usage, pricing = plan.modelPricing;
+  const e = plan.baseline?.environmentVariables, u = plan.usage, pricing = plan.modelPricing, noModels = plan.maxModelCalls === 0;
+  check((!noModels || plan.resumeExistingTask?.retainedAttempts === 3 && plan.maxNewTasks === 0) &&
+    Number.isSafeInteger(plan.maxSparkRuns) && plan.maxSparkRuns >= 1 && plan.maxSparkRuns <= 4, 'RECOVERY_SCOPE_INVALID');
   check(u?.month === month(now) && fresh(u.checkedAt, now) && Number.isSafeInteger(u.sparkRuns) && u.sparkRuns >= 0 &&
     Number.isFinite(u.modelCny) && u.modelCny >= 0, 'RECOVERY_CURRENT_USAGE_REQUIRED');
-  check(pricing?.model === e.V2_MODEL && fresh(pricing.checkedAt, now) && pricing.available === true &&
+  if (!noModels) check(pricing?.model === e.V2_MODEL && fresh(pricing.checkedAt, now) && pricing.available === true &&
     Number.isFinite(pricing.maxBatchCny) && pricing.maxBatchCny > 0 && pricing.maxBatchCny <= 4 && hash(pricing.evidenceDigest), 'RECOVERY_MODEL_PRICE_REQUIRED');
   check(Number.isFinite(plan.billCny) && plan.billCny >= 0 && plan.billCny + plan.priorReserveCny + 5 < 200, 'RECOVERY_BUDGET_INVALID');
-  const runs = u.sparkRuns + 4, model = Math.ceil((u.modelCny + pricing.maxBatchCny) * 100) / 100;
-  check(typeof e.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT === 'string' && Number.isSafeInteger(Number(e.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT)) &&
+  const runs = u.sparkRuns + plan.maxSparkRuns,
+    model = noModels ? Number(e.V2_MODEL_MONTHLY_BUDGET_CNY) : Math.ceil((u.modelCny + pricing.maxBatchCny) * 100) / 100;
+  check(Number.isSafeInteger(runs) && typeof e.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT === 'string' && Number.isSafeInteger(Number(e.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT)) &&
     Number(e.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT) >= runs && typeof e.V2_MODEL_MONTHLY_BUDGET_CNY === 'string' &&
     e.V2_MODEL_MONTHLY_BUDGET_CNY.trim() !== '' && Number.isFinite(Number(e.V2_MODEL_MONTHLY_BUDGET_CNY)) &&
-    Number(e.V2_MODEL_MONTHLY_BUDGET_CNY) >= model, 'RECOVERY_EXISTING_QUOTA_INSUFFICIENT');
+    Number(e.V2_MODEL_MONTHLY_BUDGET_CNY) >= 0 && Number(e.V2_MODEL_MONTHLY_BUDGET_CNY) >= model, 'RECOVERY_EXISTING_QUOTA_INSUFFICIENT');
   const env = { ...e, V2_FC_PUBLIC_READ_ONLY: 'false', V2_FC_PUBLIC_WRITE_SCOPE: 'DEVELOPMENT_ONLY',
     V2_PUBLIC_DEVELOPMENT_STARTS_AT: new Date(now).toISOString(), V2_PUBLIC_DEVELOPMENT_EXPIRES_AT: new Date(plan.deadline).toISOString(),
     ...(plan.resumeExistingTask ? { V2_PUBLIC_DEVELOPMENT_TASK_ID: plan.resumeExistingTask.taskId } : {}),
-    V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: String(runs), V2_MODEL_MONTHLY_BUDGET_CNY: String(model),
+    V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: String(runs), V2_MODEL_MONTHLY_BUDGET_CNY: noModels ? e.V2_MODEL_MONTHLY_BUDGET_CNY : String(model),
     V2_ACCOUNT_MONTHLY_SPEND_CNY: String(plan.billCny) };
   publicDevelopmentConfig(env);
   return env;

@@ -25,7 +25,7 @@
 
 这些是协议与本机回归范围，实际部署、真实模型/Spark、恢复和完整E2E须另验。
 
-操作层复用环境-only的`INVITED_DEVELOPMENT_RECOVERY_WINDOW_V1`，可选`resumeExistingTask`采用`TARGET_TASK_FRESH_WINDOW_V1`：绑定目标UUID、已结束的旧窗口、保留尝试、独立批准及代码阶段已用读取/探测数；摘要写入`binding.taskResumeDigest`，不能替换任务或清零计数。该分支为零新任务、最多两次后续模型和四次Spark；环境仍最多四次写入（含恢复），代码包不由此脚本上传或修改。旧新任务模式和其原额度保持不变。
+操作层复用环境-only的`INVITED_DEVELOPMENT_RECOVERY_WINDOW_V1`，可选`resumeExistingTask`采用`TARGET_TASK_FRESH_WINDOW_V1`：绑定目标UUID、已结束的旧窗口、保留尝试、独立批准及代码阶段已用读取/探测数；摘要写入`binding.taskResumeDigest`，不能替换任务或清零计数。该分支为零新任务，保留尝试数允许1—3，后续模型上限严格为`3-retainedAttempts`，Spark上限可收窄为1—4。保留三次尝试时禁止新增模型，原模型预算原样保留，不要求模型价格或模型可用性请求；Spark额度按新鲜用量加本批上限设置，完整账单、历史预留、就绪及同一两小时时钟仍须核验。环境仍最多四次写入（含恢复），代码包不由此脚本上传或修改。旧新任务模式和其原额度保持不变。
 
 前置只读代码更新使用独立的`TARGET_TASK_CODE_CONTINUATION_V1`描述，绑定同一批准、候选、前序、完整历史和保留费用。该阶段仍零计算、零业务开窗；不混用旧预算修复描述，也不接收环境开窗字段。环境阶段从总额扣除代码阶段实际用量；缺乏真实闭合记录与人审来源时，不得凭这些协议名执行。
 

@@ -32,6 +32,12 @@ function targetedFixture() {
   p.maxNewTasks=0;p.maxModelCalls=2;p.maxReads=130;p.maxProbes=58;
   return p;
 }
+function exhaustedTargetFixture() {
+  const p=targetedFixture();p.resumeExistingTask.retainedAttempts=3;
+  p.binding.taskResumeDigest=recoveryDigest(p.resumeExistingTask);
+  p.maxModelCalls=0;p.maxSparkRuns=1;p.priorReserveCny=62;p.binding.priorReserveCny=62;
+  delete p.modelPricing;return p;
+}
 function harness(plan, options={}) {
   let current = structuredClone(options.current ?? plan.baseline), clock=time;
   const calls=[], writes=[], snapshots=[];
@@ -189,6 +195,57 @@ test('targeted runtime probe refuses an old application or anonymous task-ID dis
     await assert.rejects(runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io),/RECOVERY_RUNTIME_UNCONFIRMED/);
     assert.equal(h.writes.length,2);assert.equal(h.report.restoration,'VERIFIED');assert.deepEqual(h.current(),p.baseline);
   }
+});
+test('targeted retained attempts determine exact remaining model calls while Spark scope can only narrow',()=>{
+  for(const retainedAttempts of [1,2,3])for(const maxSparkRuns of [1,2,3,4]){
+    const p=targetedFixture();p.resumeExistingTask.retainedAttempts=retainedAttempts;p.binding.taskResumeDigest=recoveryDigest(p.resumeExistingTask);
+    p.maxModelCalls=3-retainedAttempts;p.maxSparkRuns=maxSparkRuns;
+    assert.equal(validateDevelopmentRecoveryPlan(p,time),true);
+    assert.equal(developmentRecoveryEnvironment(p,time).V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT,String(p.usage.sparkRuns+maxSparkRuns));
+  }
+  for(const mutate of [p=>p.resumeExistingTask.retainedAttempts=0,p=>p.resumeExistingTask.retainedAttempts=4,p=>p.resumeExistingTask.retainedAttempts=1.5,
+    p=>p.resumeExistingTask.retainedAttempts='3',p=>p.maxModelCalls=1,p=>p.maxModelCalls=-1,p=>p.maxModelCalls='0',
+    p=>p.maxSparkRuns=0,p=>p.maxSparkRuns=5,p=>p.maxSparkRuns=1.5,p=>p.maxSparkRuns='1',p=>p.maxNewTasks=1]){
+    const p=exhaustedTargetFixture();mutate(p);p.binding.taskResumeDigest=recoveryDigest(p.resumeExistingTask);
+    assert.throws(()=>validateDevelopmentRecoveryPlan(p,time));
+  }
+  for(const patch of [{maxSparkRuns:1},{maxModelCalls:0}])assert.throws(()=>validateDevelopmentRecoveryPlan({...fixture(),...patch},time),/RECOVERY_SCOPE_INVALID/);
+});
+test('zero-model single-Spark opening preserves exact model budget without pricing or provider requests',async()=>{
+  const p=exhaustedTargetFixture();p.baseline.environmentVariables.V2_MODEL_MONTHLY_BUDGET_CNY='020.00';p.baselineDigest=functionDigest(p.baseline);
+  const h=harness(p);await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
+  assert.equal(h.report.phase,'OPENED');assert.equal(h.writes.length,1);
+  assert.equal(h.report.activated.V2_MODEL_MONTHLY_BUDGET_CNY,'020.00');assert.equal(h.report.activated.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT,'9');
+  assert.equal(h.report.activated.V2_PUBLIC_DEVELOPMENT_TASK_ID,p.resumeExistingTask.taskId);
+  assert.equal(h.report.issuedAt,p.issuedAt);assert.equal(h.report.deadline,p.deadline);
+  assert.equal(h.report.binding.priorReserveCny,62);assert.deepEqual(h.report.historyUsage,p.historyUsage);
+  assert.ok(h.calls.every(c=>['fc','bssopenapi'].includes(c.args[0])));assert.equal(h.report.modelCalls,0);assert.equal(h.report.sparkRuns,0);
+});
+test('zero-model scope still requires fresh usage, a complete affordable bill, original quotas and actual closed code stage',async()=>{
+  for(const mutate of [p=>p.usage.checkedAt='2025-01-01',p=>p.usage.sparkRuns=-1,p=>p.usage.modelCny=NaN,
+    p=>p.baseline.environmentVariables.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT='8',p=>p.baseline.environmentVariables.V2_MODEL_MONTHLY_BUDGET_CNY='',
+    p=>p.billCny=133]){
+    const p=exhaustedTargetFixture();mutate(p);assert.throws(()=>developmentRecoveryEnvironment(p,time));
+  }
+  for(const mutate of [p=>delete p.resumeExistingTask.codeStageClosedAt,p=>p.resumeExistingTask.codeStageClosedAt=new Date(time+1).toISOString(),
+    p=>p.resumeExistingTask.codeStageIssuedAt=new Date(time-1).toISOString(),p=>p.binding.taskResumeDigest=hash('9'),p=>p.priorReserveCny=57]){
+    const p=exhaustedTargetFixture();mutate(p);assert.throws(()=>validateDevelopmentRecoveryPlan(p,time));
+  }
+  const p=exhaustedTargetFixture(),h=harness(p,{bill:133});
+  await assert.rejects(runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io),/RECOVERY_BUDGET_INVALID/);assert.equal(h.writes.length,0);
+  const liveModel=targetedFixture();delete liveModel.modelPricing;
+  assert.throws(()=>developmentRecoveryEnvironment(liveModel,time),/RECOVERY_MODEL_PRICE_REQUIRED/);
+});
+test('zero-model manual rehearsal retains the same limits through one settled reload and exact late closure',async()=>{
+  const p=exhaustedTargetFixture(),h=harness(p);await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
+  const reload={...p,mode:'recycle',phase:'OPENED',activated:h.report.activated,priorUsage:h.report.cumulativeUsage,recoveryNonce:'f'.repeat(32),
+    phaseBoundary:{taskId:p.resumeExistingTask.taskId,revisionId:uuid(2),runId:uuid(3),bootId:uuid(4),contextId:p.contextId,status:'VERIFIED',modelPending:false,sparkPending:false,evidenceDigest:hash('f')}};
+  const r=harness(reload,{current:h.current()});await runDevelopmentRecoveryOperation(reload,h.current(),r.report,r.io);
+  assert.equal(r.report.reloaded.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT,'9');assert.equal(r.report.reloaded.V2_MODEL_MONTHLY_BUDGET_CNY,p.baseline.environmentVariables.V2_MODEL_MONTHLY_BUDGET_CNY);
+  assert.equal(r.report.reloaded.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT,new Date(p.deadline).toISOString());
+  const closing={...reload,mode:'close',phase:r.report.phase,reloaded:r.report.reloaded,priorUsage:r.report.cumulativeUsage},c=harness(closing,{current:r.current()});
+  c.setClock(p.deadline+1000);await runDevelopmentRecoveryOperation(closing,r.current(),c.report,c.io);
+  assert.equal(c.report.phase,'CLOSED_READONLY');assert.deepEqual(c.current(),p.baseline);assert.equal(c.report.cumulativeUsage.configWrites,3);
 });
 test('targeted unknown environment write is reconciled once, and a depleted phase budget cannot borrow cleanup reads',async()=>{
   const p=targetedFixture(),h=harness(p,{unknown:true});await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
