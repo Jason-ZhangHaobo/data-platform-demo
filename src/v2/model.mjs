@@ -129,6 +129,16 @@ export async function generateSql(
         "仅有现金客户",
       ],
       note: "同一 SQL 会在五套独立样例回归；不能只通过当前样例。仅去除同一个 position_id 的重复；不同 position_id 即使证券和金额相同也必须分别计入市值。现金先按客户独立聚合。没有持仓但有现金的客户也必须返回正确 client_id，持仓市值与证券数为0。advisor_id只存在于accounts表，需通过client_id关联。",
+      grainReview: [
+        "先从 accounts 按 advisor_id 选出不重复的 client_id，作为最终客户集合。",
+        "持仓先按 trade_date 和当前业务口径过滤，再形成包含 position_id、client_id、security_code、market_value 的去重记录。",
+        "直接从去重后的持仓记录按客户聚合市值与证券代码数。只对 position_id 去重后再 JOIN 原始 positions 会重新引入重复记录，不能作为去重方案。",
+        "SUM(DISTINCT market_value) 会错误合并不同 position_id 的同额持仓；必须在记录层去重后使用普通 SUM。",
+        "现金单独按交易日、客户聚合；最后从客户集合 LEFT JOIN 两个已聚合结果，不能从持仓集合起步或将现金与明细持仓直接相乘。",
+      ],
+      repairReview: error
+        ? "修正必须依据下方真实错误和当前 SQL，定位失败场景对应的记录粒度或关联路径。检查修正是否把去重结果重新关联到了未去重的明细；保留已通过场景的口径。explanation 简述实际修改及待执行的验证，不得声称已执行或已通过。"
+        : "提交前逐项核对上述记录粒度与关联路径；explanation 仅说明生成的代码做了什么，真实执行结果由 Spark 返回。",
       supportedSql:
         "SELECT/WITH、JOIN、DISTINCT、GROUP BY、AND/OR、SUM/COUNT/COALESCE/CAST等常用函数；本期未开放ROW_NUMBER等窗口函数，可用包含position_id的DISTINCT子查询去重。",
     },

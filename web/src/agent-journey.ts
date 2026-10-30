@@ -25,6 +25,7 @@ export function publicationEvidenceText(release: { status: string; health: strin
 }
 export function deliveryStageText(stage: string, publicationCurrent: boolean, releaseStatus?: string, current = true): string {
   if (!current) return "原版本交付记录；当前修改待核验";
+  if (stage === "PACKAGE_PERSISTING") return "正在保存版本化交付包；记录保留，可继续确认";
   if (publicationCurrent) return publicationStopped(releaseStatus)
     ? "交付文件已演练；发布已停止"
     : "交付文件已演练并完成发布审阅";

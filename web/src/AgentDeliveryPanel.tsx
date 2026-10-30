@@ -28,7 +28,7 @@ function download(name: string, value: unknown) {
   try { document.body.appendChild(link); link.click(); }
   finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
 }
-export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, codeBusy, onOpenServices, handoffBlocked = false }: { api: Api; taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; codeBusy: boolean; onOpenServices?: () => void; handoffBlocked?: boolean }) {
+export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, codeBusy, onOpenServices, handoffBlocked = false, manual = false }: { api: Api; taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; codeBusy: boolean; onOpenServices?: () => void; handoffBlocked?: boolean; manual?: boolean }) {
   const [workflow, setWorkflow] = useState<Workflow>(), [busy, setBusy] = useState(false), [error, setError] = useState(""), [auto, setAuto] = useState(false);
   const [review, setReview] = useState(false), [confirmed, setConfirmed] = useState<Record<string,boolean>>({}), [release, setRelease] = useState<Release>(), [batches, setBatches] = useState<{ id: string; status: string; sequence: number; schedulerTriggered?: boolean }[]>([]);
   const [publication,setPublication]=useState<Publication>();
@@ -38,7 +38,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const publicationReader = useRef<ReturnType<typeof createPublicationReader<Publication>> | undefined>(undefined);
   const acceptPublication = (value: Publication) => { setPublication(value); setRelease(value.release); setBatches(value.runs); setPublicationRead("READY"); setPublicationError(""); };
   const acceptPublicationWrite = (value: Publication) => { publicationReader.current?.invalidate(); acceptPublication(value); };
-  const refreshPublication = () => { setPublicationRead("LOADING"); return publicationReader.current?.refresh(); };
+  const refreshPublication = () => { if (manual) return; setPublicationRead("LOADING"); return publicationReader.current?.refresh(); };
   const [consumption,setConsumption]=useState<TaskConsumption>(),[consumptionError,setConsumptionError]=useState("");
   const [evidenceRead, setEvidenceRead] = useState<EvidenceReadState>("LOADING");
   const [evidenceError, setEvidenceError] = useState("");
@@ -50,7 +50,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     const active = () => alive.current && activeTask.current === id && sequence === workflowEpoch.current;
     setEvidenceRead("LOADING"); setEvidenceError("");
     try {
-      const value = await api<Workflow>(`/agent/tasks/${id}/workflow`);
+      const value = await api<Workflow>(manual ? `/runs/${runId}/workflow` : `/agent/tasks/${id}/workflow`);
       if (active()) { setWorkflow(value); setEvidenceRead("READY"); }
       return value;
     } catch (e) {
@@ -60,7 +60,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   };
   const readConsumption=async(value=workflow)=>{
     const id=taskId,digest=value?.package?.digest,sequence=++consumptionEpoch.current;
-    if(!digest || !["PRIVATE_CLOUD_TEST","LOCAL_TEST_RELEASE"].includes(value?.publication.scope??""))return;
+    if(manual || !digest || !["PRIVATE_CLOUD_TEST","LOCAL_TEST_RELEASE"].includes(value?.publication.scope??""))return;
     try{
       const result=await api<TaskConsumption>(`/data-services/task-evidence?agent_task_id=${encodeURIComponent(id)}&package_digest=${encodeURIComponent(digest)}`);
       if(alive.current&&activeTask.current===id&&sequence===consumptionEpoch.current){setConsumption(result);setConsumptionError("");}
@@ -79,7 +79,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const cloud = workflow?.publication.scope === "PRIVATE_CLOUD_TEST";
   const targetMatches = publicationTargetMatches(publicationTarget, { taskId, packageDigest: workflow?.package?.digest, verificationId: workflow?.verification?.id }, publicationClock)
     && (!publicationTarget || delivery?.verificationId === publicationTarget.verificationId);
-  const publicationWritable = Boolean((canPublish ?? canWrite) && targetMatches);
+  const publicationWritable = Boolean(!manual && (canPublish ?? canWrite) && targetMatches);
   const cancellationWritable = publicationWritable && (!publicationTarget || Boolean(release && publicationTargetMatches(publicationTarget,
     {taskId:release.sourceAgentTaskId ?? "",packageDigest:release.packageDigest,verificationId:release.verificationId},publicationClock)));
   useEffect(() => {
@@ -108,7 +108,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   }
   async function prepare() {
     if (!verified || !canWrite || publicationTarget || working) return; setBusy(true); setError("");
-    try { const started = await api<Delivery>(`/agent/tasks/${taskId}/prepare-delivery`, {}, { idempotencyKey: requestKey.current }); await load(); void drive(started); }
+    try { const started = await api<Delivery>(manual ? `/runs/${runId}/prepare-delivery` : `/agent/tasks/${taskId}/prepare-delivery`, {}, { idempotencyKey: requestKey.current }); await load(); void drive(started); }
     catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   async function stop() {
@@ -129,10 +129,11 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     } catch(e) { setError((e as Error).message + " 发布结果需先读取原记录确认，不要重新创建任务。"); publicationReader.current?.invalidate(); await refreshPublication(); } finally { setBusy(false); }
   }
   useEffect(() => {
+    if (manual) { setPublicationRead("READY"); setPublication(undefined); setRelease(undefined); setBatches([]); return; }
     const reader = createPublicationReader<Publication>({ read: () => api<Publication>(`/agent/tasks/${taskId}/publication`), onValue: acceptPublication, onError: e => { setPublicationRead("ERROR"); setPublicationError((e as Error).message); } });
     publicationReader.current = reader; void reader.refresh();
     return () => { reader.close(); if (publicationReader.current === reader) publicationReader.current = undefined; };
-  }, [taskId]);
+  }, [taskId,manual]);
   useEffect(() => {
     if (!publication || publicationRead !== "READY" || !publicationPollNeeded(publication)) return;
     const timer = setInterval(() => { void publicationReader.current?.refresh(); }, cloud ? 10000 : 5000);
@@ -141,6 +142,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   useEffect(() => { if (workflow?.package?.digest) void publicationReader.current?.refresh(); }, [workflow?.package?.digest]);
   return <section id="agent-delivery" className="agent-delivery-panel" aria-label="核验与发布交付">
     <header><div><ShieldCheck size={17} /><strong>从开发到交付</strong></div><button className="icon-button" aria-label="刷新核验与交付" disabled={working || evidenceRead === "LOADING"} onClick={async()=>{try{await readConsumption(await load());}catch{/* load preserves the read error without losing evidence */}}}><RefreshCw size={14} /></button></header>
+    {manual && <p className="agent-dev-notice" role="status">工程师接管交付 · 当前报告、交付包及演练均绑定此人工版本。原 Agent 的失败和尝试记录保留，不计作自主完成；发布需要独立审阅。</p>}
     {evidenceRead !== "READY" && <div className="agent-dev-notice" role={evidenceRead === "ERROR" ? "alert" : "status"}><div><strong>{reportView.title}</strong><p>{reportView.detail}</p>{evidenceError && <small>{evidenceError}</small>}</div>{evidenceRead === "ERROR" && <button className="button" disabled={working} onClick={() => void load().catch(() => {})}>重新读取核验记录</button>}</div>}
     <div className="agent-journey-summary"><div><span className="eyebrow">TASK JOURNEY · {taskId.slice(0,8)}</span><h3>{evidenceRead !== "READY" ? "先确认核验记录" : journey.next.id === "evidence" ? "本任务测试范围内的证据已齐" : `下一步：${journey.next.label}`}</h3><p>{evidenceRead !== "READY" ? "保留原任务与交付文件；不因读取失败重新计算或创建任务。" : journey.next.detail}</p></div>{evidenceRead === "READY" && <a className="button" href={`#${journey.next.target}`}>{journey.next.id === "evidence" ? "查看消费证据" : "查看下一步"}</a>}</div>
     <ol className="agent-workflow-steps agent-journey-steps" aria-label="完整任务链路">{journey.steps.map((step,index) => <li key={step.id} className={step.state.toLowerCase()}><a href={`#${step.target}`}>{step.state === "DONE" ? <CheckCircle2 size={15} /> : <Circle size={15} />}<span>{index+1}. {step.label}</span><strong>{({DONE:"证据通过",PENDING:"待完成",ATTENTION:"需要处理",STALE:"修改后待核验"})[step.state]}</strong></a><small>{step.detail}</small></li>)}</ol>
@@ -164,9 +166,9 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
       </div>
       <div id="agent-publication" className="agent-publication-card"><div className="agent-workflow-title"><ShieldCheck size={16} /><h3>审阅发布与运行监控</h3></div><p>{!workflow.publication.available && release ? "发布记录已保留；临时调度入口已关闭，不会继续启动批次。新发布需按预算和权限重新启用。" : workflow.publication.reason}</p>{release && !journey.publicationCurrent && <p role="status">这是保留的发布记录，尚未核对为当前编辑版本的上线证据。</p>}
         {publicationTarget && <p role="status">{publicationWritable ? "本任务、包摘要和演练编号与受邀发布范围一致。请逐项审阅，不会自动批准。" : "当前任务或版本不在有效发布范围内，或窗口已关闭；只保留查看，不发布或停止其他任务。"} 同一冻结业务日期的两个样例批次，不是两个交易日或生产调度；不修改原代码或重新演练文件。</p>}
-        <div className="agent-delivery-actions"><button className="button" disabled={working || publicationRead === "LOADING"} onClick={() => void refreshPublication()}><RefreshCw size={14} />刷新发布与监控</button><small>只读取原任务，不会重新发布或运行计算。</small></div>
+        {!manual && <div className="agent-delivery-actions"><button className="button" disabled={working || publicationRead === "LOADING"} onClick={() => void refreshPublication()}><RefreshCw size={14} />刷新发布与监控</button><small>只读取原任务，不会重新发布或运行计算。</small></div>}
         {publicationRead !== "READY" && <p role={publicationRead === "ERROR" ? "alert" : "status"}>{publicationRead === "ERROR" ? `发布与监控读取未确认：${publicationError}。已读取的历史记录保留，暂不能判断当前健康或再次发布。` : "正在恢复原任务的发布、批次与告警记录…"}</p>}
-        {publicationRead === "READY" && !release && <p>当前任务尚未找到发布记录；交付演练通过并完成审阅后才能发布。</p>}
+        {publicationRead === "READY" && !release && <p>{manual ? "当前人工交付支持核验、文件生成与演练；人工包的云发布接入仍待完成。" : "当前任务尚未找到发布记录；交付演练通过并完成审阅后才能发布。"}</p>}
         {workflow.publication.available && (!release || !journey.publicationCurrent) && <button className="button primary" disabled={!publicationWritable || !fileVerified || !verified || working || publicationRead !== "READY"} onClick={() => { if (publicationWritable) setReview(true); }}>审阅并发布测试任务</button>}
         {!workflow.publication.available && !release && <span className="agent-publication-gate">交付演练通过后进入“待发布”；云端上线尚待完成。</span>}
         {review && workflow.package && <AgentPublicationReview cloud={cloud} packageDigest={workflow.package.digest} revisionId={delivery?.sourceRevisionId} runId={delivery?.sourceRunId} verificationId={delivery?.verificationId} confirmed={confirmed} disabled={!publicationWritable || working || publicationRead !== "READY" || !verified || !fileVerified || !workflow.publication.available} onConfirm={(id, checked) => setConfirmed(old => ({...old, [id]:checked}))} onPublish={() => void publishLocal()} onCancel={() => { setReview(false); setConfirmed({}); }} />}
@@ -185,12 +187,12 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           {publication && <button className="button" onClick={() => download(`publication-${release.id.slice(0,8)}.json`,{...publication, readState:publicationRead, notice:"已读取的测试范围记录，不代表实时健康或公网验收"})}><Download size={14}/>下载发布与监控记录</button>}
         </>}
       </div>
-      <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务的接口开发、测试与授权。选择实际发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
+      {!manual && <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务的接口开发、测试与授权。选择实际发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
         {consumptionError&&<p role="status">{consumptionError}</p>}
         {journey.steps.find(step=>step.id==="services")?.state==="DONE"&&<p role="status">组合接口的消费证据已通过。DAPI的单独授权调用记录独立展示，不影响已通过的XAPI组合查询。</p>}
         {consumption&&<><p>{consumption.notice}</p><small>对照时间：{consumption.checkedAt}；这是历史消费记录，不是实时授权保证。</small>{!current&&<p>编辑器或当前查看的批次已变化；下面证据仅供原版本参考。</p>}<ul>{consumption.services.map(s=><li key={s.serviceId}><strong>{s.serviceType} · {s.name}</strong> · 版本 {s.versionId.slice(0,8)} · {s.status==="VERIFIED"?"历史消费证据对照通过":s.status==="NEEDS_ATTENTION"?"需要处理":"待实际授权调用"}<p>{s.notice}</p>{s.call&&<small>调用 {s.call.callId.slice(0,8)} · {s.call.rowCount}行 · 摘要 {s.call.resultHash.slice(0,12)} · {applicationStatusText(s.call.applicationStatus,true)}</small>}</li>)}</ul>{consumption.truncated&&<p>证据数量超过本次上限，不能标记整个消费阶段完成。</p>}<EvidenceDownload name={`consumption-${taskId.slice(0,8)}.json`} value={consumption} request={{kind:"consumption",id:taskId,digest:consumption.packageDigest}}>下载消费对照证据</EvidenceDownload></>}
         {workflow.package&&<button className="button" disabled={working} onClick={()=>void readConsumption()}>刷新消费证据</button>}
-        {onOpenServices ? <><button className="button" disabled={dirty || working || handoffBlocked} onClick={onOpenServices}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>
+        {onOpenServices ? <><button className="button" disabled={dirty || working || handoffBlocked} onClick={onOpenServices}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>}
     </>}
   </section>;
 }

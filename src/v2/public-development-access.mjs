@@ -5,6 +5,7 @@ const authPaths = new Set(['/api/v2/auth/login', '/api/v2/auth/logout']);
 const routes = [
   /^\/api\/v2\/(?:revisions|runs|agent\/tasks)$/,
   /^\/api\/v2\/runs\/[a-f0-9-]{36}\/cancel$/,
+  /^\/api\/v2\/runs\/[a-f0-9-]{36}\/prepare-delivery$/,
   /^\/api\/v2\/agent\/tasks\/[a-f0-9-]{36}\/(?:advance|cancel|prepare-delivery|background(?:\/cancel)?)$/,
   /^\/api\/v2\/agent\/deliveries\/[a-f0-9-]{36}\/(?:advance|cancel)$/,
 ];

@@ -1,4 +1,14 @@
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+export function acknowledgedManualDraft(current: string, submitted: string, saved: string): string {
+  if (saved !== submitted.trim()) throw new Error("保存回执与提交代码不一致，请查询原保存记录。");
+  return current === submitted ? saved : current;
+}
+type ManualRevisionReceipt = {id:string;sql:string;contextId:string;source?:string;manualProvenance?:{kind:string;originAgentTaskId?:string;agentIndependentE2E:boolean}};
+export function mayReuseManualRevision(saved: ManualRevisionReceipt | undefined, current: {id?:string;sql:string;contextId:string;originAgentTaskId?:string}): boolean {
+  return Boolean(saved && saved.id === current.id && saved.sql === current.sql && saved.contextId === current.contextId &&
+    saved.source === "MANUAL" && saved.manualProvenance?.kind === "ENGINEER_EDIT" && saved.manualProvenance.agentIndependentE2E === false &&
+    saved.manualProvenance.originAgentTaskId === current.originAgentTaskId);
+}
 export function manualDeliveryPackages<T extends {manifest?: {source?: {runId?: string}}}>(bundles: T[], runId: string | undefined, locked: boolean): T[] {
   return locked ? bundles.filter(bundle => Boolean(runId) && bundle.manifest?.source?.runId === runId) : bundles;
 }

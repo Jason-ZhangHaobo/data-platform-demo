@@ -219,6 +219,10 @@ export function createDeliveryPackage({
       sqlHash: revision.hash,
       contextId: context.id,
       validationContractId: family.id,
+      ...(revision.source === "MANUAL" && revision.manualProvenance?.originAgentTaskId ? {attribution: {
+        kind: "ENGINEER_ASSISTED", originAgentTaskId: revision.manualProvenance.originAgentTaskId,
+        actorId: revision.manualProvenance.actorId, agentIndependentE2E: false,
+      }} : {}),
     },
     files: Object.fromEntries(
       deliveryFiles.map((file) => [
@@ -294,9 +298,15 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       "sqlHash",
       "contextId",
       "validationContractId",
+      ...(source?.attribution === undefined ? [] : ["attribution"]),
     ])
   )
     throw fail("交付清单包含未定义字段");
+  if (source.attribution !== undefined && (!keysExactly(source.attribution, ["kind", "originAgentTaskId", "actorId", "agentIndependentE2E"]) ||
+      source.attribution.kind !== "ENGINEER_ASSISTED" || source.attribution.agentIndependentE2E !== false ||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(source.attribution.originAgentTaskId ?? "") ||
+      typeof source.attribution.actorId !== "string" || !source.attribution.actorId || source.attribution.actorId.length > 100))
+    throw fail("人工交付归因不完整");
   if (
     !source ||
     source.sqlHash !== sha256(bundle.files["main.sql"]) ||
