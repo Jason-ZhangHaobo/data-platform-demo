@@ -30,13 +30,14 @@ test('development rollout is opt-in, bounded in time and bound to the existing a
   assert.doesNotThrow(() => assertDevelopmentMutation(degraded, session, 'GET', '/api/v2/agent/tasks', now));
   assert.throws(() => assertDevelopmentExecutionWindow(degraded, now), { code: 'PUBLIC_DEVELOPMENT_CLOSED' });
 });
-test('only SQL-development routes pass; publishing and credentials stay closed', () => {
+test('only SQL-development and self-session routes pass; publishing and invitation credentials stay closed', () => {
   const now = Date.now(), config = publicDevelopmentConfig(settings(now)), id = '00000000-0000-4000-8000-000000000001';
   for (const path of ['/api/v2/revisions', '/api/v2/runs', '/api/v2/agent/tasks', `/api/v2/agent/tasks/${id}/prepare-delivery`, `/api/v2/agent/tasks/${id}/advance`, `/api/v2/agent/deliveries/${id}/advance`])
     assert.doesNotThrow(() => assertDevelopmentMutation(config, session, 'POST', path, now));
-  for (const path of ['/api/v2/auth/redeem', '/api/v2/auth/invitations', '/api/v2/auth/password', '/api/v2/python/runs', '/api/v2/agent/intents', '/api/v2/releases', `/api/v2/agent/tasks/${id}/publication`, `/api/v2/agent/tasks/${id}/background/resume`, '/api/v2/data-services/applications'])
+  for (const path of ['/api/v2/auth/redeem', '/api/v2/auth/invitations', '/api/v2/auth/password/', '/api/v2/python/runs', '/api/v2/agent/intents', '/api/v2/releases', `/api/v2/agent/tasks/${id}/publication`, `/api/v2/agent/tasks/${id}/background/resume`, '/api/v2/data-services/applications'])
     assert.throws(() => assertDevelopmentMutation(config, session, 'POST', path, now), { code: 'PUBLIC_DEVELOPMENT_SCOPE_DENIED' });
   assert.doesNotThrow(() => assertDevelopmentMutation(config, session, 'POST', '/api/v2/auth/logout', config.expiresAt));
+  assert.doesNotThrow(() => assertDevelopmentMutation(config, session, 'POST', '/api/v2/auth/password', config.expiresAt));
 });
 test('one new task survives refresh, idempotent retry does not consume another slot, history stays read-only', () => {
   const now = Date.now(), config = publicDevelopmentConfig(settings(now)), tasks = [];
@@ -75,7 +76,8 @@ test('real HTTP retains CSRF/project checks, accepts one task, blocks other modu
   const created = await call('/agent/tasks', body, headers); assert.equal(created.status, 202);
   assert.equal((await call('/agent/tasks', body, headers)).body.id, created.body.id);
   assert.equal((await call('/agent/tasks', body, { ...headers, 'idempotency-key': 'new-key' })).body.code, 'PUBLIC_DEVELOPMENT_TASK_LIMIT');
-  for (const path of ['/auth/invitations', '/auth/password', '/releases', '/agent/intents', '/data-services/applications']) assert.equal((await call(path, {}, headers)).body.code, 'PUBLIC_DEVELOPMENT_SCOPE_DENIED');
+  for (const path of ['/auth/invitations', '/auth/password/', '/releases', '/agent/intents', '/data-services/applications']) assert.equal((await call(path, {}, headers)).body.code, 'PUBLIC_DEVELOPMENT_SCOPE_DENIED');
+  assert.equal((await call('/auth/password', {}, headers)).body.code, 'PASSWORD_CHANGE_INPUT_INVALID');
   now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT);
   assert.equal((await call('/auth/session', undefined, headers)).body.readOnly, true);
   assert.equal((await call(`/agent/tasks/${created.body.id}/advance`, { expectedVersion: created.body.version }, headers)).body.code, 'PUBLIC_DEVELOPMENT_CLOSED');

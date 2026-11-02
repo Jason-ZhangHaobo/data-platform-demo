@@ -98,11 +98,12 @@ test('service window limits the real HTTP and trusted internal channels to the s
     assert.equal(view.readOnly,true);assert.equal(view.consumptionPlan,undefined);
     assert.equal((await f.call('/data-services/dapis',{...f.plan.dapis[0],sourceReleaseRunId:f.run.id},{identity})).status,403);
   }
-  for(const path of ['/agent/tasks','/revisions','/runs','/python/runs','/releases','/auth/invitations','/auth/password','/auth/redeem',`/agent/tasks/${f.agent.id}/publication`]){
+  for(const path of ['/agent/tasks','/revisions','/runs','/python/runs','/releases','/auth/invitations','/auth/password/','/auth/redeem',`/agent/tasks/${f.agent.id}/publication`]){
     for(const headers of [{},f.internalHeaders]){
       const response=await f.call(path,{}, {headers});assert.equal(response.status,403,path);assert.equal(response.body.code,'PUBLIC_SERVICE_SCOPE_DENIED');
     }
   }
+  assert.equal((await f.call('/auth/password', {})).body.code,'PASSWORD_CHANGE_INPUT_INVALID');
   const body={...f.plan.dapis[0],sourceReleaseRunId:f.run.id};
   assert.equal((await f.call('/data-services/dapis',body,{headers:{'x-csrf-token':'invalid'}})).status,403);
   assert.equal((await f.call('/data-services/dapis',body,{headers:{'x-project-id':'other'}})).status,403);

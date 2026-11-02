@@ -216,6 +216,9 @@ export class AuthManager {
   }
 
   changePassword(context, input) {
+    if (!input || typeof input !== "object" || Array.isArray(input) ||
+        Object.keys(input).length !== 2 || !Object.hasOwn(input, "currentPassword") || !Object.hasOwn(input, "newPassword"))
+      throw fail(400, "只能提交当前密码和新密码，不能指定其他账号或权限", "PASSWORD_CHANGE_INPUT_INVALID");
     const user = this.store.get("auth_user", context.user.id, this.project);
     if (!user || !verifyPassword(input.currentPassword, user.passwordHash)) {
       this.#audit("PASSWORD_CHANGE_REJECTED", context.user.id, {

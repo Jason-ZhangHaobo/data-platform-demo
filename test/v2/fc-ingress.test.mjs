@@ -151,7 +151,7 @@ test("static assets never refresh storage and remain available while stateful re
 
 test("read-only public gate rejects every business write before persistence without disabling private events", async t => {
   const { call, refreshes } = await open(t, true, true);
-  for (const path of ["/api/v2/agent/tasks", "/api/v2/runs", "/api/v2/revisions", "/api/v2/releases", "/api/v2/auth/invitations", "/api/v2/auth/redeem", "/api/v2/auth/password", "/api/v2/services/applications"]) {
+  for (const path of ["/api/v2/agent/tasks", "/api/v2/runs", "/api/v2/revisions", "/api/v2/releases", "/api/v2/auth/invitations", "/api/v2/auth/redeem", "/api/v2/auth/password/", "/api/v2/services/applications"]) {
     const result = await call(path, "POST", httpHeaders, {});
     assert.equal(result.status, 403);
     assert.equal(result.body.code, "PUBLIC_READ_ONLY");

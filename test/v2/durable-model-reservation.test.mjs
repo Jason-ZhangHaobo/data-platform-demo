@@ -16,8 +16,12 @@ const now=Date.parse('2026-10-20T08:00:00Z'), project='fictional-budget-project'
 function setup(t,env={}) {
   const root=mkdtempSync(join(tmpdir(),'shuduo-reservation-')),store=new MetadataStore(join(root,'metadata.sqlite'));
   t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+  // MetadataStore uses the wall clock; the budget and engine below use October.
+  // Apply the same fixture clock to engine-created records too, not only seeds.
+  const createRecord=store.create.bind(store);
+  store.create=(kind,owner,value)=>{const item=createRecord(kind,owner,value);return store.update(kind,item.id,owner,{createdAt:new Date(now).toISOString()});};
   const budget=new BudgetManager({store,project,env:{V2_MODEL:'qwen3.7-plus',V2_MODEL_MONTHLY_BUDGET_CNY:'1.5',...env},now:()=>now});
-  const create=(kind,value)=>{const item=store.create(kind,project,value);return store.update(kind,item.id,project,{createdAt:new Date(now).toISOString()});};
+  const create=(kind,value)=>store.create(kind,project,value);
   // A pre-existing unknown call remains conservatively reserved at CNY 0.5.
   create('agent',{mode:'LIVE_MODEL',attempts:[{model:'unconfirmed',usage:{total_tokens:2500},status:'MODEL_OUTCOME_UNKNOWN',usageEstimated:true}]});
   return {store,budget,create};
@@ -31,6 +35,7 @@ test('narrow budget permits one owned durable reservation without charging it tw
       return {sql:referenceSql,model:'qwen3.7-plus',usage:{prompt_tokens:100,completion_tokens:100,total_tokens:200}};
     }});
   const task=await engine.create({message:'虚构证券资产加工',contextId:'holdings-t1',currentSql:'SELECT 1 AS pending',actorId:'fixture-engineer',idempotencyKey:'fixture-one'});
+  assert.equal(task.createdAt,new Date(now).toISOString(),'engine-created records share the fixture budget month');
   const generated=await engine.advance(task.id,{expectedVersion:task.version});
   assert.equal(requests,1);assert.equal(generated.stage,'READY_FOR_RUN');
   assert.equal(reservation.taskId,task.id);assert.equal(reservation.attempt,1);assert.match(reservation.leaseToken,/^[a-f0-9-]{36}$/);

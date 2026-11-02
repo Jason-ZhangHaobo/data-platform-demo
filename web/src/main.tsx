@@ -1789,10 +1789,11 @@ function App() {
                 </div>
                 {coreReady && status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&
                   session.role === "ADMIN" && <InvitationPanel api={api} />}
-                {coreReady && status?.mode !== "LOCAL_DEVELOPMENT" && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&
+                {coreReady && status?.mode !== "LOCAL_DEVELOPMENT" &&
                   session.authenticated && (
                     <ChangePasswordPanel
                       api={api}
+                      businessReadOnly={Boolean(session.readOnly)}
                       onChanged={(next) => {
                         authEpoch.current++;
                         setStatus(undefined);

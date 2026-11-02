@@ -15,7 +15,13 @@ export async function syncMysqlSecret({ name, password, api }) {
   const path = `/2023-03-30/functions/${name}`;
   const before = await api("GET", path);
   const env = before.environmentVariables;
-  if (before.functionName !== name || before.runtime !== "custom.debian12" || before.instanceConcurrency !== 1 || env?.V2_LOCAL_DEVELOPMENT !== "false" || env?.V2_PROVISIONING_ONLY !== "true" || env?.V2_PRIVATE_SMOKE_ENABLED !== "true" || env?.V2_MYSQL_USER !== "platform_app" || env?.V2_MYSQL_DATABASE !== "platform_meta")
+  const privateControl = before.instanceConcurrency === 1 &&
+    env?.V2_FC_PUBLIC_HTTP_ENABLED !== "true" && !env?.V2_FC_PUBLIC_WRITE_SCOPE;
+  // Match the public read-only backend boundary, not a hostname or UI label.
+  const publicReadonlyControl = before.instanceConcurrency === 8 &&
+    env?.V2_FC_PUBLIC_HTTP_ENABLED === "true" && env.V2_FC_PUBLIC_READ_ONLY === "true" &&
+    !env.V2_FC_PUBLIC_WRITE_SCOPE && env.V2_PRIVATE_RELEASE_ENABLED !== "true";
+  if (before.functionName !== name || before.runtime !== "custom.debian12" || (!privateControl && !publicReadonlyControl) || env?.V2_LOCAL_DEVELOPMENT !== "false" || env?.V2_PROVISIONING_ONLY !== "true" || env?.V2_PRIVATE_SMOKE_ENABLED !== "true" || env?.V2_MYSQL_USER !== "platform_app" || env?.V2_MYSQL_DATABASE !== "platform_meta")
     throw fail("PRIVATE_CONTROL_BOUNDARY_MISMATCH");
   if (!isDeepStrictEqual(snapshot(before), snapshot(await api("GET", path))))
     throw fail("FUNCTION_CHANGED_BEFORE_UPDATE");

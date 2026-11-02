@@ -11,7 +11,7 @@ let source = ts.transpileModule(readFileSync(new URL("../../web/src/AuthDialog.t
 }).outputText;
 for (const dependency of ["react", "react/jsx-runtime", "lucide-react"])
   source = source.replaceAll(`from "${dependency}"`, `from ${JSON.stringify(import.meta.resolve(dependency))}`);
-const { AuthDialog } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const { AuthDialog, ChangePasswordPanel } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 
 test("read-only login explains its scope and disables invite redemption", () => {
   const html = renderToStaticMarkup(React.createElement(AuthDialog, {
@@ -23,11 +23,12 @@ test("read-only login explains its scope and disables invite redemption", () => 
   assert.match(html, /autoComplete="current-password"/);
 });
 
-test("workbench retains read-only status after logout and hides account mutation panels", () => {
+test("workbench retains read-only status and invitations stay closed while self-password maintenance remains available", () => {
   const main = readFileSync(new URL("../../web/src/main.tsx", import.meta.url), "utf8");
   assert.match(main, /setSession\(\{ authenticated: false, readOnly: session.readOnly, developmentOnly: session.developmentOnly, developmentTaskOnly: session.developmentTaskOnly, publicationOnly: session.publicationOnly, consumptionOnly: session.consumptionOnly \}\)/);
   assert.match(main, /!session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&\s+session.role === "ADMIN" && <InvitationPanel/);
-  assert.match(main, /!session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&\s+session.authenticated && \(\s+<ChangePasswordPanel/);
+  assert.match(main, /coreReady && status\?\.mode !== "LOCAL_DEVELOPMENT" &&\s+session.authenticated && \(\s+<ChangePasswordPanel/);
+  assert.match(main, /businessReadOnly=\{Boolean\(session.readOnly\)\}/);
   assert.match(main, /allowRedeem=\{!privatePreview && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly\}/);
   assert.match(main, /受邀开发试点 ·/);
   assert.match(main, /仅限一条新 Agent 任务/);
@@ -38,6 +39,16 @@ test("workbench retains read-only status after logout and hides account mutation
   assert.match(workbench, /if \(readOnly \|\| !originalCanWrite\) return/);
   assert.match(workbench, /本页不会推进任务或提交计算/);
   assert.match(workbench, /代码只读；编辑与执行尚未开放/);
+});
+test("self-password form explains business readonly and keeps passwords only in transient masked inputs", () => {
+  const html=renderToStaticMarkup(React.createElement(ChangePasswordPanel,{businessReadOnly:true,api:()=>{throw Error('render cannot mutate');},onChanged(){}}));
+  assert.match(html,/仅修改本人登录密码，业务仍只读/);assert.match(html,/撤销此前会话/);
+  assert.equal((html.match(/type="password"/g)||[]).length,3);
+  assert.match(html,/autoComplete="current-password"/);assert.equal((html.match(/autoComplete="new-password"/g)||[]).length,2);
+  assert.match(html,/页面不保存密码/);
+  const panel=readFileSync(new URL('../../web/src/AuthDialog.tsx',import.meta.url),'utf8').split('export function ChangePasswordPanel')[1].split('export function InvitationPanel')[0];
+  assert.doesNotMatch(panel,/localStorage|sessionStorage|console\.|fetch\(/);
+  assert.match(panel,/onChanged\(\{ \.\.\.session, authenticated: true \}\)/);
 });
 
 test("publication-only login has no redemption control or automatic action", () => {

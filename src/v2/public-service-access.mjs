@@ -4,7 +4,7 @@ const scope = 'SERVICE_CONSUMPTION_ONLY';
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const digest = /^[a-f0-9]{64}$/;
 const slug = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
-const authPaths = new Set(['/api/v2/auth/login', '/api/v2/auth/logout']);
+const authPaths = new Set(['/api/v2/auth/login', '/api/v2/auth/logout', '/api/v2/auth/password']);
 const fail = (code, message) => Object.assign(new Error(message), { status: 403, code });
 const check = (value, code, message) => { if (!value) throw fail(code, message); };
 const keys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value) &&

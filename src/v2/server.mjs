@@ -1412,6 +1412,12 @@ export function createV2Server(options = {}) {
         throw Object.assign(fail(503, "远程执行器尚未就绪；已保存结果仍可读取"), { code: "REMOTE_SPARK_NOT_READY" });
       if (method === "POST" && budgetAgentCreationPaths.has(path))
         budget.assertCanStartModel();
+      const constrainAuthSession = body => {
+        if (publicReadOnly) return {...body, permissions: ["SESSION"], readOnly: true};
+        if (ingressChannel !== "HTTP") return body;
+        const identity = {user: body.user, role: body.role}, now = options.now?.() ?? Date.now();
+        return {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSession(publicationAccess, identity, now) ?? developmentSession(developmentAccess, identity, now) ?? {})};
+      };
       if (path === "/api/v2/auth/session" && method === "GET") {
         const context = auth.sessionFromHeaders(req.headers);
         return json(
@@ -1448,11 +1454,7 @@ export function createV2Server(options = {}) {
             result,
             !local && !insecurePublicCookies,
           );
-        if (publicReadOnly) response.body = { ...response.body, permissions: ["SESSION"], readOnly: true };
-        else if (ingressChannel === "HTTP" && serviceAccess) response.body = { ...response.body, ...serviceSession(serviceAccess, { user: response.body.user, role: response.body.role }, options.now?.() ?? Date.now()) };
-        else if (ingressChannel === "HTTP" && publicationAccess) response.body = { ...response.body, ...publicationSession(publicationAccess, { user: response.body.user, role: response.body.role }, options.now?.() ?? Date.now()) };
-        else if (ingressChannel === "HTTP" && developmentAccess) response.body = { ...response.body, ...developmentSession(developmentAccess, { user: response.body.user, role: response.body.role }, options.now?.() ?? Date.now()) };
-        return json(res, 200, response.body, {
+        return json(res, 200, constrainAuthSession(response.body), {
           "Set-Cookie": response.cookies,
         });
       }
@@ -1471,7 +1473,7 @@ export function createV2Server(options = {}) {
             result,
             !local && !insecurePublicCookies,
           );
-        return json(res, 200, changed.body, {
+        return json(res, 200, constrainAuthSession(changed.body), {
           "Set-Cookie": changed.cookies,
         });
       }

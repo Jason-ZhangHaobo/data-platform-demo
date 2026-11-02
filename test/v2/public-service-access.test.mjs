@@ -75,7 +75,7 @@ test('only first-version service writes are allowed; selected application revoca
   assert.throws(() => assertServiceMutation(config, { ...admin, role: 'ENGINEER' }, 'POST', revoke, config.expiresAt), { code: 'PUBLIC_SERVICE_CLOSED' });
   assert.throws(() => assertServiceMutation(config, admin, 'POST', `${base}/dapis`, config.expiresAt), { code: 'PUBLIC_SERVICE_CLOSED' });
   assert.doesNotThrow(() => assertServiceMutation(config, undefined, 'GET', `${base}/dapis`, config.expiresAt));
-  for (const path of ['/api/v2/auth/login', '/api/v2/auth/logout']) assert.doesNotThrow(() => assertServiceMutation(config, undefined, 'POST', path, config.expiresAt));
+  for (const path of ['/api/v2/auth/login', '/api/v2/auth/logout', '/api/v2/auth/password']) assert.doesNotThrow(() => assertServiceMutation(config, undefined, 'POST', path, config.expiresAt));
 });
 
 function fixture(t) {

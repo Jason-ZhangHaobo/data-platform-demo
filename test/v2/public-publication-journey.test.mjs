@@ -157,10 +157,11 @@ test('formal ingress keeps publication scoped to the existing administrator, tas
   for (const path of ['/agent/tasks', '/revisions', '/runs', '/python/runs', '/releases', '/agent/intents',
     `/agent/tasks/${f.agent.id}/advance`, `/agent/tasks/${f.agent.id}/prepare-delivery`,
     `/agent/tasks/${f.otherAgent.id}/publication`, `/delivery/packages/${f.item.id}/approve`,
-    '/auth/invitations', '/auth/password', '/auth/redeem', '/data-services/applications']) {
+    '/auth/invitations', '/auth/password/', '/auth/redeem', '/data-services/applications']) {
     const denied = await f.call(path, {});
     assert.equal(denied.status, 403, path); assert.equal(denied.body.code, 'PUBLIC_PUBLICATION_SCOPE_DENIED', path);
   }
+  assert.equal((await f.call('/auth/password', {})).body.code, 'PASSWORD_CHANGE_INPUT_INVALID');
   for (const kind of ['delivery_review', 'release_approval', 'release', 'release_run']) assert.equal(f.store.list(kind, PROJECT).length, 0);
   assert.deepEqual(f.counts(), { modelCalls: 0, jobCreates: 0, submitCalls: 0 });
 });
