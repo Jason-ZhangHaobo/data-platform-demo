@@ -52,8 +52,8 @@ export function createFcIngress({ publicHttpEnabled = false, publicReadOnly = fa
         page = path === "/" || path === "/v2" || path.startsWith("/v2/");
       if (!((api && ["GET", "POST"].includes(req.method)) || (page && req.method === "GET"))) deny("ROUTE_METHOD");
       if (publicReadOnly && req.method !== "GET" &&
-          !["/api/v2/auth/login", "/api/v2/auth/logout"].includes(path))
-        throw Object.assign(new Error("当前入口为只读验收模式，仅支持已有账号登录、查看和退出；任务执行与发布尚未开放"),
+          !["/api/v2/auth/login", "/api/v2/auth/logout", "/api/v2/auth/password"].includes(path))
+        throw Object.assign(new Error("当前业务入口只读，可登录、查看、修改本人密码和退出；任务执行与发布尚未开放"),
           { status: 403, code: "PUBLIC_READ_ONLY" });
       return "HTTP";
     },

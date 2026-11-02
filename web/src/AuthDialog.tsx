@@ -170,9 +170,11 @@ export function InvitationPanel({ api }: { api: Api }) {
 export function ChangePasswordPanel({
   api,
   onChanged,
+  businessReadOnly = false,
 }: {
   api: Api;
   onChanged: (session: AuthSession) => void;
+  businessReadOnly?: boolean;
 }) {
   const [currentPassword, setCurrentPassword] = useState(""),
     [newPassword, setNewPassword] = useState(""),
@@ -182,6 +184,7 @@ export function ChangePasswordPanel({
     [saved, setSaved] = useState(false);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (busy) return;
     setError("");
     setSaved(false);
     if (newPassword !== confirmation) {
@@ -211,7 +214,7 @@ export function ChangePasswordPanel({
         <div>
           <span className="eyebrow">ACCOUNT SECURITY</span>
           <h3>修改登录密码</h3>
-          <p>修改后撤销此前会话，并为当前浏览器签发新会话。</p>
+          <p>{businessReadOnly ? "仅修改本人登录密码，业务仍只读。" : "仅修改本人登录密码，现有业务权限与试点范围不变。"}修改后撤销此前会话，并为当前浏览器签发新会话。</p>
         </div>
         <ShieldCheck size={22} />
       </header>
@@ -221,6 +224,7 @@ export function ChangePasswordPanel({
           <input
             type="password"
             autoComplete="current-password"
+            maxLength={128}
             value={currentPassword}
             onChange={(event) => setCurrentPassword(event.target.value)}
             required

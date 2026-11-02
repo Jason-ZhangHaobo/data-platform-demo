@@ -18,6 +18,7 @@ This is a public learning repository. Never add company code, real user data, in
 - Add or update tests for behavior changes.
 - Run `npm run ci` before handing off changes.
 - Never commit `.env`, access keys, tokens, database passwords, or generated `.data` files.
+- Treat private runtime receipts, function snapshots, and environment/configuration files as secret-bearing even during read-only diagnosis. Never print them in full with `cat`, `sed`, `jq .`, exception dumps, or subprocess output. Parse in memory and emit an explicit allowlist of non-secret status, counts, identifiers needed for this task, or code/artifact digests; never emit credential values or fragments. Prefer encrypted original receipts for retention. Public code review must use synthetic fixtures, not private operational reports.
 
 ## 高效执行约定
 

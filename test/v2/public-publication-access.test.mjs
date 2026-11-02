@@ -83,14 +83,14 @@ test('only exact selected-task publication and cancellation writes pass; reads a
     `/api/v2/agent/tasks/${taskId}/advance`, `/api/v2/agent/tasks/${taskId}/prepare-delivery`,
     `/api/v2/agent/tasks/${otherTaskId}/publication`, `${path}/`, `${path}/cancel/`, `${path}?extra=1`,
     '/api/v2/releases', `/api/v2/delivery/packages/${taskId}/approve`,
-    '/api/v2/auth/invitations', '/api/v2/auth/redeem', '/api/v2/auth/password',
+    '/api/v2/auth/invitations', '/api/v2/auth/redeem', '/api/v2/auth/password/',
     '/api/v2/data-services/applications', '/api/v2/python/runs'])
     assert.throws(() => assertPublicationMutation(config, session, 'POST', route, now), { code: 'PUBLIC_PUBLICATION_SCOPE_DENIED' });
   for (const method of ['PUT', 'PATCH', 'DELETE', 'post', undefined])
     assert.throws(() => assertPublicationMutation(config, session, method, path, now), { code: 'PUBLIC_PUBLICATION_SCOPE_DENIED' });
   for (const route of [path, '/api/v2/agent/tasks', '/api/v2/auth/session'])
     assert.doesNotThrow(() => assertPublicationMutation(config, undefined, 'GET', route, config.expiresAt));
-  for (const route of ['/api/v2/auth/login', '/api/v2/auth/logout']) {
+  for (const route of ['/api/v2/auth/login', '/api/v2/auth/logout', '/api/v2/auth/password']) {
     assert.doesNotThrow(() => assertPublicationMutation(config, undefined, 'POST', route, config.expiresAt));
     assert.throws(() => assertPublicationMutation(config, session, 'DELETE', route, now), { code: 'PUBLIC_PUBLICATION_SCOPE_DENIED' });
   }

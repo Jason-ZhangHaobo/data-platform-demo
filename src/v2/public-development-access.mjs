@@ -1,7 +1,7 @@
 // Optional, fail-closed rollout gate. This never grants a session or bypasses
 // existing CSRF, project, role, ownership, persistence or execution budgets.
 const permissions = Object.freeze(['SESSION', 'AGENT', 'DEVELOPMENT', 'DELIVERY']);
-const authPaths = new Set(['/api/v2/auth/login', '/api/v2/auth/logout']);
+const authPaths = new Set(['/api/v2/auth/login', '/api/v2/auth/logout', '/api/v2/auth/password']);
 const routes = [
   /^\/api\/v2\/(?:revisions|runs|agent\/tasks)$/,
   /^\/api\/v2\/runs\/[a-f0-9-]{36}\/cancel$/,
