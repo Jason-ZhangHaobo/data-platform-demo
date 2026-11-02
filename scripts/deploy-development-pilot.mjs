@@ -180,7 +180,8 @@ export function validateReadonlyCodeRefreshPlan(plan) {
   const binding = plan?.readonlyCodeRefresh;
   const continuation = plan?.budgetFixContinuation;
   const taskContinuation = plan?.targetTaskCodeContinuation;
-  check(!(continuation !== undefined && taskContinuation !== undefined), 'READONLY_CODE_CONTINUATION_AMBIGUOUS');
+  const securityContinuation = plan?.securityMaintenanceContinuation;
+  check([continuation, taskContinuation, securityContinuation].filter(value => value !== undefined).length <= 1, 'READONLY_CODE_CONTINUATION_AMBIGUOUS');
   if (continuation !== undefined) {
     const fields = ['protocol', 'approvalDigest', 'predecessorDigest', 'historyUsageDigest', 'candidateSha256', 'previousReserveCny'];
     check(continuation && !Array.isArray(continuation) && Object.keys(continuation).length === fields.length &&
@@ -200,11 +201,23 @@ export function validateReadonlyCodeRefreshPlan(plan) {
       Number.isFinite(taskContinuation.previousReserveCny) && taskContinuation.previousReserveCny >= 0 && taskContinuation.previousReserveCny === plan.priorReserveCny &&
       binding?.taskResumeDigest === timerHash(taskContinuation), 'TARGET_TASK_CODE_CONTINUATION_INVALID');
   }
+  if (securityContinuation !== undefined) {
+    const fields = ['protocol', 'approvalDigest', 'predecessorDigest', 'historyUsageDigest', 'candidateSha256', 'approvedSource', 'applicationTree', 'previousReserveCny'];
+    check(securityContinuation && !Array.isArray(securityContinuation) && Object.keys(securityContinuation).length === fields.length &&
+      fields.every(key => Object.hasOwn(securityContinuation, key)) && securityContinuation.protocol === 'SECURITY_MAINTENANCE_CODE_ONLY_V1' &&
+      ['approvalDigest', 'predecessorDigest', 'historyUsageDigest', 'candidateSha256'].every(key => /^[a-f0-9]{64}$/.test(securityContinuation[key] ?? '')) &&
+      ['approvedSource', 'applicationTree'].every(key => /^[a-f0-9]{40}$/.test(securityContinuation[key] ?? '')) &&
+      securityContinuation.approvalDigest === binding?.approvalDigest && securityContinuation.predecessorDigest === binding?.predecessorDigest &&
+      securityContinuation.historyUsageDigest === binding?.historyUsageDigest && securityContinuation.candidateSha256 === plan.candidate?.sha256 &&
+      securityContinuation.previousReserveCny === 62 && binding?.securityMaintenanceDigest === timerHash(securityContinuation),
+    'SECURITY_MAINTENANCE_CONTINUATION_INVALID');
+  }
   const keys = ['protocol', 'predecessorDigest', 'approvalDigest', 'historyUsageDigest',
-    'previousSha256', 'candidateSha256', 'applicationSource', 'buildRunId', 'artifactId', ...(taskContinuation ? ['taskResumeDigest'] : [])];
+    'previousSha256', 'candidateSha256', 'applicationSource', 'buildRunId', 'artifactId', ...(taskContinuation ? ['taskResumeDigest'] : []),
+    ...(securityContinuation ? ['securityMaintenanceDigest'] : [])];
   check(plan?.scope === readonlyCodeRefreshScope && readonlyCodeModes.includes(plan.mode) &&
     plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === (continuation || taskContinuation ? 5 : 2) &&
-    plan.monthlyCny === 200 && plan.priorReserveCny === (taskContinuation ? taskContinuation.previousReserveCny : continuation ? 52 : 45),
+    plan.monthlyCny === 200 && plan.priorReserveCny === (securityContinuation ? 62 : taskContinuation ? taskContinuation.previousReserveCny : continuation ? 52 : 45),
   'READONLY_CODE_SCOPE_INVALID');
   check(!['target', 'servicePlan', 'servicePlanDigest', 'triggerNames', 'timerRecords', 'timerPreparedAt',
     'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint', 'activated', 'cloudTransferContinuation', 'resumeExistingTask']
@@ -284,6 +297,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const serviceOnly = plan.scope === serviceConsumptionScope;
   const codeOnly = plan.scope === readonlyCodeRefreshScope, noTimers = serviceOnly || codeOnly;
   const extendedCode = codeOnly && (plan.budgetFixContinuation !== undefined || plan.targetTaskCodeContinuation !== undefined);
+  const securityCode = codeOnly && plan.securityMaintenanceContinuation !== undefined;
+  check(codeOnly || plan.securityMaintenanceContinuation === undefined, 'SECURITY_MAINTENANCE_SCOPE_INVALID');
   const preStaged = validatePilotPackageTransport(plan);
   const preStagedObjectDigest = preStaged ? sha(canonical(plan.preStagedObject)) : undefined;
   if (preStaged && (plan.mode !== 'stage' || Object.hasOwn(plan, 'preStagedObjectDigest')))
@@ -291,7 +306,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   check((codeOnly ? readonlyCodeModes : serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
     (codeOnly ? validateReadonlyCodeRefreshPlan(plan) : serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && validateServicePilotReserve(plan, preStaged)
       : plan.scope === publicationScope && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32) && plan.monthlyCny === 200 &&
-    plan.maxReads === (extendedCode ? 102 : 120) && plan.maxProbes === 40 && plan.normalReadLimit === (extendedCode ? 72 : 84) &&
+    plan.maxReads === (securityCode ? 100 : extendedCode ? 102 : 120) && plan.maxProbes === (securityCode ? 20 : 40) &&
+    plan.normalReadLimit === (securityCode ? 64 : extendedCode ? 72 : 84) &&
     (codeOnly ? Number.isSafeInteger(plan.ownerCleanupReadReserve) && plan.ownerCleanupReadReserve >= 18 && plan.ownerCleanupReadReserve <= 32 &&
       plan.readLimit === plan.maxReads - plan.ownerCleanupReadReserve && plan.readLimit >= plan.normalReadLimit
       : plan.readLimit === 108 && plan.ownerCleanupReadReserve === 12) &&
@@ -311,7 +327,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   // GetCallerIdentity and the function GET needed to open the plan are already
   // recorded before their calls by main; include them in the inherited total.
   usage.configReads += report.configReads + (report.identityReads ?? 0);
-  check(usage.configReads <= (cleanupReading ? plan.readLimit : plan.normalReadLimit) && usage.activeHttp <= 40 && usage.configWrites <= 4 && usage.objectPuts <= 1 && usage.triggerCreates <= 4 && usage.triggerDeletes <= 4 && usage.permissionProbes <= 1, 'PUBLICATION_USAGE_LIMIT');
+  check(usage.configReads <= (cleanupReading ? plan.readLimit : plan.normalReadLimit) && usage.activeHttp <= plan.maxProbes && usage.configWrites <= 4 && usage.objectPuts <= 1 && usage.triggerCreates <= 4 && usage.triggerDeletes <= 4 && usage.permissionProbes <= 1, 'PUBLICATION_USAGE_LIMIT');
   const path = `/2023-03-30/functions/${plan.controlName}`;
   Object.assign(report, { scope: plan.scope, mode: plan.mode, issuedAt: plan.issuedAt, deadline: plan.deadline,
     priorUsage: structuredClone(plan.priorUsage), cumulativeUsage: usage, target: plan.target, releaseId: plan.releaseId, previous: plan.previous,
@@ -321,7 +337,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     ...(noTimers && ['close', 'rollback'].includes(plan.mode) && plan.phase === 'RESTORE_REQUESTED' ? { phase: 'RESTORE_REQUESTED' } : {}),
     ...(codeOnly ? { readonlyCodeRefresh: structuredClone(plan.readonlyCodeRefresh), historyUsage: structuredClone(plan.historyUsage),
       ...(plan.budgetFixContinuation ? { budgetFixContinuation: structuredClone(plan.budgetFixContinuation) } : {}),
-      ...(plan.targetTaskCodeContinuation ? { targetTaskCodeContinuation: structuredClone(plan.targetTaskCodeContinuation) } : {}) }
+      ...(plan.targetTaskCodeContinuation ? { targetTaskCodeContinuation: structuredClone(plan.targetTaskCodeContinuation) } : {}),
+      ...(plan.securityMaintenanceContinuation ? { securityMaintenanceContinuation: structuredClone(plan.securityMaintenanceContinuation) } : {}) }
       : serviceOnly ? { servicePlanDigest: sha(canonical(plan.servicePlan)), historyUsage: structuredClone(plan.historyUsage),
       ...(plan.cloudTransferContinuation ? { cloudTransferContinuation: structuredClone(plan.cloudTransferContinuation) } : {}) }
       : { permissionProbe: plan.permissionProbe, timerRecords: structuredClone(plan.timerRecords ?? []), timerPreparedAt: plan.timerPreparedAt }) });
@@ -333,7 +350,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     check(now() < plan.deadline, 'PLAN_EXPIRED');
     if (preStaged) check(kind !== 'objectPuts', 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
     if (noTimers) check(!['triggerCreates', 'triggerDeletes', 'permissionProbes'].includes(kind), codeOnly ? 'READONLY_CODE_EXTRA_AUTHORITY_FORBIDDEN' : 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
-    const limit = { configReads: cleanupReading ? plan.readLimit : plan.normalReadLimit, activeHttp: 40, configWrites: codeOnly ? 2 : 4, objectPuts: 1, triggerCreates: 4, triggerDeletes: 4, permissionProbes: 1 }[kind];
+    const limit = { configReads: cleanupReading ? plan.readLimit : plan.normalReadLimit, activeHttp: plan.maxProbes, configWrites: codeOnly ? 2 : 4, objectPuts: 1, triggerCreates: 4, triggerDeletes: 4, permissionProbes: 1 }[kind];
     check(limit === undefined || usage[kind] < limit, 'PUBLICATION_USAGE_LIMIT');
     usage[kind]++; report[kind] = (report[kind] ?? 0) + 1; save();
   };

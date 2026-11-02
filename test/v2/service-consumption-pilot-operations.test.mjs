@@ -156,6 +156,95 @@ function targetCodeFixture() {
   p.readonlyCodeRefresh.taskResumeDigest=canonicalHash(p.targetTaskCodeContinuation);
   return f;
 }
+function securityCodeFixture() {
+  const f=codeFixture(),p=f.basePlan;
+  p.priorReserveCny=62;p.maxReads=100;p.maxProbes=20;p.normalReadLimit=64;p.readLimit=82;
+  p.securityMaintenanceContinuation={protocol:'SECURITY_MAINTENANCE_CODE_ONLY_V1',approvalDigest:p.readonlyCodeRefresh.approvalDigest,
+    predecessorDigest:p.readonlyCodeRefresh.predecessorDigest,historyUsageDigest:p.readonlyCodeRefresh.historyUsageDigest,
+    candidateSha256:p.candidate.sha256,approvedSource:'a'.repeat(40),applicationTree:'b'.repeat(40),previousReserveCny:62};
+  p.readonlyCodeRefresh.securityMaintenanceDigest=canonicalHash(p.securityMaintenanceContinuation);
+  return f;
+}
+
+test('security maintenance binds approved source and tree while preserving readonly configuration and zero computation',async()=>{
+  const f=securityCodeFixture(),p=f.basePlan,r=await f.step('stage');
+  assert.equal(r.phase,'STAGED');assert.equal(r.runtime.ready,true);
+  assert.deepEqual(r.securityMaintenanceContinuation,p.securityMaintenanceContinuation);assert.deepEqual(r.readonlyCodeRefresh,p.readonlyCodeRefresh);
+  assert.deepEqual(r.historyUsage,p.historyUsage);assert.deepEqual(f.current.environmentVariables,f.baseline.environmentVariables);
+  assert.equal(r.modelCalls,0);assert.equal(r.sparkRuns,0);assert.equal(r.cumulativeUsage.configWrites,1);assert.equal(r.cumulativeUsage.objectPuts,1);
+  for(const key of ['triggerCreates','triggerDeletes','permissionProbes'])assert.equal(r.cumulativeUsage[key],0);
+  for(const call of f.calls.filter(c=>c.args?.[1]==='PUT'))assert.deepEqual(Object.keys(call.body),['code']);
+  assert.ok(!f.calls.some(c=>c.args?.some(v=>/triggers|custom-domains|\/invoke/.test(v))));
+  assert.equal(f.calls.filter(c=>c.object===f.previous.sha256&&c.method==='PUT').length,0);
+});
+
+test('security maintenance rejects altered review, predecessor, source, tree, history and mixed grants before IO',async()=>{
+  const changes=[p=>p.securityMaintenanceContinuation=undefined,p=>p.securityMaintenanceContinuation=null,
+    p=>p.securityMaintenanceContinuation.protocol='TARGET_TASK_CODE_CONTINUATION_V1',p=>p.securityMaintenanceContinuation.approvalDigest='d'.repeat(64),
+    p=>p.securityMaintenanceContinuation.predecessorDigest='d'.repeat(64),p=>p.securityMaintenanceContinuation.historyUsageDigest='d'.repeat(64),
+    p=>p.securityMaintenanceContinuation.candidateSha256=p.previous.sha256,p=>p.securityMaintenanceContinuation.approvedSource='c'.repeat(40),
+    p=>p.securityMaintenanceContinuation.applicationTree='c'.repeat(40),p=>p.securityMaintenanceContinuation.previousReserveCny=45,
+    p=>p.securityMaintenanceContinuation.extra=true,p=>p.readonlyCodeRefresh.securityMaintenanceDigest='d'.repeat(64),
+    p=>p.readonlyCodeRefresh.applicationSource='c'.repeat(40),p=>p.historyUsage.configReads=0,p=>p.priorReserveCny=45,
+    p=>p.budgetFixContinuation={},p=>p.targetTaskCodeContinuation={},p=>p.cloudTransferContinuation={},p=>p.resumeExistingTask={},
+    p=>p.activated={},p=>p.target={},p=>p.servicePlan={},p=>p.triggerNames=[],p=>p.schedulerSecret='synthetic-forbidden'];
+  for(const change of changes){const f=securityCodeFixture(),p=structuredClone(f.basePlan);change(p);
+    await assert.rejects(f.step('stage',p));assert.equal(f.calls.length,0);}
+  for(const key of ['approvedSource','applicationTree']){
+    const f=securityCodeFixture();f.basePlan.securityMaintenanceContinuation[key]='invalid';
+    f.basePlan.readonlyCodeRefresh.securityMaintenanceDigest=canonicalHash(f.basePlan.securityMaintenanceContinuation);
+    await assert.rejects(f.step('stage'),/SECURITY_MAINTENANCE_CONTINUATION_INVALID/);assert.equal(f.calls.length,0);
+  }
+  const other=fixture();other.basePlan.securityMaintenanceContinuation=securityCodeFixture().basePlan.securityMaintenanceContinuation;
+  await assert.rejects(other.step('stage'),/SECURITY_MAINTENANCE_SCOPE_INVALID/);assert.equal(other.calls.length,0);
+});
+
+test('security maintenance keeps exact 100 reads, 20 probes, cleanup reserve and two-yuan budget with no execution or environment authority',async()=>{
+  for(const patch of [{maxReads:102},{maxReads:120},{maxProbes:21},{maxProbes:40},{normalReadLimit:65},{readLimit:83},
+    {ownerCleanupReadReserve:17},{priorReserveCny:61},{maxIncrementCny:5},{monthlyCny:201},{maxModelCalls:1},{maxSparkRuns:1}]){
+    const f=securityCodeFixture();await assert.rejects(f.step('stage',patch));assert.equal(f.calls.length,0);
+  }
+  for(const mode of ['activate','close','timers','cleanup-timers','resume-stage','deploy']){
+    const f=securityCodeFixture();await assert.rejects(f.step(mode));assert.equal(f.calls.length,0);
+  }
+  const f=securityCodeFixture();f.controls.bill='136';await assert.rejects(f.step('stage'),/MONTHLY_BUDGET_NOT_VERIFIED/);
+  assert.equal(f.calls.filter(c=>c.method==='PUT'||c.args?.[1]==='PUT').length,0);
+  const g=securityCodeFixture();await assert.rejects(g.step('stage',{priorUsage:{...g.basePlan.priorUsage,configReads:63}}),/USAGE_LIMIT/);
+  assert.equal(g.calls.length,0);
+  const h=securityCodeFixture();await assert.rejects(h.step('stage',{priorUsage:{...h.basePlan.priorUsage,activeHttp:21}}),/USAGE_LIMIT/);
+  assert.equal(h.calls.length,0);
+});
+
+test('security maintenance counts HTTP probes dynamically and cannot consume a twenty-first request',async()=>{
+  const exact=securityCodeFixture();const ok=await exact.step('stage',{priorUsage:{...exact.basePlan.priorUsage,activeHttp:18}});
+  assert.equal(ok.phase,'STAGED');assert.equal(ok.cumulativeUsage.activeHttp,20);assert.equal(exact.calls.filter(c=>c.http).length,2);
+  const f=securityCodeFixture();await assert.rejects(f.step('stage',{priorUsage:{...f.basePlan.priorUsage,activeHttp:19}}),/USAGE_LIMIT/);
+  assert.equal(f.report.cumulativeUsage.activeHttp,20);assert.equal(f.calls.filter(c=>c.http).length,1);
+  assert.equal(f.report.rollback,'VERIFIED');assert.equal(f.report.cumulativeUsage.configWrites,2);assert.deepEqual(f.current,f.baseline);
+  const g=securityCodeFixture();await g.step('stage');const report=await g.step('rollback',{
+    priorUsage:{...g.report.cumulativeUsage,configReads:g.basePlan.readLimit-5}});
+  assert.equal(report.phase,'ROLLED_BACK');assert.equal(report.cumulativeUsage.configReads,g.basePlan.readLimit);
+  assert.equal(g.basePlan.maxReads-report.cumulativeUsage.configReads,g.basePlan.ownerCleanupReadReserve);
+});
+
+test('security maintenance preserves unknown writes and allows only the original code update and rollback',async()=>{
+  for(const failure of ['lostUpload','lostUpdate']){
+    const f=securityCodeFixture();f.controls[failure]=true;await f.step('stage');
+    assert.equal(f.report.cumulativeUsage.objectPuts,1);assert.equal(f.report.cumulativeUsage.configWrites,1);
+    await f.step('rollback');assert.equal(f.report.phase,'ROLLED_BACK');assert.equal(f.report.cumulativeUsage.configWrites,2);
+    assert.deepEqual(f.report.securityMaintenanceContinuation,f.basePlan.securityMaintenanceContinuation);
+    const writes=f.calls.filter(c=>c.method==='PUT'||c.args?.[1]==='PUT').length;
+    await assert.rejects(f.step('rollback'));assert.equal(f.calls.filter(c=>c.method==='PUT'||c.args?.[1]==='PUT').length,writes);
+    assert.deepEqual(f.current,f.baseline);
+  }
+  const upload=securityCodeFixture();upload.controls.unappliedUpload=true;await assert.rejects(upload.step('stage'));
+  const count=upload.calls.filter(c=>c.method==='PUT').length;await assert.rejects(upload.step('stage'));
+  assert.equal(upload.calls.filter(c=>c.method==='PUT').length,count);assert.equal(upload.report.cumulativeUsage.configWrites,0);
+  const rollback=securityCodeFixture();await rollback.step('stage');rollback.controls.unappliedUpdate=true;await assert.rejects(rollback.step('rollback'));
+  const writes=rollback.calls.filter(c=>c.args?.[1]==='PUT').length;
+  await assert.rejects(rollback.step('rollback'),/RESTORE_ALREADY_ATTEMPTED/);assert.equal(rollback.calls.filter(c=>c.args?.[1]==='PUT').length,writes);
+  assert.equal(rollback.report.cumulativeUsage.configWrites,2);
+});
 
 test('targeted-task code refresh binds the independent review, original history and retained reserve but never opens development',async()=>{
   const f=targetCodeFixture(),p=f.basePlan,r=await f.step('stage');
