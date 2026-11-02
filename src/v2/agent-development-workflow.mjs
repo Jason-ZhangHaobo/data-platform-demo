@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createDeliveryPackage, validateDeliveryPackage, resolveDeliverySchedule, validationMatchesFamily } from "./delivery.mjs";
 import { getContext, validationContractId, validationFamilyForContext } from "./context.mjs";
 import { deliveryArtifactValue } from "./artifact-store.mjs";
+import { resolveExplicitSqlRepairSource } from "./sql-repair-source.mjs";
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -11,6 +12,43 @@ export function publicDeliveryTask(task) {
   if (!task) return task;
   const { remoteSubmission, submittedBy, ...visible } = task;
   return visible;
+}
+
+// Read-only evidence selection. A skipped repair may display only the exact
+// earlier failed run it references; this is never a delivery/publication source.
+export function resolveEvidenceSource(agent, read) {
+  const attempt = agent.attempts?.at(-1), code = "AGENT_SQL_UNCHANGED_AFTER_FAILURE";
+  const retained = agent.code === code || attempt?.code === code || attempt?.status === "NO_SQL_CHANGE";
+  if (!retained) return {
+    revision: attempt?.revisionId ? read("revision", attempt.revisionId) : undefined,
+    run: attempt?.runId ? read("run", attempt.runId) : undefined,
+    retainedFailure: false,
+  };
+  const invalid = () => Object.assign(fail(409, "原失败证据与当前任务不一致，请核对保留的版本和批次；不会重新执行或准备交付"), {code: "AGENT_RETAINED_FAILURE_SOURCE_INVALID"});
+  if (agent.status !== "FAILED" || agent.executionMode !== "DURABLE_SQL_AGENT_V1" || agent.language !== "SPARK_SQL" ||
+      agent.code !== code || attempt?.status !== "NO_SQL_CHANGE" || attempt.code !== code || attempt.computationSkipped !== true ||
+      attempt.runId !== undefined || attempt.revisionId !== undefined ||
+      typeof attempt.sourceRunId !== "string" || attempt.sourceRunId !== agent.runId ||
+      typeof attempt.sourceRevisionId !== "string" || attempt.sourceRevisionId !== agent.revisionId) throw invalid();
+  if (attempt.sourceKind === "EXPLICIT_FAILED_RUN") {
+    if (agent.sourceRunId !== attempt.sourceRunId || agent.attempts.slice(0,-1).some(item=>item.runId!==undefined)) throw invalid();
+    let source;
+    try { source=resolveExplicitSqlRepairSource({sourceRunId:agent.sourceRunId,actorId:agent.submittedBy,contextId:agent.contextId,currentSql:agent.sql,project:agent.projectId,read}); }
+    catch { throw invalid(); }
+    if (source.revision.id!==attempt.sourceRevisionId) throw invalid();
+    return {...source,retainedFailure:true,sourceKind:"EXPLICIT_FAILED_RUN"};
+  }
+  if (attempt.sourceKind !== undefined) throw invalid();
+  const previous = agent.attempts.slice(0, -1).findLast(item => item.runId === attempt.sourceRunId && item.revisionId === attempt.sourceRevisionId);
+  const run = read("run", attempt.sourceRunId), revision = read("revision", attempt.sourceRevisionId);
+  if (!previous || !["FAILED", "VALIDATION_FAILED"].includes(previous.status) || previous.computationSkipped === true ||
+      run?.status !== previous.status || run.agentTaskId !== agent.id || run.contextId !== agent.contextId ||
+      run.revisionId !== revision?.id || revision?.contextId !== agent.contextId || revision.author !== agent.submittedBy ||
+      typeof revision.sql !== "string" || revision.sql !== agent.sql || run.revisionHash !== revision.hash || hash(revision.sql) !== revision.hash ||
+      run.engine !== "Apache Spark" || run.testDouble === true || run.remoteSubmission?.prepared?.job?.jobId !== run.id ||
+      (run.status === "VALIDATION_FAILED" && run.mainSqlExecuted !== true) ||
+      typeof agent.validationContractId !== "string" || run.validationContractId !== agent.validationContractId) throw invalid();
+  return {revision, run, retainedFailure: true, sourceKind:"TASK_FAILED_RUN"};
 }
 
 export function developmentVerificationReport(task, run, revision) {
@@ -71,7 +109,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
   };
   const change = (item, patch) => store.update("agent_delivery_task", item.id, project, patch, { expectedVersion: item.version });
   const source = agent => {
-    const attempt = agent.attempts?.at(-1), revision = store.get("revision", attempt?.revisionId, project), run = store.get("run", attempt?.runId, project);
+    const attempt = agent.attempts?.at(-1), revision = store.get("revision", attempt?.revisionId ?? "", project), run = store.get("run", attempt?.runId ?? "", project);
     if (agent.status !== "SUCCEEDED" || agent.mode !== "LIVE_MODEL" || attempt?.status !== "SUCCEEDED" || !attempt.model || /TEST_DOUBLE|unconfirmed/.test(attempt.model) || developmentVerificationReport(agent, run, revision).status !== "PASSED")
       throw fail(409, "请先完成真实模型、Spark 与独立结果核验");
     return { revision, run };

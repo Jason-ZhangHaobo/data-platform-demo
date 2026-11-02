@@ -15,7 +15,7 @@ import { MetadataStore } from "./store.mjs";
 import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-application.mjs";
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
-import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource } from "./agent-development-workflow.mjs";
+import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
 import { createCloudPublication } from "./cloud-publication.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
 import { localTaskConsumption } from "./local-task-consumption.mjs";
@@ -4827,9 +4827,13 @@ export function createV2Server(options = {}) {
       if (developmentWorkflow && method === "GET") {
         const agent = get("agent", developmentWorkflow[1]);
         requireDurableAgentOwner(agent, req);
-        const attempt = agent.attempts?.at(-1), revision = attempt?.revisionId ? get("revision", attempt.revisionId) : undefined,
-          run = attempt?.runId ? await reconcileDevelopment(get("run", attempt.runId)) : undefined;
-        let delivery = store.list("agent_delivery_task", PROJECT).find(t => t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision?.id && t.sourceRunId === run?.id);
+        const source = resolveEvidenceSource(agent, get), revision = source.revision,
+          run = source.retainedFailure || !source.run ? source.run : await reconcileDevelopment(source.run);
+        const report = developmentVerificationReport(agent, run, revision);
+        if (source.retainedFailure) Object.assign(report, {status: "NEEDS_ATTENTION", retainedFailure: true, computationSkipped: true,
+          retainedFailureSourceKind:source.sourceKind,retainedRunStatus: run.status, summary: "本次修正没有形成新的 SQL，已保留原失败批次供诊断，没有重新执行或验证通过。",
+          notice: source.sourceKind==="EXPLICIT_FAILED_RUN" ? "以下结论来自当前账号明确引用的原失败版本和批次，不是本次修正的新执行结果；本次模型调用照常计入历史，未新增 Spark 计算或可发布交付。" : "以下结论来自此前同一任务、版本和批次的失败记录；本次模型调用照常计入历史，未新增 Spark 计算或可发布交付。"});
+        let delivery = source.retainedFailure ? undefined : store.list("agent_delivery_task", PROJECT).find(t => t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision?.id && t.sourceRunId === run?.id);
         if (delivery?.mode === durableDeliveryMode && durableDelivery) {
           await durableDelivery.reconcile(delivery.id);
           delivery = get("agent_delivery_task", delivery.id);
@@ -4837,11 +4841,11 @@ export function createV2Server(options = {}) {
         const bundle = delivery?.packageId ? get("delivery_package", delivery.packageId) : undefined,
           verification = delivery?.verificationId ? get("delivery_verification", delivery.verificationId) : undefined;
         return json(res, 200, {
-          report: developmentVerificationReport(agent, run, revision),
+          report,
           delivery: publicDeliveryTask(delivery),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: verification.validation, finishedAt: verification.finishedAt } : undefined,
-          publication: { available: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER"), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
+          publication: { available: !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
       }
       const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel))?$/);

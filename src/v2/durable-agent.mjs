@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { reconcileDurableDevelopment } from "./durable-development.mjs";
 import { safeModelDiagnostic, modelFailure as diagnosticFailure } from "./model-diagnostics.mjs";
+import { sameSqlIgnoringLayout } from "./sql-repair-progress.mjs";
+import { buildSqlRepairFeedback } from "./sql-repair-feedback.mjs";
+import { resolveExplicitSqlRepairSource } from "./sql-repair-source.mjs";
 
 export const durableSqlAgentMode = "DURABLE_SQL_AGENT_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -53,6 +56,8 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     await persist(); return publicDurableAgent(saved);
   };
   const replaceAttempt = (task, patch) => task.attempts.map((a, i) => i === task.attempts.length - 1 ? { ...a, ...patch } : a);
+  const explicitRepairSource = (sourceRunId, actorId, contextId, currentSql) => resolveExplicitSqlRepairSource({sourceRunId, actorId, contextId, currentSql, project,
+    read:(kind,id)=>store.get(kind,id,project)});
   const markUnknown = async (task, diagnostic = safeModelDiagnostic(diagnosticFailure("MODEL_INTERRUPTED", "LEASE"))) => {
     const saved = change(task, { status: "INTERRUPTED", stage: "MODEL_OUTCOME_UNKNOWN",
       attempts: replaceAttempt(task, { status: "MODEL_OUTCOME_UNKNOWN", usageEstimated: true,
@@ -72,6 +77,11 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     if ((sourceRunId !== undefined || sourceError !== undefined) &&
         (typeof sourceRunId !== "string" || !/^[a-f0-9-]{36}$/.test(sourceRunId) || typeof sourceError !== "string" || !sourceError || sourceError.length > 8000))
       throw fail(422, "DURABLE_AGENT_REPAIR_INVALID", "修正任务必须绑定有效失败批次及其错误");
+    if (sourceRunId) {
+      const {run}=explicitRepairSource(sourceRunId,actorId,contextId,currentSql);
+      const actualError=String(run.error || run.validation?.issues?.join("；") || "独立业务校验未通过").slice(0,8000);
+      if (sourceError!==actualError) throw fail(409,"AGENT_REPAIR_SOURCE_INVALID","修正错误必须来自同一已保存失败批次，不能替换诊断内容");
+    }
     const family=validationFamily(contextId);
     const signature = digest({ message, currentSql, contextId, ...(sourceRunId ? { sourceRunId, sourceError } : {}) });
     const result = store.deduplicate(`${project}:durable-agent:${actorId}:${idempotencyKey}`, signature, () =>
@@ -84,6 +94,8 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   }
 
   async function generate(task) {
+    const explicitSource = !task.runId && task.sourceRunId
+      ? explicitRepairSource(task.sourceRunId,task.submittedBy,task.contextId,task.sql) : undefined;
     const remaining = task.tokenBudget - task.usedTokens;
     if (remaining < 1 || task.attempts.length >= task.maxAttempts)
       return finish(task, "FAILED", "已达到模型预算或尝试次数上限");
@@ -110,8 +122,11 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     try {
       const work = Promise.resolve().then(() => {
         if (controller.signal.aborted || now() >= Date.parse(task.durable.leaseExpiresAt) || !ownedLease(task.id, token)) throw new Error("Model step no longer owned");
+        const previousRun = store.get("run", task.runId ?? "", project);
+        const feedbackRun = previousRun?.agentTaskId===task.id && previousRun.revisionId===task.revisionId ? previousRun : explicitSource?.run;
         return generator({ message: task.message, context: getContext(task.contextId),
           currentSql: task.sql, error: task.durable.validationError,
+          repairFeedback: feedbackRun ? buildSqlRepairFeedback(feedbackRun, task.contextId) : undefined,
           remainingBudget: reserved, signal: controller.signal,
           modelBudgetReservation: { taskId: task.id, attempt: task.attempts.length, leaseToken: token } });
       });
@@ -143,6 +158,28 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     if (typeof generated?.sql !== "string" || !generated.sql.trim() || generated.sql.length > 20000 ||
         typeof generated?.model !== "string" || !generated.model || generated.model.length > 200)
       return modelFailure("MODEL_OUTPUT_INVALID", "模型未返回有效 SQL 或模型标识，未提交计算任务");
+    const previous = task.attempts.slice(0, -1).findLast(attempt => attempt.runId === task.runId && attempt.revisionId === task.revisionId);
+    let failedRun = store.get("run", previous?.runId ?? "", project),
+      failedRevision = store.get("revision", previous?.revisionId ?? "", project);
+    const sameFailedSource = previous && ["FAILED", "VALIDATION_FAILED"].includes(previous.status) && failedRun?.status === previous.status &&
+      failedRun.agentTaskId === task.id && failedRun.id === task.runId && failedRun.contextId === task.contextId &&
+      failedRun.engine === "Apache Spark" && failedRun.testDouble !== true && failedRun.remoteSubmission?.prepared?.job?.jobId === failedRun.id &&
+      (failedRun.status !== "VALIDATION_FAILED" || failedRun.mainSqlExecuted === true) &&
+      failedRevision?.id === task.revisionId && failedRun.revisionId === failedRevision.id && failedRevision.contextId === task.contextId &&
+      failedRevision.author === task.submittedBy && typeof failedRevision.sql === "string" && failedRevision.sql === task.sql &&
+      failedRun.revisionHash === failedRevision.hash && createHash("sha256").update(failedRevision.sql).digest("hex") === failedRevision.hash;
+    if (explicitSource) {
+      try { const source=explicitRepairSource(task.sourceRunId,task.submittedBy,task.contextId,task.sql);failedRun=source.run;failedRevision=source.revision; }
+      catch { return modelFailure("AGENT_REPAIR_SOURCE_INVALID","原失败来源已变化，本次模型调用已计入历史，但未提交新的计算任务"); }
+    }
+    if ((sameFailedSource || explicitSource) && sameSqlIgnoringLayout(generated.sql, failedRevision.sql)) {
+      const code = "AGENT_SQL_UNCHANGED_AFTER_FAILURE";
+      return finish(change(task, { ...completedPatch, code, sql:failedRevision.sql, revisionId:failedRevision.id, runId:failedRun.id,
+        attempts: attempts.map((attempt, index) => index === attempts.length - 1 ? { ...attempt, status: "NO_SQL_CHANGE", code,
+          sourceRevisionId: failedRevision.id, sourceRunId: failedRun.id, computationSkipped: true,
+          ...(explicitSource ? {sourceKind:"EXPLICIT_FAILED_RUN"} : {}) } : attempt),
+      }), "FAILED", "模型本次未对已失败的 SQL 作出有效修改，已停止重复计算。原失败版本和批次保留，请人工修改后重新核验；本次模型调用与费用仍计入历史。");
+    }
     // Revision creation and task linkage share an atomic local transaction.
     const linked = store.deduplicate(`${project}:durable-agent-revision:${task.id}:${attempts.length}`,
       digest(generated.sql), () => {

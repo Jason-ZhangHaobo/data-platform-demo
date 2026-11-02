@@ -7,18 +7,19 @@ import {agentSubmissionRequest,agentSubmissionLocation,createAgentSubmission,age
 import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
 import {initialAgentTaskId,loadHistoryAfterTarget,mergeTaskHistory} from "./agent-history-loading";
 import {agentTaskFinished,mayEditScopedTask} from "./agent-task-scope";
+import {AgentRepairAction} from "./AgentRepairAction";
 import type { PublicationTarget } from "./AuthDialog";
 import type {ValidationFamily} from "./validation-family";
 import "./agent-development.css";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const ManualDeliveryWorkbench = lazy(async () => ({default:(await import("./DeliveryWorkbench")).DeliveryWorkbench}));
 type Context = { id: string; name: string; definition: string; validationFamily?:ValidationFamily; tables: { name: string; columns: [string, string][] }[] };
-type Task = { id: string; version: number; status: string; stage?: string; executionMode?: string; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
+type Task = { id: string; version: number; status: string; stage?: string; executionMode?: string; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
 type Run = { id: string; status: string; createdAt?: string; validationContractId?: string; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type SavedRevision = {id:string;sql:string;contextId:string;source?:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
 const terminal = (s?: string) => Boolean(s && ["SUCCEEDED", "FAILED", "CANCELLED", "VALIDATION_FAILED","INTERRUPTED"].includes(s));
-const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "执行中断，记录保留", VALIDATION_FAILED: "业务断言未通过" };
+const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "执行中断，记录保留", VALIDATION_FAILED: "业务断言未通过", NO_SQL_CHANGE:"模型未修改代码（未重复执行）" };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
@@ -62,6 +63,9 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   const runPending = Boolean(run && !terminal(run.status));
   const working = automatic || busy, durable = task?.executionMode === "DURABLE_SQL_AGENT_V1";
   const unknown = task?.stage === "MODEL_OUTCOME_UNKNOWN";
+  const repairInput = {taskOnly,taskStatus:task?.status,ready,canWrite,working,dirty,
+    pendingResult:manualUnconfirmed||Boolean(pendingSaveKey)||Boolean(pendingAgentKey)||runPending,
+    hasContext:Boolean(context),baselineRevisionId,run};
   function accept(current: Task) {
     setTask(current); setTasks(old => [current, ...old.filter(t => t.id !== current.id)]);
   }
@@ -240,12 +244,13 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     }catch(cause){if(alive.current&&epoch.current===token)setError((cause as Error).message+(agentSubmissionRequest(location.href)?" 原提交编号保留，请用原账号继续查询；不会自动新建任务。":" 原任务已找回，执行结果读取尚未确认，请刷新原任务。"));}
     finally{if(alive.current&&epoch.current===token)setBusy(false);}
   }
-  async function send(overrideMessage?: string) {
+  async function send(overrideMessage?: string, expectedRepairSourceId?: string) {
     const requestMessage = (overrideMessage ?? message).trim();
     if (taskOnly || !ready || !canWrite || working || manualUnconfirmed || pendingSaveKey || pendingAgentKey || runPending || requestMessage.length < 4 || !context) return;
+    const repairSource = run && ["FAILED", "VALIDATION_FAILED"].includes(run.status) && !dirty && run.revisionId === baselineRevisionId ? run.id : undefined;
+    if (expectedRepairSourceId && repairSource !== expectedRepairSourceId) { setNotice("失败批次或代码版本已变化，请重新确认当前核验记录；未新建任务。"); return; }
     const token=++epoch.current;
     setBusy(true); setError("");
-    const repairSource = run && ["FAILED", "VALIDATION_FAILED"].includes(run.status) && !dirty && run.revisionId === baselineRevisionId ? run.id : undefined;
     const body = { message: requestMessage, sql: draft.trim() || "SELECT 1 AS pending", contextId, ...(backgroundAvailable?{background:backgroundConsent}:{}), ...(repairSource ? { sourceRunId: repairSource } : {}) };
     try {
       const controller=submissionController(),created=await controller.submit(body),key=controller.snapshot().key;
@@ -372,7 +377,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
               {task.error && <p className="agent-dev-error-text">{task.error}</p>}
               {task.attempts.filter(a=>a.diagnostic).map(a=><p key={`diagnostic-${a.attempt}`} className="agent-dev-error-text">第{a.attempt}次安全诊断：{a.diagnostic!.code} · 阶段 {a.diagnostic!.phase}{a.diagnostic!.httpStatus?` · HTTP ${a.diagnostic!.httpStatus}`:""} · {a.diagnostic!.elapsedMs}ms。{a.diagnostic!.requestMayHaveBeenSent?"请求可能已发送，不能据此确认是否计费。":"失败发生在请求发送前；原预算预留仍保留。"}</p>)}
               {task.sourceRunId && <button className="button" disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${task.sourceRunId}`)); setTab("日志"); setNotice("这里是本次修正引用的原始失败批次；编辑器仍保留当前代码。"); } catch(e) { setError((e as Error).message); } }}>查看修正依据 · {task.sourceRunId.slice(0,8)}</button>}
-              <ol className="agent-dev-attempts">{task.attempts.map(a => <li key={a.attempt}><span>第{a.attempt}次</span><strong>{a.status === "FAILED" ? "执行失败（记录保留）" : a.status === "GENERATED" ? "代码已生成" : stageText[a.status] ?? a.status}</strong>{a.model && <small>模型：{a.model}</small>}{a.runId && <button disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${a.runId}`)); setTab("日志"); setNotice("正在查看这次尝试的执行记录；编辑器保留最新代码，结果以批次所绑定版本为准。"); } catch(e) { setError((e as Error).message); } }}>查看第{a.attempt}次执行 · {a.runId.slice(0,8)}</button>}</li>)}</ol>
+              <ol className="agent-dev-attempts">{task.attempts.map(a => <li key={a.attempt}><span>第{a.attempt}次</span><strong>{a.status === "FAILED" ? "执行失败（记录保留）" : a.status === "GENERATED" ? "代码已生成" : stageText[a.status] ?? a.status}</strong>{a.model && <small>模型：{a.model}</small>}{a.status === "NO_SQL_CHANGE" ? a.sourceRunId && <button disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${a.sourceRunId}`)); setTab("校验"); setNotice("正在查看修正前的原失败批次；本次模型未修改代码，没有新增 Spark 执行。编辑器内容保持不变。"); } catch(e) { setError((e as Error).message); } }}>查看原失败批次 · {a.sourceRunId.slice(0,8)}</button> : a.runId && <button disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${a.runId}`)); setTab("日志"); setNotice("正在查看这次尝试的执行记录；编辑器保留最新代码，结果以批次所绑定版本为准。"); } catch(e) { setError((e as Error).message); } }}>查看第{a.attempt}次执行 · {a.runId.slice(0,8)}</button>}</li>)}</ol>
               <small>版本 {task.version} · 预算占用 {task.usedTokens ?? 0} Token（未知结果含预留）· 结论仅对应当前代码版本</small>
               {task.background&&<p role="status">云后台：{task.background.status} · 已处理{task.background.consumedEvents}/{task.background.maxEvents}个事件 · 截止{new Date(task.background.expiresAt).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai"})}。未知模型结果暂停，不自动上线。{task.background.code&&` ${task.background.code}`}</p>}
             </div>
@@ -390,11 +395,11 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
       </section>
       <section id="agent-code" className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : baselineRevisionId ? `版本 ${baselineRevisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>
         <div className="agent-dev-editor"><Suspense fallback={<div className="agent-dev-empty">正在加载代码编辑器…</div>}><SqlEditor value={draft} original={codeOriginal} diff={diff} onChange={setDraft} readOnly={readOnly||!scopeEditable||Boolean(publicationTarget)||working} /></Suspense></div>
-        <div className="agent-dev-code-actions"><small><Code2 size={14} />{readOnly ? "代码只读；编辑与执行尚未开放" : !scopeEditable ? "其他任务只读；请查看指定任务续接" : automatic ? "Agent 处理中，可随时停止后接管" : "可直接编辑；修改后需重新验证"}</small>{runPending && !automatic && <button className="button" disabled={!canWrite || busy} onClick={async () => { if (!run) return; setBusy(true); try { setRun(await api<Run>(`/runs/${run.id}/cancel`, {})); setNotice("取消标记已保存；迟到结果不会覆盖已取消状态。"); } catch(e) { setError((e as Error).message); } finally { setBusy(false); } }}><Square size={13} />停止运行</button>}<button className="button" disabled={!canWrite || working || runPending || !draft.trim()} onClick={() => void runDraft()}><Play size={14} />保存并运行我的代码</button></div>
+        <div className="agent-dev-code-actions"><small><Code2 size={14} />{readOnly ? "代码只读；编辑与执行尚未开放" : !scopeEditable ? "其他任务只读；请查看指定任务续接" : automatic ? "Agent 处理中，可随时停止后接管" : "可直接编辑；修改后需重新验证"}</small>{runPending && !automatic && <button className="button" disabled={!canWrite || busy} onClick={async () => { if (!run) return; setBusy(true); try { setRun(await api<Run>(`/runs/${run.id}/cancel`, {})); setNotice("取消标记已保存；迟到结果不会覆盖已取消状态。"); } catch(e) { setError((e as Error).message); } finally { setBusy(false); } }}><Square size={13} />停止运行</button>}<button className="button" disabled={!canWrite || working || runPending || manualUnconfirmed || Boolean(pendingSaveKey) || Boolean(pendingAgentKey) || !draft.trim()} onClick={() => void runDraft()}><Play size={14} />保存并运行我的代码</button></div>
         <div className="agent-dev-result-tabs" role="tablist" aria-label="开发执行反馈">{["结果","校验","日志"].map(name => <button key={name} role="tab" aria-selected={tab === name} onClick={() => setTab(name)}>{name}</button>)}<span>{run ? `${stageText[run.status] ?? run.status} · ${run.id.slice(0,8)}` : "尚未执行"}</span></div>
         <div className="agent-dev-results">{!run ? <div className="agent-dev-empty">执行后的真实结果、校验与日志会显示在这里。<br />不会预先填入报表结果。</div> : <>
           {run.error && <p className="agent-dev-error-text" role="alert">{run.error}</p>}
-          {["FAILED", "VALIDATION_FAILED"].includes(run.status) && <button className="button" disabled={!ready || !canWrite || working || dirty || run.revisionId !== baselineRevisionId} title="仅修正与当前已保存代码一致的失败批次" onClick={() => void send("请依据这次失败运行的真实错误信息修正当前SQL，并重新执行独立业务校验。")}>让 Agent 修正并验证</button>}
+          <AgentRepairAction input={repairInput} onSubmit={request=>send(request.message,request.sourceRunId)} onExplain={setNotice} />
           {tab === "结果" && (resultFields.length ? <><div className="agent-dev-table-scroll"><table><thead><tr>{resultFields.map(k => <th key={k} title={k}>{resultLabel(k)}</th>)}</tr></thead><tbody>{run.rows?.map((row,i) => <tr key={i}>{resultFields.map(k => <td key={k}>{String(row[k] ?? "—")}</td>)}</tr>)}</tbody></table></div><p>{run.engine} {run.engineVersion} · {run.rows?.length} 行 · 结果绑定版本 {run.revisionId?.slice(0,8)}</p></> : <p className="agent-dev-empty">{terminal(run.status) ? "本次未产生可展示的数据行。请查看校验和日志。" : "Spark 正在执行，结果完成后显示。"}</p>)}
           {tab === "校验" && <><h4>{run.validation?.passed ? "独立业务断言通过" : "校验尚未通过"}</h4>{run.validation?.issues?.map((x,i) => <p key={i}>{x}</p>)}{run.validation?.regressions?.map(r => <div className="agent-dev-check" key={r.contextId}><span>{r.name ?? r.contextId}</span><strong>{r.passed ? "通过" : "未通过"}</strong></div>)}</>}
           {tab === "日志" && <pre>{developmentRunLog(run)}</pre>}
