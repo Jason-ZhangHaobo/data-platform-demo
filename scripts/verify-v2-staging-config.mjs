@@ -27,12 +27,20 @@ export function validateV2StagingConfig(input = {}) {
   const effectiveInput = mergeSecretBundle(input);
   const provisioningOnly = effectiveInput.V2_PROVISIONING_ONLY === "true";
   const requiredNames = provisioningOnly ? required : [...publicRequired, ...required];
+  const usesRemoteSpark = effectiveInput.V2_SPARK_EXECUTOR_TRANSPORT === "OSS_QUEUE" ||
+    typeof effectiveInput.V2_SPARK_EXECUTOR_URL === "string" && effectiveInput.V2_SPARK_EXECUTOR_URL.length > 0;
   const missing = requiredNames.filter((name) => {
     const value = effectiveInput[name];
     return typeof value !== "string" || value.length === 0;
   });
   const errors = [];
   errors.push(...validateSecretValues(effectiveInput));
+  if (usesRemoteSpark) {
+    const secret = effectiveInput.V2_SPARK_EXECUTOR_SECRET;
+    if (!secret) missing.push("V2_SPARK_EXECUTOR_SECRET");
+    else if ((typeof secret !== "string" || secret.length < 32 || secret.length > 512 || /\s|\u0000/.test(secret)) &&
+      !errors.includes("INVALID_VALUE:V2_SPARK_EXECUTOR_SECRET")) errors.push("INVALID_VALUE:V2_SPARK_EXECUTOR_SECRET");
+  }
   if (!provisioningOnly && typeof effectiveInput.V2_PUBLIC_URL === "string" && !/^https:\/\//.test(effectiveInput.V2_PUBLIC_URL))
     errors.push("V2_PUBLIC_URL_MUST_USE_HTTPS");
   if (

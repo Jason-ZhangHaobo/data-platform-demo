@@ -21,6 +21,17 @@ export const secretNames = [
   "V2_SCHEDULER_TICK_SECRET",
 ];
 
+// These credentials have individual authorities and rotation lifecycles.
+// A deleted/empty named Secret must never silently reactivate a stale bundle
+// value. Other optional bundle settings (including the scheduler) still work.
+export const individualCredentialNames = Object.freeze([
+  "DASHSCOPE_API_KEY",
+  "V2_MYSQL_PASSWORD",
+  "V2_BOOTSTRAP_ADMIN_PASSWORD_HASH",
+  "V2_SPARK_EXECUTOR_SECRET",
+]);
+const individualCredentials = new Set(individualCredentialNames);
+
 const keyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const placeholderPattern = /^(?:\.{3}|x{3,}|<[^>]+>|(?:change|replace)[-_ ]?me|example|todo|tbd|null|undefined)$/i;
 
@@ -160,24 +171,37 @@ export function parseSecretBundle(raw) {
   return result;
 }
 
-export function mergeSecretBundle(input = {}, raw = input.JASONSECRETS) {
+function bundleFallback(input, raw) {
   const bundle = parseSecretBundle(raw);
+  const pendingBundle = Object.fromEntries(Object.entries(bundle)
+    .filter(([key]) => !individualCredentials.has(key) && !input[key]));
+  return { bundle, pendingBundle,
+    ignoredCredentialKeys: Object.keys(bundle).filter(key => individualCredentials.has(key)),
+    missingNamedCredentials: Object.keys(bundle).filter(key => individualCredentials.has(key) && !input[key]) };
+}
+
+export function mergeSecretBundle(input = {}, raw = input.JASONSECRETS) {
+  const { pendingBundle } = bundleFallback(input, raw);
   return {
     ...input,
-    ...Object.fromEntries(
-      Object.entries(bundle).filter(([key]) => !input[key]),
-    ),
+    ...pendingBundle,
   };
 }
 
 function run() {
   try {
-    const bundle = parseSecretBundle(process.env.JASONSECRETS),
-      pendingBundle = Object.fromEntries(
-        Object.entries(bundle).filter(([key]) => !process.env[key]),
-      ),
+    const { bundle, pendingBundle, ignoredCredentialKeys, missingNamedCredentials } = bundleFallback(process.env, process.env.JASONSECRETS),
       overriddenKeys = Object.keys(bundle).filter((key) => process.env[key]),
       errors = validateSecretValues(pendingBundle);
+    const declaredButMissing = missingNamedCredentials.filter(key => Object.hasOwn(process.env, key));
+    if (declaredButMissing.length > 0) {
+      // A workflow explicitly declared this credential as a dependency. Fail
+      // before exporting ANY values; a scheduler-only workflow does not declare
+      // unrelated database/model credentials and may still use its own bundle.
+      process.stdout.write(JSON.stringify({ ok: false, error: "NAMED_CREDENTIAL_REQUIRED", missing: declaredButMissing, containsSecretValues: false }) + "\n");
+      process.exitCode = 1;
+      return;
+    }
     if (errors.length > 0) {
       process.stdout.write(JSON.stringify({ ok: false, error: "JASONSECRETS_VALUE_INVALID", errors }) + "\n");
       process.exitCode = 1;
@@ -197,6 +221,11 @@ function run() {
         bundlePresent: Object.keys(bundle).length > 0,
         loadedKeys: Object.keys(pendingBundle),
         overriddenKeys,
+        ignoredCredentialKeys,
+        missingNamedCredentials,
+        // Required credential checks belong to each consuming workflow; e.g.
+        // a scheduler-only export does not need the model/database credentials.
+        credentialsVerified: false,
       }) +
         "\n",
     );

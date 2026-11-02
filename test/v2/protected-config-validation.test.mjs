@@ -57,6 +57,15 @@ test("protected configuration names missing and partial optional source config",
   assert.equal(result.errors.includes("V2_MYSQL_SOURCE_CONFIG_PARTIAL"), true);
 });
 
+test("stale fallback credentials cannot make a missing named credential pass predeployment validation", () => {
+  const names=["V2_MYSQL_PASSWORD","DASHSCOPE_API_KEY","V2_BOOTSTRAP_ADMIN_PASSWORD_HASH","V2_SPARK_EXECUTOR_SECRET"];
+  for(const name of names){
+    const result=validateV2ProtectedConfig({...input,[name]:"",JASONSECRETS:JSON.stringify({[name]:input[name]})});
+    assert.equal(result.ok,false);assert.ok(result.missing.includes(name));
+    assert.equal(JSON.stringify(result).includes(input[name]),false);
+  }
+});
+
 test("protected configuration workflow never requests cloud credentials", async () => {
   const workflow = await readFile(
     new URL(
