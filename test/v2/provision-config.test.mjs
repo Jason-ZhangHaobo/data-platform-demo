@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { validateV2StagingConfig } from "../../scripts/verify-v2-staging-config.mjs";
-import { mergeSecretBundle, parseSecretBundle } from "../../scripts/export-v2-staging-secret-bundle.mjs";
+import { individualCredentialNames, mergeSecretBundle, parseSecretBundle } from "../../scripts/export-v2-staging-secret-bundle.mjs";
 
 const base = Object.fromEntries([
   "V2_PUBLIC_URL",
@@ -83,7 +83,7 @@ test("JASONSECRETS supports platform and optional source MySQL keys without expo
   });
   const merged = mergeSecretBundle({ V2_MYSQL_PASSWORD: "already-set", JASONSECRETS: bundle });
   assert.equal(merged.V2_MYSQL_PASSWORD, "already-set");
-  assert.equal(merged.DASHSCOPE_API_KEY, "hidden-key");
+  assert.equal(merged.DASHSCOPE_API_KEY, undefined);
   assert.equal(merged.V2_MYSQL_SOURCE_USER, "sync_reader");
   assert.equal(JSON.stringify({ ok: true, loadedKeys: Object.keys(merged) }).includes("hidden"), false);
 });
@@ -130,7 +130,7 @@ test("staging config validates optional source MySQL secrets when present", () =
   ]);
 });
 
-test("bundle exporter masks values before writing the GitHub environment file", () => {
+test("bundle exporter still masks non-retired optional values before writing the GitHub environment file", () => {
   const root = mkdtempSync(resolve(tmpdir(), "shuduo-secret-export-")),
     githubEnv = resolve(root, "github-env"),
     secretValue = "Valid-Password-2026";
@@ -141,15 +141,76 @@ test("bundle exporter masks values before writing the GitHub environment file", 
           ...process.env,
           GITHUB_ACTIONS: "true",
           GITHUB_ENV: githubEnv,
-          JASONSECRETS: JSON.stringify({ V2_MYSQL_PASSWORD: secretValue }),
+          JASONSECRETS: JSON.stringify({ V2_MYSQL_SOURCE_PASSWORD: secretValue }),
         },
       }).toString("utf8");
     assert.match(output, /::add-mask::/);
     assert.equal(output.includes(secretValue), true);
-    assert.equal(readFileSync(githubEnv, "utf8"), `V2_MYSQL_PASSWORD=${secretValue}\n`);
+    assert.equal(readFileSync(githubEnv, "utf8"), `V2_MYSQL_SOURCE_PASSWORD=${secretValue}\n`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("rotatable named credentials never fall back to old JSON or dotenv bundle values", () => {
+  for (const key of individualCredentialNames) {
+    for (const raw of [JSON.stringify({ [key]: "synthetic-retired-value" }), `${key}=synthetic-retired-value`]) {
+      assert.equal(mergeSecretBundle({}, raw)[key], undefined);
+      assert.equal(mergeSecretBundle({[key]: ""}, raw)[key], "");
+      assert.equal(mergeSecretBundle({[key]: "synthetic-authoritative-value"}, raw)[key], "synthetic-authoritative-value");
+    }
+  }
+});
+
+test("CLI skips all retired fallback credentials without masking, exporting or echoing their values", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "shuduo-retired-secrets-")), githubEnv = resolve(root,"github-env"),
+    script = resolve(dirname(fileURLToPath(import.meta.url)),"../../scripts/export-v2-staging-secret-bundle.mjs"),
+    retired = Object.fromEntries(individualCredentialNames.map((key,index)=>[key,`SyntheticRetiredCredential-${index}!`])),
+    scheduler = "SyntheticSchedulerSecret-32-characters!";
+  try {
+    // Do not inherit possible real process credentials into this negative case.
+    const output = execFileSync(process.execPath,[script],{env:{GITHUB_ACTIONS:"false",GITHUB_ENV:githubEnv,
+      JASONSECRETS:JSON.stringify({...retired,V2_SCHEDULER_TICK_SECRET:scheduler})}}).toString("utf8");
+    const result=JSON.parse(output),exported=readFileSync(githubEnv,"utf8");
+    assert.deepEqual(result.loadedKeys,["V2_SCHEDULER_TICK_SECRET"]);
+    assert.deepEqual(new Set(result.ignoredCredentialKeys),new Set(individualCredentialNames));
+    assert.deepEqual(new Set(result.missingNamedCredentials),new Set(individualCredentialNames));
+    assert.equal(result.credentialsVerified,false);
+    assert.equal(exported,`V2_SCHEDULER_TICK_SECRET=${scheduler}\n`);
+    for(const value of Object.values(retired)) {assert.equal(output.includes(value),false);assert.equal(exported.includes(value),false);}
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("a workflow's declared but missing credential stops export before any bundle value is written", () => {
+  const root=mkdtempSync(resolve(tmpdir(),"shuduo-required-named-secret-")),target=resolve(root,"github-env"),
+    script=resolve(dirname(fileURLToPath(import.meta.url)),"../../scripts/export-v2-staging-secret-bundle.mjs");
+  try {
+    for(const name of individualCredentialNames){
+      let failure;
+      try {execFileSync(process.execPath,[script],{env:{GITHUB_ACTIONS:"true",GITHUB_ENV:target,[name]:"",
+        JASONSECRETS:JSON.stringify({[name]:"SyntheticRetiredValue!2026",V2_MYSQL_HOST:"synthetic-host.example.invalid"})},stdio:["ignore","pipe","pipe"]});}
+      catch(error){failure=error;}
+      assert.equal(failure?.status,1);
+      assert.deepEqual(JSON.parse(failure.stdout.toString()),{ok:false,error:"NAMED_CREDENTIAL_REQUIRED",missing:[name],containsSecretValues:false});
+      assert.equal(failure.stdout.toString().includes("SyntheticRetiredValue"),false);
+      assert.equal(failure.stdout.toString().includes("::add-mask::"),false);
+      assert.equal(existsSync(target),false);
+    }
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("both staging and provisioning require a named worker credential when remote Spark is configured", () => {
+  const secret="Synthetic-New-Worker-Credential-2026!";
+  for(const mode of [{V2_SPARK_EXECUTOR_URL:"https://worker.example.invalid"},{V2_SPARK_EXECUTOR_TRANSPORT:"OSS_QUEUE"}]){
+    for(const provisioningOnly of ["true","false"]){
+      const input={...base,...mode,V2_PROVISIONING_ONLY:provisioningOnly,V2_SPARK_EXECUTOR_SECRET:"",
+        JASONSECRETS:JSON.stringify({V2_SPARK_EXECUTOR_SECRET:secret})};
+      const missing=validateV2StagingConfig(input);assert.equal(missing.ok,false);assert.ok(missing.missing.includes("V2_SPARK_EXECUTOR_SECRET"));
+      const valid=validateV2StagingConfig({...input,V2_SPARK_EXECUTOR_SECRET:secret});assert.equal(valid.ok,true);
+      const weak=validateV2StagingConfig({...input,V2_SPARK_EXECUTOR_SECRET:"short"});assert.equal(weak.ok,false);assert.ok(weak.errors.includes("INVALID_VALUE:V2_SPARK_EXECUTOR_SECRET"));
+    }
+  }
+  assert.equal(validateV2StagingConfig({...base,V2_PROVISIONING_ONLY:"true"}).ok,true,"initial provisioning without a remote Worker stays compatible");
 });
 
 test("valid individual secrets override invalid bundle placeholders", () => {
