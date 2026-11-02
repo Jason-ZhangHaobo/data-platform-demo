@@ -83,12 +83,14 @@ test("task, generated revision and queued run survive distinct store restarts", 
 test("a repair task retains the bound failed-run context across restart and passes it to generation", async t => {
   let observed;
   const f = setup(t, { generator: async input => { observed = input; return { sql: referenceSql, model: "TEST_DOUBLE", usage: { total_tokens: 20 } }; } });
-  const sourceRunId = "00000000-0000-4000-8000-000000000001";
-  const created = await f.create({ sourceRunId, sourceError: "stored unresolved column" });
+  let origin = await f.create({idempotencyKey:"original-failed-source"});await f.advance(origin.id);origin=await f.advance(origin.id);
+  f.complete(origin.id,{status:"FAILED",error:"stored unresolved column",validation:undefined,mainSqlExecuted:false});await f.advance(origin.id);
+  const sourceRunId = origin.runId;
+  const created = await f.create({ idempotencyKey:"explicit-repair",sourceRunId, sourceError: "stored unresolved column" });
   f.restart(); await f.advance(created.id);
   assert.equal(observed.error, "stored unresolved column");
   assert.equal(f.engine.get(created.id).sourceRunId, sourceRunId);
-  await assert.rejects(f.create({ sourceRunId, sourceError: "changed stored error" }), { status: 409 });
+  await assert.rejects(f.create({ idempotencyKey:"explicit-repair",sourceRunId, sourceError: "changed stored error" }), { status: 409 });
 });
 
 test("a signed Spark failure without a version is preserved for repair, never upgraded to success", async t => {
@@ -148,7 +150,8 @@ test("expired model lease requires explicit retry and fences late completion", a
 
 test("validation failure is persisted as repair context without replaying the previous run", async t => {
   let correction;
-  const f = setup(t, { generator: input => { correction = input.error; return f.generated; } });
+  const f = setup(t, { generator: (input, attempt) => { correction = input.error; return attempt === 1
+    ? { ...f.generated, sql: referenceSql.replace("SELECT DISTINCT position_id", "SELECT position_id") } : f.generated; } });
   let task = await f.create(); await f.advance(task.id); task = await f.advance(task.id);
   const firstRun = task.runId;
   f.complete(task.id, { status: "VALIDATION_FAILED", validation: { passed: false, issues: ["synthetic mismatch"] } });
@@ -161,6 +164,120 @@ test("validation failure is persisted as repair context without replaying the pr
   f.complete(timed.id, { status: "FAILED", code: "REMOTE_SPARK_TIMEOUT", error: "synthetic timeout" });
   assert.equal((await f.advance(timed.id)).status, "FAILED");
   await f.advance(timed.id); assert.equal(f.counts.model, 3);
+});
+
+test("an unchanged repair keeps its exact failed evidence and model cost but creates no new revision or Spark run", async t => {
+  for (const status of ["VALIDATION_FAILED", "FAILED"]) for (const formatted of [false, true]) await t.test(`${status} / ${formatted ? "layout" : "exact"}`, async t => {
+    const f = setup(t, { generator: (_input, attempt) => ({ ...f.generated,
+      sql: attempt > 1 && formatted ? referenceSql.replaceAll("\n  ", "\n      ") : referenceSql }) });
+    let task = await f.create(); await f.advance(task.id); task = await f.advance(task.id);
+    f.complete(task.id, status === "VALIDATION_FAILED"
+      ? { status, validation: { passed: false, issues: ["重复持仓：holding_market_value 结果不符"] } }
+      : { status, engineVersion: undefined, mainSqlExecuted: false, validation: undefined, error: "UNRESOLVED_COLUMN: fictional_column" });
+    task = await f.advance(task.id); const prior = structuredClone(task), run = f.store.get("run", task.runId, PROJECT), revision = f.store.get("revision", task.revisionId, PROJECT);
+    f.restart(); task = await f.advance(task.id);
+    assert.equal(task.status, "FAILED"); assert.equal(task.code, "AGENT_SQL_UNCHANGED_AFTER_FAILURE"); assert.match(task.error, /未对已失败的 SQL 作出有效修改/);
+    assert.equal(task.runId, prior.runId); assert.equal(task.revisionId, prior.revisionId); assert.equal(task.sql, prior.sql);
+    assert.deepEqual(task.attempts[0], prior.attempts[0]); assert.equal(task.attempts.length, 2); assert.equal(task.maxAttempts, 3); assert.equal(task.usedTokens, 40);
+    const last = task.attempts.at(-1); assert.equal(last.status, "NO_SQL_CHANGE"); assert.equal(last.code, task.code); assert.equal(last.computationSkipped, true);
+    assert.equal(last.sourceRunId, run.id); assert.equal(last.sourceRevisionId, revision.id); assert.equal(last.runId, undefined); assert.equal(last.revisionId, undefined);
+    assert.equal(f.counts.model, 2); assert.equal(f.counts.jobs, 1); assert.equal(f.counts.budget, 1);
+    assert.equal(f.store.list("revision", PROJECT).length, 1); assert.equal(f.store.list("run", PROJECT).length, 1);
+    assert.deepEqual(f.store.get("run", run.id, PROJECT), run); assert.deepEqual(f.store.get("revision", revision.id, PROJECT), revision);
+    f.restart(); assert.equal((await f.advance(task.id)).code, task.code); assert.equal(f.counts.model, 2); assert.equal(f.counts.jobs, 1);
+    await assert.rejects(f.engine.prepareResume(task.id, { expectedVersion: f.engine.get(task.id).version, confirmModelRetry: true }), { code: "AGENT_STAGE_INVALID" });
+  });
+});
+
+test("a no-change repair after an unknown model result retains that reservation and all three attempts", async t => {
+  const f = setup(t, { generator: (_input, attempt) => { if (attempt === 2) throw Error("synthetic unknown model outcome"); return f.generated; } });
+  let task = await f.create(); await f.advance(task.id); task = await f.advance(task.id);
+  f.complete(task.id, { status: "VALIDATION_FAILED", validation: { passed: false, issues: ["synthetic duplicate position"] } });
+  task = await f.advance(task.id); const failedRunId = task.runId;
+  task = await f.advance(task.id); const unknown = structuredClone(task.attempts[1]);
+  assert.equal(task.stage, "MODEL_OUTCOME_UNKNOWN"); assert.equal(task.usedTokens, 120); f.restart();
+  task = await f.advance(task.id, { confirmModelRetry: true });
+  assert.equal(task.code, "AGENT_SQL_UNCHANGED_AFTER_FAILURE"); assert.equal(task.attempts.length, 3); assert.equal(task.usedTokens, 140);
+  assert.deepEqual(task.attempts[1], unknown); assert.equal(task.attempts[2].sourceRunId, failedRunId);
+  assert.equal(f.counts.jobs, 1); assert.equal(f.counts.model, 3); await f.advance(task.id); assert.equal(f.counts.model, 3);
+});
+
+test("generation receives bounded registered regression feedback only from this task's last matching run", async t => {
+  for (const foreign of [false, true]) await t.test(foreign ? "foreign run rejected" : "same-source failure feedback survives restart", async t => {
+    let received;
+    const f = setup(t, { generator: (input, attempt) => { received = input.repairFeedback; return attempt === 1
+      ? { ...f.generated, sql: referenceSql.replace("SELECT DISTINCT position_id", "SELECT position_id") } : f.generated; } });
+    let task = await f.create(); await f.advance(task.id); assert.equal(received, undefined); task = await f.advance(task.id);
+    f.complete(task.id, { status: "VALIDATION_FAILED", validation: { passed: false, issues: ["重复持仓：holding_market_value 结果不符"],
+      regressions: contextIds.map(contextId => ({ contextId, passed: contextId !== "duplicate-position",
+        issues: contextId === "duplicate-position" ? ["SYNTHETIC-CLIENT.holding_market_value 结果不符"] : [],
+        expected: "SYNTHETIC_PRIVATE_ANSWER", rows: ["SYNTHETIC_RAW_ROW"] })) } });
+    task = await f.advance(task.id);
+    if (foreign) f.store.update("run", task.runId, PROJECT, { agentTaskId: "another-task" });
+    f.restart(); task = await f.advance(task.id); assert.equal(task.stage, "READY_FOR_RUN");
+    if (foreign) assert.equal(received, undefined);
+    else {
+      assert.equal(received.protocol, "SECURITIES_SQL_REPAIR_FEEDBACK_V1"); assert.equal(received.passedCaseCount, 4); assert.equal(received.failedCaseCount, 1);
+      assert.deepEqual(received.checks.find(row => !row.passed), { contextId: "duplicate-position", passed: false, fields: ["holding_market_value"], issueKinds: ["VALUE_MISMATCH"] });
+      assert.doesNotMatch(JSON.stringify(received), /SYNTHETIC_PRIVATE_ANSWER|SYNTHETIC_RAW_ROW|SYNTHETIC-CLIENT/);
+    }
+    assert.equal(f.counts.model, 2); assert.equal(f.counts.jobs, 1, "feedback preparation itself does not submit another Spark run");
+  });
+});
+
+test("an explicit repair's first model receives source feedback and unchanged SQL reuses only its reviewed failure",async t=>{
+  for(const changed of [false,true])await t.test(changed?"actual change can be executed":"unchanged source is not executed twice",async t=>{
+    const bad=referenceSql.replace("SELECT DISTINCT position_id","SELECT position_id");let feedback;
+    const f=setup(t,{generator:(input,attempt)=>{feedback=input.repairFeedback;return{...f.generated,sql:attempt===1||!changed?bad:referenceSql};}});
+    let origin=await f.create({idempotencyKey:"origin"});await f.advance(origin.id);origin=await f.advance(origin.id);
+    f.complete(origin.id,{status:"VALIDATION_FAILED",validation:{passed:false,issues:["重复持仓：holding_market_value 结果不符"],
+      regressions:contextIds.map(contextId=>({contextId,passed:contextId!=="duplicate-position",issues:contextId==="duplicate-position"?["holding_market_value 结果不符"]:[]}))}});
+    origin=await f.advance(origin.id);const oldAgent=f.store.get("agent",origin.id,PROJECT),oldRun=f.store.get("run",origin.runId,PROJECT),oldRevision=f.store.get("revision",origin.revisionId,PROJECT);
+    let repair=await f.create({idempotencyKey:"repair",sourceRunId:oldRun.id,sourceError:oldRun.validation.issues.join("；"),currentSql:oldRevision.sql});
+    f.restart();repair=await f.advance(repair.id);assert.equal(feedback.passedCaseCount,4);assert.equal(feedback.failedCaseCount,1);
+    assert.equal(repair.usedTokens,20);assert.equal(repair.attempts.length,1);assert.equal(f.counts.model,2);
+    if(changed){assert.equal(repair.stage,"READY_FOR_RUN");assert.notEqual(repair.revisionId,oldRevision.id);await f.advance(repair.id);assert.equal(f.counts.jobs,2);}
+    else{
+      assert.equal(repair.code,"AGENT_SQL_UNCHANGED_AFTER_FAILURE");assert.equal(repair.status,"FAILED");assert.equal(repair.runId,oldRun.id);assert.equal(repair.revisionId,oldRevision.id);
+      assert.equal(repair.attempts[0].sourceKind,"EXPLICIT_FAILED_RUN");assert.equal(repair.attempts[0].runId,undefined);assert.equal(repair.attempts[0].computationSkipped,true);
+      assert.equal(f.counts.jobs,1);assert.equal(f.store.list("run",PROJECT).length,1);assert.equal(f.store.list("revision",PROJECT).length,1);
+    }
+    assert.deepEqual(f.store.get("agent",origin.id,PROJECT),oldAgent);assert.deepEqual(f.store.get("run",oldRun.id,PROJECT),oldRun);assert.deepEqual(f.store.get("revision",oldRevision.id,PROJECT),oldRevision);
+  });
+});
+
+test("explicit repair creation rejects foreign, mismatched or timeout sources before creating a task or reserving model tokens",async t=>{
+  const f=setup(t);let origin=await f.create({idempotencyKey:"origin"});await f.advance(origin.id);origin=await f.advance(origin.id);
+  f.complete(origin.id,{status:"FAILED",error:"stored unresolved column",validation:undefined,mainSqlExecuted:false});await f.advance(origin.id);
+  const source=f.store.get("run",origin.runId,PROJECT),revision=f.store.get("revision",source.revisionId,PROJECT),before=f.store.list("agent",PROJECT).length;
+  for(const patch of [{actorId:"other-user"},{contextId:"cash-change"},{currentSql:"SELECT 1"},{sourceError:"untrusted replacement"},{sourceRunId:"00000000-0000-4000-8000-000000000001"}]){
+    await assert.rejects(f.create({idempotencyKey:"foreign",sourceRunId:source.id,sourceError:source.error,currentSql:revision.sql,...patch}),{code:"AGENT_REPAIR_SOURCE_INVALID"});
+    assert.equal(f.store.list("agent",PROJECT).length,before);
+  }
+  f.store.update("run",source.id,PROJECT,{code:"REMOTE_SPARK_TIMEOUT"});
+  await assert.rejects(f.create({idempotencyKey:"timeout",sourceRunId:source.id,sourceError:source.error,currentSql:revision.sql}),{code:"AGENT_REPAIR_SOURCE_INVALID"});
+  assert.equal(f.store.list("agent",PROJECT).length,before);assert.equal(f.counts.model,1);assert.equal(f.counts.jobs,1);
+});
+
+test("known failure reuse never applies to another task, another context, an untrusted result or changed quoted content", async t => {
+  for (const mutate of [
+    (f, run) => f.store.update("run", run.id, PROJECT, { agentTaskId: "another-task" }),
+    (f, run) => f.store.update("run", run.id, PROJECT, { contextId: "cash-change" }),
+    (f, run) => f.store.update("run", run.id, PROJECT, { testDouble: true }),
+    (f, run) => f.store.update("run", run.id, PROJECT, { revisionHash: "0".repeat(64) }),
+  ]) await t.test("unbound failure is not reused", async t => {
+    const f = setup(t); let task = await f.create(); await f.advance(task.id); task = await f.advance(task.id);
+    f.complete(task.id, { status: "VALIDATION_FAILED", validation: { passed: false, issues: ["synthetic mismatch"] } });
+    task = await f.advance(task.id); mutate(f, f.store.get("run", task.runId, PROJECT));
+    task = await f.advance(task.id); assert.equal(task.stage, "READY_FOR_RUN"); assert.equal(task.code, undefined);
+  });
+  const f = setup(t, { generator: (_input, attempt) => ({ ...f.generated, sql: attempt === 2 ? referenceSql.replace("'{{advisor_id}}'", "'ANOTHER-ADVISOR'") : referenceSql }) });
+  let task = await f.create(); await f.advance(task.id); task = await f.advance(task.id);
+  f.complete(task.id, { status: "VALIDATION_FAILED", validation: { passed: false, issues: ["synthetic mismatch"] } });
+  await f.advance(task.id); task = await f.advance(task.id); assert.equal(task.stage, "READY_FOR_RUN"); await f.advance(task.id);
+  assert.equal(f.counts.jobs, 2, "changed literal must reach independent validation, not be mistaken for an identical query");
+  const other = await f.create({ idempotencyKey: "independent-task-same-sql" }); await f.advance(other.id); await f.advance(other.id);
+  assert.equal(f.counts.jobs, 3, "a new task is not suppressed because another task failed the same SQL");
 });
 
 test("cancellation persists intent and can retry its marker; late success stays cancelled", async t => {

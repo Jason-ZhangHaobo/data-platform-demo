@@ -1,4 +1,5 @@
 import { modelFailure } from "./model-diagnostics.mjs";
+import { safeSqlRepairFeedback } from "./sql-repair-feedback.mjs";
 
 export class ModelUnavailable extends Error {
   constructor() {
@@ -86,7 +87,7 @@ export async function generateAgentIntent(
   };
 }
 export async function generateSql(
-  { message, context, currentSql, error, signal, remainingBudget },
+  { message, context, currentSql, error, repairFeedback, signal, remainingBudget },
   env = process.env,
   fetchImpl = fetch,
 ) {
@@ -107,6 +108,7 @@ export async function generateSql(
     outputLimit < 1
   )
     throw new Error("模型预算配置不合法");
+  const feedback = safeSqlRepairFeedback(repairFeedback, context.id);
   const prompt = JSON.stringify({
     request: message,
     context: {
@@ -120,6 +122,7 @@ export async function generateSql(
     },
     currentSql,
     error,
+    ...(feedback ? { repairFeedback: feedback } : {}),
     executionContract: {
       regressionFixtures: [
         "标准数据",
@@ -137,7 +140,7 @@ export async function generateSql(
         "现金单独按交易日、客户聚合；最后从客户集合 LEFT JOIN 两个已聚合结果，不能从持仓集合起步或将现金与明细持仓直接相乘。",
       ],
       repairReview: error
-        ? "修正必须依据下方真实错误和当前 SQL，定位失败场景对应的记录粒度或关联路径。检查修正是否把去重结果重新关联到了未去重的明细；保留已通过场景的口径。explanation 简述实际修改及待执行的验证，不得声称已执行或已通过。"
+        ? "修正必须依据真实错误和当前 SQL，结合repairFeedback中的已通过/失败场景，定位失败场景对应的记录粒度或关联路径。检查修正是否把去重结果重新关联到了未去重的明细；保留已通过场景的口径。修复后必须形成实际代码修改，不能原样返回已失败代码。explanation 简述实际修改及待执行的验证，不得声称已执行或已通过。"
         : "提交前逐项核对上述记录粒度与关联路径；explanation 仅说明生成的代码做了什么，真实执行结果由 Spark 返回。",
       supportedSql:
         "SELECT/WITH、JOIN、DISTINCT、GROUP BY、AND/OR、SUM/COUNT/COALESCE/CAST等常用函数；本期未开放ROW_NUMBER等窗口函数，可用包含position_id的DISTINCT子查询去重。",

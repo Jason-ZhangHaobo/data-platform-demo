@@ -4,7 +4,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
-import { getContext } from "../../src/v2/context.mjs";
+import { getContext, validationContractId } from "../../src/v2/context.mjs";
+import { saveManualRevision } from "../../src/v2/manual-revisions.mjs";
 import { createFcIngress } from "../../src/v2/fc-ingress.mjs";
 import { validatePrivateApplicationRequest, callPrivateApplication, privateApplicationTimeoutMs } from "../../src/v2/private-application.mjs";
 
@@ -95,8 +96,9 @@ test("normal private app login and CSRF are required to create a durable Agent t
     assert([401,403].includes(denied.body.status));assert(!JSON.stringify(denied).includes(task.body.id));
     assert.equal((await call("/api/v2/agent/tasks", body, headers)).body.id, task.body.id);
     assert.equal((await call("/api/v2/agent/tasks", { ...body, language: "PYTHON" }, headers)).code, "PRIVATE_AGENT_LANGUAGE_NOT_ENABLED");
-    const revision = service.app.store.create("revision", PROJECT, { sql: "SELECT missing_col FROM positions", contextId: "holdings-t1" });
-    const failed = service.app.store.create("run", PROJECT, { revisionId: revision.id, status: "FAILED", engine: "Apache Spark", error: "stored unresolved column missing_col" });
+    const revision = saveManualRevision({store:service.app.store,project:PROJECT,actor:login.body.user.id,key:"existing-manual-failure",sql:"SELECT missing_col FROM positions",contextId:"holdings-t1"}).revision;
+    const failed = service.app.store.create("run", PROJECT, { revisionId: revision.id, revisionHash:revision.hash,contextId:revision.contextId,validationContractId,
+      status: "FAILED", engine: "Apache Spark", error: "stored unresolved column missing_col" });
     const repairBody = { ...body, sql: revision.sql, sourceRunId: failed.id, sourceError: "untrusted client override" };
     const repairHeaders = { ...headers, "idempotency-key": "repair-fixture" };
     const repaired = await call("/api/v2/agent/tasks", repairBody, repairHeaders);
