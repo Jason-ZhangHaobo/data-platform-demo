@@ -1,12 +1,19 @@
 // Inspect an existing CI artifact; never build, execute its code, or contact a cloud provider.
-import {readFileSync,writeFileSync} from 'node:fs';
+import {readFileSync,writeFileSync,existsSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const check=(v,c)=>{if(!v)throw Error(c);};
 const sha=b=>createHash('sha256').update(b).digest('hex');
-export const controlArtifactSources=Object.freeze(['fc-ingress','server','cloud-server','public-status','auth','private-application','request-lane','static-response','cloud-state-coordinator','public-development-access','public-publication-access','cloud-publication','private-release-timer','public-service-access','private-data-services','data-services','private-task-consumption','budget','durable-agent','model-diagnostics','agent-event-driver','agent-development-workflow'].map(n=>`src/v2/${n}.mjs`));
+export const controlArtifactSources=Object.freeze(['fc-ingress','server','cloud-server','public-status','auth','private-application','request-lane','static-response','cloud-state-coordinator','public-development-access','public-publication-access','cloud-publication','private-release-timer','public-service-access','private-data-services','data-services','private-task-consumption','budget','durable-agent','model','model-diagnostics','agent-event-driver','agent-development-workflow'].map(n=>`src/v2/${n}.mjs`));
+const repairSources=['sql-repair-feedback','sql-repair-progress','sql-repair-source'].map(name=>`src/v2/${name}.mjs`);
+// Source checkout, not archive contents, determines required checks. Legacy
+// applications may predate these modules; a new archive cannot omit one that
+// its immutable application source contains and still pass inspection.
+export function controlArtifactSourceChecks(sourceRoot, exists=existsSync){
+ return Object.freeze([...controlArtifactSources,...repairSources.filter(name=>exists(resolve(sourceRoot,name)))]);
+}
 export function validateArtifactIdentity(run,artifact,{source,buildRunId,artifactId}){
  check(/^[a-f0-9]{40}$/.test(source)&&/^\d+$/.test(buildRunId)&&/^\d+$/.test(artifactId),'IDENTITY_INVALID');
  check(String(run.id)===buildRunId&&run.name==='Build V2 control plane package'&&run.head_sha===source&&run.conclusion==='success'&&run.status==='completed','BUILD_NOT_VERIFIED');
@@ -24,10 +31,10 @@ export async function inspectControlArtifact(env=process.env){
  const names=execFileSync('unzip',['-Z1',path],{encoding:'utf8'}).trim().split('\n');
  check(!names.some(n=>/(^|\/)(\.env(?:\..*)?|[^/]+\.(?:pem|key))$/.test(n)||n.startsWith('/')||n.split('/').includes('..')),'UNSAFE_PACKAGE');
  const extract=name=>execFileSync('unzip',['-p',path,name],{maxBuffer:10000000});
- const sources=controlArtifactSources;
+ const sources=controlArtifactSourceChecks('.artifact-source');
  for(const name of sources)check(sha(extract(name))===sha(readFileSync(resolve('.artifact-source',name))),'SOURCE_MISMATCH');
  const index=extract('web-dist/index.html');
- const report={protocol:'shuduo-control-artifact-inspection/v1',operatorSource:env.GITHUB_SHA,inspectionRunId:env.GITHUB_RUN_ID,applicationSource:identity.source,buildRunId:identity.buildRunId,artifactId:identity.artifactId,artifactDigest:artifact.digest,sha256:sha(bytes),bytes:bytes.length,webIndexSha256:sha(index),webIndexBytes:index.length,sourceChecks:sources.length,zipValid:true,sensitivePaths:0};
+ const report={protocol:'shuduo-control-artifact-inspection/v1',operatorSource:env.GITHUB_SHA,inspectionRunId:env.GITHUB_RUN_ID,applicationSource:identity.source,buildRunId:identity.buildRunId,artifactId:identity.artifactId,artifactDigest:artifact.digest,sha256:sha(bytes),bytes:bytes.length,webIndexSha256:sha(index),webIndexBytes:index.length,sourceChecks:sources.length,sourceFiles:sources,zipValid:true,sensitivePaths:0};
  writeFileSync('control-artifact-inspection.json',JSON.stringify(report,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify(report));
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))inspectControlArtifact().catch(()=>{console.error('ARTIFACT_INSPECTION_FAILED');process.exitCode=1;});

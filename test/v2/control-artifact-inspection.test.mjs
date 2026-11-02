@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {validateArtifactIdentity,controlArtifactSources} from '../../scripts/inspect-control-artifact.mjs';
+import {resolve} from 'node:path';
+import {validateArtifactIdentity,controlArtifactSources,controlArtifactSourceChecks} from '../../scripts/inspect-control-artifact.mjs';
 test('remote inspection requires a successful source-matched original build and unexpired matching artifact',()=>{
  const identity={source:'a'.repeat(40),buildRunId:'12345678',artifactId:'12345679'};
  const run={id:12345678,name:'Build V2 control plane package',head_sha:identity.source,status:'completed',conclusion:'success'};
@@ -14,9 +15,17 @@ test('remote inspection requires a successful source-matched original build and 
 });
 test('readonly artifact source checks cover budget accounting, durable ownership, event scope and delivery',()=>{
  const prior=['fc-ingress','server','cloud-server','public-status','auth','private-application','request-lane','static-response','cloud-state-coordinator','public-development-access','public-publication-access','cloud-publication','private-release-timer','public-service-access','private-data-services','data-services','private-task-consumption'];
- assert.deepEqual(controlArtifactSources,[...prior,'budget','durable-agent','model-diagnostics','agent-event-driver','agent-development-workflow'].map(name=>`src/v2/${name}.mjs`));
- assert.equal(new Set(controlArtifactSources).size,22);assert.equal(Object.isFrozen(controlArtifactSources),true);
+ assert.deepEqual(controlArtifactSources,[...prior,'budget','durable-agent','model','model-diagnostics','agent-event-driver','agent-development-workflow'].map(name=>`src/v2/${name}.mjs`));
+ assert.equal(new Set(controlArtifactSources).size,23);assert.equal(Object.isFrozen(controlArtifactSources),true);
  const source=readFileSync(new URL('../../scripts/inspect-control-artifact.mjs',import.meta.url),'utf8');
  assert.match(source,/sha\(extract\(name\)\)===sha\(readFileSync\(resolve\('\.artifact-source',name\)\)\)/);
  assert.ok(!source.includes('execFileSync(extract('),'package source is inspected, never executed');
+});
+test('source checkout makes new repair modules mandatory without breaking legacy application inspection',()=>{
+ const root='/synthetic-source',modules=['sql-repair-feedback','sql-repair-progress','sql-repair-source'].map(name=>`src/v2/${name}.mjs`);
+ const queried=[];const checks=controlArtifactSourceChecks(root,path=>{queried.push(path);return true;});
+ assert.deepEqual(checks,[...controlArtifactSources,...modules]);assert.equal(checks.length,26);assert.equal(Object.isFrozen(checks),true);
+ assert.deepEqual(queried,modules.map(name=>resolve(root,name)));
+ assert.deepEqual(controlArtifactSourceChecks(root,()=>false),controlArtifactSources);
+ assert.deepEqual(controlArtifactSourceChecks(root,path=>path.endsWith('/sql-repair-source.mjs')),[...controlArtifactSources,modules[2]]);
 });
