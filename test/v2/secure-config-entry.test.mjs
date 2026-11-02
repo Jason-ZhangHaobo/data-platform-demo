@@ -175,6 +175,33 @@ test("prepare-only requires a planned account, rejects extra fields and preserve
   assert.throws(() => f.entry.consumePrepared(), /没有可领取/);
 });
 
+test("executionAuthorized changes only preparation copy and preserves receipt waiting, no cloud calls and one-time consumption", async (t) => {
+  const f = await preparationFixture(t, { executionAuthorized: true });
+  assert.match(f.page.text, /提交后由已授权的同进程维护驱动校验并按批准范围执行；本页不直接改云端，结果以执行回执为准/);
+  assert.match(f.page.text, /提交给已授权维护驱动/);
+  assert.doesNotMatch(f.page.text, /等待独立的执行授权/);
+  assert.equal((await f.submit({ ...preparationInput(), executionAuthorized: true })).status, 400);
+  const waiting = f.entry.waitUntilPrepared(), submission = f.submit();
+  const receipt = await waiting;
+  assert.equal(receipt.cloudChanged, false); assert.equal(receipt.secretsChanged, false); assert.equal(receipt.modelCalled, false);
+  assert.equal(Object.hasOwn(receipt, "executionAuthorized"), false, "display copy is not an authorization receipt");
+  const value = f.entry.consumePrepared();
+  assert.equal(value.password, preparationInput().password);
+  assert.equal((await submission).status, 200);
+  assert.throws(() => f.entry.consumePrepared(), /没有可领取/);
+  const completed = await call(f.url, "GET");
+  assert.match(completed.text, /执行结果以维护回执为准/);
+  assert.doesNotMatch(completed.text, /等待独立的执行授权/);
+  assert.equal(f.calls.length, 0);
+});
+
+test("executionAuthorized rejects non-booleans and cannot activate any non-preparation mode", () => {
+  for (const executionAuthorized of ["true", "false", 1, 0, null, {}])
+    assert.throws(() => createSecureConfigServer({ prepareOnly: true, plannedEmail: "owner@example.test", executionAuthorized }), /executionAuthorized 必须为布尔值/);
+  for (const options of [{}, { mysqlOnly: true }])
+    assert.throws(() => createSecureConfigServer({ ...options, executionAuthorized: true }), /仅准备模式可启用/);
+});
+
 test("prepare-only validates user-chosen password limits and model syntax without trimming current passwords or echoing failures", async (t) => {
   const f = await preparationFixture(t);
   const cases = [{ mysql: "Aa1!" }, { mysql: "Aa1!" + "x".repeat(29) }, { mysql: "aaaaaaaaAAAA" }, { mysql: "Aa1!\r\nxx" },
@@ -286,6 +313,13 @@ test("pending preparation waiters reject safely on close or expiry before the su
   assert.throws(() => expired.entry.consumePrepared(), /没有可领取/);
   await assert.rejects(expired.entry.waitUntilPrepared(), /暂存不可领取/);
   assert.equal(closed.calls.length + expired.calls.length, 0);
+});
+
+test("RDS rotation input rejects unsupported API characters before any cloud operation", () => {
+  for (const character of ['?', ':', '~', '"', "'", '\\', '/', '[', ']']) {
+    assert.throws(() => validatePreparedConfig({ ...preparationInput(), mysql: `SyntheticDb${character}New42!` }), /特殊字符仅支持/);
+  }
+  assert.doesNotThrow(() => validatePreparedConfig({ ...preparationInput(), mysql: "SyntheticDb#New42!" }));
 });
 
 test("standalone prepare-only CLI fails safely without starting a page or printing provided account arguments", () => {

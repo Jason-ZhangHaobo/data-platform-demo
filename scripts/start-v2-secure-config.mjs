@@ -49,8 +49,8 @@ export function validatePreparedConfig(input) {
       PREPARE_FIELDS.some(key => !Object.hasOwn(input, key) || typeof input[key] !== "string"))
     throw prepareFailure("只能填写数据库密码、当前登录密码、新登录密码及确认值、模型 Key，不能更改账号或提交其他字段");
   const categories = value => [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter(rule => rule.test(value)).length;
-  if (!/^[\x21-\x7e]{8,32}$/.test(input.mysql) || categories(input.mysql) < 3)
-    throw prepareFailure("数据库密码须为8—32位可见字符，包含大小写字母、数字、符号中的至少三类，不能含空白");
+  if (!/^[A-Za-z0-9!@#$&%^*()_+=-]{8,32}$/.test(input.mysql) || categories(input.mysql) < 3)
+    throw prepareFailure("数据库密码须为8—32位、至少三类字符；特殊字符仅支持 !@#$&%^*()_+-=，不能含空白");
   if (input.currentPassword.length < 1 || input.currentPassword.length > 128)
     throw prepareFailure("当前登录密码须为1—128位，首尾空格会原样保留");
   if (input.password !== input.confirm) throw prepareFailure("两次登录密码不一致");
@@ -109,22 +109,25 @@ function renderPage(body, script, nonce) {
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>数舵 · 部署凭证</title><style nonce="${nonce}">*{box-sizing:border-box}body{margin:0;background:#f3f5f1;color:#18352d;font:16px system-ui,sans-serif}main{max-width:650px;margin:6vh auto;padding:36px;background:white;border:1px solid #dce4dc;border-radius:20px}h1{margin:10px 0 16px;font-size:30px}p,small{line-height:1.7;color:#53665c}.eyebrow{font-size:13px;color:#367958}label{display:block;margin:24px 0 8px;font-weight:600}input{width:100%;padding:13px;border:1px solid #b9cbbf;border-radius:9px;font:inherit}button{margin-top:28px;background:#14694c;color:white;border:0;border-radius:10px;padding:14px 20px;font:inherit;cursor:pointer}button:disabled{opacity:.55}#result{white-space:pre-line;margin-top:20px}</style><main>${body}</main>${script}</html>`;
 }
 
-function preparePage({ nonce, token, plannedEmail, status, preparedTtlMs }) {
+function preparePage({ nonce, token, plannedEmail, status, preparedTtlMs, executionAuthorized }) {
   const escape = value => value.replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const finished = status !== "EMPTY";
+  const notice = executionAuthorized ? "提交后由已授权的同进程维护驱动校验并按批准范围执行；本页不直接改云端，结果以执行回执为准。" : PREPARE_NOTICE;
+  const preparedMessage = executionAuthorized ? "本机准备已完成，已通知同进程维护驱动。执行结果请查看维护回执。" : "已在本机暂存，等待独立的执行授权。";
+  const consumedMessage = executionAuthorized ? "暂存已交给已授权维护驱动，不能再次领取；执行结果以维护回执为准。" : "暂存已由进程内驱动领取，不能再次领取。";
   const body = `<span class="eyebrow">本机临时页面 · 凭证轮换准备</span><h1>集中准备凭证</h1>
-    <p>${PREPARE_NOTICE}</p><p>固定账号：<strong id="planned-email">${escape(plannedEmail)}</strong>。本页不创建或修改账号邮箱。</p>
+    <p>${notice}</p><p>固定账号：<strong id="planned-email">${escape(plannedEmail)}</strong>。本页不创建或修改账号邮箱。</p>
     <p>内容仅在本进程内暂存，提交后最多保留${Math.ceil(preparedTtlMs / 60000)}分钟；过期或关闭服务后失效，不会永久保存。Worker 密钥不在此收取或生成。</p>
-    ${finished ? `<p role="status">${status === "EXPIRED" ? "暂存已过期，内容已释放。" : status === "CONSUMED" ? "暂存已由进程内驱动领取，不能再次领取。" : "已在本机暂存，等待独立的执行授权。"}</p>` : `<form id="setup">
-      <label for="mysql">自选数据库新密码</label><input id="mysql" type="password" autocomplete="new-password" minlength="8" maxlength="32" required><small>8—32位，至少三类字符；与登录密码分开。</small>
-      <label for="currentPassword">当前数舵登录密码</label><input id="currentPassword" type="password" autocomplete="current-password" maxlength="128" required><small>首尾空格原样保留，仅在后续获准改密时使用。</small>
+    ${finished ? `<p role="status">${status === "EXPIRED" ? "暂存已过期，内容已释放。" : status === "CONSUMED" ? consumedMessage : preparedMessage}</p>` : `<form id="setup">
+      <label for="mysql">自选数据库新密码</label><input id="mysql" type="password" autocomplete="new-password" minlength="8" maxlength="32" required><small>8—32位，至少三类字符；特殊字符仅 !@#$&amp;%^*()_+-=，与登录密码分开。</small>
+      <label for="currentPassword">当前数舵登录密码</label><input id="currentPassword" type="password" autocomplete="current-password" maxlength="128" required><small>${executionAuthorized ? "首尾空格原样保留，由已授权维护驱动用于本人改密验证。" : "首尾空格原样保留，仅在后续获准改密时使用。"}</small>
       <label for="password">自选数舵新登录密码</label><input id="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
       <label for="confirm">再次输入新登录密码</label><input id="confirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
       <label for="modelKey">模型新 Key</label><input id="modelKey" type="password" autocomplete="off" maxlength="8192" required><small>只检查格式，不调用模型验证。</small>
-      <button id="save" type="submit">仅校验并暂存本机</button></form><p id="result" role="status" aria-live="polite"></p>`}`;
+      <button id="save" type="submit">${executionAuthorized ? "提交给已授权维护驱动" : "仅校验并暂存本机"}</button></form><p id="result" role="status" aria-live="polite"></p>`}`;
   const script = finished ? "" : `<script nonce="${nonce}">
     const form=document.getElementById('setup'),save=document.getElementById('save'),result=document.getElementById('result');
-    form.addEventListener('submit',async event=>{event.preventDefault();const fields=${JSON.stringify(PREPARE_FIELDS)},input=Object.fromEntries(fields.map(key=>[key,document.getElementById(key).value]));if(input.password!==input.confirm){result.textContent='两次登录密码不一致';return}save.disabled=true;result.textContent='正在本机校验…';try{const response=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json','X-Setup-Token':'${token}'},body:JSON.stringify(input)});const receipt=await response.json();if(!response.ok)throw new Error(receipt.error||'本机准备失败');for(const key of fields)document.getElementById(key).value='';form.hidden=true;result.textContent='已在本机暂存，等待独立的执行授权。${PREPARE_NOTICE} 暂存到期时间：'+receipt.expiresAt;}catch(error){result.textContent=error instanceof TypeError?'本机准备服务已停止，请返回对话。不要将密码发到聊天。':error.message;save.disabled=false}});
+    form.addEventListener('submit',async event=>{event.preventDefault();const fields=${JSON.stringify(PREPARE_FIELDS)},input=Object.fromEntries(fields.map(key=>[key,document.getElementById(key).value]));if(input.password!==input.confirm){result.textContent='两次登录密码不一致';return}save.disabled=true;result.textContent='正在本机校验…';try{const response=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json','X-Setup-Token':'${token}'},body:JSON.stringify(input)});const receipt=await response.json();if(!response.ok)throw new Error(receipt.error||'本机准备失败');for(const key of fields)document.getElementById(key).value='';form.hidden=true;result.textContent=${JSON.stringify(preparedMessage + notice + " 暂存到期时间：")}+receipt.expiresAt;}catch(error){result.textContent=error instanceof TypeError?'本机准备服务已停止，请返回对话。不要将密码发到聊天。':error.message;save.disabled=false}});
     </script>`;
   return renderPage(body, script, nonce);
 }
@@ -141,10 +144,15 @@ export function createSecureConfigServer({
   random = randomBytes,
   mysqlOnly = false,
   prepareOnly = false,
+  executionAuthorized = false,
   plannedEmail,
   preparedTtlMs = PREPARE_TTL_MS,
   now = Date.now,
 } = {}) {
+  // Presentation only: the caller must verify independent human approval.
+  // This flag grants no authority and never starts or enables an execution path.
+  if (typeof executionAuthorized !== "boolean" || executionAuthorized && !prepareOnly)
+    throw new Error("executionAuthorized 必须为布尔值，且仅准备模式可启用已授权驱动文案");
   if (prepareOnly && (mysqlOnly || typeof plannedEmail !== "string" || plannedEmail.length > 254 ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(plannedEmail) || !Number.isSafeInteger(preparedTtlMs) || preparedTtlMs < 1 || preparedTtlMs > 120 * 60 * 1000))
     throw new Error("准备模式必须指定固定账号和有效暂存期限，且不能同时启用数据库同步模式");
@@ -185,7 +193,7 @@ export function createSecureConfigServer({
     if (req.method === "GET" && pathname === "/") {
       res.setHeader("Set-Cookie", `shuduo_setup=${token}; HttpOnly; SameSite=Strict; Path=/`);
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(prepareOnly ? preparePage({ nonce, token, plannedEmail: targetEmail, status: preparedStatus, preparedTtlMs }) :
+      res.end(prepareOnly ? preparePage({ nonce, token, plannedEmail: targetEmail, status: preparedStatus, preparedTtlMs, executionAuthorized }) :
         page({ completed, nonce, token, mysqlOnly, workflowStarted }));
       return;
     }
