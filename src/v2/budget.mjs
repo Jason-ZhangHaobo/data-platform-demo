@@ -268,6 +268,27 @@ export class BudgetManager {
     return status;
   }
 
+  assertCanStartServiceModel(reservation) {
+    const status=this.overview();this.#assertAccount(status,modelPrepareFailure);
+    const invalid=()=>{throw modelPrepareFailure('服务规划预算预留与当前持久租约不一致','MODEL_RESERVATION_INVALID');};
+    if(!reservation||Array.isArray(reservation)||Object.keys(reservation).length!==3||!['taskId','attempt','leaseToken'].every(key=>Object.hasOwn(reservation,key))||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(reservation.taskId??'')||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(reservation.leaseToken??''))invalid();
+    const task=this.store.get('service_agent_plan',reservation.taskId,this.project),attempt=task?.attempts?.at(-1),reserved=tokens(attempt?.usage).total,
+      window=this.store.list('service_agent_window',this.project).filter(item=>item.profileId===task?.pilotId),actor=task&&this.store.get('auth_user',task.submittedBy,this.project);
+    if(task?.executionMode!=='DURABLE_PRIVATE_SERVICE_AGENT_V1'||task.scope!=='PRIVATE_CLOUD_TEST'||task.mode!=='LIVE_MODEL'||task.stage!=='MODEL_IN_FLIGHT'||task.status!=='RUNNING'||
+      !Number.isSafeInteger(reservation.attempt)||reservation.attempt!==task.attempts?.length||attempt?.attempt!==reservation.attempt||attempt.status!=='MODEL_IN_FLIGHT'||attempt.usageEstimated!==true||attempt.model!=='unconfirmed'||
+      task.durable?.leaseToken!==reservation.leaseToken||!Number.isFinite(Date.parse(task.durable.leaseExpiresAt))||Date.parse(task.durable.leaseExpiresAt)<=this.now()||
+      !Number.isFinite(Date.parse(task.createdAt))||monthKey(task.createdAt)!==status.month||window.length!==1||window[0].fingerprint!==task.policyFingerprint||actor?.status!=='ACTIVE'||
+      !actor.memberships?.some(item=>item.projectId===this.project&&['ADMIN','ENGINEER','PRODUCT_MANAGER'].includes(item.role))||
+      ![task.requestTokenLimit,task.usedTokens,task.tokenBudget,task.maxAttempts].every(value=>Number.isSafeInteger(value)&&value>0)||
+      reserved<1||reserved>task.requestTokenLimit||reserved>task.usedTokens||task.usedTokens>task.tokenBudget||task.attempts.length>task.maxAttempts||
+      task.attempts.reduce((sum,item)=>sum+tokens(item.usage).total,0)!==task.usedTokens)invalid();
+    const pending=Math.max(0,status.model.estimatedCostCny-modelCost(attempt.model,attempt.usage,this.fallbackTokens)),
+      projected=modelCost(this.env.V2_MODEL??'qwen3.7-plus',{},reserved);
+    if(pending+projected>status.model.limitCny)throw modelPrepareFailure('本月模型预算不足以启动此服务规划','MONTHLY_MODEL_BUDGET_EXCEEDED');
+    return status;
+  }
+
   #assertAccount(status, makeFailure = fail) {
     if (
       status.account.observedSpendCny !== undefined &&

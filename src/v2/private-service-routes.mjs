@@ -11,7 +11,7 @@ export function privateServiceSourceSelection(params, evidence = false) {
   if(evidence?!(taskId&&packageDigest):(packageDigest!==undefined||releaseId!==undefined)&&!(taskId&&packageDigest&&releaseId))return;
   return {taskId,packageDigest,releaseId};
 }
-export function privateServiceRoute(method,path) {
+export function privateServiceRoute(method,path,{agentPlanning=false,agentRead=false}={}) {
   if(typeof path!=="string" || path.length>700 || /[#\\]/.test(path) || !path.startsWith("/api/v2/"))return false;
   const url=new URL(path,"http://127.0.0.1"),p=url.pathname;
   if(p!==path.split("?")[0] || new Set(url.searchParams.keys()).size!==[...url.searchParams.keys()].length)return false;
@@ -20,6 +20,12 @@ export function privateServiceRoute(method,path) {
   else if(method==='GET' && p==='/api/v2/data-services/agent/context'){
     try{return Boolean(servicePlanSourceQuery(url.searchParams));}catch{return false;}
   }
+  else if(agentRead&&method==='GET'&&p==='/api/v2/data-services/agent/plans'){
+    try{return Boolean(servicePlanSourceQuery(url.searchParams));}catch{return false;}
+  }
+  else if(agentRead&&method==='GET'&&new RegExp(`^/api/v2/data-services/agent/(?:plans|requests)/${uuid}$`).test(p))allowed=[];
+  else if(agentPlanning&&method==='POST'&&(p==='/api/v2/data-services/agent/plans'||new RegExp(`^/api/v2/data-services/agent/plans/${uuid}/(?:advance|apply|cancel)$`).test(p)))allowed=[];
+  else if(agentRead&&method==='POST'&&new RegExp(`^/api/v2/data-services/agent/plans/${uuid}/cancel$`).test(p))allowed=[];
   else if(method==="GET" && p==="/api/v2/data-services/sources")return Boolean(privateServiceSourceSelection(url.searchParams));
   else if(method==="GET" && p==="/api/v2/data-services/task-evidence"){
     // Keep the existing bare route so its authenticated handler returns the

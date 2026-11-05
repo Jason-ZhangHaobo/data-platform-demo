@@ -4,6 +4,7 @@ import {serviceVersionConfigValid} from './data-services.mjs';
 import {getContext,validationFamilyForContext} from './context.mjs';
 import {servicePlanSourceBinding} from './service-plan-request.mjs';
 export {servicePlanSourceBinding,servicePlanSourceQuery,servicePlanSourcePath} from './service-plan-request.mjs';
+export {bindServicePlanProposal,servicePlanDraftMatches} from './service-plan-proposal.mjs';
 
 const fail=(code,message,status=409)=>Object.assign(Error(message),{status,code});
 const fields=['client_id','holding_market_value','available_cash','total_assets','security_count'];
@@ -40,20 +41,5 @@ export function assertServicePlanVersions({store,project,binding,refs,current=fa
    version.configHash!==ref.configHash||!same(version.fields,ref.fields)||current&&(service.status!=='PUBLISHED'||service.publishedVersionId!==ref.versionId))
    throw fail('SERVICE_PLAN_VERSION_CHANGED','方案中的DAPI版本或来源已变化，请核对原方案；未切换到最新版本');
  }
-}
-export function bindServicePlanProposal(proposal,context){
- if(proposal.serviceType==='DAPI'){
-  if(proposal.sourceReleaseRunId!==context.binding.sourceReleaseRunId)throw fail('SERVICE_PLAN_SOURCE_MISMATCH','Agent方案未引用当前确切发布批次');
-  return [];
- }
- const selected=proposal.steps.map(step=>context.resourceVersions.find(ref=>ref.serviceId===step.dapiId&&ref.versionId===step.dapiVersionId));
- if(selected.some(ref=>!ref))throw fail('SERVICE_PLAN_SOURCE_MISMATCH','XAPI方案必须使用当前来源的固定DAPI版本');
- return selected;
-}
-export function servicePlanDraftMatches(service,proposal,binding){
- const v=service?.currentVersion;
- return Boolean(service&&service.serviceType===proposal.serviceType&&service.name===proposal.name&&service.slug===proposal.slug&&v&&serviceVersionConfigValid(v)&&
-  v.timeoutMs===proposal.timeoutMs&&v.rateLimitPerMinute===proposal.rateLimitPerMinute&&
-  (proposal.serviceType==='DAPI'?v.sourceReleaseRunId===binding.sourceReleaseRunId&&v.sourceReleaseId===binding.releaseId&&v.sourcePackageDigest===binding.packageDigest&&same(v.fields,proposal.fields):same(v.steps,proposal.steps)));
 }
 export function publicServicePlan(plan){const {submittedBy,...visible}=plan;return visible;}

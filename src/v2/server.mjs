@@ -26,6 +26,7 @@ import { localServiceSources } from "./local-service-sources.mjs";
 import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource,assertServicePlanVersions,bindServicePlanProposal,servicePlanDraftMatches,publicServicePlan} from './service-plan-source.mjs';
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
+import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress} from './private-service-agent-policy.mjs';
 import { privateServiceSourceSelection } from "./private-service-routes.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
@@ -284,6 +285,8 @@ export function createV2Server(options = {}) {
   runner.descriptor = runnerDescriptor;
   const publicationAccess = publicPublicationConfig(env);
   const serviceAccess = publicServiceConfig(env);
+  const serviceAgentAccess=privateServiceAgentProfile(env);
+  assertServiceAgentIngress(serviceAgentAccess,options.ingress);
   const developmentAccess = publicDevelopmentConfig(env);
   const developmentNow = () => options.now?.() ?? Date.now();
   const assertTargetTask = task => assertDevelopmentTargetTask(developmentAccess, task,
@@ -312,11 +315,12 @@ export function createV2Server(options = {}) {
         input && (input.sql !== bundle?.files?.['main.sql'] || input.testSql !== bundle?.files?.['tests.sql'])) throw targetDenied();
   };
   const assertDevelopmentExecution = () => {
+    if(serviceAgentAccess)throw Object.assign(fail(403,'当前仅允许指定来源的服务模型规划，不执行SQL或Spark'),{code:'PRIVATE_SERVICE_AGENT_SCOPE_DENIED'});
     if (serviceAccess) throw Object.assign(fail(403, "本次仅开放既有发布结果的接口交付，不启动模型或 Spark。"), { code: "PUBLIC_SERVICE_SCOPE_DENIED" });
     if (publicationAccess) throw Object.assign(fail(403, "本次仅允许审阅发布既有交付包，不启动模型或新的开发计算。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
     assertDevelopmentExecutionWindow(developmentAccess, options.now?.() ?? Date.now());
   };
-  const durableDevelopment = !rawRunner.durable || (!developmentAccess && !publicationAccess && !serviceAccess) ? rawRunner.durable : {
+  const durableDevelopment = !rawRunner.durable || (!developmentAccess && !publicationAccess && !serviceAccess && !serviceAgentAccess) ? rawRunner.durable : {
     prepare: (input, id) => { assertDevelopmentExecution(); assertTargetRun(id, input); return rawRunner.durable.prepare(input, id); },
     submit: prepared => { assertDevelopmentExecution(); assertTargetRun(prepared?.job?.jobId); return rawRunner.durable.submit(prepared); },
     read: (...args) => rawRunner.durable.read(...args),
@@ -896,7 +900,8 @@ export function createV2Server(options = {}) {
     now: options.now,
     executeDapi: options.dataServiceExecutor,
   });
-  const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment }) : undefined;
+  const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment,
+    agentConfig:serviceAgentAccess,planner:input=>servicePlanner(input),assertModelBudget:reservation=>budget.assertCanStartServiceModel(reservation),budgetOverview:()=>budget.overview(),modelLeaseMs:options.serviceAgentModelLeaseMs }) : undefined;
   const sourceBoundServicePlansEnabled=local&&!privateDataServicesEnabled&&!serviceAccess&&!publicationAccess&&!developmentAccess;
   const servicePlanActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
   const boundServiceContext=(binding,actorId)=>{
@@ -926,7 +931,7 @@ export function createV2Server(options = {}) {
   const servicePlanner =
     options.servicePlanner ??
     (async (input) => {
-      budget.assertCanStartModel();
+      if(input.modelBudgetReservation)budget.assertCanStartServiceModel(input.modelBudgetReservation);else budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateDataServicePlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -1309,6 +1314,7 @@ export function createV2Server(options = {}) {
         assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
       if (!isPrivateSmokeInvoke)
         assertServiceMutation(serviceAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
+      if(!isPrivateSmokeInvoke)assertServiceAgentMutation(serviceAgentAccess,auth.sessionFromHeaders(req.headers),method,path);
       if (ingressChannel === "HTTP" && developmentAccess && method === "POST") {
         const taskPath = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\//);
         const deliveryPath = path.match(/^\/api\/v2\/agent\/deliveries\/([a-f0-9-]{36})\//);
@@ -1323,6 +1329,7 @@ export function createV2Server(options = {}) {
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = await readPrivateSmokeBody(req);
+        if(serviceAgentAccess&&!['PRIVATE_STATUS_V1','PRIVATE_APPLICATION_HTTP_V1'].includes(privateInput.operation))throw Object.assign(fail(403,'服务规划窗口不接受计算、调度或其他私有操作'),{code:'PRIVATE_SERVICE_AGENT_SCOPE_DENIED'});
         if (developmentAccess?.taskId && !['PRIVATE_STATUS_V1','PRIVATE_AGENT_OBJECT_EVENT_V1'].includes(privateInput.operation))
           throw targetDenied();
         if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
@@ -1349,7 +1356,7 @@ export function createV2Server(options = {}) {
           const address = server.address(), base = `http://127.0.0.1:${address.port}`;
           const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
             ? await verifyPrivateApplicationTask(privateInput, { base, store, project: PROJECT, internalHeaders: options.ingress?.internalHeaders })
-            : await callPrivateApplication(privateInput, base, undefined, { internalHeaders: options.ingress?.internalHeaders, allowDurableAgent: Boolean(durableAgent), allowDurableAgentRead: privateDataServicesEnabled, allowDataServices: privateDataServicesEnabled });
+            : await callPrivateApplication(privateInput, base, undefined, { internalHeaders: options.ingress?.internalHeaders, allowDurableAgent: Boolean(durableAgent), allowDurableAgentRead: privateDataServicesEnabled, allowDataServices: privateDataServicesEnabled,allowServiceAgent:Boolean(serviceAgentAccess) });
           await persistence.flush?.();
           return json(res, 200, result);
         }
@@ -1454,9 +1461,9 @@ export function createV2Server(options = {}) {
           auth.requireMutation(req.headers, path);
       }
       if (method === "POST" && env.V2_EXECUTION_UNAVAILABLE === "true" &&
-          (budgetAgentCreationPaths.has(path) || path === "/api/v2/runs" || path === "/api/v2/python/runs" || path.startsWith("/api/v2/agent/")))
+          (budgetAgentCreationPaths.has(path)&&!(serviceAgentAccess&&path==='/api/v2/data-services/agent/plans') || path === "/api/v2/runs" || path === "/api/v2/python/runs" || path.startsWith("/api/v2/agent/")))
         throw Object.assign(fail(503, "远程执行器尚未就绪；已保存结果仍可读取"), { code: "REMOTE_SPARK_NOT_READY" });
-      if (method === "POST" && budgetAgentCreationPaths.has(path))
+      if (method === "POST" && budgetAgentCreationPaths.has(path)&&!(serviceAgentAccess&&path==='/api/v2/data-services/agent/plans'))
         budget.assertCanStartModel();
       const constrainAuthSession = body => {
         if (publicReadOnly) return {...body, permissions: ["SESSION"], readOnly: true};
@@ -1607,6 +1614,7 @@ export function createV2Server(options = {}) {
             localSourcesEnabled: local,
             sourceBoundAgentPlansEnabled: sourceBoundServicePlansEnabled,
             sourceBoundAgentContextEnabled: privateDataServicesEnabled,
+            durableServiceAgentEnabled: Boolean(serviceAgentAccess),
             scope: privateDataServicesEnabled ? "PRIVATE_CLOUD_TEST" : "LOCAL_TEST_ONLY",
             serviceCount: dataServices.list().length,
             businessDriver: options.stateCoordinator
@@ -5846,6 +5854,7 @@ export function createV2Server(options = {}) {
       .finally(() => res.removeListener("close", onClose));
   });
   server.on("close", () => {
+    privateServices?.agentPlanner.shutdown();
     for (const c of controls.values()) c.abort();
     releaseScheduler.shutdown();
     realtime.shutdown();
