@@ -18,7 +18,8 @@ export function privateServiceAgentProfile(env){
   if(env.V2_LOCAL_DEVELOPMENT!=='false'||env.V2_PRIVATE_SMOKE_ENABLED!=='true'||env.V2_PRIVATE_DATA_SERVICES_ENABLED!=='true'||
    env.V2_FC_PUBLIC_READ_ONLY==='false'||env.V2_FC_PUBLIC_WRITE_SCOPE||typeof env.V2_PRIVATE_SERVICE_AGENT_PROFILE!=='string'||env.V2_PRIVATE_SERVICE_AGENT_PROFILE.length>4096)throw Error();
   const value=JSON.parse(env.V2_PRIVATE_SERVICE_AGENT_PROFILE);
-  if(!exact(value,['id','actorId','sourceBinding','startsAt','expiresAt','maxPlans','maxModelCalls','requestTokenLimit','tokenBudget','maxModelCostCny','bill'])||
+  if(!exact(value,['id','actorId','sourceBinding','startsAt','expiresAt','maxPlans','maxModelCalls','requestTokenLimit','tokenBudget','maxModelCostCny','bill',...(Object.hasOwn(value,'driver')?['driver']:[])])||
+   value.driver!==undefined&&!['EXPLICIT_ADVANCE','OSS_EVENTS'].includes(value.driver)||
    !uuid(value.id)||!uuid(value.actorId)||!date(value.startsAt)||!date(value.expiresAt)||Date.parse(value.expiresAt)<=Date.parse(value.startsAt)||Date.parse(value.expiresAt)-Date.parse(value.startsAt)>7200000||
    !integer(value.maxPlans,1,3)||!integer(value.maxModelCalls,1,3)||!integer(value.requestTokenLimit,1024,24000)||!integer(value.tokenBudget,value.requestTokenLimit,24000)||!money(value.maxModelCostCny,0.01,5)||
    !exact(value.bill,['month','observedAt','spendCny','unsettledReserveCny'])||!/^\d{4}-\d{2}$/.test(value.bill.month)||!date(value.bill.observedAt)||
@@ -26,11 +27,13 @@ export function privateServiceAgentProfile(env){
   value.sourceBinding=servicePlanSourceBinding(value.sourceBinding);
   const settings=modelSettings(env),endpoint=new URL(settings.baseUrl);
   if(typeof settings.model!=='string'||!/^[A-Za-z0-9_.:/-]{1,100}$/.test(settings.model)||endpoint.protocol!=='https:'||endpoint.username||endpoint.password||endpoint.search||endpoint.hash)throw Error();
-  const {bill,...boundary}=value;
+  const {bill,driver,...boundary}=value,executionDriver=driver??'EXPLICIT_ADVANCE';
   // A trusted bill refresh may update observed spend/time, but cannot renew a
   // window, lower its unsettled reserve or reset calls/tokens under the same id.
   const endpointHash=serviceHash(endpoint.href.replace(/\/$/,'')),model=settings.model;
-  const profile={...value,scope:'PRIVATE_SERVICE_AGENT_PLANNING',model,endpointHash,fingerprint:serviceHash({...boundary,billMonth:bill.month,unsettledReserveCny:bill.unsettledReserveCny,model,endpointHash})};
+  const eventTransportHash=executionDriver==='OSS_EVENTS'?serviceHash({bucket:env.OSS_BUCKET??null,accountId:env.V2_AGENT_EVENT_ACCOUNT_ID??null,project:env.V2_PROJECT_ID??'project-securities-lab',resultPrefix:env.V2_SPARK_QUEUE_RESULT_PREFIX??null,
+   signingHash:serviceHash(env.V2_SPARK_EXECUTOR_SECRET||env.V2_SCHEDULER_TICK_SECRET||null)}):undefined;
+  const profile={...value,driver:executionDriver,scope:'PRIVATE_SERVICE_AGENT_PLANNING',model,endpointHash,fingerprint:serviceHash({...boundary,...(executionDriver==='OSS_EVENTS'?{driver:executionDriver,eventTransportHash}:{}),billMonth:bill.month,unsettledReserveCny:bill.unsettledReserveCny,model,endpointHash})};
   // Copy before freezing so neither caller nor a mutable env object can change
   // an in-flight profile. A changed profile needs a different reviewed identity.
   const freeze=v=>{for(const child of Object.values(v))if(child&&typeof child==='object')freeze(child);return Object.freeze(v);};
@@ -54,7 +57,7 @@ export function serviceAgentSession(config,identity,store,project,now=Date.now()
  const windows=store.list('service_agent_window',project).filter(item=>item.profileId===config.id),
   reason=windows.length>1||windows[0]&&windows[0].fingerprint!==config.fingerprint?'BOUNDARY_CHANGED':now<Date.parse(config.startsAt)?'NOT_STARTED':now>=Date.parse(config.expiresAt)?'EXPIRED':undefined;
  return {servicePlanningOnly:true,readOnly:!selected,permissions:selected?['SESSION','SERVICES']:['SESSION'],
-  servicePlanning:selected?{enabled:reason===undefined,...(reason?{reason}:{}),id:config.id,sourceBinding:config.sourceBinding,model:config.model,
+  servicePlanning:selected?{enabled:reason===undefined,...(reason?{reason}:{}),id:config.id,sourceBinding:config.sourceBinding,model:config.model,driver:config.driver,
    startsAt:config.startsAt,expiresAt:config.expiresAt,maxPlans:config.maxPlans,maxModelCalls:config.maxModelCalls,tokenBudget:config.tokenBudget}:{enabled:false}};
 }
 export function assertServiceAgentWindow(config,now){

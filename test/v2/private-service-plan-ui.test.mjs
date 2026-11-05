@@ -33,6 +33,17 @@ test('session discovery narrows the selected user to planning, masks other users
  const publicView=(await f.call('/auth/session',undefined,f.a,undefined,true)).body;assert.equal(publicView.readOnly,true);assert.deepEqual(publicView.servicePlanning,{enabled:false});
  f.moveClock(600001);const closed=(await f.call('/auth/session',undefined,f.a)).body;assert.equal(closed.servicePlanning.enabled,false);assert.deepEqual(closed.permissions,['SESSION','SERVICES']);assert.equal(closed.readOnly,false,'the original owner may still cancel');
 });
+
+test('private event receipts bind the original task, window and safe background projection',async t=>{
+ const f=await durableServiceFixture(t,{eventMode:true,manual:true}),source=f.sourceBinding,b=binding(f),p=(await f.create()).body;
+ const queued=(await f.call('/data-services/agent/plans/'+p.id+'/advance',{expectedVersion:p.version},f.a)).body;
+ const parsed=checkedPrivateServicePlan(queued,source,b);assert.equal(parsed.recovery.driver,'OSS_EVENTS');assert.equal(parsed.recovery.background.status,'ACTIVE');
+ const session=(await f.call('/auth/session',undefined,f.a)).body;assert.equal(samePlanningWindow(parsed,session.servicePlanning),true);assert.equal(samePlanningWindow(parsed,{...session.servicePlanning,driver:'EXPLICIT_ADVANCE'}),false);
+ for(const mutate of [v=>{v.recovery.background.protocol='shuduo-agent-event-driver/v1';},v=>{v.recovery.background.cloudDriverVerified=true;},v=>{v.recovery.background.policyFingerprint='DO_NOT_EXPOSE';},v=>{v.recovery.background.taskId=f.agent.id;},v=>{v.recovery.background.publicationAutomatic=true;},v=>{v.recovery.background.expiresAt=Date.parse(v.executionWindow.expiresAt)+1;}]){
+  const bad=structuredClone(queued);mutate(bad);assert.throws(()=>checkedPrivateServicePlan(bad,source,b));
+ }
+ assert.equal(f.counts().calls,0);
+});
 test('changed window configuration is not advertised as writable during session recovery',async t=>{
  const f=await durableServiceFixture(t);await f.create();f.env.V2_PRIVATE_SERVICE_AGENT_PROFILE=JSON.stringify({...f.profile,maxPlans:2});const changed=await f.start();
  const session=(await changed.call('/auth/session',undefined,changed.a)).body;assert.equal(session.servicePlanning.enabled,false);assert.equal(session.servicePlanning.reason,'BOUNDARY_CHANGED');assert.deepEqual(session.permissions,['SESSION','SERVICES']);

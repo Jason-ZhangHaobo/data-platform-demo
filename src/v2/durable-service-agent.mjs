@@ -20,7 +20,7 @@ const frozenFrom=context=>({sourceKind:context.sourceKind,sourceAttribution:cont
 // One explicit advance owns one durable model boundary. This engine does not
 // imply an installed event driver, nor does any GET start or retry a model.
 export function createDurableServiceAgent({store,project,config,contextFor,assertVersions,validateProposal,createDraft,draftDetail,
- planner,persist,assertBudget,budgetOverview,now=Date.now,modelLeaseMs=90000,waitForModel=start=>start()}){
+ planner,persist,assertBudget,budgetOverview,now=Date.now,modelLeaseMs=90000,waitForModel=start=>start(),backgroundView=()=>undefined}){
  if(![contextFor,assertVersions,validateProposal,createDraft,draftDetail,persist,assertBudget,budgetOverview,waitForModel].every(fn=>typeof fn==='function')||
   !Number.isSafeInteger(modelLeaseMs)||modelLeaseMs<1||modelLeaseMs>90000)throw Error('持久服务规划依赖或租约不合法');
  const active=new Map(),kind='service_agent_plan',stamp=()=>new Date(now()).toISOString();
@@ -45,10 +45,11 @@ export function createDurableServiceAgent({store,project,config,contextFor,asser
  const visible=(task,actorId)=>{
   original(task.id,actorId);let sourceCheck='VERIFIED',sourceCheckCode;
   try{checkedContext(task);}catch(error){if(![403,404,409,422].includes(error.status))throw error;sourceCheck='UNAVAILABLE';sourceCheckCode='SERVICE_PLAN_SOURCE_UNAVAILABLE';}
-  const {durable,submittedBy,services,frozenSource,policyFingerprint,...value}=task;
+  const {durable,submittedBy,services,frozenSource,policyFingerprint,eventMode,...value}=task;
   const window=store.list(kind,project).filter(item=>item.executionMode===privateServiceAgentMode&&item.pilotId===task.pilotId),
    quota={attemptsUsed:window.reduce((sum,item)=>sum+item.attempts.length,0),attemptLimit:task.maxAttempts,usedTokens:window.reduce((sum,item)=>sum+item.usedTokens,0),tokenLimit:task.tokenBudget};
-  return {...value,sourceRevisionId:frozenSource.releaseRun.sourceRevisionId,sourceRunId:frozenSource.releaseRun.sourceRunId,quota,sourceCheck,...(sourceCheckCode?{sourceCheckCode}:{}),recovery:{supported:true,driver:'EXPLICIT_ADVANCE',backgroundDispatcherVerified:false,
+  const background=eventMode==='OSS_EVENTS'?backgroundView(task):undefined;
+  return {...value,sourceRevisionId:frozenSource.releaseRun.sourceRevisionId,sourceRunId:frozenSource.releaseRun.sourceRunId,quota,sourceCheck,...(sourceCheckCode?{sourceCheckCode}:{}),recovery:{supported:true,driver:eventMode??'EXPLICIT_ADVANCE',...(background?{background}:{}),backgroundDispatcherVerified:false,
    confirmationRequired:task.stage==='MODEL_OUTCOME_UNKNOWN',modelLeaseExpiresAt:durable?.leaseExpiresAt,
    leaseExpired:task.stage==='MODEL_IN_FLIGHT'&&Date.parse(durable?.leaseExpiresAt)<=now()}};
  };
@@ -95,7 +96,7 @@ export function createDurableServiceAgent({store,project,config,contextFor,asser
    return store.create(kind,project,{message,sourceBinding:binding,sourceContext:context.sourceContext,sourceKind:context.sourceKind,
     ...(context.sourceAttribution?{sourceAttribution:context.sourceAttribution}:{}),resourceVersions,resourcesTruncated:context.resourcesTruncated,services,frozenSource,
     contextHash:serviceHash({sourceBinding:binding,frozenSource,resourceVersions,services}),submittedBy:actorId,requestId,pilotId:config.id,policyFingerprint:config.fingerprint,
-    executionMode:privateServiceAgentMode,scope:'PRIVATE_CLOUD_TEST',mode:'LIVE_MODEL',requestedModel:config.model,executionWindow:{startsAt:config.startsAt,expiresAt:config.expiresAt},completionScope:'DATA_SERVICE_DESIGN',fullLifecycleE2E:false,agentIndependentE2E:false,publicDeployed:false,
+    executionMode:privateServiceAgentMode,...(config.driver==='OSS_EVENTS'?{eventMode:'OSS_EVENTS'}:{}),scope:'PRIVATE_CLOUD_TEST',mode:'LIVE_MODEL',requestedModel:config.model,executionWindow:{startsAt:config.startsAt,expiresAt:config.expiresAt},completionScope:'DATA_SERVICE_DESIGN',fullLifecycleE2E:false,agentIndependentE2E:false,publicDeployed:false,
     status:'QUEUED',stage:'READY_FOR_MODEL',attempts:[],usedTokens:0,requestTokenLimit:config.requestTokenLimit,tokenBudget:config.tokenBudget,maxAttempts:config.maxModelCalls,durable:{}});
   });
   await persist();return visible(original(record.id,actorId),actorId);
@@ -178,7 +179,23 @@ export function createDurableServiceAgent({store,project,config,contextFor,asser
   if(task.status!=='APPLIED')task=change(task,{status:'APPLIED',stage:'APPLIED',serviceId:service.id,appliedVersionId:service.currentVersion.id,appliedConfigHash:service.currentVersion.configHash});
   await persist();return service;
  }
- return {configured:Boolean(config),create,advance,cancel,apply,
+ const eventBoundary=task=>({profileId:task.pilotId,policyFingerprint:task.policyFingerprint,sourceBinding:task.sourceBinding,expiresAt:task.executionWindow.expiresAt});
+ const assertEventScope=(task,boundary)=>{
+  original(task.id,task.submittedBy);assertPolicy(task);
+  try{checkedContext(task,true);}catch(error){if(![403,404,409,422].includes(error.status))throw error;throw fail('SERVICE_AGENT_EVENT_SOURCE_BLOCKED','原规划的来源或固定版本暂不可用');}
+  if(config.driver!=='OSS_EVENTS'||task.eventMode!=='OSS_EVENTS'||!same(boundary,eventBoundary(task)))throw fail('SERVICE_AGENT_EVENT_SCOPE_DENIED','事件不属于原规划执行窗口');
+ };
+ const reviewEventAdvance=(id,actorId,{expectedVersion,confirmModelRetry=false}={})=>{
+  const task=original(id,actorId);if(expectedVersion!==task.version||!Number.isSafeInteger(expectedVersion)||typeof confirmModelRetry!=='boolean')throw fail('STALE_SERVICE_AGENT_VERSION','请读取原任务最新版本后再推进');
+  assertEventScope(task,eventBoundary(task));
+  if(task.stage==='MODEL_OUTCOME_UNKNOWN'&&!confirmModelRetry)throw fail('SERVICE_AGENT_RETRY_CONFIRMATION_REQUIRED','上一次模型结果可能已收费，需明确确认后才能在剩余额度内重试');
+  if(!['READY_FOR_MODEL','MODEL_NOT_SENT','MODEL_OUTCOME_UNKNOWN'].includes(task.stage))throw fail('SERVICE_AGENT_STAGE_INVALID','原阶段不能登记新的模型事件');
+  const value=stats(),reserved=remaining();if(value.calls>=config.maxModelCalls||reserved<1024)throw fail('SERVICE_AGENT_EXECUTION_LIMIT','原窗口的模型次数、Token或费用额度已用完',429);
+  bill(reserved);return task;
+ };
+ return {configured:Boolean(config),create,advance,cancel,apply,eventBoundary,assertEventScope,reviewEventAdvance,
+  prepareEventResume:async(id,actorId,options)=>{const task=reviewEventAdvance(id,actorId,options);await finish(task,{});},
+  eventTask:(id,actorId)=>original(id,actorId),
   read:(id,actorId)=>visible(original(id,actorId),actorId),
   request:(key,actorId)=>{if(!uuid(key))throw fail('SERVICE_AGENT_REQUEST_INVALID','原请求UUID不合法',422);const id=store.deduplicatedId(namespace(actorId,key));if(!id)throw fail('SERVICE_AGENT_REQUEST_NOT_FOUND','原请求尚未找到',404);return visible(original(id,actorId),actorId);},
   list:(binding,actorId)=>{binding=servicePlanSourceBinding(binding);return store.list(kind,project).filter(task=>task.executionMode===privateServiceAgentMode&&task.submittedBy===actorId&&same(task.sourceBinding,binding)).map(task=>visible(original(task.id,actorId),actorId));},

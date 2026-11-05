@@ -16,7 +16,7 @@
 
 CLI 使用 `shuduo services plan-context --task-id UUID --package-digest SHA256 --release-id UUID --source-run-id UUID`；MCP 为只读工具 `service_agent_context`，参数仅 `sourceBinding`。GUI／CLI／MCP 使用同一只读 API 和回执验证，不接收执行者、确认写入或模型参数。私有传输及临时预览仅新增这一条严格 GET，不放开旧规划 POST。
 
-当前只读适配已通过本机 HTTP／SQLite、CLI/MCP和实际浏览器合成验收；上游发布回执为合成数据，不计真实云或模型验收。新增[持久私有规划](durable-service-agent.md)已接入独立Agent界面，包含独立窗口、持久模型尝试、原请求恢复及预算门；默认关闭、未部署云端，云事件驱动仍待接入，不沿用旧消费批准。下面工作流程描述普通本机模式；私有持久模式须先保存任务，再显式开始，窗口只允许方案及草稿，不开放测试、发布或凭证。
+当前只读适配、[持久私有规划](durable-service-agent.md)及[受控事件适配](service-agent-events.md)已完成本机合成验收，GUI／API／CLI／MCP共用原来源、窗口、模型尝试与恢复记录。默认关闭，真实云及模型另行验收，不沿用旧消费批准。下面描述普通本机流程；私有持久模式须先保存再明确推进，事件模式只登记原唤醒，方案完成后仍须摘要审阅，不能自动测试、发布或发凭证。
 
 ## 工作流程
 
@@ -62,7 +62,7 @@ CLI 使用 `shuduo services plan-context --task-id UUID --package-digest SHA256 
 
 来源暂时失效时，创建者仍可读取自己的原方案元数据，返回 `sourceCheck:UNAVAILABLE`；它不是执行许可。界面只读展示原方案及口径，生成与应用关闭，正在运行的本人规划仍可取消。来源恢复后重新读取原来源与方案即可，无须再次调用模型。验证成功的读取返回 `sourceCheck:VERIFIED`，应用仍会再次核对当前固定版本。
 
-切换批次会切换对应记录，不显示旧批次方案充当新方案。明确恢复链接中的批次不可用时保持错误与原编号，不改选其他批次。本机原模式仍按现有队列保存状态，进程重启不自动重发。私有显式持久规划见[独立协议](durable-service-agent.md)，GUI及云事件驱动和真实验收仍待后续，不能将本机队列当成云后台。
+切换批次会切换对应记录，不显示旧批次方案充当新方案。恢复批次不可用时保留错误及原编号，不改选其他来源。原本机队列进程重启不自动重发；私有[持久协议](durable-service-agent.md)及[事件协议](service-agent-events.md)独立恢复同一记录，真实新进程及云验收仍待后续，不能将本机队列当成云后台。
 
 ## CLI／MCP
 

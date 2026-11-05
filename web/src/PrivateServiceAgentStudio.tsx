@@ -10,6 +10,7 @@ type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promi
 type Props={api:Api;binding:ServiceSourceBinding;verifiedSource?:ServicePlanSource;readEnabled:boolean;planningEnabled:boolean;transportEnabled:boolean;canAct:boolean;modelConfigured:boolean;
  access?:ServicePlanningAccess;onApplied:(serviceId:string)=>Promise<void>;onBusyChange:(busy:boolean)=>void;onRefreshSource:()=>Promise<void>};
 const terminal=new Set(['SUCCEEDED','FAILED','CANCELLED','APPLIED']);
+const eventStatusText:Record<string,string>={INACTIVE:'尚未登记',ACTIVE:'已登记',COMPLETED:'本次事件已完成',NEEDS_CONFIRMATION:'等待本人确认',PAUSED:'已暂停',EXPIRED:'事件窗口已到期',CANCELLED:'已停止'};
 const href=()=>typeof window==='undefined'?undefined:window.location.href;
 export function PrivateServiceAgentStudio(props:Props){
  const marker=href()?servicePlanMarker(href()!):{invalid:false as const,requestId:undefined,planId:undefined,batchId:undefined},
@@ -29,8 +30,11 @@ export function PrivateServiceAgentStudio(props:Props){
   writeWindow=Boolean(props.planningEnabled&&props.transportEnabled&&props.canAct&&windowOpen),
   canSave=Boolean(writeWindow&&contextInfo&&historyState==='READY'&&Number.isSafeInteger(props.access?.maxPlans)&&windowTasks<Number(props.access?.maxPlans)&&!plan&&!pendingRequest&&!marker.invalid),
   currentWindow=Boolean(plan&&samePlanningWindow(plan,props.access)),
+  eventExpired=Boolean(plan?.recovery.driver==='OSS_EVENTS'&&plan.recovery.background?.expiresAt!==undefined&&plan.recovery.background.expiresAt<=clock),
+  eventPending=Boolean(plan?.recovery.driver==='OSS_EVENTS'&&plan.recovery.background?.status==='ACTIVE'&&!eventExpired&&plan.recovery.background.delivery==='ACKNOWLEDGED'&&['READY_FOR_MODEL','MODEL_NOT_SENT','MODEL_OUTCOME_UNKNOWN'].includes(plan.stage)),
   quotaOpen=Boolean(plan&&plan.quota.attemptsUsed<plan.quota.attemptLimit&&plan.quota.usedTokens<plan.quota.tokenLimit),
-  canAdvance=Boolean(plan&&writeWindow&&currentWindow&&props.modelConfigured&&sourceAvailable&&plan.sourceCheck==='VERIFIED'&&quotaOpen&&!pendingRequest&&!pendingAction&&['READY_FOR_MODEL','MODEL_NOT_SENT','MODEL_OUTCOME_UNKNOWN'].includes(plan.stage)),
+  canAdvance=Boolean(plan&&writeWindow&&currentWindow&&props.modelConfigured&&sourceAvailable&&plan.sourceCheck==='VERIFIED'&&!plan.recovery.background?.scopeBlocked&&quotaOpen&&!pendingRequest&&!pendingAction&&!eventPending&&['READY_FOR_MODEL','MODEL_NOT_SENT','MODEL_OUTCOME_UNKNOWN'].includes(plan.stage)),
+  canRedrive=Boolean(eventPending&&plan?.stage==='READY_FOR_MODEL'&&writeWindow&&currentWindow&&props.modelConfigured&&sourceAvailable&&plan.sourceCheck==='VERIFIED'&&!plan.recovery.background?.scopeBlocked&&quotaOpen&&!pendingRequest&&!pendingAction),
   canApply=Boolean(plan&&writeWindow&&currentWindow&&sourceAvailable&&plan.sourceCheck==='VERIFIED'&&plan.status==='SUCCEEDED'&&reviewed&&!pendingRequest&&!pendingAction);
  const windowReason=props.access?.reason==='BOUNDARY_CHANGED'?'执行配置与原窗口不一致，需要先复核。':!props.canAct?'当前账号或入口没有规划写权限。':!props.planningEnabled?'当前服务未开放新规划步骤。':props.access?.reason==='NOT_STARTED'?'执行窗口尚未开始。':props.access?.reason==='EXPIRED'||props.access?.expiresAt&&clock>=Date.parse(props.access.expiresAt)?'执行窗口已到期。':!sameServicePlanSource(props.access?.sourceBinding,props.verifiedSource)?'当前发布批次不属于此执行窗口。':'当前执行窗口未开放。';
  function start(action:string){setBusy(action);setError('');setNotice('');callbacks.current.onBusyChange(true);return ++actionSequence.current;}
@@ -76,14 +80,14 @@ export function PrivateServiceAgentStudio(props:Props){
   return()=>{active=false;};
  },[identity,sourceAvailable,props.readEnabled]);
  useEffect(()=>{
-  if(!plan||plan.status!=='RUNNING'||busy||pendingAction)return;let active=true,reads=0,flight=false;const key=identity,selected=source,id=plan.id;
+  if(!plan||!(plan.status==='RUNNING'||plan.recovery.driver==='OSS_EVENTS'&&plan.recovery.background?.status==='ACTIVE'&&(plan.recovery.background.expiresAt??0)>Date.now())||busy||pendingAction)return;let active=true,reads=0,flight=false;const key=identity,selected=source,id=plan.id;
   if(!selected)return;
   const timer=setInterval(async()=>{if(!active||flight||reads>=12){if(reads>=12)clearInterval(timer);return;}reads++;flight=true;
    try{const value=await props.api('/data-services/agent/plans/'+id);if(active&&valid(key)){
-    const next=checkedPrivateServicePlan(value,selected,props.binding);setPlan(next);setPlans(old=>[next,...old.filter(p=>p.id!==id)]);if(next.status!=='RUNNING'||next.recovery.leaseExpired||next.sourceCheck==='UNAVAILABLE')clearInterval(timer);
+    const next=checkedPrivateServicePlan(value,selected,props.binding);setPlan(next);setPlans(old=>[next,...old.filter(p=>p.id!==id)]);if(!(next.status==='RUNNING'||next.recovery.driver==='OSS_EVENTS'&&next.recovery.background?.status==='ACTIVE'&&(next.recovery.background.expiresAt??0)>Date.now())||next.recovery.leaseExpired||next.sourceCheck==='UNAVAILABLE'||next.recovery.background?.scopeBlocked)clearInterval(timer);
    }}catch(cause){clearInterval(timer);if(active&&valid(key))setError((cause as Error).message+' 状态读取已暂停，可手动查询原任务。');}finally{flight=false;}
   },5000);return()=>{active=false;clearInterval(timer);};
- },[plan?.id,plan?.status,busy,pendingAction,identity]);
+ },[plan?.id,plan?.status,plan?.recovery.background?.status,plan?.recovery.background?.expiresAt,busy,pendingAction,identity]);
  async function save(){
   if(!canSave||!source||busy||message.trim().length<4||message.trim().length>2000)return;const key=identity,selected=source,text=message.trim(),ticket=start('save');
   try{const c=submission(),value=await c.submit({message:text,sourceBinding:selected}),request=c.snapshot().key;
@@ -91,11 +95,11 @@ export function PrivateServiceAgentStudio(props:Props){
    if(accept(value,selected,key,request,ticket)&&latest(key,ticket))setNotice('任务已保存，尚未调用模型；请核对后开始规划。');
   }catch(cause){if(latest(key,ticket))setError((cause as Error).message+' 请先查询原请求，不会自动重发。');}finally{end(key,ticket);}
  }
- async function advance(reconcile=false){
-  if(!plan||!source||busy||(!reconcile&&!canAdvance)||reconcile&&!(props.planningEnabled&&props.canAct&&plan.recovery.leaseExpired)||plan.stage==='MODEL_OUTCOME_UNKNOWN'&&!confirmRetry)return;
+ async function advance(reconcile=false,redrive=false){
+  if(!plan||!source||busy||(!reconcile&&!redrive&&!canAdvance)||redrive&&!canRedrive||reconcile&&!(props.planningEnabled&&props.canAct&&plan.recovery.leaseExpired)||plan.stage==='MODEL_OUTCOME_UNKNOWN'&&!confirmRetry)return;
   const key=identity,selected=source,id=plan.id,version=plan.version,ticket=start('advance');setPendingAction('advance');
   try{const value=await props.api('/data-services/agent/plans/'+id+'/advance',{expectedVersion:version,...(plan.stage==='MODEL_OUTCOME_UNKNOWN'?{confirmModelRetry:true}:{})});
-   if(accept(value,selected,key,undefined,ticket)&&latest(key,ticket))setNotice(reconcile?'已核对原租约状态，没有自动重试模型。':'本次推进结果已保存，请查看方案或恢复提示。');
+   const next=accept(value,selected,key,undefined,ticket);if(next&&latest(key,ticket))setNotice(reconcile?'已核对原租约状态，没有自动重试模型。':next.recovery.driver==='OSS_EVENTS'?next.recovery.background?.delivery==='UNCONFIRMED'?'原事件投递结果待核对；保留原任务与唤醒记录，不自动重新投递。':'原任务事件已登记；前台无需持续打开，实际推进以事件回执为准。':'本次推进结果已保存，请查看方案或恢复提示。');
   }catch(cause){if(latest(key,ticket))setError((cause as Error).message+' 本次结果待核对；先读取原任务，不自动再调用模型。');}finally{end(key,ticket);}
  }
  async function apply(){
@@ -127,9 +131,10 @@ export function PrivateServiceAgentStudio(props:Props){
    {props.access?.maxPlans&&windowOpen&&<small>{historyState==='READY'?`当前窗口已保存 ${windowTasks}/${props.access.maxPlans} 个任务，服务端会重新核对额度。`:historyState==='LOADING'?'正在读取当前窗口任务数…':'当前窗口任务数未确认，创建保持关闭。'}</small>}
    {pendingRequest&&<div className="service-feedback" role="status"><strong>原提交结果待确认</strong><p>请求编号 {pendingRequest}。查询只读取，不调用模型。</p><button className="button" disabled={!!busy||!source} onClick={()=>void readOriginal()}>查询原提交</button>{controller.current?.snapshot().canRetry&&<button className="button" disabled={!writeWindow||!!busy||!sourceAvailable} onClick={()=>void readOriginal(undefined,true)}>核对后重试原保存</button>}</div>}
    {plans.length>0&&<details className="private-service-history"><summary>此来源的本人规划记录（{plans.length}）</summary>{plans.map(item=><button className="button" key={item.id} disabled={!!busy||Boolean(pendingRequest)} onClick={()=>void readOriginal(item.id)}>{item.proposal?.name??item.message.slice(0,24)} · {privatePlanStageText[item.stage]}</button>)}</details>}
-  </div><div className="private-service-task" aria-live="polite">{plan?<><div className="private-service-task-heading"><span className={['SUCCEEDED','APPLIED'].includes(plan.status)?'pill success':'pill'}>{busy==='advance'?'已请求推进 · 等待结果':busy==='cancel'?'正在取消原任务':pendingAction&&!busy?'操作结果待核对':privatePlanStageText[plan.stage]}</span><small>任务 {plan.id.slice(0,8)} · 最新已知版本 {plan.version}</small></div>
+  </div><div className="private-service-task" aria-live="polite">{plan?<><div className="private-service-task-heading"><span className={['SUCCEEDED','APPLIED'].includes(plan.status)?'pill success':'pill'}>{busy==='advance'?'已请求推进 · 等待结果':busy==='cancel'?'正在取消原任务':pendingAction&&!busy?'操作结果待核对':eventPending?'原任务等待事件':privatePlanStageText[plan.stage]}</span><small>任务 {plan.id.slice(0,8)} · 最新已知版本 {plan.version}</small></div>
    <div className="private-service-quota"><div><strong>{plan.quota.attemptsUsed}<small>/{plan.quota.attemptLimit}</small></strong><span>原窗口模型尝试</span></div><div><strong>{plan.quota.usedTokens.toLocaleString()}<small>/{plan.quota.tokenLimit.toLocaleString()}</small></strong><span>窗口已用／保守预留 Token</span></div></div>
    <small>{busy?'用量为最近确认的检查点，响应或读取后更新。':''}包含未确认与发送前停止的尝试。Token 预留不是已扣费账单；实际推进还受费用、权限和来源门约束。</small>
+   {plan.recovery.driver==='OSS_EVENTS'&&<div className="service-context-boundary" role="status"><strong>受控事件推进 · 不依赖前台请求</strong><p>{eventPending?'原事件已登记，读取和刷新不会再次投递。':eventExpired&&plan.recovery.background?.status==='ACTIVE'?'原事件窗口已到期，可在原执行窗口内明确续接，次数和预留保留。':plan.recovery.background?.delivery==='UNCONFIRMED'?'投递是否成功尚未确认，可明确恢复同一唤醒记录。':'事件进度：'+(eventStatusText[plan.recovery.background?.status??'']??'原记录待读取')} {plan.recovery.background?.consumedEvents!==undefined?`已处理 ${plan.recovery.background.consumedEvents}/${plan.recovery.background.maxEvents} 个事件，事件数不等于模型调用数。`:''}</p><small>云端部署、触发器和真实运行须单独验收；此模式不会自动确认草稿或发布。</small></div>}
    <p><strong>{plan.sourceContext.name}</strong><br/>{plan.sourceContext.definition}</p><small>{plan.sourceKind==='MANUAL'?'工程师人工来源 · 不计 Agent 自主完成':'Agent发布来源'} · 模型 {plan.requestedModel}</small>
    {(!sourceAvailable||plan.sourceCheck==='UNAVAILABLE')&&<p role="status">原来源待复核；此处为历史口径，只读与取消可用。</p>}
    {!currentWindow&&<p>原任务不属于当前执行窗口，不能借新窗口继续调用或应用。</p>}
@@ -137,9 +142,10 @@ export function PrivateServiceAgentStudio(props:Props){
    {plan.stage==='MODEL_OUTCOME_UNKNOWN'&&<div className="private-service-warning"><strong>上次调用可能已经收费</strong><p>结果未确认，次数和保守用量保留。先读取原任务，确认仍需重试后再继续。</p><label><input type="checkbox" checked={confirmRetry} disabled={!!busy||!canAdvance} onChange={event=>setConfirmRetry(event.target.checked)}/>我确认在剩余额度内重试这次未知结果</label></div>}
    {plan.stage==='MODEL_NOT_SENT'&&<p>上次在发送前停止，没有确认发起模型请求；历史尝试和保守预留保留，先处理配置或预算原因。</p>}
    {plan.error&&<p role={plan.status==='FAILED'?'alert':'status'}>{plan.error}</p>}
-   <div className="private-service-actions">{['READY_FOR_MODEL','MODEL_NOT_SENT','MODEL_OUTCOME_UNKNOWN'].includes(plan.stage)&&<button className="button primary" disabled={!canAdvance||!!busy||plan.stage==='MODEL_OUTCOME_UNKNOWN'&&!confirmRetry} onClick={()=>void advance()}>{busy==='advance'?<LoaderCircle className="spin" size={15}/>:<Play size={15}/>} {plan.stage==='MODEL_OUTCOME_UNKNOWN'?'确认重试模型':plan.stage==='MODEL_NOT_SENT'?'明确继续原任务':'开始模型规划'}</button>}
+   <div className="private-service-actions">{['READY_FOR_MODEL','MODEL_NOT_SENT','MODEL_OUTCOME_UNKNOWN'].includes(plan.stage)&&<button className="button primary" disabled={!canAdvance||!!busy||plan.stage==='MODEL_OUTCOME_UNKNOWN'&&!confirmRetry} onClick={()=>void advance()}>{busy==='advance'?<LoaderCircle className="spin" size={15}/>:<Play size={15}/>} {eventPending?'原任务等待事件':plan.recovery.background?.delivery==='UNCONFIRMED'?'恢复原事件投递':plan.stage==='MODEL_OUTCOME_UNKNOWN'?'确认重试模型':eventExpired?'继续原事件任务':plan.stage==='MODEL_NOT_SENT'?'明确继续原任务':plan.recovery.driver==='OSS_EVENTS'?'登记模型事件':'开始模型规划'}</button>}
     {plan.recovery.leaseExpired&&<button className="button" disabled={!props.planningEnabled||!props.canAct||!!busy} onClick={()=>void advance(true)}>核对中断状态</button>}
     <button className="button" disabled={Boolean(busy&&busy!=='advance')||Boolean(pendingRequest)} onClick={()=>void readOriginal(plan.id)}><RefreshCw size={14}/>读取原任务</button>
+    {canRedrive&&<button className="button" disabled={!!busy} onClick={()=>void advance(false,true)}>明确重新投递原任务</button>}
     {!terminal.has(plan.status)&&<button className="button" disabled={!props.canAct||Boolean(busy&&!['advance','read'].includes(busy))} onClick={()=>void cancel()}><Square size={14}/>取消后续规划</button>}</div>
    {pendingAction&&<p role="status">{busy?'正在处理原任务。':'上次操作结果待核对，请先读取原任务，不会自动重发。'}</p>}
    {plan.proposal&&<div className="service-agent-plan"><h4>{plan.proposal.name} <small>{plan.proposal.serviceType}</small></h4><code>/{plan.proposal.slug}</code><p>{plan.explanation}</p>
@@ -150,6 +156,6 @@ export function PrivateServiceAgentStudio(props:Props){
    <details><summary>查看尝试与原来源</summary><p>任务 {plan.id} · 请求 {plan.requestId}</p><p>批次 {plan.sourceBinding.sourceReleaseRunId}</p>{plan.attempts.map(a=><p key={a.attempt}>第{a.attempt}次 · {a.status==='MODEL_NOT_SENT'?'发送前停止':a.status==='MODEL_OUTCOME_UNKNOWN'?'结果未知':a.status==='MODEL_IN_FLIGHT'?'调用中':'模型已返回'} · {a.usage.total_tokens} Token{a.usageEstimated?'（保守预留）':''}{a.diagnostic?' · '+a.diagnostic.code:''}</p>)}</details>
   </>:<div className="private-service-empty"><Bot size={26}/><h4>{pendingRequest?'正在找回原提交':'规划从一条明确需求开始'}</h4><p>先保存任务，再明确开始。窗口与来源不满足时不会调用模型。</p>{historyState==='LOADING'&&source&&<small>正在读取此来源的本人记录…</small>}</div>}</div></div>
   {(error||notice)&&<div className={error?'service-feedback error':'service-feedback'} role={error?'alert':'status'}>{error||notice}</div>}
-  <p className="service-context-boundary">当前为显式推进协议，不代表已安装云事件后台。任务、方案和草稿均绑定原来源；刷新与查询不会自动调用模型。</p>
+  <p className="service-context-boundary">{(plan?.recovery.driver??props.access?.driver)==='OSS_EVENTS'?'当前采用受控事件协议；已登记任务可由独立事件调用推进，不代表真实云部署已验收。':'当前为显式推进协议，不代表已安装云事件后台。'}任务、方案和草稿均绑定原来源；刷新与查询不会自动调用模型。</p>
  </section>;
 }

@@ -15,7 +15,7 @@ const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(
 export { privateServiceRoute } from "./private-service-routes.mjs";
 
 export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,pilotConfig,persist=async()=>{},
-  agentConfig,planner,assertModelBudget=()=>{throw Error('Model budget not configured');},budgetOverview=()=>{throw Error('Budget not configured');},modelLeaseMs,waitForModel}) {
+  agentConfig,planner,assertModelBudget=()=>{throw Error('Model budget not configured');},budgetOverview=()=>{throw Error('Budget not configured');},modelLeaseMs,waitForModel,backgroundView,dispatchPlan,cancelPlan}) {
   const get=(kind,id)=>typeof id==="string"?store.get(kind,id,project):undefined;
   const source=id=>{
     const run=get("release_run",id),release=run&&get("release",run.releaseId),bundle=run&&get("delivery_package",run.packageId),approval=release&&get("release_approval",release.approvalId);
@@ -140,7 +140,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
         current&&(item.status!=='PUBLISHED'||item.publishedVersionId!==v.id||v.status!=='PUBLISHED'))throw fail(409,'原规划DAPI固定版本、权限或快照已经变化','SERVICE_PLAN_VERSION_CHANGED');
     }
   };
-  const agentPlanner=createDurableServiceAgent({store,project,config:agentConfig,now,modelLeaseMs,persist,planner,waitForModel,assertBudget:assertModelBudget,budgetOverview,
+  const agentPlanner=createDurableServiceAgent({store,project,config:agentConfig,now,modelLeaseMs,persist,planner,waitForModel,backgroundView,assertBudget:assertModelBudget,budgetOverview,
     contextFor:(actorId,binding)=>agentContext(identity(actorId),binding),assertVersions:assertPlanVersions,validateProposal:value=>manager.validateAgentPlan(value),
     createDraft:(proposal,actorId)=>{
       const {serviceType,...body}=proposal;checkInput(identity(actorId),serviceType,body);
@@ -171,9 +171,9 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       const id=planPath[1],action=planPath[2];
       if(method==='GET'&&!action)return {status:200,body:agentPlanner.read(id,owner)};
       const b=await readBody(req);
-      if(action==='advance'){bodyKeys(b,['expectedVersion','confirmModelRetry']);return {status:200,body:await agentPlanner.advance(id,owner,b)};}
+      if(action==='advance'){bodyKeys(b,['expectedVersion','confirmModelRetry']);if(agentConfig?.driver==='OSS_EVENTS'&&!dispatchPlan)throw fail(503,'受控事件驱动未就绪');return {status:agentConfig?.driver==='OSS_EVENTS'?202:200,body:await(dispatchPlan?dispatchPlan(id,owner,b):agentPlanner.advance(id,owner,b))};}
       if(action==='apply'){bodyKeys(b,['proposalHash']);return {status:200,body:await agentPlanner.apply(id,owner,b.proposalHash)};}
-      if(action==='cancel'){bodyKeys(b,['sourceBoundOnly']);if(b.sourceBoundOnly!==undefined&&b.sourceBoundOnly!==true)throw fail(422,'仅可取消原同源规划');return {status:200,body:await agentPlanner.cancel(id,owner)};}
+      if(action==='cancel'){bodyKeys(b,['sourceBoundOnly']);if(b.sourceBoundOnly!==undefined&&b.sourceBoundOnly!==true)throw fail(422,'仅可取消原同源规划');return {status:200,body:await(cancelPlan?cancelPlan(id,owner):agentPlanner.cancel(id,owner))};}
     }
     if(method==="GET" && path.endsWith("/task-evidence")){
       const selection=privateServiceSourceSelection(url.searchParams,true);

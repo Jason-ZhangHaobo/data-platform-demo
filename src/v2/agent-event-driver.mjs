@@ -1,16 +1,18 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { durableSqlAgentMode } from "./durable-agent.mjs";
+import {privateServiceAgentMode} from './private-service-agent-policy.mjs';
 import { SPARK_QUEUE_PREFIXES, verifyQueuedSparkResult } from "./remote-spark-queue.mjs";
 
 export const AGENT_WAKE_PREFIX = "data-platform-demo/v2/agent-wakes";
 export const agentEventProtocol = "shuduo-agent-event-driver/v1";
+export const serviceAgentEventProtocol='shuduo-service-agent-event-driver/v1';
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const hash = text => createHash("sha256").update(text).digest("hex");
 const fail = (status, code) => Object.assign(new Error(code), {status,code});
 const ready = new Set(["READY_FOR_MODEL","READY_FOR_RUN"]);
 const terminal = new Set(["SUCCEEDED","FAILED","CANCELLED"]);
 const safeCode = e => /^[A-Z][A-Z0-9_]{2,64}$/.test(e?.code ?? "") ? e.code : "AGENT_EVENT_FAILED";
-const signature = (body, secret) => createHmac("sha256", secret).update(`shuduo-agent-wake/v1\n${JSON.stringify(body)}`).digest("hex");
+const signature = (body, secret,protocol='shuduo-agent-wake/v1') => createHmac("sha256", secret).update(`${protocol}\n${JSON.stringify(body)}`).digest("hex");
 const equal = (a,b) => typeof a === "string" && /^[a-f0-9]{64}$/.test(a) && timingSafeEqual(Buffer.from(a),Buffer.from(b));
 
 export function agentEventConfigFromEnvironment(env) {
@@ -44,20 +46,27 @@ export function parseAgentObjectEvent(event,config) {
 
 // No process timer, idle polling, publication or user-controlled command. Each
 // event can claim only its opted-in task and one durable development boundary.
-export function createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist,now=Date.now,assertExecutionScope=()=>{}}) {
-  if(!dispatcher || !transport?.create || !transport?.read || config?.project!==project || queueConfig?.projectId!==project)
+export function createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist,now=Date.now,assertExecutionScope=()=>{},taskKind='agent',assertCancelScope}) {
+  const servicePlanning=taskKind==='service_agent_plan',eventProtocol=servicePlanning?serviceAgentEventProtocol:agentEventProtocol,
+    wakeProtocol=servicePlanning?'shuduo-service-agent-wake/v1':'shuduo-agent-wake/v1',
+    owns=item=>Boolean(item&&(servicePlanning?item.taskKind===taskKind:item.taskKind===undefined||item.taskKind==='agent')),
+    contextDigest=task=>servicePlanning?task.policyFingerprint:task.durable.contextDigest,
+    readyFor=task=>servicePlanning?task.stage==='READY_FOR_MODEL':ready.has(task.stage),
+    terminalFor=task=>terminal.has(task.status)||servicePlanning&&task.status==='APPLIED',
+    reviewed=(task,g)=>servicePlanning&&g.review?.taskVersion===task.version&&(task.stage!=='MODEL_OUTCOME_UNKNOWN'||g.review.confirmModelRetry===true);
+  if(!['agent','service_agent_plan'].includes(taskKind)||!dispatcher || !transport?.create || !transport?.read || config?.project!==project || !servicePlanning&&queueConfig?.projectId!==project)
     throw fail(503,"AGENT_EVENT_DEPENDENCY_INVALID");
   const getTask=id=>{
-    const task=store.get("agent",id,project);
-    if(!task || task.executionMode!==durableSqlAgentMode)throw fail(404,"AGENT_EVENT_TASK_NOT_FOUND");
+    const task=store.get(taskKind,id,project);
+    if(!task || task.executionMode!==(servicePlanning?privateServiceAgentMode:durableSqlAgentMode)||servicePlanning&&task.eventMode!=='OSS_EVENTS')throw fail(404,"AGENT_EVENT_TASK_NOT_FOUND");
     return task;
   };
   const ownerAllowed=task=>{
     const owner=store.get("auth_user",task.submittedBy,project);
-    return owner?.status==="ACTIVE" && owner.memberships?.some(m=>m.projectId===project && ["ADMIN","ENGINEER"].includes(m.role));
+    return owner?.status==="ACTIVE" && owner.memberships?.some(m=>m.projectId===project && (servicePlanning?["ADMIN","ENGINEER","PRODUCT_MANAGER"]:["ADMIN","ENGINEER"]).includes(m.role));
   };
-  const grantFor=id=>store.list("agent_background",project).find(g=>g.taskId===id && g.status==="ACTIVE");
-  const view=(g,delivery)=>({protocol:agentEventProtocol,taskId:g.taskId,status:g.status,expiresAt:g.expiresAt,maxEvents:g.maxEvents,
+  const grantFor=id=>store.list("agent_background",project).find(g=>owns(g)&&g.taskId===id && g.status==="ACTIVE");
+  const view=(g,delivery)=>({protocol:eventProtocol,taskId:g.taskId,status:g.status,expiresAt:g.expiresAt,maxEvents:g.maxEvents,
     consumedEvents:g.consumedEvents,delivery:delivery ?? g.delivery,state:g.state,code:g.code,
     cloudDriverVerified:false,publicationAutomatic:false});
   const patch=(g,value)=>store.update("agent_background",g.id,project,value,{expectedVersion:g.version});
@@ -67,29 +76,29 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
   const scoped=(task,g)=>{
     try{assertExecutionScope(task,g?.developmentBoundary);}
     catch(error){
-      if(!String(error.code??'').startsWith('PUBLIC_DEVELOPMENT_'))throw error;
-      return {protocol:agentEventProtocol,state:'SCOPE_DENIED',code:error.code};
+      if(!String(error.code??'').startsWith(servicePlanning?'SERVICE_AGENT_':'PUBLIC_DEVELOPMENT_'))throw error;
+      return {protocol:eventProtocol,state:'SCOPE_DENIED',code:error.code};
     }
   };
   const live=async(g,task)=>{
     const denied=scoped(task,g);if(denied)return denied;
     if(g.expiresAt<=now())return stop(g,"EXPIRED","AGENT_BACKGROUND_DEADLINE");
     if(!ownerAllowed(task))return stop(g,"PAUSED","AGENT_OWNER_PERMISSION_REVOKED");
-    if(task.durable.contextDigest!==g.contextDigest)return stop(g,"PAUSED","AGENT_BACKGROUND_CONTEXT_CHANGED");
-    if(terminal.has(task.status))return stop(g,"COMPLETED",undefined);
-    if(task.stage==="MODEL_NOT_SENT")return stop(g,"PAUSED","MODEL_NOT_SENT");
-    if(task.stage==="MODEL_OUTCOME_UNKNOWN")return stop(g,"NEEDS_CONFIRMATION","MODEL_OUTCOME_UNKNOWN");
+    if(contextDigest(task)!==g.contextDigest)return stop(g,"PAUSED","AGENT_BACKGROUND_CONTEXT_CHANGED");
+    if(terminalFor(task))return stop(g,"COMPLETED",undefined);
+    if(task.stage==="MODEL_NOT_SENT"&&!reviewed(task,g))return stop(g,"PAUSED","MODEL_NOT_SENT");
+    if(task.stage==="MODEL_OUTCOME_UNKNOWN"&&!reviewed(task,g))return stop(g,"NEEDS_CONFIRMATION","MODEL_OUTCOME_UNKNOWN");
     return undefined;
   };
   async function schedule(g,task) {
     const gated=await live(g,task);if(gated)return gated;
-    if(!ready.has(task.stage) && task.stage!=="WAITING_FOR_RUN" && task.stage!=="CANCELLING")return view(g,"WAITING_FOR_CHECKPOINT");
+    if(!readyFor(task)&&!reviewed(task,g) && (servicePlanning||task.stage!=="WAITING_FOR_RUN" && task.stage!=="CANCELLING"))return view(g,"WAITING_FOR_CHECKPOINT");
     if(g.consumedEvents>=g.maxEvents)return stop(g,"PAUSED","AGENT_BACKGROUND_EVENT_LIMIT");
-    const dedup=store.deduplicate(`${project}:agent-wake:${g.id}:${task.version}`,task.stage,()=>store.create("agent_wake",project,{grantId:g.id,taskId:task.id,taskVersion:task.version,status:"PREPARED"}));
+    const dedup=store.deduplicate(`${project}:agent-wake:${g.id}:${task.version}`,task.stage,()=>store.create("agent_wake",project,{...(servicePlanning?{taskKind}:{}),grantId:g.id,taskId:task.id,taskVersion:task.version,status:"PREPARED"}));
     let wake=store.get("agent_wake",dedup.id,project);
     if(!wake.body){
-      const body={protocol:"shuduo-agent-wake/v1",wakeId:wake.id,grantId:g.id,taskId:task.id,taskVersion:task.version,projectId:project,expiresAt:g.expiresAt};
-      const serialized=JSON.stringify({body,signature:signature(body,config.secret)});
+      const body={protocol:wakeProtocol,...(servicePlanning?{taskKind}:{}),wakeId:wake.id,grantId:g.id,taskId:task.id,taskVersion:task.version,projectId:project,expiresAt:g.expiresAt};
+      const serialized=JSON.stringify({body,signature:signature(body,config.secret,wakeProtocol)});
       wake=store.update("agent_wake",wake.id,project,{body:serialized,bodyHash:hash(serialized)},{expectedVersion:wake.version});
     }
     if(wake.status==="DONE")return view(g,"ALREADY_CONSUMED");
@@ -113,18 +122,18 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
     assertExecutionScope(task,developmentBoundary);
     if(!Number.isSafeInteger(maxEvents)||maxEvents<1||maxEvents>20||!Number.isSafeInteger(durationMs)||durationMs<60000||durationMs>30*60000)
       throw fail(422,"AGENT_BACKGROUND_LIMIT_INVALID");
-    let g=store.list("agent_background",project).find(x=>x.taskId===taskId);
+    let g=store.list("agent_background",project).find(x=>owns(x)&&x.taskId===taskId);
     if(g && g.status!=="ACTIVE")throw fail(409,"AGENT_BACKGROUND_REVIEW_REQUIRED");
     if(g)assertExecutionScope(task,g.developmentBoundary);
-    if(!g)g=store.create("agent_background",project,{taskId,actorId,status:"ACTIVE",state:"QUEUED",contextDigest:task.durable.contextDigest,
-      expiresAt:now()+durationMs,maxEvents,consumedEvents:0,scope:"SQL_DEVELOPMENT",publicationAutomatic:false,...(developmentBoundary?{developmentBoundary}:{})});
+    if(!g)g=store.create("agent_background",project,{...(servicePlanning?{taskKind}:{}),taskId,actorId,status:"ACTIVE",state:"QUEUED",contextDigest:contextDigest(task),
+      expiresAt:now()+durationMs,maxEvents,consumedEvents:0,scope:servicePlanning?'DATA_SERVICE_DESIGN':"SQL_DEVELOPMENT",publicationAutomatic:false,...(developmentBoundary?{developmentBoundary}:{})});
     await persist();return schedule(g,task);
   }
   async function cancel(taskId,actorId,{developmentBoundary}={}) {
     const task=getTask(taskId),g=grantFor(taskId);
     if(task.submittedBy!==actorId)throw fail(403,"AGENT_BACKGROUND_OWNER_REQUIRED");
-    assertExecutionScope(task,developmentBoundary??g?.developmentBoundary);
-    if(!g)return{protocol:agentEventProtocol,taskId,status:"INACTIVE"};
+    (assertCancelScope??assertExecutionScope)(task,developmentBoundary??g?.developmentBoundary);
+    if(!g)return{protocol:eventProtocol,taskId,status:"INACTIVE"};
     return stop(g,"CANCELLED","USER_STOPPED_BACKGROUND");
   }
   async function resume(taskId,actorId,{expectedVersion,confirmModelRetry=false,durationMs=15*60000,developmentBoundary}={}) {
@@ -132,50 +141,51 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
     if(task.submittedBy!==actorId || !ownerAllowed(task))throw fail(403,"AGENT_BACKGROUND_OWNER_REQUIRED");
     assertExecutionScope(task,developmentBoundary);
     if(!Number.isSafeInteger(durationMs)||durationMs<60000||durationMs>15*60000)throw fail(422,"AGENT_BACKGROUND_LIMIT_INVALID");
-    let g=store.list("agent_background",project).find(x=>x.taskId===taskId);
+    let g=store.list("agent_background",project).find(x=>owns(x)&&x.taskId===taskId);
     const expiredOrRebound=g?.status==='ACTIVE'&&(g.expiresAt<=now()||scoped(task,g));
-    if(!g || !["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(g.status)&&!expiredOrRebound)throw fail(409,"AGENT_BACKGROUND_REVIEW_REQUIRED");
-    if(g.contextDigest!==task.durable.contextDigest)throw fail(409,"AGENT_BACKGROUND_CONTEXT_CHANGED");
+    const reviewedServiceRedrive=servicePlanning&&g?.status==='ACTIVE'&&task.stage==='READY_FOR_MODEL';
+    if(!g || !["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(g.status)&&!expiredOrRebound&&!reviewedServiceRedrive)throw fail(409,"AGENT_BACKGROUND_REVIEW_REQUIRED");
+    if(g.contextDigest!==contextDigest(task))throw fail(409,"AGENT_BACKGROUND_CONTEXT_CHANGED");
     if(g.consumedEvents>=g.maxEvents)throw fail(409,"AGENT_BACKGROUND_EVENT_LIMIT");
     if(!engine?.prepareResume)throw fail(503,"AGENT_BACKGROUND_RESUME_UNAVAILABLE");
     await engine.prepareResume(taskId,{expectedVersion,confirmModelRetry});
     // No limit/count reset. The review renews only a bounded execution window.
     g=patch(g,{status:"ACTIVE",state:"QUEUED",code:undefined,expiresAt:now()+durationMs,developmentBoundary,
-      review:{actorId,taskVersion:expectedVersion,reviewedAt:new Date(now()).toISOString(),confirmModelRetry}});
+      review:{actorId,taskVersion:servicePlanning?getTask(taskId).version:expectedVersion,...(servicePlanning?{reviewedTaskVersion:expectedVersion}:{}),reviewedAt:new Date(now()).toISOString(),confirmModelRetry}});
     await persist();return schedule(g,getTask(taskId));
   }
   const status=taskId=>{
-    const g=store.list("agent_background",project).find(x=>x.taskId===taskId);
-    return g?{...view(g),...(scoped(getTask(taskId),g)?{scopeBlocked:true}:{})}:{protocol:agentEventProtocol,taskId,status:"INACTIVE",cloudDriverVerified:false};
+    const g=store.list("agent_background",project).find(x=>owns(x)&&x.taskId===taskId);
+    return g?{...view(g),...(scoped(getTask(taskId),g)?{scopeBlocked:true}:{})}:{protocol:eventProtocol,taskId,status:"INACTIVE",cloudDriverVerified:false};
   };
   async function consumeWake(object) {
     const wake=store.get("agent_wake",object.id,project);
-    if(!wake)return{protocol:agentEventProtocol,state:"IGNORED_UNREGISTERED"};
+    if(!owns(wake))return{protocol:eventProtocol,state:"IGNORED_UNREGISTERED"};
     let g=store.get("agent_background",wake.grantId,project);
-    if(!g || g.status!=="ACTIVE")return{protocol:agentEventProtocol,state:"INACTIVE"};
+    if(!owns(g) || g.status!=="ACTIVE")return{protocol:eventProtocol,state:"INACTIVE"};
     const denied=scoped(getTask(g.taskId),g);if(denied)return denied;
     const raw=await transport.read(object.key);
     if(typeof raw!=="string"||Buffer.byteLength(raw)>16384||hash(raw)!==wake.bodyHash)throw fail(401,"AGENT_WAKE_BODY_MISMATCH");
     let envelope;try{envelope=JSON.parse(raw);}catch{throw fail(422,"AGENT_WAKE_INVALID");}
     const b=envelope?.body;
     if(!b || b.wakeId!==wake.id || b.grantId!==g.id || b.taskId!==g.taskId || b.taskVersion!==wake.taskVersion || b.projectId!==project ||
-      b.protocol!=="shuduo-agent-wake/v1" || !equal(envelope.signature,signature(b,config.secret)))throw fail(401,"AGENT_WAKE_SIGNATURE_INVALID");
-    if(b.expiresAt!==g.expiresAt)return{protocol:agentEventProtocol,state:"IGNORED_SUPERSEDED"};
+      b.protocol!==wakeProtocol || servicePlanning&&b.taskKind!==taskKind || !equal(envelope.signature,signature(b,config.secret,wakeProtocol)))throw fail(401,"AGENT_WAKE_SIGNATURE_INVALID");
+    if(b.expiresAt!==g.expiresAt)return{protocol:eventProtocol,state:"IGNORED_SUPERSEDED"};
     if(wake.status==="DONE"){
       const current=getTask(g.taskId);
-      if(ready.has(current.stage)){
+      if(readyFor(current)){
         const next=await schedule(g,current);
         if(next.delivery==="UNCONFIRMED")throw fail(503,"AGENT_WAKE_DELIVERY_UNCONFIRMED");
         return next;
       }
-      return{protocol:agentEventProtocol,state:"REPLAYED"};
+      return{protocol:eventProtocol,state:"REPLAYED"};
     }
     const task=getTask(g.taskId),gated=await live(g,task);if(gated)return gated;
     if(wake.status!=="CLAIMED"){
       if(g.consumedEvents>=g.maxEvents)return stop(g,"PAUSED","AGENT_BACKGROUND_EVENT_LIMIT");
       if(task.version!==wake.taskVersion){
         store.update("agent_wake",wake.id,project,{status:"DONE",outcome:"STALE"},{expectedVersion:wake.version});await persist();
-        return ready.has(task.stage)?schedule(g,task):view(g,"STALE_EVENT");
+        return readyFor(task)?schedule(g,task):view(g,"STALE_EVENT");
       }
       g=patch(g,{consumedEvents:g.consumedEvents+1,state:"RUNNING"});
       store.update("agent_wake",wake.id,project,{status:"CLAIMED"},{expectedVersion:wake.version});await persist();
@@ -183,13 +193,14 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
     const result=await dispatcher.tick({requestId:wake.id,taskId:g.taskId});
     if(["BUSY","IN_PROGRESS","LEASE_EXPIRED"].includes(result.state))throw fail(503,"AGENT_EVENT_LEASE_BUSY");
     g=store.get("agent_background",g.id,project);
+    if(!owns(g)||g.status!=='ACTIVE')return{protocol:eventProtocol,state:'INACTIVE'};
     const fresh=getTask(g.taskId);
     if(result.state==="STEP_FAILED")return stop(g,"PAUSED",result.code);
     const ended=await live(g,fresh);
     const receipt=store.get("agent_wake",wake.id,project);
     store.update("agent_wake",receipt.id,project,{status:"DONE",outcome:result.state},{expectedVersion:receipt.version});await persist();
     if(ended)return ended;
-    if(ready.has(fresh.stage)){
+    if(readyFor(fresh)){
       const next=await schedule(g,fresh);
       if(next.delivery==="UNCONFIRMED")throw fail(503,"AGENT_WAKE_DELIVERY_UNCONFIRMED");
       return next;
@@ -211,6 +222,7 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
   }
   async function consume(event) {
     const object=parseAgentObjectEvent(event,config);
+    if(servicePlanning&&object.kind!=='WAKE')return{protocol:eventProtocol,state:'IGNORED_UNRELATED'};
     return object.kind==="WAKE"?consumeWake(object):consumeResult(object);
   }
   return{enable,resume,cancel,status,consume};

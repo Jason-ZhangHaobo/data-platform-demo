@@ -31,6 +31,7 @@ import { privateServiceSourceSelection } from "./private-service-routes.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
+import {createServiceAgentEvents} from './service-agent-events.mjs';
 import { createAgentEventDriver, agentEventConfigFromEnvironment } from "./agent-event-driver.mjs";
 import { createAgentWakeOssTransport } from "./agent-wake-oss-transport.mjs";
 import { ossConfigFromEnvironment } from "./oss-client.mjs";
@@ -900,9 +901,22 @@ export function createV2Server(options = {}) {
     now: options.now,
     executeDapi: options.dataServiceExecutor,
   });
+  let serviceAgentEvents;
   const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment,
     agentConfig:serviceAgentAccess,planner:input=>servicePlanner(input),assertModelBudget:reservation=>budget.assertCanStartServiceModel(reservation),budgetOverview:()=>budget.overview(),modelLeaseMs:options.serviceAgentModelLeaseMs,
-    waitForModel:serviceAgentAccess?start=>statefulRequests.waitForProvider(start):undefined }) : undefined;
+    waitForModel:serviceAgentAccess?start=>statefulRequests.waitForProvider(start):undefined,
+    backgroundView:task=>serviceAgentEvents?.status(task.id),
+    dispatchPlan:serviceAgentAccess?.driver==='OSS_EVENTS'?(...args)=>serviceAgentEvents.advance(...args):undefined,
+    cancelPlan:serviceAgentAccess?.driver==='OSS_EVENTS'?(...args)=>serviceAgentEvents.cancel(...args):undefined }) : undefined;
+  if(serviceAgentAccess?.driver==='OSS_EVENTS'){
+    if(agentEventDriver)throw Error('PRIVATE_SERVICE_AGENT_DRIVER_CONFLICT');
+    const eventConfig=agentEventConfigFromEnvironment({...env,V2_AGENT_DRIVER_MODE:'OSS_EVENTS'});
+    const transport=options.agentWakeTransport??(()=>{
+      const oss=ossConfigFromEnvironment(env);
+      return createAgentWakeOssTransport({...oss,credentialsProvider:async()=>ossConfigFromEnvironment(env).credentials,wakePrefix:eventConfig.wakePrefix,resultPrefix:eventConfig.resultPrefix});
+    })();
+    serviceAgentEvents=createServiceAgentEvents({store,project:PROJECT,engine:privateServices.agentPlanner,profile:serviceAgentAccess,transport,config:eventConfig,persist:persistDevelopment,now:options.now??Date.now});
+  }
   const sourceBoundServicePlansEnabled=local&&!privateDataServicesEnabled&&!serviceAccess&&!publicationAccess&&!developmentAccess;
   const servicePlanActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
   const boundServiceContext=(binding,actorId)=>{
@@ -1184,7 +1198,7 @@ export function createV2Server(options = {}) {
   const readBody = async (req) => (await readJsonBody(req)).parsed;
   const readPrivateSmokeBody = async (req) => {
     const binaryPayload = String(req.headers["content-type"]).startsWith("application/octet-stream");
-    if (!binaryPayload && !((privatePublicationConfig || agentEventDriver) && String(req.headers["content-type"]).startsWith("application/json")))
+    if (!binaryPayload && !((privatePublicationConfig || agentEventDriver || serviceAgentEvents) && String(req.headers["content-type"]).startsWith("application/json")))
       throw fail(415, "私有函数验收仅接受二进制事件载荷");
     let body = "";
     for await (const chunk of req) {
@@ -1197,7 +1211,7 @@ export function createV2Server(options = {}) {
     } catch {
       throw fail(400, "私有函数验收载荷不是JSON");
     }
-    if (agentEventDriver && parsed && Array.isArray(parsed.events)) return {operation:"PRIVATE_AGENT_OBJECT_EVENT_V1",event:parsed};
+    if ((agentEventDriver||serviceAgentEvents) && parsed && Array.isArray(parsed.events)) return {operation:"PRIVATE_AGENT_OBJECT_EVENT_V1",event:parsed};
     if (parsed && typeof parsed === "object" && ("triggerName" in parsed || "payload" in parsed))
       return { operation: "PRIVATE_RELEASE_TIMER_V1", ...validatePrivateReleaseTimer(parsed, privatePublicationConfig, options.now?.() ?? Date.now()) };
     if (!binaryPayload) throw fail(415, "普通私有调用只接受二进制载荷");
@@ -1331,7 +1345,7 @@ export function createV2Server(options = {}) {
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = prefetchedPrivateInputs.get(req)??await readPrivateSmokeBody(req);prefetchedPrivateInputs.delete(req);
-        if(serviceAgentAccess&&!['PRIVATE_STATUS_V1','PRIVATE_APPLICATION_HTTP_V1'].includes(privateInput.operation))throw Object.assign(fail(403,'服务规划窗口不接受计算、调度或其他私有操作'),{code:'PRIVATE_SERVICE_AGENT_SCOPE_DENIED'});
+        if(serviceAgentAccess&&!['PRIVATE_STATUS_V1','PRIVATE_APPLICATION_HTTP_V1',...(serviceAgentEvents?['PRIVATE_AGENT_OBJECT_EVENT_V1']:[])].includes(privateInput.operation))throw Object.assign(fail(403,'服务规划窗口不接受计算、调度或其他私有操作'),{code:'PRIVATE_SERVICE_AGENT_SCOPE_DENIED'});
         if (developmentAccess?.taskId && !['PRIVATE_STATUS_V1','PRIVATE_AGENT_OBJECT_EVENT_V1'].includes(privateInput.operation))
           throw targetDenied();
         if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
@@ -1340,7 +1354,7 @@ export function createV2Server(options = {}) {
         // acceptance and Agent drivers can mutate records before API forwarding.
         if (publicationAccess && !["PRIVATE_STATUS_V1", "PRIVATE_RELEASE_TIMER_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
           throw Object.assign(fail(403, "本次仅允许指定交付包发布、签名调度与状态读取；其他私有任务和验收操作未开放。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
-        if(privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1")return json(res,200,await agentEventDriver.consume(privateInput.event));
+        if(privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1")return json(res,200,await(serviceAgentEvents??agentEventDriver).consume(privateInput.event));
         if (privateInput.operation === "PRIVATE_RELEASE_TIMER_V1") {
           if (!cloudPublication || !privatePublicationConfig) throw fail(503,"私有发布调度未启用");
           return json(res,200,await cloudPublication.tick(privateInput));
