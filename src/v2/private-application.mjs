@@ -11,10 +11,10 @@ const paths = [
 ];
 const headerNames = new Set(["cookie", "x-csrf-token", "idempotency-key", "x-project-id", "x-shuduo-client"]);
 // Keep the model's bounded checkpoint inside the private function's 120s limit.
-export const privateApplicationTimeoutMs = path => /^\/api\/v2\/agent\/tasks\/[a-f0-9-]{36}\/advance$/.test(path) ? 105000 : 30000;
+export const privateApplicationTimeoutMs = path => /^\/api\/v2\/(?:agent\/tasks|data-services\/agent\/plans)\/[a-f0-9-]{36}\/advance$/.test(path) ? 105000 : 30000;
 
-export function validatePrivateApplicationRequest(input, { allowDurableAgent = false, allowDurableAgentRead = false, allowDataServices = false } = {}) {
-  const servicePath=allowDataServices && privateServiceRoute(input?.method,input?.path);
+export function validatePrivateApplicationRequest(input, { allowDurableAgent = false, allowDurableAgentRead = false, allowDataServices = false,allowServiceAgent=false } = {}) {
+  const servicePath=allowDataServices && privateServiceRoute(input?.method,input?.path,{agentRead:true,agentPlanning:allowServiceAgent});
   const saveRecoveryRead=input?.method === "GET" && /^\/api\/v2\/revisions\/requests\/[A-Za-z0-9_-]{1,100}$/.test(input?.path ?? "");
   const publicationRead=(allowDurableAgent || allowDurableAgentRead) && privatePublicationReadRoute(input?.method,input?.path);
   const manualWorkflow=(allowDurableAgent || (allowDurableAgentRead && input?.method==="GET")) && (input?.method==="GET"

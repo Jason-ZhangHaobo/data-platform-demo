@@ -6,13 +6,16 @@ import { privateServiceRecovery } from "./private-service-recovery.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateTaskConsumption } from "./private-task-consumption.mjs";
 import { createServicePilotGuard, assertServiceMutation } from "./public-service-access.mjs";
+import {createDurableServiceAgent} from './durable-service-agent.mjs';
+import {assertServiceAgentMutation} from './private-service-agent-policy.mjs';
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(new Error(message),{status,code});
 
 // One shared allowlist for the private transport, temporary preview and router.
 export { privateServiceRoute } from "./private-service-routes.mjs";
 
-export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,pilotConfig,persist=async()=>{}}) {
+export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,pilotConfig,persist=async()=>{},
+  agentConfig,planner,assertModelBudget=()=>{throw Error('Model budget not configured');},budgetOverview=()=>{throw Error('Budget not configured');},modelLeaseMs}) {
   const get=(kind,id)=>typeof id==="string"?store.get(kind,id,project):undefined;
   const source=id=>{
     const run=get("release_run",id),release=run&&get("release",run.releaseId),bundle=run&&get("delivery_package",run.packageId),approval=release&&get("release_approval",release.approvalId);
@@ -125,18 +128,53 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     if(type==="DAPI")sourceOwner(a,source(b.sourceReleaseRunId));
     else if(b.steps!==undefined){if(!Array.isArray(b.steps))throw fail(422,"XAPI步骤无效");for(const s of b.steps){bodyKeys(s,["alias","dapiId","dapiVersionId"]);const child=service(a,s.dapiId);if(s.dapiVersionId && s.dapiVersionId!==child.publishedVersionId)throw fail(409,"XAPI子版本已经变更","STALE_SERVICE_VERSION");}}
   };
+  const identity=id=>{const user=get('auth_user',id);return {user,role:user?.memberships?.find(item=>item.projectId===project)?.role};};
+  const assertPlanVersions=(actorId,binding,refs,current)=>{
+    const a=identity(actorId);
+    if(!Array.isArray(refs)||refs.length>100||new Set(refs.map(ref=>ref?.serviceId)).size!==refs.length)throw fail(409,'原规划固定版本记录不完整','SERVICE_PLAN_VERSION_CHANGED');
+    for(const ref of refs){
+      const item=get('data_service',ref?.serviceId),v=get('data_service_version',ref?.versionId),snapshot=v&&businessStore.snapshotEvidence(v.snapshotId);
+      if(!item||!owned(a,item)||item.serviceType!=='DAPI'||!v||v.serviceId!==item.id||!versionOwned(a,v)||!serviceVersionConfigValid(v)||
+        v.sourceReleaseRunId!==binding.sourceReleaseRunId||v.sourceReleaseId!==binding.releaseId||v.sourcePackageDigest!==binding.packageDigest||v.configHash!==ref.configHash||
+        serviceHash(v.fields)!==serviceHash(ref.fields)||!snapshot?.integrityVerified||snapshot.contentHash!==v.snapshotHash||
+        current&&(item.status!=='PUBLISHED'||item.publishedVersionId!==v.id||v.status!=='PUBLISHED'))throw fail(409,'原规划DAPI固定版本、权限或快照已经变化','SERVICE_PLAN_VERSION_CHANGED');
+    }
+  };
+  const agentPlanner=createDurableServiceAgent({store,project,config:agentConfig,now,modelLeaseMs,persist,planner,assertBudget:assertModelBudget,budgetOverview,
+    contextFor:(actorId,binding)=>agentContext(identity(actorId),binding),assertVersions:assertPlanVersions,validateProposal:value=>manager.validateAgentPlan(value),
+    createDraft:(proposal,actorId)=>{
+      const {serviceType,...body}=proposal;checkInput(identity(actorId),serviceType,body);
+      const made=serviceType==='DAPI'?manager.createDapi(body):manager.createXapi(body);
+      return store.update('data_service',made.id,project,{createdBy:actorId,scope:'PRIVATE_CLOUD_TEST'});
+    },draftDetail:(id,actorId)=>service(identity(actorId),id)});
   let queryTail=Promise.resolve(),queries=0;
   async function handle(req,url,readBody) {
     const method=req.method,path=url.pathname;
-    if(!privateServiceRoute(method,url.pathname+url.search))throw fail(404,"私有数据服务接口未开放");
+    if(!privateServiceRoute(method,url.pathname+url.search,{agentRead:true,agentPlanning:Boolean(agentConfig)}))throw fail(404,"私有数据服务接口未开放");
     const open=path.match(/^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/);
     if(open){if(queries>=8)throw fail(429,"私有查询队列已满","PRIVATE_SERVICE_QUEUE_FULL");queries++;const query=queryTail.then(async()=>{try{return {status:200,body:await manager.invoke(open[1]==="dapis"?"DAPI":"XAPI",open[2],req.headers.authorization,Object.fromEntries(url.searchParams),{assertAccess:input=>{
       pilot?.assertService(input.service);pilot?.assertApplication(input.application);assertApplicationVersion(input);
     }})};}finally{await persist();}});queryTail=query.catch(()=>{});try{return await query;}finally{queries--;}}
     const a=actor(req),owner=a.user.id;
     assertServiceMutation(pilotConfig,a,method,path,now?.()??Date.now());
+    assertServiceAgentMutation(agentConfig,a,method,path);
     if(method==="POST")auth.requireMutation(req.headers,path);
     if(method==='GET'&&path==='/api/v2/data-services/agent/context')return {status:200,body:agentContext(a,servicePlanSourceQuery(url.searchParams))};
+    if(path==='/api/v2/data-services/agent/plans'){
+      if(method==='GET')return {status:200,body:agentPlanner.list(servicePlanSourceQuery(url.searchParams),owner)};
+      const b=bodyKeys(await readBody(req),['message','sourceBinding']);return {status:202,body:await agentPlanner.create({...b,actorId:owner,requestId:req.headers['idempotency-key']})};
+    }
+    const planRequest=path.match(new RegExp(`^/api/v2/data-services/agent/requests/(${uuid})$`));
+    if(planRequest&&method==='GET')return {status:200,body:agentPlanner.request(planRequest[1],owner)};
+    const planPath=path.match(new RegExp(`^/api/v2/data-services/agent/plans/(${uuid})(?:/(advance|apply|cancel))?$`));
+    if(planPath){
+      const id=planPath[1],action=planPath[2];
+      if(method==='GET'&&!action)return {status:200,body:agentPlanner.read(id,owner)};
+      const b=await readBody(req);
+      if(action==='advance'){bodyKeys(b,['expectedVersion','confirmModelRetry']);return {status:200,body:await agentPlanner.advance(id,owner,b)};}
+      if(action==='apply'){bodyKeys(b,['proposalHash']);return {status:200,body:await agentPlanner.apply(id,owner,b.proposalHash)};}
+      if(action==='cancel'){bodyKeys(b,['sourceBoundOnly']);if(b.sourceBoundOnly!==undefined&&b.sourceBoundOnly!==true)throw fail(422,'仅可取消原同源规划');return {status:200,body:await agentPlanner.cancel(id,owner)};}
+    }
     if(method==="GET" && path.endsWith("/task-evidence")){
       const selection=privateServiceSourceSelection(url.searchParams,true);
       if(!selection)throw fail(422,"需提供任务编号、确切包摘要及合法发布选择","INVALID_CONSUMPTION_INPUT");
@@ -206,5 +244,5 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     }
     throw fail(404,"接口不存在");
   }
-  return {handle,manager};
+  return {handle,manager,agentPlanner};
 }

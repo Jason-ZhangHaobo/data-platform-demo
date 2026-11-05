@@ -88,6 +88,7 @@ test("private application rejects external targets, unlisted paths and injected 
 
 test("private Agent transport is explicit, SQL-only and preserves ordinary authentication", async () => {
   assert.equal(privateApplicationTimeoutMs("/api/v2/agent/tasks/00000000-0000-4000-8000-000000000001/advance"), 105000);
+  assert.equal(privateApplicationTimeoutMs("/api/v2/data-services/agent/plans/00000000-0000-4000-8000-000000000001/advance"), 105000);
   assert.equal(privateApplicationTimeoutMs("/api/v2/runs"), 30000);
   assert.equal(privateApplicationTimeoutMs("/api/v2/agent/tasks"), 30000);
   const input = { operation: "PRIVATE_APPLICATION_HTTP_V1", method: "POST", path: "/api/v2/agent/tasks", body: { message: "虚构证券加工", sql: "SELECT 1" } };
