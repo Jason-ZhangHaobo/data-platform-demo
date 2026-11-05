@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+import {randomUUID} from 'node:crypto';
 import {createV2Server,PROJECT} from '../../src/v2/server.mjs';
 import {MetadataStore} from '../../src/v2/store.mjs';
 import {BusinessQueryStore,DataServiceManager} from '../../src/v2/data-services.mjs';
@@ -34,6 +35,15 @@ test('local task consumption joins existing source and revoked-app receipts with
   assert.equal(JSON.stringify(proof).includes('1800.00'),false);assert.equal(JSON.stringify(proof).includes(issued.token),false);
  }
  assert.equal(store.list('service_call',PROJECT).length,count);assert.equal(manager.listApplications().length,1);
+ const exact=await read({releaseId:release.id}),entry=exact.services.find(s=>s.serviceId===x.id);
+ assert.equal(exact.releaseId,release.id);assert.equal(exact.sourceKind,'AGENT');assert.equal(exact.externalSystemVerified,false);
+ assert.equal(entry.call.configHash,entry.configHash);
+ assert.equal(entry.sourceVersions.length,2);assert.equal(new Set(entry.sourceVersions.map(v=>v.versionId)).size,2);
+ assert.ok(entry.sourceVersions.every(v=>v.sourceKind==='AGENT'&&v.releaseId===release.id&&v.sourceReleaseRunId===run.id&&v.packageDigest===bundle.digest&&/^[a-f0-9]{64}$/.test(v.configHash)));
+ assert.deepEqual([...new Set(entry.sourceVersions.flatMap(v=>v.fields))].sort(),['available_cash','client_id','holding_market_value','security_count','total_assets']);
+ const unknown=await read({releaseId:randomUUID()});assert.equal(unknown.status,'PENDING');assert.equal(unknown.services.length,0);
+ await assert.rejects(read({agent:{...agent,status:'FAILED'}}),{status:409});
+ for(const sourceKind of ['MANUAL','UNKNOWN'])await assert.rejects(read({agent:{...agent,sourceKind}}),{status:409});
  store.update('service_app',issued.application.id,PROJECT,{scope:'PRIVATE_CLOUD_TEST'});assert.equal((await read()).status,'PENDING');
  store.update('service_app',issued.application.id,PROJECT,{scope:'LOCAL_TEST_ONLY'});
  await assert.rejects(read({packageDigest:'0'.repeat(64)}),{status:409});
@@ -45,6 +55,9 @@ test('local task consumption joins existing source and revoked-app receipts with
  t.after(async()=>{app.server.closeAllConnections();await new Promise(resolve=>app.server.close(resolve));businessStore.close();store.close();});
  const path=`http://127.0.0.1:${app.server.address().port}/api/v2/data-services/task-evidence?agent_task_id=${agent.id}&package_digest=${bundle.digest}`;
  const response=await fetch(path);assert.equal(response.status,200);assert.equal((await response.json()).status,'VERIFIED');
+ const selected=await fetch(path+'&release_id='+release.id);assert.equal(selected.status,200);assert.equal((await selected.json()).releaseId,release.id);
+ const absent=await fetch(path+'&release_id='+randomUUID());assert.equal(absent.status,200);assert.equal((await absent.json()).status,'PENDING');
+ for(const suffix of ['&release_id=invalid','&release_id='+release.id+'&release_id='+release.id,'&package_digest='+bundle.digest])assert.equal((await fetch(path+suffix)).status,422);
  assert.equal((await fetch(path+'&extra=not-supported')).status,422);
  assert.equal(computations,0);assert.equal(store.list('service_call',PROJECT).length,count);
 });

@@ -16,7 +16,7 @@ export async function privateTaskConsumption({ taskId, packageDigest, releaseId,
     if (!root || service.status !== "PUBLISHED") continue;
     let children;
     try {
-      children = root.serviceType === "XAPI" ? (root.steps ?? []).map(step => {
+      children = root.serviceType === "XAPI" ? (Array.isArray(root.steps) ? root.steps.slice(0,5) : []).map(step => {
         ownedService(step.dapiId);
         const child = getVersion(step.dapiVersionId);
         return child?.serviceId === step.dapiId ? child : undefined;
@@ -34,7 +34,9 @@ export async function privateTaskConsumption({ taskId, packageDigest, releaseId,
       versionId: root.id, configHash: root.configHash, status: "PENDING", sourceRunIds: [],
       notice: "尚无当前发布版本的成功授权调用；测试或打开模块不算消费。" };
     try {
-      if (!serviceVersionConfigValid(root) || !children.length || children.some(v => !v || !serviceVersionConfigValid(v))) throw Object.assign(new Error(), {status:409, code:"SERVICE_VERSION_CORRUPT"});
+      if (!serviceVersionConfigValid(root) || !children.length || root.serviceType==="XAPI"&&(!Array.isArray(root.steps)||root.steps.length<2||root.steps.length>5) ||
+          children.some(v => !v || !serviceVersionConfigValid(v) || !Array.isArray(v.fields) || v.fields.length>assetFields.length ||
+            new Set(v.fields).size!==v.fields.length || v.fields.some(field=>!assetFields.includes(field)))) throw Object.assign(new Error(), {status:409, code:"SERVICE_VERSION_CORRUPT"});
       const sourceReleases=[];
       const sources = children.map(v => {
         const run = source(v.sourceReleaseRunId), release = getRelease(run.releaseId);
@@ -48,6 +50,12 @@ export async function privateTaskConsumption({ taskId, packageDigest, releaseId,
         throw Object.assign(new Error(), {status:409, code:"MIXED_SOURCE_VERSIONS"});
       entry.sourceRunIds = [...new Set(sources)];
       Object.assign(entry,attribution(sourceReleases[0]),{releaseId:sourceReleases[0].id});
+      // Bounded immutable child references, not data rows or query parameters.
+      // Consumers can independently check the exact versions and release batch
+      // instead of trusting a top-level VERIFIED label or composition boolean.
+      entry.sourceVersions = children.map((version,index)=>({serviceId:version.serviceId,versionId:version.id,configHash:version.configHash,
+        releaseId:sourceReleases[index].id,sourceReleaseRunId:sources[index],packageDigest:version.sourcePackageDigest,
+        sourceKind:sourceReleases[index].sourceKind??"AGENT",fields:assetFields.filter(field=>version.fields.includes(field))}));
       const fields = new Set(children.flatMap(v => v.fields ?? []));
       entry.fullAssetComposition = root.serviceType === "XAPI" && assetFields.every(field => fields.has(field));
       const successful = calls(service.id).filter(c => c.serviceVersionId === root.id && c.outcome === "SUCCEEDED" && c.statusCode === 200 && c.rowCount > 0).sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt)));
