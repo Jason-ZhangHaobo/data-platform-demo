@@ -1,13 +1,5 @@
 import {servicePlanSourceQuery} from './service-plan-request.mjs';
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
-// Transport may deliver an authenticated stop signal before waiting for its
-// normal serial mutation. This syntax never authorizes or persists a cancel.
-export function privateServiceCancelId(input){
- if(!input||input.operation!=='PRIVATE_APPLICATION_HTTP_V1'||input.method!=='POST'||typeof input.path!=='string'||
-  Object.keys(input).some(key=>!['operation','method','path','headers','body'].includes(key))||!input.body||typeof input.body!=='object'||Array.isArray(input.body)||
-  Object.keys(input.body).some(key=>key!=='sourceBoundOnly')||input.body.sourceBoundOnly!==undefined&&input.body.sourceBoundOnly!==true)return;
- return input.path.match(new RegExp(`^/api/v2/data-services/agent/plans/(${uuid})/cancel$`))?.[1];
-}
 // Optional source selection is all-or-nothing. Never degrade a malformed exact
 // handoff into the older task-wide discovery request.
 export function privateServiceSourceSelection(params, evidence = false) {

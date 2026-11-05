@@ -829,7 +829,7 @@ export function DataServicesWorkbench({
         {boundPlannerAllowed&&agentPlans.length>0&&<details><summary>当前来源的方案记录</summary>{agentPlans.map(plan=><button className="button" key={plan.id} disabled={!!busy||Boolean(pendingPlanKey)} onClick={()=>void readSourcePlan(plan.id)}>{plan.proposal?.name??'规划任务'} · {planLabels[plan.status]??plan.status}</button>)}</details>}
         <small>{agentPlans.length}条方案记录 · 不自动发布、不创建调用凭证</small>
       </section>}
-      {privateCloud && <div className="service-feedback" role="status">复用已经审阅并运行的版本创建接口，不重新调用模型或Spark。仅提供当前虚构证券资产契约的参数化快照查询；模型服务规划后续单独接入。</div>}
+      {privateCloud && <div className="service-feedback" role="status">{privateStudioVisible?"Agent只使用当前来源的已核验元数据规划，执行受窗口约束；确认草稿不重跑Spark，查询测试、发布和授权须另行开放。":"复用已经审阅并运行的版本创建接口，不重新运行模型或Spark；当前服务操作仅提供虚构证券资产契约的参数化快照查询。"}</div>}
       <div className="service-layout">
         <aside className="service-catalog">
           <header>

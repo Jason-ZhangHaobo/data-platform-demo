@@ -27,7 +27,7 @@ import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
 import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress,serviceAgentSession} from './private-service-agent-policy.mjs';
-import { privateServiceSourceSelection,privateServiceCancelId } from "./private-service-routes.mjs";
+import { privateServiceSourceSelection } from "./private-service-routes.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
@@ -901,7 +901,8 @@ export function createV2Server(options = {}) {
     executeDapi: options.dataServiceExecutor,
   });
   const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment,
-    agentConfig:serviceAgentAccess,planner:input=>servicePlanner(input),assertModelBudget:reservation=>budget.assertCanStartServiceModel(reservation),budgetOverview:()=>budget.overview(),modelLeaseMs:options.serviceAgentModelLeaseMs }) : undefined;
+    agentConfig:serviceAgentAccess,planner:input=>servicePlanner(input),assertModelBudget:reservation=>budget.assertCanStartServiceModel(reservation),budgetOverview:()=>budget.overview(),modelLeaseMs:options.serviceAgentModelLeaseMs,
+    waitForModel:serviceAgentAccess?start=>statefulRequests.waitForProvider(start):undefined }) : undefined;
   const sourceBoundServicePlansEnabled=local&&!privateDataServicesEnabled&&!serviceAccess&&!publicationAccess&&!developmentAccess;
   const servicePlanActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
   const boundServiceContext=(binding,actorId)=>{
@@ -5846,29 +5847,31 @@ export function createV2Server(options = {}) {
     try { channel = options.ingress?.assertRequest(req); }
     catch { void handleRequest(req, res).catch(() => {}); return; }
     const staticRequest = req.method === "GET" && (req.url === "/" || /^\/v2(?:[/?]|$)/.test(req.url));
-    if (!options.ingress || channel === "INTERNAL" || staticRequest) { void handleRequest(req, res).catch(() => {}); return; }
-    const controller = new AbortController(), onClose = () => controller.abort();let stopSignalled=false;
+    if (!options.ingress || channel === "INTERNAL"&&!serviceAgentAccess || staticRequest) { void handleRequest(req, res).catch(() => {}); return; }
+    const controller = new AbortController(), onClose = () => controller.abort();
     res.once("close", onClose);
     const dispatch=async()=>{
       if(serviceAgentAccess&&channel==='EVENT'&&req.url==='/invoke'){
         const input=await readPrivateSmokeBody(req);prefetchedPrivateInputs.set(req,input);
-        const id=privateServiceCancelId(input);
-        if(id){
-          const request=validatePrivateApplicationRequest(input,{allowDataServices:true,allowServiceAgent:true});
-          if(request.headers['x-project-id']&&request.headers['x-project-id']!==PROJECT)throw fail(403,'无权访问此项目');
-          auth.requireMutation(request.headers,request.path);
-          const actor=auth.sessionFromHeaders(request.headers);assertServiceAgentMutation(serviceAgentAccess,actor,'POST',request.path);
-          // No metadata mutation or refresh here. The active invocation owns
-          // its persisted lease; after its abort, normal serial cancel confirms.
-          stopSignalled=privateServices.agentPlanner.signalCancel(id,actor.user.id);
+        if(input.operation==='PRIVATE_APPLICATION_HTTP_V1'){
+          if(!privateSmokeEnabled)throw fail(404,'页面不存在');
+          validatePrivateApplicationRequest(input,{allowDurableAgent:Boolean(durableAgent),allowDurableAgentRead:privateDataServicesEnabled,allowDataServices:true,allowServiceAgent:true});
+          // Pure transport: no refresh, mutation, auth projection or final
+          // metadata flush here. The authenticated INTERNAL API owns its lane.
+          // This avoids carrying an outer owner across the HTTP loopback.
+          const address=server.address(),base=`http://127.0.0.1:${address.port}`;
+          const result=await callPrivateApplication(input,base,undefined,{internalHeaders:options.ingress.internalHeaders,
+            allowDurableAgent:Boolean(durableAgent),allowDurableAgentRead:privateDataServicesEnabled,allowDataServices:true,allowServiceAgent:true});
+          return json(res,200,result);
         }
       }
+      if(serviceAgentAccess&&channel==='INTERNAL'&&req.url==='/invoke')throw fail(403,'服务规划内部通道不接受嵌套私有调用');
       return statefulRequests.run(() => handleRequest(req, res), { signal: controller.signal });
     };
     void dispatch()
       .catch(error => { if (!res.destroyed && !res.writableEnded) {
         if(error.status&&error.code!=='REQUEST_LANE_BUSY'){void json(res,error.status,{code:error.code??'PRIVATE_APPLICATION_REQUEST_INVALID',message:error.message}).catch(()=>{});return;}
-        const notStarted = error.code === "REQUEST_LANE_BUSY"&&!stopSignalled;
+        const notStarted = error.code === "REQUEST_LANE_BUSY";
         if (notStarted) res.setHeader("Retry-After", "1");
         void json(res, 503, { code: notStarted ? "REQUEST_LANE_BUSY" : "REQUEST_OUTCOME_UNCONFIRMED", message: notStarted ? "服务忙，请稍后重试；本次操作未执行" : "操作结果尚未确认，请查看原任务状态，不要重复提交" }).catch(() => {});
       } })
