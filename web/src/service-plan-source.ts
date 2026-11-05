@@ -1,4 +1,6 @@
 import {createAgentSubmission} from './agent-submission.ts';
+import {readServiceAgentContext} from '../../src/v2/service-agent-context-client.mjs';
+export type {ServiceAgentContext} from '../../src/v2/service-agent-context-client.mjs';
 
 export type ServicePlanSource={taskId:string;packageDigest:string;releaseId:string;sourceReleaseRunId:string};
 export type SourcePlan={id:string;status:string;message:string;requestId?:string;sourceBinding?:ServicePlanSource;scope?:string;
@@ -55,6 +57,9 @@ export function servicePlanLocation(href:string,{batchId,requestId,planId}:{batc
  url.searchParams.set('service_plan_batch',batchId);if(requestId)url.searchParams.set('service_plan_request',requestId);if(planId)url.searchParams.set('service_plan',planId);return url;
 }
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
+export function readPrivateServiceAgentContext(api:Api,sourceBinding:ServicePlanSource){
+ return readServiceAgentContext({request:path=>api(path)},{sourceBinding});
+}
 export function createServicePlanSubmission<T extends {id:string}>(options:{api:Api;initialKey?:string;onPending:(key:string|undefined)=>void;makeKey?:()=>string}){
  return createAgentSubmission<T>({...options,api:<R,>(path:string,body?:unknown,requestOptions?:{idempotencyKey?:string})=>{
   if(path==='/agent/tasks')return options.api<R>('/data-services/agent/plans',body,requestOptions);

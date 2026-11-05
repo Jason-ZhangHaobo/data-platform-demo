@@ -16,3 +16,6 @@ export function servicePlanSourceQuery(query){
 export function servicePlanSourcePath(binding){
  const value=servicePlanSourceBinding(binding);return '/data-services/agent/plans?'+new URLSearchParams(Object.entries(names).map(([key,name])=>[name,value[key]]));
 }
+export function serviceAgentContextPath(binding){
+ return servicePlanSourcePath(binding).replace('/agent/plans?','/agent/context?');
+}

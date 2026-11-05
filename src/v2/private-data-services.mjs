@@ -1,4 +1,6 @@
-import { DataServiceManager, serviceHash, verifiedPrivateServiceSource } from "./data-services.mjs";
+import { DataServiceManager, serviceHash, serviceVersionConfigValid, verifiedPrivateServiceSource } from "./data-services.mjs";
+import {servicePlanSourceBinding,servicePlanSourceQuery} from './service-plan-request.mjs';
+import {getContext,validationFamilyForContext} from './context.mjs';
 import { privateServiceRoute, privateServiceSourceSelection } from "./private-service-routes.mjs";
 import { privateServiceRecovery } from "./private-service-recovery.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
@@ -77,6 +79,41 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
   };
   const requireOwned=(a,item)=>{if(!owned(a,item))throw fail(403,"无权管理其他用户的数据服务");return item;};
   const sourceOwner=(a,run)=>{const release=get("release",run.releaseId),task=get("agent",release.sourceAgentTaskId);if(!task || (a.role!=="ADMIN" && task.submittedBy!==a.user.id)||!manualReleaseOwned(a,release))throw fail(403,"无权使用该发布批次");};
+  // This is a read-only authority adapter, not a model execution grant. Keep it
+  // behind the same source/ownership checks as manual service development.
+  const agentContext=(a,input)=>{
+    const binding=servicePlanSourceBinding(input),run=source(binding.sourceReleaseRunId),release=get('release',run.releaseId);
+    sourceOwner(a,run);
+    if(run.releaseId!==binding.releaseId||run.packageDigest!==binding.packageDigest||release.sourceAgentTaskId!==binding.taskId)
+      throw fail(409,'发布批次与所选任务、交付包或发布不一致','SERVICE_PLAN_SOURCE_MISMATCH');
+    if(pilotConfig&&(pilotConfig.plan.taskId!==binding.taskId||pilotConfig.plan.packageDigest!==binding.packageDigest||pilotConfig.plan.sourceReleaseRunId!==run.id))
+      throw fail(403,'上下文不属于当前限定消费来源','PUBLIC_SERVICE_TARGET_MISMATCH');
+    const bundle=get('delivery_package',run.packageId),origin=bundle.manifest.source,context=getContext(origin.contextId),family=validationFamilyForContext(origin.contextId);
+    // getContext has a legacy default. A missing/unregistered manifest context
+    // must never acquire that default or borrow a mutable Agent context instead.
+    if(typeof origin.contextId!=='string'||context.id!==origin.contextId||family?.id!==origin.validationContractId||!family?.contextIds.includes(context.id))
+      throw fail(409,'发布包业务口径未登记或与独立断言契约不一致','SERVICE_PLAN_CONTEXT_UNAVAILABLE');
+    const available=[];let unavailableServiceCount=0;
+    for(const item of store.list('data_service',project)){
+      if(item.serviceType!=='DAPI'||item.scope!=='PRIVATE_CLOUD_TEST'||item.status!=='PUBLISHED'||!owned(a,item))continue;
+      const version=get('data_service_version',item.publishedVersionId);
+      if(!version||version.sourceReleaseRunId!==run.id||version.sourceReleaseId!==release.id||version.sourcePackageDigest!==binding.packageDigest)continue;
+      const snapshot=businessStore.snapshotEvidence(version.snapshotId);
+      if(version.serviceId!==item.id||version.status!=='PUBLISHED'||!versionOwned(a,version)||!serviceVersionConfigValid(version)||
+        version.snapshotId!==`release-run:${run.id}`||!snapshot?.integrityVerified||snapshot.contentHash!==version.snapshotHash||
+        !Array.isArray(version.fields)||version.fields.length<1||version.fields.length>5||new Set(version.fields).size!==version.fields.length||
+        version.fields.some(field=>!['client_id','holding_market_value','available_cash','total_assets','security_count'].includes(field))){unavailableServiceCount++;continue;}
+      available.push({id:item.id,name:item.name,slug:item.slug,serviceType:'DAPI',status:'PUBLISHED',publishedVersion:{id:version.id,configHash:version.configHash,fields:[...version.fields]}});
+    }
+    const services=available.sort((a,b)=>a.id.localeCompare(b.id)).slice(0,100);
+    return {protocol:'shuduo-service-agent-context/v1',scope:'PRIVATE_CLOUD_TEST',sourceBinding:binding,sourceKind:release.sourceKind??'AGENT',
+      ...(release.sourceKind==='MANUAL'?{sourceAttribution:'ENGINEER_ASSISTED'}:{}),
+      sourceContext:{id:context.id,name:context.name,definition:context.definition,validationContractId:family.id,metricLabels:family.metricLabels},
+      releaseRuns:[{id:run.id,releaseId:release.id,packageDigest:binding.packageDigest,sourceAgentTaskId:binding.taskId,sourceRevisionId:origin.revisionId,sourceRunId:origin.runId,
+        scope:'PRIVATE_CLOUD_TEST',sourceKind:release.sourceKind??'AGENT',status:run.status,published:true,schedulerTriggered:true,engine:run.engine,engineVersion:run.engineVersion}],
+      services,resourceVersions:services.map(item=>({serviceId:item.id,versionId:item.publishedVersion.id,configHash:item.publishedVersion.configHash,fields:[...item.publishedVersion.fields]})),
+      resourcesTruncated:available.length>100,unavailableServiceCount,planning:{enabled:false,code:'PRIVATE_SERVICE_AGENT_EXECUTION_NOT_ENABLED'},agentIndependentE2E:false,publicDeployed:false};
+  };
   const bodyKeys=(b,keys)=>{if(!b || Array.isArray(b)||Object.keys(b).some(k=>!keys.includes(k)))throw fail(422,"请求包含未支持字段","INVALID_PRIVATE_SERVICE_INPUT");return b;};
   const service=(a,id)=>requireOwned(a,manager.detail(id));
   const callOwned=(a,call)=>{
@@ -99,6 +136,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     const a=actor(req),owner=a.user.id;
     assertServiceMutation(pilotConfig,a,method,path,now?.()??Date.now());
     if(method==="POST")auth.requireMutation(req.headers,path);
+    if(method==='GET'&&path==='/api/v2/data-services/agent/context')return {status:200,body:agentContext(a,servicePlanSourceQuery(url.searchParams))};
     if(method==="GET" && path.endsWith("/task-evidence")){
       const selection=privateServiceSourceSelection(url.searchParams,true);
       if(!selection)throw fail(422,"需提供任务编号、确切包摘要及合法发布选择","INVALID_CONSUMPTION_INPUT");

@@ -2682,6 +2682,18 @@ kbd {
 .service-agent-source label { display:grid; gap:6px; min-width:220px; font-size:12px; font-weight:600; color:#263c32; }
 .service-agent-source select { min-height:40px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:#fff; color:#263c32; }
 .service-agent-source .button { min-height:40px; }
+.service-context-columns { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; margin:20px 0; }
+.service-context-columns > div { min-width:0; padding:16px; border:1px solid var(--border); border-radius:12px; background:#fff; }
+.service-context-columns h4 { margin:12px 0 8px; font-size:15px; }
+.service-context-columns dl { display:grid; gap:8px; margin:16px 0 0; font-size:12px; }
+.service-context-columns dl > div { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 12px; }
+.service-context-columns dt { color:var(--muted); }
+.service-context-columns dd { margin:0; overflow-wrap:anywhere; }
+.service-context-columns ul { display:grid; gap:10px; padding:0; list-style:none; }
+.service-context-columns li { display:grid; gap:5px; padding:10px 0; border-top:1px solid var(--border); overflow-wrap:anywhere; }
+.service-context-columns li small,.service-context-boundary { color:var(--muted); font-size:12px; line-height:1.6; }
+.service-context-inspection details { overflow-wrap:anywhere; font-size:12px; }
+@media(max-width:900px) { .service-context-columns { grid-template-columns:minmax(0,1fr); } }
 .service-catalog,
 .service-editor,
 .service-create-more,

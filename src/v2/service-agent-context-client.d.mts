@@ -1,0 +1,9 @@
+export type ServiceAgentContextSource={taskId:string;packageDigest:string;releaseId:string;sourceReleaseRunId:string};
+export type ServiceAgentContext={protocol:'shuduo-service-agent-context/v1';scope:'PRIVATE_CLOUD_TEST';sourceBinding:ServiceAgentContextSource;
+ sourceKind:'AGENT'|'MANUAL';sourceAttribution?:'ENGINEER_ASSISTED';sourceContext:{id:string;name:string;definition:string;validationContractId:string;metricLabels:Record<string,string>};
+ releaseRuns:{id:string;releaseId:string;packageDigest:string;sourceAgentTaskId:string;sourceRevisionId:string;sourceRunId:string;scope:'PRIVATE_CLOUD_TEST';sourceKind:'AGENT'|'MANUAL';status:'SUCCEEDED';published:true;schedulerTriggered:true;engine:'Apache Spark';engineVersion:string}[];
+ services:{id:string;name:string;slug:string;serviceType:'DAPI';status:'PUBLISHED';publishedVersion:{id:string;configHash:string;fields:string[]}}[];
+ resourceVersions:{serviceId:string;versionId:string;configHash:string;fields:string[]}[];resourcesTruncated:boolean;unavailableServiceCount:number;
+ planning:{enabled:false;code:'PRIVATE_SERVICE_AGENT_EXECUTION_NOT_ENABLED'};agentIndependentE2E:false;publicDeployed:false};
+export function checkedServiceAgentContext(value:unknown,source:ServiceAgentContextSource):ServiceAgentContext;
+export function readServiceAgentContext(client:{request(path:string):Promise<unknown>},args:{sourceBinding:ServiceAgentContextSource}):Promise<ServiceAgentContext>;

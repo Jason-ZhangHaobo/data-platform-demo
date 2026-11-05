@@ -3,6 +3,7 @@ import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
+import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
@@ -12,6 +13,7 @@ const publicationProperties={sourceKind:{type:"string",enum:["AGENT","MANUAL"]},
 const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANUAL"}},required:["sourceKind"]},then:{required:["sourceRunId","packageDigest","verificationId",...(stop?["releaseId"]:[])]}});
 
 const tools = [
+  {name:'service_agent_context',description:'只读核对确切私有发布批次、业务口径和可用DAPI固定版本。不调用模型，不创建任务或接口，不构成规划/发布授权。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceBinding:servicePlanSourceSchema},required:['sourceBinding']},annotations:{readOnlyHint:true}},
   {name:'service_agent_plan_create',description:'基于确切本机发布来源调用模型规划DAPI/XAPI；只生成方案，不创建草稿、发布或发凭证。未知结果按原requestId查询，不自动重试。',inputSchema:{type:'object',additionalProperties:false,properties:{message:{type:'string',minLength:4,maxLength:2000},sourceBinding:servicePlanSourceSchema,requestId:{type:'string',format:'uuid'}},required:['message','sourceBinding','requestId']}},
   {name:'service_agent_plan_list',description:'只读当前确切来源的本人规划记录。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceBinding:servicePlanSourceSchema},required:['sourceBinding']},annotations:{readOnlyHint:true}},
   ...['detail','request','apply','cancel'].map(operation=>({name:'service_agent_plan_'+operation,description:operation==='apply'?'应用本人原同源方案为草稿；不测试、发布或发令牌。':operation==='cancel'?'取消本人原同源规划并保留记录，不取消其他资源。':operation==='request'?'按原请求编号只读找回规划，不重新调用模型。':'只读原同源规划与固定版本。',inputSchema:{type:'object',additionalProperties:false,properties:{[operation==='request'?'requestId':'planId']:{type:'string',format:'uuid'}},required:[operation==='request'?'requestId':'planId']},annotations:{readOnlyHint:['detail','request'].includes(operation)}})),
@@ -193,6 +195,7 @@ const typePath = (value) => {
   return value + "s";
 };
 async function callTool(name, args = {}, client=defaultClient) {
+  if(name==='service_agent_context')return readServiceAgentContext(client,args);
   if(typeof name==='string'&&name.startsWith('service_agent_plan_'))return callServicePlan(client,name.slice('service_agent_plan_'.length),args);
   if (name === "v2_status") return client.request("/status");
   if (name === "budget_status") return client.request("/budget");

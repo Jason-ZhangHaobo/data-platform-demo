@@ -6,6 +6,7 @@ import {publicationSelectorInput,publicationReadPath} from "../src/v2/publicatio
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
+import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 
 const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
 
@@ -70,6 +71,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services list [--type dapi|xapi]
   shuduo services plan --message "生成当前发布批次的持仓DAPI" --request-id UUID --task-id UUID --package-digest SHA256 --release-id UUID --source-run-id UUID
   shuduo services plans --task-id UUID --package-digest SHA256 --release-id UUID --source-run-id UUID
+  shuduo services plan-context --task-id UUID --package-digest SHA256 --release-id UUID --source-run-id UUID
   shuduo services plan-detail|apply-plan|cancel-plan --id PLAN_UUID
   shuduo services plan-request --request-id ORIGINAL_UUID
     规划可能调用付费模型；应用仅创建原方案草稿，不测试、发布或发凭证。未知结果先查询原编号。
@@ -329,14 +331,14 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     if (resource === "status") result = await client.request("/status");
     else if (resource === "budget" && !action)
       result = await client.request("/budget");
-    else if(resource==='services'&&['plan','plans','plan-detail','plan-request','apply-plan','cancel-plan'].includes(action)){
-      const sourceFlags=['task_id','package_digest','release_id','source_run_id'],fields=action==='plan'?['message','request_id',...sourceFlags]:action==='plans'?sourceFlags:action==='plan-request'?['request_id']:['id'],
+    else if(resource==='services'&&['plan','plans','plan-context','plan-detail','plan-request','apply-plan','cancel-plan'].includes(action)){
+      const sourceFlags=['task_id','package_digest','release_id','source_run_id'],fields=action==='plan'?['message','request_id',...sourceFlags]:['plans','plan-context'].includes(action)?sourceFlags:action==='plan-request'?['request_id']:['id'],
         allowed=new Set([...fields,'base_url','help']),seen=new Set();
       if(parsed.positionals.length!==2)throw Error('规划命令包含额外参数');
       for(const token of argv.filter(value=>value.startsWith('--'))){const key=token.slice(2).replaceAll('-','_');if(!allowed.has(key)||seen.has(key))throw Error('规划命令包含未知或重复参数');seen.add(key);}
-      const sourceBinding=['plan','plans'].includes(action)?{taskId:required(parsed.options,'task_id'),packageDigest:required(parsed.options,'package_digest'),releaseId:required(parsed.options,'release_id'),sourceReleaseRunId:required(parsed.options,'source_run_id')}:undefined;
+      const sourceBinding=['plan','plans','plan-context'].includes(action)?{taskId:required(parsed.options,'task_id'),packageDigest:required(parsed.options,'package_digest'),releaseId:required(parsed.options,'release_id'),sourceReleaseRunId:required(parsed.options,'source_run_id')}:undefined;
       const operation={plan:'create',plans:'list','plan-detail':'detail','plan-request':'request','apply-plan':'apply','cancel-plan':'cancel'}[action];
-      result=await callServicePlan(client,operation,action==='plan'?{sourceBinding,message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id')}:action==='plans'?{sourceBinding}:
+      result=action==='plan-context'?await readServiceAgentContext(client,{sourceBinding}):await callServicePlan(client,operation,action==='plan'?{sourceBinding,message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id')}:action==='plans'?{sourceBinding}:
         action==='plan-request'?{requestId:required(parsed.options,'request_id')}:{planId:required(parsed.options,'id')});
     }
     else if (resource === "agent" && action === "intents")

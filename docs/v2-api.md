@@ -209,6 +209,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /open/dapis/:slug | Bearer + client_id/page/page_size | 参数化业务查询、分页、限流、超时及调用ID |
 | GET /open/xapis/:slug | Bearer + client_id/page/page_size | 固定子版本组合结果及调用ID |
 | GET/POST /data-services/agent/plans | 列表或自然语言需求 | 后台真实模型方案，范围为DATA_SERVICE_DESIGN |
+| GET /data-services/agent/context?agent_task_id=…&package_digest=…&release_id=…&source_release_run_id=… | 完整且唯一的任务/包/发布/成功批次；私有受邀身份 | 只读已验证包口径与同源已发布DAPI固定版本，最多100个；复用私有归属和快照验证。planning.enabled=false，不调用模型、不创建方案或接口；GUI/CLI plan-context/MCP service_agent_context同源 |
 | GET /data-services/agent/plans/:id | 方案状态 | 受治理提案、模型用量或明确失败 |
 | POST /data-services/agent/plans/:id/apply | 空对象 | 人工应用已验证方案为草稿，不自动发布 |
 | GET /data-services/agent/requests/:requestId | 本人原请求UUID | 找回原同源规划，不重新调用模型；来源不可用时仍只读返回原元数据 |

@@ -11,6 +11,7 @@ export const V2_OPERATIONS = Object.freeze([
   "agent_development_workflow",
   "agent_request_lookup",
   "service_agent_plan_list",
+  "service_agent_context",
   "service_agent_plan_create",
   "service_agent_plan_detail",
   "service_agent_plan_request",
