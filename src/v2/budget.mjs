@@ -1,3 +1,5 @@
+import {modelFailure} from "./model-diagnostics.mjs";
+
 const agentKinds = [
   "agent",
   "service_agent_plan",
@@ -14,6 +16,10 @@ const remoteRunKinds = ["run", "delivery_verification", "release_run"];
 
 const fail = (message, code) =>
   Object.assign(new Error(message), { status: 429, code });
+// Only these actual model preflight throw sites may prove an unsent request.
+// A provider/transport exception with an identical code has no such provenance.
+const modelPrepareFailure = (message, code) =>
+  Object.assign(modelFailure(code, "PREPARE"), {message, status:429});
 
 const numberSetting = (value, fallback, min, max, name) => {
   const result = value === undefined || value === "" ? fallback : Number(value);
@@ -205,7 +211,7 @@ export class BudgetManager {
 
   assertCanStartModel(reservation) {
     const status = this.overview();
-    this.#assertAccount(status);
+    this.#assertAccount(status, modelPrepareFailure);
     let pendingCost = status.model.estimatedCostCny, projectedTokens = this.fallbackTokens;
     if (reservation !== undefined) {
       // Only the exact, still-owned durable lease may replace its own pending
@@ -215,7 +221,7 @@ export class BudgetManager {
           !["taskId", "attempt", "leaseToken"].every(key => Object.hasOwn(reservation, key)) ||
           !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(reservation.taskId ?? "") ||
           !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(reservation.leaseToken ?? ""))
-        throw fail("模型预算预留与当前持久任务租约不一致", "MODEL_RESERVATION_INVALID");
+        throw modelPrepareFailure("模型预算预留与当前持久任务租约不一致", "MODEL_RESERVATION_INVALID");
       const task = this.store.get("agent", reservation.taskId, this.project),
         attempt = task?.attempts?.at(-1), reserved = tokens(attempt?.usage).total;
       if (task?.executionMode !== "DURABLE_SQL_AGENT_V1" || task.mode !== "LIVE_MODEL" || task.stage !== "MODEL_IN_FLIGHT" || task.status !== "RUNNING" ||
@@ -227,13 +233,13 @@ export class BudgetManager {
           ![task.requestTokenLimit, task.usedTokens, task.tokenBudget].every(v => Number.isSafeInteger(v) && v > 0) ||
           monthKey(task.createdAt) !== status.month || reserved < 1 || reserved > task.requestTokenLimit ||
           reserved > task.usedTokens || reserved > task.tokenBudget || task.usedTokens > task.tokenBudget)
-        throw fail("模型预算预留与当前持久任务租约不一致", "MODEL_RESERVATION_INVALID");
+        throw modelPrepareFailure("模型预算预留与当前持久任务租约不一致", "MODEL_RESERVATION_INVALID");
       pendingCost = Math.max(0, pendingCost - modelCost(attempt.model, attempt.usage, this.fallbackTokens));
       projectedTokens = reserved;
     }
     const projected = modelCost(this.env.V2_MODEL ?? "qwen3.7-plus", {}, projectedTokens);
     if (pendingCost + projected > status.model.limitCny)
-      throw fail(
+      throw modelPrepareFailure(
         "本月模型预算不足以启动下一次最坏情况任务",
         "MONTHLY_MODEL_BUDGET_EXCEEDED",
       );
@@ -262,12 +268,12 @@ export class BudgetManager {
     return status;
   }
 
-  #assertAccount(status) {
+  #assertAccount(status, makeFailure = fail) {
     if (
       status.account.observedSpendCny !== undefined &&
       status.account.observedSpendCny >= status.hardLimitCny
     )
-      throw fail(
+      throw makeFailure(
         "账号本月支出已达到硬上限，收费操作已停止",
         "MONTHLY_HARD_BUDGET_EXCEEDED",
       );

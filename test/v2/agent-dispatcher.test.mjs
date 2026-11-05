@@ -80,9 +80,21 @@ test("driver rechecks owner permission, skips unknown model outcomes and respect
   f.store.update("auth_user", f.owner.id, PROJECT, { memberships: [{ projectId: PROJECT, role: "ENGINEER" }] });
   f.store.update("agent", task.id, PROJECT, { stage: "MODEL_OUTCOME_UNKNOWN", status: "INTERRUPTED" });
   assert.equal((await f.tick()).state, "IDLE"); assert.equal(f.calls, 0);
+  f.store.update("agent", task.id, PROJECT, { stage: "MODEL_NOT_SENT", status: "INTERRUPTED" });
+  const stopped=f.store.get("agent",task.id,PROJECT);
+  assert.equal((await f.tick()).state,"IDLE");assert.equal(f.calls,0);assert.deepEqual(f.store.get("agent",task.id,PROJECT),stopped);
   f.store.update("agent", task.id, PROJECT, { stage: "MODEL_IN_FLIGHT", status: "RUNNING", durable: { leaseExpiresAt: new Date(f.now() + 90000).toISOString() } });
   f.create(); assert.equal((await f.tick()).state, "BUSY"); assert.equal(f.calls, 0);
   f.later(90001); assert.equal((await f.tick()).state, "ADVANCED");
+});
+
+test("a preparation failure appearing during dispatcher claim persistence cannot be mistaken for explicit retry consent",async t=>{
+  const f=fixture(t),task=f.create(),requestId=randomUUID();let stopped=false;
+  f.persist(async()=>{if(!stopped){stopped=true;f.store.update("agent",task.id,PROJECT,{status:"INTERRUPTED",stage:"MODEL_NOT_SENT"});}});
+  const result=await f.dispatcher.tick({requestId,taskId:task.id});
+  assert.equal(result.state,"IDLE");assert.equal(result.stage,"MODEL_NOT_SENT");assert.equal(result.pending,0);assert.equal(f.calls,0);
+  assert.deepEqual(await f.dispatcher.tick({requestId,taskId:task.id}),result);assert.equal(f.calls,0);
+  f.restart();assert.equal((await f.tick()).state,"IDLE");assert.equal(f.calls,0);
 });
 
 test("repeated task faults back off and pause without starving other tasks; manual state change permits retry", async t => {

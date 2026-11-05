@@ -45,7 +45,7 @@ export function createAgentDispatcher({ store, project, engine, persist, now = D
     }
     const tasks = store.list("agent", project).filter(t => t.executionMode === durableSqlAgentMode &&
       (!taskId || t.id === taskId) && (!prior || t.id === prior.taskId) &&
-      ["QUEUED", "RUNNING", "INTERRUPTED"].includes(t.status) && t.stage !== "MODEL_OUTCOME_UNKNOWN");
+      ["QUEUED", "RUNNING", "INTERRUPTED"].includes(t.status) && !["MODEL_OUTCOME_UNKNOWN", "MODEL_NOT_SENT"].includes(t.stage));
     // Respect an in-flight model lease, including one started by a manual call.
     if (tasks.some(t => t.stage === "MODEL_IN_FLIGHT" && Date.parse(t.durable.leaseExpiresAt) > now()))
       return response("BUSY");
@@ -73,8 +73,14 @@ export function createAgentDispatcher({ store, project, engine, persist, now = D
     try {
       const fresh = store.get("agent", task.id, project);
       if (!allowed(fresh) && fresh.stage !== "CANCELLING") throw fail(403, "AGENT_OWNER_PERMISSION_REVOKED");
-      const advanced = await engine.advance(task.id, { expectedVersion: fresh.version });
-      result = response("ADVANCED", { requestId, taskId: task.id, status: advanced.status, stage: advanced.stage });
+      if (fresh.stage === "MODEL_NOT_SENT") {
+        // A foreground step can stop while this claim is being persisted.
+        // Keep the existing driver protocol and do not treat that as consent.
+        result = response("IDLE", {requestId,taskId:task.id,status:fresh.status,stage:fresh.stage,pending:0});
+      } else {
+        const advanced = await engine.advance(task.id, { expectedVersion: fresh.version });
+        result = response("ADVANCED", { requestId, taskId: task.id, status: advanced.status, stage: advanced.stage });
+      }
     } catch (error) {
       failed = true;
       result = response("STEP_FAILED", { requestId, taskId: task.id, code: safeCode(error) });

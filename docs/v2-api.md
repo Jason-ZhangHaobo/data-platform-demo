@@ -279,3 +279,5 @@ M2b/M2c已增加本机摘要审批、短周期墙上时钟发布、监控告警�
 私有后台驱动另见[有界私有后台驱动](durable-agent-recovery.md#第二次增量有界私有后台驱动)：已有 IAM 私有事件入口可显式启用 `PRIVATE_AGENT_TICK_V1`，载荷仅 `operation` 与 UUID `requestId`。无新增公网接口；默认关闭，不替代未知模型结果的人工重试确认。
 
 默认关闭的 `V2_DURABLE_SQL_AGENT_ENABLED` 将 SQL Agent 创建改为检查点任务，新增 `POST /api/v2/agent/tasks/:id/advance`。请求必须携带 `expectedVersion`，可选 `confirmModelRetry`；GET 只读，未知模型结果不会自动重试。沿用身份/CSRF/开发权限，任务限制提交人或管理员操作。阶段、边界及本机测试见 [Agent 恢复合同](durable-agent-recovery.md)。本增量尚非云端或完整 Agent E2E 验收。
+
+`MODEL_NOT_SENT` 表示可信诊断已确认本次请求在发送前停止，任务状态为 `INTERRUPTED`。GET、后台事件、调度tick和评测器均不得自动重试；处理配置或预算条件后，用户明确调用原任务 `advance` 或 `background/resume` 可继续，无需未知计费的 `confirmModelRetry:true`。版本、所有权、次数和预算检查继续生效，原attempt和保守预算预留保留。普通错误的同名code不能自证请求未发送；未知结果、租约过期及历史 `MODEL_OUTCOME_UNKNOWN` 仍沿原确认规则。

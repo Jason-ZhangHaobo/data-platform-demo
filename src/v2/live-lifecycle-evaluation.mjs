@@ -50,8 +50,9 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
  async function poll(path,kind){
   for(let count=0;count<maxPolls;count++){
    const current=await adapter.request(path);
-   if(terminal(current.status))return current;
    if(current.stage==="MODEL_OUTCOME_UNKNOWN")throw fail("MODEL_OUTCOME_UNKNOWN");
+   if(current.stage==="MODEL_NOT_SENT")throw fail("MODEL_NOT_SENT");
+   if(terminal(current.status))return current;
    if((kind==="agent"&&current.executionMode==="DURABLE_SQL_AGENT_V1")||(kind==="delivery"&&current.mode==="DURABLE_AGENT_DELIVERY_V1")){
     const expectedVersion=current.version;ensure(Number.isSafeInteger(expectedVersion),"RESOURCE_VERSION_MISSING");
     try{await adapter.request(path+"/advance",{expectedVersion});}
@@ -142,7 +143,7 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
  }catch(cause){
   state.code=state.code??undefined;
   state.errorCode=/^[A-Z0-9_]{1,80}$/.test(cause.code??"")?cause.code:"EVALUATION_UNCONFIRMED";
-  state.status=["MUTATION_OUTCOME_UNKNOWN","MODEL_OUTCOME_UNKNOWN","ADVANCE_OUTCOME_UNKNOWN","STAGE_WAIT_EXPIRED","EVALUATION_UNCONFIRMED","API_REQUEST_UNCONFIRMED","API_RESPONSE_UNCONFIRMED"].includes(state.errorCode)?"PAUSED":"FAILED";
+  state.status=["MUTATION_OUTCOME_UNKNOWN","MODEL_OUTCOME_UNKNOWN","MODEL_NOT_SENT","ADVANCE_OUTCOME_UNKNOWN","STAGE_WAIT_EXPIRED","EVALUATION_UNCONFIRMED","API_REQUEST_UNCONFIRMED","API_RESPONSE_UNCONFIRMED"].includes(state.errorCode)?"PAUSED":"FAILED";
   persist();
  }
  return state;

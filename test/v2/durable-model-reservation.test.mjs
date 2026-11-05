@@ -92,8 +92,25 @@ test('unknown provider outcome retains the original full reservation and cannot 
   assert.equal(unchanged.stage,'MODEL_OUTCOME_UNKNOWN');assert.equal(requests,1);
   await assert.rejects(engine.prepareResume(task.id,{expectedVersion:task.version,confirmModelRetry:false}),{code:'AGENT_RETRY_CONFIRMATION_REQUIRED'});
 });
-test('reservation rejection is a safe pre-request diagnostic; internal lease is not sent in the SQL prompt',async()=>{
-  const d=safeModelDiagnostic(Object.assign(Error('private'),{code:'MODEL_RESERVATION_INVALID'}));
+test('an inner pre-request budget rejection is marked not sent without discounting its reserve or prior unknown costs',async t=>{
+  const f=setup(t),before=f.store.list('agent',project)[0];let requests=0;
+  const runner=Object.fromEntries(['prepare','submit','read','cancel'].map(key=>[key,()=>{throw Error('Spark must not execute');}]));
+  const engine=createDurableSqlAgent({store:f.store,project,runner,persist:async()=>{},getContext,contextIds,contractId:validationContractId,now:()=>now,
+    assertModelBudget:()=>f.budget.assertCanStartModel(),generator:async input=>{
+      f.budget.assertCanStartModel({...input.modelBudgetReservation,leaseToken:randomUUID()});requests++;throw Error('provider must not execute');
+    }});
+  let task=await engine.create({message:'虚构证券加工',contextId:'holdings-t1',currentSql:'SELECT 1 AS pending',actorId:'fixture',idempotencyKey:'not-sent-reservation'});
+  task=await engine.advance(task.id,{expectedVersion:task.version});
+  assert.equal(task.stage,'MODEL_NOT_SENT');assert.equal(task.recovery.confirmationRequired,false);assert.equal(requests,0);assert.equal(task.usedTokens,12000);
+  assert.equal(task.attempts[0].usage.total_tokens,12000);assert.equal(task.attempts[0].diagnostic.code,'MODEL_RESERVATION_INVALID');
+  assert.equal(f.budget.overview().model.estimatedCostCny,2.9);assert.deepEqual(f.store.get('agent',before.id,project),before);
+  await assert.rejects(engine.prepareResume(task.id,{expectedVersion:task.version,confirmModelRetry:false}),{code:'MONTHLY_MODEL_BUDGET_EXCEEDED'});
+  assert.equal(engine.get(task.id).stage,'MODEL_NOT_SENT');assert.equal(engine.get(task.id).usedTokens,12000);assert.equal(requests,0);
+});
+test('reservation rejection is a safe pre-request diagnostic; internal lease is not sent in the SQL prompt',async t=>{
+  const f=setup(t),r=pending(f);let actual;
+  try{f.budget.assertCanStartModel({...r.reservation,leaseToken:randomUUID()});}catch(error){actual=error;}
+  const d=safeModelDiagnostic(actual);
   assert.equal(d.phase,'PREPARE');assert.equal(d.requestMayHaveBeenSent,false);assert.ok(!JSON.stringify(d).includes('private'));
   const server=readFileSync(new URL('../../src/v2/server.mjs',import.meta.url),'utf8');
   assert.match(server,/budget\.assertCanStartModel\(input\.modelBudgetReservation\)/);
@@ -103,4 +120,20 @@ test('reservation rejection is a safe pre-request diagnostic; internal lease is 
       body=options.body;return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({sql:referenceSql,explanation:'synthetic'})}}],usage:{total_tokens:20}}));
     });
   assert.ok(!body.includes(internal.taskId));assert.ok(!body.includes(internal.leaseToken));assert.ok(!body.includes('modelBudgetReservation'));
+});
+test('only actual model budget failures carry a trusted unsent diagnostic; original messages and HTTP status remain intact',t=>{
+  const cases=[
+    {fixture:setup(t),call:f=>f.budget.assertCanStartModel({}),code:'MODEL_RESERVATION_INVALID',message:'模型预算预留与当前持久任务租约不一致'},
+    {fixture:setup(t,{V2_MODEL_MONTHLY_BUDGET_CNY:'0.1'}),call:f=>f.budget.assertCanStartModel(),code:'MONTHLY_MODEL_BUDGET_EXCEEDED',message:'本月模型预算不足以启动下一次最坏情况任务'},
+    {fixture:setup(t,{V2_ACCOUNT_MONTHLY_SPEND_CNY:'200'}),call:f=>f.budget.assertCanStartModel(),code:'MONTHLY_HARD_BUDGET_EXCEEDED',message:'账号本月支出已达到硬上限，收费操作已停止'},
+  ];
+  for(const sample of cases){
+    let actual;try{sample.call(sample.fixture);}catch(error){actual=error;}
+    assert.equal(actual?.code,sample.code);assert.equal(actual.status,429);assert.equal(actual.message,sample.message);
+    assert.equal(safeModelDiagnostic(actual).phase,'PREPARE');assert.equal(safeModelDiagnostic(actual).requestMayHaveBeenSent,false);
+    const collision=Object.assign(Error('SYNTHETIC_REMOTE_FAILURE'),{code:sample.code,status:429});
+    assert.equal(safeModelDiagnostic(collision).code,'MODEL_STEP_ERROR');assert.equal(safeModelDiagnostic(collision).requestMayHaveBeenSent,true);
+  }
+  let sparkError;try{cases[2].fixture.budget.assertCanStartRemoteSpark();}catch(error){sparkError=error;}
+  assert.equal(sparkError.code,'MONTHLY_HARD_BUDGET_EXCEEDED');assert.equal(safeModelDiagnostic(sparkError).requestMayHaveBeenSent,true,'a non-model budget gate does not manufacture model-send provenance');
 });
