@@ -11,16 +11,18 @@ import { reviewAttestationsComplete } from "./delivery-presentation";
 import { createPublicationReader, publicationPollNeeded } from "./publication-read";
 import {ValidationDetails} from "./ValidationDetails";
 import type {ValidationDetailsReport} from "./validation-details";
+import {publicationSelector,publicationSelectionKey,publicationReadPath,checkedPublication,publicationWriteAllowed,publicationCancellationAllowed,cloudPublicationRequest,createPublicationAttempt} from "./publication-selection";
+import type {PublicationSelector} from "./publication-selection";
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
-type Delivery = { id: string; version: number; status: string; stage: string; mode?: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string; error?: string };
+type Delivery = { id: string; version: number; status: string; stage: string; mode?: string; sourceKind?:string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string; error?: string };
 type Workflow = {
-  report: { taskId: string; contextId?:string; validationContractId?:string; validationDetails?:ValidationDetailsReport; status: string; summary: string; definition?: string; checks: { id: string; label: string; passed: boolean }[]; revisionId?: string; revisionHash?:string; runId?: string; rowCount: number; engine?: string; engineVersion?: string; notice: string };
+  report: { taskId: string; sourceKind?:string; agentIndependentE2E?:boolean; contextId?:string; validationContractId?:string; validationDetails?:ValidationDetailsReport; status: string; summary: string; definition?: string; checks: { id: string; label: string; passed: boolean }[]; revisionId?: string; revisionHash?:string; runId?: string; rowCount: number; engine?: string; engineVersion?: string; notice: string };
   delivery?: Delivery;
   package?: { id: string; digest: string; manifest: unknown; files: Record<string,string> };
   verification?: { id: string; status: string; engine?: string; engineVersion?: string; mainSqlExecuted?: boolean; durationMs?: number; error?: string; testSqlValidation?: { passed: boolean }; validation?: { passed: boolean; regressions?: { contextId: string; passed: boolean }[] } };
   publication: { available: boolean; scope: string; reason: string };
 };
-type Release = { id: string; status: string; health: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number };
+type Release = { id: string; status: string; health: string; sourceKind?:string; sourceRunId?:string; agentIndependentE2E?:boolean; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number };
 type Publication = { release?: Release; runs: {id:string; status:string; sequence:number; schedulerTriggered?:boolean; durationMs?:number; triggeredAt?:string; finishedAt?:string}[]; alerts:{id:string;status:string;message:string;recoveryRunId?:string}[]; events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[] };
 const complete = (status?: string) => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(status ?? "");
 const batchLabels: Record<string,string> = { SCHEDULED: "等待调度", RUNNING: "正在运行", SUCCEEDED: "独立核验通过", FAILED: "运行或核验失败", CANCELLED: "已停止" };
@@ -36,20 +38,30 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const [publication,setPublication]=useState<Publication>();
   const [publicationClock,setPublicationClock]=useState(Date.now);
   const [publicationRead, setPublicationRead] = useState<EvidenceReadState>("LOADING");
+  const [publicationReadKey,setPublicationReadKey]=useState("");
   const [publicationError, setPublicationError] = useState("");
   const publicationReader = useRef<ReturnType<typeof createPublicationReader<Publication>> | undefined>(undefined);
-  const acceptPublication = (value: Publication) => { setPublication(value); setRelease(value.release); setBatches(value.runs); setPublicationRead("READY"); setPublicationError(""); };
-  const acceptPublicationWrite = (value: Publication) => { publicationReader.current?.invalidate(); acceptPublication(value); };
-  const refreshPublication = () => { if (manual) return; setPublicationRead("LOADING"); return publicationReader.current?.refresh(); };
+  const activePublicationKey=useRef(""),publicationReaderKey=useRef(""),pinnedReleases=useRef(new Map<string,string>());
+  const publicationAttempts=useRef(new Map<string,ReturnType<typeof createPublicationAttempt>>());
+  const acceptPublication = (value: Publication,key=activePublicationKey.current) => { setPublication(value); setRelease(value.release); setBatches(value.runs); setPublicationReadKey(key);setPublicationRead("READY"); setPublicationError(""); };
+  const acceptPublicationWrite = (value: Publication,key=activePublicationKey.current,selector?:PublicationSelector) => {
+    if(!alive.current||activePublicationKey.current!==key)return;
+    if(selector)checkedPublication(value,taskId,selector,pinnedReleases.current.get(key));
+    if(value.release)pinnedReleases.current.set(key,value.release.id);
+    publicationAttempts.current.get(key)?.readback(Boolean(value.release));
+    publicationReader.current?.invalidate(); acceptPublication(value,key);
+  };
+  const refreshPublication = () => { if (!publicationReader.current||publicationReaderKey.current!==activePublicationKey.current) return Promise.resolve(); setPublicationRead("LOADING"); return publicationReader.current.refresh(); };
   const [consumption,setConsumption]=useState<TaskConsumption>(),[consumptionError,setConsumptionError]=useState("");
   const [evidenceRead, setEvidenceRead] = useState<EvidenceReadState>("LOADING");
   const [evidenceError, setEvidenceError] = useState("");
   const consumptionEpoch=useRef(0),workflowEpoch=useRef(0);
   const epoch = useRef(0), alive = useRef(true), requestKey = useRef(crypto.randomUUID());
   const activeTask = useRef(taskId); activeTask.current = taskId;
+  const workflowSourceKey=JSON.stringify([taskId,manual,runId,revisionId,contextId]),activeWorkflowSource=useRef(workflowSourceKey);activeWorkflowSource.current=workflowSourceKey;
   const load = async () => {
     const id = taskId, sequence=++workflowEpoch.current;
-    const active = () => alive.current && activeTask.current === id && sequence === workflowEpoch.current;
+    const active = () => alive.current && activeTask.current === id && activeWorkflowSource.current===workflowSourceKey && sequence === workflowEpoch.current;
     setEvidenceRead("LOADING"); setEvidenceError("");
     try {
       const value = await api<Workflow>(manual ? `/runs/${runId}/workflow` : `/agent/tasks/${id}/workflow`);
@@ -71,19 +83,28 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; }; }, []);
   useEffect(() => { if (!codeBusy) void load().catch(() => {}); }, [taskId, revisionId, runId, codeBusy]);
   const report = workflow?.report, delivery = workflow?.delivery;
-  const journey = agentJourney({ taskId, contextId, revisionId, runId, dirty, evidenceReadable: evidenceRead === "READY", publicationReadable: publicationRead === "READY", report, delivery, bundle: workflow?.package, verification: workflow?.verification, release, batches, alerts: publication?.alerts, events: publication?.events, consumption });
+  const cloud = workflow?.publication.scope === "PRIVATE_CLOUD_TEST";
+  // A retained, successfully read workflow may still select read-only history
+  // while refreshing; write gates continue to require fresh READY evidence.
+  const selector=cloud?publicationSelector({taskId,manual,runId,revisionId,contextId},workflow,Boolean(workflow)):undefined;
+  const publicationKey=selector?publicationSelectionKey(taskId,selector):!manual&&workflow&&!cloud?`local:${workflowSourceKey}`:"";
+  activePublicationKey.current=publicationKey;
+  const publicationReady=Boolean(publicationKey)&&publicationReadKey===publicationKey&&publicationRead==="READY";
+  const journey = agentJourney({ taskId, contextId, revisionId, runId, dirty, evidenceReadable: evidenceRead === "READY", publicationReadable: publicationReady, report, delivery, bundle: workflow?.package, verification: workflow?.verification, release, batches, alerts: publication?.alerts, events: publication?.events, consumption });
   const current = journey.current;
   const verified = journey.steps.find(step => step.id === "validation")?.state === "DONE";
   const reportView = verificationPresentation(current, verified, evidenceRead, report?.status);
   const releaseLabel = (value: Release) => publicationEvidenceText(value, journey.publicationCurrent, journey.steps.some(step => step.id === "monitoring" && step.state === "DONE"));
   const working = busy || auto || codeBusy;
   const fileVerified = journey.fileVerified;
-  const cloud = workflow?.publication.scope === "PRIVATE_CLOUD_TEST";
   const targetMatches = publicationTargetMatches(publicationTarget, { taskId, packageDigest: workflow?.package?.digest, verificationId: workflow?.verification?.id }, publicationClock)
     && (!publicationTarget || delivery?.verificationId === publicationTarget.verificationId);
-  const publicationWritable = Boolean(!manual && (canPublish ?? canWrite) && targetMatches);
-  const cancellationWritable = publicationWritable && (!publicationTarget || Boolean(release && publicationTargetMatches(publicationTarget,
-    {taskId:release.sourceAgentTaskId ?? "",packageDigest:release.packageDigest,verificationId:release.verificationId},publicationClock)));
+  const publicationWritable = publicationWriteAllowed({manual,canPublish,canWrite,cloud,hasSelector:Boolean(selector),targetMatches});
+  const publicationUnknown=publicationAttempts.current.get(publicationKey)?.snapshot().status==="UNKNOWN";
+  const cancellationInput={taskId,selector,release,publicationKey,confirmedReadKey:publicationReadKey,pinnedReleaseId:pinnedReleases.current.get(publicationKey),dirty,working,
+    canPublish:publicationWritable&&(!publicationTarget||Boolean(release&&publicationTargetMatches(publicationTarget,
+      {taskId:release.sourceAgentTaskId??"",packageDigest:release.packageDigest,verificationId:release.verificationId},publicationClock)))};
+  const cancellationWritable=publicationCancellationAllowed(cancellationInput);
   useEffect(() => {
     if (!publicationTarget) return;
     setPublicationClock(Date.now());
@@ -93,7 +114,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   useEffect(() => { if (!publicationWritable) { setReview(false);setConfirmed({}); } }, [publicationWritable]);
   useEffect(() => { if (!canWrite || publicationTarget) { epoch.current++;setAuto(false); } }, [canWrite,publicationTarget?.taskId]);
   useEffect(()=>{setConsumption(undefined);setConsumptionError("");void readConsumption();return()=>{consumptionEpoch.current++;};},[taskId,workflow?.package?.digest,cloud]);
-  useEffect(() => { setReview(false); setConfirmed({}); }, [workflow?.package?.digest, workflow?.verification?.id, dirty, current, publicationRead]);
+  useEffect(() => { setReview(false); setConfirmed({}); }, [publicationKey,workflow?.package?.digest, workflow?.verification?.id, dirty, current, publicationRead]);
   useEffect(() => { requestKey.current = crypto.randomUUID(); }, [taskId, revisionId, runId]);
   async function drive(start: Delivery) {
     if (!canWrite || publicationTarget) return;
@@ -119,29 +140,50 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     catch(e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   async function publishLocal() {
-    if (!publicationWritable || working || publicationRead !== "READY" || !workflow?.package || !delivery?.verificationId || !verified || !fileVerified || !workflow.publication.available || !reviewAttestationsComplete(confirmed, cloud)) return;
+    if (!publicationWritable || working || !publicationReady || !workflow?.package || !delivery?.verificationId || !verified || !fileVerified || !workflow.publication.available || !reviewAttestationsComplete(confirmed, cloud)) return;
     setBusy(true); setError("");
-    const bundle = workflow.package;
+    const bundle = workflow.package,writeKey=publicationKey;
     try {
-      if(cloud){const result=await api<Publication>(`/agent/tasks/${taskId}/publication`,{packageDigest:bundle.digest,verificationId:delivery.verificationId,attestations:confirmed},{idempotencyKey:`agent-cloud-publication-${bundle.id}`});acceptPublicationWrite(result);setReview(false);return;}
+      if(cloud){
+        if(!selector)throw Error("请先确认当前交付包、人工来源及文件演练，不能发布其他历史版本。");
+        const key=publicationKey,request=cloudPublicationRequest(selector,bundle.id,confirmed);
+        let attempt=publicationAttempts.current.get(key);
+        if(!attempt){attempt=createPublicationAttempt(request);publicationAttempts.current.set(key,attempt);}
+        const result=await attempt.submit(async frozen=>checkedPublication(await api<Publication>(`/agent/tasks/${taskId}/publication`,frozen.body,{idempotencyKey:frozen.idempotencyKey}),taskId,selector,pinnedReleases.current.get(key),true),true);
+        acceptPublicationWrite(result,key,selector);if(activePublicationKey.current===key)setReview(false);return;
+      }
       const reviewed = await api<{ id: string }>(`/delivery/packages/${bundle.id}/review`, { packageDigest: bundle.digest, verificationId: delivery.verificationId, reviewNote: "工程师已在Agent工作台审阅代码、核验、交付文件和测试发布范围。", attestations: confirmed });
       const approved = await api<{ id: string }>(`/delivery/packages/${bundle.id}/approve`, { packageDigest: bundle.digest, reviewId: reviewed.id });
       const published = await api<Release>("/releases", { approvalId: approved.id, triggerAfterSeconds: 5, intervalSeconds: 30, runCount: 2 }, { idempotencyKey: `agent-workbench-release-${bundle.id}` });
       publicationReader.current?.invalidate(); setRelease(published); setReview(false); await refreshPublication();
-    } catch(e) { setError((e as Error).message + " 发布结果需先读取原记录确认，不要重新创建任务。"); publicationReader.current?.invalidate(); await refreshPublication(); } finally { setBusy(false); }
+    } catch(e) { if(alive.current&&activePublicationKey.current===writeKey){setReview(false);setConfirmed({});setError((e as Error).message + " 只查询当前包的原发布记录；不会自动重发。明确重试仍复用原请求编号和审阅内容，不重新创建批准。"); publicationReader.current?.invalidate(); await refreshPublication();} } finally { if(alive.current)setBusy(false); }
   }
   useEffect(() => {
-    if (manual) { setPublicationRead("READY"); setPublication(undefined); setRelease(undefined); setBatches([]); return; }
-    const reader = createPublicationReader<Publication>({ read: () => api<Publication>(`/agent/tasks/${taskId}/publication`), onValue: acceptPublication, onError: e => { setPublicationRead("ERROR"); setPublicationError((e as Error).message); } });
-    publicationReader.current = reader; void reader.refresh();
-    return () => { reader.close(); if (publicationReader.current === reader) publicationReader.current = undefined; };
-  }, [taskId,manual]);
+    const key=publicationKey;
+    setPublication(undefined);setRelease(undefined);setBatches([]);setPublicationError("");
+    if(!key){setPublicationReadKey("");setPublicationRead("READY");return;}
+    setPublicationRead("LOADING");
+    const reader = createPublicationReader<Publication>({
+      read: async () => {
+        const pinned=pinnedReleases.current.get(key);
+        const value=await api<Publication>(selector?publicationReadPath(taskId,selector,pinned):`/agent/tasks/${taskId}/publication`);
+        return selector?checkedPublication(value,taskId,selector,pinned):value;
+      },
+      onValue:value=>{
+        if(!alive.current||activePublicationKey.current!==key)return;
+        if(value.release)pinnedReleases.current.set(key,value.release.id);
+        publicationAttempts.current.get(key)?.readback(Boolean(value.release));
+        acceptPublication(value,key);
+      },onError:e=>{if(alive.current&&activePublicationKey.current===key){setPublicationRead("ERROR");setPublicationError((e as Error).message);}}
+    });
+    publicationReader.current = reader;publicationReaderKey.current=key; void reader.refresh();
+    return () => { reader.close(); if (publicationReader.current === reader){publicationReader.current = undefined;publicationReaderKey.current="";} };
+  }, [publicationKey]);
   useEffect(() => {
-    if (!publication || publicationRead !== "READY" || !publicationPollNeeded(publication)) return;
+    if (!publication || !publicationReady || !publicationPollNeeded(publication)) return;
     const timer = setInterval(() => { void publicationReader.current?.refresh(); }, cloud ? 10000 : 5000);
     return () => clearInterval(timer);
-  }, [publication, publicationRead, cloud]);
-  useEffect(() => { if (workflow?.package?.digest) void publicationReader.current?.refresh(); }, [workflow?.package?.digest]);
+  }, [publication, publicationReady, cloud]);
   return <section id="agent-delivery" className="agent-delivery-panel" aria-label="核验与发布交付">
     <header><div><ShieldCheck size={17} /><strong>从开发到交付</strong></div><button className="icon-button" aria-label="刷新核验与交付" disabled={working || evidenceRead === "LOADING"} onClick={async()=>{try{await readConsumption(await load());}catch{/* load preserves the read error without losing evidence */}}}><RefreshCw size={14} /></button></header>
     {manual && <p className="agent-dev-notice" role="status">工程师接管交付 · 当前报告、交付包及演练均绑定此人工版本。原 Agent 的失败和尝试记录保留，不计作自主完成；发布需要独立审阅。</p>}
@@ -169,23 +211,27 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
       </div>
       <div id="agent-publication" className="agent-publication-card"><div className="agent-workflow-title"><ShieldCheck size={16} /><h3>审阅发布与运行监控</h3></div><p>{!workflow.publication.available && release ? "发布记录已保留；临时调度入口已关闭，不会继续启动批次。新发布需按预算和权限重新启用。" : workflow.publication.reason}</p>{release && !journey.publicationCurrent && <p role="status">这是保留的发布记录，尚未核对为当前编辑版本的上线证据。</p>}
         {publicationTarget && <p role="status">{publicationWritable ? "本任务、包摘要和演练编号与受邀发布范围一致。请逐项审阅，不会自动批准。" : "当前任务或版本不在有效发布范围内，或窗口已关闭；只保留查看，不发布或停止其他任务。"} 同一冻结业务日期的两个样例批次，不是两个交易日或生产调度；不修改原代码或重新演练文件。</p>}
-        {!manual && <div className="agent-delivery-actions"><button className="button" disabled={working || publicationRead === "LOADING"} onClick={() => void refreshPublication()}><RefreshCw size={14} />刷新发布与监控</button><small>只读取原任务，不会重新发布或运行计算。</small></div>}
-        {publicationRead !== "READY" && <p role={publicationRead === "ERROR" ? "alert" : "status"}>{publicationRead === "ERROR" ? `发布与监控读取未确认：${publicationError}。已读取的历史记录保留，暂不能判断当前健康或再次发布。` : "正在恢复原任务的发布、批次与告警记录…"}</p>}
-        {publicationRead === "READY" && !release && <p>{manual ? "当前人工交付支持核验、文件生成与演练；人工包的云发布接入仍待完成。" : "当前任务尚未找到发布记录；交付演练通过并完成审阅后才能发布。"}</p>}
-        {workflow.publication.available && (!release || !journey.publicationCurrent) && <button className="button primary" disabled={!publicationWritable || !fileVerified || !verified || working || publicationRead !== "READY"} onClick={() => { if (publicationWritable) setReview(true); }}>审阅并发布测试任务</button>}
+        <div className="agent-delivery-actions"><button className="button" disabled={!publicationKey || working || publicationRead === "LOADING"} onClick={() => void refreshPublication()}><RefreshCw size={14} />刷新发布与监控</button><small>{publicationKey?"只读取当前来源、交付包和演练绑定的发布，不重新发布或运行计算。":"先确认当前交付包及文件演练，才能读取此版本的发布记录。"}</small></div>
+        {manual&&<p role="status">发布来源：工程师接管（MANUAL／ENGINEER_ASSISTED）· 原 Agent 失败记录保留，此包和发布不计作 Agent 自主完成。</p>}
+        {publicationUnknown&&<p role="status">原发布请求结果尚未确认。先刷新读取同一包的记录；如仍未找到，重新审阅后可按原请求编号重试，不会自动生成新的批准。</p>}
+        {publicationKey && !publicationReady && <p role={publicationRead === "ERROR" ? "alert" : "status"}>{publicationRead === "ERROR" ? `发布与监控读取未确认：${publicationError}。已读取的历史记录保留，暂不能判断当前健康或再次发布。` : "正在恢复当前来源与确切交付包的发布、批次与告警记录…"}</p>}
+        {publicationReady && !release && <p>当前来源、交付包与演练尚未找到发布记录；需逐项审阅确切版本，发布后仍等待受控调度器执行。</p>}
+        {workflow.publication.available && (!release || !journey.publicationCurrent) && <button className="button primary" disabled={!publicationWritable || !fileVerified || !verified || working || !publicationReady} onClick={() => { if (publicationWritable&&!working&&verified&&fileVerified&&publicationReady) setReview(true); }}>{publicationUnknown?"重新审阅并重试原发布请求":"审阅并发布测试任务"}</button>}
         {!workflow.publication.available && !release && <span className="agent-publication-gate">交付演练通过后进入“待发布”；云端上线尚待完成。</span>}
-        {review && workflow.package && <AgentPublicationReview cloud={cloud} packageDigest={workflow.package.digest} revisionId={delivery?.sourceRevisionId} runId={delivery?.sourceRunId} verificationId={delivery?.verificationId} confirmed={confirmed} disabled={!publicationWritable || working || publicationRead !== "READY" || !verified || !fileVerified || !workflow.publication.available} onConfirm={(id, checked) => setConfirmed(old => ({...old, [id]:checked}))} onPublish={() => void publishLocal()} onCancel={() => { setReview(false); setConfirmed({}); }} />}
+        {review && workflow.package && <AgentPublicationReview cloud={cloud} sourceKind={manual?"MANUAL":"AGENT"} originTaskId={taskId} packageDigest={workflow.package.digest} revisionId={delivery?.sourceRevisionId} runId={delivery?.sourceRunId} verificationId={delivery?.verificationId} confirmed={confirmed} disabled={!publicationWritable || working || !publicationReady || !verified || !fileVerified || !workflow.publication.available} onConfirm={(id, checked) => setConfirmed(old => ({...old, [id]:checked}))} onPublish={() => void publishLocal()} onCancel={() => { setReview(false); setConfirmed({}); }} />}
         {release && <>
-          <strong>发布版本 {release.id.slice(0,8)} · {publicationRead === "READY" ? releaseLabel(release) : "上次读取的记录 · 当前状态未确认"}</strong>
+          <strong>发布版本 {release.id.slice(0,8)} · {publicationReady ? releaseLabel(release) : "上次读取的记录 · 当前状态未确认"}</strong>
           <p className="agent-publication-id">发布编号：{release.id}</p>
           <ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batchLabels[batch.status] ?? batch.status} · {batch.schedulerTriggered ? "调度器已触发" : batch.status === "CANCELLED" ? "未再触发" : "等待计划时间"}<small>批次编号：{batch.id}</small></li>)}</ul>
           {publication?.alerts.map(alert => <p key={alert.id} role={alert.status === "OPEN" ? "alert" : undefined}>{alert.status === "OPEN" ? "未解除告警" : "已恢复"}：{alert.message}{alert.recoveryRunId ? ` · 恢复批次 ${alert.recoveryRunId.slice(0,8)}` : ""}</p>)}
-          {cloud && release.status !== "CANCELLED" && batches.some(batch => !complete(batch.status)) && <button className="button" disabled={working || !cancellationWritable || publicationRead !== "READY"} onClick={async () => {
-            if (!cancellationWritable) return;
+          {cloud&&cancellationWritable&&!publicationReady&&<p role="status">监控读取尚未确认；原发布来源和编号已核对，仍可停止这个已确认版本的后续批次。</p>}
+          {cloud && release.status !== "CANCELLED" && batches.some(batch => !complete(batch.status)) && <button className="button" disabled={!cancellationWritable} onClick={async () => {
+            if (!publicationCancellationAllowed(cancellationInput)||!selector) return;
+            const key=publicationKey,selectedReleaseId=release.id;
             setBusy(true);
-            try { acceptPublicationWrite(await api<Publication>(`/agent/tasks/${taskId}/publication/cancel`,{})); }
-            catch(e) { setError((e as Error).message); publicationReader.current?.invalidate(); await refreshPublication(); }
-            finally { setBusy(false); }
+            try { const value=checkedPublication(await api<Publication>(`/agent/tasks/${taskId}/publication/cancel`,{...selector,releaseId:selectedReleaseId}),taskId,selector,selectedReleaseId);acceptPublicationWrite(value,key,selector); }
+            catch(e) { if(alive.current&&activePublicationKey.current===key){setError((e as Error).message); publicationReader.current?.invalidate(); await refreshPublication();} }
+            finally { if(alive.current)setBusy(false); }
           }}><Square size={14}/>停止后续云端批次</button>}
           {publication && <button className="button" onClick={() => download(`publication-${release.id.slice(0,8)}.json`,{...publication, readState:publicationRead, notice:"已读取的测试范围记录，不代表实时健康或公网验收"})}><Download size={14}/>下载发布与监控记录</button>}
         </>}

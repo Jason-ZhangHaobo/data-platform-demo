@@ -16,9 +16,46 @@
 - `POST /runs/:id/prepare-delivery`：空 JSON 对象与 `Idempotency-Key`。仅真实隔离 Spark 3.5.9、当前代码和同口径五场景核验通过的人工批次可进入。服务端决定来源，不接受客户端替换任务、代码或批次；`DEVELOPMENT_ONLY` 仍受指定原任务与工程师范围限制。
 - 人工交付复用 `/agent/deliveries/:id/advance` 和取消、读取路径。包先持久化，再写私有不可变产物；未知结果沿用原摘要与批次对账。文件演练与普通开发共同消耗现有 Spark 额度。
 - 清单保存 `source.attribution.kind=ENGINEER_ASSISTED`、原任务和操作者，报告与交付均标记 `agentIndependentE2E=false`。界面继续显示人工来源，未保存修改不能继承旧核验。
-- 该增量只完成云交付准备，不开放人工包发布。现有 Agent 发布入口拒绝借用人工包或原失败任务的批准；后续人工发布须有独立的确切包审阅及发布能力，不能用此接口代替。
+- 本准备接口不批准或发布任务，也不借用原失败 Agent 的批准。人工包的独立审阅发布契约见下节；准备交付成功不能代替该审阅。
 
 以上为接口与本机实现范围；模型生成正确率、真实云文件演练、关页推进和实例恢复须分别实测，不由合成回归推断。
+
+## 人工同源包的审阅发布契约（2026-11-05）
+
+本节描述接口、客户端及权限边界，不声明实际环境已部署、发布窗口已开放或真实云调度已验收。人工接管复用原任务的发布路径，但必须指明人工来源；原 Agent 的失败、尝试、Token 预留及自主完成结论不变。
+
+### 精确来源与接口
+
+发布选择字段只有 `sourceKind`、`sourceRunId`、`packageDigest`、`verificationId`、`releaseId`，查询参数使用这些 camelCase 名称。`sourceKind` 只能为 `AGENT` 或 `MANUAL`；摘要为 64 位小写十六进制，其他选择编号为不超过 100 字符的字母、数字、下划线或连字符。客户端语法校验不替代服务端 UUID、项目、所有权及来源核验。重复查询键、未知字段和路径注入拒绝，不采用“最后一个参数覆盖前一个”的规则。
+
+| 操作 | 请求及来源约束 | 行为边界 |
+|---|---|---|
+| `GET /agent/tasks/:originTaskId/publication` | 精确查询可携带上述五个选择字段；`MANUAL` 必须包含 `sourceRunId/packageDigest/verificationId`，已知发布编号时再绑定 `releaseId` | 只读取、对账该来源和包的已有发布、批次、告警；不新建批准或提交 Spark，不回退到其他历史包 |
+| `POST /agent/tasks/:originTaskId/publication` | JSON 为 `packageDigest, verificationId, attestations`；人工版本另加 `sourceKind:"MANUAL", sourceRunId`，并携带 `Idempotency-Key` | 校验原任务、人工版本及真实成功批次、不可变包和成功文件演练的同源关系；四项人审通过后创建该包的审阅、批准和发布记录。返回 `WAITING_SCHEDULER` 不代表已执行 |
+| `POST /agent/tasks/:originTaskId/publication/cancel` | JSON 携带同一精确选择字段及选定 `releaseId`；人工来源仍须完整的运行、包摘要、演练绑定 | 只停止选定发布的后续批次，保留已完成结果、原请求和审阅历史；不能取消其他人工包或同任务的其他发布 |
+
+四项 `attestations` 必须分别为 `code/assertions/deliveryFiles/cloudScope=true`。生成文件、查看报告和工程师接管本身均不代表已审阅。代码版本、源运行、包摘要或演练记录变化后，旧确认不得复用；同一请求编号对应不同内容时拒绝。
+
+人工链路沿用 `GET /runs/:sourceRunId/workflow` 取得核验报告及同源包、演练。服务端还要核验原任务、当前工程师、`MANUAL/ENGINEER_EDIT` 来源、口径、SQL 摘要、实际隔离执行和独立断言；不能仅凭客户端声明 `sourceKind:"MANUAL"` 取得权限。包清单保留 `source.attribution.kind=ENGINEER_ASSISTED`，发布回读携带 `sourceKind:"MANUAL"`、`sourceRunId` 及 `agentIndependentE2E:false`，界面继续明确人工归因。
+
+`actorId`、`submittedBy` 或其他执行者覆盖字段不属于发布请求，客户端与服务端均拒绝；执行者仅由后端从已验证会话注入。该契约不沿用本机安全演示接口的 `X-Actor-Id` 身份模拟。
+
+兼容旧 AGENT：省略 `sourceKind` 时仍按 AGENT 来源解释；旧的无选择字段读取与空对象停止请求只兼容唯一的 AGENT 发布。存在多个可匹配版本时返回 409，不能取第一条。新客户端优先绑定 `packageDigest/verificationId`，停止已选版本还绑定 `releaseId`；无来源选择不能落到人工发布。
+
+### 权限、未知结果与客户端映射
+
+`PUBLICATION_ONLY` 仍限指定账号、原任务、包摘要、演练及有效时间窗口，沿用 Cookie、CSRF、Origin、项目权限、预算和签名调度门。它允许读取对应人工 `workflow` 并审阅确切包，但不开放代码编辑、新模型调用、开发运行或交付文件重演练。GUI 将 `canPublish` 与开发 `canWrite` 分开：没有开发写权限的获准发布用户可审阅指定包，但开发权限不能代替人工发布权限。未保存草稿、错包、错演练、读取结果未确认或窗口到期都不能提交。
+
+发布结果未知时先用相同选择字段读取原记录，不自动重发 POST、不生成新批准或新任务。确需明确重试时复用首次请求的 `Idempotency-Key` 和冻结请求内容；已有发布继续返回原记录，不重置两个测试批次的额度。页面切换包或演练后，旧异步响应和旧“读取成功”状态不能放行新选择；取消也必须使用当前已核对的 `releaseId`。
+
+| 客户端 | 精确读取／停止 | 发布与稳定请求编号 |
+|---|---|---|
+| CLI | `shuduo agent publication --id TASK_ID`／`shuduo agent stop-publication --id TASK_ID`，增加 `--source-kind`、`--source-run-id`、`--package-digest`、`--verification-id`、`--release-id`；人工选择必须完整，带选择字段的停止命令必须有发布编号 | `shuduo agent publish --id TASK_ID --file REVIEW_JSON --source-kind MANUAL --source-run-id RUN_ID --request-id ORIGINAL_REQUEST_ID`；审阅文件保留包摘要、演练及四项确认，文件与命令参数冲突时拒绝，不覆盖已审阅范围 |
+| MCP | `agent_publication_detail`／`agent_publication_stop` 使用 `taskId` 及同名 camelCase 选择字段；工具 schema 和实际调用均拒绝未知字段、缺失人工来源和 actor 覆盖 | `agent_publication_create` 使用 `taskId, sourceKind, sourceRunId, packageDigest, verificationId, attestations`，可选 `requestId`；`requestId` 映射为 `Idempotency-Key`，不放入执行者或选择字段 |
+
+`requestId` 为 1—100 字符的字母、数字、下划线或连字符。需要跨终端恢复时，从首次发布起提供并保留它；旧客户端省略该项仍兼容，但不能把再次生成的编号当作原请求的重试。CLI/MCP 不代替用户勾选四项人审，也不自动重试失败的传输。真实云发布、定时执行及监控结果仍须按实际证据分别验收。
+
+私有应用与临时预览仅在既有 Agent 允许列表开启时接入合法的精确发布 GET 和人工 workflow；`allowDurableAgentRead` 不允许上述 Agent／人工交付路由的 POST，也不新增写能力。临时预览仍过滤云账号 Cookie 并保留应用身份校验，不因这些路径变成公开写入口。
 
 ## 指定旧任务的开发续接（2026-10-29，默认关闭）
 
@@ -42,9 +79,9 @@
 以下为已实现的范围控制，不声明任何实际环境已开放。设置 `V2_FC_PUBLIC_WRITE_SCOPE=PUBLICATION_ONLY` 时，必须同时配置 `V2_LOCAL_DEVELOPMENT=false`、既有 `V2_BOOTSTRAP_ADMIN_EMAIL`、`V2_PUBLIC_PUBLICATION_TASK_ID`、`V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST`、`V2_PUBLIC_PUBLICATION_VERIFICATION_ID` 和 `V2_PUBLIC_PUBLICATION_STARTS_AT/EXPIRES_AT`（最多两小时）。实际执行仍要求原持久化、隔离Worker、预算和签名定时器条件通过；不因设置scope取得身份或跳过CSRF。
 
 - 会话仅对指定管理员返回批准目标与 `SESSION/DELIVERY` 写能力；匿名及其他账号不返回任务、包或演练标识，保持只读。
-- `GET /agent/tasks/:id/workflow` 与 `GET /agent/tasks/:id/publication` 仍受原项目/记录访问控制。只读取已有结果，不能提交新Spark。
-- `POST /agent/tasks/:id/publication`：请求为 `packageDigest, verificationId, attestations` 和 `Idempotency-Key`，四项确认是 `code/assertions/deliveryFiles/cloudScope=true`。必须匹配指定任务、当前真实演练与最新成功SQL；创建审阅、批准和一个发布记录，**本请求不提交Spark**。
-- `POST /agent/tasks/:id/publication/cancel`：仅停止同一允许目标。发布记录持久化 `verificationId`；取消/回滚后换幂等键仍返回原记录，不重置两批额度。
+- `GET /agent/tasks/:id/workflow`、人工 `GET /runs/:id/workflow` 与精确选择的 `GET /agent/tasks/:id/publication` 仍受原项目/记录访问控制。只读取已有结果，不能提交新Spark；人工及多版本查询规则见上节。
+- `POST /agent/tasks/:id/publication`：请求为 `packageDigest, verificationId, attestations` 和 `Idempotency-Key`，四项确认是 `code/assertions/deliveryFiles/cloudScope=true`。AGENT 必须匹配指定任务、真实演练与成功SQL；MANUAL 必须额外绑定人工源运行和确切包，不能复用原失败任务的批准。创建审阅、批准和一个发布记录，**本请求不提交Spark**。
+- `POST /agent/tasks/:id/publication/cancel`：以同一选择字段和选定 `releaseId` 停止允许目标；仅旧唯一 AGENT 保留空对象兼容。发布记录持久化 `verificationId`；取消/回滚后换幂等键不重置两批额度。
 - 签名定时事件才可推进两个固定批次；准备及提交时再次检查任务、摘要、演练和期限。两个批次使用同一冻结业务日期，仅为有界样例验收，不是连续两交易日或永久生产调度。窗口结束不启动新计算，原迟到结果可继续对账。
 - 发布scope关闭模型与开发计算、其他模块写、邀请及凭证管理。私有内部API转发也受限；旧私有任务验收及Agent推进操作拒绝。合法状态读取、签名发布定时事件保留，非发布模式原行为不变。
 - GUI将 `canPublish` 与开发写权限分开，并核对当前任务/包/演练、显示期限和完整来源编号。仅看文件不会勾选审阅；修改来源或确认读取失败时不能提交。

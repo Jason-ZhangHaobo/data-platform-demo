@@ -80,8 +80,8 @@ test("publication permission cannot enable development or other module writes", 
   assert.match(panel, /publicationTargetMatches\(publicationTarget, \{ taskId, packageDigest: workflow\?\.package\?\.digest, verificationId: workflow\?\.verification\?\.id \}/);
   assert.match(panel, /delivery\?\.verificationId === publicationTarget.verificationId/);
   assert.match(panel, /if \(!publicationWritable \|\| working/);
-  assert.match(panel, /if \(!cancellationWritable\) return/);
-  assert.match(panel, /taskId:release.sourceAgentTaskId \?\? "",packageDigest:release.packageDigest,verificationId:release.verificationId/);
+  assert.match(panel, /if \(!publicationCancellationAllowed\(cancellationInput\)\|\|!selector\) return/);
+  assert.match(panel, /taskId:release.sourceAgentTaskId\s*\?\?\s*"",packageDigest:release.packageDigest,verificationId:release.verificationId/);
   assert.match(panel, /if \(!canWrite \|\| publicationTarget\) return/);
 });
 

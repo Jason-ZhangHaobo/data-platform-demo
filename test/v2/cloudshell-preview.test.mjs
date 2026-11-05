@@ -9,6 +9,34 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createPreviewServer, privatePayload, invokePrivate, pipeBridge, privateEvidenceExport } from "../../scripts/run-v2-cloudshell-preview.mjs";
+import {publicationReadPath} from "../../src/v2/publication-request.mjs";
+
+const publicationTaskId="00000000-0000-4000-8000-000000000001",manualSourceRunId="00000000-0000-4000-8000-000000000002";
+const exactManualSelector={sourceKind:"MANUAL",sourceRunId:manualSourceRunId,packageDigest:"a".repeat(64),verificationId:"00000000-0000-4000-8000-000000000003",releaseId:"00000000-0000-4000-8000-000000000004"};
+const exactPublicationPath="/api/v2"+publicationReadPath(publicationTaskId,exactManualSelector),manualWorkflowPath=`/api/v2/runs/${manualSourceRunId}/workflow`;
+
+test("preview exact manual publication/workflow payload keeps the bound GET and filtered application identity",()=>{
+  const headers={cookie:"aliyun_token=not-forwarded; shuduo_session=synthetic_owner; shuduo_csrf=synthetic_csrf",authorization:"Bearer not-forwarded","x-actor-id":"not-forwarded","x-project-id":"synthetic-project"};
+  for(const path of [exactPublicationPath,manualWorkflowPath,`/api/v2/agent/tasks/${publicationTaskId}/publication`]){
+    assert.throws(()=>privatePayload("GET",path,headers,undefined),error=>error.status===404);
+    const payload=privatePayload("GET",path,headers,undefined,{allowAgent:true});
+    assert.equal(payload.method,"GET");assert.equal(payload.path,path);assert.equal(payload.body,undefined);
+    assert.equal(payload.headers.cookie,"shuduo_session=synthetic_owner; shuduo_csrf=synthetic_csrf");
+    assert.equal(payload.headers.authorization,undefined);assert.equal(payload.headers["x-actor-id"],undefined);
+    assert.equal(payload.headers["x-project-id"],"synthetic-project");assert.equal(payload.operation,"PRIVATE_APPLICATION_HTTP_V1");
+  }
+});
+
+test("preview exact publication selector does not become a POST route or permit duplicate/unknown/path injection",()=>{
+  for(const path of [exactPublicationPath,manualWorkflowPath])for(const method of ["POST","PUT","DELETE"])
+    assert.throws(()=>privatePayload(method,path,{},{} ,{allowAgent:true}),error=>error.status===404);
+  const paths=[exactPublicationPath+"&sourceKind=MANUAL",exactPublicationPath+"&source%4bind=MANUAL",exactPublicationPath+"&actorId=other",exactPublicationPath+"&unknown=1",
+    exactPublicationPath+"&releaseId=other",exactPublicationPath+"#fragment",exactPublicationPath+"&releaseId="+"a".repeat(701),
+    exactPublicationPath.replace("/agent/","/agent/../agent/"),exactPublicationPath.replace("/agent/","/agent\\"),exactPublicationPath.replace("/agent/","/agent/%2e%2e/agent/"),
+    "https://external.invalid"+exactPublicationPath,manualWorkflowPath+"?url=https://external.invalid",manualWorkflowPath+"/extra",
+    manualWorkflowPath.replace("/runs/","/runs/../runs/"),`/api/v2/agent/tasks/${publicationTaskId}/publication?sourceKind=MANUAL`];
+  for(const path of paths)assert.throws(()=>privatePayload("GET",path,{},undefined,{allowAgent:true}),error=>error.status===404,path);
+});
 
 async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), "shuduo-preview-"));

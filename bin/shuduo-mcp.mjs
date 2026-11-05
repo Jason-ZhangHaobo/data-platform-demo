@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
+import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
+
+const publicationIdSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"};
+const publicationProperties={sourceKind:{type:"string",enum:["AGENT","MANUAL"]},sourceRunId:publicationIdSchema,packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},verificationId:publicationIdSchema,releaseId:publicationIdSchema};
+const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANUAL"}},required:["sourceKind"]},then:{required:["sourceRunId","packageDigest","verificationId",...(stop?["releaseId"]:[])]}});
 
 const tools = [
   {name:"agent_background_status",description:"读取原任务的有界云后台状态；不会推进任务或调用模型。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"}},required:["taskId"]}},
@@ -25,9 +30,9 @@ const tools = [
   { name: "agent_journey", description: "只读串联代码Agent、交付包、审批、计时发布和监控证据；人工步骤不冒充Agent自主E2E。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
   { name: "agent_development_workflow", description: "读取同一Agent任务的独立结果核验报告、调度部署文件、文件演练和发布条件；读取不启动计算。", inputSchema: { type: "object", additionalProperties: false, properties: { taskId: { type: "string", format: "uuid" } }, required: ["taskId"] } },
   { name: "agent_request_lookup",description:"按当前创建者与原幂等请求编号找回Agent任务；只读，不重发需求或调用模型。",inputSchema:{type:"object",additionalProperties:false,properties:{requestId:{type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"}},required:["requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},
-  { name: "agent_publication_detail", description: "读取当前任务的云端测试发布、实际批次、健康、告警及恢复记录。读取不会创建新的计算工作。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"}},required:["taskId"]} },
-  { name: "agent_publication_create", description: "审阅当前不可变包及成功演练后创建两个云端测试批次；须先逐项审阅，不得将草稿生成当作批准。驱动默认关闭。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},verificationId:{type:"string",format:"uuid"},attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"]} },
-  { name: "agent_publication_stop", description:"停止当前任务后续云端批次，保留已完成记录与审阅历史。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"}},required:["taskId"]} },
+  { name: "agent_publication_detail", description: "按来源、包摘要及演练读取云端测试发布，不创建计算。MANUAL必须提供sourceRunId、packageDigest、verificationId；已知releaseId时一并绑定，不选择其他历史包。执行者来自会话。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(false)]} },
+  { name: "agent_publication_create", description: "人工逐项审阅当前不可变包及成功演练后创建两个云端测试批次，不代批或自动重试。MANUAL须提供sourceKind与sourceRunId，不计Agent自主完成。可提供原requestId复用幂等编号；未知结果先查原发布，执行者不能指定。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceKind:publicationProperties.sourceKind,sourceRunId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema,requestId:publicationIdSchema,attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"],allOf:[manualPublicationCondition(false)]} },
+  { name: "agent_publication_stop", description:"停止指定来源、交付包及演练的后续云端批次，保留记录。不选择其他历史发布。MANUAL必须提供sourceRunId、packageDigest、verificationId、releaseId；提供任何selector时也须releaseId，执行者来自会话。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(true)]} },
   { name: "agent_delivery_advance", description: "按当前版本推进原持久交付任务一个步骤；可提交真实Spark文件演练，不审批或发布。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 } }, required: ["deliveryTaskId", "expectedVersion"] } },
   { name: "agent_delivery_list", description: "列出代码Agent的后台交付准备、不可变包与文件演练结果。", inputSchema: { type: "object", properties: { sourceAgentTaskId: { type: "string" } } } },
   { name: "agent_delivery_prepare", description: "对真实模型与Spark已核验代码自动生成调度/部署包并实际文件演练；不审批、不发布、不创建公网资源。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
@@ -168,7 +173,7 @@ const tools = [
 export const V2_MCP_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
 export const V2_MCP_TOOL_NAMES = Object.freeze(tools.map((tool) => tool.name));
 
-const client = new V2Client({
+const defaultClient = new V2Client({
   baseUrl:
     process.env.SHUDUO_V2_API_BASE_URL ??
     "http://127.0.0.1:3100/api/v2",
@@ -179,7 +184,7 @@ const typePath = (value) => {
   if (!['dapi', 'xapi'].includes(value)) throw new Error("type必须是dapi或xapi");
   return value + "s";
 };
-async function callTool(name, args = {}) {
+async function callTool(name, args = {}, client=defaultClient) {
   if (name === "v2_status") return client.request("/status");
   if (name === "budget_status") return client.request("/budget");
   if (name === "agent_intent_list") return client.request("/agent/intents");
@@ -263,9 +268,22 @@ async function callTool(name, args = {}) {
     if(args.confirm!==true)throw new Error("必须先确认停止后台推进");
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background/cancel`,{method:"POST",body:{}});
   }
-  if(name==="agent_publication_detail")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/publication`);
-  if(name==="agent_publication_create")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/publication`,{method:"POST",body:{packageDigest:args.packageDigest,verificationId:args.verificationId,attestations:args.attestations}});
-  if(name==="agent_publication_stop")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/publication/cancel`,{method:"POST",body:{}});
+  if(["agent_publication_detail","agent_publication_create","agent_publication_stop"].includes(name)){
+    const creating=name==="agent_publication_create";
+    const allowed=new Set(["taskId",...Object.keys(publicationProperties),...(creating?["attestations","requestId"]:[])]);
+    if(!args||typeof args!=="object"||Array.isArray(args)||Object.keys(args).some(key=>!allowed.has(key)))throw Error("发布工具包含未知参数；执行者只能来自当前会话");
+    const {taskId,attestations,requestId,...rawSelector}=args,selector=publicationSelectorInput(rawSelector);
+    const path=publicationReadPath(taskId);
+    if(name==="agent_publication_detail")return client.request(publicationReadPath(taskId,selector));
+    if(name==="agent_publication_stop"){
+      if(Object.keys(selector).length&&!selector.releaseId)throw Error("停止指定版本必须提供releaseId，不选择其他历史发布");
+      return client.request(path+"/cancel",{method:"POST",body:selector});
+    }
+    const required=["code","assertions","deliveryFiles","cloudScope"];
+    if(!selector.packageDigest||!selector.verificationId||selector.releaseId||!attestations||typeof attestations!=="object"||Array.isArray(attestations)||Object.keys(attestations).length!==required.length||!required.every(key=>attestations[key]===true))throw Error("请逐项审阅确切包、成功演练和四项云端测试依据，不自动代批");
+    if(requestId!==undefined&&(typeof requestId!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(requestId)))throw Error("原发布requestId不合法");
+    return client.request(path,{method:"POST",body:{...selector,attestations:Object.fromEntries(required.map(key=>[key,true]))},...(requestId===undefined?{}:{idempotencyKey:requestId})});
+  }
   if (name === "agent_delivery_advance")
     return client.request(`/agent/deliveries/${encodeURIComponent(args.deliveryTaskId)}/advance`, { method: "POST", body: { expectedVersion: args.expectedVersion } });
   if (name === "agent_delivery_list")
@@ -753,7 +771,7 @@ async function callTool(name, args = {}) {
 const response = (id, result) => JSON.stringify({ jsonrpc: "2.0", id, result });
 const errorResponse = (id, code, message, data) =>
   JSON.stringify({ jsonrpc: "2.0", id, error: { code, message, ...(data ? { data } : {}) } });
-export async function handleV2Mcp(message) {
+export async function handleV2Mcp(message, options = {}) {
   if (message.method === "initialize")
     return response(message.id, {
       protocolVersion: "2024-11-05",
@@ -767,6 +785,7 @@ export async function handleV2Mcp(message) {
       const result = await callTool(
         message.params?.name,
         message.params?.arguments,
+        options.client ?? defaultClient,
       );
       return response(message.id, {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
