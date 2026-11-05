@@ -12,7 +12,7 @@
 
 ## 构建与启动
 
-1. PR 的 CI 完成后取得 `shuduo-private-preview-*` 构建产物。包仅包含 `web-dist/` 与 `scripts/run-v2-cloudshell-preview.mjs`，没有环境变量、数据库文件、认证材料或公司数据。
+1. PR 的 CI 完成后取得 `shuduo-private-preview-*` 构建产物。包包含 `web-dist/`、`scripts/run-v2-cloudshell-preview.mjs` 及其两个纯路由依赖 `src/v2/private-service-routes.mjs`、`src/v2/publication-request.mjs`，没有环境变量、数据库文件、认证材料或公司数据。
 2. 使用有界 CLI 下载把该包传至 Cloud Shell，核对 SHA-256 后解压到新建临时目录。不复用曾长时间挂起的网页上传控件。
 3. 从 Cloud Shell 工具栏选择 Web Preview 的 60000 端口，确认实际生成的 HTTPS 地址；不要推测主机名。使用地址的 origin（不带路径/查询）启动：
 
