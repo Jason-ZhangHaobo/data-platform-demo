@@ -3,7 +3,8 @@ const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
 const scoped=plan=>{
  servicePlanSourceBinding(plan?.sourceBinding);
- const privatePlan=plan?.scope==='PRIVATE_CLOUD_TEST'&&plan.executionMode==='DURABLE_PRIVATE_SERVICE_AGENT_V1'&&plan.recovery?.driver==='EXPLICIT_ADVANCE'&&plan.recovery?.supported===true&&plan.recovery?.backgroundDispatcherVerified===false;
+ const privatePlan=plan?.scope==='PRIVATE_CLOUD_TEST'&&plan.executionMode==='DURABLE_PRIVATE_SERVICE_AGENT_V1'&&['EXPLICIT_ADVANCE','OSS_EVENTS'].includes(plan.recovery?.driver)&&plan.recovery?.supported===true&&plan.recovery?.backgroundDispatcherVerified===false&&
+  (!plan.recovery.background||plan.recovery.driver==='OSS_EVENTS'&&plan.recovery.background.protocol==='shuduo-service-agent-event-driver/v1'&&plan.recovery.background.taskId===plan.id&&plan.recovery.background.cloudDriverVerified===false&&plan.recovery.background.publicationAutomatic!==true);
  if(!uuid(plan?.id)||plan.scope!=='LOCAL_TEST_ONLY'&&!privatePlan||plan.agentIndependentE2E!==false||plan.publicDeployed!==false||plan.completionScope!=='DATA_SERVICE_DESIGN')throw Error('同源规划回执尚未确认');
  return plan;
 };

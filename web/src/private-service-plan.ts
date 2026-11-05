@@ -2,7 +2,8 @@ import {sameServicePlanSource,validServicePlanSource} from './service-plan-sourc
 import type {ServicePlanSource,SourcePlan} from './service-plan-source.ts';
 import type {ServiceSourceBinding} from './service-source-binding.ts';
 
-export type ServicePlanningAccess={enabled:boolean;reason?:'BOUNDARY_CHANGED'|'NOT_STARTED'|'EXPIRED';id?:string;sourceBinding?:ServicePlanSource;model?:string;startsAt?:string;expiresAt?:string;maxPlans?:number;maxModelCalls?:number;tokenBudget?:number};
+export type ServicePlanningAccess={enabled:boolean;reason?:'BOUNDARY_CHANGED'|'NOT_STARTED'|'EXPIRED';id?:string;sourceBinding?:ServicePlanSource;model?:string;driver?:'EXPLICIT_ADVANCE'|'OSS_EVENTS';startsAt?:string;expiresAt?:string;maxPlans?:number;maxModelCalls?:number;tokenBudget?:number};
+type ServiceBackground={protocol:'shuduo-service-agent-event-driver/v1';taskId:string;status:string;expiresAt?:number;maxEvents?:number;consumedEvents?:number;delivery?:string;state?:string;code?:string;cloudDriverVerified:false;publicationAutomatic?:false;scopeBlocked?:boolean};
 type VersionRef={serviceId:string;versionId:string;configHash:string;fields:string[]};
 type Diagnostic={code:string;phase:string;requestMayHaveBeenSent:boolean;httpStatus?:number;networkCode?:string;elapsedMs:number};
 export type PrivateServicePlan=SourcePlan&{version:number;stage:string;pilotId:string;executionMode:'DURABLE_PRIVATE_SERVICE_AGENT_V1';scope:'PRIVATE_CLOUD_TEST';mode:'LIVE_MODEL';requestId:string;
@@ -11,7 +12,7 @@ export type PrivateServicePlan=SourcePlan&{version:number;stage:string;pilotId:s
  resourceVersions:VersionRef[];selectedVersions?:VersionRef[];proposalHash?:string;requestedModel:string;executionWindow:{startsAt:string;expiresAt:string};maxAttempts:number;requestTokenLimit:number;tokenBudget:number;usedTokens:number;
  attempts:{attempt:number;status:string;model:string;usage:{total_tokens:number;prompt_tokens?:number;completion_tokens?:number};usageEstimated:boolean;startedAt:string;finishedAt?:string;diagnostic?:Diagnostic}[];
  quota:{attemptsUsed:number;attemptLimit:number;usedTokens:number;tokenLimit:number};
- recovery:{supported:true;driver:'EXPLICIT_ADVANCE';backgroundDispatcherVerified:false;confirmationRequired:boolean;modelLeaseExpiresAt?:string;leaseExpired:boolean};};
+ recovery:{supported:true;driver:'EXPLICIT_ADVANCE'|'OSS_EVENTS';background?:ServiceBackground;backgroundDispatcherVerified:false;confirmationRequired:boolean;modelLeaseExpiresAt?:string;leaseExpired:boolean};};
 const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v);
 const hash=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const text=(v:unknown,max:number)=>typeof v==='string'&&v.length>0&&v.length<=max;
@@ -44,9 +45,17 @@ export function checkedPrivateServicePlan(value:unknown,source:ServicePlanSource
   if(stageStatus[p.stage]!==p.status)fail();
   if(!exact(context,['id','name','definition','validationContractId','metricLabels'])||!text(context.id,100)||!text(context.name,160)||!text(context.definition,2000)||!text(context.validationContractId,160)||!exact(context.metricLabels,fields)||fields.some(field=>!text(context.metricLabels[field],160)))fail();
   const r=p.recovery;
-  if(!only(r,['supported','driver','backgroundDispatcherVerified','confirmationRequired','modelLeaseExpiresAt','leaseExpired'])||r.supported!==true||r.driver!=='EXPLICIT_ADVANCE'||r.backgroundDispatcherVerified!==false||
+  if(!only(r,['supported','driver','background','backgroundDispatcherVerified','confirmationRequired','modelLeaseExpiresAt','leaseExpired'])||r.supported!==true||!['EXPLICIT_ADVANCE','OSS_EVENTS'].includes(r.driver)||r.backgroundDispatcherVerified!==false||
    r.confirmationRequired!==(p.stage==='MODEL_OUTCOME_UNKNOWN')||typeof r.leaseExpired!=='boolean'||r.modelLeaseExpiresAt!==undefined&&!date(r.modelLeaseExpiresAt)||
    p.stage==='MODEL_IN_FLIGHT'&&(!date(r.modelLeaseExpiresAt)||Date.parse(r.modelLeaseExpiresAt)>Date.parse(p.executionWindow.expiresAt)))fail();
+  const b=r.background;
+  if(b&&(!only(b,['protocol','taskId','status','expiresAt','maxEvents','consumedEvents','delivery','state','code','cloudDriverVerified','publicationAutomatic','scopeBlocked'])||r.driver!=='OSS_EVENTS'||
+   b.protocol!=='shuduo-service-agent-event-driver/v1'||b.taskId!==p.id||b.cloudDriverVerified!==false||!['INACTIVE','ACTIVE','COMPLETED','NEEDS_CONFIRMATION','PAUSED','EXPIRED','CANCELLED'].includes(b.status)||
+   b.status!=='INACTIVE'&&(!int(b.expiresAt,1)||!int(b.maxEvents,1,3)||!int(b.consumedEvents,0,b.maxEvents)||b.publicationAutomatic!==false)||
+   b.expiresAt!==undefined&&(!int(b.expiresAt,1)||b.expiresAt>Date.parse(p.executionWindow.expiresAt))||b.maxEvents!==undefined&&!int(b.maxEvents,1,p.maxAttempts)||b.consumedEvents!==undefined&&!int(b.consumedEvents,0,b.maxEvents??3)||b.publicationAutomatic!==undefined&&b.publicationAutomatic!==false||
+   b.delivery!==undefined&&!['ACKNOWLEDGED','UNCONFIRMED','WAITING_FOR_CHECKPOINT','ALREADY_CONSUMED'].includes(b.delivery)||
+   b.state!==undefined&&!['QUEUED','RUNNING','WAITING_FOR_RESULT','READY_FOR_MODEL','MODEL_IN_FLIGHT','MODEL_OUTCOME_UNKNOWN','MODEL_NOT_SENT','COMPLETED','NEEDS_CONFIRMATION','PAUSED','EXPIRED','CANCELLED'].includes(b.state)||
+   b.code!==undefined&&!/^[A-Z][A-Z0-9_]{2,64}$/.test(b.code)||b.scopeBlocked!==undefined&&typeof b.scopeBlocked!=='boolean'))fail();
   if(!Array.isArray(p.attempts)||p.attempts.length>3||p.quota.attemptsUsed<p.attempts.length)fail();
   for(const [index,a]of p.attempts.entries()){
    if(!only(a,['attempt','status','startedAt','model','usage','usageEstimated','finishedAt','diagnostic'])||a.attempt!==index+1||!date(a.startedAt)||a.finishedAt!==undefined&&!date(a.finishedAt)||
@@ -77,6 +86,6 @@ export function servicePlanningWindowOpen(access:ServicePlanningAccess|undefined
   date(access.startsAt)&&date(access.expiresAt)&&Number.isFinite(now)&&now>=Date.parse(access.startsAt)&&now<Date.parse(access.expiresAt));
 }
 export function samePlanningWindow(plan:PrivateServicePlan,access:ServicePlanningAccess|undefined){
- return Boolean(access&&plan.pilotId===access.id&&plan.requestedModel===access.model&&plan.executionWindow.startsAt===access.startsAt&&plan.executionWindow.expiresAt===access.expiresAt);
+ return Boolean(access&&plan.pilotId===access.id&&plan.requestedModel===access.model&&plan.recovery.driver===(access.driver??'EXPLICIT_ADVANCE')&&plan.executionWindow.startsAt===access.startsAt&&plan.executionWindow.expiresAt===access.expiresAt);
 }
 export const privatePlanStageText:Record<string,string>={READY_FOR_MODEL:'任务已保存 · 待开始',MODEL_IN_FLIGHT:'模型规划中',MODEL_OUTCOME_UNKNOWN:'模型结果待确认',MODEL_NOT_SENT:'发送前已停止',SUCCEEDED:'方案待审阅',APPLIED:'草稿已创建',FAILED:'方案核验未通过',CANCELLED:'已取消'};
