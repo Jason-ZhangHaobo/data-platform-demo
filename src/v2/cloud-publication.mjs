@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto";
 import { validateDeliveryPackage, resolveDeliverySchedule, validationMatchesFamily } from "./delivery.mjs";
 import { deliveryArtifactValue } from "./artifact-store.mjs";
+import { validationWithoutRawComparisons } from "./validation-details.mjs";
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 const hash = text => createHash("sha256").update(text).digest("hex");
 const fail = (status, message) => Object.assign(new Error(message), { status });
-const clean = item => { const { remoteSubmission, submittedBy, rows, log, stdout, stderr, ...result } = item; return result; };
+const clean = item => {
+  const { remoteSubmission, submittedBy, rows, log, stdout, stderr, ...result } = item;
+  return Object.hasOwn(result, "validation") ? { ...result, validation: validationWithoutRawComparisons(result.validation) } : result;
+};
 
 // Bounded cloud test releases. The driver is external and must be authenticated;
 // reads reconcile existing receipts but never submit a new Spark job.

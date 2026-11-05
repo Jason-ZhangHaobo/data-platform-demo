@@ -1,5 +1,5 @@
 """Real Spark SQL runner for allowlisted synthetic fixtures. Local process != production isolation."""
-import json, os, sys, time, hashlib
+import json, os, sys, time, hashlib, re
 from decimal import Decimal
 from pathlib import Path
 import sqlglot
@@ -69,22 +69,85 @@ def execute(spark, sql, context):
     rows=[{k:format(v,"f") if isinstance(v,Decimal) else v for k,v in row.asDict().items()} for row in data]
     return {"rows":rows,"columns":[{"name":f.name,"type":f.dataType.simpleString()} for f in frame.schema.fields],"engine":"Apache Spark","engineVersion":spark.version}
 
+COMPARISON_FIELDS=("holding_market_value","available_cash","total_assets","security_count")
+COMPARISON_LIMIT=20
+
+def comparison_number(value):
+    """Bounded decimal text without float conversion or context rounding."""
+    if isinstance(value,bool) or value is None:return None
+    try:raw=str(value)
+    except Exception:return None
+    if len(raw)>128:return None
+    raw=raw.strip()
+    match=re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE]([+-]?[0-9]+))?",raw)
+    if match is None or abs(int(match.group(1) or "0"))>128:return None
+    try:number=Decimal(raw)
+    except Exception:return None
+    if not number.is_finite():return None
+    sign,digits,exponent=number.as_tuple()
+    # Bound the exponent before any fixed-point expansion. Do not normalize():
+    # Decimal.normalize() can round long values under the active precision.
+    if not isinstance(exponent,int) or abs(exponent)>128:return None
+    if not any(digits):return "0"
+    text="".join(str(digit) for digit in digits)
+    while text.endswith("0"):
+        text=text[:-1];exponent+=1
+    point=len(text)+exponent
+    if max(point,0)>38 or max(-exponent,0)>18:return None
+    if exponent>=0:text+="0"*exponent
+    elif point>0:text=text[:point]+"."+text[point:]
+    else:text="0."+"0"*(-point)+text
+    if sign:text="-"+text
+    return text if len(text)<=64 else None
+
 def verify(rows,expected):
-    issues=[]
-    if len(rows)!=len(expected):issues.append("客户记录数不符")
-    keys={"client_id","holding_market_value","available_cash","total_assets","security_count"}
-    if any(set(row)!=keys for row in rows):issues.append("输出字段与契约不符")
-    actual={r.get("client_id"):r for r in rows}
-    if len(actual)!=len(rows):issues.append("客户记录重复")
+    issues=[];mismatches=[];total_mismatches=0
+    expected_ids={row["client_id"] for row in expected}
+    def add(kind,**detail):
+        nonlocal total_mismatches
+        total_mismatches+=1
+        client=detail.get("clientId")
+        if kind is None or ("clientId" in detail and (not isinstance(client,str) or client not in expected_ids or
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}",client) is None)):return
+        if len(mismatches)<COMPARISON_LIMIT:mismatches.append({"kind":kind,**detail})
+    if len(rows)!=len(expected):
+        issues.append("客户记录数不符");add("CLIENT_COUNT",expectedCount=len(expected),actualCount=len(rows))
+    keys={"client_id",*COMPARISON_FIELDS}
+    if any(not isinstance(row,dict) or set(row)!=keys for row in rows):
+        issues.append("输出字段与契约不符");add("OUTPUT_FIELDS")
+    actual={};unkeyed=0
+    for row in rows:
+        client=row.get("client_id") if isinstance(row,dict) else None
+        try:actual.setdefault(client,[]).append(row)
+        except TypeError:unkeyed+=1
+    duplicates=[(client,values) for client,values in actual.items() if len(values)>1]
+    if duplicates:
+        issues.append("客户记录重复")
+        for client,values in duplicates:add("DUPLICATE_CLIENT",clientId=client,actualCount=len(values))
     for goal in expected:
-        row=actual.get(goal["client_id"])
-        if row is None: issues.append("缺少客户 "+goal["client_id"]);continue
-        for field in keys-{"client_id"}:
-            try:
-                if Decimal(str(row.get(field)))!=Decimal(str(goal[field])):issues.append(goal["client_id"]+"."+field+" 结果不符")
-            except Exception:issues.append(field+" 非有效数值")
-    if set(actual)!={r["client_id"] for r in expected}:issues.append("结果包含范围外客户或缺少客户")
-    return {"passed":not issues,"issues":issues,"assertions":["客户范围","客户唯一性","持仓去重","现金独立聚合","金额精度","证券代码去重","输出契约"]}
+        client=goal["client_id"];matches=actual.get(client,[])
+        if not matches:
+            issues.append("缺少客户 "+str(client));add("MISSING_CLIENT",clientId=client);continue
+        # A duplicate is not a unique measured value. Never pick the last row
+        # and present it as the customer's authoritative result.
+        if len(matches)!=1:continue
+        row=matches[0]
+        for field in COMPARISON_FIELDS:
+            wanted=comparison_number(goal.get(field))
+            if field=="security_count" and wanted is not None and (wanted.startswith("-") or "." in wanted):wanted=None
+            measured=comparison_number(row.get(field) if isinstance(row,dict) else None)
+            if wanted is None or measured is None:
+                issues.append(field+" 非有效数值")
+                if wanted is None:add(None)
+                else:add("INVALID_VALUE",clientId=client,field=field,expected=wanted)
+            elif Decimal(measured)!=Decimal(wanted):
+                issues.append(str(client)+"."+field+" 结果不符")
+                add("VALUE_MISMATCH",clientId=client,field=field,expected=wanted,actual=measured)
+    outside=unkeyed+sum(len(values) for client,values in actual.items() if client not in expected_ids)
+    if set(actual)!=expected_ids or unkeyed:issues.append("结果包含范围外客户或缺少客户")
+    if outside:add("OUT_OF_SCOPE_CLIENTS",actualCount=outside)
+    return {"passed":not issues,"issues":issues,"assertions":["客户范围","客户唯一性","持仓去重","现金独立聚合","金额精度","证券代码去重","输出契约"],
+        "comparison":{"schema":"shuduo-result-comparison/v1","mismatches":mismatches,"totalMismatches":total_mismatches,"truncated":total_mismatches>len(mismatches)}}
 
 def execute_test_sql(spark,test_sql,context):
     scope={"advisorId":context["advisorId"],"businessDate":context["businessDate"],"tables":[{"name":"__shuduo_result"}]}
@@ -95,6 +158,10 @@ def execute_test_sql(spark,test_sql,context):
     return {"passed":passed,"sqlHash":hashlib.sha256(test_sql.encode()).hexdigest(),"rowCount":len(values),"columns":frame.columns}
 
 def execute_with_validation(spark,sql,context,validation_contexts=None,test_sql=None):
+    if validation_contexts is not None and (not isinstance(validation_contexts,list) or len(validation_contexts)>5):
+        raise ValueError("回归上下文数量不合法")
+    if len({context["id"],*(item["id"] for item in validation_contexts or [])})>5:
+        raise ValueError("回归上下文数量不合法")
     result=execute(spark,sql,context)
     result["mainSqlExecuted"]=True
     test_check=None
@@ -104,8 +171,6 @@ def execute_with_validation(spark,sql,context,validation_contexts=None,test_sql=
             test_check={"passed":False,"sqlHash":hashlib.sha256(test_sql.encode()).hexdigest(),"error":str(error)[:3000]}
     selected=verify(result["rows"],context["expected"])
     regressions=[{"contextId":context["id"],"name":context["name"],**selected}]
-    if validation_contexts is not None and (not isinstance(validation_contexts,list) or len(validation_contexts)>5):
-        raise ValueError("回归上下文数量不合法")
     seen={context["id"]}
     for check_context in validation_contexts or []:
         if check_context["id"] in seen:continue

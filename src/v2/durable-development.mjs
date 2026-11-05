@@ -1,10 +1,12 @@
+import { validationDetails, validationWithoutRawComparisons } from "./validation-details.mjs";
+
 const terminal = new Set(["SUCCEEDED", "FAILED", "VALIDATION_FAILED", "CANCELLED"]);
 
-export function publicDevelopmentRun(run) {
+export function publicDevelopmentRun(run, revision) {
   if (!run) return run;
   const { remoteSubmission, ...visible } = run;
   if (!terminal.has(run.status)) delete visible.durationMs;
-  return visible;
+  return { ...visible, validation: validationWithoutRawComparisons(visible.validation), validationDetails: validationDetails(run, revision) };
 }
 
 export async function submitDurableDevelopment(run, revision, { runner, store, project, persist, context, validationContexts }) {

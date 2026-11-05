@@ -9,10 +9,12 @@ import type { PublicationTarget } from "./AuthDialog";
 import { applicationStatusText } from "./service-consumption-scope";
 import { reviewAttestationsComplete } from "./delivery-presentation";
 import { createPublicationReader, publicationPollNeeded } from "./publication-read";
+import {ValidationDetails} from "./ValidationDetails";
+import type {ValidationDetailsReport} from "./validation-details";
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type Delivery = { id: string; version: number; status: string; stage: string; mode?: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string; error?: string };
 type Workflow = {
-  report: { taskId: string; contextId?:string; validationContractId?:string; status: string; summary: string; definition?: string; checks: { id: string; label: string; passed: boolean }[]; revisionId?: string; runId?: string; rowCount: number; engine?: string; engineVersion?: string; notice: string };
+  report: { taskId: string; contextId?:string; validationContractId?:string; validationDetails?:ValidationDetailsReport; status: string; summary: string; definition?: string; checks: { id: string; label: string; passed: boolean }[]; revisionId?: string; revisionHash?:string; runId?: string; rowCount: number; engine?: string; engineVersion?: string; notice: string };
   delivery?: Delivery;
   package?: { id: string; digest: string; manifest: unknown; files: Record<string,string> };
   verification?: { id: string; status: string; engine?: string; engineVersion?: string; mainSqlExecuted?: boolean; durationMs?: number; error?: string; testSqlValidation?: { passed: boolean }; validation?: { passed: boolean; regressions?: { contextId: string; passed: boolean }[] } };
@@ -153,6 +155,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         <p>{reportView.detail}</p>{current && <p>{report?.summary}</p>}
         <ul>{report?.checks.map(check => <li key={check.id}>{reportView.currentChecks && check.passed ? <CheckCircle2 size={14} /> : <Circle size={14} />}<span>{check.label}</span><strong>{!reportView.currentChecks ? "历史记录" : check.passed ? "通过" : "待核验"}</strong></li>)}</ul>
         <small>{report?.rowCount}位客户 · {report?.engine} {report?.engineVersion} · {report?.notice}</small>
+        <ValidationDetails details={evidenceRead==="READY"?report?.validationDetails:{schema:"shuduo-validation-details/v1",status:"UNVERIFIED"}} expectedSource={{runId:report?.runId,revisionId:report?.revisionId,contextId:report?.contextId,revisionHash:report?.revisionHash,contractId:report?.validationContractId}} dirty={dirty} historical={!current} />
         <button className="button" onClick={() => download("verification-report.json", report)}><Download size={14} />下载核验报告</button>
       </div>
       <div id="agent-files" className="agent-delivery-card"><div className="agent-workflow-title"><Package size={16} /><h3>调度与部署交付</h3></div><p>把当前通过核验的代码、测试、调度依赖、交易日历和部署清单固定到同一版本，再用 Spark 按文件执行一次演练。</p>

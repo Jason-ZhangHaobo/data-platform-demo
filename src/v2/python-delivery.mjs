@@ -17,6 +17,7 @@ import {
   validationMatchesFamily,
 } from "./delivery.mjs";
 import { pythonRuntimeConfig, runRestrictedPython } from "./python.mjs";
+import { validationWithoutRawComparisons } from "./validation-details.mjs";
 
 export const pythonDeliveryFormat = "shuduo-python-delivery/v1";
 export const pythonDeliveryFiles = [
@@ -150,7 +151,7 @@ export function createPythonDeliveryPackage({
         revisionHash: revision.codeHash,
         engine: run.engine,
         engineVersion: run.engineVersion,
-        report: run.validation,
+        report: validationWithoutRawComparisons(run.validation),
         resourceLimits: run.resourceLimits,
       }),
       "README.md":

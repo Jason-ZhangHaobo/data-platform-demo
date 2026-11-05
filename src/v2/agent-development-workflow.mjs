@@ -3,6 +3,7 @@ import { createDeliveryPackage, validateDeliveryPackage, resolveDeliverySchedule
 import { getContext, validationContractId, validationFamilyForContext } from "./context.mjs";
 import { deliveryArtifactValue } from "./artifact-store.mjs";
 import { resolveExplicitSqlRepairSource } from "./sql-repair-source.mjs";
+import { validationDetails, equalValidationNumber } from "./validation-details.mjs";
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -55,7 +56,7 @@ export function developmentVerificationReport(task, run, revision) {
   const context = getContext(task.contextId), expected = context?.expected ?? [];
   const family = validationFamilyForContext(task.contextId), legacy = family?.id === validationContractId;
   const rows = run?.rows ?? [], fields = ["holding_market_value", "available_cash", "total_assets", "security_count"];
-  const numericEqual = (a, b) => a !== null && a !== undefined && String(a).trim() !== "" && Number.isFinite(Number(a)) && Number(a) === Number(b);
+  const numericEqual = equalValidationNumber;
   const resultsMatch = rows.length === expected.length && expected.every(want => {
     const matches = rows.filter(row => row.client_id === want.client_id);
     return matches.length === 1 && fields.every(field => numericEqual(matches[0][field], want[field]));
@@ -63,20 +64,21 @@ export function developmentVerificationReport(task, run, revision) {
   const checks = [
     { id: "revision", label: "结果对应当前代码版本", passed: Boolean(revision && revision.contextId === task.contextId &&
       (run?.contextId === undefined || run.contextId === task.contextId) && run?.revisionId === revision.id && run.revisionHash === revision.hash && hash(revision.sql) === revision.hash) },
-    { id: "execution", label: "Spark 实际执行完成", passed: run?.status === "SUCCEEDED" && run.engine === "Apache Spark" && run.mainSqlExecuted === true && run.testDouble !== true },
+    { id: "execution", label: "Spark 实际执行完成", passed: ["SUCCEEDED", "VALIDATION_FAILED"].includes(run?.status) && run.engine === "Apache Spark" && run.mainSqlExecuted === true && run.testDouble !== true },
     { id: "results", label: "客户、金额与证券数量匹配独立预期", passed: resultsMatch },
     { id: "regressions", label: legacy ? "重复持仓、现金变化及现金客户等五场景通过" : "股票持仓、现金变化及现金客户等五场景通过", passed:
       (task.validationContractId === undefined || task.validationContractId === family?.id) &&
       (run?.validationContractId === undefined || run.validationContractId === family?.id) &&
       validationMatchesFamily(run?.validation, family, { requireContract: true }) },
   ];
-  const passed = checks.every(check => check.passed);
+  const passed = run?.status === "SUCCEEDED" && checks.every(check => check.passed);
   return {
     schema: "shuduo-development-verification/v1", taskId: task.id, revisionId: revision?.id,
     revisionHash: revision?.hash, runId: run?.id, contextId: task.contextId,
     status: passed ? "PASSED" : !run || ![...terminal, "VALIDATION_FAILED"].includes(run.status) ? "PENDING" : "NEEDS_ATTENTION",
     summary: passed ? legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
     definition: context?.definition, checks, rowCount: rows.length, engine: run?.engine, engineVersion: run?.engineVersion,
+    validationDetails: validationDetails(run, revision, task.contextId),
     finishedAt: run?.finishedAt, validationContractId: family?.id, validationFamily: family, completionScope: "KNOWN_SECURITIES_CONTRACT",
     notice: "核验仅覆盖所选数据与已登记口径；新增指标需要新的独立预期。",
   };

@@ -1,3 +1,5 @@
+import { validationWithoutRawComparisons } from "./validation-details.mjs";
+
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const terminal = new Set([
   "SUCCEEDED",
@@ -76,6 +78,7 @@ export function publicRelease(item, workspaceRoot = "") {
   const { artifactDirectory, ...safe } = item;
   return {
     ...safe,
+    ...(Object.hasOwn(safe, "validation") ? { validation: validationWithoutRawComparisons(safe.validation) } : {}),
     artifactReady: Boolean(artifactDirectory),
     ...(safe.log
       ? {

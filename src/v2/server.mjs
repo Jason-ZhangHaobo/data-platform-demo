@@ -14,6 +14,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { MetadataStore } from "./store.mjs";
 import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-application.mjs";
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
+import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
 import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
 import { createCloudPublication } from "./cloud-publication.mjs";
@@ -372,6 +373,7 @@ export function createV2Server(options = {}) {
     if (!item) throw fail(404, "未找到当前项目的记录");
     return item;
   };
+  const exposeDevelopmentRun = run => publicDevelopmentRun(run, store.get("revision", run?.revisionId ?? "", PROJECT));
   function validationFamilyForRun(run) {
     // Older persisted runs only carry the context on their immutable revision.
     // Missing duplicate metadata may be read, but conflicting metadata must not
@@ -647,6 +649,8 @@ export function createV2Server(options = {}) {
         });
   releaseScheduler.start();
   const expose = (item) => publicRelease(item, root);
+  const exposeValidationRecord = item => item && Object.hasOwn(item, "validation")
+    ? { ...item, validation: validationWithoutRawComparisons(item.validation) } : item;
   const ensureDeliveryArtifact = async (item) => {
     const value = deliveryArtifactValue(item);
     if (item.artifact) {
@@ -2934,7 +2938,7 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/revisions" && method === "GET")
         return json(res, 200, store.list("revision", PROJECT).filter(item => mayReadRevision(item, auth.sessionFromHeaders(req.headers))));
       if (path === "/api/v2/runs" && method === "GET")
-        return json(res, 200, await Promise.all(store.list("run", PROJECT).filter(item => mayReadRun(item, auth.sessionFromHeaders(req.headers))).map(async run => publicDevelopmentRun(await reconcileDevelopment(run)))));
+        return json(res, 200, await Promise.all(store.list("run", PROJECT).filter(item => mayReadRun(item, auth.sessionFromHeaders(req.headers))).map(async run => exposeDevelopmentRun(await reconcileDevelopment(run)))));
       if (path === "/api/v2/python/revisions" && method === "GET")
         return json(res, 200, store.list("python_revision", PROJECT).filter(item => mayReadRevision(item, auth.sessionFromHeaders(req.headers))));
       if (path === "/api/v2/python/revisions" && method === "POST") {
@@ -2966,7 +2970,7 @@ export function createV2Server(options = {}) {
         return json(res, dedup.replayed ? 200 : 201, saved);
       }
       if (path === "/api/v2/python/runs" && method === "GET")
-        return json(res, 200, store.list("python_run", PROJECT).filter(item => mayReadRun(item, auth.sessionFromHeaders(req.headers), "python_revision")));
+        return json(res, 200, store.list("python_run", PROJECT).filter(item => mayReadRun(item, auth.sessionFromHeaders(req.headers), "python_revision")).map(exposeValidationRecord));
       if (path === "/api/v2/python/runs" && method === "POST") {
         if (!options.pythonRunner && !pythonRuntime.available)
           throw fail(503, "Python运行环境尚未就绪");
@@ -3023,7 +3027,7 @@ export function createV2Server(options = {}) {
               finishedAt: new Date().toISOString(),
             });
           });
-        return json(res, dedup.replayed ? 200 : 202, run);
+        return json(res, dedup.replayed ? 200 : 202, exposeValidationRecord(run));
       }
       const pythonRunRoute = path.match(
         /^\/api\/v2\/python\/runs\/([a-f0-9-]+)(?:\/(cancel))?$/,
@@ -3032,7 +3036,7 @@ export function createV2Server(options = {}) {
         const run = get("python_run", pythonRunRoute[1]),
           action = pythonRunRoute[2];
         requireDevelopmentOwner("python_run", run, req);
-        if (method === "GET" && !action) return json(res, 200, run);
+        if (method === "GET" && !action) return json(res, 200, exposeValidationRecord(run));
         if (method === "POST" && action === "cancel") {
           await readBody(req);
           if (!terminal.has(run.status)) {
@@ -3042,7 +3046,7 @@ export function createV2Server(options = {}) {
             });
             controls.get(run.id)?.abort();
           }
-          return json(res, 200, get("python_run", run.id));
+          return json(res, 200, exposeValidationRecord(get("python_run", run.id)));
         }
       }
       const agentRequestLookup=path.match(/^\/api\/v2\/agent\/requests\/([A-Za-z0-9_-]{1,100})$/);
@@ -3963,7 +3967,7 @@ export function createV2Server(options = {}) {
           })),
         );
       if (path === "/api/v2/delivery/verifications" && method === "GET")
-        return json(res, 200, store.list("delivery_verification", PROJECT));
+        return json(res, 200, store.list("delivery_verification", PROJECT).map(exposeValidationRecord));
       if (path === "/api/v2/release/approvals" && method === "GET")
         return json(res, 200, store.list("release_approval", PROJECT));
       if (path === "/api/v2/releases" && method === "GET")
@@ -4279,7 +4283,7 @@ export function createV2Server(options = {}) {
             ? "delivery_package"
             : "delivery_verification";
         const item = get(kind, deliveryRecord[2]);
-        if (method === "GET" && !deliveryRecord[3]) return json(res, 200, item);
+        if (method === "GET" && !deliveryRecord[3]) return json(res, 200, kind === "delivery_verification" ? exposeValidationRecord(item) : item);
         if (
           kind === "delivery_verification" &&
           deliveryRecord[3] === "cancel" &&
@@ -4289,7 +4293,7 @@ export function createV2Server(options = {}) {
             store.update(kind, item.id, PROJECT, { status: "CANCELLED" });
             controls.get(item.id)?.abort();
           }
-          return json(res, 200, get(kind, item.id));
+          return json(res, 200, exposeValidationRecord(get(kind, item.id)));
         }
         if (
           kind === "delivery_package" &&
@@ -4572,7 +4576,7 @@ export function createV2Server(options = {}) {
                   },
                 );
             });
-          return json(res, 202, verification);
+          return json(res, 202, exposeValidationRecord(verification));
         }
       }
       if (path === "/api/v2/releases" && method === "POST") {
@@ -4819,7 +4823,7 @@ export function createV2Server(options = {}) {
         return json(res, 200, {report: source.report, delivery: publicDeliveryTask(delivery),
           package: bundle ? {id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files} : undefined,
           verification: verification ? {id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion,
-            mainSqlExecuted: verification.mainSqlExecuted, testSqlValidation: verification.testSqlValidation, validation: verification.validation,
+            mainSqlExecuted: verification.mainSqlExecuted, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation),
             durationMs: verification.durationMs, error: verification.error, finishedAt: verification.finishedAt} : undefined,
           publication: {available: false, scope: "PRIVATE_CLOUD_TEST", reason: "人工版本的云发布尚未开放。交付文件与演练结果已保留，后续需要针对当前包建立独立审阅与发布流程。"}});
       }
@@ -4844,7 +4848,7 @@ export function createV2Server(options = {}) {
           report,
           delivery: publicDeliveryTask(delivery),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
-          verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: verification.validation, finishedAt: verification.finishedAt } : undefined,
+          verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt } : undefined,
           publication: { available: !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
       }
@@ -5128,7 +5132,7 @@ export function createV2Server(options = {}) {
         if (kind !== "agent") requireDevelopmentOwner(kind, original, req);
         const item = kind === "run" ? await reconcileDevelopment(original) : original;
         if (kind === "agent") requireDurableAgentOwner(item, req);
-        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? publicDevelopmentRun(item) : kind === "agent" ? exposeDurableTask(item) : item);
+        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? exposeDevelopmentRun(item) : kind === "agent" ? exposeDurableTask(item) : item);
         if (method === "GET" && record[3] === "journey" && kind === "agent")
           return json(
             res,
@@ -5152,22 +5156,23 @@ export function createV2Server(options = {}) {
             store.update(kind, item.id, PROJECT, { status: "CANCELLED" });
             controls.get(item.id)?.abort();
           }
-          return json(res, 200, kind === "run" ? publicDevelopmentRun(get(kind, item.id)) : get(kind, item.id));
+          return json(res, 200, kind === "run" ? exposeDevelopmentRun(get(kind, item.id)) : get(kind, item.id));
         }
         if (method === "GET" && record[3] === "bundle" && kind === "run") {
           if (item.status !== "SUCCEEDED")
             throw fail(409, "只有经过结果验证的运行可以导出验证包");
           const rev = get("revision", item.revisionId);
+          const validation = validationWithoutRawComparisons(item.validation);
           return json(res, 200, {
             format: "shuduo-verification-bundle/v1",
             revision: rev,
-            validation: item.validation,
+            validation,
             engine: item.engine,
             engineVersion: item.engineVersion,
             rows: item.rows,
             files: {
               "main.sql": rev.sql,
-              "validation.json": JSON.stringify(item.validation, null, 2),
+              "validation.json": JSON.stringify(validation, null, 2),
             },
             releaseState: "NOT_PUBLISHED",
             currentValidationContractId: validationFamily(rev.contextId).id,
@@ -5237,11 +5242,11 @@ export function createV2Server(options = {}) {
             runner: durableDevelopment, store, project: PROJECT, persist: persistDevelopment,
             context: getContext(rev.contextId), validationContexts: validationContextsFor(rev.contextId),
           });
-          return json(res, 202, publicDevelopmentRun(submitted));
+          return json(res, 202, exposeDevelopmentRun(submitted));
         }
         if (!dedup.replayed)
           schedule("run", run, (signal) => execute(run, rev, signal));
-        return json(res, 202, run);
+        return json(res, 202, exposeDevelopmentRun(run));
       }
       if (method === "POST" && path === "/api/v2/agent/intents") {
         const body = await readBody(req),
