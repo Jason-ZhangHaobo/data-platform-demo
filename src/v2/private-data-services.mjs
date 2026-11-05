@@ -108,6 +108,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       const releases=store.list("release",project).filter(release=>release.sourceAgentTaskId===taskId&&release.packageDigest===packageDigest&&(releaseId===undefined||release.id===releaseId));
       if(releases.some(release=>!manualReleaseOwned(a,release)))throw fail(403,"人工消费记录仅属于原任务工程师和发布者");
       return {status:200,body:await privateTaskConsumption({taskId,packageDigest,releaseId,
+        getPackage:id=>get("delivery_package",id),
         services:manager.list().filter(s=>owned(a,s)),ownedService:id=>service(a,id),getVersion:id=>get("data_service_version",id),source:id=>{const run=source(id);sourceOwner(a,run);return run;},getRelease:id=>get("release",id),
         application:id=>get("service_app",id)?manager.application(id):undefined,calls:id=>manager.listCalls(id).filter(call=>callOwned(a,call)),recheckCall:(id,callId)=>{
           const call=get("service_call",callId);

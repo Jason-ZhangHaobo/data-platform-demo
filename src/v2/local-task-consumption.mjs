@@ -13,6 +13,7 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
   const selection={taskId:agent.id,packageDigest,releaseId},sources=localServiceSources({store,project,selection}),ids=new Set(sources.map(source=>source.id));
   const getRelease=id=>id===releaseId&&sources.length?{...store.get('release',id,project),sourceAgentTaskId:agent.id,sourceKind:'AGENT'}:undefined;
   return privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,scope:'LOCAL_TEST_ONLY',services:manager.list(),
+   getPackage:id=>store.get('delivery_package',id,project),
    ownedService:id=>manager.detail(id),getVersion:id=>store.get('data_service_version',id,project),getRelease,
    source:id=>{if(!ids.has(id))throw fail();return store.get('release_run',id,project);},
    application:id=>store.get('service_app',id,project),calls:id=>manager.listCalls(id),recheckCall:(id,callId)=>manager.recheckCall(id,callId)});
@@ -36,6 +37,7 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
   return run;
  };
  return privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,scope:'LOCAL_TEST_ONLY',services:manager.list(),
+  getPackage:id=>store.get('delivery_package',id,project),
   ownedService:id=>manager.detail(id),getVersion:id=>store.get('data_service_version',id,project),source,getRelease,
   application:id=>store.get('service_app',id,project),calls:id=>manager.listCalls(id),recheckCall:(id,callId)=>manager.recheckCall(id,callId)});
 }

@@ -27,6 +27,36 @@ XAPI查询的`service.steps`返回实际`alias`、`dapiId`、`dapiVersionId`，�
 
 本机HTTP/持久化、独立消费者协议测试和UI夹具均使用合成证券输入。当前实际部署与同任务云端消费是否完成，以受保护续接记录为准。
 
+## V2 外部断言报告的来源绑定（2026-11-05）
+
+原消费者继续执行独立业务预期、分页、授权、限流和撤销检查，不另建执行器。`SERVICE_CONSUMER_V2` 增加冻结来源：任务、代码版本/摘要、开发运行、业务口径、交付包、发布及成功发布批次，并记录 DAPI／XAPI 固定版本和配置摘要。来源声明不是授权；真实执行仍须当前批准、有效凭证、原固定窗口和请求额度。
+
+使用现有受保护文件作只读核对：
+
+```sh
+node scripts/verify-service-consumer.mjs \
+  --plan /private/consumer-plan.json \
+  --expected-source /private/frozen-source.json \
+  --bind-evidence /private/task-evidence.json
+```
+
+`frozen-source.json` 是执行前确认的来源对象；`task-evidence.json` 是同一来源的受治理 API 回读。报告位置取自 `plan.reportFile`。四个文件都必须为当前用户所有、0600、非符号链接的普通文件。这种模式不读取令牌、不发请求、不写文件或评测状态；与 `--execute`、`--token-file`、`--phase` 混用会直接拒绝。旧窗口已结束仍可核对历史文件，不能借此继续执行旧计划。
+
+V2 仍从受保护计划读取独立 `expectedRows`，不得从服务响应反推预期。报告只保存预期摘要、来源和必要固定版本，不保存预期行、响应行、令牌、认证头或原始查询参数。每个请求先记录目标、预期状态及查询摘要，再发一次 GET；只有成功响应通过断言后才记录实际版本证明、行摘要和调用编号摘要。未授权探测的目标元数据只是计划声明，403不能证明那个版本被读取过。两个 DAPI 都授权时仍可明确声明第四个未授权服务，不缩小原验证能力。
+
+`responseDigest` 覆盖数据与分页；新增 `rowsDigest` 只覆盖数据行，与平台 `call.resultHash` 使用同一递归排序对象键的摘要口径。两者不能混比。平台消费投影的 `entry.source` 由已核验不可变清单及发布批次产生，包含代码和开发来源；`sourceVersions` 记录 XAPI 固定的两个 DAPI 版本，`call.configHash` 来自实际内部回查。
+
+纯函数 `bindExternalConsumption({expectedSource, plan, report, taskEvidence})` 不读文件、不发请求。它核对 V2 计划和完整两阶段报告、独立预期、目标 XAPI/固定子版本及同一实际调用；调用摘要必须匹配平台回执，不用另一条最近调用代替。非目标接口可来自同发布的另一个成功批次，目标 XAPI 及其子版本仍须属于原精确批次。调用超出原固定窗口时无法自动确认，不引入跨机器逐毫秒假设，也不自动重试。
+
+| 结论 | 含义 |
+|---|---|
+| `MATCHED` | 私有测试范围的原生来源、HTTP消费者报告与平台回执一致，可列为外部验收候选 |
+| `MATCHED_ONLY` | 本机或人工来源的报告绑定一致，不能升级为真实原生云端完成 |
+| `UNMATCHED` | 来源、请求、版本、时序或调用无法对应；保留具体固定原因码 |
+| `INELIGIBLE` | 旧 V1、未执行计划或显式合成证据，不能迁移为 V2 外部验收 |
+
+所有结论的 `verificationScope` 都是 `REPORT_AND_PLATFORM_RECEIPT_CONSISTENCY`，`externalSystemVerified`、`agentIndependentE2E`、`publicDeployed` 保持false。即使文件互相一致，也不能单凭文件声明认证真实运行环境；实际验收仍须结合原执行、原接口和独立业务预期。现有内部消费报告和旧评测契约不会因此被改写。
+
 ## 历史本机证据
 
 - 源发布批次：`7b1e764d-b655-4c14-a315-becf000a6123`，Spark3.5.7、调度触发、结果验证通过。
