@@ -97,7 +97,7 @@ test("MySQL-only entry distinguishes saved secret from failed workflow dispatch 
   const response = await call(`${url}/save`, "POST", { origin: url, cookie: page.headers["set-cookie"][0].split(";")[0], "x-setup-token": "07".repeat(32), "content-type": "application/json" }, JSON.stringify({ mysql: "SyntheticMysql!123" }));
   assert.deepEqual(JSON.parse(response.text), { ok: true, workflowStarted: false });
   assert.equal(saves, 1);
-  assert.match((await call(url, "GET")).text, /但同步任务未启动/);
+  assert.match((await call(url, "GET")).text, /同步启动尚未确认/);
   assert.equal(response.text.includes("private-cloud-error"), false);
 });
 

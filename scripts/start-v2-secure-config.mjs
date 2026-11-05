@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createPasswordHash } from "../src/v2/auth.mjs";
 import { normalizeModelKey } from "../src/v2/model-credentials.mjs";
+import {mountSecureConfigForm} from './secure-config-client.mjs';
 
 const DEFAULT_REPO = "Jason-ZhangHaobo/data-platform-demo";
 const DEFAULT_ENVIRONMENT = "v2-staging";
@@ -80,9 +81,12 @@ function realGhRunner(args, value = "") {
   });
 }
 
-function page({ completed, nonce, token, mysqlOnly, workflowStarted }) {
+function clientScript({nonce,token,entryId,mode,fields,messages}){
+ return `<script nonce="${nonce}">(${mountSecureConfigForm.toString()})({form:document.getElementById('setup'),save:document.getElementById('save'),recover:document.getElementById('recover'),result:document.getElementById('result'),fields:Object.fromEntries(${JSON.stringify(fields)}.map(key=>[key,document.getElementById(key)])),token:${JSON.stringify(token)},entryId:${JSON.stringify(entryId)},mode:${JSON.stringify(mode)},messages:${JSON.stringify(messages)},storage:(()=>{try{return window.sessionStorage}catch{return undefined}})()});</script>`;
+}
+function page({ completed, nonce, token, entryId, mysqlOnly, workflowStarted }) {
   const body = completed
-    ? `<h1>已加密保存</h1><p>${mysqlOnly ? `数据库密码已提交，${workflowStarted ? "控制面同步已启动" : "但同步任务未启动，请返回对话继续，不必重复填写"}；保存成功不等于数据库连接已验证。数舵登录账号未改动。` : "三项配置已提交，受保护配置校验已自动启动。"}可以返回数舵继续后续部署。</p>`
+    ? `<h1>已加密保存</h1><p>${mysqlOnly ? `数据库密码已提交，${workflowStarted ? "控制面同步已启动" : "同步启动尚未确认，请返回对话核对，不必重复填写"}；保存成功不等于数据库连接已验证。数舵登录账号未改动。` : `三项配置已提交，${workflowStarted?"受保护配置校验已启动。":"校验启动尚未确认，请核对原回执，不必重复填写。"}`}可以返回数舵继续后续验证。</p>`
     : `<span class="eyebrow">本机临时页面 · 仅用于本次部署</span>
       <h1>${mysqlOnly ? "更新数据库连接密码" : "补齐最后三项账号信息"}</h1>
       <p>内容仅通过本机 GitHub CLI 写入 <strong>v2-staging 加密 Secrets</strong>，不会进入聊天、Git 或浏览器历史。</p>
@@ -94,14 +98,11 @@ function page({ completed, nonce, token, mysqlOnly, workflowStarted }) {
         <label for="password">设置数舵登录密码</label><input id="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
         <small>至少12位，包含大小写字母、数字、符号中的至少三类；与数据库密码分开。</small>
         <label for="confirm">再次输入数舵登录密码</label><input id="confirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>`}
-        <button id="save" type="submit">${mysqlOnly ? '加密保存并同步' : '加密保存并校验'}</button>
-      </form><p id="result" role="status" aria-live="polite"></p>`;
-  const script = completed
-    ? ""
-    : `<script nonce="${nonce}">
-      const form=document.getElementById('setup'),save=document.getElementById('save'),result=document.getElementById('result');
-      form.addEventListener('submit',async(event)=>{event.preventDefault();const mysql=document.getElementById('mysql'),email=document.getElementById('email'),password=document.getElementById('password'),confirm=document.getElementById('confirm');if(password&&password.value!==confirm.value){result.textContent='两次登录密码不一致';return}save.disabled=true;result.textContent='正在加密保存，请稍候…';try{const response=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json','X-Setup-Token':'${token}'},body:JSON.stringify({mysql:mysql.value,...(email?{email:email.value,password:password.value,confirm:confirm.value}:{})})});const value=await response.json();if(!response.ok)throw new Error(value.error||'保存失败');mysql.value='';if(password)password.value='';if(confirm)confirm.value='';form.hidden=true;result.textContent=value.workflowStarted===false?'数据库密码已加密保存，但同步任务未启动。请返回对话继续，不必重复填写。':${JSON.stringify(mysqlOnly ? '数据库密码已加密保存，控制面同步已启动。连接结果仍待验证；数舵登录账号未改动。' : '已加密保存，配置校验已启动。')};result.append(document.createElement('br'),document.createTextNode('可以返回数舵继续后续验证。'))}catch(error){result.textContent=error instanceof TypeError?'无法连接本机配置服务，请回到对话获取仍有效的页面。不要将密码发到聊天。':error.message;save.disabled=false}});
-    </script>`;
+        <button id="save" type="submit" disabled>${mysqlOnly ? '加密保存并同步' : '加密保存并校验'}</button>
+      </form><p id="result" role="status" aria-live="polite"></p><button id="recover" type="button" hidden>核对原保存状态</button>`;
+  const script=completed?'':clientScript({nonce,token,entryId,mode:mysqlOnly?'MYSQL_ONLY':'SECRETS_SETUP',fields:mysqlOnly?['mysql']:['mysql','email','password','confirm'],messages:{
+   saved:mysqlOnly?'数据库密码已加密保存，控制面同步已启动；连接结果仍待验证。':'三项配置已加密保存，受保护配置校验已启动。',
+   savedUnconfirmed:mysqlOnly?'数据库密码已加密保存，同步启动尚未确认；不必重复填写，请核对原回执。':'三项配置已加密保存，校验启动尚未确认；不必重复填写，请核对原回执。'}});
   return renderPage(body, script, nonce);
 }
 
@@ -109,7 +110,7 @@ function renderPage(body, script, nonce) {
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>数舵 · 部署凭证</title><style nonce="${nonce}">*{box-sizing:border-box}body{margin:0;background:#f3f5f1;color:#18352d;font:16px system-ui,sans-serif}main{max-width:650px;margin:6vh auto;padding:36px;background:white;border:1px solid #dce4dc;border-radius:20px}h1{margin:10px 0 16px;font-size:30px}p,small{line-height:1.7;color:#53665c}.eyebrow{font-size:13px;color:#367958}label{display:block;margin:24px 0 8px;font-weight:600}input{width:100%;padding:13px;border:1px solid #b9cbbf;border-radius:9px;font:inherit}button{margin-top:28px;background:#14694c;color:white;border:0;border-radius:10px;padding:14px 20px;font:inherit;cursor:pointer}button:disabled{opacity:.55}#result{white-space:pre-line;margin-top:20px}</style><main>${body}</main>${script}</html>`;
 }
 
-function preparePage({ nonce, token, plannedEmail, status, preparedTtlMs, executionAuthorized }) {
+function preparePage({ nonce, token, entryId, plannedEmail, status, preparedTtlMs, executionAuthorized }) {
   const escape = value => value.replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const finished = status !== "EMPTY";
   const notice = executionAuthorized ? "提交后由已授权的同进程维护驱动校验并按批准范围执行；本页不直接改云端，结果以执行回执为准。" : PREPARE_NOTICE;
@@ -124,11 +125,8 @@ function preparePage({ nonce, token, plannedEmail, status, preparedTtlMs, execut
       <label for="password">自选数舵新登录密码</label><input id="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
       <label for="confirm">再次输入新登录密码</label><input id="confirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
       <label for="modelKey">模型新 Key</label><input id="modelKey" type="password" autocomplete="off" maxlength="8192" required><small>只检查格式，不调用模型验证。</small>
-      <button id="save" type="submit">${executionAuthorized ? "提交给已授权维护驱动" : "仅校验并暂存本机"}</button></form><p id="result" role="status" aria-live="polite"></p>`}`;
-  const script = finished ? "" : `<script nonce="${nonce}">
-    const form=document.getElementById('setup'),save=document.getElementById('save'),result=document.getElementById('result');
-    form.addEventListener('submit',async event=>{event.preventDefault();const fields=${JSON.stringify(PREPARE_FIELDS)},input=Object.fromEntries(fields.map(key=>[key,document.getElementById(key).value]));if(input.password!==input.confirm){result.textContent='两次登录密码不一致';return}save.disabled=true;result.textContent='正在本机校验…';try{const response=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json','X-Setup-Token':'${token}'},body:JSON.stringify(input)});const receipt=await response.json();if(!response.ok)throw new Error(receipt.error||'本机准备失败');for(const key of fields)document.getElementById(key).value='';form.hidden=true;result.textContent=${JSON.stringify(preparedMessage + notice + " 暂存到期时间：")}+receipt.expiresAt;}catch(error){result.textContent=error instanceof TypeError?'本机准备服务已停止，请返回对话。不要将密码发到聊天。':error.message;save.disabled=false}});
-    </script>`;
+      <button id="save" type="submit" disabled>${executionAuthorized ? "提交给已授权维护驱动" : "仅校验并暂存本机"}</button></form><p id="result" role="status" aria-live="polite"></p><button id="recover" type="button" hidden>核对原保存状态</button>`}`;
+  const script=finished?'':clientScript({nonce,token,entryId,mode:'PREPARE_ONLY',fields:PREPARE_FIELDS,messages:{prepared:preparedMessage+notice,consumed:consumedMessage}});
   return renderPage(body, script, nonce);
 }
 
@@ -159,10 +157,13 @@ export function createSecureConfigServer({
   const targetEmail = prepareOnly ? plannedEmail.toLowerCase() : undefined;
   const token = random(32).toString("hex");
   const nonce = random(18).toString("base64");
+  const entryId=random(16).toString('hex');
+  const cookieName='shuduo_setup_'+entryId;
   let origin = "";
   let completed = false;
   let workflowStarted = false;
   let saving = false;
+  let unconfirmedWrite=false,attemptedSecrets=0,confirmedSecrets=0,validationError='';
   let prepared, preparedReceipt, preparedStatus = "EMPTY", expirationTimer, closed = false;
   let responseSent = false;
   const preparedWaiters = new Set();
@@ -181,6 +182,10 @@ export function createSecureConfigServer({
   const expirePrepared = () => {
     if (preparedStatus === "PREPARED" && now() >= Date.parse(preparedReceipt.expiresAt)) releasePrepared("EXPIRED");
   };
+  const setupIdentity=req=>req.headers['x-setup-token']===token&&req.headers.cookie?.split('; ').includes(`${cookieName}=${token}`);
+  const statusProjection=()=>({protocol:'shuduo-local-setup-status/v1',entryId,mode:prepareOnly?'PREPARE_ONLY':mysqlOnly?'MYSQL_ONLY':'SECRETS_SETUP',
+   state:saving?'SAVING':prepareOnly&&['PREPARED','CONSUMED','EXPIRED'].includes(preparedStatus)?preparedStatus:completed?'COMPLETED':unconfirmedWrite?'UNKNOWN':validationError?'REJECTED':'EMPTY',
+   workflowStarted,attemptedSecrets,confirmedSecrets,...(preparedReceipt?{expiresAt:preparedReceipt.expiresAt}:{}),...(validationError&&!unconfirmedWrite?{validationError}:{})});
   const server = http.createServer(async (req, res) => {
     const pathname = String(req.url ?? "").split("?")[0];
     res.setHeader("Cache-Control", "no-store");
@@ -191,26 +196,30 @@ export function createSecureConfigServer({
       return reply(res, 403, { error: "只允许本机直接访问" });
     if (prepareOnly) expirePrepared();
     if (req.method === "GET" && pathname === "/") {
-      res.setHeader("Set-Cookie", `shuduo_setup=${token}; HttpOnly; SameSite=Strict; Path=/`);
+      res.setHeader("Set-Cookie", `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/`);
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(prepareOnly ? preparePage({ nonce, token, plannedEmail: targetEmail, status: preparedStatus, preparedTtlMs, executionAuthorized }) :
-        page({ completed, nonce, token, mysqlOnly, workflowStarted }));
+      res.end(prepareOnly ? preparePage({ nonce, token, entryId, plannedEmail: targetEmail, status: preparedStatus, preparedTtlMs, executionAuthorized }) :
+        page({ completed, nonce, token, entryId, mysqlOnly, workflowStarted }));
       return;
+    }
+    if(req.method==='GET'&&pathname==='/status'){
+      if(!setupIdentity(req)||req.headers.origin&&req.headers.origin!==origin||req.headers['sec-fetch-site']==='cross-site')return reply(res,403,{error:'请从本机原页面核对'});
+      return reply(res,200,statusProjection());
     }
     if (req.method !== "POST" || pathname !== "/save")
       return reply(res, 404, { error: "页面不存在" });
     if (prepareOnly && preparedStatus === "EXPIRED") return reply(res, 410, { error: "本机暂存已过期，请重新启动准备入口" });
-    if (saving || completed)
-      return reply(res, 409, { error: prepareOnly ? "本次准备已提交或正在处理，不能重复提交" : completed ? "凭证已保存" : "正在保存，请稍候" });
+    if (saving || completed || unconfirmedWrite)
+      return reply(res, 409, { error: unconfirmedWrite ? "原保存结果尚未确认，不能重复提交，请核对原状态" : prepareOnly ? "本次准备已提交或正在处理，不能重复提交" : completed ? "凭证已保存" : "正在保存，请稍候" });
     if (
       req.headers.origin !== origin ||
-      req.headers["x-setup-token"] !== token ||
-      !req.headers.cookie?.split("; ").includes(`shuduo_setup=${token}`)
+      !setupIdentity(req)
     )
       return reply(res, 403, { error: "请从本机页面提交" });
     if (req.headers["content-type"] !== "application/json")
       return reply(res, 415, { error: "请求格式错误" });
     saving = true;
+    validationError='';
     try {
       let raw = "";
       for await (const chunk of req) {
@@ -251,32 +260,26 @@ export function createSecureConfigServer({
           throw new Error('数据库密码格式不正确');
         values = { V2_MYSQL_PASSWORD: input.mysql };
       } else values = validateSecureConfig(input);
-      for (const [name, value] of Object.entries(values))
+      for (const [name, value] of Object.entries(values)){
+        attemptedSecrets++;unconfirmedWrite=true;
         await ghRunner(["secret", "set", name, "--repo", repo, "--env", environment], value);
-      if (mysqlOnly) {
-        completed = true;
-        try {
-          await ghRunner(["workflow", "run", "sync-v2-control-mysql-secret.yml", "--repo", repo, "--ref", "main"]);
-          workflowStarted = true;
-        } catch { /* The secret is already saved; do not ask the user to re-enter it. */ }
-        reply(res, 200, { ok: true, workflowStarted });
-        return;
+        confirmedSecrets++;unconfirmedWrite=false;
       }
-      await ghRunner(["workflow", "run", "validate-v2-protected-config.yml", "--repo", repo, "--ref", "main"]);
-      workflowStarted = true;
       completed = true;
-      reply(res, 200, { ok: true });
+      try{
+        await ghRunner(["workflow", "run", mysqlOnly?"sync-v2-control-mysql-secret.yml":"validate-v2-protected-config.yml", "--repo", repo, "--ref", "main"]);
+        workflowStarted=true;
+      }catch{ /* Values are confirmed saved; workflow dispatch remains unconfirmed. */ }
+      reply(res, 200, { ok: true, workflowStarted });
     } catch (error) {
       if (prepareOnly) {
         releasePrepared(preparedStatus === "EXPIRED" || closed ? "EXPIRED" : "EMPTY");
         preparedReceipt = undefined;
-        return reply(res, error.prepareMessage ? error.status : 400, { error: error.prepareMessage ?? "本机准备失败，请检查输入格式；未提交任何云端操作" });
+        validationError=error.prepareMessage ?? "本机准备失败，请检查输入格式；未提交任何云端操作";
+        return reply(res, error.prepareMessage ? error.status : 400, { error: validationError });
       }
-      reply(res, 400, {
-        error: KNOWN_ERRORS.has(error.message)
-          ? error.message
-          : "登录密码至少12位，且需包含至少三类字符",
-      });
+      validationError=unconfirmedWrite?'':KNOWN_ERRORS.has(error.message)?error.message:"登录密码至少12位，且需包含至少三类字符";
+      reply(res, 400, {error:unconfirmedWrite?'原保存结果尚未确认，请核对原状态，不要重复提交':validationError});
     } finally {
       saving = false;
     }
