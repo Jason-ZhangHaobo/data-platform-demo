@@ -9,11 +9,12 @@ import {sha256} from '../../../src/v2/delivery.mjs';
 
 // Actual controller, package files, timer writes and SQLite; synthetic model and
 // Spark receipts only. No real credentials or provider processes are used.
-export async function createLocalSourceApiFixture({applicationRoot,port=0}={}){
+export async function createLocalSourceApiFixture({applicationRoot,port=0,readyForUi=false}={}){
  const root=mkdtempSync(join(tmpdir(),'shuduo-local-source-api-')),store=new MetadataStore(join(root,'metadata.sqlite'));
  if(applicationRoot)cpSync(join(applicationRoot,'web-dist'),join(root,'web-dist'),{recursive:true});
  const counts={syntheticModel:0,syntheticSpark:0};
- const app=createV2Server({root,store,env:{V2_LOCAL_DEVELOPMENT:'true'},releaseTimeUnitMs:10,
+ const app=createV2Server({root,store,env:{V2_LOCAL_DEVELOPMENT:'true',...(readyForUi?{DASHSCOPE_API_KEY:'synthetic-not-a-provider-credential',V2_MODEL_BASE_URL:'https://model.example.invalid/v1'}:{})},releaseTimeUnitMs:10,
+  ...(readyForUi?{runnerDescriptor:{engine:'Apache Spark',isolation:'LOCAL_PROCESS',publicWriteEnabled:true}}:{}),
   generator:async({context})=>{counts.syntheticModel++;return {sql:referenceSqlForContext(context.id),model:'protocol-model-provider',usage:{total_tokens:100}};},
   runner:async({context,testSql})=>{counts.syntheticSpark++;const family=validationFamilyForContext(context.id);return {status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',
    mainSqlExecuted:true,isolation:'LOCAL_PROCESS',rows:getContext(context.id).expected,validation:{passed:true,contractId:family.id,regressions:family.contextIds.map(contextId=>({contextId,passed:true}))},
@@ -26,7 +27,7 @@ export async function createLocalSourceApiFixture({applicationRoot,port=0}={}){
   headers:{'content-type':'application/json','x-shuduo-client':'cli','idempotency-key':'synthetic-source-'+requests,...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
   return {status:response.status,body:await response.json()};};
  const poll=async(path,done)=>{let last;for(let n=0;n<100;n++){last=await call(path);assert.equal(last.status,200);if(done(last.body))return last.body;await new Promise(r=>setTimeout(r,10));}assert.fail('synthetic producer did not reach expected checkpoint: '+last.body.status);};
- return {root,store,origin,base,call,poll,counts,dispose};
+ return {root,store,server:app.server,origin,base,call,poll,counts,dispose};
 }
 
 export async function publishLocalAgentFixture(f,{contextId='holdings-t1'}={}){

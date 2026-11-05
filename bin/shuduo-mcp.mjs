@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
+import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
@@ -19,6 +20,7 @@ const tools = [
   { name: "agent_tool_list", description: "读取十个专业Agent域的版本化工具目录、风险、资源路径、前置依赖和批准边界。", inputSchema: { type: "object", properties: {} } },
   { name: "agent_tool_validate", description: "按工具目录版本和摘要校验专业Agent输入；只做契约预检，不创建任务或批准。", inputSchema: { type: "object", properties: { toolId: { type: "string" }, catalogVersion: { type: "string" }, contractDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, input: { type: "object" } }, required: ["toolId", "catalogVersion", "contractDigest", "input"], additionalProperties: false } },
   { name: "agent_tool_invoke", description: "以当前父意图、目录摘要和步骤批准调用一个专业Agent原子能力，并原子绑定任务图；不应用草稿、不发布、不授权。调用前必须取得用户对该步骤的明确批准。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, toolId: { type: "string" }, approvalId: { type: "string" }, catalogVersion: { type: "string" }, contractDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, input: { type: "object" } }, required: ["intentId", "toolId", "approvalId", "catalogVersion", "contractDigest", "input"], additionalProperties: false } },
+  { name: "agent_context_derive", description: "从本人已成功并核验的SQL版本创建新口径任务，可能执行真实模型与Spark。先确认新任务与预算范围；不继承原成功或发布批准。不自动重试，结果未知先用agent_request_lookup按原requestId查询。", inputSchema: {type:'object',additionalProperties:false,properties:{derivation:{type:'object',additionalProperties:false,properties:{kind:{const:'REGISTERED_CONTEXT_CHANGE'},taskId:{type:'string',format:'uuid'},revisionId:{type:'string',format:'uuid'},runId:{type:'string',format:'uuid'},revisionHash:{type:'string',pattern:'^[a-f0-9]{64}$'}},required:['kind','taskId','revisionId','runId','revisionHash']},contextId:{type:'string',minLength:2,maxLength:80},message:{type:'string',minLength:4,maxLength:2000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['derivation','contextId','message','requestId','confirm']} },
   { name: "agent_intent_create", description: "理解需求并在受支持模块中推荐下一步；只做路由，不执行同步、查询、审批、发布、发令牌或改权限。", inputSchema: { type: "object", properties: { message: { type: "string", minLength: 4, maxLength: 2000 } }, required: ["message"] } },
   { name: "agent_intent_approval_list", description: "读取一个Data Agent意图中已批准和已绑定的专业步骤；不返回批准者内部标识。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name: "agent_intent_approval_create", description: "批准REQUEST_APPROVAL任务中的一个精确专业步骤；只生成版本绑定批准，不执行专业任务。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, destinationId: { type: "string" } }, required: ["intentId", "destinationId"] } },
@@ -252,6 +254,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/journey`);
   if (name === "agent_development_workflow")
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/workflow`);
+  if(name==='agent_context_derive')return createContextDerivedTask(client,args);
   if(name==="agent_request_lookup"){
     if(!/^[A-Za-z0-9_-]{1,100}$/.test(args.requestId??""))throw Error("原请求编号格式不合法");
     return client.request(`/agent/requests/${encodeURIComponent(args.requestId)}`);

@@ -74,7 +74,7 @@ test("publication permission cannot enable development or other module writes", 
   assert.match(main, /同一冻结业务日期运行两批，不代表两个交易日或生产调度/);
   const workbench = readFileSync(new URL("../../web/src/AgentDevelopmentWorkbench.tsx", import.meta.url), "utf8");
   assert.match(workbench, /canWrite=originalCanWrite&&!readOnly&&!publicationTarget/);
-  assert.match(workbench, /readOnly=\{readOnly\|\|!scopeEditable\|\|Boolean\(publicationTarget\)\|\|working\}/);
+  assert.match(workbench, /readOnly=\{derivationActive\|\|readOnly\|\|!scopeEditable\|\|Boolean\(publicationTarget\)\|\|working\}/);
   assert.match(workbench, /scopeEditable=mayEditScopedTask\(taskOnly,targetTaskId,task\?\.id,originTaskId\)/);
   assert.match(workbench, /canPublish=\{canPublish\} publicationTarget=\{publicationTarget\}/);
   const panel = readFileSync(new URL("../../web/src/AgentDeliveryPanel.tsx", import.meta.url), "utf8");

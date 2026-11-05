@@ -305,6 +305,8 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /internal/scheduler/tick | HMAC签名的`{limit}` | 外部持久调度驱动领取到期ACTIVE_CLOUD批次；不接受用户会话替代服务签名，默认关闭 |
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
+`POST /agent/tasks` 可通过严格 `derivation:{kind:REGISTERED_CONTEXT_CHANGE,taskId,revisionId,runId,revisionHash}` 从本人成功原生 SQL 版本创建不同已登记口径的新任务。目标仍用 `contextId`，`sql` 必须等于原冻结版本，与失败修正字段互斥。服务端核来源、归属、五场景断言及原窗口；新任务返回白名单 `derivedFrom`，不继承原成功、计费或批准。幂等摘要包含来源和目标；未知提交复用原请求查询。工作台/CLI/MCP 契约见 [口径变更说明](agent-context-derivation.md)。
+
 当前代码 Agent 按语言返回 completionScope=SQL_DEVELOPMENT或PYTHON_DEVELOPMENT、fullLifecycleE2E=false；Python只到代码与独立断言，调度交付仍返回明确未实现边界；
 即使 SUCCEEDED 也只代表代码阶段通过。旧记录缺少范围字段同样不能被计为完整 E2E。
 完整 E2E 要求理解需求至上线后监控的全部证据，定义及分阶段门槛见 PRD.md。
