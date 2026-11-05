@@ -70,6 +70,10 @@
 
 重复、未知或不完整选择字段拒绝。人工消费保留 `sourceKind:MANUAL`、`sourceAttribution:ENGINEER_ASSISTED`、`agentIndependentE2E:false`；消费对照只是既有调用与不可变快照的一致性，不等于外部系统独立验收或 Agent 自主完成。历史调用中的凭证已撤销时，显示历史证据和当前凭证状态，不自动重新授权。
 
+本机原生 Agent 的 `task-evidence` 同样接受可选 `release_id`，保持 `LOCAL_TEST_ONLY` 和既有身份边界；人工/未知来源不能被转换为原生 Agent 成功。消费条目的 `sourceVersions` 仅投影最多5个固定 DAPI 的服务/版本编号、配置摘要、包摘要、发布/发布批次和允许字段名，不含业务行、SQL、参数或令牌。实际 `recheckCall` 返回配置摘要，`call.configHash` 必须与当前固定版本一致；摘要格式本身不构成独立真实性证明。
+
+新任务评测 v2 在同源监控通过后保留 `AWAITING_CONSUMPTION`，通过上述只读投影继续核验；旧 v1 只覆盖到监控，不能迁移或改名计作 v2。`--refresh` 更新原本机检查点，但远端仅 GET 原任务/包/发布的 `task-evidence`，不检查或启动模型、Spark及后续案例；`--report` 不改检查点。具体命令、版本和失败恢复见 [新任务评测说明](live-lifecycle-evaluation.md)。
+
 人工服务的实际调用按当前已发布根版本和 XAPI 固定子版本校验应用创建者与原工程师归属；旧的非所有者应用不能借接口版本更新继承人工数据。管理读取还核对所暴露的历史版本及调用，接口切回 Agent 不能解除人工历史保护。自己的应用元数据与撤销能力保留，不能因此读取人工服务内容。旧纯 Agent 的管理员策略兼容；无关候选版本不改变实际调用的固定来源。
 
 CLI 对应 `services sources --agent-task-id ID --package-digest SHA256 --release-id ID` 和 `services task-evidence --task-id ID --package-digest SHA256 [--release-id ID]`。MCP 的 `data_service_sources`、`data_service_task_evidence` 对应 `agentTaskId/packageDigest/releaseId`，只发 GET；不接受执行者覆盖，不在选择不全时退回宽范围。临时预览的消费证据下载可带 `releaseId`，转发为同一 `release_id` 并核对返回报告的发布编号。

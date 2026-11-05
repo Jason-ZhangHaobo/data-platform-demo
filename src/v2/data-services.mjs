@@ -695,7 +695,7 @@ export class DataServiceManager {
       throw fail(409, "当前发布版本尚无可对照的非空成功调用", "CONSUMPTION_RECEIPT_UNAVAILABLE");
     const version = this.#version(call.serviceVersionId);
     const response = await this.#execute({ ...version, timeoutMs: Math.min(version.timeoutMs, 1000) }, normalizeQuery(call.parameters));
-    return { callId: call.id, versionId: version.id, rowCount: call.rowCount,
+    return { callId: call.id, versionId: version.id, configHash: version.configHash, rowCount: call.rowCount,
       resultHash: call.resultHash,
       verified: response.data.length === call.rowCount && serviceHash(response.data) === call.resultHash };
   }

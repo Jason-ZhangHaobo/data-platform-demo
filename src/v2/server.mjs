@@ -23,6 +23,7 @@ import { localTaskPublication } from "./local-task-publication.mjs";
 import { localTaskConsumption } from "./local-task-consumption.mjs";
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
+import { privateServiceSourceSelection } from "./private-service-routes.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
@@ -4024,11 +4025,12 @@ export function createV2Server(options = {}) {
       }
       if (path === "/api/v2/data-services/task-evidence" && method === "GET") {
         if (!local) throw fail(403, "本机消费证据仅在本机开发环境可读");
-        const taskId = url.searchParams.get("agent_task_id"), packageDigest = url.searchParams.get("package_digest");
-        if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(taskId ?? "") || !/^[a-f0-9]{64}$/.test(packageDigest ?? "") || [...url.searchParams.keys()].some(k => !["agent_task_id", "package_digest"].includes(k)))
+        const selected = privateServiceSourceSelection(url.searchParams,true);
+        if (!selected)
           throw fail(422, "需提供任务编号与确切包摘要");
+        const {taskId,packageDigest,releaseId}=selected;
         const agent = get("agent", taskId); requireDurableAgentOwner(agent, req);
-        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, manager: dataServices }));
+        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, manager: dataServices }));
       }
       if (path === "/api/v2/data-services/dapis" && method === "GET")
         return json(res, 200, dataServices.list("DAPI"));
