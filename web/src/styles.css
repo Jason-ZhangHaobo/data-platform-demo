@@ -2694,6 +2694,41 @@ kbd {
 .service-context-columns li small,.service-context-boundary { color:var(--muted); font-size:12px; line-height:1.6; }
 .service-context-inspection details { overflow-wrap:anywhere; font-size:12px; }
 @media(max-width:900px) { .service-context-columns { grid-template-columns:minmax(0,1fr); } }
+.private-service-studio p { font-size:13px; line-height:1.65; overflow-wrap:anywhere; }
+.private-service-studio small { color:var(--muted); font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+.private-service-studio > header > .pill { margin-left:auto; display:flex; align-items:center; gap:5px; white-space:nowrap; }
+.private-service-steps { display:flex; gap:8px; flex-wrap:wrap; margin:18px 0; }
+.private-service-steps span { padding:7px 12px; border:1px solid var(--border); border-radius:7px; color:var(--muted); background:#fff; font-size:12px; }
+.private-service-steps .done { background:var(--mint); color:var(--green); border-color:#c5ddcd; }
+.private-service-steps .active { color:#7b5d1b; background:#fff8e7; border-color:#ead8ab; }
+.private-service-source { margin:16px 0; padding:14px 16px; border-left:3px solid #7eab8e; background:#f0f5ed; border-radius:8px; }
+.private-service-layout { display:grid; grid-template-columns:minmax(240px,.85fr) minmax(0,1.3fr); gap:20px; margin:18px 0; }
+.private-service-composer,.private-service-task { min-width:0; padding:18px; border:1px solid var(--border); border-radius:12px; background:#fff; }
+.private-service-composer > label { display:grid; gap:8px; font-size:13px; font-weight:600; }
+.private-service-composer textarea { box-sizing:border-box; resize:vertical; min-height:132px; width:100%; padding:12px; border:1px solid var(--border); border-radius:9px; font:inherit; font-size:13px; line-height:1.7; color:inherit; background:#fbfcfa; }
+.private-service-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:14px 0; }
+.private-service-history { margin-top:18px; font-size:12px; }
+.private-service-history .button { display:block; width:100%; margin:8px 0; white-space:normal; text-align:left; overflow-wrap:anywhere; }
+.private-service-task-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+.private-service-quota { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding:16px 0; }
+.private-service-quota > div { display:grid; gap:5px; }
+.private-service-quota strong { font-size:22px; letter-spacing:-.6px; color:var(--green); }
+.private-service-quota strong small { font-size:12px; margin-left:4px; letter-spacing:0; }
+.private-service-quota span { font-size:11px; color:var(--muted); }
+.private-service-warning { margin:12px 0; padding:13px; border:1px solid #ead8ab; border-radius:9px; background:#fff9ed; }
+.private-service-warning > label,.private-service-review { display:flex; align-items:flex-start; gap:8px; font-size:12px; line-height:1.6; }
+.private-service-review { margin:14px 0; padding:12px; border-radius:8px; background:var(--mint); }
+.private-service-review input,.private-service-warning input { flex-shrink:0; margin-top:3px; }
+.private-service-empty { display:grid; gap:8px; align-content:center; min-height:220px; color:var(--muted); }
+.private-service-empty h4 { margin:0; color:#324a3b; font-size:15px; }
+.private-service-task details,.private-service-source details { margin:12px 0 0; font-size:12px; overflow-wrap:anywhere; }
+.service-hero.service-hero-compact { padding:20px 24px; margin-bottom:16px; }
+.service-hero.service-hero-compact h2 { font-size:25px; margin:7px 0; }
+.service-hero.service-hero-compact p { margin:0; }
+.private-service-task .service-agent-plan { display:block; margin-top:16px; }
+.private-service-task .service-agent-plan > code { display:block; margin:8px 0; overflow-wrap:anywhere; white-space:normal; }
+.private-service-task .service-agent-plan h4 { margin:0 0 8px; line-height:1.5; }
+@media(max-width:1000px) { .private-service-layout { grid-template-columns:minmax(0,1fr); } }
 .service-catalog,
 .service-editor,
 .service-create-more,

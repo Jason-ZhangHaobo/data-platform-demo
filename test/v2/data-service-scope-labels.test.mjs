@@ -13,12 +13,14 @@ function compile(source) {
     jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022,
   } }).outputText;
   for (const name of ["react", "react/jsx-runtime", "lucide-react"])
-    output = output.replaceAll(`from "${name}"`, `from ${JSON.stringify(import.meta.resolve(name))}`);
+    output = output.replaceAll(`from "${name}"`, `from ${JSON.stringify(import.meta.resolve(name))}`).replaceAll(`from '${name}'`, `from ${JSON.stringify(import.meta.resolve(name))}`);
   return output;
 }
 const moduleUrl = (source) => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const evidenceUrl = moduleUrl(compile(readFileSync(new URL("../../web/src/EvidenceDownload.tsx", import.meta.url), "utf8")));
-let compiled = compile(workbenchSource).replaceAll('from "./EvidenceDownload"', `from ${JSON.stringify(evidenceUrl)}`);
+let privateStudio=compile(readFileSync(new URL('../../web/src/PrivateServiceAgentStudio.tsx',import.meta.url),'utf8'));
+for(const name of ['service-plan-source','private-service-plan'])privateStudio=privateStudio.replaceAll(`from './${name}'`,`from ${JSON.stringify(new URL(`../../web/src/${name}.ts`,import.meta.url).href)}`).replaceAll(`from "./${name}"`,`from ${JSON.stringify(new URL(`../../web/src/${name}.ts`,import.meta.url).href)}`);
+let compiled = compile(workbenchSource).replaceAll('from "./EvidenceDownload"', `from ${JSON.stringify(evidenceUrl)}`).replaceAll('from "./PrivateServiceAgentStudio"',`from ${JSON.stringify(moduleUrl(privateStudio))}`).replaceAll("from './PrivateServiceAgentStudio'",`from ${JSON.stringify(moduleUrl(privateStudio))}`);
 for (const name of ["service-composition", "service-consumption-scope", "service-source-binding", "service-plan-source"])
   compiled = compiled.replaceAll(`from "./${name}"`, `from ${JSON.stringify(new URL(`../../web/src/${name}.ts`, import.meta.url).href)}`);
 const { DataServicesWorkbench } = await import(moduleUrl(compiled));

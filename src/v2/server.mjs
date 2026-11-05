@@ -12,7 +12,7 @@ import { join, resolve, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { MetadataStore } from "./store.mjs";
-import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-application.mjs";
+import { callPrivateApplication, verifyPrivateApplicationTask,validatePrivateApplicationRequest } from "./private-application.mjs";
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
@@ -26,8 +26,8 @@ import { localServiceSources } from "./local-service-sources.mjs";
 import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource,assertServicePlanVersions,bindServicePlanProposal,servicePlanDraftMatches,publicServicePlan} from './service-plan-source.mjs';
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
-import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress} from './private-service-agent-policy.mjs';
-import { privateServiceSourceSelection } from "./private-service-routes.mjs";
+import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress,serviceAgentSession} from './private-service-agent-policy.mjs';
+import { privateServiceSourceSelection,privateServiceCancelId } from "./private-service-routes.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
@@ -1262,6 +1262,7 @@ export function createV2Server(options = {}) {
     return { status: response.status, body: value };
   };
   const statefulRequests = createRequestLane();
+  const prefetchedPrivateInputs=new WeakMap();
   const handleRequest = async (req, res) => {
     try {
       const ingressChannel = options.ingress?.assertRequest(req);
@@ -1328,7 +1329,7 @@ export function createV2Server(options = {}) {
         res.metadataFlush = () => persistence.flush();
       if (isPrivateSmokeInvoke) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
-        const privateInput = await readPrivateSmokeBody(req);
+        const privateInput = prefetchedPrivateInputs.get(req)??await readPrivateSmokeBody(req);prefetchedPrivateInputs.delete(req);
         if(serviceAgentAccess&&!['PRIVATE_STATUS_V1','PRIVATE_APPLICATION_HTTP_V1'].includes(privateInput.operation))throw Object.assign(fail(403,'服务规划窗口不接受计算、调度或其他私有操作'),{code:'PRIVATE_SERVICE_AGENT_SCOPE_DENIED'});
         if (developmentAccess?.taskId && !['PRIVATE_STATUS_V1','PRIVATE_AGENT_OBJECT_EVENT_V1'].includes(privateInput.operation))
           throw targetDenied();
@@ -1466,7 +1467,9 @@ export function createV2Server(options = {}) {
       if (method === "POST" && budgetAgentCreationPaths.has(path)&&!(serviceAgentAccess&&path==='/api/v2/data-services/agent/plans'))
         budget.assertCanStartModel();
       const constrainAuthSession = body => {
-        if (publicReadOnly) return {...body, permissions: ["SESSION"], readOnly: true};
+        const planningView=serviceAgentSession(serviceAgentAccess,{user:body.user,role:body.role},store,PROJECT,options.now?.()??Date.now());
+        if (publicReadOnly) return {...body,...(planningView?{servicePlanningOnly:true,servicePlanning:{enabled:false}}:{}),permissions: ["SESSION"], readOnly: true};
+        if(planningView)return {...body,...planningView};
         if (ingressChannel !== "HTTP") return body;
         const identity = {user: body.user, role: body.role}, now = options.now?.() ?? Date.now();
         const constrained = {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSession(publicationAccess, identity, now) ?? developmentSession(developmentAccess, identity, now) ?? {})};
@@ -1615,6 +1618,7 @@ export function createV2Server(options = {}) {
             sourceBoundAgentPlansEnabled: sourceBoundServicePlansEnabled,
             sourceBoundAgentContextEnabled: privateDataServicesEnabled,
             durableServiceAgentEnabled: Boolean(serviceAgentAccess),
+            durableServiceAgentReadEnabled: privateDataServicesEnabled,
             scope: privateDataServicesEnabled ? "PRIVATE_CLOUD_TEST" : "LOCAL_TEST_ONLY",
             serviceCount: dataServices.list().length,
             businessDriver: options.stateCoordinator
@@ -5843,15 +5847,32 @@ export function createV2Server(options = {}) {
     catch { void handleRequest(req, res).catch(() => {}); return; }
     const staticRequest = req.method === "GET" && (req.url === "/" || /^\/v2(?:[/?]|$)/.test(req.url));
     if (!options.ingress || channel === "INTERNAL" || staticRequest) { void handleRequest(req, res).catch(() => {}); return; }
-    const controller = new AbortController(), onClose = () => controller.abort();
+    const controller = new AbortController(), onClose = () => controller.abort();let stopSignalled=false;
     res.once("close", onClose);
-    void statefulRequests.run(() => handleRequest(req, res), { signal: controller.signal })
+    const dispatch=async()=>{
+      if(serviceAgentAccess&&channel==='EVENT'&&req.url==='/invoke'){
+        const input=await readPrivateSmokeBody(req);prefetchedPrivateInputs.set(req,input);
+        const id=privateServiceCancelId(input);
+        if(id){
+          const request=validatePrivateApplicationRequest(input,{allowDataServices:true,allowServiceAgent:true});
+          if(request.headers['x-project-id']&&request.headers['x-project-id']!==PROJECT)throw fail(403,'无权访问此项目');
+          auth.requireMutation(request.headers,request.path);
+          const actor=auth.sessionFromHeaders(request.headers);assertServiceAgentMutation(serviceAgentAccess,actor,'POST',request.path);
+          // No metadata mutation or refresh here. The active invocation owns
+          // its persisted lease; after its abort, normal serial cancel confirms.
+          stopSignalled=privateServices.agentPlanner.signalCancel(id,actor.user.id);
+        }
+      }
+      return statefulRequests.run(() => handleRequest(req, res), { signal: controller.signal });
+    };
+    void dispatch()
       .catch(error => { if (!res.destroyed && !res.writableEnded) {
-        const notStarted = error.code === "REQUEST_LANE_BUSY";
+        if(error.status&&error.code!=='REQUEST_LANE_BUSY'){void json(res,error.status,{code:error.code??'PRIVATE_APPLICATION_REQUEST_INVALID',message:error.message}).catch(()=>{});return;}
+        const notStarted = error.code === "REQUEST_LANE_BUSY"&&!stopSignalled;
         if (notStarted) res.setHeader("Retry-After", "1");
         void json(res, 503, { code: notStarted ? "REQUEST_LANE_BUSY" : "REQUEST_OUTCOME_UNCONFIRMED", message: notStarted ? "服务忙，请稍后重试；本次操作未执行" : "操作结果尚未确认，请查看原任务状态，不要重复提交" }).catch(() => {});
       } })
-      .finally(() => res.removeListener("close", onClose));
+      .finally(() => {prefetchedPrivateInputs.delete(req);res.removeListener("close", onClose);});
   });
   server.on("close", () => {
     privateServices?.agentPlanner.shutdown();

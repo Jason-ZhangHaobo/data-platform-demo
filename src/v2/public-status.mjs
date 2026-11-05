@@ -14,7 +14,7 @@ export function publicCapabilityStatus(status){
   artifacts:pick(status.artifacts,['driver','durable','cloudVerified']),
   agentDevelopment:pick(status.agentDevelopment,['durableEnabled','durableDeliveryEnabled','eventBackgroundAvailable','publishAvailable','sqlMaxAttempts','sqlTokenBudget']),
   validationContract:pick(status.validationContract,['id','fixtureCount']),
-  dataServices:pick(status.dataServices,['privateEnabled','localSourcesEnabled','sourceBoundAgentContextEnabled','durableServiceAgentEnabled','scope']),
+  dataServices:pick(status.dataServices,['privateEnabled','localSourcesEnabled','sourceBoundAgentContextEnabled','durableServiceAgentEnabled','durableServiceAgentReadEnabled','scope']),
   ingestion:{...pick(status.ingestion,['sourceType','availableSourceTypes']),serverMysql:pick(status.ingestion?.serverMysql,['configured','supportsOfflineSync','credentialMode'])},
   authentication:pick(status.authentication,['mode','publicSessionEnforced']),
   scheduler:pick(status.scheduler,['mode','durableTickConfigured','publicDeployed']),

@@ -7,6 +7,8 @@ import {validServiceSourceBinding,serviceSourceKey,sourceBindingEnvironmentMatch
 import type {ServiceSourceBinding} from "./service-source-binding";
 import {validServicePlanSource,sourcePlanReceiptValid,boundServicePlansPath,servicePlanMarker,servicePlanLocation,createServicePlanSubmission,servicePlanRecoverySource,readPrivateServiceAgentContext} from "./service-plan-source";
 import type {ServicePlanSource,SourcePlan,ServiceAgentContext} from './service-plan-source';
+import {PrivateServiceAgentStudio} from './PrivateServiceAgentStudio';
+import type {ServicePlanningAccess} from './private-service-plan';
 import {
   Activity,
   AppWindow,
@@ -187,6 +189,11 @@ export function DataServicesWorkbench({
   sourceBoundAgentPlansEnabled=false,
   sourceBoundAgentContextEnabled=false,
   modelConfigured=false,
+  durableServiceAgentEnabled=false,
+  durableServiceAgentReadEnabled=false,
+  servicePlanningTransport=false,
+  servicePlanningOnly=false,
+  servicePlanning,
 }: {
   api: Api;
   canWrite: boolean;
@@ -200,6 +207,11 @@ export function DataServicesWorkbench({
   sourceBoundAgentPlansEnabled?:boolean;
   sourceBoundAgentContextEnabled?:boolean;
   modelConfigured?:boolean;
+  durableServiceAgentEnabled?:boolean;
+  durableServiceAgentReadEnabled?:boolean;
+  servicePlanningTransport?:boolean;
+  servicePlanningOnly?:boolean;
+  servicePlanning?:ServicePlanningAccess;
 }) {
   const scopePlan=consumptionPlanAvailable(consumptionScope)?consumptionScope.plan:undefined;
   const bindingDeclared=sourceBinding!==undefined||Boolean(sourceBindingError),binding=validServiceSourceBinding(sourceBinding)?sourceBinding:undefined;
@@ -208,12 +220,13 @@ export function DataServicesWorkbench({
   const savedPlanMarker=typeof window==='undefined'?{invalid:false as const,requestId:undefined,planId:undefined,batchId:undefined}:servicePlanMarker(window.location.href);
   const boundPlannerAllowed=sourceBoundAgentPlansEnabled&&runtimeMode==='LOCAL_DEVELOPMENT'&&!privateCloud&&!consumptionScope&&binding?.scope==='LOCAL_TEST_ONLY'&&binding.sourceKind==='AGENT'&&!bindingError;
   const privateContextAllowed=sourceBoundAgentContextEnabled&&privateCloud&&runtimeMode!=='LOCAL_DEVELOPMENT'&&binding?.scope!=='LOCAL_TEST_ONLY'&&Boolean(binding)&&!bindingError;
+  const privateStudioVisible=durableServiceAgentReadEnabled&&privateCloud&&Boolean(binding)&&!bindingError&&!consumptionScope;
   const sourceContext=useRef(scopeKey);sourceContext.current=scopeKey;
   const sourceRequest=useRef(0),alive=useRef(true);
   const [sourceRead,setSourceRead]=useState<{key:string;state:"LOADING"|"READY"|"ERROR"}>({key:"",state:"LOADING"});
   async function api<T>(path:string,body?:unknown,options?:{idempotencyKey?:string}):Promise<T>{const key=scopeKey;const result=await rawApi<T>(path,body,options);if(!alive.current||sourceContext.current!==key)throw Error("来源已切换，旧响应未用于当前工作区。");return result;}
   const [scopeClock,setScopeClock]=useState(Date.now);
-  const canWrite=originalCanWrite&&(!consumptionScope||privateCloud&&consumptionWindowOpen(consumptionScope,scopeClock))&&
+  const canWrite=originalCanWrite&&!servicePlanningOnly&&(!consumptionScope||privateCloud&&consumptionWindowOpen(consumptionScope,scopeClock))&&
     (!bindingDeclared||Boolean(binding&&!bindingError&&sourceRead.key===scopeKey&&sourceRead.state==="READY"));
   const cloudScopeLabel = cloudAccess === "invited" ? "受邀云测试范围" : "私有云测试范围";
   const [releaseRuns, setReleaseRuns] = useState<ReleaseRun[]>([]),
@@ -287,6 +300,7 @@ export function DataServicesWorkbench({
   const privateContextSource=privateContextAllowed&&validServicePlanSource(planSourceCandidate)&&sourceRead.key===scopeKey&&sourceRead.state==='READY'&&eligibleRuns.some(run=>run.id===sourceRunId)?planSourceCandidate:undefined;
   const privateContextKey=JSON.stringify([scopeKey,privateContextSource??null]),privateContextRef=useRef(privateContextKey);privateContextRef.current=privateContextKey;
   const privateContextState=privateContextRead?.key===privateContextKey?privateContextRead:undefined;
+  const privateStudioSource=privateContextSource??servicePlanRecoverySource(binding,typeof window==='undefined'?undefined:window.location.href);
   async function inspectPrivateContext(){
     if(!privateContextSource||privateContextState?.state==='LOADING')return;
     const key=privateContextKey,source=privateContextSource;setPrivateContextRead({key,state:'LOADING'});
@@ -379,7 +393,7 @@ export function DataServicesWorkbench({
     void reload().catch(()=>{});
   }, [scopeKey]);
   useEffect(()=>{if(!consumptionScope)return;setScopeClock(Date.now());const timer=setInterval(()=>setScopeClock(Date.now()),1000);return()=>clearInterval(timer);},[scopeKey]);
-  useEffect(()=>{if(!canWrite){setIssuedToken("");setTokenVisible(false);}if(consumptionScope){setShowVersionEditor(false);setVersionReview(undefined);}},[canWrite,scopeKey]);
+  useEffect(()=>{if(!canWrite){setIssuedToken("");setTokenVisible(false);}if(consumptionScope||servicePlanningOnly){setShowVersionEditor(false);setVersionReview(undefined);}},[canWrite,scopeKey,servicePlanningOnly]);
   useEffect(()=>{
     planSubmission.current?.close();planSubmission.current=undefined;
     if(!boundPlannerAllowed||!readablePlanSource)return;
@@ -664,15 +678,15 @@ export function DataServicesWorkbench({
 
   return (
     <div className="service-workbench">
-      <section className="service-hero">
+      <section className={servicePlanningOnly?"service-hero service-hero-compact":"service-hero"}>
         <div>
-          <span className="eyebrow">DATA SERVICE STUDIO · M3</span>
-          <h2>把已验证数据发布成可治理接口</h2>
+          <span className="eyebrow">{servicePlanningOnly?"DATA AGENT · SERVICE DELIVERY":"DATA SERVICE STUDIO · M3"}</span>
+          <h2>{servicePlanningOnly?"用 Agent 交付数据服务":"把已验证数据发布成可治理接口"}</h2>
           <p>
-            DAPI查询真实发布批次，XAPI固定编排已发布版本；测试、授权、限流、版本和调用证据共享一个工作区。
+            {servicePlanningOnly?"描述接口需求，核对来源与方案，再确认创建草稿；全过程保留原任务和恢复记录。":"DAPI查询真实发布批次，XAPI固定编排已发布版本；测试、授权、限流、版本和调用证据共享一个工作区。"}
           </p>
         </div>
-        <div className="service-stats">
+        {!servicePlanningOnly&&<div className="service-stats">
           <div>
             <strong>{scopedDapis.length}</strong>
             <span>DAPI</span>
@@ -685,12 +699,12 @@ export function DataServicesWorkbench({
             <strong>{consumptionScope||bindingDeclared?visibleCalls.filter(c=>services.some(s=>s.id===c.serviceId)).length:visibleCalls.length}</strong>
             <span>调用</span>
           </div>
-        </div>
+        </div>}
       </section>
-      {bindingDeclared&&<section className={bindingError||sourceRead.state==="ERROR"?"service-feedback error":"service-feedback"} role="status" aria-label="确切发布来源"><div><strong>{binding?.sourceKind==="MANUAL"?"工程师接管结果 · 非 Agent 自主完成":"指定发布结果交接"}</strong><p>只使用指定任务、交付包和发布版本的成功发布批次；不是开发运行，不会自动创建接口、凭证或调用数据。</p>{binding&&<><p>原任务：{binding.taskId}<br/>交付包：{binding.packageDigest}<br/>发布版本：{binding.releaseId}</p>{sourceRead.key===scopeKey&&sourceRead.state==="READY"?<a className="button" href={serviceReturnLocation(typeof location==="undefined"?"http://localhost/v2/":location.href,binding).href}>返回原{binding.sourceKind==="MANUAL"?"人工版本":"Agent任务"}</a>:<small>返回原版本的链接将在同源核对后开放。</small>}</>}{bindingError?<p>{bindingError}</p>:<p>{sourceRead.key!==scopeKey||sourceRead.state==="LOADING"?"正在核对确切发布来源；写入暂不开放。":sourceRead.state==="ERROR"?"来源尚未确认；保留绑定，不回退全项目或其他发布。":"已核对可消费的成功发布批次；写权限仍按当前账号和消费计划判断。"}</p>}<button className="button" disabled={!!busy||Boolean(bindingError)} onClick={()=>void reload().catch(()=>{})}>重新读取指定来源</button></div></section>}
+      {bindingDeclared&&<section className={bindingError||sourceRead.state==="ERROR"?"service-feedback error":"service-feedback"} role="status" aria-label="确切发布来源"><details open={!servicePlanningOnly}><summary>{bindingError||sourceRead.state==='ERROR'?"来源待恢复 · 查看核对记录":sourceRead.key===scopeKey&&sourceRead.state==='READY'?"发布来源已核对 · 查看原任务与版本":"正在核对发布来源"}</summary><div><strong>{binding?.sourceKind==="MANUAL"?"工程师接管结果 · 非 Agent 自主完成":"指定发布结果交接"}</strong><p>只使用指定任务、交付包和发布版本的成功发布批次；不是开发运行，不会自动创建接口、凭证或调用数据。</p>{binding&&<><p>原任务：{binding.taskId}<br/>交付包：{binding.packageDigest}<br/>发布版本：{binding.releaseId}</p>{sourceRead.key===scopeKey&&sourceRead.state==="READY"?<a className="button" href={serviceReturnLocation(typeof location==="undefined"?"http://localhost/v2/":location.href,binding).href}>返回原{binding.sourceKind==="MANUAL"?"人工版本":"Agent任务"}</a>:<small>返回原版本的链接将在同源核对后开放。</small>}</>}{bindingError?<p>{bindingError}</p>:<p>{sourceRead.key!==scopeKey||sourceRead.state==="LOADING"?"正在核对确切发布来源；写入暂不开放。":sourceRead.state==="ERROR"?"来源尚未确认；保留绑定，不回退全项目或其他发布。":"已核对可消费的成功发布批次；写权限仍按当前账号和消费计划判断。"}</p>}<button className="button" disabled={!!busy||Boolean(bindingError)} onClick={()=>void reload().catch(()=>{})}>重新读取指定来源</button></div></details></section>}
       {consumptionScope&&<section className="service-feedback" role="status" aria-label="接口消费试点范围"><div><strong>仅本次冻结接口计划 · 不重新计算业务数据</strong><p>{canWrite?"允许手动创建、测试、发布本计划接口，并创建及撤销唯一测试应用。":"当前消费窗口未开放、已到期或计划不可用；保持只读，不发行凭证。"} 不开放模型规划、代码开发、业务批次发布或接口版本切换。</p>{scopePlan&&<><p>源任务：{scopePlan.taskId}<br/>源发布批次：{scopePlan.sourceReleaseRunId}<br/>包摘要：{scopePlan.packageDigest}</p><small>接口：{scopePlan.dapis.map(d=>d.name).join("、")}、{scopePlan.xapi.name}。应用：{scopePlan.applicationName}；只授权直接查询持仓和组合资产，现金接口未单独授权。</small></>}<p>截止：{consumptionScope.expiresAt?new Date(consumptionScope.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}):"未确认"}（北京时间）。凭证到期后失效，历史调用证据保留。</p></div></section>}
       {scopeConflict&&<div className="service-feedback error" role="alert">发现同名服务不属于本次试点或其版本配置与计划不符；不会混入、覆盖或更新旧服务，请先核对来源。</div>}
-      <div className="service-flow" aria-label="数据服务生命周期">
+      {!servicePlanningOnly&&<div className="service-flow" aria-label="数据服务生命周期">
         {flowSteps.map(({ Icon: FlowIcon, number, title, description }) => {
           return (
             <div key={String(number)}>
@@ -701,7 +715,7 @@ export function DataServicesWorkbench({
             </div>
           );
         })}
-      </div>
+      </div>}
       {(error || notice) && (
         <div
           className={error ? "service-feedback error" : "service-feedback"}
@@ -711,7 +725,15 @@ export function DataServicesWorkbench({
           {error || notice}
         </div>
       )}
-      {privateContextAllowed&&<section className="service-agent-studio service-context-inspection" aria-label="私有Agent规划上下文">
+      {privateStudioVisible&&<div className="service-agent-source"><label>当前发布批次<select aria-label="私有规划发布批次" value={sourceRunId} disabled={!!busy||sourceRead.state!=='READY'||Boolean(!savedPlanMarker.invalid&&savedPlanMarker.requestId)} onChange={event=>{setSourceRunId(event.target.value);history.replaceState(null,'',servicePlanLocation(location.href,{batchId:event.target.value}));}}>
+        {!eligibleRuns.some(run=>run.id===sourceRunId)&&<option value={sourceRunId}>原成功批次待核对</option>}{eligibleRuns.map(run=><option key={run.id} value={run.id}>批次 {run.sequence??run.id.slice(0,8)} · {run.id.slice(0,8)}</option>)}
+      </select></label><small>仅当前窗口指定的成功批次可创建与推进；切换不会删除原任务，待确认的原提交须先恢复。</small></div>}
+      {privateStudioVisible&&binding&&<PrivateServiceAgentStudio key={JSON.stringify([scopeKey,privateStudioSource??null])}
+        api={api} binding={binding} verifiedSource={privateContextSource} readEnabled={durableServiceAgentReadEnabled} planningEnabled={durableServiceAgentEnabled} transportEnabled={servicePlanningTransport}
+        canAct={originalCanWrite} modelConfigured={modelConfigured} access={servicePlanning} onBusyChange={value=>setBusy(value?'private-agent':'')}
+        onRefreshSource={reload} onApplied={async id=>{await reload();if(alive.current)setSelectedId(id);}}/>}
+      {servicePlanningOnly&&<p className="service-feedback" role="status">当前仅允许指定来源的规划与草稿确认；下方经典模块可查看，测试、发布、版本修改及调用凭证保持关闭。</p>}
+      {privateContextAllowed&&!privateStudioVisible&&<section className="service-agent-studio service-context-inspection" aria-label="私有Agent规划上下文">
         <header><div className="service-agent-icon"><Bot size={20}/></div><div><span className="eyebrow">DATA AGENT · SOURCE CONTEXT</span><h3>规划前，先核对数据</h3><p>核对当前成功批次、字段口径及可组合的接口版本，再决定下一步开发。</p></div></header>
         <div className="service-agent-source"><label>当前成功批次<select aria-label="规划上下文成功批次" value={sourceRunId} disabled={privateContextState?.state==='LOADING'||!!busy} onChange={event=>{setSourceRunId(event.target.value);history.replaceState(null,'',servicePlanLocation(location.href,{batchId:event.target.value}));}}>
           {!sourceRunId&&<option value="">请选择已核验批次</option>}{eligibleRuns.map(run=><option key={run.id} value={run.id}>批次 {run.sequence??run.id.slice(0,8)} · {run.id.slice(0,8)}</option>)}
@@ -856,7 +878,7 @@ export function DataServicesWorkbench({
                 </div>
                 <Braces size={22} />
               </header>
-              {scopePlan&&<label>本次计划中的DAPI<select aria-label="选择已批准DAPI定义" disabled={!!busy} value={plannedDapiIndex} onChange={event=>setPlannedDapiIndex(Number(event.target.value))}>{scopePlan.dapis.map((d,index)=><option key={d.slug} value={index}>{d.name}{dapis.some(s=>s.slug===d.slug)?" · 已登记":""}</option>)}</select></label>}
+              {scopePlan&&<label>本次计划中的DAPI<select aria-label="选择已批准DAPI定义" disabled={!!busy||servicePlanningOnly} value={plannedDapiIndex} onChange={event=>setPlannedDapiIndex(Number(event.target.value))}>{scopePlan.dapis.map((d,index)=><option key={d.slug} value={index}>{d.name}{dapis.some(s=>s.slug===d.slug)?" · 已登记":""}</option>)}</select></label>}
               <div className="service-form-grid">
                 <label>
                   服务名称
@@ -1104,10 +1126,10 @@ LIMIT :limit OFFSET :offset`}</pre>
             </div>
           </header>
           <div className="service-composition-form">
-            <label>XAPI名称<input value={scopePlan?.xapi.name??xapiName} maxLength={100} readOnly={Boolean(consumptionScope)} disabled={!!busy} onChange={e=>setXapiName(e.target.value)}/></label>
-            <label>XAPI路径标识<input value={scopePlan?.xapi.slug??xapiSlug} maxLength={48} readOnly={Boolean(consumptionScope)} disabled={!!busy} onChange={e=>setXapiSlug(e.target.value)}/></label>
-            <label>持仓DAPI版本<select value={composition.holdings?.publishedVersion?.id??""} disabled={!!busy||Boolean(consumptionScope)} onChange={e=>{setHoldingsVersionId(e.target.value);setCashVersionId("");}}><option value="">请选择已发布版本</option>{composition.holdingsOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
-            <label>现金DAPI版本<select value={composition.cash?.publishedVersion?.id??""} disabled={!!busy||Boolean(consumptionScope)} onChange={e=>setCashVersionId(e.target.value)}><option value="">请选择已发布版本</option>{composition.cashOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
+            <label>XAPI名称<input value={scopePlan?.xapi.name??xapiName} maxLength={100} readOnly={Boolean(consumptionScope)} disabled={!!busy||servicePlanningOnly} onChange={e=>setXapiName(e.target.value)}/></label>
+            <label>XAPI路径标识<input value={scopePlan?.xapi.slug??xapiSlug} maxLength={48} readOnly={Boolean(consumptionScope)} disabled={!!busy||servicePlanningOnly} onChange={e=>setXapiSlug(e.target.value)}/></label>
+            <label>持仓DAPI版本<select value={composition.holdings?.publishedVersion?.id??""} disabled={!!busy||Boolean(consumptionScope)||servicePlanningOnly} onChange={e=>{setHoldingsVersionId(e.target.value);setCashVersionId("");}}><option value="">请选择已发布版本</option>{composition.holdingsOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
+            <label>现金DAPI版本<select value={composition.cash?.publishedVersion?.id??""} disabled={!!busy||Boolean(consumptionScope)||servicePlanningOnly} onChange={e=>setCashVersionId(e.target.value)}><option value="">请选择已发布版本</option>{composition.cashOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
           </div>
           <button
             className="button"
