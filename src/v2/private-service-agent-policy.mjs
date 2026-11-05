@@ -44,6 +44,10 @@ export function assertServiceAgentActor(config,actorId,store,project){
   throw fail('SERVICE_AGENT_ACTOR_DENIED','当前账号未获准执行此服务规划');
  return {user:actor,role};
 }
+export function assertServiceAgentIngress(config,ingress){
+ if(config&&(ingress?.status?.mode!=='FC_CONTROL_PATH'||ingress.status.publicReadOnly!==true))
+  throw Error('PRIVATE_SERVICE_AGENT_READONLY_INGRESS_REQUIRED');
+}
 export function assertServiceAgentWindow(config,now){
  if(!config||!Number.isFinite(now)||now<Date.parse(config.startsAt)||now>=Date.parse(config.expiresAt))
   throw fail('SERVICE_AGENT_WINDOW_CLOSED','私有服务规划窗口未开放或已到期；原任务仍可读取或取消');

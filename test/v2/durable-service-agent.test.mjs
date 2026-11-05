@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {durableServiceFixture} from './fixtures/durable-service-agent.mjs';
 import {servicePlanSourcePath} from '../../src/v2/service-plan-request.mjs';
-import {serviceAgentMonth,privateServiceAgentProfile} from '../../src/v2/private-service-agent-policy.mjs';
+import {serviceAgentMonth,privateServiceAgentProfile,assertServiceAgentIngress} from '../../src/v2/private-service-agent-policy.mjs';
+import {createFcIngress} from '../../src/v2/fc-ingress.mjs';
 import {V2Client} from '../../src/v2/client.mjs';
 import {callServicePlan} from '../../src/v2/service-plan-client.mjs';
 import {handleV2Mcp} from '../../bin/shuduo-mcp.mjs';
@@ -15,6 +16,13 @@ const planPath=id=>'/data-services/agent/plans/'+id;
 const read=(f,id)=>f.call(planPath(id),undefined,f.a);
 const advance=(f,p,extra={})=>f.call(planPath(p.id)+'/advance',{expectedVersion:p.version,...extra},f.a);
 const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
+
+test('a private planning profile cannot rely on a missing or writable ingress despite an env read-only flag',()=>{
+ assert.throws(()=>assertServiceAgentIngress({configured:true},undefined),/PRIVATE_SERVICE_AGENT_READONLY_INGRESS_REQUIRED/);
+ assert.throws(()=>assertServiceAgentIngress({configured:true},createFcIngress({publicHttpEnabled:true,publicReadOnly:false})),/PRIVATE_SERVICE_AGENT_READONLY_INGRESS_REQUIRED/);
+ assert.doesNotThrow(()=>assertServiceAgentIngress({configured:true},createFcIngress({publicHttpEnabled:true,publicReadOnly:true})));
+ assert.doesNotThrow(()=>assertServiceAgentIngress(undefined,undefined));
+});
 
 test('durable private plan is queued without compute, recovered by original request, generated once and applied to one private draft',async t=>{
  const f=await durableServiceFixture(t,{manual:true}),parent=structuredClone(f.store.get('agent',f.agent.id,f.project)),key=randomUUID(),made=await f.create(undefined,key);assert.equal(made.status,202,JSON.stringify(made.body));const p=made.body;

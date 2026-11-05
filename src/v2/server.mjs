@@ -26,7 +26,7 @@ import { localServiceSources } from "./local-service-sources.mjs";
 import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource,assertServicePlanVersions,bindServicePlanProposal,servicePlanDraftMatches,publicServicePlan} from './service-plan-source.mjs';
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
-import {privateServiceAgentProfile,assertServiceAgentMutation} from './private-service-agent-policy.mjs';
+import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress} from './private-service-agent-policy.mjs';
 import { privateServiceSourceSelection } from "./private-service-routes.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
@@ -286,6 +286,7 @@ export function createV2Server(options = {}) {
   const publicationAccess = publicPublicationConfig(env);
   const serviceAccess = publicServiceConfig(env);
   const serviceAgentAccess=privateServiceAgentProfile(env);
+  assertServiceAgentIngress(serviceAgentAccess,options.ingress);
   const developmentAccess = publicDevelopmentConfig(env);
   const developmentNow = () => options.now?.() ?? Date.now();
   const assertTargetTask = task => assertDevelopmentTargetTask(developmentAccess, task,
