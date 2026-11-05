@@ -63,7 +63,7 @@ export async function durableServiceFixture(t,{profilePatch={},modelLeaseMs=9000
   const a=await login(owner.email),b=await login(other.email);const result={app,base,call,invoke,a,b,internalHeaders:ingress.internalHeaders};apps.push(result);return result;
  };
  const api=await start();
- t.after(async()=>{for(const {app}of apps){app.server.closeAllConnections();await new Promise(resolve=>app.server.close(resolve));}businessStore.close();store.close();rmSync(root,{recursive:true,force:true});});
+ t.after(async()=>{for(const {app}of apps){if(app.server.listening){app.server.closeAllConnections();await new Promise(resolve=>app.server.close(resolve));}}businessStore.close();store.close();rmSync(root,{recursive:true,force:true});});
  const create=(message='基于当前股票与现金来源规划资产DAPI',key=randomUUID(),binding=sourceBinding,headers=api.a)=>api.call('/data-services/agent/plans',{message,sourceBinding:binding},headers,key);
  return {...api,root,store,businessStore,owner,other,agent,run,release,bundle,holdings,cash,sourceBinding,profile,env,create,start,inputs,privateManager:seed.manager,project:PROJECT,
   setNext:fn=>{next=fn;},setRefreshHook:fn=>{refreshHook=fn;},moveClock:ms=>{clock+=ms;},now,counts:()=>({calls,compute,flushes}),failFlush:value=>{failFlush=value;},failFlushAt:value=>{failAtFlush=value;},

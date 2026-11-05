@@ -38,4 +38,4 @@ GUI、CLI、MCP共用原有创建／推进／查询／摘要应用／取消API�
 
 本机使用真实HTTP、认证／CSRF、SQLite、预算与服务管理器，上游模型、OSS和Spark发布回执全部合成。实际界面验证登记后关闭任务页、独立事件推进、原链接恢复和人审草稿；也验证未知确认、同任务新检查点、明确重新投递、取消及旧事件失效。1280双栏与900单栏无横向溢出。
 
-逻辑控制器接续不等于新进程或真实云实例恢复，本机延迟不证明公网三秒目标。`backgroundDispatcherVerified`、`cloudDriverVerified` 继续为 `false`，不能由开关自我证明。后续先做跨进程恢复，再按有效具体范围核验真实云事件、模型与费用；所有公开材料只使用虚构证券数据。
+已补充[本机跨进程验收](service-agent-process-recovery.md)：排队后退出、模型在途SIGKILL、新进程原会话恢复、不同bootId／同状态摘要、未知预留和显式重试均有独立断言。本机新进程不等于真实云实例恢复或公网性能，`backgroundDispatcherVerified`、`cloudDriverVerified` 仍为 `false`。真实云事件、模型与费用另按有效具体范围核验，所有公开材料只使用虚构证券数据。
