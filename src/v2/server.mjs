@@ -1606,6 +1606,7 @@ export function createV2Server(options = {}) {
             privateEnabled: privateDataServicesEnabled,
             localSourcesEnabled: local,
             sourceBoundAgentPlansEnabled: sourceBoundServicePlansEnabled,
+            sourceBoundAgentContextEnabled: privateDataServicesEnabled,
             scope: privateDataServicesEnabled ? "PRIVATE_CLOUD_TEST" : "LOCAL_TEST_ONLY",
             serviceCount: dataServices.list().length,
             businessDriver: options.stateCoordinator

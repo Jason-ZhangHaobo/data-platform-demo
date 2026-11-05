@@ -217,3 +217,14 @@ test('source-bound Agent studio requires the explicit local capability and never
   assert.doesNotMatch(renderToStaticMarkup(React.createElement(DataServicesWorkbench,{...props,...patch})),/aria-label="Agent规划成功批次"/);
  assert.equal(calls,0);
 });
+
+test('private context inspection is explicitly read-only and does not render the local model studio',()=>{
+ let calls=0;const props={api:async()=>{calls++;throw Error('render cannot request');},canWrite:false,sourceBinding:binding,
+  privateCloud:true,runtimeMode:'PUBLIC_INVITATION',sourceBoundAgentContextEnabled:true,sourceBoundAgentPlansEnabled:true,modelConfigured:true};
+ const html=renderToStaticMarkup(React.createElement(DataServicesWorkbench,props));
+ assert.match(html,/aria-label="私有Agent规划上下文"/);assert.match(html,/核对上下文不会调用模型、创建方案或发布接口/);
+ assert.doesNotMatch(html,/生成受治理方案/);assert.match(html,/disabled=""[^>]*>[\s\S]*?核对规划上下文/);
+ for(const patch of [{sourceBoundAgentContextEnabled:false},{privateCloud:false},{sourceBindingError:'当前来源不可用'},{sourceBinding:undefined}])
+  assert.doesNotMatch(renderToStaticMarkup(React.createElement(DataServicesWorkbench,{...props,...patch})),/aria-label="私有Agent规划上下文"/);
+ assert.equal(calls,0);
+});

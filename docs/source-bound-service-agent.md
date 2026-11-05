@@ -4,6 +4,20 @@
 
 首期实现普通本机开发模式中的原生 SQL Agent 来源。后端通过 `dataServices.sourceBoundAgentPlansEnabled` 明示能力，界面同时核对本机环境与原来源。私有云、受邀公网、人工接管及限定消费窗口保持既有能力边界；本实现不表示这些环境已开放模型规划。
 
+## 私有／受邀来源上下文（只读适配）
+
+私有数据服务启用时，`dataServices.sourceBoundAgentContextEnabled` 表示可核对上下文，**不表示可调用模型**。独立 Agent 的接口交付视图提供“核对规划上下文”，展示当前成功批次、已登记字段含义和同源已发布 DAPI 的固定版本。人工交付保留原工程师、原人工版本与非自主完成归因；沿用既有后台权限，其他管理员不能继承他人的人工来源。
+
+`GET /api/v2/data-services/agent/context?agent_task_id=…&package_digest=…&release_id=…&source_release_run_id=…` 要求四项来源完整且唯一，必须受邀登录。后端复用私有来源验证、服务管理器及归属判断；口径来自已验证交付包清单，不采用任务后来改写的口径或默认口径。只返回一个确切批次，最多100个可访问、配置完整且结果快照未损坏的已发布 DAPI；显示截断与未通过候选数，不暴露业务行、SQL、查询模板、凭证或文件内容。
+
+返回协议为 `shuduo-service-agent-context/v1`，范围 `PRIVATE_CLOUD_TEST`；`planning.enabled:false`、`agentIndependentE2E:false`、`publicDeployed:false`。这是读取时的元数据核对，不是执行票据。限定消费来源不能借此切换到其他包；旧消费窗口不会因此开放规划、草稿应用或模型付费。
+
+切换批次立即清除旧上下文；链接只保留来源与批次标识。刷新保留所选批次，须重新只读核对，不能借用上一份回执。来源失效显示错误并保留选择，不使用其他结果；恢复后可核对同一批次。没有自动轮询或模型提交。
+
+CLI 使用 `shuduo services plan-context --task-id UUID --package-digest SHA256 --release-id UUID --source-run-id UUID`；MCP 为只读工具 `service_agent_context`，参数仅 `sourceBinding`。GUI／CLI／MCP 使用同一只读 API 和回执验证，不接收执行者、确认写入或模型参数。私有传输及临时预览仅新增这一条严格 GET，不放开旧规划 POST。
+
+当前只读适配已通过本机 HTTP／SQLite、CLI/MCP和实际浏览器合成验收；上游发布回执为合成数据，不计真实云或模型验收。云端规划下一步仍须实现来源与身份复核、单独执行窗口、持久模型尝试及未知结果保留、次数/Token/月预算和原任务恢复，再按具体范围部署验收。
+
 ## 工作流程
 
 1. 从原 Agent 的确切交付包与发布进入接口交付页，选择一个已经完整核验的成功批次。开发运行不能用作发布批次。

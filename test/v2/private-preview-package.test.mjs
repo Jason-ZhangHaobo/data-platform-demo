@@ -12,7 +12,7 @@ test('the isolated private preview archive includes its pure route dependencies 
  const line=workflow.split('\n').find(value=>value.includes('run: zip -qr'));
  assert.ok(line,'CI must retain the account-restricted preview package');
  const files=line.slice(line.indexOf('web-dist')).trim().split(/\s+/).filter(value=>value!=='web-dist');
- assert.deepEqual(files,['scripts/run-v2-cloudshell-preview.mjs','src/v2/private-service-routes.mjs','src/v2/publication-request.mjs']);
+ assert.deepEqual(files,['scripts/run-v2-cloudshell-preview.mjs','src/v2/private-service-routes.mjs','src/v2/publication-request.mjs','src/v2/service-plan-request.mjs']);
  const archive=join(directory,'preview.zip'),unpacked=join(directory,'unpacked');
  execFileSync('zip',['-q',archive,...files],{timeout:10000,stdio:'pipe'});
  execFileSync('unzip',['-q',archive,'-d',unpacked],{timeout:10000,stdio:'pipe'});

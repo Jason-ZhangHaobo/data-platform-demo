@@ -5,8 +5,8 @@ import { applicationStatusText, consumptionApplicationInput, consumptionDapiInpu
 import type { ConsumptionScope } from "./service-consumption-scope";
 import {validServiceSourceBinding,serviceSourceKey,sourceBindingEnvironmentMatches,serviceSourcesPath,serviceReturnLocation,serviceReadCurrent,sourceRunMatches,sourceRunEligible,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
-import {validServicePlanSource,sourcePlanReceiptValid,boundServicePlansPath,servicePlanMarker,servicePlanLocation,createServicePlanSubmission,servicePlanRecoverySource} from "./service-plan-source";
-import type {ServicePlanSource,SourcePlan} from './service-plan-source';
+import {validServicePlanSource,sourcePlanReceiptValid,boundServicePlansPath,servicePlanMarker,servicePlanLocation,createServicePlanSubmission,servicePlanRecoverySource,readPrivateServiceAgentContext} from "./service-plan-source";
+import type {ServicePlanSource,SourcePlan,ServiceAgentContext} from './service-plan-source';
 import {
   Activity,
   AppWindow,
@@ -185,6 +185,7 @@ export function DataServicesWorkbench({
   sourceBindingError,
   runtimeMode,
   sourceBoundAgentPlansEnabled=false,
+  sourceBoundAgentContextEnabled=false,
   modelConfigured=false,
 }: {
   api: Api;
@@ -197,6 +198,7 @@ export function DataServicesWorkbench({
   sourceBindingError?:string;
   runtimeMode?:"LOCAL_DEVELOPMENT"|"PUBLIC_INVITATION";
   sourceBoundAgentPlansEnabled?:boolean;
+  sourceBoundAgentContextEnabled?:boolean;
   modelConfigured?:boolean;
 }) {
   const scopePlan=consumptionPlanAvailable(consumptionScope)?consumptionScope.plan:undefined;
@@ -205,6 +207,7 @@ export function DataServicesWorkbench({
   const scopeKey=JSON.stringify([consumptionScope??null,sourceAgentTaskId??null,serviceSourceKey(binding),bindingError]);
   const savedPlanMarker=typeof window==='undefined'?{invalid:false as const,requestId:undefined,planId:undefined,batchId:undefined}:servicePlanMarker(window.location.href);
   const boundPlannerAllowed=sourceBoundAgentPlansEnabled&&runtimeMode==='LOCAL_DEVELOPMENT'&&!privateCloud&&!consumptionScope&&binding?.scope==='LOCAL_TEST_ONLY'&&binding.sourceKind==='AGENT'&&!bindingError;
+  const privateContextAllowed=sourceBoundAgentContextEnabled&&privateCloud&&runtimeMode!=='LOCAL_DEVELOPMENT'&&binding?.scope!=='LOCAL_TEST_ONLY'&&Boolean(binding)&&!bindingError;
   const sourceContext=useRef(scopeKey);sourceContext.current=scopeKey;
   const sourceRequest=useRef(0),alive=useRef(true);
   const [sourceRead,setSourceRead]=useState<{key:string;state:"LOADING"|"READY"|"ERROR"}>({key:"",state:"LOADING"});
@@ -227,7 +230,7 @@ export function DataServicesWorkbench({
   const [dapiName, setDapiName] = useState(scopePlan?.dapis[0]?.name??"客户持仓查询"),
     [dapiSlug, setDapiSlug] = useState(scopePlan?.dapis[0]?.slug??(sourceAgentTaskId?`customer-holdings-${sourceAgentTaskId.slice(0,8)}`:"customer-holdings")),
     [profile, setProfile] = useState<keyof typeof fieldProfiles>("holdings"),
-    [sourceRunId, setSourceRunId] = useState(scopePlan?.sourceReleaseRunId??(boundPlannerAllowed&&!savedPlanMarker.invalid?savedPlanMarker.batchId:undefined)??"");
+    [sourceRunId, setSourceRunId] = useState(scopePlan?.sourceReleaseRunId??((boundPlannerAllowed||privateContextAllowed)&&!savedPlanMarker.invalid?savedPlanMarker.batchId:undefined)??"");
   const [xapiName,setXapiName]=useState(scopePlan?.xapi.name??"财富顾问客户资产组合查询"),
     [xapiSlug,setXapiSlug]=useState(scopePlan?.xapi.slug??(sourceAgentTaskId?`advisor-assets-${sourceAgentTaskId.slice(0,8)}`:"advisor-asset-overview")),
     [holdingsVersionId,setHoldingsVersionId]=useState(""),[cashVersionId,setCashVersionId]=useState("");
@@ -246,6 +249,7 @@ export function DataServicesWorkbench({
   const [pendingPlanKey,setPendingPlanKey]=useState<string|undefined>(()=>boundPlannerAllowed&&!savedPlanMarker.invalid?savedPlanMarker.requestId:undefined),
     [planReadError,setPlanReadError]=useState('');
   const planSubmission=useRef<ReturnType<typeof createServicePlanSubmission<ServiceAgentPlan>>|undefined>(undefined);
+  const [privateContextRead,setPrivateContextRead]=useState<{key:string;state:'LOADING'|'READY'|'ERROR';value?:ServiceAgentContext;error?:string}>();
   const services = useMemo(() => consumptionServices(binding?sourceBoundServices([...dapis,...xapis],binding,releaseRuns):bindingDeclared?[]:[...dapis, ...xapis],consumptionScope), [dapis, xapis, releaseRuns,scopeKey]),
     selected = services.find((item) => item.id === selectedId),
     eligibleRuns = (binding?releaseRuns.filter(run=>sourceRunMatches(run,binding)):bindingDeclared?[]:releaseRuns).filter(
@@ -280,6 +284,18 @@ export function DataServicesWorkbench({
   const activeVersionRef=useRef(versionContext);activeVersionRef.current=versionContext;
   const planSourceCandidate=binding?{taskId:binding.taskId,packageDigest:binding.packageDigest,releaseId:binding.releaseId,sourceReleaseRunId:sourceRunId}:undefined;
   const boundPlanSource=boundPlannerAllowed&&validServicePlanSource(planSourceCandidate)&&eligibleRuns.some(run=>run.id===sourceRunId)?planSourceCandidate:undefined;
+  const privateContextSource=privateContextAllowed&&validServicePlanSource(planSourceCandidate)&&sourceRead.key===scopeKey&&sourceRead.state==='READY'&&eligibleRuns.some(run=>run.id===sourceRunId)?planSourceCandidate:undefined;
+  const privateContextKey=JSON.stringify([scopeKey,privateContextSource??null]),privateContextRef=useRef(privateContextKey);privateContextRef.current=privateContextKey;
+  const privateContextState=privateContextRead?.key===privateContextKey?privateContextRead:undefined;
+  async function inspectPrivateContext(){
+    if(!privateContextSource||privateContextState?.state==='LOADING')return;
+    const key=privateContextKey,source=privateContextSource;setPrivateContextRead({key,state:'LOADING'});
+    try{const value=await readPrivateServiceAgentContext(api,source);if(alive.current&&privateContextRef.current===key){
+      if(value.sourceKind!==binding?.sourceKind||binding?.sourceKind==='MANUAL'&&(value.releaseRuns[0].sourceRevisionId!==binding.revisionId||value.releaseRuns[0].sourceRunId!==binding.runId))throw Error('上下文来源类型或人工版本不一致，未采用该回执。');
+      history.replaceState(null,'',servicePlanLocation(location.href,{batchId:source.sourceReleaseRunId}));
+      setPrivateContextRead({key,state:'READY',value});}}
+    catch(cause){if(alive.current&&privateContextRef.current===key)setPrivateContextRead({key,state:'ERROR',error:(cause as Error).message});}
+  }
   const recoveryPlanSource=boundPlannerAllowed?servicePlanRecoverySource(binding,typeof window==='undefined'?undefined:window.location.href):undefined,readablePlanSource=boundPlanSource??recoveryPlanSource;
   const plannerKey=JSON.stringify([scopeKey,readablePlanSource??null]),activePlanner=useRef(plannerKey);activePlanner.current=plannerKey;
   const plannerCurrent=(key:string)=>alive.current&&activePlanner.current===key;
@@ -345,7 +361,7 @@ export function DataServicesWorkbench({
       setSourceRunId("");setSelectedId("");setSourceRead({key,state:"ERROR"});
       setError(boundEligible.length?"确切发布批次与当前最小消费计划冲突；未扩大来源。":"此确切发布尚无通过核验的可消费批次，或当前账号不可见。可重新读取；不会选其他发布或开发运行。");return;
     }
-    const marker=servicePlanMarker(location.href),requestedBatch=boundPlannerAllowed&&!marker.invalid?marker.batchId:undefined;
+    const marker=servicePlanMarker(location.href),requestedBatch=(boundPlannerAllowed||privateContextAllowed)&&!marker.invalid?marker.batchId:undefined;
     if(requestedBatch&&!boundEligible.some(run=>run.id===requestedBatch)){setSourceRunId('');setSourceRead({key,state:'ERROR'});setError('原规划指定批次当前不可用，保留原记录，不采用其他批次。');return;}
     if(scopePlan)setSourceRunId(scopePlan.sourceReleaseRunId);
     else if(binding)setSourceRunId(previous=>defaultBoundSourceRun(binding,nextRuns,[...nextDapis,...nextXapis],{currentRunId:previous||requestedBatch,selectedServiceId:activeServiceRef.current})??"");
@@ -359,7 +375,7 @@ export function DataServicesWorkbench({
   };
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;sourceRequest.current++;};},[]);
   useEffect(() => {
-    const marker=servicePlanMarker(location.href);setSelectedId("");setSourceRunId(scopePlan?.sourceReleaseRunId??(boundPlannerAllowed&&!marker.invalid?marker.batchId:undefined)??"");setHoldingsVersionId("");setCashVersionId("");setTestReceipt(undefined);setIssuedToken("");setTokenVisible(false);setVersionReview(undefined);setRecoveryReport(undefined);setOpenApi(undefined);
+    const marker=servicePlanMarker(location.href);setSelectedId("");setSourceRunId(scopePlan?.sourceReleaseRunId??((boundPlannerAllowed||privateContextAllowed)&&!marker.invalid?marker.batchId:undefined)??"");setHoldingsVersionId("");setCashVersionId("");setTestReceipt(undefined);setIssuedToken("");setTokenVisible(false);setVersionReview(undefined);setRecoveryReport(undefined);setOpenApi(undefined);
     void reload().catch(()=>{});
   }, [scopeKey]);
   useEffect(()=>{if(!consumptionScope)return;setScopeClock(Date.now());const timer=setInterval(()=>setScopeClock(Date.now()),1000);return()=>clearInterval(timer);},[scopeKey]);
@@ -695,6 +711,17 @@ export function DataServicesWorkbench({
           {error || notice}
         </div>
       )}
+      {privateContextAllowed&&<section className="service-agent-studio service-context-inspection" aria-label="私有Agent规划上下文">
+        <header><div className="service-agent-icon"><Bot size={20}/></div><div><span className="eyebrow">DATA AGENT · SOURCE CONTEXT</span><h3>规划前，先核对数据</h3><p>核对当前成功批次、字段口径及可组合的接口版本，再决定下一步开发。</p></div></header>
+        <div className="service-agent-source"><label>当前成功批次<select aria-label="规划上下文成功批次" value={sourceRunId} disabled={privateContextState?.state==='LOADING'||!!busy} onChange={event=>{setSourceRunId(event.target.value);history.replaceState(null,'',servicePlanLocation(location.href,{batchId:event.target.value}));}}>
+          {!sourceRunId&&<option value="">请选择已核验批次</option>}{eligibleRuns.map(run=><option key={run.id} value={run.id}>批次 {run.sequence??run.id.slice(0,8)} · {run.id.slice(0,8)}</option>)}
+        </select></label><button className="button" disabled={!privateContextSource||privateContextState?.state==='LOADING'||!!busy} onClick={()=>void inspectPrivateContext()}>{privateContextState?.state==='LOADING'?<LoaderCircle className="spin" size={16}/>:<ShieldCheck size={16}/>} {privateContextState?.state==='READY'?'重新核对上下文':'核对规划上下文'}</button></div>
+        {privateContextState?.state==='ERROR'&&<p role="alert" className="service-feedback error">{privateContextState.error} 当前选择保留，可重新核对；未采用其他批次。</p>}
+        {privateContextState?.value&&<><div className="service-context-columns"><div><span className="pill success">来源已核对 · {privateContextState.value.sourceKind==='MANUAL'?'工程师人工交付':'Agent交付'}</span><h4>{privateContextState.value.sourceContext.name}</h4><p>{privateContextState.value.sourceContext.definition}</p><dl>{Object.entries(privateContextState.value.sourceContext.metricLabels).map(([field,label])=><div key={field}><dt>{label}</dt><dd><code>{field}</code></dd></div>)}</dl></div><div><h4>可组合的 DAPI · {privateContextState.value.services.length}</h4><p>只列出当前批次已发布且可访问的固定版本。</p>{privateContextState.value.services.length?<ul>{privateContextState.value.services.map(service=><li key={service.id}><strong>{service.name}</strong><small>版本 {service.publishedVersion.id.slice(0,8)} · {service.publishedVersion.fields.map(field=>privateContextState.value!.sourceContext.metricLabels[field]).join('、')}</small></li>)}</ul>:<p>当前没有可组合的已发布 DAPI，可先完成 DAPI 开发、测试和发布。</p>}
+          {privateContextState.value.resourcesTruncated&&<p>仅展示前100个接口，不代表全部接口已纳入后续规划。</p>}{privateContextState.value.unavailableServiceCount>0&&<p>{privateContextState.value.unavailableServiceCount} 个同源接口未通过版本或结果快照核对，未纳入。</p>}</div></div>
+          <details><summary>查看来源标识</summary><p>发布 {privateContextState.value.sourceBinding.releaseId} · 批次 {privateContextState.value.sourceBinding.sourceReleaseRunId}</p></details></>}
+        <p className="service-context-boundary" role="status">云端自动规划尚未开放。核对上下文不会调用模型、创建方案或发布接口。</p>
+      </section>}
       {(!privateCloud && !consumptionScope && !bindingDeclared || boundPlannerAllowed) && <section className="service-agent-studio">
         <header>
           <div className="service-agent-icon">
