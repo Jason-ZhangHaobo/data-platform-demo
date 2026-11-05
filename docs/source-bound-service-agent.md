@@ -62,7 +62,7 @@ CLI 使用 `shuduo services plan-context --task-id UUID --package-digest SHA256 
 
 来源暂时失效时，创建者仍可读取自己的原方案元数据，返回 `sourceCheck:UNAVAILABLE`；它不是执行许可。界面只读展示原方案及口径，生成与应用关闭，正在运行的本人规划仍可取消。来源恢复后重新读取原来源与方案即可，无须再次调用模型。验证成功的读取返回 `sourceCheck:VERIFIED`，应用仍会再次核对当前固定版本。
 
-切换批次会切换对应记录，不显示旧批次方案充当新方案。恢复批次不可用时保留错误及原编号，不改选其他来源。原本机队列进程重启不自动重发；私有[持久协议](durable-service-agent.md)及[事件协议](service-agent-events.md)独立恢复同一记录，真实新进程及云验收仍待后续，不能将本机队列当成云后台。
+切换批次会切换对应记录，不显示旧批次方案充当新方案。恢复批次不可用时保留错误及原编号，不改选其他来源。原本机队列进程重启不自动重发；私有[持久协议](durable-service-agent.md)及[事件协议](service-agent-events.md)已有[本机新进程证据](service-agent-process-recovery.md)，真实云与模型仍分别验收，不能将本机队列当成云后台。
 
 ## CLI／MCP
 
