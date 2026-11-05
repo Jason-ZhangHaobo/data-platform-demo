@@ -21,6 +21,7 @@ import { createCloudPublication, validatePublicationSelector } from "./cloud-pub
 import { publicationSelectorFromUrl } from "./publication-request.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
 import { localTaskConsumption } from "./local-task-consumption.mjs";
+import { localServiceSources } from "./local-service-sources.mjs";
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
 import { privateServiceSourceSelection } from "./private-service-routes.mjs";
@@ -436,7 +437,18 @@ export function createV2Server(options = {}) {
     assertExecutionScope:(task,boundary)=>assertDevelopmentBackgroundScope(developmentAccess,task,store.get('auth_user',task?.submittedBy??'',PROJECT),PROJECT,boundary,developmentNow())}) : undefined;
   const exposeDurableTask = task => {
     const background=agentEventDriver&&task.executionMode===durableSqlAgentMode?agentEventDriver.status(task.id):undefined;
-    return {...publicDurableAgent(task),...(background&&background.status!=="INACTIVE"?{background}:{})};
+    const visible={...publicDurableAgent(task)};
+    // Older local SQL tasks retained the final run only inside attempts. Recover
+    // its display pointer from the verified existing relationship, never by
+    // choosing a newer run or modifying the stored task on a read.
+    if(local&&task.executionMode!==durableSqlAgentMode&&task.language!=="PYTHON"&&task.runId===undefined){
+      const attempt=task.attempts?.at(-1),revision=attempt?.revisionId?store.get("revision",attempt.revisionId,PROJECT):undefined,
+        run=attempt?.runId?store.get("run",attempt.runId,PROJECT):undefined;
+      if(run&&revision&&run.agentTaskId===task.id&&run.revisionId===revision.id&&task.revisionId===revision.id&&
+        run.revisionHash===revision.hash&&typeof revision.sql==="string"&&hash(revision.sql)===revision.hash&&task.sql===revision.sql)
+        visible.runId=run.id;
+    }
+    return {...visible,...(background&&background.status!=="INACTIVE"?{background}:{})};
   };
   const privateRuntimeBootId = randomUUID();
   const publicAgentIntent = ({ submittedBy, message, ...item }) => item;
@@ -1564,6 +1576,7 @@ export function createV2Server(options = {}) {
           },
           dataServices: {
             privateEnabled: privateDataServicesEnabled,
+            localSourcesEnabled: local,
             scope: privateDataServicesEnabled ? "PRIVATE_CLOUD_TEST" : "LOCAL_TEST_ONLY",
             serviceCount: dataServices.list().length,
             businessDriver: options.stateCoordinator
@@ -4023,6 +4036,17 @@ export function createV2Server(options = {}) {
             "这里只展示本机发布批次与告警证据，不能作为公网、生产或完整Agent E2E验收。",
         });
       }
+      if (path === "/api/v2/data-services/sources" && method === "GET") {
+        if (!local) throw fail(403, "本机发布来源只在本机开发环境可读");
+        const selection=privateServiceSourceSelection(url.searchParams);
+        if (!selection) throw fail(422, "发布来源选择不完整或不合法");
+        if (selection.taskId) {
+          const agent=store.get("agent",selection.taskId,PROJECT);
+          if (!agent) return json(res,200,[]);
+          requireDurableAgentOwner(agent,req);
+        }
+        return json(res,200,localServiceSources({store,project:PROJECT,selection}));
+      }
       if (path === "/api/v2/data-services/task-evidence" && method === "GET") {
         if (!local) throw fail(403, "本机消费证据仅在本机开发环境可读");
         const selected = privateServiceSourceSelection(url.searchParams,true);
@@ -4875,8 +4899,9 @@ export function createV2Server(options = {}) {
           assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
         }
         if (local && method === "GET" && !privatePublication[2]) {
-          if (url.search) throw fail(422, "本机任务发布视图不接受云端来源选择，请读取具体本机发布记录");
-          return json(res,200,localTaskPublication(store,PROJECT,agent));
+          const selector=url.search?validatePublicationSelector(publicationSelectorFromUrl(url),actorId):undefined;
+          if(selector&&selector.sourceKind!=="AGENT")throw fail(422,"本机精确任务发布只接受原生 Agent 来源，不能转用云端人工发布");
+          return json(res,200,localTaskPublication(store,PROJECT,agent,selector));
         }
         if(agent.executionMode!==durableSqlAgentMode)throw fail(422,"云端发布仅支持持久SQL Agent任务");
         if (!cloudPublication) throw fail(503,"云端发布执行器尚未配置");
@@ -5656,6 +5681,7 @@ export function createV2Server(options = {}) {
               store.update("agent", task.id, PROJECT, {
                 attempts,
                 revisionId: rev.id,
+                runId: run.id,
                 sql,
                 explanation: generated.explanation,
                 usedTokens,

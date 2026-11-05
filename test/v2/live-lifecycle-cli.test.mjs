@@ -32,6 +32,15 @@ async function savedFixture(t,{limit=3,legacy=false}={}){
  }};
  return {f,id,dir,path,state,calls,output,errors,options,read:()=>JSON.parse(readFileSync(path,'utf8'))};
 }
+function assertExactServicesLink(value,x){
+ const url=new URL(value.servicesUrl);
+ assert.equal(url.origin,x.state.origin);assert.equal(url.pathname,'/v2/');assert.equal(url.hash,'');
+ assert.deepEqual(Object.fromEntries(url.searchParams),{module:'services',source_task:x.f.task.id,source_package:x.f.bundle.digest,
+  source_release:x.f.release.id,source_kind:'AGENT',source_scope:'LOCAL_TEST_ONLY',source_revision:x.f.revision.id,source_run:x.f.run.id});
+ assert.equal(value.navigationOnly,true);assert.equal(value.sourceSelection,'EXACT_LOCAL_RELEASE');
+ assert.match(value.servicesNotice,/实际回读/);assert.match(value.servicesNotice,/链接本身不授权/);
+ assert.deepEqual(value.consumptionTarget,{taskId:x.f.task.id,packageDigest:x.f.bundle.digest,releaseId:x.f.release.id,batchIds:x.f.batches.map(batch=>batch.id)});
+}
 
 test('CLI plan defaults to v2 including consumption and has no network or filesystem side effects',async t=>{
  const root=mkdtempSync(join(tmpdir(),'shuduo-live-plan-synthetic-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
@@ -53,9 +62,7 @@ test('CLI refresh checks only existing consumption cases without authorization, 
  assert.equal(state.succeededCaseCount,0,'synthetic evidence never becomes genuine success');assert.equal(state.targetMet,false);
  const progress=x.output.find(row=>row.caseId===x.f.definition.id);
  assert.equal(progress.taskUrl,x.state.origin+'/v2/?module=agent-center&task='+x.f.task.id);
- assert.equal(progress.servicesUrl,x.state.origin+'/v2/?module=services&task='+x.f.task.id);assert.equal(progress.navigationOnly,true);
- assert.deepEqual(progress.consumptionTarget.batchIds,x.f.batches.map(batch=>batch.id));
- assert.match(progress.servicesNotice,/不是精确预选/);assert.equal(x.output.at(-1).waitingConsumptionCount,0);
+ assertExactServicesLink(progress,x);assert.equal(x.output.at(-1).waitingConsumptionCount,0);
  assert.deepEqual(readdirSync(x.dir),['checkpoint.json']);assert.equal(statSync(x.path).mode&0o777,0o600);
  const bytes=readFileSync(x.path,'utf8'),calls=x.calls.length;
  assert.equal(await runLiveLifecycleCli(['--refresh',x.id],{},x.options),0);assert.equal(x.calls.length,calls);assert.equal(readFileSync(x.path,'utf8'),bytes,'no waiting case means no checkpoint rewrite');
@@ -84,9 +91,48 @@ test('report reads current or legacy contract as recorded only; legacy resume ne
   assert.equal(await runLiveLifecycleCli(['--report',x.id],{},x.options),0);
   const output=x.output.at(-1);assert.equal(output.recorded,true);assert.equal(output.externalTruthReverified,false);
   assert.equal(output.contract.id,legacy?legacyLiveLifecycleContract.id:liveLifecycleContract.id);assert.equal(output.currentContractTargetMet,false);
-  if(legacy){assert.match(output.scopeNotice,/不含消费/);assert.equal(await runLiveLifecycleCli(['--resume',x.id],{},x.options),2);assert.equal(x.output.at(-1).resumeUnsupported,true);assert.equal(await runLiveLifecycleCli(['--refresh',x.id],{},x.options),2);}
+  if(legacy){assert.match(output.scopeNotice,/不含消费/);assert.equal(output.cases[0].servicesUrl,undefined);assert.equal(output.cases[0].taskUrl,x.state.origin+'/v2/?module=agent-center&task='+x.f.task.id);assert.equal(await runLiveLifecycleCli(['--resume',x.id],{},x.options),2);assert.equal(x.output.at(-1).resumeUnsupported,true);assert.equal(await runLiveLifecycleCli(['--refresh',x.id],{},x.options),2);}
+  else assertExactServicesLink(output.cases[0],x);
   assert.equal(x.calls.length,0);assert.equal(readFileSync(x.path,'utf8'),before);assert.equal(statSync(x.path).mtimeMs,mtime);assert.deepEqual(readdirSync(x.dir),['checkpoint.json']);
  }
+});
+
+test('recorded v2 report navigates to only its exact local source without requests, mutations or rewriting the checkpoint',async t=>{
+ const x=await savedFixture(t,{limit:1}),before=readFileSync(x.path,'utf8'),mutations=[...x.f.mutations],mtime=statSync(x.path).mtimeMs;
+ assert.equal(await runLiveLifecycleCli(['--report',x.id],{},x.options),0);
+ const row=x.output.at(-1).cases[0];assertExactServicesLink(row,x);
+ assert.equal(row.status,'AWAITING_CONSUMPTION');assert.equal(x.output.at(-1).externalTruthReverified,false);
+ assert.equal(x.calls.length,0);assert.deepEqual(x.f.mutations,mutations);assert.equal(readFileSync(x.path,'utf8'),before);
+ assert.equal(statSync(x.path).mtimeMs,mtime);assert.deepEqual(readdirSync(x.dir),['checkpoint.json']);
+});
+
+test('missing or contradictory saved sources never degrade to an unscoped service directory link',async t=>{
+ const x=await savedFixture(t,{limit:1}),original=structuredClone(x.state),mutations=[...x.f.mutations];
+ for(const change of [
+  s=>{delete s.consumptionSource;},s=>{delete s.consumptionSource.revisionId;},s=>{delete s.consumptionSource.developmentRunId;},
+  s=>{s.consumptionSource.scope='PRIVATE_CLOUD_TEST';},s=>{s.consumptionSource.sourceKind='MANUAL';},s=>{s.consumptionSource.sourceKind='UNKNOWN';},
+  s=>{s.consumptionSource.sourceAttribution='ENGINEER_ASSISTED';},s=>{s.consumptionSource.taskId=randomUUID();},s=>{s.consumptionSource.revisionId=randomUUID();},
+  s=>{s.consumptionSource.revisionHash='f'.repeat(64);},s=>{s.consumptionSource.developmentRunId=randomUUID();},s=>{s.consumptionSource.packageDigest='f'.repeat(64);},
+  s=>{s.consumptionSource.releaseId=randomUUID();},s=>{s.consumptionSource.batches[0].id=s.consumptionSource.developmentRunId;},
+  s=>{s.code.sourceKind='MANUAL';},s=>{s.code.sourceAttribution='ENGINEER_ASSISTED';},s=>{s.publication.releaseId=randomUUID();},
+  s=>{s.delivery.verificationId=randomUUID();},s=>{s.actions.agent.id=randomUUID();},s=>{s.actions.delivery.id=randomUUID();},
+  s=>{s.lifecycleOutcome.stages.postReleaseMonitoring.health='CRITICAL';},s=>{s.phase='CODE_AND_DEBUG';},
+  s=>{s.status='SUCCEEDED';s.phase='COMPLETE';},
+ ]){
+  const state=structuredClone(original);change(state.outcomes[0]);writeFileSync(x.path,JSON.stringify(state),{mode:0o600});
+  const before=readFileSync(x.path,'utf8');assert.equal(await runLiveLifecycleCli(['--report',x.id],{},x.options),0,x.errors.join('\n'));
+  const row=x.output.at(-1).cases[0];assert.equal(row.servicesUrl,undefined);assert.equal(row.consumptionTarget,undefined);assert.equal(row.sourceSelection,undefined);
+  assert.equal(row.taskUrl,x.state.origin+'/v2/?module=agent-center&task='+x.f.task.id);
+  assert.equal(readFileSync(x.path,'utf8'),before);assert.equal(x.calls.length,0);assert.deepEqual(x.f.mutations,mutations);
+ }
+});
+
+test('a legacy case with a leftover v2-shaped source still receives no exact service navigation',async t=>{
+ const x=await savedFixture(t,{limit:1}),legacy=structuredClone(x.state);legacy.contract=legacyLiveLifecycleContract;delete legacy.outcomes[0].contractId;
+ writeFileSync(x.path,JSON.stringify(legacy),{mode:0o600});const before=readFileSync(x.path,'utf8');
+ assert.equal(await runLiveLifecycleCli(['--report',x.id],{},x.options),0);
+ const row=x.output.at(-1).cases[0];assert.equal(row.servicesUrl,undefined);assert.equal(row.sourceSelection,undefined);
+ assert.equal(row.taskUrl,x.state.origin+'/v2/?module=agent-center&task='+x.f.task.id);assert.equal(x.calls.length,0);assert.equal(readFileSync(x.path,'utf8'),before);
 });
 
 test('refresh rejects scope drift, arbitrary paths, symlinks and an existing serial lock before any request',async t=>{

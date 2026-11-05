@@ -5,8 +5,8 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import ts from 'typescript';
 import {manualRunRecovery} from '../../web/src/manual-run-recovery.ts';
-import {validServiceSourceBinding,serviceSourceKey,serviceSourceFromLocation,serviceHandoffLocation,serviceReturnLocation,publicationSourceLocation,
-  serviceSourcesPath,serviceEvidencePath,serviceReadCurrent,sourceRunMatches,sourceRunEligible,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from '../../web/src/service-source-binding.ts';
+import {validServiceSourceBinding,serviceSourceKey,serviceSourceScope,sourceBindingEnvironmentMatches,serviceSourceFromLocation,serviceHandoffLocation,serviceReturnLocation,currentAgentTaskLocation,publicationSourceLocation,returnedPublicationMatches,localAgentPublicationPath,
+  serviceSourcesPath,serviceEvidencePath,serviceReadCurrent,sourceRunMatches,sourceRunEligible,agentReturnSourceMatches,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from '../../web/src/service-source-binding.ts';
 const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 const binding={taskId:id(1),packageDigest:'a'.repeat(64),releaseId:id(2),sourceKind:'MANUAL',revisionId:id(3),runId:id(4)};
 const run=(n=5,patch={})=>({id:id(n),releaseId:binding.releaseId,sourceAgentTaskId:binding.taskId,packageDigest:binding.packageDigest,sourceKind:'MANUAL',sourceAttribution:'ENGINEER_ASSISTED',agentIndependentE2E:false,
@@ -44,6 +44,60 @@ test('incomplete, duplicate, unknown and former manual deep links are invalid ra
   assert.equal(serviceSourceFromLocation(`https://example.invalid/v2/?module=agent-center&origin_task=${binding.taskId}`,true).status,'INVALID');
   assert.deepEqual(serviceSourceFromLocation('https://example.invalid/v2/?module=services'),{status:'ABSENT'});
   assert.equal(validServiceSourceBinding({...binding,runId:undefined}),false);assert.throws(()=>serviceHandoffLocation(url.href,{...binding,releaseId:undefined}));
+});
+
+test('explicit local source is native AGENT only and environment/scope matching never crosses local and private cloud',()=>{
+  const local={...binding,sourceKind:'AGENT',scope:'LOCAL_TEST_ONLY'};
+  assert.equal(validServiceSourceBinding(local),true);assert.equal(sourceBindingEnvironmentMatches(local,false,'LOCAL_DEVELOPMENT'),true);
+  assert.equal(sourceBindingEnvironmentMatches(local,false),false);assert.equal(sourceBindingEnvironmentMatches(local,true,'PUBLIC_INVITATION'),false);
+  for(const patch of [{sourceKind:'MANUAL'},{revisionId:undefined},{runId:undefined},{scope:'UNKNOWN'}])assert.equal(validServiceSourceBinding({...local,...patch}),false);
+  assert.equal(serviceSourceScope(binding),'PRIVATE_CLOUD_TEST');assert.equal(sourceBindingEnvironmentMatches(binding,true,'PUBLIC_INVITATION'),true);
+  assert.equal(sourceBindingEnvironmentMatches(binding,false,'LOCAL_DEVELOPMENT'),false);
+  const native=run(5,{scope:'LOCAL_TEST_ONLY',sourceKind:'AGENT'});assert.equal(sourceRunMatches(native,local),true);
+  assert.equal(sourceRunMatches({...native,scope:'PRIVATE_CLOUD_TEST'},local),false);assert.equal(sourceRunMatches({...native,scope:undefined},local),false);
+  assert.equal(sourceRunMatches(run(),{...binding,scope:'PRIVATE_CLOUD_TEST'}),false,'explicit cloud scope requires the matching response scope');
+  assert.equal(sourceRunMatches(run(5,{scope:'PRIVATE_CLOUD_TEST'}),binding),true,'legacy omitted scope remains private-compatible');
+  assert.equal(sourceRunMatches(run(5,{scope:'LOCAL_TEST_ONLY'}),binding),false);
+  assert.notEqual(serviceSourceKey(local),serviceSourceKey({...local,scope:'PRIVATE_CLOUD_TEST'}));
+  assert.equal(sourceBindingScopeCompatible(local,{taskId:local.taskId,plan:{taskId:local.taskId,packageDigest:local.packageDigest,sourceReleaseRunId:native.id}},[native]),false,'a local source cannot expand a cloud-only consumption window');
+});
+
+test('local handoff refresh and Agent return preserve the exact tuple without generating manual origin fields',()=>{
+  const local={...binding,sourceKind:'AGENT',scope:'LOCAL_TEST_ONLY'},services=serviceHandoffLocation('http://127.0.0.1:3100/v2/?module=agent-center',local);
+  assert.equal(services.searchParams.get('source_scope'),'LOCAL_TEST_ONLY');assert.deepEqual(serviceSourceFromLocation(services.href),{status:'VALID',binding:local});
+  const back=serviceReturnLocation(services.href,local);assert.equal(back.searchParams.get('task'),local.taskId);
+  assert.equal(back.searchParams.get('source_revision'),local.revisionId);assert.equal(back.searchParams.get('source_run'),local.runId);
+  assert.equal(back.searchParams.get('source_scope'),'LOCAL_TEST_ONLY');assert.equal(back.searchParams.has('origin_task'),false);assert.equal(back.searchParams.has('revision'),false);
+  assert.deepEqual(serviceSourceFromLocation(back.href),{status:'VALID',binding:local});
+  const current=currentAgentTaskLocation(back.href,local.taskId);assert.deepEqual([...current.searchParams.keys()],['module','task']);assert.equal(current.searchParams.get('task'),local.taskId);
+  assert.equal(serviceSourceFromLocation(services.href.replace('LOCAL_TEST_ONLY','MANUAL_LOCAL')).status,'INVALID');
+});
+
+test('native Agent return accepts only matching current code, immutable revision/run and verified release sources',()=>{
+  const local={...binding,sourceKind:'AGENT',scope:'LOCAL_TEST_ONLY'},hash='c'.repeat(64);
+  const task={id:local.taskId,contextId:'holdings-t1',sql:'SELECT original',revisionId:local.revisionId,runId:local.runId};
+  const actual={id:local.runId,agentTaskId:local.taskId,contextId:task.contextId,revisionId:local.revisionId,revisionHash:hash};
+  const revision={id:local.revisionId,contextId:task.contextId,sql:task.sql,hash,source:'LIVE_MODEL'},sources=[run(5,{scope:'LOCAL_TEST_ONLY',sourceKind:'AGENT'})];
+  assert.equal(agentReturnSourceMatches(local,task,actual,revision,sources),true);
+  assert.equal(agentReturnSourceMatches(local,{...task,revisionId:undefined,runId:undefined,attempts:[{revisionId:local.revisionId,runId:local.runId}]},actual,revision,sources),true,'legacy native tasks may expose the latest source through their attempt');
+  for(const changed of [{...task,sql:'SELECT latest'},{...task,runId:id(99)},{...task,revisionId:id(99)},{...task,id:id(99)}])assert.equal(agentReturnSourceMatches(local,changed,actual,revision,sources),false);
+  for(const changed of [{...actual,revisionHash:'d'.repeat(64)},{...actual,contextId:'other'},{...actual,agentTaskId:id(99)}])assert.equal(agentReturnSourceMatches(local,task,changed,revision,sources),false);
+  assert.equal(agentReturnSourceMatches(local,task,actual,{...revision,source:'MANUAL'},sources),false);
+  for(const changed of [[],[run(5,{sourceKind:'AGENT',scope:'PRIVATE_CLOUD_TEST'})],[{...sources[0],releaseId:id(99)}]])assert.equal(agentReturnSourceMatches(local,task,actual,revision,changed),false);
+  const ui=readFileSync('web/src/AgentDevelopmentWorkbench.tsx','utf8'),main=readFileSync('web/src/main.tsx','utf8');
+  assert.match(ui,/readOnly=requestedReadOnly\|\|sourceReturnActive/);assert.match(ui,/if\(!agentReturnSourceMatches/);assert.match(ui,/打开当前任务继续处理/);
+  assert.match(ui,/api<unknown>\(serviceSourcesPath\(expectedSourceBinding\)\)/);assert.match(main,/expectedSourceBinding=\{sourceBinding\?\.sourceKind==="AGENT"/);
+});
+
+test('returned local publication selects the frozen release and never pins the latest workflow verification',()=>{
+  const local={...binding,sourceKind:'AGENT',scope:'LOCAL_TEST_ONLY'},url=new URL(localAgentPublicationPath(local),'http://127.0.0.1');
+  assert.deepEqual(Object.fromEntries(url.searchParams),{sourceKind:'AGENT',sourceRunId:local.runId,packageDigest:local.packageDigest,releaseId:local.releaseId});
+  assert.equal(url.searchParams.has('verificationId'),false);
+  const release={id:local.releaseId,packageDigest:local.packageDigest,sourceRevisionId:local.revisionId,sourceRunId:local.runId,sourceAgentTaskId:local.taskId,sourceKind:'AGENT'};
+  assert.equal(returnedPublicationMatches(local,{release}),true);
+  for(const patch of [{id:id(99)},{sourceRevisionId:id(99)},{sourceRunId:id(99)},{packageDigest:'b'.repeat(64)}])assert.equal(returnedPublicationMatches(local,{release:{...release,...patch}}),false);
+  assert.equal(returnedPublicationMatches(local,{}),false);assert.throws(()=>localAgentPublicationPath(binding));
+  const panel=readFileSync('web/src/AgentDeliveryPanel.tsx','utf8');assert.match(panel,/localAgentPublicationPath\(expectedSourceBinding\)/);assert.match(panel,/!returnedPublicationMatches\(expectedSourceBinding,value\)/);
 });
 
 test('sources and consumption reads bind release_id and consumption only uses successful published release_run IDs',()=>{
@@ -143,4 +197,13 @@ test('actual bound workspace shows provenance and recovery, no write on render a
   assert.match(invalid,/来源不完整，不回退全项目/);assert.doesNotMatch(invalid,/返回原人工版本/);assert.equal(calls,0);
   const exportUrl=new URL(evidenceExportHref({kind:'consumption',id:binding.taskId,digest:binding.packageDigest,releaseId:binding.releaseId}),'https://example.invalid');assert.equal(exportUrl.searchParams.get('releaseId'),binding.releaseId);
   assert.equal(new URL(evidenceExportHref({kind:'consumption',id:binding.taskId,digest:binding.packageDigest}),'https://example.invalid').searchParams.has('releaseId'),false);
+});
+
+test('actual local bound workspace accepts only confirmed local environment and keeps writes closed before readback',()=>{
+  const local={...binding,sourceKind:'AGENT',scope:'LOCAL_TEST_ONLY'},props={api:async()=>assert.fail('render cannot fetch'),canWrite:true,sourceBinding:local,privateCloud:false,runtimeMode:'LOCAL_DEVELOPMENT'};
+  const html=renderToStaticMarkup(React.createElement(DataServicesWorkbench,props));
+  assert.match(html,/正在核对确切发布来源/);assert.doesNotMatch(html,/交接范围与当前运行环境不一致/);assert.match(html,/disabled=""[^>]*>新建 DAPI/);
+  for(const patch of [{runtimeMode:undefined},{runtimeMode:'PUBLIC_INVITATION',privateCloud:true}])assert.match(renderToStaticMarkup(React.createElement(DataServicesWorkbench,{...props,...patch})),/交接范围与当前运行环境不一致/);
+  const main=readFileSync('web/src/main.tsx','utf8');assert.match(main,/privateCloud=\{workbench.cloudServices\} runtimeMode=\{workbench.runtimeMode\}/);
+  assert.doesNotMatch(main,/if\(workbench.cloudServices\)\{const url=serviceHandoffLocation/);
 });

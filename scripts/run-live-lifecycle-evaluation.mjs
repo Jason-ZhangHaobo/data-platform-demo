@@ -3,7 +3,7 @@ import {mkdirSync,readFileSync,writeFileSync,renameSync,existsSync,openSync,clos
 import {randomUUID} from "node:crypto";
 import {dirname,join,resolve} from "node:path";
 import {fileURLToPath} from "node:url";
-import {advanceLiveLifecycleCase,refreshLiveLifecycleConsumption,liveLifecyclePlan,liveCaseCheckpoint,summarizeLiveLifecycle,liveLifecycleContract,legacyLiveLifecycleContract} from "../src/v2/live-lifecycle-evaluation.mjs";
+import {advanceLiveLifecycleCase,refreshLiveLifecycleConsumption,liveLifecyclePlan,liveCaseCheckpoint,summarizeLiveLifecycle,validatedLiveConsumptionSource,liveLifecycleContract,legacyLiveLifecycleContract} from "../src/v2/live-lifecycle-evaluation.mjs";
 import {m1EvaluationCases} from "../src/v2/evaluation.mjs";
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),".."),uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -36,15 +36,22 @@ function checkpointScope(state,runId,env){
  return {plan,origin,contractId};
 }
 function summaryOf(state,contractId){return summarizeLiveLifecycle(m1EvaluationCases(),state.outcomes,{contractId,testDouble:state.executionEvidenceMode==="TEST_HARNESS"});}
+function exactLocalNavigationSource(state){
+ const definition=m1EvaluationCases().find(item=>item.id===state.caseId),source=definition?validatedLiveConsumptionSource(definition,state):undefined;
+ if(!source||![source.taskId,source.revisionId,source.developmentRunId,source.packageId,source.verificationId,source.releaseId,...source.batches.map(batch=>batch.id)].every(value=>uuid.test(value)))return undefined;
+ return source;
+}
 function links(state,origin){
- const taskId=uuid.test(state.taskId??"")?state.taskId:undefined,source=state.consumptionSource;
+ const taskId=uuid.test(state.taskId??"")?state.taskId:undefined,source=exactLocalNavigationSource(state);
  const taskUrl=taskId?origin+"/v2/?module=agent-center&task="+taskId:undefined;
  let servicesUrl,consumptionTarget;
- if(taskId&&source?.taskId===taskId&&uuid.test(source.releaseId??"")&&/^[a-f0-9]{64}$/.test(source.packageDigest??"")){
-  servicesUrl=origin+"/v2/?module=services&task="+taskId;
-  consumptionTarget={taskId,packageDigest:source.packageDigest,releaseId:source.releaseId,batchIds:Array.isArray(source.batches)?source.batches.slice(0,2).map(batch=>batch.id).filter(id=>uuid.test(id??"")):[]};
+ if(taskId&&source?.taskId===taskId){
+  servicesUrl=origin+"/v2/?"+new URLSearchParams({module:"services",source_task:taskId,source_package:source.packageDigest,source_release:source.releaseId,
+   source_kind:"AGENT",source_scope:"LOCAL_TEST_ONLY",source_revision:source.revisionId,source_run:source.developmentRunId});
+  consumptionTarget={taskId,packageDigest:source.packageDigest,releaseId:source.releaseId,batchIds:source.batches.map(batch=>batch.id)};
  }
- return {taskUrl,servicesUrl,...(servicesUrl?{navigationOnly:true,servicesNotice:"本机接口目录，需核对原包、发布和成功批次后选择；不是精确预选，不自动创建或调用接口。",consumptionTarget}:{})};
+ return {taskUrl,servicesUrl,...(servicesUrl?{navigationOnly:true,sourceSelection:"EXACT_LOCAL_RELEASE",
+  servicesNotice:"导航定位同一原任务、人工审阅过的包及本机发布版本；页面须实际回读并核对同源后才可操作。链接本身不授权，不自动创建或调用接口。",consumptionTarget}:{})};
 }
 function report(state,origin,contractId){
  const summary=summaryOf(state,contractId);
