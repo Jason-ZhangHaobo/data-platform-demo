@@ -2,6 +2,7 @@
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
+import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 
 const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
 
@@ -33,9 +34,10 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm
   shuduo agent resume-background --id TASK_ID --version CURRENT_VERSION --confirm [--confirm-model-retry]
   shuduo agent stop-background --id TASK_ID --confirm
-  shuduo agent publication --id AGENT_TASK_ID
-  shuduo agent publish --id AGENT_TASK_ID --file REVIEW_JSON
-  shuduo agent stop-publication --id AGENT_TASK_ID
+  shuduo agent publication --id AGENT_TASK_ID [--source-kind AGENT|MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
+  shuduo agent publish --id AGENT_TASK_ID --file REVIEW_JSON [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --request-id ORIGINAL_REQUEST_ID]
+  shuduo agent stop-publication --id AGENT_TASK_ID [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
+    人工来源必须指定运行、包摘要和演练；停止还须指定发布编号。四项审阅来自 REVIEW_JSON，不自动批准或重试；发布重试沿用 --request-id。
   shuduo agent cancel-delivery --id DELIVERY_TASK_ID
   shuduo python revisions
   shuduo python create --context holdings-t1 --file transform.py
@@ -189,6 +191,26 @@ const jsonObject = (value, name) => {
     throw new Error(`${name}必须是JSON对象`);
   return parsed;
 };
+const publicationCliFields={source_kind:"sourceKind",source_run_id:"sourceRunId",package_digest:"packageDigest",verification_id:"verificationId",release_id:"releaseId"};
+function publicationCliOptions(argv,options,action){
+  const allowed=new Set(["id","base_url","help",...Object.keys(publicationCliFields),...(action==="publish"?["file","request_id"]:[])]),seen=new Set();
+  for(const token of argv.filter(value=>value.startsWith("--"))){
+    const key=token.slice(2).replaceAll("-","_");
+    if(!allowed.has(key)||seen.has(key))throw Error("发布命令包含未知或重复参数；不能指定执行者或覆盖审阅范围");
+    seen.add(key);
+  }
+  const selected={};for(const [flag,key]of Object.entries(publicationCliFields))if(Object.hasOwn(options,flag))selected[key]=options[flag];
+  return selected;
+}
+function reviewedPublication(input){
+  if(!input||typeof input!=="object"||Array.isArray(input))throw Error("发布审阅必须为JSON对象");
+  const {attestations,...selector}=input;
+  const required=["code","assertions","deliveryFiles","cloudScope"];
+  if(!attestations||typeof attestations!=="object"||Array.isArray(attestations)||Object.keys(attestations).length!==required.length||!required.every(key=>attestations[key]===true))throw Error("必须逐项确认代码、断言、交付文件和云端测试范围，不自动代批");
+  const selected=publicationSelectorInput(selector);
+  if(!selected.packageDigest||!selected.verificationId||selected.releaseId)throw Error("发布必须绑定包摘要和演练，不能提供已有发布编号");
+  return {...selected,attestations:Object.fromEntries(required.map(key=>[key,true]))};
+}
 const typePath = (value) => {
   if (!['dapi', 'xapi'].includes(value)) throw new Error("--type必须是dapi或xapi");
   return value + "s";
@@ -383,12 +405,23 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     }
     else if (resource === "agent" && action === "workflow")
       result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
-    else if (resource === "agent" && action === "publication")
-      result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/publication`);
-    else if (resource === "agent" && action === "publish")
-      result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/publication`,{method:"POST",body:JSON.parse(readFileSync(required(parsed.options,"file"),"utf8"))});
-    else if (resource === "agent" && action === "stop-publication")
-      result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/publication/cancel`,{method:"POST",body:{}});
+    else if (resource === "agent" && ["publication","publish","stop-publication"].includes(action)) {
+      const flags=publicationCliOptions(argv,parsed.options,action),taskId=required(parsed.options,"id");
+      if(action==="publication")result=await client.request(publicationReadPath(taskId,publicationSelectorInput(flags)));
+      else if(action==="stop-publication"){
+        const selector=publicationSelectorInput(flags);
+        if(Object.keys(selector).length&&!selector.releaseId)throw Error("停止指定版本必须提供 --release-id，不选择其他历史发布");
+        result=await client.request(publicationReadPath(taskId)+"/cancel",{method:"POST",body:selector});
+      }else{
+        const reviewed=jsonObject(readFileSync(required(parsed.options,"file"),"utf8"),"发布审阅");
+        for(const[key,value]of Object.entries(flags)){
+          if(Object.hasOwn(reviewed,key)&&reviewed[key]!==value)throw Error("命令参数与审阅文件不一致，不能覆盖已审阅版本");
+        }
+        const body=reviewedPublication({...reviewed,...flags}),requestId=parsed.options.request_id;
+        if(requestId!==undefined&&(typeof requestId!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(requestId)))throw Error("原发布请求编号不合法");
+        result=await client.request(publicationReadPath(taskId),{method:"POST",body,...(requestId===undefined?{}:{idempotencyKey:requestId})});
+      }
+    }
     else if (resource === "agent" && action === "deliveries") {
       const sourceId = parsed.options.source_id;
       result = await client.request(

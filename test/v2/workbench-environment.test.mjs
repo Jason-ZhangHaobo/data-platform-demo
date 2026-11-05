@@ -46,15 +46,17 @@ test('real app keeps local delivery separate and routes verified manual cloud so
  assert.match(agent,/runtimeMode === "LOCAL_DEVELOPMENT" && !privatePreview/);
  assert.match(agent,/!localManualDelivery \? originTaskId && run\?\.id \? <AgentDeliveryPanel/);
  assert.match(agent,/manual api=\{api\} taskId=\{originTaskId\}/);
- assert.match(agent,/canWrite=\{canWrite&&!manualUnconfirmed&&!pendingSaveKey\} canPublish=\{false\}/);
+ assert.match(agent,/canWrite=\{canWrite&&!manualUnconfirmed&&!pendingSaveKey\} canPublish=\{canPublish\} publicationTarget=\{publicationTarget\}/);
  assert.match(agent,/!task && !dirty && mayReuseManualRevision/);
  assert.match(agent,/originAgentTaskId:origin/);
  assert.match(agent,/打开本机人工交付流程/);
  assert.match(panel,/manual \? `\/runs\/\$\{runId\}\/prepare-delivery`/);
- assert.match(panel,/if \(manual\) \{ setPublicationRead\("READY"\)/);
- assert.match(panel,/const refreshPublication = \(\) => \{ if \(manual\) return;/);
- assert.match(panel,/\{!manual && <div className="agent-delivery-actions"><button[\s\S]*?刷新发布与监控/);
- assert.match(panel,/!manual && \(canPublish \?\? canWrite\)/);
+ assert.match(panel,/publicationSelector\(\{taskId,manual,runId,revisionId,contextId\}/);
+ assert.match(panel,/if\(!key\)\{setPublicationReadKey\(""\);setPublicationRead\("READY"\);return;\}/);
+ assert.match(panel,/selector\?publicationReadPath\(taskId,selector,pinned\)/);
+ assert.match(panel,/publicationWriteAllowed\(\{manual,canPublish,canWrite,cloud/);
+ assert.match(panel,/!publicationKey \|\| working \|\| publicationRead === "LOADING"/);
+ assert.match(panel,/\{\.\.\.selector,releaseId:selectedReleaseId\}/);
 });
 
 const compile = (name) => {

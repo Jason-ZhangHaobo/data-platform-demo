@@ -17,7 +17,8 @@ import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelop
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
 import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
-import { createCloudPublication } from "./cloud-publication.mjs";
+import { createCloudPublication, validatePublicationSelector } from "./cloud-publication.mjs";
+import { publicationSelectorFromUrl } from "./publication-request.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
 import { localTaskConsumption } from "./local-task-consumption.mjs";
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
@@ -4825,7 +4826,8 @@ export function createV2Server(options = {}) {
           verification: verification ? {id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion,
             mainSqlExecuted: verification.mainSqlExecuted, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation),
             durationMs: verification.durationMs, error: verification.error, finishedAt: verification.finishedAt} : undefined,
-          publication: {available: false, scope: "PRIVATE_CLOUD_TEST", reason: "人工版本的云发布尚未开放。交付文件与演练结果已保留，后续需要针对当前包建立独立审阅与发布流程。"}});
+          publication: {available: Boolean(privatePublicationConfig && cloudPublication), scope: "PRIVATE_CLOUD_TEST", sourceKind: "MANUAL", sourceRunId: source.run.id,
+            agentIndependentE2E: false, reason: privatePublicationConfig && cloudPublication ? "审阅此人工版本的确切包与成功演练后，可创建两个受控云端测试批次；工程师归因保留，原 Agent 失败与费用记录不变。" : "人工交付文件与演练结果已保留；云端调度驱动尚未配置，发布需在确切包的有效权限范围内进行。"}});
       }
       const developmentWorkflow = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/workflow$/);
       if (developmentWorkflow && method === "GET") {
@@ -4855,23 +4857,31 @@ export function createV2Server(options = {}) {
       const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel))?$/);
       if (privatePublication) {
         const agent = get("agent", privatePublication[1]); requireDurableAgentOwner(agent,req);
-        if (method === "POST") assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
-        if (local && method === "GET" && !privatePublication[2]) return json(res,200,localTaskPublication(store,PROJECT,agent));
+        const actorId = auth.sessionFromHeaders(req.headers)?.user.id;
+        if (method === "POST") {
+          if (url.search) throw fail(422, "发布写入仅接受正文中的确切来源，不接受查询参数");
+          assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
+        }
+        if (local && method === "GET" && !privatePublication[2]) {
+          if (url.search) throw fail(422, "本机任务发布视图不接受云端来源选择，请读取具体本机发布记录");
+          return json(res,200,localTaskPublication(store,PROJECT,agent));
+        }
         if(agent.executionMode!==durableSqlAgentMode)throw fail(422,"云端发布仅支持持久SQL Agent任务");
         if (!cloudPublication) throw fail(503,"云端发布执行器尚未配置");
-        if (method==="GET" && !privatePublication[2]) return json(res,200,await cloudPublication.detail(agent.id));
+        if (method==="GET" && !privatePublication[2]) {
+          const selector = validatePublicationSelector(publicationSelectorFromUrl(url), actorId);
+          return json(res,200,await cloudPublication.detail(agent.id, selector));
+        }
         if (method==="POST" && privatePublication[2]==="cancel") {
-          await readBody(req);
-          if (publicationAccess) {
-            const { release } = await cloudPublication.detail(agent.id);
-            assertPublicationTarget(publicationAccess, { agentId: agent.id, packageDigest: release?.packageDigest, verificationId: release?.verificationId }, options.now?.() ?? Date.now());
-          }
-          return json(res,200,await cloudPublication.cancel(agent.id));
+          const selector = validatePublicationSelector(await readBody(req), actorId);
+          return json(res,200,await cloudPublication.cancel(agent.id, selector));
         }
         if (method==="POST" && !privatePublication[2]) {
           const body=await readBody(req);
-          if(Object.keys(body).some(k=>!["packageDigest","verificationId","attestations"].includes(k)))throw fail(422,"发布请求包含未支持字段");
-          return json(res,202,await cloudPublication.publish({agent,packageDigest:text(body.packageDigest,64,64),verificationId:text(body.verificationId,1,80),attestations:body.attestations,actorId:auth.sessionFromHeaders(req.headers)?.user.id,idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
+          if(Object.keys(body).some(k=>!["sourceKind","sourceRunId","packageDigest","verificationId","attestations"].includes(k)))throw fail(422,"发布请求包含未支持字段");
+          const selector = validatePublicationSelector({packageDigest:text(body.packageDigest,64,64),verificationId:text(body.verificationId,1,100),
+            ...(Object.hasOwn(body,"sourceKind")?{sourceKind:body.sourceKind}:{}),...(Object.hasOwn(body,"sourceRunId")?{sourceRunId:body.sourceRunId}:{})},actorId);
+          return json(res,202,await cloudPublication.publish({agent,...selector,attestations:body.attestations,idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
         }
       }
       if (path === "/api/v2/agent/deliveries" && method === "GET") {

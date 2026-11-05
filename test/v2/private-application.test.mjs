@@ -8,6 +8,56 @@ import { getContext, validationContractId } from "../../src/v2/context.mjs";
 import { saveManualRevision } from "../../src/v2/manual-revisions.mjs";
 import { createFcIngress } from "../../src/v2/fc-ingress.mjs";
 import { validatePrivateApplicationRequest, callPrivateApplication, privateApplicationTimeoutMs } from "../../src/v2/private-application.mjs";
+import {publicationReadPath} from "../../src/v2/publication-request.mjs";
+
+const publicationTaskId="00000000-0000-4000-8000-000000000001",manualSourceRunId="00000000-0000-4000-8000-000000000002";
+const exactManualSelector={sourceKind:"MANUAL",sourceRunId:manualSourceRunId,packageDigest:"a".repeat(64),verificationId:"00000000-0000-4000-8000-000000000003",releaseId:"00000000-0000-4000-8000-000000000004"};
+const exactPublicationPath="/api/v2"+publicationReadPath(publicationTaskId,exactManualSelector),manualWorkflowPath=`/api/v2/runs/${manualSourceRunId}/workflow`;
+
+test("private exact publication and manual workflow reads require opt-in and preserve ordinary authorization",async()=>{
+  for(const path of [exactPublicationPath,manualWorkflowPath,`/api/v2/agent/tasks/${publicationTaskId}/publication`]){
+    const input={operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path,headers:{cookie:"shuduo_session=synthetic-owner"}};
+    assert.throws(()=>validatePrivateApplicationRequest(input),{code:"PRIVATE_APPLICATION_REQUEST_INVALID"});
+    for(const options of [{allowDurableAgentRead:true},{allowDurableAgent:true}]){
+      assert.equal(validatePrivateApplicationRequest(input,options).path,path);
+      let forwards=0;
+      const result=await callPrivateApplication(input,"http://127.0.0.1:3100",async(url,request)=>{
+        forwards++;assert.equal(url,"http://127.0.0.1:3100"+path);assert.equal(request.method,"GET");
+        assert.equal(request.body,undefined);assert.equal(request.headers.cookie,"shuduo_session=synthetic-owner");
+        assert.equal(request.headers["x-actor-id"],undefined);assert.equal(request.redirect,"error");
+        return new Response(JSON.stringify({code:"SOURCE_OWNER_DENIED"}),{status:403});
+      },options);
+      assert.equal(result.status,403);assert.equal(result.body.code,"SOURCE_OWNER_DENIED");assert.equal(forwards,1);
+    }
+    for(const headers of [{"x-actor-id":"another"},{authorization:"Bearer synthetic"}])assert.throws(()=>validatePrivateApplicationRequest({...input,headers},{allowDurableAgentRead:true}),{code:"PRIVATE_APPLICATION_HEADERS_INVALID"});
+  }
+});
+
+test("private read-only Agent permission cannot POST a workflow, publication or execution even with exact selectors",async()=>{
+  const paths=[exactPublicationPath,manualWorkflowPath,`/api/v2/runs/${manualSourceRunId}/prepare-delivery`,
+    `/api/v2/agent/tasks/${publicationTaskId}/publication`,`/api/v2/agent/tasks/${publicationTaskId}/publication/cancel`,
+    `/api/v2/agent/tasks/${publicationTaskId}/advance`];
+  let forwards=0;
+  for(const path of paths){
+    const input={operation:"PRIVATE_APPLICATION_HTTP_V1",method:"POST",path,body:{...exactManualSelector}};
+    await assert.rejects(callPrivateApplication(input,"http://127.0.0.1:3100",async()=>{forwards++;return new Response('{}');},{allowDurableAgentRead:true}),{code:"PRIVATE_APPLICATION_REQUEST_INVALID"});
+  }
+  assert.equal(forwards,0);
+  assert.equal(validatePrivateApplicationRequest({operation:"PRIVATE_APPLICATION_HTTP_V1",method:"POST",path:`/api/v2/runs/${manualSourceRunId}/prepare-delivery`,body:{}},{allowDurableAgent:true}).method,"POST","explicit existing full Agent scope remains separate from read-only scope");
+});
+
+test("private publication/manual read allowlists reject duplicate selectors, unknown query and path injection",()=>{
+  const rejected=[exactPublicationPath+"&sourceKind=MANUAL",exactPublicationPath+"&source%4bind=MANUAL",exactPublicationPath+"&actorId=other",
+    exactPublicationPath+"&unknown=1",exactPublicationPath+"&releaseId=other",exactPublicationPath+"#fragment",
+    exactPublicationPath.replace("sourceKind=MANUAL","sourceKind=MANUAL%0A"),exactPublicationPath.replace("/agent/","/agent/../agent/"),
+    exactPublicationPath.replace("/agent/","/agent\\"),exactPublicationPath.replace("/agent/","/agent/%2e%2e/agent/"),
+    exactPublicationPath+"&verificationId="+"a".repeat(701),"https://external.invalid"+exactPublicationPath,
+    manualWorkflowPath+"?sourceKind=MANUAL",manualWorkflowPath+"/extra",manualWorkflowPath.replace("/runs/","/runs/../runs/"),
+    `/api/v2/agent/tasks/${publicationTaskId}/publication?sourceKind=MANUAL&sourceRunId=${manualSourceRunId}`];
+  for(const path of rejected)for(const options of [{allowDurableAgentRead:true},{allowDurableAgent:true}])
+    assert.throws(()=>validatePrivateApplicationRequest({operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path},options),{code:"PRIVATE_APPLICATION_REQUEST_INVALID"},path);
+  assert.throws(()=>validatePrivateApplicationRequest({operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:exactPublicationPath,body:{}},{allowDurableAgentRead:true}),{code:"PRIVATE_APPLICATION_REQUEST_INVALID"});
+});
 
 test("private save recovery allows only exact read paths and preserves header boundaries",()=>{
   const input={operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:"/api/v2/revisions/requests/fixture-save-1",headers:{cookie:"synthetic-session"}};
