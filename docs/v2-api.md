@@ -74,6 +74,16 @@
 
 新任务评测 v2 在同源监控通过后保留 `AWAITING_CONSUMPTION`，通过上述只读投影继续核验；旧 v1 只覆盖到监控，不能迁移或改名计作 v2。`--refresh` 更新原本机检查点，但远端仅 GET 原任务/包/发布的 `task-evidence`，不检查或启动模型、Spark及后续案例；`--report` 不改检查点。具体命令、版本和失败恢复见 [新任务评测说明](live-lifecycle-evaluation.md)。
 
+### 本机原生 SQL Agent 的精确交接
+
+本机开发环境同样提供 `GET /data-services/sources`，使用上表相同选择参数。只列出当前项目中可核验的原生 SQL Agent 来源：当前代码/运行、不可变包、文件演练、独立审阅和批准、本机健康发布、成功调度批次及监控必须关联一致。无匹配或证据不足返回空列表，不选其他任务、包或发布；非法、重复或不完整参数拒绝。旧不带绑定的经典服务目录仍沿用既有行为。
+
+响应明确 `scope:LOCAL_TEST_ONLY`、`sourceKind:AGENT`、`publicDeployed:false`，只返回来源编号、包摘要、执行状态、行数等白名单；开发运行编号与发布批次编号分开。合法包复用可以没有反向交付指针，必须保留成功交付与演练的正向关系；回滚恢复须核验当前恢复窗口的两批及其事件，历史成功批次仍可供固定服务版本引用，不能借旧成功补当前缺失。
+
+工作台链接使用 `source_scope=LOCAL_TEST_ONLY` 及原 `source_task/source_package/source_release/source_kind/source_revision/source_run`。私有云显式使用 `PRIVATE_CLOUD_TEST`，旧省略scope的私有云链接兼容；未知范围、跨环境或本机人工来源不自动转换。本机按钮还须由 `/status.dataServices.localSourcesEnabled` 与实际本机范围共同确认，不能仅因浏览器是本机地址而宣称能力已接通。
+
+返程保留原生 Agent 与精确来源，重新读取任务、代码、开发运行及同源发布后只读展示；来源变化不展示最新代码冒充原版本。可明确打开不带来源锁定的当前任务页面继续处理，导航本身不执行模型、Spark或接口调用。本机 `GET /agent/tasks/:id/publication` 支持原生 `AGENT` 的精确包、源运行及发布编号；有选择时无匹配不回退，多匹配拒绝，旧无query读取兼容。旧本机任务缺少顶层runId时，只从已核对的最后尝试及代码关系投影原编号，不修改历史记录。
+
 人工服务的实际调用按当前已发布根版本和 XAPI 固定子版本校验应用创建者与原工程师归属；旧的非所有者应用不能借接口版本更新继承人工数据。管理读取还核对所暴露的历史版本及调用，接口切回 Agent 不能解除人工历史保护。自己的应用元数据与撤销能力保留，不能因此读取人工服务内容。旧纯 Agent 的管理员策略兼容；无关候选版本不改变实际调用的固定来源。
 
 CLI 对应 `services sources --agent-task-id ID --package-digest SHA256 --release-id ID` 和 `services task-evidence --task-id ID --package-digest SHA256 [--release-id ID]`。MCP 的 `data_service_sources`、`data_service_task_evidence` 对应 `agentTaskId/packageDigest/releaseId`，只发 GET；不接受执行者覆盖，不在选择不全时退回宽范围。临时预览的消费证据下载可带 `releaseId`，转发为同一 `release_id` 并核对返回报告的发布编号。

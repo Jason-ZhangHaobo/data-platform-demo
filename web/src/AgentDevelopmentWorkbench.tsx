@@ -12,6 +12,7 @@ import {AgentModelRecovery} from "./AgentModelRecovery";
 import {ValidationDetails,ValidationResultScope} from "./ValidationDetails";
 import type {ValidationDetailsReport} from "./validation-details";
 import type {ServiceSourceBinding} from "./service-source-binding";
+import {validServiceSourceBinding,sourceBindingEnvironmentMatches,agentReturnSourceMatches,serviceSourcesPath,currentAgentTaskLocation} from "./service-source-binding";
 import {agentResumeDecision,modelRecoveryNeedsAction,pauseModelRecovery,submitAgentResume} from "./agent-model-recovery";
 import type { PublicationTarget } from "./AuthDialog";
 import type {ValidationFamily} from "./validation-family";
@@ -20,17 +21,20 @@ const SqlEditor = lazy(() => import("./SqlEditor"));
 const ManualDeliveryWorkbench = lazy(async () => ({default:(await import("./DeliveryWorkbench")).DeliveryWorkbench}));
 type Context = { id: string; name: string; definition: string; validationFamily?:ValidationFamily; tables: { name: string; columns: [string, string][] }[] };
 type Task = { id: string; version: number; status: string; stage?: string; executionMode?: string; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
-type Run = { id: string; status: string; contextId?:string; createdAt?: string; validationContractId?: string; validationDetails?:ValidationDetailsReport; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
+type Run = { id: string; status: string; agentTaskId?:string; contextId?:string; createdAt?: string; validationContractId?: string; validationDetails?:ValidationDetailsReport; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
-type SavedRevision = {id:string;sql:string;contextId:string;source?:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
+type SavedRevision = {id:string;sql:string;hash?:string;contextId:string;source?:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
 const terminal = (s?: string) => Boolean(s && ["SUCCEEDED", "FAILED", "CANCELLED", "VALIDATION_FAILED","INTERRUPTED"].includes(s));
 const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", MODEL_NOT_SENT:"模型请求未发送，等待修复后重试", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "执行中断，记录保留", VALIDATION_FAILED: "业务断言未通过", NO_SQL_CHANGE:"模型未修改代码（未重复执行）" };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
-export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, readOnly=false, taskOnly=false, targetTaskId, onLogin, onDirtyChange, onOpenServices }: {
+export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, readOnly:requestedReadOnly=false, taskOnly=false, targetTaskId, expectedSourceBinding,expectedSourceError,onLogin, onDirtyChange, onOpenServices }: {
   api: Api; contexts: Context[]; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; ready: boolean; readinessReason?:string; loading: boolean; privatePreview: boolean; runtimeMode?: "LOCAL_DEVELOPMENT" | "PUBLIC_INVITATION"; backgroundAvailable?:boolean; readOnly?:boolean; taskOnly?:boolean; targetTaskId?:string; onLogin: () => void; onDirtyChange: (dirty: boolean) => void; onOpenServices?: (source:ServiceSourceBinding) => void;
+  expectedSourceBinding?:ServiceSourceBinding;expectedSourceError?:string;
 }) {
+  const sourceReturnActive=Boolean(expectedSourceBinding||expectedSourceError),readOnly=requestedReadOnly||sourceReturnActive;
+  const [returnSourceError,setReturnSourceError]=useState("");
   const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState("holdings-t1");
   const [message, setMessage] = useState(""), [draft, setDraft] = useState(""), [baseline, setBaseline] = useState("");
   const [run, setRun] = useState<Run>(), [tab, setTab] = useState("结果"), [diff, setDiff] = useState(false);
@@ -85,6 +89,15 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   }
   async function loadHistoryOnce() {
     setHistoryError("");setHistoryState("loading");
+    if(sourceReturnActive){
+      if(expectedSourceError||!expectedSourceBinding||!validServiceSourceBinding(expectedSourceBinding)||expectedSourceBinding.sourceKind!=="AGENT"||
+        !sourceBindingEnvironmentMatches(expectedSourceBinding,runtimeMode==="PUBLIC_INVITATION",runtimeMode)){
+        setReturnSourceError(expectedSourceError??"返程来源或运行环境未确认，未采用当前任务的其他版本。");setHistoryState("deferred");return;
+      }
+      const linkedId=initialAgentTaskId(location.href);
+      if(linkedId&&linkedId!==expectedSourceBinding.taskId){setReturnSourceError("返程任务编号与发布来源不一致，未采用其他任务。");setHistoryState("deferred");return;}
+      await selectTask(expectedSourceBinding.taskId,false);if(alive.current)setHistoryState("deferred");return;
+    }
     if(agentSubmissionRequest(location.href)){await recoverAgentSubmission();if(alive.current)setHistoryState("deferred");return;}
     const saveKey=manualSaveRequest(location.href);
     if (saveKey) { setPendingSaveKey(saveKey); await recoverSavedRevision(saveKey); if(alive.current)setHistoryState("deferred"); return; }
@@ -160,6 +173,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     history.replaceState(null, "", url);
   };
   async function selectTask(id: string, protectDraft = true) {
+    if(sourceReturnActive&&(expectedSourceError||!expectedSourceBinding||id!==expectedSourceBinding.taskId)){setReturnSourceError("此页只定位原发布来源；未切换到其他任务或最新代码。");return;}
     if (manualUnconfirmed || pendingSaveKey || pendingAgentKey) { setNotice("请先确认原提交、保存或运行请求，再切换任务；不会丢弃未确认请求。"); return; }
     const keepDraft = selectedId.current === id && dirty;
     if (protectDraft && dirty && !keepDraft && !confirm("当前代码有未保存修改，是否放弃修改并切换任务？")) return;
@@ -168,13 +182,21 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     try {
       const current = await api<Task>(`/agent/tasks/${id}`);
       if (!alive.current || selectedId.current !== id || epoch.current !== selectionEpoch) return;
+      if(expectedSourceBinding){
+        if(!expectedSourceBinding.revisionId||!expectedSourceBinding.runId)throw Error("返程链接缺少原代码版本或运行编号，未采用最新版本。");
+        const [saved,actual,sources]=await Promise.all([api<SavedRevision>(`/revisions/${expectedSourceBinding.revisionId}`),api<Run>(`/runs/${expectedSourceBinding.runId}`),api<unknown>(serviceSourcesPath(expectedSourceBinding))]);
+        if(!alive.current||selectedId.current!==id||epoch.current!==selectionEpoch)return;
+        if(!agentReturnSourceMatches(expectedSourceBinding,current,actual,saved,sources))throw Error("原任务的代码、运行或发布来源已变化，无法恢复此冻结版本；未展示最新版本冒充原证据。");
+        accept(current);setContextId(current.contextId);setDraft(saved.sql);setBaseline(saved.sql);setBaselineRevisionId(saved.id);setDiff(false);setRun(actual);setReturnSourceError("");
+        setNotice("已核对原生 Agent、代码、运行和确切发布来源；当前返程只读，不创建人工版本或启动计算。");return;
+      }
       accept(current); setContextId(current.contextId);
       if (!keepDraft) { setDraft(current.sql ?? ""); setBaseline(current.sql ?? ""); setBaselineRevisionId(current.revisionId); setDiff(false); }
       const actual = current.runId ? await api<Run>(`/runs/${current.runId}`) : undefined;
       if (!alive.current || selectedId.current !== id || epoch.current !== selectionEpoch) return;
       setRun(actual);
       setNotice(keepDraft ? "服务端状态已刷新，未保存的编辑已保留；运行结果仍对应原代码版本。" : "已恢复服务端任务；读取历史不会重新调用模型。点击继续才会推进。");
-    } catch (e) { if (alive.current && epoch.current === selectionEpoch) setError((e as Error).message); } finally { if (alive.current && epoch.current === selectionEpoch) setBusy(false); }
+    } catch (e) { if (alive.current && epoch.current === selectionEpoch){if(sourceReturnActive){setReturnSourceError((e as Error).message);setTask(undefined);setRun(undefined);setDraft("");setBaseline("");setBaselineRevisionId(undefined);}else setError((e as Error).message);} } finally { if (alive.current && epoch.current === selectionEpoch) setBusy(false); }
   }
   function newTask() {
     if (readOnly || !originalCanWrite || publicationTarget || taskOnly) return;
@@ -357,6 +379,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   const resultFields = run?.rows?.[0] ? Object.keys(run.rows[0]) : [];
   return <section className="agent-dev" aria-label="Agent 数据开发工作台">
     <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>{scopedLabels?context?.validationFamily?.name:"客户资产 T+1"} · 需求、代码与真实执行，在一个工作台完成。</p></div><div className="agent-dev-header-actions">{task && <a className="button" href="#agent-delivery">核验与交付</a>}<button className="button" disabled={taskOnly||!canWrite||working||Boolean(pendingAgentKey)} onClick={newTask}><Plus size={15} />新建任务</button></div></header>
+    {sourceReturnActive&&<div className="agent-dev-notice" role={returnSourceError||expectedSourceError?"alert":"status"}><div><strong>精确发布返程 · 原生 Agent 只读定位</strong><p>{returnSourceError||expectedSourceError||(task?"原任务、代码、运行和确切发布来源已核对，当前只读展示冻结来源。":"正在核对原任务、代码版本、运行与确切发布来源；未核对前不展示其他版本。")}</p><small>离开版本定位可查看当前任务；打开链接不会自动调用模型或计算。</small>{expectedSourceBinding&&validServiceSourceBinding(expectedSourceBinding)&&<a className="button" href={currentAgentTaskLocation(typeof location==="undefined"?"http://localhost/v2/":location.href,expectedSourceBinding.taskId).href}>打开当前任务继续处理</a>}</div></div>}
     <div className="agent-dev-boundary"><span className="agent-dev-dot" />{publicationTarget ? "受邀发布试点 · 开发只读" : readOnly ? "只读验收" : privatePreview ? "私有试用" : runtimeMode === "PUBLIC_INVITATION" ? "受邀云端验证" : runtimeMode === "LOCAL_DEVELOPMENT" ? "本机开发验证" : "环境待确认"} · 仅虚构证券数据与 Spark SQL。{publicationTarget ? "本页仅查看原代码与核验记录；只有指定交付包可以在下方审阅后进入两个冻结样例批次，不新建任务或修改代码。" : readOnly ? "仅查看历史任务与已保存结果；本页不会推进任务或提交计算。" : taskOnly ? "先查看指定任务并审阅原检查点，再明确选择继续或恢复后台；打开页面与刷新不会启动计算。" : backgroundAvailable?"可委托云端事件后台；浏览器只展示进度，不负责触发计算。每个委托有时限、事件与模型预算，发布仍须人工审阅。":"本页打开时自动推进；离开后检查点保留，已提交计算可继续，返回后可恢复。不是永久云调度。"}</div>
     {taskOnly&&<div className="agent-dev-alert" role="status"><div><strong>仅续接指定任务</strong><p>保留原任务编号、业务口径、尝试次数与费用预留。不新建或派生任务，其他历史只读；人工编辑单独标记，不计为 Agent 自主完成。查看任务不会启动计算。</p></div>{targetTaskId&&<button className="button" disabled={working||Boolean(pendingAgentKey)} onClick={()=>void selectTask(targetTaskId)}>查看指定任务</button>}</div>}
     {loading ? <div className="agent-dev-notice" role="status"><LoaderCircle size={14} className="spin" />正在连接服务并读取项目上下文…</div> : !ready && !publicationTarget && <div className="agent-dev-alert">{readinessReason??"模型或执行环境尚未就绪；历史任务仍可查询。"}</div>}
@@ -418,7 +441,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
         </>}</div>
       </section>
     </div>
-    {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} contextId={task.contextId} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} canPublish={canPublish} publicationTarget={publicationTarget} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />}
+    {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} contextId={task.contextId} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} canPublish={canPublish&&!sourceReturnActive} publicationTarget={publicationTarget} expectedSourceBinding={expectedSourceBinding} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />}
     {!task && baselineRevisionId && <section className="agent-delivery-panel" aria-label="人工接管与交付"><h3>人工接管记录</h3><p>当前代码由工程师保存；原 Agent 的失败和验证结论不改写，也不计作 Agent 自主完成。</p><small>代码版本：{baselineRevisionId}{run ? ` · 运行批次：${run.id}` : " · 运行尚未确认"}</small>
       {originTaskId && <button className="button" disabled={working || manualUnconfirmed || Boolean(message.trim())} onClick={() => void selectTask(originTaskId)}>返回原 Agent 任务</button>}
       {!localManualDelivery ? originTaskId && run?.id ? <AgentDeliveryPanel key={`manual-${baselineRevisionId}-${run.id}`} manual api={api} taskId={originTaskId} contextId={contextId} revisionId={baselineRevisionId} runId={run.id} dirty={dirty} canWrite={canWrite&&!manualUnconfirmed&&!pendingSaveKey} canPublish={canPublish} publicationTarget={publicationTarget} codeBusy={working||runPending} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())} /> : <p>先保存并运行关联原任务的人工版本；真实 Spark 与独立核验通过后，可继续准备云端交付。</p> : <><button className="button" disabled={working || dirty || manualUnconfirmed || Boolean(message.trim()) || run?.status !== "SUCCEEDED" || run.revisionId !== baselineRevisionId || !run.validationContractId} onClick={() => setManualDeliveryOpen(true)}>打开本机人工交付流程</button><small>在本页继续生成包、文件演练和审阅；服务端仍核验实际执行与来源。不是自动批准或云端上线。</small>

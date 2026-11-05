@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {existsSync,readFileSync} from 'node:fs';
 import ts from 'typescript';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {workbenchEnvironment,mayWriteServices} from '../../web/src/workbench-environment.ts';
 
 const cloud={mode:'PUBLIC_INVITATION',dataServices:{privateEnabled:true,scope:'PRIVATE_CLOUD_TEST'}};
+const scopedLocal={mode:'LOCAL_DEVELOPMENT',dataServices:{localSourcesEnabled:true,scope:'LOCAL_TEST_ONLY'}};
 test('invited cloud service handoff is selected by server capability without preview metadata',()=>{
  const state=workbenchEnvironment(cloud);
  assert.equal(state.servicesAvailable,true);assert.equal(state.cloudServices,true);assert.equal(state.agentServiceHandoffAvailable,true);
@@ -24,9 +25,28 @@ test('temporary preview restrictions cannot invent backend capabilities or chang
  assert.equal(workbenchEnvironment(undefined,preview).servicesAvailable,false);
  assert.equal(workbenchEnvironment({mode:'LOCAL_DEVELOPMENT'},preview).localManualDeliveryAvailable,false);
  const local=workbenchEnvironment({mode:'LOCAL_DEVELOPMENT'});assert.equal(local.servicesAvailable,true);assert.equal(local.cloudServices,false);assert.equal(local.localManualDeliveryAvailable,true);
- // Local classic service selection remains unchanged; cloud task-scoped
- // handoff must not claim that an unfiltered local release list is scoped.
+ // Old local backends still offer their classic directory, but must not
+ // imply that exact task/package/release lookup exists without its flag.
  assert.equal(local.agentServiceHandoffAvailable,false);
+});
+test('exact local service handoff needs explicit capability, matching scope and a local backend outside preview',()=>{
+ const local=workbenchEnvironment(scopedLocal);
+ assert.equal(local.servicesAvailable,true);assert.equal(local.agentServiceHandoffAvailable,true);
+ assert.equal(local.cloudServices,false);assert.equal(local.runtimeMode,'LOCAL_DEVELOPMENT');
+ for(const status of [
+  {mode:'LOCAL_DEVELOPMENT'},
+  {...scopedLocal,dataServices:{scope:'LOCAL_TEST_ONLY'}},
+  {...scopedLocal,dataServices:{localSourcesEnabled:false,scope:'LOCAL_TEST_ONLY'}},
+  {...scopedLocal,dataServices:{localSourcesEnabled:'true',scope:'LOCAL_TEST_ONLY'}},
+  {...scopedLocal,dataServices:{localSourcesEnabled:true,scope:'PRIVATE_CLOUD_TEST'}},
+  {...scopedLocal,dataServices:{localSourcesEnabled:true}},
+  {...scopedLocal,mode:'UNKNOWN'},
+  {...scopedLocal,mode:'PUBLIC_INVITATION'},
+ ])assert.equal(workbenchEnvironment(status).agentServiceHandoffAvailable,false);
+ for(const privateServicesPreview of [false,true]){
+  const state=workbenchEnvironment(scopedLocal,{privatePreview:true,privateServicesPreview});
+  assert.equal(state.agentServiceHandoffAvailable,false);assert.equal(state.servicesAvailable,false);
+ }
 });
 test('service write affordance uses SERVICES permission, not the parent Agent permission',()=>{
  assert.equal(mayWriteServices(cloud,{authenticated:true,permissions:['AGENT']}),false);
@@ -59,16 +79,37 @@ test('real app keeps local delivery separate and routes verified manual cloud so
  assert.match(panel,/\{\.\.\.selector,releaseId:selectedReleaseId\}/);
 });
 
-const compile = (name) => {
- let source=ts.transpileModule(readFileSync(`web/src/${name}.tsx`,'utf8'),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const compile = (name, initialWorkflow) => {
+ let input=readFileSync(`web/src/${name}.tsx`,'utf8');
+ // Supply only the already-read workflow state; SSR never runs effects or API calls.
+ if(initialWorkflow&&name==='AgentDeliveryPanel')input=input.replace('useState<Workflow>()',`useState<Workflow>(${JSON.stringify(initialWorkflow)})`);
+ let source=ts.transpileModule(input,{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
  for(const pkg of ['react','react/jsx-runtime','lucide-react'])source=source.replaceAll(`from "${pkg}"`,`from ${JSON.stringify(import.meta.resolve(pkg))}`);
- source=source.replaceAll('from "./service-composition"',`from ${JSON.stringify(new URL('../../web/src/service-composition.ts',import.meta.url).href)}`);
- source=source.replaceAll('from "./service-consumption-scope"',`from ${JSON.stringify(new URL('../../web/src/service-consumption-scope.ts',import.meta.url).href)}`);
- source=source.replaceAll('from "./service-source-binding"',`from ${JSON.stringify(new URL('../../web/src/service-source-binding.ts',import.meta.url).href)}`);
- if(name==='DataServicesWorkbench')source=source.replaceAll('from "./EvidenceDownload"',`from ${JSON.stringify(compile('EvidenceDownload'))}`);
+ source=source.replace(/from "\.\/([^".]+)"/g,(_match,dependency)=>`from ${JSON.stringify(existsSync(`web/src/${dependency}.tsx`)?compile(dependency):new URL(`../../web/src/${dependency}.ts`,import.meta.url).href)}`);
+ source=source.replace(/import "\.\/[^"\n]+\.css";/g,'');
  return`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 };
 const {DataServicesWorkbench}=await import(compile('DataServicesWorkbench'));
+const {AgentDeliveryPanel}=await import(compile('AgentDeliveryPanel',{
+ report:{taskId:'synthetic-task',revisionId:'synthetic-revision',runId:'synthetic-run',status:'NEEDS_ATTENTION',summary:'合成历史核验',checks:[],rowCount:0,notice:'仅用于入口渲染回归'},
+ publication:{available:false,scope:'LOCAL_TEST_RELEASE',reason:'未准备完整发布证据'},
+}));
+test('actual delivery panel exposes local handoff only with the capability and keeps unconfirmed-source action disabled',()=>{
+ let calls=0;
+ const render=(status,preview)=>{
+  const environment=workbenchEnvironment(status,preview);
+  return renderToStaticMarkup(React.createElement(AgentDeliveryPanel,{api:()=>{calls++;throw Error('render must not request or mutate');},taskId:'synthetic-task',revisionId:'synthetic-revision',runId:'synthetic-run',dirty:false,canWrite:false,codeBusy:false,
+   onOpenServices:environment.agentServiceHandoffAvailable?()=>{calls++;}:undefined}));
+ };
+ const available=render(scopedLocal);
+ assert.match(available,/<button[^>]*disabled=""[^>]*>继续此任务的接口交付<\/button>/);
+ assert.doesNotMatch(available,/当前环境尚未开放服务接管/);
+ assert.match(available,/请先核对当前包的确切发布记录/);
+ for(const html of [render({mode:'LOCAL_DEVELOPMENT'}),render({...scopedLocal,mode:'UNKNOWN'}),render(scopedLocal,{privatePreview:true,privateServicesPreview:true})]){
+  assert.match(html,/当前环境尚未开放服务接管/);assert.doesNotMatch(html,/继续此任务的接口交付/);
+ }
+ assert.equal(calls,0,'capability and render never create services, credentials or invocations');
+});
 test('actual cloud service view labels invited access honestly and does not perform work on render',()=>{
  const render=extra=>renderToStaticMarkup(React.createElement(DataServicesWorkbench,{api:()=>{throw Error('render must not create, fetch or execute');},canWrite:false,privateCloud:true,...extra}));
  const invited=render({cloudAccess:'invited'}),preview=render({cloudAccess:'private-preview'});

@@ -122,7 +122,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       const rows=[];for(const r of store.list("release_run",project)){try {const run=source(r.id);sourceOwner(a,run);const release=get("release",run.releaseId);
         if(taskId&&release.sourceAgentTaskId!==taskId||packageDigest&&run.packageDigest!==packageDigest||releaseId&&run.releaseId!==releaseId)continue;
         const sourceInfo=get("delivery_package",run.packageId).manifest.source;
-        rows.push({id:run.id,releaseId:run.releaseId,sourceAgentTaskId:release.sourceAgentTaskId,sourceKind:release.sourceKind??"AGENT",
+        rows.push({id:run.id,releaseId:run.releaseId,sourceAgentTaskId:release.sourceAgentTaskId,sourceKind:release.sourceKind??"AGENT",scope:"PRIVATE_CLOUD_TEST",
           sourceRevisionId:sourceInfo.revisionId,sourceRunId:sourceInfo.runId,
           ...(release.sourceKind==="MANUAL"?{sourceAttribution:"ENGINEER_ASSISTED"}:{}),agentIndependentE2E:false,
           status:run.status,published:run.published,schedulerTriggered:run.schedulerTriggered,engine:run.engine,engineVersion:run.engineVersion,mainSqlExecuted:run.mainSqlExecuted,testSqlValidation:{passed:true},validation:{passed:true},packageDigest:run.packageDigest,sequence:run.sequence,createdAt:run.createdAt,rowCount:run.rows.length});}catch(e){if(![403,409,422].includes(e.status))throw e;}}

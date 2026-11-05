@@ -27,6 +27,7 @@ test('monitor checkpoint advances only after actual local service query evidence
   ['delivery_verification',f.verification],['delivery_review',f.review],['release_approval',f.approval],['release',f.release]])seed(kind,value);
  const rows=getContext(f.definition.contextId).expected;
  const batches=f.batches.map(batch=>seed('release_run',{...batch,published:true,publicDeployed:false,rows}));
+ for(const event of f.events)seed('monitor_event',event);
  const manager=new DataServiceManager({store,businessStore,project:PROJECT,releaseRunFor:id=>store.get('release_run',id,PROJECT)});
  let computations=0;
  const app=createV2Server({root,store,businessStore,env:{V2_LOCAL_DEVELOPMENT:'true'},runner:async()=>{computations++;throw Error('SYNTHETIC_API_MUST_NOT_COMPUTE');},generator:async()=>{computations++;throw Error('SYNTHETIC_API_MUST_NOT_GENERATE');}});

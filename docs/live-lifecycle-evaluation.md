@@ -39,7 +39,9 @@
 
 恢复时默认取原报告的回环入口和案例数；若另行设置 `V2_LIVE_EVALUATION_ORIGIN` 或 `V2_LIVE_EVALUATION_CASE_LIMIT`，必须与原记录一致。所有入口仍拒绝云 origin、非回环地址、任意路径和符号链接检查点；命令只接受原 UUID，不接受文件路径。
 
-输出包含 core 返回的阶段、统计及 `waitingConsumptionCount`（对应 `awaitingConsumptionCaseCount`），消费阶段暂停另外保留 `pausedCaseCount`。`taskUrl` 精确指向已存在的原任务；`servicesUrl` 只是固定的**本机接口目录导航**，标记 `navigationOnly:true`，不承诺精确预选、不触发写入。另输出 `consumptionTarget` 的原包、发布和成功批次编号，供工程师进入后核对。当前不新增 GUI 评测页面；原任务已有的消费证据区用于查看同源记录。
+输出包含 core 返回的阶段、统计及 `waitingConsumptionCount`（对应 `awaitingConsumptionCaseCount`），消费阶段暂停另外保留 `pausedCaseCount`。`taskUrl` 指向已存在的原任务。只有 v2 检查点中任务、代码版本/摘要、开发运行、包、演练、发布及两个成功批次与已通过的监控证据一致时，才生成精确本机 `servicesUrl`：携带 `source_task`、`source_package`、`source_release`、`source_kind=AGENT`、`source_scope=LOCAL_TEST_ONLY`、`source_revision` 和 `source_run`。输出标记 `navigationOnly:true`、`sourceSelection:EXACT_LOCAL_RELEASE`；`consumptionTarget` 保留原包、发布和成功批次编号。
+
+深链只定位来源，不赋予权限、不自动创建或调用接口。页面必须实际回读原任务、包、发布与成功批次并核对一致后，才能在既有权限内操作；返回代码沿原版本和开发运行恢复。缺失或矛盾来源不生成服务入口，也不退回全项目目录猜选。旧 v1 没有此来源时只提供原任务链接，不能伪造 v2 预选。当前不新增 GUI 评测页面；原任务已有的消费证据区用于查看同源记录。
 
 `--report` 的统计只从已记录内容按相应契约核对，不重新核验服务、账单、实际模型或计算真实性。旧 v1 输出明确不含消费，`currentContractTargetMet` 不会因旧 v1 达标而变为 true。报告读取不会把历史记录升级为新证据。
 

@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 import {liveLifecyclePlan,liveCaseCheckpoint} from "../../../src/v2/live-lifecycle-evaluation.mjs";
 import {m1EvaluationCases} from "../../../src/v2/evaluation.mjs";
 import {createDeliveryPackage,sha256} from "../../../src/v2/delivery.mjs";
-import {contextIds,referenceSql,validationContractId} from "../../../src/v2/context.mjs";
+import {contextIds,getContext,referenceSql,validationContractId} from "../../../src/v2/context.mjs";
 import {PROJECT} from "../../../src/v2/server.mjs";
 
 // Public synthetic API receipts; no model, Spark, network or credentials.
@@ -11,19 +11,32 @@ export function createLiveLifecycleFixture(options={}){
  const time=seconds=>new Date(Date.UTC(2026,8,15,0,0,seconds)).toISOString();
  const checkpoint=liveCaseCheckpoint(definition,time(0),plan.caseSetDigest);
  const revision={id:randomUUID(),projectId:PROJECT,source:'LIVE_MODEL',sql:referenceSql,hash:sha256(referenceSql),contextId:definition.contextId};
- const run={id:randomUUID(),projectId:PROJECT,agentTaskId:'unused',revisionId:revision.id,revisionHash:revision.hash,status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,validation:{contractId:validationContractId,passed:true,regressions:contextIds.map(contextId=>({contextId,passed:true}))}};
+ const run={id:randomUUID(),projectId:PROJECT,agentTaskId:'unused',revisionId:revision.id,revisionHash:revision.hash,
+  contextId:definition.contextId,validationContractId,isolation:'LOCAL_PROCESS',rows:structuredClone(getContext(definition.contextId).expected),
+  status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,validation:{contractId:validationContractId,passed:true,regressions:contextIds.map(contextId=>({contextId,passed:true}))}};
  const task={id:randomUUID(),message:definition.request,contextId:definition.contextId,status:'SUCCEEDED',mode:'LIVE_MODEL',createdAt:time(1),usedTokens:100,attempts:[{status:'SUCCEEDED',model:'qwen3.7-plus',revisionId:revision.id,runId:run.id}]};run.agentTaskId=task.id;
- const bundle={...createDeliveryPackage({run,revision,name:'虚构证券评测'}),id:randomUUID()};
- const verification={id:randomUUID(),status:'SUCCEEDED',engine:'Apache Spark',mainSqlExecuted:true,testSqlValidation:{passed:true},validation:run.validation};
- const delivery={id:randomUUID(),status:'SUCCEEDED',sourceAgentTaskId:task.id,sourceRevisionId:revision.id,sourceRunId:run.id,packageId:bundle.id,packageDigest:bundle.digest,verificationId:verification.id};
- const review={id:randomUUID(),status:'REVIEWED',packageId:bundle.id,packageDigest:bundle.digest,verificationId:verification.id,scope:'LOCAL_TEST_RELEASE',attestations:{code:true,assertions:true,deliveryFiles:true,localScope:true}};
- const approval={id:randomUUID(),status:'APPROVED',packageId:bundle.id,packageDigest:bundle.digest,reviewId:review.id};
- const release={id:randomUUID(),status:'ACTIVE_LOCAL',health:'HEALTHY',successfulRunCount:2,packageId:bundle.id,packageDigest:bundle.digest,sourceRevisionId:revision.id,approvalId:approval.id,activatedAt:time(10)};
+ const deliveryId=randomUUID(),bundle={...createDeliveryPackage({run,revision,name:'虚构证券评测'}),id:randomUUID(),sourceRunId:run.id,agentDeliveryTaskId:deliveryId};
  const {contractId,...rawValidation}=run.validation;
- const batches=[0,1].map(index=>({...run,id:randomUUID(),releaseId:release.id,packageId:bundle.id,packageDigest:bundle.digest,source:bundle.manifest.source,
-  fileHashes:Object.fromEntries(Object.entries(bundle.manifest.files).map(([name,value])=>[name,value.sha256])),validation:rawValidation,
-  schedulerTriggered:true,clockMode:'WALL_CLOCK_TIMER',testSqlValidation:{passed:true,sqlHash:sha256(bundle.files['tests.sql'])},scheduledTriggerAt:time(11+index*2),startedAt:time(11+index*2),finishedAt:time(12+index*2)}));
- const events=batches.map(batch=>({id:randomUUID(),releaseId:release.id,releaseRunId:batch.id,packageDigest:bundle.digest,type:'BATCH_SUCCEEDED',observedAt:batch.finishedAt}));
+ const executedFiles={status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,packageDigest:bundle.digest,
+  source:bundle.manifest.source,fileHashes:Object.fromEntries(Object.entries(bundle.manifest.files).map(([name,value])=>[name,value.sha256])),
+  validation:rawValidation,testSqlValidation:{passed:true,sqlHash:sha256(bundle.files['tests.sql'])},rows:structuredClone(run.rows)};
+ const verification={...executedFiles,id:randomUUID(),packageId:bundle.id,agentDeliveryTaskId:deliveryId,
+  scope:'M2A_LOCAL_FILE_REHEARSAL',mode:'LOCAL_FILE_REHEARSAL',published:false};
+ const delivery={id:deliveryId,mode:'VERIFIED_ARTIFACT_ORCHESTRATION',status:'SUCCEEDED',actualExecution:true,sourceSqlHash:revision.hash,
+  sourceAgentTaskId:task.id,sourceRevisionId:revision.id,sourceRunId:run.id,packageId:bundle.id,packageDigest:bundle.digest,verificationId:verification.id};
+ const review={id:randomUUID(),status:'REVIEWED',packageId:bundle.id,packageDigest:bundle.digest,verificationId:verification.id,scope:'LOCAL_TEST_RELEASE',publicDeploymentApproved:false,
+  attestations:{code:true,assertions:true,deliveryFiles:true,localScope:true}};
+ const approval={id:randomUUID(),status:'APPROVED',scope:'LOCAL_TEST_RELEASE',publicDeploymentApproved:false,packageId:bundle.id,packageDigest:bundle.digest,
+  reviewId:review.id,rehearsalId:verification.id,sourceRevisionId:revision.id,sourceCodeHash:revision.hash,sourceSqlHash:revision.hash};
+ const release={id:randomUUID(),status:'ACTIVE_LOCAL',health:'HEALTHY',successfulRunCount:2,failedRunCount:0,openAlertCount:0,
+  environment:'local-rehearsal',adapter:'local-spark-v1',publicDeployed:false,scheduleSpec:{triggerAfterSeconds:1,intervalSeconds:2,runCount:2},
+  packageId:bundle.id,packageDigest:bundle.digest,sourceRevisionId:revision.id,sourceCodeHash:revision.hash,sourceSqlHash:revision.hash,approvalId:approval.id,activatedAt:time(10)};
+ approval.consumedByReleaseId=release.id;
+ const batches=[0,1].map(index=>({...executedFiles,id:randomUUID(),releaseId:release.id,packageId:bundle.id,
+  mode:'LOCAL_SCHEDULED_RELEASE',sequence:index+1,published:true,publicDeployed:false,schedulerTriggered:true,clockMode:'WALL_CLOCK_TIMER',
+  scheduledTriggerAt:time(11+index*2),triggeredAt:time(11+index*2),startedAt:time(11+index*2),finishedAt:time(12+index*2)}));
+ const events=batches.map(batch=>({id:randomUUID(),releaseId:release.id,releaseRunId:batch.id,packageDigest:bundle.digest,type:'BATCH_SUCCEEDED',
+  status:'SUCCEEDED',schedulerTriggered:true,observedAt:batch.finishedAt}));
  const holdingsServiceId=randomUUID(),cashServiceId=randomUUID(),xapiId=randomUUID(),xapiVersionId=randomUUID();
  const consumption={protocol:'shuduo-local-task-consumption/v1',scope:'LOCAL_TEST_ONLY',taskId:task.id,packageDigest:bundle.digest,releaseId:release.id,
   sourceKind:'AGENT',status:'VERIFIED',checkedAt:time(21),matchingCount:1,truncated:false,externalSystemVerified:false,agentIndependentE2E:false,publicDeployed:false,

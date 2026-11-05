@@ -1,6 +1,6 @@
 type Status = {
   mode?: string;
-  dataServices?: { privateEnabled?: boolean; scope?: string };
+  dataServices?: { privateEnabled?: boolean; localSourcesEnabled?: boolean; scope?: string };
 };
 type Session = { authenticated?: boolean; permissions?: string[] };
 
@@ -11,11 +11,13 @@ export function workbenchEnvironment(status?: Status, preview = { privatePreview
   const cloud = status?.mode === "PUBLIC_INVITATION";
   const cloudServices = cloud && status?.dataServices?.privateEnabled === true
     && status.dataServices.scope === "PRIVATE_CLOUD_TEST";
+  const localSources = local && status?.dataServices?.localSourcesEnabled === true
+    && status.dataServices.scope === "LOCAL_TEST_ONLY";
   const servicesAvailable = (local || cloudServices) && (!preview.privatePreview || preview.privateServicesPreview);
   return {
     runtimeMode: local ? "LOCAL_DEVELOPMENT" as const : cloud ? "PUBLIC_INVITATION" as const : undefined,
     servicesAvailable,
-    agentServiceHandoffAvailable: servicesAvailable && cloudServices,
+    agentServiceHandoffAvailable: servicesAvailable && (cloudServices || localSources),
     cloudServices,
     cloudAccess: preview.privatePreview ? "private-preview" as const : "invited" as const,
     localManualDeliveryAvailable: local,

@@ -3,7 +3,7 @@ import { EvidenceDownload, requestTextDownload } from "./EvidenceDownload";
 import { compositionChoices } from "./service-composition";
 import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
 import type { ConsumptionScope } from "./service-consumption-scope";
-import {validServiceSourceBinding,serviceSourceKey,serviceSourcesPath,serviceReturnLocation,serviceReadCurrent,sourceRunMatches,sourceRunEligible,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from "./service-source-binding";
+import {validServiceSourceBinding,serviceSourceKey,sourceBindingEnvironmentMatches,serviceSourcesPath,serviceReturnLocation,serviceReadCurrent,sourceRunMatches,sourceRunEligible,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
 import {
   Activity,
@@ -44,6 +44,7 @@ type ReleaseRun = {
   sourceAgentTaskId?: string;
   packageDigest?: string;
   sourceKind?:string;sourceAttribution?:string;agentIndependentE2E?:boolean;
+  scope?:string;
   sourceRevisionId?:string;sourceRunId?:string;
 };
 type ServiceVersion = {
@@ -179,6 +180,7 @@ export function DataServicesWorkbench({
   consumptionScope,
   sourceBinding,
   sourceBindingError,
+  runtimeMode,
 }: {
   api: Api;
   canWrite: boolean;
@@ -188,10 +190,11 @@ export function DataServicesWorkbench({
   consumptionScope?: ConsumptionScope;
   sourceBinding?:ServiceSourceBinding;
   sourceBindingError?:string;
+  runtimeMode?:"LOCAL_DEVELOPMENT"|"PUBLIC_INVITATION";
 }) {
   const scopePlan=consumptionPlanAvailable(consumptionScope)?consumptionScope.plan:undefined;
   const bindingDeclared=sourceBinding!==undefined||Boolean(sourceBindingError),binding=validServiceSourceBinding(sourceBinding)?sourceBinding:undefined;
-  const bindingError=sourceBindingError||(bindingDeclared&&!binding?"接口交接来源不完整；不会退回全项目数据。":binding&&!privateCloud?"当前环境不能核对云端发布来源；保留只读，不回退本机结果。":binding&&!sourceBindingScopeCompatible(binding,consumptionScope)?"交接来源与当前最小消费计划冲突；不扩大计划或切换到其他包。":"");
+  const bindingError=sourceBindingError||(bindingDeclared&&!binding?"接口交接来源不完整；不会退回全项目数据。":binding&&!sourceBindingEnvironmentMatches(binding,privateCloud,runtimeMode)?"交接范围与当前运行环境不一致；保留只读，不切换本机／云端来源。":binding&&!sourceBindingScopeCompatible(binding,consumptionScope)?"交接来源与当前最小消费计划冲突；不扩大计划或切换到其他包。":"");
   const scopeKey=JSON.stringify([consumptionScope??null,sourceAgentTaskId??null,serviceSourceKey(binding),bindingError]);
   const sourceContext=useRef(scopeKey);sourceContext.current=scopeKey;
   const sourceRequest=useRef(0),alive=useRef(true);

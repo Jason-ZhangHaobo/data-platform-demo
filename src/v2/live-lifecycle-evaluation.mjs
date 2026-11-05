@@ -192,6 +192,17 @@ export function verifyLiveCaseEvidence(definition,state,{contractId=liveLifecycl
  return validLifecycleConsumptionSource(source)&&JSON.stringify(source)===JSON.stringify(state.consumptionSource)&&verifyLifecycleConsumptionStage(source,state.consumptionStage);
 }
 
+// Read-only navigation shares the evaluator's established source checks. A URL
+// is not execution authority; the destination still rechecks persisted records.
+export function validatedLiveConsumptionSource(definition,state){
+ if(state?.contractId!==liveLifecycleContract.id||!verifyCodeThroughMonitoring(definition,state))return;
+ if(state.status==='SUCCEEDED'){
+  if(state.phase!=='COMPLETE'||!verifyLiveCaseEvidence(definition,state))return;
+ }else if(state.phase!=='CONSUMPTION'||!['AWAITING_CONSUMPTION','PAUSED'].includes(state.status))return;
+ const source=consumptionSourceForState(state);
+ if(validLifecycleConsumptionSource(source)&&JSON.stringify(source)===JSON.stringify(state.consumptionSource))return structuredClone(source);
+}
+
 // This is the only continuation after monitoring has passed. The exact URL is
 // rebuilt from the immutable checkpoint and the adapter is never given a body.
 // No model/Spark readiness, mutation, authorization or service invocation occurs.

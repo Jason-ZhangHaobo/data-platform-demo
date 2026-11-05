@@ -60,7 +60,7 @@ import {workbenchEnvironment,mayWriteServices} from "./workbench-environment";
 import type { AuthSession, PublicationTarget } from "./AuthDialog";
 import { consumptionWindowOpen } from "./service-consumption-scope";
 import type { ConsumptionScope } from "./service-consumption-scope";
-import {publicationSourceLocation,serviceSourceFromLocation,serviceHandoffLocation,serviceSourceKey,validServiceSourceBinding} from "./service-source-binding";
+import {publicationSourceLocation,serviceSourceFromLocation,serviceHandoffLocation,serviceSourceKey,validServiceSourceBinding,sourceBindingEnvironmentMatches} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
 import { loadModuleStartup, loadStartupCore, moduleStartupPaths, startupReadCurrent } from "./startup-loading";
 import type { StartupReadState } from "./startup-loading";
@@ -113,7 +113,7 @@ type Capability = {
   features: string[];
 };
 type Status = {
-  dataServices?: { privateEnabled: boolean; scope: string };
+  dataServices?: { privateEnabled: boolean; localSourcesEnabled?: boolean; scope: string };
   site?: { registeredName: string; icpNumber: string; icpUrl: string };
   agentDevelopment?: { durableEnabled: boolean; eventBackgroundAvailable?: boolean };
   validationContract?: { id: string; fixtureCount: number };
@@ -702,9 +702,8 @@ function App() {
   const serviceWorkspaceKey=`${session.user?.id??"anonymous"}:${serviceSourceKey(sourceBinding)||sourceBindingError||"legacy"}`;
   const serviceTaskId=session.consumptionOnly?session.consumptionTaskId:sourceBinding?.taskId??new URLSearchParams(window.location.search).get("task")??undefined;
   const openServiceHandoff=(binding:ServiceSourceBinding)=>{
-    if(agentDraftDirty||!validServiceSourceBinding(binding)){setNotice("请先确认当前版本及输入，再从确切发布记录继续；未切换来源。");return;}
-    if(workbench.cloudServices){const url=serviceHandoffLocation(window.location.href,binding);history.replaceState(null,"",url);setServiceLocation({status:"VALID",binding});}
-    else{const url=new URL(window.location.href);for(const key of [...url.searchParams.keys()])if(key.startsWith("source_")||["revision","run","origin_task"].includes(key))url.searchParams.delete(key);url.searchParams.set("module","services");url.searchParams.set("task",binding.taskId);url.hash="";history.replaceState(null,"",url);setServiceLocation({status:"ABSENT"});}
+    if(agentDraftDirty||!validServiceSourceBinding(binding)||!sourceBindingEnvironmentMatches(binding,workbench.cloudServices,workbench.runtimeMode)){setNotice("请先确认当前版本、运行环境及输入，再从确切发布记录继续；未切换来源。");return;}
+    const url=serviceHandoffLocation(window.location.href,binding);history.replaceState(null,"",url);setServiceLocation({status:"VALID",binding});
     setAgentWorkspaceMode("services");setNavState("services");setNotice("已保留原任务、交付包和发布来源；只选择成功发布批次，不自动创建接口、凭证或调用数据。");
   };
   const runRevision = revisions.find(
@@ -895,7 +894,7 @@ function App() {
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>{setServiceLocation(serviceSourceFromLocation(window.location.href,true));setAgentWorkspaceMode("services");}}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
-          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
+          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite && !session.developmentOnly}
@@ -1658,7 +1657,7 @@ function App() {
             <h1>{active?.name}</h1>
             <p className="module-subtitle">{active?.description}</p>
             {nav === "services" ? (
-              workbench.servicesAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}</div>
+              workbench.servicesAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}</div>
             ) : nav === "sources" || nav === "sync" ? (
               <IngestionWorkbench
                 api={api}

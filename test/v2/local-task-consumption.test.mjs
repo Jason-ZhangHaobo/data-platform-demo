@@ -7,20 +7,12 @@ import {randomUUID} from 'node:crypto';
 import {createV2Server,PROJECT} from '../../src/v2/server.mjs';
 import {MetadataStore} from '../../src/v2/store.mjs';
 import {BusinessQueryStore,DataServiceManager} from '../../src/v2/data-services.mjs';
-import {createDeliveryPackage,sha256} from '../../src/v2/delivery.mjs';
-import {referenceSql,getContext,contextIds,validationContractId} from '../../src/v2/context.mjs';
 import {localTaskConsumption} from '../../src/v2/local-task-consumption.mjs';
+import {seedLocalServiceSource} from './fixtures/local-service-sources.mjs';
 
 test('local task consumption joins existing source and revoked-app receipts without executing or writing',async t=>{
  const root=mkdtempSync(join(tmpdir(),'shuduo-local-consumption-')),store=new MetadataStore(join(root,'meta.sqlite')),businessStore=new BusinessQueryStore(join(root,'business.sqlite'));
- const revision={id:'fixture-revision',projectId:PROJECT,sql:referenceSql,hash:sha256(referenceSql),contextId:'holdings-t1'};
- const codeRun={id:'fixture-code-run',projectId:PROJECT,revisionId:revision.id,revisionHash:revision.hash,status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',validation:{passed:true,contractId:validationContractId,regressions:contextIds.map(contextId=>({contextId,passed:true}))}};
- const agent=store.create('agent',PROJECT,{status:'SUCCEEDED',attempts:[{revisionId:revision.id,runId:codeRun.id}]});
- const bundle=store.create('delivery_package',PROJECT,createDeliveryPackage({run:codeRun,revision}));
- store.create('agent_delivery_task',PROJECT,{sourceAgentTaskId:agent.id,sourceRevisionId:revision.id,sourceRunId:codeRun.id,packageId:bundle.id,packageDigest:bundle.digest});
- const approval=store.create('release_approval',PROJECT,{status:'APPROVED',packageId:bundle.id,packageDigest:bundle.digest});
- const release=store.create('release',PROJECT,{status:'ACTIVE_LOCAL',packageId:bundle.id,packageDigest:bundle.digest,sourceRevisionId:revision.id,approvalId:approval.id});
- const run=store.create('release_run',PROJECT,{releaseId:release.id,packageId:bundle.id,packageDigest:bundle.digest,status:'SUCCEEDED',published:true,publicDeployed:false,schedulerTriggered:true,engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,testSqlValidation:{passed:true},validation:{passed:true},source:{revisionId:revision.id,runId:codeRun.id},rows:getContext('holdings-t1').expected});
+ const {revision,codeRun,agent,bundle,release,batches}=seedLocalServiceSource({store,project:PROJECT}),run=batches[0];
  const manager=new DataServiceManager({store,businessStore,project:PROJECT,releaseRunFor:id=>store.get('release_run',id,PROJECT)});
  async function dapi(slug,fields){const s=manager.createDapi({name:'合成证券查询',slug,fields,sourceReleaseRunId:run.id});await manager.test(s.id,{});manager.publish(s.id);return s;}
  const h=await dapi('fixture-holdings',['client_id','holding_market_value','security_count']),c=await dapi('fixture-cash',['client_id','available_cash','total_assets']);
