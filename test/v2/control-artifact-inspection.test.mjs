@@ -22,9 +22,9 @@ test('readonly artifact source checks cover budget accounting, durable ownership
  assert.ok(!source.includes('execFileSync(extract('),'package source is inspected, never executed');
 });
 test('source checkout makes new repair modules mandatory without breaking legacy application inspection',()=>{
- const root='/synthetic-source',modules=['sql-repair-feedback','sql-repair-progress','sql-repair-source','validation-details','publication-request','private-service-routes','private-task-consumption','consumer-source','agent-context-derivation'].map(name=>`src/v2/${name}.mjs`);
+ const root='/synthetic-source',modules=['sql-repair-feedback','sql-repair-progress','sql-repair-source','validation-details','publication-request','private-service-routes','private-task-consumption','consumer-source','agent-context-derivation','service-plan-source','service-plan-request'].map(name=>`src/v2/${name}.mjs`);
  const queried=[];const checks=controlArtifactSourceChecks(root,path=>{queried.push(path);return true;});
- assert.deepEqual(checks,[...controlArtifactSources,...modules]);assert.equal(checks.length,32);assert.equal(Object.isFrozen(checks),true);
+ assert.deepEqual(checks,[...controlArtifactSources,...modules]);assert.equal(checks.length,34);assert.equal(Object.isFrozen(checks),true);
  assert.deepEqual(queried,modules.map(name=>resolve(root,name)));
  assert.deepEqual(controlArtifactSourceChecks(root,()=>false),controlArtifactSources);
  assert.deepEqual(controlArtifactSourceChecks(root,path=>path.endsWith('/sql-repair-source.mjs')),[...controlArtifactSources,modules[2]]);

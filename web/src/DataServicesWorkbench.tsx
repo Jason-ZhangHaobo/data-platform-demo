@@ -5,6 +5,8 @@ import { applicationStatusText, consumptionApplicationInput, consumptionDapiInpu
 import type { ConsumptionScope } from "./service-consumption-scope";
 import {validServiceSourceBinding,serviceSourceKey,sourceBindingEnvironmentMatches,serviceSourcesPath,serviceReturnLocation,serviceReadCurrent,sourceRunMatches,sourceRunEligible,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
+import {validServicePlanSource,sourcePlanReceiptValid,boundServicePlansPath,servicePlanMarker,servicePlanLocation,createServicePlanSubmission,servicePlanRecoverySource} from "./service-plan-source";
+import type {ServicePlanSource,SourcePlan} from './service-plan-source';
 import {
   Activity,
   AppWindow,
@@ -119,7 +121,7 @@ type RecoveryReport = {
   state: { serviceId: string; calls: unknown[]; applications: {id:string;status:string}[];
     evidence: {verified:boolean;code?:string;snapshot?:{actualRowCount:number;integrityVerified:boolean}|null}[] };
 };
-type ServiceAgentPlan = {
+type ServiceAgentPlan = SourcePlan & {
   id: string;
   message: string;
   status: string;
@@ -159,6 +161,7 @@ const labels: Record<string, string> = {
   TIMED_OUT: "已超时",
   FAILED: "失败",
 };
+const planLabels:Record<string,string>={QUEUED:'待规划',RUNNING:'规划中',SUCCEEDED:'方案待确认',APPLIED:'草稿已创建',FAILED:'规划失败',CANCELLED:'已取消',INTERRUPTED:'待恢复'};
 const flowSteps: {
   Icon: typeof CodeXml;
   number: string;
@@ -181,6 +184,8 @@ export function DataServicesWorkbench({
   sourceBinding,
   sourceBindingError,
   runtimeMode,
+  sourceBoundAgentPlansEnabled=false,
+  modelConfigured=false,
 }: {
   api: Api;
   canWrite: boolean;
@@ -191,11 +196,15 @@ export function DataServicesWorkbench({
   sourceBinding?:ServiceSourceBinding;
   sourceBindingError?:string;
   runtimeMode?:"LOCAL_DEVELOPMENT"|"PUBLIC_INVITATION";
+  sourceBoundAgentPlansEnabled?:boolean;
+  modelConfigured?:boolean;
 }) {
   const scopePlan=consumptionPlanAvailable(consumptionScope)?consumptionScope.plan:undefined;
   const bindingDeclared=sourceBinding!==undefined||Boolean(sourceBindingError),binding=validServiceSourceBinding(sourceBinding)?sourceBinding:undefined;
   const bindingError=sourceBindingError||(bindingDeclared&&!binding?"接口交接来源不完整；不会退回全项目数据。":binding&&!sourceBindingEnvironmentMatches(binding,privateCloud,runtimeMode)?"交接范围与当前运行环境不一致；保留只读，不切换本机／云端来源。":binding&&!sourceBindingScopeCompatible(binding,consumptionScope)?"交接来源与当前最小消费计划冲突；不扩大计划或切换到其他包。":"");
   const scopeKey=JSON.stringify([consumptionScope??null,sourceAgentTaskId??null,serviceSourceKey(binding),bindingError]);
+  const savedPlanMarker=typeof window==='undefined'?{invalid:false as const,requestId:undefined,planId:undefined,batchId:undefined}:servicePlanMarker(window.location.href);
+  const boundPlannerAllowed=sourceBoundAgentPlansEnabled&&runtimeMode==='LOCAL_DEVELOPMENT'&&!privateCloud&&!consumptionScope&&binding?.scope==='LOCAL_TEST_ONLY'&&binding.sourceKind==='AGENT'&&!bindingError;
   const sourceContext=useRef(scopeKey);sourceContext.current=scopeKey;
   const sourceRequest=useRef(0),alive=useRef(true);
   const [sourceRead,setSourceRead]=useState<{key:string;state:"LOADING"|"READY"|"ERROR"}>({key:"",state:"LOADING"});
@@ -218,7 +227,7 @@ export function DataServicesWorkbench({
   const [dapiName, setDapiName] = useState(scopePlan?.dapis[0]?.name??"客户持仓查询"),
     [dapiSlug, setDapiSlug] = useState(scopePlan?.dapis[0]?.slug??(sourceAgentTaskId?`customer-holdings-${sourceAgentTaskId.slice(0,8)}`:"customer-holdings")),
     [profile, setProfile] = useState<keyof typeof fieldProfiles>("holdings"),
-    [sourceRunId, setSourceRunId] = useState(scopePlan?.sourceReleaseRunId??"");
+    [sourceRunId, setSourceRunId] = useState(scopePlan?.sourceReleaseRunId??(boundPlannerAllowed&&!savedPlanMarker.invalid?savedPlanMarker.batchId:undefined)??"");
   const [xapiName,setXapiName]=useState(scopePlan?.xapi.name??"财富顾问客户资产组合查询"),
     [xapiSlug,setXapiSlug]=useState(scopePlan?.xapi.slug??(sourceAgentTaskId?`advisor-assets-${sourceAgentTaskId.slice(0,8)}`:"advisor-asset-overview")),
     [holdingsVersionId,setHoldingsVersionId]=useState(""),[cashVersionId,setCashVersionId]=useState("");
@@ -234,6 +243,9 @@ export function DataServicesWorkbench({
       "基于已发布的持仓与现金DAPI，规划一个财富顾问客户资产组合XAPI",
     ),
     [agentPlan, setAgentPlan] = useState<ServiceAgentPlan>();
+  const [pendingPlanKey,setPendingPlanKey]=useState<string|undefined>(()=>boundPlannerAllowed&&!savedPlanMarker.invalid?savedPlanMarker.requestId:undefined),
+    [planReadError,setPlanReadError]=useState('');
+  const planSubmission=useRef<ReturnType<typeof createServicePlanSubmission<ServiceAgentPlan>>|undefined>(undefined);
   const services = useMemo(() => consumptionServices(binding?sourceBoundServices([...dapis,...xapis],binding,releaseRuns):bindingDeclared?[]:[...dapis, ...xapis],consumptionScope), [dapis, xapis, releaseRuns,scopeKey]),
     selected = services.find((item) => item.id === selectedId),
     eligibleRuns = (binding?releaseRuns.filter(run=>sourceRunMatches(run,binding)):bindingDeclared?[]:releaseRuns).filter(
@@ -266,6 +278,40 @@ export function DataServicesWorkbench({
   const currentPublished=Boolean(selected?.currentVersion && selected.currentVersion.id===selected.publishedVersion?.id);
   const versionContext=`${scopeKey}:${selectedId}:${selected?.currentVersion?.id??""}`;
   const activeVersionRef=useRef(versionContext);activeVersionRef.current=versionContext;
+  const planSourceCandidate=binding?{taskId:binding.taskId,packageDigest:binding.packageDigest,releaseId:binding.releaseId,sourceReleaseRunId:sourceRunId}:undefined;
+  const boundPlanSource=boundPlannerAllowed&&validServicePlanSource(planSourceCandidate)&&eligibleRuns.some(run=>run.id===sourceRunId)?planSourceCandidate:undefined;
+  const recoveryPlanSource=boundPlannerAllowed?servicePlanRecoverySource(binding,typeof window==='undefined'?undefined:window.location.href):undefined,readablePlanSource=boundPlanSource??recoveryPlanSource;
+  const plannerKey=JSON.stringify([scopeKey,readablePlanSource??null]),activePlanner=useRef(plannerKey);activePlanner.current=plannerKey;
+  const plannerCurrent=(key:string)=>alive.current&&activePlanner.current===key;
+  function serviceSubmission(){
+    if(!readablePlanSource)throw Error('原规划来源标识不完整');
+    if(!planSubmission.current||planSubmission.current.snapshot().closed){
+      const marker=servicePlanMarker(location.href),source=readablePlanSource;
+      planSubmission.current=createServicePlanSubmission<ServiceAgentPlan>({api,initialKey:!marker.invalid?marker.requestId:undefined,onPending:key=>{
+        setPendingPlanKey(key);if(key)history.replaceState(null,'',servicePlanLocation(location.href,{batchId:source.sourceReleaseRunId,requestId:key}));
+      }});
+    }
+    return planSubmission.current;
+  }
+  function acceptSourcePlan(plan:ServiceAgentPlan,source:ServicePlanSource,key:string,requestId?:string){
+    if(!plannerCurrent(key))return;
+    if(!sourcePlanReceiptValid(plan,source)||requestId&&plan.requestId!==requestId)throw Error('原规划回执尚未确认，已保留来源和请求编号；未创建替代任务。');
+    if(requestId)serviceSubmission().acknowledge(requestId);
+    setPendingPlanKey(undefined);setPlanReadError(plan.sourceCheck==='UNAVAILABLE'?'原来源当前未通过复核；仅恢复原方案记录，可取消规划，不能应用或再生成。':'');setAgentPlan(plan);
+    setAgentPlans(old=>[plan,...old.filter(item=>item.id!==plan.id)]);
+    history.replaceState(null,'',servicePlanLocation(location.href,{batchId:source.sourceReleaseRunId,planId:plan.id}));
+    if(plan.status==='APPLIED'&&plan.serviceId)setSelectedId(plan.serviceId);
+  }
+  async function readSourcePlan(id?:string,retry=false){
+    if(!readablePlanSource||busy||retry&&(!boundPlanSource||!canWrite||!modelConfigured))return;const source=readablePlanSource,key=plannerKey;setBusy('agent-read');setError('');
+    try{
+      const request=servicePlanMarker(location.href),pending=!request.invalid?request.requestId:pendingPlanKey;
+      const plan=id?await api<ServiceAgentPlan>('/data-services/agent/plans/'+id):pending?
+        await (retry?serviceSubmission().retry():serviceSubmission().recover()):agentPlan?await api<ServiceAgentPlan>('/data-services/agent/plans/'+agentPlan.id):undefined;
+      if(plan){acceptSourcePlan(plan,source,key,id?undefined:pending);if(plan.status==='APPLIED'&&plan.sourceCheck!=='UNAVAILABLE')await reload();}
+    }catch(cause){if(plannerCurrent(key)){setPlanReadError((cause as Error).message);setError((cause as Error).message+' 原编号保留，不自动重新调用模型。');}}
+    finally{if(plannerCurrent(key))setBusy('');}
+  }
   const currentTestValid=Boolean(selected?.currentVersion && testReceipt?.test.status==="PASSED" && testReceipt.test.versionId===selected.currentVersion.id && testReceipt.test.configHash===selected.currentVersion.configHash);
   const requestKeys=useRef<Record<string,{signature:string;key:string}>>({});
   const keyFor=(action:string,body:unknown)=>{const signature=JSON.stringify(body),old=requestKeys.current[action];if(old?.signature===signature)return old.key;const key=crypto.randomUUID();requestKeys.current[action]={signature,key};return key;};
@@ -293,15 +339,16 @@ export function DataServicesWorkbench({
     setXapis(nextXapis);
     setApplications(nextApps);
     setCalls(nextCalls);
-    setAgentPlans(nextPlans);
-    if (!agentPlan && nextPlans[0]) setAgentPlan(nextPlans[0]);
+    if(!bindingDeclared){setAgentPlans(nextPlans);if (!agentPlan && nextPlans[0]) setAgentPlan(nextPlans[0]);}
     const boundEligible=binding?nextRuns.filter(run=>sourceRunMatches(run,binding)&&sourceRunEligible(run)):nextRuns;
     if(binding&&(!boundEligible.length||!sourceBindingScopeCompatible(binding,consumptionScope,boundEligible))){
       setSourceRunId("");setSelectedId("");setSourceRead({key,state:"ERROR"});
       setError(boundEligible.length?"确切发布批次与当前最小消费计划冲突；未扩大来源。":"此确切发布尚无通过核验的可消费批次，或当前账号不可见。可重新读取；不会选其他发布或开发运行。");return;
     }
+    const marker=servicePlanMarker(location.href),requestedBatch=boundPlannerAllowed&&!marker.invalid?marker.batchId:undefined;
+    if(requestedBatch&&!boundEligible.some(run=>run.id===requestedBatch)){setSourceRunId('');setSourceRead({key,state:'ERROR'});setError('原规划指定批次当前不可用，保留原记录，不采用其他批次。');return;}
     if(scopePlan)setSourceRunId(scopePlan.sourceReleaseRunId);
-    else if(binding)setSourceRunId(previous=>defaultBoundSourceRun(binding,nextRuns,[...nextDapis,...nextXapis],{currentRunId:previous,selectedServiceId:activeServiceRef.current})??"");
+    else if(binding)setSourceRunId(previous=>defaultBoundSourceRun(binding,nextRuns,[...nextDapis,...nextXapis],{currentRunId:previous||requestedBatch,selectedServiceId:activeServiceRef.current})??"");
     else if (!sourceRunId && nextRuns.find((run) => run.status === "SUCCEEDED"))
       setSourceRunId(nextRuns.find((run) => run.status === "SUCCEEDED")!.id);
     const nextServices=consumptionServices(binding?sourceBoundServices([...nextDapis,...nextXapis],binding,nextRuns):[...nextDapis,...nextXapis],consumptionScope);
@@ -312,11 +359,34 @@ export function DataServicesWorkbench({
   };
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;sourceRequest.current++;};},[]);
   useEffect(() => {
-    setSelectedId("");setSourceRunId(scopePlan?.sourceReleaseRunId??"");setHoldingsVersionId("");setCashVersionId("");setTestReceipt(undefined);setIssuedToken("");setTokenVisible(false);setVersionReview(undefined);setRecoveryReport(undefined);setOpenApi(undefined);
+    const marker=servicePlanMarker(location.href);setSelectedId("");setSourceRunId(scopePlan?.sourceReleaseRunId??(boundPlannerAllowed&&!marker.invalid?marker.batchId:undefined)??"");setHoldingsVersionId("");setCashVersionId("");setTestReceipt(undefined);setIssuedToken("");setTokenVisible(false);setVersionReview(undefined);setRecoveryReport(undefined);setOpenApi(undefined);
     void reload().catch(()=>{});
   }, [scopeKey]);
   useEffect(()=>{if(!consumptionScope)return;setScopeClock(Date.now());const timer=setInterval(()=>setScopeClock(Date.now()),1000);return()=>clearInterval(timer);},[scopeKey]);
   useEffect(()=>{if(!canWrite){setIssuedToken("");setTokenVisible(false);}if(consumptionScope){setShowVersionEditor(false);setVersionReview(undefined);}},[canWrite,scopeKey]);
+  useEffect(()=>{
+    planSubmission.current?.close();planSubmission.current=undefined;
+    if(!boundPlannerAllowed||!readablePlanSource)return;
+    const key=plannerKey,source=readablePlanSource,marker=servicePlanMarker(location.href);let active=true;
+    setAgentPlan(undefined);setAgentPlans([]);setPlanReadError('');
+    const valid=()=>active&&plannerCurrent(key);
+    if(marker.invalid){setPlanReadError('规划恢复链接不完整，未读取其他来源。');return;}
+    if(marker.batchId&&marker.batchId!==source.sourceReleaseRunId){
+      if(marker.requestId){setPendingPlanKey(marker.requestId);setPlanReadError('原规划请求属于另一成功批次；请沿原恢复链接核对，未切换来源。');return;}
+      history.replaceState(null,'',servicePlanLocation(location.href,{batchId:source.sourceReleaseRunId}));
+    }
+    void(async()=>{
+      try{
+        let original:ServiceAgentPlan|undefined;
+        if(marker.requestId){setPendingPlanKey(marker.requestId);original=await serviceSubmission().recover();if(valid())acceptSourcePlan(original,source,key,marker.requestId);}
+        else if(marker.planId&&marker.batchId===source.sourceReleaseRunId){original=await api<ServiceAgentPlan>('/data-services/agent/plans/'+marker.planId);if(valid())acceptSourcePlan(original,source,key);}
+        if(!valid()||original?.sourceCheck==='UNAVAILABLE')return;
+        const plans=await api<ServiceAgentPlan[]>(boundServicePlansPath(source));if(!valid())return;
+        if(!Array.isArray(plans)||plans.some(plan=>!sourcePlanReceiptValid(plan,source)))throw Error('同源方案记录回执不完整');setAgentPlans(plans);
+      }catch(cause){if(valid())setPlanReadError((cause as Error).message+' 原来源和请求编号保留，未重新提交。');}
+    })();
+    return()=>{active=false;planSubmission.current?.close();planSubmission.current=undefined;};
+  },[plannerKey,boundPlannerAllowed]);
   useEffect(() => {
     setTestReceipt(undefined);
     setOpenApi(undefined);
@@ -327,23 +397,37 @@ export function DataServicesWorkbench({
     if(selected?.currentVersion){setVersionRate(String(selected.currentVersion.rateLimitPerMinute));setVersionTimeout(String(selected.currentVersion.timeoutMs));setVersionProfile(selected.currentVersion.fields?.includes("holding_market_value") ? selected.currentVersion.fields.includes("available_cash")?"full":"holdings":"cash");}
   }, [selectedId, selected?.currentVersion?.id]);
   useEffect(() => {
-    if (!agentPlan || !["QUEUED", "RUNNING"].includes(agentPlan.status)) return;
+    if (!agentPlan || !["QUEUED", "RUNNING"].includes(agentPlan.status)||boundPlannerAllowed&&Boolean(planReadError)) return;
+    const key=plannerKey,source=readablePlanSource;
     const timer = setInterval(async () => {
       try {
         const latest = await api<ServiceAgentPlan>(
           `/data-services/agent/plans/${agentPlan.id}`,
         );
+        if(boundPlannerAllowed){if(!plannerCurrent(key))return;if(!source||!sourcePlanReceiptValid(latest,source))throw Error('原规划状态回执未确认');}
         setAgentPlan(latest);
         if (!["QUEUED", "RUNNING"].includes(latest.status))
-          setAgentPlans(await api<ServiceAgentPlan[]>("/data-services/agent/plans"));
+          {const plans=await api<ServiceAgentPlan[]>(source?boundServicePlansPath(source):'/data-services/agent/plans');if(!boundPlannerAllowed||plannerCurrent(key))setAgentPlans(plans);}
       } catch (cause) {
+        if(boundPlannerAllowed&&!plannerCurrent(key))return;
         setError((cause as Error).message);
+        if(boundPlannerAllowed){clearInterval(timer);setPlanReadError((cause as Error).message+' 查询已暂停，可手动读取原方案。');}
       }
     }, 1200);
     return () => clearInterval(timer);
-  }, [agentPlan?.id, agentPlan?.status]);
+  }, [agentPlan?.id, agentPlan?.status,plannerKey,planReadError]);
 
   const planWithAgent = async () => {
+    if(boundPlannerAllowed){
+      if(!canWrite||!boundPlanSource||!modelConfigured||busy||pendingPlanKey||planReadError||servicePlanMarker(location.href).invalid)return;
+      const source=boundPlanSource,key=plannerKey;setBusy('agent');setError('');setPlanReadError('');setAgentPlan(undefined);
+      try{
+        const controller=serviceSubmission(),plan=await controller.submit({message:agentMessage.trim(),sourceBinding:source}),request=controller.snapshot().key;
+        if(request)acceptSourcePlan(plan,source,key,request);
+        if(plannerCurrent(key))setNotice('已按当前发布批次生成规划任务；方案通过后仍需确认草稿。');
+      }catch(cause){if(plannerCurrent(key))setError((cause as Error).message+' 原规划编号和需求保留，请先查询，不会自动再调用模型。');}
+      finally{if(plannerCurrent(key))setBusy('');}return;
+    }
     if(!canWrite||consumptionScope||bindingDeclared)return;
     setBusy("agent");
     setError("");
@@ -359,7 +443,26 @@ export function DataServicesWorkbench({
       setBusy("");
     }
   };
+  const cancelSourcePlan=async()=>{
+    if(!boundPlannerAllowed||!readablePlanSource||!agentPlan||!sourcePlanReceiptValid(agentPlan,readablePlanSource)||!originalCanWrite||busy||pendingPlanKey)return;
+    const key=plannerKey,source=readablePlanSource,id=agentPlan.id;setBusy('agent-cancel');setError('');
+    try{const plan=await api<ServiceAgentPlan>('/data-services/agent/plans/'+id+'/cancel',{sourceBoundOnly:true});if(plannerCurrent(key)){acceptSourcePlan(plan,source,key);setNotice('已取消原规划；原来源与记录保留。');}}
+    catch(cause){if(plannerCurrent(key))setError((cause as Error).message+' 可沿原方案编号确认取消结果。');}
+    finally{if(plannerCurrent(key))setBusy('');}
+  };
   const applyAgentPlan = async () => {
+    if(boundPlannerAllowed){
+      if(!canWrite||!boundPlanSource||!agentPlan||agentPlan.sourceCheck==='UNAVAILABLE'||!sourcePlanReceiptValid(agentPlan,boundPlanSource)||busy||pendingPlanKey)return;
+      const source=boundPlanSource,key=plannerKey,planId=agentPlan.id;setBusy('agent-apply');setError('');
+      try{
+        const service=await api<DataService>('/data-services/agent/plans/'+planId+'/apply',{}),plan=await api<ServiceAgentPlan>('/data-services/agent/plans/'+planId);
+        if(!plannerCurrent(key))return;
+        if(!sourcePlanReceiptValid(plan,source)||plan.status!=='APPLIED'||plan.serviceId!==service.id||plan.appliedVersionId!==service.currentVersion?.id||plan.appliedConfigHash!==service.currentVersion?.configHash)
+          throw Error('草稿回执尚未与原方案版本对应，请先查询原方案');
+        acceptSourcePlan(plan,source,key);await reload();if(plannerCurrent(key)){setSelectedId(service.id);setNotice('已创建同源草稿；当前版本、测试、发布和授权仍可逐项审阅。');}
+      }catch(cause){if(plannerCurrent(key))setError((cause as Error).message+' 原方案保留；可查询其状态，未另建规划或自动发布。');}
+      finally{if(plannerCurrent(key))setBusy('');}return;
+    }
     if (!agentPlan || !canWrite || consumptionScope || bindingDeclared) return;
     setBusy("agent-apply");
     setError("");
@@ -592,7 +695,7 @@ export function DataServicesWorkbench({
           {error || notice}
         </div>
       )}
-      {!privateCloud && !consumptionScope && !bindingDeclared && <section className="service-agent-studio">
+      {(!privateCloud && !consumptionScope && !bindingDeclared || boundPlannerAllowed) && <section className="service-agent-studio">
         <header>
           <div className="service-agent-icon">
             <Bot size={20} />
@@ -601,8 +704,13 @@ export function DataServicesWorkbench({
             <span className="eyebrow">DATA AGENT · GOVERNED DESIGN</span>
             <h3>用自然语言规划数据服务</h3>
             <p>模型只能选择页面中的发布批次和DAPI版本；后端校验通过后仍只创建草稿。</p>
+            {boundPlanSource&&<small>已锁定当前任务的发布与成功批次 · {boundPlanSource.releaseId.slice(0,8)} / {boundPlanSource.sourceReleaseRunId.slice(0,8)}。字段含义继承原发布口径。</small>}
           </div>
         </header>
+        {boundPlannerAllowed&&<div className="service-agent-source"><label>当前成功批次<select aria-label="Agent规划成功批次" value={sourceRunId} disabled={!!busy||Boolean(pendingPlanKey)||!canWrite} onChange={event=>setSourceRunId(event.target.value)}>
+          {eligibleRuns.map(run=><option key={run.id} value={run.id}>第{run.sequence??'—'}批 · {run.id.slice(0,8)}</option>)}</select></label>
+          <button className="button" disabled={!!busy||Boolean(pendingPlanKey)} onClick={()=>setAgentMessage('基于当前已核验批次生成持仓DAPI，只返回客户编号、持仓市值和证券数量；继承原发布口径。')}>先规划持仓 DAPI</button>
+          <button className="button" disabled={!!busy||Boolean(pendingPlanKey)} onClick={()=>setAgentMessage('将当前批次已发布的持仓和现金DAPI组合为XAPI，按客户编号关联，并保留原字段口径。')}>组合已有 DAPI</button></div>}
         <div className="service-agent-compose">
           <textarea
             aria-label="向Data Agent描述数据服务需求"
@@ -617,6 +725,7 @@ export function DataServicesWorkbench({
             disabled={
               !canWrite ||
               !!busy ||
+              boundPlannerAllowed&&(!boundPlanSource||!modelConfigured||Boolean(pendingPlanKey)||Boolean(planReadError)||Boolean(servicePlanMarker(location.href).invalid)) ||
               agentMessage.trim().length < 4 ||
               ["QUEUED", "RUNNING"].includes(agentPlan?.status ?? "")
             }
@@ -629,10 +738,17 @@ export function DataServicesWorkbench({
             生成受治理方案
           </button>
         </div>
+        {boundPlannerAllowed&&!modelConfigured&&<p role="status">模型尚未配置；来源仍可核对，配置完成后可生成同源方案。</p>}
+        {boundPlannerAllowed&&pendingPlanKey&&<div className="service-feedback" role="status"><div><strong>原规划结果待确认</strong><p>请求编号 {pendingPlanKey}。查询只读取原任务，不再调用模型。</p>
+          <button className="button" disabled={!!busy||!readablePlanSource} onClick={()=>void readSourcePlan()}>查询原规划任务</button>
+          <button className="button" disabled={!!busy||!canWrite||!modelConfigured||!planSubmission.current?.snapshot().canRetry} onClick={()=>void readSourcePlan(undefined,true)}>按原需求和编号重试</button>
+          {readablePlanSource&&<a href={servicePlanLocation(location.href,{batchId:readablePlanSource.sourceReleaseRunId,requestId:pendingPlanKey}).toString()} target="_blank" rel="noreferrer">原规划恢复链接</a>}</div></div>}
+        {boundPlannerAllowed&&pendingPlanKey&&readablePlanSource&&<a href={servicePlanLocation(location.href,{batchId:readablePlanSource.sourceReleaseRunId}).toString()} target="_blank" rel="noreferrer">另开当前来源工作台查看记录</a>}
+        {boundPlannerAllowed&&planReadError&&<p role="alert">{planReadError}</p>}
         {agentPlan && (
           <div className="service-agent-plan">
             <span className={"status-pill " + agentPlan.status.toLowerCase()}>
-              {agentPlan.status}
+              {planLabels[agentPlan.status]??agentPlan.status}
             </span>
             <div>
               <strong>
@@ -641,6 +757,8 @@ export function DataServicesWorkbench({
                   : "正在生成方案"}
               </strong>
               <p>{agentPlan.explanation ?? agentPlan.error ?? "读取资源与约束中…"}</p>
+              {boundPlannerAllowed&&<small>本方案需求：{agentPlan.message}</small>}
+              {boundPlannerAllowed&&agentPlan.sourceContext&&<p>{agentPlan.sourceCheck==='UNAVAILABLE'?'原方案口径（来源待复核）':'当前已登记口径'}：{agentPlan.sourceContext.name}。{agentPlan.sourceContext.definition}</p>}
               {agentPlan.proposal && (
                 <code>
                   /{agentPlan.proposal.slug} · {agentPlan.proposal.timeoutMs}ms · {agentPlan.proposal.rateLimitPerMinute}/min
@@ -650,13 +768,16 @@ export function DataServicesWorkbench({
             <button
               className="button"
               onClick={applyAgentPlan}
-              disabled={!canWrite || agentPlan.status !== "SUCCEEDED" || !!busy}
+              disabled={!canWrite || agentPlan.status !== "SUCCEEDED" || !!busy || Boolean(pendingPlanKey) || boundPlannerAllowed&&(!boundPlanSource||agentPlan.sourceCheck==='UNAVAILABLE'||!sourcePlanReceiptValid(agentPlan,boundPlanSource))}
             >
               <CheckCircle2 size={15} />
               {agentPlan.status === "APPLIED" ? "草稿已创建" : "确认创建草稿"}
             </button>
           </div>
         )}
+        {boundPlannerAllowed&&agentPlan&&<button className="button" disabled={!!busy||Boolean(pendingPlanKey)} onClick={()=>void readSourcePlan(agentPlan.id)}>重新读取原方案</button>}
+        {boundPlannerAllowed&&agentPlan&&['QUEUED','RUNNING'].includes(agentPlan.status)&&<button className="button" disabled={!!busy||!originalCanWrite||Boolean(pendingPlanKey)} onClick={()=>void cancelSourcePlan()}>取消当前规划</button>}
+        {boundPlannerAllowed&&agentPlans.length>0&&<details><summary>当前来源的方案记录</summary>{agentPlans.map(plan=><button className="button" key={plan.id} disabled={!!busy||Boolean(pendingPlanKey)} onClick={()=>void readSourcePlan(plan.id)}>{plan.proposal?.name??'规划任务'} · {planLabels[plan.status]??plan.status}</button>)}</details>}
         <small>{agentPlans.length}条方案记录 · 不自动发布、不创建调用凭证</small>
       </section>}
       {privateCloud && <div className="service-feedback" role="status">复用已经审阅并运行的版本创建接口，不重新调用模型或Spark。仅提供当前虚构证券资产契约的参数化快照查询；模型服务规划后续单独接入。</div>}
@@ -732,7 +853,7 @@ export function DataServicesWorkbench({
                   已验证发布批次
                   <select
                     value={scopePlan?.sourceReleaseRunId??sourceRunId}
-                    disabled={Boolean(consumptionScope)}
+                    disabled={Boolean(consumptionScope)||!!busy||Boolean(pendingPlanKey)}
                     onChange={(event) => setSourceRunId(event.target.value)}
                   >
                     {!eligibleRuns.length && <option>暂无可用批次</option>}
