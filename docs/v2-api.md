@@ -57,6 +57,23 @@
 
 私有应用与临时预览仅在既有 Agent 允许列表开启时接入合法的精确发布 GET 和人工 workflow；`allowDurableAgentRead` 不允许上述 Agent／人工交付路由的 POST，也不新增写能力。临时预览仍过滤云账号 Cookie 并保留应用身份校验，不因这些路径变成公开写入口。
 
+### 从人工版本进入数据服务
+
+指定发布账号的登录及会话读取返回 `publicationSource`：以授权的 `taskId/packageDigest/verificationId` 唯一解析交付来源，成功时为 `status:RESOLVED`，携带 `sourceKind/revisionId/runId`；缺失、歧义或来源变化时为 `UNAVAILABLE`，不能回退原失败 Agent 的代码。匿名与其他账号不返回此字段。它只用于准确导航，不能代替四项审阅、有效窗口或执行权限；窗口到期仍可保留确切版本的只读入口。
+
+人工结果的服务交接携带原任务、确切包、发布编号和人工来源。开发运行编号用于回到原代码；服务查询必须使用该发布中实际成功的 `release_run.id`，两者不得混用。指定来源不存在或不一致时不自动选取另一包、另一发布或全项目最新批次。读取、切换页面、刷新和导出不新增模型、Spark、接口调用或应用凭证。
+
+| 读取接口 | 来源选择 | 结果边界 |
+|---|---|---|
+| `GET /data-services/sources` | 旧用法可不传参或只传 `agent_task_id`；指定 `package_digest` 或 `release_id` 时三项必须齐全 | 仅返回匹配且通过发布核验的批次；投影含发布来源类型、包摘要、源代码版本及开发运行编号，结果编号本身仍是发布批次编号 |
+| `GET /data-services/task-evidence` | 必须有 `agent_task_id/package_digest`；可加 `release_id` 锁定一个发布 | 固定服务版本及所有 XAPI 子版本必须来自相同发布；XAPI还必须来自同一个成功发布批次。未知或混合来源不能标记 `VERIFIED` |
+
+重复、未知或不完整选择字段拒绝。人工消费保留 `sourceKind:MANUAL`、`sourceAttribution:ENGINEER_ASSISTED`、`agentIndependentE2E:false`；消费对照只是既有调用与不可变快照的一致性，不等于外部系统独立验收或 Agent 自主完成。历史调用中的凭证已撤销时，显示历史证据和当前凭证状态，不自动重新授权。
+
+人工服务的实际调用按当前已发布根版本和 XAPI 固定子版本校验应用创建者与原工程师归属；旧的非所有者应用不能借接口版本更新继承人工数据。管理读取还核对所暴露的历史版本及调用，接口切回 Agent 不能解除人工历史保护。自己的应用元数据与撤销能力保留，不能因此读取人工服务内容。旧纯 Agent 的管理员策略兼容；无关候选版本不改变实际调用的固定来源。
+
+CLI 对应 `services sources --agent-task-id ID --package-digest SHA256 --release-id ID` 和 `services task-evidence --task-id ID --package-digest SHA256 [--release-id ID]`。MCP 的 `data_service_sources`、`data_service_task_evidence` 对应 `agentTaskId/packageDigest/releaseId`，只发 GET；不接受执行者覆盖，不在选择不全时退回宽范围。临时预览的消费证据下载可带 `releaseId`，转发为同一 `release_id` 并核对返回报告的发布编号。
+
 ## 指定旧任务的开发续接（2026-10-29，默认关闭）
 
 `DEVELOPMENT_ONLY`可选`V2_PUBLIC_DEVELOPMENT_TASK_ID`，严格UUID、既有持久Spark SQL任务、原指定管理员及最多两小时的新窗口。没有该项时保留一条新任务模式。原身份、项目、CSRF、版本和预算校验不变；不能用配置本身替代实际授权。

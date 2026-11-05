@@ -1421,7 +1421,17 @@ export function createV2Server(options = {}) {
         if (publicReadOnly) return {...body, permissions: ["SESSION"], readOnly: true};
         if (ingressChannel !== "HTTP") return body;
         const identity = {user: body.user, role: body.role}, now = options.now?.() ?? Date.now();
-        return {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSession(publicationAccess, identity, now) ?? developmentSession(developmentAccess, identity, now) ?? {})};
+        const constrained = {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSession(publicationAccess, identity, now) ?? developmentSession(developmentAccess, identity, now) ?? {})};
+        // The scope projection only exposes these identifiers to the selected
+        // administrator. Anonymous/other accounts do not get source metadata.
+        if (constrained.publicationOnly && constrained.publicationTaskId && body.user?.id) {
+          const target = {agentId: constrained.publicationTaskId, packageDigest: constrained.publicationPackageDigest,
+            verificationId: constrained.publicationVerificationId, actorId: body.user.id};
+          constrained.publicationSource = cloudPublication?.sourceForNavigation(target) ?? {
+            status: "UNAVAILABLE", taskId: target.agentId, packageDigest: target.packageDigest, verificationId: target.verificationId,
+          };
+        }
+        return constrained;
       };
       if (path === "/api/v2/auth/session" && method === "GET") {
         const context = auth.sessionFromHeaders(req.headers);
@@ -1429,14 +1439,14 @@ export function createV2Server(options = {}) {
           res,
           200,
           context
-            ? {
+            ? constrainAuthSession({
                 authenticated: true,
                 user: context.user,
                 role: context.role,
                 permissions: publicReadOnly ? ["SESSION"] : context.permissions,
                 ...(publicReadOnly ? { readOnly: true } : developmentSessionView ?? {}),
                 expiresAt: context.session.expiresAt,
-              }
+              })
             : {
                 authenticated: false,
                 ...(publicReadOnly ? { readOnly: true } : developmentSessionView ?? {}),

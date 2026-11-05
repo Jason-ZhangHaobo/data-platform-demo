@@ -33,19 +33,25 @@ export function deliveryStageText(stage: string, publicationCurrent: boolean, re
   return labels[stage] ?? stage;
 }
 export type TaskConsumption = {
-  protocol: string; taskId: string; packageDigest: string; scope: string; status: string; truncated: boolean;
+  protocol: string; taskId: string; packageDigest: string; releaseId?:string;sourceKind?:string; scope: string; status: string; truncated: boolean;
   checkedAt: string; notice: string; externalSystemVerified: boolean; agentIndependentE2E: boolean;
   services: { serviceId: string; serviceType: string; name: string; versionId: string; configHash: string;
+    releaseId?:string;sourceKind?:string;agentIndependentE2E?:boolean;
     status: string; code?: string; notice: string; sourceRunIds: string[]; fullAssetComposition?: boolean;
     call?: { callId: string; versionId: string; verified: boolean; resultHash: string; rowCount: number; applicationId: string; applicationStatus: string; finishedAt: string } }[];
 };
+export function manualConsumptionEntryMatches(entry:{releaseId?:string;sourceKind?:string;agentIndependentE2E?:boolean;sourceRunIds?:string[]},releaseId:string,batches:{id:string;status:string;schedulerTriggered?:boolean}[],developmentRunId?:string){
+  if(entry.releaseId!==releaseId||entry.sourceKind!=="MANUAL"||entry.agentIndependentE2E!==false||!Array.isArray(entry.sourceRunIds)||entry.sourceRunIds.length!==1)return false;
+  const id=entry.sourceRunIds[0],matches=batches.filter(batch=>batch.id===id);
+  return typeof id==="string"&&id.length>0&&id!==developmentRunId&&matches.length===1&&matches[0].status==="SUCCEEDED"&&matches[0].schedulerTriggered===true;
+}
 type Evidence = {
   taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; evidenceReadable?: boolean; publicationReadable?: boolean;
   report?: { taskId?: string; contextId?:string; validationContractId?:string; revisionId?: string; runId?: string; status: string; checks: { id: string; passed: boolean }[] };
   delivery?: { status: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string };
   bundle?: { id: string; digest: string; files: Record<string, string> };
   verification?: { id: string; status: string; mainSqlExecuted?: boolean; testSqlValidation?: { passed: boolean }; validation?: { passed: boolean; contractId?:string; regressions?: { contextId: string; passed: boolean }[] } };
-  release?: { id: string; packageId?: string; packageDigest?: string; sourceRevisionId?: string; status: string; health: string; runCount?: number };
+  release?: { id: string; packageId?: string; packageDigest?: string; sourceKind?:string; sourceRevisionId?: string; status: string; health: string; runCount?: number };
   batches?: { id: string; status: string; schedulerTriggered?: boolean }[];
   alerts?: { status: string }[];
   events?: { releaseId?: string; releaseRunId?: string; packageDigest?: string; type: string }[];
@@ -73,8 +79,10 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
   const consumptionScopeMatches = e.release?.status === "ACTIVE_LOCAL"
     ? e.consumption?.protocol === "shuduo-local-task-consumption/v1" && e.consumption.scope === "LOCAL_TEST_ONLY"
     : e.consumption?.protocol === "shuduo-private-task-consumption/v1" && e.consumption.scope === "PRIVATE_CLOUD_TEST";
-  const consumptionCurrent = current && consumptionScopeMatches && e.consumption?.taskId === e.taskId && e.consumption.packageDigest === e.bundle?.digest;
-  const consumed = Boolean(healthy && consumptionCurrent && !e.consumption?.truncated && e.consumption?.status === "VERIFIED" && e.consumption.services.some(s => s.serviceType === "XAPI" && s.status === "VERIFIED" && s.fullAssetComposition === true && s.call?.verified === true && s.call.versionId === s.versionId && s.call.rowCount > 0));
+  const consumptionCurrent = current && consumptionScopeMatches && e.consumption?.taskId === e.taskId && e.consumption.packageDigest === e.bundle?.digest&&
+    (e.release?.sourceKind==="MANUAL"?e.consumption.releaseId===e.release.id&&e.consumption.sourceKind==="MANUAL"&&e.consumption.agentIndependentE2E===false:e.consumption.releaseId===undefined||e.consumption.releaseId===e.release?.id);
+  const consumed = Boolean(healthy && consumptionCurrent && !e.consumption?.truncated && e.consumption?.status === "VERIFIED" && e.consumption.services.some(s => s.serviceType === "XAPI" && s.status === "VERIFIED" && s.fullAssetComposition === true && s.call?.verified === true && s.call.versionId === s.versionId && s.call.rowCount > 0&&
+    (e.release?.sourceKind!=="MANUAL"||manualConsumptionEntryMatches(s,e.release.id,batches,e.runId))));
   const steps: JourneyStep[] = [
     { id: "requirement", label: "需求与口径", state: "DONE", detail: "需求已记录；按已登记证券口径执行，不代表模型已理解任意需求。", target: "agent-requirement" },
     { id: "code", label: "代码与调试", state: state(codeExecuted, codeFailed), detail: e.dirty ? "未保存修改不继承旧结论。" : codeExecuted ? `代码版本 ${e.revisionId!.slice(0, 8)} 已完成实际执行；业务正确性另见独立结果核验。` : codeFailed ? "当前代码执行尚未通过，请查看报错并修正。" : e.revisionId ? `代码版本 ${e.revisionId.slice(0, 8)} 已生成，等待核对执行与调试回执。` : "等待生成代码，可随时人工接管。", target: "agent-code" },

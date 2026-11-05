@@ -33,9 +33,10 @@ export function privateEvidenceExport(path) {
   if (kind === "recovery" && keys.length === 3 && keys.every(k => ["kind", "type", "id"].includes(k)) && ["dapi", "xapi"].includes(u.searchParams.get("type"))) {
     return { kind, id, path: `/api/v2/data-services/${u.searchParams.get("type")}s/${id}/recovery`, name: `service-recovery-${id.slice(0, 8)}.json` };
   }
-  const digest = u.searchParams.get("digest");
-  if (kind === "consumption" && keys.length === 3 && keys.every(k => ["kind", "id", "digest"].includes(k)) && /^[a-f0-9]{64}$/.test(digest || "")) {
-    return { kind, id, digest, path: `/api/v2/data-services/task-evidence?agent_task_id=${id}&package_digest=${digest}`, name: `consumption-${id.slice(0, 8)}.json` };
+  const digest = u.searchParams.get("digest"), releaseId = u.searchParams.get("releaseId");
+  if (kind === "consumption" && keys.length === (releaseId===null?3:4) && keys.every(k => ["kind", "id", "digest", "releaseId"].includes(k)) &&
+      /^[a-f0-9]{64}$/.test(digest || "") && (releaseId===null || new RegExp(`^${uuid}$`).test(releaseId))) {
+    return { kind, id, digest, ...(releaseId===null?{}:{releaseId}), path: `/api/v2/data-services/task-evidence?agent_task_id=${id}&package_digest=${digest}${releaseId===null?'':`&release_id=${releaseId}`}`, name: `consumption-${id.slice(0, 8)}.json` };
   }
   throw error(422, "导出范围无效");
 }
@@ -44,7 +45,8 @@ export function exportedEvidence(result, request) {
   const body = result.body;
   const valid = body?.scope === "PRIVATE_CLOUD_TEST" && body.publicDeployed === false && (request.kind === "recovery"
     ? body.protocol === "shuduo-private-service-recovery/v1" && body.state?.serviceId === request.id
-    : body.protocol === "shuduo-private-task-consumption/v1" && body.taskId === request.id && body.packageDigest === request.digest);
+    : body.protocol === "shuduo-private-task-consumption/v1" && body.taskId === request.id && body.packageDigest === request.digest &&
+      (request.releaseId===undefined || body.releaseId===request.releaseId));
   if (!valid) throw error(502, "报告来源与导出请求不一致，未生成文件");
   const text = JSON.stringify(body, null, 2) + "\n";
   if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw error(413, "报告超过导出上限");

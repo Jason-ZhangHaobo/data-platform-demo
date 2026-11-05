@@ -64,6 +64,7 @@ const compile = (name) => {
  for(const pkg of ['react','react/jsx-runtime','lucide-react'])source=source.replaceAll(`from "${pkg}"`,`from ${JSON.stringify(import.meta.resolve(pkg))}`);
  source=source.replaceAll('from "./service-composition"',`from ${JSON.stringify(new URL('../../web/src/service-composition.ts',import.meta.url).href)}`);
  source=source.replaceAll('from "./service-consumption-scope"',`from ${JSON.stringify(new URL('../../web/src/service-consumption-scope.ts',import.meta.url).href)}`);
+ source=source.replaceAll('from "./service-source-binding"',`from ${JSON.stringify(new URL('../../web/src/service-source-binding.ts',import.meta.url).href)}`);
  if(name==='DataServicesWorkbench')source=source.replaceAll('from "./EvidenceDownload"',`from ${JSON.stringify(compile('EvidenceDownload'))}`);
  return`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 };

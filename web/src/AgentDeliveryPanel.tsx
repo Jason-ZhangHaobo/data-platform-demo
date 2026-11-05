@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Circle, Download, FileText, LoaderCircle, Package, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
-import { agentJourney, deliveryStageText, publicationEvidenceText, verificationPresentation } from "./agent-journey";
+import { agentJourney, deliveryStageText, publicationEvidenceText, verificationPresentation,manualConsumptionEntryMatches } from "./agent-journey";
 import type { EvidenceReadState, TaskConsumption } from "./agent-journey";
 import { EvidenceDownload } from "./EvidenceDownload";
 import { DeliveryFilePreview } from "./DeliveryFilePreview";
@@ -11,8 +11,10 @@ import { reviewAttestationsComplete } from "./delivery-presentation";
 import { createPublicationReader, publicationPollNeeded } from "./publication-read";
 import {ValidationDetails} from "./ValidationDetails";
 import type {ValidationDetailsReport} from "./validation-details";
-import {publicationSelector,publicationSelectionKey,publicationReadPath,checkedPublication,publicationWriteAllowed,publicationCancellationAllowed,cloudPublicationRequest,createPublicationAttempt} from "./publication-selection";
+import {publicationSelector,publicationSelectionKey,publicationReadPath,publicationReleaseMatches,checkedPublication,publicationWriteAllowed,publicationCancellationAllowed,cloudPublicationRequest,createPublicationAttempt} from "./publication-selection";
 import type {PublicationSelector} from "./publication-selection";
+import {validServiceSourceBinding,serviceSourceKey,serviceEvidencePath} from "./service-source-binding";
+import type {ServiceSourceBinding} from "./service-source-binding";
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type Delivery = { id: string; version: number; status: string; stage: string; mode?: string; sourceKind?:string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string; error?: string };
 type Workflow = {
@@ -32,7 +34,7 @@ function download(name: string, value: unknown) {
   try { document.body.appendChild(link); link.click(); }
   finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
 }
-export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, codeBusy, onOpenServices, handoffBlocked = false, manual = false }: { api: Api; taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; codeBusy: boolean; onOpenServices?: () => void; handoffBlocked?: boolean; manual?: boolean }) {
+export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, codeBusy, onOpenServices, handoffBlocked = false, manual = false }: { api: Api; taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; codeBusy: boolean; onOpenServices?: (source:ServiceSourceBinding) => void; handoffBlocked?: boolean; manual?: boolean }) {
   const [workflow, setWorkflow] = useState<Workflow>(), [busy, setBusy] = useState(false), [error, setError] = useState(""), [auto, setAuto] = useState(false);
   const [review, setReview] = useState(false), [confirmed, setConfirmed] = useState<Record<string,boolean>>({}), [release, setRelease] = useState<Release>(), [batches, setBatches] = useState<{ id: string; status: string; sequence: number; schedulerTriggered?: boolean }[]>([]);
   const [publication,setPublication]=useState<Publication>();
@@ -56,6 +58,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const [evidenceRead, setEvidenceRead] = useState<EvidenceReadState>("LOADING");
   const [evidenceError, setEvidenceError] = useState("");
   const consumptionEpoch=useRef(0),workflowEpoch=useRef(0);
+  const activeConsumptionSource=useRef("");
   const epoch = useRef(0), alive = useRef(true), requestKey = useRef(crypto.randomUUID());
   const activeTask = useRef(taskId); activeTask.current = taskId;
   const workflowSourceKey=JSON.stringify([taskId,manual,runId,revisionId,contextId]),activeWorkflowSource=useRef(workflowSourceKey);activeWorkflowSource.current=workflowSourceKey;
@@ -73,12 +76,14 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     }
   };
   const readConsumption=async(value=workflow)=>{
-    const id=taskId,digest=value?.package?.digest,sequence=++consumptionEpoch.current;
-    if(manual || !digest || !["PRIVATE_CLOUD_TEST","LOCAL_TEST_RELEASE"].includes(value?.publication.scope??""))return;
+    const id=taskId,digest=value?.package?.digest,sequence=++consumptionEpoch.current,binding=serviceHandoff,key=serviceSourceKey(binding);
+    if(!binding||digest!==binding.packageDigest||!["PRIVATE_CLOUD_TEST","LOCAL_TEST_RELEASE"].includes(value?.publication.scope??""))return;
     try{
-      const result=await api<TaskConsumption>(`/data-services/task-evidence?agent_task_id=${encodeURIComponent(id)}&package_digest=${encodeURIComponent(digest)}`);
-      if(alive.current&&activeTask.current===id&&sequence===consumptionEpoch.current){setConsumption(result);setConsumptionError("");}
-    }catch(e){if(alive.current&&activeTask.current===id&&sequence===consumptionEpoch.current){setConsumption(undefined);setConsumptionError(`消费对照尚未确认：${(e as Error).message}。不会新增调用或凭证。`);}}
+      const result=await api<TaskConsumption>(cloud?serviceEvidencePath(binding):`/data-services/task-evidence?agent_task_id=${encodeURIComponent(id)}&package_digest=${encodeURIComponent(digest)}`);
+      if(result.taskId!==binding.taskId||result.packageDigest!==binding.packageDigest||cloud&&(result.releaseId!==binding.releaseId||(result.sourceKind??"AGENT")!==binding.sourceKind)||manual&&result.agentIndependentE2E!==false)throw Error("消费证据不是当前确切发布来源，未采用其他包或发布记录");
+      if(manual&&(!Array.isArray(result.services)||result.services.some(entry=>entry.status==="VERIFIED"&&!manualConsumptionEntryMatches(entry,binding.releaseId,batches,binding.runId))))throw Error("人工消费证据未绑定当前成功调度的发布批次；不采用开发运行或混合来源。");
+      if(alive.current&&activeTask.current===id&&activeConsumptionSource.current===key&&sequence===consumptionEpoch.current){setConsumption(result);setConsumptionError("");}
+    }catch(e){if(alive.current&&activeTask.current===id&&activeConsumptionSource.current===key&&sequence===consumptionEpoch.current){setConsumption(undefined);setConsumptionError(`消费对照尚未确认：${(e as Error).message}。不会新增调用或凭证。`);}}
   };
   useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; }; }, []);
   useEffect(() => { if (!codeBusy) void load().catch(() => {}); }, [taskId, revisionId, runId, codeBusy]);
@@ -105,6 +110,10 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     canPublish:publicationWritable&&(!publicationTarget||Boolean(release&&publicationTargetMatches(publicationTarget,
       {taskId:release.sourceAgentTaskId??"",packageDigest:release.packageDigest,verificationId:release.verificationId},publicationClock)))};
   const cancellationWritable=publicationCancellationAllowed(cancellationInput);
+  const handoffCandidate:ServiceSourceBinding|undefined=publicationReady&&current&&release&&workflow?.package&&
+    (!cloud||selector&&publicationReleaseMatches(release,taskId,selector))?{taskId,packageDigest:workflow.package.digest,releaseId:release.id,sourceKind:manual?"MANUAL":"AGENT",revisionId,runId}:undefined;
+  const serviceHandoff=validServiceSourceBinding(handoffCandidate)?handoffCandidate:undefined,serviceHandoffKey=serviceSourceKey(serviceHandoff);
+  activeConsumptionSource.current=serviceHandoffKey;
   useEffect(() => {
     if (!publicationTarget) return;
     setPublicationClock(Date.now());
@@ -113,7 +122,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   },[publicationTarget?.taskId,publicationTarget?.packageDigest,publicationTarget?.verificationId,publicationTarget?.startsAt,publicationTarget?.expiresAt]);
   useEffect(() => { if (!publicationWritable) { setReview(false);setConfirmed({}); } }, [publicationWritable]);
   useEffect(() => { if (!canWrite || publicationTarget) { epoch.current++;setAuto(false); } }, [canWrite,publicationTarget?.taskId]);
-  useEffect(()=>{setConsumption(undefined);setConsumptionError("");void readConsumption();return()=>{consumptionEpoch.current++;};},[taskId,workflow?.package?.digest,cloud]);
+  useEffect(()=>{setConsumption(undefined);setConsumptionError("");void readConsumption();return()=>{consumptionEpoch.current++;};},[serviceHandoffKey,cloud]);
   useEffect(() => { setReview(false); setConfirmed({}); }, [publicationKey,workflow?.package?.digest, workflow?.verification?.id, dirty, current, publicationRead]);
   useEffect(() => { requestKey.current = crypto.randomUUID(); }, [taskId, revisionId, runId]);
   async function drive(start: Delivery) {
@@ -236,12 +245,14 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           {publication && <button className="button" onClick={() => download(`publication-${release.id.slice(0,8)}.json`,{...publication, readState:publicationRead, notice:"已读取的测试范围记录，不代表实时健康或公网验收"})}><Download size={14}/>下载发布与监控记录</button>}
         </>}
       </div>
-      {!manual && <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务的接口开发、测试与授权。选择实际发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
+      <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务、交付包和发布版本的接口开发、测试与授权。选择实际成功发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
+        {manual&&<p role="status">人工发布结果消费 · 保留原 Agent 失败及工程师接管归因，不计为 Agent 自主完成。</p>}
+        {!serviceHandoff&&<p role="status">请先核对当前包的确切发布记录；未确认来源时不跳转到全项目或原 Agent 的其他结果。</p>}
         {consumptionError&&<p role="status">{consumptionError}</p>}
         {journey.steps.find(step=>step.id==="services")?.state==="DONE"&&<p role="status">组合接口的消费证据已通过。DAPI的单独授权调用记录独立展示，不影响已通过的XAPI组合查询。</p>}
-        {consumption&&<><p>{consumption.notice}</p><small>对照时间：{consumption.checkedAt}；这是历史消费记录，不是实时授权保证。</small>{!current&&<p>编辑器或当前查看的批次已变化；下面证据仅供原版本参考。</p>}<ul>{consumption.services.map(s=><li key={s.serviceId}><strong>{s.serviceType} · {s.name}</strong> · 版本 {s.versionId.slice(0,8)} · {s.status==="VERIFIED"?"历史消费证据对照通过":s.status==="NEEDS_ATTENTION"?"需要处理":"待实际授权调用"}<p>{s.notice}</p>{s.call&&<small>调用 {s.call.callId.slice(0,8)} · {s.call.rowCount}行 · 摘要 {s.call.resultHash.slice(0,12)} · {applicationStatusText(s.call.applicationStatus,true)}</small>}</li>)}</ul>{consumption.truncated&&<p>证据数量超过本次上限，不能标记整个消费阶段完成。</p>}<EvidenceDownload name={`consumption-${taskId.slice(0,8)}.json`} value={consumption} request={{kind:"consumption",id:taskId,digest:consumption.packageDigest}}>下载消费对照证据</EvidenceDownload></>}
-        {workflow.package&&<button className="button" disabled={working} onClick={()=>void readConsumption()}>刷新消费证据</button>}
-        {onOpenServices ? <><button className="button" disabled={dirty || working || handoffBlocked} onClick={onOpenServices}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>}
+        {consumption&&<><p>{consumption.notice}</p><small>对照时间：{consumption.checkedAt}；这是历史消费记录，不是实时授权保证。</small>{!current&&<p>编辑器或当前查看的批次已变化；下面证据仅供原版本参考。</p>}<ul>{consumption.services.map(s=><li key={s.serviceId}><strong>{s.serviceType} · {s.name}</strong> · 版本 {s.versionId.slice(0,8)} · {s.status==="VERIFIED"?"历史消费证据对照通过":s.status==="NEEDS_ATTENTION"?"需要处理":"待实际授权调用"}<p>{s.notice}</p>{s.call&&<small>调用 {s.call.callId.slice(0,8)} · {s.call.rowCount}行 · 摘要 {s.call.resultHash.slice(0,12)} · {applicationStatusText(s.call.applicationStatus,true)}</small>}</li>)}</ul>{consumption.truncated&&<p>证据数量超过本次上限，不能标记整个消费阶段完成。</p>}<EvidenceDownload name={`consumption-${taskId.slice(0,8)}.json`} value={consumption} request={{kind:"consumption",id:taskId,digest:consumption.packageDigest,...(cloud?{releaseId:consumption.releaseId}:{})}}>下载当前发布的消费对照证据</EvidenceDownload></>}
+        {workflow.package&&<button className="button" disabled={working||!serviceHandoff} onClick={()=>void readConsumption()}>刷新消费证据</button>}
+        {onOpenServices ? <><button className="button" disabled={!serviceHandoff || dirty || working || handoffBlocked} onClick={()=>{if(serviceHandoff&&!dirty&&!working&&!handoffBlocked)onOpenServices(serviceHandoff);}}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>
     </>}
   </section>;
 }

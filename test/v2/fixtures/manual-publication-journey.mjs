@@ -17,7 +17,7 @@ import { signSchedulerTick } from "../../../src/v2/scheduler-tick.mjs";
 // This helper never contacts a cloud, model or Spark. The password/keys below
 // are public test constants and must never be used for a real account.
 export const manualPublicationTestPassword = "SyntheticManualPublication!2026";
-export async function createManualPublicationJourney({ applicationRoot, port = 0 } = {}) {
+export async function createManualPublicationJourney({ applicationRoot, port = 0, businessStore, enableServices = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "shuduo-manual-publication-journey-"));
   const artifactStore = new LocalArtifactStore(join(directory, "artifacts")), objects = new Map(), identities = {};
   let now = Date.now(), app, base, store = new MetadataStore(join(directory, "metadata.sqlite"));
@@ -82,6 +82,7 @@ export async function createManualPublicationJourney({ applicationRoot, port = 0
   const queueBaseline = { jobCreates, submitCalls, resultReads, cancelCalls };
   const secret = "synthetic-manual-publication-timer-key-123456789", triggerName = "shuduo-release-manual-contract";
   const env = { V2_LOCAL_DEVELOPMENT: "false", V2_HOST: "127.0.0.1", V2_PROVISIONING_ONLY: "true", V2_PRIVATE_SMOKE_ENABLED: "true", V2_ALLOW_INSECURE_PUBLIC_COOKIES: "true",
+    ...(enableServices ? {V2_PRIVATE_DATA_SERVICES_ENABLED: "true"} : {}),
     V2_PUBLIC_ORIGIN: "https://manual-publication.example.invalid", V2_DURABLE_SQL_AGENT_ENABLED: "true", V2_FC_PUBLIC_WRITE_SCOPE: "PUBLICATION_ONLY",
     V2_BOOTSTRAP_ADMIN_EMAIL: owner.email, V2_PUBLIC_PUBLICATION_TASK_ID: agent.id, V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST: item.digest,
     V2_PUBLIC_PUBLICATION_VERIFICATION_ID: verification.id, V2_PUBLIC_PUBLICATION_STARTS_AT: new Date(now - 1000).toISOString(), V2_PUBLIC_PUBLICATION_EXPIRES_AT: new Date(now + 3600000).toISOString(),
@@ -99,7 +100,7 @@ export async function createManualPublicationJourney({ applicationRoot, port = 0
   };
   const open = async () => {
     store ??= new MetadataStore(join(directory, "metadata.sqlite"));
-    app = createV2Server({ root: applicationRoot ?? directory, store, artifactStore, runner, stateCoordinator, env, now: () => now,
+    app = createV2Server({ root: applicationRoot ?? directory, store, artifactStore, runner, businessStore, stateCoordinator, env, now: () => now,
       ingress: createFcIngress({ publicHttpEnabled: true }), generator: async () => { modelCalls++; throw Error("SYNTHETIC_MODEL_FORBIDDEN"); } });
     await new Promise(resolve => app.server.listen(port, "127.0.0.1", resolve)); base = `http://127.0.0.1:${app.server.address().port}`;
   };

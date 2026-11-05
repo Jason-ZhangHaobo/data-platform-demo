@@ -2,6 +2,7 @@
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
 const publicationIdSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"};
 const publicationProperties={sourceKind:{type:"string",enum:["AGENT","MANUAL"]},sourceRunId:publicationIdSchema,packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},verificationId:publicationIdSchema,releaseId:publicationIdSchema};
@@ -71,8 +72,8 @@ const tools = [
   { name: "data_service_history", description: "只读版本切换/回滚回执，不包含调用密钥。", inputSchema: { type:"object",additionalProperties:false,properties:{type:{type:"string",enum:["dapi","xapi"]},serviceId:{type:"string",format:"uuid"}},required:["type","serviceId"]}},
   { name: "data_service_new_version", description: "创建新草稿，不测试、发布或改变已有线上端点；XAPI未传steps时保留原固定子版本。", inputSchema:{type:"object",additionalProperties:false,properties:{type:{type:"string",enum:["dapi","xapi"]},serviceId:{type:"string",format:"uuid"},input:{type:"object",additionalProperties:false,properties:{sourceReleaseRunId:{type:"string",format:"uuid"},fields:{type:"array",items:{type:"string"}},timeoutMs:{type:"integer",minimum:100,maximum:5000},rateLimitPerMinute:{type:"integer",minimum:1,maximum:600},steps:{type:"array",items:{type:"object"}}}}},required:["type","serviceId","input"]}},
   { name: "data_service_activate", description: "审阅后切换到已测试发布的目标版本，或回滚；必须确认当前线上版本和目标摘要，恢复原requestId。失败或重放不重复改变端点。", inputSchema:{type:"object",additionalProperties:false,properties:{type:{type:"string",enum:["dapi","xapi"]},serviceId:{type:"string",format:"uuid"},versionId:{type:"string",format:"uuid"},expectedPublishedVersionId:{type:"string",format:"uuid"},configHash:{type:"string",pattern:"^[a-f0-9]{64}$"},requestId:{type:"string",minLength:1,maxLength:100},confirm:{type:"boolean",const:true}},required:["type","serviceId","versionId","expectedPublishedVersionId","configHash","requestId","confirm"]}},
-  {name:"data_service_sources",description:"只读列出本人或项目管理员可访问的真实已核验云端发布批次，不返回结果行或原始日志。",inputSchema:{type:"object",additionalProperties:false,properties:{agentTaskId:{type:"string",format:"uuid"}}}},
-  {name:"data_service_task_evidence",description:"按任务与包摘要只读对照固定版本、历史授权调用与实际快照；不新增调用、凭证或计算，不代表外部系统或自主E2E验收。",inputSchema:{type:"object",additionalProperties:false,properties:{agentTaskId:{type:"string",format:"uuid"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}},required:["agentTaskId","packageDigest"]}},
+  {name:"data_service_sources",description:"只读列出已核验发布批次。可按agentTaskId读取旧范围；指定packageDigest或releaseId时三项必须齐全且不回退其他包。人工来源仍需原工程师权限，不返回结果行。",inputSchema:{type:"object",additionalProperties:false,properties:{agentTaskId:{type:"string",format:"uuid"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},releaseId:{type:"string",format:"uuid"}},dependentRequired:{packageDigest:["agentTaskId","releaseId"],releaseId:["agentTaskId","packageDigest"]}}},
+  {name:"data_service_task_evidence",description:"按任务与包摘要只读对照历史调用，可指定releaseId锁定确切发布。人工结果保留工程师归因；不新增调用、凭证或计算，不代表外部系统或自主E2E验收。",inputSchema:{type:"object",additionalProperties:false,properties:{agentTaskId:{type:"string",format:"uuid"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},releaseId:{type:"string",format:"uuid"}},required:["agentTaskId","packageDigest"]}},
   { name: "data_service_openapi", description: "读取指定DAPI/XAPI的OpenAPI 3.1文档。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" } }, required: ["type", "serviceId"] } },
   { name: "data_service_recovery", description: "使用当前平台身份读取私有服务启动标识、快照完整性和恢复对照；不执行计算、不发凭证，单份报告不代表冷启动验收。", inputSchema: { type: "object", additionalProperties: false, properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string", format: "uuid" } }, required: ["type", "serviceId"] } },
   { name: "data_service_calls", description: "读取数据服务调用日志，可按服务过滤。", inputSchema: { type: "object", properties: { serviceId: { type: "string" } } } },
@@ -409,11 +410,8 @@ async function callTool(name, args = {}, client=defaultClient) {
   if (name === "xapi_list") return client.request("/data-services/xapis");
   if (name === "dapi_create")
     return client.request("/data-services/dapis", { method: "POST", body: args });
-  if(name==="data_service_sources")return client.request("/data-services/sources"+(args.agentTaskId?`?agent_task_id=${encodeURIComponent(args.agentTaskId)}`:""));
-  if(name==="data_service_task_evidence"){
-    if(!/^[a-f0-9-]{36}$/.test(args.agentTaskId??"") || !/^[a-f0-9]{64}$/.test(args.packageDigest??""))throw new Error("需提供任务编号与确切包摘要");
-    return client.request(`/data-services/task-evidence?agent_task_id=${encodeURIComponent(args.agentTaskId)}&package_digest=${encodeURIComponent(args.packageDigest)}`);
-  }
+  if(name==="data_service_sources"||name==="data_service_task_evidence")
+    return client.request(serviceSourceReadPath(name==="data_service_sources"?'sources':'task-evidence',args));
   if(["data_service_detail","data_service_history"].includes(name))return client.request(`/data-services/${typePath(args.type)}/${encodeURIComponent(args.serviceId)}${name==="data_service_history"?"/history":""}`);
   if(name==="data_service_new_version")return client.request(`/data-services/${typePath(args.type)}/${encodeURIComponent(args.serviceId)}/versions`,{method:"POST",body:args.input});
   if(name==="data_service_activate"){

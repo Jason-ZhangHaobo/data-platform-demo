@@ -1006,6 +1006,19 @@ export const dataServiceFields = Object.freeze([...assetFields]);
 export function verifiedPrivateServiceSource({run,release,bundle,approval}) {
   if (!run || !release || !bundle || !approval || run.publicDeployed!==false || release.publicDeployed!==false || release.scope!=="PRIVATE_CLOUD_TEST" || approval.packageId!==bundle.id) throw fail(409,"缺少发布来源证据","INVALID_RELEASE_PROVENANCE");
   const plan=validateDeliveryPackage(bundle,bundle.digest);
+  const attribution=plan.source.attribution,records=[run,release,approval,bundle];
+  const manual=attribution!==undefined||records.some(record=>record.sourceKind==='MANUAL'||record.sourceAttribution==='ENGINEER_ASSISTED');
+  if(records.some(record=>record.sourceKind!==undefined&&!['AGENT','MANUAL'].includes(record.sourceKind)))
+    throw fail(409,"发布来源类型不合法","INVALID_RELEASE_PROVENANCE");
+  if(manual && (attribution?.kind!=='ENGINEER_ASSISTED'||attribution.agentIndependentE2E!==false||
+      bundle.sourceKind!=='MANUAL'||bundle.agentIndependentE2E!==false||bundle.sourceRunId!==plan.source.runId||
+      [run,release,approval].some(record=>record.sourceKind!=='MANUAL'||record.sourceAttribution!=='ENGINEER_ASSISTED'||
+        record.agentIndependentE2E!==false||record.sourceRunId!==plan.source.runId||record.submittedBy!==attribution.actorId)||
+      release.sourceAgentTaskId!==attribution.originAgentTaskId||run.sourceAgentTaskId!==attribution.originAgentTaskId||
+      [release,approval].some(record=>record.sourceRevisionId!==plan.source.revisionId||record.sourceCodeHash!==plan.source.sqlHash)||
+      (run.sourceRevisionId!==undefined&&run.sourceRevisionId!==plan.source.revisionId)||
+      (run.sourceCodeHash!==undefined&&run.sourceCodeHash!==plan.source.sqlHash)))
+    throw fail(409,"人工发布来源、工程师与不可变交付包不一致","INVALID_RELEASE_PROVENANCE");
   if (run.mode!=="DURABLE_PRIVATE_RELEASE_V1" || release.mode!==run.mode || run.releaseId!==release.id || release.status!=="COMPLETED_CLOUD_TEST" || release.health!=="HEALTHY" || run.status!=="SUCCEEDED" || !run.published || !run.schedulerTriggered || run.clockMode!=="FC_TIMER" || run.packageId!==bundle.id || release.packageId!==bundle.id || run.packageDigest!==bundle.digest || release.packageDigest!==bundle.digest || release.sourceCodeHash!==plan.source.sqlHash || approval.id!==release.approvalId || approval.status!=="APPROVED" || approval.packageDigest!==bundle.digest || run.engine!=="Apache Spark" || run.engineVersion!==plan.deployment.runtime.version || run.mainSqlExecuted!==true || run.testSqlValidation?.passed!==true || run.testSqlValidation.sqlHash!==sha256(bundle.files["tests.sql"]) || !validationMatchesFamily(run.validation,{id:plan.source.validationContractId,contextIds:plan.fixtures.validationContexts.map(context=>context.id)}) || !Array.isArray(run.rows) || run.testDouble===true)
     throw fail(409,"发布版本、实际执行与独立断言证据不一致","INVALID_RELEASE_PROVENANCE");
   return run;

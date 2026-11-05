@@ -67,7 +67,8 @@ test("publication permission cannot enable development or other module writes", 
   assert.match(main, /const canPublish = session.publicationOnly\s+\? Boolean\(session.authenticated && !session.readOnly && !session.developmentOnly && !session.consumptionOnly && session.permissions\?\.includes\("DELIVERY"\) && publicationWindowOpen\)/);
   assert.match(main, /const servicesCanWrite = !session.readOnly && !session.publicationOnly/);
   assert.match(main, /canWrite=\{canWrite\} canPublish=\{canPublish\} publicationTarget=\{publicationTarget\}/);
-  assert.match(main, /encodeURIComponent\(session.publicationTaskId\)/);
+  assert.match(main, /publicationSourceLocation\(window\.location\.href,publicationTarget,session\.publicationSource\)/);
+  assert.match(main, /指定发布来源尚未解析/);
   assert.match(main, /setInterval\(\(\) => setPublicationClock\(Date.now\(\)\), 1000\)/);
   assert.match(main, /publicationClock < Date.parse\(publicationTarget.expiresAt\)/);
   assert.match(main, /同一冻结业务日期运行两批，不代表两个交易日或生产调度/);

@@ -3,9 +3,13 @@ import { serviceVersionConfigValid } from "./data-services.mjs";
 const assetFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 // Private, owner-authorized projection of persisted calls. No tokens, rows,
 // parameters, rematerialization, model invocation or new consumer calls.
-export async function privateTaskConsumption({ taskId, packageDigest, services, ownedService, getVersion, source, getRelease, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
+export async function privateTaskConsumption({ taskId, packageDigest, releaseId, services, ownedService, getVersion, source, getRelease, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
   if (!["PRIVATE_CLOUD_TEST", "LOCAL_TEST_ONLY"].includes(scope)) throw new Error("Unsupported consumption scope");
   const entries = [], limit = 20;
+  const selectedRelease=releaseId===undefined?undefined:getRelease(releaseId);
+  const selectedMatches=releaseId===undefined||selectedRelease?.id===releaseId&&selectedRelease.sourceAgentTaskId===taskId&&selectedRelease.packageDigest===packageDigest;
+  const attribution=release=>({sourceKind:release.sourceKind??"AGENT",
+    ...(release.sourceKind==="MANUAL"?{sourceAttribution:"ENGINEER_ASSISTED"}:{}),agentIndependentE2E:false});
   let matchingCount = 0;
   for (const service of services) {
     const root = service.publishedVersion;
@@ -20,7 +24,8 @@ export async function privateTaskConsumption({ taskId, packageDigest, services, 
     } catch (error) { if ([403,404].includes(error.status)) continue; throw error; }
     const related = children.filter(Boolean).some(v => {
       const release = getRelease(v.sourceReleaseId);
-      return release?.sourceAgentTaskId === taskId && v.sourcePackageDigest === packageDigest;
+      return selectedMatches && release?.sourceAgentTaskId === taskId && v.sourcePackageDigest === packageDigest &&
+        (releaseId===undefined||release.id===releaseId);
     });
     if (!related) continue;
     matchingCount++;
@@ -30,14 +35,19 @@ export async function privateTaskConsumption({ taskId, packageDigest, services, 
       notice: "尚无当前发布版本的成功授权调用；测试或打开模块不算消费。" };
     try {
       if (!serviceVersionConfigValid(root) || !children.length || children.some(v => !v || !serviceVersionConfigValid(v))) throw Object.assign(new Error(), {status:409, code:"SERVICE_VERSION_CORRUPT"});
+      const sourceReleases=[];
       const sources = children.map(v => {
         const run = source(v.sourceReleaseRunId), release = getRelease(run.releaseId);
-        if (release?.sourceAgentTaskId !== taskId || run.packageDigest !== packageDigest || v.sourcePackageDigest !== packageDigest || v.sourceReleaseId !== release.id)
+        if (release?.sourceAgentTaskId !== taskId || run.packageDigest !== packageDigest || v.sourcePackageDigest !== packageDigest || v.sourceReleaseId !== release.id ||
+          (releaseId!==undefined&&release.id!==releaseId))
           throw Object.assign(new Error(), {status:409, code:"MIXED_SOURCE_VERSIONS"});
+        sourceReleases.push(release);
         return run.id;
       });
-      if (root.serviceType === "XAPI" && new Set(sources).size !== 1) throw Object.assign(new Error(), {status:409, code:"MIXED_SOURCE_VERSIONS"});
+      if (new Set(sourceReleases.map(release=>release.id)).size!==1||root.serviceType === "XAPI" && new Set(sources).size !== 1)
+        throw Object.assign(new Error(), {status:409, code:"MIXED_SOURCE_VERSIONS"});
       entry.sourceRunIds = [...new Set(sources)];
+      Object.assign(entry,attribution(sourceReleases[0]),{releaseId:sourceReleases[0].id});
       const fields = new Set(children.flatMap(v => v.fields ?? []));
       entry.fullAssetComposition = root.serviceType === "XAPI" && assetFields.every(field => fields.has(field));
       const successful = calls(service.id).filter(c => c.serviceVersionId === root.id && c.outcome === "SUCCEEDED" && c.statusCode === 200 && c.rowCount > 0).sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt)));
@@ -61,7 +71,11 @@ export async function privateTaskConsumption({ taskId, packageDigest, services, 
   }
   const truncated = matchingCount > limit;
   const verified = !truncated && entries.some(e => e.status === "VERIFIED" && e.fullAssetComposition === true);
+  const sourceKinds=[...new Set(entries.map(entry=>entry.sourceKind).filter(Boolean))];
+  const sourceMetadata=selectedMatches&&selectedRelease?attribution(selectedRelease):sourceKinds.length===1?
+    {sourceKind:sourceKinds[0],...(sourceKinds[0]==="MANUAL"?{sourceAttribution:"ENGINEER_ASSISTED"}:{})}:{};
   return { protocol: scope === "LOCAL_TEST_ONLY" ? "shuduo-local-task-consumption/v1" : "shuduo-private-task-consumption/v1", taskId, packageDigest,
+    ...(releaseId===undefined?{}:{releaseId}),...sourceMetadata,
     scope, status: verified ? "VERIFIED" : "PENDING", checkedAt: new Date().toISOString(),
     services: entries, matchingCount, truncated, publicDeployed: false, externalSystemVerified: false, agentIndependentE2E: false,
     notice: "持久授权调用与现有快照的只读对照；不新增调用、不消耗限流，不等同外部客户端独立断言或自主E2E验收。" };
