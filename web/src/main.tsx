@@ -60,6 +60,8 @@ import {workbenchEnvironment,mayWriteServices} from "./workbench-environment";
 import type { AuthSession, PublicationTarget } from "./AuthDialog";
 import { consumptionWindowOpen } from "./service-consumption-scope";
 import type { ConsumptionScope } from "./service-consumption-scope";
+import {publicationSourceLocation,serviceSourceFromLocation,serviceHandoffLocation,serviceSourceKey,validServiceSourceBinding} from "./service-source-binding";
+import type {ServiceSourceBinding} from "./service-source-binding";
 import { loadModuleStartup, loadStartupCore, moduleStartupPaths, startupReadCurrent } from "./startup-loading";
 import type { StartupReadState } from "./startup-loading";
 const SqlEditor = lazy(() => import("./SqlEditor"));
@@ -422,6 +424,7 @@ function App() {
     return () => clearInterval(timer);
   }, [session.publicationOnly, session.publicationStartsAt, session.publicationExpiresAt, session.consumptionOnly, session.consumptionStartsAt, session.consumptionExpiresAt]);
   const [agentWorkspaceMode, setAgentWorkspaceMode] = useState("development");
+  const [serviceLocation,setServiceLocation]=useState(()=>serviceSourceFromLocation(window.location.href));
   const inputModule = nav === "agent-center" && agentWorkspaceMode === "services" ? "services" : nav;
   const inputModuleRef = useRef(inputModule); inputModuleRef.current = inputModule;
   const [agentDraftDirty, setAgentDraftDirty] = useState(false);
@@ -437,6 +440,7 @@ function App() {
   };
   const setNav = (next: string) => {
     if (next !== nav && agentDraftDirty && !confirm("Agent 工作台有未保存的输入或代码，是否放弃并切换模块？")) return;
+    if(next==="services")setServiceLocation(serviceSourceFromLocation(window.location.href,true));
     setNavState(next);
   };
   const [authOpen, setAuthOpen] = useState(false);
@@ -687,13 +691,22 @@ function App() {
   const canPublish = session.publicationOnly
     ? Boolean(session.authenticated && !session.readOnly && !session.developmentOnly && !session.consumptionOnly && session.permissions?.includes("DELIVERY") && publicationWindowOpen)
     : canWrite && !session.developmentOnly && !session.consumptionOnly;
-  const publicationTaskHref = session.publicationTaskId && /^[a-f0-9-]{36}$/.test(session.publicationTaskId)
-    ? `/v2/?module=agent-center&task=${encodeURIComponent(session.publicationTaskId)}#agent-publication` : undefined;
+  const publicationTaskHref = publicationTarget?publicationSourceLocation(window.location.href,publicationTarget,session.publicationSource)?.href:undefined;
   const workbench = workbenchEnvironment(status,{privatePreview,privateServicesPreview});
   const consumptionScope: ConsumptionScope | undefined = session.consumptionOnly ? {pilotId:session.consumptionPilotId,taskId:session.consumptionTaskId,plan:session.consumptionPlan,startsAt:session.consumptionStartsAt,expiresAt:session.consumptionExpiresAt} : undefined;
   const servicesCanWrite = !session.readOnly && !session.publicationOnly && !session.developmentOnly && workbench.servicesAvailable && mayWriteServices(status,session) && (!session.consumptionOnly || consumptionWindowOpen(consumptionScope,publicationClock)) && coreReady;
   const consumptionTaskHref = session.consumptionTaskId && /^[a-f0-9-]{36}$/.test(session.consumptionTaskId)
     ? `/v2/?module=services&task=${encodeURIComponent(session.consumptionTaskId)}` : undefined;
+  const sourceBinding=serviceLocation.status==="VALID"?serviceLocation.binding:undefined;
+  const sourceBindingError=serviceLocation.status==="INVALID"?serviceLocation.error:undefined;
+  const serviceWorkspaceKey=`${session.user?.id??"anonymous"}:${serviceSourceKey(sourceBinding)||sourceBindingError||"legacy"}`;
+  const serviceTaskId=session.consumptionOnly?session.consumptionTaskId:sourceBinding?.taskId??new URLSearchParams(window.location.search).get("task")??undefined;
+  const openServiceHandoff=(binding:ServiceSourceBinding)=>{
+    if(agentDraftDirty||!validServiceSourceBinding(binding)){setNotice("请先确认当前版本及输入，再从确切发布记录继续；未切换来源。");return;}
+    if(workbench.cloudServices){const url=serviceHandoffLocation(window.location.href,binding);history.replaceState(null,"",url);setServiceLocation({status:"VALID",binding});}
+    else{const url=new URL(window.location.href);for(const key of [...url.searchParams.keys()])if(key.startsWith("source_")||["revision","run","origin_task"].includes(key))url.searchParams.delete(key);url.searchParams.set("module","services");url.searchParams.set("task",binding.taskId);url.hash="";history.replaceState(null,"",url);setServiceLocation({status:"ABSENT"});}
+    setAgentWorkspaceMode("services");setNavState("services");setNotice("已保留原任务、交付包和发布来源；只选择成功发布批次，不自动创建接口、凭证或调用数据。");
+  };
   const runRevision = revisions.find(
     (revision) => revision.id === run?.revisionId,
   );
@@ -866,7 +879,7 @@ function App() {
         {coreReady && moduleInputsRequired && (!moduleInputsReady || needsContexts && !contexts.length) && <div className={moduleInputError ? "error-banner" : "notice-banner"} role={moduleInputError ? "alert" : "status"}><div><strong>{moduleInputError ? "当前模块数据读取失败" : moduleInputsReady ? "没有可用业务上下文" : "正在读取当前模块所需数据"}</strong><p>{moduleInputError || (needsContexts ? "表结构与业务口径未确认前，开发按钮保持禁用；已保存任务可继续读取。" : "历史列表尚未确认，不把加载中显示为空结果。")}</p></div>{(moduleInputError || moduleInputsReady) && <button className="button" disabled={!coreReady} onClick={() => void reloadModule()}>重新读取当前模块</button>}</div>}
         {session.readOnly && <div className="notice-banner" role="status">只读验收入口 · 已有账号可登录查看已保存结果；创建、运行、发布及新邀请暂未开放。不会因登录自动运行模型或 Spark。</div>}
         {session.developmentOnly && !session.readOnly && <div className="notice-banner" role="status">受邀开发试点 · {session.developmentTaskOnly ? "仅续接指定既有任务及其关联代码与交付文件，原次数和费用预留不重置；其他任务只读" : "仅限一条新 Agent 任务、SQL 编辑运行及交付文件准备；历史任务只读"}，发布、全平台规划、邀请和接口凭证管理关闭。窗口截止 {session.developmentExpiresAt ? new Date(session.developmentExpiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间），到期停止新计算并保留结果。</div>}
-        {session.publicationOnly && <div className="notice-banner" role="status"><div><strong>受邀发布试点 · 仅指定交付包的两个样例批次</strong><p>代码、需求和交付文件只读，不重新调用模型或演练；同一冻结业务日期运行两批，不代表两个交易日或生产调度。{canPublish ? "请核对下方指定版本并逐项审阅。" : "当前发布窗口未开放、已结束或此账号无发布权限；已有结果仍可查看。"}</p><small>窗口：{session.publicationStartsAt ? new Date(session.publicationStartsAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"} — {session.publicationExpiresAt ? new Date(session.publicationExpiresAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；邀请码、改密及其他模块写入保持关闭。</small>{publicationTaskHref && <a className="button" href={publicationTaskHref}>查看指定任务与审阅范围</a>}</div></div>}
+        {session.publicationOnly && <div className="notice-banner" role="status"><div><strong>受邀发布试点 · 仅指定交付包的两个样例批次</strong><p>代码、需求和交付文件只读，不重新调用模型或演练；同一冻结业务日期运行两批，不代表两个交易日或生产调度。{canPublish ? "请核对下方指定版本并逐项审阅。" : "当前发布窗口未开放、已结束或此账号无发布权限；已有结果仍可查看。"}</p><small>窗口：{session.publicationStartsAt ? new Date(session.publicationStartsAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"} — {session.publicationExpiresAt ? new Date(session.publicationExpiresAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；邀请码及其他业务模块写入保持关闭。</small>{publicationTaskHref ? <a className="button" href={publicationTaskHref}>查看指定{session.publicationSource?.sourceKind==="MANUAL"?"人工版本":"任务"}与审阅范围</a>:<p>指定发布来源尚未解析；请重新读取身份与包记录，不会回退到原 Agent 的其他版本。</p>}</div></div>}
         {session.consumptionOnly && <div className="notice-banner" role="status"><div><strong>受邀接口消费试点 · 同任务2个DAPI、1个XAPI、1个测试应用</strong><p>仅按冻结计划开发、测试和发布接口，不修改代码、不运行模型或Spark、不重新发布业务批次；版本新增/切换、其他模块、邀请和改密继续关闭。{servicesCanWrite ? "请进入指定任务的接口交付。" : "当前窗口未开放、已结束或此账号无权限；已保存证据仍可查看。"}</p><small>窗口：{session.consumptionStartsAt ? new Date(session.consumptionStartsAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"} — {session.consumptionExpiresAt ? new Date(session.consumptionExpiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；测试凭证到期失效，历史调用记录保留。</small>{consumptionTaskHref&&<a className="button" href={consumptionTaskHref}>打开指定任务的接口交付</a>}</div></div>}
         {privatePreview && <div className="notice-banner" role="status">私有云端试用 · {agentDevelopmentPreview ? "Agent 数据开发、SQL 编辑、真实运行与任务恢复" : "SQL 编辑、真实 Spark 运行和结果恢复"}{privateServicesPreview ? "、发布结果的数据服务消费" : ""}；未开放模块不代表已验收。临时访问通道到期后入口失效，已保存的云端任务记录保留。</div>}
         {error && (
@@ -881,8 +894,8 @@ function App() {
         {!coreSnapshotKnown ? <WorkbenchLoading label={coreReadState === "ERROR" ? "工作台等待身份与服务重新核验，未加载任何个人任务。" : "正在确认当前身份，随后加载所选工作台…"} /> : <Suspense key={session.user?.id ?? "public-visitor"} fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
-          {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>setAgentWorkspaceMode("services")}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
-          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={session.consumptionOnly ? session.consumptionTaskId : new URLSearchParams(window.location.search).get("task")??undefined} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? () => { setAgentWorkspaceMode("services"); setNotice("已带入原任务来源；请选择实际发布批次继续接口交付。不会自动创建凭证。"); } : undefined} /> :
+          {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>{setServiceLocation(serviceSourceFromLocation(window.location.href,true));setAgentWorkspaceMode("services");}}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
+          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite && !session.developmentOnly}
@@ -1645,7 +1658,7 @@ function App() {
             <h1>{active?.name}</h1>
             <p className="module-subtitle">{active?.description}</p>
             {nav === "services" ? (
-              workbench.servicesAvailable ? <DataServicesWorkbench key={session.user?.id ?? "anonymous"} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={session.consumptionOnly ? session.consumptionTaskId : undefined} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}</div>
+              workbench.servicesAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}</div>
             ) : nav === "sources" || nav === "sync" ? (
               <IngestionWorkbench
                 api={api}

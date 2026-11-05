@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
 const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
 
@@ -25,7 +26,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent journey --id AGENT_TASK_ID
   shuduo agent workflow --id AGENT_TASK_ID
   shuduo agent request --request-id ORIGINAL_REQUEST_ID
-  shuduo services task-evidence --task-id AGENT_TASK_ID --package-digest SHA256
+  shuduo services task-evidence --task-id AGENT_TASK_ID --package-digest SHA256 [--release-id RELEASE_ID]
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-delivery --id AGENT_TASK_ID
   shuduo agent delivery --id DELIVERY_TASK_ID
@@ -67,7 +68,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services create-xapi --name 名称 --slug path --steps alias:DAPI_ID,alias:DAPI_ID
   shuduo services test --type dapi|xapi --id ID [--client-id CLIENT-001]
   shuduo services publish --type dapi|xapi --id ID [--config-hash SHA256]
-  shuduo services sources [--agent-task-id ID]
+  shuduo services sources [--agent-task-id ID] [--package-digest SHA256 --release-id RELEASE_ID]
   shuduo services openapi --type dapi|xapi --id ID
   shuduo services recovery --type dapi|xapi --id ID
   shuduo services show|history --type dapi|xapi --id ID
@@ -210,6 +211,16 @@ function reviewedPublication(input){
   const selected=publicationSelectorInput(selector);
   if(!selected.packageDigest||!selected.verificationId||selected.releaseId)throw Error("发布必须绑定包摘要和演练，不能提供已有发布编号");
   return {...selected,attestations:Object.fromEntries(required.map(key=>[key,true]))};
+}
+function serviceReadCliOptions(argv,options,action){
+  const taskFlag=action==='sources'?'agent_task_id':'task_id',fields={[taskFlag]:'agentTaskId',package_digest:'packageDigest',release_id:'releaseId'},
+    allowed=new Set(['base_url','help',...Object.keys(fields)]),seen=new Set();
+  for(const token of argv.filter(value=>value.startsWith('--'))){
+    const key=token.slice(2).replaceAll('-','_');
+    if(!allowed.has(key)||seen.has(key))throw Error('来源读取命令包含未知或重复参数，不允许覆盖执行者或回退其他结果');
+    seen.add(key);
+  }
+  return Object.fromEntries(Object.entries(fields).filter(([key])=>Object.hasOwn(options,key)).map(([key,name])=>[name,options[key]]));
 }
 const typePath = (value) => {
   if (!['dapi', 'xapi'].includes(value)) throw new Error("--type必须是dapi或xapi");
@@ -584,10 +595,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "releases" && action === "monitor")
       result = await client.request("/monitoring/overview");
-    else if (resource === "services" && action === "sources") result=await client.request("/data-services/sources"+(parsed.options.agent_task_id?`?agent_task_id=${encodeURIComponent(parsed.options.agent_task_id)}`:""));
-    else if (resource === "services" && action === "task-evidence") {
-      result=await client.request(`/data-services/task-evidence?agent_task_id=${encodeURIComponent(required(parsed.options,"task_id"))}&package_digest=${encodeURIComponent(required(parsed.options,"package_digest"))}`);
-    }
+    else if (resource === "services" && ["sources","task-evidence"].includes(action))
+      result=await client.request(serviceSourceReadPath(action,serviceReadCliOptions(argv,parsed.options,action)));
     else if (resource === "services" && action === "list") {
       const type = parsed.options.type;
       if (type) result = await client.request(`/data-services/${typePath(type)}`);

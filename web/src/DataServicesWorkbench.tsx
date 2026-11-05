@@ -3,6 +3,8 @@ import { EvidenceDownload, requestTextDownload } from "./EvidenceDownload";
 import { compositionChoices } from "./service-composition";
 import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
 import type { ConsumptionScope } from "./service-consumption-scope";
+import {validServiceSourceBinding,serviceSourceKey,serviceSourcesPath,serviceReturnLocation,serviceReadCurrent,sourceRunMatches,sourceRunEligible,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from "./service-source-binding";
+import type {ServiceSourceBinding} from "./service-source-binding";
 import {
   Activity,
   AppWindow,
@@ -27,6 +29,7 @@ type Api = <T>(path: string, body?: unknown, options?: {idempotencyKey?:string})
 type ReleaseRun = {
   id: string;
   releaseId: string;
+  sequence?:number;
   status: string;
   published: boolean;
   schedulerTriggered: boolean;
@@ -40,6 +43,8 @@ type ReleaseRun = {
   createdAt: string;
   sourceAgentTaskId?: string;
   packageDigest?: string;
+  sourceKind?:string;sourceAttribution?:string;agentIndependentE2E?:boolean;
+  sourceRevisionId?:string;sourceRunId?:string;
 };
 type ServiceVersion = {
   id: string;
@@ -81,6 +86,7 @@ type Application = {
 type ServiceCall = {
   id: string;
   serviceId: string;
+  serviceVersionId?:string;
   serviceType: string;
   versionNumber: number;
   applicationId: string;
@@ -165,12 +171,14 @@ const flowSteps: {
 ];
 
 export function DataServicesWorkbench({
-  api,
+  api:rawApi,
   canWrite: originalCanWrite,
   privateCloud = false,
   cloudAccess = "private-preview",
   sourceAgentTaskId,
   consumptionScope,
+  sourceBinding,
+  sourceBindingError,
 }: {
   api: Api;
   canWrite: boolean;
@@ -178,11 +186,20 @@ export function DataServicesWorkbench({
   cloudAccess?: "private-preview" | "invited";
   sourceAgentTaskId?: string;
   consumptionScope?: ConsumptionScope;
+  sourceBinding?:ServiceSourceBinding;
+  sourceBindingError?:string;
 }) {
   const scopePlan=consumptionPlanAvailable(consumptionScope)?consumptionScope.plan:undefined;
-  const scopeKey=JSON.stringify(consumptionScope??null);
+  const bindingDeclared=sourceBinding!==undefined||Boolean(sourceBindingError),binding=validServiceSourceBinding(sourceBinding)?sourceBinding:undefined;
+  const bindingError=sourceBindingError||(bindingDeclared&&!binding?"接口交接来源不完整；不会退回全项目数据。":binding&&!privateCloud?"当前环境不能核对云端发布来源；保留只读，不回退本机结果。":binding&&!sourceBindingScopeCompatible(binding,consumptionScope)?"交接来源与当前最小消费计划冲突；不扩大计划或切换到其他包。":"");
+  const scopeKey=JSON.stringify([consumptionScope??null,sourceAgentTaskId??null,serviceSourceKey(binding),bindingError]);
+  const sourceContext=useRef(scopeKey);sourceContext.current=scopeKey;
+  const sourceRequest=useRef(0),alive=useRef(true);
+  const [sourceRead,setSourceRead]=useState<{key:string;state:"LOADING"|"READY"|"ERROR"}>({key:"",state:"LOADING"});
+  async function api<T>(path:string,body?:unknown,options?:{idempotencyKey?:string}):Promise<T>{const key=scopeKey;const result=await rawApi<T>(path,body,options);if(!alive.current||sourceContext.current!==key)throw Error("来源已切换，旧响应未用于当前工作区。");return result;}
   const [scopeClock,setScopeClock]=useState(Date.now);
-  const canWrite=originalCanWrite&&(!consumptionScope||privateCloud&&consumptionWindowOpen(consumptionScope,scopeClock));
+  const canWrite=originalCanWrite&&(!consumptionScope||privateCloud&&consumptionWindowOpen(consumptionScope,scopeClock))&&
+    (!bindingDeclared||Boolean(binding&&!bindingError&&sourceRead.key===scopeKey&&sourceRead.state==="READY"));
   const cloudScopeLabel = cloudAccess === "invited" ? "受邀云测试范围" : "私有云测试范围";
   const [releaseRuns, setReleaseRuns] = useState<ReleaseRun[]>([]),
     [dapis, setDapis] = useState<DataService[]>([]),
@@ -214,9 +231,9 @@ export function DataServicesWorkbench({
       "基于已发布的持仓与现金DAPI，规划一个财富顾问客户资产组合XAPI",
     ),
     [agentPlan, setAgentPlan] = useState<ServiceAgentPlan>();
-  const services = useMemo(() => consumptionServices([...dapis, ...xapis],consumptionScope), [dapis, xapis, scopeKey]),
+  const services = useMemo(() => consumptionServices(binding?sourceBoundServices([...dapis,...xapis],binding,releaseRuns):bindingDeclared?[]:[...dapis, ...xapis],consumptionScope), [dapis, xapis, releaseRuns,scopeKey]),
     selected = services.find((item) => item.id === selectedId),
-    eligibleRuns = releaseRuns.filter(
+    eligibleRuns = (binding?releaseRuns.filter(run=>sourceRunMatches(run,binding)):bindingDeclared?[]:releaseRuns).filter(
       (run) =>
         run.status === "SUCCEEDED" &&
         run.published &&
@@ -227,12 +244,13 @@ export function DataServicesWorkbench({
           (run.engine === "CPython" && run.codeExecuted === true)) &&
         run.validation?.passed && (!consumptionScope || Boolean(scopePlan&&run.id===scopePlan.sourceReleaseRunId&&run.sourceAgentTaskId===scopePlan.taskId&&run.packageDigest===scopePlan.packageDigest)),
     ),
-    publishedDapis = dapis.filter((item) => item.status === "PUBLISHED"),
+    visibleCalls=bindingDeclared?sourceBoundCalls(calls,services):calls,
     callsForSelected = selected
-      ? calls.filter((item) => item.serviceId === selected.id)
-      : calls.filter(item=>!consumptionScope||services.some(s=>s.id===item.serviceId));
+      ? visibleCalls.filter((item) => item.serviceId === selected.id)
+      : visibleCalls.filter(item=>!consumptionScope&&!bindingDeclared||services.some(s=>s.id===item.serviceId));
   const scopedDapis=services.filter(s=>s.serviceType==="DAPI"),scopedXapis=services.filter(s=>s.serviceType==="XAPI");
-  const scopedApplications=consumptionScope?applications.filter(a=>scopePlan&&a.pilotId===consumptionScope.pilotId&&a.name===scopePlan.applicationName&&a.serviceIds.length>0&&a.serviceIds.every(id=>services.some(s=>s.id===id))):applications;
+  const visibleApplications=bindingDeclared?applications.filter(a=>a.serviceIds.length>0&&a.serviceIds.every(id=>services.some(s=>s.id===id))):applications;
+  const scopedApplications=consumptionScope?visibleApplications.filter(a=>scopePlan&&a.pilotId===consumptionScope.pilotId&&a.name===scopePlan.applicationName&&a.serviceIds.length>0&&a.serviceIds.every(id=>services.some(s=>s.id===id))):visibleApplications;
   const plannedDapi=scopePlan?.dapis[plannedDapiIndex];
   const nextPlannedDapi=scopePlan?.dapis.findIndex(d=>!dapis.some(s=>s.slug===d.slug))??-1;
   const dapiAlreadyExists=Boolean(consumptionScope&&plannedDapi&&dapis.some(s=>s.slug===plannedDapi.slug));
@@ -243,22 +261,30 @@ export function DataServicesWorkbench({
   if(consumptionScope&&scopePlan){try{plannedXapiBody=consumptionXapiInput(consumptionScope,services);}catch{/* Wait for both approved DAPI versions. */}try{plannedApplicationBody=consumptionApplicationInput(consumptionScope,services);}catch{/* Wait for the approved three-service set. */}}
   const composition=compositionChoices(scopedDapis,{privateCloud,sourceRunId,holdingsVersionId,cashVersionId});
   const currentPublished=Boolean(selected?.currentVersion && selected.currentVersion.id===selected.publishedVersion?.id);
-  const versionContext=`${selectedId}:${selected?.currentVersion?.id??""}`;
+  const versionContext=`${scopeKey}:${selectedId}:${selected?.currentVersion?.id??""}`;
   const activeVersionRef=useRef(versionContext);activeVersionRef.current=versionContext;
   const currentTestValid=Boolean(selected?.currentVersion && testReceipt?.test.status==="PASSED" && testReceipt.test.versionId===selected.currentVersion.id && testReceipt.test.configHash===selected.currentVersion.configHash);
   const requestKeys=useRef<Record<string,{signature:string;key:string}>>({});
   const keyFor=(action:string,body:unknown)=>{const signature=JSON.stringify(body),old=requestKeys.current[action];if(old?.signature===signature)return old.key;const key=crypto.randomUUID();requestKeys.current[action]={signature,key};return key;};
 
   const reload = async () => {
+    const key=scopeKey,request=++sourceRequest.current;
+    const current=()=>serviceReadCurrent(key,request,sourceContext.current,sourceRequest.current,alive.current);
+    if(!alive.current)return;
+    if(bindingError){setSourceRead({key,state:"ERROR"});setError(bindingError);return;}
+    if(bindingDeclared)setSourceRead({key,state:"LOADING"});
+    try{
     const [nextRuns, nextDapis, nextXapis, nextApps, nextCalls, nextPlans] =
       await Promise.all([
-        api<ReleaseRun[]>(privateCloud ? "/data-services/sources" + (sourceAgentTaskId ? `?agent_task_id=${encodeURIComponent(sourceAgentTaskId)}` : "") : "/release/runs"),
+        api<ReleaseRun[]>(binding?serviceSourcesPath(binding):privateCloud ? "/data-services/sources" + (sourceAgentTaskId ? `?agent_task_id=${encodeURIComponent(sourceAgentTaskId)}` : "") : "/release/runs"),
         api<DataService[]>("/data-services/dapis"),
         api<DataService[]>("/data-services/xapis"),
         api<Application[]>("/data-services/applications"),
         api<ServiceCall[]>("/data-services/calls"),
-        privateCloud || consumptionScope ? Promise.resolve([] as ServiceAgentPlan[]) : api<ServiceAgentPlan[]>("/data-services/agent/plans"),
+        privateCloud || consumptionScope || bindingDeclared ? Promise.resolve([] as ServiceAgentPlan[]) : api<ServiceAgentPlan[]>("/data-services/agent/plans"),
       ]);
+    if(!current())return;
+    if(binding&&nextRuns.some(run=>!sourceRunMatches(run,binding)))throw Error("发布来源回读与交接包或版本不一致，未采用其他结果。");
     setReleaseRuns(nextRuns);
     setDapis(nextDapis);
     setXapis(nextXapis);
@@ -266,15 +292,25 @@ export function DataServicesWorkbench({
     setCalls(nextCalls);
     setAgentPlans(nextPlans);
     if (!agentPlan && nextPlans[0]) setAgentPlan(nextPlans[0]);
+    const boundEligible=binding?nextRuns.filter(run=>sourceRunMatches(run,binding)&&sourceRunEligible(run)):nextRuns;
+    if(binding&&(!boundEligible.length||!sourceBindingScopeCompatible(binding,consumptionScope,boundEligible))){
+      setSourceRunId("");setSelectedId("");setSourceRead({key,state:"ERROR"});
+      setError(boundEligible.length?"确切发布批次与当前最小消费计划冲突；未扩大来源。":"此确切发布尚无通过核验的可消费批次，或当前账号不可见。可重新读取；不会选其他发布或开发运行。");return;
+    }
     if(scopePlan)setSourceRunId(scopePlan.sourceReleaseRunId);
+    else if(binding)setSourceRunId(previous=>defaultBoundSourceRun(binding,nextRuns,[...nextDapis,...nextXapis],{currentRunId:previous,selectedServiceId:activeServiceRef.current})??"");
     else if (!sourceRunId && nextRuns.find((run) => run.status === "SUCCEEDED"))
       setSourceRunId(nextRuns.find((run) => run.status === "SUCCEEDED")!.id);
-    const nextServices=consumptionServices([...nextDapis,...nextXapis],consumptionScope);
+    const nextServices=consumptionServices(binding?sourceBoundServices([...nextDapis,...nextXapis],binding,nextRuns):[...nextDapis,...nextXapis],consumptionScope);
     if (!selectedId && nextServices[0])setSelectedId(nextServices[0].id);
-    else if(consumptionScope&&selectedId&&!nextServices.some(s=>s.id===selectedId))setSelectedId("");
+    else if((consumptionScope||bindingDeclared)&&selectedId&&!nextServices.some(s=>s.id===selectedId))setSelectedId("");
+    setSourceRead({key,state:"READY"});if(bindingDeclared)setError("");
+    }catch(cause){if(current()){setSourceRead({key,state:"ERROR"});setError((cause as Error).message);}throw cause;}
   };
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false;sourceRequest.current++;};},[]);
   useEffect(() => {
-    reload().catch((cause) => setError(cause.message));
+    setSelectedId("");setSourceRunId(scopePlan?.sourceReleaseRunId??"");setHoldingsVersionId("");setCashVersionId("");setTestReceipt(undefined);setIssuedToken("");setTokenVisible(false);setVersionReview(undefined);setRecoveryReport(undefined);setOpenApi(undefined);
+    void reload().catch(()=>{});
   }, [scopeKey]);
   useEffect(()=>{if(!consumptionScope)return;setScopeClock(Date.now());const timer=setInterval(()=>setScopeClock(Date.now()),1000);return()=>clearInterval(timer);},[scopeKey]);
   useEffect(()=>{if(!canWrite){setIssuedToken("");setTokenVisible(false);}if(consumptionScope){setShowVersionEditor(false);setVersionReview(undefined);}},[canWrite,scopeKey]);
@@ -305,7 +341,7 @@ export function DataServicesWorkbench({
   }, [agentPlan?.id, agentPlan?.status]);
 
   const planWithAgent = async () => {
-    if(!canWrite||consumptionScope)return;
+    if(!canWrite||consumptionScope||bindingDeclared)return;
     setBusy("agent");
     setError("");
     try {
@@ -321,7 +357,7 @@ export function DataServicesWorkbench({
     }
   };
   const applyAgentPlan = async () => {
-    if (!agentPlan || !canWrite || consumptionScope) return;
+    if (!agentPlan || !canWrite || consumptionScope || bindingDeclared) return;
     setBusy("agent-apply");
     setError("");
     try {
@@ -345,7 +381,7 @@ export function DataServicesWorkbench({
   };
 
   const createDapi = async () => {
-    if(!canWrite||!eligibleRuns.length||dapiAlreadyExists)return;
+    if(!canWrite||!eligibleRuns.some(run=>run.id===sourceRunId)||dapiAlreadyExists)return;
     setBusy("create-dapi");
     setError("");
     try {
@@ -489,8 +525,8 @@ export function DataServicesWorkbench({
     }catch(cause){setError((cause as Error).message);}finally{setBusy("");}
   };
   const loadSwitchHistory = async () => {
-    if(!selected)return;const resource=selected;setBusy("history");setError("");
-    try{const rows=await api<VersionSwitchReceipt[]>(`/data-services/${resource.serviceType.toLowerCase()}s/${resource.id}/history`);if(activeServiceRef.current===resource.id)setSwitchHistory(rows);}
+    if(!selected)return;const resource=selected,version=versionContext;setBusy("history");setError("");
+    try{const rows=await api<VersionSwitchReceipt[]>(`/data-services/${resource.serviceType.toLowerCase()}s/${resource.id}/history`);if(activeVersionRef.current===version)setSwitchHistory(bindingDeclared?sourceBoundSwitches(rows,resource):rows);}
     catch(cause){setError((cause as Error).message);}finally{setBusy("");}
   };
   const activateVersion = async () => {
@@ -524,11 +560,12 @@ export function DataServicesWorkbench({
             <span>XAPI</span>
           </div>
           <div>
-            <strong>{consumptionScope?calls.filter(c=>services.some(s=>s.id===c.serviceId)).length:calls.length}</strong>
+            <strong>{consumptionScope||bindingDeclared?visibleCalls.filter(c=>services.some(s=>s.id===c.serviceId)).length:visibleCalls.length}</strong>
             <span>调用</span>
           </div>
         </div>
       </section>
+      {bindingDeclared&&<section className={bindingError||sourceRead.state==="ERROR"?"service-feedback error":"service-feedback"} role="status" aria-label="确切发布来源"><div><strong>{binding?.sourceKind==="MANUAL"?"工程师接管结果 · 非 Agent 自主完成":"指定发布结果交接"}</strong><p>只使用指定任务、交付包和发布版本的成功发布批次；不是开发运行，不会自动创建接口、凭证或调用数据。</p>{binding&&<><p>原任务：{binding.taskId}<br/>交付包：{binding.packageDigest}<br/>发布版本：{binding.releaseId}</p>{sourceRead.key===scopeKey&&sourceRead.state==="READY"?<a className="button" href={serviceReturnLocation(typeof location==="undefined"?"http://localhost/v2/":location.href,binding).href}>返回原{binding.sourceKind==="MANUAL"?"人工版本":"Agent任务"}</a>:<small>返回原版本的链接将在同源核对后开放。</small>}</>}{bindingError?<p>{bindingError}</p>:<p>{sourceRead.key!==scopeKey||sourceRead.state==="LOADING"?"正在核对确切发布来源；写入暂不开放。":sourceRead.state==="ERROR"?"来源尚未确认；保留绑定，不回退全项目或其他发布。":"已核对可消费的成功发布批次；写权限仍按当前账号和消费计划判断。"}</p>}<button className="button" disabled={!!busy||Boolean(bindingError)} onClick={()=>void reload().catch(()=>{})}>重新读取指定来源</button></div></section>}
       {consumptionScope&&<section className="service-feedback" role="status" aria-label="接口消费试点范围"><div><strong>仅本次冻结接口计划 · 不重新计算业务数据</strong><p>{canWrite?"允许手动创建、测试、发布本计划接口，并创建及撤销唯一测试应用。":"当前消费窗口未开放、已到期或计划不可用；保持只读，不发行凭证。"} 不开放模型规划、代码开发、业务批次发布或接口版本切换。</p>{scopePlan&&<><p>源任务：{scopePlan.taskId}<br/>源发布批次：{scopePlan.sourceReleaseRunId}<br/>包摘要：{scopePlan.packageDigest}</p><small>接口：{scopePlan.dapis.map(d=>d.name).join("、")}、{scopePlan.xapi.name}。应用：{scopePlan.applicationName}；只授权直接查询持仓和组合资产，现金接口未单独授权。</small></>}<p>截止：{consumptionScope.expiresAt?new Date(consumptionScope.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}):"未确认"}（北京时间）。凭证到期后失效，历史调用证据保留。</p></div></section>}
       {scopeConflict&&<div className="service-feedback error" role="alert">发现同名服务不属于本次试点或其版本配置与计划不符；不会混入、覆盖或更新旧服务，请先核对来源。</div>}
       <div className="service-flow" aria-label="数据服务生命周期">
@@ -552,7 +589,7 @@ export function DataServicesWorkbench({
           {error || notice}
         </div>
       )}
-      {!privateCloud && !consumptionScope && <section className="service-agent-studio">
+      {!privateCloud && !consumptionScope && !bindingDeclared && <section className="service-agent-studio">
         <header>
           <div className="service-agent-icon">
             <Bot size={20} />

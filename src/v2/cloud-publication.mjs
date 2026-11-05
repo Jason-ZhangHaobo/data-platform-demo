@@ -91,6 +91,23 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       throw fail(409, "源任务或文件演练尚未通过；审阅必须绑定当前模型版本");
     return { agent, delivery, item, verification, plan, sourceRunId: last.runId };
   }
+  // Navigation is a read-only projection of the exact configured review target,
+  // never an approval. Resolve the stored kind before applying the same source
+  // checks as publication; do not fall back to the failed Agent's last attempt.
+  function sourceForNavigation({ agentId, packageDigest, verificationId, actorId }) {
+    const target = { taskId: agentId, packageDigest, verificationId };
+    try {
+      const candidates = store.list("agent_delivery_task", project).filter(t =>
+        t.sourceAgentTaskId === agentId && t.packageDigest === packageDigest && t.verificationId === verificationId);
+      if (candidates.length !== 1) return { ...target, status: "UNAVAILABLE" };
+      const delivery = candidates[0], sourceKind = delivery.sourceKind ?? "AGENT";
+      if (!["AGENT", "MANUAL"].includes(sourceKind)) return { ...target, status: "UNAVAILABLE" };
+      const source = reviewedSource({ agentId, sourceKind, sourceRunId: delivery.sourceRunId, packageDigest, verificationId, actorId });
+      return { ...target, status: "RESOLVED", sourceKind, revisionId: source.plan.source.revisionId, runId: source.sourceRunId };
+    } catch {
+      return { ...target, status: "UNAVAILABLE" };
+    }
+  }
   async function publish({ agent, sourceKind = "AGENT", sourceRunId, packageDigest, verificationId, attestations, actorId, idempotencyKey }) {
     if (!enabled) throw fail(503, "云端发布驱动尚未配置");
     const publicationScope = { agentId: agent.id, packageDigest, verificationId };
@@ -230,5 +247,5 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const jobs=[]; for(const run of store.list("release_run",project).filter(r=>r.releaseId===release.id&&!terminal.has(r.status))) { patch("release_run",run,{status:"CANCELLED",finishedAt:stamp()}); if(run.remoteSubmission)jobs.push(run.remoteSubmission.prepared); }
     await persist(); for(const job of jobs)await runner.cancel(job);return detail(agentId, { ...selector, releaseId: release.id });
   }
-  return { publish, detail, tick, cancel };
+  return { publish, detail, tick, cancel, sourceForNavigation };
 }

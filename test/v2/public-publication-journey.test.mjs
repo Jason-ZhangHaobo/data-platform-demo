@@ -137,6 +137,8 @@ test('formal ingress keeps publication scoped to the existing administrator, tas
   assert.equal(owner.authenticated, true); assert.equal(owner.readOnly, false);
   assert.equal(owner.publicationOnly, true); assert.deepEqual(owner.permissions, ['SESSION', 'DELIVERY']);
   assert.equal(owner.publicationTaskId, f.agent.id); assert.equal(owner.publicationPackageDigest, f.item.digest);
+  assert.deepEqual(owner.publicationSource, {status: 'RESOLVED', sourceKind: 'AGENT', taskId: f.agent.id,
+    packageDigest: f.item.digest, verificationId: f.verification.id, revisionId: f.item.manifest.source.revisionId, runId: f.item.sourceRunId});
   const other = (await f.call('/auth/session', undefined, { identity: 'other' })).body;
   assert.equal(other.readOnly, true); assert.deepEqual(other.permissions, ['SESSION']);
   const anonymous = (await f.call('/auth/session', undefined, { identity: null })).body;

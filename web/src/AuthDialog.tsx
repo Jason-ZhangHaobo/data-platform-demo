@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ConsumptionPlan } from "./service-consumption-scope";
+import type {PublicationSource} from "./service-source-binding";
 import {
   CheckCircle2,
   Copy,
@@ -44,6 +45,7 @@ export type AuthSession = {
   publicationVerificationId?: string;
   publicationStartsAt?: string;
   publicationExpiresAt?: string;
+  publicationSource?:PublicationSource;
   consumptionOnly?: boolean;
   consumptionPilotId?: string;
   consumptionTaskId?: string;

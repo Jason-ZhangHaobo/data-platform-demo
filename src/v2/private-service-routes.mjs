@@ -1,12 +1,27 @@
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
+// Optional source selection is all-or-nothing. Never degrade a malformed exact
+// handoff into the older task-wide discovery request.
+export function privateServiceSourceSelection(params, evidence = false) {
+  const keys=["agent_task_id","package_digest","release_id"],entries=[...params];
+  if(new Set(entries.map(([key])=>key)).size!==entries.length||entries.some(([key])=>!keys.includes(key)))return;
+  const taskId=params.get("agent_task_id")??undefined,packageDigest=params.get("package_digest")??undefined,releaseId=params.get("release_id")??undefined;
+  if(taskId!==undefined&&!new RegExp(`^${uuid}$`).test(taskId)||packageDigest!==undefined&&!/^[a-f0-9]{64}$/.test(packageDigest)||
+    releaseId!==undefined&&!new RegExp(`^${uuid}$`).test(releaseId))return;
+  if(evidence?!(taskId&&packageDigest):(packageDigest!==undefined||releaseId!==undefined)&&!(taskId&&packageDigest&&releaseId))return;
+  return {taskId,packageDigest,releaseId};
+}
 export function privateServiceRoute(method,path) {
   if(typeof path!=="string" || path.length>700 || /[#\\]/.test(path) || !path.startsWith("/api/v2/"))return false;
   const url=new URL(path,"http://127.0.0.1"),p=url.pathname;
   if(p!==path.split("?")[0] || new Set(url.searchParams.keys()).size!==[...url.searchParams.keys()].length)return false;
   let allowed=[];
   if(method==="GET" && /^\/api\/v2\/open\/(dapis|xapis)\/[a-z][a-z0-9-]{2,47}$/.test(p))allowed=["client_id","clientId","page","page_size","pageSize"];
-  else if(method==="GET" && p==="/api/v2/data-services/sources")allowed=["agent_task_id"];
-  else if(method==="GET" && p==="/api/v2/data-services/task-evidence")allowed=["agent_task_id","package_digest"];
+  else if(method==="GET" && p==="/api/v2/data-services/sources")return Boolean(privateServiceSourceSelection(url.searchParams));
+  else if(method==="GET" && p==="/api/v2/data-services/task-evidence"){
+    // Keep the existing bare route so its authenticated handler returns the
+    // established 422 missing-input response; populated queries are strict.
+    return !url.search||Boolean(privateServiceSourceSelection(url.searchParams,true));
+  }
   else if(method==="GET" && p==="/api/v2/data-services/calls")allowed=["service_id"];
   else if(["GET","POST"].includes(method) && /^\/api\/v2\/data-services\/(dapis|xapis|applications)$/.test(p))allowed=[];
   else if(method==="POST" && new RegExp(`^/api/v2/data-services/applications/${uuid}/revoke$`).test(p))allowed=[];

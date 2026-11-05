@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { Download } from "lucide-react";
 
-type Request = {kind:"recovery";type:"dapi"|"xapi";id:string} | {kind:"consumption";id:string;digest:string};
+type Request = {kind:"recovery";type:"dapi"|"xapi";id:string} | {kind:"consumption";id:string;digest:string;releaseId?:string};
 export function evidenceExportHref(request: Request): string {
-  const query = new URLSearchParams(request);
+  const query = new URLSearchParams(Object.entries(request).filter((entry):entry is [string,string]=>typeof entry[1]==="string"));
   return `/api/v2/evidence-export?${query}`;
 }
 

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { agentJourney, deliveryStageText, publicationEvidenceText, verificationPresentation } from "../../web/src/agent-journey.ts";
+import { agentJourney, deliveryStageText, publicationEvidenceText, verificationPresentation,manualConsumptionEntryMatches } from "../../web/src/agent-journey.ts";
 import { contextIds } from "../../src/v2/context.mjs";
 import { deliveryFiles } from "../../src/v2/delivery.mjs";
 
@@ -157,4 +157,21 @@ test('local consumption can complete the same task journey but cannot claim a cl
   assert.equal(stage({...f,consumption},'services'),'DONE');
   assert.notEqual(stage({...fixture(),consumption},'services'),'DONE');
   assert.notEqual(stage({...f,consumption:{...consumption,protocol:'shuduo-private-task-consumption/v1',scope:'PRIVATE_CLOUD_TEST'}},'services'),'DONE');
+});
+test('manual consumption requires the same exact release and keeps human attribution',()=>{
+  const f=fixture();f.release.sourceKind='MANUAL';
+  const consumption={protocol:'shuduo-private-task-consumption/v1',taskId:f.taskId,packageDigest:f.bundle.digest,releaseId:f.release.id,sourceKind:'MANUAL',agentIndependentE2E:false,
+    scope:'PRIVATE_CLOUD_TEST',status:'VERIFIED',truncated:false,services:[{serviceType:'XAPI',status:'VERIFIED',fullAssetComposition:true,versionId:'manual-x',releaseId:f.release.id,sourceKind:'MANUAL',agentIndependentE2E:false,sourceRunIds:[f.batches[0].id],call:{verified:true,versionId:'manual-x',rowCount:2}}]};
+  assert.equal(stage({...f,consumption},'services'),'DONE');
+  for(const patch of [{releaseId:undefined},{releaseId:'another-release'},{sourceKind:'AGENT'},{agentIndependentE2E:true}])
+    assert.notEqual(stage({...f,consumption:{...consumption,...patch}},'services'),'DONE');
+  assert.equal(consumption.agentIndependentE2E,false);
+  const entry=consumption.services[0];
+  for(const patch of [{releaseId:undefined},{releaseId:'other-release'},{sourceKind:undefined},{sourceKind:'AGENT'},{agentIndependentE2E:undefined},{agentIndependentE2E:true},
+    {sourceRunIds:undefined},{sourceRunIds:[]},{sourceRunIds:[f.runId]},{sourceRunIds:['foreign-run']},{sourceRunIds:[f.batches[0].id,f.batches[0].id]},{sourceRunIds:f.batches.map(batch=>batch.id)}]){
+    assert.equal(manualConsumptionEntryMatches({...entry,...patch},f.release.id,f.batches,f.runId),false);
+    assert.notEqual(stage({...f,consumption:{...consumption,services:[{...entry,...patch}]}},'services'),'DONE');
+  }
+  for(const patch of [{status:'FAILED'},{schedulerTriggered:false}])assert.equal(manualConsumptionEntryMatches(entry,f.release.id,[{...f.batches[0],...patch}],f.runId),false);
+  assert.equal(manualConsumptionEntryMatches({...entry,sourceRunIds:[f.runId]},f.release.id,[{id:f.runId,status:'SUCCEEDED',schedulerTriggered:true}],f.runId),false,'a mislabeled development run never becomes a release batch');
 });
