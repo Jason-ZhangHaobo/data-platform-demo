@@ -4,6 +4,7 @@ import { safeModelDiagnostic, modelFailure as diagnosticFailure } from "./model-
 import { sameSqlIgnoringLayout } from "./sql-repair-progress.mjs";
 import { buildSqlRepairFeedback } from "./sql-repair-feedback.mjs";
 import { resolveExplicitSqlRepairSource } from "./sql-repair-source.mjs";
+import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 
 export const durableSqlAgentMode = "DURABLE_SQL_AGENT_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -58,6 +59,8 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   const replaceAttempt = (task, patch) => task.attempts.map((a, i) => i === task.attempts.length - 1 ? { ...a, ...patch } : a);
   const explicitRepairSource = (sourceRunId, actorId, contextId, currentSql) => resolveExplicitSqlRepairSource({sourceRunId, actorId, contextId, currentSql, project,
     read:(kind,id)=>store.get(kind,id,project)});
+  const contextDerivation = (derivation, actorId, targetContextId, currentSql) => resolveAgentContextDerivation({derivation, actorId, targetContextId, currentSql, project,
+    read:(kind,id)=>store.get(kind,id,project)});
   const markUnknown = async (task, diagnostic = safeModelDiagnostic(diagnosticFailure("MODEL_INTERRUPTED", "LEASE"))) => {
     const saved = change(task, { status: "INTERRUPTED", stage: "MODEL_OUTCOME_UNKNOWN",
       attempts: replaceAttempt(task, { status: "MODEL_OUTCOME_UNKNOWN", usageEstimated: true,
@@ -76,12 +79,15 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     await persist();return saved;
   };
 
-  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError }) {
+  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError, derivation }) {
     assertExecutionScope(undefined);
     if (!getContext(contextId) || typeof message !== "string" || !message.trim() || message.length > 2000 ||
         typeof currentSql !== "string" || !currentSql.trim() || currentSql.length > 20000 ||
         typeof actorId !== "string" || !actorId || typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 100)
       throw fail(422, "DURABLE_AGENT_INPUT_INVALID", "持久任务输入不合法");
+    if (derivation !== undefined && (sourceRunId !== undefined || sourceError !== undefined))
+      throw fail(422, "AGENT_CONTEXT_DERIVATION_CONFLICT", "成功版本口径变更不能同时引用失败修正来源");
+    const derivedFrom = derivation === undefined ? undefined : contextDerivation(derivation, actorId, contextId, currentSql);
     if ((sourceRunId !== undefined || sourceError !== undefined) &&
         (typeof sourceRunId !== "string" || !/^[a-f0-9-]{36}$/.test(sourceRunId) || typeof sourceError !== "string" || !sourceError || sourceError.length > 8000))
       throw fail(422, "DURABLE_AGENT_REPAIR_INVALID", "修正任务必须绑定有效失败批次及其错误");
@@ -91,9 +97,10 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
       if (sourceError!==actualError) throw fail(409,"AGENT_REPAIR_SOURCE_INVALID","修正错误必须来自同一已保存失败批次，不能替换诊断内容");
     }
     const family=validationFamily(contextId);
-    const signature = digest({ message, currentSql, contextId, ...(sourceRunId ? { sourceRunId, sourceError } : {}) });
+    const signature = digest({ message, currentSql, contextId, ...(sourceRunId ? { sourceRunId, sourceError } : {}), ...(derivedFrom ? {derivation:derivedFrom} : {}) });
     const result = store.deduplicate(`${project}:durable-agent:${actorId}:${idempotencyKey}`, signature, () =>
       store.create("agent", project, { message, sql: currentSql, initialSql: currentSql, sourceRunId, language: "SPARK_SQL", contextId,
+        ...(derivedFrom ? {derivedFrom} : {}),
         submittedBy: actorId, status: "QUEUED", stage: "READY_FOR_MODEL", attempts: [], usedTokens: 0,
         maxAttempts, tokenBudget, requestTokenLimit, executionMode: durableSqlAgentMode, mode: "LIVE_MODEL",
         completionScope: "SQL_DEVELOPMENT", fullLifecycleE2E: false, validationContractId: family.id,
@@ -102,6 +109,12 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   }
 
   async function generate(task) {
+    if (task.derivedFrom !== undefined && task.revisionId === undefined) {
+      const {kind, taskId, revisionId, runId, revisionHash} = task.derivedFrom;
+      const checked = contextDerivation({kind, taskId, revisionId, runId, revisionHash}, task.submittedBy, task.contextId, task.sql);
+      if (JSON.stringify(checked) !== JSON.stringify(task.derivedFrom) || task.initialSql !== task.sql)
+        throw fail(409, "AGENT_CONTEXT_SOURCE_INVALID", "原成功来源与保存的派生关系不一致，未启动模型");
+    }
     const explicitSource = !task.runId && task.sourceRunId
       ? explicitRepairSource(task.sourceRunId,task.submittedBy,task.contextId,task.sql) : undefined;
     const remaining = task.tokenBudget - task.usedTokens;

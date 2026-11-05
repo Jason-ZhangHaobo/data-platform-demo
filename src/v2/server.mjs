@@ -16,6 +16,7 @@ import { callPrivateApplication, verifyPrivateApplicationTask } from "./private-
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
+import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
 import { createCloudPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import { publicationSelectorFromUrl } from "./publication-request.mjs";
@@ -5368,7 +5369,14 @@ export function createV2Server(options = {}) {
             body.language === undefined
               ? "SPARK_SQL"
               : text(body.language, 3, 20),
-          currentCode = text(body.code ?? body.sql, 1, 20_000);
+          suppliedCode = body.code ?? body.sql;
+        let currentCode = text(suppliedCode, 1, 20_000);
+        if (body.derivation !== undefined) {
+          if (language !== "SPARK_SQL" || body.sourceRunId !== undefined || body.sourceError !== undefined ||
+              body.code !== undefined && body.sql !== undefined && body.code !== body.sql)
+            throw Object.assign(fail(422, "成功版本口径变更仅支持原生 SQL，不能混用失败来源或不同代码"), {code:"AGENT_CONTEXT_DERIVATION_CONFLICT"});
+          currentCode = suppliedCode; // Preserve the exact saved SQL bytes/hash.
+        }
         if(body.background!==undefined && typeof body.background!=="boolean")throw fail(422,"后台选项必须为布尔值");
         if(body.background && (!agentEventDriver || language!=="SPARK_SQL"))throw Object.assign(fail(503,"此环境未启用Spark SQL事件后台"),{code:"AGENT_EVENT_DRIVER_DISABLED"});
         if (!["SPARK_SQL", "PYTHON"].includes(language))
@@ -5376,6 +5384,11 @@ export function createV2Server(options = {}) {
         const context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效上下文");
         if (ingressChannel === "HTTP") assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, options.now?.() ?? Date.now());
+        const actorId = durableAgent && language === "SPARK_SQL"
+          ? auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer"
+          : local ? "local-engineer" : auth.sessionFromHeaders(req.headers)?.user.id;
+        const derivedFrom = body.derivation === undefined ? undefined : resolveAgentContextDerivation({derivation:body.derivation, actorId,
+          targetContextId:context.id,currentSql:currentCode,project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
         const backgroundWindow = body.background && ingressChannel === 'HTTP' ? developmentBackgroundWindow(developmentAccess, options.now?.() ?? Date.now()) : {};
         if (durableAgent && language === "SPARK_SQL") {
           if (!options.generator && !modelSettings(env).configured) throw new ModelUnavailable();
@@ -5390,8 +5403,8 @@ export function createV2Server(options = {}) {
             repair = { sourceRunId: source.id, sourceError };
           }
           const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
-            actorId: auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer",
-            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair });
+            actorId,
+            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}) });
           if(body.background){
             const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version,...backgroundWindow,
               developmentBoundary:developmentBackgroundBoundary(developmentAccess,created.id,developmentNow())});
@@ -5423,6 +5436,7 @@ export function createV2Server(options = {}) {
               language,
               currentCode,
               contextId: context.id,
+              ...(derivedFrom ? {derivation:derivedFrom} : {}),
             }),
           );
         const existingAgent = store.deduplicatedId(PROJECT + ":agent:" + key);
@@ -5436,6 +5450,7 @@ export function createV2Server(options = {}) {
               message,
               language,
               contextId: context.id,
+              ...(derivedFrom ? {derivedFrom,initialSql:currentCode,sql:currentCode,usedTokens:0} : {}),
               status: "QUEUED",
               attempts: [],
               mode: "LIVE_MODEL",
@@ -5590,6 +5605,8 @@ export function createV2Server(options = {}) {
               });
               return;
             }
+            if (derivedFrom) resolveAgentContextDerivation({derivation:body.derivation,actorId,targetContextId:context.id,currentSql:currentCode,
+              project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
             let sql = currentCode,
               error,
               usedTokens = 0;

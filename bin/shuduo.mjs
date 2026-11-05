@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
+import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 
 const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
 
@@ -26,6 +27,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent journey --id AGENT_TASK_ID
   shuduo agent workflow --id AGENT_TASK_ID
   shuduo agent request --request-id ORIGINAL_REQUEST_ID
+  shuduo agent derive --task-id TASK_ID --revision-id REVISION_ID --run-id RUN_ID --revision-hash SHA256 --context stock-cash-t1 --message "改为股票持仓和现金口径" --request-id UUID --confirm
+    从原成功版本创建独立任务，可能执行模型与Spark；原批准不继承。未知结果先用 agent request 查询，不换请求编号重试。
   shuduo services task-evidence --task-id AGENT_TASK_ID --package-digest SHA256 [--release-id RELEASE_ID]
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-delivery --id AGENT_TASK_ID
@@ -413,6 +416,13 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       const key=required(parsed.options,"request_id");
       if(!/^[A-Za-z0-9_-]{1,100}$/.test(key))throw Error("原请求编号格式不合法");
       result=await client.request(`/agent/requests/${encodeURIComponent(key)}`);
+    }
+    else if(resource==='agent'&&action==='derive'){
+      const allowed=new Set(['task_id','revision_id','run_id','revision_hash','context','message','request_id','confirm','base_url','help']),seen=new Set();
+      if(parsed.positionals.length!==2)throw Error('口径变更命令包含额外参数');
+      for(const token of argv.filter(value=>value.startsWith('--'))){const key=token.slice(2).replaceAll('-','_');if(!allowed.has(key)||seen.has(key))throw Error('口径变更命令包含未知或重复参数');seen.add(key);}
+      result=await createContextDerivedTask(client,{derivation:{kind:'REGISTERED_CONTEXT_CHANGE',taskId:required(parsed.options,'task_id'),revisionId:required(parsed.options,'revision_id'),runId:required(parsed.options,'run_id'),revisionHash:required(parsed.options,'revision_hash')},
+        contextId:required(parsed.options,'context'),message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
     }
     else if (resource === "agent" && action === "workflow")
       result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
