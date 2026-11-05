@@ -19,7 +19,7 @@ function compile(source) {
 const moduleUrl = (source) => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const evidenceUrl = moduleUrl(compile(readFileSync(new URL("../../web/src/EvidenceDownload.tsx", import.meta.url), "utf8")));
 let compiled = compile(workbenchSource).replaceAll('from "./EvidenceDownload"', `from ${JSON.stringify(evidenceUrl)}`);
-for (const name of ["service-composition", "service-consumption-scope", "service-source-binding"])
+for (const name of ["service-composition", "service-consumption-scope", "service-source-binding", "service-plan-source"])
   compiled = compiled.replaceAll(`from "./${name}"`, `from ${JSON.stringify(new URL(`../../web/src/${name}.ts`, import.meta.url).href)}`);
 const { DataServicesWorkbench } = await import(moduleUrl(compiled));
 const render = (props = {}) => renderToStaticMarkup(React.createElement(DataServicesWorkbench, {

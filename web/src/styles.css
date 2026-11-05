@@ -2677,6 +2677,11 @@ kbd {
   color: #7b8875;
   font-size: 9px;
 }
+
+.service-agent-source { display:flex; align-items:flex-end; flex-wrap:wrap; gap:12px; margin:16px 0; }
+.service-agent-source label { display:grid; gap:6px; min-width:220px; font-size:12px; font-weight:600; color:#263c32; }
+.service-agent-source select { min-height:40px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:#fff; color:#263c32; }
+.service-agent-source .button { min-height:40px; }
 .service-catalog,
 .service-editor,
 .service-create-more,

@@ -182,7 +182,7 @@ test('old source reads cannot replace another binding or a newer same-source ref
 const compile=name=>{
   let text=ts.transpileModule(readFileSync(`web/src/${name}.tsx`,'utf8'),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
   for(const pkg of ['react','react/jsx-runtime','lucide-react'])text=text.replaceAll(`from "${pkg}"`,`from ${JSON.stringify(import.meta.resolve(pkg))}`);
-  for(const helper of ['service-composition','service-consumption-scope','service-source-binding'])text=text.replaceAll(`from "./${helper}"`,`from ${JSON.stringify(new URL(`../../web/src/${helper}.ts`,import.meta.url).href)}`);
+  for(const helper of ['service-composition','service-consumption-scope','service-source-binding','service-plan-source'])text=text.replaceAll(`from "./${helper}"`,`from ${JSON.stringify(new URL(`../../web/src/${helper}.ts`,import.meta.url).href)}`);
   if(name==='DataServicesWorkbench')text=text.replaceAll('from "./EvidenceDownload"',`from ${JSON.stringify(compile('EvidenceDownload'))}`);
   return 'data:text/javascript;base64,'+Buffer.from(text).toString('base64');
 };
@@ -206,4 +206,14 @@ test('actual local bound workspace accepts only confirmed local environment and 
   for(const patch of [{runtimeMode:undefined},{runtimeMode:'PUBLIC_INVITATION',privateCloud:true}])assert.match(renderToStaticMarkup(React.createElement(DataServicesWorkbench,{...props,...patch})),/交接范围与当前运行环境不一致/);
   const main=readFileSync('web/src/main.tsx','utf8');assert.match(main,/privateCloud=\{workbench.cloudServices\} runtimeMode=\{workbench.runtimeMode\}/);
   assert.doesNotMatch(main,/if\(workbench.cloudServices\)\{const url=serviceHandoffLocation/);
+});
+
+test('source-bound Agent studio requires the explicit local capability and never opens private or consumption-only planning',()=>{
+ let calls=0;const local={...binding,sourceKind:'AGENT',scope:'LOCAL_TEST_ONLY'},props={api:async()=>{calls++;throw Error('render cannot request');},canWrite:true,sourceBinding:local,
+  privateCloud:false,runtimeMode:'LOCAL_DEVELOPMENT',sourceBoundAgentPlansEnabled:true,modelConfigured:true};
+ const html=renderToStaticMarkup(React.createElement(DataServicesWorkbench,props));assert.match(html,/aria-label="Agent规划成功批次"/);assert.match(html,/先规划持仓 DAPI/);
+ assert.match(html,/disabled=""[^>]*>[\s\S]*?生成受治理方案/);
+ for(const patch of [{sourceBoundAgentPlansEnabled:false},{privateCloud:true,runtimeMode:'PUBLIC_INVITATION'},{consumptionScope:{}}])
+  assert.doesNotMatch(renderToStaticMarkup(React.createElement(DataServicesWorkbench,{...props,...patch})),/aria-label="Agent规划成功批次"/);
+ assert.equal(calls,0);
 });

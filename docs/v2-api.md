@@ -211,6 +211,8 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET/POST /data-services/agent/plans | 列表或自然语言需求 | 后台真实模型方案，范围为DATA_SERVICE_DESIGN |
 | GET /data-services/agent/plans/:id | 方案状态 | 受治理提案、模型用量或明确失败 |
 | POST /data-services/agent/plans/:id/apply | 空对象 | 人工应用已验证方案为草稿，不自动发布 |
+| GET /data-services/agent/requests/:requestId | 本人原请求UUID | 找回原同源规划，不重新调用模型；来源不可用时仍只读返回原元数据 |
+| POST /data-services/agent/plans/:id/cancel | 空对象或sourceBoundOnly:true | 同源规划限定创建者，可在来源失效时停止 |
 | GET/POST /sources | 列表或name/sourceType/fileName | 创建仅限合成目录的LOCAL_CSV源及V1版本 |
 | GET /sources/:id | 数据源详情 | 当前版本、历史版本、连接测试和元数据版本 |
 | POST /sources/:id/test | 空对象 | 真实读取文件并记录摘要、字节、行列数和耗时 |
@@ -303,6 +305,8 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /evaluations/full-lifecycle/latest | 无 | v2报告/v3契约：重新核对冻结源摘要、七阶段关联、同版双批及监控时序；固定20例分母，保留失败/未执行/救援；旧契约或证据不一致409，缺报告404；历史回放不计Agent自主E2E |
 | GET /agent/requests/:requestId | 原创建请求编号 | 按当前创建者找回原Agent任务；读取不重发需求，本机/受邀持久命名空间分别隔离，匿名403、缺失404 |
 | POST /internal/scheduler/tick | HMAC签名的`{limit}` | 外部持久调度驱动领取到期ACTIVE_CLOUD批次；不接受用户会话替代服务签名，默认关闭 |
+
+普通本机原生 Agent 的精确发布交接可使用 `sourceBinding:{taskId,packageDigest,releaseId,sourceReleaseRunId}` 规划服务，后端能力标志为 `sourceBoundAgentPlansEnabled`。候选批次、语义和固定 DAPI 版本仅来自原来源；生成、读取、应用和恢复都保留原身份与编号。来源暂不可用时只读元数据带 `sourceCheck:UNAVAILABLE`，不能据此创建或应用；模型取消不依赖来源仍健康。私有／受邀／限定消费模式不因这项本机能力开放模型。完整契约、版本变化与 CLI/MCP 入口见 [同源服务Agent](source-bound-service-agent.md)。
 
 任务状态：QUEUED、RUNNING、SUCCEEDED、VALIDATION_FAILED、FAILED、CANCELLED、INTERRUPTED。
 `POST /agent/tasks` 可通过严格 `derivation:{kind:REGISTERED_CONTEXT_CHANGE,taskId,revisionId,runId,revisionHash}` 从本人成功原生 SQL 版本创建不同已登记口径的新任务。目标仍用 `contextId`，`sql` 必须等于原冻结版本，与失败修正字段互斥。服务端核来源、归属、五场景断言及原窗口；新任务返回白名单 `derivedFrom`，不继承原成功、计费或批准。幂等摘要包含来源和目标；未知提交复用原请求查询。工作台/CLI/MCP 契约见 [口径变更说明](agent-context-derivation.md)。

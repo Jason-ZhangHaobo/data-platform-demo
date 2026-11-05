@@ -358,7 +358,7 @@ export async function generatePython(
 }
 
 export async function generateDataServicePlan(
-  { message, services, releaseRuns, signal },
+  { message, services, releaseRuns, signal, sourceContext },
   env = process.env,
   fetchImpl = fetch,
 ) {
@@ -368,6 +368,7 @@ export async function generateDataServicePlan(
   if (base.protocol !== "https:") throw new Error("模型 API 必须使用 HTTPS");
   const prompt = JSON.stringify({
     request: message,
+    ...(sourceContext?{sourceContext:{id:sourceContext.id,name:sourceContext.name,definition:sourceContext.definition,validationContractId:sourceContext.validationContractId,metricLabels:sourceContext.metricLabels}}:{}),
     availablePublishedDapis: services
       .filter((service) => service.serviceType === "DAPI" && service.status === "PUBLISHED")
       .map((service) => ({

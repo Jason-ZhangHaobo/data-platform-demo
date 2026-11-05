@@ -23,6 +23,7 @@ import { publicationSelectorFromUrl } from "./publication-request.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
 import { localTaskConsumption } from "./local-task-consumption.mjs";
 import { localServiceSources } from "./local-service-sources.mjs";
+import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource,assertServicePlanVersions,bindServicePlanProposal,servicePlanDraftMatches,publicServicePlan} from './service-plan-source.mjs';
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
 import { privateServiceSourceSelection } from "./private-service-routes.mjs";
@@ -896,6 +897,32 @@ export function createV2Server(options = {}) {
     executeDapi: options.dataServiceExecutor,
   });
   const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment }) : undefined;
+  const sourceBoundServicePlansEnabled=local&&!privateDataServicesEnabled&&!serviceAccess&&!publicationAccess&&!developmentAccess;
+  const servicePlanActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
+  const boundServiceContext=(binding,actorId)=>{
+    if(!sourceBoundServicePlansEnabled)throw Object.assign(fail(403,'此环境未开放同源Agent服务规划'),{code:'SOURCE_BOUND_SERVICE_PLANS_DISABLED'});
+    return resolveServicePlanSource({store,project:PROJECT,binding,actorId,services:dataServices.list()});
+  };
+  const ownedServicePlan=(plan,req)=>{
+    if(!plan.sourceBinding)return plan;
+    if(!sourceBoundServicePlansEnabled)throw Object.assign(fail(403,'此环境未开放同源Agent服务规划'),{code:'SOURCE_BOUND_SERVICE_PLANS_DISABLED'});
+    if(plan.projectId!==PROJECT||plan.scope!=='LOCAL_TEST_ONLY'||plan.submittedBy!==servicePlanActor(req))throw Object.assign(fail(403,'规划任务仅属于原创建者'),{code:'SERVICE_PLAN_ACCESS_DENIED'});
+    servicePlanSourceBinding(plan.sourceBinding);
+    if(plan.proposal&&hash(JSON.stringify(plan.proposal))!==plan.proposalHash)throw Object.assign(fail(409,'原规划方案摘要不一致'),{code:'SERVICE_PLAN_CHANGED'});
+    return plan;
+  };
+  const checkedServicePlan=(plan,req)=>{
+    ownedServicePlan(plan,req);if(!plan.sourceBinding)return plan;
+    boundServiceContext(plan.sourceBinding,plan.submittedBy);
+    assertServicePlanVersions({store,project:PROJECT,binding:plan.sourceBinding,refs:plan.selectedVersions??plan.resourceVersions});
+    return plan;
+  };
+  const readableServicePlan=(plan,req)=>{
+    ownedServicePlan(plan,req);if(!plan.sourceBinding)return publicServicePlan(plan);
+    try{checkedServicePlan(plan,req);return publicServicePlan({...plan,sourceCheck:'VERIFIED'});}
+    catch(error){if(![403,404,409,422].includes(error.status))throw error;
+      return publicServicePlan({...plan,sourceCheck:'UNAVAILABLE',sourceCheckCode:/^[A-Z0-9_]{1,80}$/.test(error.code??'')?error.code:'SERVICE_PLAN_SOURCE_UNAVAILABLE'});}
+  };
   const servicePlanner =
     options.servicePlanner ??
     (async (input) => {
@@ -1578,6 +1605,7 @@ export function createV2Server(options = {}) {
           dataServices: {
             privateEnabled: privateDataServicesEnabled,
             localSourcesEnabled: local,
+            sourceBoundAgentPlansEnabled: sourceBoundServicePlansEnabled,
             scope: privateDataServicesEnabled ? "PRIVATE_CLOUD_TEST" : "LOCAL_TEST_ONLY",
             serviceCount: dataServices.list().length,
             businessDriver: options.stateCoordinator
@@ -4069,17 +4097,32 @@ export function createV2Server(options = {}) {
           200,
           dataServices.listCalls(url.searchParams.get("service_id") ?? undefined),
         );
-      if (path === "/api/v2/data-services/agent/plans" && method === "GET")
-        return json(res, 200, store.list("service_agent_plan", PROJECT));
+      const servicePlanRequest=path.match(/^\/api\/v2\/data-services\/agent\/requests\/([a-f0-9-]+)$/);
+      if(servicePlanRequest&&method==='GET'){
+        if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(servicePlanRequest[1]))throw fail(422,'原规划请求编号不合法');
+        const id=store.deduplicatedId(`${PROJECT}:source-service-agent-plan:${servicePlanActor(req)}:${servicePlanRequest[1]}`);
+        if(!id)throw fail(404,'未找到原规划请求，未重新提交');
+        return json(res,200,readableServicePlan(get('service_agent_plan',id),req));
+      }
+      if (path === "/api/v2/data-services/agent/plans" && method === "GET"){
+        const binding=servicePlanSourceQuery(url.searchParams),actorId=servicePlanActor(req);
+        if(binding)boundServiceContext(binding,actorId);
+        const plans=store.list('service_agent_plan',PROJECT).filter(plan=>binding?plan.sourceBinding&&plan.submittedBy===actorId&&
+          JSON.stringify(servicePlanSourceBinding(plan.sourceBinding))===JSON.stringify(binding):!plan.sourceBinding);
+        return json(res,200,plans.map(plan=>readableServicePlan(plan,req)));
+      }
       if (path === "/api/v2/data-services/agent/plans" && method === "POST") {
         const body = await readBody(req),
-          message = text(body.message, 4, 2000);
+          message = text(body.message, 4, 2000),actorId=servicePlanActor(req);
+        if(Object.keys(body).some(key=>!['message','sourceBinding'].includes(key)))throw fail(422,'服务规划只接受需求与可选确切来源');
+        const context=Object.hasOwn(body,'sourceBinding')?boundServiceContext(servicePlanSourceBinding(body.sourceBinding),actorId):undefined;
         if (!options.servicePlanner && !modelSettings(env).configured)
           throw new ModelUnavailable();
-        const key = text(req.headers["idempotency-key"], 1, 100),
-          signature = hash(JSON.stringify({ message })),
+        const key = text(req.headers["idempotency-key"], 1, 100);
+        if(context&&!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(key))throw fail(422,'同源规划须使用可恢复的UUID请求编号');
+        const signature = hash(JSON.stringify({ message,...(context?{sourceBinding:context.binding}:{}) })),
           dedup = store.deduplicate(
-            `${PROJECT}:service-agent-plan:${key}`,
+            context?`${PROJECT}:source-service-agent-plan:${actorId}:${key}`:`${PROJECT}:service-agent-plan:${key}`,
             signature,
             () =>
               store.create("service_agent_plan", PROJECT, {
@@ -4088,12 +4131,22 @@ export function createV2Server(options = {}) {
                 mode: "LIVE_MODEL",
                 completionScope: "DATA_SERVICE_DESIGN",
                 fullLifecycleE2E: false,
+                ...(context?{sourceBinding:context.binding,sourceContext:context.sourceContext,resourceVersions:context.resourceVersions,resourcesTruncated:context.resourcesTruncated,
+                  submittedBy:actorId,requestId:key,scope:'LOCAL_TEST_ONLY',agentIndependentE2E:false,publicDeployed:false}:{}),
               }),
           ),
           task = get("service_agent_plan", dedup.id);
+        if(context)checkedServicePlan(task,req);
         if (!dedup.replayed)
           schedule("service_agent_plan", task, async (signal) => {
-            const releaseRuns = store
+            let frozenContext;
+            if(task.sourceBinding){
+              const current=boundServiceContext(task.sourceBinding,task.submittedBy);
+              assertServicePlanVersions({store,project:PROJECT,binding:task.sourceBinding,refs:task.resourceVersions,current:true});
+              frozenContext={...current,services:current.services.filter(service=>task.resourceVersions.some(ref=>ref.serviceId===service.id)),resourceVersions:task.resourceVersions};
+            }
+            if(signal.aborted||get('service_agent_plan',task.id).status==='CANCELLED')return;
+            const releaseRuns = frozenContext?.releaseRuns??store
                 .list("release_run", PROJECT)
                 .filter(
                   (run) =>
@@ -4104,12 +4157,19 @@ export function createV2Server(options = {}) {
                 ),
               generated = await servicePlanner({
                 message,
-                services: dataServices.list(),
+                services: frozenContext?.services??dataServices.list(),
                 releaseRuns,
+                ...(frozenContext?{sourceContext:frozenContext.sourceContext}:{}),
                 signal,
               });
             if (get("service_agent_plan", task.id).status === "CANCELLED") return;
             const proposal = dataServices.validateAgentPlan(generated.plan);
+            let selectedVersions;
+            if(frozenContext){
+              boundServiceContext(task.sourceBinding,task.submittedBy);
+              selectedVersions=bindServicePlanProposal(proposal,frozenContext);
+              assertServicePlanVersions({store,project:PROJECT,binding:task.sourceBinding,refs:selectedVersions,current:true});
+            }
             store.update("service_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
@@ -4117,19 +4177,26 @@ export function createV2Server(options = {}) {
               model: generated.model,
               usage: generated.usage,
               finishedAt: new Date().toISOString(),
+              ...(frozenContext?{selectedVersions,proposalHash:hash(JSON.stringify(proposal))}:{}),
             });
           });
-        return json(res, 202, task);
+        return json(res, 202, publicServicePlan(task));
       }
       const serviceAgentPlan = path.match(
         /^\/api\/v2\/data-services\/agent\/plans\/([a-f0-9-]+)(?:\/(apply|cancel))?$/,
       );
       if (serviceAgentPlan) {
-        const plan = get("service_agent_plan", serviceAgentPlan[1]),
-          action = serviceAgentPlan[2];
-        if (method === "GET" && !action) return json(res, 200, plan);
+        const rawPlan=get('service_agent_plan',serviceAgentPlan[1]),action=serviceAgentPlan[2];
+        if(rawPlan.sourceBinding&&action==='cancel'){
+          if(!sourceBoundServicePlansEnabled||rawPlan.submittedBy!==servicePlanActor(req))throw Object.assign(fail(403,'无权取消此规划任务'),{code:'SERVICE_PLAN_ACCESS_DENIED'});
+          servicePlanSourceBinding(rawPlan.sourceBinding);
+        }
+        const plan=action==='cancel'||method==='GET'&&!action?rawPlan:checkedServicePlan(rawPlan,req);
+        if (method === "GET" && !action) return json(res, 200, readableServicePlan(plan,req));
         if (method === "POST" && action === "cancel") {
-          await readBody(req);
+          const body=await readBody(req);
+          if(body.sourceBoundOnly===true&&!plan.sourceBinding)throw fail(409,'此取消入口只操作同源规划任务');
+          if(plan.sourceBinding&&Object.keys(body).some(key=>key!=='sourceBoundOnly')||body.sourceBoundOnly!==undefined&&body.sourceBoundOnly!==true)throw fail(422,'取消规划不接受覆盖来源');
           if (!terminal.has(plan.status) && plan.status !== "APPLIED") {
             store.update("service_agent_plan", plan.id, PROJECT, {
               status: "CANCELLED",
@@ -4137,10 +4204,31 @@ export function createV2Server(options = {}) {
             });
             controls.get(plan.id)?.abort();
           }
-          return json(res, 200, get("service_agent_plan", plan.id));
+          return json(res, 200, publicServicePlan(get("service_agent_plan", plan.id)));
         }
         if (method === "POST" && action === "apply") {
-          await readBody(req);
+          const input=await readBody(req);
+          if(plan.sourceBinding){
+            if(Object.keys(input).length)throw fail(422,'同源方案应用不接受覆盖字段');
+            if(!['SUCCEEDED','APPLIED'].includes(plan.status)||!plan.proposal)throw fail(409,'请先等待同源方案核验通过');
+            const namespace=`${PROJECT}:source-service-plan-apply:${plan.id}`,signature=hash(JSON.stringify({sourceBinding:plan.sourceBinding,proposal:plan.proposal,selectedVersions:plan.selectedVersions}));
+            const prior=store.deduplicatedId(namespace);
+            if(!prior){
+              assertServicePlanVersions({store,project:PROJECT,binding:plan.sourceBinding,refs:plan.selectedVersions,current:true});
+              const valid=dataServices.validateAgentPlan(plan.proposal);
+              if(JSON.stringify(valid)!==JSON.stringify(plan.proposal))throw fail(409,'原方案固定版本已变化');
+              bindServicePlanProposal(valid,{binding:plan.sourceBinding,resourceVersions:plan.resourceVersions});
+            }
+            const receipt=store.deduplicate(namespace,signature,()=>plan.proposal.serviceType==='DAPI'?dataServices.createDapi(plan.proposal):dataServices.createXapi(plan.proposal)),
+              service=dataServices.detail(receipt.id);
+            if(!servicePlanDraftMatches(service,plan.proposal,plan.sourceBinding)||plan.appliedVersionId&&
+              (service.currentVersion.id!==plan.appliedVersionId||service.currentVersion.configHash!==plan.appliedConfigHash))
+              throw Object.assign(fail(409,'已应用草稿的当前版本已变化，未替换原结果'),{code:'APPLIED_SERVICE_CHANGED'});
+            if(plan.status==='APPLIED'&&plan.serviceId===service.id)return json(res,200,service);
+            store.update('service_agent_plan',plan.id,PROJECT,{status:'APPLIED',serviceId:service.id,appliedVersionId:service.currentVersion.id,
+              appliedConfigHash:service.currentVersion.configHash,appliedAt:plan.appliedAt??new Date().toISOString()});
+            return json(res,receipt.replayed?200:201,service);
+          }
           if (plan.status === "APPLIED" && plan.serviceId)
             return json(res, 200, dataServices.detail(plan.serviceId));
           if (plan.status !== "SUCCEEDED" || !plan.proposal)
