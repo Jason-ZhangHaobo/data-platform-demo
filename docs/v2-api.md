@@ -281,3 +281,9 @@ M2b/M2c已增加本机摘要审批、短周期墙上时钟发布、监控告警�
 默认关闭的 `V2_DURABLE_SQL_AGENT_ENABLED` 将 SQL Agent 创建改为检查点任务，新增 `POST /api/v2/agent/tasks/:id/advance`。请求必须携带 `expectedVersion`，可选 `confirmModelRetry`；GET 只读，未知模型结果不会自动重试。沿用身份/CSRF/开发权限，任务限制提交人或管理员操作。阶段、边界及本机测试见 [Agent 恢复合同](durable-agent-recovery.md)。本增量尚非云端或完整 Agent E2E 验收。
 
 `MODEL_NOT_SENT` 表示可信诊断已确认本次请求在发送前停止，任务状态为 `INTERRUPTED`。GET、后台事件、调度tick和评测器均不得自动重试；处理配置或预算条件后，用户明确调用原任务 `advance` 或 `background/resume` 可继续，无需未知计费的 `confirmModelRetry:true`。版本、所有权、次数和预算检查继续生效，原attempt和保守预算预留保留。普通错误的同名code不能自证请求未发送；未知结果、租约过期及历史 `MODEL_OUTCOME_UNKNOWN` 仍沿原确认规则。
+
+## 独立核验差异
+
+已授权的运行读取及Agent核验报告增加`validationDetails`，schema为`shuduo-validation-details/v1`。`source`绑定runId、revisionId、revisionHash、contextId、contractId；只有与原版本及项目相符时才展示值。根状态为`AVAILABLE`、`LEGACY_UNAVAILABLE`或`UNVERIFIED`，每个场景另有`detailsStatus`、`mismatches`、`totalMismatches`、`truncated`。单场景≤20项、五场景≤100项；金额/数量的具体比较值为有限十进制字符串，不转浮点数。
+
+差异kind为`VALUE_MISMATCH`、`INVALID_VALUE`、`MISSING_CLIENT`、`DUPLICATE_CLIENT`、`CLIENT_COUNT`、`OUT_OF_SCOPE_CLIENTS`、`OUTPUT_FIELDS`。非法实际值不回显原文；范围外客户只给数量。旧回执没有明细时不根据当前rows重建；字段不合法或来源不符时不显示数值。原始Worker comparison经现有签名回执落库，但不从普通validation出口直接透出，也不追加到模型错误摘要。GET不产生新的计算，现有权限不变。

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { getContext, validationContractId, validationFamilyForContext } from "./context.mjs";
+import { validationWithoutRawComparisons } from "./validation-details.mjs";
 
 export const deliveryFormat = "shuduo-delivery/v1";
 export const deliveryFiles = [
@@ -204,7 +205,7 @@ export function createDeliveryPackage({
       engine: run.engine,
       engineVersion: run.engineVersion,
       isolation: run.isolation ?? "LOCAL_PROCESS",
-      report: run.validation,
+      report: validationWithoutRawComparisons(run.validation),
     }),
     "README.md":
       `# ${remoteExecution ? "隔离Worker" : "本机"}交付包\n\n包含 SQL、实际执行的测试 SQL、调度、部署和样例交易日历。\n适配器 ${deployment.adapter}，Spark ${run.engineVersion}；当前只是演练，尚未发布或适配 DataWorks/EMR。\n演练时间：2026-09-11T09:00:00+08:00，对应业务日2026-09-10。\n散列只能校验与指定摘要一致，不构成生产审批或发布签名。\n`,

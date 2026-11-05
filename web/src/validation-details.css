@@ -1,0 +1,20 @@
+.validation-details,.validation-result-scope{min-width:0;max-width:100%;overflow-wrap:anywhere;font-size:12px;line-height:1.7}
+.validation-details{margin-top:14px;border-top:1px solid #dce4de;padding-top:12px}
+.validation-details h4{margin:0 0 8px;font-size:13px}
+.validation-details p,.validation-result-scope p{margin:7px 0}
+.validation-details-source,.validation-result-scope small{font-size:10px;color:#687d70}
+.validation-result-scope{background:#f4f8f1;border:1px solid #dce4de;border-radius:8px;padding:10px;margin-bottom:10px;box-sizing:border-box}
+.validation-details-warning{background:#fff5e8;color:#835b30;padding:8px 10px;border-radius:6px}
+.validation-details-scenario{min-width:0;margin:10px 0;border:1px solid #e5d8c9;border-radius:8px;padding:10px}
+.validation-details-scenario summary{display:flex;align-items:start;justify-content:space-between;gap:8px;cursor:pointer}
+.validation-details-scenario summary strong{min-width:0;font-size:12px}
+.validation-details-scenario summary>span{flex-shrink:0;color:#96583a;font-size:11px}
+.validation-details-scenario>small{display:block;font-size:10px;color:#7c8276;margin:4px 0 8px}
+.validation-details .validation-details-table,.agent-dev-results .validation-details-table{width:100%;min-width:0;table-layout:fixed;border-collapse:collapse;white-space:normal;font-size:11px;text-align:left}
+.validation-details-table caption{caption-side:top;text-align:left;padding:6px 0;color:#687d70;font-size:10px}
+.validation-details .validation-details-table th,.validation-details .validation-details-table td{padding:8px 6px;border-bottom:1px solid #e8e6dd;vertical-align:top;white-space:normal;overflow-wrap:anywhere;font-weight:400}
+.validation-details-table thead th{background:#f5f7f0;color:#617663;font-size:10px}
+.validation-details-table th:first-child{width:42%}
+.validation-details-table th span,.validation-details-table th small{display:block;margin:0;font-size:10px}
+.validation-details-table td{font-variant-numeric:tabular-nums}
+.validation-details-scenario summary:focus-visible{outline:2px solid #176d51;outline-offset:3px}
