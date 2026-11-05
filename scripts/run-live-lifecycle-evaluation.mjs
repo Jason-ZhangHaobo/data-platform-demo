@@ -3,8 +3,7 @@ import {mkdirSync,readFileSync,writeFileSync,renameSync,existsSync,openSync,clos
 import {randomUUID} from "node:crypto";
 import {dirname,join,resolve} from "node:path";
 import {fileURLToPath} from "node:url";
-import {advanceLiveLifecycleCase,refreshLiveLifecycleConsumption,liveLifecyclePlan,liveCaseCheckpoint,summarizeLiveLifecycle,validatedLiveConsumptionSource,liveLifecycleContract,legacyLiveLifecycleContract} from "../src/v2/live-lifecycle-evaluation.mjs";
-import {m1EvaluationCases} from "../src/v2/evaluation.mjs";
+import {advanceLiveLifecycleCase,refreshLiveLifecycleConsumption,liveLifecyclePlan,liveCaseCheckpoint,summarizeLiveLifecycle,validatedLiveConsumptionSource,liveLifecycleCases,liveLifecycleContract,legacyLiveLifecycleContract,currentLiveLifecycleContract,liveContractById} from "../src/v2/live-lifecycle-evaluation.mjs";
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),".."),uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const stop=message=>{throw Object.assign(Error(message),{publicMessage:message});};
@@ -26,23 +25,25 @@ function readCheckpoint(path){
 }
 function checkpointScope(state,runId,env){
  if(!state||state.evaluationRunId!==runId||!Number.isFinite(Date.parse(state.startedAt))||!Number.isSafeInteger(state.caseLimit)||state.caseLimit<1||state.caseLimit>20||!Array.isArray(state.outcomes))stop("原评测编号、案例范围或检查点不合法");
- const plan=liveLifecyclePlan(state.caseLimit),origin=loopbackOrigin(state.origin);
+ const contractId=state.contract?.id;if(!liveContractById(contractId))stop("原报告契约未知，不能迁移或当作新契约继续执行");
+ const plan=liveLifecyclePlan(state.caseLimit,{contractId}),origin=loopbackOrigin(state.origin);
  if(env.V2_LIVE_EVALUATION_ORIGIN!==undefined&&loopbackOrigin(env.V2_LIVE_EVALUATION_ORIGIN)!==origin||
-   env.V2_LIVE_EVALUATION_CASE_LIMIT!==undefined&&Number(env.V2_LIVE_EVALUATION_CASE_LIMIT)!==state.caseLimit||state.caseSetDigest!==plan.caseSetDigest)stop("恢复范围与原评测的入口、案例数或案例集不一致");
+   env.V2_LIVE_EVALUATION_CASE_LIMIT!==undefined&&Number(env.V2_LIVE_EVALUATION_CASE_LIMIT)!==state.caseLimit||state.caseSetDigest!==plan.caseSetDigest||
+   env.V2_LIVE_EVALUATION_CONTRACT!==undefined&&env.V2_LIVE_EVALUATION_CONTRACT!==contractId)stop("恢复范围与原评测的入口、案例数或案例集不一致");
  if(new Set(state.outcomes.map(item=>item?.caseId)).size!==state.outcomes.length||state.outcomes.some(item=>!item||!plan.selectedCases.some(def=>def.id===item.caseId)))stop("原检查点包含重复或范围外案例");
- const contractId=state.contract?.id;
- if(![liveLifecycleContract.id,legacyLiveLifecycleContract.id].includes(contractId))stop("原报告契约未知，不能迁移或当作新契约继续执行");
- if(contractId===liveLifecycleContract.id&&state.outcomes.some(item=>item.contractId!==contractId))stop("新契约检查点的案例来源不一致，未执行恢复");
+ if(contractId!==legacyLiveLifecycleContract.id&&state.outcomes.some(item=>item.contractId!==contractId))stop("新契约检查点的案例来源不一致，未执行恢复");
+ if(contractId===currentLiveLifecycleContract.id&&state.outcomes.some(item=>item.evaluationRunId!==runId))stop('案例不属于原评测运行，不能混用其他运行的成功来源');
  return {plan,origin,contractId};
 }
-function summaryOf(state,contractId){return summarizeLiveLifecycle(m1EvaluationCases(),state.outcomes,{contractId,testDouble:state.executionEvidenceMode==="TEST_HARNESS"});}
-function exactLocalNavigationSource(state){
- const definition=m1EvaluationCases().find(item=>item.id===state.caseId),source=definition?validatedLiveConsumptionSource(definition,state):undefined;
+function summaryOf(state,contractId){return summarizeLiveLifecycle(liveLifecycleCases(contractId),state.outcomes,{contractId,testDouble:state.executionEvidenceMode==="TEST_HARNESS"});}
+function exactLocalNavigationSource(state,outcomes){
+ const definition=liveLifecycleCases(state.contractId??legacyLiveLifecycleContract.id).find(item=>item.id===state.caseId),
+  source=definition?validatedLiveConsumptionSource(definition,state,{sourceCheckpoint:outcomes.find(item=>item.caseId===definition.sourceCaseId)}):undefined;
  if(!source||![source.taskId,source.revisionId,source.developmentRunId,source.packageId,source.verificationId,source.releaseId,...source.batches.map(batch=>batch.id)].every(value=>uuid.test(value)))return undefined;
  return source;
 }
-function links(state,origin){
- const taskId=uuid.test(state.taskId??"")?state.taskId:undefined,source=exactLocalNavigationSource(state);
+function links(state,origin,outcomes=[]){
+ const taskId=uuid.test(state.taskId??"")?state.taskId:undefined,source=exactLocalNavigationSource(state,outcomes);
  const taskUrl=taskId?origin+"/v2/?module=agent-center&task="+taskId:undefined;
  let servicesUrl,consumptionTarget;
  if(taskId&&source?.taskId===taskId){
@@ -57,9 +58,10 @@ function report(state,origin,contractId){
  const summary=summaryOf(state,contractId);
  return {...summary,evaluationRunId:state.evaluationRunId,origin,caseLimit:state.caseLimit,caseSetDigest:state.caseSetDigest,
   recorded:true,verificationMode:"RECORDED_CHECKPOINT_ONLY",externalTruthReverified:false,
-  waitingConsumptionCount:summary.awaitingConsumptionCaseCount??0,currentContractTargetMet:contractId===liveLifecycleContract.id&&summary.targetMet,
-  scopeNotice:contractId===legacyLiveLifecycleContract.id?"旧 v1 记录仅覆盖开发至发布监控，不含消费；不能计作 v2 含消费达标。未迁移或重跑。":"v2 包含受治理数据消费；本输出只整理已记录检查点，不重新核验外部真实性。",
-  cases:state.outcomes.map(item=>({caseId:item.caseId,status:safeCode(item.status)??"UNRECOGNIZED",phase:safeCode(item.phase)??"UNRECOGNIZED",errorCode:safeCode(item.errorCode),...links(item,origin)}))};
+  waitingConsumptionCount:summary.awaitingConsumptionCaseCount??0,currentContractTargetMet:contractId===currentLiveLifecycleContract.id&&summary.targetMet,
+  scopeNotice:contractId===legacyLiveLifecycleContract.id?"旧 v1 记录仅覆盖开发至发布监控，不含消费；不能计作新版含消费达标。未迁移或重跑。":
+   contractId===liveLifecycleContract.id?"v2 保留旧20例与含消费范围，不能计作 v3 两族与派生覆盖；本输出只整理原记录。":"v3 包含两组已登记口径、成功来源变更与受治理消费；本输出只整理记录，不重新核验外部真实性。",
+  cases:state.outcomes.map(item=>({caseId:item.caseId,status:safeCode(item.status)??"UNRECOGNIZED",phase:safeCode(item.phase)??"UNRECOGNIZED",errorCode:safeCode(item.errorCode),...links(item,origin,state.outcomes)}))};
 }
 function refreshReadAllowed(path,outcomes){
  if(typeof path!=="string"||/[\\#\s]/.test(path))return false;
@@ -89,8 +91,8 @@ export async function runLiveLifecycleCli(args=[],env=process.env,options={}){
   if(!["--plan","--execute","--resume","--refresh","--report"].includes(mode)||
     (mode==="--plan"?args.length>1:mode==="--execute"?args.length!==1:args.length!==2))stop("使用 --plan、--execute、--resume <原编号>、--refresh <原编号> 或 --report <原编号>");
   if(mode==="--plan"){
-   const plan=liveLifecyclePlan(Number(env.V2_LIVE_EVALUATION_CASE_LIMIT??1)),origin=loopbackOrigin(env.V2_LIVE_EVALUATION_ORIGIN??"http://127.0.0.1:3100");
-   out(JSON.stringify({...plan,selectedCases:plan.selectedCases.map(({id,contextId,category,request})=>({id,contextId,category,request})),origin},null,2));return 0;
+   const plan=liveLifecyclePlan(Number(env.V2_LIVE_EVALUATION_CASE_LIMIT??1),{contractId:env.V2_LIVE_EVALUATION_CONTRACT??currentLiveLifecycleContract.id}),origin=loopbackOrigin(env.V2_LIVE_EVALUATION_ORIGIN??"http://127.0.0.1:3100");
+   out(JSON.stringify({...plan,selectedCases:plan.selectedCases.map(({id,kind,sourceCaseId,contextId,category,request})=>({id,kind,sourceCaseId,contextId,category,request})),origin},null,2));return 0;
   }
   const runId=mode==="--execute"?(options.runId??randomUUID()):args[1];if(!uuid.test(runId??""))stop("必须提供原评测 UUID，不能使用文件路径");
   const base=options.artifactRoot?resolve(options.artifactRoot):join(root,".v2-artifacts","live-lifecycle");
@@ -98,7 +100,8 @@ export async function runLiveLifecycleCli(args=[],env=process.env,options={}){
   const runDirectory=join(base,runId),path=join(runDirectory,"checkpoint.json");
   let state,plan,origin,contractId,originalCheckpointText;
   if(mode==="--execute"){
-   plan=liveLifecyclePlan(Number(env.V2_LIVE_EVALUATION_CASE_LIMIT??1));origin=loopbackOrigin(env.V2_LIVE_EVALUATION_ORIGIN??"http://127.0.0.1:3100");contractId=plan.contract.id;
+   plan=liveLifecyclePlan(Number(env.V2_LIVE_EVALUATION_CASE_LIMIT??1),{contractId:env.V2_LIVE_EVALUATION_CONTRACT??currentLiveLifecycleContract.id});origin=loopbackOrigin(env.V2_LIVE_EVALUATION_ORIGIN??"http://127.0.0.1:3100");contractId=plan.contract.id;
+   if(contractId===legacyLiveLifecycleContract.id)stop('旧 v1 仅保留原报告，不创建新的旧契约运行');
    if(existsSync(runDirectory))stop("新评测编号已经存在，不覆盖原记录");
    state={evaluationRunId:runId,contract:plan.contract,startedAt:new Date().toISOString(),caseSetDigest:plan.caseSetDigest,caseLimit:plan.selectedCases.length,origin,outcomes:[]};
   }else{directory(runDirectory);const snapshot=readCheckpoint(path);state=snapshot.state;originalCheckpointText=snapshot.text;({plan,origin,contractId}=checkpointScope(state,runId,env));}
@@ -141,11 +144,12 @@ export async function runLiveLifecycleCli(args=[],env=process.env,options={}){
    for(const definition of selected){
     if(interruption.signal.aborted){waitingForAction=true;break;}
     let current=state.outcomes.find(item=>item.caseId===definition.id);
-    if(!current){if(readOnly)stop("只读刷新不能创建案例");current=liveCaseCheckpoint(definition,state.startedAt,plan.caseSetDigest);state.outcomes.push(current);save();}
-    const progress={save:value=>{state.outcomes=state.outcomes.map(item=>item.caseId===definition.id?value:item);save();}};
+    if(!current){if(readOnly)stop("只读刷新不能创建案例");current=liveCaseCheckpoint(definition,state.startedAt,plan.caseSetDigest,{contractId,evaluationRunId:runId});state.outcomes.push(current);save();}
+    const progress={sourceCheckpoint:state.outcomes.find(item=>item.caseId===definition.sourceCaseId),save:value=>{state.outcomes=state.outcomes.map(item=>item.caseId===definition.id?value:item);save();}};
     const result=readOnly?await refreshLiveLifecycleConsumption(definition,current,adapter,progress):await advanceLiveLifecycleCase(definition,current,adapter,progress);
     state.outcomes=state.outcomes.map(item=>item.caseId===definition.id?result:item);save();if(readOnly)refreshedCaseCount++;
-    out(JSON.stringify({evaluationRunId:runId,contractId,caseId:definition.id,status:safeCode(result.status)??"UNRECOGNIZED",phase:safeCode(result.phase)??"UNRECOGNIZED",errorCode:safeCode(result.errorCode),...links(result,origin),checkpoint:path,refreshReadOnly:readOnly}));
+    out(JSON.stringify({evaluationRunId:runId,contractId,caseId:definition.id,status:safeCode(result.status)??"UNRECOGNIZED",phase:safeCode(result.phase)??"UNRECOGNIZED",errorCode:safeCode(result.errorCode),...links(result,origin,state.outcomes),checkpoint:path,refreshReadOnly:readOnly}));
+    if(result.status==='BLOCKED_SOURCE'){waitingForAction=true;continue;}
     if(!["SUCCEEDED","FAILED"].includes(result.status)){waitingForAction=true;if(!readOnly)break;}
    }
    const summary=summaryOf(state,contractId);

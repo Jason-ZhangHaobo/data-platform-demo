@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {runLiveLifecycleCli,createLiveEvaluationAdapter} from '../../scripts/run-live-lifecycle-evaluation.mjs';
-import {liveLifecyclePlan,liveLifecycleContract,legacyLiveLifecycleContract,liveCaseCheckpoint,advanceLiveLifecycleCase} from '../../src/v2/live-lifecycle-evaluation.mjs';
+import {liveLifecyclePlan,liveLifecycleContract,legacyLiveLifecycleContract,currentLiveLifecycleContract,liveCaseCheckpoint,advanceLiveLifecycleCase} from '../../src/v2/live-lifecycle-evaluation.mjs';
 import {m1EvaluationCases} from '../../src/v2/evaluation.mjs';
 import {createLiveLifecycleFixture} from './fixtures/live-lifecycle-case.mjs';
 
@@ -42,11 +42,11 @@ function assertExactServicesLink(value,x){
  assert.deepEqual(value.consumptionTarget,{taskId:x.f.task.id,packageDigest:x.f.bundle.digest,releaseId:x.f.release.id,batchIds:x.f.batches.map(batch=>batch.id)});
 }
 
-test('CLI plan defaults to v2 including consumption and has no network or filesystem side effects',async t=>{
+test('CLI plan defaults to v3 with registered context changes and consumption without network or filesystem effects',async t=>{
  const root=mkdtempSync(join(tmpdir(),'shuduo-live-plan-synthetic-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
  const output=[],artifactRoot=join(root,'not-created');
  assert.equal(await runLiveLifecycleCli(['--plan'],{},{artifactRoot,output:text=>output.push(JSON.parse(text)),fetchImpl:()=>assert.fail('plan cannot fetch')}),0);
- assert.equal(output[0].contract.id,liveLifecycleContract.id);assert.ok(output[0].contract.stages.includes('CONSUMPTION'));assert.equal(output[0].willExecute,false);
+ assert.equal(output[0].contract.id,currentLiveLifecycleContract.id);assert.ok(output[0].contract.stages.includes('CONSUMPTION'));assert.equal(output[0].willExecute,false);
  assert.equal(existsSync(artifactRoot),false);
 });
 

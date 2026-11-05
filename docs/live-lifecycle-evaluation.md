@@ -2,13 +2,15 @@
 
 此入口从新的证券需求创建真实Agent任务，再由现有工作流生成并演练调度/部署文件。它与[历史模型代码回放](full-lifecycle-evaluation.md)分别计分。本文记录执行器合同；实际案例完成数、人工审批、模型/Spark结果与待办以当前受保护执行记录为准，不能把本文件或源码测试当作公网验收。
 
-默认计划采用 `securities-live-agent-reviewed-lifecycle-v2`，在原开发、调度文件、部署文件、工程师审阅、发布及监控证据之外，新增 `CONSUMPTION`：核对同一原任务、包、发布和成功批次的固定 DAPI 版本组合、XAPI 及已有授权调用证据。范围为 `LOCAL_FRESH_MODEL_ENGINEER_REVIEWED_WITH_CONSUMPTION`；不等于外部系统验收、生产或公网完成。
+新 CLI 计划和执行默认采用 `securities-live-agent-reviewed-lifecycle-v3`：固定20例覆盖客户全品类持仓＋现金、股票持仓＋现金两组口径。每组5套数据，共创建10个基础任务，再创建10个引用本轮成功基础任务的跨组口径变更任务。20例包含所有来源任务，不另加隐藏的准备任务。范围为 `LOCAL_FRESH_MODEL_CONTEXT_CHANGE_WITH_CONSUMPTION`；不等于外部系统验收、生产或公网完成。
 
-旧 `securities-live-agent-reviewed-lifecycle-v1` 只覆盖至发布后监控，按原范围保留。其 `SUCCEEDED` 不能算作 v2 的含消费通过；不会因升级程序自动迁移、补字段或重跑旧案例。
+v3 沿用完整开发、文件、独立审阅、发布、监控和 `CONSUMPTION` 门：消费核对同一任务、包、发布与成功批次的固定 DAPI 版本、XAPI 及已有授权调用。每个基础和派生任务均须使用自己的包、审阅、批准及消费结果。
+
+旧 `securities-live-agent-reviewed-lifecycle-v1` 只覆盖至发布后监控；v2 增加受治理消费，但仍使用旧5套口径×4类意图目录。两者均保留原案例、摘要、分母和范围，不迁移为v3，不补造历史成功。v1继续只读报告；v2可按原范围恢复与刷新。库函数原有默认v2保持兼容，新增调用可传 `{contractId:currentLiveLifecycleContract.id}`；CLI新执行默认v3。
 
 ## 计划与资源边界
 
-使用项目要求的Node.js 24运行`node scripts/run-live-lifecycle-evaluation.mjs --plan`仅输出计划，不连接服务、不提交任务。默认1例；`V2_LIVE_EVALUATION_CASE_LIMIT`可选择1—20例。完整集合复用已登记的20个证券开发场景，覆盖4类开发意图、5套资产数据；这仍不等于所有经典模块或全部证券业务范围。
+使用项目要求的Node.js 24运行`node scripts/run-live-lifecycle-evaluation.mjs --plan`仅输出计划，不连接服务、不提交任务。默认1例；`V2_LIVE_EVALUATION_CASE_LIMIT`可选择固定目录的前1—20例。完整v3包括两组共10套上下文的基础开发及其10个跨组变更，覆盖重复持仓、现金变化、同额不同持仓、仅有现金客户、字段范围、金额精度及口径变更；这仍不等于所有经典模块或全部证券业务范围。完整计划可设置案例数20后查看，`willExecute=false`不构成执行授权。
 
 每例最坏情况为3次模型调用、3次代码Spark运行、1次文件演练、2次工程师批准后的发布批次，合计最多6个Spark运行；每例模型Token预留上限32000。20例上界为60次模型调用、120个Spark运行、640000 Token。执行前必须核对现有预算、真实授权和服务配置；这里只声明次数/Token边界，不把它换算为未经核验的费用保证。
 
@@ -23,15 +25,19 @@
 3. 达到`AWAITING_ENGINEER_REVIEW`后停止，输出原任务工作台链接。工程师在现有工作台审阅精确代码、核验、包与演练，按原权限确认发布；执行器不会创建审阅、审批或发布记录。
 4. 工程师操作后，用同一入口和原案例范围 `--resume 原评测编号` 恢复。沿原任务/交付/发布读取或推进，不创建替代任务；未开始的后续案例仍属于付费执行范围，所以此模式继续要求当前模型/计算授权及就绪检查。发布仍在运行则返回 `AWAITING_MONITORING`。
 5. 同一包、同一代码版本、独立审阅及审批、两个真实Spark批次和同版监控齐全后，进入 `AWAITING_CONSUMPTION`，不能提前标记完整成功。前序检查包含激活/计划/开始/完成时间顺序、监控观察时间与批次对应关系。仅有 PASSED 或 HEALTHY 标签不够。
-6. 工程师在已有数据服务工作台按原来源开发、测试、发布并完成授权调用后，用 `--refresh 原评测编号` 只读核对消费证据。只有 core 的同源与时序检查通过，原案例才进入 v2 `SUCCEEDED`；执行器不自动建 DAPI/XAPI、发行应用凭证、调用接口或代为审批。
+6. 工程师在已有数据服务工作台按原来源开发、测试、发布并完成授权调用后，用 `--refresh 原评测编号` 只读核对消费证据。只有 core 的同源与时序检查通过，原案例才进入相应含消费契约的 `SUCCEEDED`；执行器不自动建 DAPI/XAPI、发行应用凭证、调用接口或代为审批。
+
+v3 派生案例只能引用固定 `sourceCaseId` 对应的本轮已完成基础案例。检查点冻结原任务、代码、运行、摘要、源口径、验证契约与父证据摘要；同一评测UUID和开始时间必须一致。提交前只读原版本SQL并核实际父任务与独立断言，再使用平台既有 `derivation` 创建接口。原SQL不进入评测报告，父任务的费用、批准、结果不能转移给子任务。子回执必须绑定原谱系及目标口径，结果未知只查询原请求编号。
+
+来源未完成时记 `AWAITING_SOURCE`，来源失败时记 `BLOCKED_SOURCE`；不换来源、重建父任务或缩小分母。失败来源的子案例保持未完成，同时仍可推进其他已授权且来源有效的案例。每个目标按自己的验证族核对代码、文件演练和两批发布；旧族五场景不能替代股票族五场景。
 
 ## 命令与恢复边界
 
 | 命令 | 作用 | 授权与写入边界 |
 |---|---|---|
-| `--plan` | 默认输出 v2 计划、选定案例与资源上界 | 无服务请求、无评测文件写入，不代表已获费用授权 |
-| `--execute` | 开始一份新的 v2 评测 | 保留原模型/计算授权、案例数与本机就绪门；默认不执行 |
-| `--resume <原编号>` | 继续原 v2 执行范围 | 仍检查当前授权及模型/Spark就绪；旧 v1 仅返回历史范围说明，不迁移、不重跑 |
+| `--plan` | 默认输出 v3 计划、固定来源依赖与资源上界 | 无服务请求、无评测文件写入，不代表已获费用授权 |
+| `--execute` | 默认开始新的 v3 评测 | 保留原模型/计算授权、案例数与本机就绪门；不代为审阅或发布 |
+| `--resume <原编号>` | 按原文件的 v2/v3 契约继续 | 仍检查当前授权及模型/Spark就绪；旧 v1 仅返回历史范围说明，不迁移、不重跑 |
 | `--refresh <原编号>` | 只核对已处于 `AWAITING_CONSUMPTION` 或 `PAUSED + phase=CONSUMPTION` 的原案例 | 不要求付费 `AUTHORIZED` 标志或模型/Spark仍可用；adapter 拒绝任何 POST，只允许已保存同源 `GET /data-services/task-evidence?agent_task_id=…&package_digest=…&release_id=…` |
 | `--report <原编号>` | 只读取新/旧原检查点，按对应契约整理已有阶段和统计 | 不访问服务，不创建锁，不修改原文件；标记 `recorded:true`、`RECORDED_CHECKPOINT_ONLY` 和 `externalTruthReverified:false` |
 
@@ -39,11 +45,11 @@
 
 恢复时默认取原报告的回环入口和案例数；若另行设置 `V2_LIVE_EVALUATION_ORIGIN` 或 `V2_LIVE_EVALUATION_CASE_LIMIT`，必须与原记录一致。所有入口仍拒绝云 origin、非回环地址、任意路径和符号链接检查点；命令只接受原 UUID，不接受文件路径。
 
-输出包含 core 返回的阶段、统计及 `waitingConsumptionCount`（对应 `awaitingConsumptionCaseCount`），消费阶段暂停另外保留 `pausedCaseCount`。`taskUrl` 指向已存在的原任务。只有 v2 检查点中任务、代码版本/摘要、开发运行、包、演练、发布及两个成功批次与已通过的监控证据一致时，才生成精确本机 `servicesUrl`：携带 `source_task`、`source_package`、`source_release`、`source_kind=AGENT`、`source_scope=LOCAL_TEST_ONLY`、`source_revision` 和 `source_run`。输出标记 `navigationOnly:true`、`sourceSelection:EXACT_LOCAL_RELEASE`；`consumptionTarget` 保留原包、发布和成功批次编号。
+输出包含 core 返回的阶段、统计及 `waitingConsumptionCount`（对应 `awaitingConsumptionCaseCount`），消费阶段暂停另外保留 `pausedCaseCount`。`taskUrl` 指向已存在的原任务。只有 v2/v3 检查点中任务、代码版本/摘要、开发运行、包、演练、发布及两个成功批次与已通过的监控证据一致时，才生成精确本机 `servicesUrl`；v3派生还要核对本轮成功父案例。链接携带 `source_task`、`source_package`、`source_release`、`source_kind=AGENT`、`source_scope=LOCAL_TEST_ONLY`、`source_revision` 和 `source_run`，标记 `navigationOnly:true`、`sourceSelection:EXACT_LOCAL_RELEASE`；`consumptionTarget` 保留原包、发布和成功批次编号。
 
 深链只定位来源，不赋予权限、不自动创建或调用接口。页面必须实际回读原任务、包、发布与成功批次并核对一致后，才能在既有权限内操作；返回代码沿原版本和开发运行恢复。缺失或矛盾来源不生成服务入口，也不退回全项目目录猜选。旧 v1 没有此来源时只提供原任务链接，不能伪造 v2 预选。当前不新增 GUI 评测页面；原任务已有的消费证据区用于查看同源记录。
 
-`--report` 的统计只从已记录内容按相应契约核对，不重新核验服务、账单、实际模型或计算真实性。旧 v1 输出明确不含消费，`currentContractTargetMet` 不会因旧 v1 达标而变为 true。报告读取不会把历史记录升级为新证据。
+`--report` 的统计只从已记录内容按相应契约核对，不重新核验服务、账单、实际模型或计算真实性。`currentContractTargetMet` 只指当前v3，旧v1/v2按自己的原契约统计，不能表示新覆盖已达标。报告读取不会升级历史证据。恢复默认按文件中的契约选择目录；可用 `V2_LIVE_EVALUATION_CONTRACT` 显式指定完整契约ID，若与原文件不同则拒绝，不迁移。v2新计划可显式选择其ID；不新增v1执行。
 
 普通代码运行由平台在`validation.contractId`记录验证契约；文件演练/发布回执从不可变包读取`source.validationContractId`、源版本/运行/SQL摘要和`fileHashes`。评测分别校验这两种协议，不要求底层Spark原始输出包含平台附加字段；缺少源绑定或文件摘要仍须拒绝。
 
@@ -54,7 +60,7 @@
 - 创建响应丢失：按原创建者和原请求编号只读查询；结果未确认则`PAUSED`，不会重发需求。交付响应丢失按同任务/同版本/同运行查找，歧义同样暂停。
 - 持久推进仅使用已读版本；写入响应未知后先回读。版本未推进时停止，不重复提交该写入；未知模型结果不自动确认重试。
 - 已确认失败保留在原案例，后续可继续其他已授权案例；未知结果、等待审阅、监控或消费会保留恢复点并停止付费执行脚本。恢复不清零次数或新建替代模型任务。错误报告只记录固定错误码与阶段。
-- 分母固定20例，17例及以上成功且全部案例形成确定结果，才达到对应契约的85%门槛。v2 成功必须含消费证据；未执行、待审阅、待监控、待消费、暂停和未知提交分别展示，v1/v2 不混算。
+- 分母固定20例，17例及以上成功且全部案例形成确定结果，才达到对应契约的85%门槛。v2/v3成功必须含消费证据；v3另核原父案例成功、原谱系及验证族。未执行、待来源、来源失败、待审阅、待监控、待消费、暂停和未知提交分别展示，版本不混算，不能借其他评测运行或重复任务补足成功数。
 - `agentIndependentE2E=false`：报告属于真实新任务加工程师审阅的本机链路，不是Agent无人工批准的自主发布，也不是公网完成率。测试替身标记会持久保留；任何混入替身的结果都不计真实成功。
 - 检查点及API回执的关联校验不是独立的外部真实性证明；正式验收仍须核对原服务、版本文件、元数据库、运行与监控证据。不能手工补字段把模拟检查点升级为真实运行。
 

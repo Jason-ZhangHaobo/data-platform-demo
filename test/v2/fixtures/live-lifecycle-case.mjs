@@ -2,19 +2,21 @@ import {randomUUID} from "node:crypto";
 import {liveLifecyclePlan,liveCaseCheckpoint} from "../../../src/v2/live-lifecycle-evaluation.mjs";
 import {m1EvaluationCases} from "../../../src/v2/evaluation.mjs";
 import {createDeliveryPackage,sha256} from "../../../src/v2/delivery.mjs";
-import {contextIds,getContext,referenceSql,validationContractId} from "../../../src/v2/context.mjs";
+import {contextIds,getContext,referenceSql,validationContractId,validationFamilyForContext,referenceSqlForContext} from "../../../src/v2/context.mjs";
 import {PROJECT} from "../../../src/v2/server.mjs";
 
 // Public synthetic API receipts; no model, Spark, network or credentials.
 export function createLiveLifecycleFixture(options={}){
- const definition=options.definition??m1EvaluationCases()[0],mutations=[],plan=liveLifecyclePlan();
- const time=seconds=>new Date(Date.UTC(2026,8,15,0,0,seconds)).toISOString();
- const checkpoint=liveCaseCheckpoint(definition,time(0),plan.caseSetDigest);
- const revision={id:randomUUID(),projectId:PROJECT,source:'LIVE_MODEL',sql:referenceSql,hash:sha256(referenceSql),contextId:definition.contextId};
+ const definition=options.definition??m1EvaluationCases()[0],mutations=[],plan=liveLifecyclePlan(1,options.contractId?{contractId:options.contractId}:{}),
+  family=validationFamilyForContext(definition.contextId),sql=options.contractId?referenceSqlForContext(definition.contextId):referenceSql;
+ const time=seconds=>new Date(Date.UTC(2026,8,15,0,0,seconds+(options.timeOffset??0))).toISOString();
+ const checkpoint=liveCaseCheckpoint(definition,options.evaluationStartedAt??time(0),plan.caseSetDigest,options.contractId?{contractId:options.contractId,evaluationRunId:options.evaluationRunId??'00000000-0000-4000-8000-000000000123'}:{});
+ const revision={id:randomUUID(),projectId:PROJECT,source:'LIVE_MODEL',sql,hash:sha256(sql),contextId:definition.contextId};
  const run={id:randomUUID(),projectId:PROJECT,agentTaskId:'unused',revisionId:revision.id,revisionHash:revision.hash,
-  contextId:definition.contextId,validationContractId,isolation:'LOCAL_PROCESS',rows:structuredClone(getContext(definition.contextId).expected),
-  status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,validation:{contractId:validationContractId,passed:true,regressions:contextIds.map(contextId=>({contextId,passed:true}))}};
- const task={id:randomUUID(),message:definition.request,contextId:definition.contextId,status:'SUCCEEDED',mode:'LIVE_MODEL',createdAt:time(1),usedTokens:100,attempts:[{status:'SUCCEEDED',model:'qwen3.7-plus',revisionId:revision.id,runId:run.id}]};run.agentTaskId=task.id;
+  contextId:definition.contextId,validationContractId:family.id,isolation:'LOCAL_PROCESS',rows:structuredClone(getContext(definition.contextId).expected),
+  status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,validation:{contractId:family.id,passed:true,regressions:family.contextIds.map(contextId=>({contextId,passed:true}))}};
+ const task={id:randomUUID(),message:definition.request,contextId:definition.contextId,status:'SUCCEEDED',mode:'LIVE_MODEL',createdAt:time(1),usedTokens:100,attempts:[{status:'SUCCEEDED',model:'qwen3.7-plus',revisionId:revision.id,runId:run.id}],
+  ...(options.contractId?{version:1,language:'SPARK_SQL',sql,revisionId:revision.id,runId:run.id,validationContractId:family.id}:{}),...(options.derivedFrom?{derivedFrom:options.derivedFrom,initialSql:options.parent.revision.sql}:{})};run.agentTaskId=task.id;
  const deliveryId=randomUUID(),bundle={...createDeliveryPackage({run,revision,name:'虚构证券评测'}),id:randomUUID(),sourceRunId:run.id,agentDeliveryTaskId:deliveryId};
  const {contractId,...rawValidation}=run.validation;
  const executedFiles={status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,packageDigest:bundle.digest,
@@ -49,15 +51,16 @@ export function createLiveLifecycleFixture(options={}){
    call:{callId:randomUUID(),versionId:xapiVersionId,configHash:sha256('synthetic-xapi'),resultHash:sha256('synthetic-asset-query-result'),verified:true,rowCount:3,
     applicationId:randomUUID(),applicationStatus:'REVOKED',finishedAt:time(20)}}]};
  let agentCreated=false,deliveryCreated=false,reviewed=false,consumed=Boolean(options.consumed),failConsumptionRead=false;
- const reads=[];
+ const reads=[],submittedBodies=[];
  const adapter={testDouble:true,request:async(path,body)=>{
   if(body!==undefined){
    mutations.push(path);
-   if(path==='/agent/tasks'){agentCreated=!options.uncommitted; if(options.postLost)throw Error('synthetic lost response');return task;}
+   if(path==='/agent/tasks'){submittedBodies.push(structuredClone(body));agentCreated=!options.uncommitted; if(options.postLost)throw Error('synthetic lost response');return task;}
    if(path===`/agent/tasks/${task.id}/prepare-delivery`){deliveryCreated=true;return delivery;}
    throw Error('unexpected write: '+path);
   }
   reads.push(path);
+  if(options.parent&&[`/agent/tasks/${options.parent.task.id}`,`/revisions/${options.parent.revision.id}`,`/runs/${options.parent.run.id}`].includes(path))return options.parent.adapter.request(path);
   if(path.startsWith('/data-services/task-evidence?')){
    if(failConsumptionRead)throw Error('SYNTHETIC_CONSUMPTION_READ_UNKNOWN');
    return consumed?consumption:{...consumption,status:'PENDING',services:[],matchingCount:0};
@@ -76,7 +79,7 @@ export function createLiveLifecycleFixture(options={}){
   if(path.startsWith('/release/runs/'))return batches.find(batch=>path.endsWith(batch.id));
   throw Error('unexpected read: '+path);
  }};
- return {definition,checkpoint,adapter,mutations,reads,task,revision,bundle,delivery,verification,review,approval,release,batches,events,run,consumption,
+ return {definition,checkpoint,adapter,mutations,reads,submittedBodies,task,revision,bundle,delivery,verification,review,approval,release,batches,events,run,consumption,
   reviewNow:()=>{reviewed=true;},confirmTask:()=>{agentCreated=true;},consumeNow:()=>{consumed=true;},failConsumptionRead:value=>{failConsumptionRead=value;}};
 }
 
