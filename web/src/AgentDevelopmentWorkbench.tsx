@@ -8,6 +8,8 @@ import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
 import {initialAgentTaskId,loadHistoryAfterTarget,mergeTaskHistory} from "./agent-history-loading";
 import {agentTaskFinished,mayEditScopedTask} from "./agent-task-scope";
 import {AgentRepairAction} from "./AgentRepairAction";
+import {AgentModelRecovery} from "./AgentModelRecovery";
+import {agentResumeDecision,modelRecoveryNeedsAction,pauseModelRecovery,submitAgentResume} from "./agent-model-recovery";
 import type { PublicationTarget } from "./AuthDialog";
 import type {ValidationFamily} from "./validation-family";
 import "./agent-development.css";
@@ -19,7 +21,7 @@ type Run = { id: string; status: string; createdAt?: string; validationContractI
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type SavedRevision = {id:string;sql:string;contextId:string;source?:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
 const terminal = (s?: string) => Boolean(s && ["SUCCEEDED", "FAILED", "CANCELLED", "VALIDATION_FAILED","INTERRUPTED"].includes(s));
-const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "执行中断，记录保留", VALIDATION_FAILED: "业务断言未通过", NO_SQL_CHANGE:"模型未修改代码（未重复执行）" };
+const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", MODEL_NOT_SENT:"模型请求未发送，等待修复后重试", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "执行中断，记录保留", VALIDATION_FAILED: "业务断言未通过", NO_SQL_CHANGE:"模型未修改代码（未重复执行）" };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
@@ -63,6 +65,10 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   const runPending = Boolean(run && !terminal(run.status));
   const working = automatic || busy, durable = task?.executionMode === "DURABLE_SQL_AGENT_V1";
   const unknown = task?.stage === "MODEL_OUTCOME_UNKNOWN";
+  const modelNotSent = task?.stage === "MODEL_NOT_SENT";
+  const resumeInput = task ? {task,canWrite,working,dirty,
+    pendingResult:manualUnconfirmed||Boolean(pendingSaveKey)||Boolean(pendingAgentKey),retryConsent} : undefined;
+  const resumeReason = resumeInput ? agentResumeDecision(resumeInput).reason : undefined;
   const repairInput = {taskOnly,taskStatus:task?.status,ready,canWrite,working,dirty,
     pendingResult:manualUnconfirmed||Boolean(pendingSaveKey)||Boolean(pendingAgentKey)||runPending,
     hasContext:Boolean(context),baselineRevisionId,run};
@@ -154,7 +160,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     if (manualUnconfirmed || pendingSaveKey || pendingAgentKey) { setNotice("请先确认原提交、保存或运行请求，再切换任务；不会丢弃未确认请求。"); return; }
     const keepDraft = selectedId.current === id && dirty;
     if (protectDraft && dirty && !keepDraft && !confirm("当前代码有未保存修改，是否放弃修改并切换任务？")) return;
-    const selectionEpoch = ++epoch.current; setAutomatic(false); setBusy(true); setError("");
+    const selectionEpoch = ++epoch.current; setAutomatic(false); setBusy(true); setError(""); setRetryConsent(false);
     rememberSelection(id);
     try {
       const current = await api<Task>(`/agent/tasks/${id}`);
@@ -179,12 +185,13 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     if (publicationTarget || !mayEditScopedTask(taskOnly,targetTaskId,start.id,undefined)) return;
     const token = ++epoch.current; setAutomatic(true); setError("");
     let current = start, started = Date.now();
+    let explicitNotSentRetry = manualTakeover && start.stage === "MODEL_NOT_SENT";
     try {
       for (let step = 0; step < 40 && token === epoch.current; step++) {
         if (Date.now() - started > 5 * 60 * 1000) { setNotice("本次自动推进已达5分钟上限；任务记录保留，可稍后继续。"); break; }
         if (agentTaskFinished(current.status)) break;
         if(current.background && !["ACTIVE","COMPLETED"].includes(current.background.status) && !manualTakeover){setNotice("云后台已暂停，检查点保留；请核对原因后明确选择人工继续。");break;}
-        if (current.stage === "MODEL_OUTCOME_UNKNOWN" && !confirmRetry) break;
+        if (pauseModelRecovery(current.stage,{explicitNotSentRetry,confirmModelRetry:confirmRetry})) break;
         if (current.executionMode === "DURABLE_SQL_AGENT_V1") {
           if(current.background?.status==="ACTIVE"){
             if(current.background.delivery==="UNCONFIRMED"){setNotice("后台唤醒投递未确认；请刷新原任务后重试同一投递，不重新提交需求。");break;}
@@ -195,6 +202,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
             await pause(5000); if (token !== epoch.current) break;
             current = await api<Task>(`/agent/tasks/${current.id}`);
           } else {
+            explicitNotSentRetry = false;
             current = await api<Task>(`/agent/tasks/${current.id}/advance`, { expectedVersion: current.version, ...(confirmRetry ? { confirmModelRetry: true } : {}) });
             confirmRetry = false;
           }
@@ -207,7 +215,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
           if (token !== epoch.current) break;
           setRun(actual);
         }
-        if (agentTaskFinished(current.status) || current.stage === "MODEL_OUTCOME_UNKNOWN") break;
+        if (agentTaskFinished(current.status) || modelRecoveryNeedsAction(current.stage)) break;
         await pause(current.stage === "WAITING_FOR_RUN" ? 5000 : 800);
       }
     } catch (e) {
@@ -378,16 +386,17 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
               {task.attempts.filter(a=>a.diagnostic).map(a=><p key={`diagnostic-${a.attempt}`} className="agent-dev-error-text">第{a.attempt}次安全诊断：{a.diagnostic!.code} · 阶段 {a.diagnostic!.phase}{a.diagnostic!.httpStatus?` · HTTP ${a.diagnostic!.httpStatus}`:""} · {a.diagnostic!.elapsedMs}ms。{a.diagnostic!.requestMayHaveBeenSent?"请求可能已发送，不能据此确认是否计费。":"失败发生在请求发送前；原预算预留仍保留。"}</p>)}
               {task.sourceRunId && <button className="button" disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${task.sourceRunId}`)); setTab("日志"); setNotice("这里是本次修正引用的原始失败批次；编辑器仍保留当前代码。"); } catch(e) { setError((e as Error).message); } }}>查看修正依据 · {task.sourceRunId.slice(0,8)}</button>}
               <ol className="agent-dev-attempts">{task.attempts.map(a => <li key={a.attempt}><span>第{a.attempt}次</span><strong>{a.status === "FAILED" ? "执行失败（记录保留）" : a.status === "GENERATED" ? "代码已生成" : stageText[a.status] ?? a.status}</strong>{a.model && <small>模型：{a.model}</small>}{a.status === "NO_SQL_CHANGE" ? a.sourceRunId && <button disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${a.sourceRunId}`)); setTab("校验"); setNotice("正在查看修正前的原失败批次；本次模型未修改代码，没有新增 Spark 执行。编辑器内容保持不变。"); } catch(e) { setError((e as Error).message); } }}>查看原失败批次 · {a.sourceRunId.slice(0,8)}</button> : a.runId && <button disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${a.runId}`)); setTab("日志"); setNotice("正在查看这次尝试的执行记录；编辑器保留最新代码，结果以批次所绑定版本为准。"); } catch(e) { setError((e as Error).message); } }}>查看第{a.attempt}次执行 · {a.runId.slice(0,8)}</button>}</li>)}</ol>
-              <small>版本 {task.version} · 预算占用 {task.usedTokens ?? 0} Token（未知结果含预留）· 结论仅对应当前代码版本</small>
-              {task.background&&<p role="status">云后台：{task.background.status} · 已处理{task.background.consumedEvents}/{task.background.maxEvents}个事件 · 截止{new Date(task.background.expiresAt).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai"})}。未知模型结果暂停，不自动上线。{task.background.code&&` ${task.background.code}`}</p>}
+              <small>版本 {task.version} · 预算占用 {task.usedTokens ?? 0} Token（含未发送或未知结果的保留额度）· 结论仅对应当前代码版本</small>
+              {task.background&&<p role="status">云后台：{task.background.status} · 已处理{task.background.consumedEvents}/{task.background.maxEvents}个事件 · 截止{new Date(task.background.expiresAt).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai"})}。请求未发送或模型结果未知时暂停，不自动重试或上线。{task.background.code&&` ${task.background.code}`}</p>}
             </div>
-            {unknown && <label className="agent-dev-consent"><input type="checkbox" checked={retryConsent} onChange={e => setRetryConsent(e.target.checked)} />上次模型结果未知，可能已产生费用。我确认在剩余预算内再次调用。</label>}
+            <AgentModelRecovery stage={task.stage} consent={retryConsent} disabled={!canWrite||working} onConsent={setRetryConsent} />
             <div className="agent-dev-task-actions"><button className="button" disabled={busy} onClick={() => void selectTask(task.id, false)}><RefreshCw size={14} />刷新 / 恢复</button>
               {task.background?.status==="ACTIVE"&&<button className="button" disabled={!canWrite||busy} onClick={async()=>{epoch.current++;setAutomatic(false);setBusy(true);try{await api(`/agent/tasks/${task.id}/background/cancel`,{});setNotice("已停止后续后台推进；已提交步骤不会重复运行，待当前步骤确认后可人工接管。");await selectTask(task.id,false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}><Square size={13}/>停止后台自动推进</button>}
-              {task.background&&(["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(task.background.status)||task.background.scopeBlocked||Date.now()>=task.background.expiresAt)&&!agentTaskFinished(task.status)&&<button className="button primary" disabled={!canWrite||working||dirty||(unknown&&!retryConsent)} onClick={async()=>{setBusy(true);try{await api(`/agent/tasks/${task.id}/background/resume`,{expectedVersion:task.version,confirmModelRetry:retryConsent});setRetryConsent(false);setNotice("已审阅并在当前窗口内恢复原任务云后台，最多15分钟；原次数与预算不清零，不自动发布。");await selectTask(task.id,false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}>审阅并恢复云后台</button>}
-              {!agentTaskFinished(task.status) && <button className="button primary" title={dirty ? "请先保存并运行修改，或撤销未保存修改" : undefined} disabled={!canWrite || working || dirty || (unknown && !retryConsent)} onClick={() => void drive(task, retryConsent,true)}><Play size={14} />{unknown ? "确认重试" : task.background?.status==="ACTIVE"?"查看后台进度":"继续任务"}</button>}
+              {task.background&&(["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(task.background.status)||task.background.scopeBlocked||Date.now()>=task.background.expiresAt)&&!agentTaskFinished(task.status)&&<button className="button primary" title={resumeReason} disabled={Boolean(resumeReason)} onClick={()=>resumeInput&&submitAgentResume(resumeInput,{explain:setNotice,submit:async confirmModelRetry=>{setBusy(true);try{await api(`/agent/tasks/${task.id}/background/resume`,{expectedVersion:task.version,confirmModelRetry});setRetryConsent(false);setNotice("已审阅并在当前窗口内恢复原任务云后台，最多15分钟；原次数与预算不清零，不自动发布。");await selectTask(task.id,false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}})}>{modelNotSent?"修复后恢复后台":"审阅并恢复云后台"}</button>}
+              {!agentTaskFinished(task.status) && <button className="button primary" title={resumeReason} disabled={Boolean(resumeReason)} onClick={()=>resumeInput&&submitAgentResume(resumeInput,{explain:setNotice,submit:confirmModelRetry=>drive(task,confirmModelRetry,true)})}><Play size={14} />{modelNotSent ? "修复后重试原任务" : unknown ? "确认重试" : task.background?.status==="ACTIVE"?"查看后台进度":"继续任务"}</button>}
               {!agentTaskFinished(task.status) && <button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button>}
             </div>
+            {!agentTaskFinished(task.status)&&resumeReason&&<p className="agent-dev-notice" role="status">{resumeReason}</p>}
             {task.status === "SUCCEEDED" && <p className="agent-dev-success"><CheckCircle2 size={16} />代码已通过执行校验。继续查看下方核验报告，并准备调度与部署交付。</p>}
           </>}
         </div>

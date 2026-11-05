@@ -4,10 +4,11 @@ import { readFileSync } from "node:fs";
 
 test("development workspace declares bounded scope and preserves explicit recovery boundaries", () => {
   const ui = readFileSync("web/src/AgentDevelopmentWorkbench.tsx", "utf8");
-  for (const label of ["任务历史", "本次数据与业务口径", "按此口径生成并验证", "查看代码差异", "保存并运行我的代码", "刷新 / 恢复", "确认重试", "不是永久云调度", "未知结果含预留", "未保存的编辑已保留"])
+  for (const label of ["任务历史", "本次数据与业务口径", "按此口径生成并验证", "查看代码差异", "保存并运行我的代码", "刷新 / 恢复", "确认重试", "修复后重试原任务", "不是永久云调度", "含未发送或未知结果的保留额度", "未保存的编辑已保留"])
     assert.ok(ui.includes(label), label);
   assert.match(ui, /expectedVersion: current\.version/);
-  assert.match(ui, /MODEL_OUTCOME_UNKNOWN" && !confirmRetry/);
+  assert.match(ui, /pauseModelRecovery\(current\.stage/);
+  assert.match(ui, /modelRecoveryNeedsAction\(current\.stage\)/);
   assert.match(ui, /confirmModelRetry: true/);
   // The creation path is delegated to the tested submission controller;
   // key/body preservation and unknown replies have behavioral coverage in

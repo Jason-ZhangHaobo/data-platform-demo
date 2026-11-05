@@ -90,6 +90,17 @@ test('unknown durable model outcomes pause on the original task without retry co
  const state=await advance(f);assert.equal(state.status,'PAUSED');assert.equal(state.errorCode,'MODEL_OUTCOME_UNKNOWN');assert.equal(state.taskId,f.task.id);
  assert.deepEqual(f.mutations,['/agent/tasks']);
 });
+test('interrupted model preparation and unknown outcomes remain paused before terminal handling and cannot auto-retry',async()=>{
+ for(const stage of ['MODEL_NOT_SENT','MODEL_OUTCOME_UNKNOWN']){
+  const f=fixture();Object.assign(f.task,{status:'INTERRUPTED',executionMode:'DURABLE_SQL_AGENT_V1',stage,version:3});
+  const state=await advance(f);assert.equal(state.status,'PAUSED');assert.equal(state.errorCode,stage);assert.equal(state.taskId,f.task.id);
+  const restored=await advance(f,JSON.parse(JSON.stringify(state)));
+  assert.equal(restored.status,'PAUSED');assert.equal(restored.errorCode,stage);assert.equal(restored.actions.agent.id,f.task.id);
+  assert.deepEqual(f.mutations,['/agent/tasks'],'refresh/recovery never resubmits or advances a blocked model step');
+  const summary=summarizeLiveLifecycle(m1EvaluationCases(),[restored]);
+  assert.equal(summary.pausedCaseCount,1);assert.equal(summary.failedCaseCount,0);assert.equal(summary.succeededCaseCount,0);
+ }
+});
 test('a lost advance reply with unchanged version stops instead of repeating the write',async()=>{
  const f=fixture();f.task.status='QUEUED';f.task.executionMode='DURABLE_SQL_AGENT_V1';f.task.stage='READY_FOR_MODEL';f.task.version=1;
  const state=await advance(f);assert.equal(state.status,'PAUSED');assert.equal(state.errorCode,'ADVANCE_OUTCOME_UNKNOWN');

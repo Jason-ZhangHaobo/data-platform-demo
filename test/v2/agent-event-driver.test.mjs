@@ -6,6 +6,7 @@ import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {MetadataStore} from "../../src/v2/store.mjs";
 import {createDurableSqlAgent} from "../../src/v2/durable-agent.mjs";
+import {modelFailure} from "../../src/v2/model-diagnostics.mjs";
 import {createAgentDispatcher} from "../../src/v2/agent-dispatcher.mjs";
 import {createAgentEventDriver,AGENT_WAKE_PREFIX,agentEventConfigFromEnvironment,parseAgentObjectEvent} from "../../src/v2/agent-event-driver.mjs";
 import {createAgentWakeOssTransport} from "../../src/v2/agent-wake-oss-transport.mjs";
@@ -113,6 +114,27 @@ test("unknown model outcomes, cancellation and event caps halt instead of callin
   await g.driver.consume(g.events[0]);assert.equal(g.models,0);assert.equal(g.driver.status(u.id).status,"NEEDS_CONFIRMATION");
   const c=fixture(t),x=await c.create();await c.driver.enable(x.id,c.owner.id,{expectedVersion:x.version});await c.driver.cancel(x.id,c.owner.id);
   await c.driver.consume(c.events[0]);assert.equal(c.models,0);
+});
+test("known-unsent model preparation pauses the grant, ignores duplicate events and resumes only after explicit review without fee confirmation",async t=>{
+  const f=fixture(t),task=await f.create();await f.driver.enable(task.id,f.owner.id,{expectedVersion:task.version,maxEvents:4});
+  f.modelFault(modelFailure("MODEL_KEY_MISSING","PREPARE"));
+  const originalEvent=f.events[0],paused=await f.driver.consume(originalEvent),before=f.engine.get(task.id);
+  assert.equal(paused.status,"PAUSED");assert.equal(paused.code,"MODEL_NOT_SENT");assert.equal(paused.consumedEvents,1);
+  assert.equal(before.stage,"MODEL_NOT_SENT");assert.equal(before.recovery.confirmationRequired,false);assert.equal(before.usedTokens,12000);
+  const originalAttempt=structuredClone(before.attempts[0]),grant=f.store.list("agent_background",project)[0];
+  assert.equal(f.models,1);assert.equal(f.submitted,0);assert.equal(f.events.length,1);
+  f.restart();const reads=f.reads;assert.equal((await f.driver.consume(originalEvent)).state,"INACTIVE");
+  assert.equal(f.reads,reads);assert.equal(f.models,1);assert.equal(f.events.length,1);assert.deepEqual(f.engine.get(task.id).attempts,[originalAttempt]);
+  f.modelFault(undefined);
+  const resumed=await f.driver.resume(task.id,f.owner.id,{expectedVersion:f.engine.get(task.id).version,confirmModelRetry:false});
+  assert.equal(resumed.status,"ACTIVE");assert.equal(resumed.consumedEvents,1);assert.equal(resumed.maxEvents,4);assert.equal(f.models,1);
+  assert.equal(f.store.list("agent_background",project)[0].id,grant.id);assert.equal(f.engine.get(task.id).usedTokens,12000);
+  assert.deepEqual(f.engine.get(task.id).attempts,[originalAttempt]);assert.equal(f.events.length,2);
+  await f.driver.consume(originalEvent);assert.equal(f.models,1);assert.equal(f.events.length,2);
+  const nextEvent=f.events[1];await f.driver.consume(nextEvent);await f.driver.consume(nextEvent);
+  assert.equal(f.models,2);assert.equal(f.submitted,0);assert.equal(f.engine.get(task.id).stage,"READY_FOR_RUN");
+  assert.equal(f.engine.get(task.id).usedTokens,12020);assert.deepEqual(f.engine.get(task.id).attempts[0],originalAttempt);
+  assert.equal(f.driver.status(task.id).consumedEvents,2);assert.equal(f.driver.status(task.id).maxEvents,4);
 });
 test("outbox unknown ACK retains exact object; recovered event never repeats the model step",async t=>{
   const f=fixture(t),task=await f.create();f.blockPut(true);

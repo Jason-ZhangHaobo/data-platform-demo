@@ -24,8 +24,6 @@ export function modelFailure(code, phase, { httpStatus, elapsedMs = 0, networkCo
 
 export function safeModelDiagnostic(error, elapsedMs = 0) {
   if (trusted.has(error)) return { ...trusted.get(error) };
-  if (["MONTHLY_MODEL_BUDGET_EXCEEDED", "MONTHLY_HARD_BUDGET_EXCEEDED", "MODEL_RESERVATION_INVALID"].includes(error?.code))
-    return { code: error.code, phase: "PREPARE", requestMayHaveBeenSent: false, elapsedMs: Math.max(0, Math.floor(elapsedMs)) };
   return { code: "MODEL_STEP_ERROR", phase: "REQUEST", requestMayHaveBeenSent: true,
     elapsedMs: Math.max(0, Math.floor(elapsedMs)) };
 }
