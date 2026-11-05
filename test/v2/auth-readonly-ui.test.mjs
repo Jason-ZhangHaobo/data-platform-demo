@@ -29,7 +29,7 @@ test("workbench retains read-only status and invitations stay closed while self-
   assert.match(main, /!session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly &&\s+session.role === "ADMIN" && <InvitationPanel/);
   assert.match(main, /coreReady && status\?\.mode !== "LOCAL_DEVELOPMENT" &&\s+session.authenticated && \(\s+<ChangePasswordPanel/);
   assert.match(main, /businessReadOnly=\{Boolean\(session.readOnly\)\}/);
-  assert.match(main, /allowRedeem=\{!privatePreview && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly\}/);
+  assert.match(main, /allowRedeem=\{!privatePreview && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly && !session.servicePlanningOnly\}/);
   assert.match(main, /受邀开发试点 ·/);
   assert.match(main, /仅限一条新 Agent 任务/);
   assert.match(main, /session.developmentTaskOnly \? "仅续接指定既有任务/);
@@ -90,7 +90,7 @@ test("consumption-only login hides redemption and the app never enables non-serv
   const html=renderToStaticMarkup(React.createElement(AuthDialog,{consumptionOnly:true,allowRedeem:false,api:()=>{throw Error('render must not authenticate');},onClose(){},onAuthenticated(){}}));
   assert.match(html,/受邀接口消费试点/);assert.doesNotMatch(html,/首次受邀|兑换邀请|一次性邀请码|创建账号并登录/);
   const main=readFileSync(new URL('../../web/src/main.tsx',import.meta.url),'utf8');
-  assert.match(main,/!session.readOnly && !session.publicationOnly && !session.consumptionOnly && \(status\?\.mode/);
+  assert.match(main,/!session.readOnly && !session.publicationOnly && !session.consumptionOnly && !session.servicePlanningOnly && \(status\?\.mode/);
   assert.match(main,/: canWrite && !session.developmentOnly && !session.consumptionOnly/);
   assert.match(main,/servicesCanWrite = !session.readOnly && !session.publicationOnly && !session.developmentOnly/);
   assert.match(main,/!session.consumptionOnly \|\| consumptionWindowOpen\(consumptionScope,publicationClock\)/);

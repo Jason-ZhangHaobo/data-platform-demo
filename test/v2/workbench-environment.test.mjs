@@ -84,8 +84,8 @@ const compile = (name, initialWorkflow) => {
  // Supply only the already-read workflow state; SSR never runs effects or API calls.
  if(initialWorkflow&&name==='AgentDeliveryPanel')input=input.replace('useState<Workflow>()',`useState<Workflow>(${JSON.stringify(initialWorkflow)})`);
  let source=ts.transpileModule(input,{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
- for(const pkg of ['react','react/jsx-runtime','lucide-react'])source=source.replaceAll(`from "${pkg}"`,`from ${JSON.stringify(import.meta.resolve(pkg))}`);
- source=source.replace(/from "\.\/([^".]+)"/g,(_match,dependency)=>`from ${JSON.stringify(existsSync(`web/src/${dependency}.tsx`)?compile(dependency):new URL(`../../web/src/${dependency}.ts`,import.meta.url).href)}`);
+ for(const pkg of ['react','react/jsx-runtime','lucide-react'])source=source.replaceAll(`from "${pkg}"`,`from ${JSON.stringify(import.meta.resolve(pkg))}`).replaceAll(`from '${pkg}'`,`from ${JSON.stringify(import.meta.resolve(pkg))}`);
+ source=source.replace(/from (["'])\.\/([^"'.]+)\1/g,(_match,_quote,dependency)=>`from ${JSON.stringify(existsSync(`web/src/${dependency}.tsx`)?compile(dependency):new URL(`../../web/src/${dependency}.ts`,import.meta.url).href)}`);
  source=source.replace(/import "\.\/[^"\n]+\.css";/g,'');
  return`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 };

@@ -84,7 +84,8 @@ const InvitationPanel = lazy(async () => ({ default: (await import("./AuthDialog
 const privatePreview = Boolean(document.querySelector('meta[name="shuduo-private-preview"]'));
 const agentDevelopmentPreview = privatePreview && Boolean(document.querySelector('meta[name="shuduo-agent-development"]'));
 const privateServicesPreview=privatePreview && Boolean(document.querySelector('meta[name="shuduo-private-services"]'));
-const previewModuleAllowed=(id:string)=>!privatePreview || id==="development" || (agentDevelopmentPreview&&id==="agent-center") || (privateServicesPreview&&id==="services");
+const privateServiceAgentPreview=privateServicesPreview&&Boolean(document.querySelector('meta[name="shuduo-private-service-agent"]'));
+const previewModuleAllowed=(id:string)=>!privatePreview || id==="development" || ((agentDevelopmentPreview||privateServiceAgentPreview)&&id==="agent-center") || (privateServicesPreview&&id==="services");
 
 function WorkbenchLoading({ label = "正在加载工作台…" }: { label?: string }) {
   return <div className="workbench-loading" role="status"><LoaderCircle className="spin" size={16} />{label}</div>;
@@ -113,7 +114,7 @@ type Capability = {
   features: string[];
 };
 type Status = {
-  dataServices?: { privateEnabled: boolean; localSourcesEnabled?: boolean; sourceBoundAgentPlansEnabled?:boolean; sourceBoundAgentContextEnabled?:boolean; scope: string };
+  dataServices?: { privateEnabled: boolean; localSourcesEnabled?: boolean; sourceBoundAgentPlansEnabled?:boolean; sourceBoundAgentContextEnabled?:boolean; durableServiceAgentEnabled?:boolean;durableServiceAgentReadEnabled?:boolean;scope: string };
   site?: { registeredName: string; icpNumber: string; icpUrl: string };
   agentDevelopment?: { durableEnabled: boolean; eventBackgroundAvailable?: boolean };
   validationContract?: { id: string; fixtureCount: number };
@@ -386,7 +387,7 @@ function App() {
     [contextId, setContextId] = useState("holdings-t1");
   const [nav, setNavState] = useState(
       () =>
-        (privatePreview && !agentDevelopmentPreview ? "development" : new URLSearchParams(window.location.search).get("module")) ??
+        (privatePreview && !agentDevelopmentPreview&&!privateServiceAgentPreview ? "development" : new URLSearchParams(window.location.search).get("module")) ??
         "agent-center",
     ),
     [sql, setSql] = useState(""),
@@ -682,7 +683,7 @@ function App() {
     : !contexts.length ? "当前项目没有可用业务上下文，不能生成或运行；已保存任务仍可读取。" : undefined;
   const dirty = sql !== original,
     canWrite = Boolean(
-      !session.readOnly && !session.publicationOnly && !session.consumptionOnly && (status?.mode === "LOCAL_DEVELOPMENT" ||
+      !session.readOnly && !session.publicationOnly && !session.consumptionOnly && !session.servicePlanningOnly && (status?.mode === "LOCAL_DEVELOPMENT" ||
         (session.authenticated &&
           (session.permissions?.includes("*") ||
             session.permissions?.includes(navPermission[nav])))),
@@ -757,7 +758,7 @@ function App() {
         </button>
         <button
           aria-label="Data Agent"
-          disabled={privatePreview && !agentDevelopmentPreview}
+          disabled={privatePreview && !agentDevelopmentPreview&&!privateServiceAgentPreview}
           title="Data Agent"
           className={
             "agent-entry " +
@@ -884,7 +885,8 @@ function App() {
         {session.developmentOnly && !session.readOnly && <div className="notice-banner" role="status">受邀开发试点 · {session.developmentTaskOnly ? "仅续接指定既有任务及其关联代码与交付文件，原次数和费用预留不重置；其他任务只读" : "仅限一条新 Agent 任务、SQL 编辑运行及交付文件准备；历史任务只读"}，发布、全平台规划、邀请和接口凭证管理关闭。窗口截止 {session.developmentExpiresAt ? new Date(session.developmentExpiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间），到期停止新计算并保留结果。</div>}
         {session.publicationOnly && <div className="notice-banner" role="status"><div><strong>受邀发布试点 · 仅指定交付包的两个样例批次</strong><p>代码、需求和交付文件只读，不重新调用模型或演练；同一冻结业务日期运行两批，不代表两个交易日或生产调度。{canPublish ? "请核对下方指定版本并逐项审阅。" : "当前发布窗口未开放、已结束或此账号无发布权限；已有结果仍可查看。"}</p><small>窗口：{session.publicationStartsAt ? new Date(session.publicationStartsAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"} — {session.publicationExpiresAt ? new Date(session.publicationExpiresAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；邀请码及其他业务模块写入保持关闭。</small>{publicationTaskHref ? <a className="button" href={publicationTaskHref}>查看指定{session.publicationSource?.sourceKind==="MANUAL"?"人工版本":"任务"}与审阅范围</a>:<p>指定发布来源尚未解析；请重新读取身份与包记录，不会回退到原 Agent 的其他版本。</p>}</div></div>}
         {session.consumptionOnly && <div className="notice-banner" role="status"><div><strong>受邀接口消费试点 · 同任务2个DAPI、1个XAPI、1个测试应用</strong><p>仅按冻结计划开发、测试和发布接口，不修改代码、不运行模型或Spark、不重新发布业务批次；版本新增/切换、其他模块、邀请和改密继续关闭。{servicesCanWrite ? "请进入指定任务的接口交付。" : "当前窗口未开放、已结束或此账号无权限；已保存证据仍可查看。"}</p><small>窗口：{session.consumptionStartsAt ? new Date(session.consumptionStartsAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"} — {session.consumptionExpiresAt ? new Date(session.consumptionExpiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；测试凭证到期失效，历史调用记录保留。</small>{consumptionTaskHref&&<a className="button" href={consumptionTaskHref}>打开指定任务的接口交付</a>}</div></div>}
-        {privatePreview && <div className="notice-banner" role="status">私有云端试用 · {agentDevelopmentPreview ? "Agent 数据开发、SQL 编辑、真实运行与任务恢复" : "SQL 编辑、真实 Spark 运行和结果恢复"}{privateServicesPreview ? "、发布结果的数据服务消费" : ""}；未开放模块不代表已验收。临时访问通道到期后入口失效，已保存的云端任务记录保留。</div>}
+        {privatePreview && <div className="notice-banner" role="status">私有云端试用 · {privateServiceAgentPreview?'同源服务规划、原任务恢复和草稿确认':agentDevelopmentPreview ? "Agent 数据开发、SQL 编辑、真实运行与任务恢复" : "SQL 编辑、真实 Spark 运行和结果恢复"}{privateServicesPreview&&!privateServiceAgentPreview ? "、发布结果的数据服务消费" : ""}；具体操作仍受当前账号和窗口约束。临时访问通道到期后入口失效，已保存记录保留，未开放模块不代表已验收。</div>}
+        {session.servicePlanningOnly&&<div className="notice-banner" role="status">受控服务规划窗口 · 仅允许指定来源的规划与草稿确认，SQL/Spark开发、发布、邀请和调用凭证保持关闭。{session.servicePlanning?.enabled?'请在原发布结果的接口交付中保存需求并明确开始。':'当前账号、入口或窗口不允许新模型步骤；原记录仍可读取。'}</div>}
         {error && (
           <div role="alert" className="error-banner">
             <AlertCircle size={16} />
@@ -898,7 +900,7 @@ function App() {
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>{setServiceLocation(serviceSourceFromLocation(window.location.href,true));setAgentWorkspaceMode("services");}}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
-          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
+          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite && !session.developmentOnly}
@@ -1661,7 +1663,7 @@ function App() {
             <h1>{active?.name}</h1>
             <p className="module-subtitle">{active?.description}</p>
             {nav === "services" ? (
-              workbench.servicesAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}</div>
+              workbench.servicesAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}</div>
             ) : nav === "sources" || nav === "sync" ? (
               <IngestionWorkbench
                 api={api}
@@ -1997,7 +1999,7 @@ function App() {
       {authOpen && (
         <Suspense fallback={<WorkbenchLoading label="正在加载登录入口…" />}>
           <AuthDialog
-            allowRedeem={!privatePreview && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly}
+            allowRedeem={!privatePreview && !session.readOnly && !session.developmentOnly && !session.publicationOnly && !session.consumptionOnly && !session.servicePlanningOnly}
             readOnly={session.readOnly || !coreReady}
             publicationOnly={session.publicationOnly}
             consumptionOnly={session.consumptionOnly}

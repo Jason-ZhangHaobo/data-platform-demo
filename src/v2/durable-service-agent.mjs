@@ -46,7 +46,9 @@ export function createDurableServiceAgent({store,project,config,contextFor,asser
   original(task.id,actorId);let sourceCheck='VERIFIED',sourceCheckCode;
   try{checkedContext(task);}catch(error){if(![403,404,409,422].includes(error.status))throw error;sourceCheck='UNAVAILABLE';sourceCheckCode='SERVICE_PLAN_SOURCE_UNAVAILABLE';}
   const {durable,submittedBy,services,frozenSource,policyFingerprint,...value}=task;
-  return {...value,sourceCheck,...(sourceCheckCode?{sourceCheckCode}:{}),recovery:{supported:true,driver:'EXPLICIT_ADVANCE',backgroundDispatcherVerified:false,
+  const window=store.list(kind,project).filter(item=>item.executionMode===privateServiceAgentMode&&item.pilotId===task.pilotId),
+   quota={attemptsUsed:window.reduce((sum,item)=>sum+item.attempts.length,0),attemptLimit:task.maxAttempts,usedTokens:window.reduce((sum,item)=>sum+item.usedTokens,0),tokenLimit:task.tokenBudget};
+  return {...value,sourceRevisionId:frozenSource.releaseRun.sourceRevisionId,sourceRunId:frozenSource.releaseRun.sourceRunId,quota,sourceCheck,...(sourceCheckCode?{sourceCheckCode}:{}),recovery:{supported:true,driver:'EXPLICIT_ADVANCE',backgroundDispatcherVerified:false,
    confirmationRequired:task.stage==='MODEL_OUTCOME_UNKNOWN',modelLeaseExpiresAt:durable?.leaseExpiresAt,
    leaseExpired:task.stage==='MODEL_IN_FLIGHT'&&Date.parse(durable?.leaseExpiresAt)<=now()}};
  };
@@ -175,6 +177,7 @@ export function createDurableServiceAgent({store,project,config,contextFor,asser
   await persist();return service;
  }
  return {configured:Boolean(config),create,advance,cancel,apply,
+  signalCancel:(id,actorId)=>{const task=original(id,actorId),controller=active.get(task.id);if(!terminal.has(task.status)&&controller){controller.abort();return true;}return false;},
   read:(id,actorId)=>visible(original(id,actorId),actorId),
   request:(key,actorId)=>{if(!uuid(key))throw fail('SERVICE_AGENT_REQUEST_INVALID','原请求UUID不合法',422);const id=store.deduplicatedId(namespace(actorId,key));if(!id)throw fail('SERVICE_AGENT_REQUEST_NOT_FOUND','原请求尚未找到',404);return visible(original(id,actorId),actorId);},
   list:(binding,actorId)=>{binding=servicePlanSourceBinding(binding);return store.list(kind,project).filter(task=>task.executionMode===privateServiceAgentMode&&task.submittedBy===actorId&&same(task.sourceBinding,binding)).map(task=>visible(original(task.id,actorId),actorId));},

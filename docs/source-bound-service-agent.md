@@ -16,7 +16,7 @@
 
 CLI 使用 `shuduo services plan-context --task-id UUID --package-digest SHA256 --release-id UUID --source-run-id UUID`；MCP 为只读工具 `service_agent_context`，参数仅 `sourceBinding`。GUI／CLI／MCP 使用同一只读 API 和回执验证，不接收执行者、确认写入或模型参数。私有传输及临时预览仅新增这一条严格 GET，不放开旧规划 POST。
 
-当前只读适配已通过本机 HTTP／SQLite、CLI/MCP和实际浏览器合成验收；上游发布回执为合成数据，不计真实云或模型验收。后续新增[持久私有规划后端](durable-service-agent.md)，包含独立窗口、持久模型尝试、原请求恢复及预算门；默认关闭，未部署云端，GUI与云事件驱动仍待接入，不沿用旧消费批准。
+当前只读适配已通过本机 HTTP／SQLite、CLI/MCP和实际浏览器合成验收；上游发布回执为合成数据，不计真实云或模型验收。新增[持久私有规划](durable-service-agent.md)已接入独立Agent界面，包含独立窗口、持久模型尝试、原请求恢复及预算门；默认关闭、未部署云端，云事件驱动仍待接入，不沿用旧消费批准。下面工作流程描述普通本机模式；私有持久模式须先保存任务，再显式开始，窗口只允许方案及草稿，不开放测试、发布或凭证。
 
 ## 工作流程
 

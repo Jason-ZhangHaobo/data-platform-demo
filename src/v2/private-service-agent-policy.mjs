@@ -48,6 +48,15 @@ export function assertServiceAgentIngress(config,ingress){
  if(config&&(ingress?.status?.mode!=='FC_CONTROL_PATH'||ingress.status.publicReadOnly!==true))
   throw Error('PRIVATE_SERVICE_AGENT_READONLY_INGRESS_REQUIRED');
 }
+export function serviceAgentSession(config,identity,store,project,now=Date.now()){
+ if(!config)return;
+ let selected=false;try{assertServiceAgentActor(config,identity?.user?.id,store,project);selected=true;}catch{}
+ const windows=store.list('service_agent_window',project).filter(item=>item.profileId===config.id),
+  reason=windows.length>1||windows[0]&&windows[0].fingerprint!==config.fingerprint?'BOUNDARY_CHANGED':now<Date.parse(config.startsAt)?'NOT_STARTED':now>=Date.parse(config.expiresAt)?'EXPIRED':undefined;
+ return {servicePlanningOnly:true,readOnly:!selected,permissions:selected?['SESSION','SERVICES']:['SESSION'],
+  servicePlanning:selected?{enabled:reason===undefined,...(reason?{reason}:{}),id:config.id,sourceBinding:config.sourceBinding,model:config.model,
+   startsAt:config.startsAt,expiresAt:config.expiresAt,maxPlans:config.maxPlans,maxModelCalls:config.maxModelCalls,tokenBudget:config.tokenBudget}:{enabled:false}};
+}
 export function assertServiceAgentWindow(config,now){
  if(!config||!Number.isFinite(now)||now<Date.parse(config.startsAt)||now>=Date.parse(config.expiresAt))
   throw fail('SERVICE_AGENT_WINDOW_CLOSED','私有服务规划窗口未开放或已到期；原任务仍可读取或取消');

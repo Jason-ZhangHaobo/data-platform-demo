@@ -86,6 +86,22 @@ test('concurrent advance and readback cannot duplicate an owned model lease',asy
  work.resolve(result(f));assert.equal((await pending).body.status,'SUCCEEDED');assert.equal(f.counts().calls,1);
 });
 
+test('authenticated private cancellation signals an in-flight model before the serial lane, then persists normally',async t=>{
+ const f=await durableServiceFixture(t),started=deferred(),work=deferred();f.setNext(()=>{started.resolve();return work.promise;});
+ const p=(await f.create()).body;
+ const invoke=async(payload,timeoutMs=5000)=>{const r=await fetch(f.base+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke'},body:JSON.stringify(payload),signal:AbortSignal.timeout(timeoutMs)});return {status:r.status,body:await r.json()};};
+ const envelope=(action,body,headers=f.a)=>({operation:'PRIVATE_APPLICATION_HTTP_V1',method:'POST',path:'/api/v2'+planPath(p.id)+'/'+action,headers:{'x-shuduo-client':'workbench',...headers},body});
+ const running=invoke(envelope('advance',{expectedVersion:p.version}));await started.promise;
+ try{
+  const denied=await invoke(envelope('cancel',{sourceBoundOnly:true},f.b));assert.equal(denied.status,403);assert.equal(f.inputs[0].signal.aborted,false);
+  const noCsrf=await invoke(envelope('cancel',{sourceBoundOnly:true},{cookie:f.a.cookie}));assert.equal(noCsrf.status,403);assert.equal(f.inputs[0].signal.aborted,false);
+  const publicDenied=await f.call(planPath(p.id)+'/cancel',{},f.a,undefined,true);assert.equal(publicDenied.status,403);assert.equal(f.inputs[0].signal.aborted,false);
+  const cancelled=await invoke(envelope('cancel',{sourceBoundOnly:true}));assert.equal(cancelled.status,200,JSON.stringify(cancelled.body));assert.equal(cancelled.body.body.status,'CANCELLED');
+  assert.equal(f.inputs[0].signal.aborted,true);assert.equal(cancelled.body.body.usedTokens,8000);assert.equal(f.counts().calls,1);
+ }finally{work.resolve(result(f));await running;}
+ assert.equal((await read(f,p.id)).body.status,'CANCELLED');assert.equal(f.store.list('data_service',f.project).length,2);
+});
+
 test('failed durable reservation stops before model and retains the original attempt and conservative accounting',async t=>{
  const f=await durableServiceFixture(t),p=(await f.create()).body;f.failFlushAt(f.counts().flushes+1);
  const failed=await advance(f,p);assert.equal(failed.status,503);assert.equal(failed.body.code,'SERVICE_AGENT_RESERVATION_UNCONFIRMED');assert.equal(f.counts().calls,0);

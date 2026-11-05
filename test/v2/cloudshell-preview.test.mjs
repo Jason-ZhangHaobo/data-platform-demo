@@ -59,6 +59,23 @@ async function fixture(t, options = {}) {
 
 const exportId = "11111111-1111-4111-8111-111111111111";
 const recoveryExportPath = `/api/v2/evidence-export?kind=recovery&type=xapi&id=${exportId}`;
+test('service Agent preview requires an independent write flag and advertises only that transport capability',async t=>{
+  const path='/api/v2/data-services/agent/plans',body=JSON.stringify({message:'虚构证券服务规划'}),headers={origin:'https://preview.example.invalid','content-type':'application/json'};
+  const readOnly=await fixture(t,{allowDataServices:true});assert.equal((await readOnly.request(path,{method:'POST',headers,body})).status,404);assert.equal(readOnly.calls.length,0);
+  const enabled=await fixture(t,{allowDataServices:true,allowServiceAgent:true});
+  const page=await enabled.request('/v2/');assert.match(await page.text(),/name="shuduo-private-service-agent"/);
+  assert.equal((await enabled.request(path,{method:'POST',headers:{...headers,cookie:'aliyun_session=never; shuduo_session=synthetic'},body})).status,200);
+  assert.equal(enabled.calls[0].headers.cookie,'shuduo_session=synthetic');assert.equal(enabled.calls[0].path,path);
+  const count=enabled.calls.length;assert.equal((await enabled.request(path,{method:'POST',headers:{...headers,origin:'https://evil.invalid'},body})).status,403);assert.equal(enabled.calls.length,count);
+  assert.throws(()=>createPreviewServer({origin:'https://preview.example.invalid',webRoot:enabled.root,allowServiceAgent:true}),/requires data services/);
+});
+test('only opted-in cancellation can reach invocation while a model request occupies the preview serial lane',async t=>{
+ let enter,release;const entered=new Promise(r=>{enter=r;}),work=new Promise(r=>{release=r;}),seen=[];
+ const id='00000000-0000-4000-8000-000000000001',base=`/api/v2/data-services/agent/plans/${id}`;
+ const f=await fixture(t,{allowDataServices:true,allowServiceAgent:true,invoke:async payload=>{seen.push(payload.path);if(payload.path.endsWith('/advance')){enter();await work;}return {status:200,body:{status:payload.path.endsWith('/cancel')?'CANCELLED':'INTERRUPTED'},cookies:[]};}});
+ const headers={origin:'https://preview.example.invalid','content-type':'application/json'},running=f.request(base+'/advance',{method:'POST',headers,body:'{"expectedVersion":1}'});await entered;
+ try{const cancelled=await Promise.race([f.request(base+'/cancel',{method:'POST',headers,body:'{}'}),new Promise((_,reject)=>setTimeout(()=>reject(Error('stop signal queued behind model')),1000))]);assert.equal((await cancelled.json()).status,'CANCELLED');assert.equal(seen.length,2);}finally{release();await running;}
+});
 test("native evidence attachment keeps normal auth, actual bytes and exact report identity", async t => {
   const calls = [], report = {protocol:"shuduo-private-service-recovery/v1",scope:"PRIVATE_CLOUD_TEST",publicDeployed:false,state:{serviceId:exportId},healthy:true};
   const {request} = await fixture(t,{allowDataServices:true,invoke:async payload=>{
