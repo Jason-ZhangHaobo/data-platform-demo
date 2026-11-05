@@ -51,7 +51,7 @@ export function PrivateServiceAgentStudio(props:Props){
   return next;
  }
  async function readOriginal(id?:string,retrySave=false){
-  if(!source||busy)return;const key=identity,selected=source,ticket=start('read');
+  if(!source||busy&&busy!=='advance')return;const key=identity,selected=source,ticket=start('read');
   try{
    const pending=pendingRequest??(!marker.invalid?marker.requestId:undefined),value=id?await props.api('/data-services/agent/plans/'+id):pending?
     await(retrySave?submission().retry():submission().recover()):plan?await props.api('/data-services/agent/plans/'+plan.id):undefined;
@@ -139,7 +139,7 @@ export function PrivateServiceAgentStudio(props:Props){
    {plan.error&&<p role={plan.status==='FAILED'?'alert':'status'}>{plan.error}</p>}
    <div className="private-service-actions">{['READY_FOR_MODEL','MODEL_NOT_SENT','MODEL_OUTCOME_UNKNOWN'].includes(plan.stage)&&<button className="button primary" disabled={!canAdvance||!!busy||plan.stage==='MODEL_OUTCOME_UNKNOWN'&&!confirmRetry} onClick={()=>void advance()}>{busy==='advance'?<LoaderCircle className="spin" size={15}/>:<Play size={15}/>} {plan.stage==='MODEL_OUTCOME_UNKNOWN'?'确认重试模型':plan.stage==='MODEL_NOT_SENT'?'明确继续原任务':'开始模型规划'}</button>}
     {plan.recovery.leaseExpired&&<button className="button" disabled={!props.planningEnabled||!props.canAct||!!busy} onClick={()=>void advance(true)}>核对中断状态</button>}
-    <button className="button" disabled={!!busy||Boolean(pendingRequest)} onClick={()=>void readOriginal(plan.id)}><RefreshCw size={14}/>读取原任务</button>
+    <button className="button" disabled={Boolean(busy&&busy!=='advance')||Boolean(pendingRequest)} onClick={()=>void readOriginal(plan.id)}><RefreshCw size={14}/>读取原任务</button>
     {!terminal.has(plan.status)&&<button className="button" disabled={!props.canAct||Boolean(busy&&!['advance','read'].includes(busy))} onClick={()=>void cancel()}><Square size={14}/>取消后续规划</button>}</div>
    {pendingAction&&<p role="status">{busy?'正在处理原任务。':'上次操作结果待核对，请先读取原任务，不会自动重发。'}</p>}
    {plan.proposal&&<div className="service-agent-plan"><h4>{plan.proposal.name} <small>{plan.proposal.serviceType}</small></h4><code>/{plan.proposal.slug}</code><p>{plan.explanation}</p>

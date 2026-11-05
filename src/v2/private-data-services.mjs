@@ -15,7 +15,7 @@ const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(
 export { privateServiceRoute } from "./private-service-routes.mjs";
 
 export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,pilotConfig,persist=async()=>{},
-  agentConfig,planner,assertModelBudget=()=>{throw Error('Model budget not configured');},budgetOverview=()=>{throw Error('Budget not configured');},modelLeaseMs}) {
+  agentConfig,planner,assertModelBudget=()=>{throw Error('Model budget not configured');},budgetOverview=()=>{throw Error('Budget not configured');},modelLeaseMs,waitForModel}) {
   const get=(kind,id)=>typeof id==="string"?store.get(kind,id,project):undefined;
   const source=id=>{
     const run=get("release_run",id),release=run&&get("release",run.releaseId),bundle=run&&get("delivery_package",run.packageId),approval=release&&get("release_approval",release.approvalId);
@@ -140,7 +140,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
         current&&(item.status!=='PUBLISHED'||item.publishedVersionId!==v.id||v.status!=='PUBLISHED'))throw fail(409,'原规划DAPI固定版本、权限或快照已经变化','SERVICE_PLAN_VERSION_CHANGED');
     }
   };
-  const agentPlanner=createDurableServiceAgent({store,project,config:agentConfig,now,modelLeaseMs,persist,planner,assertBudget:assertModelBudget,budgetOverview,
+  const agentPlanner=createDurableServiceAgent({store,project,config:agentConfig,now,modelLeaseMs,persist,planner,waitForModel,assertBudget:assertModelBudget,budgetOverview,
     contextFor:(actorId,binding)=>agentContext(identity(actorId),binding),assertVersions:assertPlanVersions,validateProposal:value=>manager.validateAgentPlan(value),
     createDraft:(proposal,actorId)=>{
       const {serviceType,...body}=proposal;checkInput(identity(actorId),serviceType,body);

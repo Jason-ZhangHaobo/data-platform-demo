@@ -20,8 +20,8 @@ const frozenFrom=context=>({sourceKind:context.sourceKind,sourceAttribution:cont
 // One explicit advance owns one durable model boundary. This engine does not
 // imply an installed event driver, nor does any GET start or retry a model.
 export function createDurableServiceAgent({store,project,config,contextFor,assertVersions,validateProposal,createDraft,draftDetail,
- planner,persist,assertBudget,budgetOverview,now=Date.now,modelLeaseMs=90000}){
- if(![contextFor,assertVersions,validateProposal,createDraft,draftDetail,persist,assertBudget,budgetOverview].every(fn=>typeof fn==='function')||
+ planner,persist,assertBudget,budgetOverview,now=Date.now,modelLeaseMs=90000,waitForModel=start=>start()}){
+ if(![contextFor,assertVersions,validateProposal,createDraft,draftDetail,persist,assertBudget,budgetOverview,waitForModel].every(fn=>typeof fn==='function')||
   !Number.isSafeInteger(modelLeaseMs)||modelLeaseMs<1||modelLeaseMs>90000)throw Error('持久服务规划依赖或租约不合法');
  const active=new Map(),kind='service_agent_plan',stamp=()=>new Date(now()).toISOString();
  const get=id=>store.get(kind,id,project);
@@ -111,6 +111,8 @@ export function createDurableServiceAgent({store,project,config,contextFor,asser
   if(task.stage==='MODEL_OUTCOME_UNKNOWN'&&!confirmModelRetry)throw fail('SERVICE_AGENT_RETRY_CONFIRMATION_REQUIRED','上一次模型结果可能已收费，需明确确认后才能在剩余额度内重试');
   if(!['READY_FOR_MODEL','MODEL_NOT_SENT','MODEL_OUTCOME_UNKNOWN'].includes(task.stage))throw fail('SERVICE_AGENT_STAGE_INVALID','原任务阶段不支持模型推进');
   assertPolicy(task);const context=checkedContext(task,true),value=stats(),reserved=remaining();
+  if(active.size||store.list(kind,project).some(other=>other.id!==id&&other.executionMode===privateServiceAgentMode&&other.stage==='MODEL_IN_FLIGHT'&&Date.parse(other.durable?.leaseExpiresAt)>now()))
+   throw fail('SERVICE_AGENT_MODEL_BUSY','已有私有规划模型步骤在途；可读取原任务，暂不启动另一项模型',409);
   if(value.calls>=config.maxModelCalls||reserved<1024)throw fail('SERVICE_AGENT_EXECUTION_LIMIT','原窗口的模型次数、Token或费用额度已用完',429);
   bill(reserved);
   const token=randomUUID(),controller=new AbortController();active.set(task.id,controller);
@@ -126,14 +128,14 @@ export function createDurableServiceAgent({store,project,config,contextFor,asser
   const watchdog=setTimeout(()=>controller.abort(),Math.max(1,Math.min(modelLeaseMs,Date.parse(task.durable.leaseExpiresAt)-now())));watchdog.unref?.();
   let generated;
   try{
-   const work=Promise.resolve().then(()=>{
+   generated=await waitForModel(()=>{
     if(!leaseOwned(id,token)||controller.signal.aborted||now()>=Date.parse(task.durable.leaseExpiresAt))throw modelFailure('MODEL_INTERRUPTED','LEASE');
     try{assertPolicy(task);checkedContext(task,true);bill(0);assertBudget({taskId:id,attempt:task.attempts.length,leaseToken:token});}
     catch(error){const diagnostic=safeModelDiagnostic(error);if(diagnostic.phase==='PREPARE'&&diagnostic.requestMayHaveBeenSent===false)throw error;throw modelFailure('MODEL_CONFIG_INVALID','PREPARE');}
-    return planner({message:task.message,services:context.services,releaseRuns:context.releaseRuns,sourceContext:context.sourceContext,signal:controller.signal,remainingBudget:reserved,
+    const work=planner({message:task.message,services:context.services,releaseRuns:context.releaseRuns,sourceContext:context.sourceContext,signal:controller.signal,remainingBudget:reserved,
      modelBudgetReservation:{taskId:id,attempt:task.attempts.length,leaseToken:token}});
+    return Promise.race([work,interrupted]);
    });
-   generated=await Promise.race([work,interrupted]);
   }catch(error){
    if(leaseOwned(id,token)){
     const diagnostic=safeModelDiagnostic(error);
@@ -177,7 +179,6 @@ export function createDurableServiceAgent({store,project,config,contextFor,asser
   await persist();return service;
  }
  return {configured:Boolean(config),create,advance,cancel,apply,
-  signalCancel:(id,actorId)=>{const task=original(id,actorId),controller=active.get(task.id);if(!terminal.has(task.status)&&controller){controller.abort();return true;}return false;},
   read:(id,actorId)=>visible(original(id,actorId),actorId),
   request:(key,actorId)=>{if(!uuid(key))throw fail('SERVICE_AGENT_REQUEST_INVALID','原请求UUID不合法',422);const id=store.deduplicatedId(namespace(actorId,key));if(!id)throw fail('SERVICE_AGENT_REQUEST_NOT_FOUND','原请求尚未找到',404);return visible(original(id,actorId),actorId);},
   list:(binding,actorId)=>{binding=servicePlanSourceBinding(binding);return store.list(kind,project).filter(task=>task.executionMode===privateServiceAgentMode&&task.submittedBy===actorId&&same(task.sourceBinding,binding)).map(task=>visible(original(task.id,actorId),actorId));},

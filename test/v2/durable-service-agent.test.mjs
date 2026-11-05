@@ -86,20 +86,51 @@ test('concurrent advance and readback cannot duplicate an owned model lease',asy
  work.resolve(result(f));assert.equal((await pending).body.status,'SUCCEEDED');assert.equal(f.counts().calls,1);
 });
 
-test('authenticated private cancellation signals an in-flight model before the serial lane, then persists normally',async t=>{
+test('private model waits allow serialized reads, duplicate advances and authenticated cancellation through the actual loopback',async t=>{
  const f=await durableServiceFixture(t),started=deferred(),work=deferred();f.setNext(()=>{started.resolve();return work.promise;});
  const p=(await f.create()).body;
  const invoke=async(payload,timeoutMs=5000)=>{const r=await fetch(f.base+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke'},body:JSON.stringify(payload),signal:AbortSignal.timeout(timeoutMs)});return {status:r.status,body:await r.json()};};
  const envelope=(action,body,headers=f.a)=>({operation:'PRIVATE_APPLICATION_HTTP_V1',method:'POST',path:'/api/v2'+planPath(p.id)+'/'+action,headers:{'x-shuduo-client':'workbench',...headers},body});
  const running=invoke(envelope('advance',{expectedVersion:p.version}));await started.promise;
  try{
-  const denied=await invoke(envelope('cancel',{sourceBoundOnly:true},f.b));assert.equal(denied.status,403);assert.equal(f.inputs[0].signal.aborted,false);
-  const noCsrf=await invoke(envelope('cancel',{sourceBoundOnly:true},{cookie:f.a.cookie}));assert.equal(noCsrf.status,403);assert.equal(f.inputs[0].signal.aborted,false);
+  const snapshot=await invoke({operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2'+planPath(p.id),headers:f.a},2000);
+  assert.equal(snapshot.body.status,200);assert.equal(snapshot.body.body.stage,'MODEL_IN_FLIGHT');assert.equal(snapshot.body.body.usedTokens,8000);
+  const session=await invoke({operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2/auth/session',headers:f.a},2000);assert.equal(session.body.body.servicePlanning.enabled,true);
+  const duplicate=await invoke(envelope('advance',{expectedVersion:snapshot.body.body.version}),2000);assert.equal(duplicate.body.body.stage,'MODEL_IN_FLIGHT');assert.equal(f.counts().calls,1);
+  const denied=await invoke(envelope('cancel',{sourceBoundOnly:true},f.b));assert.equal(denied.body.status,403);assert.equal(f.inputs[0].signal.aborted,false);
+  const noCsrf=await invoke(envelope('cancel',{sourceBoundOnly:true},{cookie:f.a.cookie}));assert.equal(noCsrf.body.status,403);assert.equal(f.inputs[0].signal.aborted,false);
   const publicDenied=await f.call(planPath(p.id)+'/cancel',{},f.a,undefined,true);assert.equal(publicDenied.status,403);assert.equal(f.inputs[0].signal.aborted,false);
   const cancelled=await invoke(envelope('cancel',{sourceBoundOnly:true}));assert.equal(cancelled.status,200,JSON.stringify(cancelled.body));assert.equal(cancelled.body.body.status,'CANCELLED');
   assert.equal(f.inputs[0].signal.aborted,true);assert.equal(cancelled.body.body.usedTokens,8000);assert.equal(f.counts().calls,1);
  }finally{work.resolve(result(f));await running;}
  assert.equal((await read(f,p.id)).body.status,'CANCELLED');assert.equal(f.store.list('data_service',f.project).length,2);
+});
+
+test('a provider result cannot mutate its checkpoint while another private request refreshes metadata',async t=>{
+ const f=await durableServiceFixture(t),started=deferred(),work=deferred(),refreshStarted=deferred(),refreshDone=deferred();
+ f.setNext(()=>{started.resolve();return work.promise;});const p=(await f.create()).body,pending=advance(f,p);await started.promise;
+ let refreshes=0;f.setRefreshHook(async()=>{refreshes++;refreshStarted.resolve();await refreshDone.promise;});
+ const reading=read(f,p.id);await refreshStarted.promise;work.resolve(result(f));await new Promise(r=>setImmediate(r));
+ const held=f.store.get('service_agent_plan',p.id,f.project);assert.equal(held.stage,'MODEL_IN_FLIGHT');assert.equal(held.version,2);assert.equal(held.usedTokens,8000);
+ refreshDone.resolve();const readResult=await reading;assert.equal(readResult.body.stage,'MODEL_IN_FLIGHT');
+ const finished=await pending;assert.equal(finished.body.status,'SUCCEEDED');assert.equal(finished.body.usedTokens,700);assert.equal(f.counts().calls,1);assert.equal(refreshes,1);
+});
+
+test('yielding a model wait does not introduce parallel paid models across private plans',async t=>{
+ const f=await durableServiceFixture(t,{profilePatch:{maxPlans:2}}),started=deferred(),work=deferred();f.setNext(()=>{started.resolve();return work.promise;});
+ const first=(await f.create()).body,second=(await f.create('同一虚构证券来源的另一项资产接口需求')).body;
+ const pending=advance(f,first);await started.promise;
+ const blocked=await advance(f,second);assert.equal(blocked.status,409);assert.equal(blocked.body.code,'SERVICE_AGENT_MODEL_BUSY');assert.equal(f.counts().calls,1);
+ const unchanged=(await read(f,second.id)).body;assert.equal(unchanged.version,1);assert.equal(unchanged.attempts.length,0);assert.equal(unchanged.usedTokens,0);
+ work.resolve(result(f));assert.equal((await pending).body.status,'SUCCEEDED');
+});
+
+test('private refresh failure during a provider wait does not consume a second attempt or lose the final checkpoint',async t=>{
+ const f=await durableServiceFixture(t),started=deferred(),work=deferred();f.setNext(()=>{started.resolve();return work.promise;});
+ const p=(await f.create()).body,pending=advance(f,p);await started.promise;
+ f.setRefreshHook(async()=>{throw Error('synthetic refresh failed');});const denied=await read(f,p.id);assert.equal(denied.status,500);
+ f.setRefreshHook(async()=>{});work.resolve(result(f));assert.equal((await pending).body.status,'SUCCEEDED');
+ const saved=(await read(f,p.id)).body;assert.equal(saved.attempts.length,1);assert.equal(saved.usedTokens,700);assert.equal(f.counts().calls,1);
 });
 
 test('failed durable reservation stops before model and retains the original attempt and conservative accounting',async t=>{

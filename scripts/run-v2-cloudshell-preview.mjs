@@ -7,7 +7,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { privateServiceRoute,privateServiceCancelId } from "../src/v2/private-service-routes.mjs";
+import { privateServiceRoute } from "../src/v2/private-service-routes.mjs";
 import { privatePublicationReadRoute } from "../src/v2/publication-request.mjs";
 
 const error = (status, message) => Object.assign(new Error(message), { status });
@@ -160,11 +160,11 @@ export function createPreviewServer({ origin, webRoot, invoke = invokePrivate, m
         const payload = privatePayload(req.method, backendPath, req.headers, body, { allowAgent, allowDataServices,allowServiceAgent });
         if (waiting >= 8 || calls >= maxCalls) throw error(429, "本次预览调用额度已达上限，请稍后核查后重启预览");
         waiting++; calls++;
-        // Only the stop signal may overtake a long model request. The backend
-        // still authenticates it and persists cancellation in its serial lane.
-        const urgentStop=allowServiceAgent&&Boolean(privateServiceCancelId(payload));
-        const action = urgentStop?Promise.resolve().then(()=>invoke(payload)):tail.then(() => invoke(payload));
-        if(!urgentStop)tail = action.catch(() => {});
+        // Opt-in service planning can transport concurrent requests; the
+        // authenticated backend serializes all metadata and only yields for
+        // a pure model wait. Older preview modes retain their serial tail.
+        const action = allowServiceAgent?Promise.resolve().then(()=>invoke(payload)):tail.then(() => invoke(payload));
+        if(!allowServiceAgent)tail = action.catch(() => {});
         try {
           const result = await action;
           const cookies = result.cookies.filter(c => typeof c === "string" && /^shuduo_(session|csrf)=/.test(c) && !/[\r\n]/.test(c));

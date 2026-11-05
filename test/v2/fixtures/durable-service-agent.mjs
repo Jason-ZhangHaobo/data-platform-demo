@@ -41,10 +41,11 @@ export async function durableServiceFixture(t,{profilePatch={},modelLeaseMs=9000
  const env={V2_LOCAL_DEVELOPMENT:'false',V2_ALLOW_INSECURE_PUBLIC_COOKIES:'true',V2_PROVISIONING_ONLY:'true',V2_PRIVATE_SMOKE_ENABLED:'true',V2_PRIVATE_DATA_SERVICES_ENABLED:'true',V2_DURABLE_SQL_AGENT_ENABLED:'false',V2_FC_PUBLIC_READ_ONLY:'true',V2_ACCOUNT_MONTHLY_SPEND_CNY:'40',V2_MODEL:'qwen3.7-plus',V2_PRIVATE_SERVICE_AGENT_PROFILE:JSON.stringify(profile)};
  let next=input=>({plan:{serviceType:'DAPI',name:'股票与现金查询',slug:'synthetic-agent-assets',sourceReleaseRunId:input.releaseRuns[0].id,fields:['client_id','total_assets']},explanation:'按所选股票与现金口径生成方案',model:'qwen3.7-plus',usage:{prompt_tokens:500,completion_tokens:200,total_tokens:700}});
  const inputs=[],apps=[];
+ let refreshHook=async()=>{};
  const persist=async()=>{flushes++;if(failFlush||failAtFlush===flushes)throw Error('Synthetic persistence failure');};
  const start=async()=>{
   const ingress=createFcIngress({publicHttpEnabled:true,publicReadOnly:true});
-  const app=createV2Server({root,store,businessStore,env,now,ingress,stateCoordinator:{refresh:async()=>{},flush:persist},serviceAgentModelLeaseMs:modelLeaseMs,
+  const app=createV2Server({root,store,businessStore,env,now,ingress,stateCoordinator:{refresh:()=>refreshHook(),flush:persist},serviceAgentModelLeaseMs:modelLeaseMs,
    servicePlanner:async input=>{calls++;inputs.push(input);return next(input);},runner:async()=>{compute++;throw Error('must not compute');}});
   await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));const base=`http://127.0.0.1:${app.server.address().port}`;env.V2_PUBLIC_ORIGIN=base;
   const call=async(path,body,headers={},key=randomUUID(),publicHttp=false)=>{
@@ -58,5 +59,5 @@ export async function durableServiceFixture(t,{profilePatch={},modelLeaseMs=9000
  t.after(async()=>{for(const {app}of apps){app.server.closeAllConnections();await new Promise(resolve=>app.server.close(resolve));}businessStore.close();store.close();rmSync(root,{recursive:true,force:true});});
  const create=(message='基于当前股票与现金来源规划资产DAPI',key=randomUUID(),binding=sourceBinding,headers=api.a)=>api.call('/data-services/agent/plans',{message,sourceBinding:binding},headers,key);
  return {...api,root,store,businessStore,owner,other,agent,run,release,bundle,holdings,cash,sourceBinding,profile,env,create,start,inputs,privateManager:seed.manager,project:PROJECT,
-  setNext:fn=>{next=fn;},moveClock:ms=>{clock+=ms;},now,counts:()=>({calls,compute,flushes}),failFlush:value=>{failFlush=value;},failFlushAt:value=>{failAtFlush=value;}};
+  setNext:fn=>{next=fn;},setRefreshHook:fn=>{refreshHook=fn;},moveClock:ms=>{clock+=ms;},now,counts:()=>({calls,compute,flushes}),failFlush:value=>{failFlush=value;},failFlushAt:value=>{failAtFlush=value;}};
 }

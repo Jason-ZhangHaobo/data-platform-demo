@@ -212,9 +212,9 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /data-services/agent/context?agent_task_id=…&package_digest=…&release_id=…&source_release_run_id=… | 完整且唯一的任务/包/发布/成功批次；私有受邀身份 | 只读已验证包口径与同源已发布DAPI固定版本，最多100个；复用私有归属和快照验证。planning.enabled=false，不调用模型、不创建方案或接口；GUI/CLI plan-context/MCP service_agent_context同源 |
 | GET /data-services/agent/plans/:id | 方案状态 | 受治理提案、原来源/人工版本、原窗口quota共享尝试及保守Token、恢复与安全诊断；不返回内部租约 |
 | POST /data-services/agent/plans/:id/apply | 本机空对象；持久私有模式{proposalHash} | 人工确认指定摘要为原草稿，事务幂等恢复，不测试、发布或发凭证 |
-| POST /data-services/agent/plans/:id/advance | 持久私有模式{expectedVersion,confirmModelRetry?} | 独立窗口、身份、来源与预算门，一次持久模型边界；未知结果不自动重试，后台驱动尚未安装 |
+| POST /data-services/agent/plans/:id/advance | 持久私有模式{expectedVersion,confirmModelRetry?} | 独立窗口、身份、来源与预算门，一次持久模型边界；纯模型等待释放元数据通道，结果处理重获通道；其他模型在途时409且不新增尝试。未知不自动重试，事件后台尚未安装 |
 | GET /data-services/agent/requests/:requestId | 本人原请求UUID | 找回原同源规划，不重新调用模型；来源不可用时仍只读返回原元数据 |
-| POST /data-services/agent/plans/:id/cancel | 空对象或sourceBoundOnly:true | 同源规划限定创建者，可在来源失效时停止；受控私有入口先认证停止信号，最终状态仍串行持久化 |
+| POST /data-services/agent/plans/:id/cancel | 空对象或sourceBoundOnly:true | 同源规划限定创建者，可在来源失效或模型等待时停止；正常认证和最终状态均串行持久化，晚到结果不覆盖取消 |
 | GET/POST /sources | 列表或name/sourceType/fileName | 创建仅限合成目录的LOCAL_CSV源及V1版本 |
 | GET /sources/:id | 数据源详情 | 当前版本、历史版本、连接测试和元数据版本 |
 | POST /sources/:id/test | 空对象 | 真实读取文件并记录摘要、字节、行列数和耗时 |
