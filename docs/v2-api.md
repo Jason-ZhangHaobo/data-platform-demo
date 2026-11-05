@@ -72,6 +72,8 @@
 
 本机原生 Agent 的 `task-evidence` 同样接受可选 `release_id`，保持 `LOCAL_TEST_ONLY` 和既有身份边界；人工/未知来源不能被转换为原生 Agent 成功。消费条目的 `sourceVersions` 仅投影最多5个固定 DAPI 的服务/版本编号、配置摘要、包摘要、发布/发布批次和允许字段名，不含业务行、SQL、参数或令牌。实际 `recheckCall` 返回配置摘要，`call.configHash` 必须与当前固定版本一致；摘要格式本身不构成独立真实性证明。
 
+已核验条目另提供 `source`（`shuduo-service-consumer-source/v1`），从原不可变包投影 `scope/sourceKind/taskId/revisionId/revisionHash/developmentRunId/contextId/validationContractId/packageDigest/releaseId/sourceReleaseRunId`。必须同时关联当前项目、包、代码和实际发布运行，开发运行与发布批次不同；不是将消费者文件中的声明原样回显。缺失或矛盾来源不提供成功的外部绑定。该字段不含业务行、SQL、账号或凭证，也不改变原权限。外部 V2 报告绑定协议见 [数据服务说明](m3-data-services.md)。
+
 新任务评测 v2 在同源监控通过后保留 `AWAITING_CONSUMPTION`，通过上述只读投影继续核验；旧 v1 只覆盖到监控，不能迁移或改名计作 v2。`--refresh` 更新原本机检查点，但远端仅 GET 原任务/包/发布的 `task-evidence`，不检查或启动模型、Spark及后续案例；`--report` 不改检查点。具体命令、版本和失败恢复见 [新任务评测说明](live-lifecycle-evaluation.md)。
 
 ### 本机原生 SQL Agent 的精确交接

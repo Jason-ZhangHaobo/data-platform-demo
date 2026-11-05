@@ -1,9 +1,11 @@
 import { serviceVersionConfigValid } from "./data-services.mjs";
+import {validateDeliveryPackage} from "./delivery.mjs";
+import {validateConsumerSource} from "./consumer-source.mjs";
 
 const assetFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 // Private, owner-authorized projection of persisted calls. No tokens, rows,
 // parameters, rematerialization, model invocation or new consumer calls.
-export async function privateTaskConsumption({ taskId, packageDigest, releaseId, services, ownedService, getVersion, source, getRelease, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
+export async function privateTaskConsumption({ taskId, packageDigest, releaseId, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
   if (!["PRIVATE_CLOUD_TEST", "LOCAL_TEST_ONLY"].includes(scope)) throw new Error("Unsupported consumption scope");
   const entries = [], limit = 20;
   const selectedRelease=releaseId===undefined?undefined:getRelease(releaseId);
@@ -37,19 +39,35 @@ export async function privateTaskConsumption({ taskId, packageDigest, releaseId,
       if (!serviceVersionConfigValid(root) || !children.length || root.serviceType==="XAPI"&&(!Array.isArray(root.steps)||root.steps.length<2||root.steps.length>5) ||
           children.some(v => !v || !serviceVersionConfigValid(v) || !Array.isArray(v.fields) || v.fields.length>assetFields.length ||
             new Set(v.fields).size!==v.fields.length || v.fields.some(field=>!assetFields.includes(field)))) throw Object.assign(new Error(), {status:409, code:"SERVICE_VERSION_CORRUPT"});
-      const sourceReleases=[];
+      const sourceReleases=[],sourceRuns=[];
       const sources = children.map(v => {
         const run = source(v.sourceReleaseRunId), release = getRelease(run.releaseId);
         if (release?.sourceAgentTaskId !== taskId || run.packageDigest !== packageDigest || v.sourcePackageDigest !== packageDigest || v.sourceReleaseId !== release.id ||
           (releaseId!==undefined&&release.id!==releaseId))
           throw Object.assign(new Error(), {status:409, code:"MIXED_SOURCE_VERSIONS"});
         sourceReleases.push(release);
+        sourceRuns.push(run);
         return run.id;
       });
       if (new Set(sourceReleases.map(release=>release.id)).size!==1||root.serviceType === "XAPI" && new Set(sources).size !== 1)
         throw Object.assign(new Error(), {status:409, code:"MIXED_SOURCE_VERSIONS"});
       entry.sourceRunIds = [...new Set(sources)];
       Object.assign(entry,attribution(sourceReleases[0]),{releaseId:sourceReleases[0].id});
+      if(typeof getPackage==='function'){
+        try{
+          const run=sourceRuns[0],release=sourceReleases[0],bundle=getPackage(run.packageId),origin=validateDeliveryPackage(bundle,packageDigest).source,
+            sourceKind=release.sourceKind??'AGENT';
+          if(bundle.id!==release.packageId||bundle.digest!==packageDigest||release.sourceAgentTaskId!==taskId||
+            origin.projectId!==bundle.projectId||bundle.projectId!==run.projectId||run.projectId!==release.projectId||
+            release.sourceRevisionId!==undefined&&release.sourceRevisionId!==origin.revisionId||
+            (release.sourceCodeHash??release.sourceSqlHash)!==undefined&&(release.sourceCodeHash??release.sourceSqlHash)!==origin.sqlHash||
+            sourceKind==='AGENT'&&origin.attribution!==undefined||sourceKind==='MANUAL'&&
+              (origin.attribution?.kind!=='ENGINEER_ASSISTED'||origin.attribution.originAgentTaskId!==taskId||origin.attribution.agentIndependentE2E!==false))throw Error('UNBOUND_SOURCE');
+          entry.source=validateConsumerSource({schema:'shuduo-service-consumer-source/v1',scope,sourceKind,taskId,
+            revisionId:origin.revisionId,revisionHash:origin.sqlHash,developmentRunId:origin.runId,contextId:origin.contextId,
+            validationContractId:origin.validationContractId,packageDigest,releaseId:release.id,sourceReleaseRunId:run.id});
+        }catch{throw Object.assign(new Error(),{status:409,code:'CONSUMER_SOURCE_IDENTITY_UNAVAILABLE'});}
+      }
       // Bounded immutable child references, not data rows or query parameters.
       // Consumers can independently check the exact versions and release batch
       // instead of trusting a top-level VERIFIED label or composition boolean.

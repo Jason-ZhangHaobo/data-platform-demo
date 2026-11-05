@@ -16,7 +16,13 @@
 // expectedRows MUST come from an independently reviewed business expectation, never
 // the service response. XAPI HTTP responses must expose exact immutable child
 // version bindings as service.steps; missing bindings fail verification.
-import { createHash, randomUUID } from "node:crypto";
+// SERVICE_CONSUMER_V2 adds the strict consumer-source.mjs source envelope and a
+// configHash on each declared service. Non-200 request descriptors record only
+// the requested target; they never claim that response versions were verified.
+// Neither protocol creates an externalSystemVerified=true assertion by itself.
+// Read-only binding: --plan /private/plan.json --expected-source /private/source.json
+//   --bind-evidence /private/task-evidence.json. Never combine with execution or token flags.
+import { randomUUID } from "node:crypto";
 import { constants, closeSync, existsSync, fstatSync, fsyncSync, openSync,
   readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -24,8 +30,11 @@ import { pathToFileURL } from "node:url";
 import http from "node:http";
 import https from "node:https";
 import { isDeepStrictEqual } from "node:util";
+import { ConsumerSourceError, consumerCanonical as canonical, consumerDigest as digest, consumerV2PlanEvidence } from "../src/v2/consumer-source.mjs";
+import { bindExternalConsumption } from "../src/v2/external-consumption-binding.mjs";
 
 const PROTOCOL = "SERVICE_CONSUMER_V1";
+const SOURCE_PROTOCOL = "SERVICE_CONSUMER_V2";
 const FIELDS = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 const PHASES = ["consume", "revoked"];
 const STATES = ["NOT_STARTED", "RUNNING", "PASSED", "FAILED"];
@@ -34,15 +43,14 @@ class AcceptanceError extends Error {
 }
 const fail = (code) => { throw new AcceptanceError(code); };
 const requireThat = (condition, code) => { if (!condition) fail(code); };
-const digest = (value) => createHash("sha256").update(value).digest("hex");
-const canonical = (value) => JSON.stringify(value && typeof value === "object"
-  ? Array.isArray(value) ? value.map((v) => JSON.parse(canonical(v)))
-    : Object.fromEntries(Object.keys(value).sort().map((k) => [k, JSON.parse(canonical(value[k]))])) : value);
 const record = (value) => value && typeof value === "object" && !Array.isArray(value);
 const identifier = (value) => typeof value === "string" && /^[a-zA-Z0-9_-]{3,100}$/.test(value);
 const slug = (value) => typeof value === "string" && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value) && value.length <= 48;
 const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
-const safeCode = (error) => error instanceof AcceptanceError ? error.code : "LOCAL_IO_FAILED";
+const safeCode = (error) => error instanceof AcceptanceError || error instanceof ConsumerSourceError ? error.code : "LOCAL_IO_FAILED";
+const hashValue = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const safeTime = value => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
+  Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 
 function readPrivate(file, maximum) {
   requireThat(typeof file === "string" && isAbsolute(file), "ABSOLUTE_FILE_REQUIRED");
@@ -82,7 +90,8 @@ function persist(file, value, initial = false) {
 }
 
 export function validateConsumerPlan(plan) {
-  requireThat(record(plan) && plan.protocol === PROTOCOL && typeof plan.authorized === "boolean", "INVALID_PLAN");
+  requireThat(record(plan) && [PROTOCOL, SOURCE_PROTOCOL].includes(plan.protocol) && typeof plan.authorized === "boolean", "INVALID_PLAN");
+  const metadata = plan.protocol === SOURCE_PROTOCOL ? consumerV2PlanEvidence(plan) : undefined;
   let url;
   try { url = new URL(plan.origin); } catch { fail("INVALID_ORIGIN"); }
   requireThat(url.origin === plan.origin && plan.origin === plan.approvedOrigin && !url.username && !url.password &&
@@ -122,7 +131,7 @@ export function validateConsumerPlan(plan) {
     integer(plan.rateLimit.perMinute, 3, 28), "INVALID_RATE_LIMIT_TEST");
   const plannedRequests = targets.length * 3 + plan.rateLimit.perMinute + 3;
   requireThat(plannedRequests <= plan.maxRequests, "INSUFFICIENT_REQUEST_BUDGET");
-  return { targets, plannedRequests, started, deadline };
+  return { targets, plannedRequests, started, deadline, ...(metadata ? { metadata } : {}) };
 }
 
 // No redirects, proxy configuration, cookies, arbitrary headers, POSTs or retries.
@@ -183,22 +192,52 @@ function verifySuccess(plan, service, query, response) {
     childBindingsVerified = true;
   }
   return { responseDigest: digest(canonical({ data: body.data, pagination: body.pagination })),
-    callIdDigest: digest(body.callId), childBindingsVerified };
+    callIdDigest: digest(body.callId), childBindingsVerified,
+    ...(plan.protocol === SOURCE_PROTOCOL ? { rowsDigest: digest(canonical(body.data)), rowCount: body.data.length,
+      versionBindingsVerified: true, ...(childBindingsVerified ? { childBindingsDigest: digest(canonical(body.service.steps)) } : {}) } : {}) };
 }
 
 function validateReport(report, planHash, credentialDigest, plan) {
-  requireThat(record(report) && report.protocol === PROTOCOL && report.planDigest === planHash &&
+  requireThat(record(report) && report.protocol === plan.protocol && report.planDigest === planHash &&
     report.credentialDigest === credentialDigest && report.maxRequests === plan.maxRequests && report.deadline === plan.deadline &&
     integer(report.requestCount, 0, plan.maxRequests) && Array.isArray(report.requests) && report.requests.length === report.requestCount &&
     record(report.phases) && PHASES.every((phase) => STATES.includes(report.phases[phase])), "REPORT_BINDING_INVALID");
   requireThat(report.requests.every((entry, index) => record(entry) && entry.sequence === index + 1 && PHASES.includes(entry.phase) &&
     ["PENDING", "PASSED", "FAILED"].includes(entry.result)), "REPORT_COUNTER_INVALID");
+  if (plan.protocol === SOURCE_PROTOCOL) {
+    const metadata = consumerV2PlanEvidence(plan);
+    const keys = ["protocol", "planDigest", "credentialDigest", "maxRequests", "startedAt", "deadline", "evidence", "requestCount", "phases", "requests", "finishedAt", ...Object.keys(metadata)];
+    requireThat(Object.keys(report).every(key => keys.includes(key)) && Object.entries(metadata).every(([key, value]) => isDeepStrictEqual(report[key], value)) &&
+      report.startedAt === plan.startedAt && report.evidence === (plan.testOnly ? "LOCAL_HTTP_FIXTURE" : "HTTP_CONSUMER_ONLY") &&
+      Object.keys(report.phases).length === PHASES.length && (!Object.hasOwn(report, "finishedAt") || safeTime(report.finishedAt)) &&
+      (!PHASES.every(phase => report.phases[phase] === "PASSED") || safeTime(report.finishedAt)), "REPORT_BINDING_INVALID");
+    const requestKeys = ["sequence", "phase", "check", "startedAt", "result", "serviceId", "type", "versionId", "configHash", "expectedStatus", "queryDigest",
+      "statusCode", "finishedAt", "failure", "responseDigest", "callIdDigest", "childBindingsVerified", "rowsDigest", "rowCount", "versionBindingsVerified", "childBindingsDigest"];
+    requireThat(report.requests.every(entry => {
+      const target = [...metadata.services, metadata.ungrantedService].find(service => service.id === entry.serviceId && service.type === entry.type &&
+        service.versionId === entry.versionId && service.configHash === entry.configHash);
+      if (Object.keys(entry).some(key => !requestKeys.includes(key)) || !target || !hashValue(entry.queryDigest) || ![200,400,401,403,429].includes(entry.expectedStatus) ||
+          !safeTime(entry.startedAt) || Date.parse(entry.startedAt) < Date.parse(plan.startedAt) || Date.parse(entry.startedAt) >= Date.parse(plan.deadline) ||
+          typeof entry.check !== "string" || !/^(SERVICE_[1-3]_(PAGE_[12]|FILTER)|MISSING_TOKEN|INVALID_TOKEN|UNGRANTED_SERVICE|INVALID_PARAMETERS|RATE_LIMIT_(ALLOWED|REJECTED)|REVOKED_TOKEN)$/.test(entry.check) ||
+          Object.hasOwn(entry, "finishedAt") && (!safeTime(entry.finishedAt) || Date.parse(entry.finishedAt) < Date.parse(entry.startedAt)) ||
+          Object.hasOwn(entry, "failure") && (typeof entry.failure !== "string" || !/^[A-Z0-9_]{1,80}$/.test(entry.failure)) ||
+          Object.hasOwn(entry, "statusCode") && !integer(entry.statusCode,100,599)) return false;
+      if (entry.result === "PASSED") {
+        if (!safeTime(entry.finishedAt) || entry.statusCode !== entry.expectedStatus) return false;
+        if (entry.expectedStatus === 200) return entry.versionBindingsVerified === true && integer(entry.rowCount,0,100) &&
+          [entry.rowsDigest,entry.responseDigest,entry.callIdDigest].every(hashValue) && entry.childBindingsVerified === (entry.type === "XAPI") &&
+          (entry.type === "XAPI" ? hashValue(entry.childBindingsDigest) : entry.childBindingsDigest === undefined);
+        return ["versionBindingsVerified","rowCount","rowsDigest","responseDigest","callIdDigest","childBindingsVerified","childBindingsDigest"].every(key => !Object.hasOwn(entry,key));
+      }
+      return true;
+    }), "REPORT_COUNTER_INVALID");
+  }
 }
 
 export async function runConsumerAcceptance({ planFile, tokenFile, phase = "consume", execute = false }) {
   const plan = readJson(planFile), bounds = validateConsumerPlan(plan);
   requireThat(PHASES.includes(phase), "INVALID_PHASE");
-  if (execute !== true) return { protocol: PROTOCOL, mode: "PLAN_ONLY", plannedRequests: bounds.plannedRequests,
+  if (execute !== true) return { protocol: plan.protocol, mode: "PLAN_ONLY", plannedRequests: bounds.plannedRequests,
     maxRequests: plan.maxRequests, requests: 0, evidence: "NOT_EXECUTED" };
   requireThat(plan.authorized === true, "EXPLICIT_AUTHORIZATION_REQUIRED");
   requireThat(Date.now() >= bounds.started && Date.now() < bounds.deadline, "OUTSIDE_FIXED_WINDOW");
@@ -215,7 +254,8 @@ export async function runConsumerAcceptance({ planFile, tokenFile, phase = "cons
       validateReport(report, planHash, credentialDigest, plan);
     } else {
       requireThat(phase === "consume", "PRIOR_CONSUMER_REPORT_REQUIRED");
-      report = { protocol: PROTOCOL, planDigest: planHash, credentialDigest, maxRequests: plan.maxRequests,
+      report = { ...(bounds.metadata ?? {}), protocol: plan.protocol, planDigest: planHash, credentialDigest, maxRequests: plan.maxRequests,
+        ...(bounds.metadata ? { startedAt: plan.startedAt } : {}),
         deadline: plan.deadline, evidence: plan.testOnly ? "LOCAL_HTTP_FIXTURE" : "HTTP_CONSUMER_ONLY",
         requestCount: 0, phases: { consume: "NOT_STARTED", revoked: "NOT_STARTED" }, requests: [] };
       persist(plan.reportFile, report, true);
@@ -223,13 +263,17 @@ export async function runConsumerAcceptance({ planFile, tokenFile, phase = "cons
     requireThat(report.phases[phase] === "NOT_STARTED", "PHASE_ALREADY_ATTEMPTED");
     requireThat(phase !== "revoked" || report.requestCount > 0, "PRIOR_CONSUMER_REQUEST_REQUIRED");
     report.phases[phase] = "RUNNING";
+    if (bounds.metadata) delete report.finishedAt;
     persist(plan.reportFile, report);
     phaseStarted = true;
     const firstSuccess = new Map();
     const call = async (service, query, auth, expectedStatus, check) => {
       requireThat(Date.now() < bounds.deadline, "FIXED_DEADLINE_REACHED");
       requireThat(report.requestCount < plan.maxRequests - (phase === "consume" ? 1 : 0), "REQUEST_BUDGET_EXHAUSTED");
-      const entry = { sequence: ++report.requestCount, phase, check, startedAt: new Date().toISOString(), result: "PENDING" };
+      const target = bounds.metadata ? check === "UNGRANTED_SERVICE" ? bounds.metadata.ungrantedService : bounds.metadata.services.find(value => value.id === service.id && value.type === service.type) : undefined;
+      requireThat(!bounds.metadata || target, "INVALID_CONSUMER_SERVICE_BINDING");
+      const entry = { sequence: ++report.requestCount, phase, check, startedAt: new Date().toISOString(), result: "PENDING",
+        ...(target ? { serviceId: target.id, type: target.type, versionId: target.versionId, configHash: target.configHash, expectedStatus, queryDigest: digest(canonical(query)) } : {}) };
       report.requests.push(entry);
       // This reservation survives disconnects/crashes. Even a GET is not reissued.
       persist(plan.reportFile, report);
@@ -246,7 +290,7 @@ export async function runConsumerAcceptance({ planFile, tokenFile, phase = "cons
         }
         entry.result = "PASSED";
       } catch (error) { entry.result = "FAILED"; entry.failure = safeCode(error); throw error; }
-      finally { persist(plan.reportFile, report); }
+      finally { if (bounds.metadata) entry.finishedAt = new Date().toISOString(); persist(plan.reportFile, report); }
     };
     const standard = { page: 1, page_size: Math.ceil(plan.expectedRows.length / 2) };
     const first = bounds.targets[0];
@@ -270,12 +314,15 @@ export async function runConsumerAcceptance({ planFile, tokenFile, phase = "cons
       }
     }
     report.phases[phase] = "PASSED";
+    if (bounds.metadata) report.finishedAt = new Date().toISOString();
     persist(plan.reportFile, report);
-    return { protocol: PROTOCOL, phase, result: "PASSED", requestCount: report.requestCount,
-      maxRequests: plan.maxRequests, phases: report.phases, evidence: report.evidence };
+    return { protocol: plan.protocol, phase, result: "PASSED", requestCount: report.requestCount,
+      maxRequests: plan.maxRequests, phases: report.phases, evidence: report.evidence,
+      ...(bounds.metadata ? { sourceDigest: bounds.metadata.sourceDigest, scope: bounds.metadata.scope, externalSystemVerified: false, agentIndependentE2E: false } : {}) };
   } catch (error) {
     if (phaseStarted && report && report.phases[phase] === "RUNNING") {
       report.phases[phase] = "FAILED";
+      if (bounds.metadata) report.finishedAt = new Date().toISOString();
       try { persist(plan.reportFile, report); } catch { /* Durable pending reservations remain authoritative. */ }
     }
     throw new AcceptanceError(safeCode(error));
@@ -284,17 +331,32 @@ export async function runConsumerAcceptance({ planFile, tokenFile, phase = "cons
   }
 }
 
+export function runConsumerBinding(input = {}) {
+  requireThat(record(input) && Object.keys(input).length === 3 && ["planFile", "sourceFile", "evidenceFile"].every(key => Object.hasOwn(input,key)), "INVALID_BINDING_ARGUMENTS");
+  const plan = readJson(input.planFile);
+  validateConsumerPlan(plan);
+  const expectedSource = readJson(input.sourceFile), taskEvidence = readJson(input.evidenceFile), report = readJson(plan.reportFile);
+  const decision = bindExternalConsumption({ expectedSource, plan, report, taskEvidence });
+  const keys = ["schema", "verificationScope", "status", "reason", "eligibleForExternalAcceptance", "source", "sourceDigest", "expectedRowsDigest",
+    "planDigest", "reportDigest", "servicesDigest", "callIdDigest", "rowsDigest", "matchedRequestSequence"];
+  return { ...Object.fromEntries(keys.filter(key => Object.hasOwn(decision,key)).map(key => [key,decision[key]])),
+    externalSystemVerified: false, agentIndependentE2E: false, publicDeployed: false };
+}
+
 async function main() {
   const args = process.argv.slice(2), options = {};
   for (let i = 0; i < args.length; i += 1) {
     const key = args[i];
     if (key === "--execute" && options.execute === undefined) options.execute = true;
-    else if (["--plan", "--token-file", "--phase"].includes(key) && args[i + 1] && !args[i + 1].startsWith("--")) {
-      const name = { "--plan": "planFile", "--token-file": "tokenFile", "--phase": "phase" }[key];
+    else if (["--plan", "--token-file", "--phase", "--expected-source", "--bind-evidence"].includes(key) && args[i + 1] && !args[i + 1].startsWith("--")) {
+      const name = { "--plan": "planFile", "--token-file": "tokenFile", "--phase": "phase", "--expected-source": "sourceFile", "--bind-evidence": "evidenceFile" }[key];
       requireThat(options[name] === undefined, "INVALID_CLI_ARGUMENTS"); options[name] = args[++i];
     } else fail("INVALID_CLI_ARGUMENTS");
   }
-  const result = await runConsumerAcceptance(options);
+  const binding = options.sourceFile !== undefined || options.evidenceFile !== undefined;
+  if (binding) requireThat(options.sourceFile !== undefined && options.evidenceFile !== undefined &&
+    options.execute === undefined && options.tokenFile === undefined && options.phase === undefined, "BINDING_MODE_CONFLICT");
+  const result = binding ? runConsumerBinding({planFile:options.planFile,sourceFile:options.sourceFile,evidenceFile:options.evidenceFile}) : await runConsumerAcceptance(options);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
