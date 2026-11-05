@@ -84,6 +84,8 @@
 
 返程保留原生 Agent 与精确来源，重新读取任务、代码、开发运行及同源发布后只读展示；来源变化不展示最新代码冒充原版本。可明确打开不带来源锁定的当前任务页面继续处理，导航本身不执行模型、Spark或接口调用。本机 `GET /agent/tasks/:id/publication` 支持原生 `AGENT` 的精确包、源运行及发布编号；有选择时无匹配不回退，多匹配拒绝，旧无query读取兼容。旧本机任务缺少顶层runId时，只从已核对的最后尝试及代码关系投影原编号，不修改历史记录。
 
+本机调度器在执行前重新检查实际到期时间；计时器提前唤醒或排队期间时钟回退时，批次保留 `SCHEDULED` 并等待剩余时间，未实际启动前不记录触发或调用执行器。取消及旧回调不能重启同一批次。触发时间使用当时实际时钟，不用计划时间补造证明，也不修改历史坏时序记录。
+
 人工服务的实际调用按当前已发布根版本和 XAPI 固定子版本校验应用创建者与原工程师归属；旧的非所有者应用不能借接口版本更新继承人工数据。管理读取还核对所暴露的历史版本及调用，接口切回 Agent 不能解除人工历史保护。自己的应用元数据与撤销能力保留，不能因此读取人工服务内容。旧纯 Agent 的管理员策略兼容；无关候选版本不改变实际调用的固定来源。
 
 CLI 对应 `services sources --agent-task-id ID --package-digest SHA256 --release-id ID` 和 `services task-evidence --task-id ID --package-digest SHA256 [--release-id ID]`。MCP 的 `data_service_sources`、`data_service_task_evidence` 对应 `agentTaskId/packageDigest/releaseId`，只发 GET；不接受执行者覆盖，不在选择不全时退回宽范围。临时预览的消费证据下载可带 `releaseId`，转发为同一 `release_id` 并核对返回报告的发布编号。

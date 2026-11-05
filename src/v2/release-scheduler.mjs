@@ -125,10 +125,11 @@ export class LocalReleaseScheduler {
   }
 
   schedule(run) {
-    if (this.closed || run.status !== "SCHEDULED" || this.timers.has(run.id))
+    if (this.closed || run?.status !== "SCHEDULED" || this.timers.has(run.id))
       return;
     const delay = Math.max(0, Date.parse(run.scheduledTriggerAt) - this.now());
     const timer = this.setTimer(() => {
+      if (this.closed || this.timers.get(run.id) !== timer) return;
       this.timers.delete(run.id);
       if (delay > MAX_TIMER_DELAY) {
         this.schedule(this.store.get("release_run", run.id, this.project));
@@ -180,6 +181,11 @@ export class LocalReleaseScheduler {
     if (this.closed) return;
     const run = this.store.get("release_run", id, this.project);
     if (!run || run.status !== "SCHEDULED") return;
+    const pendingTimer = this.timers.get(id);
+    if (pendingTimer !== undefined) {
+      this.clearTimer(pendingTimer);
+      this.timers.delete(id);
+    }
     const release = this.store.get("release", run.releaseId, this.project);
     const allowedReleaseStatuses = profile.allowedReleaseStatuses ?? ["ACTIVE_LOCAL"];
     if (!release || !allowedReleaseStatuses.includes(release.status)) {
@@ -196,9 +202,18 @@ export class LocalReleaseScheduler {
       await this.#finishFailure(run, release, "发布包记录或摘要不一致", profile);
       return;
     }
+    // Timers can wake before the wall-clock deadline, and queued work may see
+    // a clock change. Recheck at the claim boundary, before recording a trigger
+    // or calling the runner; a wake-up is not evidence that this batch is due.
+    const triggerTime = this.now();
+    if ((profile.clockMode ?? "WALL_CLOCK_TIMER") === "WALL_CLOCK_TIMER" &&
+        triggerTime < Date.parse(run.scheduledTriggerAt)) {
+      this.schedule(run);
+      return;
+    }
     const controller = new AbortController();
     this.controllers.set(run.id, controller);
-    const triggeredAt = new Date(this.now()).toISOString();
+    const triggeredAt = new Date(triggerTime).toISOString();
     this.store.update("release_run", id, this.project, {
       status: "RUNNING",
       triggeredAt,
