@@ -4692,7 +4692,7 @@ kbd {
 }
 .asset-search-v2 {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) 150px auto;
+  grid-template-columns: auto minmax(0, 1fr) 150px auto auto;
   align-items: center;
   gap: 9px;
   padding: 11px 12px;
