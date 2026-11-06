@@ -1,9 +1,17 @@
 import test from 'node:test';
+import {localReleaseScheduleText,defaultLocalReleaseSchedule} from '../../web/src/delivery-presentation.ts';
 import assert from 'node:assert/strict';
 import { deliveryFiles } from '../../src/v2/delivery.mjs';
 import { deliveryFileGuide, deliveryFilePresentation, deliveryReviewRequirements, reviewAttestationsComplete } from '../../web/src/delivery-presentation.ts';
 
 const files = () => Object.fromEntries(deliveryFiles.map(name => [name, 'fictional test content']));
+test('published timing uses its recorded schedule rather than the new-release defaults',()=>{
+ assert.match(localReleaseScheduleText(),/新发布默认配置：5秒.*15秒.*2批/);
+ assert.match(localReleaseScheduleText({scheduleSpec:{triggerAfterSeconds:1,intervalSeconds:2,runCount:2}}),/此发布的计时配置：1秒.*2秒.*2批/);
+ assert.match(localReleaseScheduleText({scheduleSpec:{triggerAfterSeconds:3,intervalSeconds:7,runCount:3}}),/3秒.*7秒.*3批/);
+ for(const release of [{},{scheduleSpec:{triggerAfterSeconds:'5',intervalSeconds:15,runCount:2}},{scheduleSpec:{triggerAfterSeconds:-1,intervalSeconds:15,runCount:2}},{scheduleSpec:{triggerAfterSeconds:5,intervalSeconds:Infinity,runCount:2}}])assert.match(localReleaseScheduleText(release),/未确认计时参数/);
+ assert.deepEqual(defaultLocalReleaseSchedule,{triggerAfterSeconds:5,intervalSeconds:15,runCount:2});
+});
 
 test('file guide covers every executable package file without claiming execution', () => {
   assert.deepEqual(deliveryFileGuide.map(f => f.name), deliveryFiles);

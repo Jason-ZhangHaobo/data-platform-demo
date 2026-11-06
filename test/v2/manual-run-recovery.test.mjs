@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { manualRunLocation, manualRunRecovery, manualDeliveryPackages, manualSaveLocation, manualSaveRequest, acknowledgedManualDraft, mayReuseManualRevision } from '../../web/src/manual-run-recovery.ts';
+import { manualRunLocation, manualRunRecovery, manualDeliveryPackages, manualSaveLocation, manualSaveRequest, acknowledgedManualDraft, mayReuseManualRevision,verifiedManualOrigin,manualSourceDisclosure,developmentContextLocked } from '../../web/src/manual-run-recovery.ts';
 const revisionId='11111111-1111-4111-8111-111111111111', requestKey='22222222-2222-4222-8222-222222222222', originTaskId='33333333-3333-4333-8333-333333333333',runId='44444444-4444-4444-8444-444444444444';
 test('confirmed manual save normalizes only its submitted draft and preserves newer edits',()=>{
   const submitted='  SELECT client_id FROM accounts\n',saved=submitted.trim();
@@ -50,4 +50,26 @@ test('malformed or partial recovery identifiers cannot become a replay request',
   assert.equal(manualRunRecovery(`http://127.0.0.1/v2/?revision=${revisionId}&run_request=secret-text`).requestKey,undefined);
   assert.throws(()=>manualRunLocation('http://127.0.0.1/v2/',{revisionId:'SELECT something private'}),/不合法/);
   assert.throws(()=>manualRunLocation('http://127.0.0.1/v2/',{revisionId,originTaskId:'https://untrusted.invalid'}),/不合法/);
+});
+test('manual origin comes from the saved receipt and cannot be invented by a recovery link',()=>{
+ const standalone={source:'MANUAL',manualProvenance:{kind:'ENGINEER_EDIT',agentIndependentE2E:false}};
+ assert.equal(verifiedManualOrigin(standalone),undefined);
+ assert.throws(()=>verifiedManualOrigin(standalone,originTaskId),/来源未通过/);
+ const linked={...standalone,manualProvenance:{...standalone.manualProvenance,originAgentTaskId:originTaskId}};
+ assert.equal(verifiedManualOrigin(linked,originTaskId),originTaskId);
+ for(const bad of [{...linked,source:'LIVE_MODEL'},{...linked,manualProvenance:{...linked.manualProvenance,agentIndependentE2E:true}}])assert.throws(()=>verifiedManualOrigin(bad),/来源未通过/);
+ assert.throws(()=>verifiedManualOrigin(linked,runId),/来源未通过/);
+});
+test('standalone manual and unverified saved code never imply an earlier failed Agent',()=>{
+ const standalone=manualSourceDisclosure({source:'MANUAL'}),linked=manualSourceDisclosure({source:'MANUAL'},originTaskId),legacy=manualSourceDisclosure(undefined);
+ assert.equal(standalone.kind,'STANDALONE_MANUAL');assert.equal(standalone.description.includes('失败'),false);
+ assert.equal(linked.kind,'AGENT_TAKEOVER');assert.equal(linked.description.includes('失败'),true);
+ assert.equal(legacy.kind,'UNVERIFIED_SAVED_SOURCE');assert.equal(legacy.description.includes('尚未核验'),true);
+});
+test('only a fresh idle editable draft can change context; saved and unresolved sources remain bound',()=>{
+ const fresh={readOnly:false,publicationOnly:false,taskOnly:false,working:false,hasTask:false,hasSavedRevision:false,pendingSubmission:false,runPending:false};
+ assert.equal(developmentContextLocked(fresh),false);
+ assert.equal(developmentContextLocked({...fresh,readOnly:true}),false,'a blank readonly demo can inspect definitions without running anything');
+ for(const key of Object.keys(fresh).filter(k=>k!=='readOnly'))assert.equal(developmentContextLocked({...fresh,[key]:true}),true,key);
+ assert.equal(developmentContextLocked({...fresh,readOnly:true,hasSavedRevision:true}),true);
 });

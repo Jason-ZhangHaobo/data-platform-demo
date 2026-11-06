@@ -4,6 +4,22 @@ export function acknowledgedManualDraft(current: string, submitted: string, save
   return current === submitted ? saved : current;
 }
 type ManualRevisionReceipt = {id:string;sql:string;contextId:string;source?:string;manualProvenance?:{kind:string;originAgentTaskId?:string;agentIndependentE2E:boolean}};
+export function verifiedManualOrigin(saved:Pick<ManualRevisionReceipt,'source'|'manualProvenance'>,requestedOrigin?:string):string|undefined {
+  const provenance=saved.manualProvenance,origin=provenance?.originAgentTaskId;
+  const verified=saved.source==='MANUAL'&&provenance?.kind==='ENGINEER_EDIT'&&provenance.agentIndependentE2E===false&&typeof origin==='string'&&uuid.test(origin)?origin:undefined;
+  if(origin!==undefined&&!verified||requestedOrigin!==undefined&&requestedOrigin!==verified)throw Error('手工版本的原Agent来源未通过保存回执核验；原版本和恢复链接保留，不自动关联其他任务。');
+  return verified;
+}
+export function manualSourceDisclosure(saved:{source?:string}|undefined,originId?:string) {
+  return originId?{kind:'AGENT_TAKEOVER',region:'人工接管与交付',title:'人工接管记录',description:'当前代码由工程师保存；原 Agent 的失败和验证结论不改写，也不计作 Agent 自主完成。'}:
+    saved?.source==='MANUAL'?{kind:'STANDALONE_MANUAL',region:'手工开发与交付',title:'手工开发记录',description:'当前版本由工程师独立保存，未关联原 Agent 任务；不计作 Agent 自主完成。'}:
+    {kind:'UNVERIFIED_SAVED_SOURCE',region:'已保存版本与交付',title:'已保存代码版本',description:'已恢复保存的代码与运行；来源关系尚未核验，不推定为 Agent 生成或人工接管。'};
+}
+export function developmentContextLocked(input:{readOnly:boolean;publicationOnly:boolean;taskOnly:boolean;working:boolean;hasTask:boolean;hasSavedRevision:boolean;pendingSubmission:boolean;runPending:boolean}) {
+  // A fresh read-only demo may inspect different definitions. A saved or
+  // recovering source stays bound regardless of whether editing is allowed.
+  return input.publicationOnly||input.taskOnly||input.working||input.hasTask||input.hasSavedRevision||input.pendingSubmission||input.runPending;
+}
 export function mayReuseManualRevision(saved: ManualRevisionReceipt | undefined, current: {id?:string;sql:string;contextId:string;originAgentTaskId?:string}): boolean {
   return Boolean(saved && saved.id === current.id && saved.sql === current.sql && saved.contextId === current.contextId &&
     saved.source === "MANUAL" && saved.manualProvenance?.kind === "ENGINEER_EDIT" && saved.manualProvenance.agentIndependentE2E === false &&

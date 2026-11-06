@@ -1,4 +1,10 @@
 // Presentation metadata only: file presence is not an execution or integrity proof.
+export const defaultLocalReleaseSchedule={triggerAfterSeconds:5,intervalSeconds:15,runCount:2} as const;
+export function localReleaseScheduleText(release?:{scheduleSpec?:{triggerAfterSeconds?:unknown;intervalSeconds?:unknown;runCount?:unknown}}) {
+  const spec=release?release.scheduleSpec:defaultLocalReleaseSchedule;
+  if(!spec||![spec.triggerAfterSeconds,spec.intervalSeconds,spec.runCount].every(v=>Number.isSafeInteger(v))||Number(spec.triggerAfterSeconds)<1||Number(spec.triggerAfterSeconds)>300||Number(spec.intervalSeconds)<1||Number(spec.intervalSeconds)>300||![2,3].includes(Number(spec.runCount)))return '此历史发布未确认计时参数，请查看批次计划与实际触发时间。';
+  return `${release?'此发布的计时配置':'新发布默认配置'}：${spec.triggerAfterSeconds}秒后触发首批，间隔${spec.intervalSeconds}秒，共${spec.runCount}批。页面刷新不重新触发。`;
+}
 export const deliveryFileGuide = [
   { name: "main.sql", label: "加工代码", purpose: "客户资产加工逻辑；审阅金额精度、关联粒度与现金重复累计风险。" },
   { name: "tests.sql", label: "结果断言", purpose: "独立预期结果的检查 SQL；执行成功后仍需检查每项断言。" },
