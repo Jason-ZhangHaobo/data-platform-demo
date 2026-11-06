@@ -2538,6 +2538,10 @@ kbd {
   color: #71806b;
   font-size: 10px;
 }
+.service-catalog-refresh {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
 .service-flow {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
