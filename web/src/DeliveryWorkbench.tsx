@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { manualDeliveryPackages } from "./manual-run-recovery";
 import { deliverySourceSelection } from "./delivery-source";
+import {defaultLocalReleaseSchedule,localReleaseScheduleText} from "./delivery-presentation";
 import {
   Activity,
   ArrowDownToLine,
@@ -106,6 +107,7 @@ type Release = {
   openAlertCount?: number;
   publicDeployed: false;
   artifactReady: boolean;
+  scheduleSpec?:{triggerAfterSeconds?:unknown;intervalSeconds?:unknown;runCount?:unknown};
 };
 type ReleaseRun = {
   id: string;
@@ -406,9 +408,7 @@ export function DeliveryWorkbench({
     try {
       await api<Release>("/releases", {
         approvalId: approval.id,
-        triggerAfterSeconds: 5,
-        intervalSeconds: 15,
-        runCount: 2,
+        ...defaultLocalReleaseSchedule,
       });
       await loadLifecycle();
     } catch (error) {
@@ -817,8 +817,7 @@ export function DeliveryWorkbench({
                   <ShieldCheck size={22} />
                 </header>
                 <p>
-                  先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。发布后 5 秒触发首批、
-                  间隔 15 秒触发第二批；页面刷新不会丢失批次记录。
+                  先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。{localReleaseScheduleText(selectedRelease)}
                 </p>
                 <fieldset className="delivery-review-checklist" disabled={!canWrite || !!selectedReview || !!busy}>
                   <legend>工程师审阅确认（不会发布）</legend>
