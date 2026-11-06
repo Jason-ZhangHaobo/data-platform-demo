@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -18,6 +18,8 @@ import {
   Table2,
 } from "lucide-react";
 import { RealtimeWorkbench } from "./RealtimeWorkbench";
+import { createIngestionReader } from "./ingestion-read";
+import type { IngestionReadStatus } from "./ingestion-read";
 
 type Api = <T>(path: string, body?: unknown) => Promise<T>;
 type Column = {
@@ -134,7 +136,7 @@ const identityMapping = (metadata?: Metadata) =>
 export function IngestionWorkbench({
   api,
   activeModule,
-  canWrite,
+  canWrite: originalCanWrite,
   serverMysqlConfigured,
   serverMysqlSyncEnabled,
   onModuleChange,
@@ -147,6 +149,11 @@ export function IngestionWorkbench({
   onModuleChange: (module: "sources" | "sync") => void;
 }) {
   const [syncView, setSyncView] = useState<"offline" | "realtime">("offline");
+  const [catalogRead, setCatalogRead] = useState<IngestionReadStatus>({ state: "LOADING" });
+  const [previewRead, setPreviewRead] = useState<IngestionReadStatus>({ state: "LOADING" });
+  const catalogReady = catalogRead.state === "READY", previewReady = previewRead.state === "READY";
+  const canWrite = originalCanWrite && catalogReady;
+  const offlineView = activeModule === "sources" || syncView === "offline";
   const [sources, setSources] = useState<Source[]>([]),
     [tasks, setTasks] = useState<SyncTask[]>([]),
     [plans, setPlans] = useState<AgentPlan[]>([]),
@@ -185,40 +192,27 @@ export function IngestionWorkbench({
       [tasks],
     );
 
-  const reload = async () => {
-    const [nextSources, nextTasks, nextPlans, nextRows] = await Promise.all([
-      api<Source[]>("/sources"),
-      api<SyncTask[]>("/sync/tasks"),
-      api<AgentPlan[]>("/sync/agent/plans"),
-      api<Record<string, unknown>[]>("/sync/targets/raw_positions/rows").catch(
-        () => [],
-      ),
-    ]);
-    setSources(nextSources);
-    setTasks(nextTasks);
-    setPlans(nextPlans);
-    setTargetRows(nextRows);
-    if (!selectedSourceId && nextSources[0]) setSelectedSourceId(nextSources[0].id);
-    const firstSyncSource = nextSources.find(
-      (source) => source.currentMetadataId && source.supportsOfflineSync,
-    );
-    if (
-      firstSyncSource &&
-      (!taskSourceId ||
-        !nextSources.some(
-          (source) =>
-            source.id === taskSourceId &&
-            source.currentMetadataId &&
-            source.supportsOfflineSync,
-        ))
-    )
-      setTaskSourceId(firstSyncSource.id);
-    if (!selectedTaskId && nextTasks[0]) setSelectedTaskId(nextTasks[0].id);
-    if (!agentPlan && nextPlans[0]) setAgentPlan(nextPlans[0]);
-  };
+  const reader = useRef<ReturnType<typeof createIngestionReader<Source, SyncTask, AgentPlan, Record<string, unknown>>> | undefined>(undefined);
+  const reload = () => reader.current?.reload() ?? Promise.resolve(false);
   useEffect(() => {
-    reload().catch((cause) => setError(cause.message));
-  }, []);
+    const current = createIngestionReader<Source, SyncTask, AgentPlan, Record<string, unknown>>({
+    api,
+    onCatalog(result) {
+      setCatalogRead(result);
+      if (result.state !== "READY") return;
+      setSources(result.sources); setTasks(result.tasks); setPlans(result.plans);
+      setSelectedSourceId(previous => result.sources.some(source => source.id === previous) ? previous : result.sources[0]?.id ?? "");
+      const available = result.sources.filter(source => source.currentMetadataId && source.supportsOfflineSync);
+      setTaskSourceId(previous => available.some(source => source.id === previous) ? previous : available[0]?.id ?? "");
+      setSelectedTaskId(previous => result.tasks.some(task => task.id === previous) ? previous : result.tasks[0]?.id ?? "");
+      setAgentPlan(previous => previous ?? result.plans[0]);
+    },
+    onPreview(result) { setPreviewRead(result); if (result.state === "READY") setTargetRows(result.rows); },
+    });
+    reader.current = current;
+    void current.reload().catch(() => {});
+    return () => { current.close(); if (reader.current === current) reader.current = undefined; };
+  }, [api]);
   useEffect(() => {
     if (!agentPlan || !["QUEUED", "RUNNING"].includes(agentPlan.status)) return;
     const timer = setInterval(async () => {
@@ -237,6 +231,7 @@ export function IngestionWorkbench({
   }, [agentPlan?.id, agentPlan?.status]);
 
   const action = async (name: string, work: () => Promise<unknown>, message: string) => {
+    if (!canWrite || busy) return;
     setBusy(name);
     setError("");
     try {
@@ -358,10 +353,11 @@ export function IngestionWorkbench({
             <div><strong>WM</strong><span>Watermark</span></div>
             <div><strong>0</strong><span>云连接</span></div>
           </> : <>
-            <div><strong>{sources.length}</strong><span>数据源</span></div>
-            <div><strong>{tasks.length}</strong><span>同步任务</span></div>
-            <div><strong>{successfulRuns.length}</strong><span>成功运行</span></div>
-            <div><strong>{targetRows.length}</strong><span>落地行</span></div>
+            <div><strong>{catalogReady ? sources.length : "—"}</strong><span>数据源</span></div>
+            <div><strong>{catalogReady ? tasks.length : "—"}</strong><span>同步任务</span></div>
+            <div><strong>{catalogReady ? successfulRuns.length : "—"}</strong><span>成功运行</span></div>
+            <div><strong>{previewReady ? targetRows.length : "—"}</strong><span title="仅 raw_positions 的本次预览，不是全平台总行数">默认表预览行</span></div>
+            <button className="button ingestion-catalog-refresh" disabled={catalogRead.state === "LOADING" || !!busy} onClick={() => void reload().catch(() => {})}>刷新接入目录</button>
           </>}
         </div>
       </section>
@@ -397,6 +393,22 @@ export function IngestionWorkbench({
           <Radio size={16} />实时同步
         </button>
       </div>
+      {offlineView && !catalogReady && <section className={catalogRead.state === "ERROR" ? "ingestion-feedback error" : "ingestion-feedback"} role={catalogRead.state === "ERROR" ? "alert" : "status"} aria-label="接入目录读取状态">
+        {catalogRead.state === "ERROR" ? <AlertTriangle size={18}/> : <LoaderCircle className="spin" size={18}/>}
+        <div><strong>{catalogRead.state === "ERROR" ? catalogRead.loginRequired ? "登录后查看接入目录" : "接入目录尚未确认" : "正在读取数据源、离线任务与方案"}</strong>
+          <p>{catalogRead.state === "ERROR" ? catalogRead.message : "确认前不显示零项或使用旧目录操作；原表单和任务保留。"}</p>
+          <small>目录与默认表预览分别核对；仅重读，不创建资源或运行模型。</small>
+          <button className="button" disabled={catalogRead.state === "LOADING" || !!busy} onClick={() => void reload().catch(() => {})}>重新读取接入目录</button>
+        </div>
+      </section>}
+      {activeModule === "sources" && catalogReady && !previewReady && <section className="ingestion-feedback" role="status" aria-label="默认表预览读取状态">
+        {previewRead.state === "LOADING" ? <LoaderCircle className="spin" size={16}/> : <AlertTriangle size={16}/>}
+        <div><strong>接入目录已确认，默认表预览{previewRead.state === "LOADING" ? "仍在读取" : "尚未确认"}</strong>
+          <p>{previewRead.state === "ERROR" ? previewRead.message : "可以继续查看或配置目录；不会等待默认表预览。"}</p>
+          <small>仅 raw_positions 的返回行，不是落地总行数。</small>
+          <button className="button" disabled={previewRead.state === "LOADING" || !!busy} onClick={() => void reader.current?.readPreview()}>重读默认表预览</button>
+        </div>
+      </section>}
       {(notice || error) && (
         <div className={error ? "ingestion-feedback error" : "ingestion-feedback"} role={error ? "alert" : "status"}>
           {error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
@@ -404,7 +416,7 @@ export function IngestionWorkbench({
         </div>
       )}
 
-      {activeModule === "sources" ? (
+      {activeModule === "sources" ? catalogReady && (
         <>
           <div className="source-layout">
             <aside className="source-list">
@@ -472,7 +484,7 @@ export function IngestionWorkbench({
           </details>
         </>
       ) : syncView === "realtime" ? (
-        <RealtimeWorkbench api={api} canWrite={canWrite} />
+        <RealtimeWorkbench api={api} canWrite={originalCanWrite} />
       ) : (
         <>
           <section className="ingestion-agent">
@@ -481,9 +493,9 @@ export function IngestionWorkbench({
               {busy === "agent" || ["QUEUED", "RUNNING"].includes(agentPlan?.status ?? "") ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />}生成方案
             </button></div>
             {agentPlan && <div className="ingestion-agent-plan"><span className={"status-pill " + agentPlan.status.toLowerCase()}>{statusLabels[agentPlan.status] ?? agentPlan.status}</span><div><strong>{agentPlan.proposal?.name ?? "正在读取元数据"}</strong><p>{agentPlan.explanation ?? agentPlan.error ?? "生成中…"}</p>{agentPlan.proposal && <code>{agentPlan.proposal.mode} → {agentPlan.proposal.targetTable} · {agentPlan.proposal.configHash.slice(0, 12)}</code>}</div><button className="button" onClick={applyPlan} disabled={!canWrite || agentPlan.status !== "SUCCEEDED" || !!busy}><CheckCircle2 size={14} />确认创建草稿</button></div>}
-            <small>{plans.length}条Agent方案 · 不自动运行</small>
+            <small>{catalogReady ? `${plans.length}条Agent方案` : "方案目录尚未确认"} · 不自动运行</small>
           </section>
-          <div className="sync-layout">
+          {catalogReady && <><div className="sync-layout">
             <aside className="sync-task-list">
               <header><div><span className="eyebrow">OFFLINE JOBS</span><h3>同步任务</h3></div><span>{tasks.length}</span></header>
               {tasks.map((task) => <button className={task.id === selectedTaskId ? "active" : ""} key={task.id} onClick={() => setSelectedTaskId(task.id)}><GitBranch size={16} /><div><strong>{task.name}</strong><code>{task.mode} → {task.targetTable}</code></div><span className={"status-pill " + task.status.toLowerCase()}>{statusLabels[task.status] ?? task.status}</span><ChevronRight size={14} /></button>)}
@@ -504,7 +516,11 @@ export function IngestionWorkbench({
             <div><label>任务名称<input value={taskName} onChange={(event) => setTaskName(event.target.value)} /></label><label>可同步数据源<select value={taskSourceId} onChange={(event) => setTaskSourceId(event.target.value)}>{sources.filter((source) => source.currentMetadataId && source.supportsOfflineSync).map((source) => <option value={source.id} key={source.id}>{source.name} · V{source.currentRevision.revisionNumber}</option>)}</select></label><label>同步模式<select value={taskMode} onChange={(event) => setTaskMode(event.target.value)}><option value="FULL">FULL全量</option><option value="INCREMENTAL_UPSERT">{sourceForTask?.sourceType === "SERVER_MYSQL" ? "快照差异UPSERT（非CDC）" : "增量UPSERT"}</option></select></label><label>目标表<input value={targetTable} onChange={(event) => setTargetTable(event.target.value)} /></label></div>
             <footer><span>{Object.keys(identityMapping(metadataForTask)).length}个字段同名映射 · position_id主键</span><button className="button" onClick={createTask} disabled={!canWrite || !metadataForTask || !!busy}>创建版本化任务</button></footer>
           </section>
-          <section className="target-preview"><header><div><Table2 size={18} /><h3>raw_positions 实际落地结果</h3></div><span>{targetRows.length}行</span></header><div><table><thead><tr><th>持仓ID</th><th>客户</th><th>证券</th><th>类别</th><th>市值</th><th>交易日</th></tr></thead><tbody>{targetRows.map((row) => <tr key={String(row.position_id)}><td><code>{String(row.position_id)}</code></td><td>{String(row.client_id)}</td><td>{String(row.security_code)}</td><td>{String(row.asset_class)}</td><td>{String(row.market_value)}</td><td>{String(row.trade_date)}</td></tr>)}</tbody></table></div></section>
+          </>}
+          <section className="target-preview" aria-label="默认落地表预览"><header><div><Table2 size={18}/><h3>raw_positions 默认表预览</h3></div><span>{previewReady ? `${targetRows.length}行` : "行数待确认"}</span><button className="button" disabled={previewRead.state === "LOADING" || !!busy} onClick={() => void reader.current?.readPreview()}>重读默认表预览</button></header>
+            <p>仅展示此固定表的返回行，不代表所有同步目标或落地总行数。其他目标请查看所选任务的实际运行证据。</p>
+            {previewRead.state === "LOADING" ? <p role="status">正在读取默认表预览…</p> : previewRead.state === "ERROR" ? <div className="ingestion-feedback error" role="alert"><AlertTriangle size={16}/><span>默认表预览未确认：{previewRead.message}。不影响已确认的接入目录。</span></div> : <div><table><thead><tr><th>持仓ID</th><th>客户</th><th>证券</th><th>类别</th><th>市值</th><th>交易日</th></tr></thead><tbody>{targetRows.map(row => <tr key={String(row.position_id)}><td><code>{String(row.position_id)}</code></td><td>{String(row.client_id)}</td><td>{String(row.security_code)}</td><td>{String(row.asset_class)}</td><td>{String(row.market_value)}</td><td>{String(row.trade_date)}</td></tr>)}</tbody></table>{!targetRows.length && <p>本次读取未返回预览行。</p>}</div>}
+          </section>
         </>
       )}
       <footer className="ingestion-boundary"><FileSpreadsheet size={15} />{syncView === "realtime" && activeModule === "sync" ? "真实读取仓库内虚构JSONL并写入本机独立状态库；不是Kafka/Flink、真实CDC或公网流计算。" : `CSV源真实写入独立落地区；SERVER_MYSQL${serverMysqlConfigured ? serverMysqlSyncEnabled ? "可执行有界FULL/快照差异UPSERT（非CDC）" : "仅做白名单连接与元数据摘要" : "尚未配置"}；真实同VPC业务源仍需云端验收。`}</footer>
