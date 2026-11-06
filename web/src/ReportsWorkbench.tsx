@@ -358,7 +358,7 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
   );
 }
 
-function ReportWidget({ widget }: { widget: WidgetResult }) {
+export function ReportWidget({ widget }: { widget: WidgetResult }) {
   if (widget.type === "KPI")
     return <article className="report-kpi-v2"><span>{widget.title}</span><strong>{widget.value}</strong><small>{widget.aggregation}({widget.field}) · {widget.evaluatedCount}行</small></article>;
   const series = widget.series ?? [],

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { CheckCircle2, Circle, Download, FileText, LoaderCircle, Package, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { agentJourney, deliveryStageText, publicationEvidenceText, verificationPresentation } from "./agent-journey";
 import type { EvidenceReadState, TaskConsumption } from "./agent-journey";
@@ -17,6 +17,8 @@ import {publicationSelector,publicationSelectionKey,publicationReadPath,publicat
 import type {PublicationSelector} from "./publication-selection";
 import {validServiceSourceBinding,serviceSourceKey,serviceSourceScope,serviceEvidencePath,returnedPublicationMatches,localAgentPublicationPath} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
+import type {PublishedReportSource} from "./published-report-read";
+const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type Release = { id: string; status: string; health: string; sourceKind?:string; sourceRunId?:string; agentIndependentE2E?:boolean; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number };
 type Publication = { release?: Release; runs: {id:string; status:string; sequence:number; schedulerTriggered?:boolean; durationMs?:number; triggeredAt?:string; finishedAt?:string}[]; alerts:{id:string;status:string;message:string;recoveryRunId?:string}[]; events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[] };
@@ -114,6 +116,9 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const handoffCandidate:ServiceSourceBinding|undefined=publicationReady&&journey.publicationCurrent&&release&&workflow?.package&&["PRIVATE_CLOUD_TEST","LOCAL_TEST_RELEASE"].includes(workflow.publication.scope)&&
     (!cloud||selector&&publicationReleaseMatches(release,taskId,selector))?{taskId,packageDigest:workflow.package.digest,releaseId:release.id,sourceKind:manual?"MANUAL":"AGENT",scope:cloud?"PRIVATE_CLOUD_TEST":"LOCAL_TEST_ONLY",revisionId,runId}:undefined;
   const serviceHandoff=validServiceSourceBinding(handoffCandidate)?handoffCandidate:undefined,serviceHandoffKey=serviceSourceKey(serviceHandoff);
+  const reportBatchIds=batches.filter(batch=>batch.status==="SUCCEEDED"&&batch.schedulerTriggered===true).map(batch=>batch.id);
+  const reportSource:PublishedReportSource|undefined=!cloud&&publicationReady&&journey.publicationCurrent&&release&&workflow?.package&&revisionId&&runId&&reportBatchIds.length?
+    {kind:manual?"MANUAL":"AGENT",releaseId:release.id,packageDigest:workflow.package.digest,revisionId,runId,...(manual?{}:{taskId}),batchIds:reportBatchIds}:undefined;
   const showConsumption=Boolean(consumption&&serviceHandoff&&consumption.taskId===serviceHandoff.taskId&&consumption.packageDigest===serviceHandoff.packageDigest&&consumption.releaseId===serviceHandoff.releaseId&&consumption.scope===serviceSourceScope(serviceHandoff));
   activeConsumptionSource.current=serviceHandoffKey;
   useEffect(() => {
@@ -248,6 +253,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           {publication && <button className="button" onClick={() => download(`publication-${release.id.slice(0,8)}.json`,{...publication, readState:publicationRead, notice:"已读取的测试范围记录，不代表实时健康或公网验收"})}><Download size={14}/>下载发布与监控记录</button>}
         </>}
       </div>
+      {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource}/></Suspense>}
       <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务、交付包和发布版本的接口开发、测试与授权。选择实际成功发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
         {manual&&<p role="status">人工发布结果消费 · 保留原 Agent 失败及工程师接管归因，不计为 Agent 自主完成。</p>}
         {!serviceHandoff&&<p role="status">请先核对当前包的确切发布记录；未确认来源时不跳转到全项目或原 Agent 的其他结果。</p>}
