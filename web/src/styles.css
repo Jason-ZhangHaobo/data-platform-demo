@@ -4692,7 +4692,7 @@ kbd {
 }
 .asset-search-v2 {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) 150px auto;
+  grid-template-columns: auto minmax(0, 1fr) 150px auto auto;
   align-items: center;
   gap: 9px;
   padding: 11px 12px;
@@ -8018,3 +8018,9 @@ kbd {
   }
 }
 .ingestion-catalog-refresh{grid-column:1/-1;justify-self:end}
+.asset-read-scope{color:#617466;font-size:12px;line-height:1.8;overflow-wrap:anywhere}
+.asset-read-scope .button{margin-left:10px;font-size:11px}
+.asset-draft-conflict{padding:12px;border:1px solid #e5c7b6;border-radius:8px;background:#fff5ed;overflow:auto;margin:10px 0}
+.asset-draft-conflict table{width:100%;table-layout:fixed;font-size:11px}
+.asset-annotation-v2>.asset-draft-conflict{display:block}
+.asset-draft-conflict th,.asset-draft-conflict td{padding:7px;vertical-align:top;overflow-wrap:anywhere;border-bottom:1px solid #e6dcd1}

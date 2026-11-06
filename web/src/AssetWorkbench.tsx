@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createAssetReader, assetSummaryValid, assetDetailValid, assetResourcePath, annotationKey, annotationValues, annotationDirty, annotationTags, annotationReceiptMatches, reconcileAnnotation, rebaseAnnotation } from "./asset-read";
+import type { AssetCatalogRead, AssetDetailRead, AnnotationDraft, AnnotationValues } from "./asset-read";
 import {
   Activity,
   AlertTriangle,
@@ -151,7 +153,7 @@ const pending = (status?: string) =>
 
 export function AssetWorkbench({
   api,
-  canWrite,
+  canWrite: originalCanWrite,
   initialAssetId,
   handoffMessage,
 }: {
@@ -163,10 +165,14 @@ export function AssetWorkbench({
   const [assets, setAssets] = useState<Asset[]>([]),
     [metrics, setMetrics] = useState<Metric[]>([]),
     [standards, setStandards] = useState<Standard[]>([]),
-    [agentTasks, setAgentTasks] = useState<AgentTask[]>([]),
-    [detail, setDetail] = useState<AssetDetail>();
-  const [selectedId, setSelectedId] = useState(initialAssetId ?? ""),
-    [query, setQuery] = useState(""),
+    [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
+  const [catalogRead, setCatalogRead] = useState<AssetCatalogRead<Asset, Metric, Standard, AgentTask>>({ state: "LOADING", criteria: { query: "", kind: "" } });
+  const [detailRead, setDetailRead] = useState<AssetDetailRead<AssetDetail>>({ state: "EMPTY", id: "" });
+  const detail = "value" in detailRead ? detailRead.value : undefined, selectedId = detailRead.id;
+  const catalogReady = catalogRead.state === "READY", detailReady = detailRead.state === "READY" && detail?.id === selectedId;
+  const canWrite = originalCanWrite && detailReady;
+  const [knownKinds, setKnownKinds] = useState<string[]>([]);
+  const [query, setQuery] = useState(""),
     [kind, setKind] = useState(""),
     [tab, setTab] = useState<"overview" | "fields" | "lineage" | "governance">("overview"),
     [busy, setBusy] = useState(""),
@@ -179,11 +185,16 @@ export function AssetWorkbench({
   useEffect(() => {
     if (handoffMessage) setAgentMessage(handoffMessage);
   }, [handoffMessage]);
-  const [businessName, setBusinessName] = useState(""),
-    [description, setDescription] = useState(""),
-    [domain, setDomain] = useState("财富管理"),
-    [owner, setOwner] = useState("数据产品负责人"),
-    [tagText, setTagText] = useState("持仓,T+1");
+  const drafts = useRef(new Map<string, AnnotationDraft>());
+  const [annotation, setAnnotation] = useState<AnnotationDraft>();
+  const { businessName = "", description = "", domain = "", owner = "", tagText = "" } = annotation?.values ?? {};
+  const draftDirty = Boolean(annotation && annotationDirty(annotation));
+  const draftConflict = Boolean(draftDirty && detailReady && annotation && detail && annotation.key !== annotationKey(detail));
+  const reader = useRef<ReturnType<typeof createAssetReader<Asset, Metric, Standard, AgentTask, AssetDetail>> | undefined>(undefined);
+  const formsAsset = useRef("");
+  const selectionRef = useRef(initialAssetId ?? "");
+  const activeQuestion = useRef<string | undefined>(undefined);
+  activeQuestion.current = agentTask?.id;
   const [metricName, setMetricName] = useState("持仓市值"),
     [metricCode, setMetricCode] = useState("holding_market_value_v2"),
     [aggregation, setAggregation] = useState("SUM"),
@@ -195,123 +206,126 @@ export function AssetWorkbench({
     [standardField, setStandardField] = useState("security_code"),
     [semanticType, setSemanticType] = useState("SECURITY_CODE"),
     [standardDescription, setStandardDescription] = useState("虚构证券代码必须使用SEC-前缀");
+  const metricFieldsValid = Boolean(detail && (aggregation === "COUNT_ROWS" || detail.fields.some(field => field.name === metricField)) && (!groupBy || detail.fields.some(field => field.name === groupBy)));
+  const standardFieldValid = Boolean(detail?.fields.some(field => field.name === standardField));
 
   const nodeById = useMemo(
       () => new Map(detail?.lineage.nodes.map((node) => [node.id, node]) ?? []),
       [detail],
     ),
     executableAssets = assets.filter((asset) => asset.executableMetrics),
-    assetKinds = [...new Set(assets.map((asset) => asset.kind))];
-
-  const loadLists = async (search = query, filter = kind) => {
-    const params = new URLSearchParams({
-        ...(search.trim() ? { q: search.trim() } : {}),
-        ...(filter ? { kind: filter } : {}),
-      }),
-      [nextAssets, nextMetrics, nextStandards, nextTasks] = await Promise.all([
-        api<Asset[]>(`/assets${params.size ? `?${params}` : ""}`),
-        api<Metric[]>("/metrics"),
-        api<Standard[]>("/standards"),
-        api<AgentTask[]>("/assets/agent/tasks"),
-      ]);
-    setAssets(nextAssets);
-    setMetrics(nextMetrics);
-    setStandards(nextStandards);
-    setAgentTasks(nextTasks);
-    const nextSelected =
-      nextAssets.find((asset) => asset.id === selectedId)?.id ??
-      nextAssets.find((asset) => asset.id === initialAssetId)?.id ??
-      nextAssets.find((asset) => asset.id === "landing:raw_positions")?.id ??
-      nextAssets[0]?.id;
-    if (nextSelected && nextSelected !== selectedId) setSelectedId(nextSelected);
-    if (!agentTask && nextTasks[0]) setAgentTask(nextTasks[0]);
-  };
-  const loadDetail = async (id: string) => {
-    const next = await api<AssetDetail>(`/assets/${encodeURIComponent(id)}`);
-    setDetail(next);
-    setBusinessName(next.businessName);
-    setDescription(next.description);
-    setDomain(next.domain);
-    setOwner(next.owner ?? "数据产品负责人");
-    setTagText(next.tags.join(","));
-    const fieldNames = new Set(next.fields.map((field) => field.name));
-    if (fieldNames.has("market_value")) setMetricField("market_value");
-    else if (fieldNames.has("price")) setMetricField("price");
-    else setMetricField(next.fields[0]?.name ?? "");
-    if (fieldNames.has("asset_class")) setGroupBy("asset_class");
-    else setGroupBy("");
-    if (fieldNames.has("security_code")) setStandardField("security_code");
-    else setStandardField(next.fields[0]?.name ?? "");
-  };
+    assetKinds = [...new Set([...knownKinds, kind].filter(Boolean))];
+  const loadLists = (search?: string, filter?: string) => reader.current?.search(search === undefined ? undefined : { query: search, kind: filter ?? "" }) ?? Promise.resolve(false);
+  const selectAsset = (id: string) => { if (!busy) void reader.current?.select(id); };
+  function editAnnotation(field: keyof AnnotationValues, value: string) {
+    if (!detail || !originalCanWrite || busy === "annotation") return;
+    const current = reconcileAnnotation(drafts.current.get(detail.id), detail, detailReady), next = { ...current, values: { ...current.values, [field]: value } };
+    drafts.current.set(detail.id, next); setAnnotation(next);
+  }
   useEffect(() => {
-    loadLists().catch((cause) => setError((cause as Error).message));
-  }, []);
-  useEffect(() => {
-    if (selectedId)
-      loadDetail(selectedId).catch((cause) => setError((cause as Error).message));
-  }, [selectedId]);
+    const current = createAssetReader<Asset, Metric, Standard, AgentTask, AssetDetail>({ api, initialId: initialAssetId, validAsset: assetSummaryValid, validDetail: assetDetailValid, isOlder: (value, known) => (value.annotation?.revision ?? 0) < (known.annotation?.revision ?? 0),
+      onCatalog(result) {
+        setCatalogRead(result);
+        if (result.state !== "READY") return;
+        setAssets(result.assets); setMetrics(result.metrics); setStandards(result.standards); setAgentTasks(result.tasks);
+        setKnownKinds(previous => [...new Set([...previous, ...result.assets.map(asset => asset.kind)])]);
+        setAgentTask(previous => previous ?? result.tasks[0]);
+      },
+      onDetail(result) {
+        selectionRef.current = result.id;
+        setDetailRead(result);
+        if (!("value" in result) || !result.value) { setAnnotation(undefined); return; }
+        const value = result.value, draft = reconcileAnnotation(drafts.current.get(value.id), value, result.state === "READY");
+        drafts.current.set(value.id, draft); setAnnotation(draft);
+        if (formsAsset.current === value.id) return;
+        formsAsset.current = value.id;
+        const names = new Set(value.fields.map(field => field.name));
+        setMetricField(names.has("market_value") ? "market_value" : names.has("price") ? "price" : value.fields[0]?.name ?? "");
+        setGroupBy(names.has("asset_class") ? "asset_class" : "");
+        setStandardField(names.has("security_code") ? "security_code" : value.fields[0]?.name ?? "");
+      },
+    });
+    reader.current = current; void current.search();
+    return () => { current.close(); if (reader.current === current) reader.current = undefined; };
+  }, [api, initialAssetId]);
   useEffect(() => {
     if (!agentTask || !pending(agentTask.status)) return;
+    let live = true, polling = false; const id = agentTask.id;
     const timer = setInterval(async () => {
+      if (polling || activeQuestion.current !== id) return; polling = true;
       try {
-        const current = await api<AgentTask>(`/assets/agent/tasks/${agentTask.id}`);
+        const current = await api<AgentTask>(`/assets/agent/tasks/${id}`);
+        if (!live || activeQuestion.current !== id || current.id !== id) return;
         setAgentTask(current);
-        if (!pending(current.status)) setAgentTasks(await api<AgentTask[]>("/assets/agent/tasks"));
+        if (!pending(current.status)) { const tasks = await api<AgentTask[]>("/assets/agent/tasks"); if (live && activeQuestion.current === id && Array.isArray(tasks)) setAgentTasks(tasks); }
       } catch (cause) {
-        setError((cause as Error).message);
-      }
+        if (live && activeQuestion.current === id) setError((cause as Error).message);
+      } finally { polling = false; }
     }, 1000);
-    return () => clearInterval(timer);
-  }, [agentTask?.id, agentTask?.status]);
+    return () => { live = false; clearInterval(timer); };
+  }, [agentTask?.id, agentTask?.status, api]);
 
   const action = async (
     name: string,
     work: () => Promise<unknown>,
     message: string,
+    refresh: "catalog" | "history" = "catalog",
   ) => {
+    if (!originalCanWrite || busy) return;
+    const current = reader.current;
     setBusy(name);
     setError("");
     try {
       await work();
-      await loadLists();
-      if (selectedId) await loadDetail(selectedId);
+      if (reader.current !== current) return;
       setNotice(message);
+      if (refresh === "catalog") await current?.search();
+      else { const tasks = await api<AgentTask[]>("/assets/agent/tasks"); if (reader.current === current && Array.isArray(tasks)) setAgentTasks(tasks); }
     } catch (cause) {
-      setError((cause as Error).message);
+      if (reader.current === current) setError((cause as Error).message);
     } finally {
-      setBusy("");
+      if (reader.current === current) setBusy("");
     }
   };
-  const search = () =>
-    action("search", () => loadLists(query, kind), "已按实际资产字段与说明检索");
+  const search = async () => { if (busy) return; setNotice(""); if (await loadLists(query, kind)) setNotice("已按所示条件读取资产目录；详情分别核对，没有创建问答。"); };
   const askAgent = () =>
-    action(
+    catalogReady && originalCanWrite && action(
       "agent",
       async () => {
-        const task = await api<AgentTask>("/assets/agent/tasks", {
+        const current = reader.current, task = await api<AgentTask>("/assets/agent/tasks", {
           message: agentMessage,
         });
-        setAgentTask(task);
+        if (reader.current === current) { activeQuestion.current = task.id; setAgentTask(task); }
       },
       "Data Agent正在读取资产摘要和版本绑定血缘",
+      "history",
     );
   const saveAnnotation = () =>
-    detail &&
+    detail && canWrite && annotation && draftDirty && !draftConflict &&
     action(
       "annotation",
-      () =>
-        api(`/assets/${encodeURIComponent(detail.id)}/annotation`, {
-          businessName,
-          description,
-          domain,
-          owner,
+      async () => {
+        const id = detail.id, submitted = annotation, current = reader.current;
+        const result = await api<AssetDetail>(assetResourcePath(id, "annotation"), {
+          businessName: submitted.values.businessName,
+          description: submitted.values.description,
+          domain: submitted.values.domain,
+          owner: submitted.values.owner,
           classification: "INTERNAL_DEMO",
-          tags: tagText.split(",").map((item) => item.trim()).filter(Boolean),
-        }),
+          tags: annotationTags(submitted),
+        });
+        if (reader.current !== current) return;
+        if (!assetDetailValid(result, id) || !result.annotation || !annotationReceiptMatches(result, submitted)) throw Error("说明保存回执尚未确认，原草稿保留，请先重新读取详情。");
+        if (!current?.confirmDetail(id, result)) throw Error("保存版本未与当前上下文对应，原记录保留，请重新核对。");
+        if (drafts.current.get(id) === submitted) {
+          const ack = reconcileAnnotation(undefined, result);
+          drafts.current.set(id, ack); if (selectionRef.current === id) setAnnotation(ack);
+        }
+      },
       "资产说明已保存为新版本",
     );
   const createMetric = () =>
-    detail &&
+    detail && canWrite && detail.executableMetrics && (aggregation === "COUNT_ROWS" || detail.fields.some(field => field.name === metricField)) && (!groupBy || detail.fields.some(field => field.name === groupBy)) &&
     action(
       "metric",
       () =>
@@ -327,13 +341,13 @@ export function AssetWorkbench({
       "指标定义已绑定当前资产证据",
     );
   const runMetric = (id: string) =>
-    action(
+    canWrite && detail?.metrics.some(metric => metric.id === id) && action(
       `metric-run:${id}`,
       () => api(`/metrics/${id}/run`, {}),
       "指标已在实际资产行上执行并保存结果摘要",
     );
   const createStandard = () =>
-    detail &&
+    detail && canWrite && detail.executableMetrics && detail.fields.some(field => field.name === standardField) &&
     action(
       "standard",
       () =>
@@ -348,7 +362,7 @@ export function AssetWorkbench({
       "数据标准已绑定当前字段",
     );
   const checkStandard = (id: string) =>
-    action(
+    canWrite && detail?.standards.some(standard => standard.id === id) && action(
       `standard-check:${id}`,
       () => api(`/standards/${id}/check`, {}),
       "标准已在实际资产行上检查",
@@ -358,39 +372,44 @@ export function AssetWorkbench({
     <div className="asset-workbench-v2">
       <section className="asset-hero-v2">
         <div><span className="eyebrow">ASSET GRAPH · M4C</span><h2>资产不是登记表，而是可验证的关系网络</h2><p>目录由真实源版本、同步配置、实时状态、发布批次和数据服务关系生成；业务说明可版本化补充。</p></div>
-        <div className="asset-kpis-v2"><div><strong>{assets.length}</strong><span>当前资产</span></div><div><strong>{detail?.lineage.edges.length ?? 0}</strong><span>关联血缘</span></div><div><strong>{metrics.length}</strong><span>指标</span></div><div><strong>{standards.length}</strong><span>标准</span></div></div>
+        <div className="asset-kpis-v2"><div><strong>{catalogReady ? assets.length : "—"}</strong><span>本次检索资产</span></div><div><strong>{detailReady ? detail?.lineage.edges.length : "—"}</strong><span>所选资产血缘</span></div><div><strong>{catalogReady ? metrics.length : "—"}</strong><span>项目指标</span></div><div><strong>{catalogReady ? standards.length : "—"}</strong><span>项目标准</span></div></div>
       </section>
 
       <form className="asset-search-v2" onSubmit={(event) => { event.preventDefault(); search(); }}>
         <Search size={17} />
-        <input aria-label="搜索数据资产" placeholder="搜索业务名称、表、字段、标签，例如 market_value" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <input aria-label="搜索数据资产" maxLength={500} placeholder="搜索业务名称、表、字段、标签，例如 market_value" value={query} onChange={(event) => setQuery(event.target.value)} />
         <select aria-label="资产类型" value={kind} onChange={(event) => setKind(event.target.value)}><option value="">全部类型</option>{assetKinds.map((item) => <option key={item} value={item}>{kindLabels[item] ?? item}</option>)}</select>
-        <button className="button primary" disabled={!!busy}>{busy === "search" ? <LoaderCircle className="spin" size={15} /> : <FileSearch size={15} />}搜索</button>
+        <button className="button primary" disabled={!!busy}>{catalogRead.state === "LOADING" ? <LoaderCircle className="spin" size={15} /> : <FileSearch size={15} />}搜索</button>
+        <button className="button" type="button" disabled={!!busy||catalogRead.state==="LOADING"} onClick={()=>void loadLists()}>刷新当前检索</button>
       </form>
+      <p className="asset-read-scope" role="status">{catalogReady?"已应用条件":"本次读取条件"}：{catalogRead.criteria.query||"全部关键词"} · {(kindLabels[catalogRead.criteria.kind]??catalogRead.criteria.kind)||"全部类型"}。{(query.trim()!==catalogRead.criteria.query||kind!==catalogRead.criteria.kind)&&"输入框的新条件尚未应用。"}</p>
+      {!catalogReady&&<section className={catalogRead.state==="ERROR"?"ingestion-feedback error":"ingestion-feedback"} role={catalogRead.state==="ERROR"?"alert":"status"} aria-label="资产目录读取状态"><div><strong>{catalogRead.state==="ERROR"?catalogRead.loginRequired?"登录后查看项目资产":"资产目录尚未确认":"正在读取当前条件的资产目录"}</strong><p>{catalogRead.state==="ERROR"?catalogRead.message:"读取完成前不显示零项或空结果。"}</p><small>详情与原问答分别核对；重读不调用模型或创建资源。</small><button className="button" disabled={!!busy||catalogRead.state==="LOADING"} onClick={()=>void loadLists()}>重新读取资产目录</button></div></section>}
 
       {(notice || error) && <div className={error ? "ingestion-feedback error" : "ingestion-feedback"} role={error ? "alert" : "status"}>{error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}{error || notice}</div>}
 
       <section className="asset-agent-v2">
         <header><div className="asset-agent-icon-v2"><Bot size={20} /></div><div><span className="eyebrow">DATA AGENT · GROUNDED DISCOVERY</span><h3>找数据、解释口径、看下游影响</h3><p>模型只接收资产摘要、版本绑定关系和已检查的契约摘要；引用未知资产即失败，不读取业务行。</p></div></header>
-        <div className="asset-agent-compose-v2"><textarea aria-label="向Data Agent询问数据资产" rows={2} value={agentMessage} onChange={(event) => setAgentMessage(event.target.value)} /><button className="button primary" onClick={askAgent} type="button" disabled={!canWrite || !!busy || pending(agentTask?.status)}>{busy === "agent" || pending(agentTask?.status) ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />}询问资产 Agent</button></div>
-        {agentTask && <div className="asset-agent-answer-v2"><span className={`status-pill ${agentTask.status.toLowerCase()}`}>{statusLabels[agentTask.status] ?? agentTask.status}</span><div><strong>{agentTask.insight?.answer ?? agentTask.error ?? "正在分析资产关系…"}</strong>{agentTask.insight?.caveats.map((item) => <p key={item}>边界：{item}</p>)}{agentTask.usage?.total_tokens && <small>{agentTask.model} · {agentTask.usage.total_tokens} Token</small>}</div><div className="asset-citations-v2">{agentTask.insight?.assetIds.map((id) => <button type="button" key={id} onClick={() => { setSelectedId(id); setTab("lineage"); }}>{id}<ChevronRight size={12} /></button>)}</div></div>}
-        <small>{agentTasks.length}次受治理问答 · 不自动修改资产</small>
+        <div className="asset-agent-compose-v2"><textarea aria-label="向Data Agent询问数据资产" rows={2} readOnly={!originalCanWrite} value={agentMessage} onChange={(event) => setAgentMessage(event.target.value)} /><button className="button primary" onClick={askAgent} type="button" disabled={!originalCanWrite || !catalogReady || !!busy || pending(agentTask?.status)}>{busy === "agent" || pending(agentTask?.status) ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />}询问资产 Agent</button></div>
+        {agentTask && <div className="asset-agent-answer-v2"><span className={`status-pill ${agentTask.status.toLowerCase()}`}>{statusLabels[agentTask.status] ?? agentTask.status}</span><div><small>原问题：{agentTask.message} · 不随本次检索重新生成</small><strong>{agentTask.insight?.answer ?? agentTask.error ?? "正在分析资产关系…"}</strong>{agentTask.insight?.caveats.map((item) => <p key={item}>边界：{item}</p>)}{agentTask.usage?.total_tokens && <small>{agentTask.model} · {agentTask.usage.total_tokens} Token</small>}</div><div className="asset-citations-v2">{agentTask.insight?.assetIds.map((id) => <button type="button" disabled={!!busy} key={id} onClick={() => { selectAsset(id); setTab("lineage"); }}>{id}<ChevronRight size={12} /></button>)}</div></div>}
+        <small>{catalogReady?`${agentTasks.length}次受治理问答`:"问答目录尚未确认"} · 不自动修改资产</small>
       </section>
 
       <div className="asset-main-v2">
         <aside className="asset-catalog-v2">
-          <header><div><span className="eyebrow">CATALOG</span><h3>资产目录</h3></div><span>{assets.length}</span></header>
-          {assets.map((asset) => <button key={asset.id} className={asset.id === selectedId ? "active" : ""} onClick={() => setSelectedId(asset.id)}><Database size={16} /><div><strong>{asset.businessName}</strong><code>{asset.name}</code><small>{kindLabels[asset.kind] ?? asset.kind} · {asset.fields.length}字段</small></div><span className={`status-pill ${asset.status.toLowerCase()}`}>{statusLabels[asset.status] ?? asset.status}</span></button>)}
-          {!assets.length && <div className="ingestion-empty"><FileSearch size={25} /><p>没有符合条件的资产。</p></div>}
+          <header><div><span className="eyebrow">CATALOG</span><h3>资产目录</h3></div><span>{catalogReady?assets.length:"—"}</span></header>
+          {catalogReady&&assets.map((asset) => <button disabled={!!busy} key={asset.id} className={asset.id === selectedId ? "active" : ""} onClick={() => selectAsset(asset.id)}><Database size={16} /><div><strong>{asset.businessName}</strong><code>{asset.name}</code><small>{kindLabels[asset.kind] ?? asset.kind} · {asset.fields.length}字段</small></div><span className={`status-pill ${asset.status.toLowerCase()}`}>{statusLabels[asset.status] ?? asset.status}</span></button>)}
+          {!catalogReady?<div className="ingestion-empty"><FileSearch size={25}/><p>目录尚未确认，请按上方状态重新读取。</p></div>:!assets.length&&<div className="ingestion-empty"><FileSearch size={25} /><p>没有符合已应用条件的资产。</p></div>}
         </aside>
         <section className="asset-detail-v2">
+          {detailRead.state!=="READY"&&detailRead.state!=="EMPTY"&&<div className={detailRead.state==="ERROR"?"ingestion-feedback error":"ingestion-feedback"} role={detailRead.state==="ERROR"?"alert":"status"} aria-label="资产详情读取状态"><div><strong>{detailRead.state==="ERROR"?"资产详情尚未确认":"正在读取所选资产详情"}</strong><p>{detailRead.state==="ERROR"?detailRead.message:detailRead.id}</p>{detail&&<small>显示上次已读快照；本次读取未确认，不能保存或执行。未保存的说明保留。</small>}<button className="button" disabled={!!busy||detailRead.state==="LOADING"} onClick={()=>void reader.current?.refreshDetail()}>重新读取原资产</button></div></div>}
+          {detail&&<p className="asset-read-scope">详情定位：{detail.id} · 已读说明V{detail.annotation?.revision??0}。{!catalogReady?"目录尚未确认，详情单独核对。":!assets.some(asset=>asset.id===detail.id)?"此资产不在当前检索结果中，来自原定位。":"属于当前检索结果。"}<button className="button" disabled={!!busy||detailRead.state==="LOADING"} onClick={()=>void reader.current?.refreshDetail()}>刷新所选详情</button></p>}
           {detail ? <>
             <header className="asset-detail-head-v2"><div><span className="eyebrow">{kindLabels[detail.kind] ?? detail.kind} · {detail.system}</span><h3>{detail.businessName}</h3><code>{detail.id}</code></div><div><span className={`status-pill ${detail.status.toLowerCase()}`}>{statusLabels[detail.status] ?? detail.status}</span><small>evidence {detail.evidenceHash.slice(0, 12)}</small></div></header>
             <div className="asset-tabs-v2" role="tablist" aria-label="资产详情视图">{[["overview", "概览"], ["fields", `字段 ${detail.fields.length}`], ["lineage", `血缘 ${detail.lineage.edges.length}`], ["governance", "指标、标准与契约"]].map(([id, label]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id as typeof tab)}>{label}</button>)}</div>
             {tab === "overview" && <div className="asset-overview-v2">
               <div className="asset-proof-v2"><div><span>真实行数</span><strong>{detail.rowCount ?? "—"}</strong></div><div><span>业务域</span><strong>{detail.domain}</strong></div><div><span>责任人</span><strong>{detail.owner ?? "待补充"}</strong></div><div><span>说明版本</span><strong>V{detail.annotation?.revision ?? 0}</strong></div></div>
               <article className="asset-description-v2"><Layers3 size={18} /><div><strong>{detail.description}</strong><p>{detail.tags.join(" · ")}</p></div></article>
-              <details className="asset-annotation-v2"><summary><Tag size={14} />编辑业务说明</summary><div><label>业务名称<input value={businessName} onChange={(event) => setBusinessName(event.target.value)} /></label><label>业务域<input value={domain} onChange={(event) => setDomain(event.target.value)} /></label><label>负责人<input value={owner} onChange={(event) => setOwner(event.target.value)} /></label><label>标签<input value={tagText} onChange={(event) => setTagText(event.target.value)} /></label><label className="wide">说明<textarea rows={2} value={description} onChange={(event) => setDescription(event.target.value)} /></label><button className="button" onClick={saveAnnotation} disabled={!canWrite || !!busy}><Save size={14} />保存新版本</button></div></details>
+              <details className="asset-annotation-v2"><summary><Tag size={14} />编辑业务说明{draftDirty?" · 有本页草稿":""}</summary>{draftDirty&&<p role="status">本页说明草稿基于已读V{annotation?.revision}；切换资产和重读不会覆盖，尚未保存。</p>}{draftConflict&&annotation&&<div className="asset-draft-conflict" role="alert"><strong>新读取版本与草稿基线不同，先核对再保存。</strong><table><thead><tr><th>字段</th><th>草稿基线</th><th>本次读取</th><th>本页编辑</th></tr></thead><tbody>{(Object.keys(annotation.values) as (keyof AnnotationValues)[]).map(field=><tr key={field}><th>{{businessName:"业务名称",description:"说明",domain:"业务域",owner:"负责人",tagText:"标签"}[field]}</th><td>{annotation.base[field]}</td><td>{annotationValues(detail)[field]}</td><td>{annotation.values[field]}</td></tr>)}</tbody></table><button className="button" disabled={!originalCanWrite||!detailReady||!!busy} onClick={()=>{const next=rebaseAnnotation(annotation,detail);drafts.current.set(detail.id,next);setAnnotation(next);}}>审阅后沿用当前已读版本</button></div>}<div><label>业务名称<input readOnly={!originalCanWrite||busy==="annotation"} value={businessName} onChange={event=>editAnnotation("businessName",event.target.value)} /></label><label>业务域<input readOnly={!originalCanWrite||busy==="annotation"} value={domain} onChange={event=>editAnnotation("domain",event.target.value)} /></label><label>负责人<input readOnly={!originalCanWrite||busy==="annotation"} value={owner} onChange={event=>editAnnotation("owner",event.target.value)} /></label><label>标签<input readOnly={!originalCanWrite||busy==="annotation"} value={tagText} onChange={event=>editAnnotation("tagText",event.target.value)} /></label><label className="wide">说明<textarea readOnly={!originalCanWrite||busy==="annotation"} rows={2} value={description} onChange={event=>editAnnotation("description",event.target.value)} /></label><button className="button" onClick={saveAnnotation} disabled={!canWrite || !draftDirty || draftConflict || !!busy}><Save size={14} />保存新版本</button></div></details>
             </div>}
             {tab === "fields" && <div className="asset-fields-v2"><table><thead><tr><th>#</th><th>字段</th><th>类型</th><th>可空</th><th>基数</th></tr></thead><tbody>{detail.fields.map((field, index) => <tr key={field.name}><td>{index + 1}</td><td><code>{field.name}</code></td><td>{field.type}</td><td>{field.nullable ? "是" : "否"}</td><td>{field.distinctCount ?? "—"}</td></tr>)}</tbody></table></div>}
             {tab === "lineage" && <div className="asset-lineage-v2">
@@ -400,8 +419,8 @@ export function AssetWorkbench({
             {tab === "governance" && <div className="asset-governance-v2">
               {!detail.executableMetrics && <div className="lineage-boundary-v2"><AlertTriangle size={16} /><div><strong>该资产首版只读</strong><p>指标与标准执行目前只对有实际本机行数据的落地表和实时状态表开放。</p></div></div>}
               <div className="governance-columns-v2">
-                <section><header><div><Gauge size={17} /><h4>指标定义</h4></div><span>{detail.metrics.length}</span></header>{detail.metrics.map((metric) => <article key={metric.id}><div><strong>{metric.name}</strong><code>{metric.aggregation}({metric.field ?? "*"}){metric.groupBy ? ` BY ${metric.groupBy}` : ""}</code><p>{metric.definition}</p></div><button className="button" onClick={() => runMetric(metric.id)} disabled={!canWrite || !!busy}><Play size={13} />执行</button>{metric.runs[0] && <div className="governance-result-v2"><CheckCircle2 size={13} />{metric.runs[0].values.map((value) => `${value.group}:${value.value}`).join(" · ")}</div>}</article>)}{detail.executableMetrics && <details><summary>新建指标</summary><div className="governance-form-v2"><label>名称<input value={metricName} onChange={(event) => setMetricName(event.target.value)} /></label><label>代码<input value={metricCode} onChange={(event) => setMetricCode(event.target.value)} /></label><label>聚合<select value={aggregation} onChange={(event) => setAggregation(event.target.value)}><option>SUM</option><option>COUNT_DISTINCT</option><option>COUNT_ROWS</option></select></label><label>字段<select value={metricField} onChange={(event) => setMetricField(event.target.value)}>{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label>分组<select value={groupBy} onChange={(event) => setGroupBy(event.target.value)}><option value="">不分组</option>{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label className="wide">口径<input value={metricDefinition} onChange={(event) => setMetricDefinition(event.target.value)} /></label><button className="button" onClick={createMetric} disabled={!canWrite || !!busy}><Sparkles size={13} />创建指标</button></div></details>}</section>
-                <section><header><div><ShieldCheck size={17} /><h4>数据标准</h4></div><span>{detail.standards.length}</span></header>{detail.standards.map((standard) => <article key={standard.id}><div><strong>{standard.name}</strong><code>{standard.field} · {standard.semanticType}</code><p>{standard.description}</p></div><button className="button" onClick={() => checkStandard(standard.id)} disabled={!canWrite || !!busy}><Activity size={13} />检查</button>{standard.checks[0] && <div className={`governance-result-v2 ${standard.checks[0].status.toLowerCase()}`}>{standard.checks[0].status === "PASSED" ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}{standard.checks[0].passedCount}/{standard.checks[0].evaluatedCount}通过</div>}</article>)}{detail.executableMetrics && <details><summary>新建标准</summary><div className="governance-form-v2"><label>名称<input value={standardName} onChange={(event) => setStandardName(event.target.value)} /></label><label>代码<input value={standardCode} onChange={(event) => setStandardCode(event.target.value)} /></label><label>字段<select value={standardField} onChange={(event) => setStandardField(event.target.value)}>{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label>语义<select value={semanticType} onChange={(event) => setSemanticType(event.target.value)}><option>SECURITY_CODE</option><option>CLIENT_ID</option><option>DECIMAL_18_2</option><option>TRADE_DATE</option></select></label><label className="wide">说明<input value={standardDescription} onChange={(event) => setStandardDescription(event.target.value)} /></label><button className="button" onClick={createStandard} disabled={!canWrite || !!busy}><Network size={13} />创建标准</button></div></details>}</section>
+                <section><header><div><Gauge size={17} /><h4>指标定义</h4></div><span>{detail.metrics.length}</span></header>{detail.metrics.map((metric) => <article key={metric.id}><div><strong>{metric.name}</strong><code>{metric.aggregation}({metric.field ?? "*"}){metric.groupBy ? ` BY ${metric.groupBy}` : ""}</code><p>{metric.definition}</p></div><button className="button" onClick={() => runMetric(metric.id)} disabled={!canWrite || !!busy}><Play size={13} />执行</button>{metric.runs[0] && <div className="governance-result-v2"><CheckCircle2 size={13} />{metric.runs[0].values.map((value) => `${value.group}:${value.value}`).join(" · ")}</div>}</article>)}{detail.executableMetrics && <details><summary>新建指标</summary><div className="governance-form-v2"><label>名称<input value={metricName} onChange={(event) => setMetricName(event.target.value)} /></label><label>代码<input value={metricCode} onChange={(event) => setMetricCode(event.target.value)} /></label><label>聚合<select value={aggregation} onChange={(event) => setAggregation(event.target.value)}><option>SUM</option><option>COUNT_DISTINCT</option><option>COUNT_ROWS</option></select></label><label>字段<select value={metricField} onChange={(event) => setMetricField(event.target.value)}>{!detail.fields.some(field=>field.name===metricField)&&<option value={metricField}>原字段待重新选择：{metricField||"未选择"}</option>}{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label>分组<select value={groupBy} onChange={(event) => setGroupBy(event.target.value)}><option value="">不分组</option>{groupBy&&!detail.fields.some(field=>field.name===groupBy)&&<option value={groupBy}>原分组待重新选择：{groupBy}</option>}{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label className="wide">口径<input value={metricDefinition} onChange={(event) => setMetricDefinition(event.target.value)} /></label><button className="button" onClick={createMetric} disabled={!canWrite || !metricFieldsValid || !!busy}><Sparkles size={13} />创建指标</button></div></details>}</section>
+                <section><header><div><ShieldCheck size={17} /><h4>数据标准</h4></div><span>{detail.standards.length}</span></header>{detail.standards.map((standard) => <article key={standard.id}><div><strong>{standard.name}</strong><code>{standard.field} · {standard.semanticType}</code><p>{standard.description}</p></div><button className="button" onClick={() => checkStandard(standard.id)} disabled={!canWrite || !!busy}><Activity size={13} />检查</button>{standard.checks[0] && <div className={`governance-result-v2 ${standard.checks[0].status.toLowerCase()}`}>{standard.checks[0].status === "PASSED" ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}{standard.checks[0].passedCount}/{standard.checks[0].evaluatedCount}通过</div>}</article>)}{detail.executableMetrics && <details><summary>新建标准</summary><div className="governance-form-v2"><label>名称<input value={standardName} onChange={(event) => setStandardName(event.target.value)} /></label><label>代码<input value={standardCode} onChange={(event) => setStandardCode(event.target.value)} /></label><label>字段<select value={standardField} onChange={(event) => setStandardField(event.target.value)}>{!standardFieldValid&&<option value={standardField}>原字段待重新选择：{standardField||"未选择"}</option>}{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label>语义<select value={semanticType} onChange={(event) => setSemanticType(event.target.value)}><option>SECURITY_CODE</option><option>CLIENT_ID</option><option>DECIMAL_18_2</option><option>TRADE_DATE</option></select></label><label className="wide">说明<input value={standardDescription} onChange={(event) => setStandardDescription(event.target.value)} /></label><button className="button" onClick={createStandard} disabled={!canWrite || !standardFieldValid || !!busy}><Network size={13} />创建标准</button></div></details>}</section>
               </div>
               <ContractsPanel api={api} canWrite={canWrite} asset={detail} />
             </div>}

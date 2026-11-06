@@ -243,7 +243,7 @@ test("CLI covers the shared V2 operation contract without putting app tokens in 
     ),
     0,
   );
-  assert.equal(requests[4].path, "/assets/landing%3Araw_positions/lineage");
+  assert.equal(requests[4].path, "/assets/landing:raw_positions/lineage");
   assert.equal(
     await runV2Cli(
       [
