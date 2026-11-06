@@ -64,10 +64,17 @@ export class ReportDataStore {
     this.mutationListener = listener;
   }
 
-  materialize(assetId, rows, createdAt) {
+  materialize(assetId, rows, createdAt, fixedId) {
     const normalized = structuredClone(rows),
       contentHash = stableHash(normalized),
-      id = randomUUID();
+      id = fixedId ?? randomUUID();
+    const existing = this.db.prepare("SELECT id FROM report_snapshots WHERE id=?").get(id);
+    if (existing) {
+      const prior = this.read(id);
+      if (prior.assetId !== assetId || prior.contentHash !== contentHash)
+        throw fail(409, "原快照编号对应不同来源或内容，未覆盖", "REPORT_SNAPSHOT_CONFLICT");
+      return { id: prior.id, assetId, contentHash, rowCount: prior.rowCount, createdAt: prior.createdAt };
+    }
     this.db
       .prepare("INSERT INTO report_snapshots VALUES(?,?,?,?,?,?)")
       .run(
@@ -103,11 +110,12 @@ export class ReportDataStore {
 }
 
 export class ReportManager {
-  constructor({ store, reportStore, assets, project, now = () => Date.now() }) {
+  constructor({ store, reportStore, assets, project, resolvePublishedSource, now = () => Date.now() }) {
     this.store = store;
     this.reportStore = reportStore;
     this.assets = assets;
     this.project = project;
+    this.resolvePublishedSource = resolvePublishedSource;
     this.now = now;
   }
 
@@ -131,8 +139,8 @@ export class ReportManager {
     };
   }
 
-  createDataset(input) {
-    const { asset } = this.assets.reportRows(text(input.assetId, "资产编号", 4, 160)),
+  createDataset(input, { publishedSource, actorId } = {}) {
+    const { asset } = publishedSource ? this.resolvePublishedSource(publishedSource, actorId) : this.assets.reportRows(text(input.assetId, "资产编号", 4, 160)),
       fields = normalizeFields(input.fields, asset.fields.map((field) => field.name)),
       code = identifier(input.code, "数据集代码");
     if (
@@ -148,12 +156,13 @@ export class ReportManager {
       fields,
       status: "DRAFT",
       actualSnapshot: false,
+      ...(publishedSource ? { publishedSource, sourceActorId: actorId } : {}),
     });
   }
 
-  refreshDataset(id) {
+  refreshDataset(id, { fixedSnapshotId } = {}) {
     const dataset = this.#dataset(id),
-      { asset, rows } = this.assets.reportRows(dataset.assetId),
+      { asset, rows } = dataset.publishedSource ? this.resolvePublishedSource(dataset.publishedSource, dataset.sourceActorId) : this.assets.reportRows(dataset.assetId),
       projected = rows.map((row) =>
         Object.fromEntries(dataset.fields.map((field) => [field, row[field]])),
       ),
@@ -161,6 +170,7 @@ export class ReportManager {
         asset.id,
         projected,
         new Date(this.now()).toISOString(),
+        fixedSnapshotId,
       ),
       snapshot = this.store.create("report_snapshot", this.project, {
         datasetId: dataset.id,
@@ -395,7 +405,8 @@ export class ReportManager {
   #normalizeReport(input) {
     const dataset = this.#dataset(text(input.datasetId, "数据集编号", 3, 80)),
       detail = this.datasetDetail(dataset.id);
-    if (!detail.currentSnapshot || detail.status !== "READY")
+    const snapshot = input.datasetSnapshotId === undefined ? detail.currentSnapshot : detail.snapshots.find(item => item.id === input.datasetSnapshotId);
+    if (!snapshot || snapshot.status !== "READY" || detail.status !== "READY")
       throw fail(409, "请先刷新数据集快照", "REPORT_DATASET_NOT_READY");
     if (!Array.isArray(input.widgets) || !input.widgets.length || input.widgets.length > 8)
       throw fail(400, "报表必须包含1—8个组件", "INVALID_REPORT_WIDGETS");
@@ -406,7 +417,7 @@ export class ReportManager {
       throw fail(400, "报表组件ID不能重复", "DUPLICATE_WIDGET_ID");
     const config = {
       datasetId: dataset.id,
-      datasetSnapshotId: detail.currentSnapshot.id,
+      datasetSnapshotId: snapshot.id,
       widgets,
       description: text(input.description, "报表说明", 4, 500),
     };

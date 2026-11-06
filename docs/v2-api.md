@@ -285,10 +285,13 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /security/agent/plans/:id/apply | 空对象 | 人工应用为策略V1，不查询或审批 |
 | POST /security/agent/plans/:id/cancel | 空对象 | 取消生成并保留记录 |
 | GET /reports/overview | 无 | 数据集、就绪快照、报表和实际运行汇总 |
+| POST /reports/published | 名称、确切发布来源 + UUID幂等键 | 本机实际物化／聚合，保存可恢复请求；不运行模型或Spark |
+| GET /reports/published/requests/:requestId | 原UUID请求编号 | 仅本账号只读恢复原请求；未知结果不新建 |
+| POST /reports/published/:id/advance | 空对象 | 续接原报表任务，复用已完成步骤 |
 | GET/POST /reports/datasets | 列表或名称/代码/资产/字段 | 创建数据集草稿，不复制业务行 |
 | GET /reports/datasets/:id | 无 | 数据集与全部不可变快照摘要 |
 | POST /reports/datasets/:id/refresh | 空对象 + 幂等键 | 从实际资产物化独立快照并绑定证据摘要 |
-| GET/POST /reports | 列表或名称/代码/数据集/组件/说明 | 创建固定当前快照的报表V1 |
+| GET/POST /reports | 列表或名称/代码/数据集/组件/说明；可指定同数据集datasetSnapshotId | 创建固定所选快照的报表V1，未指定时固定当前快照 |
 | GET /reports/:id | 无 | 当前/历史版本与全部聚合运行 |
 | POST /reports/:id/versions | 组件/说明 + 幂等键 | 创建固定当前数据集快照的新版本 |
 | POST /reports/:id/run | 空对象 + 幂等键 | 实际执行KPI/BAR/PIE受限聚合并保存摘要 |

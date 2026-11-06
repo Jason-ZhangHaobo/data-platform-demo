@@ -111,6 +111,8 @@ import { AssetCatalogManager } from "./assets.mjs";
 import { QualityManager } from "./quality.mjs";
 import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
+import {resolvePublishedReportSource} from './published-report-source.mjs';
+import {createPublishedReportWorkflow} from './published-report-workflow.mjs';
 import { OperationsManager } from "./operations.mjs";
 import { AuthManager } from "./auth.mjs";
 import { DataContractManager } from "./contracts.mjs";
@@ -1056,8 +1058,11 @@ export function createV2Server(options = {}) {
     reportStore,
     assets,
     project: PROJECT,
+    resolvePublishedSource: (source, actorId) => resolvePublishedReportSource({store, project:PROJECT, source, actorId}),
     now: options.now,
   });
+  const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,
+    resolveSource:(source,actorId)=>resolvePublishedReportSource({store,project:PROJECT,source,actorId}),afterStep:options.publishedReportAfterStep});
   const reportPlanner =
     options.reportPlanner ??
     (async (input) => {
@@ -2709,6 +2714,17 @@ export function createV2Server(options = {}) {
       }
       if (path === "/api/v2/reports/overview" && method === "GET")
         return json(res, 200, reports.overview());
+      const reportCreation=path.match(/^\/api\/v2\/reports\/published(?:\/(requests)\/([a-f0-9-]{36})|\/([a-f0-9-]{36})\/(advance))?$/);
+      if(reportCreation){
+        if(!local)throw fail(403,'确切发布报表创建尚只在本机开发边界开放');
+        const actorId=auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
+        if(method==='POST'&&!reportCreation[1]&&!reportCreation[3]){
+          const body=await readBody(req),result=publishedReports.submit(body,actorId,req.headers['idempotency-key']);
+          return json(res,result.status==='SUCCEEDED'?200:202,result);
+        }
+        if(method==='GET'&&reportCreation[1])return json(res,200,publishedReports.lookup(reportCreation[2],actorId));
+        if(method==='POST'&&reportCreation[4]){await readBody(req);const result=publishedReports.advance(reportCreation[3],actorId);return json(res,result.status==='SUCCEEDED'?200:202,result);}
+      }
       if (path === "/api/v2/reports/datasets" && method === "GET")
         return json(res, 200, reports.listDatasets());
       if (path === "/api/v2/reports/datasets" && method === "POST") {
@@ -2734,7 +2750,8 @@ export function createV2Server(options = {}) {
         if (method === "GET" && !action) return json(res, 200, dataset);
         if (method === "POST" && action === "refresh") {
           await readBody(req);
-          const asset = assets.detail(dataset.assetId),
+          const boundSource=dataset.publishedSource?resolvePublishedReportSource({store,project:PROJECT,source:dataset.publishedSource,actorId:auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer'}):undefined;
+          const asset = boundSource?.asset??assets.detail(dataset.assetId),
             key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               `${PROJECT}:report-dataset-refresh:${dataset.id}:${key}`,
