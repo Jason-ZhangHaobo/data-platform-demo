@@ -6739,9 +6739,28 @@ kbd {
 .reports-canvas-v2 {
   padding: 18px;
 }
+.reports-canvas-v2 > header > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
 .reports-canvas-v2 > header > div:last-child {
   display: flex;
   gap: 7px;
+  flex: 0 0 auto;
+}
+.reports-canvas-v2 > header .button {
+  white-space: nowrap;
+}
+.report-template-notes-v2 {
+  padding: 10px;
+  border-radius: 7px;
+  background: #f4f7ef;
+  color: #52684e;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.report-template-notes-v2 p {
+  margin: 6px 0 0;
 }
 .reports-proof-v2 {
   display: grid;

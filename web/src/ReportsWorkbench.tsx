@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { securitiesReportTemplate } from "./report-template";
 import {
   AlertTriangle,
   BarChart3,
@@ -139,11 +140,11 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
     [error, setError] = useState("");
   const [datasetName, setDatasetName] = useState("证券持仓报表数据集"),
     [datasetCode, setDatasetCode] = useState("holdings_report_dataset_review"),
-    [assetId, setAssetId] = useState("landing:raw_positions"),
+    [assetId, setAssetId] = useState(""),
     [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [reportName, setReportName] = useState("财富顾问持仓结构报告"),
     [reportCode, setReportCode] = useState("advisor_holdings_report_review"),
-    [reportDescription, setReportDescription] = useState("展示持仓市值、证券数量、资产类别和行业分布");
+    [reportDescription, setReportDescription] = useState("按数据集实际字段生成证券资产聚合报表；缺失指标不生成，运行前请确认业务口径与数据粒度");
   const [agentMessage, setAgentMessage] = useState(
       "基于已就绪的证券持仓数据集，生成包含持仓市值、证券数量、资产类别分布和行业分布的聚合报表草稿，不运行、不导出",
     ),
@@ -234,20 +235,8 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
       () => api(`/reports/datasets/${id}/refresh`, {}),
       "实际资产行已物化为独立不可变快照",
     );
-  const widgetsFor = (dataset?: Dataset) => {
-    const fields = new Set(dataset?.fields ?? []);
-    if (fields.has("market_value"))
-      return [
-        { id: "holding_value", type: "KPI", title: "持仓市值", aggregation: "SUM", field: "market_value" },
-        { id: "security_count", type: "KPI", title: "证券数量", aggregation: "COUNT_DISTINCT", field: "security_code" },
-        { id: "asset_class_distribution", type: "PIE", title: "资产类别分布", aggregation: "SUM", field: "market_value", dimension: "asset_class" },
-        { id: "industry_distribution", type: "BAR", title: "行业分布", aggregation: "SUM", field: "market_value", dimension: "industry" },
-      ];
-    return [
-      { id: "total_assets", type: "KPI", title: "客户总资产", aggregation: "SUM", field: "total_assets" },
-      { id: "client_assets", type: "BAR", title: "客户资产分布", aggregation: "SUM", field: "total_assets", dimension: "client_id" },
-    ];
-  };
+  const reportTemplate = securitiesReportTemplate(selectedDataset?.fields),
+    widgetsFor = (dataset?: Dataset) => securitiesReportTemplate(dataset?.fields).widgets;
   const createReport = () =>
     selectedDataset &&
     action(
@@ -289,7 +278,7 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
       anchor.download = exported.fileName;
       anchor.click();
       URL.revokeObjectURL(url);
-      setNotice("已导出聚合结果CSV，不包含客户或持仓明细行");
+      setNotice("已导出聚合结果CSV，客户维度已脱敏，不包含原始持仓明细行");
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -361,7 +350,7 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
         <div className="reports-builder-steps-v2">
           <fieldset><legend>1. 数据集草稿</legend><label>可报表资产<select value={assetId} onChange={(event) => setAssetId(event.target.value)}>{reportableAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.businessName} · {asset.rowCount ?? 0}行</option>)}</select></label><label>名称<input value={datasetName} onChange={(event) => setDatasetName(event.target.value)} /></label><label>代码<input value={datasetCode} onChange={(event) => setDatasetCode(event.target.value)} /></label><button className="button" onClick={createDataset} disabled={!canWrite || !selectedAsset || !!busy}><Database size={13} />创建数据集</button></fieldset>
           <fieldset><legend>2. 物化快照</legend><label>数据集<select value={selectedDatasetId} onChange={(event) => setSelectedDatasetId(event.target.value)}>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name} · {dataset.status}</option>)}</select></label><div className="dataset-proof-v2"><span>字段 {selectedDataset?.fields.length ?? 0}</span><span>快照 {selectedDataset?.snapshots.length ?? 0}</span><span>行 {selectedDataset?.currentSnapshot?.rowCount ?? 0}</span></div><button className="button" onClick={() => selectedDataset && refreshDataset(selectedDataset.id)} disabled={!canWrite || !selectedDataset || !!busy}><RefreshCw size={13} />刷新实际快照</button></fieldset>
-          <fieldset><legend>3. 报表草稿</legend><label>名称<input value={reportName} onChange={(event) => setReportName(event.target.value)} /></label><label>代码<input value={reportCode} onChange={(event) => setReportCode(event.target.value)} /></label><label>说明<input value={reportDescription} onChange={(event) => setReportDescription(event.target.value)} /></label><button className="button" onClick={createReport} disabled={!canWrite || selectedDataset?.status !== "READY" || !!busy}><PieChart size={13} />创建{widgetsFor(selectedDataset).length}组件报表</button></fieldset>
+          <fieldset><legend>3. 报表草稿</legend><label>名称<input value={reportName} onChange={(event) => setReportName(event.target.value)} /></label><label>代码<input value={reportCode} onChange={(event) => setReportCode(event.target.value)} /></label><label>说明<input value={reportDescription} onChange={(event) => setReportDescription(event.target.value)} /></label>{selectedDataset && <aside className="report-template-notes-v2" aria-label="模板指标与口径"><strong>按实际字段生成 {reportTemplate.widgets.length} 个组件</strong>{reportTemplate.notes.map(note => <p key={note}>{note}</p>)}</aside>}<button className="button" onClick={createReport} disabled={!canWrite || selectedDataset?.status !== "READY" || !reportTemplate.widgets.length || !!busy}><PieChart size={13} />创建{reportTemplate.widgets.length}组件报表</button></fieldset>
         </div>
       </section>
       <footer className="reports-boundary-v2"><TableProperties size={14} />报表基于本机不可变快照实际聚合；导出不含明细行，尚未接入公网分享、受邀认证或生产BI引擎。</footer>
