@@ -3,6 +3,7 @@ import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
+import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
@@ -164,6 +165,9 @@ const tools = [
   { name: "security_plan_apply", description: "把已验证安全方案应用为策略V1，不执行查询或审批。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
   { name: "report_overview", description: "读取报表数据集、报告和实际运行汇总。", inputSchema: { type: "object", properties: {} } },
   { name: "report_dataset_list", description: "列出报表数据集和不可变快照摘要。", inputSchema: { type: "object", properties: {} } },
+  { name: "report_published_create", description: "从确切已核验本机发布批次实际生成快照和聚合报表；固定requestId可恢复，不运行模型或Spark。", inputSchema: {type:"object",properties:{name:{type:"string"},requestId:{type:"string"},source:{type:"object",properties:{kind:{type:"string",enum:["AGENT","MANUAL"]},releaseId:{type:"string"},packageDigest:{type:"string"},revisionId:{type:"string"},runId:{type:"string"},batchId:{type:"string"},taskId:{type:"string"}},required:["kind","releaseId","packageDigest","revisionId","runId","batchId"],additionalProperties:false}},required:["name","source","requestId"],additionalProperties:false}},
+  { name: "report_published_request",description:"只读查询本账号原报表创建请求，不创建或聚合。",inputSchema:{type:"object",properties:{requestId:{type:"string"}},required:["requestId"],additionalProperties:false}},
+  { name: "report_published_resume",description:"续接已有报表创建任务，复用原数据集、快照和运行；不改变原来源。",inputSchema:{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false}},
   { name: "report_dataset_create", description: "从可报表资产创建字段受限数据集草稿，不复制数据。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, fields: { type: "array", items: { type: "string" } } }, required: ["name", "code", "assetId", "fields"] } },
   { name: "report_dataset_refresh", description: "将实际资产行物化到独立报表快照库并保存摘要。", inputSchema: { type: "object", properties: { datasetId: { type: "string" } }, required: ["datasetId"] } },
   { name: "report_list", description: "列出版本化报表、聚合组件和运行。", inputSchema: { type: "object", properties: {} } },
@@ -714,6 +718,9 @@ async function callTool(name, args = {}, client=defaultClient) {
       `/security/agent/plans/${encodeURIComponent(args.planId)}/apply`,
       { method: "POST", body: {} },
     );
+  if(name==='report_published_create')return submitPublishedReport(client,args);
+  if(name==='report_published_request')return lookupPublishedReport(client,args);
+  if(name==='report_published_resume')return resumePublishedReport(client,args);
   if (name === "report_overview") return client.request("/reports/overview");
   if (name === "report_dataset_list") return client.request("/reports/datasets");
   if (name === "report_dataset_create")

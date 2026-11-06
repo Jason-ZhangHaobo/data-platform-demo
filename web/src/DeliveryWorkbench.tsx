@@ -1008,7 +1008,7 @@ export function DeliveryWorkbench({
               </article>
             </div>
           </section>
-          {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource}/></Suspense>}
+          {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!busy}/></Suspense>}
         </>
       )}
     </div>

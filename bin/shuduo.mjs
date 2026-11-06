@@ -4,6 +4,7 @@ import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/ass
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
+import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
@@ -153,6 +154,9 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo security apply-plan --id PLAN_ID
   shuduo reports overview|datasets|list
   shuduo reports create-dataset --name 名称 --code holdings_dataset --asset-id landing:raw_positions --fields client_id,security_code,asset_class,industry,market_value,trade_date
+  shuduo reports from-publication --name 财富顾问报告 --source-file published-source.json --request-id UUID
+  shuduo reports request --request-id UUID
+  shuduo reports resume --id CREATION_ID
   shuduo reports refresh-dataset --id DATASET_ID
   shuduo reports create --name 持仓结构报告 --code holdings_structure --dataset-id DATASET_ID --preset holdings --description "持仓指标与分布"
   shuduo reports version --id REPORT_ID --preset holdings --description "报表V2"
@@ -1158,6 +1162,10 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         `/security/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
         { method: "POST", body: {} },
       );
+    else if(resource==='reports'&&action==='from-publication')
+      result=await submitPublishedReport(client,{name:required(parsed.options,'name'),source:jsonObject(readFileSync(required(parsed.options,'source_file'),'utf8'),'报表发布来源'),requestId:required(parsed.options,'request_id')});
+    else if(resource==='reports'&&action==='request')result=await lookupPublishedReport(client,{requestId:required(parsed.options,'request_id')});
+    else if(resource==='reports'&&action==='resume')result=await resumePublishedReport(client,{id:required(parsed.options,'id')});
     else if (resource === "reports" && action === "overview")
       result = await client.request("/reports/overview");
     else if (resource === "reports" && action === "datasets")
