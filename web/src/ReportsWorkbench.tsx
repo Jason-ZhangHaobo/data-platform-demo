@@ -140,7 +140,7 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
     [error, setError] = useState("");
   const [datasetName, setDatasetName] = useState("证券持仓报表数据集"),
     [datasetCode, setDatasetCode] = useState("holdings_report_dataset_review"),
-    [assetId, setAssetId] = useState("landing:raw_positions"),
+    [assetId, setAssetId] = useState(""),
     [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [reportName, setReportName] = useState("财富顾问持仓结构报告"),
     [reportCode, setReportCode] = useState("advisor_holdings_report_review"),
