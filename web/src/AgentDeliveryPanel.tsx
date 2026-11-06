@@ -10,20 +10,13 @@ import { applicationStatusText } from "./service-consumption-scope";
 import { reviewAttestationsComplete } from "./delivery-presentation";
 import { createPublicationReader, publicationPollNeeded } from "./publication-read";
 import {ValidationDetails} from "./ValidationDetails";
-import type {ValidationDetailsReport} from "./validation-details";
+import {checkedAgentWorkflow} from "./agent-workflow-read";
+import type {Delivery,Workflow} from "./agent-workflow-read";
 import {publicationSelector,publicationSelectionKey,publicationReadPath,publicationReleaseMatches,checkedPublication,publicationWriteAllowed,publicationCancellationAllowed,cloudPublicationRequest,createPublicationAttempt} from "./publication-selection";
 import type {PublicationSelector} from "./publication-selection";
 import {validServiceSourceBinding,serviceSourceKey,serviceSourceScope,serviceEvidencePath,returnedPublicationMatches,localAgentPublicationPath} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
-type Delivery = { id: string; version: number; status: string; stage: string; mode?: string; sourceKind?:string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string; error?: string };
-type Workflow = {
-  report: { taskId: string; sourceKind?:string; agentIndependentE2E?:boolean; contextId?:string; validationContractId?:string; validationDetails?:ValidationDetailsReport; status: string; summary: string; definition?: string; checks: { id: string; label: string; passed: boolean }[]; revisionId?: string; revisionHash?:string; runId?: string; rowCount: number; engine?: string; engineVersion?: string; notice: string };
-  delivery?: Delivery;
-  package?: { id: string; digest: string; manifest: unknown; files: Record<string,string> };
-  verification?: { id: string; status: string; engine?: string; engineVersion?: string; mainSqlExecuted?: boolean; durationMs?: number; error?: string; testSqlValidation?: { passed: boolean }; validation?: { passed: boolean; regressions?: { contextId: string; passed: boolean }[] } };
-  publication: { available: boolean; scope: string; reason: string };
-};
 type Release = { id: string; status: string; health: string; sourceKind?:string; sourceRunId?:string; agentIndependentE2E?:boolean; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number };
 type Publication = { release?: Release; runs: {id:string; status:string; sequence:number; schedulerTriggered?:boolean; durationMs?:number; triggeredAt?:string; finishedAt?:string}[]; alerts:{id:string;status:string;message:string;recoveryRunId?:string}[]; events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[] };
 const complete = (status?: string) => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(status ?? "");
@@ -35,7 +28,10 @@ function download(name: string, value: unknown) {
   finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
 }
 export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, expectedSourceBinding,codeBusy, onOpenServices, handoffBlocked = false, manual = false }: { api: Api; taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; expectedSourceBinding?:ServiceSourceBinding; codeBusy: boolean; onOpenServices?: (source:ServiceSourceBinding) => void; handoffBlocked?: boolean; manual?: boolean }) {
-  const [workflow, setWorkflow] = useState<Workflow>(), [busy, setBusy] = useState(false), [error, setError] = useState(""), [auto, setAuto] = useState(false);
+  const workflowSourceKey=JSON.stringify([taskId,manual,runId,revisionId,contextId,expectedSourceBinding]);
+  const [workflowRecord,setWorkflowRecord]=useState<{key:string;value:Workflow}>();
+  const workflow=workflowRecord?.key===workflowSourceKey?workflowRecord.value:undefined;
+  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [auto, setAuto] = useState(false);
   const [review, setReview] = useState(false), [confirmed, setConfirmed] = useState<Record<string,boolean>>({}), [release, setRelease] = useState<Release>(), [batches, setBatches] = useState<{ id: string; status: string; sequence: number; schedulerTriggered?: boolean }[]>([]);
   const [publication,setPublication]=useState<Publication>();
   const [publicationClock,setPublicationClock]=useState(Date.now);
@@ -55,23 +51,27 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   };
   const refreshPublication = () => { if (!publicationReader.current||publicationReaderKey.current!==activePublicationKey.current) return Promise.resolve(); setPublicationRead("LOADING"); return publicationReader.current.refresh(); };
   const [consumption,setConsumption]=useState<TaskConsumption>(),[consumptionError,setConsumptionError]=useState("");
-  const [evidenceRead, setEvidenceRead] = useState<EvidenceReadState>("LOADING");
-  const [evidenceError, setEvidenceError] = useState("");
+  const [evidenceRecord,setEvidenceRecord]=useState<{key:string;state:EvidenceReadState;error?:string}>();
+  const evidenceRead=evidenceRecord?.key===workflowSourceKey?evidenceRecord.state:"LOADING";
+  const evidenceError=evidenceRecord?.key===workflowSourceKey?evidenceRecord.error??"":"";
   const consumptionEpoch=useRef(0),workflowEpoch=useRef(0);
   const activeConsumptionSource=useRef("");
   const epoch = useRef(0), alive = useRef(true), requestKey = useRef(crypto.randomUUID());
   const activeTask = useRef(taskId); activeTask.current = taskId;
-  const workflowSourceKey=JSON.stringify([taskId,manual,runId,revisionId,contextId]),activeWorkflowSource=useRef(workflowSourceKey);activeWorkflowSource.current=workflowSourceKey;
+  const activeWorkflowSource=useRef(workflowSourceKey);activeWorkflowSource.current=workflowSourceKey;
   const load = async () => {
     const id = taskId, sequence=++workflowEpoch.current;
     const active = () => alive.current && activeTask.current === id && activeWorkflowSource.current===workflowSourceKey && sequence === workflowEpoch.current;
-    setEvidenceRead("LOADING"); setEvidenceError("");
+    setEvidenceRecord({key:workflowSourceKey,state:"LOADING"});
     try {
-      const value = await api<Workflow>(manual ? `/runs/${runId}/workflow` : `/agent/tasks/${id}/workflow`);
-      if (active()) { setWorkflow(value); setEvidenceRead("READY"); }
+      const raw = await api<unknown>(manual ? `/runs/${runId}/workflow` : `/agent/tasks/${id}/workflow`);
+      if(!active())return;
+      const value=await checkedAgentWorkflow(raw,{taskId,contextId,revisionId,runId,manual,expectedSourceBinding});
+      if (!active()) return;
+      setWorkflowRecord({key:workflowSourceKey,value});setEvidenceRecord({key:workflowSourceKey,state:"READY"});
       return value;
     } catch (e) {
-      if (active()) { setEvidenceRead("ERROR"); setEvidenceError((e as Error).message); }
+      if (active()) setEvidenceRecord({key:workflowSourceKey,state:"ERROR",error:(e as Error).message});
       throw e;
     }
   };
@@ -86,7 +86,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     }catch(e){if(alive.current&&activeTask.current===id&&activeConsumptionSource.current===key&&sequence===consumptionEpoch.current){setConsumption(undefined);setConsumptionError(`消费对照尚未确认：${(e as Error).message}。不会新增调用或凭证。`);}}
   };
   useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; }; }, []);
-  useEffect(() => { if (!codeBusy) void load().catch(() => {}); }, [taskId, revisionId, runId, codeBusy]);
+  useEffect(() => { if (!codeBusy) void load().catch(() => {}); }, [workflowSourceKey, codeBusy]);
   const report = workflow?.report, delivery = workflow?.delivery;
   const cloud = workflow?.publication.scope === "PRIVATE_CLOUD_TEST";
   // A retained, successfully read workflow may still select read-only history
@@ -129,9 +129,9 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     if (!canWrite || publicationTarget) return;
     const token = ++epoch.current; setAuto(true); setError(""); let item = start;
     try {
-      for (let i = 0; i < 40 && token === epoch.current && !complete(item.status); i++) {
+      for (let i = 0; i < 40 && alive.current && activeWorkflowSource.current===workflowSourceKey && token === epoch.current && !complete(item.status); i++) {
         item = item.mode === "DURABLE_AGENT_DELIVERY_V1" ? await api<Delivery>(`/agent/deliveries/${item.id}/advance`, { expectedVersion: item.version }) : await api<Delivery>(`/agent/deliveries/${item.id}`);
-        if (token !== epoch.current) break;
+        if (!alive.current || activeWorkflowSource.current!==workflowSourceKey || token !== epoch.current) break;
         await load();
         if (!complete(item.status)) await new Promise(r => setTimeout(r, 5000));
       }
@@ -140,7 +140,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   }
   async function prepare() {
     if (!verified || !canWrite || publicationTarget || working) return; setBusy(true); setError("");
-    try { const started = await api<Delivery>(manual ? `/runs/${runId}/prepare-delivery` : `/agent/tasks/${taskId}/prepare-delivery`, {}, { idempotencyKey: requestKey.current }); await load(); void drive(started); }
+    try { const started = await api<Delivery>(manual ? `/runs/${runId}/prepare-delivery` : `/agent/tasks/${taskId}/prepare-delivery`, {}, { idempotencyKey: requestKey.current }); const value=await load(); if(value&&alive.current&&activeWorkflowSource.current===workflowSourceKey)void drive(started); }
     catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   async function stop() {
