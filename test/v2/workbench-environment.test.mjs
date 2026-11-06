@@ -79,10 +79,13 @@ test('real app keeps local delivery separate and routes verified manual cloud so
  assert.match(panel,/\{\.\.\.selector,releaseId:selectedReleaseId\}/);
 });
 
-const compile = (name, initialWorkflow) => {
+const compile = (name, initialWorkflow, staleSource=false) => {
  let input=readFileSync(`web/src/${name}.tsx`,'utf8');
  // Supply only the already-read workflow state; SSR never runs effects or API calls.
- if(initialWorkflow&&name==='AgentDeliveryPanel')input=input.replace('useState<Workflow>()',`useState<Workflow>(${JSON.stringify(initialWorkflow)})`);
+ if(initialWorkflow&&name==='AgentDeliveryPanel'){
+  const slot='useState<{key:string;value:Workflow}>()';assert.ok(input.includes(slot),'already-read state injection must match the actual component');
+  input=input.replace(slot,`useState<{key:string;value:Workflow}>({key:${staleSource?'"stale-source"':'workflowSourceKey'},value:${JSON.stringify(initialWorkflow)}})`);
+ }
  let source=ts.transpileModule(input,{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
  for(const pkg of ['react','react/jsx-runtime','lucide-react'])source=source.replaceAll(`from "${pkg}"`,`from ${JSON.stringify(import.meta.resolve(pkg))}`).replaceAll(`from '${pkg}'`,`from ${JSON.stringify(import.meta.resolve(pkg))}`);
  source=source.replace(/from (["'])\.\/([^"'.]+)\1/g,(_match,_quote,dependency)=>`from ${JSON.stringify(existsSync(`web/src/${dependency}.tsx`)?compile(dependency):new URL(`../../web/src/${dependency}.ts`,import.meta.url).href)}`);
@@ -90,10 +93,12 @@ const compile = (name, initialWorkflow) => {
  return`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 };
 const {DataServicesWorkbench}=await import(compile('DataServicesWorkbench'));
-const {AgentDeliveryPanel}=await import(compile('AgentDeliveryPanel',{
+const readWorkflow={
  report:{taskId:'synthetic-task',revisionId:'synthetic-revision',runId:'synthetic-run',status:'NEEDS_ATTENTION',summary:'合成历史核验',checks:[],rowCount:0,notice:'仅用于入口渲染回归'},
  publication:{available:false,scope:'LOCAL_TEST_RELEASE',reason:'未准备完整发布证据'},
-}));
+};
+const {AgentDeliveryPanel}=await import(compile('AgentDeliveryPanel',readWorkflow));
+const {AgentDeliveryPanel:StaleDeliveryPanel}=await import(compile('AgentDeliveryPanel',readWorkflow,true));
 test('actual delivery panel exposes local handoff only with the capability and keeps unconfirmed-source action disabled',()=>{
  let calls=0;
  const render=(status,preview)=>{
@@ -109,6 +114,10 @@ test('actual delivery panel exposes local handoff only with the capability and k
   assert.match(html,/当前环境尚未开放服务接管/);assert.doesNotMatch(html,/继续此任务的接口交付/);
  }
  assert.equal(calls,0,'capability and render never create services, credentials or invocations');
+});
+test('a cached workflow from another selection cannot expose report or handoff actions',()=>{
+ const html=renderToStaticMarkup(React.createElement(StaleDeliveryPanel,{api:()=>assert.fail('render must not request'),taskId:'synthetic-task',revisionId:'new-revision',runId:'new-run',dirty:false,canWrite:true,codeBusy:false,onOpenServices:()=>assert.fail('render must not navigate')}));
+ assert.match(html,/先确认核验记录/);assert.doesNotMatch(html,/合成历史核验|继续此任务的接口交付|下载核验报告|生成交付并演练/);
 });
 test('actual cloud service view labels invited access honestly and does not perform work on render',()=>{
  const render=extra=>renderToStaticMarkup(React.createElement(DataServicesWorkbench,{api:()=>{throw Error('render must not create, fetch or execute');},canWrite:false,privateCloud:true,...extra}));
