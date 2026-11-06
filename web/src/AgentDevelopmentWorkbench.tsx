@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Bot, CheckCircle2, ChevronDown, Code2, FileCode2, GitCompareArrows, History, LoaderCircle, Play, Plus, RefreshCw, Send, Square, Undo2 } from "lucide-react";
 import { developmentRunLog } from "./run-log";
 import { AgentDeliveryPanel } from "./AgentDeliveryPanel";
+import { AgentRequirementExample } from "./AgentRequirementExample";
 import { manualRunLocation, manualRunRecovery, manualSaveLocation, manualSaveRequest, acknowledgedManualDraft, mayReuseManualRevision } from "./manual-run-recovery";
 import {agentSubmissionRequest,agentSubmissionLocation,createAgentSubmission,agentTaskReceiptValid} from "./agent-submission";
 import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
@@ -488,7 +489,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
             <p>{context?.definition ?? "正在加载数据上下文…"}</p><div className="agent-dev-tables">{context?.tables.map(t => <details key={t.name}><summary>{t.name} · {t.columns.length}字段</summary><dl>{t.columns.map(([name,type]) => <div key={name}><dt>{name}</dt><dd>{type}</dd></div>)}</dl></details>)}</div>
             <small>输出：{scopedLabels?["client_id","holding_market_value","available_cash","total_assets","security_count"].map(resultLabel).join("、"):"客户、持仓市值、可用现金、总资产、证券数量"}。其他指标请先补充并审阅口径，不默认纳入。</small>
           </details>
-          {!task && <div className="agent-dev-intro"><h3>{derivationActive?"说明这次口径变化。":"先说清楚你想得到什么。"}</h3><p>{derivationActive?"确认前只保留本页草稿；新任务会从冻结SQL出发，按目标口径重新生成与验证。":"我会引用当前表结构编写 SQL，交给 Spark 执行，并依据独立断言修正错误。代码和失败记录始终可见。"}</p><button disabled={taskOnly||derivationActive&&derivationState!=="READY"} onClick={() => setMessage(scopedLabels?`请按已选择的“${context?.name}”口径编写Spark SQL。${context?.definition}`:"请计算T+1客户资产，确保现金不重复累计、持仓按position_id去重，并包含只有现金的客户。")}>试试：生成{scopedLabels?"当前口径":"客户资产"}加工 SQL <Send size={13} /></button></div>}
+          {!task && <div className="agent-dev-intro"><h3>{derivationActive?"说明这次口径变化。":"先说清楚你想得到什么。"}</h3><p>{derivationActive?"确认前只保留本页草稿；新任务会从冻结SQL出发，按目标口径重新生成与验证。":"我会引用当前表结构编写 SQL，交给 Spark 执行，并依据独立断言修正错误。代码和失败记录始终可见。"}</p><AgentRequirementExample readOnly={readOnly||Boolean(publicationTarget)} disabled={taskOnly||derivationActive&&derivationState!=="READY"} scoped={Boolean(scopedLabels)} example={scopedLabels?`请按已选择的“${context?.name}”口径编写Spark SQL。${context?.definition}`:"请计算T+1客户资产，确保现金不重复累计、持仓按position_id去重，并包含只有现金的客户。"} onFill={setMessage}/></div>}
           {task && <><div className="agent-dev-message user"><small>你的需求 · {task.id.slice(0,8)}</small><p>{task.message}</p></div>
             {task.derivedFrom&&<div className="agent-dev-notice" role="status"><strong>已登记口径变更 · 独立新任务</strong><p>来自任务 {task.derivedFrom.taskId.slice(0,8)}、版本 {task.derivedFrom.revisionId.slice(0,8)}。原口径：{contexts.find(item=>item.id===task.derivedFrom?.contextId)?.name??task.derivedFrom.contextId}；原任务及批准不变，新任务需重新核验、交付和审阅。</p></div>}
             <div className="agent-dev-message assistant"><strong>{automatic ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}{automatic && task.stage === "READY_FOR_MODEL" ? "正在请求模型生成或修正…" : stageText[task.stage ?? task.status] ?? task.status}</strong><p>{task.explanation || "需求已记录，将使用上方已确认的上下文和口径。"}</p>
