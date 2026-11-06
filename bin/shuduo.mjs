@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
@@ -897,13 +898,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       resource === "assets" &&
       ["show", "lineage", "impact"].includes(action)
     ) {
-      const id = encodeURIComponent(required(parsed.options, "id"));
       result = await client.request(
-        `/assets/${id}${action === "show" ? "" : `/${action}`}`,
+        assetResourcePath(required(parsed.options, "id"), action === "show" ? undefined : action),
       );
     } else if (resource === "assets" && action === "annotate")
       result = await client.request(
-        `/assets/${encodeURIComponent(required(parsed.options, "id"))}/annotation`,
+        assetResourcePath(required(parsed.options, "id"), "annotation"),
         {
           method: "POST",
           body: {

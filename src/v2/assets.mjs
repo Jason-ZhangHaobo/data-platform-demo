@@ -157,7 +157,7 @@ export class AssetCatalogManager {
         )
           ? input.classification ?? prior.classification
           : "INTERNAL_DEMO",
-        tags: tags(input.tags ?? prior?.tags),
+        tags: tags(input.tags ?? prior?.tags ?? item.tags),
         evidenceHash: item.evidenceHash,
       });
     return { ...item, annotation: publicAnnotation(annotation) };
@@ -641,7 +641,7 @@ export class AssetCatalogManager {
         domain: annotation?.domain ?? item.domain,
         owner: annotation?.owner,
         classification: annotation?.classification ?? "SYNTHETIC_ONLY",
-        tags: annotation?.tags?.length ? annotation.tags : item.tags,
+        tags: annotation?.tags ?? item.tags,
         annotation: publicAnnotation(annotation),
       };
     });

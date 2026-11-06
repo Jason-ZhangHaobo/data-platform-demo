@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
@@ -573,15 +574,15 @@ async function callTool(name, args = {}, client=defaultClient) {
   }
   if (["asset_detail", "asset_lineage", "asset_impact"].includes(name)) {
     const action = {
-      asset_detail: "",
-      asset_lineage: "/lineage",
-      asset_impact: "/impact",
+      asset_detail: undefined,
+      asset_lineage: "lineage",
+      asset_impact: "impact",
     }[name];
-    return client.request(`/assets/${encodeURIComponent(args.assetId)}${action}`);
+    return client.request(assetResourcePath(args.assetId, action));
   }
   if (name === "asset_annotate") {
     const { assetId, ...body } = args;
-    return client.request(`/assets/${encodeURIComponent(assetId)}/annotation`, {
+    return client.request(assetResourcePath(assetId, "annotation"), {
       method: "POST",
       body,
     });
