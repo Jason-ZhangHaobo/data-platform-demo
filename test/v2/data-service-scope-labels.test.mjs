@@ -30,11 +30,16 @@ const render = (props = {}) => renderToStaticMarkup(React.createElement(DataServ
 
 test("free DAPI field templates do not describe a scoped result as the customer's full assets", () => {
   const html = render();
-  assert.match(html, /<option value="cash">现金与口径合计<\/option>/);
-  assert.match(html, /<option value="full">全部结果字段<\/option>/);
-  assert.match(html, /结果字段含义继承所选发布口径，不当然等于客户全资产/);
-  assert.match(html, /选择全部字段不会补入原口径之外的资产/);
-  assert.doesNotMatch(html, /现金与总资产|完整客户资产/);
+  assert.match(html, /当前范围统计尚未确认/);
+  assert.doesNotMatch(html, /<option value="cash">|<option value="full">/);
+  // The form is only mounted after catalog readback. Preserve its wording
+  // contract here; the actual ready form is also checked in the browser.
+  const form = workbenchSource.slice(workbenchSource.indexOf('className="service-create-panel"'), workbenchSource.indexOf('className="service-detail-head"'));
+  assert.match(form, /<option value="cash">现金与口径合计<\/option>/);
+  assert.match(form, /<option value="full">全部结果字段<\/option>/);
+  assert.match(workbenchSource, /结果字段含义继承所选发布口径，不当然等于客户全资产/);
+  assert.match(workbenchSource, /选择全部字段不会补入原口径之外的资产/);
+  assert.doesNotMatch(form, /现金与总资产|完整客户资产/);
 });
 
 test("new-version template keeps the same neutral labels and source-scope notice", () => {
@@ -62,8 +67,10 @@ test("invited consumption continues to display the fixed reviewed name and field
     pilotId: "synthetic-pilot", taskId: plan.taskId, plan,
     startsAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 60000).toISOString(),
   } });
-  assert.match(html, /readonly=""[^>]*value="已审阅持仓名称"/i);
-  assert.match(html, /<code>client_id, holding_market_value, security_count<\/code>/);
+  assert.match(html, /已审阅持仓名称/);
+  assert.match(html, /当前范围统计尚未确认/);
+  assert.doesNotMatch(html, /创建DAPI草稿/);
+  assert.match(workbenchSource, /value=\{plannedDapi\?\.name\?\?dapiName\}[^>]*readOnly=\{Boolean\(consumptionScope\)\}/);
   assert.doesNotMatch(html, /<option value="cash">|<option value="full">|结果字段含义继承所选发布口径/);
   assert.deepEqual(plan, before);
 });

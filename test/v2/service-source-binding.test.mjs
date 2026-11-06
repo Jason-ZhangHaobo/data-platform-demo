@@ -193,7 +193,7 @@ test('actual bound workspace shows provenance and recovery, no write on render a
   let calls=0;const props={api:async()=>{calls++;throw Error('render must not fetch or write');},canWrite:true,privateCloud:true,cloudAccess:'invited'};
   const html=renderToStaticMarkup(React.createElement(DataServicesWorkbench,{...props,sourceBinding:binding}));
   assert.match(html,/工程师接管结果 · 非 Agent 自主完成/);assert.match(html,/返回原版本的链接将在同源核对后开放/);assert.doesNotMatch(html,/href=.*origin_task/);
-  assert.match(html,/正在核对确切发布来源/);assert.match(html,/disabled=""[^>]*>新建 DAPI/);
+  assert.match(html,/正在核对确切发布来源/);assert.match(html,/当前范围统计尚未确认/);assert.doesNotMatch(html,/>新建 DAPI<|创建DAPI草稿/);
   const invalid=renderToStaticMarkup(React.createElement(DataServicesWorkbench,{...props,sourceBindingError:'来源不完整，不回退全项目'}));
   assert.match(invalid,/来源不完整，不回退全项目/);assert.doesNotMatch(invalid,/返回原人工版本/);assert.equal(calls,0);
   const exportUrl=new URL(evidenceExportHref({kind:'consumption',id:binding.taskId,digest:binding.packageDigest,releaseId:binding.releaseId}),'https://example.invalid');assert.equal(exportUrl.searchParams.get('releaseId'),binding.releaseId);
@@ -203,7 +203,7 @@ test('actual bound workspace shows provenance and recovery, no write on render a
 test('actual local bound workspace accepts only confirmed local environment and keeps writes closed before readback',()=>{
   const local={...binding,sourceKind:'AGENT',scope:'LOCAL_TEST_ONLY'},props={api:async()=>assert.fail('render cannot fetch'),canWrite:true,sourceBinding:local,privateCloud:false,runtimeMode:'LOCAL_DEVELOPMENT'};
   const html=renderToStaticMarkup(React.createElement(DataServicesWorkbench,props));
-  assert.match(html,/正在核对确切发布来源/);assert.doesNotMatch(html,/交接范围与当前运行环境不一致/);assert.match(html,/disabled=""[^>]*>新建 DAPI/);
+  assert.match(html,/正在核对确切发布来源/);assert.doesNotMatch(html,/交接范围与当前运行环境不一致/);assert.match(html,/当前范围统计尚未确认/);assert.doesNotMatch(html,/>新建 DAPI<|创建DAPI草稿/);
   for(const patch of [{runtimeMode:undefined},{runtimeMode:'PUBLIC_INVITATION',privateCloud:true}])assert.match(renderToStaticMarkup(React.createElement(DataServicesWorkbench,{...props,...patch})),/交接范围与当前运行环境不一致/);
   const main=readFileSync('web/src/main.tsx','utf8');assert.match(main,/privateCloud=\{workbench.cloudServices\} runtimeMode=\{workbench.runtimeMode\}/);
   assert.doesNotMatch(main,/if\(workbench.cloudServices\)\{const url=serviceHandoffLocation/);

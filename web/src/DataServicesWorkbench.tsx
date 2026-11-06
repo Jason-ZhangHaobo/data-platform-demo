@@ -223,7 +223,9 @@ export function DataServicesWorkbench({
   const privateStudioVisible=durableServiceAgentReadEnabled&&privateCloud&&Boolean(binding)&&!bindingError&&!consumptionScope;
   const sourceContext=useRef(scopeKey);sourceContext.current=scopeKey;
   const sourceRequest=useRef(0),alive=useRef(true);
-  const [sourceRead,setSourceRead]=useState<{key:string;state:"LOADING"|"READY"|"ERROR"}>({key:"",state:"LOADING"});
+  const [sourceRead,setSourceRead]=useState<{key:string;state:"LOADING"|"READY"|"ERROR";message?:string;loginRequired?:boolean}>({key:"",state:"LOADING"});
+  const dataReady=sourceRead.key===scopeKey&&sourceRead.state==="READY";
+  const readFailed=sourceRead.key===scopeKey&&sourceRead.state==="ERROR";
   async function api<T>(path:string,body?:unknown,options?:{idempotencyKey?:string}):Promise<T>{const key=scopeKey;const result=await rawApi<T>(path,body,options);if(!alive.current||sourceContext.current!==key)throw Error("来源已切换，旧响应未用于当前工作区。");return result;}
   const [scopeClock,setScopeClock]=useState(Date.now);
   const canWrite=originalCanWrite&&!servicePlanningOnly&&(!consumptionScope||privateCloud&&consumptionWindowOpen(consumptionScope,scopeClock))&&
@@ -350,8 +352,8 @@ export function DataServicesWorkbench({
     const key=scopeKey,request=++sourceRequest.current;
     const current=()=>serviceReadCurrent(key,request,sourceContext.current,sourceRequest.current,alive.current);
     if(!alive.current)return;
-    if(bindingError){setSourceRead({key,state:"ERROR"});setError(bindingError);return;}
-    if(bindingDeclared)setSourceRead({key,state:"LOADING"});
+    if(bindingError){setSourceRead({key,state:"ERROR",message:bindingError});return;}
+    setSourceRead({key,state:"LOADING"});
     try{
     const [nextRuns, nextDapis, nextXapis, nextApps, nextCalls, nextPlans] =
       await Promise.all([
@@ -363,6 +365,7 @@ export function DataServicesWorkbench({
         privateCloud || consumptionScope || bindingDeclared ? Promise.resolve([] as ServiceAgentPlan[]) : api<ServiceAgentPlan[]>("/data-services/agent/plans"),
       ]);
     if(!current())return;
+    if(![nextRuns,nextDapis,nextXapis,nextApps,nextCalls,nextPlans].every(Array.isArray))throw Error("服务目录响应不完整；未确认服务、批次、应用或调用数量，请重新读取。");
     if(binding&&nextRuns.some(run=>!sourceRunMatches(run,binding)))throw Error("发布来源回读与交接包或版本不一致，未采用其他结果。");
     setReleaseRuns(nextRuns);
     setDapis(nextDapis);
@@ -372,11 +375,10 @@ export function DataServicesWorkbench({
     if(!bindingDeclared){setAgentPlans(nextPlans);if (!agentPlan && nextPlans[0]) setAgentPlan(nextPlans[0]);}
     const boundEligible=binding?nextRuns.filter(run=>sourceRunMatches(run,binding)&&sourceRunEligible(run)):nextRuns;
     if(binding&&(!boundEligible.length||!sourceBindingScopeCompatible(binding,consumptionScope,boundEligible))){
-      setSourceRunId("");setSelectedId("");setSourceRead({key,state:"ERROR"});
-      setError(boundEligible.length?"确切发布批次与当前最小消费计划冲突；未扩大来源。":"此确切发布尚无通过核验的可消费批次，或当前账号不可见。可重新读取；不会选其他发布或开发运行。");return;
+      setSourceRunId("");setSelectedId("");setSourceRead({key,state:"ERROR",message:boundEligible.length?"确切发布批次与当前最小消费计划冲突；未扩大来源。":"此确切发布尚无通过核验的可消费批次，或当前账号不可见。可重新读取；不会选其他发布或开发运行。"});return;
     }
     const marker=servicePlanMarker(location.href),requestedBatch=(boundPlannerAllowed||privateContextAllowed)&&!marker.invalid?marker.batchId:undefined;
-    if(requestedBatch&&!boundEligible.some(run=>run.id===requestedBatch)){setSourceRunId('');setSourceRead({key,state:'ERROR'});setError('原规划指定批次当前不可用，保留原记录，不采用其他批次。');return;}
+    if(requestedBatch&&!boundEligible.some(run=>run.id===requestedBatch)){setSourceRunId('');setSourceRead({key,state:'ERROR',message:'原规划指定批次当前不可用，保留原记录，不采用其他批次。'});return;}
     if(scopePlan)setSourceRunId(scopePlan.sourceReleaseRunId);
     else if(binding)setSourceRunId(previous=>defaultBoundSourceRun(binding,nextRuns,[...nextDapis,...nextXapis],{currentRunId:previous||requestedBatch,selectedServiceId:activeServiceRef.current})??"");
     else if (!sourceRunId && nextRuns.find((run) => run.status === "SUCCEEDED"))
@@ -384,8 +386,8 @@ export function DataServicesWorkbench({
     const nextServices=consumptionServices(binding?sourceBoundServices([...nextDapis,...nextXapis],binding,nextRuns):[...nextDapis,...nextXapis],consumptionScope);
     if (!selectedId && nextServices[0])setSelectedId(nextServices[0].id);
     else if((consumptionScope||bindingDeclared)&&selectedId&&!nextServices.some(s=>s.id===selectedId))setSelectedId("");
-    setSourceRead({key,state:"READY"});if(bindingDeclared)setError("");
-    }catch(cause){if(current()){setSourceRead({key,state:"ERROR"});setError((cause as Error).message);}throw cause;}
+    setSourceRead({key,state:"READY"});
+    }catch(cause){if(current()){const failure=cause as Error&{status?:number;code?:string};setSourceRead({key,state:"ERROR",message:failure.message,loginRequired:failure.status===401||failure.code==="AUTHENTICATION_REQUIRED"});}throw cause;}
   };
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;sourceRequest.current++;};},[]);
   useEffect(() => {
@@ -448,6 +450,7 @@ export function DataServicesWorkbench({
   }, [agentPlan?.id, agentPlan?.status,plannerKey,planReadError]);
 
   const planWithAgent = async () => {
+    if(!dataReady)return;
     if(boundPlannerAllowed){
       if(!canWrite||!boundPlanSource||!modelConfigured||busy||pendingPlanKey||planReadError||servicePlanMarker(location.href).invalid)return;
       const source=boundPlanSource,key=plannerKey;setBusy('agent');setError('');setPlanReadError('');setAgentPlan(undefined);
@@ -481,6 +484,7 @@ export function DataServicesWorkbench({
     finally{if(plannerCurrent(key))setBusy('');}
   };
   const applyAgentPlan = async () => {
+    if(!dataReady)return;
     if(boundPlannerAllowed){
       if(!canWrite||!boundPlanSource||!agentPlan||agentPlan.sourceCheck==='UNAVAILABLE'||!sourcePlanReceiptValid(agentPlan,boundPlanSource)||busy||pendingPlanKey)return;
       const source=boundPlanSource,key=plannerKey,planId=agentPlan.id;setBusy('agent-apply');setError('');
@@ -686,21 +690,31 @@ export function DataServicesWorkbench({
             {servicePlanningOnly?"描述接口需求，核对来源与方案，再确认创建草稿；全过程保留原任务和恢复记录。":"DAPI查询真实发布批次，XAPI固定编排已发布版本；测试、授权、限流、版本和调用证据共享一个工作区。"}
           </p>
         </div>
-        {!servicePlanningOnly&&<div className="service-stats">
+        {!servicePlanningOnly&&<div className="service-stats" aria-label={dataReady?"当前范围统计":"当前范围统计尚未确认"}>
           <div>
-            <strong>{scopedDapis.length}</strong>
+            <strong>{dataReady?scopedDapis.length:"—"}</strong>
             <span>DAPI</span>
           </div>
           <div>
-            <strong>{scopedXapis.length}</strong>
+            <strong>{dataReady?scopedXapis.length:"—"}</strong>
             <span>XAPI</span>
           </div>
           <div>
-            <strong>{consumptionScope||bindingDeclared?visibleCalls.filter(c=>services.some(s=>s.id===c.serviceId)).length:visibleCalls.length}</strong>
+            <strong>{dataReady?(consumptionScope||bindingDeclared?visibleCalls.filter(c=>services.some(s=>s.id===c.serviceId)).length:visibleCalls.length):"—"}</strong>
             <span>调用</span>
           </div>
+          <button className="button service-catalog-refresh" disabled={(!dataReady&&!readFailed)||!!busy||Boolean(bindingError)} onClick={()=>void reload().catch(()=>{})}>刷新目录</button>
         </div>}
       </section>
+      {!dataReady&&<section className={readFailed?"service-feedback error":"service-feedback"} role={readFailed?"alert":"status"} aria-label="数据服务读取状态">
+        {readFailed?<CircleAlert size={18}/>:<LoaderCircle size={18} className="spin"/>}
+        <div><strong>{readFailed?(sourceRead.loginRequired?"登录后查看项目服务":"目录读取尚未确认"):"正在读取当前范围的服务目录"}</strong>
+          <p>{readFailed?sourceRead.message:"正在核对发布批次、DAPI／XAPI、应用与调用记录。"}</p>
+          <small>未读取成功不代表没有数据；确认前不显示零项或使用旧目录操作。原方案、待确认请求与草稿保留。</small>
+          {sourceRead.loginRequired&&<p>请通过右上角“受邀用户登录”进入已有账号，再重新读取目录。</p>}
+          <button className="button" disabled={!readFailed||!!busy||Boolean(bindingError)} onClick={()=>void reload().catch(()=>{})}>重新读取目录</button>
+        </div>
+      </section>}
       {bindingDeclared&&<section className={bindingError||sourceRead.state==="ERROR"?"service-feedback error":"service-feedback"} role="status" aria-label="确切发布来源"><details open={!servicePlanningOnly}><summary>{bindingError||sourceRead.state==='ERROR'?"来源待恢复 · 查看核对记录":sourceRead.key===scopeKey&&sourceRead.state==='READY'?"发布来源已核对 · 查看原任务与版本":"正在核对发布来源"}</summary><div><strong>{binding?.sourceKind==="MANUAL"?"工程师接管结果 · 非 Agent 自主完成":"指定发布结果交接"}</strong><p>只使用指定任务、交付包和发布版本的成功发布批次；不是开发运行，不会自动创建接口、凭证或调用数据。</p>{binding&&<><p>原任务：{binding.taskId}<br/>交付包：{binding.packageDigest}<br/>发布版本：{binding.releaseId}</p>{sourceRead.key===scopeKey&&sourceRead.state==="READY"?<a className="button" href={serviceReturnLocation(typeof location==="undefined"?"http://localhost/v2/":location.href,binding).href}>返回原{binding.sourceKind==="MANUAL"?"人工版本":"Agent任务"}</a>:<small>返回原版本的链接将在同源核对后开放。</small>}</>}{bindingError?<p>{bindingError}</p>:<p>{sourceRead.key!==scopeKey||sourceRead.state==="LOADING"?"正在核对确切发布来源；写入暂不开放。":sourceRead.state==="ERROR"?"来源尚未确认；保留绑定，不回退全项目或其他发布。":"已核对可消费的成功发布批次；写权限仍按当前账号和消费计划判断。"}</p>}<button className="button" disabled={!!busy||Boolean(bindingError)} onClick={()=>void reload().catch(()=>{})}>重新读取指定来源</button></div></details></section>}
       {consumptionScope&&<section className="service-feedback" role="status" aria-label="接口消费试点范围"><div><strong>仅本次冻结接口计划 · 不重新计算业务数据</strong><p>{canWrite?"允许手动创建、测试、发布本计划接口，并创建及撤销唯一测试应用。":"当前消费窗口未开放、已到期或计划不可用；保持只读，不发行凭证。"} 不开放模型规划、代码开发、业务批次发布或接口版本切换。</p>{scopePlan&&<><p>源任务：{scopePlan.taskId}<br/>源发布批次：{scopePlan.sourceReleaseRunId}<br/>包摘要：{scopePlan.packageDigest}</p><small>接口：{scopePlan.dapis.map(d=>d.name).join("、")}、{scopePlan.xapi.name}。应用：{scopePlan.applicationName}；只授权直接查询持仓和组合资产，现金接口未单独授权。</small></>}<p>截止：{consumptionScope.expiresAt?new Date(consumptionScope.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}):"未确认"}（北京时间）。凭证到期后失效，历史调用证据保留。</p></div></section>}
       {scopeConflict&&<div className="service-feedback error" role="alert">发现同名服务不属于本次试点或其版本配置与计划不符；不会混入、覆盖或更新旧服务，请先核对来源。</div>}
@@ -772,7 +786,7 @@ export function DataServicesWorkbench({
             className="button primary"
             onClick={planWithAgent}
             disabled={
-              !canWrite ||
+              !dataReady || !canWrite ||
               !!busy ||
               boundPlannerAllowed&&(!boundPlanSource||!modelConfigured||Boolean(pendingPlanKey)||Boolean(planReadError)||Boolean(servicePlanMarker(location.href).invalid)) ||
               agentMessage.trim().length < 4 ||
@@ -817,7 +831,7 @@ export function DataServicesWorkbench({
             <button
               className="button"
               onClick={applyAgentPlan}
-              disabled={!canWrite || agentPlan.status !== "SUCCEEDED" || !!busy || Boolean(pendingPlanKey) || boundPlannerAllowed&&(!boundPlanSource||agentPlan.sourceCheck==='UNAVAILABLE'||!sourcePlanReceiptValid(agentPlan,boundPlanSource))}
+              disabled={!dataReady || !canWrite || agentPlan.status !== "SUCCEEDED" || !!busy || Boolean(pendingPlanKey) || boundPlannerAllowed&&(!boundPlanSource||agentPlan.sourceCheck==='UNAVAILABLE'||!sourcePlanReceiptValid(agentPlan,boundPlanSource))}
             >
               <CheckCircle2 size={15} />
               {agentPlan.status === "APPLIED" ? "草稿已创建" : "确认创建草稿"}
@@ -827,10 +841,10 @@ export function DataServicesWorkbench({
         {boundPlannerAllowed&&agentPlan&&<button className="button" disabled={!!busy||Boolean(pendingPlanKey)} onClick={()=>void readSourcePlan(agentPlan.id)}>重新读取原方案</button>}
         {boundPlannerAllowed&&agentPlan&&['QUEUED','RUNNING'].includes(agentPlan.status)&&<button className="button" disabled={!!busy||!originalCanWrite||Boolean(pendingPlanKey)} onClick={()=>void cancelSourcePlan()}>取消当前规划</button>}
         {boundPlannerAllowed&&agentPlans.length>0&&<details><summary>当前来源的方案记录</summary>{agentPlans.map(plan=><button className="button" key={plan.id} disabled={!!busy||Boolean(pendingPlanKey)} onClick={()=>void readSourcePlan(plan.id)}>{plan.proposal?.name??'规划任务'} · {planLabels[plan.status]??plan.status}</button>)}</details>}
-        <small>{agentPlans.length}条方案记录 · 不自动发布、不创建调用凭证</small>
+        <small>{dataReady?`${agentPlans.length}条方案记录`:"方案目录尚未确认"} · 不自动发布、不创建调用凭证</small>
       </section>}
       {privateCloud && <div className="service-feedback" role="status">{privateStudioVisible?"Agent只使用当前来源的已核验元数据规划，执行受窗口约束；确认草稿不重跑Spark，查询测试、发布和授权须另行开放。":"复用已经审阅并运行的版本创建接口，不重新运行模型或Spark；当前服务操作仅提供虚构证券资产契约的参数化快照查询。"}</div>}
-      <div className="service-layout">
+      {dataReady&&<><div className="service-layout">
         <aside className="service-catalog">
           <header>
             <div>
@@ -1168,7 +1182,7 @@ LIMIT :limit OFFSET :offset`}</pre>
             )}
           {scopedApplications.filter(app=>consumptionScope||!selected||app.serviceIds.includes(selected.id)).map(app=><div key={app.id}><span>{app.name} · {applicationStatusText(serviceApplicationStatus(app,scopeClock))}{app.expiresAt&&<small>到期：{new Date(app.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}</small>}</span><button className="button" disabled={!canWrite||serviceApplicationStatus(app,scopeClock)!=="ACTIVE"||!!busy} onClick={async()=>{if(!canWrite||!scopedApplications.some(a=>a.id===app.id))return;setBusy("revoke");try{await api(`/data-services/applications/${app.id}/revoke`,{});for(const id of app.serviceIds)delete requestKeys.current["app:"+id];setIssuedToken("");await reload();setNotice("凭证已撤销，旧令牌不能继续调用");}catch(e){setError((e as Error).message);}finally{setBusy("");}}}>撤销凭证</button></div>)}
         </article>
-      </section>
+      </section></>}
       <footer className="service-boundary">
         <AppWindow size={15} />
         当前数据来自虚构证券发布批次；业务查询库与平台元数据库分离。{privateCloud ? `${cloudScopeLabel}：接口查询已发布结果的不可变快照，不在每次调用时重跑Spark；访问仍受应用授权限制，不代表生产验收完成。` : "本机端点不是公网服务。"}

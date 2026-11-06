@@ -121,7 +121,7 @@ test('actual consumption view shows immutable plan fields, limited authorization
  const render=s=>renderToStaticMarkup(React.createElement(DataServicesWorkbench,{api:()=>{throw Error('render must not write or query');},canWrite:true,privateCloud:true,cloudAccess:'invited',sourceAgentTaskId:scope.taskId,consumptionScope:s}));
  const html=render(scope);
  assert.match(html,/仅本次冻结接口计划/);assert.match(html,/合成持仓/);assert.match(html,/fictional-release-run/);assert.match(html,/fictional-package/);
- assert.match(html,/readOnly=""[^>]*value="合成持仓"|value="合成持仓"[^>]*readOnly=""/);
+ assert.match(html,/当前范围统计尚未确认/);assert.doesNotMatch(html,/创建DAPI草稿|新建 DAPI</);
  assert.match(html,/现金接口未单独授权/);assert.match(html,/凭证到期后失效，历史调用证据保留/);
  assert.doesNotMatch(html,/用自然语言规划数据服务|生成受治理方案|新建版本<|确认切换版本/);
  assert.match(render({...scope,expiresAt:new Date(now-1).toISOString()}),/当前消费窗口未开放、已到期或计划不可用/);
