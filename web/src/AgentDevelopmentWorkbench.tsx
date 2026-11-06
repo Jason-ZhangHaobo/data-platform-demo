@@ -6,7 +6,7 @@ import { AgentRequirementExample } from "./AgentRequirementExample";
 import { manualRunLocation, manualRunRecovery, manualSaveLocation, manualSaveRequest, acknowledgedManualDraft, mayReuseManualRevision } from "./manual-run-recovery";
 import {agentSubmissionRequest,agentSubmissionLocation,createAgentSubmission,agentTaskReceiptValid} from "./agent-submission";
 import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
-import {initialAgentTaskId,loadHistoryAfterTarget,mergeTaskHistory} from "./agent-history-loading";
+import {initialAgentTaskId,loadHistoryAfterTarget,mergeTaskHistory,checkedAgentTask,checkedAgentRun} from "./agent-history-loading";
 import {agentTaskFinished,mayEditScopedTask} from "./agent-task-scope";
 import {AgentRepairAction} from "./AgentRepairAction";
 import {AgentModelRecovery} from "./AgentModelRecovery";
@@ -41,7 +41,9 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   const [returnSourceError,setReturnSourceError]=useState("");
   const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState("holdings-t1");
   const [message, setMessage] = useState(""), [draft, setDraft] = useState(""), [baseline, setBaseline] = useState("");
-  const [run, setRun] = useState<Run>(), [tab, setTab] = useState("结果"), [diff, setDiff] = useState(false);
+  const [run, setRunValue] = useState<Run>(), [tab, setTab] = useState("结果"), [diff, setDiff] = useState(false);
+  const [runRead,setRunRead]=useState<{state:"IDLE"|"LOADING"|"ERROR";message?:string}>({state:"IDLE"});
+  function setRun(value:Run|undefined){setRunValue(value);setRunRead({state:"IDLE"});}
   const [baselineRevisionId, setBaselineRevisionId] = useState<string>();
   const [automatic, setAutomatic] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [retryConsent, setRetryConsent] = useState(false);
@@ -243,8 +245,9 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     if (protectDraft && dirty && !keepDraft && !confirm("当前代码有未保存修改，是否放弃修改并切换任务？")) return;
     const selectionEpoch = ++epoch.current; setAutomatic(false); setBusy(true); setError(""); setRetryConsent(false);
     rememberSelection(id);
+    let readingRun=false;
     try {
-      const current = await api<Task>(`/agent/tasks/${id}`);
+      const current = checkedAgentTask<Task>(await api<unknown>(`/agent/tasks/${id}`),id);
       if (!alive.current || selectedId.current !== id || epoch.current !== selectionEpoch) return;
       if(expectedSourceBinding){
         if(!expectedSourceBinding.revisionId||!expectedSourceBinding.runId)throw Error("返程链接缺少原代码版本或运行编号，未采用最新版本。");
@@ -256,11 +259,25 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
       }
       accept(current); setContextId(current.contextId);
       if (!keepDraft) { setDraft(current.sql ?? ""); setBaseline(current.sql ?? ""); setBaselineRevisionId(current.revisionId); setDiff(false); }
-      const actual = current.runId ? await api<Run>(`/runs/${current.runId}`) : undefined;
+      setRun(undefined);readingRun=Boolean(current.runId);
+      if(readingRun)setRunRead({state:"LOADING"});
+      const actual = current.runId ? checkedAgentRun<Run>(await api<unknown>(`/runs/${current.runId}`),current) : undefined;
       if (!alive.current || selectedId.current !== id || epoch.current !== selectionEpoch) return;
       setRun(actual);
       setNotice(keepDraft ? "服务端状态已刷新，未保存的编辑已保留；运行结果仍对应原代码版本。" : "已恢复服务端任务；读取历史不会重新调用模型。点击继续才会推进。");
-    } catch (e) { if (alive.current && epoch.current === selectionEpoch){if(sourceReturnActive){setReturnSourceError((e as Error).message);setTask(undefined);setRun(undefined);setDraft("");setBaseline("");setBaselineRevisionId(undefined);}else setError((e as Error).message);} } finally { if (alive.current && epoch.current === selectionEpoch) setBusy(false); }
+    } catch (e) { if (alive.current && epoch.current === selectionEpoch){if(sourceReturnActive){setReturnSourceError((e as Error).message);setTask(undefined);setRun(undefined);setDraft("");setBaseline("");setBaselineRevisionId(undefined);}else {if(readingRun)setRunRead({state:"ERROR",message:(e as Error).message});setError((e as Error).message);}} } finally { if (alive.current && epoch.current === selectionEpoch) setBusy(false); }
+  }
+  async function readAttemptRun(runId:string,revisionId:string|undefined,label:string,source=false,view="日志") {
+    if(!task||working)return;
+    const token=epoch.current,taskId=task.id,context=task.contextId;
+    const active=()=>alive.current&&epoch.current===token&&selectedId.current===taskId;
+    setBusy(true);setError("");
+    try {
+      const actual=checkedAgentRun<Run>(await api<unknown>(`/runs/${runId}`),{...(source?{}:{id:taskId}),contextId:context,runId,revisionId});
+      if(!active())return;
+      setRun(actual);setTab(view);setNotice(label+" 编辑器保留当前代码；结果以原批次所绑定版本为准，没有新增计算。");
+    } catch(cause) {if(active())setError((cause as Error).message+" 已展示的原批次保持不变。");}
+    finally {if(active())setBusy(false);}
   }
   function newTask() {
     if (readOnly || !originalCanWrite || publicationTarget || taskOnly || derivationActive) return;
@@ -495,8 +512,8 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
             <div className="agent-dev-message assistant"><strong>{automatic ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}{automatic && task.stage === "READY_FOR_MODEL" ? "正在请求模型生成或修正…" : stageText[task.stage ?? task.status] ?? task.status}</strong><p>{task.explanation || "需求已记录，将使用上方已确认的上下文和口径。"}</p>
               {task.error && <p className="agent-dev-error-text">{task.error}</p>}
               {task.attempts.filter(a=>a.diagnostic).map(a=><p key={`diagnostic-${a.attempt}`} className="agent-dev-error-text">第{a.attempt}次安全诊断：{a.diagnostic!.code} · 阶段 {a.diagnostic!.phase}{a.diagnostic!.httpStatus?` · HTTP ${a.diagnostic!.httpStatus}`:""} · {a.diagnostic!.elapsedMs}ms。{a.diagnostic!.requestMayHaveBeenSent?"请求可能已发送，不能据此确认是否计费。":"失败发生在请求发送前；原预算预留仍保留。"}</p>)}
-              {task.sourceRunId && <button className="button" disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${task.sourceRunId}`)); setTab("日志"); setNotice("这里是本次修正引用的原始失败批次；编辑器仍保留当前代码。"); } catch(e) { setError((e as Error).message); } }}>查看修正依据 · {task.sourceRunId.slice(0,8)}</button>}
-              <ol className="agent-dev-attempts">{task.attempts.map(a => <li key={a.attempt}><span>第{a.attempt}次</span><strong>{a.status === "FAILED" ? "执行失败（记录保留）" : a.status === "GENERATED" ? "代码已生成" : stageText[a.status] ?? a.status}</strong>{a.model && <small>模型：{a.model}</small>}{a.status === "NO_SQL_CHANGE" ? a.sourceRunId && <button disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${a.sourceRunId}`)); setTab("校验"); setNotice("正在查看修正前的原失败批次；本次模型未修改代码，没有新增 Spark 执行。编辑器内容保持不变。"); } catch(e) { setError((e as Error).message); } }}>查看原失败批次 · {a.sourceRunId.slice(0,8)}</button> : a.runId && <button disabled={working} onClick={async () => { try { setRun(await api<Run>(`/runs/${a.runId}`)); setTab("日志"); setNotice("正在查看这次尝试的执行记录；编辑器保留最新代码，结果以批次所绑定版本为准。"); } catch(e) { setError((e as Error).message); } }}>查看第{a.attempt}次执行 · {a.runId.slice(0,8)}</button>}</li>)}</ol>
+              {task.sourceRunId && <button className="button" disabled={working} onClick={()=>void readAttemptRun(task.sourceRunId!,undefined,"这里是本次修正引用的原始失败批次。",true)}>查看修正依据 · {task.sourceRunId.slice(0,8)}</button>}
+              <ol className="agent-dev-attempts">{task.attempts.map(a => <li key={a.attempt}><span>第{a.attempt}次</span><strong>{a.status === "FAILED" ? "执行失败（记录保留）" : a.status === "GENERATED" ? "代码已生成" : stageText[a.status] ?? a.status}</strong>{a.model && <small>模型：{a.model}</small>}{a.status === "NO_SQL_CHANGE" ? a.sourceRunId && <button disabled={working} onClick={()=>void readAttemptRun(a.sourceRunId!,undefined,"本次模型未修改代码，正在查看原失败批次。",true,"校验")}>查看原失败批次 · {a.sourceRunId.slice(0,8)}</button> : a.runId && <button disabled={working} onClick={()=>void readAttemptRun(a.runId!,a.revisionId,"正在查看这次尝试的执行记录。")}>查看第{a.attempt}次执行 · {a.runId.slice(0,8)}</button>}</li>)}</ol>
               <small>版本 {task.version} · 预算占用 {task.usedTokens ?? 0} Token（含未发送或未知结果的保留额度）· 结论仅对应当前代码版本</small>
               {task.background&&<p role="status">云后台：{task.background.status} · 已处理{task.background.consumedEvents}/{task.background.maxEvents}个事件 · 截止{new Date(task.background.expiresAt).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai"})}。请求未发送或模型结果未知时暂停，不自动重试或上线。{task.background.code&&` ${task.background.code}`}</p>}
             </div>
@@ -516,8 +533,8 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
       <section id="agent-code" className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : baselineRevisionId ? `版本 ${baselineRevisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>
         <div className="agent-dev-editor"><Suspense fallback={<div className="agent-dev-empty">正在加载代码编辑器…</div>}><SqlEditor value={draft} original={codeOriginal} diff={diff} onChange={setDraft} readOnly={derivationActive||readOnly||!scopeEditable||Boolean(publicationTarget)||working} /></Suspense></div>
         <div className="agent-dev-code-actions"><small><Code2 size={14} />{derivationActive?"源SQL已冻结；新任务确认后才按目标口径生成新版本":readOnly ? "代码只读；编辑与执行尚未开放" : !scopeEditable ? "其他任务只读；请查看指定任务续接" : automatic ? "Agent 处理中，可随时停止后接管" : "可直接编辑；修改后需重新验证"}</small>{runPending && !automatic && <button className="button" disabled={!canWrite || busy} onClick={async () => { if (!run) return; setBusy(true); try { setRun(await api<Run>(`/runs/${run.id}/cancel`, {})); setNotice("取消标记已保存；迟到结果不会覆盖已取消状态。"); } catch(e) { setError((e as Error).message); } finally { setBusy(false); } }}><Square size={13} />停止运行</button>}<button className="button" disabled={derivationActive||!canWrite || working || runPending || manualUnconfirmed || Boolean(pendingSaveKey) || Boolean(pendingAgentKey) || !draft.trim()} onClick={() => void runDraft()}><Play size={14} />保存并运行我的代码</button></div>
-        <div className="agent-dev-result-tabs" role="tablist" aria-label="开发执行反馈">{["结果","校验","日志"].map(name => <button key={name} role="tab" aria-selected={tab === name} onClick={() => setTab(name)}>{name}</button>)}<span>{run ? `${stageText[run.status] ?? run.status} · ${run.id.slice(0,8)}` : "尚未执行"}</span></div>
-        <div className="agent-dev-results">{!run ? <div className="agent-dev-empty">执行后的真实结果、校验与日志会显示在这里。<br />不会预先填入报表结果。</div> : <>
+        <div className="agent-dev-result-tabs" role="tablist" aria-label="开发执行反馈">{["结果","校验","日志"].map(name => <button key={name} role="tab" aria-selected={tab === name} onClick={() => setTab(name)}>{name}</button>)}<span>{runRead.state==="LOADING"?"正在读取原运行记录":runRead.state==="ERROR"?"运行结果未确认":run ? `${stageText[run.status] ?? run.status} · ${run.id.slice(0,8)}` : "尚未执行"}</span></div>
+        <div className="agent-dev-results">{!run ? runRead.state!=="IDLE"?<div className="agent-dev-empty" role={runRead.state==="ERROR"?"alert":"status"}>{runRead.state==="LOADING"?"正在核对原任务的运行记录；不重新执行计算。":<>{runRead.message}<p>已读代码与草稿保留，不显示其他任务的结果。</p><button className="button" disabled={working||!task} onClick={()=>task&&void selectTask(task.id,false)}>重新读取原任务与运行</button></>}</div>:<div className="agent-dev-empty">执行后的真实结果、校验与日志会显示在这里。<br />不会预先填入报表结果。</div> : <>
           {run.error && <p className="agent-dev-error-text" role="alert">{run.error}</p>}
           <AgentRepairAction input={repairInput} onSubmit={request=>send(request.message,request.sourceRunId)} onExplain={setNotice} />
           {tab === "结果" && (resultFields.length ? <><ValidationResultScope contextId={run.contextId} contextName={contexts.find(item=>item.id===run.contextId)?.name} runId={run.id} revisionId={run.revisionId} dirty={dirty} /><div className="agent-dev-table-scroll"><table><thead><tr>{resultFields.map(k => <th key={k} title={k}>{resultLabel(k)}</th>)}</tr></thead><tbody>{run.rows?.map((row,i) => <tr key={i}>{resultFields.map(k => <td key={k}>{String(row[k] ?? "—")}</td>)}</tr>)}</tbody></table></div><p>{run.engine} {run.engineVersion} · {run.rows?.length} 行 · 结果绑定版本 {run.revisionId?.slice(0,8)}</p></> : <p className="agent-dev-empty">{terminal(run.status) ? "本次未产生可展示的数据行。请查看校验和日志。" : "Spark 正在执行，结果完成后显示。"}</p>)}
