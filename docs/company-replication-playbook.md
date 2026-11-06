@@ -132,6 +132,8 @@ API是原子能力和治理契约；GUI、CLI、MCP是不同使用入口，不�
 
 ## 十、交付和复现入口
 
+2026-11-06新增[本机真实Spark到服务消费集成](local-real-spark-service-integration.md)：可按现有API顺序复现手工开发、按文件演练、两个本机计时批次及授权查询。记录中的合成测试审阅只服务隔离回归，不可作为公司或本人批准；迁入公司时用真实审批系统及实际计算／调度／数据服务替换相应环节。
+
 - 需求边界：[PRD](PRD.md)
 - 决策与替代关系：[decisions.md](decisions.md)
 - 架构：[architecture.md](architecture.md)
