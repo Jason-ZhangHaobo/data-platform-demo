@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { ingressDenialReasons } from "./fc-ingress.mjs";
 import { createRequestLane } from "./request-lane.mjs";
+import { createAssetAnnotationRequests } from "./asset-annotation-requests.mjs";
 import { serveV2Static } from "./static-response.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
 import { publicDevelopmentConfig, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow, assertDevelopmentTargetTask, developmentBackgroundBoundary, assertDevelopmentBackgroundScope } from "./public-development-access.mjs";
@@ -1007,6 +1008,7 @@ export function createV2Server(options = {}) {
     project: PROJECT,
     now: options.now,
   });
+  const annotationRequests = createAssetAnnotationRequests({ store, assets, project: PROJECT });
   const assetPlanner =
     options.assetPlanner ??
     (async (input) => {
@@ -2218,6 +2220,16 @@ export function createV2Server(options = {}) {
           }
           return json(res, 200, get("asset_agent_task", task.id));
         }
+      }
+      const annotationRequest = path.match(/^\/api\/v2\/assets\/([^/]+)\/annotation-requests(?:\/([a-f0-9-]+))?$/i);
+      if (annotationRequest) {
+        const id = decodeURIComponent(annotationRequest[1]), requestId = annotationRequest[2], actorId = local ? "local-engineer" : auth.sessionFromHeaders(req.headers)?.user.id;
+        if (method === "GET" && requestId) return json(res, 200, annotationRequests.lookup(id, requestId, actorId));
+        if (method === "POST" && !requestId) {
+          const value = annotationRequests.submit(id, await readBody(req), actorId, req.headers["idempotency-key"]);
+          return json(res, value.replayed ? 200 : 201, value);
+        }
+        throw fail(405, "标注请求方法不受支持");
       }
       const assetRecord = path.match(
         /^\/api\/v2\/assets\/([^/]+)(?:\/(annotation|lineage|impact))?$/,

@@ -106,6 +106,8 @@ export const V2_OPERATIONS = Object.freeze([
   "asset_lineage",
   "asset_impact",
   "asset_annotate",
+  "asset_annotation_submit",
+  "asset_annotation_request",
   "metric_list",
   "metric_create",
   "metric_run",

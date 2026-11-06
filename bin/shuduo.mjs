@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
+import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
@@ -118,6 +119,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo assets list [--query 持仓] [--kind LANDING_TABLE]
   shuduo assets show|lineage|impact --id ASSET_ID
   shuduo assets annotate --id ASSET_ID --business-name 名称 --description 说明 --domain 财富管理 --owner 负责人 [--tags 持仓,T+1]
+  shuduo assets annotation-submit --id ASSET_ID --file 完整标注请求.json
+  shuduo assets annotation-request --id ASSET_ID --request-id UUID
   shuduo assets agent --message "找出持仓市值资产并解释来源"
   shuduo assets agents
   shuduo contracts list
@@ -901,7 +904,11 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         assetResourcePath(required(parsed.options, "id"), action === "show" ? undefined : action),
       );
-    } else if (resource === "assets" && action === "annotate")
+    } else if (resource === "assets" && action === "annotation-submit")
+      result = await submitAssetAnnotation(client, required(parsed.options,"id"), jsonObject(readFileSync(required(parsed.options,"file"),"utf8"),"标注请求"));
+    else if (resource === "assets" && action === "annotation-request")
+      result = await readAssetAnnotationRequest(client, required(parsed.options,"id"), required(parsed.options,"request_id"));
+    else if (resource === "assets" && action === "annotate")
       result = await client.request(
         assetResourcePath(required(parsed.options, "id"), "annotation"),
         {
@@ -1259,6 +1266,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request("/evaluations/full-lifecycle/latest");
     else throw new Error(`不支持的V2命令：${parsed.positionals.join(" ")}`);
     out(JSON.stringify(result, null, 2));
+    if(resource==='assets'&&action==='annotation-submit'&&result?.protocol==='shuduo-asset-annotation-result/v2'&&result.receipt.outcome==='REJECTED')return 2;
     return 0;
   } catch (error) {
     err(`错误：${error.message}`);
