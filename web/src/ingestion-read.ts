@@ -16,6 +16,7 @@ export function createIngestionReader<S, T, P, R>({ api, onCatalog, onPreview }:
   onPreview: (result: Preview<R>) => void;
 }) {
   let live = true, catalogSequence = 0, previewSequence = 0;
+  async function request<T>(path: string) { return api<T>(path); }
   async function readPreview() {
     if (!live) return false;
     const sequence = ++previewSequence;
@@ -37,11 +38,13 @@ export function createIngestionReader<S, T, P, R>({ api, onCatalog, onPreview }:
     const sequence = ++catalogSequence;
     const current = () => live && sequence === catalogSequence;
     onCatalog({ state: "LOADING" });
-    void readPreview();
     try {
-      const [sources, tasks, plans] = await Promise.all([
-        api<S[]>("/sources"), api<T[]>("/sync/tasks"), api<P[]>("/sync/agent/plans"),
+      const catalog = Promise.all([
+        request<S[]>("/sources"), request<T[]>("/sync/tasks"), request<P[]>("/sync/agent/plans"),
       ]);
+      // Submit essential reads first when the transport shares a request lane.
+      void readPreview();
+      const [sources, tasks, plans] = await catalog;
       if (!current()) return false;
       if (![sources, tasks, plans].every(Array.isArray)) throw Error("接入目录响应不完整；数据源、任务和方案数量尚未确认。");
       onCatalog({ state: "READY", sources, tasks, plans });

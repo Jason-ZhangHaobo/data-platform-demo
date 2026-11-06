@@ -14,6 +14,7 @@ test("a slow optional preview cannot hold a confirmed catalog in loading", async
   const rows = deferred();
   const f = fixture(async path => path === previewPath ? rows.promise : []);
   assert.equal(await f.reader.reload(), true);
+  assert.deepEqual(f.calls.map(args => args[0]), ["/sources", "/sync/tasks", "/sync/agent/plans", previewPath]);
   assert.deepEqual(f.catalogs.map(r => r.state), ["LOADING", "READY"]);
   assert.deepEqual(f.previews.map(r => r.state), ["LOADING"]);
   rows.resolve([{ position_id: "synthetic-position" }]); await rows.promise; await Promise.resolve();
