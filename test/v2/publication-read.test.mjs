@@ -30,3 +30,9 @@ test('polling ends for terminal releases, complete batches, and an empty history
   assert.equal(publicationPollNeeded({release:{status:'ACTIVE_LOCAL'},runs:[{status:'SUCCEEDED'},{status:'FAILED'}]}),false);
   assert.equal(publicationPollNeeded({release:{status:'ACTIVE_LOCAL'},runs:[{status:'SUCCEEDED'},{status:'RUNNING'}]}),true);
 });
+test('rejected adoption enters the error state and later explicit refresh can recover',async()=>{
+ let reads=0,accepted=[],errors=[];
+ const reader=createPublicationReader({read:async()=>++reads,onValue:value=>{if(value===1)throw Error('invalid projection');accepted.push(value);},onError:error=>errors.push(error.message)});
+ await reader.refresh();assert.deepEqual(errors,['invalid projection']);assert.deepEqual(accepted,[]);
+ await reader.refresh();assert.deepEqual(accepted,[2]);assert.equal(reads,2);reader.close();
+});

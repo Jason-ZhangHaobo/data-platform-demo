@@ -20,7 +20,7 @@ export function createPublicationReader<T>({ read, onValue, onError }: {
       const stamp = generation;
       const request = Promise.resolve().then(read).then(value => {
         if (!closed && stamp === generation) onValue(value);
-      }, error => { if (!closed && stamp === generation) onError(error); });
+      }).catch(error => { if (!closed && stamp === generation) onError(error); });
       const completion = request.finally(() => { if (pending === completion) pending = undefined; });
       pending = completion;
       return completion;
