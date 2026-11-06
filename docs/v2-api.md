@@ -244,6 +244,8 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | GET /assets | q/kind可选 | 搜索从当前实际资源和版本关系投影的逻辑资产目录 |
 | GET /assets/:id | 资产编号 | 字段、证据摘要、说明、血缘、指标与标准 |
 | POST /assets/:id/annotation | 业务名称/说明/域/负责人/分类/标签 | 保存新的资产说明版本，不覆盖底层证据 |
+| POST /assets/:id/annotation-requests | V2协议、请求UUID、expected版本/摘要、完整annotation | 事务核对已读基线并保存不可变应用／拒绝回执；必须检查outcome，不能只看201 |
+| GET /assets/:id/annotation-requests/:requestId | 原UUID | 仅本账号原请求；原快照与当前投影分开，恢复不写入 |
 | GET /assets/:id/lineage | 无 | 上下游版本绑定及同步字段映射；明确SQL字段级解析状态 |
 | GET /assets/:id/impact | 无 | 基于有向版本绑定的下游影响范围 |
 | GET/POST /metrics | 列表或资产/聚合/字段/分组/口径 | 版本化指标定义；首版只支持实际落地/实时状态行 |

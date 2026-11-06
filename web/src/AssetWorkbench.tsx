@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createAssetReader, assetSummaryValid, assetDetailValid, assetResourcePath, annotationKey, annotationValues, annotationDirty, annotationTags, annotationReceiptMatches, reconcileAnnotation, rebaseAnnotation } from "./asset-read";
 import type { AssetCatalogRead, AssetDetailRead, AnnotationDraft, AnnotationValues } from "./asset-read";
+import {createAnnotationSubmission,annotationRecoveryMarker,annotationRecoveryLocation,assetLocationTarget} from './asset-annotation-submission';
+import {normalizeAnnotationValues} from '../../src/v2/asset-annotation-client.mjs';
+import type {AnnotationResult} from '../../src/v2/asset-annotation-client.mjs';
 import {
   Activity,
   AlertTriangle,
@@ -25,7 +28,7 @@ import {
 } from "lucide-react";
 import { ContractsPanel } from "./ContractsPanel";
 
-type Api = <T>(path: string, body?: unknown) => Promise<T>;
+type Api = <T>(path: string, body?: unknown, options?:{idempotencyKey?:string}) => Promise<T>;
 type Field = {
   name: string;
   type: string;
@@ -162,6 +165,14 @@ export function AssetWorkbench({
   initialAssetId?: string;
   handoffMessage?: string;
 }) {
+  const initialAnnotation = useMemo(()=>typeof window==='undefined'?{state:'ABSENT' as const}:annotationRecoveryMarker(window.location.href),[]);
+  const locationTarget=useMemo(()=>typeof window==='undefined'?undefined:assetLocationTarget(window.location.href),[]);
+  const initialTarget = initialAnnotation.state==='VALID'?initialAnnotation.assetId:initialAssetId??locationTarget;
+  const [annotationPending,setAnnotationPending]=useState<{assetId:string;requestId:string}|undefined>(initialAnnotation.state==='VALID'?{assetId:initialAnnotation.assetId,requestId:initialAnnotation.requestId}:undefined);
+  const [annotationResult,setAnnotationResult]=useState<AnnotationResult>();
+  const annotationSubmission=useRef<{assetId:string;controller:ReturnType<typeof createAnnotationSubmission>}|undefined>(undefined);
+  const submittedDraft=useRef<AnnotationDraft|undefined>(undefined);
+  const confirmedRevisions=useRef(new Map<string,number>());
   const [assets, setAssets] = useState<Asset[]>([]),
     [metrics, setMetrics] = useState<Metric[]>([]),
     [standards, setStandards] = useState<Standard[]>([]),
@@ -169,7 +180,7 @@ export function AssetWorkbench({
   const [catalogRead, setCatalogRead] = useState<AssetCatalogRead<Asset, Metric, Standard, AgentTask>>({ state: "LOADING", criteria: { query: "", kind: "" } });
   const [detailRead, setDetailRead] = useState<AssetDetailRead<AssetDetail>>({ state: "EMPTY", id: "" });
   const detail = "value" in detailRead ? detailRead.value : undefined, selectedId = detailRead.id;
-  const catalogReady = catalogRead.state === "READY", detailReady = detailRead.state === "READY" && detail?.id === selectedId;
+  const catalogReady = catalogRead.state === "READY", detailReady = detailRead.state === "READY" && detail?.id === selectedId && (detail.annotation?.revision??0)>=(confirmedRevisions.current.get(selectedId)??0);
   const canWrite = originalCanWrite && detailReady;
   const [knownKinds, setKnownKinds] = useState<string[]>([]);
   const [query, setQuery] = useState(""),
@@ -192,7 +203,7 @@ export function AssetWorkbench({
   const draftConflict = Boolean(draftDirty && detailReady && annotation && detail && annotation.key !== annotationKey(detail));
   const reader = useRef<ReturnType<typeof createAssetReader<Asset, Metric, Standard, AgentTask, AssetDetail>> | undefined>(undefined);
   const formsAsset = useRef("");
-  const selectionRef = useRef(initialAssetId ?? "");
+  const selectionRef = useRef(initialTarget ?? "");
   const activeQuestion = useRef<string | undefined>(undefined);
   activeQuestion.current = agentTask?.id;
   const [metricName, setMetricName] = useState("持仓市值"),
@@ -223,7 +234,7 @@ export function AssetWorkbench({
     drafts.current.set(detail.id, next); setAnnotation(next);
   }
   useEffect(() => {
-    const current = createAssetReader<Asset, Metric, Standard, AgentTask, AssetDetail>({ api, initialId: initialAssetId, validAsset: assetSummaryValid, validDetail: assetDetailValid, isOlder: (value, known) => (value.annotation?.revision ?? 0) < (known.annotation?.revision ?? 0),
+    const current = createAssetReader<Asset, Metric, Standard, AgentTask, AssetDetail>({ api, initialId: initialTarget, validAsset: assetSummaryValid, validDetail: (value,id)=>assetDetailValid(value,id)&&((value as AssetDetail).annotation?.revision??0)>=(confirmedRevisions.current.get(id)??0), isOlder: (value, known) => (value.annotation?.revision ?? 0) < (known.annotation?.revision ?? 0),
       onCatalog(result) {
         setCatalogRead(result);
         if (result.state !== "READY") return;
@@ -247,7 +258,7 @@ export function AssetWorkbench({
     });
     reader.current = current; void current.search();
     return () => { current.close(); if (reader.current === current) reader.current = undefined; };
-  }, [api, initialAssetId]);
+  }, [api, initialTarget]);
   useEffect(() => {
     if (!agentTask || !pending(agentTask.status)) return;
     let live = true, polling = false; const id = agentTask.id;
@@ -300,30 +311,57 @@ export function AssetWorkbench({
       "Data Agent正在读取资产摘要和版本绑定血缘",
       "history",
     );
-  const saveAnnotation = () =>
-    detail && canWrite && annotation && draftDirty && !draftConflict &&
-    action(
-      "annotation",
-      async () => {
-        const id = detail.id, submitted = annotation, current = reader.current;
-        const result = await api<AssetDetail>(assetResourcePath(id, "annotation"), {
-          businessName: submitted.values.businessName,
-          description: submitted.values.description,
-          domain: submitted.values.domain,
-          owner: submitted.values.owner,
-          classification: "INTERNAL_DEMO",
-          tags: annotationTags(submitted),
-        });
-        if (reader.current !== current) return;
-        if (!assetDetailValid(result, id) || !result.annotation || !annotationReceiptMatches(result, submitted)) throw Error("说明保存回执尚未确认，原草稿保留，请先重新读取详情。");
-        if (!current?.confirmDetail(id, result)) throw Error("保存版本未与当前上下文对应，原记录保留，请重新核对。");
-        if (drafts.current.get(id) === submitted) {
-          const ack = reconcileAnnotation(undefined, result);
-          drafts.current.set(id, ack); if (selectionRef.current === id) setAnnotation(ack);
-        }
-      },
-      "资产说明已保存为新版本",
-    );
+  function annotationController(assetId:string) {
+    const previous=annotationSubmission.current;
+    if(previous?.assetId===assetId&&!previous.controller.snapshot().closed)return previous;
+    if(previous?.controller.snapshot().key)throw Error('原标注结果尚未确认，不能切换为另一个写请求');
+    previous?.controller.close();
+    const controller=createAnnotationSubmission({api,assetId,initialKey:annotationPending?.assetId===assetId?annotationPending.requestId:undefined,onPending:key=>{
+      setAnnotationPending(key?{assetId,requestId:key}:undefined);
+      if(typeof window!=='undefined')history.replaceState(null,'',annotationRecoveryLocation(location.href,key?assetId:selectionRef.current||assetId,key));
+    }});
+    const entry={assetId,controller};annotationSubmission.current=entry;return entry;
+  }
+  async function acceptAnnotationResult(result:AnnotationResult,entry:NonNullable<typeof annotationSubmission.current>) {
+    if(annotationSubmission.current!==entry||result.assetId!==entry.assetId||result.requestId!==entry.controller.snapshot().key)throw Error('标注回执上下文不一致，原请求保留');
+    setAnnotationResult(result);
+    if(result.receipt.outcome==='APPLIED'&&result.receipt.annotation){
+      const saved=result.receipt.annotation,known=drafts.current.get(result.assetId),sent=submittedDraft.current;
+      confirmedRevisions.current.set(result.assetId,Math.max(confirmedRevisions.current.get(result.assetId)??0,saved.revision));
+      if((!known||known===sent||!annotationDirty(known))&&(!known||known.revision<=saved.revision)){
+        const ack=reconcileAnnotation(undefined,{...saved,id:result.assetId,annotation:{revision:saved.revision}});drafts.current.set(result.assetId,ack);if(selectionRef.current===result.assetId)setAnnotation(ack);
+      }
+      setNotice(`原请求已应用为说明V${saved.revision}${result.currentMatches?'；继续核对当前详情。':'；当前版本另行核对，不把原结果当作最新。'}`);setError('');
+    }else{setNotice('');setError('原请求已明确拒绝：已读基线发生变化，没有创建标注版本；本页草稿保留，请重读并审阅新基线。');}
+    entry.controller.acknowledge(result.requestId);submittedDraft.current=undefined;
+    if(result.receipt.outcome==='APPLIED'){const ready=await reader.current?.search();if(!ready&&selectionRef.current===result.assetId)await reader.current?.refreshDetail();}
+    else if(selectionRef.current===result.assetId)await reader.current?.refreshDetail();
+  }
+  async function recoverAnnotation(retry=false) {
+    if(busy||!annotationPending||retry&&!originalCanWrite)return;
+    const entry=annotationController(annotationPending.assetId);setBusy('annotation-read');setError('');
+    try{await acceptAnnotationResult(await(retry?entry.controller.retry():entry.controller.recover()),entry);}
+    catch(cause){if(annotationSubmission.current===entry)setError((cause as Error).message+' 原编号保留；不自动重写。');}
+    finally{if(annotationSubmission.current===entry)setBusy('');}
+  }
+  async function saveAnnotation() {
+    if(!detail||!canWrite||!annotation||!draftDirty||draftConflict||busy||annotationPending||initialAnnotation.state==='INVALID')return;
+    let values;try{values=normalizeAnnotationValues({businessName:annotation.values.businessName,description:annotation.values.description,domain:annotation.values.domain,owner:annotation.values.owner,classification:'INTERNAL_DEMO',tags:annotationTags(annotation)});}catch(cause){setError((cause as Error).message);return;}
+    const entry=annotationController(detail.id);submittedDraft.current=annotation;setBusy('annotation');setError('');
+    try{
+      const result=await entry.controller.submit({expected:{revision:annotation.revision,evidenceHash:detail.evidenceHash},annotation:values});
+      await acceptAnnotationResult(result,entry);
+    }catch(cause){
+      if(annotationSubmission.current===entry){
+        try{await acceptAnnotationResult(await entry.controller.recover(),entry);}
+        catch{setError((cause as Error).message+' 保存结果尚未确认；原内容和编号保留，请先核对原请求。');}
+      }
+    }finally{if(annotationSubmission.current===entry)setBusy('');}
+  }
+  useEffect(()=>{
+    if(initialAnnotation.state==='VALID')void recoverAnnotation();
+    return()=>{annotationSubmission.current?.controller.close();annotationSubmission.current=undefined;};
+  },[api]);
   const createMetric = () =>
     detail && canWrite && detail.executableMetrics && (aggregation === "COUNT_ROWS" || detail.fields.some(field => field.name === metricField)) && (!groupBy || detail.fields.some(field => field.name === groupBy)) &&
     action(
@@ -386,6 +424,9 @@ export function AssetWorkbench({
       {!catalogReady&&<section className={catalogRead.state==="ERROR"?"ingestion-feedback error":"ingestion-feedback"} role={catalogRead.state==="ERROR"?"alert":"status"} aria-label="资产目录读取状态"><div><strong>{catalogRead.state==="ERROR"?catalogRead.loginRequired?"登录后查看项目资产":"资产目录尚未确认":"正在读取当前条件的资产目录"}</strong><p>{catalogRead.state==="ERROR"?catalogRead.message:"读取完成前不显示零项或空结果。"}</p><small>详情与原问答分别核对；重读不调用模型或创建资源。</small><button className="button" disabled={!!busy||catalogRead.state==="LOADING"} onClick={()=>void loadLists()}>重新读取资产目录</button></div></section>}
 
       {(notice || error) && <div className={error ? "ingestion-feedback error" : "ingestion-feedback"} role={error ? "alert" : "status"}>{error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}{error || notice}</div>}
+      {initialAnnotation.state==='INVALID'&&<div className="ingestion-feedback error" role="alert">标注恢复链接不完整；可读取资产，本页不创建另一个标注请求。请使用原完整恢复链接。</div>}
+      {annotationPending&&<section className="asset-annotation-recovery" aria-label="标注请求恢复" role="status"><strong>原标注结果待核对</strong><p>资产：{annotationPending.assetId}<br/>请求：{annotationPending.requestId}</p><small>只读核对原请求；恢复链接不含标注正文。正文不在本页时仅能查询，不能重发。</small><div><button className="button" disabled={!!busy} onClick={()=>void recoverAnnotation()}>核对原标注请求</button><button className="button" disabled={!!busy||!originalCanWrite||!annotationSubmission.current?.controller.snapshot().canRetry} onClick={()=>void recoverAnnotation(true)}>按原内容和编号重试</button><a className="button" target="_blank" rel="noreferrer" href={annotationRecoveryLocation(typeof location==='undefined'?'http://localhost/v2/':location.href,annotationPending.assetId,annotationPending.requestId).href}>原请求恢复链接</a></div></section>}
+      {annotationResult&&<section className="asset-annotation-receipt" aria-label="原标注回执"><strong>{annotationResult.receipt.outcome==='APPLIED'?`原请求已应用为说明V${annotationResult.receipt.annotation?.revision}`:'原请求被拒绝，没有新增标注版本'}</strong><p>{annotationResult.assetId} · {annotationResult.requestId}</p><small>{annotationResult.current.state==='UNAVAILABLE'?'当前资产暂不可核对，原回执保留。':annotationResult.currentMatches?'当前已读状态与原回执一致。':`当前状态已变化（说明V${annotationResult.current.revision}）；原请求结果保持不变。`}</small><small>原回执摘要：{annotationResult.receiptHash.slice(0,12)} · 不以最新详情替代原结果</small></section>}
 
       <section className="asset-agent-v2">
         <header><div className="asset-agent-icon-v2"><Bot size={20} /></div><div><span className="eyebrow">DATA AGENT · GROUNDED DISCOVERY</span><h3>找数据、解释口径、看下游影响</h3><p>模型只接收资产摘要、版本绑定关系和已检查的契约摘要；引用未知资产即失败，不读取业务行。</p></div></header>
@@ -401,6 +442,7 @@ export function AssetWorkbench({
           {!catalogReady?<div className="ingestion-empty"><FileSearch size={25}/><p>目录尚未确认，请按上方状态重新读取。</p></div>:!assets.length&&<div className="ingestion-empty"><FileSearch size={25} /><p>没有符合已应用条件的资产。</p></div>}
         </aside>
         <section className="asset-detail-v2">
+          {detailRead.state==='READY'&&!detailReady&&<div className="ingestion-feedback" role="status">原标注回执已确认，当前详情尚未完成回读；请刷新所选详情，期间不保存或执行。</div>}
           {detailRead.state!=="READY"&&detailRead.state!=="EMPTY"&&<div className={detailRead.state==="ERROR"?"ingestion-feedback error":"ingestion-feedback"} role={detailRead.state==="ERROR"?"alert":"status"} aria-label="资产详情读取状态"><div><strong>{detailRead.state==="ERROR"?"资产详情尚未确认":"正在读取所选资产详情"}</strong><p>{detailRead.state==="ERROR"?detailRead.message:detailRead.id}</p>{detail&&<small>显示上次已读快照；本次读取未确认，不能保存或执行。未保存的说明保留。</small>}<button className="button" disabled={!!busy||detailRead.state==="LOADING"} onClick={()=>void reader.current?.refreshDetail()}>重新读取原资产</button></div></div>}
           {detail&&<p className="asset-read-scope">详情定位：{detail.id} · 已读说明V{detail.annotation?.revision??0}。{!catalogReady?"目录尚未确认，详情单独核对。":!assets.some(asset=>asset.id===detail.id)?"此资产不在当前检索结果中，来自原定位。":"属于当前检索结果。"}<button className="button" disabled={!!busy||detailRead.state==="LOADING"} onClick={()=>void reader.current?.refreshDetail()}>刷新所选详情</button></p>}
           {detail ? <>
@@ -409,7 +451,7 @@ export function AssetWorkbench({
             {tab === "overview" && <div className="asset-overview-v2">
               <div className="asset-proof-v2"><div><span>真实行数</span><strong>{detail.rowCount ?? "—"}</strong></div><div><span>业务域</span><strong>{detail.domain}</strong></div><div><span>责任人</span><strong>{detail.owner ?? "待补充"}</strong></div><div><span>说明版本</span><strong>V{detail.annotation?.revision ?? 0}</strong></div></div>
               <article className="asset-description-v2"><Layers3 size={18} /><div><strong>{detail.description}</strong><p>{detail.tags.join(" · ")}</p></div></article>
-              <details className="asset-annotation-v2"><summary><Tag size={14} />编辑业务说明{draftDirty?" · 有本页草稿":""}</summary>{draftDirty&&<p role="status">本页说明草稿基于已读V{annotation?.revision}；切换资产和重读不会覆盖，尚未保存。</p>}{draftConflict&&annotation&&<div className="asset-draft-conflict" role="alert"><strong>新读取版本与草稿基线不同，先核对再保存。</strong><table><thead><tr><th>字段</th><th>草稿基线</th><th>本次读取</th><th>本页编辑</th></tr></thead><tbody>{(Object.keys(annotation.values) as (keyof AnnotationValues)[]).map(field=><tr key={field}><th>{{businessName:"业务名称",description:"说明",domain:"业务域",owner:"负责人",tagText:"标签"}[field]}</th><td>{annotation.base[field]}</td><td>{annotationValues(detail)[field]}</td><td>{annotation.values[field]}</td></tr>)}</tbody></table><button className="button" disabled={!originalCanWrite||!detailReady||!!busy} onClick={()=>{const next=rebaseAnnotation(annotation,detail);drafts.current.set(detail.id,next);setAnnotation(next);}}>审阅后沿用当前已读版本</button></div>}<div><label>业务名称<input readOnly={!originalCanWrite||busy==="annotation"} value={businessName} onChange={event=>editAnnotation("businessName",event.target.value)} /></label><label>业务域<input readOnly={!originalCanWrite||busy==="annotation"} value={domain} onChange={event=>editAnnotation("domain",event.target.value)} /></label><label>负责人<input readOnly={!originalCanWrite||busy==="annotation"} value={owner} onChange={event=>editAnnotation("owner",event.target.value)} /></label><label>标签<input readOnly={!originalCanWrite||busy==="annotation"} value={tagText} onChange={event=>editAnnotation("tagText",event.target.value)} /></label><label className="wide">说明<textarea readOnly={!originalCanWrite||busy==="annotation"} rows={2} value={description} onChange={event=>editAnnotation("description",event.target.value)} /></label><button className="button" onClick={saveAnnotation} disabled={!canWrite || !draftDirty || draftConflict || !!busy}><Save size={14} />保存新版本</button></div></details>
+              <details className="asset-annotation-v2"><summary><Tag size={14} />编辑业务说明{draftDirty?" · 有本页草稿":""}</summary>{draftDirty&&<p role="status">本页说明草稿基于已读V{annotation?.revision}；切换资产和重读不会覆盖，尚未保存。</p>}{draftConflict&&annotation&&<div className="asset-draft-conflict" role="alert"><strong>新读取版本与草稿基线不同，先核对再保存。</strong><table><thead><tr><th>字段</th><th>草稿基线</th><th>本次读取</th><th>本页编辑</th></tr></thead><tbody>{(Object.keys(annotation.values) as (keyof AnnotationValues)[]).map(field=><tr key={field}><th>{{businessName:"业务名称",description:"说明",domain:"业务域",owner:"负责人",tagText:"标签"}[field]}</th><td>{annotation.base[field]}</td><td>{annotationValues(detail)[field]}</td><td>{annotation.values[field]}</td></tr>)}</tbody></table><button className="button" disabled={!originalCanWrite||!detailReady||!!busy} onClick={()=>{const next=rebaseAnnotation(annotation,detail);drafts.current.set(detail.id,next);setAnnotation(next);}}>审阅后沿用当前已读版本</button></div>}<div><label>业务名称<input readOnly={!originalCanWrite||busy==="annotation"} value={businessName} onChange={event=>editAnnotation("businessName",event.target.value)} /></label><label>业务域<input readOnly={!originalCanWrite||busy==="annotation"} value={domain} onChange={event=>editAnnotation("domain",event.target.value)} /></label><label>负责人<input readOnly={!originalCanWrite||busy==="annotation"} value={owner} onChange={event=>editAnnotation("owner",event.target.value)} /></label><label>标签<input readOnly={!originalCanWrite||busy==="annotation"} value={tagText} onChange={event=>editAnnotation("tagText",event.target.value)} /></label><label className="wide">说明<textarea readOnly={!originalCanWrite||busy==="annotation"} rows={2} value={description} onChange={event=>editAnnotation("description",event.target.value)} /></label><button className="button" onClick={saveAnnotation} disabled={!canWrite || !draftDirty || draftConflict || !!busy || Boolean(annotationPending) || initialAnnotation.state==='INVALID'}><Save size={14} />保存新版本</button></div></details>
             </div>}
             {tab === "fields" && <div className="asset-fields-v2"><table><thead><tr><th>#</th><th>字段</th><th>类型</th><th>可空</th><th>基数</th></tr></thead><tbody>{detail.fields.map((field, index) => <tr key={field.name}><td>{index + 1}</td><td><code>{field.name}</code></td><td>{field.type}</td><td>{field.nullable ? "是" : "否"}</td><td>{field.distinctCount ?? "—"}</td></tr>)}</tbody></table></div>}
             {tab === "lineage" && <div className="asset-lineage-v2">

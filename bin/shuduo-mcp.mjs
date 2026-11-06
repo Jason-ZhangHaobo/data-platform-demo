@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
+import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
@@ -124,6 +125,8 @@ const tools = [
   { name: "asset_lineage", description: "读取来自同步、发布和数据服务版本绑定的血缘；不是完整SQL字段级解析。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
   { name: "asset_impact", description: "读取指定资产的下游版本绑定影响范围。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
   { name: "asset_annotate", description: "为合成资产保存版本化业务名称、说明、域、负责人和标签。", inputSchema: { type: "object", properties: { assetId: { type: "string" }, businessName: { type: "string" }, description: { type: "string" }, domain: { type: "string" }, owner: { type: "string" }, classification: { type: "string", enum: ["PUBLIC_DEMO", "INTERNAL_DEMO", "RESTRICTED_DEMO"] }, tags: { type: "array", items: { type: "string" } } }, required: ["assetId", "businessName", "description", "domain", "owner"] } },
+  { name: "asset_annotation_submit", description: "按确切已读版本提交完整标注；检查回执outcome，REJECTED没有写入标注。未知结果先按原requestId查询，不换编号重写。", inputSchema: { type:"object",properties:{assetId:{type:"string"},request:{type:"object",properties:{protocol:{type:"string",enum:["shuduo-asset-annotation-write/v2"]},requestId:{type:"string"},expected:{type:"object",properties:{revision:{type:"integer",minimum:0},evidenceHash:{type:"string"}},required:["revision","evidenceHash"]},annotation:{type:"object",properties:{businessName:{type:"string"},description:{type:"string"},domain:{type:"string"},owner:{type:"string"},classification:{type:"string",enum:["PUBLIC_DEMO","INTERNAL_DEMO","RESTRICTED_DEMO"]},tags:{type:"array",items:{type:"string"}}},required:["businessName","description","domain","owner","classification","tags"]}},required:["protocol","requestId","expected","annotation"]}},required:["assetId","request"]} },
+  { name: "asset_annotation_request", description:"只读恢复当前账号的原标注回执，区分原写入结果与当前版本；不创建新标注。",inputSchema:{type:"object",properties:{assetId:{type:"string"},requestId:{type:"string"}},required:["assetId","requestId"]} },
   { name: "metric_list", description: "列出版本化指标定义及实际运行。", inputSchema: { type: "object", properties: {} } },
   { name: "metric_create", description: "在可执行的落地或实时状态资产上创建SUM/COUNT指标定义。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, aggregation: { type: "string", enum: ["SUM", "COUNT_DISTINCT", "COUNT_ROWS"] }, field: { type: "string" }, groupBy: { type: "string" }, definition: { type: "string" } }, required: ["name", "code", "assetId", "aggregation", "definition"] } },
   { name: "metric_run", description: "对当前资产实际行执行指标并保存摘要。", inputSchema: { type: "object", properties: { metricId: { type: "string" } }, required: ["metricId"] } },
@@ -580,6 +583,8 @@ async function callTool(name, args = {}, client=defaultClient) {
     }[name];
     return client.request(assetResourcePath(args.assetId, action));
   }
+  if(name==='asset_annotation_submit')return submitAssetAnnotation(client,args.assetId,args.request);
+  if(name==='asset_annotation_request')return readAssetAnnotationRequest(client,args.assetId,args.requestId);
   if (name === "asset_annotate") {
     const { assetId, ...body } = args;
     return client.request(assetResourcePath(assetId, "annotation"), {
@@ -802,6 +807,7 @@ export async function handleV2Mcp(message, options = {}) {
       return response(message.id, {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
+        ...(message.params?.name==='asset_annotation_submit'&&result?.protocol==='shuduo-asset-annotation-result/v2'&&result.receipt.outcome==='REJECTED'?{isError:true}:{}),
       });
     } catch (error) {
       return errorResponse(message.id, -32000, error.message, {

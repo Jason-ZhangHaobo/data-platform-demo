@@ -132,10 +132,12 @@ export class AssetCatalogManager {
     };
   }
 
-  annotate(id, input) {
+  annotate(id, input, { expected } = {}) {
     const item = this.#asset(id),
-      prior = this.#latestAnnotation(item.id),
-      annotation = this.store.create("asset_annotation", this.project, {
+      prior = this.#latestAnnotation(item.id);
+    if (expected && (expected.revision !== Number(prior?.revision ?? 0) || expected.evidenceHash !== item.evidenceHash))
+      throw Object.assign(fail(409,"已读说明或资产证据已变化，未写入新版本","ASSET_ANNOTATION_BASE_STALE"), { observed: { revision:Number(prior?.revision??0), evidenceHash:item.evidenceHash } });
+    const annotation = this.store.create("asset_annotation", this.project, {
         assetId: item.id,
         revision: Number(prior?.revision ?? 0) + 1,
         businessName: text(
