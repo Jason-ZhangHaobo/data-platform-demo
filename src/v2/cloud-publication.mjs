@@ -6,6 +6,7 @@ import { manualCloudDeliverySource, durableDeliveryMode } from "./agent-developm
 import {sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 import {standaloneManualPublicationSource} from './standalone-manual-publication-source.mjs';
 import {assertSqlRequirementPackageSource} from './sql-requirements.mjs';
+import {assertSqlClarificationTask} from './sql-clarification.mjs';
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -50,6 +51,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
   const assertRequirementSource=item=>{
     const s=item.manifest.source,run=store.get('run',s.runId,project),revision=store.get('revision',s.revisionId,project),
       agent=revision?.source==='LIVE_MODEL'&&run?.agentTaskId?store.get('agent',run.agentTaskId,project):undefined;
+    if(agent?.clarification)assertSqlClarificationTask(agent,{store,project});
     assertSqlRequirementPackageSource(item,{agent,run,revision});
   };
   const passes = (receipt, item, plan) => receipt?.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) &&

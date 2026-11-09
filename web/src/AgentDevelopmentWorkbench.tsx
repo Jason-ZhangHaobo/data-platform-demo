@@ -4,6 +4,9 @@ import { developmentRunLog } from "./run-log";
 import { AgentDeliveryPanel } from "./AgentDeliveryPanel";
 import { AgentRequirementExample } from "./AgentRequirementExample";
 import {AgentRequirementUnderstanding} from './AgentRequirementUnderstanding';
+import {AgentClarificationReply} from './AgentClarificationReply';
+import {readSqlClarification,sqlClarificationBody,verifiedClarificationReceipt} from '../../src/v2/sql-clarification-client.mjs';
+import {clarificationReplyReason} from '../../src/v2/sql-clarification-contract.mjs';
 import { manualRunLocation, manualRunRecovery, manualSaveLocation, manualSaveRequest, acknowledgedManualDraft, mayReuseManualRevision,verifiedManualOrigin,manualSourceDisclosure,developmentContextLocked } from "./manual-run-recovery";
 import {agentSubmissionRequest,agentSubmissionLocation,createAgentSubmission,agentTaskReceiptValid} from "./agent-submission";
 import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
@@ -32,13 +35,14 @@ const RunColumnLineagePanel=lazy(()=>import('./RunColumnLineagePanel'));
 const RunComparisonPanel=lazy(()=>import('./RunComparisonPanel'));
 const StandaloneManualDeliveryPanel=lazy(async()=>({default:(await import('./StandaloneManualDeliveryPanel')).StandaloneManualDeliveryPanel}));
 type Context = { id: string; name: string; definition: string; validationFamily?:ValidationFamily; tables: { name: string; columns: [string, string][] }[] };
-type Task = { id: string; version: number; status: string; stage?: string; requirements?:unknown;executionMode?: string; mode?:string;language?:string;sourceKind?:string;sourceAttribution?:unknown;manualContinuation?:import('../../src/v2/manual-continuation-binding.mjs').ManualContinuationBinding;assistedContinuation?:import('../../src/v2/assisted-continuation-binding.mjs').AssistedContinuationBinding;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
+type Task = { id: string; version: number; status: string; stage?: string; requirements?:unknown;clarification?:import('../../src/v2/sql-clarification-client.mjs').SqlClarification;humanClarified?:boolean;directAutonomousEligible?:boolean;clarificationOriginTaskId?:string;executionMode?: string; mode?:string;language?:string;sourceKind?:string;sourceAttribution?:unknown;manualContinuation?:import('../../src/v2/manual-continuation-binding.mjs').ManualContinuationBinding;assistedContinuation?:import('../../src/v2/assisted-continuation-binding.mjs').AssistedContinuationBinding;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
 type Run = { id: string; status: string; agentTaskId?:string; contextId?:string; createdAt?: string; validationContractId?: string; validationDetails?:ValidationDetailsReport; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; mainSqlExecuted?:boolean;columnLineage?:unknown;testDouble?:boolean;sourceKind?:string;sourceAttribution?:unknown; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; contractId?:string; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type SavedRevision = {id:string;sql:string;hash?:string;contextId:string;source?:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
 const terminal = (s?: string) => Boolean(s && ["SUCCEEDED", "FAILED", "CANCELLED", "VALIDATION_FAILED","INTERRUPTED"].includes(s));
 const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", MODEL_NOT_SENT:"模型请求未发送，等待修复后重试", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "执行中断，记录保留", VALIDATION_FAILED: "业务断言未通过", NO_SQL_CHANGE:"模型未修改代码（未重复执行）" };
 Object.assign(stageText,{REQUIREMENT_CLARIFICATION_REQUIRED:'等待需求澄清（未执行）',REQUIREMENT_EVIDENCE_INVALID:'需求理解未确认（未执行）'});
+stageText.CLARIFICATION_SOURCE_CHANGED='澄清依据已变化，原记录保留';
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
@@ -99,6 +103,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   const submissionAccess=useRef({canWrite,ready,taskOnly});submissionAccess.current={canWrite,ready,taskOnly};
   const unknown = task?.stage === "MODEL_OUTCOME_UNKNOWN";
   const modelNotSent = task?.stage === "MODEL_NOT_SENT";
+  const clarificationReason=task?.stage==='REQUIREMENT_CLARIFICATION_REQUIRED'?clarificationReplyReason(task):undefined;
   const resumeInput = task ? {task,canWrite,working,dirty,
     pendingResult:manualUnconfirmed||Boolean(pendingSaveKey)||Boolean(pendingAgentKey),retryConsent} : undefined;
   const resumeReason = resumeInput ? agentResumeDecision(resumeInput).reason : undefined;
@@ -271,7 +276,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
         setNotice("已核对原生 Agent、代码、运行和确切发布来源；当前返程只读，不创建人工版本或启动计算。");return;
       }
       accept(current); setContextId(current.contextId);
-      if (!keepDraft) { setDraft(current.sql ?? ""); setBaseline(current.sql ?? ""); setBaselineRevisionId(current.revisionId); setDiff(false); }
+      if (!keepDraft) { setDraft(current.sql ?? current.initialSql ?? ""); setBaseline(current.sql ?? current.initialSql ?? ""); setBaselineRevisionId(current.revisionId); setDiff(false); }
       setRun(undefined);readingRun=Boolean(current.runId);
       if(readingRun)setRunRead({state:"LOADING"});
       const actual = current.runId ? checkedAgentRun<Run>(await api<unknown>(`/runs/${current.runId}`),current) : undefined;
@@ -347,6 +352,8 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     if(!manualContinuationReceiptMatches(current,submissionController().expectedBody()))throw Error("手工续改回执与原保存版本、意图或来源不一致，原编号保留。");
     if(!assistedContinuationReceiptMatches(current,submissionController().expectedBody()))throw Error('续改回执与原父版本或人工辅助来源不一致，保留原请求编号。');
     if(!comparisonRepairReceiptMatches(current,submissionController().expectedBody()))throw Error('对照修正回执未绑定原来源、证据或人工辅助归因，保留原提交编号。');
+    if(!await verifiedClarificationReceipt(current,submissionController().expectedBody()))throw Error('澄清回执未绑定原问题、答复或输入，保留原请求编号。');
+    if(!alive.current||epoch.current!==token||agentSubmissionRequest(location.href)!==key)return;
     if(derivationActiveRef.current&&(!derivationRef.current||!derivationSourceRef.current||!contextDerivationReceiptMatches(current,derivationRef.current,derivationSourceRef.current)))
       throw Error("新任务回执未绑定原成功版本与目标口径，保留提交编号；不会改用其他任务。");
     const derivedReceipt=derivationActiveRef.current,automaticMessage=derivationAutomaticMessage.current;
@@ -427,6 +434,20 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
       if(key)await acceptSubmissionReceipt(created,key,token,true);
     } catch (e) { if(alive.current&&epoch.current===token)setError((e as Error).message + " 输入仍在本页，原编号已保留在恢复链接中，请先查询原任务。"); }
     finally { if(alive.current&&epoch.current===token)setBusy(false); }
+  }
+  async function answerClarification(){
+    const parent=task,answer=message.trim(),question=(parent?.requirements as {interpretation?:{question?:string}}|undefined)?.interpretation?.question;
+    if(!parent||parent.stage!=='REQUIREMENT_CLARIFICATION_REQUIRED'||clarificationReason||!question||taskOnly||readOnly||publicationTarget||derivationActive||!ready||!canWrite||working||dirty||runPending||!answer||answer.length>1000)return;
+    const sourceSql=parent.sql??parent.initialSql;if(!sourceSql){setError('原任务未保存代码输入，请保留历史并新建完整需求；不会猜造原代码。');return;}
+    const token=++epoch.current;setBusy(true);setError('');
+    try{
+      const source=await readSqlClarification({request:p=>api<unknown>(p)},{taskId:parent.id,contextId:parent.contextId,question,sql:sourceSql});
+      if(!alive.current||epoch.current!==token||selectedId.current!==parent.id||messageRef.current.trim()!==answer||!submissionAccess.current.canWrite||!submissionAccess.current.ready||submissionAccess.current.taskOnly)return;
+      const body={...sqlClarificationBody(source,answer),...(backgroundAvailable?{background:backgroundConsent}:{})};
+      const controller=submissionController(),created=await controller.submit(body),key=controller.snapshot().key;
+      if(key)await acceptSubmissionReceipt(created,key,token,true);
+    }catch(cause){if(alive.current&&epoch.current===token)setError((cause as Error).message+' 原需求与回答保留，先按原编号查询，不自动重提。');}
+    finally{if(alive.current&&epoch.current===token)setBusy(false);}
   }
   async function stop() {
     epoch.current++; setAutomatic(false); setBusy(true); setError(""); setNotice("停止请求已发送；当前调用返回前不会继续发起下一步骤。");
@@ -575,7 +596,9 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
             {task.status === "SUCCEEDED" && <p className="agent-dev-success"><CheckCircle2 size={16} />{task.sourceKind==='MANUAL'?'代码已通过当前开发核验。人工辅助归因保留，交付仍需独立审阅。':'代码已通过执行校验。继续查看下方核验报告，并准备调度与部署交付。'}</p>}
           </>}
         </div>
+        {task?.stage==='REQUIREMENT_CLARIFICATION_REQUIRED' ? <AgentClarificationReply answer={message} onChange={setMessage} onReply={()=>void answerClarification()} disabled={Boolean(clarificationReason)||taskOnly||readOnly||Boolean(publicationTarget)||!ready||!canWrite||working||dirty||runPending} reason={clarificationReason??(dirty?'请先处理当前代码编辑，回答不会替换未保存代码。':readinessReason)} background={backgroundAvailable&&!taskOnly&&!readOnly&&!publicationTarget?{checked:backgroundConsent,onChange:setBackgroundConsent}:undefined}/> : (
         <form className="agent-dev-compose" onSubmit={e => { e.preventDefault(); void send(); }}><label htmlFor="agent-dev-message">{taskOnly ? "本窗口不创建新的需求任务" : derivationActive?"确认新口径任务的需求":task ? "基于当前代码提出下一次修改" : manualSuccessReady?"描述对手工版本的修改":"描述开发需求"}</label><textarea id="agent-dev-message" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} placeholder="例如：计算客户总资产，检查现金是否被重复累计…" disabled={taskOnly||readOnly||Boolean(publicationTarget)||working} />{backgroundAvailable&&!taskOnly&&!readOnly&&!publicationTarget&&<label className="agent-dev-consent"><input type="checkbox" checked={backgroundConsent} disabled={working} onChange={e=>setBackgroundConsent(e.target.checked)}/>委托云后台推进本次开发（15分钟、最多20个事件；沿用模型与执行预算，不自动发布）</label>}<div><small>{taskOnly ? "使用上方原任务的继续／恢复操作，不会清零历史" : readOnly || publicationTarget ? "当前不会调用模型或开发计算" : derivationActive?"确认后才新建任务并调用模型与 Spark，原批准不继承":"本次将真实调用模型与隔离 Spark"}</small><button className="button primary" type="submit" disabled={taskOnly || !ready || !canWrite || working || runPending || Boolean(assistedChatReason) || message.trim().length < 4 || derivationActive&&Boolean(derivationSubmitReason)}><Send size={14} />{derivationActive?"确认新建口径任务并验证":manualSuccessReady?"基于手工版本修改并验证":"按此口径生成并验证"}</button></div>{assistedChatReason&&<p role="status">{assistedChatReason}</p>}</form>
+        )}
       </section>
       <section id="agent-code" className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : baselineRevisionId ? `版本 ${baselineRevisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>
         <div className="agent-dev-editor"><Suspense fallback={<div className="agent-dev-empty">正在加载代码编辑器…</div>}><SqlEditor value={draft} original={codeOriginal} diff={diff} onChange={setDraft} readOnly={derivationActive||readOnly||!scopeEditable||Boolean(publicationTarget)||working} /></Suspense></div>

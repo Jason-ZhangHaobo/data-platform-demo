@@ -24,6 +24,8 @@ import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelop
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
 import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,assertSqlRequirementPackageSource} from './sql-requirements.mjs';
+import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
+import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
@@ -644,7 +646,8 @@ export function createV2Server(options = {}) {
   const packageRequirementSource=(run,revision)=>({run,revision,agent:revision?.source==='LIVE_MODEL'&&run?.agentTaskId?store.get('agent',run.agentTaskId,PROJECT):undefined});
   const assertRequirementSource=item=>{
     const source=item.manifest?.source,run=store.get('run',source?.runId??'',PROJECT),revision=store.get('revision',source?.revisionId??'',PROJECT);
-    return assertSqlRequirementPackageSource(item,packageRequirementSource(run,revision));
+    const selected=packageRequirementSource(run,revision);if(selected.agent?.clarification)assertSqlClarificationTask(selected.agent,{store,project:PROJECT});
+    return assertSqlRequirementPackageSource(item,selected);
   };
   const isPythonDelivery = (item) =>
       item?.manifest?.format === "shuduo-python-delivery/v1",
@@ -3281,6 +3284,11 @@ export function createV2Server(options = {}) {
         return json(res, 200, store.list("agent", PROJECT)
           .filter(task => mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)))
           .map(exposeDurableTask));
+      const clarificationSourceRoute=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/clarification-source$/);
+      if(clarificationSourceRoute&&method==='GET'){
+        const parent=get('agent',clarificationSourceRoute[1]);requireDurableAgentOwner(parent,req);
+        return json(res,200,readSqlClarificationSource({store,project:PROJECT,taskId:parent.id,actorId:auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined)}));
+      }
       const backgroundRoute=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/background(?:\/(cancel|resume))?$/);
       if(backgroundRoute){
         const task=get("agent",backgroundRoute[1]);requireDurableAgentOwner(task,req);
@@ -5742,13 +5750,18 @@ export function createV2Server(options = {}) {
       }
       if (method === "POST" && path === "/api/v2/agent/tasks") {
         const body = await readBody(req),
-          message = text(body.message, 4, 2000),
+          message = text(body.message, body.clarification===undefined?4:1, body.clarification===undefined?2000:1000),
           language =
             body.language === undefined
               ? "SPARK_SQL"
               : text(body.language, 3, 20),
           suppliedCode = body.code ?? body.sql;
         let currentCode = text(suppliedCode, 1, 20_000);
+        if(body.clarification!==undefined){
+          if(Object.keys(body).some(k=>!['message','sql','code','language','contextId','clarification','background'].includes(k)))throw fail(422,'澄清请求包含未支持字段');
+          if(language!=='SPARK_SQL'||[body.sourceRunId,body.sourceError,body.derivation,body.repairComparison,body.assistedContinuation,body.manualContinuation].some(v=>v!==undefined)||body.code!==undefined&&body.sql!==undefined&&body.code!==body.sql)throw fail(422,'澄清答复只能绑定原SQL问题，不能混用其他来源');
+          currentCode=suppliedCode;
+        }
         if(body.manualContinuation!==undefined){
           if(language!=='SPARK_SQL'||[body.sourceRunId,body.sourceError,body.derivation,body.repairComparison,body.assistedContinuation].some(v=>v!==undefined)||body.code!==undefined&&body.sql!==undefined&&body.code!==body.sql)throw Object.assign(fail(422,'手工成功版本不能混用其他续改来源'),{code:'MANUAL_CONTINUATION_CONFLICT'});
           if(!durableAgent)throw fail(503,'手工成功版本续改需要持久SQL执行器，不回退普通任务');
@@ -5781,6 +5794,7 @@ export function createV2Server(options = {}) {
         const actorId = language === "SPARK_SQL"
           ? auth.sessionFromHeaders(req.headers)?.user.id ?? (local ? "local-engineer" : undefined)
           : local ? "local-engineer" : auth.sessionFromHeaders(req.headers)?.user.id;
+        const clarification=body.clarification===undefined?undefined:resolveSqlClarification({store,project:PROJECT,actorId,binding:body.clarification,contextId:context.id,currentSql:currentCode,answer:message});
         const derivedFrom = body.derivation === undefined ? undefined : resolveAgentContextDerivation({derivation:body.derivation, actorId,
           targetContextId:context.id,currentSql:currentCode,project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
         const repairBasis=body.repairComparison===undefined?undefined:resolveSqlRepairComparison({store,project:PROJECT,actorId,sourceRunId:body.sourceRunId,
@@ -5801,7 +5815,7 @@ export function createV2Server(options = {}) {
           }
           const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
             actorId,
-            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}),...(repairBasis?{repairComparison:repairBasis.binding}:{}),...(body.assistedContinuation!==undefined?{assistedContinuation:body.assistedContinuation}:{}),...(body.manualContinuation!==undefined?{manualContinuation:body.manualContinuation}:{}) });
+            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}),...(repairBasis?{repairComparison:repairBasis.binding}:{}),...(body.assistedContinuation!==undefined?{assistedContinuation:body.assistedContinuation}:{}),...(body.manualContinuation!==undefined?{manualContinuation:body.manualContinuation}:{}),...(body.clarification!==undefined?{clarification:body.clarification}:{}) });
           if(body.background){
             const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version,...backgroundWindow,
               developmentBoundary:developmentBackgroundBoundary(developmentAccess,created.id,developmentNow())});
@@ -5836,6 +5850,7 @@ export function createV2Server(options = {}) {
               ...(derivedFrom ? {derivation:derivedFrom} : {}),
               ...(explicitRepair?{sourceRunId:body.sourceRunId}:{}),
               ...(repairBasis?{sourceRunId:body.sourceRunId,repairComparison:repairBasis.binding}:{}),
+              ...(clarification?{clarification:clarification.digest}:{}),
             }),
           );
         const existingAgent = store.deduplicatedId(PROJECT + ":agent:" + key);
@@ -5849,6 +5864,8 @@ export function createV2Server(options = {}) {
               message,
               language,
               contextId: context.id,
+              ...(language==='SPARK_SQL'?{initialSql:currentCode,usedTokens:0}:{}),
+              ...(clarification?{clarification,...clarificationAttribution({clarification})}:derivedFrom?clarificationAttribution(store.get('agent',derivedFrom.taskId,PROJECT)):{}),
               ...(derivedFrom ? {derivedFrom,initialSql:currentCode,sql:currentCode,usedTokens:0} : {}),
               ...(explicitRepair?{sourceRunId:body.sourceRunId,initialSql:currentCode,sql:currentCode,...explicitRepairAttribution(body.sourceRunId)}:{}),
               ...(repairBasis?{sourceRunId:body.sourceRunId,repairComparison:repairBasis.binding,initialSql:currentCode,sql:currentCode,...repairBasis.attribution}:{}),
@@ -6019,12 +6036,14 @@ export function createV2Server(options = {}) {
                 throw new Error("本次 Agent 已达到 Token 预算上限");
               let generated;
               const modelStartedAt = Date.now();
+              if(task.clarification){try{assertSqlClarificationTask(get('agent',task.id),{store,project:PROJECT});}catch(cause){store.update('agent',task.id,PROJECT,{status:'FAILED',stage:'CLARIFICATION_SOURCE_CHANGED',error:cause.message,finishedAt:new Date().toISOString()});return;}}
               if(explicitRepair)resolveExplicitSqlRepairSource({sourceRunId:body.sourceRunId,actorId,contextId:context.id,currentSql:currentCode,project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
               const comparison=repairBasis?resolveSqlRepairComparison({store,project:PROJECT,actorId,sourceRunId:body.sourceRunId,contextId:context.id,currentSql:currentCode,binding:repairBasis.binding}):undefined;
               try {
                 generated = await generator({
                   message,
                   context,
+                  ...(task.clarification?{clarification:task.clarification}:{}),
                   currentSql: sql,
                   error,
                   ...(attempt===1&&comparison?{repairComparison:comparison.summary,repairFeedback:buildSqlRepairFeedback(get('run',body.sourceRunId),context.id,{currentSql:sql})}:{}),
@@ -6064,6 +6083,8 @@ export function createV2Server(options = {}) {
                   : remainingBudget;
               if (usedTokens > Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000))
                 throw new Error("本次 Agent 已达到 Token 预算上限");
+              if(task.clarification){try{assertSqlClarificationTask(get('agent',task.id),{store,project:PROJECT});}catch{store.update('agent',task.id,PROJECT,{usedTokens,status:'FAILED',stage:'CLARIFICATION_SOURCE_CHANGED',error:'原澄清依据在模型返回前发生变化；已保留用量，未执行SQL。',
+                attempts:[...get('agent',task.id).attempts,{attempt,status:'CLARIFICATION_SOURCE_CHANGED',model:generated.model,usage:generated.usage,computationSkipped:true}],finishedAt:new Date().toISOString()});return;}}
               const requirements=sqlRequirementReport({task,message,context,generated,attempt});
               if(requirements&&requirements.status!=='MODEL_PROPOSED'){
                 const code=requirements.status==='CLARIFICATION_REQUIRED'?'REQUIREMENT_CLARIFICATION_REQUIRED':'REQUIREMENT_EVIDENCE_INVALID';
@@ -6080,6 +6101,7 @@ export function createV2Server(options = {}) {
               }
               sql = generated.sql;
               const rev = revision(sql, context.id, "LIVE_MODEL", task.submittedBy);
+              if(task.humanClarified)store.update('revision',rev.id,PROJECT,clarificationAttribution(task));
               if(requirements)store.update('revision',rev.id,PROJECT,{requirementBinding:sqlRequirementBinding(bindSqlRequirementRevision(requirements,rev))});
               if(requirements)store.update('agent',task.id,PROJECT,{usedTokens,requirements:bindSqlRequirementRevision(requirements,rev),revisionId:rev.id,
                 sql,attempts:[...get('agent',task.id).attempts,{attempt,status:'GENERATED',model:generated.model,usage:generated.usage,revisionId:rev.id}]});
@@ -6092,6 +6114,7 @@ export function createV2Server(options = {}) {
                 status: "RUNNING",
                 startedAt: new Date().toISOString(),
                 agentTaskId: task.id,
+                ...clarificationAttribution(task),
                 ...repairComparisonAttribution(task),
               });
               let completed;

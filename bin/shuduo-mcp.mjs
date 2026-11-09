@@ -12,6 +12,7 @@ import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/re
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
 import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
 import {readManualContinuation,createManualContinuation} from '../src/v2/manual-continuation-client.mjs';
+import {readSqlClarification,createSqlClarification} from '../src/v2/sql-clarification-client.mjs';
 import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,mutateStandaloneManual} from '../src/v2/standalone-manual-client.mjs';
 import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication} from '../src/v2/standalone-manual-publication-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
@@ -27,6 +28,8 @@ const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANU
 const manualPublicationProperties={sourceRunId:{type:'string',format:'uuid'},taskId:{type:'string',format:'uuid'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},verificationId:{type:'string',format:'uuid'},releaseId:{type:'string',format:'uuid'}};
 const manualPublicationRequired=['sourceRunId','taskId','packageDigest','verificationId'];
 const tools = [
+  {name:'agent_clarification_source',description:'只读本人原SQL澄清问题、输入与摘要，不调用模型或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'}},required:['taskId']},annotations:{readOnlyHint:true}},
+  {name:'agent_clarification_reply',description:'明确回答已读取的原问题后新建独立任务，可能调用模型和Spark；保留原用量，不继承批准，不计直接自主完成。未知结果先按requestId查询，不自动重试。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},evidenceDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},answer:{type:'string',minLength:1,maxLength:1000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['taskId','evidenceDigest','answer','requestId','confirm']},annotations:{readOnlyHint:false}},
   {name:'manual_publication_detail',description:'只读本人独立手工交付的确切发布、批次和告警，不借用Agent身份或创建新计算。',inputSchema:{type:'object',additionalProperties:false,properties:manualPublicationProperties,required:manualPublicationRequired},annotations:{readOnlyHint:true}},
   {name:'manual_publication_create',description:'人工逐项审阅指定包与成功演练后，创建两个冻结虚构样例批次。需有效确切窗口、稳定requestId及confirm；不调用模型或安装定时器，不计自主完成。未知结果先读原发布。',inputSchema:{type:'object',additionalProperties:false,properties:{...manualPublicationProperties,requestId:{type:'string',format:'uuid'},confirm:{const:true},attestations:{type:'object',additionalProperties:false,properties:Object.fromEntries(['code','assertions','deliveryFiles','cloudScope'].map(k=>[k,{const:true}])),required:['code','assertions','deliveryFiles','cloudScope']}},required:[...manualPublicationRequired,'requestId','confirm','attestations']}},
   {name:'manual_publication_cancel',description:'明确确认后停止确切手工发布，保留历史。无需成功读取Worker回执；仅确认停止，不把它当结果验收。',inputSchema:{type:'object',additionalProperties:false,properties:{...manualPublicationProperties,confirm:{const:true}},required:[...manualPublicationRequired,'releaseId','confirm']}},
@@ -244,6 +247,8 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==='manual_delivery_detail')return readStandaloneDetail(client,args);
   if(name==='manual_delivery_prepare')return prepareStandaloneManual(client,args);
   if(['manual_delivery_advance','manual_delivery_cancel'].includes(name))return mutateStandaloneManual(client,{...args,operation:name.slice('manual_delivery_'.length)});
+  if(name==='agent_clarification_source')return readSqlClarification(client,args);
+  if(name==='agent_clarification_reply')return createSqlClarification(client,args);
   if(name==='agent_manual_continuation_read')return readManualContinuation(client,args);
   if(name==='agent_continue_manual')return createManualContinuation(client,args);
   if(name==='agent_assisted_continuation_read')return readAssistedContinuation(client,args);

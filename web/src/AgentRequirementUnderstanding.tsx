@@ -6,7 +6,7 @@ const constraintLabels:Record<string,string>={SCOPED_CLIENTS:'仅限当前顾问
  SEPARATE_CASH_AGGREGATION:'现金独立聚合后关联',INCLUDE_CASH_ONLY_CLIENTS:'保留仅有现金的客户',NULL_MONEY_AS_ZERO:'空金额按零处理',
  DECIMAL_MONEY:'金额按十进制精度核算',STOCK_POSITIONS_ONLY:'仅统计股票持仓'};
 export function AgentRequirementUnderstanding({task,dirty,frozen=false}:{task:{id:string;contextId:string;message:string;revisionId?:string;language?:string;
- requirements?:unknown;attempts:unknown[]};dirty:boolean;frozen?:boolean}){
+ requirements?:unknown;attempts:unknown[];clarification?:unknown;humanClarified?:boolean;directAutonomousEligible?:boolean;clarificationOriginTaskId?:string};dirty:boolean;frozen?:boolean}){
  if(task.language==='PYTHON')return null;
  const r=task.requirements;
  if(r===undefined)return <p className="agent-requirement-note">尚无结构化需求理解记录；已登记口径可查看，旧任务不补造模型理解。</p>;
@@ -16,6 +16,13 @@ export function AgentRequirementUnderstanding({task,dirty,frozen=false}:{task:{i
   <summary><ClipboardList size={16}/><strong>{clarification?'先确认一个问题':invalid?'需求理解未确认':frozen?'此交付包冻结的需求理解':'模型如何理解这次需求'}</strong>
    <span>{clarification?'已停止计算':invalid?'未提交计算':frozen?'随包冻结':'可审阅提案'}</span><ChevronDown size={14}/></summary>
   <div className="agent-requirement-body">
+   {r.humanClarified&&<p className="agent-requirement-note">此版本经过人工澄清，仍由Agent生成与核验代码；不计直接自主完成。</p>}
+   {r.clarification&&<details className="agent-clarification-history"><summary>原需求与{r.clarification.depth}轮问答 · 历史占用 {r.clarification.turns.reduce((n,t)=>n+t.usedTokens,0)} Token</summary>
+    <p><strong>原需求</strong>：{r.clarification.originalRequest}</p><ol>{r.clarification.turns.map((t,i)=><li key={t.taskId}>
+     <strong>第{i+1}轮问题</strong><p>{t.question}</p><strong>你的回答</strong><p>{t.answer}</p>
+     <small>原任务占用 {t.usedTokens} Token{t.usageEstimated?'（含估算／保留额度）':''} · <a href={`/v2/?module=agent-center&task=${t.taskId}#agent-requirement`}>查看原任务</a></small>
+    </li>)}</ol><small>历史占用不转入本次计费，也不代替实际账单；原任务和批准不变。</small>
+   </details>}
    {invalid?<p role="alert">{r.reason}</p>:<><p>{r.interpretation!.summary}</p>
     {clarification?<><p className="agent-requirement-question">{r.interpretation!.question}</p><small>请补充完整需求后重新委托；本条记录及模型用量保留，没有执行 SQL。</small></>:
     <><dl className="agent-requirement-basis"><div><dt>计算粒度</dt><dd>每个客户 × 交易日</dd></div><div><dt>业务口径</dt><dd>{r.basis.contextName}</dd></div>

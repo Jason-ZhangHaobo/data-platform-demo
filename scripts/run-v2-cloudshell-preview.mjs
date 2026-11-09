@@ -14,7 +14,7 @@ const error = (status, message) => Object.assign(new Error(message), { status })
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const reads = new RegExp(`^/api/v2/(?:status|budget|contexts|auth/session|revisions|runs|(?:runs|revisions)/${uuid})$`);
 const writes = new RegExp(`^/api/v2/(?:auth/(?:login|logout)|revisions|runs|runs/${uuid}/cancel)$`);
-const agentReads = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}(?:/(?:workflow|publication|background))?)?|deliveries/${uuid})$`);
+const agentReads = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}(?:/(?:workflow|publication|background|clarification-source))?)?|deliveries/${uuid})$`);
 const agentWrites = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}/(?:advance|cancel|prepare-delivery|publication(?:/cancel)?|background(?:/(?:cancel|resume))?))?|deliveries/${uuid}/(?:advance|cancel))$`);
 const manualWorkflow = (method,path) => (method==="GET" ? new RegExp(`^/api/v2/runs/${uuid}/workflow$`) : method==="POST" ? new RegExp(`^/api/v2/runs/${uuid}/prepare-delivery$`) : /$a/).test(path);
 const routeAllowed = (method, path, allowAgent, allowDataServices,allowServiceAgent=false,allowManualPublication=false) => (method === "GET" ? reads : method === "POST" ? writes : /$a/).test(path) ||
