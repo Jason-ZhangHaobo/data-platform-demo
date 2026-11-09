@@ -23,6 +23,12 @@ jobs:
           node-version: 24
       - name: Install locked dependencies
         run: npm ci
+      - name: Set up Python for the existing SQL parser
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the existing SQL parser for lineage verification
+        run: python3 -m pip install --require-hashes --no-deps --requirement deploy/sql-lineage-requirements.txt
       - name: Run quality gate
         run: npm run ci
       - name: Package account-restricted workbench preview

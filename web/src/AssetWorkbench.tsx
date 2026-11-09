@@ -27,6 +27,8 @@ import {
   Tag,
 } from "lucide-react";
 import { ContractsPanel } from "./ContractsPanel";
+import {SqlColumnLineagePanel} from './SqlColumnLineagePanel';
+import type{SqlValueLineage}from'./sql-column-lineage';
 
 type Api = <T>(path: string, body?: unknown, options?:{idempotencyKey?:string}) => Promise<T>;
 type Field = {
@@ -71,6 +73,7 @@ type Lineage = {
   edges: LineageEdge[];
   derivation: string;
   sqlColumnLineageParsed: boolean;
+  columnLineages?:SqlValueLineage[];
 };
 type MetricRun = {
   id: string;
@@ -455,7 +458,8 @@ export function AssetWorkbench({
             </div>}
             {tab === "fields" && <div className="asset-fields-v2"><table><thead><tr><th>#</th><th>字段</th><th>类型</th><th>可空</th><th>基数</th></tr></thead><tbody>{detail.fields.map((field, index) => <tr key={field.name}><td>{index + 1}</td><td><code>{field.name}</code></td><td>{field.type}</td><td>{field.nullable ? "是" : "否"}</td><td>{field.distinctCount ?? "—"}</td></tr>)}</tbody></table></div>}
             {tab === "lineage" && <div className="asset-lineage-v2">
-              <div className="lineage-boundary-v2"><ShieldCheck size={16} /><div><strong>当前是版本绑定血缘</strong><p>同步字段映射真实可追溯；Spark SQL字段级表达式解析尚未完成，页面不会冒充完整血缘。</p></div></div>
+              <div className="lineage-boundary-v2"><ShieldCheck size={16} /><div><strong>版本绑定与字段值来源分开展示</strong><p>同步字段映射可追溯；SQL值来源仅使用原发布批次保存并通过版本核对的分析。连接、筛选及分组的完整影响仍未覆盖。</p></div></div>
+              {Boolean(detail.lineage.columnLineages?.length)&&<SqlColumnLineagePanel items={detail.lineage.columnLineages!} onSource={table=>{selectAsset(`fixture:${table}`);setTab('fields');}}/>}
               <div className="lineage-edges-v2">{detail.lineage.edges.map((edge) => <article key={edge.id}><div><span>{kindLabels[nodeById.get(edge.from)?.kind ?? ""] ?? nodeById.get(edge.from)?.kind}</span><strong>{nodeById.get(edge.from)?.businessName ?? edge.from}</strong><code>{edge.from}</code></div><div className="lineage-arrow-v2"><span>{edge.type}</span><ArrowRight size={21} /><small>{edge.fieldMappings.length}字段映射</small></div><div><span>{kindLabels[nodeById.get(edge.to)?.kind ?? ""] ?? nodeById.get(edge.to)?.kind}</span><strong>{nodeById.get(edge.to)?.businessName ?? edge.to}</strong><code>{edge.to}</code></div></article>)}</div>
             </div>}
             {tab === "governance" && <div className="asset-governance-v2">

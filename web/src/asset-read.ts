@@ -1,4 +1,5 @@
 import { assetResourcePath, isAssetResourceId } from "../../src/v2/asset-resource-path.mjs";
+import {sqlValueLineageValid} from './sql-column-lineage.ts';
 export { assetResourcePath } from "../../src/v2/asset-resource-path.mjs";
 export type AssetCriteria = { query: string; kind: string };
 type Failure = { state: "ERROR"; message: string; loginRequired: boolean };
@@ -109,7 +110,9 @@ export const assetSummaryValid = (value: unknown): boolean => {
     (!v.annotation || typeof v.annotation === "object" && Number.isSafeInteger((v.annotation as { revision?: unknown }).revision) && Number((v.annotation as { revision: number }).revision) >= 0));
 };
 export const assetDetailValid = (value: unknown, id: string): boolean => {
-  const v = value as { id?: string; lineage?: { focusAssetId?: string; nodes?: unknown[]; edges?: { id?: unknown; from?: unknown; to?: unknown; type?: unknown; fieldMappings?: unknown[] }[] }; metrics?: unknown[]; standards?: unknown[] } | null;
+  const v = value as { id?: string; lineage?: { focusAssetId?: string; nodes?: unknown[]; columnLineages?:unknown[];sqlColumnLineageParsed?:boolean;edges?: { id?: unknown; from?: unknown; to?: unknown; type?: unknown; fieldMappings?: unknown[] }[] }; metrics?: unknown[]; standards?: unknown[] } | null;
   return Boolean(assetSummaryValid(value) && v?.id === id && v.lineage?.focusAssetId === id && Array.isArray(v.lineage.nodes) && v.lineage.nodes.every(assetSummaryValid) &&
-    Array.isArray(v.lineage.edges) && v.lineage.edges.every(edge => edge && [edge.id, edge.from, edge.to, edge.type].every(text => typeof text === "string") && Array.isArray(edge.fieldMappings)) && Array.isArray(v.metrics) && Array.isArray(v.standards));
+    Array.isArray(v.lineage.edges) && v.lineage.edges.every(edge => edge && [edge.id, edge.from, edge.to, edge.type].every(text => typeof text === "string") && Array.isArray(edge.fieldMappings)) && Array.isArray(v.metrics) && Array.isArray(v.standards)&&
+    (v.lineage.columnLineages===undefined||Array.isArray(v.lineage.columnLineages)&&v.lineage.columnLineages.every(item=>sqlValueLineageValid(item,v.lineage!.nodes!))&&new Set(v.lineage.columnLineages.map(item=>(item as {assetId:string}).assetId)).size===v.lineage.columnLineages.length&&
+    v.lineage.sqlColumnLineageParsed===(v.lineage.columnLineages.length>0&&v.lineage.columnLineages.every(item=>(item as {status:string}).status==='COMPLETE'))));
 };

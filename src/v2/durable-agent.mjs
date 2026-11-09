@@ -147,7 +147,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
         const feedbackRun = previousRun?.agentTaskId===task.id && previousRun.revisionId===task.revisionId ? previousRun : explicitSource?.run;
         return generator({ message: task.message, context: getContext(task.contextId),
           currentSql: task.sql, error: task.durable.validationError,
-          repairFeedback: feedbackRun ? buildSqlRepairFeedback(feedbackRun, task.contextId) : undefined,
+          repairFeedback: feedbackRun ? buildSqlRepairFeedback(feedbackRun, task.contextId,{currentSql:task.sql}) : undefined,
           remainingBudget: reserved, signal: controller.signal,
           modelBudgetReservation: { taskId: task.id, attempt: task.attempts.length, leaseToken: token } });
       });

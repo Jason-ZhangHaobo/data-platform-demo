@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { getContext } from "./context.mjs";
+import {publishedSqlColumnLineage} from './sql-column-lineage.mjs';
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -196,12 +197,14 @@ export class AssetCatalogManager {
       upstream.splice(0, upstream.length, ...nextUpstream);
       downstream.splice(0, downstream.length, ...nextDownstream);
     }
+    const columnLineages=inventory.filter(item=>selected.has(item.id)&&item.kind==='PUBLISHED_DATASET').map(item=>publishedSqlColumnLineage({store:this.store,project:this.project,run:this.store.get('release_run',item.versionId,this.project),assetId:item.id}));
     return {
       focusAssetId: focus.id,
       nodes: [...selected].map((nodeId) => nodes.get(nodeId)).filter(Boolean),
       edges: allEdges.filter((edge) => selectedEdges.has(edge.id)),
       derivation: "VERSION_BINDINGS",
-      sqlColumnLineageParsed: false,
+      sqlColumnLineageParsed: columnLineages.length>0&&columnLineages.every(item=>item.status==='COMPLETE'),
+      columnLineages,
     };
   }
 
@@ -227,7 +230,7 @@ export class AssetCatalogManager {
       edges: edges.filter(
         (edge) => edge.from === focus.id || downstream.has(edge.from),
       ),
-      notice: "影响分析来自当前版本绑定；尚未解析Spark SQL字段级表达式。",
+      notice: "影响范围来自当前版本绑定；字段值来源如有记录单独展示，尚未覆盖连接、筛选、分组对行集的完整影响。",
     };
   }
 
@@ -680,7 +683,8 @@ export class AssetCatalogManager {
           evidenceHash: job.configHash,
         });
     }
-    for (const asset of inventory.filter((item) => item.kind === "PUBLISHED_DATASET"))
+    for (const asset of inventory.filter((item) => item.kind === "PUBLISHED_DATASET")) {
+      const analysis=publishedSqlColumnLineage({store:this.store,project:this.project,run:this.store.get('release_run',asset.versionId,this.project),assetId:asset.id});
       for (const source of ["fixture:accounts", "fixture:positions", "fixture:cash"])
         if (ids.has(source))
           edges.push({
@@ -688,10 +692,11 @@ export class AssetCatalogManager {
             from: source,
             to: asset.id,
             type: "SPARK_SQL",
-            fieldMappings: [],
+            fieldMappings: analysis.fields.filter(f=>f.status==='RESOLVED').flatMap(f=>f.sources.filter(s=>`fixture:${s.table}`===source).map(s=>({source:s.column,target:f.target}))),
             evidenceId: asset.versionId,
             evidenceHash: asset.evidenceHash,
           });
+    }
     for (const service of this.dataServices.list()) {
       const version = service.publishedVersion ?? service.currentVersion,
         to = `service:${service.id}`;

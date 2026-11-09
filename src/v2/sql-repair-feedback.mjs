@@ -1,4 +1,6 @@
-import { validationFamilyForContext } from "./context.mjs";
+import { getContext,validationFamilyForContext } from "./context.mjs";
+import {createHash}from'node:crypto';
+import {sqlLineageSchemaHash}from'./sql-column-lineage.mjs';
 
 const protocol = "SECURITIES_SQL_REPAIR_FEEDBACK_V1";
 const fields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
@@ -22,7 +24,7 @@ const classify = issues => {
 // Describe registered check outcomes, never fixture rows, reference SQL, expected
 // values, client identifiers or untrusted error text. The ordinary error summary
 // remains a separate input to the model; this adds which checks already passed.
-export function buildSqlRepairFeedback(run, contextId) {
+export function buildSqlRepairFeedback(run, contextId, {currentSql}={}) {
   const family = validationFamilyForContext(contextId), validation = run?.validation;
   if (!family || run?.contextId !== contextId || run.status !== "VALIDATION_FAILED" || validation?.passed !== false ||
       validation.contractId !== family.id || !Array.isArray(validation.regressions) || validation.regressions.length !== family.contextIds.length)
@@ -33,10 +35,21 @@ export function buildSqlRepairFeedback(run, contextId) {
         !Array.isArray(row.issues) || row.issues.length > 100) return undefined;
     cases.set(row.contextId, { contextId: row.contextId, passed: row.passed, ...classify(row.issues) });
   }
-  return safeSqlRepairFeedback({ protocol, contextId, contractId: family.id, checks: family.contextIds.map(id => cases.get(id)) }, contextId);
+  const trace=run.columnLineage,sourceSqlHash=typeof currentSql==='string'?createHash('sha256').update(currentSql).digest('hex'):undefined;
+  const valueLineage=trace?.protocol==='shuduo-sql-value-lineage/v1'&&run.engine==='Apache Spark'&&run.mainSqlExecuted===true&&run.revisionHash===sourceSqlHash&&trace.sourceSqlHash===sourceSqlHash&&trace.contextId===contextId&&
+    ['COMPLETE','PARTIAL'].includes(trace.status)?{...trace,protocol:'shuduo-sql-value-lineage-summary/v1'}:undefined;
+  return safeSqlRepairFeedback({ protocol, contextId, contractId: family.id, checks: family.contextIds.map(id => cases.get(id)),...(valueLineage?{valueLineage}:{}) }, contextId,{currentSql});
 }
 
-export function safeSqlRepairFeedback(value, contextId) {
+function safeValueLineage(value,contextId,currentSql){
+ if(typeof currentSql!=='string'||!currentSql.length||currentSql.length>20000||value?.protocol!=='shuduo-sql-value-lineage-summary/v1'||value.analysis!=='STATIC_VALUE_DEPENDENCIES'||value.rowSetImpactAnalyzed!==false)return;
+ const context=getContext(contextId),sourceSqlHash=createHash('sha256').update(currentSql).digest('hex'),schemaHash=sqlLineageSchemaHash(context),known=new Map(context.tables.map(t=>[t.name,new Set(t.columns.map(c=>c[0]))]));
+ if(value.sourceSqlHash!==sourceSqlHash||value.schemaHash!==schemaHash||!Array.isArray(value.fields)||value.fields.length!==fields.length)return;
+ const summaries=[];for(const target of fields){const matches=value.fields.filter(f=>f?.target===target);if(matches.length!==1)return;const f=matches[0];if(!['RESOLVED','CONSTANT','UNRESOLVED'].includes(f.status)||!Array.isArray(f.sources)||f.sources.length>150||f.sources.some(s=>!s||!known.get(s.table)?.has(s.column))||new Set(f.sources.map(s=>`${s.table}.${s.column}`)).size!==f.sources.length||f.status==='RESOLVED'&&!f.sources.length||f.status==='CONSTANT'&&f.sources.length)return;summaries.push({target,status:f.status,sources:f.sources.map(s=>({table:s.table,column:s.column}))});}
+ return{protocol:'shuduo-sql-value-lineage-summary/v1',analysis:'STATIC_VALUE_DEPENDENCIES',sourceSqlHash,schemaHash,rowSetImpactAnalyzed:false,fields:summaries};
+}
+
+export function safeSqlRepairFeedback(value, contextId,{currentSql}={}) {
   const family = validationFamilyForContext(contextId);
   if (!family || value?.protocol !== protocol || value.contextId !== contextId || value.contractId !== family.id ||
       !Array.isArray(value.checks) || value.checks.length !== family.contextIds.length) return undefined;
@@ -54,5 +67,6 @@ export function safeSqlRepairFeedback(value, contextId) {
   }
   const failedCaseCount = checks.filter(check => !check.passed).length;
   if (!failedCaseCount) return undefined;
-  return { protocol, contextId, contractId: family.id, checks, passedCaseCount: checks.length - failedCaseCount, failedCaseCount };
+  const valueLineage=safeValueLineage(value.valueLineage,contextId,currentSql);
+  return { protocol, contextId, contractId: family.id, checks, passedCaseCount: checks.length - failedCaseCount, failedCaseCount,...(valueLineage?{valueLineage}:{}) };
 }

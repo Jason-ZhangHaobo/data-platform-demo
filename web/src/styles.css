@@ -8079,3 +8079,10 @@ kbd {
 .asset-annotation-recovery>div{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .asset-annotation-recovery p,.asset-annotation-receipt p{font-size:12px;line-height:1.7}
 .asset-annotation-recovery small,.asset-annotation-receipt small{display:block;color:#627567;font-size:11px;line-height:1.8}
+.asset-column-lineage-v2{padding:20px;border:1px solid var(--border);border-radius:14px;background:#fff;margin-bottom:18px}
+.asset-column-lineage-v2>header{display:flex;align-items:center;gap:9px}.asset-column-lineage-v2 h4{margin:0}.asset-column-lineage-v2 p{font-size:13px;line-height:1.7;color:var(--muted)}
+.column-lineage-source-v2{display:grid;gap:6px;padding:12px 0}.column-lineage-source-v2 small,.asset-column-lineage-v2>small{color:var(--muted);line-height:1.6}
+.column-lineage-table-v2{overflow-x:auto}.column-lineage-table-v2 table{width:100%;border-collapse:collapse;font-size:13px}.column-lineage-table-v2 th,.column-lineage-table-v2 td{text-align:left;padding:12px;border-bottom:1px solid var(--border);vertical-align:top}.column-lineage-table-v2 td:first-child{min-width:250px}.column-lineage-table-v2 td>code{display:block;max-width:500px;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px;font-size:12px;line-height:1.7}.column-lineage-table-v2 td small{display:block;line-height:1.7}
+.column-source-link-v2{display:flex;align-items:center;gap:5px;border:0;background:transparent;color:var(--green,#197159);padding:4px 0;cursor:pointer;font-size:12px;text-align:left;white-space:nowrap}.column-source-link-v2:hover{text-decoration:underline}
+.column-lineage-table-v2 td:nth-child(2){min-width:160px}.column-lineage-table-v2 td:nth-child(2)>code{white-space:nowrap;overflow-wrap:normal}.column-lineage-table-v2 td:nth-child(3){min-width:88px}
+.column-lineage-state-v2{font-size:11px;display:inline-block;border-radius:6px;padding:4px 6px;background:#edf5ef;color:#246044;white-space:nowrap}.column-lineage-state-v2.unresolved{background:#fff2e5;color:#965c20}.column-lineage-state-v2.constant{background:#eef1f5;color:#5a6874}

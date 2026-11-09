@@ -1,0 +1,2 @@
+# Same parser version and hash as the Spark Worker; no Spark installation in CI.
+sqlglot==27.14.0 --hash=sha256:a5adc68abc85ccd249258ae0f3aff3c1869bb5b086e360375e16518858ce8a7a
