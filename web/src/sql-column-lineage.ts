@@ -1,3 +1,5 @@
+import {sqlConditionReferences}from'../../src/v2/sql-condition-references.mjs';
+import type{SqlConditionReferences}from'../../src/v2/sql-condition-references.mjs';
 export type SqlValueLineage = {
     assetId: string;
     runId: string;
@@ -11,6 +13,7 @@ export type SqlValueLineage = {
     parser?: string;
     parserVersion?: string;
     notice?: string;
+    conditionReferences?:SqlConditionReferences;
     fields: {
         target: string;
         status: 'RESOLVED' | 'CONSTANT' | 'UNRESOLVED';
@@ -28,6 +31,7 @@ function valueAnalysisValid(v: SqlValueLineage | undefined, outputs: {
 }[]): v is SqlValueLineage {
     if (!v || v.analysis !== 'STATIC_VALUE_DEPENDENCIES' || v.rowSetImpactAnalyzed !== false || !['COMPLETE', 'PARTIAL', 'UNAVAILABLE'].includes(v.status) || !Array.isArray(v.fields) || v.reason !== undefined && typeof v.reason !== 'string')
         return false;
+    if(v.conditionReferences!==undefined&&!sqlConditionReferences(v.conditionReferences,{sourceSqlHash:v.sourceSqlHash,schemaHash:v.schemaHash}))return false;
     if (v.status === 'UNAVAILABLE')
         return v.fields.length === 0;
     if (!id(v.revisionId) || !digest(v.sourceSqlHash) || !digest(v.schemaHash) || v.parser !== 'sqlglot' || typeof v.parserVersion !== 'string' || v.parserVersion.length > 40 || !v.fields.length || v.fields.length !== outputs.length)
@@ -101,6 +105,7 @@ export async function developmentSqlValueLineage({ run, revisionId, sql, context
         const known = new Map(context.tables.map(t => [t.name, new Set(t.columns.map(c => c[0]))]));
         if (item.fields.some(f => f.sources.some(s => !known.get(s.table)?.has(s.column))))
             throw Error('COLUMN');
+        if(item.conditionReferences!==undefined&&!sqlConditionReferences(item.conditionReferences,{sourceSqlHash,schemaHash,tables:context.tables}))throw Error('CONDITION_COLUMN');
         return { state: 'READY', item };
     }
     catch {

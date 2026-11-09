@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { getContext } from './context.mjs';
+import {sqlConditionReferences,unavailableSqlConditionReferences} from './sql-condition-references.mjs';
 const hash = v => createHash('sha256').update(typeof v === 'string' ? v : JSON.stringify(canonical(v))).digest('hex');
 const canonical = v => Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])])) : v;
 const identifier = v => typeof v === 'string' && /^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(v);
@@ -33,7 +34,10 @@ export function publishedSqlColumnLineage({ store, project, run, assetId = 'data
             throw Error('INVALID_FIELDS');
         if ((saved.status === 'COMPLETE') !== saved.fields.every(f => ['RESOLVED', 'CONSTANT'].includes(f.status)))
             throw Error('INCONSISTENT_COMPLETENESS');
+        const conditionBinding={sourceSqlHash:revision.hash,schemaHash:saved.schemaHash,tables:context.tables};
+        const conditionReferences=saved.conditionReferences===undefined?undefined:sqlConditionReferences(saved.conditionReferences,conditionBinding)??unavailableSqlConditionReferences(conditionBinding);
         return { assetId, runId: run.id, revisionId: revision.id, sourceSqlHash: revision.hash, schemaHash: saved.schemaHash, status: saved.status, analysis: saved.analysis, rowSetImpactAnalyzed: false,
+            ...(conditionReferences?{conditionReferences}:{}),
             parser: saved.parser, parserVersion: saved.parserVersion, fields: saved.fields.map(f => ({ target: f.target, status: f.status, expression: f.expression, sources: f.sources.map(s => ({ table: s.table, column: s.column })), ...(f.reason ? { reason: f.reason.slice(0, 300) } : {}) })),
             notice: '静态字段值依赖；字面量已隐藏。未覆盖连接、筛选、分组和行级权限对行集的影响，不替代Spark执行或完整影响分析' };
     }

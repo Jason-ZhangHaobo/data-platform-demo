@@ -20,3 +20,8 @@ test('changed code, input schema, output field or original run identity cannot i
         assert.equal((await developmentSqlValueLineage({ ...base, ...patch })).state, 'ERROR');
     assert.equal((await developmentSqlValueLineage({ ...base, run: { ...run, columnLineage: undefined } })).state, 'UNAVAILABLE');
 });
+test('development condition references share the original source binding and cannot introduce unregistered columns',async()=>{
+ const condition={protocol:'shuduo-sql-condition-references/v1',analysis:'STATIC_CONDITION_REFERENCES',sourceSqlHash:proof.sourceSqlHash,schemaHash,semanticImpactAnalyzed:false,status:'COMPLETE',scopeCount:1,totalClauses:1,truncated:false,clauses:[{id:'C1',scopeId:'S1',scopeLabel:'主查询',kind:'WHERE',status:'RESOLVED',expression:'positions.market_value > ?',sources:[{table:'positions',column:'market_value'}]}]},args={run:{...run,columnLineage:{...proof,conditionReferences:condition}},revisionId:id(2),sql,context};
+ const valid=await developmentSqlValueLineage(args);assert.equal(valid.state,'READY');assert.equal(valid.item.conditionReferences.semanticImpactAnalyzed,false);
+ for(const patch of [{sourceSqlHash:'a'.repeat(64)},{clauses:[{...condition.clauses[0],sources:[{table:'positions',column:'unregistered_field'}]}]}])assert.equal((await developmentSqlValueLineage({...args,run:{...run,columnLineage:{...proof,conditionReferences:{...condition,...patch}}}})).state,'ERROR');
+});

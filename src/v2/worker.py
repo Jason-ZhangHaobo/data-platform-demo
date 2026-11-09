@@ -46,6 +46,84 @@ def create_spark():
       .config("spark.sql.warehouse.dir", str(Path.cwd()/"warehouse"))
       .getOrCreate())
 
+def masked_sql_expression(expression):
+    value=expression.copy()
+    for node in value.walk():node.comments=None
+    value=value.transform(lambda n:exp.Placeholder() if isinstance(n,(exp.Literal,exp.Boolean,exp.Null)) and not isinstance(n.parent,(exp.DataType,exp.DataTypeParam)) else n)
+    rendered=value.sql(dialect="spark")
+    return rendered if len(rendered)<=1000 else "表达式过长，请查看原代码版本"
+
+def lineage_leaf_sources(node,schema):
+    sources=set();unresolved=False
+    for leaf in node.walk():
+        if leaf.downstream:continue
+        if isinstance(leaf.expression,exp.Table):
+            table=leaf.expression.name;name=leaf.name.rsplit(".",1)[-1].strip('"`')
+            if table not in schema or name not in schema[table]:unresolved=True
+            else:sources.add((table,name))
+        elif leaf.expression.find(exp.Column,exp.Star,exp.AggFunc,exp.Window,exp.Select,exp.Subquery) is not None:
+            unresolved=True
+    return sources,unresolved
+
+def analyze_condition_references(scope,schema,binding):
+    """Resolve clause references in reachable scopes, not semantic row-set impact."""
+    from sqlglot.lineage import lineage
+    from sqlglot.optimizer.scope import Scope,find_all_in_scope
+    base={"protocol":"shuduo-sql-condition-references/v1","analysis":"STATIC_CONDITION_REFERENCES",
+          "sourceSqlHash":binding["sourceSqlHash"],"schemaHash":binding["schemaHash"],"semanticImpactAnalyzed":False,
+          "status":"UNAVAILABLE","scopeCount":0,"totalClauses":0,"truncated":False,"clauses":[]}
+    seen={};clauses=[]
+    def resolve(column,current):
+        pair=current.selected_sources.get(column.table)
+        if pair is None:return set(),True
+        source=pair[1]
+        if isinstance(source,exp.Table):
+            return ({(source.name,column.name)},False) if column.name in schema.get(source.name,{}) else (set(),True)
+        if isinstance(source,Scope):
+            root=lineage(column.name,source.expression,dialect="spark",scope=source,trim_selects=False)
+            return lineage_leaf_sources(root,schema)
+        return set(),True
+    def add(current,scope_id,label,kind,expressions,join_type=None,force_unknown=False):
+        sources=set();unknown=force_unknown
+        for expression in expressions:
+            if expression.find(exp.Subquery,exp.Window,exp.Star) is not None:unknown=True
+            for column in find_all_in_scope(expression,exp.Column):
+                try:refs,missing=resolve(column,current);sources.update(refs);unknown=unknown or missing
+                except Exception:unknown=True
+            if expression.find(exp.AggFunc) is not None and expression.find(exp.Column) is None:unknown=True
+        rendered=("DISTINCT " if kind=="DISTINCT" else "")+", ".join(masked_sql_expression(e) for e in expressions)
+        status="UNRESOLVED" if unknown else "RESOLVED" if sources else "NO_COLUMN_REFERENCE"
+        clauses.append({"id":"C"+str(len(clauses)+1),"scopeId":scope_id,"scopeLabel":label,"kind":kind,"status":status,
+            "expression":rendered if len(rendered)<=1000 else "表达式过长，请查看原代码版本",
+            "sources":[{"table":t,"column":c} for t,c in sorted(sources)],**({"joinType":join_type} if join_type else {}),
+            **({"reason":"含未解析来源、子查询或行集依赖；不能视为完整条件影响"} if unknown else {})})
+    def visit(current,label="主查询",depth=0):
+        if id(current) in seen:return
+        if depth>20 or len(seen)>=100:raise ValueError("CONDITION_SCOPE_LIMIT")
+        scope_id="S"+str(len(seen)+1);seen[id(current)]=scope_id
+        if label!="主查询" and re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]{0,62}",label) is None:raise ValueError("UNSUPPORTED_SCOPE_LABEL")
+        for alias,(_,source) in current.selected_sources.items():
+            if isinstance(source,Scope):visit(source,alias,depth+1)
+        expression=current.expression
+        if not isinstance(expression,exp.Select):raise ValueError("UNSUPPORTED_CONDITION_QUERY")
+        for key,kind in [("where","WHERE"),("group","GROUP_BY"),("having","HAVING")]:
+            if expression.args.get(key) is not None:add(current,scope_id,label,kind,[expression.args[key]])
+        for join in expression.args.get("joins",[]):
+            side=str(join.args.get("side") or "").upper();kind=str(join.args.get("kind") or "").upper()
+            join_type=(side+"_"+kind if side and kind in ("SEMI","ANTI") else side or kind or "INNER")
+            if join_type not in ("INNER","LEFT","RIGHT","FULL","CROSS","SEMI","ANTI","LEFT_SEMI","LEFT_ANTI"):join_type="UNKNOWN"
+            if join.args.get("on") is not None:add(current,scope_id,label,"JOIN_ON",[join.args["on"]],join_type)
+            else:add(current,scope_id,label,"JOIN",[],join_type,force_unknown=bool(join.args.get("using") or join.args.get("method")))
+        if expression.args.get("distinct") is not None:
+            add(current,scope_id,label,"DISTINCT",expression.selects,force_unknown=bool(expression.args["distinct"].args.get("on")))
+    try:
+        visit(scope)
+        truncated=len(clauses)>100
+        return{**base,"status":"PARTIAL" if truncated or any(c["status"]=="UNRESOLVED" for c in clauses) else "COMPLETE",
+            "scopeCount":len(seen),"totalClauses":len(clauses),"truncated":truncated,"clauses":clauses[:100]}
+    except Exception:
+        return{**base,"reason":"条件作用域或引用无法完整核对，未推断其语义影响"}
+
 def analyze_column_lineage(sql, context, output_columns):
     """Static value dependencies only. Does not execute SQL or prove row-set semantics."""
     from sqlglot.lineage import lineage
@@ -66,26 +144,13 @@ def analyze_column_lineage(sql, context, output_columns):
         scope=build_scope(qualified)
         if [s.alias_or_name for s in qualified.selects]!=output_columns:
             raise ValueError("OUTPUT_SCHEMA_MISMATCH")
+        base["conditionReferences"]=analyze_condition_references(scope,schema,base)
         for column in output_columns:
             field={"target":column,"status":"UNRESOLVED","sources":[],"expression":""}
             try:
                 root=lineage(column,qualified,dialect="spark",scope=scope,trim_selects=False)
-                expression=root.expression.copy()
-                # Literal values and comments are not needed to explain column flow.
-                for node in expression.walk():
-                    node.comments=None
-                expression=expression.transform(lambda n:exp.Placeholder() if isinstance(n,(exp.Literal,exp.Boolean,exp.Null)) and not isinstance(n.parent,(exp.DataType,exp.DataTypeParam)) else n)
-                rendered=expression.sql(dialect="spark")
-                field["expression"]=rendered if len(rendered)<=1000 else "表达式过长，请查看原代码版本"
-                sources=set();unresolved=False
-                for leaf in root.walk():
-                    if leaf.downstream:continue
-                    if isinstance(leaf.expression,exp.Table):
-                        table=leaf.expression.name;name=leaf.name.rsplit(".",1)[-1].strip('"`')
-                        if table not in schema or name not in schema[table]:unresolved=True
-                        else:sources.add((table,name))
-                    elif leaf.expression.find(exp.Column,exp.Star,exp.AggFunc,exp.Window,exp.Select,exp.Subquery) is not None:
-                        unresolved=True
+                field["expression"]=masked_sql_expression(root.expression)
+                sources,unresolved=lineage_leaf_sources(root,schema)
                 if root.expression.find(exp.Subquery) is not None:unresolved=True
                 field["sources"]=[{"table":t,"column":c} for t,c in sorted(sources)]
                 if not unresolved and sources:field["status"]="RESOLVED"
