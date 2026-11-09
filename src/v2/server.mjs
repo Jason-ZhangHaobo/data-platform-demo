@@ -119,6 +119,7 @@ import {publishedReportPlanningContext,validatePublishedReportPlan,publishedRepo
 import { OperationsManager } from "./operations.mjs";
 import { AuthManager } from "./auth.mjs";
 import { DataContractManager } from "./contracts.mjs";
+import {createServiceContractGates} from './service-contract-gates.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
 import {
   LocalArtifactStore,
@@ -1013,6 +1014,9 @@ export function createV2Server(options = {}) {
     project: PROJECT,
     now: options.now,
   });
+  const serviceContractGates=createServiceContractGates({store,project:PROJECT,contracts:dataContracts,businessStore,now:options.now});
+  dataServices.contractGate=serviceContractGates;
+  if(privateServices?.manager)privateServices.manager.contractGate=serviceContractGates;
   const annotationRequests = createAssetAnnotationRequests({ store, assets, project: PROJECT });
   const assetPlanner =
     options.assetPlanner ??
@@ -2270,6 +2274,24 @@ export function createV2Server(options = {}) {
             );
           get("asset_annotation", dedup.id);
           return json(res, dedup.replayed ? 200 : 201, assets.detail(id));
+        }
+      }
+      const gateRoute=path.match(/^\/api\/v2\/data-services\/([a-f0-9-]{36})\/contract-gates(?:\/([a-f0-9-]{36})\/(versions))?$/);
+      const gateRequest=path.match(/^\/api\/v2\/data-services\/([a-f0-9-]{36})\/contract-gate-requests\/([A-Za-z0-9_-]{1,100})$/);
+      if(gateRequest&&method==='GET'){
+        if(!local)throw fail(403,'门禁保存请求只在本机开发边界开放');
+        return json(res,200,serviceContractGates.lookup(gateRequest[1],auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer',gateRequest[2]));
+      }
+      if(gateRoute){
+        if(!local)throw fail(403,'契约门禁配置目前只在本机开发边界开放');
+        const serviceId=gateRoute[1];
+        if(method==='GET'&&!gateRoute[2])return json(res,200,serviceContractGates.list(serviceId));
+        if(method==='POST'){
+          const body=await readBody(req),actor=auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer',key=text(req.headers['idempotency-key'],1,100),allowed=gateRoute[2]?['contractVersionId','freshnessBasis','expectedBindingVersion','changeReason']:['contractId','contractVersionId','freshnessBasis'];
+          if(!body||typeof body!=='object'||Array.isArray(body))throw fail(422,'契约门禁请求必须是对象');
+          if(Object.keys(body).some(k=>!allowed.includes(k)))throw fail(422,'契约门禁请求包含未声明字段');
+          const result=serviceContractGates.submit(serviceId,gateRoute[2],body,actor,key);
+          return json(res,result.replayed?200:201,result);
         }
       }
       if (path === "/api/v2/contracts" && method === "GET")

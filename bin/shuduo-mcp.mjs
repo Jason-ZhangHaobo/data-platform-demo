@@ -4,6 +4,7 @@ import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/ass
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
+import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import{publishedReportSourceSchema,publishedReportMetricIds}from'../src/v2/published-report-request.mjs';
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
@@ -137,6 +138,10 @@ const tools = [
   { name: "standard_check", description: "在实际资产行上检查标准；无效值只返回哈希。", inputSchema: { type: "object", properties: { standardId: { type: "string" } }, required: ["standardId"] } },
   { name: "asset_agent_list", description: "列出受治理的数据资产Agent回答。", inputSchema: { type: "object", properties: {} } },
   { name: "asset_agent_create", description: "让真实模型基于资产摘要和版本绑定血缘找数据、解释口径与影响，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
+  {name:'service_contract_gates',description:'只读查询数据服务契约门禁配置和历史判定；历史放行不代表当前时效。',inputSchema:{type:'object',properties:{serviceId:{type:'string'}},required:['serviceId']}},
+  {name:'service_contract_gate_bind',description:'为本机数据服务绑定确切契约版本和时间依据，不发布服务。',inputSchema:{type:'object',properties:{serviceId:{type:'string'},requestId:{type:'string'},input:{type:'object',properties:{contractId:{type:'string'},contractVersionId:{type:'string'},freshnessBasis:{type:'string',enum:['SOURCE_ROWS','PUBLICATION_FINISHED']}},required:['contractId','contractVersionId'],additionalProperties:false}},required:['serviceId','input','requestId']}},
+  {name:'service_contract_gate_version',description:'审阅后保存门禁新版本，要求原绑定修订号、契约版本与理由；不发布服务。',inputSchema:{type:'object',properties:{serviceId:{type:'string'},bindingId:{type:'string'},requestId:{type:'string'},input:{type:'object',properties:{expectedBindingVersion:{type:'integer'},contractVersionId:{type:'string'},freshnessBasis:{type:'string',enum:['SOURCE_ROWS','PUBLICATION_FINISHED']},changeReason:{type:'string'}},required:['expectedBindingVersion','contractVersionId','freshnessBasis','changeReason'],additionalProperties:false}},required:['serviceId','bindingId','input','requestId']}},
+  {name:'service_contract_gate_request',description:'只读恢复本账号原门禁保存回执，区分当时应用版本和当前版本。',inputSchema:{type:'object',properties:{serviceId:{type:'string'},requestId:{type:'string'}},required:['serviceId','requestId']}},
   { name: "contract_list", description: "列出版本化数据契约、兼容策略、检查、告警和下游影响。", inputSchema: { type: "object", properties: {} } },
   { name: "contract_detail", description: "读取一个数据契约的全部不可变版本、评估和检查证据。", inputSchema: { type: "object", properties: { contractId: { type: "string" } }, required: ["contractId"] } },
   { name: "contract_create", description: "从当前实际资产元数据创建契约V1，不修改源资产。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, compatibility: { type: "string", enum: ["BACKWARD", "FULL", "NONE"] }, owner: { type: "string" }, description: { type: "string" }, qualitySlo: { type: "object", properties: { minPassRate: { type: "number", minimum: 0.5, maximum: 1 }, maxFreshnessSeconds: { type: "integer", minimum: 1, maximum: 2678400 } } } }, required: ["name", "code", "assetId", "compatibility", "owner", "description"] } },
@@ -620,6 +625,9 @@ async function callTool(name, args = {}, client=defaultClient) {
       method: "POST",
       body: { message: args.message },
     });
+  if(name==='service_contract_gates')return client.request(`/data-services/${encodeURIComponent(args.serviceId)}/contract-gates`);
+  if(name==='service_contract_gate_bind'||name==='service_contract_gate_version')return submitServiceGateWrite(client,args);
+  if(name==='service_contract_gate_request')return lookupServiceGateWrite(client,args);
   if (name === "contract_list") return client.request("/contracts");
   if (name === "contract_detail")
     return client.request(

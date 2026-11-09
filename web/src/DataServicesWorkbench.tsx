@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+const ServiceContractGatesPanel=lazy(async()=>({default:(await import('./ServiceContractGatesPanel')).ServiceContractGatesPanel}));
 import { EvidenceDownload, requestTextDownload } from "./EvidenceDownload";
 import { compositionChoices } from "./service-composition";
 import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
@@ -973,6 +974,7 @@ export function DataServicesWorkbench({
                   {labels[selected.status] ?? selected.status}
                 </span>
               </section>
+              {!privateCloud&&runtimeMode==='LOCAL_DEVELOPMENT'&&<Suspense fallback={<p role="status">正在加载数据契约门禁…</p>}><ServiceContractGatesPanel key={selected.id} api={api} serviceId={selected.id} canWrite={canWrite&&!consumptionScope&&!bindingDeclared} refreshToken={`${selected.currentVersion?.id??''}:${error}:${notice}`}/></Suspense>}
               <div className="service-version-grid">
                 <div>
                   <span>{currentPublished?"线上版本":"当前草稿"}</span>

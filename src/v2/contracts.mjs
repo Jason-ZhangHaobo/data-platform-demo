@@ -162,7 +162,7 @@ export class DataContractManager {
         .filter((item) => item.contractId === contract.id),
       checks = this.store
         .list("data_contract_check", this.project)
-        .filter((item) => item.contractId === contract.id),
+        .filter((item) => item.contractId === contract.id && item.trigger !== "DATA_SERVICE_GATE"),
       alerts = this.store
         .list("data_contract_alert", this.project)
         .filter((item) => item.contractId === contract.id);
@@ -308,10 +308,10 @@ export class DataContractManager {
     return this.detail(contract.id);
   }
 
-  check(id) {
+  check(id, { evidence } = {}) {
     const contract = this.#contract(id),
       version = this.#version(contract.currentVersionId),
-      asset = this.assets.detail(contract.assetId),
+      asset = evidence?.asset ?? this.assets.detail(contract.assetId),
       expected = new Map(version.fields.map((field) => [field.name, field])),
       actual = new Map(
         asset.fields.map((field) => [field.name, {
@@ -346,9 +346,12 @@ export class DataContractManager {
       rowPassRate,
       freshnessMeasured = false,
       freshnessSeconds,
-      freshnessPassed;
+      freshnessPassed,
+      freshnessClockSkewDetected = false;
+    if(asset.id !== contract.assetId)throw fail(409,"门禁来源与契约资产不一致","CONTRACT_GATE_ASSET_MISMATCH");
     try {
-      const rows = this.assets.executionRows(asset.id).rows;
+      const rows = evidence ? evidence.rows : this.assets.executionRows(asset.id).rows;
+      if(!Array.isArray(rows))throw fail(409,"门禁缺少实际数据行","CONTRACT_GATE_ROWS_UNAVAILABLE");
       actualRows = true;
       evaluatedRows = rows.length;
       const required = version.fields.filter((field) => field.nullable === false),
@@ -370,18 +373,21 @@ export class DataContractManager {
       rowPassRate = rows.length
         ? Number(((rows.length - invalidRows.length) / rows.length).toFixed(4))
         : 1;
-      const timestamps = rows
+      const rowTimestamps = rows
         .map((row) => row.syncedAt ?? row.updatedAt ?? row.event_time)
-        .map((value) => Date.parse(value))
+        .map((value) => evidence && (typeof value !== 'string' || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) ? NaN : Date.parse(value))
         .filter(Number.isFinite);
-      if (timestamps.length) {
+      const timestamps=evidence?.freshnessBasis==='PUBLICATION_FINISHED'?[typeof evidence.publicationFinishedAt==='string'&&/(?:Z|[+-]\d{2}:\d{2})$/i.test(evidence.publicationFinishedAt)?Date.parse(evidence.publicationFinishedAt):NaN].filter(Number.isFinite):rowTimestamps;
+      const complete=evidence ? (evidence.freshnessBasis==='PUBLICATION_FINISHED'?timestamps.length===1:rows.length>0&&timestamps.length===rows.length) : timestamps.length>0;
+      if (complete) {
         freshnessMeasured = true;
         freshnessSeconds = Math.max(
           0,
-          Math.floor((this.now() - Math.max(...timestamps)) / 1000),
+          Math.floor((this.now() - (evidence?Math.min(...timestamps):Math.max(...timestamps))) / 1000),
         );
+        freshnessClockSkewDetected=Boolean(evidence&&timestamps.some(t=>t>this.now()+30_000));
         freshnessPassed =
-          freshnessSeconds <= contract.qualitySlo.maxFreshnessSeconds;
+          !freshnessClockSkewDetected&&freshnessSeconds <= contract.qualitySlo.maxFreshnessSeconds;
       }
     } catch (error) {
       if (error.code !== "ASSET_ROWS_UNAVAILABLE") throw error;
@@ -418,8 +424,10 @@ export class DataContractManager {
         freshnessPassed,
         actualMetadata: true,
         actualRows,
+        requiredFieldCount:version.fields.filter(field=>field.nullable===false).length,
+        ...(evidence?{trigger:'DATA_SERVICE_GATE',assetVersionId:asset.versionId,freshnessBasis:evidence.freshnessBasis,freshnessClockSkewDetected}:{}),
       });
-    if (failed)
+    if (failed && !evidence)
       this.store.create("data_contract_alert", this.project, {
         contractId: contract.id,
         contractVersionId: version.id,
@@ -433,7 +441,7 @@ export class DataContractManager {
           ...nullViolations,
         ],
       });
-    else if (check.status === "PASSED")
+    else if (check.status === "PASSED" && !evidence)
       for (const alert of this.store
         .list("data_contract_alert", this.project)
         .filter(
