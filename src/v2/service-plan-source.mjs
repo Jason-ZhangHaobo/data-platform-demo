@@ -13,6 +13,7 @@ export function servicePlanVersionRef(service,version){
 }
 export function resolveServicePlanSource({store,project,binding,actorId,services}){
  binding=servicePlanSourceBinding(binding);
+ if(binding.manualDeliveryTaskId)throw fail('SERVICE_PLAN_SOURCE_SCOPE','独立手工来源仅使用私有持久服务规划，不回退本机Agent',403);
  const agent=store.get('agent',binding.taskId,project);
  if(!agent||agent.submittedBy!=='local-engineer'&&agent.submittedBy!==actorId)throw fail('SERVICE_PLAN_SOURCE_OWNER','规划来源不属于当前本机开发者',403);
  const runs=localServiceSources({store,project,selection:{taskId:binding.taskId,packageDigest:binding.packageDigest,releaseId:binding.releaseId}}),

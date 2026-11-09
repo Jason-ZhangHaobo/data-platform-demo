@@ -2,8 +2,8 @@ import assert from'node:assert/strict';import{randomUUID}from'node:crypto';
 import{createManualPublicationJourney}from'./manual-publication-journey.mjs';import{BusinessQueryStore}from'../../../src/v2/data-services.mjs';import{createPrivateDataServices}from'../../../src/v2/private-data-services.mjs';import{PROJECT}from'../../../src/v2/server.mjs';
 // Real manual producers, authenticated loopback and SQLite. Only upstream
 // Spark/queue receipts are synthetic; never a real cloud/model acceptance.
-export async function createStandaloneServiceJourney(){
- const businessStore=new BusinessQueryStore(':memory:'),f=await createManualPublicationJourney({standalone:true,enableServices:true,businessStore});let publication;
+export async function createStandaloneServiceJourney({servicePlanner,agentWakeTransport,serviceAgentModelLeaseMs}={}){
+ const businessStore=new BusinessQueryStore(':memory:'),f=await createManualPublicationJourney({standalone:true,enableServices:true,businessStore,servicePlanner,agentWakeTransport,serviceAgentModelLeaseMs});let publication;
  try{publication=(await f.call(f.path,f.body)).body;for(const n of[1,2]){if(n===2)f.advance();assert.equal((await f.tick(publication.release.id,n)).status,200);const r=f.store.list('release_run',PROJECT).find(r=>r.releaseId===publication.release.id&&r.sequence===n);f.complete(r.remoteSubmission.prepared);publication=(await f.call(f.path+f.query)).body;}assert.equal(publication.release.health,'HEALTHY');}
  catch(e){await f.dispose();businessStore.close();throw e;}
  const sourceRun=publication.runs.find(r=>r.sequence===1),selection={manualDeliveryTaskId:f.delivery.id,packageDigest:f.item.digest,releaseId:publication.release.id},query=new URLSearchParams({manual_delivery_task_id:selection.manualDeliveryTaskId,package_digest:selection.packageDigest,release_id:selection.releaseId}),api=createPrivateDataServices({store:f.store,businessStore,project:PROJECT,auth:{sessionFromHeaders:h=>h['x-test-actor']?{role:'ADMIN',user:{id:h['x-test-actor']}}:undefined,requireMutation:()=>{}}});

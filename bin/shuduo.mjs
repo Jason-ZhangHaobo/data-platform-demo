@@ -98,9 +98,9 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo releases rollback --id RELEASE_ID --target-release-id RELEASE_ID --reason "恢复稳定版本"
   shuduo releases monitor
   shuduo services list [--type dapi|xapi]
-  shuduo services plan --message "生成当前发布批次的持仓DAPI" --request-id UUID --task-id UUID --package-digest SHA256 --release-id UUID --source-run-id UUID
-  shuduo services plans --task-id UUID --package-digest SHA256 --release-id UUID --source-run-id UUID
-  shuduo services plan-context --task-id UUID --package-digest SHA256 --release-id UUID --source-run-id UUID
+  shuduo services plan --message "生成当前发布批次的持仓DAPI" --request-id UUID [--task-id UUID | --manual-delivery-task-id UUID] --package-digest SHA256 --release-id UUID --source-run-id UUID
+  shuduo services plans [--task-id UUID | --manual-delivery-task-id UUID] --package-digest SHA256 --release-id UUID --source-run-id UUID
+  shuduo services plan-context [--task-id UUID | --manual-delivery-task-id UUID] --package-digest SHA256 --release-id UUID --source-run-id UUID
   shuduo services plan-detail|apply-plan|cancel-plan --id PLAN_UUID
   shuduo services plan-request --request-id ORIGINAL_UUID
   shuduo services advance-plan --id PLAN_UUID --expected-version N [--confirm-model-retry true]
@@ -396,11 +396,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "budget" && !action)
       result = await client.request("/budget");
     else if(resource==='services'&&['plan','plans','plan-context','plan-detail','plan-request','apply-plan','cancel-plan','advance-plan'].includes(action)){
-      const sourceFlags=['task_id','package_digest','release_id','source_run_id'],fields=action==='plan'?['message','request_id',...sourceFlags]:['plans','plan-context'].includes(action)?sourceFlags:action==='advance-plan'?['id','expected_version','confirm_model_retry']:action==='plan-request'?['request_id']:['id'],
+      const sourceFlags=['task_id','manual_delivery_task_id','package_digest','release_id','source_run_id'],fields=action==='plan'?['message','request_id',...sourceFlags]:['plans','plan-context'].includes(action)?sourceFlags:action==='advance-plan'?['id','expected_version','confirm_model_retry']:action==='plan-request'?['request_id']:['id'],
         allowed=new Set([...fields,'base_url','help']),seen=new Set();
       if(parsed.positionals.length!==2)throw Error('规划命令包含额外参数');
       for(const token of argv.filter(value=>value.startsWith('--'))){const key=token.slice(2).replaceAll('-','_');if(!allowed.has(key)||seen.has(key))throw Error('规划命令包含未知或重复参数');seen.add(key);}
-      const sourceBinding=['plan','plans','plan-context'].includes(action)?{taskId:required(parsed.options,'task_id'),packageDigest:required(parsed.options,'package_digest'),releaseId:required(parsed.options,'release_id'),sourceReleaseRunId:required(parsed.options,'source_run_id')}:undefined;
+      if(parsed.options.manual_delivery_task_id!==undefined&&parsed.options.task_id!==undefined)throw Error('任务与独立手工来源不能混用');
+      const sourceBinding=['plan','plans','plan-context'].includes(action)?{...(parsed.options.manual_delivery_task_id!==undefined?{manualDeliveryTaskId:required(parsed.options,'manual_delivery_task_id')}:{taskId:required(parsed.options,'task_id')}),packageDigest:required(parsed.options,'package_digest'),releaseId:required(parsed.options,'release_id'),sourceReleaseRunId:required(parsed.options,'source_run_id')}:undefined;
       const operation={plan:'create',plans:'list','plan-detail':'detail','plan-request':'request','apply-plan':'apply','cancel-plan':'cancel','advance-plan':'advance'}[action];
       if(action==='advance-plan'&&parsed.options.confirm_model_retry!==undefined&&!['true','false'].includes(parsed.options.confirm_model_retry))throw Error('confirm-model-retry必须显式为true或false');
       result=action==='plan-context'?await readServiceAgentContext(client,{sourceBinding}):await callServicePlan(client,operation,action==='plan'?{sourceBinding,message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id')}:action==='plans'?{sourceBinding}:

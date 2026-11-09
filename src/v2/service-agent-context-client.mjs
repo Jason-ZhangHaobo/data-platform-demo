@@ -12,14 +12,14 @@ export function checkedServiceAgentContext(value,source){
  const binding=servicePlanSourceBinding(source),fail=()=>{throw Error('规划上下文回执未与当前私有发布来源对应；未调用模型');};
  try{
   if(!exact(value,['protocol','scope','sourceBinding','sourceKind',...(value?.sourceKind==='MANUAL'?['sourceAttribution']:[]),'sourceContext','releaseRuns','services','resourceVersions','resourcesTruncated','unavailableServiceCount','planning','agentIndependentE2E','publicDeployed'])||
-   value.protocol!=='shuduo-service-agent-context/v1'||value.scope!=='PRIVATE_CLOUD_TEST'||!['AGENT','MANUAL'].includes(value.sourceKind)||
-   value.sourceKind==='MANUAL'&&value.sourceAttribution!=='ENGINEER_ASSISTED'||!same(servicePlanSourceBinding(value.sourceBinding),binding)||
+   value.protocol!=='shuduo-service-agent-context/v1'||value.scope!=='PRIVATE_CLOUD_TEST'||!['AGENT','MANUAL'].includes(value.sourceKind)||binding.manualDeliveryTaskId!==undefined&&value.sourceKind!=='MANUAL'||
+   value.sourceKind==='MANUAL'&&value.sourceAttribution!==(binding.manualDeliveryTaskId?'ENGINEER_AUTHORED':'ENGINEER_ASSISTED')||!same(servicePlanSourceBinding(value.sourceBinding),binding)||
    value.agentIndependentE2E!==false||value.publicDeployed!==false||!exact(value.planning,['enabled','code'])||value.planning.enabled!==false||value.planning.code!=='PRIVATE_SERVICE_AGENT_EXECUTION_NOT_ENABLED')fail();
   const context=value.sourceContext,run=value.releaseRuns?.[0];
   if(!exact(context,['id','name','definition','validationContractId','metricLabels'])||!text(context.id,100)||!text(context.name,160)||!text(context.definition,2000)||
    !text(context.validationContractId,160)||!exact(context.metricLabels,fields)||fields.some(field=>!text(context.metricLabels[field],160))||
-   !Array.isArray(value.releaseRuns)||value.releaseRuns.length!==1||!exact(run,['id','releaseId','packageDigest','sourceAgentTaskId','sourceRevisionId','sourceRunId','scope','sourceKind','status','published','schedulerTriggered','engine','engineVersion'])||
-   run.id!==binding.sourceReleaseRunId||run.releaseId!==binding.releaseId||run.packageDigest!==binding.packageDigest||run.sourceAgentTaskId!==binding.taskId||
+   !Array.isArray(value.releaseRuns)||value.releaseRuns.length!==1||!exact(run,['id','releaseId','packageDigest',binding.manualDeliveryTaskId?'manualDeliveryTaskId':'sourceAgentTaskId','sourceRevisionId','sourceRunId','scope','sourceKind','status','published','schedulerTriggered','engine','engineVersion'])||
+   run.id!==binding.sourceReleaseRunId||run.releaseId!==binding.releaseId||run.packageDigest!==binding.packageDigest||(binding.manualDeliveryTaskId?run.manualDeliveryTaskId!==binding.manualDeliveryTaskId||run.sourceAgentTaskId!==undefined:run.sourceAgentTaskId!==binding.taskId||run.manualDeliveryTaskId!==undefined)||
    !uuid(run.sourceRevisionId)||!uuid(run.sourceRunId)||run.scope!==value.scope||run.sourceKind!==value.sourceKind||run.status!=='SUCCEEDED'||run.published!==true||run.schedulerTriggered!==true||run.engine!=='Apache Spark'||!text(run.engineVersion,40))fail();
   if(!Array.isArray(value.services)||value.services.length>100||new Set(value.services.map(item=>item?.id)).size!==value.services.length||
    !Array.isArray(value.resourceVersions)||value.resourceVersions.length!==value.services.length||typeof value.resourcesTruncated!=='boolean'||

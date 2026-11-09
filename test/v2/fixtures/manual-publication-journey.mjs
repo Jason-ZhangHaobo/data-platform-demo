@@ -18,7 +18,7 @@ import { signSchedulerTick } from "../../../src/v2/scheduler-tick.mjs";
 // This helper never contacts a cloud, model or Spark. The password/keys below
 // are public test constants and must never be used for a real account.
 export const manualPublicationTestPassword = "SyntheticManualPublication!2026";
-export async function createManualPublicationJourney({ applicationRoot, port = 0, businessStore, enableServices = false, standalone = false } = {}) {
+export async function createManualPublicationJourney({ applicationRoot, port = 0, businessStore, enableServices = false, standalone = false, servicePlanner,agentWakeTransport,serviceAgentModelLeaseMs } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "shuduo-manual-publication-journey-"));
   const artifactStore = new LocalArtifactStore(join(directory, "artifacts")), objects = new Map(), identities = {};
   let now = Date.now(), app, base, store = new MetadataStore(join(directory, "metadata.sqlite"));
@@ -104,8 +104,8 @@ export async function createManualPublicationJourney({ applicationRoot, port = 0
   };
   const open = async () => {
     store ??= new MetadataStore(join(directory, "metadata.sqlite"));
-    app = createV2Server({ root: applicationRoot ?? directory, store, artifactStore, runner, businessStore, stateCoordinator, env, now: () => now,
-      ingress: createFcIngress({ publicHttpEnabled: true }), generator: async () => { modelCalls++; throw Error("SYNTHETIC_MODEL_FORBIDDEN"); } });
+    app = createV2Server({ root: applicationRoot ?? directory, store, artifactStore, runner, businessStore, stateCoordinator, env, now: () => now,servicePlanner,agentWakeTransport,serviceAgentModelLeaseMs,
+      ingress: createFcIngress({ publicHttpEnabled: true,publicReadOnly:env.V2_FC_PUBLIC_READ_ONLY==='true' }), generator: async () => { modelCalls++; throw Error("SYNTHETIC_MODEL_FORBIDDEN"); } });
     await new Promise(resolve => app.server.listen(port, "127.0.0.1", resolve)); base = `http://127.0.0.1:${app.server.address().port}`;
   };
   const call = async (path, body, { identity = "owner", key = "synthetic-manual-reviewed-package", headers = {} } = {}) => {
@@ -125,6 +125,7 @@ export async function createManualPublicationJourney({ applicationRoot, port = 0
     const r=await fetch(base+'/invoke',{method:'POST',signal:AbortSignal.timeout(5000),headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke'},body:JSON.stringify({operation:'PRIVATE_APPLICATION_HTTP_V1',method:body===undefined?'GET':'POST',path:'/api/v2'+path,headers:{'x-shuduo-client':'workbench','idempotency-key':key,...(identity?identities[identity]:{})},...(body===undefined?{}:{body})})});
     return {status:r.status,body:await r.json()};
   };
+  const invoke=async payload=>{const r=await fetch(base+'/invoke',{method:'POST',signal:AbortSignal.timeout(10000),headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke'},body:JSON.stringify(payload)});return{status:r.status,body:await r.json()};};
   const tick = async (releaseId, sequence, extra = {}) => {
     const timestamp = String(now), nonce = `synthetic-manual-publication-event-${sequence}`,
       body = JSON.stringify({ releaseId, triggerName, expiresAt: now + 120000 }),
@@ -136,7 +137,7 @@ export async function createManualPublicationJourney({ applicationRoot, port = 0
   try { await open(); await login("owner"); await login("other"); }
   catch (error) { await close(); rmSync(directory, { recursive: true, force: true }); throw error; }
   const selector = { sourceKind: "MANUAL", sourceRunId: sourceRun.id, packageDigest: item.digest, verificationId: verification.id }, path = standalone?`/delivery/manual/${delivery.id}/publication`:`/agent/tasks/${agent.id}/publication`;
-  return { directory, env, owner, other, agent, revision, sourceRun, delivery, item, verification, selector, path, call, forward, tick, complete, login,
+  return { directory, env, owner, other, agent, revision, sourceRun, delivery, item, verification, selector, path, call, forward, invoke, tick, complete, login,
     query: "?" + new URLSearchParams(selector).toString(), body: { ...selector, attestations: { code: true, assertions: true, deliveryFiles: true, cloudScope: true } },
     restart: async () => { await close(); await open(); }, time:()=>now, advance: () => { now += 60000; }, expire: () => { now = Date.parse(env.V2_PUBLIC_PUBLICATION_EXPIRES_AT); },
     failReceiptReads: value => { failReads = value; }, loseNextPublicationAcknowledgement: () => { losePublishFlush = true; },
