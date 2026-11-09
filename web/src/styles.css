@@ -6782,6 +6782,16 @@ kbd {
 .source-report-agent-v2 select { margin:0 0 8px 10px; padding:6px; border:1px solid #cbd9c6; border-radius:6px; }
 .source-report-proposal-v2 { padding:12px; margin-top:12px; background:white; border-radius:8px; }
 .source-report-proposal-v2 h4 { margin:8px 0; }
+.service-contract-gates-v2 { margin:14px 0; padding:16px; border:1px solid #d5e1cf; border-radius:10px; background:#f7faf3; }
+.service-contract-gates-v2 > header,.service-contract-gates-v2 > header > div { display:flex; align-items:center; gap:8px; }
+.service-contract-gates-v2 > header { justify-content:space-between; }
+.service-contract-gates-v2 h3 { margin:0; }
+.service-contract-gates-v2 select,.service-contract-gates-v2 input { display:block; width:100%; min-width:0; padding:8px; margin-top:5px; border:1px solid #cbd9c6; border-radius:6px; background:white; }
+.service-gate-form-v2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:12px 0; }
+.service-gate-form-v2 p { grid-column:1/-1; }
+.service-gate-history-v2 article { padding:12px; margin-top:8px; border:1px solid #dde5d8; border-radius:7px; background:white; }
+.service-gate-history-v2 small { display:block; margin-top:4px; }
+@media(max-width:640px){.service-gate-form-v2{grid-template-columns:minmax(0,1fr);}}
 @media (max-width:720px) { .published-report-form-v2 { grid-template-columns:minmax(0,1fr); } }
 @media (max-width: 640px) { .agent-report-heading-v2 { flex-direction: column; } }
 .reports-proof-v2 {

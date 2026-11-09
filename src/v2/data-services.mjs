@@ -103,22 +103,7 @@ const publicApp = (app, now = Date.now()) => {
   return safe;
 };
 
-export class BusinessQueryStore {
-  constructor(path = ":memory:") {
-    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-    this.db = new DatabaseSync(path);
-    this.db.exec(
-      "PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS service_snapshots(id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, row_count INTEGER NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS customer_assets(snapshot_id TEXT NOT NULL, client_id TEXT NOT NULL, holding_market_value TEXT NOT NULL, available_cash TEXT NOT NULL, total_assets TEXT NOT NULL, security_count INTEGER NOT NULL, PRIMARY KEY(snapshot_id,client_id), FOREIGN KEY(snapshot_id) REFERENCES service_snapshots(id)); CREATE INDEX IF NOT EXISTS customer_assets_snapshot ON customer_assets(snapshot_id,client_id);",
-    );
-    this.mutationListener = undefined;
-  }
-
-  setMutationListener(listener) {
-    this.mutationListener = listener;
-  }
-
-  materialize(snapshotId, rows, now = new Date().toISOString()) {
-    const id = text(snapshotId, "快照编号", 3, 120);
+export function normalizedServiceSourceRows(rows) {
     if (!Array.isArray(rows) || !rows.length || rows.length > 1000)
       throw fail(409, "源发布批次没有可服务的结果", "INVALID_SOURCE_ROWS");
     const normalized = rows.map((row) => {
@@ -145,6 +130,26 @@ export class BusinessQueryStore {
     if (new Set(normalized.map((row) => row.client_id)).size !== normalized.length)
       throw fail(409, "源发布结果包含重复客户", "DUPLICATE_CLIENT");
     normalized.sort((a, b) => a.client_id.localeCompare(b.client_id));
+    return normalized;
+}
+
+export class BusinessQueryStore {
+  constructor(path = ":memory:") {
+    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+    this.db = new DatabaseSync(path);
+    this.db.exec(
+      "PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS service_snapshots(id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, row_count INTEGER NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS customer_assets(snapshot_id TEXT NOT NULL, client_id TEXT NOT NULL, holding_market_value TEXT NOT NULL, available_cash TEXT NOT NULL, total_assets TEXT NOT NULL, security_count INTEGER NOT NULL, PRIMARY KEY(snapshot_id,client_id), FOREIGN KEY(snapshot_id) REFERENCES service_snapshots(id)); CREATE INDEX IF NOT EXISTS customer_assets_snapshot ON customer_assets(snapshot_id,client_id);",
+    );
+    this.mutationListener = undefined;
+  }
+
+  setMutationListener(listener) {
+    this.mutationListener = listener;
+  }
+
+  materialize(snapshotId, rows, now = new Date().toISOString()) {
+    const id = text(snapshotId, "快照编号", 3, 120);
+    const normalized = normalizedServiceSourceRows(rows);
     const contentHash = serviceHash(normalized),
       prior = this.db
         .prepare("SELECT * FROM service_snapshots WHERE id=?")
@@ -257,6 +262,7 @@ export class DataServiceManager {
     verifySource,
     now = () => Date.now(),
     executeDapi,
+    contractGate,
   }) {
     this.store = store;
     this.businessStore = businessStore;
@@ -265,6 +271,7 @@ export class DataServiceManager {
     if (!["LOCAL_TEST_ONLY", "PRIVATE_CLOUD_TEST"].includes(scope)) throw new Error("Unsupported service scope");
     this.scope = scope;
     this.verifySource = verifySource;
+    this.contractGate = contractGate;
     this.now = now;
     this.executeDapi =
       executeDapi ??
@@ -569,6 +576,7 @@ export class DataServiceManager {
     }
     if(service.publishedVersionId===version.id && version.status==='PUBLISHED')
       return {service,version,test,replayed:true};
+    const contractGate=this.contractGate?.evaluate({service,version,dataVersions,action:'PUBLISH'});
     if (service.publishedVersionId) {
       const prior = this.#version(service.publishedVersionId);
       if (prior.id !== version.id)
@@ -585,6 +593,7 @@ export class DataServiceManager {
         status: "PUBLISHED",
         publishedAt: new Date(this.now()).toISOString(),
         testId: test.id,
+        ...(contractGate?.id?{contractGateDecisionId:contractGate.id}:{}),
       },
     );
     const published = this.store.update("data_service", service.id, this.project, {
@@ -593,14 +602,24 @@ export class DataServiceManager {
       endpoint: `/api/v2/open/${service.serviceType.toLowerCase()}s/${service.slug}`,
       publishedAt: new Date(this.now()).toISOString(),
     });
-    return { service: published, version: publishedVersion, test };
+    return { service: published, version: publishedVersion, test,...(contractGate?{contractGate}:{}) };
   }
 
-  activate(serviceId, versionId) {
+  prepareActivation(serviceId,versionId){
+    const service=this.#service(serviceId),version=this.#version(text(versionId,'版本编号',3,80));
+    if(version.serviceId!==service.id||!['PUBLISHED','RETIRED'].includes(version.status))throw fail(409,'只能切换已发布历史版本','INVALID_VERSION');
+    const dataVersions=version.serviceType==='DAPI'?[version]:version.steps.map(step=>this.#version(step.dapiVersionId));
+    for(const v of dataVersions){const evidence=this.businessStore.snapshotEvidence(v.snapshotId);if(!evidence?.integrityVerified||evidence.contentHash!==v.snapshotHash)throw fail(409,'目标版本源快照缺失或变化，不能切换','SOURCE_SNAPSHOT_UNAVAILABLE');}
+    return this.contractGate?.evaluate({service,version,dataVersions,action:'ACTIVATE'});
+  }
+
+  activate(serviceId, versionId, {preparedGate}={}) {
     const service = this.#service(serviceId),
       target = this.#version(text(versionId, "版本编号", 3, 80));
     if (target.serviceId !== service.id || !["PUBLISHED", "RETIRED"].includes(target.status))
       throw fail(409, "只能切换到该服务已经测试发布过的版本", "INVALID_VERSION");
+    const gate=preparedGate??this.prepareActivation(serviceId,target.id);
+    if(gate&&this.contractGate){const dataVersions=target.serviceType==='DAPI'?[target]:target.steps.map(step=>this.#version(step.dapiVersionId));this.contractGate.verifyPrepared({service,version:target,dataVersions,receipt:gate,action:'ACTIVATE'});}
     if (service.publishedVersionId && service.publishedVersionId !== target.id)
       this.store.update(
         "data_service_version",
@@ -611,6 +630,7 @@ export class DataServiceManager {
     this.store.update("data_service_version", target.id, this.project, {
       status: "PUBLISHED",
       reactivatedAt: new Date(this.now()).toISOString(),
+      ...(gate?.id?{contractGateActivationDecisionId:gate.id}:{}),
     });
     return this.store.update("data_service", service.id, this.project, {
       status: "PUBLISHED",

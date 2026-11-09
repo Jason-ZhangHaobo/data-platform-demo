@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
+import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
@@ -130,6 +131,10 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo contracts assess-current --id CONTRACT_ID
   shuduo contracts apply-version --id CONTRACT_ID --assessment-id ASSESSMENT_ID [--acknowledge-breaking]
   shuduo contracts check --id CONTRACT_ID
+  shuduo contracts service-gates --service-id SERVICE_ID
+  shuduo contracts bind-service --service-id SERVICE_ID --file binding.json --request-id UUID
+  shuduo contracts gate-version --service-id SERVICE_ID --binding-id BINDING_ID --file change.json --request-id UUID
+  shuduo contracts gate-request --service-id SERVICE_ID --request-id UUID
   shuduo metrics list
   shuduo metrics create --name 持仓市值 --code holding_market_value --asset-id landing:raw_positions --aggregation SUM --field market_value --group-by asset_class --definition "按资产类别汇总持仓，不含现金"
   shuduo metrics run --id METRIC_ID
@@ -937,6 +942,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       });
     else if (resource === "assets" && action === "agents")
       result = await client.request("/assets/agent/tasks");
+    else if(resource==='contracts'&&action==='service-gates')result=await client.request(`/data-services/${encodeURIComponent(required(parsed.options,'service_id'))}/contract-gates`);
+    else if(resource==='contracts'&&['bind-service','gate-version'].includes(action))result=await submitServiceGateWrite(client,{serviceId:required(parsed.options,'service_id'),...(action==='gate-version'?{bindingId:required(parsed.options,'binding_id')}:{}),input:jsonObject(readFileSync(required(parsed.options,'file'),'utf8'),'门禁配置'),requestId:required(parsed.options,'request_id')});
+    else if(resource==='contracts'&&action==='gate-request')result=await lookupServiceGateWrite(client,{serviceId:required(parsed.options,'service_id'),requestId:required(parsed.options,'request_id')});
     else if (resource === "contracts" && action === "list")
       result = await client.request("/contracts");
     else if (resource === "contracts" && action === "show")

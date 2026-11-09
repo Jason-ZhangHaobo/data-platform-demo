@@ -18,14 +18,21 @@ export function activateServiceReviewed({manager,store,project,serviceId,actorId
   only(body,['versionId','expectedPublishedVersionId','configHash']);
   if(typeof key!=='string'||key.length<1||key.length>100)
     throw fail(422,'缺少版本切换幂等键','IDEMPOTENCY_KEY_REQUIRED');
-  const record=store.deduplicate(`${project}:service-switch:${manager.scope}:${actorId}:${serviceId}:${key}`,serviceHash(body),()=>{
+  const namespace=`${project}:service-switch:${manager.scope}:${actorId}:${serviceId}:${key}`;
+  let preparedGate;
+  if(!store.deduplicatedId(namespace)){
+    const current=manager.detail(serviceId),target=current.versions.find(v=>v.id===body.versionId);
+    if(!target||body.configHash!==target.configHash||!body.expectedPublishedVersionId||body.expectedPublishedVersionId!==current.publishedVersionId)throw fail(409,'线上版本或目标摘要已变化，请重新审阅后切换','STALE_SERVICE_VERSION');
+    preparedGate=manager.prepareActivation?.(serviceId,target.id);
+  }
+  const record=store.deduplicate(namespace,serviceHash(body),()=>{
     const current=manager.detail(serviceId),target=current.versions.find(v=>v.id===body.versionId);
     if(!target || body.configHash!==target.configHash || !body.expectedPublishedVersionId || body.expectedPublishedVersionId!==current.publishedVersionId)
       throw fail(409,'线上版本或目标摘要已变化，请重新审阅后切换','STALE_SERVICE_VERSION');
-    manager.activate(serviceId,target.id);
+    manager.activate(serviceId,target.id,{preparedGate});
     return store.create('service_version_switch',project,{serviceId,serviceType:current.serviceType,
       fromVersionId:current.publishedVersionId,toVersionId:target.id,targetConfigHash:target.configHash,
-      performedBy:actorId,scope:manager.scope,status:'APPLIED'});
+      performedBy:actorId,scope:manager.scope,status:'APPLIED',...(preparedGate?.id?{contractGateDecisionId:preparedGate.id}:{})});
   });
   const receipt=store.get('service_version_switch',record.id,project),service=manager.detail(serviceId);
   return{receipt,service,replayed:Boolean(record.replayed),

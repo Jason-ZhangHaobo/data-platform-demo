@@ -1,0 +1,43 @@
+import test from'node:test';import assert from'node:assert/strict';import{randomUUID}from'node:crypto';
+import{MetadataStore}from'../../src/v2/store.mjs';import{BusinessQueryStore,DataServiceManager}from'../../src/v2/data-services.mjs';import{DataContractManager}from'../../src/v2/contracts.mjs';import{createServiceContractGates}from'../../src/v2/service-contract-gates.mjs';import{activateServiceReviewed}from'../../src/v2/service-version-governance.mjs';
+const project='synthetic-contract-gate',NOW=Date.UTC(2026,10,9,8),fields=[{name:'client_id',type:'STRING',nullable:false},...['holding_market_value','available_cash','total_assets'].map(name=>({name,type:'DECIMAL(18,2)',nullable:false})),{name:'security_count',type:'BIGINT',nullable:false}];
+const rows=[{client_id:'CLIENT-001',holding_market_value:'1500.00',available_cash:'300.00',total_assets:'1800.00',security_count:2},{client_id:'CLIENT-002',holding_market_value:'750.00',available_cash:'200.00',total_assets:'950.00',security_count:1}];
+async function setup(t){
+ const store=new MetadataStore(':memory:'),businessStore=new BusinessQueryStore();t.after(()=>{businessStore.close();store.close();});
+ const run=store.create('release_run',project,{releaseId:randomUUID(),rows,columns:fields,engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,testSqlValidation:{passed:true},status:'SUCCEEDED',published:true,schedulerTriggered:true,publicDeployed:false,validation:{passed:true},finishedAt:new Date(NOW-60_000).toISOString()});
+ const asset={id:'dataset:customer_assets_t1',versionId:run.id,fields,evidenceHash:'synthetic-source-schema'},assets={detail:()=>asset,impact:()=>({downstream:[],edges:[],edgeCount:0,derivation:'SYNTHETIC'})};
+ const contracts=new DataContractManager({store,assets,project,now:()=>NOW}),gates=createServiceContractGates({store,project,contracts,businessStore,now:()=>NOW}),manager=new DataServiceManager({store,businessStore,project,releaseRunFor:id=>store.get('release_run',id,project),contractGate:gates,now:()=>NOW});
+ const service=manager.createDapi({name:'虚构客户资产查询',slug:'synthetic-gate-assets',sourceReleaseRunId:run.id,fields:fields.map(f=>f.name)});await manager.test(service.id,{});
+ const contract=contracts.create({name:'虚构客户资产契约',code:'synthetic_assets_contract',assetId:asset.id,owner:'虚构负责人',description:'约束字段、必填和最大时效',qualitySlo:{minPassRate:1,maxFreshnessSeconds:3600}});
+ return{store,businessStore,run,assets,asset,contracts,gates,manager,service,contract};
+}
+const change=(f,b,input)=>f.gates.update(f.service.id,b.id,{expectedBindingVersion:b.version,contractVersionId:f.contracts.detail(f.contract.id).currentVersion.id,freshnessBasis:'PUBLICATION_FINISHED',changeReason:'已审阅处理完成时间的适用边界',...input},'local-engineer');
+test('unmeasured row time blocks publishing, explicit publication time passes and replay does not rerun gates',async t=>{
+ const f=await setup(t);let b=f.gates.create(f.service.id,{contractId:f.contract.id,contractVersionId:f.contract.currentVersion.id},'local-engineer');
+ assert.throws(()=>f.manager.publish(f.service.id),{code:'CONTRACT_GATE_BLOCKED'});assert.equal(f.manager.detail(f.service.id).status,'DRAFT');let d=f.gates.list(f.service.id).decisions[0];assert.equal(d.decision,'BLOCK');assert.equal(d.checks[0].status,'PARTIAL');assert.equal(d.checks[0].freshnessMeasured,false);assert.equal(d.checks[0].requiredFieldCount,5);
+ assert.equal(f.contracts.detail(f.contract.id).checks.length,0);assert.equal(f.store.list('data_contract_alert',project).length,0);
+ b=change(f,b,{});const result=f.manager.publish(f.service.id);assert.equal(result.contractGate.decision,'ALLOW');assert.equal(result.contractGate.checks[0].freshnessBasis,'PUBLICATION_FINISHED');assert.equal(result.contractGate.checks[0].freshnessSeconds,60);
+ const count=f.gates.list(f.service.id).decisions.length;assert.equal(f.manager.publish(f.service.id).replayed,true);assert.equal(f.gates.list(f.service.id).decisions.length,count);
+ assert.throws(()=>change(f,{...b,version:b.version-1},{}),{code:'CONTRACT_GATE_STALE_BINDING'});
+});
+test('contract changes block new versions and activation, failed checks survive without mutating live pointers',async t=>{
+ const f=await setup(t);let b=f.gates.create(f.service.id,{contractId:f.contract.id,contractVersionId:f.contract.currentVersion.id,freshnessBasis:'PUBLICATION_FINISHED'},'local-engineer');const first=f.manager.publish(f.service.id).version;
+ f.manager.createDapiVersion(f.service.id,{sourceReleaseRunId:f.run.id,fields:fields.map(x=>x.name),timeoutMs:2000});await f.manager.test(f.service.id,{});const second=f.manager.publish(f.service.id).version;
+ const assessment=f.contracts.assess(f.contract.id,{fields:[...fields,{name:'risk_level',type:'STRING',nullable:false}]});f.contracts.createVersion(f.contract.id,{assessmentId:assessment.id,acknowledgeBreaking:true});
+ const body={versionId:first.id,expectedPublishedVersionId:second.id,configHash:first.configHash};
+ assert.throws(()=>activateServiceReviewed({manager:f.manager,store:f.store,project,serviceId:f.service.id,actorId:'local-engineer',key:'stale-contract-switch',body}),{code:'CONTRACT_GATE_BLOCKED'});assert.equal(f.manager.detail(f.service.id).publishedVersionId,second.id);assert.equal(f.gates.list(f.service.id).decisions[0].checks[0].reasonCode,'CONTRACT_GATE_STALE_CONTRACT');assert.equal(f.store.list('service_version_switch',project).length,0);
+ b=change(f,b,{});assert.throws(()=>f.manager.prepareActivation(f.service.id,first.id),{code:'CONTRACT_GATE_BLOCKED'});assert(f.gates.list(f.service.id).decisions[0].checks[0].missing.includes('risk_level'));
+ const fix=f.contracts.assess(f.contract.id,{fields});f.contracts.createVersion(f.contract.id,{assessmentId:fix.id,acknowledgeBreaking:true});b=change(f,b,{});
+ const switched=activateServiceReviewed({manager:f.manager,store:f.store,project,serviceId:f.service.id,actorId:'local-engineer',key:'fixed-contract-switch',body});assert.equal(switched.targetStillActive,true);assert.equal(f.gates.list(f.service.id).decisions[0].action,'ACTIVATE');
+ const count=f.gates.list(f.service.id).decisions.length;assert.equal(activateServiceReviewed({manager:f.manager,store:f.store,project,serviceId:f.service.id,actorId:'local-engineer',key:'fixed-contract-switch',body}).replayed,true);assert.equal(f.gates.list(f.service.id).decisions.length,count);
+});
+test('XAPI checks pinned DAPI sources and a changed preflight cannot be used to activate',async t=>{
+ const f=await setup(t);const b=f.gates.create(f.service.id,{contractId:f.contract.id,contractVersionId:f.contract.currentVersion.id,freshnessBasis:'PUBLICATION_FINISHED'},'local-engineer');const first=f.manager.publish(f.service.id).version;
+ const cash=f.manager.createDapi({name:'虚构现金查询',slug:'synthetic-gate-cash',sourceReleaseRunId:f.run.id,fields:['client_id','available_cash']});await f.manager.test(cash.id,{});f.manager.publish(cash.id);
+ const x=f.manager.createXapi({name:'虚构组合查询',slug:'synthetic-gate-combined',steps:[{alias:'holdings',dapiId:f.service.id},{alias:'cash',dapiId:cash.id}]});await f.manager.test(x.id,{});f.gates.create(x.id,{contractId:f.contract.id,contractVersionId:f.contract.currentVersion.id},'local-engineer');assert.throws(()=>f.manager.publish(x.id),{code:'CONTRACT_GATE_BLOCKED'});assert.equal(f.manager.detail(x.id).status,'DRAFT');
+ const proof=f.manager.prepareActivation(f.service.id,first.id);change(f,b,{});assert.throws(()=>f.manager.activate(f.service.id,first.id,{preparedGate:proof}),{code:'CONTRACT_GATE_PREFLIGHT_CHANGED'});
+});
+test('future completion time and source snapshot drift remain blocked',async t=>{
+ const f=await setup(t);f.gates.create(f.service.id,{contractId:f.contract.id,contractVersionId:f.contract.currentVersion.id,freshnessBasis:'PUBLICATION_FINISHED'},'local-engineer');f.store.update('release_run',f.run.id,project,{finishedAt:new Date(NOW+120_000).toISOString()});assert.throws(()=>f.manager.publish(f.service.id),{code:'CONTRACT_GATE_BLOCKED'});assert.equal(f.gates.list(f.service.id).decisions[0].checks[0].freshnessClockSkewDetected,true);
+ f.store.update('release_run',f.run.id,project,{finishedAt:new Date(NOW-60_000).toISOString(),rows:[{...rows[0],available_cash:'999.00'},rows[1]]});assert.throws(()=>f.manager.publish(f.service.id),{code:'CONTRACT_GATE_BLOCKED'});assert.equal(f.gates.list(f.service.id).decisions[0].checks[0].reasonCode,'CONTRACT_GATE_SOURCE_CHANGED');
+});

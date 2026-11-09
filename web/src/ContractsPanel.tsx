@@ -116,6 +116,7 @@ export function ContractsPanel({
     [compatibility, setCompatibility] = useState("BACKWARD"),
     [proposal, setProposal] = useState("CURRENT"),
     [acknowledgeBreaking, setAcknowledgeBreaking] = useState(false);
+  const [minPassRate,setMinPassRate]=useState('99'),[freshnessSeconds,setFreshnessSeconds]=useState('86400');
 
   const relevant = useMemo(
       () => contracts.filter((contract) => contract.assetId === asset.id),
@@ -168,7 +169,7 @@ export function ContractsPanel({
           owner,
           description,
           compatibility,
-          qualitySlo: { minPassRate: 0.99, maxFreshnessSeconds: 86400 },
+          qualitySlo: { minPassRate: Number(minPassRate)/100, maxFreshnessSeconds: Number(freshnessSeconds) },
         });
         setSelectedId(contract.id);
       },
@@ -250,6 +251,8 @@ export function ContractsPanel({
           <label>代码<input value={code} onChange={(event) => setCode(event.target.value)} /></label>
           <label>兼容策略<select value={compatibility} onChange={(event) => setCompatibility(event.target.value)}><option>BACKWARD</option><option>FULL</option><option>NONE</option></select></label>
           <label>责任人<input value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
+          <label>非空行通过率下限（%）<input type="number" min="50" max="100" step="0.01" value={minPassRate} onChange={e=>setMinPassRate(e.target.value)}/></label>
+          <label>最大陈旧秒数<input type="number" min="1" max="2678400" value={freshnessSeconds} onChange={e=>setFreshnessSeconds(e.target.value)}/></label>
           <label className="wide">说明<input value={description} onChange={(event) => setDescription(event.target.value)} /></label>
           <button className="button primary" onClick={create} disabled={!canWrite || !!busy}><Plus size={14} />{busy === "create" ? "正在创建…" : "从当前资产创建V1"}</button>
         </div>
