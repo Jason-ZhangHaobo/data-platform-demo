@@ -5087,7 +5087,7 @@ export function createV2Server(options = {}) {
             mainSqlExecuted: verification.mainSqlExecuted, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation),
             durationMs: verification.durationMs, error: verification.error, finishedAt: verification.finishedAt} : undefined,
           publication: {available: Boolean(privatePublicationConfig && cloudPublication), scope: "PRIVATE_CLOUD_TEST", sourceKind: "MANUAL", sourceRunId: source.run.id,
-            agentIndependentE2E: false, reason: privatePublicationConfig && cloudPublication ? "审阅此人工版本的确切包与成功演练后，可创建两个受控云端测试批次；工程师归因保留，原 Agent 失败与费用记录不变。" : "人工交付文件与演练结果已保留；云端调度驱动尚未配置，发布需在确切包的有效权限范围内进行。"}});
+            agentIndependentE2E: false, reason: privatePublicationConfig && cloudPublication ? "审阅此人工版本的确切包与成功演练后，可创建两个受控云端测试批次；工程师归因保留，原 Agent 失败与费用记录不变。" : bundle?"当前人工辅助交付记录已保留；云端调度驱动尚未配置，发布需在确切包的有效权限范围内进行。":"先生成并演练当前版本的交付文件；云端调度驱动尚未配置，不代表已经发布。"}});
       }
       const developmentWorkflow = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/workflow$/);
       if (developmentWorkflow && method === "GET") {
@@ -5096,6 +5096,7 @@ export function createV2Server(options = {}) {
         const source = resolveEvidenceSource(agent, get), revision = source.revision,
           run = source.retainedFailure || !source.run ? source.run : await reconcileDevelopment(source.run);
         const report = developmentVerificationReport(agent, run, revision);
+        if(agent.sourceKind==='MANUAL')Object.assign(report,{sourceKind:'MANUAL',agentIndependentE2E:false,notice:'此报告保留人工辅助来源；交付请按当前运行读取人工辅助工作流，不计自主完成。'});
         if (source.retainedFailure) Object.assign(report, {status: "NEEDS_ATTENTION", retainedFailure: true, computationSkipped: true,
           retainedFailureSourceKind:source.sourceKind,retainedRunStatus: run.status, summary: "本次修正没有形成新的 SQL，已保留原失败批次供诊断，没有重新执行或验证通过。",
           notice: source.sourceKind==="EXPLICIT_FAILED_RUN" ? "以下结论来自当前账号明确引用的原失败版本和批次，不是本次修正的新执行结果；本次模型调用照常计入历史，未新增 Spark 计算或可发布交付。" : "以下结论来自此前同一任务、版本和批次的失败记录；本次模型调用照常计入历史，未新增 Spark 计算或可发布交付。"});

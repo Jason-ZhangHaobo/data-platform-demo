@@ -1,16 +1,18 @@
 import type {ValidationDetailsReport} from './validation-details';
 import type {ServiceSourceBinding} from './service-source-binding';
 import {deliveryFileGuide} from './delivery-presentation.ts';
+import {checkedAssistedDevelopmentReference,sameAssistedDevelopmentReference} from '../../src/v2/assisted-development-reference.mjs';
+import type {AssistedDevelopmentReference} from '../../src/v2/assisted-development-reference.mjs';
 
 export type Delivery = {id:string;version:number;status:string;stage:string;mode?:string;sourceKind?:string;packageId?:string;packageDigest?:string;verificationId?:string;sourceRevisionId?:string;sourceRunId?:string;error?:string};
 export type Workflow = {
- report:{taskId:string;sourceKind?:string;agentIndependentE2E?:boolean;contextId?:string;validationContractId?:string;validationDetails?:ValidationDetailsReport;status:string;summary:string;definition?:string;checks:{id:string;label:string;passed:boolean}[];revisionId?:string;revisionHash?:string;runId?:string;rowCount:number;engine?:string;engineVersion?:string;notice:string};
+ report:{developmentReference?:AssistedDevelopmentReference;taskId:string;sourceKind?:string;agentIndependentE2E?:boolean;contextId?:string;validationContractId?:string;validationDetails?:ValidationDetailsReport;status:string;summary:string;definition?:string;checks:{id:string;label:string;passed:boolean}[];revisionId?:string;revisionHash?:string;runId?:string;rowCount:number;engine?:string;engineVersion?:string;notice:string};
  delivery?:Delivery;
  package?:{id:string;digest:string;manifest:unknown;files:Record<string,string>};
  verification?:{id:string;status:string;engine?:string;engineVersion?:string;mainSqlExecuted?:boolean;durationMs?:number;error?:string;testSqlValidation?:{passed:boolean};validation?:{passed:boolean;regressions?:{contextId:string;passed:boolean}[]}};
  publication:{available:boolean;scope:string;reason:string};
 };
-export type WorkflowSelection={taskId:string;contextId?:string;revisionId?:string;runId?:string;manual:boolean;expectedSourceBinding?:ServiceSourceBinding};
+export type WorkflowSelection={taskId:string;contextId?:string;revisionId?:string;runId?:string;manual:boolean;assisted?:boolean;expectedSourceBinding?:ServiceSourceBinding};
 const record=(v:unknown):v is Record<string,unknown>=>Boolean(v&&typeof v==='object'&&!Array.isArray(v));
 const id=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v);
 const hash=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
@@ -36,6 +38,8 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
   typeof p.available!=='boolean'||!['LOCAL_TEST_RELEASE','PRIVATE_CLOUD_TEST'].includes(String(p.scope))||typeof p.reason!=='string')throw bad();
  if(r.status==='PASSED'&&(!id(r.revisionId)||!id(r.runId)||!hash(r.revisionHash)||r.engine!=='Apache Spark'||checks.some(c=>!c.passed)))throw bad();
  if(selection.manual?(r.sourceKind!=='MANUAL'||r.agentIndependentE2E!==false||r.runId!==selection.runId||r.revisionId!==selection.revisionId||p.scope!=='PRIVATE_CLOUD_TEST'||p.sourceKind!=='MANUAL'||p.sourceRunId!==selection.runId||p.agentIndependentE2E!==false):r.sourceKind==='MANUAL'||p.sourceKind==='MANUAL')throw bad();
+ if(selection.assisted&&(!selection.manual||r.developmentReference===undefined))throw bad();
+ if(r.developmentReference!==undefined){if(!selection.manual)throw bad();checkedAssistedDevelopmentReference(r.developmentReference);}
  const frozen=selection.expectedSourceBinding;
  if(frozen&&(frozen.taskId!==r.taskId||frozen.revisionId!==r.revisionId||frozen.runId!==r.runId||(frozen.sourceKind==='MANUAL')!==selection.manual||
   (frozen.scope==='LOCAL_TEST_ONLY'?p.scope!=='LOCAL_TEST_RELEASE':p.scope!=='PRIVATE_CLOUD_TEST')))throw bad();
@@ -46,6 +50,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    !optional(d.sourceAgentTaskId,x=>x===r.taskId)||d.sourceRevisionId!==r.revisionId||d.sourceRunId!==r.runId||!id(d.sourceRevisionId)||!id(d.sourceRunId)||
    !optional(d.sourceSqlHash,x=>x===r.revisionHash)||(selection.manual?d.sourceKind!=='MANUAL':d.sourceKind==='MANUAL'))throw bad();
  }
+ if(record(d)&&!sameAssistedDevelopmentReference(d.developmentReference,r.developmentReference))throw bad();
  if(b!==undefined){
   if(!record(d)||!record(b)||!id(b.id)||!hash(b.digest)||d.packageId!==b.id||d.packageDigest!==b.digest||!record(b.manifest)||!record(b.files))throw bad();
   const manifest=b.manifest,source=manifest.source,names=deliveryFileGuide.map(f=>f.name).sort(),files=b.files,entries=manifest.files;
@@ -54,6 +59,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    canonical(Object.keys(files).sort())!==canonical(names)||canonical(Object.keys(entries).sort())!==canonical(names)||
    frozen&&b.digest!==frozen.packageDigest)throw bad();
   const attribution=source.attribution;
+ if(record(attribution)&&!sameAssistedDevelopmentReference(attribution.developmentReference,r.developmentReference))throw bad();
   if(selection.manual?(!record(attribution)||attribution.kind!=='ENGINEER_ASSISTED'||attribution.originAgentTaskId!==selection.taskId||attribution.agentIndependentE2E!==false):attribution!==undefined)throw bad();
   let total=0;
   for(const name of names){const content=files[name],entry=entries[name];if(typeof content!=='string'||!record(entry))throw bad();const bytes=new TextEncoder().encode(content).length;total+=bytes;if(bytes>250000||entry.bytes!==bytes||entry.sha256!==await digest(content))throw bad();}

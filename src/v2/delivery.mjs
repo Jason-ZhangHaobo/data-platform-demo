@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { getContext, validationContractId, validationFamilyForContext } from "./context.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
+import {checkedAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 
 export const deliveryFormat = "shuduo-delivery/v1";
 export const deliveryFiles = [
@@ -92,7 +93,11 @@ export function createDeliveryPackage({
   run,
   revision,
   name,
+  developmentReference,
 }) {
+  const reference=developmentReference===undefined?undefined:checkedAssistedDevelopmentReference(developmentReference);
+  if(reference&&(revision?.sourceAttribution?.kind!=='ENGINEER_ASSISTED'||revision.sourceKind!=='MANUAL'||revision.agentIndependentE2E!==false||
+    revision.sourceAttribution.sourceRunId!==reference.sourceRunId))throw Object.assign(new Error('开发依据与人工辅助版本不一致'),{status:409});
   const remoteExecution = run?.isolation === "FUNCTION_PROCESS";
   const family = validationFamilyForContext(revision?.contextId);
   if (name === undefined || (family?.id !== validationContractId && name === "客户资产 T+1"))
@@ -221,7 +226,7 @@ export function createDeliveryPackage({
       contextId: context.id,
       validationContractId: family.id,
       ...(revision.sourceAttribution?.kind==='ENGINEER_ASSISTED'?{attribution:{kind:'ENGINEER_ASSISTED',originAgentTaskId:revision.sourceAttribution.originAgentTaskId,
-        actorId:revision.sourceAttribution.actorId,agentIndependentE2E:false}}:{}),
+        actorId:revision.sourceAttribution.actorId,agentIndependentE2E:false,...(reference?{developmentReference:reference}:{})}}:{}),
       ...(revision.source === "MANUAL" && revision.manualProvenance?.originAgentTaskId ? {attribution: {
         kind: "ENGINEER_ASSISTED", originAgentTaskId: revision.manualProvenance.originAgentTaskId,
         actorId: revision.manualProvenance.actorId, agentIndependentE2E: false,
@@ -305,11 +310,12 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     ])
   )
     throw fail("交付清单包含未定义字段");
-  if (source.attribution !== undefined && (!keysExactly(source.attribution, ["kind", "originAgentTaskId", "actorId", "agentIndependentE2E"]) ||
+  if (source.attribution !== undefined && (!keysExactly(source.attribution, ["kind", "originAgentTaskId", "actorId", "agentIndependentE2E",...(source.attribution?.developmentReference===undefined?[]:['developmentReference'])]) ||
       source.attribution.kind !== "ENGINEER_ASSISTED" || source.attribution.agentIndependentE2E !== false ||
       !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(source.attribution.originAgentTaskId ?? "") ||
       typeof source.attribution.actorId !== "string" || !source.attribution.actorId || source.attribution.actorId.length > 100))
     throw fail("人工交付归因不完整");
+  if(source.attribution?.developmentReference!==undefined)checkedAssistedDevelopmentReference(source.attribution.developmentReference);
   if (
     !source ||
     source.sqlHash !== sha256(bundle.files["main.sql"]) ||

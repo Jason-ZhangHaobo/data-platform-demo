@@ -11,6 +11,7 @@ import {publicationSelectorInput,publicationReadPath} from "../src/v2/publicatio
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
+import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 
@@ -44,6 +45,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services task-evidence --task-id AGENT_TASK_ID --package-digest SHA256 [--release-id RELEASE_ID]
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-delivery --id AGENT_TASK_ID
+  shuduo agent prepare-delivery --id TASK_ID --source-kind MANUAL --source-run-id RUN_ID --request-id UUID --confirm
   shuduo agent delivery --id DELIVERY_TASK_ID
   shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION
   shuduo agent background --id TASK_ID
@@ -327,6 +329,14 @@ const reportWidgets = (preset) => {
 
 export const V2_CLI_OPERATIONS = Object.freeze([...V2_OPERATIONS]);
 
+function validateManualDeliveryFlags(parsed,argv){
+  const keys=['source_kind','source_run_id','request_id','confirm'];
+  if(!keys.some(k=>parsed.options[k]!==undefined))return;
+  if(!['AGENT','MANUAL'].includes(parsed.options.source_kind)||parsed.options.source_kind!=='MANUAL'&&keys.slice(1).some(k=>parsed.options[k]!==undefined))throw Error('人工辅助交付需明确 MANUAL 来源，不混用其他来源参数');
+  const allowed=new Set(['id','source_kind','source_run_id','request_id','confirm','base_url','help']),seen=new Set();
+  if(parsed.positionals.length!==2)throw Error('交付命令包含额外参数');
+  for(const token of argv.filter(v=>v.startsWith('--'))){const k=token.slice(2).replaceAll('-','_');if(!allowed.has(k)||seen.has(k))throw Error('交付命令包含未知或重复参数');seen.add(k);}
+}
 export async function runV2Cli(argv, env = process.env, options = {}) {
   const parsed = parse(argv),
     [resource, action] = parsed.positionals,
@@ -473,8 +483,10 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result=await createContextDerivedTask(client,{derivation:{kind:'REGISTERED_CONTEXT_CHANGE',taskId:required(parsed.options,'task_id'),revisionId:required(parsed.options,'revision_id'),runId:required(parsed.options,'run_id'),revisionHash:required(parsed.options,'revision_hash')},
         contextId:required(parsed.options,'context'),message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
     }
-    else if (resource === "agent" && action === "workflow")
-      result = await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
+    else if (resource === "agent" && action === "workflow") {
+      validateManualDeliveryFlags(parsed,argv);
+      result = parsed.options.source_kind==='MANUAL'?await readManualDeliveryWorkflow(client,{taskId:required(parsed.options,'id'),sourceRunId:required(parsed.options,'source_run_id')}):await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
+    }
     else if (resource === "agent" && ["publication","publish","stop-publication"].includes(action)) {
       const flags=publicationCliOptions(argv,parsed.options,action),taskId=required(parsed.options,"id");
       if(action==="publication")result=await client.request(publicationReadPath(taskId,publicationSelectorInput(flags)));
@@ -498,11 +510,13 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         `/agent/deliveries${sourceId ? `?sourceAgentTaskId=${encodeURIComponent(sourceId)}` : ""}`,
       );
     }
-    else if (resource === "agent" && action === "prepare-delivery")
-      result = await client.request(
+    else if (resource === "agent" && action === "prepare-delivery") {
+      validateManualDeliveryFlags(parsed,argv);
+      result = parsed.options.source_kind==='MANUAL'?await prepareManualDelivery(client,{taskId:required(parsed.options,'id'),sourceRunId:required(parsed.options,'source_run_id'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm}):await client.request(
         `/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/prepare-delivery`,
         { method: "POST", body: {} },
       );
+    }
     else if (resource === "agent" && action === "delivery")
       result = await client.request(
         `/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}`,
