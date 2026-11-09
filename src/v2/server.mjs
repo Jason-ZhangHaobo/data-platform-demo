@@ -120,6 +120,7 @@ import { OperationsManager } from "./operations.mjs";
 import { AuthManager } from "./auth.mjs";
 import { DataContractManager } from "./contracts.mjs";
 import {createServiceContractGates} from './service-contract-gates.mjs';
+import{compareSqlRuns}from'./run-comparison.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
 import {
   LocalArtifactStore,
@@ -5384,6 +5385,18 @@ export function createV2Server(options = {}) {
             }
           });
         return json(res, 202, publicAgentIntent(task));
+      }
+      const comparisonRead=path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\/(comparison|comparison-candidates)$/);
+      if(comparisonRead&&method==='GET'){
+        const current=get('run',comparisonRead[1]);requireDevelopmentOwner('run',current,req);
+        if(comparisonRead[2]==='comparison-candidates'){
+          if(url.searchParams.size)throw fail(422,'运行候选读取不接受其他参数');
+          const revision=get('revision',current.revisionId),session=auth.sessionFromHeaders(req.headers),all=store.list('run',PROJECT).filter(r=>r.id!==current.id&&['SUCCEEDED','VALIDATION_FAILED','FAILED','CANCELLED','INTERRUPTED'].includes(r.status)&&mayReadRun(r,session)&&store.get('revision',r.revisionId,PROJECT)?.contextId===revision.contextId);
+          return json(res,200,{protocol:'shuduo-run-comparison-candidates/v1',currentRunId:current.id,contextId:revision.contextId,truncated:all.length>50,candidates:all.slice(0,50).map(r=>{const rev=store.get('revision',r.revisionId,PROJECT);return{runId:r.id,revisionId:rev.id,revisionHash:r.revisionHash,contextId:rev.contextId,runStatus:r.status,createdAt:r.createdAt,sourceKind:rev.source==='MANUAL'?'MANUAL':'AGENT_OR_OTHER'};})});
+        }
+        if([...url.searchParams.keys()].some(k=>k!=='baseline_run_id')||url.searchParams.getAll('baseline_run_id').length!==1||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(url.searchParams.get('baseline_run_id')??''))throw fail(422,'需要一个确切的基线运行编号');
+        const baseline=get('run',url.searchParams.get('baseline_run_id'));requireDevelopmentOwner('run',baseline,req);
+        return json(res,200,compareSqlRuns({store,project:PROJECT,current,baseline}));
       }
       const record = path.match(
         /^\/api\/v2\/(runs|revisions|agent\/tasks)\/([a-f0-9-]+)(?:\/(cancel|bundle|journey))?$/,

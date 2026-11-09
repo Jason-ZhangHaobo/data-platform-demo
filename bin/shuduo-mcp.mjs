@@ -3,6 +3,7 @@ import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
+import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import{publishedReportSourceSchema,publishedReportMetricIds}from'../src/v2/published-report-request.mjs';
@@ -18,6 +19,8 @@ const publicationProperties={sourceKind:{type:"string",enum:["AGENT","MANUAL"]},
 const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANUAL"}},required:["sourceKind"]},then:{required:["sourceRunId","packageDigest","verificationId",...(stop?["releaseId"]:[])]}});
 
 const tools = [
+  {name:'sql_run_comparison_candidates',description:'只读当前用户可见的同口径运行候选，最多50条元数据；不读业务行、不推进运行。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'}},required:['runId']},annotations:{readOnlyHint:true}},
+  {name:'sql_run_compare',description:'只读两个确切已保存运行的代码/值来源/条件引用及验证对照；缺旧证据不当新增或删除，不证明业务因果，不解析草稿或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'},baselineRunId:{type:'string',format:'uuid'}},required:['runId','baselineRunId']},annotations:{readOnlyHint:true}},
   {name:'service_agent_plan_advance',description:'显式推进已读取的持久私有服务规划。直接模式可能调用模型，事件模式只登记原任务的受控唤醒。须有效独立窗口和原版本；未知结果不自动重试，confirmModelRetry仅表示本次明确确认。不会确认草稿、发布或发凭证。',inputSchema:{type:'object',additionalProperties:false,properties:{planId:{type:'string',format:'uuid'},expectedVersion:{type:'integer',minimum:1},confirmModelRetry:{type:'boolean'}},required:['planId','expectedVersion']}},
   {name:'service_agent_context',description:'只读核对确切私有发布批次、业务口径和可用DAPI固定版本。不调用模型，不创建任务或接口，不构成规划/发布授权。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceBinding:servicePlanSourceSchema},required:['sourceBinding']},annotations:{readOnlyHint:true}},
   {name:'service_agent_plan_create',description:'基于确切发布来源创建DAPI/XAPI规划；本机模式排队模型，持久私有模式仅保存待推进任务。未知结果查询原requestId，不自动重试，不创建草稿、发布或发凭证。',inputSchema:{type:'object',additionalProperties:false,properties:{message:{type:'string',minLength:4,maxLength:2000},sourceBinding:servicePlanSourceSchema,requestId:{type:'string',format:'uuid'}},required:['message','sourceBinding','requestId']}},
@@ -211,6 +214,8 @@ const typePath = (value) => {
   return value + "s";
 };
 async function callTool(name, args = {}, client=defaultClient) {
+  if(name==='sql_run_comparison_candidates')return readRunComparisonCandidates(client,args);
+  if(name==='sql_run_compare')return readSqlRunComparison(client,args);
   if(name==='service_agent_context')return readServiceAgentContext(client,args);
   if(typeof name==='string'&&name.startsWith('service_agent_plan_'))return callServicePlan(client,name.slice('service_agent_plan_'.length),args);
   if (name === "v2_status") return client.request("/status");
