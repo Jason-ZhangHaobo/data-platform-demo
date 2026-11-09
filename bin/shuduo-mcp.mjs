@@ -138,7 +138,7 @@ const tools = [
   { name: "standard_check", description: "在实际资产行上检查标准；无效值只返回哈希。", inputSchema: { type: "object", properties: { standardId: { type: "string" } }, required: ["standardId"] } },
   { name: "asset_agent_list", description: "列出受治理的数据资产Agent回答。", inputSchema: { type: "object", properties: {} } },
   { name: "asset_agent_create", description: "让真实模型基于资产摘要和版本绑定血缘找数据、解释口径与影响，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
-  {name:'service_contract_gates',description:'只读查询数据服务契约门禁配置和历史判定；历史放行不代表当前时效。',inputSchema:{type:'object',properties:{serviceId:{type:'string'}},required:['serviceId']}},
+  {name:'service_contract_gates',description:'只读查询数据服务契约门禁配置和历史判定；可指定确切版本，历史放行不代表当前时效。',inputSchema:{type:'object',properties:{serviceId:{type:'string'},versionId:{type:'string'}},required:['serviceId']}},
   {name:'service_contract_gate_bind',description:'为本机数据服务绑定确切契约版本和时间依据，不发布服务。',inputSchema:{type:'object',properties:{serviceId:{type:'string'},requestId:{type:'string'},input:{type:'object',properties:{contractId:{type:'string'},contractVersionId:{type:'string'},freshnessBasis:{type:'string',enum:['SOURCE_ROWS','PUBLICATION_FINISHED']}},required:['contractId','contractVersionId'],additionalProperties:false}},required:['serviceId','input','requestId']}},
   {name:'service_contract_gate_version',description:'审阅后保存门禁新版本，要求原绑定修订号、契约版本与理由；不发布服务。',inputSchema:{type:'object',properties:{serviceId:{type:'string'},bindingId:{type:'string'},requestId:{type:'string'},input:{type:'object',properties:{expectedBindingVersion:{type:'integer'},contractVersionId:{type:'string'},freshnessBasis:{type:'string',enum:['SOURCE_ROWS','PUBLICATION_FINISHED']},changeReason:{type:'string'}},required:['expectedBindingVersion','contractVersionId','freshnessBasis','changeReason'],additionalProperties:false}},required:['serviceId','bindingId','input','requestId']}},
   {name:'service_contract_gate_request',description:'只读恢复本账号原门禁保存回执，区分当时应用版本和当前版本。',inputSchema:{type:'object',properties:{serviceId:{type:'string'},requestId:{type:'string'}},required:['serviceId','requestId']}},
@@ -625,7 +625,7 @@ async function callTool(name, args = {}, client=defaultClient) {
       method: "POST",
       body: { message: args.message },
     });
-  if(name==='service_contract_gates')return client.request(`/data-services/${encodeURIComponent(args.serviceId)}/contract-gates`);
+  if(name==='service_contract_gates')return client.request(`/data-services/${encodeURIComponent(args.serviceId)}/contract-gates${args.versionId?'?version_id='+encodeURIComponent(args.versionId):''}`);
   if(name==='service_contract_gate_bind'||name==='service_contract_gate_version')return submitServiceGateWrite(client,args);
   if(name==='service_contract_gate_request')return lookupServiceGateWrite(client,args);
   if (name === "contract_list") return client.request("/contracts");

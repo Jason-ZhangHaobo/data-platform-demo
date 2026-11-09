@@ -12,4 +12,8 @@ test('HTTP binding receipts preserve applied version, publication blocks then pa
  assert.equal((await submitServiceGateWrite(client,args)).receipt.id,first.receipt.id);assert.equal(store.list('service_contract_gate',PROJECT).length,1);assert.equal(store.list('service_contract_gate_version',PROJECT).length,2);
  await assert.rejects(submitServiceGateWrite(client,{...args,input:{...input,freshnessBasis:'PUBLICATION_FINISHED'}}),e=>e.status===409);
  const published=await client.request('/data-services/dapis/'+dapi.id+'/publish',{method:'POST',body:{configHash:dapi.currentVersion.configHash}});assert.equal(published.contractGate.decision,'ALLOW');assert.equal((await client.request(`/data-services/${dapi.id}/contract-gates`)).decisions.length,2);assert.equal(engine,0);
+ const scoped=await client.request(`/data-services/${dapi.id}/contract-gates?version_id=${published.version.id}`);assert.equal(scoped.serviceVersion.configHash,published.version.configHash);assert(scoped.decisions.every(d=>d.serviceVersionId===published.version.id));
+ await assert.rejects(client.request(`/data-services/${dapi.id}/contract-gates?version_id=${randomUUID()}`),e=>e.code==='CONTRACT_GATE_VERSION_MISMATCH');
+ await assert.rejects(client.request(`/data-services/${dapi.id}/contract-gates?version_id=${published.version.id}&version_id=${published.version.id}`),e=>e.status===422);
+ await assert.rejects(client.request(`/data-services/${dapi.id}/contract-gates?other=invalid`),e=>e.status===422);
 });

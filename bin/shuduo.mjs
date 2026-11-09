@@ -131,7 +131,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo contracts assess-current --id CONTRACT_ID
   shuduo contracts apply-version --id CONTRACT_ID --assessment-id ASSESSMENT_ID [--acknowledge-breaking]
   shuduo contracts check --id CONTRACT_ID
-  shuduo contracts service-gates --service-id SERVICE_ID
+  shuduo contracts service-gates --service-id SERVICE_ID [--version-id VERSION_ID]
   shuduo contracts bind-service --service-id SERVICE_ID --file binding.json --request-id UUID
   shuduo contracts gate-version --service-id SERVICE_ID --binding-id BINDING_ID --file change.json --request-id UUID
   shuduo contracts gate-request --service-id SERVICE_ID --request-id UUID
@@ -942,7 +942,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       });
     else if (resource === "assets" && action === "agents")
       result = await client.request("/assets/agent/tasks");
-    else if(resource==='contracts'&&action==='service-gates')result=await client.request(`/data-services/${encodeURIComponent(required(parsed.options,'service_id'))}/contract-gates`);
+    else if(resource==='contracts'&&action==='service-gates')result=await client.request(`/data-services/${encodeURIComponent(required(parsed.options,'service_id'))}/contract-gates${parsed.options.version_id?'?version_id='+encodeURIComponent(parsed.options.version_id):''}`);
     else if(resource==='contracts'&&['bind-service','gate-version'].includes(action))result=await submitServiceGateWrite(client,{serviceId:required(parsed.options,'service_id'),...(action==='gate-version'?{bindingId:required(parsed.options,'binding_id')}:{}),input:jsonObject(readFileSync(required(parsed.options,'file'),'utf8'),'门禁配置'),requestId:required(parsed.options,'request_id')});
     else if(resource==='contracts'&&action==='gate-request')result=await lookupServiceGateWrite(client,{serviceId:required(parsed.options,'service_id'),requestId:required(parsed.options,'request_id')});
     else if (resource === "contracts" && action === "list")

@@ -54,7 +54,12 @@ export function createServiceContractGates({store,project,contracts,businessStor
   return receipt;
  }
  const api={
-  list(serviceId){if(!read('data_service',serviceId))throw fail('未找到数据服务','SERVICE_NOT_FOUND');return{serviceId,bindingStateHash:stateHash(serviceId),bindings:bindingsFor(serviceId).map(detail),decisions:store.list('service_contract_gate_decision',project).filter(d=>d.serviceId===serviceId).slice(0,30),notice:'历史放行不代表当前时效，发布与切换将重新检查；发布完成时间不代表行情或业务日新鲜度'};},
+  list(serviceId,{versionId}={}){
+   if(!read('data_service',serviceId))throw fail('未找到数据服务','SERVICE_NOT_FOUND');
+   const target=versionId===undefined?undefined:read('data_service_version',versionId);
+   if(versionId!==undefined&&(!uuid(versionId)||!target||target.serviceId!==serviceId||!serviceVersionConfigValid(target)))throw fail('门禁查询版本与服务不一致或配置未确认','CONTRACT_GATE_VERSION_MISMATCH');
+   return{serviceId,...(target?{serviceVersion:{id:target.id,configHash:target.configHash}}:{}),bindingStateHash:stateHash(serviceId),bindings:bindingsFor(serviceId).map(detail),decisions:store.list('service_contract_gate_decision',project).filter(d=>d.serviceId===serviceId&&(!target||d.serviceVersionId===target.id)).slice(0,30),notice:'历史放行不代表当前时效，发布与切换将重新检查；发布完成时间不代表行情或业务日新鲜度'};
+  },
   create(serviceId,input,actor){
    const service=read('data_service',serviceId);if(!service)throw fail('未找到数据服务','SERVICE_NOT_FOUND');
    if(!uuid(input.contractId))throw Object.assign(Error('需要契约编号'),{status:422});if(bindingsFor(serviceId).length>=10)throw fail('每个服务最多绑定10个契约');

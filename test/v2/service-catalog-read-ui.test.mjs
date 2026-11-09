@@ -31,7 +31,13 @@ async function component(file) {
   return url;
 }
 const { DataServicesWorkbench } = await import(await component(resolve("web/src/DataServicesWorkbench.tsx")));
+const {ServiceContractGatesPanel}=await import(await component(resolve('web/src/ServiceContractGatesPanel.tsx')));
 const api = () => assert.fail("render must not fetch, create, invoke a model or run Spark");
+
+test('a fixed Agent handoff version exposes gate evidence without rule editing or save recovery actions',()=>{
+ const html=renderToStaticMarkup(React.createElement(ServiceContractGatesPanel,{api,serviceId:'00000000-0000-4000-8000-000000000001',canWrite:true,refreshToken:'original-version',version:{id:'00000000-0000-4000-8000-000000000002',configHash:'a'.repeat(64),versionNumber:2}}));
+ assert.match(html,/当前交付版本 V/);assert.match(html,/仅查看此固定版本的历史判定/);assert.match(html,/门禁目录尚未确认/);assert.doesNotMatch(html,/绑定并启用门禁|保存新的门禁版本|门禁变更理由|门禁新鲜度依据|查询原门禁保存/);
+});
 
 test("unknown catalog is not presented as empty, even to a user with write permission", () => {
   for (const canWrite of [false, true]) {
