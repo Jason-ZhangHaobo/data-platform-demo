@@ -3,6 +3,7 @@ import { validateDeliveryPackage, resolveDeliverySchedule, validationMatchesFami
 import { deliveryArtifactValue } from "./artifact-store.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { manualCloudDeliverySource, durableDeliveryMode } from "./agent-development-workflow.mjs";
+import {sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -80,6 +81,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
           plan.source.runId !== run.id || plan.source.revisionId !== revision.id || plan.source.sqlHash !== revision.hash || plan.source.contextId !== revision.contextId ||
           run.validationContractId !== plan.source.validationContractId || run.validation?.contractId !== plan.source.validationContractId ||
           attribution?.kind !== "ENGINEER_ASSISTED" || attribution.originAgentTaskId !== agentId || attribution.actorId !== actorId || attribution.agentIndependentE2E !== false ||
+          !sameAssistedDevelopmentReference(attribution.developmentReference,source.developmentReference)||!sameAssistedDevelopmentReference(delivery.developmentReference,source.developmentReference)||
           verification.agentDeliveryTaskId !== delivery.id || verification.actualExecution !== true || verification.isolation !== "FUNCTION_PROCESS" || verification.mode !== "CLOUD_ISOLATED_FILE_REHEARSAL")
         throw fail(409, "人工版本、来源工程师、交付包和文件演练不一致");
       return { agent, delivery, item, verification, plan, run, revision, sourceRunId: run.id };

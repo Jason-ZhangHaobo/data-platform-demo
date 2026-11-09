@@ -25,3 +25,5 @@
 .run-comparison-repair-v2 .button{justify-self:start;white-space:normal}
 
 .agent-dev-assisted{display:block}.agent-dev-assisted strong{display:block;margin-bottom:6px}.agent-dev-assisted p{margin:0;line-height:1.7}
+
+.agent-assisted-reference{padding:14px 18px;border:1px solid var(--border,#dce5df);border-radius:12px;background:var(--surface-muted,#f4f8f4)}.agent-assisted-reference summary{cursor:pointer;font-weight:600}.agent-assisted-reference dl>div{display:grid;grid-template-columns:140px minmax(0,1fr);gap:12px;padding:6px 0}.agent-assisted-reference dd{margin:0;overflow-wrap:anywhere}.agent-assisted-reference p{margin:8px 0 0}

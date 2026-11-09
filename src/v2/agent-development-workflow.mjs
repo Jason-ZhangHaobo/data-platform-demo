@@ -4,6 +4,8 @@ import { getContext, validationContractId, validationFamilyForContext } from "./
 import { deliveryArtifactValue } from "./artifact-store.mjs";
 import { resolveExplicitSqlRepairSource } from "./sql-repair-source.mjs";
 import { validationDetails, equalValidationNumber } from "./validation-details.mjs";
+import {assistedSqlDeliverySource} from './assisted-sql-delivery-source.mjs';
+import {sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -86,19 +88,22 @@ export function developmentVerificationReport(task, run, revision) {
 
 export function manualCloudDeliverySource({store, project, runId, actorId, requireVerified = true}) {
   const run = store.get("run", runId, project), revision = store.get("revision", run?.revisionId ?? "", project),
-    provenance = revision?.manualProvenance, agent = store.get("agent", provenance?.originAgentTaskId ?? "", project);
-  if (!actorId || !agent || agent.executionMode !== "DURABLE_SQL_AGENT_V1" || agent.language !== "SPARK_SQL" ||
+    provenance = revision?.manualProvenance;
+  const assisted=revision?.source==='LIVE_MODEL'?assistedSqlDeliverySource({store,project,run,revision,actorId}):undefined,
+    agent=assisted?.agent??store.get("agent",provenance?.originAgentTaskId??"",project);
+  if (!assisted&&(!actorId || !agent || agent.executionMode !== "DURABLE_SQL_AGENT_V1" || agent.language !== "SPARK_SQL" ||
       agent.submittedBy !== actorId || revision?.author !== actorId || revision.source !== "MANUAL" ||
       provenance?.kind !== "ENGINEER_EDIT" || provenance.actorId !== actorId || provenance.agentIndependentE2E !== false ||
       revision.contextId !== agent.contextId || run?.contextId !== revision.contextId || run.revisionHash !== revision.hash ||
-      hash(revision.sql) !== revision.hash)
+      hash(revision.sql) !== revision.hash))
     throw fail(403, "人工交付必须属于当前工程师、原任务与同一已保存代码版本");
   const report = {...developmentVerificationReport(agent, run, revision), sourceKind: "MANUAL", agentIndependentE2E: false,
-    originAgentStatus: agent.status, notice: "此核验属于工程师接管版本；原 Agent 的失败、尝试及预算记录保持不变，不计为自主完成。"};
+    originAgentStatus: agent.status,...(assisted?{developmentReference:assisted.developmentReference}:{}),
+    notice: assisted?'此核验属于人工辅助修正版本；代码仍为模型生成，原参考依据、失败及用量不改写，不计自主完成。':"此核验属于工程师接管版本；原 Agent 的失败、尝试及预算记录保持不变，不计为自主完成。"};
   if (requireVerified && (report.status !== "PASSED" || run.engineVersion !== "3.5.9" || run.isolation !== "FUNCTION_PROCESS" ||
       run.mode !== "DURABLE_REMOTE_SUBMISSION" && run.adapter !== "remote-spark-worker-v1"))
     throw fail(409, "请先完成此人工版本的云端隔离 Spark 执行与五场景独立核验");
-  return {agent, revision, run, report};
+  return {agent, revision, run, report,...(assisted?{developmentReference:assisted.developmentReference}:{})};
 }
 
 // Each POST crosses one durable boundary; GET only reads a signed Worker receipt.
@@ -125,7 +130,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const plan = validateDeliveryPackage(item, task.packageDigest);
     if (task.sourceKind === "MANUAL" && (plan.source.attribution?.kind !== "ENGINEER_ASSISTED" ||
         plan.source.attribution.originAgentTaskId !== task.sourceAgentTaskId || plan.source.attribution.actorId !== task.submittedBy ||
-        plan.source.attribution.agentIndependentE2E !== false)) throw fail(409, "人工交付来源与不可变清单不一致");
+        plan.source.attribution.agentIndependentE2E !== false||!sameAssistedDevelopmentReference(plan.source.attribution.developmentReference,task.developmentReference))) throw fail(409, "人工交付来源与不可变清单不一致");
     return { item, plan };
   };
   const assertTaskScope = task => {
@@ -133,7 +138,8 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     assertExecutionScope(agent);
     if (task.sourceKind === "MANUAL") {
       const source = manualCloudDeliverySource({store, project, runId: task.sourceRunId, actorId: task.submittedBy});
-      if (source.agent.id !== task.sourceAgentTaskId || source.revision.id !== task.sourceRevisionId || source.revision.hash !== task.sourceSqlHash)
+      if (source.agent.id !== task.sourceAgentTaskId || source.revision.id !== task.sourceRevisionId || source.revision.hash !== task.sourceSqlHash||
+        !sameAssistedDevelopmentReference(source.developmentReference,task.developmentReference))
         throw fail(409, "人工交付来源已变化");
     }
   };
@@ -151,17 +157,17 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     task = change(task, {stage: "PACKAGE_READY"}); await persist(); return task;
   }
   async function createManual({runId, actorId, key}) {
-    const {agent, revision, run} = manualCloudDeliverySource({store, project, runId, actorId});
+    const {agent, revision, run,developmentReference} = manualCloudDeliverySource({store, project, runId, actorId});
     assertExecutionScope(agent);
     if (typeof key !== "string" || !key || key.length > 100) throw fail(422, "人工交付缺少有效幂等编号");
     const existing = store.list("agent_delivery_task", project).find(t => t.sourceKind === "MANUAL" && t.sourceAgentTaskId === agent.id &&
-      t.sourceRunId === run.id && t.sourceRevisionId === revision.id && t.sourceSqlHash === revision.hash && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
-    const dedup = store.deduplicate(`${project}:manual-cloud-delivery:${actorId}:${key}`, hash(JSON.stringify({runId: run.id, revisionHash: revision.hash, origin: agent.id})), () => {
+      t.sourceRunId === run.id && t.sourceRevisionId === revision.id && t.sourceSqlHash === revision.hash && sameAssistedDevelopmentReference(t.developmentReference,developmentReference)&&["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
+    const dedup = store.deduplicate(`${project}:manual-cloud-delivery:${actorId}:${key}`, hash(JSON.stringify({runId: run.id, revisionHash: revision.hash, origin: agent.id,...(developmentReference?{developmentReference}:{})})), () => {
       if (existing) return existing;
-      const bundle = createDeliveryPackage({run, revision, name: "工程师接管 · 已核验证券加工交付"});
+      const bundle = createDeliveryPackage({run, revision,developmentReference, name: developmentReference?'人工辅助修正 · 已核验证券加工交付':"工程师接管 · 已核验证券加工交付"});
       const task = store.create("agent_delivery_task", project, {mode: durableDeliveryMode, sourceKind: "MANUAL", sourceAgentTaskId: agent.id,
         sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: actorId, status: "QUEUED", stage: "PACKAGE_PERSISTING",
-        packageDigest: bundle.digest, completionScope: "MANUAL_DELIVERY_PREPARATION", agentIndependentE2E: false, fullLifecycleE2E: false, publicDeployed: false});
+        packageDigest: bundle.digest,...(developmentReference?{developmentReference}:{}), completionScope: "MANUAL_DELIVERY_PREPARATION", agentIndependentE2E: false, fullLifecycleE2E: false, publicDeployed: false});
       const item = store.create("delivery_package", project, {...bundle, sourceRunId: run.id, agentDeliveryTaskId: task.id, sourceKind: "MANUAL", agentIndependentE2E: false, stage: "M2A", published: false});
       return change(task, {packageId: item.id});
     });
