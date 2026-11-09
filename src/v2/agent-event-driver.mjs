@@ -86,6 +86,7 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
     if(!ownerAllowed(task))return stop(g,"PAUSED","AGENT_OWNER_PERMISSION_REVOKED");
     if(contextDigest(task)!==g.contextDigest)return stop(g,"PAUSED","AGENT_BACKGROUND_CONTEXT_CHANGED");
     if(terminalFor(task))return stop(g,"COMPLETED",undefined);
+    if(task.stage==='CLARIFICATION_SOURCE_CHANGED')return stop(g,'PAUSED','CLARIFICATION_SOURCE_CHANGED');
     if(task.stage==="MODEL_NOT_SENT"&&!reviewed(task,g))return stop(g,"PAUSED","MODEL_NOT_SENT");
     if(task.stage==="MODEL_OUTCOME_UNKNOWN"&&!reviewed(task,g))return stop(g,"NEEDS_CONFIRMATION","MODEL_OUTCOME_UNKNOWN");
     return undefined;

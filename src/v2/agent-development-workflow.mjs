@@ -8,6 +8,7 @@ import {assistedSqlDeliverySource} from './assisted-sql-delivery-source.mjs';
 import {sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 import {resolveManualContinuation} from './manual-sql-continuation.mjs';
 import {verifiedSqlRequirementForRevision,assertSqlRequirementPackageSource,sqlRequirementBinding} from './sql-requirements.mjs';
+import {assertSqlClarificationTask} from './sql-clarification.mjs';
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 export const standaloneManualDeliveryMode='DURABLE_MANUAL_DELIVERY_V1';
@@ -126,6 +127,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
   };
   const change = (item, patch) => store.update(resource, item.id, project, patch, { expectedVersion: item.version });
   const source = agent => {
+    if(agent.clarification)assertSqlClarificationTask(agent,{store,project});
     if(agent.repairComparison!==undefined||agent.sourceKind==='MANUAL'||agent.sourceAttribution!==undefined)throw fail(409,'人工辅助修正须独立记录来源并重新审阅交付，不能从原生Agent入口继承发布');
     const attempt = agent.attempts?.at(-1), revision = store.get("revision", attempt?.revisionId ?? "", project), run = store.get("run", attempt?.runId ?? "", project);
     if (agent.status !== "SUCCEEDED" || agent.mode !== "LIVE_MODEL" || attempt?.status !== "SUCCEEDED" || !attempt.model || /TEST_DOUBLE|unconfirmed/.test(attempt.model) || developmentVerificationReport(agent, run, revision).status !== "PASSED")
@@ -152,6 +154,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     }
     const agent = store.get("agent", task.sourceAgentTaskId, project);
     assertExecutionScope(agent);
+    if(agent?.clarification)assertSqlClarificationTask(agent,{store,project});
     if (task.sourceKind === "MANUAL") {
       const source = manualCloudDeliverySource({store, project, runId: task.sourceRunId, actorId: task.submittedBy});
       if (source.agent.id !== task.sourceAgentTaskId || source.revision.id !== task.sourceRevisionId || source.revision.hash !== task.sourceSqlHash||

@@ -30,6 +30,7 @@ export function liveEvidenceProvenance(...roots) {
     if (value.testDouble === true || value.synthetic === true || value.executionEvidenceMode === 'TEST_HARNESS' ||
         nonLiveModelLabel(value.model)) synthetic = true;
     if (value.sourceKind !== undefined && value.sourceKind !== 'AGENT' ||
+        value.humanClarified===true || value.clarification!==undefined ||
         value.source === 'MANUAL' || manualKinds.has(value.kind) ||
         manualKeys.some(key => value[key] !== undefined) ||
         value.executionMode === 'DURABLE_PRIVATE_SERVICE_AGENT_V1' || value.completionScope === 'DATA_SERVICE_DESIGN') nonNative = true;

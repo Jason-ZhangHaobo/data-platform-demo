@@ -14,6 +14,7 @@ import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/re
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
 import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
 import {readManualContinuation,createManualContinuation} from '../src/v2/manual-continuation-client.mjs';
+import {readSqlClarification,createSqlClarification} from '../src/v2/sql-clarification-client.mjs';
 import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,mutateStandaloneManual} from '../src/v2/standalone-manual-client.mjs';
 import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication} from '../src/v2/standalone-manual-publication-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
@@ -22,6 +23,8 @@ import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mj
 const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
 
 用法：
+  shuduo agent clarification --id TASK_ID
+  shuduo agent clarify --id TASK_ID --evidence-digest SHA256 --answer "对原问题的回答" --request-id UUID --confirm
   shuduo status
   shuduo sql compare-candidates --run-id RUN_ID
   shuduo sql compare-runs --run-id RUN_ID --baseline-run-id RUN_ID
@@ -508,6 +511,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       for(const token of argv.filter(value=>value.startsWith('--'))){const key=token.slice(2).replaceAll('-','_');if(!allowed.has(key)||seen.has(key))throw Error('对照修正命令包含未知或重复参数');seen.add(key);}
       const selection={sourceRunId:required(parsed.options,'source_run_id'),baselineRunId:required(parsed.options,'baseline_run_id')};
       result=action==='repair-basis'?await readRepairComparisonBasis(client,selection):await createComparisonRepairTask(client,{...selection,message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
+    }
+    else if(resource==='agent'&&['clarification','clarify'].includes(action)){
+      const allowed=new Set(['id','answer','evidence_digest','request_id','confirm','base_url','help']),seen=new Set();
+      if(parsed.positionals.length!==2)throw Error('澄清命令包含额外参数');
+      for(const token of argv.filter(v=>v.startsWith('--'))){const k=token.slice(2).replaceAll('-','_');if(!allowed.has(k)||seen.has(k))throw Error('澄清命令包含未知或重复参数');seen.add(k);}
+      const taskId=required(parsed.options,'id');result=action==='clarification'?await readSqlClarification(client,{taskId}):await createSqlClarification(client,{taskId,answer:required(parsed.options,'answer'),evidenceDigest:required(parsed.options,'evidence_digest'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
     }
     else if(resource==='agent'&&['manual-continuation','continue-manual'].includes(action)){
       const allowed=new Set(['source_run_id','message','request_id','confirm','base_url','help']),seen=new Set();

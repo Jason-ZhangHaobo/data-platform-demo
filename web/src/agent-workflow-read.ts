@@ -34,6 +34,8 @@ export function frozenRequirementProposal(bundle:Workflow['package'],taskId:stri
   binding.protocol!=='shuduo-sql-requirements/v1'||binding.taskId!==taskId||!hash(binding.basisDigest)||!hash(binding.reportDigest)||!record(report)||
   report.status!=='MODEL_PROPOSED'||report.contextId!==source.contextId||report.sqlHash!==source.sqlHash||report.revisionId!==source.revisionId||
   !sqlRequirementReportMatches(report,{id:taskId,contextId:String(source.contextId),message:String(report.request),revisionId:String(source.revisionId),
+    humanClarified:report.humanClarified===true,directAutonomousEligible:report.directAutonomousEligible===false?false:undefined,clarificationOriginTaskId:typeof report.clarificationOriginTaskId==='string'?report.clarificationOriginTaskId:undefined,
+    clarification:report.clarification,
     attempts:[{attempt:report.attempt,revisionId:source.revisionId,model:report.model}]})||report.basis.digest!==binding.basisDigest)throw bad();
  return report;
 }
@@ -84,6 +86,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    const {digest:basisDigest,...basis}=requirements.basis;
    if(!record(source.requirement)||await digest(canonical(requirements))!==source.requirement.reportDigest||
     basisDigest!==await digest(JSON.stringify(basis))||await digest(requirements.request)!==(basis as Record<string,unknown>).requestDigest)throw bad();
+   if(requirements.clarification){const {digest:cd,...content}=requirements.clarification;if(cd!==await digest(canonical(content)))throw bad();}
   }
  }
  if(record(d)&&(d.packageId!==undefined&&b===undefined||d.verificationId!==undefined&&v===undefined||d.status==='SUCCEEDED'&&(b===undefined||v===undefined)))throw bad();

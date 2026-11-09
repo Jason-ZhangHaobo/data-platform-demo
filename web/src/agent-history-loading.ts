@@ -1,3 +1,4 @@
+import {clarificationReceiptMatches} from '../../src/v2/sql-clarification-contract.mjs';
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 type HistoryTask = {id:string;version:number;message:string;contextId:string;status:string;stage?:string};
 const record = (value:unknown):value is Record<string,unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -21,6 +22,7 @@ export function checkedAgentTask<T extends HistoryTask>(value:unknown,expectedId
     value.language!==undefined&&value.language!=="SPARK_SQL"&&value.language!=="PYTHON"||
     value.usedTokens!==undefined&&(!Number.isSafeInteger(value.usedTokens)||Number(value.usedTokens)<0))throw invalid();
   const attempts=value.attempts;
+  if(!clarificationReceiptMatches(value)||value.humanClarified===true&&(value.directAutonomousEligible!==false||!identifier(value.clarificationOriginTaskId)))throw invalid();
   if(!attempts.every(attempt=>record(attempt)&&Number.isSafeInteger(attempt.attempt)&&Number(attempt.attempt)>0&&typeof attempt.status==="string"&&
     ["revisionId","runId","sourceRunId"].every(key=>attempt[key]===undefined||identifier(attempt[key]))&&optionalText(attempt.model)&&
     (attempt.diagnostic===undefined||record(attempt.diagnostic)&&typeof attempt.diagnostic.code==="string"&&typeof attempt.diagnostic.phase==="string"&&

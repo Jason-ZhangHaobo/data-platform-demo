@@ -7,12 +7,14 @@ import { spawnSync } from "node:child_process";
 import { MetadataStore } from "../../src/v2/store.mjs";
 import { MemorySnapshotBackend, ReplicatedMetadataStore } from "../../src/v2/metadata-replica.mjs";
 import { createDurableSqlAgent } from "../../src/v2/durable-agent.mjs";
-import { referenceSql, getContext, contextIds, validationContractId } from "../../src/v2/context.mjs";
+import { referenceSql, getContext, contextIds, validationContractId,validationFamilyForContext } from "../../src/v2/context.mjs";
 import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult } from "../../src/v2/remote-spark-queue.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { createPasswordHash } from "../../src/v2/auth.mjs";
 import {syntheticSqlRequirement} from './fixtures/sql-requirement.mjs';
 import {verifiedSqlRequirementReport} from '../../src/v2/sql-requirements.mjs';
+import {readSqlClarificationSource} from '../../src/v2/sql-clarification.mjs';
+import {liveEvidenceProvenance} from '../../src/v2/live-lifecycle-provenance.mjs';
 
 function setup(t, overrides = {}) {
   const dir = mkdtempSync(join(tmpdir(), "shuduo-durable-agent-")), path = join(dir, "metadata.sqlite");
@@ -37,6 +39,7 @@ function setup(t, overrides = {}) {
   const generator = async input => { counts.model++; return overrides.generator ? overrides.generator(input, counts.model) : generated; };
   const build = () => createDurableSqlAgent({ store, project: PROJECT, runner, generator,
     persist: async () => { if (persistFault) await persistFault(store); }, getContext, contextIds,
+    ...(overrides.resolveValidationFamily?{resolveValidationFamily:overrides.resolveValidationFamily}:{}),
     contractId: validationContractId, tokenBudget: overrides.tokenBudget ?? 300, requestTokenLimit: 100, modelLeaseMs: overrides.modelLeaseMs ?? 1000,
     now: () => clock, assertRunBudget: () => { counts.budget++; } });
   let engine = build();
@@ -86,6 +89,71 @@ test('one clarification question stops SQL development, persists the response an
  assert.equal(verifiedSqlRequirementReport(task.requirements,task),true);assert.equal(task.usedTokens,20);assert.equal(f.counts.jobs,0);
  const original=structuredClone(task.requirements);f.restart();task=await f.advance(task.id,{confirmModelRetry:true});
  assert.deepEqual(task.requirements,original);assert.equal(f.counts.model,1);assert.equal(f.counts.jobs,0);assert.equal(task.status,'FAILED');
+});
+
+test('a clarification answer creates one source-bound child, preserves root usage and survives SQL/model recovery',async t=>{
+ const f=setup(t,{generator:async input=>({...f.generated,...syntheticSqlRequirement(input,{clarification:!input.clarification}),...(input.clarification?{}:{sql:null})})});
+ let root=await f.create({idempotencyKey:'original'});root=await f.advance(root.id);assert.equal(root.stage,'REQUIREMENT_CLARIFICATION_REQUIRED');
+ const source=readSqlClarificationSource({store:f.store,project:PROJECT,taskId:root.id,actorId:'synthetic-owner'}),before=JSON.stringify(f.store.get('agent',root.id,PROJECT));
+ const input={message:'先计算当前五项',currentSql:source.sql,contextId:source.contextId,actorId:'synthetic-owner',idempotencyKey:'answer',clarification:source.binding};
+ let child=await f.engine.create(input);assert.notEqual(child.id,root.id);assert.equal((await f.engine.create(input)).id,child.id);
+ assert.equal(child.clarification.originalRequest,root.message);assert.equal(child.clarification.turns[0].usedTokens,20);assert.equal(child.humanClarified,true);assert.equal(child.directAutonomousEligible,false);
+ assert.equal(child.usedTokens,0);assert.equal(f.counts.model,1);f.restart();child=await f.advance(child.id);assert.equal(child.stage,'READY_FOR_RUN');
+ assert.equal(verifiedSqlRequirementReport(child.requirements,child),true);assert.equal(child.requirements.basis.clarificationDigest,child.clarification.digest);
+ child=await f.advance(child.id);f.complete(child.id);child=await f.advance(child.id);assert.equal(child.status,'SUCCEEDED');
+ assert.equal(JSON.stringify(f.store.get('agent',root.id,PROJECT)),before);assert.equal(f.counts.model,2);assert.equal(f.counts.jobs,1);assert.equal(liveEvidenceProvenance(child).nonNative,true);
+});
+test('clarification rejects another actor, stale question, substituted code/context and mixed origins before a new model call',async t=>{
+ const f=setup(t,{generator:async input=>({...f.generated,sql:null,...syntheticSqlRequirement(input,{clarification:true})})});
+ let parent=await f.create();parent=await f.advance(parent.id);const source=readSqlClarificationSource({store:f.store,project:PROJECT,taskId:parent.id,actorId:'synthetic-owner'});
+ const base={message:'按当前口径',currentSql:source.sql,contextId:source.contextId,actorId:'synthetic-owner',idempotencyKey:'answer',clarification:source.binding};
+ await assert.rejects(f.engine.create({...base,actorId:'other'}),e=>e.status===403);
+ for(const patch of [{currentSql:'SELECT 1'},{contextId:'cash-change'},{sourceRunId:'foreign'},{clarification:{...source.binding,evidenceDigest:'0'.repeat(64)}}])await assert.rejects(f.engine.create({...base,...patch}));
+ const r=structuredClone(parent.requirements);r.interpretation.question='新的业务问题？';f.store.update('agent',parent.id,PROJECT,{requirements:r});
+ await assert.rejects(f.engine.create(base));assert.equal(f.counts.model,1);assert.equal(f.store.list('agent',PROJECT).length,1);
+});
+test('clarification drift before or during a model step preserves reservations/confirmed usage without Spark',async t=>{
+ for(const phase of ['before','persist','model']){
+  const f=setup(t,{generator:async input=>{if(input.clarification&&phase==='model')drift();return {...f.generated,...syntheticSqlRequirement(input,{clarification:!input.clarification}),...(input.clarification?{}:{sql:null})};}});
+  let parent=await f.create();parent=await f.advance(parent.id);
+  const drift=()=>{const r=structuredClone(parent.requirements);r.interpretation.question='新的问题？';f.store.update('agent',parent.id,PROJECT,{requirements:r});};
+  const source=readSqlClarificationSource({store:f.store,project:PROJECT,taskId:parent.id,actorId:'synthetic-owner'});
+  let child=await f.engine.create({message:'先按当前范围',currentSql:source.sql,contextId:source.contextId,actorId:'synthetic-owner',idempotencyKey:'answer',clarification:source.binding});
+  if(phase==='before')drift();if(phase==='persist')f.fault(()=>{if(f.store.get('agent',child.id,PROJECT).stage==='MODEL_IN_FLIGHT')drift();});
+  child=await f.advance(child.id);assert.equal(child.status,'FAILED');assert.equal(child.code??child.attempts.at(-1).status,'CLARIFICATION_SOURCE_CHANGED');
+  assert.equal(f.counts.model,phase==='model'?2:1);assert.equal(f.counts.jobs,0);assert.equal(f.store.get('agent',parent.id,PROJECT).usedTokens,20);
+  assert.equal(child.usedTokens,phase==='before'?0:phase==='model'?20:100);
+ }
+});
+test('a persisted Spark claim whose clarification changed is retained as unknown, not submitted or automatically retried',async t=>{
+ const f=setup(t,{generator:async input=>({...f.generated,...syntheticSqlRequirement(input,{clarification:!input.clarification}),...(input.clarification?{}:{sql:null})})});
+ let parent=await f.create();parent=await f.advance(parent.id);const source=readSqlClarificationSource({store:f.store,project:PROJECT,taskId:parent.id,actorId:'synthetic-owner'});
+ let child=await f.engine.create({message:'先按当前范围',currentSql:source.sql,contextId:source.contextId,actorId:'synthetic-owner',idempotencyKey:'answer',clarification:source.binding});child=await f.advance(child.id);
+ f.fault(()=>{if(f.store.list('run',PROJECT).length){const r=structuredClone(parent.requirements);r.interpretation.question='已变化';f.store.update('agent',parent.id,PROJECT,{requirements:r});}});
+ child=await f.advance(child.id);assert.equal(child.status,'INTERRUPTED');assert.equal(child.stage,'CLARIFICATION_SOURCE_CHANGED');assert.ok(child.runId);assert.equal(f.counts.jobs,0);assert.equal(f.counts.model,2);
+ const run=f.store.get('run',child.runId,PROJECT);assert.ok(run.remoteSubmission.prepared);assert.notEqual(run.status,'FAILED');
+ await assert.rejects(f.advance(child.id));assert.equal(f.counts.jobs,0);
+});
+test('three explicit question/answer turns preserve the original request and stop a fourth continuation',async t=>{
+ const f=setup(t,{generator:async input=>({...f.generated,sql:null,...syntheticSqlRequirement(input,{clarification:true})})});
+ let parent=await f.create({idempotencyKey:'root'});parent=await f.advance(parent.id);const original=parent.message;
+ for(let depth=1;depth<=3;depth++){
+  const source=readSqlClarificationSource({store:f.store,project:PROJECT,taskId:parent.id,actorId:'synthetic-owner'});
+  parent=await f.engine.create({message:'第'+depth+'次答复',currentSql:source.sql,contextId:source.contextId,actorId:'synthetic-owner',idempotencyKey:'reply-'+depth,clarification:source.binding});
+  parent=await f.advance(parent.id);assert.equal(parent.clarification.depth,depth);assert.equal(parent.clarification.originalRequest,original);
+ }
+ assert.throws(()=>readSqlClarificationSource({store:f.store,project:PROJECT,taskId:parent.id,actorId:'synthetic-owner'}),e=>e.code==='CLARIFICATION_DEPTH_LIMIT');
+ assert.equal(f.counts.model,4);assert.equal(f.counts.jobs,0);
+});
+test('registered context derivation retains a human-clarified origin instead of laundering it into direct autonomy',async t=>{
+ const f=setup(t,{resolveValidationFamily:validationFamilyForContext,generator:async input=>({...f.generated,model:'qwen3.7-plus',...syntheticSqlRequirement(input,{clarification:!input.clarification}),...(input.clarification?{}:{sql:null})})});
+ let root=await f.create();root=await f.advance(root.id);const source=readSqlClarificationSource({store:f.store,project:PROJECT,taskId:root.id,actorId:'synthetic-owner'});
+ let child=await f.engine.create({message:'当前五项即可',currentSql:source.sql,contextId:source.contextId,actorId:'synthetic-owner',idempotencyKey:'reply',clarification:source.binding});
+ child=await f.advance(child.id);child=await f.advance(child.id);f.complete(child.id);child=await f.advance(child.id);
+ const rev=f.store.get('revision',child.revisionId,PROJECT),derived=await f.engine.create({message:'改为股票持仓加现金',currentSql:rev.sql,contextId:'stock-cash-t1',actorId:'synthetic-owner',idempotencyKey:'derive',
+  derivation:{kind:'REGISTERED_CONTEXT_CHANGE',taskId:child.id,revisionId:rev.id,runId:child.runId,revisionHash:rev.hash}});
+ assert.equal(derived.humanClarified,true);assert.equal(derived.directAutonomousEligible,false);assert.equal(derived.clarificationOriginTaskId,root.id);assert.equal(derived.clarification,undefined);
+ assert.equal(liveEvidenceProvenance(derived).nonNative,true);assert.equal(f.counts.model,2);
 });
 
 test("task, generated revision and queued run survive distinct store restarts", async t => {
