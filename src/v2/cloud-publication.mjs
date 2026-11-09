@@ -88,7 +88,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     }
     const last = agent.attempts?.at(-1);
     if (agent.status !== "SUCCEEDED" || agent.mode !== "LIVE_MODEL" || last?.status !== "SUCCEEDED" || !last.model || /TEST_DOUBLE|unconfirmed/.test(last.model) ||
-        item.sourceKind === "MANUAL" || plan.source.attribution?.kind === "ENGINEER_ASSISTED" ||
+        item.sourceKind === "MANUAL" || plan.source.attribution !== undefined ||
         item.manifest.source.revisionId !== last.revisionId || item.sourceRunId !== last.runId || sourceRunId && sourceRunId !== last.runId)
       throw fail(409, "源任务或文件演练尚未通过；审阅必须绑定当前模型版本");
     return { agent, delivery, item, verification, plan, sourceRunId: last.runId };

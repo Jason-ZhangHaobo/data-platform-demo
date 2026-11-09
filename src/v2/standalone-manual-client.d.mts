@@ -1,0 +1,12 @@
+import type {ManualContinuationBinding} from './manual-continuation-binding.mjs';
+import type {AssistedDevelopmentReference} from './assisted-development-reference.mjs';
+type Client={request:(path:string,options?:any)=>Promise<any>};
+export type StandaloneTask={id:string;version:number;status:string;stage:string;error?:string;sourceBinding:ManualContinuationBinding;developmentReference:AssistedDevelopmentReference;sourceRunId:string;sourceRevisionId:string;sourceSqlHash:string;packageId?:string;packageDigest?:string;verificationId?:string;mode:string;sourceKind:string;modelRequired:false};
+export type StandaloneWorkflow={protocol:string;sourceBinding:ManualContinuationBinding;developmentReference:AssistedDevelopmentReference;sourceCurrent:boolean;executionAvailable:boolean;modelRequired:false;source:{kind:string;runId:string;revisionId:string;revisionHash:string;contextId:string};report:{status:string;summary:string;notice:string;checks:{id:string;label:string;passed:boolean}[]};delivery?:StandaloneTask;package?:{id:string;digest:string;manifest:any;files:Record<string,string>};verification?:{id:string;status:string;engineVersion?:string;error?:string};publication:{available:false;scope:string;reason:string}};
+export type Selection={sourceRunId:string;revisionId?:string;revisionHash?:string;taskId?:string;sourceBinding?:ManualContinuationBinding};
+export type StandaloneDetail=Pick<StandaloneWorkflow,'package'|'verification'>&{protocol:'shuduo-standalone-manual-detail/v1';delivery:StandaloneTask;modelRequired:false};
+export function checkedStandaloneTask(value:unknown,selection:Selection):StandaloneTask;
+export function readStandaloneWorkflow(client:Client,selection:Selection):Promise<StandaloneWorkflow>;
+export function readStandaloneDetail(client:Client,selection:Selection):Promise<StandaloneDetail>;
+export function prepareStandaloneManual(client:Client,input:{sourceRunId:string;requestId:string;confirm:true}):Promise<StandaloneTask>;
+export function mutateStandaloneManual(client:Client,input:{sourceRunId:string;taskId:string;expectedVersion:number;operation:'advance'|'cancel';confirm:true}):Promise<StandaloneTask>;

@@ -3,6 +3,8 @@
 const permissions = Object.freeze(['SESSION', 'AGENT', 'DEVELOPMENT', 'DELIVERY']);
 const authPaths = new Set(['/api/v2/auth/login', '/api/v2/auth/logout', '/api/v2/auth/password']);
 const routes = [
+  /^\/api\/v2\/delivery\/manual$/,
+  /^\/api\/v2\/delivery\/manual\/[a-f0-9-]{36}\/(?:advance|cancel)$/,
   /^\/api\/v2\/(?:revisions|runs|agent\/tasks)$/,
   /^\/api\/v2\/runs\/[a-f0-9-]{36}\/cancel$/,
   /^\/api\/v2\/runs\/[a-f0-9-]{36}\/prepare-delivery$/,
@@ -22,7 +24,7 @@ export function publicDevelopmentConfig(env) {
   if (scope !== 'DEVELOPMENT_ONLY' || env.V2_LOCAL_DEVELOPMENT !== 'false' ||
       !Number.isFinite(startsAt) || !Number.isFinite(expiresAt) || expiresAt <= startsAt || expiresAt - startsAt > 2 * 3600000 ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-      (env.V2_DURABLE_SQL_AGENT_ENABLED !== 'true' && env.V2_EXECUTION_UNAVAILABLE !== 'true') ||
+      (env.V2_DURABLE_SQL_AGENT_ENABLED !== 'true' && env.V2_DURABLE_MANUAL_DELIVERY_ENABLED !== 'true' && env.V2_EXECUTION_UNAVAILABLE !== 'true') ||
       (taskId !== undefined && taskId !== '' && (typeof taskId !== 'string' || !uuid.test(taskId))))
     throw Error('PUBLIC_DEVELOPMENT_CONFIG_INVALID');
   return Object.freeze({ scope, startsAt, expiresAt, email,
@@ -40,6 +42,7 @@ export function assertDevelopmentMutation(config, session, method, path, now = D
   if (developmentSession(config, session, now).readOnly)
     throw fail('PUBLIC_DEVELOPMENT_CLOSED', '当前开发窗口未开放、已到期、执行器未就绪或此账号未获准；已保存结果仍可查看。');
   if(config.taskId){
+    if(path.startsWith('/api/v2/delivery/manual'))throw targetDenied();
     if(path==='/api/v2/agent/tasks')throw targetDenied();
     const taskPath=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\//);
     if(taskPath && taskPath[1]!==config.taskId)throw targetDenied();

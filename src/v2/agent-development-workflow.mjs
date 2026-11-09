@@ -6,8 +6,10 @@ import { resolveExplicitSqlRepairSource } from "./sql-repair-source.mjs";
 import { validationDetails, equalValidationNumber } from "./validation-details.mjs";
 import {assistedSqlDeliverySource} from './assisted-sql-delivery-source.mjs';
 import {sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
+import {resolveManualContinuation} from './manual-sql-continuation.mjs';
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
+export const standaloneManualDeliveryMode='DURABLE_MANUAL_DELIVERY_V1';
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 const hash = value => createHash("sha256").update(value).digest("hex");
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -107,14 +109,19 @@ export function manualCloudDeliverySource({store, project, runId, actorId, requi
 }
 
 // Each POST crosses one durable boundary; GET only reads a signed Worker receipt.
-export function createDurableAgentDelivery({ store, project, runner, artifactStore, persist, assertRunBudget = () => {}, assertExecutionScope = () => {}, reservationSeconds = 30 }) {
+export function createDurableAgentDelivery({ store, project, runner, artifactStore, persist, assertRunBudget = () => {}, assertExecutionScope = () => {}, reservationSeconds = 30, standaloneManual = false }) {
+  const resource=standaloneManual?'manual_delivery_task':'agent_delivery_task',mode=standaloneManual?standaloneManualDeliveryMode:durableDeliveryMode;
   if (!Number.isFinite(reservationSeconds) || reservationSeconds < 1 || reservationSeconds > 300) throw new Error("交付计算预留无效");
+  const standaloneSource=(runId,actorId,binding)=>{
+    const proof=resolveManualContinuation({store,project,actorId,sourceRunId:runId,binding}),run=store.get('run',proof.binding.runId,project),revision=store.get('revision',proof.binding.revisionId,project);
+    return {...proof,run,revision};
+  };
   const get = id => {
-    const item = store.get("agent_delivery_task", id, project);
-    if (!item || item.mode !== durableDeliveryMode) throw fail(404, "未找到持久交付任务");
+    const item = store.get(resource, id, project);
+    if (!item || item.mode !== mode) throw fail(404, "未找到持久交付任务");
     return item;
   };
-  const change = (item, patch) => store.update("agent_delivery_task", item.id, project, patch, { expectedVersion: item.version });
+  const change = (item, patch) => store.update(resource, item.id, project, patch, { expectedVersion: item.version });
   const source = agent => {
     if(agent.repairComparison!==undefined||agent.sourceKind==='MANUAL'||agent.sourceAttribution!==undefined)throw fail(409,'人工辅助修正须独立记录来源并重新审阅交付，不能从原生Agent入口继承发布');
     const attempt = agent.attempts?.at(-1), revision = store.get("revision", attempt?.revisionId ?? "", project), run = store.get("run", attempt?.runId ?? "", project);
@@ -128,12 +135,18 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       throw fail(409, "交付文件与已核验源版本不一致");
     await artifactStore.verify(item.artifact, "delivery-package", item.digest, deliveryArtifactValue(item));
     const plan = validateDeliveryPackage(item, task.packageDigest);
-    if (task.sourceKind === "MANUAL" && (plan.source.attribution?.kind !== "ENGINEER_ASSISTED" ||
-        plan.source.attribution.originAgentTaskId !== task.sourceAgentTaskId || plan.source.attribution.actorId !== task.submittedBy ||
+    if (task.sourceKind === "MANUAL" && (plan.source.attribution?.kind !== (standaloneManual?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED") ||
+        (!standaloneManual&&plan.source.attribution.originAgentTaskId !== task.sourceAgentTaskId) || plan.source.attribution.actorId !== task.submittedBy ||
         plan.source.attribution.agentIndependentE2E !== false||!sameAssistedDevelopmentReference(plan.source.attribution.developmentReference,task.developmentReference))) throw fail(409, "人工交付来源与不可变清单不一致");
     return { item, plan };
   };
   const assertTaskScope = task => {
+    if(standaloneManual){
+      const source=standaloneSource(task.sourceRunId,task.submittedBy,task.sourceBinding);
+      assertExecutionScope(source.revision);
+      if(source.revision.id!==task.sourceRevisionId||source.revision.hash!==task.sourceSqlHash||!sameAssistedDevelopmentReference(source.developmentReference,task.developmentReference))throw fail(409,'手工交付来源已变化');
+      return;
+    }
     const agent = store.get("agent", task.sourceAgentTaskId, project);
     assertExecutionScope(agent);
     if (task.sourceKind === "MANUAL") {
@@ -156,19 +169,20 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     store.update("delivery_package", item.id, project, {artifact});
     task = change(task, {stage: "PACKAGE_READY"}); await persist(); return task;
   }
-  async function createManual({runId, actorId, key}) {
-    const {agent, revision, run,developmentReference} = manualCloudDeliverySource({store, project, runId, actorId});
-    assertExecutionScope(agent);
+  async function createManual({runId, actorId, key, sourceBinding}) {
+    const source=standaloneManual?standaloneSource(runId,actorId,sourceBinding):manualCloudDeliverySource({store,project,runId,actorId});
+    const {agent,revision,run,developmentReference}=source;
+    assertExecutionScope(standaloneManual?revision:agent);
     if (typeof key !== "string" || !key || key.length > 100) throw fail(422, "人工交付缺少有效幂等编号");
-    const existing = store.list("agent_delivery_task", project).find(t => t.sourceKind === "MANUAL" && t.sourceAgentTaskId === agent.id &&
+    const existing = store.list(resource, project).find(t => t.sourceKind === "MANUAL" && (standaloneManual?t.submittedBy===actorId:t.sourceAgentTaskId===agent.id) &&
       t.sourceRunId === run.id && t.sourceRevisionId === revision.id && t.sourceSqlHash === revision.hash && sameAssistedDevelopmentReference(t.developmentReference,developmentReference)&&["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
-    const dedup = store.deduplicate(`${project}:manual-cloud-delivery:${actorId}:${key}`, hash(JSON.stringify({runId: run.id, revisionHash: revision.hash, origin: agent.id,...(developmentReference?{developmentReference}:{})})), () => {
+    const dedup = store.deduplicate(`${project}:${standaloneManual?"standalone-manual-delivery":"manual-cloud-delivery"}:${actorId}:${key}`, hash(JSON.stringify({runId: run.id, revisionHash: revision.hash, ...(standaloneManual?{sourceBinding:source.binding}:{origin:agent.id}),...(developmentReference?{developmentReference}:{})})), () => {
       if (existing) return existing;
-      const bundle = createDeliveryPackage({run, revision,developmentReference, name: developmentReference?'人工辅助修正 · 已核验证券加工交付':"工程师接管 · 已核验证券加工交付"});
-      const task = store.create("agent_delivery_task", project, {mode: durableDeliveryMode, sourceKind: "MANUAL", sourceAgentTaskId: agent.id,
-        sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: actorId, status: "QUEUED", stage: "PACKAGE_PERSISTING",
-        packageDigest: bundle.digest,...(developmentReference?{developmentReference}:{}), completionScope: "MANUAL_DELIVERY_PREPARATION", agentIndependentE2E: false, fullLifecycleE2E: false, publicDeployed: false});
-      const item = store.create("delivery_package", project, {...bundle, sourceRunId: run.id, agentDeliveryTaskId: task.id, sourceKind: "MANUAL", agentIndependentE2E: false, stage: "M2A", published: false});
+      const bundle = createDeliveryPackage({run, revision,developmentReference,manualAuthor:standaloneManual, name: standaloneManual?'手工开发 · 已核验证券加工交付':developmentReference?'人工辅助修正 · 已核验证券加工交付':"工程师接管 · 已核验证券加工交付"});
+      const task = store.create(resource, project, {mode, sourceKind: "MANUAL",...(standaloneManual?{source:{kind:"MANUAL_RUN",runId:run.id,revisionId:revision.id,revisionHash:revision.hash},sourceBinding:source.binding}:{sourceAgentTaskId:agent.id}),
+        sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash,...(standaloneManual?{sourceAttribution:'ENGINEER_AUTHORED',modelRequired:false}:{}), submittedBy: actorId, status: "QUEUED", stage: "PACKAGE_PERSISTING",
+        packageDigest: bundle.digest,...(developmentReference?{developmentReference}:{}), completionScope: standaloneManual?'CLASSIC_MANUAL_DELIVERY_PREPARATION':"MANUAL_DELIVERY_PREPARATION", agentIndependentE2E: false, fullLifecycleE2E: false, publicDeployed: false});
+      const item = store.create("delivery_package", project, {...bundle, sourceRunId: run.id, ...(standaloneManual?{manualDeliveryTaskId:task.id}:{agentDeliveryTaskId:task.id}), sourceKind: "MANUAL", agentIndependentE2E: false, stage: "M2A", published: false});
       return change(task, {packageId: item.id});
     });
     await persist(); // Persist the exact package before OSS; an unknown PUT resumes its digest.
@@ -176,16 +190,17 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     return publicDeliveryTask(terminal.has(task.status) ? task : await persistManualArtifact(task));
   }
   async function create(agent, key) {
+    if(standaloneManual)throw fail(422,'独立手工交付不能接受Agent任务作为来源');
     assertExecutionScope(agent);
     const { run, revision } = source(agent);
-    const existing = store.list("agent_delivery_task", project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision.id && t.sourceRunId === run.id && t.sourceSqlHash === revision.hash && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
+    const existing = store.list(resource, project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision.id && t.sourceRunId === run.id && t.sourceSqlHash === revision.hash && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
     if (existing) return publicDeliveryTask(existing);
     const family = validationFamilyForContext(revision.contextId);
     const bundle = createDeliveryPackage({ run, revision, name: family?.id === validationContractId ? "客户资产 T+1 · Agent交付" : "股票持仓＋可用现金（非客户全资产）· Agent交付" });
     const artifact = await artifactStore.put("delivery-package", bundle.digest, bundle);
     const dedup = store.deduplicate(`${project}:durable-delivery:${agent.id}:${key}`, hash(JSON.stringify({ runId: run.id, revisionHash: revision.hash })), () => {
-      const task = store.create("agent_delivery_task", project, { mode: durableDeliveryMode, sourceAgentTaskId: agent.id, sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: agent.submittedBy, status: "QUEUED", stage: "PACKAGE_READY", packageDigest: bundle.digest, completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
-      const item = store.create("delivery_package", project, { ...bundle, artifact, sourceRunId: run.id, agentDeliveryTaskId: task.id, stage: "M2A", published: false });
+      const task = store.create(resource, project, { mode, sourceAgentTaskId: agent.id, sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: agent.submittedBy, status: "QUEUED", stage: "PACKAGE_READY", packageDigest: bundle.digest, completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
+      const item = store.create("delivery_package", project, { ...bundle, artifact, sourceRunId: run.id, ...(standaloneManual?{manualDeliveryTaskId:task.id}:{agentDeliveryTaskId:task.id}), stage: "M2A", published: false });
       return change(task, { packageId: item.id });
     });
     await persist(); return publicDeliveryTask(get(dedup.id));
@@ -220,18 +235,26 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       if (terminal.has(task.status)) return publicDeliveryTask(task);
     }
     const { item, plan } = await bundleFor(task);
+    const refreshed=get(id);
+    if(terminal.has(refreshed.status))return publicDeliveryTask(refreshed);
+    if(refreshed.version!==task.version)throw fail(409,'交付任务已更新，请读取原任务后继续');
+    task=refreshed;
     if (!task.remoteSubmission) {
+      assertTaskScope(task); // Storage reads may outlive the selected source or session.
       assertRunBudget();
       const businessIndex = plan.calendar.tradingDays.indexOf(plan.fixtures.context.businessDate), nextDay = plan.calendar.tradingDays[businessIndex + 1];
       if (!nextDay) throw fail(422, "日历中缺少下一交易日，无法演练");
       const scheduledFor = `${nextDay}T${plan.schedule.at}+08:00`, occurrence = resolveDeliverySchedule(plan, scheduledFor);
       if (!occurrence.eligible || occurrence.businessDate !== plan.fixtures.context.businessDate) throw fail(422, "调度业务日与冻结输入不一致");
-      const verification = store.create("delivery_verification", project, { packageId: item.id, packageDigest: item.digest, agentDeliveryTaskId: task.id, scheduledFor, occurrence, status: "RUNNING", mode: durableDeliveryMode, isolation: "FUNCTION_PROCESS", reservedDurationMs: reservationSeconds * 1000, published: false });
+      const verification = store.create("delivery_verification", project, { packageId: item.id, packageDigest: item.digest, ...(standaloneManual?{manualDeliveryTaskId:task.id}:{agentDeliveryTaskId:task.id}), scheduledFor, occurrence, status: "RUNNING", mode, isolation: "FUNCTION_PROCESS", reservedDurationMs: reservationSeconds * 1000, published: false });
       const prepared = runner.prepare({ sql: item.files["main.sql"], testSql: item.files["tests.sql"], context: plan.fixtures.context, validationContexts: plan.fixtures.validationContexts }, verification.id);
       task = change(task, { status: "RUNNING", stage: "FILE_REHEARSAL_SUBMITTING", verificationId: verification.id, remoteSubmission: { prepared, submitted: false } });
       await persist();
     }
+    task=get(id);
+    if(terminal.has(task.status))return publicDeliveryTask(task);
     if (!task.remoteSubmission.submitted) {
+      assertTaskScope(task); // Recheck after durable persistence, before new computation.
       await runner.submit(task.remoteSubmission.prepared);
       task = get(id); if (terminal.has(task.status)) return publicDeliveryTask(task);
       task = change(task, { stage: "FILE_REHEARSAL_RUNNING", remoteSubmission: { ...task.remoteSubmission, submitted: true } });
@@ -241,7 +264,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
   }
   async function cancel(id) {
     let task = get(id); if (terminal.has(task.status)) return publicDeliveryTask(task);
-    assertExecutionScope(store.get("agent", task.sourceAgentTaskId, project));
+    if(standaloneManual){const revision=store.get("revision",task.sourceRevisionId,project);assertExecutionScope(revision);}else assertExecutionScope(store.get("agent", task.sourceAgentTaskId, project));
     task = change(task, { status: "CANCELLED", stage: "CANCELLED", finishedAt: new Date().toISOString() });
     if (task.verificationId) store.update("delivery_verification", task.verificationId, project, { status: "CANCELLED", finishedAt: task.finishedAt });
     await persist();
@@ -249,4 +272,9 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     return publicDeliveryTask(task);
   }
   return { create, createManual, advance, reconcile, cancel, bundleFor };
+}
+
+export function createStandaloneManualDelivery(options){
+  const engine=createDurableAgentDelivery({...options,standaloneManual:true});
+  return {create:engine.createManual,advance:engine.advance,reconcile:engine.reconcile,cancel:engine.cancel,bundleFor:engine.bundleFor};
 }

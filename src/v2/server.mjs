@@ -24,7 +24,7 @@ import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelop
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
-import { createDurableAgentDelivery, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
+import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
 import { createCloudPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import { publicationSelectorFromUrl } from "./publication-request.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
@@ -5064,6 +5064,55 @@ export function createV2Server(options = {}) {
             activeRelease: expose(restored),
           });
         }
+      }
+      const standaloneSource=path.match(/^\/api\/v2\/delivery\/manual\/source\/([a-f0-9-]{36})$/),standaloneRecord=path.match(/^\/api\/v2\/delivery\/manual\/([a-f0-9-]{36})(?:\/(advance|cancel))?$/);
+      if((standaloneSource&&method==='GET')||(path==='/api/v2/delivery/manual'&&method==='POST')||standaloneRecord){
+        const actorId=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
+        if(!actorId)throw fail(401,'请先登录查看手工交付');
+        const scope=revision=>{
+          const session=auth.sessionFromHeaders(req.headers),currentActor=session?.user.id??(local?'local-engineer':undefined);
+          if(currentActor!==revision?.author)throw fail(403,'手工交付仅属于原代码作者');
+          if(!local||session)auth.requireMutation(req.headers,path);
+          requireDevelopmentOwner('revision',revision,req);
+          if(developmentAccess?.taskId)throw targetDenied();
+          if(ingressChannel==='HTTP')assertDevelopmentMutation(developmentAccess,session,'POST',path,developmentNow());
+          assertScopedRecord(session,revision);
+        };
+        const engine=durableDevelopment?createStandaloneManualDelivery({store,project:PROJECT,runner:durableDevelopment,artifactStore,persist:persistDevelopment,
+          assertRunBudget:()=>budget.assertCanStartRemoteSpark(),assertExecutionScope:scope,reservationSeconds:Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS??30)}):undefined;
+        const readable=revision=>{requireDevelopmentOwner('revision',revision,req);assertScopedRecord(auth.sessionFromHeaders(req.headers),revision);};
+        const owned=id=>{const task=get('manual_delivery_task',id);if(task.mode!==standaloneManualDeliveryMode||task.submittedBy!==actorId)throw fail(403,'无权访问此手工交付任务');readable(get('revision',task.sourceRevisionId));return task;};
+        const packageView=task=>{
+          const item=task?.packageId?get('delivery_package',task.packageId):undefined,verification=task?.verificationId?get('delivery_verification',task.verificationId):undefined;
+          return {package:item?{id:item.id,digest:item.digest,manifest:item.manifest,files:item.files}:undefined,verification:verification?{id:verification.id,packageId:verification.packageId,packageDigest:verification.packageDigest,manualDeliveryTaskId:verification.manualDeliveryTaskId,
+            status:verification.status,engine:verification.engine,engineVersion:verification.engineVersion,mainSqlExecuted:verification.mainSqlExecuted,testSqlValidation:verification.testSqlValidation,validation:validationWithoutRawComparisons(verification.validation),durationMs:verification.durationMs,error:verification.error}:undefined};
+        };
+        if(standaloneSource){
+          if(url.searchParams.size)throw fail(422,'手工交付来源读取不接受其他参数');
+          const proof=resolveManualContinuation({store,project:PROJECT,actorId,sourceRunId:standaloneSource[1]}),run=get('run',proof.binding.runId),revision=get('revision',proof.binding.revisionId),
+            all=store.list('manual_delivery_task',PROJECT).filter(t=>t.submittedBy===actorId&&t.sourceRunId===run.id&&t.sourceRevisionId===revision.id),task=all.find(t=>t.sourceBinding?.evidenceDigest===proof.binding.evidenceDigest)??all[0];
+          readable(revision);if(task&&engine){owned(task.id);await engine.reconcile(task.id);}
+          const latest=task?owned(task.id):undefined,{taskId:ignored,...baseReport}=developmentVerificationReport({contextId:revision.contextId},run,revision);
+          return json(res,200,{protocol:'shuduo-standalone-manual-workflow/v1',executionAvailable:Boolean(engine),source:{kind:'MANUAL_RUN',runId:run.id,revisionId:revision.id,revisionHash:revision.hash,contextId:revision.contextId},sourceBinding:proof.binding,developmentReference:proof.developmentReference,
+            report:{...baseReport,sourceKind:'MANUAL',sourceAttribution:'ENGINEER_AUTHORED',agentIndependentE2E:false,notice:'手工版本已按登记口径核验；文件与演练独立记录，不调用模型或虚构Agent来源。'},
+            sourceCurrent:!latest||latest.sourceBinding?.evidenceDigest===proof.binding.evidenceDigest,delivery:publicDeliveryTask(latest),...packageView(latest),modelRequired:false,
+            publication:{available:false,scope:'NOT_IMPLEMENTED',reason:'本阶段准备文件与演练；独立手工发布仍需确切版本审阅与后续适配，未自动发布。'}});
+        }
+        if(path==='/api/v2/delivery/manual'&&method==='POST'){
+          const body=await readBody(req);if(Object.keys(body).length!==1||!Object.hasOwn(body,'sourceBinding'))throw fail(422,'仅接受已读取的手工成功来源绑定');
+          if(!engine)throw fail(503,'隔离Spark演练执行器未就绪；不要求模型凭证');
+          return json(res,202,await engine.create({actorId,key:text(req.headers['idempotency-key'],1,100),sourceBinding:body.sourceBinding}));
+        }
+        if(standaloneRecord){
+          const task=owned(standaloneRecord[1]);
+          if(method==='GET'&&!standaloneRecord[2]){if(engine)await engine.reconcile(task.id);return json(res,200,{protocol:'shuduo-standalone-manual-detail/v1',delivery:publicDeliveryTask(owned(task.id)),...packageView(owned(task.id)),modelRequired:false});}
+          if(method==='POST'&&standaloneRecord[2]){
+            const body=await readBody(req);if(Object.keys(body).length!==1||body.expectedVersion!==task.version)throw fail(409,'手工交付已更新，请按原编号读取后继续');
+            if(!engine)throw fail(503,'隔离Spark执行器未就绪；已有记录保留');
+            return json(res,200,standaloneRecord[2]==='advance'?await engine.advance(task.id,task.version):await engine.cancel(task.id));
+          }
+        }
+        throw fail(405,'手工交付操作方法不受支持');
       }
       const manualCloudWorkflow = path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\/(workflow|prepare-delivery)$/);
       if (manualCloudWorkflow && (method === "GET" && manualCloudWorkflow[2] === "workflow" || method === "POST" && manualCloudWorkflow[2] === "prepare-delivery")) {

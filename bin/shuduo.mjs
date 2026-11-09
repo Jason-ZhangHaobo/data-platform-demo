@@ -14,6 +14,7 @@ import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/re
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
 import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
 import {readManualContinuation,createManualContinuation} from '../src/v2/manual-continuation-client.mjs';
+import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,mutateStandaloneManual} from '../src/v2/standalone-manual-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 
@@ -24,6 +25,11 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo sql compare-candidates --run-id RUN_ID
   shuduo sql compare-runs --run-id RUN_ID --baseline-run-id RUN_ID
   shuduo budget
+  shuduo manual workflow --source-run-id RUN_ID
+  shuduo manual prepare --source-run-id RUN_ID --request-id UUID --confirm
+  shuduo manual detail --source-run-id RUN_ID --id MANUAL_DELIVERY_ID
+  shuduo manual advance|cancel --source-run-id RUN_ID --id MANUAL_DELIVERY_ID --version N --confirm
+    独立手工文件与演练不调用模型、不创建Agent、不发布。未知回执先读取workflow/detail，保留原编号。
   shuduo agent intents
   shuduo agent tools
   shuduo agent validate-tool --tool MODULE_ID --catalog-version VERSION --contract-digest SHA256 --input-json '{"message":"任务目标"}'
@@ -364,7 +370,15 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       return 0;
     }
     let result;
-    if (resource === "status") result = await client.request("/status");
+    if(resource==='manual'&&['workflow','prepare','detail','advance','cancel'].includes(action)){
+      const fields=action==='workflow'?['source_run_id']:action==='prepare'?['source_run_id','request_id','confirm']:action==='detail'?['source_run_id','id']:['source_run_id','id','version','confirm'],allowed=new Set([...fields,'base_url','help']),seen=new Set();
+      if(parsed.positionals.length!==2)throw Error('手工交付命令包含额外参数');
+      for(const token of argv.filter(v=>v.startsWith('--'))){const flag=token.slice(2).replaceAll('-','_');if(!allowed.has(flag)||seen.has(flag))throw Error('手工交付命令包含未知或重复参数');seen.add(flag);}
+      const sourceRunId=required(parsed.options,'source_run_id');
+      if(['advance','cancel'].includes(action)&&parsed.options.confirm!==true)throw Error('须明确确认本次演练或停止操作');
+      result=action==='workflow'?await readStandaloneWorkflow(client,{sourceRunId}):action==='prepare'?await prepareStandaloneManual(client,{sourceRunId,requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm}):action==='detail'?await readStandaloneDetail(client,{sourceRunId,taskId:required(parsed.options,'id')}):await mutateStandaloneManual(client,{sourceRunId,taskId:required(parsed.options,'id'),expectedVersion:Number(required(parsed.options,'version')),operation:action,confirm:true});
+    }
+    else if (resource === "status") result = await client.request("/status");
     else if(resource==='sql'&&action==='compare-candidates')result=await readRunComparisonCandidates(client,{runId:required(parsed.options,'run_id')});
     else if(resource==='sql'&&action==='compare-runs')result=await readSqlRunComparison(client,{runId:required(parsed.options,'run_id'),baselineRunId:required(parsed.options,'baseline_run_id')});
     else if (resource === "budget" && !action)

@@ -12,6 +12,7 @@ import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/re
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
 import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
 import {readManualContinuation,createManualContinuation} from '../src/v2/manual-continuation-client.mjs';
+import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,mutateStandaloneManual} from '../src/v2/standalone-manual-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
@@ -23,6 +24,11 @@ const publicationProperties={sourceKind:{type:"string",enum:["AGENT","MANUAL"]},
 const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANUAL"}},required:["sourceKind"]},then:{required:["sourceRunId","packageDigest","verificationId",...(stop?["releaseId"]:[])]}});
 
 const tools = [
+  {name:'manual_development_workflow',description:'只读本人手工SQL的完整成功核验与原交付文件；不要求模型或Agent任务。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'}},required:['sourceRunId']},annotations:{readOnlyHint:true}},
+  {name:'manual_delivery_prepare',description:'明确确认后固定本人手工版本并准备八文件；不调用模型、不创建Agent、不自动演练或发布。未知结果先查workflow，沿用requestId。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['sourceRunId','requestId','confirm']}},
+  {name:'manual_delivery_detail',description:'只读指定手工交付的原文件与演练回执；不提交计算。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},taskId:{type:'string',format:'uuid'}},required:['sourceRunId','taskId']},annotations:{readOnlyHint:true}},
+  ...['advance','cancel'].map(operation=>({name:'manual_delivery_'+operation,description:operation==='advance'?'明确确认后推进原手工文件演练，可能启动一次隔离Spark；未知结果只读原记录，不自动重提。':'明确确认后停止原手工交付，保留历史文件及计算记录。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},taskId:{type:'string',format:'uuid'},expectedVersion:{type:'integer',minimum:1},confirm:{const:true}},required:['sourceRunId','taskId','expectedVersion','confirm']}})),
+
   {name:'agent_manual_continuation_read',description:'只读核对本人手工保存SQL的成功运行，不要求已有Agent任务，不调用模型或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'}},required:['sourceRunId']},annotations:{readOnlyHint:true}},
   {name:'agent_continue_manual',description:'明确委托后从手工成功版本新建Agent续改任务；保留手工来源，不复制批准或结果。需稳定requestId，未知结果先查原请求。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},message:{type:'string',minLength:4,maxLength:2000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['sourceRunId','message','requestId','confirm']},annotations:{readOnlyHint:false}},
   {name:'agent_assisted_continuation_read',description:'只读核对本人成功辅助版本及原参考链，固定续改父任务、版本、运行和证据；不调用模型或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'}},required:['taskId']},annotations:{readOnlyHint:true}},
@@ -224,6 +230,10 @@ const typePath = (value) => {
   return value + "s";
 };
 async function callTool(name, args = {}, client=defaultClient) {
+  if(name==='manual_development_workflow')return readStandaloneWorkflow(client,args);
+  if(name==='manual_delivery_detail')return readStandaloneDetail(client,args);
+  if(name==='manual_delivery_prepare')return prepareStandaloneManual(client,args);
+  if(['manual_delivery_advance','manual_delivery_cancel'].includes(name))return mutateStandaloneManual(client,{...args,operation:name.slice('manual_delivery_'.length)});
   if(name==='agent_manual_continuation_read')return readManualContinuation(client,args);
   if(name==='agent_continue_manual')return createManualContinuation(client,args);
   if(name==='agent_assisted_continuation_read')return readAssistedContinuation(client,args);
