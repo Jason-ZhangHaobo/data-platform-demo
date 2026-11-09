@@ -1,15 +1,17 @@
 import {manualRunLocation} from "./manual-run-recovery.ts";
 import type {ConsumptionScope} from "./service-consumption-scope.ts";
 
-export type ServiceSourceBinding={taskId:string;packageDigest:string;releaseId:string;sourceKind:"AGENT"|"MANUAL";scope?:"LOCAL_TEST_ONLY"|"PRIVATE_CLOUD_TEST";revisionId?:string;runId?:string};
+export type StandaloneServiceSourceBinding={taskId?:never;manualDeliveryTaskId:string;packageDigest:string;releaseId:string;sourceKind:'MANUAL';scope:'PRIVATE_CLOUD_TEST';revisionId:string;runId:string;revisionHash:string};
+export type ServiceSourceBinding={taskId:string;manualDeliveryTaskId?:never;packageDigest:string;releaseId:string;sourceKind:"AGENT"|"MANUAL";scope?:"LOCAL_TEST_ONLY"|"PRIVATE_CLOUD_TEST";revisionId?:string;runId?:string;revisionHash?:never}|StandaloneServiceSourceBinding;
 export type PublicationSource={status:"RESOLVED"|"UNAVAILABLE";sourceKind?:"AGENT"|"MANUAL";taskId:string;packageDigest:string;verificationId:string;revisionId?:string;runId?:string};
 const uuid=(value:unknown):value is string=>typeof value==="string"&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 const digest=(value:unknown):value is string=>typeof value==="string"&&/^[a-f0-9]{64}$/.test(value);
-const queryKeys={taskId:"source_task",packageDigest:"source_package",releaseId:"source_release",sourceKind:"source_kind",scope:"source_scope",revisionId:"source_revision",runId:"source_run"} as const;
+const queryKeys={taskId:"source_task",packageDigest:"source_package",releaseId:"source_release",sourceKind:"source_kind",scope:"source_scope",revisionId:"source_revision",runId:"source_run",manualDeliveryTaskId:"source_manual_delivery",revisionHash:"source_revision_hash"} as const;
 export function validServiceSourceBinding(value:unknown):value is ServiceSourceBinding{
   if(!value||typeof value!=="object"||Array.isArray(value))return false;
   const b=value as ServiceSourceBinding;
-  return uuid(b.taskId)&&digest(b.packageDigest)&&uuid(b.releaseId)&&["AGENT","MANUAL"].includes(b.sourceKind)&&
+  if(b.manualDeliveryTaskId!==undefined)return b.taskId===undefined&&uuid(b.manualDeliveryTaskId)&&digest(b.packageDigest)&&uuid(b.releaseId)&&b.sourceKind==='MANUAL'&&b.scope==='PRIVATE_CLOUD_TEST'&&uuid(b.revisionId)&&uuid(b.runId)&&digest(b.revisionHash);
+  return b.revisionHash===undefined&&uuid(b.taskId)&&digest(b.packageDigest)&&uuid(b.releaseId)&&["AGENT","MANUAL"].includes(b.sourceKind)&&
     (b.scope===undefined||["LOCAL_TEST_ONLY","PRIVATE_CLOUD_TEST"].includes(b.scope))&&
     (b.revisionId===undefined||uuid(b.revisionId))&&(b.runId===undefined||uuid(b.runId))&&
     (b.sourceKind!=="MANUAL"||b.scope!=="LOCAL_TEST_ONLY"&&uuid(b.revisionId)&&uuid(b.runId))&&
@@ -20,7 +22,7 @@ export function sourceBindingEnvironmentMatches(binding:ServiceSourceBinding,pri
   if(!validServiceSourceBinding(binding))return false;
   return serviceSourceScope(binding)==="LOCAL_TEST_ONLY"?!privateCloud&&runtimeMode==="LOCAL_DEVELOPMENT":privateCloud&&runtimeMode!=="LOCAL_DEVELOPMENT";
 }
-export function serviceSourceKey(binding?:ServiceSourceBinding){return binding?JSON.stringify([binding.taskId,binding.packageDigest,binding.releaseId,binding.sourceKind,binding.scope??"LEGACY_PRIVATE",binding.revisionId??"",binding.runId??""]):"";}
+export function serviceSourceKey(binding?:ServiceSourceBinding){return binding?binding.manualDeliveryTaskId?JSON.stringify(['MANUAL_RUN',binding.manualDeliveryTaskId,binding.packageDigest,binding.releaseId,binding.revisionId,binding.runId,binding.revisionHash]):JSON.stringify([binding.taskId,binding.packageDigest,binding.releaseId,binding.sourceKind,binding.scope??"LEGACY_PRIVATE",binding.revisionId??"",binding.runId??""]):"";}
 export function serviceReadCurrent(key:string,request:number,activeKey:string,activeRequest:number,alive=true){return alive&&key===activeKey&&request===activeRequest;}
 export type ServiceSourceLocation={status:"ABSENT"}|{status:"VALID";binding:ServiceSourceBinding}|{status:"INVALID";error:string};
 const invalidLocation=():ServiceSourceLocation=>({status:"INVALID",error:"接口交接来源不完整或不合法；请返回原发布卡重新选择确切版本，不会回退到全项目数据。"});
@@ -41,7 +43,8 @@ export function serviceHandoffLocation(href:string,binding:ServiceSourceBinding)
 export function serviceReturnLocation(href:string,binding:ServiceSourceBinding){
   if(!validServiceSourceBinding(binding))throw Error("原版本返回来源未确认");
   let url=new URL(href);url.search="";
-  if(binding.sourceKind==="MANUAL")url=manualRunLocation(url.href,{revisionId:binding.revisionId!,runId:binding.runId,originTaskId:binding.taskId});
+  if(binding.manualDeliveryTaskId){url=serviceHandoffLocation(url.href,binding);url=manualRunLocation(url.href,{revisionId:binding.revisionId,runId:binding.runId});}
+  else if(binding.sourceKind==="MANUAL")url=manualRunLocation(url.href,{revisionId:binding.revisionId!,runId:binding.runId,originTaskId:binding.taskId});
   else{url=serviceHandoffLocation(url.href,binding);url.searchParams.set("task",binding.taskId);}
   url.searchParams.set("module","agent-center");url.hash="agent-service-handoff";return url;
 }
@@ -49,10 +52,10 @@ export function currentAgentTaskLocation(href:string,taskId:string){
   if(!uuid(taskId))throw Error("原任务编号未确认");
   const url=new URL(href);url.search="";url.hash="";url.searchParams.set("module","agent-center");url.searchParams.set("task",taskId);return url;
 }
-export function returnedPublicationMatches(binding:ServiceSourceBinding,value:{release?:{id:string;packageDigest?:string;sourceRevisionId?:string;sourceRunId?:string;sourceAgentTaskId?:string;sourceKind?:string}}){
+export function returnedPublicationMatches(binding:ServiceSourceBinding,value:{release?:{id:string;packageDigest?:string;sourceRevisionId?:string;sourceRunId?:string;sourceAgentTaskId?:string;manualDeliveryTaskId?:string;sourceKind?:string}}){
   const release=value.release;
   return Boolean(validServiceSourceBinding(binding)&&release&&release.id===binding.releaseId&&release.packageDigest===binding.packageDigest&&release.sourceRevisionId===binding.revisionId&&
-    (release.sourceKind??"AGENT")===binding.sourceKind&&(release.sourceRunId===undefined||release.sourceRunId===binding.runId)&&(release.sourceAgentTaskId===undefined||release.sourceAgentTaskId===binding.taskId));
+    (binding.manualDeliveryTaskId?release.manualDeliveryTaskId===binding.manualDeliveryTaskId&&release.sourceAgentTaskId===undefined:true)&&(release.sourceKind??"AGENT")===binding.sourceKind&&(release.sourceRunId===undefined||release.sourceRunId===binding.runId)&&(release.sourceAgentTaskId===undefined||release.sourceAgentTaskId===binding.taskId));
 }
 export function publicationSourceLocation(href:string,target:{taskId:string;packageDigest:string;verificationId:string},source?:PublicationSource){
   if(!source)return;
@@ -65,21 +68,21 @@ export function publicationSourceLocation(href:string,target:{taskId:string;pack
 }
 export function serviceSourcesPath(binding:ServiceSourceBinding){
   if(!validServiceSourceBinding(binding))throw Error("接口交接来源不完整");
-  return "/data-services/sources?"+new URLSearchParams({agent_task_id:binding.taskId,package_digest:binding.packageDigest,release_id:binding.releaseId});
+  return "/data-services/sources?"+new URLSearchParams({...((binding.manualDeliveryTaskId)?{manual_delivery_task_id:binding.manualDeliveryTaskId}:{agent_task_id:binding.taskId!}),package_digest:binding.packageDigest,release_id:binding.releaseId});
 }
 export function serviceEvidencePath(binding:ServiceSourceBinding){return serviceSourcesPath(binding).replace("/sources?","/task-evidence?");}
 export function localAgentPublicationPath(binding:ServiceSourceBinding){
   if(!validServiceSourceBinding(binding)||binding.scope!=="LOCAL_TEST_ONLY"||binding.sourceKind!=="AGENT")throw Error("本机原生 Agent 发布来源未确认");
   return `/agent/tasks/${binding.taskId}/publication?`+new URLSearchParams({sourceKind:"AGENT",sourceRunId:binding.runId!,packageDigest:binding.packageDigest,releaseId:binding.releaseId});
 }
-type SourceRun={id:string;releaseId:string;scope?:string;sequence?:number;createdAt?:string;sourceAgentTaskId?:string;sourceRevisionId?:string;sourceRunId?:string;packageDigest?:string;sourceKind?:string;sourceAttribution?:string;agentIndependentE2E?:boolean;status?:string;published?:boolean;schedulerTriggered?:boolean;engine?:string;mainSqlExecuted?:boolean;testSqlValidation?:{passed:boolean};codeExecuted?:boolean;validation?:{passed:boolean}};
+type SourceRun={id:string;releaseId:string;scope?:string;sequence?:number;createdAt?:string;sourceAgentTaskId?:string;manualDeliveryTaskId?:string;sourceRevisionHash?:string;sourceRevisionId?:string;sourceRunId?:string;packageDigest?:string;sourceKind?:string;sourceAttribution?:string;agentIndependentE2E?:boolean;status?:string;published?:boolean;schedulerTriggered?:boolean;engine?:string;mainSqlExecuted?:boolean;testSqlValidation?:{passed:boolean};codeExecuted?:boolean;validation?:{passed:boolean}};
 export function sourceRunEligible(run:SourceRun){return run.status==="SUCCEEDED"&&run.published===true&&run.schedulerTriggered===true&&run.validation?.passed===true&&
   (run.engine==="Apache Spark"&&run.mainSqlExecuted===true&&run.testSqlValidation?.passed===true||run.engine==="CPython"&&run.codeExecuted===true);}
 export function sourceRunMatches(run:SourceRun,binding:ServiceSourceBinding){
-  return run.releaseId===binding.releaseId&&run.sourceAgentTaskId===binding.taskId&&run.packageDigest===binding.packageDigest&&(run.sourceKind??"AGENT")===binding.sourceKind&&
+  return run.releaseId===binding.releaseId&&(binding.manualDeliveryTaskId?run.manualDeliveryTaskId===binding.manualDeliveryTaskId&&run.sourceAgentTaskId===undefined&&run.sourceRevisionHash===binding.revisionHash:run.sourceAgentTaskId===binding.taskId&&run.manualDeliveryTaskId===undefined)&&run.packageDigest===binding.packageDigest&&(run.sourceKind??"AGENT")===binding.sourceKind&&
     (binding.scope===undefined?run.scope===undefined||run.scope==="PRIVATE_CLOUD_TEST":run.scope===binding.scope)&&
     (binding.revisionId===undefined||run.sourceRevisionId===binding.revisionId)&&(binding.runId===undefined||run.sourceRunId===binding.runId)&&
-    (binding.sourceKind!=="MANUAL"||run.sourceAttribution==="ENGINEER_ASSISTED"&&run.agentIndependentE2E===false);
+    (binding.sourceKind!=="MANUAL"||run.sourceAttribution===(binding.manualDeliveryTaskId?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED")&&run.agentIndependentE2E===false);
 }
 export function agentReturnSourceMatches(binding:ServiceSourceBinding,task:{id:string;contextId:string;sql?:string;revisionId?:string;runId?:string;attempts?:{revisionId?:string;runId?:string}[]},
   run:{id:string;revisionId?:string;revisionHash?:string;contextId?:string;agentTaskId?:string}|undefined,
@@ -94,7 +97,7 @@ export function agentReturnSourceMatches(binding:ServiceSourceBinding,task:{id:s
 }
 export function sourceBindingScopeCompatible(binding:ServiceSourceBinding,scope?:ConsumptionScope,runs?:SourceRun[]){
   if(!scope)return true;
-  return Boolean(serviceSourceScope(binding)==="PRIVATE_CLOUD_TEST"&&scope.plan&&scope.taskId===binding.taskId&&scope.plan.taskId===binding.taskId&&scope.plan.packageDigest===binding.packageDigest&&
+  return Boolean(serviceSourceScope(binding)==="PRIVATE_CLOUD_TEST"&&scope.plan&&(binding.manualDeliveryTaskId?scope.manualDeliveryTaskId===binding.manualDeliveryTaskId&&scope.plan.manualDeliveryTaskId===binding.manualDeliveryTaskId&&scope.taskId===undefined:scope.taskId===binding.taskId&&scope.plan.taskId===binding.taskId)&&scope.plan.packageDigest===binding.packageDigest&&
     (!runs||runs.some(run=>run.id===scope.plan!.sourceReleaseRunId&&sourceRunMatches(run,binding)&&sourceRunEligible(run))));
 }
 type BoundVersion={id:string;sourcePackageDigest?:string;sourceReleaseRunId?:string;steps?:{dapiId:string;dapiVersionId:string;alias:string}[]};

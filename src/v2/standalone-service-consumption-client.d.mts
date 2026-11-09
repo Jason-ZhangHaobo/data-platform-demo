@@ -1,0 +1,3 @@
+export type StandaloneConsumptionSelection={manualDeliveryTaskId:string;packageDigest:string;releaseId:string;revisionId:string;runId:string;revisionHash:string};
+export type StandaloneConsumption={protocol:string;sources:{id:string}[];evidence:{status:string;matchingCount:number;truncated:boolean;services:{serviceId:string;serviceType:string;name:string;versionId:string;status:string;call?:{rowCount:number;applicationStatus:string};notice:string}[];notice:string}};
+export function readStandaloneConsumption(client:{request:(path:string)=>Promise<any>},input:StandaloneConsumptionSelection):Promise<StandaloneConsumption>;

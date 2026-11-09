@@ -21,16 +21,17 @@ const deepFreeze = value => { for (const child of Object.values(value)) if (chil
 export function publicServiceConfig(env) {
   if (env.V2_FC_PUBLIC_WRITE_SCOPE !== scope) return undefined;
   let plan;
+  const sourceKind=env.V2_PUBLIC_SERVICE_SOURCE_KIND??"AGENT_TASK",sourceKey=sourceKind==='MANUAL_DELIVERY'?'manualDeliveryTaskId':'taskId';
   const startsAt = typeof env.V2_PUBLIC_SERVICE_STARTS_AT === 'string' ? Date.parse(env.V2_PUBLIC_SERVICE_STARTS_AT) : NaN;
   const expiresAt = typeof env.V2_PUBLIC_SERVICE_EXPIRES_AT === 'string' ? Date.parse(env.V2_PUBLIC_SERVICE_EXPIRES_AT) : NaN;
   const email = typeof env.V2_BOOTSTRAP_ADMIN_EMAIL === 'string' ? env.V2_BOOTSTRAP_ADMIN_EMAIL.trim().toLowerCase() : '';
   try {
     if (typeof env.V2_PUBLIC_SERVICE_PLAN !== 'string' || env.V2_PUBLIC_SERVICE_PLAN.length > 8192) throw Error();
     plan = JSON.parse(env.V2_PUBLIC_SERVICE_PLAN);
-    if (env.V2_LOCAL_DEVELOPMENT !== 'false' || !Number.isFinite(startsAt) || !Number.isFinite(expiresAt) ||
+    if (!["AGENT_TASK","MANUAL_DELIVERY"].includes(sourceKind) || env.V2_LOCAL_DEVELOPMENT !== 'false' || !Number.isFinite(startsAt) || !Number.isFinite(expiresAt) ||
         expiresAt <= startsAt || expiresAt - startsAt > 2 * 3600000 || email.length > 160 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-        !keys(plan, ['taskId', 'packageDigest', 'sourceReleaseRunId', 'dapis', 'xapi', 'applicationName']) ||
-        typeof plan.taskId !== 'string' || !uuid.test(plan.taskId) || typeof plan.packageDigest !== 'string' || !digest.test(plan.packageDigest) ||
+        !keys(plan, [sourceKey, 'packageDigest', 'sourceReleaseRunId', 'dapis', 'xapi', 'applicationName']) ||
+        typeof plan[sourceKey] !== 'string' || !uuid.test(plan[sourceKey]) || typeof plan.packageDigest !== 'string' || !digest.test(plan.packageDigest) ||
         typeof plan.sourceReleaseRunId !== 'string' || !uuid.test(plan.sourceReleaseRunId) || !nameValid(plan.applicationName) ||
         !Array.isArray(plan.dapis) || plan.dapis.length !== 2 || plan.dapis.some(item =>
           !keys(item, ['name', 'slug', 'fields', 'timeoutMs', 'rateLimitPerMinute']) || !nameValid(item.name) || !slugValid(item.slug) || !limitsValid(item) ||
@@ -43,7 +44,7 @@ export function publicServiceConfig(env) {
           !plan.dapis.some(item => item.slug === step.dapiSlug)) ||
         new Set(plan.xapi.steps.map(step => step.alias)).size !== 2 || new Set(plan.xapi.steps.map(step => step.dapiSlug)).size !== 2) throw Error();
   } catch { throw Error('PUBLIC_SERVICE_CONFIG_INVALID'); }
-  return deepFreeze({ scope, startsAt, expiresAt, email, plan, pilotId: serviceHash(plan) });
+  return deepFreeze({ scope, sourceKind, startsAt, expiresAt, email, plan, pilotId: serviceHash(plan) });
 }
 
 export function serviceSession(config, session, now = Date.now()) {
@@ -51,7 +52,8 @@ export function serviceSession(config, session, now = Date.now()) {
   const administrator = selected(config, session), allowed = administrator && inWindow(config, now);
   return { readOnly: !allowed, consumptionOnly: true, permissions: allowed ? ['SESSION', 'SERVICES'] : ['SESSION'],
     consumptionStartsAt: new Date(config.startsAt).toISOString(), consumptionExpiresAt: new Date(config.expiresAt).toISOString(),
-    ...(administrator ? { consumptionTaskId: config.plan.taskId, consumptionPilotId: config.pilotId, consumptionPlan: config.plan } : {}) };
+    ...(config.sourceKind==='MANUAL_DELIVERY'?{manualConsumptionOnly:true}:{}),
+    ...(administrator ? { [config.sourceKind==='MANUAL_DELIVERY'?'manualConsumptionTaskId':'consumptionTaskId']:config.plan[config.sourceKind==='MANUAL_DELIVERY'?'manualDeliveryTaskId':'taskId'], consumptionPilotId: config.pilotId, consumptionPlan: config.plan } : {}) };
 }
 
 export function assertServiceMutation(config, session, method, path, now = Date.now()) {
@@ -79,7 +81,7 @@ export function createServicePilotGuard({ config, store, project, source, detail
     const run = source(config.plan.sourceReleaseRunId);
     const release = run && store.get('release', run.releaseId, project);
     allowed(run?.id === config.plan.sourceReleaseRunId && run.packageDigest === config.plan.packageDigest &&
-      release?.id === run.releaseId && release.sourceAgentTaskId === config.plan.taskId && release.packageDigest === config.plan.packageDigest);
+      release?.id === run.releaseId && (config.sourceKind==='MANUAL_DELIVERY'?release.manualDeliveryTaskId===config.plan.manualDeliveryTaskId&&release.sourceAgentTaskId===undefined:release.sourceAgentTaskId===config.plan.taskId&&release.manualDeliveryTaskId===undefined) && release.packageDigest === config.plan.packageDigest);
     return run;
   };
   const specFor = item => item?.serviceType === 'DAPI' ? config.plan.dapis.find(spec => spec.slug === item.slug)

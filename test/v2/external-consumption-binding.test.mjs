@@ -6,11 +6,12 @@ import { consumerCanonical, consumerDigest, consumerV2PlanEvidence } from "../..
 // Synthetic in-memory report documents only. MATCHED means consistent documents,
 // never actual network/model/Spark execution or verified external environment.
 const hash = value => consumerDigest(consumerCanonical(value));
-function fixture({ scope = "PRIVATE_CLOUD_TEST", sourceKind = "AGENT", twoGranted = false } = {}) {
+function fixture({ scope = "PRIVATE_CLOUD_TEST", sourceKind = "AGENT", twoGranted = false, standalone=false } = {}) {
   const source = { schema: "shuduo-service-consumer-source/v1", scope, sourceKind, taskId: "synthetic-task", revisionId: "synthetic-revision",
     revisionHash: consumerDigest("synthetic SQL"), developmentRunId: "synthetic-development", contextId: "holdings-t1",
     validationContractId: "securities-assets-five-fixtures-2026-09-14", packageDigest: consumerDigest("synthetic package"),
     releaseId: "synthetic-release", sourceReleaseRunId: "synthetic-published-batch" };
+  if(standalone){delete source.taskId;Object.assign(source,{schema:'shuduo-service-consumer-source/v2',manualDeliveryTaskId:'synthetic-manual-delivery',sourceAttribution:'ENGINEER_AUTHORED',agentIndependentE2E:false});}
   const plan = { protocol: "SERVICE_CONSUMER_V2", authorized: true, source,
     origin: scope === "LOCAL_TEST_ONLY" ? "http://127.0.0.1:34567" : "https://consumer.example.invalid",
     approvedOrigin: scope === "LOCAL_TEST_ONLY" ? "http://127.0.0.1:34567" : "https://consumer.example.invalid",
@@ -61,8 +62,8 @@ function fixture({ scope = "PRIVATE_CLOUD_TEST", sourceKind = "AGENT", twoGrante
   }
   append(targets[0], "REVOKED_TOKEN", query, 401, "revoked");
   report.requestCount = report.requests.length; report.finishedAt = report.requests.at(-1).finishedAt;
-  const manual = sourceKind === "MANUAL" ? { sourceAttribution: "ENGINEER_ASSISTED" } : {};
-  const taskEvidence = { protocol: plan.testOnly ? "shuduo-local-task-consumption/v1" : "shuduo-private-task-consumption/v1", taskId: source.taskId,
+  const manual = sourceKind === "MANUAL" ? { sourceAttribution: standalone?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED" } : {};
+  const taskEvidence = { protocol: standalone?"shuduo-private-manual-consumption/v1":plan.testOnly ? "shuduo-local-task-consumption/v1" : "shuduo-private-task-consumption/v1", ...(standalone?{manualDeliveryTaskId:source.manualDeliveryTaskId}:{taskId:source.taskId}),
     packageDigest: source.packageDigest, releaseId: source.releaseId, sourceKind, ...manual, scope, status: "VERIFIED", checkedAt: "2026-11-05T00:01:00.000Z",
     matchingCount: 1, truncated: false, externalSystemVerified: false, agentIndependentE2E: false, publicDeployed: false,
     services: [{ serviceId: plan.xapi.id, serviceType: "XAPI", name: "合成证券组合", versionId: plan.xapi.versionId, configHash: plan.xapi.configHash,
@@ -181,4 +182,9 @@ test("manual/local consistency never upgrades native external acceptance and leg
     x => { x.report.externalSystemVerified = true; }, x => { x.report.agentIndependentE2E = true; }]) {
     const input = fixture(); mutate(input); notCandidate(input);
   }
+});
+
+test('standalone manual report identity binds without inventing an Agent or upgrading authored work',()=>{
+ const input=fixture({sourceKind:'MANUAL',standalone:true}),result=bindExternalConsumption(input);assert.equal(result.status,'MATCHED_ONLY');assert.equal(result.eligibleForExternalAcceptance,false);assert.equal(result.source.taskId,undefined);assert.equal(result.source.manualDeliveryTaskId,'synthetic-manual-delivery');assert.equal(result.source.sourceAttribution,'ENGINEER_AUTHORED');assert.equal(result.externalSystemVerified,false);assert.equal(result.agentIndependentE2E,false);
+ for(const mutate of[x=>{x.taskEvidence.taskId='synthetic-manual-delivery';},x=>{x.taskEvidence.sourceAttribution='ENGINEER_ASSISTED';},x=>{x.taskEvidence.manualDeliveryTaskId='wrong-manual';},x=>{x.plan.source.taskId='forged-agent';}]){const bad=structuredClone(input);mutate(bad);notCandidate(bad);}
 });

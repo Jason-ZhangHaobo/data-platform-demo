@@ -69,4 +69,4 @@ MCP：`manual_publication_detail`、`manual_publication_create`、`manual_public
 
 ## 5 Demo
 
-证券财富场景：股票持仓＋可用现金T+1（非客户全资产）。工程师从已核验手工SQL查看八文件，审阅后登记两个固定样例批次；页面关闭后调度器推进，回来看到同一发布的两批独立核验结果。下一步将这些确切发布结果接到DAPI／XAPI消费，继续保留独立手工来源。
+证券财富场景：股票持仓＋可用现金T+1（非客户全资产）。工程师从已核验手工SQL查看八文件，审阅后登记两个固定样例批次；页面关闭后调度器推进，回来看到同一发布的两批独立核验结果。[DAPI／XAPI消费与返程](standalone-service-consumption.md)已继续接入，保留独立手工来源；真实云端验收另行记录。

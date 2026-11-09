@@ -89,16 +89,16 @@ const evidenceKeys = ["protocol", "taskId", "packageDigest", "releaseId", "scope
 const entryKeys = ["serviceId", "serviceType", "name", "versionId", "configHash", "status", "sourceRunIds", "notice", "sourceKind", "sourceAttribution", "agentIndependentE2E", "releaseId", "sourceVersions", "fullAssetComposition", "call", "code", "source"];
 const versionKeys = ["serviceId", "versionId", "configHash", "releaseId", "sourceReleaseRunId", "packageDigest", "sourceKind", "sourceAttribution", "fields"];
 const callKeys = ["callId", "versionId", "configHash", "rowCount", "resultHash", "verified", "applicationId", "applicationStatus", "finishedAt"];
-const attributionMatches = (value, source) => source.sourceKind === "MANUAL" ? value.sourceAttribution === "ENGINEER_ASSISTED" : value.sourceAttribution === undefined;
+const attributionMatches = (value, source) => source.sourceKind === "MANUAL" ? value.sourceAttribution === (source.manualDeliveryTaskId?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED") : value.sourceAttribution === undefined;
 const textFieldsSafe = value => ["name", "notice", "code"].every(key => value[key] === undefined || typeof value[key] === "string" && value[key].length <= 4000);
 const samePublicationSource = (value, source) => {
   const observed = validateConsumerSource(value);
-  return ["scope", "sourceKind", "taskId", "packageDigest", "releaseId"].every(key => observed[key] === source[key]);
+  return ["scope", "sourceKind", ...(source.manualDeliveryTaskId?["manualDeliveryTaskId"]:["taskId"]), "packageDigest", "releaseId"].every(key => observed[key] === source[key]);
 };
 
 function platformMatch(source, plan, report, evidence) {
-  check(only(evidence, evidenceKeys) && evidence.protocol === (source.scope === "LOCAL_TEST_ONLY" ? "shuduo-local-task-consumption/v1" : "shuduo-private-task-consumption/v1") &&
-    evidence.scope === source.scope && evidence.taskId === source.taskId && evidence.packageDigest === source.packageDigest && evidence.releaseId === source.releaseId &&
+  check(only(evidence, source.manualDeliveryTaskId?[...evidenceKeys.filter(k=>k!=="taskId"),"manualDeliveryTaskId"]:evidenceKeys) && evidence.protocol === (source.manualDeliveryTaskId?"shuduo-private-manual-consumption/v1":source.scope === "LOCAL_TEST_ONLY" ? "shuduo-local-task-consumption/v1" : "shuduo-private-task-consumption/v1") &&
+    evidence.scope === source.scope && (source.manualDeliveryTaskId?evidence.manualDeliveryTaskId===source.manualDeliveryTaskId&&evidence.taskId===undefined:evidence.taskId === source.taskId) && evidence.packageDigest === source.packageDigest && evidence.releaseId === source.releaseId &&
     evidence.sourceKind === source.sourceKind && attributionMatches(evidence, source) && evidence.externalSystemVerified === false && evidence.agentIndependentE2E === false &&
     evidence.publicDeployed === false && evidence.status === "VERIFIED" && evidence.truncated === false && timestamp(evidence.checkedAt) && textFieldsSafe(evidence) &&
     Array.isArray(evidence.services) && integer(evidence.services.length, 1, 20) && evidence.matchingCount === evidence.services.length &&
@@ -119,7 +119,7 @@ function platformMatch(source, plan, report, evidence) {
     const version = entry.sourceVersions.find(value => value.serviceId === service.id);
     return version && version.versionId === service.versionId && version.configHash === service.configHash && version.releaseId === source.releaseId &&
       version.sourceReleaseRunId === source.sourceReleaseRunId && version.packageDigest === source.packageDigest && version.sourceKind === source.sourceKind &&
-      (version.sourceAttribution === undefined || source.sourceKind === "MANUAL" && version.sourceAttribution === "ENGINEER_ASSISTED") &&
+      (version.sourceAttribution === undefined || source.sourceKind === "MANUAL" && version.sourceAttribution === (source.manualDeliveryTaskId?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED")) &&
       Array.isArray(version.fields) && same([...version.fields].sort(), [...service.fields].sort());
   }), "CHILD_VERSION_MISMATCH");
   const call = entry.call;

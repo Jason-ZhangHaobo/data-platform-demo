@@ -3,11 +3,11 @@ const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 // Optional source selection is all-or-nothing. Never degrade a malformed exact
 // handoff into the older task-wide discovery request.
 export function privateServiceSourceSelection(params, evidence = false) {
-  const keys=["agent_task_id","package_digest","release_id"],entries=[...params];
+  const keys=["agent_task_id","manual_delivery_task_id","package_digest","release_id"],entries=[...params];
   if(new Set(entries.map(([key])=>key)).size!==entries.length||entries.some(([key])=>!keys.includes(key)))return;
-  const taskId=params.get("agent_task_id")??undefined,packageDigest=params.get("package_digest")??undefined,releaseId=params.get("release_id")??undefined;
-  if(taskId!==undefined&&!new RegExp(`^${uuid}$`).test(taskId)||packageDigest!==undefined&&!/^[a-f0-9]{64}$/.test(packageDigest)||
-    releaseId!==undefined&&!new RegExp(`^${uuid}$`).test(releaseId))return;
+  const taskId=params.get("agent_task_id")??undefined,manualDeliveryTaskId=params.get('manual_delivery_task_id')??undefined,packageDigest=params.get("package_digest")??undefined,releaseId=params.get("release_id")??undefined;
+  if(taskId!==undefined&&!new RegExp(`^${uuid}$`).test(taskId)||manualDeliveryTaskId!==undefined&&!new RegExp(`^${uuid}$`).test(manualDeliveryTaskId)||taskId!==undefined&&manualDeliveryTaskId!==undefined||packageDigest!==undefined&&!/^[a-f0-9]{64}$/.test(packageDigest)||releaseId!==undefined&&!new RegExp(`^${uuid}$`).test(releaseId))return;
+  if(manualDeliveryTaskId)return packageDigest&&releaseId?{manualDeliveryTaskId,packageDigest,releaseId}:undefined;
   if(evidence?!(taskId&&packageDigest):(packageDigest!==undefined||releaseId!==undefined)&&!(taskId&&packageDigest&&releaseId))return;
   return {taskId,packageDigest,releaseId};
 }
