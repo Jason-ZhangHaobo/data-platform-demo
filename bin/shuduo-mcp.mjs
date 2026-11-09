@@ -10,6 +10,7 @@ import{publishedReportSourceSchema,publishedReportMetricIds}from'../src/v2/publi
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
+import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
@@ -21,6 +22,8 @@ const publicationProperties={sourceKind:{type:"string",enum:["AGENT","MANUAL"]},
 const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANUAL"}},required:["sourceKind"]},then:{required:["sourceRunId","packageDigest","verificationId",...(stop?["releaseId"]:[])]}});
 
 const tools = [
+  {name:'agent_assisted_continuation_read',description:'只读核对本人成功辅助版本及原参考链，固定续改父任务、版本、运行和证据；不调用模型或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'}},required:['taskId']},annotations:{readOnlyHint:true}},
+  {name:'agent_assisted_continue',description:'明确委托后从成功辅助版本新建续改任务；保留人工来源与原历史，不继承包、批准或付费结果。需稳定requestId，未知结果先查询原请求。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},message:{type:'string',minLength:4,maxLength:2000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['taskId','message','requestId','confirm']},annotations:{readOnlyHint:false}},
   {name:'agent_repair_comparison_basis',description:'只读核对本人失败SQL与成功基线，冻结代码及证据摘要；不运行模型或Spark，不继承批准。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},baselineRunId:{type:'string',format:'uuid'}},required:['sourceRunId','baselineRunId']},annotations:{readOnlyHint:true}},
   {name:'agent_repair_comparison_create',description:'明确委托后新建对照辅助修正任务；后台重核双方归属、代码和证据，只传脱敏摘要。记为人工辅助，不计自主完成，不批准发布。未知结果用同一requestId查询原请求，不另建任务。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},baselineRunId:{type:'string',format:'uuid'},message:{type:'string',minLength:4,maxLength:2000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['sourceRunId','baselineRunId','message','requestId','confirm']},annotations:{readOnlyHint:false}},
   {name:'sql_run_comparison_candidates',description:'只读当前用户可见的同口径运行候选，最多50条元数据；不读业务行、不推进运行。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'}},required:['runId']},annotations:{readOnlyHint:true}},
@@ -218,6 +221,8 @@ const typePath = (value) => {
   return value + "s";
 };
 async function callTool(name, args = {}, client=defaultClient) {
+  if(name==='agent_assisted_continuation_read')return readAssistedContinuation(client,args);
+  if(name==='agent_assisted_continue')return createAssistedContinuation(client,args);
   if(name==='sql_run_comparison_candidates')return readRunComparisonCandidates(client,args);
   if(name==='sql_run_compare')return readSqlRunComparison(client,args);
   if(name==='agent_repair_comparison_basis')return readRepairComparisonBasis(client,args);

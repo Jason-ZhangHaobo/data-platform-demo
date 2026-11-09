@@ -11,6 +11,7 @@ import {agentTaskFinished,mayEditScopedTask} from "./agent-task-scope";
 import {AgentRepairAction} from "./AgentRepairAction";
 import {failedRunRepairAction} from './agent-repair-action';
 import {comparisonRepairReceiptMatches} from '../../src/v2/repair-comparison-client.mjs';
+import {readAssistedContinuation,assistedContinuationReceiptMatches} from '../../src/v2/assisted-continuation-client.mjs';
 import {AgentModelRecovery} from "./AgentModelRecovery";
 import {AgentContextDerivation} from "./AgentContextDerivation";
 import {contextDerivationFromLocation,contextDerivationLocation,clearContextDerivation,contextDerivationReference,contextDerivationAccessReason,readContextDerivationSource,contextDerivationSubmitReason,contextDerivationBody,contextDerivationReceiptMatches,contextDerivationReceiptContent} from "./agent-context-derivation";
@@ -28,7 +29,7 @@ const ManualDeliveryWorkbench = lazy(async () => ({default:(await import("./Deli
 const RunColumnLineagePanel=lazy(()=>import('./RunColumnLineagePanel'));
 const RunComparisonPanel=lazy(()=>import('./RunComparisonPanel'));
 type Context = { id: string; name: string; definition: string; validationFamily?:ValidationFamily; tables: { name: string; columns: [string, string][] }[] };
-type Task = { id: string; version: number; status: string; stage?: string; executionMode?: string; mode?:string;language?:string;sourceKind?:string;sourceAttribution?:unknown;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
+type Task = { id: string; version: number; status: string; stage?: string; executionMode?: string; mode?:string;language?:string;sourceKind?:string;sourceAttribution?:unknown;assistedContinuation?:import('../../src/v2/assisted-continuation-binding.mjs').AssistedContinuationBinding;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
 type Run = { id: string; status: string; agentTaskId?:string; contextId?:string; createdAt?: string; validationContractId?: string; validationDetails?:ValidationDetailsReport; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; mainSqlExecuted?:boolean;columnLineage?:unknown;testDouble?:boolean;sourceKind?:string;sourceAttribution?:unknown; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; contractId?:string; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type SavedRevision = {id:string;sql:string;hash?:string;contextId:string;source?:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
@@ -91,6 +92,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   const runPending = Boolean(run && !terminal(run.status));
   const working = automatic || busy, durable = task?.executionMode === "DURABLE_SQL_AGENT_V1";
   const contextLocked=developmentContextLocked({readOnly,publicationOnly:Boolean(publicationTarget),taskOnly,working,hasTask:Boolean(task)||sourceReturnActive,hasSavedRevision:Boolean(baselineRevisionId||initialManual?.revisionId),pendingSubmission:Boolean(pendingAgentKey||pendingSaveKey||manualUnconfirmed),runPending});
+  const submissionAccess=useRef({canWrite,ready,taskOnly});submissionAccess.current={canWrite,ready,taskOnly};
   const unknown = task?.stage === "MODEL_OUTCOME_UNKNOWN";
   const modelNotSent = task?.stage === "MODEL_NOT_SENT";
   const resumeInput = task ? {task,canWrite,working,dirty,
@@ -336,6 +338,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   async function acceptSubmissionReceipt(current:Task,key:string,token:number,continueOriginal:boolean){
     if(!alive.current||epoch.current!==token||agentSubmissionRequest(location.href)!==key)return;
     if(!agentTaskReceiptValid(current))throw Error("任务回执不完整或语言不匹配，保留原提交编号");
+    if(!assistedContinuationReceiptMatches(current,submissionController().expectedBody()))throw Error('续改回执与原父版本或人工辅助来源不一致，保留原请求编号。');
     if(!comparisonRepairReceiptMatches(current,submissionController().expectedBody()))throw Error('对照修正回执未绑定原来源、证据或人工辅助归因，保留原提交编号。');
     if(derivationActiveRef.current&&(!derivationRef.current||!derivationSourceRef.current||!contextDerivationReceiptMatches(current,derivationRef.current,derivationSourceRef.current)))
       throw Error("新任务回执未绑定原成功版本与目标口径，保留提交编号；不会改用其他任务。");
@@ -384,16 +387,29 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
       finally{if(alive.current&&epoch.current===token)setBusy(false);}return;
     }
     if (taskOnly || !ready || !canWrite || working || manualUnconfirmed || pendingSaveKey || pendingAgentKey || runPending || requestMessage.length < 4 || !context) return;
+    if(assistedChatReason){setNotice(assistedChatReason);return;}
     const repairSource = run && ["FAILED", "VALIDATION_FAILED"].includes(run.status) && !dirty && run.revisionId === baselineRevisionId ? run.id : undefined;
     if (expectedRepairSourceId && repairSource !== expectedRepairSourceId) { setNotice("失败批次或代码版本已变化，请重新确认当前核验记录；未新建任务。"); return; }
     if(repairComparison&&(repairComparison.sourceRunId!==repairSource||repairComparison.contextId!==contextId||repairComparison.binding.currentRevisionHash!==run?.revisionHash||dirty)){
       setNotice('对照来源或代码已变化，请重读原运行；未新建任务。');return;
     }
-    const token=++epoch.current;
+    const continuationParent=task?.sourceKind==='MANUAL'&&task.status==='SUCCEEDED'&&!repairSource?task:undefined;
+    if(continuationParent&&(dirty||!run||run.id!==continuationParent.runId||run.revisionId!==continuationParent.revisionId||baselineRevisionId!==continuationParent.revisionId||!run.revisionHash||run.status!=='SUCCEEDED')){
+      setNotice('续改须基于当前成功代码与运行；请先保存核验或恢复当前版本，原需求与草稿保留。');return;
+    }
+    const token=++epoch.current,submittedSql=draft,submittedContext=contextId,submittedParent=continuationParent?.id;
     setBusy(true); setError("");
-    const body = { message: requestMessage, sql: repairComparison?draft:draft.trim() || "SELECT 1 AS pending", contextId, ...(backgroundAvailable?{background:backgroundConsent}:{}), ...(repairSource ? { sourceRunId: repairSource } : {}),...(repairComparison?{repairComparison:repairComparison.binding}:{}) };
+    const body = { message: requestMessage, sql: repairComparison||continuationParent?draft:draft.trim() || "SELECT 1 AS pending", contextId, ...(backgroundAvailable?{background:backgroundConsent}:{}), ...(repairSource ? { sourceRunId: repairSource } : {}),...(repairComparison?{repairComparison:repairComparison.binding}:{}) };
     try {
-      const controller=submissionController(),created=await controller.submit(body),key=controller.snapshot().key;
+      let continuation;
+      if(continuationParent){
+        const proof=await readAssistedContinuation({request:p=>api<unknown>(p)},{taskId:continuationParent.id,revisionId:baselineRevisionId,runId:run!.id,revisionHash:run!.revisionHash,contextId:submittedContext});
+        if(!alive.current||epoch.current!==token||selectedId.current!==submittedParent||draftRef.current!==submittedSql||messageRef.current.trim()!==requestMessage||!submissionAccess.current.canWrite||!submissionAccess.current.ready||submissionAccess.current.taskOnly){
+          if(alive.current&&epoch.current===token)setNotice('原输入、代码或权限已变化，本次未提交；请按当前版本重新确认。');return;
+        }
+        continuation=proof.binding;
+      }
+      const controller=submissionController(),created=await controller.submit({...body,...(continuation?{assistedContinuation:continuation}:{})}),key=controller.snapshot().key;
       if(key)await acceptSubmissionReceipt(created,key,token,true);
     } catch (e) { if(alive.current&&epoch.current===token)setError((e as Error).message + " 输入仍在本页，原编号已保留在恢复链接中，请先查询原任务。"); }
     finally { if(alive.current&&epoch.current===token)setBusy(false); }
@@ -484,6 +500,8 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   }
   const codeOriginal = dirty ? baseline : task?.initialSql ?? baseline;
   const manualDisclosure=manualSourceDisclosure(confirmedManualRevision.current,originTaskId);
+  const assistedChatReason=(task?.sourceKind==='MANUAL'||!task&&confirmedManualRevision.current?.source==='MANUAL')&&!derivationActive&&task?.status!=='SUCCEEDED'&&
+    !(run&&['FAILED','VALIDATION_FAILED'].includes(run.status)&&run.revisionId===baselineRevisionId&&!dirty)?'当前尚无可续改的成功辅助任务或可引用的失败批次；请先继续原任务，或在编辑器保存核验。新的修改意图保留，不会改作无来源的新任务。':'';
   const resultFields = run?.rows?.[0] ? Object.keys(run.rows[0]) : [];
   return <section className="agent-dev" aria-label="Agent 数据开发工作台">
     <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>{scopedLabels?context?.validationFamily?.name:"客户资产 T+1"} · 需求、代码与真实执行，在一个工作台完成。</p></div><div className="agent-dev-header-actions">{(task || baselineRevisionId) && <a className="button" href="#agent-delivery">核验与交付</a>}{task?.status==="SUCCEEDED"&&<button className="button" title={derivationStartReason||"以当前成功版本创建新口径草稿，尚不执行"} disabled={Boolean(derivationStartReason)||derivationActive} onClick={()=>void beginDerivation()}>基于此版本变更口径</button>}<button className="button" disabled={derivationActive||taskOnly||!canWrite||working||Boolean(pendingAgentKey)} onClick={newTask}><Plus size={15} />新建任务</button></div></header>
@@ -519,6 +537,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
           {!task && <div className="agent-dev-intro"><h3>{derivationActive?"说明这次口径变化。":"先说清楚你想得到什么。"}</h3><p>{derivationActive?"确认前只保留本页草稿；新任务会从冻结SQL出发，按目标口径重新生成与验证。":"我会引用当前表结构编写 SQL，交给 Spark 执行，并依据独立断言修正错误。代码和失败记录始终可见。"}</p><AgentRequirementExample readOnly={readOnly||Boolean(publicationTarget)} disabled={taskOnly||derivationActive&&derivationState!=="READY"} scoped={Boolean(scopedLabels)} example={scopedLabels?`请按已选择的“${context?.name}”口径编写Spark SQL。${context?.definition}`:"请计算T+1客户资产，确保现金不重复累计、持仓按position_id去重，并包含只有现金的客户。"} onFill={setMessage}/></div>}
           {task && <><div className="agent-dev-message user"><small>你的需求 · {task.id.slice(0,8)}</small><p>{task.message}</p></div>
             {task.sourceKind==='MANUAL'&&<div className="agent-dev-notice agent-dev-assisted" role="status"><strong>人工辅助修正 · 独立开发结果</strong><p>工程师引用了历史开发依据。代码、运行与核验保留人工辅助来源，不计 Agent 自主完成。交付文件与演练使用下方人工辅助流程，须重新审阅确切版本。</p></div>}
+            {task.assistedContinuation&&<div className="agent-dev-notice agent-dev-assisted" role="status"><strong>基于成功版本续改 · 第{task.assistedContinuation.depth}次</strong><p>父任务 {task.assistedContinuation.taskId.slice(0,8)}，父版本 {task.assistedContinuation.revisionId.slice(0,8)}。原文件与批准保留，本任务需重新核验和交付；人工参考归因继续保留。</p><button className="button" disabled={working} onClick={()=>void selectTask(task.assistedContinuation!.taskId)}>查看父任务</button></div>}
             {task.derivedFrom&&<div className="agent-dev-notice" role="status"><strong>已登记口径变更 · 独立新任务</strong><p>来自任务 {task.derivedFrom.taskId.slice(0,8)}、版本 {task.derivedFrom.revisionId.slice(0,8)}。原口径：{contexts.find(item=>item.id===task.derivedFrom?.contextId)?.name??task.derivedFrom.contextId}；原任务及批准不变，新任务需重新核验、交付和审阅。</p></div>}
             <div className="agent-dev-message assistant"><strong>{automatic ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}{automatic && task.stage === "READY_FOR_MODEL" ? "正在请求模型生成或修正…" : stageText[task.stage ?? task.status] ?? task.status}</strong><p>{task.explanation || "需求已记录，将使用上方已确认的上下文和口径。"}</p>
               {task.error && <p className="agent-dev-error-text">{task.error}</p>}
@@ -539,7 +558,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
             {task.status === "SUCCEEDED" && <p className="agent-dev-success"><CheckCircle2 size={16} />{task.sourceKind==='MANUAL'?'代码已通过当前开发核验。人工辅助归因保留，交付仍需独立审阅。':'代码已通过执行校验。继续查看下方核验报告，并准备调度与部署交付。'}</p>}
           </>}
         </div>
-        <form className="agent-dev-compose" onSubmit={e => { e.preventDefault(); void send(); }}><label htmlFor="agent-dev-message">{taskOnly ? "本窗口不创建新的需求任务" : derivationActive?"确认新口径任务的需求":task ? "基于当前代码提出下一次修改" : "描述开发需求"}</label><textarea id="agent-dev-message" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} placeholder="例如：计算客户总资产，检查现金是否被重复累计…" disabled={taskOnly||readOnly||Boolean(publicationTarget)||working} />{backgroundAvailable&&!taskOnly&&!readOnly&&!publicationTarget&&<label className="agent-dev-consent"><input type="checkbox" checked={backgroundConsent} disabled={working} onChange={e=>setBackgroundConsent(e.target.checked)}/>委托云后台推进本次开发（15分钟、最多20个事件；沿用模型与执行预算，不自动发布）</label>}<div><small>{taskOnly ? "使用上方原任务的继续／恢复操作，不会清零历史" : readOnly || publicationTarget ? "当前不会调用模型或开发计算" : derivationActive?"确认后才新建任务并调用模型与 Spark，原批准不继承":"本次将真实调用模型与隔离 Spark"}</small><button className="button primary" type="submit" disabled={taskOnly || !ready || !canWrite || working || runPending || message.trim().length < 4 || derivationActive&&Boolean(derivationSubmitReason)}><Send size={14} />{derivationActive?"确认新建口径任务并验证":"按此口径生成并验证"}</button></div></form>
+        <form className="agent-dev-compose" onSubmit={e => { e.preventDefault(); void send(); }}><label htmlFor="agent-dev-message">{taskOnly ? "本窗口不创建新的需求任务" : derivationActive?"确认新口径任务的需求":task ? "基于当前代码提出下一次修改" : "描述开发需求"}</label><textarea id="agent-dev-message" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} placeholder="例如：计算客户总资产，检查现金是否被重复累计…" disabled={taskOnly||readOnly||Boolean(publicationTarget)||working} />{backgroundAvailable&&!taskOnly&&!readOnly&&!publicationTarget&&<label className="agent-dev-consent"><input type="checkbox" checked={backgroundConsent} disabled={working} onChange={e=>setBackgroundConsent(e.target.checked)}/>委托云后台推进本次开发（15分钟、最多20个事件；沿用模型与执行预算，不自动发布）</label>}<div><small>{taskOnly ? "使用上方原任务的继续／恢复操作，不会清零历史" : readOnly || publicationTarget ? "当前不会调用模型或开发计算" : derivationActive?"确认后才新建任务并调用模型与 Spark，原批准不继承":"本次将真实调用模型与隔离 Spark"}</small><button className="button primary" type="submit" disabled={taskOnly || !ready || !canWrite || working || runPending || Boolean(assistedChatReason) || message.trim().length < 4 || derivationActive&&Boolean(derivationSubmitReason)}><Send size={14} />{derivationActive?"确认新建口径任务并验证":"按此口径生成并验证"}</button></div>{assistedChatReason&&<p role="status">{assistedChatReason}</p>}</form>
       </section>
       <section id="agent-code" className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : baselineRevisionId ? `版本 ${baselineRevisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>
         <div className="agent-dev-editor"><Suspense fallback={<div className="agent-dev-empty">正在加载代码编辑器…</div>}><SqlEditor value={draft} original={codeOriginal} diff={diff} onChange={setDraft} readOnly={derivationActive||readOnly||!scopeEditable||Boolean(publicationTarget)||working} /></Suspense></div>

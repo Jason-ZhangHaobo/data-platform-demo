@@ -97,7 +97,7 @@ export function createDeliveryPackage({
 }) {
   const reference=developmentReference===undefined?undefined:checkedAssistedDevelopmentReference(developmentReference);
   if(reference&&(revision?.sourceAttribution?.kind!=='ENGINEER_ASSISTED'||revision.sourceKind!=='MANUAL'||revision.agentIndependentE2E!==false||
-    revision.sourceAttribution.sourceRunId!==reference.sourceRunId))throw Object.assign(new Error('开发依据与人工辅助版本不一致'),{status:409});
+    (reference.kind==='ASSISTED_CONTINUATION'?revision.sourceAttribution.parentRunId:revision.sourceAttribution.sourceRunId)!==reference.sourceRunId))throw Object.assign(new Error('开发依据与人工辅助版本不一致'),{status:409});
   const remoteExecution = run?.isolation === "FUNCTION_PROCESS";
   const family = validationFamilyForContext(revision?.contextId);
   if (name === undefined || (family?.id !== validationContractId && name === "客户资产 T+1"))
