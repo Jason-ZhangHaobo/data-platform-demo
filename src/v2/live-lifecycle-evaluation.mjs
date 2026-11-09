@@ -7,14 +7,15 @@ import {liveContextEvaluationCases,validateLiveContextEvaluationCases,liveContex
 import {developmentVerificationReport} from './agent-development-workflow.mjs';
 import {inspectLifecycleOutcome} from "./lifecycle-evaluation.mjs";
 import {inspectLifecycleConsumption,validLifecycleConsumptionSource,verifyLifecycleConsumptionStage} from "./lifecycle-consumption.mjs";
+import {liveEvidenceProvenance,nonLiveModelLabel} from './live-lifecycle-provenance.mjs';
 
 const hash=value=>createHash("sha256").update(typeof value==="string"?value:JSON.stringify(value)).digest("hex");
 const fail=code=>Object.assign(new Error(code),{code});
 const ensure=(condition,code)=>{if(!condition)throw fail(code);};
 const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 const terminal=status=>["SUCCEEDED","FAILED","VALIDATION_FAILED","CANCELLED","INTERRUPTED"].includes(status);
-const nativeSource=value=>Boolean(value&&(value.sourceKind===undefined||value.sourceKind==="AGENT")&&value.sourceAttribution===undefined&&value.attribution===undefined);
-const declaredSynthetic=value=>value?.testDouble===true||value?.synthetic===true||value?.executionEvidenceMode==='TEST_HARNESS';
+const nativeSource=value=>{const proof=liveEvidenceProvenance(value);return Boolean(value&&!proof.nonNative&&!proof.unconfirmed);};
+const declaredSynthetic=value=>liveEvidenceProvenance(value).synthetic;
 export const legacyLiveLifecycleContract=Object.freeze({id:"securities-live-agent-reviewed-lifecycle-v1",expectedCaseCount:20,targetRate:0.85,
   scope:"LOCAL_FRESH_MODEL_ENGINEER_REVIEWED",modelEvidenceMode:"LIVE_NEW_TASK",agentIndependentE2E:false,publicDeployed:false,
   stages:["REQUIREMENT","CODE","DEBUG","SCHEDULE_FILE","DEPLOY_FILE","ENGINEER_REVIEW","PUBLISH","MONITOR"]});
@@ -50,8 +51,12 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
  ensure(checkpoint.caseSetDigest===liveLifecyclePlan(1,{contractId}).caseSetDigest,"CASE_SET_CHANGED");
  if(v3)ensure(uuid(checkpoint.evaluationRunId),'EVALUATION_RUN_MISMATCH');
   const state=structuredClone(checkpoint);
- if(adapter.testDouble===true||state.executionEvidenceMode==="TEST_HARNESS")state.executionEvidenceMode="TEST_HARNESS";
- const disclose=(...values)=>{if(v3&&values.some(declaredSynthetic))state.executionEvidenceMode='TEST_HARNESS';};
+ if(adapter.testDouble===true||liveEvidenceProvenance(state,sourceCheckpoint).synthetic)state.executionEvidenceMode="TEST_HARNESS";
+ const disclose=(...values)=>{
+  const proof=liveEvidenceProvenance(...values);
+  if(proof.synthetic&&state.executionEvidenceMode!=='TEST_HARNESS'){state.executionEvidenceMode='TEST_HARNESS';persist();}
+  ensure(!proof.nonNative&&!proof.unconfirmed,'NON_NATIVE_EVIDENCE_REJECTED');
+ };
  const persist=()=>save(structuredClone(state));
  const mark=(status,phase)=>{state.status=status;state.phase=phase;persist();};
  if(state.phase==="CONSUMPTION"||state.consumptionSource!==undefined||state.consumptionStage!==undefined)
@@ -88,6 +93,7 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
  async function poll(path,kind){
   for(let count=0;count<maxPolls;count++){
    const current=await adapter.request(path);
+   disclose(current);
    if(current.stage==="MODEL_OUTCOME_UNKNOWN")throw fail("MODEL_OUTCOME_UNKNOWN");
    if(current.stage==="MODEL_NOT_SENT")throw fail("MODEL_NOT_SENT");
    if(terminal(current.status))return current;
@@ -136,7 +142,7 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
     typeof task.initialSql==='string'&&hash(task.initialSql)===state.derivationSource.revisionHash:task.derivedFrom===undefined),'DERIVATION_TASK_MISMATCH');
   ensure(Date.parse(task.createdAt)>=Date.parse(state.evaluationStartedAt),"HISTORICAL_TASK_REJECTED");
   const attempt=task.attempts?.at(-1);
-  ensure(attempt?.status==="SUCCEEDED"&&typeof attempt.model==="string"&&!/test.?double|unconfirmed|fixture|stub/i.test(attempt.model)&&task.attempts.length<=3,"LIVE_MODEL_EVIDENCE_REQUIRED");
+  ensure(attempt?.status==="SUCCEEDED"&&typeof attempt.model==="string"&&!nonLiveModelLabel(attempt.model)&&task.attempts.length<=3,"LIVE_MODEL_EVIDENCE_REQUIRED");
   ensure(Number.isSafeInteger(task.usedTokens)&&task.usedTokens>=0&&task.usedTokens<=32000,"MODEL_USAGE_NOT_CONFIRMED");
   const workflow=await adapter.request(`/agent/tasks/${task.id}/workflow`);
   disclose(workflow,workflow.report);
@@ -261,11 +267,11 @@ function savedDerivationValid(definition,state){
 }
 function verifyCodeThroughMonitoring(definition,state,contractId=state?.contractId??legacyLiveLifecycleContract.id){
  const source=state.code;
- if(!liveContractById(contractId)||!isDeepStrictEqual(liveLifecycleCases(contractId).find(item=>item.id===definition.id),definition)||
+ if(!nativeSource(state)||!liveContractById(contractId)||!isDeepStrictEqual(liveLifecycleCases(contractId).find(item=>item.id===definition.id),definition)||
    !source||state.caseId!==definition.id||state.caseSetDigest!==liveLifecyclePlan(1,{contractId}).caseSetDigest||state.requestDigest!==liveCaseRequestDigest(definition,contractId)||
    state.actions?.agent?.id!==source.taskId||state.taskId!==source.taskId||Date.parse(source.createdAt)<Date.parse(state.evaluationStartedAt)||
    !Number.isFinite(Date.parse(source.createdAt))||!Number.isFinite(Date.parse(state.evaluationStartedAt))||!Number.isSafeInteger(source.modelAttempts)||source.modelAttempts<1||source.modelAttempts>3||
-   typeof source.model!=="string"||/test.?double|unconfirmed|fixture|stub/i.test(source.model)||!/^[a-f0-9]{64}$/.test(source.revisionHash??""))return false;
+   typeof source.model!=="string"||nonLiveModelLabel(source.model)||!/^[a-f0-9]{64}$/.test(source.revisionHash??""))return false;
  if(contractId===currentLiveLifecycleContract.id&&(!uuid(state.evaluationRunId)||!Number.isSafeInteger(source.reportedTokens)||source.reportedTokens<0||source.reportedTokens>32000||
   source.contextId!==definition.contextId||source.validationContractId!==validationFamilyForContext(definition.contextId)?.id||
   state.lifecycleOutcome?.validationContractId!==source.validationContractId||!savedDerivationValid(definition,state)))return false;
@@ -322,7 +328,7 @@ export async function refreshLiveLifecycleConsumption(definition,checkpoint,adap
  }
  ensure(checkpoint.phase==="CONSUMPTION"&&["AWAITING_CONSUMPTION","PAUSED"].includes(checkpoint.status),"CONSUMPTION_CHECKPOINT_INVALID");
  const state=structuredClone(checkpoint);
- if(adapter.testDouble===true||state.executionEvidenceMode==="TEST_HARNESS")state.executionEvidenceMode="TEST_HARNESS";
+ if(adapter.testDouble===true||liveEvidenceProvenance(state,sourceCheckpoint).synthetic)state.executionEvidenceMode="TEST_HARNESS";
  if(state.errorCode){state.errorHistory=[...(state.errorHistory??[]),{code:state.errorCode,phase:state.phase}].slice(-20);delete state.errorCode;}
  delete state.consumptionStage;
  let report;
@@ -334,7 +340,12 @@ export async function refreshLiveLifecycleConsumption(definition,checkpoint,adap
   save(structuredClone(state));return state;
  }
  const checked=inspectLifecycleConsumption(source,report);
- if(checkpoint.contractId===currentLiveLifecycleContract.id&&declaredSynthetic(report))state.executionEvidenceMode='TEST_HARNESS';
+ if(declaredSynthetic(report))state.executionEvidenceMode='TEST_HARNESS';
+ const provenance=liveEvidenceProvenance(report);
+ if(provenance.nonNative||provenance.unconfirmed){
+  state.status='AWAITING_CONSUMPTION';state.phase='CONSUMPTION';state.errorCode='CONSUMPTION_EVIDENCE_INVALID';
+  save(structuredClone(state));return state;
+ }
  state.consumptionStage=checked;
  state.status=checked.status==="PASSED"?"SUCCEEDED":"AWAITING_CONSUMPTION";
  state.phase=checked.status==="PASSED"?"COMPLETE":"CONSUMPTION";
@@ -353,7 +364,8 @@ export function summarizeLiveLifecycle(cases,outcomes,{testDouble=false,contract
   ensure(outcomes.every(item=>uuid(item.evaluationRunId))&&new Set(outcomes.map(item=>item.evaluationRunId)).size<=1&&new Set(outcomes.map(item=>item.evaluationStartedAt)).size<=1,'EVALUATION_RUN_MISMATCH');
   const taskIds=outcomes.filter(item=>item.actions?.agent?.id).map(item=>item.actions.agent.id);ensure(new Set(taskIds).size===taskIds.length,'OUTCOME_TASK_SET_INVALID');
  }
- const simulated=testDouble||outcomes.some(item=>item.executionEvidenceMode==="TEST_HARNESS"||contractId===currentLiveLifecycleContract.id&&declaredSynthetic(item));
+ const simulated=testDouble||outcomes.some(declaredSynthetic);
+ const rejectedProvenanceCaseCount=outcomes.filter(item=>{const proof=liveEvidenceProvenance(item);return item.errorCode==='NON_NATIVE_EVIDENCE_REJECTED'||proof.nonNative||proof.unconfirmed;}).length;
  const succeeded=simulated?0:outcomes.filter(item=>{const definition=all.find(value=>value.id===item.caseId);return item.status==="SUCCEEDED"&&verifyLiveCaseEvidence(definition,item,
   {contractId,sourceCheckpoint:outcomes.find(parent=>parent.caseId===definition.sourceCaseId)});}).length;
  const attempted=outcomes.filter(item=>item.actions?.agent).length,completed=outcomes.filter(item=>item.taskId&&item.taskId===item.actions?.agent?.id&&["SUCCEEDED","FAILED"].includes(item.status)).length;
@@ -364,6 +376,8 @@ export function summarizeLiveLifecycle(cases,outcomes,{testDouble=false,contract
    blockedSourceCaseCount:outcomes.filter(item=>item.status==='BLOCKED_SOURCE').length,contextChangeCaseCount:all.filter(item=>item.kind==='DERIVED').length}:{}),
   pausedCaseCount:outcomes.filter(item=>item.status==="PAUSED").length,unconfirmedSubmissionCount:outcomes.filter(item=>item.actions?.agent?.status==="UNKNOWN").length,
   attemptedCaseCount:attempted,completedCaseCount:completed,unexecutedCaseCount:all.length-attempted,
+  measurementStatus:simulated?'TEST_HARNESS':attempted===0?'NOT_RUN':'RECORDED_EVIDENCE_ONLY',
+  rejectedProvenanceCaseCount,autonomousCompletionRate:null,fullGoalTargetMet:false,
   frozenCaseCount:all.length,completionRate:succeeded/all.length,targetMet:!simulated&&completed===all.length&&succeeded/all.length>=0.85,
   agentIndependentE2E:false,publicDeployed:false,externalSystemVerified:false,
   notice:contractId===legacyLiveLifecycleContract.id?"旧版本机新任务评测只覆盖至监控，不含消费检查；按旧范围保留，不升级为新版或云端验收。":
