@@ -2285,7 +2285,10 @@ export function createV2Server(options = {}) {
       if(gateRoute){
         if(!local)throw fail(403,'契约门禁配置目前只在本机开发边界开放');
         const serviceId=gateRoute[1];
-        if(method==='GET'&&!gateRoute[2])return json(res,200,serviceContractGates.list(serviceId));
+        if(method==='GET'&&!gateRoute[2]){
+          if([...url.searchParams.keys()].some(k=>k!=='version_id')||url.searchParams.getAll('version_id').length>1)throw fail(422,'门禁读取只接受一个确切版本');
+          return json(res,200,serviceContractGates.list(serviceId,{versionId:url.searchParams.get('version_id')??undefined}));
+        }
         if(method==='POST'){
           const body=await readBody(req),actor=auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer',key=text(req.headers['idempotency-key'],1,100),allowed=gateRoute[2]?['contractVersionId','freshnessBasis','expectedBindingVersion','changeReason']:['contractId','contractVersionId','freshnessBasis'];
           if(!body||typeof body!=='object'||Array.isArray(body))throw fail(422,'契约门禁请求必须是对象');

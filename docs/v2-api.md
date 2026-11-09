@@ -259,7 +259,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /contracts/:id/assess | 可选fields + 幂等键 | 对当前版本评估结构差异、兼容性和下游影响；不自动改版本 |
 | POST /contracts/:id/versions | assessmentId/acknowledgeBreaking + 幂等键 | 只从未过期评估创建版本；破坏性变更必须明确确认 |
 | POST /contracts/:id/check | 空对象 + 幂等键 | 检查实际元数据/可用行、行通过率与新鲜度SLO；PASSED/PARTIAL/FAILED并关联告警恢复 |
-| GET /data-services/:id/contract-gates | 本机开发范围 | 服务绑定、不可变配置版本和最近30次判定；只读不检查或发布 |
+| GET /data-services/:id/contract-gates | 本机开发范围，可选单个version_id | 服务绑定、不可变配置版本和最近30次判定；指定版本时回显确切id/configHash且只含本版判定，其他服务/损坏/重复参数拒绝；只读不检查或发布 |
 | POST /data-services/:id/contract-gates | contractId/contractVersionId/freshnessBasis + 幂等键 | 固定契约规则和时间依据；仅客户资产数据集，不自动发布 |
 | POST /data-services/:id/contract-gates/:bindingId/versions | expectedBindingVersion/contractVersionId/freshnessBasis/changeReason + 幂等键 | CAS更新并保存原版本回执；契约变化须重新确认 |
 | GET /data-services/:id/contract-gate-requests/:requestId | 原请求编号、本账号 | shuduo-service-contract-gate-write/v1：原应用版本与当前版本分开；读取不重写 |

@@ -974,7 +974,7 @@ export function DataServicesWorkbench({
                   {labels[selected.status] ?? selected.status}
                 </span>
               </section>
-              {!privateCloud&&runtimeMode==='LOCAL_DEVELOPMENT'&&<Suspense fallback={<p role="status">正在加载数据契约门禁…</p>}><ServiceContractGatesPanel key={selected.id} api={api} serviceId={selected.id} canWrite={canWrite&&!consumptionScope&&!bindingDeclared} refreshToken={`${selected.currentVersion?.id??''}:${error}:${notice}`}/></Suspense>}
+              {!privateCloud&&runtimeMode==='LOCAL_DEVELOPMENT'&&<Suspense fallback={<p role="status">正在加载数据契约门禁…</p>}><ServiceContractGatesPanel key={`${selected.id}:${bindingDeclared?selected.currentVersion?.id??'unconfirmed':'settings'}`} api={api} serviceId={selected.id} canWrite={canWrite&&!consumptionScope&&!bindingDeclared} version={bindingDeclared?selected.currentVersion:undefined} refreshToken={`${selected.currentVersion?.id??''}:${error}:${notice}`}/></Suspense>}
               <div className="service-version-grid">
                 <div>
                   <span>{currentPublished?"线上版本":"当前草稿"}</span>
