@@ -7,7 +7,7 @@ type ServiceBackground={protocol:'shuduo-service-agent-event-driver/v1';taskId:s
 type VersionRef={serviceId:string;versionId:string;configHash:string;fields:string[]};
 type Diagnostic={code:string;phase:string;requestMayHaveBeenSent:boolean;httpStatus?:number;networkCode?:string;elapsedMs:number};
 export type PrivateServicePlan=SourcePlan&{version:number;stage:string;pilotId:string;executionMode:'DURABLE_PRIVATE_SERVICE_AGENT_V1';scope:'PRIVATE_CLOUD_TEST';mode:'LIVE_MODEL';requestId:string;
- sourceBinding:ServicePlanSource;sourceKind:'AGENT'|'MANUAL';sourceAttribution?:'ENGINEER_ASSISTED';sourceRevisionId:string;sourceRunId:string;
+ sourceBinding:ServicePlanSource;sourceKind:'AGENT'|'MANUAL';sourceAttribution?:'ENGINEER_ASSISTED'|'ENGINEER_AUTHORED';sourceRevisionId:string;sourceRunId:string;
  sourceCheck:'VERIFIED'|'UNAVAILABLE';sourceContext:{id:string;name:string;definition:string;validationContractId:string;metricLabels:Record<string,string>};
  resourceVersions:VersionRef[];selectedVersions?:VersionRef[];proposalHash?:string;requestedModel:string;executionWindow:{startsAt:string;expiresAt:string};maxAttempts:number;requestTokenLimit:number;tokenBudget:number;usedTokens:number;
  attempts:{attempt:number;status:string;model:string;usage:{total_tokens:number;prompt_tokens?:number;completion_tokens?:number};usageEstimated:boolean;startedAt:string;finishedAt?:string;diagnostic?:Diagnostic}[];
@@ -33,7 +33,7 @@ export function checkedPrivateServicePlan(value:unknown,source:ServicePlanSource
   if(!only(value,allowed))fail();const p=value as PrivateServicePlan;
   if(!uuid(p.id)||!uuid(p.requestId)||!uuid(p.pilotId)||!int(p.version,1)||!sameServicePlanSource(p.sourceBinding,source)||p.scope!=='PRIVATE_CLOUD_TEST'||p.executionMode!=='DURABLE_PRIVATE_SERVICE_AGENT_V1'||p.mode!=='LIVE_MODEL'||
    p.completionScope!=='DATA_SERVICE_DESIGN'||p.fullLifecycleE2E!==false||p.agentIndependentE2E!==false||p.publicDeployed!==false||
-   p.sourceKind!==binding.sourceKind||!uuid(p.sourceRevisionId)||!uuid(p.sourceRunId)||p.sourceKind==='MANUAL'&&(p.sourceAttribution!=='ENGINEER_ASSISTED'||p.sourceRevisionId!==binding.revisionId||p.sourceRunId!==binding.runId)||p.sourceKind==='AGENT'&&p.sourceAttribution!==undefined||
+   p.sourceKind!==binding.sourceKind||!uuid(p.sourceRevisionId)||!uuid(p.sourceRunId)||p.sourceKind==='MANUAL'&&(p.sourceAttribution!==(binding.manualDeliveryTaskId?'ENGINEER_AUTHORED':'ENGINEER_ASSISTED')||p.sourceRevisionId!==binding.revisionId||p.sourceRunId!==binding.runId)||p.sourceKind==='AGENT'&&p.sourceAttribution!==undefined||
    !['VERIFIED','UNAVAILABLE'].includes(p.sourceCheck)||!text(p.message,2000)||!['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','INTERRUPTED','APPLIED'].includes(p.status)||
    !['READY_FOR_MODEL','MODEL_IN_FLIGHT','MODEL_OUTCOME_UNKNOWN','MODEL_NOT_SENT','SUCCEEDED','FAILED','CANCELLED','APPLIED'].includes(p.stage)||
    !text(p.requestedModel,100)||!/^[A-Za-z0-9_.:/-]+$/.test(p.requestedModel)||!exact(p.executionWindow,['startsAt','expiresAt'])||!date(p.executionWindow.startsAt)||!date(p.executionWindow.expiresAt)||

@@ -1,6 +1,8 @@
 # V2 迭代路线与证据
 
-当前增量：[独立手工DAPI／XAPI消费](standalone-service-consumption.md)完成本机真实SQLite／认证HTTP、权限、多端及完整页面返程验收；上游批次合成，未部署真实云端。下一步接同一来源的服务Agent上下文／规划，唯一动作见[执行清单](goal-mode-next.md)。
+当前增量：[独立手工服务Agent](standalone-service-agent.md)完成元数据上下文、持久规划／摘要确认草稿、多端、隐私、未知恢复及本机完整页面验收。模型及上游替身不计自主；真实模型／云未完成。下一步重核当前v3完整E2E归因与九阶段证据门，唯一动作见[执行清单](goal-mode-next.md)。
+
+当前增量：[独立手工DAPI／XAPI消费](standalone-service-consumption.md)完成本机真实SQLite／认证HTTP、权限、多端及完整页面返程验收；上游批次合成，未部署真实云端。同一来源的服务Agent上下文／规划已继续接入，唯一动作见[执行清单](goal-mode-next.md)。
 
 当前增量：[独立手工审阅发布与监控](standalone-manual-publication.md)完成本机合成队列、窗口／恢复、多端及完整页面验收。保留MANUAL_RUN与人工作者；真实云部署未完成。确切批次的DAPI／XAPI消费已继续接入，唯一动作见[执行清单](goal-mode-next.md)。
 

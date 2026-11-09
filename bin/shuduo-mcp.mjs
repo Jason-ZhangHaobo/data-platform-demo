@@ -20,7 +20,7 @@ import {publicationSelectorInput,publicationReadPath} from "../src/v2/publicatio
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
 const publicationIdSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"};
-const servicePlanSourceSchema={type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},releaseId:{type:'string',format:'uuid'},sourceReleaseRunId:{type:'string',format:'uuid'}},required:['taskId','packageDigest','releaseId','sourceReleaseRunId']};
+const servicePlanSourceSchema={type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},manualDeliveryTaskId:{type:'string',format:'uuid'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},releaseId:{type:'string',format:'uuid'},sourceReleaseRunId:{type:'string',format:'uuid'}},required:['packageDigest','releaseId','sourceReleaseRunId'],oneOf:[{required:['taskId'],not:{required:['manualDeliveryTaskId']}},{required:['manualDeliveryTaskId'],not:{required:['taskId']}}]};
 const publicationProperties={sourceKind:{type:"string",enum:["AGENT","MANUAL"]},sourceRunId:publicationIdSchema,packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},verificationId:publicationIdSchema,releaseId:publicationIdSchema};
 const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANUAL"}},required:["sourceKind"]},then:{required:["sourceRunId","packageDigest","verificationId",...(stop?["releaseId"]:[])]}});
 

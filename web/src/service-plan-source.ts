@@ -1,25 +1,19 @@
 import {createAgentSubmission} from './agent-submission.ts';
 import {readServiceAgentContext} from '../../src/v2/service-agent-context-client.mjs';
+import type{ServiceAgentContextSource}from'../../src/v2/service-agent-context-client.mjs';
+import{servicePlanSourceBinding,servicePlanSourcePath}from'../../src/v2/service-plan-request.mjs';
 export type {ServiceAgentContext} from '../../src/v2/service-agent-context-client.mjs';
 
-export type ServicePlanSource={taskId:string;packageDigest:string;releaseId:string;sourceReleaseRunId:string};
+export type ServicePlanSource=ServiceAgentContextSource;
 export type SourcePlan={id:string;status:string;message:string;requestId?:string;sourceBinding?:ServicePlanSource;scope?:string;
  sourceCheck?:'VERIFIED'|'UNAVAILABLE';
  sourceContext?:{name:string;definition:string};
  completionScope?:string;fullLifecycleE2E?:boolean;agentIndependentE2E?:boolean;publicDeployed?:boolean;proposal?:{serviceType:string;name:string;slug:string;timeoutMs:number;rateLimitPerMinute:number;sourceReleaseRunId?:string;fields?:string[];steps?:{alias:string;dapiId:string;dapiVersionId:string}[]};
  error?:string;explanation?:string;serviceId?:string;appliedVersionId?:string;appliedConfigHash?:string};
 const uuid=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
-const keys=['taskId','packageDigest','releaseId','sourceReleaseRunId'] as const;
-export function validServicePlanSource(value:unknown):value is ServicePlanSource{
- if(!value||typeof value!=='object'||Array.isArray(value))return false;
- const source=value as ServicePlanSource;
- return Object.keys(source).length===4&&keys.every(key=>Object.hasOwn(source,key))&&[source.taskId,source.releaseId,source.sourceReleaseRunId].every(uuid)&&/^[a-f0-9]{64}$/.test(source.packageDigest);
-}
-export function sameServicePlanSource(a:unknown,b:unknown){return validServicePlanSource(a)&&validServicePlanSource(b)&&keys.every(key=>a[key]===b[key]);}
-export function boundServicePlansPath(source:ServicePlanSource){
- if(!validServicePlanSource(source))throw Error('服务规划来源不完整');
- return '/data-services/agent/plans?'+new URLSearchParams({agent_task_id:source.taskId,package_digest:source.packageDigest,release_id:source.releaseId,source_release_run_id:source.sourceReleaseRunId});
-}
+export function validServicePlanSource(value:unknown):value is ServicePlanSource{try{servicePlanSourceBinding(value);return true;}catch{return false;}}
+export function sameServicePlanSource(a:unknown,b:unknown){return validServicePlanSource(a)&&validServicePlanSource(b)&&JSON.stringify(servicePlanSourceBinding(a))===JSON.stringify(servicePlanSourceBinding(b));}
+export function boundServicePlansPath(source:ServicePlanSource){if(!validServicePlanSource(source))throw Error('服务规划来源不完整');return servicePlanSourcePath(source);}
 export function sourcePlanReceiptValid(plan:SourcePlan|undefined,source:ServicePlanSource){
  if(!plan||!uuid(plan.id)||!sameServicePlanSource(plan.sourceBinding,source)||!uuid(plan.requestId)||plan.scope!=='LOCAL_TEST_ONLY'||
   plan.completionScope!=='DATA_SERVICE_DESIGN'||plan.fullLifecycleE2E!==false||plan.agentIndependentE2E!==false||plan.publicDeployed!==false||
@@ -45,10 +39,9 @@ export function servicePlanMarker(href:string){
 // Historical navigation only. This tuple never substitutes for a verified
 // release source when creating a model task or applying its proposal.
 export function servicePlanRecoverySource(binding:{taskId?:string;manualDeliveryTaskId?:string;packageDigest:string;releaseId:string}|undefined,href:string|undefined):ServicePlanSource|undefined{
- if(binding?.manualDeliveryTaskId||!binding?.taskId)return;
  if(!binding||!href)return;
  const marker=servicePlanMarker(href);if(marker.invalid||!marker.requestId&&!marker.planId)return;
- const candidate={taskId:binding.taskId,packageDigest:binding.packageDigest,releaseId:binding.releaseId,sourceReleaseRunId:marker.batchId};
+ const candidate={...(binding.manualDeliveryTaskId?{manualDeliveryTaskId:binding.manualDeliveryTaskId}:{taskId:binding.taskId}),packageDigest:binding.packageDigest,releaseId:binding.releaseId,sourceReleaseRunId:marker.batchId};
  return validServicePlanSource(candidate)?candidate:undefined;
 }
 export function servicePlanLocation(href:string,{batchId,requestId,planId}:{batchId:string;requestId?:string;planId?:string}){

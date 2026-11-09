@@ -89,9 +89,9 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
   const agentContext=(a,input)=>{
     const binding=servicePlanSourceBinding(input),run=source(binding.sourceReleaseRunId),release=get('release',run.releaseId);
     sourceOwner(a,run);
-    if(run.releaseId!==binding.releaseId||run.packageDigest!==binding.packageDigest||release.sourceAgentTaskId!==binding.taskId)
+    if(run.releaseId!==binding.releaseId||run.packageDigest!==binding.packageDigest||(binding.manualDeliveryTaskId?release.manualDeliveryTaskId!==binding.manualDeliveryTaskId||release.sourceAgentTaskId!==undefined:release.sourceAgentTaskId!==binding.taskId||release.manualDeliveryTaskId!==undefined))
       throw fail(409,'发布批次与所选任务、交付包或发布不一致','SERVICE_PLAN_SOURCE_MISMATCH');
-    if(pilotConfig&&(pilotConfig.plan.taskId!==binding.taskId||pilotConfig.plan.packageDigest!==binding.packageDigest||pilotConfig.plan.sourceReleaseRunId!==run.id))
+    if(pilotConfig&&((binding.manualDeliveryTaskId?pilotConfig.plan.manualDeliveryTaskId!==binding.manualDeliveryTaskId||pilotConfig.plan.taskId!==undefined:pilotConfig.plan.taskId!==binding.taskId||pilotConfig.plan.manualDeliveryTaskId!==undefined)||pilotConfig.plan.packageDigest!==binding.packageDigest||pilotConfig.plan.sourceReleaseRunId!==run.id))
       throw fail(403,'上下文不属于当前限定消费来源','PUBLIC_SERVICE_TARGET_MISMATCH');
     const bundle=get('delivery_package',run.packageId),origin=bundle.manifest.source,context=getContext(origin.contextId),family=validationFamilyForContext(origin.contextId);
     // getContext has a legacy default. A missing/unregistered manifest context
@@ -112,9 +112,9 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     }
     const services=available.sort((a,b)=>a.id.localeCompare(b.id)).slice(0,100);
     return {protocol:'shuduo-service-agent-context/v1',scope:'PRIVATE_CLOUD_TEST',sourceBinding:binding,sourceKind:release.sourceKind??'AGENT',
-      ...(release.sourceKind==='MANUAL'?{sourceAttribution:'ENGINEER_ASSISTED'}:{}),
+      ...(release.sourceKind==='MANUAL'?{sourceAttribution:binding.manualDeliveryTaskId?'ENGINEER_AUTHORED':'ENGINEER_ASSISTED'}:{}),
       sourceContext:{id:context.id,name:context.name,definition:context.definition,validationContractId:family.id,metricLabels:family.metricLabels},
-      releaseRuns:[{id:run.id,releaseId:release.id,packageDigest:binding.packageDigest,sourceAgentTaskId:binding.taskId,sourceRevisionId:origin.revisionId,sourceRunId:origin.runId,
+      releaseRuns:[{id:run.id,releaseId:release.id,packageDigest:binding.packageDigest,...(binding.manualDeliveryTaskId?{manualDeliveryTaskId:binding.manualDeliveryTaskId}:{sourceAgentTaskId:binding.taskId}),sourceRevisionId:origin.revisionId,sourceRunId:origin.runId,
         scope:'PRIVATE_CLOUD_TEST',sourceKind:release.sourceKind??'AGENT',status:run.status,published:true,schedulerTriggered:true,engine:run.engine,engineVersion:run.engineVersion}],
       services,resourceVersions:services.map(item=>({serviceId:item.id,versionId:item.publishedVersion.id,configHash:item.publishedVersion.configHash,fields:[...item.publishedVersion.fields]})),
       resourcesTruncated:available.length>100,unavailableServiceCount,planning:{enabled:false,code:'PRIVATE_SERVICE_AGENT_EXECUTION_NOT_ENABLED'},agentIndependentE2E:false,publicDeployed:false};
