@@ -297,8 +297,10 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /reports/:id/run | 空对象 + 幂等键 | 实际执行KPI/BAR/PIE受限聚合并保存摘要 |
 | GET /reports/:id/export | 无 | 导出最后成功运行的聚合CSV，不含明细行 |
 | GET/POST /reports/agent/plans | 列表或自然语言需求 | 真实模型基于字段和快照摘要生成报表方案 |
+| GET /reports/agent/plans?source_batch_id=UUID | 确切批次 | 本机本账号同源方案；默认列表仍只展示传统方案 |
+| GET /reports/agent/requests/:requestId | 原请求键 | 只读恢复原同源规划，不再次调用模型 |
 | GET /reports/agent/plans/:id | 无 | 受治理方案、解释、模型与用量 |
-| POST /reports/agent/plans/:id/apply | 空对象 | 人工应用为报表草稿，不运行或导出 |
+| POST /reports/agent/plans/:id/apply | 普通方案空对象；同源方案须proposalHash | 普通方案为草稿，同源方案实际生成已审阅指标；不导出或生产发布 |
 | POST /reports/agent/plans/:id/cancel | 空对象 | 取消生成并保留记录 |
 | GET /operations/overview | 无 | 跨模块健康、域计数、事故和最近活动；含外部模型上下文开关 |
 | POST /operations/refresh | 空对象 | 扫描实际失败/恢复运行，按源运行幂等生成或更新事故 |

@@ -4,6 +4,7 @@ import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/ass
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
+import{publishedReportSourceSchema,publishedReportMetricIds}from'../src/v2/published-report-request.mjs';
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
@@ -32,7 +33,7 @@ const tools = [
   { name: "agent_tool_validate", description: "按工具目录版本和摘要校验专业Agent输入；只做契约预检，不创建任务或批准。", inputSchema: { type: "object", properties: { toolId: { type: "string" }, catalogVersion: { type: "string" }, contractDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, input: { type: "object" } }, required: ["toolId", "catalogVersion", "contractDigest", "input"], additionalProperties: false } },
   { name: "agent_tool_invoke", description: "以当前父意图、目录摘要和步骤批准调用一个专业Agent原子能力，并原子绑定任务图；不应用草稿、不发布、不授权。调用前必须取得用户对该步骤的明确批准。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, toolId: { type: "string" }, approvalId: { type: "string" }, catalogVersion: { type: "string" }, contractDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, input: { type: "object" } }, required: ["intentId", "toolId", "approvalId", "catalogVersion", "contractDigest", "input"], additionalProperties: false } },
   { name: "agent_context_derive", description: "从本人已成功并核验的SQL版本创建新口径任务，可能执行真实模型与Spark。先确认新任务与预算范围；不继承原成功或发布批准。不自动重试，结果未知先用agent_request_lookup按原requestId查询。", inputSchema: {type:'object',additionalProperties:false,properties:{derivation:{type:'object',additionalProperties:false,properties:{kind:{const:'REGISTERED_CONTEXT_CHANGE'},taskId:{type:'string',format:'uuid'},revisionId:{type:'string',format:'uuid'},runId:{type:'string',format:'uuid'},revisionHash:{type:'string',pattern:'^[a-f0-9]{64}$'}},required:['kind','taskId','revisionId','runId','revisionHash']},contextId:{type:'string',minLength:2,maxLength:80},message:{type:'string',minLength:4,maxLength:2000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['derivation','contextId','message','requestId','confirm']} },
-  { name: "agent_intent_create", description: "理解需求并在受支持模块中推荐下一步；只做路由，不执行同步、查询、审批、发布、发令牌或改权限。", inputSchema: { type: "object", properties: { message: { type: "string", minLength: 4, maxLength: 2000 } }, required: ["message"] } },
+  { name: "agent_intent_create", description: "理解需求并推荐下一步；可固定reportSource供报表专业工具使用，不直接执行业务。", inputSchema: { type: "object", properties: { message: { type: "string", minLength: 4, maxLength: 2000 },approvalMode:{type:'string',enum:['PLAN_ONLY','REQUEST_APPROVAL']},reportSource:publishedReportSourceSchema }, required: ["message"] } },
   { name: "agent_intent_approval_list", description: "读取一个Data Agent意图中已批准和已绑定的专业步骤；不返回批准者内部标识。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name: "agent_intent_approval_create", description: "批准REQUEST_APPROVAL任务中的一个精确专业步骤；只生成版本绑定批准，不执行专业任务。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, destinationId: { type: "string" } }, required: ["intentId", "destinationId"] } },
   { name: "agent_intent_graph", description: "读取意图、逐步批准、专业任务绑定与状态组成的统一任务图；不返回原始任务描述、业务数据或批准者标识。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
@@ -165,7 +166,7 @@ const tools = [
   { name: "security_plan_apply", description: "把已验证安全方案应用为策略V1，不执行查询或审批。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
   { name: "report_overview", description: "读取报表数据集、报告和实际运行汇总。", inputSchema: { type: "object", properties: {} } },
   { name: "report_dataset_list", description: "列出报表数据集和不可变快照摘要。", inputSchema: { type: "object", properties: {} } },
-  { name: "report_published_create", description: "从确切已核验本机发布批次实际生成快照和聚合报表；固定requestId可恢复，不运行模型或Spark。", inputSchema: {type:"object",properties:{name:{type:"string"},requestId:{type:"string"},source:{type:"object",properties:{kind:{type:"string",enum:["AGENT","MANUAL"]},releaseId:{type:"string"},packageDigest:{type:"string"},revisionId:{type:"string"},runId:{type:"string"},batchId:{type:"string"},taskId:{type:"string"}},required:["kind","releaseId","packageDigest","revisionId","runId","batchId"],additionalProperties:false}},required:["name","source","requestId"],additionalProperties:false}},
+  { name: "report_published_create", description: "从确切已核验本机发布批次实际生成快照和聚合报表；固定requestId可恢复，不运行模型或Spark。", inputSchema: {type:"object",properties:{name:{type:"string"},requestId:{type:"string"},metricIds:{type:"array",items:{type:"string",enum:publishedReportMetricIds},minItems:1,maxItems:5},source:{type:"object",properties:{kind:{type:"string",enum:["AGENT","MANUAL"]},releaseId:{type:"string"},packageDigest:{type:"string"},revisionId:{type:"string"},runId:{type:"string"},batchId:{type:"string"},taskId:{type:"string"}},required:["kind","releaseId","packageDigest","revisionId","runId","batchId"],additionalProperties:false}},required:["name","source","requestId"],additionalProperties:false}},
   { name: "report_published_request",description:"只读查询本账号原报表创建请求，不创建或聚合。",inputSchema:{type:"object",properties:{requestId:{type:"string"}},required:["requestId"],additionalProperties:false}},
   { name: "report_published_resume",description:"续接已有报表创建任务，复用原数据集、快照和运行；不改变原来源。",inputSchema:{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false}},
   { name: "report_dataset_create", description: "从可报表资产创建字段受限数据集草稿，不复制数据。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, fields: { type: "array", items: { type: "string" } } }, required: ["name", "code", "assetId", "fields"] } },
@@ -175,9 +176,10 @@ const tools = [
   { name: "report_version", description: "创建报表新版本并固定当前数据集快照。", inputSchema: { type: "object", properties: { reportId: { type: "string" }, description: { type: "string" }, widgets: { type: "array", items: { type: "object" } } }, required: ["reportId", "description", "widgets"] } },
   { name: "report_run", description: "对固定快照实际运行KPI/柱状/饼图聚合并保存摘要。", inputSchema: { type: "object", properties: { reportId: { type: "string" } }, required: ["reportId"] } },
   { name: "report_export", description: "导出最后一次成功聚合结果CSV；不导出业务明细。", inputSchema: { type: "object", properties: { reportId: { type: "string" } }, required: ["reportId"] } },
-  { name: "report_plan_list", description: "列出受治理报表Agent方案。", inputSchema: { type: "object", properties: {} } },
-  { name: "report_plan_create", description: "让真实模型基于数据集字段和快照摘要生成聚合报表草稿，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
-  { name: "report_plan_apply", description: "把已验证报表方案应用为草稿，不执行或导出。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
+  { name: "report_plan_list", description: "列出传统报表方案；sourceBatchId指定时只列本账号同批次方案。", inputSchema: { type: "object", properties: {sourceBatchId:{type:'string'}} } },
+  { name: "report_plan_request",description:"只读恢复本账号原同源报表规划请求，不再次调用模型。",inputSchema:{type:'object',properties:{requestId:{type:'string'}},required:['requestId']}},
+  { name: "report_plan_create", description: "模型基于字段摘要规划报表。可绑定source及requestId；缺字段须澄清，不读取业务行或执行。", inputSchema: { type: "object", properties: { message: { type: "string" },source:publishedReportSourceSchema,requestId:{type:'string'} }, required: ["message"] } },
+  { name: "report_plan_apply", description: "应用审阅方案：普通方案创建草稿；同源方案必须提供proposalHash，将实际物化并聚合，不导出或发布生产。", inputSchema: { type: "object", properties: { planId: { type: "string" },proposalHash:{type:'string'} }, required: ["planId"] } },
   { name: "ops_overview", description: "读取跨开发、同步、发布、质量、服务、报表和安全审计的本机运行健康。", inputSchema: { type: "object", properties: {} } },
   { name: "ops_refresh", description: "扫描实际失败与恢复证据并幂等归一为运维事故。", inputSchema: { type: "object", properties: {} } },
   { name: "ops_incident_list", description: "列出开放、已确认和已恢复事故。", inputSchema: { type: "object", properties: {} } },
@@ -238,7 +240,7 @@ async function callTool(name, args = {}, client=defaultClient) {
   if (name === "agent_intent_create")
     return client.request("/agent/intents", {
       method: "POST",
-      body: { message: args.message },
+      body: { message: args.message,...(args.approvalMode===undefined?{}:{approvalMode:args.approvalMode}),...(args.reportSource===undefined?{}:{reportSource:args.reportSource}) },
     });
   if (name === "agent_intent_approval_list")
     return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/approvals`);
@@ -747,16 +749,18 @@ async function callTool(name, args = {}, client=defaultClient) {
     });
   if (name === "report_export")
     return client.request(`/reports/${encodeURIComponent(args.reportId)}/export`);
-  if (name === "report_plan_list") return client.request("/reports/agent/plans");
+  if (name === "report_plan_list") return client.request('/reports/agent/plans'+(args.sourceBatchId?'?source_batch_id='+encodeURIComponent(args.sourceBatchId):''));
+  if(name==='report_plan_request')return client.request('/reports/agent/requests/'+encodeURIComponent(args.requestId));
   if (name === "report_plan_create")
     return client.request("/reports/agent/plans", {
       method: "POST",
-      body: { message: args.message },
+      body: { message: args.message,...(args.source===undefined?{}:{source:args.source}) },
+      ...(args.requestId?{idempotencyKey:args.requestId}:{}),
     });
   if (name === "report_plan_apply")
     return client.request(
       `/reports/agent/plans/${encodeURIComponent(args.planId)}/apply`,
-      { method: "POST", body: {} },
+      { method: "POST", body: args.proposalHash===undefined?{}:{proposalHash:args.proposalHash} },
     );
   if (name === "ops_overview") return client.request("/operations/overview");
   if (name === "ops_refresh")

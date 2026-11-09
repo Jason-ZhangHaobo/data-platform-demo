@@ -6776,6 +6776,12 @@ kbd {
 .published-report-form-v2 .button { white-space:nowrap; }
 .published-report-actions-v2 { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 .published-report-create-v2 small { overflow-wrap:anywhere; }
+.source-report-agent-v2 { padding:16px; margin-top:14px; border:1px solid #cedec8; border-radius:10px; background:linear-gradient(115deg,#f2f7ed,#fbfcf8); }
+.source-report-agent-v2 h4 { margin:0; }
+.source-report-agent-v2 textarea { display:block; width:100%; min-width:0; padding:10px; margin:10px 0; border:1px solid #cbd9c6; border-radius:7px; background:white; }
+.source-report-agent-v2 select { margin:0 0 8px 10px; padding:6px; border:1px solid #cbd9c6; border-radius:6px; }
+.source-report-proposal-v2 { padding:12px; margin-top:12px; background:white; border-radius:8px; }
+.source-report-proposal-v2 h4 { margin:8px 0; }
 @media (max-width:720px) { .published-report-form-v2 { grid-template-columns:minmax(0,1fr); } }
 @media (max-width: 640px) { .agent-report-heading-v2 { flex-direction: column; } }
 .reports-proof-v2 {
