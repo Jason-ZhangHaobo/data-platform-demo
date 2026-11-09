@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import { readSessionCredential } from "./session-credential.mjs";
 
 export const V2_OPERATIONS = Object.freeze([
+  'manual_development_workflow',
+  'manual_delivery_prepare',
+  'manual_delivery_detail',
+  'manual_delivery_advance',
+  'manual_delivery_cancel',
   'agent_manual_continuation_read',
   'agent_continue_manual',
   'agent_assisted_continuation_read',

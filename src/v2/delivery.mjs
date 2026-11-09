@@ -94,9 +94,13 @@ export function createDeliveryPackage({
   revision,
   name,
   developmentReference,
+  manualAuthor = false,
 }) {
   const reference=developmentReference===undefined?undefined:checkedAssistedDevelopmentReference(developmentReference);
-  if(reference&&(revision?.sourceAttribution?.kind!=='ENGINEER_ASSISTED'||revision.sourceKind!=='MANUAL'||revision.agentIndependentE2E!==false||
+  const authored=revision?.source==='MANUAL'&&revision.manualProvenance?.kind==='ENGINEER_EDIT'&&revision.manualProvenance.actorId===revision.author&&revision.manualProvenance.agentIndependentE2E===false;
+  if(manualAuthor&&!authored)throw Object.assign(new Error('独立手工文件必须属于原作者和保存版本'),{status:409});
+  if(reference&&manualAuthor&&(reference.kind!=='MANUAL_SUCCESS_REFERENCE'||reference.sourceRunId!==run?.id||reference.sourceRevisionId!==revision.id||reference.sourceRevisionHash!==revision.hash))throw Object.assign(new Error('手工文件与成功来源引用不一致'),{status:409});
+  if(reference&&!manualAuthor&&(revision?.sourceAttribution?.kind!=='ENGINEER_ASSISTED'||revision.sourceKind!=='MANUAL'||revision.agentIndependentE2E!==false||
     (reference.kind==='ASSISTED_CONTINUATION'?revision.sourceAttribution.parentRunId:revision.sourceAttribution.sourceRunId)!==reference.sourceRunId))throw Object.assign(new Error('开发依据与人工辅助版本不一致'),{status:409});
   const remoteExecution = run?.isolation === "FUNCTION_PROCESS";
   const family = validationFamilyForContext(revision?.contextId);
@@ -227,10 +231,11 @@ export function createDeliveryPackage({
       validationContractId: family.id,
       ...(revision.sourceAttribution?.kind==='ENGINEER_ASSISTED'?{attribution:{kind:'ENGINEER_ASSISTED',originAgentTaskId:revision.sourceAttribution.originAgentTaskId,
         actorId:revision.sourceAttribution.actorId,agentIndependentE2E:false,...(reference?{developmentReference:reference}:{})}}:{}),
-      ...(revision.source === "MANUAL" && revision.manualProvenance?.originAgentTaskId ? {attribution: {
+      ...(!manualAuthor&&revision.source === "MANUAL" && revision.manualProvenance?.originAgentTaskId ? {attribution: {
         kind: "ENGINEER_ASSISTED", originAgentTaskId: revision.manualProvenance.originAgentTaskId,
         actorId: revision.manualProvenance.actorId, agentIndependentE2E: false,
       }} : {}),
+      ...(authored&&(manualAuthor||!revision.manualProvenance.originAgentTaskId)?{attribution:{kind:'ENGINEER_AUTHORED',actorId:revision.author,agentIndependentE2E:false,...(reference?{developmentReference:reference}:{})}}:{}),
     },
     files: Object.fromEntries(
       deliveryFiles.map((file) => [
@@ -310,9 +315,9 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     ])
   )
     throw fail("交付清单包含未定义字段");
-  if (source.attribution !== undefined && (!keysExactly(source.attribution, ["kind", "originAgentTaskId", "actorId", "agentIndependentE2E",...(source.attribution?.developmentReference===undefined?[]:['developmentReference'])]) ||
-      source.attribution.kind !== "ENGINEER_ASSISTED" || source.attribution.agentIndependentE2E !== false ||
-      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(source.attribution.originAgentTaskId ?? "") ||
+  if (source.attribution !== undefined && (!keysExactly(source.attribution, ["kind", ...(source.attribution?.kind==='ENGINEER_AUTHORED'?[]:['originAgentTaskId']), "actorId", "agentIndependentE2E",...(source.attribution?.developmentReference===undefined?[]:['developmentReference'])]) ||
+      !['ENGINEER_ASSISTED','ENGINEER_AUTHORED'].includes(source.attribution.kind) || source.attribution.agentIndependentE2E !== false ||
+      source.attribution.kind==='ENGINEER_ASSISTED'&&!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(source.attribution.originAgentTaskId ?? "") ||
       typeof source.attribution.actorId !== "string" || !source.attribution.actorId || source.attribution.actorId.length > 100))
     throw fail("人工交付归因不完整");
   if(source.attribution?.developmentReference!==undefined)checkedAssistedDevelopmentReference(source.attribution.developmentReference);

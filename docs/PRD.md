@@ -1,6 +1,8 @@
 # 数舵 V2 产品需求与边界
 
-> 2026-11-09 增量：[手工成功SQL交接Agent](manual-success-continuation.md)。无原Agent任务的手工版本可按本人保存与运行证据创建独立辅助任务，保留人工来源并重新核验／交付；登录保存作者与Agent身份一致。手工版本不经模型直接交付仍需独立衔接，不能伪造Agent任务。
+> 2026-11-10 增量：[独立手工SQL文件与演练](standalone-manual-delivery.md)。本人成功版本直接准备八文件、持久演练与原编号恢复，模型禁用仍可使用；MANUAL／ENGINEER_AUTHORED，无虚构Agent。独立手工确切版本审阅发布为下一阶段，源码未代表公网部署。
+
+> 2026-11-09 增量：[手工成功SQL交接Agent](manual-success-continuation.md)。无原Agent任务的手工版本可按本人保存与运行证据创建独立辅助任务，保留人工来源并重新核验／交付；登录保存作者与Agent身份一致。不经模型的文件准备／演练已由[独立手工交付](standalone-manual-delivery.md)补齐；独立手工发布仍后续验收。
 
 > 2026-11-09 增量：[成功辅助版本的对话续改](assisted-success-continuation.md)。父任务、代码、运行及参考链固定到独立新任务，续改后重新执行、交付及审阅，不继承原批准或自主归因；GUI／API／CLI／MCP沿用原编号恢复。手工保存成功版本的续改仍独立补齐，不走无来源回退。
 
