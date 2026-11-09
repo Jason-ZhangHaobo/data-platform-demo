@@ -99,6 +99,8 @@ type Context = {
   advisorId: string;
   businessDate: string;
   referenceSql: string;
+  capabilities?:{classicSql:boolean;agentDevelopment:boolean;delivery:boolean;scope:string};
+  outputContract?:{id:string;name:string;grain:string;keyFields:string[];fields:{name:string;label:string}[]};
   tables: {
     name: string;
     label: string;
@@ -452,6 +454,8 @@ function App() {
   const [authOpen, setAuthOpen] = useState(false);
   sqlRef.current = sql;
   const modalRef = useRef<HTMLElement>(null);
+  const resultBodyRef=useRef<HTMLDivElement>(null);
+  useEffect(()=>{resultBodyRef.current?.scrollTo({top:0,left:0});},[tab,run?.id]);
   const context = contexts.find((c) => c.id === contextId),
     active = status?.capabilities.find((c) => c.id === nav);
   const totalRows = context?.tables.reduce((s, t) => s + t.rows.length, 0) ?? 0;
@@ -901,7 +905,7 @@ function App() {
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>{setServiceLocation(serviceSourceFromLocation(window.location.href,true));setAgentWorkspaceMode("services");}}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
-          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedManualSource={sourceBinding?.manualDeliveryTaskId?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"&&!sourceBinding.manualDeliveryTaskId?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
+          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts.filter(c=>c.capabilities?.agentDevelopment!==false)} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedManualSource={sourceBinding?.manualDeliveryTaskId?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"&&!sourceBinding.manualDeliveryTaskId?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite && !session.developmentOnly}
@@ -942,7 +946,7 @@ function App() {
                   <span /> DATA DEVELOPMENT
                 </div>
                 <h1>
-                  客户资产 T+1 <span className="draft-badge">开发中</span>
+                  {context?.outputContract?.name??"客户资产 T+1"} <span className="draft-badge">开发中</span>
                 </h1>
                 <p>在已知数据与业务口径下，编写、执行并验证 SQL。</p>
               </div>
@@ -981,8 +985,8 @@ function App() {
                 03 核验结果
               </span>
               <ChevronRight size={12} />
-              <span title="M2：本机计时发布已验证；云端公网部署仍待验收">
-                04 发布交付 <small>M2</small>
+              <span title={context?.outputContract?"分布契约尚未接入调度交付":"M2：本机计时发布已验证；云端公网部署仍待验收"}>
+                04 发布交付 <small>{context?.outputContract?"待适配":"M2"}</small>
               </span>
               <div className="journey-end">
                 <Database size={13} />
@@ -990,11 +994,11 @@ function App() {
               </div>
             </div>
             <div className={"work-area " + (agentOpen ? "with-agent" : "")}>
-              <section className="studio">
+              <section className={"studio "+(context?.outputContract?"distribution-studio":"")}>
                 <div className="studio-top">
                   <div className="file-tab">
                     <FileCode2 size={15} />
-                    <strong>customer_assets.sql</strong>
+                    <strong>{context?.outputContract ? context.outputContract.id.includes("industry")?"holdings_industry.sql":"holdings_asset_class.sql" : "customer_assets.sql"}</strong>
                     {dirty && (
                       <span className="unsaved-dot" title="编辑已修改" />
                     )}
@@ -1017,6 +1021,7 @@ function App() {
                     </select>
                   </label>
                   <div className="toolbar-actions">
+                    {contexts.find(c=>c.id===contextId)?.outputContract && <button onClick={()=>{const c=contexts.find(v=>v.id===contextId);if(!c)return;if(sql!==original&&!window.confirm("当前代码尚未保存，载入参考 SQL 会替换编辑器内容。继续吗？"))return;setSql(c.referenceSql);setOriginal(c.referenceSql);setRun(undefined);setNotice("已载入当前分布参考SQL；保存并运行后独立核验。");}}>载入此口径参考 SQL</button>}
                     <button
                       title="查看与参考版本的差异"
                       className={diff ? "on" : ""}
@@ -1158,7 +1163,7 @@ function App() {
                       </button>
                     </div>
                   </div>
-                  <div className="result-body">
+                  <div className="result-body" ref={resultBodyRef}>
                     {run && tab !== "运行记录" && (
                       <div
                         className={
@@ -1181,14 +1186,14 @@ function App() {
                     {tab === "结果" &&
                       (run?.rows ? (
                         <>
-                          <table>
+                          <table className={contexts.find(c=>c.id===run.contextId)?.outputContract?"distribution-result-table":undefined}>
                             <thead>
                               <tr>
                                 <th>#</th>
                                 {run.columns?.map((c) => (
                                   <th key={c.name}>
-                                    {c.name}
-                                    <small>{c.type}</small>
+                                    {contexts.find(v=>v.id===run.contextId)?.outputContract?.fields.find(f=>f.name===c.name)?.label??c.name}
+                                    <small>{c.name} · {c.type}</small>
                                   </th>
                                 ))}
                               </tr>
@@ -1244,6 +1249,7 @@ function App() {
                             (run.validation.passed ? "passed" : "failed")
                           }
                         >
+                          {contexts.find(c=>c.id===run.contextId)?.outputContract&&<p>复合键：客户＋交易日＋分类。占比为0—1，分母不含现金；以下五个分布场景独立核验，不计完整Agent E2E。</p>}
                           <h3>
                             {run.validation.passed
                               ? "独立业务断言通过"
@@ -1329,7 +1335,8 @@ function App() {
                   </div>
                 </section>
               </section>
-              {agentOpen && (
+              {contexts.find(c=>c.id===contextId)?.capabilities?.agentDevelopment===false && <aside className="agent-panel distribution-scope-card"><header><Database size={18}/><strong>持仓分布口径</strong></header><div className="distribution-scope-content"><small className="distribution-scope-status">本机 · 经典 SQL</small><h2>先确认粒度，再看占比</h2><p>每行对应一位客户、一个交易日、一个分类。同一持仓编号去重，证券数量按代码去重。</p><div className="distribution-grain"><span>客户</span><span>交易日</span><span>{context?.outputContract?.id.includes("industry")?"行业标签":"资产类别"}</span></div><div className="distribution-formula"><strong>分类持仓市值 ÷ 客户持仓总市值</strong><small>占比为 0—1 · 不含现金 · 不作穿透</small></div><p>未分类保留，零分母记为0；仅现金客户保留“未持仓”零行。</p><div className="distribution-scope-next"><strong>尚未开放</strong><p>Agent 理解、调度交付与云端执行将在适配后开放。当前结果仅代表本机 SQL 核验。</p></div></div></aside>}
+              {agentOpen && contexts.find(c=>c.id===contextId)?.capabilities?.agentDevelopment!==false && (
                 <aside className="agent-panel">
                   <header>
                     <span className="agent-icon">

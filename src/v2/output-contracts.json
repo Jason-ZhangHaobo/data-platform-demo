@@ -1,0 +1,447 @@
+{
+  "schema": "shuduo-securities-output-contracts/v1",
+  "contracts": [
+    {
+      "id": "securities-holdings-asset-class-distribution-v1",
+      "name": "持仓资产类别分布（不含现金）",
+      "dimension": "asset_class",
+      "grain": "CLIENT_TRADE_DATE_ASSET_CLASS",
+      "definitionVersion": 1,
+      "definition": "按顾问范围内客户、交易日与资产类别分组；同一持仓编号的重复记录去重，冲突记录拒绝。市值占比=分组持仓市值/该客户当日全部持仓市值，不包含现金、不代表全资产占比；保留仅有现金客户为未持仓零行。空白标签归未分类，零分母占比为0，保留6位小数；仅支持非负持仓市值，不作空头或穿透分析。",
+      "keyFields": [
+        "client_id",
+        "trade_date",
+        "asset_class"
+      ],
+      "fields": [
+        {
+          "name": "client_id",
+          "type": "STRING",
+          "label": "客户编号"
+        },
+        {
+          "name": "trade_date",
+          "type": "STRING",
+          "label": "交易日"
+        },
+        {
+          "name": "asset_class",
+          "type": "STRING",
+          "label": "资产类别"
+        },
+        {
+          "name": "holding_market_value",
+          "type": "DECIMAL",
+          "label": "持仓市值（元）",
+          "scale": 2,
+          "minimum": "0"
+        },
+        {
+          "name": "security_count",
+          "type": "INTEGER",
+          "label": "证券数量（按代码去重）",
+          "minimum": "0"
+        },
+        {
+          "name": "market_value_ratio",
+          "type": "DECIMAL",
+          "label": "持仓市值占比（0—1，不含现金）",
+          "scale": 6,
+          "minimum": "0",
+          "maximum": "1"
+        }
+      ],
+      "cases": [
+        {
+          "id": "holdings-asset-class-t1",
+          "sourceId": "holdings-t1",
+          "variant": "t1",
+          "name": "持仓资产类别分布（不含现金） · 标准",
+          "expected": [
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "asset_class": "股票",
+              "holding_market_value": "1000.00",
+              "security_count": 1,
+              "market_value_ratio": "0.666667"
+            },
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "asset_class": "债券",
+              "holding_market_value": "500.00",
+              "security_count": 1,
+              "market_value_ratio": "0.333333"
+            },
+            {
+              "client_id": "CLIENT-002",
+              "trade_date": "2026-09-10",
+              "asset_class": "股票",
+              "holding_market_value": "750.00",
+              "security_count": 1,
+              "market_value_ratio": "1.000000"
+            }
+          ]
+        },
+        {
+          "id": "holdings-asset-class-duplicate",
+          "sourceId": "duplicate-position",
+          "variant": "duplicate",
+          "name": "持仓资产类别分布（不含现金） · 重复持仓",
+          "expected": [
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "asset_class": "股票",
+              "holding_market_value": "1000.00",
+              "security_count": 1,
+              "market_value_ratio": "0.666667"
+            },
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "asset_class": "债券",
+              "holding_market_value": "500.00",
+              "security_count": 1,
+              "market_value_ratio": "0.333333"
+            },
+            {
+              "client_id": "CLIENT-002",
+              "trade_date": "2026-09-10",
+              "asset_class": "股票",
+              "holding_market_value": "750.00",
+              "security_count": 1,
+              "market_value_ratio": "1.000000"
+            }
+          ]
+        },
+        {
+          "id": "holdings-asset-class-equal",
+          "sourceId": "equal-value-positions",
+          "variant": "equal",
+          "name": "持仓资产类别分布（不含现金） · 同额不同持仓",
+          "expected": [
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "asset_class": "股票",
+              "holding_market_value": "2000.00",
+              "security_count": 1,
+              "market_value_ratio": "0.800000"
+            },
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "asset_class": "债券",
+              "holding_market_value": "500.00",
+              "security_count": 1,
+              "market_value_ratio": "0.200000"
+            },
+            {
+              "client_id": "CLIENT-002",
+              "trade_date": "2026-09-10",
+              "asset_class": "股票",
+              "holding_market_value": "750.00",
+              "security_count": 1,
+              "market_value_ratio": "1.000000"
+            }
+          ]
+        },
+        {
+          "id": "holdings-asset-class-cash-only",
+          "sourceId": "cash-only-client",
+          "variant": "cash-only",
+          "name": "持仓资产类别分布（不含现金） · 仅有现金客户",
+          "expected": [
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "asset_class": "股票",
+              "holding_market_value": "1000.00",
+              "security_count": 1,
+              "market_value_ratio": "0.666667"
+            },
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "asset_class": "债券",
+              "holding_market_value": "500.00",
+              "security_count": 1,
+              "market_value_ratio": "0.333333"
+            },
+            {
+              "client_id": "CLIENT-002",
+              "trade_date": "2026-09-10",
+              "asset_class": "股票",
+              "holding_market_value": "750.00",
+              "security_count": 1,
+              "market_value_ratio": "1.000000"
+            },
+            {
+              "client_id": "CLIENT-004",
+              "trade_date": "2026-09-10",
+              "asset_class": "未持仓",
+              "holding_market_value": "0.00",
+              "security_count": 0,
+              "market_value_ratio": "0.000000"
+            }
+          ]
+        },
+        {
+          "id": "holdings-asset-class-unclassified-zero",
+          "sourceId": "holdings-t1",
+          "variant": "unclassified-zero",
+          "name": "持仓资产类别分布（不含现金） · 未分类/零分母/现金变化",
+          "expected": [
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "asset_class": "未分类",
+              "holding_market_value": "1000.00",
+              "security_count": 1,
+              "market_value_ratio": "0.666667"
+            },
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "asset_class": "债券",
+              "holding_market_value": "500.00",
+              "security_count": 1,
+              "market_value_ratio": "0.333333"
+            },
+            {
+              "client_id": "CLIENT-002",
+              "trade_date": "2026-09-10",
+              "asset_class": "未分类",
+              "holding_market_value": "0.00",
+              "security_count": 1,
+              "market_value_ratio": "0.000000"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "securities-holdings-industry-distribution-v1",
+      "name": "持仓行业标签分布（不穿透、不含现金）",
+      "dimension": "industry",
+      "grain": "CLIENT_TRADE_DATE_INDUSTRY",
+      "definitionVersion": 1,
+      "definition": "按顾问范围内客户、交易日与持仓行业标签分组；同一持仓编号的重复记录去重，冲突记录拒绝。市值占比=分组持仓市值/该客户当日全部持仓市值，不包含现金、不代表全资产占比；保留仅有现金客户为未持仓零行。空白标签归未分类，零分母占比为0，保留6位小数；仅支持非负持仓市值，不作空头或穿透分析。",
+      "keyFields": [
+        "client_id",
+        "trade_date",
+        "industry"
+      ],
+      "fields": [
+        {
+          "name": "client_id",
+          "type": "STRING",
+          "label": "客户编号"
+        },
+        {
+          "name": "trade_date",
+          "type": "STRING",
+          "label": "交易日"
+        },
+        {
+          "name": "industry",
+          "type": "STRING",
+          "label": "持仓行业标签"
+        },
+        {
+          "name": "holding_market_value",
+          "type": "DECIMAL",
+          "label": "持仓市值（元）",
+          "scale": 2,
+          "minimum": "0"
+        },
+        {
+          "name": "security_count",
+          "type": "INTEGER",
+          "label": "证券数量（按代码去重）",
+          "minimum": "0"
+        },
+        {
+          "name": "market_value_ratio",
+          "type": "DECIMAL",
+          "label": "持仓市值占比（0—1，不含现金）",
+          "scale": 6,
+          "minimum": "0",
+          "maximum": "1"
+        }
+      ],
+      "cases": [
+        {
+          "id": "holdings-industry-t1",
+          "sourceId": "holdings-t1",
+          "variant": "t1",
+          "name": "持仓行业标签分布（不穿透、不含现金） · 标准",
+          "expected": [
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "industry": "金融",
+              "holding_market_value": "1000.00",
+              "security_count": 1,
+              "market_value_ratio": "0.666667"
+            },
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "industry": "公共事业",
+              "holding_market_value": "500.00",
+              "security_count": 1,
+              "market_value_ratio": "0.333333"
+            },
+            {
+              "client_id": "CLIENT-002",
+              "trade_date": "2026-09-10",
+              "industry": "金融",
+              "holding_market_value": "750.00",
+              "security_count": 1,
+              "market_value_ratio": "1.000000"
+            }
+          ]
+        },
+        {
+          "id": "holdings-industry-duplicate",
+          "sourceId": "duplicate-position",
+          "variant": "duplicate",
+          "name": "持仓行业标签分布（不穿透、不含现金） · 重复持仓",
+          "expected": [
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "industry": "金融",
+              "holding_market_value": "1000.00",
+              "security_count": 1,
+              "market_value_ratio": "0.666667"
+            },
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "industry": "公共事业",
+              "holding_market_value": "500.00",
+              "security_count": 1,
+              "market_value_ratio": "0.333333"
+            },
+            {
+              "client_id": "CLIENT-002",
+              "trade_date": "2026-09-10",
+              "industry": "金融",
+              "holding_market_value": "750.00",
+              "security_count": 1,
+              "market_value_ratio": "1.000000"
+            }
+          ]
+        },
+        {
+          "id": "holdings-industry-equal",
+          "sourceId": "equal-value-positions",
+          "variant": "equal",
+          "name": "持仓行业标签分布（不穿透、不含现金） · 同额不同持仓",
+          "expected": [
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "industry": "金融",
+              "holding_market_value": "2000.00",
+              "security_count": 1,
+              "market_value_ratio": "0.800000"
+            },
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "industry": "公共事业",
+              "holding_market_value": "500.00",
+              "security_count": 1,
+              "market_value_ratio": "0.200000"
+            },
+            {
+              "client_id": "CLIENT-002",
+              "trade_date": "2026-09-10",
+              "industry": "金融",
+              "holding_market_value": "750.00",
+              "security_count": 1,
+              "market_value_ratio": "1.000000"
+            }
+          ]
+        },
+        {
+          "id": "holdings-industry-cash-only",
+          "sourceId": "cash-only-client",
+          "variant": "cash-only",
+          "name": "持仓行业标签分布（不穿透、不含现金） · 仅有现金客户",
+          "expected": [
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "industry": "金融",
+              "holding_market_value": "1000.00",
+              "security_count": 1,
+              "market_value_ratio": "0.666667"
+            },
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "industry": "公共事业",
+              "holding_market_value": "500.00",
+              "security_count": 1,
+              "market_value_ratio": "0.333333"
+            },
+            {
+              "client_id": "CLIENT-002",
+              "trade_date": "2026-09-10",
+              "industry": "金融",
+              "holding_market_value": "750.00",
+              "security_count": 1,
+              "market_value_ratio": "1.000000"
+            },
+            {
+              "client_id": "CLIENT-004",
+              "trade_date": "2026-09-10",
+              "industry": "未持仓",
+              "holding_market_value": "0.00",
+              "security_count": 0,
+              "market_value_ratio": "0.000000"
+            }
+          ]
+        },
+        {
+          "id": "holdings-industry-unclassified-zero",
+          "sourceId": "holdings-t1",
+          "variant": "unclassified-zero",
+          "name": "持仓行业标签分布（不穿透、不含现金） · 未分类/零分母/现金变化",
+          "expected": [
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "industry": "未分类",
+              "holding_market_value": "1000.00",
+              "security_count": 1,
+              "market_value_ratio": "0.666667"
+            },
+            {
+              "client_id": "CLIENT-001",
+              "trade_date": "2026-09-10",
+              "industry": "公共事业",
+              "holding_market_value": "500.00",
+              "security_count": 1,
+              "market_value_ratio": "0.333333"
+            },
+            {
+              "client_id": "CLIENT-002",
+              "trade_date": "2026-09-10",
+              "industry": "未分类",
+              "holding_market_value": "0.00",
+              "security_count": 1,
+              "market_value_ratio": "0.000000"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

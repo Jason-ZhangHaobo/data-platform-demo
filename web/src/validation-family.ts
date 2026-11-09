@@ -5,6 +5,10 @@ const stockIds=["stock-cash-t1","stock-cash-cash-change","stock-cash-duplicate-p
 export function validationFamilyForContextId(contextId?:string):ValidationFamily|undefined{
   if(contextId===undefined||legacyIds.includes(contextId))return{id:"securities-assets-five-fixtures-2026-09-14",contextIds:[...legacyIds]};
   if(stockIds.includes(contextId))return{id:"securities-stock-cash-five-fixtures-v1",contextIds:[...stockIds]};
+  for(const [dimension,label] of [["asset-class","资产类别"],["industry","行业标签"]]){
+    const ids=["t1","duplicate","equal","cash-only","unclassified-zero"].map(s=>`holdings-${dimension}-${s}`);
+    if(ids.includes(contextId))return{id:`securities-holdings-${dimension}-distribution-v1`,contextIds:ids,name:`持仓${label}分布（不含现金）`};
+  }
   return undefined;
 }
 export function regressionsMatchFamily(validation:{passed?:boolean;contractId?:string;regressions?:{contextId:string;passed:boolean}[]}|undefined,family:ValidationFamily|undefined):boolean{

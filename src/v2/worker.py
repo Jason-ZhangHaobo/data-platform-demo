@@ -2,6 +2,8 @@
 import json, os, sys, time, hashlib, re
 from decimal import Decimal
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from output_contracts import registered_contract, preflight_contexts, verify_output
 import sqlglot
 from sqlglot import exp
 
@@ -292,6 +294,7 @@ def execute_with_validation(spark,sql,context,validation_contexts=None,test_sql=
         raise ValueError("回归上下文数量不合法")
     if len({context["id"],*(item["id"] for item in validation_contexts or [])})>5:
         raise ValueError("回归上下文数量不合法")
+    preflight_contexts(context,validation_contexts)
     result=execute(spark,sql,context)
     result["mainSqlExecuted"]=True
     test_check=None
@@ -299,14 +302,14 @@ def execute_with_validation(spark,sql,context,validation_contexts=None,test_sql=
         try:test_check=execute_test_sql(spark,test_sql,context)
         except Exception as error:
             test_check={"passed":False,"sqlHash":hashlib.sha256(test_sql.encode()).hexdigest(),"error":str(error)[:3000]}
-    selected=verify(result["rows"],context["expected"])
+    selected=verify_output(result["rows"],context) if registered_contract(context) else verify(result["rows"],context["expected"])
     regressions=[{"contextId":context["id"],"name":context["name"],**selected,**({"inputEvidence":result["inputEvidence"]} if result.get("inputEvidence") else {})}]
     seen={context["id"]}
     for check_context in validation_contexts or []:
         if check_context["id"] in seen:continue
         seen.add(check_context["id"])
         actual=execute(spark,sql,check_context)
-        checked=verify(actual["rows"],check_context["expected"])
+        checked=verify_output(actual["rows"],check_context) if registered_contract(check_context) else verify(actual["rows"],check_context["expected"])
         regressions.append({"contextId":check_context["id"],"name":check_context["name"],**checked,**({"inputEvidence":actual["inputEvidence"]} if actual.get("inputEvidence") else {})})
     issues=[check["name"]+"："+issue for check in regressions for issue in check["issues"]]
     if test_check is not None and not test_check["passed"]:issues.append("tests.sql："+test_check.get("error","没有得到唯一的 passed=true 结果"))
@@ -323,6 +326,7 @@ if __name__=="__main__":
     payload=json.loads(Path(sys.argv[1]).read_text())
     started=time.monotonic();spark=None
     try:
+        preflight_contexts(payload["context"],payload.get("validationContexts",[]))
         validate_sql(payload["sql"],payload["context"])
         spark=create_spark();spark.sparkContext.setLogLevel("ERROR")
         result=execute_with_validation(spark,payload["sql"],payload["context"],payload.get("validationContexts",[]),payload.get("testSql"))

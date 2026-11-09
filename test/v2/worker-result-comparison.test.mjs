@@ -10,12 +10,14 @@ const harness=String.raw`
 import ast, json, sys, re, hashlib
 from decimal import Decimal
 from pathlib import Path
+sys.path.insert(0,str(Path(sys.argv[1]).parent))
+from output_contracts import preflight_contexts, registered_contract, verify_output
 tree=ast.parse(Path(sys.argv[1]).read_text(encoding="utf-8"))
 names={"comparison_number","verify","execute_with_validation"}
 constants={"COMPARISON_FIELDS","COMPARISON_LIMIT"}
 selected=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in names or
     isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in constants for target in node.targets)]
-scope={"Decimal":Decimal,"re":re,"hashlib":hashlib}
+scope={"Decimal":Decimal,"re":re,"hashlib":hashlib,"preflight_contexts":preflight_contexts,"registered_contract":registered_contract,"verify_output":verify_output}
 exec(compile(ast.Module(body=selected,type_ignores=[]),"pure-worker-verification","exec"),scope)
 input=json.load(sys.stdin)
 if input["operation"]=="numbers":

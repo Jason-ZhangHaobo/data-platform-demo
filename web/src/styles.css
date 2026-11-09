@@ -8101,3 +8101,23 @@ kbd {
 .agent-dev-results.agent-dev-results-compare{max-height:580px;min-height:330px}
 .run-comparison-code-v2{border:1px solid var(--border);border-radius:8px;padding:10px;margin:12px 0}.run-comparison-code-v2>summary{cursor:pointer;font-size:12px;font-weight:600}.run-comparison-sql-editor-v2{height:300px;margin-top:10px;overflow:hidden;border-radius:7px}
 @media(max-width:650px){.run-comparison-sides-v2,.run-comparison-changes-v2 article>div{grid-template-columns:1fr}}
+
+/* Registered distribution contracts share the development studio layout. */
+.distribution-scope-content { padding: 18px 16px; overflow: auto; font-size: 13px; line-height: 1.8; color: #566b5e; }
+.distribution-scope-content h2 { margin: 16px 0 8px; font-size: 17px; color: #234a38; }
+.distribution-scope-content p { margin: 10px 0; }
+.distribution-scope-status { display:inline-block; padding:3px 9px; border:1px solid #dce7d8; border-radius:6px; background:#eff5eb; color:#34634a; }
+.distribution-grain { display:flex; flex-wrap:wrap; gap:7px; margin:16px 0; }
+.distribution-grain span { padding:3px 9px; background:#f1f4ee; border:1px solid #e1e8dc; border-radius:5px; }
+.distribution-formula { padding:12px; background:#edf4e9; border-left:3px solid #4e8060; border-radius:5px; }
+.distribution-formula strong,.distribution-formula small { display:block; }
+.distribution-formula strong { font-size:12px; color:#2e583e; }
+.distribution-scope-next { margin-top:24px; padding-top:16px; border-top:1px solid #e1e8dc; }
+.distribution-scope-next strong { color:#6f7469; font-size:12px; }
+
+.distribution-studio .result-panel { height: 300px; }
+.result-body .distribution-result-table { table-layout: fixed; }
+.result-body .distribution-result-table th { white-space: normal; padding: 10px 7px; }
+.result-body .distribution-result-table th small { overflow-wrap: anywhere; }
+.result-body .distribution-result-table td { padding: 10px 7px; font-size: 10px; }
+.result-body .distribution-result-table th:first-child,.result-body .distribution-result-table td:first-child { width: 26px; }
