@@ -42,6 +42,7 @@ test('reference is part of immutable package digest and cannot be removed or cha
   const f=await assistedDeliveryFixture();t.after(f.dispose);const task=await f.delivery.createManual(f.input),bundle=f.store.get('delivery_package',task.packageId,f.project);
   const changed=structuredClone(bundle);changed.manifest.source.attribution.developmentReference.baselineRevisionHash='a'.repeat(64);assert.throws(()=>validateDeliveryPackage(changed,bundle.digest));
   const invalid=structuredClone(bundle);invalid.manifest.source.attribution.developmentReference.initialSqlHash='b'.repeat(64);invalid.digest=computeManifestDigest(invalid.manifest);assert.throws(()=>validateDeliveryPackage(invalid,invalid.digest));
+  for(const attribution of [null,[],0,'invalid']){const malformed=structuredClone(bundle);malformed.manifest.source.attribution=attribution;malformed.digest=computeManifestDigest(malformed.manifest);assert.throws(()=>validateDeliveryPackage(malformed,malformed.digest),e=>e.status===422);}
   const changedTask=f.store.update('agent_delivery_task',task.id,f.project,{developmentReference:undefined});await assert.rejects(f.delivery.advance(task.id,changedTask.version),/人工交付来源/);assert.equal(f.counts.submits,1);
 });
 test('unknown artifact and Spark acknowledgement recover the same package and job without duplicate computation',async t=>{

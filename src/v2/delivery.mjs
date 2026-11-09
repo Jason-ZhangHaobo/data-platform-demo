@@ -310,7 +310,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     ])
   )
     throw fail("交付清单包含未定义字段");
-  if (source.attribution !== undefined && (!keysExactly(source.attribution, ["kind", "originAgentTaskId", "actorId", "agentIndependentE2E",...(source.attribution.developmentReference===undefined?[]:['developmentReference'])]) ||
+  if (source.attribution !== undefined && (!keysExactly(source.attribution, ["kind", "originAgentTaskId", "actorId", "agentIndependentE2E",...(source.attribution?.developmentReference===undefined?[]:['developmentReference'])]) ||
       source.attribution.kind !== "ENGINEER_ASSISTED" || source.attribution.agentIndependentE2E !== false ||
       !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(source.attribution.originAgentTaskId ?? "") ||
       typeof source.attribution.actorId !== "string" || !source.attribution.actorId || source.attribution.actorId.length > 100))
