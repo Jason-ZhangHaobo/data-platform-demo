@@ -5,6 +5,7 @@ import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { manualCloudDeliverySource, durableDeliveryMode } from "./agent-development-workflow.mjs";
 import {sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 import {standaloneManualPublicationSource} from './standalone-manual-publication-source.mjs';
+import {assertSqlRequirementPackageSource} from './sql-requirements.mjs';
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -46,6 +47,11 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
   const stamp = () => new Date(now()).toISOString();
   const patch = (kind, item, values) => store.update(kind, item.id, project, values, { expectedVersion: item.version });
   const ensure = async item => { await artifactStore.verify(item.artifact, "delivery-package", item.digest, deliveryArtifactValue(item)); return validateDeliveryPackage(item, item.digest); };
+  const assertRequirementSource=item=>{
+    const s=item.manifest.source,run=store.get('run',s.runId,project),revision=store.get('revision',s.revisionId,project),
+      agent=revision?.source==='LIVE_MODEL'&&run?.agentTaskId?store.get('agent',run.agentTaskId,project):undefined;
+    assertSqlRequirementPackageSource(item,{agent,run,revision});
+  };
   const passes = (receipt, item, plan) => receipt?.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) &&
     validationMatchesFamily(receipt.validation, { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) });
   const kindOf = release => release.sourceKind ?? "AGENT";
@@ -73,6 +79,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       (t.sourceKind ?? "AGENT") === sourceKind && t.status === "SUCCEEDED" && t.actualExecution === true);
     if (candidates.length !== 1 || agent.executionMode !== "DURABLE_SQL_AGENT_V1") throw fail(409, "源任务或文件演练尚未通过；人工版本需要独立的发布审阅");
     const delivery = candidates[0], item = get("delivery_package", delivery.packageId), verification = get("delivery_verification", verificationId), plan = validateDeliveryPackage(item, item.digest);
+    assertRequirementSource(item);
     if (item.digest !== packageDigest || item.digest !== delivery.packageDigest || verification.packageId !== item.id || verification.packageDigest !== item.digest || !passes(verification, item, plan))
       throw fail(409, "审阅必须绑定当前代码、包摘要和真实演练");
     if (sourceKind === "MANUAL") {
@@ -217,6 +224,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       // Re-read both records before claiming or submitting the frozen job.
       if (terminal.has(current.status) || get("release", release.id).status === "CANCELLED") return { releaseId: release.id, cancelled: true };
       if (!current.remoteSubmission) {
+        assertRequirementSource(item);
         assertExecutionScope(get("release", release.id));
         assertBudget(); const prepared = runner.prepare({ sql: item.files["main.sql"], testSql: item.files["tests.sql"], context: plan.fixtures.context, validationContexts: plan.fixtures.validationContexts }, current.id);
         current = patch("release_run", current, { status: "RUNNING", stage: "SUBMITTING", isolation: "FUNCTION_PROCESS", reservedDurationMs: reservationSeconds*1000, schedulerTriggered: true, clockMode: "FC_TIMER", triggerName, triggeredAt: stamp(), remoteSubmission: { prepared, submitted: false }, published: true });
@@ -227,6 +235,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       // Persisting the claim can cross the approved deadline. Unknown-submit
       // retries must pass the same fresh scope check before touching the queue.
       assertExecutionScope(get("release", release.id));
+      assertRequirementSource(item);
       await runner.submit(current.remoteSubmission.prepared);
       current = get("release_run", current.id);
       if (!terminal.has(current.status) && get("release", release.id).status !== "CANCELLED") {

@@ -27,6 +27,14 @@ test("generated or pending code cannot be a completed code-and-debug milestone",
   }
 });
 
+test('an explicit failed requirement binding cannot remain a green recorded-request milestone',()=>{
+ const f=fixture();f.report.checks.push({id:'requirement',passed:false});f.report.status='NEEDS_ATTENTION';
+ assert.equal(stage(f,'requirement'),'ATTENTION');assert.equal(agentJourney(f).next.id,'requirement');
+ assert.match(agentJourney(f).steps[0].detail,/不能沿用原交付与批准/);
+ assert.equal(stage({...f,evidenceReadable:false},'requirement'),'PENDING');assert.equal(stage({...f,dirty:true},'requirement'),'STALE');
+ f.report.checks.at(-1).passed=true;assert.equal(stage(f,'requirement'),'DONE');assert.match(agentJourney(f).steps[0].detail,/仍须独立核验/);
+});
+
 test("code execution requires the current task, revision, run and registered family", () => {
   for(const change of [{taskId:"foreign-task"},{revisionId:"different-code"},{runId:"different-run"},{contextId:"unknown-family"}])
     assert.notEqual(stage({...fixture(),...change},"code"),"DONE");

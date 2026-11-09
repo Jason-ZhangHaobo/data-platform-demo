@@ -8,7 +8,7 @@ import {developmentVerificationReport} from './agent-development-workflow.mjs';
 import {inspectLifecycleOutcome} from "./lifecycle-evaluation.mjs";
 import {inspectLifecycleConsumption,validLifecycleConsumptionSource,verifyLifecycleConsumptionStage} from "./lifecycle-consumption.mjs";
 import {liveEvidenceProvenance,nonLiveModelLabel} from './live-lifecycle-provenance.mjs';
-import {verifiedSqlRequirementReport} from './sql-requirements.mjs';
+import {verifiedSqlRequirementReport,sqlRequirementBinding} from './sql-requirements.mjs';
 
 const hash=value=>createHash("sha256").update(typeof value==="string"?value:JSON.stringify(value)).digest("hex");
 const fail=code=>Object.assign(new Error(code),{code});
@@ -154,6 +154,7 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
   const revision=await adapter.request(`/revisions/${attempt.revisionId}`),run=await adapter.request(`/runs/${attempt.runId}`),family=validationFamilyForContext(definition.contextId),
    expectedContract=v3?family.id:validationContractId,expectedContexts=v3?family.contextIds:contextIds;
   disclose(revision,run);
+  if(revision.requirementBinding!==undefined)ensure(task.requirements&&isDeepStrictEqual(revision.requirementBinding,sqlRequirementBinding(task.requirements)),'REQUIREMENT_EVIDENCE_UNCONFIRMED');
   ensure(nativeSource(revision)&&nativeSource(run)&&revision.source==="LIVE_MODEL"&&!revision.manualProvenance&&run.agentTaskId===task.id&&
     revision.id===attempt.revisionId&&revision.hash===hash(revision.sql)&&run.revisionId===revision.id&&run.revisionHash===revision.hash&&
     run.status==="SUCCEEDED"&&run.engine==="Apache Spark"&&run.mainSqlExecuted===true&&run.testDouble!==true&&run.validation?.contractId===expectedContract&&
@@ -179,8 +180,12 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
     verification.validation?.passed===true&&expectedContexts.every(id=>verification.validation.regressions?.some(check=>check.contextId===id&&check.passed))&&
     (!v3||bundle.manifest.source.validationContractId===expectedContract&&bundle.manifest.source.contextId===definition.contextId&&validationMatchesFamily(verification.validation,family,{requireContract:false})),"FILE_REHEARSAL_INCOMPLETE");
   ensure(deliveryFiles.every(name=>typeof bundle.files?.[name]==="string"&&bundle.files[name].length>0),"DELIVERY_FILES_MISSING");
-  try{validateDeliveryPackage(bundle,bundle.digest);}catch{throw fail("DELIVERY_MANIFEST_NOT_VERIFIED");}
-  state.delivery={id:delivery.id,packageId:bundle.id,packageDigest:bundle.digest,verificationId:verification.id};persist();
+  try{
+   const plan=validateDeliveryPackage(bundle,bundle.digest);
+   ensure(isDeepStrictEqual(plan.requirements,task.requirements),'DELIVERY_REQUIREMENT_NOT_BOUND');
+  }catch{throw fail("DELIVERY_MANIFEST_NOT_VERIFIED");}
+  state.delivery={id:delivery.id,packageId:bundle.id,packageDigest:bundle.digest,verificationId:verification.id,
+   ...(bundle.manifest.source.requirement?{requirementBinding:bundle.manifest.source.requirement}:{})};persist();
   mark("AWAITING_ENGINEER_REVIEW","ENGINEER_REVIEW_AND_PUBLICATION");
   const publication=await adapter.request(`/agent/tasks/${task.id}/publication`),release=publication.release;
   disclose(publication,release);
@@ -282,6 +287,7 @@ function verifyCodeThroughMonitoring(definition,state,contractId=state?.contract
  if(source.requirementEvidence!==undefined&&(source.requirementEvidence.status!=='MODEL_PROPOSED'||source.requirementEvidence.attempt!==source.modelAttempts||
   !verifiedSqlRequirementReport(source.requirementEvidence,{id:source.taskId,contextId:definition.contextId,message:definition.request,revisionId:source.revisionId,
     attempts:[{attempt:source.modelAttempts,model:source.model,revisionId:source.revisionId}]},{revisionHash:source.revisionHash})))return false;
+ if(!isDeepStrictEqual(state.delivery?.requirementBinding,source.requirementEvidence?sqlRequirementBinding(source.requirementEvidence):undefined))return false;
  const liveDefinition={caseId:definition.id,contextId:definition.contextId,category:definition.category,requirement:definition.request,
   original:{agentTaskId:source.taskId,revisionId:source.revisionId,runId:source.runId,attemptCount:source.modelAttempts},code:{sqlHash:source.revisionHash}};
  return inspectLifecycleOutcome(liveDefinition,state.lifecycleOutcome,{modelEvidenceMode:"LIVE_NEW_TASK"}).passed;

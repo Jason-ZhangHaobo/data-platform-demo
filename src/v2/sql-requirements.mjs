@@ -1,7 +1,12 @@
 import {createHash} from 'node:crypto';
-import {validationFamilyForContext} from './context.mjs';
+import {getContext,validationFamilyForContext} from './context.mjs';
 import {sqlRequirementProtocol,sqlRequirementFields,validSqlRequirementInterpretation,sqlRequirementReportMatches} from './sql-requirement-contract.mjs';
 const hash=value=>createHash('sha256').update(typeof value==='string'?value:JSON.stringify(value)).digest('hex');
+const canonical=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?
+ Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
+const same=(a,b)=>canonical(a)===canonical(b);
+const fail=()=>Object.assign(Error('需求理解、原任务、代码与不可变交付依据不一致；请重新核验确切版本'),{status:409,code:'REQUIREMENT_DELIVERY_SOURCE_CHANGED'});
+const reportKeys=['protocol','taskId','request','contextId','basis','attempt','model','semanticVerification','status','interpretation','revisionId','sqlHash'];
 
 export function sqlRequirementBasis(message,context){
  const family=validationFamilyForContext(context.id);
@@ -35,4 +40,51 @@ export function verifiedSqlRequirementReport(report,task,{revisionHash}={}){
  const {digest,...basis}=report.basis;
  return digest===hash(basis)&&basis.requestDigest===hash(task.message)&&
   (report.status!=='MODEL_PROPOSED'||report.sqlHash===(revisionHash??(typeof task.sql==='string'?hash(task.sql):undefined)));
+}
+export function sqlRequirementBinding(report){
+ return {protocol:sqlRequirementProtocol,taskId:report.taskId,basisDigest:report.basis.digest,reportDigest:hash(canonical(report))};
+}
+export function verifiedSqlRequirementForRevision(report,task,revision){
+ return Boolean(revision&&verifiedSqlRequirementReport(report,task)&&report.status==='MODEL_PROPOSED'&&
+  report.revisionId===revision.id&&report.sqlHash===revision.hash&&
+  (revision.requirementBinding===undefined||same(revision.requirementBinding,sqlRequirementBinding(report))));
+}
+// Only a checked original model task can supply evidence. Handwritten code and
+// historical packages do not inherit an explanation from an unrelated Agent.
+export function frozenSqlRequirements({agent,run,revision}){
+ if(agent?.requirements===undefined&&revision?.requirementBinding===undefined)return undefined;
+ const report=agent?.requirements,last=agent?.attempts?.at(-1);
+ if(!agent||!run||!revision||revision.source!=='LIVE_MODEL'||agent.language!=='SPARK_SQL'||agent.status!=='SUCCEEDED'||agent.mode!=='LIVE_MODEL'||
+  agent.contextId!==revision.contextId||agent.projectId!==run.projectId||revision.projectId!==run.projectId||
+  typeof agent.submittedBy!=='string'||!agent.submittedBy||agent.submittedBy!==revision.author||run.agentTaskId!==agent.id||last?.status!=='SUCCEEDED'||
+  last.runId!==run.id||last.revisionId!==revision.id||report?.attempt!==agent.attempts.length||
+  !verifiedSqlRequirementForRevision(report,agent,revision))throw fail();
+ const basis=sqlRequirementBasis(agent.message,getContext(revision.contextId));
+ if(!same(report.basis,basis))throw fail();
+ const frozen={protocol:report.protocol,taskId:agent.id,request:agent.message,contextId:revision.contextId,basis,
+  attempt:report.attempt,model:report.model,semanticVerification:report.semanticVerification,status:report.status,
+  interpretation:structuredClone(report.interpretation),revisionId:revision.id,sqlHash:revision.hash};
+ if(!same(frozen,report))throw fail(); // Do not archive arbitrary extra provider/debug fields.
+ return frozen;
+}
+export function validateFrozenSqlRequirements(report,binding,source,sql){
+ if(report===undefined&&binding===undefined)return undefined;
+ const expectedKeys=['protocol','taskId','basisDigest','reportDigest'];
+ if(!binding||typeof binding!=='object'||Array.isArray(binding)||Object.keys(binding).length!==expectedKeys.length||
+  expectedKeys.some(k=>!Object.hasOwn(binding,k))||!report||report.status!=='MODEL_PROPOSED'||
+  Object.keys(report).length!==reportKeys.length||reportKeys.some(k=>!Object.hasOwn(report,k))||
+  !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(report.taskId??'')||typeof report.request!=='string'||!report.request.trim()||report.request.length>2000||report.attempt>3||
+  report.contextId!==source.contextId||report.revisionId!==source.revisionId||report.sqlHash!==source.sqlHash||
+  source.attribution?.kind==='ENGINEER_AUTHORED'||source.attribution&&source.attribution.originAgentTaskId!==report.taskId)throw fail();
+ const task={id:binding.taskId,message:report.request,contextId:source.contextId,revisionId:source.revisionId,sql,
+  attempts:[{attempt:report.attempt,model:report.model,revisionId:source.revisionId}]};
+ if(!verifiedSqlRequirementReport(report,task)||!same(binding,sqlRequirementBinding(report))||
+  !same(report.basis,sqlRequirementBasis(report.request,getContext(source.contextId))))throw fail();
+ return report;
+}
+export function assertSqlRequirementPackageSource(bundle,{agent,run,revision}){
+ if(!bundle?.manifest)throw fail();
+ const frozen=frozenSqlRequirements({agent,run,revision}),binding=frozen?sqlRequirementBinding(frozen):undefined;
+ if(!same(bundle.manifest?.source?.requirement,binding))throw fail();
+ return frozen;
 }

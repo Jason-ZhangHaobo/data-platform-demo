@@ -3,6 +3,8 @@ import type {ServiceSourceBinding} from './service-source-binding';
 import {deliveryFileGuide} from './delivery-presentation.ts';
 import {checkedAssistedDevelopmentReference,sameAssistedDevelopmentReference} from '../../src/v2/assisted-development-reference.mjs';
 import type {AssistedDevelopmentReference} from '../../src/v2/assisted-development-reference.mjs';
+import {sqlRequirementReportMatches} from '../../src/v2/sql-requirement-contract.mjs';
+import type {SqlRequirementReport} from '../../src/v2/sql-requirement-contract.mjs';
 
 export type Delivery = {id:string;version:number;status:string;stage:string;mode?:string;sourceKind?:string;packageId?:string;packageDigest?:string;verificationId?:string;sourceRevisionId?:string;sourceRunId?:string;error?:string};
 export type Workflow = {
@@ -22,6 +24,19 @@ const nonnegative=(v:unknown)=>Number.isSafeInteger(v)&&Number(v)>=0;
 const canonical=(v:unknown)=>JSON.stringify(v,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
 const digest=async(v:string)=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v)))].map(n=>n.toString(16).padStart(2,'0')).join('');
 const bad=()=>Error('核验与交付回执的结构、原任务或版本关系未确认；保留原记录，重新读取，不自动计算或发布。');
+export function frozenRequirementProposal(bundle:Workflow['package'],taskId:string):SqlRequirementReport|undefined{
+ if(!bundle||!record(bundle.manifest)||!record(bundle.manifest.source))return;
+ const source=bundle.manifest.source;let proof:unknown;
+ try{proof=JSON.parse(bundle.files['validation.json']);}catch{throw bad();}
+ if(!record(proof))throw bad();const report=proof.requirements,binding=source.requirement;
+ if(report===undefined&&binding===undefined)return;
+ if(!record(binding)||Object.keys(binding).length!==4||!['protocol','taskId','basisDigest','reportDigest'].every(k=>Object.hasOwn(binding,k))||
+  binding.protocol!=='shuduo-sql-requirements/v1'||binding.taskId!==taskId||!hash(binding.basisDigest)||!hash(binding.reportDigest)||!record(report)||
+  report.status!=='MODEL_PROPOSED'||report.contextId!==source.contextId||report.sqlHash!==source.sqlHash||report.revisionId!==source.revisionId||
+  !sqlRequirementReportMatches(report,{id:taskId,contextId:String(source.contextId),message:String(report.request),revisionId:String(source.revisionId),
+    attempts:[{attempt:report.attempt,revisionId:source.revisionId,model:report.model}]})||report.basis.digest!==binding.basisDigest)throw bad();
+ return report;
+}
 
 // This checks the readable receipt and byte integrity, not execution, approval,
 // a signature, or a replacement for the server's full deployment validation.
@@ -64,6 +79,12 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
   let total=0;
   for(const name of names){const content=files[name],entry=entries[name];if(typeof content!=='string'||!record(entry))throw bad();const bytes=new TextEncoder().encode(content).length;total+=bytes;if(bytes>250000||entry.bytes!==bytes||entry.sha256!==await digest(content))throw bad();}
   if(total>750000||b.digest!==await digest(canonical(manifest))||source.sqlHash!==await digest(files['main.sql'] as string))throw bad();
+  const requirements=frozenRequirementProposal(b as Workflow['package'],r.taskId);
+  if(requirements){
+   const {digest:basisDigest,...basis}=requirements.basis;
+   if(!record(source.requirement)||await digest(canonical(requirements))!==source.requirement.reportDigest||
+    basisDigest!==await digest(JSON.stringify(basis))||await digest(requirements.request)!==(basis as Record<string,unknown>).requestDigest)throw bad();
+  }
  }
  if(record(d)&&(d.packageId!==undefined&&b===undefined||d.verificationId!==undefined&&v===undefined||d.status==='SUCCEEDED'&&(b===undefined||v===undefined)))throw bad();
  if(v!==undefined){

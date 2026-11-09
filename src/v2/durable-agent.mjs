@@ -8,7 +8,7 @@ import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import {resolveSqlRepairComparison,repairComparisonAttribution,explicitRepairAttribution} from './sql-repair-comparison.mjs';
 import {resolveAssistedContinuation} from './assisted-sql-delivery-source.mjs';
 import {resolveManualContinuation} from './manual-sql-continuation.mjs';
-import {sqlRequirementReport,bindSqlRequirementRevision} from './sql-requirements.mjs';
+import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding} from './sql-requirements.mjs';
 
 export const durableSqlAgentMode = "DURABLE_SQL_AGENT_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -244,6 +244,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
       digest(generated.sql), () => {
         const rev = store.create("revision", project, { sql: generated.sql.trim(), contextId: task.contextId,
           source: "LIVE_MODEL", author: task.submittedBy, ...repairComparisonAttribution(task), hash: createHash("sha256").update(generated.sql.trim()).digest("hex") });
+        if(requirements)store.update('revision',rev.id,project,{requirementBinding:sqlRequirementBinding(bindSqlRequirementRevision(requirements,rev))});
         change(task, { ...completedPatch, stage: "READY_FOR_RUN", sql: rev.sql, revisionId: rev.id,
           ...(requirements?{requirements:bindSqlRequirementRevision(requirements,rev)}:{}),
           explanation: typeof generated.explanation === "string" ? generated.explanation.slice(0,8000) : "",
