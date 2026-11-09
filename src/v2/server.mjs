@@ -25,7 +25,8 @@ import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
-import { createCloudPublication, validatePublicationSelector } from "./cloud-publication.mjs";
+import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
+import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
 import { publicationSelectorFromUrl } from "./publication-request.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
 import { localTaskConsumption } from "./local-task-consumption.mjs";
@@ -436,10 +437,16 @@ export function createV2Server(options = {}) {
   const privatePublicationConfig = privateReleaseConfig(env);
   const privateDataServicesEnabled=env.V2_PRIVATE_DATA_SERVICES_ENABLED==="true";
   if(privateDataServicesEnabled && !privateSmokeEnabled)throw new Error("私有数据服务只能在受保护的私有边界启用");
-  if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery)) throw new Error("私有发布须使用已启用的私有持久执行边界");
+  const standalonePublicationReady=Boolean(rawRunner.durable&&env.V2_DURABLE_MANUAL_DELIVERY_ENABLED==='true'&&publicationAccess?.sourceKind==='MANUAL_DELIVERY');
+  if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery&&!standalonePublicationReady)) throw new Error("私有发布须使用已启用的私有持久执行边界");
   const cloudPublication = durableDelivery ? createCloudPublication({ store, project: PROJECT, runner: publicationAccess ? rawRunner.durable : durableDevelopment, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30), singleRelease: Boolean(publicationAccess),
     assertPublicationScope: target => assertPublicationTarget(publicationAccess, target, options.now?.() ?? Date.now()),
     assertExecutionScope: release => assertPublicationExecutionWindow(publicationAccess, release, options.now?.() ?? Date.now()) }) : undefined;
+  const manualPublisher=(assertScope=()=>{})=>rawRunner.durable?createStandaloneManualPublication({store,project:PROJECT,runner:rawRunner.durable,artifactStore,persist:persistDevelopment,
+    enabled:Boolean(privatePublicationConfig&&standalonePublicationReady),singleRelease:true,now:options.now??Date.now,reservationSeconds:Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS??30),
+    assertBudget:()=>budget.assertCanStartRemoteSpark(),assertPublicationScope:target=>{assertPublicationTarget(publicationAccess,target,options.now?.()??Date.now());assertScope();},
+    assertExecutionScope:release=>assertPublicationExecutionWindow(publicationAccess,release,options.now?.()??Date.now())}):undefined;
+  const standaloneCloudPublication=manualPublisher();
   const agentDriverMode = env.V2_AGENT_DRIVER_MODE ?? "DISABLED";
   if (!["DISABLED", "PRIVATE_TICK", "OSS_EVENTS"].includes(agentDriverMode)) throw new Error("Agent 后台推进模式不受支持");
   if (agentDriverMode !== "DISABLED" && (!privateSmokeEnabled || !durableAgent))
@@ -1385,8 +1392,9 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(403, "本次仅允许指定交付包发布、签名调度与状态读取；其他私有任务和验收操作未开放。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
         if(privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1")return json(res,200,await(serviceAgentEvents??agentEventDriver).consume(privateInput.event));
         if (privateInput.operation === "PRIVATE_RELEASE_TIMER_V1") {
-          if (!cloudPublication || !privatePublicationConfig) throw fail(503,"私有发布调度未启用");
-          return json(res,200,await cloudPublication.tick(privateInput));
+          const release=store.get('release',privateInput.releaseId,PROJECT),publisher=release?.manualDeliveryTaskId?standaloneCloudPublication:cloudPublication;
+          if (!publisher || !privatePublicationConfig) throw fail(503,"私有发布调度未启用");
+          return json(res,200,await publisher.tick(privateInput));
         }
         if (privateInput.operation === "PRIVATE_AGENT_RECOVERY_V1")
           return json(res, 200, await privateAgentRecovery(privateInput, { store, project: PROJECT,
@@ -1401,7 +1409,7 @@ export function createV2Server(options = {}) {
           const address = server.address(), base = `http://127.0.0.1:${address.port}`;
           const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
             ? await verifyPrivateApplicationTask(privateInput, { base, store, project: PROJECT, internalHeaders: options.ingress?.internalHeaders })
-            : await callPrivateApplication(privateInput, base, undefined, { internalHeaders: options.ingress?.internalHeaders, allowDurableAgent: Boolean(durableAgent), allowDurableAgentRead: privateDataServicesEnabled, allowDataServices: privateDataServicesEnabled,allowServiceAgent:Boolean(serviceAgentAccess) });
+            : await callPrivateApplication(privateInput, base, undefined, { internalHeaders: options.ingress?.internalHeaders, allowDurableAgent: Boolean(durableAgent), allowDurableAgentRead: privateDataServicesEnabled, allowDataServices: privateDataServicesEnabled,allowServiceAgent:Boolean(serviceAgentAccess),allowStandaloneManualPublication:env.V2_DURABLE_MANUAL_DELIVERY_ENABLED==='true' });
           await persistence.flush?.();
           return json(res, 200, result);
         }
@@ -1525,6 +1533,11 @@ export function createV2Server(options = {}) {
           constrained.publicationSource = cloudPublication?.sourceForNavigation(target) ?? {
             status: "UNAVAILABLE", taskId: target.agentId, packageDigest: target.packageDigest, verificationId: target.verificationId,
           };
+        }
+        if(constrained.manualPublicationOnly&&constrained.manualPublicationTaskId&&body.user?.id){
+          const target={manualDeliveryTaskId:constrained.manualPublicationTaskId,packageDigest:constrained.publicationPackageDigest,verificationId:constrained.publicationVerificationId};
+          try{const task=store.get('manual_delivery_task',target.manualDeliveryTaskId,PROJECT),resolved=standaloneManualPublicationSource({store,project:PROJECT,...target,sourceRunId:task?.sourceRunId,actorId:body.user.id});constrained.manualPublicationSource={status:'RESOLVED',kind:'MANUAL_RUN',...target,runId:resolved.run.id,revisionId:resolved.revision.id,revisionHash:resolved.revision.hash};}
+          catch{constrained.manualPublicationSource={status:'UNAVAILABLE',kind:'MANUAL_RUN',...target};}
         }
         return constrained;
       };
@@ -5065,6 +5078,27 @@ export function createV2Server(options = {}) {
           });
         }
       }
+      const standalonePublication=path.match(/^\/api\/v2\/delivery\/manual\/([a-f0-9-]{36})\/publication(?:\/(cancel))?$/);
+      if(standalonePublication){
+        const actor=auth.sessionFromHeaders(req.headers);if(!actor)throw fail(401,'请先登录审阅手工交付');
+        const delivery=get('manual_delivery_task',standalonePublication[1]);if(delivery.submittedBy!==actor.user.id||delivery.mode!==standaloneManualDeliveryMode)throw fail(403,'手工发布仅属于原代码作者');
+        if(!standaloneCloudPublication)throw fail(503,'隔离发布执行器尚未配置；原文件和演练保留');
+        if(method==='GET'&&!standalonePublication[2]){
+          const selected=publicationSelectorFromUrl(url);if(selected.sourceKind!==undefined&&selected.sourceKind!=='MANUAL')throw fail(422,'独立手工读取不接受Agent来源');
+          const selector=validatePublicationSelector({...selected,sourceKind:'MANUAL'},actor.user.id);
+          return json(res,200,{protocol:'shuduo-standalone-manual-publication/v1',manualDeliveryTaskId:delivery.id,...await standaloneCloudPublication.detail(delivery.id,selector),scope:'PRIVATE_CLOUD_TEST',agentIndependentE2E:false});
+        }
+        if(method==='POST'){
+          if(url.search)throw fail(422,'发布不能混用查询与正文');const body=await readBody(req),allowed=standalonePublication[2]?['sourceKind','sourceRunId','packageDigest','verificationId','releaseId']:['sourceKind','sourceRunId','packageDigest','verificationId','attestations'];
+          if(Object.keys(body).some(k=>!allowed.includes(k))||body.sourceKind!=='MANUAL')throw fail(422,'仅接受当前手工来源与确切版本的审阅');
+          const {attestations,...selection}=body,selector=validatePublicationSelector(selection,actor.user.id);
+          if(standalonePublication[2]&&!selector.releaseId)throw fail(422,'停止须指定原发布编号');
+          const publisher=manualPublisher(()=>{const fresh=auth.requireMutation(req.headers,path);if(fresh.user.id!==delivery.submittedBy)throw fail(403,'审阅身份已变化');assertPublicationMutation(publicationAccess,fresh,method,path,options.now?.()??Date.now());});
+          const result=standalonePublication[2]?await publisher.cancel(delivery.id,selector):await publisher.publish({manualDeliveryTaskId:delivery.id,...selector,attestations,idempotencyKey:text(req.headers['idempotency-key'],1,100)});
+          return json(res,standalonePublication[2]?200:202,{protocol:'shuduo-standalone-manual-publication/v1',manualDeliveryTaskId:delivery.id,...result,scope:'PRIVATE_CLOUD_TEST',agentIndependentE2E:false});
+        }
+        throw fail(405,'手工发布操作方法不受支持');
+      }
       const standaloneSource=path.match(/^\/api\/v2\/delivery\/manual\/source\/([a-f0-9-]{36})$/),standaloneRecord=path.match(/^\/api\/v2\/delivery\/manual\/([a-f0-9-]{36})(?:\/(advance|cancel))?$/);
       if((standaloneSource&&method==='GET')||(path==='/api/v2/delivery/manual'&&method==='POST')||standaloneRecord){
         const actorId=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
@@ -5093,10 +5127,12 @@ export function createV2Server(options = {}) {
             all=store.list('manual_delivery_task',PROJECT).filter(t=>t.submittedBy===actorId&&t.sourceRunId===run.id&&t.sourceRevisionId===revision.id),task=all.find(t=>t.sourceBinding?.evidenceDigest===proof.binding.evidenceDigest)??all[0];
           readable(revision);if(task&&engine){owned(task.id);await engine.reconcile(task.id);}
           const latest=task?owned(task.id):undefined,{taskId:ignored,...baseReport}=developmentVerificationReport({contextId:revision.contextId},run,revision);
+          const publicationWindow=latest&&publicationAccess?.sourceKind==='MANUAL_DELIVERY'&&publicationAccess.taskId===latest.id&&publicationAccess.packageDigest===latest.packageDigest&&publicationAccess.verificationId===latest.verificationId&&publicationSession(publicationAccess,auth.sessionFromHeaders(req.headers),developmentNow())?.manualPublicationTaskId===latest.id?{manualDeliveryTaskId:latest.id,packageDigest:publicationAccess.packageDigest,verificationId:publicationAccess.verificationId,startsAt:new Date(publicationAccess.startsAt).toISOString(),expiresAt:new Date(publicationAccess.expiresAt).toISOString()}:undefined;
           return json(res,200,{protocol:'shuduo-standalone-manual-workflow/v1',executionAvailable:Boolean(engine),source:{kind:'MANUAL_RUN',runId:run.id,revisionId:revision.id,revisionHash:revision.hash,contextId:revision.contextId},sourceBinding:proof.binding,developmentReference:proof.developmentReference,
             report:{...baseReport,sourceKind:'MANUAL',sourceAttribution:'ENGINEER_AUTHORED',agentIndependentE2E:false,notice:'手工版本已按登记口径核验；文件与演练独立记录，不调用模型或虚构Agent来源。'},
             sourceCurrent:!latest||latest.sourceBinding?.evidenceDigest===proof.binding.evidenceDigest,delivery:publicDeliveryTask(latest),...packageView(latest),modelRequired:false,
-            publication:{available:false,scope:'NOT_IMPLEMENTED',reason:'本阶段准备文件与演练；独立手工发布仍需确切版本审阅与后续适配，未自动发布。'}});
+            publication:{available:Boolean(privatePublicationConfig&&standalonePublicationReady&&publicationWindow),scope:'PRIVATE_CLOUD_TEST',reason:privatePublicationConfig&&standalonePublicationReady?'审阅此确切包与成功演练后可创建两个冻结样例批次，由签名定时事件执行；不调用模型，不计自主完成。':'独立手工发布协议已具备；需隔离驱动和本交付确切版本的有效审阅窗口，当前未开放。',
+              ...(publicationWindow?{window:publicationWindow}:{})}});
         }
         if(path==='/api/v2/delivery/manual'&&method==='POST'){
           const body=await readBody(req);if(Object.keys(body).length!==1||!Object.hasOwn(body,'sourceBinding'))throw fail(422,'仅接受已读取的手工成功来源绑定');

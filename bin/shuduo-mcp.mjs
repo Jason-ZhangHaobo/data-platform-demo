@@ -13,6 +13,7 @@ import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual
 import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
 import {readManualContinuation,createManualContinuation} from '../src/v2/manual-continuation-client.mjs';
 import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,mutateStandaloneManual} from '../src/v2/standalone-manual-client.mjs';
+import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication} from '../src/v2/standalone-manual-publication-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
@@ -23,7 +24,13 @@ const servicePlanSourceSchema={type:'object',additionalProperties:false,properti
 const publicationProperties={sourceKind:{type:"string",enum:["AGENT","MANUAL"]},sourceRunId:publicationIdSchema,packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},verificationId:publicationIdSchema,releaseId:publicationIdSchema};
 const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANUAL"}},required:["sourceKind"]},then:{required:["sourceRunId","packageDigest","verificationId",...(stop?["releaseId"]:[])]}});
 
+const manualPublicationProperties={sourceRunId:{type:'string',format:'uuid'},taskId:{type:'string',format:'uuid'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},verificationId:{type:'string',format:'uuid'},releaseId:{type:'string',format:'uuid'}};
+const manualPublicationRequired=['sourceRunId','taskId','packageDigest','verificationId'];
 const tools = [
+  {name:'manual_publication_detail',description:'只读本人独立手工交付的确切发布、批次和告警，不借用Agent身份或创建新计算。',inputSchema:{type:'object',additionalProperties:false,properties:manualPublicationProperties,required:manualPublicationRequired},annotations:{readOnlyHint:true}},
+  {name:'manual_publication_create',description:'人工逐项审阅指定包与成功演练后，创建两个冻结虚构样例批次。需有效确切窗口、稳定requestId及confirm；不调用模型或安装定时器，不计自主完成。未知结果先读原发布。',inputSchema:{type:'object',additionalProperties:false,properties:{...manualPublicationProperties,requestId:{type:'string',format:'uuid'},confirm:{const:true},attestations:{type:'object',additionalProperties:false,properties:Object.fromEntries(['code','assertions','deliveryFiles','cloudScope'].map(k=>[k,{const:true}])),required:['code','assertions','deliveryFiles','cloudScope']}},required:[...manualPublicationRequired,'requestId','confirm','attestations']}},
+  {name:'manual_publication_cancel',description:'明确确认后停止确切手工发布，保留历史。无需成功读取Worker回执；仅确认停止，不把它当结果验收。',inputSchema:{type:'object',additionalProperties:false,properties:{...manualPublicationProperties,confirm:{const:true}},required:[...manualPublicationRequired,'releaseId','confirm']}},
+
   {name:'manual_development_workflow',description:'只读本人手工SQL的完整成功核验与原交付文件；不要求模型或Agent任务。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'}},required:['sourceRunId']},annotations:{readOnlyHint:true}},
   {name:'manual_delivery_prepare',description:'明确确认后固定本人手工版本并准备八文件；不调用模型、不创建Agent、不自动演练或发布。未知结果先查workflow，沿用requestId。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['sourceRunId','requestId','confirm']}},
   {name:'manual_delivery_detail',description:'只读指定手工交付的原文件与演练回执；不提交计算。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},taskId:{type:'string',format:'uuid'}},required:['sourceRunId','taskId']},annotations:{readOnlyHint:true}},
@@ -230,6 +237,9 @@ const typePath = (value) => {
   return value + "s";
 };
 async function callTool(name, args = {}, client=defaultClient) {
+  if(name==='manual_publication_detail')return readStandalonePublication(client,args);
+  if(name==='manual_publication_create')return publishStandaloneManual(client,args);
+  if(name==='manual_publication_cancel')return cancelStandalonePublication(client,args);
   if(name==='manual_development_workflow')return readStandaloneWorkflow(client,args);
   if(name==='manual_delivery_detail')return readStandaloneDetail(client,args);
   if(name==='manual_delivery_prepare')return prepareStandaloneManual(client,args);

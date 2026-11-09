@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createPasswordHash } from "./auth.mjs";
 import { referenceSql } from "./context.mjs";
 import { privateServiceRoute } from "./private-service-routes.mjs";
-import { privatePublicationReadRoute } from "./publication-request.mjs";
+import { privatePublicationReadRoute,standaloneManualPublicationRoute } from "./publication-request.mjs";
 
 const fail = (status, code) => Object.assign(new Error(code), { status, code });
 const paths = [
@@ -13,7 +13,7 @@ const headerNames = new Set(["cookie", "x-csrf-token", "idempotency-key", "x-pro
 // Keep the model's bounded checkpoint inside the private function's 120s limit.
 export const privateApplicationTimeoutMs = path => /^\/api\/v2\/(?:agent\/tasks|data-services\/agent\/plans)\/[a-f0-9-]{36}\/advance$/.test(path) ? 105000 : 30000;
 
-export function validatePrivateApplicationRequest(input, { allowDurableAgent = false, allowDurableAgentRead = false, allowDataServices = false,allowServiceAgent=false } = {}) {
+export function validatePrivateApplicationRequest(input, { allowDurableAgent = false, allowDurableAgentRead = false, allowDataServices = false,allowServiceAgent=false,allowStandaloneManualPublication=false } = {}) {
   const servicePath=allowDataServices && privateServiceRoute(input?.method,input?.path,{agentRead:true,agentPlanning:allowServiceAgent});
   const saveRecoveryRead=input?.method === "GET" && /^\/api\/v2\/revisions\/requests\/[A-Za-z0-9_-]{1,100}$/.test(input?.path ?? "");
   const publicationRead=(allowDurableAgent || allowDurableAgentRead) && privatePublicationReadRoute(input?.method,input?.path);
@@ -25,7 +25,7 @@ export function validatePrivateApplicationRequest(input, { allowDurableAgent = f
   if (!input || input.operation !== "PRIVATE_APPLICATION_HTTP_V1" ||
       Object.keys(input).some(k => !["operation", "method", "path", "headers", "body"].includes(k)) ||
       !["GET", "POST"].includes(input.method) || typeof input.path !== "string" ||
-      !(paths.some(p => p.test(input.path)) || agentPath || servicePath || saveRecoveryRead || publicationRead || manualWorkflow))
+      !(paths.some(p => p.test(input.path)) || agentPath || servicePath || saveRecoveryRead || publicationRead || manualWorkflow || allowStandaloneManualPublication&&standaloneManualPublicationRoute(input.method,input.path)))
     throw fail(422, "PRIVATE_APPLICATION_REQUEST_INVALID");
   const headers = input.headers ?? {};
   if (typeof headers !== "object" || Array.isArray(headers) ||

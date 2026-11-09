@@ -12,17 +12,18 @@ export function publicPublicationConfig(env) {
   const startsAt = typeof env.V2_PUBLIC_PUBLICATION_STARTS_AT === 'string' ? Date.parse(env.V2_PUBLIC_PUBLICATION_STARTS_AT) : NaN,
     expiresAt = typeof env.V2_PUBLIC_PUBLICATION_EXPIRES_AT === 'string' ? Date.parse(env.V2_PUBLIC_PUBLICATION_EXPIRES_AT) : NaN,
     email = typeof env.V2_BOOTSTRAP_ADMIN_EMAIL === 'string' ? env.V2_BOOTSTRAP_ADMIN_EMAIL.trim().toLowerCase() : '',
+    sourceKind=env.V2_PUBLIC_PUBLICATION_SOURCE_KIND??"AGENT_TASK",
     taskId = env.V2_PUBLIC_PUBLICATION_TASK_ID,
     packageDigest = env.V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST,
     verificationId = env.V2_PUBLIC_PUBLICATION_VERIFICATION_ID;
-  if (env.V2_LOCAL_DEVELOPMENT !== 'false' ||
+  if (!["AGENT_TASK","MANUAL_DELIVERY"].includes(sourceKind) || env.V2_LOCAL_DEVELOPMENT !== 'false' ||
       !Number.isFinite(startsAt) || !Number.isFinite(expiresAt) || expiresAt <= startsAt || expiresAt - startsAt > 2 * 3600000 ||
       email.length > 160 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
       typeof taskId !== 'string' || !uuid.test(taskId) ||
       typeof packageDigest !== 'string' || !digest.test(packageDigest) ||
       typeof verificationId !== 'string' || !uuid.test(verificationId))
     throw Error('PUBLIC_PUBLICATION_CONFIG_INVALID');
-  return Object.freeze({ scope, startsAt, expiresAt, email, taskId, packageDigest, verificationId,
+  return Object.freeze({ scope, sourceKind, startsAt, expiresAt, email, taskId, packageDigest, verificationId,
     executionAvailable: env.V2_EXECUTION_UNAVAILABLE !== 'true' });
 }
 
@@ -32,7 +33,7 @@ export function publicationSession(config, session, now = Date.now()) {
     typeof session?.user?.email === 'string' && session.user.email.toLowerCase() === config.email;
   const allowed = inWindow(config, now) && selectedAdministrator;
   return { readOnly: !allowed, permissions: allowed ? ['SESSION', 'DELIVERY'] : ['SESSION'],
-    publicationOnly: true, ...(selectedAdministrator ? { publicationTaskId: config.taskId,
+    publicationOnly: true, ...(config.sourceKind==='MANUAL_DELIVERY'?{manualPublicationOnly:true}:{}), ...(selectedAdministrator ? { [config.sourceKind==='MANUAL_DELIVERY'?'manualPublicationTaskId':'publicationTaskId']: config.taskId,
       publicationPackageDigest: config.packageDigest, publicationVerificationId: config.verificationId } : {}),
     publicationStartsAt: new Date(config.startsAt).toISOString(),
     publicationExpiresAt: new Date(config.expiresAt).toISOString() };
@@ -42,7 +43,7 @@ export function assertPublicationMutation(config, session, method, path, now = D
   if (!config || method === 'GET' || (method === 'POST' && authPaths.has(path))) return;
   if (publicationSession(config, session, now).readOnly)
     throw fail('PUBLIC_PUBLICATION_CLOSED', '当前发布窗口未开放、已到期、执行器未就绪或此账号未获准；已保存结果仍可查看。');
-  const target = `/api/v2/agent/tasks/${config.taskId}/publication`;
+  const target = config.sourceKind==='MANUAL_DELIVERY'?`/api/v2/delivery/manual/${config.taskId}/publication`:`/api/v2/agent/tasks/${config.taskId}/publication`;
   if (method !== 'POST' || (path !== target && path !== `${target}/cancel`))
     throw fail('PUBLIC_PUBLICATION_SCOPE_DENIED', '当前仅开放指定任务和交付包的审阅发布及停止；代码开发、其他任务和账号凭证管理保持只读。');
 }
@@ -51,7 +52,8 @@ export function assertPublicationTarget(config, target = {}, now = Date.now()) {
   if (!config) return;
   if (!inWindow(config, now))
     throw fail('PUBLIC_PUBLICATION_CLOSED', '发布窗口未开放、已到期或执行器未就绪；不会新建发布或计算。');
-  if (!target || target.agentId !== config.taskId || target.packageDigest !== config.packageDigest || target.verificationId !== config.verificationId)
+  const manual=config.sourceKind==='MANUAL_DELIVERY';
+  if (!target || (manual?target.manualDeliveryTaskId!==config.taskId||target.agentId!==undefined:target.agentId!==config.taskId||target.manualDeliveryTaskId!==undefined) || target.packageDigest !== config.packageDigest || target.verificationId !== config.verificationId)
     throw fail('PUBLIC_PUBLICATION_TARGET_MISMATCH', '发布必须绑定本次允许的任务、交付包摘要和文件演练；不允许替换版本。');
 }
 
@@ -59,7 +61,8 @@ export function assertPublicationExecutionWindow(config, release, now = Date.now
   if (!config) return;
   if (!inWindow(config, now))
     throw fail('PUBLIC_PUBLICATION_CLOSED', '发布窗口未开放、已到期或执行器未就绪；不再启动新 Spark，已提交结果仍可查看。');
-  if (!release || release.sourceAgentTaskId !== config.taskId || release.packageDigest !== config.packageDigest ||
+  const manual=config.sourceKind==='MANUAL_DELIVERY';
+  if (!release || (manual?release.manualDeliveryTaskId!==config.taskId||release.sourceAgentTaskId!==undefined:release.sourceAgentTaskId!==config.taskId||release.manualDeliveryTaskId!==undefined) || release.packageDigest !== config.packageDigest ||
       release.verificationId !== config.verificationId)
     throw fail('PUBLIC_PUBLICATION_TARGET_MISMATCH', '调度只能执行本次允许的任务及确切交付包；其他发布保持停止。');
 }

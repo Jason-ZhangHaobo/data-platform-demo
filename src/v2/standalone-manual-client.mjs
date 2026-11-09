@@ -33,10 +33,13 @@ async function checkedValue(value,selection,workflow){
     if(value.source?.kind!=='MANUAL_RUN'||value.source.runId!==selection.sourceRunId||value.source.revisionId!==b.revisionId||value.source.revisionHash!==b.revisionHash||
       r?.runId!==b.runId||r.revisionId!==b.revisionId||r.revisionHash!==b.revisionHash||r.sourceKind!=='MANUAL'||r.sourceAttribution!=='ENGINEER_AUTHORED'||r.agentIndependentE2E!==false||r.taskId!==undefined||
       !Array.isArray(r.checks)||canonical(r.checks.map(c=>c.id).sort())!==canonical(['revision','execution','results','regressions'].sort())||r.status!=='PASSED'||r.checks.some(c=>c.passed!==true)||typeof value.sourceCurrent!=='boolean'||typeof value.executionAvailable!=='boolean'||
-      ref.kind!=='MANUAL_SUCCESS_REFERENCE'||ref.evidenceDigest!==b.evidenceDigest||ref.sourceRunId!==b.runId||ref.sourceRevisionId!==b.revisionId||ref.sourceRevisionHash!==b.revisionHash||ref.originAgentTaskId!==b.originAgentTaskId||value.publication?.available!==false||value.publication.scope!=='NOT_IMPLEMENTED'||
+      ref.kind!=='MANUAL_SUCCESS_REFERENCE'||ref.evidenceDigest!==b.evidenceDigest||ref.sourceRunId!==b.runId||ref.sourceRevisionId!==b.revisionId||ref.sourceRevisionHash!==b.revisionHash||ref.originAgentTaskId!==b.originAgentTaskId||typeof value.publication?.available!=='boolean'||!['NOT_IMPLEMENTED','PRIVATE_CLOUD_TEST'].includes(value.publication.scope)||
       selection.revisionId!==undefined&&b.revisionId!==selection.revisionId||selection.revisionHash!==undefined&&b.revisionHash!==selection.revisionHash||
       value.sourceCurrent!==(!task||task.sourceBinding.evidenceDigest===b.evidenceDigest))throw bad();
   }
+  const window=value.publication?.window;
+  if(window&&(!task||window.manualDeliveryTaskId!==task.id||window.packageDigest!==task.packageDigest||window.verificationId!==task.verificationId||!Number.isFinite(Date.parse(window.startsAt))||!Number.isFinite(Date.parse(window.expiresAt))||Date.parse(window.expiresAt)<=Date.parse(window.startsAt)||Date.parse(window.expiresAt)-Date.parse(window.startsAt)>7200000))throw bad();
+  if(value.publication?.available&&(!window||value.publication.scope!=='PRIVATE_CLOUD_TEST'))throw bad();
   await checkedFiles(value,task);
   const v=value.verification;if(v!==undefined&&(!task||v.id!==task.verificationId||v.manualDeliveryTaskId!==task.id||v.packageId!==task.packageId||v.packageDigest!==task.packageDigest||v.agentDeliveryTaskId!==undefined||
     !['RUNNING','SUCCEEDED','FAILED','CANCELLED'].includes(v.status)||v.status==='SUCCEEDED'&&(v.engine!=='Apache Spark'||v.engineVersion!=='3.5.9'||v.mainSqlExecuted!==true||v.testSqlValidation?.passed!==true||v.validation?.passed!==true)))throw bad();

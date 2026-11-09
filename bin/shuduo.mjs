@@ -15,6 +15,7 @@ import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual
 import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
 import {readManualContinuation,createManualContinuation} from '../src/v2/manual-continuation-client.mjs';
 import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,mutateStandaloneManual} from '../src/v2/standalone-manual-client.mjs';
+import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication} from '../src/v2/standalone-manual-publication-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 
@@ -25,6 +26,10 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo sql compare-candidates --run-id RUN_ID
   shuduo sql compare-runs --run-id RUN_ID --baseline-run-id RUN_ID
   shuduo budget
+  shuduo manual publication --source-run-id RUN_ID --id MANUAL_DELIVERY_ID --package-digest SHA256 --verification-id ID [--release-id ID]
+  shuduo manual publish --source-run-id RUN_ID --id MANUAL_DELIVERY_ID --package-digest SHA256 --verification-id ID --file REVIEW_JSON --request-id UUID --confirm
+  shuduo manual stop-publication --source-run-id RUN_ID --id MANUAL_DELIVERY_ID --package-digest SHA256 --verification-id ID --release-id ID --confirm
+    发布仅在确切版本的有效独立窗口内允许；REVIEW_JSON含人工逐项attestations，不自动批准或安装定时器。
   shuduo manual workflow --source-run-id RUN_ID
   shuduo manual prepare --source-run-id RUN_ID --request-id UUID --confirm
   shuduo manual detail --source-run-id RUN_ID --id MANUAL_DELIVERY_ID
@@ -370,7 +375,14 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       return 0;
     }
     let result;
-    if(resource==='manual'&&['workflow','prepare','detail','advance','cancel'].includes(action)){
+    if(resource==='manual'&&['publication','publish','stop-publication'].includes(action)){
+      const common=['source_run_id','id','package_digest','verification_id'],fields=action==='publication'?[...common,'release_id']:action==='publish'?[...common,'request_id','file','confirm']:[...common,'release_id','confirm'],allowed=new Set([...fields,'base_url','help']),seen=new Set();
+      if(parsed.positionals.length!==2)throw Error('手工发布命令包含额外参数');for(const token of argv.filter(v=>v.startsWith('--'))){const flag=token.slice(2).replaceAll('-','_');if(!allowed.has(flag)||seen.has(flag))throw Error('手工发布命令包含未知或重复参数');seen.add(flag);}
+      const selected={sourceRunId:required(parsed.options,'source_run_id'),taskId:required(parsed.options,'id'),packageDigest:required(parsed.options,'package_digest'),verificationId:required(parsed.options,'verification_id'),...(parsed.options.release_id?{releaseId:parsed.options.release_id}:{})};
+      if(action==='publish'){const review=jsonObject(readFileSync(required(parsed.options,'file'),'utf8'),'审阅文件');if(Object.keys(review).length!==1||!review.attestations)throw Error('审阅文件仅接受逐项attestations，不自动填写批准');result=await publishStandaloneManual(client,{...selected,requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm,attestations:review.attestations});}
+      else result=action==='publication'?await readStandalonePublication(client,selected):await cancelStandalonePublication(client,{...selected,confirm:parsed.options.confirm});
+    }
+    else if(resource==='manual'&&['workflow','prepare','detail','advance','cancel'].includes(action)){
       const fields=action==='workflow'?['source_run_id']:action==='prepare'?['source_run_id','request_id','confirm']:action==='detail'?['source_run_id','id']:['source_run_id','id','version','confirm'],allowed=new Set([...fields,'base_url','help']),seen=new Set();
       if(parsed.positionals.length!==2)throw Error('手工交付命令包含额外参数');
       for(const token of argv.filter(v=>v.startsWith('--'))){const flag=token.slice(2).replaceAll('-','_');if(!allowed.has(flag)||seen.has(flag))throw Error('手工交付命令包含未知或重复参数');seen.add(flag);}

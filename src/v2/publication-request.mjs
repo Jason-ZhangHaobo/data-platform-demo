@@ -40,3 +40,16 @@ export function privatePublicationReadRoute(method, path) {
       !/^\/api\/v2\/agent\/tasks\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\/publication(?:\?[^#]*)?$/.test(path)) return false;
   try { publicationSelectorFromUrl(path); return true; } catch { return false; }
 }
+
+// Separate explicit transport capability; legacy Agent permissions do not
+// imply access to standalone manual publication endpoints.
+export function standaloneManualPublicationRoute(method,path){
+  if(typeof path!=='string'||!path.startsWith('/api/v2/')||path.length>700||/[\\#\s\u0000-\u001f\u007f]/.test(path))return false;
+  const u=new URL(path,'http://publication.invalid'),p=u.pathname,id='[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}';
+  if(p!==path.split('?')[0])return false;
+  if(method==='GET'&&new RegExp(`^/api/v2/delivery/manual/(?:source/)?${id}$`).test(p))return !u.search;
+  if(!new RegExp(`^/api/v2/delivery/manual/${id}/publication(?:/cancel)?$`).test(p))return false;
+  if(method==='POST')return !u.search;
+  if(method!=='GET'||p.endsWith('/cancel'))return false;
+  try{const s=publicationSelectorFromUrl(path);return s.sourceKind==='MANUAL'&&Boolean(s.sourceRunId&&s.packageDigest&&s.verificationId);}catch{return false;}
+}

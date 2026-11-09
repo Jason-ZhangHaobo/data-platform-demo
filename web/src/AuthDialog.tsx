@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ConsumptionPlan } from "./service-consumption-scope";
+import type {ManualPublicationNavigationSource}from'./standalone-manual-publication-navigation';
 import type {PublicationSource} from "./service-source-binding";
 import type {ServicePlanningAccess} from './private-service-plan';
 import {
@@ -41,6 +42,9 @@ export type AuthSession = {
   developmentStartsAt?: string;
   developmentExpiresAt?: string;
   publicationOnly?: boolean;
+  manualPublicationOnly?:boolean;
+  manualPublicationTaskId?:string;
+  manualPublicationSource?:ManualPublicationNavigationSource;
   publicationTaskId?: string;
   publicationPackageDigest?: string;
   publicationVerificationId?: string;
