@@ -1,13 +1,13 @@
 import {useEffect,useRef,useState} from 'react';
 import {Activity,RefreshCw,ShieldCheck,Square} from 'lucide-react';
-import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication} from '../../src/v2/standalone-manual-publication-client.mjs';
+import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication,manualPublicationRequestId} from '../../src/v2/standalone-manual-publication-client.mjs';
 import type {ManualPublication,ManualPublicationSelection} from '../../src/v2/standalone-manual-publication-client.mjs';
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
 type Window={manualDeliveryTaskId:string;packageDigest:string;verificationId:string;startsAt:string;expiresAt:string};
 const labels:Record<string,string>={SCHEDULED:'等待调度',RUNNING:'批次运行中',SUCCEEDED:'独立核验通过',FAILED:'批次失败',CANCELLED:'已停止',WAITING_SCHEDULER:'等待调度',RUNNING_CLOUD_TEST:'批次运行中',ACTIVE_CLOUD_TEST:'继续观察',COMPLETED_CLOUD_TEST:'两个样例批次已结束',HEALTHY:'两个批次核验通过',CRITICAL:'存在未解决告警',RECOVERED_WITH_FAILURE:'已恢复，仍有失败历史',OBSERVING:'继续观察',PENDING:'尚无运行结论',STOPPED:'已停止'};
 const reviews=[['code','已核对当前SQL版本及业务口径'],['assertions','已核对独立结果和五场景断言'],['deliveryFiles','已审阅当前包的调度、部署及其他文件'],['cloudScope','仅发布两个冻结虚构样例批次，非生产上线']] as const;
 export function StandaloneManualPublicationPanel({api,selection,canPublish,blocked,available,window:approvedWindow}:{api:Api;selection:ManualPublicationSelection;canPublish:boolean;blocked:boolean;available:boolean;window?:Window}){
- const key=JSON.stringify(selection),source=useRef(key);source.current=key;const live=useRef(true),seq=useRef(0),flight=useRef(false),request=useRef({key,id:crypto.randomUUID()}),access=useRef({canPublish,blocked});access.current={canPublish,blocked};
+ const key=JSON.stringify(selection),source=useRef(key);source.current=key;const live=useRef(true),seq=useRef(0),flight=useRef(false),request=useRef<{key:string;id?:string}>({key}),access=useRef({canPublish,blocked});access.current={canPublish,blocked};
  const [record,setRecord]=useState<{key:string;state:'LOADING'|'READY'|'ERROR';value?:ManualPublication;error?:string}>({key,state:'LOADING'}),[checked,setChecked]=useState<Record<string,boolean>>({}),[busy,setBusy]=useState(false),[unknown,setUnknown]=useState<string>(),[error,setError]=useState(''),[stopConfirmed,setStopConfirmed]=useState(false),[stopAck,setStopAck]=useState(''),[clock,setClock]=useState(Date.now());
  const current=record.key===key?record:undefined,value=current?.value,release=value?.release,uncertain=unknown===key;
  const validWindow=Boolean(approvedWindow&&approvedWindow.manualDeliveryTaskId===selection.taskId&&approvedWindow.packageDigest===selection.packageDigest&&approvedWindow.verificationId===selection.verificationId&&clock>=Date.parse(approvedWindow.startsAt)&&clock<Date.parse(approvedWindow.expiresAt)),writable=canPublish&&!blocked&&available&&validWindow;
@@ -16,11 +16,11 @@ export function StandaloneManualPublicationPanel({api,selection,canPublish,block
   try{const next=await readStandalonePublication(client,selection);if(active(scope)&&ticket===seq.current){setRecord({key:scope,state:'READY',value:next});setUnknown(old=>old===scope?undefined:old);setError('');}return next;}
   catch(e){if(active(scope)&&ticket===seq.current)setRecord(old=>({key:scope,state:'ERROR',value:old.key===scope?old.value:undefined,error:(e as Error).message}));return undefined;}};
  useEffect(()=>{live.current=true;return()=>{live.current=false;seq.current++;};},[]);
- useEffect(()=>{if(request.current.key!==key)request.current={key,id:crypto.randomUUID()};setChecked({});setStopConfirmed(false);setStopAck('');void load();},[key]);
+ useEffect(()=>{if(request.current.key!==key)request.current={key};setChecked({});setStopConfirmed(false);setStopAck('');void load();},[key]);
  useEffect(()=>{if(!approvedWindow)return;setClock(Date.now());const id=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(id);},[approvedWindow?.startsAt,approvedWindow?.expiresAt]);
  useEffect(()=>{if(!writable)setChecked({});},[writable]);
  const publish=async()=>{if(flight.current||!writable||current?.state!=='READY'||release||uncertain||!reviews.every(([id])=>checked[id]))return;const scope=key;flight.current=true;setBusy(true);setError('');
-  try{const next=await publishStandaloneManual(client,{...selection,requestId:request.current.id,confirm:true,attestations:{code:true,assertions:true,deliveryFiles:true,cloudScope:true}});if(active(scope)){setRecord({key:scope,state:'READY',value:next});setChecked({});}}
+  try{const requestId=request.current.id??await manualPublicationRequestId(selection);if(!active(scope)||!access.current.canPublish||access.current.blocked)return;request.current={key:scope,id:requestId};const next=await publishStandaloneManual(client,{...selection,requestId,confirm:true,attestations:{code:true,assertions:true,deliveryFiles:true,cloudScope:true}});if(active(scope)){setRecord({key:scope,state:'READY',value:next});setChecked({});}}
   catch(e){if(active(scope)){setUnknown(scope);setError((e as Error).message+' 原请求编号保留，先读取原发布，不自动重提。');}}
   finally{flight.current=false;if(active(scope))setBusy(false);}};
  const stop=async()=>{if(flight.current||!canPublish||!validWindow||!release||!stopConfirmed)return;const scope=key;flight.current=true;setBusy(true);setError('');

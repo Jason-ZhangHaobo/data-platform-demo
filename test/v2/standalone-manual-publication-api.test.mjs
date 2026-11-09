@@ -1,7 +1,7 @@
 import{writeFileSync}from'node:fs';import{join}from'node:path';import{runV2Cli}from'../../bin/shuduo.mjs';import{handleV2Mcp}from'../../bin/shuduo-mcp.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';
 import {createManualPublicationJourney} from './fixtures/manual-publication-journey.mjs';import{PROJECT}from'../../src/v2/server.mjs';
-import{readStandalonePublication,publishStandaloneManual,cancelStandalonePublication}from'../../src/v2/standalone-manual-publication-client.mjs';
+import{readStandalonePublication,publishStandaloneManual,cancelStandalonePublication,manualPublicationRequestId}from'../../src/v2/standalone-manual-publication-client.mjs';
 async function setup(t){const f=await createManualPublicationJourney({standalone:true});t.after(f.dispose);return f;}
 test('manual-only publication API enforces exact source, session, CSRF and prevents old Agent scope reuse',async t=>{
  const f=await setup(t),session=(await f.call('/auth/session')).body;assert.equal(session.manualPublicationOnly,true);assert.equal(session.manualPublicationTaskId,f.delivery.id);assert.equal(session.publicationTaskId,undefined);assert.deepEqual(session.permissions,['SESSION','DELIVERY']);
@@ -41,4 +41,10 @@ test('CLI and MCP keep the same reviewed request, never create an Agent and reje
 test('explicit manual-only private forwarding accepts the same guarded API without enabling model development',async t=>{
  const f=await setup(t),read=await f.forward(f.path+f.query);assert.equal(read.status,200);assert.equal(read.body.status,200);assert.equal(read.body.body.manualDeliveryTaskId,f.delivery.id);
  const made=await f.forward(f.path,f.body);assert.equal(made.status,200);assert.equal(made.body.status,202);assert.equal(made.body.body.release.manualDeliveryTaskId,f.delivery.id);assert.equal(f.store.list('agent',PROJECT).length,0);assert.equal(f.counts().submitCalls,0);
+});
+
+test('UI publication request identity survives refresh and unknown acknowledgement without storage or a second approval',async t=>{
+ const f=await setup(t),selected={sourceRunId:f.sourceRun.id,taskId:f.delivery.id,packageDigest:f.item.digest,verificationId:f.verification.id},id=await manualPublicationRequestId(selected),afterRefresh=await manualPublicationRequestId({...selected});assert.equal(id,afterRefresh);assert.notEqual(id,await manualPublicationRequestId({...selected,verificationId:randomUUID()}));
+ const client={request:async(p,o)=>{const r=await f.call(p,o?.method==='POST'?o.body:undefined,{key:o?.idempotencyKey});if(r.status>=400)throw Error(r.body.message);return r.body;}},input={...selected,requestId:id,confirm:true,attestations:f.body.attestations};let posts=0;
+ await assert.rejects(publishStandaloneManual({request:async(p,o)=>{const v=await client.request(p,o);if(o?.method==='POST'){posts++;throw Error('synthetic reply unknown');}return v;}},input));const read=await readStandalonePublication(client,selected),again=await publishStandaloneManual(client,{...input,requestId:afterRefresh});assert.equal(posts,1);assert.equal(again.release.id,read.release.id);assert.equal(f.store.list('release_approval',PROJECT).length,1);assert.equal(f.counts().submitCalls,0);
 });

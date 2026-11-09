@@ -6,3 +6,5 @@ export function publishStandaloneManual(client:Client,input:ManualPublicationSel
 export type ManualPublicationStop={protocol:'shuduo-standalone-manual-stop/v1';scope:'STOP_ACK_ONLY';manualDeliveryTaskId:string;releaseId:string;packageDigest:string;verificationId:string;status:string};
 export function cancelStandalonePublication(client:Client,input:ManualPublicationSelection&{confirm:true}):Promise<ManualPublicationStop>;
 export function checkedStandalonePublication(value:unknown,selection:ManualPublicationSelection,before:unknown):ManualPublication;
+
+export function manualPublicationRequestId(input:ManualPublicationSelection):Promise<string>;
