@@ -23,6 +23,7 @@ import { callPrivateApplication, verifyPrivateApplicationTask,validatePrivateApp
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
+import {sqlRequirementReport,bindSqlRequirementRevision} from './sql-requirements.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
@@ -6039,6 +6040,14 @@ export function createV2Server(options = {}) {
                   : remainingBudget;
               if (usedTokens > Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000))
                 throw new Error("本次 Agent 已达到 Token 预算上限");
+              const requirements=sqlRequirementReport({task,message,context,generated,attempt});
+              if(requirements&&requirements.status!=='MODEL_PROPOSED'){
+                const code=requirements.status==='CLARIFICATION_REQUIRED'?'REQUIREMENT_CLARIFICATION_REQUIRED':'REQUIREMENT_EVIDENCE_INVALID';
+                store.update('agent',task.id,PROJECT,{usedTokens,requirements,status:'FAILED',stage:code,code,finishedAt:new Date().toISOString(),
+                  error:requirements.interpretation?.question??requirements.reason,
+                  attempts:[...get('agent',task.id).attempts,{attempt,status:code,model:generated.model,usage:generated.usage,computationSkipped:true}]});
+                return;
+              }
               if(explicitRepair){
                 store.update('agent',task.id,PROJECT,{usedTokens});
                 resolveExplicitSqlRepairSource({sourceRunId:body.sourceRunId,actorId,contextId:context.id,currentSql:currentCode,project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
@@ -6047,6 +6056,8 @@ export function createV2Server(options = {}) {
               }
               sql = generated.sql;
               const rev = revision(sql, context.id, "LIVE_MODEL", task.submittedBy);
+              if(requirements)store.update('agent',task.id,PROJECT,{usedTokens,requirements:bindSqlRequirementRevision(requirements,rev),revisionId:rev.id,
+                sql,attempts:[...get('agent',task.id).attempts,{attempt,status:'GENERATED',model:generated.model,usage:generated.usage,revisionId:rev.id}]});
               if(explicitRepair)store.update('revision',rev.id,PROJECT,repairComparisonAttribution(task));
               const run = store.create("run", PROJECT, {
                 validationContractId:validationFamily(context.id).id,
@@ -6070,7 +6081,7 @@ export function createV2Server(options = {}) {
               }
               const latest = get("agent", task.id),
                 attempts = [
-                  ...latest.attempts,
+                  ...latest.attempts.filter(previous=>previous.attempt!==attempt),
                   {
                     attempt,
                     runId: run.id,

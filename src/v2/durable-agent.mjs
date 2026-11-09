@@ -8,6 +8,7 @@ import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import {resolveSqlRepairComparison,repairComparisonAttribution,explicitRepairAttribution} from './sql-repair-comparison.mjs';
 import {resolveAssistedContinuation} from './assisted-sql-delivery-source.mjs';
 import {resolveManualContinuation} from './manual-sql-continuation.mjs';
+import {sqlRequirementReport,bindSqlRequirementRevision} from './sql-requirements.mjs';
 
 export const durableSqlAgentMode = "DURABLE_SQL_AGENT_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -198,6 +199,14 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
       attempts: attempts.map((a, i) => i === attempts.length - 1 ? { ...a, status: code } : a) }), "FAILED", message);
     if (spent > reserved || completedPatch.usedTokens > task.tokenBudget)
       return modelFailure("MODEL_BUDGET_EXCEEDED", "模型返回的用量超出本次预算，未提交计算任务");
+    const requirements=sqlRequirementReport({task,message:task.message,context:getContext(task.contextId),generated,attempt:attempts.length});
+    if(requirements&&requirements.status!=='MODEL_PROPOSED'){
+      const code=requirements.status==='CLARIFICATION_REQUIRED'?'REQUIREMENT_CLARIFICATION_REQUIRED':'REQUIREMENT_EVIDENCE_INVALID';
+      const saved=change(task,{...completedPatch,requirements,status:'FAILED',stage:code,code,finishedAt:stamp(),
+        error:requirements.interpretation?.question??requirements.reason,
+        attempts:attempts.map((a,i)=>i===attempts.length-1?{...a,status:code,computationSkipped:true}:a)});
+      await persist();return publicDurableAgent(saved);
+    }
     if (typeof generated?.sql !== "string" || !generated.sql.trim() || generated.sql.length > 20000 ||
         typeof generated?.model !== "string" || !generated.model || generated.model.length > 200)
       return modelFailure("MODEL_OUTPUT_INVALID", "模型未返回有效 SQL 或模型标识，未提交计算任务");
@@ -236,6 +245,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
         const rev = store.create("revision", project, { sql: generated.sql.trim(), contextId: task.contextId,
           source: "LIVE_MODEL", author: task.submittedBy, ...repairComparisonAttribution(task), hash: createHash("sha256").update(generated.sql.trim()).digest("hex") });
         change(task, { ...completedPatch, stage: "READY_FOR_RUN", sql: rev.sql, revisionId: rev.id,
+          ...(requirements?{requirements:bindSqlRequirementRevision(requirements,rev)}:{}),
           explanation: typeof generated.explanation === "string" ? generated.explanation.slice(0,8000) : "",
           attempts: attempts.map((a, i) => i === attempts.length - 1 ? { ...a, revisionId: rev.id } : a) });
         return rev;
