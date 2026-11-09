@@ -34,7 +34,7 @@ export function StandaloneManualDeliveryPanel({api,sourceRunId,revisionId,revisi
     if(flight.current||busy||unknown||current?.state!=='READY'||!value?.sourceCurrent||!value.executionAvailable||!canWrite||dirty)return;
     const scope=key;flight.current=true;setBusy(true);setError('');
     try{const started=await prepareStandaloneManual(client,{sourceRunId,requestId:request.current.id,confirm:true});if(!live(scope))return;
-      const next=await load();flight.current=false;setBusy(false);if(next&&access.current.canWrite&&!access.current.dirty)void drive(started);
+      const next=await load();flight.current=false;setBusy(false);if(next&&access.current.canWrite&&!access.current.dirty)await drive(started);
     }catch(e){if(live(scope)){setUncertain(scope);setError((e as Error).message+' 原准备请求编号保留，请先读取原交付。');}}
     finally{flight.current=false;if(live(scope))setBusy(false);}
   };
