@@ -12,12 +12,14 @@ export default function SqlEditor({
   onChange,
   diff,
   readOnly = false,
+  focusChanges = false,
 }: {
   value: string;
   original: string;
   onChange: (v: string) => void;
   diff: boolean;
   readOnly?: boolean;
+  focusChanges?: boolean;
 }) {
   const options = {
     readOnly,
@@ -39,7 +41,7 @@ export default function SqlEditor({
       language="sql"
       original={original}
       modified={value}
-      options={{ ...options, readOnly: true, renderSideBySide: false }}
+      options={{ ...options, readOnly: true, renderSideBySide: false,hideUnchangedRegions:focusChanges?{enabled:true,contextLineCount:3,minimumLineCount:6,revealLineCount:20}:undefined }}
       loading={<div className="editor-loading">准备代码差异…</div>}
     />
   ) : (

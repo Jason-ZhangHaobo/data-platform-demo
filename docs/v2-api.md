@@ -242,6 +242,8 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /streams/agent/plans/:id/apply | 空对象 | 人工应用已验证方案为READY任务，不自动启动 |
 | POST /streams/agent/plans/:id/cancel | 空对象 | 取消排队或运行中的方案并保留记录 |
 | GET /assets | q/kind可选 | 搜索从当前实际资源和版本关系投影的逻辑资产目录 |
+| GET /runs/:id/comparison-candidates | 无查询参数 | 现有权限下的同口径运行候选，最多50条元数据，不含源码/行/日志 |
+| GET /runs/:id/comparison?baseline_run_id=UUID | 单一确切基线编号 | 两记录分别校验归属；只读原代码摘要、值来源/条件及独立核验。输入/断言/引擎未齐不作受控状态对照；缺历史不推断新增/删除；不解析草稿或执行 |
 | GET /assets/:id | 资产编号 | 字段、证据摘要、说明、血缘、指标与标准 |
 | POST /assets/:id/annotation | 业务名称/说明/域/负责人/分类/标签 | 保存新的资产说明版本，不覆盖底层证据 |
 | POST /assets/:id/annotation-requests | V2协议、请求UUID、expected版本/摘要、完整annotation | 事务核对已读基线并保存不可变应用／拒绝回执；必须检查outcome，不能只看201 |

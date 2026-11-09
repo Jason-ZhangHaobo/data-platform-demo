@@ -1,0 +1,16 @@
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { getContext, referenceSqlForContext, validationFamilyForContext } from '../../../src/v2/context.mjs';
+import { sqlLineageSchemaHash } from '../../../src/v2/sql-column-lineage.mjs';
+export const comparisonHash = v => createHash('sha256').update(v).digest('hex');
+export function seedRunComparison({ store, project, author = 'local-engineer' }) {
+    const context = getContext('holdings-t1'), family = validationFamilyForContext(context.id), goodSql = referenceSqlForContext(context.id), badSql = goodSql.replace('SELECT DISTINCT position_id', 'SELECT position_id'), metadata = { id: context.id, advisorId: context.advisorId, businessDate: context.businessDate, tables: context.tables.map(t => ({ name: t.name, columns: t.columns })) }, outputs = ['client_id', 'holding_market_value', 'available_cash', 'total_assets', 'security_count'];
+    const harness = "import importlib.util,json,sys\ns=importlib.util.spec_from_file_location('worker','src/v2/worker.py');w=importlib.util.module_from_spec(s);s.loader.exec_module(w)\np=json.load(sys.stdin);print(json.dumps([w.analyze_column_lineage(q,p['context'],p['outputs']) for q in p['queries']]))", r = spawnSync(existsSync('.runtime/python/bin/python') ? '.runtime/python/bin/python' : 'python3', ['-c', harness], { input: JSON.stringify({ queries: [goodSql, badSql], context: metadata, outputs }), encoding: 'utf8', timeout: 10000, maxBuffer: 500000 });
+    if (r.status !== 0)
+        throw Error('SYNTHETIC_LINEAGE_FIXTURE_FAILED');
+    const traces = JSON.parse(r.stdout);
+    const input = id => ({ protocol: 'shuduo-spark-execution-input/v1', scope: 'ADVISOR_SCOPED_REGISTERED_TABLES', contextId: id, inputHash: comparisonHash('synthetic-input:' + id), schemaHash: sqlLineageSchemaHash(getContext(id)), tableCount: 3 }), assertion = id => ({ protocol: 'shuduo-securities-assertion-evidence/v1', verifierRevision: 'comparison-v2', contentHash: comparisonHash('synthetic-assertions:' + id) });
+    const make = (sql, trace, bad) => { const revision = store.create('revision', project, { sql, hash: comparisonHash(sql), contextId: context.id, source: 'MANUAL', author }), run = store.create('run', project, { revisionId: revision.id, revisionHash: revision.hash, contextId: context.id, validationContractId: family.id, status: bad ? 'VALIDATION_FAILED' : 'SUCCEEDED', engine: 'Apache Spark', engineVersion: '3.5.9', mainSqlExecuted: true, inputEvidence: input(context.id), columnLineage: trace, columns: outputs.map(name => ({ name, type: 'string' })), rows: [{ SYNTHETIC_PRIVATE_ROW: 'MUST_NOT_LEAK' }], testSqlValidation: { passed: true, sqlHash: comparisonHash('synthetic-tests') }, validation: { passed: !bad, contractId: family.id, assertionEvidence: assertion(context.id), issues: ['SYNTHETIC_PRIVATE_ISSUE'], regressions: family.contextIds.map((id, i) => ({ contextId: id, passed: !(bad && i === 2), inputEvidence: input(id), assertionEvidence: assertion(id), issues: ['SYNTHETIC_PRIVATE_ISSUE'] })) } }); return { revision, run }; };
+    return { context, family, baseline: make(goodSql, traces[0], false), current: make(badSql, traces[1], true), input, assertion };
+}

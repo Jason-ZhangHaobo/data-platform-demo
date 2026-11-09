@@ -4,6 +4,7 @@ import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/ass
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
+import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
@@ -16,6 +17,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
 
 用法：
   shuduo status
+  shuduo sql compare-candidates --run-id RUN_ID
+  shuduo sql compare-runs --run-id RUN_ID --baseline-run-id RUN_ID
   shuduo budget
   shuduo agent intents
   shuduo agent tools
@@ -343,6 +346,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     }
     let result;
     if (resource === "status") result = await client.request("/status");
+    else if(resource==='sql'&&action==='compare-candidates')result=await readRunComparisonCandidates(client,{runId:required(parsed.options,'run_id')});
+    else if(resource==='sql'&&action==='compare-runs')result=await readSqlRunComparison(client,{runId:required(parsed.options,'run_id'),baselineRunId:required(parsed.options,'baseline_run_id')});
     else if (resource === "budget" && !action)
       result = await client.request("/budget");
     else if(resource==='services'&&['plan','plans','plan-context','plan-detail','plan-request','apply-plan','cancel-plan','advance-plan'].includes(action)){

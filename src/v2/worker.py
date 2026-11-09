@@ -168,13 +168,16 @@ def execute(spark, sql, context):
     validated=validate_sql(sql,context)
     accounts=next(t for t in context["tables"] if t["name"]=="accounts")
     allowed_clients={row[0] for row in accounts["rows"] if row[1]==context["advisorId"]}
+    input_tables=[]
     for table in context["tables"]:
         name=table["name"]
         if name not in {"accounts","positions","cash"}: raise ValueError("数据表不在允许列表")
         schema=StructType([StructField(c[0],StringType(),True) for c in table["columns"]])
         client_index=[c[0] for c in table["columns"]].index("client_id")
         scoped_rows=[row for row in table["rows"] if row[client_index] in allowed_clients]
-        frame=spark.createDataFrame([[None if v is None else str(v) for v in row] for row in scoped_rows],schema)
+        normalized_rows=[[None if v is None else str(v) for v in row] for row in scoped_rows]
+        input_tables.append({"name":name,"columns":table["columns"],"rows":normalized_rows})
+        frame=spark.createDataFrame(normalized_rows,schema)
         for col,kind in table["columns"]:
             if kind not in {"STRING","DECIMAL(18,2)"}: raise ValueError("字段类型不支持")
             frame=frame.withColumn(col,frame[col].cast(kind))
@@ -184,7 +187,13 @@ def execute(spark, sql, context):
     if len(data)>1000: raise ValueError("查询结果超过 1000 行")
     spark.createDataFrame(data,frame.schema).createOrReplaceTempView("__shuduo_result")
     rows=[{k:format(v,"f") if isinstance(v,Decimal) else v for k,v in row.asDict().items()} for row in data]
+    input_body={"contextId":context["id"],"advisorId":context["advisorId"],"businessDate":context["businessDate"],"tables":input_tables}
+    schema_body={"tables":[{"name":t["name"],"columns":t["columns"]} for t in input_tables]}
+    input_evidence={"protocol":"shuduo-spark-execution-input/v1","scope":"ADVISOR_SCOPED_REGISTERED_TABLES","contextId":context["id"],
+        "inputHash":hashlib.sha256(json.dumps(input_body,sort_keys=True,ensure_ascii=False,separators=(",",":")).encode()).hexdigest(),
+        "schemaHash":hashlib.sha256(json.dumps(schema_body,sort_keys=True,ensure_ascii=False,separators=(",",":")).encode()).hexdigest(),"tableCount":len(input_tables)}
     return {"rows":rows,"columns":[{"name":f.name,"type":f.dataType.simpleString()} for f in frame.schema.fields],"engine":"Apache Spark","engineVersion":spark.version,
+            "inputEvidence":input_evidence,
             "columnLineage":analyze_column_lineage(sql,context,frame.columns)}
 
 COMPARISON_FIELDS=("holding_market_value","available_cash","total_assets","security_count")
@@ -219,6 +228,7 @@ def comparison_number(value):
     return text if len(text)<=64 else None
 
 def verify(rows,expected):
+    import json
     issues=[];mismatches=[];total_mismatches=0
     expected_ids={row["client_id"] for row in expected}
     def add(kind,**detail):
@@ -265,7 +275,9 @@ def verify(rows,expected):
     if set(actual)!=expected_ids or unkeyed:issues.append("结果包含范围外客户或缺少客户")
     if outside:add("OUT_OF_SCOPE_CLIENTS",actualCount=outside)
     return {"passed":not issues,"issues":issues,"assertions":["客户范围","客户唯一性","持仓去重","现金独立聚合","金额精度","证券代码去重","输出契约"],
-        "comparison":{"schema":"shuduo-result-comparison/v1","mismatches":mismatches,"totalMismatches":total_mismatches,"truncated":total_mismatches>len(mismatches)}}
+        "comparison":{"schema":"shuduo-result-comparison/v1","mismatches":mismatches,"totalMismatches":total_mismatches,"truncated":total_mismatches>len(mismatches)},
+        "assertionEvidence":{"protocol":"shuduo-securities-assertion-evidence/v1","verifierRevision":"comparison-v2",
+            "contentHash":hashlib.sha256(json.dumps({"expected":expected,"fields":COMPARISON_FIELDS},sort_keys=True,ensure_ascii=False,separators=(",",":")).encode()).hexdigest()}}
 
 def execute_test_sql(spark,test_sql,context):
     scope={"advisorId":context["advisorId"],"businessDate":context["businessDate"],"tables":[{"name":"__shuduo_result"}]}
@@ -288,19 +300,20 @@ def execute_with_validation(spark,sql,context,validation_contexts=None,test_sql=
         except Exception as error:
             test_check={"passed":False,"sqlHash":hashlib.sha256(test_sql.encode()).hexdigest(),"error":str(error)[:3000]}
     selected=verify(result["rows"],context["expected"])
-    regressions=[{"contextId":context["id"],"name":context["name"],**selected}]
+    regressions=[{"contextId":context["id"],"name":context["name"],**selected,**({"inputEvidence":result["inputEvidence"]} if result.get("inputEvidence") else {})}]
     seen={context["id"]}
     for check_context in validation_contexts or []:
         if check_context["id"] in seen:continue
         seen.add(check_context["id"])
         actual=execute(spark,sql,check_context)
         checked=verify(actual["rows"],check_context["expected"])
-        regressions.append({"contextId":check_context["id"],"name":check_context["name"],**checked})
+        regressions.append({"contextId":check_context["id"],"name":check_context["name"],**checked,**({"inputEvidence":actual["inputEvidence"]} if actual.get("inputEvidence") else {})})
     issues=[check["name"]+"："+issue for check in regressions for issue in check["issues"]]
     if test_check is not None and not test_check["passed"]:issues.append("tests.sql："+test_check.get("error","没有得到唯一的 passed=true 结果"))
     result["validation"]={
         "passed":not issues,"issues":issues,"assertions":selected["assertions"],
         "selectedPassed":selected["passed"],"scope":"SELECTED_AND_REGISTERED_FIXTURES","regressions":regressions,
+        **({"assertionEvidence":selected["assertionEvidence"]} if selected.get("assertionEvidence") else {}),
     }
     result["status"]="SUCCEEDED" if result["validation"]["passed"] else "VALIDATION_FAILED"
     if test_check is not None:result["testSqlValidation"]=test_check
