@@ -1,6 +1,7 @@
 import { getContext,validationFamilyForContext } from "./context.mjs";
 import {createHash}from'node:crypto';
 import {sqlLineageSchemaHash}from'./sql-column-lineage.mjs';
+import{sqlConditionReferences}from'./sql-condition-references.mjs';
 
 const protocol = "SECURITIES_SQL_REPAIR_FEEDBACK_V1";
 const fields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
@@ -46,7 +47,9 @@ function safeValueLineage(value,contextId,currentSql){
  const context=getContext(contextId),sourceSqlHash=createHash('sha256').update(currentSql).digest('hex'),schemaHash=sqlLineageSchemaHash(context),known=new Map(context.tables.map(t=>[t.name,new Set(t.columns.map(c=>c[0]))]));
  if(value.sourceSqlHash!==sourceSqlHash||value.schemaHash!==schemaHash||!Array.isArray(value.fields)||value.fields.length!==fields.length)return;
  const summaries=[];for(const target of fields){const matches=value.fields.filter(f=>f?.target===target);if(matches.length!==1)return;const f=matches[0];if(!['RESOLVED','CONSTANT','UNRESOLVED'].includes(f.status)||!Array.isArray(f.sources)||f.sources.length>150||f.sources.some(s=>!s||!known.get(s.table)?.has(s.column))||new Set(f.sources.map(s=>`${s.table}.${s.column}`)).size!==f.sources.length||f.status==='RESOLVED'&&!f.sources.length||f.status==='CONSTANT'&&f.sources.length)return;summaries.push({target,status:f.status,sources:f.sources.map(s=>({table:s.table,column:s.column}))});}
- return{protocol:'shuduo-sql-value-lineage-summary/v1',analysis:'STATIC_VALUE_DEPENDENCIES',sourceSqlHash,schemaHash,rowSetImpactAnalyzed:false,fields:summaries};
+ const conditionReferences=sqlConditionReferences(value.conditionReferences,{sourceSqlHash,schemaHash,tables:context.tables,summary:true});
+ return{protocol:'shuduo-sql-value-lineage-summary/v1',analysis:'STATIC_VALUE_DEPENDENCIES',sourceSqlHash,schemaHash,rowSetImpactAnalyzed:false,fields:summaries,
+  ...(conditionReferences&&conditionReferences.status!=='UNAVAILABLE'?{conditionReferences}:{})};
 }
 
 export function safeSqlRepairFeedback(value, contextId,{currentSql}={}) {

@@ -246,7 +246,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /assets/:id/annotation | 业务名称/说明/域/负责人/分类/标签 | 保存新的资产说明版本，不覆盖底层证据 |
 | POST /assets/:id/annotation-requests | V2协议、请求UUID、expected版本/摘要、完整annotation | 事务核对已读基线并保存不可变应用／拒绝回执；必须检查outcome，不能只看201 |
 | GET /assets/:id/annotation-requests/:requestId | 原UUID | 仅本账号原请求；原快照与当前投影分开，恢复不写入 |
-| GET /assets/:id/lineage | 无 | 上下游版本绑定；columnLineages只读原批次保存且核对SQL/结构/输出的静态字段值来源。COMPLETE不代表完整行集影响，未采集/错版本明确UNAVAILABLE；GET不解析或执行 |
+| GET /assets/:id/lineage | 无 | 上下游版本绑定；columnLineages只读原批次保存且核对SQL/结构/输出的值来源，可含conditionReferences（WHERE/JOIN/GROUP/HAVING/DISTINCT引用）。子摘要再次核对SQL/结构，缺失不补造；COMPLETE不代表完整行集影响，GET不解析或执行 |
 | GET /assets/:id/impact | 无 | 基于有向版本绑定的下游影响范围 |
 | GET/POST /metrics | 列表或资产/聚合/字段/分组/口径 | 版本化指标定义；首版只支持实际落地/实时状态行 |
 | GET /metrics/:id | 无 | 指标定义与全部实际运行 |

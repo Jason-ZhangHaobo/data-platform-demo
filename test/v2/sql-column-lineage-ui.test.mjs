@@ -6,9 +6,12 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { sqlValueLineageValid } from '../../web/src/sql-column-lineage.ts';
 import { assetDetailValid, createAssetReader } from '../../web/src/asset-read.ts';
+let conditionCode=ts.transpileModule(readFileSync('web/src/SqlConditionReferencesPanel.tsx','utf8'),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext}}).outputText;
+for(const match of [...conditionCode.matchAll(/from (["'])([^"']+)\1/g)])conditionCode=conditionCode.replaceAll(match[0],`from ${JSON.stringify(import.meta.resolve(match[2]))}`);
+const conditionUrl='data:text/javascript;base64,'+Buffer.from(conditionCode).toString('base64'),{SqlConditionReferencesPanel}=await import(conditionUrl);
 let code = ts.transpileModule(readFileSync('web/src/SqlColumnLineagePanel.tsx', 'utf8'), { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext } }).outputText;
 for (const match of [...code.matchAll(/from (["'])([^"']+)\1/g)])
-    code = code.replaceAll(match[0], `from ${JSON.stringify(import.meta.resolve(match[2]))}`);
+    code = code.replaceAll(match[0], `from ${JSON.stringify(match[2]==='./SqlConditionReferencesPanel'?conditionUrl:import.meta.resolve(match[2]))}`);
 const { SqlColumnLineagePanel } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, node = { id: 'dataset:customer_assets_t1', kind: 'PUBLISHED_DATASET', versionId: id(1), name: 'customer_assets_t1', businessName: '虚构证券资产', domain: '财富管理', description: '虚构测试', status: 'PUBLISHED_LOCAL', system: 'LOCAL_SPARK_RELEASE', fields: [{ name: 'total_assets', type: 'DECIMAL(18,2)', nullable: false }], tags: [], evidenceHash: 'a'.repeat(64) }, value = { assetId: node.id, runId: id(1), revisionId: id(2), sourceSqlHash: 'b'.repeat(64), schemaHash: 'c'.repeat(64), status: 'COMPLETE', analysis: 'STATIC_VALUE_DEPENDENCIES', rowSetImpactAnalyzed: false, parser: 'sqlglot', parserVersion: '27.14.0', fields: [{ target: 'total_assets', status: 'RESOLVED', expression: 'holding_market_value + available_cash AS total_assets', sources: [{ table: 'positions', column: 'market_value' }, { table: 'cash', column: 'available_cash' }] }] }, detail = { ...node, lineage: { focusAssetId: node.id, nodes: [node], edges: [], columnLineages: [value], sqlColumnLineageParsed: true }, metrics: [], standards: [] };
 test('the real field-lineage panel separates static value dependencies from execution and complete row-set impact', () => {
@@ -51,4 +54,8 @@ test('a dirty development draft labels original evidence and starts unconfirmed 
     assert(html.includes('当前未保存修改尚未验证'));
     assert(html.includes('正在核对原SQL'));
     assert(!html.includes('本版值来源已解析'));
+});
+test('condition evidence labels missing and partial references and never claims no-column means no row impact',()=>{
+ const empty=renderToStaticMarkup(React.createElement(SqlConditionReferencesPanel,{}));assert(empty.includes('尚未采集'));assert(empty.includes('查看不会从当前草稿补造历史'));
+ const conditions={status:'PARTIAL',scopeCount:1,totalClauses:2,truncated:false,clauses:[{id:'C1',scopeId:'S1',scopeLabel:'主查询',kind:'JOIN',joinType:'CROSS',status:'NO_COLUMN_REFERENCE',expression:'',sources:[]},{id:'C2',scopeId:'S1',scopeLabel:'主查询',kind:'HAVING',status:'UNRESOLVED',expression:'HAVING COUNT(*) > ?',sources:[],reason:'行集依赖未完整解析'}]},html=renderToStaticMarkup(React.createElement(SqlConditionReferencesPanel,{value:conditions}));assert(html.includes('部分未解析'));assert(html.includes('没有字段引用不代表没有行数影响'));assert(html.includes('行集依赖未完整解析'));assert(html.includes('不证明条件正确'));
 });
