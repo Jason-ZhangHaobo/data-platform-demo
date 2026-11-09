@@ -1,4 +1,5 @@
 import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {AssistedDevelopmentReference} from './AssistedDevelopmentReference';
 import { CheckCircle2, Circle, Download, FileText, LoaderCircle, Package, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
 import { agentJourney, deliveryStageText, publicationEvidenceText, verificationPresentation } from "./agent-journey";
 import type { EvidenceReadState, TaskConsumption } from "./agent-journey";
@@ -209,7 +210,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   }, [publication, publicationReady, cloud]);
   return <section id="agent-delivery" className="agent-delivery-panel" aria-label="核验与发布交付">
     <header><div><ShieldCheck size={17} /><strong>从开发到交付</strong></div><button className="icon-button" aria-label="刷新核验与交付" disabled={working || evidenceRead === "LOADING"} onClick={async()=>{try{await readConsumption(await load());}catch{/* load preserves the read error without losing evidence */}}}><RefreshCw size={14} /></button></header>
-    {report?.developmentReference&&<details className="agent-assisted-reference"><summary>本次辅助开发依据 · 已绑定交付版本</summary><dl><div><dt>原失败批次</dt><dd><code>{report.developmentReference.sourceRunId}</code></dd></div><div><dt>原代码摘要</dt><dd><code>{report.developmentReference.sourceRevisionHash}</code></dd></div>{report.developmentReference.baselineRunId&&<><div><dt>参考基线批次</dt><dd><code>{report.developmentReference.baselineRunId}</code></dd></div><div><dt>参考基线代码摘要</dt><dd><code>{report.developmentReference.baselineRevisionHash}</code></dd></div><div><dt>保存证据摘要</dt><dd><code>{report.developmentReference.evidenceDigest}</code></dd></div></>}</dl><p>基线仅作开发参考；本次代码、文件、演练和审阅独立绑定，不继承原发布批准。</p></details>}
+    {report?.developmentReference&&<AssistedDevelopmentReference value={report.developmentReference}/>}
     {manual && <p className="agent-dev-notice" role="status">{assisted?'人工辅助修正交付':'工程师接管交付'} · 当前报告、交付包及演练均绑定此版本。原开发与参考记录保留，不计作自主完成；发布需要独立审阅。</p>}
     {evidenceRead !== "READY" && <div className="agent-dev-notice" role={evidenceRead === "ERROR" ? "alert" : "status"}><div><strong>{reportView.title}</strong><p>{reportView.detail}</p>{evidenceError && <small>{evidenceError}</small>}</div>{evidenceRead === "ERROR" && <button className="button" disabled={working} onClick={() => void load().catch(() => {})}>重新读取核验记录</button>}</div>}
     <div className="agent-journey-summary"><div><span className="eyebrow">TASK JOURNEY · {taskId.slice(0,8)}</span><h3>{evidenceRead !== "READY" ? "先确认核验记录" : journey.next.id === "evidence" ? "本任务测试范围内的证据已齐" : `下一步：${journey.next.label}`}</h3><p>{evidenceRead !== "READY" ? "保留原任务与交付文件；不因读取失败重新计算或创建任务。" : journey.next.detail}</p></div>{evidenceRead === "READY" && <a className="button" href={`#${journey.next.target}`}>{journey.next.id === "evidence" ? "查看消费证据" : "查看下一步"}</a>}</div>

@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import {resolveAssistedContinuation} from './assisted-sql-delivery-source.mjs';
 import {resolveSqlRepairComparison,repairComparisonAttribution,explicitRepairAttribution} from './sql-repair-comparison.mjs';
 import {resolveExplicitSqlRepairSource} from './sql-repair-source.mjs';
 import {sameSqlIgnoringLayout} from './sql-repair-progress.mjs';
@@ -5408,6 +5409,13 @@ export function createV2Server(options = {}) {
         }
         return json(res,200,compareSqlRuns({store,project:PROJECT,current,baseline}));
       }
+      const continuationRead=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\/assisted-continuation$/);
+      if(continuationRead&&method==='GET'){
+        if(url.searchParams.size)throw fail(422,'续改依据读取不接受其他参数');
+        const parent=get('agent',continuationRead[1]);requireDurableAgentOwner(parent,req);
+        const actorId=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
+        return json(res,200,resolveAssistedContinuation({store,project:PROJECT,actorId,taskId:parent.id}));
+      }
       const record = path.match(
         /^\/api\/v2\/(runs|revisions|agent\/tasks)\/([a-f0-9-]+)(?:\/(cancel|bundle|journey))?$/,
       );
@@ -5615,6 +5623,12 @@ export function createV2Server(options = {}) {
               : text(body.language, 3, 20),
           suppliedCode = body.code ?? body.sql;
         let currentCode = text(suppliedCode, 1, 20_000);
+        if(body.assistedContinuation!==undefined){
+          if(language!=='SPARK_SQL'||[body.sourceRunId,body.sourceError,body.derivation,body.repairComparison].some(v=>v!==undefined)||body.code!==undefined&&body.sql!==undefined&&body.code!==body.sql)
+            throw Object.assign(fail(422,'续改只接受同一成功版本，不能混用失败来源或口径派生'),{code:'ASSISTED_CONTINUATION_CONFLICT'});
+          if(!durableAgent)throw fail(503,'成功版本续改需要持久SQL执行器，未创建普通任务');
+          currentCode=suppliedCode;
+        }
         if(body.repairComparison!==undefined){
           if(language!=='SPARK_SQL'||body.sourceRunId===undefined||body.derivation!==undefined||body.sourceError!==undefined||
             body.code!==undefined&&body.sql!==undefined&&body.code!==body.sql)throw fail(422,'对照修正仅支持同一失败SQL来源，不能混用口径派生或自填诊断');
@@ -5656,7 +5670,7 @@ export function createV2Server(options = {}) {
           }
           const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
             actorId,
-            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}),...(repairBasis?{repairComparison:repairBasis.binding}:{}) });
+            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}),...(repairBasis?{repairComparison:repairBasis.binding}:{}),...(body.assistedContinuation!==undefined?{assistedContinuation:body.assistedContinuation}:{}) });
           if(body.background){
             const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version,...backgroundWindow,
               developmentBoundary:developmentBackgroundBoundary(developmentAccess,created.id,developmentNow())});

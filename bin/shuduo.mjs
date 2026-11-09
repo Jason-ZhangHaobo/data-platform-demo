@@ -12,6 +12,7 @@ import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
+import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 
@@ -38,6 +39,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent journey --id AGENT_TASK_ID
   shuduo agent workflow --id AGENT_TASK_ID
   shuduo agent request --request-id ORIGINAL_REQUEST_ID
+  shuduo agent continuation --id TASK_ID
+  shuduo agent continue-version --id TASK_ID --message "基于成功版本继续修改" --request-id UUID --confirm
   shuduo agent repair-basis --source-run-id FAILED_RUN_ID --baseline-run-id SUCCEEDED_RUN_ID
   shuduo agent repair-compare --source-run-id FAILED_RUN_ID --baseline-run-id SUCCEEDED_RUN_ID --message "参考基线修正" --request-id UUID --confirm
   shuduo agent derive --task-id TASK_ID --revision-id REVISION_ID --run-id RUN_ID --revision-hash SHA256 --context stock-cash-t1 --message "改为股票持仓和现金口径" --request-id UUID --confirm
@@ -475,6 +478,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       for(const token of argv.filter(value=>value.startsWith('--'))){const key=token.slice(2).replaceAll('-','_');if(!allowed.has(key)||seen.has(key))throw Error('对照修正命令包含未知或重复参数');seen.add(key);}
       const selection={sourceRunId:required(parsed.options,'source_run_id'),baselineRunId:required(parsed.options,'baseline_run_id')};
       result=action==='repair-basis'?await readRepairComparisonBasis(client,selection):await createComparisonRepairTask(client,{...selection,message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
+    }
+    else if(resource==='agent'&&['continuation','continue-version'].includes(action)){
+      const allowed=new Set(['id','message','request_id','confirm','base_url','help']),seen=new Set();
+      if(parsed.positionals.length!==2)throw Error('续改命令包含额外参数');
+      for(const token of argv.filter(v=>v.startsWith('--'))){const key=token.slice(2).replaceAll('-','_');if(!allowed.has(key)||seen.has(key))throw Error('续改命令包含未知或重复参数');seen.add(key);}
+      const taskId=required(parsed.options,'id');result=action==='continuation'?await readAssistedContinuation(client,{taskId}):await createAssistedContinuation(client,{taskId,message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
     }
     else if(resource==='agent'&&action==='derive'){
       const allowed=new Set(['task_id','revision_id','run_id','revision_hash','context','message','request_id','confirm','base_url','help']),seen=new Set();
