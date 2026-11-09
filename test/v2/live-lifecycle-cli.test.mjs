@@ -50,6 +50,22 @@ test('CLI plan defaults to v3 with registered context changes and consumption wi
  assert.equal(existsSync(artifactRoot),false);
 });
 
+test('saved v3 reports disclose nested synthetic receipts without network, file rewrites or an adapter flag',async t=>{
+ const x=await savedFixture(t,{limit:1}),contractId=currentLiveLifecycleContract.id,
+  definition=liveLifecyclePlan(1,{contractId}).selectedCases[0],f=createLiveLifecycleFixture({definition,contractId,evaluationRunId:x.id});
+ delete f.adapter.testDouble;
+ const opts={pause:async()=>{},maxPolls:2},waiting=await advanceLiveLifecycleCase(definition,f.checkpoint,f.adapter,opts);
+ f.reviewNow();f.consumeNow();const completed=await advanceLiveLifecycleCase(definition,waiting,f.adapter,opts);
+ assert.equal(completed.status,'SUCCEEDED');completed.lifecycleOutcome.stages.codeAndDebug.synthetic=true;
+ const state={evaluationRunId:x.id,contract:currentLiveLifecycleContract,startedAt:f.checkpoint.evaluationStartedAt,
+  caseSetDigest:liveLifecyclePlan(1,{contractId}).caseSetDigest,caseLimit:1,origin:x.state.origin,outcomes:[completed]};
+ writeFileSync(x.path,JSON.stringify(state));const before=readFileSync(x.path,'utf8');
+ assert.equal(await runLiveLifecycleCli(['--report',x.id],{},{...x.options,testDouble:false,fetchImpl:()=>assert.fail('report must not fetch')}),0);
+ const report=x.output.at(-1);assert.equal(report.executionEvidenceMode,'TEST_HARNESS');assert.equal(report.succeededCaseCount,0);
+ assert.equal(report.fullGoalTargetMet,false);assert.equal(report.currentContractTargetMet,false);assert.equal(report.autonomousCompletionRate,null);
+ assert.equal(readFileSync(x.path,'utf8'),before);assert.equal(x.calls.length,0);
+});
+
 test('CLI refresh checks only existing consumption cases without authorization, health checks, POSTs or later case creation',async t=>{
  const x=await savedFixture(t),later=structuredClone(x.state.outcomes[1]),mutationCount=x.f.mutations.length;x.f.consumeNow();
  assert.equal(await runLiveLifecycleCli(['--refresh',x.id],{},x.options),0,x.errors.join('\n'));
