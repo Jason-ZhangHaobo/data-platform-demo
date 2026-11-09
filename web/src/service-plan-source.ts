@@ -44,7 +44,8 @@ export function servicePlanMarker(href:string){
 }
 // Historical navigation only. This tuple never substitutes for a verified
 // release source when creating a model task or applying its proposal.
-export function servicePlanRecoverySource(binding:{taskId:string;packageDigest:string;releaseId:string}|undefined,href:string|undefined):ServicePlanSource|undefined{
+export function servicePlanRecoverySource(binding:{taskId?:string;manualDeliveryTaskId?:string;packageDigest:string;releaseId:string}|undefined,href:string|undefined):ServicePlanSource|undefined{
+ if(binding?.manualDeliveryTaskId||!binding?.taskId)return;
  if(!binding||!href)return;
  const marker=servicePlanMarker(href);if(marker.invalid||!marker.requestId&&!marker.planId)return;
  const candidate={taskId:binding.taskId,packageDigest:binding.packageDigest,releaseId:binding.releaseId,sourceReleaseRunId:marker.batchId};

@@ -1,3 +1,5 @@
+import{StandaloneServiceConsumptionPanel}from'./StandaloneServiceConsumptionPanel';
+import type{ServiceSourceBinding}from'./service-source-binding';
 import {useEffect,useRef,useState} from 'react';
 import {Activity,RefreshCw,ShieldCheck,Square} from 'lucide-react';
 import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication,manualPublicationRequestId} from '../../src/v2/standalone-manual-publication-client.mjs';
@@ -6,7 +8,7 @@ type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promi
 type Window={manualDeliveryTaskId:string;packageDigest:string;verificationId:string;startsAt:string;expiresAt:string};
 const labels:Record<string,string>={SCHEDULED:'等待调度',RUNNING:'批次运行中',SUCCEEDED:'独立核验通过',FAILED:'批次失败',CANCELLED:'已停止',WAITING_SCHEDULER:'等待调度',RUNNING_CLOUD_TEST:'批次运行中',ACTIVE_CLOUD_TEST:'继续观察',COMPLETED_CLOUD_TEST:'两个样例批次已结束',HEALTHY:'两个批次核验通过',CRITICAL:'存在未解决告警',RECOVERED_WITH_FAILURE:'已恢复，仍有失败历史',OBSERVING:'继续观察',PENDING:'尚无运行结论',STOPPED:'已停止'};
 const reviews=[['code','已核对当前SQL版本及业务口径'],['assertions','已核对独立结果和五场景断言'],['deliveryFiles','已审阅当前包的调度、部署及其他文件'],['cloudScope','仅发布两个冻结虚构样例批次，非生产上线']] as const;
-export function StandaloneManualPublicationPanel({api,selection,canPublish,blocked,available,window:approvedWindow}:{api:Api;selection:ManualPublicationSelection;canPublish:boolean;blocked:boolean;available:boolean;window?:Window}){
+export function StandaloneManualPublicationPanel({api,selection,canPublish,blocked,available,window:approvedWindow,sourceRevision,onOpenServices}:{api:Api;selection:ManualPublicationSelection;canPublish:boolean;blocked:boolean;available:boolean;window?:Window;sourceRevision:{id:string;hash:string};onOpenServices?:(source:ServiceSourceBinding)=>void}){
  const key=JSON.stringify(selection),source=useRef(key);source.current=key;const live=useRef(true),seq=useRef(0),flight=useRef(false),request=useRef<{key:string;id?:string}>({key}),access=useRef({canPublish,blocked});access.current={canPublish,blocked};
  const [record,setRecord]=useState<{key:string;state:'LOADING'|'READY'|'ERROR';value?:ManualPublication;error?:string}>({key,state:'LOADING'}),[checked,setChecked]=useState<Record<string,boolean>>({}),[busy,setBusy]=useState(false),[unknown,setUnknown]=useState<string>(),[error,setError]=useState(''),[stopConfirmed,setStopConfirmed]=useState(false),[stopAck,setStopAck]=useState(''),[clock,setClock]=useState(Date.now());
  const current=record.key===key?record:undefined,value=current?.value,release=value?.release,uncertain=unknown===key;
@@ -35,6 +37,7 @@ export function StandaloneManualPublicationPanel({api,selection,canPublish,block
   {release&&<><h4><Activity size={16}/> {labels[release.status]??release.status} · {labels[release.health]??release.health}</h4><code>发布 {release.id}</code><ol>{value?.runs.map(r=><li key={r.id}>批次 {r.sequence} · {labels[r.status]??r.status} · <code>{r.id.slice(0,8)}</code></li>)}</ol>{value?.alerts.map(a=><p role={a.status==='OPEN'?'alert':'status'} key={a.id}>{a.status==='OPEN'?'待处理告警':'已恢复告警'}：{a.message}</p>)}<small>监控事件 {value?.events.length??0} 条；保留失败和恢复历史，不以状态标签代替独立结果。</small>
    {!['COMPLETED_CLOUD_TEST','CANCELLED'].includes(release.status)&&<div><label className="agent-review-check"><input type="checkbox" checked={stopConfirmed} onChange={e=>setStopConfirmed(e.target.checked)} disabled={!canPublish||!validWindow||busy}/>确认停止此发布的后续批次，保留历史</label><button className="button" disabled={!canPublish||!validWindow||busy||!stopConfirmed} onClick={()=>void stop()}><Square size={14}/>停止原发布</button></div>}
   </>}
+  {release&&release.status==='COMPLETED_CLOUD_TEST'&&release.health==='HEALTHY'&&current?.state==='READY'&&!uncertain&&<StandaloneServiceConsumptionPanel key={release.id} api={api} binding={{manualDeliveryTaskId:selection.taskId,packageDigest:selection.packageDigest,releaseId:release.id,sourceKind:'MANUAL',scope:'PRIVATE_CLOUD_TEST',revisionId:sourceRevision.id,runId:selection.sourceRunId,revisionHash:sourceRevision.hash}} blocked={blocked||busy} onOpenServices={onOpenServices}/>}
   <small>发布后由独立调度器推进，页面可以关闭。刷新读取原批次和告警；实际云端验收按运行证据单独确认。</small>
  </section>;
 }

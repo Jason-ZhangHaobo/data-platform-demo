@@ -104,6 +104,7 @@ import {
 import {
   BusinessQueryStore,
   DataServiceManager,
+  verifiedPrivateServiceSource,
 } from "./data-services.mjs";
 import {
   IngestionManager,
@@ -1538,6 +1539,13 @@ export function createV2Server(options = {}) {
           const target={manualDeliveryTaskId:constrained.manualPublicationTaskId,packageDigest:constrained.publicationPackageDigest,verificationId:constrained.publicationVerificationId};
           try{const task=store.get('manual_delivery_task',target.manualDeliveryTaskId,PROJECT),resolved=standaloneManualPublicationSource({store,project:PROJECT,...target,sourceRunId:task?.sourceRunId,actorId:body.user.id});constrained.manualPublicationSource={status:'RESOLVED',kind:'MANUAL_RUN',...target,runId:resolved.run.id,revisionId:resolved.revision.id,revisionHash:resolved.revision.hash};}
           catch{constrained.manualPublicationSource={status:'UNAVAILABLE',kind:'MANUAL_RUN',...target};}
+        }
+        if(constrained.manualConsumptionOnly&&constrained.manualConsumptionTaskId&&body.user?.id){
+          try{const plan=constrained.consumptionPlan,run=store.get('release_run',plan.sourceReleaseRunId,PROJECT),release=run&&store.get('release',run.releaseId,PROJECT),bundle=run&&store.get('delivery_package',run.packageId,PROJECT),approval=release&&store.get('release_approval',release.approvalId,PROJECT);
+            verifiedPrivateServiceSource({run,release,bundle,approval,delivery:store.get('manual_delivery_task',constrained.manualConsumptionTaskId,PROJECT),verification:release&&store.get('delivery_verification',release.verificationId,PROJECT),review:release&&store.get('delivery_review',release.reviewId,PROJECT),releaseRuns:release?store.list('release_run',PROJECT).filter(r=>r.releaseId===release.id):[]});
+            if(release.submittedBy!==body.user.id||release.manualDeliveryTaskId!==constrained.manualConsumptionTaskId||release.packageDigest!==plan.packageDigest)throw Error('Manual source mismatch');const source=bundle.manifest.source;
+            constrained.manualConsumptionSource={status:'RESOLVED',binding:{manualDeliveryTaskId:release.manualDeliveryTaskId,packageDigest:bundle.digest,releaseId:release.id,sourceKind:'MANUAL',scope:'PRIVATE_CLOUD_TEST',revisionId:source.revisionId,runId:source.runId,revisionHash:source.sqlHash},sourceReleaseRunId:run.id};
+          }catch{constrained.manualConsumptionSource={status:'UNAVAILABLE'};}
         }
         return constrained;
       };

@@ -5,13 +5,15 @@ import {validateConsumerSource} from "./consumer-source.mjs";
 const assetFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 // Private, owner-authorized projection of persisted calls. No tokens, rows,
 // parameters, rematerialization, model invocation or new consumer calls.
-export async function privateTaskConsumption({ taskId, packageDigest, releaseId, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
+export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
   if (!["PRIVATE_CLOUD_TEST", "LOCAL_TEST_ONLY"].includes(scope)) throw new Error("Unsupported consumption scope");
   const entries = [], limit = 20;
+  const sourceField=manualDeliveryTaskId?'manualDeliveryTaskId':'sourceAgentTaskId',sourceId=manualDeliveryTaskId??taskId,identity=manualDeliveryTaskId?{manualDeliveryTaskId}:{taskId},matches=r=>r?.[sourceField]===sourceId&&(!manualDeliveryTaskId||r.sourceAgentTaskId===undefined);
+  if(manualDeliveryTaskId&&(taskId!==undefined||!releaseId||scope!=='PRIVATE_CLOUD_TEST'))throw Error('Invalid manual consumption identity');
   const selectedRelease=releaseId===undefined?undefined:getRelease(releaseId);
-  const selectedMatches=releaseId===undefined||selectedRelease?.id===releaseId&&selectedRelease.sourceAgentTaskId===taskId&&selectedRelease.packageDigest===packageDigest;
+  const selectedMatches=releaseId===undefined||selectedRelease?.id===releaseId&&matches(selectedRelease)&&selectedRelease.packageDigest===packageDigest;
   const attribution=release=>({sourceKind:release.sourceKind??"AGENT",
-    ...(release.sourceKind==="MANUAL"?{sourceAttribution:"ENGINEER_ASSISTED"}:{}),agentIndependentE2E:false});
+    ...(release.sourceKind==="MANUAL"?{sourceAttribution:release.sourceAttribution??"ENGINEER_ASSISTED"}:{}),agentIndependentE2E:false});
   let matchingCount = 0;
   for (const service of services) {
     const root = service.publishedVersion;
@@ -26,7 +28,7 @@ export async function privateTaskConsumption({ taskId, packageDigest, releaseId,
     } catch (error) { if ([403,404].includes(error.status)) continue; throw error; }
     const related = children.filter(Boolean).some(v => {
       const release = getRelease(v.sourceReleaseId);
-      return selectedMatches && release?.sourceAgentTaskId === taskId && v.sourcePackageDigest === packageDigest &&
+      return selectedMatches && matches(release) && v.sourcePackageDigest === packageDigest &&
         (releaseId===undefined||release.id===releaseId);
     });
     if (!related) continue;
@@ -42,7 +44,7 @@ export async function privateTaskConsumption({ taskId, packageDigest, releaseId,
       const sourceReleases=[],sourceRuns=[];
       const sources = children.map(v => {
         const run = source(v.sourceReleaseRunId), release = getRelease(run.releaseId);
-        if (release?.sourceAgentTaskId !== taskId || run.packageDigest !== packageDigest || v.sourcePackageDigest !== packageDigest || v.sourceReleaseId !== release.id ||
+        if (!matches(release) || run.packageDigest !== packageDigest || v.sourcePackageDigest !== packageDigest || v.sourceReleaseId !== release.id ||
           (releaseId!==undefined&&release.id!==releaseId))
           throw Object.assign(new Error(), {status:409, code:"MIXED_SOURCE_VERSIONS"});
         sourceReleases.push(release);
@@ -57,13 +59,13 @@ export async function privateTaskConsumption({ taskId, packageDigest, releaseId,
         try{
           const run=sourceRuns[0],release=sourceReleases[0],bundle=getPackage(run.packageId),origin=validateDeliveryPackage(bundle,packageDigest).source,
             sourceKind=release.sourceKind??'AGENT';
-          if(bundle.id!==release.packageId||bundle.digest!==packageDigest||release.sourceAgentTaskId!==taskId||
+          if(bundle.id!==release.packageId||bundle.digest!==packageDigest||!matches(release)||
             origin.projectId!==bundle.projectId||bundle.projectId!==run.projectId||run.projectId!==release.projectId||
             release.sourceRevisionId!==undefined&&release.sourceRevisionId!==origin.revisionId||
             (release.sourceCodeHash??release.sourceSqlHash)!==undefined&&(release.sourceCodeHash??release.sourceSqlHash)!==origin.sqlHash||
             sourceKind==='AGENT'&&origin.attribution!==undefined||sourceKind==='MANUAL'&&
-              (origin.attribution?.kind!=='ENGINEER_ASSISTED'||origin.attribution.originAgentTaskId!==taskId||origin.attribution.agentIndependentE2E!==false))throw Error('UNBOUND_SOURCE');
-          entry.source=validateConsumerSource({schema:'shuduo-service-consumer-source/v1',scope,sourceKind,taskId,
+              (manualDeliveryTaskId?origin.attribution?.kind!=='ENGINEER_AUTHORED'||origin.attribution.originAgentTaskId!==undefined||origin.attribution.agentIndependentE2E!==false:origin.attribution?.kind!=='ENGINEER_ASSISTED'||origin.attribution.originAgentTaskId!==taskId||origin.attribution.agentIndependentE2E!==false))throw Error('UNBOUND_SOURCE');
+          entry.source=validateConsumerSource({schema:manualDeliveryTaskId?'shuduo-service-consumer-source/v2':'shuduo-service-consumer-source/v1',scope,sourceKind,...identity,...(manualDeliveryTaskId?{sourceAttribution:'ENGINEER_AUTHORED',agentIndependentE2E:false}:{}),
             revisionId:origin.revisionId,revisionHash:origin.sqlHash,developmentRunId:origin.runId,contextId:origin.contextId,
             validationContractId:origin.validationContractId,packageDigest,releaseId:release.id,sourceReleaseRunId:run.id});
         }catch{throw Object.assign(new Error(),{status:409,code:'CONSUMER_SOURCE_IDENTITY_UNAVAILABLE'});}
@@ -99,8 +101,8 @@ export async function privateTaskConsumption({ taskId, packageDigest, releaseId,
   const verified = !truncated && entries.some(e => e.status === "VERIFIED" && e.fullAssetComposition === true);
   const sourceKinds=[...new Set(entries.map(entry=>entry.sourceKind).filter(Boolean))];
   const sourceMetadata=selectedMatches&&selectedRelease?attribution(selectedRelease):sourceKinds.length===1?
-    {sourceKind:sourceKinds[0],...(sourceKinds[0]==="MANUAL"?{sourceAttribution:"ENGINEER_ASSISTED"}:{})}:{};
-  return { protocol: scope === "LOCAL_TEST_ONLY" ? "shuduo-local-task-consumption/v1" : "shuduo-private-task-consumption/v1", taskId, packageDigest,
+    {sourceKind:sourceKinds[0],...(sourceKinds[0]==="MANUAL"?{sourceAttribution:manualDeliveryTaskId?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED"}:{})}:{};
+  return { protocol: manualDeliveryTaskId?"shuduo-private-manual-consumption/v1":scope === "LOCAL_TEST_ONLY" ? "shuduo-local-task-consumption/v1" : "shuduo-private-task-consumption/v1", ...identity, packageDigest,
     ...(releaseId===undefined?{}:{releaseId}),...sourceMetadata,
     scope, status: verified ? "VERIFIED" : "PENDING", checkedAt: new Date().toISOString(),
     services: entries, matchingCount, truncated, publicDeployed: false, externalSystemVerified: false, agentIndependentE2E: false,

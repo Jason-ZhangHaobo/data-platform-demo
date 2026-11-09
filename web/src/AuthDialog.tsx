@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ConsumptionPlan } from "./service-consumption-scope";
+import type {StandaloneServiceSourceBinding}from'./service-source-binding';
 import type {ManualPublicationNavigationSource}from'./standalone-manual-publication-navigation';
 import type {PublicationSource} from "./service-source-binding";
 import type {ServicePlanningAccess} from './private-service-plan';
@@ -54,6 +55,9 @@ export type AuthSession = {
   consumptionOnly?: boolean;
   consumptionPilotId?: string;
   consumptionTaskId?: string;
+  manualConsumptionOnly?:boolean;
+  manualConsumptionTaskId?:string;
+  manualConsumptionSource?:{status:'RESOLVED'|'UNAVAILABLE';binding?:StandaloneServiceSourceBinding;sourceReleaseRunId?:string};
   consumptionPlan?: ConsumptionPlan;
   consumptionStartsAt?: string;
   consumptionExpiresAt?: string;

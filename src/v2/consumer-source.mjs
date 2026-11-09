@@ -18,6 +18,11 @@ export const consumerDigest = value => createHash("sha256").update(value).digest
 // Pure schema validation. IDs and digests become evidence only after the caller
 // cross-checks the frozen plan against authorized platform records.
 export function validateConsumerSource(source) {
+  if(source?.schema==='shuduo-service-consumer-source/v2'){
+    const keys=[...sourceKeys.filter(k=>k!=='taskId'),'manualDeliveryTaskId','sourceAttribution','agentIndependentE2E'];
+    requireThat(exact(source,keys)&&source.scope==='PRIVATE_CLOUD_TEST'&&source.sourceKind==='MANUAL'&&source.sourceAttribution==='ENGINEER_AUTHORED'&&source.agentIndependentE2E===false&&[source.manualDeliveryTaskId,source.revisionId,source.developmentRunId,source.contextId,source.validationContractId,source.releaseId,source.sourceReleaseRunId].every(identifier)&&hash(source.revisionHash)&&hash(source.packageDigest)&&source.sourceReleaseRunId!==source.developmentRunId,'INVALID_CONSUMER_SOURCE');
+    return Object.fromEntries(keys.map(k=>[k,source[k]]));
+  }
   requireThat(exact(source, sourceKeys) && source.schema === "shuduo-service-consumer-source/v1" &&
     ["LOCAL_TEST_ONLY", "PRIVATE_CLOUD_TEST"].includes(source.scope) && ["AGENT", "MANUAL"].includes(source.sourceKind) &&
     [source.taskId, source.revisionId, source.developmentRunId, source.contextId, source.validationContractId, source.releaseId, source.sourceReleaseRunId].every(identifier) &&
@@ -72,7 +77,7 @@ export function consumerV2PlanEvidence(plan) {
     services: [...plan.dapis.map(service => ({ id: service.id, type: "DAPI", versionId: service.versionId, configHash: service.configHash,
       alias: service.alias, fields: [...service.fields] })), { id: plan.xapi.id, type: "XAPI", versionId: plan.xapi.versionId, configHash: plan.xapi.configHash }],
     ungrantedService: { id: ungranted.id, type: plan.ungranted.type, versionId: ungranted.versionId, configHash: ungranted.configHash },
-    origin: plan.origin, scope: source.scope, ...(source.sourceKind === "MANUAL" ? { sourceAttribution: "ENGINEER_ASSISTED" } : {}),
+    origin: plan.origin, scope: source.scope, ...(source.sourceKind === "MANUAL" ? { sourceAttribution: source.manualDeliveryTaskId?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED" } : {}),
     agentIndependentE2E: false, externalSystemVerified: false, publicDeployed: false,
   };
 }

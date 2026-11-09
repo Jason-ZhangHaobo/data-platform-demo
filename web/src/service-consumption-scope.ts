@@ -1,10 +1,10 @@
 export type ConsumptionPlan = {
-  taskId: string; packageDigest: string; sourceReleaseRunId: string;
+  taskId?: string; manualDeliveryTaskId?:string; packageDigest: string; sourceReleaseRunId: string;
   dapis: { name: string; slug: string; fields: string[]; timeoutMs: number; rateLimitPerMinute: number }[];
   xapi: { name: string; slug: string; timeoutMs: number; rateLimitPerMinute: number; steps: { alias: string; dapiSlug: string }[] };
   applicationName: string;
 };
-export type ConsumptionScope = { pilotId?: string; taskId?: string; plan?: ConsumptionPlan; startsAt?: string; expiresAt?: string };
+export type ConsumptionScope = { pilotId?: string; taskId?: string; manualDeliveryTaskId?:string; plan?: ConsumptionPlan; startsAt?: string; expiresAt?: string };
 type Version = { id: string; sourceReleaseRunId?: string; sourcePackageDigest?: string; fields?: string[];
   timeoutMs: number; rateLimitPerMinute: number; steps?: { alias: string; dapiId: string; dapiVersionId: string }[] };
 type Service = { id: string; name: string; slug: string; serviceType: string; status: string; pilotId?: string; currentVersion?: Version; publishedVersion?: Version };
@@ -12,7 +12,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 export function consumptionPlanAvailable(scope?: ConsumptionScope): scope is ConsumptionScope & {plan: ConsumptionPlan; pilotId: string} {
   const p=scope?.plan;
-  return Boolean(scope?.pilotId && p && scope.taskId===p.taskId && p.packageDigest && p.sourceReleaseRunId &&
+  return Boolean(scope?.pilotId && p && (p.manualDeliveryTaskId?scope.manualDeliveryTaskId===p.manualDeliveryTaskId&&scope.taskId===undefined&&p.taskId===undefined:typeof p.taskId==='string'&&scope.taskId===p.taskId&&!scope.manualDeliveryTaskId)&&p.packageDigest && p.sourceReleaseRunId &&
     Array.isArray(p.dapis)&&p.dapis.length===2&&p.dapis.every(d=>d.name&&d.slug&&Array.isArray(d.fields)&&d.fields.length)&&
     new Set(p.dapis.map(d=>d.slug)).size===2&&p.xapi?.name&&p.xapi.slug&&!p.dapis.some(d=>d.slug===p.xapi.slug)&&
     Array.isArray(p.xapi.steps)&&p.xapi.steps.length===2&&p.xapi.steps.every(s=>s.alias&&p.dapis.some(d=>d.slug===s.dapiSlug))&&

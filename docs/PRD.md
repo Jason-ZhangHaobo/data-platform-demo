@@ -1,5 +1,7 @@
 # 数舵 V2 产品需求与边界
 
+> 2026-11-10 增量：[独立手工发布的DAPI／XAPI消费](standalone-service-consumption.md)。真实手工来源贯穿服务、授权查询及返程，复用既有快照和管理器，核对审阅／演练／两个正确批次；GUI／API／CLI／MCP支持同一来源，历史通过不升级为当前授权或自主完成。真实云部署及新来源服务Agent规划仍另阶段验收。
+
 > 2026-11-10 增量：[独立手工确切版本发布与监控](standalone-manual-publication.md)。复用持久发布引擎，四项审阅绑定原包／演练，MANUAL_RUN来源贯穿批准、两个调度批次及监控；GUI／API／CLI／MCP同源，默认不开放新窗口。已通过本机合成签名队列与完整页面验收，未代表真实云部署或当前v3自主完成。
 
 > 2026-11-10 增量：[独立手工SQL文件与演练](standalone-manual-delivery.md)。本人成功版本直接准备八文件、持久演练与原编号恢复，模型禁用仍可使用；MANUAL／ENGINEER_AUTHORED，无虚构Agent。独立手工确切版本审阅发布已由[后续阶段](standalone-manual-publication.md)接入，源码未代表公网部署。

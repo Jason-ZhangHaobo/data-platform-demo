@@ -1,6 +1,13 @@
 # 已确认决策与实施假设
 基线日期：2026-09-13。状态分为：已确认、待验证、已实现、已验收。变更必须记录替代关系。
 
+## 2026-11-10 独立手工接口消费保持真实来源（本机实施选择）
+
+- 扩展同一服务管理器和来源验证，要求原交付／演练／四项审阅／批准及两个正确结果批次；以不可变样例预期核对输出，不能只信状态。
+- 选择参数manual_delivery_task_id与agent_task_id互斥；限定消费计划显式MANUAL_DELIVERY，以manualDeliveryTaskId代替taskId。默认Agent范围不扩大，作者、窗口及最小测试应用约束保留。
+- 消费者来源v2与独立手工历史协议保留ENGINEER_AUTHORED、非自主归因；已有v1及Agent行为兼容。历史调用和当前凭证状态分开，外部文件一致性仅MATCHED_ONLY。
+- GUI服务开发／返程使用同一绑定，不写伪Agent定位；CLI／MCP共用严格查询选择。手动真实查询与合成上游分别计证据；新来源的服务Agent上下文下一阶段再接入，见[范围与验收](standalone-service-consumption.md)。
+
 ## 2026-11-10 独立手工发布复用持久引擎（本机实施选择）
 
 - 同一发布引擎按真实来源分派；独立手工以manualDeliveryTaskId／MANUAL_RUN绑定原run和revision，贯穿审阅、批准、release及批次，保持ENGINEER_AUTHORED与非自主归因。不创建或借用Agent身份。

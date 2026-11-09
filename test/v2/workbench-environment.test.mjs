@@ -64,7 +64,8 @@ test('real app keeps local delivery separate and routes verified manual cloud so
  assert.match(app,/runtimeMode=\{workbench.runtimeMode\}/);
  assert.doesNotMatch(app,/privateCloud=\{privateServicesPreview\}/);
  assert.match(agent,/runtimeMode === "LOCAL_DEVELOPMENT" && !privatePreview/);
- assert.match(agent,/!localManualDelivery \? originTaskId && run\?\.id \? <AgentDeliveryPanel/);
+ assert.match(agent,/!localManualDelivery \? originTaskId && !expectedManualSource && run\?\.id \? <AgentDeliveryPanel/);
+ assert.match(agent,/originTaskId:expectedManualSource\?undefined:origin/);
  assert.match(agent,/manual api=\{api\} taskId=\{originTaskId\}/);
  assert.match(agent,/canWrite=\{canWrite&&!manualUnconfirmed&&!pendingSaveKey\} canPublish=\{canPublish\} publicationTarget=\{publicationTarget\}/);
  assert.match(agent,/!task && !dirty && mayReuseManualRevision/);

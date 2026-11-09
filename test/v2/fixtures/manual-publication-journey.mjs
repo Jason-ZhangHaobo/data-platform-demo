@@ -138,7 +138,7 @@ export async function createManualPublicationJourney({ applicationRoot, port = 0
   const selector = { sourceKind: "MANUAL", sourceRunId: sourceRun.id, packageDigest: item.digest, verificationId: verification.id }, path = standalone?`/delivery/manual/${delivery.id}/publication`:`/agent/tasks/${agent.id}/publication`;
   return { directory, env, owner, other, agent, revision, sourceRun, delivery, item, verification, selector, path, call, forward, tick, complete, login,
     query: "?" + new URLSearchParams(selector).toString(), body: { ...selector, attestations: { code: true, assertions: true, deliveryFiles: true, cloudScope: true } },
-    restart: async () => { await close(); await open(); }, advance: () => { now += 60000; }, expire: () => { now = Date.parse(env.V2_PUBLIC_PUBLICATION_EXPIRES_AT); },
+    restart: async () => { await close(); await open(); }, time:()=>now, advance: () => { now += 60000; }, expire: () => { now = Date.parse(env.V2_PUBLIC_PUBLICATION_EXPIRES_AT); },
     failReceiptReads: value => { failReads = value; }, loseNextPublicationAcknowledgement: () => { losePublishFlush = true; },
     counts: () => ({ modelCalls, jobCreates: jobCreates - queueBaseline.jobCreates, submitCalls: submitCalls - queueBaseline.submitCalls,
       resultReads: resultReads - queueBaseline.resultReads, cancelCalls: cancelCalls - queueBaseline.cancelCalls }),
