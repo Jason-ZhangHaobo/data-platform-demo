@@ -46,6 +46,58 @@ def create_spark():
       .config("spark.sql.warehouse.dir", str(Path.cwd()/"warehouse"))
       .getOrCreate())
 
+def analyze_column_lineage(sql, context, output_columns):
+    """Static value dependencies only. Does not execute SQL or prove row-set semantics."""
+    from sqlglot.lineage import lineage
+    from sqlglot.optimizer.qualify import qualify
+    from sqlglot.optimizer.scope import build_scope
+    schema_tables=[{"name":t["name"],"columns":t["columns"]} for t in context["tables"]]
+    schema={t["name"]:{c[0]:c[1] for c in t["columns"]} for t in schema_tables}
+    base={"protocol":"shuduo-sql-value-lineage/v1","dialect":"spark","analysis":"STATIC_VALUE_DEPENDENCIES",
+          "sourceSqlHash":hashlib.sha256(sql.encode()).hexdigest(),"contextId":context["id"],
+          "schemaHash":hashlib.sha256(json.dumps({"tables":schema_tables},sort_keys=True,ensure_ascii=False,separators=(",",":")).encode()).hexdigest(),
+          "parser":"sqlglot","parserVersion":sqlglot.__version__,"fields":[],"rowSetImpactAnalyzed":False}
+    try:
+        validated=validate_sql(sql,context)
+        tree=sqlglot.parse_one(validated,read="spark")
+        if len(list(tree.walk()))>2500 or not 1<=len(output_columns)<=200 or len(set(output_columns))!=len(output_columns):
+            raise ValueError("UNSUPPORTED_ANALYSIS_SIZE")
+        qualified=qualify(tree,dialect="spark",schema=schema,validate_qualify_columns=True,identify=False,quote_identifiers=False)
+        scope=build_scope(qualified)
+        if [s.alias_or_name for s in qualified.selects]!=output_columns:
+            raise ValueError("OUTPUT_SCHEMA_MISMATCH")
+        for column in output_columns:
+            field={"target":column,"status":"UNRESOLVED","sources":[],"expression":""}
+            try:
+                root=lineage(column,qualified,dialect="spark",scope=scope,trim_selects=False)
+                expression=root.expression.copy()
+                # Literal values and comments are not needed to explain column flow.
+                for node in expression.walk():
+                    node.comments=None
+                expression=expression.transform(lambda n:exp.Placeholder() if isinstance(n,(exp.Literal,exp.Boolean,exp.Null)) and not isinstance(n.parent,(exp.DataType,exp.DataTypeParam)) else n)
+                rendered=expression.sql(dialect="spark")
+                field["expression"]=rendered if len(rendered)<=1000 else "表达式过长，请查看原代码版本"
+                sources=set();unresolved=False
+                for leaf in root.walk():
+                    if leaf.downstream:continue
+                    if isinstance(leaf.expression,exp.Table):
+                        table=leaf.expression.name;name=leaf.name.rsplit(".",1)[-1].strip('"`')
+                        if table not in schema or name not in schema[table]:unresolved=True
+                        else:sources.add((table,name))
+                    elif leaf.expression.find(exp.Column,exp.Star,exp.AggFunc,exp.Window,exp.Select,exp.Subquery) is not None:
+                        unresolved=True
+                if root.expression.find(exp.Subquery) is not None:unresolved=True
+                field["sources"]=[{"table":t,"column":c} for t,c in sorted(sources)]
+                if not unresolved and sources:field["status"]="RESOLVED"
+                elif not unresolved and root.expression.find(exp.Column,exp.Star,exp.AggFunc,exp.Window,exp.Select,exp.Subquery) is None:field["status"]="CONSTANT"
+                else:field["reason"]="包含未解析来源或行集依赖，不能当作纯字段值来源"
+            except Exception:
+                field["reason"]="此字段的静态值来源未能确认"
+            base["fields"].append(field)
+        return {**base,"status":"COMPLETE" if all(f["status"] in ("RESOLVED","CONSTANT") for f in base["fields"]) else "PARTIAL"}
+    except Exception:
+        return {**base,"status":"UNAVAILABLE","reason":"原SQL、输入结构或输出字段无法完成静态解析"}
+
 def execute(spark, sql, context):
     from pyspark.sql.types import StructType, StructField, StringType
     validated=validate_sql(sql,context)
@@ -67,7 +119,8 @@ def execute(spark, sql, context):
     if len(data)>1000: raise ValueError("查询结果超过 1000 行")
     spark.createDataFrame(data,frame.schema).createOrReplaceTempView("__shuduo_result")
     rows=[{k:format(v,"f") if isinstance(v,Decimal) else v for k,v in row.asDict().items()} for row in data]
-    return {"rows":rows,"columns":[{"name":f.name,"type":f.dataType.simpleString()} for f in frame.schema.fields],"engine":"Apache Spark","engineVersion":spark.version}
+    return {"rows":rows,"columns":[{"name":f.name,"type":f.dataType.simpleString()} for f in frame.schema.fields],"engine":"Apache Spark","engineVersion":spark.version,
+            "columnLineage":analyze_column_lineage(sql,context,frame.columns)}
 
 COMPARISON_FIELDS=("holding_market_value","available_cash","total_assets","security_count")
 COMPARISON_LIMIT=20
