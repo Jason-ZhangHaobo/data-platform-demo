@@ -40,7 +40,7 @@ export function runComparisonSide({ run, revision }) {
     if (measuredInput.state === 'VERIFIED' && selectedCase?.input.state === 'VERIFIED' && (measuredInput.inputHash !== selectedCase.input.inputHash || measuredInput.schemaHash !== selectedCase.input.schemaHash))
         measuredInput = { state: 'UNCONFIRMED' };
     return { runId: run.id, revisionId: run.revisionId, revisionHash: bound ? revision.hash : undefined, contextId: run.contextId ?? revision?.contextId ?? 'UNKNOWN', createdAt: run.createdAt,
-        sourceKind: revision?.source === 'MANUAL' ? 'MANUAL' : 'AGENT_OR_OTHER', runStatus: run.status, engine: run.engine, engineVersion: run.engineVersion, binding: bound ? 'VERIFIED' : 'UNCONFIRMED',
+        sourceKind: revision?.source === 'MANUAL' || revision?.sourceKind === 'MANUAL' || revision?.sourceAttribution !== undefined ? 'MANUAL' : 'AGENT_OR_OTHER', runStatus: run.status, engine: run.engine, engineVersion: run.engineVersion, binding: bound ? 'VERIFIED' : 'UNCONFIRMED',
         input: measuredInput, validation: measuredValidation,
         testSql: actual && typeof run.testSqlValidation?.passed === 'boolean' && digest(run.testSqlValidation.sqlHash) ? { state: run.testSqlValidation.passed ? 'PASSED' : 'FAILED', sqlHash: run.testSqlValidation.sqlHash } : { state: 'NOT_RECORDED' },
         lineage: lineage ?? { status: 'UNAVAILABLE', fields: [], reason: '原代码与运行摘要未核对一致' } };

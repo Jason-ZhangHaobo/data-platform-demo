@@ -111,6 +111,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
   };
   const change = (item, patch) => store.update("agent_delivery_task", item.id, project, patch, { expectedVersion: item.version });
   const source = agent => {
+    if(agent.repairComparison!==undefined||agent.sourceKind==='MANUAL'||agent.sourceAttribution!==undefined)throw fail(409,'人工辅助修正须独立记录来源并重新审阅交付，不能从原生Agent入口继承发布');
     const attempt = agent.attempts?.at(-1), revision = store.get("revision", attempt?.revisionId ?? "", project), run = store.get("run", attempt?.runId ?? "", project);
     if (agent.status !== "SUCCEEDED" || agent.mode !== "LIVE_MODEL" || attempt?.status !== "SUCCEEDED" || !attempt.model || /TEST_DOUBLE|unconfirmed/.test(attempt.model) || developmentVerificationReport(agent, run, revision).status !== "PASSED")
       throw fail(409, "请先完成真实模型、Spark 与独立结果核验");

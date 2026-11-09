@@ -1,5 +1,6 @@
 import { modelFailure } from "./model-diagnostics.mjs";
 import { safeSqlRepairFeedback } from "./sql-repair-feedback.mjs";
+import {safeRepairComparisonSummary} from './sql-repair-comparison.mjs';
 
 export class ModelUnavailable extends Error {
   constructor() {
@@ -87,7 +88,7 @@ export async function generateAgentIntent(
   };
 }
 export async function generateSql(
-  { message, context, currentSql, error, repairFeedback, signal, remainingBudget },
+  { message, context, currentSql, error, repairFeedback, repairComparison, signal, remainingBudget },
   env = process.env,
   fetchImpl = fetch,
 ) {
@@ -109,6 +110,7 @@ export async function generateSql(
   )
     throw new Error("模型预算配置不合法");
   const feedback = safeSqlRepairFeedback(repairFeedback, context.id,{currentSql});
+  const comparison=safeRepairComparisonSummary(repairComparison,context,currentSql);
   const prompt = JSON.stringify({
     request: message,
     context: {
@@ -123,6 +125,7 @@ export async function generateSql(
     currentSql,
     error,
     ...(feedback ? { repairFeedback: feedback } : {}),
+    ...(comparison?{repairComparison:comparison,comparisonNotice:'这是工程师选定的历史参考摘要，不是标准SQL或因果结论。只修正当前代码，保留未确认边界，不能声称执行或继承发布批准。'}:{}),
     executionContract: {
       regressionFixtures: [
         "标准数据",

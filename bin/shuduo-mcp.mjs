@@ -8,6 +8,7 @@ import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from 
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import{publishedReportSourceSchema,publishedReportMetricIds}from'../src/v2/published-report-request.mjs';
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
+import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
@@ -19,6 +20,8 @@ const publicationProperties={sourceKind:{type:"string",enum:["AGENT","MANUAL"]},
 const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANUAL"}},required:["sourceKind"]},then:{required:["sourceRunId","packageDigest","verificationId",...(stop?["releaseId"]:[])]}});
 
 const tools = [
+  {name:'agent_repair_comparison_basis',description:'只读核对本人失败SQL与成功基线，冻结代码及证据摘要；不运行模型或Spark，不继承批准。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},baselineRunId:{type:'string',format:'uuid'}},required:['sourceRunId','baselineRunId']},annotations:{readOnlyHint:true}},
+  {name:'agent_repair_comparison_create',description:'明确委托后新建对照辅助修正任务；后台重核双方归属、代码和证据，只传脱敏摘要。记为人工辅助，不计自主完成，不批准发布。未知结果用同一requestId查询原请求，不另建任务。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},baselineRunId:{type:'string',format:'uuid'},message:{type:'string',minLength:4,maxLength:2000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['sourceRunId','baselineRunId','message','requestId','confirm']},annotations:{readOnlyHint:false}},
   {name:'sql_run_comparison_candidates',description:'只读当前用户可见的同口径运行候选，最多50条元数据；不读业务行、不推进运行。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'}},required:['runId']},annotations:{readOnlyHint:true}},
   {name:'sql_run_compare',description:'只读两个确切已保存运行的代码/值来源/条件引用及验证对照；缺旧证据不当新增或删除，不证明业务因果，不解析草稿或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'},baselineRunId:{type:'string',format:'uuid'}},required:['runId','baselineRunId']},annotations:{readOnlyHint:true}},
   {name:'service_agent_plan_advance',description:'显式推进已读取的持久私有服务规划。直接模式可能调用模型，事件模式只登记原任务的受控唤醒。须有效独立窗口和原版本；未知结果不自动重试，confirmModelRetry仅表示本次明确确认。不会确认草稿、发布或发凭证。',inputSchema:{type:'object',additionalProperties:false,properties:{planId:{type:'string',format:'uuid'},expectedVersion:{type:'integer',minimum:1},confirmModelRetry:{type:'boolean'}},required:['planId','expectedVersion']}},
@@ -216,6 +219,8 @@ const typePath = (value) => {
 async function callTool(name, args = {}, client=defaultClient) {
   if(name==='sql_run_comparison_candidates')return readRunComparisonCandidates(client,args);
   if(name==='sql_run_compare')return readSqlRunComparison(client,args);
+  if(name==='agent_repair_comparison_basis')return readRepairComparisonBasis(client,args);
+  if(name==='agent_repair_comparison_create')return createComparisonRepairTask(client,args);
   if(name==='service_agent_context')return readServiceAgentContext(client,args);
   if(typeof name==='string'&&name.startsWith('service_agent_plan_'))return callServicePlan(client,name.slice('service_agent_plan_'.length),args);
   if (name === "v2_status") return client.request("/status");

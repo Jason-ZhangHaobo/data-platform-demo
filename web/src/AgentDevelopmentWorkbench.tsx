@@ -9,6 +9,8 @@ import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
 import {initialAgentTaskId,loadHistoryAfterTarget,mergeTaskHistory,checkedAgentTask,checkedAgentRun} from "./agent-history-loading";
 import {agentTaskFinished,mayEditScopedTask} from "./agent-task-scope";
 import {AgentRepairAction} from "./AgentRepairAction";
+import {failedRunRepairAction} from './agent-repair-action';
+import {comparisonRepairReceiptMatches} from '../../src/v2/repair-comparison-client.mjs';
 import {AgentModelRecovery} from "./AgentModelRecovery";
 import {AgentContextDerivation} from "./AgentContextDerivation";
 import {contextDerivationFromLocation,contextDerivationLocation,clearContextDerivation,contextDerivationReference,contextDerivationAccessReason,readContextDerivationSource,contextDerivationSubmitReason,contextDerivationBody,contextDerivationReceiptMatches,contextDerivationReceiptContent} from "./agent-context-derivation";
@@ -334,6 +336,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   async function acceptSubmissionReceipt(current:Task,key:string,token:number,continueOriginal:boolean){
     if(!alive.current||epoch.current!==token||agentSubmissionRequest(location.href)!==key)return;
     if(!agentTaskReceiptValid(current))throw Error("任务回执不完整或语言不匹配，保留原提交编号");
+    if(!comparisonRepairReceiptMatches(current,submissionController().expectedBody()))throw Error('对照修正回执未绑定原来源、证据或人工辅助归因，保留原提交编号。');
     if(derivationActiveRef.current&&(!derivationRef.current||!derivationSourceRef.current||!contextDerivationReceiptMatches(current,derivationRef.current,derivationSourceRef.current)))
       throw Error("新任务回执未绑定原成功版本与目标口径，保留提交编号；不会改用其他任务。");
     const derivedReceipt=derivationActiveRef.current,automaticMessage=derivationAutomaticMessage.current;
@@ -345,7 +348,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     if(saved!==undefined){setDraft(previous=>derivedContent?derivedContent.sql:!continueOriginal&&previous!==baseline?previous:saved);setBaseline(saved);}
     setMessage(previous=>previous.trim()===current.message.trim()||derivedReceipt&&automaticMessage!==undefined&&previous===automaticMessage?"":previous);
     derivationAutomaticMessage.current=undefined;
-    if(continueOriginal){
+    if(continueOriginal&&!agentTaskFinished(current.status)){
       setBusy(false);
       setNotice(current.background?.status==="ACTIVE"?"需求已保存并委托云端事件后台；发布仍须审阅。":"需求已保存，将按已确认口径生成代码并执行独立校验。");
       void drive(current);return;
@@ -368,7 +371,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     }catch(cause){if(alive.current&&epoch.current===token)setError((cause as Error).message+(agentSubmissionRequest(location.href)?" 原提交编号保留，请用原账号继续查询；不会自动新建任务。":" 原任务已找回，执行结果读取尚未确认，请刷新原任务。"));}
     finally{if(alive.current&&epoch.current===token)setBusy(false);}
   }
-  async function send(overrideMessage?: string, expectedRepairSourceId?: string) {
+  async function send(overrideMessage?: string, expectedRepairSourceId?: string, repairComparison?: import('../../src/v2/repair-comparison-client.mjs').RepairComparisonBasis) {
     const requestMessage = (overrideMessage ?? message).trim();
     if(derivationActive){
       if(derivationSubmitReason||!derivationDraft||!derivationSource||expectedRepairSourceId){setNotice(derivationSubmitReason||"口径变更不能混用失败修正来源。");return;}
@@ -383,9 +386,12 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     if (taskOnly || !ready || !canWrite || working || manualUnconfirmed || pendingSaveKey || pendingAgentKey || runPending || requestMessage.length < 4 || !context) return;
     const repairSource = run && ["FAILED", "VALIDATION_FAILED"].includes(run.status) && !dirty && run.revisionId === baselineRevisionId ? run.id : undefined;
     if (expectedRepairSourceId && repairSource !== expectedRepairSourceId) { setNotice("失败批次或代码版本已变化，请重新确认当前核验记录；未新建任务。"); return; }
+    if(repairComparison&&(repairComparison.sourceRunId!==repairSource||repairComparison.contextId!==contextId||repairComparison.binding.currentRevisionHash!==run?.revisionHash||dirty)){
+      setNotice('对照来源或代码已变化，请重读原运行；未新建任务。');return;
+    }
     const token=++epoch.current;
     setBusy(true); setError("");
-    const body = { message: requestMessage, sql: draft.trim() || "SELECT 1 AS pending", contextId, ...(backgroundAvailable?{background:backgroundConsent}:{}), ...(repairSource ? { sourceRunId: repairSource } : {}) };
+    const body = { message: requestMessage, sql: repairComparison?draft:draft.trim() || "SELECT 1 AS pending", contextId, ...(backgroundAvailable?{background:backgroundConsent}:{}), ...(repairSource ? { sourceRunId: repairSource } : {}),...(repairComparison?{repairComparison:repairComparison.binding}:{}) };
     try {
       const controller=submissionController(),created=await controller.submit(body),key=controller.snapshot().key;
       if(key)await acceptSubmissionReceipt(created,key,token,true);
@@ -512,6 +518,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
           </details>
           {!task && <div className="agent-dev-intro"><h3>{derivationActive?"说明这次口径变化。":"先说清楚你想得到什么。"}</h3><p>{derivationActive?"确认前只保留本页草稿；新任务会从冻结SQL出发，按目标口径重新生成与验证。":"我会引用当前表结构编写 SQL，交给 Spark 执行，并依据独立断言修正错误。代码和失败记录始终可见。"}</p><AgentRequirementExample readOnly={readOnly||Boolean(publicationTarget)} disabled={taskOnly||derivationActive&&derivationState!=="READY"} scoped={Boolean(scopedLabels)} example={scopedLabels?`请按已选择的“${context?.name}”口径编写Spark SQL。${context?.definition}`:"请计算T+1客户资产，确保现金不重复累计、持仓按position_id去重，并包含只有现金的客户。"} onFill={setMessage}/></div>}
           {task && <><div className="agent-dev-message user"><small>你的需求 · {task.id.slice(0,8)}</small><p>{task.message}</p></div>
+            {task.sourceKind==='MANUAL'&&<div className="agent-dev-notice agent-dev-assisted" role="status"><strong>人工辅助修正 · 独立开发结果</strong><p>工程师引用了历史开发依据。代码、运行与核验保留人工辅助来源，不计 Agent 自主完成。此版本的人工辅助交付适配尚未验收，暂不通过原生 Agent 入口发布。</p></div>}
             {task.derivedFrom&&<div className="agent-dev-notice" role="status"><strong>已登记口径变更 · 独立新任务</strong><p>来自任务 {task.derivedFrom.taskId.slice(0,8)}、版本 {task.derivedFrom.revisionId.slice(0,8)}。原口径：{contexts.find(item=>item.id===task.derivedFrom?.contextId)?.name??task.derivedFrom.contextId}；原任务及批准不变，新任务需重新核验、交付和审阅。</p></div>}
             <div className="agent-dev-message assistant"><strong>{automatic ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}{automatic && task.stage === "READY_FOR_MODEL" ? "正在请求模型生成或修正…" : stageText[task.stage ?? task.status] ?? task.status}</strong><p>{task.explanation || "需求已记录，将使用上方已确认的上下文和口径。"}</p>
               {task.error && <p className="agent-dev-error-text">{task.error}</p>}
@@ -529,7 +536,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
               {!agentTaskFinished(task.status) && <button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button>}
             </div>
             {!agentTaskFinished(task.status)&&resumeReason&&<p className="agent-dev-notice" role="status">{resumeReason}</p>}
-            {task.status === "SUCCEEDED" && <p className="agent-dev-success"><CheckCircle2 size={16} />代码已通过执行校验。继续查看下方核验报告，并准备调度与部署交付。</p>}
+            {task.status === "SUCCEEDED" && <p className="agent-dev-success"><CheckCircle2 size={16} />{task.sourceKind==='MANUAL'?'代码已通过当前开发核验。人工辅助归因保留，交付仍需独立审阅。':'代码已通过执行校验。继续查看下方核验报告，并准备调度与部署交付。'}</p>}
           </>}
         </div>
         <form className="agent-dev-compose" onSubmit={e => { e.preventDefault(); void send(); }}><label htmlFor="agent-dev-message">{taskOnly ? "本窗口不创建新的需求任务" : derivationActive?"确认新口径任务的需求":task ? "基于当前代码提出下一次修改" : "描述开发需求"}</label><textarea id="agent-dev-message" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} placeholder="例如：计算客户总资产，检查现金是否被重复累计…" disabled={taskOnly||readOnly||Boolean(publicationTarget)||working} />{backgroundAvailable&&!taskOnly&&!readOnly&&!publicationTarget&&<label className="agent-dev-consent"><input type="checkbox" checked={backgroundConsent} disabled={working} onChange={e=>setBackgroundConsent(e.target.checked)}/>委托云后台推进本次开发（15分钟、最多20个事件；沿用模型与执行预算，不自动发布）</label>}<div><small>{taskOnly ? "使用上方原任务的继续／恢复操作，不会清零历史" : readOnly || publicationTarget ? "当前不会调用模型或开发计算" : derivationActive?"确认后才新建任务并调用模型与 Spark，原批准不继承":"本次将真实调用模型与隔离 Spark"}</small><button className="button primary" type="submit" disabled={taskOnly || !ready || !canWrite || working || runPending || message.trim().length < 4 || derivationActive&&Boolean(derivationSubmitReason)}><Send size={14} />{derivationActive?"确认新建口径任务并验证":"按此口径生成并验证"}</button></div></form>
@@ -543,13 +550,14 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
           {tab!=='运行对照'&&<AgentRepairAction input={repairInput} onSubmit={request=>send(request.message,request.sourceRunId)} onExplain={setNotice} />}
           {tab === "结果" && (resultFields.length ? <><ValidationResultScope contextId={run.contextId} contextName={contexts.find(item=>item.id===run.contextId)?.name} runId={run.id} revisionId={run.revisionId} dirty={dirty} /><div className="agent-dev-table-scroll"><table><thead><tr>{resultFields.map(k => <th key={k} title={k}>{resultLabel(k)}</th>)}</tr></thead><tbody>{run.rows?.map((row,i) => <tr key={i}>{resultFields.map(k => <td key={k}>{String(row[k] ?? "—")}</td>)}</tr>)}</tbody></table></div><p>{run.engine} {run.engineVersion} · {run.rows?.length} 行 · 结果绑定版本 {run.revisionId?.slice(0,8)}</p></> : <p className="agent-dev-empty">{terminal(run.status) ? "本次未产生可展示的数据行。请查看校验和日志。" : "Spark 正在执行，结果完成后显示。"}</p>)}
           {tab === "字段来源" && <Suspense fallback={<p role="status">正在加载字段来源视图…</p>}><RunColumnLineagePanel key={run.id} run={run} revisionId={baselineRevisionId} sql={baseline} context={context} dirty={dirty}/></Suspense>}
-          {tab === "运行对照" && <Suspense fallback={<p role="status">正在加载已保存运行对照…</p>}><RunComparisonPanel key={run.id} api={api} runId={run.id} revisionHash={run.revisionHash} contextId={run.contextId??contextId} runStatus={run.status} dirty={dirty}/></Suspense>}
+          {tab === "运行对照" && <Suspense fallback={<p role="status">正在加载已保存运行对照…</p>}><RunComparisonPanel key={run.id} api={api} runId={run.id} revisionHash={run.revisionHash} contextId={run.contextId??contextId} runStatus={run.status} dirty={dirty} repairReason={failedRunRepairAction(repairInput).request?undefined:failedRunRepairAction(repairInput).reason} onRepair={basis=>send('参考所选成功基线的已核验差异，修正当前失败 SQL；以实际运行与独立断言验证，不继承发布批准。',basis.sourceRunId,basis)}/></Suspense>}
           {tab === "校验" && <><h4>{run.validation?.passed ? "独立业务断言通过" : "校验尚未通过"}</h4>{run.validation?.issues?.map((x,i) => <p key={i}>{x}</p>)}{run.validation?.regressions?.map(r => <div className="agent-dev-check" key={r.contextId}><span>{r.name ?? r.contextId}</span><strong>{r.passed ? "通过" : "未通过"}</strong></div>)}<ValidationDetails details={run.validationDetails} expectedSource={{runId:run.id,revisionId:baselineRevisionId,contextId,revisionHash:run.revisionHash,contractId:run.validationContractId}} dirty={dirty} /></>}
           {tab === "日志" && <pre>{developmentRunLog(run)}</pre>}
         </>}</div>
       </section>
     </div>
-    {task && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} contextId={task.contextId} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} canPublish={canPublish&&!sourceReturnActive} publicationTarget={publicationTarget} expectedSourceBinding={expectedSourceBinding} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />}
+    {task?.sourceKind==='MANUAL'&&<section id="agent-delivery" className="agent-dev-context" aria-label="人工辅助开发交付边界"><h3>人工辅助开发结果</h3><p>当前代码、运行和核验均已保留来源。人工辅助交付适配尚未验收；不能继承历史基线的审阅、预算或发布批准。</p><button className="button" disabled={!run||working} onClick={()=>setTab('校验')}>查看当前独立核验</button></section>}
+    {task && task.sourceKind!=='MANUAL' && <AgentDeliveryPanel key={task.id} api={api} taskId={task.id} contextId={task.contextId} revisionId={baselineRevisionId} runId={run?.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} canPublish={canPublish&&!sourceReturnActive} publicationTarget={publicationTarget} expectedSourceBinding={expectedSourceBinding} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />}
     {!task && !derivationActive && baselineRevisionId && <section id="agent-delivery" className="agent-delivery-panel" aria-label={manualDisclosure.region}><h3>{manualDisclosure.title}</h3><p>{manualDisclosure.description}</p><small>代码版本：{baselineRevisionId}{run ? ` · 运行批次：${run.id}` : " · 运行尚未确认"}</small>
       {originTaskId && <button className="button" disabled={working || manualUnconfirmed || Boolean(message.trim())} onClick={() => void selectTask(originTaskId)}>返回原 Agent 任务</button>}
       {!localManualDelivery ? originTaskId && run?.id ? <AgentDeliveryPanel key={`manual-${baselineRevisionId}-${run.id}`} manual api={api} taskId={originTaskId} contextId={contextId} revisionId={baselineRevisionId} runId={run.id} dirty={dirty} canWrite={canWrite&&!manualUnconfirmed&&!pendingSaveKey} canPublish={canPublish} publicationTarget={publicationTarget} codeBusy={working||runPending} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())} /> : <p>先保存并运行关联原任务的人工版本；真实 Spark 与独立核验通过后，可继续准备云端交付。</p> : <><button className="button" disabled={working || dirty || manualUnconfirmed || Boolean(message.trim()) || run?.status !== "SUCCEEDED" || run.revisionId !== baselineRevisionId || !run.validationContractId} onClick={() => setManualDeliveryOpen(true)}>打开本机人工交付流程</button><small>在本页继续生成包、文件演练和审阅；服务端仍核验实际执行与来源。不是自动批准或云端上线。</small>

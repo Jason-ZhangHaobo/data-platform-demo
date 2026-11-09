@@ -20,3 +20,8 @@
 .agent-dev-example summary:focus-visible{outline:2px solid #32654e;outline-offset:4px;border-radius:2px}
 .agent-dev-example p{overflow-wrap:anywhere;margin:9px 0}
 .agent-dev-example small{display:block;font-size:11px;color:#647965;line-height:1.7}
+.run-comparison-repair-v2{padding:16px 18px;border:1px solid var(--border,#dce5df);border-radius:12px;background:var(--surface-muted,#f4f8f4);display:grid;gap:10px}
+.run-comparison-repair-v2 h4,.run-comparison-repair-v2 p{margin:0}
+.run-comparison-repair-v2 .button{justify-self:start;white-space:normal}
+
+.agent-dev-assisted{display:block}.agent-dev-assisted strong{display:block;margin-bottom:6px}.agent-dev-assisted p{margin:0;line-height:1.7}

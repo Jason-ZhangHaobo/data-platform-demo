@@ -5,6 +5,7 @@ import { sameSqlIgnoringLayout } from "./sql-repair-progress.mjs";
 import { buildSqlRepairFeedback } from "./sql-repair-feedback.mjs";
 import { resolveExplicitSqlRepairSource } from "./sql-repair-source.mjs";
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
+import {resolveSqlRepairComparison,repairComparisonAttribution,explicitRepairAttribution} from './sql-repair-comparison.mjs';
 
 export const durableSqlAgentMode = "DURABLE_SQL_AGENT_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -79,13 +80,15 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     await persist();return saved;
   };
 
-  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError, derivation }) {
+  const comparisonBasis=(binding,task)=>resolveSqlRepairComparison({store,project,actorId:task.submittedBy??task.actorId,sourceRunId:task.sourceRunId,
+    contextId:task.contextId,currentSql:task.initialSql??task.currentSql,binding});
+  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError, derivation, repairComparison }) {
     assertExecutionScope(undefined);
     if (!getContext(contextId) || typeof message !== "string" || !message.trim() || message.length > 2000 ||
         typeof currentSql !== "string" || !currentSql.trim() || currentSql.length > 20000 ||
         typeof actorId !== "string" || !actorId || typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 100)
       throw fail(422, "DURABLE_AGENT_INPUT_INVALID", "持久任务输入不合法");
-    if (derivation !== undefined && (sourceRunId !== undefined || sourceError !== undefined))
+    if (derivation !== undefined && (sourceRunId !== undefined || sourceError !== undefined || repairComparison !== undefined))
       throw fail(422, "AGENT_CONTEXT_DERIVATION_CONFLICT", "成功版本口径变更不能同时引用失败修正来源");
     const derivedFrom = derivation === undefined ? undefined : contextDerivation(derivation, actorId, contextId, currentSql);
     if ((sourceRunId !== undefined || sourceError !== undefined) &&
@@ -96,11 +99,12 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
       const actualError=String(run.error || run.validation?.issues?.join("；") || "独立业务校验未通过").slice(0,8000);
       if (sourceError!==actualError) throw fail(409,"AGENT_REPAIR_SOURCE_INVALID","修正错误必须来自同一已保存失败批次，不能替换诊断内容");
     }
+    const basis=repairComparison===undefined?undefined:comparisonBasis(repairComparison,{actorId,sourceRunId,contextId,currentSql});
     const family=validationFamily(contextId);
-    const signature = digest({ message, currentSql, contextId, ...(sourceRunId ? { sourceRunId, sourceError } : {}), ...(derivedFrom ? {derivation:derivedFrom} : {}) });
+    const signature = digest({ message, currentSql, contextId, ...(sourceRunId ? { sourceRunId, sourceError } : {}), ...(derivedFrom ? {derivation:derivedFrom} : {}),...(basis?{repairComparison:basis.binding}:{}) });
     const result = store.deduplicate(`${project}:durable-agent:${actorId}:${idempotencyKey}`, signature, () =>
       store.create("agent", project, { message, sql: currentSql, initialSql: currentSql, sourceRunId, language: "SPARK_SQL", contextId,
-        ...(derivedFrom ? {derivedFrom} : {}),
+        ...(derivedFrom ? {derivedFrom} : {}),...(sourceRunId?explicitRepairAttribution(sourceRunId):{}),...(basis?{repairComparison:basis.binding,...basis.attribution}:{}),
         submittedBy: actorId, status: "QUEUED", stage: "READY_FOR_MODEL", attempts: [], usedTokens: 0,
         maxAttempts, tokenBudget, requestTokenLimit, executionMode: durableSqlAgentMode, mode: "LIVE_MODEL",
         completionScope: "SQL_DEVELOPMENT", fullLifecycleE2E: false, validationContractId: family.id,
@@ -109,6 +113,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   }
 
   async function generate(task) {
+    const comparison=task.repairComparison?comparisonBasis(task.repairComparison,task):undefined;
     if (task.derivedFrom !== undefined && task.revisionId === undefined) {
       const {kind, taskId, revisionId, runId, revisionHash} = task.derivedFrom;
       const checked = contextDerivation({kind, taskId, revisionId, runId, revisionHash}, task.submittedBy, task.contextId, task.sql);
@@ -148,6 +153,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
         return generator({ message: task.message, context: getContext(task.contextId),
           currentSql: task.sql, error: task.durable.validationError,
           repairFeedback: feedbackRun ? buildSqlRepairFeedback(feedbackRun, task.contextId,{currentSql:task.sql}) : undefined,
+          ...(!task.runId&&comparison?{repairComparison:comparison.summary}:{}),
           remainingBudget: reserved, signal: controller.signal,
           modelBudgetReservation: { taskId: task.id, attempt: task.attempts.length, leaseToken: token } });
       });
@@ -206,11 +212,16 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
           ...(explicitSource ? {sourceKind:"EXPLICIT_FAILED_RUN"} : {}) } : attempt),
       }), "FAILED", "模型本次未对已失败的 SQL 作出有效修改，已停止重复计算。原失败版本和批次保留，请人工修改后重新核验；本次模型调用与费用仍计入历史。");
     }
+    if(task.repairComparison){
+      try{comparisonBasis(task.repairComparison,task);}catch(cause){
+        task=change(task,completedPatch);await persist();return finish(task,'FAILED',cause.message);
+      }
+    }
     // Revision creation and task linkage share an atomic local transaction.
     const linked = store.deduplicate(`${project}:durable-agent-revision:${task.id}:${attempts.length}`,
       digest(generated.sql), () => {
         const rev = store.create("revision", project, { sql: generated.sql.trim(), contextId: task.contextId,
-          source: "LIVE_MODEL", author: task.submittedBy, hash: createHash("sha256").update(generated.sql.trim()).digest("hex") });
+          source: "LIVE_MODEL", author: task.submittedBy, ...repairComparisonAttribution(task), hash: createHash("sha256").update(generated.sql.trim()).digest("hex") });
         change(task, { ...completedPatch, stage: "READY_FOR_RUN", sql: rev.sql, revisionId: rev.id,
           explanation: typeof generated.explanation === "string" ? generated.explanation.slice(0,8000) : "",
           attempts: attempts.map((a, i) => i === attempts.length - 1 ? { ...a, revisionId: rev.id } : a) });
@@ -221,6 +232,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   }
 
   async function runStep(task) {
+    if(task.repairComparison&&task.stage==='READY_FOR_RUN')comparisonBasis(task.repairComparison,task);
     const family=validationFamily(task.contextId);
     if(task.validationContractId!==family.id)throw fail(409,"AGENT_VALIDATION_CONTRACT_CHANGED","任务绑定的业务口径版本与当前验证契约不一致");
     if (task.stage === "READY_FOR_RUN") {
@@ -231,7 +243,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
           assertRunBudget();
           const run = store.create("run", project, { status: "QUEUED", revisionId: rev.id,
             revisionHash: rev.hash, contextId: task.contextId, validationContractId: family.id,
-            agentTaskId: task.id, mode: "DURABLE_REMOTE_SUBMISSION", isolation: "FUNCTION_PROCESS", durationMs: 30000 });
+            agentTaskId: task.id,...repairComparisonAttribution(task), mode: "DURABLE_REMOTE_SUBMISSION", isolation: "FUNCTION_PROCESS", durationMs: 30000 });
           const prepared = runner.prepare({ sql: rev.sql, context: getContext(task.contextId), validationContexts: family.contextIds.map(getContext) }, run.id);
           if (prepared?.job?.jobId !== run.id) throw new Error("持久运行标识不一致");
           store.update("run", run.id, project, { stage: "SUBMITTING", remoteSubmission: { prepared, submitted: false } });

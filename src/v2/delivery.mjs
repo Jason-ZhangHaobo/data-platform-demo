@@ -220,6 +220,8 @@ export function createDeliveryPackage({
       sqlHash: revision.hash,
       contextId: context.id,
       validationContractId: family.id,
+      ...(revision.sourceAttribution?.kind==='ENGINEER_ASSISTED'?{attribution:{kind:'ENGINEER_ASSISTED',originAgentTaskId:revision.sourceAttribution.originAgentTaskId,
+        actorId:revision.sourceAttribution.actorId,agentIndependentE2E:false}}:{}),
       ...(revision.source === "MANUAL" && revision.manualProvenance?.originAgentTaskId ? {attribution: {
         kind: "ENGINEER_ASSISTED", originAgentTaskId: revision.manualProvenance.originAgentTaskId,
         actorId: revision.manualProvenance.actorId, agentIndependentE2E: false,
