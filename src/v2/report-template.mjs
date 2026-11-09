@@ -24,3 +24,8 @@ export function securitiesReportTemplate(fields = []) {
     notes.push("各客户证券数量使用已加工的 security_count；请确认每客户一行，不将跨客户合计当作全局去重数。");
   return { widgets, notes };
 }
+export function publishedReportTemplate(fields,contextId){
+ const result=securitiesReportTemplate(fields);
+ if(contextId.startsWith('stock-cash'))for(const w of result.widgets){if(w.id==='total_assets')w.title='股票持仓＋现金合计（元）';if(w.id==='client_assets')w.title='各客户股票持仓＋现金（元）';}
+ return result;
+}

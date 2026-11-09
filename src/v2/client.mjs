@@ -157,6 +157,7 @@ export const V2_OPERATIONS = Object.freeze([
   "report_export",
   "report_plan_list",
   "report_plan_create",
+  "report_plan_request",
   "report_plan_apply",
   "ops_overview",
   "ops_refresh",

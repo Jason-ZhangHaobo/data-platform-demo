@@ -113,6 +113,9 @@ import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
 import {resolvePublishedReportSource} from './published-report-source.mjs';
 import {createPublishedReportWorkflow} from './published-report-workflow.mjs';
+import {publishedReportSource,reportRequestId as publishedReportSourceBatchId} from './published-report-request.mjs';
+import {publishedReportHash} from './published-report-source.mjs';
+import {publishedReportPlanningContext,validatePublishedReportPlan,publishedReportPlanHash,samePublishedReportSource} from './published-report-plan.mjs';
 import { OperationsManager } from "./operations.mjs";
 import { AuthManager } from "./auth.mjs";
 import { DataContractManager } from "./contracts.mjs";
@@ -1063,6 +1066,14 @@ export function createV2Server(options = {}) {
   });
   const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,
     resolveSource:(source,actorId)=>resolvePublishedReportSource({store,project:PROJECT,source,actorId}),afterStep:options.publishedReportAfterStep});
+  const reportActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
+  const publishedPlanContext=(source,actor)=>{
+    if(!local)throw fail(403,'同源报表规划尚只在本机开发边界开放');
+    return publishedReportPlanningContext(resolvePublishedReportSource({store,project:PROJECT,source,actorId:actor}));
+  };
+  const requireReportPlanOwner=(plan,req)=>{if(plan.sourceBinding&&(!local||plan.submittedBy!==reportActor(req)))throw fail(404,'未找到本账号的同源报表方案');};
+  const publicReportPlan=plan=>{const{submittedBy,...visible}=plan;return visible;};
+  const sourceReportKey=value=>{const key=text(value,1,100);if(!/^[A-Za-z0-9_-]+$/.test(key))throw fail(422,'原报表规划请求编号不合法');return key;};
   const reportPlanner =
     options.reportPlanner ??
     (async (input) => {
@@ -1713,6 +1724,7 @@ export function createV2Server(options = {}) {
           },
           reports: {
             ...reports.overview().counts,
+            sourceBoundPlanningAvailable:local&&Boolean(options.reportPlanner||modelSettings(env).configured),
             executionScope: "LOCAL_AGGREGATED_REPORTING",
             publicDeployed: false,
             snapshotDriver: options.stateCoordinator
@@ -2784,17 +2796,28 @@ export function createV2Server(options = {}) {
           reports.reportDetail(dedup.id),
         );
       }
-      if (path === "/api/v2/reports/agent/plans" && method === "GET")
-        return json(res, 200, store.list("report_agent_plan", PROJECT));
+      if (path === "/api/v2/reports/agent/plans" && method === "GET") {
+        const batchId=url.searchParams.has('source_batch_id')?publishedReportSourceBatchId(url.searchParams.get('source_batch_id')):undefined;
+        if(batchId&&!local)throw fail(403,'同源报表规划仅供本机读取');
+        return json(res,200,store.list('report_agent_plan',PROJECT).filter(p=>batchId?p.sourceBinding?.batchId===batchId&&p.submittedBy===reportActor(req):!p.sourceBinding).map(publicReportPlan));
+      }
+      const sourceReportRequest=path.match(/^\/api\/v2\/reports\/agent\/requests\/([A-Za-z0-9_-]{1,100})$/);
+      if(sourceReportRequest&&method==='GET'){
+        if(!local)throw fail(403,'同源报表原请求仅供本机读取');
+        const id=store.deduplicatedId(`${PROJECT}:source-report-plan:${reportActor(req)}:${sourceReportRequest[1]}`),task=id?store.get('report_agent_plan',id,PROJECT):undefined;
+        if(!task)throw fail(404,'未找到本账号的原报表规划请求');requireReportPlanOwner(task,req);return json(res,200,publicReportPlan(task));
+      }
       if (path === "/api/v2/reports/agent/plans" && method === "POST") {
         const body = await readBody(req),
           message = text(body.message, 4, 2000);
+        if(Object.keys(body).some(k=>!['message','source'].includes(k)))throw fail(422,'报表规划只接受需求和可选确切发布来源');
+        const source=body.source===undefined?undefined:publishedReportSource(body.source),actor=reportActor(req),publication=source?publishedPlanContext(source,actor):undefined;
         if (!options.reportPlanner && !modelSettings(env).configured)
           throw new ModelUnavailable();
-        const key = text(req.headers["idempotency-key"], 1, 100),
+        const key = source?sourceReportKey(req.headers["idempotency-key"]):text(req.headers["idempotency-key"], 1, 100),
           dedup = store.deduplicate(
-            `${PROJECT}:report-agent-plan:${key}`,
-            hash(JSON.stringify({ message })),
+            source?`${PROJECT}:source-report-plan:${actor}:${key}`:`${PROJECT}:report-agent-plan:${key}`,
+            hash(JSON.stringify({ message,...(source?{source}:{}) })),
             () =>
               store.create("report_agent_plan", PROJECT, {
                 message,
@@ -2802,18 +2825,25 @@ export function createV2Server(options = {}) {
                 mode: "LIVE_MODEL",
                 completionScope: "REPORT_DESIGN",
                 fullLifecycleE2E: false,
+                ...(source?{sourceBinding:source,submittedBy:actor,requestId:key,planMode:'PUBLISHED_SOURCE_REPORT_V1',sourceEvidenceHash:publication.sourceEvidenceHash,contextHash:publishedReportHash(publication)}:{}),
               }),
           ),
           task = get("report_agent_plan", dedup.id);
         if (!dedup.replayed)
           schedule("report_agent_plan", task, async (signal) => {
-            const context = reports.agentContext(),
+            const context = source?{publication:publishedPlanContext(source,actor)}:reports.agentContext(),
               generated = await reportPlanner({
                 message,
                 ...context,
                 signal,
               });
             if (get("report_agent_plan", task.id).status === "CANCELLED") return;
+            if(source){
+              const latest=publishedPlanContext(source,actor);if(publishedReportHash(latest)!==task.contextHash)throw fail(409,'发布来源已变化，未采用旧方案');
+              const proposal=validatePublishedReportPlan(generated.plan,latest);
+              store.update('report_agent_plan',task.id,PROJECT,{status:proposal.kind==='CLARIFICATION_REQUIRED'?'NEEDS_CLARIFICATION':'SUCCEEDED',proposal,
+                proposalHash:publishedReportPlanHash(source,task.contextHash,proposal),explanation:generated.explanation,model:generated.model,usage:generated.usage,planningMode:generated.mode??'UNCONFIRMED',finishedAt:new Date().toISOString()});return;
+            }
             const proposal = reports.validateAgentPlan(generated.plan);
             store.update("report_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
@@ -2824,7 +2854,7 @@ export function createV2Server(options = {}) {
               finishedAt: new Date().toISOString(),
             });
           });
-        return json(res, 202, task);
+        return json(res, 202, publicReportPlan(task));
       }
       const reportAgentPlan = path.match(
         /^\/api\/v2\/reports\/agent\/plans\/([a-f0-9-]+)(?:\/(apply|cancel))?$/,
@@ -2832,9 +2862,15 @@ export function createV2Server(options = {}) {
       if (reportAgentPlan) {
         const plan = get("report_agent_plan", reportAgentPlan[1]),
           action = reportAgentPlan[2];
-        if (method === "GET" && !action) return json(res, 200, plan);
+        requireReportPlanOwner(plan,req);
+        if (method === "GET" && !action) return json(res, 200, publicReportPlan(plan));
         if (method === "POST" && action === "cancel") {
           await readBody(req);
+          if(plan.sourceBinding){
+            if(['APPLIED','APPLYING'].includes(plan.status))throw fail(409,'方案已进入报表生成；取消规划不能撤销已有结果，请查询原方案');
+            if(plan.status!=='CANCELLED')store.update('report_agent_plan',plan.id,PROJECT,{status:'CANCELLED',finishedAt:new Date().toISOString()});
+            controls.get(plan.id)?.abort();return json(res,200,publicReportPlan(get('report_agent_plan',plan.id)));
+          }
           if (!terminal.has(plan.status) && plan.status !== "APPLIED") {
             store.update("report_agent_plan", plan.id, PROJECT, {
               status: "CANCELLED",
@@ -2845,7 +2881,15 @@ export function createV2Server(options = {}) {
           return json(res, 200, get("report_agent_plan", plan.id));
         }
         if (method === "POST" && action === "apply") {
-          await readBody(req);
+          const body=await readBody(req);
+          if(plan.sourceBinding){
+            if(Object.keys(body).some(k=>k!=='proposalHash')||body.proposalHash!==plan.proposalHash||!['SUCCEEDED','APPLYING','APPLIED'].includes(plan.status)||plan.proposal?.kind!=='PUBLISHED_REPORT'||
+              publishedReportPlanHash(plan.sourceBinding,plan.contextHash,plan.proposal)!==plan.proposalHash)throw fail(409,'请先审阅并提交此确切同源报表方案摘要');
+            if(plan.status==='APPLIED')return json(res,200,publishedReports.lookup(plan.id,reportActor(req)));
+            const context=publishedPlanContext(plan.sourceBinding,reportActor(req));if(publishedReportHash(context)!==plan.contextHash)throw fail(409,'来源或指标定义已变化，请重新审阅方案');
+            const created=publishedReports.submit({name:plan.proposal.name,source:plan.sourceBinding,metricIds:plan.proposal.metricIds},reportActor(req),plan.id);
+            store.update('report_agent_plan',plan.id,PROJECT,{status:created.status==='SUCCEEDED'?'APPLIED':'APPLYING',reportCreation:created,...(created.reportId?{reportId:created.reportId}:{}),appliedAt:new Date().toISOString()});return json(res,created.status==='SUCCEEDED'?200:202,created);
+          }
           if (plan.status === "APPLIED" && plan.reportId)
             return json(res, 200, reports.reportDetail(plan.reportId));
           if (plan.status !== "SUCCEEDED" || !plan.proposal)
@@ -3307,6 +3351,10 @@ export function createV2Server(options = {}) {
           version: body.catalogVersion,
           contractDigest: body.contractDigest,
         });
+        if(destinationId==='reports'&&(intent.reportSource||body.input.source)){
+          if(!intent.reportSource||!body.input.source||!samePublishedReportSource(intent.reportSource,body.input.source))throw Object.assign(fail(409,'报表工具来源须与原意图保存的发布上下文一致'),{code:'AGENT_REPORT_SOURCE_MISMATCH'});
+          publishedPlanContext(body.input.source,reportActor(req));
+        }
         if (
           !approval ||
           approval.intentId !== intent.id ||
@@ -5447,10 +5495,12 @@ export function createV2Server(options = {}) {
           approvalMode = validateAgentApprovalMode(body.approvalMode),
           session = auth.sessionFromHeaders(req.headers),
           submittedBy = session?.user.id ?? "local-engineer";
+        const reportSource=body.reportSource===undefined?undefined:publishedReportSource(body.reportSource);
+        if(reportSource)publishedPlanContext(reportSource,submittedBy);
         if (!options.intentPlanner && !modelSettings(env).configured)
           throw new ModelUnavailable();
         const key = text(req.headers["idempotency-key"], 1, 100),
-          signature = hash(JSON.stringify({ message, approvalMode })),
+          signature = hash(JSON.stringify({ message, approvalMode,...(reportSource?{reportSource}:{}) })),
           dedup = store.deduplicate(
             `${PROJECT}:agent-intent:${key}`,
             signature,
@@ -5466,6 +5516,7 @@ export function createV2Server(options = {}) {
                 execution: "NO_EXECUTION",
                 fullLifecycleE2E: false,
                 publicDeployed: false,
+                ...(reportSource?{reportSource}:{}),
               }),
           ),
           task = get("agent_intent", dedup.id);

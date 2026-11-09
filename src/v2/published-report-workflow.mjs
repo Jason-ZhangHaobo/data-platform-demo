@@ -1,6 +1,6 @@
-import {publishedReportInput,reportRequestId} from './published-report-request.mjs';
+import {publishedReportInput,reportRequestId,publishedReportMetricIds} from './published-report-request.mjs';
 import {publishedReportHash} from './published-report-source.mjs';
-import {securitiesReportTemplate} from './report-template.mjs';
+import {publishedReportTemplate} from './report-template.mjs';
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
 export function createPublishedReportWorkflow({store,project,reports,resolveSource,afterStep=()=>{}}){
  const kind='published_report_creation',keyFor=(actor,id)=>`${project}:published-report:v1:${actor}:${id}`;
@@ -8,7 +8,7 @@ export function createPublishedReportWorkflow({store,project,reports,resolveSour
  const view=r=>{
   const result={protocol:'shuduo-published-report-creation/v1',id:r.id,requestId:r.requestId,status:r.status,scope:'LOCAL_TEST_ONLY',source:r.input.source,name:r.input.name,stage:r.stage,error:r.error,
     datasetId:r.datasetId,snapshotId:r.snapshotId,reportId:r.reportId,reportVersionId:r.reportVersionId,reportRunId:r.reportRunId,sourceEvidenceHash:r.sourceEvidenceHash,
-    agentIndependentE2E:false,publicDeployed:false};
+    metricIds:r.input.metricIds??[...publishedReportMetricIds],agentIndependentE2E:false,publicDeployed:false};
   if(r.status==='SUCCEEDED'){
    const report=reports.reportDetail(r.reportId),run=report.runs.find(x=>x.id===r.reportRunId),version=report.versions.find(x=>x.id===r.reportVersionId),snapshot=reports.datasetDetail(r.datasetId).snapshots.find(x=>x.id===r.snapshotId);
    if(!run||!version||!snapshot||run.reportId!==report.id||run.reportVersionId!==version.id||run.datasetSnapshotId!==snapshot.id||version.datasetSnapshotId!==snapshot.id||snapshot.assetVersionId!==r.input.source.batchId||snapshot.assetEvidenceHash!==r.sourceEvidenceHash||run.datasetContentHash!==snapshot.contentHash||run.status!=='SUCCEEDED'||run.actualExecution!==true)throw fail(409,'REPORT_CREATION_RECEIPT_CHANGED','原报表请求与固定产物不一致，未重新计算');
@@ -31,8 +31,8 @@ export function createPublishedReportWorkflow({store,project,reports,resolveSour
    const datasetId=step('dataset',()=>reports.createDataset({name:r.input.name,code:`agent_ds_${suffix}`,fields:resolved.asset.fields.map(f=>f.name)},{publishedSource:r.input.source,actorId:actor}));
    if(!store.get('report_dataset',datasetId,project))throw fail(409,'REPORT_CREATION_RECORD_MISSING','原数据集记录缺失，未重建');
    const snapshotId=step('snapshot',()=>reports.refreshDataset(datasetId,{fixedSnapshotId:r.id}).currentSnapshot);
-   const template=securitiesReportTemplate(resolved.asset.fields.map(f=>f.name));
-   if(resolved.context.id.startsWith('stock-cash'))for(const w of template.widgets){if(w.id==='total_assets')w.title='股票持仓＋现金合计（元）';if(w.id==='client_assets')w.title='各客户股票持仓＋现金（元）';}
+   const template=publishedReportTemplate(resolved.asset.fields.map(f=>f.name),resolved.context.id);
+   if(r.input.metricIds)template.widgets=template.widgets.filter(w=>r.input.metricIds.includes(w.id));
    const reportId=step('report',()=>reports.createReport({name:r.input.name,code:`agent_report_${suffix}`,datasetId,datasetSnapshotId:snapshotId,
     description:`虚构证券 · ${resolved.context.name}。${resolved.context.definition} 来源为${r.input.source.kind==='MANUAL'?'工程师手工代码':'原Agent代码'}的确切发布批次；只聚合已发布数据，不运行新SQL或模型。`,widgets:template.widgets}));
    const report=reports.reportDetail(reportId),original=report.versions.find(v=>v.versionNumber===1&&v.datasetSnapshotId===snapshotId);

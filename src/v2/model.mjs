@@ -945,7 +945,7 @@ export async function generateSecurityPlan(
 }
 
 export async function generateReportPlan(
-  { message, datasets, reports, signal },
+  { message, datasets = [], reports = [], publication, signal },
   env = process.env,
   fetchImpl = fetch,
 ) {
@@ -953,7 +953,12 @@ export async function generateReportPlan(
   const settings = modelSettings(env),
     base = new URL(settings.baseUrl);
   if (base.protocol !== "https:") throw new Error("模型 API 必须使用 HTTPS");
-  const prompt = JSON.stringify({
+  const prompt = JSON.stringify(publication ? {
+    request:message,publishedSource:publication,
+    contract:{kind:'PUBLISHED_REPORT',output:'仅返回JSON：kind,name,metricIds,explanation。metricIds只能选availableWidgets中的id；来源由系统固定，不能返回或修改source、datasetId或SQL。',
+      clarification:'若请求需要当前不存在的字段或指标，返回kind=CLARIFICATION_REQUIRED、question（一个澄清问题）、explanation；不得用其他指标冒充。',
+      boundary:'只规划，不复制数据、不执行聚合、不导出或发布；经审阅后才创建报表。遵守context.definition，股票持仓加现金不等于客户全资产。'},
+  } : {
     request: message,
     readyDatasets: datasets.map((dataset) => ({
       id: dataset.id,
@@ -1004,7 +1009,7 @@ export async function generateReportPlan(
           {
             role: "system",
             content:
-              "你是证券数据报表助手。只根据已就绪数据集的字段与快照摘要生成聚合报表草稿。不得读取或复述业务行、虚构数据集/字段、执行报表、导出文件或声称公网发布。不要输出推理过程。",
+              publication ? "你是证券数据报表Agent。只根据给定发布来源的字段、口径、允许指标和摘要制定方案。不得读取业务行、虚构字段、变更来源或声称已执行。缺字段时只提出一个明确澄清问题，不输出推理过程。" : "你是证券数据报表助手。只根据已就绪数据集的字段与快照摘要生成聚合报表草稿。不得读取或复述业务行、虚构数据集/字段、执行报表、导出文件或声称公网发布。不要输出推理过程。",
           },
           { role: "user", content: prompt },
         ],

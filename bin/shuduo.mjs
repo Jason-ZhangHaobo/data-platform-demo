@@ -393,7 +393,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "understand")
       result = await client.request("/agent/intents", {
         method: "POST",
-        body: { message: required(parsed.options, "message") },
+        body: { message: required(parsed.options, "message"),...(parsed.options.report_source_file?{reportSource:jsonObject(readFileSync(parsed.options.report_source_file,'utf8'),'报表发布上下文')}:{}) },
       });
     else if (resource === "agent" && action === "approvals")
       result = await client.request(
@@ -1163,7 +1163,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         { method: "POST", body: {} },
       );
     else if(resource==='reports'&&action==='from-publication')
-      result=await submitPublishedReport(client,{name:required(parsed.options,'name'),source:jsonObject(readFileSync(required(parsed.options,'source_file'),'utf8'),'报表发布来源'),requestId:required(parsed.options,'request_id')});
+      result=await submitPublishedReport(client,{name:required(parsed.options,'name'),source:jsonObject(readFileSync(required(parsed.options,'source_file'),'utf8'),'报表发布来源'),requestId:required(parsed.options,'request_id'),...(parsed.options.metric_ids?{metricIds:list(parsed.options.metric_ids,'--metric-ids')}:{})});
     else if(resource==='reports'&&action==='request')result=await lookupPublishedReport(client,{requestId:required(parsed.options,'request_id')});
     else if(resource==='reports'&&action==='resume')result=await resumePublishedReport(client,{id:required(parsed.options,'id')});
     else if (resource === "reports" && action === "overview")
@@ -1217,14 +1217,16 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "reports" && action === "plan")
       result = await client.request("/reports/agent/plans", {
         method: "POST",
-        body: { message: required(parsed.options, "message") },
+        body: { message: required(parsed.options, "message"),...(parsed.options.source_file?{source:jsonObject(readFileSync(parsed.options.source_file,'utf8'),'报表发布来源')}:{}) },
+        ...(parsed.options.request_id?{idempotencyKey:parsed.options.request_id}:{}),
       });
+    else if(resource==='reports'&&action==='plan-request')result=await client.request('/reports/agent/requests/'+encodeURIComponent(required(parsed.options,'request_id')));
     else if (resource === "reports" && action === "plans")
-      result = await client.request("/reports/agent/plans");
+      result = await client.request('/reports/agent/plans'+(parsed.options.source_batch_id?'?source_batch_id='+encodeURIComponent(parsed.options.source_batch_id):''));
     else if (resource === "reports" && action === "apply-plan")
       result = await client.request(
         `/reports/agent/plans/${encodeURIComponent(required(parsed.options, "id"))}/apply`,
-        { method: "POST", body: {} },
+        { method: "POST", body:parsed.options.proposal_hash?{proposalHash:parsed.options.proposal_hash}:{} },
       );
     else if (resource === "ops" && action === "overview")
       result = await client.request("/operations/overview");

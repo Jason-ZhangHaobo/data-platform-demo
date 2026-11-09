@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import {publishedReportSource} from './published-report-request.mjs';
 
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
 const toolFail = (message, code = "AGENT_TOOL_INPUT_INVALID") =>
@@ -87,7 +88,7 @@ export function publicAgentSpecialistTools() {
         : {}),
       approvalRequired: true,
       idempotencyKeyRequired: true,
-      inputSchema,
+      inputSchema:destination.id==='reports'?{...inputSchema,properties:{...inputSchema.properties,source:{type:'object',description:'可选确切发布来源；必须与意图保存的reportSource相同。',properties:Object.fromEntries(['kind','releaseId','packageDigest','revisionId','runId','batchId','taskId'].map(k=>[k,{type:'string'}])),required:['kind','releaseId','packageDigest','revisionId','runId','batchId'],additionalProperties:false}}}:inputSchema,
       outputSchema: {
         type: "object",
         properties: {
@@ -103,7 +104,7 @@ export function publicAgentSpecialistTools() {
       invokePath:
         "/agent/intents/{intentId}/tools/{destinationId}/invoke",
       executionBoundary:
-        "创建专业任务不等于应用草稿、发布、授权或完整E2E。",
+        destination.id==='reports'?"无source时生成传统草稿方案；绑定发布来源时生成可审阅报表方案，显式应用将实际物化和聚合。均不代表生产发布或完整E2E。":"创建专业任务不等于应用草稿、发布、授权或完整E2E。",
     };
   });
 }
@@ -165,6 +166,7 @@ export function validateAgentToolInput(
     if (Array.isArray(field.enum) && !field.enum.includes(value))
       throw toolFail("专业Agent工具字段枚举值不合法");
   }
+  if(toolId==='reports'&&Object.hasOwn(input,'source'))publishedReportSource(input.source);
   return {
     valid: true,
     toolId: tool.id,

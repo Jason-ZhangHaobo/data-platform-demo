@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type{PublishedReportBinding}from'../../src/v2/published-report-request.mjs';
 import {
   Activity,
   ArrowRight,
@@ -36,6 +37,7 @@ type IntentRoute = {
   notice: string;
 };
 type IntentTask = {
+  reportSource?:PublishedReportBinding;
   id: string;
   status: string;
   messageHash?: string;
@@ -353,7 +355,7 @@ export function AgentCenter({
             }
           : tool.createMode === "DELIVERY_FROM_DEVELOPMENT"
             ? { sourceTaskId: requiredActivity!.id }
-            : { message: step.objective };
+            : { message: step.objective,...(step.destinationId==='reports'&&task?.reportSource?{source:task.reportSource}:{}) };
       if (!toolCatalog) throw new Error("专业Agent工具目录尚未加载");
       await api(`/agent/tools/${encodeURIComponent(tool.id)}/validate`, {
         catalogVersion: toolCatalog.version,
@@ -478,7 +480,7 @@ export function AgentCenter({
         : undefined;
     if (!activity || !applyPath) return;
     try {
-      await api(applyPath, {});
+      await api(applyPath, activity.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?{proposalHash:activity.result.proposalHash}:{});
       const result = await api<Record<string, unknown>>(activity.getPath);
       setActivities((all) => ({
         ...all,
@@ -486,7 +488,7 @@ export function AgentCenter({
           ...activity,
           status: String(result.status ?? "APPLIED"),
           result,
-          applied: true,
+          applied: result.status==='APPLIED',
         },
       }));
       if (task?.id)
@@ -545,13 +547,13 @@ export function AgentCenter({
               {pending(task.status) ? <div className="agent-os-thinking-v2"><LoaderCircle className="spin" size={15} />正在理解目标、匹配上下文并规划跨域步骤…</div> : route ? <>
                 <p>{route.summary}</p><small>{route.rationale}</small>
                 <div className="agent-os-plan-v2"><header><div><FileCheck2 size={15} /><strong>执行计划</strong></div><span>{completedCount}/{graph?.totalCount ?? steps.length} 已完成 · {graph ? "持久任务图" : "加载中"}</span></header><ol>{steps.map((step, index) => {
-                  const activity = activities[step.destinationId], approval = approvals.find((item) => item.destinationId === step.destinationId), prepared = handoffs.some((item) => item.destinationId === step.destinationId), graphStep = graph?.steps.find((item) => item.destinationId === step.destinationId), linked = graphStep?.executionEvidence === "SPECIALIST_TASK_LINKED", canApply = activity?.status === "SUCCEEDED" && linked && Boolean(toolById.get(step.destinationId)?.applyPath), artifactRows = activityArtifactRows(activity), complete = succeeded(activity?.status) && (!graph || linked), recoveryText = graphStep?.invocationRecovery === "RETRY_BINDING" ? "专业任务已创建，等待恢复任务图绑定" : graphStep?.invocationRecovery === "RETRY_REQUIRED" ? "工具调用已中断或失败，可重新批准恢复" : graphStep?.invocationRecovery === "WAIT" ? "工具调用已持久化，正在创建专业任务" : "";
+                  const activity = activities[step.destinationId], approval = approvals.find((item) => item.destinationId === step.destinationId), prepared = handoffs.some((item) => item.destinationId === step.destinationId), graphStep = graph?.steps.find((item) => item.destinationId === step.destinationId), linked = graphStep?.executionEvidence === "SPECIALIST_TASK_LINKED", canApply = ["SUCCEEDED","APPLYING"].includes(activity?.status??"") && linked && Boolean(toolById.get(step.destinationId)?.applyPath), artifactRows = activityArtifactRows(activity), complete = succeeded(activity?.status) && (!graph || linked), recoveryText = graphStep?.invocationRecovery === "RETRY_BINDING" ? "专业任务已创建，等待恢复任务图绑定" : graphStep?.invocationRecovery === "RETRY_REQUIRED" ? "工具调用已中断或失败，可重新批准恢复" : graphStep?.invocationRecovery === "WAIT" ? "工具调用已持久化，正在创建专业任务" : "";
                   return <li key={step.destinationId} className={complete ? "complete" : retryable(activity?.status) ? "failed" : ""}><span>{complete ? <Check size={13} /> : String(index + 1).padStart(2, "0")}</span><div><div className="agent-os-step-title-v2"><strong>{step.label}</strong><small>{riskLabel[step.risk]}</small></div><p>{step.objective}</p>
                     {activity && <div className="agent-os-activity-v2"><CircleDot size={12} /><span>{complete ? activity.applied ? "专业草稿已写入" : "专业Agent已完成" : activity.status === "FAILED" ? activity.error : activity.status === "CANCELLED" ? "专业Agent已取消" : activity.status === "INTERRUPTED" ? "服务重启后专业任务已中断" : "专业Agent执行中"}</span>{activity.id !== "preparing" && activity.id !== "failed" && <code>{activity.id.slice(0, 8)}</code>}</div>}
                     {recoveryText && <div className="agent-os-activity-v2"><Clock3 size={12} /><span>{recoveryText}</span>{graphStep?.invocationAttempt && <code>尝试 {graphStep.invocationAttempt}</code>}</div>}
                     {approval && <div className="agent-os-activity-v2"><ShieldCheck size={12} /><span>{approval.status === "BOUND" ? "本次批准已绑定专业任务" : "步骤已批准，等待绑定任务"}</span><code>{approval.id.slice(0, 8)}</code></div>}
                     {artifactRows.length > 0 && <details className="agent-os-artifact-v2"><summary>查看专业Agent产物</summary><div>{artifactRows.map((row) => <section key={row.label}><span>{row.label}</span>{Array.isArray(row.value) ? <div className="agent-os-artifact-tags-v2">{row.value.map((item) => <code key={item}>{item}</code>)}</div> : <p>{row.value}</p>}</section>)}</div></details>}
-                    <div className="agent-os-step-actions-v2">{task.status !== "CANCELLED" && task.approvalMode !== "PLAN_ONLY" && (!activity || retryable(activity.status)) && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured}><Wrench size={13} />{retryable(activity?.status) ? "重新批准并重试" : "批准并执行此步骤"}</button>}{activity && pending(activity.status) && <button className="secondary" onClick={() => cancelSpecialist(step)} disabled={!canWrite || childCancelBusy === step.destinationId}><Clock3 size={12} />{childCancelBusy === step.destinationId ? "正在取消…" : "取消专业子任务"}</button>}{canApply && !activity.applied && <button onClick={() => applyDraft(step)}><Check size={13} />应用为草稿</button>}{activity?.applied && <span className="agent-os-applied-v2"><Check size={12} />草稿已写入</span>}<button className="secondary" onClick={() => openProfessionalWorkspace(step)}><ExternalLink size={12} />记录接管并打开工作台</button></div>
+                    <div className="agent-os-step-actions-v2">{task.status !== "CANCELLED" && task.approvalMode !== "PLAN_ONLY" && (!activity || retryable(activity.status)) && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured}><Wrench size={13} />{retryable(activity?.status) ? "重新批准并重试" : "批准并执行此步骤"}</button>}{activity && pending(activity.status) && <button className="secondary" onClick={() => cancelSpecialist(step)} disabled={!canWrite || childCancelBusy === step.destinationId}><Clock3 size={12} />{childCancelBusy === step.destinationId ? "正在取消…" : "取消专业子任务"}</button>}{canApply && !activity.applied && <button disabled={!canWrite} onClick={() => applyDraft(step)}><Check size={13} />{activity?.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?'按审阅方案生成报表':'应用为草稿'}</button>}{activity?.applied && <span className="agent-os-applied-v2"><Check size={12} />{activity?.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?'报表已实际生成':'草稿已写入'}</span>}<button className="secondary" onClick={() => openProfessionalWorkspace(step)}><ExternalLink size={12} />记录接管并打开工作台</button></div>
                     {prepared && !activity && <small className="agent-os-prepared-v2">已准备专业Agent输入，尚未执行工具。</small>}
                   </div></li>;
                 })}</ol></div>

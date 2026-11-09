@@ -5,6 +5,7 @@ import { securitiesReportTemplate } from "./report-template";
 import { boundPublishedReports, checkedPublishedReportExport, publishedReportSourceKey } from "./published-report-read";
 import type { PublishedReportResult, PublishedReportSource } from "./published-report-read";
 import {PublishedReportCreator} from './PublishedReportCreator';
+import {PublishedReportAgent} from './PublishedReportAgent';
 
 type Api = <T>(path: string,body?:unknown,options?:{idempotencyKey?:string}) => Promise<T>;
 export function AgentReportPanel({ api, source, canCreate=false }: { api: Api; source: PublishedReportSource;canCreate?:boolean }) {
@@ -12,7 +13,7 @@ export function AgentReportPanel({ api, source, canCreate=false }: { api: Api; s
   active.current = key;
   const [record, setRecord] = useState<{ key: string; results: PublishedReportResult[] }>(),
     [read, setRead] = useState<{ key: string; state: "LOADING" | "READY" | "ERROR"; error?: string }>(),
-    [selected, setSelected] = useState(""), [exporting, setExporting] = useState(false), [notice, setNotice] = useState("");
+    [selected, setSelected] = useState(""), [exporting, setExporting] = useState(false), [notice, setNotice] = useState(""),[manualCreateOpen,setManualCreateOpen]=useState(false);
   const results = record?.key === key ? record.results : [],
     result = results.find(r => r.key === selected) ?? results[0],
     ready = read?.key === key && read.state === "READY";
@@ -47,7 +48,8 @@ export function AgentReportPanel({ api, source, canCreate=false }: { api: Api; s
     <header className="agent-workflow-title"><BarChart3 size={18} /><h3>发布结果 → 资产分析报表</h3><button className="button" onClick={() => void refresh()} disabled={read?.state === "LOADING" || exporting}><RefreshCw size={14} />重读报表</button></header>
     <p>{source.kind === "MANUAL" ? "手工开发结果，保留工程师与测试审阅归因；不计Agent自主完成。" : "当前Agent任务的本机发布结果。"}仅匹配确切成功批次与固定快照。查看不会计算；创建须显式确认，将物化并聚合已发布结果，不运行新SQL、模型或Spark。</p>
     <small>发布 {source.releaseId.slice(0, 8)} · 包 {source.packageDigest.slice(0, 12)} · {source.batchIds.length}个已确认成功批次</small>
-    <PublishedReportCreator key={key} api={api} source={source} canCreate={canCreate} onCreated={receipt=>{setSelected(`${receipt.reportId}:${receipt.reportVersionId}:${receipt.reportRunId}`);void refresh();}}/>
+    <PublishedReportAgent api={api} source={source} canWrite={canCreate} onCreated={receipt=>{setSelected(`${receipt.reportId}:${receipt.reportVersionId}:${receipt.reportRunId}`);void refresh();}}/>
+    <details onToggle={e=>setManualCreateOpen(e.currentTarget.open)}><summary>手动创建与原请求恢复</summary>{manualCreateOpen&&<PublishedReportCreator key={key} api={api} source={source} canCreate={canCreate} onCreated={receipt=>{setSelected(`${receipt.reportId}:${receipt.reportVersionId}:${receipt.reportRunId}`);void refresh();}}/>}</details>
     {read?.key === key && read.state === "LOADING" && <p role="status"><LoaderCircle size={14} className="spin" />正在核对同源报表…</p>}
     {read?.key === key && read.state === "ERROR" && <p role="status">{read.error} {result && "下方保留上次确认的历史结果，当前导出已关闭。"}</p>}
     {ready && !result && <p role="status">此发布版本尚无已核验报表。未切换到其他任务或全局最新结果；需先用此确切批次生成快照与报表。</p>}
