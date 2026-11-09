@@ -238,7 +238,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
       <div id="agent-publication" className="agent-publication-card"><div className="agent-workflow-title"><ShieldCheck size={16} /><h3>审阅发布与运行监控</h3></div><p>{!workflow.publication.available && release ? "发布记录已保留；临时调度入口已关闭，不会继续启动批次。新发布需按预算和权限重新启用。" : workflow.publication.reason}</p>{release && !journey.publicationCurrent && <p role="status">这是保留的发布记录，尚未核对为当前编辑版本的上线证据。</p>}
         {publicationTarget && <p role="status">{publicationWritable ? "本任务、包摘要和演练编号与受邀发布范围一致。请逐项审阅，不会自动批准。" : "当前任务或版本不在有效发布范围内，或窗口已关闭；只保留查看，不发布或停止其他任务。"} 同一冻结业务日期的两个样例批次，不是两个交易日或生产调度；不修改原代码或重新演练文件。</p>}
         <div className="agent-delivery-actions"><button className="button" disabled={!publicationKey || working || publicationRead === "LOADING"} onClick={() => void refreshPublication()}><RefreshCw size={14} />刷新发布与监控</button><small>{publicationKey?"只读取当前来源、交付包和演练绑定的发布，不重新发布或运行计算。":"先确认当前交付包及文件演练，才能读取此版本的发布记录。"}</small></div>
-        {manual&&<p role="status">发布来源：工程师接管（MANUAL／ENGINEER_ASSISTED）· 原开发及参考记录保留，此包和发布不计作 Agent 自主完成。</p>}
+        {manual&&<p role="status">发布来源：人工辅助（MANUAL／ENGINEER_ASSISTED）· 原开发及参考记录保留，此包和发布不计作 Agent 自主完成。</p>}
         {publicationUnknown&&<p role="status">原发布请求结果尚未确认。先刷新读取同一包的记录；如仍未找到，重新审阅后可按原请求编号重试，不会自动生成新的批准。</p>}
         {publicationKey && !publicationReady && <p role={publicationRead === "ERROR" ? "alert" : "status"}>{publicationRead === "ERROR" ? `发布与监控读取未确认：${publicationError}。已读取的历史记录保留，暂不能判断当前健康或再次发布。` : "正在恢复当前来源与确切交付包的发布、批次与告警记录…"}</p>}
         {publicationReady && !release && <p>当前来源、交付包与演练尚未找到发布记录；需逐项审阅确切版本，发布后仍等待受控调度器执行。</p>}

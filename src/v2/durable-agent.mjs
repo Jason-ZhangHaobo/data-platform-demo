@@ -7,6 +7,7 @@ import { resolveExplicitSqlRepairSource } from "./sql-repair-source.mjs";
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import {resolveSqlRepairComparison,repairComparisonAttribution,explicitRepairAttribution} from './sql-repair-comparison.mjs';
 import {resolveAssistedContinuation} from './assisted-sql-delivery-source.mjs';
+import {resolveManualContinuation} from './manual-sql-continuation.mjs';
 
 export const durableSqlAgentMode = "DURABLE_SQL_AGENT_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -84,12 +85,14 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   const comparisonBasis=(binding,task)=>resolveSqlRepairComparison({store,project,actorId:task.submittedBy??task.actorId,sourceRunId:task.sourceRunId,
     contextId:task.contextId,currentSql:task.initialSql??task.currentSql,binding});
   const continuationBasis=task=>resolveAssistedContinuation({store,project,actorId:task.submittedBy??task.actorId,binding:task.assistedContinuation,contextId:task.contextId,currentSql:task.initialSql??task.currentSql});
-  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError, derivation, repairComparison, assistedContinuation }) {
+  const manualBasis=task=>resolveManualContinuation({store,project,actorId:task.submittedBy??task.actorId,binding:task.manualContinuation,contextId:task.contextId,currentSql:task.initialSql??task.currentSql});
+  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError, derivation, repairComparison, assistedContinuation, manualContinuation }) {
     assertExecutionScope(undefined);
     if (!getContext(contextId) || typeof message !== "string" || !message.trim() || message.length > 2000 ||
         typeof currentSql !== "string" || !currentSql.trim() || currentSql.length > 20000 ||
         typeof actorId !== "string" || !actorId || typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 100)
       throw fail(422, "DURABLE_AGENT_INPUT_INVALID", "持久任务输入不合法");
+    if(manualContinuation!==undefined&&[sourceRunId,sourceError,derivation,repairComparison,assistedContinuation].some(v=>v!==undefined))throw fail(422,'MANUAL_CONTINUATION_CONFLICT','手工成功版本续改不能混用其他来源');
     if(assistedContinuation!==undefined&&[sourceRunId,sourceError,derivation,repairComparison].some(v=>v!==undefined))throw fail(422,'ASSISTED_CONTINUATION_CONFLICT','成功版本续改不能混用失败来源、对照或口径派生');
     if (derivation !== undefined && (sourceRunId !== undefined || sourceError !== undefined || repairComparison !== undefined))
       throw fail(422, "AGENT_CONTEXT_DERIVATION_CONFLICT", "成功版本口径变更不能同时引用失败修正来源");
@@ -104,12 +107,13 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     }
     const basis=repairComparison===undefined?undefined:comparisonBasis(repairComparison,{actorId,sourceRunId,contextId,currentSql});
     const continuation=assistedContinuation===undefined?undefined:continuationBasis({actorId,assistedContinuation,contextId,currentSql});
+    const manual=manualContinuation===undefined?undefined:manualBasis({actorId,manualContinuation,contextId,currentSql});
     const family=validationFamily(contextId);
-    const signature = digest({ message, currentSql, contextId, ...(sourceRunId ? { sourceRunId, sourceError } : {}), ...(derivedFrom ? {derivation:derivedFrom} : {}),...(basis?{repairComparison:basis.binding}:{}),...(continuation?{assistedContinuation:continuation.binding}:{}) });
+    const signature = digest({ message, currentSql, contextId, ...(sourceRunId ? { sourceRunId, sourceError } : {}), ...(derivedFrom ? {derivation:derivedFrom} : {}),...(basis?{repairComparison:basis.binding}:{}),...(continuation?{assistedContinuation:continuation.binding}:{}),...(manual?{manualContinuation:manual.binding}:{}) });
     const result = store.deduplicate(`${project}:durable-agent:${actorId}:${idempotencyKey}`, signature, () =>
       store.create("agent", project, { message, sql: currentSql, initialSql: currentSql, sourceRunId, language: "SPARK_SQL", contextId,
         ...(derivedFrom ? {derivedFrom} : {}),...(sourceRunId?explicitRepairAttribution(sourceRunId):{}),...(basis?{repairComparison:basis.binding,...basis.attribution}:{}),
-        ...(continuation?{assistedContinuation:continuation.binding,...continuation.attribution}:{}),
+        ...(continuation?{assistedContinuation:continuation.binding,...continuation.attribution}:{}),...(manual?{manualContinuation:manual.binding,...manual.attribution}:{}),
         submittedBy: actorId, status: "QUEUED", stage: "READY_FOR_MODEL", attempts: [], usedTokens: 0,
         maxAttempts, tokenBudget, requestTokenLimit, executionMode: durableSqlAgentMode, mode: "LIVE_MODEL",
         completionScope: "SQL_DEVELOPMENT", fullLifecycleE2E: false, validationContractId: family.id,
@@ -118,6 +122,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   }
 
   async function generate(task) {
+    if(task.manualContinuation)manualBasis(task);
     if(task.assistedContinuation)continuationBasis(task);
     const comparison=task.repairComparison?comparisonBasis(task.repairComparison,task):undefined;
     if (task.derivedFrom !== undefined && task.revisionId === undefined) {
@@ -224,6 +229,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
       }
     }
     if(task.assistedContinuation){try{continuationBasis(task);}catch(cause){return modelFailure('ASSISTED_CONTINUATION_CHANGED',cause.message);}}
+    if(task.manualContinuation){try{manualBasis(task);}catch(cause){return modelFailure('MANUAL_CONTINUATION_CHANGED',cause.message);}}
     // Revision creation and task linkage share an atomic local transaction.
     const linked = store.deduplicate(`${project}:durable-agent-revision:${task.id}:${attempts.length}`,
       digest(generated.sql), () => {
@@ -239,6 +245,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   }
 
   async function runStep(task) {
+    if(task.manualContinuation&&task.stage==='READY_FOR_RUN')manualBasis(task);
     if(task.assistedContinuation&&task.stage==='READY_FOR_RUN')continuationBasis(task);
     if(task.repairComparison&&task.stage==='READY_FOR_RUN')comparisonBasis(task.repairComparison,task);
     const family=validationFamily(task.contextId);
