@@ -17,7 +17,8 @@ export function createLiveLifecycleFixture(options={}){
   status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,validation:{contractId:family.id,passed:true,regressions:family.contextIds.map(contextId=>({contextId,passed:true}))}};
  const task={id:randomUUID(),message:definition.request,contextId:definition.contextId,status:'SUCCEEDED',mode:'LIVE_MODEL',createdAt:time(1),usedTokens:100,attempts:[{status:'SUCCEEDED',model:'qwen3.7-plus',revisionId:revision.id,runId:run.id}],
   ...(options.contractId?{version:1,language:'SPARK_SQL',sql,revisionId:revision.id,runId:run.id,validationContractId:family.id}:{}),...(options.derivedFrom?{derivedFrom:options.derivedFrom,initialSql:options.parent.revision.sql}:{})};run.agentTaskId=task.id;
- const deliveryId=randomUUID(),bundle={...createDeliveryPackage({run,revision,name:'虚构证券评测'}),id:randomUUID(),sourceRunId:run.id,agentDeliveryTaskId:deliveryId};
+ options.beforeDelivery?.({task,run,revision});
+ const deliveryId=randomUUID(),bundle={...createDeliveryPackage({run,revision,...(task.requirements?{agent:task}:{}),name:'虚构证券评测'}),id:randomUUID(),sourceRunId:run.id,agentDeliveryTaskId:deliveryId};
  const {contractId,...rawValidation}=run.validation;
  const executedFiles={status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,packageDigest:bundle.digest,
   source:bundle.manifest.source,fileHashes:Object.fromEntries(Object.entries(bundle.manifest.files).map(([name,value])=>[name,value.sha256])),

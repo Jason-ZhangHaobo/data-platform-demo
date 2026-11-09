@@ -83,8 +83,11 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
     (e.release?.sourceKind==="MANUAL"?e.consumption.releaseId===e.release.id&&e.consumption.sourceKind==="MANUAL"&&e.consumption.agentIndependentE2E===false:e.consumption.releaseId===undefined||e.consumption.releaseId===e.release?.id);
   const consumed = Boolean(healthy && consumptionCurrent && !e.consumption?.truncated && e.consumption?.status === "VERIFIED" && e.consumption.services.some(s => s.serviceType === "XAPI" && s.status === "VERIFIED" && s.fullAssetComposition === true && s.call?.verified === true && s.call.versionId === s.versionId && s.call.rowCount > 0&&
     (e.release?.sourceKind!=="MANUAL"||manualConsumptionEntryMatches(s,e.release.id,batches,e.runId))));
+  const requirementCheck=e.report?.taskId===e.taskId?e.report.checks.find(check=>check.id==='requirement'):undefined;
   const steps: JourneyStep[] = [
-    { id: "requirement", label: "需求与口径", state: "DONE", detail: "需求已记录；按已登记证券口径执行，不代表模型已理解任意需求。", target: "agent-requirement" },
+    { id: "requirement", label: "需求与口径", state:requirementCheck?state(Boolean(current&&requirementCheck.passed),current&&!requirementCheck.passed):"DONE",
+      detail:requirementCheck?(!current?'当前版本的需求理解尚未确认，原记录仅供对照。':requirementCheck.passed?'结构化理解已绑定需求与代码；语义和结果仍须独立核验。':'需求理解与原版本的绑定未通过；不能沿用原交付与批准。'):
+       "需求已记录；按已登记证券口径执行，不代表模型已理解任意需求。", target: "agent-requirement" },
     { id: "code", label: "代码与调试", state: state(codeExecuted, codeFailed), detail: e.dirty ? "未保存修改不继承旧结论。" : codeExecuted ? `代码版本 ${e.revisionId!.slice(0, 8)} 已完成实际执行；业务正确性另见独立结果核验。` : codeFailed ? "当前代码执行尚未通过，请查看报错并修正。" : e.revisionId ? `代码版本 ${e.revisionId.slice(0, 8)} 已生成，等待核对执行与调试回执。` : "等待生成代码，可随时人工接管。", target: "agent-code" },
     { id: "validation", label: "独立结果核验", state: state(verified, current && e.report?.status === "NEEDS_ATTENTION"), detail: verified ? "版本、真实执行、结果和五场景断言通过。" : "查看未通过项；SQL跑通不等于完整核验。", target: "agent-verification" },
     { id: "files", label: "调度与部署文件", state: state(fileVerified, e.delivery?.status === "FAILED"), detail: fileVerified ? "同一版本的交付文件演练通过。" : files ? "文件已生成，仍需实际演练。" : "核验通过后准备版本化交付。", target: "agent-files" },

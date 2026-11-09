@@ -23,7 +23,7 @@ import { callPrivateApplication, verifyPrivateApplicationTask,validatePrivateApp
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
-import {sqlRequirementReport,bindSqlRequirementRevision} from './sql-requirements.mjs';
+import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,assertSqlRequirementPackageSource} from './sql-requirements.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
@@ -641,12 +641,20 @@ export function createV2Server(options = {}) {
   const releaseTimeUnitMs = Number(options.releaseTimeUnitMs ?? 1000);
   if (!Number.isSafeInteger(releaseTimeUnitMs) || releaseTimeUnitMs < 1)
     throw new Error("本机发布调度时间单位不合法");
+  const packageRequirementSource=(run,revision)=>({run,revision,agent:revision?.source==='LIVE_MODEL'&&run?.agentTaskId?store.get('agent',run.agentTaskId,PROJECT):undefined});
+  const assertRequirementSource=item=>{
+    const source=item.manifest?.source,run=store.get('run',source?.runId??'',PROJECT),revision=store.get('revision',source?.revisionId??'',PROJECT);
+    return assertSqlRequirementPackageSource(item,packageRequirementSource(run,revision));
+  };
   const isPythonDelivery = (item) =>
       item?.manifest?.format === "shuduo-python-delivery/v1",
-    validateAnyDeliveryPackage = (item) =>
-      (isPythonDelivery(item)
+    validateAnyDeliveryPackage = (item) => {
+      const plan=(isPythonDelivery(item)
         ? validatePythonDeliveryPackage
-        : validateDeliveryPackage)(item, item.digest),
+        : validateDeliveryPackage)(item, item.digest);
+      if(!isPythonDelivery(item))assertRequirementSource(item);
+      return plan;
+    },
     unpackAnyDeliveryPackage = (item, directory) =>
       (isPythonDelivery(item)
         ? unpackPythonDeliveryPackage
@@ -4525,6 +4533,7 @@ export function createV2Server(options = {}) {
         const bundle = createDeliveryPackage({
           run: sourceRun,
           revision: sourceRevision,
+          agent:packageRequirementSource(sourceRun,sourceRevision).agent,
           name,
         }),
           artifact = await artifactStore.put(
@@ -4532,6 +4541,7 @@ export function createV2Server(options = {}) {
             bundle.digest,
             bundle,
           );
+        assertRequirementSource(bundle); // Re-read after artifact I/O; never freeze stale understanding.
         const key = text(req.headers["idempotency-key"], 1, 100);
         const dedup = store.deduplicate(
           PROJECT + ":delivery:" + key,
@@ -4540,6 +4550,7 @@ export function createV2Server(options = {}) {
               sourceRunId: sourceRun.id,
               name,
               validationContractId: family.id,
+              ...(bundle.manifest.source.requirement?{requirement:bundle.manifest.source.requirement}:{}),
             }),
           ),
           () =>
@@ -5315,7 +5326,7 @@ export function createV2Server(options = {}) {
           throw fail(503, "按文件Spark演练尚未就绪");
         const run = get("run", finalAttempt.runId),
           rev = get("revision", finalAttempt.revisionId);
-        createDeliveryPackage({ run, revision: rev });
+        createDeliveryPackage({ run, revision: rev,agent });
         const existing = store
           .list("agent_delivery_task", PROJECT)
           .find(
@@ -5323,9 +5334,14 @@ export function createV2Server(options = {}) {
               item.sourceAgentTaskId === agent.id &&
               item.sourceRevisionId === rev.id &&
               item.sourceRunId === run.id &&
+              JSON.stringify(item.sourceRequirementBinding)===JSON.stringify(agent.requirements?sqlRequirementBinding(agent.requirements):undefined)&&
               ["QUEUED", "RUNNING", "SUCCEEDED"].includes(item.status),
           );
-        if (existing) return json(res, 200, existing);
+        if (existing) {
+          if(JSON.stringify(existing.sourceRequirementBinding)!==JSON.stringify(agent.requirements?sqlRequirementBinding(agent.requirements):undefined))throw fail(409,'原交付任务绑定不同需求依据');
+          if(existing.packageId)assertRequirementSource(get('delivery_package',existing.packageId));
+          return json(res, 200, existing);
+        }
         const key = text(req.headers["idempotency-key"], 1, 100),
           dedup = store.deduplicate(
             `${PROJECT}:agent-delivery:${agent.id}:${key}`,
@@ -5334,6 +5350,7 @@ export function createV2Server(options = {}) {
                 agentTaskId: agent.id,
                 runId: run.id,
                 revisionHash: rev.hash,
+                ...(agent.requirements?{requirement:sqlRequirementBinding(agent.requirements)}:{}),
               }),
             ),
             () =>
@@ -5342,6 +5359,7 @@ export function createV2Server(options = {}) {
                 sourceRunId: run.id,
                 sourceRevisionId: rev.id,
                 sourceSqlHash: rev.hash,
+                ...(agent.requirements?{sourceRequirementBinding:sqlRequirementBinding(agent.requirements)}:{}),
                 status: "QUEUED",
                 stage: "QUEUED",
                 mode: "VERIFIED_ARTIFACT_ORCHESTRATION",
@@ -5363,12 +5381,15 @@ export function createV2Server(options = {}) {
                   .filter((item) => item.status === "APPROVED")
                   .map((item) => item.packageId),
               );
+            const sourceAgent=get('agent',task.sourceAgentTaskId);
+            if(JSON.stringify(task.sourceRequirementBinding)!==JSON.stringify(sourceAgent.requirements?sqlRequirementBinding(sourceAgent.requirements):undefined))throw fail(409,'交付任务的原需求依据已变化');
             let packageItem = store
               .list("delivery_package", PROJECT)
               .find(
                 (item) =>
                   item.sourceRunId === sourceRun.id &&
                   item.manifest?.source?.revisionId === sourceRevision.id &&
+                  JSON.stringify(item.manifest?.source?.requirement)===JSON.stringify(task.sourceRequirementBinding)&&
                   !approvedPackageIds.has(item.id) &&
                   item.published !== true,
               );
@@ -5376,10 +5397,12 @@ export function createV2Server(options = {}) {
               await ensureDeliveryArtifact(packageItem);
               packageItem = get("delivery_package", packageItem.id);
               validateDeliveryPackage(packageItem, packageItem.digest);
+              assertRequirementSource(packageItem);
             } else {
               const bundle = createDeliveryPackage({
                   run: sourceRun,
                   revision: sourceRevision,
+                  agent:sourceAgent,
                   name: "客户资产 T+1 · Agent交付准备",
                 }),
                 artifact = await artifactStore.put(
@@ -5388,6 +5411,7 @@ export function createV2Server(options = {}) {
                   bundle,
                 );
               if (signal.aborted) throw new Error("交付准备已取消");
+              assertRequirementSource(bundle);
               packageItem = store.create("delivery_package", PROJECT, {
                 ...bundle,
                 artifact,
@@ -6056,6 +6080,7 @@ export function createV2Server(options = {}) {
               }
               sql = generated.sql;
               const rev = revision(sql, context.id, "LIVE_MODEL", task.submittedBy);
+              if(requirements)store.update('revision',rev.id,PROJECT,{requirementBinding:sqlRequirementBinding(bindSqlRequirementRevision(requirements,rev))});
               if(requirements)store.update('agent',task.id,PROJECT,{usedTokens,requirements:bindSqlRequirementRevision(requirements,rev),revisionId:rev.id,
                 sql,attempts:[...get('agent',task.id).attempts,{attempt,status:'GENERATED',model:generated.model,usage:generated.usage,revisionId:rev.id}]});
               if(explicitRepair)store.update('revision',rev.id,PROJECT,repairComparisonAttribution(task));

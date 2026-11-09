@@ -89,6 +89,7 @@ const compile = (name, initialWorkflow, staleSource=false) => {
  }
  let source=ts.transpileModule(input,{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
  for(const pkg of ['react','react/jsx-runtime','lucide-react'])source=source.replaceAll(`from "${pkg}"`,`from ${JSON.stringify(import.meta.resolve(pkg))}`).replaceAll(`from '${pkg}'`,`from ${JSON.stringify(import.meta.resolve(pkg))}`);
+ source=source.replace(/from (["'])\.\.\/\.\.\/src\/v2\/([^"']+\.mjs)\1/g,(_match,_quote,dependency)=>`from ${JSON.stringify(new URL(`../../src/v2/${dependency}`,import.meta.url).href)}`);
  source=source.replace(/from (["'])\.\/([^"'.]+)\1/g,(_match,_quote,dependency)=>`from ${JSON.stringify(existsSync(`web/src/${dependency}.tsx`)?compile(dependency):new URL(`../../web/src/${dependency}.ts`,import.meta.url).href)}`);
  source=source.replace(/import "\.\/[^"\n]+\.css";/g,'');
  return`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;

@@ -4,6 +4,7 @@ import { resolve, join } from "node:path";
 import { getContext, validationContractId, validationFamilyForContext } from "./context.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import {checkedAssistedDevelopmentReference} from './assisted-development-reference.mjs';
+import {frozenSqlRequirements,sqlRequirementBinding,validateFrozenSqlRequirements} from './sql-requirements.mjs';
 
 export const deliveryFormat = "shuduo-delivery/v1";
 export const deliveryFiles = [
@@ -92,6 +93,7 @@ export function createTestSql(expected) {
 export function createDeliveryPackage({
   run,
   revision,
+  agent,
   name,
   developmentReference,
   manualAuthor = false,
@@ -147,6 +149,7 @@ export function createDeliveryPackage({
     throw fail("任务名称需为1–80个字符");
   const context = getContext(revision.contextId);
   if (!context) throw fail("输入上下文不存在");
+  const requirements=frozenSqlRequirements({agent,run,revision});
   const calendar = {
     schema: "shuduo-calendar/v1",
     kind: "SYNTHETIC_DEMO",
@@ -215,6 +218,7 @@ export function createDeliveryPackage({
       engineVersion: run.engineVersion,
       isolation: run.isolation ?? "LOCAL_PROCESS",
       report: validationWithoutRawComparisons(run.validation),
+      ...(requirements?{requirements}:{}),
     }),
     "README.md":
       `# ${remoteExecution ? "隔离Worker" : "本机"}交付包\n\n包含 SQL、实际执行的测试 SQL、调度、部署和样例交易日历。\n适配器 ${deployment.adapter}，Spark ${run.engineVersion}；当前只是演练，尚未发布或适配 DataWorks/EMR。\n演练时间：2026-09-11T09:00:00+08:00，对应业务日2026-09-10。\n散列只能校验与指定摘要一致，不构成生产审批或发布签名。\n`,
@@ -229,6 +233,7 @@ export function createDeliveryPackage({
       sqlHash: revision.hash,
       contextId: context.id,
       validationContractId: family.id,
+      ...(requirements?{requirement:sqlRequirementBinding(requirements)}:{}),
       ...(revision.sourceAttribution?.kind==='ENGINEER_ASSISTED'?{attribution:{kind:'ENGINEER_ASSISTED',originAgentTaskId:revision.sourceAttribution.originAgentTaskId,
         actorId:revision.sourceAttribution.actorId,agentIndependentE2E:false,...(reference?{developmentReference:reference}:{})}}:{}),
       ...(!manualAuthor&&revision.source === "MANUAL" && revision.manualProvenance?.originAgentTaskId ? {attribution: {
@@ -312,6 +317,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       "contextId",
       "validationContractId",
       ...(source?.attribution === undefined ? [] : ["attribution"]),
+      ...(source?.requirement === undefined ? [] : ["requirement"]),
     ])
   )
     throw fail("交付清单包含未定义字段");
@@ -416,6 +422,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
   )
     throw fail("源验证报告与代码或契约不一致");
   validateCalendar(calendar);
+  const requirements=validateFrozenSqlRequirements(proof.requirements,source.requirement,source,bundle.files['main.sql']);
   return {
     source,
     schedule,
@@ -424,6 +431,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     fixtures,
     order,
     digest: expectedDigest,
+    ...(requirements?{requirements}:{}),
   };
 }
 

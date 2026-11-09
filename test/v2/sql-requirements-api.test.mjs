@@ -8,7 +8,7 @@ import {MetadataStore} from '../../src/v2/store.mjs';
 import {createV2Server,PROJECT} from '../../src/v2/server.mjs';
 import {generateSql} from '../../src/v2/model.mjs';
 import {referenceSql} from '../../src/v2/context.mjs';
-import {verifiedSqlRequirementReport} from '../../src/v2/sql-requirements.mjs';
+import {verifiedSqlRequirementReport,sqlRequirementBinding} from '../../src/v2/sql-requirements.mjs';
 import {syntheticSqlRequirement} from './fixtures/sql-requirement.mjs';
 
 test('local development HTTP keeps one proposal/attempt and stops clarification or missing evidence before execution',async t=>{
@@ -35,6 +35,7 @@ test('local development HTTP keeps one proposal/attempt and stops clarification 
   if(desired==='proposal'){
    assert.equal(current.status,'SUCCEEDED');assert.equal(current.requirements.status,'MODEL_PROPOSED');assert.equal(verifiedSqlRequirementReport(current.requirements,current),true);
    assert.equal(store.list('revision',PROJECT).length,1);
+   assert.deepEqual(store.get('revision',current.revisionId,PROJECT).requirementBinding,sqlRequirementBinding(current.requirements));
   }else{
    assert.equal(current.status,'FAILED');assert.equal(current.stage,desired==='clarification'?'REQUIREMENT_CLARIFICATION_REQUIRED':'REQUIREMENT_EVIDENCE_INVALID');
    assert.equal(current.attempts[0].computationSkipped,true);assert.equal(executions,1);

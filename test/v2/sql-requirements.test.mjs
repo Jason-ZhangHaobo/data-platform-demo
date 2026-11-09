@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {getContext,referenceSql} from '../../src/v2/context.mjs';
-import {sqlRequirementBasis,sqlRequirementReport,bindSqlRequirementRevision,verifiedSqlRequirementReport} from '../../src/v2/sql-requirements.mjs';
+import {sqlRequirementBasis,sqlRequirementReport,bindSqlRequirementRevision,verifiedSqlRequirementReport,sqlRequirementBinding} from '../../src/v2/sql-requirements.mjs';
 import {sqlRequirementReportMatches,validSqlRequirementInterpretation} from '../../src/v2/sql-requirement-contract.mjs';
 import {generateSql} from '../../src/v2/model.mjs';
 import {syntheticSqlRequirement} from './fixtures/sql-requirement.mjs';
@@ -62,10 +62,12 @@ test('independent execution does not turn a contradictory requirement proposal i
  assert.equal(checked.status,'NEEDS_ATTENTION');assert.equal(checked.checks.find(c=>c.id==='requirement').passed,false);
 });
 test('new lifecycle evidence retains the structured proposal and refuses a mismatched saved interpretation without migrating old records',async()=>{
- const definition=liveLifecycleCases(currentLiveLifecycleContract.id)[0],f=createLiveLifecycleFixture({definition,contractId:currentLiveLifecycleContract.id,consumed:true});
- f.task.attempts[0].attempt=1;
- const generated={model:f.task.attempts[0].model,...syntheticSqlRequirement({message:definition.request,context:getContext(definition.contextId)})};
- f.task.requirements=bindSqlRequirementRevision(sqlRequirementReport({task:f.task,message:definition.request,context:getContext(definition.contextId),generated,attempt:1}),f.revision);
+ const definition=liveLifecycleCases(currentLiveLifecycleContract.id)[0],f=createLiveLifecycleFixture({definition,contractId:currentLiveLifecycleContract.id,consumed:true,beforeDelivery:({task,run,revision})=>{
+  task.attempts[0].attempt=1;task.projectId=revision.projectId;task.submittedBy=revision.author='synthetic-owner';
+  const generated={model:task.attempts[0].model,...syntheticSqlRequirement({message:definition.request,context:getContext(definition.contextId)})};
+  task.requirements=bindSqlRequirementRevision(sqlRequirementReport({task,message:definition.request,context:getContext(definition.contextId),generated,attempt:1}),revision);
+  revision.requirementBinding=sqlRequirementBinding(task.requirements);
+ }});
  f.reviewNow();const state=await advanceLiveLifecycleCase(definition,f.checkpoint,f.adapter,{pause:async()=>{},maxPolls:2});
  assert.equal(state.status,'SUCCEEDED',state.errorCode);assert.deepEqual(state.code.requirementEvidence,f.task.requirements);
  const changed=structuredClone(state);changed.code.requirementEvidence.request='changed';assert.equal(verifyLiveCaseEvidence(definition,changed),false);

@@ -7,7 +7,7 @@ import { validationDetails, equalValidationNumber } from "./validation-details.m
 import {assistedSqlDeliverySource} from './assisted-sql-delivery-source.mjs';
 import {sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 import {resolveManualContinuation} from './manual-sql-continuation.mjs';
-import {verifiedSqlRequirementReport} from './sql-requirements.mjs';
+import {verifiedSqlRequirementForRevision,assertSqlRequirementPackageSource,sqlRequirementBinding} from './sql-requirements.mjs';
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 export const standaloneManualDeliveryMode='DURABLE_MANUAL_DELIVERY_V1';
@@ -77,8 +77,7 @@ export function developmentVerificationReport(task, run, revision) {
       validationMatchesFamily(run?.validation, family, { requireContract: true }) },
   ];
   if(task.requirements!==undefined&&revision?.source==='LIVE_MODEL')checks.push({id:'requirement',label:'结构化理解绑定当前需求与代码，结果另行核验',
-    passed:verifiedSqlRequirementReport(task.requirements,task)&&task.requirements.status==='MODEL_PROPOSED'&&
-      task.requirements.revisionId===revision.id&&task.requirements.sqlHash===revision.hash});
+    passed:verifiedSqlRequirementForRevision(task.requirements,task,revision)});
   const passed = run?.status === "SUCCEEDED" && checks.every(check => check.passed);
   return {
     schema: "shuduo-development-verification/v1", taskId: task.id, revisionId: revision?.id,
@@ -159,6 +158,11 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
         !sameAssistedDevelopmentReference(source.developmentReference,task.developmentReference))
         throw fail(409, "人工交付来源已变化");
     }
+    const revision=store.get('revision',task.sourceRevisionId,project),run=store.get('run',task.sourceRunId,project);
+    if(task.sourceRequirementBinding||(revision?.source==='LIVE_MODEL'&&agent?.requirements)||revision?.requirementBinding){
+      if(JSON.stringify(task.sourceRequirementBinding)!==JSON.stringify(agent?.requirements?sqlRequirementBinding(agent.requirements):undefined))throw fail(409,'交付恢复的需求依据已变化');
+      assertSqlRequirementPackageSource(store.get('delivery_package',task.packageId,project),{agent,run,revision});
+    }
   };
   async function persistManualArtifact(task) {
     const item = store.get("delivery_package", task.packageId, project);
@@ -179,13 +183,15 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     assertExecutionScope(standaloneManual?revision:agent);
     if (typeof key !== "string" || !key || key.length > 100) throw fail(422, "人工交付缺少有效幂等编号");
     const existing = store.list(resource, project).find(t => t.sourceKind === "MANUAL" && (standaloneManual?t.submittedBy===actorId:t.sourceAgentTaskId===agent.id) &&
-      t.sourceRunId === run.id && t.sourceRevisionId === revision.id && t.sourceSqlHash === revision.hash && sameAssistedDevelopmentReference(t.developmentReference,developmentReference)&&["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
-    const dedup = store.deduplicate(`${project}:${standaloneManual?"standalone-manual-delivery":"manual-cloud-delivery"}:${actorId}:${key}`, hash(JSON.stringify({runId: run.id, revisionHash: revision.hash, ...(standaloneManual?{sourceBinding:source.binding}:{origin:agent.id}),...(developmentReference?{developmentReference}:{})})), () => {
+      t.sourceRunId === run.id && t.sourceRevisionId === revision.id && t.sourceSqlHash === revision.hash && sameAssistedDevelopmentReference(t.developmentReference,developmentReference)&&
+      JSON.stringify(t.sourceRequirementBinding)===JSON.stringify(revision.source==='LIVE_MODEL'&&agent?.requirements?sqlRequirementBinding(agent.requirements):undefined)&&["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
+    if(existing)assertSqlRequirementPackageSource(store.get('delivery_package',existing.packageId,project),{agent:revision.source==='LIVE_MODEL'?agent:undefined,run,revision});
+    const dedup = store.deduplicate(`${project}:${standaloneManual?"standalone-manual-delivery":"manual-cloud-delivery"}:${actorId}:${key}`, hash(JSON.stringify({runId: run.id, revisionHash: revision.hash, ...(standaloneManual?{sourceBinding:source.binding}:{origin:agent.id}),...(developmentReference?{developmentReference}:{}),...(revision.source==='LIVE_MODEL'&&agent?.requirements?{requirement:sqlRequirementBinding(agent.requirements)}:{})})), () => {
       if (existing) return existing;
-      const bundle = createDeliveryPackage({run, revision,developmentReference,manualAuthor:standaloneManual, name: standaloneManual?'手工开发 · 已核验证券加工交付':developmentReference?'人工辅助修正 · 已核验证券加工交付':"工程师接管 · 已核验证券加工交付"});
+      const bundle = createDeliveryPackage({run, revision,agent:revision.source==='LIVE_MODEL'?agent:undefined,developmentReference,manualAuthor:standaloneManual, name: standaloneManual?'手工开发 · 已核验证券加工交付':developmentReference?'人工辅助修正 · 已核验证券加工交付':"工程师接管 · 已核验证券加工交付"});
       const task = store.create(resource, project, {mode, sourceKind: "MANUAL",...(standaloneManual?{source:{kind:"MANUAL_RUN",runId:run.id,revisionId:revision.id,revisionHash:revision.hash},sourceBinding:source.binding}:{sourceAgentTaskId:agent.id}),
         sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash,...(standaloneManual?{sourceAttribution:'ENGINEER_AUTHORED',modelRequired:false}:{}), submittedBy: actorId, status: "QUEUED", stage: "PACKAGE_PERSISTING",
-        packageDigest: bundle.digest,...(developmentReference?{developmentReference}:{}), completionScope: standaloneManual?'CLASSIC_MANUAL_DELIVERY_PREPARATION':"MANUAL_DELIVERY_PREPARATION", agentIndependentE2E: false, fullLifecycleE2E: false, publicDeployed: false});
+        packageDigest: bundle.digest,...(bundle.manifest.source.requirement?{sourceRequirementBinding:bundle.manifest.source.requirement}:{}),...(developmentReference?{developmentReference}:{}), completionScope: standaloneManual?'CLASSIC_MANUAL_DELIVERY_PREPARATION':"MANUAL_DELIVERY_PREPARATION", agentIndependentE2E: false, fullLifecycleE2E: false, publicDeployed: false});
       const item = store.create("delivery_package", project, {...bundle, sourceRunId: run.id, ...(standaloneManual?{manualDeliveryTaskId:task.id}:{agentDeliveryTaskId:task.id}), sourceKind: "MANUAL", agentIndependentE2E: false, stage: "M2A", published: false});
       return change(task, {packageId: item.id});
     });
@@ -197,13 +203,16 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     if(standaloneManual)throw fail(422,'独立手工交付不能接受Agent任务作为来源');
     assertExecutionScope(agent);
     const { run, revision } = source(agent);
-    const existing = store.list(resource, project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision.id && t.sourceRunId === run.id && t.sourceSqlHash === revision.hash && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
-    if (existing) return publicDeliveryTask(existing);
+    const existing = store.list(resource, project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision.id && t.sourceRunId === run.id && t.sourceSqlHash === revision.hash &&
+      JSON.stringify(t.sourceRequirementBinding)===JSON.stringify(agent.requirements?sqlRequirementBinding(agent.requirements):undefined)&&["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
+    if (existing) {assertSqlRequirementPackageSource(store.get('delivery_package',existing.packageId,project),{agent,run,revision});return publicDeliveryTask(existing);}
     const family = validationFamilyForContext(revision.contextId);
-    const bundle = createDeliveryPackage({ run, revision, name: family?.id === validationContractId ? "客户资产 T+1 · Agent交付" : "股票持仓＋可用现金（非客户全资产）· Agent交付" });
+    const bundle = createDeliveryPackage({ run, revision,agent, name: family?.id === validationContractId ? "客户资产 T+1 · Agent交付" : "股票持仓＋可用现金（非客户全资产）· Agent交付" });
     const artifact = await artifactStore.put("delivery-package", bundle.digest, bundle);
-    const dedup = store.deduplicate(`${project}:durable-delivery:${agent.id}:${key}`, hash(JSON.stringify({ runId: run.id, revisionHash: revision.hash })), () => {
-      const task = store.create(resource, project, { mode, sourceAgentTaskId: agent.id, sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: agent.submittedBy, status: "QUEUED", stage: "PACKAGE_READY", packageDigest: bundle.digest, completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
+    const freshAgent=store.get('agent',agent.id,project),fresh=source(freshAgent);
+    assertSqlRequirementPackageSource(bundle,{agent:freshAgent,...fresh});
+    const dedup = store.deduplicate(`${project}:durable-delivery:${agent.id}:${key}`, hash(JSON.stringify({ runId: run.id, revisionHash: revision.hash,...(bundle.manifest.source.requirement?{requirement:bundle.manifest.source.requirement}:{}) })), () => {
+      const task = store.create(resource, project, { mode, sourceAgentTaskId: agent.id, sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: agent.submittedBy, status: "QUEUED", stage: "PACKAGE_READY", packageDigest: bundle.digest,...(bundle.manifest.source.requirement?{sourceRequirementBinding:bundle.manifest.source.requirement}:{}), completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
       const item = store.create("delivery_package", project, { ...bundle, artifact, sourceRunId: run.id, ...(standaloneManual?{manualDeliveryTaskId:task.id}:{agentDeliveryTaskId:task.id}), stage: "M2A", published: false });
       return change(task, { packageId: item.id });
     });

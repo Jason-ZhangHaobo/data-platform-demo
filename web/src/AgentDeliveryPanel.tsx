@@ -5,13 +5,14 @@ import { agentJourney, deliveryStageText, publicationEvidenceText, verificationP
 import type { EvidenceReadState, TaskConsumption } from "./agent-journey";
 import { EvidenceDownload } from "./EvidenceDownload";
 import { DeliveryFilePreview } from "./DeliveryFilePreview";
+import {AgentRequirementUnderstanding} from './AgentRequirementUnderstanding';
 import { AgentPublicationReview, publicationTargetMatches } from "./AgentPublicationReview";
 import type { PublicationTarget } from "./AuthDialog";
 import { applicationStatusText } from "./service-consumption-scope";
 import { reviewAttestationsComplete } from "./delivery-presentation";
 import { createPublicationReader, publicationPollNeeded } from "./publication-read";
 import {ValidationDetails} from "./ValidationDetails";
-import {checkedAgentWorkflow} from "./agent-workflow-read";
+import {checkedAgentWorkflow,frozenRequirementProposal} from "./agent-workflow-read";
 import type {Delivery,Workflow} from "./agent-workflow-read";
 import {checkedAgentPublication,checkedAgentConsumption} from "./agent-delivery-evidence-read";
 import {publicationSelector,publicationSelectionKey,publicationReadPath,publicationReleaseMatches,checkedPublication,publicationWriteAllowed,publicationCancellationAllowed,cloudPublicationRequest,createPublicationAttempt} from "./publication-selection";
@@ -229,6 +230,8 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         {preparationUnknown&&<p role="status">交付准备结果待确认。<button className="button" disabled={working||evidenceRead==='LOADING'} onClick={()=>void load().catch(()=>{})}>查询原交付</button>查询只恢复原版本记录；确认前不能重新准备。</p>}
         {!delivery && <button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => void prepare()}><Play size={14} />生成交付并演练</button>}
         {delivery && <><strong className="agent-delivery-stage">{auto && <LoaderCircle size={14} className="spin" />}{deliveryStageText(delivery.stage, journey.publicationCurrent, release?.status, journey.current)}</strong>{delivery.error && <p role="alert">{delivery.error}</p>}<div className="agent-delivery-actions">{!complete(delivery.status) && <><button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => void drive(delivery)}>继续交付准备</button><button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button></>}{["FAILED","CANCELLED"].includes(delivery.status) && <button className="button" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => { if(preparationUnknown)return;requestKey.current=crypto.randomUUID(); void prepare(); }}>重新准备并演练</button>}{workflow.package && <button className="button" onClick={() => download("shuduo-delivery-package.json", workflow.package)}><Download size={14} />下载版本化交付包</button>}</div></>}
+        {workflow.package && (()=>{const frozen=frozenRequirementProposal(workflow.package,taskId);return frozen&&<AgentRequirementUnderstanding frozen dirty={!current} task={{id:taskId,contextId:frozen.contextId,message:frozen.request,revisionId:frozen.revisionId,language:'SPARK_SQL',requirements:frozen,
+          attempts:[{attempt:frozen.attempt,revisionId:frozen.revisionId,model:frozen.model}]}}/>;})()}
         {workflow.package && <DeliveryFilePreview key={workflow.package.digest} bundle={workflow.package} current={current} onDownload={download} />}
         {workflow.verification && <><p className={fileVerified ? "passed" : ""}>文件演练：{fileVerified ? "主SQL、测试SQL与五场景回归全部通过" : workflow.verification.status} · {workflow.verification.engine} {workflow.verification.engineVersion}</p>
           <dl className="delivery-review-source" aria-label="交付演练来源"><dt>文件演练编号</dt><dd>{workflow.verification.id}</dd><dt>源代码版本</dt><dd>{delivery?.sourceRevisionId ?? "未确认"}</dd><dt>源运行批次</dt><dd>{delivery?.sourceRunId ?? "未确认"}</dd></dl>
