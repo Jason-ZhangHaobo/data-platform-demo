@@ -1,6 +1,8 @@
 # 数舵 V2 产品需求与边界
 
-> 2026-11-10 增量：[独立手工SQL文件与演练](standalone-manual-delivery.md)。本人成功版本直接准备八文件、持久演练与原编号恢复，模型禁用仍可使用；MANUAL／ENGINEER_AUTHORED，无虚构Agent。独立手工确切版本审阅发布为下一阶段，源码未代表公网部署。
+> 2026-11-10 增量：[独立手工确切版本发布与监控](standalone-manual-publication.md)。复用持久发布引擎，四项审阅绑定原包／演练，MANUAL_RUN来源贯穿批准、两个调度批次及监控；GUI／API／CLI／MCP同源，默认不开放新窗口。已通过本机合成签名队列与完整页面验收，未代表真实云部署或当前v3自主完成。
+
+> 2026-11-10 增量：[独立手工SQL文件与演练](standalone-manual-delivery.md)。本人成功版本直接准备八文件、持久演练与原编号恢复，模型禁用仍可使用；MANUAL／ENGINEER_AUTHORED，无虚构Agent。独立手工确切版本审阅发布已由[后续阶段](standalone-manual-publication.md)接入，源码未代表公网部署。
 
 > 2026-11-09 增量：[手工成功SQL交接Agent](manual-success-continuation.md)。无原Agent任务的手工版本可按本人保存与运行证据创建独立辅助任务，保留人工来源并重新核验／交付；登录保存作者与Agent身份一致。不经模型的文件准备／演练已由[独立手工交付](standalone-manual-delivery.md)补齐；独立手工发布仍后续验收。
 

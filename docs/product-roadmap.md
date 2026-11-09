@@ -1,6 +1,8 @@
 # V2 迭代路线与证据
 
-当前增量：[独立手工文件与演练](standalone-manual-delivery.md)已完成本机验收；模型禁用、无Agent资源，八文件和真实本机Spark核验通过。独立手工确切版本审阅发布为下一步；未部署公网、不计当前v3自主完成，状态见[执行清单](goal-mode-next.md)。
+当前增量：[独立手工审阅发布与监控](standalone-manual-publication.md)完成本机合成队列、窗口／恢复、多端及完整页面验收。保留MANUAL_RUN与人工作者；真实云部署未完成。下一步接确切批次的DAPI／XAPI消费，唯一动作见[执行清单](goal-mode-next.md)。
+
+当前增量：[独立手工文件与演练](standalone-manual-delivery.md)已完成本机验收；模型禁用、无Agent资源，八文件和真实本机Spark核验通过。独立手工确切版本审阅发布已继续接入；未部署公网、不计当前v3自主完成，状态见[执行清单](goal-mode-next.md)。
 
 当前增量：[手工成功SQL交接](manual-success-continuation.md)已完成本机来源、身份、恢复和模型流程衔接，保留人工归因；纯手工不经模型的文件／演练已补齐，发布仍独立推进。唯一动作见[执行清单](goal-mode-next.md)，不得按替身或源码合并计真实E2E／公网完成。
 

@@ -4,6 +4,7 @@ import { deliveryArtifactValue } from "./artifact-store.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { manualCloudDeliverySource, durableDeliveryMode } from "./agent-development-workflow.mjs";
 import {sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
+import {standaloneManualPublicationSource} from './standalone-manual-publication-source.mjs';
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -38,9 +39,10 @@ const clean = item => {
 // reads reconcile existing receipts but never submit a new Spark job.
 export function createCloudPublication({ store, project, runner, artifactStore, persist, enabled = false,
   assertBudget = () => {}, assertPublicationScope = () => {}, assertExecutionScope = () => {},
-  singleRelease = false, now = Date.now, reservationSeconds = 30 }) {
+  singleRelease = false, now = Date.now, reservationSeconds = 30, standaloneManual = false }) {
   if (!Number.isFinite(reservationSeconds) || reservationSeconds < 1 || reservationSeconds > 300) throw new Error("发布计算预留无效");
   const get = (kind, id) => { const item = store.get(kind, id, project); if (!item) throw fail(404, "未找到当前项目发布记录"); return item; };
+  const sourceField=standaloneManual?'manualDeliveryTaskId':'sourceAgentTaskId',identity=id=>({[standaloneManual?'manualDeliveryTaskId':'agentId']:id});
   const stamp = () => new Date(now()).toISOString();
   const patch = (kind, item, values) => store.update(kind, item.id, project, values, { expectedVersion: item.version });
   const ensure = async item => { await artifactStore.verify(item.artifact, "delivery-package", item.digest, deliveryArtifactValue(item)); return validateDeliveryPackage(item, item.digest); };
@@ -48,12 +50,12 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     validationMatchesFamily(receipt.validation, { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) });
   const kindOf = release => release.sourceKind ?? "AGENT";
   const runOf = release => release.sourceRunId ?? (kindOf(release) === "AGENT" ? store.get("delivery_package", release.packageId, project)?.manifest?.source?.runId : undefined);
-  const matches = (release, agentId, selector) => release.mode === cloudPublicationMode && release.sourceAgentTaskId === agentId && kindOf(release) === selector.sourceKind &&
+  const matches = (release, agentId, selector) => release.mode === cloudPublicationMode && release[sourceField] === agentId && (!standaloneManual||release.sourceAgentTaskId===undefined) && kindOf(release) === selector.sourceKind &&
     (!selector.sourceRunId || runOf(release) === selector.sourceRunId) && (!selector.packageDigest || release.packageDigest === selector.packageDigest) &&
     (!selector.verificationId || release.verificationId === selector.verificationId) && (!selector.releaseId || release.id === selector.releaseId);
   const authorizeManualRead = (agentId, selector, release) => {
     if (selector.sourceKind !== "MANUAL") return;
-    const owner = store.get("agent", agentId, project)?.submittedBy;
+    const owner = store.get(standaloneManual?"manual_delivery_task":"agent", agentId, project)?.submittedBy;
     if (!owner || owner !== selector.actorId || release && release.submittedBy !== selector.actorId)
       throw fail(403, "人工发布记录仅属于原任务工程师和发布者");
   };
@@ -64,7 +66,8 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     authorizeManualRead(agentId, selector, records[0]);
     return records[0];
   };
-  function reviewedSource({ agentId, sourceKind, sourceRunId, packageDigest, verificationId, actorId }) {
+  function reviewedSource({ agentId, manualDeliveryTaskId, sourceKind, sourceRunId, packageDigest, verificationId, actorId }) {
+    if(standaloneManual){if(sourceKind!=='MANUAL'||agentId!==undefined)throw fail(422,'独立手工发布不接受Agent来源');return standaloneManualPublicationSource({store,project,manualDeliveryTaskId,sourceRunId,packageDigest,verificationId,actorId});}
     const agent = get("agent", agentId);
     const candidates = store.list("agent_delivery_task", project).filter(t => t.sourceAgentTaskId === agentId && t.verificationId === verificationId &&
       (t.sourceKind ?? "AGENT") === sourceKind && t.status === "SUCCEEDED" && t.actualExecution === true);
@@ -98,6 +101,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
   // checks as publication; do not fall back to the failed Agent's last attempt.
   function sourceForNavigation({ agentId, packageDigest, verificationId, actorId }) {
     const target = { taskId: agentId, packageDigest, verificationId };
+    if(standaloneManual)return {manualDeliveryTaskId:agentId,packageDigest,verificationId,status:'UNAVAILABLE'};
     try {
       const candidates = store.list("agent_delivery_task", project).filter(t =>
         t.sourceAgentTaskId === agentId && t.packageDigest === packageDigest && t.verificationId === verificationId);
@@ -110,16 +114,17 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       return { ...target, status: "UNAVAILABLE" };
     }
   }
-  async function publish({ agent, sourceKind = "AGENT", sourceRunId, packageDigest, verificationId, attestations, actorId, idempotencyKey }) {
+  async function publish({ agent, manualDelivery, sourceKind = "AGENT", sourceRunId, packageDigest, verificationId, attestations, actorId, idempotencyKey }) {
     if (!enabled) throw fail(503, "云端发布驱动尚未配置");
-    const publicationScope = { agentId: agent.id, packageDigest, verificationId };
+    const subject=standaloneManual?manualDelivery:agent;if(!subject||typeof subject.id!=='string'||standaloneManual&&agent!==undefined)throw fail(422,'发布缺少指定来源任务');
+    const publicationScope = { ...identity(subject.id), packageDigest, verificationId };
     assertPublicationScope(publicationScope);
     const required = ["code", "assertions", "deliveryFiles", "cloudScope"];
     if (!attestations || Object.keys(attestations).length !== required.length || !required.every(key => attestations[key] === true) || !actorId ||
         typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 100)
       throw fail(422, "请逐项审阅代码、核验、交付文件和云端测试范围");
     const requested = validatePublicationSelector({ sourceKind, ...(sourceRunId === undefined ? {} : { sourceRunId }), packageDigest, verificationId }, actorId);
-    const input = { agentId: agent.id, ...requested }, initial = reviewedSource(input);
+    const input = { ...identity(subject.id), ...requested }, initial = reviewedSource(input);
     await ensure(initial.item);
     // The immutable artifact check yields. Reload every source record and reject
     // changes before approving; an earlier in-memory success is not authority.
@@ -128,25 +133,25 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const { item, plan } = fresh, selector = { ...requested, sourceRunId: fresh.sourceRunId };
     assertPublicationScope(publicationScope);
     const confirmed = Object.fromEntries(required.map(key => [key,true]));
-    const signature = hash(JSON.stringify({ agentId: agent.id, packageDigest, verificationId, actorId, attestations: confirmed,
+    const signature = hash(JSON.stringify({ ...identity(subject.id), packageDigest, verificationId, actorId, attestations: confirmed,
       ...(sourceKind === "MANUAL" ? { sourceKind, sourceRunId } : {}) }));
-    const key = `${project}:cloud-publication:${actorId}:${idempotencyKey}`;
+    const key = `${project}:${standaloneManual?"manual-publication":"cloud-publication"}:${actorId}:${idempotencyKey}`;
     const prior = store.deduplicatedId(key);
     if (prior) {
       store.deduplicate(key, signature, () => { throw fail(409, "原发布幂等记录缺失"); });
       const previous = get("release", prior);
-      if (!matches(previous, agent.id, selector)) throw fail(409, "原发布请求绑定了不同来源或演练");
-      authorizeManualRead(agent.id, selector, previous);
-      await persist(); return detail(agent.id, { ...selector, releaseId: previous.id });
+      if (!matches(previous, subject.id, selector)) throw fail(409, "原发布请求绑定了不同来源或演练");
+      authorizeManualRead(subject.id, selector, previous);
+      await persist(); return detail(subject.id, { ...selector, releaseId: previous.id });
     }
-    const samePackage = store.list("release", project).filter(r => r.mode === cloudPublicationMode && r.sourceAgentTaskId === agent.id && r.packageDigest === item.digest);
-    const existing = samePackage.filter(r => matches(r, agent.id, selector) && (singleRelease || !["CANCELLED", "ROLLED_BACK"].includes(r.status)));
-    if (existing.length > 1 || singleRelease && samePackage.some(r => !matches(r, agent.id, selector)))
+    const samePackage = store.list("release", project).filter(r => r.mode === cloudPublicationMode && r[sourceField] === subject.id && r.packageDigest === item.digest);
+    const existing = samePackage.filter(r => matches(r, subject.id, selector) && (singleRelease || !["CANCELLED", "ROLLED_BACK"].includes(r.status)));
+    if (existing.length > 1 || singleRelease && samePackage.some(r => !matches(r, subject.id, selector)))
       throw fail(409, "此交付包已有另一演练或发布记录，不能借用旧批准");
     if (existing.length === 1) {
-      authorizeManualRead(agent.id, selector, existing[0]);
+      authorizeManualRead(subject.id, selector, existing[0]);
       const saved = store.deduplicate(key, signature, () => existing[0]);
-      await persist(); return detail(agent.id, { ...selector, releaseId: saved.id });
+      await persist(); return detail(subject.id, { ...selector, releaseId: saved.id });
     }
     const index = plan.calendar.tradingDays.indexOf(plan.fixtures.context.businessDate), nextDay = plan.calendar.tradingDays[index + 1];
     if (!nextDay) throw fail(422, "日历缺少下一交易日");
@@ -155,15 +160,16 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     // Artifact verification yields; an approval window may close before records
     // are created. Re-check without changing the reviewed package or its scope.
     assertPublicationScope(publicationScope);
-    const attribution = { sourceKind, sourceRunId: fresh.sourceRunId, ...(sourceKind === "MANUAL" ? { sourceAttribution: "ENGINEER_ASSISTED", agentIndependentE2E: false } : {}) };
+    const attribution = { sourceKind, sourceRunId: fresh.sourceRunId, ...(sourceKind === "MANUAL" ? { sourceAttribution: standaloneManual?'ENGINEER_AUTHORED':"ENGINEER_ASSISTED", agentIndependentE2E: false } : {}),
+      ...(standaloneManual?{source:{kind:'MANUAL_RUN',runId:fresh.run.id,revisionId:fresh.revision.id,revisionHash:fresh.revision.hash,manualDeliveryTaskId:subject.id},manualDeliveryTaskId:subject.id}:{}) };
     const created = store.deduplicate(key, signature, () => {
       const review = store.create("delivery_review", project, { ...attribution, packageId: item.id, packageDigest, verificationId, status: "REVIEWED", scope: "PRIVATE_CLOUD_TEST", submittedBy: actorId, attestations: confirmed, reviewedAt: stamp() });
       const approval = store.create("release_approval", project, { ...attribution, packageId: item.id, packageDigest, rehearsalId: verificationId, reviewId: review.id, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, status: "APPROVED", scope: "PRIVATE_CLOUD_TEST", submittedBy: actorId, approvedAt: stamp() });
-      const release = store.create("release", project, { ...attribution, mode: cloudPublicationMode, sourceAgentTaskId: agent.id, submittedBy: actorId, reviewId: review.id, approvalId: approval.id, packageId: item.id, packageDigest, verificationId, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, businessScheduledFor, status: "WAITING_SCHEDULER", health: "PENDING", scope: "PRIVATE_CLOUD_TEST", runCount: 2, publicDeployed: false, fullLifecycleE2E: false });
-      for (let sequence = 1; sequence <= 2; sequence++) store.create("release_run", project, { ...attribution, mode: cloudPublicationMode, sourceAgentTaskId: agent.id, submittedBy: actorId, releaseId: release.id, packageId: item.id, packageDigest, sequence, businessScheduledFor, status: "SCHEDULED", schedulerTriggered: false, scheduledTriggerAt: new Date(now() + (sequence - 1) * 60000).toISOString(), published: false, publicDeployed: false });
+      const release = store.create("release", project, { ...attribution, mode: cloudPublicationMode, [sourceField]: subject.id, submittedBy: actorId, reviewId: review.id, approvalId: approval.id, packageId: item.id, packageDigest, verificationId, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, businessScheduledFor, status: "WAITING_SCHEDULER", health: "PENDING", scope: "PRIVATE_CLOUD_TEST", runCount: 2, publicDeployed: false, fullLifecycleE2E: false });
+      for (let sequence = 1; sequence <= 2; sequence++) store.create("release_run", project, { ...attribution, mode: cloudPublicationMode, [sourceField]: subject.id, submittedBy: actorId, releaseId: release.id, packageId: item.id, packageDigest, sequence, businessScheduledFor, status: "SCHEDULED", schedulerTriggered: false, scheduledTriggerAt: new Date(now() + (sequence - 1) * 60000).toISOString(), published: false, publicDeployed: false });
       return release;
     });
-    await persist(); return detail(agent.id, { ...selector, releaseId: created.id });
+    await persist(); return detail(subject.id, { ...selector, releaseId: created.id });
   }
   async function finish(run, receipt) {
     const current = get("release_run", run.id), release = get("release", run.releaseId);
@@ -191,7 +197,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
   async function tick({ releaseId, requestId, triggerName, triggerTime }) {
     if (!enabled) throw fail(503, "云端发布驱动未启用");
     let release = get("release", releaseId);
-    if (release.mode !== cloudPublicationMode || !["WAITING_SCHEDULER", "RUNNING_CLOUD_TEST", "ACTIVE_CLOUD_TEST", "COMPLETED_CLOUD_TEST"].includes(release.status)) throw fail(409, "发布版本已失效");
+    if (release.mode !== cloudPublicationMode || (standaloneManual?typeof release.manualDeliveryTaskId!=="string"||release.sourceAgentTaskId!==undefined:release.manualDeliveryTaskId!==undefined) || !["WAITING_SCHEDULER", "RUNNING_CLOUD_TEST", "ACTIVE_CLOUD_TEST", "COMPLETED_CLOUD_TEST"].includes(release.status)) throw fail(409, "发布版本已失效");
     if (typeof requestId !== "string" || !/^[a-f0-9]{64}$/.test(requestId) || typeof triggerName !== "string" || !triggerName || !Number.isFinite(Date.parse(triggerTime))) throw fail(422, "调度事件标识不合法");
     const old = store.list("cloud_release_tick", project).find(t => t.requestId === requestId);
     if (old && old.releaseId !== release.id) throw fail(409, "同一事件不能调用另一发布版本");
@@ -243,11 +249,16 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if (!release) throw fail(404,"未找到发布版本");
     // Stop uses only persisted identity/source and the live approval boundary.
     // A broken receipt read must not prevent stopping a selected running job.
-    assertPublicationScope({ agentId, packageDigest: release.packageDigest, verificationId: release.verificationId });
+    assertPublicationScope({ ...identity(agentId), packageDigest: release.packageDigest, verificationId: release.verificationId });
     if(release.status==="COMPLETED_CLOUD_TEST" || release.status==="CANCELLED")return detail(agentId, { ...selector, releaseId: release.id });
     patch("release",release,{status:"CANCELLED",health:"STOPPED",cancelledAt:stamp()});
     const jobs=[]; for(const run of store.list("release_run",project).filter(r=>r.releaseId===release.id&&!terminal.has(r.status))) { patch("release_run",run,{status:"CANCELLED",finishedAt:stamp()}); if(run.remoteSubmission)jobs.push(run.remoteSubmission.prepared); }
     await persist(); for(const job of jobs)await runner.cancel(job);return detail(agentId, { ...selector, releaseId: release.id });
   }
   return { publish, detail, tick, cancel, sourceForNavigation };
+}
+
+export function createStandaloneManualPublication(options){
+  const engine=createCloudPublication({...options,standaloneManual:true});
+  return {publish:({manualDeliveryTaskId,...input})=>engine.publish({...input,manualDelivery:options.store.get('manual_delivery_task',manualDeliveryTaskId,options.project)}),detail:engine.detail,tick:engine.tick,cancel:engine.cancel};
 }
