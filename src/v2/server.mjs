@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import {resolveManualContinuation} from './manual-sql-continuation.mjs';
 import {resolveAssistedContinuation} from './assisted-sql-delivery-source.mjs';
 import {resolveSqlRepairComparison,repairComparisonAttribution,explicitRepairAttribution} from './sql-repair-comparison.mjs';
 import {resolveExplicitSqlRepairSource} from './sql-repair-source.mjs';
@@ -5088,7 +5089,7 @@ export function createV2Server(options = {}) {
             mainSqlExecuted: verification.mainSqlExecuted, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation),
             durationMs: verification.durationMs, error: verification.error, finishedAt: verification.finishedAt} : undefined,
           publication: {available: Boolean(privatePublicationConfig && cloudPublication), scope: "PRIVATE_CLOUD_TEST", sourceKind: "MANUAL", sourceRunId: source.run.id,
-            agentIndependentE2E: false, reason: privatePublicationConfig && cloudPublication ? "审阅此人工版本的确切包与成功演练后，可创建两个受控云端测试批次；工程师归因保留，原 Agent 失败与费用记录不变。" : bundle?"当前人工辅助交付记录已保留；云端调度驱动尚未配置，发布需在确切包的有效权限范围内进行。":"先生成并演练当前版本的交付文件；云端调度驱动尚未配置，不代表已经发布。"}});
+            agentIndependentE2E: false, reason: privatePublicationConfig && cloudPublication ? "审阅此人工版本的确切包与成功演练后，可创建两个受控云端测试批次；人工来源保留，原开发、参考和费用记录不变。" : bundle?"当前人工辅助交付记录已保留；云端调度驱动尚未配置，发布需在确切包的有效权限范围内进行。":"先生成并演练当前版本的交付文件；云端调度驱动尚未配置，不代表已经发布。"}});
       }
       const developmentWorkflow = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/workflow$/);
       if (developmentWorkflow && method === "GET") {
@@ -5409,6 +5410,13 @@ export function createV2Server(options = {}) {
         }
         return json(res,200,compareSqlRuns({store,project:PROJECT,current,baseline}));
       }
+      const manualContinuationRead=path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\/manual-continuation$/);
+      if(manualContinuationRead&&method==='GET'){
+        if(url.searchParams.size)throw fail(422,'手工续改依据不接受其他参数');
+        const run=get('run',manualContinuationRead[1]);requireDevelopmentOwner('run',run,req);
+        const actorId=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
+        return json(res,200,resolveManualContinuation({store,project:PROJECT,actorId,sourceRunId:run.id}));
+      }
       const continuationRead=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\/assisted-continuation$/);
       if(continuationRead&&method==='GET'){
         if(url.searchParams.size)throw fail(422,'续改依据读取不接受其他参数');
@@ -5481,7 +5489,7 @@ export function createV2Server(options = {}) {
       }
       const manualRevisionRequest = path.match(/^\/api\/v2\/revisions\/requests\/([A-Za-z0-9_-]{1,100})$/);
       if (method === "GET" && manualRevisionRequest) {
-        const actor = local ? "local-engineer" : auth.sessionFromHeaders(req.headers)?.user.id;
+        const actor = auth.sessionFromHeaders(req.headers)?.user.id ?? (local ? "local-engineer" : undefined);
         if (!actor) throw fail(401,"请先登录以查询原保存请求");
         const saved=savedManualRevision({store,project:PROJECT,actor,key:manualRevisionRequest[1]});
         if (!saved) return json(res,200,{status:"NOT_FOUND",notice:"当前身份尚未查到这个保存请求；未创建版本或运行。"});
@@ -5494,7 +5502,7 @@ export function createV2Server(options = {}) {
           contextId = text(body.contextId, 1, 80);
         if (!getContext(contextId)) throw fail(400, "请选择有效上下文");
         if (Object.keys(body).some(key=>!["sql","contextId","originAgentTaskId"].includes(key))) throw fail(400,"代码保存包含未支持字段");
-        const session=auth.sessionFromHeaders(req.headers), actor=local ? "local-engineer" : session?.user.id;
+        const session=auth.sessionFromHeaders(req.headers), actor=session?.user.id ?? (local ? "local-engineer" : undefined);
         if (!actor) throw fail(401,"请先登录后保存代码");
         const originAgentTaskId=body.originAgentTaskId === undefined ? undefined : text(body.originAgentTaskId,1,80);
         if (developmentAccess?.taskId && originAgentTaskId !== developmentAccess.taskId) throw targetDenied();
@@ -5623,6 +5631,11 @@ export function createV2Server(options = {}) {
               : text(body.language, 3, 20),
           suppliedCode = body.code ?? body.sql;
         let currentCode = text(suppliedCode, 1, 20_000);
+        if(body.manualContinuation!==undefined){
+          if(language!=='SPARK_SQL'||[body.sourceRunId,body.sourceError,body.derivation,body.repairComparison,body.assistedContinuation].some(v=>v!==undefined)||body.code!==undefined&&body.sql!==undefined&&body.code!==body.sql)throw Object.assign(fail(422,'手工成功版本不能混用其他续改来源'),{code:'MANUAL_CONTINUATION_CONFLICT'});
+          if(!durableAgent)throw fail(503,'手工成功版本续改需要持久SQL执行器，不回退普通任务');
+          currentCode=suppliedCode;
+        }
         if(body.assistedContinuation!==undefined){
           if(language!=='SPARK_SQL'||[body.sourceRunId,body.sourceError,body.derivation,body.repairComparison].some(v=>v!==undefined)||body.code!==undefined&&body.sql!==undefined&&body.code!==body.sql)
             throw Object.assign(fail(422,'续改只接受同一成功版本，不能混用失败来源或口径派生'),{code:'ASSISTED_CONTINUATION_CONFLICT'});
@@ -5670,7 +5683,7 @@ export function createV2Server(options = {}) {
           }
           const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
             actorId,
-            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}),...(repairBasis?{repairComparison:repairBasis.binding}:{}),...(body.assistedContinuation!==undefined?{assistedContinuation:body.assistedContinuation}:{}) });
+            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}),...(repairBasis?{repairComparison:repairBasis.binding}:{}),...(body.assistedContinuation!==undefined?{assistedContinuation:body.assistedContinuation}:{}),...(body.manualContinuation!==undefined?{manualContinuation:body.manualContinuation}:{}) });
           if(body.background){
             const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version,...backgroundWindow,
               developmentBoundary:developmentBackgroundBoundary(developmentAccess,created.id,developmentNow())});

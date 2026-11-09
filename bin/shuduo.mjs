@@ -13,6 +13,7 @@ import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
 import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
+import {readManualContinuation,createManualContinuation} from '../src/v2/manual-continuation-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 
@@ -39,6 +40,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent journey --id AGENT_TASK_ID
   shuduo agent workflow --id AGENT_TASK_ID
   shuduo agent request --request-id ORIGINAL_REQUEST_ID
+  shuduo agent manual-continuation --source-run-id RUN_ID
+  shuduo agent continue-manual --source-run-id RUN_ID --message "优化已核验的手工SQL" --request-id UUID --confirm
   shuduo agent continuation --id TASK_ID
   shuduo agent continue-version --id TASK_ID --message "基于成功版本继续修改" --request-id UUID --confirm
   shuduo agent repair-basis --source-run-id FAILED_RUN_ID --baseline-run-id SUCCEEDED_RUN_ID
@@ -478,6 +481,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       for(const token of argv.filter(value=>value.startsWith('--'))){const key=token.slice(2).replaceAll('-','_');if(!allowed.has(key)||seen.has(key))throw Error('对照修正命令包含未知或重复参数');seen.add(key);}
       const selection={sourceRunId:required(parsed.options,'source_run_id'),baselineRunId:required(parsed.options,'baseline_run_id')};
       result=action==='repair-basis'?await readRepairComparisonBasis(client,selection):await createComparisonRepairTask(client,{...selection,message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
+    }
+    else if(resource==='agent'&&['manual-continuation','continue-manual'].includes(action)){
+      const allowed=new Set(['source_run_id','message','request_id','confirm','base_url','help']),seen=new Set();
+      if(parsed.positionals.length!==2)throw Error('手工续改命令包含额外参数');
+      for(const token of argv.filter(v=>v.startsWith('--'))){const key=token.slice(2).replaceAll('-','_');if(!allowed.has(key)||seen.has(key))throw Error('手工续改命令包含未知或重复参数');seen.add(key);}
+      const sourceRunId=required(parsed.options,'source_run_id');result=action==='manual-continuation'?await readManualContinuation(client,{sourceRunId}):await createManualContinuation(client,{sourceRunId,message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
     }
     else if(resource==='agent'&&['continuation','continue-version'].includes(action)){
       const allowed=new Set(['id','message','request_id','confirm','base_url','help']),seen=new Set();

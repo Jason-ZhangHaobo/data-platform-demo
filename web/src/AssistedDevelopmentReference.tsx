@@ -8,11 +8,12 @@ export function AssistedDevelopmentReference({value}:{value:Reference}){
       <div><dt>父代码摘要</dt><dd><code>{value.sourceRevisionHash}</code></dd></div>
       <div><dt>父证据摘要</dt><dd><code>{value.parentEvidenceDigest}</code></dd></div>
     </dl></>}
-    <dl><div><dt>原失败批次</dt><dd><code>{root.sourceRunId}</code></dd></div>
-      <div><dt>原代码摘要</dt><dd><code>{root.sourceRevisionHash}</code></dd></div>
+    <dl><div><dt>{root.kind==='MANUAL_SUCCESS_REFERENCE'?'手工成功批次':'原失败批次'}</dt><dd><code>{root.sourceRunId}</code></dd></div>
+      <div><dt>{root.kind==='MANUAL_SUCCESS_REFERENCE'?'手工代码摘要':'原代码摘要'}</dt><dd><code>{root.sourceRevisionHash}</code></dd></div>
+      {root.kind==='MANUAL_SUCCESS_REFERENCE'&&<><div><dt>手工保存证据</dt><dd><code>{root.evidenceDigest}</code></dd></div>{root.originAgentTaskId&&<div><dt>原关联任务</dt><dd><code>{root.originAgentTaskId}</code></dd></div>}</>}
       {root.baselineRunId&&<><div><dt>参考基线批次</dt><dd><code>{root.baselineRunId}</code></dd></div>
         <div><dt>参考基线代码摘要</dt><dd><code>{root.baselineRevisionHash}</code></dd></div>
         <div><dt>保存证据摘要</dt><dd><code>{root.evidenceDigest}</code></dd></div></>}
-    </dl><p>基线仅作开发参考；本次代码、文件、演练和审阅独立绑定，不继承原发布批准。</p>
+    </dl><p>{root.kind==='MANUAL_SUCCESS_REFERENCE'?'手工代码是本次开发起点；新版本仍须独立核验和审阅，不继承原成功结论或批准。':'基线仅作开发参考；本次代码、文件、演练和审阅独立绑定，不继承原发布批准。'}</p>
   </details>;
 }
