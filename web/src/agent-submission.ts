@@ -39,6 +39,7 @@ export function createAgentSubmission<T extends {id:string}>({api,initialKey,onP
   const read=()=>{if(!pending)throw Error("没有待确认的原提交编号");return api<T>(`/agent/requests/${pending.key}`);};
   return {
     snapshot:()=>({key:pending?.key,canRetry:Boolean(pending?.payload),closed}),
+    expectedBody:()=>pending?.payload?JSON.parse(pending.payload):undefined,
     submit(body:unknown){
       if(pending)return Promise.reject(Error("请先确认原提交结果，不新建第二个请求编号"));
       const key=makeKey();if(!uuid.test(key))return Promise.reject(Error("提交编号不合法"));

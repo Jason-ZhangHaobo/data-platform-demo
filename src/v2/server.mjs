@@ -1,4 +1,8 @@
 import { createServer } from "node:http";
+import {resolveSqlRepairComparison,repairComparisonAttribution,explicitRepairAttribution} from './sql-repair-comparison.mjs';
+import {resolveExplicitSqlRepairSource} from './sql-repair-source.mjs';
+import {sameSqlIgnoringLayout} from './sql-repair-progress.mjs';
+import {buildSqlRepairFeedback} from './sql-repair-feedback.mjs';
 import { ingressDenialReasons } from "./fc-ingress.mjs";
 import { createRequestLane } from "./request-lane.mjs";
 import { createAssetAnnotationRequests } from "./asset-annotation-requests.mjs";
@@ -5194,6 +5198,7 @@ export function createV2Server(options = {}) {
         const agent = get("agent", prepareAgentDelivery[1]),
           finalAttempt = agent.attempts?.at(-1);
         requireDurableAgentOwner(agent, req);
+        if(agent.repairComparison!==undefined||agent.sourceKind==='MANUAL'||agent.sourceAttribution!==undefined)throw fail(409,'人工辅助修正的开发结果已保留；人工辅助交付须独立审阅，当前不能作为原生Agent成果发布');
         if (agent.executionMode === durableSqlAgentMode) {
           if (!durableDelivery) throw fail(503, "持久交付执行器尚未启用");
           const key = text(req.headers["idempotency-key"], 1, 100);
@@ -5386,7 +5391,7 @@ export function createV2Server(options = {}) {
           });
         return json(res, 202, publicAgentIntent(task));
       }
-      const comparisonRead=path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\/(comparison|comparison-candidates)$/);
+      const comparisonRead=path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\/(comparison|comparison-candidates|repair-comparison)$/);
       if(comparisonRead&&method==='GET'){
         const current=get('run',comparisonRead[1]);requireDevelopmentOwner('run',current,req);
         if(comparisonRead[2]==='comparison-candidates'){
@@ -5396,6 +5401,10 @@ export function createV2Server(options = {}) {
         }
         if([...url.searchParams.keys()].some(k=>k!=='baseline_run_id')||url.searchParams.getAll('baseline_run_id').length!==1||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(url.searchParams.get('baseline_run_id')??''))throw fail(422,'需要一个确切的基线运行编号');
         const baseline=get('run',url.searchParams.get('baseline_run_id'));requireDevelopmentOwner('run',baseline,req);
+        if(comparisonRead[2]==='repair-comparison'){
+          const revision=get('revision',current.revisionId),actorId=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
+          return json(res,200,resolveSqlRepairComparison({store,project:PROJECT,actorId,sourceRunId:current.id,baselineRunId:baseline.id,currentSql:revision.sql,contextId:revision.contextId}));
+        }
         return json(res,200,compareSqlRuns({store,project:PROJECT,current,baseline}));
       }
       const record = path.match(
@@ -5605,6 +5614,11 @@ export function createV2Server(options = {}) {
               : text(body.language, 3, 20),
           suppliedCode = body.code ?? body.sql;
         let currentCode = text(suppliedCode, 1, 20_000);
+        if(body.repairComparison!==undefined){
+          if(language!=='SPARK_SQL'||body.sourceRunId===undefined||body.derivation!==undefined||body.sourceError!==undefined||
+            body.code!==undefined&&body.sql!==undefined&&body.code!==body.sql)throw fail(422,'对照修正仅支持同一失败SQL来源，不能混用口径派生或自填诊断');
+          currentCode=suppliedCode;
+        }
         if (body.derivation !== undefined) {
           if (language !== "SPARK_SQL" || body.sourceRunId !== undefined || body.sourceError !== undefined ||
               body.code !== undefined && body.sql !== undefined && body.code !== body.sql)
@@ -5618,11 +5632,14 @@ export function createV2Server(options = {}) {
         const context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效上下文");
         if (ingressChannel === "HTTP") assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, options.now?.() ?? Date.now());
-        const actorId = durableAgent && language === "SPARK_SQL"
-          ? auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer"
+        const actorId = language === "SPARK_SQL"
+          ? auth.sessionFromHeaders(req.headers)?.user.id ?? (local ? "local-engineer" : undefined)
           : local ? "local-engineer" : auth.sessionFromHeaders(req.headers)?.user.id;
         const derivedFrom = body.derivation === undefined ? undefined : resolveAgentContextDerivation({derivation:body.derivation, actorId,
           targetContextId:context.id,currentSql:currentCode,project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
+        const repairBasis=body.repairComparison===undefined?undefined:resolveSqlRepairComparison({store,project:PROJECT,actorId,sourceRunId:body.sourceRunId,
+          contextId:context.id,currentSql:currentCode,binding:body.repairComparison});
+        const explicitRepair=body.sourceRunId===undefined||durableAgent?undefined:resolveExplicitSqlRepairSource({sourceRunId:body.sourceRunId,actorId,contextId:context.id,currentSql:currentCode,project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
         const backgroundWindow = body.background && ingressChannel === 'HTTP' ? developmentBackgroundWindow(developmentAccess, options.now?.() ?? Date.now()) : {};
         if (durableAgent && language === "SPARK_SQL") {
           if (!options.generator && !modelSettings(env).configured) throw new ModelUnavailable();
@@ -5638,7 +5655,7 @@ export function createV2Server(options = {}) {
           }
           const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
             actorId,
-            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}) });
+            idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}),...(repairBasis?{repairComparison:repairBasis.binding}:{}) });
           if(body.background){
             const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version,...backgroundWindow,
               developmentBoundary:developmentBackgroundBoundary(developmentAccess,created.id,developmentNow())});
@@ -5671,6 +5688,8 @@ export function createV2Server(options = {}) {
               currentCode,
               contextId: context.id,
               ...(derivedFrom ? {derivation:derivedFrom} : {}),
+              ...(explicitRepair?{sourceRunId:body.sourceRunId}:{}),
+              ...(repairBasis?{sourceRunId:body.sourceRunId,repairComparison:repairBasis.binding}:{}),
             }),
           );
         const existingAgent = store.deduplicatedId(PROJECT + ":agent:" + key);
@@ -5680,11 +5699,13 @@ export function createV2Server(options = {}) {
           signature,
           () =>
             store.create("agent", PROJECT, {
-              submittedBy: local ? "local-engineer" : auth.sessionFromHeaders(req.headers).user.id,
+              submittedBy: language==='SPARK_SQL'?actorId:local ? "local-engineer" : auth.sessionFromHeaders(req.headers).user.id,
               message,
               language,
               contextId: context.id,
               ...(derivedFrom ? {derivedFrom,initialSql:currentCode,sql:currentCode,usedTokens:0} : {}),
+              ...(explicitRepair?{sourceRunId:body.sourceRunId,initialSql:currentCode,sql:currentCode,...explicitRepairAttribution(body.sourceRunId)}:{}),
+              ...(repairBasis?{sourceRunId:body.sourceRunId,repairComparison:repairBasis.binding,initialSql:currentCode,sql:currentCode,...repairBasis.attribution}:{}),
               status: "QUEUED",
               attempts: [],
               mode: "LIVE_MODEL",
@@ -5842,7 +5863,7 @@ export function createV2Server(options = {}) {
             if (derivedFrom) resolveAgentContextDerivation({derivation:body.derivation,actorId,targetContextId:context.id,currentSql:currentCode,
               project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
             let sql = currentCode,
-              error,
+              error=explicitRepair?String(explicitRepair.run.error||explicitRepair.run.validation?.issues?.join('；')||'独立业务校验未通过').slice(0,8000):undefined,
               usedTokens = 0;
             for (let attempt = 1; attempt <= 3; attempt++) {
               if (signal.aborted) throw new Error("任务已取消");
@@ -5852,12 +5873,15 @@ export function createV2Server(options = {}) {
                 throw new Error("本次 Agent 已达到 Token 预算上限");
               let generated;
               const modelStartedAt = Date.now();
+              if(explicitRepair)resolveExplicitSqlRepairSource({sourceRunId:body.sourceRunId,actorId,contextId:context.id,currentSql:currentCode,project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
+              const comparison=repairBasis?resolveSqlRepairComparison({store,project:PROJECT,actorId,sourceRunId:body.sourceRunId,contextId:context.id,currentSql:currentCode,binding:repairBasis.binding}):undefined;
               try {
                 generated = await generator({
                   message,
                   context,
                   currentSql: sql,
                   error,
+                  ...(attempt===1&&comparison?{repairComparison:comparison.summary,repairFeedback:buildSqlRepairFeedback(get('run',body.sourceRunId),context.id,{currentSql:sql})}:{}),
                   signal,
                   remainingBudget,
                 });
@@ -5894,8 +5918,15 @@ export function createV2Server(options = {}) {
                   : remainingBudget;
               if (usedTokens > Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000))
                 throw new Error("本次 Agent 已达到 Token 预算上限");
+              if(explicitRepair){
+                store.update('agent',task.id,PROJECT,{usedTokens});
+                resolveExplicitSqlRepairSource({sourceRunId:body.sourceRunId,actorId,contextId:context.id,currentSql:currentCode,project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
+                if(repairBasis)resolveSqlRepairComparison({store,project:PROJECT,actorId,sourceRunId:body.sourceRunId,contextId:context.id,currentSql:currentCode,binding:repairBasis.binding});
+                if(attempt===1&&sameSqlIgnoringLayout(generated.sql,currentCode))throw fail(409,'模型未修改失败代码，未重新提交计算');
+              }
               sql = generated.sql;
               const rev = revision(sql, context.id, "LIVE_MODEL", task.submittedBy);
+              if(explicitRepair)store.update('revision',rev.id,PROJECT,repairComparisonAttribution(task));
               const run = store.create("run", PROJECT, {
                 validationContractId:validationFamily(context.id).id,
                 revisionId: rev.id,
@@ -5904,6 +5935,7 @@ export function createV2Server(options = {}) {
                 status: "RUNNING",
                 startedAt: new Date().toISOString(),
                 agentTaskId: task.id,
+                ...repairComparisonAttribution(task),
               });
               let completed;
               try {
