@@ -7,6 +7,7 @@ import { validationDetails, equalValidationNumber } from "./validation-details.m
 import {assistedSqlDeliverySource} from './assisted-sql-delivery-source.mjs';
 import {sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 import {resolveManualContinuation} from './manual-sql-continuation.mjs';
+import {verifiedSqlRequirementReport} from './sql-requirements.mjs';
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 export const standaloneManualDeliveryMode='DURABLE_MANUAL_DELIVERY_V1';
@@ -75,6 +76,9 @@ export function developmentVerificationReport(task, run, revision) {
       (run?.validationContractId === undefined || run.validationContractId === family?.id) &&
       validationMatchesFamily(run?.validation, family, { requireContract: true }) },
   ];
+  if(task.requirements!==undefined&&revision?.source==='LIVE_MODEL')checks.push({id:'requirement',label:'结构化理解绑定当前需求与代码，结果另行核验',
+    passed:verifiedSqlRequirementReport(task.requirements,task)&&task.requirements.status==='MODEL_PROPOSED'&&
+      task.requirements.revisionId===revision.id&&task.requirements.sqlHash===revision.hash});
   const passed = run?.status === "SUCCEEDED" && checks.every(check => check.passed);
   return {
     schema: "shuduo-development-verification/v1", taskId: task.id, revisionId: revision?.id,

@@ -11,6 +11,8 @@ import { referenceSql, getContext, contextIds, validationContractId } from "../.
 import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult } from "../../src/v2/remote-spark-queue.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { createPasswordHash } from "../../src/v2/auth.mjs";
+import {syntheticSqlRequirement} from './fixtures/sql-requirement.mjs';
+import {verifiedSqlRequirementReport} from '../../src/v2/sql-requirements.mjs';
 
 function setup(t, overrides = {}) {
   const dir = mkdtempSync(join(tmpdir(), "shuduo-durable-agent-")), path = join(dir, "metadata.sqlite");
@@ -55,6 +57,36 @@ function setup(t, overrides = {}) {
     },
   };
 }
+
+test('structured requirement proposal is bound to the original task/code and survives restart without extra model calls',async t=>{
+ const f=setup(t,{generator:async input=>({...f.generated,...syntheticSqlRequirement(input)})});
+ let task=await f.create();task=await f.advance(task.id);
+ assert.equal(task.stage,'READY_FOR_RUN');assert.equal(task.requirements.status,'MODEL_PROPOSED');
+ assert.equal(verifiedSqlRequirementReport(task.requirements,task),true);assert.equal(task.requirements.semanticVerification,'REQUIRES_INDEPENDENT_EXECUTION');
+ assert.equal(task.requirements.revisionId,task.revisionId);assert.equal(f.counts.model,1);assert.equal(f.counts.jobs,0);
+ const proposal=structuredClone(task.requirements);f.restart();assert.deepEqual(f.engine.get(task.id).requirements,proposal);
+ task=await f.advance(task.id);assert.equal(f.counts.jobs,1);assert.equal(f.counts.model,1);f.complete(task.id);task=await f.advance(task.id);
+ assert.equal(task.status,'SUCCEEDED');assert.deepEqual(task.requirements,proposal);assert.equal(verifiedSqlRequirementReport(proposal,task),true);
+});
+test('invalid/missing model understanding stops before Spark and retains the confirmed model usage',async t=>{
+ for(const mutate of [g=>{g.requirement=undefined;},g=>{g.requirement.basisDigest='0'.repeat(64);},g=>{g.requirement.metrics[0].sourceFields=['accounts.fake'];},
+  g=>{g.requirement.constraints.pop();},g=>{g.requirement.grain='POSITION';}]){
+  const f=setup(t,{generator:async input=>{const g={...f.generated,...syntheticSqlRequirement(input)};mutate(g);return g;}});
+  const created=await f.create(),task=await f.advance(created.id);
+  assert.equal(task.status,'FAILED');assert.equal(task.stage,'REQUIREMENT_EVIDENCE_INVALID');assert.equal(task.requirements.status,'INVALID');
+  assert.equal(task.usedTokens,20);assert.equal(task.attempts[0].usage.total_tokens,20);assert.equal(task.attempts[0].computationSkipped,true);
+  assert.equal(f.counts.jobs,0);assert.equal(f.store.list('revision',PROJECT).length,0);
+  f.restart();await f.advance(task.id);assert.equal(f.counts.model,1);assert.equal(f.counts.jobs,0);
+ }
+});
+test('one clarification question stops SQL development, persists the response and never becomes automatic retry consent',async t=>{
+ const f=setup(t,{generator:async input=>({...f.generated,sql:null,...syntheticSqlRequirement(input,{clarification:true})})});
+ let task=await f.create();task=await f.advance(task.id);
+ assert.equal(task.stage,'REQUIREMENT_CLARIFICATION_REQUIRED');assert.equal(task.requirements.status,'CLARIFICATION_REQUIRED');
+ assert.equal(verifiedSqlRequirementReport(task.requirements,task),true);assert.equal(task.usedTokens,20);assert.equal(f.counts.jobs,0);
+ const original=structuredClone(task.requirements);f.restart();task=await f.advance(task.id,{confirmModelRetry:true});
+ assert.deepEqual(task.requirements,original);assert.equal(f.counts.model,1);assert.equal(f.counts.jobs,0);assert.equal(task.status,'FAILED');
+});
 
 test("task, generated revision and queued run survive distinct store restarts", async t => {
   const f = setup(t);

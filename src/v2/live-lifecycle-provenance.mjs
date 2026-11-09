@@ -8,7 +8,7 @@ const receiptKeys = new Set([
   'consumptionSource', 'consumptionStage', 'evidence', 'services', 'sourceVersions',
   'call', 'source', 'manifest', 'report', 'package', 'verification', 'release',
   'approval', 'review', 'runs', 'events', 'batches', 'successfulEvents',
-  'validation', 'regressions', 'testSqlValidation', 'checks',
+  'validation', 'regressions', 'testSqlValidation', 'checks', 'requirements', 'requirementEvidence',
 ]);
 const manualKeys = ['manualProvenance', 'manualContinuation', 'assistedContinuation',
   'repairComparison', 'developmentReference', 'manualDeliveryTaskId', 'sourceAttribution', 'attribution'];

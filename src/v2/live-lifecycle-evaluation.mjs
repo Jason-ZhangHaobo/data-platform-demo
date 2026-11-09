@@ -8,6 +8,7 @@ import {developmentVerificationReport} from './agent-development-workflow.mjs';
 import {inspectLifecycleOutcome} from "./lifecycle-evaluation.mjs";
 import {inspectLifecycleConsumption,validLifecycleConsumptionSource,verifyLifecycleConsumptionStage} from "./lifecycle-consumption.mjs";
 import {liveEvidenceProvenance,nonLiveModelLabel} from './live-lifecycle-provenance.mjs';
+import {verifiedSqlRequirementReport} from './sql-requirements.mjs';
 
 const hash=value=>createHash("sha256").update(typeof value==="string"?value:JSON.stringify(value)).digest("hex");
 const fail=code=>Object.assign(new Error(code),{code});
@@ -143,6 +144,8 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
   ensure(Date.parse(task.createdAt)>=Date.parse(state.evaluationStartedAt),"HISTORICAL_TASK_REJECTED");
   const attempt=task.attempts?.at(-1);
   ensure(attempt?.status==="SUCCEEDED"&&typeof attempt.model==="string"&&!nonLiveModelLabel(attempt.model)&&task.attempts.length<=3,"LIVE_MODEL_EVIDENCE_REQUIRED");
+  if(task.requirements!==undefined)ensure(task.requirements.status==='MODEL_PROPOSED'&&task.requirements.attempt===task.attempts.length&&
+    verifiedSqlRequirementReport(task.requirements,task),'REQUIREMENT_EVIDENCE_UNCONFIRMED');
   ensure(Number.isSafeInteger(task.usedTokens)&&task.usedTokens>=0&&task.usedTokens<=32000,"MODEL_USAGE_NOT_CONFIRMED");
   const workflow=await adapter.request(`/agent/tasks/${task.id}/workflow`);
   disclose(workflow,workflow.report);
@@ -157,6 +160,7 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
     run.validation.passed===true&&run.validation.regressions?.length===5&&expectedContexts.every(id=>run.validation.regressions.some(check=>check.contextId===id&&check.passed))&&
     (!v3||developmentVerificationReport(task,run,revision).status==='PASSED'),"CODE_EXECUTION_NOT_VERIFIED");
   state.code={sourceKind:"AGENT",taskId:task.id,createdAt:task.createdAt,revisionId:attempt.revisionId,revisionHash:revision.hash,runId:attempt.runId,model:attempt.model,modelAttempts:task.attempts.length,reportedTokens:task.usedTokens??0,
+   ...(task.requirements?{requirementEvidence:structuredClone(task.requirements)}:{}),
    ...(v3?{contextId:definition.contextId,validationContractId:expectedContract,...(task.derivedFrom?{derivedFrom:task.derivedFrom,initialSqlHash:hash(task.initialSql)}:{})}:{})};persist();
   mark("RUNNING","DELIVERY_PREPARATION");
   const prepared=await mutation("delivery",`/agent/tasks/${task.id}/prepare-delivery`,{},async()=>{
@@ -275,6 +279,9 @@ function verifyCodeThroughMonitoring(definition,state,contractId=state?.contract
  if(contractId===currentLiveLifecycleContract.id&&(!uuid(state.evaluationRunId)||!Number.isSafeInteger(source.reportedTokens)||source.reportedTokens<0||source.reportedTokens>32000||
   source.contextId!==definition.contextId||source.validationContractId!==validationFamilyForContext(definition.contextId)?.id||
   state.lifecycleOutcome?.validationContractId!==source.validationContractId||!savedDerivationValid(definition,state)))return false;
+ if(source.requirementEvidence!==undefined&&(source.requirementEvidence.status!=='MODEL_PROPOSED'||source.requirementEvidence.attempt!==source.modelAttempts||
+  !verifiedSqlRequirementReport(source.requirementEvidence,{id:source.taskId,contextId:definition.contextId,message:definition.request,revisionId:source.revisionId,
+    attempts:[{attempt:source.modelAttempts,model:source.model,revisionId:source.revisionId}]},{revisionHash:source.revisionHash})))return false;
  const liveDefinition={caseId:definition.id,contextId:definition.contextId,category:definition.category,requirement:definition.request,
   original:{agentTaskId:source.taskId,revisionId:source.revisionId,runId:source.runId,attemptCount:source.modelAttempts},code:{sqlHash:source.revisionHash}};
  return inspectLifecycleOutcome(liveDefinition,state.lifecycleOutcome,{modelEvidenceMode:"LIVE_NEW_TASK"}).passed;
