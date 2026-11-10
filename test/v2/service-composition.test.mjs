@@ -20,3 +20,9 @@ test('explicit stale versions and duplicate DAPI selection cannot silently becom
   const draft={...full,currentVersion:{id:'draft-v2',fields:['available_cash']}};
   assert.equal(compositionChoices([draft,services[1]],base).holdings.publishedVersion.id,'full-v1');
 });
+
+test('distribution composition choices preserve contract, release batch and immutable snapshot while legacy choices stay separate',()=>{
+ const item=(id,run,hash,fields)=>({...dapi(id,id+'-v1',run,fields),publishedVersion:{id:id+'-v1',sourceReleaseRunId:run,snapshotHash:hash,outputContractId:'distribution-contract',fields}});
+ const services=[item('values','run-a','hash-a',['holding_market_value']),item('ratio','run-a','hash-a',['market_value_ratio']),item('other-batch','run-b','hash-b',['market_value_ratio']),dapi('legacy','v-legacy','run-a',['available_cash'])];
+ const c=compositionChoices(services,{...base,privateCloud:false,outputContractId:'distribution-contract'});assert.equal(c.holdings.id,'values');assert.deepEqual(c.cashOptions.map(s=>s.id),['ratio']);assert.equal(c.cash.id,'ratio');assert.equal(compositionChoices(services,{...base,privateCloud:false}).holdings,undefined);
+});

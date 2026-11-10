@@ -181,6 +181,7 @@ test('old source reads cannot replace another binding or a newer same-source ref
 
 const compile=name=>{
   let text=ts.transpileModule(readFileSync(`web/src/${name}.tsx`,'utf8'),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+  text=text.replaceAll('from "../../src/v2/output-contract-metadata.mjs"',`from ${JSON.stringify(new URL('../../src/v2/output-contract-metadata.mjs',import.meta.url).href)}`);
   for(const pkg of ['react','react/jsx-runtime','lucide-react'])text=text.replaceAll(`from "${pkg}"`,`from ${JSON.stringify(import.meta.resolve(pkg))}`).replaceAll(`from '${pkg}'`,`from ${JSON.stringify(import.meta.resolve(pkg))}`);
   for(const helper of ['service-composition','service-consumption-scope','service-source-binding','service-plan-source','private-service-plan'])text=text.replaceAll(`from "./${helper}"`,`from ${JSON.stringify(new URL(`../../web/src/${helper}.ts`,import.meta.url).href)}`).replaceAll(`from './${helper}'`,`from ${JSON.stringify(new URL(`../../web/src/${helper}.ts`,import.meta.url).href)}`);
   if(name==='DataServicesWorkbench')text=text.replaceAll('from "./EvidenceDownload"',`from ${JSON.stringify(compile('EvidenceDownload'))}`);

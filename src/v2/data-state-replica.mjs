@@ -68,6 +68,7 @@ const specs = {
     key: ["id"],
     order: "id",
   },
+  serviceDistributions: {store:'businessStore',table:'service_distribution_snapshots',columns:['snapshot_id','output_contract_id','metadata_hash','rows_json'],key:['snapshot_id'],order:'snapshot_id'},
   customerAssets: {
     store: "businessStore",
     table: "customer_assets",
@@ -163,7 +164,7 @@ export function validateDataState(payload, project) {
   )
     throw fail("云端业务状态快照格式不合法");
   for (const [name, spec] of Object.entries(specs))
-    validateRows(name, payload.tables[name], spec);
+    validateRows(name, name==='serviceDistributions'?(payload.tables[name]??[]):payload.tables[name], spec);
   const snapshotIds = new Set(
     payload.tables.serviceSnapshots.map((row) => row.id),
   );
@@ -183,6 +184,7 @@ export function validateDataState(payload, project) {
       throw fail("云端业务状态包含损坏的 JSON 数据");
     }
   }
+  for(const row of payload.tables.serviceDistributions??[]){if(!snapshotIds.has(row.snapshot_id))throw fail('分布数据引用不存在的快照');try{if(!Array.isArray(JSON.parse(row.rows_json)))throw Error('not rows');}catch{throw fail('分布快照包含损坏JSON');}}
   for (const row of payload.tables.reportSnapshots) {
     try {
       const rows = JSON.parse(row.rows_json);
@@ -205,6 +207,7 @@ export function snapshotDataStores(stores, project) {
 }
 
 const deleteOrder = [
+  "serviceDistributions",
   "customerAssets",
   "serviceSnapshots",
   "streamCheckpoints",
@@ -235,7 +238,7 @@ export function replaceDataStores(stores, payload, project) {
           insert = db.prepare(
             `INSERT INTO ${spec.table} (${spec.columns.join(",")}) VALUES (${placeholders})`,
           );
-        for (const row of payload.tables[name])
+        for (const row of payload.tables[name]??[])
           insert.run(...spec.columns.map((column) => row[column]));
       }
       db.exec("COMMIT");
