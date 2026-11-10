@@ -21,6 +21,7 @@ const evidenceUrl = moduleUrl(compile(readFileSync(new URL("../../web/src/Eviden
 let privateStudio=compile(readFileSync(new URL('../../web/src/PrivateServiceAgentStudio.tsx',import.meta.url),'utf8'));
 for(const name of ['service-plan-source','private-service-plan'])privateStudio=privateStudio.replaceAll(`from './${name}'`,`from ${JSON.stringify(new URL(`../../web/src/${name}.ts`,import.meta.url).href)}`).replaceAll(`from "./${name}"`,`from ${JSON.stringify(new URL(`../../web/src/${name}.ts`,import.meta.url).href)}`);
 let compiled = compile(workbenchSource).replaceAll('from "./EvidenceDownload"', `from ${JSON.stringify(evidenceUrl)}`).replaceAll('from "./PrivateServiceAgentStudio"',`from ${JSON.stringify(moduleUrl(privateStudio))}`).replaceAll("from './PrivateServiceAgentStudio'",`from ${JSON.stringify(moduleUrl(privateStudio))}`);
+compiled=compiled.replaceAll('from "../../src/v2/output-contract-metadata.mjs"',`from ${JSON.stringify(new URL('../../src/v2/output-contract-metadata.mjs',import.meta.url).href)}`);
 for (const name of ["service-composition", "service-consumption-scope", "service-source-binding", "service-plan-source"])
   compiled = compiled.replaceAll(`from "./${name}"`, `from ${JSON.stringify(new URL(`../../web/src/${name}.ts`, import.meta.url).href)}`);
 const { DataServicesWorkbench } = await import(moduleUrl(compiled));
@@ -35,7 +36,7 @@ test("free DAPI field templates do not describe a scoped result as the customer'
   // The form is only mounted after catalog readback. Preserve its wording
   // contract here; the actual ready form is also checked in the browser.
   const form = workbenchSource.slice(workbenchSource.indexOf('className="service-create-panel"'), workbenchSource.indexOf('className="service-detail-head"'));
-  assert.match(form, /<option value="cash">现金与口径合计<\/option>/);
+  assert.match(form, /<option value="cash">\{sourceContract\?"市值占比（六位小数）":"现金与口径合计"\}<\/option>/);
   assert.match(form, /<option value="full">全部结果字段<\/option>/);
   assert.match(workbenchSource, /结果字段含义继承所选发布口径，不当然等于客户全资产/);
   assert.match(workbenchSource, /选择全部字段不会补入原口径之外的资产/);
@@ -44,9 +45,9 @@ test("free DAPI field templates do not describe a scoped result as the customer'
 
 test("new-version template keeps the same neutral labels and source-scope notice", () => {
   const versionEditor = workbenchSource.slice(workbenchSource.indexOf("{!consumptionScope&&showVersionEditor"), workbenchSource.indexOf("{selected.versions.map"));
-  assert.match(versionEditor, /<option value="cash">现金与口径合计<\/option>/);
+  assert.match(versionEditor, /<option value="cash">\{selectedContract\?"市值占比（六位小数）":"现金与口径合计"\}<\/option>/);
   assert.match(versionEditor, /<option value="full">全部结果字段<\/option>/);
-  assert.match(versionEditor, /selected\.serviceType==="DAPI"&&<small>\{fieldScopeNotice\}<\/small>/);
+  assert.match(versionEditor, /selected\.serviceType==="DAPI"&&<small>\{selectedContract\?.*:fieldScopeNotice\}<\/small>/);
   assert.doesNotMatch(versionEditor, /现金与总资产|完整客户资产/);
 });
 

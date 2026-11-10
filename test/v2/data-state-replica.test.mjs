@@ -178,3 +178,17 @@ test("cloud coordinator durably flushes metadata and data as one request boundar
   await restoredData.closeReplicated({ closeStores: true });
   await restoredMetadata.closeReplicated();
 });
+
+test('distribution snapshots survive replica reopening without changing legacy snapshots',async()=>{
+ const {getContext}=await import('../../src/v2/context.mjs'),{distributionMetadataForContext}=await import('../../src/v2/output-contract-metadata.mjs');
+ const backend=new MemoryDataStateBackend(),stores=makeStores(),replica=await ReplicatedDataState.open({backend,stores,project:PROJECT,autoFlush:false});
+ writeAllStoreTypes(stores);const id='distribution-snapshot',c=getContext('holdings-industry-t1');stores.businessStore.materialize(id,c.expected,new Date().toISOString(),distributionMetadataForContext(c.id).id);await replica.flush();
+ const again=makeStores(),reopened=await ReplicatedDataState.open({backend,stores:again,project:PROJECT,autoFlush:false});
+ assert.equal(again.businessStore.snapshotEvidence(id).integrityVerified,true);assert.equal(again.businessStore.queryAssets(id,{page:2,pageSize:1}).rows.length,1);assert.equal(again.businessStore.queryAssets('release-run-001').rows[0].total_assets,'1200.00');await reopened.closeReplicated({closeStores:true});await replica.closeReplicated({closeStores:true});
+});
+
+test('old v1 data-state payload without the optional distribution table retains its original hashable shape',async()=>{
+ const {emptyDataState,validateDataState,replaceDataStores}=await import('../../src/v2/data-state-replica.mjs');
+ const payload=emptyDataState(PROJECT);delete payload.tables.serviceDistributions;const before=JSON.stringify(payload);assert.equal(validateDataState(payload,PROJECT),payload);assert.equal(JSON.stringify(payload),before);
+ const stores=makeStores();try{replaceDataStores(stores,payload,PROJECT);assert.equal(stores.businessStore.db.prepare('SELECT COUNT(*) AS n FROM service_distribution_snapshots').get().n,0);}finally{for(const s of Object.values(stores))s.close();}
+});

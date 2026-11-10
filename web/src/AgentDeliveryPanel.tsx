@@ -90,7 +90,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   };
   const readConsumption=async(value=workflow)=>{
     const id=taskId,digest=value?.package?.digest,sequence=++consumptionEpoch.current,binding=serviceHandoff,key=serviceSourceKey(binding);
-    if(!binding||digest!==binding.packageDigest||!["PRIVATE_CLOUD_TEST","LOCAL_TEST_RELEASE"].includes(value?.publication.scope??""))return;
+    if(distributionMetadataForContext(contextId)||!binding||digest!==binding.packageDigest||!["PRIVATE_CLOUD_TEST","LOCAL_TEST_RELEASE"].includes(value?.publication.scope??""))return;
     setConsumptionRead("LOADING");setConsumptionError("");
     try{
       const result=checkedAgentConsumption(await api<unknown>(serviceEvidencePath(binding)),binding,batches);
@@ -276,7 +276,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         </>}
       </div>
       {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!dirty&&!working&&!handoffBlocked&&!publicationTarget}/></Suspense>}
-      {distributionMetadataForContext(contextId)?<div id="agent-service-handoff" className="agent-publication-card"><h3>分布结果消费</h3><p>发布与批次证据保留。DAPI/XAPI的分组粒度与字段投影尚未适配，不会回退到旧五列客户资产接口。</p></div>:
+      {distributionMetadataForContext(contextId)?<div id="agent-service-handoff" className="agent-publication-card"><h3>分布结果 → DAPI / XAPI</h3><p>选择同一真实发布批次，保留客户、交易日与分类。DAPI按明细行分页，XAPI返回完整分类数组；上游模型归因保留，暂不计完整自主E2E。</p>{onOpenServices&&<button className="button" disabled={!serviceHandoff||dirty||working||handoffBlocked} onClick={()=>{if(serviceHandoff&&!dirty&&!working&&!handoffBlocked)onOpenServices(serviceHandoff);}}>继续此任务的接口交付</button>}<small>仅本机已核验结果；服务授权和调用日志在接口工作台查看。</small></div>:
       <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务、交付包和发布版本的接口开发、测试与授权。选择实际成功发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
         {manual&&<p role="status">人工发布结果消费 · 保留开发历史及人工辅助归因，不计为 Agent 自主完成。</p>}
         {!serviceHandoff&&<p role="status">请先核对当前包的确切发布记录；未确认来源时不跳转到全项目或原 Agent 的其他结果。</p>}

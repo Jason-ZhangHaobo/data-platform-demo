@@ -1,3 +1,4 @@
+import {certifiedDistributionSource,distributionServiceSources} from './distribution-service-source.mjs';
 import {assertDistributionConsent,assertDistributionRelease,sameLocalPublicationLane,sameDistributionConsent,assertDistributionRollback,activateDistributionRollback,distributionRequestSignature} from './distribution-publication.mjs';
 import { createServer } from "node:http";
 import {resolveManualContinuation} from './manual-sql-continuation.mjs';
@@ -942,6 +943,7 @@ export function createV2Server(options = {}) {
     businessStore,
     project: PROJECT,
     releaseRunFor: (id) => store.get("release_run", id, PROJECT),
+    distributionSourceFor: run=>{const proof=certifiedDistributionSource({store,project:PROJECT,run});if(proof&&!local)throw fail(422,"分布消费仅本机已核验来源");return proof;},
     now: options.now,
     executeDapi: options.dataServiceExecutor,
   });
@@ -4260,7 +4262,7 @@ export function createV2Server(options = {}) {
           if (!agent) return json(res,200,[]);
           requireDurableAgentOwner(agent,req);
         }
-        return json(res,200,localServiceSources({store,project:PROJECT,selection}));
+        return json(res,200,[...localServiceSources({store,project:PROJECT,selection}),...distributionServiceSources({store,project:PROJECT,selection})]);
       }
       if (path === "/api/v2/data-services/task-evidence" && method === "GET") {
         if (!local) throw fail(403, "本机消费证据仅在本机开发环境可读");

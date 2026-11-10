@@ -1,3 +1,6 @@
+import {distributionMetadataById} from './output-contract-metadata.mjs';
+import {distributionFields,distributionComposition,distributionResponseSchema,combineDistributionResults} from './distribution-services.mjs';
+import {initDistributionStore,distributionDescriptor,materializeDistribution,distributionSnapshotEvidence,queryDistribution} from './distribution-query-store.mjs';
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -26,7 +29,7 @@ export function serviceVersionConfigValid(version) {
     ['sourceReleaseRunId','sourceReleaseId','sourceEngine','sourceEngineVersion','sourcePackageDigest','scope','snapshotId','snapshotHash','fields','timeoutMs','rateLimitPerMinute','parameterSchema','queryTemplate']:
     ['steps','scope','joinKey','timeoutMs','rateLimitPerMinute','parameterSchema'];
   const config={serviceType:version.serviceType};
-  for(const key of keys)if(Object.hasOwn(version,key))config[key]=version[key];
+  for(const key of [...keys,"outputContractId","sourceEvidence","composition","groupKeys","joinKeys"])if(Object.hasOwn(version,key))config[key]=version[key];
   try{return serviceHash(config)===version.configHash;}catch{return false;}
 }
 const text = (value, name, min = 1, max = 100) => {
@@ -140,6 +143,7 @@ export class BusinessQueryStore {
     this.db.exec(
       "PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS service_snapshots(id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, row_count INTEGER NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS customer_assets(snapshot_id TEXT NOT NULL, client_id TEXT NOT NULL, holding_market_value TEXT NOT NULL, available_cash TEXT NOT NULL, total_assets TEXT NOT NULL, security_count INTEGER NOT NULL, PRIMARY KEY(snapshot_id,client_id), FOREIGN KEY(snapshot_id) REFERENCES service_snapshots(id)); CREATE INDEX IF NOT EXISTS customer_assets_snapshot ON customer_assets(snapshot_id,client_id);",
     );
+    initDistributionStore(this.db);
     this.mutationListener = undefined;
   }
 
@@ -147,7 +151,8 @@ export class BusinessQueryStore {
     this.mutationListener = listener;
   }
 
-  materialize(snapshotId, rows, now = new Date().toISOString()) {
+  materialize(snapshotId, rows, now = new Date().toISOString(),outputContractId) {
+    if(outputContractId)return materializeDistribution(this,text(snapshotId,"快照编号",3,120),rows,now,outputContractId,serviceHash);
     const id = text(snapshotId, "快照编号", 3, 120);
     const normalized = normalizedServiceSourceRows(rows);
     const contentHash = serviceHash(normalized),
@@ -190,7 +195,9 @@ export class BusinessQueryStore {
     return { id, contentHash, rowCount: normalized.length, replayed: false };
   }
 
-  queryAssets(snapshotId, input = {}, fields = assetFields) {
+  queryAssets(snapshotId, input = {}, fields) {
+    const descriptor=distributionDescriptor(this.db,snapshotId);
+    if(descriptor)return queryDistribution(this,text(snapshotId,"快照编号",3,120),normalizeQuery(input),fields,descriptor);
     const id = text(snapshotId, "快照编号", 3, 120),
       query = normalizeQuery(input),
       projection = normalizeFields(fields),
@@ -229,12 +236,14 @@ export class BusinessQueryStore {
 
   snapshot(id) {
     const value=this.db.prepare("SELECT id,content_hash,row_count FROM service_snapshots WHERE id=?").get(id);
-    return value ? {id:value.id,contentHash:value.content_hash,rowCount:value.row_count} : undefined;
+    const d=value?distributionDescriptor(this.db,id):undefined;
+    return value ? {id:value.id,contentHash:value.content_hash,rowCount:value.row_count,...(d?{outputContractId:d.output_contract_id}:{})} : undefined;
   }
 
   snapshotEvidence(id) {
     const snapshot = this.snapshot(id);
     if (!snapshot) return undefined;
+    const d=distributionDescriptor(this.db,id);if(d)return distributionSnapshotEvidence(this,snapshot,d,serviceHash);
     // The materialization contract permits at most 1,000 rows. Reading one
     // extra detects corrupt restores without allowing an unbounded scan.
     const rows = this.db.prepare(
@@ -260,6 +269,7 @@ export class DataServiceManager {
     releaseRunFor,
     scope = "LOCAL_TEST_ONLY",
     verifySource,
+    distributionSourceFor,
     now = () => Date.now(),
     executeDapi,
     contractGate,
@@ -271,13 +281,14 @@ export class DataServiceManager {
     if (!["LOCAL_TEST_ONLY", "PRIVATE_CLOUD_TEST"].includes(scope)) throw new Error("Unsupported service scope");
     this.scope = scope;
     this.verifySource = verifySource;
+    this.distributionSourceFor=distributionSourceFor;
     this.contractGate = contractGate;
     this.now = now;
     this.executeDapi =
       executeDapi ??
       ((version, input) => {
         const snapshot = this.businessStore.snapshotEvidence(version.snapshotId);
-        if(!snapshot?.integrityVerified || snapshot.contentHash!==version.snapshotHash)
+        if(!snapshot?.integrityVerified || snapshot.contentHash!==version.snapshotHash||snapshot.outputContractId!==version.outputContractId)
           throw fail(409,"服务结果快照缺失或摘要不一致，不能以空结果冒充恢复成功","SOURCE_SNAPSHOT_UNAVAILABLE");
         return this.businessStore.queryAssets(
           version.snapshotId,
@@ -314,7 +325,6 @@ export class DataServiceManager {
   createDapi(input) {
     const name = text(input.name, "DAPI名称", 2, 80),
       path = slug(input.slug),
-      fields = normalizeFields(input.fields),
       timeoutMs = integer(input.timeoutMs, "超时时间", 1500, 100, 5000),
       rateLimitPerMinute = integer(
         input.rateLimitPerMinute,
@@ -328,10 +338,12 @@ export class DataServiceManager {
       text(input.sourceReleaseRunId, "源发布批次", 3, 80),
     );
     this.#assertReleaseRun(releaseRun);
+    const distribution=this.#distribution(releaseRun),fields=distribution?distributionFields(distribution.outputContractId,input.fields):normalizeFields(input.fields);
     const snapshot = this.businessStore.materialize(
         `release-run:${releaseRun.id}`,
         releaseRun.rows,
         new Date(this.now()).toISOString(),
+        distribution?.outputContractId,
       ),
       service = this.store.create("data_service", this.project, {
         serviceType: "DAPI",
@@ -348,6 +360,7 @@ export class DataServiceManager {
         scope: this.scope,
         snapshotId: snapshot.id,
         snapshotHash: snapshot.contentHash,
+        ...(distribution?{outputContractId:distribution.outputContractId,sourceEvidence:distribution.sourceEvidence}:{}),
         fields,
         timeoutMs,
         rateLimitPerMinute,
@@ -357,7 +370,7 @@ export class DataServiceManager {
           page_size: { type: "integer", default: 20, maximum: 100 },
         },
         queryTemplate:
-          "SELECT <fields> FROM customer_assets WHERE snapshot_id = :snapshot_id AND (:client_id IS NULL OR client_id = :client_id) ORDER BY client_id LIMIT :limit OFFSET :offset",
+          distribution?"SELECT <registered fields> FROM immutable_distribution_snapshot WHERE client_id = :client_id ORDER BY <client_id,trade_date,dimension> LIMIT :limit OFFSET :offset":"SELECT <fields> FROM customer_assets WHERE snapshot_id = :snapshot_id AND (:client_id IS NULL OR client_id = :client_id) ORDER BY client_id LIMIT :limit OFFSET :offset",
       });
     return this.store.update("data_service", service.id, this.project, {
       currentVersionId: version.id,
@@ -370,12 +383,14 @@ export class DataServiceManager {
         text(input.sourceReleaseRunId, "源发布批次", 3, 80),
       );
     this.#assertReleaseRun(releaseRun);
+    const distribution=this.#distribution(releaseRun),prior=this.#version(service.currentVersionId);
+    if(prior.outputContractId!==distribution?.outputContractId)throw fail(409,'服务版本不能隐式切换输出粒度','OUTPUT_GRAIN_CHANGED');
     const snapshot = this.businessStore.materialize(
         `release-run:${releaseRun.id}`,
         releaseRun.rows,
         new Date(this.now()).toISOString(),
+        distribution?.outputContractId,
       ),
-      prior = this.#version(service.currentVersionId),
       version = this.#createVersion(service, {
         sourceReleaseRunId: releaseRun.id,
         sourceReleaseId: releaseRun.releaseId,
@@ -385,7 +400,8 @@ export class DataServiceManager {
         scope: this.scope,
         snapshotId: snapshot.id,
         snapshotHash: snapshot.contentHash,
-        fields: normalizeFields(input.fields ?? prior.fields),
+        ...(distribution?{outputContractId:distribution.outputContractId,sourceEvidence:distribution.sourceEvidence}:{}),
+        fields: distribution?distributionFields(distribution.outputContractId,input.fields??prior.fields):normalizeFields(input.fields ?? prior.fields),
         timeoutMs: integer(
           input.timeoutMs,
           "超时时间",
@@ -423,6 +439,7 @@ export class DataServiceManager {
       );
     this.#uniqueSlug(path);
     const steps = this.#steps(input.steps),
+      composition=distributionComposition(steps.map(s=>this.#version(s.dapiVersionId)),steps),
       service = this.store.create("data_service", this.project, {
         serviceType: "XAPI",
         name,
@@ -431,6 +448,7 @@ export class DataServiceManager {
       }),
       version = this.#createVersion(service, {
         steps,
+        ...(composition??{}),
         scope: this.scope,
         joinKey: "client_id",
         timeoutMs,
@@ -449,8 +467,11 @@ export class DataServiceManager {
   createXapiVersion(serviceId, input) {
     const service = this.#service(serviceId, "XAPI"),
       prior = this.#version(service.currentVersionId),
-      version = this.#createVersion(service, {
-        steps: input.steps === undefined ? prior.steps : this.#steps(input.steps),
+      steps=input.steps===undefined?prior.steps:this.#steps(input.steps),
+      composition=distributionComposition(steps.map(s=>this.#version(s.dapiVersionId)),steps),
+      version = (()=>{if(prior.outputContractId!==composition?.outputContractId)throw fail(409,'组合版本不能隐式切换粒度','OUTPUT_GRAIN_CHANGED');return this.#createVersion(service, {
+        steps,
+        ...(composition??{}),
         scope: this.scope,
         joinKey: "client_id",
         timeoutMs: integer(
@@ -468,7 +489,7 @@ export class DataServiceManager {
           600,
         ),
         parameterSchema: prior.parameterSchema,
-      });
+      });})();
     this.store.update("data_service", service.id, this.project, {
       currentVersionId: version.id,
       status: service.publishedVersionId ? "PUBLISHED" : "DRAFT",
@@ -514,7 +535,7 @@ export class DataServiceManager {
       return {
         ...common,
         sourceReleaseRunId,
-        fields: normalizeFields(value.fields),
+        fields: this.#distribution(releaseRun)?distributionFields(this.#distribution(releaseRun).outputContractId,value.fields):normalizeFields(value.fields),
       };
     }
     return { ...common, steps: this.#steps(value.steps) };
@@ -743,7 +764,7 @@ export class DataServiceManager {
               { name: "page_size", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
             ],
             responses: {
-              200: { description: "查询成功" },
+              200: { description: "查询成功",...(version.outputContractId?{content:{"application/json":{schema:distributionResponseSchema(version,(version.steps??[]).map(s=>this.#version(s.dapiVersionId)))}}}:{}) },
               401: { description: "应用令牌无效" },
               403: { description: "应用未获服务授权" },
               429: { description: "超过版本限流" },
@@ -848,6 +869,8 @@ export class DataServiceManager {
       throw fail(409, "服务路径已存在", "DUPLICATE_SLUG");
   }
 
+  #distribution(run){const proof=this.distributionSourceFor?.(run);if(proof&&this.scope!=="LOCAL_TEST_ONLY")throw fail(422,"分布查询尚未开放私有云适配","DISTRIBUTION_SCOPE_DISABLED");return proof;}
+
   #assertReleaseRun(run) {
     if (this.scope === "PRIVATE_CLOUD_TEST") {
       if (typeof this.verifySource !== "function") throw fail(409,"缺少私有来源核验器","INVALID_RELEASE_PROVENANCE");
@@ -946,13 +969,30 @@ export class DataServiceManager {
       ]);
       if (!result || !Array.isArray(result.rows) || !result.pagination)
         throw fail(500, "数据服务执行结果格式不合法", "INVALID_RESULT");
-      return { data: result.rows, pagination: result.pagination };
+      const c=distributionMetadataById(version.outputContractId);
+      return { data: result.rows, pagination: result.pagination,...(c?{resultContract:{id:c.id,grain:version.serviceType==='DAPI'?c.grain:'CLIENT_TRADE_DATE_WITH_DISTRIBUTION_ARRAY',keyFields:version.serviceType==='DAPI'?c.keyFields:['client_id','trade_date'],paginationUnit:version.serviceType==='DAPI'?'DISTRIBUTION_ROWS':'CLIENT_DATE_GROUPS'},sourceEvidence:version.sourceEvidence}:{}) };
     } finally {
       clearTimeout(timer);
     }
   }
 
   async #executeXapi(version, query) {
+    const currentComposition=distributionComposition(version.steps.map(s=>this.#version(s.dapiVersionId)),version.steps);
+    if(currentComposition?.outputContractId!==version.outputContractId||currentComposition?.composition!==version.composition)throw fail(409,'组合粒度与子接口版本不一致','OUTPUT_GRAIN_CHANGED');
+    if(version.outputContractId){
+      const results=[];
+      for(const step of version.steps){
+        const child=this.#version(step.dapiVersionId),rows=[];let total;
+        for(let page=1;page<=10;page++){
+          const result=await this.executeDapi(child,{clientId:query.clientId,page,pageSize:100});
+          if(!result?.pagination||!Number.isSafeInteger(result.pagination.total)||result.pagination.total<0||result.pagination.total>1000||total!==undefined&&total!==result.pagination.total)throw fail(409,'分布子结果分页不一致','INVALID_RESULT');
+          total=result.pagination.total;rows.push(...result.rows);
+          if(page*100>=total)break;
+        }
+        if(rows.length!==total)throw fail(409,'分布子结果不完整','INVALID_RESULT');results.push({alias:step.alias,rows});
+      }
+      return combineDistributionResults(results,version.outputContractId,query);
+    }
     const results = await Promise.all(
         version.steps.map(async (step) => {
           const child = this.#version(step.dapiVersionId),
