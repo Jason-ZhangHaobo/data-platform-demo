@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import {distributionReportTemplate} from '../../src/v2/distribution-report-contract.mjs';
+const DistributionReportResults=lazy(async()=>({default:(await import('./DistributionReportResults')).DistributionReportResults}));
+import { lazy,Suspense,useEffect, useMemo, useState } from "react";
 import { securitiesReportTemplate } from "./report-template";
 import {
   AlertTriangle,
@@ -35,6 +37,7 @@ type Snapshot = {
   actualMaterialization: boolean;
 };
 type Dataset = {
+  outputContractId?:string;
   id: string;
   name: string;
   code: string;
@@ -59,7 +62,7 @@ type WidgetResult = {
 type ReportRun = {
   id: string;
   status: string;
-  widgets: WidgetResult[];
+  widgets: WidgetResult[];outputContractId?:string;sourceEvidence?:{modelClassification?:string;engineClassification?:string};
   resultHash: string;
   datasetContentHash: string;
   durationMs: number;
@@ -235,8 +238,9 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
       () => api(`/reports/datasets/${id}/refresh`, {}),
       "实际资产行已物化为独立不可变快照",
     );
-  const reportTemplate = securitiesReportTemplate(selectedDataset?.fields),
-    widgetsFor = (dataset?: Dataset) => securitiesReportTemplate(dataset?.fields).widgets;
+  const templateFor=(dataset?:Dataset)=>distributionReportTemplate(dataset?.outputContractId)??securitiesReportTemplate(dataset?.fields);
+  const reportTemplate = templateFor(selectedDataset),
+    widgetsFor = (dataset?: Dataset) => templateFor(dataset).widgets;
   const createReport = () =>
     selectedDataset &&
     action(
@@ -339,7 +343,7 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
           {selectedReport ? <>
             <header><div><span className="eyebrow">{selectedReport.code} · SNAPSHOT PINNED</span><h3>{selectedReport.name}</h3><p>{selectedReport.currentVersion.description}</p></div><div><button className="button primary" onClick={runReport} disabled={!canWrite || !!busy}>{busy === "run" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际运行</button><button className="button" onClick={download} disabled={!latestRun || !!busy}><Download size={14} />导出聚合CSV</button></div></header>
             <div className="reports-proof-v2"><div><span>状态</span><strong>{labels[selectedReport.status] ?? selectedReport.status}</strong></div><div><span>快照</span><code>{selectedReport.currentVersion.datasetSnapshotId.slice(0, 8)}</code></div><div><span>报表版本</span><strong>V{selectedReport.currentVersion.versionNumber}</strong></div><div><span>运行</span><strong>{selectedReport.runs.length}</strong></div><div><span>公网</span><strong>未部署</strong></div></div>
-            {latestRun ? <div className="report-widgets-v2">{latestRun.widgets.map((widget) => <ReportWidget key={widget.id} widget={widget} />)}</div> : <div className="reports-empty-canvas-v2"><Sparkles size={28} /><strong>草稿已固定快照，尚未计算</strong><p>点击“实际运行”后才生成KPI与分布，不使用预设结果。</p></div>}
+            {latestRun ? <>{latestRun.outputContractId?<Suspense fallback={<p>正在读取分布报表…</p>}><DistributionReportResults key={latestRun.id} contractId={latestRun.outputContractId} widgets={latestRun.widgets} sourceEvidence={latestRun.sourceEvidence}/></Suspense>:<div className="report-widgets-v2">{latestRun.widgets.map((widget) => <ReportWidget key={widget.id} widget={widget} />)}</div>}</> : <div className="reports-empty-canvas-v2"><Sparkles size={28} /><strong>草稿已固定快照，尚未计算</strong><p>点击“实际运行”后才生成KPI与分布，不使用预设结果。</p></div>}
             {latestRun && <footer className="reports-run-proof-v2"><CheckCircle2 size={14} />运行 {latestRun.id.slice(0, 8)} · 结果摘要 {latestRun.resultHash.slice(0, 12)} · {latestRun.durationMs}ms · public=false</footer>}
           </> : <div className="reports-empty-canvas-v2"><BarChart3 size={28} /><strong>创建第一张聚合报表</strong><p>数据集必须先完成实际快照。</p></div>}
         </section>
@@ -371,5 +375,5 @@ export function ReportWidget({ widget }: { widget: WidgetResult }) {
       state.value = end;
       return state;
     }, { value: 0, colors: [] });
-  return <article className={`report-chart-v2 ${widget.type.toLowerCase()}`}><header><div>{widget.type === "PIE" ? <PieChart size={16} /> : <BarChart3 size={16} />}<strong>{widget.title}</strong></div><small>{widget.aggregation}({widget.field}) BY {widget.dimension}</small></header>{widget.type === "PIE" ? <div className="report-pie-body-v2"><div className="report-donut-v2" style={{ background: `conic-gradient(${stops.colors.join(",")})` }}><span>{series.length}<small>分类</small></span></div><div className="report-legend-v2">{series.map((item, index) => <div key={item.group}><i style={{ background: colors[index % colors.length] }} /><span>{item.group}</span><strong>{item.value}</strong></div>)}</div></div> : <div className="report-bars-v2">{series.map((item, index) => <div key={item.group}><span>{item.group}</span><div><i style={{ width: `${(numberValue(item.value) / max) * 100}%`, background: colors[index % colors.length] }} /></div><strong>{item.value}</strong></div>)}</div>}</article>;
+  return <article className={`report-chart-v2 ${widget.type.toLowerCase()}`}><header><div>{widget.type === "PIE" ? <PieChart size={16} /> : <BarChart3 size={16} />}<strong>{widget.title}</strong></div><small>{widget.aggregation==="VALUE"?"同一客户、同一交易日":`${widget.aggregation}(${widget.field}) BY ${widget.dimension}`}</small></header>{widget.type === "PIE" ? <div className="report-pie-body-v2"><div className="report-donut-v2" style={{ background: `conic-gradient(${stops.colors.join(",")})` }}><span>{series.length}<small>分类</small></span></div><div className="report-legend-v2">{series.map((item, index) => <div key={item.group}><i style={{ background: colors[index % colors.length] }} /><span>{item.group}</span><strong>{widget.field==="market_value_ratio"?`${(Number(item.value)*100).toFixed(4)}%`:item.value}</strong></div>)}</div></div> : <div className="report-bars-v2">{series.map((item, index) => <div key={item.group}><span>{item.group}</span><div><i style={{ width: `${(numberValue(item.value) / max) * 100}%`, background: colors[index % colors.length] }} /></div><strong>{widget.field==="market_value_ratio"?`${(Number(item.value)*100).toFixed(4)}%`:item.value}</strong></div>)}</div>}</article>;
 }

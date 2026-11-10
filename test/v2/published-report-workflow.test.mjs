@@ -45,3 +45,9 @@ test('lost checkpoint after a committed stage resumes original records without n
  const requestId=randomUUID(),partial=w.submit({name:'虚构已运行回执恢复',source:f.source},actor,requestId);assert.equal(partial.status,'PARTIAL');assert.equal(count(f.store,'report_run'),1);
  const done=w.advance(partial.id,actor);assert.equal(done.status,'SUCCEEDED');assert.equal(count(f.store,'report_run'),1);assert.equal(w.lookup(requestId,actor).reportRunId,done.reportRunId);
 });
+
+test('new globally registered distribution metrics do not create partial artifacts from a legacy five-field source',t=>{
+ const f=setup(t,{contextId:'stock-cash-t1'}),before=['report_dataset','report_snapshot','report','report_run','published_report_creation'].map(k=>count(f.store,k));
+ assert.throws(()=>f.workflow.submit({name:'不支持的行业指标',source:f.source,metricIds:['industry_distribution']},actor,randomUUID()),e=>e.status===422&&e.code==='INVALID_PUBLISHED_REPORT_METRIC');
+ assert.deepEqual(['report_dataset','report_snapshot','report','report_run','published_report_creation'].map(k=>count(f.store,k)),before);
+});
