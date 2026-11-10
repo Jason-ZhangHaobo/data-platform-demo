@@ -58,8 +58,8 @@ def preflight_context(context):
         if not isinstance(row[ix["position_id"]], str) or not row[ix["position_id"]].strip():
             raise ValueError("分布输入缺少持仓编号")
         amount = number("0.00" if row[ix["market_value"]] is None else row[ix["market_value"]], {"scale": 2})
-        if amount is None:
-            raise ValueError("分布仅支持非负、两位小数的持仓市值")
+        if amount is None or amount >= Decimal("10000000000000000"):
+            raise ValueError("分布输入须为非负且符合DECIMAL(18,2)的持仓市值")
         key = tuple(row[ix[k]] for k in ("client_id", "trade_date", "position_id"))
         fingerprint = (row[ix["security_code"]], amount, *[(row[ix[d]] or "").strip() or "未分类" for d in ("asset_class", "industry")])
         if key in seen and seen[key] != fingerprint:

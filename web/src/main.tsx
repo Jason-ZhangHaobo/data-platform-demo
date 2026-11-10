@@ -958,7 +958,7 @@ function App() {
                 <button
                   className="icon-button"
                   disabled={privatePreview}
-                  aria-label={agentOpen ? "收起 Agent" : "展开 Agent"}
+                  aria-label={context?.outputContract ? (agentOpen?"收起口径说明":"展开口径说明") : (agentOpen ? "收起 Agent" : "展开 Agent")}
                   onClick={() => setAgentOpen(!agentOpen)}
                 >
                   {agentOpen ? (
@@ -1335,7 +1335,7 @@ function App() {
                   </div>
                 </section>
               </section>
-              {contexts.find(c=>c.id===contextId)?.capabilities?.agentDevelopment===false && <aside className="agent-panel distribution-scope-card"><header><Database size={18}/><strong>持仓分布口径</strong></header><div className="distribution-scope-content"><small className="distribution-scope-status">本机 · 经典 SQL</small><h2>先确认粒度，再看占比</h2><p>每行对应一位客户、一个交易日、一个分类。同一持仓编号去重，证券数量按代码去重。</p><div className="distribution-grain"><span>客户</span><span>交易日</span><span>{context?.outputContract?.id.includes("industry")?"行业标签":"资产类别"}</span></div><div className="distribution-formula"><strong>分类持仓市值 ÷ 客户持仓总市值</strong><small>占比为 0—1 · 不含现金 · 不作穿透</small></div><p>未分类保留，零分母记为0；仅现金客户保留“未持仓”零行。</p><div className="distribution-scope-next"><strong>尚未开放</strong><p>Agent 理解、调度交付与云端执行将在适配后开放。当前结果仅代表本机 SQL 核验。</p></div></div></aside>}
+              {agentOpen && contexts.find(c=>c.id===contextId)?.capabilities?.agentDevelopment===false && <aside className="agent-panel distribution-scope-card"><header><Database size={18}/><strong>持仓分布口径</strong></header><div className="distribution-scope-content"><small className="distribution-scope-status">本机 · 经典 SQL</small><h2>先确认粒度，再看占比</h2><p>每行对应一位客户、一个交易日、一个分类。同一持仓编号去重，证券数量按代码去重。</p><div className="distribution-grain"><span>客户</span><span>交易日</span><span>{context?.outputContract?.id.includes("industry")?"行业标签":"资产类别"}</span></div><div className="distribution-formula"><strong>分类持仓市值 ÷ 客户持仓总市值</strong><small>占比为 0—1 · 不含现金 · 不作穿透</small></div><p>未分类保留，零分母记为0；仅现金客户保留“未持仓”零行。</p><div className="distribution-scope-next"><strong>尚未开放</strong><p>Agent 理解、调度交付与云端执行将在适配后开放。当前结果仅代表本机 SQL 核验。</p></div></div></aside>}
               {agentOpen && contexts.find(c=>c.id===contextId)?.capabilities?.agentDevelopment!==false && (
                 <aside className="agent-panel">
                   <header>

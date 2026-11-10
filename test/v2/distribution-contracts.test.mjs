@@ -62,6 +62,7 @@ test('input preflight rejects conflicting position IDs and negative values, scop
  assert.match(check(conflict,[],'preflight').error,/冲突/);
  const negative=structuredClone(c);negative.tables.find(t=>t.name==='positions').rows[0][5]='-1.00';assert.equal(check(negative,[],'preflight').rejected,true);
  const outside=structuredClone(c);outside.tables.find(t=>t.name==='positions').rows.at(-1)[5]='-1.00';assert.equal(check(outside,[],'preflight').passed,true);
+ const oversized=structuredClone(c);oversized.tables.find(t=>t.name==='positions').rows[0][5]='10000000000000000.00';assert.match(check(oversized,[],'preflight').error,/DECIMAL/);
  assert.equal(check(c,[],'preflight').passed,true);
  assert.throws(()=>createDeliveryPackage({revision:{contextId:c.id}}),e=>e.code==='OUTPUT_CONTRACT_CLASSIC_ONLY');
 });
