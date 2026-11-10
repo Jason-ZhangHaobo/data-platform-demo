@@ -1,3 +1,5 @@
+import {outputContractForContext,verifyOutputRows} from './output-contracts.mjs';
+import {distributionDeliveryBinding,createDistributionTestSql,validateDistributionDelivery} from './distribution-delivery.mjs';
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { resolve, join } from "node:path";
@@ -52,7 +54,9 @@ const keysExactly = (value, keys) =>
 export const computeManifestDigest = (manifest) => sha256(canonical(manifest));
 const literal = (value) => "'" + String(value).replaceAll("'", "''") + "'";
 
-export function createTestSql(expected) {
+export function createTestSql(expected, contextId) {
+  if(contextId!==undefined&&!getContext(contextId))throw fail("测试SQL上下文未登记");
+  if(outputContractForContext(contextId))return createDistributionTestSql(expected,contextId);
   const fields = [
     "holding_market_value",
     "available_cash",
@@ -98,7 +102,8 @@ export function createDeliveryPackage({
   developmentReference,
   manualAuthor = false,
 }) {
-  if(getContext(revision?.contextId)?.outputContractId)throw Object.assign(new Error("分布契约的调度与交付尚未开放，保留SQL和验证记录"),{status:422,code:"OUTPUT_CONTRACT_CLASSIC_ONLY"});
+  const distribution=outputContractForContext(revision?.contextId);
+  if(distribution&&(run?.isolation==="FUNCTION_PROCESS"||run?.mainSqlExecuted!==true||run?.testDouble===true||!verifyOutputRows(run?.rows,getContext(revision.contextId))))throw fail("分布交付须来自本机真实Spark及独立复合键核验，尚未开放云端");
   const reference=developmentReference===undefined?undefined:checkedAssistedDevelopmentReference(developmentReference);
   const authored=revision?.source==='MANUAL'&&revision.manualProvenance?.kind==='ENGINEER_EDIT'&&revision.manualProvenance.actorId===revision.author&&revision.manualProvenance.agentIndependentE2E===false;
   if(manualAuthor&&!authored)throw Object.assign(new Error('独立手工文件必须属于原作者和保存版本'),{status:409});
@@ -107,8 +112,8 @@ export function createDeliveryPackage({
     (reference.kind==='ASSISTED_CONTINUATION'?revision.sourceAttribution.parentRunId:revision.sourceAttribution.sourceRunId)!==reference.sourceRunId))throw Object.assign(new Error('开发依据与人工辅助版本不一致'),{status:409});
   const remoteExecution = run?.isolation === "FUNCTION_PROCESS";
   const family = validationFamilyForContext(revision?.contextId);
-  if (name === undefined || (family?.id !== validationContractId && name === "客户资产 T+1"))
-    name = family?.id === validationContractId ? "客户资产 T+1" : "股票持仓＋可用现金 T+1（非客户全资产）";
+  if (name === undefined || (distribution&&["客户资产 T+1","客户资产 T+1 · Agent交付准备"].includes(name)) || (family?.id !== validationContractId && name === "客户资产 T+1"))
+    name = distribution ? distribution.name+" · T+1交付" : family?.id === validationContractId ? "客户资产 T+1" : "股票持仓＋可用现金 T+1（非客户全资产）";
   if (
     ![run?.id, run?.projectId, revision?.id, revision?.projectId].every(
       (value) =>
@@ -151,6 +156,7 @@ export function createDeliveryPackage({
   const context = getContext(revision.contextId);
   if (!context) throw fail("输入上下文不存在");
   const requirements=frozenSqlRequirements({agent,run,revision});
+  if(distribution&&revision.source==='LIVE_MODEL'&&!requirements)throw fail("分布Agent交付缺少当前版本的冻结需求依据");
   const calendar = {
     schema: "shuduo-calendar/v1",
     kind: "SYNTHETIC_DEMO",
@@ -204,13 +210,14 @@ export function createDeliveryPackage({
   };
   const files = {
     "main.sql": revision.sql,
-    "tests.sql": createTestSql(context.expected),
+    "tests.sql": createTestSql(context.expected,context.id),
     "schedule.json": encoded(schedule),
     "deployment.json": encoded(deployment),
     "calendar.json": encoded(calendar),
     "fixtures.json": encoded({
       context,
       validationContexts: family.contextIds.map(getContext),
+      ...(distribution?{outputContract:distribution}:{}),
     }),
     "validation.json": encoded({
       sourceRunId: run.id,
@@ -234,6 +241,7 @@ export function createDeliveryPackage({
       sqlHash: revision.hash,
       contextId: context.id,
       validationContractId: family.id,
+      ...(distribution?{outputContract:distributionDeliveryBinding(context.id)}:{}),
       ...(requirements?{requirement:sqlRequirementBinding(requirements)}:{}),
       ...(revision.sourceAttribution?.kind==='ENGINEER_ASSISTED'?{attribution:{kind:'ENGINEER_ASSISTED',originAgentTaskId:revision.sourceAttribution.originAgentTaskId,
         actorId:revision.sourceAttribution.actorId,agentIndependentE2E:false,...(reference?{developmentReference:reference}:{})}}:{}),
@@ -319,6 +327,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       "validationContractId",
       ...(source?.attribution === undefined ? [] : ["attribution"]),
       ...(source?.requirement === undefined ? [] : ["requirement"]),
+      ...(source?.outputContract === undefined ? [] : ["outputContract"]),
     ])
   )
     throw fail("交付清单包含未定义字段");
@@ -422,6 +431,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     !validationMatchesFamily(proof.report, family, { requireContract: true })
   )
     throw fail("源验证报告与代码或契约不一致");
+  validateDistributionDelivery({source,fixtures,testSql:bundle.files["tests.sql"],localTarget});
   validateCalendar(calendar);
   const requirements=validateFrozenSqlRequirements(proof.requirements,source.requirement,source,bundle.files['main.sql']);
   return {

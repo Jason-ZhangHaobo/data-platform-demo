@@ -86,7 +86,7 @@ export function developmentVerificationReport(task, run, revision) {
     schema: "shuduo-development-verification/v1", taskId: task.id, revisionId: revision?.id,
     revisionHash: revision?.hash, runId: run?.id, contextId: task.contextId,
     status: passed ? "PASSED" : !run || ![...terminal, "VALIDATION_FAILED"].includes(run.status) ? "PENDING" : "NEEDS_ATTENTION",
-    summary: passed ? distribution?"持仓分布的代码、真实执行、复合键与五场景核验通过；占比不含现金，调度交付尚未适配。":legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
+    summary: passed ? distribution?"持仓分布的代码、真实执行、复合键与五场景核验通过；占比不含现金，可准备本机交付文件并独立演练。":legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
     definition: context?.definition, checks, rowCount: rows.length, engine: run?.engine, engineVersion: run?.engineVersion,
     validationDetails: validationDetails(run, revision, task.contextId),
     finishedAt: run?.finishedAt, validationContractId: family?.id, validationFamily: family, completionScope: "KNOWN_SECURITIES_CONTRACT",

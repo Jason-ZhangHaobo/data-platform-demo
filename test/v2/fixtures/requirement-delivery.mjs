@@ -4,14 +4,14 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding} f
 import {syntheticSqlRequirement} from './sql-requirement.mjs';
 // All provider/Worker receipts here are synthetic, including live-shaped model
 // names needed to exercise publication guards. Never count as actual acceptance.
-export function requirementDeliverySource(store,project,{contextId='stock-cash-t1',assisted=false,message='【合成回执验收】按登记证券口径计算客户日资产'}={}){
+export function requirementDeliverySource(store,project,{contextId='stock-cash-t1',assisted=false,isolation='FUNCTION_PROCESS',message='【合成回执验收】按登记证券口径计算客户日资产'}={}){
  const actor='synthetic-owner',context=getContext(contextId),family=validationFamilyForContext(contextId),sql=referenceSqlForContext(contextId);
  let revision=store.create('revision',project,{contextId,sql,hash:sha256(sql),source:'LIVE_MODEL',author:actor});
  let agent=store.create('agent',project,{contextId,message,language:'SPARK_SQL',mode:'LIVE_MODEL',
   executionMode:'DURABLE_SQL_AGENT_V1',executionEvidenceMode:'TEST_HARNESS',submittedBy:actor,status:'SUCCEEDED',stage:'SUCCEEDED',sql,revisionId:revision.id,validationContractId:family.id,attempts:[]});
  const validation={passed:true,contractId:family.id,regressions:family.contextIds.map(contextId=>({contextId,passed:true}))};
  const run=store.create('run',project,{contextId,agentTaskId:agent.id,revisionId:revision.id,revisionHash:revision.hash,status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',
-  mainSqlExecuted:true,isolation:'FUNCTION_PROCESS',executionEvidenceMode:'TEST_HARNESS',validationContractId:family.id,validation,rows:context.expected});
+  mainSqlExecuted:true,isolation,executionEvidenceMode:'TEST_HARNESS',validationContractId:family.id,validation,rows:context.expected});
  agent=store.update('agent',agent.id,project,{runId:run.id,attempts:[{attempt:1,model:'qwen3.7-plus',status:'SUCCEEDED',revisionId:revision.id,runId:run.id}]});
  const generated={model:'qwen3.7-plus',...syntheticSqlRequirement({message:agent.message,context})};
  const requirements=bindSqlRequirementRevision(sqlRequirementReport({task:agent,message:agent.message,context,generated,attempt:1}),revision);

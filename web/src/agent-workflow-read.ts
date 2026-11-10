@@ -1,3 +1,4 @@
+import {distributionMetadataForContext} from '../../src/v2/output-contract-metadata.mjs';
 import type {ValidationDetailsReport} from './validation-details';
 import type {ServiceSourceBinding} from './service-source-binding';
 import {deliveryFileGuide} from './delivery-presentation.ts';
@@ -7,7 +8,9 @@ import {sqlRequirementReportMatches} from '../../src/v2/sql-requirement-contract
 import type {SqlRequirementReport} from '../../src/v2/sql-requirement-contract.mjs';
 
 export type Delivery = {id:string;version:number;status:string;stage:string;mode?:string;sourceKind?:string;packageId?:string;packageDigest?:string;verificationId?:string;sourceRevisionId?:string;sourceRunId?:string;error?:string};
+export type FileReview={id:string;status:"REVIEWED";packageId:string;packageDigest:string;verificationId:string;reviewedAt:string;scope:"LOCAL_FILE_REVIEW"};
 export type Workflow = {
+ fileReview?:FileReview;
  report:{developmentReference?:AssistedDevelopmentReference;taskId:string;sourceKind?:string;agentIndependentE2E?:boolean;contextId?:string;validationContractId?:string;validationDetails?:ValidationDetailsReport;status:string;summary:string;definition?:string;checks:{id:string;label:string;passed:boolean}[];revisionId?:string;revisionHash?:string;runId?:string;rowCount:number;engine?:string;engineVersion?:string;notice:string};
  delivery?:Delivery;
  package?:{id:string;digest:string;manifest:unknown;files:Record<string,string>};
@@ -81,6 +84,13 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
   let total=0;
   for(const name of names){const content=files[name],entry=entries[name];if(typeof content!=='string'||!record(entry))throw bad();const bytes=new TextEncoder().encode(content).length;total+=bytes;if(bytes>250000||entry.bytes!==bytes||entry.sha256!==await digest(content))throw bad();}
   if(total>750000||b.digest!==await digest(canonical(manifest))||source.sqlHash!==await digest(files['main.sql'] as string))throw bad();
+  const metadata=distributionMetadataForContext(r.contextId as string);
+  if(metadata){
+   const binding=source.outputContract;
+   if(!record(binding)||Object.keys(binding).length!==2||binding.id!==metadata.id||binding.metadataHash!==await digest(canonical(metadata)))throw bad();
+   let fixture;try{fixture=JSON.parse(files['fixtures.json'] as string);}catch{throw bad();}
+   if(!record(fixture)||canonical(fixture.outputContract)!==canonical(metadata))throw bad();
+  }else if(source.outputContract!==undefined)throw bad();
   const requirements=frozenRequirementProposal(b as Workflow['package'],r.taskId);
   if(requirements){
    const {digest:basisDigest,...basis}=requirements.basis;
@@ -95,6 +105,11 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    !['engine','engineVersion','error'].every(k=>optional(v[k],text))||!optional(v.mainSqlExecuted,x=>typeof x==='boolean')||!optional(v.durationMs,x=>typeof x==='number'&&Number.isFinite(x)&&x>=0)||
    v.testSqlValidation!==undefined&&(!record(v.testSqlValidation)||typeof v.testSqlValidation.passed!=='boolean')||
    v.validation!==undefined&&(!record(v.validation)||typeof v.validation.passed!=='boolean'||v.validation.regressions!==undefined&&(!Array.isArray(v.validation.regressions)||!v.validation.regressions.every(x=>record(x)&&typeof x.contextId==='string'&&typeof x.passed==='boolean'))))throw bad();
+ }
+ if(value.fileReview!==undefined){
+  const f=value.fileReview;
+  if(!distributionMetadataForContext(r.contextId as string)||!record(f)||Object.keys(f).length!==7||!id(f.id)||f.status!=='REVIEWED'||f.scope!=='LOCAL_FILE_REVIEW'||!text(f.reviewedAt)||
+   !record(b)||!record(v)||f.packageId!==b.id||f.packageDigest!==b.digest||f.verificationId!==v.id||v.status!=='SUCCEEDED')throw bad();
  }
  if(frozen&&!record(b))throw bad();
  return value as Workflow;

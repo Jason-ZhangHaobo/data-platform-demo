@@ -653,6 +653,7 @@ export function createV2Server(options = {}) {
   const isPythonDelivery = (item) =>
       item?.manifest?.format === "shuduo-python-delivery/v1",
     validateAnyDeliveryPackage = (item) => {
+      if(item?.manifest?.source?.outputContract&&!local)throw fail(422,"分布交付当前仅支持本机文件演练");
       const plan=(isPythonDelivery(item)
         ? validatePythonDeliveryPackage
         : validateDeliveryPackage)(item, item.digest);
@@ -4544,6 +4545,7 @@ export function createV2Server(options = {}) {
           run: sourceRun,
           revision: sourceRevision,
           agent:packageRequirementSource(sourceRun,sourceRevision).agent,
+          manualAuthor:Boolean(getContext(sourceRevision.contextId)?.outputContractId&&sourceRevision.source==='MANUAL'&&!sourceRevision.manualProvenance?.originAgentTaskId),
           name,
         }),
           artifact = await artifactStore.put(
@@ -4683,7 +4685,7 @@ export function createV2Server(options = {}) {
                   reviewNote,
                   attestations,
                   status: "REVIEWED",
-                  scope: "LOCAL_TEST_RELEASE",
+                  scope: item.manifest?.source?.outputContract ? "LOCAL_FILE_REVIEW" : "LOCAL_TEST_RELEASE",
                   publicDeploymentApproved: false,
                   reviewedAt: new Date().toISOString(),
                 }),
@@ -4704,6 +4706,7 @@ export function createV2Server(options = {}) {
           if (packageDigest !== item.digest)
             throw fail(409, "审批摘要与当前交付包不一致");
           const reviewId = text(body.reviewId, 1, 80);
+          if(item.manifest?.source?.outputContract)throw Object.assign(fail(422,"分布仅开放本机文件审阅，尚未开放发布批准"),{code:"DISTRIBUTION_PUBLICATION_DISABLED"});
           await ensureDeliveryArtifact(item);
           validateAnyDeliveryPackage(item);
           const rehearsal = store
@@ -4897,6 +4900,7 @@ export function createV2Server(options = {}) {
           spec = localScheduleSpec(body),
           artifact = await ensureDeliveryArtifact(item),
           plan = validateAnyDeliveryPackage(item);
+        if(plan.source.outputContract)throw Object.assign(fail(422,"分布发布调度尚未开放"),{code:"DISTRIBUTION_PUBLICATION_DISABLED"});
         if (
           approval.status !== "APPROVED" ||
           approval.packageDigest !== item.digest ||
@@ -5224,8 +5228,11 @@ export function createV2Server(options = {}) {
         }
         const bundle = delivery?.packageId ? get("delivery_package", delivery.packageId) : undefined,
           verification = delivery?.verificationId ? get("delivery_verification", delivery.verificationId) : undefined;
+        const fileReviewer=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
+        const fileReview=bundle?.manifest?.source?.outputContract&&verification?store.list('delivery_review',PROJECT).find(r=>r.packageId===bundle.id&&r.packageDigest===bundle.digest&&r.verificationId===verification.id&&r.reviewer?.id===fileReviewer&&r.status==='REVIEWED'&&r.scope==='LOCAL_FILE_REVIEW'):undefined;
         return json(res, 200, {
           report,
+          ...(fileReview?{fileReview:{id:fileReview.id,status:fileReview.status,packageId:fileReview.packageId,packageDigest:fileReview.packageDigest,verificationId:fileReview.verificationId,reviewedAt:fileReview.reviewedAt,scope:fileReview.scope}}:{}),
           delivery: publicDeliveryTask(delivery),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt } : undefined,
@@ -5332,6 +5339,7 @@ export function createV2Server(options = {}) {
           codeJourney.stages.find((item) => item.id === "DEBUG")?.status !== "SUCCEEDED"
         )
           throw fail(409, "缺少真实模型和Spark独立结果证据，不能委托交付准备");
+        if(getContext(agent.contextId)?.outputContractId&&!local)throw fail(422,"分布交付当前仅支持本机");
         if (!options.deliveryRunner && !options.runner && !runtime.available)
           throw fail(503, "按文件Spark演练尚未就绪");
         const run = get("run", finalAttempt.runId),
