@@ -29,7 +29,7 @@ test('distribution contracts are explicit, independent of old ten contexts and n
   const c=getContext(id),pub=publicContext(id),contract=outputContractForContext(id),family=validationFamilyForContext(id);
   assert.deepEqual(validationFamilyForContextId(id).contextIds,family.contextIds);assert.equal(validationFamilyForContextId(id).id,family.id);
   assert.equal(family.contextIds.length,5);assert.equal(family.id,c.outputContractId);assert.equal(contract.keyFields.length,3);
-  assert.equal(pub.capabilities.agentDevelopment,false);assert.equal(pub.capabilities.delivery,false);assert.equal(pub.capabilities.scope,'LOCAL_ONLY');
+  assert.equal(pub.capabilities.agentDevelopment,true);assert.equal(pub.capabilities.delivery,false);assert.equal(pub.capabilities.scope,'LOCAL_ONLY');
   assert(!Object.hasOwn(pub,'expected'));assert(!Object.hasOwn(pub.outputContract,'cases'));
   assert(verifyOutputRows(c.expected,c));assert(check(c).passed);assert(check(c,c.expected,'preflight',family.contextIds.map(getContext)).passed);
   assert.match(referenceSqlForContext(id),/COUNT\(DISTINCT p.security_code\)/);

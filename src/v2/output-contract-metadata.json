@@ -1,0 +1,240 @@
+{
+  "schema": "shuduo-output-contract-metadata/v1",
+  "contracts": [
+    {
+      "id": "securities-holdings-asset-class-distribution-v1",
+      "name": "持仓资产类别分布（不含现金）",
+      "dimension": "asset_class",
+      "grain": "CLIENT_TRADE_DATE_ASSET_CLASS",
+      "definitionVersion": 1,
+      "definition": "按顾问范围内客户、交易日与资产类别分组；同一持仓编号的重复记录去重，冲突记录拒绝。市值占比=分组持仓市值/该客户当日全部持仓市值，不包含现金、不代表全资产占比；保留仅有现金客户为未持仓零行。空白标签归未分类，零分母占比为0，保留6位小数；仅支持非负持仓市值，不作空头或穿透分析。",
+      "keyFields": [
+        "client_id",
+        "trade_date",
+        "asset_class"
+      ],
+      "fields": [
+        {
+          "name": "client_id",
+          "type": "STRING",
+          "label": "客户编号"
+        },
+        {
+          "name": "trade_date",
+          "type": "STRING",
+          "label": "交易日"
+        },
+        {
+          "name": "asset_class",
+          "type": "STRING",
+          "label": "资产类别"
+        },
+        {
+          "name": "holding_market_value",
+          "type": "DECIMAL",
+          "label": "持仓市值（元）",
+          "scale": 2,
+          "minimum": "0"
+        },
+        {
+          "name": "security_count",
+          "type": "INTEGER",
+          "label": "证券数量（按代码去重）",
+          "minimum": "0"
+        },
+        {
+          "name": "market_value_ratio",
+          "type": "DECIMAL",
+          "label": "持仓市值占比（0—1，不含现金）",
+          "scale": 6,
+          "minimum": "0",
+          "maximum": "1"
+        }
+      ],
+      "contextIds": [
+        "holdings-asset-class-t1",
+        "holdings-asset-class-duplicate",
+        "holdings-asset-class-equal",
+        "holdings-asset-class-cash-only",
+        "holdings-asset-class-unclassified-zero"
+      ],
+      "metrics": [
+        {
+          "field": "client_id",
+          "label": "客户编号",
+          "sourceFields": [
+            "accounts.client_id"
+          ]
+        },
+        {
+          "field": "trade_date",
+          "label": "交易日",
+          "sourceFields": [
+            "positions.trade_date"
+          ]
+        },
+        {
+          "field": "asset_class",
+          "label": "资产类别",
+          "sourceFields": [
+            "positions.asset_class"
+          ]
+        },
+        {
+          "field": "holding_market_value",
+          "label": "持仓市值（元）",
+          "sourceFields": [
+            "positions.position_id",
+            "positions.market_value"
+          ]
+        },
+        {
+          "field": "security_count",
+          "label": "证券数量（按代码去重）",
+          "sourceFields": [
+            "positions.security_code"
+          ]
+        },
+        {
+          "field": "market_value_ratio",
+          "label": "持仓市值占比（0—1，不含现金）",
+          "sourceFields": [
+            "positions.market_value",
+            "positions.asset_class"
+          ]
+        }
+      ],
+      "constraints": [
+        "SCOPED_CLIENTS",
+        "POSITION_ID_DEDUP",
+        "INCLUDE_CASH_ONLY_CLIENTS",
+        "NULL_MONEY_AS_ZERO",
+        "DECIMAL_MONEY",
+        "DISTRIBUTION_COMPOSITE_KEY",
+        "HOLDINGS_ONLY_DENOMINATOR",
+        "UNCLASSIFIED_LABEL",
+        "ZERO_DIVISOR_AS_ZERO",
+        "RATIO_SCALE_SIX",
+        "NONNEGATIVE_MARKET_VALUE"
+      ]
+    },
+    {
+      "id": "securities-holdings-industry-distribution-v1",
+      "name": "持仓行业标签分布（不穿透、不含现金）",
+      "dimension": "industry",
+      "grain": "CLIENT_TRADE_DATE_INDUSTRY",
+      "definitionVersion": 1,
+      "definition": "按顾问范围内客户、交易日与持仓行业标签分组；同一持仓编号的重复记录去重，冲突记录拒绝。市值占比=分组持仓市值/该客户当日全部持仓市值，不包含现金、不代表全资产占比；保留仅有现金客户为未持仓零行。空白标签归未分类，零分母占比为0，保留6位小数；仅支持非负持仓市值，不作空头或穿透分析。",
+      "keyFields": [
+        "client_id",
+        "trade_date",
+        "industry"
+      ],
+      "fields": [
+        {
+          "name": "client_id",
+          "type": "STRING",
+          "label": "客户编号"
+        },
+        {
+          "name": "trade_date",
+          "type": "STRING",
+          "label": "交易日"
+        },
+        {
+          "name": "industry",
+          "type": "STRING",
+          "label": "持仓行业标签"
+        },
+        {
+          "name": "holding_market_value",
+          "type": "DECIMAL",
+          "label": "持仓市值（元）",
+          "scale": 2,
+          "minimum": "0"
+        },
+        {
+          "name": "security_count",
+          "type": "INTEGER",
+          "label": "证券数量（按代码去重）",
+          "minimum": "0"
+        },
+        {
+          "name": "market_value_ratio",
+          "type": "DECIMAL",
+          "label": "持仓市值占比（0—1，不含现金）",
+          "scale": 6,
+          "minimum": "0",
+          "maximum": "1"
+        }
+      ],
+      "contextIds": [
+        "holdings-industry-t1",
+        "holdings-industry-duplicate",
+        "holdings-industry-equal",
+        "holdings-industry-cash-only",
+        "holdings-industry-unclassified-zero"
+      ],
+      "metrics": [
+        {
+          "field": "client_id",
+          "label": "客户编号",
+          "sourceFields": [
+            "accounts.client_id"
+          ]
+        },
+        {
+          "field": "trade_date",
+          "label": "交易日",
+          "sourceFields": [
+            "positions.trade_date"
+          ]
+        },
+        {
+          "field": "industry",
+          "label": "持仓行业标签",
+          "sourceFields": [
+            "positions.industry"
+          ]
+        },
+        {
+          "field": "holding_market_value",
+          "label": "持仓市值（元）",
+          "sourceFields": [
+            "positions.position_id",
+            "positions.market_value"
+          ]
+        },
+        {
+          "field": "security_count",
+          "label": "证券数量（按代码去重）",
+          "sourceFields": [
+            "positions.security_code"
+          ]
+        },
+        {
+          "field": "market_value_ratio",
+          "label": "持仓市值占比（0—1，不含现金）",
+          "sourceFields": [
+            "positions.market_value",
+            "positions.industry"
+          ]
+        }
+      ],
+      "constraints": [
+        "SCOPED_CLIENTS",
+        "POSITION_ID_DEDUP",
+        "INCLUDE_CASH_ONLY_CLIENTS",
+        "NULL_MONEY_AS_ZERO",
+        "DECIMAL_MONEY",
+        "DISTRIBUTION_COMPOSITE_KEY",
+        "HOLDINGS_ONLY_DENOMINATOR",
+        "UNCLASSIFIED_LABEL",
+        "ZERO_DIVISOR_AS_ZERO",
+        "RATIO_SCALE_SIX",
+        "NONNEGATIVE_MARKET_VALUE",
+        "INDUSTRY_LABEL_NOT_LOOKTHROUGH"
+      ]
+    }
+  ]
+}

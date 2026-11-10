@@ -1,3 +1,4 @@
+import {distributionMetadataForContext,distributionMetadataById} from './output-contract-metadata.mjs';
 import {validSqlClarification,clarificationUuid} from './sql-clarification-contract.mjs';
 export const sqlRequirementProtocol='shuduo-sql-requirements/v1';
 export const sqlRequirementFields=['client_id','holding_market_value','available_cash','total_assets','security_count'];
@@ -6,27 +7,34 @@ const text=(v,n)=>typeof v==='string'&&v.trim().length>0&&v.length<=n;
 const digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const exact=(v,keys)=>record(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
 const canonical=value=>JSON.stringify(value,(_k,item)=>record(item)?Object.fromEntries(Object.keys(item).sort().map(k=>[k,item[k]])):item);
+const requiredFields=b=>distributionMetadataForContext(b?.contextId)?.metrics.map(m=>m.field)??sqlRequirementFields;
+const registeredBasisMatches=b=>{
+ const c=distributionMetadataForContext(b.contextId);
+ if(!c)return !distributionMetadataById(b.validationContractId);
+ return b.validationContractId===c.id&&b.definitionVersion===c.definitionVersion&&b.definition===c.definition&&
+  canonical(b.metrics)===canonical(c.metrics)&&canonical(b.constraints)===canonical(c.constraints);
+};
 const basisValid=b=>exact(b,['protocol','requestDigest','contextId','contextName','definition','validationContractId','definitionVersion','parameters','grain','tables','metrics','constraints','digest',...(b?.clarificationDigest!==undefined?['clarificationDigest']:[])])&&
  (b.clarificationDigest===undefined||digest(b.clarificationDigest))&&digest(b.digest)&&digest(b.requestDigest)&&b.protocol===sqlRequirementProtocol&&text(b.contextId,80)&&text(b.contextName,200)&&
- text(b.validationContractId,120)&&Number.isSafeInteger(b.definitionVersion)&&b.definitionVersion>0&&b.grain==='CLIENT_TRADE_DATE'&&
+ text(b.validationContractId,120)&&Number.isSafeInteger(b.definitionVersion)&&b.definitionVersion>0&&b.grain===(distributionMetadataForContext(b.contextId)?.grain??'CLIENT_TRADE_DATE')&&
  text(b.definition,4000)&&exact(b.parameters,['advisor_id','trade_date'])&&text(b.parameters.advisor_id,100)&&text(b.parameters.trade_date,30)&&
  Array.isArray(b.constraints)&&b.constraints.length>0&&b.constraints.length<=12&&b.constraints.every(v=>text(v,80))&&
- Array.isArray(b.metrics)&&b.metrics.length===5&&new Set(b.metrics.map(m=>m?.field)).size===5&&b.metrics.every(m=>exact(m,['field','label','sourceFields'])&&sqlRequirementFields.includes(m.field)&&text(m.label,200)&&
+ Array.isArray(b.metrics)&&b.metrics.length===requiredFields(b).length&&new Set(b.metrics.map(m=>m?.field)).size===requiredFields(b).length&&b.metrics.every(m=>exact(m,['field','label','sourceFields'])&&requiredFields(b).includes(m.field)&&text(m.label,200)&&
   Array.isArray(m.sourceFields)&&m.sourceFields.length>0&&m.sourceFields.every(v=>text(v,150)))&&
  Array.isArray(b.tables)&&b.tables.length>0&&b.tables.length<=10&&b.tables.every(t=>exact(t,['name','columns'])&&text(t.name,80)&&Array.isArray(t.columns)&&
-  t.columns.length>0&&t.columns.length<=100&&t.columns.every(c=>Array.isArray(c)&&c.length===2&&text(c[0],80)&&text(c[1],100)));
+  t.columns.length>0&&t.columns.length<=100&&t.columns.every(c=>Array.isArray(c)&&c.length===2&&text(c[0],80)&&text(c[1],100)))&&registeredBasisMatches(b);
 
 // Structural/schema acknowledgement only. A valid proposal is not proof that
 // the generated SQL implements the request; independent execution still decides.
 export function validSqlRequirementInterpretation(value,basis){
  if(!basisValid(basis)||!record(value)||value.basisDigest!==basis.digest||!text(value.summary,600))return false;
  if(value.kind==='CLARIFICATION_REQUIRED')return exact(value,['kind','basisDigest','summary','question'])&&text(value.question,300);
- if(!exact(value,['kind','basisDigest','summary','grain','metrics','constraints'])||value.kind!=='DEVELOPMENT'||value.grain!=='CLIENT_TRADE_DATE'||
-  !Array.isArray(value.metrics)||value.metrics.length!==5||new Set(value.metrics.map(v=>v?.field)).size!==5||
+ if(!exact(value,['kind','basisDigest','summary','grain','metrics','constraints'])||value.kind!=='DEVELOPMENT'||value.grain!==basis.grain||
+  !Array.isArray(value.metrics)||value.metrics.length!==basis.metrics.length||new Set(value.metrics.map(v=>v?.field)).size!==basis.metrics.length||
   !Array.isArray(value.constraints)||value.constraints.length!==basis.constraints.length||new Set(value.constraints).size!==value.constraints.length||
   !basis.constraints.every(id=>value.constraints.includes(id)))return false;
  const columns=new Set(basis.tables.flatMap(t=>t.columns.map(c=>`${t.name}.${c[0]}`)));
- return sqlRequirementFields.every(field=>{
+ return basis.metrics.map(m=>m.field).every(field=>{
   const metric=value.metrics.find(m=>m?.field===field),required=basis.metrics.find(m=>m.field===field)?.sourceFields;
   return exact(metric,['field','meaning','sourceFields'])&&text(metric.meaning,240)&&Array.isArray(metric.sourceFields)&&
    metric.sourceFields.length>0&&metric.sourceFields.length<=12&&new Set(metric.sourceFields).size===metric.sourceFields.length&&

@@ -42,6 +42,7 @@ cp \
   "$repo_root/src/v2/worker.py" \
   "$repo_root/src/v2/output_contracts.py" \
   "$repo_root/src/v2/output-contracts.json" \
+  "$repo_root/src/v2/output-contract-metadata.json" \
   "$stage/src/v2/"
 
 "$python_binary" -m pip install \

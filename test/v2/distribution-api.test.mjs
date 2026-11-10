@@ -12,7 +12,9 @@ test('a local UI configured with a remote Worker cannot enqueue an unadapted dis
  const base=`http://127.0.0.1:${app.server.address().port}/api/v2`;
  assert.equal((await(await fetch(base+'/contexts')).json()).length,10);
  const response=await fetch(base+'/revisions',{method:'POST',headers:{'content-type':'application/json','x-shuduo-client':'workbench'},body:JSON.stringify({contextId:'holdings-industry-t1',sql:referenceSqlForContext('holdings-industry-t1')})});
- assert.equal(response.status,422);assert.equal(calls,0);assert.equal(store.list('revision',PROJECT).length,0);assert.equal(store.list('run',PROJECT).length,0);
+ assert.equal(response.status,422);
+ const agent=await fetch(base+'/agent/tasks',{method:'POST',headers:{'content-type':'application/json','x-shuduo-client':'workbench','idempotency-key':'remote-deny'},body:JSON.stringify({contextId:'holdings-industry-t1',message:'生成持仓行业分布',sql:'SELECT client_id FROM accounts'})});assert.equal(agent.status,422);assert.equal((await agent.json()).code,'OUTPUT_CONTRACT_LOCAL_ONLY');
+ assert.equal(calls,0);assert.equal(store.list('revision',PROJECT).length,0);assert.equal(store.list('run',PROJECT).length,0);
 });
 
 test('public context catalog retains the original ten contexts without exposing unadapted distributions',async t=>{
@@ -26,7 +28,7 @@ test('public context catalog retains the original ten contexts without exposing 
  assert.equal(store.list('run',PROJECT).length,0);
 });
 
-test('classic SQL offers distribution contexts, persists one manual version/run, rejects Agent and Python before invocation',async t=>{
+test('classic SQL offers distribution contexts, persists one manual version/run, rejects unsupported Python before invocation',async t=>{
  const store=new MetadataStore(':memory:');let executions=0,models=0;
  const app=createV2Server({store,env:{V2_LOCAL_DEVELOPMENT:'true'},generator:async()=>{models++;throw Error('must not call');},runner:async({context,validationContexts})=>{
   executions++;assert.equal(context.outputContractId,validationFamilyForContext(context.id).id);
@@ -39,7 +41,6 @@ test('classic SQL offers distribution contexts, persists one manual version/run,
  const post=(path,body,key)=>fetch(base+path,{method:'POST',headers:{'content-type':'application/json','x-shuduo-client':'workbench','idempotency-key':key},body:JSON.stringify(body)});
  const contexts=await(await fetch(base+'/contexts')).json();assert.equal(contexts.length,20);assert(contexts.every(c=>!Object.hasOwn(c,'expected')));
  const id='holdings-industry-t1',sql=referenceSqlForContext(id);
- const rejected=await post('/agent/tasks',{contextId:id,sql,message:'生成行业分布'},'not-agent');assert.equal(rejected.status,422);assert.equal((await rejected.json()).code,'OUTPUT_CONTRACT_CLASSIC_ONLY');
  assert.equal((await post('/python/revisions',{contextId:id,code:'print("not supported")'},'not-python')).status,422);
  const rev=await(await post('/revisions',{contextId:id,sql},'save-distribution')).json();assert(rev.id);
  assert.equal((await(await post('/revisions',{contextId:id,sql},'save-distribution')).json()).id,rev.id);

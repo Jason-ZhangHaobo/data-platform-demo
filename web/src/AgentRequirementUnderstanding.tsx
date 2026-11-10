@@ -1,10 +1,11 @@
+import {distributionGrainLabel} from '../../src/v2/output-contract-metadata.mjs';
 import React from 'react';
 import {ClipboardList,ChevronDown} from 'lucide-react';
 import {sqlRequirementReportMatches} from '../../src/v2/sql-requirement-contract.mjs';
 
 const constraintLabels:Record<string,string>={SCOPED_CLIENTS:'仅限当前顾问的客户',POSITION_ID_DEDUP:'按持仓编号去重',
  SEPARATE_CASH_AGGREGATION:'现金独立聚合后关联',INCLUDE_CASH_ONLY_CLIENTS:'保留仅有现金的客户',NULL_MONEY_AS_ZERO:'空金额按零处理',
- DECIMAL_MONEY:'金额按十进制精度核算',STOCK_POSITIONS_ONLY:'仅统计股票持仓'};
+ DECIMAL_MONEY:'金额按十进制精度核算',STOCK_POSITIONS_ONLY:'仅统计股票持仓',DISTRIBUTION_COMPOSITE_KEY:'客户、交易日和分类组成唯一键',HOLDINGS_ONLY_DENOMINATOR:'占比分母为持仓市值，不含现金',UNCLASSIFIED_LABEL:'空白标签归未分类',ZERO_DIVISOR_AS_ZERO:'零分母占比为0',RATIO_SCALE_SIX:'占比0—1，六位小数',NONNEGATIVE_MARKET_VALUE:'仅支持非负市值',INDUSTRY_LABEL_NOT_LOOKTHROUGH:'行业按持仓标签，不作穿透'};
 export function AgentRequirementUnderstanding({task,dirty,frozen=false}:{task:{id:string;contextId:string;message:string;revisionId?:string;language?:string;
  requirements?:unknown;attempts:unknown[];clarification?:unknown;humanClarified?:boolean;directAutonomousEligible?:boolean;clarificationOriginTaskId?:string};dirty:boolean;frozen?:boolean}){
  if(task.language==='PYTHON')return null;
@@ -25,7 +26,7 @@ export function AgentRequirementUnderstanding({task,dirty,frozen=false}:{task:{i
    </details>}
    {invalid?<p role="alert">{r.reason}</p>:<><p>{r.interpretation!.summary}</p>
     {clarification?<><p className="agent-requirement-question">{r.interpretation!.question}</p><small>请补充完整需求后重新委托；本条记录及模型用量保留，没有执行 SQL。</small></>:
-    <><dl className="agent-requirement-basis"><div><dt>计算粒度</dt><dd>每个客户 × 交易日</dd></div><div><dt>业务口径</dt><dd>{r.basis.contextName}</dd></div>
+    <><dl className="agent-requirement-basis"><div><dt>计算粒度</dt><dd>{distributionGrainLabel(r.basis.grain)}</dd></div><div><dt>业务口径</dt><dd>{r.basis.contextName}</dd></div>
      <div><dt>参数范围</dt><dd>{r.basis.parameters.advisor_id} · {r.basis.parameters.trade_date}</dd></div></dl>
      <div className="agent-requirement-metrics">{r.interpretation!.metrics!.map(m=><div key={m.field}><strong>{r.basis.metrics.find(v=>v.field===m.field)?.label}</strong>
       <p>{m.meaning}</p><small>{m.sourceFields.join(' · ')}</small></div>)}</div>

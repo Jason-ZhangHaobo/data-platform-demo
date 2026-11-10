@@ -5229,7 +5229,7 @@ export function createV2Server(options = {}) {
           delivery: publicDeliveryTask(delivery),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt } : undefined,
-          publication: { available: !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
+          publication: { available: !getContext(agent.contextId)?.outputContractId && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: getContext(agent.contextId)?.outputContractId ? "分布调度交付与发布尚未开放" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
       }
       const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel))?$/);
@@ -5794,7 +5794,7 @@ export function createV2Server(options = {}) {
           throw fail(422, "数据开发语言不受支持");
         const context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效上下文");
-        if(context.outputContractId)throw Object.assign(fail(422,"分布契约当前仅开放经典SQL开发；Agent理解与交付适配完成后开放"),{code:"OUTPUT_CONTRACT_CLASSIC_ONLY"});
+        if(context.outputContractId&&(!local||durableDevelopment||runnerDescriptor.isolation!=="LOCAL_PROCESS"))throw Object.assign(fail(422,"分布Agent尚未启用云端执行"),{code:"OUTPUT_CONTRACT_LOCAL_ONLY"});
         if (ingressChannel === "HTTP") assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, options.now?.() ?? Date.now());
         const actorId = language === "SPARK_SQL"
           ? auth.sessionFromHeaders(req.headers)?.user.id ?? (local ? "local-engineer" : undefined)
@@ -6044,6 +6044,13 @@ export function createV2Server(options = {}) {
               if(task.clarification){try{assertSqlClarificationTask(get('agent',task.id),{store,project:PROJECT});}catch(cause){store.update('agent',task.id,PROJECT,{status:'FAILED',stage:'CLARIFICATION_SOURCE_CHANGED',error:cause.message,finishedAt:new Date().toISOString()});return;}}
               if(explicitRepair)resolveExplicitSqlRepairSource({sourceRunId:body.sourceRunId,actorId,contextId:context.id,currentSql:currentCode,project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
               const comparison=repairBasis?resolveSqlRepairComparison({store,project:PROJECT,actorId,sourceRunId:body.sourceRunId,contextId:context.id,currentSql:currentCode,binding:repairBasis.binding}):undefined;
+              let feedbackRun=attempt===1?explicitRepair?.run:undefined;
+              if(attempt>1){
+                const previous=get('agent',task.id).attempts.at(-1),failed=previous?.runId?get('run',previous.runId):undefined;
+                if(failed?.agentTaskId===task.id&&failed.contextId===context.id&&failed.revisionHash===hash(sql)&&failed.revisionId===previous.revisionId&&
+                  failed.status==='VALIDATION_FAILED'&&previous.status===failed.status)feedbackRun=failed;
+              }
+              const repairFeedback=feedbackRun?buildSqlRepairFeedback(feedbackRun,context.id,{currentSql:sql}):undefined;
               try {
                 generated = await generator({
                   message,
@@ -6051,6 +6058,7 @@ export function createV2Server(options = {}) {
                   ...(task.clarification?{clarification:task.clarification}:{}),
                   currentSql: sql,
                   error,
+                  ...(repairFeedback?{repairFeedback}:{}),
                   ...(attempt===1&&comparison?{repairComparison:comparison.summary,repairFeedback:buildSqlRepairFeedback(get('run',body.sourceRunId),context.id,{currentSql:sql})}:{}),
                   signal,
                   remainingBudget,
