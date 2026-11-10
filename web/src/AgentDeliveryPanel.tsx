@@ -90,10 +90,11 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   };
   const readConsumption=async(value=workflow)=>{
     const id=taskId,digest=value?.package?.digest,sequence=++consumptionEpoch.current,binding=serviceHandoff,key=serviceSourceKey(binding);
-    if(distributionMetadataForContext(contextId)||!binding||digest!==binding.packageDigest||!["PRIVATE_CLOUD_TEST","LOCAL_TEST_RELEASE"].includes(value?.publication.scope??""))return;
+    if(!binding||digest!==binding.packageDigest||!["PRIVATE_CLOUD_TEST","LOCAL_TEST_RELEASE"].includes(value?.publication.scope??""))return;
     setConsumptionRead("LOADING");setConsumptionError("");
     try{
-      const result=checkedAgentConsumption(await api<unknown>(serviceEvidencePath(binding)),binding,batches);
+      const output=(value?.package?.manifest as {source?:{outputContract?:{id:string;metadataHash:string}}})?.source?.outputContract;
+      const result=checkedAgentConsumption(await api<unknown>(serviceEvidencePath(binding)),binding,batches,output);
       if(alive.current&&activeTask.current===id&&activeConsumptionSource.current===key&&sequence===consumptionEpoch.current){setConsumption(result);setConsumptionRead("READY");setConsumptionError("");}
     }catch(e){if(alive.current&&activeTask.current===id&&activeConsumptionSource.current===key&&sequence===consumptionEpoch.current){setConsumptionRead("ERROR");setConsumptionError(`消费对照尚未确认：${(e as Error).message}。不会新增调用或凭证。`);}}
   };
@@ -276,16 +277,16 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         </>}
       </div>
       {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!dirty&&!working&&!handoffBlocked&&!publicationTarget}/></Suspense>}
-      {distributionMetadataForContext(contextId)?<div id="agent-service-handoff" className="agent-publication-card"><h3>分布结果 → DAPI / XAPI</h3><p>选择同一真实发布批次，保留客户、交易日与分类。DAPI按明细行分页，XAPI返回完整分类数组；上游模型归因保留，暂不计完整自主E2E。</p>{onOpenServices&&<button className="button" disabled={!serviceHandoff||dirty||working||handoffBlocked} onClick={()=>{if(serviceHandoff&&!dirty&&!working&&!handoffBlocked)onOpenServices(serviceHandoff);}}>继续此任务的接口交付</button>}<small>仅本机已核验结果；服务授权和调用日志在接口工作台查看。</small></div>:
       <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务、交付包和发布版本的接口开发、测试与授权。选择实际成功发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
+        {distributionMetadataForContext(contextId)&&<p role="status">分布按客户＋交易日＋分类独立核对，保留完整分类数组。上游模型归因保留，本机旅程通过不计真实模型完整自主E2E。</p>}
         {manual&&<p role="status">人工发布结果消费 · 保留开发历史及人工辅助归因，不计为 Agent 自主完成。</p>}
         {!serviceHandoff&&<p role="status">请先核对当前包的确切发布记录；未确认来源时不跳转到全项目或原 Agent 的其他结果。</p>}
         {consumptionError&&<p role="status">{consumptionError}</p>}
         {showConsumption&&consumptionRead!=="READY"&&<p role="status">本次消费读取尚未确认；下方保留上次核对的历史记录，不计作本次消费阶段通过。</p>}
         {journey.steps.find(step=>step.id==="services")?.state==="DONE"&&<p role="status">组合接口的消费证据已通过。DAPI的单独授权调用记录独立展示，不影响已通过的XAPI组合查询。</p>}
-        {showConsumption&&consumption&&<><p>{consumption.notice}</p><small>对照时间：{consumption.checkedAt}；这是历史消费记录，不是实时授权保证。</small>{!current&&<p>编辑器或当前查看的批次已变化；下面证据仅供原版本参考。</p>}<ul>{consumption.services.map(s=><li key={s.serviceId}><strong>{s.serviceType} · {s.name}</strong> · 版本 {s.versionId.slice(0,8)} · {s.status==="VERIFIED"?"历史消费证据对照通过":s.status==="NEEDS_ATTENTION"?"需要处理":"待实际授权调用"}<p>{s.notice}</p>{s.call&&<small>调用 {s.call.callId.slice(0,8)} · {s.call.rowCount}行 · 摘要 {s.call.resultHash.slice(0,12)} · {applicationStatusText(s.call.applicationStatus,true)}</small>}</li>)}</ul>{consumption.truncated&&<p>证据数量超过本次上限，不能标记整个消费阶段完成。</p>}<EvidenceDownload name={`consumption-${taskId.slice(0,8)}.json`} value={consumption} request={{kind:"consumption",id:taskId,digest:consumption.packageDigest,releaseId:consumption.releaseId}}>下载当前发布的消费对照证据</EvidenceDownload></>}
+        {showConsumption&&consumption&&<><p>{consumption.notice}</p><small>对照时间：{consumption.checkedAt}；这是历史消费记录，不是实时授权保证。</small>{!current&&<p>编辑器或当前查看的批次已变化；下面证据仅供原版本参考。</p>}<ul>{consumption.services.map(s=><li key={s.serviceId}><strong>{s.serviceType} · {s.name}</strong> · 版本 {s.versionId.slice(0,8)} · {s.status==="VERIFIED"?"历史消费证据对照通过":s.status==="NEEDS_ATTENTION"?"需要处理":"待实际授权调用"}<p>{s.notice}</p>{consumption.outputContractId&&s.source&&<small>{s.source.modelClassification==="SYNTHETIC_UPSTREAM"?"模型响应：测试替身":"模型真实性待独立验证"} · {s.source.engineClassification==="LOCAL_SPARK_RECEIPTS"?"本机Spark执行证据":"执行器：测试替身"}</small>}{s.call&&<small>调用 {s.call.callId.slice(0,8)} · {s.call.rowCount}{consumption.outputContractId&&s.serviceType==="XAPI"?"个客户日期组":"行"} · 摘要 {s.call.resultHash.slice(0,12)} · {applicationStatusText(s.call.applicationStatus,true)}</small>}</li>)}</ul>{consumption.truncated&&<p>证据数量超过本次上限，不能标记整个消费阶段完成。</p>}<EvidenceDownload name={`consumption-${taskId.slice(0,8)}.json`} value={consumption} request={{kind:"consumption",id:taskId,digest:consumption.packageDigest,releaseId:consumption.releaseId}}>下载当前发布的消费对照证据</EvidenceDownload></>}
         {workflow.package&&<button className="button" disabled={working||!serviceHandoff} onClick={()=>void readConsumption()}>刷新消费证据</button>}
-        {onOpenServices ? <><button className="button" disabled={!serviceHandoff || dirty || working || handoffBlocked} onClick={()=>{if(serviceHandoff&&!dirty&&!working&&!handoffBlocked)onOpenServices(serviceHandoff);}}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>}
+        {onOpenServices ? <><button className="button" disabled={!serviceHandoff || dirty || working || handoffBlocked} onClick={()=>{if(serviceHandoff&&!dirty&&!working&&!handoffBlocked)onOpenServices(serviceHandoff);}}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>
     </>}
   </section>;
 }

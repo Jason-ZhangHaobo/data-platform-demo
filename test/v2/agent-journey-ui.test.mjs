@@ -183,3 +183,13 @@ test('manual consumption requires the same exact release and keeps human attribu
   for(const patch of [{status:'FAILED'},{schedulerTriggered:false}])assert.equal(manualConsumptionEntryMatches(entry,f.release.id,[{...f.batches[0],...patch}],f.runId),false);
   assert.equal(manualConsumptionEntryMatches({...entry,sourceRunIds:[f.runId]},f.release.id,[{id:f.runId,status:'SUCCEEDED',schedulerTriggered:true}],f.runId),false,'a mislabeled development run never becomes a release batch');
 });
+
+test('distribution journey uses its schema-specific receipt, complete arrays and independent evidence without borrowing legacy full-asset success',async()=>{
+ const {validationFamilyForContext}=await import('../../src/v2/context.mjs'),{distributionMetadataForContext}=await import('../../src/v2/output-contract-metadata.mjs');
+ const f=fixture(),contextId='holdings-asset-class-t1',family=validationFamilyForContext(contextId),c=distributionMetadataForContext(contextId);f.contextId=contextId;f.report.contextId=contextId;f.report.validationContractId=family.id;f.verification.validation={passed:true,contractId:family.id,regressions:family.contextIds.map(contextId=>({contextId,passed:true}))};f.release.status='ACTIVE_LOCAL';
+ const receipt={protocol:'shuduo-local-distribution-consumption/v1',outputContractId:c.id,scope:'LOCAL_TEST_ONLY',taskId:f.taskId,packageDigest:f.bundle.digest,releaseId:f.release.id,sourceKind:'AGENT',status:'VERIFIED',truncated:false,agentIndependentE2E:false,services:[{serviceType:'XAPI',status:'VERIFIED',distributionComposition:true,fullAssetComposition:false,versionId:'version-distribution',call:{verified:true,independentResultVerified:true,versionId:'version-distribution',rowCount:1}}]};f.consumption=receipt;
+ assert.equal(stage(f,'services'),'DONE');assert.match(agentJourney(f).next.detail,/仍不代表自主E2E/);
+ for(const change of [{outputContractId:'wrong'},{protocol:'shuduo-local-task-consumption/v1'},{agentIndependentE2E:true},{releaseId:'different'}])assert.notEqual(stage({...f,consumption:{...receipt,...change}},'services'),'DONE');
+ for(const change of [{distributionComposition:false},{fullAssetComposition:true},{call:{...receipt.services[0].call,independentResultVerified:false}}])assert.notEqual(stage({...f,consumption:{...receipt,services:[{...receipt.services[0],...change}]}},'services'),'DONE');
+ assert.equal(stage({...f,dirty:true},'services'),'STALE');
+});
