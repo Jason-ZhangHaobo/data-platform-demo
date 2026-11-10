@@ -976,7 +976,7 @@ export async function generateSecurityPlan(
 }
 
 export async function generateReportPlan(
-  { message, datasets = [], reports = [], publication, signal },
+  { message, datasets = [], reports = [], publication, clarification, signal },
   env = process.env,
   fetchImpl = fetch,
 ) {
@@ -985,7 +985,7 @@ export async function generateReportPlan(
     base = new URL(settings.baseUrl);
   if (base.protocol !== "https:") throw new Error("模型 API 必须使用 HTTPS");
   const prompt = JSON.stringify(publication ? {
-    request:message,publishedSource:publication,
+    request:message,publishedSource:publication,...(clarification?{clarification:{originalRequest:clarification.originalRequest,turns:clarification.turns.map(t=>({question:t.question,answer:t.answer}))}}:{}),
     contract:{kind:'PUBLISHED_REPORT',output:'仅返回JSON：kind,name,metricIds,explanation。metricIds只能选availableWidgets中的id；来源由系统固定，不能返回或修改source、datasetId或SQL。',
       clarification:'若请求需要当前不存在的字段或指标，返回kind=CLARIFICATION_REQUIRED、question（一个澄清问题）、explanation；不得用其他指标冒充。',
       boundary:'只规划，不复制数据、不执行聚合、不导出或发布；经审阅后才创建报表。遵守context.definition，股票持仓加现金不等于客户全资产。'},

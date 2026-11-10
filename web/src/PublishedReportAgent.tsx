@@ -1,3 +1,4 @@
+import{ReportClarificationReply}from'./ReportClarificationReply';
 import{useEffect,useRef,useState}from'react';
 import{Bot,Send,CheckCircle2,RefreshCw,LoaderCircle}from'lucide-react';
 import{publishedReportSource}from'../../src/v2/published-report-request.mjs';
@@ -38,17 +39,17 @@ export function PublishedReportAgent({api,source,canWrite,onCreated}:{api:Api;so
   return()=>{stopped=true;clearInterval(timer);};
  },[plan?.id,plan?.status,key]);
  const generate=async(retryOriginal=false)=>{
-  if(!canWrite||!batchIds.includes(batchId)||!available||busy||executionUnconfirmed||Boolean(plan?.recovery)||(!retryOriginal&&(!historyReady||pendingKey&&!plan))||retryOriginal&&(!missingOriginal||!pendingKey||pendingMessage.trim().length<4)||!retryOriginal&&message.trim().length<4||plan?.status==='APPLYING')return;const current=key,requestId=retryOriginal?pendingKey:crypto.randomUUID(),frozenMessage=retryOriginal?pendingMessage:message;setBusy(true);setNotice('');
+  if(!canWrite||!batchIds.includes(batchId)||!available||busy||executionUnconfirmed||Boolean(plan?.recovery)||plan?.requestBasisState==='UNCONFIRMED'||(!retryOriginal&&(!historyReady||pendingKey&&!plan))||retryOriginal&&(!missingOriginal||!pendingKey||pendingMessage.trim().length<4)||!retryOriginal&&message.trim().length<4||plan?.status==='APPLYING')return;const current=key,requestId=retryOriginal?pendingKey:crypto.randomUUID(),frozenMessage=retryOriginal?pendingMessage:message;setBusy(true);setNotice('');
   try{localStorage.setItem(storage,JSON.stringify({requestId,message:frozenMessage}));setPendingKey(requestId);setPendingMessage(frozenMessage);setMissingOriginal(false);const raw=await api('/reports/agent/plans',{message:frozenMessage,source:binding},{idempotencyKey:requestId});if(alive.current&&active.current===current){adopt(raw,requestId);setHistoryReady(true);}}catch(e){if(alive.current&&active.current===current)setNotice(`规划结果尚未确认：${(e as Error).message}。先查询原请求，不重新调用模型。`);}finally{if(alive.current&&active.current===current)setBusy(false);}
  };
  const apply=async()=>{
-  if(!canWrite||!batchIds.includes(batchId)||busy||executionUnconfirmed||plan?.recovery||!plan?.proposalHash)return;const original=plan,current=key;setBusy(true);setNotice('');
+  if(!canWrite||!batchIds.includes(batchId)||busy||executionUnconfirmed||plan?.recovery||plan?.requestBasisState==='UNCONFIRMED'||!plan?.proposalHash)return;const original=plan,current=key;setBusy(true);setNotice('');
   try{const raw=await api(`/reports/agent/plans/${original.id}/apply`,{proposalHash:original.proposalHash});if(!alive.current||active.current!==current)return;
    const created=checkedPublishedReportReceipt(raw,{requestId:original.id,source:binding,name:original.proposal?.name,metricIds:original.proposal?.metricIds});
    const latest=await api(`/reports/agent/plans/${original.id}`);if(!alive.current||active.current!==current)return;adopt(latest,original.requestId);if(created.status==='SUCCEEDED'){setNotice('已按审阅方案实际生成报表，下方显示同源结果。');}else setNotice('中间结果已保存；查询后可继续原报表生成，不重复规划。');
   }catch(e){if(alive.current&&active.current===current){setExecutionUnconfirmed(true);setNotice(`生成结果尚未确认：${(e as Error).message}。请查询原方案后再续接。`);}}finally{if(alive.current&&active.current===current)setBusy(false);}
  };
- const recoveryBlocked=Boolean(plan?.recovery);
+ const recoveryBlocked=Boolean(plan?.recovery)||plan?.requestBasisState==='UNCONFIRMED';
  const resumePlanning=async()=>{if(!plan?.recovery?.canResume||!canWrite||!available||busy||executionUnconfirmed)return;const original=plan,current=key;setBusy(true);try{const raw=await api(`/reports/agent/plans/${original.id}/resume`,{});if(alive.current&&active.current===current)adopt(raw,original.requestId);}catch(e){if(alive.current&&active.current===current){setExecutionUnconfirmed(true);setNotice(`续接结果尚未确认：${(e as Error).message}。先查询原方案，不重复调用。`);}}finally{if(alive.current&&active.current===current)setBusy(false);}};
  const pending=plan&&['QUEUED','RUNNING'].includes(plan.status),canApply=plan&&['SUCCEEDED','APPLYING'].includes(plan.status)&&plan.proposal?.kind==='PUBLISHED_REPORT';
  return <section className="source-report-agent-v2" aria-label="同源报表Agent"><header className="agent-workflow-title"><Bot size={18}/><h4>把报告需求交给 Agent</h4><button className="button" disabled={busy} onClick={()=>void query()}><RefreshCw size={14}/>查询原方案</button></header>
@@ -62,8 +63,9 @@ export function PublishedReportAgent({api,source,canWrite,onCreated}:{api:Api;so
   {missingOriginal&&pendingKey&&<button className="button" disabled={!canWrite||!available||busy} onClick={()=>void generate(true)}>按原编号和原内容重试规划</button>}
   {!available&&<p>模型暂未连接；仍可手动创建同源报表，已有方案可以查询和审阅。</p>}
   <details className="source-report-history"><summary>当前批次的规划历史</summary><button className="button" disabled={historyReading||busy} onClick={()=>void readHistory()}>读取规划历史</button>{historyReading&&<p role="status">正在核对历史目录…</p>}{historyError&&<p role="status">{historyError}，未替换当前方案。</p>}{history?.map(p=><button className="button" key={p.id} disabled={busy} onClick={()=>void selectHistory(p.id)}>{p.proposal?.name??'报表规划'} · {p.id.slice(0,8)} · {p.status}</button>)}{history?.length===0&&<p>该批次暂无已确认规划记录。</p>}{history?.length===20&&<small>本页最多显示20条，可通过CLI/API按原编号查询。</small>}</details>
-  {plan&&<div className="source-report-proposal-v2"><small>原方案 {plan.id.slice(0,8)} · {plan.status} · 模型 {plan.model??'处理中'} {plan.planningMode==='TEST_DOUBLE'?'· 合成规划器验收':''}</small><p>原需求：{plan.message}</p>
-   {plan.proposal?.kind==='CLARIFICATION_REQUIRED'?<p role="status">{plan.proposal.question}</p>:<><h4>{plan.proposal?.name??'正在核对字段与指标'}</h4><ul>{plan.proposal?.widgets?.map(w=><li key={w.id}>{w.title}</li>)}</ul></>}
+  {plan&&<div className="source-report-proposal-v2"><small>原方案 {plan.id.slice(0,8)} · {plan.status} · 模型 {plan.model??'处理中'} {plan.planningMode==='TEST_DOUBLE'?'· 合成规划器验收':''}</small><p>{plan.clarification?'本次回答':'原需求'}：{plan.message}</p>
+   {plan.proposal?.kind==='CLARIFICATION_REQUIRED'?<><p role="status">{plan.proposal.question}</p><ReportClarificationReply key={plan.id} api={api} plan={plan} canWrite={canWrite&&!executionUnconfirmed&&plan.requestBasisState!=='UNCONFIRMED'} available={available} onContinue={value=>{adopt(value,value.requestId);setHistoryReady(true);setNotice('已保留原问题、回答和来源；后续方案独立核验与审阅。');}}/></>:<><h4>{plan.proposal?.name??'正在核对字段与指标'}</h4><ul>{plan.proposal?.widgets?.map(w=><li key={w.id}>{w.title}</li>)}</ul></>}
+   {plan.clarification&&<details><summary>查看随此方案保留的澄清记录</summary><p>原需求：{plan.clarification.originalRequest}</p>{plan.clarification.turns.map((t,i)=><p key={t.planId}>第{i+1}轮：{t.question}<br/>回答：{t.answer}</p>)}</details>}{plan.requestBasisState==='UNCONFIRMED'&&<p role="status">原请求或澄清依据未确认；历史记录保留，当前不能继续模型或应用。</p>}
    <p>{plan.explanation??plan.error}</p>{plan.proposalHash&&<small>审阅摘要 {plan.proposalHash.slice(0,12)} · 仅当前固定来源</small>}
    {canApply&&<button className="button" disabled={!canWrite||!batchIds.includes(batchId)||busy||executionUnconfirmed||recoveryBlocked} onClick={()=>void apply()}><CheckCircle2 size={14}/>{plan.status==='APPLYING'?'继续原报表生成':'按此方案创建并核验报表'}</button>}{plan.status==='APPLIED'&&<p>此方案的报表已实际生成；查询不重新规划或聚合。</p>}
   </div>}{notice&&<p role="status">{notice}</p>}

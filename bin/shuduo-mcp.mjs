@@ -215,6 +215,8 @@ const tools = [
   { name: "report_run", description: "对固定快照实际运行KPI/柱状/饼图聚合并保存摘要。", inputSchema: { type: "object", properties: { reportId: { type: "string" } }, required: ["reportId"] } },
   { name: "report_export", description: "导出最后一次成功聚合结果CSV；不导出业务明细。", inputSchema: { type: "object", properties: { reportId: { type: "string" } }, required: ["reportId"] } },
   { name: "report_plan_list", description: "列出传统报表方案；sourceBatchId指定时只列本账号同批次方案。", inputSchema: { type: "object", properties: {sourceBatchId:{type:'string'}} } },
+  {name:'report_plan_clarification',description:'只读查询原同源报表澄清问题、来源及历史用量，不调用模型。',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id'],additionalProperties:false}},
+  {name:'report_plan_clarify',description:'回答原报表问题后创建独立后续规划，保留原来源和历史用量；可能调用模型，须独立审阅新方案。',inputSchema:{type:'object',properties:{id:{type:'string'},evidenceDigest:{type:'string'},answer:{type:'string',minLength:1,maxLength:1000},requestId:{type:'string'}},required:['id','evidenceDigest','answer','requestId'],additionalProperties:false}},
   {name:'report_plan_resume',description:'显式续接模型尚未调用的原同源报表规划；未知模型结果不能重试，不新建编号。',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id'],additionalProperties:false}},
   { name: "report_plan_request",description:"只读恢复本账号原同源报表规划请求，不再次调用模型。",inputSchema:{type:'object',properties:{requestId:{type:'string'}},required:['requestId']}},
   { name: "report_plan_create", description: "模型基于字段摘要规划报表。可绑定source及requestId；缺字段须澄清，不读取业务行或执行。", inputSchema: { type: "object", properties: { message: { type: "string" },source:publishedReportSourceSchema,requestId:{type:'string'} }, required: ["message"] } },
@@ -812,6 +814,8 @@ async function callTool(name, args = {}, client=defaultClient) {
   if (name === "report_export")
     return client.request(`/reports/${encodeURIComponent(args.reportId)}/export`);
   if (name === "report_plan_list") return client.request('/reports/agent/plans'+(args.sourceBatchId?'?source_batch_id='+encodeURIComponent(args.sourceBatchId):''));
+  if(name==='report_plan_clarification')return client.request('/reports/agent/plans/'+encodeURIComponent(args.id)+'/clarification');
+  if(name==='report_plan_clarify')return client.request('/reports/agent/plans/'+encodeURIComponent(args.id)+'/clarify',{method:'POST',body:{evidenceDigest:args.evidenceDigest,answer:args.answer},idempotencyKey:args.requestId});
   if(name==='report_plan_resume')return client.request('/reports/agent/plans/'+encodeURIComponent(args.id)+'/resume',{method:'POST',body:{}});
   if(name==='report_plan_request')return client.request('/reports/agent/requests/'+encodeURIComponent(args.requestId));
   if (name === "report_plan_create")
