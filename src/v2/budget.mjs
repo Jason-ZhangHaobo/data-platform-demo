@@ -268,6 +268,15 @@ export class BudgetManager {
     return status;
   }
 
+  assertCanStartReportModel(reservation){
+    const invalid=()=>{throw modelPrepareFailure('报表模型预留与当前执行边界不一致','MODEL_RESERVATION_INVALID');};
+    if(!reservation||Object.keys(reservation).length!==3||!['taskId','invocationId','bootId'].every(k=>/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(reservation[k]??'')))invalid();
+    const task=this.store.get('report_agent_plan',reservation.taskId,this.project),reserved=tokens(task?.usage).total,status=this.overview();this.#assertAccount(status,modelPrepareFailure);
+    if(task?.executionMode!=='SOURCE_BOUND_REPORT_AGENT_V1'||task.mode!=='LIVE_MODEL'||task.planMode!=='PUBLISHED_SOURCE_REPORT_V1'||task.status!=='RUNNING'||task.providerPhase!=='STARTED'||task.executionBootId!==reservation.bootId||task.providerInvocationId!==reservation.invocationId||task.usageEstimated!==true||task.model!=='unconfirmed'||!Number.isFinite(Date.parse(task.modelLeaseExpiresAt))||Date.parse(task.modelLeaseExpiresAt)<=this.now()||monthKey(task.createdAt)!==status.month||reserved!==this.fallbackTokens)invalid();
+    const pending=Math.max(0,status.model.estimatedCostCny-modelCost(task.model,task.usage,this.fallbackTokens)),projected=modelCost(this.env.V2_MODEL??'qwen3.7-plus',{},reserved);
+    if(pending+projected>status.model.limitCny)throw modelPrepareFailure('本月模型预算不足','MONTHLY_MODEL_BUDGET_EXCEEDED');return status;
+  }
+
   assertCanStartServiceModel(reservation) {
     const status=this.overview();this.#assertAccount(status,modelPrepareFailure);
     const invalid=()=>{throw modelPrepareFailure('服务规划预算预留与当前持久租约不一致','MODEL_RESERVATION_INVALID');};

@@ -215,6 +215,7 @@ const tools = [
   { name: "report_run", description: "对固定快照实际运行KPI/柱状/饼图聚合并保存摘要。", inputSchema: { type: "object", properties: { reportId: { type: "string" } }, required: ["reportId"] } },
   { name: "report_export", description: "导出最后一次成功聚合结果CSV；不导出业务明细。", inputSchema: { type: "object", properties: { reportId: { type: "string" } }, required: ["reportId"] } },
   { name: "report_plan_list", description: "列出传统报表方案；sourceBatchId指定时只列本账号同批次方案。", inputSchema: { type: "object", properties: {sourceBatchId:{type:'string'}} } },
+  {name:'report_plan_resume',description:'显式续接模型尚未调用的原同源报表规划；未知模型结果不能重试，不新建编号。',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id'],additionalProperties:false}},
   { name: "report_plan_request",description:"只读恢复本账号原同源报表规划请求，不再次调用模型。",inputSchema:{type:'object',properties:{requestId:{type:'string'}},required:['requestId']}},
   { name: "report_plan_create", description: "模型基于字段摘要规划报表。可绑定source及requestId；缺字段须澄清，不读取业务行或执行。", inputSchema: { type: "object", properties: { message: { type: "string" },source:publishedReportSourceSchema,requestId:{type:'string'} }, required: ["message"] } },
   { name: "report_plan_apply", description: "应用审阅方案：普通方案创建草稿；同源方案必须提供proposalHash，将实际物化并聚合，不导出或发布生产。", inputSchema: { type: "object", properties: { planId: { type: "string" },proposalHash:{type:'string'} }, required: ["planId"] } },
@@ -811,6 +812,7 @@ async function callTool(name, args = {}, client=defaultClient) {
   if (name === "report_export")
     return client.request(`/reports/${encodeURIComponent(args.reportId)}/export`);
   if (name === "report_plan_list") return client.request('/reports/agent/plans'+(args.sourceBatchId?'?source_batch_id='+encodeURIComponent(args.sourceBatchId):''));
+  if(name==='report_plan_resume')return client.request('/reports/agent/plans/'+encodeURIComponent(args.id)+'/resume',{method:'POST',body:{}});
   if(name==='report_plan_request')return client.request('/reports/agent/requests/'+encodeURIComponent(args.requestId));
   if (name === "report_plan_create")
     return client.request("/reports/agent/plans", {
