@@ -1,3 +1,4 @@
+import{readReportClarification,deriveReportClarification,assertReportClarificationPlan,reportProposalHash,reportClarificationSignature}from'./report-clarification.mjs';
 import {sourceReportInitial,sourceReportMayStart,sourceReportProjection,runSourceReportPlan} from './source-report-execution.mjs';
 import {certifiedDistributionSource,distributionServiceSources} from './distribution-service-source.mjs';
 import {assertDistributionConsent,assertDistributionRelease,sameLocalPublicationLane,sameDistributionConsent,assertDistributionRollback,activateDistributionRollback,distributionRequestSignature} from './distribution-publication.mjs';
@@ -1116,7 +1117,7 @@ export function createV2Server(options = {}) {
     return publishedReportPlanningContext(resolvePublishedReportSource({store,project:PROJECT,source,actorId:actor}));
   };
   const requireReportPlanOwner=(plan,req)=>{if(plan.sourceBinding&&(!local||plan.submittedBy!==reportActor(req)))throw fail(404,'未找到本账号的同源报表方案');};
-  const publicReportPlan=plan=>{const{submittedBy,executionBootId,...visible}=sourceReportProjection(plan,{bootId:privateRuntimeBootId,active:controls.has(plan.id),now:options.now?.()??Date.now()});return visible;};
+  const publicReportPlan=plan=>{const{submittedBy,executionBootId,...visible}=sourceReportProjection(plan,{bootId:privateRuntimeBootId,active:controls.has(plan.id),now:options.now?.()??Date.now()});if(plan.sourceBinding){try{assertReportClarificationPlan(plan,{store,project:PROJECT,contextFor:publishedPlanContext});visible.requestBasisState='VERIFIED';}catch{visible.requestBasisState='UNCONFIRMED';}}return visible;};
   const sourceReportKey=value=>{const key=text(value,1,100);if(!/^[A-Za-z0-9_-]+$/.test(key))throw fail(422,'原报表规划请求编号不合法');return key;};
   const reportPlanner =
     options.reportPlanner ??
@@ -2934,17 +2935,32 @@ export function createV2Server(options = {}) {
         return json(res, 202, publicReportPlan(task));
       }
       const reportAgentPlan = path.match(
-        /^\/api\/v2\/reports\/agent\/plans\/([a-f0-9-]+)(?:\/(apply|cancel|resume))?$/,
+        /^\/api\/v2\/reports\/agent\/plans\/([a-f0-9-]+)(?:\/(apply|cancel|resume|clarification|clarify))?$/,
       );
       if (reportAgentPlan) {
         const plan = get("report_agent_plan", reportAgentPlan[1]),
           action = reportAgentPlan[2];
         requireReportPlanOwner(plan,req);
         if (method === "GET" && !action) return json(res, 200, publicReportPlan(plan));
+        if(method==='GET'&&action==='clarification'){
+          if(!local||!plan.sourceBinding)throw fail(403,'报表澄清仅供本机原所属人使用');
+          return json(res,200,readReportClarification({store,project:PROJECT,planId:plan.id,actorId:reportActor(req),contextFor:publishedPlanContext}));
+        }
+        if(method==='POST'&&action==='clarify'){
+          const body=await readBody(req);if(!local||!plan.sourceBinding||Object.keys(body).length!==2||!['evidenceDigest','answer'].every(k=>Object.hasOwn(body,k)))throw fail(422,'回答须绑定原问题摘要');
+          const actor=reportActor(req),key=sourceReportKey(req.headers['idempotency-key']),resolved=deriveReportClarification({store,project:PROJECT,planId:plan.id,actorId:actor,contextFor:publishedPlanContext,...body});
+          const dedup=store.deduplicate(`${PROJECT}:source-report-plan:${actor}:${key}`,reportClarificationSignature(plan.id,body.evidenceDigest,resolved.answer),()=>{
+            if(!options.reportPlanner&&!modelSettings(env).configured)throw new ModelUnavailable();budget.assertCanStartModel();
+            return store.create('report_agent_plan',PROJECT,{message:resolved.answer,status:'QUEUED',mode:'LIVE_MODEL',completionScope:'REPORT_DESIGN',fullLifecycleE2E:false,agentIndependentE2E:false,...sourceReportInitial(privateRuntimeBootId),sourceBinding:resolved.parent.sourceBinding,submittedBy:actor,requestId:key,planMode:'PUBLISHED_SOURCE_REPORT_V1',sourceEvidenceHash:resolved.parent.sourceEvidenceHash,contextHash:resolved.parent.contextHash,derivationKind:'REPORT_CLARIFICATION_V1',originPlanId:plan.id,clarification:resolved.frame});
+          });
+          const child=get('report_agent_plan',dedup.id);if(!dedup.replayed)scheduleSourceReport(child);return json(res,202,publicReportPlan(child));
+        }
+
         if(method==='POST'&&action==='resume'){
           const body=await readBody(req),current=get('report_agent_plan',plan.id);requireReportPlanOwner(current,req);
           if(!local||!current.sourceBinding||Object.keys(body).length||!publicReportPlan(current).recovery?.canResume)throw fail(409,'仅能显式续接模型尚未调用的原报表规划；未知结果不重试');
           if(!options.reportPlanner&&!modelSettings(env).configured)throw new ModelUnavailable();
+          assertReportClarificationPlan(current,{store,project:PROJECT,contextFor:publishedPlanContext});
           if(publishedReportHash(publishedPlanContext(current.sourceBinding,reportActor(req)))!==current.contextHash)throw fail(409,'原来源变化，未重新调用模型');
           const resumed=store.update('report_agent_plan',current.id,PROJECT,{...sourceReportInitial(privateRuntimeBootId),status:'QUEUED',resumeCount:(current.resumeCount??0)+1},{expectedVersion:current.version});scheduleSourceReport(resumed);return json(res,202,publicReportPlan(resumed));
         }
@@ -2969,7 +2985,8 @@ export function createV2Server(options = {}) {
           if(plan.sourceBinding){
             if(plan.executionMode==='SOURCE_BOUND_REPORT_AGENT_V1'&&plan.providerPhase!=='RECORDED')throw fail(409,'模型结果尚未确认，不能应用方案');
             if(Object.keys(body).some(k=>k!=='proposalHash')||body.proposalHash!==plan.proposalHash||!['SUCCEEDED','APPLYING','APPLIED'].includes(plan.status)||plan.proposal?.kind!=='PUBLISHED_REPORT'||
-              publishedReportPlanHash(plan.sourceBinding,plan.contextHash,plan.proposal)!==plan.proposalHash)throw fail(409,'请先审阅并提交此确切同源报表方案摘要');
+              reportProposalHash(plan,plan.proposal)!==plan.proposalHash)throw fail(409,'请先审阅并提交此确切同源报表方案摘要');
+            assertReportClarificationPlan(plan,{store,project:PROJECT,contextFor:publishedPlanContext});
             if(plan.status==='APPLIED')return json(res,200,publishedReports.lookup(plan.id,reportActor(req)));
             const context=publishedPlanContext(plan.sourceBinding,reportActor(req));if(publishedReportHash(context)!==plan.contextHash)throw fail(409,'来源或指标定义已变化，请重新审阅方案');
             const created=publishedReports.submit({name:plan.proposal.name,source:plan.sourceBinding,metricIds:plan.proposal.metricIds},reportActor(req),plan.id);
