@@ -29,7 +29,7 @@ test('distribution contracts are explicit, independent of old ten contexts and n
   const c=getContext(id),pub=publicContext(id),contract=outputContractForContext(id),family=validationFamilyForContext(id);
   assert.deepEqual(validationFamilyForContextId(id).contextIds,family.contextIds);assert.equal(validationFamilyForContextId(id).id,family.id);
   assert.equal(family.contextIds.length,5);assert.equal(family.id,c.outputContractId);assert.equal(contract.keyFields.length,3);
-  assert.equal(pub.capabilities.agentDevelopment,true);assert.equal(pub.capabilities.delivery,false);assert.equal(pub.capabilities.scope,'LOCAL_ONLY');
+  assert.equal(pub.capabilities.agentDevelopment,true);assert.equal(pub.capabilities.delivery,true);assert.equal(pub.capabilities.scope,'LOCAL_ONLY');
   assert(!Object.hasOwn(pub,'expected'));assert(!Object.hasOwn(pub.outputContract,'cases'));
   assert(verifyOutputRows(c.expected,c));assert(check(c).passed);assert(check(c,c.expected,'preflight',family.contextIds.map(getContext)).passed);
   assert.match(referenceSqlForContext(id),/COUNT\(DISTINCT p.security_code\)/);
@@ -64,5 +64,5 @@ test('input preflight rejects conflicting position IDs and negative values, scop
  const outside=structuredClone(c);outside.tables.find(t=>t.name==='positions').rows.at(-1)[5]='-1.00';assert.equal(check(outside,[],'preflight').passed,true);
  const oversized=structuredClone(c);oversized.tables.find(t=>t.name==='positions').rows[0][5]='10000000000000000.00';assert.match(check(oversized,[],'preflight').error,/DECIMAL/);
  assert.equal(check(c,[],'preflight').passed,true);
- assert.throws(()=>createDeliveryPackage({revision:{contextId:c.id}}),e=>e.code==='OUTPUT_CONTRACT_CLASSIC_ONLY');
+ assert.throws(()=>createDeliveryPackage({revision:{contextId:c.id}}),/本机真实Spark/);
 });

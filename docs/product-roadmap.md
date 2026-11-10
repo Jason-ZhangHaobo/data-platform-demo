@@ -1,5 +1,7 @@
 # V2 迭代路线与证据
 
+当前增量：[分布八文件/演练/本机审阅](distribution-delivery-review.md)复用已核验的原任务，不新增模型；包冻结六列契约、理解与复合键测试，本机审阅和发布批准分开。真实模型/云端及实际发布仍独立验收，唯一下一动作见[执行清单](goal-mode-next.md)。
+
 当前增量：[分布Agent开发](distribution-agent-development.md)已接入登记理解、六列代码生成/反馈修正与独立核验。本机模型替身/真实Spark分别存证；交付、真实模型及云端仍待后续，唯一动作见[执行清单](goal-mode-next.md)。
 
 当前增量：[持仓分布契约](holdings-distribution-contracts.md)已通过经典SQL本机真实Spark的两族十场景，明确复合键与不含现金的占比分母；原契约不变。Agent理解／交付及云端尚未适配，唯一动作见[执行清单](goal-mode-next.md)。

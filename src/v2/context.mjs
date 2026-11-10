@@ -114,7 +114,7 @@ export function publicContext(id) {
     ...context,
     referenceSql: referenceSqlForContext(id),
     validationFamily: validationFamilyForContext(id),
-    ...(context.outputContractId ? {outputContract:outputContractForContext(id),capabilities:{classicSql:true,agentDevelopment:true,delivery:false,scope:"LOCAL_ONLY"}} : {}),
+    ...(context.outputContractId ? {outputContract:outputContractForContext(id),capabilities:{classicSql:true,agentDevelopment:true,delivery:true,publication:false,scope:"LOCAL_ONLY"}} : {}),
   };
 }
 export const contextIds = [
