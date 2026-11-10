@@ -1,3 +1,5 @@
+import {distributionMetadataById} from '../../src/v2/output-contract-metadata.mjs';
+import {checkedDistributionReportWidgets} from './distribution-report-read.ts';
 export type PublishedReportSource = {
   kind: "AGENT" | "MANUAL";
   releaseId: string;
@@ -10,11 +12,12 @@ export type PublishedReportSource = {
 export type ReportWidgetResult = {
   id: string; type: "KPI" | "BAR" | "PIE"; title: string;
   aggregation: string; field?: string; dimension?: string;
-  value?: string; series?: { group: string; value: string }[]; evaluatedCount: number;
+  value?: string; series?: { group: string; value: string;partitionKey?:string;clientLabel?:string;tradeDate?:string;zeroDenominator?:boolean }[]; evaluatedCount: number;
 };
 export type PublishedReportResult = {
   key: string; reportId: string; name: string; versionId: string; versionNumber: number;
   runId: string; snapshotId: string; sourceBatchId: string; contentHash: string;
+  outputContractId?:string;sourceEvidence?:{modelClassification?:string;engineClassification?:string};
   resultHash: string; description: string; fields: string[]; widgets: ReportWidgetResult[]; exportable: boolean;
 };
 const record = (v: unknown): v is Record<string, any> => Boolean(v && typeof v === "object" && !Array.isArray(v));
@@ -49,9 +52,12 @@ export function boundPublishedReports(value: unknown, source: PublishedReportSou
     for (const snapshot of dataset.snapshots) {
       if (!record(snapshot) || !id(snapshot.id) || snapshots.has(snapshot.id)) throw invalid();
       if (!source.batchIds.includes(snapshot.assetVersionId)) continue;
-      if (snapshot.datasetId !== dataset.id || snapshot.assetId !== "dataset:customer_assets_t1" || dataset.assetId !== snapshot.assetId ||
+      if (snapshot.datasetId !== dataset.id || (snapshot.outputContractId?(!distributionMetadataById(snapshot.outputContractId)||snapshot.assetId!=="dataset:"+snapshot.outputContractId):snapshot.assetId !== "dataset:customer_assets_t1") || dataset.assetId !== snapshot.assetId ||
         snapshot.actualMaterialization !== true || snapshot.status !== "READY" || !hash(snapshot.contentHash) || !hash(snapshot.assetEvidenceHash) || !count(snapshot.rowCount) ||
         !Array.isArray(snapshot.fields) || !snapshot.fields.length || !snapshot.fields.every(text) || new Set(snapshot.fields).size !== snapshot.fields.length) throw invalid();
+      if(snapshot.outputContractId){const c=distributionMetadataById(snapshot.outputContractId),p=dataset.publishedSource,e=snapshot.sourceEvidence;
+       if(!c||dataset.outputContractId!==c.id||JSON.stringify(snapshot.fields)!==JSON.stringify(c.fields.map(f=>f.name))||!c.contextIds.includes(snapshot.contextId)||snapshot.contextId!==dataset.contextId||!record(p)||p.kind!==source.kind||p.taskId!==source.taskId||p.releaseId!==source.releaseId||p.packageDigest!==source.packageDigest||p.revisionId!==source.revisionId||p.runId!==source.runId||p.batchId!==snapshot.assetVersionId||!record(e)||e.agentIndependentE2E!==false||e.scope!=='LOCAL_TEST_ONLY'||e.sourceTaskId!==source.taskId||e.sourceRevisionId!==source.revisionId||e.sourceRunId!==source.runId||e.sourceReleaseRunId!==p.batchId)throw invalid();
+      }
       snapshots.set(snapshot.id, { datasetId: dataset.id, snapshot });
     }
   }
@@ -71,12 +77,16 @@ export function boundPublishedReports(value: unknown, source: PublishedReportSou
         !text(version.description) || !text(report.name) || !hash(version.configHash) || run.reportId !== report.id || run.datasetId !== bound.datasetId ||
         run.status !== "SUCCEEDED" || run.actualExecution !== true || run.publicDeployed !== false || run.fullLifecycleE2E !== false || run.datasetContentHash !== bound.snapshot.contentHash ||
         run.reportConfigHash !== version.configHash || !hash(run.resultHash)) throw invalid();
-      const widgets = checkedWidgets(run.widgets);
+      const distribution=bound.snapshot.outputContractId;
+      if(distribution&&(version.outputContractId!==distribution||run.outputContractId!==distribution||run.distributionValidation?.passed!==true||run.distributionValidation.agentIndependentE2E!==false))throw invalid();
+      if(distribution&&(!record(run.sourceEvidence)||['modelClassification','engineClassification','sourceTaskId','sourceRevisionId','sourceRunId','sourceReleaseRunId','outputContractId','packageDigest','releaseId'].some(k=>run.sourceEvidence[k]!==bound.snapshot.sourceEvidence[k])))throw invalid();
+      const widgets = distribution?checkedDistributionReportWidgets(run.widgets,version.widgets,distribution,bound.snapshot.rowCount):checkedWidgets(run.widgets);
       if (!Array.isArray(version.widgets) || version.widgets.length !== widgets.length ||
         widgets.some((w, i) => !record(version.widgets[i]) || definition(w) !== definition(version.widgets[i]) ||
           w.evaluatedCount !== bound.snapshot.rowCount || w.field !== undefined && !bound.snapshot.fields.includes(w.field) || w.dimension !== undefined && !bound.snapshot.fields.includes(w.dimension))) throw invalid();
       results.push({ key: `${report.id}:${version.id}:${run.id}`, reportId: report.id, name: report.name, versionId: version.id, versionNumber: version.versionNumber,
         runId: run.id, snapshotId: run.datasetSnapshotId, sourceBatchId: bound.snapshot.assetVersionId, contentHash: bound.snapshot.contentHash,
+        ...(distribution?{outputContractId:distribution,sourceEvidence:run.sourceEvidence}:{}),
         resultHash: run.resultHash, description: version.description, fields: bound.snapshot.fields, widgets,
         exportable: report.lastRunId === run.id && report.currentVersionId === version.id });
     }

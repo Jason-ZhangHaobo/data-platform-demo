@@ -9,7 +9,7 @@ import type{SourceReportPlan}from'./source-report-plan';
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
 export function PublishedReportAgent({api,source,canWrite,onCreated}:{api:Api;source:PublishedReportSource;canWrite:boolean;onCreated:(value:PublishedReportReceipt)=>void}){
  const selectionKey='shuduo:source-report-batch:v1:'+JSON.stringify([source.kind,source.taskId??'',source.releaseId,source.packageDigest,source.revisionId,source.runId]);
- const[message,setMessage]=useState('基于此发布结果生成持仓市值和可用现金分析报告'),[batchId,setBatchId]=useState(()=>{try{const saved=localStorage.getItem(selectionKey);return saved&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(saved)?saved:source.batchIds[0];}catch{return source.batchIds[0];}}),[available,setAvailable]=useState(false),[plan,setPlan]=useState<SourceReportPlan>(),[pendingKey,setPendingKey]=useState(''),[busy,setBusy]=useState(false),[notice,setNotice]=useState('');
+ const[message,setMessage]=useState('基于此发布结果的可用字段生成分析报表，保留原业务口径并说明缺失字段'),[batchId,setBatchId]=useState(()=>{try{const saved=localStorage.getItem(selectionKey);return saved&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(saved)?saved:source.batchIds[0];}catch{return source.batchIds[0];}}),[available,setAvailable]=useState(false),[plan,setPlan]=useState<SourceReportPlan>(),[pendingKey,setPendingKey]=useState(''),[busy,setBusy]=useState(false),[notice,setNotice]=useState('');
  const{batchIds,...base}=source,binding=publishedReportSource({...base,batchId}),key=JSON.stringify(binding),active=useRef(key),epoch=useRef(0),alive=useRef(true);active.current=key;
  const storage='shuduo:source-report-plan:v1:'+key;
  const[executionUnconfirmed,setExecutionUnconfirmed]=useState(false);

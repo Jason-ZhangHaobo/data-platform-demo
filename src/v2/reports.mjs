@@ -1,3 +1,5 @@
+import {normalizeDistributionReportWidgets,executeDistributionReport} from './distribution-reports.mjs';
+import {distributionMetadataById} from './output-contract-metadata.mjs';
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -140,7 +142,8 @@ export class ReportManager {
   }
 
   createDataset(input, { publishedSource, actorId } = {}) {
-    const { asset } = publishedSource ? this.resolvePublishedSource(publishedSource, actorId) : this.assets.reportRows(text(input.assetId, "资产编号", 4, 160)),
+    const resolved=publishedSource?this.resolvePublishedSource(publishedSource,actorId):undefined;
+    const { asset } = publishedSource ? resolved : this.assets.reportRows(text(input.assetId, "资产编号", 4, 160)),
       fields = normalizeFields(input.fields, asset.fields.map((field) => field.name)),
       code = identifier(input.code, "数据集代码");
     if (
@@ -149,6 +152,7 @@ export class ReportManager {
         .some((dataset) => dataset.code === code)
     )
       throw fail(409, "报表数据集代码已存在", "DUPLICATE_REPORT_DATASET");
+    if(asset.outputContractId&&JSON.stringify(fields)!==JSON.stringify(asset.fields.map(f=>f.name)))throw fail(422,"分布数据集须保留完整复合键与六列契约","DISTRIBUTION_REPORT_FIELDS");
     return this.store.create("report_dataset", this.project, {
       name: text(input.name, "数据集名称", 2, 80),
       code,
@@ -156,6 +160,7 @@ export class ReportManager {
       fields,
       status: "DRAFT",
       actualSnapshot: false,
+      ...(asset.outputContractId?{outputContractId:asset.outputContractId,contextId:resolved.context.id,sourceEvidence:resolved.sourceEvidence}:{}),
       ...(publishedSource ? { publishedSource, sourceActorId: actorId } : {}),
     });
   }
@@ -183,6 +188,7 @@ export class ReportManager {
         fields: dataset.fields,
         status: "READY",
         actualMaterialization: true,
+        ...(asset.outputContractId?{outputContractId:asset.outputContractId,contextId:dataset.contextId,sourceEvidence:dataset.sourceEvidence}:{}),
       });
     this.store.update("report_dataset", dataset.id, this.project, {
       currentSnapshotId: snapshot.id,
@@ -297,11 +303,12 @@ export class ReportManager {
       );
     if (!snapshotMeta)
       throw fail(409, "报表绑定的数据集快照不存在", "REPORT_SNAPSHOT_MISSING");
+    if(version.outputContractId!==snapshotMeta.outputContractId||!version.outputContractId&&version.widgets.some(w=>w.aggregation==='VALUE'))throw fail(409,'分布报表与固定快照契约不一致','REPORT_VERSION_CORRUPT');
+    if(version.outputContractId&&stableHash({datasetId:version.datasetId,outputContractId:version.outputContractId,datasetSnapshotId:version.datasetSnapshotId,widgets:version.widgets,description:version.description})!==version.configHash)throw fail(409,'分布报表版本摘要不一致','REPORT_VERSION_CORRUPT');
     const snapshot = this.reportStore.read(snapshotMeta.dataSnapshotId),
       started = this.now(),
-      widgets = version.widgets.map((widget) =>
-        executeWidget(widget, snapshot.rows),
-      ),
+      distribution=version.outputContractId?executeDistributionReport({version,snapshot,metadata:snapshotMeta,hash:stableHash}):undefined,
+      widgets = distribution?.widgets??version.widgets.map((widget) =>executeWidget(widget, snapshot.rows)),
       run = this.store.create("report_run", this.project, {
         reportId: report.id,
         reportVersionId: version.id,
@@ -311,6 +318,7 @@ export class ReportManager {
         datasetContentHash: snapshot.contentHash,
         status: "SUCCEEDED",
         widgets,
+        ...(distribution?{outputContractId:version.outputContractId,distributionValidation:distribution.distributionValidation,sourceEvidence:distribution.sourceEvidence}:{}),
         resultHash: stableHash(widgets),
         durationMs: this.now() - started,
         actualExecution: true,
@@ -333,13 +341,14 @@ export class ReportManager {
       run = report.runs.find((item) => item.id === report.lastRunId);
     if (!run || run.status !== "SUCCEEDED")
       throw fail(409, "报表尚无成功运行，不能导出", "REPORT_RUN_REQUIRED");
-    const rows = [["widget_id", "title", "group", "value"]];
+    const partitioned=Boolean(run.outputContractId);
+    const rows = [partitioned?["widget_id","title","customer_slice","client_label","trade_date","group","value"]:["widget_id", "title", "group", "value"]];
     for (const widget of run.widgets) {
       if (widget.value !== undefined)
         rows.push([widget.id, widget.title, "ALL", widget.value]);
       else
         for (const item of widget.series)
-          rows.push([widget.id, widget.title, item.group, item.value]);
+          rows.push(partitioned?[widget.id,widget.title,item.partitionKey,item.clientLabel,item.tradeDate,item.group,item.value]:[widget.id, widget.title, item.group, item.value]);
     }
     const content = rows.map((row) => row.map(csvCell).join(",")).join("\n") + "\n";
     return {
@@ -410,13 +419,12 @@ export class ReportManager {
       throw fail(409, "请先刷新数据集快照", "REPORT_DATASET_NOT_READY");
     if (!Array.isArray(input.widgets) || !input.widgets.length || input.widgets.length > 8)
       throw fail(400, "报表必须包含1—8个组件", "INVALID_REPORT_WIDGETS");
-    const widgets = input.widgets.map((widget) =>
-      normalizeWidget(widget, dataset.fields),
-    );
+    const widgets = dataset.outputContractId?normalizeDistributionReportWidgets(input.widgets,dataset.outputContractId):input.widgets.map((widget) =>normalizeWidget(widget, dataset.fields));
     if (new Set(widgets.map((widget) => widget.id)).size !== widgets.length)
       throw fail(400, "报表组件ID不能重复", "DUPLICATE_WIDGET_ID");
     const config = {
       datasetId: dataset.id,
+      ...(dataset.outputContractId?{outputContractId:dataset.outputContractId}:{}),
       datasetSnapshotId: snapshot.id,
       widgets,
       description: text(input.description, "报表说明", 4, 500),

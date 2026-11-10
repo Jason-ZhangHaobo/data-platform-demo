@@ -8121,3 +8121,5 @@ kbd {
 .result-body .distribution-result-table th small { overflow-wrap: anywhere; }
 .result-body .distribution-result-table td { padding: 10px 7px; font-size: 10px; }
 .result-body .distribution-result-table th:first-child,.result-body .distribution-result-table td:first-child { width: 26px; }
+
+.distribution-report-view>label{display:flex;flex-direction:column;gap:8px;max-width:460px}.distribution-report-view select{padding:10px;border:1px solid var(--border);border-radius:8px;background:#fff}.report-distribution-table{overflow:auto;margin:20px 0}.report-distribution-table table{width:100%;border-collapse:collapse}.report-distribution-table th,.report-distribution-table td{text-align:left;padding:12px;border-bottom:1px solid var(--border)}.report-distribution-table caption{text-align:left;padding:8px 0;color:var(--muted)}

@@ -1,3 +1,4 @@
+import {distributionReportTemplateForContext} from './distribution-report-contract.mjs';
 // Templates describe available fields; they never invent missing dimensions.
 export function securitiesReportTemplate(fields = []) {
   const available = new Set(fields), widgets = [];
@@ -25,6 +26,7 @@ export function securitiesReportTemplate(fields = []) {
   return { widgets, notes };
 }
 export function publishedReportTemplate(fields,contextId){
+ const distribution=distributionReportTemplateForContext(contextId);if(distribution)return distribution;
  const result=securitiesReportTemplate(fields);
  if(contextId.startsWith('stock-cash'))for(const w of result.widgets){if(w.id==='total_assets')w.title='股票持仓＋现金合计（元）';if(w.id==='client_assets')w.title='各客户股票持仓＋现金（元）';}
  return result;

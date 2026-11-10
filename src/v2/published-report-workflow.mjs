@@ -8,10 +8,12 @@ export function createPublishedReportWorkflow({store,project,reports,resolveSour
  const view=r=>{
   const result={protocol:'shuduo-published-report-creation/v1',id:r.id,requestId:r.requestId,status:r.status,scope:'LOCAL_TEST_ONLY',source:r.input.source,name:r.input.name,stage:r.stage,error:r.error,
     datasetId:r.datasetId,snapshotId:r.snapshotId,reportId:r.reportId,reportVersionId:r.reportVersionId,reportRunId:r.reportRunId,sourceEvidenceHash:r.sourceEvidenceHash,
-    metricIds:r.input.metricIds??[...publishedReportMetricIds],agentIndependentE2E:false,publicDeployed:false};
+    metricIds:r.metricIds??r.input.metricIds??[...publishedReportMetricIds],agentIndependentE2E:false,publicDeployed:false};
   if(r.status==='SUCCEEDED'){
    const report=reports.reportDetail(r.reportId),run=report.runs.find(x=>x.id===r.reportRunId),version=report.versions.find(x=>x.id===r.reportVersionId),snapshot=reports.datasetDetail(r.datasetId).snapshots.find(x=>x.id===r.snapshotId);
    if(!run||!version||!snapshot||run.reportId!==report.id||run.reportVersionId!==version.id||run.datasetSnapshotId!==snapshot.id||version.datasetSnapshotId!==snapshot.id||snapshot.assetVersionId!==r.input.source.batchId||snapshot.assetEvidenceHash!==r.sourceEvidenceHash||run.datasetContentHash!==snapshot.contentHash||run.status!=='SUCCEEDED'||run.actualExecution!==true)throw fail(409,'REPORT_CREATION_RECEIPT_CHANGED','原报表请求与固定产物不一致，未重新计算');
+   if(r.outputContractId&&(version.outputContractId!==r.outputContractId||snapshot.outputContractId!==r.outputContractId||run.outputContractId!==r.outputContractId||run.distributionValidation?.passed!==true||run.distributionValidation.agentIndependentE2E!==false))throw fail(409,'DISTRIBUTION_REPORT_RECEIPT_CHANGED','分布报表固定契约或独立结果未确认');
+   if(r.outputContractId)result.outputContractId=r.outputContractId;
    result.resultHash=run.resultHash;result.rowCount=snapshot.rowCount;result.widgetCount=run.widgets.length;
   }
   return result;
@@ -51,8 +53,9 @@ export function createPublishedReportWorkflow({store,project,reports,resolveSour
    if(typeof actor!=='string'||!actor)throw fail(403,'REPORT_CREATION_OWNER','需要已授权工程师身份');
    input=publishedReportInput(input);requestId=reportRequestId(requestId);
    const d=store.deduplicate(keyFor(actor,requestId),publishedReportHash(input),()=>{
-    const resolved=resolveSource(input.source,actor);
-    return store.create(kind,project,{actorId:actor,requestId,input,sourceEvidenceHash:resolved.asset.evidenceHash,status:'PREPARING',stage:'SOURCE_CONFIRMED'});
+    const resolved=resolveSource(input.source,actor),template=publishedReportTemplate(resolved.asset.fields.map(f=>f.name),resolved.context.id);
+    if(input.metricIds?.some(id=>!template.widgets.some(w=>w.id===id)))throw fail(422,'INVALID_PUBLISHED_REPORT_METRIC','此发布结果不支持所选指标，请先澄清字段与口径');
+    return store.create(kind,project,{actorId:actor,requestId,input,...(resolved.asset.outputContractId?{metricIds:input.metricIds??template.widgets.map(w=>w.id),outputContractId:resolved.asset.outputContractId}:{}),sourceEvidenceHash:resolved.asset.evidenceHash,status:'PREPARING',stage:'SOURCE_CONFIRMED'});
    });
    return advance(d.id,actor);
   },

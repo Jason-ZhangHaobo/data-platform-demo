@@ -1,3 +1,4 @@
+import {distributionReportTemplate} from './distribution-report-contract.mjs';
 import {publishedReportInput,publishedReportSource,reportRequestId} from './published-report-request.mjs';
 const hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 export function checkedPublishedReportReceipt(value,{requestId,source,name,metricIds}={}){
@@ -8,6 +9,7 @@ export function checkedPublishedReportReceipt(value,{requestId,source,name,metri
  if(metricIds&&JSON.stringify([...metricIds].sort())!==JSON.stringify([...(value.metricIds??[])].sort()))bad();
  if(typeof value.stage!=='string'||!['SOURCE_CONFIRMED','dataset','snapshot','report','reportRun','COMPLETE'].includes(value.stage)||value.status==='PARTIAL'&&(!value.error||typeof value.error.code!=='string'||typeof value.error.message!=='string'))bad();
  if(value.status==='SUCCEEDED'&&(!['datasetId','snapshotId','reportId','reportVersionId','reportRunId'].every(k=>typeof value[k]==='string')||value.stage!=='COMPLETE'||!hash(value.resultHash)||!Number.isSafeInteger(value.rowCount)||value.rowCount<0||!Number.isSafeInteger(value.widgetCount)||value.widgetCount<1||value.widgetCount>8))bad();
+ if(value.outputContractId!==undefined){const template=distributionReportTemplate(value.outputContractId);if(!template||!Array.isArray(value.metricIds)||!value.metricIds.length||new Set(value.metricIds).size!==value.metricIds.length||value.metricIds.some(id=>!template.widgets.some(w=>w.id===id))||value.status==='SUCCEEDED'&&value.widgetCount!==value.metricIds.length)bad();}
  return value;
 }
 export async function submitPublishedReport(client,args){

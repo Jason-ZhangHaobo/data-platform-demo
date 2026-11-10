@@ -31,7 +31,7 @@ test('provider adapter prompts for exact metadata and clarification without cust
 });
 test('invalid proposed fields and changed source cannot reach report creation',async t=>{
  const f=await fixture(t,async()=>({plan:{kind:'PUBLISHED_REPORT',name:'虚构行业报告',metricIds:['industry_distribution']},model:'SYNTHETIC_REPORT_PLANNER',mode:'TEST_DOUBLE'}));
- const created=await f.client.request('/reports/agent/plans',{method:'POST',body:{message:'生成行业分布报告',source:f.source}}),p=await wait(f,created.id);assert.equal(p.status,'FAILED');assert.match(p.error,/未登记指标/);assert.equal(f.store.list('report',PROJECT).length,0);
+ const created=await f.client.request('/reports/agent/plans',{method:'POST',body:{message:'生成行业分布报告',source:f.source}}),p=await wait(f,created.id);assert.equal(p.status,'FAILED');assert.match(p.error,/未登记指标|此发布结果不支持/);assert.equal(f.store.list('report',PROJECT).length,0);
  f.store.update('report_agent_plan',p.id,PROJECT,{submittedBy:'other-owner'});await assert.rejects(f.client.request('/reports/agent/plans/'+p.id),e=>e.status===404);
 });
 test('missing industry requests ask for clarification and never create reports',async t=>{

@@ -4,8 +4,8 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding} f
 import {syntheticSqlRequirement} from './sql-requirement.mjs';
 // All provider/Worker receipts here are synthetic, including live-shaped model
 // names needed to exercise publication guards. Never count as actual acceptance.
-export function requirementDeliverySource(store,project,{contextId='stock-cash-t1',assisted=false,isolation='FUNCTION_PROCESS',message='【合成回执验收】按登记证券口径计算客户日资产'}={}){
- const actor='synthetic-owner',context=getContext(contextId),family=validationFamilyForContext(contextId),sql=referenceSqlForContext(contextId);
+export function requirementDeliverySource(store,project,{contextId='stock-cash-t1',actor='synthetic-owner',assisted=false,isolation='FUNCTION_PROCESS',message='【合成回执验收】按登记证券口径计算客户日资产'}={}){
+ const context=getContext(contextId),family=validationFamilyForContext(contextId),sql=referenceSqlForContext(contextId);
  let revision=store.create('revision',project,{contextId,sql,hash:sha256(sql),source:'LIVE_MODEL',author:actor});
  let agent=store.create('agent',project,{contextId,message,language:'SPARK_SQL',mode:'LIVE_MODEL',
   executionMode:'DURABLE_SQL_AGENT_V1',executionEvidenceMode:'TEST_HARNESS',submittedBy:actor,status:'SUCCEEDED',stage:'SUCCEEDED',sql,revisionId:revision.id,validationContractId:family.id,attempts:[]});
