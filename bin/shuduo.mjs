@@ -93,11 +93,13 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo delivery cancel --id VERIFICATION_ID
   shuduo delivery reviews
   shuduo delivery review --id PACKAGE_ID --package-digest SHA256 --verification-id VERIFICATION_ID --note "已核对" --attest-code --attest-assertions --attest-delivery-files --attest-local-scope
+  分布批准/回滚需 --distribution-consent 已审阅确认JSON文件；读取不自动确认。
   shuduo releases approvals
   shuduo releases approve --package-id PACKAGE_ID --package-digest SHA256 --review-id REVIEW_ID
   shuduo releases list
   shuduo releases show --id RELEASE_ID
   shuduo releases publish --approval-id APPROVAL_ID [--trigger-after-seconds 5 --interval-seconds 15 --run-count 2]
+  shuduo releases cancel --id RELEASE_ID --package-digest SHA256
   shuduo releases rollback --id RELEASE_ID --target-release-id RELEASE_ID --reason "恢复稳定版本"
   shuduo releases monitor
   shuduo services list [--type dapi|xapi]
@@ -688,6 +690,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: {
             packageDigest: required(parsed.options, "package_digest"),
             reviewId: required(parsed.options, "review_id"),
+            ...(parsed.options.distribution_consent?{distributionConsent:jsonObject(readFileSync(parsed.options.distribution_consent,"utf8"),"分布发布批准")}:{})
           },
         },
       );
@@ -702,20 +705,20 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         method: "POST",
         body: {
           approvalId: required(parsed.options, "approval_id"),
-          triggerAfterSeconds: Number(parsed.options.trigger_after_seconds ?? 5),
-          intervalSeconds: Number(parsed.options.interval_seconds ?? 15),
-          runCount: Number(parsed.options.run_count ?? 2),
+          ...(parsed.options.distribution_consent?jsonObject(readFileSync(parsed.options.distribution_consent,"utf8"),"分布发布批准").scheduleSpec:{triggerAfterSeconds:Number(parsed.options.trigger_after_seconds??5),intervalSeconds:Number(parsed.options.interval_seconds??15),runCount:Number(parsed.options.run_count??2)}),
         },
       });
+    else if (resource === "releases" && action === "cancel")
+      result=await client.request(`/releases/${encodeURIComponent(required(parsed.options,"id"))}/cancel`,{method:"POST",body:{packageDigest:required(parsed.options,"package_digest")}});
     else if (resource === "releases" && action === "rollback")
       result = await client.request(
         `/releases/${encodeURIComponent(required(parsed.options, "id"))}/rollback`,
         {
           method: "POST",
+          ...(parsed.options.request_id?{idempotencyKey:parsed.options.request_id}:{}),
           body: {
             targetReleaseId: required(parsed.options, "target_release_id"),
-            triggerAfterSeconds: Number(parsed.options.trigger_after_seconds ?? 5),
-            intervalSeconds: Number(parsed.options.interval_seconds ?? 15),
+            ...(parsed.options.distribution_consent?{distributionRollback:jsonObject(readFileSync(parsed.options.distribution_consent,"utf8"),"分布回滚确认")}:{triggerAfterSeconds:Number(parsed.options.trigger_after_seconds??5),intervalSeconds:Number(parsed.options.interval_seconds??15)}),
             reason: required(parsed.options, "reason"),
           },
         },

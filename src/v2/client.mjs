@@ -74,6 +74,7 @@ export const V2_OPERATIONS = Object.freeze([
   "release_detail",
   "release_create",
   "release_rollback",
+  "release_cancel",
   "release_monitor",
   "dapi_list",
   "dapi_create",

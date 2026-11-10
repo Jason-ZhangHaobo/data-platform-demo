@@ -27,6 +27,8 @@ const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANU
 
 const manualPublicationProperties={sourceRunId:{type:'string',format:'uuid'},taskId:{type:'string',format:'uuid'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},verificationId:{type:'string',format:'uuid'},releaseId:{type:'string',format:'uuid'}};
 const manualPublicationRequired=['sourceRunId','taskId','packageDigest','verificationId'];
+const distributionApprovalSchema={type:'object',additionalProperties:false,properties:{scope:{const:'LOCAL_TEST_RELEASE'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},verificationId:{type:'string',format:'uuid'},metadataHash:{type:'string',pattern:'^[a-f0-9]{64}$'},scheduleSpec:{type:'object',additionalProperties:false,properties:{triggerAfterSeconds:{type:'integer',minimum:1,maximum:300},intervalSeconds:{type:'integer',minimum:1,maximum:300},runCount:{const:2}},required:['triggerAfterSeconds','intervalSeconds','runCount']},confirmFrozenFictionalData:{const:true}},required:['scope','packageDigest','verificationId','metadataHash','scheduleSpec','confirmFrozenFictionalData']};
+const distributionRollbackSchema={type:'object',additionalProperties:false,properties:{scope:{const:'LOCAL_TEST_RELEASE'},targetPackageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},metadataHash:{type:'string',pattern:'^[a-f0-9]{64}$'},confirmFrozenFictionalData:{const:true}},required:['scope','targetPackageDigest','metadataHash','confirmFrozenFictionalData']};
 const tools = [
   {name:'agent_clarification_source',description:'只读本人原SQL澄清问题、输入与摘要，不调用模型或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'}},required:['taskId']},annotations:{readOnlyHint:true}},
   {name:'agent_clarification_reply',description:'明确回答已读取的原问题后新建独立任务，可能调用模型和Spark；保留原用量，不继承批准，不计直接自主完成。未知结果先按requestId查询，不自动重试。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},evidenceDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},answer:{type:'string',minLength:1,maxLength:1000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['taskId','evidenceDigest','answer','requestId','confirm']},annotations:{readOnlyHint:false}},
@@ -100,11 +102,12 @@ const tools = [
   { name: "delivery_review_list", description: "列出按包摘要与文件演练绑定的工程师审阅记录。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_review_create", description: "记录工程师已核对代码、断言、交付文件和本机范围；不审批、不发布。调用前必须完成实际审阅并取得明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, verificationId: { type: "string" }, reviewNote: { type: "string" }, attestations: { type: "object", properties: { code: { type: "boolean", const: true }, assertions: { type: "boolean", const: true }, deliveryFiles: { type: "boolean", const: true }, localScope: { type: "boolean", const: true } }, required: ["code", "assertions", "deliveryFiles", "localScope"], additionalProperties: false } }, required: ["packageId", "packageDigest", "verificationId", "reviewNote", "attestations"] } },
   { name: "release_approval_list", description: "列出绑定交付包摘要的发布审批记录。", inputSchema: { type: "object", properties: {} } },
-  { name: "release_approve", description: "审批已成功演练且已有摘要绑定审阅记录的交付包；会授予本机发布资格，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, reviewId: { type: "string" } }, required: ["packageId", "packageDigest", "reviewId"] } },
+  { name: "release_approve", description: "审批已成功演练且已有摘要绑定审阅记录的交付包；会授予本机发布资格，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, reviewId: { type: "string" },distributionConsent:distributionApprovalSchema }, required: ["packageId", "packageDigest", "reviewId"] } },
   { name: "release_list", description: "列出本机发布版本、健康度和调度状态。", inputSchema: { type: "object", properties: {} } },
   { name: "release_detail", description: "读取指定本机发布版本及批次摘要。", inputSchema: { type: "object", properties: { releaseId: { type: "string" } }, required: ["releaseId"] } },
   { name: "release_create", description: "消费一次审批并激活本机发布、安排两个墙上时钟批次；调用前必须取得用户明确确认，且不代表公网发布。", inputSchema: { type: "object", properties: { approvalId: { type: "string" }, triggerAfterSeconds: { type: "integer", minimum: 1, maximum: 30 }, intervalSeconds: { type: "integer", minimum: 1, maximum: 60 }, runCount: { type: "integer", minimum: 2, maximum: 5 } }, required: ["approvalId"] } },
-  { name: "release_rollback", description: "回滚到已有健康本机版本并安排恢复批次；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { releaseId: { type: "string" }, targetReleaseId: { type: "string" }, triggerAfterSeconds: { type: "integer", minimum: 1, maximum: 30 }, intervalSeconds: { type: "integer", minimum: 1, maximum: 60 }, reason: { type: "string" } }, required: ["releaseId", "targetReleaseId", "reason"] } },
+  { name:"release_cancel",description:"停止确切本机分布发布的后续批次；需明确确认并提供包摘要，不改变历史成功记录。",inputSchema:{type:"object",properties:{releaseId:{type:"string"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}},required:["releaseId","packageDigest"]}},
+  { name: "release_rollback", description: "回滚到已有健康本机版本并安排恢复批次；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { releaseId: { type: "string" }, targetReleaseId: { type: "string" }, triggerAfterSeconds: { type: "integer", minimum: 1, maximum: 30 }, intervalSeconds: { type: "integer", minimum: 1, maximum: 60 }, reason: { type: "string" },distributionRollback:distributionRollbackSchema,requestId:{type:"string",format:"uuid"} }, required: ["releaseId", "targetReleaseId", "reason"] } },
   { name: "release_monitor", description: "读取本机发布批次、告警、恢复和健康度；明确不是公网监控。", inputSchema: { type: "object", properties: {} } },
   { name: "dapi_list", description: "列出版本化DAPI。", inputSchema: { type: "object", properties: {} } },
   { name: "dapi_create", description: "从已验证发布批次创建DAPI草稿，不自动发布。", inputSchema: { type: "object", properties: { name: { type: "string" }, slug: { type: "string" }, sourceReleaseRunId: { type: "string" }, fields: { type: "array", items: { type: "string" } } }, required: ["name", "slug", "sourceReleaseRunId"] } },
@@ -450,6 +453,7 @@ async function callTool(name, args = {}, client=defaultClient) {
         body: {
           packageDigest: args.packageDigest,
           reviewId: args.reviewId,
+          ...(args.distributionConsent?{distributionConsent:args.distributionConsent}:{}),
         },
       },
     );
@@ -466,15 +470,16 @@ async function callTool(name, args = {}, client=defaultClient) {
         runCount: args.runCount ?? 2,
       },
     });
+  if(name==="release_cancel")return client.request(`/releases/${encodeURIComponent(args.releaseId)}/cancel`,{method:"POST",body:{packageDigest:args.packageDigest}});
   if (name === "release_rollback")
     return client.request(
       `/releases/${encodeURIComponent(args.releaseId)}/rollback`,
       {
         method: "POST",
+        ...(args.requestId?{idempotencyKey:args.requestId}:{}),
         body: {
           targetReleaseId: args.targetReleaseId,
-          triggerAfterSeconds: args.triggerAfterSeconds ?? 5,
-          intervalSeconds: args.intervalSeconds ?? 15,
+          ...(args.distributionRollback?{distributionRollback:args.distributionRollback}:{triggerAfterSeconds:args.triggerAfterSeconds??5,intervalSeconds:args.intervalSeconds??15}),
           reason: args.reason,
         },
       },

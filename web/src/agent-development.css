@@ -51,3 +51,8 @@
 .agent-file-review-check input { flex: 0 0 16px; width: 16px; height: 16px; margin: 3px 0 0; accent-color: #276c48; }
 .agent-file-review > small { display: block; color: #748675; margin: 8px 0 14px; overflow-wrap: anywhere; }
 .agent-file-review > button { margin: 10px 8px 0 0; }
+
+.local-distribution-controls { display: grid; gap: 10px; margin-top: 14px; }
+.local-distribution-controls select { display: block; width: 100%; margin-top: 6px; padding: 9px 11px; border: 1px solid #d8e3d6; border-radius: 6px; background: #fff; color: #385944; }
+.local-distribution-controls h4,.local-distribution-controls p { margin: 0; }
+.local-distribution-controls .button { justify-self: start; }

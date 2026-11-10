@@ -1,5 +1,7 @@
 # V2 迭代路线与证据
 
+当前增量：[分布本机发布/监控/控制](distribution-local-publication.md)已接通确切批准、两批调度、停止/原子回滚与验证后解除告警。真实本机两批通过，停止/回滚用合成执行器验收；真实模型/云端及分布消费尚未完成。唯一动作见[执行清单](goal-mode-next.md)。
+
 当前增量：[分布八文件/演练/本机审阅](distribution-delivery-review.md)复用已核验的原任务，不新增模型；包冻结六列契约、理解与复合键测试，本机审阅和发布批准分开。真实模型/云端及实际发布仍独立验收，唯一下一动作见[执行清单](goal-mode-next.md)。
 
 当前增量：[分布Agent开发](distribution-agent-development.md)已接入登记理解、六列代码生成/反馈修正与独立核验。本机模型替身/真实Spark分别存证；交付、真实模型及云端仍待后续，唯一动作见[执行清单](goal-mode-next.md)。

@@ -25,16 +25,16 @@ export function deliveryFilePresentation(files: Record<string, string>, selected
   return { entries, active, missing: deliveryFileGuide.filter(f => !Object.hasOwn(files, f.name) || !files[f.name]?.trim()).map(f => f.name) };
 }
 
-export function deliveryReviewRequirements(cloud: boolean) {
+export function deliveryReviewRequirements(cloud: boolean, distribution=false) {
   return [
     { id: "code", label: "已审阅当前 SQL 版本", target: "agent-code" },
     { id: "assertions", label: "已查看独立核验与文件演练", target: "agent-verification" },
     { id: "deliveryFiles", label: "已审阅调度、部署和日历文件", target: "agent-files" },
-    { id: cloud ? "cloudScope" : "localScope", label: cloud ? "仅发布冻结样例的两个云端测试批次，由受控调度器触发" : "仅发布本机测试任务：5 秒后触发，共两个批次", target: "agent-publication" },
+    { id: cloud ? "cloudScope" : "localScope", label: cloud ? "仅发布冻结样例的两个云端测试批次，由受控调度器触发" : distribution ? "仅发布同一冻结业务日的两个本机虚构证券批次，不调用模型" : "仅发布本机测试任务：5 秒后触发，共两个批次", target: "agent-publication" },
   ];
 }
 
-export function reviewAttestationsComplete(values: Record<string, boolean>, cloud: boolean) {
-  const required = deliveryReviewRequirements(cloud);
+export function reviewAttestationsComplete(values: Record<string, boolean>, cloud: boolean, distribution=false) {
+  const required = deliveryReviewRequirements(cloud,distribution);
   return Object.keys(values).length === required.length && required.every(item => values[item.id] === true);
 }
