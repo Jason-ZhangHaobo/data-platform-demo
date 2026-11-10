@@ -12,11 +12,8 @@ const decimal = value => {
   return `${negative && (integer !== "0" || fraction) ? "-" : ""}${integer}${fraction ? "." + fraction : ""}`;
 };
 const count = value => Number.isSafeInteger(value) && value >= 0 && value <= 1000;
-export function equalValidationNumber(left, right) {
-  if (!["string", "number"].includes(typeof left) || !["string", "number"].includes(typeof right)) return false;
-  const a = decimal(String(left).trim()), b = decimal(String(right).trim());
-  return a !== undefined && b !== undefined && a === b;
-}
+export { equalValidationNumber } from "./validation-number.mjs";
+
 const exact = (value, allowed, required = allowed) => value && typeof value === "object" && !Array.isArray(value) &&
   Object.keys(value).every(key => allowed.includes(key)) && required.every(key => Object.hasOwn(value, key));
 
@@ -80,6 +77,7 @@ export function validationDetails(run, revision, contextId = run?.contextId) {
   const unavailable = status => ({ schema, status, source, scenarios: [] });
   if (!run || !["SUCCEEDED", "VALIDATION_FAILED"].includes(run.status) || run.engine !== "Apache Spark" || run.mainSqlExecuted !== true || run.testDouble === true || !family)
     return unavailable("UNVERIFIED");
+  if(family.outputContractId)return unavailable("UNVERIFIED"); // Composite contracts use their bounded assertion summary, never legacy customer-key details.
   const cases = run.validation?.regressions;
   if (!Array.isArray(cases) || cases.length !== family.contextIds.length || new Set(cases.map(row => row?.contextId)).size !== cases.length ||
       cases.some(row => !row || !family.contextIds.includes(row.contextId) || typeof row.passed !== "boolean")) return unavailable("UNVERIFIED");

@@ -40,6 +40,8 @@ cp \
   "$repo_root/src/v2/spark-worker-private-smoke.mjs" \
   "$repo_root/src/v2/spark.mjs" \
   "$repo_root/src/v2/worker.py" \
+  "$repo_root/src/v2/output_contracts.py" \
+  "$repo_root/src/v2/output-contracts.json" \
   "$stage/src/v2/"
 
 "$python_binary" -m pip install \

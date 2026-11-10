@@ -98,6 +98,7 @@ export function createDeliveryPackage({
   developmentReference,
   manualAuthor = false,
 }) {
+  if(getContext(revision?.contextId)?.outputContractId)throw Object.assign(new Error("分布契约的调度与交付尚未开放，保留SQL和验证记录"),{status:422,code:"OUTPUT_CONTRACT_CLASSIC_ONLY"});
   const reference=developmentReference===undefined?undefined:checkedAssistedDevelopmentReference(developmentReference);
   const authored=revision?.source==='MANUAL'&&revision.manualProvenance?.kind==='ENGINEER_EDIT'&&revision.manualProvenance.actorId===revision.author&&revision.manualProvenance.agentIndependentE2E===false;
   if(manualAuthor&&!authored)throw Object.assign(new Error('独立手工文件必须属于原作者和保存版本'),{status:409});

@@ -170,7 +170,7 @@ test("synthetic legacy task survives resolver adoption with the original context
   assert.equal(q.counts.jobs, 1);
 });
 
-test("local HTTP lists ten registered contexts without independent expected answers or execution", async (t) => {
+test("remote-backed HTTP retains ten supported contexts without independent expected answers or execution", async (t) => {
   const f = await httpFixture(t);
   const response = await f.request("GET", "/contexts");
   assert.equal(response.status, 200);

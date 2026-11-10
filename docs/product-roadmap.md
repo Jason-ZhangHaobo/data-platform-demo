@@ -1,5 +1,7 @@
 # V2 迭代路线与证据
 
+当前增量：[持仓分布契约](holdings-distribution-contracts.md)已通过经典SQL本机真实Spark的两族十场景，明确复合键与不含现金的占比分母；原契约不变。Agent理解／交付及云端尚未适配，唯一动作见[执行清单](goal-mode-next.md)。
+
 当前增量：[澄清答复续接](sql-clarification-continuation.md)保留原输入和三轮问答，独立任务与归因贯穿报告／交付，原编号恢复不新增计算。本机模型替身＋真实Spark开发及文件演练分别验收；未部署，不计直接自主。唯一动作见[执行清单](goal-mode-next.md)。
 
 当前增量：[冻结需求与审阅](frozen-requirement-delivery.md)把模型理解纳入八文件及来源摘要，准备／恢复／发布前重核，同一成功任务可生成新包但不继承旧批准。一次真实本机Spark文件检查与合成页面分别验收；未部署，不计当前v3真实自主率。唯一动作见[执行清单](goal-mode-next.md)。

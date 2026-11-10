@@ -53,6 +53,7 @@ import {
   publicContext,
   contextIds,
   allContextIds,
+  classicContextIds,
   validationFamilyForContext,
   referenceSql,
   validationContractId,
@@ -1844,7 +1845,7 @@ export function createV2Server(options = {}) {
         throw Object.assign(fail(401, "请先登录受邀账号查看项目数据"), { code: "AUTHENTICATION_REQUIRED" });
       }
       if (path === "/api/v2/contexts" && method === "GET")
-        return json(res, 200, allContextIds.map(publicContext));
+        return json(res, 200, (local && !durableDevelopment && runnerDescriptor.isolation === "LOCAL_PROCESS" ? classicContextIds : allContextIds).map(publicContext));
       if (path === "/api/v2/sources" && method === "GET")
         return json(res, 200, ingestion.listSources());
       if (path === "/api/v2/sources" && method === "POST") {
@@ -3166,6 +3167,7 @@ export function createV2Server(options = {}) {
           code = text(body.code, 20, 20_000),
           context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效Python数据上下文");
+        if(context.outputContractId)throw fail(422,"分布契约当前仅支持本机经典Spark SQL开发");
         const key = text(req.headers["idempotency-key"], 1, 100);
         const existingPythonRevision = store.deduplicatedId(`${PROJECT}:python-revision:${key}`);
         if (existingPythonRevision) requireDevelopmentOwner("python_revision", get("python_revision", existingPythonRevision), req);
@@ -5627,6 +5629,7 @@ export function createV2Server(options = {}) {
           sql = text(body.sql),
           contextId = text(body.contextId, 1, 80);
         if (!getContext(contextId)) throw fail(400, "请选择有效上下文");
+        if(getContext(contextId).outputContractId&&(!local||durableDevelopment||runnerDescriptor.isolation!=="LOCAL_PROCESS"))throw fail(422,"分布契约尚未启用云端执行");
         if (Object.keys(body).some(key=>!["sql","contextId","originAgentTaskId"].includes(key))) throw fail(400,"代码保存包含未支持字段");
         const session=auth.sessionFromHeaders(req.headers), actor=session?.user.id ?? (local ? "local-engineer" : undefined);
         if (!actor) throw fail(401,"请先登录后保存代码");
@@ -5648,6 +5651,7 @@ export function createV2Server(options = {}) {
         const body = await readBody(req),
           rev = get("revision", text(body.revisionId, 1, 80));
         requireDevelopmentOwner("revision", rev, req);
+        if(getContext(rev.contextId)?.outputContractId&&(!local||durableDevelopment||runnerDescriptor.isolation!=="LOCAL_PROCESS"))throw fail(422,"分布契约尚未启用云端执行");
         if (ingressChannel === 'HTTP') assertScopedRecord(auth.sessionFromHeaders(req.headers), rev);
         if (!options.runner && !runtime.available)
           throw fail(503, "Spark 尚未就绪，请运行 npm run v2:bootstrap");
@@ -5790,6 +5794,7 @@ export function createV2Server(options = {}) {
           throw fail(422, "数据开发语言不受支持");
         const context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效上下文");
+        if(context.outputContractId)throw Object.assign(fail(422,"分布契约当前仅开放经典SQL开发；Agent理解与交付适配完成后开放"),{code:"OUTPUT_CONTRACT_CLASSIC_ONLY"});
         if (ingressChannel === "HTTP") assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, options.now?.() ?? Date.now());
         const actorId = language === "SPARK_SQL"
           ? auth.sessionFromHeaders(req.headers)?.user.id ?? (local ? "local-engineer" : undefined)
