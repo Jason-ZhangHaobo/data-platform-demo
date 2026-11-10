@@ -18,7 +18,7 @@ export function LocalDistributionReview({api,packageId,packageDigest,verificatio
   finally{setBusy(false);}
  }
  return <section className="agent-verification-card agent-file-review" aria-label="分布文件本机审阅"><h4>本机文件审阅</h4>
-  <p>审阅绑定此包摘要与成功演练。仅记录文件检查，发布批准与上线仍未开放。</p>
+  <p>审阅绑定此包摘要与成功演练。仅记录文件检查；发布须独立确认，不代表公网或生产上线。</p>
   <small>包摘要 {packageDigest.slice(0,16)} · 演练 {verificationId.slice(0,8)}</small>
   {review?<p className={current?"passed":""} role="status">{current?"此包本机文件已审阅":"历史本机审阅记录；当前依据需重新核验"} · {review.id.slice(0,8)} · 不代表批准发布</p>:<>
    {Object.entries(labels).map(([key,label])=><label className="agent-file-review-check" key={key}><input type="checkbox" checked={checked[key]??false} disabled={!enabled||busy||unknown} onChange={e=>setChecked(v=>({...v,[key]:e.target.checked}))}/>{label}</label>)}

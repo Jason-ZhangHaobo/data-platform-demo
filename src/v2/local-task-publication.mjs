@@ -24,13 +24,19 @@ export function localTaskPublication(store, project, agent, selector) {
     return bundle.manifest.source.revisionId === attempt?.revisionId && bundle.manifest.source.runId === attempt?.runId;
   }) ?? candidates[0];
   if (!selected) return { scope:"LOCAL_TEST_RELEASE", runs:[], alerts:[], events:[] };
+  const allRuns=store.list('release_run',project).filter(r=>r.releaseId===selected.id),currentRuns=selected.outputContract&&selected.currentRollbackId?allRuns.filter(r=>r.rollbackId===selected.currentRollbackId):allRuns;
+  const rollbackTargets=selected.outputContract?store.list('release',project).filter(r=>r.id!==selected.id&&['SUPERSEDED_LOCAL','ROLLED_BACK_LOCAL'].includes(r.status)&&r.health==='HEALTHY'&&r.successfulRunCount>=2&&r.outputContract?.id===selected.outputContract.id).slice(0,10).map(r=>{
+    const b=store.get('delivery_package',r.packageId,project);
+    return {id:r.id,packageDigest:r.packageDigest,metadataHash:r.outputContract.metadataHash,sourceRevisionId:r.sourceRevisionId,successfulRunCount:r.successfulRunCount,...(b?.manifest?.source?.requirement?.taskId?{taskId:b.manifest.source.requirement.taskId}:{})};
+  }):undefined;
   return {
     scope:"LOCAL_TEST_RELEASE",
-    release: {...pick(selected, ["id","status","health","packageId","packageDigest","sourceRevisionId"]), runCount:selected.scheduleSpec?.runCount,
+    ...(rollbackTargets?{rollbackTargets,historyRunCount:allRuns.length-currentRuns.length}:{}),
+    release: {...pick(selected, ["id","status","health","packageId","packageDigest","sourceRevisionId","outputContract","rolledBackToReleaseId","rolledBackToTaskId","restoredAt"]), runCount:selected.scheduleSpec?.runCount,
       ...(selector?{sourceKind:"AGENT",sourceAgentTaskId:agent.id,sourceRunId:store.get("delivery_package",selected.packageId,project).manifest.source.runId,
         verificationId:store.get("release_approval",selected.approvalId,project)?.rehearsalId}:{})},
-    runs:store.list("release_run",project).filter(r => r.releaseId === selected.id).sort((a,b) => a.sequence-b.sequence).map(r => pick(r,["id","status","sequence","schedulerTriggered","durationMs","triggeredAt","finishedAt"])),
+    runs:currentRuns.sort((a,b) => a.sequence-b.sequence).map(r => pick(r,["id","status","sequence","schedulerTriggered","durationMs","triggeredAt","finishedAt"])),
     alerts:store.list("monitor_alert",project).filter(a => a.releaseId === selected.id).map(a => pick(a,["id","status","message","recoveryRunId"])),
-    events:store.list("monitor_event",project).filter(e => e.releaseId === selected.id).map(e => pick(e,["id","type","observedAt","releaseId","releaseRunId","packageDigest"])),
+    events:store.list("monitor_event",project).filter(e => e.releaseId === selected.id&&(!selected.outputContract||!selected.currentRollbackId||!e.releaseRunId||currentRuns.some(r=>r.id===e.releaseRunId))).map(e => pick(e,["id","type","observedAt","releaseId","releaseRunId","packageDigest"])),
   };
 }

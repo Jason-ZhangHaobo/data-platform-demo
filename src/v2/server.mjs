@@ -1,3 +1,4 @@
+import {assertDistributionConsent,assertDistributionRelease,sameLocalPublicationLane,sameDistributionConsent,assertDistributionRollback,activateDistributionRollback,distributionRequestSignature} from './distribution-publication.mjs';
 import { createServer } from "node:http";
 import {resolveManualContinuation} from './manual-sql-continuation.mjs';
 import {resolveAssistedContinuation} from './assisted-sql-delivery-source.mjs';
@@ -682,6 +683,13 @@ export function createV2Server(options = {}) {
     project: PROJECT,
     packageFor: (id) => store.get("delivery_package", id, PROJECT),
     runPackage: releaseRunner,
+    assertRunSource: ({run,release,packageItem})=>{
+      if(!packageItem.manifest?.source?.outputContract)return;
+      validateAnyDeliveryPackage(packageItem);
+      const approval=get('release_approval',release.approvalId);
+      assertDistributionRelease({bundle:packageItem,verification:get('delivery_verification',approval.rehearsalId),review:get('delivery_review',approval.reviewId),approval,spec:release.scheduleSpec,local,schedulerMode:releaseSchedulerMode});
+      if(!Number.isSafeInteger(run.sequence)||run.sequence<1||run.sequence>2||JSON.stringify(release.outputContract)!==JSON.stringify(packageItem.manifest.source.outputContract))throw fail(409,'分布批次超出已批准的冻结范围');
+    },
     now: options.now,
     setTimer: options.setTimer,
     clearTimer: options.clearTimer,
@@ -4706,7 +4714,7 @@ export function createV2Server(options = {}) {
           if (packageDigest !== item.digest)
             throw fail(409, "审批摘要与当前交付包不一致");
           const reviewId = text(body.reviewId, 1, 80);
-          if(item.manifest?.source?.outputContract)throw Object.assign(fail(422,"分布仅开放本机文件审阅，尚未开放发布批准"),{code:"DISTRIBUTION_PUBLICATION_DISABLED"});
+
           await ensureDeliveryArtifact(item);
           validateAnyDeliveryPackage(item);
           const rehearsal = store
@@ -4715,7 +4723,7 @@ export function createV2Server(options = {}) {
               (record) =>
                 record.packageId === item.id &&
                 record.packageDigest === item.digest &&
-                record.status === "SUCCEEDED",
+                record.status === "SUCCEEDED" && (!item.manifest?.source?.outputContract||record.id===body.distributionConsent?.verificationId),
             );
           if (!rehearsal)
             throw fail(409, "交付包尚无成功的按文件演练，不能审批发布");
@@ -4727,6 +4735,7 @@ export function createV2Server(options = {}) {
             review.status !== "REVIEWED"
           )
             throw fail(409, "审批必须引用当前包、摘要和演练一致的审阅记录");
+          const distributionConsent=assertDistributionConsent({bundle:item,verification:rehearsal,review,consent:body.distributionConsent,local,schedulerMode:releaseSchedulerMode});
           const actor = auth.sessionFromHeaders(req.headers),
             approver = actor
               ? {
@@ -4747,7 +4756,10 @@ export function createV2Server(options = {}) {
                 approval.packageDigest === item.digest &&
                 approval.status === "APPROVED",
             );
-          if (existingApproval) return json(res, 200, existingApproval);
+          if (existingApproval) {
+            if(distributionConsent&&!sameDistributionConsent(existingApproval.distributionConsent,distributionConsent))throw fail(409,"原批准绑定另一份分布测试发布计划");
+            return json(res, 200, existingApproval);
+          }
           const key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               PROJECT + ":release-approval:" + key,
@@ -4758,6 +4770,7 @@ export function createV2Server(options = {}) {
                   rehearsalId: rehearsal.id,
                   reviewId: review.id,
                   approverId: approver.id,
+                  ...(distributionConsent?{distributionConsent}:{}),
                 }),
               ),
               () =>
@@ -4775,6 +4788,7 @@ export function createV2Server(options = {}) {
                   reviewId: review.id,
                   reviewer: approver.displayName,
                   reviewedBy: review.reviewer,
+                  ...(distributionConsent?{distributionConsent,approver}:{}),
                   decision: "APPROVED",
                   status: "APPROVED",
                   reviewNote: review.reviewNote,
@@ -4900,7 +4914,9 @@ export function createV2Server(options = {}) {
           spec = localScheduleSpec(body),
           artifact = await ensureDeliveryArtifact(item),
           plan = validateAnyDeliveryPackage(item);
-        if(plan.source.outputContract)throw Object.assign(fail(422,"分布发布调度尚未开放"),{code:"DISTRIBUTION_PUBLICATION_DISABLED"});
+        const latestApproval=get('release_approval',approval.id);
+        if(plan.source.outputContract)assertDistributionRelease({bundle:item,verification:latestApproval.rehearsalId?store.get('delivery_verification',latestApproval.rehearsalId,PROJECT):undefined,review:latestApproval.reviewId?store.get('delivery_review',latestApproval.reviewId,PROJECT):undefined,approval:latestApproval,spec,local,schedulerMode:releaseSchedulerMode});
+        const consumedReleaseId=plan.source.outputContract?latestApproval.consumedByReleaseId:approval.consumedByReleaseId;
         if (
           approval.status !== "APPROVED" ||
           approval.packageDigest !== item.digest ||
@@ -4908,8 +4924,8 @@ export function createV2Server(options = {}) {
             (item.manifest.source.codeHash ?? item.manifest.source.sqlHash)
         )
           throw fail(409, "审批记录未绑定当前不可变交付包");
-        if (approval.consumedByReleaseId) {
-          const existing = get("release", approval.consumedByReleaseId);
+        if (consumedReleaseId) {
+          const existing = get("release", consumedReleaseId);
           if (
             existing.packageId === item.id &&
             existing.packageDigest === item.digest &&
@@ -4927,7 +4943,7 @@ export function createV2Server(options = {}) {
             nextTradingDay + "T" + plan.schedule.at + "+08:00",
           key = text(req.headers["idempotency-key"], 1, 100),
           dedup = store.deduplicate(
-            PROJECT + ":release:" + key,
+            plan.source.outputContract ? PROJECT+":distribution-release:"+approval.id : PROJECT + ":release:" + key,
             hash(
               JSON.stringify({
                 approvalId: approval.id,
@@ -4949,6 +4965,7 @@ export function createV2Server(options = {}) {
                 ...(item.manifest.source.sqlHash
                   ? { sourceSqlHash: item.manifest.source.sqlHash }
                   : {}),
+                ...(plan.source.outputContract?{outputContract:plan.source.outputContract}:{}),
                 status: "DEPLOYING",
                 health: "PENDING",
                 environment: plan.deployment.environment,
@@ -4971,7 +4988,8 @@ export function createV2Server(options = {}) {
             for (const previous of store.list("release", PROJECT)) {
               if (
                 previous.id !== release.id &&
-                previous.status === "ACTIVE_LOCAL"
+                previous.status === "ACTIVE_LOCAL" &&
+                sameLocalPublicationLane(store.get("delivery_package",previous.packageId,PROJECT),item)
               ) {
                 releaseScheduler.cancelRelease(
                   previous.id,
@@ -5019,7 +5037,7 @@ export function createV2Server(options = {}) {
         return json(res, dedup.replayed ? 200 : 201, expose(release));
       }
       const releaseRecord = path.match(
-        /^\/api\/v2\/(releases|release\/runs)\/([a-f0-9-]+)(?:\/(rollback))?$/,
+        /^\/api\/v2\/(releases|release\/runs)\/([a-f0-9-]+)(?:\/(rollback|cancel))?$/,
       );
       if (releaseRecord) {
         const kind =
@@ -5027,6 +5045,18 @@ export function createV2Server(options = {}) {
           item = get(kind, releaseRecord[2]);
         if (method === "GET" && !releaseRecord[3])
           return json(res, 200, expose(item));
+        if(kind==='release'&&method==='POST'&&releaseRecord[3]==='cancel'){
+          const body=await readBody(req);
+          if(!local||releaseSchedulerMode!=='LOCAL_TIMER'||!item.outputContract)throw fail(422,'此停止入口仅用于本机分布测试发布');
+          if(body.packageDigest!==item.packageDigest)throw fail(409,'停止须绑定确切发布与包摘要');
+          if(item.status==='CANCELLED')return json(res,200,expose(item));
+          if(!['ACTIVE_LOCAL','DEPLOYING'].includes(item.status))throw fail(409,'只能停止当前生效的分布发布');
+          releaseScheduler.cancelRelease(item.id,'工程师停止后续本机批次');
+          const stopped=store.update('release',item.id,PROJECT,{status:'CANCELLED',health:'STOPPED',cancelledAt:new Date().toISOString()});
+          if(item.currentRollbackId)store.update('release_rollback',item.currentRollbackId,PROJECT,{status:'CANCELLED',stoppedAt:new Date().toISOString()});
+          store.create('monitor_event',PROJECT,{type:'RELEASE_CANCELLED',releaseId:item.id,packageDigest:item.packageDigest,observedAt:new Date().toISOString()});
+          return json(res,200,expose(stopped));
+        }
         if (
           kind === "release" &&
           releaseRecord[3] === "rollback" &&
@@ -5034,6 +5064,26 @@ export function createV2Server(options = {}) {
         ) {
           const body = await readBody(req),
             target = get("release", text(body.targetReleaseId, 1, 80));
+          const currentBundle=get('delivery_package',item.packageId),targetBundle=get('delivery_package',target.packageId);
+          if(currentBundle.manifest.source.outputContract||targetBundle.manifest.source.outputContract){
+            if(!local||releaseSchedulerMode!=='LOCAL_TIMER')throw fail(422,'分布回滚仅用于本机测试');
+            const key=text(req.headers['idempotency-key'],1,100),reason=body.reason===undefined?'恢复到已验证的分布版本':text(body.reason,4,500),namespace=`${PROJECT}:distribution-rollback:${item.id}:${key}`;
+            const previous=store.deduplicatedId(namespace);
+            if(previous){
+              const recovered=store.deduplicate(namespace,distributionRequestSignature({targetReleaseId:target.id,consent:body.distributionRollback,reason}),()=>{throw fail(409,'回滚记录未确认');});
+              const rollback=get('release_rollback',recovered.id);
+              return json(res,200,{rollback,activeRelease:expose(get('release',rollback.toReleaseId))});
+            }
+            if(item.status!=='ACTIVE_LOCAL'||target.id===item.id||!['SUPERSEDED_LOCAL','ROLLED_BACK_LOCAL'].includes(target.status))throw fail(409,'回滚须选择当前发布及已验证历史版本');
+            await ensureDeliveryArtifact(targetBundle);validateAnyDeliveryPackage(targetBundle);
+            const consent=assertDistributionRollback({currentBundle,targetBundle,target,consent:body.distributionRollback}),approval=get('release_approval',target.approvalId),spec=localScheduleSpec(target.scheduleSpec);
+            assertDistributionRelease({bundle:targetBundle,verification:get('delivery_verification',approval.rehearsalId),review:get('delivery_review',approval.reviewId),approval,spec,local,schedulerMode:releaseSchedulerMode});
+            if(['triggerAfterSeconds','intervalSeconds'].some(k=>body[k]!==undefined&&Number(body[k])!==spec[k]))throw fail(409,'回滚复用原已批准的两批计时参数');
+            const planned=plannedLocalRuns({releaseId:target.id,packageId:target.packageId,packageDigest:target.packageDigest,businessScheduledFor:target.businessScheduledFor,spec,nowMs:options.now?.()??Date.now(),timeUnitMs:releaseTimeUnitMs,triggerReason:'ROLLBACK_RECOVERY'});
+            const result=activateDistributionRollback({store,project:PROJECT,item,target,consent,spec,reason,key,nowMs:options.now?.()??Date.now(),plannedRuns:planned});
+            if(!result.replayed){releaseScheduler.cancelRelease(item.id,'当前版本已执行回滚');for(const run of result.runs)releaseScheduler.schedule(run);}
+            return json(res,result.replayed?200:202,{rollback:result.rollback,activeRelease:expose(result.activeRelease)});
+          }
           if (item.status !== "ACTIVE_LOCAL")
             throw fail(409, "只能回滚当前生效的本机发布版本");
           if (
@@ -5236,7 +5286,7 @@ export function createV2Server(options = {}) {
           delivery: publicDeliveryTask(delivery),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt } : undefined,
-          publication: { available: !getContext(agent.contextId)?.outputContractId && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: getContext(agent.contextId)?.outputContractId ? "分布调度交付与发布尚未开放" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
+          publication: { available: (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
       }
       const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel))?$/);

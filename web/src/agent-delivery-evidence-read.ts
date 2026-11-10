@@ -3,8 +3,9 @@ import type {PublicationSelector} from './publication-selection';
 import {serviceSourceScope,validServiceSourceBinding} from './service-source-binding.ts';
 import type {ServiceSourceBinding} from './service-source-binding';
 import type {TaskConsumption} from './agent-journey';
-export type Release={id:string;status:string;health:string;sourceKind?:string;sourceRunId?:string;agentIndependentE2E?:boolean;packageId?:string;packageDigest?:string;verificationId?:string;sourceAgentTaskId?:string;sourceRevisionId?:string;runCount?:number};
-export type Publication={release?:Release;runs:{id:string;status:string;sequence:number;schedulerTriggered?:boolean;durationMs?:number;triggeredAt?:string;finishedAt?:string}[];alerts:{id:string;status:string;message:string;recoveryRunId?:string}[];events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[]};
+export type RollbackTarget={id:string;packageDigest:string;metadataHash:string;sourceRevisionId:string;successfulRunCount:number;taskId?:string};
+export type Release={id:string;status:string;health:string;sourceKind?:string;sourceRunId?:string;agentIndependentE2E?:boolean;packageId?:string;packageDigest?:string;verificationId?:string;sourceAgentTaskId?:string;sourceRevisionId?:string;runCount?:number;rolledBackToReleaseId?:string;rolledBackToTaskId?:string;restoredAt?:string;outputContract?:{id:string;metadataHash:string}};
+export type Publication={rollbackTargets?:RollbackTarget[];historyRunCount?:number;release?:Release;runs:{id:string;status:string;sequence:number;schedulerTriggered?:boolean;durationMs?:number;triggeredAt?:string;finishedAt?:string}[];alerts:{id:string;status:string;message:string;recoveryRunId?:string}[];events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[]};
 const record=(v:unknown):v is Record<string,unknown>=>Boolean(v&&typeof v==='object'&&!Array.isArray(v));
 const id=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v);
 const hash=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
@@ -18,7 +19,7 @@ export function checkedAgentPublication(value:unknown,{taskId,scope,selector,rel
  if(!record(value)||!optional(value.scope,v=>v===scope)||!Array.isArray(value.runs)||!Array.isArray(value.alerts)||!Array.isArray(value.events))throw invalidPublication();
  const r=value.release,runs=value.runs,alerts=value.alerts,events=value.events;
  if(r!==undefined&&(!record(r)||!id(r.id)||!['ACTIVE_LOCAL','SUPERSEDED_LOCAL','ROLLED_BACK_LOCAL','FAILED_LOCAL','WAITING_SCHEDULER','RUNNING_CLOUD_TEST','ACTIVE_CLOUD_TEST','COMPLETED_CLOUD_TEST','CANCELLED','FAILED','ROLLED_BACK'].includes(String(r.status))||
-  !['PENDING','OBSERVING','HEALTHY','CRITICAL','RECOVERED_WITH_FAILURE','STOPPED'].includes(String(r.health))||!id(r.packageId)||!hash(r.packageDigest)||!id(r.sourceRevisionId)||
+  !['PENDING','OBSERVING','HEALTHY','CRITICAL','RECOVERED_WITH_FAILURE','RECOVERING','STOPPED'].includes(String(r.health))||!id(r.packageId)||!hash(r.packageDigest)||!id(r.sourceRevisionId)||
   !optional(r.sourceAgentTaskId,v=>v===taskId)||!optional(r.scope,v=>v===scope)||!['sourceRunId','verificationId'].every(k=>optional(r[k],id))||!optional(r.sourceKind,v=>v==='AGENT'||v==='MANUAL')||
   !optional(r.agentIndependentE2E,v=>typeof v==='boolean')||r.sourceKind==='MANUAL'&&r.agentIndependentE2E!==false||
   !optional(r.runCount,v=>count(v)&&Number(v)>0)||releaseId!==undefined&&r.id!==releaseId))throw invalidPublication();
@@ -29,6 +30,9 @@ export function checkedAgentPublication(value:unknown,{taskId,scope,selector,rel
  if(!alerts.every(a=>record(a)&&id(a.id)&&['OPEN','RESOLVED'].includes(String(a.status))&&typeof a.message==='string'&&optional(a.recoveryRunId,id)&&optional(a.releaseId,v=>record(r)&&v===r.id))||!uniqueIds(alerts))throw invalidPublication();
  if(!events.every(e=>record(e)&&id(e.id)&&typeof e.type==='string'&&e.type.length>0&&date(e.observedAt)&&optional(e.releaseId,v=>record(r)&&v===r.id)&&
   optional(e.packageDigest,v=>record(r)&&v===r.packageDigest)&&optional(e.releaseRunId,v=>id(v)&&runs.some(b=>b.id===v)))||!uniqueIds(events))throw invalidPublication();
+ if(value.rollbackTargets!==undefined&&(!Array.isArray(value.rollbackTargets)||value.rollbackTargets.length>10||!value.rollbackTargets.every(t=>record(t)&&id(t.id)&&hash(t.packageDigest)&&hash(t.metadataHash)&&id(t.sourceRevisionId)&&count(t.successfulRunCount)&&Number(t.successfulRunCount)>=2&&optional(t.taskId,id))))throw invalidPublication();
+ if(!optional(value.historyRunCount,count))throw invalidPublication();
+ if(record(r)&&(!optional(r.rolledBackToReleaseId,id)||!optional(r.rolledBackToTaskId,id)||!optional(r.restoredAt,date)||r.outputContract!==undefined&&(!record(r.outputContract)||typeof r.outputContract.id!=='string'||!hash(r.outputContract.metadataHash))))throw invalidPublication();
  const result=value as Publication;
  return selector?checkedPublication(result,taskId,selector,releaseId,requireRelease):result;
 }

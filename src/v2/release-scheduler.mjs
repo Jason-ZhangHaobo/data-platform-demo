@@ -103,6 +103,7 @@ export class LocalReleaseScheduler {
     clearTimer = clearTimeout,
     persist = async () => undefined,
     resolveDirectory = async ({ release }) => release.artifactDirectory,
+    assertRunSource = () => {},
   }) {
     this.store = store;
     this.project = project;
@@ -113,6 +114,7 @@ export class LocalReleaseScheduler {
     this.clearTimer = clearTimer;
     this.persist = persist;
     this.resolveDirectory = resolveDirectory;
+    this.assertRunSource = assertRunSource;
     this.timers = new Map();
     this.controllers = new Map();
     this.queue = Promise.resolve();
@@ -228,20 +230,31 @@ export class LocalReleaseScheduler {
     // A durable scheduler must persist the claim before any side effect. If the
     // process dies afterwards, a later tick can recover the expired lease.
     let claimPersisted = false;
+    const stopped=()=>controller.signal.aborted||!allowedReleaseStatuses.includes(this.store.get('release',release.id,this.project)?.status);
+    const cancelBeforeRun=async()=>{
+      const current=this.store.get('release_run',id,this.project);
+      if(!terminal.has(current.status))this.store.update('release_run',id,this.project,{status:'CANCELLED',error:'发布已停止，未提交计算',finishedAt:new Date(this.now()).toISOString()});
+      await this.persist();return this.store.get('release_run',id,this.project);
+    };
     try {
       await this.persist();
       claimPersisted = true;
+      if(stopped())return await cancelBeforeRun();
+      this.assertRunSource({run,release,packageItem});
       const directory = await this.resolveDirectory({
         run,
         release,
         packageItem,
       });
+      if(stopped())return await cancelBeforeRun();
+      this.assertRunSource({run,release,packageItem});
       const result = await this.runPackage({
         directory,
         expectedDigest: run.packageDigest,
         scheduledFor: run.businessScheduledFor,
         signal: controller.signal,
       });
+      if(release.outputContract&&stopped())return await cancelBeforeRun();
       if (!terminal.has(result.status) || result.status === "INTERRUPTED")
         throw new Error("发布执行器返回无效状态");
       const finished = this.store.update("release_run", id, this.project, {
@@ -264,6 +277,7 @@ export class LocalReleaseScheduler {
       return finished;
     } catch (error) {
       if (!claimPersisted) throw error;
+      if(release.outputContract&&controller.signal.aborted)return await cancelBeforeRun();
       return this.#finishFailure(run, release, error.message, profile);
     } finally {
       this.controllers.delete(run.id);
@@ -291,7 +305,7 @@ export class LocalReleaseScheduler {
   async #recordMonitoring(run, release) {
     const success = run.status === "SUCCEEDED";
     this.store.create("monitor_event", this.project, {
-      type: success ? "BATCH_SUCCEEDED" : "BATCH_FAILED",
+      type: success ? "BATCH_SUCCEEDED" : release.outputContract&&run.status==="CANCELLED"?"BATCH_CANCELLED":"BATCH_FAILED",
       releaseId: release.id,
       releaseRunId: run.id,
       packageDigest: run.packageDigest,
@@ -300,6 +314,7 @@ export class LocalReleaseScheduler {
       durationMs: run.durationMs ?? null,
       schedulerTriggered: run.schedulerTriggered === true,
     });
+    if(release.outputContract&&run.status==='CANCELLED')return;
     let recoveredAlerts = 0;
     if (!success) {
       this.store.create("monitor_alert", this.project, {
@@ -325,7 +340,7 @@ export class LocalReleaseScheduler {
     }
     const runs = this.store
         .list("release_run", this.project)
-        .filter((item) => item.releaseId === release.id),
+        .filter((item) => item.releaseId === release.id && (!release.outputContract||!release.currentRollbackId||item.rollbackId===release.currentRollbackId)),
       successfulRunCount = runs.filter(
         (item) => item.status === "SUCCEEDED",
       ).length,
@@ -344,6 +359,19 @@ export class LocalReleaseScheduler {
           : recoveredAlerts
             ? "RECOVERING"
             : "OBSERVING";
+    if(release.outputContract&&release.currentRollbackId){
+      const rollback=this.store.get('release_rollback',release.currentRollbackId,this.project);
+      if(rollback?.status==='SCHEDULED_FOR_VERIFICATION'&&successfulRunCount>=2&&!openAlertCount){
+        const resolvedAlertIds=[];
+        for(const alert of this.store.list('monitor_alert',this.project))if(alert.releaseId===rollback.fromReleaseId&&alert.status==='OPEN'){
+          resolvedAlertIds.push(alert.id);this.store.update('monitor_alert',alert.id,this.project,{status:'RESOLVED',resolutionMode:'VERIFIED_ROLLBACK',recoveryReleaseId:release.id,recoveryRunId:run.id,resolvedAt:new Date(this.now()).toISOString()});
+        }
+        this.store.update('release_rollback',rollback.id,this.project,{status:'VERIFIED',resolvedAlertIds,verifiedAt:new Date(this.now()).toISOString()});
+        this.store.create('monitor_event',this.project,{type:'ROLLBACK_VERIFIED',releaseId:rollback.fromReleaseId,recoveryReleaseId:release.id,rollbackId:rollback.id,releaseRunId:run.id,observedAt:new Date(this.now()).toISOString(),status:'RECOVERY_VERIFIED'});
+      }else if(rollback?.status==='SCHEDULED_FOR_VERIFICATION'&&runs.every(r=>terminal.has(r.status))&&failedRunCount){
+        this.store.update('release_rollback',rollback.id,this.project,{status:'FAILED',failedAt:new Date(this.now()).toISOString()});
+      }
+    }
     this.store.update("release", release.id, this.project, {
       health,
       lastRunId: run.id,
