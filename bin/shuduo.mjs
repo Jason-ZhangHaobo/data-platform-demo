@@ -190,6 +190,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo reports overview|datasets|list
   shuduo reports create-dataset --name 名称 --code holdings_dataset --asset-id landing:raw_positions --fields client_id,security_code,asset_class,industry,market_value,trade_date
   shuduo reports from-publication --name 财富顾问报告 --source-file published-source.json --request-id UUID
+  shuduo reports resume-plan --id PLAN_ID
   shuduo reports request --request-id UUID
   shuduo reports resume --id CREATION_ID
   shuduo reports refresh-dataset --id DATASET_ID
@@ -1314,6 +1315,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         body: { message: required(parsed.options, "message"),...(parsed.options.source_file?{source:jsonObject(readFileSync(parsed.options.source_file,'utf8'),'报表发布来源')}:{}) },
         ...(parsed.options.request_id?{idempotencyKey:parsed.options.request_id}:{}),
       });
+    else if(resource==='reports'&&action==='resume-plan')result=await client.request('/reports/agent/plans/'+encodeURIComponent(required(parsed.options,'id'))+'/resume',{method:'POST',body:{}});
     else if(resource==='reports'&&action==='plan-request')result=await client.request('/reports/agent/requests/'+encodeURIComponent(required(parsed.options,'request_id')));
     else if (resource === "reports" && action === "plans")
       result = await client.request('/reports/agent/plans'+(parsed.options.source_batch_id?'?source_batch_id='+encodeURIComponent(parsed.options.source_batch_id):''));

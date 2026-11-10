@@ -1052,15 +1052,14 @@ export async function generateReportPlan(
       "模型请求失败（" + response.status + "），请检查服务配置或额度",
     );
   const payload = await response.json();
-  let content = payload.choices?.[0]?.message?.content ?? "";
-  content = content
-    .replace(/^\s*```(?:json)?\s*/, "")
-    .replace(/\s*```\s*$/, "");
   let plan;
   try {
-    plan = JSON.parse(content);
-  } catch {
-    throw new Error("模型未返回可解析的报表方案");
+    const raw=payload.choices?.[0]?.message?.content;
+    if(typeof raw!=='string')throw new Error('INVALID_REPORT_CONTENT');
+    const content=raw.replace(/^\s*```(?:json)?\s*/, '').replace(/\s*```\s*$/, '');
+    plan=JSON.parse(content);if(!plan||typeof plan!=='object'||Array.isArray(plan))throw new Error('INVALID_REPORT_CONTENT');
+  }catch{
+    throw Object.assign(new Error('模型未返回可解析的报表方案'),{modelResultRecorded:true,model:settings.model,usage:payload.usage??{},mode:'LIVE_MODEL'});
   }
   const explanation = String(plan.explanation ?? "").slice(0, 1200);
   delete plan.explanation;

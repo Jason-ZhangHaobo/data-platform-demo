@@ -122,6 +122,7 @@ export class MetadataStore {
           !(kind === "run" && item.mode === "DURABLE_REMOTE_SUBMISSION" && item.remoteSubmission?.prepared?.job?.jobId) &&
           !(kind === "agent" && item.executionMode === "DURABLE_SQL_AGENT_V1") &&
           !(kind === "service_agent_plan" && item.executionMode === "DURABLE_PRIVATE_SERVICE_AGENT_V1") &&
+          !(kind === "report_agent_plan" && item.executionMode === "SOURCE_BOUND_REPORT_AGENT_V1" && item.sourceBinding) &&
           !(["agent_delivery_task", "delivery_verification"].includes(kind) && item.mode === "DURABLE_AGENT_DELIVERY_V1") &&
           !(["manual_delivery_task", "delivery_verification"].includes(kind) && item.mode === "DURABLE_MANUAL_DELIVERY_V1") &&
           !(kind === "release_run" && item.mode === "DURABLE_PRIVATE_RELEASE_V1" && item.remoteSubmission?.prepared?.job?.jobId) &&

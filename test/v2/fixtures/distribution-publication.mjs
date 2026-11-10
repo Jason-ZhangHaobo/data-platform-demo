@@ -12,7 +12,7 @@ import {requirementDeliverySource} from './requirement-delivery.mjs';
 // All execution/model shapes here are synthetic. Real Spark is separately evidenced.
 export async function distributionPublicationFixture(t,options={}){
  const root=mkdtempSync(join(tmpdir(),'distribution-publish-')),store=new MetadataStore(':memory:'),artifactStore=new LocalArtifactStore(root);let now=Date.now(),calls=0,failNext=false,hold;
- const app=createV2Server({...options,root,store,artifactStore,env:{V2_LOCAL_DEVELOPMENT:'true'},now:()=>now,releaseTimeUnitMs:1,setTimer:()=>({unref(){}}),clearTimer:()=>{},releaseRunner:async input=>{
+ const app=createV2Server({...options,root,store,artifactStore,env:{...options.env,V2_LOCAL_DEVELOPMENT:'true'},now:()=>now,releaseTimeUnitMs:1,setTimer:()=>({unref(){}}),clearTimer:()=>{},releaseRunner:async input=>{
   calls++;if(hold){const current=hold;hold=undefined;current.enter();await current.promise;}const {bundle,plan}=loadDeliveryDirectory(input.directory,input.expectedDigest),passed=!failNext;failNext=false;
   return {status:passed?'SUCCEEDED':'VALIDATION_FAILED',executionEvidenceMode:'TEST_HARNESS',source:bundle.manifest.source,fileHashes:Object.fromEntries(Object.entries(bundle.manifest.files).map(([k,v])=>[k,v.sha256])),engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,testSqlValidation:{passed,sqlHash:sha256(bundle.files['tests.sql'])},rows:plan.fixtures.context.expected,validation:{passed,regressions:plan.fixtures.validationContexts.map(c=>({contextId:c.id,passed}))}};
  }});
