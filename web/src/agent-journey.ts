@@ -1,3 +1,4 @@
+import {distributionMetadataForContext} from '../../src/v2/output-contract-metadata.mjs';
 import { deliveryFilePresentation } from "./delivery-presentation.ts";
 import { publicationStopped } from "./publication-read.ts";
 import {validationFamilyForContextId,regressionsMatchFamily} from "./validation-family.ts";
@@ -34,11 +35,13 @@ export function deliveryStageText(stage: string, publicationCurrent: boolean, re
 }
 export type TaskConsumption = {
   protocol: string; taskId: string; packageDigest: string; releaseId?:string;sourceKind?:string; scope: string; status: string; truncated: boolean;
+  outputContractId?:string;metadataHash?:string;
   checkedAt: string; notice: string; externalSystemVerified: boolean; agentIndependentE2E: boolean;
   services: { serviceId: string; serviceType: string; name: string; versionId: string; configHash: string;
     releaseId?:string;sourceKind?:string;agentIndependentE2E?:boolean;
-    status: string; code?: string; notice: string; sourceRunIds: string[]; fullAssetComposition?: boolean;
-    call?: { callId: string; versionId: string; verified: boolean; resultHash: string; rowCount: number; applicationId: string; applicationStatus: string; finishedAt: string } }[];
+    status: string; code?: string; notice: string; sourceRunIds: string[]; fullAssetComposition?: boolean;distributionComposition?:boolean;
+    source?:{modelClassification?:string;engineClassification?:string};
+    call?: { callId: string; versionId: string; verified: boolean;independentResultVerified?:boolean; resultHash: string; rowCount: number; applicationId: string; applicationStatus: string; finishedAt: string } }[];
 };
 export function manualConsumptionEntryMatches(entry:{releaseId?:string;sourceKind?:string;agentIndependentE2E?:boolean;sourceRunIds?:string[]},releaseId:string,batches:{id:string;status:string;schedulerTriggered?:boolean}[],developmentRunId?:string){
   if(entry.releaseId!==releaseId||entry.sourceKind!=="MANUAL"||entry.agentIndependentE2E!==false||!Array.isArray(entry.sourceRunIds)||entry.sourceRunIds.length!==1)return false;
@@ -76,12 +79,14 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
   const executed = e.publicationReadable !== false && publicationCurrent && !stopped && batches.some(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true);
   const healthy = executed && e.release?.health === "HEALTHY" && Number.isSafeInteger(e.release.runCount) && e.release.runCount! > 0 && batches.length === e.release.runCount && new Set(batches.map(b => b.id)).size === batches.length && batches.every(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true && e.events?.some(event => event.type === "BATCH_SUCCEEDED" && event.releaseId === e.release?.id && event.releaseRunId === b.id && event.packageDigest === e.bundle?.digest)) && !(e.alerts ?? []).some(a => a.status === "OPEN");
   const state = (done: boolean, failed = false): JourneyState => e.dirty ? "STALE" : done ? "DONE" : failed ? "ATTENTION" : "PENDING";
+  const distribution=distributionMetadataForContext(e.contextId??e.report?.contextId);
+  const distributionReceipt=Boolean(distribution&&e.consumption?.protocol==='shuduo-local-distribution-consumption/v1'&&e.consumption.outputContractId===distribution.id&&e.consumption.agentIndependentE2E===false);
   const consumptionScopeMatches = e.release?.status === "ACTIVE_LOCAL"
-    ? e.consumption?.protocol === "shuduo-local-task-consumption/v1" && e.consumption.scope === "LOCAL_TEST_ONLY"
+    ? (distribution?distributionReceipt:e.consumption?.protocol === "shuduo-local-task-consumption/v1") && e.consumption?.scope === "LOCAL_TEST_ONLY"
     : e.consumption?.protocol === "shuduo-private-task-consumption/v1" && e.consumption.scope === "PRIVATE_CLOUD_TEST";
   const consumptionCurrent = current && consumptionScopeMatches && e.consumption?.taskId === e.taskId && e.consumption.packageDigest === e.bundle?.digest&&
     (e.release?.sourceKind==="MANUAL"?e.consumption.releaseId===e.release.id&&e.consumption.sourceKind==="MANUAL"&&e.consumption.agentIndependentE2E===false:e.consumption.releaseId===undefined||e.consumption.releaseId===e.release?.id);
-  const consumed = Boolean(healthy && consumptionCurrent && !e.consumption?.truncated && e.consumption?.status === "VERIFIED" && e.consumption.services.some(s => s.serviceType === "XAPI" && s.status === "VERIFIED" && s.fullAssetComposition === true && s.call?.verified === true && s.call.versionId === s.versionId && s.call.rowCount > 0&&
+  const consumed = Boolean(healthy && consumptionCurrent && !e.consumption?.truncated && e.consumption?.status === "VERIFIED" && e.consumption.services.some(s => s.serviceType === "XAPI" && s.status === "VERIFIED" && (distribution?distributionReceipt&&s.distributionComposition===true&&s.fullAssetComposition===false&&s.call?.independentResultVerified===true:s.fullAssetComposition === true) && s.call?.verified === true && s.call.versionId === s.versionId && s.call.rowCount > 0&&
     (e.release?.sourceKind!=="MANUAL"||manualConsumptionEntryMatches(s,e.release.id,batches,e.runId))));
   const requirementCheck=e.report?.taskId===e.taskId?e.report.checks.find(check=>check.id==='requirement'):undefined;
   const steps: JourneyStep[] = [

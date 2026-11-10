@@ -1,3 +1,4 @@
+import {distributionTaskConsumption} from './distribution-task-consumption.mjs';
 import {privateTaskConsumption} from './private-task-consumption.mjs';
 import {validateDeliveryPackage} from './delivery.mjs';
 import {localServiceSources} from './local-service-sources.mjs';
@@ -10,6 +11,8 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
  if(releaseId!==undefined){
   const stored=store.get('agent',agent.id,project);
   if(!stored||agent.status!=='SUCCEEDED'||!agentSource(agent)||JSON.stringify(agent.attempts)!==JSON.stringify(stored.attempts))throw fail();
+  const selectedRelease=store.get('release',releaseId,project),selectedPackage=selectedRelease&&store.get('delivery_package',selectedRelease.packageId,project);
+  if(selectedPackage?.manifest?.source?.outputContract)return distributionTaskConsumption({store,project,agent,packageDigest,releaseId,manager});
   const selection={taskId:agent.id,packageDigest,releaseId},sources=localServiceSources({store,project,selection}),ids=new Set(sources.map(source=>source.id));
   const getRelease=id=>id===releaseId&&sources.length?{...store.get('release',id,project),sourceAgentTaskId:agent.id,sourceKind:'AGENT'}:undefined;
   return privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,scope:'LOCAL_TEST_ONLY',services:manager.list(),

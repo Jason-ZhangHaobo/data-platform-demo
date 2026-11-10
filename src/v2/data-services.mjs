@@ -1,3 +1,4 @@
+import {checkDistributionResponse} from './distribution-consumption-check.mjs';
 import {distributionMetadataById} from './output-contract-metadata.mjs';
 import {distributionFields,distributionComposition,distributionResponseSchema,combineDistributionResults} from './distribution-services.mjs';
 import {initDistributionStore,distributionDescriptor,materializeDistribution,distributionSnapshotEvidence,queryDistribution} from './distribution-query-store.mjs';
@@ -739,6 +740,18 @@ export class DataServiceManager {
     return { callId: call.id, versionId: version.id, configHash: version.configHash, rowCount: call.rowCount,
       resultHash: call.resultHash,
       verified: response.data.length === call.rowCount && serviceHash(response.data) === call.resultHash };
+  }
+
+  async recheckDistributionCall(serviceId,callId) {
+    const service=this.#service(serviceId),call=this.store.get('service_call',callId,this.project);
+    if(this.scope!=='LOCAL_TEST_ONLY'||!call||call.serviceId!==service.id||call.serviceVersionId!==service.publishedVersionId||call.outcome!=='SUCCEEDED'||call.statusCode!==200||!call.parameters||typeof call.parameters!=='object'||Array.isArray(call.parameters)||!Number.isSafeInteger(call.rowCount)||call.rowCount<0||!/^[a-f0-9]{64}$/.test(call.resultHash??''))throw fail(409,'分布历史调用未确认','DISTRIBUTION_CALL_UNAVAILABLE');
+    const version=this.#version(call.serviceVersionId),children=version.serviceType==='DAPI'?[version]:(version.steps??[]).map(s=>this.#version(s.dapiVersionId));
+    if(version.scope!=='LOCAL_TEST_ONLY'||!version.outputContractId||!children.length||children.some(v=>v.scope!=='LOCAL_TEST_ONLY'))throw fail(409,'分布固定版本未确认','DISTRIBUTION_CALL_UNAVAILABLE');
+    const certify=()=>children.map(v=>{const current=this.#version(v.id);if(!serviceVersionConfigValid(current)||current.configHash!==v.configHash)throw fail(409,'固定子版本变化','DISTRIBUTION_CALL_UNAVAILABLE');const proof=this.#distribution(this.releaseRunFor(v.sourceReleaseRunId));if(!proof||serviceHash(proof.sourceEvidence)!==serviceHash(v.sourceEvidence))throw fail(409,'分布调用来源变化','DISTRIBUTION_CALL_UNAVAILABLE');return proof;});
+    const proofs=certify(),run=this.releaseRunFor(children[0].sourceReleaseRunId),query=normalizeQuery(call.parameters),response=await this.#execute({...version,timeoutMs:Math.min(version.timeoutMs,1000)},query);
+    const check=checkDistributionResponse({contextId:run.source.contextId,version,children,query,response});
+    if(serviceHash(certify())!==serviceHash(proofs)||!serviceVersionConfigValid(this.#version(version.id))||serviceHash(this.store.get('service_call',call.id,this.project))!==serviceHash(call)||this.#service(serviceId).publishedVersionId!==version.id)throw fail(409,'核验期间发布来源变化','DISTRIBUTION_CALL_UNAVAILABLE');
+    return {callId:call.id,versionId:version.id,configHash:version.configHash,rowCount:call.rowCount,resultHash:call.resultHash,verified:response.data.length===call.rowCount&&serviceHash(response.data)===call.resultHash,...check};
   }
 
   openApi(serviceId, origin = "http://127.0.0.1:3100") {
