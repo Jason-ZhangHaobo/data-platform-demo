@@ -1,12 +1,15 @@
+import {distributionMetadataForContext} from './output-contract-metadata.mjs';
 import { getContext,validationFamilyForContext } from "./context.mjs";
 import {createHash}from'node:crypto';
 import {sqlLineageSchemaHash}from'./sql-column-lineage.mjs';
 import{sqlConditionReferences}from'./sql-condition-references.mjs';
 
 const protocol = "SECURITIES_SQL_REPAIR_FEEDBACK_V1";
-const fields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
-const issueKinds = ["VALUE_MISMATCH", "INVALID_NUMBER", "CLIENT_COUNT", "DUPLICATE_CLIENT", "CLIENT_SCOPE", "OUTPUT_FIELDS"];
-const classify = issues => {
+const legacyFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
+const legacyKinds = ["VALUE_MISMATCH", "INVALID_NUMBER", "CLIENT_COUNT", "DUPLICATE_CLIENT", "CLIENT_SCOPE", "OUTPUT_FIELDS"];
+const fieldsFor=id=>distributionMetadataForContext(id)?.fields.map(f=>f.name)??legacyFields;
+const kindsFor=id=>distributionMetadataForContext(id)?[...legacyKinds,"ROW_COUNT","DUPLICATE_KEY","GROUP_SCOPE","DECIMAL_RANGE"]:legacyKinds;
+const classify = (issues,fields,issueKinds) => {
   const selectedFields = new Set(), kinds = new Set();
   for (const raw of issues) {
     if (typeof raw !== "string") continue;
@@ -17,6 +20,10 @@ const classify = issues => {
     if (issue.includes("客户记录数不符")) kinds.add("CLIENT_COUNT");
     if (issue.includes("客户记录重复")) kinds.add("DUPLICATE_CLIENT");
     if (issue.includes("缺少客户") || issue.includes("范围外客户")) kinds.add("CLIENT_SCOPE");
+    if (issue.includes("分组记录数")) kinds.add("ROW_COUNT");
+    if (issue.includes("复合键重复")) kinds.add("DUPLICATE_KEY");
+    if (issue.includes("未登记分组")||issue.includes("缺少登记分组")) kinds.add("GROUP_SCOPE");
+    if (issue.includes("分组数值")) {kinds.add("VALUE_MISMATCH");kinds.add("DECIMAL_RANGE");}
     if (issue.includes("输出字段")) kinds.add("OUTPUT_FIELDS");
   }
   return { fields: fields.filter(field => selectedFields.has(field)), issueKinds: issueKinds.filter(kind => kinds.has(kind)) };
@@ -30,11 +37,12 @@ export function buildSqlRepairFeedback(run, contextId, {currentSql}={}) {
   if (!family || run?.contextId !== contextId || run.status !== "VALIDATION_FAILED" || validation?.passed !== false ||
       validation.contractId !== family.id || !Array.isArray(validation.regressions) || validation.regressions.length !== family.contextIds.length)
     return undefined;
+  const fields=fieldsFor(contextId),issueKinds=kindsFor(contextId);
   const cases = new Map();
   for (const row of validation.regressions) {
     if (!row || !family.contextIds.includes(row.contextId) || cases.has(row.contextId) || typeof row.passed !== "boolean" ||
         !Array.isArray(row.issues) || row.issues.length > 100) return undefined;
-    cases.set(row.contextId, { contextId: row.contextId, passed: row.passed, ...classify(row.issues) });
+    cases.set(row.contextId, { contextId: row.contextId, passed: row.passed, ...classify(row.issues,fields,issueKinds) });
   }
   const trace=run.columnLineage,sourceSqlHash=typeof currentSql==='string'?createHash('sha256').update(currentSql).digest('hex'):undefined;
   const valueLineage=trace?.protocol==='shuduo-sql-value-lineage/v1'&&run.engine==='Apache Spark'&&run.mainSqlExecuted===true&&run.revisionHash===sourceSqlHash&&trace.sourceSqlHash===sourceSqlHash&&trace.contextId===contextId&&
@@ -43,6 +51,7 @@ export function buildSqlRepairFeedback(run, contextId, {currentSql}={}) {
 }
 
 function safeValueLineage(value,contextId,currentSql){
+ const fields=fieldsFor(contextId);
  if(typeof currentSql!=='string'||!currentSql.length||currentSql.length>20000||value?.protocol!=='shuduo-sql-value-lineage-summary/v1'||value.analysis!=='STATIC_VALUE_DEPENDENCIES'||value.rowSetImpactAnalyzed!==false)return;
  const context=getContext(contextId),sourceSqlHash=createHash('sha256').update(currentSql).digest('hex'),schemaHash=sqlLineageSchemaHash(context),known=new Map(context.tables.map(t=>[t.name,new Set(t.columns.map(c=>c[0]))]));
  if(value.sourceSqlHash!==sourceSqlHash||value.schemaHash!==schemaHash||!Array.isArray(value.fields)||value.fields.length!==fields.length)return;
@@ -53,7 +62,7 @@ function safeValueLineage(value,contextId,currentSql){
 }
 
 export function safeSqlRepairFeedback(value, contextId,{currentSql}={}) {
-  const family = validationFamilyForContext(contextId);
+  const family = validationFamilyForContext(contextId),fields=fieldsFor(contextId),issueKinds=kindsFor(contextId);
   if (!family || value?.protocol !== protocol || value.contextId !== contextId || value.contractId !== family.id ||
       !Array.isArray(value.checks) || value.checks.length !== family.contextIds.length) return undefined;
   const checks = [];

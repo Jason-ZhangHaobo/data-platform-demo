@@ -6,7 +6,8 @@ from decimal import Decimal, localcontext, InvalidOperation
 from pathlib import Path
 
 REGISTRY = json.loads(Path(__file__).with_name("output-contracts.json").read_text())
-CONTRACTS = REGISTRY["contracts"]
+METADATA = json.loads(Path(__file__).with_name("output-contract-metadata.json").read_text())["contracts"]
+CONTRACTS = [{**{k:v for k,v in m.items() if k not in ("contextIds", "metrics", "constraints")}, "cases": next(c["cases"] for c in REGISTRY["contracts"] if c["id"] == m["id"])} for m in METADATA]
 
 
 def registered_contract(context):
@@ -88,7 +89,7 @@ def verify_output(rows, context):
     def add(kind, key=None, field=None):
         # Only registered expected keys are safe to expose. Never echo unknown
         # row labels, identifiers or arbitrary SQL-generated values.
-        issues.append({"ROW_COUNT": "分组记录数不符", "OUTPUT_FIELDS": "输出字段不符", "OUT_OF_SCOPE": "包含未登记分组或无效复合键", "DUPLICATE_KEY": "分组复合键重复", "MISSING_KEY": "缺少登记分组", "VALUE_MISMATCH": "分组数值不符或精度/范围不合法"}[kind] + ("：" + field if field else "") + ("（" + " / ".join(key) + "）" if key in expected_map else ""))
+        issues.append({"ROW_COUNT": "分组记录数不符", "OUTPUT_FIELDS": "输出字段不符", "OUT_OF_SCOPE": "包含未登记分组或无效复合键", "DUPLICATE_KEY": "分组复合键重复", "MISSING_KEY": "缺少登记分组", "VALUE_MISMATCH": "分组数值不符或精度/范围不合法"}[kind] + ("：" + field if field else ""))
         mismatches.append({"kind": kind, **({"key": dict(zip(keys, key))} if key in expected_map else {}), **({"field": field} if field else {})})
     if not isinstance(rows, list) or len(rows) > 1000:
         rows = []

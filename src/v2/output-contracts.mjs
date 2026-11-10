@@ -1,8 +1,10 @@
 import {readFileSync} from 'node:fs';
+import {distributionMetadataById,distributionMetadataForContext} from './output-contract-metadata.mjs';
 import {equalValidationNumber} from './validation-number.mjs';
-const registry=JSON.parse(readFileSync(new URL('./output-contracts.json',import.meta.url),'utf8'));
+const cases=JSON.parse(readFileSync(new URL('./output-contracts.json',import.meta.url),'utf8'));
+const registry={contracts:cases.contracts.map(c=>({...distributionMetadataById(c.id),cases:c.cases}))};
 export const distributionContextIds=registry.contracts.flatMap(c=>c.cases.map(v=>v.id));
-export function outputContractForContext(id){const c=registry.contracts.find(c=>c.cases.some(v=>v.id===id));if(!c)return;const {cases,...schema}=c;return structuredClone({...schema,contextIds:cases.map(v=>v.id)});}
+export function outputContractForContext(id){return distributionMetadataForContext(id);}
 export function distributionFamilyForContext(id){const c=outputContractForContext(id);return c?{id:c.id,contextIds:c.contextIds,name:c.name,definitionVersion:c.definitionVersion,
  outputContractId:c.id,grain:c.grain,keyFields:c.keyFields,metricLabels:Object.fromEntries(c.fields.map(f=>[f.name,f.label]))}:undefined;}
 export function distributionContext(id,getBase){

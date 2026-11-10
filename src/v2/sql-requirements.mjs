@@ -1,3 +1,4 @@
+import {distributionMetadataForContext} from './output-contract-metadata.mjs';
 import {createHash} from 'node:crypto';
 import {getContext,validationFamilyForContext} from './context.mjs';
 import {sqlRequirementProtocol,sqlRequirementFields,validSqlRequirementInterpretation,sqlRequirementReportMatches} from './sql-requirement-contract.mjs';
@@ -13,21 +14,22 @@ const reportKeys=['protocol','taskId','request','contextId','basis','attempt','m
 export function sqlRequirementBasis(message,context,clarification){
  const family=validationFamilyForContext(context.id);
  if(!family)throw Error('SQL_REQUIREMENT_CONTEXT_UNREGISTERED');
+ const distribution=distributionMetadataForContext(context.id);
  const sources={client_id:['accounts.client_id'],holding_market_value:['positions.position_id','positions.market_value'],
   available_cash:['cash.available_cash'],total_assets:['positions.market_value','cash.available_cash'],security_count:['positions.security_code']};
  const value={protocol:sqlRequirementProtocol,requestDigest:hash(message),contextId:context.id,contextName:context.name,
   definition:context.definition,validationContractId:family.id,definitionVersion:family.definitionVersion,
-  parameters:{advisor_id:context.advisorId,trade_date:context.businessDate},grain:'CLIENT_TRADE_DATE',
+  parameters:{advisor_id:context.advisorId,trade_date:context.businessDate},grain:distribution?.grain??'CLIENT_TRADE_DATE',
   tables:context.tables.map(({name,columns})=>({name,columns:columns.map(c=>[...c])})),
-  metrics:sqlRequirementFields.map(field=>({field,label:family.metricLabels[field],sourceFields:sources[field]})),
-  constraints:['SCOPED_CLIENTS','POSITION_ID_DEDUP','SEPARATE_CASH_AGGREGATION','INCLUDE_CASH_ONLY_CLIENTS','NULL_MONEY_AS_ZERO','DECIMAL_MONEY',
+  metrics:distribution?.metrics??sqlRequirementFields.map(field=>({field,label:family.metricLabels[field],sourceFields:sources[field]})),
+  constraints:distribution?.constraints??['SCOPED_CLIENTS','POSITION_ID_DEDUP','SEPARATE_CASH_AGGREGATION','INCLUDE_CASH_ONLY_CLIENTS','NULL_MONEY_AS_ZERO','DECIMAL_MONEY',
    ...(family.id==='securities-stock-cash-five-fixtures-v1'?['STOCK_POSITIONS_ONLY']:[])]};
  if(clarification!==undefined){if(!verifiedSqlClarification(clarification,{message,contextId:context.id}))throw fail();value.clarificationDigest=clarification.digest;}
  return {...value,digest:hash(value)};
 }
 
 export function sqlRequirementReport({task,message,context,generated,attempt}){
- if(generated?.requirementProtocol===undefined&&task.clarification===undefined&&task.humanClarified!==true)return undefined; // Never invent historical understanding.
+ if(generated?.requirementProtocol===undefined&&task.clarification===undefined&&task.humanClarified!==true&&!context.outputContractId)return undefined; // Never invent historical understanding.
  const basis=sqlRequirementBasis(message,context,task.clarification),valid=generated.requirementProtocol===sqlRequirementProtocol&&
   validSqlRequirementInterpretation(generated.requirement,basis);
  return {protocol:sqlRequirementProtocol,taskId:task.id,request:message,contextId:context.id,basis,attempt,

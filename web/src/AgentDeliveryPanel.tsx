@@ -1,3 +1,4 @@
+import {distributionMetadataForContext} from '../../src/v2/output-contract-metadata.mjs';
 import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {AssistedDevelopmentReference} from './AssistedDevelopmentReference';
 import { CheckCircle2, Circle, Download, FileText, LoaderCircle, Package, Play, RefreshCw, ShieldCheck, Square } from "lucide-react";
@@ -222,8 +223,8 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
       <div id="agent-verification" className="agent-verification-card"><div className="agent-workflow-title"><FileText size={16} /><h3>结果核验报告</h3><span className={verified ? "passed" : ""}>{reportView.title}</span></div>
         <p>{reportView.detail}</p>{current && <p>{report?.summary}</p>}
         <ul>{report?.checks.map(check => <li key={check.id}>{reportView.currentChecks && check.passed ? <CheckCircle2 size={14} /> : <Circle size={14} />}<span>{check.label}</span><strong>{!reportView.currentChecks ? "历史记录" : check.passed ? "通过" : "待核验"}</strong></li>)}</ul>
-        <small>{report?.rowCount}位客户 · {report?.engine} {report?.engineVersion} · {report?.notice}</small>
-        <ValidationDetails details={evidenceRead==="READY"?report?.validationDetails:{schema:"shuduo-validation-details/v1",status:"UNVERIFIED"}} expectedSource={{runId:report?.runId,revisionId:report?.revisionId,contextId:report?.contextId,revisionHash:report?.revisionHash,contractId:report?.validationContractId}} dirty={dirty} historical={!current} />
+        <small>{report?.rowCount}{distributionMetadataForContext(contextId)?"个分组":"位客户"} · {report?.engine} {report?.engineVersion} · {report?.notice}</small>
+        {distributionMetadataForContext(contextId)?<p>分布结果按复合键、金额及六位占比核验；失败明细见代码校验页，旧客户级差异表不适用。</p>:(<ValidationDetails details={evidenceRead==="READY"?report?.validationDetails:{schema:"shuduo-validation-details/v1",status:"UNVERIFIED"}} expectedSource={{runId:report?.runId,revisionId:report?.revisionId,contextId:report?.contextId,revisionHash:report?.revisionHash,contractId:report?.validationContractId}} dirty={dirty} historical={!current} />)}
         <button className="button" onClick={() => download("verification-report.json", report)}><Download size={14} />下载核验报告</button>
       </div>
       <div id="agent-files" className="agent-delivery-card"><div className="agent-workflow-title"><Package size={16} /><h3>调度与部署交付</h3></div><p>把当前通过核验的代码、测试、调度依赖、交易日历和部署清单固定到同一版本，再用 Spark 按文件执行一次演练。</p>

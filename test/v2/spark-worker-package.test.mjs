@@ -14,6 +14,7 @@ test("Spark Worker package builder normalizes timestamps and ZIP metadata", asyn
   assert.match(script, /spark-worker-private-smoke\.mjs/);
   assert.match(script, /output_contracts\.py/);
   assert.match(script, /output-contracts\.json/);
+  assert.match(script, /output-contract-metadata\.json/);
   assert.doesNotMatch(script, /zip -qr/);
   const workflow = await readFile(
     new URL("../../.github/workflows/build-v2-spark-worker.yml", import.meta.url),

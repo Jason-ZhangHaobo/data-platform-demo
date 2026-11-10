@@ -1,3 +1,4 @@
+import {verifyOutputRows,outputContractForContext} from './output-contracts.mjs';
 import { createHash } from "node:crypto";
 import { createDeliveryPackage, validateDeliveryPackage, resolveDeliverySchedule, validationMatchesFamily } from "./delivery.mjs";
 import { getContext, validationContractId, validationFamilyForContext } from "./context.mjs";
@@ -63,7 +64,8 @@ export function developmentVerificationReport(task, run, revision) {
   const family = validationFamilyForContext(task.contextId), legacy = family?.id === validationContractId;
   const rows = run?.rows ?? [], fields = ["holding_market_value", "available_cash", "total_assets", "security_count"];
   const numericEqual = equalValidationNumber;
-  const resultsMatch = rows.length === expected.length && expected.every(want => {
+  const distribution=outputContractForContext(task.contextId);
+  const resultsMatch = distribution ? verifyOutputRows(rows,context) : rows.length === expected.length && expected.every(want => {
     const matches = rows.filter(row => row.client_id === want.client_id);
     return matches.length === 1 && fields.every(field => numericEqual(matches[0][field], want[field]));
   });
@@ -71,20 +73,20 @@ export function developmentVerificationReport(task, run, revision) {
     { id: "revision", label: "结果对应当前代码版本", passed: Boolean(revision && revision.contextId === task.contextId &&
       (run?.contextId === undefined || run.contextId === task.contextId) && run?.revisionId === revision.id && run.revisionHash === revision.hash && hash(revision.sql) === revision.hash) },
     { id: "execution", label: "Spark 实际执行完成", passed: ["SUCCEEDED", "VALIDATION_FAILED"].includes(run?.status) && run.engine === "Apache Spark" && run.mainSqlExecuted === true && run.testDouble !== true },
-    { id: "results", label: "客户、金额与证券数量匹配独立预期", passed: resultsMatch },
-    { id: "regressions", label: legacy ? "重复持仓、现金变化及现金客户等五场景通过" : "股票持仓、现金变化及现金客户等五场景通过", passed:
+    { id: "results", label: distribution?"客户/交易日/分类、市值和占比匹配独立预期":"客户、金额与证券数量匹配独立预期", passed: resultsMatch },
+    { id: "regressions", label: distribution?"持仓去重、现金客户、未分类及零分母等五场景通过":legacy ? "重复持仓、现金变化及现金客户等五场景通过" : "股票持仓、现金变化及现金客户等五场景通过", passed:
       (task.validationContractId === undefined || task.validationContractId === family?.id) &&
       (run?.validationContractId === undefined || run.validationContractId === family?.id) &&
       validationMatchesFamily(run?.validation, family, { requireContract: true }) },
   ];
-  if(task.requirements!==undefined&&revision?.source==='LIVE_MODEL')checks.push({id:'requirement',label:'结构化理解绑定当前需求与代码，结果另行核验',
+  if((task.requirements!==undefined||distribution)&&revision?.source==='LIVE_MODEL')checks.push({id:'requirement',label:'结构化理解绑定当前需求与代码，结果另行核验',
     passed:verifiedSqlRequirementForRevision(task.requirements,task,revision)});
   const passed = run?.status === "SUCCEEDED" && checks.every(check => check.passed);
   return {
     schema: "shuduo-development-verification/v1", taskId: task.id, revisionId: revision?.id,
     revisionHash: revision?.hash, runId: run?.id, contextId: task.contextId,
     status: passed ? "PASSED" : !run || ![...terminal, "VALIDATION_FAILED"].includes(run.status) ? "PENDING" : "NEEDS_ATTENTION",
-    summary: passed ? legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
+    summary: passed ? distribution?"持仓分布的代码、真实执行、复合键与五场景核验通过；占比不含现金，调度交付尚未适配。":legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
     definition: context?.definition, checks, rowCount: rows.length, engine: run?.engine, engineVersion: run?.engineVersion,
     validationDetails: validationDetails(run, revision, task.contextId),
     finishedAt: run?.finishedAt, validationContractId: family?.id, validationFamily: family, completionScope: "KNOWN_SECURITIES_CONTRACT",
