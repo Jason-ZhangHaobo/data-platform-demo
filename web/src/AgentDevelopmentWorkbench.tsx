@@ -540,7 +540,32 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     !(run&&['FAILED','VALIDATION_FAILED'].includes(run.status)&&run.revisionId===baselineRevisionId&&!dirty)?'当前尚无可续改的成功辅助任务或可引用的失败批次；请先继续原任务，或在编辑器保存核验。新的修改意图保留，不会改作无来源的新任务。':'';
   const resultFields = run?.rows?.[0] ? Object.keys(run.rows[0]) : [];
   return <section className="agent-dev" aria-label="Agent 数据开发工作台">
-    <header className="agent-dev-heading"><div><div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div><h1>把需求交给 Agent，<span>把结果握在手里。</span></h1><p>{scopedLabels?context?.validationFamily?.name:"客户资产 T+1"} · 需求、代码与真实执行，在一个工作台完成。</p></div><div className="agent-dev-header-actions">{(task || baselineRevisionId) && <a className="button" href="#agent-delivery">核验与交付</a>}{task?.status==="SUCCEEDED"&&<button className="button" title={derivationStartReason||"以当前成功版本创建新口径草稿，尚不执行"} disabled={Boolean(derivationStartReason)||derivationActive} onClick={()=>void beginDerivation()}>基于此版本变更口径</button>}<button className="button" disabled={derivationActive||taskOnly||!canWrite||working||Boolean(pendingAgentKey)} onClick={newTask}><Plus size={15} />新建任务</button></div></header>
+    <header className="agent-dev-heading">
+      <div>
+        <div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div>
+        <h1>把需求交给 Agent，<span>把结果握在手里。</span></h1>
+        <p>{scopedLabels?context?.validationFamily?.name:"客户资产 T+1"} · 需求、代码与真实执行，在一个工作台完成。</p>
+      </div>
+      <div className="agent-dev-heading-controls">
+        {!derivationActive && <label className="agent-dev-context-picker">
+          <span>业务口径与验证数据</span>
+          <select aria-label="Agent 验证数据" disabled={contextLocked} value={contextId} onChange={event => {
+            if (contextLocked) return;
+            setContextId(event.target.value);
+            setRun(undefined);
+            setBaselineRevisionId(undefined);
+          }}>
+            {contexts.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+          {baselineRevisionId && <small>当前口径绑定已保存版本；新建任务后可另选口径。</small>}
+        </label>}
+        <div className="agent-dev-header-actions">
+          {(task || baselineRevisionId) && <a className="button" href="#agent-delivery">核验与交付</a>}
+          {task?.status === "SUCCEEDED" && <button className="button" title={derivationStartReason||"以当前成功版本创建新口径草稿，尚不执行"} disabled={Boolean(derivationStartReason)||derivationActive} onClick={()=>void beginDerivation()}>基于此版本变更口径</button>}
+          <button className="button" disabled={derivationActive||taskOnly||!canWrite||working||Boolean(pendingAgentKey)} onClick={newTask}><Plus size={15} />新建任务</button>
+        </div>
+      </div>
+    </header>
     {sourceReturnActive&&<div className="agent-dev-notice" role={returnSourceError||expectedSourceError?"alert":"status"}><div><strong>{expectedManualSource?"精确发布返程 · 独立手工版本只读定位":"精确发布返程 · 原生 Agent 只读定位"}</strong><p>{returnSourceError||expectedSourceError||(task?"原任务、代码、运行和确切发布来源已核对，当前只读展示冻结来源。":"正在核对原任务、代码版本、运行与确切发布来源；未核对前不展示其他版本。")}</p><small>离开版本定位可查看当前任务；打开链接不会自动调用模型或计算。</small>{expectedSourceBinding?.taskId&&validServiceSourceBinding(expectedSourceBinding)&&<a className="button" href={currentAgentTaskLocation(typeof location==="undefined"?"http://localhost/v2/":location.href,expectedSourceBinding.taskId).href}>打开当前任务继续处理</a>}</div></div>}
     <div className="agent-dev-boundary"><span className="agent-dev-dot" />{publicationTarget||readOnly&&canPublish ? "受邀发布试点 · 开发只读" : readOnly ? "只读验收" : privatePreview ? "私有试用" : runtimeMode === "PUBLIC_INVITATION" ? "受邀云端验证" : runtimeMode === "LOCAL_DEVELOPMENT" ? "本机开发验证" : "环境待确认"} · 仅虚构证券数据与 Spark SQL。{publicationTarget||readOnly&&canPublish ? "本页仅查看原代码与核验记录；只有指定交付包可以在下方审阅后进入两个冻结样例批次，不新建任务或修改代码。" : readOnly ? "仅查看历史任务与已保存结果；本页不会推进任务或提交计算。" : taskOnly ? "先查看指定任务并审阅原检查点，再明确选择继续或恢复后台；打开页面与刷新不会启动计算。" : backgroundAvailable?"可委托云端事件后台；浏览器只展示进度，不负责触发计算。每个委托有时限、事件与模型预算，发布仍须人工审阅。":"本页打开时自动推进；离开后检查点保留，已提交计算可继续，返回后可恢复。不是永久云调度。"}</div>
     {taskOnly&&<div className="agent-dev-alert" role="status"><div><strong>仅续接指定任务</strong><p>保留原任务编号、业务口径、尝试次数与费用预留。不新建或派生任务，其他历史只读；人工编辑单独标记，不计为 Agent 自主完成。查看任务不会启动计算。</p></div>{targetTaskId&&<button className="button" disabled={working||Boolean(pendingAgentKey)} onClick={()=>void selectTask(targetTaskId)}>查看指定任务</button>}</div>}
@@ -565,7 +590,7 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
       <section id="agent-requirement" className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
         <div className="agent-dev-conversation">
           <details className="agent-dev-context" open={!task}><summary>本次数据与业务口径 <ChevronDown size={14} /></summary>
-            {derivationActive?<p>目标口径在上方变更草稿中选择；下方展示其已登记定义与数据结构。</p>:<label>业务口径与验证数据<select aria-label="Agent 验证数据" disabled={contextLocked} value={contextId} onChange={e => { if(contextLocked)return;setContextId(e.target.value); setRun(undefined); setBaselineRevisionId(undefined); }}>{contexts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>{baselineRevisionId&&<small>当前口径绑定已保存版本；新建任务后可另选口径。</small>}</label>}
+            {derivationActive && <p>目标口径在上方变更草稿中选择；下方展示其已登记定义与数据结构。</p>}
             {context?.validationFamily&&<small>已登记口径 · {context.validationFamily.name} · V{context.validationFamily.definitionVersion}</small>}
             <p>{context?.definition ?? "正在加载数据上下文…"}</p><div className="agent-dev-tables">{context?.tables.map(t => <details key={t.name}><summary>{t.name} · {t.columns.length}字段</summary><dl>{t.columns.map(([name,type]) => <div key={name}><dt>{name}</dt><dd>{type}</dd></div>)}</dl></details>)}</div>
             <small>输出：{scopedLabels?(context?.outputContract?.fields.map(f=>f.name)??["client_id","holding_market_value","available_cash","total_assets","security_count"]).map(resultLabel).join("、"):"客户、持仓市值、可用现金、总资产、证券数量"}。其他指标请先补充并审阅口径，不默认纳入。</small>
