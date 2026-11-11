@@ -12,7 +12,7 @@ import {checkedBatchArchive, prepareBatchArchive, readBatchArchive, submitBatchA
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
-import {advanceCloudV3Rehearsal,bindCloudV3Consumption,continueCloudV3Start,exportCloudV3PublicationReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,submitCloudV3Publication} from "../scripts/start-cloud-v3-case.mjs";
+import {advanceCloudV3Rehearsal,bindCloudV3Consumption,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,rebindCloudV3PreparedSource,submitCloudV3Publication} from "../scripts/start-cloud-v3-case.mjs";
 import {firstCloudCheckpointBinding} from "../scripts/first-cloud-v3-window.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
@@ -75,6 +75,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-binding
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-file ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --reconcile
+  shuduo agent v3-rebind-source --checkpoint ABSOLUTE_PATH --source-revision SHA --out-file ABSOLUTE_PATH
+  shuduo agent v3-rebind-source --checkpoint ABSOLUTE_PATH --review-file ABSOLUTE_PATH --review-digest SHA256
   shuduo agent workflow --id AGENT_TASK_ID
   shuduo agent request --request-id ORIGINAL_REQUEST_ID
   shuduo agent manual-continuation --source-run-id RUN_ID
@@ -561,6 +563,17 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         mode==="window_binding"?firstCloudCheckpointBinding(checkpoint):
           await continueCloudV3Start(checkpoint,client,mode==="reconcile"?{reconcile:true}:{billPath:required(args,"bill_file"),
             ...(Object.hasOwn(args,"window_file")?{windowPath:required(args,"window_file")}:{})});
+    }
+    else if (resource === "agent" && action === "v3-rebind-source") {
+      const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
+      const applying=Object.hasOwn(args,"review_file");
+      const allowed=["checkpoint",...(applying?["review_file","review_digest"]:["source_revision","out_file"])];
+      if(parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
+          flags.some(flag=>!allowed.includes(flag)))
+        throw Error("首例源码换绑须选择导出审阅或按已确认摘要应用");
+      const checkpoint=required(args,"checkpoint");
+      result=applying?await rebindCloudV3PreparedSource(checkpoint,required(args,"review_file"),required(args,"review_digest")):
+        exportCloudV3SourceReview(checkpoint,required(args,"source_revision"),required(args,"out_file"));
     }
     else if (resource === "agent" && action === "v3-prepare-delivery") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));

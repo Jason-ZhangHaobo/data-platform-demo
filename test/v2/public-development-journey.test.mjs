@@ -2,12 +2,12 @@
 // This file is NOT evidence of live model, Spark, cloud recovery or public E2E.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createV2Server, PROJECT } from '../../src/v2/server.mjs';
 import { MetadataStore } from '../../src/v2/store.mjs';
 import { LocalArtifactStore } from '../../src/v2/artifact-store.mjs';
@@ -32,6 +32,8 @@ import { privateBatchReportPath } from '../../src/v2/private-batch-report-reques
 import { reportEvidenceDigest } from '../../src/v2/report-provenance-client.mjs';
 import { batchArchiveRoute, batchArchiveListPath, batchArchiveRequestPath, prepareBatchArchive, readBatchArchive, submitBatchArchive } from '../../src/v2/private-batch-archive-client.mjs';
 import { agentArchiveHref, agentArchivePin, checkedAgentArchive, clearAgentArchivePin } from '../../web/src/agent-archive-location.ts';
+import { exportCloudV3SourceReview, prepareCloudV3Start, rebindCloudV3PreparedSource } from '../../scripts/start-cloud-v3-case.mjs';
+import { withCloudCheckpoint } from '../../scripts/cloud-v3-checkpoint-lock.mjs';
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
@@ -441,11 +443,95 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   return {bound,flags};
 }
 
+function fixtureSourceReview(directory) {
+  const cwd=join(directory,'source-review-repo');
+  mkdirSync(cwd);
+  const git=(...args)=>execFileSync('git',args,{cwd,encoding:'utf8',timeout:5000,stdio:['ignore','pipe','pipe']}).trim();
+  git('init','--quiet','-b','main');
+  const save=message=>{
+    writeFileSync(join(cwd,'fictional-scope.txt'),message);
+    git('add','fictional-scope.txt');
+    git('-c','user.name=Fictional Review','-c','user.email=review@example.invalid','-c','commit.gpgsign=false','commit','--quiet','-m',message);
+    return git('rev-parse','HEAD');
+  };
+  const source=save('reviewed fictional source'),tree=git('rev-parse','HEAD^{tree}');
+  git('update-ref','refs/remotes/origin/main',source);
+  return {cwd,source,tree,unmerged:save('unmerged fictional source')};
+}
+
+test('source rebind CLI preserves a PREPARED request and rejects unreviewed, locked and submitted states', async t=>{
+  const directory=mkdtempSync(join(tmpdir(),'shuduo-source-review-'));
+  t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const {cwd,source,tree,unmerged}=fixtureSourceReview(directory);
+  const checkpoint=join(directory,'first-case.json'),reviewPath=join(directory,'source-review.json');
+  prepareCloudV3Start(checkpoint,{baseUrl:'https://fictional.example/api/v2',projectId:'fictional'},'a'.repeat(40));
+  const prepared=JSON.parse(readFileSync(checkpoint,'utf8'));
+  prepared.historyUsage={unsettledReserveCny:64,recordedModelCalls:2};
+  writeFileSync(checkpoint,JSON.stringify(prepared,null,2)+'\n');
+  const original=readFileSync(checkpoint,'utf8'),key=JSON.parse(original).outcomes[0].actions.agent.key;
+  const cliPath=resolve('bin/shuduo.mjs');
+  const cli=(args,expected=0)=>{
+    const run=spawnSync(process.execPath,[cliPath,'agent','v3-rebind-source','--checkpoint',checkpoint,...args],{cwd,encoding:'utf8',timeout:10000});
+    assert.equal(run.status,expected,run.stderr);
+    return expected===0?JSON.parse(run.stdout):undefined;
+  };
+  cli(['--source-revision',unmerged,'--out-file',reviewPath],1);
+  assert.equal(existsSync(reviewPath),false);
+  const review=cli(['--source-revision',source,'--out-file',reviewPath]);
+  assert.equal(review.status,'SOURCE_REVIEW_EXPORTED');
+  assert.equal(review.applicationTree,tree);
+  const reviewBytes=readFileSync(reviewPath,'utf8');
+  const digest=value=>createHash('sha256').update(value).digest('hex');
+  assert.equal(review.reviewDigest,digest(reviewBytes));
+  assert.equal(statSync(reviewPath).mode&0o777,0o600);
+  assert.ok(!reviewBytes.includes(key));
+  assert.equal(readFileSync(checkpoint,'utf8'),original);
+  const flags=['--review-file',reviewPath,'--review-digest',review.reviewDigest];
+  cli(['--review-file',reviewPath,'--review-digest','0'.repeat(64)],1);
+  const alteredTree=JSON.stringify({...JSON.parse(reviewBytes),applicationTree:'f'.repeat(40)});
+  writeFileSync(reviewPath,alteredTree);
+  cli(['--review-file',reviewPath,'--review-digest',digest(alteredTree)],1);
+  writeFileSync(reviewPath,reviewBytes);
+  await withCloudCheckpoint(checkpoint,async()=>{
+    await assert.rejects(rebindCloudV3PreparedSource(checkpoint,reviewPath,review.reviewDigest,{cwd}),/已有锁/);
+  });
+  assert.equal(readFileSync(checkpoint,'utf8'),original);
+  const unknown=JSON.parse(original);
+  unknown.outcomes[0].actions.agent.status='UNKNOWN';
+  writeFileSync(checkpoint,JSON.stringify(unknown));
+  cli(flags,1);
+  assert.deepEqual(JSON.parse(readFileSync(checkpoint,'utf8')),unknown);
+  const stale={...JSON.parse(original),historyUsage:{...prepared.historyUsage,unsettledReserveCny:0}};
+  writeFileSync(checkpoint,JSON.stringify(stale));
+  cli(flags,1);
+  assert.deepEqual(JSON.parse(readFileSync(checkpoint,'utf8')),stale);
+  writeFileSync(checkpoint,original);
+  const applied=cli(flags);
+  assert.equal(applied.status,'SOURCE_REBOUND');
+  const reboundBytes=readFileSync(checkpoint,'utf8');
+  const {reviewedSource,sourceRebinds,...preserved}=JSON.parse(reboundBytes);
+  assert.equal(reviewedSource,source);
+  const {reviewedSource:ignored,...originalFields}=JSON.parse(original);
+  assert.deepEqual(preserved,originalFields);
+  assert.equal(sourceRebinds[0].previousCheckpointDigest,digest(original));
+  assert.equal(sourceRebinds[0].reviewDigest,review.reviewDigest);
+  assert.equal(cli(flags).status,'SOURCE_ALREADY_REBOUND');
+  assert.equal(readFileSync(checkpoint,'utf8'),reboundBytes);
+  const changedAudit=JSON.parse(reboundBytes);
+  changedAudit.sourceRebinds[0].applicationTree='0'.repeat(40);
+  const changedBytes=JSON.stringify(changedAudit);
+  writeFileSync(checkpoint,changedBytes);
+  cli(flags,1);
+  assert.equal(readFileSync(checkpoint,'utf8'),changedBytes);
+  assert.equal(existsSync(checkpoint+'.lock'),false);
+});
+
 test('cloud v3 startup saves the original key before one POST and reconciles a lost receipt by GET',async t=>{
   const f=await fixture(t,{startupPreflight:true});
   const checkpoint=join(f.directory,'first-v3-checkpoint.json'),billPath=join(f.directory,'bill.json'),
     windowPath=join(f.directory,'opened-window.json'),sessionFile=join(f.directory,'session.json'),reads=[];
   const source='a'.repeat(40), approvalDigest='d'.repeat(64);
+  let activeSource=source,activeApprovalDigest=approvalDigest;
   const baseUrl='https://journey.example.invalid/api/v2';
   writeFileSync(sessionFile,JSON.stringify({protocol:'shuduo-invite-session/v1',apiBaseUrl:baseUrl,projectId:PROJECT,
     cookie:'shuduo_session=fictional-session-placeholder',csrfToken:'fictional-csrf-placeholder',
@@ -459,10 +545,10 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
       assert.equal(saved.outcomes[0].actions.agent.status,'SUBMITTING');
       assert.equal(saved.outcomes[0].actions.agent.key,originalKey);
       assert.equal(options.headers['Idempotency-Key'],originalKey);
-      assert.equal(saved.reviewedSource,source);
+      assert.equal(saved.reviewedSource,activeSource);
       assert.equal(saved.submission.bill.unsettledReserveCny,64);
       assert.equal(saved.submission.usage.modelCalls,0);
-      assert.equal(saved.submission.windowApprovalDigest,approvalDigest);
+      assert.equal(saved.submission.windowApprovalDigest,activeApprovalDigest);
       const body=JSON.parse(options.body);
       assert.deepEqual(Object.keys(body),['message','sql','contextId']);
       assert.equal((await f.call(path,body,originalKey)).status,202);
@@ -533,12 +619,29 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(reads,[{path:'/status?include=session',method:'GET'}]);
   assert.equal(readFileSync(checkpoint,'utf8'),preparedBytes);
   missingUsage=false;
+  const reviewedSource=fixtureSourceReview(f.directory),reviewFile=join(f.directory,'source-review.json');
+  const billBytes=readFileSync(billPath,'utf8');
+  const exported=exportCloudV3SourceReview(checkpoint,reviewedSource.source,reviewFile,{cwd:reviewedSource.cwd});
+  await rebindCloudV3PreparedSource(checkpoint,reviewFile,exported.reviewDigest,{cwd:reviewedSource.cwd});
+  activeSource=reviewedSource.source;
+  assert.equal(readFileSync(billPath,'utf8'),billBytes);
+  await cli(confirmedFlags,1);
+  assert.deepEqual(reads,[],'old window receipt cannot authorize the rebound source');
+  const reboundBinding=await cli(['--window-binding']);
+  assert.equal(reboundBinding.sourceRevision,activeSource);
+  assert.equal(reboundBinding.requestKeyHash,binding.requestKeyHash);
+  assert.equal(reboundBinding.requestBodyHash,binding.requestBodyHash);
+  assert.equal(reboundBinding.evaluationRunId,binding.evaluationRunId);
+  assert.notEqual(reboundBinding.checkpointDigest,binding.checkpointDigest);
+  activeApprovalDigest='c'.repeat(64);
+  writeWindow({...window,checkpoint:reboundBinding,approvalDigest:activeApprovalDigest});
   const unknown=await cli(confirmedFlags);
   assert.equal(unknown.reason,'RECONCILE_ORIGINAL_CREATION');
   assert.deepEqual(reads.map(read=>read.method),['GET','POST']);
   assert.equal(f.store.list('agent',PROJECT).length,1);
   const unknownBytes=readFileSync(checkpoint,'utf8');
   assert.equal(JSON.parse(unknownBytes).outcomes[0].actions.agent.status,'UNKNOWN');
+  await assert.rejects(rebindCloudV3PreparedSource(checkpoint,reviewFile,exported.reviewDigest,{cwd:reviewedSource.cwd}));
   assert.equal((await cli(confirmedFlags)).reason,'RECONCILE_ORIGINAL_CREATION');
   assert.deepEqual(reads,[]);
   assert.equal(readFileSync(checkpoint,'utf8'),unknownBytes);
@@ -562,7 +665,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   const state=JSON.parse(readFileSync(checkpoint,'utf8'));
   assert.equal(state.outcomes[0].actions.agent.id,task.id);
   assert.equal(state.outcomes[0].actions.agent.key,originalKey);
-  assert.equal(state.reviewedSource,source);
+  assert.equal(state.reviewedSource,activeSource);
   assert.equal(state.submission.bill.unsettledReserveCny,64);
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
   assert.ok(!JSON.stringify(recovered).includes(originalKey));

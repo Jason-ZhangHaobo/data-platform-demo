@@ -58,6 +58,19 @@ shuduo agent v3-start --checkpoint /private/first-case.json --reconcile
 
 准备命令固定首例、项目、入口、已审阅源码版本、请求体摘要及原幂等编号。它只创建当前用户所有的 0600 检查点。源码版本由已核验的部署记录提供，命令不证明云端已运行该版本。
 
+### 未提交首例更换审阅源码
+
+首例仍为 `PREPARED` 时，在代码仓库内核对已合入本机 `origin/main` 的完整源码 SHA，导出仅供审阅的 0600 文件。审阅内容绑定原检查点、原请求摘要和目标 Git 树。确认该文件后，显式传入它的 SHA-256。
+
+```sh
+shuduo agent v3-rebind-source --checkpoint /private/first-case.json --source-revision REVIEWED_GIT_SHA --out-file /private/source-review.json
+shuduo agent v3-rebind-source --checkpoint /private/first-case.json --review-file /private/source-review.json --review-digest CONFIRMED_SHA256
+```
+
+应用在原检查点锁内核对审阅内容，原子更新源码版本并追加审阅记录。评测、案例、请求编号、请求体及既有用量保留，账单文件继续独立使用。再次确认同一份已应用审阅可只读确认本机结果。已提交或结果待确认的请求继续按原编号对账。应用后旧窗口回执失效，新窗口与真实部署继续使用各自的确切授权。
+
+### 独立开发窗口与提交
+
 窗口绑定命令从同一未提交检查点导出首例、源码版本、文件、请求体和原编号摘要，保留原始请求编号在检查点内。独立开窗使用受保护主分支运维流程和单独批准的 `INVITED_FIRST_V3_DEVELOPMENT_WINDOW_V1` 计划。运维流程读取完整当月账单，连同原未结算预留和本次增量核对预算，最多写入一次开发环境、一次恢复原只读环境。运行时起止时间和就绪状态核对后，才从加密回执提取 `firstCaseReceipt`，保存为当前用户所有的 0600 窗口文件。
 
 HTTPS 提交同时使用原独立窗口回执和当前用户所有的 0600 账单文件。账单文件包含采集时间 `checkedAt`、完整当月账单原始页 `pages`、未结算预留 `unsettledReserveCny` 和本次费用上界 `maxIncrementCny`。命令核对原检查点、账单与实际窗口起止时间，再保存会话所属人、窗口批准摘要、账单和用量基线，沿原幂等编号提交一次。确切请求由运维计划和 CLI 核对，服务端继续执行管理员身份、窗口时间和新任务数限制。任务创建与模型调用、Spark 执行、交付和发布各有独立边界。

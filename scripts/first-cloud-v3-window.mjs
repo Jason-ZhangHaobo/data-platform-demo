@@ -35,6 +35,10 @@ export function validFirstCloudBinding(value) {
 // local checkpoint and is never put into a rollout plan or its public output.
 export function firstCloudCheckpointBinding(path) {
   const {state,text}=readCheckpoint(path,{privateFile:true});
+  return preparedFirstCloudBinding(state,text);
+}
+
+export function preparedFirstCloudBinding(state,text) {
   const {plan,contractId}=checkpointCaseScope(state,state?.evaluationRunId);
   const [definition]=plan.selectedCases,[item]=state.outcomes,action=item?.actions?.agent;
   const binding={protocol:'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1',evaluationRunId:state.evaluationRunId,
