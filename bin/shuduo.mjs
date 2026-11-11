@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
+import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
@@ -199,6 +200,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo reports create --name 持仓结构报告 --code holdings_structure --dataset-id DATASET_ID --preset holdings --description "持仓指标与分布"
   shuduo reports version --id REPORT_ID --preset holdings --description "报表V2"
   shuduo reports run|export --id REPORT_ID
+  shuduo reports provenance --id REPORT_ID --run-id RUN_ID
+  shuduo reports verify-provenance --file evidence.json
   shuduo reports plan --message "生成持仓结构报告"
   shuduo reports plans
   shuduo reports apply-plan --id PLAN_ID
@@ -1306,6 +1309,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           },
         },
       );
+    else if(resource==='reports'&&action==='provenance')result=await readReportProvenance(client,{reportId:required(parsed.options,'id'),runId:required(parsed.options,'run_id')});
+    else if(resource==='reports'&&action==='verify-provenance'){const evidence=await checkedReportProvenance(JSON.parse(readFileSync(required(parsed.options,'file'),'utf8')));result={passed:true,digest:evidence.digest,artifacts:evidence.artifacts,integrity:evidence.integrity,onlineAuthorityVerified:false,agentIndependentE2E:false};}
     else if (resource === "reports" && ["run", "export"].includes(action))
       result = await client.request(
         `/reports/${encodeURIComponent(required(parsed.options, "id"))}/${action}`,

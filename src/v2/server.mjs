@@ -129,6 +129,7 @@ import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
 import {resolvePublishedReportSource} from './published-report-source.mjs';
 import {createPublishedReportWorkflow} from './published-report-workflow.mjs';
+import {createReportProvenance,reviewedReportBasis} from './report-provenance.mjs';
 import {publishedReportSource,reportRequestId as publishedReportSourceBatchId} from './published-report-request.mjs';
 import {publishedReportHash} from './published-report-source.mjs';
 import {publishedReportPlanningContext,validatePublishedReportPlan,publishedReportPlanHash,samePublishedReportSource} from './published-report-plan.mjs';
@@ -1109,7 +1110,8 @@ export function createV2Server(options = {}) {
     resolvePublishedSource: (source, actorId) => resolvePublishedReportSource({store, project:PROJECT, source, actorId}),
     now: options.now,
   });
-  const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,
+  const reportProvenance=createReportProvenance({store,project:PROJECT,reportStore});
+  const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,provenance:reportProvenance,
     resolveSource:(source,actorId)=>resolvePublishedReportSource({store,project:PROJECT,source,actorId}),afterStep:options.publishedReportAfterStep});
   const reportActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
   const publishedPlanContext=(source,actor)=>{
@@ -2987,10 +2989,9 @@ export function createV2Server(options = {}) {
             if(Object.keys(body).some(k=>k!=='proposalHash')||body.proposalHash!==plan.proposalHash||!['SUCCEEDED','APPLYING','APPLIED'].includes(plan.status)||plan.proposal?.kind!=='PUBLISHED_REPORT'||
               reportProposalHash(plan,plan.proposal)!==plan.proposalHash)throw fail(409,'请先审阅并提交此确切同源报表方案摘要');
             assertReportClarificationPlan(plan,{store,project:PROJECT,contextFor:publishedPlanContext});
-            if(plan.status==='APPLIED')return json(res,200,publishedReports.lookup(plan.id,reportActor(req)));
             const context=publishedPlanContext(plan.sourceBinding,reportActor(req));if(publishedReportHash(context)!==plan.contextHash)throw fail(409,'来源或指标定义已变化，请重新审阅方案');
-            const created=publishedReports.submit({name:plan.proposal.name,source:plan.sourceBinding,metricIds:plan.proposal.metricIds},reportActor(req),plan.id);
-            store.update('report_agent_plan',plan.id,PROJECT,{status:created.status==='SUCCEEDED'?'APPLIED':'APPLYING',reportCreation:created,...(created.reportId?{reportId:created.reportId}:{}),appliedAt:new Date().toISOString()});return json(res,created.status==='SUCCEEDED'?200:202,created);
+            const created=publishedReports.submit({name:plan.proposal.name,source:plan.sourceBinding,metricIds:plan.proposal.metricIds},reportActor(req),plan.id,reviewedReportBasis(plan,reportActor(req),body.proposalHash));
+            store.update('report_agent_plan',plan.id,PROJECT,{status:created.status==='SUCCEEDED'?'APPLIED':'APPLYING',reportCreation:created,...(created.reportId?{reportId:created.reportId}:{}),appliedAt:plan.appliedAt??new Date().toISOString()});return json(res,created.status==='SUCCEEDED'?200:202,created);
           }
           if (plan.status === "APPLIED" && plan.reportId)
             return json(res, 200, reports.reportDetail(plan.reportId));
@@ -3007,11 +3008,28 @@ export function createV2Server(options = {}) {
         }
       }
       const reportRecord = path.match(
-        /^\/api\/v2\/reports\/([a-f0-9-]+)(?:\/(versions|run|export))?$/,
+        /^\/api\/v2\/reports\/([a-f0-9-]+)(?:\/(versions|run|export|provenance))?$/,
       );
       if (reportRecord) {
         const report = reports.reportDetail(reportRecord[1]),
           action = reportRecord[2];
+        if(method==='GET'&&action==='provenance'){
+          if(!local)throw fail(403,'报表需求溯源尚仅在本机所属人边界开放');
+          const query = url.searchParams;
+          if ([...query.keys()].some(key => !['run_id', 'download_digest'].includes(key)) ||
+              query.getAll('run_id').length !== 1 || query.getAll('download_digest').length > 1)
+            throw fail(422, '溯源须选择一个确切报表运行');
+          const runId = publishedReportSourceBatchId(query.get('run_id'));
+          const downloadDigest = query.get('download_digest');
+          if (downloadDigest !== null && !/^[a-f0-9]{64}$/.test(downloadDigest))
+            throw fail(422, '下载须提供已核对的溯源摘要');
+          const evidence = reportProvenance.read(report.id, runId, reportActor(req));
+          if (downloadDigest === null) return json(res, 200, evidence);
+          if (downloadDigest !== evidence.digest) throw fail(409, '溯源摘要已变化，请重新核对');
+          return json(res, 200, evidence, {
+            'Content-Disposition': `attachment; filename="shuduo-report-provenance-${runId.slice(0, 8)}.json"`,
+          });
+        }
         if (method === "GET" && !action) return json(res, 200, report);
         if (method === "GET" && action === "export")
           return json(res, 200, reports.exportReport(report.id));

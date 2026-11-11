@@ -2,7 +2,7 @@ import {publishedReportInput,reportRequestId,publishedReportMetricIds} from './p
 import {publishedReportHash} from './published-report-source.mjs';
 import {publishedReportTemplate} from './report-template.mjs';
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
-export function createPublishedReportWorkflow({store,project,reports,resolveSource,afterStep=()=>{}}){
+export function createPublishedReportWorkflow({store,project,reports,resolveSource,provenance,afterStep=()=>{}}){
  const kind='published_report_creation',keyFor=(actor,id)=>`${project}:published-report:v1:${actor}:${id}`;
  const owned=(id,actor)=>{const r=store.get(kind,id,project);if(!r||r.actorId!==actor)throw fail(404,'REPORT_CREATION_NOT_FOUND','未找到本账号的原报表请求');return r;};
  const view=r=>{
@@ -15,11 +15,12 @@ export function createPublishedReportWorkflow({store,project,reports,resolveSour
    if(r.outputContractId&&(version.outputContractId!==r.outputContractId||snapshot.outputContractId!==r.outputContractId||run.outputContractId!==r.outputContractId||run.distributionValidation?.passed!==true||run.distributionValidation.agentIndependentE2E!==false))throw fail(409,'DISTRIBUTION_REPORT_RECEIPT_CHANGED','分布报表固定契约或独立结果未确认');
    if(r.outputContractId)result.outputContractId=r.outputContractId;
    result.resultHash=run.resultHash;result.rowCount=snapshot.rowCount;result.widgetCount=run.widgets.length;
+   if(r.reviewBasis&&provenance)result.provenanceDigest=provenance.read(r.reportId,r.reportRunId,r.actorId).digest;
   }
   return result;
  };
  function advance(id,actor){
-  let r=owned(id,actor);if(r.status==='SUCCEEDED')return view(r);
+  let r=owned(id,actor);if(r.status==='SUCCEEDED'){provenance?.freeze(r);return view(r);}
   try{
    const resolved=resolveSource(r.input.source,actor);
    if(resolved.asset.evidenceHash!==r.sourceEvidenceHash)throw fail(409,'REPORT_SOURCE_CHANGED','原发布内容已变化，停止原请求，未改用其他来源');
@@ -45,18 +46,22 @@ export function createPublishedReportWorkflow({store,project,reports,resolveSour
     return reports.runReport(reportId).run;
    });
    r=store.update(kind,r.id,project,{status:'SUCCEEDED',stage:'COMPLETE',datasetId,snapshotId,reportId,reportVersionId:original.id,reportRunId,error:undefined});
+   provenance?.freeze(r);
   }catch(error){r=store.update(kind,r.id,project,{status:'PARTIAL',error:{code:error.code??'REPORT_CREATION_INTERRUPTED',message:[403,409,422].includes(error.status)?error.message:'原请求已保存；请核对后续接原编号，不新建请求。'}});}
   return view(r);
  }
  return{
-  submit(input,actor,requestId){
+  submit(input,actor,requestId,reviewBasis){
    if(typeof actor!=='string'||!actor)throw fail(403,'REPORT_CREATION_OWNER','需要已授权工程师身份');
    input=publishedReportInput(input);requestId=reportRequestId(requestId);
    const d=store.deduplicate(keyFor(actor,requestId),publishedReportHash(input),()=>{
     const resolved=resolveSource(input.source,actor),template=publishedReportTemplate(resolved.asset.fields.map(f=>f.name),resolved.context.id);
     if(input.metricIds?.some(id=>!template.widgets.some(w=>w.id===id)))throw fail(422,'INVALID_PUBLISHED_REPORT_METRIC','此发布结果不支持所选指标，请先澄清字段与口径');
-    return store.create(kind,project,{actorId:actor,requestId,input,...(resolved.asset.outputContractId?{metricIds:input.metricIds??template.widgets.map(w=>w.id),outputContractId:resolved.asset.outputContractId}:{}),sourceEvidenceHash:resolved.asset.evidenceHash,status:'PREPARING',stage:'SOURCE_CONFIRMED'});
+    return store.create(kind,project,{actorId:actor,requestId,input,...(reviewBasis?{reviewBasis}:{}),...(resolved.asset.outputContractId?{metricIds:input.metricIds??template.widgets.map(w=>w.id),outputContractId:resolved.asset.outputContractId}:{}),sourceEvidenceHash:resolved.asset.evidenceHash,status:'PREPARING',stage:'SOURCE_CONFIRMED'});
    });
+   const r=owned(d.id,actor);
+   if(reviewBasis&&!r.reviewBasis)store.update(kind,r.id,project,{reviewBasis});
+   if(reviewBasis&&r.reviewBasis){const core=v=>({...v,captureMode:undefined,originalAppliedAt:undefined});if(publishedReportHash(core(reviewBasis))!==publishedReportHash(core(r.reviewBasis)))throw fail(409,'REPORT_REVIEW_BASIS_CHANGED','原报表审阅依据已冻结，不能替换');}
    return advance(d.id,actor);
   },
   lookup(requestId,actor){const id=store.deduplicatedId(keyFor(actor,reportRequestId(requestId)));if(!id)throw fail(404,'REPORT_CREATION_NOT_FOUND','未找到本账号的原报表请求');return view(owned(id,actor));},
