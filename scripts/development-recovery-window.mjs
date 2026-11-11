@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { functionDigest, functionSnapshot } from './refresh-v2-spark-readiness.mjs';
 import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
 import { publicDevelopmentConfig } from '../src/v2/public-development-access.mjs';
-import { firstCloudDevelopmentScope, firstCloudDevelopmentModes, validFirstCloudBinding } from './first-cloud-v3-window.mjs';
+import { firstCloudApplicationBinding, firstCloudDevelopmentScope, firstCloudDevelopmentModes, firstCloudWindowReceiptProtocol, validFirstCloudBinding } from './first-cloud-v3-window.mjs';
 
 export const developmentRecoveryScope = 'INVITED_DEVELOPMENT_RECOVERY_WINDOW_V1';
 export const developmentRecoveryModes = ['activate', 'recycle', 'close', 'rollback'];
@@ -25,6 +25,8 @@ const fresh = (at, now) => Number.isFinite(Date.parse(at)) && Date.parse(at) <= 
 
 export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
   const firstCase = plan?.scope===firstCloudDevelopmentScope, resumed = plan?.resumeExistingTask;
+  const legacyFirstCleanup = firstCase && ['close','rollback'].includes(plan.mode) && plan.applicationInspection === undefined;
+  const inspected = firstCase && !legacyFirstCleanup ? firstCloudApplicationBinding(plan.applicationInspection,plan.firstCase) : undefined;
   if (firstCase) {
     check(resumed===undefined && firstCloudDevelopmentModes.includes(plan.mode) && validFirstCloudBinding(plan.firstCase) &&
       plan.firstCase.sourceRevision===plan.applicationSource && plan.contextId===plan.firstCase.contextId &&
@@ -35,7 +37,9 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
       Number.isSafeInteger(plan.maxProbes) && plan.maxProbes>=8 && plan.maxProbes<=60 && plan.maxWrites===2 &&
       plan.reloaded===undefined && plan.recoveryNonce===undefined && plan.phaseBoundary===undefined,
     'FIRST_CLOUD_WINDOW_SCOPE_INVALID');
-  } else check(plan?.firstCase===undefined,'FIRST_CLOUD_WINDOW_SCOPE_INVALID');
+    if (!legacyFirstCleanup) check(inspected && inspected.sha256===plan.application?.sha256 && inspected.bytes===plan.application?.bytes &&
+      inspected.inspectionDigest===plan.binding?.applicationInspectionDigest,'FIRST_CLOUD_APPLICATION_INSPECTION_INVALID');
+  } else check(plan?.firstCase===undefined && plan?.applicationInspection===undefined,'FIRST_CLOUD_WINDOW_SCOPE_INVALID');
   if (resumed !== undefined) {
     check(sameKeys(resumed, ['protocol', 'taskId', 'originalStartsAt', 'originalDeadline', 'retainedAttempts', 'approvalDigest', 'priorCodeReads', 'priorCodeHttp', 'codeStageIssuedAt', 'codeStageClosedAt']) &&
       resumed.protocol === 'TARGET_TASK_FRESH_WINDOW_V1' && uuid(resumed.taskId) &&
@@ -65,7 +69,8 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
     (['close', 'rollback'].includes(plan.mode) || plan.deadline > now), 'RECOVERY_WINDOW_INVALID');
   const b = plan.binding;
   check(sameKeys(b, ['protocol', 'approvalDigest', 'predecessorDigest', 'historyDigest', 'applicationSha256', 'workerDigest', 'priorReserveCny',
-    ...(resumed ? ['taskResumeDigest'] : []), ...(firstCase ? ['firstCaseDigest','budgetPolicyDigest'] : [])]) &&
+    ...(resumed ? ['taskResumeDigest'] : []), ...(firstCase ? ['firstCaseDigest','budgetPolicyDigest'] : []),
+    ...(inspected ? ['applicationInspectionDigest'] : [])]) &&
     b.protocol === (firstCase ? 'FIRST_CLOUD_WINDOW_CONTINUATION_V1' : resumed ? 'DEVELOPMENT_TASK_RESUME_CONTINUATION_V1' : 'DEVELOPMENT_RECOVERY_CONTINUATION_V1') &&
     (!resumed || b.taskResumeDigest === recoveryDigest(resumed)) &&
     (!firstCase || b.firstCaseDigest===recoveryDigest(plan.firstCase) &&
@@ -231,7 +236,8 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
     await settle(expected(desired)); await runtime(!cleanup);
     report.phase = cleanup ? 'CLOSED_READONLY' : plan.mode === 'recycle' ? 'RELOAD_CONFIGURATION_VERIFIED' : 'OPENED';
     if (firstCase && report.phase==='OPENED') report.firstCaseReceipt={
-      protocol:'SHUDUO_FIRST_V3_WINDOW_RECEIPT_V1',checkpoint:plan.firstCase,approvalDigest:plan.binding.approvalDigest,
+      protocol:firstCloudWindowReceiptProtocol,checkpoint:plan.firstCase,approvalDigest:plan.binding.approvalDigest,
+      application:{...firstCloudApplicationBinding(plan.applicationInspection,plan.firstCase),crc64:plan.application.crc64},
       startsAt:report.activated.V2_PUBLIC_DEVELOPMENT_STARTS_AT,expiresAt:report.activated.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT,
       bill:report.firstCaseBill};
     save(); return report;
