@@ -139,12 +139,44 @@ function platformMatch(source, plan, report, evidence) {
 // Consistency only. No IO, clock reads, invocation, credential creation or eval
 // changes. Even a completely self-consistent report can be fabricated; it is
 // not proof that a real environment or independent system was exercised.
-export function bindExternalConsumption({ expectedSource, plan, report, taskEvidence } = {}) {
+function matchedDapiReceipt(source,plan,report,evidence,xapiEvidence) {
+  check(only(evidence,evidenceKeys) && evidence.protocol==="shuduo-private-task-consumption/v1" && evidence.taskId===source.taskId &&
+    evidence.packageDigest===source.packageDigest && evidence.releaseId===source.releaseId &&
+    evidence.scope===source.scope && evidence.sourceKind==="AGENT" && evidence.truncated===false &&
+    evidence.externalSystemVerified===false && evidence.agentIndependentE2E===false && evidence.publicDeployed===false &&
+    evidence.matchingCount===1 && Array.isArray(evidence.services) && evidence.services.length===1 &&
+    timestamp(evidence.checkedAt), "DAPI_RECEIPT_INVALID");
+  const [entry]=evidence.services, service=plan.dapis.find(row=>row.granted && row.id===entry?.serviceId);
+  const call=entry?.call, versions=entry?.sourceVersions, xapi=xapiEvidence.services.find(row=>row.serviceId===plan.xapi.id);
+  check(service && only(entry,entryKeys) && entry.serviceType==="DAPI" && entry.status==="VERIFIED" &&
+    entry.sourceKind==="AGENT" && entry.versionId===service.versionId && entry.configHash===service.configHash &&
+    entry.releaseId===source.releaseId && same(validateConsumerSource(entry.source),source) &&
+    same(entry.sourceRunIds,[source.sourceReleaseRunId]) && Array.isArray(versions) && versions.length===1 &&
+    only(versions[0],versionKeys) && versions[0].serviceId===service.id && versions[0].versionId===service.versionId &&
+    versions[0].configHash===service.configHash && versions[0].releaseId===source.releaseId &&
+    versions[0].packageDigest===source.packageDigest && versions[0].sourceReleaseRunId===source.sourceReleaseRunId &&
+    versions[0].sourceKind==="AGENT" &&
+    Array.isArray(versions[0].fields) && same([...versions[0].fields].sort(),[...service.fields].sort()),
+    "DAPI_SOURCE_MISMATCH");
+  check(exact(call,callKeys) && id(call.callId) && call.applicationId===xapi?.call?.applicationId &&
+    call.verified===true && call.versionId===service.versionId && call.configHash===service.configHash &&
+    ["REVOKED","EXPIRED"].includes(call.applicationStatus) && timestamp(call.finishedAt) &&
+    Date.parse(call.finishedAt)>=Date.parse(plan.startedAt) && Date.parse(call.finishedAt)<Date.parse(plan.deadline) &&
+    Date.parse(call.finishedAt)<=Date.parse(evidence.checkedAt),"DAPI_CALL_PROOF_INVALID");
+  const callIdDigest=consumerDigest(call.callId);
+  const matches=report.requests.filter(row=>row.type==="DAPI" && row.statusCode===200 && row.serviceId===service.id &&
+    row.versionId===service.versionId && row.callIdDigest===callIdDigest);
+  check(matches.length===1 && matches[0].rowsDigest===call.resultHash && matches[0].rowCount===call.rowCount,
+    "DAPI_CALL_RESULT_MISMATCH");
+  return {dapiCallIdDigest:callIdDigest,dapiRowsDigest:call.resultHash};
+}
+
+export function bindExternalConsumption({ expectedSource, plan, report, taskEvidence, dapiEvidence } = {}) {
   const base = { schema: "shuduo-external-consumption-binding/v1", verificationScope: "REPORT_AND_PLATFORM_RECEIPT_CONSISTENCY",
     eligibleForExternalAcceptance: false, externalSystemVerified: false, agentIndependentE2E: false, publicDeployed: false };
   if (plan?.protocol !== "SERVICE_CONSUMER_V2" || report?.protocol !== "SERVICE_CONSUMER_V2")
     return { ...base, status: "INELIGIBLE", reason: "V2_REPORT_REQUIRED" };
-  if (report.mode === "PLAN_ONLY" || report.evidence === "NOT_EXECUTED" || [plan, report, taskEvidence].some(value =>
+  if (report.mode === "PLAN_ONLY" || report.evidence === "NOT_EXECUTED" || [plan, report, taskEvidence, dapiEvidence].some(value =>
     value?.testDouble === true || value?.synthetic === true || value?.executionEvidenceMode === "TEST_HARNESS"))
     return { ...base, status: "INELIGIBLE", reason: "NON_EXECUTION_EVIDENCE" };
   try {
@@ -153,11 +185,12 @@ export function bindExternalConsumption({ expectedSource, plan, report, taskEvid
     const program = expectedRequests(plan, metadata);
     verifyReport(plan, report, metadata, program);
     const matched = platformMatch(source, plan, report, taskEvidence);
+    const dapi = dapiEvidence===undefined ? {} : matchedDapiReceipt(source,plan,report,dapiEvidence,taskEvidence);
     const eligible = source.scope === "PRIVATE_CLOUD_TEST" && source.sourceKind === "AGENT" && plan.testOnly === false && report.evidence === "HTTP_CONSUMER_ONLY";
     return { ...base, status: eligible ? "MATCHED" : "MATCHED_ONLY", reason: eligible ? "REPORT_AND_RECEIPT_MATCHED" : "LOCAL_OR_MANUAL_CONSISTENCY_ONLY",
       eligibleForExternalAcceptance: eligible, source, sourceDigest: metadata.sourceDigest, expectedRowsDigest: metadata.expectedRowsDigest,
       planDigest: report.planDigest, reportDigest: hash(report), servicesDigest: hash(metadata.services),
-      callIdDigest: matched.callIdDigest, rowsDigest: matched.rowsDigest, matchedRequestSequence: matched.sequence };
+      callIdDigest: matched.callIdDigest, rowsDigest: matched.rowsDigest, matchedRequestSequence: matched.sequence, ...dapi };
   } catch (error) {
     return { ...base, status: "UNMATCHED", reason: error instanceof BindingError ? error.code : "INVALID_DOCUMENT" };
   }

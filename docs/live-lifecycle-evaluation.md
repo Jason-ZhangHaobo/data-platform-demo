@@ -138,6 +138,17 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 
 本机测试可用 `SHUDUO_TEST_LOCAL_SPARK_RELEASE=true` 执行同一包的两个真实 Spark 批次。签名入口、队列和数据仍在隔离本机环境，真实云调度、付费执行与授权消费需分别验收。
 
+### 核对两个原发布批次的授权消费
+
+```sh
+shuduo agent v3-consumption --checkpoint /private/first-case.json --batch-id ORIGINAL_BATCH_ID --out-file /private/consumer-source.json
+shuduo agent v3-consumption --checkpoint /private/first-case.json --plan /private/consumer-plan.json --call-id-digest ORIGINAL_XAPI_CALL_SHA256
+```
+
+导出前按原发布编号复核同一包、两个成功批次和监控事件，并核对私有数据服务返回的同源批次。每个服务消费窗口仍绑定一个选定批次。DAPI 与 XAPI 沿已有受邀授权和固定版本执行，独立消费者复用既有请求预算、分页、拒绝、限流及撤销断言。
+
+核验命令读取已保存的 V2 计划和报告。独立预期须与原证券口径的登记数据一致。命令分别读取原 DAPI 与 XAPI 成功调用，核对同一应用、固定版本、结果摘要和撤销状态，再把两个调用摘要写入原检查点。重复核验可读回同一证明。每个批次单独保留证据。回环报告为 `MATCHED_ONLY`，真实外部验收与端到端计分另行核验。
+
 ### 读取原任务的执行阶段
 
 在本机运维监控展开已受理案例的模型与 Spark 状态，或执行 `node scripts/run-live-lifecycle-evaluation.mjs --inspect 原评测UUID`。CLI 与页面共用原评测记录，CLI 额外核对本机检查点文件摘要。已冻结的案例始终展示原代码版本和批次，尚未冻结的案例只读最近尝试已关联的版本及批次。

@@ -1,6 +1,8 @@
 # V2 迭代路线与证据
 
-当前增量：[云端原批次签名调度](live-lifecycle-evaluation.md#核对同一发布的签名调度与监控)绑定原发布和两个原批次。回环覆盖失联恢复及同包监控核验，见[执行清单](goal-mode-next.md)。
+当前增量：[两个原批次的授权消费](live-lifecycle-evaluation.md#核对两个原发布批次的授权消费)回环验证同一应用的 DAPI／XAPI 实际调用与独立报告，见[执行清单](goal-mode-next.md)。
+
+此前增量：[云端原批次签名调度](live-lifecycle-evaluation.md#核对同一发布的签名调度与监控)绑定原发布和两个原批次，覆盖失联恢复及同包监控核验。
 
 此前增量：[云端确切审阅与发布回执](live-lifecycle-evaluation.md#导出确切版本审阅与提交发布记录)绑定原八文件与演练。回环验证人审、失联恢复和两条待调度批次。
 

@@ -10,7 +10,7 @@ import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-pro
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
-import {advanceCloudV3Rehearsal,continueCloudV3Start,exportCloudV3PublicationReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,submitCloudV3Publication} from "../scripts/start-cloud-v3-case.mjs";
+import {advanceCloudV3Rehearsal,bindCloudV3Consumption,continueCloudV3Start,exportCloudV3PublicationReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,submitCloudV3Publication} from "../scripts/start-cloud-v3-case.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
@@ -65,6 +65,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-publication-review --checkpoint ABSOLUTE_PATH --out-file ABSOLUTE_PATH
   shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --review-file ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
   shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --reconcile
+  shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --batch-id ID --out-file ABSOLUTE_PATH
+  shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --source-revision SHA
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
@@ -574,6 +576,16 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result=exporting?await exportCloudV3PublicationReview(checkpoint,client,required(args,"out_file")):
         await submitCloudV3Publication(checkpoint,client,reconcile?{reconcile:true}:{reviewPath:required(args,"review_file"),
           billPath:required(args,"bill_file")});
+    }
+    else if (resource === "agent" && action === "v3-consumption") {
+      const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
+      const exporting=Object.hasOwn(args,"out_file");
+      const allowed=["checkpoint","base_url",...(exporting?["out_file","batch_id"]:["plan","call_id_digest"])];
+      if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length || flags.some(flag=>!allowed.includes(flag)))
+        throw Error("消费核验仅接受原批次导出或原报告与调用摘要");
+      result=await bindCloudV3Consumption(required(args,"checkpoint"),client,exporting?
+        {batchId:required(args,"batch_id"),outFile:required(args,"out_file")}:
+        {planPath:required(args,"plan"),callIdDigest:required(args,"call_id_digest")});
     }
     else if (resource === "agent" && action === "request") {
       const key=required(parsed.options,"request_id");

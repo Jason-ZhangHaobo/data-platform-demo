@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { validateDeliveryPackage, resolveDeliverySchedule, validationMatchesFamily } from "./delivery.mjs";
+import { validateDeliveryPackage, resolveDeliverySchedule } from "./delivery.mjs";
 import { deliveryArtifactValue } from "./artifact-store.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { manualCloudDeliverySource, durableDeliveryMode } from "./agent-development-workflow.mjs";
@@ -8,6 +8,7 @@ import {standaloneManualPublicationSource} from './standalone-manual-publication
 import {assertSqlRequirementPackageSource} from './sql-requirements.mjs';
 import {assertSqlClarificationTask} from './sql-clarification.mjs';
 import {storedAgentReviewEvidence} from './agent-review-evidence.mjs';
+import {exactPublicationReceipt,passedCloudReleaseBatch} from "./cloud-release-evidence.mjs";
 import {publicationAttestationKeys} from './publication-request.mjs';
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
@@ -56,8 +57,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if(agent?.clarification)assertSqlClarificationTask(agent,{store,project});
     assertSqlRequirementPackageSource(item,{agent,run,revision});
   };
-  const passes = (receipt, item, plan) => receipt?.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) &&
-    validationMatchesFamily(receipt.validation, { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) });
+  const exactReceipt = release => exactPublicationReceipt(store,project,release);
   const kindOf = release => release.sourceKind ?? "AGENT";
   const runOf = release => release.sourceRunId ?? (kindOf(release) === "AGENT" ? store.get("delivery_package", release.packageId, project)?.manifest?.source?.runId : undefined);
   const matches = (release, agentId, selector) => release.mode === cloudPublicationMode && release[sourceField] === agentId && (!standaloneManual||release.sourceAgentTaskId===undefined) && kindOf(release) === selector.sourceKind &&
@@ -84,7 +84,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if (candidates.length !== 1 || agent.executionMode !== "DURABLE_SQL_AGENT_V1") throw fail(409, "源任务或文件演练尚未通过；人工版本需要独立的发布审阅");
     const delivery = candidates[0], item = get("delivery_package", delivery.packageId), verification = get("delivery_verification", verificationId), plan = validateDeliveryPackage(item, item.digest);
     assertRequirementSource(item);
-    if (item.digest !== packageDigest || item.digest !== delivery.packageDigest || verification.packageId !== item.id || verification.packageDigest !== item.digest || !passes(verification, item, plan))
+    if (item.digest !== packageDigest || item.digest !== delivery.packageDigest || verification.packageId !== item.id || verification.packageDigest !== item.digest || !passedCloudReleaseBatch(verification,item,plan))
       throw fail(409, "审阅必须绑定当前代码、包摘要和真实演练");
     if (sourceKind === "MANUAL") {
       const source = manualCloudDeliverySource({store, project, runId: sourceRunId, actorId});
@@ -165,57 +165,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const release = get("release",releaseId);
     if (!matches(release,agentId,{sourceKind:"AGENT"}) || release.submittedBy !== actorId || !release.reviewDigest)
       throw fail(404,"未找到原发布请求回执");
-    return exactPublicationReceipt(release);
-  }
-  function exactPublicationReceipt(release) {
-    const review = get("delivery_review",release.reviewId), approval = get("release_approval",release.approvalId);
-    const runs = store.list("release_run",project).filter(run=>run.releaseId===release.id).sort((a,b)=>a.sequence-b.sequence);
-    if (release.scope !== "PRIVATE_CLOUD_TEST" || review.status !== "REVIEWED" || approval.status !== "APPROVED" ||
-        !publicationAttestationKeys.every(key=>review.attestations?.[key]===true) ||
-        review.verificationId !== release.verificationId ||
-        approval.reviewId !== review.id || approval.rehearsalId !== release.verificationId ||
-        approval.sourceRevisionId !== release.sourceRevisionId || approval.sourceCodeHash !== release.sourceCodeHash ||
-        [review,approval].some(value=>value.reviewDigest!==release.reviewDigest || value.packageDigest!==release.packageDigest ||
-          value.packageId!==release.packageId || value.submittedBy!==release.submittedBy ||
-          value.sourceRunId!==release.sourceRunId || value.scope!==release.scope) ||
-        runs.length!==2 || runs.some((run,index)=>run.sequence!==index+1 || run.packageId!==release.packageId ||
-          run.packageDigest!==release.packageDigest || run.sourceAgentTaskId!==release.sourceAgentTaskId ||
-          run.sourceRunId!==release.sourceRunId || run.reviewDigest!==release.reviewDigest))
-      throw fail(409,"发布、人工审阅、批准及调度批次的原记录不一致");
-    const events = store.list("monitor_event",project).filter(event=>event.releaseId===release.id);
-    const openAlertCount = store.list("monitor_alert",project).filter(alert=>alert.releaseId===release.id && alert.status==="OPEN").length;
-    const monitoring = {status:"PENDING",health:release.health,openAlertCount};
-    if (release.status === "CANCELLED" || runs.some(run=>["FAILED","CANCELLED","INTERRUPTED"].includes(run.status)))
-      monitoring.status = "NEEDS_ATTENTION";
-    else if (runs.every(run=>run.status==="SUCCEEDED")) {
-      const item = get("delivery_package",release.packageId), plan = validateDeliveryPackage(item,release.packageDigest);
-      const checks = runs.map(run=>{
-        const observed = events.filter(event=>event.releaseRunId===run.id && event.type==="BATCH_SUCCEEDED");
-        const event = observed[0], triggered = Date.parse(run.triggeredAt), scheduled = Date.parse(run.scheduledTriggerAt);
-        const finished = Date.parse(run.finishedAt);
-        if (run.schedulerTriggered !== true || run.clockMode !== "FC_TIMER" ||
-            run.businessScheduledFor !== release.businessScheduledFor || !Number.isFinite(triggered) ||
-            !Number.isFinite(scheduled) || triggered < scheduled || !Number.isFinite(finished) || finished < triggered ||
-            !passes(run,item,plan) || !["main.sql","tests.sql"].every(name=>run.fileHashes?.[name]===item.manifest.files[name].sha256) ||
-            observed.length!==1 || event.status!=="SUCCEEDED" || event.packageDigest!==release.packageDigest ||
-            !(Date.parse(event.observedAt)>=finished)) return;
-        return {batchId:run.id,eventId:event.id,observedAt:event.observedAt};
-      });
-      if (release.status==="COMPLETED_CLOUD_TEST" && release.health==="HEALTHY" && openAlertCount===0 && checks.every(Boolean)) {
-        monitoring.status="VERIFIED";
-        monitoring.batches=checks;
-      } else monitoring.status="UNCONFIRMED";
-    }
-    return {protocol:"shuduo-cloud-publication-receipt/v1",
-      release:{id:release.id, taskId:release.sourceAgentTaskId, sourceRunId:release.sourceRunId,
-        sourceRevisionId:release.sourceRevisionId, sourceCodeHash:release.sourceCodeHash, packageId:release.packageId,
-        packageDigest:release.packageDigest, verificationId:release.verificationId, reviewDigest:release.reviewDigest,
-        reviewId:review.id, approvalId:approval.id, status:release.status, scope:release.scope,
-        businessScheduledFor:release.businessScheduledFor},
-      runs:runs.map(run=>({id:run.id,sequence:run.sequence,status:run.status,schedulerTriggered:run.schedulerTriggered,
-        ...(run.stage ? {stage:run.stage} : {}),
-        ...(Number.isFinite(run.reservedDurationMs) ? {reservedDurationMs:run.reservedDurationMs} : {}),
-        ...(Number.isFinite(run.durationMs) ? {durationMs:run.durationMs} : {})})),monitoring};
+    return exactReceipt(release);
   }
   async function publish({ agent, manualDelivery, sourceKind = "AGENT", sourceRunId, packageDigest, verificationId, attestations, reviewDigest, actorId, idempotencyKey }) {
     if (!enabled) throw fail(503, "云端发布驱动尚未配置");
@@ -248,7 +198,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       const previous = get("release", prior);
       if (!matches(previous, subject.id, selector)) throw fail(409, "原发布请求绑定了不同来源或演练");
       authorizeManualRead(subject.id, selector, previous);
-      await persist(); return reviewDigest ? exactPublicationReceipt(previous) : detail(subject.id, { ...selector, releaseId: previous.id });
+      await persist(); return reviewDigest ? exactReceipt(previous) : detail(subject.id, { ...selector, releaseId: previous.id });
     }
     const samePackage = store.list("release", project).filter(r => r.mode === cloudPublicationMode && r[sourceField] === subject.id && r.packageDigest === item.digest);
     const existing = samePackage.filter(r => matches(r, subject.id, selector) && (singleRelease || !["CANCELLED", "ROLLED_BACK"].includes(r.status)));
@@ -259,7 +209,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       if (reviewDigest && (existing[0].reviewDigest !== reviewDigest || existing[0].submittedBy !== actorId))
         throw fail(409,"此交付包已有不同审阅的发布，须核对原编号");
       const saved = store.deduplicate(key, signature, () => existing[0]);
-      await persist(); return reviewDigest ? exactPublicationReceipt(existing[0]) : detail(subject.id, { ...selector, releaseId: saved.id });
+      await persist(); return reviewDigest ? exactReceipt(existing[0]) : detail(subject.id, { ...selector, releaseId: saved.id });
     }
     const {businessScheduledFor} = businessSchedule(plan);
     // Artifact verification yields; an approval window may close before records
@@ -274,12 +224,12 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       for (let sequence = 1; sequence <= 2; sequence++) store.create("release_run", project, { ...attribution, mode: cloudPublicationMode, [sourceField]: subject.id, submittedBy: actorId, releaseId: release.id, packageId: item.id, packageDigest, sequence, businessScheduledFor, status: "SCHEDULED", schedulerTriggered: false, scheduledTriggerAt: new Date(now() + (sequence - 1) * 60000).toISOString(), published: false, publicDeployed: false });
       return release;
     });
-    await persist(); return reviewDigest ? exactPublicationReceipt(get("release",created.id)) : detail(subject.id, { ...selector, releaseId: created.id });
+    await persist(); return reviewDigest ? exactReceipt(get("release",created.id)) : detail(subject.id, { ...selector, releaseId: created.id });
   }
   async function finish(run, receipt) {
     const current = get("release_run", run.id), release = get("release", run.releaseId);
     if (terminal.has(current.status) || release.status === "CANCELLED") return;
-    const item = get("delivery_package", run.packageId), plan = await ensure(item), passed = passes(receipt, item, plan);
+    const item = get("delivery_package", run.packageId), plan = await ensure(item), passed = passedCloudReleaseBatch(receipt, item, plan);
     const latest = get("release_run", run.id), latestRelease=get("release",run.releaseId);
     if (terminal.has(latest.status) || latestRelease.status === "CANCELLED") return;
     if (release.reviewDigest) {
@@ -322,7 +272,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     return summary;
   }
   function exactTickSource(release) {
-    exactPublicationReceipt(release);
+    exactReceipt(release);
     const source = reviewedSource({agentId:release.sourceAgentTaskId,sourceKind:"AGENT",sourceRunId:release.sourceRunId,
       packageDigest:release.packageDigest,verificationId:release.verificationId,actorId:release.submittedBy});
     const basis=reviewBasis(source,release.submittedBy);
@@ -332,7 +282,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     return source;
   }
   async function tickExact(release, input, old) {
-    exactPublicationReceipt(release);
+    exactReceipt(release);
     const {releaseId,requestId,triggerName,triggerTime}=input;
     const key = `${project}:cloud-release-tick:${requestId}`;
     const saved = store.deduplicate(key,hash(JSON.stringify({releaseId,triggerName,triggerTime})),()=>
