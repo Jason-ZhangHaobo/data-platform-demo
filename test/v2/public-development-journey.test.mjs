@@ -944,7 +944,14 @@ test('a killed publication CLI recovers both original batches through signed sch
     const record=await monitorReader(path);
     return path.endsWith(secondId)?{...record,status:'RUNNING'}:record;
   },monitorTarget);
-  assert.equal(onePending.batches[1].serviceHref,undefined);
+  assert.ok(onePending.batches.every(batch=>batch.serviceHref===undefined));
+  for (const releaseState of [{status:'RUNNING'}, {health:'DEGRADED'}]) {
+    const ineligible=await readOpsPublication(async path=>{
+      const record=await monitorReader(path);
+      return path.endsWith(releaseId)?{...record,...releaseState}:record;
+    },monitorTarget);
+    assert.ok(ineligible.batches.every(batch=>batch.serviceHref===undefined));
+  }
   await assert.rejects(readOpsPublication(monitorReader,{...monitorTarget,firstBatchId:secondId,secondBatchId:firstId}),/来源不一致/);
   await assert.rejects(readOpsPublication(monitorReader,{...monitorTarget,revisionId:randomUUID()}),/来源不一致/);
   assert.deepEqual(f.queueCounts(),monitoringBefore);
