@@ -71,6 +71,7 @@ export function createLiveLifecycleFixture(options={}){
   if(path===`/revisions/${revision.id}`)return revision;
   if(path===`/runs/${run.id}`)return run;
   if(path===`/agent/tasks/${task.id}/workflow`)return {report:{status:'PASSED',taskId:task.id,revisionId:revision.id,runId:run.id,checks:['revision','execution','results','regressions'].map(id=>({id,passed:true}))},...(deliveryCreated?{package:bundle,verification}:{})};
+  if(path.startsWith(`/agent/tasks/${task.id}/delivery-requests/`)){if(!deliveryCreated)throw Error('not found');return delivery;}
   if(path===`/agent/deliveries/${delivery.id}`)return delivery;
   if(path.startsWith('/agent/deliveries?'))return deliveryCreated?[delivery]:[];
   if(path===`/agent/tasks/${task.id}/publication`)return reviewed?{release,runs:batches,alerts:[],events}:{runs:[],alerts:[],events:[]};

@@ -49,7 +49,24 @@ test('fresh and derived v3 cases each publish and consume their own result, reco
  let child=await advance(childDefinition,liveCaseCheckpoint(childDefinition,startedAt,plan.caseSetDigest,{contractId,evaluationRunId:runId}),parent);
  assert.equal(child.status,'PAUSED',child.errorCode);assert.equal(child.errorCode,'MUTATION_OUTCOME_UNKNOWN');assert.equal(child.actions.agent.key,originalRequestId);
  const source=structuredClone(child.derivationSource),submittedCount=requests.filter(item=>item.method==='POST'&&item.path==='/api/v2/agent/tasks').length;
- child=await advance(childDefinition,JSON.parse(JSON.stringify(child)),parent);assert.equal(child.status,'AWAITING_ENGINEER_REVIEW',child.errorCode);assert.deepEqual(child.derivationSource,source);
+ const root=mkdtempSync(join(tmpdir(),'shuduo-v3-live-cli-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const directory=join(root,runId);mkdirSync(directory,{mode:0o700});
+ const checkpointPath=join(directory,'checkpoint.json');
+ const checkpointFor=child=>({evaluationRunId:runId,contract:currentLiveLifecycleContract,startedAt,origin:f.origin,
+  caseSetDigest:plan.caseSetDigest,caseLimit:11,outcomes:[parent,child],executionEvidenceMode:'TEST_HARNESS'});
+ writeFileSync(checkpointPath,JSON.stringify(checkpointFor(child)),{mode:0o600});
+ const beforeLookup={...f.counts},lookupRequests=[],lookupOutput=[],lookupErrors=[];
+ const lookupOptions={artifactRoot:root,output:text=>lookupOutput.push(JSON.parse(text)),error:text=>lookupErrors.push(text),
+  fetchImpl:(url,request)=>{lookupRequests.push({method:request.method,path:new URL(url).pathname});return fetch(url,request);}};
+ assert.equal(await runLiveLifecycleCli(['--reconcile',runId],{},lookupOptions),0,lookupErrors.join('\n'));
+ assert.deepEqual(lookupRequests,[{method:'GET',path:'/api/v2/agent/requests/'+originalRequestId}]);
+ assert.equal(lookupOutput[0].cases[0].status,'RECOVERED');
+ assert.deepEqual(f.counts,beforeLookup);
+ child=JSON.parse(readFileSync(checkpointPath,'utf8')).outcomes[1];
+ assert.equal(child.status,'PAUSED');
+ assert.equal(child.actions.agent.status,'CONFIRMED');
+ assert.deepEqual(child.derivationSource,source);
+ child=await advance(childDefinition,child,parent);assert.equal(child.status,'AWAITING_ENGINEER_REVIEW',child.errorCode);assert.deepEqual(child.derivationSource,source);
  assert.equal(requests.filter(item=>item.method==='POST'&&item.path==='/api/v2/agent/tasks').length,submittedCount);assert.equal(f.counts.syntheticModel,2);
  const childPublication=await operatorPublishAndConsume(child,'child');
  assert.deepEqual(childPublication.result,[{client_id:'CLIENT-001',holdings:{holding_market_value:'1000.00',security_count:1},cash:{available_cash:'300.00',total_assets:'1300.00'}}]);
@@ -60,9 +77,7 @@ test('fresh and derived v3 cases each publish and consume their own result, reco
   sourceKind:'AGENT',taskId:child.taskId,packageDigest:child.delivery.packageDigest,releaseId:childPublication.releaseId,status:'PENDING',checkedAt:new Date().toISOString(),services:[],matchingCount:0,
   truncated:false,externalSystemVerified:false,agentIndependentE2E:false,publicDeployed:false}:adapter.request(path,body,key)};
  child=await advanceLiveLifecycleCase(childDefinition,child,withoutConsumption,{sourceCheckpoint:parent,pause:async()=>{},maxPolls:2});assert.equal(child.status,'AWAITING_CONSUMPTION',child.errorCode);
- const root=mkdtempSync(join(tmpdir(),'shuduo-v3-live-cli-'));t.after(()=>rmSync(root,{recursive:true,force:true}));const directory=join(root,runId);mkdirSync(directory,{mode:0o700});
- const checkpointPath=join(directory,'checkpoint.json');writeFileSync(checkpointPath,JSON.stringify({evaluationRunId:runId,contract:currentLiveLifecycleContract,startedAt,origin:f.origin,
-  caseSetDigest:plan.caseSetDigest,caseLimit:11,outcomes:[parent,child],executionEvidenceMode:'TEST_HARNESS'}),{mode:0o600});
+ writeFileSync(checkpointPath,JSON.stringify(checkpointFor(child)),{mode:0o600});
  const before={...f.counts,calls:f.store.list('service_call',PROJECT).length,apps:f.store.list('service_app',PROJECT).length},reads=[],output=[],errors=[];
  const options={artifactRoot:root,output:text=>output.push(JSON.parse(text)),error:text=>errors.push(text),fetchImpl:async(url,request)=>{reads.push({url,method:request.method});return fetch(url,request);}};
  assert.equal(await runLiveLifecycleCli(['--refresh',runId],{},options),0,errors.join('\n'));
@@ -91,5 +106,19 @@ test('new CLI execution chooses v3, stops for real per-package review and resume
  const restored=JSON.parse(readFileSync(path,'utf8'));assert.equal(restored.outcomes[0].taskId,initial.outcomes[0].taskId);assert.deepEqual(f.counts,counts);
  assert.equal(f.store.list('release_approval',PROJECT).length,0);assert.equal(f.store.list('release',PROJECT).length,0);
  assert.equal(f.store.list('agent',PROJECT).length,1);assert.equal(f.counts.syntheticModel,1);assert.equal(f.counts.syntheticSpark,2);
+ const reuseKey=randomUUID(), prior=restored.outcomes[0];
+ const reused=await f.call(`/agent/tasks/${prior.taskId}/prepare-delivery`,{}, {headers:{"idempotency-key":reuseKey}});
+ assert.equal(reused.status,200);
+ assert.equal(reused.body.id,prior.actions.delivery.id);
+ const expected=prior.actions.delivery.id;
+ prior.status='PAUSED';prior.phase='DELIVERY_PREPARATION';
+ prior.actions.delivery={key:reuseKey,bodyHash:prior.actions.delivery.bodyHash,status:'UNKNOWN'};
+ writeFileSync(path,JSON.stringify(restored),{mode:0o600});
+ assert.equal(await runLiveLifecycleCli(['--reconcile',runId],{},options),0,errors.join('\n'));
+ const reconciled=JSON.parse(readFileSync(path,'utf8')).outcomes[0];
+ assert.equal(reconciled.actions.delivery.id,expected);
+ assert.equal(reconciled.status,'PAUSED');
+ assert.deepEqual(f.counts,counts);
+ assert.equal(f.store.list('agent_delivery_task',PROJECT).length,1);
  const bytes=readFileSync(path,'utf8');assert.equal(await runLiveLifecycleCli(['--report',runId],{},options),0);assert.equal(readFileSync(path,'utf8'),bytes);
 });

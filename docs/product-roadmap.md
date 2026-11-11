@@ -1,5 +1,7 @@
 # V2 迭代路线与证据
 
+当前增量：[v3 创建回执对账](live-lifecycle-evaluation.md#创建回执丢失时)在本机只读找回原任务及交付，留在原评测检查点。当前安排见[执行清单](goal-mode-next.md)。
+
 当前增量：[v3 逐例验收](live-lifecycle-evaluation.md)接入本机运维监控，显示固定20例的原运行、阶段和同源入口。当前安排见[执行清单](goal-mode-next.md)。
 当前增量：[报表需求与审阅溯源](report-provenance.md)已在本机验证固定运行读取、HTTP附件下载与离线核对。后续验收见[执行清单](goal-mode-next.md)。
 

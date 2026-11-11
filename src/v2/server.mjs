@@ -181,6 +181,10 @@ const text = (value, min = 1, max = 20000) => {
     throw fail(400, "提交内容长度不符合要求");
   return value.trim();
 };
+function isLoopbackEvaluationRead(req) {
+  const host = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]{1,5})?$/i;
+  return host.test(req.headers.host ?? "") && ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress);
+}
 const json = async (res, status, data, headers = {}) => {
   let responseStatus = status,
     responseData = data,
@@ -3178,10 +3182,7 @@ export function createV2Server(options = {}) {
         }
       }
       if (method === "GET" && path === "/api/v2/evaluations/live-lifecycle/overview") {
-        const loopbackPeers = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
-        const loopbackHost = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]{1,5})?$/i;
-        if (!local || options.ingress || !loopbackHost.test(req.headers.host ?? "") ||
-            !loopbackPeers.includes(req.socket.remoteAddress))
+        if (!local || options.ingress || !isLoopbackEvaluationRead(req))
           throw fail(403, "逐例验收记录仅在本机工作台读取");
         const query = url.searchParams;
         if ([...query.keys()].some(key => key !== "run_id") || query.getAll("run_id").length > 1)
@@ -3347,7 +3348,12 @@ export function createV2Server(options = {}) {
         const session=auth.sessionFromHeaders(req.headers);
         if(!local&&!session)throw fail(403,"请先以原任务创建者身份登录");
         const actorId=session?.user.id??"local-engineer",key=agentRequestLookup[1];
-        const id=store.deduplicatedId(`${PROJECT}:durable-agent:${actorId}:${key}`)??(local?store.deduplicatedId(`${PROJECT}:agent:${key}`):undefined);
+        const ids = new Set([
+          store.deduplicatedId(`${PROJECT}:durable-agent:${actorId}:${key}`),
+          local ? store.deduplicatedId(`${PROJECT}:agent:${key}`) : undefined,
+        ].filter(Boolean));
+        if (ids.size > 1) throw fail(409, "原创建请求有冲突的任务回执");
+        const [id] = ids;
         const task=id?store.get("agent",id,PROJECT):undefined;
         if(!task)throw fail(404,"未找到当前身份的原创建请求");
         requireDurableAgentOwner(task,req);
@@ -5395,6 +5401,27 @@ export function createV2Server(options = {}) {
             .map(publicDeliveryTask),
         );
       }
+      const deliveryRequestLookup = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\/delivery-requests\/([A-Za-z0-9_-]{1,100})$/);
+      if (method === "GET" && deliveryRequestLookup) {
+        if (!local || options.ingress || !isLoopbackEvaluationRead(req))
+          throw fail(403, "交付请求回执仅在本机评测入口读取");
+        if (url.searchParams.size) throw fail(422, "交付回执须按原任务和请求编号读取");
+        const [, taskId, key] = deliveryRequestLookup;
+        const agent = get("agent", taskId);
+        requireDurableAgentOwner(agent, req);
+        const durableId = store.deduplicatedId(`${PROJECT}:durable-delivery:${taskId}:${key}`);
+        const localId = store.deduplicatedId(`${PROJECT}:agent-delivery:${taskId}:${key}`);
+        if (durableId && localId) throw fail(409, "原交付请求回执有冲突");
+        const id = durableId ?? localId;
+        if (!id) throw fail(404, "未找到原交付请求的回执");
+        const item = store.get("agent_delivery_task", id, PROJECT);
+        const expectedMode = durableId ? durableDeliveryMode : "VERIFIED_ARTIFACT_ORCHESTRATION";
+        if (item?.sourceAgentTaskId !== taskId || item.mode !== expectedMode ||
+            (item.sourceKind !== undefined && item.sourceKind !== "AGENT") ||
+            (item.submittedBy !== undefined && item.submittedBy !== agent.submittedBy))
+          throw fail(409, "原交付回执与任务来源不一致");
+        return json(res, 200, publicDeliveryTask(item));
+      }
       const agentDeliveryRecord = path.match(
         /^\/api\/v2\/agent\/deliveries\/([a-f0-9-]+)(?:\/(cancel|advance))?$/,
       );
@@ -5457,49 +5484,27 @@ export function createV2Server(options = {}) {
         const run = get("run", finalAttempt.runId),
           rev = get("revision", finalAttempt.revisionId);
         createDeliveryPackage({ run, revision: rev,agent });
-        const existing = store
-          .list("agent_delivery_task", PROJECT)
-          .find(
-            (item) =>
-              item.sourceAgentTaskId === agent.id &&
-              item.sourceRevisionId === rev.id &&
-              item.sourceRunId === run.id &&
-              JSON.stringify(item.sourceRequirementBinding)===JSON.stringify(agent.requirements?sqlRequirementBinding(agent.requirements):undefined)&&
-              ["QUEUED", "RUNNING", "SUCCEEDED"].includes(item.status),
-          );
-        if (existing) {
-          if(JSON.stringify(existing.sourceRequirementBinding)!==JSON.stringify(agent.requirements?sqlRequirementBinding(agent.requirements):undefined))throw fail(409,'原交付任务绑定不同需求依据');
-          if(existing.packageId)assertRequirementSource(get('delivery_package',existing.packageId));
-          return json(res, 200, existing);
-        }
-        const key = text(req.headers["idempotency-key"], 1, 100),
-          dedup = store.deduplicate(
-            `${PROJECT}:agent-delivery:${agent.id}:${key}`,
-            hash(
-              JSON.stringify({
-                agentTaskId: agent.id,
-                runId: run.id,
-                revisionHash: rev.hash,
-                ...(agent.requirements?{requirement:sqlRequirementBinding(agent.requirements)}:{}),
-              }),
-            ),
-            () =>
-              store.create("agent_delivery_task", PROJECT, {
-                sourceAgentTaskId: agent.id,
-                sourceRunId: run.id,
-                sourceRevisionId: rev.id,
-                sourceSqlHash: rev.hash,
-                ...(agent.requirements?{sourceRequirementBinding:sqlRequirementBinding(agent.requirements)}:{}),
-                status: "QUEUED",
-                stage: "QUEUED",
-                mode: "VERIFIED_ARTIFACT_ORCHESTRATION",
-                completionScope: "DELIVERY_PREPARATION",
-                fullLifecycleE2E: false,
-                agentIndependentE2E: false,
-                publicDeployed: false,
-              }),
-          ),
-          task = get("agent_delivery_task", dedup.id);
+        const requirement = agent.requirements ? sqlRequirementBinding(agent.requirements) : undefined;
+        const existing = store.list("agent_delivery_task", PROJECT).find(item =>
+          item.mode === "VERIFIED_ARTIFACT_ORCHESTRATION" && item.sourceAgentTaskId === agent.id &&
+          item.sourceRevisionId === rev.id && item.sourceRunId === run.id && item.sourceSqlHash === rev.hash &&
+          JSON.stringify(item.sourceRequirementBinding) === JSON.stringify(requirement) &&
+          ["QUEUED", "RUNNING", "SUCCEEDED"].includes(item.status));
+        if (existing?.packageId) assertRequirementSource(get("delivery_package", existing.packageId));
+        if (existing && req.headers["idempotency-key"] === undefined) return json(res, 200, existing);
+        const key = text(req.headers["idempotency-key"], 1, 100);
+        const namespace = `${PROJECT}:agent-delivery:${agent.id}:${key}`;
+        const signature = hash(JSON.stringify({
+          agentTaskId:agent.id, runId:run.id, revisionHash:rev.hash, ...(requirement ? {requirement} : {}),
+        }));
+        const dedup = store.deduplicate(namespace, signature, () => existing ?? store.create("agent_delivery_task", PROJECT, {
+          sourceAgentTaskId:agent.id, sourceRunId:run.id, sourceRevisionId:rev.id, sourceSqlHash:rev.hash,
+          ...(requirement ? {sourceRequirementBinding:requirement} : {}),
+          status:"QUEUED", stage:"QUEUED", mode:"VERIFIED_ARTIFACT_ORCHESTRATION",
+          completionScope:"DELIVERY_PREPARATION", fullLifecycleE2E:false, agentIndependentE2E:false, publicDeployed:false,
+        }));
+        const task = get("agent_delivery_task", dedup.id);
+        if (existing) return json(res, 200, task);
         if (!dedup.replayed)
           schedule("agent_delivery_task", task, async (signal) => {
             if (signal.aborted) throw new Error("交付准备已取消");

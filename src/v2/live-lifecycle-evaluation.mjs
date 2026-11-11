@@ -68,17 +68,12 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
   const accepted=value=>{
    if(!value||typeof value.id!=='string')return false;
    if(!v3)return true;
-   if(!uuid(value.id))return false;
-   if(name!=='agent')return value.sourceAgentTaskId===state.taskId&&value.sourceRevisionId===state.code.revisionId&&value.sourceRunId===state.code.runId;
-   return Boolean(value.contextId===definition.contextId&&value.message===definition.request&&value.mode==='LIVE_MODEL'&&value.language==='SPARK_SQL'&&value.sourceRunId===undefined&&
-    Number.isSafeInteger(value.version)&&value.version>=1&&Array.isArray(value.attempts)&&
-    (definition.kind==='DERIVED'?value.id!==state.derivationSource.taskId&&isDeepStrictEqual(value.derivedFrom,derivedFrom(state.derivationSource))&&
-     typeof value.initialSql==='string'&&hash(value.initialSql)===state.derivationSource.revisionHash:value.derivedFrom===undefined));
+   return v3CreationReceiptMatches(definition,state,name,value);
   };
-  if(action?.id)return {id:action.id};
+  if(action?.id&&(!v3||action.status==="CONFIRMED"))return {id:action.id};
   if(action){
    let prior;try{prior=await recover();}catch{}
-   if(!accepted(prior))throw fail("MUTATION_OUTCOME_UNKNOWN");
+   if(!accepted(prior)||(v3&&action.id!==undefined&&action.id!==prior.id))throw fail("MUTATION_OUTCOME_UNKNOWN");
    disclose(prior);action.id=prior.id;action.status="CONFIRMED";persist();return prior;
   }
   action=state.actions[name]={key:randomUUID(),bodyHash,status:"SUBMITTING"};persist();
@@ -165,6 +160,7 @@ export async function advanceLiveLifecycleCase(definition,checkpoint,adapter,{sa
    ...(v3?{contextId:definition.contextId,validationContractId:expectedContract,...(task.derivedFrom?{derivedFrom:task.derivedFrom,initialSqlHash:hash(task.initialSql)}:{})}:{})};persist();
   mark("RUNNING","DELIVERY_PREPARATION");
   const prepared=await mutation("delivery",`/agent/tasks/${task.id}/prepare-delivery`,{},async()=>{
+   if (v3) return adapter.request(`/agent/tasks/${task.id}/delivery-requests/${state.actions.delivery.key}`);
    const values=await adapter.request(`/agent/deliveries?sourceAgentTaskId=${task.id}`);
    const matches=values.filter(value=>value.sourceRevisionId===attempt.revisionId&&value.sourceRunId===attempt.runId);
    ensure(matches.length===1,"DELIVERY_RECOVERY_AMBIGUOUS");return matches[0];
@@ -263,6 +259,83 @@ function verifiedParent(definition,state,parent){
   sourceDefinition.contextId!==definition.contextId&&validationFamilyForContext(sourceDefinition.contextId)?.id!==validationFamilyForContext(definition.contextId)?.id&&
   verifyLiveCaseEvidence(sourceDefinition,parent,{contractId:currentLiveLifecycleContract.id}));
 }
+function v3CreationReceiptMatches(definition, state, name, value) {
+  if (!uuid(value?.id)) return false;
+  if (name === "delivery") return value.sourceAgentTaskId === state.taskId &&
+    value.sourceRevisionId === state.code?.revisionId && value.sourceRunId === state.code?.runId;
+  if (value.contextId !== definition.contextId || value.message !== definition.request ||
+      value.mode !== "LIVE_MODEL" || value.language !== "SPARK_SQL" || value.sourceRunId !== undefined ||
+      !Number.isSafeInteger(value.version) || value.version < 1 || !Array.isArray(value.attempts)) return false;
+  if (definition.kind !== "DERIVED") return value.derivedFrom === undefined;
+  const binding = state.derivationSource;
+  return Boolean(binding && value.id !== binding.taskId && isDeepStrictEqual(value.derivedFrom, derivedFrom(binding)) &&
+    typeof value.initialSql === "string" && hash(value.initialSql) === binding.revisionHash);
+}
+
+export function pendingLiveCreation(state) {
+  if (state.contractId !== currentLiveLifecycleContract.id || !["RUNNING", "PAUSED"].includes(state.status)) return undefined;
+  const pending = ["agent", "delivery"].filter(name => ["UNKNOWN", "SUBMITTING"].includes(state.actions?.[name]?.status));
+  if (pending.length !== 1) return undefined;
+  const [name] = pending;
+  const {key} = state.actions[name];
+  if (!uuid(key)) return {name};
+  if (name === "agent" && state.phase === "CODE_AND_DEBUG") return {name, path:"/agent/requests/" + key};
+  if (name === "delivery" && state.phase === "DELIVERY_PREPARATION" && uuid(state.taskId))
+    return {name, path:"/agent/tasks/" + state.taskId + "/delivery-requests/" + key};
+  return {name};
+}
+
+// Recover only the creation acknowledgment. A running task remains paused in
+// the evaluation until a separate, explicitly authorized advance.
+export async function reconcileLiveCreation(definition, state, adapter, {sourceCheckpoint}={}) {
+  const pending = pendingLiveCreation(state);
+  if (!pending) return {status:"NOT_PENDING"};
+  const {name, path} = pending;
+  const action = state.actions[name];
+  const unresolved = {status:"UNCONFIRMED", action:name};
+  if (!path || !uuid(state.evaluationRunId) ||
+      state.requestDigest !== liveCaseRequestDigest(definition, currentLiveLifecycleContract.id) ||
+      state.caseId !== definition.id) return unresolved;
+  const proof = liveEvidenceProvenance(state, sourceCheckpoint);
+  if (proof.nonNative || proof.unconfirmed) return unresolved;
+  const derived = definition.kind === "DERIVED";
+  if (derived && (!verifiedParent(definition, state, sourceCheckpoint) ||
+      !isDeepStrictEqual(state.derivationSource, parentBinding(definition, sourceCheckpoint)))) return unresolved;
+  if (!derived && state.derivationSource !== undefined) return unresolved;
+  if (name === "agent" && !derived && action.bodyHash !== hash({
+    message:definition.request, sql:definition.seedSql, contextId:definition.contextId,
+  })) return unresolved;
+  if (name === "delivery" && (action.bodyHash !== hash({}) || state.actions.agent?.status !== "CONFIRMED" ||
+      state.actions.agent.id !== state.taskId || state.code?.taskId !== state.taskId ||
+      ![state.code.revisionId, state.code.runId].every(uuid) || !/^[a-f0-9]{64}$/.test(state.code.revisionHash ?? "")))
+    return unresolved;
+  let receipt;
+  try {
+    receipt = await adapter.request(path);
+  } catch (error) {
+    return {status:error.status === 404 ? "NOT_RECORDED" : "UNCONFIRMED", action:name};
+  }
+  const received = liveEvidenceProvenance(receipt);
+  if (received.nonNative || received.unconfirmed || !v3CreationReceiptMatches(definition, state, name, receipt) ||
+      (action.id !== undefined && action.id !== receipt.id)) return unresolved;
+  if (name === "agent") {
+    const seed = derived ? receipt.initialSql : definition.seedSql;
+    const body = {message:definition.request, sql:seed, contextId:definition.contextId,
+      ...(derived ? {language:"SPARK_SQL", derivation:derivationRequest(state.derivationSource)} : {})};
+    if (action.bodyHash !== hash(body) || (!derived && receipt.initialSql !== seed.trim()) ||
+        !Number.isFinite(Date.parse(receipt.createdAt)) || Date.parse(receipt.createdAt) < Date.parse(state.evaluationStartedAt) ||
+        (state.taskId !== undefined && state.taskId !== receipt.id)) return unresolved;
+  } else if (receipt.sourceSqlHash !== state.code.revisionHash ||
+      !isDeepStrictEqual(receipt.sourceRequirementBinding,
+        state.code.requirementEvidence ? sqlRequirementBinding(state.code.requirementEvidence) : undefined)) return unresolved;
+  const checkpoint = structuredClone(state);
+  checkpoint.actions[name] = {...action, id:receipt.id, status:"CONFIRMED"};
+  if (name === "agent") checkpoint.taskId = receipt.id;
+  if (proof.synthetic || received.synthetic || adapter.testDouble === true) checkpoint.executionEvidenceMode = "TEST_HARNESS";
+  checkpoint.status = "PAUSED";
+  return {status:"RECOVERED", action:name, checkpoint};
+}
+
 function savedDerivationValid(definition,state){
  if(definition.kind==='FRESH')return state.derivationSource===undefined&&state.code?.derivedFrom===undefined&&state.code?.initialSqlHash===undefined;
  const binding=state.derivationSource,sourceDefinition=liveLifecycleCases(currentLiveLifecycleContract.id).find(item=>item.id===definition.sourceCaseId),

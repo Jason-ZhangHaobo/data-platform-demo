@@ -39,7 +39,14 @@ v3 派生案例只能引用固定 `sourceCaseId` 对应的本轮已完成基础�
 | `--execute` | 默认开始新的 v3 评测 | 保留原模型/计算授权、案例数与本机就绪门；不代为审阅或发布 |
 | `--resume <原编号>` | 按原文件的 v2/v3 契约继续 | 仍检查当前授权及模型/Spark就绪；旧 v1 仅返回历史范围说明，不迁移、不重跑 |
 | `--refresh <原编号>` | 只核对已处于 `AWAITING_CONSUMPTION` 或 `PAUSED + phase=CONSUMPTION` 的原案例 | 不要求付费 `AUTHORIZED` 标志或模型/Spark仍可用；adapter 拒绝任何 POST，只允许已保存同源 `GET /data-services/task-evidence?agent_task_id=…&package_digest=…&release_id=…` |
+| `--reconcile <原编号>` | 对账 v3 中提交待确认的 Agent 或交付创建回执 | 仅读原请求账本，核对后更新本机原检查点。原任务仍由后续步骤推进 |
 | `--report <原编号>` | 只读取新/旧原检查点，按对应契约整理已有阶段和统计 | 不访问服务，不创建锁，不修改原文件；标记 `recorded:true`、`RECORDED_CHECKPOINT_ONLY` 和 `externalTruthReverified:false` |
+
+### 创建回执丢失时
+
+运行 `node scripts/run-live-lifecycle-evaluation.mjs --reconcile 原评测UUID`。命令使用原运行的回环入口和幂等编号。Agent 原回执经 `GET /api/v2/agent/requests/{key}` 查询，交付原回执经 `GET /api/v2/agent/tasks/{taskId}/delivery-requests/{key}` 查询。交付读取从请求账本和已存元数据返回，不进入执行器的协调步骤。带幂等编号复用既有交付时，也记录该编号所对应的原交付。
+
+对账成功后在同一检查点保存已确认的任务或交付编号，评测留在暂停状态。缺少记录、身份或来源不符、网络不确定时保留原记录。返回码 0 表示待对账项已找回或没有待对账项，2 表示仍有待确认项，1 表示本次输入或检查点无法处理。回到运维逐例验收读取记录，可打开原任务。后续模型、文件演练或发布按原有授权流程推进。
 
 `--refresh` 不执行后续尚未开始的案例，不创建任务，也不把已过期的付费窗口用于重新推进模型、SQL、演练或发布。它沿用原编号、入口、案例集摘要和案例数，并取得原运行的串行锁；只读 GET 的结果可以原子更新**同一份本机检查点**，因此“只读”指远端业务操作，不是禁止保存本机核验状态。没有待消费案例时只给说明，不改写检查点。网络或证据读取未确认时保留原案例为消费阶段暂停，不自动重试。
 
