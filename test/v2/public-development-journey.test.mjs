@@ -34,6 +34,8 @@ import { batchArchiveRoute, batchArchiveListPath, batchArchiveRequestPath, prepa
 import { agentArchiveHref, agentArchivePin, checkedAgentArchive, clearAgentArchivePin } from '../../web/src/agent-archive-location.ts';
 import { exportCloudV3SourceReview, prepareCloudV3Start, rebindCloudV3PreparedSource } from '../../scripts/start-cloud-v3-case.mjs';
 import { withCloudCheckpoint } from '../../scripts/cloud-v3-checkpoint-lock.mjs';
+import { firstCloudApplicationBinding, firstCloudWindowReceiptProtocol } from '../../scripts/first-cloud-v3-window.mjs';
+import { fixtureFirstCloudIndex, fixtureFirstCloudInspection } from './fixtures/first-cloud-application-inspection.mjs';
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
@@ -529,17 +531,25 @@ test('source rebind CLI preserves a PREPARED request and rejects unreviewed, loc
 test('cloud v3 startup saves the original key before one POST and reconciles a lost receipt by GET',async t=>{
   const f=await fixture(t,{startupPreflight:true});
   const checkpoint=join(f.directory,'first-v3-checkpoint.json'),billPath=join(f.directory,'bill.json'),
-    windowPath=join(f.directory,'opened-window.json'),sessionFile=join(f.directory,'session.json'),reads=[];
+    windowPath=join(f.directory,'opened-window.json'),applicationPath=join(f.directory,'inspected-application.json'),
+    sessionFile=join(f.directory,'session.json'),reads=[];
   const source='a'.repeat(40), approvalDigest='d'.repeat(64);
   let activeSource=source,activeApprovalDigest=approvalDigest;
   const baseUrl='https://journey.example.invalid/api/v2';
   writeFileSync(sessionFile,JSON.stringify({protocol:'shuduo-invite-session/v1',apiBaseUrl:baseUrl,projectId:PROJECT,
     cookie:'shuduo_session=fictional-session-placeholder',csrfToken:'fictional-csrf-placeholder',
     expiresAt:f.env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT}),{mode:0o600});
-  let originalKey, hideReceipt=false, differentActor=false, missingUsage=false;
+  let originalKey, activeApplication, hideReceipt=false, differentActor=false, missingUsage=false, wrongEntry=false;
   const client=new V2Client({baseUrl,sessionFile,fetchImpl:async(url,options)=>{
-    const target=new URL(url), path=target.pathname.slice('/api/v2'.length)+target.search;
+    const target=new URL(url), path=target.pathname==='/v2/'?'/v2/':target.pathname.slice('/api/v2'.length)+target.search;
     reads.push({path,method:options.method});
+    if(path==='/v2/'){
+      assert.equal(options.method,'GET');
+      assert.equal(options.headers.Cookie,undefined);
+      assert.equal(options.headers.Authorization,undefined);
+      return new Response(wrongEntry?fixtureFirstCloudIndex.replace('Fictional','Different'):fixtureFirstCloudIndex,
+        {headers:{'content-type':'text/html; charset=utf-8'}});
+    }
     if(options.method==='POST'){
       const saved=JSON.parse(readFileSync(checkpoint,'utf8'));
       assert.equal(saved.outcomes[0].actions.agent.status,'SUBMITTING');
@@ -549,6 +559,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
       assert.equal(saved.submission.bill.unsettledReserveCny,64);
       assert.equal(saved.submission.usage.modelCalls,0);
       assert.equal(saved.submission.windowApprovalDigest,activeApprovalDigest);
+      assert.deepEqual(saved.submission.application,activeApplication);
       const body=JSON.parse(options.body);
       assert.deepEqual(Object.keys(body),['message','sql','contextId']);
       assert.equal((await f.call(path,body,originalKey)).status,202);
@@ -582,16 +593,27 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.equal(binding.checkpointDigest,sha(preparedBytes));
   assert.equal(binding.requestKeyHash,sha(originalKey));
   assert.ok(!JSON.stringify(binding).includes(originalKey));
+  writeFileSync(checkpoint,JSON.stringify({...JSON.parse(preparedBytes),sourceRebinds:[]}));
+  const emptyHistory=await cli(['--window-binding']);
+  assert.equal(emptyHistory.applicationTree,undefined);
+  assert.equal(emptyHistory.requestKeyHash,binding.requestKeyHash);
+  writeFileSync(checkpoint,preparedBytes);
   await cli(['--source-revision',source],1);
   assert.equal(readFileSync(checkpoint,'utf8'),preparedBytes);
   const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
   const writeBill=amount=>writeFileSync(billPath,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny:64,maxIncrementCny:2,
     pages:[{Success:true,Data:{PageNum:1,PageSize:300,TotalCount:1,BillingCycle:month,Items:{Item:[{Currency:'CNY',PretaxAmount:amount}]}}}]}),{mode:0o600});
   const startsAt=f.env.V2_PUBLIC_DEVELOPMENT_STARTS_AT, expiresAt=f.env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT;
-  const window={protocol:'SHUDUO_FIRST_V3_WINDOW_RECEIPT_V1',checkpoint:binding,approvalDigest,startsAt,expiresAt,
+  const writeInspection=(checkpoint,tree)=>{
+    const inspection=fixtureFirstCloudInspection(checkpoint.sourceRevision,tree);
+    writeFileSync(applicationPath,JSON.stringify(inspection),{mode:0o600});
+    return {...firstCloudApplicationBinding(inspection,checkpoint),crc64:'123456789'};
+  };
+  const window={protocol:firstCloudWindowReceiptProtocol,checkpoint:binding,approvalDigest,startsAt,expiresAt,
+    application:writeInspection(binding,'b'.repeat(40)),
     bill:{month,checkedAt:startsAt,spendCny:20,recordCount:1,pagesDigest:'e'.repeat(64),unsettledReserveCny:64,maxIncrementCny:2}};
   const writeWindow=value=>writeFileSync(windowPath,JSON.stringify(value),{mode:0o600});
-  const confirmedFlags=['--window-file',windowPath,'--bill-file',billPath,'--confirm'];
+  const confirmedFlags=['--window-file',windowPath,'--application-file',applicationPath,'--bill-file',billPath,'--confirm'];
   writeWindow(window);
   writeBill('134.00');
   await cli(confirmedFlags,1);
@@ -601,7 +623,14 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   writeBill('20.00');
   await cli(['--bill-file',billPath,'--confirm'],1);
   assert.deepEqual(reads,[]);
-  for(const alter of [v=>v.bill.unsettledReserveCny=0,v=>v.checkpoint.requestKeyHash='f'.repeat(64),v=>v.bill.spendCny=134]){
+  await cli(['--window-file',windowPath,'--bill-file',billPath,'--confirm'],1);
+  assert.deepEqual(reads,[]);
+  for(const alter of [
+    v=>v.bill.unsettledReserveCny=0,v=>v.checkpoint.requestKeyHash='f'.repeat(64),v=>v.bill.spendCny=134,
+    v=>v.protocol='SHUDUO_FIRST_V3_WINDOW_RECEIPT_V1',v=>delete v.application,
+    v=>v.application.sha256='f'.repeat(64),v=>v.application.webIndexSha256='f'.repeat(64),v=>v.application.inspectionDigest='f'.repeat(64),
+    v=>v.expiresAt=new Date(Date.now()-1).toISOString(),
+  ]){
     const changed=structuredClone(window);alter(changed);writeWindow(changed);
     await cli(confirmedFlags,1);
     assert.deepEqual(reads,[]);
@@ -629,15 +658,29 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(reads,[],'old window receipt cannot authorize the rebound source');
   const reboundBinding=await cli(['--window-binding']);
   assert.equal(reboundBinding.sourceRevision,activeSource);
+  assert.equal(reboundBinding.applicationTree,reviewedSource.tree);
   assert.equal(reboundBinding.requestKeyHash,binding.requestKeyHash);
   assert.equal(reboundBinding.requestBodyHash,binding.requestBodyHash);
   assert.equal(reboundBinding.evaluationRunId,binding.evaluationRunId);
   assert.notEqual(reboundBinding.checkpointDigest,binding.checkpointDigest);
   activeApprovalDigest='c'.repeat(64);
-  writeWindow({...window,checkpoint:reboundBinding,approvalDigest:activeApprovalDigest});
+  activeApplication=writeInspection(reboundBinding,reviewedSource.tree);
+  const newWindow={...window,checkpoint:reboundBinding,approvalDigest:activeApprovalDigest,application:activeApplication};
+  writeWindow(newWindow);
+  writeFileSync(applicationPath,JSON.stringify(fixtureFirstCloudInspection(activeSource,'0'.repeat(40))));
+  await cli(confirmedFlags,1);
+  assert.deepEqual(reads,[],'a different Git tree cannot authorize this rebound checkpoint');
+  writeInspection(reboundBinding,reviewedSource.tree);
+  const reboundBytes=readFileSync(checkpoint,'utf8');
+  wrongEntry=true;
+  await cli(confirmedFlags,1);
+  assert.deepEqual(reads,[{path:'/status?include=session',method:'GET'},{path:'/v2/',method:'GET'}]);
+  assert.equal(readFileSync(checkpoint,'utf8'),reboundBytes);
+  assert.equal(f.store.list('agent',PROJECT).length,0);
+  wrongEntry=false;
   const unknown=await cli(confirmedFlags);
   assert.equal(unknown.reason,'RECONCILE_ORIGINAL_CREATION');
-  assert.deepEqual(reads.map(read=>read.method),['GET','POST']);
+  assert.deepEqual(reads.map(read=>read.method),['GET','GET','POST']);
   assert.equal(f.store.list('agent',PROJECT).length,1);
   const unknownBytes=readFileSync(checkpoint,'utf8');
   assert.equal(JSON.parse(unknownBytes).outcomes[0].actions.agent.status,'UNKNOWN');

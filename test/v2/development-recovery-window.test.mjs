@@ -4,9 +4,10 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { developmentRecoveryScope, developmentRecoveryEnvironment, validateDevelopmentRecoveryPlan, runDevelopmentRecoveryOperation, recoveryDigest, recoveryUsageKeys } from '../../scripts/development-recovery-window.mjs';
-import { firstCloudCheckpointBinding, firstCloudDevelopmentScope } from '../../scripts/first-cloud-v3-window.mjs';
+import { firstCloudApplicationBinding, firstCloudCheckpointBinding, firstCloudDevelopmentScope, firstCloudWindowReceiptProtocol } from '../../scripts/first-cloud-v3-window.mjs';
 import { prepareCloudV3Start } from '../../scripts/start-cloud-v3-case.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
+import { fixtureFirstCloudInspection } from './fixtures/first-cloud-application-inspection.mjs';
 
 const time = Date.parse('2026-10-20T08:00:00Z'), stamp = new Date(time).toISOString();
 const hash = c => c.repeat(64), uuid = n => `${String(n).padStart(8,'0')}-0000-4000-8000-000000000001`;
@@ -48,10 +49,12 @@ function firstFixture(t) {
   const checkpoint = join(dir,'original.json'), applicationSource='a'.repeat(40);
   prepareCloudV3Start(checkpoint,{baseUrl:'https://first-case.example.invalid/api/v2',projectId:'fictional'},applicationSource);
   const firstCase = firstCloudCheckpointBinding(checkpoint);
+  const applicationInspection=fixtureFirstCloudInspection(applicationSource,'b'.repeat(40));
   const p={...fixture(),scope:firstCloudDevelopmentScope,applicationSource,firstCase,contextId:firstCase.contextId,
-    priorReserveCny:64,maxIncrementCny:3,maxWrites:2};
+    applicationInspection,priorReserveCny:64,maxIncrementCny:3,maxWrites:2};
   p.binding={...p.binding,protocol:'FIRST_CLOUD_WINDOW_CONTINUATION_V1',priorReserveCny:p.priorReserveCny,
-    firstCaseDigest:recoveryDigest(firstCase),budgetPolicyDigest:recoveryDigest({reserveCny:p.priorReserveCny,
+    firstCaseDigest:recoveryDigest(firstCase),applicationInspectionDigest:firstCloudApplicationBinding(applicationInspection,firstCase).inspectionDigest,
+    budgetPolicyDigest:recoveryDigest({reserveCny:p.priorReserveCny,
       maxIncrementCny:p.maxIncrementCny,monthlyCny:p.monthlyCny,windowDeadline:p.deadline,
       maxSparkRuns:p.maxSparkRuns,maxModelCalls:p.maxModelCalls})};
   return p;
@@ -178,7 +181,9 @@ test('first v3 activation binds the original request and complete bill, then res
   assert.equal(h.report.phase,'OPENED');
   assert.equal(h.writes.length,1);
   const receipt=h.report.firstCaseReceipt;
+  assert.equal(receipt.protocol,firstCloudWindowReceiptProtocol);
   assert.deepEqual(receipt.checkpoint,p.firstCase);
+  assert.deepEqual(receipt.application,{...firstCloudApplicationBinding(p.applicationInspection,p.firstCase),crc64:p.application.crc64});
   assert.equal(receipt.approvalDigest,p.binding.approvalDigest);
   assert.equal(receipt.startsAt,stamp);
   assert.equal(receipt.expiresAt,new Date(p.deadline).toISOString());
@@ -202,6 +207,14 @@ test('first v3 activation binds the original request and complete bill, then res
   await runDevelopmentRecoveryOperation(already,p.baseline,r.report,r.io);
   assert.equal(r.report.phase,'CLOSED_READONLY');
   assert.equal(r.writes.length,0);
+  const legacy=structuredClone(close);
+  delete legacy.applicationInspection;
+  delete legacy.binding.applicationInspectionDigest;
+  const legacyClose=harness(legacy,{current:h.current()});
+  legacyClose.setClock(p.deadline+1);
+  await runDevelopmentRecoveryOperation(legacy,h.current(),legacyClose.report,legacyClose.io);
+  assert.equal(legacyClose.report.phase,'CLOSED_READONLY');
+  assert.equal(legacyClose.writes.length,1);
 });
 
 test('first v3 rejects altered request, reserve, source or window and restores if the runtime start differs',async t=>{
@@ -209,6 +222,10 @@ test('first v3 rejects altered request, reserve, source or window and restores i
   for(const alter of [
     v=>v.firstCase.checkpointDigest=hash('f'),v=>v.firstCase.requestKeyHash=hash('f'),v=>v.firstCase.requestBodyHash=hash('f'),
     v=>v.firstCase.origin='http://example.invalid',v=>v.applicationSource='b'.repeat(40),v=>v.contextId='other-context',
+    v=>delete v.applicationInspection,v=>v.applicationInspection.sha256=hash('f'),v=>v.applicationInspection.bytes++,
+    v=>v.applicationInspection.applicationSource='c'.repeat(40),v=>v.applicationInspection.webIndexSha256=hash('f'),
+    v=>v.applicationInspection.buildWorkflowSource='f'.repeat(40),
+    v=>v.binding.applicationInspectionDigest=hash('f'),v=>v.application.crc64='0123456789',
     v=>{v.priorReserveCny=0;v.binding.priorReserveCny=0;},v=>v.maxIncrementCny=4,v=>v.deadline--,
     v=>v.mode='recycle',v=>v.maxProbes=7,v=>v.recoveryNonce='f'.repeat(32),v=>v.priorUsage.configWrites=1,
   ]){

@@ -73,7 +73,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --source-revision SHA
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-binding
-  shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-file ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
+  shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-file ABSOLUTE_PATH --application-file ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --reconcile
   shuduo agent v3-rebind-source --checkpoint ABSOLUTE_PATH --source-revision SHA --out-file ABSOLUTE_PATH
   shuduo agent v3-rebind-source --checkpoint ABSOLUTE_PATH --review-file ABSOLUTE_PATH --review-digest SHA256
@@ -553,7 +553,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "v3-start") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
       const mode=Object.hasOwn(args,"reconcile")?"reconcile":Object.hasOwn(args,"confirm")?"confirm":Object.hasOwn(args,"window_binding")?"window_binding":"prepare";
-      const allowed=["checkpoint","base_url",...(mode==="reconcile"?["reconcile"]:mode==="confirm"?["confirm","bill_file","window_file"]:
+      const allowed=["checkpoint","base_url",...(mode==="reconcile"?["reconcile"]:mode==="confirm"?["confirm","bill_file","window_file","application_file"]:
         mode==="window_binding"?["window_binding"]:["source_revision"])];
       if(parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
          flags.some(flag=>!allowed.includes(flag)) || (mode!=="prepare" && args[mode]!==true))
@@ -562,7 +562,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result=mode==="prepare"?prepareCloudV3Start(checkpoint,client,required(args,"source_revision")):
         mode==="window_binding"?firstCloudCheckpointBinding(checkpoint):
           await continueCloudV3Start(checkpoint,client,mode==="reconcile"?{reconcile:true}:{billPath:required(args,"bill_file"),
-            ...(Object.hasOwn(args,"window_file")?{windowPath:required(args,"window_file")}:{})});
+            ...(Object.hasOwn(args,"window_file")?{windowPath:required(args,"window_file")}:{}),
+            ...(Object.hasOwn(args,"application_file")?{applicationPath:required(args,"application_file")}:{})});
     }
     else if (resource === "agent" && action === "v3-rebind-source") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));

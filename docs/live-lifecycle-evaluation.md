@@ -52,7 +52,7 @@ v3 派生案例只能引用固定 `sourceCaseId` 对应的本轮已完成基础�
 ```sh
 shuduo agent v3-start --checkpoint /private/first-case.json --source-revision REVIEWED_GIT_SHA
 shuduo agent v3-start --checkpoint /private/first-case.json --window-binding
-shuduo agent v3-start --checkpoint /private/first-case.json --window-file /private/opened-window.json --bill-file /private/current-bill.json --confirm
+shuduo agent v3-start --checkpoint /private/first-case.json --window-file /private/opened-window.json --application-file /private/control-artifact-inspection.json --bill-file /private/current-bill.json --confirm
 shuduo agent v3-start --checkpoint /private/first-case.json --reconcile
 ```
 
@@ -71,9 +71,9 @@ shuduo agent v3-rebind-source --checkpoint /private/first-case.json --review-fil
 
 ### 独立开发窗口与提交
 
-窗口绑定命令从同一未提交检查点导出首例、源码版本、文件、请求体和原编号摘要，保留原始请求编号在检查点内。独立开窗使用受保护主分支运维流程和单独批准的 `INVITED_FIRST_V3_DEVELOPMENT_WINDOW_V1` 计划。运维流程读取完整当月账单，连同原未结算预留和本次增量核对预算，最多写入一次开发环境、一次恢复原只读环境。运行时起止时间和就绪状态核对后，才从加密回执提取 `firstCaseReceipt`，保存为当前用户所有的 0600 窗口文件。
+窗口绑定命令从同一未提交检查点导出首例、源码版本、文件、请求体和原编号摘要，保留原始请求编号在检查点内。换绑后的检查点也包含已审阅 Git 树。独立开窗使用受保护主分支运维流程和单独批准的 `INVITED_FIRST_V3_DEVELOPMENT_WINDOW_V1` 计划。计划的 `applicationInspection` 使用独立控制面验包结果，批准绑定中的 `applicationInspectionDigest` 固定其制品身份。开窗前核对 Git 来源、包 SHA-256、大小和控制面的 CRC64。运维流程读取完整当月账单，连同原未结算预留和本次增量核对预算，最多写入一次开发环境、一次恢复原只读环境。运行时起止时间、控制面回读和就绪状态核对后，从加密回执提取 V2 `firstCaseReceipt`，保存为当前用户所有的 0600 窗口文件。已有旧窗口仍可按原授权恢复只读。
 
-HTTPS 提交同时使用原独立窗口回执和当前用户所有的 0600 账单文件。账单文件包含采集时间 `checkedAt`、完整当月账单原始页 `pages`、未结算预留 `unsettledReserveCny` 和本次费用上界 `maxIncrementCny`。命令核对原检查点、账单与实际窗口起止时间，再保存会话所属人、窗口批准摘要、账单和用量基线，沿原幂等编号提交一次。确切请求由运维计划和 CLI 核对，服务端继续执行管理员身份、窗口时间和新任务数限制。任务创建与模型调用、Spark 执行、交付和发布各有独立边界。
+HTTPS 提交使用 V2 独立窗口回执、原独立验包文件和 0600 账单文件。账单文件包含采集时间 `checkedAt`、完整当月账单原始页 `pages`、未结算预留 `unsettledReserveCny` 和本次费用上界 `maxIncrementCny`。命令先核对原检查点、包回执及账单，再验证实际窗口起止时间和权限。提交前增加一次无凭证的正式入口 HTML GET，校对验包记录的字节和摘要。任一校验失败时保留检查点。通过后保存会话所属人、窗口批准摘要、包身份、账单和用量基线，沿原幂等编号提交一次。服务端继续执行管理员身份、窗口时间和新任务数限制。任务创建与模型调用、Spark 执行、交付和发布各有独立边界。
 
 响应丢失或无法确认时，使用 `--reconcile` 和原创建者会话。它只读取身份和原请求回执，开发写入窗口关闭后仍可对账。缺少原回执时保留待定状态。
 
