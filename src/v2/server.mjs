@@ -187,6 +187,9 @@ function isLoopbackEvaluationRead(req) {
   const host = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]{1,5})?$/i;
   return host.test(req.headers.host ?? "") && ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress);
 }
+const contextsPath = "/api/v2/contexts";
+const isPublicContextRead = (req, channel) =>
+  channel === "HTTP" && req.method === "GET" && req.url.split("?", 1)[0] === contextsPath;
 const json = async (res, status, data, headers = {}) => {
   let responseStatus = status,
     responseData = data,
@@ -1360,6 +1363,8 @@ export function createV2Server(options = {}) {
     return { status: response.status, body: value };
   };
   const statefulRequests = createRequestLane();
+  const fixtureContexts = () =>
+    (local && !durableDevelopment && runnerDescriptor.isolation === "LOCAL_PROCESS" ? classicContextIds : allContextIds).map(publicContext);
   const prefetchedPrivateInputs=new WeakMap();
   const handleRequest = async (req, res) => {
     try {
@@ -1436,6 +1441,8 @@ export function createV2Server(options = {}) {
         throw fail(403, "无权访问此项目");
       if (method === "GET" && !path.startsWith("/api/v2"))
         return await serveV2Static(res, root, path, req.headers["accept-encoding"]);
+      // This admitted HTTP read serves built-in fixtures independent of project state.
+      if (isPublicContextRead(req, ingressChannel)) return json(res, 200, fixtureContexts());
       if (typeof persistence.refresh === "function") await persistence.refresh();
       const developmentSessionView = ingressChannel === "HTTP" && !publicReadOnly
         ? serviceSession(serviceAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? publicationSession(publicationAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? developmentSession(developmentAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) : undefined;
@@ -1907,15 +1914,14 @@ export function createV2Server(options = {}) {
             Object.fromEntries(url.searchParams),
           ),
         );
-      if (!local && method === "GET" && path.startsWith("/api/v2/") && !["/api/v2/contexts", "/api/v2/agent/tools"].includes(path) && !auth.sessionFromHeaders(req.headers)) {
+      if (!local && method === "GET" && path.startsWith("/api/v2/") && ![contextsPath, "/api/v2/agent/tools"].includes(path) && !auth.sessionFromHeaders(req.headers)) {
         const emptyLists = new Set(["/api/v2/revisions", "/api/v2/runs", "/api/v2/python/revisions", "/api/v2/python/runs", "/api/v2/agent/tasks", "/api/v2/agent/deliveries"]);
         if (emptyLists.has(path)) return json(res, 200, []);
         throw Object.assign(fail(401, "请先登录受邀账号查看项目数据"), { code: "AUTHENTICATION_REQUIRED" });
       }
       if (!local && path.startsWith("/api/v2/data-services/"))
         throw fail(403, "当前受邀环境未启用受治理的数据服务");
-      if (path === "/api/v2/contexts" && method === "GET")
-        return json(res, 200, (local && !durableDevelopment && runnerDescriptor.isolation === "LOCAL_PROCESS" ? classicContextIds : allContextIds).map(publicContext));
+      if (path === contextsPath && method === "GET") return json(res, 200, fixtureContexts());
       if (path === "/api/v2/sources" && method === "GET")
         return json(res, 200, ingestion.listSources());
       if (path === "/api/v2/sources" && method === "POST") {
@@ -6423,7 +6429,9 @@ export function createV2Server(options = {}) {
     try { channel = options.ingress?.assertRequest(req); }
     catch { void handleRequest(req, res).catch(() => {}); return; }
     const staticRequest = req.method === "GET" && (req.url === "/" || /^\/v2(?:[/?]|$)/.test(req.url));
-    if (!options.ingress || channel === "INTERNAL"&&!serviceAgentAccess || staticRequest) { void handleRequest(req, res).catch(() => {}); return; }
+    if (!options.ingress || channel === "INTERNAL"&&!serviceAgentAccess || staticRequest || isPublicContextRead(req, channel)) {
+      void handleRequest(req, res).catch(() => {}); return;
+    }
     const controller = new AbortController(), onClose = () => controller.abort();
     res.once("close", onClose);
     const dispatch=async()=>{

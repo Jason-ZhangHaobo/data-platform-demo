@@ -8,6 +8,7 @@ import { gzipSync } from "node:zlib";
 import { createFcIngress } from "../../src/v2/fc-ingress.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { validatePrivateApplicationRequest } from "../../src/v2/private-application.mjs";
+import { allContextIds, publicContext } from "../../src/v2/context.mjs";
 
 const stub = (url, control, method = "POST", headers = {}) => ({
   url, method, headers: { ...(control === undefined ? {} : { "x-fc-control-path": control }), ...headers },
@@ -38,6 +39,9 @@ test("ingress diagnostics distinguish failure causes without reflecting request 
   const response = await call('/v2/', 'GET', httpHeaders);
   assert.equal(response.status, 404);
   assert.deepEqual(response.body, { message: '访问入口不可用', code: 'INGRESS_DENIED', ingressReason: 'HTTP_DISABLED' });
+  const contexts = await call('/api/v2/contexts', 'GET', httpHeaders);
+  assert.equal(contexts.status, 404);
+  assert.equal(contexts.body.ingressReason, 'HTTP_DISABLED');
   assert.equal(refreshes(), 0);
 });
 
@@ -132,21 +136,57 @@ test("cloud bootstrap always installs the FC boundary with public HTTP opt-in", 
   assert.match(source, /publicReadOnly: env\.V2_FC_PUBLIC_READ_ONLY !== "false"/);
 });
 
-test("static assets never refresh storage and remain available while stateful requests serialize",async t=>{
+test("static assets and public fixture contexts remain readable while stateful requests serialize",async t=>{
  const root=mkdtempSync(join(tmpdir(),'shuduo-static-lane-'));mkdirSync(join(root,'web-dist','assets'),{recursive:true});
  const assetSource='export default 1;'+ '\n// fictional securities'.repeat(100);
  writeFileSync(join(root,'web-dist','index.html'),'<html>fixture</html>');writeFileSync(join(root,'web-dist','assets','test-12345678.js'),assetSource);
  writeFileSync(join(root,'web-dist','assets','test-12345678.js.gz'),gzipSync(assetSource));
  let active=0,max=0,calls=0,unlock;const blocked=new Promise(r=>{unlock=r});
- const app=createV2Server({root,ingress:createFcIngress({publicHttpEnabled:true,publicReadOnly:true}),env:{V2_LOCAL_DEVELOPMENT:'false',V2_PROVISIONING_ONLY:'true',V2_PRIVATE_SMOKE_ENABLED:'true'},stateCoordinator:{refresh:async()=>{calls++;active++;max=Math.max(max,active);await blocked;active--;},flush:async()=>{}}});
+ const ingress = createFcIngress({publicHttpEnabled:true,publicReadOnly:true});
+ const origin = "https://workbench.example.test";
+ const app=createV2Server({root,ingress,env:{V2_LOCAL_DEVELOPMENT:'false',V2_PROVISIONING_ONLY:'true',V2_PRIVATE_SMOKE_ENABLED:'true',V2_PUBLIC_ORIGIN:origin},stateCoordinator:{refresh:async()=>{calls++;active++;max=Math.max(max,active);await blocked;active--;},flush:async()=>{}}});
  await new Promise(r=>app.server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${app.server.address().port}`;
  t.after(async()=>{unlock();app.server.closeAllConnections();await new Promise(r=>app.server.close(r));app.store.close();rmSync(root,{recursive:true,force:true});});
- const requests=[fetch(base+'/api/v2/auth/session'),fetch(base+'/api/v2/auth/session')];
+ const requests=[fetch(base+'/api/v2/auth/session'),fetch(base+'/api/v2/status')];
  while(calls===0)await new Promise(r=>setImmediate(r));
  const asset=await fetch(base+'/v2/assets/test-12345678.js',{headers:{'accept-encoding':'gzip'}});assert.equal(asset.status,200);assert.equal(await asset.text(),assetSource);assert.equal(asset.headers.get('content-encoding'),'gzip');assert.match(asset.headers.get('cache-control'),/immutable/);assert.equal(calls,1);
  const rawAsset=await fetch(base+'/v2/assets/test-12345678.js',{headers:{'accept-encoding':'identity'}});assert.equal(await rawAsset.text(),assetSource);assert.equal(rawAsset.headers.get('content-encoding'),null);assert.equal(calls,1);
  const page=await fetch(base+'/v2/');assert.equal(page.status,200);assert.equal(page.headers.get('cache-control'),'no-cache');assert.equal(calls,1);
- unlock();for(const r of await Promise.all(requests)){assert.equal(r.status,200);assert.equal((await r.json()).readOnly,true);}assert.equal(calls,2);assert.equal(max,1);
+ const read = (path, options) => fetch(base + path, {signal:AbortSignal.timeout(1000), ...options});
+ const contextsPath = '/api/v2/contexts';
+ const expected = allContextIds.map(publicContext);
+ const fixtures = await read(contextsPath + '?q=%E8%AF%81', {headers:{...httpHeaders, origin, 'x-project-id':PROJECT}});
+ assert.equal(fixtures.status, 200);
+ assert.equal(fixtures.headers.get('cache-control'), 'no-store');
+ assert.deepEqual(await fixtures.json(), expected);
+ assert.ok(expected.some(item => item.id === 'holdings-t1' && item.referenceSql && item.tables.length > 0));
+ assert.ok(expected.every(item => !Object.hasOwn(item, 'expected')));
+ const wrongOrigin = await read(contextsPath, {headers:{origin:'https://other.example.test'}});
+ assert.equal(wrongOrigin.status, 403);
+ await wrongOrigin.json();
+ const wrongProject = await read(contextsPath, {headers:{'x-project-id':'fictional-other-project'}});
+ assert.equal(wrongProject.status, 403);
+ await wrongProject.json();
+ const encoded = await read('/api/v2/%63ontexts');
+ assert.equal(encoded.status, 404);
+ assert.equal((await encoded.json()).ingressReason, 'TARGET_ENCODING');
+ const write = await read(contextsPath, {method:'POST'});
+ assert.equal(write.status, 403);
+ assert.equal((await write.json()).code, 'PUBLIC_READ_ONLY');
+ assert.equal(calls,1);
+ unlock();
+ const [session, status] = await Promise.all(requests);
+ assert.equal(session.status, 200);
+ assert.equal((await session.json()).readOnly, true);
+ assert.equal(status.status, 200);
+ const statusBody = await status.json();
+ assert.equal(statusBody.mode, "PUBLIC_INVITATION");
+ assert.equal(Object.hasOwn(statusBody, "budget"), false);
+ assert.equal(calls, 2);
+ assert.equal(max, 1);
+ const internal = await read(contextsPath, {headers:ingress.internalHeaders});
+ assert.deepEqual(await internal.json(), expected);
+ assert.equal(calls,3);
 });
 
 test("read-only public gate rejects every business write before persistence without disabling private events", async t => {
