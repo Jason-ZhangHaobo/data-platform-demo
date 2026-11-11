@@ -1050,6 +1050,7 @@ export function createV2Server(options = {}) {
       return result;
     });
   const assets = new AssetCatalogManager({
+    allowLocalPublishedEvidence:local,
     store,
     landingStore,
     stateStore: streamStateStore,
@@ -1110,6 +1111,7 @@ export function createV2Server(options = {}) {
       return result;
     });
   const reports = new ReportManager({
+    allowLocalPublishedEvidence:local,
     store,
     reportStore,
     assets,
@@ -1125,7 +1127,12 @@ export function createV2Server(options = {}) {
     if(!local)throw fail(403,'同源报表规划尚只在本机开发边界开放');
     return publishedReportPlanningContext(resolvePublishedReportSource({store,project:PROJECT,source,actorId:actor}));
   };
-  const requireReportPlanOwner=(plan,req)=>{if(plan.sourceBinding&&(!local||plan.submittedBy!==reportActor(req)))throw fail(404,'未找到本账号的同源报表方案');};
+  const canReadReportPlan = (plan, req) => local
+    ? !plan.sourceBinding || plan.submittedBy === reportActor(req)
+    : plan.contextScope === "INVITED_PROJECT_REPORTS" && !plan.sourceBinding && plan.submittedBy === reportActor(req);
+  const requireReportPlanOwner = (plan, req) => {
+    if (!canReadReportPlan(plan, req)) throw fail(404, "未找到本账号的报表方案");
+  };
   const publicReportPlan=plan=>{const{submittedBy,executionBootId,...visible}=sourceReportProjection(plan,{bootId:privateRuntimeBootId,active:controls.has(plan.id),now:options.now?.()??Date.now()});if(plan.sourceBinding){try{assertReportClarificationPlan(plan,{store,project:PROJECT,contextFor:publishedPlanContext});visible.requestBasisState='VERIFIED';}catch{visible.requestBasisState='UNCONFIRMED';}}return visible;};
   const sourceReportKey=value=>{const key=text(value,1,100);if(!/^[A-Za-z0-9_-]+$/.test(key))throw fail(422,'原报表规划请求编号不合法');return key;};
   const reportPlanner =
@@ -1759,7 +1766,7 @@ export function createV2Server(options = {}) {
             durableServiceAgentEnabled: Boolean(serviceAgentAccess),
             durableServiceAgentReadEnabled: privateDataServicesEnabled,
             scope: privateDataServicesEnabled ? "PRIVATE_CLOUD_TEST" : "LOCAL_TEST_ONLY",
-            serviceCount: dataServices.list().length,
+            ...(mayReadAdminStatus ? {serviceCount:dataServices.list().length} : {}),
             businessDriver: options.stateCoordinator
               ? "sqlite-index-with-oss-snapshot-cas"
               : "sqlite",
@@ -1905,6 +1912,8 @@ export function createV2Server(options = {}) {
         if (emptyLists.has(path)) return json(res, 200, []);
         throw Object.assign(fail(401, "请先登录受邀账号查看项目数据"), { code: "AUTHENTICATION_REQUIRED" });
       }
+      if (!local && path.startsWith("/api/v2/data-services/"))
+        throw fail(403, "当前受邀环境未启用受治理的数据服务");
       if (path === "/api/v2/contexts" && method === "GET")
         return json(res, 200, (local && !durableDevelopment && runnerDescriptor.isolation === "LOCAL_PROCESS" ? classicContextIds : allContextIds).map(publicContext));
       if (path === "/api/v2/sources" && method === "GET")
@@ -2926,7 +2935,7 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/reports/agent/plans" && method === "GET") {
         const batchId=url.searchParams.has('source_batch_id')?publishedReportSourceBatchId(url.searchParams.get('source_batch_id')):undefined;
         if(batchId&&!local)throw fail(403,'同源报表规划仅供本机读取');
-        return json(res,200,store.list('report_agent_plan',PROJECT).filter(p=>batchId?p.sourceBinding?.batchId===batchId&&p.submittedBy===reportActor(req):!p.sourceBinding).map(publicReportPlan));
+        return json(res,200,store.list('report_agent_plan',PROJECT).filter(p=>canReadReportPlan(p,req)).filter(p=>batchId?p.sourceBinding?.batchId===batchId&&p.submittedBy===reportActor(req):!p.sourceBinding).map(publicReportPlan));
       }
       const sourceReportRequest=path.match(/^\/api\/v2\/reports\/agent\/requests\/([A-Za-z0-9_-]{1,100})$/);
       if(sourceReportRequest&&method==='GET'){
@@ -2943,7 +2952,7 @@ export function createV2Server(options = {}) {
           throw new ModelUnavailable();
         const key = source?sourceReportKey(req.headers["idempotency-key"]):text(req.headers["idempotency-key"], 1, 100),
           dedup = store.deduplicate(
-            source?`${PROJECT}:source-report-plan:${actor}:${key}`:`${PROJECT}:report-agent-plan:${key}`,
+            source?`${PROJECT}:source-report-plan:${actor}:${key}`:`${PROJECT}:report-agent-plan:${local?"":actor+":"}${key}`,
             hash(JSON.stringify({ message,...(source?{source}:{}) })),
             () =>
               store.create("report_agent_plan", PROJECT, {
@@ -2952,6 +2961,7 @@ export function createV2Server(options = {}) {
                 mode: "LIVE_MODEL",
                 completionScope: "REPORT_DESIGN",
                 fullLifecycleE2E: false,
+                ...(!local ? {contextScope:"INVITED_PROJECT_REPORTS",submittedBy:actor} : {}),
                 ...(source?{...sourceReportInitial(privateRuntimeBootId),sourceBinding:source,submittedBy:actor,requestId:key,planMode:'PUBLISHED_SOURCE_REPORT_V1',sourceEvidenceHash:publication.sourceEvidenceHash,contextHash:publishedReportHash(publication)}:{}),
               }),
           ),
@@ -3110,6 +3120,7 @@ export function createV2Server(options = {}) {
       const canReadOpsSource = (kind, item) => {
         if (local) return true;
         if (kind === "release_run") return canReadDelivery(kind, item);
+        if (kind === "report_run") return reports.canReadRun(item);
         if (kind === "run") return Boolean(item && mayReadRun(item, opsSession()));
         return true;
       };
@@ -3142,7 +3153,7 @@ export function createV2Server(options = {}) {
         if (method === "GET" && !action) return json(res, 200, incident);
         if (method === "POST" && ["acknowledge", "resolve"].includes(action)) {
           const body = await readBody(req);
-          if (action === "resolve" && ["run","release_run"].includes(body.evidenceKind) &&
+          if (action === "resolve" && ["run","release_run","report_run"].includes(body.evidenceKind) &&
               !canReadOpsSource(body.evidenceKind, store.get(body.evidenceKind, body.evidenceId, PROJECT)))
             throw fail(403, "当前身份无权读取此恢复证据");
           const key = text(req.headers["idempotency-key"], 1, 100),

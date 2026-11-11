@@ -91,6 +91,10 @@ export class ReportDataStore {
     return { id, assetId, contentHash, rowCount: normalized.length, createdAt };
   }
 
+  snapshotMetadata(id) {
+    return this.db.prepare("SELECT asset_id, content_hash, row_count FROM report_snapshots WHERE id=?").get(id);
+  }
+
   read(id) {
     const row = this.db
       .prepare("SELECT * FROM report_snapshots WHERE id=?")
@@ -111,27 +115,73 @@ export class ReportDataStore {
   }
 }
 
+const publishedAssetId = value => typeof value === "string" && value.trim().startsWith("dataset:");
+const hasPublishedBinding = item => Boolean(item && (
+  publishedAssetId(item.assetId) || item.publishedSource !== undefined || item.sourceActorId !== undefined || item.sourceEvidence !== undefined || item.outputContractId !== undefined
+));
+const publishedEvidenceDenied = () => fail(403, "受邀报表不能读取本机发布快照，请使用已授权的数据接口", "REPORT_PUBLISHED_EVIDENCE_LOCAL_ONLY");
+
 export class ReportManager {
-  constructor({ store, reportStore, assets, project, resolvePublishedSource, now = () => Date.now() }) {
+  constructor({ store, reportStore, assets, project, resolvePublishedSource, allowLocalPublishedEvidence = true, now = () => Date.now() }) {
     this.store = store;
     this.reportStore = reportStore;
     this.assets = assets;
     this.project = project;
     this.resolvePublishedSource = resolvePublishedSource;
+    this.allowLocalPublishedEvidence = allowLocalPublishedEvidence;
     this.now = now;
+  }
+
+  #snapshots(datasetId) {
+    return this.store.list("report_snapshot", this.project).filter(item => item.datasetId === datasetId);
+  }
+
+  #canReadDataset(dataset) {
+    if (!dataset) return false;
+    if (this.allowLocalPublishedEvidence) return true;
+    if (hasPublishedBinding(dataset)) return false;
+    const snapshots = this.#snapshots(dataset.id);
+    if (dataset.currentSnapshotId !== undefined && !snapshots.some(item => item.id === dataset.currentSnapshotId)) return false;
+    return snapshots.every(item => {
+      if (hasPublishedBinding(item) || item.assetId !== dataset.assetId ||
+          typeof item.dataSnapshotId !== "string" ||
+          (item.assetVersionId && this.store.get("release_run", item.assetVersionId, this.project))) return false;
+      const materialized = this.reportStore.snapshotMetadata(item.dataSnapshotId);
+      return materialized?.asset_id === item.assetId && materialized.content_hash === item.contentHash &&
+        materialized.row_count === item.rowCount;
+    });
+  }
+
+  #canReadReport(report) {
+    if (!report) return false;
+    if (this.allowLocalPublishedEvidence) return true;
+    if (hasPublishedBinding(report) || typeof report.datasetId !== "string") return false;
+    const dataset = this.store.get("report_dataset", report.datasetId, this.project);
+    if (!this.#canReadDataset(dataset)) return false;
+    const versions = this.store.list("report_version", this.project).filter(item => item.reportId === report.id);
+    const snapshots = new Set(this.#snapshots(dataset.id).map(item => item.id));
+    if (!versions.some(item => item.id === report.currentVersionId) ||
+        versions.some(item => hasPublishedBinding(item) || item.datasetId !== dataset.id || !snapshots.has(item.datasetSnapshotId))) return false;
+    const runs = this.store.list("report_run", this.project).filter(item => item.reportId === report.id);
+    return runs.every(run => !hasPublishedBinding(run) && run.datasetId === dataset.id &&
+      versions.some(item => item.id === run.reportVersionId && item.datasetSnapshotId === run.datasetSnapshotId)) &&
+      (report.lastRunId === undefined || runs.some(item => item.id === report.lastRunId));
+  }
+
+  canReadRun(run) {
+    return Boolean(typeof run?.reportId === "string" && this.#canReadReport(this.store.get("report", run.reportId, this.project)));
   }
 
   listDatasets() {
     return this.store
       .list("report_dataset", this.project)
+      .filter(dataset => this.#canReadDataset(dataset))
       .map((dataset) => this.datasetDetail(dataset.id));
   }
 
   datasetDetail(id) {
     const dataset = this.#dataset(id),
-      snapshots = this.store
-        .list("report_snapshot", this.project)
-        .filter((snapshot) => snapshot.datasetId === dataset.id);
+      snapshots = this.#snapshots(dataset.id);
     return {
       ...dataset,
       currentSnapshot: snapshots.find(
@@ -142,6 +192,8 @@ export class ReportManager {
   }
 
   createDataset(input, { publishedSource, actorId } = {}) {
+    if (!this.allowLocalPublishedEvidence && (publishedSource !== undefined || publishedAssetId(input.assetId)))
+      throw publishedEvidenceDenied();
     const resolved=publishedSource?this.resolvePublishedSource(publishedSource,actorId):undefined;
     const { asset } = publishedSource ? resolved : this.assets.reportRows(text(input.assetId, "资产编号", 4, 160)),
       fields = normalizeFields(input.fields, asset.fields.map((field) => field.name)),
@@ -201,6 +253,7 @@ export class ReportManager {
   listReports() {
     return this.store
       .list("report", this.project)
+      .filter(report => this.#canReadReport(report))
       .map((report) => this.reportDetail(report.id));
   }
 
@@ -395,7 +448,8 @@ export class ReportManager {
   overview() {
     const datasets = this.listDatasets(),
       reports = this.listReports(),
-      runs = this.store.list("report_run", this.project);
+      runCount = this.allowLocalPublishedEvidence ? this.store.list("report_run", this.project).length
+        : reports.reduce((count, report) => count + report.runs.length, 0);
     return {
       scope: "LOCAL_AGGREGATED_REPORTING",
       publicDeployed: false,
@@ -406,7 +460,7 @@ export class ReportManager {
         readyDatasets: datasets.filter((item) => item.status === "READY").length,
         reports: reports.length,
         verifiedReports: reports.filter((item) => item.status === "VERIFIED_LOCAL").length,
-        runs: runs.length,
+        runs: runCount,
       },
     };
   }
@@ -435,12 +489,14 @@ export class ReportManager {
   #dataset(id) {
     const item = this.store.get("report_dataset", text(id, "数据集编号", 3, 80), this.project);
     if (!item) throw fail(404, "未找到报表数据集", "REPORT_DATASET_NOT_FOUND");
+    if (!this.#canReadDataset(item)) throw publishedEvidenceDenied();
     return item;
   }
 
   #report(id) {
     const item = this.store.get("report", text(id, "报表编号", 3, 80), this.project);
     if (!item) throw fail(404, "未找到报表", "REPORT_NOT_FOUND");
+    if (!this.#canReadReport(item)) throw publishedEvidenceDenied();
     return item;
   }
 
