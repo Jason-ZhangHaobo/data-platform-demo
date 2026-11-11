@@ -43,6 +43,8 @@ const FAILURE_SOURCES = [
   },
 ];
 
+const allEvidence = () => true;
+
 export class OperationsManager {
   constructor({ store, project, now = () => Date.now() }) {
     this.store = store;
@@ -50,13 +52,13 @@ export class OperationsManager {
     this.now = now;
   }
 
-  refresh() {
+  refresh(canRead = allEvidence) {
     const created = [],
       updated = [];
     for (const source of FAILURE_SOURCES)
       for (const failure of this.store
         .list(source.kind, this.project)
-        .filter(source.failed)) {
+        .filter(item => source.failed(item) && canRead(source.kind, item))) {
         const existing = this.store
             .list("ops_incident", this.project)
             .find(
@@ -65,8 +67,11 @@ export class OperationsManager {
                 incident.sourceId === failure.id,
             ),
           resource = source.resource(failure),
-          recovery = this.#recovery(source.kind, failure),
-          data = {
+          foundRecovery = this.#recovery(source.kind, failure),
+          recovery = foundRecovery && canRead(foundRecovery.kind, this.store.get(foundRecovery.kind, foundRecovery.id, this.project))
+            ? foundRecovery : undefined;
+        if (existing && !this.canReadIncident(existing, canRead)) continue;
+        const data = {
             domain: source.domain,
             sourceKind: source.kind,
             sourceId: failure.id,
@@ -102,15 +107,22 @@ export class OperationsManager {
       scannedKinds: FAILURE_SOURCES.map((source) => source.kind),
       created,
       updated,
-      overview: this.overview(),
+      overview: this.overview(canRead),
     };
   }
 
-  listIncidents() {
-    return this.store.list("ops_incident", this.project);
+  canReadIncident(incident, canRead = allEvidence) {
+    return Boolean(incident &&
+      canRead(incident.sourceKind, this.store.get(incident.sourceKind, incident.sourceId, this.project)) &&
+      (!incident.recoveryKind || canRead(incident.recoveryKind,
+        this.store.get(incident.recoveryKind, incident.recoveryId, this.project))));
   }
 
-  incidentDetail(id) {
+  listIncidents(canRead = allEvidence) {
+    return this.store.list("ops_incident", this.project).filter(incident => this.canReadIncident(incident, canRead));
+  }
+
+  incidentDetail(id, canRead = allEvidence) {
     const incident = this.#incident(id),
       source = this.store.get(
         incident.sourceKind,
@@ -124,6 +136,8 @@ export class OperationsManager {
             this.project,
           )
         : undefined;
+    if (!this.canReadIncident(incident, canRead))
+      throw fail(403, "当前身份无权访问此运维证据", "OPS_EVIDENCE_ACCESS_DENIED");
     return {
       ...incident,
       sourceEvidence: publicEvidence(source),
@@ -192,8 +206,8 @@ export class OperationsManager {
     return this.incidentDetail(incident.id);
   }
 
-  overview() {
-    const incidents = this.listIncidents(),
+  overview(canRead = allEvidence) {
+    const incidents = this.listIncidents(canRead),
       domainCounts = {};
     for (const domain of [
       "数据开发",
@@ -218,6 +232,7 @@ export class OperationsManager {
     const activity = [];
     for (const [kind, domain] of mappings)
       for (const item of this.store.list(kind, this.project)) {
+        if (!canRead(kind, item)) continue;
         if (["FAILED", "VALIDATION_FAILED"].includes(item.status))
           domainCounts[domain].failures++;
         else if (["RUNNING", "QUEUED", "SCHEDULED"].includes(item.status))
@@ -265,8 +280,8 @@ export class OperationsManager {
     };
   }
 
-  agentContext() {
-    const overview = this.overview();
+  agentContext(canRead = allEvidence) {
+    const overview = this.overview(canRead);
     return {
       health: overview.health,
       domainCounts: overview.domainCounts,
@@ -286,13 +301,15 @@ export class OperationsManager {
     };
   }
 
-  validateAgentDiagnosis(value) {
+  validateAgentDiagnosis(value, canRead = allEvidence) {
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw fail(422, "Agent未返回可验证的运维诊断", "INVALID_OPS_DIAGNOSIS");
     const incident = this.#incident(text(value.incidentId, "事故编号", 3, 80)),
       evidenceIds = Array.isArray(value.evidenceIds)
         ? [...new Set(value.evidenceIds.map((id) => text(id, "证据编号", 3, 80)))]
         : [];
+    if (!this.canReadIncident(incident, canRead))
+      throw fail(403, "当前身份无权诊断此运维证据", "OPS_EVIDENCE_ACCESS_DENIED");
     const allowedEvidence = new Set(
       [incident.sourceId, incident.recoveryId].filter(Boolean),
     );
