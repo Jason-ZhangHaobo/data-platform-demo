@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { loadModuleStartup, loadStartupCore, moduleStartupPaths, startupReadCurrent } from '../../web/src/startup-loading.ts';
+import { workbenchSessionScope } from '../../web/src/workbench-session-boundary.ts';
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
 const status={mode:'PUBLIC_INVITATION',capabilities:[]};
 const session=id=>({authenticated:true,user:{id},role:'ENGINEER',permissions:['DEVELOPMENT','AGENT']});
@@ -25,6 +26,51 @@ test('Agent startup reads context only, settings/services make no parent history
     if(module==='development')assert.deepEqual(accepted[0],{contexts:fixtures['/contexts'],runs:fixtures['/runs'],revisions:fixtures['/revisions'],agents:fixtures['/agent/tasks'],deliveries:fixtures['/agent/deliveries']});
   }
   assert.deepEqual(moduleStartupPaths('development',true),['/contexts','/runs','/revisions']);
+});
+test('combined core accepts one identity snapshot and old servers need only the session fallback', async () => {
+  for (const legacy of [false, true]) {
+    const requests = [], views = [], actor = session('user-a');
+    await loadStartupCore({
+      combined: true, isCurrent: () => true, accept: value => views.push(value),
+      read: async path => {
+        requests.push(path);
+        return path === '/auth/session' ? actor : legacy ? status : {status, session:actor};
+      },
+    });
+    assert.deepEqual(views, [{status, session:actor}]);
+    assert.deepEqual(requests, ['/status?include=session', ...(legacy ? ['/auth/session'] : [])]);
+  }
+});
+test('partial, failed or stale combined responses never unlock the view or trigger the legacy fallback', async () => {
+  const load = read => loadStartupCore({
+    combined:true, isCurrent:()=>true,
+    read: path => { assert.equal(path, '/status?include=session'); return read(); },
+    accept: () => assert.fail('startup must remain unverified'),
+  });
+  for (const value of [{status}, {...status,session:null}, {status,session:{authenticated:true}}, {}]) {
+    await assert.rejects(load(async () => value), /响应尚未确认/);
+  }
+  await assert.rejects(load(async () => { throw new Error('request unavailable'); }), /request unavailable/);
+  const pending = deferred();
+  let current = true;
+  const stale = loadStartupCore({
+    combined:true, isCurrent:()=>current,
+    read: path => { assert.equal(path, '/status?include=session'); return pending.promise; },
+    accept: () => assert.fail('superseded startup must stay hidden'),
+  });
+  current = false;
+  pending.resolve(status);
+  assert.equal(await stale, false);
+});
+test('an account downgrade during legacy fallback cannot expose earlier administrator status', async () => {
+  const adminStatus = {...status, budget:{account:{observedSpendCny:42}}};
+  for (const actor of [session('user-b'), {authenticated:false}]) {
+    await assert.rejects(loadStartupCore({
+      combined:true, isCurrent:()=>true,
+      read:async path=>path==='/auth/session' ? actor : adminStatus,
+      accept:value=>workbenchSessionScope(value.status,value.session),
+    }), /状态与当前身份不一致/);
+  }
 });
 test('failed or malformed core reads retain the prior account view and never manufacture anonymous success',async()=>{
   for(const read of [async path=>{if(path==='/status')throw Error('unavailable');return session('user-b');},async path=>path==='/status'?status:{},async path=>path==='/status'?status:{authenticated:true},async path=>path==='/status'?{mode:'UNKNOWN',capabilities:[]}:session('user-b')]){
@@ -89,7 +135,7 @@ test('actual app wires guarded loading, explicit retry and no-context write gate
   assert.match(source,/loadStartupCore<Status, AuthSession>/);assert.match(source,/loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>/);
   assert.match(source,/ready=\{coreReady && contextsReady && agentDevelopmentReadiness\(status\).ready\}/);
   assert.match(source,/\) && startupWritable/);assert.match(source,/重新读取服务与身份/);assert.match(source,/重新读取当前模块/);
-  assert.match(source,/!coreSnapshotKnown \?/);assert.match(source,/<Suspense key=\{viewEpoch\}/);assert.match(source,/workbenchSessionScope\(nextStatus.mode, nextSession\)/);
+  assert.match(source,/!coreSnapshotKnown \?/);assert.match(source,/<Suspense key=\{viewEpoch\}/);assert.match(source,/workbenchSessionScope\(nextStatus, nextSession\)/);
   assert.match(source,/const currentView = \(\) => active && startupReadCurrent/);
   assert.ok((source.match(/if \(!currentView\(\)\) return/g)||[]).length>=6);
   assert.match(source,/active = false; clearInterval\(interval\)/);

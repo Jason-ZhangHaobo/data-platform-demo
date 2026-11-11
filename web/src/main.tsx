@@ -502,13 +502,14 @@ function App() {
       let accepted: {status:Status;session:AuthSession} | undefined;
       const [policy] = await Promise.all([
         import("./workbench-session-boundary"),
-        loadStartupCore<Status, AuthSession>({read:requestApi,isCurrent:current,accept:value => { accepted=value; }}),
+        loadStartupCore<Status, AuthSession>({read:requestApi,isCurrent:current,
+          combined:!privatePreview && inputModuleRef.current === "agent-center",accept:value => { accepted=value; }}),
       ]);
       if (!current() || !accepted) return;
       sessionPolicy.current = policy;
       const {status:nextStatus,session:nextSession} = accepted;
       let acceptedEpoch = epoch;
-      const scope = policy.workbenchSessionScope(nextStatus.mode, nextSession);
+      const scope = policy.workbenchSessionScope(nextStatus, nextSession);
       if (verifiedScope.current !== undefined && verifiedScope.current !== scope) {
         acceptedEpoch = ++authEpoch.current;
         clearPersonalView();

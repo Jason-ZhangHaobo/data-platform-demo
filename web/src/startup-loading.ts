@@ -18,14 +18,28 @@ export function moduleStartupPaths(module: string, privatePreview = false) {
   if (module === "schedules") return ["/runs"];
   return [];
 }
-export async function loadStartupCore<S, A>({ read, isCurrent, accept }: {
-  read: Reader; isCurrent: Guard; accept: (value: { status: S; session: A }) => void;
+function isStartupStatus(value: unknown) {
+  const status = value as { mode?: unknown; capabilities?: unknown };
+  return status && (status.mode === "LOCAL_DEVELOPMENT" || status.mode === "PUBLIC_INVITATION") && Array.isArray(status.capabilities);
+}
+export async function loadStartupCore<S, A>({ read, isCurrent, combined, accept }: {
+  read: Reader; isCurrent: Guard; combined?: boolean; accept: (value: { status: S; session: A }) => void;
 }) {
   try {
-    const [status, session] = await Promise.all([read<S>("/status"), read<A>("/auth/session")]);
+    let status: S, session: A;
+    if (combined) {
+      const value = await read<S & { status: S; session: A }>("/status?include=session");
+      if (!isCurrent()) return false;
+      // An older control plane ignores the opt-in and returns the original status.
+      const legacy = isStartupStatus(value) && !("status" in value || "session" in value);
+      status = legacy ? value : value?.status;
+      session = legacy ? await read<A>("/auth/session") : value?.session;
+    } else {
+      [status, session] = await Promise.all([read<S>("/status"), read<A>("/auth/session")]);
+    }
     if (!isCurrent()) return false;
-    const s = status as { mode?: unknown; capabilities?: unknown }, a = session as { authenticated?: unknown; user?: {id?: unknown}; role?: unknown; permissions?: unknown };
-    if (!s || !["LOCAL_DEVELOPMENT", "PUBLIC_INVITATION"].includes(String(s.mode)) || !Array.isArray(s.capabilities) || !a || typeof a.authenticated !== "boolean" ||
+    const a = session as { authenticated?: unknown; user?: {id?: unknown}; role?: unknown; permissions?: unknown };
+    if (!isStartupStatus(status) || !a || typeof a.authenticated !== "boolean" ||
         a.authenticated && (typeof a.user?.id !== "string" || !a.user.id || typeof a.role !== "string" || !Array.isArray(a.permissions)))
       throw new Error("平台状态或身份响应尚未确认，请重新读取；不会切换为匿名或开放写入。");
     accept({ status, session }); return true;

@@ -138,6 +138,7 @@ FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查�
 | 方法与路径 | 输入 / 行为 | 输出 |
 |---|---|---|
 | GET /status | 配置状态，永不返回密钥 | 模块范围、Spark/模型/元数据/产物/预算状态；接入域返回可用源类型和SERVER_ENV_ONLY凭证模式，不返回连接信息 |
+| GET /status?include=session | Agent 首屏显式请求同一次刷新后的会话和状态 | `{status, session}`；使用与单独读取相同的权限投影和 `no-store` 响应 |
 | GET /budget | 无 | 当月模型估算、远程Spark次数/秒数、资源门和账号账单连接状态 |
 | GET /cloud/readiness | 本地开发或ADMIN会话 | 只返回脱敏部署门、失败项、生成时间和账单摘要；公开匿名拒绝，绝不返回资源标识或审计原文 |
 | GET /auth/session | Cookie可选 | 当前受邀用户、角色、权限和过期时间；匿名返回authenticated=false |

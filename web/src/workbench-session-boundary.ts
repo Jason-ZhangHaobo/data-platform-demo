@@ -8,7 +8,11 @@ function stable(value: unknown): unknown {
   return value;
 }
 
-export function workbenchSessionScope(mode: string, session: AuthSession) {
+export function workbenchSessionScope(status: {mode: string; budget?: unknown}, session: AuthSession) {
+  const {mode} = status;
+  if (mode === "PUBLIC_INVITATION" && "budget" in status && (!session.authenticated || session.role !== "ADMIN")) {
+    throw new Error("服务状态与当前身份不一致，请重新读取。");
+  }
   return JSON.stringify(stable({
     mode, authenticated:session.authenticated, userId:session.user?.id, role:session.role,
     permissions:[...new Set(session.permissions ?? [])].sort(),
