@@ -242,3 +242,56 @@ test("read-only public login keeps original role, narrows presentation permissio
   assert.equal((await call("/api/v2/auth/logout", "POST", headers, {})).status, 200);
   assert.equal((await call("/api/v2/auth/session", "GET", headers)).body.authenticated, false);
 });
+
+test("combined startup refreshes once and preserves the session and status projections", async t => {
+  const {app, call, refreshes} = await open(t, true, true);
+  const password = "SyntheticOnly!2026", email = "bootstrap-owner@example.invalid";
+  const admin = app.auth.bootstrapAdmin({email, password, displayName:"虚构管理员"});
+  const login = app.auth.login({email, password});
+  const adminCookie = `shuduo_session=${login.rawToken}`;
+  const adminContext = app.auth.sessionFromHeaders({cookie:adminCookie});
+  const invitation = app.auth.createInvitation(adminContext, {email:"bootstrap-engineer@example.invalid",role:"ENGINEER"});
+  const engineer = app.auth.redeemInvitation({inviteCode:invitation.inviteCode,password,displayName:"虚构工程师"});
+  const engineerCookie = `shuduo_session=${engineer.rawToken}`;
+  const path = "/api/v2/status?include=session";
+  const sessionFromHeaders = app.auth.sessionFromHeaders.bind(app.auth);
+  let sessionLookups = 0;
+  app.auth.sessionFromHeaders = headers => {
+    sessionLookups++;
+    return sessionFromHeaders(headers);
+  };
+  for (const [cookie, role] of [[undefined,undefined], [engineerCookie,"ENGINEER"], [adminCookie,"ADMIN"]]) {
+    const headers = {...httpHeaders, "x-role":"ADMIN", "x-user-id":admin.id, ...(cookie ? {cookie} : {})};
+    const before = refreshes();
+    const beforeLookups = sessionLookups;
+    const combined = await call(path, "GET", headers);
+    assert.equal(refreshes() - before, 1);
+    assert.equal(sessionLookups - beforeLookups, 1);
+    assert.equal(combined.status, 200);
+    assert.equal(combined.headers["cache-control"], "no-store");
+    assert.equal(combined.headers["set-cookie"], undefined);
+    const status = await call("/api/v2/status", "GET", headers);
+    const session = await call("/api/v2/auth/session", "GET", headers);
+    assert.deepEqual(combined.body, {status:status.body,session:session.body});
+    assert.equal(combined.body.session.authenticated, Boolean(role));
+    assert.equal(combined.body.session.role, role);
+    assert.equal(combined.body.session.readOnly, true);
+    if (role) assert.deepEqual(combined.body.session.permissions, ["SESSION"]);
+    assert.equal(Object.hasOwn(combined.body.status,"budget"), role === "ADMIN");
+  }
+  app.store.update("auth_user", admin.id, PROJECT, {memberships:[{projectId:PROJECT,role:"VIEWER"}]});
+  const downgraded = await call(path,"GET",{cookie:adminCookie});
+  assert.equal(downgraded.body.session.role,"VIEWER");
+  assert.equal(Object.hasOwn(downgraded.body.status,"budget"),false);
+  app.store.update("auth_session", adminContext.session.id, PROJECT, {expiresAt:"2000-01-01T00:00:00.000Z"});
+  const expired = await call(path,"GET",{cookie:adminCookie});
+  assert.equal(expired.body.session.authenticated,false);
+  assert.equal(Object.hasOwn(expired.body.status,"budget"),false);
+  const before = refreshes();
+  assert.equal((await call(path,"GET",{origin:"https://other.example.test"})).status,403);
+  assert.equal((await call(path,"GET",{"x-project-id":"fictional-other-project"})).status,403);
+  assert.equal(refreshes(),before);
+  const duplicate = await call(path+"&include=session","GET");
+  assert.equal(duplicate.body.mode,"PUBLIC_INVITATION");
+  assert.equal(Object.hasOwn(duplicate.body,"session"),false);
+});

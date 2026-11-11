@@ -1444,18 +1444,22 @@ export function createV2Server(options = {}) {
       // This admitted HTTP read serves built-in fixtures independent of project state.
       if (isPublicContextRead(req, ingressChannel)) return json(res, 200, fixtureContexts());
       if (typeof persistence.refresh === "function") await persistence.refresh();
+      const includeSession = method === "GET" && path === "/api/v2/status" &&
+        url.searchParams.size === 1 && url.searchParams.get("include") === "session";
+      const startupActor = includeSession ? auth.sessionFromHeaders(req.headers) : undefined;
+      const scopeActor = () => includeSession ? startupActor : auth.sessionFromHeaders(req.headers);
       const developmentSessionView = ingressChannel === "HTTP" && !publicReadOnly
-        ? serviceSession(serviceAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? publicationSession(publicationAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) ?? developmentSession(developmentAccess, auth.sessionFromHeaders(req.headers), options.now?.() ?? Date.now()) : undefined;
+        ? serviceSession(serviceAccess, scopeActor(), options.now?.() ?? Date.now()) ?? publicationSession(publicationAccess, scopeActor(), options.now?.() ?? Date.now()) ?? developmentSession(developmentAccess, scopeActor(), options.now?.() ?? Date.now()) : undefined;
       if (ingressChannel === "HTTP" && !publicReadOnly) {
-        assertDevelopmentMutation(developmentAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
+        assertDevelopmentMutation(developmentAccess, scopeActor(), method, path, options.now?.() ?? Date.now());
       }
       // The rollout scope also constrains trusted internal application forwarding;
       // only the separately authenticated event envelope bypasses this API gate.
       if (!isPrivateSmokeInvoke)
-        assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
+        assertPublicationMutation(publicationAccess, scopeActor(), method, path, options.now?.() ?? Date.now());
       if (!isPrivateSmokeInvoke)
-        assertServiceMutation(serviceAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
-      if(!isPrivateSmokeInvoke)assertServiceAgentMutation(serviceAgentAccess,auth.sessionFromHeaders(req.headers),method,path);
+        assertServiceMutation(serviceAccess, scopeActor(), method, path, options.now?.() ?? Date.now());
+      if(!isPrivateSmokeInvoke)assertServiceAgentMutation(serviceAgentAccess,scopeActor(),method,path);
       if (ingressChannel === "HTTP" && developmentAccess && method === "POST") {
         const taskPath = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\//);
         const deliveryPath = path.match(/^\/api\/v2\/agent\/deliveries\/([a-f0-9-]{36})\//);
@@ -1637,29 +1641,22 @@ export function createV2Server(options = {}) {
         }
         return constrained;
       };
-      if (path === "/api/v2/auth/session" && method === "GET") {
-        const context = auth.sessionFromHeaders(req.headers);
-        return json(
-          res,
-          200,
-          context
-            ? constrainAuthSession({
-                authenticated: true,
-                user: context.user,
-                role: context.role,
-                permissions: publicReadOnly ? ["SESSION"] : context.permissions,
-                ...(publicReadOnly ? { readOnly: true } : developmentSessionView ?? {}),
-                expiresAt: context.session.expiresAt,
-              })
-            : {
-                authenticated: false,
-                ...(publicReadOnly ? { readOnly: true } : developmentSessionView ?? {}),
-                mode: local
-                  ? "LOCAL_DEVELOPMENT_BYPASS"
-                  : "INVITATION_SESSION",
-              },
-        );
-      }
+      const sessionView = context => context
+        ? constrainAuthSession({
+            authenticated: true,
+            user: context.user,
+            role: context.role,
+            permissions: publicReadOnly ? ["SESSION"] : context.permissions,
+            ...(publicReadOnly ? { readOnly: true } : developmentSessionView ?? {}),
+            expiresAt: context.session.expiresAt,
+          })
+        : {
+            authenticated: false,
+            ...(publicReadOnly ? { readOnly: true } : developmentSessionView ?? {}),
+            mode: local ? "LOCAL_DEVELOPMENT_BYPASS" : "INVITATION_SESSION",
+          };
+      if (path === "/api/v2/auth/session" && method === "GET")
+        return json(res, 200, sessionView(auth.sessionFromHeaders(req.headers)));
       if (
         ["/api/v2/auth/login", "/api/v2/auth/redeem"].includes(path) &&
         method === "POST"
@@ -1711,7 +1708,8 @@ export function createV2Server(options = {}) {
         );
       }
       if (path === "/api/v2/status" && method === "GET") {
-        const mayReadAdminStatus = local || auth.sessionFromHeaders(req.headers)?.role === "ADMIN";
+        const actor = local && !includeSession ? undefined : scopeActor();
+        const mayReadAdminStatus = local || actor?.role === "ADMIN";
         const cloudReplication =
           typeof options.stateCoordinator?.replicationStatus === "function"
             ? options.stateCoordinator.replicationStatus()
@@ -1873,7 +1871,8 @@ export function createV2Server(options = {}) {
             publicDeployed: false,
           },
         };
-        return json(res, 200, mayReadAdminStatus ? status : publicCapabilityStatus(status));
+        const visibleStatus = mayReadAdminStatus ? status : publicCapabilityStatus(status);
+        return json(res, 200, includeSession ? { status: visibleStatus, session: sessionView(actor) } : visibleStatus);
       }
       if (path === "/api/v2/budget" && method === "GET") {
         if (!local) {

@@ -502,7 +502,8 @@ function App() {
       let accepted: {status:Status;session:AuthSession} | undefined;
       const [policy] = await Promise.all([
         import("./workbench-session-boundary"),
-        loadStartupCore<Status, AuthSession>({read:requestApi,isCurrent:current,accept:value => { accepted=value; }}),
+        loadStartupCore<Status, AuthSession>({read:requestApi,isCurrent:current,
+          combined:!privatePreview && inputModuleRef.current === "agent-center",accept:value => { accepted=value; }}),
       ]);
       if (!current() || !accepted) return;
       sessionPolicy.current = policy;

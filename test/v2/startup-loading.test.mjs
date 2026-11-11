@@ -26,6 +26,41 @@ test('Agent startup reads context only, settings/services make no parent history
   }
   assert.deepEqual(moduleStartupPaths('development',true),['/contexts','/runs','/revisions']);
 });
+test('combined core accepts one identity snapshot and old servers need only the session fallback', async () => {
+  for (const legacy of [false, true]) {
+    const requests = [], views = [], actor = session('user-a');
+    await loadStartupCore({
+      combined: true, isCurrent: () => true, accept: value => views.push(value),
+      read: async path => {
+        requests.push(path);
+        return path === '/auth/session' ? actor : legacy ? status : {status, session:actor};
+      },
+    });
+    assert.deepEqual(views, [{status, session:actor}]);
+    assert.deepEqual(requests, ['/status?include=session', ...(legacy ? ['/auth/session'] : [])]);
+  }
+});
+test('partial, failed or stale combined responses never unlock the view or trigger the legacy fallback', async () => {
+  const load = read => loadStartupCore({
+    combined:true, isCurrent:()=>true,
+    read: path => { assert.equal(path, '/status?include=session'); return read(); },
+    accept: () => assert.fail('startup must remain unverified'),
+  });
+  for (const value of [{status}, {...status,session:null}, {status,session:{authenticated:true}}, {}]) {
+    await assert.rejects(load(async () => value), /响应尚未确认/);
+  }
+  await assert.rejects(load(async () => { throw new Error('request unavailable'); }), /request unavailable/);
+  const pending = deferred();
+  let current = true;
+  const stale = loadStartupCore({
+    combined:true, isCurrent:()=>current,
+    read: path => { assert.equal(path, '/status?include=session'); return pending.promise; },
+    accept: () => assert.fail('superseded startup must stay hidden'),
+  });
+  current = false;
+  pending.resolve(status);
+  assert.equal(await stale, false);
+});
 test('failed or malformed core reads retain the prior account view and never manufacture anonymous success',async()=>{
   for(const read of [async path=>{if(path==='/status')throw Error('unavailable');return session('user-b');},async path=>path==='/status'?status:{},async path=>path==='/status'?status:{authenticated:true},async path=>path==='/status'?{mode:'UNKNOWN',capabilities:[]}:session('user-b')]){
     const view={status,session:session('user-a')};let accepted=false;
