@@ -133,6 +133,8 @@ CLI 对应 `services sources --agent-task-id ID --package-digest SHA256 --releas
 匿名写入返回401；缺CSRF、跨项目或越权返回403；未知记录返回404；无效参数返回400。公网模型Key写入始终拒绝。
 SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携带 `Idempotency-Key`。
 
+FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查后直接读取内置样例，无需等待会话或云状态刷新。响应使用 `Cache-Control: no-store`。
+
 | 方法与路径 | 输入 / 行为 | 输出 |
 |---|---|---|
 | GET /status | 配置状态，永不返回密钥 | 模块范围、Spark/模型/元数据/产物/预算状态；接入域返回可用源类型和SERVER_ENV_ONLY凭证模式，不返回连接信息 |
@@ -145,7 +147,7 @@ SQL 上限 20,000 字符，请求体上限 100 KB。任务/运行请求必须携
 | POST /auth/password | 当前密码、新密码 + Cookie/CSRF | 更新scrypt哈希、撤销全部旧会话并签发新会话 |
 | GET/POST /auth/invitations | ADMIN会话；创建时邮箱/角色 | 列表不返回哈希；创建邀请码只显示一次、7天到期 |
 | POST /settings/model-key | 仅本地开发模式；apiKey | 保存到权限 0600 的 .env.local，只返回 configured；不自动调用模型 |
-| GET /contexts | 五组虚构证券输入 | 表结构、口径、参考 SQL；不含独立预期结果 |
+| GET /contexts | 内置虚构证券输入，列表取决于执行模式 | 表结构、口径、参考 SQL；独立预期结果留在服务端 |
 | POST /revisions | sql、contextId | 201；不可变版本、SHA-256 |
 | GET /revisions | 当前项目版本列表 | 版本、代码、来源和时间 |
 | GET /revisions/:id | 指定版本 | 版本详情 |
