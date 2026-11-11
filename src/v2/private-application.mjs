@@ -21,7 +21,7 @@ export function validatePrivateApplicationRequest(input, { allowDurableAgent = f
   const manualWorkflow=(allowDurableAgent || (allowDurableAgentRead && input?.method==="GET")) && (input?.method==="GET"
     ? /^\/api\/v2\/runs\/[a-f0-9-]{36}\/workflow$/ : input?.method==="POST" ? /^\/api\/v2\/runs\/[a-f0-9-]{36}\/prepare-delivery$/ : /$a/).test(input?.path??"");
   const agentPath = (allowDurableAgent || (allowDurableAgentRead && input?.method === "GET")) && (input?.method === "GET"
-    ? /^\/api\/v2\/agent\/(?:requests\/[A-Za-z0-9_-]{1,100}|tasks(?:\/[a-f0-9-]{36}(?:\/(?:workflow|publication|background))?)?|deliveries\/[a-f0-9-]{36})$/
+    ? /^\/api\/v2\/agent\/(?:requests\/[A-Za-z0-9_-]{1,100}|tasks(?:\/[a-f0-9-]{36}(?:\/(?:workflow|publication|background|delivery-requests\/[A-Za-z0-9_-]{1,100}))?)?|deliveries\/[a-f0-9-]{36})$/
     : /^\/api\/v2\/agent\/(?:tasks(?:\/[a-f0-9-]{36}\/(?:advance|cancel|prepare-delivery|publication(?:\/cancel)?|background(?:\/(?:cancel|resume))?))?|deliveries\/[a-f0-9-]{36}\/(?:advance|cancel))$/).test(input?.path ?? "");
   if (!input || input.operation !== "PRIVATE_APPLICATION_HTTP_V1" ||
       Object.keys(input).some(k => !["operation", "method", "path", "headers", "body"].includes(k)) ||

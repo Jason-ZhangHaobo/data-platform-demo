@@ -1,4 +1,5 @@
 import {mkdirSync, readFileSync, existsSync, openSync, closeSync, lstatSync, fstatSync, constants} from "node:fs";
+import {isAbsolute} from "node:path";
 import {
   currentLiveLifecycleContract, legacyLiveLifecycleContract, liveCaseRequestDigest, liveContractById,
   liveLifecycleCases, liveLifecyclePlan, validatedLiveConsumptionSource,
@@ -31,12 +32,15 @@ export function directory(path, create=false) {
   if (stat.isSymbolicLink() || !stat.isDirectory()) stop("评测目录不允许符号链接或非目录路径");
 }
 
-export function readCheckpoint(path) {
+export function readCheckpoint(path, {privateFile=false} = {}) {
   let fd;
   try {
+    if (privateFile && !isAbsolute(path)) stop("原评测检查点须使用受保护的绝对路径");
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > 8 * 1024 * 1024) stop("原检查点不是受支持的有界文件");
+    if (privateFile && ((stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 ||
+        (process.getuid && stat.uid !== process.getuid()))) stop("原评测检查点须为当前用户所有的 0600 单链接文件");
     const text = readFileSync(fd, "utf8");
     return {state:JSON.parse(text), text};
   } catch (error) {
@@ -47,19 +51,14 @@ export function readCheckpoint(path) {
   }
 }
 
-export function checkpointScope(state, runId, env) {
+export function checkpointCaseScope(state, runId) {
   if (!state || state.evaluationRunId !== runId || !Number.isFinite(Date.parse(state.startedAt)) ||
       !Number.isSafeInteger(state.caseLimit) || state.caseLimit < 1 || state.caseLimit > 20 || !Array.isArray(state.outcomes))
     stop("原评测编号、案例范围或检查点不合法");
   const contractId = state.contract?.id;
   if (!liveContractById(contractId)) stop("原报告契约未知，不能迁移或当作新契约继续执行");
   const plan = liveLifecyclePlan(state.caseLimit, {contractId});
-  const origin = loopbackOrigin(state.origin);
-  if ((env.V2_LIVE_EVALUATION_ORIGIN !== undefined && loopbackOrigin(env.V2_LIVE_EVALUATION_ORIGIN) !== origin) ||
-      (env.V2_LIVE_EVALUATION_CASE_LIMIT !== undefined && Number(env.V2_LIVE_EVALUATION_CASE_LIMIT) !== state.caseLimit) ||
-      state.caseSetDigest !== plan.caseSetDigest ||
-      (env.V2_LIVE_EVALUATION_CONTRACT !== undefined && env.V2_LIVE_EVALUATION_CONTRACT !== contractId))
-    stop("恢复范围与原评测的入口、案例数或案例集不一致");
+  if (state.caseSetDigest !== plan.caseSetDigest) stop("恢复范围与原评测的入口、案例数或案例集不一致");
   const allowed = new Map(plan.selectedCases.map(definition => [definition.id, definition]));
   if (new Set(state.outcomes.map(item => item?.caseId)).size !== state.outcomes.length ||
       state.outcomes.some(item => !allowed.has(item?.caseId)))
@@ -70,6 +69,16 @@ export function checkpointScope(state, runId, env) {
     item.evaluationRunId !== runId || item.evaluationStartedAt !== state.startedAt ||
     item.caseSetDigest !== plan.caseSetDigest || item.requestDigest !== liveCaseRequestDigest(allowed.get(item.caseId), contractId)))
     stop("案例不属于原评测运行，不能混用其他运行的成功来源");
+  return {plan, contractId};
+}
+
+export function checkpointScope(state, runId, env) {
+  const {plan, contractId} = checkpointCaseScope(state, runId);
+  const origin = loopbackOrigin(state.origin);
+  if ((env.V2_LIVE_EVALUATION_ORIGIN !== undefined && loopbackOrigin(env.V2_LIVE_EVALUATION_ORIGIN) !== origin) ||
+      (env.V2_LIVE_EVALUATION_CASE_LIMIT !== undefined && Number(env.V2_LIVE_EVALUATION_CASE_LIMIT) !== state.caseLimit) ||
+      (env.V2_LIVE_EVALUATION_CONTRACT !== undefined && env.V2_LIVE_EVALUATION_CONTRACT !== contractId))
+    stop("恢复范围与原评测的入口、案例数或案例集不一致");
   return {plan, origin, contractId};
 }
 
