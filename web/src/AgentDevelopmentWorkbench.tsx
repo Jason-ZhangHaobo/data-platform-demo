@@ -26,6 +26,7 @@ import type {ValidationDetailsReport} from "./validation-details";
 import type {ServiceSourceBinding} from "./service-source-binding";
 import {validServiceSourceBinding,sourceBindingEnvironmentMatches,agentReturnSourceMatches,serviceSourcesPath,currentAgentTaskLocation} from "./service-source-binding";
 import {agentResumeDecision,modelRecoveryNeedsAction,pauseModelRecovery,submitAgentResume} from "./agent-model-recovery";
+import {clearAgentArchivePin} from "./agent-archive-location";
 import type { PublicationTarget } from "./AuthDialog";
 import type {ValidationFamily} from "./validation-family";
 import "./agent-development.css";
@@ -238,7 +239,9 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   }, [run?.id, run?.status, automatic]);
   const rememberSelection = (id?: string) => {
     selectedId.current = id;
-    const url = clearContextDerivation(location.href); if (id) url.searchParams.set("task", id); else url.searchParams.delete("task");
+    const url = clearContextDerivation(location.href);
+    if (url.searchParams.get("task") !== id) clearAgentArchivePin(url);
+    if (id) url.searchParams.set("task", id); else url.searchParams.delete("task");
     setDerivationActive(false);derivationActiveRef.current=false;setDerivationDraft(undefined);derivationRef.current=undefined;
     setDerivationSource(undefined);derivationSourceRef.current=undefined;setDerivationError("");
     url.searchParams.delete("revision"); url.searchParams.delete("run");

@@ -24,6 +24,7 @@ import {validServiceSourceBinding,serviceSourceKey,serviceSourceScope,serviceEvi
 import type {ServiceSourceBinding} from "./service-source-binding";
 import type {PublishedReportSource} from "./published-report-read";
 const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
+const AgentBatchArchivePanel = lazy(async () => ({default:(await import("./AgentBatchArchivePanel")).AgentBatchArchivePanel}));
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type Release = { id: string; status: string; health: string; sourceKind?:string; sourceRunId?:string; reviewDigest?:string; agentIndependentE2E?:boolean; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number;rolledBackToReleaseId?:string;rolledBackToTaskId?:string;restoredAt?:string;outputContract?:{id:string;metadataHash:string} };
 type Publication = { rollbackTargets?:import("./agent-delivery-evidence-read").RollbackTarget[];historyRunCount?:number;release?: Release; runs: {id:string; status:string; sequence:number; schedulerTriggered?:boolean; durationMs?:number; triggeredAt?:string; finishedAt?:string}[]; alerts:{id:string;status:string;message:string;recoveryRunId?:string}[]; events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[] };
@@ -136,6 +137,13 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const reportBatchIds=batches.filter(batch=>batch.status==="SUCCEEDED"&&batch.schedulerTriggered===true).map(batch=>batch.id);
   const reportSource:PublishedReportSource|undefined=!cloud&&publicationReady&&journey.publicationCurrent&&release&&workflow?.package&&revisionId&&runId&&reportBatchIds.length?
     {kind:manual?"MANUAL":"AGENT",releaseId:release.id,packageDigest:workflow.package.digest,revisionId,runId,...(manual?{}:{taskId}),batchIds:reportBatchIds}:undefined;
+  const archiveChoices = cloud && !manual && !assisted && serviceHandoff && !distributionMetadataForContext(contextId) &&
+    release?.sourceKind === "AGENT" && release.sourceAgentTaskId === taskId && release.sourceRunId === runId && revisionId && runId
+    ? batches.filter(batch => reportBatchIds.includes(batch.id)).map(batch => ({
+      sequence:batch.sequence,
+      source:{kind:"AGENT" as const, taskId, releaseId:release.id, packageDigest:serviceHandoff.packageDigest, revisionId, runId, batchId:batch.id},
+    })) : [];
+  const archiveReopen = !manual && !assisted && typeof window !== "undefined" && window.location.hash === "#agent-report-archives";
   const showConsumption=Boolean(consumption&&serviceHandoff&&consumption.taskId===serviceHandoff.taskId&&consumption.packageDigest===serviceHandoff.packageDigest&&consumption.releaseId===serviceHandoff.releaseId&&consumption.scope===serviceSourceScope(serviceHandoff));
   activeConsumptionSource.current=serviceHandoffKey;
   useEffect(() => {
@@ -268,6 +276,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           <strong>发布版本 {release.id.slice(0,8)} · {publicationReady ? releaseLabel(release) : "上次读取的记录 · 当前状态未确认"}</strong>
           <p className="agent-publication-id">发布编号：{release.id}</p>
           {monitorHref && <a className="button" href={monitorHref}>在运维监控查看原批次</a>}
+          {archiveChoices.length > 0 && <a className="button" href="#agent-report-archives">在此任务查看报表归档</a>}
           <ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batchLabels[batch.status] ?? batch.status} · {batch.schedulerTriggered ? "调度器已触发" : batch.status === "CANCELLED" ? "未再触发" : "等待计划时间"}<small>批次编号：{batch.id}</small></li>)}</ul>
           {publication?.alerts.map(alert => <p key={alert.id} role={alert.status === "OPEN" ? "alert" : undefined}>{alert.status === "OPEN" ? "未解除告警" : "已恢复"}：{alert.message}{alert.recoveryRunId ? ` · 恢复批次 ${alert.recoveryRunId.slice(0,8)}` : ""}</p>)}
           {cloud&&cancellationWritable&&!publicationReady&&<p role="status">监控读取尚未确认；原发布来源和编号已核对，仍可停止这个已确认版本的后续批次。</p>}
@@ -285,7 +294,11 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         </>}
       </div>
       {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!dirty&&!working&&!handoffBlocked&&!publicationTarget}/></Suspense>}
-      <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务、交付包和发布版本的接口开发、测试与授权。选择实际成功发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
+    </>}
+    {(archiveChoices.length > 0 || archiveReopen) && <Suspense fallback={<p role="status">正在加载原批次归档…</p>}>
+      <AgentBatchArchivePanel api={api} taskId={taskId} choices={archiveChoices}/>
+    </Suspense>}
+    {workflow && <div id="agent-service-handoff" className="agent-publication-card"><div className="agent-workflow-title"><Package size={16}/><h3>发布结果 → DAPI / XAPI</h3></div><p>继续同一个任务、交付包和发布版本的接口开发、测试与授权。选择实际成功发布批次后核对返回值和调用日志；打开模块不会自动创建凭证或调用接口。</p>
         {distributionMetadataForContext(contextId)&&<p role="status">分布按客户＋交易日＋分类独立核对，保留完整分类数组。上游模型归因保留，本机旅程通过不计真实模型完整自主E2E。</p>}
         {manual&&<p role="status">人工发布结果消费 · 保留开发历史及人工辅助归因，不计为 Agent 自主完成。</p>}
         {!serviceHandoff&&<p role="status">请先核对当前包的确切发布记录；未确认来源时不跳转到全项目或原 Agent 的其他结果。</p>}
@@ -294,7 +307,6 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         {journey.steps.find(step=>step.id==="services")?.state==="DONE"&&<p role="status">组合接口的消费证据已通过。DAPI的单独授权调用记录独立展示，不影响已通过的XAPI组合查询。</p>}
         {showConsumption&&consumption&&<><p>{consumption.notice}</p><small>对照时间：{consumption.checkedAt}；这是历史消费记录，不是实时授权保证。</small>{!current&&<p>编辑器或当前查看的批次已变化；下面证据仅供原版本参考。</p>}<ul>{consumption.services.map(s=><li key={s.serviceId}><strong>{s.serviceType} · {s.name}</strong> · 版本 {s.versionId.slice(0,8)} · {s.status==="VERIFIED"?"历史消费证据对照通过":s.status==="NEEDS_ATTENTION"?"需要处理":"待实际授权调用"}<p>{s.notice}</p>{consumption.outputContractId&&s.source&&<small>{s.source.modelClassification==="SYNTHETIC_UPSTREAM"?"模型响应：测试替身":"模型真实性待独立验证"} · {s.source.engineClassification==="LOCAL_SPARK_RECEIPTS"?"本机Spark执行证据":"执行器：测试替身"}</small>}{s.call&&<small>调用 {s.call.callId.slice(0,8)} · {s.call.rowCount}{consumption.outputContractId&&s.serviceType==="XAPI"?"个客户日期组":"行"} · 摘要 {s.call.resultHash.slice(0,12)} · {applicationStatusText(s.call.applicationStatus,true)}</small>}</li>)}</ul>{consumption.truncated&&<p>证据数量超过本次上限，不能标记整个消费阶段完成。</p>}<EvidenceDownload name={`consumption-${taskId.slice(0,8)}.json`} value={consumption} request={{kind:"consumption",id:taskId,digest:consumption.packageDigest,releaseId:consumption.releaseId}}>下载当前发布的消费对照证据</EvidenceDownload></>}
         {workflow.package&&<button className="button" disabled={working||!serviceHandoff} onClick={()=>void readConsumption()}>刷新消费证据</button>}
-        {onOpenServices ? <><button className="button" disabled={!serviceHandoff || dirty || working || handoffBlocked} onClick={()=>{if(serviceHandoff&&!dirty&&!working&&!handoffBlocked)onOpenServices(serviceHandoff);}}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>
-    </>}
+        {onOpenServices ? <><button className="button" disabled={!serviceHandoff || dirty || working || handoffBlocked} onClick={()=>{if(serviceHandoff&&!dirty&&!working&&!handoffBlocked)onOpenServices(serviceHandoff);}}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>}
   </section>;
 }
