@@ -18,15 +18,16 @@ import { runSpark, runtimeConfig } from '../../src/v2/spark.mjs';
 import { syntheticSqlRequirement } from './fixtures/sql-requirement.mjs';
 import { publicationPreflightPath, publicationRequestReceiptPath } from '../../src/v2/publication-request.mjs';
 import { validatePrivateApplicationRequest } from '../../src/v2/private-application.mjs';
+import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 
-async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false}={}) {
+async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
   let loseArtifactAcknowledgement=false, packageWrites=0;
   let jobWriteAttempts=0, cancellationWrites=0, resultReads=0;
   const objects = new Map();
   const wakes=[];
-  const config = { projectId: PROJECT, sharedSecret: 'synthetic-journey-signing-key-only-123456789', jobPrefix: SPARK_QUEUE_PREFIXES.jobs, resultPrefix: SPARK_QUEUE_PREFIXES.results, cancellationPrefix: SPARK_QUEUE_PREFIXES.cancellations, timeoutMs: 180000 };
+  const config = { projectId: PROJECT, sharedSecret: 'synthetic-journey-signing-key-only-123456789', jobPrefix: SPARK_QUEUE_PREFIXES.jobs, resultPrefix: SPARK_QUEUE_PREFIXES.results, cancellationPrefix: SPARK_QUEUE_PREFIXES.cancellations, timeoutMs: queueTimeoutMs };
   const queue = new RemoteSparkQueueClient(config, {
     read: async key => { if(key.startsWith(config.resultPrefix+'/'))resultReads++;return objects.get(key); },
     create: async (key, body) => {
@@ -91,9 +92,22 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   return { call, complete, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
     loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
     queueCounts:()=>({jobWriteAttempts,cancellationWrites,resultReads}),
-    privateCall:async body=>{const r=await fetch(base.replace(/\/api\/v2$/,'')+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke'},body:JSON.stringify(body)});return{status:r.status,body:await r.json()};} };
+    privateCall:async body=>{const r=await fetch(base.replace(/\/api\/v2$/,'')+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke',...(stableOrigin?{connection:'close'}:{})},body:JSON.stringify(body)});return{status:r.status,body:await r.json()};} };
 }
 const taskInput = { message: '计算虚构客户总资产，避免现金重复累计。', code: 'SELECT 1', contextId: 'holdings-t1' };
+
+async function measuredSpark(t,f,prepared,label){
+  const input=JSON.parse(prepared.job.body);
+  const result=await runSpark(input,{...runtimeConfig({}),artifactRoot:f.directory,retainArtifacts:false});
+  assert.equal(result.status,'SUCCEEDED');
+  assert.equal(result.engineVersion,'3.5.9');
+  assert.equal(result.mainSqlExecuted,true);
+  assert.equal(result.testSqlValidation?.passed,true);
+  assert.equal(result.validation?.regressions.length,5);
+  assert.ok(result.validation.regressions.every(check=>check.passed===true));
+  t.diagnostic(`Local Spark ${result.engineVersion}, ${label}, five independent scenarios, ${result.durationMs} ms`);
+  return result;
+}
 
 test('cloud v3 startup saves the original key before one POST and reconciles a lost receipt by GET',async t=>{
   const f=await fixture(t,{startupPreflight:true});
@@ -215,9 +229,9 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
-test('exact cloud delivery and rehearsal lead to human review and recover the original release receipt',async t=>{
+test('exact cloud delivery and rehearsal lead to review, signed scheduling and bound monitoring',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.
-  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true});
+  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true,queueTimeoutMs:30000});
   const checkpoint=join(f.directory,'exact-delivery.json'),billPath=join(f.directory,'current-bill.json'),requests=[];
   const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
   const writeBill=unsettledReserveCny=>writeFileSync(billPath,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny,maxIncrementCny:2,
@@ -363,18 +377,7 @@ test('exact cloud delivery and rehearsal lead to human review and recover the or
   assert.deepEqual(absent,unconfirmed);
   assert.deepEqual((await f.call('/status')).body.budget.remoteSpark,budgetBefore);
   assert.deepEqual(f.queueCounts(),{...readsBefore,resultReads:readsBefore.resultReads+1});
-  let measuredResult;
-  if (process.env.SHUDUO_TEST_LOCAL_SPARK_REHEARSAL === 'true') {
-    const input=JSON.parse(queued.job.body);
-    measuredResult=await runSpark(input,{...runtimeConfig({}),artifactRoot:f.directory,retainArtifacts:false});
-    assert.equal(measuredResult.status,'SUCCEEDED');
-    assert.equal(measuredResult.engineVersion,'3.5.9');
-    assert.equal(measuredResult.mainSqlExecuted,true);
-    assert.equal(measuredResult.testSqlValidation?.passed,true);
-    assert.equal(measuredResult.validation?.regressions.length,5);
-    assert.ok(measuredResult.validation.regressions.every(check=>check.passed===true));
-    t.diagnostic(`Local Spark ${measuredResult.engineVersion}, one rehearsal, five independent scenarios, ${measuredResult.durationMs} ms`);
-  }
+  const measuredResult=process.env.SHUDUO_TEST_LOCAL_SPARK_REHEARSAL==='true' ? await measuredSpark(t,f,queued,'one rehearsal') : undefined;
   f.complete(queued,measuredResult);
   assert.equal((await f.call('/agent/deliveries/'+pending.id)).body.rehearsal.status,'RUNNING');
   assert.equal((await f.call(taskPath+'/workflow')).body.delivery.status,'RUNNING');
@@ -424,7 +427,7 @@ test('exact cloud delivery and rehearsal lead to human review and recover the or
   Object.assign(f.env,{
     V2_FC_PUBLIC_WRITE_SCOPE:'PUBLICATION_ONLY',
     V2_PUBLIC_PUBLICATION_STARTS_AT:new Date(Date.now()-1000).toISOString(),
-    V2_PUBLIC_PUBLICATION_EXPIRES_AT:new Date(f.now()+60000).toISOString(),
+    V2_PUBLIC_PUBLICATION_EXPIRES_AT:new Date(f.now()+600000).toISOString(),
     V2_PUBLIC_PUBLICATION_TASK_ID:task.id,
     V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST:pending.packageDigest,
     V2_PUBLIC_PUBLICATION_VERIFICATION_ID:verification.id,
@@ -452,7 +455,7 @@ test('exact cloud delivery and rehearsal lead to human review and recover the or
   assert.equal((await cli('v3-publish',publishFlags)).reason,'INSPECT_ORIGINAL_PUBLICATION');
   assert.deepEqual(requests,[]);
   await f.restart();
-  f.later(60001);
+  assert.deepEqual(f.queueCounts(),preflightQueue);
   const found=await cli('v3-publish',['--reconcile']);
   const receiptPath=publicationRequestReceiptPath(task.id,savedAtPublicationPost.key);
   assert.equal(found.status,'PUBLICATION_RECORDED');
@@ -468,6 +471,75 @@ test('exact cloud delivery and rehearsal lead to human review and recover the or
   assert.equal(f.store.list('release',PROJECT).length,1);
   assert.equal(f.store.list('release_run',PROJECT).length,2);
   assert.deepEqual(f.queueCounts(),preflightQueue);
+
+  const releaseId=found.publication.releaseId,[firstId,secondId]=found.publication.batchIds;
+  const releaseRun=id=>f.store.get('release_run',id,PROJECT);
+  const timer=(mark,forged=false)=>{
+    const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=mark.repeat(24);
+    const body=JSON.stringify({releaseId,triggerName,expiresAt:f.now()+300000});
+    return {triggerName,triggerTime:new Date(f.now()).toISOString(),payload:JSON.stringify({
+      operation:'PRIVATE_RELEASE_TIMER_V1',timestamp,nonce,body,
+      signature:forged?'bad':signSchedulerTick({sharedSecret:f.env.V2_SCHEDULER_TICK_SECRET,timestamp,nonce,body}),
+    })};
+  };
+  assert.equal((await f.privateCall(timer('x',true))).status,401);
+  const releaseRecord=f.store.get('release',releaseId,PROJECT);
+  f.store.update('release',releaseId,PROJECT,{sourceCodeHash:'0'.repeat(64)});
+  assert.equal((await f.privateCall(timer('y'))).status,409);
+  f.store.update('release',releaseId,PROJECT,{sourceCodeHash:releaseRecord.sourceCodeHash});
+  assert.equal(releaseRun(firstId).status,'SCHEDULED');
+  assert.deepEqual(f.queueCounts(),preflightQueue);
+  const firstTimer=timer('a');
+  f.lose();
+  assert.equal((await f.privateCall(firstTimer)).status,500);
+  const first=releaseRun(firstId).remoteSubmission.prepared;
+  assert.equal(first.job.jobId,firstId);
+  const reserved=(await f.call('/status')).body.budget.remoteSpark;
+  assert.equal(reserved.runCount,3);
+  assert.equal(releaseRun(firstId).reservedDurationMs,30000);
+  await f.restart();
+  f.later(60000);
+  const lostQueue=f.queueCounts();
+  const waiting=(await cli('v3-publish',['--reconcile'])).publication;
+  assert.equal(waiting.monitoringStatus,'PENDING');
+  assert.deepEqual(waiting.batches,[{id:firstId,status:'RUNNING',reservedDurationMs:30000},{id:secondId,status:'SCHEDULED'}]);
+  assert.equal((await f.call(taskPath+'/publication')).body.release.status,'RUNNING_CLOUD_TEST');
+  assert.deepEqual(f.queueCounts(),lostQueue);
+  assert.equal((await f.privateCall(timer('b'))).status,200);
+  assert.equal((await f.privateCall(timer('a'))).status,409,'changing the signed time with the original nonce is rejected');
+  assert.deepEqual((await f.call('/status')).body.budget.remoteSpark,reserved);
+  assert.equal(releaseRun(secondId).status,'SCHEDULED');
+  assert.equal(f.queueCounts().jobWriteAttempts,lostQueue.jobWriteAttempts);
+  assert.equal(f.queueCounts().cancellationWrites,0);
+
+  const useRealSpark=process.env.SHUDUO_TEST_LOCAL_SPARK_RELEASE==='true';
+  f.complete(first,useRealSpark?await measuredSpark(t,f,first,'release batch 1'):undefined);
+  assert.equal((await f.privateCall(firstTimer)).status,200);
+  assert.equal(releaseRun(firstId).status,'SUCCEEDED');
+  assert.equal(releaseRun(secondId).status,'SCHEDULED','the original signed event can settle only its prior batch');
+  assert.equal((await f.privateCall(firstTimer)).body.replayed,true);
+  const competing=await Promise.all([f.privateCall(timer('c')),f.privateCall(timer('e'))]);
+  assert.ok(competing.every(response=>response.status===200));
+  const second=releaseRun(secondId).remoteSubmission.prepared;
+  assert.equal(second.job.jobId,secondId);
+  f.complete(second,useRealSpark?await measuredSpark(t,f,second,'release batch 2'):undefined);
+  f.later(600001);
+  assert.equal((await f.privateCall(timer('d'))).status,200);
+  const complete=(await cli('v3-publish',['--reconcile'])).publication;
+  assert.equal(complete.status,'COMPLETED_CLOUD_TEST');
+  assert.equal(complete.monitoringStatus,'VERIFIED');
+  assert.deepEqual(complete.monitoring.map(entry=>entry.batchId),[firstId,secondId]);
+  assert.equal(f.queueCounts().jobWriteAttempts,preflightQueue.jobWriteAttempts+2);
+  assert.equal(f.queueCounts().cancellationWrites,0);
+  assert.equal(f.store.list('release_run',PROJECT).length,2);
+  assert.equal(f.store.list('monitor_event',PROJECT).length,2);
+  assert.equal(f.store.list('monitor_alert',PROJECT).length,0);
+  const event=complete.monitoring[0];
+  f.store.update('monitor_event',event.eventId,PROJECT,{observedAt:'2000-01-01T00:00:00.000Z'});
+  const checkpointBytes=readFileSync(checkpoint,'utf8');
+  assert.equal((await f.call(receiptPath)).body.monitoring.status,'UNCONFIRMED');
+  assert.equal((await cli('v3-publish',['--reconcile'])).reason,'ORIGINAL_PUBLICATION_UNCONFIRMED');
+  assert.equal(readFileSync(checkpoint,'utf8'),checkpointBytes);
 });
 
 test('invited development reaches versioned files across restart without another task or submission', async t => {

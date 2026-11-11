@@ -435,14 +435,30 @@ function bindPublication(item, receipt) {
       ["packageId","packageDigest","verificationId","reviewDigest","businessScheduledFor"].some(key=>release[key]!==action[key]) ||
       !id(release.reviewId) || !id(release.approvalId) || !Array.isArray(runs) || runs.length!==2 ||
       new Set(runs.map(run=>run?.id)).size!==2 || !runs.every((run,index)=>id(run?.id) && run.sequence===index+1) ||
-      !["WAITING_SCHEDULER","ACTIVE_CLOUD_TEST","COMPLETED_CLOUD_TEST","CANCELLED"].includes(release.status) ||
+      !["WAITING_SCHEDULER","RUNNING_CLOUD_TEST","ACTIVE_CLOUD_TEST","COMPLETED_CLOUD_TEST","CANCELLED"].includes(release.status) ||
       action.id && (action.id !== release.id || action.reviewId !== release.reviewId || action.approvalId !== release.approvalId ||
         !isDeepStrictEqual(action.batchIds,runs.map(run=>run.id))))
     return;
+  const monitoring=receipt.monitoring;
+  let verified;
+  if (monitoring?.status==="VERIFIED") {
+    if (release.status!=="COMPLETED_CLOUD_TEST" || monitoring.health!=="HEALTHY" || monitoring.openAlertCount!==0 ||
+        !Array.isArray(monitoring.batches) || monitoring.batches.length!==2 ||
+        new Set(monitoring.batches.map(batch=>batch?.eventId)).size!==2 ||
+        !monitoring.batches.every((batch,index)=>batch?.batchId===runs[index].id && id(batch.eventId) &&
+          Number.isFinite(Date.parse(batch.observedAt)) && runs[index].status==="SUCCEEDED" && runs[index].schedulerTriggered===true))
+      return;
+    verified=monitoring.batches.map(({batchId,eventId,observedAt})=>({batchId,eventId,observedAt}));
+  }
+  if (action.monitoring && !isDeepStrictEqual(action.monitoring,verified)) return;
   const saved = {releaseId:release.id, reviewId:release.reviewId, approvalId:release.approvalId,
-    batchIds:runs.map(run=>run.id), status:release.status};
+    batchIds:runs.map(run=>run.id), status:release.status,
+    batches:runs.map(run=>({id:run.id,status:run.status,
+      ...(Number.isFinite(run.reservedDurationMs)&&run.reservedDurationMs>0?{reservedDurationMs:run.reservedDurationMs}:{})})),
+    ...(["PENDING","NEEDS_ATTENTION","UNCONFIRMED","VERIFIED"].includes(monitoring?.status)?{monitoringStatus:monitoring.status}:{}),
+    ...(verified?{monitoring:verified}:{})};
   item.actions.publication = {...action,id:release.id,status:"CONFIRMED",reviewId:release.reviewId,
-    approvalId:release.approvalId,batchIds:saved.batchIds};
+    approvalId:release.approvalId,batchIds:saved.batchIds,...(verified?{monitoring:verified}:{})};
   return saved;
 }
 
