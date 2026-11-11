@@ -4,7 +4,7 @@ import {createScopedWorkbenchApi, workbenchSessionScope} from "../../web/src/wor
 import {createAssetReader} from "../../web/src/asset-read.ts";
 
 const engineer = {authenticated:true,user:{id:"fictional-engineer"},role:"ENGINEER",permissions:["DELIVERY","ASSETS"]};
-const scope = session => workbenchSessionScope("PUBLIC_INVITATION",session);
+const scope = session => workbenchSessionScope({mode:"PUBLIC_INVITATION"},session);
 const deferred = () => { let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject}; };
 
 test("effective identity changes on same-user role and scoped target changes, but equivalent grants keep the view",()=>{

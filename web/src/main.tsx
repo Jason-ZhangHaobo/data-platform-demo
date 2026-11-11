@@ -509,7 +509,7 @@ function App() {
       sessionPolicy.current = policy;
       const {status:nextStatus,session:nextSession} = accepted;
       let acceptedEpoch = epoch;
-      const scope = policy.workbenchSessionScope(nextStatus.mode, nextSession);
+      const scope = policy.workbenchSessionScope(nextStatus, nextSession);
       if (verifiedScope.current !== undefined && verifiedScope.current !== scope) {
         acceptedEpoch = ++authEpoch.current;
         clearPersonalView();

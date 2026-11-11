@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { loadModuleStartup, loadStartupCore, moduleStartupPaths, startupReadCurrent } from '../../web/src/startup-loading.ts';
+import { workbenchSessionScope } from '../../web/src/workbench-session-boundary.ts';
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
 const status={mode:'PUBLIC_INVITATION',capabilities:[]};
 const session=id=>({authenticated:true,user:{id},role:'ENGINEER',permissions:['DEVELOPMENT','AGENT']});
@@ -60,6 +61,16 @@ test('partial, failed or stale combined responses never unlock the view or trigg
   current = false;
   pending.resolve(status);
   assert.equal(await stale, false);
+});
+test('an account downgrade during legacy fallback cannot expose earlier administrator status', async () => {
+  const adminStatus = {...status, budget:{account:{observedSpendCny:42}}};
+  for (const actor of [session('user-b'), {authenticated:false}]) {
+    await assert.rejects(loadStartupCore({
+      combined:true, isCurrent:()=>true,
+      read:async path=>path==='/auth/session' ? actor : adminStatus,
+      accept:value=>workbenchSessionScope(value.status,value.session),
+    }), /状态与当前身份不一致/);
+  }
 });
 test('failed or malformed core reads retain the prior account view and never manufacture anonymous success',async()=>{
   for(const read of [async path=>{if(path==='/status')throw Error('unavailable');return session('user-b');},async path=>path==='/status'?status:{},async path=>path==='/status'?status:{authenticated:true},async path=>path==='/status'?{mode:'UNKNOWN',capabilities:[]}:session('user-b')]){
@@ -124,7 +135,7 @@ test('actual app wires guarded loading, explicit retry and no-context write gate
   assert.match(source,/loadStartupCore<Status, AuthSession>/);assert.match(source,/loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>/);
   assert.match(source,/ready=\{coreReady && contextsReady && agentDevelopmentReadiness\(status\).ready\}/);
   assert.match(source,/\) && startupWritable/);assert.match(source,/重新读取服务与身份/);assert.match(source,/重新读取当前模块/);
-  assert.match(source,/!coreSnapshotKnown \?/);assert.match(source,/<Suspense key=\{viewEpoch\}/);assert.match(source,/workbenchSessionScope\(nextStatus.mode, nextSession\)/);
+  assert.match(source,/!coreSnapshotKnown \?/);assert.match(source,/<Suspense key=\{viewEpoch\}/);assert.match(source,/workbenchSessionScope\(nextStatus, nextSession\)/);
   assert.match(source,/const currentView = \(\) => active && startupReadCurrent/);
   assert.ok((source.match(/if \(!currentView\(\)\) return/g)||[]).length>=6);
   assert.match(source,/active = false; clearInterval\(interval\)/);
