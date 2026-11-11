@@ -8,11 +8,25 @@ import sqlglot
 from sqlglot import exp
 
 FUNCTIONS = {"SUM","COUNT","COALESCE","CAST","TRY_CAST","ROUND","ABS","MIN","MAX","AVG","IF","CASE","TRIM","UPPER","LOWER","CONCAT","NULLIF","DATE","TO_DATE","DATE_ADD","DATE_SUB"}
+FUND_CONTEXT_ID = "synthetic-fund-lookthrough-t1"
+
+def context_parameters(context):
+    scope = ("manager_id", "managerId") if context.get("id") == FUND_CONTEXT_ID else ("advisor_id", "advisorId")
+    return {scope[0]: context[scope[1]], "trade_date": context["businessDate"]}
+
+def preflight_execution_contexts(context, others):
+    items = [context, *(others or [])]
+    if any(item.get("id") == FUND_CONTEXT_ID for item in items):
+        from fund_lookthrough import registered_inputs
+        for item in items:
+            registered_inputs(item)
+    else:
+        preflight_contexts(context, others)
 
 def validate_sql(sql, context):
     if not isinstance(sql, str) or not 6 <= len(sql) <= 20000:
         raise ValueError("SQL 长度必须在 6—20000 字符之间")
-    for key, value in {"advisor_id": context["advisorId"], "trade_date": context["businessDate"]}.items():
+    for key, value in context_parameters(context).items():
         if not isinstance(value,str) or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in value):
             raise ValueError("运行参数不合法")
         sql = sql.replace("{{"+key+"}}", value)
@@ -165,33 +179,46 @@ def analyze_column_lineage(sql, context, output_columns):
     except Exception:
         return {**base,"status":"UNAVAILABLE","reason":"原SQL、输入结构或输出字段无法完成静态解析"}
 
-def execute(spark, sql, context):
-    from pyspark.sql.types import StructType, StructField, StringType
-    validated=validate_sql(sql,context)
+def execution_input_tables(context):
+    if context.get("id") == FUND_CONTEXT_ID:
+        from fund_lookthrough import registered_inputs
+        return registered_inputs(context)[0]
     accounts=next(t for t in context["tables"] if t["name"]=="accounts")
     allowed_clients={row[0] for row in accounts["rows"] if row[1]==context["advisorId"]}
     input_tables=[]
     for table in context["tables"]:
         name=table["name"]
         if name not in {"accounts","positions","cash"}: raise ValueError("数据表不在允许列表")
-        schema=StructType([StructField(c[0],StringType(),True) for c in table["columns"]])
         client_index=[c[0] for c in table["columns"]].index("client_id")
         scoped_rows=[row for row in table["rows"] if row[client_index] in allowed_clients]
         normalized_rows=[[None if v is None else str(v) for v in row] for row in scoped_rows]
         input_tables.append({"name":name,"columns":table["columns"],"rows":normalized_rows})
-        frame=spark.createDataFrame(normalized_rows,schema)
+    return input_tables
+
+def execute(spark, sql, context):
+    from pyspark.sql.types import StructType, StructField, StringType
+    input_tables = execution_input_tables(context)
+    validated = validate_sql(sql, {**context, "tables": input_tables})
+    fund = context.get("id") == FUND_CONTEXT_ID
+    allowed_types = {"STRING", "DECIMAL(18,2)"}
+    if fund:
+        allowed_types.add("DECIMAL(9,6)")
+    for table in input_tables:
+        schema=StructType([StructField(c[0],StringType(),True) for c in table["columns"]])
+        frame=spark.createDataFrame(table["rows"],schema)
         for col,kind in table["columns"]:
-            if kind not in {"STRING","DECIMAL(18,2)"}: raise ValueError("字段类型不支持")
+            if kind not in allowed_types: raise ValueError("字段类型不支持")
             frame=frame.withColumn(col,frame[col].cast(kind))
-        frame.createOrReplaceTempView(name)
+        frame.createOrReplaceTempView(table["name"])
     frame=spark.sql(validated)
     data=frame.limit(1001).collect()
     if len(data)>1000: raise ValueError("查询结果超过 1000 行")
     spark.createDataFrame(data,frame.schema).createOrReplaceTempView("__shuduo_result")
     rows=[{k:format(v,"f") if isinstance(v,Decimal) else v for k,v in row.asDict().items()} for row in data]
-    input_body={"contextId":context["id"],"advisorId":context["advisorId"],"businessDate":context["businessDate"],"tables":input_tables}
+    subject = "managerId" if fund else "advisorId"
+    input_body={"contextId":context["id"],subject:context[subject],"businessDate":context["businessDate"],"tables":input_tables}
     schema_body={"tables":[{"name":t["name"],"columns":t["columns"]} for t in input_tables]}
-    input_evidence={"protocol":"shuduo-spark-execution-input/v1","scope":"ADVISOR_SCOPED_REGISTERED_TABLES","contextId":context["id"],
+    input_evidence={"protocol":"shuduo-spark-execution-input/v1","scope":"MANAGER_SCOPED_REGISTERED_TABLES" if fund else "ADVISOR_SCOPED_REGISTERED_TABLES","contextId":context["id"],
         "inputHash":hashlib.sha256(json.dumps(input_body,sort_keys=True,ensure_ascii=False,separators=(",",":")).encode()).hexdigest(),
         "schemaHash":hashlib.sha256(json.dumps(schema_body,sort_keys=True,ensure_ascii=False,separators=(",",":")).encode()).hexdigest(),"tableCount":len(input_tables)}
     return {"rows":rows,"columns":[{"name":f.name,"type":f.dataType.simpleString()} for f in frame.schema.fields],"engine":"Apache Spark","engineVersion":spark.version,
@@ -282,19 +309,25 @@ def verify(rows,expected):
             "contentHash":hashlib.sha256(json.dumps({"expected":expected,"fields":COMPARISON_FIELDS},sort_keys=True,ensure_ascii=False,separators=(",",":")).encode()).hexdigest()}}
 
 def execute_test_sql(spark,test_sql,context):
-    scope={"advisorId":context["advisorId"],"businessDate":context["businessDate"],"tables":[{"name":"__shuduo_result"}]}
+    scope={**context,"tables":[{"name":"__shuduo_result"}]}
     query=validate_sql(test_sql,scope)
     frame=spark.sql(query)
     values=frame.limit(2).collect()
     passed=frame.columns==["passed"] and len(values)==1 and values[0]["passed"] is True
     return {"passed":passed,"sqlHash":hashlib.sha256(test_sql.encode()).hexdigest(),"rowCount":len(values),"columns":frame.columns}
 
+def verify_context_rows(rows, context):
+    if context.get("id") == FUND_CONTEXT_ID:
+        from fund_lookthrough import verify_fund_output
+        return verify_fund_output(rows, context)
+    return verify_output(rows, context) if registered_contract(context) else verify(rows, context["expected"])
+
 def execute_with_validation(spark,sql,context,validation_contexts=None,test_sql=None):
     if validation_contexts is not None and (not isinstance(validation_contexts,list) or len(validation_contexts)>5):
         raise ValueError("回归上下文数量不合法")
     if len({context["id"],*(item["id"] for item in validation_contexts or [])})>5:
         raise ValueError("回归上下文数量不合法")
-    preflight_contexts(context,validation_contexts)
+    preflight_execution_contexts(context,validation_contexts)
     result=execute(spark,sql,context)
     result["mainSqlExecuted"]=True
     test_check=None
@@ -302,14 +335,14 @@ def execute_with_validation(spark,sql,context,validation_contexts=None,test_sql=
         try:test_check=execute_test_sql(spark,test_sql,context)
         except Exception as error:
             test_check={"passed":False,"sqlHash":hashlib.sha256(test_sql.encode()).hexdigest(),"error":str(error)[:3000]}
-    selected=verify_output(result["rows"],context) if registered_contract(context) else verify(result["rows"],context["expected"])
+    selected=verify_context_rows(result["rows"],context)
     regressions=[{"contextId":context["id"],"name":context["name"],**selected,**({"inputEvidence":result["inputEvidence"]} if result.get("inputEvidence") else {})}]
     seen={context["id"]}
     for check_context in validation_contexts or []:
         if check_context["id"] in seen:continue
         seen.add(check_context["id"])
         actual=execute(spark,sql,check_context)
-        checked=verify_output(actual["rows"],check_context) if registered_contract(check_context) else verify(actual["rows"],check_context["expected"])
+        checked=verify_context_rows(actual["rows"],check_context)
         regressions.append({"contextId":check_context["id"],"name":check_context["name"],**checked,**({"inputEvidence":actual["inputEvidence"]} if actual.get("inputEvidence") else {})})
     issues=[check["name"]+"："+issue for check in regressions for issue in check["issues"]]
     if test_check is not None and not test_check["passed"]:issues.append("tests.sql："+test_check.get("error","没有得到唯一的 passed=true 结果"))
@@ -326,7 +359,7 @@ if __name__=="__main__":
     payload=json.loads(Path(sys.argv[1]).read_text())
     started=time.monotonic();spark=None
     try:
-        preflight_contexts(payload["context"],payload.get("validationContexts",[]))
+        preflight_execution_contexts(payload["context"],payload.get("validationContexts",[]))
         validate_sql(payload["sql"],payload["context"])
         spark=create_spark();spark.sparkContext.setLogLevel("ERROR")
         result=execute_with_validation(spark,payload["sql"],payload["context"],payload.get("validationContexts",[]),payload.get("testSql"))

@@ -39,7 +39,7 @@ test('classic SQL offers distribution contexts, persists one manual version/run,
  t.after(async()=>{app.server.closeAllConnections();await new Promise(r=>app.server.close(r));store.close();});
  const base=`http://127.0.0.1:${app.server.address().port}/api/v2`;
  const post=(path,body,key)=>fetch(base+path,{method:'POST',headers:{'content-type':'application/json','x-shuduo-client':'workbench','idempotency-key':key},body:JSON.stringify(body)});
- const contexts=await(await fetch(base+'/contexts')).json();assert.equal(contexts.length,20);assert(contexts.every(c=>!Object.hasOwn(c,'expected')));
+ const contexts=await(await fetch(base+'/contexts')).json();assert.equal(contexts.filter(c=>c.capabilities?.agentDevelopment!==false).length,20);assert(contexts.every(c=>!Object.hasOwn(c,'expected')));
  const id='holdings-industry-t1',sql=referenceSqlForContext(id);
  assert.equal((await post('/python/revisions',{contextId:id,code:'print("not supported")'},'not-python')).status,422);
  const rev=await(await post('/revisions',{contextId:id,sql},'save-distribution')).json();assert(rev.id);

@@ -89,8 +89,8 @@ test("source contexts omit independent expected results", async () => {
   try {
     const r = await app.call("/contexts");
     assert.equal(r.status, 200);
-    assert.equal(r.body.length, 20);
-    assert.equal(new Set(r.body.map(c=>c.validationFamily.id)).size,4);
+    assert.equal(r.body.length, 21);
+    assert.equal(new Set(r.body.map(c=>c.validationFamily.id)).size,5);
     assert.ok(r.body.every((c) => !("expected" in c)));
   } finally {
     await app.close();

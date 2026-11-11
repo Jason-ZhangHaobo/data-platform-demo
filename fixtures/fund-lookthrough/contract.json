@@ -1,0 +1,19 @@
+{
+  "id": "securities-fund-lookthrough-v1",
+  "name": "基金组合穿透 · T+1",
+  "definition": "单层穿透。用组合的人民币基金持仓市值乘以同日底层权重，按组合、交易日和资产类别汇总。缺失权重对应未穿透余额。分母是组合当日基金持仓市值。",
+  "grain": "PORTFOLIO_TRADE_DATE_ASSET_CLASS",
+  "keyFields": ["portfolio_id", "trade_date", "asset_class"],
+  "fields": [
+    { "name": "portfolio_id", "label": "组合编号" },
+    { "name": "trade_date", "label": "交易日" },
+    { "name": "asset_class", "label": "底层资产类别" },
+    { "name": "exposure_amount", "label": "敞口金额（元）" },
+    { "name": "exposure_ratio", "label": "敞口占比" }
+  ],
+  "sourceTables": [
+    { "name": "portfolios", "label": "组合归属", "columns": [["portfolio_id", "STRING"], ["manager_id", "STRING"]] },
+    { "name": "fund_positions", "label": "基金持仓", "columns": [["position_id", "STRING"], ["portfolio_id", "STRING"], ["fund_code", "STRING"], ["trade_date", "STRING"], ["market_value", "DECIMAL(18,2)"], ["currency", "STRING"]] },
+    { "name": "fund_allocations", "label": "基金底层权重", "columns": [["fund_code", "STRING"], ["trade_date", "STRING"], ["underlying_id", "STRING"], ["asset_class", "STRING"], ["allocation_weight", "DECIMAL(9,6)"]] }
+  ]
+}
