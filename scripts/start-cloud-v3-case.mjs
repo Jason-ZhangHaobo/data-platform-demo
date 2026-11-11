@@ -20,6 +20,7 @@ import { serviceSourceReadPath } from "../src/v2/service-source-request.mjs";
 import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
 import { verifyV2MonthlyBillPages } from "./verify-v2-monthly-bill-pages.mjs";
 import { validateConsumerPlan } from "./verify-service-consumer.mjs";
+import { firstCloudCheckpointBinding } from "./first-cloud-v3-window.mjs";
 
 const revisionPattern = /^[a-f0-9]{40}$/;
 const id = value => typeof value === "string" && uuid.test(value);
@@ -174,7 +175,26 @@ function assertDeliveryWindow(session, taskId, bill) {
     stop("原任务未处于获准交付操作的开发窗口");
 }
 
-export async function continueCloudV3Start(path, client, {billPath, reconcile=false} = {}) {
+function checkedFirstWindowReceipt(path,windowPath,client,bill) {
+  if (!windowPath) {
+    if (new URL(client.baseUrl).protocol==="https:") stop("云端首例提交须提供原独立开发窗口回执");
+    return;
+  }
+  const {state:receipt}=readCheckpoint(windowPath,{privateFile:true}), bounds=receipt?.bill;
+  const starts=Date.parse(receipt?.startsAt), ends=Date.parse(receipt?.expiresAt), checked=Date.parse(bounds?.checkedAt);
+  if (receipt?.protocol!=="SHUDUO_FIRST_V3_WINDOW_RECEIPT_V1" ||
+      !digest(receipt.approvalDigest) || !isDeepStrictEqual(receipt.checkpoint,firstCloudCheckpointBinding(path)) ||
+      !Number.isFinite(starts) || !Number.isFinite(ends) || !(ends>starts&&ends-starts<=7200000) ||
+      !Number.isFinite(checked) || checked>starts || starts-checked>=3600000 ||
+      bounds.month!==bill.month || !digest(bounds.pagesDigest) || !Number.isFinite(bounds.spendCny) || bounds.spendCny<0 ||
+      !Number.isSafeInteger(bounds.recordCount) || bounds.recordCount<0 ||
+      bounds.unsettledReserveCny!==bill.unsettledReserveCny || bounds.maxIncrementCny!==bill.maxIncrementCny ||
+      bounds.maxIncrementCny>5 || bounds.spendCny+bounds.unsettledReserveCny+bounds.maxIncrementCny>=200)
+    stop("独立开发窗口、原检查点或预算范围不一致");
+  return receipt;
+}
+
+export async function continueCloudV3Start(path, client, {billPath, windowPath, reconcile=false} = {}) {
   return withCloudCheckpoint(path, async () => {
     const original = snapshot(client, path), {state, definition, item, action} = original;
     if (action.status === "CONFIRMED") return result(state, item, "CREATION_CONFIRMED");
@@ -189,10 +209,15 @@ export async function continueCloudV3Start(path, client, {billPath, reconcile=fa
     }
     if (action.status !== "PREPARED") return result(state, item, "PENDING", "RECONCILE_ORIGINAL_CREATION");
     const bill = readCurrentBill(billPath, Date.now());
+    const window = checkedFirstWindowReceipt(path,windowPath,client,bill);
     const {status, session} = await client.request("/status?include=session");
     const now = Date.now(), submittedAt = new Date(now).toISOString();
     if (now - Date.parse(bill.checkedAt) >= 3600000) stop("当前月账单在预检期间到期");
-    state.submission = submissionSnapshot(status, session, client, bill, now);
+    if (window && (session?.developmentStartsAt!==window.startsAt || session?.developmentExpiresAt!==window.expiresAt ||
+        !(status?.budget?.account?.observedSpendCny>=window.bill.spendCny)))
+      stop("实际运行时与原独立开发窗口不一致");
+    state.submission = {...submissionSnapshot(status, session, client, bill, now),
+      ...(window?{windowApprovalDigest:window.approvalDigest}:{})};
     state.startedAt = item.evaluationStartedAt = submittedAt;
     item.status = "PAUSED"; item.phase = "CODE_AND_DEBUG"; action.status = "SUBMITTING";
     writeCheckpoint(path, state);

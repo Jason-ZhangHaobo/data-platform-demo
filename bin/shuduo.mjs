@@ -11,6 +11,7 @@ import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-cont
 import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
 import {advanceCloudV3Rehearsal,bindCloudV3Consumption,continueCloudV3Start,exportCloudV3PublicationReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,submitCloudV3Publication} from "../scripts/start-cloud-v3-case.mjs";
+import {firstCloudCheckpointBinding} from "../scripts/first-cloud-v3-window.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
@@ -69,7 +70,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --source-revision SHA
-  shuduo agent v3-start --checkpoint ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
+  shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-binding
+  shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-file ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --reconcile
   shuduo agent workflow --id AGENT_TASK_ID
   shuduo agent request --request-id ORIGINAL_REQUEST_ID
@@ -540,14 +542,17 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     }
     else if (resource === "agent" && action === "v3-start") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
-      const mode=Object.hasOwn(args,"reconcile")?"reconcile":Object.hasOwn(args,"confirm")?"confirm":"prepare";
-      const allowed=["checkpoint","base_url",...(mode==="reconcile"?["reconcile"]:mode==="confirm"?["confirm","bill_file"]:["source_revision"])];
+      const mode=Object.hasOwn(args,"reconcile")?"reconcile":Object.hasOwn(args,"confirm")?"confirm":Object.hasOwn(args,"window_binding")?"window_binding":"prepare";
+      const allowed=["checkpoint","base_url",...(mode==="reconcile"?["reconcile"]:mode==="confirm"?["confirm","bill_file","window_file"]:
+        mode==="window_binding"?["window_binding"]:["source_revision"])];
       if(parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
          flags.some(flag=>!allowed.includes(flag)) || (mode!=="prepare" && args[mode]!==true))
-        throw Error("首例启动仅接受准备、明确提交或原回执对账的一种操作");
+        throw Error("首例启动仅接受准备、导出窗口绑定、明确提交或原回执对账的一种操作");
       const checkpoint=required(args,"checkpoint");
       result=mode==="prepare"?prepareCloudV3Start(checkpoint,client,required(args,"source_revision")):
-        await continueCloudV3Start(checkpoint,client,mode==="reconcile"?{reconcile:true}:{billPath:required(args,"bill_file")});
+        mode==="window_binding"?firstCloudCheckpointBinding(checkpoint):
+          await continueCloudV3Start(checkpoint,client,mode==="reconcile"?{reconcile:true}:{billPath:required(args,"bill_file"),
+            ...(Object.hasOwn(args,"window_file")?{windowPath:required(args,"window_file")}:{})});
     }
     else if (resource === "agent" && action === "v3-prepare-delivery") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
