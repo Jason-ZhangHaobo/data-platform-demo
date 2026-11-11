@@ -43,6 +43,22 @@ v3 派生案例只能引用固定 `sourceCaseId` 对应的本轮已完成基础�
 | `--inspect <原编号>` | 核对 v3 已受理任务的模型用量、原代码版本及 Spark 阶段 | 对照同一检查点的摘要，只读取本机已保存元数据 |
 | `--report <原编号>` | 只读取新/旧原检查点，按对应契约整理已有阶段和统计 | 不访问服务，不创建锁，不修改原文件；标记 `recorded:true`、`RECORDED_CHECKPOINT_ONLY` 和 `externalTruthReverified:false` |
 
+### 启动云端首例
+
+使用绑定原 V2 入口和项目的 CLI 配置。先准备受保护的检查点，再按现有新任务开发授权核对实际部署版本、当前账单及受邀会话。
+
+```sh
+shuduo agent v3-start --checkpoint /private/first-case.json --source-revision REVIEWED_GIT_SHA
+shuduo agent v3-start --checkpoint /private/first-case.json --bill-file /private/current-bill.json --confirm
+shuduo agent v3-start --checkpoint /private/first-case.json --reconcile
+```
+
+准备命令固定首例、项目、入口、已审阅源码版本、请求体摘要及原幂等编号。它只创建当前用户所有的 0600 检查点。源码版本由已核验的部署记录提供，命令不证明云端已运行该版本。
+
+确认命令使用当前用户所有的 0600 账单文件，其中包含采集时间 `checkedAt`、当前月的完整账单原始页 `pages`、未结算预留 `unsettledReserveCny` 和本次费用上界 `maxIncrementCny`。预检校验账单范围、现有预算、受邀开发窗口、已配置的模型及隔离 Spark。提交前在原检查点保存会话所属人、窗口、账单和用量基线，然后用原幂等编号提交一次任务创建。任务创建与模型调用、Spark 执行、交付和发布各有独立边界。
+
+响应丢失或无法确认时，使用第三条命令和原创建者会话。它只读取身份和原请求回执，即使开发写入窗口已关闭也可对账。缺少原回执时保留待定状态。中断留下锁文件时先核对原进程和检查点，再处理该锁。分母仍为20例，创建回执只证明受理。
+
 ### 读取云端待审阅证据
 
 拿到原任务、确切交付编号和冻结需求的 SHA-256 后，可读取：

@@ -2,8 +2,8 @@
 // This file is NOT evidence of live model, Spark, cloud recovery or public E2E.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createV2Server, PROJECT } from '../../src/v2/server.mjs';
@@ -12,8 +12,10 @@ import { LocalArtifactStore } from '../../src/v2/artifact-store.mjs';
 import { createFcIngress } from '../../src/v2/fc-ingress.mjs';
 import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult } from '../../src/v2/remote-spark-queue.mjs';
 import { referenceSql, contextIds, getContext } from '../../src/v2/context.mjs';
+import { V2Client } from '../../src/v2/client.mjs';
+import { runV2Cli } from '../../bin/shuduo.mjs';
 
-async function fixture(t,{eventsEnabled=false}={}) {
+async function fixture(t,{eventsEnabled=false,startupPreflight=false}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
   const objects = new Map();
@@ -32,6 +34,7 @@ async function fixture(t,{eventsEnabled=false}={}) {
   runner.descriptor = { engine: 'Apache Spark', isolation: 'REMOTE_FUNCTION', transport: 'PRIVATE_OSS_QUEUE', healthVerified: true, publicWriteEnabled: true };
   runner.durable = { prepare: (input, id) => queue.prepare(input, id), submit: q => queue.submitPrepared(q), read: q => queue.readPreparedResult(q), cancel: q => queue.cancelPrepared(q) };
   const env = { V2_LOCAL_DEVELOPMENT: 'false', V2_HOST: '127.0.0.1', V2_PROVISIONING_ONLY: 'true', V2_PRIVATE_SMOKE_ENABLED: 'true', V2_ALLOW_INSECURE_PUBLIC_COOKIES: 'true', V2_PUBLIC_ORIGIN: 'https://journey.example.invalid', V2_DURABLE_SQL_AGENT_ENABLED: 'true', V2_FC_PUBLIC_WRITE_SCOPE: 'DEVELOPMENT_ONLY', V2_PUBLIC_DEVELOPMENT_STARTS_AT: new Date(now - 1000).toISOString(), V2_PUBLIC_DEVELOPMENT_EXPIRES_AT: new Date(now + 3600000).toISOString(), V2_BOOTSTRAP_ADMIN_EMAIL: 'owner@example.invalid', V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: '4' };
+  if(startupPreflight)Object.assign(env,{DASHSCOPE_API_KEY:'synthetic-no-provider-credential',V2_ACCOUNT_MONTHLY_SPEND_CNY:'20'});
   if(eventsEnabled)Object.assign(env,{V2_AGENT_DRIVER_MODE:'OSS_EVENTS',OSS_BUCKET:'fictional-securities-test',V2_AGENT_EVENT_ACCOUNT_ID:'111122223333',V2_SPARK_EXECUTOR_SECRET:config.sharedSecret,V2_SPARK_EXECUTOR_TRANSPORT:'OSS_QUEUE'});
   const agentWakeTransport={read:async key=>objects.get(key),create:async(key,body)=>{
     if(objects.has(key)){assert.equal(objects.get(key),body);return;}
@@ -65,10 +68,108 @@ async function fixture(t,{eventsEnabled=false}={}) {
   const login = await call('/auth/login', { email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026' });
   assert.equal(login.status, 200); cookie = login.cookies.map(c => c.split(';')[0]).join('; '); csrf = login.body.csrfToken;
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
-  return { call, complete, env, wakes, restart: async () => { await close(); await open(); }, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
+  return { call, complete, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
     privateCall:async body=>{const r=await fetch(base.replace(/\/api\/v2$/,'')+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke'},body:JSON.stringify(body)});return{status:r.status,body:await r.json()};} };
 }
 const taskInput = { message: '计算虚构客户总资产，避免现金重复累计。', code: 'SELECT 1', contextId: 'holdings-t1' };
+
+test('cloud v3 startup saves the original key before one POST and reconciles a lost receipt by GET',async t=>{
+  const f=await fixture(t,{startupPreflight:true});
+  const checkpoint=join(f.directory,'first-v3-checkpoint.json'),billPath=join(f.directory,'bill.json'),reads=[];
+  const source='a'.repeat(40);
+  let originalKey, hideReceipt=false, differentActor=false, missingUsage=false;
+  const client=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
+    const target=new URL(url), path=target.pathname.slice('/api/v2'.length)+target.search;
+    reads.push({path,method:options.method});
+    if(options.method==='POST'){
+      const saved=JSON.parse(readFileSync(checkpoint,'utf8'));
+      assert.equal(saved.outcomes[0].actions.agent.status,'SUBMITTING');
+      assert.equal(saved.outcomes[0].actions.agent.key,originalKey);
+      assert.equal(options.headers['Idempotency-Key'],originalKey);
+      assert.equal(saved.reviewedSource,source);
+      assert.equal(saved.submission.bill.unsettledReserveCny,64);
+      assert.equal(saved.submission.usage.modelCalls,0);
+      const body=JSON.parse(options.body);
+      assert.deepEqual(Object.keys(body),['message','sql','contextId']);
+      assert.equal((await f.call(path,body,originalKey)).status,202);
+      throw Error('SYNTHETIC_CREATE_RESPONSE_LOST');
+    }
+    assert.equal(options.body,undefined);
+    if(hideReceipt&&path.startsWith('/agent/requests/'))return new Response('{}',{status:404});
+    const response=await f.call(path);
+    if(differentActor&&path==='/auth/session')response.body.user.id=randomUUID();
+    if(missingUsage&&path==='/status?include=session')delete response.body.status.budget.model.recordedCalls;
+    return new Response(JSON.stringify(response.body),{status:response.status});
+  }});
+  const cli=async(flags,expectedExit=0)=>{
+    reads.length=0;
+    let value;
+    assert.equal(await runV2Cli(['agent','v3-start','--checkpoint',checkpoint,...flags],{},
+      {client,output:line=>{value=JSON.parse(line);},error:()=>{}}),expectedExit);
+    return value;
+  };
+  const prepared=await cli(['--source-revision',source]);
+  assert.equal(prepared.status,'PREPARED');
+  assert.equal(prepared.expectedCaseCount,20);
+  assert.deepEqual(reads,[]);
+  assert.equal(statSync(checkpoint).mode&0o777,0o600);
+  const preparedBytes=readFileSync(checkpoint,'utf8');
+  originalKey=JSON.parse(preparedBytes).outcomes[0].actions.agent.key;
+  assert.ok(!JSON.stringify(prepared).includes(originalKey));
+  await cli(['--source-revision',source],1);
+  assert.equal(readFileSync(checkpoint,'utf8'),preparedBytes);
+  const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
+  const writeBill=amount=>writeFileSync(billPath,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny:64,maxIncrementCny:2,
+    pages:[{Success:true,Data:{PageNum:1,PageSize:300,TotalCount:1,BillingCycle:month,Items:{Item:[{Currency:'CNY',PretaxAmount:amount}]}}}]}),{mode:0o600});
+  writeBill('134.00');
+  await cli(['--bill-file',billPath,'--confirm'],1);
+  assert.deepEqual(reads,[]);
+  assert.equal(readFileSync(checkpoint,'utf8'),preparedBytes);
+  assert.equal(f.store.list('agent',PROJECT).length,0);
+  writeBill('20.00');
+  client.projectId='different-project';
+  await cli(['--bill-file',billPath,'--confirm'],1);
+  assert.deepEqual(reads,[]);
+  client.projectId=PROJECT;
+  missingUsage=true;
+  await cli(['--bill-file',billPath,'--confirm'],1);
+  assert.deepEqual(reads,[{path:'/status?include=session',method:'GET'}]);
+  assert.equal(readFileSync(checkpoint,'utf8'),preparedBytes);
+  missingUsage=false;
+  const unknown=await cli(['--bill-file',billPath,'--confirm']);
+  assert.equal(unknown.reason,'RECONCILE_ORIGINAL_CREATION');
+  assert.deepEqual(reads.map(read=>read.method),['GET','POST']);
+  assert.equal(f.store.list('agent',PROJECT).length,1);
+  const unknownBytes=readFileSync(checkpoint,'utf8');
+  assert.equal(JSON.parse(unknownBytes).outcomes[0].actions.agent.status,'UNKNOWN');
+  assert.equal((await cli(['--bill-file',billPath,'--confirm'])).reason,'RECONCILE_ORIGINAL_CREATION');
+  assert.deepEqual(reads,[]);
+  assert.equal(readFileSync(checkpoint,'utf8'),unknownBytes);
+
+  f.expire();
+  differentActor=true;
+  await cli(['--reconcile'],1);
+  assert.deepEqual(reads,[{path:'/auth/session',method:'GET'}]);
+  differentActor=false;
+  hideReceipt=true;
+  assert.equal((await cli(['--reconcile'])).reason,'ORIGINAL_CREATION_UNCONFIRMED');
+  const originalReads=[{path:'/auth/session',method:'GET'},{path:'/agent/requests/'+originalKey,method:'GET'}];
+  assert.deepEqual(reads,originalReads);
+  assert.equal(readFileSync(checkpoint,'utf8'),unknownBytes);
+  hideReceipt=false;
+  const recovered=await cli(['--reconcile']);
+  assert.equal(recovered.status,'CREATION_CONFIRMED');
+  assert.deepEqual(reads,originalReads);
+  const [task]=f.store.list('agent',PROJECT);
+  assert.equal(recovered.taskId,task.id);
+  const state=JSON.parse(readFileSync(checkpoint,'utf8'));
+  assert.equal(state.outcomes[0].actions.agent.id,task.id);
+  assert.equal(state.outcomes[0].actions.agent.key,originalKey);
+  assert.equal(state.reviewedSource,source);
+  assert.equal(state.submission.bill.unsettledReserveCny,64);
+  assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
+  assert.ok(!JSON.stringify(recovered).includes(originalKey));
+});
 
 test('invited development reaches versioned files across restart without another task or submission', async t => {
   const f = await fixture(t);
