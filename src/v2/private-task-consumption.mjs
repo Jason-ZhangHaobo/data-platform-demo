@@ -1,15 +1,17 @@
 import { serviceVersionConfigValid } from "./data-services.mjs";
 import {validateDeliveryPackage} from "./delivery.mjs";
-import {validateConsumerSource} from "./consumer-source.mjs";
+import {consumerDigest,validateConsumerSource} from "./consumer-source.mjs";
 
 const assetFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 // Private, owner-authorized projection of persisted calls. No tokens, rows,
 // parameters, rematerialization, model invocation or new consumer calls.
-export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
+export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
   if (!["PRIVATE_CLOUD_TEST", "LOCAL_TEST_ONLY"].includes(scope)) throw new Error("Unsupported consumption scope");
   const entries = [], limit = 20;
   const sourceField=manualDeliveryTaskId?'manualDeliveryTaskId':'sourceAgentTaskId',sourceId=manualDeliveryTaskId??taskId,identity=manualDeliveryTaskId?{manualDeliveryTaskId}:{taskId},matches=r=>r?.[sourceField]===sourceId&&(!manualDeliveryTaskId||r.sourceAgentTaskId===undefined);
   if(manualDeliveryTaskId&&(taskId!==undefined||!releaseId||scope!=='PRIVATE_CLOUD_TEST'))throw Error('Invalid manual consumption identity');
+  if (callIdDigest !== undefined && (!releaseId || typeof callIdDigest !== "string" || !/^[a-f0-9]{64}$/.test(callIdDigest)))
+    throw Error("Invalid exact consumption call");
   const selectedRelease=releaseId===undefined?undefined:getRelease(releaseId);
   const selectedMatches=releaseId===undefined||selectedRelease?.id===releaseId&&matches(selectedRelease)&&selectedRelease.packageDigest===packageDigest;
   const attribution=release=>({sourceKind:release.sourceKind??"AGENT",
@@ -32,6 +34,14 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
         (releaseId===undefined||release.id===releaseId);
     });
     if (!related) continue;
+    const successful = c => c.serviceVersionId === root.id && c.outcome === "SUCCEEDED" && c.statusCode === 200 && c.rowCount > 0;
+    const granted = c => {
+      const app = application(c.applicationId);
+      return app?.scope === scope && app.serviceIds?.includes(service.id) && ["ACTIVE", "REVOKED", "EXPIRED"].includes(app.status);
+    };
+    const exactCall = callIdDigest === undefined ? undefined : calls(service.id).find(c =>
+      typeof c.id === "string" && consumerDigest(c.id) === callIdDigest && successful(c) && granted(c));
+    if (callIdDigest !== undefined && !exactCall) continue;
     matchingCount++;
     if (entries.length >= limit) continue;
     const entry = { serviceId: service.id, serviceType: service.serviceType, name: service.name,
@@ -78,11 +88,8 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
         sourceKind:sourceReleases[index].sourceKind??"AGENT",fields:assetFields.filter(field=>version.fields.includes(field))}));
       const fields = new Set(children.flatMap(v => v.fields ?? []));
       entry.fullAssetComposition = root.serviceType === "XAPI" && assetFields.every(field => fields.has(field));
-      const successful = calls(service.id).filter(c => c.serviceVersionId === root.id && c.outcome === "SUCCEEDED" && c.statusCode === 200 && c.rowCount > 0).sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt)));
-      const call = successful.find(c => {
-        const app = application(c.applicationId);
-        return app?.scope === scope && app.serviceIds?.includes(service.id) && ["ACTIVE", "REVOKED", "EXPIRED"].includes(app.status);
-      });
+      const call = exactCall ?? calls(service.id).filter(successful)
+        .sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt))).find(granted);
       if (call) {
         const proof = await recheckCall(service.id, call.id);
         entry.status = proof.verified ? "VERIFIED" : "NEEDS_ATTENTION";

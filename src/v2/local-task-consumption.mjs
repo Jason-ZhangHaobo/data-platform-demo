@@ -7,15 +7,18 @@ const agentSource=record=>record&&[undefined,'AGENT'].includes(record.sourceKind
 
 // The HTTP route is local-only; every relationship is rebuilt from stored records.
 // No mutations, credential creation, model calls or Spark execution occur here.
-export async function localTaskConsumption({store,project,agent,packageDigest,releaseId,manager}) {
+export async function localTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager}) {
  if(releaseId!==undefined){
   const stored=store.get('agent',agent.id,project);
   if(!stored||agent.status!=='SUCCEEDED'||!agentSource(agent)||JSON.stringify(agent.attempts)!==JSON.stringify(stored.attempts))throw fail();
   const selectedRelease=store.get('release',releaseId,project),selectedPackage=selectedRelease&&store.get('delivery_package',selectedRelease.packageId,project);
-  if(selectedPackage?.manifest?.source?.outputContract)return distributionTaskConsumption({store,project,agent,packageDigest,releaseId,manager});
+  if(selectedPackage?.manifest?.source?.outputContract){
+   if(callIdDigest!==undefined)throw Object.assign(new Error('分布消费使用原固定批次核验'),{status:422,code:'EXACT_DISTRIBUTION_CALL_UNSUPPORTED'});
+   return distributionTaskConsumption({store,project,agent,packageDigest,releaseId,manager});
+  }
   const selection={taskId:agent.id,packageDigest,releaseId},sources=localServiceSources({store,project,selection}),ids=new Set(sources.map(source=>source.id));
   const getRelease=id=>id===releaseId&&sources.length?{...store.get('release',id,project),sourceAgentTaskId:agent.id,sourceKind:'AGENT'}:undefined;
-  return privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,scope:'LOCAL_TEST_ONLY',services:manager.list(),
+  return privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,callIdDigest,scope:'LOCAL_TEST_ONLY',services:manager.list(),
    getPackage:id=>store.get('delivery_package',id,project),
    ownedService:id=>manager.detail(id),getVersion:id=>store.get('data_service_version',id,project),getRelease,
    source:id=>{if(!ids.has(id))throw fail();return store.get('release_run',id,project);},

@@ -56,4 +56,24 @@ test('existing consumer V2 and pure binder join the exact real local API receipt
  assert.equal(bindExternalConsumption({expectedSource:source,plan,report,taskEvidence:wrong}).reason,'CALL_UNMATCHED');
  assert.deepEqual(f.counts,before);assert.deepEqual({calls:f.store.list('service_call',PROJECT).length,apps:f.store.list('service_app',PROJECT).length},counts);
  for(const forbidden of [issued.body.token,'CLIENT-001','1000.00',planFile,tokenFile,reportFile,'credentialDigest'])assert.equal(JSON.stringify(bound).includes(forbidden),false);
+
+ const laterApp=await f.call('/data-services/applications',{name:'后续虚构查询',serviceIds:[xapi.id]});
+ assert.equal(laterApp.status,201);
+ const laterResponse=await f.call('/open/xapis/consumer-bound-assets?page=1&page_size=1',undefined,{headers:{authorization:'Bearer '+laterApp.body.token}});
+ assert.equal(laterResponse.status,200);
+ assert.equal((await f.call(`/data-services/applications/${laterApp.body.application.id}/revoke`,{})).status,200);
+ const latest=await f.call(evidencePath);
+ assert.equal(latest.body.services.find(entry=>entry.serviceId===xapi.id).call.callId,laterResponse.body.callId);
+ assert.equal(bindExternalConsumption({expectedSource:source,plan,report,taskEvidence:latest.body}).reason,'CALL_UNMATCHED');
+ const finalCounts={calls:f.store.list('service_call',PROJECT).length,apps:f.store.list('service_app',PROJECT).length};
+ const pinned=await f.call(evidencePath+'&call_id_digest='+bound.callIdDigest);
+ assert.equal(pinned.status,200);
+ assert.equal(pinned.body.services.length,1);
+ assert.equal(pinned.body.services[0].call.callId,call.callId);
+ const restored=bindExternalConsumption({expectedSource:source,plan,report,taskEvidence:pinned.body});
+ assert.equal(restored.status,'MATCHED_ONLY',restored.reason);
+ assert.equal(restored.callIdDigest,bound.callIdDigest);
+ const absent=await f.call(evidencePath+'&call_id_digest='+'0'.repeat(64));
+ assert.equal(absent.status,200);assert.equal(absent.body.status,'PENDING');assert.deepEqual(absent.body.services,[]);
+ assert.deepEqual(f.counts,before);assert.deepEqual({calls:f.store.list('service_call',PROJECT).length,apps:f.store.list('service_app',PROJECT).length},finalCounts);
 });
