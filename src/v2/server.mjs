@@ -140,6 +140,7 @@ import {createServiceContractGates} from './service-contract-gates.mjs';
 import{compareSqlRuns}from'./run-comparison.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
 import { storedAgentReviewEvidence } from "./agent-review-evidence.mjs";
+import { storedAgentExecutionEvidence } from "./agent-execution-evidence.mjs";
 import {
   LocalArtifactStore,
   deliveryArtifactValue,
@@ -3421,11 +3422,13 @@ export function createV2Server(options = {}) {
           return json(res, 200, exposeValidationRecord(get("python_run", run.id)));
         }
       }
-      const agentRequestLookup=path.match(/^\/api\/v2\/agent\/requests\/([A-Za-z0-9_-]{1,100})$/);
+      const agentRequestLookup=path.match(/^\/api\/v2\/agent\/requests\/([A-Za-z0-9_-]{1,100})(\/execution-evidence)?$/);
       if(agentRequestLookup&&method==="GET"){
         const session=auth.sessionFromHeaders(req.headers);
         if(!local&&!session)throw fail(403,"请先以原任务创建者身份登录");
         const actorId=session?.user.id??"local-engineer",key=agentRequestLookup[1];
+        if (agentRequestLookup[2] && (local || url.searchParams.size))
+          throw fail(local ? 403 : 422, "云端执行证据只接受原创建请求编号");
         const ids = new Set([
           store.deduplicatedId(`${PROJECT}:durable-agent:${actorId}:${key}`),
           local ? store.deduplicatedId(`${PROJECT}:agent:${key}`) : undefined,
@@ -3435,6 +3438,10 @@ export function createV2Server(options = {}) {
         const task=id?store.get("agent",id,PROJECT):undefined;
         if(!task)throw fail(404,"未找到当前身份的原创建请求");
         requireDurableAgentOwner(task,req);
+        if (agentRequestLookup[2]) {
+          if (task.submittedBy !== actorId) throw fail(403, "云端执行证据仅原任务创建者可读");
+          return json(res,200,storedAgentExecutionEvidence(task,(kind,id)=>store.get(kind,id,PROJECT)));
+        }
         return json(res,200,exposeDurableTask(task));
       }
       if (path === "/api/v2/agent/tasks" && method === "GET")
