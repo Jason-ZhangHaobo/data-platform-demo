@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { closeSync, constants, existsSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -20,7 +21,7 @@ import { serviceSourceReadPath } from "../src/v2/service-source-request.mjs";
 import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
 import { verifyV2MonthlyBillPages } from "./verify-v2-monthly-bill-pages.mjs";
 import { validateConsumerPlan } from "./verify-service-consumer.mjs";
-import { firstCloudCheckpointBinding } from "./first-cloud-v3-window.mjs";
+import { firstCloudCheckpointBinding, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
 
 const revisionPattern = /^[a-f0-9]{40}$/;
@@ -141,6 +142,82 @@ export function prepareCloudV3Start(path, client, reviewedSource) {
     caseLimit:1, origin:base.origin, projectId:client.projectId, reviewedSource, outcomes:[item]};
   writeCheckpoint(path, state, true);
   return result(state, item, "PREPARED");
+}
+
+function mergedApplicationTree(revision, cwd) {
+  if (!sourceRevision(revision)) stop("须使用完整的已合入应用源码 SHA");
+  const git = (...args) => execFileSync("git", args, {cwd, encoding:"utf8", timeout:5000,
+    env:{...process.env,GIT_NO_LAZY_FETCH:"1",GIT_NO_REPLACE_OBJECTS:"1"}, stdio:["ignore","pipe","pipe"]}).trim();
+  try {
+    if (git("rev-parse", "--verify", revision + "^{commit}") !== revision) throw Error();
+    git("merge-base", "--is-ancestor", revision, "refs/remotes/origin/main");
+    const tree = git("rev-parse", "--verify", revision + "^{tree}");
+    if (!sourceRevision(tree)) throw Error();
+    return tree;
+  } catch {
+    stop("无法在本机 origin/main 确认确切应用源码及其 Git 树");
+  }
+}
+
+function sourceRebindReview(checkpoint, source, applicationTree) {
+  return {protocol:"SHUDUO_FIRST_V3_SOURCE_REVIEW_V1", checkpoint, source, applicationTree};
+}
+
+function rebindableFirstCloudCheckpoint(path) {
+  const {state,text} = readCheckpoint(path,{privateFile:true});
+  const checkpoint = preparedFirstCloudBinding(state,text);
+  const [item] = state.outcomes;
+  if (item.status !== "NOT_RUN" || item.phase !== "REQUIREMENT" || Object.keys(item.actions).length !== 1)
+    stop("首例已有其他执行记录，须按原编号核对");
+  return {state,checkpoint};
+}
+
+export function exportCloudV3SourceReview(path, source, outPath, {cwd = process.cwd()} = {}) {
+  if (!isAbsolute(outPath)) stop("须使用受保护的绝对路径保存源码审阅");
+  const {checkpoint} = rebindableFirstCloudCheckpoint(path);
+  if (source === checkpoint.sourceRevision) stop("新源码与原检查点一致");
+  const applicationTree = mergedApplicationTree(source,cwd);
+  const review = sourceRebindReview(checkpoint,source,applicationTree);
+  writeCheckpoint(outPath,review,true);
+  return {status:"SOURCE_REVIEW_EXPORTED", evaluationRunId:checkpoint.evaluationRunId,
+    previousSource:checkpoint.sourceRevision, source, applicationTree,
+    reviewDigest:sha256(readCheckpoint(outPath,{privateFile:true}).text), submissionState:"PREPARED"};
+}
+
+export async function rebindCloudV3PreparedSource(path, reviewPath, reviewDigest, {cwd = process.cwd()} = {}) {
+  if (!digest(reviewDigest)) stop("须明确确认已审阅文件的 SHA-256");
+  const {state:review,text:reviewText} = readCheckpoint(reviewPath,{privateFile:true});
+  if (sha256(reviewText) !== reviewDigest) stop("源码审阅文件与确认摘要不一致");
+  if (!validFirstCloudBinding(review?.checkpoint)) stop("源码审阅未绑定原首例");
+  const applicationTree = mergedApplicationTree(review?.source,cwd);
+  if (!isDeepStrictEqual(review,sourceRebindReview(review.checkpoint,review.source,applicationTree)))
+    stop("源码审阅文件与确切 Git 树不一致");
+  return withCloudCheckpoint(path,() => {
+    const {state,checkpoint} = rebindableFirstCloudCheckpoint(path);
+    const history = state.sourceRebinds ?? [];
+    if (!Array.isArray(history)) stop("原源码审阅历史不可核对");
+    const latest = history.at(-1);
+    const outcome = status => ({status,evaluationRunId:checkpoint.evaluationRunId,
+      source:review.source,applicationTree,reviewDigest,submissionState:"PREPARED"});
+    if (checkpoint.sourceRevision === review.source && latest?.reviewDigest === reviewDigest) {
+      const beforeAudit = {...state};
+      if (history.length === 1) delete beforeAudit.sourceRebinds;
+      else beforeAudit.sourceRebinds = history.slice(0,-1);
+      if (latest.from !== review.checkpoint.sourceRevision || latest.to !== review.source || latest.applicationTree !== applicationTree ||
+          latest.previousCheckpointDigest !== review.checkpoint.checkpointDigest ||
+          latest.resultStateDigest !== sha256(JSON.stringify(beforeAudit))) stop("原换绑结果已变化，请核对检查点");
+      return outcome("SOURCE_ALREADY_REBOUND");
+    }
+    if (!isDeepStrictEqual(checkpoint,review.checkpoint) || checkpoint.sourceRevision === review.source)
+      stop("原检查点、请求或旧源码已变化，请重新核对审阅");
+    const updated = {...state,reviewedSource:review.source};
+    const audit = {from:checkpoint.sourceRevision,to:review.source,applicationTree,reviewDigest,
+      previousCheckpointDigest:checkpoint.checkpointDigest,resultStateDigest:sha256(JSON.stringify(updated)),
+      confirmedAt:new Date().toISOString()};
+    updated.sourceRebinds = [...history,audit];
+    writeCheckpoint(path,updated);
+    return outcome("SOURCE_REBOUND");
+  });
 }
 
 async function requireOriginalCreator(state, client, session) {
