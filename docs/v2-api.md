@@ -181,7 +181,7 @@ FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查�
 | POST /agent/deliveries/:id/advance | `expectedVersion`，确切演练另带 `rehearsal` | 绑定包编号和摘要提交一次。已有确切批次须带原演练编号对账，只读取同一 Worker 结果并记录核验结论 |
 | GET /agent/tasks/:id/publication/preflight | `sourceKind=AGENT`、`sourceRunId`、`packageDigest`、`verificationId` | 仅原创建者可读。核对实际存储的原包和演练，返回八文件与审阅摘要 |
 | POST /agent/tasks/:id/publication | 原发布选择、四项人工确认与可选 `reviewDigest` | 确切审阅摘要模式需要独立发布窗口，写入前复核实际包和摘要 |
-| GET /agent/tasks/:id/publication/requests/:key | 原幂等编号 | 原创建者只读已存审阅、批准和原发布批次 |
+| GET /agent/tasks/:id/publication/requests/:key | 原幂等编号 | 原创建者只读已存审阅、批准、两个原批次、费用预留与同包监控核验 |
 | POST /agent/deliveries/:id/cancel | 空对象 | 取消排队/运行中的文件演练并保留包和运行状态，不会随后变成成功 |
 | POST /agent/tasks/:id/cancel | 取消委托及其执行 | CANCELLED |
 | GET /delivery/packages | 当前项目交付包摘要列表 | 不返回大段文件正文 |

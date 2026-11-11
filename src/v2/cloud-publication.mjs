@@ -182,13 +182,40 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
           run.packageDigest!==release.packageDigest || run.sourceAgentTaskId!==release.sourceAgentTaskId ||
           run.sourceRunId!==release.sourceRunId || run.reviewDigest!==release.reviewDigest))
       throw fail(409,"发布、人工审阅、批准及调度批次的原记录不一致");
+    const events = store.list("monitor_event",project).filter(event=>event.releaseId===release.id);
+    const openAlertCount = store.list("monitor_alert",project).filter(alert=>alert.releaseId===release.id && alert.status==="OPEN").length;
+    const monitoring = {status:"PENDING",health:release.health,openAlertCount};
+    if (release.status === "CANCELLED" || runs.some(run=>["FAILED","CANCELLED","INTERRUPTED"].includes(run.status)))
+      monitoring.status = "NEEDS_ATTENTION";
+    else if (runs.every(run=>run.status==="SUCCEEDED")) {
+      const item = get("delivery_package",release.packageId), plan = validateDeliveryPackage(item,release.packageDigest);
+      const checks = runs.map(run=>{
+        const observed = events.filter(event=>event.releaseRunId===run.id && event.type==="BATCH_SUCCEEDED");
+        const event = observed[0], triggered = Date.parse(run.triggeredAt), scheduled = Date.parse(run.scheduledTriggerAt);
+        const finished = Date.parse(run.finishedAt);
+        if (run.schedulerTriggered !== true || run.clockMode !== "FC_TIMER" ||
+            run.businessScheduledFor !== release.businessScheduledFor || !Number.isFinite(triggered) ||
+            !Number.isFinite(scheduled) || triggered < scheduled || !Number.isFinite(finished) || finished < triggered ||
+            !passes(run,item,plan) || !["main.sql","tests.sql"].every(name=>run.fileHashes?.[name]===item.manifest.files[name].sha256) ||
+            observed.length!==1 || event.status!=="SUCCEEDED" || event.packageDigest!==release.packageDigest ||
+            !(Date.parse(event.observedAt)>=finished)) return;
+        return {batchId:run.id,eventId:event.id,observedAt:event.observedAt};
+      });
+      if (release.status==="COMPLETED_CLOUD_TEST" && release.health==="HEALTHY" && openAlertCount===0 && checks.every(Boolean)) {
+        monitoring.status="VERIFIED";
+        monitoring.batches=checks;
+      } else monitoring.status="UNCONFIRMED";
+    }
     return {protocol:"shuduo-cloud-publication-receipt/v1",
       release:{id:release.id, taskId:release.sourceAgentTaskId, sourceRunId:release.sourceRunId,
         sourceRevisionId:release.sourceRevisionId, sourceCodeHash:release.sourceCodeHash, packageId:release.packageId,
         packageDigest:release.packageDigest, verificationId:release.verificationId, reviewDigest:release.reviewDigest,
         reviewId:review.id, approvalId:approval.id, status:release.status, scope:release.scope,
         businessScheduledFor:release.businessScheduledFor},
-      runs:runs.map(run=>({id:run.id,sequence:run.sequence,status:run.status,schedulerTriggered:run.schedulerTriggered}))};
+      runs:runs.map(run=>({id:run.id,sequence:run.sequence,status:run.status,schedulerTriggered:run.schedulerTriggered,
+        ...(run.stage ? {stage:run.stage} : {}),
+        ...(Number.isFinite(run.reservedDurationMs) ? {reservedDurationMs:run.reservedDurationMs} : {}),
+        ...(Number.isFinite(run.durationMs) ? {durationMs:run.durationMs} : {})})),monitoring};
   }
   async function publish({ agent, manualDelivery, sourceKind = "AGENT", sourceRunId, packageDigest, verificationId, attestations, reviewDigest, actorId, idempotencyKey }) {
     if (!enabled) throw fail(503, "云端发布驱动尚未配置");
@@ -253,24 +280,105 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const current = get("release_run", run.id), release = get("release", run.releaseId);
     if (terminal.has(current.status) || release.status === "CANCELLED") return;
     const item = get("delivery_package", run.packageId), plan = await ensure(item), passed = passes(receipt, item, plan);
-    const latest = get("release_run", run.id);
-    if (terminal.has(latest.status) || get("release", run.releaseId).status === "CANCELLED") return;
+    const latest = get("release_run", run.id), latestRelease=get("release",run.releaseId);
+    if (terminal.has(latest.status) || latestRelease.status === "CANCELLED") return;
+    if (release.reviewDigest) {
+      if (latest.remoteSubmission?.prepared?.job?.jobId !== latest.id || latest.reviewDigest !== release.reviewDigest ||
+          latestRelease.reviewDigest!==release.reviewDigest || latestRelease.packageDigest!==item.digest ||
+          latest.packageId !== item.id || latest.packageDigest !== item.digest)
+        throw fail(409,"调度批次与原 Worker 回执不一致");
+      store.deduplicate(`${project}:cloud-release-result:${run.id}`,hash(JSON.stringify(receipt)),
+        ()=>recordBatchResult(latest,release,item,receipt,passed));
+    } else recordBatchResult(latest,release,item,receipt,passed);
+    await persist();
+  }
+  function recordBatchResult(run, release, item, receipt, passed) {
     const values = Object.fromEntries(["engine", "engineVersion", "mainSqlExecuted", "testSqlValidation", "validation", "durationMs", "rows", "columns", "log"].filter(k => receipt[k] !== undefined).map(k => [k, receipt[k]]));
-    const saved = patch("release_run", latest, { ...values, status: passed ? "SUCCEEDED" : "FAILED", stage: "COMPLETED", finishedAt: stamp(), ...(passed ? {} : { error: "云端发布批次执行或独立校验未通过" }) });
+    if (release.reviewDigest && !(Number.isFinite(values.durationMs) && values.durationMs>0)) delete values.durationMs;
+    const saved = patch("release_run", run, { ...values, status: passed ? "SUCCEEDED" : "FAILED", stage: "COMPLETED", finishedAt: stamp(), ...(passed ? {} : { error: "云端发布批次执行或独立校验未通过" }) });
     store.create("monitor_event", project, { releaseId: release.id, releaseRunId: run.id, type: passed ? "BATCH_SUCCEEDED" : "BATCH_FAILED", status: saved.status, observedAt: stamp(), packageDigest: item.digest });
     if (!passed) store.create("monitor_alert", project, { releaseId: release.id, releaseRunId: run.id, status: "OPEN", severity: "ERROR", code: "CLOUD_RELEASE_BATCH_FAILED", message: saved.error, openedAt: stamp() });
     else for (const alert of store.list("monitor_alert", project)) if (alert.releaseId === release.id && alert.status === "OPEN" && Date.parse(alert.openedAt) <= now()) store.update("monitor_alert", alert.id, project, { status: "RESOLVED", resolvedAt: stamp(), recoveryRunId: run.id });
     const runs = store.list("release_run", project).filter(r => r.releaseId === release.id), successCount = runs.filter(r => r.status === "SUCCEEDED").length, openAlerts = store.list("monitor_alert", project).filter(a => a.releaseId === release.id && a.status === "OPEN").length;
     const allFinished=runs.every(r=>terminal.has(r.status));
     patch("release", get("release", release.id), { status: allFinished ? "COMPLETED_CLOUD_TEST" : "ACTIVE_CLOUD_TEST", health: openAlerts ? "CRITICAL" : successCount >= 2 ? "HEALTHY" : allFinished ? "RECOVERED_WITH_FAILURE" : "OBSERVING", successfulRunCount: successCount, openAlertCount: openAlerts, lastRunId: run.id, lastObservedAt: stamp() });
-    await persist();
+    return saved;
   }
-  async function reconcile(run) {
+  async function reconcile(run, {passive=false}={}) {
     if (terminal.has(run.status) || !run.remoteSubmission) return;
     let receipt;
-    try { receipt = await runner.read(run.remoteSubmission.prepared); }
-    catch (error) { if (error.code !== "REMOTE_SPARK_TIMEOUT") throw error; receipt = { status: "FAILED" }; }
+    if (passive && run.remoteSubmission.prepared?.job?.jobId!==run.id)
+      throw fail(409,"调度批次与原 Worker 编号不一致");
+    try { receipt = await runner.read(run.remoteSubmission.prepared,passive?{cancelOnTimeout:false}:undefined); }
+    catch (error) { if (passive || error.code !== "REMOTE_SPARK_TIMEOUT") throw error; receipt = { status: "FAILED" }; }
     if (receipt) await finish(run, receipt);
+  }
+  async function finishTick(releaseId,event) {
+    const all = store.list("release_run",project).filter(run=>run.releaseId===releaseId);
+    const summary = {releaseId,succeeded:all.filter(run=>run.status==="SUCCEEDED").length,
+      failed:all.filter(run=>run.status==="FAILED").length,pending:all.filter(run=>!terminal.has(run.status)).length};
+    store.update("cloud_release_tick",event.id,project,{status:"COMPLETED",summary});
+    await persist();
+    return summary;
+  }
+  function exactTickSource(release) {
+    exactPublicationReceipt(release);
+    const source = reviewedSource({agentId:release.sourceAgentTaskId,sourceKind:"AGENT",sourceRunId:release.sourceRunId,
+      packageDigest:release.packageDigest,verificationId:release.verificationId,actorId:release.submittedBy});
+    const basis=reviewBasis(source,release.submittedBy);
+    if (hash(JSON.stringify(basis)) !== release.reviewDigest || basis.businessScheduledFor!==release.businessScheduledFor ||
+        source.plan.source.revisionId!==release.sourceRevisionId || source.plan.source.sqlHash!==release.sourceCodeHash)
+      throw fail(409,"签名调度须沿用原审阅版本");
+    return source;
+  }
+  async function tickExact(release, input, old) {
+    exactPublicationReceipt(release);
+    const {releaseId,requestId,triggerName,triggerTime}=input;
+    const key = `${project}:cloud-release-tick:${requestId}`;
+    const saved = store.deduplicate(key,hash(JSON.stringify({releaseId,triggerName,triggerTime})),()=>
+      old ?? store.create("cloud_release_tick",project,{requestId,releaseId,triggerName,triggerTime,status:"RUNNING"}));
+    const event = get("cloud_release_tick",saved.id);
+    await persist();
+    const releaseRuns = () => store.list("release_run",project).filter(run=>run.releaseId===releaseId);
+    for (const run of releaseRuns().filter(run=>run.status==="RUNNING")) await reconcile(run,{passive:true});
+    // A replay may settle its original result. Only a fresh signed event may
+    // claim a new batch, and a pending earlier batch keeps the queue serial.
+    const all=releaseRuns();
+    const selected = !old && !saved.replayed && !all.some(run=>run.status==="RUNNING") &&
+      all.filter(run=>run.status==="SCHEDULED" && Date.parse(run.scheduledTriggerAt)<=now())
+        .sort((a,b)=>a.sequence-b.sequence)[0];
+    if (!selected) return finishTick(releaseId,event);
+    const {item} = exactTickSource(get("release",releaseId)), plan=await ensure(item);
+    const current=get("release_run",selected.id), active=get("release",releaseId);
+    if (active.status==="CANCELLED" || current.status!=="SCHEDULED" || releaseRuns().some(run=>run.status==="RUNNING"))
+      return finishTick(releaseId,event);
+    assertExecutionScope(active);
+    exactTickSource(active);
+    assertBudget();
+    const reserved=store.deduplicate(`${project}:cloud-release-claim:${current.id}`,active.reviewDigest,()=>{
+      const prepared=runner.prepare({sql:item.files["main.sql"],testSql:item.files["tests.sql"],
+        context:plan.fixtures.context,validationContexts:plan.fixtures.validationContexts},current.id);
+      const claim=patch("release_run",current,{status:"RUNNING",stage:"SUBMITTING",isolation:"FUNCTION_PROCESS",
+        reservedDurationMs:reservationSeconds*1000,schedulerTriggered:true,clockMode:"FC_TIMER",triggerName,triggeredAt:stamp(),
+        fileHashes:Object.fromEntries(["main.sql","tests.sql"].map(name=>[name,item.manifest.files[name].sha256])),
+        remoteSubmission:{prepared,submitted:false},published:true});
+      patch("release",active,{status:"RUNNING_CLOUD_TEST",health:active.health==="CRITICAL"?"CRITICAL":"OBSERVING"});
+      store.update("cloud_release_tick",event.id,project,{batchId:current.id});
+      return claim;
+    });
+    if (reserved.replayed) return finishTick(releaseId,event);
+    await persist();
+    const claimed=get("release_run",current.id), latest=get("release",releaseId);
+    if (latest.status==="CANCELLED" || terminal.has(claimed.status)) return finishTick(releaseId,event);
+    if (claimed.version!==current.version+1 || get("cloud_release_tick",event.id).batchId!==current.id)
+      throw fail(409,"原调度批次已变化");
+    assertExecutionScope(latest);
+    exactTickSource(latest);
+    await runner.submit(claimed.remoteSubmission.prepared,{retry:false});
+    const acknowledged=get("release_run",current.id);
+    if (!terminal.has(acknowledged.status) && get("release",releaseId).status!=="CANCELLED")
+      patch("release_run",acknowledged,{stage:"WAITING_FOR_WORKER_RESULT",remoteSubmission:{...acknowledged.remoteSubmission,submitted:true}});
+    return finishTick(releaseId,event);
   }
   async function tick({ releaseId, requestId, triggerName, triggerTime }) {
     if (!enabled) throw fail(503, "云端发布驱动未启用");
@@ -279,7 +387,10 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if (typeof requestId !== "string" || !/^[a-f0-9]{64}$/.test(requestId) || typeof triggerName !== "string" || !triggerName || !Number.isFinite(Date.parse(triggerTime))) throw fail(422, "调度事件标识不合法");
     const old = store.list("cloud_release_tick", project).find(t => t.requestId === requestId);
     if (old && old.releaseId !== release.id) throw fail(409, "同一事件不能调用另一发布版本");
+    if (old && release.reviewDigest && (old.triggerName!==triggerName || old.triggerTime!==triggerTime))
+      throw fail(409,"同一签名编号不能替换调度时间或触发器");
     if (old?.status === "COMPLETED") return { replayed: true, ...old.summary };
+    if (release.reviewDigest) return tickExact(release,{releaseId,requestId,triggerName,triggerTime},old);
     const event = old ?? store.create("cloud_release_tick", project, { requestId, releaseId, triggerName, triggerTime, status: "RUNNING" });
     if (event.releaseId !== release.id) throw fail(409, "同一事件不能调用另一发布版本");
     await persist();
@@ -313,13 +424,13 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
         patch("release_run", current, { stage: "WAITING_FOR_WORKER_RESULT", remoteSubmission: { ...current.remoteSubmission, submitted: true } }); await persist();
       }
     }
-    const all = store.list("release_run", project).filter(r => r.releaseId === release.id), summary = { releaseId: release.id, succeeded: all.filter(r=>r.status==="SUCCEEDED").length, failed: all.filter(r=>r.status==="FAILED").length, pending: all.filter(r=>!terminal.has(r.status)).length };
-    store.update("cloud_release_tick", event.id, project, { status: "COMPLETED", summary }); await persist(); return summary;
+    return finishTick(release.id,event);
   }
   async function detail(agentId, input = {}) {
     const selector = internalSelector(input), release = select(agentId, selector);
     if (!release) return { release: undefined, runs: [], alerts: [], events: [] };
-    for (const run of store.list("release_run", project).filter(r => r.releaseId === release.id && r.status === "RUNNING")) await reconcile(run);
+    if (!release.reviewDigest)
+      for (const run of store.list("release_run", project).filter(r => r.releaseId === release.id && r.status === "RUNNING")) await reconcile(run);
     const latest = select(agentId, { ...selector, releaseId: release.id });
     if (!latest) throw fail(409, "发布来源在读取期间变化，请重新读取原记录");
     return { release: clean(latest), runs: store.list("release_run", project).filter(r => r.releaseId === release.id).sort((a,b)=>a.sequence-b.sequence).map(clean), alerts: store.list("monitor_alert", project).filter(a=>a.releaseId===release.id), events:store.list("monitor_event",project).filter(e=>e.releaseId===release.id) };

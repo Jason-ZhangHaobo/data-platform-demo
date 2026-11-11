@@ -130,6 +130,14 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 
 响应丢失时用 `--reconcile` 读取 `GET /agent/tasks/{id}/publication/requests/{key}`，沿原创建者和原请求确认同一发布及两条原批次。该读取不协调 Worker，窗口关闭后也可读取已保存的回执。实际调度、监控和消费分别验收。
 
+### 核对同一发布的签名调度与监控
+
+确切审阅的发布沿用私有签名定时入口。每个新签名事件最多认领一个原批次，认领事务先保存原 Worker 编号、冻结 SQL 摘要和计算预留。提交前再次核对发布窗口、审阅摘要和预算。已有批次待确认时，后续事件仅查原签名结果，后一个批次保持待调度。原签名事件重放可结算已有结果。
+
+`shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile` 读取原发布、两个原批次及已存预留。只读查询不触发 Worker。签名调度结算时将批次结果和监控事件一起落盘。两个原批次均通过 Spark、测试 SQL 和独立断言，且各有同包、完成时间之后的成功事件并且没有开放告警，才返回 `monitoringStatus: VERIFIED`。
+
+本机测试可用 `SHUDUO_TEST_LOCAL_SPARK_RELEASE=true` 执行同一包的两个真实 Spark 批次。签名入口、队列和数据仍在隔离本机环境，真实云调度、付费执行与授权消费需分别验收。
+
 ### 读取原任务的执行阶段
 
 在本机运维监控展开已受理案例的模型与 Spark 状态，或执行 `node scripts/run-live-lifecycle-evaluation.mjs --inspect 原评测UUID`。CLI 与页面共用原评测记录，CLI 额外核对本机检查点文件摘要。已冻结的案例始终展示原代码版本和批次，尚未冻结的案例只读最近尝试已关联的版本及批次。
