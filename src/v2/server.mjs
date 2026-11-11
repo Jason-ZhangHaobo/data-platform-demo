@@ -684,6 +684,7 @@ export function createV2Server(options = {}) {
   const isPythonDelivery = (item) =>
       item?.manifest?.format === "shuduo-python-delivery/v1",
     validateAnyDeliveryPackage = (item) => {
+      if (item?.manifest?.source?.contextId === fundContextId && !localClassicSpark) throw fail(422, "基金交付仅支持本机文件演练");
       if(item?.manifest?.source?.outputContract&&!local)throw fail(422,"分布交付当前仅支持本机文件演练");
       const plan=(isPythonDelivery(item)
         ? validatePythonDeliveryPackage
@@ -714,6 +715,7 @@ export function createV2Server(options = {}) {
     packageFor: (id) => store.get("delivery_package", id, PROJECT),
     runPackage: releaseRunner,
     assertRunSource: ({run,release,packageItem})=>{
+      if (packageItem.manifest?.source?.contextId === fundContextId) throw fail(422, "基金组合穿透尚未开放发布调度");
       if(!packageItem.manifest?.source?.outputContract)return;
       validateAnyDeliveryPackage(packageItem);
       const approval=get('release_approval',release.approvalId);
@@ -1396,7 +1398,13 @@ export function createV2Server(options = {}) {
       const deliveryAccessForRequest = () => deliveryAccess ??= createDeliveryEvidenceAccess({
         store, project:PROJECT, local, session:auth.sessionFromHeaders(req.headers),
       });
-      const canReadDelivery = (kind, item) => deliveryAccessForRequest().canRead(kind, item);
+      const canReadDelivery = (kind, item) => {
+        if (!localClassicSpark && item) {
+          const pack = kind === "delivery_package" ? item : item.packageId && store.get("delivery_package", item.packageId, PROJECT);
+          if (pack?.manifest?.source?.contextId === fundContextId) return false;
+        }
+        return deliveryAccessForRequest().canRead(kind, item);
+      };
       const visibleDelivery = kind => store.list(kind, PROJECT).filter(item => canReadDelivery(kind, item));
       const deliveryDenied = () => Object.assign(fail(403, "当前身份无权访问此交付证据"), {code:"DELIVERY_EVIDENCE_ACCESS_DENIED"});
       const requireDeliveryEvidence = (kind, item) => {
@@ -4766,7 +4774,7 @@ export function createV2Server(options = {}) {
           sourceRun = get("run", text(body.sourceRunId, 1, 80)),
           sourceRevision = get("revision", sourceRun.revisionId);
         if (!deliveryAccessForRequest().canPrepare(sourceRun, sourceRevision)) throw deliveryDenied();
-        if (sourceRevision.contextId === fundContextId) throw fail(422, "基金组合穿透的调度交付尚未开放");
+        if (sourceRevision.contextId === fundContextId && !localClassicSpark) throw fail(422, "基金交付仅支持本机文件演练");
         const family = validationFamilyForRun(sourceRun);
         const name =
           body.name === undefined ? "客户资产 T+1" : text(body.name, 1, 80);
@@ -4919,7 +4927,7 @@ export function createV2Server(options = {}) {
                   reviewNote,
                   attestations,
                   status: "REVIEWED",
-                  scope: item.manifest?.source?.outputContract ? "LOCAL_FILE_REVIEW" : "LOCAL_TEST_RELEASE",
+                  scope: item.manifest?.source?.outputContract || item.manifest?.source?.fundLookthrough ? "LOCAL_FILE_REVIEW" : "LOCAL_TEST_RELEASE",
                   publicDeploymentApproved: false,
                   reviewedAt: new Date().toISOString(),
                 }),
@@ -4935,6 +4943,7 @@ export function createV2Server(options = {}) {
           deliveryRecord[3] === "approve" &&
           method === "POST"
         ) {
+          if (item.manifest?.source?.contextId === fundContextId) throw fail(422, "基金组合穿透尚未开放发布审批");
           const body = await readBody(req),
             packageDigest = text(body.packageDigest, 64, 64);
           if (packageDigest !== item.digest)
@@ -5139,9 +5148,9 @@ export function createV2Server(options = {}) {
             text(body.approvalId, 1, 80),
           ),
           item = get("delivery_package", approval.packageId),
-          spec = localScheduleSpec(body),
-          artifact = await ensureDeliveryArtifact(item),
-          plan = validateAnyDeliveryPackage(item);
+          spec = localScheduleSpec(body);
+        if (item.manifest?.source?.contextId === fundContextId) throw fail(422, "基金组合穿透尚未开放发布调度");
+        const artifact = await ensureDeliveryArtifact(item), plan = validateAnyDeliveryPackage(item);
         const latestApproval=get('release_approval',approval.id);
         if(plan.source.outputContract)assertDistributionRelease({bundle:item,verification:latestApproval.rehearsalId?store.get('delivery_verification',latestApproval.rehearsalId,PROJECT):undefined,review:latestApproval.reviewId?store.get('delivery_review',latestApproval.reviewId,PROJECT):undefined,approval:latestApproval,spec,local,schedulerMode:releaseSchedulerMode});
         const consumedReleaseId=plan.source.outputContract?latestApproval.consumedByReleaseId:approval.consumedByReleaseId;

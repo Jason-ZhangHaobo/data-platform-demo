@@ -1414,6 +1414,8 @@ function App() {
               </section>
               {agentOpen && context?.outputContract && <SqlContractScope title={context.outputContract.name}
                 definition={context.definition} industry={context.outputContract.id.includes("industry")}
+                onDelivery={context.capabilities?.agentDevelopment===false && context.capabilities.delivery && resultIsCurrent && run?.status==="SUCCEEDED"
+                  ? () => { setDeliverySourceId(run.id); setNav("schedules"); } : undefined}
                 onAgent={context.capabilities?.agentDevelopment===false ? undefined : () => setNav("agent-center")} />}
               {agentOpen && !context?.outputContract && (
                 <aside className="agent-panel">
