@@ -1,10 +1,11 @@
 import { Database } from "lucide-react";
 
-export function SqlContractScope({ title, definition, industry, onAgent }: {
+export function SqlContractScope({ title, definition, industry, onAgent, onDelivery }: {
   title: string;
   definition: string;
   industry: boolean;
   onAgent?: () => void;
+  onDelivery?: () => void;
 }) {
   return (
     <aside className="agent-panel distribution-scope-card">
@@ -18,7 +19,8 @@ export function SqlContractScope({ title, definition, industry, onAgent }: {
         </div>
         <div className="distribution-scope-next">
           {onAgent ? <button className="button" onClick={onAgent}>进入 Data Agent</button>
-            : <p>可保存版本并查看独立验证。此口径的 Agent、调度交付和接口消费待接入。</p>}
+            : <><p>当前支持本机文件演练。Agent、发布调度和接口消费待接入。</p>
+                <button className="button" disabled={!onDelivery} onClick={onDelivery}>准备本机文件演练</button></>}
         </div>
       </div>
     </aside>

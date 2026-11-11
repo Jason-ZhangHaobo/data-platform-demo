@@ -47,6 +47,7 @@ type Bundle = {
       sqlHash?: string;
       codeHash?: string;
       contextId: string;
+      fundLookthrough?: { businessDate: string; managerId: string };
     };
     files: Record<string, { sha256: string; bytes: number }>;
   };
@@ -215,6 +216,7 @@ export function DeliveryWorkbench({
     [loadedPackage, setSelected] = useState<Bundle>();
   const packages = manualDeliveryPackages(loadedPackages, sourceRunId, sourceLocked);
   const selected = sourceLocked && (!source || loadedPackage?.manifest.source.runId !== sourceRunId) ? undefined : loadedPackage;
+  const fundFileOnly = Boolean(selected?.manifest.source.fundLookthrough);
   const [checks, setChecks] = useState<Verification[]>([]),
     [observedCheck, setCheck] = useState<Verification>();
   const check = observedCheck && matchingDeliveryVerification(selected, [observedCheck]);
@@ -402,7 +404,7 @@ export function DeliveryWorkbench({
     }
   };
   const approve = async () => {
-    if (!selected || !reviewTarget || !selectedReview) return;
+    if (!selected || fundFileOnly || !reviewTarget || !selectedReview) return;
     setBusy("approve");
     setError("");
     try {
@@ -418,7 +420,7 @@ export function DeliveryWorkbench({
     }
   };
   const publish = async () => {
-    if (!selected) return;
+    if (!selected || fundFileOnly) return;
     const approval = approvals.find(
       (item) =>
         item.packageId === selected.id &&
@@ -728,7 +730,7 @@ export function DeliveryWorkbench({
                   <span>1</span>执行 {selectedIsPython ? "main.py" : "main.sql"}
                 </li>
                 <li>
-                  <span>2</span>{selectedIsPython ? "执行受限Python五场景断言" : "运行 tests.sql 与五场景核验"}
+                  <span>2</span>{selectedIsPython ? "执行受限Python五场景断言" : fundFileOnly ? "运行 tests.sql 与组合独立断言" : "运行 tests.sql 与五场景核验"}
                 </li>
                 <li>
                   <span>3</span>保存真实结果与文件摘要
@@ -845,7 +847,8 @@ export function DeliveryWorkbench({
                   <ShieldCheck size={22} />
                 </header>
                 <p>
-                  先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。{localReleaseScheduleText(selectedRelease)}
+                  {fundFileOnly ? "当前仅审阅文件和本机演练，基金组合发布待接入。" :
+                    "先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。" + localReleaseScheduleText(selectedRelease)}
                 </p>
                 <fieldset className="delivery-review-checklist" disabled={!canWrite || !reviewTarget || !!selectedReview || !!busy}>
                   <legend>工程师审阅确认（不会发布）</legend>
@@ -905,6 +908,7 @@ export function DeliveryWorkbench({
                       !canWrite ||
                       check?.status !== "SUCCEEDED" ||
                       !selectedReview ||
+                      fundFileOnly ||
                       !!selectedApproval ||
                       !!busy
                     }
@@ -922,6 +926,7 @@ export function DeliveryWorkbench({
                     disabled={
                       !canWrite ||
                       !selectedApproval ||
+                      fundFileOnly ||
                       !!selectedRelease ||
                       !!busy
                     }

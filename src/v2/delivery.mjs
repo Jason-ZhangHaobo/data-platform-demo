@@ -1,5 +1,7 @@
 import {outputContractForContext,verifyOutputRows} from './output-contracts.mjs';
 import {distributionDeliveryBinding,createDistributionTestSql,validateDistributionDelivery} from './distribution-delivery.mjs';
+import { fundContextId, fundFamily } from "./fund-lookthrough.mjs";
+import { createFundTestSql, fundDeliveryBinding, fundValidationMatches, validateFundDelivery, verifiedFundRun } from "./fund-delivery.mjs";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { resolve, join } from "node:path";
@@ -56,6 +58,7 @@ const literal = (value) => "'" + String(value).replaceAll("'", "''") + "'";
 
 export function createTestSql(expected, contextId) {
   if(contextId!==undefined&&!getContext(contextId))throw fail("测试SQL上下文未登记");
+  if (contextId === fundContextId) return createFundTestSql(expected);
   if(outputContractForContext(contextId))return createDistributionTestSql(expected,contextId);
   const fields = [
     "holding_market_value",
@@ -103,9 +106,13 @@ export function createDeliveryPackage({
   manualAuthor = false,
 }) {
   const distribution=outputContractForContext(revision?.contextId);
+  const fund = revision?.contextId === fundContextId;
   if(distribution&&(run?.isolation==="FUNCTION_PROCESS"||run?.mainSqlExecuted!==true||run?.testDouble===true||!verifyOutputRows(run?.rows,getContext(revision.contextId))))throw fail("分布交付须来自本机真实Spark及独立复合键核验，尚未开放云端");
   const reference=developmentReference===undefined?undefined:checkedAssistedDevelopmentReference(developmentReference);
   const authored=revision?.source==='MANUAL'&&revision.manualProvenance?.kind==='ENGINEER_EDIT'&&revision.manualProvenance.actorId===revision.author&&revision.manualProvenance.agentIndependentE2E===false;
+  if (fund && (!authored || revision.manualProvenance.originAgentTaskId !== undefined || !verifiedFundRun(run) ||
+      run.contextId !== fundContextId || !Number.isFinite(Date.parse(run.finishedAt))))
+    throw fail("基金交付须来自原作者的本机真实 Spark 运行与独立组合断言");
   if(manualAuthor&&!authored)throw Object.assign(new Error('独立手工文件必须属于原作者和保存版本'),{status:409});
   if(reference&&manualAuthor&&(reference.kind!=='MANUAL_SUCCESS_REFERENCE'||reference.sourceRunId!==run?.id||reference.sourceRevisionId!==revision.id||reference.sourceRevisionHash!==revision.hash))throw Object.assign(new Error('手工文件与成功来源引用不一致'),{status:409});
   if(reference&&!manualAuthor&&(revision?.sourceAttribution?.kind!=='ENGINEER_ASSISTED'||revision.sourceKind!=='MANUAL'||revision.agentIndependentE2E!==false||
@@ -113,7 +120,7 @@ export function createDeliveryPackage({
   const remoteExecution = run?.isolation === "FUNCTION_PROCESS";
   const family = validationFamilyForContext(revision?.contextId);
   if (name === undefined || (distribution&&["客户资产 T+1","客户资产 T+1 · Agent交付准备"].includes(name)) || (family?.id !== validationContractId && name === "客户资产 T+1"))
-    name = distribution ? distribution.name+" · T+1交付" : family?.id === validationContractId ? "客户资产 T+1" : "股票持仓＋可用现金 T+1（非客户全资产）";
+    name = fund ? fundFamily().name : distribution ? distribution.name+" · T+1交付" : family?.id === validationContractId ? "客户资产 T+1" : "股票持仓＋可用现金 T+1（非客户全资产）";
   if (
     ![run?.id, run?.projectId, revision?.id, revision?.projectId].every(
       (value) =>
@@ -146,7 +153,7 @@ export function createDeliveryPackage({
       { status: 409 },
     );
   if (
-    !validationMatchesFamily(run.validation, family, { requireContract: true })
+    !fund && !validationMatchesFamily(run.validation, family, { requireContract: true })
   )
     throw Object.assign(new Error("缺少五场景验证证据，请先重新运行 SQL"), {
       status: 409,
@@ -226,10 +233,11 @@ export function createDeliveryPackage({
       engineVersion: run.engineVersion,
       isolation: run.isolation ?? "LOCAL_PROCESS",
       report: validationWithoutRawComparisons(run.validation),
+      ...(fund ? { inputEvidence: run.inputEvidence } : {}),
       ...(requirements?{requirements}:{}),
     }),
     "README.md":
-      `# ${remoteExecution ? "隔离Worker" : "本机"}交付包\n\n包含 SQL、实际执行的测试 SQL、调度、部署和样例交易日历。\n适配器 ${deployment.adapter}，Spark ${run.engineVersion}；当前只是演练，尚未发布或适配 DataWorks/EMR。\n演练时间：2026-09-11T09:00:00+08:00，对应业务日2026-09-10。\n散列只能校验与指定摘要一致，不构成生产审批或发布签名。\n`,
+      `# ${remoteExecution ? "隔离Worker" : "本机"}交付包\n\n包含 SQL、${fund ? "测试 SQL" : "实际执行的测试 SQL"}、调度、部署和样例交易日历。\n适配器 ${deployment.adapter}，Spark ${run.engineVersion}；当前只是演练，尚未发布或适配 DataWorks/EMR。\n演练时间：2026-09-11T09:00:00+08:00，对应业务日2026-09-10。\n散列只能校验与指定摘要一致，不构成生产审批或发布签名。\n`,
   };
   const manifest = {
     format: deliveryFormat,
@@ -241,6 +249,7 @@ export function createDeliveryPackage({
       sqlHash: revision.hash,
       contextId: context.id,
       validationContractId: family.id,
+      ...(fund ? { fundLookthrough: fundDeliveryBinding() } : {}),
       ...(distribution?{outputContract:distributionDeliveryBinding(context.id)}:{}),
       ...(requirements?{requirement:sqlRequirementBinding(requirements)}:{}),
       ...(revision.sourceAttribution?.kind==='ENGINEER_ASSISTED'?{attribution:{kind:'ENGINEER_ASSISTED',originAgentTaskId:revision.sourceAttribution.originAgentTaskId,
@@ -258,7 +267,8 @@ export function createDeliveryPackage({
       ]),
     ),
     releaseState: "NOT_PUBLISHED",
-    createdAt: new Date().toISOString(),
+    // Freeze the source timestamp so retries keep the fund package digest.
+    createdAt: fund ? new Date(run.finishedAt).toISOString() : new Date().toISOString(),
   };
   return { manifest, files, digest: computeManifestDigest(manifest) };
 }
@@ -309,6 +319,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
   if (total > 750000) throw fail("交付包超过本机演练大小限制");
   const source = bundle.manifest.source;
   const family = validationFamilyForContext(source?.contextId);
+  const fund = source?.contextId === fundContextId;
   if (
     !keysExactly(bundle.manifest, [
       "format",
@@ -328,6 +339,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       ...(source?.attribution === undefined ? [] : ["attribution"]),
       ...(source?.requirement === undefined ? [] : ["requirement"]),
       ...(source?.outputContract === undefined ? [] : ["outputContract"]),
+      ...(source?.fundLookthrough === undefined ? [] : ["fundLookthrough"]),
     ])
   )
     throw fail("交付清单包含未定义字段");
@@ -428,10 +440,12 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     proof.engine !== deployment.runtime.engine ||
     proof.engineVersion !== deployment.runtime.version ||
     (remoteTarget && proof.isolation !== "FUNCTION_PROCESS") ||
-    !validationMatchesFamily(proof.report, family, { requireContract: true })
+    !(fund ? proof.report?.contractId === family.id && fundValidationMatches(proof.report) :
+      validationMatchesFamily(proof.report, family, { requireContract: true }))
   )
     throw fail("源验证报告与代码或契约不一致");
   validateDistributionDelivery({source,fixtures,testSql:bundle.files["tests.sql"],localTarget});
+  validateFundDelivery({ source, proof, testSql: bundle.files["tests.sql"], localTarget });
   validateCalendar(calendar);
   const requirements=validateFrozenSqlRequirements(proof.requirements,source.requirement,source,bundle.files['main.sql']);
   return {

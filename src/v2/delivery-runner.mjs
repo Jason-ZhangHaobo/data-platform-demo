@@ -7,6 +7,7 @@ import {
   sha256,
 } from "./delivery.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
+import { verifiedFundRun } from "./fund-delivery.mjs";
 
 export async function verifyDeliveryDirectory(
   { directory, expectedDigest, scheduledFor, signal },
@@ -43,6 +44,7 @@ export async function verifyDeliveryDirectory(
     result.validation?.passed &&
       result.testSqlValidation?.passed &&
       result.testSqlValidation.sqlHash === sha256(bundle.files["tests.sql"]) &&
+      (!plan.source.fundLookthrough || verifiedFundRun(result)) &&
       regressionIds.every((id) =>
         result.validation.regressions?.some(
           (check) => check.contextId === id && check.passed,
