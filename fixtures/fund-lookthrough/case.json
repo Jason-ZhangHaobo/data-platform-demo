@@ -1,0 +1,41 @@
+{
+  "id": "synthetic-fund-lookthrough-t1",
+  "classification": "SYNTHETIC",
+  "managerId": "MANAGER-DEMO-A",
+  "businessDate": "2026-09-10",
+  "tables": {
+    "portfolios": [
+      ["PORT-DEMO-A1", "MANAGER-DEMO-A"],
+      ["PORT-DEMO-A2", "MANAGER-DEMO-A"],
+      ["PORT-DEMO-B1", "MANAGER-DEMO-B"]
+    ],
+    "fund_positions": [
+      ["POS-A1-01", "PORT-DEMO-A1", "FUND-DEMO-100", "2026-09-10", "1000.00", "CNY"],
+      ["POS-A1-01", "PORT-DEMO-A1", "FUND-DEMO-100", "2026-09-10", "1000.00", "CNY"],
+      ["POS-A1-02", "PORT-DEMO-A1", "FUND-DEMO-100", "2026-09-10", "200.00", "CNY"],
+      ["POS-A1-03", "PORT-DEMO-A1", "FUND-DEMO-200", "2026-09-10", "500.00", "CNY"],
+      ["POS-A1-04", "PORT-DEMO-A1", "FUND-DEMO-300", "2026-09-10", "300.00", "CNY"],
+      ["POS-A2-01", "PORT-DEMO-A2", "FUND-DEMO-200", "2026-09-10", "800.00", "CNY"],
+      ["POS-B1-01", "PORT-DEMO-B1", "FUND-DEMO-100", "2026-09-10", "9000.00", "CNY"],
+      ["POS-A1-01", "PORT-DEMO-A1", "FUND-DEMO-100", "2026-09-09", "100000.00", "CNY"]
+    ],
+    "fund_allocations": [
+      ["FUND-DEMO-100", "2026-09-10", "SEC-DEMO-101", "股票", "0.600000"],
+      ["FUND-DEMO-100", "2026-09-10", "SEC-DEMO-101", "股票", "0.600000"],
+      ["FUND-DEMO-100", "2026-09-10", "SEC-DEMO-102", "债券", "0.300000"],
+      ["FUND-DEMO-100", "2026-09-10", "CASH-DEMO-103", "现金", "0.100000"],
+      ["FUND-DEMO-200", "2026-09-10", "SEC-DEMO-201", "股票", "0.200000"],
+      ["FUND-DEMO-200", "2026-09-10", "SEC-DEMO-202", "债券", "0.500000"],
+      ["FUND-DEMO-200", "2026-09-09", "SEC-DEMO-203", "股票", "1.000000"]
+    ]
+  },
+  "expected": [
+    { "portfolio_id": "PORT-DEMO-A1", "trade_date": "2026-09-10", "asset_class": "债券", "exposure_amount": "610.00", "exposure_ratio": "0.305000" },
+    { "portfolio_id": "PORT-DEMO-A1", "trade_date": "2026-09-10", "asset_class": "未穿透", "exposure_amount": "450.00", "exposure_ratio": "0.225000" },
+    { "portfolio_id": "PORT-DEMO-A1", "trade_date": "2026-09-10", "asset_class": "现金", "exposure_amount": "120.00", "exposure_ratio": "0.060000" },
+    { "portfolio_id": "PORT-DEMO-A1", "trade_date": "2026-09-10", "asset_class": "股票", "exposure_amount": "820.00", "exposure_ratio": "0.410000" },
+    { "portfolio_id": "PORT-DEMO-A2", "trade_date": "2026-09-10", "asset_class": "债券", "exposure_amount": "400.00", "exposure_ratio": "0.500000" },
+    { "portfolio_id": "PORT-DEMO-A2", "trade_date": "2026-09-10", "asset_class": "未穿透", "exposure_amount": "240.00", "exposure_ratio": "0.300000" },
+    { "portfolio_id": "PORT-DEMO-A2", "trade_date": "2026-09-10", "asset_class": "股票", "exposure_amount": "160.00", "exposure_ratio": "0.200000" }
+  ]
+}
