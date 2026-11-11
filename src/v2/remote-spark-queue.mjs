@@ -222,12 +222,12 @@ export class RemoteSparkQueueClient {
       throw fail(422, "持久任务正文与签名不一致", "SPARK_QUEUE_JOB_INVALID");
   }
 
-  async submitPrepared(queued) {
+  async submitPrepared(queued, options) {
     this.validatePrepared(queued);
-    return this.transport.create(queued.jobKey, queued.serialized);
+    return this.transport.create(queued.jobKey, queued.serialized, options);
   }
 
-  async readPreparedResult(queued) {
+  async readPreparedResult(queued, {cancelOnTimeout=true} = {}) {
     this.validatePrepared(queued, true);
     const raw = await this.transport.read(queued.resultKey);
     if (raw !== undefined) {
@@ -235,7 +235,7 @@ export class RemoteSparkQueueClient {
       try { envelope = JSON.parse(raw); } catch { throw fail(502, "Spark队列结果不是JSON", "SPARK_QUEUE_RESULT_INVALID"); }
       return verifyQueuedSparkResult(envelope, queued.job.jobId, this.config);
     }
-    if (Date.parse(queued.job.expiresAt) <= this.now()) {
+    if (cancelOnTimeout && Date.parse(queued.job.expiresAt) <= this.now()) {
       await this.cancelPrepared(queued, "DEADLINE");
       throw fail(504, "云端任务已超时", "REMOTE_SPARK_TIMEOUT");
     }
@@ -285,7 +285,7 @@ export class OssSparkQueueTransport {
     this.retryOptions = retryOptions;
   }
 
-  async #request(method, key, body, ifNoneMatch) {
+  async #request(method, key, body, ifNoneMatch, retryOptions=this.retryOptions) {
     return requestOssWithRetry(
       () => {
         const request = createOssRequest({
@@ -298,7 +298,7 @@ export class OssSparkQueueTransport {
         return { ...request, options: { ...request.options, redirect: "error" } };
       },
       this.fetchImpl,
-      this.retryOptions,
+      retryOptions,
     );
   }
 
@@ -313,10 +313,10 @@ export class OssSparkQueueTransport {
     return body;
   }
 
-  async create(key, body) {
+  async create(key, body, {retry=true} = {}) {
     if (Buffer.byteLength(body, "utf8") > 2 * 1024 * 1024)
       throw fail(413, "Spark队列对象超过上限", "SPARK_QUEUE_OBJECT_TOO_LARGE");
-    const response = await this.#request("PUT", key, body, "*");
+    const response = await this.#request("PUT", key, body, "*",retry?this.retryOptions:{...this.retryOptions,attempts:1});
     if ([409, 412].includes(response.status)) {
       const existing = await this.read(key);
       if (existing === body) return { created: false };

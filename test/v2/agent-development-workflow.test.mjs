@@ -95,6 +95,21 @@ test("native package recovery verifies an attached artifact before finishing the
   assert.deepEqual(f.submits,[]);
 });
 
+test("exact rehearsal reserves the batch and budget atomically if queue preparation fails", async t => {
+  const f=fixture(t), delivery=await f.engine.create(f.agent,"ready-to-rehearse");
+  const source={packageId:delivery.packageId,packageDigest:delivery.packageDigest};
+  const engine=createDurableAgentDelivery({...f.options,runner:{...f.options.runner,
+    prepare:()=>{throw Error("synthetic queue preparation failure");}}});
+  await assert.rejects(engine.advance(delivery.id,delivery.version,source),/synthetic queue preparation failure/);
+  assert.equal(f.store.list("delivery_verification",f.project).length,0);
+  assert.equal(f.store.deduplicatedId(`${f.project}:delivery-rehearsal:${delivery.id}`),undefined);
+  const ready=f.store.get("agent_delivery_task",delivery.id,f.project);
+  assert.equal(ready.version,delivery.version);
+  assert.equal(ready.stage,"PACKAGE_READY");
+  assert.equal(ready.verificationId,undefined);
+  assert.deepEqual(f.submits,[]);
+});
+
 test("file rehearsal rejects missing test SQL hash, missing regressions and test-double receipts", async t => {
   for(const alter of [r=>({...r,testSqlValidation:{passed:true,sqlHash:"x".repeat(64)}}),r=>({...r,validation:{passed:true,regressions:[]}}),r=>({...r,testDouble:true}),r=>({...r,mainSqlExecuted:false})]) {
     const f=fixture(t), task=await f.engine.create(f.agent,"receipt-test"), running=await f.engine.advance(task.id,task.version);

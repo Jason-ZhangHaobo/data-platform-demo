@@ -86,7 +86,12 @@ function submissionSnapshot(status, session, client, bill, at) {
       status.agentDevelopment.sqlMaxAttempts !== 3 || !Number.isSafeInteger(status.agentDevelopment.sqlTokenBudget) ||
       status.agentDevelopment.sqlTokenBudget < 1 || status.agentDevelopment.sqlTokenBudget > 32000)
     stop("云端模型、隔离 Spark 或持久 Agent 未就绪");
-  const budget = status.budget, observed = budget?.account?.observedSpendCny;
+  return {actorId:session.user.id, windowExpiresAt:session.developmentExpiresAt, bill,
+    usage:budgetBaseline(status.budget,bill), sparkIsolation:status.spark.isolation};
+}
+
+function budgetBaseline(budget, bill) {
+  const observed = budget?.account?.observedSpendCny;
   if (budget?.enforced !== "ALLOW" || budget.month !== bill.month || !Number.isFinite(observed) || observed < 0 ||
       !Number.isFinite(budget.hardLimitCny) || budget.hardLimitCny <= 0 ||
       Math.max(observed, bill.spendCny) + bill.unsettledReserveCny + bill.maxIncrementCny >= Math.min(200, budget.hardLimitCny))
@@ -96,8 +101,7 @@ function submissionSnapshot(status, session, client, bill, at) {
   if (![modelCalls, remoteSparkRuns].every(value => Number.isSafeInteger(value) && value >= 0) ||
       !Number.isFinite(remoteSparkSeconds) || remoteSparkSeconds < 0)
     stop("当前云端模型与 Spark 用量基线未确认");
-  return {actorId:session.user.id, windowExpiresAt:session.developmentExpiresAt, bill,
-    usage:{modelCalls, remoteSparkRuns, remoteSparkSeconds}, sparkIsolation:status.spark.isolation};
+  return {modelCalls, remoteSparkRuns, remoteSparkSeconds};
 }
 
 function result(state, item, status, reason) {
@@ -146,13 +150,22 @@ async function withCloudCheckpoint(path, operation) {
   }
 }
 
-async function requireOriginalCreator(state, client) {
+async function requireOriginalCreator(state, client, session) {
   if (!id(state.submission?.actorId)) stop("原创建者尚未确认");
-  const session = await client.request("/auth/session");
+  session ??= await client.request("/auth/session");
   if (session?.authenticated !== true || session.user?.id !== state.submission.actorId ||
       session.user?.projectId !== state.projectId)
     stop("当前会话与原任务创建者不一致");
   return session;
+}
+
+function assertDeliveryWindow(session, taskId, bill) {
+  const now = Date.now();
+  if (session.role !== "ADMIN" || session.developmentOnly !== true || session.readOnly !== false ||
+      !(Date.parse(session.developmentStartsAt) <= now && now < Date.parse(session.developmentExpiresAt)) ||
+      (session.developmentTaskOnly === true && session.developmentTaskId !== taskId) ||
+      (bill && now - Date.parse(bill.checkedAt) >= 3600000))
+    stop("原任务未处于获准交付操作的开发窗口");
 }
 
 export async function continueCloudV3Start(path, client, {billPath, reconcile=false} = {}) {
@@ -214,6 +227,25 @@ function verifiedDevelopmentCode(definition, view, execution) {
       basisDigest:requirement.basisDigest, reportDigest:requirement.reportDigest}} : {})};
 }
 
+const rehearsalStages = new Set(["FILE_REHEARSAL_SUBMITTING","FILE_REHEARSAL_RUNNING","FILE_REHEARSAL_FAILED","AWAITING_ENGINEER_REVIEW","CANCELLED"]);
+
+function bindRehearsal(item, receipt) {
+  const rehearsal = receipt.rehearsal, old = item.rehearsal, action = item.actions.rehearsal;
+  if (!rehearsal) return !old && (!action || receipt.verificationId === undefined);
+  if (!id(rehearsal.id) || rehearsal.id !== receipt.verificationId || !rehearsalStages.has(receipt.stage) ||
+      rehearsal.status !== receipt.status || !["RUNNING","SUCCEEDED","FAILED","CANCELLED"].includes(rehearsal.status) ||
+      !Number.isFinite(rehearsal.reservedDurationMs) || rehearsal.reservedDurationMs <= 0 ||
+      (rehearsal.status === "SUCCEEDED" && (receipt.stage !== "AWAITING_ENGINEER_REVIEW" || receipt.actualExecution !== true)) ||
+      (old && (old.id !== rehearsal.id || old.reservedDurationMs !== rehearsal.reservedDurationMs ||
+        (old.status !== "RUNNING" && old.status !== rehearsal.status))) ||
+      (action?.id !== undefined && action.id !== rehearsal.id)) return false;
+  item.rehearsal = {id:rehearsal.id, status:rehearsal.status, stage:receipt.stage,
+    reservedDurationMs:rehearsal.reservedDurationMs,
+    ...(Number.isFinite(rehearsal.durationMs) && rehearsal.durationMs >= 0 ? {durationMs:rehearsal.durationMs} : {})};
+  if (action) item.actions.rehearsal = {...action, id:rehearsal.id, status:"CONFIRMED"};
+  return true;
+}
+
 function bindOriginalDelivery(item, code, receipt) {
   const action = item.actions.delivery;
   const proof = liveEvidenceProvenance(receipt);
@@ -223,13 +255,16 @@ function bindOriginalDelivery(item, code, receipt) {
       receipt.sourceRunId !== code.runId || !id(receipt.packageId) || !digest(receipt.packageDigest) ||
       (action.packageId !== undefined && action.packageId !== receipt.packageId) ||
       (action.packageDigest !== undefined && action.packageDigest !== receipt.packageDigest) ||
-      !isDeepStrictEqual(receipt.sourceRequirementBinding,deliveryPreparationRequirement(code)))
+      !isDeepStrictEqual(receipt.sourceRequirementBinding,deliveryPreparationRequirement(code)) ||
+      !bindRehearsal(item,receipt))
     return;
   item.actions.delivery = {...action, id:receipt.id, status:"CONFIRMED",
     packageId:receipt.packageId, packageDigest:receipt.packageDigest};
   return {status:"CONFIRMED", id:receipt.id, packageId:receipt.packageId, packageDigest:receipt.packageDigest,
     ...(Number.isSafeInteger(receipt.version) && receipt.version > 0 ? {version:receipt.version} : {}),
-    ...(receipt.stage === "PACKAGE_PERSISTING" ? {storagePending:true} : {})};
+    ...(receipt.stage === "PACKAGE_PERSISTING" ? {storagePending:true} : {}),
+    ...(receipt.stage === "PACKAGE_READY" ? {readyForRehearsal:true} : {}),
+    ...(item.rehearsal ? {rehearsal:item.rehearsal} : {})};
 }
 
 async function reconcileOriginalDelivery(client, item, code) {
@@ -257,12 +292,7 @@ export async function prepareCloudV3Delivery(path, client, billPath) {
     const startupBill = state.submission?.bill;
     if (!Number.isFinite(startupBill?.unsettledReserveCny) || bill.unsettledReserveCny < startupBill.unsettledReserveCny)
       stop("交付准备须保留原评测的未结算预留");
-    const session = await requireOriginalCreator(state,client), now = Date.now();
-    if (session.role !== "ADMIN" || session.developmentOnly !== true || session.readOnly !== false ||
-        !(Date.parse(session.developmentStartsAt) <= now && now < Date.parse(session.developmentExpiresAt)) ||
-        (session.developmentTaskOnly === true && session.developmentTaskId !== item.taskId) ||
-        now - Date.parse(bill.checkedAt) >= 3600000)
-      stop("原任务未处于获准交付准备的开发窗口");
+    assertDeliveryWindow(await requireOriginalCreator(state,client),item.taskId,bill);
     const deliveryAction = {key:randomUUID(),bodyHash:sha256(JSON.stringify(body)),status:"SUBMITTING",bill};
     item.actions.delivery = deliveryAction;
     writeCheckpoint(path,state);
@@ -280,6 +310,73 @@ export async function prepareCloudV3Delivery(path, client, billPath) {
     writeCheckpoint(path,state);
     return delivery ? {...response("DELIVERY_CREATION_CONFIRMED"), delivery}
       : response("PENDING","INSPECT_ORIGINAL_DELIVERY");
+  });
+}
+
+export async function advanceCloudV3Rehearsal(path, client, {billPath, settle=false} = {}) {
+  return withCloudCheckpoint(path, async () => {
+    const {state,item,action} = snapshot(client,path), code = item.code, original = item.actions.delivery;
+    const response = (status,reason) => result(state,item,status,reason);
+    if (action.status !== "CONFIRMED" || code?.taskId !== item.taskId || original?.status !== "CONFIRMED" ||
+        !id(original.id) || !id(original.packageId) || !digest(original.packageDigest))
+      return response("PENDING","ORIGINAL_DELIVERY_UNCONFIRMED");
+    if (!settle && (item.actions.rehearsal || item.rehearsal))
+      return response("PENDING","INSPECT_ORIGINAL_REHEARSAL");
+
+    let session, bill, usage;
+    if (settle) {
+      session = await requireOriginalCreator(state,client);
+    } else {
+      bill = readCurrentBill(billPath,Date.now());
+      const reserve = state.submission?.bill?.unsettledReserveCny;
+      if (!Number.isFinite(reserve) || bill.unsettledReserveCny < Math.max(reserve,original.bill?.unsettledReserveCny ?? 0))
+        stop("文件演练须保留原评测和交付的未结算预留");
+      const current = await client.request("/status?include=session");
+      if (!current.session) stop("原创建者会话未确认");
+      session = await requireOriginalCreator(state,client,current.session);
+      const {status} = current;
+      if (status?.mode !== "PUBLIC_INVITATION" || status.projectId !== state.projectId ||
+          status.spark?.available !== true || status.spark.healthVerified !== true || status.spark.isolation !== "REMOTE_FUNCTION" ||
+          status.agentDevelopment?.durableDeliveryEnabled !== true)
+        stop("云端隔离 Spark 文件演练未就绪");
+      usage = budgetBaseline(status.budget,bill);
+    }
+    assertDeliveryWindow(session,item.taskId,bill);
+    const before = JSON.stringify(item);
+    const delivery = await reconcileOriginalDelivery(client,item,code);
+    if (JSON.stringify(item) !== before) writeCheckpoint(path,state);
+    if (delivery.status !== "CONFIRMED" || !delivery.version)
+      return response("PENDING","ORIGINAL_DELIVERY_UNCONFIRMED");
+    if (settle ? !delivery.rehearsal : !delivery.readyForRehearsal)
+      return response("PENDING","INSPECT_ORIGINAL_REHEARSAL");
+    if (settle && delivery.rehearsal.status !== "RUNNING")
+      return {...response("REHEARSAL_RECORDED"),delivery};
+
+    const rehearsal = {packageId:delivery.packageId, packageDigest:delivery.packageDigest,
+      ...(settle ? {verificationId:delivery.rehearsal.id} : {})};
+    if (!settle) {
+      item.actions.rehearsal = {status:"SUBMITTING", deliveryId:delivery.id,
+        packageId:delivery.packageId, packageDigest:delivery.packageDigest, expectedVersion:delivery.version, bill, usage};
+      writeCheckpoint(path,state);
+    }
+    let saved;
+    try {
+      const receipt = await client.request(`/agent/deliveries/${delivery.id}/advance`,{
+        method:"POST",body:{expectedVersion:delivery.version,rehearsal},
+      });
+      saved = bindOriginalDelivery(item,code,receipt);
+    } catch {
+      // Recovery uses the original delivery receipt, never another submission.
+    }
+    if (saved?.rehearsal) {
+      writeCheckpoint(path,state);
+      return {...response("REHEARSAL_RECORDED"),delivery:saved};
+    }
+    if (!settle) {
+      item.actions.rehearsal.status = "UNKNOWN";
+      writeCheckpoint(path,state);
+    }
+    return response("PENDING","INSPECT_ORIGINAL_REHEARSAL");
   });
 }
 

@@ -24,6 +24,15 @@ export function publicDeliveryTask(task) {
   return visible;
 }
 
+export function storedFileRehearsal(task, verification) {
+  if (!verification || verification.id !== task.verificationId || verification.agentDeliveryTaskId !== task.id ||
+      verification.packageId !== task.packageId || verification.packageDigest !== task.packageDigest ||
+      !["RUNNING","SUCCEEDED","FAILED","CANCELLED"].includes(verification.status) ||
+      !Number.isFinite(verification.reservedDurationMs) || verification.reservedDurationMs <= 0) return;
+  return {id:verification.id, status:verification.status, reservedDurationMs:verification.reservedDurationMs,
+    ...(Number.isFinite(verification.durationMs) && verification.durationMs >= 0 ? {durationMs:verification.durationMs} : {})};
+}
+
 // Read-only evidence selection. A skipped repair may display only the exact
 // earlier failed run it references; this is never a delivery/publication source.
 export function resolveEvidenceSource(agent, read) {
@@ -284,15 +293,21 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const task = get(dedup.id);
     return publicDeliveryTask(expected ? await persistDeliveryArtifact(task) : task);
   }
-  async function reconcile(id) {
+  async function reconcile(id, {passive=false} = {}) {
     let task = get(id);
     if (terminal.has(task.status) || !task.remoteSubmission) return publicDeliveryTask(task);
+    const verificationId = task.verificationId, prepared = task.remoteSubmission.prepared;
+    if (passive && (prepared?.job?.jobId !== verificationId ||
+        !storedFileRehearsal(task,store.get("delivery_verification",verificationId,project))))
+      throw fail(409,"演练批次与原交付包不一致");
     const { item, plan } = await bundleFor(task);
     let receipt;
-    try { receipt = await runner.read(task.remoteSubmission.prepared); }
-    catch (error) { if (error.code !== "REMOTE_SPARK_TIMEOUT") throw error; receipt = { status: "FAILED", error: "交付文件演练超时" }; }
+    try { receipt = await runner.read(prepared,passive ? {cancelOnTimeout:false} : undefined); }
+    catch (error) { if (passive || error.code !== "REMOTE_SPARK_TIMEOUT") throw error; receipt = { status: "FAILED", error: "交付文件演练超时" }; }
     if (!receipt) return publicDeliveryTask(task);
     task = get(id); if (terminal.has(task.status)) return publicDeliveryTask(task);
+    if (passive && (task.verificationId !== verificationId || task.packageId !== item.id || task.packageDigest !== item.digest))
+      throw fail(409,"演练批次或交付包已变化");
     const family = { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) };
     const passed = receipt.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) && validationMatchesFamily(receipt.validation, family);
     const verification = store.get("delivery_verification", task.verificationId, project);
@@ -302,11 +317,20 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     task = change(task, { status: passed ? "SUCCEEDED" : "FAILED", stage: passed ? "AWAITING_ENGINEER_REVIEW" : "FILE_REHEARSAL_FAILED", actualExecution: passed, finishedAt: new Date().toISOString(), ...(passed ? {} : { error: "演练未通过真实执行、测试SQL或独立回归，请检查演练记录。" }) });
     await persist(); return publicDeliveryTask(task);
   }
-  async function advance(id, expectedVersion) {
+  async function advance(id, expectedVersion, expectedRehearsal) {
     let task = get(id);
+    if (expectedRehearsal && (task.sourceKind === "MANUAL" || standaloneManual ||
+        task.packageId !== expectedRehearsal.packageId || task.packageDigest !== expectedRehearsal.packageDigest ||
+        task.verificationId !== expectedRehearsal.verificationId ||
+        (expectedRehearsal.verificationId && !task.sourcePinned && !task.rehearsalPinned)))
+      throw fail(409,"演练须绑定原交付包和批次");
     if (terminal.has(task.status)) return publicDeliveryTask(task);
     assertTaskScope(task);
     if (expectedVersion !== task.version) throw fail(409, "交付任务已更新，请刷新后继续");
+    const protectedRehearsal = Boolean(expectedRehearsal || task.sourcePinned || task.rehearsalPinned);
+    if (expectedRehearsal && (task.stage === "PACKAGE_PERSISTING" || expectedRehearsal.verificationId && !task.remoteSubmission))
+      throw fail(409,"原交付包或演练批次尚未就绪");
+    if (protectedRehearsal && task.remoteSubmission) return reconcile(id,{passive:true});
     if (task.sourceKind === "MANUAL") task = await persistDeliveryArtifact(task);
     else if (task.stage === "PACKAGE_PERSISTING") return publicDeliveryTask(await persistDeliveryArtifact(task));
     if (terminal.has(task.status)) return publicDeliveryTask(task);
@@ -326,21 +350,32 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       if (!nextDay) throw fail(422, "日历中缺少下一交易日，无法演练");
       const scheduledFor = `${nextDay}T${plan.schedule.at}+08:00`, occurrence = resolveDeliverySchedule(plan, scheduledFor);
       if (!occurrence.eligible || occurrence.businessDate !== plan.fixtures.context.businessDate) throw fail(422, "调度业务日与冻结输入不一致");
-      const verification = store.create("delivery_verification", project, { packageId: item.id, packageDigest: item.digest, ...(standaloneManual?{manualDeliveryTaskId:task.id}:{agentDeliveryTaskId:task.id}), scheduledFor, occurrence, status: "RUNNING", mode, isolation: "FUNCTION_PROCESS", reservedDurationMs: reservationSeconds * 1000, published: false });
-      const prepared = runner.prepare({ sql: item.files["main.sql"], testSql: item.files["tests.sql"], context: plan.fixtures.context, validationContexts: plan.fixtures.validationContexts }, verification.id);
-      task = change(task, { status: "RUNNING", stage: "FILE_REHEARSAL_SUBMITTING", verificationId: verification.id, remoteSubmission: { prepared, submitted: false } });
+      const reserve = () => {
+        const verification = store.create("delivery_verification", project, { packageId: item.id, packageDigest: item.digest, ...(standaloneManual?{manualDeliveryTaskId:task.id}:{agentDeliveryTaskId:task.id}), scheduledFor, occurrence, status: "RUNNING", mode, isolation: "FUNCTION_PROCESS", reservedDurationMs: reservationSeconds * 1000, published: false });
+        const prepared = runner.prepare({ sql: item.files["main.sql"], testSql: item.files["tests.sql"], context: plan.fixtures.context, validationContexts: plan.fixtures.validationContexts }, verification.id);
+        return change(task, { status: "RUNNING", stage: "FILE_REHEARSAL_SUBMITTING", verificationId: verification.id,
+          ...(protectedRehearsal ? {rehearsalPinned:true} : {}), remoteSubmission: { prepared, submitted: false } });
+      };
+      if (protectedRehearsal) {
+        if (task.stage !== "PACKAGE_READY" || task.verificationId) throw fail(409,"原演练批次待核对");
+        const saved = store.deduplicate(`${project}:delivery-rehearsal:${task.id}`,item.digest,reserve);
+        if (saved.replayed) return reconcile(id,{passive:true});
+        task = get(saved.id);
+      } else {
+        task = reserve();
+      }
       await persist();
     }
     task=get(id);
     if(terminal.has(task.status))return publicDeliveryTask(task);
     if (!task.remoteSubmission.submitted) {
       assertTaskScope(task); // Recheck after durable persistence, before new computation.
-      await runner.submit(task.remoteSubmission.prepared);
+      await runner.submit(task.remoteSubmission.prepared,protectedRehearsal?{retry:false}:undefined);
       task = get(id); if (terminal.has(task.status)) return publicDeliveryTask(task);
       task = change(task, { stage: "FILE_REHEARSAL_RUNNING", remoteSubmission: { ...task.remoteSubmission, submitted: true } });
       await persist();
     }
-    return reconcile(id);
+    return reconcile(id,{passive:protectedRehearsal});
   }
   async function cancel(id) {
     let task = get(id); if (terminal.has(task.status)) return publicDeliveryTask(task);

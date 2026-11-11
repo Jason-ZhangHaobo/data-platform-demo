@@ -255,8 +255,8 @@ export function createRemoteSparkRunner(env = process.env, fetchImpl = fetch) {
       runner = (input) => client.execute(input);
     runner.durable = {
       prepare: (input, requestId) => client.prepare(input, requestId),
-      submit: queued => client.submitPrepared(queued),
-      read: queued => client.readPreparedResult(queued),
+      submit: (queued, options) => client.submitPrepared(queued, options),
+      read: (queued, options) => client.readPreparedResult(queued, options),
       cancel: queued => client.cancelPrepared(queued),
     };
     runner.descriptor = {

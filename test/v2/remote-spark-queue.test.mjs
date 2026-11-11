@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   RemoteSparkQueueClient,
+  OssSparkQueueTransport,
   SPARK_QUEUE_PREFIXES,
   createQueuedSparkJob,
   createQueuedSparkResult,
@@ -60,6 +61,30 @@ test("queue timeout leaves a signed cancellation marker for a delayed Worker", a
   await assert.rejects(client.execute(input), { code: "REMOTE_SPARK_TIMEOUT" });
   const marker = JSON.parse(objects.get([...objects.keys()].find((key) => key.endsWith(".cancel.json"))));
   assert.equal(verifyQueuedSparkCancellation(marker, marker.jobId, config, clock), "DEADLINE");
+});
+
+test("exact rehearsal uses one OSS PUT and can read a signed result after expiry without writing cancellation", async () => {
+  const requests=[];
+  let clock=1789900000000, result;
+  const transport=new OssSparkQueueTransport({bucket:"synthetic-securities",endpoint:"oss.example.invalid",
+    credentials:{accessKeyId:"synthetic-id",accessKeySecret:"synthetic-secret"}},async(url,options)=>{
+    requests.push({url,method:options.method});
+    if(options.method==="PUT"){
+      assert.equal(options.headers["x-oss-forbid-overwrite"],"true");
+      throw new TypeError("simulated response loss");
+    }
+    return result ? new Response(JSON.stringify(result),{status:200}) : new Response(null,{status:404});
+  },{sleep:async()=>assert.fail("exact submission must not retry transport")});
+  const client=new RemoteSparkQueueClient(config,transport,{now:()=>clock});
+  const prepared=client.prepare(input,"11111111-1111-4111-8111-111111111111");
+  await assert.rejects(client.submitPrepared(prepared,{retry:false}));
+  assert.deepEqual(requests.map(request=>request.method),["PUT"]);
+  clock+=config.timeoutMs+1;
+  assert.equal(await client.readPreparedResult(prepared,{cancelOnTimeout:false}),undefined);
+  result=createQueuedSparkResult(prepared.job,{status:"SUCCEEDED"},config,clock);
+  assert.deepEqual(await client.readPreparedResult(prepared,{cancelOnTimeout:false}),{status:"SUCCEEDED"});
+  assert.deepEqual(requests.map(request=>request.method),["PUT","GET","GET"]);
+  assert.ok(requests.slice(1).every(request=>request.url.endsWith(prepared.resultKey)));
 });
 
 test("Worker consumer executes only a signed create-only job and writes a bound result", async () => {
