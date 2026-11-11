@@ -10,7 +10,7 @@ import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-pro
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
-import {continueCloudV3Start,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start} from "../scripts/start-cloud-v3-case.mjs";
+import {advanceCloudV3Rehearsal,continueCloudV3Start,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start} from "../scripts/start-cloud-v3-case.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
@@ -60,6 +60,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent execution-evidence --request-id ORIGINAL_REQUEST_ID
   shuduo agent v3-inspect --checkpoint ABSOLUTE_PATH
   shuduo agent v3-prepare-delivery --checkpoint ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
+  shuduo agent v3-rehearse --checkpoint ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
+  shuduo agent v3-rehearse --checkpoint ABSOLUTE_PATH --settle
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --source-revision SHA
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
@@ -548,6 +550,15 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           flags.some(flag=>!["checkpoint","bill_file","base_url","confirm"].includes(flag)) || args.confirm!==true)
         throw Error("仅在有效开发窗口按原检查点明确确认交付准备");
       result=await prepareCloudV3Delivery(required(args,"checkpoint"),client,required(args,"bill_file"));
+    }
+    else if (resource === "agent" && action === "v3-rehearse") {
+      const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
+      const settle=args.settle===true, allowed=["checkpoint","base_url",...(settle?["settle"]:["bill_file","confirm"])];
+      if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
+          flags.some(flag=>!allowed.includes(flag)) || (!settle && args.confirm!==true))
+        throw Error("须选择提交一次原包演练，或核对同一演练批次");
+      const checkpoint=required(args,"checkpoint");
+      result=await advanceCloudV3Rehearsal(checkpoint,client,settle?{settle:true}:{billPath:required(args,"bill_file")});
     }
     else if (resource === "agent" && action === "request") {
       const key=required(parsed.options,"request_id");

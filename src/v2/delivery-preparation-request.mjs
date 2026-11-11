@@ -42,3 +42,15 @@ export function deliveryPreparationHashMatches(bodyHash, code) {
   try { return bodyHash === hash({}) || bodyHash === hash(deliveryPreparationBody(code)); }
   catch { return false; }
 }
+
+export function readDeliveryAdvance(body) {
+  const bad = () => Object.assign(new Error("须提供原交付版本、包与演练批次"), {status:422});
+  if (!record(body) || Object.keys(body).some(key => !["expectedVersion","rehearsal"].includes(key)) ||
+      !Number.isSafeInteger(body.expectedVersion) || body.expectedVersion < 1) throw bad();
+  if (!Object.hasOwn(body,"rehearsal")) return {version:body.expectedVersion};
+  const value = body.rehearsal;
+  if (!record(value) || Object.keys(value).some(key => !["packageId","packageDigest","verificationId"].includes(key)) ||
+      !uuid(value.packageId) || !digest(value.packageDigest) ||
+      (Object.hasOwn(value,"verificationId") && !uuid(value.verificationId))) throw bad();
+  return {version:body.expectedVersion, rehearsal:value};
+}

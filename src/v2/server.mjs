@@ -31,7 +31,7 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,as
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
-import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
+import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
 import { parseAgentReviewEvidencePath, publicationSelectorFromUrl } from "./publication-request.mjs";
@@ -141,7 +141,7 @@ import{compareSqlRuns}from'./run-comparison.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
 import { storedAgentReviewEvidence } from "./agent-review-evidence.mjs";
 import { storedAgentExecutionEvidence } from "./agent-execution-evidence.mjs";
-import { readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
+import { readDeliveryAdvance, readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
 import {
   LocalArtifactStore,
   deliveryArtifactValue,
@@ -361,7 +361,7 @@ export function createV2Server(options = {}) {
   };
   const durableDevelopment = !rawRunner.durable || (!developmentAccess && !publicationAccess && !serviceAccess && !serviceAgentAccess) ? rawRunner.durable : {
     prepare: (input, id) => { assertDevelopmentExecution(); assertTargetRun(id, input); return rawRunner.durable.prepare(input, id); },
-    submit: prepared => { assertDevelopmentExecution(); assertTargetRun(prepared?.job?.jobId); return rawRunner.durable.submit(prepared); },
+    submit: (prepared, options) => { assertDevelopmentExecution(); assertTargetRun(prepared?.job?.jobId); return rawRunner.durable.submit(prepared,options); },
     read: (...args) => rawRunner.durable.read(...args),
     cancel: (...args) => rawRunner.durable.cancel(...args),
   },
@@ -1411,6 +1411,11 @@ export function createV2Server(options = {}) {
           }
         }
         return {bundle, verification};
+      };
+      const deliveryReceipt = item => {
+        const {verification} = workflowDeliveryEvidence(item);
+        const rehearsal = storedFileRehearsal(item,verification);
+        return {...publicDeliveryTask(item),...(rehearsal?{rehearsal}:{})};
       };
       const origin = req.headers.origin;
       let localOriginAllowed = false;
@@ -5454,7 +5459,7 @@ export function createV2Server(options = {}) {
         if (source.retainedFailure) Object.assign(report, {status: "NEEDS_ATTENTION", retainedFailure: true, computationSkipped: true,
           retainedFailureSourceKind:source.sourceKind,retainedRunStatus: run.status, summary: "本次修正没有形成新的 SQL，已保留原失败批次供诊断，没有重新执行或验证通过。",
           notice: source.sourceKind==="EXPLICIT_FAILED_RUN" ? "以下结论来自当前账号明确引用的原失败版本和批次，不是本次修正的新执行结果；本次模型调用照常计入历史，未新增 Spark 计算或可发布交付。" : "以下结论来自此前同一任务、版本和批次的失败记录；本次模型调用照常计入历史，未新增 Spark 计算或可发布交付。"});
-        if (delivery?.mode === durableDeliveryMode && durableDelivery) {
+        if (delivery?.mode === durableDeliveryMode && durableDelivery && !delivery.sourcePinned && !delivery.rehearsalPinned) {
           await durableDelivery.reconcile(delivery.id);
           delivery = get("agent_delivery_task", delivery.id);
         }
@@ -5546,7 +5551,7 @@ export function createV2Server(options = {}) {
           throw fail(409, "原交付回执与任务来源不一致");
         if (!local) {
           if (item.submittedBy !== agent.submittedBy) throw fail(409, "原交付回执与任务来源不一致");
-          workflowDeliveryEvidence(item);
+          return json(res,200,deliveryReceipt(item));
         }
         return json(res, 200, publicDeliveryTask(item));
       }
@@ -5555,15 +5560,22 @@ export function createV2Server(options = {}) {
       );
       if (agentDeliveryRecord) {
         const item = get("agent_delivery_task", agentDeliveryRecord[1]);
-        requireDurableAgentOwner(get("agent", item.sourceAgentTaskId), req);
+        const agent = get("agent", item.sourceAgentTaskId);
+        requireDurableAgentOwner(agent, req);
         workflowDeliveryEvidence(item);
         if (item.mode === durableDeliveryMode) {
           if (!durableDelivery) throw fail(503, "持久交付执行器尚未启用");
-          if (method === "GET" && !agentDeliveryRecord[2]) return json(res, 200, await durableDelivery.reconcile(item.id));
+          if (method === "GET" && !agentDeliveryRecord[2]) {
+            if (item.sourcePinned || item.rehearsalPinned) return json(res,200,deliveryReceipt(item));
+            return json(res, 200, await durableDelivery.reconcile(item.id));
+          }
           if (method === "POST" && agentDeliveryRecord[2] === "advance") {
-            const body = await readBody(req);
-            if (!Number.isSafeInteger(body.expectedVersion)) throw fail(422, "需提供当前交付版本");
-            return json(res, 200, await durableDelivery.advance(item.id, body.expectedVersion));
+            const {version,rehearsal} = readDeliveryAdvance(await readBody(req));
+            if ((rehearsal || item.sourcePinned || item.rehearsalPinned) && (item.submittedBy !== agent.submittedBy ||
+                item.submittedBy !== auth.sessionFromHeaders(req.headers)?.user.id))
+              throw fail(403,"确切包演练须由原任务创建者操作");
+            const advanced = await durableDelivery.advance(item.id,version,rehearsal);
+            return json(res,200,deliveryReceipt(get("agent_delivery_task",advanced.id)));
           }
           if (method === "POST" && agentDeliveryRecord[2] === "cancel") {
             await readBody(req); return json(res, 200, await durableDelivery.cancel(item.id));

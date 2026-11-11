@@ -82,6 +82,20 @@ shuduo agent v3-prepare-delivery --checkpoint /private/first-case.json --bill-fi
 
 响应丢失后执行 `v3-inspect`，只查原请求回执。若回执显示 `storagePending`，说明该版本文件已保存到交付记录，产物存储尚待确认。在有效窗口对原交付版本执行一次 `advance-delivery` 可恢复同一文件摘要。对这一阶段的推进只恢复存储，后续 Spark 演练另行提交。两种推进均沿用原任务的审批与预算边界。
 
+### 演练云端首例的原交付包
+
+```sh
+shuduo agent v3-rehearse --checkpoint /private/first-case.json --bill-file /private/current-bill.json --confirm
+shuduo agent v3-inspect --checkpoint /private/first-case.json
+shuduo agent v3-rehearse --checkpoint /private/first-case.json --settle
+```
+
+首次演练使用原创建者和有效开发窗口，核对当月完整账单、未结算预留、隔离 Spark 就绪及原交付包。客户端先保存包、交付版本和用量基线。服务端将原演练批次和计算预留一并持久化，再提交冻结的主 SQL、测试 SQL 和交易日输入。
+
+响应丢失时用 `v3-inspect` 读取原交付的已保存批次和费用预留。签名结果尚未入账时，`--settle` 在有效窗口核对同一批次，只读该 Worker 结果。缺少结果时保留原批次及预留，即使越过原执行期限也不新增提交或写取消标记。结果经测试 SQL 摘要和独立场景核验后进入待工程师审阅。
+
+API 沿用 `POST /agent/deliveries/{id}/advance`。确切请求包含 `expectedVersion` 以及 `rehearsal.packageId`、`rehearsal.packageDigest`，对账另带 `rehearsal.verificationId`。读取原交付请求回执可取得已保存演练状态、预留毫秒数和已核验实际耗时。
+
 ### 读取云端待审阅证据
 
 拿到原任务、确切交付编号和冻结需求的 SHA-256 后，可读取：
