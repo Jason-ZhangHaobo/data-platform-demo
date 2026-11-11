@@ -9,7 +9,7 @@ type MonitorTarget = {
 const fields = ["taskId", "releaseId", "revisionId", "firstBatchId", "secondBatchId"] as const;
 const uuid = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
-const hash = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const hash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const valid = (target: Partial<MonitorTarget>): target is MonitorTarget =>
   fields.every(field => uuid(target[field])) && target.firstBatchId !== target.secondBatchId;
 
@@ -33,6 +33,8 @@ type SavedBatch = {
   id?: string; releaseId?: string; sourceAgentTaskId?: string; sourceRunId?: string;
   sourceKind?: string; reviewDigest?: string; packageId?: string; packageDigest?: string;
   sequence?: number; status?: string; schedulerTriggered?: boolean;
+  published?: boolean; engine?: string; mainSqlExecuted?: boolean;
+  testSqlValidation?: {passed?: boolean}; validation?: {passed?: boolean};
 };
 type Reader = <T>(path: string) => Promise<T>;
 
@@ -52,6 +54,17 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
         batch.sourceKind === release.sourceKind && batch.reviewDigest === release.reviewDigest &&
         batch.packageId === release.packageId && batch.packageDigest === release.packageDigest))
     throw new Error("原发布、代码版本或两个批次的来源不一致。");
-  return {status:release.status, health:release.health,
-    batches:[first, second].map(({id, sequence, status, schedulerTriggered}) => ({id, sequence, status, schedulerTriggered}))};
+  const batches = [first, second].map(batch => {
+    const {id, sequence, status, schedulerTriggered} = batch;
+    const canConsume = status === "SUCCEEDED" && schedulerTriggered === true && batch.published === true &&
+      batch.engine === "Apache Spark" && batch.mainSqlExecuted === true &&
+      batch.testSqlValidation?.passed === true && batch.validation?.passed === true;
+    const serviceHref = canConsume ? "/v2/?" + new URLSearchParams({
+      module:"services", source_task:target.taskId, source_release:target.releaseId,
+      source_revision:target.revisionId, source_run:release.sourceRunId!, source_package:release.packageDigest!,
+      source_scope:"PRIVATE_CLOUD_TEST", source_kind:"AGENT", release_batch:id!,
+    }) : undefined;
+    return {id, sequence, status, schedulerTriggered, serviceHref};
+  });
+  return {status:release.status, health:release.health, batches};
 }

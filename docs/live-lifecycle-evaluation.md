@@ -149,6 +149,8 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 
 ### 核对两个原发布批次的授权消费
 
+从运维监控的「查看第 1 批接口」或「查看第 2 批接口」进入数据服务。该入口只对已经实际执行并通过 SQL 测试和独立结果验证的批次显示。数据服务重新核对任务、版本、包和批次，按本批次显示 DAPI、XAPI、应用授权与调用记录。批次错误或不在当前授权范围时提示回到原发布核对。本机 Chrome 测试版已用同一虚构发布的两个批次验证该交接。
+
 ```sh
 shuduo agent v3-consumption --checkpoint /private/first-case.json --batch-id ORIGINAL_BATCH_ID --out-file /private/consumer-source.json
 shuduo agent v3-consumption --checkpoint /private/first-case.json --plan /private/consumer-plan.json --call-id-digest ORIGINAL_XAPI_CALL_SHA256

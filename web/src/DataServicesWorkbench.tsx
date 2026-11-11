@@ -7,6 +7,7 @@ import { applicationStatusText, consumptionApplicationInput, consumptionDapiInpu
 import type { ConsumptionScope } from "./service-consumption-scope";
 import {validServiceSourceBinding,serviceSourceKey,sourceBindingEnvironmentMatches,serviceSourcesPath,serviceReturnLocation,serviceReadCurrent,sourceRunMatches,sourceRunEligible,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
+import {serviceBatchFromLocation} from "./service-batch-scope";
 import {validServicePlanSource,sourcePlanReceiptValid,boundServicePlansPath,servicePlanMarker,servicePlanLocation,createServicePlanSubmission,servicePlanRecoverySource,readPrivateServiceAgentContext} from "./service-plan-source";
 import type {ServicePlanSource,SourcePlan,ServiceAgentContext} from './service-plan-source';
 import {PrivateServiceAgentStudio} from './PrivateServiceAgentStudio';
@@ -222,9 +223,16 @@ export function DataServicesWorkbench({
   servicePlanning?:ServicePlanningAccess;
 }) {
   const scopePlan=consumptionPlanAvailable(consumptionScope)?consumptionScope.plan:undefined;
-  const bindingDeclared=sourceBinding!==undefined||Boolean(sourceBindingError),binding=validServiceSourceBinding(sourceBinding)?sourceBinding:undefined;
-  const bindingError=sourceBindingError||(bindingDeclared&&!binding?"接口交接来源不完整；不会退回全项目数据。":binding&&!sourceBindingEnvironmentMatches(binding,privateCloud,runtimeMode)?"交接范围与当前运行环境不一致；保留只读，不切换本机／云端来源。":binding&&!sourceBindingScopeCompatible(binding,consumptionScope)?"交接来源与当前最小消费计划冲突；不扩大计划或切换到其他包。":"");
-  const scopeKey=JSON.stringify([consumptionScope??null,sourceAgentTaskId??null,serviceSourceKey(binding),bindingError]);
+  const binding=validServiceSourceBinding(sourceBinding)?sourceBinding:undefined;
+  const pinnedBatch=typeof window==="undefined"?undefined:serviceBatchFromLocation(window.location.href,binding);
+  const bindingDeclared=sourceBinding!==undefined||Boolean(sourceBindingError)||pinnedBatch!==undefined;
+  const scopeMismatch=(binding&&!sourceBindingScopeCompatible(binding,consumptionScope))||
+    (pinnedBatch&&scopePlan&&pinnedBatch!==scopePlan.sourceReleaseRunId);
+  const bindingError=sourceBindingError||(pinnedBatch===null?"批次定位信息不完整，请从原发布批次重新打开。"
+    :bindingDeclared&&!binding?"接口交接来源不完整；不会退回全项目数据。"
+    :binding&&!sourceBindingEnvironmentMatches(binding,privateCloud,runtimeMode)?"交接范围与当前运行环境不一致；保留只读，不切换本机／云端来源。"
+    :scopeMismatch?"交接来源与当前最小消费计划冲突；不扩大计划或切换到其他包。":"");
+  const scopeKey=JSON.stringify([consumptionScope??null,sourceAgentTaskId??null,serviceSourceKey(binding),pinnedBatch,bindingError]);
   const savedPlanMarker=typeof window==='undefined'?{invalid:false as const,requestId:undefined,planId:undefined,batchId:undefined}:servicePlanMarker(window.location.href);
   const boundPlannerAllowed=sourceBoundAgentPlansEnabled&&runtimeMode==='LOCAL_DEVELOPMENT'&&!privateCloud&&!consumptionScope&&binding?.scope==='LOCAL_TEST_ONLY'&&binding.sourceKind==='AGENT'&&!bindingError;
   const privateContextAllowed=sourceBoundAgentContextEnabled&&privateCloud&&runtimeMode!=='LOCAL_DEVELOPMENT'&&binding?.scope!=='LOCAL_TEST_ONLY'&&Boolean(binding)&&!bindingError;
@@ -273,7 +281,7 @@ export function DataServicesWorkbench({
     [planReadError,setPlanReadError]=useState('');
   const planSubmission=useRef<ReturnType<typeof createServicePlanSubmission<ServiceAgentPlan>>|undefined>(undefined);
   const [privateContextRead,setPrivateContextRead]=useState<{key:string;state:'LOADING'|'READY'|'ERROR';value?:ServiceAgentContext;error?:string}>();
-  const services = useMemo(() => consumptionServices(binding?sourceBoundServices([...dapis,...xapis],binding,releaseRuns):bindingDeclared?[]:[...dapis, ...xapis],consumptionScope), [dapis, xapis, releaseRuns,scopeKey]),
+  const services = useMemo(() => consumptionServices(bindingError?[]:binding?sourceBoundServices([...dapis,...xapis],binding,releaseRuns):bindingDeclared?[]:[...dapis, ...xapis],consumptionScope), [dapis, xapis, releaseRuns,scopeKey]),
     selected = services.find((item) => item.id === selectedId),
     eligibleRuns = (binding?releaseRuns.filter(run=>sourceRunMatches(run,binding)):bindingDeclared?[]:releaseRuns).filter(
       (run) =>
@@ -377,23 +385,24 @@ export function DataServicesWorkbench({
     if(!current())return;
     if(![nextRuns,nextDapis,nextXapis,nextApps,nextCalls,nextPlans].every(Array.isArray))throw Error("服务目录响应不完整；未确认服务、批次、应用或调用数量，请重新读取。");
     if(binding&&nextRuns.some(run=>!sourceRunMatches(run,binding)))throw Error("发布来源回读与交接包或版本不一致，未采用其他结果。");
-    setReleaseRuns(nextRuns);
+    const scopedRuns=pinnedBatch?nextRuns.filter(run=>run.id===pinnedBatch):nextRuns;
+    const boundEligible=binding?scopedRuns.filter(run=>sourceRunMatches(run,binding)&&sourceRunEligible(run)):scopedRuns;
+    if(binding&&(!boundEligible.length||!sourceBindingScopeCompatible(binding,consumptionScope,boundEligible))){
+      setSourceRunId("");setSelectedId("");setSourceRead({key,state:"ERROR",message:pinnedBatch?"指定批次暂无可核对的接口来源，请返回原发布核对。":boundEligible.length?"确切发布批次与当前最小消费计划冲突；未扩大来源。":"此确切发布尚无通过核验的可消费批次，或当前账号不可见。可重新读取；不会选其他发布或开发运行。"});return;
+    }
+    const marker=servicePlanMarker(location.href),requestedBatch=(boundPlannerAllowed||privateContextAllowed)&&!marker.invalid?marker.batchId:undefined;
+    if(requestedBatch&&!boundEligible.some(run=>run.id===requestedBatch)){setSourceRunId('');setSourceRead({key,state:'ERROR',message:'原规划指定批次当前不可用，保留原记录，不采用其他批次。'});return;}
+    setReleaseRuns(scopedRuns);
     setDapis(nextDapis);
     setXapis(nextXapis);
     setApplications(nextApps);
     setCalls(nextCalls);
     if(!bindingDeclared){setAgentPlans(nextPlans);if (!agentPlan && nextPlans[0]) setAgentPlan(nextPlans[0]);}
-    const boundEligible=binding?nextRuns.filter(run=>sourceRunMatches(run,binding)&&sourceRunEligible(run)):nextRuns;
-    if(binding&&(!boundEligible.length||!sourceBindingScopeCompatible(binding,consumptionScope,boundEligible))){
-      setSourceRunId("");setSelectedId("");setSourceRead({key,state:"ERROR",message:boundEligible.length?"确切发布批次与当前最小消费计划冲突；未扩大来源。":"此确切发布尚无通过核验的可消费批次，或当前账号不可见。可重新读取；不会选其他发布或开发运行。"});return;
-    }
-    const marker=servicePlanMarker(location.href),requestedBatch=(boundPlannerAllowed||privateContextAllowed)&&!marker.invalid?marker.batchId:undefined;
-    if(requestedBatch&&!boundEligible.some(run=>run.id===requestedBatch)){setSourceRunId('');setSourceRead({key,state:'ERROR',message:'原规划指定批次当前不可用，保留原记录，不采用其他批次。'});return;}
     if(scopePlan)setSourceRunId(scopePlan.sourceReleaseRunId);
-    else if(binding)setSourceRunId(previous=>defaultBoundSourceRun(binding,nextRuns,[...nextDapis,...nextXapis],{currentRunId:previous||requestedBatch,selectedServiceId:activeServiceRef.current})??"");
+    else if(binding)setSourceRunId(previous=>defaultBoundSourceRun(binding,scopedRuns,[...nextDapis,...nextXapis],{currentRunId:previous||requestedBatch,selectedServiceId:activeServiceRef.current})??"");
     else if (!sourceRunId && nextRuns.find((run) => run.status === "SUCCEEDED"))
       setSourceRunId(nextRuns.find((run) => run.status === "SUCCEEDED")!.id);
-    const nextServices=consumptionServices(binding?sourceBoundServices([...nextDapis,...nextXapis],binding,nextRuns):[...nextDapis,...nextXapis],consumptionScope);
+    const nextServices=consumptionServices(binding?sourceBoundServices([...nextDapis,...nextXapis],binding,scopedRuns):[...nextDapis,...nextXapis],consumptionScope);
     if (!selectedId && nextServices[0])setSelectedId(nextServices[0].id);
     else if((consumptionScope||bindingDeclared)&&selectedId&&!nextServices.some(s=>s.id===selectedId))setSelectedId("");
     setSourceRead({key,state:"READY"});
@@ -725,7 +734,7 @@ export function DataServicesWorkbench({
           <button className="button" disabled={!readFailed||!!busy||Boolean(bindingError)} onClick={()=>void reload().catch(()=>{})}>重新读取目录</button>
         </div>
       </section>}
-      {bindingDeclared&&<section className={bindingError||sourceRead.state==="ERROR"?"service-feedback error":"service-feedback"} role="status" aria-label="确切发布来源"><details open={!servicePlanningOnly}><summary>{bindingError||sourceRead.state==='ERROR'?"来源待恢复 · 查看核对记录":sourceRead.key===scopeKey&&sourceRead.state==='READY'?"发布来源已核对 · 查看原任务与版本":"正在核对发布来源"}</summary><div><strong>{binding?.manualDeliveryTaskId?"独立手工发布结果 · 非 Agent 自主完成":binding?.sourceKind==="MANUAL"?"工程师接管结果 · 非 Agent 自主完成":"指定发布结果交接"}</strong><p>只使用指定任务、交付包和发布版本的成功发布批次；不是开发运行，不会自动创建接口、凭证或调用数据。</p>{binding&&<><p>原{binding.manualDeliveryTaskId?"手工交付":"任务"}：{binding.manualDeliveryTaskId??binding.taskId}<br/>交付包：{binding.packageDigest}<br/>发布版本：{binding.releaseId}</p>{sourceRead.key===scopeKey&&sourceRead.state==="READY"?<a className="button" href={serviceReturnLocation(typeof location==="undefined"?"http://localhost/v2/":location.href,binding).href}>返回原{binding.sourceKind==="MANUAL"?"人工版本":"Agent任务"}</a>:<small>返回原版本的链接将在同源核对后开放。</small>}</>}{bindingError?<p>{bindingError}</p>:<p>{sourceRead.key!==scopeKey||sourceRead.state==="LOADING"?"正在核对确切发布来源；写入暂不开放。":sourceRead.state==="ERROR"?"来源尚未确认；保留绑定，不回退全项目或其他发布。":"已核对可消费的成功发布批次；写权限仍按当前账号和消费计划判断。"}</p>}<button className="button" disabled={!!busy||Boolean(bindingError)} onClick={()=>void reload().catch(()=>{})}>重新读取指定来源</button></div></details></section>}
+      {bindingDeclared&&<section className={bindingError||sourceRead.state==="ERROR"?"service-feedback error":"service-feedback"} role="status" aria-label="确切发布来源"><details open={!servicePlanningOnly}><summary>{bindingError||sourceRead.state==='ERROR'?"来源待恢复 · 查看核对记录":sourceRead.key===scopeKey&&sourceRead.state==='READY'?"发布来源已核对 · 查看原任务与版本":"正在核对发布来源"}</summary><div><strong>{binding?.manualDeliveryTaskId?"独立手工发布结果 · 非 Agent 自主完成":binding?.sourceKind==="MANUAL"?"工程师接管结果 · 非 Agent 自主完成":"指定发布结果交接"}</strong><p>只使用指定任务、交付包和发布版本的成功发布批次；不是开发运行，不会自动创建接口、凭证或调用数据。</p>{binding&&<><p>原{binding.manualDeliveryTaskId?"手工交付":"任务"}：{binding.manualDeliveryTaskId??binding.taskId}<br/>交付包：{binding.packageDigest}<br/>发布版本：{binding.releaseId}{pinnedBatch&&<><br/>源发布批次：{pinnedBatch}</>}</p>{sourceRead.key===scopeKey&&sourceRead.state==="READY"?<a className="button" href={serviceReturnLocation(typeof location==="undefined"?"http://localhost/v2/":location.href,binding).href}>返回原{binding.sourceKind==="MANUAL"?"人工版本":"Agent任务"}</a>:<small>返回原版本的链接将在同源核对后开放。</small>}</>}{bindingError?<p>{bindingError}</p>:<p>{sourceRead.key!==scopeKey||sourceRead.state==="LOADING"?"正在核对确切发布来源；写入暂不开放。":sourceRead.state==="ERROR"?"来源尚未确认；保留绑定，不回退全项目或其他发布。":"已核对可消费的成功发布批次；写权限仍按当前账号和消费计划判断。"}</p>}<button className="button" disabled={!!busy||Boolean(bindingError)} onClick={()=>void reload().catch(()=>{})}>重新读取指定来源</button></div></details></section>}
       {consumptionScope&&<section className="service-feedback" role="status" aria-label="接口消费试点范围"><div><strong>仅本次冻结接口计划 · 不重新计算业务数据</strong><p>{canWrite?"允许手动创建、测试、发布本计划接口，并创建及撤销唯一测试应用。":"当前消费窗口未开放、已到期或计划不可用；保持只读，不发行凭证。"} 不开放模型规划、代码开发、业务批次发布或接口版本切换。</p>{scopePlan&&<><p>源{scopePlan.manualDeliveryTaskId?"手工交付":"任务"}：{scopePlan.manualDeliveryTaskId??scopePlan.taskId}<br/>源发布批次：{scopePlan.sourceReleaseRunId}<br/>包摘要：{scopePlan.packageDigest}</p><small>接口：{scopePlan.dapis.map(d=>d.name).join("、")}、{scopePlan.xapi.name}。应用：{scopePlan.applicationName}；只授权直接查询持仓和组合资产，现金接口未单独授权。</small></>}<p>截止：{consumptionScope.expiresAt?new Date(consumptionScope.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}):"未确认"}（北京时间）。凭证到期后失效，历史调用证据保留。</p></div></section>}
       {scopeConflict&&<div className="service-feedback error" role="alert">发现同名服务不属于本次试点或其版本配置与计划不符；不会混入、覆盖或更新旧服务，请先核对来源。</div>}
       {!servicePlanningOnly&&<div className="service-flow" aria-label="数据服务生命周期">

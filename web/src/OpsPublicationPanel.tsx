@@ -43,10 +43,11 @@ export function OpsPublicationPanel({api}: {api: Api}) {
         <div className="ops-live-table-v2">
           <table aria-label="确切发布批次">
             <caption>发布 {target.releaseId} · 代码版本 {target.revisionId}</caption>
-            <thead><tr><th scope="col">原批次编号</th><th scope="col">保存状态</th><th scope="col">调度状态</th></tr></thead>
+            <thead><tr><th scope="col">原批次编号</th><th scope="col">保存状态</th><th scope="col">调度状态</th><th scope="col">接口</th></tr></thead>
             <tbody>{evidence.batches.map(batch => <tr key={batch.id}>
               <th scope="row">第 {batch.sequence} 批 <small>{batch.id}</small></th>
               <td>{label(batch.status)}</td><td>{batch.schedulerTriggered ? "已触发" : "未触发"}</td>
+              <td>{batch.serviceHref ? <a href={batch.serviceHref}>查看第 {batch.sequence} 批接口</a> : "—"}</td>
             </tr>)}</tbody>
           </table>
         </div>
