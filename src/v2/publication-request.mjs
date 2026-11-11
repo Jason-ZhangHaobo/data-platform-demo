@@ -3,6 +3,12 @@
 const keys = ["sourceKind", "sourceRunId", "packageDigest", "verificationId", "releaseId"];
 const safeId = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(value);
 const invalid = () => Object.assign(new Error("发布选择参数不合法；仅允许指定来源、运行、包摘要、演练和发布编号"), { status: 422, code: "PUBLICATION_SELECTOR_INVALID" });
+export const publicationAttestationKeys = Object.freeze(["code","assertions","deliveryFiles","cloudScope"]);
+
+function exactPreflightSelector(selector) {
+  return selector.sourceKind === "AGENT" && selector.sourceRunId && selector.packageDigest &&
+    selector.verificationId && !selector.releaseId;
+}
 
 export function publicationSelectorInput(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !keys.includes(key))) throw invalid();
@@ -22,6 +28,16 @@ export function publicationReadPath(taskId, selector = {}) {
   return `/agent/tasks/${taskId}/publication${query ? `?${query}` : ""}`;
 }
 
+export function publicationPreflightPath(taskId, selector) {
+  if (!exactPreflightSelector(publicationSelectorInput(selector))) throw invalid();
+  return publicationReadPath(taskId,selector).replace("/publication?","/publication/preflight?");
+}
+
+export function publicationRequestReceiptPath(taskId, requestId) {
+  if (!safeId(taskId) || !safeId(requestId)) throw invalid();
+  return `/agent/tasks/${taskId}/publication/requests/${requestId}`;
+}
+
 export function publicationSelectorFromUrl(input) {
   let url;
   if (typeof input !== "string" && !(input instanceof URL) || /[\\#\s\u0000-\u001f\u007f]/.test(String(input))) throw invalid();
@@ -37,8 +53,11 @@ export function publicationSelectorFromUrl(input) {
 
 export function privatePublicationReadRoute(method, path) {
   if (method !== "GET" || typeof path !== "string" || path.length > 700 || /[\\#\s\u0000-\u001f\u007f]/.test(path) ||
-      !/^\/api\/v2\/agent\/tasks\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\/publication(?:\?[^#]*)?$/.test(path)) return false;
-  try { publicationSelectorFromUrl(path); return true; } catch { return false; }
+      !/^\/api\/v2\/agent\/tasks\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\/publication(?:\/preflight\?[^#]*|\/requests\/[A-Za-z0-9_-]{1,100}|\?[^#]*)?$/.test(path)) return false;
+  try {
+    const selector = publicationSelectorFromUrl(path);
+    return !path.includes("/publication/preflight?") || Boolean(exactPreflightSelector(selector));
+  } catch { return false; }
 }
 
 const reviewUuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";

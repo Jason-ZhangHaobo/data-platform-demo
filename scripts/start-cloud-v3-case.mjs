@@ -4,13 +4,15 @@ import { dirname, isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { agentExecutionEvidencePath } from "../src/v2/agent-execution-evidence.mjs";
 import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
+import { readCloudV3Review } from "../src/v2/cloud-v3-review.mjs";
 import { validationFamilyForContext } from "../src/v2/context.mjs";
-import { sha256 } from "../src/v2/delivery.mjs";
+import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
 import { deliveryPreparationBody, deliveryPreparationHashMatches, deliveryPreparationRequirement } from "../src/v2/delivery-preparation-request.mjs";
 import { checkpointCaseScope, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedLiveTaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-execution.mjs";
 import { liveEvidenceProvenance, nonLiveModelLabel } from "../src/v2/live-lifecycle-provenance.mjs";
+import { publicationAttestationKeys, publicationPreflightPath, publicationReadPath, publicationRequestReceiptPath } from "../src/v2/publication-request.mjs";
 import { normalizeSessionBase } from "../src/v2/session-credential.mjs";
 import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
 import { verifyV2MonthlyBillPages } from "./verify-v2-monthly-bill-pages.mjs";
@@ -377,6 +379,128 @@ export async function advanceCloudV3Rehearsal(path, client, {billPath, settle=fa
       writeCheckpoint(path,state);
     }
     return response("PENDING","INSPECT_ORIGINAL_REHEARSAL");
+  });
+}
+
+async function checkedPublicationPreflight(path, client, item) {
+  const bound = await readCloudV3Review(path,client);
+  if (bound.status !== "REVIEW_EVIDENCE_BOUND" || item.rehearsal?.status !== "SUCCEEDED" ||
+      item.rehearsal.id !== bound.verificationId)
+    stop("须先核对原交付包与成功演练");
+  const selector = {sourceKind:"AGENT",sourceRunId:bound.developmentRunId,
+    packageDigest:bound.packageDigest,verificationId:bound.verificationId};
+  const current = await client.request(publicationPreflightPath(bound.taskId,selector));
+  const basis = current?.basis, evidence = basis?.evidence;
+  if (current?.protocol !== "shuduo-cloud-publication-preflight/v1" || basis?.scope !== "PRIVATE_CLOUD_TEST" ||
+      basis.plannedBatchCount !== 2 || !digest(current.reviewDigest) ||
+      current.reviewDigest !== sha256(JSON.stringify(basis)) ||
+      evidence?.status !== "REVIEW_EVIDENCE_READY" || evidence.taskId !== bound.taskId ||
+      evidence.deliveryId !== bound.deliveryId || evidence.requestSha256 !== bound.requestSha256 ||
+      evidence.development?.revisionId !== bound.revisionId || evidence.development?.revisionHash !== item.code.revisionHash ||
+      evidence.development?.runId !== bound.developmentRunId || evidence.delivery?.packageId !== bound.packageId ||
+      evidence.delivery?.packageDigest !== bound.packageDigest || evidence.delivery?.verificationId !== bound.verificationId)
+    stop("发布预检与原核验回执不一致");
+  validateDeliveryPackage(current.package,bound.packageDigest);
+  if (!Object.entries(current.package.manifest.files).every(([name,file])=>evidence.delivery.fileHashes?.[name]===file.sha256))
+    stop("审阅文件摘要与原演练不一致");
+  return {selector,current,review:{protocol:"shuduo-cloud-publication-review/v1",
+    taskId:bound.taskId, reviewDigest:current.reviewDigest, basis, package:current.package}};
+}
+
+export async function exportCloudV3PublicationReview(path,client,outFile) {
+  return withCloudCheckpoint(path,async()=>{
+    const {state,item} = snapshot(client,path);
+    if (!isAbsolute(outFile)) stop("审阅文件须写入受保护的绝对路径");
+    await requireOriginalCreator(state,client);
+    const {review,current} = await checkedPublicationPreflight(path,client,item);
+    const attestations = Object.fromEntries(publicationAttestationKeys.map(key=>[key,false]));
+    writeCheckpoint(outFile,{...review,attestations},true);
+    return {...result(state,item,"REVIEW_FILE_READY"),reviewDigest:review.reviewDigest,
+      schedulerAvailable:current.schedulerAvailable===true,approvalRecorded:false};
+  });
+}
+
+function publicationBody(selection) {
+  return {sourceKind:"AGENT",sourceRunId:selection.sourceRunId,packageDigest:selection.packageDigest,
+    verificationId:selection.verificationId,reviewDigest:selection.reviewDigest,
+    attestations:Object.fromEntries(publicationAttestationKeys.map(key=>[key,true]))};
+}
+
+function bindPublication(item, receipt) {
+  const action = item.actions.publication, release = receipt?.release, runs = receipt?.runs;
+  if (receipt?.protocol !== "shuduo-cloud-publication-receipt/v1" || !id(release?.id) ||
+      release.taskId !== item.taskId || release.sourceRunId !== action.sourceRunId ||
+      release.sourceRevisionId !== item.code?.revisionId || release.sourceCodeHash !== item.code?.revisionHash ||
+      release.scope !== "PRIVATE_CLOUD_TEST" ||
+      ["packageId","packageDigest","verificationId","reviewDigest","businessScheduledFor"].some(key=>release[key]!==action[key]) ||
+      !id(release.reviewId) || !id(release.approvalId) || !Array.isArray(runs) || runs.length!==2 ||
+      new Set(runs.map(run=>run?.id)).size!==2 || !runs.every((run,index)=>id(run?.id) && run.sequence===index+1) ||
+      !["WAITING_SCHEDULER","ACTIVE_CLOUD_TEST","COMPLETED_CLOUD_TEST","CANCELLED"].includes(release.status) ||
+      action.id && (action.id !== release.id || action.reviewId !== release.reviewId || action.approvalId !== release.approvalId ||
+        !isDeepStrictEqual(action.batchIds,runs.map(run=>run.id))))
+    return;
+  const saved = {releaseId:release.id, reviewId:release.reviewId, approvalId:release.approvalId,
+    batchIds:runs.map(run=>run.id), status:release.status};
+  item.actions.publication = {...action,id:release.id,status:"CONFIRMED",reviewId:release.reviewId,
+    approvalId:release.approvalId,batchIds:saved.batchIds};
+  return saved;
+}
+
+export async function submitCloudV3Publication(path,client,{reviewPath,billPath,reconcile=false}={}) {
+  return withCloudCheckpoint(path,async()=>{
+    const {state,item} = snapshot(client,path), action = item.actions.publication;
+    const response = (status,reason) => result(state,item,status,reason);
+    if (reconcile) {
+      if (!id(action?.key) || !["SUBMITTING","UNKNOWN","CONFIRMED"].includes(action.status) ||
+          action.bodyHash !== sha256(JSON.stringify(publicationBody(action))))
+        return response("PENDING","ORIGINAL_PUBLICATION_UNCONFIRMED");
+      await requireOriginalCreator(state,client);
+      let receipt;
+      try { receipt=await client.request(publicationRequestReceiptPath(item.taskId,action.key)); }
+      catch { return response("PENDING","ORIGINAL_PUBLICATION_UNCONFIRMED"); }
+      const publication = bindPublication(item,receipt);
+      if (!publication) return response("PENDING","ORIGINAL_PUBLICATION_UNCONFIRMED");
+      if (!isDeepStrictEqual(action,item.actions.publication)) writeCheckpoint(path,state);
+      return {...response("PUBLICATION_RECORDED"),publication};
+    }
+    if (action) return response("PENDING","INSPECT_ORIGINAL_PUBLICATION");
+    const {state:reviewed} = readCheckpoint(reviewPath,{privateFile:true});
+    const attestations = reviewed?.attestations;
+    if (!attestations || Object.keys(attestations).length !== publicationAttestationKeys.length ||
+        !publicationAttestationKeys.every(key=>attestations[key]===true))
+      stop("须由工程师在原审阅文件逐项确认");
+    const bill = readCurrentBill(billPath,Date.now()), reserve = state.submission?.bill?.unsettledReserveCny;
+    if (!Number.isFinite(reserve) || bill.unsettledReserveCny < Math.max(reserve,
+      item.actions.delivery?.bill?.unsettledReserveCny ?? 0,item.actions.rehearsal?.bill?.unsettledReserveCny ?? 0))
+      stop("发布须保留原评测、交付和演练的未结算预留");
+    const current = await client.request("/status?include=session");
+    if (!current.session) stop("原发布会话未确认");
+    const session = await requireOriginalCreator(state,client,current.session);
+    const {review,selector,current:preflight} = await checkedPublicationPreflight(path,client,item);
+    if (!isDeepStrictEqual(reviewed,{...review,attestations})) stop("审阅文件与当前确切证据不一致");
+    const now = Date.now();
+    if (session.role !== "ADMIN" || session.publicationOnly !== true || session.manualPublicationOnly === true ||
+        session.readOnly !== false || session.publicationTaskId !== item.taskId ||
+        session.publicationPackageDigest !== selector.packageDigest || session.publicationVerificationId !== selector.verificationId ||
+        !(Date.parse(session.publicationStartsAt) <= now && now < Date.parse(session.publicationExpiresAt)) ||
+        now - Date.parse(bill.checkedAt) >= 3600000 || preflight.schedulerAvailable !== true ||
+        current.status?.mode !== "PUBLIC_INVITATION" || current.status?.projectId !== state.projectId)
+      stop("此确切版本的独立发布窗口或调度器尚未就绪");
+    const usage = budgetBaseline(current.status.budget,bill);
+    const selection = {...selector, reviewDigest:review.reviewDigest, packageId:review.basis.evidence.delivery.packageId,
+      businessScheduledFor:review.basis.businessScheduledFor};
+    const body = publicationBody(selection);
+    const pending = {key:randomUUID(),...selection,bodyHash:sha256(JSON.stringify(body)),status:"SUBMITTING",bill,usage};
+    item.actions.publication = pending;
+    writeCheckpoint(path,state);
+    let receipt;
+    try { receipt=await client.request(publicationReadPath(item.taskId),{method:"POST",body,idempotencyKey:pending.key}); }
+    catch { /* Reconcile by the frozen key after an ambiguous response. */ }
+    const publication = bindPublication(item,receipt);
+    if (!publication) pending.status = "UNKNOWN";
+    writeCheckpoint(path,state);
+    return publication ? {...response("PUBLICATION_RECORDED"),publication}
+      : response("PENDING","INSPECT_ORIGINAL_PUBLICATION");
   });
 }
 
