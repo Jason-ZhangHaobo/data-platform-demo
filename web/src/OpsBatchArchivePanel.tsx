@@ -3,6 +3,7 @@ import {batchArchiveListPath, listBatchArchives, prepareBatchArchive, readBatchA
 import type {ArchiveIndex, BatchArchive, ReviewedBatchArchive} from "../../src/v2/private-batch-archive-client.mjs";
 import type {PrivateBatchSummary} from "../../src/v2/private-batch-report-client.mjs";
 import type {PublishedReportBinding} from "../../src/v2/published-report-request.mjs";
+import {BatchArchiveDetail} from "./BatchArchiveDetail";
 
 type Api = <T>(path: string, body?: unknown, options?: {idempotencyKey?: string}) => Promise<T>;
 type Pending = {requestId: string; reviewedDigest: string};
@@ -133,14 +134,7 @@ export function OpsBatchArchivePanel({api, source, summary}: {api: Api; source: 
       </>}
       {!index.canArchive && <p>当前可查看已归档版本。</p>}
     </>}
-    {archive && <div className="source-report-proposal-v2">
-      <h5>V{archive.reportVersion} · {archive.review.draft.title}</h5>
-      <p>{archive.review.draft.requirement}</p>
-      <p>审阅时间 <time dateTime={archive.review.reviewedAt}>{new Date(archive.review.reviewedAt).toLocaleString("zh-CN")}</time></p>
-      {archive.summary.metrics.map(metric => <p key={metric.id}>{metric.title} {metric.value}</p>)}
-      <p>审阅摘要 {archive.review.reviewedDigest}</p>
-      <a className="button" href={"/api/v2/reports/published/batch-archives/" + archive.review.requestId + "?download_digest=" + archive.digest}>下载归档溯源 JSON</a>
-    </div>}
+    {archive && <BatchArchiveDetail archive={archive}/>}
     {notice && <p role="status">{notice}</p>}
   </section>;
 }

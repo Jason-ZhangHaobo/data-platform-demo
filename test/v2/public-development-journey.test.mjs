@@ -31,6 +31,7 @@ import { serviceBatchFromLocation } from '../../web/src/service-batch-scope.ts';
 import { privateBatchReportPath } from '../../src/v2/private-batch-report-request.mjs';
 import { reportEvidenceDigest } from '../../src/v2/report-provenance-client.mjs';
 import { batchArchiveRoute, batchArchiveListPath, batchArchiveRequestPath, prepareBatchArchive, readBatchArchive, submitBatchArchive } from '../../src/v2/private-batch-archive-client.mjs';
+import { agentArchiveHref, agentArchivePin, checkedAgentArchive, clearAgentArchivePin } from '../../web/src/agent-archive-location.ts';
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
@@ -1116,6 +1117,26 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(archivedFile.headers.get('cache-control'),'no-store');
   assert.match(archivedFile.headers.get('content-disposition'),/^attachment; filename="shuduo-batch-archive-/);
   assert.deepEqual(archivedFile.body,recoveredArchive);
+  const archivedAgentHref='https://journey.example.invalid/v2/?module=agent-center&task='+task.id;
+  const archivePin={requestId:archiveRequestId,batchId:firstId,digest:recoveredArchive.digest};
+  const bookmark=new URL(agentArchiveHref(archivedAgentHref,task.id,archivePin),archivedAgentHref);
+  assert.equal(bookmark.hash,'#agent-report-archives');
+  assert.deepEqual(agentArchivePin(bookmark.href,task.id),archivePin);
+  assert.equal(agentArchivePin(bookmark.href,randomUUID()),null);
+  const duplicate=new URL(bookmark);
+  duplicate.searchParams.append('archiveBatch',secondId);
+  assert.equal(agentArchivePin(duplicate.href,task.id),null);
+  const incomplete=new URL(bookmark);
+  incomplete.searchParams.delete('archiveDigest');
+  assert.equal(agentArchivePin(incomplete.href,task.id),null);
+  const removed=clearAgentArchivePin(new URL(bookmark));
+  assert.equal(removed.searchParams.get('task'),task.id);
+  assert.equal(agentArchivePin(removed.href,task.id),undefined);
+  const reopened=await readBatchArchive(archiveClient,{requestId:agentArchivePin(bookmark.href,task.id).requestId});
+  assert.deepEqual(checkedAgentArchive(reopened,task.id,archivePin),recoveredArchive);
+  assert.throws(()=>checkedAgentArchive(reopened,task.id,{...archivePin,batchId:secondId}),/不一致/);
+  assert.throws(()=>checkedAgentArchive(reopened,task.id,{...archivePin,digest:secondArchive.digest}),/不一致/);
+  assert.throws(()=>checkedAgentArchive(secondArchive,task.id,archivePin),/不一致/);
   assert.equal((await f.call(batchArchiveRequestPath(archiveRequestId)+'?download_digest='+'0'.repeat(64))).status,409);
   const archiveFile=join(f.directory,'batch-archive.json');
   writeFileSync(archiveFile,JSON.stringify(archivedFile.body),{mode:0o600});

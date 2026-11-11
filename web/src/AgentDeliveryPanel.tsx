@@ -24,6 +24,7 @@ import {validServiceSourceBinding,serviceSourceKey,serviceSourceScope,serviceEvi
 import type {ServiceSourceBinding} from "./service-source-binding";
 import type {PublishedReportSource} from "./published-report-read";
 const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
+const AgentBatchArchivePanel = lazy(async () => ({default:(await import("./AgentBatchArchivePanel")).AgentBatchArchivePanel}));
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type Release = { id: string; status: string; health: string; sourceKind?:string; sourceRunId?:string; reviewDigest?:string; agentIndependentE2E?:boolean; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number;rolledBackToReleaseId?:string;rolledBackToTaskId?:string;restoredAt?:string;outputContract?:{id:string;metadataHash:string} };
 type Publication = { rollbackTargets?:import("./agent-delivery-evidence-read").RollbackTarget[];historyRunCount?:number;release?: Release; runs: {id:string; status:string; sequence:number; schedulerTriggered?:boolean; durationMs?:number; triggeredAt?:string; finishedAt?:string}[]; alerts:{id:string;status:string;message:string;recoveryRunId?:string}[]; events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[] };
@@ -136,6 +137,13 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const reportBatchIds=batches.filter(batch=>batch.status==="SUCCEEDED"&&batch.schedulerTriggered===true).map(batch=>batch.id);
   const reportSource:PublishedReportSource|undefined=!cloud&&publicationReady&&journey.publicationCurrent&&release&&workflow?.package&&revisionId&&runId&&reportBatchIds.length?
     {kind:manual?"MANUAL":"AGENT",releaseId:release.id,packageDigest:workflow.package.digest,revisionId,runId,...(manual?{}:{taskId}),batchIds:reportBatchIds}:undefined;
+  const archiveChoices = cloud && !manual && !assisted && serviceHandoff && !distributionMetadataForContext(contextId) &&
+    release?.sourceKind === "AGENT" && release.sourceAgentTaskId === taskId && release.sourceRunId === runId && revisionId && runId
+    ? batches.filter(batch => reportBatchIds.includes(batch.id)).map(batch => ({
+      sequence:batch.sequence,
+      source:{kind:"AGENT" as const, taskId, releaseId:release.id, packageDigest:serviceHandoff.packageDigest, revisionId, runId, batchId:batch.id},
+    })) : [];
+  const archiveReopen = !manual && !assisted && typeof window !== "undefined" && window.location.hash === "#agent-report-archives";
   const showConsumption=Boolean(consumption&&serviceHandoff&&consumption.taskId===serviceHandoff.taskId&&consumption.packageDigest===serviceHandoff.packageDigest&&consumption.releaseId===serviceHandoff.releaseId&&consumption.scope===serviceSourceScope(serviceHandoff));
   activeConsumptionSource.current=serviceHandoffKey;
   useEffect(() => {
@@ -268,6 +276,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           <strong>发布版本 {release.id.slice(0,8)} · {publicationReady ? releaseLabel(release) : "上次读取的记录 · 当前状态未确认"}</strong>
           <p className="agent-publication-id">发布编号：{release.id}</p>
           {monitorHref && <a className="button" href={monitorHref}>在运维监控查看原批次</a>}
+          {archiveChoices.length > 0 && <a className="button" href="#agent-report-archives">在此任务查看报表归档</a>}
           <ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batchLabels[batch.status] ?? batch.status} · {batch.schedulerTriggered ? "调度器已触发" : batch.status === "CANCELLED" ? "未再触发" : "等待计划时间"}<small>批次编号：{batch.id}</small></li>)}</ul>
           {publication?.alerts.map(alert => <p key={alert.id} role={alert.status === "OPEN" ? "alert" : undefined}>{alert.status === "OPEN" ? "未解除告警" : "已恢复"}：{alert.message}{alert.recoveryRunId ? ` · 恢复批次 ${alert.recoveryRunId.slice(0,8)}` : ""}</p>)}
           {cloud&&cancellationWritable&&!publicationReady&&<p role="status">监控读取尚未确认；原发布来源和编号已核对，仍可停止这个已确认版本的后续批次。</p>}
@@ -296,5 +305,8 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         {workflow.package&&<button className="button" disabled={working||!serviceHandoff} onClick={()=>void readConsumption()}>刷新消费证据</button>}
         {onOpenServices ? <><button className="button" disabled={!serviceHandoff || dirty || working || handoffBlocked} onClick={()=>{if(serviceHandoff&&!dirty&&!working&&!handoffBlocked)onOpenServices(serviceHandoff);}}>继续此任务的接口交付</button>{handoffBlocked && <small>修改需求尚未发送，请先处理输入再切换；不会丢弃你的文字。</small>}</> : <small>当前环境尚未开放服务接管；已有交付记录保留。</small>}</div>
     </>}
+    {(archiveChoices.length > 0 || archiveReopen) && <Suspense fallback={<p role="status">正在加载原批次归档…</p>}>
+      <AgentBatchArchivePanel api={api} taskId={taskId} choices={archiveChoices}/>
+    </Suspense>}
   </section>;
 }
