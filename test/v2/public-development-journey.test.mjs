@@ -196,10 +196,15 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
 
 test('cloud v3 startup saves the original key before one POST and reconciles a lost receipt by GET',async t=>{
   const f=await fixture(t,{startupPreflight:true});
-  const checkpoint=join(f.directory,'first-v3-checkpoint.json'),billPath=join(f.directory,'bill.json'),reads=[];
-  const source='a'.repeat(40);
+  const checkpoint=join(f.directory,'first-v3-checkpoint.json'),billPath=join(f.directory,'bill.json'),
+    windowPath=join(f.directory,'opened-window.json'),sessionFile=join(f.directory,'session.json'),reads=[];
+  const source='a'.repeat(40), approvalDigest='d'.repeat(64);
+  const baseUrl='https://journey.example.invalid/api/v2';
+  writeFileSync(sessionFile,JSON.stringify({protocol:'shuduo-invite-session/v1',apiBaseUrl:baseUrl,projectId:PROJECT,
+    cookie:'shuduo_session=fictional-session-placeholder',csrfToken:'fictional-csrf-placeholder',
+    expiresAt:f.env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT}),{mode:0o600});
   let originalKey, hideReceipt=false, differentActor=false, missingUsage=false;
-  const client=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
+  const client=new V2Client({baseUrl,sessionFile,fetchImpl:async(url,options)=>{
     const target=new URL(url), path=target.pathname.slice('/api/v2'.length)+target.search;
     reads.push({path,method:options.method});
     if(options.method==='POST'){
@@ -210,6 +215,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
       assert.equal(saved.reviewedSource,source);
       assert.equal(saved.submission.bill.unsettledReserveCny,64);
       assert.equal(saved.submission.usage.modelCalls,0);
+      assert.equal(saved.submission.windowApprovalDigest,approvalDigest);
       const body=JSON.parse(options.body);
       assert.deepEqual(Object.keys(body),['message','sql','contextId']);
       assert.equal((await f.call(path,body,originalKey)).status,202);
@@ -237,33 +243,56 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   const preparedBytes=readFileSync(checkpoint,'utf8');
   originalKey=JSON.parse(preparedBytes).outcomes[0].actions.agent.key;
   assert.ok(!JSON.stringify(prepared).includes(originalKey));
+  const binding=await cli(['--window-binding']);
+  const sha=value=>createHash('sha256').update(value).digest('hex');
+  assert.deepEqual(reads,[]);
+  assert.equal(binding.checkpointDigest,sha(preparedBytes));
+  assert.equal(binding.requestKeyHash,sha(originalKey));
+  assert.ok(!JSON.stringify(binding).includes(originalKey));
   await cli(['--source-revision',source],1);
   assert.equal(readFileSync(checkpoint,'utf8'),preparedBytes);
   const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
   const writeBill=amount=>writeFileSync(billPath,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny:64,maxIncrementCny:2,
     pages:[{Success:true,Data:{PageNum:1,PageSize:300,TotalCount:1,BillingCycle:month,Items:{Item:[{Currency:'CNY',PretaxAmount:amount}]}}}]}),{mode:0o600});
+  const startsAt=f.env.V2_PUBLIC_DEVELOPMENT_STARTS_AT, expiresAt=f.env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT;
+  const window={protocol:'SHUDUO_FIRST_V3_WINDOW_RECEIPT_V1',checkpoint:binding,approvalDigest,startsAt,expiresAt,
+    bill:{month,checkedAt:startsAt,spendCny:20,recordCount:1,pagesDigest:'e'.repeat(64),unsettledReserveCny:64,maxIncrementCny:2}};
+  const writeWindow=value=>writeFileSync(windowPath,JSON.stringify(value),{mode:0o600});
+  const confirmedFlags=['--window-file',windowPath,'--bill-file',billPath,'--confirm'];
+  writeWindow(window);
   writeBill('134.00');
-  await cli(['--bill-file',billPath,'--confirm'],1);
+  await cli(confirmedFlags,1);
   assert.deepEqual(reads,[]);
   assert.equal(readFileSync(checkpoint,'utf8'),preparedBytes);
   assert.equal(f.store.list('agent',PROJECT).length,0);
   writeBill('20.00');
-  client.projectId='different-project';
   await cli(['--bill-file',billPath,'--confirm'],1);
+  assert.deepEqual(reads,[]);
+  for(const alter of [v=>v.bill.unsettledReserveCny=0,v=>v.checkpoint.requestKeyHash='f'.repeat(64),v=>v.bill.spendCny=134]){
+    const changed=structuredClone(window);alter(changed);writeWindow(changed);
+    await cli(confirmedFlags,1);
+    assert.deepEqual(reads,[]);
+  }
+  writeWindow({...window,expiresAt:new Date(Date.parse(expiresAt)+1).toISOString()});
+  await cli(confirmedFlags,1);
+  assert.deepEqual(reads,[{path:'/status?include=session',method:'GET'}]);
+  writeWindow(window);
+  client.projectId='different-project';
+  await cli(confirmedFlags,1);
   assert.deepEqual(reads,[]);
   client.projectId=PROJECT;
   missingUsage=true;
-  await cli(['--bill-file',billPath,'--confirm'],1);
+  await cli(confirmedFlags,1);
   assert.deepEqual(reads,[{path:'/status?include=session',method:'GET'}]);
   assert.equal(readFileSync(checkpoint,'utf8'),preparedBytes);
   missingUsage=false;
-  const unknown=await cli(['--bill-file',billPath,'--confirm']);
+  const unknown=await cli(confirmedFlags);
   assert.equal(unknown.reason,'RECONCILE_ORIGINAL_CREATION');
   assert.deepEqual(reads.map(read=>read.method),['GET','POST']);
   assert.equal(f.store.list('agent',PROJECT).length,1);
   const unknownBytes=readFileSync(checkpoint,'utf8');
   assert.equal(JSON.parse(unknownBytes).outcomes[0].actions.agent.status,'UNKNOWN');
-  assert.equal((await cli(['--bill-file',billPath,'--confirm'])).reason,'RECONCILE_ORIGINAL_CREATION');
+  assert.equal((await cli(confirmedFlags)).reason,'RECONCILE_ORIGINAL_CREATION');
   assert.deepEqual(reads,[]);
   assert.equal(readFileSync(checkpoint,'utf8'),unknownBytes);
 

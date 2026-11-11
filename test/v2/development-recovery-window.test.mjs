@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { developmentRecoveryScope, developmentRecoveryEnvironment, validateDevelopmentRecoveryPlan, runDevelopmentRecoveryOperation, recoveryDigest, recoveryUsageKeys } from '../../scripts/development-recovery-window.mjs';
+import { firstCloudCheckpointBinding, firstCloudDevelopmentScope } from '../../scripts/first-cloud-v3-window.mjs';
+import { prepareCloudV3Start } from '../../scripts/start-cloud-v3-case.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
 
 const time = Date.parse('2026-10-20T08:00:00Z'), stamp = new Date(time).toISOString();
@@ -38,6 +42,20 @@ function exhaustedTargetFixture() {
   p.maxModelCalls=0;p.maxSparkRuns=1;p.priorReserveCny=62;p.binding.priorReserveCny=62;
   delete p.modelPricing;return p;
 }
+function firstFixture(t) {
+  const dir = mkdtempSync(join(tmpdir(),'shuduo-first-window-'));
+  t.after(() => rmSync(dir,{recursive:true,force:true}));
+  const checkpoint = join(dir,'original.json'), applicationSource='a'.repeat(40);
+  prepareCloudV3Start(checkpoint,{baseUrl:'https://first-case.example.invalid/api/v2',projectId:'fictional'},applicationSource);
+  const firstCase = firstCloudCheckpointBinding(checkpoint);
+  const p={...fixture(),scope:firstCloudDevelopmentScope,applicationSource,firstCase,contextId:firstCase.contextId,
+    priorReserveCny:64,maxIncrementCny:3,maxWrites:2};
+  p.binding={...p.binding,protocol:'FIRST_CLOUD_WINDOW_CONTINUATION_V1',priorReserveCny:p.priorReserveCny,
+    firstCaseDigest:recoveryDigest(firstCase),budgetPolicyDigest:recoveryDigest({reserveCny:p.priorReserveCny,
+      maxIncrementCny:p.maxIncrementCny,monthlyCny:p.monthlyCny,windowDeadline:p.deadline,
+      maxSparkRuns:p.maxSparkRuns,maxModelCalls:p.maxModelCalls})};
+  return p;
+}
 function harness(plan, options={}) {
   let current = structuredClone(options.current ?? plan.baseline), clock=time;
   const calls=[], writes=[], snapshots=[];
@@ -57,7 +75,9 @@ function harness(plan, options={}) {
       if(options.httpError)throw new TypeError('fixture-network');
       assert.ok(['/api/v2/auth/session','/api/v2/status'].includes(endpoint));
       const open=current.environmentVariables.V2_FC_PUBLIC_WRITE_SCOPE==='DEVELOPMENT_ONLY';
-      return endpoint.endsWith('/session')?{status:200,body:{authenticated:false,readOnly:true,developmentOnly:open,developmentExpiresAt:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT,
+      return endpoint.endsWith('/session')?{status:200,body:{authenticated:false,readOnly:true,developmentOnly:open,
+        developmentStartsAt:options.differentStart?new Date(time-1).toISOString():current.environmentVariables.V2_PUBLIC_DEVELOPMENT_STARTS_AT,
+        developmentExpiresAt:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT,
         ...(open&&current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID?{developmentTaskOnly:options.targetFlag!==false,...(options.leakTargetId?{developmentTaskId:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID}:{})}:{} )}}
         :{status:200,body:{spark:{healthVerified:options.health!==false},agentDevelopment:{durableEnabled:true,eventBackgroundAvailable:true}}};
     }};
@@ -147,8 +167,75 @@ test('workflow supports only environment lifecycle without artifact fetch; exist
   const source=readFileSync(new URL('../../scripts/deploy-development-pilot.mjs',import.meta.url),'utf8');
   const workflow=readFileSync(new URL('../../.github/workflows/deploy-v2-development-pilot.yml',import.meta.url),'utf8');
   assert.match(workflow,/activate, recycle, timers/);assert.match(workflow,/inputs.mode == 'deploy' \|\| inputs.mode == 'stage'/);
-  assert.match(source,/plan.scope === developmentRecoveryScope \? 7200000 : 3600000/);
+  assert.match(source,/const environmentOnly=firstCase \|\| plan.scope===developmentRecoveryScope/);
+  assert.match(source,/environmentOnly \? 7200000 : 3600000/);
   assert.match(source,/runDevelopmentRecoveryOperation\(plan, before, report/);
+});
+
+test('first v3 activation binds the original request and complete bill, then restores the exact baseline once',async t=>{
+  const p=firstFixture(t),h=harness(p,{bill:13});
+  await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
+  assert.equal(h.report.phase,'OPENED');
+  assert.equal(h.writes.length,1);
+  const receipt=h.report.firstCaseReceipt;
+  assert.deepEqual(receipt.checkpoint,p.firstCase);
+  assert.equal(receipt.approvalDigest,p.binding.approvalDigest);
+  assert.equal(receipt.startsAt,stamp);
+  assert.equal(receipt.expiresAt,new Date(p.deadline).toISOString());
+  assert.deepEqual(receipt.bill,{month:'2026-10',checkedAt:stamp,spendCny:13,recordCount:1,
+    pagesDigest:recoveryDigest([{
+      Success:true,Data:{PageNum:1,PageSize:300,TotalCount:1,BillingCycle:'2026-10',Items:{Item:[{Currency:'CNY',PretaxAmount:'13'}]}}
+    }]),unsettledReserveCny:64,maxIncrementCny:3});
+  assert.ok(!JSON.stringify(receipt).includes(p.baseline.environmentVariables.V2_SPARK_EXECUTOR_SECRET));
+  assert.deepEqual(h.report.historyUsage,p.historyUsage);
+  const close={...p,mode:'close',phase:'ACTIVATION_REQUESTED',activated:h.report.activated,priorUsage:h.report.cumulativeUsage};
+  const c=harness(close,{current:h.current()});
+  c.setClock(p.deadline+1);
+  await runDevelopmentRecoveryOperation(close,h.current(),c.report,c.io);
+  assert.equal(c.report.phase,'CLOSED_READONLY');
+  assert.equal(c.writes.length,1);
+  assert.equal(c.report.cumulativeUsage.configWrites,2);
+  assert.deepEqual(c.current(),p.baseline);
+  assert.equal(c.report.firstCaseReceipt,undefined);
+  const already={...close,phase:'RESTORE_REQUESTED',priorUsage:c.report.cumulativeUsage};
+  const r=harness(already);
+  await runDevelopmentRecoveryOperation(already,p.baseline,r.report,r.io);
+  assert.equal(r.report.phase,'CLOSED_READONLY');
+  assert.equal(r.writes.length,0);
+});
+
+test('first v3 rejects altered request, reserve, source or window and restores if the runtime start differs',async t=>{
+  const p=firstFixture(t);
+  for(const alter of [
+    v=>v.firstCase.checkpointDigest=hash('f'),v=>v.firstCase.requestKeyHash=hash('f'),v=>v.firstCase.requestBodyHash=hash('f'),
+    v=>v.firstCase.origin='http://example.invalid',v=>v.applicationSource='b'.repeat(40),v=>v.contextId='other-context',
+    v=>{v.priorReserveCny=0;v.binding.priorReserveCny=0;},v=>v.maxIncrementCny=4,v=>v.deadline--,
+    v=>v.mode='recycle',v=>v.maxProbes=7,v=>v.recoveryNonce='f'.repeat(32),v=>v.priorUsage.configWrites=1,
+  ]){
+    const changed=structuredClone(p);alter(changed);
+    const h=harness(changed);
+    await assert.rejects(runDevelopmentRecoveryOperation(changed,p.baseline,h.report,h.io));
+    assert.equal(h.calls.length,0);
+  }
+  const over=harness(p,{bill:133});
+  await assert.rejects(runDevelopmentRecoveryOperation(p,p.baseline,over.report,over.io),/RECOVERY_BUDGET_INVALID/);
+  assert.equal(over.writes.length,0);
+  const drift=harness(p,{differentStart:true});
+  await assert.rejects(runDevelopmentRecoveryOperation(p,p.baseline,drift.report,drift.io),/RECOVERY_RUNTIME_UNCONFIRMED/);
+  assert.equal(drift.report.restoration,'VERIFIED');
+  assert.equal(drift.report.firstCaseReceipt,undefined);
+  assert.equal(drift.writes.length,2);
+  assert.deepEqual(drift.current(),p.baseline);
+  let interruptedSave=false;
+  const interrupted=harness(p,{failSave:r=>{
+    if(r.phase!=='OPENED'||interruptedSave)return false;
+    interruptedSave=true;
+    return true;
+  }});
+  await assert.rejects(runDevelopmentRecoveryOperation(p,p.baseline,interrupted.report,interrupted.io),/fixture-save/);
+  assert.equal(interrupted.report.restoration,'VERIFIED');
+  assert.equal(interrupted.report.firstCaseReceipt,undefined);
+  assert.deepEqual(interrupted.current(),p.baseline);
 });
 
 test('targeted fresh window binds one old task, preserves both histories and subtracts prior code-stage reads',async()=>{

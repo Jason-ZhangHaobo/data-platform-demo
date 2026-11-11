@@ -15,6 +15,7 @@ import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
 import { publicationPilotTimers, publicationPilotTimerNames } from './publication-pilot-timers.mjs';
 import { publicServiceConfig } from '../src/v2/public-service-access.mjs';
 import { developmentRecoveryScope, developmentRecoveryModes, runDevelopmentRecoveryOperation } from './development-recovery-window.mjs';
+import { firstCloudDevelopmentScope, firstCloudDevelopmentModes } from './first-cloud-v3-window.mjs';
 
 const check = (v, code) => { if (!v) throw Object.assign(new Error(code), { safeCode: code }); };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -716,12 +717,16 @@ async function main(env = process.env) {
     const before = read(); report.initial = before;
     plan = openReadinessProof(env.V2_PILOT_PLAN, before.environmentVariables?.V2_SPARK_EXECUTOR_SECRET);
     const preStaged = validatePilotPackageTransport(plan, env.V2_PILOT_PRE_STAGED ?? 'false');
-    check(['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope, developmentRecoveryScope].includes(plan.scope) && plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
-      (plan.scope === developmentRecoveryScope ? developmentRecoveryModes : plan.scope === publicationScope ? publicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
-    check(plan.issuedAt <= Date.now() && (plan.deadline > Date.now() || (plan.scope === developmentRecoveryScope && ['close', 'rollback'].includes(plan.mode))) &&
-      plan.deadline - plan.issuedAt <= (plan.scope === developmentRecoveryScope ? 7200000 : 3600000), 'PLAN_EXPIRED');
+    const firstCase = plan.scope===firstCloudDevelopmentScope;
+    const environmentOnly=firstCase || plan.scope===developmentRecoveryScope;
+    check(['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope, developmentRecoveryScope, firstCloudDevelopmentScope].includes(plan.scope) &&
+      plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
+      (!firstCase || plan.firstCase?.origin==='https://shuduoai.cn') &&
+      (firstCase ? firstCloudDevelopmentModes : plan.scope === developmentRecoveryScope ? developmentRecoveryModes : plan.scope === publicationScope ? publicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
+    check(plan.issuedAt <= Date.now() && (plan.deadline > Date.now() || (environmentOnly && ['close', 'rollback'].includes(plan.mode))) &&
+      plan.deadline - plan.issuedAt <= (environmentOnly ? 7200000 : 3600000), 'PLAN_EXPIRED');
     report.scope = plan.scope; report.planVerified = true; save();
-    if (plan.scope === developmentRecoveryScope) {
+    if (environmentOnly) {
       await runDevelopmentRecoveryOperation(plan, before, report, {
         save,
         command: (args, body) => {
