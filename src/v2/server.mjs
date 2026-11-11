@@ -150,6 +150,7 @@ import {
 import { verifyLifecycleReport } from "./lifecycle-evaluation.mjs";
 import {liveLifecycleOverview} from "./live-lifecycle-overview.mjs";
 import {liveExecutionSnapshot} from "./live-lifecycle-execution.mjs";
+import {createDeliveryEvidenceAccess} from "./delivery-evidence-access.mjs";
 import {
   evaluateCloudPreflight,
   publicCloudReadiness,
@@ -1361,6 +1362,41 @@ export function createV2Server(options = {}) {
         method = req.method,
         publicReadOnly = options.ingress?.status.publicReadOnly === true && ingressChannel === "HTTP",
         isPrivateSmokeInvoke = method === "POST" && path === "/invoke";
+      let deliveryAccess;
+      const deliveryAccessForRequest = () => deliveryAccess ??= createDeliveryEvidenceAccess({
+        store, project:PROJECT, local, session:auth.sessionFromHeaders(req.headers),
+      });
+      const canReadDelivery = (kind, item) => deliveryAccessForRequest().canRead(kind, item);
+      const visibleDelivery = kind => store.list(kind, PROJECT).filter(item => canReadDelivery(kind, item));
+      const deliveryDenied = () => Object.assign(fail(403, "当前身份无权访问此交付证据"), {code:"DELIVERY_EVIDENCE_ACCESS_DENIED"});
+      const requireDeliveryEvidence = (kind, item) => {
+        if (!canReadDelivery(kind, item)) throw deliveryDenied();
+      };
+      const protectedDeliveryPayload = item => {
+        if (local || !item) return item;
+        const {artifact, remoteSubmission, leaseToken, ...visible} = item;
+        return visible;
+      };
+      const workflowDeliveryEvidence = delivery => {
+        const bundle = delivery?.packageId ? get("delivery_package", delivery.packageId) : undefined;
+        const verification = delivery?.verificationId ? get("delivery_verification", delivery.verificationId) : undefined;
+        if (bundle) {
+          requireDeliveryEvidence("delivery_package", bundle);
+          if (!local && (delivery.packageDigest !== bundle.digest ||
+              delivery.sourceRunId !== bundle.manifest?.source?.runId ||
+              delivery.sourceRevisionId !== bundle.manifest?.source?.revisionId)) throw deliveryDenied();
+        }
+        if (verification) {
+          requireDeliveryEvidence("delivery_verification", verification);
+          if (!local) {
+            const attached = bundle && verification.packageId === bundle.id && verification.packageDigest === bundle.digest;
+            const archivedFailure = !bundle && ["FAILED","CANCELLED","INTERRUPTED"].includes(verification.status) &&
+              verification.packageId === undefined && verification.packageDigest === undefined;
+            if (!attached && !archivedFailure) throw deliveryDenied();
+          }
+        }
+        return {bundle, verification};
+      };
       const origin = req.headers.origin;
       let localOriginAllowed = false;
       if (local && typeof origin === "string") {
@@ -3070,9 +3106,22 @@ export function createV2Server(options = {}) {
           return json(res, dedup.replayed ? 200 : 201, reports.reportDetail(report.id));
         }
       }
+      const opsSession = () => auth.sessionFromHeaders(req.headers);
+      const canReadOpsSource = (kind, item) => {
+        if (local) return true;
+        if (kind === "release_run") return canReadDelivery(kind, item);
+        if (kind === "run") return Boolean(item && mayReadRun(item, opsSession()));
+        return true;
+      };
+      const canReadOpsDiagnosis = task => {
+        const session = opsSession();
+        return local || session?.role === "ADMIN" || Boolean(session?.permissions.includes("OPS") &&
+          task.submittedBy === session.user.id &&
+          (!task.diagnosis || operations.canReadIncident(store.get("ops_incident", task.diagnosis.incidentId, PROJECT), canReadOpsSource)));
+      };
       if (path === "/api/v2/operations/overview" && method === "GET")
         return json(res, 200, {
-          ...operations.overview(),
+          ...operations.overview(canReadOpsSource),
           externalModelContextAllowed: Boolean(
             options.opsPlanner ||
               env.V2_ALLOW_EXTERNAL_OPS_CONTEXT === "true",
@@ -3080,20 +3129,23 @@ export function createV2Server(options = {}) {
         });
       if (path === "/api/v2/operations/refresh" && method === "POST") {
         await readBody(req);
-        return json(res, 200, operations.refresh());
+        return json(res, 200, operations.refresh(canReadOpsSource));
       }
       if (path === "/api/v2/operations/incidents" && method === "GET")
-        return json(res, 200, operations.listIncidents());
+        return json(res, 200, operations.listIncidents(canReadOpsSource));
       const opsIncidentRecord = path.match(
         /^\/api\/v2\/operations\/incidents\/([a-f0-9-]+)(?:\/(acknowledge|resolve))?$/,
       );
       if (opsIncidentRecord) {
-        const incident = operations.incidentDetail(opsIncidentRecord[1]),
+        const incident = operations.incidentDetail(opsIncidentRecord[1], canReadOpsSource),
           action = opsIncidentRecord[2];
         if (method === "GET" && !action) return json(res, 200, incident);
         if (method === "POST" && ["acknowledge", "resolve"].includes(action)) {
-          const body = await readBody(req),
-            key = text(req.headers["idempotency-key"], 1, 100),
+          const body = await readBody(req);
+          if (action === "resolve" && ["run","release_run"].includes(body.evidenceKind) &&
+              !canReadOpsSource(body.evidenceKind, store.get(body.evidenceKind, body.evidenceId, PROJECT)))
+            throw fail(403, "当前身份无权读取此恢复证据");
+          const key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               `${PROJECT}:ops-incident:${incident.id}:${action}:${key}`,
               hash(JSON.stringify(body)),
@@ -3105,16 +3157,16 @@ export function createV2Server(options = {}) {
           return json(
             res,
             dedup.replayed ? 200 : 201,
-            operations.incidentDetail(dedup.id),
+            operations.incidentDetail(dedup.id, canReadOpsSource),
           );
         }
       }
       if (path === "/api/v2/operations/agent/diagnoses" && method === "GET")
-        return json(res, 200, store.list("ops_agent_diagnosis", PROJECT));
+        return json(res, 200, store.list("ops_agent_diagnosis", PROJECT).filter(canReadOpsDiagnosis));
       if (path === "/api/v2/operations/agent/diagnoses" && method === "POST") {
         const body = await readBody(req),
           message = text(body.message, 4, 2000);
-        if (!operations.listIncidents().length)
+        if (!operations.listIncidents(canReadOpsSource).length)
           throw fail(409, "请先刷新并选择有实际证据的事故");
         if (
           !options.opsPlanner &&
@@ -3126,15 +3178,17 @@ export function createV2Server(options = {}) {
           );
         if (!options.opsPlanner && !modelSettings(env).configured)
           throw new ModelUnavailable();
+        const actorId = local ? undefined : opsSession().user.id;
         const key = text(req.headers["idempotency-key"], 1, 100),
           dedup = store.deduplicate(
-            `${PROJECT}:ops-agent-diagnosis:${key}`,
+            `${PROJECT}:ops-agent-diagnosis:${actorId ? actorId + ":" : ""}${key}`,
             hash(JSON.stringify({ message })),
             () =>
               store.create("ops_agent_diagnosis", PROJECT, {
                 message,
                 status: "QUEUED",
                 mode: "LIVE_MODEL",
+                ...(actorId ? {submittedBy:actorId} : {}),
                 completionScope: "OPS_DIAGNOSIS",
                 fullLifecycleE2E: false,
                 executable: false,
@@ -3143,7 +3197,7 @@ export function createV2Server(options = {}) {
           task = get("ops_agent_diagnosis", dedup.id);
         if (!dedup.replayed)
           schedule("ops_agent_diagnosis", task, async (signal) => {
-            const context = operations.agentContext(),
+            const context = operations.agentContext(canReadOpsSource),
               generated = await opsPlanner({
                 message,
                 ...context,
@@ -3151,7 +3205,7 @@ export function createV2Server(options = {}) {
               });
             if (get("ops_agent_diagnosis", task.id).status === "CANCELLED") return;
             const diagnosis = operations.validateAgentDiagnosis(
-                generated.diagnosis,
+                generated.diagnosis, canReadOpsSource,
               );
             store.update("ops_agent_diagnosis", task.id, PROJECT, {
               status: "SUCCEEDED",
@@ -3169,6 +3223,7 @@ export function createV2Server(options = {}) {
       if (opsAgentDiagnosis) {
         const task = get("ops_agent_diagnosis", opsAgentDiagnosis[1]),
           action = opsAgentDiagnosis[2];
+        if (!canReadOpsDiagnosis(task)) throw fail(403, "当前身份无权查看此诊断");
         if (method === "GET" && !action) return json(res, 200, task);
         if (method === "POST" && action === "cancel") {
           await readBody(req);
@@ -4275,32 +4330,32 @@ export function createV2Server(options = {}) {
         return json(
           res,
           200,
-          store.list("delivery_package", PROJECT).map(({ files, ...item }) => ({
+          visibleDelivery("delivery_package").map(protectedDeliveryPayload).map(({ files, ...item }) => ({
             ...item,
-            fileNames: Object.keys(files),
+            fileNames: Object.keys(files ?? {}),
           })),
         );
       if (path === "/api/v2/delivery/verifications" && method === "GET")
-        return json(res, 200, store.list("delivery_verification", PROJECT).map(exposeValidationRecord));
+        return json(res, 200, visibleDelivery("delivery_verification").map(protectedDeliveryPayload).map(exposeValidationRecord));
       if (path === "/api/v2/release/approvals" && method === "GET")
-        return json(res, 200, store.list("release_approval", PROJECT));
+        return json(res, 200, visibleDelivery("release_approval"));
       if (path === "/api/v2/releases" && method === "GET")
         return json(
           res,
           200,
-          store.list("release", PROJECT).map(expose),
+          visibleDelivery("release").map(protectedDeliveryPayload).map(expose),
         );
       if (path === "/api/v2/release/runs" && method === "GET")
         return json(
           res,
           200,
-          store.list("release_run", PROJECT).map(expose),
+          visibleDelivery("release_run").map(protectedDeliveryPayload).map(expose),
         );
       if (path === "/api/v2/monitoring/overview" && method === "GET") {
-        const releases = store.list("release", PROJECT),
-          runs = store.list("release_run", PROJECT),
-          alerts = store.list("monitor_alert", PROJECT),
-          events = store.list("monitor_event", PROJECT),
+        const releases = visibleDelivery("release"),
+          runs = visibleDelivery("release_run"),
+          alerts = visibleDelivery("monitor_alert"),
+          events = visibleDelivery("monitor_event"),
           activeRelease = releases.find(
             (release) => release.status === "ACTIVE_LOCAL",
           );
@@ -4308,7 +4363,7 @@ export function createV2Server(options = {}) {
           scope: "LOCAL_RELEASE_MONITORING",
           publicDeployed: false,
           fullLifecycleE2E: false,
-          activeRelease: expose(activeRelease),
+          activeRelease: expose(protectedDeliveryPayload(activeRelease)),
           counts: {
             scheduled: runs.filter((run) => run.status === "SCHEDULED").length,
             running: runs.filter((run) => run.status === "RUNNING").length,
@@ -4318,7 +4373,7 @@ export function createV2Server(options = {}) {
             ).length,
             openAlerts: alerts.filter((alert) => alert.status === "OPEN").length,
           },
-          recentRuns: runs.slice(0, 20).map(expose),
+          recentRuns: runs.slice(0, 20).map(protectedDeliveryPayload).map(expose),
           alerts: alerts.slice(0, 20),
           recentEvents: events.slice(0, 30),
           notice:
@@ -4619,8 +4674,9 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/delivery/packages" && method === "POST") {
         const body = await readBody(req),
           sourceRun = get("run", text(body.sourceRunId, 1, 80)),
-          sourceRevision = get("revision", sourceRun.revisionId),
-          family = validationFamilyForRun(sourceRun);
+          sourceRevision = get("revision", sourceRun.revisionId);
+        if (!deliveryAccessForRequest().canPrepare(sourceRun, sourceRevision)) throw deliveryDenied();
+        const family = validationFamilyForRun(sourceRun);
         const name =
           body.name === undefined ? "客户资产 T+1" : text(body.name, 1, 80);
         const bundle = createDeliveryPackage({
@@ -4659,11 +4715,11 @@ export function createV2Server(options = {}) {
         return json(
           res,
           dedup.replayed ? 200 : 201,
-          get("delivery_package", dedup.id),
+          protectedDeliveryPayload(get("delivery_package", dedup.id)),
         );
       }
       if (path === "/api/v2/delivery/reviews" && method === "GET")
-        return json(res, 200, store.list("delivery_review", PROJECT));
+        return json(res, 200, visibleDelivery("delivery_review"));
       const deliveryRecord = path.match(
         /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|review|approve))?$/,
       );
@@ -4673,7 +4729,11 @@ export function createV2Server(options = {}) {
             ? "delivery_package"
             : "delivery_verification";
         const item = get(kind, deliveryRecord[2]);
-        if (method === "GET" && !deliveryRecord[3]) return json(res, 200, kind === "delivery_verification" ? exposeValidationRecord(item) : item);
+        requireDeliveryEvidence(kind, item);
+        if (method === "GET" && !deliveryRecord[3]) {
+          const visible = protectedDeliveryPayload(item);
+          return json(res, 200, kind === "delivery_verification" ? exposeValidationRecord(visible) : visible);
+        }
         if (
           kind === "delivery_verification" &&
           deliveryRecord[3] === "cancel" &&
@@ -4683,7 +4743,7 @@ export function createV2Server(options = {}) {
             store.update(kind, item.id, PROJECT, { status: "CANCELLED" });
             controls.get(item.id)?.abort();
           }
-          return json(res, 200, exposeValidationRecord(get(kind, item.id)));
+          return json(res, 200, exposeValidationRecord(protectedDeliveryPayload(get(kind, item.id))));
         }
         if (
           kind === "delivery_package" &&
@@ -4713,15 +4773,16 @@ export function createV2Server(options = {}) {
             !requiredAttestations.every((key) => attestations[key] === true)
           )
             throw fail(422, "需逐项确认代码、断言、交付文件和本机范围");
-          await ensureDeliveryArtifact(item);
-          validateAnyDeliveryPackage(item);
           const rehearsal = get("delivery_verification", verificationId);
+          requireDeliveryEvidence("delivery_verification", rehearsal);
           if (
             rehearsal.packageId !== item.id ||
             rehearsal.packageDigest !== item.digest ||
             rehearsal.status !== "SUCCEEDED"
           )
             throw fail(409, "审阅必须绑定当前交付包的成功按文件演练");
+          await ensureDeliveryArtifact(item);
+          validateAnyDeliveryPackage(item);
           const session = auth.sessionFromHeaders(req.headers),
             reviewer = session
               ? {
@@ -4788,9 +4849,9 @@ export function createV2Server(options = {}) {
           if (packageDigest !== item.digest)
             throw fail(409, "审批摘要与当前交付包不一致");
           const reviewId = text(body.reviewId, 1, 80);
+          const review = get("delivery_review", reviewId);
+          requireDeliveryEvidence("delivery_review", review);
 
-          await ensureDeliveryArtifact(item);
-          validateAnyDeliveryPackage(item);
           const rehearsal = store
             .list("delivery_verification", PROJECT)
             .find(
@@ -4801,7 +4862,7 @@ export function createV2Server(options = {}) {
             );
           if (!rehearsal)
             throw fail(409, "交付包尚无成功的按文件演练，不能审批发布");
-          const review = get("delivery_review", reviewId);
+          requireDeliveryEvidence("delivery_verification", rehearsal);
           if (
             review.packageId !== item.id ||
             review.packageDigest !== item.digest ||
@@ -4809,6 +4870,8 @@ export function createV2Server(options = {}) {
             review.status !== "REVIEWED"
           )
             throw fail(409, "审批必须引用当前包、摘要和演练一致的审阅记录");
+          await ensureDeliveryArtifact(item);
+          validateAnyDeliveryPackage(item);
           const distributionConsent=assertDistributionConsent({bundle:item,verification:rehearsal,review,consent:body.distributionConsent,local,schedulerMode:releaseSchedulerMode});
           const actor = auth.sessionFromHeaders(req.headers),
             approver = actor
@@ -4973,7 +5036,7 @@ export function createV2Server(options = {}) {
                   },
                 );
             });
-          return json(res, 202, exposeValidationRecord(verification));
+          return json(res, 202, exposeValidationRecord(protectedDeliveryPayload(verification)));
         }
       }
       if (path === "/api/v2/releases" && method === "POST") {
@@ -5117,8 +5180,9 @@ export function createV2Server(options = {}) {
         const kind =
             releaseRecord[1] === "releases" ? "release" : "release_run",
           item = get(kind, releaseRecord[2]);
+        requireDeliveryEvidence(kind, item);
         if (method === "GET" && !releaseRecord[3])
-          return json(res, 200, expose(item));
+          return json(res, 200, expose(protectedDeliveryPayload(item)));
         if(kind==='release'&&method==='POST'&&releaseRecord[3]==='cancel'){
           const body=await readBody(req);
           if(!local||releaseSchedulerMode!=='LOCAL_TIMER'||!item.outputContract)throw fail(422,'此停止入口仅用于本机分布测试发布');
@@ -5138,6 +5202,7 @@ export function createV2Server(options = {}) {
         ) {
           const body = await readBody(req),
             target = get("release", text(body.targetReleaseId, 1, 80));
+          requireDeliveryEvidence("release", target);
           const currentBundle=get('delivery_package',item.packageId),targetBundle=get('delivery_package',target.packageId);
           if(currentBundle.manifest.source.outputContract||targetBundle.manifest.source.outputContract){
             if(!local||releaseSchedulerMode!=='LOCAL_TIMER')throw fail(422,'分布回滚仅用于本机测试');
@@ -5275,7 +5340,7 @@ export function createV2Server(options = {}) {
         const readable=revision=>{requireDevelopmentOwner('revision',revision,req);assertScopedRecord(auth.sessionFromHeaders(req.headers),revision);};
         const owned=id=>{const task=get('manual_delivery_task',id);if(task.mode!==standaloneManualDeliveryMode||task.submittedBy!==actorId)throw fail(403,'无权访问此手工交付任务');readable(get('revision',task.sourceRevisionId));return task;};
         const packageView=task=>{
-          const item=task?.packageId?get('delivery_package',task.packageId):undefined,verification=task?.verificationId?get('delivery_verification',task.verificationId):undefined;
+          const {bundle:item,verification} = workflowDeliveryEvidence(task);
           return {package:item?{id:item.id,digest:item.digest,manifest:item.manifest,files:item.files}:undefined,verification:verification?{id:verification.id,packageId:verification.packageId,packageDigest:verification.packageDigest,manualDeliveryTaskId:verification.manualDeliveryTaskId,
             status:verification.status,engine:verification.engine,engineVersion:verification.engineVersion,mainSqlExecuted:verification.mainSqlExecuted,testSqlValidation:verification.testSqlValidation,validation:validationWithoutRawComparisons(verification.validation),durationMs:verification.durationMs,error:verification.error}:undefined};
         };
@@ -5283,7 +5348,7 @@ export function createV2Server(options = {}) {
           if(url.searchParams.size)throw fail(422,'手工交付来源读取不接受其他参数');
           const proof=resolveManualContinuation({store,project:PROJECT,actorId,sourceRunId:standaloneSource[1]}),run=get('run',proof.binding.runId),revision=get('revision',proof.binding.revisionId),
             all=store.list('manual_delivery_task',PROJECT).filter(t=>t.submittedBy===actorId&&t.sourceRunId===run.id&&t.sourceRevisionId===revision.id),task=all.find(t=>t.sourceBinding?.evidenceDigest===proof.binding.evidenceDigest)??all[0];
-          readable(revision);if(task&&engine){owned(task.id);await engine.reconcile(task.id);}
+          readable(revision);if(task&&engine){workflowDeliveryEvidence(owned(task.id));await engine.reconcile(task.id);}
           const latest=task?owned(task.id):undefined,{taskId:ignored,...baseReport}=developmentVerificationReport({contextId:revision.contextId},run,revision);
           const publicationWindow=latest&&publicationAccess?.sourceKind==='MANUAL_DELIVERY'&&publicationAccess.taskId===latest.id&&publicationAccess.packageDigest===latest.packageDigest&&publicationAccess.verificationId===latest.verificationId&&publicationSession(publicationAccess,auth.sessionFromHeaders(req.headers),developmentNow())?.manualPublicationTaskId===latest.id?{manualDeliveryTaskId:latest.id,packageDigest:publicationAccess.packageDigest,verificationId:publicationAccess.verificationId,startsAt:new Date(publicationAccess.startsAt).toISOString(),expiresAt:new Date(publicationAccess.expiresAt).toISOString()}:undefined;
           return json(res,200,{protocol:'shuduo-standalone-manual-workflow/v1',executionAvailable:Boolean(engine),source:{kind:'MANUAL_RUN',runId:run.id,revisionId:revision.id,revisionHash:revision.hash,contextId:revision.contextId},sourceBinding:proof.binding,developmentReference:proof.developmentReference,
@@ -5299,7 +5364,7 @@ export function createV2Server(options = {}) {
         }
         if(standaloneRecord){
           const task=owned(standaloneRecord[1]);
-          if(method==='GET'&&!standaloneRecord[2]){if(engine)await engine.reconcile(task.id);return json(res,200,{protocol:'shuduo-standalone-manual-detail/v1',delivery:publicDeliveryTask(owned(task.id)),...packageView(owned(task.id)),modelRequired:false});}
+          if(method==='GET'&&!standaloneRecord[2]){workflowDeliveryEvidence(task);if(engine)await engine.reconcile(task.id);return json(res,200,{protocol:'shuduo-standalone-manual-detail/v1',delivery:publicDeliveryTask(owned(task.id)),...packageView(owned(task.id)),modelRequired:false});}
           if(method==='POST'&&standaloneRecord[2]){
             const body=await readBody(req);if(Object.keys(body).length!==1||body.expectedVersion!==task.version)throw fail(409,'手工交付已更新，请按原编号读取后继续');
             if(!engine)throw fail(503,'隔离Spark执行器未就绪；已有记录保留');
@@ -5323,9 +5388,12 @@ export function createV2Server(options = {}) {
         }
         let delivery = store.list("agent_delivery_task", PROJECT).find(t => t.sourceKind === "MANUAL" && t.sourceAgentTaskId === source.agent.id &&
           t.sourceRevisionId === source.revision.id && t.sourceRunId === run.id && t.submittedBy === actorId);
-        if (delivery && durableDelivery) { await durableDelivery.reconcile(delivery.id); delivery = get("agent_delivery_task", delivery.id); }
-        const bundle = delivery?.packageId ? get("delivery_package", delivery.packageId) : undefined,
-          verification = delivery?.verificationId ? get("delivery_verification", delivery.verificationId) : undefined;
+        if (delivery && durableDelivery) {
+          workflowDeliveryEvidence(delivery);
+          await durableDelivery.reconcile(delivery.id);
+          delivery = get("agent_delivery_task", delivery.id);
+        }
+        const {bundle, verification} = workflowDeliveryEvidence(delivery);
         return json(res, 200, {report: source.report, delivery: publicDeliveryTask(delivery),
           package: bundle ? {id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files} : undefined,
           verification: verification ? {id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion,
@@ -5338,20 +5406,21 @@ export function createV2Server(options = {}) {
       if (developmentWorkflow && method === "GET") {
         const agent = get("agent", developmentWorkflow[1]);
         requireDurableAgentOwner(agent, req);
-        const source = resolveEvidenceSource(agent, get), revision = source.revision,
-          run = source.retainedFailure || !source.run ? source.run : await reconcileDevelopment(source.run);
+        const source = resolveEvidenceSource(agent, get), revision = source.revision;
+        let delivery = source.retainedFailure ? undefined : store.list("agent_delivery_task", PROJECT)
+          .find(item => item.sourceAgentTaskId === agent.id && item.sourceRevisionId === revision?.id && item.sourceRunId === source.run?.id);
+        workflowDeliveryEvidence(delivery);
+        const run = source.retainedFailure || !source.run ? source.run : await reconcileDevelopment(source.run);
         const report = developmentVerificationReport(agent, run, revision);
         if(agent.sourceKind==='MANUAL')Object.assign(report,{sourceKind:'MANUAL',agentIndependentE2E:false,notice:'此报告保留人工辅助来源；交付请按当前运行读取人工辅助工作流，不计自主完成。'});
         if (source.retainedFailure) Object.assign(report, {status: "NEEDS_ATTENTION", retainedFailure: true, computationSkipped: true,
           retainedFailureSourceKind:source.sourceKind,retainedRunStatus: run.status, summary: "本次修正没有形成新的 SQL，已保留原失败批次供诊断，没有重新执行或验证通过。",
           notice: source.sourceKind==="EXPLICIT_FAILED_RUN" ? "以下结论来自当前账号明确引用的原失败版本和批次，不是本次修正的新执行结果；本次模型调用照常计入历史，未新增 Spark 计算或可发布交付。" : "以下结论来自此前同一任务、版本和批次的失败记录；本次模型调用照常计入历史，未新增 Spark 计算或可发布交付。"});
-        let delivery = source.retainedFailure ? undefined : store.list("agent_delivery_task", PROJECT).find(t => t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision?.id && t.sourceRunId === run?.id);
         if (delivery?.mode === durableDeliveryMode && durableDelivery) {
           await durableDelivery.reconcile(delivery.id);
           delivery = get("agent_delivery_task", delivery.id);
         }
-        const bundle = delivery?.packageId ? get("delivery_package", delivery.packageId) : undefined,
-          verification = delivery?.verificationId ? get("delivery_verification", delivery.verificationId) : undefined;
+        const {bundle, verification} = workflowDeliveryEvidence(delivery);
         const fileReviewer=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
         const fileReview=bundle?.manifest?.source?.outputContract&&verification?store.list('delivery_review',PROJECT).find(r=>r.packageId===bundle.id&&r.packageDigest===bundle.digest&&r.verificationId===verification.id&&r.reviewer?.id===fileReviewer&&r.status==='REVIEWED'&&r.scope==='LOCAL_FILE_REVIEW'):undefined;
         return json(res, 200, {
@@ -5404,6 +5473,13 @@ export function createV2Server(options = {}) {
           store
             .list("agent_delivery_task", PROJECT)
             .filter((item) => (!sourceId || item.sourceAgentTaskId === sourceId) && mayReadDurableAgent(store.get("agent", item.sourceAgentTaskId, PROJECT) ?? {}, auth.sessionFromHeaders(req.headers)))
+            .filter(item => {
+              try { workflowDeliveryEvidence(item); return true; }
+              catch (error) {
+                if (error.status === 403 || error.status === 404) return false;
+                throw error;
+              }
+            })
             .map(publicDeliveryTask),
         );
       }
@@ -5434,6 +5510,7 @@ export function createV2Server(options = {}) {
       if (agentDeliveryRecord) {
         const item = get("agent_delivery_task", agentDeliveryRecord[1]);
         requireDurableAgentOwner(get("agent", item.sourceAgentTaskId), req);
+        workflowDeliveryEvidence(item);
         if (item.mode === durableDeliveryMode) {
           if (!durableDelivery) throw fail(503, "持久交付执行器尚未启用");
           if (method === "GET" && !agentDeliveryRecord[2]) return json(res, 200, await durableDelivery.reconcile(item.id));
