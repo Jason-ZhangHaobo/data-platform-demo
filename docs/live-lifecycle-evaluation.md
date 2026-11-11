@@ -47,6 +47,8 @@ v3 派生案例只能引用固定 `sourceCaseId` 对应的本轮已完成基础�
 
 使用绑定原 V2 入口和项目的 CLI 配置。先准备受保护的检查点，再按现有新任务开发授权核对实际部署版本、当前账单及受邀会话。
 
+控制面构建可从主分支选择已经合入的完整应用 SHA。构建在该应用提交上安装锁定依赖、跑 CI、生成 Linux ZIP 并校验重复打包的字节一致性。构建回执分别记录工作流提交、应用提交及树、运行次数、ZIP 摘要和大小。包的独立检查同时验证 GitHub 运行与产物编号、原应用检出和 ZIP 内容。旧的同提交构建仍按原方式校验。构建产物有效期一天，下载保留的 ZIP 可用于离线验真，实际部署仍需可用产物及单独有效的部署授权。
+
 ```sh
 shuduo agent v3-start --checkpoint /private/first-case.json --source-revision REVIEWED_GIT_SHA
 shuduo agent v3-start --checkpoint /private/first-case.json --window-binding
