@@ -5,7 +5,7 @@ import ts from 'typescript';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { deliveryFiles } from '../../src/v2/delivery.mjs';
-import { deliveryReviewRequirements } from '../../web/src/delivery-presentation.ts';
+import { deliveryReviewRequirements, matchingDeliveryVerification } from '../../web/src/delivery-presentation.ts';
 
 // Render the actual TSX components without a browser or network. These are
 // markup/semantics tests, not visual or click-interaction acceptance.
@@ -23,6 +23,15 @@ const Review = await component('AgentPublicationReview');
 const publicationTargetMatches = await component('AgentPublicationReview', 'publicationTargetMatches');
 const ManualDelivery = await component('DeliveryWorkbench');
 const bundle = {id:'fictional-package',digest:'fictional-digest',files:Object.fromEntries(deliveryFiles.map(name=>[name,'fictional content']))};
+
+test('delivery rehearsal selection matches both package ID and digest', () => {
+  const stale = { id: 'stale', packageId: bundle.id, packageDigest: 'different-digest' };
+  const foreign = { id: 'foreign', packageId: 'different-package', packageDigest: bundle.digest };
+  const exact = { id: 'exact', packageId: bundle.id, packageDigest: bundle.digest };
+  assert.equal(matchingDeliveryVerification(bundle, [stale, foreign]), undefined);
+  assert.equal(matchingDeliveryVerification(undefined, [exact]), undefined);
+  assert.equal(matchingDeliveryVerification(bundle, [stale, foreign, exact]), exact);
+});
 test('actual embedded manual delivery locks the source selector and does not execute on render',()=>{
   const contractId='securities-assets-five-fixtures-2026-09-14';
   const html=renderToStaticMarkup(React.createElement(ManualDelivery,{api:()=>{throw Error('must not call on render');},runs:[{id:'manual-run',status:'SUCCEEDED',revisionId:'manual-revision',contextId:'holdings-t1',validationContractId:contractId,createdAt:'2026-01-01'}],contractId,sourceRunId:'manual-run',lockSource:true,canWrite:false,onBack:()=>{}}));
