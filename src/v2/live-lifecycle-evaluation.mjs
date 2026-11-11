@@ -281,7 +281,8 @@ function verifyCodeThroughMonitoring(definition,state,contractId=state?.contract
    state.actions?.agent?.id!==source.taskId||state.taskId!==source.taskId||Date.parse(source.createdAt)<Date.parse(state.evaluationStartedAt)||
    !Number.isFinite(Date.parse(source.createdAt))||!Number.isFinite(Date.parse(state.evaluationStartedAt))||!Number.isSafeInteger(source.modelAttempts)||source.modelAttempts<1||source.modelAttempts>3||
    typeof source.model!=="string"||nonLiveModelLabel(source.model)||!/^[a-f0-9]{64}$/.test(source.revisionHash??""))return false;
- if(contractId===currentLiveLifecycleContract.id&&(!uuid(state.evaluationRunId)||!Number.isSafeInteger(source.reportedTokens)||source.reportedTokens<0||source.reportedTokens>32000||
+ if(contractId===currentLiveLifecycleContract.id&&(!uuid(state.evaluationRunId)||state.actions?.agent?.status!=="CONFIRMED"||
+  state.actions?.delivery?.status!=="CONFIRMED"||!Number.isSafeInteger(source.reportedTokens)||source.reportedTokens<0||source.reportedTokens>32000||
   source.contextId!==definition.contextId||source.validationContractId!==validationFamilyForContext(definition.contextId)?.id||
   state.lifecycleOutcome?.validationContractId!==source.validationContractId||!savedDerivationValid(definition,state)))return false;
  if(source.requirementEvidence!==undefined&&(source.requirementEvidence.status!=='MODEL_PROPOSED'||source.requirementEvidence.attempt!==source.modelAttempts||
