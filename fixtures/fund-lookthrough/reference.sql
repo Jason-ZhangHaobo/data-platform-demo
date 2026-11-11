@@ -2,7 +2,7 @@
 WITH authorized_portfolios AS (
   SELECT DISTINCT portfolio_id
   FROM portfolios
-  WHERE manager_id = '{{advisor_id}}'
+  WHERE manager_id = '{{manager_id}}'
 ), unique_positions AS (
   SELECT DISTINCT p.position_id, p.portfolio_id, p.fund_code,
     CAST(p.market_value AS DECIMAL(18, 2)) AS market_value

@@ -73,6 +73,7 @@ const SecurityWorkbench = lazy(async () => ({ default: (await import("./Security
 const ReportsWorkbench = lazy(async () => ({ default: (await import("./ReportsWorkbench")).ReportsWorkbench }));
 const OperationsWorkbench = lazy(async () => ({ default: (await import("./OperationsWorkbench")).OperationsWorkbench }));
 const AgentCenter = lazy(async () => ({ default: (await import("./AgentCenter")).AgentCenter }));
+const SqlContractScope = lazy(async () => ({ default: (await import("./SqlContractScope")).SqlContractScope }));
 const AgentDevelopmentWorkbench = lazy(async () => ({ default: (await import("./AgentDevelopmentWorkbench")).AgentDevelopmentWorkbench }));
 const PythonWorkbench = lazy(async () => ({ default: (await import("./PythonWorkbench")).PythonWorkbench }));
 const CloudReadinessPanel = lazy(async () => ({ default: (await import("./CloudReadinessPanel")).CloudReadinessPanel }));
@@ -95,11 +96,11 @@ type Context = {
   id: string;
   name: string;
   definition: string;
-  advisorId: string;
+  advisorId?: string;
   businessDate: string;
   referenceSql: string;
   capabilities?:{classicSql:boolean;agentDevelopment:boolean;delivery:boolean;scope:string};
-  outputContract?:{id:string;name:string;grain:string;keyFields:string[];fields:{name:string;label:string}[]};
+  outputContract?:{id:string;name:string;grain:string;keyFields:string[];fields:{name:string;label:string}[];referenceFile?:string};
   tables: {
     name: string;
     label: string;
@@ -821,13 +822,14 @@ function App() {
   const runRevision = revisions.find(
     (revision) => revision.id === run?.revisionId,
   );
+  const expectedRunContract = context?.outputContract?.id ?? validationFamilyForContextId(contextId)?.id;
   const resultIsCurrent = Boolean(
     run &&
       run.contextId === contextId &&
-      validationFamilyForContextId(run.contextId) &&
+      expectedRunContract &&
       runRevision?.sql === sql.trim() &&
       (!status?.validationContract ||
-        run.validationContractId === validationFamilyForContextId(run.contextId)?.id),
+        run.validationContractId === expectedRunContract),
   );
   return (
     <div className="shell">
@@ -1001,7 +1003,7 @@ function App() {
           <>
             <div className="development-language-v2" role="tablist" aria-label="数据开发语言">
               <button role="tab" aria-selected={developmentLanguage === "SQL"} className={developmentLanguage === "SQL" ? "active" : ""} onClick={() => setDevelopmentLanguage("SQL")}>Spark SQL</button>
-              <button role="tab" disabled={privatePreview} title={privatePreview ? "云端 Python 尚未接入此预览" : undefined} aria-selected={developmentLanguage === "PYTHON"} className={developmentLanguage === "PYTHON" ? "active" : ""} onClick={() => setDevelopmentLanguage("PYTHON")}>Python</button>
+              <button role="tab" disabled={privatePreview || context?.capabilities?.agentDevelopment === false} title={privatePreview ? "云端 Python 尚未接入此预览" : context?.capabilities?.agentDevelopment === false ? "当前口径仅支持 Spark SQL" : undefined} aria-selected={developmentLanguage === "PYTHON"} className={developmentLanguage === "PYTHON" ? "active" : ""} onClick={() => setDevelopmentLanguage("PYTHON")}>Python</button>
               <span>{developmentLanguage === "SQL" ? "Apache Spark 3.5.9" : "受限CPython · 本机实际执行"}</span>
             </div>
             {developmentLanguage === "PYTHON" ? (
@@ -1060,7 +1062,7 @@ function App() {
                 03 核验结果
               </span>
               <ChevronRight size={12} />
-              <span title={context?.outputContract?"分布契约尚未接入调度交付":"M2：本机计时发布已验证；云端公网部署仍待验收"}>
+              <span title={context?.outputContract?"此口径的发布能力以交付核验为准":"M2：本机计时发布已验证；云端公网部署仍待验收"}>
                 04 发布交付 <small>{context?.outputContract?"待适配":"M2"}</small>
               </span>
               <div className="journey-end">
@@ -1073,7 +1075,7 @@ function App() {
                 <div className="studio-top">
                   <div className="file-tab">
                     <FileCode2 size={15} />
-                    <strong>{context?.outputContract ? context.outputContract.id.includes("industry")?"holdings_industry.sql":"holdings_asset_class.sql" : "customer_assets.sql"}</strong>
+                    <strong>{context?.outputContract ? context.outputContract.referenceFile ?? (context.outputContract.id.includes("industry")?"holdings_industry.sql":"holdings_asset_class.sql") : "customer_assets.sql"}</strong>
                     {dirty && (
                       <span className="unsaved-dot" title="编辑已修改" />
                     )}
@@ -1096,7 +1098,7 @@ function App() {
                     </select>
                   </label>
                   <div className="toolbar-actions">
-                    {contexts.find(c=>c.id===contextId)?.outputContract && <button onClick={()=>{const c=contexts.find(v=>v.id===contextId);if(!c)return;if(sql!==original&&!window.confirm("当前代码尚未保存，载入参考 SQL 会替换编辑器内容。继续吗？"))return;setSql(c.referenceSql);setOriginal(c.referenceSql);setRun(undefined);setNotice("已载入当前分布参考SQL；保存并运行后独立核验。");}}>载入此口径参考 SQL</button>}
+                    {contexts.find(c=>c.id===contextId)?.outputContract && <button onClick={()=>{const c=contexts.find(v=>v.id===contextId);if(!c)return;if(sql!==original&&!window.confirm("当前代码尚未保存，载入参考 SQL 会替换编辑器内容。继续吗？"))return;setSql(c.referenceSql);setOriginal(c.referenceSql);setRun(undefined);setNotice("已载入当前口径的参考 SQL，运行后会核对独立断言。");}}>载入此口径参考 SQL</button>}
                     <button
                       title="查看与参考版本的差异"
                       className={diff ? "on" : ""}
@@ -1289,7 +1291,7 @@ function App() {
                           <div className="table-foot">
                             <span>
                               <ShieldCheck size={12} />
-                              仅当前上下文的合成客户
+                              {contexts.find(c=>c.id===run.contextId)?.capabilities?.agentDevelopment===false ? "当前样例授权的虚构组合" : "仅当前上下文的合成客户"}
                             </span>
                             <span>
                               {run.engine} {run.engineVersion}
@@ -1324,7 +1326,7 @@ function App() {
                             (run.validation.passed ? "passed" : "failed")
                           }
                         >
-                          {contexts.find(c=>c.id===run.contextId)?.outputContract&&<p>复合键：客户＋交易日＋分类。占比为0—1，分母不含现金；以下五个分布场景独立核验，不计完整Agent E2E。</p>}
+                          {contexts.find(c=>c.id===run.contextId)?.outputContract&&<p>{contexts.find(c=>c.id===run.contextId)?.definition}</p>}
                           <h3>
                             {run.validation.passed
                               ? "独立业务断言通过"
@@ -1368,7 +1370,7 @@ function App() {
                         <div className="empty-result">
                           <ListChecks size={27} />
                           <strong>运行后生成验证报告</strong>
-                          <p>核验客户范围、现金聚合、证券去重和金额精度。</p>
+                          <p>按当前业务口径核对输出、范围和独立断言。</p>
                         </div>
                       ))}
                     {tab === "日志" && (
@@ -1410,7 +1412,9 @@ function App() {
                   </div>
                 </section>
               </section>
-              {agentOpen && context?.outputContract && <aside className="agent-panel distribution-scope-card"><header><Database size={18}/><strong>持仓分布口径</strong></header><div className="distribution-scope-content"><small className="distribution-scope-status">本机 · 经典 SQL</small><h2>先确认粒度，再看占比</h2><p>每行对应一位客户、一个交易日、一个分类。同一持仓编号去重，证券数量按代码去重。</p><div className="distribution-grain"><span>客户</span><span>交易日</span><span>{context?.outputContract?.id.includes("industry")?"行业标签":"资产类别"}</span></div><div className="distribution-formula"><strong>分类持仓市值 ÷ 客户持仓总市值</strong><small>占比为 0—1 · 不含现金 · 不作穿透</small></div><p>未分类保留，零分母记为0；仅现金客户保留“未持仓”零行。</p><div className="distribution-scope-next"><button className="button" onClick={()=>setNav("agent-center")}>进入 Data Agent</button><strong>尚未开放</strong><p>调度交付与云端执行尚未开放。可进入独立 Data Agent，选择此分布口径进行开发；当前结果仅代表本机 SQL 核验。</p></div></div></aside>}
+              {agentOpen && context?.outputContract && <SqlContractScope title={context.outputContract.name}
+                definition={context.definition} industry={context.outputContract.id.includes("industry")}
+                onAgent={context.capabilities?.agentDevelopment===false ? undefined : () => setNav("agent-center")} />}
               {agentOpen && !context?.outputContract && (
                 <aside className="agent-panel">
                   <header>

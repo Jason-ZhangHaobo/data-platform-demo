@@ -62,6 +62,7 @@ import {
   referenceSql,
   validationContractId,
 } from "./context.mjs";
+import { fundContextId } from "./fund-lookthrough.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import {
   pythonRuntimeConfig,
@@ -379,6 +380,12 @@ export function createV2Server(options = {}) {
     };
   const pythonRunner =
     options.pythonRunner ?? ((input) => runRestrictedPython(input, pythonRuntime));
+  const localClassicSpark = local && !durableDevelopment && runnerDescriptor.isolation === "LOCAL_PROCESS";
+  const assertClassicSqlContext = context => {
+    if (localClassicSpark || !context?.outputContractId) return;
+    if (context.id === fundContextId) throw fail(422, "基金组合穿透仅支持本机经典 Spark SQL");
+    throw fail(422, "分布契约尚未启用云端执行");
+  };
   let modelVerifiedAt = null;
   const rawGenerator =
     options.generator ??
@@ -445,10 +452,12 @@ export function createV2Server(options = {}) {
   const mayReadDurableAgent = (task, session) =>
     local || session?.role === "ADMIN" || Boolean(session && task?.submittedBy === session.user.id);
   const mayReadRevision = (item, session) =>
-    local || session?.role === "ADMIN" || Boolean(session && item?.author === session.user.id);
+    (item?.contextId !== fundContextId || localClassicSpark) &&
+    (local || session?.role === "ADMIN" || Boolean(session && item?.author === session.user.id));
   const mayReadRun = (item, session, kind = "revision") =>
-    (local || session?.role === "ADMIN") || Boolean(session && mayReadRevision(store.get(kind, item.revisionId, PROJECT), session) &&
-      (!item.agentTaskId || mayReadDurableAgent(store.get("agent", item.agentTaskId, PROJECT), session)));
+    (item?.contextId !== fundContextId || localClassicSpark) &&
+    ((local || session?.role === "ADMIN") || Boolean(session && mayReadRevision(store.get(kind, item.revisionId, PROJECT), session) &&
+      (!item.agentTaskId || mayReadDurableAgent(store.get("agent", item.agentTaskId, PROJECT), session))));
   const requireDevelopmentOwner = (kind, item, req) => {
     const session = auth.sessionFromHeaders(req.headers);
     if (!(kind === "revision" || kind === "python_revision" ? mayReadRevision(item, session) : mayReadRun(item, session, kind === "python_run" ? "python_revision" : "revision")))
@@ -1373,7 +1382,7 @@ export function createV2Server(options = {}) {
   };
   const statefulRequests = createRequestLane();
   const fixtureContexts = () =>
-    (local && !durableDevelopment && runnerDescriptor.isolation === "LOCAL_PROCESS" ? classicContextIds : allContextIds).map(publicContext);
+    (localClassicSpark ? classicContextIds : allContextIds).map(publicContext);
   const prefetchedPrivateInputs=new WeakMap();
   const handleRequest = async (req, res) => {
     try {
@@ -3373,6 +3382,7 @@ export function createV2Server(options = {}) {
           code = text(body.code, 20, 20_000),
           context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效Python数据上下文");
+        if (context.id === fundContextId) throw fail(422, "基金组合穿透仅支持本机经典 Spark SQL");
         if(context.outputContractId)throw fail(422,"分布契约当前仅支持本机经典Spark SQL开发");
         const key = text(req.headers["idempotency-key"], 1, 100);
         const existingPythonRevision = store.deduplicatedId(`${PROJECT}:python-revision:${key}`);
@@ -3410,6 +3420,7 @@ export function createV2Server(options = {}) {
           context = getContext(revision.contextId);
         requireDevelopmentOwner("python_revision", revision, req);
         if (!context) throw fail(409, "Python版本绑定的数据上下文不存在");
+        if (context.id === fundContextId) throw fail(422, "基金组合穿透仅支持本机经典 Spark SQL");
         const key = text(req.headers["idempotency-key"], 1, 100),
           signature = hash(
             JSON.stringify({
@@ -4755,6 +4766,7 @@ export function createV2Server(options = {}) {
           sourceRun = get("run", text(body.sourceRunId, 1, 80)),
           sourceRevision = get("revision", sourceRun.revisionId);
         if (!deliveryAccessForRequest().canPrepare(sourceRun, sourceRevision)) throw deliveryDenied();
+        if (sourceRevision.contextId === fundContextId) throw fail(422, "基金组合穿透的调度交付尚未开放");
         const family = validationFamilyForRun(sourceRun);
         const name =
           body.name === undefined ? "客户资产 T+1" : text(body.name, 1, 80);
@@ -5961,8 +5973,9 @@ export function createV2Server(options = {}) {
         const body = await readBody(req),
           sql = text(body.sql),
           contextId = text(body.contextId, 1, 80);
-        if (!getContext(contextId)) throw fail(400, "请选择有效上下文");
-        if(getContext(contextId).outputContractId&&(!local||durableDevelopment||runnerDescriptor.isolation!=="LOCAL_PROCESS"))throw fail(422,"分布契约尚未启用云端执行");
+        const context = getContext(contextId);
+        if (!context) throw fail(400, "请选择有效上下文");
+        assertClassicSqlContext(context);
         if (Object.keys(body).some(key=>!["sql","contextId","originAgentTaskId"].includes(key))) throw fail(400,"代码保存包含未支持字段");
         const session=auth.sessionFromHeaders(req.headers), actor=session?.user.id ?? (local ? "local-engineer" : undefined);
         if (!actor) throw fail(401,"请先登录后保存代码");
@@ -5984,7 +5997,7 @@ export function createV2Server(options = {}) {
         const body = await readBody(req),
           rev = get("revision", text(body.revisionId, 1, 80));
         requireDevelopmentOwner("revision", rev, req);
-        if(getContext(rev.contextId)?.outputContractId&&(!local||durableDevelopment||runnerDescriptor.isolation!=="LOCAL_PROCESS"))throw fail(422,"分布契约尚未启用云端执行");
+        assertClassicSqlContext(getContext(rev.contextId));
         if (ingressChannel === 'HTTP') assertScopedRecord(auth.sessionFromHeaders(req.headers), rev);
         if (!options.runner && !runtime.available)
           throw fail(503, "Spark 尚未就绪，请运行 npm run v2:bootstrap");
@@ -6127,6 +6140,7 @@ export function createV2Server(options = {}) {
           throw fail(422, "数据开发语言不受支持");
         const context = getContext(text(body.contextId, 1, 80));
         if (!context) throw fail(400, "请选择有效上下文");
+        if (context.id === fundContextId) throw fail(422, "基金组合穿透当前仅支持本机经典 SQL，请在数据开发中保存并运行");
         if(context.outputContractId&&(!local||durableDevelopment||runnerDescriptor.isolation!=="LOCAL_PROCESS"))throw Object.assign(fail(422,"分布Agent尚未启用云端执行"),{code:"OUTPUT_CONTRACT_LOCAL_ONLY"});
         if (ingressChannel === "HTTP") assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, options.now?.() ?? Date.now());
         const actorId = language === "SPARK_SQL"
