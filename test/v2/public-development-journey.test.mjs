@@ -2,8 +2,10 @@
 // This file is NOT evidence of live model, Spark, cloud recovery or public E2E.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createV2Server, PROJECT } from '../../src/v2/server.mjs';
@@ -97,6 +99,114 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     privateCall:async body=>{const r=await fetch(base.replace(/\/api\/v2$/,'')+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke',...(stableOrigin?{connection:'close'}:{})},body:JSON.stringify(body)});return{status:r.status,body:await r.json()};} };
 }
 const taskInput = { message: '计算虚构客户总资产，避免现金重复累计。', code: 'SELECT 1', contextId: 'holdings-t1' };
+
+test('a killed V3 CLI can only recover the accepted original request under the replacement lock', {timeout:15000}, async t=>{
+  const f=await fixture(t,{startupPreflight:true});
+  const checkpoint=join(f.directory,'interrupted.json'),billPath=join(f.directory,'bill.json'),requests=[];
+  const accepted=Promise.withResolvers(),receivingReceipt=Promise.withResolvers(),sendReceipt=Promise.withResolvers();
+  const children=new Set();
+  const gate=createServer(async (req,res)=>{
+    try {
+      const path=req.url.slice('/api/v2'.length);
+      requests.push({method:req.method,path,key:req.headers['idempotency-key']});
+      const chunks=[];
+      for await(const chunk of req)chunks.push(chunk);
+      const body=chunks.length?JSON.parse(Buffer.concat(chunks)):undefined;
+      const result=await f.call(path,body,req.headers['idempotency-key']);
+      if(req.method==='POST'&&path==='/agent/tasks'){
+        accepted.resolve(result);
+        return; // The application accepted it. The CLI never receives the response.
+      }
+      if(path.startsWith('/agent/requests/')){
+        receivingReceipt.resolve();
+        await sendReceipt.promise;
+      }
+      res.writeHead(result.status,{'content-type':'application/json'}).end(JSON.stringify(result.body));
+    }catch{
+      res.writeHead(500).end('{}');
+    }
+  });
+  await new Promise((resolve,reject)=>{gate.once('error',reject);gate.listen(0,'127.0.0.1',resolve);});
+  t.after(async()=>{
+    sendReceipt.resolve();
+    for(const child of children)child.kill('SIGKILL');
+    gate.closeAllConnections();
+    await new Promise(resolve=>gate.close(resolve));
+  });
+  const base='http://127.0.0.1:'+gate.address().port+'/api/v2';
+  function run(flags){
+    const child=spawn(process.execPath,['bin/shuduo.mjs','agent','v3-start','--base-url',base,'--checkpoint',checkpoint,...flags],
+      {env:{PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
+    children.add(child);
+    let stdout='',stderr='';
+    child.stdout.on('data',chunk=>{stdout+=chunk;});child.stderr.on('data',chunk=>{stderr+=chunk;});
+    const done=new Promise((resolve,reject)=>{
+      child.once('error',reject);
+      child.once('close',(code,signal)=>{children.delete(child);resolve({code,signal,stdout,stderr});});
+    });
+    return {child,done};
+  }
+  const prepared=await run(['--source-revision','a'.repeat(40)]).done;
+  assert.equal(prepared.code,0,prepared.stderr);
+  const originalKey=JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.agent.key;
+  const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
+  writeFileSync(billPath,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny:64,maxIncrementCny:2,
+    pages:[{Success:true,Data:{PageNum:1,PageSize:300,TotalCount:1,BillingCycle:month,Items:{Item:[{Currency:'CNY',PretaxAmount:'20.00'}]}}}]}),{mode:0o600});
+  const submitting=run(['--bill-file',billPath,'--confirm']);
+  const result=await Promise.race([accepted.promise,submitting.done.then(e=>{throw Error('CLI exited before POST was accepted: '+e.stderr);})]);
+  assert.equal(result.status,202);
+  assert.equal(JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.agent.status,'SUBMITTING');
+  assert.equal((await run(['--reconcile']).done).code,1,'a live CLI still holds the lock');
+  assert.equal(requests.length,2);
+  submitting.child.kill('SIGKILL');
+  assert.equal((await submitting.done).signal,'SIGKILL');
+  const lockPath=checkpoint+'.lock';
+  const [abandonedName]=readdirSync(lockPath);
+  const abandoned=JSON.parse(readFileSync(join(lockPath,abandonedName),'utf8'));
+  assert.equal(abandoned.pid,submitting.child.pid);
+  f.expire();
+  const blocked=await run(['--bill-file',billPath,'--confirm']).done;
+  assert.equal(blocked.code,1,'only reconciliation can recover the abandoned lock');
+  assert.equal(requests.length,2);
+
+  const recoveries=[run(['--reconcile']).done,run(['--reconcile']).done];
+  try {
+    await Promise.race([receivingReceipt.promise,Promise.all(recoveries).then(all=>{
+      throw Error('Neither CLI read the original receipt: '+all.map(e=>e.stderr).join(', '));
+    })]);
+    assert.equal((await Promise.race(recoveries)).code,1,'only one recovery may enter the locked checkpoint');
+  }finally{sendReceipt.resolve();}
+  const completed=await Promise.all(recoveries);
+  assert.deepEqual(completed.map(e=>e.code).sort(),[0,1]);
+  const recovered=completed.find(e=>e.code===0);
+  assert.equal(JSON.parse(recovered.stdout).taskId,result.body.id);
+  const confirmed=JSON.parse(readFileSync(checkpoint,'utf8'));
+  const original=confirmed.outcomes[0].actions.agent;
+  assert.equal(original.key,originalKey);
+  assert.equal(original.id,result.body.id);
+  assert.equal(original.status,'CONFIRMED');
+  assert.equal(confirmed.submission.bill.unsettledReserveCny,64);
+  assert.equal(existsSync(lockPath),false);
+  const legacy=JSON.stringify({pid:abandoned.pid});
+  writeFileSync(lockPath,legacy,{mode:0o600});
+  assert.equal((await run(['--reconcile']).done).code,1);
+  assert.equal(readFileSync(lockPath,'utf8'),legacy,'a legacy lock has no boot identity to verify');
+  rmSync(lockPath);
+  mkdirSync(lockPath,{mode:0o700});
+  const foreign=JSON.stringify({...abandoned,scope:'0'.repeat(64)});
+  const foreignPath=join(lockPath,abandonedName);
+  writeFileSync(foreignPath,foreign,{mode:0o600});
+  assert.equal((await run(['--reconcile']).done).code,1);
+  assert.equal(readFileSync(foreignPath,'utf8'),foreign,'a lock from a different boot cannot be recovered automatically');
+  rmSync(lockPath,{recursive:true});
+  assert.equal(JSON.parse((await run(['--reconcile']).done).stdout).taskId,result.body.id);
+  assert.deepEqual(requests.map(({method,path})=>[method,path]),[
+    ['GET','/status?include=session'],['POST','/agent/tasks'],['GET','/auth/session'],['GET','/agent/requests/'+originalKey],
+  ]);
+  assert.equal(requests[1].key,originalKey);
+  assert.equal(f.store.list('agent',PROJECT).length,1);
+  assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
+});
 
 async function measuredSpark(t,f,prepared,label){
   const input=JSON.parse(prepared.job.body);
