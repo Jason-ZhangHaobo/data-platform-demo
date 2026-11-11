@@ -22,6 +22,7 @@ import { publicationPreflightPath, publicationRequestReceiptPath } from '../../s
 import { validatePrivateApplicationRequest } from '../../src/v2/private-application.mjs';
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
+import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
@@ -100,27 +101,19 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
 }
 const taskInput = { message: '计算虚构客户总资产，避免现金重复累计。', code: 'SELECT 1', contextId: 'holdings-t1' };
 
-test('a killed V3 CLI can only recover the accepted original request under the replacement lock', {timeout:15000}, async t=>{
-  const f=await fixture(t,{startupPreflight:true});
-  const checkpoint=join(f.directory,'interrupted.json'),billPath=join(f.directory,'bill.json'),requests=[];
-  const accepted=Promise.withResolvers(),receivingReceipt=Promise.withResolvers(),sendReceipt=Promise.withResolvers();
+async function subprocessCli(t,f,checkpoint,intercept){
+  const requests=[];
   const children=new Set();
   const gate=createServer(async (req,res)=>{
     try {
       const path=req.url.slice('/api/v2'.length);
-      requests.push({method:req.method,path,key:req.headers['idempotency-key']});
+      const request={method:req.method,path,key:req.headers['idempotency-key']};
+      requests.push(request);
       const chunks=[];
       for await(const chunk of req)chunks.push(chunk);
       const body=chunks.length?JSON.parse(Buffer.concat(chunks)):undefined;
       const result=await f.call(path,body,req.headers['idempotency-key']);
-      if(req.method==='POST'&&path==='/agent/tasks'){
-        accepted.resolve(result);
-        return; // The application accepted it. The CLI never receives the response.
-      }
-      if(path.startsWith('/agent/requests/')){
-        receivingReceipt.resolve();
-        await sendReceipt.promise;
-      }
+      if(await intercept(request,result)===false)return;
       res.writeHead(result.status,{'content-type':'application/json'}).end(JSON.stringify(result.body));
     }catch{
       res.writeHead(500).end('{}');
@@ -128,14 +121,13 @@ test('a killed V3 CLI can only recover the accepted original request under the r
   });
   await new Promise((resolve,reject)=>{gate.once('error',reject);gate.listen(0,'127.0.0.1',resolve);});
   t.after(async()=>{
-    sendReceipt.resolve();
     for(const child of children)child.kill('SIGKILL');
     gate.closeAllConnections();
     await new Promise(resolve=>gate.close(resolve));
   });
   const base='http://127.0.0.1:'+gate.address().port+'/api/v2';
-  function run(flags){
-    const child=spawn(process.execPath,['bin/shuduo.mjs','agent','v3-start','--base-url',base,'--checkpoint',checkpoint,...flags],
+  function run(action,flags=[]){
+    const child=spawn(process.execPath,['bin/shuduo.mjs','agent',action,'--base-url',base,'--checkpoint',checkpoint,...flags],
       {env:{PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
     children.add(child);
     let stdout='',stderr='';
@@ -146,12 +138,35 @@ test('a killed V3 CLI can only recover the accepted original request under the r
     });
     return {child,done};
   }
+  return {run,requests};
+}
+
+function writeSubprocessBill(path){
+  const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
+  writeFileSync(path,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny:64,maxIncrementCny:2,
+    pages:[{Success:true,Data:{PageNum:1,PageSize:300,TotalCount:1,BillingCycle:month,Items:{Item:[{Currency:'CNY',PretaxAmount:'20.00'}]}}}]}),{mode:0o600});
+}
+
+test('a killed V3 CLI can only recover the accepted original request under the replacement lock', {timeout:15000}, async t=>{
+  const f=await fixture(t,{startupPreflight:true});
+  const checkpoint=join(f.directory,'interrupted.json'),billPath=join(f.directory,'bill.json');
+  const accepted=Promise.withResolvers(),receivingReceipt=Promise.withResolvers(),sendReceipt=Promise.withResolvers();
+  t.after(()=>sendReceipt.resolve());
+  const gate=await subprocessCli(t,f,checkpoint,async ({method,path},result)=>{
+    if(method==='POST'&&path==='/agent/tasks'){
+      accepted.resolve(result);
+      return false;
+    }
+    if(path.startsWith('/agent/requests/')){
+      receivingReceipt.resolve();
+      await sendReceipt.promise;
+    }
+  });
+  const run=flags=>gate.run('v3-start',flags),requests=gate.requests;
   const prepared=await run(['--source-revision','a'.repeat(40)]).done;
   assert.equal(prepared.code,0,prepared.stderr);
   const originalKey=JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.agent.key;
-  const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
-  writeFileSync(billPath,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny:64,maxIncrementCny:2,
-    pages:[{Success:true,Data:{PageNum:1,PageSize:300,TotalCount:1,BillingCycle:month,Items:{Item:[{Currency:'CNY',PretaxAmount:'20.00'}]}}}]}),{mode:0o600});
+  writeSubprocessBill(billPath);
   const submitting=run(['--bill-file',billPath,'--confirm']);
   const result=await Promise.race([accepted.promise,submitting.done.then(e=>{throw Error('CLI exited before POST was accepted: '+e.stderr);})]);
   assert.equal(result.status,202);
@@ -206,6 +221,110 @@ test('a killed V3 CLI can only recover the accepted original request under the r
   assert.equal(requests[1].key,originalKey);
   assert.equal(f.store.list('agent',PROJECT).length,1);
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
+});
+
+test('v3-inspect recovers the same delivery files and rehearsal after CLI termination', {timeout:15000}, async t=>{
+  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true});
+  const checkpoint=join(f.directory,'delivery-interruption.json'),billPath=join(f.directory,'bill.json');
+  const deliveryAccepted=Promise.withResolvers(),rehearsalAccepted=Promise.withResolvers();
+  const {run,requests}=await subprocessCli(t,f,checkpoint,({method,path},result)=>{
+    if(method!=='POST')return;
+    if(path.endsWith('/prepare-delivery'))deliveryAccepted.resolve(result);
+    else if(path.startsWith('/agent/deliveries/')&&path.endsWith('/advance'))rehearsalAccepted.resolve(result);
+    else return;
+    return false;
+  });
+  async function cli(action,flags=[]){
+    const completed=await run(action,flags).done;
+    assert.equal(completed.code,0,completed.stderr);
+    return JSON.parse(completed.stdout);
+  }
+  async function stopAfterAcceptance(action,accepted,expectedStatus,phase){
+    const submitting=run(action,confirm);
+    const response=await Promise.race([accepted.promise,submitting.done.then(e=>{
+      throw Error(action+' exited before the application accepted its request: '+e.stderr);
+    })]);
+    assert.equal(response.status,expectedStatus);
+    const before=readFileSync(checkpoint,'utf8');
+    assert.equal(JSON.parse(before).outcomes[0].actions[phase].status,'SUBMITTING');
+    const beforeInspect=requests.length;
+    assert.equal((await run('v3-inspect').done).code,1);
+    assert.equal(requests.length,beforeInspect);
+    submitting.child.kill('SIGKILL');
+    assert.equal((await submitting.done).signal,'SIGKILL');
+    assert.equal(readFileSync(checkpoint,'utf8'),before);
+    assert.ok(existsSync(checkpoint+'.lock'));
+    return response.body;
+  }
+  writeSubprocessBill(billPath);
+  const confirm=['--bill-file',billPath,'--confirm'];
+  await cli('v3-start',['--source-revision','a'.repeat(40)]);
+  const {taskId}=await cli('v3-start',confirm);
+  const taskPath='/agent/tasks/'+taskId;
+  const advance=async task=>(await f.call(taskPath+'/advance',{expectedVersion:task.version})).body;
+  let task=(await f.call(taskPath)).body;
+  task=await advance(await advance(task));
+  f.complete(f.store.get('run',task.runId,PROJECT).remoteSubmission.prepared);
+  task=await advance(task);
+  assert.equal(task.status,'SUCCEEDED');
+  assert.equal((await cli('v3-inspect')).status,'DEVELOPMENT_BOUND');
+
+  const accepted=await stopAfterAcceptance('v3-prepare-delivery',deliveryAccepted,202,'delivery');
+  assert.equal(accepted.stage,'PACKAGE_READY');
+  const deliveryKey=JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.delivery.key;
+  const bundle=f.store.get('delivery_package',accepted.packageId,PROJECT);
+  const artifactPath=join(f.directory,'artifacts',bundle.artifact.key);
+  const artifact=readFileSync(artifactPath);
+  assert.equal(createHash('sha256').update(artifact).digest('hex'),bundle.artifact.contentHash);
+  validateDeliveryPackage(JSON.parse(artifact),accepted.packageDigest);
+  assert.equal(Object.keys(bundle.files).length,8);
+  await f.restart();
+  const offset=requests.length;
+  const recovered=await cli('v3-inspect');
+  assert.equal(recovered.delivery.id,accepted.id);
+  assert.equal(recovered.delivery.packageId,accepted.packageId);
+  assert.equal(recovered.delivery.packageDigest,accepted.packageDigest);
+  assert.deepEqual(requests.slice(offset).map(({method})=>method),['GET','GET','GET']);
+  assert.equal(requests.at(-1).path,taskPath+'/delivery-requests/'+deliveryKey);
+  assert.equal((await cli('v3-prepare-delivery',confirm)).reason,'INSPECT_ORIGINAL_DELIVERY');
+  assert.equal(requests.length,offset+3);
+
+  const started=await stopAfterAcceptance('v3-rehearse',rehearsalAccepted,200,'rehearsal');
+  const verification=f.store.get('delivery_verification',started.verificationId,PROJECT);
+  assert.equal(verification.status,'RUNNING');
+  const queued=f.store.get('agent_delivery_task',accepted.id,PROJECT).remoteSubmission.prepared;
+  assert.equal(queued.job.jobId,verification.id);
+  await f.restart();
+  f.complete(queued);
+  const settling=await f.call('/agent/deliveries/'+accepted.id+'/advance',{
+    expectedVersion:started.version,rehearsal:{packageId:accepted.packageId,packageDigest:accepted.packageDigest,verificationId:verification.id},
+  });
+  assert.equal(settling.body.stage,'AWAITING_ENGINEER_REVIEW');
+  f.expire();
+  const queueBefore=f.queueCounts(), lastOffset=requests.length;
+  const final=await cli('v3-inspect');
+  assert.equal(final.delivery.packageDigest,accepted.packageDigest);
+  assert.equal(final.delivery.rehearsal.id,verification.id);
+  assert.equal(final.delivery.rehearsal.status,'SUCCEEDED');
+  assert.equal(final.delivery.rehearsal.reservedDurationMs,verification.reservedDurationMs);
+  assert.deepEqual(requests.slice(lastOffset).map(({method})=>method),['GET','GET','GET']);
+  assert.equal(requests.at(-1).path,taskPath+'/delivery-requests/'+deliveryKey);
+  assert.equal((await cli('v3-rehearse',confirm)).reason,'INSPECT_ORIGINAL_REHEARSAL');
+  assert.equal(requests.length,lastOffset+3);
+  const [saved]=JSON.parse(readFileSync(checkpoint,'utf8')).outcomes;
+  assert.equal(saved.actions.delivery.key,deliveryKey);
+  assert.equal(saved.actions.delivery.bill.unsettledReserveCny,64);
+  assert.equal(saved.actions.rehearsal.bill.unsettledReserveCny,64);
+  assert.equal(saved.actions.rehearsal.id,verification.id);
+  assert.deepEqual(readFileSync(artifactPath),artifact);
+  assert.equal(f.packageWrites(),1);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,1);
+  assert.equal(f.store.list('delivery_verification',PROJECT).length,1);
+  assert.deepEqual(f.queueCounts(),queueBefore);
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:2});
+  assert.deepEqual(requests.filter(r=>r.method==='POST').map(r=>r.path),
+    ['/agent/tasks',taskPath+'/prepare-delivery','/agent/deliveries/'+accepted.id+'/advance']);
+  assert.equal(existsSync(checkpoint+'.lock'),false);
 });
 
 async function measuredSpark(t,f,prepared,label){

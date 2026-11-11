@@ -637,5 +637,5 @@ export async function inspectCloudV3Execution(path, client) {
     const delivery = await reconcileOriginalDelivery(client, item, code);
     if (JSON.stringify(item) !== before) writeCheckpoint(path,state);
     return {...response("DEVELOPMENT_BOUND"), execution, delivery};
-  });
+  }, {reconcile:true});
 }
