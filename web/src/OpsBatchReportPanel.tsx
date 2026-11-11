@@ -2,8 +2,9 @@ import {useEffect, useRef, useState} from "react";
 import {readPrivateBatchSummary} from "../../src/v2/private-batch-report-client.mjs";
 import type {PrivateBatchSummary} from "../../src/v2/private-batch-report-client.mjs";
 import type {PublishedReportBinding} from "../../src/v2/published-report-request.mjs";
+import {OpsBatchArchivePanel} from "./OpsBatchArchivePanel";
 
-type Api = <T>(path: string) => Promise<T>;
+type Api = <T>(path: string, body?: unknown, options?: {idempotencyKey?: string}) => Promise<T>;
 export function OpsBatchReportPanel({api, source, sequence}: {api: Api; source: PublishedReportBinding; sequence: number}) {
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<{revision: number; report?: PrivateBatchSummary; message?: string}>();
@@ -44,7 +45,7 @@ export function OpsBatchReportPanel({api, source, sequence}: {api: Api; source: 
     }
   };
   return <section id="ops-batch-report" className="ops-live-evaluation-v2" aria-labelledby="ops-batch-report-title">
-    <header><div><h3 id="ops-batch-report-title">第 {sequence} 批客户资产汇总</h3><p>私有发布 · 只读</p></div>
+    <header><div><h3 id="ops-batch-report-title">第 {sequence} 批客户资产汇总</h3><p>私有发布 · 汇总只读</p></div>
       <button className="button" disabled={!current || downloading} onClick={() => {setNotice(""); setRevision(value => value + 1);}}>重新读取汇总</button>
     </header>
     {!current && <p role="status">正在核对固定发布、快照和汇总…</p>}
@@ -66,5 +67,6 @@ export function OpsBatchReportPanel({api, source, sequence}: {api: Api; source: 
       <button className="button" disabled={downloading} onClick={() => void download()}>下载批次溯源 JSON</button>
     </>}
     {notice && <p role="status">{notice}</p>}
+    <OpsBatchArchivePanel api={api} source={source} summary={report}/>
   </section>;
 }

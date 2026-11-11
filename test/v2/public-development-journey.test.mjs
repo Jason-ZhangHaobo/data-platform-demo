@@ -30,6 +30,7 @@ import { serviceSourceFromLocation } from '../../web/src/service-source-binding.
 import { serviceBatchFromLocation } from '../../web/src/service-batch-scope.ts';
 import { privateBatchReportPath } from '../../src/v2/private-batch-report-request.mjs';
 import { reportEvidenceDigest } from '../../src/v2/report-provenance-client.mjs';
+import { batchArchiveRoute, batchArchiveListPath, batchArchiveRequestPath, prepareBatchArchive, readBatchArchive, submitBatchArchive } from '../../src/v2/private-batch-archive-client.mjs';
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
@@ -1058,6 +1059,86 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM documents').get().n,beforeReportReads);
   assert.deepEqual(f.counts(),beforeReportExecution);
   assert.deepEqual(f.queueCounts(),queuesBeforeConsumption);
+
+  const archiveDraft={source:boundReport,summaryDigest:firstReport.body.digest,title:'虚构财富顾问资产分析',
+    requirement:'核对原批次客户资产、持仓和现金汇总，并保留审阅依据。'};
+  const reviewedArchive=await prepareBatchArchive(archiveDraft), archiveRequestId=randomUUID();
+  assert.equal((await f.call(batchArchiveListPath(boundReport))).body.canArchive,false);
+  assert.equal((await f.call(batchArchiveRoute,reviewedArchive,archiveRequestId)).status,403);
+  delete f.env.V2_FC_PUBLIC_READ_ONLY;
+  delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
+  await f.restart();
+  assert.equal((await f.call(batchArchiveRoute,reviewedArchive,archiveRequestId)).status,403);
+  f.env.V2_PRIVATE_BATCH_REPORT_ARCHIVE_ENABLED='true';
+  await f.restart();
+  assert.equal((await f.call(batchArchiveListPath(boundReport))).body.canArchive,true);
+  assert.equal((await f.call(batchArchiveRoute,{...reviewedArchive,draft:{...archiveDraft,title:'被替换的归档'}},archiveRequestId)).status,409);
+  const stale=await prepareBatchArchive({...archiveDraft,summaryDigest:secondReport.body.digest});
+  assert.equal((await f.call(batchArchiveRoute,stale,archiveRequestId)).status,409);
+  const otherWrite=await fetch(f.base+batchArchiveRoute,{method:'POST',headers:{cookie:otherCookie,
+    'x-shuduo-client':'workbench','x-csrf-token':otherLogin.body.csrfToken,'content-type':'application/json',
+    'idempotency-key':archiveRequestId},body:JSON.stringify(reviewedArchive)});
+  assert.equal(otherWrite.status,404);
+  assert.equal(f.store.list('private_batch_report_archive',PROJECT).length,0);
+
+  const archiveClient={request:async (path,options)=>{
+    const response=await f.call(path,options?.body,options?.idempotencyKey);
+    assert.ok(response.status===200||response.status===201);
+    return response.body;
+  }};
+  let submittedArchive;
+  await assert.rejects(submitBatchArchive({request:async (path,options)=>{
+    submittedArchive=await archiveClient.request(path,options);
+    throw Error('simulated connection loss after archive commit');
+  }},{...reviewedArchive,requestId:archiveRequestId}),/connection loss/);
+  await f.restart();
+  const recoveredArchive=await readBatchArchive(archiveClient,{requestId:archiveRequestId,source:boundReport,reviewedDigest:reviewedArchive.reviewedDigest});
+  assert.deepEqual(recoveredArchive,submittedArchive);
+  assert.equal(recoveredArchive.reportVersion,1);
+  assert.equal(recoveredArchive.review.draft.requirement,archiveDraft.requirement);
+  assert.deepEqual(recoveredArchive.summary,firstReport.body);
+  assert.deepEqual(await submitBatchArchive(archiveClient,{...reviewedArchive,requestId:archiveRequestId}),recoveredArchive);
+  const secondReview=await prepareBatchArchive({...archiveDraft,title:'虚构财富顾问资产分析复核版'});
+  assert.equal((await f.call(batchArchiveRoute,secondReview,archiveRequestId)).status,409);
+  const secondArchive=await submitBatchArchive(archiveClient,{...secondReview,requestId:randomUUID()});
+  assert.equal(secondArchive.reportVersion,2);
+  assert.equal(f.store.list('private_batch_report_archive',PROJECT).length,2);
+  assert.ok(!(await f.call('/reports/overview')).body.reports.some(report=>report.name===archiveDraft.title));
+  assert.deepEqual((await f.call(batchArchiveListPath(boundReport))).body.entries.map(entry=>entry.reportVersion),[2,1]);
+  assert.deepEqual((await f.call(batchArchiveListPath(monitorBatches[1].reportSource))).body.entries,[]);
+  assert.equal((await fetch(f.base+batchArchiveRequestPath(archiveRequestId),{headers:{cookie:otherCookie}})).status,404);
+  assert.equal((await fetch(f.base+batchArchiveRequestPath(archiveRequestId))).status,401);
+  f.env.V2_FC_PUBLIC_READ_ONLY='true';
+  await f.restart();
+  assert.equal((await f.call(batchArchiveRoute,reviewedArchive,archiveRequestId)).status,403);
+  const archivedFile=await f.call(batchArchiveRequestPath(archiveRequestId)+'?download_digest='+recoveredArchive.digest);
+  assert.equal(archivedFile.status,200);
+  assert.equal(archivedFile.headers.get('cache-control'),'no-store');
+  assert.match(archivedFile.headers.get('content-disposition'),/^attachment; filename="shuduo-batch-archive-/);
+  assert.deepEqual(archivedFile.body,recoveredArchive);
+  assert.equal((await f.call(batchArchiveRequestPath(archiveRequestId)+'?download_digest='+'0'.repeat(64))).status,409);
+  const archiveFile=join(f.directory,'batch-archive.json');
+  writeFileSync(archiveFile,JSON.stringify(archivedFile.body),{mode:0o600});
+  const verifyArchive=['reports','verify-batch-archive','--file',archiveFile];
+  assert.equal(await runV2Cli(verifyArchive,{},{client:offline,output:()=>{},error:value=>{throw Error(value);}}),0);
+  const changedArchive=structuredClone(archivedFile.body);
+  changedArchive.review.draft.requirement='不符合原审阅的修改';
+  writeFileSync(archiveFile,JSON.stringify(changedArchive),{mode:0o600});
+  assert.equal(await runV2Cli(verifyArchive,{},{client:offline,output:()=>{},error:()=>{}}),1);
+  const archiveMcp=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:2,method:'tools/call',
+    params:{name:'report_batch_archive',arguments:{requestId:archiveRequestId}}},{client:archiveClient}));
+  assert.deepEqual(archiveMcp.result.structuredContent,recoveredArchive);
+  const storedArchive=f.store.list('private_batch_report_archive',PROJECT).find(record=>record.receipt.review.requestId===archiveRequestId);
+  const {digest:originalDigest,...rehashed}=structuredClone(storedArchive.receipt);
+  rehashed.review.draft.title='写入后改过的名称';
+  rehashed.review.reviewedDigest=await reportEvidenceDigest(rehashed.review.draft);
+  f.store.update('private_batch_report_archive',storedArchive.id,PROJECT,{receipt:{...rehashed,digest:await reportEvidenceDigest(rehashed)}});
+  assert.equal((await f.call(batchArchiveRequestPath(archiveRequestId))).body.code,'BATCH_REPORT_ARCHIVE_CHANGED');
+  f.store.update('private_batch_report_archive',storedArchive.id,PROJECT,{receipt:storedArchive.receipt});
+  assert.equal((await f.call(batchArchiveRequestPath(archiveRequestId))).body.digest,originalDigest);
+  assert.deepEqual(f.counts(),beforeReportExecution);
+  assert.deepEqual(f.queueCounts(),queuesBeforeConsumption);
+
   const sources=new URLSearchParams({agent_task_id:task.id,package_digest:pending.packageDigest,release_id:releaseId});
   f.store.update('release',releaseId,PROJECT,{reviewDigest:undefined});
   assert.deepEqual((await f.call('/data-services/sources?'+sources)).body,[]);
@@ -1066,6 +1147,7 @@ test('a killed publication CLI recovers both original batches through signed sch
   f.store.update('monitor_event',event.eventId,PROJECT,{observedAt:'2000-01-01T00:00:00.000Z'});
   const checkpointBytes=readFileSync(checkpoint,'utf8');
   assert.equal((await f.call(receiptPath)).body.monitoring.status,'UNCONFIRMED');
+  assert.deepEqual(await readBatchArchive(archiveClient,{requestId:archiveRequestId,source:boundReport}),recoveredArchive);
   assert.deepEqual((await f.call('/data-services/sources?'+sources)).body,[]);
   assert.equal((await cli('v3-publish',['--reconcile'])).reason,'ORIGINAL_PUBLICATION_UNCONFIRMED');
   await cli('v3-consumption',secondConsumption.flags,1);

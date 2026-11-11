@@ -8,6 +8,7 @@ import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-compa
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import {readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
+import {readBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import{publishedReportSourceSchema,publishedReportMetricIds}from'../src/v2/published-report-request.mjs';
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
@@ -222,6 +223,7 @@ const tools = [
   { name: "report_run", description: "对固定快照实际运行KPI/柱状/饼图聚合并保存摘要。", inputSchema: { type: "object", properties: { reportId: { type: "string" } }, required: ["reportId"] } },
   {name:"report_provenance",description:"只读核对确切报表运行的冻结需求、澄清、审阅与产物摘要；不依赖当前聊天、不计算。",inputSchema:{type:"object",properties:{reportId:{type:"string"},runId:{type:"string"}},required:["reportId","runId"],additionalProperties:false}},
   {name:"report_batch_summary",description:"读取本人私有 Agent 发布批次的固定快照汇总和发布溯源。",inputSchema:{type:"object",properties:{source:{...publishedReportSourceSchema,properties:{...publishedReportSourceSchema.properties,kind:{const:"AGENT"}},required:[...publishedReportSourceSchema.required,"taskId"]}},required:["source"],additionalProperties:false}},
+  {name:"report_batch_archive",description:"按原请求编号只读核对本账号的报表归档及审阅依据。",inputSchema:{type:"object",properties:{requestId:{type:"string"}},required:["requestId"],additionalProperties:false}},
   { name: "report_export", description: "导出最后一次成功聚合结果CSV；不导出业务明细。", inputSchema: { type: "object", properties: { reportId: { type: "string" } }, required: ["reportId"] } },
   { name: "report_plan_list", description: "列出传统报表方案；sourceBatchId指定时只列本账号同批次方案。", inputSchema: { type: "object", properties: {sourceBatchId:{type:'string'}} } },
   {name:'report_plan_clarification',description:'只读查询原同源报表澄清问题、来源及历史用量，不调用模型。',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id'],additionalProperties:false}},
@@ -826,6 +828,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     });
   if(name==='report_provenance')return readReportProvenance(client,args);
   if(name==='report_batch_summary')return readPrivateBatchSummary(client,{source:args.source});
+  if(name==='report_batch_archive')return readBatchArchive(client,{requestId:args.requestId});
   if (name === "report_export")
     return client.request(`/reports/${encodeURIComponent(args.reportId)}/export`);
   if (name === "report_plan_list") return client.request('/reports/agent/plans'+(args.sourceBatchId?'?source_batch_id='+encodeURIComponent(args.sourceBatchId):''));

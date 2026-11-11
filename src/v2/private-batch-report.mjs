@@ -8,7 +8,7 @@ import { executeWidget } from "./reports.mjs";
 const fail = (status, code, message) => Object.assign(Error(message), {status, code});
 const unconfirmed = message => fail(409, "PRIVATE_BATCH_REPORT_UNCONFIRMED", message);
 
-export function readPrivateBatchReport({store, businessStore, project, actorId, source}) {
+export function requirePrivateBatchReportOwner({store, project, actorId, source}) {
   const get = (kind, id) => store.get(kind, id, project);
   const task = get("agent", source.taskId);
   const original = get("release", source.releaseId);
@@ -20,7 +20,12 @@ export function readPrivateBatchReport({store, businessStore, project, actorId, 
       original.packageDigest !== source.packageDigest || original.sourceRevisionId !== source.revisionId ||
       original.sourceRunId !== source.runId || selected.sourceAgentTaskId !== task.id)
     throw unconfirmed("任务、代码版本、开发运行或交付包与原批次不一致");
+  return {task, selected};
+}
 
+export function readPrivateBatchReport({store, businessStore, project, actorId, source}) {
+  const {task, selected} = requirePrivateBatchReportOwner({store, project, actorId, source});
+  const get = (kind, id) => store.get(kind, id, project);
   const {batch, release, bundle, monitoring} = readPrivateReleaseBatch(store, project, selected.id);
   const event = monitoring?.batches.find(item => item.batchId === batch.id);
   const origin = bundle.manifest.source;
