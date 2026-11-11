@@ -35,6 +35,8 @@ XAPI查询的`service.steps`返回实际`alias`、`dapiId`、`dapiVersionId`，�
 
 原消费者继续执行独立业务预期、分页、授权、限流和撤销检查，不另建执行器。`SERVICE_CONSUMER_V2` 增加冻结来源：任务、代码版本/摘要、开发运行、业务口径、交付包、发布及成功发布批次，并记录 DAPI／XAPI 固定版本和配置摘要。来源声明不是授权；真实执行仍须当前批准、有效凭证、原固定窗口和请求额度。
 
+确切审阅发布的两个批次和同包监控必须同时核验，私有数据服务才接受该来源。首例可用 [原发布批次消费核验](live-lifecycle-evaluation.md#核对两个原发布批次的授权消费) 核对同一应用的原 DAPI 与 XAPI 结果。V2 的 `privateFixture:true` 仅在 `testOnly:true` 和本机 HTTP 回环地址下使用，保留本机报告及 `MATCHED_ONLY`。
+
 使用现有受保护文件作只读核对：
 
 ```sh

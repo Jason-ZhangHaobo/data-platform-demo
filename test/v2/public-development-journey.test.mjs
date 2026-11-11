@@ -19,6 +19,7 @@ import { syntheticSqlRequirement } from './fixtures/sql-requirement.mjs';
 import { publicationPreflightPath, publicationRequestReceiptPath } from '../../src/v2/publication-request.mjs';
 import { validatePrivateApplicationRequest } from '../../src/v2/private-application.mjs';
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
+import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
@@ -92,6 +93,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   return { call, complete, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
     loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
     queueCounts:()=>({jobWriteAttempts,cancellationWrites,resultReads}),
+    alignWallClock:()=>{now=Date.now();},
     privateCall:async body=>{const r=await fetch(base.replace(/\/api\/v2$/,'')+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke',...(stableOrigin?{connection:'close'}:{})},body:JSON.stringify(body)});return{status:r.status,body:await r.json()};} };
 }
 const taskInput = { message: '计算虚构客户总资产，避免现金重复累计。', code: 'SELECT 1', contextId: 'holdings-t1' };
@@ -107,6 +109,89 @@ async function measuredSpark(t,f,prepared,label){
   assert.ok(result.validation.regressions.every(check=>check.passed===true));
   t.diagnostic(`Local Spark ${result.engineVersion}, ${label}, five independent scenarios, ${result.durationMs} ms`);
   return result;
+}
+
+async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchId,sequence}){
+  const [holdingsSpec,cashSpec]=[
+    {name:'虚构持仓原批次 '+sequence,slug:'verified-holdings-'+sequence,
+      fields:['client_id','holding_market_value','security_count'],timeoutMs:3000,rateLimitPerMinute:12},
+    {name:'虚构现金原批次 '+sequence,slug:'verified-cash-'+sequence,
+      fields:['client_id','available_cash','total_assets'],timeoutMs:3000,rateLimitPerMinute:12},
+  ];
+  const xapiSpec={name:'虚构资产组合原批次 '+sequence,slug:'verified-assets-'+sequence,timeoutMs:3000,rateLimitPerMinute:6,
+    steps:[{alias:'holdings',dapiSlug:holdingsSpec.slug},{alias:'cash',dapiSlug:cashSpec.slug}]};
+  const applicationName='原批次独立验收应用 '+sequence;
+  f.alignWallClock();
+  Object.assign(f.env,{V2_PRIVATE_DATA_SERVICES_ENABLED:'true',V2_FC_PUBLIC_WRITE_SCOPE:'SERVICE_CONSUMPTION_ONLY',
+    V2_PUBLIC_SERVICE_STARTS_AT:new Date(f.now()-1000).toISOString(),V2_PUBLIC_SERVICE_EXPIRES_AT:new Date(f.now()+60000).toISOString(),
+    V2_PUBLIC_SERVICE_PLAN:JSON.stringify({taskId,packageDigest,sourceReleaseRunId:batchId,dapis:[holdingsSpec,cashSpec],xapi:xapiSpec,applicationName})});
+  await f.restart();
+  const sourceFile=join(f.directory,'consumer-source-'+sequence+'.json');
+  assert.equal((await cli('v3-consumption',['--batch-id',batchId,'--out-file',sourceFile])).status,'CONSUMPTION_SOURCE_READY');
+  assert.equal(statSync(sourceFile).mode&0o777,0o600);
+  const source=JSON.parse(readFileSync(sourceFile,'utf8'));
+  assert.equal(source.releaseId,releaseId);
+  assert.equal(source.sourceReleaseRunId,batchId);
+  async function createService(type,body){
+    const made=await f.call('/data-services/'+type,body,randomUUID());
+    assert.equal(made.status,201,JSON.stringify({code:made.body.code,message:made.body.message}));
+    const path='/data-services/'+type+'/'+made.body.id;
+    assert.equal((await f.call(path+'/test',{})).status,200);
+    const published=await f.call(path+'/publish',{configHash:made.body.currentVersion.configHash});
+    assert.equal(published.status,200);
+    return made.body;
+  }
+  const holdings=await createService('dapis',{...holdingsSpec,sourceReleaseRunId:batchId});
+  const cash=await createService('dapis',{...cashSpec,sourceReleaseRunId:batchId});
+  const xapi=await createService('xapis',{...xapiSpec,steps:[{alias:'holdings',dapiId:holdings.id,dapiVersionId:holdings.currentVersion.id},
+    {alias:'cash',dapiId:cash.id,dapiVersionId:cash.currentVersion.id}]});
+  const app=await f.call('/data-services/applications',{name:applicationName,serviceIds:[holdings.id,xapi.id]},randomUUID());
+  assert.equal(app.status,201);
+  const tokenFile=join(f.directory,'consumer-token-'+sequence),planFile=join(f.directory,'consumer-plan-'+sequence+'.json');
+  const reportFile=join(f.directory,'consumer-report-'+sequence+'.json');
+  writeFileSync(tokenFile,app.body.token,{mode:0o600});
+  const describe=service=>({id:service.id,slug:service.slug,versionId:service.currentVersion.id,configHash:service.currentVersion.configHash});
+  const origin=new URL(f.base).origin;
+  // Literal expectations were declared independently of Spark and HTTP output.
+  const expectedRows=[{client_id:'CLIENT-001',holding_market_value:'1500.00',available_cash:'300.00',total_assets:'1800.00',security_count:2},
+    {client_id:'CLIENT-002',holding_market_value:'750.00',available_cash:'200.00',total_assets:'950.00',security_count:1}];
+  const plan={protocol:'SERVICE_CONSUMER_V2',authorized:true,testOnly:true,privateFixture:true,origin,approvedOrigin:origin,
+    startedAt:new Date(f.now()-1000).toISOString(),deadline:new Date(f.now()+50000).toISOString(),timeoutMs:5000,maxRequests:20,
+    reportFile,expectedRows,source,dapis:[{...describe(holdings),alias:'holdings',fields:holdingsSpec.fields,granted:true},
+      {...describe(cash),alias:'cash',fields:cashSpec.fields,granted:false}],xapi:describe(xapi),
+    ungranted:{type:'DAPI',slug:cash.slug},rateLimit:{serviceId:xapi.id,perMinute:6}};
+  writeFileSync(planFile,JSON.stringify(plan),{mode:0o600});
+  assert.equal((await runConsumerAcceptance({planFile,tokenFile,execute:true})).result,'PASSED');
+  assert.equal((await f.call('/data-services/applications/'+app.body.application.id+'/revoke',{})).status,200);
+  assert.equal((await runConsumerAcceptance({planFile,tokenFile,execute:true,phase:'revoked'})).result,'PASSED');
+  const report=JSON.parse(readFileSync(reportFile,'utf8'));
+  assert.equal(report.requestCount,15);
+  assert.deepEqual(report.phases,{consume:'PASSED',revoked:'PASSED'});
+  const dapiCall=report.requests.find(row=>row.type==='DAPI'&&row.statusCode===200);
+  const xapiCall=report.requests.find(row=>row.type==='XAPI'&&row.statusCode===200);
+  const flags=['--plan',planFile,'--call-id-digest',xapiCall.callIdDigest];
+  const storedCalls=f.store.list('service_call',PROJECT).length;
+  const bound=await cli('v3-consumption',flags);
+  assert.equal(bound.status,'CONSUMPTION_BOUND',bound.reason);
+  assert.equal(bound.consumption.status,'MATCHED_ONLY');
+  assert.equal(bound.consumption.dapiCallIdDigest,dapiCall.callIdDigest);
+  assert.equal(bound.consumption.xapiCallIdDigest,xapiCall.callIdDigest);
+  assert.equal(bound.agentIndependentE2E,false);
+  assert.equal(f.store.list('service_call',PROJECT).length,storedCalls);
+  assert.ok(!JSON.stringify(bound).includes(app.body.token));
+  const missing=structuredClone(report);
+  missing.requests[dapiCall.sequence-1].callIdDigest='a'.repeat(64);
+  writeFileSync(reportFile,JSON.stringify(missing));
+  const missingProof=await cli('v3-consumption',flags);
+  assert.equal(missingProof.status,'CONSUMPTION_UNCONFIRMED');
+  assert.equal(missingProof.reason,'DAPI_RECEIPT_INVALID');
+  assert.equal(f.store.list('service_call',PROJECT).length,storedCalls);
+  writeFileSync(reportFile,JSON.stringify(report));
+  const altered=structuredClone(plan);altered.expectedRows[0].total_assets='1.00';
+  writeFileSync(planFile,JSON.stringify(altered));
+  await cli('v3-consumption',flags,1);
+  writeFileSync(planFile,JSON.stringify(plan));
+  return {bound,flags};
 }
 
 test('cloud v3 startup saves the original key before one POST and reconciles a lost receipt by GET',async t=>{
@@ -229,7 +314,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
-test('exact cloud delivery and rehearsal lead to review, signed scheduling and bound monitoring',async t=>{
+test('exact cloud delivery and rehearsal lead to signed scheduling and authorized consumption of both original batches',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.
   const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true,queueTimeoutMs:30000});
   const checkpoint=join(f.directory,'exact-delivery.json'),billPath=join(f.directory,'current-bill.json'),requests=[];
@@ -534,11 +619,23 @@ test('exact cloud delivery and rehearsal lead to review, signed scheduling and b
   assert.equal(f.store.list('release_run',PROJECT).length,2);
   assert.equal(f.store.list('monitor_event',PROJECT).length,2);
   assert.equal(f.store.list('monitor_alert',PROJECT).length,0);
+  const queuesBeforeConsumption=f.queueCounts();
+  const firstConsumption=await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:pending.packageDigest,batchId:firstId,sequence:1});
+  const secondConsumption=await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:pending.packageDigest,batchId:secondId,sequence:2});
+  assert.equal(firstConsumption.bound.consumption.batchId,firstId);
+  assert.equal(secondConsumption.bound.consumption.batchId,secondId);
+  assert.deepEqual(f.queueCounts(),queuesBeforeConsumption);
+  const sources=new URLSearchParams({agent_task_id:task.id,package_digest:pending.packageDigest,release_id:releaseId});
+  f.store.update('release',releaseId,PROJECT,{reviewDigest:undefined});
+  assert.deepEqual((await f.call('/data-services/sources?'+sources)).body,[]);
+  f.store.update('release',releaseId,PROJECT,{reviewDigest:releaseRecord.reviewDigest});
   const event=complete.monitoring[0];
   f.store.update('monitor_event',event.eventId,PROJECT,{observedAt:'2000-01-01T00:00:00.000Z'});
   const checkpointBytes=readFileSync(checkpoint,'utf8');
   assert.equal((await f.call(receiptPath)).body.monitoring.status,'UNCONFIRMED');
+  assert.deepEqual((await f.call('/data-services/sources?'+sources)).body,[]);
   assert.equal((await cli('v3-publish',['--reconcile'])).reason,'ORIGINAL_PUBLICATION_UNCONFIRMED');
+  await cli('v3-consumption',secondConsumption.flags,1);
   assert.equal(readFileSync(checkpoint,'utf8'),checkpointBytes);
 });
 

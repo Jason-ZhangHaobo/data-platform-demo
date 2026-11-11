@@ -35,10 +35,11 @@ export const sourceDigest = source => consumerDigest(consumerCanonical(validateC
 // and request-budget validation. It never retains expected rows or file paths.
 export function consumerV2PlanEvidence(plan) {
   const planKeys = ["protocol", "authorized", "origin", "approvedOrigin", "testOnly", "startedAt", "deadline", "timeoutMs", "maxRequests", "reportFile",
-    "expectedRows", "dapis", "xapi", "ungranted", "rateLimit", "source"];
+    "expectedRows", "dapis", "xapi", "ungranted", "rateLimit", "source", ...(plan?.privateFixture===true?["privateFixture"]:[])];
   requireThat(exact(plan, planKeys) && plan.protocol === "SERVICE_CONSUMER_V2" && typeof plan.testOnly === "boolean", "INVALID_CONSUMER_V2_PLAN");
   const source = validateConsumerSource(plan.source);
-  requireThat(source.scope === (plan.testOnly ? "LOCAL_TEST_ONLY" : "PRIVATE_CLOUD_TEST"), "CONSUMER_SOURCE_SCOPE_MISMATCH");
+  requireThat((!plan.privateFixture || plan.testOnly) &&
+    source.scope === (plan.testOnly && !plan.privateFixture ? "LOCAL_TEST_ONLY" : "PRIVATE_CLOUD_TEST"), "CONSUMER_SOURCE_SCOPE_MISMATCH");
   let origin;
   try { origin = new URL(plan.origin); } catch { throw new ConsumerSourceError("INVALID_ORIGIN"); }
   requireThat(origin.origin === plan.origin && plan.approvedOrigin === plan.origin && !origin.username && !origin.password &&

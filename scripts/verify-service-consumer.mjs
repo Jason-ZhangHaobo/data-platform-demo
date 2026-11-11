@@ -183,7 +183,8 @@ function verifySuccess(plan, service, query, response) {
   requireThat(isDeepStrictEqual(body.data, expected.data), "BUSINESS_ROWS_MISMATCH");
   requireThat(isDeepStrictEqual(body.pagination, expected.pagination), "PAGINATION_MISMATCH");
   requireThat(identifier(body.callId), "CALL_EVIDENCE_MISSING");
-  requireThat(body.scope === (plan.testOnly ? "LOCAL_TEST_ONLY" : "PRIVATE_CLOUD_TEST") && body.localTestOnly === plan.testOnly,
+  const localScope=plan.testOnly && !(plan.protocol===SOURCE_PROTOCOL && plan.privateFixture===true);
+  requireThat(body.scope === (localScope ? "LOCAL_TEST_ONLY" : "PRIVATE_CLOUD_TEST") && body.localTestOnly === localScope,
     "EVIDENCE_SCOPE_MISMATCH");
   let childBindingsVerified = false;
   if (service.type === "XAPI") {
