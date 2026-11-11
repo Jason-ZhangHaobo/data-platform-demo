@@ -2,6 +2,11 @@ name: Build V2 control plane package
 
 on:
   workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Optional full SHA of an already merged application revision
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -14,6 +19,24 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: ${{ inputs.source_revision != '' && '0' || '1' }}
+          persist-credentials: false
+
+      - name: Select the immutable application revision
+        id: application
+        env:
+          V2_BUILD_SOURCE: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$V2_BUILD_SOURCE" ]]; then
+            test "$GITHUB_REF" = refs/heads/main
+            [[ "$V2_BUILD_SOURCE" =~ ^[a-f0-9]{40}$ ]]
+            git merge-base --is-ancestor "$V2_BUILD_SOURCE" "$GITHUB_SHA"
+            git switch --detach "$V2_BUILD_SOURCE"
+          fi
+          test "$(git rev-parse HEAD)" = "${V2_BUILD_SOURCE:-$GITHUB_SHA}"
+          printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v7
@@ -24,7 +47,17 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Set up Python for the existing SQL parser
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the existing SQL parser for lineage verification
+        run: python3 -m pip install --require-hashes --no-deps --requirement deploy/sql-lineage-requirements.txt
+
       - name: Verify code and web build
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
         run: npm run ci
 
       - name: Build immutable Linux package
@@ -36,6 +69,8 @@ jobs:
           test "$(wc -c < v2-function.zip)" = "$(wc -c < v2-function-repeat.zip)"
 
       - name: Verify package and record identity
+        env:
+          V2_APPLICATION_SOURCE: ${{ steps.application.outputs.sha }}
         run: |
           set -euo pipefail
           unzip -tq v2-function.zip
@@ -48,14 +83,27 @@ jobs:
           test "${#digest}" = 64
           test "$bytes" -gt 0
           test "$bytes" -le 73400320
+          node --input-type=module - "$digest" "$bytes" "$(git rev-parse 'HEAD^{tree}')" <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          const [sha256, bytes, applicationTree] = process.argv.slice(2);
+          const { V2_APPLICATION_SOURCE: applicationSource, GITHUB_SHA: workflowSource,
+            GITHUB_RUN_ID: buildRunId, GITHUB_RUN_ATTEMPT: buildAttempt } = process.env;
+          writeFileSync('control-build-source.json', JSON.stringify({
+            protocol:'shuduo-control-build-source/v1', applicationSource, applicationTree,
+            workflowSource, buildRunId, buildAttempt, sha256, bytes:Number(bytes),
+          }) + '\n', {flag:'wx'});
+          NODE
+          echo "V2 application revision: $V2_APPLICATION_SOURCE" >> "$GITHUB_STEP_SUMMARY"
           echo "V2 control package SHA-256: $digest" >> "$GITHUB_STEP_SUMMARY"
           echo "V2 control package bytes: $bytes" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Retain one verified package briefly
         uses: actions/upload-artifact@v6
         with:
-          name: shuduo-v2-control-${{ github.sha }}
-          path: v2-function.zip
+          name: shuduo-v2-control-${{ steps.application.outputs.sha }}
+          path: |
+            v2-function.zip
+            control-build-source.json
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
