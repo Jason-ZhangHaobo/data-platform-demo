@@ -24,7 +24,7 @@ npm run v2:dev
 打开 [本机新版工作台](http://127.0.0.1:3100/v2/)。这是本机地址，不是朋友可访问的公网地址。
 本地验证使用 Node.js 24；首次需要安装 Python/Spark/Java，详见 [V2 启动与模型配置](docs/v2-quickstart.md)。
 
-公网目标域名为`shuduoai.cn`，当前已购买但尚未备案、解析或部署；至少等待3天后才能提交ICP备案。在备案、HTTPS、身份、隔离执行和预算门全部验收前，该域名不作为可访问地址。进度与用户操作见[域名备案清单](docs/domain-registration-checklist.md)。
+公网目标域名为 `shuduoai.cn`，备案已获审核通过。实际 HTTPS 接入与受邀业务验收进度见[当前执行清单](docs/goal-mode-next.md)和[域名备案清单](docs/domain-registration-checklist.md)。
 
 需求：[PRD](docs/PRD.md) · [决策](docs/decisions.md) · [路线图](docs/product-roadmap.md) · [验收证据](docs/acceptance.md) · [V2 API](docs/v2-api.md) · [成本核验](docs/v2-budget.md)。
 
