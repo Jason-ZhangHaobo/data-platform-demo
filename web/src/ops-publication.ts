@@ -54,11 +54,11 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
         batch.sourceKind === release.sourceKind && batch.reviewDigest === release.reviewDigest &&
         batch.packageId === release.packageId && batch.packageDigest === release.packageDigest))
     throw new Error("原发布、代码版本或两个批次的来源不一致。");
-  const batches = [first, second].map(batch => {
-    const {id, sequence, status, schedulerTriggered} = batch;
-    const canConsume = status === "SUCCEEDED" && schedulerTriggered === true && batch.published === true &&
-      batch.engine === "Apache Spark" && batch.mainSqlExecuted === true &&
-      batch.testSqlValidation?.passed === true && batch.validation?.passed === true;
+  const canConsume = release.status === "COMPLETED_CLOUD_TEST" && release.health === "HEALTHY" &&
+    [first, second].every(batch => batch.status === "SUCCEEDED" && batch.schedulerTriggered === true &&
+      batch.published === true && batch.engine === "Apache Spark" && batch.mainSqlExecuted === true &&
+      batch.testSqlValidation?.passed === true && batch.validation?.passed === true);
+  const batches = [first, second].map(({id, sequence, status, schedulerTriggered}) => {
     const serviceHref = canConsume ? "/v2/?" + new URLSearchParams({
       module:"services", source_task:target.taskId, source_release:target.releaseId,
       source_revision:target.revisionId, source_run:release.sourceRunId!, source_package:release.packageDigest!,
