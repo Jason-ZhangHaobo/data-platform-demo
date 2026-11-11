@@ -23,6 +23,7 @@ import { validatePrivateApplicationRequest } from '../../src/v2/private-applicat
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
 import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
+import { opsPublicationTarget, readOpsPublication } from '../../web/src/ops-publication.ts';
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
@@ -908,6 +909,32 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(f.store.list('release_run',PROJECT).length,2);
   assert.equal(f.store.list('monitor_event',PROJECT).length,2);
   assert.equal(f.store.list('monitor_alert',PROJECT).length,0);
+  const monitorHref='/v2/?'+new URLSearchParams({module:'ops',taskId:task.id,releaseId,revisionId:source.revisionId,
+    firstBatchId:firstId,secondBatchId:secondId})+'#ops-exact-publication';
+  const monitorTarget=opsPublicationTarget(new URL(monitorHref,f.base).href);
+  assert.equal(opsPublicationTarget(new URL(monitorHref.replace('#','&releaseId='+releaseId+'#'),f.base).href),null);
+  const monitorReads=[];
+  const monitorReader=async path=>{
+    monitorReads.push(path);
+    const result=await f.call(path);
+    assert.equal(result.status,200);
+    return result.body;
+  };
+  const monitoringBefore=f.queueCounts();
+  const opsEvidence=await readOpsPublication(monitorReader,monitorTarget);
+  assert.deepEqual(monitorReads,['/releases/'+releaseId,'/release/runs/'+firstId,'/release/runs/'+secondId]);
+  assert.deepEqual(opsEvidence,{status:'COMPLETED_CLOUD_TEST',health:'HEALTHY',batches:[
+    {id:firstId,sequence:1,status:'SUCCEEDED',schedulerTriggered:true},
+    {id:secondId,sequence:2,status:'SUCCEEDED',schedulerTriggered:true},
+  ]});
+  await assert.rejects(readOpsPublication(monitorReader,{...monitorTarget,firstBatchId:secondId,secondBatchId:firstId}),/来源不一致/);
+  await assert.rejects(readOpsPublication(monitorReader,{...monitorTarget,revisionId:randomUUID()}),/来源不一致/);
+  assert.deepEqual(f.queueCounts(),monitoringBefore);
+  for(const path of monitorReads.slice(0,3)){
+    const guest=await fetch(f.base+path);
+    assert.ok([401,403].includes(guest.status));
+    assert.ok(!(await guest.text()).includes(releaseId));
+  }
   const queuesBeforeConsumption=f.queueCounts();
   const origin=new URL(publicationCli.base).origin;
   const firstConsumption=await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:pending.packageDigest,batchId:firstId,sequence:1,origin});

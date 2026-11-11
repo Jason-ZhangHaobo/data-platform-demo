@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {LifecycleEvaluationPanel,type LifecycleReport} from "./LifecycleEvaluationPanel";
 import {LiveLifecycleEvaluationPanel} from "./LiveLifecycleEvaluationPanel";
+import {OpsPublicationPanel} from "./OpsPublicationPanel";
 import {
   Activity,
   AlertTriangle,
@@ -278,6 +279,7 @@ export function OperationsWorkbench({api, canWrite, showLiveEvaluation}: {api:Ap
 
   return (
     <div className="ops-workbench-v2">
+      <OpsPublicationPanel api={api}/>
       <section className={`ops-hero-v2 ${(overview?.health ?? "HEALTHY").toLowerCase()}`}>
         <div><span className="eyebrow">PLATFORM OPERATIONS · M4G</span><h2>一张事故视图，串起失败与恢复</h2><p>归一开发、同步、发布、质量、服务和报表运行；每个结论都引用实际源运行或恢复运行。</p></div>
         <div className="ops-health-v2"><HeartPulse size={22} /><strong>{labels[overview?.health ?? "HEALTHY"]}</strong><span>{overview?.counts.open ?? 0}开放 · {overview?.counts.resolved ?? 0}已恢复</span><small>public=false</small></div>
