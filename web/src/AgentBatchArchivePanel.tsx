@@ -46,7 +46,7 @@ export function AgentBatchArchivePanel({api, taskId, choices}: {api: Api; taskId
   }, []);
   useEffect(() => {
     if (currentRecord?.value) detail.current?.scrollIntoView({block:"start"});
-  }, [currentRecord?.value]);
+  }, [currentRecord?.value, source?.batchId]);
 
   if (!choices.length && pin === undefined) return null;
   const change = (next?: AgentArchivePin) => {
