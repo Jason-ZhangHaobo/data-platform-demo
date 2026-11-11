@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
-import { developmentVerificationReport, durableDeliveryMode } from "./agent-development-workflow.mjs";
-import { validationFamilyForContext } from "./context.mjs";
+import { durableDeliveryMode } from "./agent-development-workflow.mjs";
+import { verifiedStoredCloudDevelopment } from "./agent-execution-evidence.mjs";
 import { sha256, validateDeliveryPackage, validationMatchesFamily } from "./delivery.mjs";
-import { liveEvidenceProvenance, nonLiveModelLabel } from "./live-lifecycle-provenance.mjs";
+import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
 import { assertSqlRequirementPackageSource, sqlRequirementBinding } from "./sql-requirements.mjs";
 
 // This only evaluates persisted, exact records. Provider and Worker reconciliation
@@ -26,24 +26,9 @@ export function storedAgentReviewEvidence({ task, delivery, revision, run, bundl
   if (["QUEUED","RUNNING"].includes(task.status) || ["QUEUED","RUNNING"].includes(delivery.status))
     return { ...base, status:"PENDING", reason:"STORED_RESULT_PENDING" };
 
-  const attempts = Array.isArray(task.attempts) ? task.attempts : [];
-  const attempt = attempts.at(-1), family = validationFamilyForContext(task.contextId);
-  if (task.status !== "SUCCEEDED" || attempt?.status !== "SUCCEEDED" ||
-      typeof attempt.model !== "string" || !attempt.model || attempt.model.length > 200 || nonLiveModelLabel(attempt.model) ||
-      attempts.length > 3 || !Number.isSafeInteger(task.usedTokens) || task.usedTokens < 0 || task.usedTokens > 32000 ||
-      revision?.source !== "LIVE_MODEL" || revision.id !== attempt.revisionId || revision.author !== task.submittedBy ||
-      typeof revision.sql !== "string" || revision.sql !== task.sql ||
-      !run || run.id !== attempt.runId || run.agentTaskId !== task.id || run.contextId !== task.contextId ||
-      run.mode !== "DURABLE_REMOTE_SUBMISSION" || run.isolation !== "FUNCTION_PROCESS" || run.engineVersion !== "3.5.9" ||
-      run.remoteSubmission?.prepared?.job?.jobId !== run.id ||
-      !Array.isArray(run.rows) || run.rows.some(row => !row || typeof row !== "object" || Array.isArray(row)))
-    return reject("DEVELOPMENT_RESULT_UNCONFIRMED");
-  try {
-    if (developmentVerificationReport(task, run, revision).status !== "PASSED")
-      return reject("DEVELOPMENT_RESULT_UNCONFIRMED");
-  } catch {
-    return reject("DEVELOPMENT_RESULT_UNCONFIRMED");
-  }
+  const development = verifiedStoredCloudDevelopment(task, revision, run);
+  if (!development) return reject("DEVELOPMENT_RESULT_UNCONFIRMED");
+  const {attempt, attempts, family} = development;
 
   if (delivery.status !== "SUCCEEDED" || delivery.stage !== "AWAITING_ENGINEER_REVIEW" || delivery.actualExecution !== true ||
       delivery.sourceRevisionId !== revision.id || delivery.sourceSqlHash !== revision.hash || delivery.sourceRunId !== run.id ||

@@ -20,6 +20,7 @@ import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublic
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
 const publicationIdSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"};
@@ -82,6 +83,7 @@ const tools = [
     required:["taskId","deliveryId","requestSha256"] } },
   {name:'agent_development_workflow',description:'读取指定任务的核验与文件。人工辅助来源须指定sourceKind=MANUAL及sourceRunId，读取不计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},sourceKind:{enum:['AGENT','MANUAL']},sourceRunId:{type:'string',format:'uuid'}},required:['taskId'],allOf:[{if:{properties:{sourceKind:{const:'MANUAL'}},required:['sourceKind']},then:{required:['sourceRunId']}}]}},
   { name: "agent_request_lookup",description:"按当前创建者与原幂等请求编号找回Agent任务；只读，不重发需求或调用模型。",inputSchema:{type:"object",additionalProperties:false,properties:{requestId:{type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"}},required:["requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},
+  { name: "agent_execution_evidence",description:"按原创建请求编号读取已保存的模型用量、Spark阶段及通过核验的版本。",inputSchema:{type:"object",additionalProperties:false,properties:{requestId:publicationIdSchema},required:["requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},
   { name: "agent_publication_detail", description: "按来源、包摘要及演练读取云端测试发布，不创建计算。MANUAL必须提供sourceRunId、packageDigest、verificationId；已知releaseId时一并绑定，不选择其他历史包。执行者来自会话。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(false)]} },
   { name: "agent_publication_create", description: "人工逐项审阅当前不可变包及成功演练后创建两个云端测试批次，不代批或自动重试。MANUAL须提供sourceKind与sourceRunId，不计Agent自主完成。可提供原requestId复用幂等编号；未知结果先查原发布，执行者不能指定。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceKind:publicationProperties.sourceKind,sourceRunId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema,requestId:publicationIdSchema,attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"],allOf:[manualPublicationCondition(false)]} },
   { name: "agent_publication_stop", description:"停止指定来源、交付包及演练的后续云端批次，保留记录。不选择其他历史发布。MANUAL必须提供sourceRunId、packageDigest、verificationId、releaseId；提供任何selector时也须releaseId，执行者来自会话。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(true)]} },
@@ -337,6 +339,8 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/journey`);
   if (name === "agent_review_evidence")
     return client.request(agentReviewEvidencePath(args));
+  if (name === "agent_execution_evidence")
+    return client.request(agentExecutionEvidencePath(args.requestId));
   if(['agent_development_workflow','agent_delivery_prepare'].includes(name)&&args.sourceKind!=='MANUAL'&&['sourceRunId','requestId','confirm'].some(k=>Object.hasOwn(args,k)))throw Error('人工辅助参数必须显式选择MANUAL来源');
   if (name === "agent_development_workflow")
     return args.sourceKind==='MANUAL'?readManualDeliveryWorkflow(client,args):client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/workflow`);

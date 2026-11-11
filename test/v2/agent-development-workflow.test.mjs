@@ -121,7 +121,7 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   const task=store.get("agent",store.deduplicate(`${PROJECT}:durable-agent:${owner.id}:${agentKey}`,bodyHash,createTask).id,PROJECT);
   const revision=store.create("revision",PROJECT,{sql:referenceSql,hash:sha256(referenceSql),contextId:first.contextId,source:"LIVE_MODEL",author:owner.id});
   const run=store.create("run",PROJECT,{...f.run,id:undefined,revisionId:revision.id,revisionHash:revision.hash,contextId:first.contextId,
-    agentTaskId:task.id,mode:"DURABLE_REMOTE_SUBMISSION",rows:getContext(first.contextId).expected});
+    agentTaskId:task.id,mode:"DURABLE_REMOTE_SUBMISSION",validationContractId:validationContractId,rows:getContext(first.contextId).expected});
   store.update("run",run.id,PROJECT,{remoteSubmission:{prepared:{job:{jobId:run.id}},submitted:true}});
   const agent=store.update("agent",task.id,PROJECT,{attempts:[{...f.agent.attempts[0],revisionId:revision.id,runId:run.id}]});
   const base=`http://127.0.0.1:${app.server.address().port}/api/v2`;
@@ -145,6 +145,7 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   assert.equal((await call("/releases",{},a)).status,503);assert.equal(store.list("release",PROJECT).length,0);
   const target={taskId:agent.id,deliveryId:started.body.id,requestSha256:sha256(first.request)};
   const evidencePath=agentReviewEvidencePath(target);
+  const executionPath=`/agent/requests/${agentKey}/execution-evidence`;
   const deliveryReceiptPath=`/agent/tasks/${agent.id}/delivery-requests/${deliveryKey}`;
   assert.equal((await call(deliveryReceiptPath)).status,401);
   assert.equal((await call(deliveryReceiptPath,undefined,b)).status,403);
@@ -184,6 +185,61 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
     assert.equal(readFileSync(checkpointPath,"utf8"),original);
     return value;
   };
+  const executionEnvelope={operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:"/api/v2"+executionPath};
+  assert.equal(validatePrivateApplicationRequest(executionEnvelope,{allowDurableAgentRead:true}).path,executionEnvelope.path);
+  assert.throws(()=>validatePrivateApplicationRequest(executionEnvelope));
+  assert.throws(()=>validatePrivateApplicationRequest({...executionEnvelope,method:"POST",body:{}},{allowDurableAgent:true}));
+  assert.equal((await call(executionPath)).status,401);
+  assert.equal((await call(executionPath,undefined,b)).status,404);
+  assert.equal((await call(executionPath+"?task_id="+agent.id,undefined,a)).status,422);
+  const inspectionPath=join(directory,"inspection.json");
+  const inspectionCheckpoint={...checkpoint,projectId:PROJECT,reviewedSource:"a".repeat(40),
+    submission:{actorId:owner.id},outcomes:[{...item,code:undefined,phase:"CODE_AND_DEBUG",
+      actions:{...item.actions,delivery:{...item.actions.delivery,status:"UNKNOWN",id:undefined}}}]};
+  writeFileSync(inspectionPath,JSON.stringify(inspectionCheckpoint),{mode:0o600});
+  const inspect=async()=>{
+    checkpointReads.length=0;
+    let value;
+    assert.equal(await runV2Cli(["agent","v3-inspect","--checkpoint",inspectionPath],{},
+      {client:checkpointClient,output:line=>{value=JSON.parse(line);},error:()=>{}}),0);
+    return value;
+  };
+  const executionWorkerReads=workerReads, executionSubmits=[...f.submits];
+  const executionView=(await call(executionPath,undefined,a)).body;
+  assert.equal(executionView.status,"EXECUTION_RECORDED");
+  assert.equal(executionView.development.runId,run.id);
+  assert.equal(executionView.development.regressionCount,5);
+  assert.equal(executionView.execution.spark.resultStatus,"SUCCEEDED");
+  const mcpExecution=JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",
+    params:{name:"agent_execution_evidence",arguments:{requestId:agentKey}}},{client:checkpointClient}));
+  assert.deepEqual(mcpExecution.result.structuredContent,executionView);
+  for (const secret of [first.request,referenceSql,"CLIENT-001","remoteSubmission",agentKey]) assert.ok(!JSON.stringify(executionView).includes(secret));
+  const originalRun=store.get("run",run.id,PROJECT);
+  store.update("run",run.id,PROJECT,{status:"RUNNING",stage:"WAITING_FOR_WORKER_RESULT"});
+  const waiting=await inspect();
+  assert.equal(waiting.execution.spark.state,"WAITING_FOR_RESULT");
+  assert.equal(waiting.status,"EXECUTION_RECORDED");
+  store.update("run",run.id,PROJECT,{status:originalRun.status,stage:originalRun.stage});
+  store.update("run",run.id,PROJECT,{rows:[]});
+  const unverifiedBytes=readFileSync(inspectionPath,"utf8");
+  assert.equal((await inspect()).status,"EXECUTION_RECORDED");
+  assert.equal(readFileSync(inspectionPath,"utf8"),unverifiedBytes);
+  store.update("run",run.id,PROJECT,{rows:originalRun.rows});
+  const inspected=await inspect();
+  assert.equal(inspected.status,"DEVELOPMENT_BOUND");
+  assert.equal(inspected.delivery.id,started.body.id);
+  assert.equal(inspected.fullLifecycleE2E,false);
+  assert.deepEqual(checkpointReads,["/api/v2/auth/session","/api/v2"+executionPath,"/api/v2"+deliveryReceiptPath]);
+  const boundBytes=readFileSync(inspectionPath,"utf8"), boundItem=JSON.parse(boundBytes).outcomes[0];
+  assert.equal(boundItem.actions.agent.key,agentKey);
+  assert.equal(boundItem.actions.delivery.key,deliveryKey);
+  assert.equal(boundItem.actions.delivery.status,"CONFIRMED");
+  assert.equal(boundItem.phase,"DELIVERY_PREPARATION");
+  assert.equal(boundItem.code.runId,run.id);
+  assert.equal((await inspect()).delivery.id,started.body.id);
+  assert.equal(readFileSync(inspectionPath,"utf8"),boundBytes);
+  assert.equal(workerReads,executionWorkerReads);
+  assert.deepEqual(f.submits,executionSubmits);
   const firstTwo=["/api/v2/agent/requests/"+agentKey,"/api/v2"+deliveryReceiptPath];
   const envelope={operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:"/api/v2"+evidencePath};
   assert.equal(validatePrivateApplicationRequest(envelope,{allowDurableAgentRead:true}).path,envelope.path);

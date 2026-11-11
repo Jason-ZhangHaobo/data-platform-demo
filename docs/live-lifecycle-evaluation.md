@@ -59,6 +59,17 @@ shuduo agent v3-start --checkpoint /private/first-case.json --reconcile
 
 响应丢失或无法确认时，使用第三条命令和原创建者会话。它只读取身份和原请求回执，即使开发写入窗口已关闭也可对账。缺少原回执时保留待定状态。中断留下锁文件时先核对原进程和检查点，再处理该锁。分母仍为20例，创建回执只证明受理。
 
+### 核对云端首例执行阶段
+
+```sh
+shuduo agent v3-inspect --checkpoint /private/first-case.json
+shuduo agent execution-evidence --request-id ORIGINAL_REQUEST_ID
+```
+
+API 为 `GET /agent/requests/{key}/execution-evidence`，MCP 对应 `agent_execution_evidence`。只允许原创建者按原幂等编号读取。接口投影已保存阶段和摘要，区分供应方已报告 Token、估算预留和未归属差额，并区分 Spark 批次等待、结果待确认及已入账。读取不协调 Worker。
+
+带检查点的命令核对原任务、创建时间、需求和种子 SQL 摘要。只有同一代码版本与批次通过独立预期和回归断言，才保存开发来源。若检查点已有原交付创建编号，再读取同一回执并核对代码、批次、需求绑定和交付编号。待确认或不匹配的证据保留现状。此命令只写入原本机检查点，远端均为 GET。交付演练、工程师审阅和完整验收分别推进。
+
 ### 读取云端待审阅证据
 
 拿到原任务、确切交付编号和冻结需求的 SHA-256 后，可读取：

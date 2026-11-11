@@ -10,7 +10,8 @@ import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-pro
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
-import {continueCloudV3Start,prepareCloudV3Start} from "../scripts/start-cloud-v3-case.mjs";
+import {continueCloudV3Start,inspectCloudV3Execution,prepareCloudV3Start} from "../scripts/start-cloud-v3-case.mjs";
+import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
@@ -56,6 +57,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent trace --id INTENT_ID
   shuduo agent journey --id AGENT_TASK_ID
   shuduo agent review-evidence --id AGENT_TASK_ID --delivery-id ID --request-sha256 SHA256
+  shuduo agent execution-evidence --request-id ORIGINAL_REQUEST_ID
+  shuduo agent v3-inspect --checkpoint ABSOLUTE_PATH
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --source-revision SHA
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
@@ -518,11 +521,14 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "review-evidence")
       result = await client.request(agentReviewEvidencePath({taskId:required(parsed.options,"id"),
         deliveryId:required(parsed.options,"delivery_id"),requestSha256:required(parsed.options,"request_sha256")}));
-    else if (resource === "agent" && action === "v3-review") {
+    else if (resource === "agent" && action === "execution-evidence")
+      result = await client.request(agentExecutionEvidencePath(required(parsed.options,"request_id")));
+    else if (resource === "agent" && ["v3-review","v3-inspect"].includes(action)) {
       const flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
       if(parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
          flags.some(flag=>!["checkpoint","base_url"].includes(flag)))throw Error("评测证据读取仅接受原检查点和原入口");
-      result=await readCloudV3Review(required(parsed.options,"checkpoint"),client);
+      const checkpoint=required(parsed.options,"checkpoint");
+      result=await (action==="v3-review"?readCloudV3Review:inspectCloudV3Execution)(checkpoint,client);
     }
     else if (resource === "agent" && action === "v3-start") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));

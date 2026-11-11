@@ -43,9 +43,8 @@ function modelSnapshot(task) {
     usage:!comparable ? "UNCONFIRMED" : (unconfirmedAttempts || unattributedTokens ? "PENDING" : "RECORDED")};
 }
 
-function sparkSnapshot(definition, state, task, read) {
+function sparkSnapshot(task, frozen, read) {
   const latest = task.attempts.at(-1);
-  const frozen = state.code;
   if (frozen && frozen.taskId !== task.id) return unresolved;
   const revisionId = frozen ? frozen.revisionId : latest?.revisionId;
   const runId = frozen ? frozen.runId : latest?.runId;
@@ -55,7 +54,7 @@ function sparkSnapshot(definition, state, task, read) {
   const attempt = task.attempts.find(item => item?.revisionId === revisionId && item.runId === runId);
   if (!attempt) return unresolved;
   const revision = read("revision", revisionId);
-  if (!revision || revision.id !== revisionId || revision.contextId !== definition.contextId ||
+  if (!revision || revision.id !== revisionId || revision.contextId !== task.contextId ||
       revision.source !== "LIVE_MODEL" || typeof revision.sql !== "string" ||
       createHash("sha256").update(revision.sql).digest("hex") !== revision.hash ||
       (frozen && frozen.revisionHash !== revision.hash)) return unresolved;
@@ -64,9 +63,9 @@ function sparkSnapshot(definition, state, task, read) {
   const binding = {revisionId, revisionHash:revision.hash, pinned:Boolean(frozen)};
   if (!runId) return {state:"REVISION_RECORDED", ...binding, ...(revisionProof.synthetic ? {testHarness:true} : {})};
   const run = read("run", runId);
-  const contractId = validationFamilyForContext(definition.contextId)?.id;
+  const contractId = validationFamilyForContext(task.contextId)?.id;
   if (!run || run.id !== runId || run.agentTaskId !== task.id || run.revisionId !== revisionId ||
-      run.revisionHash !== revision.hash || run.contextId !== definition.contextId ||
+      run.revisionHash !== revision.hash || run.contextId !== task.contextId ||
       run.validationContractId !== contractId ||
       (run.validation?.contractId !== undefined && run.validation.contractId !== contractId)) return unresolved;
   const proof = liveEvidenceProvenance(run);
@@ -89,9 +88,15 @@ function sparkSnapshot(definition, state, task, read) {
 export function liveExecutionSnapshot(definition, entry, sourceCheckpoint, {read, testHarness=false}) {
   const task = read("agent", entry.taskId);
   if (!verifiedLiveTaskSnapshotBinding(definition, entry, task, sourceCheckpoint)) return unresolved;
-  const proof = liveEvidenceProvenance(task, entry, sourceCheckpoint);
-  if (proof.nonNative || proof.unconfirmed || task.attempts.length > 3) return unresolved;
-  const spark = sparkSnapshot(definition, entry, task, read);
+  const proof = liveEvidenceProvenance(entry, sourceCheckpoint);
+  if (proof.nonNative || proof.unconfirmed) return unresolved;
+  return storedExecutionStages(task, read, {frozen:entry.code, testHarness:testHarness || proof.synthetic});
+}
+
+export function storedExecutionStages(task, read, {frozen, testHarness=false} = {}) {
+  const proof = liveEvidenceProvenance(task);
+  if (proof.nonNative || proof.unconfirmed || !Array.isArray(task.attempts) || task.attempts.length > 3) return unresolved;
+  const spark = sparkSnapshot(task, frozen, read);
   return {state:"RECORDED", taskId:task.id, taskVersion:task.version,
     evidence:testHarness || proof.synthetic || spark.testHarness ? "TEST_HARNESS" : "STORED_METADATA",
     model:modelSnapshot(task), spark};

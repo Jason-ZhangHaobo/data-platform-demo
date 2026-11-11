@@ -1,15 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { agentExecutionEvidencePath } from "../src/v2/agent-execution-evidence.mjs";
+import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
+import { validationFamilyForContext } from "../src/v2/context.mjs";
 import { sha256 } from "../src/v2/delivery.mjs";
 import { checkpointCaseScope, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedLiveTaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
-import { liveEvidenceProvenance } from "../src/v2/live-lifecycle-provenance.mjs";
+import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-execution.mjs";
+import { liveEvidenceProvenance, nonLiveModelLabel } from "../src/v2/live-lifecycle-provenance.mjs";
 import { normalizeSessionBase } from "../src/v2/session-credential.mjs";
+import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
 import { verifyV2MonthlyBillPages } from "./verify-v2-monthly-bill-pages.mjs";
 
 const revisionPattern = /^[a-f0-9]{40}$/;
 const id = value => typeof value === "string" && uuid.test(value);
+const digest = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const sourceRevision = value => typeof value === "string" && revisionPattern.test(value);
 const firstPlan = () => liveLifecyclePlan(1, {contractId:currentLiveLifecycleContract.id});
 const requestBody = definition => ({message:definition.request, sql:definition.seedSql, contextId:definition.contextId});
@@ -123,7 +130,7 @@ export function prepareCloudV3Start(path, client, reviewedSource) {
   return result(state, item, "PREPARED");
 }
 
-export async function continueCloudV3Start(path, client, {billPath, reconcile=false} = {}) {
+async function withCloudCheckpoint(path, operation) {
   if (!isAbsolute(path)) stop("须使用原检查点的绝对路径");
   const lockPath = path + ".lock";
   let lock;
@@ -131,15 +138,28 @@ export async function continueCloudV3Start(path, client, {billPath, reconcile=fa
   catch { stop("原检查点已有锁或不可写，请核对原进程"); }
   try {
     writeFileSync(lock, JSON.stringify({pid:process.pid}) + "\n");
+    return await operation();
+  } finally {
+    closeSync(lock);
+    unlinkSync(lockPath);
+  }
+}
+
+async function requireOriginalCreator(state, client) {
+  if (!id(state.submission?.actorId)) stop("原创建者尚未确认");
+  const session = await client.request("/auth/session");
+  if (session?.authenticated !== true || session.user?.id !== state.submission.actorId ||
+      session.user?.projectId !== state.projectId)
+    stop("当前会话与原任务创建者不一致");
+}
+
+export async function continueCloudV3Start(path, client, {billPath, reconcile=false} = {}) {
+  return withCloudCheckpoint(path, async () => {
     const original = snapshot(client, path), {state, definition, item, action} = original;
     if (action.status === "CONFIRMED") return result(state, item, "CREATION_CONFIRMED");
     if (reconcile) {
       if (!["UNKNOWN","SUBMITTING"].includes(action.status)) return result(state, item, "PREPARED");
-      if (!id(state.submission?.actorId)) stop("原创建者尚未确认");
-      const session = await client.request("/auth/session");
-      if (session?.authenticated !== true || session.user?.id !== state.submission.actorId ||
-          session.user?.projectId !== state.projectId)
-        stop("当前会话与原任务创建者不一致");
+      await requireOriginalCreator(state, client);
       let receipt;
       try { receipt = await client.request(`/agent/requests/${action.key}`); }
       catch { return result(state, item, "PENDING", "ORIGINAL_CREATION_UNCONFIRMED"); }
@@ -168,8 +188,78 @@ export async function continueCloudV3Start(path, client, {billPath, reconcile=fa
     action.status = "UNKNOWN";
     writeCheckpoint(path, state);
     return result(state, item, "PENDING", "RECONCILE_ORIGINAL_CREATION");
-  } finally {
-    closeSync(lock);
-    unlinkSync(lockPath);
-  }
+  });
+}
+
+function verifiedDevelopmentCode(definition, view, execution) {
+  const {development} = view, {spark, model} = execution, family = validationFamilyForContext(definition.contextId);
+  if (!development || execution.evidence !== "STORED_METADATA" || spark.state !== "RESULT_RECORDED" ||
+      spark.resultStatus !== "SUCCEEDED" || development.revisionId !== spark.revisionId ||
+      development.revisionHash !== spark.revisionHash || development.runId !== spark.runId ||
+      development.engine !== "Apache Spark" || development.engineVersion !== "3.5.9" ||
+      development.validationContractId !== family.id || development.regressionCount !== family.contextIds.length ||
+      typeof development.model !== "string" || !development.model || development.model.length > 200 ||
+      nonLiveModelLabel(development.model) || !Number.isSafeInteger(model.ledgerTokens) || model.ledgerTokens > 32000 ||
+      !Number.isSafeInteger(model.reportedTokens) || model.unattributedTokens === null || model.attempts < 1) return;
+  const requirement = development.requirementBinding;
+  if (requirement !== undefined && (requirement?.protocol !== sqlRequirementProtocol || requirement.taskId !== view.taskId ||
+      !digest(requirement.basisDigest) || !digest(requirement.reportDigest))) return;
+  return {sourceKind:"AGENT", taskId:view.taskId, createdAt:view.taskCreatedAt, revisionId:spark.revisionId,
+    revisionHash:spark.revisionHash, runId:spark.runId, model:development.model, modelAttempts:model.attempts,
+    reportedTokens:model.reportedTokens, accountedTokens:model.ledgerTokens, reservedTokens:model.reservedTokens,
+    unattributedTokens:model.unattributedTokens, contextId:definition.contextId, validationContractId:family.id,
+    ...(requirement ? {requirementBinding:{protocol:requirement.protocol, taskId:requirement.taskId,
+      basisDigest:requirement.basisDigest, reportDigest:requirement.reportDigest}} : {})};
+}
+
+async function reconcileOriginalDelivery(client, item, code) {
+  const action = item.actions.delivery;
+  if (!action || action.status === "PREPARED") return {status:"REQUEST_NOT_SUBMITTED"};
+  if (!id(action.key) || action.bodyHash !== sha256("{}")) return {status:"UNCONFIRMED"};
+  if (!["SUBMITTING","UNKNOWN","CONFIRMED"].includes(action.status) ||
+      (action.status === "CONFIRMED" && !id(action.id))) return {status:"UNCONFIRMED"};
+  let receipt;
+  try { receipt = await client.request(`/agent/tasks/${item.taskId}/delivery-requests/${action.key}`); }
+  catch { return {status:"PENDING"}; }
+  const proof = liveEvidenceProvenance(receipt);
+  if (proof.synthetic || proof.nonNative || proof.unconfirmed || !id(receipt?.id) || receipt.mode !== durableDeliveryMode ||
+      (action.id !== undefined && action.id !== receipt.id) || receipt.sourceAgentTaskId !== item.taskId ||
+      receipt.sourceRevisionId !== code.revisionId || receipt.sourceSqlHash !== code.revisionHash ||
+      receipt.sourceRunId !== code.runId || !isDeepStrictEqual(receipt.sourceRequirementBinding,code.requirementBinding))
+    return {status:"UNCONFIRMED"};
+  item.actions.delivery = {...action, id:receipt.id, status:"CONFIRMED"};
+  return {status:"CONFIRMED", id:receipt.id};
+}
+
+export async function inspectCloudV3Execution(path, client) {
+  return withCloudCheckpoint(path, async () => {
+    const {state, definition, item, action} = snapshot(client, path);
+    const response = (status, reason) => result(state, item, status, reason);
+    if (action.status !== "CONFIRMED") return response("PENDING", "ORIGINAL_CREATION_UNCONFIRMED");
+    await requireOriginalCreator(state, client);
+    let view;
+    try { view = await client.request(agentExecutionEvidencePath(action.key)); }
+    catch { return response("UNCONFIRMED", "CLOUD_EXECUTION_READ_UNCONFIRMED"); }
+    if (view?.protocol !== "shuduo-agent-execution-evidence/v1" || view.scope !== "PRIVATE_CLOUD_TEST" ||
+        view.verificationMode !== "STORED_METADATA_ONLY" || view.status !== "EXECUTION_RECORDED" ||
+        view.fullLifecycleE2E !== false || view.publicDeployed !== false || view.taskId !== item.taskId ||
+        view.contextId !== definition.contextId || view.requestSha256 !== sha256(definition.request) ||
+        view.seedSqlSha256 !== sha256(definition.seedSql.trim()) || !Number.isFinite(Date.parse(view.taskCreatedAt)) ||
+        Date.parse(view.taskCreatedAt) < Date.parse(item.evaluationStartedAt))
+      return response("UNCONFIRMED", "ORIGINAL_EXECUTION_MISMATCH");
+    const execution = checkedLiveExecutionProjection(view.execution, item.taskId);
+    if (execution.state !== "RECORDED" || execution.evidence !== "STORED_METADATA")
+      return response("UNCONFIRMED", "CLOUD_EXECUTION_PROVENANCE_UNCONFIRMED");
+    const code = verifiedDevelopmentCode(definition, view, execution);
+    if (!code) return {...response("EXECUTION_RECORDED", "DEVELOPMENT_RESULT_UNCONFIRMED"), execution};
+    if (item.code && !isDeepStrictEqual(item.code,code))
+      return response("UNCONFIRMED", "ORIGINAL_DEVELOPMENT_MISMATCH");
+
+    const before = JSON.stringify(item);
+    item.code = code;
+    if (item.phase === "CODE_AND_DEBUG") item.phase = "DELIVERY_PREPARATION";
+    const delivery = await reconcileOriginalDelivery(client, item, code);
+    if (JSON.stringify(item) !== before) writeCheckpoint(path,state);
+    return {...response("DEVELOPMENT_BOUND"), execution, delivery};
+  });
 }

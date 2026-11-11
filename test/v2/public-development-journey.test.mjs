@@ -169,6 +169,28 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.equal(state.submission.bill.unsettledReserveCny,64);
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
   assert.ok(!JSON.stringify(recovered).includes(originalKey));
+
+  const evidencePath='/agent/requests/'+originalKey+'/execution-evidence';
+  const inspect=async()=>{
+    reads.length=0;
+    let value;
+    assert.equal(await runV2Cli(['agent','v3-inspect','--checkpoint',checkpoint],{},
+      {client,output:line=>{value=JSON.parse(line);},error:()=>{}}),0);
+    assert.deepEqual(reads,[{path:'/auth/session',method:'GET'},{path:evidencePath,method:'GET'}]);
+    return value;
+  };
+  const confirmedBytes=readFileSync(checkpoint,'utf8');
+  const queued=await inspect();
+  assert.equal(queued.status,'EXECUTION_RECORDED');
+  assert.equal(queued.execution.model.state,'READY');
+  assert.equal(queued.execution.spark.state,'NOT_LINKED');
+  f.store.update('agent',task.id,PROJECT,{status:'RUNNING',stage:'MODEL_OUTCOME_UNKNOWN',usedTokens:180,
+    attempts:[{status:'MODEL_OUTCOME_UNKNOWN',model:'unconfirmed',usageEstimated:true,usage:{total_tokens:180}}]});
+  const paused=await inspect();
+  assert.deepEqual(paused.execution.model,{state:'OUTCOME_UNKNOWN',usage:'PENDING',attempts:1,unconfirmedAttempts:1,
+    ledgerTokens:180,reportedTokens:0,reservedTokens:180,unattributedTokens:0});
+  assert.equal(readFileSync(checkpoint,'utf8'),confirmedBytes);
+  assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
 test('invited development reaches versioned files across restart without another task or submission', async t => {
