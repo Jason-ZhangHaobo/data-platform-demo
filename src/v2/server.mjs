@@ -63,6 +63,7 @@ import {
   validationContractId,
 } from "./context.mjs";
 import { fundContextId } from "./fund-lookthrough.mjs";
+import { assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease } from "./fund-publication.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import {
   pythonRuntimeConfig,
@@ -715,7 +716,14 @@ export function createV2Server(options = {}) {
     packageFor: (id) => store.get("delivery_package", id, PROJECT),
     runPackage: releaseRunner,
     assertRunSource: ({run,release,packageItem})=>{
-      if (packageItem.manifest?.source?.contextId === fundContextId) throw fail(422, "基金组合穿透尚未开放发布调度");
+      if (packageItem.manifest?.source?.contextId === fundContextId) {
+        const approval = get("release_approval", release.approvalId);
+        assertFundBatch({ bundle: packageItem, approval, release, run,
+          verification: get("delivery_verification", approval.rehearsalId), review: get("delivery_review", approval.reviewId),
+          batches: store.list("release_run", PROJECT).filter(batch => batch.releaseId === release.id),
+          localClassicSpark, schedulerMode: releaseSchedulerMode, timeUnitMs: releaseTimeUnitMs });
+        return;
+      }
       if(!packageItem.manifest?.source?.outputContract)return;
       validateAnyDeliveryPackage(packageItem);
       const approval=get('release_approval',release.approvalId);
@@ -973,7 +981,12 @@ export function createV2Server(options = {}) {
     store,
     businessStore,
     project: PROJECT,
-    releaseRunFor: (id) => store.get("release_run", id, PROJECT),
+    releaseRunFor: (id) => {
+      const run = store.get("release_run", id, PROJECT);
+      if (run?.releaseId && store.get("release", run.releaseId, PROJECT)?.fundLookthrough)
+        throw fail(422, "基金组合穿透尚未接入数据服务");
+      return run;
+    },
     distributionSourceFor: run=>{const proof=certifiedDistributionSource({store,project:PROJECT,run});if(proof&&!local)throw fail(422,"分布消费仅本机已核验来源");return proof;},
     now: options.now,
     executeDapi: options.dataServiceExecutor,
@@ -4882,6 +4895,7 @@ export function createV2Server(options = {}) {
             throw fail(409, "审阅必须绑定当前交付包的成功按文件演练");
           await ensureDeliveryArtifact(item);
           validateAnyDeliveryPackage(item);
+          assertFundRehearsal(item, rehearsal);
           const session = auth.sessionFromHeaders(req.headers),
             reviewer = session
               ? {
@@ -4943,7 +4957,6 @@ export function createV2Server(options = {}) {
           deliveryRecord[3] === "approve" &&
           method === "POST"
         ) {
-          if (item.manifest?.source?.contextId === fundContextId) throw fail(422, "基金组合穿透尚未开放发布审批");
           const body = await readBody(req),
             packageDigest = text(body.packageDigest, 64, 64);
           if (packageDigest !== item.digest)
@@ -4958,7 +4971,8 @@ export function createV2Server(options = {}) {
               (record) =>
                 record.packageId === item.id &&
                 record.packageDigest === item.digest &&
-                record.status === "SUCCEEDED" && (!item.manifest?.source?.outputContract||record.id===body.distributionConsent?.verificationId),
+                record.status === "SUCCEEDED" && (!item.manifest?.source?.outputContract||record.id===body.distributionConsent?.verificationId) &&
+                (item.manifest?.source?.contextId !== fundContextId || record.id === body.fundConsent?.verificationId),
             );
           if (!rehearsal)
             throw fail(409, "交付包尚无成功的按文件演练，不能审批发布");
@@ -4973,6 +4987,8 @@ export function createV2Server(options = {}) {
           await ensureDeliveryArtifact(item);
           validateAnyDeliveryPackage(item);
           const distributionConsent=assertDistributionConsent({bundle:item,verification:rehearsal,review,consent:body.distributionConsent,local,schedulerMode:releaseSchedulerMode});
+          const fundConsent = assertFundConsent({ bundle: item, verification: rehearsal, review,
+            consent: body.fundConsent, localClassicSpark, schedulerMode: releaseSchedulerMode });
           const actor = auth.sessionFromHeaders(req.headers),
             approver = actor
               ? {
@@ -4995,6 +5011,7 @@ export function createV2Server(options = {}) {
             );
           if (existingApproval) {
             if(distributionConsent&&!sameDistributionConsent(existingApproval.distributionConsent,distributionConsent))throw fail(409,"原批准绑定另一份分布测试发布计划");
+            if(fundConsent&&!sameDistributionConsent(existingApproval.fundConsent,fundConsent))throw fail(409,"原批准绑定另一份基金测试发布计划");
             return json(res, 200, existingApproval);
           }
           const key = text(req.headers["idempotency-key"], 1, 100),
@@ -5008,6 +5025,7 @@ export function createV2Server(options = {}) {
                   reviewId: review.id,
                   approverId: approver.id,
                   ...(distributionConsent?{distributionConsent}:{}),
+                  ...(fundConsent ? { fundConsent } : {}),
                 }),
               ),
               () =>
@@ -5026,6 +5044,7 @@ export function createV2Server(options = {}) {
                   reviewer: approver.displayName,
                   reviewedBy: review.reviewer,
                   ...(distributionConsent?{distributionConsent,approver}:{}),
+                  ...(fundConsent ? { fundConsent, approver } : {}),
                   decision: "APPROVED",
                   status: "APPROVED",
                   reviewNote: review.reviewNote,
@@ -5149,11 +5168,14 @@ export function createV2Server(options = {}) {
           ),
           item = get("delivery_package", approval.packageId),
           spec = localScheduleSpec(body);
-        if (item.manifest?.source?.contextId === fundContextId) throw fail(422, "基金组合穿透尚未开放发布调度");
         const artifact = await ensureDeliveryArtifact(item), plan = validateAnyDeliveryPackage(item);
         const latestApproval=get('release_approval',approval.id);
+        const fundRelease = Boolean(plan.source.fundLookthrough);
+        if (fundRelease) assertFundRelease({ bundle: item, approval: latestApproval, spec,
+          verification: get("delivery_verification", latestApproval.rehearsalId), review: get("delivery_review", latestApproval.reviewId),
+          localClassicSpark, schedulerMode: releaseSchedulerMode });
         if(plan.source.outputContract)assertDistributionRelease({bundle:item,verification:latestApproval.rehearsalId?store.get('delivery_verification',latestApproval.rehearsalId,PROJECT):undefined,review:latestApproval.reviewId?store.get('delivery_review',latestApproval.reviewId,PROJECT):undefined,approval:latestApproval,spec,local,schedulerMode:releaseSchedulerMode});
-        const consumedReleaseId=plan.source.outputContract?latestApproval.consumedByReleaseId:approval.consumedByReleaseId;
+        const consumedReleaseId=plan.source.outputContract || fundRelease ? latestApproval.consumedByReleaseId : approval.consumedByReleaseId;
         if (
           approval.status !== "APPROVED" ||
           approval.packageDigest !== item.digest ||
@@ -5180,7 +5202,7 @@ export function createV2Server(options = {}) {
             nextTradingDay + "T" + plan.schedule.at + "+08:00",
           key = text(req.headers["idempotency-key"], 1, 100),
           dedup = store.deduplicate(
-            plan.source.outputContract ? PROJECT+":distribution-release:"+approval.id : PROJECT + ":release:" + key,
+            fundRelease ? PROJECT + ":fund-release:" + approval.id : plan.source.outputContract ? PROJECT+":distribution-release:"+approval.id : PROJECT + ":release:" + key,
             hash(
               JSON.stringify({
                 approvalId: approval.id,
@@ -5203,6 +5225,7 @@ export function createV2Server(options = {}) {
                   ? { sourceSqlHash: item.manifest.source.sqlHash }
                   : {}),
                 ...(plan.source.outputContract?{outputContract:plan.source.outputContract}:{}),
+                ...(fundRelease ? { fundLookthrough: plan.source.fundLookthrough } : {}),
                 status: "DEPLOYING",
                 health: "PENDING",
                 environment: plan.deployment.environment,
@@ -5239,11 +5262,12 @@ export function createV2Server(options = {}) {
                 });
               }
             }
+            const activatedAtMs = options.now?.() ?? Date.now();
             release = store.update("release", release.id, PROJECT, {
               status: "ACTIVE_LOCAL",
               health: "OBSERVING",
               artifactDirectory,
-              activatedAt: new Date().toISOString(),
+              activatedAt: new Date(activatedAtMs).toISOString(),
             });
             store.update("release_approval", approval.id, PROJECT, {
               consumedByReleaseId: release.id,
@@ -5255,7 +5279,7 @@ export function createV2Server(options = {}) {
               packageDigest: item.digest,
               businessScheduledFor,
               spec,
-              nowMs: options.now?.() ?? Date.now(),
+              nowMs: activatedAtMs,
               timeUnitMs: releaseTimeUnitMs,
             });
             for (const runData of planned) {
@@ -5285,10 +5309,10 @@ export function createV2Server(options = {}) {
           return json(res, 200, expose(protectedDeliveryPayload(item)));
         if(kind==='release'&&method==='POST'&&releaseRecord[3]==='cancel'){
           const body=await readBody(req);
-          if(!local||releaseSchedulerMode!=='LOCAL_TIMER'||!item.outputContract)throw fail(422,'此停止入口仅用于本机分布测试发布');
+          if(!local||releaseSchedulerMode!=='LOCAL_TIMER'||(!item.outputContract&&!item.fundLookthrough)||item.fundLookthrough&&!localClassicSpark)throw fail(422,'此停止入口仅用于本机分布或基金测试发布');
           if(body.packageDigest!==item.packageDigest)throw fail(409,'停止须绑定确切发布与包摘要');
           if(item.status==='CANCELLED')return json(res,200,expose(item));
-          if(!['ACTIVE_LOCAL','DEPLOYING'].includes(item.status))throw fail(409,'只能停止当前生效的分布发布');
+          if(!['ACTIVE_LOCAL','DEPLOYING'].includes(item.status))throw fail(409,'只能停止当前生效的本机测试发布');
           releaseScheduler.cancelRelease(item.id,'工程师停止后续本机批次');
           const stopped=store.update('release',item.id,PROJECT,{status:'CANCELLED',health:'STOPPED',cancelledAt:new Date().toISOString()});
           if(item.currentRollbackId)store.update('release_rollback',item.currentRollbackId,PROJECT,{status:'CANCELLED',stoppedAt:new Date().toISOString()});
@@ -5304,6 +5328,8 @@ export function createV2Server(options = {}) {
             target = get("release", text(body.targetReleaseId, 1, 80));
           requireDeliveryEvidence("release", target);
           const currentBundle=get('delivery_package',item.packageId),targetBundle=get('delivery_package',target.packageId);
+          if (currentBundle.manifest.source.fundLookthrough || targetBundle.manifest.source.fundLookthrough)
+            throw fail(422, "基金组合穿透尚未开放回滚");
           if(currentBundle.manifest.source.outputContract||targetBundle.manifest.source.outputContract){
             if(!local||releaseSchedulerMode!=='LOCAL_TIMER')throw fail(422,'分布回滚仅用于本机测试');
             const key=text(req.headers['idempotency-key'],1,100),reason=body.reason===undefined?'恢复到已验证的分布版本':text(body.reason,4,500),namespace=`${PROJECT}:distribution-rollback:${item.id}:${key}`;

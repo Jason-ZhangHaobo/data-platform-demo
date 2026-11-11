@@ -254,7 +254,7 @@ export class LocalReleaseScheduler {
         scheduledFor: run.businessScheduledFor,
         signal: controller.signal,
       });
-      if(release.outputContract&&stopped())return await cancelBeforeRun();
+      if((release.outputContract||release.fundLookthrough)&&stopped())return await cancelBeforeRun();
       if (!terminal.has(result.status) || result.status === "INTERRUPTED")
         throw new Error("发布执行器返回无效状态");
       const finished = this.store.update("release_run", id, this.project, {
@@ -277,7 +277,7 @@ export class LocalReleaseScheduler {
       return finished;
     } catch (error) {
       if (!claimPersisted) throw error;
-      if(release.outputContract&&controller.signal.aborted)return await cancelBeforeRun();
+      if((release.outputContract||release.fundLookthrough)&&controller.signal.aborted)return await cancelBeforeRun();
       return this.#finishFailure(run, release, error.message, profile);
     } finally {
       this.controllers.delete(run.id);
@@ -305,7 +305,7 @@ export class LocalReleaseScheduler {
   async #recordMonitoring(run, release) {
     const success = run.status === "SUCCEEDED";
     this.store.create("monitor_event", this.project, {
-      type: success ? "BATCH_SUCCEEDED" : release.outputContract&&run.status==="CANCELLED"?"BATCH_CANCELLED":"BATCH_FAILED",
+      type: success ? "BATCH_SUCCEEDED" : (release.outputContract||release.fundLookthrough)&&run.status==="CANCELLED"?"BATCH_CANCELLED":"BATCH_FAILED",
       releaseId: release.id,
       releaseRunId: run.id,
       packageDigest: run.packageDigest,
@@ -314,7 +314,7 @@ export class LocalReleaseScheduler {
       durationMs: run.durationMs ?? null,
       schedulerTriggered: run.schedulerTriggered === true,
     });
-    if(release.outputContract&&run.status==='CANCELLED')return;
+    if((release.outputContract||release.fundLookthrough)&&run.status==='CANCELLED')return;
     let recoveredAlerts = 0;
     if (!success) {
       this.store.create("monitor_alert", this.project, {
@@ -326,7 +326,7 @@ export class LocalReleaseScheduler {
         message: run.error ?? "本机发布批次失败",
         openedAt: new Date(this.now()).toISOString(),
       });
-    } else {
+    } else if (!release.fundLookthrough) {
       for (const alert of this.store.list("monitor_alert", this.project)) {
         if (alert.releaseId === release.id && alert.status === "OPEN") {
           recoveredAlerts++;

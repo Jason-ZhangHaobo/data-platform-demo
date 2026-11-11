@@ -28,6 +28,8 @@ export function assertDistributionRelease({bundle,verification,review,approval,s
 // Existing customer-asset releases retain their legacy lane. New distributions
 // supersede only the same registered contract, never another running pipeline.
 export function sameLocalPublicationLane(previousBundle,nextBundle){
+ const previous=previousBundle?.manifest?.source?.fundLookthrough,next=nextBundle?.manifest?.source?.fundLookthrough;
+ if(previous||next)return Boolean(previous&&next&&previous.contractId===next.contractId&&previous.managerId===next.managerId);
  const a=previousBundle?.manifest?.source?.outputContract?.id,b=nextBundle?.manifest?.source?.outputContract?.id;
  return a===b;
 }
