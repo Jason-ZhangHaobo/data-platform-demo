@@ -104,6 +104,7 @@ export class LocalReleaseScheduler {
     persist = async () => undefined,
     resolveDirectory = async ({ release }) => release.artifactDirectory,
     assertRunSource = () => {},
+    fundExecutionEvidenceMode,
   }) {
     this.store = store;
     this.project = project;
@@ -115,6 +116,7 @@ export class LocalReleaseScheduler {
     this.persist = persist;
     this.resolveDirectory = resolveDirectory;
     this.assertRunSource = assertRunSource;
+    this.fundExecutionEvidenceMode = fundExecutionEvidenceMode;
     this.timers = new Map();
     this.controllers = new Map();
     this.queue = Promise.resolve();
@@ -248,6 +250,7 @@ export class LocalReleaseScheduler {
       });
       if(stopped())return await cancelBeforeRun();
       this.assertRunSource({run,release,packageItem});
+      const executionStartedAt = new Date(this.now()).toISOString();
       const result = await this.runPackage({
         directory,
         expectedDigest: run.packageDigest,
@@ -259,6 +262,7 @@ export class LocalReleaseScheduler {
         throw new Error("发布执行器返回无效状态");
       const finished = this.store.update("release_run", id, this.project, {
         ...result,
+        ...(release.fundLookthrough ? { executionEvidenceMode: this.fundExecutionEvidenceMode, startedAt: executionStartedAt } : {}),
         status: result.status,
         mode: profile.mode ?? "LOCAL_SCHEDULED_RELEASE",
         clockMode: profile.clockMode ?? "WALL_CLOCK_TIMER",

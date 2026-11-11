@@ -13,6 +13,7 @@ import { MetadataStore } from '../../src/v2/store.mjs';
 import { LocalArtifactStore } from '../../src/v2/artifact-store.mjs';
 import { loadDeliveryDirectory } from '../../src/v2/delivery.mjs';
 import { resolvePublishedReportSource } from '../../src/v2/published-report-source.mjs';
+import { resolveFundConsumptionSource } from '../../src/v2/fund-consumption-source.mjs';
 
 function fixture() {
   const context = fundContext(), binding = fundDeliveryBinding();
@@ -86,7 +87,7 @@ async function publicationFixture(t) {
   let clock = Date.parse('2026-09-11T01:00:00Z'), releaseCalls = 0;
   const replayFiles = args => {
     const { bundle } = loadDeliveryDirectory(args.directory, args.expectedDigest);
-    return verifyDeliveryDirectory(args, { runner: async () => ({ ...input.run,
+    return verifyDeliveryDirectory(args, { runner: async () => ({ ...input.run, executionEvidenceMode: 'LOCAL_SPARK_PROCESS',
       testSqlValidation: { passed: true, sqlHash: sha256(bundle.files['tests.sql']) } }) });
   };
   const app = createV2Server({ root, store, artifactStore: new LocalArtifactStore(join(root, 'objects')),
@@ -106,7 +107,7 @@ async function publicationFixture(t) {
     const r = await fetch(base + path, { method: body ? 'POST' : 'GET',
       headers: { 'content-type': 'application/json', 'x-shuduo-client': 'workbench', 'idempotency-key': `fund-test-${++request}` },
       ...(body ? { body: JSON.stringify(body) } : {}) });
-    return { status: r.status, body: await r.json() };
+    return { status: r.status, body: await r.json(), cacheControl: r.headers.get('cache-control') };
   };
   const created = await call('/delivery/packages', { sourceRunId: source.id, name: '合成基金发布测试夹具' });
   assert.equal(created.status, 201);
@@ -222,4 +223,63 @@ test('stopping a fund fixture prevents both original batches from running', asyn
   assert.equal(f.calls(), 0);
   assert.equal(f.store.list('monitor_alert', PROJECT).length, 0);
   assert.equal(f.store.list('monitor_event', PROJECT).filter(event => event.type === 'RELEASE_CANCELLED').length, 1);
+});
+
+test('fund service source reads one exact batch only after verifying both and labels synthetic execution', async t => {
+  const f = await publicationFixture(t);
+  const review = await f.call(f.path + '/review', f.reviewInput);
+  const approval = await f.approve(review.body.id, f.consent);
+  const release = await f.call('/releases', { approvalId: approval.body.id, ...f.consent.scheduleSpec });
+  assert.equal(release.status, 201);
+  const releaseId = release.body.id, packageDigest = f.bundle.digest;
+  const [first, second] = f.store.list('release_run', PROJECT).sort((a, b) => a.sequence - b.sequence);
+  const query = new URLSearchParams({ release_id: releaseId, package_digest: packageDigest });
+  const path = (batchId = first.id, params = query) => `/data-services/fund-sources/${batchId}?${params}`;
+  f.at(first.scheduledTriggerAt);
+  await f.app.releaseScheduler.executeRun(first.id);
+  assert.equal((await f.call(path())).status, 409);
+  f.at(second.scheduledTriggerAt);
+  await f.app.releaseScheduler.executeRun(second.id);
+  const { status, body, cacheControl } = await f.call(path());
+  assert.equal(status, 200, body.message);
+  assert.equal(cacheControl, 'no-store');
+  assert.deepEqual(body.keyFields, ['portfolio_id', 'trade_date', 'asset_class']);
+  assert.equal(body.businessDate, '2026-09-10');
+  assert.equal(body.batchId, first.id);
+  assert.equal(body.rowCount, 7);
+  assert.deepEqual(body.batches.map(batch => batch.id), [first.id, second.id]);
+  assert.equal(body.engineClassification, 'TEST_HARNESS');
+  assert.equal(body.eligibleForService, false);
+  assert.equal(body.agentIndependentE2E, false);
+  assert.equal(body.publicDeployed, false);
+  for (const value of ['rows', 'exposure_amount', 'main.sql', 'approvalId']) assert.equal(JSON.stringify(body).includes(value), false);
+  assert.equal(resolveFundConsumptionSource({ store: f.store, project: PROJECT,
+    selection: { releaseId, packageDigest, batchId: first.id } }).rows, undefined);
+  const other = await f.call(path(second.id));
+  assert.equal(other.body.batchId, second.id);
+  assert.equal(other.body.resultDigest, body.resultDigest);
+  assert.equal((await f.call(path(first.id, query + '&release_id=' + releaseId))).status, 422);
+  assert.equal((await f.call(path(first.id, new URLSearchParams({ release_id: releaseId, package_digest: '0'.repeat(64) })))).status, 409);
+  assert.equal((await f.call(path('00000000-0000-0000-0000-000000000000'))).status, 409);
+
+  const run = f.store.get('release_run', second.id, PROJECT);
+  const event = f.store.list('monitor_event', PROJECT).find(item => item.releaseRunId === second.id);
+  for (const [kind, record, field, value] of [
+    ['release_run', run, 'rows', run.rows.map((row, index) => index === 0 ? { ...row, exposure_amount: '0.00' } : row)],
+    ['release_run', run, 'fileHashes', { ...run.fileHashes, 'tests.sql': 'a'.repeat(64) }],
+    ['release_run', run, 'executionEvidenceMode', 'LOCAL_SPARK_PROCESS'],
+    ['monitor_event', event, 'status', 'FAILED'],
+  ]) {
+    f.store.update(kind, record.id, PROJECT, { [field]: value });
+    assert.equal((await f.call(path())).status, 409);
+    f.store.update(kind, record.id, PROJECT, { [field]: record[field] });
+  }
+  const before = f.store.get('release_run', first.id, PROJECT).version;
+  assert.deepEqual((await f.call(path())).body, body);
+  assert.equal(f.store.get('release_run', first.id, PROJECT).version, before);
+  f.store.create('monitor_alert', PROJECT, { releaseId, releaseRunId: first.id, status: 'OPEN' });
+  assert.equal((await f.call(path())).status, 409);
+  assert.equal(f.calls(), 2);
+  assert.equal(f.store.list('data_service', PROJECT).length, 0);
+  assert.equal(f.store.list('service_call', PROJECT).length, 0);
 });
