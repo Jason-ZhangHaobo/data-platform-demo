@@ -1,8 +1,9 @@
+import {createHash} from "node:crypto";
 import {lstatSync, readdirSync} from "node:fs";
 import {join} from "node:path";
 import {getContext} from "./context.mjs";
 import {checkpointScope, directory, links, readCheckpoint, uuid} from "./live-lifecycle-checkpoint.mjs";
-import {currentLiveLifecycleContract, liveLifecycleCases, summarizeLiveLifecycle, verifyLiveCaseEvidence} from "./live-lifecycle-evaluation.mjs";
+import {currentLiveLifecycleContract, liveLifecycleCases, pendingLiveCreation, summarizeLiveLifecycle, verifyLiveCaseEvidence} from "./live-lifecycle-evaluation.mjs";
 
 const contractId = currentLiveLifecycleContract.id;
 const statuses = new Set([
@@ -30,7 +31,7 @@ function loadRuns(root, selectedId) {
     try {
       const runDirectory = join(base, id);
       directory(runDirectory);
-      const {state} = readCheckpoint(join(runDirectory, "checkpoint.json"));
+      const {state,text} = readCheckpoint(join(runDirectory, "checkpoint.json"));
       const scope = checkpointScope(state, id, {});
       if (scope.contractId !== contractId) {
         legacyCount++;
@@ -39,18 +40,20 @@ function loadRuns(root, selectedId) {
       const startedAt = new Date(state.startedAt).toISOString();
       const item = {id, startedAt, caseLimit:state.caseLimit};
       runs.push(item);
-      if (id === selectedId) requested = state;
+      const candidate = {startedAt, state, digest:createHash("sha256").update(text).digest("hex")};
+      if (id === selectedId) requested = candidate;
       if (!latest || startedAt > latest.startedAt ||
-          (startedAt === latest.startedAt && id > latest.state.evaluationRunId)) latest = {startedAt, state};
+          (startedAt === latest.startedAt && id > latest.state.evaluationRunId)) latest = candidate;
     } catch {
       unreadableCount++;
     }
   }
   runs.sort((left, right) => right.startedAt.localeCompare(left.startedAt) || right.id.localeCompare(left.id));
-  return {runs, selected:selectedId ? requested : latest?.state, legacyCount, unreadableCount};
+  const selected = selectedId ? requested : latest;
+  return {runs, selected:selected?.state, checkpointDigest:selected?.digest, legacyCount, unreadableCount};
 }
 
-function caseRow(definition, index, state, outcomes, simulated) {
+function caseRow(definition, index, state, outcomes, simulated, executionFor) {
   const entry = outcomes.get(definition.id);
   const parent = outcomes.get(definition.sourceCaseId);
   const submission = entry?.actions?.agent;
@@ -63,6 +66,8 @@ function caseRow(definition, index, state, outcomes, simulated) {
   row.phase = phases.has(entry.phase) ? entry.phase : "UNCONFIRMED";
   if (submission && ["UNKNOWN", "SUBMITTING"].includes(submission.status)) {
     row.status = "SUBMISSION_UNKNOWN";
+  } else if (pendingLiveCreation(entry)?.name === "delivery") {
+    row.status = "DELIVERY_SUBMISSION_UNKNOWN";
   } else if (entry.status === "SUCCEEDED") {
     const verified = !simulated && verifyLiveCaseEvidence(definition, entry, {contractId, sourceCheckpoint:parent});
     row.status = simulated ? "TEST_HARNESS" : verified ? "RECORDED_PASS" : "UNCONFIRMED";
@@ -75,14 +80,15 @@ function caseRow(definition, index, state, outcomes, simulated) {
       submission?.status === "CONFIRMED" && submission.id === entry.taskId) {
     const navigation = links(entry, state.origin, [...outcomes.values()]);
     row.taskUrl = navigation.taskUrl;
+    if (executionFor) row.execution = executionFor(definition, entry, parent, simulated);
     if (!simulated) row.servicesUrl = navigation.servicesUrl;
   }
   return row;
 }
 
-export function liveLifecycleOverview(root, selectedId) {
+export function liveLifecycleOverview(root, selectedId, {origin, executionFor}={}) {
   if (selectedId !== undefined && !uuid.test(selectedId)) throw failure(422, "请选择原评测编号");
-  const {runs, selected, legacyCount, unreadableCount} = loadRuns(root, selectedId);
+  const {runs, selected, checkpointDigest, legacyCount, unreadableCount} = loadRuns(root, selectedId);
   if (selectedId && !selected) throw failure(404, "该 v3 评测记录无法读取");
   const cases = liveLifecycleCases(contractId);
   const outcomes = new Map((selected?.outcomes ?? []).map(entry => [entry.caseId, entry]));
@@ -93,11 +99,12 @@ export function liveLifecycleOverview(root, selectedId) {
   return {
     contractId, runs, legacyCount, unreadableCount,
     selectedId:selected?.evaluationRunId ?? null,
+    checkpointDigest,
     measurementStatus:summary.measurementStatus,
     verifiedCaseCount:summary.succeededCaseCount,
     attemptedCaseCount:summary.attemptedCaseCount,
     caseCount:summary.frozenCaseCount,
     autonomousCompletionRate:summary.autonomousCompletionRate,
-    cases:cases.map((definition, index) => caseRow(definition, index, selected, outcomes, simulated)),
+    cases:cases.map((definition, index) => caseRow(definition, index, selected, outcomes, simulated, selected?.origin === origin ? executionFor : undefined)),
   };
 }

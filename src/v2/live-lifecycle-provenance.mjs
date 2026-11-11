@@ -15,6 +15,9 @@ const manualKeys = ['manualProvenance', 'manualContinuation', 'assistedContinuat
 const manualKinds = new Set(['MANUAL_RUN', 'ENGINEER_EDIT', 'ENGINEER_AUTHORED',
   'ENGINEER_ASSISTED', 'MANUAL_SUCCESS_REFERENCE', 'ASSISTED_SUCCESS_REFERENCE',
   'RUN_COMPARISON_REFERENCE', 'FAILED_RUN_REFERENCE']);
+const unsettledModelStages = new Set(["MODEL_IN_FLIGHT", "MODEL_OUTCOME_UNKNOWN", "MODEL_NOT_SENT"]);
+const unknownReservation = value => value.model === "unconfirmed" && value.usageEstimated === true &&
+  unsettledModelStages.has(value.status);
 export const nonLiveModelLabel = value => typeof value === 'string' &&
   /test.?double|unconfirmed|fixture|stub|mock|synthetic/i.test(value);
 
@@ -28,7 +31,7 @@ export function liveEvidenceProvenance(...roots) {
     seen.add(value);
     if (Array.isArray(value)) { pending.push(...value.slice(0, 4097)); if (value.length > 4096) unconfirmed = true; continue; }
     if (value.testDouble === true || value.synthetic === true || value.executionEvidenceMode === 'TEST_HARNESS' ||
-        nonLiveModelLabel(value.model)) synthetic = true;
+        (nonLiveModelLabel(value.model) && !unknownReservation(value))) synthetic = true;
     if (value.sourceKind !== undefined && value.sourceKind !== 'AGENT' ||
         value.humanClarified===true || value.clarification!==undefined ||
         value.source === 'MANUAL' || manualKinds.has(value.kind) ||

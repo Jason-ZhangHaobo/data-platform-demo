@@ -8142,6 +8142,9 @@ kbd {
 .ops-live-table-v2 td, .ops-live-table-v2 th { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .ops-live-table-v2 small { display: block; margin-top: 3px; font-weight: 400; }
 .ops-live-links-v2 { display: flex; flex-wrap: wrap; gap: 8px; }
+.ops-live-execution-v2 { margin-top: 4px; }
+.ops-live-execution-v2 > summary { padding: 3px 0; font-size: 12px; }
+.ops-live-execution-v2 > div { padding-left: 10px; border-left: 2px solid var(--border); }
 @media (max-width: 700px) {
   .ops-live-summary-v2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
 }

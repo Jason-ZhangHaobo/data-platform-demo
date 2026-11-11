@@ -149,6 +149,7 @@ import {
 } from "./budget.mjs";
 import { verifyLifecycleReport } from "./lifecycle-evaluation.mjs";
 import {liveLifecycleOverview} from "./live-lifecycle-overview.mjs";
+import {liveExecutionSnapshot} from "./live-lifecycle-execution.mjs";
 import {
   evaluateCloudPreflight,
   publicCloudReadiness,
@@ -3188,7 +3189,12 @@ export function createV2Server(options = {}) {
         if ([...query.keys()].some(key => key !== "run_id") || query.getAll("run_id").length > 1)
           throw fail(422, "只接受一个原评测编号");
         try {
-          return json(res, 200, liveLifecycleOverview(root, query.get("run_id") ?? undefined));
+          return json(res, 200, liveLifecycleOverview(root, query.get("run_id") ?? undefined, {
+            origin:new URL("http://" + req.headers.host).origin,
+            executionFor:(definition, entry, parent, testHarness) => liveExecutionSnapshot(definition, entry, parent, {
+              read:(kind, id) => store.get(kind, id, PROJECT), testHarness,
+            }),
+          }));
         } catch (error) {
           if ([404, 409, 422].includes(error.status)) throw error;
           throw fail(409, "本机评测记录无法核对，请保留原检查点");

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import {writeFileSync,renameSync,existsSync,openSync,closeSync,unlinkSync} from "node:fs";
-import {randomUUID} from "node:crypto";
+import {createHash,randomUUID} from "node:crypto";
 import {dirname,join,resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {advanceLiveLifecycleCase,refreshLiveLifecycleConsumption,pendingLiveCreation,reconcileLiveCreation,liveLifecyclePlan,liveCaseCheckpoint,summarizeLiveLifecycle,liveLifecycleCases,liveLifecycleContract,legacyLiveLifecycleContract,currentLiveLifecycleContract} from "../src/v2/live-lifecycle-evaluation.mjs";
 
 import {checkpointScope, directory, links, loopbackOrigin, readCheckpoint, stop, uuid} from "../src/v2/live-lifecycle-checkpoint.mjs";
+import {checkedLiveExecutionProjection} from "../src/v2/live-lifecycle-execution.mjs";
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const safeCode=value=>typeof value==="string"&&/^[A-Z0-9_]{1,80}$/.test(value)?value:undefined;
@@ -41,14 +42,37 @@ export function createLiveEvaluationAdapter(origin,{readOnly=false,receiptOnly=f
  }};
 }
 
+async function inspectRecordedExecution(state, origin, checkpointText, fetchImpl) {
+  const runId = state.evaluationRunId;
+  const response = await fetchImpl(origin + "/api/v2/evaluations/live-lifecycle/overview?run_id=" + runId,
+    {method:"GET", redirect:"error", signal:AbortSignal.timeout(10000), headers:{"x-shuduo-client":"cli"}});
+  if (!response.ok) stop("原本机入口暂无法核对执行记录");
+  const value = await response.json();
+  const digest = createHash("sha256").update(checkpointText).digest("hex");
+  if (value?.selectedId !== runId || value.contractId !== currentLiveLifecycleContract.id ||
+      value.checkpointDigest !== digest || !Array.isArray(value.cases) || value.cases.length !== 20 ||
+      new Set(value.cases.map(row => row?.caseId)).size !== 20)
+    stop("本机评测入口的原检查点不一致，请读取最新原记录");
+  const confirmed = state.outcomes.filter(item => uuid.test(item.taskId ?? "") &&
+    item.actions?.agent?.status === "CONFIRMED" && item.actions.agent.id === item.taskId);
+  return {
+    evaluationRunId:runId, contractId:value.contractId, verificationMode:"STORED_METADATA_ONLY",
+    cases:confirmed.map(item => {
+      const row = value.cases.find(candidate => candidate?.caseId === item.caseId);
+      return {caseId:item.caseId, taskUrl:origin + "/v2/?module=agent-center&task=" + item.taskId,
+        execution:checkedLiveExecutionProjection(row?.execution, item.taskId, item.code)};
+    }),
+  };
+}
+
 // Injection is for local synthetic tests only. CLI arguments cannot choose an
 // artifact path or adapter; production always uses this repository's directory.
 export async function runLiveLifecycleCli(args=[],env=process.env,options={}){
  const out=options.output??(value=>process.stdout.write(value+"\n")),err=options.error??(value=>process.stderr.write(value+"\n"));
  const mode=args[0]??"--plan";
  try{
-  if(!["--plan","--execute","--resume","--refresh","--reconcile","--report"].includes(mode)||
-    (mode==="--plan"?args.length>1:mode==="--execute"?args.length!==1:args.length!==2))stop("使用 --plan、--execute、--resume <原编号>、--refresh <原编号>、--reconcile <原编号> 或 --report <原编号>");
+  if(!["--plan","--execute","--resume","--refresh","--reconcile","--inspect","--report"].includes(mode)||
+    (mode==="--plan"?args.length>1:mode==="--execute"?args.length!==1:args.length!==2))stop("使用 --plan、--execute、--resume <原编号>、--refresh <原编号>、--reconcile <原编号>、--inspect <原编号> 或 --report <原编号>");
   if(mode==="--plan"){
    const plan=liveLifecyclePlan(Number(env.V2_LIVE_EVALUATION_CASE_LIMIT??1),{contractId:env.V2_LIVE_EVALUATION_CONTRACT??currentLiveLifecycleContract.id}),origin=loopbackOrigin(env.V2_LIVE_EVALUATION_ORIGIN??"http://127.0.0.1:3100");
    out(JSON.stringify({...plan,selectedCases:plan.selectedCases.map(({id,kind,sourceCaseId,contextId,category,request})=>({id,kind,sourceCaseId,contextId,category,request})),origin},null,2));return 0;
@@ -65,6 +89,13 @@ export async function runLiveLifecycleCli(args=[],env=process.env,options={}){
    state={evaluationRunId:runId,contract:plan.contract,startedAt:new Date().toISOString(),caseSetDigest:plan.caseSetDigest,caseLimit:plan.selectedCases.length,origin,outcomes:[]};
   }else{directory(runDirectory);const snapshot=readCheckpoint(path);state=snapshot.state;originalCheckpointText=snapshot.text;({plan,origin,contractId}=checkpointScope(state,runId,env));}
   if(mode==="--report"){out(JSON.stringify(report(state,origin,contractId),null,2));return 0;}
+  if (mode === "--inspect") {
+    if (contractId !== currentLiveLifecycleContract.id) stop("执行阶段对照须使用原 v3 评测编号");
+    const result = await inspectRecordedExecution(state, origin, originalCheckpointText, options.fetchImpl ?? fetch);
+    if (readCheckpoint(path).text !== originalCheckpointText) stop("读取期间原检查点已变化，请核对当前记录");
+    out(JSON.stringify(result,null,2));
+    return result.cases.some(item => item.execution.state === "UNCONFIRMED" || item.execution.spark.state === "UNCONFIRMED") ? 2 : 0;
+  }
   if(contractId===legacyLiveLifecycleContract.id){out(JSON.stringify({...report(state,origin,contractId),resumeUnsupported:true,nextAction:"--report "+runId}));return 2;}
   const receiptOnly = mode === "--reconcile";
   if (receiptOnly && contractId !== currentLiveLifecycleContract.id) stop("创建回执对账须使用原 v3 评测编号");
