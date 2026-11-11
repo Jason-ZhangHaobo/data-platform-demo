@@ -16,6 +16,8 @@ import { V2Client } from '../../src/v2/client.mjs';
 import { runV2Cli } from '../../bin/shuduo.mjs';
 import { runSpark, runtimeConfig } from '../../src/v2/spark.mjs';
 import { syntheticSqlRequirement } from './fixtures/sql-requirement.mjs';
+import { publicationPreflightPath, publicationRequestReceiptPath } from '../../src/v2/publication-request.mjs';
+import { validatePrivateApplicationRequest } from '../../src/v2/private-application.mjs';
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
@@ -213,7 +215,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
-test('exact cloud delivery and rehearsal recover their original identifiers across both lost acknowledgments',async t=>{
+test('exact cloud delivery and rehearsal lead to human review and recover the original release receipt',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.
   const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true});
   const checkpoint=join(f.directory,'exact-delivery.json'),billPath=join(f.directory,'current-bill.json'),requests=[];
@@ -223,6 +225,7 @@ test('exact cloud delivery and rehearsal recover their original identifiers acro
   writeBill(64);
   let savedAtDeliveryPost;
   let savedAtRehearsalPost;
+  let savedAtPublicationPost, lostRelease;
   const client=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
     const target=new URL(url), path=target.pathname.slice('/api/v2'.length)+target.search;
     const body=options.body?JSON.parse(options.body):undefined, key=options.headers['Idempotency-Key'];
@@ -234,6 +237,14 @@ test('exact cloud delivery and rehearsal recover their original identifiers acro
     if(path.startsWith('/agent/deliveries/')&&path.endsWith('/advance')&&body?.rehearsal&&!body.rehearsal.verificationId)
       savedAtRehearsalPost=JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.rehearsal;
     const response=await f.call(path,body,key);
+    if(path.endsWith('/publication')&&body?.reviewDigest){
+      savedAtPublicationPost=JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.publication;
+      assert.equal(savedAtPublicationPost.key,key);
+      assert.equal(savedAtPublicationPost.status,'SUBMITTING');
+      assert.equal(response.status,202);
+      lostRelease=response.body;
+      throw Error('SYNTHETIC_PUBLICATION_ACK_LOST');
+    }
     return new Response(JSON.stringify(response.body),{status:response.status});
   }});
   const cli=async(action,flags=[],exit=0)=>{
@@ -383,6 +394,80 @@ test('exact cloud delivery and rehearsal recover their original identifiers acro
   assert.equal((await cli('v3-inspect')).delivery.rehearsal.id,verification.id);
   assert.equal((await cli('v3-inspect')).delivery.storagePending,undefined);
   assert.ok(!JSON.stringify(recovered).includes(savedAtDeliveryPost.key));
+
+  const reviewPath=join(f.directory,'publication-review.json');
+  const preflightQueue=f.queueCounts();
+  const exported=await cli('v3-publication-review',['--out-file',reviewPath]);
+  assert.equal(exported.status,'REVIEW_FILE_READY');
+  assert.equal(exported.approvalRecorded,false);
+  assert.equal(exported.schedulerAvailable,false);
+  assert.ok(requests.every(request=>request.method==='GET'));
+  assert.equal(statSync(reviewPath).mode&0o777,0o600);
+  const draft=JSON.parse(readFileSync(reviewPath,'utf8'));
+  assert.deepEqual(draft.package.files,bundle.files);
+  assert.equal(draft.basis.evidence.delivery.verificationId,verification.id);
+  assert.ok(Object.values(draft.attestations).every(value=>value===false));
+  assert.deepEqual(f.queueCounts(),preflightQueue);
+  assert.equal(f.store.list('release_approval',PROJECT).length,0);
+  const selector={sourceKind:'AGENT',sourceRunId:source.runId,packageDigest:pending.packageDigest,verificationId:verification.id};
+  const proofPath=publicationPreflightPath(task.id,selector);
+  const privateProof={operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2'+proofPath};
+  assert.equal(validatePrivateApplicationRequest(privateProof,{allowDurableAgentRead:true}).path,privateProof.path);
+  assert.throws(()=>validatePrivateApplicationRequest({...privateProof,method:'POST',body:{}},{allowDurableAgent:true}));
+  assert.equal((await f.call(proofPath+'&sourceRunId='+source.runId)).status,422);
+  const publishFlags=['--review-file',reviewPath,...confirm];
+  await cli('v3-publish',publishFlags,1);
+  assert.deepEqual(requests,[]);
+  const reviewed={...draft,attestations:{code:true,assertions:true,deliveryFiles:true,cloudScope:true}};
+  const publicationBody={...selector,reviewDigest:reviewed.reviewDigest,attestations:reviewed.attestations};
+  assert.equal((await f.call(taskPath+'/publication',publicationBody,randomUUID())).status,403);
+  Object.assign(f.env,{
+    V2_FC_PUBLIC_WRITE_SCOPE:'PUBLICATION_ONLY',
+    V2_PUBLIC_PUBLICATION_STARTS_AT:new Date(Date.now()-1000).toISOString(),
+    V2_PUBLIC_PUBLICATION_EXPIRES_AT:new Date(f.now()+60000).toISOString(),
+    V2_PUBLIC_PUBLICATION_TASK_ID:task.id,
+    V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST:pending.packageDigest,
+    V2_PUBLIC_PUBLICATION_VERIFICATION_ID:verification.id,
+    V2_PRIVATE_RELEASE_ENABLED:'true',
+    V2_PRIVATE_RELEASE_TRIGGER_NAMES:'shuduo-release-synthetic-review',
+    V2_SCHEDULER_TICK_SECRET:'synthetic-release-authorization-1234567890',
+  });
+  await f.restart();
+  assert.equal((await f.call(taskPath+'/publication',{...publicationBody,reviewDigest:'f'.repeat(64)},randomUUID())).status,409);
+  const tampered=structuredClone(reviewed);
+  tampered.package.files['main.sql']+='\n-- modified after review';
+  writeFileSync(reviewPath,JSON.stringify(tampered));
+  await cli('v3-publish',publishFlags,1);
+  assert.ok(requests.every(request=>request.method==='GET'));
+  assert.equal(f.store.list('release',PROJECT).length,0);
+  writeFileSync(reviewPath,JSON.stringify(reviewed));
+  const unknownRelease=await cli('v3-publish',publishFlags);
+  assert.equal(unknownRelease.reason,'INSPECT_ORIGINAL_PUBLICATION');
+  assert.equal(requests.filter(request=>request.method==='POST').length,1);
+  assert.equal(savedAtPublicationPost.reviewDigest,reviewed.reviewDigest);
+  assert.equal(savedAtPublicationPost.bill.unsettledReserveCny,64);
+  assert.equal(lostRelease.release.status,'WAITING_SCHEDULER');
+  assert.equal(lostRelease.runs.length,2);
+  assert.ok(lostRelease.runs.every(run=>run.status==='SCHEDULED'&&!run.schedulerTriggered));
+  assert.equal((await cli('v3-publish',publishFlags)).reason,'INSPECT_ORIGINAL_PUBLICATION');
+  assert.deepEqual(requests,[]);
+  await f.restart();
+  f.later(60001);
+  const found=await cli('v3-publish',['--reconcile']);
+  const receiptPath=publicationRequestReceiptPath(task.id,savedAtPublicationPost.key);
+  assert.equal(found.status,'PUBLICATION_RECORDED');
+  assert.equal(found.publication.releaseId,lostRelease.release.id);
+  assert.deepEqual(found.publication.batchIds,lostRelease.runs.map(run=>run.id));
+  assert.deepEqual(requests,[{path:'/auth/session',method:'GET'},{path:receiptPath,method:'GET'}]);
+  assert.equal((await f.call(publicationRequestReceiptPath(task.id,randomUUID()))).status,404);
+  assert.equal((await f.call(receiptPath+'?releaseId='+lostRelease.release.id)).status,422);
+  const privateReceipt={operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2'+receiptPath};
+  assert.equal(validatePrivateApplicationRequest(privateReceipt,{allowDurableAgentRead:true}).path,privateReceipt.path);
+  assert.equal(f.store.list('delivery_review',PROJECT).length,1);
+  assert.equal(f.store.list('release_approval',PROJECT).length,1);
+  assert.equal(f.store.list('release',PROJECT).length,1);
+  assert.equal(f.store.list('release_run',PROJECT).length,2);
+  assert.deepEqual(f.queueCounts(),preflightQueue);
 });
 
 test('invited development reaches versioned files across restart without another task or submission', async t => {

@@ -116,6 +116,20 @@ shuduo agent v3-review --checkpoint /private/original-checkpoint.json
 
 检查点使用当前用户所有的绝对路径和 0600 权限，原入口须与 CLI 配置一致。命令先用原幂等编号读任务与交付创建回执。云端交付回执要求原创建者身份。只有原任务的需求、种子 SQL、创建时间、代码和已结算交付一致时，才读取第三份待审阅证据。缺回执或等待演练时保留待定或待核验结果。命令保持检查点及20例分母，后续执行和审阅沿用原权限流程。
 
+### 导出确切版本审阅与提交发布记录
+
+```sh
+shuduo agent v3-publication-review --checkpoint /private/first-case.json --out-file /private/review.json
+shuduo agent v3-publish --checkpoint /private/first-case.json --review-file /private/review.json --bill-file /private/current-bill.json --confirm
+shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
+```
+
+审阅文件通过 `GET /agent/tasks/{id}/publication/preflight` 读取。按原开发批次、包摘要及演练选择，复核实际存储的八个文件、原需求、独立断言、冻结交易日期及两个计划批次。文件为当前用户所有的 0600 JSON，四项人工确认初始均为 `false`。
+
+工程师逐项确认后，提交命令重新核对审阅文件、当月完整账单、未结算预留和独立发布窗口。先保存确切审阅摘要和原幂等编号，再向已有发布接口发出一次请求。服务端复核同一审阅摘要后创建审阅、批准、一个发布和两个待调度批次。状态为 `WAITING_SCHEDULER` 时表示发布记录已受理。
+
+响应丢失时用 `--reconcile` 读取 `GET /agent/tasks/{id}/publication/requests/{key}`，沿原创建者和原请求确认同一发布及两条原批次。该读取不协调 Worker，窗口关闭后也可读取已保存的回执。实际调度、监控和消费分别验收。
+
 ### 读取原任务的执行阶段
 
 在本机运维监控展开已受理案例的模型与 Spark 状态，或执行 `node scripts/run-live-lifecycle-evaluation.mjs --inspect 原评测UUID`。CLI 与页面共用原评测记录，CLI 额外核对本机检查点文件摘要。已冻结的案例始终展示原代码版本和批次，尚未冻结的案例只读最近尝试已关联的版本及批次。

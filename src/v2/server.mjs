@@ -5475,13 +5475,22 @@ export function createV2Server(options = {}) {
           publication: { available: (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
       }
-      const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel))?$/);
+      const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel|preflight|requests\/([A-Za-z0-9_-]{1,100})))?$/);
       if (privatePublication) {
         const agent = get("agent", privatePublication[1]); requireDurableAgentOwner(agent,req);
         const actorId = auth.sessionFromHeaders(req.headers)?.user.id;
         if (method === "POST") {
           if (url.search) throw fail(422, "发布写入仅接受正文中的确切来源，不接受查询参数");
           assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
+        }
+        if (method==="GET" && (privatePublication[2]==="preflight" || privatePublication[3])) {
+          if (local || !cloudPublication) throw fail(503,"确切云端发布预检尚未就绪");
+          if (privatePublication[3]) {
+            if (url.searchParams.size) throw fail(422,"发布回执只接受原请求编号");
+            return json(res,200,cloudPublication.publicationRequestReceipt(agent.id,privatePublication[3],actorId));
+          }
+          const selector = validatePublicationSelector(publicationSelectorFromUrl(url),actorId);
+          return json(res,200,await cloudPublication.publicationPreflight(agent.id,selector));
         }
         if (local && method === "GET" && !privatePublication[2]) {
           const selector=url.search?validatePublicationSelector(publicationSelectorFromUrl(url),actorId):undefined;
@@ -5500,10 +5509,15 @@ export function createV2Server(options = {}) {
         }
         if (method==="POST" && !privatePublication[2]) {
           const body=await readBody(req);
-          if(Object.keys(body).some(k=>!["sourceKind","sourceRunId","packageDigest","verificationId","attestations"].includes(k)))throw fail(422,"发布请求包含未支持字段");
+          if(Object.keys(body).some(k=>!["sourceKind","sourceRunId","packageDigest","verificationId","attestations","reviewDigest"].includes(k)))throw fail(422,"发布请求包含未支持字段");
+          const exact = Object.hasOwn(body,"reviewDigest");
+          if (exact && (typeof body.reviewDigest !== "string" || !/^[a-f0-9]{64}$/.test(body.reviewDigest)))
+            throw fail(422,"人工审阅摘要格式不合法");
+          if (exact && !publicationAccess) throw fail(403,"确切版本须在独立发布窗口提交");
           const selector = validatePublicationSelector({packageDigest:text(body.packageDigest,64,64),verificationId:text(body.verificationId,1,100),
             ...(Object.hasOwn(body,"sourceKind")?{sourceKind:body.sourceKind}:{}),...(Object.hasOwn(body,"sourceRunId")?{sourceRunId:body.sourceRunId}:{})},actorId);
-          return json(res,202,await cloudPublication.publish({agent,...selector,attestations:body.attestations,idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
+          return json(res,202,await cloudPublication.publish({agent,...selector,attestations:body.attestations,
+            ...(exact?{reviewDigest:body.reviewDigest}:{}),idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
         }
       }
       if (path === "/api/v2/agent/deliveries" && method === "GET") {
