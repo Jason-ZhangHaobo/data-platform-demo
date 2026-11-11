@@ -129,6 +129,8 @@ import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
 import { privateBatchReportQuery, privateBatchReportRoute } from "./private-batch-report-request.mjs";
 import { readPrivateBatchReport } from "./private-batch-report.mjs";
+import { archiveSha, batchArchiveRoute } from "./private-batch-archive-client.mjs";
+import { createPrivateBatchArchive } from "./private-batch-archive.mjs";
 import {resolvePublishedReportSource} from './published-report-source.mjs';
 import {createPublishedReportWorkflow} from './published-report-workflow.mjs';
 import {createReportProvenance,reviewedReportBasis} from './report-provenance.mjs';
@@ -1128,6 +1130,8 @@ export function createV2Server(options = {}) {
     now: options.now,
   });
   const reportProvenance=createReportProvenance({store,project:PROJECT,reportStore});
+  const privateBatchArchives = privateDataServicesEnabled
+    ? createPrivateBatchArchive({store, businessStore, project:PROJECT, now:options.now}) : undefined;
   const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,provenance:reportProvenance,
     resolveSource:(source,actorId)=>resolvePublishedReportSource({store,project:PROJECT,source,actorId}),afterStep:options.publishedReportAfterStep});
   const reportActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
@@ -2877,6 +2881,37 @@ export function createV2Server(options = {}) {
       }
       if (path === "/api/v2/reports/overview" && method === "GET")
         return json(res, 200, reports.overview());
+      const archivePath = "/api/v2" + batchArchiveRoute;
+      if (path === archivePath || path.startsWith(archivePath + "/")) {
+        if (!privateBatchArchives) throw fail(404, "此环境未启用私有批次报表归档");
+        const session = auth.sessionFromHeaders(req.headers), actorId = session?.user.id;
+        const canArchive = env.V2_PRIVATE_BATCH_REPORT_ARCHIVE_ENABLED === "true" &&
+          options.ingress?.status.publicReadOnly !== true && !developmentAccess && !publicationAccess && !serviceAccess && !serviceAgentAccess &&
+          Boolean(session?.permissions.some(permission => permission === "*" || permission === "REPORTS"));
+        if (method === "POST" && path === archivePath) {
+          if (!canArchive) throw fail(403, "当前环境只允许读取已保存的报表归档");
+          if (url.search) throw fail(422, "归档提交仅接受请求正文");
+          const {replayed, receipt} = privateBatchArchives.submit(actorId, req.headers["idempotency-key"], await readBody(req));
+          return json(res, replayed ? 200 : 201, receipt);
+        }
+        if (method === "GET" && path === archivePath) {
+          const {source, downloadDigest} = privateBatchReportQuery(url.searchParams);
+          if (downloadDigest !== null) throw fail(422, "下载需要确切归档请求编号");
+          return json(res, 200, {canArchive, actorId, entries:privateBatchArchives.list(actorId, source)});
+        }
+        if (method === "GET") {
+          const digest = url.searchParams.get("download_digest");
+          if (url.searchParams.size !== Number(digest !== null) || (digest !== null && !archiveSha.test(digest)))
+            throw fail(422, "归档下载摘要无效");
+          const receipt = privateBatchArchives.read(actorId, path.slice(archivePath.length + 1));
+          if (digest === null) return json(res, 200, receipt);
+          if (digest !== receipt.digest) throw fail(409, "归档摘要已变化，请重新核对");
+          return json(res, 200, receipt, {
+            "Content-Disposition": `attachment; filename="shuduo-batch-archive-${receipt.review.requestId.slice(0, 8)}.json"`,
+          });
+        }
+        throw fail(404, "未找到报表归档操作");
+      }
       if (path === "/api/v2" + privateBatchReportRoute && method === "GET") {
         if (!privateDataServicesEnabled) throw fail(404, "此环境未启用私有发布批次报表");
         const {source, downloadDigest} = privateBatchReportQuery(url.searchParams);

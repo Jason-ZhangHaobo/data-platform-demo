@@ -33,3 +33,20 @@ HTTP读取限制在本机原所属人。文件包含原需求与澄清文本，�
 | CLI 离线 | `shuduo reports verify-batch-summary --file batch.json` |
 
 接口使用当前项目的受邀会话，仅原任务所属人可读取。读取与导出使用已保存的数据，业务写入保持关闭。离线核验覆盖文件摘要及内部来源绑定，在线权威需通过服务端复核。
+
+## 私有批次报表的审阅归档
+
+原任务所属人在批次报表填写归档名称和需求，审阅该批次的固定汇总后显式确认。每次新的确认保留独立版本、原需求、审阅时间、审阅摘要与资产汇总。归档写入只在受保护边界显式启用，报表权限和当前会话共同校验。只读入口可核对已保存版本。
+
+| 入口 | 操作 |
+|---|---|
+| API 列表 | `GET /api/v2/reports/published/batch-archives`，传入与批次汇总相同的确切来源 |
+| API 归档 | `POST /api/v2/reports/published/batch-archives`，正文为 `{draft, reviewedDigest}`，以 `Idempotency-Key` 传入原请求 UUID |
+| API 回读 | `GET /api/v2/reports/published/batch-archives/{requestId}`，下载时可加 `download_digest` |
+| CLI 审阅 | `shuduo reports prepare-batch-archive --file draft.json`，草稿字段为 `source`、`summaryDigest`、`title` 和 `requirement` |
+| CLI 归档 | `shuduo reports archive-batch --file reviewed.json --request-id UUID --confirm` |
+| CLI 回读 | `shuduo reports batch-archive --request-id UUID`，保存时追加 `--download-digest SHA256 --out-file archive.json` |
+| MCP 回读 | `report_batch_archive`，传入 `requestId` |
+| CLI 离线 | `shuduo reports verify-batch-archive --file archive.json` |
+
+响应丢失时先查询原请求。相同编号和方案只返回原件，改动方案后沿用旧编号会被拒绝。回读与下载只使用归档保存的版本与快照证据。归档正文只由任务所属人读取，经典报表目录继续使用既有的独立权限边界。

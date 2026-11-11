@@ -6771,7 +6771,8 @@ kbd {
 .agent-report-results-v2 .report-widgets-v2 { margin: 12px 0; }
 .published-report-create-v2 { padding:14px; margin:14px 0; border:1px solid #dce6d8; border-radius:9px; background:#f8faf5; }
 .published-report-create-v2 h4 { margin:0; }
-.published-report-create-v2 input,.published-report-create-v2 select { display:block; width:100%; min-width:0; padding:8px; margin-top:5px; border:1px solid #d3dfce; border-radius:6px; background:white; }
+.published-report-create-v2 input,.published-report-create-v2 select,.published-report-create-v2 textarea { display:block; width:100%; min-width:0; padding:8px; margin-top:5px; border:1px solid #d3dfce; border-radius:6px; background:white; }
+.published-report-create-v2 textarea { resize:vertical; font:inherit; }
 .published-report-form-v2 { display:grid; grid-template-columns:minmax(160px,1fr) minmax(140px,.8fr) auto; align-items:end; gap:10px; }
 .published-report-form-v2 .button { white-space:nowrap; }
 .published-report-actions-v2 { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }

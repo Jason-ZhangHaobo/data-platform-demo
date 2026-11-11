@@ -1,0 +1,13 @@
+import type {PublishedReportBinding} from "./published-report-request.mjs";
+import type {PrivateBatchSummary} from "./private-batch-report-client.mjs";
+type Client = {request(path: string, options?: {method?: string; body?: unknown; idempotencyKey?: string}): Promise<unknown>};
+export type ArchiveDraft = {source: PublishedReportBinding; summaryDigest: string; title: string; requirement: string};
+export type ReviewedBatchArchive = {draft: ArchiveDraft; reviewedDigest: string};
+export type BatchArchive = {protocol: string; reportVersion: number; digest: string; summary: PrivateBatchSummary;
+  review: ReviewedBatchArchive & {requestId: string; reviewerId: string; reviewedAt: string}};
+export type ArchiveIndex = {canArchive: boolean; actorId: string; entries: {requestId: string; title: string; reportVersion: number; reviewedAt: string; digest: string}[]};
+export function batchArchiveListPath(source: PublishedReportBinding): string;
+export function prepareBatchArchive(draft: ArchiveDraft): Promise<ReviewedBatchArchive>;
+export function listBatchArchives(client: Client, source: PublishedReportBinding): Promise<ArchiveIndex>;
+export function readBatchArchive(client: Client, input: {requestId: string; source?: PublishedReportBinding; reviewedDigest?: string; downloadDigest?: string}): Promise<BatchArchive>;
+export function submitBatchArchive(client: Client, input: ReviewedBatchArchive & {requestId: string}): Promise<BatchArchive>;
