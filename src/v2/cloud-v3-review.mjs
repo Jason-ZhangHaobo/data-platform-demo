@@ -6,7 +6,7 @@ import { checkpointCaseScope, readCheckpoint, stop, uuid } from "./live-lifecycl
 import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
 import { agentReviewEvidencePath } from "./publication-request.mjs";
 import { normalizeSessionBase } from "./session-credential.mjs";
-import { sqlRequirementBinding } from "./sql-requirements.mjs";
+import { deliveryPreparationHashMatches, deliveryPreparationRequirement } from "./delivery-preparation-request.mjs";
 
 const digest = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value === "string" && uuid.test(value);
@@ -48,7 +48,7 @@ async function inspectFirstReview(definition, item, client) {
   if (!confirmed(deliveryAction)) return pending("ORIGINAL_DELIVERY_RECEIPT_PENDING");
   const code = item.code;
   if (code?.taskId !== item.taskId || !id(code.revisionId) || !id(code.runId) || !digest(code.revisionHash) ||
-      deliveryAction.bodyHash !== sha256("{}") || (item.delivery && item.delivery.id !== deliveryAction.id))
+      !deliveryPreparationHashMatches(deliveryAction.bodyHash,code) || (item.delivery && item.delivery.id !== deliveryAction.id))
     return reject("CHECKPOINT_SOURCE_MISMATCH");
 
   let task, delivery, review;
@@ -62,10 +62,12 @@ async function inspectFirstReview(definition, item, client) {
         attempt.revisionId !== code.revisionId || attempt.runId !== code.runId)
       return reject("ORIGINAL_DEVELOPMENT_MISMATCH");
     delivery = await client.request(`/agent/tasks/${task.id}/delivery-requests/${deliveryAction.key}`);
-    const requirement = code.requirementEvidence ? sqlRequirementBinding(code.requirementEvidence) : undefined;
+    const requirement = deliveryPreparationRequirement(code);
     if (delivery?.id !== deliveryAction.id || delivery.mode !== "DURABLE_AGENT_DELIVERY_V1" || !nativeEvidence(delivery) ||
         delivery.sourceAgentTaskId !== task.id || delivery.sourceRevisionId !== code.revisionId ||
         delivery.sourceRunId !== code.runId || delivery.sourceSqlHash !== code.revisionHash ||
+        (deliveryAction.packageId !== undefined && deliveryAction.packageId !== delivery.packageId) ||
+        (deliveryAction.packageDigest !== undefined && deliveryAction.packageDigest !== delivery.packageDigest) ||
         !isDeepStrictEqual(delivery.sourceRequirementBinding, requirement))
       return reject("ORIGINAL_DELIVERY_MISMATCH");
     if (["QUEUED","RUNNING"].includes(delivery.status)) return pending("CLOUD_REHEARSAL_PENDING");

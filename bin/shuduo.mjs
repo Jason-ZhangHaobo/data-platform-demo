@@ -10,7 +10,7 @@ import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-pro
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
-import {continueCloudV3Start,inspectCloudV3Execution,prepareCloudV3Start} from "../scripts/start-cloud-v3-case.mjs";
+import {continueCloudV3Start,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start} from "../scripts/start-cloud-v3-case.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
@@ -59,6 +59,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent review-evidence --id AGENT_TASK_ID --delivery-id ID --request-sha256 SHA256
   shuduo agent execution-evidence --request-id ORIGINAL_REQUEST_ID
   shuduo agent v3-inspect --checkpoint ABSOLUTE_PATH
+  shuduo agent v3-prepare-delivery --checkpoint ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --source-revision SHA
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
@@ -540,6 +541,13 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       const checkpoint=required(args,"checkpoint");
       result=mode==="prepare"?prepareCloudV3Start(checkpoint,client,required(args,"source_revision")):
         await continueCloudV3Start(checkpoint,client,mode==="reconcile"?{reconcile:true}:{billPath:required(args,"bill_file")});
+    }
+    else if (resource === "agent" && action === "v3-prepare-delivery") {
+      const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
+      if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
+          flags.some(flag=>!["checkpoint","bill_file","base_url","confirm"].includes(flag)) || args.confirm!==true)
+        throw Error("仅在有效开发窗口按原检查点明确确认交付准备");
+      result=await prepareCloudV3Delivery(required(args,"checkpoint"),client,required(args,"bill_file"));
     }
     else if (resource === "agent" && action === "request") {
       const key=required(parsed.options,"request_id");

@@ -82,6 +82,19 @@ test("durable delivery persists files before submission and restores the same jo
   assert.equal(f.store.list("release_approval",f.project).length,0); assert.equal(f.store.list("release",f.project).length,0);
 });
 
+test("native package recovery verifies an attached artifact before finishing the interrupted stage", async t => {
+  const f=fixture(t), ready=await f.engine.create(f.agent,"saved-artifact");
+  const pending=f.store.update("agent_delivery_task",ready.id,f.project,{stage:"PACKAGE_PERSISTING"});
+  const artifactStore=f.options.artifactStore;
+  artifactStore.put=async()=>{throw Error("the existing artifact must not be written again");};
+  const restored=createDurableAgentDelivery(f.options);
+  const resumed=await restored.advance(pending.id,pending.version);
+  assert.equal(resumed.stage,"PACKAGE_READY");
+  assert.equal(resumed.packageId,ready.packageId);
+  assert.equal(resumed.packageDigest,ready.packageDigest);
+  assert.deepEqual(f.submits,[]);
+});
+
 test("file rehearsal rejects missing test SQL hash, missing regressions and test-double receipts", async t => {
   for(const alter of [r=>({...r,testSqlValidation:{passed:true,sqlHash:"x".repeat(64)}}),r=>({...r,validation:{passed:true,regressions:[]}}),r=>({...r,testDouble:true}),r=>({...r,mainSqlExecuted:false})]) {
     const f=fixture(t), task=await f.engine.create(f.agent,"receipt-test"), running=await f.engine.advance(task.id,task.version);

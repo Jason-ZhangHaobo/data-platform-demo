@@ -141,6 +141,7 @@ import{compareSqlRuns}from'./run-comparison.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
 import { storedAgentReviewEvidence } from "./agent-review-evidence.mjs";
 import { storedAgentExecutionEvidence } from "./agent-execution-evidence.mjs";
+import { readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
 import {
   LocalArtifactStore,
   deliveryArtifactValue,
@@ -5586,15 +5587,19 @@ export function createV2Server(options = {}) {
         /^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/prepare-delivery$/,
       );
       if (prepareAgentDelivery && method === "POST") {
-        await readBody(req);
+        const expected = readDeliveryPreparationSource(await readBody(req),prepareAgentDelivery[1]);
         const agent = get("agent", prepareAgentDelivery[1]),
           finalAttempt = agent.attempts?.at(-1);
         requireDurableAgentOwner(agent, req);
+        if (expected && agent.submittedBy !== auth.sessionFromHeaders(req.headers)?.user.id)
+          throw fail(403,"确切版本交付须由原任务创建者提交");
+        if (expected && agent.executionMode !== durableSqlAgentMode)
+          throw fail(409,"确切版本交付须来自原云端持久 SQL 任务");
         if(agent.repairComparison!==undefined||agent.sourceKind==='MANUAL'||agent.sourceAttribution!==undefined)throw fail(409,'人工辅助修正的开发结果已保留；人工辅助交付须独立审阅，当前不能作为原生Agent成果发布');
         if (agent.executionMode === durableSqlAgentMode) {
           if (!durableDelivery) throw fail(503, "持久交付执行器尚未启用");
           const key = text(req.headers["idempotency-key"], 1, 100);
-          return json(res, 202, await durableDelivery.create(agent, key));
+          return json(res, 202, await durableDelivery.create(agent, key, expected));
         }
         if (agent.language === "PYTHON")
           return preparePythonAgentDelivery(agent, req, res);

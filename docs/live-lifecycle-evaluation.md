@@ -70,6 +70,18 @@ API 为 `GET /agent/requests/{key}/execution-evidence`，MCP 对应 `agent_execu
 
 带检查点的命令核对原任务、创建时间、需求和种子 SQL 摘要。只有同一代码版本与批次通过独立预期和回归断言，才保存开发来源。若检查点已有原交付创建编号，再读取同一回执并核对代码、批次、需求绑定和交付编号。待确认或不匹配的证据保留现状。此命令只写入原本机检查点，远端均为 GET。交付演练、工程师审阅和完整验收分别推进。
 
+### 准备云端首例的确切版本交付
+
+```sh
+shuduo agent v3-prepare-delivery --checkpoint /private/first-case.json --bill-file /private/current-bill.json --confirm
+```
+
+使用已绑定开发结果的检查点、原创建者会话和有效开发写入窗口。命令校验完整当前月账单并保留原未结算预留，先保存交付请求的幂等编号和摘要，再提交一次 `POST /agent/tasks/{id}/prepare-delivery`。
+
+请求的 `expectedSource` 包含 `revisionId`、`revisionHash`、`runId` 和源任务存在时的 `requirementBinding`。服务端核对原创建者、代码、实际批次与独立验证，再保存八文件及其摘要。原空对象请求仍可使用。
+
+响应丢失后执行 `v3-inspect`，只查原请求回执。若回执显示 `storagePending`，说明该版本文件已保存到交付记录，产物存储尚待确认。在有效窗口对原交付版本执行一次 `advance-delivery` 可恢复同一文件摘要。对这一阶段的推进只恢复存储，后续 Spark 演练另行提交。两种推进均沿用原任务的审批与预算边界。
+
 ### 读取云端待审阅证据
 
 拿到原任务、确切交付编号和冻结需求的 SHA-256 后，可读取：
