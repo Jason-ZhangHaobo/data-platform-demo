@@ -3,7 +3,7 @@ import type {PublishedReportSource} from "./published-report-read";
 const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
 import { manualDeliveryPackages } from "./manual-run-recovery";
 import { deliverySourceSelection } from "./delivery-source";
-import {defaultLocalReleaseSchedule,localReleaseScheduleText} from "./delivery-presentation";
+import { defaultLocalReleaseSchedule, localReleaseScheduleText, matchingDeliveryVerification } from "./delivery-presentation";
 import {
   Activity,
   ArrowDownToLine,
@@ -187,6 +187,10 @@ const releaseRunLabels: Record<string, string> = {
   INTERRUPTED: "批次已中断",
 };
 
+const defaultReviewNote = "已核对代码、独立断言、DAG与部署文件，确认仅限本机合成数据范围";
+const emptyAttestations = { code: false, assertions: false, deliveryFiles: false, localScope: false };
+type ReviewDraft = { target: string; note: string; attestations: typeof emptyAttestations };
+
 export function DeliveryWorkbench({
   api,
   runs,
@@ -212,17 +216,14 @@ export function DeliveryWorkbench({
   const packages = manualDeliveryPackages(loadedPackages, sourceRunId, sourceLocked);
   const selected = sourceLocked && (!source || loadedPackage?.manifest.source.runId !== sourceRunId) ? undefined : loadedPackage;
   const [checks, setChecks] = useState<Verification[]>([]),
-    [check, setCheck] = useState<Verification>();
-  const [reviews, setReviews] = useState<Review[]>([]),
-    [reviewNote, setReviewNote] = useState(
-      "已核对代码、独立断言、DAG与部署文件，确认仅限本机合成数据范围",
-    ),
-    [attestations, setAttestations] = useState({
-      code: false,
-      assertions: false,
-      deliveryFiles: false,
-      localScope: false,
-    });
+    [observedCheck, setCheck] = useState<Verification>();
+  const check = observedCheck && matchingDeliveryVerification(selected, [observedCheck]);
+  const [reviews, setReviews] = useState<Review[]>([]), [reviewDraft, setReviewDraft] = useState<ReviewDraft>();
+  const reviewTarget = selected && check?.status === "SUCCEEDED"
+    ? `${selected.id}:${selected.digest}:${check.id}` : undefined;
+  const currentDraft = reviewDraft?.target === reviewTarget ? reviewDraft : undefined;
+  const reviewNote = currentDraft?.note ?? defaultReviewNote;
+  const attestations = currentDraft?.attestations ?? emptyAttestations;
   const [approvals, setApprovals] = useState<Approval[]>([]),
     [releases, setReleases] = useState<Release[]>([]),
     [monitor, setMonitor] = useState<MonitorOverview>();
@@ -230,13 +231,22 @@ export function DeliveryWorkbench({
     [busy, setBusy] = useState(""),
     [error, setError] = useState("");
   const ticket = useRef(0);
+  const editReviewDraft = (edit: (draft: ReviewDraft) => ReviewDraft) => {
+    if (!reviewTarget) return;
+    setReviewDraft(draft => edit(draft?.target === reviewTarget ? draft : {
+      target: reviewTarget, note: defaultReviewNote, attestations: emptyAttestations,
+    }));
+  };
+  useEffect(() => {
+    setReviewDraft(draft => draft?.target === reviewTarget ? draft : undefined);
+  }, [reviewTarget]);
   const scopedBundles = (bundles: Bundle[]) => manualDeliveryPackages(bundles, sourceRunId, sourceLocked);
   const loadPackage = async (id: string) => {
     const request = ++ticket.current;
     const bundle = await api<Bundle>("/delivery/packages/" + id);
     if (request === ticket.current) {
       setSelected(bundle);
-      setCheck(checks.find((check) => check.packageId === id));
+      setCheck(matchingDeliveryVerification(bundle, checks));
     }
   };
   const loadLifecycle = async () => {
@@ -290,7 +300,7 @@ export function DeliveryWorkbench({
           );
           if (active) {
             setSelected(bundle);
-            setCheck(verifications.find((v) => v.packageId === bundle.id));
+            setCheck(matchingDeliveryVerification(bundle, verifications));
           }
         }
         },
@@ -303,21 +313,27 @@ export function DeliveryWorkbench({
     };
   }, [sourceRunId, lockSource]);
   useEffect(() => {
-    if (!check || !pending(check.status)) return;
+    if (!selected || !check || !pending(check.status)) return;
+    const request = ticket.current;
+    let active = true;
     const timer = setInterval(async () => {
       try {
-        const latest = await api<Verification>(
-          "/delivery/verifications/" + check.id,
-        );
+        const latest = await api<Verification>("/delivery/verifications/" + check.id);
+        if (!active || request !== ticket.current) return;
+        if (latest.id !== check.id || !matchingDeliveryVerification(selected, [latest])) {
+          setCheck(undefined);
+          setError("演练回执与当前交付包不一致，请重新核对。");
+          return;
+        }
         setCheck(latest);
         if (!pending(latest.status))
           setChecks(await api<Verification[]>("/delivery/verifications"));
       } catch (error) {
-        setError((error as Error).message);
+        if (active && request === ticket.current) setError((error as Error).message);
       }
     }, 1400);
-    return () => clearInterval(timer);
-  }, [check?.id, check?.status]);
+    return () => { active = false; clearInterval(timer); };
+  }, [selected?.id, selected?.digest, check?.id, check?.status]);
   useEffect(() => {
     if (!releasePending(monitor)) return;
     const timer = setInterval(() => {
@@ -348,15 +364,19 @@ export function DeliveryWorkbench({
   };
   const execute = async () => {
     if (!selected) return;
+    const request = ticket.current;
     setBusy("execute");
     setError("");
     try {
-      setCheck(
-        await api<Verification>(
-          "/delivery/packages/" + selected.id + "/verify",
-          { scheduledFor },
-        ),
+      const verification = await api<Verification>(
+        "/delivery/packages/" + selected.id + "/verify",
+        { scheduledFor },
       );
+      if (request === ticket.current) {
+        const matched = matchingDeliveryVerification(selected, [verification]);
+        setCheck(matched);
+        if (!matched) setError("演练回执与当前交付包不一致，请重新核对。");
+      }
     } catch (error) {
       setError((error as Error).message);
     } finally {
@@ -364,7 +384,7 @@ export function DeliveryWorkbench({
     }
   };
   const review = async () => {
-    if (!selected || !check) return;
+    if (!selected || !check || !reviewTarget || !currentDraft || !Object.values(attestations).every(Boolean)) return;
     setBusy("review");
     setError("");
     try {
@@ -382,7 +402,7 @@ export function DeliveryWorkbench({
     }
   };
   const approve = async () => {
-    if (!selected || !selectedReview) return;
+    if (!selected || !reviewTarget || !selectedReview) return;
     setBusy("approve");
     setError("");
     try {
@@ -737,17 +757,19 @@ export function DeliveryWorkbench({
                       <button
                         aria-label="取消文件演练"
                         onClick={async () => {
+                          const request = ticket.current;
                           try {
-                            setCheck(
-                              await api<Verification>(
-                                "/delivery/verifications/" +
-                                  check.id +
-                                  "/cancel",
-                                {},
-                              ),
+                            const cancelled = await api<Verification>(
+                              "/delivery/verifications/" + check.id + "/cancel", {},
                             );
+                            if (request !== ticket.current) return;
+                            if (cancelled.id !== check.id || !matchingDeliveryVerification(selected, [cancelled])) {
+                              setError("演练回执与当前交付包不一致，请重新核对。");
+                              return;
+                            }
+                            setCheck(cancelled);
                           } catch (error) {
-                            setError((error as Error).message);
+                            if (request === ticket.current) setError((error as Error).message);
                           }
                         }}
                       >
@@ -825,7 +847,7 @@ export function DeliveryWorkbench({
                 <p>
                   先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。{localReleaseScheduleText(selectedRelease)}
                 </p>
-                <fieldset className="delivery-review-checklist" disabled={!canWrite || !!selectedReview || !!busy}>
+                <fieldset className="delivery-review-checklist" disabled={!canWrite || !reviewTarget || !!selectedReview || !!busy}>
                   <legend>工程师审阅确认（不会发布）</legend>
                   {[
                     ["code", selectedIsPython ? "已核对生成Python版本及业务口径" : "已核对生成SQL版本及业务口径"],
@@ -837,12 +859,10 @@ export function DeliveryWorkbench({
                       <input
                         type="checkbox"
                         checked={attestations[key as keyof typeof attestations]}
-                        onChange={(event) =>
-                          setAttestations((current) => ({
-                            ...current,
-                            [key]: event.target.checked,
-                          }))
-                        }
+                        onChange={(event) => {
+                          const checked = event.currentTarget.checked;
+                          editReviewDraft(draft => ({ ...draft, attestations: { ...draft.attestations, [key]: checked } }));
+                        }}
                       />
                       {label}
                     </label>
@@ -851,7 +871,10 @@ export function DeliveryWorkbench({
                     aria-label="审阅备注"
                     value={reviewNote}
                     maxLength={500}
-                    onChange={(event) => setReviewNote(event.target.value)}
+                    onChange={(event) => {
+                      const note = event.currentTarget.value;
+                      editReviewDraft(draft => ({ ...draft, note }));
+                    }}
                     placeholder="说明已核对的口径或限制"
                   />
                 </fieldset>

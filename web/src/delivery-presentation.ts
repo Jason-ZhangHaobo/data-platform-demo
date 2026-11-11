@@ -1,5 +1,12 @@
 // Presentation metadata only: file presence is not an execution or integrity proof.
 export const defaultLocalReleaseSchedule={triggerAfterSeconds:5,intervalSeconds:15,runCount:2} as const;
+export function matchingDeliveryVerification<T extends { packageId: string; packageDigest: string }>(
+  bundle: { id: string; digest: string } | undefined,
+  verifications: readonly T[],
+) {
+  return bundle && verifications.find(item => item.packageId === bundle.id && item.packageDigest === bundle.digest);
+}
+
 export function localReleaseScheduleText(release?:{scheduleSpec?:{triggerAfterSeconds?:unknown;intervalSeconds?:unknown;runCount?:unknown}}) {
   const spec=release?release.scheduleSpec:defaultLocalReleaseSchedule;
   if(!spec||![spec.triggerAfterSeconds,spec.intervalSeconds,spec.runCount].every(v=>Number.isSafeInteger(v))||Number(spec.triggerAfterSeconds)<1||Number(spec.triggerAfterSeconds)>300||Number(spec.intervalSeconds)<1||Number(spec.intervalSeconds)>300||![2,3].includes(Number(spec.runCount)))return '此历史发布未确认计时参数，请查看批次计划与实际触发时间。';
