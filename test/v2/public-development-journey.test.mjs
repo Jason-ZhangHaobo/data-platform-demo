@@ -24,6 +24,8 @@ import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
 import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
 import { opsPublicationTarget, readOpsPublication } from '../../web/src/ops-publication.ts';
+import { serviceSourceFromLocation } from '../../web/src/service-source-binding.ts';
+import { serviceBatchFromLocation } from '../../web/src/service-batch-scope.ts';
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
@@ -923,10 +925,26 @@ test('a killed publication CLI recovers both original batches through signed sch
   const monitoringBefore=f.queueCounts();
   const opsEvidence=await readOpsPublication(monitorReader,monitorTarget);
   assert.deepEqual(monitorReads,['/releases/'+releaseId,'/release/runs/'+firstId,'/release/runs/'+secondId]);
-  assert.deepEqual(opsEvidence,{status:'COMPLETED_CLOUD_TEST',health:'HEALTHY',batches:[
+  const {batches:monitorBatches,...monitorStatus}=opsEvidence;
+  assert.deepEqual(monitorStatus,{status:'COMPLETED_CLOUD_TEST',health:'HEALTHY'});
+  assert.deepEqual(monitorBatches.map(({serviceHref,...batch})=>batch),[
     {id:firstId,sequence:1,status:'SUCCEEDED',schedulerTriggered:true},
     {id:secondId,sequence:2,status:'SUCCEEDED',schedulerTriggered:true},
-  ]});
+  ]);
+  for (const batch of monitorBatches) {
+    assert.ok(batch.serviceHref);
+    const href=new URL(batch.serviceHref,f.base).href;
+    const parsed=serviceSourceFromLocation(href);
+    assert.equal(parsed.status,'VALID');
+    assert.equal(parsed.binding.releaseId,releaseId);
+    assert.equal(parsed.binding.revisionId,source.revisionId);
+    assert.equal(serviceBatchFromLocation(href,parsed.binding),batch.id);
+  }
+  const onePending=await readOpsPublication(async path=>{
+    const record=await monitorReader(path);
+    return path.endsWith(secondId)?{...record,status:'RUNNING'}:record;
+  },monitorTarget);
+  assert.equal(onePending.batches[1].serviceHref,undefined);
   await assert.rejects(readOpsPublication(monitorReader,{...monitorTarget,firstBatchId:secondId,secondBatchId:firstId}),/来源不一致/);
   await assert.rejects(readOpsPublication(monitorReader,{...monitorTarget,revisionId:randomUUID()}),/来源不一致/);
   assert.deepEqual(f.queueCounts(),monitoringBefore);

@@ -5,6 +5,7 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import ts from 'typescript';
 import {manualRunRecovery} from '../../web/src/manual-run-recovery.ts';
+import {serviceBatchFromLocation} from '../../web/src/service-batch-scope.ts';
 import {validServiceSourceBinding,serviceSourceKey,serviceSourceScope,sourceBindingEnvironmentMatches,serviceSourceFromLocation,serviceHandoffLocation,serviceReturnLocation,currentAgentTaskLocation,publicationSourceLocation,returnedPublicationMatches,localAgentPublicationPath,
   serviceSourcesPath,serviceEvidencePath,serviceReadCurrent,sourceRunMatches,sourceRunEligible,agentReturnSourceMatches,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from '../../web/src/service-source-binding.ts';
 const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
@@ -14,6 +15,29 @@ const run=(n=5,patch={})=>({id:id(n),releaseId:binding.releaseId,sourceAgentTask
   status:'SUCCEEDED',published:true,schedulerTriggered:true,engine:'Apache Spark',mainSqlExecuted:true,testSqlValidation:{passed:true},validation:{passed:true},...patch});
 const dapi=(n,source=id(5),digest=binding.packageDigest)=>{const v={id:`version-${n}`,sourcePackageDigest:digest,sourceReleaseRunId:source,fields:['client_id'],timeoutMs:1500,rateLimitPerMinute:10};return{id:`service-${n}`,name:`接口${n}`,slug:`service-${n}`,serviceType:'DAPI',status:'PUBLISHED',currentVersion:v,publishedVersion:v,versions:[v]};};
 const xapi=(n,children)=>{const v={id:`version-${n}`,steps:children.map((s,i)=>({alias:`step${i}`,dapiId:s.id,dapiVersionId:s.publishedVersion.id})),timeoutMs:2500,rateLimitPerMinute:10};return{id:`service-${n}`,name:`组合${n}`,slug:`service-${n}`,serviceType:'XAPI',status:'PUBLISHED',currentVersion:v,publishedVersion:v,versions:[v]};};
+
+test('a batch location narrows the verified Agent publication and fails closed for incomplete or duplicate pins',()=>{
+  const native={...binding,sourceKind:'AGENT',scope:'PRIVATE_CLOUD_TEST'};
+  const url=serviceHandoffLocation('https://example.invalid/v2/',native);
+  assert.equal(serviceBatchFromLocation(url.href,native),undefined);
+  url.searchParams.set('release_batch',id(7));
+  assert.equal(serviceBatchFromLocation(url.href,native),id(7));
+  assert.equal(serviceBatchFromLocation(url.href),null);
+  assert.equal(serviceBatchFromLocation(url.href,binding),null);
+  assert.equal(serviceBatchFromLocation(url.href+'&release_batch='+id(5),native),null);
+  assert.equal(serviceBatchFromLocation(url.href.replace(id(7),'invalid'),native),null);
+  assert.equal(serviceBatchFromLocation(url.href.replace('module=services','module=ops'),native),null);
+
+  const first=dapi(1), second=dapi(2,id(7)), cash=dapi(3,id(7));
+  const composition=xapi(4,[second,cash]), mixed=xapi(5,[first,cash]);
+  const runs=[run(5,{sourceKind:'AGENT',scope:'PRIVATE_CLOUD_TEST'}),run(7,{sourceKind:'AGENT',scope:'PRIVATE_CLOUD_TEST'})];
+  const chosen=serviceBatchFromLocation(url.href,native);
+  const services=sourceBoundServices([first,second,cash,composition,mixed],native,runs.filter(r=>r.id===chosen));
+  assert.deepEqual(services.map(s=>s.id),[second.id,cash.id,composition.id]);
+  assert.deepEqual(sourceBoundCalls([first,second].map(s=>({serviceId:s.id,serviceVersionId:s.currentVersion.id})),services),[
+    {serviceId:second.id,serviceVersionId:second.currentVersion.id},
+  ]);
+});
 
 test('manual publication navigation uses resolved exact version and never falls back from unavailable provenance',()=>{
   const target={taskId:binding.taskId,packageDigest:binding.packageDigest,verificationId:id(6)},source={status:'RESOLVED',...target,sourceKind:'MANUAL',revisionId:binding.revisionId,runId:binding.runId};
@@ -183,7 +207,7 @@ const compile=name=>{
   let text=ts.transpileModule(readFileSync(`web/src/${name}.tsx`,'utf8'),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
   text=text.replaceAll('from "../../src/v2/output-contract-metadata.mjs"',`from ${JSON.stringify(new URL('../../src/v2/output-contract-metadata.mjs',import.meta.url).href)}`);
   for(const pkg of ['react','react/jsx-runtime','lucide-react'])text=text.replaceAll(`from "${pkg}"`,`from ${JSON.stringify(import.meta.resolve(pkg))}`).replaceAll(`from '${pkg}'`,`from ${JSON.stringify(import.meta.resolve(pkg))}`);
-  for(const helper of ['service-composition','service-consumption-scope','service-source-binding','service-plan-source','private-service-plan'])text=text.replaceAll(`from "./${helper}"`,`from ${JSON.stringify(new URL(`../../web/src/${helper}.ts`,import.meta.url).href)}`).replaceAll(`from './${helper}'`,`from ${JSON.stringify(new URL(`../../web/src/${helper}.ts`,import.meta.url).href)}`);
+  for(const helper of ['service-composition','service-consumption-scope','service-source-binding','service-plan-source','private-service-plan','service-batch-scope'])text=text.replaceAll(`from "./${helper}"`,`from ${JSON.stringify(new URL(`../../web/src/${helper}.ts`,import.meta.url).href)}`).replaceAll(`from './${helper}'`,`from ${JSON.stringify(new URL(`../../web/src/${helper}.ts`,import.meta.url).href)}`);
   if(name==='DataServicesWorkbench')text=text.replaceAll('from "./EvidenceDownload"',`from ${JSON.stringify(compile('EvidenceDownload'))}`);
   if(name==='DataServicesWorkbench')text=text.replaceAll("from './PrivateServiceAgentStudio'",`from ${JSON.stringify(compile('PrivateServiceAgentStudio'))}`);
   return 'data:text/javascript;base64,'+Buffer.from(text).toString('base64');
