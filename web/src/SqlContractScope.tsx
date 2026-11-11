@@ -19,7 +19,7 @@ export function SqlContractScope({ title, definition, industry, onAgent, onDeliv
         </div>
         <div className="distribution-scope-next">
           {onAgent ? <button className="button" onClick={onAgent}>进入 Data Agent</button>
-            : <><p>当前支持本机文件演练。Agent、发布调度和接口消费待接入。</p>
+            : <><p>当前支持本机文件演练和经审批的测试调度。Agent 与接口消费待接入。</p>
                 <button className="button" disabled={!onDelivery} onClick={onDelivery}>准备本机文件演练</button></>}
         </div>
       </div>

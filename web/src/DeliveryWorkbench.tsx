@@ -78,6 +78,7 @@ type Approval = {
   reviewer: string;
   reviewNote: string;
   consumedByReleaseId?: string;
+  fundConsent?: { scheduleSpec: { triggerAfterSeconds: number; intervalSeconds: number; runCount: number } };
 };
 type Review = {
   id: string;
@@ -110,6 +111,7 @@ type Release = {
   openAlertCount?: number;
   publicDeployed: false;
   artifactReady: boolean;
+  fundLookthrough?: { businessDate: string };
   sourceRevisionId?: string;
   scheduleSpec?:{triggerAfterSeconds?:unknown;intervalSeconds?:unknown;runCount?:unknown};
 };
@@ -177,6 +179,7 @@ const releaseLabels: Record<string, string> = {
   SUPERSEDED_LOCAL: "本机版本已被替代",
   ROLLED_BACK_LOCAL: "本机版本已回滚",
   FAILED_LOCAL: "本机发布失败",
+  CANCELLED: "本机发布已停止",
 };
 const releaseRunLabels: Record<string, string> = {
   SCHEDULED: "等待计时触发",
@@ -216,13 +219,15 @@ export function DeliveryWorkbench({
     [loadedPackage, setSelected] = useState<Bundle>();
   const packages = manualDeliveryPackages(loadedPackages, sourceRunId, sourceLocked);
   const selected = sourceLocked && (!source || loadedPackage?.manifest.source.runId !== sourceRunId) ? undefined : loadedPackage;
-  const fundFileOnly = Boolean(selected?.manifest.source.fundLookthrough);
+  const fund = selected?.manifest.source.fundLookthrough;
   const [checks, setChecks] = useState<Verification[]>([]),
     [observedCheck, setCheck] = useState<Verification>();
   const check = observedCheck && matchingDeliveryVerification(selected, [observedCheck]);
   const [reviews, setReviews] = useState<Review[]>([]), [reviewDraft, setReviewDraft] = useState<ReviewDraft>();
   const reviewTarget = selected && check?.status === "SUCCEEDED"
     ? `${selected.id}:${selected.digest}:${check.id}` : undefined;
+  const [fundConsentTarget, setFundConsentTarget] = useState<string>();
+  const fundConfirmed = Boolean(reviewTarget && fundConsentTarget === reviewTarget);
   const currentDraft = reviewDraft?.target === reviewTarget ? reviewDraft : undefined;
   const reviewNote = currentDraft?.note ?? defaultReviewNote;
   const attestations = currentDraft?.attestations ?? emptyAttestations;
@@ -241,6 +246,7 @@ export function DeliveryWorkbench({
   };
   useEffect(() => {
     setReviewDraft(draft => draft?.target === reviewTarget ? draft : undefined);
+    setFundConsentTarget(current => current === reviewTarget ? current : undefined);
   }, [reviewTarget]);
   const scopedBundles = (bundles: Bundle[]) => manualDeliveryPackages(bundles, sourceRunId, sourceLocked);
   const loadPackage = async (id: string) => {
@@ -404,13 +410,17 @@ export function DeliveryWorkbench({
     }
   };
   const approve = async () => {
-    if (!selected || fundFileOnly || !reviewTarget || !selectedReview) return;
+    if (!selected || !reviewTarget || !selectedReview || (fund && !fundConfirmed)) return;
     setBusy("approve");
     setError("");
     try {
       await api<Approval>(`/delivery/packages/${selected.id}/approve`, {
         packageDigest: selected.digest,
         reviewId: selectedReview.id,
+        ...(fund ? { fundConsent: {
+          scope: "LOCAL_TEST_RELEASE", packageDigest: selected.digest, verificationId: selectedReview.verificationId,
+          businessDate: fund.businessDate, scheduleSpec: defaultLocalReleaseSchedule, confirmFrozenFictionalData: true,
+        } } : {}),
       });
       await loadLifecycle();
     } catch (error) {
@@ -420,20 +430,17 @@ export function DeliveryWorkbench({
     }
   };
   const publish = async () => {
-    if (!selected || fundFileOnly) return;
-    const approval = approvals.find(
-      (item) =>
-        item.packageId === selected.id &&
-        item.packageDigest === selected.digest &&
-        item.status === "APPROVED",
-    );
+    if (!selected) return;
+    const approval = selectedApproval;
     if (!approval) return;
+    const scheduleSpec = fund ? approval.fundConsent?.scheduleSpec : defaultLocalReleaseSchedule;
+    if (!scheduleSpec) return;
     setBusy("publish");
     setError("");
     try {
       await api<Release>("/releases", {
         approvalId: approval.id,
-        ...defaultLocalReleaseSchedule,
+        ...scheduleSpec,
       });
       await loadLifecycle();
     } catch (error) {
@@ -494,7 +501,7 @@ export function DeliveryWorkbench({
         (item) =>
           item.packageId === selected.id &&
           item.packageDigest === selected.digest &&
-          item.status === "APPROVED",
+          item.status === "APPROVED" && (!fund || Boolean(item.fundConsent)),
       )
     : undefined;
   const selectedRelease = selected
@@ -504,9 +511,22 @@ export function DeliveryWorkbench({
           item.packageDigest === selected.digest,
       )
     : undefined;
+  const stopFundRelease = async () => {
+    if (!fund || !selectedRelease) return;
+    setBusy("stop");
+    setError("");
+    try {
+      await api(`/releases/${selectedRelease.id}/cancel`, { packageDigest: selectedRelease.packageDigest });
+      await loadLifecycle();
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
   const activeRelease = monitor?.activeRelease;
   const selectedIsActive = Boolean(
-    selectedRelease?.id && selectedRelease.id === activeRelease?.id,
+    fund ? selectedRelease?.status === "ACTIVE_LOCAL" : selectedRelease?.id && selectedRelease.id === activeRelease?.id,
   );
   const selectedHealthy = Boolean(
     selectedIsActive &&
@@ -525,10 +545,11 @@ export function DeliveryWorkbench({
       monitor?.counts.failed &&
       resolvedAlertCount,
   );
-  const rollbackTarget = activeRelease
+  const rollbackTarget = activeRelease && !activeRelease.fundLookthrough
     ? releases.find(
         (item) =>
           item.id !== activeRelease.id &&
+          !item.fundLookthrough &&
           item.status === "SUPERSEDED_LOCAL" &&
           Number(item.successfulRunCount ?? 0) > 0,
       )
@@ -538,7 +559,7 @@ export function DeliveryWorkbench({
   const selectedSourceHash =
     selected?.manifest.source.codeHash ?? selected?.manifest.source.sqlHash ?? "";
   const reportBatchIds = monitor?.recentRuns.filter(batch => batch.releaseId === selectedRelease?.id && batch.status === "SUCCEEDED" && batch.schedulerTriggered === true).map(batch => batch.id) ?? [];
-  const reportSource:PublishedReportSource|undefined=sourceLocked&&source&&selected&&selectedRelease&&selectedRelease.sourceRevisionId===selected.manifest.source.revisionId&&reportBatchIds.length?
+  const reportSource:PublishedReportSource|undefined=!fund&&sourceLocked&&source&&selected&&selectedRelease&&selectedRelease.sourceRevisionId===selected.manifest.source.revisionId&&reportBatchIds.length?
     {kind:"MANUAL",releaseId:selectedRelease.id,packageDigest:selected.digest,revisionId:selected.manifest.source.revisionId,runId:selected.manifest.source.runId,batchIds:reportBatchIds}:undefined;
   return (
     <div className="delivery-workbench">
@@ -730,7 +751,7 @@ export function DeliveryWorkbench({
                   <span>1</span>执行 {selectedIsPython ? "main.py" : "main.sql"}
                 </li>
                 <li>
-                  <span>2</span>{selectedIsPython ? "执行受限Python五场景断言" : fundFileOnly ? "运行 tests.sql 与组合独立断言" : "运行 tests.sql 与五场景核验"}
+                  <span>2</span>{selectedIsPython ? "执行受限Python五场景断言" : fund ? "运行 tests.sql 与组合独立断言" : "运行 tests.sql 与五场景核验"}
                 </li>
                 <li>
                   <span>3</span>保存真实结果与文件摘要
@@ -847,13 +868,12 @@ export function DeliveryWorkbench({
                   <ShieldCheck size={22} />
                 </header>
                 <p>
-                  {fundFileOnly ? "当前仅审阅文件和本机演练，基金组合发布待接入。" :
-                    "先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。" + localReleaseScheduleText(selectedRelease)}
+                  先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。{localReleaseScheduleText(selectedRelease)}
                 </p>
                 <fieldset className="delivery-review-checklist" disabled={!canWrite || !reviewTarget || !!selectedReview || !!busy}>
                   <legend>工程师审阅确认（不会发布）</legend>
                   {[
-                    ["code", selectedIsPython ? "已核对生成Python版本及业务口径" : "已核对生成SQL版本及业务口径"],
+                    ["code", selectedIsPython ? "已核对 Python 版本及业务口径" : "已核对 SQL 版本及业务口径"],
                     ["assertions", selectedIsPython ? "已核对独立断言与CPython演练结果" : "已核对独立断言与Spark演练结果"],
                     ["deliveryFiles", "已核对 DAG、调度和部署文件摘要"],
                     ["localScope", "确认本次仅为本机合成数据验证，非公网或生产发布"],
@@ -881,6 +901,12 @@ export function DeliveryWorkbench({
                     placeholder="说明已核对的口径或限制"
                   />
                 </fieldset>
+                {fund && !selectedApproval && <label className="delivery-review-check">
+                  <input type="checkbox" checked={fundConfirmed}
+                    disabled={!canWrite || !selectedReview || !reviewTarget || !!busy}
+                    onChange={event => setFundConsentTarget(event.currentTarget.checked ? reviewTarget : undefined)} />
+                  确认仅发布此包的两个本机虚构批次，使用同一业务日 {fund.businessDate}
+                </label>}
                 <div className="release-actions">
                   <button
                     className="button"
@@ -908,7 +934,7 @@ export function DeliveryWorkbench({
                       !canWrite ||
                       check?.status !== "SUCCEEDED" ||
                       !selectedReview ||
-                      fundFileOnly ||
+                      (Boolean(fund) && !fundConfirmed) ||
                       !!selectedApproval ||
                       !!busy
                     }
@@ -926,7 +952,6 @@ export function DeliveryWorkbench({
                     disabled={
                       !canWrite ||
                       !selectedApproval ||
-                      fundFileOnly ||
                       !!selectedRelease ||
                       !!busy
                     }
@@ -940,6 +965,9 @@ export function DeliveryWorkbench({
                       ? (releaseLabels[selectedRelease.status] ?? "已有发布记录")
                       : "发布到本机调度器"}
                   </button>
+                  {fund && selectedRelease?.status === "ACTIVE_LOCAL" && <button className="button" disabled={!canWrite || !!busy} onClick={stopFundRelease}>
+                    <Square size={15} />停止后续批次
+                  </button>}
                 </div>
                 {selectedApproval && (
                   <small className="release-proof-line">
@@ -992,7 +1020,7 @@ export function DeliveryWorkbench({
                     <small className="active-release-line">
                       所选包发布版本 {selectedRelease.id.slice(0, 8)} ·
                       {selectedIsActive ? " 当前生效" : " 历史版本"}
-                      {selectedIsActive && m2cRecoveryVerified ? " · 回滚恢复已验证" : ""}
+                      {!fund && selectedIsActive && m2cRecoveryVerified ? " · 回滚恢复已验证" : ""}
                     </small>
                     <div className="monitor-runs">
                       {monitor?.recentRuns
@@ -1018,7 +1046,7 @@ export function DeliveryWorkbench({
                           </p>
                         ))}
                     </div>
-                    {selectedIsActive && rollbackTarget && (
+                    {!fund && selectedIsActive && rollbackTarget && (
                       <button
                         className="button rollback"
                         onClick={() => rollback(selectedRelease, rollbackTarget)}
