@@ -135,7 +135,7 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 
 工程师逐项确认后，提交命令重新核对审阅文件、当月完整账单、未结算预留和独立发布窗口。先保存确切审阅摘要和原幂等编号，再向已有发布接口发出一次请求。服务端复核同一审阅摘要后创建审阅、批准、一个发布和两个待调度批次。状态为 `WAITING_SCHEDULER` 时表示发布记录已受理。
 
-响应丢失时用 `--reconcile` 读取 `GET /agent/tasks/{id}/publication/requests/{key}`，沿原创建者和原请求确认同一发布及两条原批次。该读取不协调 Worker，窗口关闭后也可读取已保存的回执。实际调度、监控和消费分别验收。
+响应丢失或 CLI 被强制终止时，用 `--reconcile` 沿原创建者和原请求读取 `GET /agent/tasks/{id}/publication/requests/{key}`。在同一系统启动会话确认原进程已退出后，可接管遗留的检查点锁。回执核对同一发布、原审阅及批准和两个原批次。该读取不协调 Worker，窗口关闭后也可读取已保存的回执。实际调度、监控和消费分别验收。
 
 ### 核对同一发布的签名调度与监控
 
