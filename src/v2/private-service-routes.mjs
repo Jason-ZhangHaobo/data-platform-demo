@@ -1,15 +1,19 @@
 import {servicePlanSourceQuery} from './service-plan-request.mjs';
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
+const digest = /^[a-f0-9]{64}$/;
 // Optional source selection is all-or-nothing. Never degrade a malformed exact
 // handoff into the older task-wide discovery request.
 export function privateServiceSourceSelection(params, evidence = false) {
-  const keys=["agent_task_id","manual_delivery_task_id","package_digest","release_id"],entries=[...params];
+  const keys=["agent_task_id","manual_delivery_task_id","package_digest","release_id",...(evidence?["call_id_digest"]:[])],entries=[...params];
   if(new Set(entries.map(([key])=>key)).size!==entries.length||entries.some(([key])=>!keys.includes(key)))return;
   const taskId=params.get("agent_task_id")??undefined,manualDeliveryTaskId=params.get('manual_delivery_task_id')??undefined,packageDigest=params.get("package_digest")??undefined,releaseId=params.get("release_id")??undefined;
-  if(taskId!==undefined&&!new RegExp(`^${uuid}$`).test(taskId)||manualDeliveryTaskId!==undefined&&!new RegExp(`^${uuid}$`).test(manualDeliveryTaskId)||taskId!==undefined&&manualDeliveryTaskId!==undefined||packageDigest!==undefined&&!/^[a-f0-9]{64}$/.test(packageDigest)||releaseId!==undefined&&!new RegExp(`^${uuid}$`).test(releaseId))return;
-  if(manualDeliveryTaskId)return packageDigest&&releaseId?{manualDeliveryTaskId,packageDigest,releaseId}:undefined;
+  if(taskId!==undefined&&!new RegExp(`^${uuid}$`).test(taskId)||manualDeliveryTaskId!==undefined&&!new RegExp(`^${uuid}$`).test(manualDeliveryTaskId)||taskId!==undefined&&manualDeliveryTaskId!==undefined||packageDigest!==undefined&&!digest.test(packageDigest)||releaseId!==undefined&&!new RegExp(`^${uuid}$`).test(releaseId))return;
+  const callIdDigest = params.get("call_id_digest") ?? undefined;
+  if (callIdDigest !== undefined && (!releaseId || !digest.test(callIdDigest))) return;
+  const call = callIdDigest === undefined ? {} : {callIdDigest};
+  if(manualDeliveryTaskId)return packageDigest&&releaseId?{manualDeliveryTaskId,packageDigest,releaseId,...call}:undefined;
   if(evidence?!(taskId&&packageDigest):(packageDigest!==undefined||releaseId!==undefined)&&!(taskId&&packageDigest&&releaseId))return;
-  return {taskId,packageDigest,releaseId};
+  return {taskId,packageDigest,releaseId,...call};
 }
 export function privateServiceRoute(method,path,{agentPlanning=false,agentRead=false}={}) {
   if(typeof path!=="string" || path.length>700 || /[#\\]/.test(path) || !path.startsWith("/api/v2/"))return false;

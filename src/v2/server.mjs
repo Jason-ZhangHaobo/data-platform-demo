@@ -4412,9 +4412,9 @@ export function createV2Server(options = {}) {
         const selected = privateServiceSourceSelection(url.searchParams,true);
         if (!selected)
           throw fail(422, "需提供任务编号与确切包摘要");
-        const {taskId,packageDigest,releaseId}=selected;
+        const {taskId,packageDigest,releaseId,callIdDigest}=selected;
         const agent = get("agent", taskId); requireDurableAgentOwner(agent, req);
-        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, manager: dataServices }));
+        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, callIdDigest, manager: dataServices }));
       }
       if (path === "/api/v2/data-services/dapis" && method === "GET")
         return json(res, 200, dataServices.list("DAPI"));

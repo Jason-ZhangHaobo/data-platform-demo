@@ -4,6 +4,7 @@ import {serviceSourceReadPath} from '../../src/v2/service-source-request.mjs';
 import {runV2Cli} from '../../bin/shuduo.mjs';
 import {handleV2Mcp} from '../../bin/shuduo-mcp.mjs';
 import {V2Client} from '../../src/v2/client.mjs';
+import {privateServiceRoute} from '../../src/v2/private-service-routes.mjs';
 const task='00000000-0000-4000-8000-000000000001',release='00000000-0000-4000-8000-000000000002',digest='a'.repeat(64);
 const exact={agentTaskId:task,packageDigest:digest,releaseId:release};
 function fixture(){const reads=[];return {reads,client:new V2Client({baseUrl:'https://synthetic.invalid/api/v2',fetchImpl:async(url,options)=>{
@@ -41,4 +42,21 @@ test('CLI and MCP preserve exact release selection and never issue a write or fa
  assert.equal(await cli(['services','sources'],f),0);
  assert.equal((await mcp('data_service_task_evidence',{agentTaskId:task,packageDigest:digest},f)).error,undefined);
  assert.equal(f.reads.length,6);
+});
+
+test('exact historical call selection is carried by one read through CLI, MCP and the private route',async()=>{
+ const f=fixture(),callIdDigest='b'.repeat(64),selected={...exact,callIdDigest};
+ const path=serviceSourceReadPath('task-evidence',selected);
+ const query=Object.fromEntries(new URL(path,'https://synthetic.invalid').searchParams);
+ assert.equal(query.call_id_digest,callIdDigest);
+ assert.equal(privateServiceRoute('GET','/api/v2'+path),true);
+ assert.equal(privateServiceRoute('POST','/api/v2'+path),false);
+ assert.equal(privateServiceRoute('GET','/api/v2'+path+'&call_id_digest='+callIdDigest),false);
+ assert.throws(()=>serviceSourceReadPath('sources',selected));
+ assert.throws(()=>serviceSourceReadPath('task-evidence',{agentTaskId:task,packageDigest:digest,callIdDigest}));
+ assert.equal(await cli(['services','task-evidence','--task-id',task,'--package-digest',digest,'--release-id',release,'--call-id-digest',callIdDigest],f),0);
+ assert.equal((await mcp('data_service_task_evidence',selected,f)).error,undefined);
+ assert.ok((await mcp('data_service_task_evidence',{...selected,callIdDigest:'invalid'},f)).error);
+ assert.equal(f.reads.length,2);
+ for(const read of f.reads){assert.equal(read.method,'GET');assert.equal(read.body,undefined);assert.deepEqual(Object.fromEntries(new URL(read.url).searchParams),query);}
 });

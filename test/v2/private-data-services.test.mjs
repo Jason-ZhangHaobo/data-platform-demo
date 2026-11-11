@@ -50,12 +50,24 @@ test('task consumption reads existing authorized calls without issuing tokens or
   const before=JSON.stringify(f.s.list('service_call',PROJECT)),apps=JSON.stringify(f.s.list('service_app',PROJECT)),flushes=f.flushes();
   const proof=await f.call(path,undefined,f.a);assert.equal(proof.status,200);assert.equal(proof.body.status,'VERIFIED');
   const entry=proof.body.services.find(s=>s.serviceId===x.id);assert.equal(entry.call.callId,actual.body.callId);assert.equal(entry.call.verified,true);
+  const callDigest=sha256(actual.body.callId);
+  const exactPath=path+'&release_id='+f.release.id+'&call_id_digest='+callDigest;
+  const exact=await f.call(exactPath,undefined,f.a);
+  assert.equal(exact.status,200);
+  assert.equal(exact.body.status,'VERIFIED');
+  assert.deepEqual(exact.body.services,[entry]);
+  assert.equal((await f.call(exactPath)).status,401);
+  assert.equal((await f.call(exactPath,undefined,f.b)).status,403);
+  assert.equal((await f.call(path+'&call_id_digest='+callDigest,undefined,f.a)).status,404);
+  const otherCall=await f.call(exactPath.replace(callDigest,'0'.repeat(64)),undefined,f.a);
+  assert.equal(otherCall.body.status,'PENDING');assert.deepEqual(otherCall.body.services,[]);
   assert.equal(proof.body.externalSystemVerified,false);assert.equal(proof.body.agentIndependentE2E,false);
   assert.equal(JSON.stringify(f.s.list('service_call',PROJECT)),before);assert.equal(JSON.stringify(f.s.list('service_app',PROJECT)),apps);assert.equal(f.flushes(),flushes);
   const text=JSON.stringify(proof.body);for(const secret of [issue.body.token,'tokenHash','tokenPrefix','CLIENT-001','parameters','"rows"'])assert.ok(!text.includes(secret),secret);
   assert.equal((await f.call(path,undefined,{authorization:'Bearer '+issue.body.token})).status,401);
   assert.equal((await f.call(`/data-services/applications/${issue.body.application.id}/revoke`,{},f.a)).status,200);
   const history=await f.call(path,undefined,f.a);assert.equal(history.body.status,'VERIFIED');assert.equal(history.body.services.find(s=>s.serviceId===x.id).call.applicationStatus,'REVOKED');
+  assert.equal((await f.call(exactPath,undefined,f.a)).body.services[0].call.applicationStatus,'REVOKED');
   assert.equal((await f.call('/open/xapis/evidence-overview',undefined,{authorization:'Bearer '+issue.body.token})).status,401);
   const h2=await f.call(`/data-services/dapis/${h.id}/versions`,{sourceReleaseRunId:f.run.id,fields:['client_id','holding_market_value','security_count'],rateLimitPerMinute:45},f.a,'evidence-h2');
   assert.equal(h2.status,201);await f.call(`/data-services/dapis/${h.id}/test`,{},f.a);
@@ -68,6 +80,7 @@ test('task consumption reads existing authorized calls without issuing tokens or
   assert.equal(x2.status,201);await f.call(`/data-services/xapis/${x.id}/test`,{},f.a);
   assert.equal((await f.call(`/data-services/xapis/${x.id}/publish`,{configHash:x2.body.configHash},f.a)).status,200);
   assert.equal((await f.call(path,undefined,f.a)).body.status,'PENDING','new XAPI version cannot borrow previous consumer receipt');
+  assert.deepEqual((await f.call(exactPath,undefined,f.a)).body.services,[],'an exact old receipt cannot be treated as proof of the new published version');
   const otherPackage=await f.call(path.replace(f.bundle.digest,'a'.repeat(64)),undefined,f.a);assert.equal(otherPackage.body.services.length,0);assert.equal(otherPackage.body.status,'PENDING');
 });
 test('task consumption rejects damaged snapshots and changed immutable service versions',async t=>{

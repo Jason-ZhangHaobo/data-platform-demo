@@ -66,7 +66,7 @@
 | 读取接口 | 来源选择 | 结果边界 |
 |---|---|---|
 | `GET /data-services/sources` | 旧用法可不传参或只传 `agent_task_id`；指定 `package_digest` 或 `release_id` 时三项必须齐全 | 仅返回匹配且通过发布核验的批次；投影含发布来源类型、包摘要、源代码版本及开发运行编号，结果编号本身仍是发布批次编号 |
-| `GET /data-services/task-evidence` | 必须有 `agent_task_id/package_digest`；可加 `release_id` 锁定一个发布 | 固定服务版本及所有 XAPI 子版本必须来自相同发布；XAPI还必须来自同一个成功发布批次。未知或混合来源不能标记 `VERIFIED` |
+| `GET /data-services/task-evidence` | 必须有 `agent_task_id/package_digest`；可加 `release_id` 锁定发布，同时可用 `call_id_digest` 读取当前固定版本的原调用 | 固定服务版本及所有 XAPI 子版本必须来自相同发布和成功批次。原调用缺失时保留待核验状态 |
 
 重复、未知或不完整选择字段拒绝。人工消费保留 `sourceKind:MANUAL`、`sourceAttribution:ENGINEER_ASSISTED`、`agentIndependentE2E:false`；消费对照只是既有调用与不可变快照的一致性，不等于外部系统独立验收或 Agent 自主完成。历史调用中的凭证已撤销时，显示历史证据和当前凭证状态，不自动重新授权。
 
@@ -90,7 +90,7 @@
 
 人工服务的实际调用按当前已发布根版本和 XAPI 固定子版本校验应用创建者与原工程师归属；旧的非所有者应用不能借接口版本更新继承人工数据。管理读取还核对所暴露的历史版本及调用，接口切回 Agent 不能解除人工历史保护。自己的应用元数据与撤销能力保留，不能因此读取人工服务内容。旧纯 Agent 的管理员策略兼容；无关候选版本不改变实际调用的固定来源。
 
-CLI 对应 `services sources --agent-task-id ID --package-digest SHA256 --release-id ID` 和 `services task-evidence --task-id ID --package-digest SHA256 [--release-id ID]`。MCP 的 `data_service_sources`、`data_service_task_evidence` 对应 `agentTaskId/packageDigest/releaseId`，只发 GET；不接受执行者覆盖，不在选择不全时退回宽范围。临时预览的消费证据下载可带 `releaseId`，转发为同一 `release_id` 并核对返回报告的发布编号。
+CLI 对应 `services sources --agent-task-id ID --package-digest SHA256 --release-id ID` 和 `services task-evidence --task-id ID --package-digest SHA256 [--release-id ID [--call-id-digest SHA256]]`。MCP 的 `data_service_sources`、`data_service_task_evidence` 使用相同来源选择，证据工具的 `callIdDigest` 需同时提供 `releaseId`。两种入口只发 GET。临时预览的消费证据下载可带 `releaseId`，转发为同一 `release_id` 并核对返回报告的发布编号。
 
 ## 指定旧任务的开发续接（2026-10-29，默认关闭）
 

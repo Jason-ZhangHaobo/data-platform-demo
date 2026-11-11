@@ -63,7 +63,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent repair-compare --source-run-id FAILED_RUN_ID --baseline-run-id SUCCEEDED_RUN_ID --message "参考基线修正" --request-id UUID --confirm
   shuduo agent derive --task-id TASK_ID --revision-id REVISION_ID --run-id RUN_ID --revision-hash SHA256 --context stock-cash-t1 --message "改为股票持仓和现金口径" --request-id UUID --confirm
     从原成功版本创建独立任务，可能执行模型与Spark；原批准不继承。未知结果先用 agent request 查询，不换请求编号重试。
-  shuduo services task-evidence [--task-id AGENT_TASK_ID | --manual-delivery-task-id MANUAL_DELIVERY_ID] --package-digest SHA256 [--release-id RELEASE_ID]
+  shuduo services task-evidence [--task-id AGENT_TASK_ID | --manual-delivery-task-id MANUAL_DELIVERY_ID] --package-digest SHA256 [--release-id RELEASE_ID [--call-id-digest SHA256]]
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-delivery --id AGENT_TASK_ID
   shuduo agent prepare-delivery --id TASK_ID --source-kind MANUAL --source-run-id RUN_ID --request-id UUID --confirm
@@ -274,7 +274,7 @@ function reviewedPublication(input){
   return {...selected,attestations:Object.fromEntries(required.map(key=>[key,true]))};
 }
 function serviceReadCliOptions(argv,options,action){
-  const taskFlag=action==='sources'?'agent_task_id':'task_id',fields={[taskFlag]:'agentTaskId',manual_delivery_task_id:'manualDeliveryTaskId',package_digest:'packageDigest',release_id:'releaseId'},
+  const taskFlag=action==='sources'?'agent_task_id':'task_id',fields={[taskFlag]:'agentTaskId',manual_delivery_task_id:'manualDeliveryTaskId',package_digest:'packageDigest',release_id:'releaseId',...(action==='task-evidence'?{call_id_digest:'callIdDigest'}:{})},
     allowed=new Set(['base_url','help',...Object.keys(fields)]),seen=new Set();
   for(const token of argv.filter(value=>value.startsWith('--'))){
     const key=token.slice(2).replaceAll('-','_');

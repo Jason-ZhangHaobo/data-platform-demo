@@ -50,6 +50,8 @@ V2 仍从受保护计划读取独立 `expectedRows`，不得从服务响应反�
 
 `responseDigest` 覆盖数据与分页；新增 `rowsDigest` 只覆盖数据行，与平台 `call.resultHash` 使用同一递归排序对象键的摘要口径。两者不能混比。平台消费投影的 `entry.source` 由已核验不可变清单及发布批次产生，包含代码和开发来源；`sourceVersions` 记录 XAPI 固定的两个 DAPI 版本，`call.configHash` 来自实际内部回查。
 
+若同一服务已有后续查询，可从原报告的成功 XAPI 请求取 `callIdDigest`，在固定任务、包摘要和发布编号的证据 GET 上增加 `call_id_digest`。CLI 对应 `services task-evidence --call-id-digest`，MCP 参数为 `callIdDigest`。回读仍核对当前发布版本、调用归属、应用授权和同源快照；找不到对应记录时返回待核验。读取后沿用同一个 V2 绑定器核对外部断言。
+
 纯函数 `bindExternalConsumption({expectedSource, plan, report, taskEvidence})` 不读文件、不发请求。它核对 V2 计划和完整两阶段报告、独立预期、目标 XAPI/固定子版本及同一实际调用；调用摘要必须匹配平台回执，不用另一条最近调用代替。非目标接口可来自同发布的另一个成功批次，目标 XAPI 及其子版本仍须属于原精确批次。调用超出原固定窗口时无法自动确认，不引入跨机器逐毫秒假设，也不自动重试。
 
 | 结论 | 含义 |

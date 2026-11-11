@@ -180,12 +180,12 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     if(method==="GET" && path.endsWith("/task-evidence")){
       const selection=privateServiceSourceSelection(url.searchParams,true);
       if(!selection)throw fail(422,"需提供任务编号、确切包摘要及合法发布选择","INVALID_CONSUMPTION_INPUT");
-      const {taskId,manualDeliveryTaskId,packageDigest,releaseId}=selection;
+      const {taskId,manualDeliveryTaskId,packageDigest,releaseId,callIdDigest}=selection;
       const task=get(manualDeliveryTaskId?"manual_delivery_task":"agent",manualDeliveryTaskId??taskId);
       if(!task || (manualDeliveryTaskId?task.submittedBy!==owner:a.role!=="ADMIN" && task.submittedBy!==owner))throw fail(403,"无权读取此任务消费证据");
       const releases=store.list("release",project).filter(release=>(manualDeliveryTaskId?release.manualDeliveryTaskId===manualDeliveryTaskId&&release.sourceAgentTaskId===undefined:release.sourceAgentTaskId===taskId&&release.manualDeliveryTaskId===undefined)&&release.packageDigest===packageDigest&&(releaseId===undefined||release.id===releaseId));
       if(releases.some(release=>!manualReleaseOwned(a,release)))throw fail(403,"人工消费记录仅属于原任务工程师和发布者");
-      return {status:200,body:await privateTaskConsumption({taskId,manualDeliveryTaskId,packageDigest,releaseId,
+      return {status:200,body:await privateTaskConsumption({taskId,manualDeliveryTaskId,packageDigest,releaseId,callIdDigest,
         getPackage:id=>get("delivery_package",id),
         services:manager.list().filter(s=>owned(a,s)),ownedService:id=>service(a,id),getVersion:id=>get("data_service_version",id),source:id=>{const run=source(id);sourceOwner(a,run);return run;},getRelease:id=>get("release",id),
         application:id=>get("service_app",id)?manager.application(id):undefined,calls:id=>manager.listCalls(id).filter(call=>callOwned(a,call)),recheckCall:(id,callId)=>{
