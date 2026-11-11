@@ -212,12 +212,20 @@ export function validateReadonlyCodeRefreshPlan(plan) {
       securityContinuation.previousReserveCny === 62 && binding?.securityMaintenanceDigest === timerHash(securityContinuation),
     'SECURITY_MAINTENANCE_CONTINUATION_INVALID');
   }
+  // An independent code-only plan can carry a larger reserve when its binding
+  // records the same amount. Historical continuation limits still apply.
+  const reserveBound = !continuation && !taskContinuation && !securityContinuation &&
+    Object.hasOwn(binding ?? {}, 'priorReserveCny');
+  const reserve = plan?.priorReserveCny;
+  const validReserve = reserveBound
+    ? Number.isFinite(reserve) && reserve >= 45 && reserve === binding.priorReserveCny
+    : reserve === (securityContinuation ? 62 : taskContinuation ? taskContinuation.previousReserveCny : continuation ? 52 : 45);
   const keys = ['protocol', 'predecessorDigest', 'approvalDigest', 'historyUsageDigest',
     'previousSha256', 'candidateSha256', 'applicationSource', 'buildRunId', 'artifactId', ...(taskContinuation ? ['taskResumeDigest'] : []),
-    ...(securityContinuation ? ['securityMaintenanceDigest'] : [])];
+    ...(securityContinuation ? ['securityMaintenanceDigest'] : []), ...(reserveBound ? ['priorReserveCny'] : [])];
   check(plan?.scope === readonlyCodeRefreshScope && readonlyCodeModes.includes(plan.mode) &&
     plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === (continuation || taskContinuation ? 5 : 2) &&
-    plan.monthlyCny === 200 && plan.priorReserveCny === (securityContinuation ? 62 : taskContinuation ? taskContinuation.previousReserveCny : continuation ? 52 : 45),
+    plan.monthlyCny === 200 && validReserve,
   'READONLY_CODE_SCOPE_INVALID');
   check(!['target', 'servicePlan', 'servicePlanDigest', 'triggerNames', 'timerRecords', 'timerPreparedAt',
     'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint', 'activated', 'cloudTransferContinuation', 'resumeExistingTask']

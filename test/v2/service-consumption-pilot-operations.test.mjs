@@ -302,6 +302,40 @@ test('code-only refresh preserves the entire public read-only configuration and 
   assert.equal(Object.hasOwn(r,'timerRecords'),false);assert.equal(Object.hasOwn(r,'servicePlanDigest'),false);
 });
 
+test('code-only refresh carries its bound reserve into staging and the complete monthly bill check', async () => {
+  const carryReserve = () => {
+    const f = codeFixture();
+    f.basePlan.priorReserveCny = 64;
+    f.basePlan.readonlyCodeRefresh.priorReserveCny = 64;
+    return f;
+  };
+  const f = carryReserve();
+  const staged = await f.step('stage');
+  assert.equal(staged.phase, 'STAGED');
+  assert.equal(staged.readonlyCodeRefresh.priorReserveCny, 64);
+  assert.deepEqual(f.current.environmentVariables, f.baseline.environmentVariables);
+  assert.equal(staged.modelCalls, 0);
+  assert.equal(staged.sparkRuns, 0);
+  assert.equal((await f.step('rollback')).phase, 'ROLLED_BACK');
+  assert.deepEqual(f.current, f.baseline);
+
+  const tooExpensive = carryReserve();
+  tooExpensive.controls.bill = '134';
+  await assert.rejects(tooExpensive.step('stage'), /MONTHLY_BUDGET_NOT_VERIFIED/);
+  assert.ok(tooExpensive.calls.every(call => call.args?.[0] === 'bssopenapi'));
+  for (const mutate of [
+    plan => { plan.priorReserveCny = 63; },
+    plan => { delete plan.readonlyCodeRefresh.priorReserveCny; },
+    plan => { plan.priorReserveCny = plan.readonlyCodeRefresh.priorReserveCny = 44; },
+    plan => { plan.priorReserveCny = plan.readonlyCodeRefresh.priorReserveCny = Infinity; },
+  ]) {
+    const invalid = carryReserve();
+    mutate(invalid.basePlan);
+    await assert.rejects(invalid.step('stage'), /READONLY_CODE_SCOPE_INVALID/);
+    assert.equal(invalid.calls.length, 0);
+  }
+});
+
 test('code-only scope refuses larger compute, spend, history or resource authority before IO',async()=>{
   const mutations=[p=>p.maxModelCalls=1,p=>p.maxSparkRuns=1,p=>p.maxIncrementCny=3,p=>p.monthlyCny=201,
     p=>p.priorReserveCny=43,p=>p.priorReserveCny=27,p=>p.maxReads=121,p=>p.maxProbes=41,
