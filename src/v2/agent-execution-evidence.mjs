@@ -1,34 +1,12 @@
-import { developmentVerificationReport } from "./agent-development-workflow.mjs";
-import { validationFamilyForContext } from "./context.mjs";
+import { verifiedStoredCloudDevelopment } from "./agent-development-workflow.mjs";
 import { sha256 } from "./delivery.mjs";
 import { checkedLiveExecutionProjection, storedExecutionStages } from "./live-lifecycle-execution.mjs";
-import { liveEvidenceProvenance, nonLiveModelLabel } from "./live-lifecycle-provenance.mjs";
 import { sqlRequirementBinding } from "./sql-requirements.mjs";
 
 export function agentExecutionEvidencePath(requestId) {
   if (typeof requestId !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(requestId))
     throw new Error("原请求编号格式不合法");
   return `/agent/requests/${requestId}/execution-evidence`;
-}
-
-export function verifiedStoredCloudDevelopment(task, revision, run) {
-  const attempts = Array.isArray(task.attempts) ? task.attempts : [];
-  const attempt = attempts.at(-1), family = validationFamilyForContext(task.contextId);
-  if (!family || task.status !== "SUCCEEDED" || attempt?.status !== "SUCCEEDED" ||
-      typeof attempt.model !== "string" || !attempt.model || attempt.model.length > 200 || nonLiveModelLabel(attempt.model) ||
-      attempts.length > 3 || !Number.isSafeInteger(task.usedTokens) || task.usedTokens < 0 || task.usedTokens > 32000 ||
-      revision?.source !== "LIVE_MODEL" || revision.id !== attempt.revisionId || revision.author !== task.submittedBy ||
-      typeof revision.sql !== "string" || revision.sql !== task.sql ||
-      !run || run.id !== attempt.runId || run.agentTaskId !== task.id || run.contextId !== task.contextId ||
-      run.mode !== "DURABLE_REMOTE_SUBMISSION" || run.isolation !== "FUNCTION_PROCESS" || run.engineVersion !== "3.5.9" ||
-      run.remoteSubmission?.prepared?.job?.jobId !== run.id ||
-      !Array.isArray(run.rows) || run.rows.some(row => !row || typeof row !== "object" || Array.isArray(row)))
-    return;
-  try {
-    if (developmentVerificationReport(task, run, revision).status === "PASSED") return {attempt, attempts, family};
-  } catch {
-    return;
-  }
 }
 
 // The caller has already resolved the authenticated creator's original ledger key.

@@ -1,5 +1,6 @@
 import {verifyOutputRows,outputContractForContext} from './output-contracts.mjs';
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { createDeliveryPackage, validateDeliveryPackage, resolveDeliverySchedule, validationMatchesFamily } from "./delivery.mjs";
 import { getContext, validationContractId, validationFamilyForContext } from "./context.mjs";
 import { deliveryArtifactValue } from "./artifact-store.mjs";
@@ -10,6 +11,7 @@ import {sameAssistedDevelopmentReference} from './assisted-development-reference
 import {resolveManualContinuation} from './manual-sql-continuation.mjs';
 import {verifiedSqlRequirementForRevision,assertSqlRequirementPackageSource,sqlRequirementBinding} from './sql-requirements.mjs';
 import {assertSqlClarificationTask} from './sql-clarification.mjs';
+import { liveEvidenceProvenance, nonLiveModelLabel } from "./live-lifecycle-provenance.mjs";
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 export const standaloneManualDeliveryMode='DURABLE_MANUAL_DELIVERY_V1';
@@ -94,6 +96,26 @@ export function developmentVerificationReport(task, run, revision) {
   };
 }
 
+export function verifiedStoredCloudDevelopment(task, revision, run) {
+  const attempts = Array.isArray(task.attempts) ? task.attempts : [];
+  const attempt = attempts.at(-1), family = validationFamilyForContext(task.contextId);
+  if (!family || task.status !== "SUCCEEDED" || attempt?.status !== "SUCCEEDED" ||
+      typeof attempt.model !== "string" || !attempt.model || attempt.model.length > 200 || nonLiveModelLabel(attempt.model) ||
+      attempts.length > 3 || !Number.isSafeInteger(task.usedTokens) || task.usedTokens < 0 || task.usedTokens > 32000 ||
+      revision?.source !== "LIVE_MODEL" || revision.id !== attempt.revisionId || revision.author !== task.submittedBy ||
+      typeof revision.sql !== "string" || revision.sql !== task.sql ||
+      !run || run.id !== attempt.runId || run.agentTaskId !== task.id || run.contextId !== task.contextId ||
+      run.mode !== "DURABLE_REMOTE_SUBMISSION" || run.isolation !== "FUNCTION_PROCESS" || run.engineVersion !== "3.5.9" ||
+      run.remoteSubmission?.prepared?.job?.jobId !== run.id ||
+      !Array.isArray(run.rows) || run.rows.some(row => !row || typeof row !== "object" || Array.isArray(row)))
+    return;
+  try {
+    if (developmentVerificationReport(task, run, revision).status === "PASSED") return {attempt, attempts, family};
+  } catch {
+    return;
+  }
+}
+
 export function manualCloudDeliverySource({store, project, runId, actorId, requireVerified = true}) {
   const run = store.get("run", runId, project), revision = store.get("revision", run?.revisionId ?? "", project),
     provenance = revision?.manualProvenance;
@@ -136,6 +158,15 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       throw fail(409, "请先完成真实模型、Spark 与独立结果核验");
     return { revision, run };
   };
+  const checkPinnedSource = (agent, {revision,run}, expected) => {
+    const proof = liveEvidenceProvenance(agent,revision,run);
+    const requirement = agent.requirements ? sqlRequirementBinding(agent.requirements) : undefined;
+    if (proof.synthetic || proof.nonNative || proof.unconfirmed || agent.sourceRunId !== undefined ||
+        agent.derivedFrom !== undefined || revision.id !== expected.revisionId || revision.hash !== expected.revisionHash ||
+        run.id !== expected.runId || !isDeepStrictEqual(requirement,expected.requirementBinding) ||
+        !verifiedStoredCloudDevelopment(agent,revision,run))
+      throw fail(409,"交付准备的代码版本、Spark 批次或需求依据已变化");
+  };
   const bundleFor = async task => {
     const item = store.get("delivery_package", task.packageId, project);
     if (!item || item.digest !== task.packageDigest || item.manifest.source.sqlHash !== task.sourceSqlHash)
@@ -156,6 +187,11 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     }
     const agent = store.get("agent", task.sourceAgentTaskId, project);
     assertExecutionScope(agent);
+    if (task.sourcePinned) {
+      if (!agent || agent.submittedBy !== task.submittedBy) throw fail(409,"交付原任务身份已变化");
+      checkPinnedSource(agent,source(agent),{revisionId:task.sourceRevisionId,revisionHash:task.sourceSqlHash,
+        runId:task.sourceRunId,requirementBinding:task.sourceRequirementBinding});
+    }
     if(agent?.clarification)assertSqlClarificationTask(agent,{store,project});
     if (task.sourceKind === "MANUAL") {
       const source = manualCloudDeliverySource({store, project, runId: task.sourceRunId, actorId: task.submittedBy});
@@ -169,17 +205,25 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       assertSqlRequirementPackageSource(store.get('delivery_package',task.packageId,project),{agent,run,revision});
     }
   };
-  async function persistManualArtifact(task) {
+  async function persistDeliveryArtifact(task) {
+    if (task.stage !== "PACKAGE_PERSISTING") return task;
     const item = store.get("delivery_package", task.packageId, project);
-    if (item?.artifact) return task;
     assertTaskScope(task);
-    if (!item || item.digest !== task.packageDigest) throw fail(409, "人工交付包检查点不完整");
+    if (!item || item.digest !== task.packageDigest) throw fail(409, "交付包检查点不完整");
     validateDeliveryPackage(item, task.packageDigest);
-    const artifact = await artifactStore.put("delivery-package", item.digest, deliveryArtifactValue(item));
+    const value = deliveryArtifactValue(item);
+    if (item.artifact) await artifactStore.verify(item.artifact,"delivery-package",item.digest,value);
+    const artifact = item.artifact ?? await artifactStore.put("delivery-package", item.digest, value);
     task = get(task.id);
-    if (terminal.has(task.status)) return task;
+    if (task.stage !== "PACKAGE_PERSISTING") return task;
     assertTaskScope(task);
-    store.update("delivery_package", item.id, project, {artifact});
+    if (!task.sourcePinned && task.sourceKind !== "MANUAL") {
+      const agent = store.get("agent",task.sourceAgentTaskId,project);
+      assertSqlRequirementPackageSource(item,{agent,...source(agent)});
+    }
+    const saved = store.get("delivery_package", item.id, project);
+    if (saved?.version !== item.version) throw fail(409,"交付包检查点已变化");
+    if (!saved.artifact) store.update("delivery_package", item.id, project, {artifact}, {expectedVersion:item.version});
     task = change(task, {stage: "PACKAGE_READY"}); await persist(); return task;
   }
   async function createManual({runId, actorId, key, sourceBinding}) {
@@ -202,34 +246,43 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     });
     await persist(); // Persist the exact package before OSS; an unknown PUT resumes its digest.
     const task = get(dedup.id);
-    return publicDeliveryTask(terminal.has(task.status) ? task : await persistManualArtifact(task));
+    return publicDeliveryTask(terminal.has(task.status) ? task : await persistDeliveryArtifact(task));
   }
-  async function create(agent, key) {
+  async function create(agent, key, expected) {
     if(standaloneManual)throw fail(422,'独立手工交付不能接受Agent任务作为来源');
     assertExecutionScope(agent);
     const { run, revision } = source(agent);
-    const existing = store.list(resource, project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision.id && t.sourceRunId === run.id && t.sourceSqlHash === revision.hash &&
-      JSON.stringify(t.sourceRequirementBinding)===JSON.stringify(agent.requirements?sqlRequirementBinding(agent.requirements):undefined)&&["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
+    if (expected) checkPinnedSource(agent,{revision,run},expected);
     const requirement = agent.requirements ? sqlRequirementBinding(agent.requirements) : undefined;
+    const findExisting = () => store.list(resource, project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id &&
+      t.sourceRevisionId === revision.id && t.sourceRunId === run.id && t.sourceSqlHash === revision.hash &&
+      isDeepStrictEqual(t.sourceRequirementBinding,requirement) && ["QUEUED","RUNNING","SUCCEEDED"].includes(t.status));
     const namespace = `${project}:durable-delivery:${agent.id}:${key}`;
     const signature = hash(JSON.stringify({runId:run.id, revisionHash:revision.hash, ...(requirement ? {requirement} : {})}));
-    if (existing || store.deduplicatedId(namespace)) {
-      if (existing) assertSqlRequirementPackageSource(store.get("delivery_package", existing.packageId, project), {agent,run,revision});
-      const prior = store.deduplicate(namespace, signature, () => existing);
-      await persist();
-      return publicDeliveryTask(get(prior.id));
+    const existing = findExisting();
+    if (existing) assertSqlRequirementPackageSource(store.get("delivery_package", existing.packageId, project), {agent,run,revision});
+    let bundle, artifact;
+    if (!existing && !store.deduplicatedId(namespace)) {
+      const family = validationFamilyForContext(revision.contextId);
+      bundle = createDeliveryPackage({run,revision,agent,name:family?.id === validationContractId
+        ? "客户资产 T+1 · Agent交付" : "股票持仓＋可用现金（非客户全资产）· Agent交付"});
+      if (!expected) {
+        artifact = await artifactStore.put("delivery-package",bundle.digest,bundle);
+        const freshAgent = store.get("agent",agent.id,project);
+        assertSqlRequirementPackageSource(bundle,{agent:freshAgent,...source(freshAgent)});
+      }
     }
-    const family = validationFamilyForContext(revision.contextId);
-    const bundle = createDeliveryPackage({ run, revision,agent, name: family?.id === validationContractId ? "客户资产 T+1 · Agent交付" : "股票持仓＋可用现金（非客户全资产）· Agent交付" });
-    const artifact = await artifactStore.put("delivery-package", bundle.digest, bundle);
-    const freshAgent=store.get('agent',agent.id,project),fresh=source(freshAgent);
-    assertSqlRequirementPackageSource(bundle,{agent:freshAgent,...fresh});
     const dedup = store.deduplicate(namespace, signature, () => {
-      const task = store.create(resource, project, { mode, sourceAgentTaskId: agent.id, sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: agent.submittedBy, status: "QUEUED", stage: "PACKAGE_READY", packageDigest: bundle.digest,...(bundle.manifest.source.requirement?{sourceRequirementBinding:bundle.manifest.source.requirement}:{}), completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
-      const item = store.create("delivery_package", project, { ...bundle, artifact, sourceRunId: run.id, ...(standaloneManual?{manualDeliveryTaskId:task.id}:{agentDeliveryTaskId:task.id}), stage: "M2A", published: false });
+      const equivalent = existing ?? findExisting();
+      if (equivalent) return equivalent;
+      const task = store.create(resource, project, { mode, sourceAgentTaskId: agent.id, sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: agent.submittedBy, status: "QUEUED",
+        stage:artifact?"PACKAGE_READY":"PACKAGE_PERSISTING", packageDigest: bundle.digest,...(requirement?{sourceRequirementBinding:requirement}:{}),...(expected?{sourcePinned:true}:{}), completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
+      const item = store.create("delivery_package", project, { ...bundle, ...(artifact?{artifact}:{}), sourceRunId: run.id, agentDeliveryTaskId:task.id, stage: "M2A", published: false });
       return change(task, { packageId: item.id });
     });
-    await persist(); return publicDeliveryTask(get(dedup.id));
+    await persist();
+    const task = get(dedup.id);
+    return publicDeliveryTask(expected ? await persistDeliveryArtifact(task) : task);
   }
   async function reconcile(id) {
     let task = get(id);
@@ -254,7 +307,8 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     if (terminal.has(task.status)) return publicDeliveryTask(task);
     assertTaskScope(task);
     if (expectedVersion !== task.version) throw fail(409, "交付任务已更新，请刷新后继续");
-    if (task.sourceKind === "MANUAL") task = await persistManualArtifact(task);
+    if (task.sourceKind === "MANUAL") task = await persistDeliveryArtifact(task);
+    else if (task.stage === "PACKAGE_PERSISTING") return publicDeliveryTask(await persistDeliveryArtifact(task));
     if (terminal.has(task.status)) return publicDeliveryTask(task);
     if (task.sourceKind === "MANUAL" && task.remoteSubmission && !task.remoteSubmission.submitted) {
       await reconcile(task.id); task = get(task.id);

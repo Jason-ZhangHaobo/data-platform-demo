@@ -6,6 +6,7 @@ import { agentExecutionEvidencePath } from "../src/v2/agent-execution-evidence.m
 import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
 import { validationFamilyForContext } from "../src/v2/context.mjs";
 import { sha256 } from "../src/v2/delivery.mjs";
+import { deliveryPreparationBody, deliveryPreparationHashMatches, deliveryPreparationRequirement } from "../src/v2/delivery-preparation-request.mjs";
 import { checkpointCaseScope, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedLiveTaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-execution.mjs";
@@ -151,6 +152,7 @@ async function requireOriginalCreator(state, client) {
   if (session?.authenticated !== true || session.user?.id !== state.submission.actorId ||
       session.user?.projectId !== state.projectId)
     stop("当前会话与原任务创建者不一致");
+  return session;
 }
 
 export async function continueCloudV3Start(path, client, {billPath, reconcile=false} = {}) {
@@ -212,23 +214,73 @@ function verifiedDevelopmentCode(definition, view, execution) {
       basisDigest:requirement.basisDigest, reportDigest:requirement.reportDigest}} : {})};
 }
 
-async function reconcileOriginalDelivery(client, item, code) {
+function bindOriginalDelivery(item, code, receipt) {
   const action = item.actions.delivery;
-  if (!action || action.status === "PREPARED") return {status:"REQUEST_NOT_SUBMITTED"};
-  if (!id(action.key) || action.bodyHash !== sha256("{}")) return {status:"UNCONFIRMED"};
-  if (!["SUBMITTING","UNKNOWN","CONFIRMED"].includes(action.status) ||
-      (action.status === "CONFIRMED" && !id(action.id))) return {status:"UNCONFIRMED"};
-  let receipt;
-  try { receipt = await client.request(`/agent/tasks/${item.taskId}/delivery-requests/${action.key}`); }
-  catch { return {status:"PENDING"}; }
   const proof = liveEvidenceProvenance(receipt);
   if (proof.synthetic || proof.nonNative || proof.unconfirmed || !id(receipt?.id) || receipt.mode !== durableDeliveryMode ||
       (action.id !== undefined && action.id !== receipt.id) || receipt.sourceAgentTaskId !== item.taskId ||
       receipt.sourceRevisionId !== code.revisionId || receipt.sourceSqlHash !== code.revisionHash ||
-      receipt.sourceRunId !== code.runId || !isDeepStrictEqual(receipt.sourceRequirementBinding,code.requirementBinding))
-    return {status:"UNCONFIRMED"};
-  item.actions.delivery = {...action, id:receipt.id, status:"CONFIRMED"};
-  return {status:"CONFIRMED", id:receipt.id};
+      receipt.sourceRunId !== code.runId || !id(receipt.packageId) || !digest(receipt.packageDigest) ||
+      (action.packageId !== undefined && action.packageId !== receipt.packageId) ||
+      (action.packageDigest !== undefined && action.packageDigest !== receipt.packageDigest) ||
+      !isDeepStrictEqual(receipt.sourceRequirementBinding,deliveryPreparationRequirement(code)))
+    return;
+  item.actions.delivery = {...action, id:receipt.id, status:"CONFIRMED",
+    packageId:receipt.packageId, packageDigest:receipt.packageDigest};
+  return {status:"CONFIRMED", id:receipt.id, packageId:receipt.packageId, packageDigest:receipt.packageDigest,
+    ...(Number.isSafeInteger(receipt.version) && receipt.version > 0 ? {version:receipt.version} : {}),
+    ...(receipt.stage === "PACKAGE_PERSISTING" ? {storagePending:true} : {})};
+}
+
+async function reconcileOriginalDelivery(client, item, code) {
+  const action = item.actions.delivery;
+  if (!action || action.status === "PREPARED") return {status:"REQUEST_NOT_SUBMITTED"};
+  if (!id(action.key) || !deliveryPreparationHashMatches(action.bodyHash,code) ||
+      !["SUBMITTING","UNKNOWN","CONFIRMED"].includes(action.status) ||
+      (action.status === "CONFIRMED" && !id(action.id))) return {status:"UNCONFIRMED"};
+  let receipt;
+  try { receipt = await client.request(`/agent/tasks/${item.taskId}/delivery-requests/${action.key}`); }
+  catch { return {status:"PENDING"}; }
+  return bindOriginalDelivery(item,code,receipt) ?? {status:"UNCONFIRMED"};
+}
+
+export async function prepareCloudV3Delivery(path, client, billPath) {
+  return withCloudCheckpoint(path, async () => {
+    const {state, item, action} = snapshot(client,path);
+    const response = (status, reason) => result(state,item,status,reason);
+    if (action.status !== "CONFIRMED" || item.phase !== "DELIVERY_PREPARATION" || item.code?.taskId !== item.taskId)
+      return response("PENDING","DEVELOPMENT_RESULT_UNCONFIRMED");
+    const body = deliveryPreparationBody(item.code);
+    if (item.actions.delivery !== undefined)
+      return response("PENDING","INSPECT_ORIGINAL_DELIVERY");
+    const bill = readCurrentBill(billPath,Date.now());
+    const startupBill = state.submission?.bill;
+    if (!Number.isFinite(startupBill?.unsettledReserveCny) || bill.unsettledReserveCny < startupBill.unsettledReserveCny)
+      stop("交付准备须保留原评测的未结算预留");
+    const session = await requireOriginalCreator(state,client), now = Date.now();
+    if (session.role !== "ADMIN" || session.developmentOnly !== true || session.readOnly !== false ||
+        !(Date.parse(session.developmentStartsAt) <= now && now < Date.parse(session.developmentExpiresAt)) ||
+        (session.developmentTaskOnly === true && session.developmentTaskId !== item.taskId) ||
+        now - Date.parse(bill.checkedAt) >= 3600000)
+      stop("原任务未处于获准交付准备的开发窗口");
+    const deliveryAction = {key:randomUUID(),bodyHash:sha256(JSON.stringify(body)),status:"SUBMITTING",bill};
+    item.actions.delivery = deliveryAction;
+    writeCheckpoint(path,state);
+    let receipt;
+    try {
+      receipt = await client.request(`/agent/tasks/${item.taskId}/prepare-delivery`,
+        {method:"POST",body,idempotencyKey:deliveryAction.key});
+    } catch {
+      deliveryAction.status = "UNKNOWN";
+      writeCheckpoint(path,state);
+      return response("PENDING","INSPECT_ORIGINAL_DELIVERY");
+    }
+    const delivery = bindOriginalDelivery(item,item.code,receipt);
+    if (!delivery) deliveryAction.status = "UNKNOWN";
+    writeCheckpoint(path,state);
+    return delivery ? {...response("DELIVERY_CREATION_CONFIRMED"), delivery}
+      : response("PENDING","INSPECT_ORIGINAL_DELIVERY");
+  });
 }
 
 export async function inspectCloudV3Execution(path, client) {

@@ -175,7 +175,7 @@ FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查�
 | POST /agent/intents/:id/children/:destination/cancel | 空对象 | 从最新handoff或未绑定工具调用租约解析并取消QUEUED/RUNNING专业任务；父意图不取消，完成态409，重复取消幂等 |
 | GET/POST /agent/intents/:id/handoffs | 只读交接或destinationId/专业任务/approvalId + 幂等键 | 已执行专业任务必须绑定同一步骤有效批准，绑定后批准转BOUND；无任务ID的草稿交接仍为NO_EXECUTION |
 | GET /agent/tasks/:id/journey | 只读指定委托 | 七阶段现有版本/运行/交付/审批/计时批次/监控证据与责任归属；固定非Agent自主E2E、非公网，不返回业务行或原始报错 |
-| POST /agent/tasks/:id/prepare-delivery | 空对象 + 幂等键 | 对真实模型+独立断言成功的SQL/Python任务返回后台交付准备编号；SQL生成Spark包，Python生成独立`shuduo-python-delivery/v1`并真实按文件受限CPython演练。两者都停在工程师审阅，后续审批与本机发布必须显式操作 |
+| POST /agent/tasks/:id/prepare-delivery | 空对象或云端持久 SQL 的 `expectedSource` + 幂等键 | 对模型与独立断言成功的任务返回交付准备编号。SQL 生成 Spark 包，Python 沿用 `shuduo-python-delivery/v1`。确切来源须匹配原任务当前已核验版本和批次。发布仍需工程师审阅及明确审批 |
 | GET /agent/deliveries | 可选sourceAgentTaskId | 列出受控准备阶段、包摘要、演练与失败；不返回密码/业务行 |
 | GET /agent/deliveries/:id | 无 | 指定准备任务；成功阶段AWAITING_ENGINEER_REVIEW，范围DELIVERY_PREPARATION |
 | POST /agent/deliveries/:id/cancel | 空对象 | 取消排队/运行中的文件演练并保留包和运行状态，不会随后变成成功 |

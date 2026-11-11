@@ -14,10 +14,12 @@ import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult }
 import { referenceSql, contextIds, getContext } from '../../src/v2/context.mjs';
 import { V2Client } from '../../src/v2/client.mjs';
 import { runV2Cli } from '../../bin/shuduo.mjs';
+import { syntheticSqlRequirement } from './fixtures/sql-requirement.mjs';
 
-async function fixture(t,{eventsEnabled=false,startupPreflight=false}={}) {
+async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
+  let loseArtifactAcknowledgement=false, packageWrites=0;
   const objects = new Map();
   const wakes=[];
   const config = { projectId: PROJECT, sharedSecret: 'synthetic-journey-signing-key-only-123456789', jobPrefix: SPARK_QUEUE_PREFIXES.jobs, resultPrefix: SPARK_QUEUE_PREFIXES.results, cancellationPrefix: SPARK_QUEUE_PREFIXES.cancellations, timeoutMs: 180000 };
@@ -43,15 +45,27 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false}={}) {
   const close = async () => { if (!app) return; app.server.closeAllConnections(); await new Promise(r => app.server.close(r)); store.close(); app = undefined; };
   const open = async () => {
     store = new MetadataStore(join(directory, 'metadata.sqlite'));
-    app = createV2Server({ store, root: directory, env, runner, agentWakeTransport, now: () => now, artifactStore: new LocalArtifactStore(join(directory, 'artifacts')), ingress: createFcIngress({ publicHttpEnabled: true }), generator: async () => {
+    const artifactStore=new LocalArtifactStore(join(directory,'artifacts')), put=artifactStore.put.bind(artifactStore);
+    artifactStore.put=async(kind,digest,value)=>{
+      const result=await put(kind,digest,value);
+      if(kind==='delivery-package'){
+        packageWrites++;
+        if(loseArtifactAcknowledgement){loseArtifactAcknowledgement=false;throw Error('SYNTHETIC_ARTIFACT_ACK_LOST');}
+      }
+      return result;
+    };
+    app = createV2Server({ store, root: directory, env, runner, agentWakeTransport, now: () => now, artifactStore, ingress: createFcIngress({ publicHttpEnabled: true }), generator: async input => {
       modelCalls++; if(modelFault)throw Error('synthetic model interrupted');
-      return { sql: referenceSql, model: 'synthetic-protocol-fixture', explanation: 'Local lifecycle fixture, not a real model', usage: { total_tokens: 12 } };
+      return { sql: referenceSql, model: structuredRequirement?'qwen3-coder-plus':'synthetic-protocol-fixture',
+        explanation: 'Local lifecycle fixture, not a real model', usage: { total_tokens: 12 },
+        ...(structuredRequirement ? syntheticSqlRequirement(input) : {}) };
     } });
     app.auth.bootstrapAdmin({ email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026', displayName: '虚构开发者' });
-    await new Promise(r => app.server.listen(0, '127.0.0.1', r)); base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
+    const port=stableOrigin && base ? Number(new URL(base).port) : 0;
+    await new Promise(r => app.server.listen(port, '127.0.0.1', r)); base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
   };
   const call = async (path, body, key = 'original-pilot-task') => {
-    const r = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json', 'x-shuduo-client': 'workbench', origin: env.V2_PUBLIC_ORIGIN, 'idempotency-key': key, ...(cookie ? { cookie, 'x-csrf-token': csrf } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const r = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json', 'x-shuduo-client': 'workbench', origin: env.V2_PUBLIC_ORIGIN, 'idempotency-key': key, ...(stableOrigin ? {connection:'close'} : {}), ...(cookie ? { cookie, 'x-csrf-token': csrf } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: r.status, body: await r.json(), cookies: r.headers.getSetCookie() };
   };
   const complete = prepared => {
@@ -69,6 +83,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false}={}) {
   assert.equal(login.status, 200); cookie = login.cookies.map(c => c.split(';')[0]).join('; '); csrf = login.body.csrfToken;
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
   return { call, complete, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
+    loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
     privateCall:async body=>{const r=await fetch(base.replace(/\/api\/v2$/,'')+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke'},body:JSON.stringify(body)});return{status:r.status,body:await r.json()};} };
 }
 const taskInput = { message: '计算虚构客户总资产，避免现金重复累计。', code: 'SELECT 1', contextId: 'holdings-t1' };
@@ -191,6 +206,108 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
     ledgerTokens:180,reportedTokens:0,reservedTokens:180,unattributedTokens:0});
   assert.equal(readFileSync(checkpoint,'utf8'),confirmedBytes);
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
+});
+
+test('exact cloud delivery survives a lost artifact acknowledgment and resumes the original eight files',async t=>{
+  // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.
+  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true});
+  const checkpoint=join(f.directory,'exact-delivery.json'),billPath=join(f.directory,'current-bill.json'),requests=[];
+  const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
+  const writeBill=unsettledReserveCny=>writeFileSync(billPath,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny,maxIncrementCny:2,
+    pages:[{Success:true,Data:{PageNum:1,PageSize:300,TotalCount:1,BillingCycle:month,Items:{Item:[{Currency:'CNY',PretaxAmount:'20.00'}]}}}]}),{mode:0o600});
+  writeBill(64);
+  let savedAtDeliveryPost;
+  const client=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
+    const target=new URL(url), path=target.pathname.slice('/api/v2'.length)+target.search;
+    const body=options.body?JSON.parse(options.body):undefined, key=options.headers['Idempotency-Key'];
+    requests.push({path,method:options.method});
+    if(path.endsWith('/prepare-delivery')){
+      const [item]=JSON.parse(readFileSync(checkpoint,'utf8')).outcomes;
+      savedAtDeliveryPost={...item.actions.delivery, postedKey:key, postedBody:body};
+    }
+    const response=await f.call(path,body,key);
+    return new Response(JSON.stringify(response.body),{status:response.status});
+  }});
+  const cli=async(action,flags=[],exit=0)=>{
+    requests.length=0;
+    let value;
+    assert.equal(await runV2Cli(['agent',action,'--checkpoint',checkpoint,...flags],{},
+      {client,output:line=>{value=JSON.parse(line);},error:()=>{}}),exit);
+    return value;
+  };
+  const confirm=['--bill-file',billPath,'--confirm'];
+  await cli('v3-start',['--source-revision','a'.repeat(40)]);
+  const created=await cli('v3-start',confirm);
+  assert.equal(created.status,'CREATION_CONFIRMED');
+  const taskPath='/agent/tasks/'+created.taskId, advance=task=>f.call(taskPath+'/advance',{expectedVersion:task.version});
+  let task=(await f.call(taskPath)).body;
+  task=(await advance(task)).body;
+  task=(await advance(task)).body;
+  const prepared=f.store.get('run',task.runId,PROJECT).remoteSubmission.prepared;
+  f.complete(prepared);
+  task=(await advance(task)).body;
+  assert.equal(task.status,'SUCCEEDED');
+  const inspected=await cli('v3-inspect');
+  assert.equal(inspected.status,'DEVELOPMENT_BOUND');
+  const initialBytes=readFileSync(checkpoint,'utf8'), [bound]=JSON.parse(initialBytes).outcomes;
+  assert.equal(task.requirements.status,'MODEL_PROPOSED');
+  assert.equal(bound.code.requirementBinding.taskId,task.id);
+  const source={revisionId:bound.code.revisionId,revisionHash:bound.code.revisionHash,runId:bound.code.runId,
+    requirementBinding:bound.code.requirementBinding};
+  const preparePath=taskPath+'/prepare-delivery';
+  assert.equal((await f.call(preparePath,{expectedSource:{...source,runId:randomUUID()}},randomUUID())).status,409);
+  assert.equal((await f.call(preparePath,{expectedSource:{...source,requirementBinding:{protocol:'shuduo-sql-requirements/v1',
+    taskId:task.id,basisDigest:'a'.repeat(64),reportDigest:'b'.repeat(64)}}},randomUUID())).status,409);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
+  assert.equal(f.packageWrites(),0);
+  writeBill(63);
+  await cli('v3-prepare-delivery',confirm,1);
+  assert.deepEqual(requests,[]);
+  assert.equal(readFileSync(checkpoint,'utf8'),initialBytes);
+  writeBill(64);
+  f.loseArtifact();
+  const unknown=await cli('v3-prepare-delivery',confirm);
+  assert.equal(unknown.reason,'INSPECT_ORIGINAL_DELIVERY');
+  assert.deepEqual(requests,[{path:'/auth/session',method:'GET'},{path:preparePath,method:'POST'}]);
+  assert.equal(savedAtDeliveryPost.status,'SUBMITTING');
+  assert.equal(savedAtDeliveryPost.key,savedAtDeliveryPost.postedKey);
+  assert.deepEqual(savedAtDeliveryPost.postedBody,{expectedSource:source});
+  assert.equal(savedAtDeliveryPost.bodyHash,createHash('sha256').update(JSON.stringify(savedAtDeliveryPost.postedBody)).digest('hex'));
+  assert.equal(savedAtDeliveryPost.bill.unsettledReserveCny,64);
+  assert.equal((await cli('v3-prepare-delivery',confirm)).reason,'INSPECT_ORIGINAL_DELIVERY');
+  assert.deepEqual(requests,[]);
+  const [pending]=f.store.list('agent_delivery_task',PROJECT);
+  assert.equal(pending.stage,'PACKAGE_PERSISTING');
+  assert.equal(f.packageWrites(),1);
+  assert.equal(f.store.list('delivery_verification',PROJECT).length,0);
+  await f.restart();
+  const recovered=await cli('v3-inspect');
+  assert.equal(recovered.delivery.id,pending.id);
+  assert.equal(recovered.delivery.packageDigest,pending.packageDigest);
+  assert.equal(recovered.delivery.version,pending.version);
+  assert.equal(recovered.delivery.storagePending,true);
+  assert.ok(requests.every(request=>request.method==='GET'));
+  assert.equal(f.packageWrites(),1);
+  const finished=(await f.call('/agent/deliveries/'+pending.id+'/advance',{expectedVersion:pending.version})).body;
+  assert.equal(finished.stage,'PACKAGE_READY');
+  assert.equal(finished.id,pending.id);
+  assert.equal(finished.packageId,pending.packageId);
+  assert.equal(finished.packageDigest,pending.packageDigest);
+  const bundle=f.store.get('delivery_package',finished.packageId,PROJECT);
+  assert.equal(Object.keys(bundle.files).length,8);
+  assert.equal(bundle.manifest.source.revisionId,source.revisionId);
+  assert.equal(bundle.manifest.source.runId,source.runId);
+  assert.deepEqual(bundle.manifest.source.requirement,source.requirementBinding);
+  const artifact=readFileSync(join(f.directory,'artifacts',bundle.artifact.key),'utf8');
+  assert.equal(createHash('sha256').update(artifact).digest('hex'),bundle.artifact.contentHash);
+  assert.deepEqual(JSON.parse(artifact).files,bundle.files);
+  assert.equal(f.store.list('delivery_package',PROJECT).length,1);
+  assert.equal(f.store.list('delivery_verification',PROJECT).length,0);
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
+  f.expire();
+  assert.equal((await cli('v3-review')).reason,'CLOUD_REHEARSAL_PENDING');
+  assert.equal((await cli('v3-inspect')).delivery.storagePending,undefined);
+  assert.ok(!JSON.stringify(recovered).includes(savedAtDeliveryPost.key));
 });
 
 test('invited development reaches versioned files across restart without another task or submission', async t => {

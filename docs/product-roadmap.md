@@ -1,6 +1,8 @@
 # V2 迭代路线与证据
 
-当前增量：[云端首例执行阶段](live-lifecycle-evaluation.md#核对云端首例执行阶段)从原任务读取已保存用量和批次，通过独立结果核验后绑定开发及原交付创建回执。回环覆盖和后续边界见[执行清单](goal-mode-next.md)。
+当前增量：[云端确切版本交付准备](live-lifecycle-evaluation.md#准备云端首例的确切版本交付)冻结原代码、批次和交付编号。回环核验存储失联后按原摘要恢复八文件，见[执行清单](goal-mode-next.md)。
+
+此前增量：[云端首例执行阶段](live-lifecycle-evaluation.md#核对云端首例执行阶段)从原任务读取已保存用量和批次，通过独立结果核验后绑定开发及原交付创建回执。
 
 此前增量：[云端 v3 首例启动](live-lifecycle-evaluation.md#启动云端首例)保存原请求和预检基线。回环验证未知创建只按原编号找回，见[执行清单](goal-mode-next.md)。
 
