@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useRef, useState } from "react";
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { WorkbenchBoundary } from "./WorkbenchBoundary";
 import {validationFamilyForContextId} from "./validation-family";
@@ -29,8 +29,6 @@ import {
   Layers3,
   ListChecks,
   LoaderCircle,
-  LogIn,
-  LogOut,
   Menu,
   MoreHorizontal,
   PanelRightClose,
@@ -79,6 +77,7 @@ const AgentDevelopmentWorkbench = lazy(async () => ({ default: (await import("./
 const PythonWorkbench = lazy(async () => ({ default: (await import("./PythonWorkbench")).PythonWorkbench }));
 const CloudReadinessPanel = lazy(async () => ({ default: (await import("./CloudReadinessPanel")).CloudReadinessPanel }));
 const AuthDialog = lazy(async () => ({ default: (await import("./AuthDialog")).AuthDialog }));
+const AuthSessionControls = lazy(async () => ({default:(await import("./AuthDialog")).AuthSessionControls}));
 const ChangePasswordPanel = lazy(async () => ({ default: (await import("./AuthDialog")).ChangePasswordPanel }));
 const InvitationPanel = lazy(async () => ({ default: (await import("./AuthDialog")).InvitationPanel }));
 // This marker narrows the UI only; proxy and application authorize requests.
@@ -313,7 +312,7 @@ const time = (s: string) =>
     hour: "2-digit",
     minute: "2-digit",
   });
-async function api<T>(
+async function requestApi<T>(
   path: string,
   body?: unknown,
   requestOptions: { actorId?: string; idempotencyKey?: string } = {},
@@ -380,6 +379,24 @@ const navPermission: Record<string, string> = {
 };
 function App() {
   const authEpoch = useRef(0);
+  const viewEpoch = authEpoch.current;
+  const verifiedScope = useRef<string|undefined>(undefined);
+  const recheckInFlight = useRef<number|undefined>(undefined);
+  const scopeVerificationPending = useRef(false);
+  const handledAccessFailures = useRef(new Set<string>());
+  const accessFailureRef = useRef<(kind:"SESSION"|"SCOPE")=>void>(()=>{});
+  const [identityChecking, setIdentityChecking] = useState(false);
+  const sessionPolicy = useRef<typeof import("./workbench-session-boundary")|undefined>(undefined);
+  const api = useMemo<typeof requestApi>(() => {
+    let scoped: typeof requestApi | undefined;
+    return async <T,>(...args: Parameters<typeof requestApi>) => {
+      const policy = sessionPolicy.current;
+      if (!policy) throw new Error("正在核对当前会话权限。");
+      scoped ??= policy.createScopedWorkbenchApi(requestApi, viewEpoch, () => authEpoch.current,
+        kind => accessFailureRef.current(kind), () => !scopeVerificationPending.current);
+      return scoped<T>(...args);
+    };
+  }, [viewEpoch]);
   const coreRequest = useRef(0), inputRequest = useRef(0);
   const [coreReadState, setCoreReadState] = useState<StartupReadState>("LOADING"),
     [coreError, setCoreError] = useState(""), [confirmedCoreEpoch, setConfirmedCoreEpoch] = useState(-1),
@@ -409,10 +426,13 @@ function App() {
   const [tab, setTab] = useState("结果"),
     [modal, setModal] = useState<"versions" | "search" | null>(null),
     [query, setQuery] = useState("");
-  const [busy, setBusy] = useState(false),
-    [notice, setNotice] = useState(""),
-    [error, setError] = useState(""),
+  const [busy, updateBusy] = useState(false),
+    [notice, updateNotice] = useState(""),
+    [error, updateError] = useState(""),
     [expanded, setExpanded] = useState("");
+  const setBusy: typeof updateBusy = value => { if (viewEpoch === authEpoch.current) updateBusy(value); };
+  const setNotice: typeof updateNotice = value => { if (viewEpoch === authEpoch.current) updateNotice(value); };
+  const setError: typeof updateError = value => { if (viewEpoch === authEpoch.current) updateError(value); };
   const sqlRef = useRef(sql);
   const [modelKey, setModelKey] = useState("");
   const [deliverySourceId, setDeliverySourceId] = useState("");
@@ -443,6 +463,9 @@ function App() {
     setAgentTask(undefined); setAgentDelivery(undefined); setAgentJourney(undefined); setAgentHandoff(undefined);
     setSql(""); sqlRef.current = ""; setOriginal(""); setPythonCode(initialPythonCode);
     setMessage(""); setDeliverySourceId(""); setAgentDraftDirty(false);
+    setModal(null); setQuery(""); setExpanded(""); setModelKey(""); setModelSaveError(""); setModelSaved(false);
+    updateBusy(false); updateError(""); updateNotice("");
+    handledAccessFailures.current.clear();
     // Opaque recovery IDs in the URL remain; the backend requires the original
     // owner. Do not discard the only reference to an unconfirmed submission.
   };
@@ -475,13 +498,67 @@ function App() {
     inputRequest.current++; setCoreReadState("LOADING"); setCoreError("");
     const current = () => startupReadCurrent({ authEpoch: epoch, coreRequest: request }, { authEpoch: authEpoch.current, coreRequest: coreRequest.current });
     try {
-      await loadStartupCore<Status, AuthSession>({ read: api, isCurrent: current, accept: ({ status: nextStatus, session: nextSession }) => {
-        let acceptedEpoch = epoch;
-        if (session.user?.id && session.user.id !== nextSession.user?.id) { acceptedEpoch = ++authEpoch.current; clearPersonalView(); }
-        setStatus(nextStatus); setSession(nextSession); setConfirmedCoreEpoch(acceptedEpoch); setConfirmedCoreRequest(request); setCoreReadState("READY");
-      } });
+      let accepted: {status:Status;session:AuthSession} | undefined;
+      const [policy] = await Promise.all([
+        import("./workbench-session-boundary"),
+        loadStartupCore<Status, AuthSession>({read:requestApi,isCurrent:current,accept:value => { accepted=value; }}),
+      ]);
+      if (!current() || !accepted) return;
+      sessionPolicy.current = policy;
+      const {status:nextStatus,session:nextSession} = accepted;
+      let acceptedEpoch = epoch;
+      const scope = policy.workbenchSessionScope(nextStatus.mode, nextSession);
+      if (verifiedScope.current !== undefined && verifiedScope.current !== scope) {
+        acceptedEpoch = ++authEpoch.current;
+        clearPersonalView();
+      }
+      verifiedScope.current = scope;
+      setStatus(nextStatus); setSession(nextSession); setConfirmedCoreEpoch(acceptedEpoch); setConfirmedCoreRequest(request); setCoreReadState("READY");
+      scopeVerificationPending.current = false;
+      setIdentityChecking(false);
     } catch (cause) { if (current()) { setCoreReadState("ERROR"); setCoreError((cause as Error).message); } }
   };
+  const holdIdentityView = () => {
+    scopeVerificationPending.current = true;
+    setIdentityChecking(true);
+  };
+  const resetSessionBoundary = () => {
+    authEpoch.current++;
+    verifiedScope.current = undefined;
+    setStatus(undefined);
+    clearPersonalView();
+    holdIdentityView();
+  };
+  const recheckIdentity = () => {
+    const epoch = authEpoch.current;
+    if (recheckInFlight.current === epoch) return;
+    recheckInFlight.current = epoch;
+    holdIdentityView();
+    void reload().finally(() => {
+      if (recheckInFlight.current === epoch) recheckInFlight.current = undefined;
+    });
+  };
+  accessFailureRef.current = kind => {
+    if (status?.mode !== "PUBLIC_INVITATION" || !session.authenticated ||
+        handledAccessFailures.current.has(kind)) return;
+    handledAccessFailures.current.add(kind);
+    if (kind === "SESSION") {
+      resetSessionBoundary();
+      setSession({authenticated:false});
+      // A rejected session supersedes any earlier in-flight scope check.
+      void reload();
+    } else recheckIdentity();
+  };
+  useEffect(() => {
+    if (status?.mode !== "PUBLIC_INVITATION") return;
+    const onReturn = () => { if (document.visibilityState === "visible") recheckIdentity(); };
+    window.addEventListener("focus", onReturn);
+    document.addEventListener("visibilitychange", onReturn);
+    return () => {
+      window.removeEventListener("focus", onReturn);
+      document.removeEventListener("visibilitychange", onReturn);
+    };
+  }, [status?.mode, viewEpoch]);
   const reloadModule = async () => {
     if (coreReadState !== "READY" || confirmedCoreEpoch !== authEpoch.current || confirmedCoreRequest !== coreRequest.current) return;
     const epoch = authEpoch.current, core = coreRequest.current, module = inputModuleRef.current, request = ++inputRequest.current;
@@ -675,6 +752,20 @@ function App() {
     setRun(undefined);
     setNotice("已切换输入数据，代码保留；重新运行以验证结果");
   };
+  const logout = async () => {
+    if ((dirty || agentDraftDirty) && !confirm("退出会清空本页未保存的输入，已保存任务和恢复链接不会丢失。确认退出？")) return;
+    try {
+      holdIdentityView();
+      await api("/auth/logout", {});
+      resetSessionBoundary();
+      setSession({ authenticated: false, readOnly: session.readOnly, developmentOnly: session.developmentOnly, developmentTaskOnly: session.developmentTaskOnly, publicationOnly: session.publicationOnly, consumptionOnly: session.consumptionOnly });
+      updateNotice("已退出受邀会话");
+      void reload();
+    } catch (cause) {
+      setError((cause as Error).message);
+      recheckIdentity();
+    }
+  };
   const coreReady = coreReadState === "READY" && confirmedCoreEpoch === authEpoch.current && confirmedCoreRequest === coreRequest.current;
   const coreSnapshotKnown = Boolean(status) && confirmedCoreEpoch === authEpoch.current;
   const moduleInputsRequired = moduleStartupPaths(inputModule, privatePreview).length > 0;
@@ -844,38 +935,10 @@ function App() {
                   ? "受邀会话"
                   : "公开浏览"}
             </span>
-            {status?.mode !== "LOCAL_DEVELOPMENT" &&
-              (session.authenticated ? (
-                <button
-                  className="auth-session-button-v2"
-                  title="退出受邀会话"
-                  onClick={async () => {
-                    if ((dirty || agentDraftDirty) && !confirm("退出会清空本页未保存的输入，已保存任务和恢复链接不会丢失。确认退出？")) return;
-                    try {
-                      await api("/auth/logout", {});
-                      authEpoch.current++;
-                      setStatus(undefined);
-                      clearPersonalView();
-                      setSession({ authenticated: false, readOnly: session.readOnly, developmentOnly: session.developmentOnly, developmentTaskOnly: session.developmentTaskOnly, publicationOnly: session.publicationOnly, consumptionOnly: session.consumptionOnly });
-                      setNotice("已退出受邀会话，切换为公开只读浏览");
-                      void reload().catch((cause) => setError(cause.message));
-                    } catch (cause) {
-                      setError((cause as Error).message);
-                    }
-                  }}
-                >
-                  <LogOut size={14} />
-                  {session.user?.displayName}
-                </button>
-              ) : (
-                <button
-                  className="auth-session-button-v2"
-                  disabled={!coreReady}
-                  onClick={() => setAuthOpen(true)}
-                >
-                  <LogIn size={14} />受邀用户登录
-                </button>
-              ))}
+            {status?.mode === "PUBLIC_INVITATION" && <Suspense fallback={null}>
+              <AuthSessionControls session={session} ready={coreReady && !identityChecking}
+                onLogin={()=>setAuthOpen(true)} onLogout={logout} onRecheck={recheckIdentity}/>
+            </Suspense>}
             <button title="帮助与验收标准" onClick={() => setNav("settings")}>
               <CircleHelp size={18} />
             </button>
@@ -884,14 +947,14 @@ function App() {
             </span>
           </div>
         </header>
-        {coreReadState !== "READY" && <div className={coreReadState === "ERROR" ? "error-banner" : "notice-banner"} role={coreReadState === "ERROR" ? "alert" : "status"}><div><strong>{coreReadState === "ERROR" ? "服务或身份读取未确认" : "正在确认服务与身份"}</strong><p>{coreReadState === "ERROR" ? coreError : "先确认当前会话与服务能力；不会等待其他模块历史列表，也不会自动提交任务。"}{coreSnapshotKnown ? " 已有视图保留，当前暂停写入。" : " 尚不能判断为匿名、空任务或可写状态。"}</p></div>{coreReadState === "ERROR" && <button className="button" onClick={() => void reload()}>重新读取服务与身份</button>}</div>}
+        {coreReadState !== "READY" && <div className={coreReadState === "ERROR" ? "error-banner" : "notice-banner"} role={coreReadState === "ERROR" ? "alert" : "status"}><div><strong>{coreReadState === "ERROR" ? "服务或身份读取未确认" : "正在确认服务与身份"}</strong><p>{coreReadState === "ERROR" ? coreError : "先确认当前会话与服务能力；不会等待其他模块历史列表，也不会自动提交任务。"}{coreSnapshotKnown ? identityChecking ? " 已读内容暂时隐藏，当前暂停写入。" : " 已有视图保留，当前暂停写入。" : " 尚不能判断为匿名、空任务或可写状态。"}</p></div>{coreReadState === "ERROR" && <button className="button" onClick={() => void reload()}>重新读取服务与身份</button>}</div>}
         {coreReady && moduleInputsRequired && (!moduleInputsReady || needsContexts && !contexts.length) && <div className={moduleInputError ? "error-banner" : "notice-banner"} role={moduleInputError ? "alert" : "status"}><div><strong>{moduleInputError ? "当前模块数据读取失败" : moduleInputsReady ? "没有可用业务上下文" : "正在读取当前模块所需数据"}</strong><p>{moduleInputError || (needsContexts ? "表结构与业务口径未确认前，开发按钮保持禁用；已保存任务可继续读取。" : "历史列表尚未确认，不把加载中显示为空结果。")}</p></div>{(moduleInputError || moduleInputsReady) && <button className="button" disabled={!coreReady} onClick={() => void reloadModule()}>重新读取当前模块</button>}</div>}
         {session.readOnly && <div className="notice-banner" role="status">只读验收入口 · 已有账号可登录查看已保存结果；创建、运行、发布及新邀请暂未开放。不会因登录自动运行模型或 Spark。</div>}
-        {session.developmentOnly && !session.readOnly && <div className="notice-banner" role="status">受邀开发试点 · {session.developmentTaskOnly ? "仅续接指定既有任务及其关联代码与交付文件，原次数和费用预留不重置；其他任务只读" : "仅限一条新 Agent 任务、SQL 编辑运行及交付文件准备；历史任务只读"}，发布、全平台规划、邀请和接口凭证管理关闭。窗口截止 {session.developmentExpiresAt ? new Date(session.developmentExpiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间），到期停止新计算并保留结果。</div>}
-        {session.publicationOnly && <div className="notice-banner" role="status"><div><strong>受邀发布试点 · 仅指定交付包的两个样例批次</strong><p>代码、需求和交付文件只读，不重新调用模型或演练；同一冻结业务日期运行两批，不代表两个交易日或生产调度。{canPublish ? "请核对下方指定版本并逐项审阅。" : "当前发布窗口未开放、已结束或此账号无发布权限；已有结果仍可查看。"}</p><small>窗口：{session.publicationStartsAt ? new Date(session.publicationStartsAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"} — {session.publicationExpiresAt ? new Date(session.publicationExpiresAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；邀请码及其他业务模块写入保持关闭。</small>{publicationTaskHref ? <a className="button" href={publicationTaskHref}>查看指定{session.manualPublicationOnly?"独立手工版本":session.publicationSource?.sourceKind==="MANUAL"?"人工版本":"任务"}与审阅范围</a>:<p>{session.manualPublicationOnly?"独立手工发布来源尚未确认，请重新读取身份与交付记录。":"指定发布来源尚未解析；请重新读取身份与包记录，不会回退到原 Agent 的其他版本。"}</p>}</div></div>}
-        {session.consumptionOnly && <div className="notice-banner" role="status"><div><strong>受邀接口消费试点 · 同任务2个DAPI、1个XAPI、1个测试应用</strong><p>仅按冻结计划开发、测试和发布接口，不修改代码、不运行模型或Spark、不重新发布业务批次；版本新增/切换、其他模块、邀请和改密继续关闭。{servicesCanWrite ? "请进入指定任务的接口交付。" : "当前窗口未开放、已结束或此账号无权限；已保存证据仍可查看。"}</p><small>窗口：{session.consumptionStartsAt ? new Date(session.consumptionStartsAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"} — {session.consumptionExpiresAt ? new Date(session.consumptionExpiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；测试凭证到期失效，历史调用记录保留。</small>{consumptionTaskHref&&<a className="button" href={consumptionTaskHref}>打开指定任务的接口交付</a>}</div></div>}
+        {!identityChecking && session.developmentOnly && !session.readOnly && <div className="notice-banner" role="status">受邀开发试点 · {session.developmentTaskOnly ? "仅续接指定既有任务及其关联代码与交付文件，原次数和费用预留不重置；其他任务只读" : "仅限一条新 Agent 任务、SQL 编辑运行及交付文件准备；历史任务只读"}，发布、全平台规划、邀请和接口凭证管理关闭。窗口截止 {session.developmentExpiresAt ? new Date(session.developmentExpiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间），到期停止新计算并保留结果。</div>}
+        {!identityChecking && session.publicationOnly && <div className="notice-banner" role="status"><div><strong>受邀发布试点 · 仅指定交付包的两个样例批次</strong><p>代码、需求和交付文件只读，不重新调用模型或演练；同一冻结业务日期运行两批，不代表两个交易日或生产调度。{canPublish ? "请核对下方指定版本并逐项审阅。" : "当前发布窗口未开放、已结束或此账号无发布权限；已有结果仍可查看。"}</p><small>窗口：{session.publicationStartsAt ? new Date(session.publicationStartsAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"} — {session.publicationExpiresAt ? new Date(session.publicationExpiresAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；邀请码及其他业务模块写入保持关闭。</small>{publicationTaskHref ? <a className="button" href={publicationTaskHref}>查看指定{session.manualPublicationOnly?"独立手工版本":session.publicationSource?.sourceKind==="MANUAL"?"人工版本":"任务"}与审阅范围</a>:<p>{session.manualPublicationOnly?"独立手工发布来源尚未确认，请重新读取身份与交付记录。":"指定发布来源尚未解析；请重新读取身份与包记录，不会回退到原 Agent 的其他版本。"}</p>}</div></div>}
+        {!identityChecking && session.consumptionOnly && <div className="notice-banner" role="status"><div><strong>受邀接口消费试点 · 同任务2个DAPI、1个XAPI、1个测试应用</strong><p>仅按冻结计划开发、测试和发布接口，不修改代码、不运行模型或Spark、不重新发布业务批次；版本新增/切换、其他模块、邀请和改密继续关闭。{servicesCanWrite ? "请进入指定任务的接口交付。" : "当前窗口未开放、已结束或此账号无权限；已保存证据仍可查看。"}</p><small>窗口：{session.consumptionStartsAt ? new Date(session.consumptionStartsAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"} — {session.consumptionExpiresAt ? new Date(session.consumptionExpiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；测试凭证到期失效，历史调用记录保留。</small>{consumptionTaskHref&&<a className="button" href={consumptionTaskHref}>打开指定任务的接口交付</a>}</div></div>}
         {privatePreview && <div className="notice-banner" role="status">私有云端试用 · {privateServiceAgentPreview?'同源服务规划、原任务恢复和草稿确认':agentDevelopmentPreview ? "Agent 数据开发、SQL 编辑、真实运行与任务恢复" : "SQL 编辑、真实 Spark 运行和结果恢复"}{privateServicesPreview&&!privateServiceAgentPreview ? "、发布结果的数据服务消费" : ""}；具体操作仍受当前账号和窗口约束。临时访问通道到期后入口失效，已保存记录保留，未开放模块不代表已验收。</div>}
-        {session.servicePlanningOnly&&<div className="notice-banner" role="status">受控服务规划窗口 · 仅允许指定来源的规划与草稿确认，SQL/Spark开发、发布、邀请和调用凭证保持关闭。{session.servicePlanning?.enabled?'请在原发布结果的接口交付中保存需求并明确开始。':'当前账号、入口或窗口不允许新模型步骤；原记录仍可读取。'}</div>}
+        {!identityChecking && session.servicePlanningOnly&&<div className="notice-banner" role="status">受控服务规划窗口 · 仅允许指定来源的规划与草稿确认，SQL/Spark开发、发布、邀请和调用凭证保持关闭。{session.servicePlanning?.enabled?'请在原发布结果的接口交付中保存需求并明确开始。':'当前账号、入口或窗口不允许新模型步骤；原记录仍可读取。'}</div>}
         {error && (
           <div role="alert" className="error-banner">
             <AlertCircle size={16} />
@@ -901,7 +964,8 @@ function App() {
             </button>
           </div>
         )}
-        {!coreSnapshotKnown ? <WorkbenchLoading label={coreReadState === "ERROR" ? "工作台等待身份与服务重新核验，未加载任何个人任务。" : "正在确认当前身份，随后加载所选工作台…"} /> : <Suspense key={session.user?.id ?? "public-visitor"} fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
+        {identityChecking && coreSnapshotKnown && <WorkbenchLoading label="正在核对当前会话权限，暂时隐藏已读内容…" />}
+        {!coreSnapshotKnown ? <WorkbenchLoading label={coreReadState === "ERROR" ? "工作台等待身份与服务重新核验，未加载任何个人任务。" : "正在确认当前身份，随后加载所选工作台…"} /> : <div hidden={identityChecking} inert={identityChecking} style={{display:identityChecking ? "none" : "contents"}}><Suspense key={viewEpoch} fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>{setServiceLocation(serviceSourceFromLocation(window.location.href,true));setAgentWorkspaceMode("services");}}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}</div>}
@@ -1685,7 +1749,7 @@ function App() {
               <DeliveryWorkbench
                 api={api}
                 runs={runs}
-                sourceRunId={deliverySourceId}
+                sourceRunId={deliverySourceId || undefined}
                 canWrite={Boolean(canWrite)}
                 onBack={() => setNav("development")}
               />
@@ -1821,10 +1885,9 @@ function App() {
                       api={api}
                       businessReadOnly={Boolean(session.readOnly)}
                       onChanged={(next) => {
-                        authEpoch.current++;
-                        setStatus(undefined);
+                        resetSessionBoundary();
                         setSession(next);
-                        setNotice("密码已更新，此前登录会话均已撤销");
+                        updateNotice("密码已更新，此前登录会话均已撤销");
                         void reload().catch((cause) => setError(cause.message));
                       }}
                     />
@@ -1980,7 +2043,7 @@ function App() {
             )}
           </section>
         )}
-        </Suspense>}
+        </Suspense></div>}
         <footer className="statusbar">
           <span>
             <span className={"connection-dot " + (coreReady ? "online" : "")} />
@@ -2014,17 +2077,15 @@ function App() {
             api={api}
             onClose={() => setAuthOpen(false)}
             onAuthenticated={(nextSession) => {
-              authEpoch.current++;
-              setStatus(undefined);
-              if (session.user?.id && session.user.id !== nextSession.user?.id) clearPersonalView();
+              resetSessionBoundary();
               setSession(nextSession);
-              setNotice("受邀项目会话已建立");
+              updateNotice("受邀项目会话已建立");
               void reload().catch((cause) => setError(cause.message));
             }}
           />
         </Suspense>
       )}
-      {modal && (
+      {modal && !identityChecking && (
         <div className="modal-overlay" onClick={() => setModal(null)}>
           <section
             ref={modalRef}

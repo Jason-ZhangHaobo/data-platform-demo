@@ -10,6 +10,7 @@ import {
   KeyRound,
   LoaderCircle,
   LogIn,
+  LogOut,
   Mail,
   ShieldCheck,
   UserPlus,
@@ -71,6 +72,20 @@ type Invitation = {
   status: string;
   expiresAt: string;
 };
+
+export function AuthSessionControls({session, ready, onLogin, onLogout, onRecheck}:{
+  session:AuthSession; ready:boolean; onLogin:()=>void; onLogout:()=>void; onRecheck:()=>void;
+}) {
+  if (!session.authenticated) return <button className="auth-session-button-v2" disabled={!ready} onClick={onLogin}>
+    <LogIn size={14}/>受邀用户登录
+  </button>;
+  return <>
+    <button className="auth-session-button-v2" type="button" disabled={!ready} onClick={onRecheck}>核对权限</button>
+    <button className="auth-session-button-v2" title="退出受邀会话" onClick={onLogout}>
+      <LogOut size={14}/>{session.user?.displayName}
+    </button>
+  </>;
+}
 
 export function AuthDialog({
   api,
