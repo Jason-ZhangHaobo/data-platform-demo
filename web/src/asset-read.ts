@@ -36,7 +36,12 @@ export function createAssetReader<A extends { id: string }, M, S, Q, D extends {
       if (cached.has(id) && isOlder(value, cached.get(id)!)) throw Error("详情早于已确认版本；保留已读快照，请重新核对。");
       cached.set(id, value); onDetail({ state: "READY", id, value }); return true;
     } catch (cause) {
-      if (current()) onDetail({ ...failure(cause), id, value: cached.get(id) });
+      if (current()) {
+        const error = cause as {status?:number;code?:string} | undefined;
+        if (error?.code === "WORKBENCH_SESSION_CHANGED" || [401,403,404].some(status => status === error?.status))
+          cached.delete(id);
+        onDetail({ ...failure(cause), id, value: cached.get(id) });
+      }
       return false;
     }
   }

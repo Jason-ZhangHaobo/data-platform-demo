@@ -70,7 +70,7 @@ test('actual app wires guarded loading, explicit retry and no-context write gate
   assert.match(source,/loadStartupCore<Status, AuthSession>/);assert.match(source,/loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>/);
   assert.match(source,/ready=\{coreReady && contextsReady && agentDevelopmentReadiness\(status\).ready\}/);
   assert.match(source,/\) && startupWritable/);assert.match(source,/重新读取服务与身份/);assert.match(source,/重新读取当前模块/);
-  assert.match(source,/!coreSnapshotKnown \?/);assert.match(source,/<Suspense key=\{session.user\?\.id \?\? "public-visitor"\}/);
+  assert.match(source,/!coreSnapshotKnown \?/);assert.match(source,/<Suspense key=\{viewEpoch\}/);assert.match(source,/workbenchSessionScope\(nextStatus.mode, nextSession\)/);
   assert.match(source,/const currentView = \(\) => active && startupReadCurrent/);
   assert.ok((source.match(/if \(!currentView\(\)\) return/g)||[]).length>=6);
   assert.match(source,/active = false; clearInterval\(interval\)/);
