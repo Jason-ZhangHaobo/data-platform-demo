@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MetadataStore } from "../../src/v2/store.mjs";
@@ -10,7 +11,8 @@ import { getContext, contextIds, referenceSql, validationContractId } from "../.
 import { sha256 } from "../../src/v2/delivery.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { BudgetManager } from "../../src/v2/budget.mjs";
-import { liveLifecyclePlan } from "../../src/v2/live-lifecycle-evaluation.mjs";
+import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan } from "../../src/v2/live-lifecycle-evaluation.mjs";
+import { V2Client } from "../../src/v2/client.mjs";
 import { agentReviewEvidencePath } from "../../src/v2/publication-request.mjs";
 import { validatePrivateApplicationRequest } from "../../src/v2/private-application.mjs";
 import { runV2Cli } from "../../bin/shuduo.mjs";
@@ -109,9 +111,14 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   const password="SyntheticPassword!2026", owner=app.auth.bootstrapAdmin({email:"owner@example.invalid",password,displayName:"测试工程师一"}), other=app.auth.bootstrapAdmin({email:"other@example.invalid",password,displayName:"测试工程师二"});
   for(const user of [owner,other]) store.update("auth_user",user.id,PROJECT,{memberships:[{projectId:PROJECT,role:"ENGINEER"}]});
   // Saved provider/Worker contract fixtures for the exact first v3 request.
-  const first=liveLifecyclePlan(1,{contractId:"securities-live-agent-reviewed-lifecycle-v3"}).selectedCases[0];
-  const task=store.create("agent",PROJECT,{...f.agent,id:undefined,contextId:first.contextId,message:first.request,
-    submittedBy:owner.id,language:"SPARK_SQL",sql:referenceSql,usedTokens:100});
+  const plan=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}),first=plan.selectedCases[0];
+  const agentKey=randomUUID(), deliveryKey=randomUUID(), evaluationRunId=randomUUID();
+  const startedAt=new Date(Date.now()-1000).toISOString();
+  const requestBody={message:first.request,sql:first.seedSql,contextId:first.contextId};
+  const bodyHash=sha256(JSON.stringify(requestBody));
+  const createTask=()=>store.create("agent",PROJECT,{...f.agent,id:undefined,contextId:first.contextId,message:first.request,
+    initialSql:first.seedSql.trim(),submittedBy:owner.id,language:"SPARK_SQL",sql:referenceSql,usedTokens:100});
+  const task=store.get("agent",store.deduplicate(`${PROJECT}:durable-agent:${owner.id}:${agentKey}`,bodyHash,createTask).id,PROJECT);
   const revision=store.create("revision",PROJECT,{sql:referenceSql,hash:sha256(referenceSql),contextId:first.contextId,source:"LIVE_MODEL",author:owner.id});
   const run=store.create("run",PROJECT,{...f.run,id:undefined,revisionId:revision.id,revisionHash:revision.hash,contextId:first.contextId,
     agentTaskId:task.id,mode:"DURABLE_REMOTE_SUBMISSION",rows:getContext(first.contextId).expected});
@@ -128,7 +135,7 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   const report=await call(`/agent/tasks/${agent.id}/workflow`,undefined,a);assert.equal(report.status,200);assert.equal(report.body.report.status,"PASSED");assert.equal(report.body.publication.available,false);
   assert.equal((await call(`/agent/tasks/${agent.id}/prepare-delivery`,{}, {cookie:a.cookie})).status,403);
   assert.equal((await call(`/agent/tasks/${agent.id}/prepare-delivery`,{},b)).status,403);
-  const started=await call(`/agent/tasks/${agent.id}/prepare-delivery`,{},a);assert.equal(started.status,202);
+  const started=await call(`/agent/tasks/${agent.id}/prepare-delivery`,{},{...a,"idempotency-key":deliveryKey});assert.equal(started.status,202);
   const oldRevision=store.create("revision",PROJECT,{sql:"SELECT 1",hash:sha256("SELECT 1"),contextId:"cash-change"});
   store.create("agent_delivery_task",PROJECT,{sourceAgentTaskId:agent.id,sourceRevisionId:oldRevision.id,sourceRunId:run.id,status:"SUCCEEDED",stage:"AWAITING_ENGINEER_REVIEW"});
   const currentWorkflow=await call(`/agent/tasks/${agent.id}/workflow`,undefined,a);
@@ -138,6 +145,46 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   assert.equal((await call("/releases",{},a)).status,503);assert.equal(store.list("release",PROJECT).length,0);
   const target={taskId:agent.id,deliveryId:started.body.id,requestSha256:sha256(first.request)};
   const evidencePath=agentReviewEvidencePath(target);
+  const deliveryReceiptPath=`/agent/tasks/${agent.id}/delivery-requests/${deliveryKey}`;
+  assert.equal((await call(deliveryReceiptPath)).status,401);
+  assert.equal((await call(deliveryReceiptPath,undefined,b)).status,403);
+  assert.equal((await call(deliveryReceiptPath,undefined,a)).body.id,started.body.id);
+  assert.equal((await call(deliveryReceiptPath+"?other=1",undefined,a)).status,422);
+  const receiptEnvelope={operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:"/api/v2"+deliveryReceiptPath};
+  assert.equal(validatePrivateApplicationRequest(receiptEnvelope,{allowDurableAgentRead:true}).path,receiptEnvelope.path);
+  assert.throws(()=>validatePrivateApplicationRequest(receiptEnvelope));
+  assert.throws(()=>validatePrivateApplicationRequest({...receiptEnvelope,method:"POST",body:{}},{allowDurableAgent:true}));
+
+  const directory=mkdtempSync(join(tmpdir(),"shuduo-cloud-v3-review-"));
+  t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const checkpointPath=join(directory,"checkpoint.json");
+  const item={...liveCaseCheckpoint(first,startedAt,plan.caseSetDigest,{contractId:plan.contract.id,evaluationRunId}),
+    taskId:agent.id,status:"PAUSED",phase:"DELIVERY_PREPARATION",
+    actions:{agent:{id:agent.id,key:agentKey,status:"CONFIRMED",bodyHash},
+      delivery:{id:started.body.id,key:deliveryKey,status:"CONFIRMED",bodyHash:sha256("{}")}},
+    code:{taskId:agent.id,revisionId:revision.id,revisionHash:revision.hash,runId:run.id}};
+  const checkpoint={evaluationRunId,startedAt,caseLimit:1,caseSetDigest:plan.caseSetDigest,
+    contract:plan.contract,origin:new URL(base).origin,outcomes:[item]};
+  const writeCheckpoint=()=>writeFileSync(checkpointPath,JSON.stringify(checkpoint),{mode:0o600});
+  writeCheckpoint();
+  const checkpointReads=[];
+  const checkpointClient=new V2Client({baseUrl:base,fetchImpl:(url,request)=>{
+    assert.equal(request.method,"GET");
+    assert.equal(request.body,undefined);
+    const target=new URL(url);
+    checkpointReads.push(target.pathname+target.search);
+    return fetch(url,{...request,headers:{...request.headers,cookie:a.cookie}});
+  }});
+  const readBound=async(expectedExit=0)=>{
+    const original=readFileSync(checkpointPath,"utf8");
+    checkpointReads.length=0;
+    let value;
+    assert.equal(await runV2Cli(["agent","v3-review","--checkpoint",checkpointPath],{},
+      {client:checkpointClient,output:line=>{value=JSON.parse(line);},error:()=>{}}),expectedExit);
+    assert.equal(readFileSync(checkpointPath,"utf8"),original);
+    return value;
+  };
+  const firstTwo=["/api/v2/agent/requests/"+agentKey,"/api/v2"+deliveryReceiptPath];
   const envelope={operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:"/api/v2"+evidencePath};
   assert.equal(validatePrivateApplicationRequest(envelope,{allowDurableAgentRead:true}).path,envelope.path);
   assert.throws(()=>validatePrivateApplicationRequest(envelope));
@@ -151,6 +198,8 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   f.receipts.set(prepared.job.jobId,f.receipt(prepared));
   const pendingReads=workerReads;
   assert.equal((await call(evidencePath,undefined,a)).body.status,"PENDING");
+  assert.equal((await readBound()).reason,"CLOUD_REHEARSAL_PENDING");
+  assert.deepEqual(checkpointReads,firstTwo);
   assert.equal(workerReads,pendingReads,"stored evidence must leave the saved Worker receipt unreconciled");
   assert.equal(store.get("agent_delivery_task",target.deliveryId,PROJECT).version,running.body.version);
   const finished=await call(`/agent/deliveries/${target.deliveryId}/advance`,{expectedVersion:running.body.version},a);
@@ -165,6 +214,42 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   assert.equal(result.body.delivery.verificationId,finished.body.verificationId);
   assert.equal(Object.keys(result.body.delivery.fileHashes).length,8);
   assert.equal(result.body.fullLifecycleE2E,false);
+  const bound=await readBound();
+  assert.equal(bound.status,"REVIEW_EVIDENCE_BOUND",bound.reason);
+  assert.equal(bound.expectedCaseCount,20);
+  assert.equal(bound.fullLifecycleE2E,false);
+  assert.equal(bound.packageDigest,finished.body.packageDigest);
+  assert.deepEqual(checkpointReads,[...firstTwo,"/api/v2"+evidencePath]);
+  assert.ok(!JSON.stringify(bound).includes(agentKey)&&!JSON.stringify(bound).includes(deliveryKey));
+  const alternateKey=randomUUID();
+  store.deduplicate(`${PROJECT}:durable-agent:${owner.id}:${alternateKey}`,bodyHash,createTask);
+  item.actions.agent.key=alternateKey;
+  writeCheckpoint();
+  assert.equal((await readBound()).reason,"ORIGINAL_AGENT_MISMATCH");
+  assert.equal(checkpointReads.length,1);
+  item.actions.agent.key=agentKey;
+  writeCheckpoint();
+  store.update("agent",task.id,PROJECT,{createdAt:new Date(Date.parse(startedAt)-1000).toISOString()});
+  assert.equal((await readBound()).reason,"ORIGINAL_AGENT_MISMATCH");
+  assert.equal(checkpointReads.length,1);
+  store.update("agent",task.id,PROJECT,{createdAt:agent.createdAt});
+  item.actions.delivery.status="UNKNOWN";
+  writeCheckpoint();
+  assert.equal((await readBound()).reason,"ORIGINAL_DELIVERY_RECEIPT_PENDING");
+  assert.deepEqual(checkpointReads,[]);
+  item.actions.delivery.status="CONFIRMED";
+  writeCheckpoint();
+  const missingKey=randomUUID();
+  item.actions.delivery.key=missingKey;
+  writeCheckpoint();
+  assert.equal((await readBound()).reason,"ORIGINAL_DELIVERY_NOT_RECORDED");
+  assert.equal(checkpointReads.length,2);
+  item.actions.delivery.key=deliveryKey;
+  writeCheckpoint();
+  chmodSync(checkpointPath,0o644);
+  await readBound(1);
+  assert.deepEqual(checkpointReads,[]);
+  chmodSync(checkpointPath,0o600);
   const wrong=await call(agentReviewEvidencePath({...target,requestSha256:"a".repeat(64)}),undefined,a);
   assert.equal(wrong.body.reason,"REQUEST_DIGEST_MISMATCH");
   const client={request:async(path,body)=>{assert.equal(body,undefined);assert.equal(path,evidencePath);return (await call(path,undefined,a)).body;}};
@@ -177,6 +262,7 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   const verification=store.get("delivery_verification",finished.body.verificationId,PROJECT);
   store.update("delivery_verification",verification.id,PROJECT,{testSqlValidation:{passed:true,sqlHash:"0".repeat(64)}});
   assert.equal((await call(evidencePath,undefined,a)).body.reason,"FILE_REHEARSAL_UNCONFIRMED");
+  assert.equal((await readBound()).reason,"REVIEW_EVIDENCE_UNCONFIRMED");
   store.update("delivery_verification",verification.id,PROJECT,{testSqlValidation:verification.testSqlValidation});
   store.update("run",run.id,PROJECT,{rows:[null]});
   assert.equal((await call(evidencePath,undefined,a)).body.reason,"DEVELOPMENT_RESULT_UNCONFIRMED");

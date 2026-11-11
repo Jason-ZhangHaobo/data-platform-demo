@@ -5515,14 +5515,18 @@ export function createV2Server(options = {}) {
       }
       const deliveryRequestLookup = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\/delivery-requests\/([A-Za-z0-9_-]{1,100})$/);
       if (method === "GET" && deliveryRequestLookup) {
-        if (!local || options.ingress || !isLoopbackEvaluationRead(req))
+        if (local && (options.ingress || !isLoopbackEvaluationRead(req)))
           throw fail(403, "交付请求回执仅在本机评测入口读取");
         if (url.searchParams.size) throw fail(422, "交付回执须按原任务和请求编号读取");
         const [, taskId, key] = deliveryRequestLookup;
         const agent = get("agent", taskId);
         requireDurableAgentOwner(agent, req);
+        if (!local && agent.submittedBy !== auth.sessionFromHeaders(req.headers)?.user.id)
+          throw fail(403, "交付请求回执仅原任务创建者可读");
+        if (!local && agent.executionMode !== durableSqlAgentMode)
+          throw fail(409, "云端回执须来自原持久 SQL Agent");
         const durableId = store.deduplicatedId(`${PROJECT}:durable-delivery:${taskId}:${key}`);
-        const localId = store.deduplicatedId(`${PROJECT}:agent-delivery:${taskId}:${key}`);
+        const localId = local ? store.deduplicatedId(`${PROJECT}:agent-delivery:${taskId}:${key}`) : undefined;
         if (durableId && localId) throw fail(409, "原交付请求回执有冲突");
         const id = durableId ?? localId;
         if (!id) throw fail(404, "未找到原交付请求的回执");
@@ -5532,6 +5536,10 @@ export function createV2Server(options = {}) {
             (item.sourceKind !== undefined && item.sourceKind !== "AGENT") ||
             (item.submittedBy !== undefined && item.submittedBy !== agent.submittedBy))
           throw fail(409, "原交付回执与任务来源不一致");
+        if (!local) {
+          if (item.submittedBy !== agent.submittedBy) throw fail(409, "原交付回执与任务来源不一致");
+          workflowDeliveryEvidence(item);
+        }
         return json(res, 200, publicDeliveryTask(item));
       }
       const agentDeliveryRecord = path.match(

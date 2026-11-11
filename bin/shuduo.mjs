@@ -9,6 +9,7 @@ import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from 
 import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
@@ -54,6 +55,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent trace --id INTENT_ID
   shuduo agent journey --id AGENT_TASK_ID
   shuduo agent review-evidence --id AGENT_TASK_ID --delivery-id ID --request-sha256 SHA256
+  shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent workflow --id AGENT_TASK_ID
   shuduo agent request --request-id ORIGINAL_REQUEST_ID
   shuduo agent manual-continuation --source-run-id RUN_ID
@@ -512,6 +514,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "review-evidence")
       result = await client.request(agentReviewEvidencePath({taskId:required(parsed.options,"id"),
         deliveryId:required(parsed.options,"delivery_id"),requestSha256:required(parsed.options,"request_sha256")}));
+    else if (resource === "agent" && action === "v3-review") {
+      const flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
+      if(parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
+         flags.some(flag=>!["checkpoint","base_url"].includes(flag)))throw Error("评测证据读取仅接受原检查点和原入口");
+      result=await readCloudV3Review(required(parsed.options,"checkpoint"),client);
+    }
     else if (resource === "agent" && action === "request") {
       const key=required(parsed.options,"request_id");
       if(!/^[A-Za-z0-9_-]{1,100}$/.test(key))throw Error("原请求编号格式不合法");
