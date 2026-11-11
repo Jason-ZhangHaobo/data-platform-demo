@@ -21,6 +21,7 @@ import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
 import { verifyV2MonthlyBillPages } from "./verify-v2-monthly-bill-pages.mjs";
 import { validateConsumerPlan } from "./verify-service-consumer.mjs";
 import { firstCloudCheckpointBinding } from "./first-cloud-v3-window.mjs";
+import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
 
 const revisionPattern = /^[a-f0-9]{40}$/;
 const id = value => typeof value === "string" && uuid.test(value);
@@ -142,21 +143,6 @@ export function prepareCloudV3Start(path, client, reviewedSource) {
   return result(state, item, "PREPARED");
 }
 
-async function withCloudCheckpoint(path, operation) {
-  if (!isAbsolute(path)) stop("须使用原检查点的绝对路径");
-  const lockPath = path + ".lock";
-  let lock;
-  try { lock = openSync(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
-  catch { stop("原检查点已有锁或不可写，请核对原进程"); }
-  try {
-    writeFileSync(lock, JSON.stringify({pid:process.pid}) + "\n");
-    return await operation();
-  } finally {
-    closeSync(lock);
-    unlinkSync(lockPath);
-  }
-}
-
 async function requireOriginalCreator(state, client, session) {
   if (!id(state.submission?.actorId)) stop("原创建者尚未确认");
   session ??= await client.request("/auth/session");
@@ -234,7 +220,7 @@ export async function continueCloudV3Start(path, client, {billPath, windowPath, 
     action.status = "UNKNOWN";
     writeCheckpoint(path, state);
     return result(state, item, "PENDING", "RECONCILE_ORIGINAL_CREATION");
-  });
+  }, {reconcile});
 }
 
 function verifiedDevelopmentCode(definition, view, execution) {
@@ -546,7 +532,7 @@ export async function submitCloudV3Publication(path,client,{reviewPath,billPath,
     writeCheckpoint(path,state);
     return publication ? {...response("PUBLICATION_RECORDED"),publication}
       : response("PENDING","INSPECT_ORIGINAL_PUBLICATION");
-  });
+  }, {reconcile});
 }
 
 async function readVerifiedConsumptionSource(state,item,client,batchId) {
