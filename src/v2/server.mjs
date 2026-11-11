@@ -127,6 +127,8 @@ import { AssetCatalogManager } from "./assets.mjs";
 import { QualityManager } from "./quality.mjs";
 import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
+import { privateBatchReportQuery, privateBatchReportRoute } from "./private-batch-report-request.mjs";
+import { readPrivateBatchReport } from "./private-batch-report.mjs";
 import {resolvePublishedReportSource} from './published-report-source.mjs';
 import {createPublishedReportWorkflow} from './published-report-workflow.mjs';
 import {createReportProvenance,reviewedReportBasis} from './report-provenance.mjs';
@@ -2875,6 +2877,18 @@ export function createV2Server(options = {}) {
       }
       if (path === "/api/v2/reports/overview" && method === "GET")
         return json(res, 200, reports.overview());
+      if (path === "/api/v2" + privateBatchReportRoute && method === "GET") {
+        if (!privateDataServicesEnabled) throw fail(404, "此环境未启用私有发布批次报表");
+        const {source, downloadDigest} = privateBatchReportQuery(url.searchParams);
+        const actorId = auth.sessionFromHeaders(req.headers)?.user.id;
+        const report = readPrivateBatchReport({store, businessStore, project:PROJECT, actorId, source});
+        if (downloadDigest === null) return json(res, 200, report);
+        if (report.digest !== downloadDigest)
+          throw Object.assign(fail(409, "批次报表摘要已变化，请重新核对"), {code:"PRIVATE_BATCH_REPORT_DIGEST_CHANGED"});
+        return json(res, 200, report, {
+          "Content-Disposition": `attachment; filename="shuduo-batch-report-${source.batchId.slice(0, 8)}.json"`,
+        });
+      }
       const reportCreation=path.match(/^\/api\/v2\/reports\/published(?:\/(requests)\/([a-f0-9-]{36})|\/([a-f0-9-]{36})\/(advance))?$/);
       if(reportCreation){
         if(!local)throw fail(403,'确切发布报表创建尚只在本机开发边界开放');

@@ -11,11 +11,13 @@ import { join } from 'node:path';
 import { createV2Server, PROJECT } from '../../src/v2/server.mjs';
 import { MetadataStore } from '../../src/v2/store.mjs';
 import { LocalArtifactStore } from '../../src/v2/artifact-store.mjs';
+import { BusinessQueryStore } from '../../src/v2/data-services.mjs';
 import { createFcIngress } from '../../src/v2/fc-ingress.mjs';
 import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult } from '../../src/v2/remote-spark-queue.mjs';
 import { referenceSql, contextIds, getContext } from '../../src/v2/context.mjs';
 import { V2Client } from '../../src/v2/client.mjs';
 import { runV2Cli } from '../../bin/shuduo.mjs';
+import { handleV2Mcp } from '../../bin/shuduo-mcp.mjs';
 import { runSpark, runtimeConfig } from '../../src/v2/spark.mjs';
 import { syntheticSqlRequirement } from './fixtures/sql-requirement.mjs';
 import { publicationPreflightPath, publicationRequestReceiptPath } from '../../src/v2/publication-request.mjs';
@@ -26,6 +28,8 @@ import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
 import { opsPublicationTarget, readOpsPublication } from '../../web/src/ops-publication.ts';
 import { serviceSourceFromLocation } from '../../web/src/service-source-binding.ts';
 import { serviceBatchFromLocation } from '../../web/src/service-batch-scope.ts';
+import { privateBatchReportPath } from '../../src/v2/private-batch-report-request.mjs';
+import { reportEvidenceDigest } from '../../src/v2/report-provenance-client.mjs';
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
@@ -56,7 +60,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     if(objects.has(key)){assert.equal(objects.get(key),body);return;}
     objects.set(key,body);wakes.push({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',eventTime:new Date(now).toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key}}}]});
   }};
-  const close = async () => { if (!app) return; app.server.closeAllConnections(); await new Promise(r => app.server.close(r)); store.close(); app = undefined; };
+  const close = async () => { if (!app) return; app.server.closeAllConnections(); await new Promise(r => app.server.close(r)); app.businessStore.close(); store.close(); app = undefined; };
   const open = async () => {
     store = new MetadataStore(join(directory, 'metadata.sqlite'));
     const artifactStore=new LocalArtifactStore(join(directory,'artifacts')), put=artifactStore.put.bind(artifactStore);
@@ -68,7 +72,8 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
       }
       return result;
     };
-    app = createV2Server({ store, root: directory, env, runner, agentWakeTransport, now: () => now, artifactStore, ingress: createFcIngress({ publicHttpEnabled: true }), generator: async input => {
+    const businessStore=new BusinessQueryStore(join(directory,'business.sqlite'));
+    app = createV2Server({ store, businessStore, root: directory, env, runner, agentWakeTransport, now: () => now, artifactStore, ingress: createFcIngress({ publicHttpEnabled: true, publicReadOnly: env.V2_FC_PUBLIC_READ_ONLY === 'true' }), generator: async input => {
       modelCalls++; if(modelFault)throw Error('synthetic model interrupted');
       return { sql: referenceSql, model: structuredRequirement?'qwen3-coder-plus':'synthetic-protocol-fixture',
         explanation: 'Local lifecycle fixture, not a real model', usage: { total_tokens: 12 },
@@ -80,7 +85,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   };
   const call = async (path, body, key = 'original-pilot-task') => {
     const r = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json', 'x-shuduo-client': 'workbench', origin: env.V2_PUBLIC_ORIGIN, 'idempotency-key': key, ...(stableOrigin ? {connection:'close'} : {}), ...(cookie ? { cookie, 'x-csrf-token': csrf } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    return { status: r.status, body: await r.json(), cookies: r.headers.getSetCookie() };
+    return { status: r.status, body: await r.json(), cookies: r.headers.getSetCookie(), headers: r.headers };
   };
   const complete = (prepared, measuredResult) => {
     const payload = JSON.parse(prepared.job.body);
@@ -97,6 +102,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   assert.equal(login.status, 200); cookie = login.cookies.map(c => c.split(';')[0]).join('; '); csrf = login.body.csrfToken;
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
   return { call, complete, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
+    get businessStore(){return app.businessStore;}, addAdmin:input=>app.auth.bootstrapAdmin(input),
     loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
     queueCounts:()=>({jobWriteAttempts,cancellationWrites,resultReads}),
     alignWallClock:()=>{now=Date.now();},
@@ -927,7 +933,7 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.deepEqual(monitorReads,['/releases/'+releaseId,'/release/runs/'+firstId,'/release/runs/'+secondId]);
   const {batches:monitorBatches,...monitorStatus}=opsEvidence;
   assert.deepEqual(monitorStatus,{status:'COMPLETED_CLOUD_TEST',health:'HEALTHY'});
-  assert.deepEqual(monitorBatches.map(({serviceHref,...batch})=>batch),[
+  assert.deepEqual(monitorBatches.map(({serviceHref,reportSource,...batch})=>batch),[
     {id:firstId,sequence:1,status:'SUCCEEDED',schedulerTriggered:true},
     {id:secondId,sequence:2,status:'SUCCEEDED',schedulerTriggered:true},
   ]);
@@ -939,18 +945,23 @@ test('a killed publication CLI recovers both original batches through signed sch
     assert.equal(parsed.binding.releaseId,releaseId);
     assert.equal(parsed.binding.revisionId,source.revisionId);
     assert.equal(serviceBatchFromLocation(href,parsed.binding),batch.id);
+    const reportLocation=new URL(monitorHref,f.base);
+    reportLocation.searchParams.set('reportBatchId',batch.id);
+    assert.equal(opsPublicationTarget(reportLocation.href).reportBatchId,batch.id);
+    reportLocation.searchParams.append('reportBatchId',batch.id);
+    assert.equal(opsPublicationTarget(reportLocation.href),null);
   }
   const onePending=await readOpsPublication(async path=>{
     const record=await monitorReader(path);
     return path.endsWith(secondId)?{...record,status:'RUNNING'}:record;
   },monitorTarget);
-  assert.ok(onePending.batches.every(batch=>batch.serviceHref===undefined));
+  assert.ok(onePending.batches.every(batch=>batch.serviceHref===undefined&&batch.reportSource===undefined));
   for (const releaseState of [{status:'RUNNING'}, {health:'DEGRADED'}]) {
     const ineligible=await readOpsPublication(async path=>{
       const record=await monitorReader(path);
       return path.endsWith(releaseId)?{...record,...releaseState}:record;
     },monitorTarget);
-    assert.ok(ineligible.batches.every(batch=>batch.serviceHref===undefined));
+    assert.ok(ineligible.batches.every(batch=>batch.serviceHref===undefined&&batch.reportSource===undefined));
   }
   await assert.rejects(readOpsPublication(monitorReader,{...monitorTarget,firstBatchId:secondId,secondBatchId:firstId}),/来源不一致/);
   await assert.rejects(readOpsPublication(monitorReader,{...monitorTarget,revisionId:randomUUID()}),/来源不一致/);
@@ -963,9 +974,89 @@ test('a killed publication CLI recovers both original batches through signed sch
   const queuesBeforeConsumption=f.queueCounts();
   const origin=new URL(publicationCli.base).origin;
   const firstConsumption=await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:pending.packageDigest,batchId:firstId,sequence:1,origin});
+  const missingReport=await f.call(privateBatchReportPath(monitorBatches[1].reportSource));
+  assert.equal(missingReport.status,404);
+  assert.equal(missingReport.body.code,'PRIVATE_BATCH_REPORT_SNAPSHOT_MISSING');
   const secondConsumption=await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:pending.packageDigest,batchId:secondId,sequence:2,origin});
   assert.equal(firstConsumption.bound.consumption.batchId,firstId);
   assert.equal(secondConsumption.bound.consumption.batchId,secondId);
+  assert.deepEqual(f.queueCounts(),queuesBeforeConsumption);
+
+  // Verify the exact snapshots over authenticated HTTP after closing writes.
+  f.env.V2_FC_PUBLIC_READ_ONLY='true';
+  await f.restart();
+  const other={email:'other-report-owner@example.invalid',password:'SyntheticJourney!2026',displayName:'其他虚构管理员'};
+  f.addAdmin(other);
+  const otherLogin=await f.call('/auth/login',{email:other.email,password:other.password});
+  assert.equal(otherLogin.status,200);
+  const otherCookie=otherLogin.cookies.map(value=>value.split(';')[0]).join('; ');
+  const beforeReportReads=f.store.db.prepare('SELECT count(*) AS n FROM documents').get().n;
+  const beforeReportExecution=f.counts();
+  const [firstReport,secondReport]=await Promise.all(monitorBatches.map(batch=>f.call(privateBatchReportPath(batch.reportSource))));
+  for (const [index, response] of [firstReport,secondReport].entries()) {
+    assert.equal(response.status,200,JSON.stringify({code:response.body.code,message:response.body.message}));
+    const {digest,...summary}=response.body, binding=monitorBatches[index].reportSource;
+    assert.deepEqual(summary.source,binding);
+    assert.equal(summary.provenance.snapshotId,'release-run:'+binding.batchId);
+    assert.equal(summary.provenance.publicationReviewDigest,releaseRecord.reviewDigest);
+    assert.equal(summary.provenance.businessDate,getContext('holdings-t1').businessDate);
+    assert.equal(summary.provenance.rowCount,2);
+    assert.deepEqual(summary.metrics.map(metric=>metric.value),['2750.00','2250.00','500.00']);
+    assert.equal(summary.reportReview,'NOT_INCLUDED');
+    assert.equal(await reportEvidenceDigest(summary),digest);
+    assert.ok(!JSON.stringify(summary).includes('CLIENT-001'));
+    const exportPath=privateBatchReportPath(binding,digest), downloaded=await f.call(exportPath);
+    assert.equal(downloaded.headers.get('cache-control'),'no-store');
+    assert.equal(downloaded.headers.get('content-disposition'),`attachment; filename="shuduo-batch-report-${binding.batchId.slice(0,8)}.json"`);
+    assert.deepEqual(downloaded.body,response.body);
+    assert.equal((await f.call(privateBatchReportPath(binding,'a'.repeat(64)))).status,409);
+    const denied=await fetch(f.base+exportPath,{headers:{cookie:otherCookie}});
+    assert.equal(denied.status,404);
+    assert.ok(!(await denied.text()).includes(summary.provenance.snapshotDigest));
+  }
+  assert.notEqual(firstReport.body.digest,secondReport.body.digest);
+  const boundReport=monitorBatches[0].reportSource, boundPath=privateBatchReportPath(boundReport);
+  const clientForReport={request:async path=>{
+    const response=await f.call(path);
+    assert.equal(response.status,200);
+    return response.body;
+  }};
+  const mcp=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',
+    params:{name:'report_batch_summary',arguments:{source:boundReport}}},{client:clientForReport}));
+  assert.ok(mcp.result,mcp.error?.message);
+  assert.deepEqual(JSON.parse(mcp.result.content[0].text),firstReport.body);
+  const sourceFile=join(f.directory,'batch-report-source.json'), reportFile=join(f.directory,'batch-report.json');
+  writeFileSync(sourceFile,JSON.stringify(boundReport),{mode:0o600});
+  const downloadArgs=['reports','batch-summary','--source-file',sourceFile,'--download-digest',firstReport.body.digest,'--out-file',reportFile];
+  assert.equal(await runV2Cli(downloadArgs,{},{client:clientForReport,output:()=>{},error:value=>{throw Error(value);}}),0);
+  assert.equal(statSync(reportFile).mode&0o777,0o600);
+  assert.deepEqual(JSON.parse(readFileSync(reportFile,'utf8')),firstReport.body);
+  const offline={request:()=>{throw Error('Offline verification must not use HTTP');}};
+  const verifyArgs=['reports','verify-batch-summary','--file',reportFile];
+  assert.equal(await runV2Cli(verifyArgs,{},{client:offline,output:value=>{
+    const result=JSON.parse(value);
+    assert.equal(result.digest,firstReport.body.digest);
+    assert.equal(result.onlineAuthorityVerified,false);
+  },error:value=>{throw Error(value);}}),0);
+  assert.equal(await runV2Cli(downloadArgs,{},{client:clientForReport,output:()=>{},error:()=>{}}),1);
+  assert.deepEqual(JSON.parse(readFileSync(reportFile,'utf8')),firstReport.body);
+  const tamperedReport=structuredClone(firstReport.body);
+  tamperedReport.metrics[0].value='1.00';
+  writeFileSync(reportFile,JSON.stringify(tamperedReport),{mode:0o600});
+  assert.equal(await runV2Cli(verifyArgs,{},{client:offline,output:()=>{},error:()=>{}}),1);
+  assert.equal((await fetch(f.base+boundPath)).status,401);
+  assert.equal((await fetch(f.base+boundPath,{headers:{cookie:otherCookie,'x-project-id':'other-project'}})).status,403);
+  assert.equal((await f.call(privateBatchReportPath({...boundReport,batchId:randomUUID()}))).status,404);
+  assert.equal((await f.call(privateBatchReportPath({...boundReport,revisionId:randomUUID()}))).status,409);
+  assert.equal((await f.call(boundPath+'&batchId='+boundReport.batchId)).status,422);
+  assert.equal((await f.call(boundPath,{})).status,403);
+  const db=f.businessStore.db, snapshotId=firstReport.body.provenance.snapshotId;
+  db.prepare('UPDATE service_snapshots SET content_hash=? WHERE id=?').run('b'.repeat(64),snapshotId);
+  assert.equal((await f.call(boundPath)).status,409);
+  db.prepare('UPDATE service_snapshots SET content_hash=? WHERE id=?').run(firstReport.body.provenance.snapshotDigest,snapshotId);
+  assert.equal((await f.call(boundPath)).body.digest,firstReport.body.digest);
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM documents').get().n,beforeReportReads);
+  assert.deepEqual(f.counts(),beforeReportExecution);
   assert.deepEqual(f.queueCounts(),queuesBeforeConsumption);
   const sources=new URLSearchParams({agent_task_id:task.id,package_digest:pending.packageDigest,release_id:releaseId});
   f.store.update('release',releaseId,PROJECT,{reviewDigest:undefined});

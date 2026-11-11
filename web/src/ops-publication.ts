@@ -4,6 +4,7 @@ type MonitorTarget = {
   revisionId: string;
   firstBatchId: string;
   secondBatchId: string;
+  reportBatchId?: string;
 };
 
 const fields = ["taskId", "releaseId", "revisionId", "firstBatchId", "secondBatchId"] as const;
@@ -17,10 +18,13 @@ export function opsPublicationTarget(href: string): MonitorTarget | undefined | 
   const url = new URL(href);
   const query = url.searchParams;
   if (query.get("module") !== "ops" || !fields.some(field => query.has(field))) return undefined;
-  if (url.pathname !== "/v2/" || query.size !== fields.length + 1 ||
+  const reportBatchId = query.get("reportBatchId");
+  if (url.pathname !== "/v2/" || query.size !== fields.length + 1 + Number(reportBatchId !== null) ||
       !fields.every(field => query.getAll(field).length === 1)) return null;
   const target = Object.fromEntries(fields.map(field => [field, query.get(field) ?? ""]));
-  return valid(target) ? target : null;
+  if (!valid(target)) return null;
+  if (reportBatchId === null) return target;
+  return [target.firstBatchId, target.secondBatchId].includes(reportBatchId) ? {...target, reportBatchId} : null;
 }
 
 type SavedRelease = {
@@ -64,7 +68,11 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
       source_revision:target.revisionId, source_run:release.sourceRunId!, source_package:release.packageDigest!,
       source_scope:"PRIVATE_CLOUD_TEST", source_kind:"AGENT", release_batch:id!,
     }) : undefined;
-    return {id, sequence, status, schedulerTriggered, serviceHref};
+    const reportSource = canConsume ? {
+      kind:"AGENT" as const, taskId:target.taskId, releaseId:target.releaseId, revisionId:target.revisionId,
+      runId:release.sourceRunId!, packageDigest:release.packageDigest!, batchId:id!,
+    } : undefined;
+    return {id, sequence, status, schedulerTriggered, serviceHref, reportSource};
   });
   return {status:release.status, health:release.health, batches};
 }

@@ -814,9 +814,9 @@ function App() {
   const serviceWorkspaceKey=`${session.user?.id??"anonymous"}:${serviceSourceKey(sourceBinding)||sourceBindingError||"legacy"}`;
   const serviceTaskId=session.consumptionOnly?session.consumptionTaskId:sourceBinding?.taskId??new URLSearchParams(window.location.search).get("task")??undefined;
   const openServiceHandoff=(binding:ServiceSourceBinding)=>{
-    if(agentDraftDirty||!validServiceSourceBinding(binding)||!sourceBindingEnvironmentMatches(binding,workbench.cloudServices,workbench.runtimeMode)){setNotice("请先确认当前版本、运行环境及输入，再从确切发布记录继续；未切换来源。");return;}
+    if(agentDraftDirty||!validServiceSourceBinding(binding)||!sourceBindingEnvironmentMatches(binding,workbench.cloudServices,workbench.runtimeMode)){setNotice("请核对版本、环境和草稿后重试。");return;}
     const url=serviceHandoffLocation(window.location.href,binding);history.replaceState(null,"",url);setServiceLocation({status:"VALID",binding});
-    setAgentWorkspaceMode("services");setNavState("services");setNotice("已保留原任务、交付包和发布来源；只选择成功发布批次，不自动创建接口、凭证或调用数据。");
+    setAgentWorkspaceMode("services");setNavState("services");setNotice("已打开同源接口目录，请选择成功批次。");
   };
   const runRevision = revisions.find(
     (revision) => revision.id === run?.revisionId,
