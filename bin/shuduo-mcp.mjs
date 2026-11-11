@@ -19,7 +19,7 @@ import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,muta
 import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication} from '../src/v2/standalone-manual-publication-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
-import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
 const publicationIdSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"};
@@ -77,6 +77,9 @@ const tools = [
   { name: "agent_intent_handoff_create", description: "把一个已完成的Agent意图交接到其推荐链路中的专业模块；只记录交接并预填草稿，不执行下游任务。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, destinationId: { type: "string" } }, required: ["intentId", "destinationId"] } },
   { name: "agent_intent_trace", description: "读取一个Agent意图的路由与专业模块交接轨迹摘要；不返回原始任务描述或业务数据。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name: "agent_journey", description: "只读串联代码Agent、交付包、审批、计时发布和监控证据；人工步骤不冒充Agent自主E2E。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
+  { name: "agent_review_evidence", description: "读取指定云端交付的已保存待审阅证据。", inputSchema: { type: "object", additionalProperties:false,
+    properties: {taskId:{type:"string",format:"uuid"},deliveryId:{type:"string",format:"uuid"},requestSha256:{type:"string",pattern:"^[a-f0-9]{64}$"}},
+    required:["taskId","deliveryId","requestSha256"] } },
   {name:'agent_development_workflow',description:'读取指定任务的核验与文件。人工辅助来源须指定sourceKind=MANUAL及sourceRunId，读取不计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},sourceKind:{enum:['AGENT','MANUAL']},sourceRunId:{type:'string',format:'uuid'}},required:['taskId'],allOf:[{if:{properties:{sourceKind:{const:'MANUAL'}},required:['sourceKind']},then:{required:['sourceRunId']}}]}},
   { name: "agent_request_lookup",description:"按当前创建者与原幂等请求编号找回Agent任务；只读，不重发需求或调用模型。",inputSchema:{type:"object",additionalProperties:false,properties:{requestId:{type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"}},required:["requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},
   { name: "agent_publication_detail", description: "按来源、包摘要及演练读取云端测试发布，不创建计算。MANUAL必须提供sourceRunId、packageDigest、verificationId；已知releaseId时一并绑定，不选择其他历史包。执行者来自会话。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(false)]} },
@@ -332,6 +335,8 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/trace`);
   if (name === "agent_journey")
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/journey`);
+  if (name === "agent_review_evidence")
+    return client.request(agentReviewEvidencePath(args));
   if(['agent_development_workflow','agent_delivery_prepare'].includes(name)&&args.sourceKind!=='MANUAL'&&['sourceRunId','requestId','confirm'].some(k=>Object.hasOwn(args,k)))throw Error('人工辅助参数必须显式选择MANUAL来源');
   if (name === "agent_development_workflow")
     return args.sourceKind==='MANUAL'?readManualDeliveryWorkflow(client,args):client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/workflow`);

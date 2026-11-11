@@ -43,6 +43,18 @@ v3 派生案例只能引用固定 `sourceCaseId` 对应的本轮已完成基础�
 | `--inspect <原编号>` | 核对 v3 已受理任务的模型用量、原代码版本及 Spark 阶段 | 对照同一检查点的摘要，只读取本机已保存元数据 |
 | `--report <原编号>` | 只读取新/旧原检查点，按对应契约整理已有阶段和统计 | 不访问服务，不创建锁，不修改原文件；标记 `recorded:true`、`RECORDED_CHECKPOINT_ONLY` 和 `externalTruthReverified:false` |
 
+### 读取云端待审阅证据
+
+拿到原任务、确切交付编号和冻结需求的 SHA-256 后，可读取：
+
+```sh
+shuduo agent review-evidence --id TASK_ID --delivery-id DELIVERY_ID --request-sha256 SHA256
+```
+
+API 为 `GET /agent/tasks/{id}/review-evidence?delivery_id={id}&request_sha256={digest}`，MCP 对应 `agent_review_evidence`。接口沿用受邀账号和原交付权限。它读取当前已保存的模型、代码、Spark 独立核验、交付包和演练记录，只返回来源、摘要、状态与计数。
+
+未结算的 Worker 回执保留待定状态。结算后可核对确切需求、版本、开发批次、八文件摘要及演练编号。损坏或来源不一致的记录显示待核验。该入口属于私有云已保存证据，文件正式审阅、发布和完整 v3 计分继续走原流程。
+
 ### 读取原任务的执行阶段
 
 在本机运维监控展开已受理案例的模型与 Spark 状态，或执行 `node scripts/run-live-lifecycle-evaluation.mjs --inspect 原评测UUID`。CLI 与页面共用原评测记录，CLI 额外核对本机检查点文件摘要。已冻结的案例始终展示原代码版本和批次，尚未冻结的案例只读最近尝试已关联的版本及批次。

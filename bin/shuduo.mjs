@@ -8,7 +8,7 @@ import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-compa
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
-import {publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
@@ -53,6 +53,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent handoff --id INTENT_ID --destination MODULE_ID
   shuduo agent trace --id INTENT_ID
   shuduo agent journey --id AGENT_TASK_ID
+  shuduo agent review-evidence --id AGENT_TASK_ID --delivery-id ID --request-sha256 SHA256
   shuduo agent workflow --id AGENT_TASK_ID
   shuduo agent request --request-id ORIGINAL_REQUEST_ID
   shuduo agent manual-continuation --source-run-id RUN_ID
@@ -508,6 +509,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         `/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/journey`,
       );
+    else if (resource === "agent" && action === "review-evidence")
+      result = await client.request(agentReviewEvidencePath({taskId:required(parsed.options,"id"),
+        deliveryId:required(parsed.options,"delivery_id"),requestSha256:required(parsed.options,"request_sha256")}));
     else if (resource === "agent" && action === "request") {
       const key=required(parsed.options,"request_id");
       if(!/^[A-Za-z0-9_-]{1,100}$/.test(key))throw Error("原请求编号格式不合法");
