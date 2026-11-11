@@ -128,6 +128,64 @@ type ReleaseRun = {
   clockMode?: string;
   error?: string;
 };
+type FundSourceEvidence = {
+  protocol: string;
+  releaseId: string;
+  packageDigest: string;
+  batchId: string;
+  businessDate: string;
+  rowCount: number;
+  resultDigest: string;
+  eligibleForService: boolean;
+};
+
+function FundSourceReadback({ api, release, batches }: { api: Api; release: Release; batches: ReleaseRun[] }) {
+  const [batchId, selectBatch] = useState("");
+  const [evidence, setEvidence] = useState<FundSourceEvidence>();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const selected = batches.find(batch => batch.id === batchId) ?? batches[0];
+  const verify = async () => {
+    if (!selected) return;
+    setPending(true);
+    setError("");
+    setEvidence(undefined);
+    try {
+      const params = new URLSearchParams({ release_id: release.id, package_digest: release.packageDigest });
+      const result = await api<FundSourceEvidence>(`/data-services/fund-sources/${selected.id}?${params}`);
+      if (result.protocol !== "shuduo-fund-consumption-source/v1" || result.releaseId !== release.id ||
+          result.packageDigest !== release.packageDigest || result.batchId !== selected.id)
+        throw new Error("返回的来源与所选发布批次不一致");
+      setEvidence(result);
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <div className="release-proof-line">
+      <label>
+        数据服务来源批次{" "}
+        <select aria-label="数据服务来源批次" disabled={pending} value={selected?.id ?? ""} onChange={event => {
+          selectBatch(event.currentTarget.value);
+          setEvidence(undefined);
+          setError("");
+        }}>
+          {batches.map(batch => <option key={batch.id} value={batch.id}>第 {batch.sequence} 批 · {batch.id.slice(0, 8)}</option>)}
+        </select>
+      </label>{" "}
+      <button className="button" disabled={!selected || pending} onClick={verify}>{pending ? "正在核对…" : "核对来源"}</button>
+      {error && <p role="alert">{error}</p>}
+      {evidence && evidence.batchId === selected?.id && (
+        <p role="status">
+          {evidence.eligibleForService ? "双批来源通过" : "测试夹具 · 不可用于发布接口"} · {evidence.businessDate} · {evidence.rowCount} 行 ·{" "}
+          <code title={evidence.resultDigest}>{evidence.resultDigest.slice(0, 12)}</code>
+        </p>
+      )}
+    </div>
+  );
+}
 type MonitorAlert = {
   id: string;
   releaseId: string;
@@ -534,6 +592,9 @@ export function DeliveryWorkbench({
     Number(selectedRelease?.successfulRunCount ?? 0) >= 2 &&
     Number(selectedRelease?.openAlertCount ?? 0) === 0,
   );
+  const fundSourceBatches = fund && selectedHealthy ? (monitor?.recentRuns ?? [])
+    .filter(batch => batch.releaseId === selectedRelease?.id && batch.status === "SUCCEEDED")
+    .sort((left, right) => left.sequence - right.sequence) : [];
   const selectedResolvedAlertCount =
     monitor?.alerts.filter(
       (item) => item.releaseId === selectedRelease?.id && item.status === "RESOLVED",
@@ -1046,6 +1107,9 @@ export function DeliveryWorkbench({
                           </p>
                         ))}
                     </div>
+                    {fund && selectedHealthy && fundSourceBatches.length === 2 && (
+                      <FundSourceReadback key={selectedRelease.id} api={api} release={selectedRelease} batches={fundSourceBatches} />
+                    )}
                     {!fund && selectedIsActive && rollbackTarget && (
                       <button
                         className="button rollback"

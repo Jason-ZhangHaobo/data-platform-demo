@@ -63,6 +63,7 @@ import {
   validationContractId,
 } from "./context.mjs";
 import { fundContextId } from "./fund-lookthrough.mjs";
+import { fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
 import { assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease } from "./fund-publication.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import {
@@ -715,6 +716,7 @@ export function createV2Server(options = {}) {
     project: PROJECT,
     packageFor: (id) => store.get("delivery_package", id, PROJECT),
     runPackage: releaseRunner,
+    fundExecutionEvidenceMode: options.releaseRunner || options.runner ? "TEST_HARNESS" : "LOCAL_SPARK_PROCESS",
     assertRunSource: ({run,release,packageItem})=>{
       if (packageItem.manifest?.source?.contextId === fundContextId) {
         const approval = get("release_approval", release.approvalId);
@@ -4490,6 +4492,13 @@ export function createV2Server(options = {}) {
           notice:
             "这里只展示本机发布批次与告警证据，不能作为公网、生产或完整Agent E2E验收。",
         });
+      }
+      const fundSource = path.match(/^\/api\/v2\/data-services\/fund-sources\/([^/]+)$/);
+      if (fundSource && method === "GET") {
+        if (!localClassicSpark) throw fail(403, "基金发布来源仅在本机 Spark 环境可读");
+        const selection = fundConsumptionSelection(fundSource[1], url.searchParams);
+        const { evidence } = resolveFundConsumptionSource({ store, project: PROJECT, selection, timeUnitMs: releaseTimeUnitMs });
+        return json(res, 200, evidence);
       }
       if (path === "/api/v2/data-services/sources" && method === "GET") {
         if (!local) throw fail(403, "本机发布来源只在本机开发环境可读");
