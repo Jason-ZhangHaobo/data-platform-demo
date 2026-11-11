@@ -31,11 +31,14 @@ export async function loadStartupCore<S, A>({ read, isCurrent, accept }: {
     accept({ status, session }); return true;
   } catch (error) { if (!isCurrent()) return false; throw error; }
 }
-export async function loadModuleStartup<C, R, V, A, D>({ read, module, privatePreview = false, isCurrent, accept }: {
-  read: Reader; module: string; privatePreview?: boolean; isCurrent: Guard; accept: (value: ModuleStartupInputs<C, R, V, A, D>) => void;
+export async function loadModuleStartup<C, R, V, A, D>({ read, module, privatePreview = false, prefetchedContexts, isCurrent, accept }: {
+  read: Reader; module: string; privatePreview?: boolean; isCurrent: Guard;
+  prefetchedContexts?: Promise<C[]>;
+  accept: (value: ModuleStartupInputs<C, R, V, A, D>) => void;
 }) {
   try {
-    const paths = moduleStartupPaths(module, privatePreview), values = await Promise.all(paths.map(path => read<unknown[]>(path)));
+    const paths = moduleStartupPaths(module, privatePreview), values = await Promise.all(paths.map(path =>
+      module === "agent-center" && path === "/contexts" && prefetchedContexts ? prefetchedContexts : read<unknown[]>(path)));
     if (!isCurrent()) return false;
     if (values.some(value => !Array.isArray(value))) throw new Error("当前模块的上下文或历史响应格式未确认，请重新读取。");
     const byPath = Object.fromEntries(paths.map((path, index) => [path, values[index]]));

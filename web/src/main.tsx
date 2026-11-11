@@ -398,6 +398,7 @@ function App() {
     };
   }, [viewEpoch]);
   const coreRequest = useRef(0), inputRequest = useRef(0);
+  const openingContexts = useRef<Promise<Context[]> | undefined>(undefined);
   const [coreReadState, setCoreReadState] = useState<StartupReadState>("LOADING"),
     [coreError, setCoreError] = useState(""), [confirmedCoreEpoch, setConfirmedCoreEpoch] = useState(-1),
     [confirmedCoreRequest, setConfirmedCoreRequest] = useState(0);
@@ -562,10 +563,12 @@ function App() {
   const reloadModule = async () => {
     if (coreReadState !== "READY" || confirmedCoreEpoch !== authEpoch.current || confirmedCoreRequest !== coreRequest.current) return;
     const epoch = authEpoch.current, core = coreRequest.current, module = inputModuleRef.current, request = ++inputRequest.current;
+    const prefetchedContexts = core === 1 ? openingContexts.current : undefined;
+    openingContexts.current = undefined;
     const current = () => startupReadCurrent({ authEpoch: epoch, coreRequest: core, moduleRequest: request, module }, { authEpoch: authEpoch.current, coreRequest: coreRequest.current, moduleRequest: inputRequest.current, module: inputModuleRef.current });
     setModuleRead({ module, epoch, core, state: "LOADING", error: "" });
     try {
-      await loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>({ read: api, module, privatePreview, isCurrent: current, accept: ({ contexts: c, runs: r, revisions: v, agents: a, deliveries: d }) => {
+      await loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>({ read: api, module, privatePreview, prefetchedContexts, isCurrent: current, accept: ({ contexts: c, runs: r, revisions: v, agents: a, deliveries: d }) => {
         if (c) setContexts(c);
         if (r) setRuns(r);
         if (module === "development") {
@@ -579,6 +582,13 @@ function App() {
   };
   useEffect(() => {
     reload().catch((e) => setError(e.message));
+    if (!privatePreview && inputModule === "agent-center" && agentWorkspaceMode === "development") {
+      // This route serves public fictional fixtures. Only the first confirmed
+      // startup may consume it; retries and account changes read again.
+      const response = requestApi<Context[]>("/contexts");
+      openingContexts.current = response;
+      void response.catch(() => {}); // The module read handles failure after identity confirmation.
+    }
   }, []);
   useEffect(() => { void reloadModule(); }, [inputModule, coreReadState, confirmedCoreEpoch, confirmedCoreRequest, session.user?.id]);
   useEffect(() => {

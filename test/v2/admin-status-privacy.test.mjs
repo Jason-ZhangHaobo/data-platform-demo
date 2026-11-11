@@ -45,7 +45,7 @@ test('identity changes discard private view state and cannot be overwritten by a
  // guard; checking the old inline return would reject the equivalent wiring.
  assert.match(main,/const current = \(\) => startupReadCurrent\(\{ authEpoch: epoch, coreRequest: request \}, \{ authEpoch: authEpoch.current, coreRequest: coreRequest.current \}\)/);
  assert.match(main,/loadStartupCore<Status, AuthSession>\(\{read:requestApi,isCurrent:current,/);
- assert.match(main,/loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>\(\{ read: api, module, privatePreview, isCurrent: current,/);
+ assert.match(main,/loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>\(\{ read: api, module, privatePreview, prefetchedContexts, isCurrent: current,/);
  assert.match(main,/const currentView = \(\) => active && startupReadCurrent\(identity, \{ authEpoch: authEpoch.current,/);
  assert.match(main,/acceptedEpoch = \+\+authEpoch.current;\s+clearPersonalView\(\)/);
  assert.match(main,/await api\("\/auth\/logout", \{\}\);\s+resetSessionBoundary\(\)/);
