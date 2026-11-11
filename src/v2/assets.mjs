@@ -88,11 +88,12 @@ const formatCents = (value) => {
 };
 
 export class AssetCatalogManager {
-  constructor({ store, landingStore, stateStore, dataServices, project, now = () => Date.now() }) {
+  constructor({ store, landingStore, stateStore, dataServices, project, allowLocalPublishedEvidence = true, now = () => Date.now() }) {
     this.store = store;
     this.landingStore = landingStore;
     this.stateStore = stateStore;
     this.dataServices = dataServices;
+    this.allowLocalPublishedEvidence = allowLocalPublishedEvidence;
     this.project = project;
     this.now = now;
   }
@@ -578,7 +579,7 @@ export class AssetCatalogManager {
         reportable: true,
       });
     }
-    const publishedRuns = this.store.list("release_run", this.project).filter(
+    const publishedRuns = (this.allowLocalPublishedEvidence ? this.store.list("release_run", this.project) : []).filter(
       (item) =>
         item.status === "SUCCEEDED" &&
         item.published === true &&
@@ -613,7 +614,7 @@ export class AssetCatalogManager {
         reportable: true,
       });
     }
-    for (const service of this.dataServices.list()) {
+    for (const service of (this.allowLocalPublishedEvidence ? this.dataServices.list() : [])) {
       const version = service.publishedVersion ?? service.currentVersion,
         fields =
           service.serviceType === "DAPI"
@@ -697,7 +698,7 @@ export class AssetCatalogManager {
             evidenceHash: asset.evidenceHash,
           });
     }
-    for (const service of this.dataServices.list()) {
+    for (const service of (this.allowLocalPublishedEvidence ? this.dataServices.list() : [])) {
       const version = service.publishedVersion ?? service.currentVersion,
         to = `service:${service.id}`;
       if (service.serviceType === "DAPI") {
