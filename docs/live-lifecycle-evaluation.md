@@ -143,6 +143,8 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 
 `shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile` 读取原发布、两个原批次及已存预留。只读查询不触发 Worker。签名调度结算时将批次结果和监控事件一起落盘。两个原批次均通过 Spark、测试 SQL 和独立断言，且各有同包、完成时间之后的成功事件并且没有开放告警，才返回 `monitoringStatus: VERIFIED`。
 
+在原 Agent 任务的「审阅发布与运行监控」中，确切发布通过核对后可打开「在运维监控查看原批次」。目标页用现有发布和批次权限读取原记录，并核对代码版本、交付包摘要、审阅摘要及两个批次的顺序。页面显示保存状态及调度是否触发，可重新读取或返回原任务。
+
 本机测试可用 `SHUDUO_TEST_LOCAL_SPARK_RELEASE=true` 执行同一包的两个真实 Spark 批次。签名入口、队列和数据仍在隔离本机环境，真实云调度、付费执行与授权消费需分别验收。
 
 ### 核对两个原发布批次的授权消费

@@ -25,7 +25,7 @@ import type {ServiceSourceBinding} from "./service-source-binding";
 import type {PublishedReportSource} from "./published-report-read";
 const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
-type Release = { id: string; status: string; health: string; sourceKind?:string; sourceRunId?:string; agentIndependentE2E?:boolean; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number;rolledBackToReleaseId?:string;rolledBackToTaskId?:string;restoredAt?:string;outputContract?:{id:string;metadataHash:string} };
+type Release = { id: string; status: string; health: string; sourceKind?:string; sourceRunId?:string; reviewDigest?:string; agentIndependentE2E?:boolean; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number;rolledBackToReleaseId?:string;rolledBackToTaskId?:string;restoredAt?:string;outputContract?:{id:string;metadataHash:string} };
 type Publication = { rollbackTargets?:import("./agent-delivery-evidence-read").RollbackTarget[];historyRunCount?:number;release?: Release; runs: {id:string; status:string; sequence:number; schedulerTriggered?:boolean; durationMs?:number; triggeredAt?:string; finishedAt?:string}[]; alerts:{id:string;status:string;message:string;recoveryRunId?:string}[]; events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[] };
 const complete = (status?: string) => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(status ?? "");
 const batchLabels: Record<string,string> = { SCHEDULED: "等待调度", RUNNING: "正在运行", SUCCEEDED: "独立核验通过", FAILED: "运行或核验失败", CANCELLED: "已停止" };
@@ -110,6 +110,13 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const publicationReady=Boolean(publicationKey)&&publicationReadKey===publicationKey&&publicationRead==="READY";
   const journey = agentJourney({ taskId, contextId, revisionId, runId, dirty, evidenceReadable: evidenceRead === "READY", publicationReadable: publicationReady, report, delivery, bundle: workflow?.package, verification: workflow?.verification, release, batches, alerts: publication?.alerts, events: publication?.events, consumption:consumptionRead==="READY"?consumption:undefined });
   const current = journey.current;
+  const firstBatch = batches.find(batch => batch.sequence === 1);
+  const secondBatch = batches.find(batch => batch.sequence === 2);
+  const monitorHref = cloud && !manual && publicationReady && journey.publicationCurrent &&
+    release?.reviewDigest && revisionId && batches.length === 2 && firstBatch && secondBatch
+    ? "/v2/?" + new URLSearchParams({module:"ops",taskId,releaseId:release.id,revisionId,
+      firstBatchId:firstBatch.id,secondBatchId:secondBatch.id}) + "#ops-exact-publication"
+    : undefined;
   const verified = journey.steps.find(step => step.id === "validation")?.state === "DONE";
   const reportView = verificationPresentation(current, verified, evidenceRead, report?.status);
   const releaseLabel = (value: Release) => publicationEvidenceText(value, journey.publicationCurrent, journey.steps.some(step => step.id === "monitoring" && step.state === "DONE"));
@@ -260,6 +267,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         {release && <>
           <strong>发布版本 {release.id.slice(0,8)} · {publicationReady ? releaseLabel(release) : "上次读取的记录 · 当前状态未确认"}</strong>
           <p className="agent-publication-id">发布编号：{release.id}</p>
+          {monitorHref && <a className="button" href={monitorHref}>在运维监控查看原批次</a>}
           <ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batchLabels[batch.status] ?? batch.status} · {batch.schedulerTriggered ? "调度器已触发" : batch.status === "CANCELLED" ? "未再触发" : "等待计划时间"}<small>批次编号：{batch.id}</small></li>)}</ul>
           {publication?.alerts.map(alert => <p key={alert.id} role={alert.status === "OPEN" ? "alert" : undefined}>{alert.status === "OPEN" ? "未解除告警" : "已恢复"}：{alert.message}{alert.recoveryRunId ? ` · 恢复批次 ${alert.recoveryRunId.slice(0,8)}` : ""}</p>)}
           {cloud&&cancellationWritable&&!publicationReady&&<p role="status">监控读取尚未确认；原发布来源和编号已核对，仍可停止这个已确认版本的后续批次。</p>}
