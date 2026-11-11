@@ -1,6 +1,13 @@
 import {useEffect, useRef, useState} from "react";
 import {RefreshCw} from "lucide-react";
 
+type Execution = {
+  state: "RECORDED" | "UNCONFIRMED";
+  evidence?: "TEST_HARNESS" | "STORED_METADATA";
+  model?: {state:string; usage:string; attempts:number; unconfirmedAttempts:number;
+    ledgerTokens:number|null; reportedTokens:number|null; reservedTokens:number|null; unattributedTokens:number|null};
+  spark?: {state:string; revisionId?:string; runId?:string; pinned?:boolean; resultStatus?:string};
+};
 type EvaluationCase = {
   caseId: string;
   context: string;
@@ -10,6 +17,7 @@ type EvaluationCase = {
   phase: string;
   taskUrl?: string;
   servicesUrl?: string;
+  execution?: Execution;
 };
 type Overview = {
   runs: {id:string; startedAt:string; caseLimit:number}[];
@@ -29,7 +37,7 @@ const statuses: Record<string, string> = {
   NOT_RUN:"未执行", OUTSIDE_RUN:"未纳入本轮", RUNNING:"已进入执行",
   AWAITING_SOURCE:"等待来源案例", BLOCKED_SOURCE:"来源未通过",
   AWAITING_ENGINEER_REVIEW:"待审阅发布", AWAITING_MONITORING:"待监控",
-  AWAITING_CONSUMPTION:"待消费", SUBMISSION_UNKNOWN:"提交待确认",
+  AWAITING_CONSUMPTION:"待消费", SUBMISSION_UNKNOWN:"提交待确认", DELIVERY_SUBMISSION_UNKNOWN:"交付回执待确认",
   PAUSED:"已暂停", FAILED:"未通过", UNCONFIRMED:"证据未确认",
   RECORDED_PASS:"记录核验通过", TEST_HARNESS:"测试记录",
 };
@@ -65,6 +73,34 @@ function caseNavigation(row: EvaluationCase) {
     {row.taskUrl && !task && <span>需打开原评测入口</span>}
     {!row.taskUrl && !services && <span>—</span>}
   </div>;
+}
+
+const modelState: Record<string,string> = {
+  READY:"待调用", IN_FLIGHT:"调用中", OUTCOME_UNKNOWN:"结果待确认", NOT_SENT:"发送前停止", OUTPUT_RECORDED:"输出已记录",
+};
+const sparkState: Record<string,string> = {
+  NOT_LINKED:"尚无关联批次", REVISION_RECORDED:"代码版本已记录", QUEUED:"已排队", RUNNING:"运行中",
+  WAITING_FOR_RESULT:"等待结果", SUBMISSION_UNCONFIRMED:"提交待确认", RESULT_UNCONFIRMED:"结果待确认", RESULT_RECORDED:"结果已记录",
+};
+const runStatus: Record<string,string> = {
+  SUCCEEDED:"成功", VALIDATION_FAILED:"校验失败", FAILED:"失败", CANCELLED:"已取消", INTERRUPTED:"已中断",
+};
+const tokenAmount = (amount: number|null) => amount === null ? "未确认" : amount.toLocaleString("zh-CN");
+function executionDetails(execution: Execution) {
+  const {model,spark} = execution;
+  if (execution.state !== "RECORDED" || !model || !spark) return <small>原任务执行记录待核对</small>;
+  return <details className="ops-live-execution-v2">
+    <summary>模型 {modelState[model.state] ?? "状态待确认"} · Spark {sparkState[spark.state] ?? "关联待确认"}</summary>
+    <div>
+      <small>{execution.evidence === "TEST_HARNESS" ? "测试记录" : "已保存记录"}</small>
+      <small>模型 {model.attempts} 次 · {model.unconfirmedAttempts} 次用量待确认</small>
+      <small>已报告 {tokenAmount(model.reportedTokens)} Token · 预留 {tokenAmount(model.reservedTokens)} Token</small>
+      <small>账本 {tokenAmount(model.ledgerTokens)} Token · 未分配 {tokenAmount(model.unattributedTokens)} Token
+        {model.usage === "UNCONFIRMED" && " · 账本待核对"}</small>
+      {spark.revisionId && <small title={spark.revisionId}>{spark.pinned ? "冻结版本" : "代码版本"} {spark.revisionId.slice(0,8)}</small>}
+      {spark.runId && <small title={spark.runId}>运行 {spark.runId.slice(0,8)}{spark.resultStatus && " · " + runStatus[spark.resultStatus]}</small>}
+    </div>
+  </details>;
 }
 
 export function LiveLifecycleEvaluationPanel({api}:{api:Api}) {
@@ -124,7 +160,8 @@ export function LiveLifecycleEvaluationPanel({api}:{api:Api}) {
               <th scope="row"><span>{row.context}</span><small>{row.kind === "FRESH" ? "新任务" : "口径变更"}
                 {row.sourceCaseId && " · 来源：" + (overview.cases.find(item => item.caseId === row.sourceCaseId)?.context ?? row.sourceCaseId)}</small></th>
               <td><strong>{statuses[row.status] ?? "证据未确认"}</strong>
-                {!["NOT_RUN","OUTSIDE_RUN"].includes(row.status) && <small>{phases[row.phase] ?? "阶段未确认"}</small>}</td>
+                {!["NOT_RUN","OUTSIDE_RUN"].includes(row.status) && <small>{phases[row.phase] ?? "阶段未确认"}</small>}
+                {row.execution && executionDetails(row.execution)}</td>
               <td>{caseNavigation(row)}</td>
             </tr>)}</tbody>
           </table>

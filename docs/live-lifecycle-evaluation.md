@@ -40,7 +40,14 @@ v3 派生案例只能引用固定 `sourceCaseId` 对应的本轮已完成基础�
 | `--resume <原编号>` | 按原文件的 v2/v3 契约继续 | 仍检查当前授权及模型/Spark就绪；旧 v1 仅返回历史范围说明，不迁移、不重跑 |
 | `--refresh <原编号>` | 只核对已处于 `AWAITING_CONSUMPTION` 或 `PAUSED + phase=CONSUMPTION` 的原案例 | 不要求付费 `AUTHORIZED` 标志或模型/Spark仍可用；adapter 拒绝任何 POST，只允许已保存同源 `GET /data-services/task-evidence?agent_task_id=…&package_digest=…&release_id=…` |
 | `--reconcile <原编号>` | 对账 v3 中提交待确认的 Agent 或交付创建回执 | 仅读原请求账本，核对后更新本机原检查点。原任务仍由后续步骤推进 |
+| `--inspect <原编号>` | 核对 v3 已受理任务的模型用量、原代码版本及 Spark 阶段 | 对照同一检查点的摘要，只读取本机已保存元数据 |
 | `--report <原编号>` | 只读取新/旧原检查点，按对应契约整理已有阶段和统计 | 不访问服务，不创建锁，不修改原文件；标记 `recorded:true`、`RECORDED_CHECKPOINT_ONLY` 和 `externalTruthReverified:false` |
+
+### 读取原任务的执行阶段
+
+在本机运维监控展开已受理案例的模型与 Spark 状态，或执行 `node scripts/run-live-lifecycle-evaluation.mjs --inspect 原评测UUID`。CLI 与页面共用原评测记录，CLI 额外核对本机检查点文件摘要。已冻结的案例始终展示原代码版本和批次，尚未冻结的案例只读最近尝试已关联的版本及批次。
+
+用量分别展示供应方已报告的 Token、估算预留、账本总额与暂未分配的差额。模型身份未知或请求结果待确认时保留对应的预留。读取只投影已保存元数据，未触发模型、Spark 或 Worker 对账，结果状态独立于端到端验收得分。
 
 ### 创建回执丢失时
 

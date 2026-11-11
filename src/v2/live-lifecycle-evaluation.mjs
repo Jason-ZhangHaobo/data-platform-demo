@@ -272,6 +272,29 @@ function v3CreationReceiptMatches(definition, state, name, value) {
     typeof value.initialSql === "string" && hash(value.initialSql) === binding.revisionHash);
 }
 
+function v3AgentInputMatches(definition, state, receipt) {
+  if (!v3CreationReceiptMatches(definition, state, "agent", receipt)) return false;
+  const derived = definition.kind === "DERIVED";
+  const seed = derived ? receipt.initialSql : definition.seedSql;
+  const body = {message:definition.request, sql:seed, contextId:definition.contextId,
+    ...(derived ? {language:"SPARK_SQL", derivation:derivationRequest(state.derivationSource)} : {})};
+  return state.actions.agent?.bodyHash === hash(body) && (derived || receipt.initialSql === seed.trim()) &&
+    Number.isFinite(Date.parse(receipt.createdAt)) && Date.parse(receipt.createdAt) >= Date.parse(state.evaluationStartedAt) &&
+    (state.taskId === undefined || state.taskId === receipt.id);
+}
+
+export function verifiedLiveTaskSnapshotBinding(definition, state, task, sourceCheckpoint) {
+  const action = state.actions?.agent;
+  if (state.contractId !== currentLiveLifecycleContract.id || action?.status !== "CONFIRMED" ||
+      !uuid(action.id) || action.id !== state.taskId || task?.id !== action.id ||
+      state.requestDigest !== liveCaseRequestDigest(definition, currentLiveLifecycleContract.id)) return false;
+  if (definition.kind === "DERIVED") {
+    if (!verifiedParent(definition, state, sourceCheckpoint) ||
+        !isDeepStrictEqual(state.derivationSource, parentBinding(definition, sourceCheckpoint))) return false;
+  } else if (state.derivationSource !== undefined) return false;
+  return v3AgentInputMatches(definition, state, task);
+}
+
 export function pendingLiveCreation(state) {
   if (state.contractId !== currentLiveLifecycleContract.id || !["RUNNING", "PAUSED"].includes(state.status)) return undefined;
   const pending = ["agent", "delivery"].filter(name => ["UNKNOWN", "SUBMITTING"].includes(state.actions?.[name]?.status));
@@ -319,12 +342,7 @@ export async function reconcileLiveCreation(definition, state, adapter, {sourceC
   if (received.nonNative || received.unconfirmed || !v3CreationReceiptMatches(definition, state, name, receipt) ||
       (action.id !== undefined && action.id !== receipt.id)) return unresolved;
   if (name === "agent") {
-    const seed = derived ? receipt.initialSql : definition.seedSql;
-    const body = {message:definition.request, sql:seed, contextId:definition.contextId,
-      ...(derived ? {language:"SPARK_SQL", derivation:derivationRequest(state.derivationSource)} : {})};
-    if (action.bodyHash !== hash(body) || (!derived && receipt.initialSql !== seed.trim()) ||
-        !Number.isFinite(Date.parse(receipt.createdAt)) || Date.parse(receipt.createdAt) < Date.parse(state.evaluationStartedAt) ||
-        (state.taskId !== undefined && state.taskId !== receipt.id)) return unresolved;
+    if (!v3AgentInputMatches(definition, state, receipt)) return unresolved;
   } else if (receipt.sourceSqlHash !== state.code.revisionHash ||
       !isDeepStrictEqual(receipt.sourceRequirementBinding,
         state.code.requirementEvidence ? sqlRequirementBinding(state.code.requirementEvidence) : undefined)) return unresolved;
