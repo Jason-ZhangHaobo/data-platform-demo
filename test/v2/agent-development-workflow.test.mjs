@@ -10,6 +10,11 @@ import { getContext, contextIds, referenceSql, validationContractId } from "../.
 import { sha256 } from "../../src/v2/delivery.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { BudgetManager } from "../../src/v2/budget.mjs";
+import { liveLifecyclePlan } from "../../src/v2/live-lifecycle-evaluation.mjs";
+import { agentReviewEvidencePath } from "../../src/v2/publication-request.mjs";
+import { validatePrivateApplicationRequest } from "../../src/v2/private-application.mjs";
+import { runV2Cli } from "../../bin/shuduo.mjs";
+import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
 
 function fixture(t) {
   const store = new MetadataStore(":memory:"), project = "synthetic-workflow", root = mkdtempSync(join(tmpdir(), "shuduo-workflow-"));
@@ -94,15 +99,24 @@ test("cancelled rehearsal rejects late success and a modified artifact cannot be
 });
 
 test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigured cloud publication", async t => {
-  const f=fixture(t), store=f.store, runner=async()=>{}; runner.durable=f.options.runner;
+  const f=fixture(t), store=f.store, runner=async()=>{};
+  let workerReads=0;
+  runner.durable={...f.options.runner,submit:async prepared=>{f.submits.push(prepared.job.jobId);},
+    read:async prepared=>{workerReads++;return f.options.runner.read(prepared);}};
   const app=createV2Server({store,runner,artifactStore:f.options.artifactStore,env:{V2_LOCAL_DEVELOPMENT:"false",V2_HOST:"127.0.0.1",V2_ALLOW_INSECURE_PUBLIC_COOKIES:"true",V2_DURABLE_SQL_AGENT_ENABLED:"true"}});
   await new Promise(resolve=>app.server.listen(0,"127.0.0.1",resolve));
   t.after(async()=>{app.server.closeAllConnections();await new Promise(resolve=>app.server.close(resolve));});
   const password="SyntheticPassword!2026", owner=app.auth.bootstrapAdmin({email:"owner@example.invalid",password,displayName:"测试工程师一"}), other=app.auth.bootstrapAdmin({email:"other@example.invalid",password,displayName:"测试工程师二"});
   for(const user of [owner,other]) store.update("auth_user",user.id,PROJECT,{memberships:[{projectId:PROJECT,role:"ENGINEER"}]});
-  const revision=store.create("revision",PROJECT,{sql:referenceSql,hash:sha256(referenceSql),contextId:"cash-change"});
-  const run=store.create("run",PROJECT,{...f.run,revisionId:revision.id,revisionHash:revision.hash});
-  const agent=store.create("agent",PROJECT,{...f.agent,submittedBy:owner.id,attempts:[{...f.agent.attempts[0],revisionId:revision.id,runId:run.id}]});
+  // Saved provider/Worker contract fixtures for the exact first v3 request.
+  const first=liveLifecyclePlan(1,{contractId:"securities-live-agent-reviewed-lifecycle-v3"}).selectedCases[0];
+  const task=store.create("agent",PROJECT,{...f.agent,id:undefined,contextId:first.contextId,message:first.request,
+    submittedBy:owner.id,language:"SPARK_SQL",sql:referenceSql,usedTokens:100});
+  const revision=store.create("revision",PROJECT,{sql:referenceSql,hash:sha256(referenceSql),contextId:first.contextId,source:"LIVE_MODEL",author:owner.id});
+  const run=store.create("run",PROJECT,{...f.run,id:undefined,revisionId:revision.id,revisionHash:revision.hash,contextId:first.contextId,
+    agentTaskId:task.id,mode:"DURABLE_REMOTE_SUBMISSION",rows:getContext(first.contextId).expected});
+  store.update("run",run.id,PROJECT,{remoteSubmission:{prepared:{job:{jobId:run.id}},submitted:true}});
+  const agent=store.update("agent",task.id,PROJECT,{attempts:[{...f.agent.attempts[0],revisionId:revision.id,runId:run.id}]});
   const base=`http://127.0.0.1:${app.server.address().port}/api/v2`;
   const call=async(path,body,headers={})=>{const r=await fetch(base+path,{method:body===undefined?"GET":"POST",headers:{"content-type":"application/json","x-shuduo-client":"workbench","idempotency-key":"http-case",...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});return{status:r.status,body:await r.json(),cookies:r.headers.getSetCookie()};};
   const login=async email=>{const r=await call("/auth/login",{email,password});return{cookie:r.cookies.map(c=>c.split(";")[0]).join("; "),"x-csrf-token":r.body.csrfToken};};
@@ -122,4 +136,56 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   assert.equal((await call(`/agent/deliveries/${started.body.id}`,undefined,b)).status,403);
   assert.equal((await call(`/agent/deliveries/${started.body.id}/advance`,{expectedVersion:started.body.version},b)).status,403);
   assert.equal((await call("/releases",{},a)).status,503);assert.equal(store.list("release",PROJECT).length,0);
+  const target={taskId:agent.id,deliveryId:started.body.id,requestSha256:sha256(first.request)};
+  const evidencePath=agentReviewEvidencePath(target);
+  const envelope={operation:"PRIVATE_APPLICATION_HTTP_V1",method:"GET",path:"/api/v2"+evidencePath};
+  assert.equal(validatePrivateApplicationRequest(envelope,{allowDurableAgentRead:true}).path,envelope.path);
+  assert.throws(()=>validatePrivateApplicationRequest(envelope));
+  assert.throws(()=>validatePrivateApplicationRequest({...envelope,method:"POST",body:{}},{allowDurableAgent:true}));
+  assert.equal((await call(evidencePath)).status,401);
+  assert.equal((await call(evidencePath,undefined,b)).status,403);
+  assert.equal((await call(evidencePath+"&delivery_id="+target.deliveryId,undefined,a)).status,422);
+  const running=await call(`/agent/deliveries/${target.deliveryId}/advance`,{expectedVersion:started.body.version},a);
+  assert.equal(running.body.stage,"FILE_REHEARSAL_RUNNING");
+  const prepared=store.get("agent_delivery_task",target.deliveryId,PROJECT).remoteSubmission.prepared;
+  f.receipts.set(prepared.job.jobId,f.receipt(prepared));
+  const pendingReads=workerReads;
+  assert.equal((await call(evidencePath,undefined,a)).body.status,"PENDING");
+  assert.equal(workerReads,pendingReads,"stored evidence must leave the saved Worker receipt unreconciled");
+  assert.equal(store.get("agent_delivery_task",target.deliveryId,PROJECT).version,running.body.version);
+  const finished=await call(`/agent/deliveries/${target.deliveryId}/advance`,{expectedVersion:running.body.version},a);
+  assert.equal(finished.body.stage,"AWAITING_ENGINEER_REVIEW");
+  const before=workerReads, submits=[...f.submits];
+  const result=await call(evidencePath,undefined,a);
+  assert.equal(result.status,200);
+  assert.equal(result.body.status,"REVIEW_EVIDENCE_READY",result.body.reason);
+  assert.equal(result.body.development.runId,run.id);
+  assert.equal(result.body.development.regressionCount,5);
+  assert.equal(result.body.delivery.packageDigest,finished.body.packageDigest);
+  assert.equal(result.body.delivery.verificationId,finished.body.verificationId);
+  assert.equal(Object.keys(result.body.delivery.fileHashes).length,8);
+  assert.equal(result.body.fullLifecycleE2E,false);
+  const wrong=await call(agentReviewEvidencePath({...target,requestSha256:"a".repeat(64)}),undefined,a);
+  assert.equal(wrong.body.reason,"REQUEST_DIGEST_MISMATCH");
+  const client={request:async(path,body)=>{assert.equal(body,undefined);assert.equal(path,evidencePath);return (await call(path,undefined,a)).body;}};
+  let cli;
+  assert.equal(await runV2Cli(["agent","review-evidence","--id",target.taskId,"--delivery-id",target.deliveryId,"--request-sha256",target.requestSha256],
+    {},{client,output:value=>{cli=JSON.parse(value);},error:()=>{}}),0);
+  assert.deepEqual(cli,result.body);
+  const mcp=JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"agent_review_evidence",arguments:target}},{client}));
+  assert.deepEqual(mcp.result.structuredContent,result.body);
+  const verification=store.get("delivery_verification",finished.body.verificationId,PROJECT);
+  store.update("delivery_verification",verification.id,PROJECT,{testSqlValidation:{passed:true,sqlHash:"0".repeat(64)}});
+  assert.equal((await call(evidencePath,undefined,a)).body.reason,"FILE_REHEARSAL_UNCONFIRMED");
+  store.update("delivery_verification",verification.id,PROJECT,{testSqlValidation:verification.testSqlValidation});
+  store.update("run",run.id,PROJECT,{rows:[null]});
+  assert.equal((await call(evidencePath,undefined,a)).body.reason,"DEVELOPMENT_RESULT_UNCONFIRMED");
+  store.update("run",run.id,PROJECT,{rows:run.rows});
+  store.update("agent",task.id,PROJECT,{testDouble:true});
+  assert.equal((await call(evidencePath,undefined,a)).body.reason,"EXECUTION_PROVENANCE_UNCONFIRMED");
+  assert.equal(workerReads,before);
+  assert.deepEqual(f.submits,submits);
+  assert.equal(store.get("agent_delivery_task",target.deliveryId,PROJECT).version,finished.body.version);
+  assert.equal(store.list("release_approval",PROJECT).length,0);
+  for (const secret of [first.request,referenceSql,"CLIENT-001","remoteSubmission"]) assert.ok(!JSON.stringify(result.body).includes(secret));
 });

@@ -34,7 +34,7 @@ import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
-import { publicationSelectorFromUrl } from "./publication-request.mjs";
+import { parseAgentReviewEvidencePath, publicationSelectorFromUrl } from "./publication-request.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
 import { localTaskConsumption } from "./local-task-consumption.mjs";
 import { localServiceSources } from "./local-service-sources.mjs";
@@ -139,6 +139,7 @@ import { DataContractManager } from "./contracts.mjs";
 import {createServiceContractGates} from './service-contract-gates.mjs';
 import{compareSqlRuns}from'./run-comparison.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
+import { storedAgentReviewEvidence } from "./agent-review-evidence.mjs";
 import {
   LocalArtifactStore,
   deliveryArtifactValue,
@@ -5417,6 +5418,19 @@ export function createV2Server(options = {}) {
             durationMs: verification.durationMs, error: verification.error, finishedAt: verification.finishedAt} : undefined,
           publication: {available: Boolean(privatePublicationConfig && cloudPublication), scope: "PRIVATE_CLOUD_TEST", sourceKind: "MANUAL", sourceRunId: source.run.id,
             agentIndependentE2E: false, reason: privatePublicationConfig && cloudPublication ? "审阅此人工版本的确切包与成功演练后，可创建两个受控云端测试批次；人工来源保留，原开发、参考和费用记录不变。" : bundle?"当前人工辅助交付记录已保留；云端调度驱动尚未配置，发布需在确切包的有效权限范围内进行。":"先生成并演练当前版本的交付文件；云端调度驱动尚未配置，不代表已经发布。"}});
+      }
+      if (method === "GET" && /^\/api\/v2\/agent\/tasks\/[a-f0-9-]+\/review-evidence$/.test(path)) {
+        const selection = parseAgentReviewEvidencePath(req.url);
+        if (!selection) throw fail(422, "需提供原任务、交付编号与需求摘要");
+        const task = get("agent", selection.taskId);
+        requireDurableAgentOwner(task, req);
+        const delivery = store.get("agent_delivery_task", selection.deliveryId, PROJECT);
+        if (!delivery || delivery.sourceAgentTaskId !== task.id || delivery.submittedBy !== task.submittedBy)
+          throw fail(404, "未找到此任务的原交付");
+        const {bundle, verification} = workflowDeliveryEvidence(delivery);
+        const revision = store.get("revision", delivery.sourceRevisionId ?? "", PROJECT);
+        const run = store.get("run", delivery.sourceRunId ?? "", PROJECT);
+        return json(res, 200, storedAgentReviewEvidence({task, delivery, bundle, verification, revision, run, requestSha256:selection.requestSha256}));
       }
       const developmentWorkflow = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/workflow$/);
       if (developmentWorkflow && method === "GET") {

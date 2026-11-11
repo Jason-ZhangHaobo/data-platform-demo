@@ -8,7 +8,7 @@ import { resolve, sep, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { privateServiceRoute } from "../src/v2/private-service-routes.mjs";
-import { privatePublicationReadRoute,standaloneManualPublicationRoute } from "../src/v2/publication-request.mjs";
+import { parseAgentReviewEvidencePath, privatePublicationReadRoute,standaloneManualPublicationRoute } from "../src/v2/publication-request.mjs";
 
 const error = (status, message) => Object.assign(new Error(message), { status });
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
@@ -18,7 +18,9 @@ const agentReads = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}(?:/(?:workflow
 const agentWrites = new RegExp(`^/api/v2/agent/(?:tasks(?:/${uuid}/(?:advance|cancel|prepare-delivery|publication(?:/cancel)?|background(?:/(?:cancel|resume))?))?|deliveries/${uuid}/(?:advance|cancel))$`);
 const manualWorkflow = (method,path) => (method==="GET" ? new RegExp(`^/api/v2/runs/${uuid}/workflow$`) : method==="POST" ? new RegExp(`^/api/v2/runs/${uuid}/prepare-delivery$`) : /$a/).test(path);
 const routeAllowed = (method, path, allowAgent, allowDataServices,allowServiceAgent=false,allowManualPublication=false) => (method === "GET" ? reads : method === "POST" ? writes : /$a/).test(path) ||
-  (allowAgent && ((method === "GET" ? agentReads : method === "POST" ? agentWrites : /$a/).test(path) || privatePublicationReadRoute(method,path) || manualWorkflow(method,path))) || (allowDataServices && privateServiceRoute(method,path,{agentRead:true,agentPlanning:allowServiceAgent})) || (allowManualPublication&&standaloneManualPublicationRoute(method,path));
+  (allowAgent && ((method === "GET" ? agentReads : method === "POST" ? agentWrites : /$a/).test(path) || privatePublicationReadRoute(method,path) ||
+    method === "GET" && Boolean(parseAgentReviewEvidencePath(path)) || manualWorkflow(method,path))) ||
+  (allowDataServices && privateServiceRoute(method,path,{agentRead:true,agentPlanning:allowServiceAgent})) || (allowManualPublication&&standaloneManualPublicationRoute(method,path));
 const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".ttf": "font/ttf" };
 
 // Native same-origin attachments avoid unsupported blob downloads in embedded

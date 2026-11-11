@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createPasswordHash } from "./auth.mjs";
 import { referenceSql } from "./context.mjs";
 import { privateServiceRoute } from "./private-service-routes.mjs";
-import { privatePublicationReadRoute,standaloneManualPublicationRoute } from "./publication-request.mjs";
+import { parseAgentReviewEvidencePath, privatePublicationReadRoute,standaloneManualPublicationRoute } from "./publication-request.mjs";
 
 const fail = (status, code) => Object.assign(new Error(code), { status, code });
 const paths = [
@@ -16,7 +16,8 @@ export const privateApplicationTimeoutMs = path => /^\/api\/v2\/(?:agent\/tasks|
 export function validatePrivateApplicationRequest(input, { allowDurableAgent = false, allowDurableAgentRead = false, allowDataServices = false,allowServiceAgent=false,allowStandaloneManualPublication=false } = {}) {
   const servicePath=allowDataServices && privateServiceRoute(input?.method,input?.path,{agentRead:true,agentPlanning:allowServiceAgent});
   const saveRecoveryRead=input?.method === "GET" && /^\/api\/v2\/revisions\/requests\/[A-Za-z0-9_-]{1,100}$/.test(input?.path ?? "");
-  const publicationRead=(allowDurableAgent || allowDurableAgentRead) && privatePublicationReadRoute(input?.method,input?.path);
+  const publicationRead=(allowDurableAgent || allowDurableAgentRead) && (privatePublicationReadRoute(input?.method,input?.path) ||
+    input?.method === "GET" && Boolean(parseAgentReviewEvidencePath(input.path)));
   const manualWorkflow=(allowDurableAgent || (allowDurableAgentRead && input?.method==="GET")) && (input?.method==="GET"
     ? /^\/api\/v2\/runs\/[a-f0-9-]{36}\/workflow$/ : input?.method==="POST" ? /^\/api\/v2\/runs\/[a-f0-9-]{36}\/prepare-delivery$/ : /$a/).test(input?.path??"");
   const agentPath = (allowDurableAgent || (allowDurableAgentRead && input?.method === "GET")) && (input?.method === "GET"

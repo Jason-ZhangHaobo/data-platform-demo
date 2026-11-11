@@ -41,6 +41,26 @@ export function privatePublicationReadRoute(method, path) {
   try { publicationSelectorFromUrl(path); return true; } catch { return false; }
 }
 
+const reviewUuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
+const reviewHash = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+
+export function parseAgentReviewEvidencePath(path) {
+  if (typeof path !== "string" || path.length > 320 || /[\\#\s\u0000-\u001f\u007f]/.test(path)) return;
+  const route = path.split("?", 1)[0].match(new RegExp(`^/api/v2/agent/tasks/(${reviewUuid})/review-evidence$`));
+  if (!route) return;
+  const params = new URL(path, "http://review.invalid").searchParams;
+  const deliveryId = params.get("delivery_id"), requestSha256 = params.get("request_sha256");
+  if ([...params].length !== 2 || !new RegExp(`^${reviewUuid}$`).test(deliveryId ?? "") || !reviewHash(requestSha256)) return;
+  return {taskId:route[1],deliveryId,requestSha256};
+}
+
+export function agentReviewEvidencePath({taskId,deliveryId,requestSha256}) {
+  const query = new URLSearchParams({delivery_id:deliveryId,request_sha256:requestSha256});
+  const path = `/agent/tasks/${taskId}/review-evidence?${query}`;
+  if (!parseAgentReviewEvidencePath("/api/v2" + path)) throw new Error("需提供原任务、交付编号与需求摘要");
+  return path;
+}
+
 // Separate explicit transport capability; legacy Agent permissions do not
 // imply access to standalone manual publication endpoints.
 export function standaloneManualPublicationRoute(method,path){
