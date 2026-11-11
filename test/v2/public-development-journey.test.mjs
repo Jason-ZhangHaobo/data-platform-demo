@@ -109,6 +109,14 @@ async function subprocessCli(t,f,checkpoint,intercept){
       const path=req.url.slice('/api/v2'.length);
       const request={method:req.method,path,key:req.headers['idempotency-key']};
       requests.push(request);
+      if(req.method==='GET'&&path.startsWith('/open/')){
+        // Independent consumers share the checkpoint origin and send only
+        // their application credential, without the fixture owner's session.
+        const headers=req.headers.authorization?{authorization:req.headers.authorization}:{};
+        const response=await fetch(f.base+path,{headers,redirect:'error'});
+        res.writeHead(response.status,{'content-type':'application/json'}).end(await response.text());
+        return;
+      }
       const chunks=[];
       for await(const chunk of req)chunks.push(chunk);
       const body=chunks.length?JSON.parse(Buffer.concat(chunks)):undefined;
@@ -138,7 +146,7 @@ async function subprocessCli(t,f,checkpoint,intercept){
     });
     return {child,done};
   }
-  return {run,requests};
+  return {base,run,requests};
 }
 
 function writeSubprocessBill(path){
@@ -340,7 +348,7 @@ async function measuredSpark(t,f,prepared,label){
   return result;
 }
 
-async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchId,sequence}){
+async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchId,sequence,origin}){
   const [holdingsSpec,cashSpec]=[
     {name:'虚构持仓原批次 '+sequence,slug:'verified-holdings-'+sequence,
       fields:['client_id','holding_market_value','security_count'],timeoutMs:3000,rateLimitPerMinute:12},
@@ -380,7 +388,6 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   const reportFile=join(f.directory,'consumer-report-'+sequence+'.json');
   writeFileSync(tokenFile,app.body.token,{mode:0o600});
   const describe=service=>({id:service.id,slug:service.slug,versionId:service.currentVersion.id,configHash:service.currentVersion.configHash});
-  const origin=new URL(f.base).origin;
   // Literal expectations were declared independently of Spark and HTTP output.
   const expectedRows=[{client_id:'CLIENT-001',holding_market_value:'1500.00',available_cash:'300.00',total_assets:'1800.00',security_count:2},
     {client_id:'CLIENT-002',holding_market_value:'750.00',available_cash:'200.00',total_assets:'950.00',security_count:1}];
@@ -572,7 +579,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
-test('exact cloud delivery and rehearsal lead to signed scheduling and authorized consumption of both original batches',async t=>{
+test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.
   const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true,queueTimeoutMs:30000});
   const checkpoint=join(f.directory,'exact-delivery.json'),billPath=join(f.directory,'current-bill.json'),requests=[];
@@ -582,8 +589,13 @@ test('exact cloud delivery and rehearsal lead to signed scheduling and authorize
   writeBill(64);
   let savedAtDeliveryPost;
   let savedAtRehearsalPost;
-  let savedAtPublicationPost, lostRelease;
-  const client=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
+  const publicationAccepted=Promise.withResolvers();
+  const publicationCli=await subprocessCli(t,f,checkpoint,(request,response)=>{
+    if(request.method!=='POST'||!request.path.endsWith('/publication'))return;
+    publicationAccepted.resolve({request,response});
+    return false;
+  });
+  const client=new V2Client({baseUrl:publicationCli.base,fetchImpl:async(url,options)=>{
     const target=new URL(url), path=target.pathname.slice('/api/v2'.length)+target.search;
     const body=options.body?JSON.parse(options.body):undefined, key=options.headers['Idempotency-Key'];
     requests.push({path,method:options.method});
@@ -594,14 +606,6 @@ test('exact cloud delivery and rehearsal lead to signed scheduling and authorize
     if(path.startsWith('/agent/deliveries/')&&path.endsWith('/advance')&&body?.rehearsal&&!body.rehearsal.verificationId)
       savedAtRehearsalPost=JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.rehearsal;
     const response=await f.call(path,body,key);
-    if(path.endsWith('/publication')&&body?.reviewDigest){
-      savedAtPublicationPost=JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.publication;
-      assert.equal(savedAtPublicationPost.key,key);
-      assert.equal(savedAtPublicationPost.status,'SUBMITTING');
-      assert.equal(response.status,202);
-      lostRelease=response.body;
-      throw Error('SYNTHETIC_PUBLICATION_ACK_LOST');
-    }
     return new Response(JSON.stringify(response.body),{status:response.status});
   }});
   const cli=async(action,flags=[],exit=0)=>{
@@ -787,26 +791,46 @@ test('exact cloud delivery and rehearsal lead to signed scheduling and authorize
   assert.ok(requests.every(request=>request.method==='GET'));
   assert.equal(f.store.list('release',PROJECT).length,0);
   writeFileSync(reviewPath,JSON.stringify(reviewed));
-  const unknownRelease=await cli('v3-publish',publishFlags);
-  assert.equal(unknownRelease.reason,'INSPECT_ORIGINAL_PUBLICATION');
-  assert.equal(requests.filter(request=>request.method==='POST').length,1);
+  const publishing=publicationCli.run('v3-publish',publishFlags);
+  const {request,response}=await Promise.race([publicationAccepted.promise,publishing.done.then(e=>{
+    throw Error('CLI exited before the application accepted the publication: '+e.stderr);
+  })]);
+  assert.equal(response.status,202);
+  assert.equal(request.path,taskPath+'/publication');
+  const acceptedRelease=response.body, submittedBytes=readFileSync(checkpoint,'utf8');
+  const savedAtPublicationPost=JSON.parse(submittedBytes).outcomes[0].actions.publication;
+  assert.equal(savedAtPublicationPost.status,'SUBMITTING');
+  assert.equal(savedAtPublicationPost.key,request.key);
   assert.equal(savedAtPublicationPost.reviewDigest,reviewed.reviewDigest);
   assert.equal(savedAtPublicationPost.bill.unsettledReserveCny,64);
-  assert.equal(lostRelease.release.status,'WAITING_SCHEDULER');
-  assert.equal(lostRelease.runs.length,2);
-  assert.ok(lostRelease.runs.every(run=>run.status==='SCHEDULED'&&!run.schedulerTriggered));
-  assert.equal((await cli('v3-publish',publishFlags)).reason,'INSPECT_ORIGINAL_PUBLICATION');
-  assert.deepEqual(requests,[]);
+  assert.equal(acceptedRelease.release.status,'WAITING_SCHEDULER');
+  assert.equal(acceptedRelease.runs.length,2);
+  assert.ok(acceptedRelease.runs.every(run=>run.status==='SCHEDULED'&&!run.schedulerTriggered));
+  const publishOffset=publicationCli.requests.length;
+  assert.equal((await publicationCli.run('v3-publish',['--reconcile']).done).code,1);
+  assert.equal(publicationCli.requests.length,publishOffset);
+  publishing.child.kill('SIGKILL');
+  assert.equal((await publishing.done).signal,'SIGKILL');
+  assert.equal(readFileSync(checkpoint,'utf8'),submittedBytes);
+  assert.ok(existsSync(checkpoint+'.lock'));
+  assert.equal((await publicationCli.run('v3-publish',publishFlags).done).code,1);
+  assert.equal(publicationCli.requests.length,publishOffset);
   await f.restart();
   assert.deepEqual(f.queueCounts(),preflightQueue);
-  const found=await cli('v3-publish',['--reconcile']);
+  const reconciled=await publicationCli.run('v3-publish',['--reconcile']).done;
+  assert.equal(reconciled.code,0,reconciled.stderr);
+  const found=JSON.parse(reconciled.stdout);
   const receiptPath=publicationRequestReceiptPath(task.id,savedAtPublicationPost.key);
   assert.equal(found.status,'PUBLICATION_RECORDED');
-  assert.equal(found.publication.releaseId,lostRelease.release.id);
-  assert.deepEqual(found.publication.batchIds,lostRelease.runs.map(run=>run.id));
-  assert.deepEqual(requests,[{path:'/auth/session',method:'GET'},{path:receiptPath,method:'GET'}]);
+  assert.equal(found.publication.releaseId,acceptedRelease.release.id);
+  assert.deepEqual(found.publication.batchIds,acceptedRelease.runs.map(run=>run.id));
+  assert.deepEqual(publicationCli.requests.slice(publishOffset).map(({method,path})=>[method,path]),
+    [['GET','/auth/session'],['GET',receiptPath]]);
+  assert.equal(existsSync(checkpoint+'.lock'),false);
+  assert.equal((await cli('v3-publish',publishFlags)).reason,'INSPECT_ORIGINAL_PUBLICATION');
+  assert.deepEqual(requests,[]);
   assert.equal((await f.call(publicationRequestReceiptPath(task.id,randomUUID()))).status,404);
-  assert.equal((await f.call(receiptPath+'?releaseId='+lostRelease.release.id)).status,422);
+  assert.equal((await f.call(receiptPath+'?releaseId='+acceptedRelease.release.id)).status,422);
   const privateReceipt={operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2'+receiptPath};
   assert.equal(validatePrivateApplicationRequest(privateReceipt,{allowDurableAgentRead:true}).path,privateReceipt.path);
   assert.equal(f.store.list('delivery_review',PROJECT).length,1);
@@ -868,7 +892,14 @@ test('exact cloud delivery and rehearsal lead to signed scheduling and authorize
   f.complete(second,useRealSpark?await measuredSpark(t,f,second,'release batch 2'):undefined);
   f.later(600001);
   assert.equal((await f.privateCall(timer('d'))).status,200);
-  const complete=(await cli('v3-publish',['--reconcile'])).publication;
+  const monitorOffset=publicationCli.requests.length, queuesBeforeMonitoring=f.queueCounts();
+  const monitoring=await publicationCli.run('v3-publish',['--reconcile']).done;
+  assert.equal(monitoring.code,0,monitoring.stderr);
+  const {publication:complete}=JSON.parse(monitoring.stdout);
+  assert.deepEqual(publicationCli.requests.slice(monitorOffset).map(({method,path})=>[method,path]),
+    [['GET','/auth/session'],['GET',receiptPath]]);
+  assert.equal(publicationCli.requests.filter(r=>r.method==='POST').length,1);
+  assert.deepEqual(f.queueCounts(),queuesBeforeMonitoring);
   assert.equal(complete.status,'COMPLETED_CLOUD_TEST');
   assert.equal(complete.monitoringStatus,'VERIFIED');
   assert.deepEqual(complete.monitoring.map(entry=>entry.batchId),[firstId,secondId]);
@@ -878,8 +909,9 @@ test('exact cloud delivery and rehearsal lead to signed scheduling and authorize
   assert.equal(f.store.list('monitor_event',PROJECT).length,2);
   assert.equal(f.store.list('monitor_alert',PROJECT).length,0);
   const queuesBeforeConsumption=f.queueCounts();
-  const firstConsumption=await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:pending.packageDigest,batchId:firstId,sequence:1});
-  const secondConsumption=await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:pending.packageDigest,batchId:secondId,sequence:2});
+  const origin=new URL(publicationCli.base).origin;
+  const firstConsumption=await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:pending.packageDigest,batchId:firstId,sequence:1,origin});
+  const secondConsumption=await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:pending.packageDigest,batchId:secondId,sequence:2,origin});
   assert.equal(firstConsumption.bound.consumption.batchId,firstId);
   assert.equal(secondConsumption.bound.consumption.batchId,secondId);
   assert.deepEqual(f.queueCounts(),queuesBeforeConsumption);
