@@ -1703,7 +1703,7 @@ function App() {
             ) : nav === "reports" ? (
               <ReportsWorkbench api={api} canWrite={Boolean(canWrite)} handoffMessage={agentHandoff?.destination === "reports" ? agentHandoff.message : undefined} />
             ) : nav === "ops" ? (
-              <OperationsWorkbench api={api} canWrite={Boolean(canWrite)} />
+              <OperationsWorkbench api={api} canWrite={Boolean(canWrite)} showLiveEvaluation={status?.mode === "LOCAL_DEVELOPMENT" && !privatePreview} />
             ) : nav === "settings" ? (
               <>
                 <div className="settings-grid">

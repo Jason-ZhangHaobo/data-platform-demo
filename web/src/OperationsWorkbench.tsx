@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {LifecycleEvaluationPanel,type LifecycleReport} from "./LifecycleEvaluationPanel";
+import {LiveLifecycleEvaluationPanel} from "./LiveLifecycleEvaluationPanel";
 import {
   Activity,
   AlertTriangle,
@@ -131,7 +132,7 @@ const domainOrder = [
   "安全审计",
 ];
 
-export function OperationsWorkbench({ api, canWrite }: { api: Api; canWrite: boolean }) {
+export function OperationsWorkbench({api, canWrite, showLiveEvaluation}: {api:Api; canWrite:boolean; showLiveEvaluation:boolean}) {
   const [overview, setOverview] = useState<Overview>(),
     [selectedIncidentId, setSelectedIncidentId] = useState(""),
     [detail, setDetail] = useState<IncidentDetail>(),
@@ -285,6 +286,7 @@ export function OperationsWorkbench({ api, canWrite }: { api: Api; canWrite: boo
 
       <section className="ops-toolbar-v2"><div><Radar size={17} /><span>已覆盖 {domainOrder.length} 个运行域 · {overview?.counts.activities ?? 0} 条活动 · {openDomains} 个域有历史失败</span></div><button className="button" onClick={refresh} disabled={!canWrite || !!busy}>{busy === "refresh" ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}扫描最新证据</button></section>
 
+      {showLiveEvaluation && <LiveLifecycleEvaluationPanel api={api}/>}
       <LifecycleEvaluationPanel report={lifecycle} error={lifecycleError} loading={lifecycleLoading}/>
 
       <section className="ops-domains-v2">{domainOrder.map((domain) => { const count = overview?.domainCounts[domain] ?? { failures: 0, running: 0, succeeded: 0 }; return <article key={domain} className={count.failures ? "has-failure" : ""}><div><Activity size={15} /><strong>{domain}</strong></div><span>{count.succeeded}成功</span><span>{count.running}进行</span><span>{count.failures}失败</span></article>; })}</section>

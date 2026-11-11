@@ -1,5 +1,6 @@
 # V2 迭代路线与证据
 
+当前增量：[v3 逐例验收](live-lifecycle-evaluation.md)接入本机运维监控，显示固定20例的原运行、阶段和同源入口。当前安排见[执行清单](goal-mode-next.md)。
 当前增量：[报表需求与审阅溯源](report-provenance.md)已在本机验证固定运行读取、HTTP附件下载与离线核对。后续验收见[执行清单](goal-mode-next.md)。
 
 当前增量：[同源报表Agent恢复](source-report-recovery.md)完成调用边界、保守预留、原排队续接、未知结果拒绝重试、方案审阅及历史／草稿恢复；隔离本机副本验收不计真实模型E2E。下一项为澄清答复后的同来源新方案，唯一动作见[执行清单](goal-mode-next.md)。

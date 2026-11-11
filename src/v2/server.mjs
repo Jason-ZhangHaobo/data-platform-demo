@@ -148,6 +148,7 @@ import {
   budgetAgentCreationPaths,
 } from "./budget.mjs";
 import { verifyLifecycleReport } from "./lifecycle-evaluation.mjs";
+import {liveLifecycleOverview} from "./live-lifecycle-overview.mjs";
 import {
   evaluateCloudPreflight,
   publicCloudReadiness,
@@ -3174,6 +3175,22 @@ export function createV2Server(options = {}) {
             controls.get(task.id)?.abort();
           }
           return json(res, 200, get("ops_agent_diagnosis", task.id));
+        }
+      }
+      if (method === "GET" && path === "/api/v2/evaluations/live-lifecycle/overview") {
+        const loopbackPeers = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
+        const loopbackHost = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]{1,5})?$/i;
+        if (!local || options.ingress || !loopbackHost.test(req.headers.host ?? "") ||
+            !loopbackPeers.includes(req.socket.remoteAddress))
+          throw fail(403, "逐例验收记录仅在本机工作台读取");
+        const query = url.searchParams;
+        if ([...query.keys()].some(key => key !== "run_id") || query.getAll("run_id").length > 1)
+          throw fail(422, "只接受一个原评测编号");
+        try {
+          return json(res, 200, liveLifecycleOverview(root, query.get("run_id") ?? undefined));
+        } catch (error) {
+          if ([404, 409, 422].includes(error.status)) throw error;
+          throw fail(409, "本机评测记录无法核对，请保留原检查点");
         }
       }
       if (
