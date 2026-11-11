@@ -16,3 +16,20 @@
 | CLI 离线 | `shuduo reports verify-provenance --file FILE` |
 
 HTTP读取限制在本机原所属人。文件包含原需求与澄清文本，业务数据用快照摘要和结果摘要表示。离线命令验证文件内容与内部绑定，返回 `onlineAuthorityVerified:false`。服务端可按存档校验来源。两种校验都保持本机验收的范围。
+
+## 私有发布批次汇总
+
+在运维监控的确切发布中选择「查看第 1 批报表」或「查看第 2 批报表」。任务所属人可查看该批次的客户资产、持仓及现金合计。系统重新核对原发布审阅、代码版本、监控事件与既有服务快照。快照缺失或改变时停止显示汇总，重新读取仍沿原批次。
+
+「下载批次溯源 JSON」绑定当前已确认的汇总摘要。文件记录业务日期、确切来源、汇总值与发布审阅摘要。它包含发布与快照证据，报表需求和报表方案审阅使用上面的独立协议。
+
+| 入口 | 操作 |
+|---|---|
+| API | `GET /api/v2/reports/published/batch-summary`，参数为 `kind=AGENT`、`taskId`、`releaseId`、`revisionId`、`runId`、`packageDigest` 和 `batchId` |
+| API 附件 | 同一地址加 `download_digest`，服务端用当前证据复核摘要 |
+| CLI | `shuduo reports batch-summary --source-file source.json`，来源文件使用与 API 相同的字段 |
+| CLI 保存 | 同一命令加 `--download-digest SHA256 --out-file batch.json`，仅创建新文件 |
+| MCP | `report_batch_summary`，以 `source` 对象传入确切来源 |
+| CLI 离线 | `shuduo reports verify-batch-summary --file batch.json` |
+
+接口使用当前项目的受邀会话，仅原任务所属人可读取。读取与导出使用已保存的数据，业务写入保持关闭。离线核验覆盖文件摘要及内部来源绑定，在线权威需通过服务端复核。

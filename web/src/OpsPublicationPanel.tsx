@@ -1,5 +1,6 @@
-import {useEffect, useRef, useState} from "react";
+import {lazy, Suspense, useEffect, useRef, useState} from "react";
 import {opsPublicationTarget, readOpsPublication} from "./ops-publication";
+const OpsBatchReportPanel = lazy(async () => ({default:(await import("./OpsBatchReportPanel")).OpsBatchReportPanel}));
 
 type Api = <T>(path: string) => Promise<T>;
 type Evidence = Awaited<ReturnType<typeof readOpsPublication>>;
@@ -31,6 +32,7 @@ export function OpsPublicationPanel({api}: {api: Api}) {
   }, [key]);
   if (target === undefined) return null;
   const evidence = current?.evidence;
+  const report = evidence?.batches.find(batch => batch.id === target?.reportBatchId);
   return <section id="ops-exact-publication" className="ops-live-evaluation-v2" aria-labelledby="ops-exact-publication-title">
     <header>
       <div><h3 id="ops-exact-publication-title">原发布批次</h3><p>私有测试记录 · 只读核对同一发布与代码版本</p></div>
@@ -43,16 +45,26 @@ export function OpsPublicationPanel({api}: {api: Api}) {
         <div className="ops-live-table-v2">
           <table aria-label="确切发布批次">
             <caption>发布 {target.releaseId} · 代码版本 {target.revisionId}</caption>
-            <thead><tr><th scope="col">原批次编号</th><th scope="col">保存状态</th><th scope="col">调度状态</th><th scope="col">接口</th></tr></thead>
+            <thead><tr><th scope="col">原批次编号</th><th scope="col">保存状态</th><th scope="col">调度状态</th><th scope="col">接口</th><th scope="col">报表</th></tr></thead>
             <tbody>{evidence.batches.map(batch => <tr key={batch.id}>
               <th scope="row">第 {batch.sequence} 批 <small>{batch.id}</small></th>
               <td>{label(batch.status)}</td><td>{batch.schedulerTriggered ? "已触发" : "未触发"}</td>
               <td>{batch.serviceHref ? <a href={batch.serviceHref}>查看第 {batch.sequence} 批接口</a> : "—"}</td>
+              <td>{batch.reportSource ? <a href={batchReportHref(location, batch.reportSource.batchId)}>查看第 {batch.sequence} 批报表</a> : "—"}</td>
             </tr>)}</tbody>
           </table>
         </div>
         <p>发布 {label(evidence.status)} · 监控 {label(evidence.health)}</p>
         <a href={"/v2/?module=agent-center&task=" + target.taskId + "#agent-publication"}>查看原任务的发布证据</a>
+        {report?.reportSource && report.sequence !== undefined &&
+          <Suspense fallback={<p role="status">正在加载批次报表…</p>}><OpsBatchReportPanel key={report.id} api={api} source={report.reportSource} sequence={report.sequence}/></Suspense>}
+        {report && !report.reportSource && <p role="status">整次发布及两个批次通过核验后可读取此报表。</p>}
       </>}
   </section>;
+}
+
+function batchReportHref(location: string, id: string) {
+  const url = new URL(location);
+  url.searchParams.set("reportBatchId", id);
+  return url.pathname + url.search + "#ops-batch-report";
 }

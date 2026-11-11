@@ -539,7 +539,7 @@ function normalizeWidget(input, fields) {
   return { id, type, title, aggregation, field, dimension };
 }
 
-function executeWidget(widget, rows) {
+export function executeWidget(widget, rows) {
   if (widget.type === "KPI")
     return {
       ...widget,

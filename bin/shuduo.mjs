@@ -2,11 +2,12 @@
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import { fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-provenance-client.mjs';
+import {checkedPrivateBatchReport, readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
@@ -222,6 +223,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo reports run|export --id REPORT_ID
   shuduo reports provenance --id REPORT_ID --run-id RUN_ID
   shuduo reports verify-provenance --file evidence.json
+  shuduo reports batch-summary --source-file source.json [--download-digest SHA256 --out-file batch.json]
+  shuduo reports verify-batch-summary --file batch.json
   shuduo reports plan --message "生成持仓结构报告"
   shuduo reports plans
   shuduo reports apply-plan --id PLAN_ID
@@ -1395,6 +1398,17 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if(resource==='reports'&&action==='provenance')result=await readReportProvenance(client,{reportId:required(parsed.options,'id'),runId:required(parsed.options,'run_id')});
     else if(resource==='reports'&&action==='verify-provenance'){const evidence=await checkedReportProvenance(JSON.parse(readFileSync(required(parsed.options,'file'),'utf8')));result={passed:true,digest:evidence.digest,artifacts:evidence.artifacts,integrity:evidence.integrity,onlineAuthorityVerified:false,agentIndependentE2E:false};}
+    else if (resource === "reports" && action === "batch-summary") {
+      const source = jsonObject(readFileSync(required(parsed.options, "source_file"), "utf8"), "批次报表来源");
+      const outFile = parsed.options.out_file, downloadDigest = parsed.options.download_digest;
+      if (Boolean(outFile) !== Boolean(downloadDigest)) throw Error("下载需要同时提供 --download-digest 和 --out-file");
+      result = await readPrivateBatchSummary(client, {source, downloadDigest});
+      if (outFile) writeFileSync(outFile, JSON.stringify(result), {mode:0o600, flag:"wx"});
+    }
+    else if (resource === "reports" && action === "verify-batch-summary") {
+      const evidence = await checkedPrivateBatchReport(JSON.parse(readFileSync(required(parsed.options, "file"), "utf8")));
+      result = {passed:true, digest:evidence.digest, batchId:evidence.source.batchId, onlineAuthorityVerified:false};
+    }
     else if (resource === "reports" && ["run", "export"].includes(action))
       result = await client.request(
         `/reports/${encodeURIComponent(required(parsed.options, "id"))}/${action}`,

@@ -1,5 +1,5 @@
-import { DataServiceManager, serviceHash, serviceVersionConfigValid, verifiedPrivateServiceSource } from "./data-services.mjs";
-import { exactPublicationReceipt } from "./cloud-release-evidence.mjs";
+import { DataServiceManager, serviceHash, serviceVersionConfigValid } from "./data-services.mjs";
+import { readPrivateReleaseBatch } from "./private-release-source.mjs";
 import {servicePlanSourceBinding,servicePlanSourceQuery} from './service-plan-request.mjs';
 import {getContext,validationFamilyForContext} from './context.mjs';
 import { privateServiceRoute, privateServiceSourceSelection } from "./private-service-routes.mjs";
@@ -18,18 +18,7 @@ export { privateServiceRoute } from "./private-service-routes.mjs";
 export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,pilotConfig,persist=async()=>{},
   agentConfig,planner,assertModelBudget=()=>{throw Error('Model budget not configured');},budgetOverview=()=>{throw Error('Budget not configured');},modelLeaseMs,waitForModel,backgroundView,dispatchPlan,cancelPlan}) {
   const get=(kind,id)=>typeof id==="string"?store.get(kind,id,project):undefined;
-  const source=id=>{
-    const run=get("release_run",id),release=run&&get("release",run.releaseId),bundle=run&&get("delivery_package",run.packageId),approval=release&&get("release_approval",release.approvalId);
-    const verified=verifiedPrivateServiceSource({run,release,bundle,approval,...(release?.manualDeliveryTaskId?{delivery:get('manual_delivery_task',release.manualDeliveryTaskId),verification:get('delivery_verification',release.verificationId),review:get('delivery_review',release.reviewId),releaseRuns:store.list('release_run',project).filter(r=>r.releaseId===release.id)}:{})});
-    if ([release,run,approval].some(record=>Object.hasOwn(record,"reviewDigest"))) {
-      if (typeof release.reviewDigest!=="string" || run.reviewDigest!==release.reviewDigest || approval.reviewDigest!==release.reviewDigest)
-        throw fail(409,"原发布审阅摘要不一致","PUBLICATION_MONITORING_UNCONFIRMED");
-      const {monitoring}=exactPublicationReceipt(store,project,release);
-      if (monitoring.status!=="VERIFIED" || !monitoring.batches.some(batch=>batch.batchId===verified.id))
-        throw fail(409,"原发布的两个批次及同包监控尚未核验","PUBLICATION_MONITORING_UNCONFIRMED");
-    }
-    return verified;
-  };
+  const source=id=>readPrivateReleaseBatch(store,project,id).batch;
   const manager=new DataServiceManager({store,businessStore,project,scope:"PRIVATE_CLOUD_TEST",releaseRunFor:source,verifySource:run=>source(run?.id),now});
   const pilot = pilotConfig ? createServicePilotGuard({config:pilotConfig,store,project,source,detail:id=>manager.detail(id),now}) : undefined;
   const actor=req=>{const a=auth.sessionFromHeaders(req.headers);if(!a)throw fail(401,"请先登录受邀账号","AUTHENTICATION_REQUIRED");return a;};
