@@ -65,6 +65,25 @@ test('empty verified contexts are distinct from failed context responses',async(
   assert.deepEqual(accepted[0].contexts,[]);
   await assert.rejects(loadModuleStartup({module:'agent-center',read:async()=>({error:'bad result'}),isCurrent:()=>true,accept:()=>{throw Error('must not accept malformed data');}}),/响应格式未确认/);
 });
+test('prefetched public Agent contexts reuse one read and obey the current identity guard', async () => {
+  const read = async () => assert.fail('initial Agent contexts must reuse the original read');
+  const pending = deferred(), accepted = [];
+  let current = true;
+  const load = prefetchedContexts => loadModuleStartup({
+    read, module: 'agent-center', prefetchedContexts, isCurrent: () => current,
+    accept: value => accepted.push(value.contexts),
+  });
+  const stale = load(pending.promise);
+  current = false;
+  pending.resolve(fixtures['/contexts']);
+  assert.equal(await stale, false);
+  assert.deepEqual(accepted, []);
+  current = true;
+  assert.equal(await load(pending.promise), true);
+  assert.deepEqual(accepted, [fixtures['/contexts']]);
+  await assert.rejects(load(Promise.reject(Error('fixture unavailable'))), /fixture unavailable/);
+  await assert.rejects(load(Promise.resolve({})), /响应格式未确认/);
+});
 test('actual app wires guarded loading, explicit retry and no-context write gates without remounting on refresh',()=>{
   const source=readFileSync(new URL('../../web/src/main.tsx',import.meta.url),'utf8');
   assert.match(source,/loadStartupCore<Status, AuthSession>/);assert.match(source,/loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>/);
@@ -74,4 +93,6 @@ test('actual app wires guarded loading, explicit retry and no-context write gate
   assert.match(source,/const currentView = \(\) => active && startupReadCurrent/);
   assert.ok((source.match(/if \(!currentView\(\)\) return/g)||[]).length>=6);
   assert.match(source,/active = false; clearInterval\(interval\)/);
+  assert.match(source,/core === 1 \? openingContexts.current/);
+  assert.match(source,/!privatePreview && inputModule === "agent-center" && agentWorkspaceMode === "development"/);
 });
