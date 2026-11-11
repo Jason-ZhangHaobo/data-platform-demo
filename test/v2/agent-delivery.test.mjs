@@ -136,6 +136,9 @@ test("Agent delivery preparation rejects test-double rehearsal without approval 
       "prepare-once",
     );
     assert.equal(replay.body.id, started.body.id);
+    const lookedUp = await app.call(`/agent/tasks/${app.agent.id}/delivery-requests/prepare-once`);
+    assert.equal(lookedUp.status, 200);
+    assert.equal(lookedUp.body.id, started.body.id);
     const failed = await waitFor(app.call, started.body.id, "FAILED");
     assert.equal(failed.stage, "FILE_REHEARSAL_RUNNING");
     assert.equal(failed.fullLifecycleE2E, false);

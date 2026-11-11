@@ -3,7 +3,7 @@ import {writeFileSync,renameSync,existsSync,openSync,closeSync,unlinkSync} from 
 import {randomUUID} from "node:crypto";
 import {dirname,join,resolve} from "node:path";
 import {fileURLToPath} from "node:url";
-import {advanceLiveLifecycleCase,refreshLiveLifecycleConsumption,liveLifecyclePlan,liveCaseCheckpoint,summarizeLiveLifecycle,liveLifecycleCases,liveLifecycleContract,legacyLiveLifecycleContract,currentLiveLifecycleContract} from "../src/v2/live-lifecycle-evaluation.mjs";
+import {advanceLiveLifecycleCase,refreshLiveLifecycleConsumption,pendingLiveCreation,reconcileLiveCreation,liveLifecyclePlan,liveCaseCheckpoint,summarizeLiveLifecycle,liveLifecycleCases,liveLifecycleContract,legacyLiveLifecycleContract,currentLiveLifecycleContract} from "../src/v2/live-lifecycle-evaluation.mjs";
 
 import {checkpointScope, directory, links, loopbackOrigin, readCheckpoint, stop, uuid} from "../src/v2/live-lifecycle-checkpoint.mjs";
 
@@ -25,13 +25,16 @@ function refreshReadAllowed(path,outcomes){
  if(url.origin!=="http://refresh.invalid"||url.pathname!=="/data-services/task-evidence"||keys.length!==3||new Set(keys).size!==3||keys.some(key=>!["agent_task_id","package_digest","release_id"].includes(key)))return false;
  return outcomes.some(item=>{const source=item.consumptionSource;return source&&url.searchParams.get("agent_task_id")===source.taskId&&url.searchParams.get("package_digest")===source.packageDigest&&url.searchParams.get("release_id")===source.releaseId;});
 }
-export function createLiveEvaluationAdapter(origin,{readOnly=false,outcomes=[],signal,fetchImpl=fetch,testDouble=false}={}){
+export function createLiveEvaluationAdapter(origin,{readOnly=false,receiptOnly=false,outcomes=[],signal,fetchImpl=fetch,testDouble=false}={}){
  origin=loopbackOrigin(origin);
+ const receiptPaths = receiptOnly ? new Set(outcomes.map(item => pendingLiveCreation(item)?.path).filter(Boolean)) : undefined;
  return {...(testDouble?{testDouble:true}:{}),request:async(requestPath,body,key)=>{
-  if(readOnly&&(body!==undefined||!refreshReadAllowed(requestPath,outcomes)))throw Object.assign(Error("READ_ONLY_CONSUMPTION_REFRESH_REQUIRED"),{code:"READ_ONLY_CONSUMPTION_REFRESH_REQUIRED"});
+  if (receiptPaths && (body !== undefined || key !== undefined || !receiptPaths.has(requestPath)))
+    throw Object.assign(Error("READ_ONLY_CREATION_RECONCILE_REQUIRED"), {code:"READ_ONLY_CREATION_RECONCILE_REQUIRED"});
+  if(readOnly&&!receiptOnly&&(body!==undefined||!refreshReadAllowed(requestPath,outcomes)))throw Object.assign(Error("READ_ONLY_CONSUMPTION_REFRESH_REQUIRED"),{code:"READ_ONLY_CONSUMPTION_REFRESH_REQUIRED"});
   if(typeof requestPath!=="string"||!requestPath.startsWith("/")||requestPath.startsWith("//")||/[\\#\r\n]/.test(requestPath)||!new URL(origin+"/api/v2"+requestPath).pathname.startsWith("/api/v2/"))stop("评测请求路径不在原本机 API 范围");
   let response,value;
-  try{response=await fetchImpl(origin+"/api/v2"+requestPath,{method:body===undefined?"GET":"POST",redirect:"error",signal:AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(60000)]),headers:{"content-type":"application/json","x-shuduo-client":"cli",...(key?{"idempotency-key":key}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});}
+  try{response=await fetchImpl(origin+"/api/v2"+requestPath,{method:body===undefined?"GET":"POST",redirect:"error",signal:AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(receiptOnly ? 10000 : 60000)]),headers:{"content-type":"application/json","x-shuduo-client":"cli",...(key?{"idempotency-key":key}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});}
   catch{throw Object.assign(Error("API_REQUEST_UNCONFIRMED"),{code:"API_REQUEST_UNCONFIRMED"});}
   try{value=await response.json();}catch{throw Object.assign(Error("API_RESPONSE_UNCONFIRMED"),{code:"API_RESPONSE_UNCONFIRMED"});}
   if(!response.ok)throw Object.assign(Error("API_REQUEST_REJECTED"),{code:"API_REQUEST_UNCONFIRMED",status:response.status});return value;
@@ -44,8 +47,8 @@ export async function runLiveLifecycleCli(args=[],env=process.env,options={}){
  const out=options.output??(value=>process.stdout.write(value+"\n")),err=options.error??(value=>process.stderr.write(value+"\n"));
  const mode=args[0]??"--plan";
  try{
-  if(!["--plan","--execute","--resume","--refresh","--report"].includes(mode)||
-    (mode==="--plan"?args.length>1:mode==="--execute"?args.length!==1:args.length!==2))stop("使用 --plan、--execute、--resume <原编号>、--refresh <原编号> 或 --report <原编号>");
+  if(!["--plan","--execute","--resume","--refresh","--reconcile","--report"].includes(mode)||
+    (mode==="--plan"?args.length>1:mode==="--execute"?args.length!==1:args.length!==2))stop("使用 --plan、--execute、--resume <原编号>、--refresh <原编号>、--reconcile <原编号> 或 --report <原编号>");
   if(mode==="--plan"){
    const plan=liveLifecyclePlan(Number(env.V2_LIVE_EVALUATION_CASE_LIMIT??1),{contractId:env.V2_LIVE_EVALUATION_CONTRACT??currentLiveLifecycleContract.id}),origin=loopbackOrigin(env.V2_LIVE_EVALUATION_ORIGIN??"http://127.0.0.1:3100");
    out(JSON.stringify({...plan,selectedCases:plan.selectedCases.map(({id,kind,sourceCaseId,contextId,category,request})=>({id,kind,sourceCaseId,contextId,category,request})),origin},null,2));return 0;
@@ -63,7 +66,15 @@ export async function runLiveLifecycleCli(args=[],env=process.env,options={}){
   }else{directory(runDirectory);const snapshot=readCheckpoint(path);state=snapshot.state;originalCheckpointText=snapshot.text;({plan,origin,contractId}=checkpointScope(state,runId,env));}
   if(mode==="--report"){out(JSON.stringify(report(state,origin,contractId),null,2));return 0;}
   if(contractId===legacyLiveLifecycleContract.id){out(JSON.stringify({...report(state,origin,contractId),resumeUnsupported:true,nextAction:"--report "+runId}));return 2;}
-  const readOnly=mode==="--refresh",waiting=state.outcomes.filter(item=>item.status==="AWAITING_CONSUMPTION"||item.status==="PAUSED"&&item.phase==="CONSUMPTION");
+  const receiptOnly = mode === "--reconcile";
+  if (receiptOnly && contractId !== currentLiveLifecycleContract.id) stop("创建回执对账须使用原 v3 评测编号");
+  const readOnly = mode === "--refresh" || receiptOnly;
+  const waiting = state.outcomes.filter(item => receiptOnly ? pendingLiveCreation(item)
+    : item.status === "AWAITING_CONSUMPTION" || item.status === "PAUSED" && item.phase === "CONSUMPTION");
+  if (receiptOnly && waiting.length === 0) {
+    out(JSON.stringify({evaluationRunId:runId, contractId, readOnly:true, recoveredCaseCount:0, cases:[]}));
+    return 0;
+  }
   if(readOnly&&!waiting.length){out(JSON.stringify({...report(state,origin,contractId),refreshReadOnly:true,refreshedCaseCount:0,notice:"没有已进入消费待核阶段的案例；未执行后续案例，也未改写检查点。"}));return 0;}
   if(!readOnly){
    if(env.V2_LIVE_EVALUATION_AUTHORIZED!=="LOCAL_FRESH_MODEL_WITH_HUMAN_REVIEW")stop("请先核实本轮模型／计算次数与预算授权；只查看用 --report，只核对待消费用 --refresh");
@@ -78,7 +89,7 @@ export async function runLiveLifecycleCli(args=[],env=process.env,options={}){
    finally{if(fd!==undefined)closeSync(fd);if(existsSync(temporary))unlinkSync(temporary);}
   };
   const interruption=new AbortController(),onStop=()=>interruption.abort();
-  const adapter=createLiveEvaluationAdapter(origin,{readOnly,outcomes:waiting,signal:interruption.signal,fetchImpl:options.fetchImpl??fetch,testDouble:options.testDouble===true});
+  const adapter=createLiveEvaluationAdapter(origin,{readOnly,receiptOnly,outcomes:waiting,signal:interruption.signal,fetchImpl:options.fetchImpl??fetch,testDouble:options.testDouble===true});
   const lockPath=join(runDirectory,"runner.lock");let lock;
   try{lock=openSync(lockPath,"wx",0o600);}catch{stop("原评测执行锁尚在；先核实该运行的原进程，不启动第二个执行器");}
   process.once("SIGINT",onStop);process.once("SIGTERM",onStop);
@@ -94,6 +105,26 @@ export async function runLiveLifecycleCli(args=[],env=process.env,options={}){
     if(status.mode!=="LOCAL_DEVELOPMENT"||!status.model?.configured||!status.spark?.available||status.agentDevelopment?.publishAvailable!==true)stop("真实模型、Spark 或本机审阅发布尚未就绪，未提交任务");
     if(status.agentDevelopment.sqlMaxAttempts!==3||!Number.isSafeInteger(status.agentDevelopment.sqlTokenBudget)||status.agentDevelopment.sqlTokenBudget<1||status.agentDevelopment.sqlTokenBudget>32000)stop("当前模型次数或 Token 上限不符合评测计划，未提交任务");
     save();
+   }
+   if (receiptOnly) {
+    const cases = [];
+    let recoveredCaseCount = 0;
+    for (const item of waiting) {
+      if (interruption.signal.aborted) break;
+      const definition = plan.selectedCases.find(value => value.id === item.caseId);
+      const sourceCheckpoint = state.outcomes.find(value => value.caseId === definition.sourceCaseId);
+      const result = await reconcileLiveCreation(definition, item, adapter, {sourceCheckpoint});
+      const projected = {caseId:item.caseId, action:result.action, status:result.status};
+      if (result.checkpoint) {
+        state.outcomes = state.outcomes.map(value => value.caseId === item.caseId ? result.checkpoint : value);
+        save();
+        recoveredCaseCount++;
+        projected.taskUrl = links(result.checkpoint, origin, state.outcomes).taskUrl;
+      }
+      cases.push(projected);
+    }
+    out(JSON.stringify({evaluationRunId:runId, contractId, readOnly:true, recoveredCaseCount, cases}));
+    return recoveredCaseCount === waiting.length ? 0 : 2;
    }
    let refreshedCaseCount=0,waitingForAction=false;
    const selected=readOnly?plan.selectedCases.filter(def=>waiting.some(item=>item.caseId===def.id)):plan.selectedCases;

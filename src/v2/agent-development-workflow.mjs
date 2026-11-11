@@ -210,13 +210,21 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const { run, revision } = source(agent);
     const existing = store.list(resource, project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id && t.sourceRevisionId === revision.id && t.sourceRunId === run.id && t.sourceSqlHash === revision.hash &&
       JSON.stringify(t.sourceRequirementBinding)===JSON.stringify(agent.requirements?sqlRequirementBinding(agent.requirements):undefined)&&["QUEUED", "RUNNING", "SUCCEEDED"].includes(t.status));
-    if (existing) {assertSqlRequirementPackageSource(store.get('delivery_package',existing.packageId,project),{agent,run,revision});return publicDeliveryTask(existing);}
+    const requirement = agent.requirements ? sqlRequirementBinding(agent.requirements) : undefined;
+    const namespace = `${project}:durable-delivery:${agent.id}:${key}`;
+    const signature = hash(JSON.stringify({runId:run.id, revisionHash:revision.hash, ...(requirement ? {requirement} : {})}));
+    if (existing || store.deduplicatedId(namespace)) {
+      if (existing) assertSqlRequirementPackageSource(store.get("delivery_package", existing.packageId, project), {agent,run,revision});
+      const prior = store.deduplicate(namespace, signature, () => existing);
+      await persist();
+      return publicDeliveryTask(get(prior.id));
+    }
     const family = validationFamilyForContext(revision.contextId);
     const bundle = createDeliveryPackage({ run, revision,agent, name: family?.id === validationContractId ? "客户资产 T+1 · Agent交付" : "股票持仓＋可用现金（非客户全资产）· Agent交付" });
     const artifact = await artifactStore.put("delivery-package", bundle.digest, bundle);
     const freshAgent=store.get('agent',agent.id,project),fresh=source(freshAgent);
     assertSqlRequirementPackageSource(bundle,{agent:freshAgent,...fresh});
-    const dedup = store.deduplicate(`${project}:durable-delivery:${agent.id}:${key}`, hash(JSON.stringify({ runId: run.id, revisionHash: revision.hash,...(bundle.manifest.source.requirement?{requirement:bundle.manifest.source.requirement}:{}) })), () => {
+    const dedup = store.deduplicate(namespace, signature, () => {
       const task = store.create(resource, project, { mode, sourceAgentTaskId: agent.id, sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: agent.submittedBy, status: "QUEUED", stage: "PACKAGE_READY", packageDigest: bundle.digest,...(bundle.manifest.source.requirement?{sourceRequirementBinding:bundle.manifest.source.requirement}:{}), completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
       const item = store.create("delivery_package", project, { ...bundle, artifact, sourceRunId: run.id, ...(standaloneManual?{manualDeliveryTaskId:task.id}:{agentDeliveryTaskId:task.id}), stage: "M2A", published: false });
       return change(task, { packageId: item.id });
