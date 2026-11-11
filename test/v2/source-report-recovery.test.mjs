@@ -26,8 +26,29 @@ test('provider-compatible adapter records measured usage when returned JSON is i
 });
 
 test('timeout retains conservative reservation and budget replacement requires the exact active source report invocation',async t=>{
- let reservation,entered;const began=new Promise(r=>{entered=r}),f=await ready(t,{reportPlanningTimeoutMs:100,reportPlanner:async input=>{reservation=input.sourceReservation;entered();await new Promise(()=>{});}}),task=await f.call('/reports/agent/plans',{message:'合成超时报告规划',source:f.source});await began;
- const budget=new BudgetManager({store:f.store,project:PROJECT,env:{},now:Date.now});assert(budget.assertCanStartReportModel(reservation));assert.throws(()=>budget.assertCanStartReportModel({...reservation,invocationId:randomUUID()}));
+ const checked=Promise.withResolvers();
+ const f=await ready(t,{reportPlanningTimeoutMs:100,reportPlanner:async input=>{
+  const reservation=input.sourceReservation;
+  try{
+   const lease=f.store.get('report_agent_plan',reservation.taskId,PROJECT);
+   const issuedAt=Date.parse(lease.createdAt),expiresAt=Date.parse(lease.modelLeaseExpiresAt);
+   assert(Number.isFinite(issuedAt)&&Number.isFinite(expiresAt)&&issuedAt<expiresAt);
+   // The fixture issues the lease on its own clock. Check the live record
+   // before awaiting the HTTP response or the real timeout.
+   let budgetNow=issuedAt;
+   const budget=new BudgetManager({store:f.store,project:PROJECT,env:{},now:()=>budgetNow});
+   assert(budget.assertCanStartReportModel(reservation));
+   assert.throws(()=>budget.assertCanStartReportModel({...reservation,invocationId:randomUUID()}),{code:'MODEL_RESERVATION_INVALID'});
+   budgetNow=expiresAt;
+   assert.throws(()=>budget.assertCanStartReportModel(reservation),{code:'MODEL_RESERVATION_INVALID'});
+   budgetNow=issuedAt;
+   checked.resolve({budget,reservation});
+  }catch(error){checked.resolve({error});}
+  await new Promise(()=>{});
+ }});
+ const task=await f.call('/reports/agent/plans',{message:'合成超时报告规划',source:f.source});
+ const {budget,reservation,error}=await checked.promise;
+ if(error)throw error;
  const done=await settled(f.call,task.body.id);assert.equal(done.status,'FAILED');assert.equal(done.providerPhase,'STARTED');assert.equal(done.recovery.state,'MODEL_RESULT_UNKNOWN');assert.equal(done.usageEstimated,true);assert(done.usage.total_tokens>0);assert.throws(()=>budget.assertCanStartReportModel(reservation));
  assert.equal((await f.call('/reports/agent/plans/'+task.body.id+'/resume',{})).status,409);
 });
