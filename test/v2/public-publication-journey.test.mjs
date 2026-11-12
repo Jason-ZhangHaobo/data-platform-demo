@@ -16,6 +16,7 @@ import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult }
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { BusinessQueryStore } from '../../src/v2/data-services.mjs';
 import { consumerDigest } from '../../src/v2/consumer-source.mjs';
+import { agentCallHistoryHref, agentCallHistoryTarget, readAgentCallHistory } from '../../web/src/agent-call-history.ts';
 
 async function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-publication-journey-'));
@@ -156,6 +157,12 @@ test('read-only ingress returns saved release history without an executor, and s
   assert.equal((await f.tick(releaseId, 1)).status, 200);
   const first = f.store.list('release_run', PROJECT).find(run => run.status === 'RUNNING');
   f.complete(first.remoteSubmission.prepared);
+  const saved = f.path + '/history?' + new URLSearchParams({releaseId, packageDigest: f.item.digest});
+  const pendingHistory = await f.call(saved);
+  assert.equal(pendingHistory.status, 200);
+  assert.equal(pendingHistory.body.readMode, 'SAVED_HISTORY');
+  assert.equal(pendingHistory.body.runs[0].status, 'RUNNING', 'explicit history does not reconcile a waiting receipt');
+  assert.equal(f.store.get('release_run', first.id, PROJECT).version, first.version);
   await f.restartReadOnly();
   const parked = await f.call(path);
   assert.equal(parked.status, 200);
@@ -168,6 +175,7 @@ test('read-only ingress returns saved release history without an executor, and s
   const other = f.store.list('auth_user', PROJECT).find(user => user.email === 'other@example.invalid');
   f.store.update('auth_user', other.id, PROJECT, { memberships: [{ projectId: PROJECT, role: 'ENGINEER' }] });
   assert.equal((await f.call(path, undefined, { identity: 'other' })).status, 403);
+  assert.equal((await f.call(saved, undefined, { identity: 'other' })).status, 403);
   assert.equal((await f.call(f.path, f.body)).body.code, 'PUBLIC_READ_ONLY');
   assert.equal((await f.call(f.path + '/preflight?' + selector)).status, 503);
   const empty = await f.call(`/agent/tasks/${f.otherAgent.id}/publication`);
@@ -340,6 +348,26 @@ test('the owner can recheck DAPI and XAPI receipts for the same saved publicatio
     assert.deepEqual(found.body.services, [originalEntry]);
     assert.equal((await f.call(exact, undefined, { identity: 'other' })).status, 403);
   }
+  const link = await agentCallHistoryHref('https://publication.example.invalid/v2/?source_old=ignore', {
+    taskId: f.agent.id, release: releaseId, package: f.item.digest, batch: batchId,
+  }, combined.body.callId);
+  const target = agentCallHistoryTarget(link, f.agent.id);
+  assert.equal(target.call, consumerDigest(combined.body.callId));
+  assert.equal(link.includes(combined.body.callId), false);
+  assert.equal(agentCallHistoryTarget(link + '&call=' + target.call, f.agent.id), null);
+  assert.equal(agentCallHistoryTarget(link, f.otherAgent.id), null);
+  const reads = [];
+  const api = async (path, identity = 'owner') => {
+    reads.push(path);
+    const result = await f.call(path, undefined, {identity});
+    assert.equal(result.status, 200);
+    assert.equal(result.cacheControl, 'no-store');
+    return result.body;
+  };
+  assert.deepEqual(await readAgentCallHistory(api, target), proof.body.services.find(item => item.call?.callId === combined.body.callId));
+  assert.equal(reads.length, 2);
+  await assert.rejects(readAgentCallHistory(api, {...target, batch: newBatchId}), /消费回执/);
+  await assert.rejects(readAgentCallHistory(path => api(path, 'other'), target), /403/);
   assert.deepEqual(savedRecords(), afterSwitch);
   const originalApplication = f.store.get('service_app', issued.body.application.id, PROJECT);
   f.store.update('service_app', originalApplication.id, PROJECT, { revokedAt: '2000-01-01T00:00:00.000Z' });

@@ -29,6 +29,8 @@ import type {ServiceSourceBinding} from "./service-source-binding";
 import {validServiceSourceBinding,sourceBindingEnvironmentMatches,agentReturnSourceMatches,serviceSourcesPath,currentAgentTaskLocation} from "./service-source-binding";
 import {agentResumeDecision,modelRecoveryNeedsAction,pauseModelRecovery,submitAgentResume} from "./agent-model-recovery";
 import {clearAgentArchivePin} from "./agent-archive-location";
+import {agentCallHistoryTarget} from "./agent-call-history";
+import {AgentCallHistory} from "./AgentCallHistory";
 import type { PublicationTarget } from "./AuthDialog";
 import type {ValidationFamily} from "./validation-family";
 import "./agent-development.css";
@@ -50,10 +52,21 @@ stageText.CLARIFICATION_SOURCE_CHANGED='澄清依据已变化，原记录保留'
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
-export function AgentDevelopmentWorkbench({ api, contexts: availableContexts, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, readOnly:requestedReadOnly=false, taskOnly=false, targetTaskId, expectedSourceBinding,expectedManualSource,expectedSourceError,onLogin, onDirtyChange, onOpenServices }: {
+type WorkbenchProps = {
   api: Api; contexts: Context[]; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; ready: boolean; readinessReason?:string; loading: boolean; privatePreview: boolean; runtimeMode?: "LOCAL_DEVELOPMENT" | "PUBLIC_INVITATION"; backgroundAvailable?:boolean; readOnly?:boolean; taskOnly?:boolean; targetTaskId?:string; onLogin: () => void; onDirtyChange: (dirty: boolean) => void; onOpenServices?: (source:ServiceSourceBinding) => void;
   expectedSourceBinding?:ServiceSourceBinding;expectedManualSource?:import("./service-source-binding").StandaloneServiceSourceBinding;expectedSourceError?:string;
-}) {
+};
+
+export function AgentDevelopmentWorkbench(props: WorkbenchProps) {
+  const url = new URL(location.href);
+  const taskId = url.searchParams.get("task") ?? "";
+  const target = agentCallHistoryTarget(url.href, taskId);
+  if (target !== undefined)
+    return <AgentCallHistory key={url.href} api={props.api} target={target} loading={props.loading} onLogin={props.onLogin}/>;
+  return <DevelopmentWorkspace {...props}/>;
+}
+
+function DevelopmentWorkspace({ api, contexts: availableContexts, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, readOnly:requestedReadOnly=false, taskOnly=false, targetTaskId, expectedSourceBinding,expectedManualSource,expectedSourceError,onLogin, onDirtyChange, onOpenServices }: WorkbenchProps) {
   const contexts=availableContexts.filter(context=>context.capabilities?.agentDevelopment!==false);
   const fundContexts=availableContexts.filter(context=>context.capabilities?.fundPreparation===true);
   const [fundDirty,setFundDirty]=useState(false);

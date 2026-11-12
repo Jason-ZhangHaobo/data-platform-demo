@@ -189,6 +189,8 @@ shuduo agent v3-consumption --checkpoint /private/first-case.json --plan /privat
 
 服务换版后，带 `call_id_digest` 的查询仍按原调用绑定的已发布版本及其固定 DAPI 子版本核验。核验包括调用发生时的应用授权、版本和快照摘要。省略调用摘要时，页面与接口仍展示当前已发布版本的消费证据。
 
+原生 Agent 私有测试发布的已核验调用提供「查看原调用」和「复制原调用链接」。原任务所属人打开链接，可核对同一调用的接口版本、发布批次、结果摘要和应用状态。链接定位使用调用摘要，页面经 `GET /agent/tasks/{id}/publication/history` 先核对保存的发布与批次，再读取指定消费回执。错任务、批次或调用显示核验失败。
+
 ### 读取原任务的执行阶段
 
 在本机运维监控展开已受理案例的模型与 Spark 状态，或执行 `node scripts/run-live-lifecycle-evaluation.mjs --inspect 原评测UUID`。CLI 与页面共用原评测记录，CLI 额外核对本机检查点文件摘要。已冻结的案例始终展示原代码版本和批次，尚未冻结的案例只读最近尝试已关联的版本及批次。
