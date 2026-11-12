@@ -53,6 +53,7 @@ const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
 type WorkbenchProps = {
+  initialContextId?:string;
   api: Api; contexts: Context[]; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; ready: boolean; readinessReason?:string; loading: boolean; privatePreview: boolean; runtimeMode?: "LOCAL_DEVELOPMENT" | "PUBLIC_INVITATION"; backgroundAvailable?:boolean; readOnly?:boolean; taskOnly?:boolean; targetTaskId?:string; onLogin: () => void; onDirtyChange: (dirty: boolean) => void; onOpenServices?: (source:ServiceSourceBinding) => void;
   expectedSourceBinding?:ServiceSourceBinding;expectedManualSource?:import("./service-source-binding").StandaloneServiceSourceBinding;expectedSourceError?:string;
 };
@@ -66,13 +67,13 @@ export function AgentDevelopmentWorkbench(props: WorkbenchProps) {
   return <DevelopmentWorkspace {...props}/>;
 }
 
-function DevelopmentWorkspace({ api, contexts: availableContexts, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, readOnly:requestedReadOnly=false, taskOnly=false, targetTaskId, expectedSourceBinding,expectedManualSource,expectedSourceError,onLogin, onDirtyChange, onOpenServices }: WorkbenchProps) {
+function DevelopmentWorkspace({ api, contexts: availableContexts, initialContextId, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, readOnly:requestedReadOnly=false, taskOnly=false, targetTaskId, expectedSourceBinding,expectedManualSource,expectedSourceError,onLogin, onDirtyChange, onOpenServices }: WorkbenchProps) {
   const contexts=availableContexts.filter(context=>context.capabilities?.agentDevelopment!==false);
   const fundContexts=availableContexts.filter(context=>context.capabilities?.fundPreparation===true);
   const [fundDirty,setFundDirty]=useState(false);
   const sourceReturnActive=Boolean(expectedSourceBinding||expectedManualSource||expectedSourceError),readOnly=requestedReadOnly||sourceReturnActive;
   const [returnSourceError,setReturnSourceError]=useState("");
-  const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState("holdings-t1");
+  const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState(initialContextId ?? "holdings-t1");
   const [message, setMessage] = useState(""), [draft, setDraft] = useState(""), [baseline, setBaseline] = useState("");
   const [run, setRunValue] = useState<Run>(), [tab, setTab] = useState("结果"), [diff, setDiff] = useState(false);
   const [runRead,setRunRead]=useState<{state:"IDLE"|"LOADING"|"ERROR";message?:string}>({state:"IDLE"});
@@ -231,6 +232,10 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, canWrite:origi
     });
   }
   useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; submission.current?.close(); }; }, []);
+  useEffect(() => {
+    if (initialContextId && contextId === initialContextId && contexts.length && !contexts.some(item => item.id === contextId))
+      setContextId(contexts[0].id);
+  }, [initialContextId, contextId, availableContexts]);
   useEffect(() => { if (readOnly || !originalCanWrite || publicationTarget) { epoch.current++; setAutomatic(false); setBusy(false); } }, [readOnly, originalCanWrite, publicationTarget?.taskId]);
   // The parent mounts this view only after identity/capabilities are confirmed.
   // Initialize its read/write epoch above before starting the first task read.
