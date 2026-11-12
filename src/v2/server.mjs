@@ -2966,11 +2966,15 @@ export function createV2Server(options = {}) {
           "Content-Disposition": `attachment; filename="shuduo-batch-report-${source.batchId.slice(0, 8)}.json"`,
         });
       }
-      const originalReportResult = path.match(/^\/api\/v2\/reports\/published\/requests\/([A-Fa-f0-9-]{36})\/result$/);
+      const originalReportResult = path.match(/^\/api\/v2\/reports\/published\/requests\/([A-Fa-f0-9-]{36})\/(result|lineage)$/);
       if (originalReportResult && method === "GET") {
         if (!local) throw fail(403, "原发布报表结果仅在本机开发边界开放");
         if (url.searchParams.size) throw fail(422, "按原编号读取结果不接受附加查询参数");
-        return json(res, 200, publishedReports.readResult(originalReportResult[1], reportActor(req)));
+        const [ , requestId, view] = originalReportResult;
+        const actor = reportActor(req);
+        return json(res, 200, view === "lineage"
+          ? publishedReports.readLineage(requestId, actor, releaseTimeUnitMs)
+          : publishedReports.readResult(requestId, actor));
       }
       const reportCreation=path.match(/^\/api\/v2\/reports\/published(?:\/(requests)\/([a-f0-9-]{36})|\/([a-f0-9-]{36})\/(advance))?$/);
       if(reportCreation){

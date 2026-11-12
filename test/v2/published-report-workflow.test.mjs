@@ -70,6 +70,9 @@ test('original report result remains fixed after a newer run, rejects another ow
   assert.equal(report.runs[0].widgets.length,5);
   assert.ok(!JSON.stringify(read).includes("CLIENT-001"));
   assert.throws(()=>f.workflow.readResult(requestId,"another-engineer"),{status:404});
+  assert.throws(()=>f.workflow.readLineage(requestId,"another-engineer"),{status:404});
+  assert.throws(()=>f.workflow.readLineage(requestId,actor),{code:"REPORT_LINEAGE_UNSUPPORTED"});
+
   assert.throws(()=>checkedPublishedReportResult(read,{source:{...f.source,batchId:randomUUID()}}));
   const snapshot=f.store.get("report_snapshot",result.snapshotId,project);
   const saved=f.data.db.prepare("SELECT rows_json FROM report_snapshots WHERE id=?").get(snapshot.dataSnapshotId);

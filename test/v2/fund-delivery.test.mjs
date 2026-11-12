@@ -13,7 +13,7 @@ import { MetadataStore } from '../../src/v2/store.mjs';
 import { LocalArtifactStore } from '../../src/v2/artifact-store.mjs';
 import { loadDeliveryDirectory } from '../../src/v2/delivery.mjs';
 import { resolvePublishedReportSource } from '../../src/v2/published-report-source.mjs';
-import { resolveFundConsumptionSource } from '../../src/v2/fund-consumption-source.mjs';
+import { resolveFundConsumptionSource, resolveFundReportPublication } from '../../src/v2/fund-consumption-source.mjs';
 
 function fixture() {
   const context = fundContext(), binding = fundDeliveryBinding();
@@ -251,6 +251,8 @@ test('fund service source reads one exact batch only after verifying both and la
   assert.equal(body.rowCount, 7);
   assert.deepEqual(body.batches.map(batch => batch.id), [first.id, second.id]);
   assert.deepEqual((await f.call('/data-services/fund-sources')).body, []);
+  assert.throws(() => resolveFundReportPublication({store:f.store,project:PROJECT,
+    selection:{batchId:first.id,releaseId,packageDigest}}),{code:'FUND_CONSUMPTION_SOURCE_UNPROVEN'});
   assert.equal(body.engineClassification, 'TEST_HARNESS');
   assert.equal(body.eligibleForService, false);
   assert.equal(body.agentIndependentE2E, false);

@@ -9,3 +9,17 @@ export function resumePublishedReport(client:Client,args:{id:string;requestId?:s
 export type PublishedReportResultRead={protocol:'shuduo-published-report-result/v1';receipt:PublishedReportReceipt;overview:unknown};
 export function checkedPublishedReportResult(value:unknown,expected?:{requestId?:string;source?:PublishedReportBinding}):PublishedReportResultRead;
 export function readPublishedReportResult(client:Client,args:{requestId:string;source?:PublishedReportBinding}):Promise<PublishedReportResultRead>;
+
+export type PublishedReportLineage={
+  protocol:'shuduo-fund-report-lineage/v1';scope:'LOCAL_TEST_ONLY';requestId:string;source:PublishedReportBinding;
+  report:{id:string;versionId:string;runId:string;resultHash:string};
+  snapshot:{id:string;datasetId:string;assetId:string;contractId:string;fields:{name:string;label:string}[];rowCount:number;contentHash:string};
+  release:{id:string;status:'ACTIVE_LOCAL'|'SUPERSEDED_LOCAL'|'CANCELLED';businessDate:string;packageDigest:string;
+    resultDigest:string;assertionDigest:string;engineClassification:'LOCAL_SPARK_PROCESS';activeForConsumption:boolean};
+  batch:{id:string;sequence:number;status:'SUCCEEDED';scheduledAt:string;startedAt:string;finishedAt:string;
+    monitorEvent:{id:string;type:'BATCH_SUCCEEDED';status:'SUCCEEDED';observedAt:string}};
+  publicDeployed:false;
+};
+type LineageExpected={requestId?:string;source?:PublishedReportBinding;receipt?:PublishedReportReceipt};
+export function checkedPublishedReportLineage(value:unknown,expected?:LineageExpected):PublishedReportLineage;
+export function readPublishedReportLineage(client:Client,args:LineageExpected&{requestId:string}):Promise<PublishedReportLineage>;

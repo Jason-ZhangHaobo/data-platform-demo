@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import { fundReportContractId } from "../../src/v2/distribution-report-contract.mjs";
+import { FundReportLineage } from "./FundReportLineage";
+import type { PublishedReportReceipt } from "../../src/v2/published-report-client.mjs";
 import { readPublishedReportResult } from "../../src/v2/published-report-client.mjs";
 import { reportRequestId } from "../../src/v2/published-report-request.mjs";
 import { boundPublishedReports } from "./published-report-read";
@@ -7,7 +10,7 @@ import { DistributionReportResults } from "./DistributionReportResults";
 import { ReportWidget } from "./ReportsWorkbench";
 
 type Api = <T>(path: string) => Promise<T>;
-type HistoryResult = { key: string; result?: PublishedReportResult; error?: string };
+type HistoryResult = { key: string; result?: PublishedReportResult; receipt?: PublishedReportReceipt; error?: string };
 
 export function AgentReportHistory({ api, local }: { api: Api; local: boolean }) {
   const initial = new URLSearchParams(window.location.search).getAll("report_request");
@@ -27,7 +30,7 @@ export function AgentReportHistory({ api, local }: { api: Api; local: boolean })
         const [result] = boundPublishedReports(overview, { ...source, batchIds: [batchId] });
         if (!result || result.runId !== receipt.reportRunId || result.versionId !== receipt.reportVersionId)
           throw Error("未找到与原请求对应的固定运行。");
-        if (active) setState({ key: request, result });
+        if (active) setState({ key: request, result, receipt });
       } catch (error) {
         if (active) setState({ key: request, error: (error as Error).message });
       }
@@ -63,13 +66,13 @@ export function AgentReportHistory({ api, local }: { api: Api; local: boolean })
         {inputError && <p role="alert">{inputError}</p>}
         {request && !show && <p role="status">正在读取原报表运行…</p>}
         {show?.error && <p role="alert">{show.error}</p>}
-        {show?.result && <HistoricalResult result={show.result} />}
+        {show?.result && show.receipt && <HistoricalResult result={show.result} receipt={show.receipt} api={api} />}
       </>}
     </section>
   );
 }
 
-function HistoricalResult({ result }: { result: PublishedReportResult }) {
+function HistoricalResult({ result, receipt, api }: { result: PublishedReportResult; receipt: PublishedReportReceipt; api: Api }) {
   return <>
     <div className="agent-report-heading-v2"><div><h4>{result.name} · V{result.versionNumber}</h4><p>{result.description}</p></div>
       <small>{result.exportable ? "原请求运行" : "固定历史运行"} · 只读</small>
@@ -77,6 +80,7 @@ function HistoricalResult({ result }: { result: PublishedReportResult }) {
     <small>批次 <code title={result.sourceBatchId}>{result.sourceBatchId.slice(0, 8)}</code>
       {" · 运行 "}<code title={result.runId}>{result.runId.slice(0, 8)}</code>
       {" · 结果 "}<code title={result.resultHash}>{result.resultHash.slice(0, 12)}</code></small>
+    {result.outputContractId === fundReportContractId && <FundReportLineage key={result.key} api={api} receipt={receipt} />}
     {result.outputContractId
       ? <DistributionReportResults key={result.key} contractId={result.outputContractId} widgets={result.widgets} sourceEvidence={result.sourceEvidence} />
       : <div className="report-widgets-v2">{result.widgets.map(widget => <ReportWidget key={widget.id} widget={widget} />)}</div>}
