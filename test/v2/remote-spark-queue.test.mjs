@@ -23,6 +23,19 @@ const config = queueConfigFromEnvironment({
   V2_SPARK_QUEUE_POLL_MS: "200",
 });
 const input = { sql: "SELECT 1", context: { id: "demo" }, validationContexts: [] };
+function atomicTransport(objects) {
+  return {
+    read: async key => objects.get(key),
+    create: async (key, body) => {
+      if (objects.has(key)) {
+        assert.equal(objects.get(key), body);
+        return {created:false};
+      }
+      objects.set(key,body);
+      return {created:true};
+    },
+  };
+}
 
 test("signed OSS queue job binds a fixed project, nonce, expiry and result key", () => {
   const queued = createQueuedSparkJob(input, config, { now: 1789900000000, requestId: "11111111-1111-4111-8111-111111111111", nonce: "n".repeat(24) });
@@ -87,6 +100,51 @@ test("exact rehearsal uses one OSS PUT and can read a signed result after expiry
   assert.ok(requests.slice(1).every(request=>request.url.endsWith(prepared.resultKey)));
 });
 
+test("OSS must reject overwriting the claim before allowing execution", async () => {
+  const time=1789900000100, queued=createQueuedSparkJob(input,config,{now:time});
+  for (const enforceCreateOnly of [true,false]) {
+    const objects=new Map([[queued.jobKey,JSON.stringify(queued.job)]]), requests=[];
+    const transport=new OssSparkQueueTransport({bucket:"synthetic-securities",endpoint:"oss.example.invalid",
+      credentials:{accessKeyId:"synthetic-id",accessKeySecret:"synthetic-secret"}},async (url,options)=>{
+      const key=new URL(url).pathname.slice(1);
+      requests.push({key,method:options.method});
+      if(options.method==="GET")return objects.has(key)?new Response(objects.get(key)):new Response(null,{status:404});
+      assert.equal(options.headers["x-oss-forbid-overwrite"],"true");
+      if(enforceCreateOnly&&objects.has(key))return new Response(null,{status:409});
+      objects.set(key,options.body);
+      return new Response(null,{status:200});
+    });
+    let starts=0;
+    const consume=()=>consumeQueuedSparkJob({jobKey:queued.jobKey,config,transport,now:()=>time,
+      runner:async()=>{starts++;return {status:"SUCCEEDED"};}});
+    if(enforceCreateOnly)assert.equal((await consume()).status,"SUCCEEDED");
+    else await assert.rejects(consume(),{code:"SPARK_QUEUE_CREATE_ONLY_UNVERIFIED"});
+    assert.equal(starts,Number(enforceCreateOnly));
+    const claimKey=config.resultPrefix+"/"+queued.job.jobId+".claim";
+    assert.deepEqual(requests.filter(r=>r.method==="PUT").map(r=>r.key),
+      [claimKey,claimKey,...(enforceCreateOnly?[queued.resultKey]:[])]);
+    assert.equal(objects.has(queued.resultKey),enforceCreateOnly);
+  }
+});
+
+test("an unconfirmed claim is retained and neither a replacement nor a replay starts Spark", async () => {
+  const time=1789900000100, queued=createQueuedSparkJob(input,config,{now:time});
+  const objects=new Map([[queued.jobKey,JSON.stringify(queued.job)]]), transport=atomicTransport(objects);
+  const options={jobKey:queued.jobKey,config,now:()=>time,runner:()=>assert.fail("unconfirmed claim must not start Spark")};
+  await assert.rejects(consumeQueuedSparkJob({...options,transport:{...transport,create:async(key,body,options)=>{
+    assert.deepEqual(options,{retry:false,verifyCreateOnly:true});
+    await transport.create(key,body);
+    throw Error("synthetic claim acknowledgement lost");
+  }}}),/acknowledgement lost/);
+  assert.equal(objects.size,2);
+  const pending=await consumeQueuedSparkJob({...options,transport});
+  assert.equal(pending.status,"RESULT_PENDING");
+  assert.equal(pending.jobId,queued.job.jobId);
+  assert.equal(objects.has(queued.resultKey),false);
+  objects.set(queued.resultKey,JSON.stringify(createQueuedSparkResult(queued.job,{status:"SUCCEEDED"},config,time)));
+  assert.equal((await consumeQueuedSparkJob({...options,transport})).status,"SUCCEEDED");
+});
+
 test("Worker consumer executes only a signed create-only job and writes a bound result", async () => {
   const objects = new Map(), queued = createQueuedSparkJob(input, config, {
     now: 1789900000000,
@@ -94,10 +152,7 @@ test("Worker consumer executes only a signed create-only job and writes a bound 
     nonce: "q".repeat(24),
   });
   objects.set(queued.jobKey, JSON.stringify(queued.job));
-  const transport = {
-    create: async (key, body) => { if (objects.has(key) && objects.get(key) !== body) throw new Error("conflict"); objects.set(key, body); },
-    read: async (key) => objects.get(key),
-  };
+  const transport = atomicTransport(objects);
   const consumed = await consumeQueuedSparkJob({
     jobKey: queued.jobKey,
     config,
@@ -138,7 +193,7 @@ test("Worker consumer honors a valid cancellation marker before running", async 
   });
   objects.set(queued.jobKey, JSON.stringify(queued.job));
   objects.set(queued.cancelKey, JSON.stringify(createQueuedSparkCancellation(queued.job.jobId, config, 1789900000050)));
-  const transport = { create: async (key, body) => objects.set(key, body), read: async (key) => objects.get(key) };
+  const transport = atomicTransport(objects);
   const result = await consumeQueuedSparkJob({
     jobKey: queued.jobKey, config, transport, now: () => 1789900000100,
     runner: async () => { throw new Error("must not run"); },
@@ -170,7 +225,7 @@ test("Worker interrupts an active Spark process after a signed cancellation", as
     nonce: "v".repeat(24),
   });
   objects.set(queued.jobKey, JSON.stringify(queued.job));
-  const transport = { read: async (key) => objects.get(key), create: async (key, body) => objects.set(key, body) };
+  const transport = atomicTransport(objects);
   let aborted = false;
   const pending = consumeQueuedSparkJob({
     jobKey: queued.jobKey, config, transport, now: () => 1789900000100,
@@ -194,7 +249,7 @@ test("queue prefixes reject overlap so cancellations cannot trigger job executio
   }), /队列前缀不合法/);
 });
 
-test("Worker accepts a native OSS event only for a signed queue job prefix", async () => {
+test("overlapping native OSS deliveries execute the signed job once and return its original result", async () => {
   const objects = new Map(), queued = createQueuedSparkJob(input, config, {
     now: 1789900000000,
     requestId: "66666666-6666-4666-8666-666666666666",
@@ -203,9 +258,10 @@ test("Worker accepts a native OSS event only for a signed queue job prefix", asy
   objects.set(queued.jobKey, JSON.stringify(queued.job));
   const transport = {
     config: { bucket: "synthetic-bucket" },
-    create: async (key, body) => objects.set(key, body),
-    read: async (key) => objects.get(key),
+    ...atomicTransport(objects),
   };
+  const entered=Promise.withResolvers(), finish=Promise.withResolvers();
+  let starts=0;
   const app = createRemoteSparkWorker({
     env: {
       V2_SPARK_WORKER_SECRET: config.sharedSecret,
@@ -214,22 +270,40 @@ test("Worker accepts a native OSS event only for a signed queue job prefix", asy
     queueConfig: config,
     queueTransport: transport,
     now: () => 1789900000100,
-    runner: async () => ({ status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", validation: { passed: true } }),
+    runner: async () => {
+      starts++;
+      entered.resolve();
+      await finish.promise;
+      return { status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", validation: { passed: true } };
+    },
   });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   try {
-    const response = await fetch(`http://127.0.0.1:${app.server.address().port}/invoke`, {
+    const invoke = key => fetch(`http://127.0.0.1:${app.server.address().port}/invoke`, {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" },
+      signal:AbortSignal.timeout(5000),
       body: JSON.stringify({
         events: [{
           eventName: "ObjectCreated:PutObject",
           eventSource: "acs:oss",
           region: "cn-hangzhou",
-          oss: { bucket: { name: "synthetic-bucket" }, object: { key: queued.jobKey } },
+          oss: { bucket: { name: "synthetic-bucket" }, object: { key } },
         }],
       }),
     });
+    const first=invoke(queued.jobKey);
+    await Promise.race([entered.promise,first.then(()=>assert.fail("Worker returned before entering the runner"))]);
+    const replay=await invoke(queued.jobKey);
+    assert.equal(replay.status,202);
+    assert.equal((await replay.json()).status,"RESULT_PENDING");
+    assert.equal(starts,1);
+    assert.equal(objects.has(queued.resultKey),false);
+    const claimKey=[...objects.keys()].find(key=>key.endsWith(".claim"));
+    assert.ok(claimKey.startsWith(config.resultPrefix+"/"));
+    assert.equal((await invoke(claimKey)).status,422);
+    finish.resolve();
+    const response=await first;
     assert.equal(response.status, 202);
     assert.deepEqual(await response.json(), {
       protocol: "shuduo-spark-queue-trigger/v1",
@@ -238,7 +312,11 @@ test("Worker accepts a native OSS event only for a signed queue job prefix", asy
       publicReady: false,
     });
     assert.equal(objects.has(queued.resultKey), true);
+    assert.equal((await (await invoke(queued.jobKey)).json()).status,"SUCCEEDED");
+    assert.equal(starts,1);
   } finally {
+    finish.resolve();
+    app.server.closeAllConnections();
     await new Promise((resolve) => app.server.close(resolve));
   }
 });

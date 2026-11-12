@@ -33,13 +33,21 @@
 
 Worker现已能解析官方原生OSS触发事件，只接受`ObjectCreated:PutObject`、杭州、配置Bucket和任务前缀；然后读取签名任务、执行Spark并写回绑定结果。原有私有健康/固定烟测仍需显式开关，队列触发不允许任意HTTP执行。
 
-该代码尚未接入云控制面，也没有创建OSS触发器、Worker专用角色或队列前缀权限；并且新增模块会改变Worker不可变包摘要，当前已验收的云Worker继续保持原包。因此不把它写成W3已完成。下一实现批次需要重新双构建、上传新包、创建专用角色和OSS触发器、真实事件执行、不可变结果、告警和恢复。
+W3 初始方案在此处记录本地准备。当前部署和验收状态见[续接清单](goal-mode-next.md)。
+
+### Worker 重复投递与中断
+
+Worker 先核对签名任务及原结果。对仍待执行的任务，在既有结果前缀下以同一任务编号创建 `.claim` 对象，正文绑定原签名任务字节摘要。对象沿用结果前缀的读写策略，后缀与结果事件的 `.json` 过滤规则区分。Worker 只有确认独占创建后才执行 Spark。并发投递或进程退出后再投递，会读原结果。结果缺失时返回 `RESULT_PENDING`，保留原占用及计算预留。
+
+首次占用多一次条件写、一次冲突验证写和一次原对象回读。两次写各发送一次，写入或确认不明确时停止本次执行。存储接受了覆盖时也停止执行。阿里云 OSS 的禁止覆盖请求头在 Bucket 版本控制开启或暂停时失效。[OSS PutObject](https://help.aliyun.com/en/oss/developer-reference/putobject)
+
+本机用两个独立 Worker 收到同一原生事件，真实 Spark 执行一次并通过五组独立断言。第三个 Worker 在执行回执写入前被结束，重放保留原占用且未再次进入执行器。上线前须复核实际 Bucket、Worker 原权限、事件过滤和新增请求预算，先对账切换前仍在执行的队列任务。文件队列验收覆盖本机独立进程，云端另行验收。
 
 ## 已准备的失败关闭云变更计划
 
 `scripts/render-v2-w3-oss-trigger-plan.mjs` 只渲染计划，固定 `apply=false`，不调用阿里云。它要求未来 W3 包必须是一个不同于已验收 W2 包的新摘要，并要求 Worker 运行角色不同于控制面角色；否则立即失败。输出采用以下不可变边界：
 
-- Worker 角色仅能读取新包、签名任务和取消对象，并且仅能写签名结果对象；不含 `fc:InvokeFunction`、List、Delete 或宽泛 Bucket 权限。
+- Worker 角色读取新包、签名任务、取消对象及结果前缀中的对象，写入范围限结果前缀。权限清单不含 `fc:InvokeFunction`、List、Delete 或 Bucket 通配操作。
 - 原生 OSS 触发器只接受 `oss:ObjectCreated:PutObject`，仅匹配 `data-platform-demo/v2/spark-queue/jobs/` 前缀和 `.json` 后缀；结果和取消前缀不匹配，避免自触发循环。
 - 控制面保持无 `fc:InvokeFunction` 权限；它只沿既有私有 OSS 数据面创建任务、写取消标记并读取签名结果。
 - 计划如实披露 `fc:CreateTrigger` 在官方 RAM 表中是账号级动作，因此在角色创建、`ram:PassRole`、Worker 更新和触发器创建前仍须一次明确审批；它不会把“代码已合并”转换为“已获得权限”。
