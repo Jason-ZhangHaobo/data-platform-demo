@@ -2,7 +2,7 @@ import {distributionMetadataById} from "../../src/v2/output-contract-metadata.mj
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 const ServiceContractGatesPanel=lazy(async()=>({default:(await import('./ServiceContractGatesPanel')).ServiceContractGatesPanel}));
 import { EvidenceDownload, requestTextDownload } from "./EvidenceDownload";
-import { compositionChoices } from "./service-composition";
+import { compositionChoices, fundContractId } from "./service-composition";
 import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
 import type { ConsumptionScope } from "./service-consumption-scope";
 import {validServiceSourceBinding,serviceSourceKey,sourceBindingEnvironmentMatches,serviceSourcesPath,serviceReturnLocation,serviceReadCurrent,sourceRunMatches,sourceRunEligible,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from "./service-source-binding";
@@ -153,7 +153,6 @@ type ServiceAgentPlan = SourcePlan & {
   serviceId?: string;
 };
 
-const fundContractId = "securities-fund-lookthrough-v1";
 const fundContextId = "synthetic-fund-lookthrough-t1";
 const fundKeys = ["portfolio_id", "trade_date", "asset_class"];
 const fundScopeNotice = "按组合、交易日和资产类别保留明细。金额及占比使用精确十进制字符串。";
@@ -333,7 +332,19 @@ export function DataServicesWorkbench({
       full: contract.fields.filter(field => !contract.keyFields.includes(field.name)).map(field => field.name) };
     return [...contract.keyFields, ...metrics[choice]];
   }
-  const composition=compositionChoices(scopedDapis.filter(dapi => dapi.publishedVersion?.outputContractId !== fundContractId),{privateCloud,sourceRunId,holdingsVersionId,cashVersionId,outputContractId:sourceContract?.id});
+  const composition=compositionChoices(scopedDapis,{privateCloud,sourceRunId,holdingsVersionId,cashVersionId,outputContractId:isFundSource ? fundContractId : sourceContract?.id});
+  useEffect(() => {
+    setXapiName(name => {
+      if (isFundSource && name === "财富顾问客户资产组合查询") return "基金组合敞口查询";
+      if (!isFundSource && name === "基金组合敞口查询") return "财富顾问客户资产组合查询";
+      return name;
+    });
+    setXapiSlug(slug => {
+      if (isFundSource && slug === "advisor-asset-overview") return "fund-exposure-overview";
+      if (!isFundSource && slug === "fund-exposure-overview") return "advisor-asset-overview";
+      return slug;
+    });
+  }, [isFundSource]);
   const currentPublished=Boolean(selected?.currentVersion && selected.currentVersion.id===selected.publishedVersion?.id);
   const versionContext=`${scopeKey}:${selectedId}:${selected?.currentVersion?.id??""}`;
   const activeVersionRef=useRef(versionContext);activeVersionRef.current=versionContext;
@@ -600,13 +611,13 @@ export function DataServicesWorkbench({
     setError("");
     try {
       const {holdings,cash}=composition;
-      if(!consumptionScope&&(!holdings||!cash))throw new Error(sourceContract?"请先发布同一分布批次的数值和占比DAPI":"请先发布同一批次的持仓DAPI与现金DAPI");
+      if(!consumptionScope&&(!holdings||!cash))throw new Error(isFundSource ? "请先发布同一基金批次的敞口金额与占比 DAPI" : sourceContract?"请先发布同一分布批次的数值和占比DAPI":"请先发布同一批次的持仓DAPI与现金DAPI");
       const body=consumptionScope?consumptionXapiInput(consumptionScope,services):{
         name: xapiName.trim(),
         slug: xapiSlug.trim(),
         steps: [
-          { alias: sourceContract?"holdings":"positions", dapiId: holdings!.id, dapiVersionId:holdings!.publishedVersion!.id },
-          { alias: sourceContract?"allocation":"cash", dapiId: cash!.id, dapiVersionId:cash!.publishedVersion!.id },
+          { alias: isFundSource ? "amount" : sourceContract?"holdings":"positions", dapiId: holdings!.id, dapiVersionId:holdings!.publishedVersion!.id },
+          { alias: isFundSource ? "ratio" : sourceContract?"allocation":"cash", dapiId: cash!.id, dapiVersionId:cash!.publishedVersion!.id },
         ],
         timeoutMs: 2500,
         rateLimitPerMinute: 30,
@@ -969,7 +980,7 @@ export function DataServicesWorkbench({
                   <select
                     value={scopePlan?.sourceReleaseRunId??sourceRunId}
                     disabled={Boolean(consumptionScope)||!!busy||Boolean(pendingPlanKey)}
-                    onChange={(event) => setSourceRunId(event.target.value)}
+                    onChange={(event) => { setSourceRunId(event.target.value); setHoldingsVersionId(""); setCashVersionId(""); }}
                   >
                     {!eligibleRuns.length && <option>暂无可用批次</option>}
                     {eligibleRuns.map((run) => (
@@ -1159,7 +1170,7 @@ LIMIT :limit OFFSET :offset`}</pre>
                 <section className="service-test-result">
                   <CheckCircle2 size={18} />
                   <div>
-                    <strong>真实查询通过 · {testReceipt.test.rowCount}{testReceipt.response.resultContract?.paginationUnit==='CLIENT_DATE_GROUPS'?"个客户日期组":"行"}</strong>
+                    <strong>真实查询通过 · {testReceipt.test.rowCount}{testReceipt.response.resultContract?.paginationUnit === 'PORTFOLIO_DATE_GROUPS' ? '个组合日期组' : testReceipt.response.resultContract?.paginationUnit === 'CLIENT_DATE_GROUPS' ? '个客户日期组' : '行'}</strong>
                     <code>结果摘要 {testReceipt.test.resultHash.slice(0, 16)}</code>
                   </div>
                   <pre>{JSON.stringify(testReceipt.response.data, null, 2)}</pre>
@@ -1199,24 +1210,36 @@ LIMIT :limit OFFSET :offset`}</pre>
             <Network size={19} />
             <div>
               <h3>XAPI组合编排</h3>
-              <p>{isFundSource ? "基金组合 XAPI 待接入，当前可单独发布基金 DAPI。" : sourceContract?"把同一发布批次的数值和占比按复合键组合，每位客户的分类完整保留在分布数组中；按客户与交易日分页。":"把两个已发布DAPI按客户编号组合，固定其版本。"}</p>
+              <p>{isFundSource ? "固定同一批次的敞口金额与占比版本，按组合和交易日分页，保留每组的资产类别。" : sourceContract?"把同一发布批次的数值和占比按复合键组合，每位客户的分类完整保留在分布数组中；按客户与交易日分页。":"把两个已发布DAPI按客户编号组合，固定其版本。"}</p>
             </div>
           </header>
           <div className="service-composition-form">
+            {!privateCloud && !bindingDeclared && !consumptionScope && eligibleRuns.some(run => run.outputContractId === fundContractId) && (
+              <label>组合来源批次<select value={sourceRunId} disabled={!!busy || servicePlanningOnly} onChange={event => {
+                setSourceRunId(event.currentTarget.value);
+                setHoldingsVersionId("");
+                setCashVersionId("");
+              }}>
+                <option value="">请选择已核验批次</option>
+                {eligibleRuns.map(run => <option key={run.id} value={run.id}>
+                  {run.outputContractId === fundContractId ? `基金穿透 · ${run.businessDate} · 第 ${run.sequence} 批 · ` : ""}{run.id.slice(0, 8)}
+                </option>)}
+              </select></label>
+            )}
             <label>XAPI名称<input value={scopePlan?.xapi.name??xapiName} maxLength={100} readOnly={Boolean(consumptionScope)} disabled={!!busy||servicePlanningOnly} onChange={e=>setXapiName(e.target.value)}/></label>
             <label>XAPI路径标识<input value={scopePlan?.xapi.slug??xapiSlug} maxLength={48} readOnly={Boolean(consumptionScope)} disabled={!!busy||servicePlanningOnly} onChange={e=>setXapiSlug(e.target.value)}/></label>
-            <label>持仓DAPI版本<select value={composition.holdings?.publishedVersion?.id??""} disabled={isFundSource||!!busy||Boolean(consumptionScope)||servicePlanningOnly} onChange={e=>{setHoldingsVersionId(e.target.value);setCashVersionId("");}}><option value="">请选择已发布版本</option>{composition.holdingsOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
-            <label>{sourceContract?"占比DAPI版本":"现金DAPI版本"}<select value={composition.cash?.publishedVersion?.id??""} disabled={isFundSource||!!busy||Boolean(consumptionScope)||servicePlanningOnly} onChange={e=>setCashVersionId(e.target.value)}><option value="">请选择已发布版本</option>{composition.cashOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
+            <label>{isFundSource ? "金额 DAPI 版本" : "持仓DAPI版本"}<select value={composition.holdings?.publishedVersion?.id??""} disabled={!!busy||Boolean(consumptionScope)||servicePlanningOnly} onChange={e=>{setHoldingsVersionId(e.target.value);setCashVersionId("");}}><option value="">请选择已发布版本</option>{composition.holdingsOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
+            <label>{isFundSource ? "占比 DAPI 版本" : sourceContract?"占比DAPI版本":"现金DAPI版本"}<select value={composition.cash?.publishedVersion?.id??""} disabled={!!busy||Boolean(consumptionScope)||servicePlanningOnly} onChange={e=>setCashVersionId(e.target.value)}><option value="">请选择已发布版本</option>{composition.cashOptions.map(s=><option key={s.id} value={s.publishedVersion!.id}>{s.name} · V{s.publishedVersion!.versionNumber} · {s.publishedVersion!.id.slice(0,8)}</option>)}</select></label>
           </div>
           <button
             className="button"
             onClick={createXapi}
-            disabled={isFundSource || !canWrite || (consumptionScope ? !plannedXapiBody || xapiAlreadyExists : !composition.holdings || !composition.cash || !xapiName.trim() || !/^[a-z][a-z0-9-]{2,47}$/.test(xapiSlug.trim())) || !!busy}
+            disabled={!canWrite || (consumptionScope ? !plannedXapiBody || xapiAlreadyExists : !composition.holdings || !composition.cash || !xapiName.trim() || !/^[a-z][a-z0-9-]{2,47}$/.test(xapiSlug.trim())) || !!busy}
           >
             <Network size={15} />
-            {sourceContract?"创建客户分布XAPI":"创建持仓+现金XAPI"}
+            {isFundSource ? "创建基金组合 XAPI" : sourceContract?"创建客户分布XAPI":"创建持仓+现金XAPI"}
           </button>
-          <small>需要至少两个已发布DAPI；首版采用声明式编排。</small>
+          <small>{isFundSource ? "金额和占比各选一个已发布版本。" : "需要至少两个已发布DAPI；首版采用声明式编排。"}</small>
           {scopePlan&&<small>固定编排：{scopePlan.xapi.steps.map(s=>`${s.alias} → ${s.dapiSlug}`).join("；")}；{scopePlan.xapi.timeoutMs}ms、{scopePlan.xapi.rateLimitPerMinute}/min。</small>}
         </article>
         <article className="service-observability">
