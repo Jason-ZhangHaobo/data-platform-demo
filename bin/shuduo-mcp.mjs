@@ -7,6 +7,7 @@ import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportLineage,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
+import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
 import {readReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import {readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
 import {readBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
@@ -247,6 +248,12 @@ const tools = [
   { name: "report_published_consumption", description: "按原基金 Agent 报表请求只读核对同一批次的 DAPI 和 XAPI 历史授权调用。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, source: publishedReportSourceSchema },
       required: ["requestId"], additionalProperties: false }, annotations:{readOnlyHint:true} },
+  { name: 'report_published_quality', description: '只读核对原基金报表快照、规则版本与质量回执。',
+    inputSchema: { type: 'object', properties: { requestId: { type: 'string', format: 'uuid' } }, required: ['requestId'], additionalProperties: false }, annotations: { readOnlyHint: true } },
+  { name: 'report_published_quality_run', description: '经明确确认后，在固定本机报表快照执行一次质量检测，复用原回执。',
+    inputSchema: { type: 'object', properties: { requestId: { type: 'string', format: 'uuid' }, snapshotId: { type: 'string', format: 'uuid' },
+      basisDigest: { type: 'string', pattern: '^[a-f0-9]{64}$' }, confirm: { type: 'boolean', const: true } },
+      required: ['requestId', 'snapshotId', 'basisDigest', 'confirm'], additionalProperties: false } },
   { name: "report_published_resume",description:"续接已有报表创建任务，复用原数据集、快照和运行；不改变原来源。",inputSchema:{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false}},
   { name: "report_dataset_create", description: "从可报表资产创建字段受限数据集草稿，不复制数据。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, fields: { type: "array", items: { type: "string" } } }, required: ["name", "code", "assetId", "fields"] } },
   { name: "report_dataset_refresh", description: "将实际资产行物化到独立报表快照库并保存摘要。", inputSchema: { type: "object", properties: { datasetId: { type: "string" } }, required: ["datasetId"] } },
@@ -849,6 +856,8 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==='report_published_lineage')return readPublishedReportLineage(client,args);
   if(name==='report_published_development')return readPublishedReportDevelopment(client,args);
   if(name==='report_published_consumption')return readPublishedReportConsumption(client,args);
+  if (name === 'report_published_quality') return readFundReportQuality(client, args);
+  if (name === 'report_published_quality_run') return runFundReportQuality(client, args);
   if(name==='report_published_resume')return resumePublishedReport(client,args);
   if (name === "report_overview") return client.request("/reports/overview");
   if (name === "report_dataset_list") return client.request("/reports/datasets");

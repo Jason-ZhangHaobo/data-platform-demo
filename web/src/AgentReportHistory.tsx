@@ -9,10 +9,10 @@ import type { PublishedReportResult } from "./published-report-read";
 import { DistributionReportResults } from "./DistributionReportResults";
 import { ReportWidget } from "./ReportsWorkbench";
 
-type Api = <T>(path: string) => Promise<T>;
+type Api = <T>(path: string, body?: unknown) => Promise<T>;
 type HistoryResult = { key: string; result?: PublishedReportResult; receipt?: PublishedReportReceipt; error?: string };
 
-export function AgentReportHistory({ api, local }: { api: Api; local: boolean }) {
+export function AgentReportHistory({ api, local, canWrite }: { api: Api; local: boolean; canWrite: boolean }) {
   const initial = new URLSearchParams(window.location.search).getAll("report_request");
   const [request, setRequest] = useState(initial.length === 1 ? initial[0] : "");
   const [draft, setDraft] = useState(request);
@@ -66,13 +66,13 @@ export function AgentReportHistory({ api, local }: { api: Api; local: boolean })
         {inputError && <p role="alert">{inputError}</p>}
         {request && !show && <p role="status">正在读取原报表运行…</p>}
         {show?.error && <p role="alert">{show.error}</p>}
-        {show?.result && show.receipt && <HistoricalResult key={show.result.key} result={show.result} receipt={show.receipt} api={api} />}
+        {show?.result && show.receipt && <HistoricalResult key={show.result.key} result={show.result} receipt={show.receipt} api={api} canWrite={canWrite} />}
       </>}
     </section>
   );
 }
 
-function HistoricalResult({ result, receipt, api }: { result: PublishedReportResult; receipt: PublishedReportReceipt; api: Api }) {
+function HistoricalResult({ result, receipt, api, canWrite }: { result: PublishedReportResult; receipt: PublishedReportReceipt; api: Api; canWrite: boolean }) {
   const [exporting, setExporting] = useState(false), [exportError, setExportError] = useState("");
   const active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
@@ -99,7 +99,7 @@ function HistoricalResult({ result, receipt, api }: { result: PublishedReportRes
     <small>批次 <code title={result.sourceBatchId}>{result.sourceBatchId.slice(0, 8)}</code>
       {" · 运行 "}<code title={result.runId}>{result.runId.slice(0, 8)}</code>
       {" · 结果 "}<code title={result.resultHash}>{result.resultHash.slice(0, 12)}</code></small>
-    {result.outputContractId === fundReportContractId && <FundReportLineage key={result.key} api={api} receipt={receipt} />}
+    {result.outputContractId === fundReportContractId && <FundReportLineage key={result.key} api={api} receipt={receipt} canWrite={canWrite} />}
     {result.outputContractId
       ? <DistributionReportResults key={result.key} contractId={result.outputContractId} widgets={result.widgets} sourceEvidence={result.sourceEvidence} />
       : <div className="report-widgets-v2">{result.widgets.map(widget => <ReportWidget key={widget.id} widget={widget} />)}</div>}
