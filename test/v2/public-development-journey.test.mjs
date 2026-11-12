@@ -1783,6 +1783,11 @@ test('an invited exact window binds derivation from the parent through signed re
   assert.deepEqual(evidence.body.derivedFrom,original.body.derivedFrom);
   assert.equal(evidence.body.development.runId,runId);
   assert.equal(evidence.body.development.validationContractId,family.id);
+  const preparation=(await f.call(taskPath+'/workflow')).body.preparationSource;
+  assert.deepEqual(preparation,{revisionId:task.revisionId,revisionHash:evidence.body.development.revisionHash,runId,
+    requirementBinding:evidence.body.development.requirementBinding});
+  assert.equal((await f.call(taskPath+'/prepare-delivery',{expectedSource:{...preparation,runId:randomUUID()}},randomUUID())).status,409);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
   assert.deepEqual(f.store.get('agent',source.task.id,PROJECT),initialParent);
   assert.deepEqual(f.counts(),before);
   const checkpoint=join(f.directory,'derived-case.json'), bill=join(f.directory,'derived-bill.json');
