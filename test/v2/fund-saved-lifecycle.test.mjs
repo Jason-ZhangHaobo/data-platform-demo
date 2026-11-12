@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { MetadataStore } from "../../src/v2/store.mjs";
 import { BusinessQueryStore } from "../../src/v2/data-services.mjs";
 import { ReportDataStore } from "../../src/v2/reports.mjs";
@@ -92,4 +94,22 @@ test("saved Agent verification requires the original request ledger and rejects 
   store.db.prepare("UPDATE idempotency SET signature=? WHERE key=?").run("1".repeat(64), ledgerKey);
   await assert.rejects(verifySavedFundAgentLifecycle(input), { code: "FUND_SAVED_AGENT_REQUEST_BINDING_CHANGED" });
   assert.equal(store.list("run", project).length + store.list("release", project).length, 0);
+});
+
+test("signed receipt and test clock options stay on the saved Agent command and reject invalid inputs", () => {
+  const script = fileURLToPath(new URL("../../scripts/verify-saved-fund-lifecycle.mjs", import.meta.url));
+  const common = ["--active-metadata", "unused.sqlite", "--business-snapshots", "unused.sqlite", "--request-id", randomUUID(),
+    "--dapi-call-id", randomUUID(), "--xapi-call-id", randomUUID()];
+  const agent = ["--agent", "--task-id", randomUUID(), "--release-id", randomUUID(), "--package-digest", "0".repeat(64)];
+  for (const args of [
+    ["--history-metadata", "unused.sqlite", "--report-snapshots", "unused.sqlite", "--signed-receipt-root", "."],
+    [...agent, "--signed-receipt-root", " "],
+    [...agent, "--test-clock-unit-ms", "0"],
+    [...agent, "--test-clock-unit-ms", "1001"],
+  ]) {
+    const result = spawnSync(process.execPath, [script, ...common, ...args], { encoding: "utf8", timeout: 5000 });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.deepEqual(JSON.parse(result.stderr), { status: "FAILED", code: "FUND_EVIDENCE_ARGUMENTS_REQUIRED" });
+  }
 });
