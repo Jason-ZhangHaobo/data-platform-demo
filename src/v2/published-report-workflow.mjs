@@ -90,6 +90,7 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
    const receipt=view(record,{report,version,run,snapshot});
    const pick=(value,keys)=>Object.fromEntries(keys.filter(key=>Object.hasOwn(value,key)).map(key=>[key,value[key]]));
    const evidenceKeys=["protocol","scope","engineClassification","modelClassification","eligibleForService","agentIndependentE2E",
+    ...(record.input.source.kind==="AGENT"?["modelMode","upstreamKind","agentTaskId"]:[]),
     "releaseId","packageDigest","sourceTaskId","sourceRevisionId","sourceRunId","sourceReleaseRunId","outputContractId",
     "batchId","businessDate","inputDigest","assertionDigest","resultDigest"];
    const snapshotView=pick(snapshot,["id","datasetId","assetId","assetVersionId","assetEvidenceHash","contentHash",

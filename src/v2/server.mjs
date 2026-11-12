@@ -37,6 +37,7 @@ import{standaloneManualPublicationSource}from"./standalone-manual-publication-so
 import { parseAgentReviewEvidencePath, publicationSelectorFromUrl } from "./publication-request.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
 import { localTaskConsumption } from "./local-task-consumption.mjs";
+import { fundAgentTaskConsumption } from "./fund-agent-task-consumption.mjs";
 import { localServiceSources } from "./local-service-sources.mjs";
 import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource,assertServicePlanVersions,bindServicePlanProposal,servicePlanDraftMatches,publicServicePlan} from './service-plan-source.mjs';
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
@@ -3035,12 +3036,36 @@ export function createV2Server(options = {}) {
           "Content-Disposition": `attachment; filename="shuduo-batch-report-${source.batchId.slice(0, 8)}.json"`,
         });
       }
-      const originalReportResult = path.match(/^\/api\/v2\/reports\/published\/requests\/([A-Fa-f0-9-]{36})\/(result|lineage|development)$/);
+      const requireFundAgentReportOwner = source => {
+        if (source?.kind !== "AGENT" || typeof source.taskId !== "string") return;
+        const agent = store.get("agent", source.taskId, PROJECT);
+        if (agent?.fundPreparation) requireDurableAgentOwner(agent, req);
+      };
+      const originalReportResult = path.match(/^\/api\/v2\/reports\/published\/requests\/([A-Fa-f0-9-]{36})\/(result|lineage|development|consumption|export)$/);
       if (originalReportResult && method === "GET") {
         if (!local) throw fail(403, "原发布报表结果仅在本机开发边界开放");
         if (url.searchParams.size) throw fail(422, "按原编号读取结果不接受附加查询参数");
         const [ , requestId, view] = originalReportResult;
         const actor = reportActor(req);
+        requireFundAgentReportOwner(publishedReports.lookup(requestId, actor).source);
+        if (view === "export") {
+          const { receipt } = publishedReports.readResult(requestId, actor);
+          return json(res, 200, reports.exportReport(receipt.reportId, receipt.reportRunId));
+        }
+        if (view === "consumption") {
+          if (!localClassicSpark || options.ingress || !isLoopbackRequest(req)) throw fail(403, "基金报表消费核验仅支持本机");
+          const lineage = publishedReports.readLineage(requestId, actor, releaseTimeUnitMs);
+          const { source, report } = lineage;
+          if (source.kind !== "AGENT") throw fail(422, "此核对需要基金 Agent 报表");
+          const agent = get("agent", source.taskId);
+          requireDurableAgentOwner(agent, req);
+          const consumption = lineage.release.activeForConsumption ? await fundAgentTaskConsumption({
+            store, project: PROJECT, agent, packageDigest: source.packageDigest, releaseId: source.releaseId,
+            batchId: source.batchId, manager: dataServices, timeUnitMs: releaseTimeUnitMs,
+          }) : undefined;
+          return json(res, 200, { protocol: "shuduo-fund-report-consumption/v1", scope: "LOCAL_TEST_ONLY",
+            requestId, source, report, status: consumption?.status ?? "UNAVAILABLE", consumption });
+        }
         if (view === "development") return json(res, 200, publishedReports.readDevelopment(requestId, actor, releaseTimeUnitMs));
         return json(res, 200, view === "lineage"
           ? publishedReports.readLineage(requestId, actor, releaseTimeUnitMs)
@@ -3051,11 +3076,18 @@ export function createV2Server(options = {}) {
         if(!local)throw fail(403,'确切发布报表创建尚只在本机开发边界开放');
         const actorId=auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
         if(method==='POST'&&!reportCreation[1]&&!reportCreation[3]){
-          const body=await readBody(req),result=publishedReports.submit(body,actorId,req.headers['idempotency-key']);
+          const body=await readBody(req);
+          requireFundAgentReportOwner(body.source);
+          const result=publishedReports.submit(body,actorId,req.headers['idempotency-key']);
           return json(res,result.status==='SUCCEEDED'?200:202,result);
         }
-        if(method==='GET'&&reportCreation[1])return json(res,200,publishedReports.lookup(reportCreation[2],actorId));
-        if(method==='POST'&&reportCreation[4]){await readBody(req);const result=publishedReports.advance(reportCreation[3],actorId);return json(res,result.status==='SUCCEEDED'?200:202,result);}
+        if(method==='GET'&&reportCreation[1]){
+          const receipt=publishedReports.lookup(reportCreation[2],actorId);requireFundAgentReportOwner(receipt.source);return json(res,200,receipt);
+        }
+        if(method==='POST'&&reportCreation[4]){
+          await readBody(req);requireFundAgentReportOwner(store.get('published_report_creation',reportCreation[3],PROJECT)?.input?.source);
+          const result=publishedReports.advance(reportCreation[3],actorId);return json(res,result.status==='SUCCEEDED'?200:202,result);
+        }
       }
       if (path === "/api/v2/reports/datasets" && method === "GET")
         return json(res, 200, reports.listDatasets());

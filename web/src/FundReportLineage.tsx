@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { readPublishedReportLineage, readPublishedReportDevelopment } from "../../src/v2/published-report-client.mjs";
-import type { PublishedReportDevelopment, PublishedReportLineage, PublishedReportReceipt } from "../../src/v2/published-report-client.mjs";
+import { readPublishedReportLineage, readPublishedReportDevelopment, readPublishedReportConsumption } from "../../src/v2/published-report-client.mjs";
+import type { PublishedReportConsumption, PublishedReportDevelopment, PublishedReportLineage, PublishedReportReceipt } from "../../src/v2/published-report-client.mjs";
 
 const releaseLabels = {
   ACTIVE_LOCAL: "当前本机发布",
@@ -54,7 +54,8 @@ export function FundReportLineage({ api, receipt }: { api: <T>(path: string) => 
             <dt>记录时间</dt><dd>{time(result.batch.monitorEvent.observedAt)} 北京时间</dd>
           </dl>
         </section>
-      </div><DevelopmentEvidence api={api} receipt={receipt} lineage={result} /></>}
+      </div><DevelopmentEvidence api={api} receipt={receipt} lineage={result} />
+      {result.source.kind === "AGENT" && <ConsumptionEvidence api={api} lineage={result} />}</>}
     </div>}
   </div>;
 }
@@ -85,7 +86,8 @@ function DevelopmentEvidence({ api, receipt, lineage }: {
       {!result && !error && <p role="status">正在核对原 SQL 与独立断言…</p>}
       {error && <p role="alert">{error}</p>}
       {result && <>
-        <h4>原开发 SQL <small>工程师编写 · 只读</small></h4>
+        <h4>原开发 SQL <small>{result.revision.source === "ENGINEER_AUTHORED" ? "工程师编写" :
+          lineage.release.modelMode === "SYNTHETIC_MODEL" ? "模型替身生成" : "Agent 生成"} · 只读</small></h4>
         <p>版本 <code title={result.revision.id}>{result.revision.id.slice(0, 12)}</code>
           {" · 摘要 "}<code title={result.revision.hash}>{result.revision.hash.slice(0, 12)}</code></p>
         <pre aria-label="原开发 SQL" tabIndex={0}><code>{result.revision.sql}</code></pre>
@@ -96,6 +98,41 @@ function DevelopmentEvidence({ api, receipt, lineage }: {
         <p>断言摘要 <code title={result.verification.assertionDigest}>{result.verification.assertionDigest.slice(0, 12)}</code>
           {" · 文件演练测试 SQL "}<code title={result.verification.testSqlDigest}>{result.verification.testSqlDigest.slice(0, 12)}</code></p>
       </>}
+    </section>}
+  </div>;
+}
+
+function ConsumptionEvidence({ api, lineage }: { api: <T>(path: string) => Promise<T>; lineage: PublishedReportLineage }) {
+  const [open, setOpen] = useState(false);
+  const [result, setResult] = useState<PublishedReportConsumption>();
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void readPublishedReportConsumption({ request: path => api(path) }, { requestId: lineage.requestId, lineage }).then(
+      data => { if (active) setResult(data); },
+      cause => { if (active) setError((cause as Error).message); },
+    );
+    return () => { active = false; };
+  }, [api, lineage, open]);
+  return <div className="report-development-v2">
+    <button className="button" aria-expanded={open} onClick={() => {
+      setResult(undefined); setError(""); setOpen(!open);
+    }}>{open ? "收起同批次调用" : "核对同批次接口调用"}</button>
+    {open && <section aria-label="同批次接口调用">
+      {!result && !error && <p role="status">正在核对报表批次的原接口调用…</p>}
+      {error && <p role="alert">{error}</p>}
+      {result?.status === "UNAVAILABLE" && <p role="status">该发布已停止或替换，保留原报表及批次运维记录。</p>}
+      {result?.status === "VERIFIED" && <p role="status">同一报表批次的 DAPI 与 XAPI 已通过独立对照。</p>}
+      {result?.status === "PENDING" && <p role="status">此报表批次尚缺通过核验的 DAPI 或 XAPI 调用。</p>}
+      {result?.consumption?.services.length ? <ul>{result.consumption.services.map(service => (
+        <li key={service.serviceId}>{service.serviceType} · {service.name} · 版本 {service.versionId.slice(0, 8)}
+          {service.call && <> · 调用 {service.call.callId.slice(0, 8)} · {service.call.rowCount}{service.serviceType==="XAPI"?" 个组合日期组":" 行"}
+            {service.call.applicationStatus === "REVOKED" ? " · 应用已撤销" : ""}</>}
+          {service.status === "PENDING" && " · 待直接授权调用"}
+          {service.status === "NEEDS_ATTENTION" && " · 调用证据待核对"}</li>
+      ))}</ul> : null}
+      {result && <a className="button" href={`?module=agent-center&task=${encodeURIComponent(lineage.source.taskId!)}#agent-publication`}>返回原 Agent 发布</a>}
     </section>}
   </div>;
 }

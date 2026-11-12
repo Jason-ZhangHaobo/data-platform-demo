@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fundReportContractId } from "../../src/v2/distribution-report-contract.mjs";
 import { FundReportLineage } from "./FundReportLineage";
 import type { PublishedReportReceipt } from "../../src/v2/published-report-client.mjs";
 import { readPublishedReportResult } from "../../src/v2/published-report-client.mjs";
 import { reportRequestId } from "../../src/v2/published-report-request.mjs";
-import { boundPublishedReports } from "./published-report-read";
+import { boundPublishedReports, checkedPublishedReportExport } from "./published-report-read";
 import type { PublishedReportResult } from "./published-report-read";
 import { DistributionReportResults } from "./DistributionReportResults";
 import { ReportWidget } from "./ReportsWorkbench";
@@ -66,17 +66,36 @@ export function AgentReportHistory({ api, local }: { api: Api; local: boolean })
         {inputError && <p role="alert">{inputError}</p>}
         {request && !show && <p role="status">正在读取原报表运行…</p>}
         {show?.error && <p role="alert">{show.error}</p>}
-        {show?.result && show.receipt && <HistoricalResult result={show.result} receipt={show.receipt} api={api} />}
+        {show?.result && show.receipt && <HistoricalResult key={show.result.key} result={show.result} receipt={show.receipt} api={api} />}
       </>}
     </section>
   );
 }
 
 function HistoricalResult({ result, receipt, api }: { result: PublishedReportResult; receipt: PublishedReportReceipt; api: Api }) {
+  const [exporting, setExporting] = useState(false), [exportError, setExportError] = useState("");
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  async function download() {
+    setExporting(true); setExportError("");
+    try {
+      const value = await checkedPublishedReportExport(
+        await api("/reports/published/requests/" + receipt.requestId + "/export"), result, { originalRequest: true });
+      if (!active.current) return;
+      const url = URL.createObjectURL(new Blob([value.content], { type: value.contentType }));
+      const link = document.createElement("a");
+      link.href = url; link.download = value.fileName; link.hidden = true;
+      try { document.body.appendChild(link); link.click(); }
+      finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
+    } catch (error) { if (active.current) setExportError((error as Error).message); }
+    finally { if (active.current) setExporting(false); }
+  }
   return <>
     <div className="agent-report-heading-v2"><div><h4>{result.name} · V{result.versionNumber}</h4><p>{result.description}</p></div>
-      <small>{result.exportable ? "原请求运行" : "固定历史运行"} · 只读</small>
+      <div><small>{result.exportable ? "原请求运行" : "固定历史运行"} · 只读</small>
+        <button className="button" disabled={exporting} onClick={() => void download()}>导出原运行 CSV</button></div>
     </div>
+    {exportError && <p role="alert">{exportError}</p>}
     <small>批次 <code title={result.sourceBatchId}>{result.sourceBatchId.slice(0, 8)}</code>
       {" · 运行 "}<code title={result.runId}>{result.runId.slice(0, 8)}</code>
       {" · 结果 "}<code title={result.resultHash}>{result.resultHash.slice(0, 12)}</code></small>

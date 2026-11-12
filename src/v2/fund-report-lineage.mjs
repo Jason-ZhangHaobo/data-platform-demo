@@ -1,6 +1,7 @@
 import { isDeepStrictEqual as same } from "node:util";
 import { fundDapiContract } from "./fund-dapi-contract.mjs";
 import { resolveFundReportPublication } from "./fund-consumption-source.mjs";
+import { fundAgentAttributionKind } from "./fund-delivery.mjs";
 
 const unproven = () => Object.assign(new Error("原报表的快照、发布批次或运维记录已变化"), {
   status: 409, code: "FUND_REPORT_LINEAGE_UNPROVEN",
@@ -9,7 +10,7 @@ const unproven = () => Object.assign(new Error("原报表的快照、发布批�
 function verifiedFundReportLineage({ store, project, record, artifacts, timeUnitMs }) {
   const { report, version, run, snapshot, dataset } = artifacts;
   const source = record.input.source, saved = snapshot.sourceEvidence, contract = fundDapiContract;
-  if (source.kind !== "MANUAL" || version.outputContractId !== contract.id)
+  if (version.outputContractId !== contract.id)
     throw Object.assign(new Error("当前仅基金组合报表支持查看此发布证据"), { status: 422, code: "REPORT_LINEAGE_UNSUPPORTED" });
   if (!saved || saved.eligibleForService !== true || !same(saved, run.sourceEvidence) || !same(saved, dataset.sourceEvidence) ||
       !same(snapshot.fields, contract.fields.map(field => field.name)) ||
@@ -21,6 +22,12 @@ function verifiedFundReportLineage({ store, project, record, artifacts, timeUnit
   const keys = ["protocol", "scope", "contractId", "releaseId", "packageDigest", "batchId", "revisionId", "developmentRunId",
     "batchSequence", "businessDate", "inputDigest", "assertionDigest", "testSqlDigest", "resultDigest", "rowCount",
     "engineClassification", "batches"];
+  const fromAgent = source.kind === "AGENT";
+  if (fromAgent ? evidence.upstreamKind !== fundAgentAttributionKind || evidence.agentTaskId !== source.taskId ||
+      saved.sourceTaskId !== source.taskId || saved.agentTaskId !== evidence.agentTaskId || saved.modelMode !== evidence.modelMode ||
+      saved.modelClassification !== (evidence.modelMode === "SYNTHETIC_MODEL" ? "SYNTHETIC_UPSTREAM" : "MODEL_NAME_RECORDED") ||
+      saved.upstreamKind !== evidence.upstreamKind || development.agentTaskId !== source.taskId || revision.author !== record.actorId
+    : evidence.upstreamKind !== "ENGINEER_AUTHORED") throw unproven();
   if (source.revisionId !== evidence.revisionId || source.runId !== evidence.developmentRunId ||
       snapshot.rowCount !== evidence.rowCount || keys.some(key => !same(saved[key], evidence[key])))
     throw unproven();
@@ -32,6 +39,7 @@ function verifiedFundReportLineage({ store, project, record, artifacts, timeUnit
       fields: contract.fields.map(({ name, label }) => ({ name, label })), rowCount: snapshot.rowCount, contentHash: snapshot.contentHash },
     release: { id: evidence.releaseId, status, businessDate: evidence.businessDate, packageDigest: evidence.packageDigest,
       resultDigest: evidence.resultDigest, assertionDigest: evidence.assertionDigest, engineClassification: evidence.engineClassification,
+      ...(fromAgent ? { upstreamKind: evidence.upstreamKind, modelMode: evidence.modelMode } : {}),
       activeForConsumption: evidence.eligibleForService },
     batch, publicDeployed: false,
   };
@@ -48,7 +56,9 @@ export const fundDevelopmentAssertions = Object.freeze([
 
 export function fundReportDevelopment(args) {
   const { lineage, revision, development, verification, evidence } = verifiedFundReportLineage(args);
-  if (revision.author !== args.record.actorId || revision.manualProvenance?.actorId !== args.record.actorId)
+  if (revision.author !== args.record.actorId ||
+      (lineage.source.kind === "MANUAL" ? revision.manualProvenance?.actorId !== args.record.actorId :
+        revision.source !== evidence.modelMode || development.agentTaskId !== lineage.source.taskId))
     throw Object.assign(new Error("原开发版本只允许其拥有者查看"), { status: 403, code: "REPORT_DEVELOPMENT_OWNER" });
   const validation = development.validation, regression = validation.regressions[0];
   if (!same(validation.assertions, fundDevelopmentAssertions) || !same(regression.assertions, fundDevelopmentAssertions) ||
@@ -57,7 +67,7 @@ export function fundReportDevelopment(args) {
     throw Object.assign(new Error("原开发运行的独立核验记录不完整"), { status: 409, code: "REPORT_DEVELOPMENT_UNPROVEN" });
   return {
     protocol: "shuduo-fund-report-development/v1", lineage,
-    revision: { id: revision.id, hash: revision.hash, sql: revision.sql, source: "ENGINEER_AUTHORED" },
+    revision: { id: revision.id, hash: revision.hash, sql: revision.sql, source: evidence.upstreamKind },
     run: { id: development.id, revisionId: development.revisionId, revisionHash: development.revisionHash,
       status: development.status, engine: development.engine, engineVersion: development.engineVersion,
       finishedAt: development.finishedAt, durationMs: development.durationMs, rowCount: development.rows.length },

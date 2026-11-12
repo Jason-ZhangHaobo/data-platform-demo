@@ -6,7 +6,7 @@ import { distributionReportTemplate, fundReportContractId } from "../../src/v2/d
 import { fundContext } from "../../src/v2/fund-lookthrough.mjs";
 import { normalizedDistributionRows } from "../../src/v2/distribution-services.mjs";
 import { publishedReportHash } from "../../src/v2/published-report-source.mjs";
-import { checkedPublishedReportLineage, checkedPublishedReportDevelopment } from "../../src/v2/published-report-client.mjs";
+import { checkedPublishedReportLineage, checkedPublishedReportDevelopment, checkedPublishedReportConsumption } from "../../src/v2/published-report-client.mjs";
 import { checkedDistributionReportWidgets } from "../../web/src/distribution-report-read.ts";
 
 test("fund reporting preserves partitions and independent precision even when wrong snapshot bytes are rehashed", () => {
@@ -73,5 +73,35 @@ test("fund lineage and development clients verify the original source, chronolog
   await assert.rejects(checkedPublishedReportDevelopment({...development,revision:{...development.revision,sql:"SELECT 2"}}));
   await assert.rejects(checkedPublishedReportDevelopment({...development,verification:{...development.verification,assertionDigest:"0".repeat(64)}}));
   await assert.rejects(checkedPublishedReportDevelopment(development,{lineage:{...body,batch:{...body.batch,monitorEvent:{...body.batch.monitorEvent,id:id()}}}}));
+  const agentSource = { ...source, kind: "AGENT", taskId: id() };
+  const agentLineage = { ...body, source: agentSource,
+    release: { ...body.release, upstreamKind: "FUND_AGENT_GENERATED", modelMode: "SYNTHETIC_MODEL" } };
+  assert.equal(checkedPublishedReportLineage(agentLineage), agentLineage);
+  assert.throws(() => checkedPublishedReportLineage({ ...agentLineage, release: body.release }));
+  const agentDevelopment = { ...development, lineage: agentLineage, revision: { ...development.revision, source: "FUND_AGENT_GENERATED" } };
+  assert.equal(await checkedPublishedReportDevelopment(agentDevelopment), agentDevelopment);
+  await assert.rejects(checkedPublishedReportDevelopment({ ...agentDevelopment, revision: development.revision }));
+});
 
+test("fund report consumption binds original report version and exact batch, retaining revoked call evidence", () => {
+  const id = () => randomUUID(), hash = "b".repeat(64);
+  const source = { kind: "AGENT", taskId: id(), releaseId: id(), packageDigest: hash, revisionId: id(), runId: id(), batchId: id() };
+  const report = { id: id(), versionId: id(), runId: id(), resultHash: hash }, requestId = id();
+  const services = ["DAPI", "XAPI"].map(serviceType => {
+    const versionId = id();
+    return { serviceId: id(), versionId, serviceType, name: "虚构基金接口", status: "VERIFIED", sourceRunIds: [source.batchId],
+      source: { revisionId: source.revisionId, developmentRunId: source.runId, modelMode: "SYNTHETIC_MODEL", resultDigest: hash },
+      call: { callId: id(), versionId, verified: true, independentResultVerified: true, resultHash: hash, rowCount: 1, applicationStatus: "REVOKED" } };
+  });
+  const value = { protocol: "shuduo-fund-report-consumption/v1", scope: "LOCAL_TEST_ONLY", requestId, source, report, status: "VERIFIED",
+    consumption: { protocol: "shuduo-local-fund-agent-consumption/v1", scope: "LOCAL_TEST_ONLY", taskId: source.taskId,
+      releaseId: source.releaseId, batchId: source.batchId, packageDigest: hash, outputContractId: fundReportContractId,
+      publicDeployed: false, externalSystemVerified: false, agentIndependentE2E: false, status: "VERIFIED", truncated: false, services } };
+  const expected = { lineage: { requestId, source, report, release: { resultDigest: hash, modelMode: "SYNTHETIC_MODEL" } } };
+  assert.equal(checkedPublishedReportConsumption(value, expected), value);
+  assert.throws(() => checkedPublishedReportConsumption({ ...value, report: { ...report, runId: id() } }, expected));
+  const cross = structuredClone(value);
+  cross.consumption.services[0].sourceRunIds = [id()];
+  assert.throws(() => checkedPublishedReportConsumption(cross, expected));
+  assert.throws(() => checkedPublishedReportConsumption({ ...value, consumption: { ...value.consumption, services: services.slice(0, 1) } }, expected));
 });

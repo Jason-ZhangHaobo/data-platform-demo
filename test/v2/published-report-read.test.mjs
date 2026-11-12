@@ -32,4 +32,7 @@ test('CSV export must match the shown report version, run and content hash',asyn
  assert.equal((await checkedPublishedReportExport(value,result)).content,content);
  for(const changed of [{runId:id(77)},{reportVersionId:id(77)},{content:content+'altered'},{contentHash:other},{fileName:'../wrong.csv'}])await assert.rejects(checkedPublishedReportExport({...value,...changed},result));
  await assert.rejects(checkedPublishedReportExport(value,{...result,exportable:false}));
+ const historical = {...result,exportable:false};
+ assert.equal((await checkedPublishedReportExport(value,historical,{originalRequest:true})).content,content);
+ await assert.rejects(checkedPublishedReportExport({...value,runId:id(77)},historical,{originalRequest:true}));
 });

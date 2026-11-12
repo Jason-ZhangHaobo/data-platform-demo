@@ -64,12 +64,13 @@ export function checkedPublishedReportLineage(value, expected={}) {
   for(const id of [report?.id,report?.versionId,report?.runId,snapshot?.id,snapshot?.datasetId,batch?.monitorEvent?.id])reportRequestId(id);
  }catch{bad();}
  const normalized=publishedReportSource(source);
- if(normalized.kind!=="MANUAL"||expected.requestId&&requestId!==expected.requestId||
+ if(expected.requestId&&requestId!==expected.requestId||
     expected.source&&JSON.stringify(normalized)!==JSON.stringify(publishedReportSource(expected.source)))bad();
  const event=batch.monitorEvent, dates=[batch.scheduledAt,batch.startedAt,batch.finishedAt,event.observedAt].map(Date.parse);
  if(release?.id!==normalized.releaseId||release.packageDigest!==normalized.packageDigest||batch.id!==normalized.batchId||
     !["ACTIVE_LOCAL","SUPERSEDED_LOCAL","CANCELLED"].includes(release.status)||
     release.activeForConsumption!==(release.status==="ACTIVE_LOCAL")||release.engineClassification!=="LOCAL_SPARK_PROCESS"||
+    (normalized.kind==="AGENT"&&(release.upstreamKind!=="FUND_AGENT_GENERATED"||!["LIVE_MODEL","SYNTHETIC_MODEL"].includes(release.modelMode)))||
     !/^\d{4}-\d{2}-\d{2}$/.test(release.businessDate)||
     ![1,2].includes(batch.sequence)||batch.status!=="SUCCEEDED"||event.type!=="BATCH_SUCCEEDED"||event.status!=="SUCCEEDED"||
     dates.some((date,index)=>!Number.isFinite(date)||index>0&&date<dates[index-1])||
@@ -100,7 +101,8 @@ export async function checkedPublishedReportDevelopment(value, expected={}) {
  if(original&&(original.report.runId!==lineage.report.runId||original.snapshot.id!==lineage.snapshot.id||
     original.batch.monitorEvent.id!==lineage.batch.monitorEvent.id||original.snapshot.contentHash!==lineage.snapshot.contentHash||
     original.release.resultDigest!==lineage.release.resultDigest||original.release.assertionDigest!==lineage.release.assertionDigest))bad();
- if(revision?.id!==lineage.source.revisionId||revision.source!=="ENGINEER_AUTHORED"||!hash(revision.hash)||
+ if(revision?.id!==lineage.source.revisionId||
+    revision.source!==(lineage.source.kind==="AGENT"?"FUND_AGENT_GENERATED":"ENGINEER_AUTHORED")||!hash(revision.hash)||
     typeof revision.sql!=="string"||!revision.sql.trim()||revision.sql.length>100000||
     run?.id!==lineage.source.runId||run.revisionId!==revision.id||run.revisionHash!==revision.hash||run.status!=="SUCCEEDED"||
     run.engine!=="Apache Spark"||typeof run.engineVersion!=="string"||!/^\d+\.\d+\.\d+$/.test(run.engineVersion)||
@@ -118,4 +120,45 @@ export async function checkedPublishedReportDevelopment(value, expected={}) {
 export async function readPublishedReportDevelopment(client,args) {
  const requestId=reportRequestId(args.requestId);
  return checkedPublishedReportDevelopment(await client.request('/reports/published/requests/'+requestId+'/development'),{...args,requestId});
+}
+
+export function checkedPublishedReportConsumption(value, expected = {}) {
+ const bad = () => { throw Error("基金报表与原接口调用的固定批次不一致"); };
+ if (!value || value.protocol !== "shuduo-fund-report-consumption/v1" || value.scope !== "LOCAL_TEST_ONLY" ||
+     !["VERIFIED", "PENDING", "UNAVAILABLE"].includes(value.status)) bad();
+ const { requestId, report, consumption } = value, source = publishedReportSource(value.source);
+ try { for (const id of [requestId, report?.id, report?.versionId, report?.runId]) reportRequestId(id); } catch { bad(); }
+ const original = expected.lineage;
+ if (source.kind !== "AGENT" || !hash(report.resultHash) || expected.requestId && requestId !== expected.requestId ||
+     (expected.source || original) && JSON.stringify(source) !== JSON.stringify(publishedReportSource(expected.source ?? original.source)) ||
+     original && (requestId !== original.requestId || ["id", "versionId", "runId", "resultHash"].some(key => report[key] !== original.report[key]))) bad();
+ if (value.status === "UNAVAILABLE") {
+  if (consumption !== undefined) bad();
+  return value;
+ }
+ if (!consumption || consumption.protocol !== "shuduo-local-fund-agent-consumption/v1" || consumption.scope !== value.scope ||
+     consumption.taskId !== source.taskId || consumption.releaseId !== source.releaseId || consumption.batchId !== source.batchId ||
+     consumption.packageDigest !== source.packageDigest || consumption.outputContractId !== fundReportContractId ||
+     consumption.publicDeployed !== false || consumption.externalSystemVerified !== false || consumption.agentIndependentE2E !== false ||
+     consumption.status !== value.status || !Array.isArray(consumption.services) || consumption.services.length > 20 ||
+     typeof consumption.truncated !== "boolean" || value.status === "VERIFIED" && consumption.truncated) bad();
+ for (const entry of consumption.services) {
+  if (!entry || !["DAPI", "XAPI"].includes(entry.serviceType) || !["PENDING", "NEEDS_ATTENTION", "VERIFIED"].includes(entry.status) ||
+      typeof entry.name !== "string" || !Array.isArray(entry.sourceRunIds) || entry.sourceRunIds.some(id => id !== source.batchId)) bad();
+  try { reportRequestId(entry.serviceId); reportRequestId(entry.versionId); if (entry.call) reportRequestId(entry.call.callId); } catch { bad(); }
+  if (entry.status === "VERIFIED" && (entry.sourceRunIds.length !== 1 ||
+      entry.source?.revisionId !== source.revisionId || entry.source.developmentRunId !== source.runId ||
+      (original && (entry.source.modelMode !== original.release.modelMode || entry.source.resultDigest !== original.release.resultDigest)) ||
+      entry.call?.versionId !== entry.versionId || entry.call?.verified !== true || entry.call.independentResultVerified !== true ||
+      !hash(entry.call.resultHash) || !Number.isSafeInteger(entry.call.rowCount) || entry.call.rowCount < 1 ||
+      !["ACTIVE", "REVOKED", "EXPIRED"].includes(entry.call.applicationStatus))) bad();
+ }
+ if (value.status === "VERIFIED" && ["DAPI", "XAPI"].some(type =>
+   !consumption.services.some(entry => entry.serviceType === type && entry.status === "VERIFIED"))) bad();
+ return value;
+}
+
+export async function readPublishedReportConsumption(client, args) {
+ const requestId = reportRequestId(args.requestId);
+ return checkedPublishedReportConsumption(await client.request("/reports/published/requests/" + requestId + "/consumption"), { ...args, requestId });
 }

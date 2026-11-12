@@ -60,9 +60,12 @@ export function boundPublishedReports(value: unknown, source: PublishedReportSou
         !Array.isArray(snapshot.fields) || !snapshot.fields.length || !snapshot.fields.every(text) || new Set(snapshot.fields).size !== snapshot.fields.length) throw invalid();
       if(snapshot.outputContractId){const c=distributionReportMetadata(snapshot.outputContractId),p=dataset.publishedSource,e=snapshot.sourceEvidence;
        if(!c||dataset.outputContractId!==c.id||JSON.stringify(snapshot.fields)!==JSON.stringify(c.fields.map(f=>f.name))||!c.contextIds.includes(snapshot.contextId)||snapshot.contextId!==dataset.contextId||!record(p)||p.kind!==source.kind||p.taskId!==source.taskId||p.releaseId!==source.releaseId||p.packageDigest!==source.packageDigest||p.revisionId!==source.revisionId||p.runId!==source.runId||p.batchId!==snapshot.assetVersionId||!record(e)||e.agentIndependentE2E!==false||e.scope!=='LOCAL_TEST_ONLY'||e.sourceTaskId!==source.taskId||e.sourceRevisionId!==source.revisionId||e.sourceRunId!==source.runId||e.sourceReleaseRunId!==p.batchId)throw invalid();
-       if(c.id===fundReportContractId&&(p.kind!=="MANUAL"||e.engineClassification!=="LOCAL_SPARK_PROCESS"||
+       if(c.id===fundReportContractId&&(e.engineClassification!=="LOCAL_SPARK_PROCESS"||
         e.eligibleForService!==true||e.batchId!==p.batchId||e.releaseId!==p.releaseId||e.packageDigest!==p.packageDigest||
-        ![e.inputDigest,e.assertionDigest,e.resultDigest].every(hash)))throw invalid();
+        ![e.inputDigest,e.assertionDigest,e.resultDigest].every(hash)||
+        p.kind==="AGENT"&&(e.upstreamKind!=="FUND_AGENT_GENERATED"||e.agentTaskId!==source.taskId||
+          !["LIVE_MODEL","SYNTHETIC_MODEL"].includes(e.modelMode)||
+          e.modelClassification!==(e.modelMode==="SYNTHETIC_MODEL"?"SYNTHETIC_UPSTREAM":"MODEL_NAME_RECORDED"))))throw invalid();
       }
       snapshots.set(snapshot.id, { datasetId: dataset.id, snapshot });
     }
@@ -85,7 +88,7 @@ export function boundPublishedReports(value: unknown, source: PublishedReportSou
         run.reportConfigHash !== version.configHash || !hash(run.resultHash)) throw invalid();
       const distribution=bound.snapshot.outputContractId;
       if(distribution&&(version.outputContractId!==distribution||run.outputContractId!==distribution||run.distributionValidation?.passed!==true||run.distributionValidation.agentIndependentE2E!==false))throw invalid();
-      if(distribution&&(!record(run.sourceEvidence)||['modelClassification','engineClassification','sourceTaskId','sourceRevisionId','sourceRunId','sourceReleaseRunId','outputContractId','packageDigest','releaseId',...(distribution===fundReportContractId?['resultDigest','assertionDigest','batchId']:[])].some(k=>run.sourceEvidence[k]!==bound.snapshot.sourceEvidence[k])))throw invalid();
+      if(distribution&&(!record(run.sourceEvidence)||['modelClassification','engineClassification','sourceTaskId','sourceRevisionId','sourceRunId','sourceReleaseRunId','outputContractId','packageDigest','releaseId',...(distribution===fundReportContractId?['resultDigest','assertionDigest','batchId','upstreamKind','agentTaskId','modelMode']:[])].some(k=>run.sourceEvidence[k]!==bound.snapshot.sourceEvidence[k])))throw invalid();
       const widgets = distribution?checkedDistributionReportWidgets(run.widgets,version.widgets,distribution,bound.snapshot.rowCount):checkedWidgets(run.widgets);
       if (!Array.isArray(version.widgets) || version.widgets.length !== widgets.length ||
         widgets.some((w, i) => !record(version.widgets[i]) || definition(w) !== definition(version.widgets[i]) ||
@@ -99,8 +102,8 @@ export function boundPublishedReports(value: unknown, source: PublishedReportSou
   }
   return results;
 }
-export async function checkedPublishedReportExport(value: unknown, result: PublishedReportResult) {
-  if (!result.exportable || !record(value) || value.reportId !== result.reportId || value.reportVersionId !== result.versionId || value.runId !== result.runId ||
+export async function checkedPublishedReportExport(value: unknown, result: PublishedReportResult, { originalRequest = false } = {}) {
+  if ((!result.exportable && !originalRequest) || !record(value) || value.reportId !== result.reportId || value.reportVersionId !== result.versionId || value.runId !== result.runId ||
     typeof value.content !== "string" || value.contentType !== "text/csv; charset=utf-8" || !hash(value.contentHash) ||
     typeof value.fileName !== "string" || !/^[a-z][a-z0-9_]*-[a-f0-9]{8}\.csv$/.test(value.fileName)) throw invalid();
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value.content));

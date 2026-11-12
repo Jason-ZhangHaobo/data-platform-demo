@@ -145,7 +145,8 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     (!cloud||selector&&publicationReleaseMatches(release,taskId,selector))?{taskId,packageDigest:workflow.package.digest,releaseId:release.id,sourceKind:manual?"MANUAL":"AGENT",scope:cloud?"PRIVATE_CLOUD_TEST":"LOCAL_TEST_ONLY",revisionId,runId}:undefined;
   const serviceHandoff=validServiceSourceBinding(handoffCandidate)?handoffCandidate:undefined,serviceHandoffKey=serviceSourceKey(serviceHandoff);
   const reportBatchIds=batches.filter(batch=>batch.status==="SUCCEEDED"&&batch.schedulerTriggered===true).map(batch=>batch.id);
-  const reportSource:PublishedReportSource|undefined=!cloud&&publicationReady&&journey.publicationCurrent&&release&&workflow?.package&&revisionId&&runId&&reportBatchIds.length?
+  const reportSource:PublishedReportSource|undefined=!cloud&&publicationReady&&journey.publicationCurrent&&release&&workflow?.package&&revisionId&&runId&&
+    (fund?reportBatchIds.length===2:reportBatchIds.length>0)?
     {kind:manual?"MANUAL":"AGENT",releaseId:release.id,packageDigest:workflow.package.digest,revisionId,runId,...(manual?{}:{taskId}),batchIds:reportBatchIds}:undefined;
   const archiveChoices = cloud && !manual && !assisted && serviceHandoff && !distributionMetadataForContext(contextId) &&
     release?.sourceKind === "AGENT" && release.sourceAgentTaskId === taskId && release.sourceRunId === runId && revisionId && runId
@@ -331,7 +332,8 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           {publication && <button className="button" onClick={() => download(`publication-${release.id.slice(0,8)}.json`,{...publication, readState:publicationRead, notice:"已读取的测试范围记录，不代表实时健康或公网验收"})}><Download size={14}/>下载发布与监控记录</button>}
         </>}
       </div>
-      {!fund&&reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!dirty&&!working&&!handoffBlocked&&!publicationTarget}/></Suspense>}
+      {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource}
+        fund={fund} canCreate={canWrite&&!dirty&&!working&&!handoffBlocked&&!publicationTarget&&(!fund||release?.health==="HEALTHY"&&release.status==="ACTIVE_LOCAL")}/></Suspense>}
     </>}
     {(archiveChoices.length > 0 || archiveReopen) && <Suspense fallback={<p role="status">正在加载原批次归档…</p>}>
       <AgentBatchArchivePanel api={api} taskId={taskId} choices={archiveChoices}/>
