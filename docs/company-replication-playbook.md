@@ -1,6 +1,6 @@
 # 将“Agent原生数据中台”复刻到成熟企业平台
 
-版本：1.0 · 2026-09-15。用途：帮助数据产品经理把数舵V2的可验证方法带回已有六七年建设基础的数据中台，而不是照搬本项目代码或推倒重建。
+版本 1.1 · 2026-11-12。用于将数舵 V2 的任务流程、证据和验收方法接入已有企业平台。
 
 本手册只使用虚构证券案例和通用系统代号，不包含公司截图、地址、账号、架构细节或数据。
 
@@ -8,7 +8,7 @@
 
 值得复刻的不是“做一个聊天框”，而是以下闭环：
 
-> 用户意图 → 受治理上下文 → Agent计划 → 代码/配置Diff → 隔离执行 → 独立断言 → 版本包 → 审批 → 发布/调度 → 监控/恢复 → 反馈评测
+> 用户意图 → 受治理上下文 → Agent计划 → 代码/配置Diff → 隔离执行 → 独立断言 → 版本包 → 审批 → 发布/调度 → 监控/恢复 → DAPI/XAPI授权消费 → 反馈评测
 
 经典中台仍是能力底座。Agent、GUI、CLI和MCP调用同一套版本化API；权限、数据口径、版本和运行证据不会因为入口改变而改变。
 
@@ -69,11 +69,11 @@
 
 建议仍采用“财富顾问查询客户持仓，理解字段后生成资产分析报表”，因为结果可核验、业务价值直观，又能串联开发与消费：
 
-1. 工程师在项目中选择经授权的账户、持仓、现金和证券分类表。
+1. 工程师在项目中选择经授权的账户、持仓和现金表，固定业务日期和字段口径。
 2. 描述T+1客户资产需求；Agent引用表/字段/指标/交易日规则并生成计划。
 3. 编辑器显示SQL Diff；工程师接受、局部修改或拒绝。
 4. Agent在隔离Spark环境运行并读取错误，最多限定次数修复。
-5. 独立测试检查客户总资产、持仓市值、证券去重、资产类别和行业分布，尤其防止现金因持仓Join重复累计。
+5. 独立测试检查客户编号、持仓市值、可用现金、口径内总资产及去重证券数量，尤其防止现金因持仓关联重复累计。仅股票持仓加现金的结果应显示该口径。资产类别和行业分布使用另立的字段契约及断言。
 6. 生成DAG、部署清单和测试报告；审批人确认不可变摘要。
 7. 发布后由真实调度触发；监控时效、质量、资源和失败信号。
 8. 生成持仓报表及DAPI，再由XAPI组合持仓与现金；示例外部系统使用自己的应用身份调用。
@@ -106,7 +106,7 @@ API是原子能力和治理契约；GUI、CLI、MCP是不同使用入口，不�
 
 ## 八、评测方法
 
-每条任务固定：需求、输入版本、输出契约、目标环境、最大模型/执行预算和成功断言。记录七阶段：理解、代码、调试、调度文件、部署文件、上线、上线后监控。
+每条任务固定需求、输入版本、输出契约、目标环境、最大模型和计算预算及成功断言。记录需求理解、代码、调试与独立核验、调度文件、部署文件、精确版本审阅、发布、监控及授权消费。
 
 核心指标：
 
@@ -116,7 +116,7 @@ API是原子能力和治理契约；GUI、CLI、MCP是不同使用入口，不�
 - Token、计算和存储成本；
 - 用户接受Diff比例、接管率、信任评分和问题归因。
 
-同一任务的有限修正不增加分母；人工代写关键产物标为救援；阻塞、取消和失败原样保留。当前数舵本机20条结果及边界见[完整链路评测](full-lifecycle-evaluation.md)。
+同一任务的有限修正沿用原案例编号。人工代写关键产物记为救援，阻塞、取消和失败保留。当前 [v3 评测](live-lifecycle-evaluation.md)固定 20 例，完整目标至少 17 例自主完成，每例须核对同一版本的结果与授权调用。[历史本机回放](full-lifecycle-evaluation.md)和本手册的保存证据复核各有独立范围。实际公网验收进度以[当前续接清单](goal-mode-next.md)为准。
 
 ## 九、90天公司试点建议
 
@@ -132,7 +132,81 @@ API是原子能力和治理契约；GUI、CLI、MCP是不同使用入口，不�
 
 ## 十、交付和复现入口
 
-2026-11-06新增[本机真实Spark到服务消费集成](local-real-spark-service-integration.md)：可按现有API顺序复现手工开发、按文件演练、两个本机计时批次及授权查询。记录中的合成测试审阅只服务隔离回归，不可作为公司或本人批准；迁入公司时用真实审批系统及实际计算／调度／数据服务替换相应环节。
+### 交接资料
+
+先记录源码提交 SHA、评测契约、案例口径和执行环境，再交接下表材料。SQLite 用于验证站留存。企业侧对应材料由项目成员在现有受控存储和审批系统中保留。
+
+| 材料 | 由谁准备 | 工程师接手后检查 |
+|---|---|---|
+| 输入快照、输出字段、业务日期、独立预期 | 数据产品经理、数据责任人 | 持仓与现金口径、基金组合粒度、T+1 和金额精度 |
+| 平台元数据、查询快照、报表快照 | 执行及数据服务工程师 | 每个案例的 `metadata.sqlite`、`business.sqlite`、`reports.sqlite` 是一致的留存副本，可在受保护目录中只读打开 |
+| 案例和消费编号 | 执行及数据服务工程师 | 财富案例保留发布、包摘要、原批次、原报表与运行、DAPI/XAPI 调用编号。基金另保留原准备请求、Agent 任务及报表创建请求 |
+| 审阅、恢复和权限记录 | 审阅人、运维与安全人员 | 包摘要、原审批、批次监控、调用授权与撤销、未知结果对应的原编号 |
+
+资料包含标识和业务快照时，按授权在受保护目录交接。原始凭证从企业凭证库分配，复核报告只留必要编号、摘要、计数及归因。保持业务版本、报告及分页调用编号原样，遇到缺项回查原记录。
+
+### 在新目录走查本机留存证据
+
+使用仓库对应源码和 Node.js 24。只读复核直接打开保存库，可在没有运行中的数舵服务和模型凭证时执行。先把授权提供的两组证据存入独立目录，设置 `WEALTH_DIR`、`FUND_DIR` 和尚无同名报告的受保护目录 `ACCEPTANCE_OUT`。命令中的其他变量为交接表所列原编号或 SHA-256。缺少留存库时，先按[本机启动与参考流程](v2-quickstart.md#在空目录复刻并读回证据)准备样例，再按[财富管理原生集成](local-real-spark-service-integration.md)或[基金保存证据复核](acceptance.md#复核已保存的基金-agent-端到端证据)走对应流程。
+
+在仓库根目录复核财富管理。两个 DAPI 固定版本分别保存两页，XAPI 保存完整查询和两页调用。
+
+```sh
+(
+  set -euC
+  umask 077
+  mkdir -p "$ACCEPTANCE_OUT"
+  node scripts/verify-saved-wealth-lifecycle.mjs \
+    --metadata "$WEALTH_DIR/metadata.sqlite" --business-snapshots "$WEALTH_DIR/business.sqlite" \
+    --report-snapshots "$WEALTH_DIR/reports.sqlite" --release-id "$WEALTH_RELEASE_ID" \
+    --package-digest "$WEALTH_PACKAGE_DIGEST" --batch-id "$WEALTH_BATCH_ID" \
+    --report-id "$WEALTH_REPORT_ID" --run-id "$WEALTH_REPORT_RUN_ID" \
+    --dapi-call-id "$WEALTH_DAPI_CALL_1" --dapi-call-id "$WEALTH_DAPI_CALL_2" \
+    --dapi-call-id "$WEALTH_DAPI_CALL_3" --dapi-call-id "$WEALTH_DAPI_CALL_4" \
+    --xapi-call-id "$WEALTH_XAPI_CALL_1" --xapi-call-id "$WEALTH_XAPI_CALL_2" \
+    --xapi-call-id "$WEALTH_XAPI_CALL_3" > "$ACCEPTANCE_OUT/wealth.json"
+)
+```
+
+复核基金时，原准备请求和原报表创建请求是两个不同的编号。此例的基金报表和质量回执保存在同一元数据副本。若使用单独的历史元数据库，按[基金报表扩展参数](acceptance.md#加入原报表与质量回执)指定。
+
+```sh
+(
+  set -euC
+  umask 077
+  mkdir -p "$ACCEPTANCE_OUT"
+  node scripts/verify-saved-fund-lifecycle.mjs --agent \
+    --active-metadata "$FUND_DIR/metadata.sqlite" --business-snapshots "$FUND_DIR/business.sqlite" \
+    --request-id "$FUND_PREPARATION_ID" --task-id "$FUND_TASK_ID" --release-id "$FUND_RELEASE_ID" \
+    --package-digest "$FUND_PACKAGE_DIGEST" --dapi-call-id "$FUND_DAPI_CALL_1" \
+    --xapi-call-id "$FUND_XAPI_CALL_1" --xapi-call-id "$FUND_XAPI_CALL_2" \
+    --report-request-id "$FUND_REPORT_REQUEST_ID" --report-snapshots "$FUND_DIR/reports.sqlite" \
+    > "$ACCEPTANCE_OUT/fund.json"
+)
+```
+
+两个报告都应返回 `VERIFIED` 和 `LOCAL_SAVED_EVIDENCE`。财富报告核对手工开发、两个真实本机 Spark 批次、原报表两行和七条历史授权回执。基金报告核对模型替身驱动的本机 Spark 过程、原报表七行和三条质量规则的独立计数。缺少基金质量记录时返回 `INCOMPLETE`，退出码为 2。错批次、错版本、缺少分页或证据被改写时，按错误码回查留存资料。归因和环境随报告交接，正式 v3 以真实执行及独立断言计分。
+
+已在不含 `.runtime` 和 `node_modules` 的源码副本中用 Node.js 24.19.0 走查。两份报告与原本机验收报告逐字节一致。错批次和缺少质量回执的路径已验证，输出目录中的同名报告受覆盖保护。每次交接先核对退出码与报告状态，再归档证据摘要。
+
+### 启动真实试点前
+
+| 接手检查 | 执行负责人 | 进入下一步的证据 |
+|---|---|---|
+| 项目访问、计算和凭证 | 云运维及安全负责人 | 域名与 HTTPS 可信，受邀身份和项目隔离实测通过，Worker 与持久存储就绪。模型凭证由本人在受保护入口交接 |
+| 具体版本与执行预算 | 工程师及审批人 | 核对冻结源码、部署和回滚制品、月度账单与预留。部署、模型、计算、发布、消费各按已批准范围执行 |
+| 新任务及中断恢复 | 发起人、工程师、运维 | 保留原请求和检查点，关闭浏览器后仍能推进。发生实例变化或回执未知时核对同任务的执行与费用记录 |
+| 正式入口和消费 | 产品经理、受邀用户、外部调用方 | 同一版本的真实发布、监控及授权 DAPI/XAPI 独立断言通过。实际 Safari、Chrome 和两种网络分别记录从导航到可操作的时延，首屏目标 3 秒 |
+
+可先运行下列计划检查，再按[真实评测合同](live-lifecycle-evaluation.md#实际流程)及[正式入口验收](domain-binding-acceptance.md#正式浏览器首屏验收)准备各自的实际执行范围。
+
+```sh
+V2_LIVE_EVALUATION_CASE_LIMIT=20 node scripts/run-live-lifecycle-evaluation.mjs --plan
+```
+
+该命令输出固定 20 例、最大资源需求、人工审阅要求及 `willExecute=false`。实际执行从一条已授权用例开始。
+
+### 其他资料
 
 - 需求边界：[PRD](PRD.md)
 - 决策与替代关系：[decisions.md](decisions.md)
