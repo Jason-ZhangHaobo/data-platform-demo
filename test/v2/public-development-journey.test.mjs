@@ -26,7 +26,7 @@ import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
 import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
 import { createCloudPublication } from '../../src/v2/cloud-publication.mjs';
-import { batchServiceHistoryTarget, opsPublicationTarget, publicationMonitorHref, readOpsPublication } from '../../web/src/ops-publication.ts';
+import { batchServiceHistoryTarget, opsPublicationTarget, publicationBatchReportHref, publicationMonitorHref, readOpsPublication } from '../../web/src/ops-publication.ts';
 import { checkedAgentPublication, checkedBatchConsumption, checkedExactPublicationReceipt } from '../../web/src/agent-delivery-evidence-read.ts';
 import { serviceEvidencePath } from '../../web/src/service-source-binding.ts';
 import { checkedAgentWorkflow, checkedCloudPublicationPreflight } from '../../web/src/agent-workflow-read.ts';
@@ -1999,6 +1999,18 @@ test('an invited exact window binds derivation from the parent through signed re
     assert.ok(result.services.filter(s=>s.call).every(s=>s.call.applicationStatus==='REVOKED'&&s.sourceRunIds[0]===batchIds[index]));
     assert.throws(()=>checkedBatchConsumption(saved.body,history.binding,batchIds[1-index]),/未确认/);
     assert.equal((await f.call(path+'&release_batch_id='+batchIds[1-index])).status,422);
+    const reportTarget=opsPublicationTarget(new URL(publicationBatchReportHref(history.publication,history.batchId),origin).href);
+    assert.deepEqual(reportTarget,{...history.publication,reportBatchId:batchIds[index]});
+    const reportSource=monitor.batches[index].reportSource;
+    const report=await f.call(privateBatchReportPath(reportSource));
+    assert.equal(report.status,200,report.body.message);
+    assert.deepEqual(report.body.metrics.map(metric=>metric.value),['2250.00','1750.00','500.00']);
+    assert.equal(report.body.source.batchId,history.batchId);
+    const attachment=await f.call(privateBatchReportPath(reportSource,report.body.digest));
+    assert.equal(attachment.status,200);
+    assert.match(attachment.headers.get('content-disposition'),/^attachment;/);
+    assert.deepEqual(attachment.body,report.body);
+    assert.equal((await f.call(privateBatchReportPath(reportSource,'f'.repeat(64)))).status,409);
   }
   const sourcePath=serviceEvidencePath(historyTargets[0].binding);
   assert.equal((await f.call(sourcePath+'&release_batch_id='+task.runId)).status,409);

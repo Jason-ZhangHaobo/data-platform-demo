@@ -1,5 +1,5 @@
 import {useEffect, useState} from "react";
-import {batchServiceHistoryHref, batchServiceHistoryTarget, publicationMonitorHref, readOpsPublication} from "./ops-publication";
+import {batchServiceHistoryHref, batchServiceHistoryTarget, publicationBatchReportHref, publicationMonitorHref, readOpsPublication} from "./ops-publication";
 import {checkedBatchConsumption} from "./agent-delivery-evidence-read";
 import {serviceEvidencePath,serviceHandoffLocation} from "./service-source-binding";
 import {applicationStatusText} from "./service-consumption-scope";
@@ -51,6 +51,7 @@ export default function BatchServiceHistory({api,workspaceAvailable}:{api:Reader
       <div className="agent-delivery-actions">
         <a className="button" href={publicationMonitorHref(target.publication,true)}>返回原发布</a>
         <a className="button" href={publicationMonitorHref(target.publication)}>返回运维</a>
+        {current?.value && <a className="button" href={publicationBatchReportHref(target.publication,target.batchId)}>查看本批次报表</a>}
         {current?.value && workspaceAvailable && <a className="button" href={batchWorkspaceHref(href,target)}>打开本批次接口工作区</a>}
       </div>
     </>}

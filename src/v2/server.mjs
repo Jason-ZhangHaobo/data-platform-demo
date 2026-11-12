@@ -3228,7 +3228,8 @@ export function createV2Server(options = {}) {
         throw fail(404, "未找到报表归档操作");
       }
       if (path === "/api/v2" + privateBatchReportRoute && method === "GET") {
-        if (!privateDataServicesEnabled) throw fail(404, "此环境未启用私有发布批次报表");
+        if (!privateDataServicesEnabled && !(publicReadOnly && savedServiceEvidenceEnabled))
+          throw fail(404, "此环境未启用私有发布批次报表");
         const {source, downloadDigest} = privateBatchReportQuery(url.searchParams);
         const actorId = auth.sessionFromHeaders(req.headers)?.user.id;
         const report = readPrivateBatchReport({store, businessStore, project:PROJECT, actorId, source});
