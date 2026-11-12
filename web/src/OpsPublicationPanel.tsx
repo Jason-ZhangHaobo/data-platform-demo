@@ -1,5 +1,5 @@
 import {lazy, Suspense, useEffect, useRef, useState} from "react";
-import {opsPublicationTarget, readOpsPublication} from "./ops-publication";
+import {opsPublicationTarget, publicationMonitorHref, readOpsPublication} from "./ops-publication";
 const OpsBatchReportPanel = lazy(async () => ({default:(await import("./OpsBatchReportPanel")).OpsBatchReportPanel}));
 
 type Api = <T>(path: string) => Promise<T>;
@@ -12,9 +12,9 @@ const statuses: Record<string,string> = {
 };
 const label = (value?: string) => (value && statuses[value]) || "状态待确认";
 
-export function OpsPublicationPanel({api}: {api: Api}) {
+export function OpsPublicationPanel({api, agent = false}: {api: Api; agent?:boolean}) {
   const location = window.location.href;
-  const target = opsPublicationTarget(location);
+  const target = opsPublicationTarget(location,agent);
   const [revision, setRevision] = useState(0);
   const key = JSON.stringify([location, revision]);
   const [response, setResponse] = useState<{key:string; evidence?:Evidence}>();
@@ -33,9 +33,9 @@ export function OpsPublicationPanel({api}: {api: Api}) {
   if (target === undefined) return null;
   const evidence = current?.evidence;
   const report = evidence?.batches.find(batch => batch.id === target?.reportBatchId);
-  return <section id="ops-exact-publication" className="ops-live-evaluation-v2" aria-labelledby="ops-exact-publication-title">
+  return <section id={agent?"agent-publication-history":"ops-exact-publication"} className="ops-live-evaluation-v2" aria-labelledby="ops-exact-publication-title">
     <header>
-      <div><h3 id="ops-exact-publication-title">原发布批次</h3><p>私有测试记录 · 只读核对同一发布与代码版本</p></div>
+      <div><h3 id="ops-exact-publication-title">{agent?"原任务的发布证据":"原发布批次"}</h3><p>私有测试记录 · 只读核对同一发布与代码版本</p></div>
       {target && <button className="button" disabled={!current} onClick={() => setRevision(value => value + 1)}>重新读取批次</button>}
     </header>
     {target === null ? <p role="alert">发布定位信息不完整，请从原任务的发布记录打开。</p>
@@ -55,10 +55,14 @@ export function OpsPublicationPanel({api}: {api: Api}) {
             </tr>)}</tbody>
           </table>
         </div>
-        <p>发布 {label(evidence.status)} · 监控 {label(evidence.health)}</p>
+        <p>发布 {label(evidence.status)} · 监控 {evidence.monitoringVerified===false?"原记录待核对":label(evidence.health)}</p>
+        {evidence.monitoringVerified&&<p role="status">两个原批次的调度与监控记录已核对。</p>}
         {evidence.failureSettlement && <p role="status">{evidence.failureSettlement==="CONFIRMED"
           ? "原发布失败已确认，两个批次的回执均已核对。" : "原发布失败仍待核对，原批次及预留保留。"}</p>}
-        <a href={"/v2/?module=agent-center&task=" + target.taskId + "#agent-publication"}>查看原任务的发布证据</a>
+        <div className="agent-delivery-actions">
+          {evidence.source && <a className="button" href={publicationMonitorHref({...target,source:evidence.source},!agent)}>{agent?"返回运维查看原批次":"查看原任务的发布证据"}</a>}
+          {agent && <a className="button" href={"/v2/?module=agent-center&task="+target.taskId}>打开当前任务</a>}
+        </div>
         {report?.reportSource && report.sequence !== undefined &&
           <Suspense fallback={<p role="status">正在加载批次报表…</p>}><OpsBatchReportPanel key={report.id} api={api} source={report.reportSource} sequence={report.sequence}/></Suspense>}
         {report && !report.reportSource && <p role="status">整次发布及两个批次通过核验后可读取此报表。</p>}
