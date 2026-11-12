@@ -13,7 +13,7 @@ import {publishedReportSource} from './published-report-request.mjs';
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
 const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).filter(k=>v[k]!==undefined).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v);
 export const publishedReportHash=value=>createHash('sha256').update(canonical(value)).digest('hex');
-export function resolvePublishedReportSource({store,project,source,actorId,allowFund=true,timeUnitMs}){
+export function resolvePublishedReportSource({store,project,source,actorId,allowFund=true,timeUnitMs,fundSignedExecutionFor}){
  source=publishedReportSource(source);
  const read=(kind,id)=>{const value=store.get(kind,id,project);if(!value||value.projectId!==project)throw fail(409,'REPORT_SOURCE_UNAVAILABLE','原发布来源缺失，未改用其他批次');return value;};
  const revision=read('revision',source.revisionId),code=read('run',source.runId),release=read('release',source.releaseId),bundle=read('delivery_package',release.packageId),batch=read('release_run',source.batchId);
@@ -27,7 +27,7 @@ export function resolvePublishedReportSource({store,project,source,actorId,allow
    : revision.source === "MANUAL" && revision.manualProvenance?.actorId === actorId);
   if (!ownerMatches)
    throw fail(403, "REPORT_SOURCE_OWNER", "基金报表须属于原开发工程师");
-  const { evidence, rows } = resolveFundConsumptionSource({ store, project,
+  const { evidence, rows } = resolveFundConsumptionSource({ store, project, fundSignedExecutionFor,
    selection: { releaseId: source.releaseId, packageDigest: source.packageDigest, batchId: source.batchId }, timeUnitMs });
   if (!rows || !evidence.eligibleForService || evidence.revisionId !== source.revisionId || evidence.developmentRunId !== source.runId ||
       fromAgent && (evidence.agentTaskId !== source.taskId || evidence.modelMode !== attribution.modelMode))

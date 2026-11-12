@@ -8,7 +8,7 @@ const unproven = () => Object.assign(new Error("原报表的快照、发布批�
   status: 409, code: "FUND_REPORT_LINEAGE_UNPROVEN",
 });
 
-function verifiedFundReportLineage({ store, project, record, artifacts, timeUnitMs }) {
+function verifiedFundReportLineage({ store, project, record, artifacts, timeUnitMs, fundSignedExecutionFor }) {
   const { report, version, run, snapshot, dataset } = artifacts;
   const source = record.input.source, saved = snapshot.sourceEvidence, contract = fundDapiContract;
   if (version.outputContractId !== contract.id)
@@ -18,7 +18,7 @@ function verifiedFundReportLineage({ store, project, record, artifacts, timeUnit
       snapshot.assetId !== "dataset:" + contract.id || dataset.assetId !== snapshot.assetId ||
       snapshot.contentHash !== snapshot.assetEvidenceHash) throw unproven();
 
-  const { evidence, status, batch, publishedRun, revision, development, verification } = resolveFundReportPublication({ store, project, timeUnitMs,
+  const { evidence, status, batch, publishedRun, revision, development, verification } = resolveFundReportPublication({ store, project, timeUnitMs, fundSignedExecutionFor,
     selection: { releaseId: source.releaseId, packageDigest: source.packageDigest, batchId: source.batchId } });
   const keys = ["protocol", "scope", "contractId", "releaseId", "packageDigest", "batchId", "revisionId", "developmentRunId",
     "batchSequence", "businessDate", "inputDigest", "assertionDigest", "testSqlDigest", "resultDigest", "rowCount",
