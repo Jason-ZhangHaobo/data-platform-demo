@@ -25,7 +25,7 @@ export function checkedPublishedReportArtifacts({store,project,reportStore,recor
   const config={datasetId:version.datasetId,...(version.outputContractId?{outputContractId:version.outputContractId}:{}),datasetSnapshotId:version.datasetSnapshotId,widgets:version.widgets,description:version.description};
   if(run.reportId!==report.id||version.reportId!==report.id||version.datasetId!==dataset.id||run.datasetId!==dataset.id||snapshot.datasetId!==dataset.id||run.reportVersionId!==version.id||run.datasetSnapshotId!==snapshot.id||version.datasetSnapshotId!==snapshot.id||snapshot.assetVersionId!==r.input.source.batchId||snapshot.assetEvidenceHash!==r.sourceEvidenceHash||!same(dataset.publishedSource,r.input.source)||dataset.sourceActorId!==r.actorId||run.status!=='SUCCEEDED'||run.actualExecution!==true||run.publicDeployed!==false||run.fullLifecycleE2E!==false||version.configHash!==digest(config)||run.reportConfigHash!==version.configHash||run.resultHash!==digest(run.widgets)||run.datasetContentHash!==snapshot.contentHash||data.contentHash!==snapshot.contentHash||digest(data.rows)!==snapshot.contentHash||data.rowCount!==snapshot.rowCount||data.rows.length!==snapshot.rowCount||data.assetId!==snapshot.assetId)throw fail();
   if(r.outputContractId&&(run.outputContractId!==r.outputContractId||version.outputContractId!==r.outputContractId||snapshot.outputContractId!==r.outputContractId||run.distributionValidation?.passed!==true))throw fail();
- return {report,version,run,snapshot,dataset};
+ return {report,version,run,snapshot,dataset,data};
 }
 
 export function createReportProvenance({store,project,reportStore}) {

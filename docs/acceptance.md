@@ -131,6 +131,22 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 
 本机隔离验收复用同一真实 Spark 发布的五个输出字段，API、CLI、MCP 和浏览器读取一致。发布停止后仍可读原证据。当前批次字段分析缺失或摘要不匹配时显示未确认，原报表可继续查看。另一个成功批次的分析不会进入当前报表。此流程只读存档，没有新模型或 Spark 运行。
 
+### 在基金报表原快照执行质量检测
+
+在报表回看打开「核对源快照与运维」和「查看原批次质量检测」，或在「数据质量」输入原报表请求编号。确认快照及规则版本后，质量执行器检查每行的交易日、资产类别及敞口金额。回执固定报表版本、发布批次、快照摘要和规则版本，只返回通过及失败计数。现有开发和报表断言仍保留各自的证据。
+
+本机隔离验收对真实 Spark 批次留下的七行数据执行三条规则，三项均为 7/7。浏览器在写入完成后失去响应，随后用只读查询找回原回执。数据质量、报表、API、CLI 与 MCP 返回一致。重复确认和重启仍返回原回执，另一个批次保持待检测。定向回归另覆盖实际失败计数、错批次和错快照拒绝。
+
+| 入口 | 操作 |
+| --- | --- |
+| API | `GET /api/v2/reports/published/requests/{requestId}/quality` 读取待检测范围或已保存回执 |
+| API | 向同一地址 `POST {confirm: true, snapshotId, basisDigest}` 明确确认原快照和规则摘要 |
+| CLI | `shuduo reports quality --request-id UUID` |
+| CLI | `shuduo reports quality-run --request-id UUID --snapshot-id UUID --basis-digest SHA256 --confirm` |
+| MCP | `report_published_quality` 只读，`report_published_quality_run` 按确切快照和摘要确认执行 |
+
+仅原报表所有者可在本机查看和执行。检测直接读取保存的快照。当前使用固定的基金规则组 v1，未接入定时检测、规则配置或独立告警。
+
 ## 回看基金原开发版本与核验
 
 从基金历史报表的来源证据打开「查看原开发版本与核验」，可读原 SQL、版本摘要、开发运行、独立断言和演练测试 SQL 摘要，返回后仍在原报表。只有原开发工程师可读。CLI `shuduo reports development` 与 MCP `report_published_development` 共用同一只读接口。

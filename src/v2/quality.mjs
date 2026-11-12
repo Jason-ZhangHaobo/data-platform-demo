@@ -167,26 +167,13 @@ export class QualityManager {
     const rule = this.#rule(ruleId),
       version = this.#version(rule.currentVersionId),
       { asset, rows } = this.assets.executionRows(rule.assetId),
-      started = this.now(),
-      invalidIndexes = this.#evaluate(version, rows),
-      passed = rows.length - invalidIndexes.length,
       run = this.store.create("quality_run", this.project, {
         ruleId: rule.id,
         ruleVersionId: version.id,
         ruleConfigHash: version.configHash,
         assetId: asset.id,
         assetEvidenceHash: asset.evidenceHash,
-        status: invalidIndexes.length ? "FAILED" : "PASSED",
-        evaluatedCount: rows.length,
-        passedCount: passed,
-        failedCount: invalidIndexes.length,
-        passRate: rows.length ? Number((passed / rows.length).toFixed(4)) : 1,
-        invalidRowHashes: invalidIndexes
-          .slice(0, 10)
-          .map((index) => hash(canonical(rows[index]))),
-        durationMs: this.now() - started,
-        actualExecution: true,
-        fullLifecycleE2E: false,
+        ...this.evaluateRows(version, rows, { includeInvalidRowHashes: true }),
       });
     if (run.status === "FAILED") {
       this.store.create("quality_alert", this.project, {
@@ -195,9 +182,9 @@ export class QualityManager {
         runId: run.id,
         assetId: asset.id,
         status: "OPEN",
-        severity: invalidIndexes.length === rows.length ? "CRITICAL" : "ERROR",
+        severity: run.failedCount === run.evaluatedCount ? "CRITICAL" : "ERROR",
         code: "QUALITY_RULE_FAILED",
-        message: `${rule.name}有${invalidIndexes.length}行未通过`,
+        message: `${rule.name}有${run.failedCount}行未通过`,
         openedAt: new Date(this.now()).toISOString(),
       });
       this.store.update("quality_rule", rule.id, this.project, {
@@ -222,6 +209,21 @@ export class QualityManager {
       });
     }
     return { rule: this.detail(rule.id), run };
+  }
+
+  evaluateRows(rule, rows, { includeInvalidRowHashes = false } = {}) {
+    const started = this.now(), invalid = this.#evaluate(rule, rows), passed = rows.length - invalid.length;
+    return {
+      status: invalid.length ? "FAILED" : "PASSED",
+      evaluatedCount: rows.length,
+      passedCount: passed,
+      failedCount: invalid.length,
+      passRate: rows.length ? Number((passed / rows.length).toFixed(4)) : 1,
+      ...(includeInvalidRowHashes ? { invalidRowHashes: invalid.slice(0, 10).map(index => stableHash(rows[index])) } : {}),
+      durationMs: this.now() - started,
+      actualExecution: true,
+      fullLifecycleE2E: false,
+    };
   }
 
   overview() {

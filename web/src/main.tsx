@@ -807,6 +807,7 @@ function App() {
     : canWrite && !session.developmentOnly && !session.consumptionOnly;
   const publicationTaskHref = session.manualPublicationOnly?manualPublicationSourceHref(window.location.href,session):publicationTarget?publicationSourceLocation(window.location.href,publicationTarget,session.publicationSource)?.href:undefined;
   const workbench = workbenchEnvironment(status,{privatePreview,privateServicesPreview});
+  const localWorkbench = workbench.runtimeMode === 'LOCAL_DEVELOPMENT';
   const consumptionScope: ConsumptionScope | undefined = session.consumptionOnly ? {pilotId:session.consumptionPilotId,taskId:session.consumptionTaskId,manualDeliveryTaskId:session.manualConsumptionTaskId,plan:session.consumptionPlan,startsAt:session.consumptionStartsAt,expiresAt:session.consumptionExpiresAt} : undefined;
   const servicesCanWrite = !session.readOnly && !session.publicationOnly && !session.developmentOnly && workbench.servicesAvailable && mayWriteServices(status,session) && (!session.consumptionOnly || consumptionWindowOpen(consumptionScope,publicationClock)) && coreReady;
   const consumptionTaskHref = session.manualConsumptionOnly?(session.manualConsumptionSource?.status==='RESOLVED'&&session.manualConsumptionSource.binding&&validServiceSourceBinding(session.manualConsumptionSource.binding)&&session.manualConsumptionSource.binding.manualDeliveryTaskId===session.manualConsumptionTaskId&&session.manualConsumptionSource.binding.packageDigest===session.consumptionPlan?.packageDigest&&session.manualConsumptionSource.sourceReleaseRunId===session.consumptionPlan.sourceReleaseRunId?serviceHandoffLocation(window.location.href,session.manualConsumptionSource.binding).href:undefined):session.consumptionTaskId && /^[a-f0-9-]{36}$/.test(session.consumptionTaskId)
@@ -981,7 +982,7 @@ function App() {
         {identityChecking && coreSnapshotKnown && <WorkbenchLoading label="正在核对当前会话权限，暂时隐藏已读内容…" />}
         {!coreSnapshotKnown ? <WorkbenchLoading label={coreReadState === "ERROR" ? "工作台等待身份与服务重新核验，未加载任何个人任务。" : "正在确认当前身份，随后加载所选工作台…"} /> : <div hidden={identityChecking} inert={identityChecking} style={{display:identityChecking ? "none" : "contents"}}><Suspense key={viewEpoch} fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? new URLSearchParams(location.search).has("report_request") ?
-          <AgentReportHistory api={api} local={workbench.runtimeMode === "LOCAL_DEVELOPMENT"} /> : (
+          <AgentReportHistory api={api} local={localWorkbench} canWrite={canWrite} /> : (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>{setServiceLocation(serviceSourceFromLocation(window.location.href,true));setAgentWorkspaceMode("services");}}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}{workbench.runtimeMode === "LOCAL_DEVELOPMENT" && !agentDraftDirty &&
           <a className="button" href="?module=agent-center&report_request=">历史报表</a>}</div>}
@@ -1781,7 +1782,7 @@ function App() {
                 handoffMessage={agentHandoff?.destination === "assets" ? agentHandoff.message : undefined}
               />
             ) : nav === "quality" ? (
-              <QualityWorkbench api={api} canWrite={Boolean(canWrite)} />
+              <QualityWorkbench api={api} canWrite={canWrite} local={localWorkbench} />
             ) : nav === "security" ? (
               <SecurityWorkbench api={api} canWrite={Boolean(canWrite)} />
             ) : nav === "reports" ? (

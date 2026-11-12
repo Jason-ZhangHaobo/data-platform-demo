@@ -131,6 +131,7 @@ import {
 } from "./realtime.mjs";
 import { AssetCatalogManager } from "./assets.mjs";
 import { QualityManager } from "./quality.mjs";
+import { fundReportQuality } from "./fund-report-quality.mjs";
 import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
 import { privateBatchReportQuery, privateBatchReportRoute } from "./private-batch-report-request.mjs";
@@ -3041,6 +3042,16 @@ export function createV2Server(options = {}) {
         const agent = store.get("agent", source.taskId, PROJECT);
         if (agent?.fundPreparation) requireDurableAgentOwner(agent, req);
       };
+      const reportQuality = path.match(/^\/api\/v2\/reports\/published\/requests\/([A-Fa-f0-9-]{36})\/quality$/);
+      if (reportQuality && ["GET", "POST"].includes(method)) {
+        if (!localClassicSpark || options.ingress || !isLoopbackRequest(req)) throw fail(403, "基金报表质量检测仅支持本机");
+        if (url.searchParams.size) throw fail(422, "请使用原报表编号，质量检测不接受切换批次");
+        const [, requestId] = reportQuality, actor = reportActor(req);
+        const confirmation = method === "POST" ? await readBody(req) : undefined;
+        requireFundAgentReportOwner(publishedReports.lookup(requestId, actor).source);
+        const { lineage, rows } = publishedReports.qualitySource(requestId, actor, releaseTimeUnitMs);
+        return json(res, 200, fundReportQuality({ store, project: PROJECT, actor, quality, lineage, rows, confirmation }));
+      }
       const originalReportResult = path.match(/^\/api\/v2\/reports\/published\/requests\/([A-Fa-f0-9-]{36})\/(result|lineage|development|consumption|export)$/);
       if (originalReportResult && method === "GET") {
         if (!local) throw fail(403, "原发布报表结果仅在本机开发边界开放");

@@ -170,6 +170,8 @@ export const V2_OPERATIONS = Object.freeze([
   "report_published_create",
   "report_published_request",
   "report_published_resume",
+  "report_published_quality",
+  "report_published_quality_run",
   "report_dataset_list",
   "report_dataset_create",
   "report_dataset_refresh",

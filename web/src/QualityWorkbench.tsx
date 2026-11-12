@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { FundReportQualityLookup } from './FundReportQualityPanel';
 import {
   Activity,
   AlertTriangle,
@@ -125,7 +126,7 @@ const configText = (version?: RuleVersion) => {
   return `${version.field} · ${version.type}`;
 };
 
-export function QualityWorkbench({ api, canWrite }: { api: Api; canWrite: boolean }) {
+export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite: boolean; local: boolean }) {
   const [overview, setOverview] = useState<Overview>(),
     [assets, setAssets] = useState<Asset[]>([]),
     [plans, setPlans] = useState<AgentPlan[]>([]),
@@ -291,6 +292,7 @@ export function QualityWorkbench({ api, canWrite }: { api: Api; canWrite: boolea
         <div className="quality-kpis-v2"><div><ShieldCheck size={15} /><strong>{overview?.counts.healthy ?? 0}</strong><span>健康规则</span></div><div><ShieldAlert size={15} /><strong>{overview?.counts.failed ?? 0}</strong><span>异常规则</span></div><div><Activity size={15} /><strong>{overview?.counts.runs ?? 0}</strong><span>实际运行</span></div><div><AlertTriangle size={15} /><strong>{overview?.counts.openAlerts ?? 0}</strong><span>开放告警</span></div></div>
       </section>
       {(notice || error) && <div className={error ? "ingestion-feedback error" : "ingestion-feedback"} role={error ? "alert" : "status"}>{error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}{error || notice}</div>}
+      {local && <FundReportQualityLookup api={api} canWrite={canWrite} />}
 
       <section className="quality-agent-v2">
         <header><div className="quality-agent-icon-v2"><Bot size={20} /></div><div><span className="eyebrow">DATA AGENT · METADATA + AGGREGATED EVIDENCE</span><h3>让 Agent 建议规则，人决定是否创建与运行</h3><p>模型只看字段元数据和失败计数，不接收业务行、无效样本或客户标识。</p></div></header>

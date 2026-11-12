@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { readPublishedReportLineage, readPublishedReportDevelopment, readPublishedReportConsumption } from "../../src/v2/published-report-client.mjs";
 import type { PublishedReportConsumption, PublishedReportDevelopment, PublishedReportLineage, PublishedReportReceipt } from "../../src/v2/published-report-client.mjs";
 import { SqlColumnLineagePanel } from "./SqlColumnLineagePanel";
+import { FundReportQualityPanel } from './FundReportQualityPanel';
 
 const releaseLabels = {
   ACTIVE_LOCAL: "当前本机发布",
@@ -12,10 +13,13 @@ const time = (value: string) => new Intl.DateTimeFormat("zh-CN", {
   timeZone: "Asia/Shanghai", dateStyle: "medium", timeStyle: "medium",
 }).format(new Date(value));
 
-export function FundReportLineage({ api, receipt }: { api: <T>(path: string) => Promise<T>; receipt: PublishedReportReceipt }) {
+export function FundReportLineage({ api, receipt, canWrite }: {
+  api: <T>(path: string, body?: unknown) => Promise<T>; receipt: PublishedReportReceipt; canWrite: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [result, setResult] = useState<PublishedReportLineage>();
   const [error, setError] = useState("");
+  const [qualityOpen, setQualityOpen] = useState(false);
   useEffect(() => {
     if (!open) return;
     let active = true;
@@ -30,6 +34,7 @@ export function FundReportLineage({ api, receipt }: { api: <T>(path: string) => 
     <button className="button" aria-expanded={open} aria-controls="report-lineage-details" onClick={() => {
       setResult(undefined);
       setError("");
+      setQualityOpen(false);
       setOpen(!open);
     }}>{open ? "收起来源证据" : "核对源快照与运维"}</button>
     {open && <div id="report-lineage-details">
@@ -60,6 +65,10 @@ export function FundReportLineage({ api, receipt }: { api: <T>(path: string) => 
         <summary>查看原批次字段来源</summary>
         {result.columnLineage ? <SqlColumnLineagePanel items={[result.columnLineage]} /> :
           <p role="status">此报表回执没有字段来源证据。快照和运维记录仍可查看。</p>}
+      </details>
+      <details className="report-development-v2" onToggle={event => setQualityOpen(event.currentTarget.open)}>
+        <summary>查看原批次质量检测</summary>
+        {qualityOpen && <FundReportQualityPanel api={api} requestId={receipt.requestId} lineage={result} canWrite={canWrite} />}
       </details>
       <DevelopmentEvidence api={api} receipt={receipt} lineage={result} />
       {result.source.kind === "AGENT" && <ConsumptionEvidence api={api} lineage={result} />}</>}
