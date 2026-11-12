@@ -7,7 +7,10 @@ import { setTimeout as pause } from "node:timers/promises";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { getContext, referenceSql, contextIds } from "../../src/v2/context.mjs";
 import { identityPositionMapping } from "../../src/v2/ingestion.mjs";
-import { readSyncSqlInput } from "../../src/v2/sync-sql-input.mjs";
+import { readSyncSqlInput, syncSqlOutputSchemaDetails } from "../../src/v2/sync-sql-input.mjs";
+import { checkedSyncSqlOutputSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
+import { runV2Cli } from "../../bin/shuduo.mjs";
+import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
 import { verifySavedSyncSqlInput } from "../../src/v2/sync-sql-saved-lifecycle.mjs";
 import { createDeliveryPackage, computeManifestDigest, loadDeliveryDirectory, resolveDeliverySchedule, sha256, validateDeliveryPackage } from "../../src/v2/delivery.mjs";
 
@@ -39,7 +42,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(context.tables.find(table => table.name === "positions").rows[0][5], "1245.07");
     assert.equal(context.expected[0].total_assets, "2045.07");
     assert.equal(validationContexts[0].expected[0].total_assets, "1800.00");
-    return { status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", testDouble: true,
+    return { status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", testDouble: true, mainSqlExecuted: true,
       rows: context.expected, columns: developmentColumns, validation: { passed: true } };
   };
   async function start() {
@@ -148,10 +151,46 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(failedDevelopment.status, "VALIDATION_FAILED");
     assert.equal(failedDevelopment.code, "SYNC_SQL_OUTPUT_SCHEMA_MISMATCH");
     assert.equal(failedDevelopment.rows[0].total_assets, "2045.07");
+    const schemaPath = `/runs/${failedDevelopment.id}/output-schema`;
+    const schema = failedDevelopment.syncOutputSchema;
+    assert.equal(schema.status, "MISMATCH");
+    assert.deepEqual(schema.differences, [{
+      expected:{name:"total_assets",type:"decimal(18,2)",position:4},
+      actual:{name:"total_assets",type:"string",position:4},
+      issues:["TYPE"],
+    }]);
+    assert.equal(schema.source.snapshotHash, run.syncInput.snapshotHash);
+    assert.deepEqual((await request(schemaPath)).value, schema);
+    assert.equal((await request(schemaPath + "?run_id=other")).status, 422);
+    const schemaClient = {request:async path => (await request(path)).value};
+    const stdout = [];
+    assert.equal(await runV2Cli(["sql","output-schema","--run-id",failedDevelopment.id],{},
+      {client:schemaClient,output:line=>stdout.push(line),error:()=>{}}),0);
+    assert.deepEqual(JSON.parse(stdout.join("")),schema);
+    const mcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",
+      params:{name:"sql_run_output_schema",arguments:{runId:failedDevelopment.id}}},{client:schemaClient}));
+    assert.deepEqual(mcp.result.structuredContent,schema);
+    assert.throws(() => checkedSyncSqlOutputSchema(schema,{runId:run.id}),/原运行/);
+    assert.throws(() => checkedSyncSqlOutputSchema({...schema,differences:[{}]},schema.source),/原运行/);
+    const {rows:ignored, ...safeSchema} = checkedSyncSqlOutputSchema({...schema,rows:failedDevelopment.rows},schema.source);
+    assert.equal(ignored,undefined);
+    assert.deepEqual(safeSchema,schema);
+    const originalFailure = app.store.get("run",failedDevelopment.id,PROJECT);
+    const ordered = syncSqlOutputSchemaDetails({...originalFailure,columns:[columns[1],columns[0],...columns.slice(2)]},revision.value);
+    assert.deepEqual(ordered.differences.map(row=>row.issues),[["ORDER"],["ORDER"]]);
+    const duplicates = syncSqlOutputSchemaDetails({...originalFailure,columns:[
+      columns[0],columns[0],columns[2],columns[3],{name:"extra_field",type:"int"},
+    ]},revision.value);
+    assert.ok(duplicates.differences.some(row=>row.issues.includes("DUPLICATE")));
+    assert.ok(duplicates.differences.some(row=>row.issues.includes("MISSING")));
+    assert.ok(duplicates.differences.some(row=>row.issues.includes("EXTRA")));
+    assert.equal(syncSqlOutputSchemaDetails({...originalFailure,columns:undefined},revision.value).status,"UNAVAILABLE");
+    assert.equal(syncSqlOutputSchemaDetails(originalFailure,{...revision.value,hash:"0".repeat(64)}),undefined);
     developmentColumns = columns;
     const manual = await request("/runs", { revisionId: revision.value.id }, "manual-run");
     assert.equal(manual.status, 202);
     const checked = await finished(`/runs/${manual.value.id}`);
+    assert.equal(checked.syncOutputSchema.status,"MATCHED");
     assert.equal(checked.rows[0].total_assets, "2045.07");
     assert.deepEqual(checked.syncInput, run.syncInput);
     const syncContext = readSyncSqlInput({ store: app.store, project: PROJECT, actorId: revision.value.author, binding: run.syncInput });
@@ -289,6 +328,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     app.store.create("auth_session", PROJECT, { userId:otherEngineer.id, tokenHash:sha256(otherCookie),
       status:"ACTIVE",expiresAt:new Date(clock+60000).toISOString() });
     const otherIdentity = { Cookie:"shuduo_session="+otherCookie };
+    assert.equal((await request(schemaPath, undefined, undefined, otherIdentity)).status, 403);
     assert.deepEqual((await request("/data-services/sources", undefined, undefined, otherIdentity)).value, []);
     assert.equal((await request(`/data-services/xapis/${xapi.id}`, undefined, undefined, otherIdentity)).status, 403);
     const persisted = await app.dataServices.recheckCall(xapi.id, checkedCall.value.callId);

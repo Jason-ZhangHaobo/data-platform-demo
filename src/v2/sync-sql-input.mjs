@@ -183,3 +183,48 @@ export function assertSyncSqlOutputSchema(columns) {
   if (!syncSqlColumnsMatch(columns))
     throw fail(409, syncSqlOutputSchemaMessage, syncSqlOutputSchemaCode);
 }
+
+export function syncSqlOutputSchemaDetails(run, revision) {
+  if (!["SUCCEEDED", "VALIDATION_FAILED"].includes(run?.status) ||
+      run.engine !== "Apache Spark" || run.mainSqlExecuted !== true || !run.syncInput ||
+      run.contextId !== syncSqlContextId || run.validationContractId !== syncSqlContractId ||
+      !revision || revision.projectId !== run.projectId || revision.contextId !== run.contextId ||
+      revision.id !== run.revisionId || revision.hash !== run.revisionHash ||
+      typeof revision.sql !== "string" || createHash("sha256").update(revision.sql).digest("hex") !== revision.hash ||
+      !isDeepStrictEqual(run.syncInput, revision.syncInput) || !digest.test(run.syncInput.snapshotHash ?? ""))
+    return undefined;
+  const source = { runId: run.id, revisionId: revision.id, revisionHash: revision.hash, snapshotHash: run.syncInput.snapshotHash };
+  const report = { protocol: "shuduo-sync-sql-output-schema/v1", source, readOnly: true };
+  const columns = run.columns;
+  if (!Array.isArray(columns) || columns.length === 0 || columns.length > 25 ||
+      columns.some(column => typeof column?.name !== "string" || typeof column?.type !== "string"))
+    return { ...report, status: "UNAVAILABLE", differences: [] };
+  const differences = [], used = new Set();
+  const identifier = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+  const sparkType = /^(?:string|boolean|tinyint|smallint|int|bigint|float|double|binary|date|timestamp|timestamp_ntz|void|decimal\(\d{1,2},\d{1,2}\))$/;
+  const observed = (column, index) => ({
+    name: identifier.test(column.name) ? column.name : null,
+    type: sparkType.test(column.type) ? column.type : null,
+    position: index + 1,
+  });
+  syncSqlOutputColumns.forEach((column, index) => {
+    const expected = { ...column, position: index + 1 };
+    const at = columns.findIndex(item => item.name === column.name);
+    if (at < 0) {
+      differences.push({ expected, actual: null, issues: ["MISSING"] });
+      return;
+    }
+    used.add(at);
+    const issues = [];
+    if (columns[at].type !== column.type) issues.push("TYPE");
+    if (at !== index) issues.push("ORDER");
+    if (issues.length) differences.push({ expected, actual: observed(columns[at], at), issues });
+  });
+  columns.forEach((column, index) => {
+    if (used.has(index)) return;
+    const original = syncSqlOutputColumns.findIndex(item => item.name === column.name);
+    const expected = original < 0 ? null : { ...syncSqlOutputColumns[original], position: original + 1 };
+    differences.push({ expected, actual: observed(column, index), issues: [expected ? "DUPLICATE" : "EXTRA"] });
+  });
+  return { ...report, status: differences.length ? "MISMATCH" : "MATCHED", differences };
+}

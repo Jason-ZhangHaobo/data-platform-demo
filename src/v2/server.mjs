@@ -42,7 +42,7 @@ import { fundAgentTaskConsumption } from "./fund-agent-task-consumption.mjs";
 import { localServiceSources } from "./local-service-sources.mjs";
 import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource,assertServicePlanVersions,bindServicePlanProposal,servicePlanDraftMatches,publicServicePlan} from './service-plan-source.mjs';
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
-import { assertSyncSqlOutputSchema, currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlColumnsMatch, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlOutputColumns, syncSqlOutputSchemaCode, syncSqlOutputSchemaMessage, syncSqlRowsMatch } from "./sync-sql-input.mjs";
+import { assertSyncSqlOutputSchema, currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlColumnsMatch, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlOutputColumns, syncSqlOutputSchemaCode, syncSqlOutputSchemaDetails, syncSqlOutputSchemaMessage, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, syncApprovalExpiry, syncSqlReviewDigest } from "./sync-sql-publication.mjs";
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence, syncServiceProtocol, syncSqlServiceSources } from "./sync-sql-service-source.mjs";
@@ -6479,6 +6479,15 @@ export function createV2Server(options = {}) {
             }
           });
         return json(res, 202, publicAgentIntent(task));
+      }
+      const schemaRead = path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\/output-schema$/);
+      if (schemaRead && method === "GET") {
+        if (url.searchParams.size) throw fail(422, "输出结构只接受原运行编号");
+        const run = get("run", schemaRead[1]);
+        requireDevelopmentOwner("run", run, req);
+        const schema = syncSqlOutputSchemaDetails(run, store.get("revision", run.revisionId ?? "", PROJECT));
+        if (!schema) throw fail(409, "原运行、版本或冻结快照的输出结构未能核对");
+        return json(res, 200, schema);
       }
       const comparisonRead=path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\/(comparison|comparison-candidates|repair-comparison)$/);
       if(comparisonRead&&method==='GET'){

@@ -1,12 +1,15 @@
 import { validationDetails, validationWithoutRawComparisons } from "./validation-details.mjs";
+import { syncSqlOutputSchemaDetails } from "./sync-sql-input.mjs";
 
 const terminal = new Set(["SUCCEEDED", "FAILED", "VALIDATION_FAILED", "CANCELLED"]);
 
 export function publicDevelopmentRun(run, revision) {
   if (!run) return run;
-  const { remoteSubmission, ...visible } = run;
+  const { remoteSubmission, syncOutputSchema: storedSchema, ...visible } = run;
   if (!terminal.has(run.status)) delete visible.durationMs;
-  return { ...visible, validation: validationWithoutRawComparisons(visible.validation), validationDetails: validationDetails(run, revision) };
+  const syncOutputSchema = syncSqlOutputSchemaDetails(run, revision);
+  return { ...visible, validation: validationWithoutRawComparisons(visible.validation), validationDetails: validationDetails(run, revision),
+    ...(syncOutputSchema ? { syncOutputSchema } : {}) };
 }
 
 export async function submitDurableDevelopment(run, revision, { runner, store, project, persist, context, validationContexts }) {
