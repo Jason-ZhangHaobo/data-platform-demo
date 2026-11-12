@@ -1,3 +1,4 @@
+import {fundRequirementScope,fundRequirementContractId} from "./fund-requirement-contract.mjs";
 import {distributionMetadataForContext,distributionMetadataById} from './output-contract-metadata.mjs';
 import {validSqlClarification,clarificationUuid} from './sql-clarification-contract.mjs';
 export const sqlRequirementProtocol='shuduo-sql-requirements/v1';
@@ -7,17 +8,23 @@ const text=(v,n)=>typeof v==='string'&&v.trim().length>0&&v.length<=n;
 const digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const exact=(v,keys)=>record(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
 const canonical=value=>JSON.stringify(value,(_k,item)=>record(item)?Object.fromEntries(Object.keys(item).sort().map(k=>[k,item[k]])):item);
-const requiredFields=b=>distributionMetadataForContext(b?.contextId)?.metrics.map(m=>m.field)??sqlRequirementFields;
+const registeredScope=id=>fundRequirementScope(id)??distributionMetadataForContext(id);
+const requiredFields=b=>registeredScope(b?.contextId)?.metrics.map(m=>m.field)??sqlRequirementFields;
 const registeredBasisMatches=b=>{
- const c=distributionMetadataForContext(b.contextId);
- if(!c)return !distributionMetadataById(b.validationContractId);
+ const fund=fundRequirementScope(b.contextId),c=fund??distributionMetadataForContext(b.contextId);
+ if(!c)return !distributionMetadataById(b.validationContractId)&&b.validationContractId!==fundRequirementContractId;
+ if(fund&&canonical(b.tables)!==canonical(fund.tables))return false;
  return b.validationContractId===c.id&&b.definitionVersion===c.definitionVersion&&b.definition===c.definition&&
   canonical(b.metrics)===canonical(c.metrics)&&canonical(b.constraints)===canonical(c.constraints);
 };
-const basisValid=b=>exact(b,['protocol','requestDigest','contextId','contextName','definition','validationContractId','definitionVersion','parameters','grain','tables','metrics','constraints','digest',...(b?.clarificationDigest!==undefined?['clarificationDigest']:[])])&&
+const parametersValid=b=>{
+ const identity=fundRequirementScope(b.contextId)?"manager_id":"advisor_id";
+ return exact(b.parameters,[identity,"trade_date"])&&text(b.parameters[identity],100)&&text(b.parameters.trade_date,30);
+};
+export const validSqlRequirementBasis=b=>exact(b,['protocol','requestDigest','contextId','contextName','definition','validationContractId','definitionVersion','parameters','grain','tables','metrics','constraints','digest',...(b?.clarificationDigest!==undefined?['clarificationDigest']:[])])&&
  (b.clarificationDigest===undefined||digest(b.clarificationDigest))&&digest(b.digest)&&digest(b.requestDigest)&&b.protocol===sqlRequirementProtocol&&text(b.contextId,80)&&text(b.contextName,200)&&
- text(b.validationContractId,120)&&Number.isSafeInteger(b.definitionVersion)&&b.definitionVersion>0&&b.grain===(distributionMetadataForContext(b.contextId)?.grain??'CLIENT_TRADE_DATE')&&
- text(b.definition,4000)&&exact(b.parameters,['advisor_id','trade_date'])&&text(b.parameters.advisor_id,100)&&text(b.parameters.trade_date,30)&&
+ text(b.validationContractId,120)&&Number.isSafeInteger(b.definitionVersion)&&b.definitionVersion>0&&b.grain===(registeredScope(b.contextId)?.grain??'CLIENT_TRADE_DATE')&&
+ text(b.definition,4000)&&parametersValid(b)&&
  Array.isArray(b.constraints)&&b.constraints.length>0&&b.constraints.length<=12&&b.constraints.every(v=>text(v,80))&&
  Array.isArray(b.metrics)&&b.metrics.length===requiredFields(b).length&&new Set(b.metrics.map(m=>m?.field)).size===requiredFields(b).length&&b.metrics.every(m=>exact(m,['field','label','sourceFields'])&&requiredFields(b).includes(m.field)&&text(m.label,200)&&
   Array.isArray(m.sourceFields)&&m.sourceFields.length>0&&m.sourceFields.every(v=>text(v,150)))&&
@@ -27,7 +34,7 @@ const basisValid=b=>exact(b,['protocol','requestDigest','contextId','contextName
 // Structural/schema acknowledgement only. A valid proposal is not proof that
 // the generated SQL implements the request; independent execution still decides.
 export function validSqlRequirementInterpretation(value,basis){
- if(!basisValid(basis)||!record(value)||value.basisDigest!==basis.digest||!text(value.summary,600))return false;
+ if(!validSqlRequirementBasis(basis)||!record(value)||value.basisDigest!==basis.digest||!text(value.summary,600))return false;
  if(value.kind==='CLARIFICATION_REQUIRED')return exact(value,['kind','basisDigest','summary','question'])&&text(value.question,300);
  if(!exact(value,['kind','basisDigest','summary','grain','metrics','constraints'])||value.kind!=='DEVELOPMENT'||value.grain!==basis.grain||
   !Array.isArray(value.metrics)||value.metrics.length!==basis.metrics.length||new Set(value.metrics.map(v=>v?.field)).size!==basis.metrics.length||
@@ -44,7 +51,7 @@ export function validSqlRequirementInterpretation(value,basis){
 
 export function sqlRequirementReportMatches(report,task){
  if(!record(report)||report.protocol!==sqlRequirementProtocol||report.taskId!==task.id||report.contextId!==task.contextId||
-  report.request!==task.message||!basisValid(report.basis)||report.basis.contextId!==task.contextId||
+  report.request!==task.message||!validSqlRequirementBasis(report.basis)||report.basis.contextId!==task.contextId||
   !['MODEL_PROPOSED','CLARIFICATION_REQUIRED','INVALID'].includes(report.status)||report.semanticVerification!=='REQUIRES_INDEPENDENT_EXECUTION'||
   !Number.isSafeInteger(report.attempt)||report.attempt<1||!text(report.model,200)||!Array.isArray(task.attempts)||
   !task.attempts.some(a=>a.attempt===report.attempt&&a.model===report.model))return false;

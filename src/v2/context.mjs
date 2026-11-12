@@ -115,7 +115,7 @@ export function publicContext(id) {
   const { expected, ...context } = getContext(id);
   if (isFundContext(id)) return {
     ...context, referenceSql: fundReferenceSql, validationFamily: fundFamily(id), outputContract: fundOutputContract(),
-    capabilities: { classicSql: true, agentDevelopment: false, delivery: true, publication: false, dataServices: false, scope: "LOCAL_ONLY" },
+    capabilities: { classicSql: true, agentDevelopment: false, fundPreparation: true, delivery: true, publication: false, dataServices: false, scope: "LOCAL_ONLY" },
   };
   return {
     ...context,

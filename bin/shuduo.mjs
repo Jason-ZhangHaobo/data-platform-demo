@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { submitFundPreparation, readFundPreparation } from "../src/v2/fund-preparation-client.mjs";
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import { fileURLToPath } from "node:url";
@@ -46,6 +47,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo manual advance|cancel --source-run-id RUN_ID --id MANUAL_DELIVERY_ID --version N --confirm
     独立手工文件与演练不调用模型、不创建Agent、不发布。未知回执先读取workflow/detail，保留原编号。
   shuduo agent intents
+  shuduo agent prepare-fund --context-id ID --trade-date YYYY-MM-DD --message "需求" --metrics FIELD_LIST --request-id UUID
+  shuduo agent fund-preparation --request-id UUID
   shuduo agent tools
   shuduo agent validate-tool --tool MODULE_ID --catalog-version VERSION --contract-digest SHA256 --input-json '{"message":"任务目标"}'
   shuduo agent invoke-tool --id INTENT_ID --tool MODULE_ID --approval-id APPROVAL_ID --catalog-version VERSION --contract-digest SHA256 --input-json '{"message":"已批准目标"}'
@@ -454,6 +457,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         action==='plan-request'?{requestId:required(parsed.options,'request_id')}:action==='advance-plan'?{planId:required(parsed.options,'id'),expectedVersion:Number(required(parsed.options,'expected_version')),
           ...(parsed.options.confirm_model_retry===undefined?{}:{confirmModelRetry:parsed.options.confirm_model_retry==='true'})}:{planId:required(parsed.options,'id')});
     }
+    else if (resource === "agent" && action === "prepare-fund")
+      result = await submitFundPreparation(client, { contextId: required(parsed.options, "context_id"),
+        businessDate: required(parsed.options, "trade_date"), message: required(parsed.options, "message"),
+        metrics: list(required(parsed.options, "metrics"), "--metrics") }, required(parsed.options, "request_id"));
+    else if (resource === "agent" && action === "fund-preparation")
+      result = await readFundPreparation(client, required(parsed.options, "request_id"));
     else if (resource === "agent" && action === "intents")
       result = await client.request("/agent/intents");
     else if (resource === "agent" && action === "tools")

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createV2Server, PROJECT } from '../../src/v2/server.mjs';
 import { MetadataStore } from '../../src/v2/store.mjs';
@@ -69,6 +70,9 @@ test('a remote Spark profile does not advertise or run fund SQL', async t => {
   const fundSources = await fetch(base + '/data-services/fund-sources');
   assert.equal(fundSources.status, 200);
   assert.deepEqual(await fundSources.json(), []);
+  assert.equal((await post('/agent/fund-preparations', {}, randomUUID())).status, 403);
+  assert.equal(store.list('agent_fund_preparation', PROJECT).length, 0);
+
   assert.equal((await post('/revisions', { contextId: fundContextId, sql: fundReferenceSql }, 'blocked-save')).status, 422);
   const revision = store.create('revision', PROJECT, { contextId: fundContextId, sql: fundReferenceSql });
   assert.equal((await post('/runs', { revisionId: revision.id }, 'blocked-run')).status, 403);
