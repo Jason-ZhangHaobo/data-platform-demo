@@ -670,7 +670,9 @@ async function checkedPublicationPreflight(path, client, item) {
       evidence.development?.runId !== bound.developmentRunId || evidence.delivery?.packageId !== bound.packageId ||
       evidence.delivery?.packageDigest !== bound.packageDigest || evidence.delivery?.verificationId !== bound.verificationId)
     stop("发布预检与原核验回执不一致");
-  validateDeliveryPackage(current.package,bound.packageDigest);
+  const plan=validateDeliveryPackage(current.package,bound.packageDigest), source=item.derivationSource;
+  const parent=source?{...agentContextDerivationRequest(source),contextId:source.contextId,validationContractId:source.validationContractId}:undefined;
+  if (!isDeepStrictEqual(plan.source.derivation,parent)) stop("发布交付包与原派生父版本不一致");
   if (!Object.entries(current.package.manifest.files).every(([name,file])=>evidence.delivery.fileHashes?.[name]===file.sha256))
     stop("审阅文件摘要与原演练不一致");
   return {selector,current,review:{protocol:"shuduo-cloud-publication-review/v1",

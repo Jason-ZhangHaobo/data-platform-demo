@@ -1,5 +1,5 @@
-// HTTP/lifecycle regression with synthetic model and queue doubles only.
-// This file is NOT evidence of live model, Spark, cloud recovery or public E2E.
+// HTTP/lifecycle regression with synthetic models and a local queue. Explicit
+// measurement flags can run local Spark. Neither mode attests cloud execution.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -42,6 +42,7 @@ import { developmentRequestDigest } from '../../src/v2/public-development-access
 import { agentContextDerivationBody } from '../../src/v2/agent-context-derivation.mjs';
 import { sha256 } from '../../src/v2/delivery.mjs';
 import { seedContextDerivation } from './fixtures/agent-context-derivation.mjs';
+import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan } from '../../src/v2/live-lifecycle-evaluation.mjs';
 import { fixtureFirstCloudIndex, fixtureFirstCloudInspection } from './fixtures/first-cloud-application-inspection.mjs';
 
 test('first-case entry preflight distinguishes exact bytes, stale HTML and a timeout without modifying the checkpoint', async t => {
@@ -492,7 +493,8 @@ async function measuredSpark(t,f,prepared,label){
   return result;
 }
 
-async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchId,sequence,origin}){
+async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchId,sequence,origin,expectedRows=baseConsumerRows,
+  differentContextRows}){
   const [holdingsSpec,cashSpec]=[
     {name:'虚构持仓原批次 '+sequence,slug:'verified-holdings-'+sequence,
       fields:['client_id','holding_market_value','security_count'],timeoutMs:3000,rateLimitPerMinute:12},
@@ -535,9 +537,6 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   const reportFile=join(f.directory,'consumer-report-'+sequence+'.json');
   writeFileSync(tokenFile,app.body.token,{mode:0o600});
   const describe=service=>({id:service.id,slug:service.slug,versionId:service.currentVersion.id,configHash:service.currentVersion.configHash});
-  // Literal expectations were declared independently of Spark and HTTP output.
-  const expectedRows=[{client_id:'CLIENT-001',holding_market_value:'1500.00',available_cash:'300.00',total_assets:'1800.00',security_count:2},
-    {client_id:'CLIENT-002',holding_market_value:'750.00',available_cash:'200.00',total_assets:'950.00',security_count:1}];
   const plan={protocol:'SERVICE_CONSUMER_V2',authorized:true,testOnly:true,privateFixture:true,origin,approvedOrigin:origin,
     startedAt:new Date(f.now()-1000).toISOString(),deadline:new Date(f.now()+50000).toISOString(),timeoutMs:5000,maxRequests:20,
     reportFile,expectedRows,source,dapis:[{...describe(holdings),alias:'holdings',fields:holdingsSpec.fields,granted:true},
@@ -570,12 +569,24 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   assert.equal(missingProof.reason,'DAPI_RECEIPT_INVALID');
   assert.equal(f.store.list('service_call',PROJECT).length,storedCalls);
   writeFileSync(reportFile,JSON.stringify(report));
-  const altered=structuredClone(plan);altered.expectedRows[0].total_assets='1.00';
+  const altered=structuredClone(plan);
+  if (differentContextRows) altered.expectedRows=differentContextRows;
+  else altered.expectedRows[0].total_assets='1.00';
   writeFileSync(planFile,JSON.stringify(altered));
   await cli('v3-consumption',flags,1);
   writeFileSync(planFile,JSON.stringify(plan));
   return {bound,flags};
 }
+
+// Reviewed literals from the fictional source inputs, independent of output.
+const baseConsumerRows=[
+  {client_id:'CLIENT-001',holding_market_value:'1500.00',available_cash:'300.00',total_assets:'1800.00',security_count:2},
+  {client_id:'CLIENT-002',holding_market_value:'750.00',available_cash:'200.00',total_assets:'950.00',security_count:1},
+];
+const stockConsumerRows=[
+  {client_id:'CLIENT-001',holding_market_value:'1000.00',available_cash:'300.00',total_assets:'1300.00',security_count:1},
+  {client_id:'CLIENT-002',holding_market_value:'750.00',available_cash:'200.00',total_assets:'950.00',security_count:1},
+];
 
 function fixtureSourceReview(directory) {
   const cwd=join(directory,'source-review-repo');
@@ -1636,14 +1647,16 @@ test('a killed publication CLI recovers both original batches through signed sch
   }
 });
 
-test('an invited exact window binds derivation to the original parent and reads the new Spark evidence',async t=>{
+test('an invited exact window binds derivation from the parent through signed release and both consumer batches',async t=>{
   const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
   const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_DERIVATION==='true';
+  const measureRelease=process.env.SHUDUO_TEST_LOCAL_SPARK_DERIVATION_RELEASE==='true';
+  const plan=liveLifecyclePlan(11,{contractId:currentLiveLifecycleContract.id}), definition=plan.selectedCases.at(-1);
   const owner=(await f.call('/auth/session')).body.user.id;
   const source=seedContextDerivation(f.store,PROJECT,{actorId:owner});
   const initialParent=f.store.get('agent',source.task.id,PROJECT);
-  const key=randomUUID(), target='stock-cash-t1', family=validationFamilyForContext(target);
-  const body=agentContextDerivationBody({message:'从已核验父版本派生股票持仓和现金口径',sql:source.sql,
+  const key=randomUUID(), target=definition.contextId, family=validationFamilyForContext(target);
+  const body=agentContextDerivationBody({message:definition.request,sql:source.sql,
     contextId:target,derivation:source.derivation});
   const starts=Math.max(Date.now(),Date.parse(source.task.createdAt)+1);
   f.later(starts-f.now());
@@ -1689,32 +1702,161 @@ test('an invited exact window binds derivation to the original parent and reads 
   assert.equal(evidence.body.development.validationContractId,family.id);
   assert.deepEqual(f.store.get('agent',source.task.id,PROJECT),initialParent);
   assert.deepEqual(f.counts(),before);
-  const {revisionId,revisionHash,requirementBinding}=evidence.body.development;
-  const delivery=await f.call(taskPath+'/prepare-delivery',{expectedSource:{revisionId,revisionHash,runId,requirementBinding}},randomUUID());
-  assert.equal(delivery.status,202,delivery.body.message);
-  const deliveryPath='/agent/deliveries/'+delivery.body.id+'/advance';
-  const exact={packageId:delivery.body.packageId,packageDigest:delivery.body.packageDigest};
-  const started=await f.call(deliveryPath,{expectedVersion:delivery.body.version,rehearsal:exact});
-  assert.equal(started.status,200,started.body.message);
-  const queued=f.store.get('agent_delivery_task',delivery.body.id,PROJECT).remoteSubmission.prepared;
+  const checkpoint=join(f.directory,'derived-case.json'), bill=join(f.directory,'derived-bill.json');
+  const evaluationRunId=randomUUID(), startedAt=new Date(starts).toISOString();
+  const approvals=Array.from({length:10},(_,index)=>sha256('derived fixture approval '+index));
+  const submittedAt=created.body.createdAt;
+  const item={...liveCaseCheckpoint(definition,startedAt,plan.caseSetDigest,{contractId:plan.contract.id,evaluationRunId}),
+    status:'PAUSED',phase:'CODE_AND_DEBUG',taskId:task.id,actions:{agent:{key,status:'CONFIRMED',id:task.id,bodyHash:sha256(JSON.stringify(body))}},
+    derivationSource:{protocol:'shuduo-cloud-v3-derivation-source/v1',sourceCaseId:definition.sourceCaseId,contextId:source.task.contextId,
+      validationContractId:source.family.id,taskId:source.task.id,revisionId:source.revision.id,runId:source.run.id,
+      revisionHash:source.revision.hash,completionDigest:sha256('fixture parent completion')}};
+  const origin=new URL(f.base).origin;
+  writeFileSync(checkpoint,JSON.stringify({evaluationRunId,contract:plan.contract,startedAt,caseSetDigest:plan.caseSetDigest,
+    caseLimit:11,origin,projectId:PROJECT,reviewedSource:'a'.repeat(40),
+    previousCase:{checkpointDigest:sha256('fixture prior checkpoint'),completionDigest:sha256('fixture prior completion'),
+      approvalDigest:approvals.at(-1),approvalDigests:approvals,reserveCny:64},
+    submission:{actorId:owner,submittedAt,bill:{unsettledReserveCny:64}},outcomes:[item]}),{mode:0o600});
+  writeSubprocessBill(bill);
+  const requests=[];
+  let losePublication=false;
+  const client=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
+    const uri=new URL(url), path=uri.pathname.slice('/api/v2'.length)+uri.search;
+    requests.push({method:options.method,path});
+    const result=await f.call(path,options.body?JSON.parse(options.body):undefined,options.headers['Idempotency-Key']);
+    if (losePublication && options.method==='POST' && path===taskPath+'/publication') {
+      assert.equal(result.status,202);
+      losePublication=false;
+      throw Error('synthetic derivative publication response lost');
+    }
+    return new Response(JSON.stringify(result.body),{status:result.status});
+  }});
+  const cli=async(action,flags=[],exit=0)=>{
+    requests.length=0;
+    let result,message;
+    const code=await runV2Cli(['agent',action,'--checkpoint',checkpoint,...flags],{},
+      {client,output:line=>{result=JSON.parse(line);},error:line=>{message=line;}});
+    assert.equal(code,exit,message);
+    return result;
+  };
+  const confirm=['--bill-file',bill,'--confirm'];
+  assert.equal((await cli('v3-inspect')).status,'DEVELOPMENT_BOUND');
+  const {delivery}=await cli('v3-prepare-delivery',confirm);
+  const bundle=f.store.get('delivery_package',delivery.packageId,PROJECT);
+  assert.deepEqual(bundle.manifest.source.derivation,original.body.derivedFrom);
+  const started=await cli('v3-rehearse',confirm);
+  const queued=f.store.get('agent_delivery_task',delivery.id,PROJECT).remoteSubmission.prepared;
   f.complete(queued,measure?await measuredSpark(t,f,queued,'derived file rehearsal'):{
     status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,durationMs:100,
     rows:getContext(target).expected,validation:{passed:true,contractId:family.id,
       regressions:family.contextIds.map(contextId=>({contextId,passed:true}))},
     testSqlValidation:{passed:true,sqlHash:sha256(JSON.parse(queued.job.body).testSql)},
   });
-  const settled=await f.call(deliveryPath,{expectedVersion:started.body.version,rehearsal:{...exact,verificationId:started.body.verificationId}});
-  assert.equal(settled.status,200,settled.body.message);
-  const reviewPath=agentReviewEvidencePath({taskId:task.id,deliveryId:delivery.body.id,requestSha256:sha256(body.message)});
-  const review=(await f.call(reviewPath)).body;
+  const settled=await cli('v3-rehearse',['--settle']);
+  assert.equal(settled.delivery.rehearsal.id,started.delivery.rehearsal.id);
+  assert.equal(settled.delivery.rehearsal.status,'SUCCEEDED');
+  const evidenceReviewPath=agentReviewEvidencePath({taskId:task.id,deliveryId:delivery.id,requestSha256:sha256(body.message)});
+  const review=(await f.call(evidenceReviewPath)).body;
   assert.equal(review.status,'REVIEW_EVIDENCE_READY',review.reason);
   assert.deepEqual(review.derivedFrom,original.body.derivedFrom);
   assert.equal(Object.keys(review.delivery.fileHashes).length,8);
   const after=f.counts();
   f.store.update('revision',source.revision.id,PROJECT,{hash:'f'.repeat(64)});
   assert.equal((await f.call(evidencePath)).body.status,'UNCONFIRMED');
-  assert.equal((await f.call(reviewPath)).body.status,'UNCONFIRMED');
+  assert.equal((await f.call(evidenceReviewPath)).body.status,'UNCONFIRMED');
   assert.deepEqual(f.counts(),after);
+  f.store.update('revision',source.revision.id,PROJECT,{hash:source.revision.hash});
+
+  const reviewFile=join(f.directory,'derivative-publication-review.json');
+  assert.equal((await cli('v3-publication-review',['--out-file',reviewFile])).status,'REVIEW_FILE_READY');
+  const draft=JSON.parse(readFileSync(reviewFile,'utf8'));
+  assert.deepEqual(draft.package.manifest.source.derivation,original.body.derivedFrom);
+  assert.equal(draft.basis.evidence.delivery.packageDigest,delivery.packageDigest);
+  const reviewed={...draft,attestations:Object.fromEntries(Object.keys(draft.attestations).map(key=>[key,true]))};
+  writeFileSync(reviewFile,JSON.stringify(reviewed));
+  f.alignWallClock();
+  Object.assign(f.env,{
+    V2_FC_PUBLIC_WRITE_SCOPE:'PUBLICATION_ONLY',
+    V2_PUBLIC_PUBLICATION_STARTS_AT:new Date(f.now()-1000).toISOString(),
+    V2_PUBLIC_PUBLICATION_EXPIRES_AT:new Date(f.now()+600000).toISOString(),
+    V2_PUBLIC_PUBLICATION_TASK_ID:task.id,V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST:delivery.packageDigest,
+    V2_PUBLIC_PUBLICATION_VERIFICATION_ID:settled.delivery.rehearsal.id,
+    V2_PRIVATE_RELEASE_ENABLED:'true',V2_PRIVATE_RELEASE_TRIGGER_NAMES:'shuduo-release-synthetic-derived',
+    V2_SCHEDULER_TICK_SECRET:'synthetic-derived-release-authorization-1234567890',
+  });
+  await f.restart();
+  losePublication=true;
+  assert.equal((await cli('v3-publish',['--review-file',reviewFile,...confirm])).reason,'INSPECT_ORIGINAL_PUBLICATION');
+  assert.equal(requests.filter(entry=>entry.method==='POST').length,1);
+  const {publication}=await cli('v3-publish',['--reconcile']);
+  assert.equal(publication.status,'WAITING_SCHEDULER');
+  assert.equal(requests.filter(entry=>entry.method==='POST').length,0);
+  assert.equal(f.store.list('release_approval',PROJECT).length,1);
+  const {releaseId,batchIds}=publication;
+  const timer=(mark,forged=false)=>{
+    const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=mark.repeat(24);
+    const signed=JSON.stringify({releaseId,triggerName,expiresAt:f.now()+300000});
+    return {triggerName,triggerTime:new Date(f.now()).toISOString(),payload:JSON.stringify({
+      operation:'PRIVATE_RELEASE_TIMER_V1',timestamp,nonce,body:signed,
+      signature:forged?'bad':signSchedulerTick({sharedSecret:f.env.V2_SCHEDULER_TICK_SECRET,timestamp,nonce,body:signed}),
+    })};
+  };
+  assert.equal((await f.privateCall(timer('x',true))).status,401);
+  const alternative=seedContextDerivation(f.store,PROJECT,{actorId:owner});
+  assert.equal(alternative.sql,source.sql);
+  f.store.update('agent',task.id,PROJECT,{derivedFrom:{...alternative.derivation,contextId:source.task.contextId,
+    validationContractId:source.family.id}});
+  // This alternative is a valid same-SQL parent, but not the reviewed one.
+  assert.equal((await f.call(evidencePath)).body.status,'EXECUTION_RECORDED');
+  assert.equal((await f.privateCall(timer('y'))).status,409);
+  assert.deepEqual(f.counts(),after);
+  f.store.update('agent',task.id,PROJECT,{derivedFrom:original.body.derivedFrom});
+
+  for (const [index,id] of batchIds.entries()) {
+    if (index) f.later(60001);
+    const tick=timer(index?'b':'a');
+    assert.equal((await f.privateCall(tick)).status,200);
+    const run=f.store.get('release_run',id,PROJECT), prepared=run.remoteSubmission.prepared;
+    assert.equal(prepared.job.jobId,id);
+    assert.equal(JSON.parse(prepared.job.body).context.id,target);
+    assert.equal(f.counts().jobCreates,after.jobCreates+index+1);
+    f.complete(prepared,measureRelease?await measuredSpark(t,f,prepared,'derived release batch '+(index+1)):{
+      status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,durationMs:100,
+      rows:stockConsumerRows,validation:{passed:true,contractId:family.id,
+        regressions:family.contextIds.map(contextId=>({contextId,passed:true}))},
+      testSqlValidation:{passed:true,sqlHash:sha256(JSON.parse(prepared.job.body).testSql)},
+    });
+    assert.equal((await f.privateCall(tick)).body.replayed,true);
+    assert.equal(f.store.get('release_run',id,PROJECT).status,'SUCCEEDED');
+    assert.equal(f.counts().jobCreates,after.jobCreates+index+1);
+  }
+  const finished=(await cli('v3-publish',['--reconcile'])).publication;
+  assert.equal(finished.monitoringStatus,'VERIFIED');
+  assert.deepEqual(finished.monitoring.map(row=>row.batchId),batchIds);
+  const monitorHref='/v2/?'+new URLSearchParams({module:'ops',taskId:task.id,releaseId,revisionId:evidence.body.development.revisionId,
+    firstBatchId:batchIds[0],secondBatchId:batchIds[1]})+'#ops-exact-publication';
+  const monitor=await readOpsPublication(async path=>(await f.call(path)).body,opsPublicationTarget(new URL(monitorHref,f.base).href));
+  assert.equal(monitor.health,'HEALTHY');
+  for (const [index,batch] of monitor.batches.entries()) {
+    const serviceUrl=new URL(batch.serviceHref,f.base).href, parsed=serviceSourceFromLocation(serviceUrl);
+    assert.equal(parsed.binding.releaseId,releaseId);
+    assert.equal(serviceBatchFromLocation(serviceUrl,parsed.binding),batchIds[index]);
+  }
+  const consumed=[];
+  for (const [index,batchId] of batchIds.entries()) {
+    consumed.push(await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:delivery.packageDigest,batchId,
+      sequence:index+1,origin,expectedRows:stockConsumerRows,differentContextRows:baseConsumerRows}));
+  }
+  f.env.V2_FC_PUBLIC_READ_ONLY='true';
+  await f.restart();
+  const proofPath=join(f.directory,'derived-completion.json'), beforeProof=readFileSync(checkpoint);
+  const proof=await cli('v3-complete',['--first-plan',consumed[0].flags[1],'--second-plan',consumed[1].flags[1],'--out-file',proofPath]);
+  assert.equal(proof.scope,'LOCAL_MATCHED_ONLY');
+  assert.equal(requests.length,10);
+  assert.ok(requests.every(entry=>entry.method==='GET'));
+  assert.deepEqual(readFileSync(checkpoint),beforeProof);
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:4});
+  assert.deepEqual(f.store.get('agent',source.task.id,PROJECT),initialParent);
 });
 
 test('a settled original development failure allows the next case while pending usage and Spark stay unresolved',async t=>{
