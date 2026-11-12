@@ -267,13 +267,17 @@ export function createRemoteSparkRunner(env = process.env, fetchImpl = fetch) {
       healthVerified: false,
       publicWriteEnabled: false,
     };
-    runner.verify = async () => {
-      const status = await client.health();
-      runner.descriptor.healthVerified = true;
-      runner.descriptor.publicWriteEnabled = true;
-      runner.descriptor.verifiedAt = status.verifiedAt;
-      return status;
+    runner.prepareVerification = async () => {
+      const check = await client.prepareHealthCheck();
+      return () => {
+        const status = check();
+        runner.descriptor.healthVerified = true;
+        runner.descriptor.publicWriteEnabled = true;
+        runner.descriptor.verifiedAt = status.verifiedAt;
+        return status;
+      };
     };
+    runner.verify = async () => (await runner.prepareVerification())();
     return runner;
   }
   const config = remoteSparkConfigFromEnvironment(env);
