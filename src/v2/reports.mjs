@@ -363,7 +363,9 @@ export class ReportManager {
     if (version.outputContractId === fundReportContractId) {
       const dataset = this.#dataset(version.datasetId), source = dataset.publishedSource, evidence = snapshotMeta.sourceEvidence;
       if (!source || !evidence || snapshotMeta.datasetId !== dataset.id || snapshotMeta.assetId !== dataset.assetId ||
-          stableHash(dataset.sourceEvidence) !== stableHash(evidence) || source.kind !== "MANUAL" ||
+          stableHash(dataset.sourceEvidence) !== stableHash(evidence) ||
+          (source.kind === "AGENT" ? evidence.upstreamKind !== "FUND_AGENT_GENERATED" || evidence.agentTaskId !== source.taskId ||
+            evidence.sourceTaskId !== source.taskId || !["LIVE_MODEL","SYNTHETIC_MODEL"].includes(evidence.modelMode) : source.kind !== "MANUAL") ||
           source.releaseId !== evidence.releaseId || source.packageDigest !== evidence.packageDigest ||
           source.revisionId !== evidence.revisionId || source.runId !== evidence.developmentRunId || source.batchId !== evidence.batchId)
         throw fail(409, "基金报表快照与原发布来源不一致", "FUND_REPORT_SOURCE_CHANGED");
@@ -399,9 +401,9 @@ export class ReportManager {
     return { report: this.reportDetail(report.id), run };
   }
 
-  exportReport(id) {
+  exportReport(id, runId) {
     const report = this.reportDetail(id),
-      run = report.runs.find((item) => item.id === report.lastRunId);
+      run = report.runs.find((item) => item.id === (runId ?? report.lastRunId));
     if (!run || run.status !== "SUCCEEDED")
       throw fail(409, "报表尚无成功运行，不能导出", "REPORT_RUN_REQUIRED");
     const partitioned=Boolean(run.outputContractId), fund=run.outputContractId===fundReportContractId;

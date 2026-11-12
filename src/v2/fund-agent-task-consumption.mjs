@@ -9,12 +9,13 @@ const invalid = () => Object.assign(new Error("基金 Agent 的原批次、固�
   status: 409, code: "FUND_AGENT_CONSUMPTION_UNCONFIRMED",
 });
 
-export async function fundAgentTaskConsumption({ store, project, agent, packageDigest, releaseId, callIdDigest, manager, timeUnitMs }) {
+export async function fundAgentTaskConsumption({ store, project, agent, packageDigest, releaseId, callIdDigest, manager, timeUnitMs, batchId }) {
   const selection = { taskId: agent.id, packageDigest, releaseId };
   const sources = () => fundAgentServiceSources({ store, project, selection, timeUnitMs });
   const original = sources();
   if (original.length !== 2) throw invalid();
-  const byBatch = new Map(original.map(run => [run.id, run.sourceEvidence]));
+  const byBatch = new Map(original.filter(run => batchId === undefined || run.id === batchId).map(run => [run.id, run.sourceEvidence]));
+  if (!byBatch.size) throw invalid();
   const services = [];
   let matchingCount = 0;
   for (const service of manager.list()) {
@@ -82,7 +83,7 @@ export async function fundAgentTaskConsumption({ store, project, agent, packageD
     services.some(dapi => dapi.serviceType === "DAPI" && dapi.status === "VERIFIED" &&
       dapi.sourceRunIds[0] === entry.sourceRunIds[0] && entry.sourceVersions.some(child => child.versionId === dapi.versionId)));
   return { protocol: "shuduo-local-fund-agent-consumption/v1", scope: "LOCAL_TEST_ONLY", taskId: agent.id,
-    releaseId, packageDigest, sourceKind: "AGENT", outputContractId: fundDapiContract.id, status: complete ? "VERIFIED" : "PENDING",
+    releaseId, packageDigest, ...(batchId ? { batchId } : {}), sourceKind: "AGENT", outputContractId: fundDapiContract.id, status: complete ? "VERIFIED" : "PENDING",
     checkedAt: new Date().toISOString(), matchingCount, truncated, services,
     publicDeployed: false, externalSystemVerified: false, agentIndependentE2E: false,
     notice: "历史消费仅核对原批次的固定版本和调用结果。凭证状态以本次读取为准。" };

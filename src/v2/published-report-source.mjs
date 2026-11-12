@@ -1,6 +1,7 @@
 import {resolveFundConsumptionSource} from "./fund-consumption-source.mjs";
 import {fundContext} from "./fund-lookthrough.mjs";
 import {fundDapiContract} from "./fund-dapi-contract.mjs";
+import {fundAgentAttributionKind} from "./fund-delivery.mjs";
 import {resolveDistributionReportSource} from './distribution-reports.mjs';
 import {isDeepStrictEqual as same} from 'node:util';
 import {createHash} from 'node:crypto';
@@ -18,18 +19,26 @@ export function resolvePublishedReportSource({store,project,source,actorId,allow
  const revision=read('revision',source.revisionId),code=read('run',source.runId),release=read('release',source.releaseId),bundle=read('delivery_package',release.packageId),batch=read('release_run',source.batchId);
  if (bundle.manifest?.source?.fundLookthrough) {
   if (!allowFund) throw fail(403, "REPORT_SOURCE_UNSUPPORTED", "基金报表仅在本机 Spark 环境开放");
-  if (source.kind !== "MANUAL" || revision.source !== "MANUAL" || revision.author !== actorId ||
-      revision.manualProvenance?.actorId !== actorId)
+  const attribution = bundle.manifest.source.attribution;
+  const fromAgent = source.kind === "AGENT";
+  const ownerMatches = revision.author === actorId && (fromAgent
+   ? attribution?.kind === fundAgentAttributionKind && attribution.actorId === actorId &&
+     attribution.originAgentTaskId === source.taskId && code.agentTaskId === source.taskId && revision.source === attribution.modelMode
+   : revision.source === "MANUAL" && revision.manualProvenance?.actorId === actorId);
+  if (!ownerMatches)
    throw fail(403, "REPORT_SOURCE_OWNER", "基金报表须属于原开发工程师");
   const { evidence, rows } = resolveFundConsumptionSource({ store, project,
    selection: { releaseId: source.releaseId, packageDigest: source.packageDigest, batchId: source.batchId }, timeUnitMs });
-  if (!rows || !evidence.eligibleForService || evidence.revisionId !== source.revisionId || evidence.developmentRunId !== source.runId)
+  if (!rows || !evidence.eligibleForService || evidence.revisionId !== source.revisionId || evidence.developmentRunId !== source.runId ||
+      fromAgent && (evidence.agentTaskId !== source.taskId || evidence.modelMode !== attribution.modelMode))
    throw fail(409, "FUND_REPORT_SOURCE_UNPROVEN", "基金报表需要同一版本的真实 Spark 发布结果");
   const contract = fundDapiContract, context = fundContext(revision.contextId);
   return {
    asset: { id: "dataset:" + contract.id, versionId: batch.id, evidenceHash: publishedReportHash(rows), fields: contract.fields, outputContractId: contract.id },
    rows, context: { id: context.id, name: context.name, definition: context.definition }, source,
-   sourceEvidence: { ...evidence, outputContractId: contract.id, sourceRevisionId: revision.id,
+   sourceEvidence: { ...evidence, ...(fromAgent ? {sourceTaskId:source.taskId,
+    modelClassification:evidence.modelMode==="SYNTHETIC_MODEL"?"SYNTHETIC_UPSTREAM":"MODEL_NAME_RECORDED"} : {}),
+    outputContractId: contract.id, sourceRevisionId: revision.id,
     sourceRunId: code.id, sourceReleaseRunId: batch.id },
   };
  }
