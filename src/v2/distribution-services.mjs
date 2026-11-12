@@ -1,8 +1,10 @@
 import {distributionMetadataById} from './output-contract-metadata.mjs';
+import {fundDapiContract} from "./fund-dapi-contract.mjs";
+export const snapshotContractById = id => id === fundDapiContract.id ? fundDapiContract : distributionMetadataById(id);
 const fail=message=>Object.assign(Error(message),{status:422,code:'INVALID_DISTRIBUTION_SERVICE'});
 const compare=(a,b)=>a<b?-1:a>b?1:0;
 export function distributionFields(id,fields){
- const c=distributionMetadataById(id);if(!c)throw fail('分布服务契约未登记');
+ const c=snapshotContractById(id);if(!c)throw fail('结果服务契约未登记');
  const selected=fields??c.fields.map(f=>f.name);
  if(!Array.isArray(selected)||!selected.length||selected.length>c.fields.length||new Set(selected).size!==selected.length||selected.some(f=>!c.fields.some(v=>v.name===f)))throw fail('字段不在分布输出契约内');
  return [...c.keyFields,...selected.filter(f=>!c.keyFields.includes(f))];
@@ -15,11 +17,11 @@ function fixed(value,scale,max){
  return integer.toString()+(scale?'.'+part.slice(0,scale).padEnd(scale,'0'):'');
 }
 export function normalizedDistributionRows(rows,id){
- const c=distributionMetadataById(id);if(!c||!Array.isArray(rows)||!rows.length||rows.length>1000)throw fail('分布快照行数或契约不合法');
+ const c=snapshotContractById(id);if(!c||!Array.isArray(rows)||!rows.length||rows.length>1000)throw fail('分布快照行数或契约不合法');
  const values=rows.map(row=>{
   if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).length!==c.fields.length||c.fields.some(f=>!Object.hasOwn(row,f.name)))throw fail('分布字段与契约不符');
   const out={};for(const f of c.fields){const v=row[f.name];
-   if(f.type==='STRING'){if(typeof v!=='string'||!v.trim()||v.length>100||f.name==='client_id'&&!/^[A-Z0-9][A-Z0-9-]{2,63}$/.test(v)||f.name==='trade_date'&&!/^\d{4}-\d{2}-\d{2}$/.test(v))throw fail('分布复合键不合法');out[f.name]=v;}
+   if(f.type==='STRING'){if(typeof v!=='string'||!v.trim()||v.length>100||['client_id','portfolio_id'].includes(f.name)&&!/^[A-Z0-9][A-Z0-9-]{2,63}$/.test(v)||f.name==='trade_date'&&!/^\d{4}-\d{2}-\d{2}$/.test(v))throw fail('分布复合键不合法');out[f.name]=v;}
    else{const text=fixed(v,f.scale??0,f.maximum??f.max);if(f.type==='INTEGER'){const n=Number(text);if(!Number.isSafeInteger(n))throw fail('证券数量超出安全范围');out[f.name]=n;}else out[f.name]=text;}
   }return out;
  });
@@ -28,6 +30,7 @@ export function normalizedDistributionRows(rows,id){
 }
 export function distributionComposition(versions,steps){
  const ids=versions.map(v=>v.outputContractId);if(!ids.some(Boolean))return undefined;
+ if(ids.includes(fundDapiContract.id))throw fail('基金组合 XAPI 尚未启用，保留已发布的 DAPI');
  if(!ids[0]||ids.some(id=>id!==ids[0])||versions.some(v=>v.sourceReleaseRunId!==versions[0].sourceReleaseRunId||v.snapshotHash!==versions[0].snapshotHash))throw fail('分布XAPI只能组合同一契约、同一发布批次的DAPI');
  const c=distributionMetadataById(ids[0]);if(!c||steps.some(s=>[...c.keyFields,'distributions'].includes(s.alias)))throw fail('分布编排别名与复合键冲突');
  return {sourceEvidence:{protocol:'shuduo-distribution-composition-source/v1',children:versions.map(v=>v.sourceEvidence),agentIndependentE2E:false},outputContractId:c.id,composition:'CLIENT_DISTRIBUTION_ARRAY_V1',groupKeys:['client_id','trade_date'],joinKeys:c.keyFields};
@@ -51,9 +54,9 @@ export function combineDistributionResults(results,contractId,query){
 
 // OpenAPI describes exact decimal strings; it does not publish fixture answers.
 export function distributionResponseSchema(version,childVersions=[]){
- const c=distributionMetadataById(version.outputContractId);if(!c)return undefined;
+ const c=snapshotContractById(version.outputContractId);if(!c)return undefined;
  const field=name=>{const f=c.fields.find(v=>v.name===name);return f.type==='STRING'?{type:'string'}:f.type==='INTEGER'?{type:'integer',minimum:0}:{type:'string',pattern:`^\\d+\\.\\d{${f.scale}}$`,description:`精确十进制字符串，固定${f.scale}位小数`};};
  const object=names=>({type:'object',additionalProperties:false,required:names,properties:Object.fromEntries(names.map(name=>[name,field(name)]))});
  const item=version.serviceType==='DAPI'?object(version.fields):{...object(['client_id','trade_date']),required:['client_id','trade_date','distributions'],properties:{...object(['client_id','trade_date']).properties,distributions:{type:'array',items:{type:'object',additionalProperties:false,required:[c.dimension,...version.steps.map(s=>s.alias)],properties:{[c.dimension]:field(c.dimension),...Object.fromEntries(version.steps.map((s,i)=>[s.alias,object(childVersions[i].fields.filter(f=>!c.keyFields.includes(f)))]))}}}}};
- return{type:'object',required:['data','pagination','resultContract'],properties:{data:{type:'array',items:item},pagination:{type:'object',required:['page','pageSize','total','totalPages'],properties:Object.fromEntries(['page','pageSize','total','totalPages'].map(n=>[n,{type:'integer',minimum:n==='total'?0:1}]))},resultContract:{type:'object',description:version.serviceType==='DAPI'?'按客户、交易日、分类明细分页':'按客户及交易日分页，分类数组不会跨页截断'},sourceEvidence:{type:'object',description:'保留本机执行与上游模型归因；不代表真实模型完整自主E2E'}}};
+ return{type:'object',required:['data','pagination','resultContract'],properties:{data:{type:'array',items:item},pagination:{type:'object',required:['page','pageSize','total','totalPages'],properties:Object.fromEntries(['page','pageSize','total','totalPages'].map(n=>[n,{type:'integer',minimum:n==='total'?0:1}]))},resultContract:{type:'object',description:version.serviceType==='DAPI'?(c.id===fundDapiContract.id?'按组合、交易日、资产类别明细分页':'按客户、交易日、分类明细分页'):'按客户及交易日分页，分类数组不会跨页截断'},sourceEvidence:{type:'object',description:'保留本机执行与上游模型归因；不代表真实模型完整自主E2E'}}};
 }

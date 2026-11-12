@@ -979,16 +979,21 @@ export function createV2Server(options = {}) {
       });
     return json(res, 202, publicAgentIntent(task));
   };
+  const fundSourceFor = run => {
+    const release = run?.releaseId && store.get("release", run.releaseId, PROJECT);
+    const bundle = run?.packageId && store.get("delivery_package", run.packageId, PROJECT);
+    if (!release?.fundLookthrough && bundle?.manifest?.source?.contextId !== fundContextId &&
+        run?.source?.contextId !== fundContextId) return undefined;
+    if (!localClassicSpark) throw fail(422, "基金组合穿透只支持本机数据服务");
+    return resolveFundConsumptionSource({ store, project: PROJECT,
+      selection: { batchId: run.id, releaseId: run.releaseId, packageDigest: run.packageDigest }, timeUnitMs: releaseTimeUnitMs });
+  };
   const dataServices = new DataServiceManager({
     store,
     businessStore,
     project: PROJECT,
-    releaseRunFor: (id) => {
-      const run = store.get("release_run", id, PROJECT);
-      if (run?.releaseId && store.get("release", run.releaseId, PROJECT)?.fundLookthrough)
-        throw fail(422, "基金组合穿透尚未接入数据服务");
-      return run;
-    },
+    releaseRunFor: id => store.get("release_run", id, PROJECT),
+    fundSourceFor,
     distributionSourceFor: run=>{const proof=certifiedDistributionSource({store,project:PROJECT,run});if(proof&&!local)throw fail(422,"分布消费仅本机已核验来源");return proof;},
     now: options.now,
     executeDapi: options.dataServiceExecutor,
@@ -1948,7 +1953,8 @@ export function createV2Server(options = {}) {
       const openService = path.match(
         /^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/,
       );
-      if (openService && method === "GET")
+      if (openService && method === "GET") {
+        if (new Set(url.searchParams.keys()).size !== url.searchParams.size) throw fail(400, "查询参数不能重复");
         return json(
           res,
           200,
@@ -1959,6 +1965,7 @@ export function createV2Server(options = {}) {
             Object.fromEntries(url.searchParams),
           ),
         );
+      }
       if (!local && method === "GET" && path.startsWith("/api/v2/") && ![contextsPath, "/api/v2/agent/tools"].includes(path) && !auth.sessionFromHeaders(req.headers)) {
         const emptyLists = new Set(["/api/v2/revisions", "/api/v2/runs", "/api/v2/python/revisions", "/api/v2/python/runs", "/api/v2/agent/tasks", "/api/v2/agent/deliveries"]);
         if (emptyLists.has(path)) return json(res, 200, []);
@@ -4494,6 +4501,26 @@ export function createV2Server(options = {}) {
         });
       }
       const fundSource = path.match(/^\/api\/v2\/data-services\/fund-sources\/([^/]+)$/);
+      if (path === "/api/v2/data-services/fund-sources" && method === "GET") {
+        if (!local) throw fail(403, "基金发布来源仅在本机 Spark 环境可读");
+        if (url.searchParams.size) throw fail(422, "基金来源目录不接受查询参数");
+        if (!localClassicSpark) return json(res, 200, []);
+        const sources = [];
+        for (const run of store.list("release_run", PROJECT)) {
+          if (run.source?.contextId !== fundContextId || run.status !== "SUCCEEDED") continue;
+          try {
+            const proof = fundSourceFor(run)?.evidence;
+            if (proof?.eligibleForService) sources.push({ id: run.id, releaseId: run.releaseId, status: run.status,
+              published: true, schedulerTriggered: true, engine: run.engine, engineVersion: run.engineVersion,
+              mainSqlExecuted: true, testSqlValidation: { passed: true }, validation: { passed: true },
+              packageDigest: proof.packageDigest, outputContractId: proof.contractId, businessDate: proof.businessDate,
+              sequence: proof.batchSequence });
+          } catch (error) {
+            if (![409, 422].includes(error.status)) throw error;
+          }
+        }
+        return json(res, 200, sources);
+      }
       if (fundSource && method === "GET") {
         if (!localClassicSpark) throw fail(403, "基金发布来源仅在本机 Spark 环境可读");
         const selection = fundConsumptionSelection(fundSource[1], url.searchParams);
