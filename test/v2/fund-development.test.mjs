@@ -64,6 +64,9 @@ test('a remote Spark profile does not advertise or run fund SQL', async t => {
   });
   const contexts = await (await fetch(base + '/contexts')).json();
   assert.ok(!contexts.some(item => item.id === fundContextId));
+  const fundSources = await fetch(base + '/data-services/fund-sources');
+  assert.equal(fundSources.status, 200);
+  assert.deepEqual(await fundSources.json(), []);
   assert.equal((await post('/revisions', { contextId: fundContextId, sql: fundReferenceSql }, 'blocked-save')).status, 422);
   const revision = store.create('revision', PROJECT, { contextId: fundContextId, sql: fundReferenceSql });
   assert.equal((await post('/runs', { revisionId: revision.id }, 'blocked-run')).status, 403);

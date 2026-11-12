@@ -4502,8 +4502,9 @@ export function createV2Server(options = {}) {
       }
       const fundSource = path.match(/^\/api\/v2\/data-services\/fund-sources\/([^/]+)$/);
       if (path === "/api/v2/data-services/fund-sources" && method === "GET") {
-        if (!localClassicSpark) throw fail(403, "基金发布来源仅在本机 Spark 环境可读");
+        if (!local) throw fail(403, "基金发布来源仅在本机 Spark 环境可读");
         if (url.searchParams.size) throw fail(422, "基金来源目录不接受查询参数");
+        if (!localClassicSpark) return json(res, 200, []);
         const sources = [];
         for (const run of store.list("release_run", PROJECT)) {
           if (run.source?.contextId !== fundContextId || run.status !== "SUCCEEDED") continue;
