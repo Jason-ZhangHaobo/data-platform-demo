@@ -4,12 +4,13 @@ import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import { fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync } from "node:fs";
+import { linkSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
 import {readSyncSqlOutputSchema} from "../src/v2/sync-sql-output-schema-client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
-import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-provenance-client.mjs';
+import {readReportProvenance,checkedReportProvenance,downloadReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
 import { readWealthConsumption } from '../src/v2/wealth-report-consumption-client.mjs';
 import {checkedPrivateBatchReport, readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
@@ -242,7 +243,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo reports create --name 持仓结构报告 --code holdings_structure --dataset-id DATASET_ID --preset holdings --description "持仓指标与分布"
   shuduo reports version --id REPORT_ID --preset holdings --description "报表V2"
   shuduo reports run|export --id REPORT_ID
-  shuduo reports provenance --id REPORT_ID --run-id RUN_ID
+  shuduo reports provenance --id REPORT_ID --run-id RUN_ID [--download-digest SHA256 --out-file evidence.json]
   shuduo reports wealth-consumption --id REPORT_ID --run-id RUN_ID
   shuduo reports verify-provenance --file evidence.json
   shuduo reports batch-summary --source-file source.json [--download-digest SHA256 --out-file batch.json]
@@ -1474,7 +1475,40 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           },
         },
       );
-    else if(resource==='reports'&&action==='provenance')result=await readReportProvenance(client,{reportId:required(parsed.options,'id'),runId:required(parsed.options,'run_id')});
+    else if (resource === "reports" && action === "provenance") {
+      const allowed = new Set(["id", "run_id", "download_digest", "out_file", "base_url"]);
+      const seen = new Set();
+      if (parsed.positionals.length !== 2) throw Error("报表溯源命令包含额外参数");
+      for (const token of argv.filter(value => value.startsWith("--"))) {
+        const key = token.slice(2).replaceAll("-", "_");
+        if (!allowed.has(key) || seen.has(key)) throw Error("报表溯源命令包含未知或重复参数");
+        seen.add(key);
+      }
+      const binding = { reportId: required(parsed.options, "id"), runId: required(parsed.options, "run_id") };
+      const download = seen.has("download_digest");
+      if (download !== seen.has("out_file")) throw Error("下载需要同时提供 --download-digest 和 --out-file");
+      if (download) {
+        const outFile = required(parsed.options, "out_file");
+        if (lstatSync(outFile, { throwIfNoEntry: false })) throw Error("目标文件已存在，原文件未覆盖");
+        const attachment = await downloadReportProvenance(client, {
+          ...binding, downloadDigest: required(parsed.options, "download_digest"),
+        });
+        const staging = mkdtempSync(join(dirname(outFile), ".shuduo-provenance-"));
+        try {
+          const temporary = join(staging, "attachment.json");
+          writeFileSync(temporary, attachment.bytes, { mode: 0o600, flag: "wx", flush: true });
+          linkSync(temporary, outFile);
+        } catch (error) {
+          if (error.code === "EEXIST") throw Error("目标文件已存在，原文件未覆盖");
+          throw error;
+        } finally {
+          rmSync(staging, { recursive: true, force: true });
+        }
+        result = { saved: true, digest: attachment.digest, ...binding, reportVersionId: attachment.reportVersionId };
+      } else {
+        result = await readReportProvenance(client, binding);
+      }
+    }
     else if(resource==='reports'&&action==='wealth-consumption')result=await readWealthConsumption(client,{reportId:required(parsed.options,'id'),runId:required(parsed.options,'run_id')});
     else if(resource==='reports'&&action==='verify-provenance'){const evidence=await checkedReportProvenance(JSON.parse(readFileSync(required(parsed.options,'file'),'utf8')));result={passed:true,digest:evidence.digest,artifacts:evidence.artifacts,integrity:evidence.integrity,onlineAuthorityVerified:false,agentIndependentE2E:false};}
     else if (resource === "reports" && action === "batch-summary") {

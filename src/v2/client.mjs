@@ -205,6 +205,38 @@ export class V2ApiError extends Error {
   }
 }
 
+async function readJsonAttachment(response, filename) {
+  const limit = 128 * 1024;
+  if (response.status !== 200 ||
+      response.headers.get("content-disposition") !== `attachment; filename="${filename}"` ||
+      response.headers.get("cache-control") !== "no-store" ||
+      !/^application\/json(?:;|$)/i.test(response.headers.get("content-type") ?? "") ||
+      Number(response.headers.get("content-length")) > limit || !response.body) {
+    await response.body?.cancel().catch(() => {});
+    const message = response.status === 409 ? "附件摘要已变化，请重新核对"
+      : `无法取得所选 JSON 附件（HTTP ${response.status}）`;
+    throw new V2ApiError(message, response.status, "JSON_ATTACHMENT_REJECTED");
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, bytes);
+      bytes += value.byteLength;
+      if (bytes > limit) throw new V2ApiError("JSON 附件超过大小限制", response.status, "JSON_ATTACHMENT_TOO_LARGE");
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    if (error instanceof V2ApiError) throw error;
+    throw new V2ApiError("JSON 附件读取中断", response.status, "JSON_ATTACHMENT_INTERRUPTED");
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export class V2Client {
   constructor({
     baseUrl = "http://127.0.0.1:3100/api/v2",
@@ -236,10 +268,14 @@ export class V2Client {
       actorId,
       idempotencyKey,
       timeoutMs,
+      attachmentFilename,
     } = {},
   ) {
     if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//"))
       throw new Error("V2 API路径不合法");
+    if (attachmentFilename !== undefined &&
+        (method !== "GET" || typeof attachmentFilename !== "string" || !/^[A-Za-z0-9_-]+\.json$/.test(attachmentFilename)))
+      throw new Error("JSON 附件请求参数不合法");
     const session=this.sessionFile&&!authorization?readSessionCredential(this.sessionFile,this.baseUrl,this.projectId):undefined;
     if(authorization&&actorId)throw Error('APPLICATION_ACTOR_OVERRIDE_FORBIDDEN');
     if(session){const target=new URL(this.baseUrl+path),base=new URL(this.baseUrl);if(target.origin!==base.origin||!target.pathname.startsWith(base.pathname+'/'))throw Error('SESSION_REQUEST_SCOPE_INVALID');if(actorId)throw Error('SESSION_ACTOR_OVERRIDE_FORBIDDEN');}
@@ -262,6 +298,7 @@ export class V2Client {
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
+    if (attachmentFilename !== undefined) return readJsonAttachment(response, attachmentFilename);
     let value;
     try {
       value = await response.json();

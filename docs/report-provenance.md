@@ -12,8 +12,11 @@
 | API | `GET /api/v2/reports/{reportId}/provenance?run_id={runId}` |
 | API 附件 | 同一地址加 `download_digest={已核对摘要}`，返回JSON附件。摘要变化时提示重新核对 |
 | CLI | `shuduo reports provenance --id REPORT_ID --run-id RUN_ID` |
+| CLI 保存 | `shuduo reports provenance --id REPORT_ID --run-id RUN_ID --download-digest SHA256 --out-file evidence.json` |
 | MCP | `report_provenance`，参数为 `reportId` 和 `runId` |
 | CLI 离线 | `shuduo reports verify-provenance --file FILE` |
+
+先核对报表运行及其摘要，再同时提供 `--download-digest` 与 `--out-file`。CLI 校验附件、所选运行与摘要后，以 0600 权限保存服务端的原始字节。目标文件已存在时拒绝覆盖。成功回执只输出报表、版本、运行标识和摘要，需求与澄清文本保存在文件中。
 
 HTTP读取限制在本机原所属人。文件包含原需求与澄清文本，业务数据用快照摘要和结果摘要表示。离线命令验证文件内容与内部绑定，返回 `onlineAuthorityVerified:false`。服务端可按存档校验来源。两种校验都保持本机验收的范围。
 
