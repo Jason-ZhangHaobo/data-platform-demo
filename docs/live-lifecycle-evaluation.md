@@ -208,6 +208,18 @@ shuduo agent v3-consumption --checkpoint /private/first-case.json --plan /privat
 
 原生 Agent 私有测试发布的已核验调用提供「查看原调用」和「复制原调用链接」。原任务所属人打开链接，可核对同一调用的接口版本、发布批次、结果摘要和应用状态。链接定位使用调用摘要，页面经 `GET /agent/tasks/{id}/publication/history` 先核对保存的发布与批次，再读取指定消费回执。错任务、批次或调用显示核验失败。
 
+### 核验原案例并查看 20 例续接状态
+
+```sh
+shuduo agent v3-complete --checkpoint "$FIRST_CASE_CHECKPOINT" \
+  --first-plan "$FIRST_CONSUMER_PLAN" --second-plan "$SECOND_CONSUMER_PLAN" --out-file "$CASE_COMPLETION"
+shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CASE_COMPLETION"
+```
+
+完成核验沿原检查点顺序重读开发、八文件、演练、确切发布和监控。分别用两个原消费计划和报告重新核对 DAPI、XAPI 调用，再核对独立业务预期及原检查点。最多十次受邀 GET，可在只读窗口执行。缺批、错序、摘要变化或回执未匹配均不能生成完成回执。新回执以 0600 保存，绑定原检查点的原字节，原请求编号和检查点保留。
+
+`v3-run` 可省略完成回执，离线查看原评测编号下的 20 个固定案例。有回执时先核对原检查点与确切案例，回环匹配只记本机证据。受邀 HTTPS 完成回执还须绑定原开发窗口、独立验包和两个匹配的消费批次，才会让对应派生案例显示已核验的父版本。报告读取已有证据，不重查远端；`willExecute:false` 和 `executionAuthorized:false` 表示没有执行或授予权限。后续案例的窗口和逐例提交仍需接线。
+
 ### 读取原任务的执行阶段
 
 在本机运维监控展开已受理案例的模型与 Spark 状态，或执行 `node scripts/run-live-lifecycle-evaluation.mjs --inspect 原评测UUID`。CLI 与页面共用原评测记录，CLI 额外核对本机检查点文件摘要。已冻结的案例始终展示原代码版本和批次，尚未冻结的案例只读最近尝试已关联的版本及批次。

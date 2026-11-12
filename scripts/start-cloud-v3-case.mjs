@@ -24,6 +24,7 @@ import { verifyV2MonthlyBillPages } from "./verify-v2-monthly-bill-pages.mjs";
 import { validateConsumerPlan } from "./verify-service-consumer.mjs";
 import { firstCloudApplicationBinding, firstCloudCheckpointBinding, firstCloudWindowReceiptProtocol, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
+import { cloudV3CompletionScope } from "./cloud-v3-run.mjs";
 import { boundedBytes } from "./control-code-transport.mjs";
 import { inspectedControlEntryScript, WEB_ENTRY_SCRIPT_LIMIT, WEB_INDEX_LIMIT } from "./control-web-entry.mjs";
 
@@ -719,10 +720,10 @@ export async function submitCloudV3Publication(path,client,{reviewPath,billPath,
   }, {reconcile});
 }
 
-async function readVerifiedConsumptionSource(state,item,client,batchId) {
+async function readVerifiedConsumptionBatches(state,item,client,batchId) {
   const action=item.actions.publication, code=item.code;
   if (action?.status!=="CONFIRMED" || !id(action.key) || !id(action.id) ||
-      !Array.isArray(action.batchIds) || !action.batchIds.includes(batchId) || !Array.isArray(action.monitoring) ||
+      !Array.isArray(action.batchIds) || (batchId!==undefined && !action.batchIds.includes(batchId)) || !Array.isArray(action.monitoring) ||
       action.bodyHash!==sha256(JSON.stringify(publicationBody(action))))
     stop("消费须绑定已核验的两个原发布批次和所选原编号");
   await requireOriginalCreator(state,client);
@@ -740,11 +741,48 @@ async function readVerifiedConsumptionSource(state,item,client,batchId) {
         run.published===true && run.schedulerTriggered===true && run.engine==="Apache Spark" && run.engineVersion==="3.5.9" &&
         run.mainSqlExecuted===true && run.testSqlValidation?.passed===true && run.validation?.passed===true))
     stop("数据服务的原发布来源与监控不一致");
-  return {selector,source:validateConsumerSource({schema:"shuduo-service-consumer-source/v1",
+  return {selector,batchIds:publication.batchIds};
+}
+
+function consumptionSourceForBatch(item,batches,batchId) {
+  if (!batches.batchIds.includes(batchId)) stop("消费批次不在原已核验发布内");
+  const {code,actions:{publication:action}}=item;
+  return {selector:batches.selector,source:validateConsumerSource({schema:"shuduo-service-consumer-source/v1",
     scope:"PRIVATE_CLOUD_TEST",sourceKind:"AGENT",taskId:item.taskId,revisionId:code.revisionId,
     revisionHash:code.revisionHash,developmentRunId:code.runId,contextId:code.contextId,
     validationContractId:code.validationContractId,packageDigest:action.packageDigest,
     releaseId:action.id,sourceReleaseRunId:batchId})};
+}
+
+function readOriginalConsumerReport(planPath,state,definition,callIdDigest) {
+  if (!digest(callIdDigest)) stop("须提供原 XAPI 成功调用摘要");
+  const {state:plan}=readCheckpoint(planPath,{privateFile:true});
+  validateConsumerPlan(plan);
+  const ordered=rows=>[...rows].sort((a,b)=>a.client_id.localeCompare(b.client_id));
+  if (plan.protocol!=="SERVICE_CONSUMER_V2" || plan.origin!==state.origin ||
+      plan.testOnly!==(new URL(state.origin).protocol==="http:") ||
+      !isDeepStrictEqual(ordered(plan.expectedRows),ordered(getContext(definition.contextId).expected)))
+    stop("消费者计划须绑定原入口及独立登记的证券业务预期");
+  const {state:report}=readCheckpoint(plan.reportFile,{privateFile:true});
+  const successful=row=>row?.phase==="consume" && row.statusCode===200;
+  const xapi=Array.isArray(report?.requests) && report.requests.find(row=>successful(row) &&
+    row.type==="XAPI" && row.serviceId===plan.xapi.id && row.callIdDigest===callIdDigest);
+  const dapi=Array.isArray(report?.requests) && report.requests.find(row=>successful(row) && row.type==="DAPI" &&
+    plan.dapis.some(service=>service.granted && row.serviceId===service.id));
+  if (!xapi || !digest(dapi?.callIdDigest)) stop("报告须包含同一应用的原 DAPI 和 XAPI 成功请求");
+  return {plan,report,callIdDigest,dapiCallIdDigest:dapi.callIdDigest};
+}
+
+async function checkOriginalConsumerProof(client,{source,selector},{plan,report,callIdDigest,dapiCallIdDigest}) {
+  if (!isDeepStrictEqual(source,validateConsumerSource(plan.source))) stop("消费者计划与冻结原批次不一致");
+  const evidence=digest=>client.request(serviceSourceReadPath("task-evidence",{...selector,callIdDigest:digest}));
+  const [taskEvidence,dapiEvidence]=await Promise.all([evidence(callIdDigest),evidence(dapiCallIdDigest)]);
+  const decision=bindExternalConsumption({expectedSource:source,plan,report,taskEvidence,dapiEvidence});
+  if (!["MATCHED","MATCHED_ONLY"].includes(decision.status) || decision.callIdDigest!==callIdDigest)
+    return {reason:decision.reason};
+  return {proof:{batchId:source.sourceReleaseRunId, status:decision.status, sourceDigest:decision.sourceDigest,
+    planDigest:decision.planDigest, reportDigest:decision.reportDigest, xapiCallIdDigest:decision.callIdDigest,
+    xapiRowsDigest:decision.rowsDigest, dapiCallIdDigest:decision.dapiCallIdDigest,dapiRowsDigest:decision.dapiRowsDigest}};
 }
 
 export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPath,callIdDigest}={}) {
@@ -752,35 +790,16 @@ export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPa
     const {state,item,definition}=snapshot(client,path);
     if (outFile!==undefined) {
       if (!id(batchId) || !isAbsolute(outFile)) stop("须提供原发布批次及受保护的导出路径");
-      const {source}=await readVerifiedConsumptionSource(state,item,client,batchId);
+      const batches=await readVerifiedConsumptionBatches(state,item,client,batchId);
+      const {source}=consumptionSourceForBatch(item,batches,batchId);
       writeCheckpoint(outFile,source,true);
       return {...result(state,item,"CONSUMPTION_SOURCE_READY"),batchId:source.sourceReleaseRunId,releaseId:source.releaseId};
     }
-    if (!digest(callIdDigest)) stop("须提供原 XAPI 成功调用摘要");
-    const {state:plan}=readCheckpoint(planPath,{privateFile:true});
-    validateConsumerPlan(plan);
-    const ordered=rows=>[...rows].sort((a,b)=>a.client_id.localeCompare(b.client_id));
-    if (plan.protocol!=="SERVICE_CONSUMER_V2" || plan.origin!==state.origin ||
-        plan.testOnly!==(new URL(state.origin).protocol==="http:") ||
-        !isDeepStrictEqual(ordered(plan.expectedRows),ordered(getContext(definition.contextId).expected)))
-      stop("消费者计划须绑定原入口及独立登记的证券业务预期");
-    const {state:report}=readCheckpoint(plan.reportFile,{privateFile:true});
-    const successful=row=>row?.phase==="consume" && row.statusCode===200;
-    const xapi=Array.isArray(report?.requests) && report.requests.find(row=>successful(row) &&
-      row.type==="XAPI" && row.serviceId===plan.xapi.id && row.callIdDigest===callIdDigest);
-    const dapi=Array.isArray(report?.requests) && report.requests.find(row=>successful(row) && row.type==="DAPI" &&
-      plan.dapis.some(service=>service.granted && row.serviceId===service.id));
-    if (!xapi || !digest(dapi?.callIdDigest)) stop("报告须包含同一应用的原 DAPI 和 XAPI 成功请求");
-    const {source,selector}=await readVerifiedConsumptionSource(state,item,client,plan.source.sourceReleaseRunId);
-    if (!isDeepStrictEqual(source,validateConsumerSource(plan.source))) stop("消费者计划与冻结原批次不一致");
-    const evidence=digest=>client.request(serviceSourceReadPath("task-evidence",{...selector,callIdDigest:digest}));
-    const [taskEvidence,dapiEvidence]=await Promise.all([evidence(callIdDigest),evidence(dapi.callIdDigest)]);
-    const decision=bindExternalConsumption({expectedSource:source,plan,report,taskEvidence,dapiEvidence});
-    if (!["MATCHED","MATCHED_ONLY"].includes(decision.status) || decision.callIdDigest!==callIdDigest)
-      return result(state,item,"CONSUMPTION_UNCONFIRMED",decision.reason);
-    const proof={batchId:source.sourceReleaseRunId, status:decision.status, sourceDigest:decision.sourceDigest,
-      planDigest:decision.planDigest, reportDigest:decision.reportDigest, xapiCallIdDigest:decision.callIdDigest,
-      xapiRowsDigest:decision.rowsDigest, dapiCallIdDigest:decision.dapiCallIdDigest,dapiRowsDigest:decision.dapiRowsDigest};
+    const report=readOriginalConsumerReport(planPath,state,definition,callIdDigest);
+    const batches=await readVerifiedConsumptionBatches(state,item,client,report.plan.source.sourceReleaseRunId);
+    const source=consumptionSourceForBatch(item,batches,report.plan.source.sourceReleaseRunId);
+    const {proof,reason}=await checkOriginalConsumerProof(client,source,report);
+    if (!proof) return result(state,item,"CONSUMPTION_UNCONFIRMED",reason);
     const prior=item.consumption?.[proof.batchId];
     if (prior && !isDeepStrictEqual(prior,proof)) stop("此批次已有原消费回执，须核对原报告");
     if (!prior) {
@@ -789,6 +808,57 @@ export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPa
     }
     return {...result(state,item,"CONSUMPTION_BOUND"),consumption:proof,externalSystemVerified:false,agentIndependentE2E:false};
   });
+}
+
+export async function verifyCloudV3Completion(path,client,{firstPlanPath,secondPlanPath,outFile}={}) {
+  if (!isAbsolute(outFile ?? "") || existsSync(outFile)) stop("须提供尚不存在的绝对回执路径");
+  return withCloudCheckpoint(path,async()=>{
+    const original=readCheckpoint(path,{privateFile:true});
+    const {state,item,definition}=snapshot(client,path);
+    const action=item.actions.publication;
+    const provenance=liveEvidenceProvenance(item);
+    if (provenance.synthetic || provenance.nonNative || provenance.unconfirmed)
+      stop("原案例的执行来源未获确认");
+    if (!Array.isArray(action?.batchIds) || action.batchIds.length!==2 ||
+        new Set(action.batchIds).size!==2 || !action.batchIds.every(id) ||
+        !action.batchIds.every(batchId=>item.consumption?.[batchId]?.batchId===batchId))
+      stop("须先分别保存两个原批次的消费回执");
+    const reportPaths=[firstPlanPath,secondPlanPath];
+    const reports=action.batchIds.map((batchId,index)=>{
+      const proof=item.consumption[batchId];
+      const report=readOriginalConsumerReport(reportPaths[index],state,definition,proof.xapiCallIdDigest);
+      if (report.plan.source.sourceReleaseRunId!==batchId || report.dapiCallIdDigest!==proof.dapiCallIdDigest)
+        stop("消费计划顺序、批次或原调用不一致");
+      return report;
+    });
+    const batches=await readVerifiedConsumptionBatches(state,item,client);
+    const review=await readCloudV3Review(path,client);
+    if (review.status!=="REVIEW_EVIDENCE_BOUND" || item.rehearsal?.status!=="SUCCEEDED" ||
+        review.taskId!==item.taskId || review.packageDigest!==action.packageDigest ||
+        review.verificationId!==action.verificationId || review.verificationId!==item.rehearsal.id)
+      stop("原开发、八文件和演练核验未通过");
+    const proofs=[];
+    for (const [index,batchId] of batches.batchIds.entries()) {
+      const {proof}=await checkOriginalConsumerProof(client,consumptionSourceForBatch(item,batches,batchId),reports[index]);
+      if (!proof || !isDeepStrictEqual(proof,item.consumption[batchId]))
+        stop("原批次的消费报告或平台回执未通过重验");
+      proofs.push(proof);
+    }
+    if (new Set(proofs.flatMap(proof=>[proof.dapiCallIdDigest,proof.xapiCallIdDigest])).size!==4)
+      stop("两个原批次不得共享消费调用回执");
+    const current=readCheckpoint(path,{privateFile:true});
+    if (current.text!==original.text) stop("重验期间原检查点已变化");
+    const scope=cloudV3CompletionScope(state,proofs);
+    const body={protocol:"shuduo-cloud-v3-completion/v1",scope,checkedAt:new Date().toISOString(),
+      checkpointDigest:sha256(original.text),evaluationRunId:state.evaluationRunId,caseSetDigest:state.caseSetDigest,
+      caseId:definition.id,requestDigest:item.requestDigest,taskId:item.taskId,revisionId:review.revisionId,
+      developmentRunId:review.developmentRunId,packageDigest:review.packageDigest,verificationId:review.verificationId,
+      releaseId:action.id,batchIds:batches.batchIds,consumptionDigest:sha256(JSON.stringify(proofs))};
+    const completionDigest=sha256(JSON.stringify(body));
+    writeCheckpoint(outFile,{...body,completionDigest},true);
+    return {...result(state,item,"COMPLETION_RECEIPT_SAVED"),scope,completionDigest,
+      independentlyVerifiedCloudCase:scope==="INVITED_CLOUD_MATCHED",externalSystemVerified:false,agentIndependentE2E:false};
+  },{reconcile:true});
 }
 
 export async function inspectCloudV3Execution(path, client) {
