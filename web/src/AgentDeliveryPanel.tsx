@@ -27,8 +27,11 @@ import type {PublishedReportSource} from "./published-report-read";
 const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
 const AgentBatchArchivePanel = lazy(async () => ({default:(await import("./AgentBatchArchivePanel")).AgentBatchArchivePanel}));
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
-type Release = { id: string; status: string; health: string; sourceKind?:string; sourceRunId?:string; reviewDigest?:string; agentIndependentE2E?:boolean; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number;rolledBackToReleaseId?:string;rolledBackToTaskId?:string;restoredAt?:string;outputContract?:{id:string;metadataHash:string} };
+type Release = { id: string; status: string; health: string; modelMode?:string; sourceKind?:string; sourceRunId?:string; reviewDigest?:string; agentIndependentE2E?:boolean; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number;rolledBackToReleaseId?:string;rolledBackToTaskId?:string;restoredAt?:string;outputContract?:{id:string;metadataHash:string} };
 type Publication = { rollbackTargets?:import("./agent-delivery-evidence-read").RollbackTarget[];historyRunCount?:number;release?: Release; runs: {id:string; status:string; sequence:number; schedulerTriggered?:boolean; durationMs?:number; triggeredAt?:string; finishedAt?:string}[]; alerts:{id:string;status:string;message:string;recoveryRunId?:string}[]; events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[] };
+type FundPreflight = { protocol:string;scope:string;ready:boolean;digest:string;taskId:string;sourceRunId:string;revisionId:string;
+  packageId:string;packageDigest:string;verificationId:string;businessDate:string;modelMode:string;reviewId:string;
+  scheduleSpec:{triggerAfterSeconds:number;intervalSeconds:number;runCount:2} };
 const complete = (status?: string) => ["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(status ?? "");
 const batchLabels: Record<string,string> = { SCHEDULED: "等待调度", RUNNING: "正在运行", SUCCEEDED: "独立核验通过", FAILED: "运行或核验失败", CANCELLED: "已停止" };
 function download(name: string, value: unknown) {
@@ -46,6 +49,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const [unconfirmedPreparation,setUnconfirmedPreparation]=useState<string>(),preparationFlight=useRef(false);
   const preparationUnknown=unconfirmedPreparation===workflowSourceKey;
   const [review, setReview] = useState(false), [confirmed, setConfirmed] = useState<Record<string,boolean>>({}), [release, setRelease] = useState<Release>(), [batches, setBatches] = useState<{ id: string; status: string; sequence: number; schedulerTriggered?: boolean }[]>([]);
+  const [fundPreflight, setFundPreflight] = useState<FundPreflight>();
   const [publication,setPublication]=useState<Publication>();
   const [publicationClock,setPublicationClock]=useState(Date.now);
   const [publicationRead, setPublicationRead] = useState<EvidenceReadState>("LOADING");
@@ -107,8 +111,9 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const cloud = workflow?.publication.scope === "PRIVATE_CLOUD_TEST";
   // A retained, successfully read workflow may still select read-only history
   // while refreshing; write gates continue to require fresh READY evidence.
-  const selector=publicationSelector({taskId,manual,runId,revisionId,contextId},workflow,Boolean(workflow));
-  const publicationKey=fund?"":selector?publicationSelectionKey(taskId,selector)+(expectedSourceBinding?`:${expectedSourceBinding.releaseId}`:""):!manual&&workflow&&!cloud?`local:${workflowSourceKey}:${expectedSourceBinding?.releaseId??""}`:"";
+  const selected=publicationSelector({taskId,manual,runId,revisionId,contextId},workflow,Boolean(workflow));
+  const selector = fund ? (selected && workflow?.verification?.status === "SUCCEEDED" ? { ...selected, sourceRunId: runId } : undefined) : selected;
+  const publicationKey=selector?publicationSelectionKey(taskId,selector)+(expectedSourceBinding?`:${expectedSourceBinding.releaseId}`:""):!fund&&!manual&&workflow&&!cloud?`local:${workflowSourceKey}:${expectedSourceBinding?.releaseId??""}`:"";
   activePublicationKey.current=publicationKey;
   const publicationReady=Boolean(publicationKey)&&publicationReadKey===publicationKey&&publicationRead==="READY";
   const journey = agentJourney({ taskId, contextId, fund, revisionId, runId, dirty, evidenceReadable: evidenceRead === "READY", publicationReadable: publicationReady, report, delivery, bundle: workflow?.package, verification: workflow?.verification, release, batches, alerts: publication?.alerts, events: publication?.events, consumption:consumptionRead==="READY"?consumption:undefined });
@@ -157,7 +162,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   useEffect(() => { if (!publicationWritable || preparationUnknown) { setReview(false);setConfirmed({}); } }, [publicationWritable,preparationUnknown]);
   useEffect(() => { if (!canWrite || publicationTarget) { epoch.current++;setAuto(false); } }, [canWrite,publicationTarget?.taskId]);
   useEffect(()=>{setConsumption(undefined);setConsumptionError("");setConsumptionRead("LOADING");void readConsumption();return()=>{consumptionEpoch.current++;};},[serviceHandoffKey,cloud]);
-  useEffect(() => { setReview(false); setConfirmed({}); }, [publicationKey,workflow?.package?.digest, workflow?.verification?.id, dirty, current, publicationRead]);
+  useEffect(() => { setReview(false); setConfirmed({});setFundPreflight(undefined); }, [publicationKey,workflow?.package?.digest, workflow?.verification?.id, workflow?.fileReview?.id, dirty, current, publicationRead]);
   useEffect(() => { requestKey.current = crypto.randomUUID(); }, [taskId, revisionId, runId]);
   async function drive(start: Delivery) {
     if (!canWrite || publicationTarget) return;
@@ -184,8 +189,30 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     try { await api(`/agent/deliveries/${delivery.id}/cancel`, {}); await load(); }
     catch(e) { setError((e as Error).message); } finally { setBusy(false); }
   }
+  async function openReview() {
+    if (!publicationWritable || !publicationReady || !fileVerified || preparationUnknown || working) return;
+    if (!fund) { setReview(true); return; }
+    if (!selector || !workflow?.package || !workflow.fileReview) return;
+    const key = publicationKey;
+    setBusy(true); setError("");
+    try {
+      const response = await api<FundPreflight>(publicationReadPath(taskId,selector).replace("/publication?", "/publication/preflight?"));
+      if (!alive.current || activePublicationKey.current !== key) return;
+      if (response.protocol !== "shuduo-fund-agent-publication-preflight/v1" || response.scope !== "LOCAL_TEST_RELEASE" ||
+          response.ready !== true || response.taskId !== taskId || response.revisionId !== revisionId ||
+          response.sourceRunId !== runId || response.packageId !== workflow.package.id || response.packageDigest !== selector.packageDigest ||
+          response.verificationId !== selector.verificationId || response.reviewId !== workflow.fileReview.id ||
+          !/^[a-f0-9]{64}$/.test(response.digest) || !/^\d{4}-\d{2}-\d{2}$/.test(response.businessDate) ||
+          !["LIVE_MODEL","SYNTHETIC_MODEL"].includes(response.modelMode) || response.scheduleSpec?.triggerAfterSeconds !== 5 ||
+          response.scheduleSpec.intervalSeconds !== 30 || response.scheduleSpec.runCount !== 2)
+        throw Error("基金发布预检与当前已审阅版本不一致");
+      setFundPreflight(response); setReview(true);
+    } catch (e) {
+      if (alive.current && activePublicationKey.current === key) setError((e as Error).message);
+    } finally { if (alive.current) setBusy(false); }
+  }
   async function publishLocal() {
-    if (!publicationWritable || working || preparationUnknown || !publicationReady || !workflow?.package || !delivery?.verificationId || !verified || !fileVerified || !workflow.publication.available || !reviewAttestationsComplete(confirmed, cloud,Boolean(distributionMetadataForContext(contextId)))) return;
+    if (!publicationWritable || working || preparationUnknown || !publicationReady || !workflow?.package || !delivery?.verificationId || !verified || !fileVerified || !workflow.publication.available || fund&&!fundPreflight || !reviewAttestationsComplete(confirmed, cloud,fund||Boolean(distributionMetadataForContext(contextId)))) return;
     setBusy(true); setError("");
     const bundle = workflow.package,writeKey=publicationKey;
     try {
@@ -197,12 +224,15 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         const result=await attempt.submit(async frozen=>checkedPublication(await api<Publication>(`/agent/tasks/${taskId}/publication`,frozen.body,{idempotencyKey:frozen.idempotencyKey}),taskId,selector,pinnedReleases.current.get(key),true),true);
         acceptPublicationWrite(result,key,selector);if(activePublicationKey.current===key)setReview(false);return;
       }
-      const reviewed = await api<{ id: string }>(`/delivery/packages/${bundle.id}/review`, { packageDigest: bundle.digest, verificationId: delivery.verificationId, reviewNote: "工程师已在Agent工作台审阅代码、核验、交付文件和测试发布范围。", attestations: confirmed });
+      const reviewed = fundPreflight ? { id: fundPreflight.reviewId } : await api<{ id: string }>(`/delivery/packages/${bundle.id}/review`, { packageDigest: bundle.digest, verificationId: delivery.verificationId, reviewNote: "工程师已在Agent工作台审阅代码、核验、交付文件和测试发布范围。", attestations: confirmed });
       const metadata=distributionMetadataForContext(contextId),source=(bundle.manifest as {source?:{outputContract?:{id:string;metadataHash:string}}}).source;
       if(metadata&&(!source?.outputContract||source.outputContract.id!==metadata.id||!/^[a-f0-9]{64}$/.test(source.outputContract.metadataHash)))throw Error('分布契约未确认，请刷新原交付包');
       const distributionConsent=metadata?{scope:'LOCAL_TEST_RELEASE',packageDigest:bundle.digest,verificationId:delivery.verificationId,metadataHash:source!.outputContract!.metadataHash,scheduleSpec:{triggerAfterSeconds:5,intervalSeconds:30,runCount:2},confirmFrozenFictionalData:true}:undefined;
-      const approved = await api<{ id: string }>(`/delivery/packages/${bundle.id}/approve`, { packageDigest: bundle.digest, reviewId: reviewed.id,...(distributionConsent?{distributionConsent}:{}) },{idempotencyKey:`agent-workbench-approval-${bundle.id}`});
-      await api<Release>("/releases", { approvalId: approved.id, triggerAfterSeconds: 5, intervalSeconds: 30, runCount: 2 }, { idempotencyKey: `agent-workbench-release-${bundle.id}` });
+      const fundConsent = fundPreflight ? { scope: fundPreflight.scope, packageDigest: bundle.digest, verificationId: delivery.verificationId,
+        businessDate: fundPreflight.businessDate, scheduleSpec: fundPreflight.scheduleSpec, preflightDigest: fundPreflight.digest,
+        confirmFrozenFictionalData: true } : undefined;
+      const approved = await api<{ id: string }>(`/delivery/packages/${bundle.id}/approve`, { packageDigest: bundle.digest, reviewId: reviewed.id,...(distributionConsent?{distributionConsent}:{}),...(fundConsent?{fundConsent}:{}) },{idempotencyKey:`agent-workbench-approval-${bundle.id}`});
+      await api<Release>("/releases", { approvalId: approved.id, ...(fundConsent?.scheduleSpec ?? { triggerAfterSeconds: 5, intervalSeconds: 30, runCount: 2 }) }, { idempotencyKey: `agent-workbench-release-${bundle.id}` });
       publicationReader.current?.invalidate(); setReview(false); await refreshPublication();
     } catch(e) { if(alive.current&&activePublicationKey.current===writeKey){setReview(false);setConfirmed({});setError((e as Error).message + " 只查询当前包的原发布记录；不会自动重发。明确重试仍复用原请求编号和审阅内容，不重新创建批准。"); publicationReader.current?.invalidate(); await refreshPublication();} } finally { if(alive.current)setBusy(false); }
   }
@@ -265,20 +295,21 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           <button className="button" onClick={() => download(`delivery-evidence-${workflow.package?.id.slice(0,8) ?? taskId.slice(0,8)}.json`, { schema: "shuduo-delivery-evidence/v1", report: workflow.report, delivery: workflow.delivery, package: workflow.package ? { id: workflow.package.id, digest: workflow.package.digest, manifest: workflow.package.manifest } : undefined, verification: workflow.verification, publication: workflow.publication, exportedAt: new Date().toISOString() })}><Download size={14} />下载演练证据</button></>}
       </div>
       {(fund||distributionMetadataForContext(contextId))&&workflow.package&&workflow.verification?.status==='SUCCEEDED'&&<LocalDistributionReview fund={fund} key={workflow.package.digest} api={api} packageId={workflow.package.id} packageDigest={workflow.package.digest} verificationId={workflow.verification.id} review={workflow.fileReview} current={current&&verified&&fileVerified&&evidenceRead==="READY"} enabled={canWrite&&verified&&fileVerified&&current&&evidenceRead==="READY"&&!working&&!preparationUnknown} onRefresh={load}/>}
-      {fund ? <div id="agent-publication" className="agent-publication-card"><p>{workflow.publication.reason}</p></div> :
       <div id="agent-publication" className="agent-publication-card"><div className="agent-workflow-title"><ShieldCheck size={16} /><h3>审阅发布与运行监控</h3></div><p>{!workflow.publication.available && release ? "发布记录已保留；临时调度入口已关闭，不会继续启动批次。新发布需按预算和权限重新启用。" : workflow.publication.reason}</p>{release && !journey.publicationCurrent && <p role="status">这是保留的发布记录，尚未核对为当前编辑版本的上线证据。</p>}
         {publicationTarget && <p role="status">{publicationWritable ? "本任务、包摘要和演练编号与受邀发布范围一致。请逐项审阅，不会自动批准。" : "当前任务或版本不在有效发布范围内，或窗口已关闭；只保留查看，不发布或停止其他任务。"} 同一冻结业务日期的两个样例批次，不是两个交易日或生产调度；不修改原代码或重新演练文件。</p>}
         <div className="agent-delivery-actions"><button className="button" disabled={!publicationKey || working || publicationRead === "LOADING"} onClick={() => void refreshPublication()}><RefreshCw size={14} />刷新发布与监控</button><small>{publicationKey?"只读取当前来源、交付包和演练绑定的发布，不重新发布或运行计算。":"先确认当前交付包及文件演练，才能读取此版本的发布记录。"}</small></div>
         {manual&&<p role="status">发布来源：人工辅助（MANUAL／ENGINEER_ASSISTED）· 原开发及参考记录保留，此包和发布不计作 Agent 自主完成。</p>}
         {publicationUnknown&&<p role="status">原发布请求结果尚未确认。先刷新读取同一包的记录；如仍未找到，重新审阅后可按原请求编号重试，不会自动生成新的批准。</p>}
         {publicationKey && !publicationReady && <p role={publicationRead === "ERROR" ? "alert" : "status"}>{publicationRead === "ERROR" ? `发布与监控读取未确认：${publicationError}。已读取的历史记录保留，暂不能判断当前健康或再次发布。` : "正在恢复当前来源与确切交付包的发布、批次与告警记录…"}</p>}
-        {publicationReady && !release && <p>当前来源、交付包与演练尚未找到发布记录；需逐项审阅确切版本，发布后仍等待受控调度器执行。</p>}
-        {workflow.publication.available && (!release || !journey.publicationCurrent) && <button className="button primary" disabled={!publicationWritable || preparationUnknown || !fileVerified || !verified || working || !publicationReady} onClick={() => { if (publicationWritable&&!preparationUnknown&&!working&&verified&&fileVerified&&publicationReady) setReview(true); }}>{publicationUnknown?"重新审阅并重试原发布请求":"审阅并发布测试任务"}</button>}
-        {!workflow.publication.available && !release && <span className="agent-publication-gate">交付演练通过后进入“待发布”；云端上线尚待完成。</span>}
-        {review && workflow.package && <AgentPublicationReview cloud={cloud} distribution={Boolean(distributionMetadataForContext(contextId))} sourceKind={manual?"MANUAL":"AGENT"} originTaskId={taskId} packageDigest={workflow.package.digest} revisionId={delivery?.sourceRevisionId} runId={delivery?.sourceRunId} verificationId={delivery?.verificationId} confirmed={confirmed} disabled={!publicationWritable || working || !publicationReady || !verified || !fileVerified || !workflow.publication.available} onConfirm={(id, checked) => setConfirmed(old => ({...old, [id]:checked}))} onPublish={() => void publishLocal()} onCancel={() => { setReview(false); setConfirmed({}); }} />}
+        {fund && !workflow.fileReview && fileVerified && <p>请先记录此包的本机文件审阅。</p>}
+        {publicationReady && !release && !fund && <p>当前来源、交付包与演练尚未找到发布记录；需逐项审阅确切版本，发布后仍等待受控调度器执行。</p>}
+        {workflow.publication.available && (!release || !journey.publicationCurrent) && <button className="button primary" disabled={!publicationWritable || preparationUnknown || !fileVerified || !verified || working || !publicationReady || fund&&!workflow.fileReview} onClick={() => void openReview()}>{publicationUnknown?"重新审阅并重试原发布请求":"审阅并发布测试任务"}</button>}
+        {!fund && !workflow.publication.available && !release && <span className="agent-publication-gate">交付演练通过后进入“待发布”；云端上线尚待完成。</span>}
+        {review && workflow.package && <AgentPublicationReview cloud={cloud} fund={fundPreflight} distribution={fund||Boolean(distributionMetadataForContext(contextId))} sourceKind={manual?"MANUAL":"AGENT"} originTaskId={taskId} packageDigest={workflow.package.digest} revisionId={delivery?.sourceRevisionId} runId={delivery?.sourceRunId} verificationId={delivery?.verificationId} confirmed={confirmed} disabled={!publicationWritable || working || !publicationReady || !verified || !fileVerified || !workflow.publication.available} onConfirm={(id, checked) => setConfirmed(old => ({...old, [id]:checked}))} onPublish={() => void publishLocal()} onCancel={() => { setReview(false); setConfirmed({}); }} />}
         {release && <>
           <strong>发布版本 {release.id.slice(0,8)} · {publicationReady ? releaseLabel(release) : "上次读取的记录 · 当前状态未确认"}</strong>
           <p className="agent-publication-id">发布编号：{release.id}</p>
+          {fund&&<small>本机测试 · {release.modelMode==="SYNTHETIC_MODEL"?"模型替身":"模型生成"}</small>}
           {monitorHref && <a className="button" href={monitorHref}>在运维监控查看原批次</a>}
           {archiveChoices.length > 0 && <a className="button" href="#agent-report-archives">在此任务查看报表归档</a>}
           <ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batchLabels[batch.status] ?? batch.status} · {batch.schedulerTriggered ? "调度器已触发" : batch.status === "CANCELLED" ? "未再触发" : "等待计划时间"}<small>批次编号：{batch.id}</small></li>)}</ul>
@@ -296,8 +327,8 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           {publication?.historyRunCount? <p>另保留 {publication.historyRunCount} 个历史批次，不计本次恢复窗口的通过数。</p>:null}
           {publication && <button className="button" onClick={() => download(`publication-${release.id.slice(0,8)}.json`,{...publication, readState:publicationRead, notice:"已读取的测试范围记录，不代表实时健康或公网验收"})}><Download size={14}/>下载发布与监控记录</button>}
         </>}
-      </div>}
-      {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!dirty&&!working&&!handoffBlocked&&!publicationTarget}/></Suspense>}
+      </div>
+      {!fund&&reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!dirty&&!working&&!handoffBlocked&&!publicationTarget}/></Suspense>}
     </>}
     {(archiveChoices.length > 0 || archiveReopen) && <Suspense fallback={<p role="status">正在加载原批次归档…</p>}>
       <AgentBatchArchivePanel api={api} taskId={taskId} choices={archiveChoices}/>

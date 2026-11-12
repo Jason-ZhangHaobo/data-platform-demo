@@ -174,7 +174,17 @@ node scripts/verify-saved-fund-lifecycle.mjs \
 
 API 使用 `POST /api/v2/agent/tasks/{id}/prepare-delivery` 和原 `Idempotency-Key`。结果未知时读原任务工作流或 `GET /api/v2/agent/tasks/{id}/delivery-requests/{key}`。CLI 使用 `shuduo agent prepare-delivery --id TASK_ID` 和 `shuduo agent workflow --id TASK_ID`。MCP 使用 `agent_delivery_prepare` 和 `agent_development_workflow`。
 
-已复用上一阶段保存的虚构基金任务，在 WebKit 提交后模拟响应丢失，按原编号找回同一份交付。Spark 3.5.9 从八个文件执行主 SQL、测试 SQL 和证据节点，七条结果与独立预期一致。CLI 重放、MCP 查询和重启回读均返回同一份交付与演练。全程仅执行一次本机文件演练。该版本等待工程师审阅，基金 Agent 发布、运维及公网验收待继续。
+已复用上一阶段保存的虚构基金任务，在 WebKit 提交后模拟响应丢失，按原编号找回同一份交付。Spark 3.5.9 从八个文件执行主 SQL、测试 SQL 和证据节点，七条结果与独立预期一致。CLI 重放、MCP 查询和重启回读均返回同一份交付与演练。全程仅执行一次本机文件演练。
+
+## 基金 Agent 确切版本的本机发布与监控
+
+在原任务记录四项文件审阅后，打开「审阅并发布测试任务」。预检读取原任务、开发运行、代码版本、包摘要、演练、冻结业务日和模型来源。确认表显示固定两批的触发参数。工程师明确确认后，审批把预检摘要和计时计划绑定到该交付包，激活时消费同一审批。工作台按确切发布显示两个批次、调度触发和监控事件。
+
+预检使用 `GET /api/v2/agent/tasks/{id}/publication/preflight`，参数为 `sourceKind=AGENT`、`sourceRunId`、`packageDigest` 和 `verificationId`。监控使用同一查询参数访问 `/publication`，可追加 `releaseId`。CLI 对应 `shuduo agent publication-preflight` 和 `shuduo agent publication`。MCP 预检工具为 `fund_agent_publication_preflight`，监控工具为 `agent_publication_detail`。
+
+CLI 可用 `shuduo releases approve` 和 `shuduo releases publish` 的 `--fund-consent` 参数传入已审阅文件。该文件包含预检回执中的 `scope`、`packageDigest`、`verificationId`、`businessDate` 和 `scheduleSpec`。将预检回执的 `digest` 填入 `preflightDigest`，经本人确认后添加 `confirmFrozenFictionalData: true`。MCP 的 `release_approve` 使用同一个 `fundConsent` 对象，`release_create` 使用已批准的原计划。回执丢失时先按确切来源读取原发布。
+
+验收在隔离副本复用原包与演练，使用测试审阅驱动实际本机调度。两个 Spark 批次各通过七条结果和独立测试 SQL。核验覆盖错误包摘要、未审阅状态、错误计时计划、发布回执丢失、重启回读及篡改监控事件。原包仍待工程师审阅。模型替身来源保留，云端发布与接口消费继续验收。
 
 ## 浏览器真实链路
 

@@ -35,7 +35,7 @@ export function publicationReadPath(taskId:string,selector:PublicationSelector,r
 export function publicationReleaseMatches(release:PublicationReleaseSource|undefined,taskId:string,selector:PublicationSelector,releaseId?:string){
   return Boolean(release&&release.sourceAgentTaskId===taskId&&(release.sourceKind??"AGENT")===selector.sourceKind&&
     release.packageDigest===selector.packageDigest&&release.verificationId===selector.verificationId&&
-    (selector.sourceKind!=="MANUAL"||release.sourceRunId===selector.sourceRunId)&&(!releaseId||release.id===releaseId));
+    (selector.sourceRunId===undefined||release.sourceRunId===selector.sourceRunId)&&(!releaseId||release.id===releaseId));
 }
 export function checkedPublication<T extends {release?:PublicationReleaseSource;runs:unknown[];alerts:unknown[];events:unknown[]}>(value:T,taskId:string,selector:PublicationSelector,releaseId?:string,requireRelease=false):T {
   if(!value||!Array.isArray(value.runs)||!Array.isArray(value.alerts)||!Array.isArray(value.events)||
