@@ -61,7 +61,7 @@ import type { ConsumptionScope } from "./service-consumption-scope";
 import{manualPublicationSourceConfirmed,manualPublicationSourceHref}from'./standalone-manual-publication-navigation';
 import {publicationSourceLocation,serviceSourceFromLocation,serviceHandoffLocation,serviceSourceKey,validServiceSourceBinding,sourceBindingEnvironmentMatches} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
-import { loadModuleStartup, loadStartupCore, moduleStartupPaths, startupReadCurrent } from "./startup-loading";
+import { loadModuleStartup, moduleStartupPaths, startupReadCurrent } from "./startup-loading";
 import type { StartupReadState } from "./startup-loading";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const DataServicesWorkbench = lazy(async () => ({ default: (await import("./DataServicesWorkbench")).DataServicesWorkbench }));
@@ -506,11 +506,9 @@ function App() {
     const current = () => startupReadCurrent({ authEpoch: epoch, coreRequest: request }, { authEpoch: authEpoch.current, coreRequest: coreRequest.current });
     try {
       let accepted: {status:Status;session:AuthSession} | undefined;
-      const [policy] = await Promise.all([
-        import("./workbench-session-boundary"),
-        loadStartupCore<Status, AuthSession>({read:requestApi,isCurrent:current,
-          combined:!privatePreview && inputModuleRef.current === "agent-center",accept:value => { accepted=value; }}),
-      ]);
+      const policy = await import("./workbench-session-boundary");
+      await policy.loadStartupCore<Status, AuthSession>({read:requestApi,isCurrent:current,
+        combined:!privatePreview && inputModuleRef.current === "agent-center",accept:value => { accepted=value; }});
       if (!current() || !accepted) return;
       sessionPolicy.current = policy;
       const {status:nextStatus,session:nextSession} = accepted;

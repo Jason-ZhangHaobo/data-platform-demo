@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { loadModuleStartup, loadStartupCore, moduleStartupPaths, startupReadCurrent } from '../../web/src/startup-loading.ts';
+import { loadModuleStartup, moduleStartupPaths, startupReadCurrent } from '../../web/src/startup-loading.ts';
+import { loadStartupCore } from '../../web/src/startup-core.ts';
 import { workbenchSessionScope } from '../../web/src/workbench-session-boundary.ts';
 import { isAgentSampleLanding, publicAgentSamples } from '../../web/src/agent-startup-samples.ts';
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
@@ -54,6 +55,34 @@ test('combined core accepts one identity snapshot and old servers need only the 
     assert.deepEqual(views, [{status, session:actor}]);
     assert.deepEqual(requests, ['/status?include=session', ...(legacy ? ['/auth/session'] : [])]);
   }
+});
+test('core retries only a declared startup response and accepts the first confirmed snapshot', async () => {
+  const calls=[], delays=[], views=[], actor=session('user-a');
+  const starting=()=>Object.assign(Error('starting'),{status:503,code:'CLOUD_STARTUP_PENDING'});
+  await loadStartupCore({combined:true,isCurrent:()=>true,wait:async ms=>delays.push(ms),accept:value=>views.push(value),
+    read:async path=>{calls.push(path);if(calls.length<3)throw starting();return {status,session:actor};}});
+  assert.deepEqual(calls,Array(3).fill('/status?include=session'));
+  assert.deepEqual(delays,[500,1000]);
+  assert.deepEqual(views,[{status,session:actor}]);
+  await assert.rejects(loadStartupCore({combined:true,isCurrent:()=>true,wait:async()=>assert.fail('ordinary failures are final'),
+    accept:()=>assert.fail('no identity was confirmed'),read:async()=>{throw Object.assign(Error('unavailable'),{status:503});}}),/unavailable/);
+  let attempts=0;
+  await assert.rejects(loadStartupCore({combined:true,isCurrent:()=>true,wait:async()=>undefined,
+    accept:()=>assert.fail('no identity was confirmed'),read:async()=>{attempts++;throw starting();}}),/starting/);
+  assert.equal(attempts,7);
+});
+
+test('a newer identity cancels a pending startup retry before its next request', async () => {
+  const wait=deferred(), waiting=deferred();
+  let current=true, reads=0;
+  const opening=loadStartupCore({combined:true,isCurrent:()=>current,wait:()=>{waiting.resolve();return wait.promise;},
+    accept:()=>assert.fail('old identity should remain hidden'),
+    read:async()=>{reads++;throw Object.assign(Error('starting'),{status:503,code:'CLOUD_STARTUP_PENDING'});}});
+  await waiting.promise;
+  current=false;
+  wait.resolve();
+  assert.equal(await opening,false);
+  assert.equal(reads,1);
 });
 test('partial, failed or stale combined responses never unlock the view or trigger the legacy fallback', async () => {
   const load = read => loadStartupCore({

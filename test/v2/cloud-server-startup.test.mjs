@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalArtifactStore } from "../../src/v2/artifact-store.mjs";
-import { createCloudV2Application } from "../../src/v2/cloud-server.mjs";
+import { createCloudV2Application, startCloudV2Listener } from "../../src/v2/cloud-server.mjs";
 import { MemoryDataStateBackend } from "../../src/v2/data-state-replica.mjs";
 import { MemorySnapshotBackend, ReplicatedMetadataStore } from "../../src/v2/metadata-replica.mjs";
 import { PROJECT } from "../../src/v2/server.mjs";
@@ -127,4 +128,111 @@ test("a persistence failure never commits prefetched Worker readiness and closes
     }),
   }), failure);
   assert.deepEqual(closed.sort(), ["metadata", "oss"]);
+});
+
+test("the read-only listener serves public first-screen files during recovery and waits to deliver marked events", {timeout:5000}, async t => {
+  const options = fixture(t), gate = Promise.withResolvers();
+  mkdirSync(join(options.root, "web-dist", "assets"));
+  writeFileSync(join(options.root, "web-dist", "assets", "index-FictionalHash.js"), "export const sample = true;");
+  const env = {...cloudEnv,V2_PROVISIONING_ONLY:"true",V2_PRIVATE_SMOKE_ENABLED:"true"};
+  const listener = startCloudV2Listener(env,{...options,port:0,host:"127.0.0.1",
+    openMetadataBackend:async()=>{await gate.promise;return new MemorySnapshotBackend();},
+    createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
+  t.after(async()=>{gate.resolve();await listener.close();});
+  await once(listener.server,"listening");
+  const base = "http://127.0.0.1:" + listener.server.address().port;
+  env.V2_PUBLIC_ORIGIN = base;
+  const read = (path,init) => fetch(base+path,init);
+  const html = await read("/v2/?module=agent-center");
+  assert.equal(await html.text(),"<html>Fictional cloud startup</html>");
+  assert.equal(html.headers.get("cache-control"),"no-cache");
+  const script=await read("/v2/assets/index-FictionalHash.js",{headers:{origin:base}});
+  assert.equal(await script.text(),"export const sample = true;");
+  assert.match(script.headers.get("cache-control"),/immutable/);
+  const catalog=await (await read("/api/v2/contexts")).json();
+  assert.ok(catalog.some(context=>context.id==="holdings-t1"));
+  for (const [path,headers] of [["/v2/",{origin:"https://wrong.example"}],
+    ["/api/v2/contexts",{"x-project-id":"different-project"}],["/api/v2/internal/status",{}],["/v2/%69ndex",{}]]) {
+    const denied=await read(path,{headers});
+    assert.ok([403,404].includes(denied.status));
+  }
+  for (const path of ["/api/v2/status?include=session","/api/v2/auth/session","/api/v2/agent/tasks"]) {
+    const pending = await read(path);
+    assert.equal(pending.status,503);
+    assert.equal(pending.headers.get("retry-after"),"1");
+    assert.equal((await pending.json()).code,"CLOUD_STARTUP_PENDING");
+  }
+  assert.equal((await read("/api/v2/agent/tasks",{method:"POST",body:"{}"})).status,403);
+  let eventSettled=false, signedPageSettled=false;
+  const event=read("/invoke",{method:"POST",headers:{"x-fc-control-path":"/invoke","content-type":"application/octet-stream"},
+    body:JSON.stringify({operation:"PRIVATE_STATUS_V1"})}).then(value=>{eventSettled=true;return value;});
+  const signedPage=read("/v2/",{headers:{cookie:"test-session=fictional"}})
+    .then(value=>{signedPageSettled=true;return value;});
+  // Give the actual socket a turn before releasing persistence. Neither the
+  // event nor the signed-in navigation is acknowledged by the early handler.
+  await new Promise(resolve=>setTimeout(resolve,40));
+  assert.equal(eventSettled,false);
+  assert.equal(signedPageSettled,false);
+  gate.resolve();
+  const boot = await listener.ready;
+  assert.equal(boot.app.server,listener.server);
+  assert.equal(listener.server.listenerCount("request"),1);
+  assert.deepEqual(await (await read("/api/v2/contexts")).json(),catalog);
+  const delivered=await event;
+  assert.equal(delivered.status,200);
+  assert.equal((await delivered.json()).mode,"PRIVATE_CONTROL_PLANE");
+  assert.equal((await signedPage).status,200);
+  const session=await (await read("/api/v2/auth/session")).json();
+  assert.equal(session.authenticated,false);
+  assert.equal(session.readOnly,true);
+  assert.equal((await read("/api/v2/agent/tasks",{method:"POST",body:"{}"})).status,403);
+});
+
+test("private and writable configurations bind after recovery and failed early listeners close", {timeout:5000}, async t => {
+  const options=fixture(t);
+  for (const env of [{V2_FC_PUBLIC_HTTP_ENABLED:"false"},{...cloudEnv,V2_FC_PUBLIC_READ_ONLY:"false"}]) {
+    const gate=Promise.withResolvers();
+    const listener=startCloudV2Listener(env,{...options,port:0,host:"127.0.0.1",
+      openMetadataBackend:async()=>{await gate.promise;return new MemorySnapshotBackend();},
+      createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
+    t.after(async()=>{gate.resolve();await listener.close();});
+    assert.equal(listener.server.listening,false);
+    gate.resolve();
+    await listener.ready;
+    assert.equal(listener.server.listening,true);
+    await listener.close();
+  }
+  const gate=Promise.withResolvers(), failure=Error("fictional restore failure");
+  const listener=startCloudV2Listener(cloudEnv,{...options,port:0,host:"127.0.0.1",
+    openMetadataBackend:()=>gate.promise,createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
+  t.after(async()=>{gate.reject(failure);await listener.close();});
+  const rejected=assert.rejects(listener.ready,failure);
+  await once(listener.server,"listening");
+  const requested=once(listener.server,"request");
+  const event=fetch("http://127.0.0.1:"+listener.server.address().port+"/invoke",{
+    method:"POST",headers:{"x-fc-control-path":"/invoke","content-type":"application/octet-stream"},body:"{}",
+  });
+  const notAcknowledged=assert.rejects(event);
+  await requested;
+  gate.reject(failure);
+  await rejected;
+  await notAcknowledged;
+  assert.equal(listener.server.listening,false);
+  await listener.close();
+
+  const opening=Promise.withResolvers(), remaining=Promise.withResolvers(), metadata=new MemorySnapshotBackend();
+  let closes=0;
+  metadata.close=async()=>{closes++;};
+  const stopping=startCloudV2Listener(cloudEnv,{...options,port:0,host:"127.0.0.1",
+    openMetadataBackend:async()=>{opening.resolve();await remaining.promise;return metadata;},
+    createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
+  t.after(async()=>{remaining.resolve();await stopping.close();});
+  await opening.promise;
+  assert.equal(stopping.server.listening,true);
+  const stopped=stopping.close();
+  assert.equal(stopping.server.listening,false);
+  remaining.resolve();
+  await stopped;
+  assert.equal(closes,1);
+  assert.equal(stopping.server.listening,false);
 });
