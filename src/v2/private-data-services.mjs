@@ -152,7 +152,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     const selection = privateServiceSourceSelection(params, true);
     if (!selection || (verifySavedRelease && (!selection.taskId || !selection.releaseId)))
       throw fail(422, "需提供任务编号、确切包摘要及合法发布选择", "INVALID_CONSUMPTION_INPUT");
-    const { taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest } = selection;
+    const { taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId } = selection;
     const task = get(manualDeliveryTaskId ? "manual_delivery_task" : "agent", manualDeliveryTaskId ?? taskId);
     if (!task || ((manualDeliveryTaskId || verifySavedRelease || a.role !== "ADMIN") && task.submittedBy !== owner))
       throw fail(403, "无权读取此任务消费证据");
@@ -163,11 +163,18 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       release.packageDigest === packageDigest && (releaseId === undefined || release.id === releaseId));
     if (releases.some(release => !manualReleaseOwned(a, release)))
       throw fail(403, "人工消费记录仅属于原任务工程师和发布者");
+    if (batchId) {
+      const batch = source(batchId);
+      sourceOwner(a,batch);
+      if (releases.length !== 1 || releases[0].sourceKind !== "AGENT" || !releases[0].reviewDigest ||
+          batch.releaseId !== releaseId || batch.packageDigest !== packageDigest || batch.reviewDigest !== releases[0].reviewDigest)
+        throw fail(409, "消费记录与所选原发布批次不一致", "CONSUMPTION_PUBLICATION_UNCONFIRMED");
+    }
     if (verifySavedRelease) {
       if (releases.length !== 1) throw fail(409, "原发布与所选消费来源不一致", "CONSUMPTION_PUBLICATION_UNCONFIRMED");
       verifySavedRelease(taskId, releases[0], owner);
     }
-    return privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest,
+    return privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId,
       getPackage: id => get("delivery_package", id),
       services: manager.list().filter(item => owned(a, item)), ownedService: id => service(a, id),
       getVersion: id => get("data_service_version", id),

@@ -65,6 +65,7 @@ import { loadModuleStartup, moduleStartupPaths, startupReadCurrent } from "./sta
 import type { StartupReadState } from "./startup-loading";
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const DataServicesWorkbench = lazy(async () => ({ default: (await import("./DataServicesWorkbench")).DataServicesWorkbench }));
+const BatchServiceHistory = lazy(() => import("./BatchServiceHistory"));
 const IngestionWorkbench = lazy(async () => ({ default: (await import("./IngestionWorkbench")).IngestionWorkbench }));
 const DeliveryWorkbench = lazy(async () => ({ default: (await import("./DeliveryWorkbench")).DeliveryWorkbench }));
 const AssetWorkbench = lazy(async () => ({ default: (await import("./AssetWorkbench")).AssetWorkbench }));
@@ -1756,6 +1757,7 @@ function App() {
             <h1>{active?.name}</h1>
             <p className="module-subtitle">{active?.description}</p>
             {nav === "services" ? (
+              location.hash === "#release-batch-consumption" ? <BatchServiceHistory api={api} workspaceAvailable={workbench.servicesAvailable} /> :
               workbench.servicesAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}</div>
             ) : nav === "sources" || nav === "sync" ? (
               <IngestionWorkbench

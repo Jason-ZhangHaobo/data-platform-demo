@@ -4922,6 +4922,7 @@ export function createV2Server(options = {}) {
         const selected = privateServiceSourceSelection(url.searchParams,true);
         if (!selected)
           throw fail(422, "需提供任务编号与确切包摘要");
+        if (selected.batchId) throw fail(422, "原发布批次的消费历史仅支持受邀发布");
         const {taskId,packageDigest,releaseId,callIdDigest}=selected;
         const agent = get("agent", taskId); requireDurableAgentOwner(agent, req);
         return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, callIdDigest, manager: dataServices, timeUnitMs: releaseTimeUnitMs, fundSignedExecutionFor, syncSourcesFor }));

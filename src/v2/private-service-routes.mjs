@@ -4,16 +4,18 @@ const digest = /^[a-f0-9]{64}$/;
 // Optional source selection is all-or-nothing. Never degrade a malformed exact
 // handoff into the older task-wide discovery request.
 export function privateServiceSourceSelection(params, evidence = false) {
-  const keys=["agent_task_id","manual_delivery_task_id","package_digest","release_id",...(evidence?["call_id_digest"]:[])],entries=[...params];
+  const keys=["agent_task_id","manual_delivery_task_id","package_digest","release_id",...(evidence?["call_id_digest","release_batch_id"]:[])],entries=[...params];
   if(new Set(entries.map(([key])=>key)).size!==entries.length||entries.some(([key])=>!keys.includes(key)))return;
   const taskId=params.get("agent_task_id")??undefined,manualDeliveryTaskId=params.get('manual_delivery_task_id')??undefined,packageDigest=params.get("package_digest")??undefined,releaseId=params.get("release_id")??undefined;
   if(taskId!==undefined&&!new RegExp(`^${uuid}$`).test(taskId)||manualDeliveryTaskId!==undefined&&!new RegExp(`^${uuid}$`).test(manualDeliveryTaskId)||taskId!==undefined&&manualDeliveryTaskId!==undefined||packageDigest!==undefined&&!digest.test(packageDigest)||releaseId!==undefined&&!new RegExp(`^${uuid}$`).test(releaseId))return;
   const callIdDigest = params.get("call_id_digest") ?? undefined;
+  const batchId = params.get("release_batch_id") ?? undefined;
   if (callIdDigest !== undefined && (!releaseId || !digest.test(callIdDigest))) return;
+  if (batchId !== undefined && (!taskId || !releaseId || !packageDigest || !new RegExp(`^${uuid}$`).test(batchId))) return;
   const call = callIdDigest === undefined ? {} : {callIdDigest};
   if(manualDeliveryTaskId)return packageDigest&&releaseId?{manualDeliveryTaskId,packageDigest,releaseId,...call}:undefined;
   if(evidence?!(taskId&&packageDigest):(packageDigest!==undefined||releaseId!==undefined)&&!(taskId&&packageDigest&&releaseId))return;
-  return {taskId,packageDigest,releaseId,...call};
+  return {taskId,packageDigest,releaseId,...call,...(batchId ? {batchId} : {})};
 }
 export function privateServiceRoute(method,path,{agentPlanning=false,agentRead=false}={}) {
   if(typeof path!=="string" || path.length>700 || /[#\\]/.test(path) || !path.startsWith("/api/v2/"))return false;
