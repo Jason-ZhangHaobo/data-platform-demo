@@ -1950,6 +1950,139 @@ test('a settled original development failure allows the next case while pending 
   await cli('v3-run',['--completion-file',tampered],1);
 });
 
+test('original file and publication Worker failures settle read-only while unfinished work retains reservations',async t=>{
+  for (const stage of ['FILE_REHEARSAL','PUBLICATION']) await t.test(stage,async t=>{
+    const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true,queueTimeoutMs:30000});
+    const checkpoint=join(f.directory,'original.json'), bill=join(f.directory,'bill.json'),
+      failureFile=join(f.directory,'failure.json'), nextPath=join(f.directory,'next.json');
+    writeSubprocessBill(bill);
+    const calls=[], client=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
+      const uri=new URL(url), path=uri.pathname.slice('/api/v2'.length)+uri.search;
+      calls.push({method:options.method,path});
+      const response=await f.call(path,options.body?JSON.parse(options.body):undefined,options.headers['Idempotency-Key']);
+      return new Response(JSON.stringify(response.body),{status:response.status});
+    }});
+    const cli=async(action,flags=[],path=checkpoint)=>{
+      calls.length=0;
+      let result,message;
+      const code=await runV2Cli(['agent',action,'--checkpoint',path,...flags],{},
+        {client,output:line=>{result=JSON.parse(line);},error:line=>{message=line;}});
+      assert.equal(code,0,message);
+      return result;
+    };
+    const confirm=['--bill-file',bill,'--confirm'];
+    await cli('v3-start',['--source-revision','a'.repeat(40)]);
+    const created=await cli('v3-start',confirm);
+    const taskPath='/agent/tasks/'+created.taskId;
+    let task=(await f.call(taskPath)).body;
+    task=(await f.call(taskPath+'/advance',{expectedVersion:task.version})).body;
+    task=(await f.call(taskPath+'/advance',{expectedVersion:task.version})).body;
+    f.complete(f.store.get('run',task.runId,PROJECT).remoteSubmission.prepared);
+    task=(await f.call(taskPath+'/advance',{expectedVersion:task.version})).body;
+    assert.equal(task.status,'SUCCEEDED');
+    assert.equal((await cli('v3-inspect')).status,'DEVELOPMENT_BOUND');
+    const {delivery}=await cli('v3-prepare-delivery',confirm);
+    const opened=await cli('v3-rehearse',confirm), verificationId=opened.delivery.rehearsal.id;
+    const rehearsalJob=f.store.get('agent_delivery_task',delivery.id,PROJECT).remoteSubmission.prepared;
+    const pending=async(reason,requestPath)=>{
+      const snapshot=readFileSync(checkpoint), queues=f.queueCounts();
+      assert.equal((await cli('v3-settle-failure',['--out-file',failureFile])).reason,reason);
+      assert.deepEqual(calls,[{method:'GET',path:'/auth/session'},{method:'GET',path:requestPath}]);
+      assert.equal(existsSync(failureFile),false);
+      assert.deepEqual(f.queueCounts(),queues);
+      assert.deepEqual(readFileSync(checkpoint),snapshot);
+    };
+    const read=()=>JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0];
+    const deliveryReceiptPath=taskPath+'/delivery-requests/'+read().actions.delivery.key;
+    const originalFailure={status:'FAILED',engine:'Apache Spark',engineVersion:'3.5.9'};
+    let settledIds, settledPath, seconds;
+    if (stage==='FILE_REHEARSAL') {
+      await pending('FILE_REHEARSAL_FAILURE_NOT_SETTLED',deliveryReceiptPath);
+      f.later(30001);
+      await pending('FILE_REHEARSAL_FAILURE_NOT_SETTLED',deliveryReceiptPath);
+      f.complete(rehearsalJob,{...originalFailure,durationMs:0});
+      assert.equal((await cli('v3-rehearse',['--settle'])).delivery.rehearsal.status,'FAILED');
+      const verified=f.store.get('delivery_verification',verificationId,PROJECT);
+      assert.equal(verified.durationMs,undefined);
+      f.store.update('delivery_verification',verificationId,PROJECT,{workerResultDigest:'f'.repeat(64)});
+      await pending('FILE_REHEARSAL_FAILURE_NOT_SETTLED',deliveryReceiptPath);
+      f.store.update('delivery_verification',verificationId,PROJECT,{workerResultDigest:verified.workerResultDigest});
+      settledIds=[verificationId];settledPath=deliveryReceiptPath;seconds=30100;
+    } else {
+      f.complete(rehearsalJob);
+      assert.equal((await cli('v3-rehearse',['--settle'])).delivery.rehearsal.status,'SUCCEEDED');
+      const file=join(f.directory,'review.json');
+      await cli('v3-publication-review',['--out-file',file]);
+      const review=JSON.parse(readFileSync(file,'utf8'));
+      writeFileSync(file,JSON.stringify({...review,attestations:Object.fromEntries(Object.keys(review.attestations).map(key=>[key,true]))}));
+      f.alignWallClock();
+      Object.assign(f.env,{V2_FC_PUBLIC_WRITE_SCOPE:'PUBLICATION_ONLY',
+        V2_PUBLIC_PUBLICATION_STARTS_AT:new Date(f.now()-1000).toISOString(),
+        V2_PUBLIC_PUBLICATION_EXPIRES_AT:new Date(f.now()+600000).toISOString(),
+        V2_PUBLIC_PUBLICATION_TASK_ID:task.id,V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST:delivery.packageDigest,
+        V2_PUBLIC_PUBLICATION_VERIFICATION_ID:verificationId,V2_PRIVATE_RELEASE_ENABLED:'true',
+        V2_PRIVATE_RELEASE_TRIGGER_NAMES:'shuduo-release-synthetic-failure',V2_SCHEDULER_TICK_SECRET:'synthetic-failure-release-authorization-1234'});
+      await f.restart();
+      const {publication}=await cli('v3-publish',['--review-file',file,...confirm]);
+      const {releaseId,batchIds}=publication;
+      settledPath=publicationRequestReceiptPath(task.id,read().actions.publication.key);
+      const tick=letter=>{
+        const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=letter.repeat(24);
+        const body=JSON.stringify({releaseId,triggerName,expiresAt:f.now()+300000});
+        return {triggerName,triggerTime:new Date(f.now()).toISOString(),payload:JSON.stringify({
+          operation:'PRIVATE_RELEASE_TIMER_V1',timestamp,nonce,body,
+          signature:signSchedulerTick({sharedSecret:f.env.V2_SCHEDULER_TICK_SECRET,timestamp,nonce,body}),
+        })};
+      };
+      f.later(1000);
+      const first=tick('a');
+      assert.equal((await f.privateCall(first)).status,200);
+      f.complete(f.store.get('release_run',batchIds[0],PROJECT).remoteSubmission.prepared,{...originalFailure,durationMs:123});
+      assert.equal((await f.privateCall(first)).body.replayed,true);
+      await pending('PUBLICATION_FAILURE_NOT_SETTLED',settledPath);
+      f.later(60001);
+      const second=tick('b');
+      assert.equal((await f.privateCall(second)).status,200);
+      f.later(30001);
+      await pending('PUBLICATION_FAILURE_NOT_SETTLED',settledPath);
+      f.complete(f.store.get('release_run',batchIds[1],PROJECT).remoteSubmission.prepared);
+      assert.equal((await f.privateCall(second)).body.replayed,true);
+      const secondRun=f.store.get('release_run',batchIds[1],PROJECT);
+      f.store.update('release_run',secondRun.id,PROJECT,{workerResultDigest:'e'.repeat(64)});
+      await pending('PUBLICATION_FAILURE_NOT_SETTLED',settledPath);
+      f.store.update('release_run',secondRun.id,PROJECT,{workerResultDigest:secondRun.workerResultDigest});
+      settledIds=batchIds;seconds=423;
+    }
+    f.env.V2_FC_PUBLIC_READ_ONLY='true';
+    delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
+    await f.restart();
+    const queues=f.queueCounts(), counts=f.counts(), checkpointBytes=readFileSync(checkpoint);
+    if (stage==='PUBLICATION') t.mock.method(Date,'now',()=>f.now());
+    const settled=await cli('v3-settle-failure',['--out-file',failureFile]);
+    assert.equal(settled.status,'FAILURE_RECEIPT_SAVED');
+    assert.equal(settled.scope,'LOCAL_SETTLED_FAILURE_ONLY');
+    assert.deepEqual(calls,[{method:'GET',path:'/auth/session'},{method:'GET',path:settledPath}]);
+    assert.deepEqual(f.counts(),counts);
+    assert.deepEqual(f.queueCounts(),queues);
+    assert.deepEqual(readFileSync(checkpoint),checkpointBytes);
+    const receipt=JSON.parse(readFileSync(failureFile,'utf8'));
+    assert.equal(receipt.failure.kind,stage);
+    assert.deepEqual(receipt.failure.batches.map(batch=>batch.id),settledIds);
+    const next=await cli('v3-prepare-next',['--first-checkpoint',checkpoint,'--completion-file',failureFile,'--source-revision','a'.repeat(40)],nextPath);
+    assert.equal(next.status,'PREPARED');
+    const {previousCase}=await cli('v3-start',['--window-binding'],nextPath);
+    assert.equal(previousCase.reserveCny,64);
+    assert.equal(previousCase.usageFloor.modelCalls,1);
+    assert.equal(previousCase.usageFloor.remoteSparkRuns,stage==='FILE_REHEARSAL'?2:4);
+    assert.equal(Math.round(previousCase.usageFloor.remoteSparkSeconds*1000),seconds);
+    const report=await cli('v3-run',['--completion-file',failureFile,'--next-checkpoint',nextPath]);
+    assert.equal(report.cases[0].status,'LOCAL_FAILURE_SETTLED_ONLY');
+    assert.equal(report.verifiedCloudCaseCount,0);
+    assert.equal(report.expectedCaseCount,20);
+    assert.deepEqual(calls,[]);
+  });
+});
+
 test('invited development reaches versioned files across restart without another task or submission', async t => {
   const f = await fixture(t);
   let task = (await f.call('/agent/tasks', taskInput)).body;

@@ -1,5 +1,6 @@
 import { sha256, validateDeliveryPackage, validationMatchesFamily } from "./delivery.mjs";
 import { publicationAttestationKeys } from "./publication-request.mjs";
+import { storedWorkerBatchResult } from "./worker-result-evidence.mjs";
 
 const fail = (status,message) => Object.assign(new Error(message),{status});
 export function passedCloudReleaseBatch(receipt,item,plan) {
@@ -21,6 +22,24 @@ export function projectCloudReleaseBatchStage(run, now) {
     if (deadline>triggered && now>=deadline) return {...run,stage:"WORKER_RESULT_UNCONFIRMED"};
   }
   return run;
+}
+
+function settledPublicationFailure(store,project,release,runs,events) {
+  if (release.status!=="COMPLETED_CLOUD_TEST" || !runs.some(run=>run.status==="FAILED")) return;
+  const batches=runs.map(run=>{
+    const result=storedWorkerBatchResult(store,run,run.remoteSubmission?.prepared?.job,
+      `${project}:cloud-release-result:${run.id}`);
+    const observed=events.filter(event=>event.releaseRunId===run.id &&
+      ["BATCH_SUCCEEDED","BATCH_FAILED"].includes(event.type));
+    const event=observed[0], triggered=Date.parse(run.triggeredAt), scheduled=Date.parse(run.scheduledTriggerAt);
+    if (!result || run.stage!=="COMPLETED" || run.schedulerTriggered!==true || run.clockMode!=="FC_TIMER" ||
+        run.businessScheduledFor!==release.businessScheduledFor || !(scheduled<=triggered && triggered<=Date.parse(result.finishedAt)) ||
+        observed.length!==1 || event.type!==(result.status==="FAILED"?"BATCH_FAILED":"BATCH_SUCCEEDED") ||
+        event.status!==result.status || event.packageDigest!==release.packageDigest ||
+        !(Date.parse(event.observedAt)>=Date.parse(result.finishedAt))) return;
+    return {...result,eventId:event.id};
+  });
+  if (batches.every(Boolean)) return {batches};
 }
 
 // Read the immutable release identity and committed monitor records. This path
@@ -49,6 +68,7 @@ export function exactPublicationReceipt(store, project, release, now=Date.now())
   const events = store.list("monitor_event",project).filter(event=>event.releaseId===release.id);
   const openAlertCount = store.list("monitor_alert",project).filter(alert=>alert.releaseId===release.id && alert.status==="OPEN").length;
   const monitoring = {status:"PENDING",health:release.health,openAlertCount};
+  const settledFailure=settledPublicationFailure(store,project,release,runs,events);
   if (release.status === "CANCELLED" || runs.some(run=>["FAILED","CANCELLED","INTERRUPTED"].includes(run.status)))
     monitoring.status = "NEEDS_ATTENTION";
   else if (runs.every(run=>run.status==="SUCCEEDED")) {
@@ -82,5 +102,5 @@ export function exactPublicationReceipt(store, project, release, now=Date.now())
         ...(run.stage ? {stage:run.stage} : {}),
         ...(Number.isFinite(run.reservedDurationMs) ? {reservedDurationMs:run.reservedDurationMs} : {}),
         ...(Number.isFinite(run.durationMs) ? {durationMs:run.durationMs} : {})};
-    }),monitoring};
+    }),monitoring,...(settledFailure?{settledFailure}:{})};
 }

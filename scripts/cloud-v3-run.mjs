@@ -5,6 +5,7 @@ import { checkpointCaseScope, readCheckpoint, stop, uuid } from "../src/v2/live-
 import { currentLiveLifecycleContract, liveCaseRequestDigest, liveLifecyclePlan } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { liveEvidenceProvenance } from "../src/v2/live-lifecycle-provenance.mjs";
 import { validSettledDevelopmentFailure } from "../src/v2/agent-execution-evidence.mjs";
+import { validStoredWorkerBatchResult } from "../src/v2/worker-result-evidence.mjs";
 import { validationFamilyForContext } from "../src/v2/context.mjs";
 import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
 
@@ -26,17 +27,56 @@ export function cloudV3CompletionScope(state,proofs) {
   stop("原开发窗口、验包或消费范围未获确认");
 }
 
+export function validDownstreamFailure(item,failure) {
+  const {delivery,rehearsal,publication}=item.actions, code=item.code;
+  if (!code || code.taskId!==item.taskId || !id(code.revisionId) || !id(code.runId) ||
+      !digest(code.revisionHash) || !Number.isSafeInteger(code.accountedTokens) ||
+      code.accountedTokens!==code.reportedTokens || code.reservedTokens!==0 || code.unattributedTokens!==0 ||
+      delivery?.status!=="CONFIRMED" || !id(delivery.id) || !id(failure.packageId) || !digest(failure.packageDigest) ||
+      failure.packageId!==delivery.packageId || failure.packageDigest!==delivery.packageDigest ||
+      !id(failure.verificationId) || (item.rehearsal && item.rehearsal.id!==failure.verificationId) ||
+      !Array.isArray(failure.batches) || item.consumption)
+    return false;
+  if (failure.kind==="FILE_REHEARSAL") {
+    const [batch]=failure.batches;
+    return Object.keys(failure).length===5 && !publication && failure.batches.length===1 &&
+      rehearsal && ["SUBMITTING","UNKNOWN","CONFIRMED"].includes(rehearsal.status) &&
+      rehearsal.deliveryId===delivery.id && rehearsal.packageId===failure.packageId && rehearsal.packageDigest===failure.packageDigest &&
+      (rehearsal.id===undefined||rehearsal.id===failure.verificationId) &&
+      validStoredWorkerBatchResult(batch) && batch.id===failure.verificationId && batch.status==="FAILED";
+  }
+  if (failure.kind!=="PUBLICATION" || Object.keys(failure).length!==7 || !publication ||
+      !["SUBMITTING","UNKNOWN","CONFIRMED"].includes(publication.status) ||
+      !id(failure.releaseId) || !digest(failure.reviewDigest) || failure.reviewDigest!==publication.reviewDigest ||
+      failure.packageId!==publication.packageId || failure.packageDigest!==publication.packageDigest ||
+      failure.verificationId!==publication.verificationId || item.rehearsal?.status!=="SUCCEEDED" ||
+      (publication.id!==undefined&&publication.id!==failure.releaseId) || failure.batches.length!==2 ||
+      !failure.batches.every(batch=>{
+        if (!batch || !id(batch.eventId)) return false;
+        const {eventId,...result}=batch;
+        return validStoredWorkerBatchResult(result);
+      }))
+    return false;
+  const batches=failure.batches.map(batch=>batch.id);
+  return new Set(batches).size===2 && new Set(failure.batches.map(batch=>batch.eventId)).size===2 &&
+    failure.batches.some(batch=>batch.status==="FAILED") &&
+    (publication.batchIds===undefined||isDeepStrictEqual(publication.batchIds,batches));
+}
+
 export function cloudV3FailureReceipt(original,item,failure,checkedAt) {
   const {state,text}=original, protocol=new URL(state.origin).protocol;
   const startedAt=state.previousCase ? state.submission?.submittedAt : item.evaluationStartedAt;
   const provenance=liveEvidenceProvenance(item);
+  const downstream=failure?.kind!==undefined;
+  const valid=downstream?validDownstreamFailure(item,failure):
+    Object.keys(item.actions).length===1 && !item.code && !item.rehearsal && !item.consumption &&
+    validSettledDevelopmentFailure(failure);
+  const finishes=valid&&downstream?failure.batches.map(batch=>batch.finishedAt):[failure?.finishedAt];
   if (provenance.synthetic || provenance.nonNative || provenance.unconfirmed ||
       item.actions.agent.status!=="CONFIRMED" || !id(item.taskId) || item.actions.agent.id!==item.taskId ||
-      Object.keys(item.actions).length!==1 || item.code || item.rehearsal || item.consumption ||
-      !validSettledDevelopmentFailure(failure) ||
-      !(Date.parse(startedAt)<=Date.parse(failure.finishedAt) && Date.parse(failure.finishedAt)<=Date.parse(checkedAt)) ||
+      !valid || !finishes.every(time=>Date.parse(startedAt)<=Date.parse(time) && Date.parse(time)<=Date.parse(checkedAt)) ||
       !(protocol==="http:" || (protocol==="https:" && hasCloudApplication(state))))
-    stop("原案例尚无已结算的开发失败证据");
+    stop("原案例尚无已结算的失败证据");
   const body={protocol:failureProtocol,scope:protocol==="https:"?"INVITED_CLOUD_SETTLED_FAILURE":"LOCAL_SETTLED_FAILURE_ONLY",
     checkedAt,checkpointDigest:sha256(text),evaluationRunId:state.evaluationRunId,caseSetDigest:state.caseSetDigest,
     caseId:item.caseId,requestDigest:item.requestDigest,taskId:item.taskId,failure};
@@ -134,7 +174,9 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
       if (!digest(approval) || approvals.includes(approval)) stop("同一评测不能复用开发窗口审批");
       approvals.push(approval);
     }
-    const identities=[...caseEvidenceIdentities(item),...(completed?.failure?.sparkRunIds??[])];
+    const failure=completed?.failure;
+    const identities=[...caseEvidenceIdentities(item),...(failure?.sparkRunIds??[]),
+      ...(failure?.batches??[]).map(batch=>batch.id),...(failure?.releaseId?[failure.releaseId]:[])];
     if (identities.some(identity=>evidence.has(identity))) stop("同一评测不能复用其他案例的任务、批次或调用回执");
     for (const identity of identities) evidence.add(identity);
     for (const attempt of [checkpoint.state.submission,...Object.values(item.actions)]) {
@@ -146,8 +188,14 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
       }
       if (attempt?.usage!==undefined) retainUsage({...attempt.usage,month:bill?.month});
     }
-    const failure=completed?.failure, submission=checkpoint.state.submission;
-    if (failure && submission?.usage && [checkpoint.state.previousCase?submission.submittedAt:item.evaluationStartedAt,failure.finishedAt]
+    const submission=checkpoint.state.submission;
+    if (failure?.batches) {
+      const attempt=failure.kind==="PUBLICATION"?item.actions.publication:item.actions.rehearsal;
+      const sameMonth=failure.batches.filter(batch=>billingMonth.format(new Date(batch.createdAt))===attempt.bill?.month);
+      if (attempt.usage && sameMonth.length) retainUsage({...attempt.usage,month:attempt.bill.month,
+        remoteSparkRuns:attempt.usage.remoteSparkRuns+sameMonth.length,
+        remoteSparkSeconds:attempt.usage.remoteSparkSeconds+sameMonth.reduce((sum,batch)=>sum+batch.durationMs,0)/1000});
+    } else if (failure && submission?.usage && [checkpoint.state.previousCase?submission.submittedAt:item.evaluationStartedAt,failure.finishedAt]
         .every(time=>billingMonth.format(new Date(time))===submission.bill.month)) {
       retainUsage({...submission.usage,month:submission.bill.month,
         modelCalls:submission.usage.modelCalls+failure.modelAttempts,

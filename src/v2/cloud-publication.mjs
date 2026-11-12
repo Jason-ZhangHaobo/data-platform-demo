@@ -11,6 +11,7 @@ import {assertSqlClarificationTask} from './sql-clarification.mjs';
 import {storedAgentReviewEvidence} from './agent-review-evidence.mjs';
 import {exactPublicationReceipt,passedCloudReleaseBatch,projectCloudReleaseBatchStage} from "./cloud-release-evidence.mjs";
 import {publicationAttestationKeys} from './publication-request.mjs';
+import {verifiedWorkerResultDigest} from "./worker-result-evidence.mjs";
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -246,15 +247,17 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
           latestRelease.reviewDigest!==release.reviewDigest || latestRelease.packageDigest!==item.digest ||
           latest.packageId !== item.id || latest.packageDigest !== item.digest)
         throw fail(409,"调度批次与原 Worker 回执不一致");
-      store.deduplicate(`${project}:cloud-release-result:${run.id}`,hash(JSON.stringify(receipt)),
-        ()=>recordBatchResult(latest,release,item,receipt,passed));
+      const workerResultDigest=verifiedWorkerResultDigest(receipt);
+      store.deduplicate(`${project}:cloud-release-result:${run.id}`,workerResultDigest??hash(JSON.stringify(receipt)),
+        ()=>recordBatchResult(latest,release,item,receipt,passed,workerResultDigest));
     } else recordBatchResult(latest,release,item,receipt,passed);
     await persist();
   }
-  function recordBatchResult(run, release, item, receipt, passed) {
+  function recordBatchResult(run, release, item, receipt, passed, workerResultDigest) {
     const values = Object.fromEntries(["engine", "engineVersion", "mainSqlExecuted", "testSqlValidation", "validation", "durationMs", "rows", "columns", "log"].filter(k => receipt[k] !== undefined).map(k => [k, receipt[k]]));
     if (release.reviewDigest && !(Number.isFinite(values.durationMs) && values.durationMs>0)) delete values.durationMs;
-    const saved = patch("release_run", run, { ...values, status: passed ? "SUCCEEDED" : "FAILED", stage: "COMPLETED", finishedAt: stamp(), ...(passed ? {} : { error: "云端发布批次执行或独立校验未通过" }) });
+    const saved = patch("release_run", run, { ...values, ...(workerResultDigest?{workerResultDigest}:{}),
+      status: passed ? "SUCCEEDED" : "FAILED", stage: "COMPLETED", finishedAt: stamp(), ...(passed ? {} : { error: "云端发布批次执行或独立校验未通过" }) });
     store.create("monitor_event", project, { releaseId: release.id, releaseRunId: run.id, type: passed ? "BATCH_SUCCEEDED" : "BATCH_FAILED", status: saved.status, observedAt: stamp(), packageDigest: item.digest });
     if (!passed) store.create("monitor_alert", project, { releaseId: release.id, releaseRunId: run.id, status: "OPEN", severity: "ERROR", code: "CLOUD_RELEASE_BATCH_FAILED", message: saved.error, openedAt: stamp() });
     else for (const alert of store.list("monitor_alert", project)) if (alert.releaseId === release.id && alert.status === "OPEN" && Date.parse(alert.openedAt) <= now()) store.update("monitor_alert", alert.id, project, { status: "RESOLVED", resolvedAt: stamp(), recoveryRunId: run.id });
@@ -265,6 +268,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
   }
   async function reconcile(run, {passive=false}={}) {
     if (terminal.has(run.status) || !run.remoteSubmission) return;
+    passive=passive||Boolean(run.reviewDigest);
     let receipt;
     if (passive && run.remoteSubmission.prepared?.job?.jobId!==run.id)
       throw fail(409,"调度批次与原 Worker 编号不一致");
