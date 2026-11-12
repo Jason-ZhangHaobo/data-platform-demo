@@ -93,9 +93,13 @@ function exactLocalNavigationSource(state, outcomes) {
   return ids.every(value => uuid.test(value)) ? source : undefined;
 }
 
+export function liveAgentTaskUrl(origin, taskId) {
+  return uuid.test(taskId ?? "") ? origin + "/v2/?module=agent-center&task=" + taskId : undefined;
+}
+
 export function links(state, origin, outcomes=[]) {
   const taskId = uuid.test(state.taskId ?? "") ? state.taskId : undefined;
-  const taskUrl = taskId ? origin + "/v2/?module=agent-center&task=" + taskId : undefined;
+  const taskUrl = liveAgentTaskUrl(origin,taskId);
   const source = exactLocalNavigationSource(state, outcomes);
   if (!taskId || source?.taskId !== taskId) return {taskUrl};
   const query = new URLSearchParams({

@@ -13,7 +13,7 @@ import { validateConsumerSource } from "../src/v2/consumer-source.mjs";
 import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
 import { deliveryPreparationBody, deliveryPreparationHashMatches, deliveryPreparationRequirement } from "../src/v2/delivery-preparation-request.mjs";
 import { bindExternalConsumption } from "../src/v2/external-consumption-binding.mjs";
-import { readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
+import { liveAgentTaskUrl, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedCloudV3TaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-execution.mjs";
 import { privateReleasePendingStage } from "../src/v2/private-release-stage.mjs";
@@ -118,9 +118,12 @@ function budgetBaseline(budget, bill) {
 }
 
 function result(state, item, status, reason) {
+  const taskUrl = status === "CREATION_CONFIRMED" && item.actions.agent.status === "CONFIRMED" && id(item.taskId)
+    ? liveAgentTaskUrl(state.origin,item.taskId) : undefined;
   return {protocol:"shuduo-cloud-v3-start/v1", evaluationRunId:state.evaluationRunId, caseId:item.caseId,
     expectedCaseCount:currentLiveLifecycleContract.expectedCaseCount, status, ...(reason ? {reason} : {}),
-    ...(id(item.taskId) ? {taskId:item.taskId} : {}), fullLifecycleE2E:false, publicDeployed:false};
+    ...(id(item.taskId) ? {taskId:item.taskId} : {}), ...(taskUrl ? {taskUrl} : {}),
+    fullLifecycleE2E:false, publicDeployed:false};
 }
 
 function confirmReceipt({state, definition, item, action}, receipt, path) {
