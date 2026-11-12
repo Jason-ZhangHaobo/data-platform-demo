@@ -137,7 +137,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
     规划可能调用付费模型；应用仅创建原方案草稿，不测试、发布或发凭证。未知结果先查询原编号。
   shuduo services create-dapi --name 名称 --slug path --source-run-id ID [--fields a,b]
   shuduo services create-xapi --name 名称 --slug path --steps alias:DAPI_ID,alias:DAPI_ID
-  shuduo services test --type dapi|xapi --id ID [--client-id CLIENT-001]
+  shuduo services test --type dapi|xapi --id ID [--client-id CLIENT-001 | --portfolio-id ID --trade-date YYYY-MM-DD --asset-class 类别] [--page N --page-size N]
   shuduo services publish --type dapi|xapi --id ID [--config-hash SHA256]
   shuduo services sources [--agent-task-id ID | --manual-delivery-task-id ID] [--package-digest SHA256 --release-id RELEASE_ID]
   shuduo services openapi --type dapi|xapi --id ID
@@ -146,7 +146,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services new-version --type dapi|xapi --id ID [--source-run-id ID] [--fields client_id,total_assets] [--rate-limit 60] [--timeout 1500]
   shuduo services activate --type dapi|xapi --id ID --version-id VERSION --expected-version LIVE_VERSION --config-hash SHA256 --request-id KEY --confirm
   shuduo services calls [--id ID]
-  shuduo services invoke --type dapi|xapi --slug path [--client-id CLIENT-001]
+  shuduo services invoke --type dapi|xapi --slug path [--client-id CLIENT-001 | --portfolio-id ID --trade-date YYYY-MM-DD --asset-class 类别] [--page N --page-size N]
   shuduo apps list
   shuduo apps create --name 名称 --service-ids ID,ID
   shuduo apps revoke --id ID
@@ -302,6 +302,10 @@ function reviewedPublication(input){
   const selected=publicationSelectorInput(selector);
   if(!selected.packageDigest||!selected.verificationId||selected.releaseId)throw Error("发布必须绑定包摘要和演练，不能提供已有发布编号");
   return {...selected,attestations:Object.fromEntries(required.map(key=>[key,true]))};
+}
+function serviceQueryOptions(options) {
+  const flags = ["client_id", "portfolio_id", "trade_date", "asset_class", "page", "page_size"];
+  return Object.fromEntries(flags.filter(flag => options[flag] !== undefined).map(flag => [flag, required(options, flag)]));
 }
 function serviceReadCliOptions(argv,options,action){
   const taskFlag=action==='sources'?'agent_task_id':'task_id',fields={[taskFlag]:'agentTaskId',manual_delivery_task_id:'manualDeliveryTaskId',package_digest:'packageDigest',release_id:'releaseId',...(action==='task-evidence'?{call_id_digest:'callIdDigest'}:{})},
@@ -888,7 +892,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
               method: "POST",
               body:
                 action === "test"
-                  ? { clientId: parsed.options.client_id, page: 1, pageSize: 20 }
+                  ? serviceQueryOptions(parsed.options)
                   : {configHash:required(parsed.options,"config_hash")},
             }),
       });
@@ -912,13 +916,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     } else if (resource === "services" && action === "invoke") {
       const token = env.SHUDUO_APP_TOKEN;
       if (!token) throw new Error("缺少环境变量 SHUDUO_APP_TOKEN");
-      const query = new URLSearchParams({
-        page: "1",
-        page_size: "20",
-        ...(parsed.options.client_id
-          ? { client_id: parsed.options.client_id }
-          : {}),
-      });
+      const query = new URLSearchParams(serviceQueryOptions(parsed.options));
       result = await client.request(
         `/open/${typePath(required(parsed.options, "type"))}/${encodeURIComponent(required(parsed.options, "slug"))}?${query}`,
         { authorization: `Bearer ${token}` },

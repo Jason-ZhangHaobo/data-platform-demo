@@ -36,7 +36,7 @@ test("free DAPI field templates do not describe a scoped result as the customer'
   // The form is only mounted after catalog readback. Preserve its wording
   // contract here; the actual ready form is also checked in the browser.
   const form = workbenchSource.slice(workbenchSource.indexOf('className="service-create-panel"'), workbenchSource.indexOf('className="service-detail-head"'));
-  assert.match(form, /<option value="cash">\{sourceContract\?"市值占比（六位小数）":"现金与口径合计"\}<\/option>/);
+  assert.match(form, /<option value="cash">\{isFundSource \? "敞口占比（六位小数）" : sourceContract \? "市值占比（六位小数）" : "现金与口径合计"\}<\/option>/);
   assert.match(form, /<option value="full">全部结果字段<\/option>/);
   assert.match(workbenchSource, /结果字段含义继承所选发布口径，不当然等于客户全资产/);
   assert.match(workbenchSource, /选择全部字段不会补入原口径之外的资产/);
@@ -45,9 +45,9 @@ test("free DAPI field templates do not describe a scoped result as the customer'
 
 test("new-version template keeps the same neutral labels and source-scope notice", () => {
   const versionEditor = workbenchSource.slice(workbenchSource.indexOf("{!consumptionScope&&showVersionEditor"), workbenchSource.indexOf("{selected.versions.map"));
-  assert.match(versionEditor, /<option value="cash">\{selectedContract\?"市值占比（六位小数）":"现金与口径合计"\}<\/option>/);
+  assert.match(versionEditor, /<option value="cash">\{isFundService \? "敞口占比（六位小数）" : selectedContract\?"市值占比（六位小数）":"现金与口径合计"\}<\/option>/);
   assert.match(versionEditor, /<option value="full">全部结果字段<\/option>/);
-  assert.match(versionEditor, /selected\.serviceType==="DAPI"&&<small>\{selectedContract\?.*:fieldScopeNotice\}<\/small>/);
+  assert.match(versionEditor, /selected\.serviceType==="DAPI"&&<small>\{isFundService \? fundScopeNotice : selectedContract\?.*:fieldScopeNotice\}<\/small>/);
   assert.doesNotMatch(versionEditor, /现金与总资产|完整客户资产/);
 });
 

@@ -248,6 +248,7 @@ test('fund service source reads one exact batch only after verifying both and la
   assert.equal(body.batchId, first.id);
   assert.equal(body.rowCount, 7);
   assert.deepEqual(body.batches.map(batch => batch.id), [first.id, second.id]);
+  assert.deepEqual((await f.call('/data-services/fund-sources')).body, []);
   assert.equal(body.engineClassification, 'TEST_HARNESS');
   assert.equal(body.eligibleForService, false);
   assert.equal(body.agentIndependentE2E, false);

@@ -67,6 +67,8 @@
 |---|---|---|
 | `GET /data-services/sources` | 旧用法可不传参或只传 `agent_task_id`；指定 `package_digest` 或 `release_id` 时三项必须齐全 | 仅返回匹配且通过发布核验的批次；投影含发布来源类型、包摘要、源代码版本及开发运行编号，结果编号本身仍是发布批次编号 |
 | `GET /data-services/fund-sources/{batchId}` | 仅本机 Spark，须同时提供 `release_id` 与 `package_digest` | 核对同包的两个成功批次和监控，返回所选批次的摘要、业务日、行数及执行类型；无业务行、SQL 或凭证。单批或证据漂移返回冲突 |
+| `GET /data-services/fund-sources` | 仅本机 Spark，无查询参数 | 仅列出经双批核验的真实本机基金批次供 DAPI 创建使用，测试夹具不进入目录 |
+| `GET /open/dapis/{slug}`（基金版本） | 应用 Bearer 授权，可选 `portfolio_id`、`trade_date`、`asset_class`、`page`、`page_size` | 固定发布版本及快照，按组合、日期和类别排序分页。旧客户参数、非法过滤、无权调用或来源漂移拒绝 |
 | `GET /data-services/task-evidence` | 必须有 `agent_task_id/package_digest`；可加 `release_id` 锁定发布，同时可用 `call_id_digest` 读取当前固定版本的原调用 | 固定服务版本及所有 XAPI 子版本必须来自相同发布和成功批次。原调用缺失时保留待核验状态 |
 
 重复、未知或不完整选择字段拒绝。人工消费保留 `sourceKind:MANUAL`、`sourceAttribution:ENGINEER_ASSISTED`、`agentIndependentE2E:false`；消费对照只是既有调用与不可变快照的一致性，不等于外部系统独立验收或 Agent 自主完成。历史调用中的凭证已撤销时，显示历史证据和当前凭证状态，不自动重新授权。
