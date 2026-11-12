@@ -18,7 +18,8 @@ import {checkedBatchArchive, prepareBatchArchive, readBatchArchive, submitBatchA
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationPreflightPath,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
-import {advanceCloudV3Rehearsal,bindCloudV3Consumption,checkCloudV3PreparedEntry,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,rebindCloudV3PreparedSource,submitCloudV3Publication} from "../scripts/start-cloud-v3-case.mjs";
+import {advanceCloudV3Rehearsal,bindCloudV3Consumption,checkCloudV3PreparedEntry,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,rebindCloudV3PreparedSource,submitCloudV3Publication,verifyCloudV3Completion} from "../scripts/start-cloud-v3-case.mjs";
+import {readCloudV3Run} from "../scripts/cloud-v3-run.mjs";
 import {firstCloudCheckpointBinding} from "../scripts/first-cloud-v3-window.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
@@ -81,6 +82,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --reconcile
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --batch-id ID --out-file ABSOLUTE_PATH
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256
+  shuduo agent v3-complete --checkpoint ABSOLUTE_PATH --first-plan ABSOLUTE_PATH --second-plan ABSOLUTE_PATH --out-file ABSOLUTE_PATH
+  shuduo agent v3-run --checkpoint ABSOLUTE_PATH [--completion-file ABSOLUTE_PATH]
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --source-revision SHA
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-binding
@@ -661,6 +664,17 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result=await bindCloudV3Consumption(required(args,"checkpoint"),client,exporting?
         {batchId:required(args,"batch_id"),outFile:required(args,"out_file")}:
         {planPath:required(args,"plan"),callIdDigest:required(args,"call_id_digest")});
+    }
+    else if (resource === "agent" && ["v3-complete","v3-run"].includes(action)) {
+      const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
+      const verifying=action==="v3-complete";
+      const allowed=["checkpoint",...(verifying?["first_plan","second_plan","out_file","base_url"]:["completion_file"])];
+      if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length || flags.some(flag=>!allowed.includes(flag)))
+        throw Error("评测续接须使用原检查点和对应的核验材料");
+      const checkpoint=required(args,"checkpoint");
+      result=verifying ? await verifyCloudV3Completion(checkpoint,client,{
+        firstPlanPath:required(args,"first_plan"),secondPlanPath:required(args,"second_plan"),outFile:required(args,"out_file"),
+      }) : readCloudV3Run(checkpoint,{completionPath:args.completion_file===undefined?undefined:required(args,"completion_file")});
     }
     else if (resource === "agent" && action === "request") {
       const key=required(parsed.options,"request_id");

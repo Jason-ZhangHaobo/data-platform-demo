@@ -1315,6 +1315,10 @@ test('a killed publication CLI recovers both original batches through signed sch
   const queuesBeforeConsumption=f.queueCounts();
   const origin=new URL(publicationCli.base).origin;
   const firstConsumption=await consumeOriginalBatch(f,cli,{taskId:task.id,releaseId,packageDigest:pending.packageDigest,batchId:firstId,sequence:1,origin});
+  const completionFile=join(f.directory,'case-completion.json');
+  const completionFlags=['--first-plan',firstConsumption.flags[1],'--second-plan',join(f.directory,'consumer-plan-2.json'),'--out-file',completionFile];
+  await cli('v3-complete',completionFlags,1);
+  assert.equal(existsSync(completionFile),false);
   const missingReport=await f.call(privateBatchReportPath(monitorBatches[1].reportSource));
   assert.equal(missingReport.status,404);
   assert.equal(missingReport.body.code,'PRIVATE_BATCH_REPORT_SNAPSHOT_MISSING');
@@ -1326,6 +1330,32 @@ test('a killed publication CLI recovers both original batches through signed sch
   // Verify the exact snapshots over authenticated HTTP after closing writes.
   f.env.V2_FC_PUBLIC_READ_ONLY='true';
   await f.restart();
+  const beforeCompletion=readFileSync(checkpoint,'utf8');
+  const incorrectOrder=['--first-plan',secondConsumption.flags[1],'--second-plan',firstConsumption.flags[1],'--out-file',completionFile];
+  await cli('v3-complete',incorrectOrder,1);
+  assert.deepEqual(requests,[]);
+  assert.equal(existsSync(completionFile),false);
+  const completion=await cli('v3-complete',completionFlags);
+  assert.equal(completion.status,'COMPLETION_RECEIPT_SAVED');
+  assert.equal(completion.scope,'LOCAL_MATCHED_ONLY');
+  assert.equal(completion.independentlyVerifiedCloudCase,false);
+  assert.equal(requests.length,10);
+  assert.ok(requests.every(request=>request.method==='GET'));
+  assert.equal(statSync(completionFile).mode&0o777,0o600);
+  const run=await cli('v3-run',['--completion-file',completionFile]);
+  assert.deepEqual(requests,[]);
+  assert.equal(run.cases.length,20);
+  assert.equal(run.verifiedCloudCaseCount,0);
+  assert.equal(run.cases[0].status,'LOCAL_MATCHED_ONLY');
+  assert.equal(run.cases.filter(item=>item.status==='WAITING_FOR_SOURCE').length,10);
+  const changedCompletion=join(f.directory,'changed-completion.json');
+  const receipt=JSON.parse(readFileSync(completionFile,'utf8'));
+  writeFileSync(changedCompletion,JSON.stringify({...receipt,revisionId:randomUUID()}),{mode:0o600});
+  await cli('v3-run',['--completion-file',changedCompletion],1);
+  assert.deepEqual(requests,[]);
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+  assert.deepEqual(f.queueCounts(),queuesBeforeConsumption);
+
   const other={email:'other-report-owner@example.invalid',password:'SyntheticJourney!2026',displayName:'其他虚构管理员'};
   f.addAdmin(other);
   const otherLogin=await f.call('/auth/login',{email:other.email,password:other.password});
