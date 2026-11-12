@@ -90,3 +90,32 @@ export async function readPublishedReportLineage(client,args) {
  const requestId=reportRequestId(args.requestId);
  return checkedPublishedReportLineage(await client.request('/reports/published/requests/'+requestId+'/lineage'),{...args,requestId});
 }
+
+export async function checkedPublishedReportDevelopment(value, expected={}) {
+ const bad=()=>{throw Error("原开发版本或独立核验与固定报表来源不一致");};
+ if(!value||value.protocol!=="shuduo-fund-report-development/v1")bad();
+ const lineage=checkedPublishedReportLineage(value.lineage,expected);
+ const {revision,run,verification}=value;
+ const original=expected.lineage;
+ if(original&&(original.report.runId!==lineage.report.runId||original.snapshot.id!==lineage.snapshot.id||
+    original.batch.monitorEvent.id!==lineage.batch.monitorEvent.id||original.snapshot.contentHash!==lineage.snapshot.contentHash||
+    original.release.resultDigest!==lineage.release.resultDigest||original.release.assertionDigest!==lineage.release.assertionDigest))bad();
+ if(revision?.id!==lineage.source.revisionId||revision.source!=="ENGINEER_AUTHORED"||!hash(revision.hash)||
+    typeof revision.sql!=="string"||!revision.sql.trim()||revision.sql.length>100000||
+    run?.id!==lineage.source.runId||run.revisionId!==revision.id||run.revisionHash!==revision.hash||run.status!=="SUCCEEDED"||
+    run.engine!=="Apache Spark"||typeof run.engineVersion!=="string"||!/^\d+\.\d+\.\d+$/.test(run.engineVersion)||
+    !Number.isFinite(Date.parse(run.finishedAt))||!Number.isSafeInteger(run.durationMs)||run.durationMs<0||run.rowCount!==lineage.snapshot.rowCount||
+    verification?.status!=="PASSED"||verification.assertionDigest!==lineage.release.assertionDigest||
+    ![verification.inputDigest,verification.testSqlDigest].every(hash)||verification.verifierRevision!=="fund-lookthrough-v1"||
+    !Array.isArray(verification.assertions)||verification.assertions.length!==4||
+    new Set(verification.assertions).size!==4||verification.assertions.some(item=>typeof item!=="string"||!item.trim()))bad();
+ try{reportRequestId(verification.rehearsalId);}catch{bad();}
+ const bytes=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(revision.sql));
+ if([...new Uint8Array(bytes)].map(byte=>byte.toString(16).padStart(2,"0")).join("")!==revision.hash)bad();
+ return value;
+}
+
+export async function readPublishedReportDevelopment(client,args) {
+ const requestId=reportRequestId(args.requestId);
+ return checkedPublishedReportDevelopment(await client.request('/reports/published/requests/'+requestId+'/development'),{...args,requestId});
+}

@@ -5,7 +5,7 @@ import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/ass
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
-import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportLineage} from '../src/v2/published-report-client.mjs';
+import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportLineage,readPublishedReportDevelopment} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import {readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
 import {readBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
@@ -218,6 +218,9 @@ const tools = [
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, source: publishedReportSourceSchema },
       required: ["requestId"], additionalProperties: false } },
   { name: "report_published_lineage", description: "按本人原基金报表请求核对已保存的快照和同批次运维证据。",
+    inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, source: publishedReportSourceSchema },
+      required: ["requestId"], additionalProperties: false } },
+  { name: "report_published_development", description: "按本账号原基金报表请求读取原 SQL 和已保存的独立核验，只读。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, source: publishedReportSourceSchema },
       required: ["requestId"], additionalProperties: false } },
   { name: "report_published_resume",description:"续接已有报表创建任务，复用原数据集、快照和运行；不改变原来源。",inputSchema:{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false}},
@@ -809,6 +812,7 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==='report_published_request')return lookupPublishedReport(client,args);
   if(name==='report_published_result')return readPublishedReportResult(client,args);
   if(name==='report_published_lineage')return readPublishedReportLineage(client,args);
+  if(name==='report_published_development')return readPublishedReportDevelopment(client,args);
   if(name==='report_published_resume')return resumePublishedReport(client,args);
   if (name === "report_overview") return client.request("/reports/overview");
   if (name === "report_dataset_list") return client.request("/reports/datasets");

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
-import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportLineage} from '../src/v2/published-report-client.mjs';
+import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportLineage,readPublishedReportDevelopment} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import {checkedPrivateBatchReport, readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
 import {checkedBatchArchive, prepareBatchArchive, readBatchArchive, submitBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
@@ -214,7 +214,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo security apply-plan --id PLAN_ID
   shuduo reports overview|datasets|list
   shuduo reports create-dataset --name 名称 --code holdings_dataset --asset-id landing:raw_positions --fields client_id,security_code,asset_class,industry,market_value,trade_date
-  shuduo reports result|lineage --request-id UUID [--source-file published-source.json]
+  shuduo reports result|lineage|development --request-id UUID [--source-file published-source.json]
   shuduo reports from-publication --name 财富顾问报告 --source-file published-source.json --request-id UUID
   shuduo reports clarification --id PLAN_ID
   shuduo reports clarify --id PLAN_ID --evidence-digest SHA256 --answer "回答" --request-id UUID
@@ -1370,8 +1370,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if(resource==='reports'&&action==='from-publication')
       result=await submitPublishedReport(client,{name:required(parsed.options,'name'),source:jsonObject(readFileSync(required(parsed.options,'source_file'),'utf8'),'报表发布来源'),requestId:required(parsed.options,'request_id'),...(parsed.options.metric_ids?{metricIds:list(parsed.options.metric_ids,'--metric-ids')}:{})});
     else if(resource==='reports'&&action==='request')result=await lookupPublishedReport(client,{requestId:required(parsed.options,'request_id')});
-    else if(resource==='reports'&&['result','lineage'].includes(action))
-      result=await (action==='lineage'?readPublishedReportLineage:readPublishedReportResult)(client,{requestId:required(parsed.options,'request_id'),
+    else if(resource==='reports'&&['result','lineage','development'].includes(action))
+      result=await ({result:readPublishedReportResult,lineage:readPublishedReportLineage,development:readPublishedReportDevelopment}[action])(client,{requestId:required(parsed.options,'request_id'),
         ...(parsed.options.source_file?{source:jsonObject(readFileSync(required(parsed.options,'source_file'),'utf8'),'报表发布来源')}:{})});
     else if(resource==='reports'&&action==='resume')result=await resumePublishedReport(client,{id:required(parsed.options,'id')});
     else if (resource === "reports" && action === "overview")

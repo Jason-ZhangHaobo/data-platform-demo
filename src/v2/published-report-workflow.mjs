@@ -1,7 +1,7 @@
 import {publishedReportInput,reportRequestId,publishedReportMetricIds} from './published-report-request.mjs';
 import {publishedReportHash} from './published-report-source.mjs';
 import {checkedPublishedReportArtifacts} from './report-provenance.mjs';
-import {fundReportLineage} from "./fund-report-lineage.mjs";
+import {fundReportLineage,fundReportDevelopment} from "./fund-report-lineage.mjs";
 import {publishedReportTemplate} from './report-template.mjs';
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
 export function createPublishedReportWorkflow({store,project,reports,reportStore,resolveSource,provenance,afterStep=()=>{}}){
@@ -123,6 +123,10 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
   readLineage(requestId,actor,timeUnitMs){
    const {record,artifacts}=verifiedResult(requestId,actor);
    return fundReportLineage({store,project,record,artifacts,timeUnitMs});
+  },
+  readDevelopment(requestId,actor,timeUnitMs){
+   const {record,artifacts}=verifiedResult(requestId,actor);
+   return fundReportDevelopment({store,project,record,artifacts,timeUnitMs});
   },
   advance(id,actor){return advance(reportRequestId(id),actor);},
  };

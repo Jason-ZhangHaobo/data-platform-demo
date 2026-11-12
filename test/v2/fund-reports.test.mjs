@@ -6,7 +6,7 @@ import { distributionReportTemplate, fundReportContractId } from "../../src/v2/d
 import { fundContext } from "../../src/v2/fund-lookthrough.mjs";
 import { normalizedDistributionRows } from "../../src/v2/distribution-services.mjs";
 import { publishedReportHash } from "../../src/v2/published-report-source.mjs";
-import { checkedPublishedReportLineage } from "../../src/v2/published-report-client.mjs";
+import { checkedPublishedReportLineage, checkedPublishedReportDevelopment } from "../../src/v2/published-report-client.mjs";
 import { checkedDistributionReportWidgets } from "../../web/src/distribution-report-read.ts";
 
 test("fund reporting preserves partitions and independent precision even when wrong snapshot bytes are rehashed", () => {
@@ -41,7 +41,7 @@ test("fund reporting preserves partitions and independent precision even when wr
   assert.throws(() => checkedDistributionReportWidgets(badChart, template.widgets, fundReportContractId, 7));
 });
 
-test("fund lineage client rejects a different batch, inconsistent lifecycle and reversed monitor chronology", () => {
+test("fund lineage and development clients verify the original source, chronology and SQL digest", async () => {
   const id = () => randomUUID(), hash = "a".repeat(64), requestId = id();
   const source = { kind: "MANUAL", releaseId: id(), packageDigest: hash, revisionId: id(), runId: id(), batchId: id() };
   const body = { protocol: "shuduo-fund-report-lineage/v1", scope: "LOCAL_TEST_ONLY", requestId, source, publicDeployed: false,
@@ -61,4 +61,17 @@ test("fund lineage client rejects a different batch, inconsistent lifecycle and 
   const changed=structuredClone(body);
   changed.batch.monitorEvent.observedAt="2026-09-10T00:00:01Z";
   assert.throws(() => checkedPublishedReportLineage(changed));
+  const sql = "SELECT 1", sqlHash = createHash("sha256").update(sql).digest("hex");
+  const development = {protocol:"shuduo-fund-report-development/v1",lineage:body,
+    revision:{id:source.revisionId,hash:sqlHash,sql,source:"ENGINEER_AUTHORED"},
+    run:{id:source.runId,revisionId:source.revisionId,revisionHash:sqlHash,status:"SUCCEEDED",engine:"Apache Spark",
+      engineVersion:"3.5.9",finishedAt:"2026-09-10T00:00:02Z",durationMs:2000,rowCount:7},
+    verification:{status:"PASSED",assertions:["组合及交易日隔离","资产类别敞口金额与占比","未穿透余额","组合市值守恒"],
+      inputDigest:hash,assertionDigest:hash,verifierRevision:"fund-lookthrough-v1",rehearsalId:id(),testSqlDigest:hash},
+  };
+  assert.equal(await checkedPublishedReportDevelopment(development,{requestId,source,lineage:body}),development);
+  await assert.rejects(checkedPublishedReportDevelopment({...development,revision:{...development.revision,sql:"SELECT 2"}}));
+  await assert.rejects(checkedPublishedReportDevelopment({...development,verification:{...development.verification,assertionDigest:"0".repeat(64)}}));
+  await assert.rejects(checkedPublishedReportDevelopment(development,{lineage:{...body,batch:{...body.batch,monitorEvent:{...body.batch.monitorEvent,id:id()}}}}));
+
 });

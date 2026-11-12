@@ -8206,3 +8206,21 @@ kbd {
 .report-lineage-grid-v2 dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; margin: 0; }
 .report-lineage-grid-v2 dt { color: var(--muted); }
 .report-lineage-grid-v2 dd { margin: 0; overflow-wrap: anywhere; }
+
+.report-development-v2 { margin-top: 14px; }
+.report-development-v2 section {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.report-development-v2 h4 { margin: 0 0 8px; }
+.report-development-v2 h4 small { color: var(--muted); font-weight: normal; }
+.report-development-v2 pre {
+  padding: 14px;
+  max-height: 22rem;
+  overflow: auto;
+  border-radius: 8px;
+  background: #f3f6f1;
+  line-height: 1.6;
+}

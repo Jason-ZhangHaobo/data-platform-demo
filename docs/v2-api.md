@@ -73,6 +73,7 @@
 | `POST /reports/published`（基金组合） | 原本机工程师，`MANUAL` 来源指定发布、包、代码、开发运行和批次，可选 `fund_exposure_amount` 与 `fund_exposure_ratio` | 创建固定快照与按组合和交易日切片的报表。原幂等编号可查询或续接，`/reports/{id}/export` 返回同版本脱敏 CSV |
 | `GET /reports/published/requests/{requestId}/result` | 原本机工程师，原请求已成功，无附加查询参数 | 仅返回原请求的脱敏报表组件、固定版本、运行、快照及来源摘要。未完成或证据不一致时拒绝，读取无写入 |
 | `GET /reports/published/requests/{requestId}/lineage` | 原本机工程师，基金报表原请求已成功，无附加查询参数 | 重新核对报表、快照与原批次监控，返回快照字段、摘要、发布状态及该批次事件。已替换或停止的发布在证据完整时可回看，活跃消费资格保持关闭 |
+| `GET /reports/published/requests/{requestId}/development` | 原本机工程师，基金报表原请求已成功，无附加查询参数 | 核对同一发布包后返回原 SQL、代码版本、开发运行、独立断言及演练测试 SQL 摘要。SQL 和断言记录不一致时拒绝 |
 | `GET /data-services/task-evidence` | 必须有 `agent_task_id/package_digest`；可加 `release_id` 锁定发布，同时可用 `call_id_digest` 读取当前固定版本的原调用 | 固定服务版本及所有 XAPI 子版本必须来自相同发布和成功批次。原调用缺失时保留待核验状态 |
 
 重复、未知或不完整选择字段拒绝。人工消费保留 `sourceKind:MANUAL`、`sourceAttribution:ENGINEER_ASSISTED`、`agentIndependentE2E:false`；消费对照只是既有调用与不可变快照的一致性，不等于外部系统独立验收或 Agent 自主完成。历史调用中的凭证已撤销时，显示历史证据和当前凭证状态，不自动重新授权。

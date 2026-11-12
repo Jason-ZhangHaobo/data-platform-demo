@@ -103,7 +103,7 @@ function verifyFundPublication({ store, project, selection, timeUnitMs }, includ
       monitorEventId: events.find(event => event.releaseRunId === batch.id).id })),
     engineClassification: mode, eligibleForService, agentIndependentE2E: false, publicDeployed: false,
   };
-  return { evidence, rows, release, selected, event: events.find(event => event.releaseRunId === selected.id) };
+  return { evidence, rows, release, selected, revision, development, verification, event: events.find(event => event.releaseRunId === selected.id) };
 }
 
 export function resolveFundConsumptionSource(args) {
@@ -112,9 +112,9 @@ export function resolveFundConsumptionSource(args) {
 }
 
 export function resolveFundReportPublication(args) {
-  const { evidence, release, selected, event } = verifyFundPublication(args, true);
+  const { evidence, release, selected, event, revision, development, verification } = verifyFundPublication(args, true);
   requireProof(evidence.engineClassification === "LOCAL_SPARK_PROCESS");
-  return { evidence, status: release.status, batch: {
+  return { evidence, revision, development, verification, status: release.status, batch: {
     id: selected.id, sequence: selected.sequence, status: selected.status, scheduledAt: selected.scheduledTriggerAt,
     startedAt: selected.startedAt, finishedAt: selected.finishedAt,
     monitorEvent: { id: event.id, type: event.type, status: event.status, observedAt: event.observedAt },
