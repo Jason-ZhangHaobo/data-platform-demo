@@ -1,0 +1,13 @@
+.agent-dev-output-schema{background:#faf7f0;border:1px solid #eadcc8;border-radius:8px;margin:8px 0 12px;padding:9px 10px;min-width:0}
+.agent-dev-output-schema h4{margin:0 0 4px;font-size:12px;color:#754321}
+.agent-dev-output-schema p{margin:3px 0 7px;font-size:11px;color:#655747}
+.agent-dev-output-schema table{width:100%;border-collapse:collapse;white-space:normal;background:#fffdf9;font-size:11px;text-align:left}
+.agent-dev-output-schema th,.agent-dev-output-schema td{padding:6px;vertical-align:top;overflow-wrap:anywhere}
+.agent-dev-output-schema th{background:#f4ede2;color:#654d37}
+.agent-dev-output-schema small{display:block;margin-top:3px;font-size:10px;line-height:1.4}
+.delivery-rehearsal-history{display:grid;gap:5px;margin:10px 0;font-size:11px}
+.delivery-rehearsal-history select{max-width:100%;min-width:0}
+.delivery-execution .agent-dev-output-schema thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.delivery-execution .agent-dev-output-schema tr{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);border-bottom:1px solid #eadcc8}
+.delivery-execution .agent-dev-output-schema th[scope=row],.delivery-execution .agent-dev-output-schema td:last-child{grid-column:1/-1}
+.delivery-execution .agent-dev-output-schema td::before{content:attr(data-label);display:block;margin-bottom:2px;color:#655747}

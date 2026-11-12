@@ -1067,6 +1067,10 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 同一差异可用 `GET /api/v2/runs/{runId}/output-schema`、`shuduo sql output-schema --run-id RUN_ID` 或 MCP `sql_run_output_schema` 读取。只允许原运行所属人。响应绑定运行、SQL 版本、摘要与冻结快照，不返回结果行。原运行、代码或快照不一致时不会采用其他批次。
 
+在交付工作台的「已保存的文件演练」选择原回执。失败演练按包摘要、原 SQL 版本、业务日和文件哈希核对后显示实际与预期字段结构。历史失败与后来的成功演练可单独查看，刷新后按浏览器会话恢复上次选择。无法核对已选回执时提示重新选择，失败演练不能进入审阅或批准。
+
+`GET /api/v2/delivery/verifications/{verificationId}`、`shuduo delivery verification --id VERIFICATION_ID` 和 MCP `delivery_verification_detail` 共用 `rehearsalOutputSchema`。它从原演练投影列差异，保留演练编号、包摘要、源版本及快照。没有可用列结构时明确标记证据缺失。读取不会提交演练或重新执行。
+
 ### 冻结持仓的确切版本发布与监控
 
 审阅成功后单独确认原快照、业务日和两批计时计划，再锁定摘要。工作台默认在激活 5 秒后开始、间隔 45 秒。审批在 15 分钟内可激活，已激活的两批按原计划执行。重复激活读回原发布，逾期的未激活审批需要重新确认。工作台监控按该发布编号显示两批和对应的健康状态。

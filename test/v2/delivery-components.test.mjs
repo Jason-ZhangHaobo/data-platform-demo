@@ -1,24 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import ts from 'typescript';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { deliveryFiles } from '../../src/v2/delivery.mjs';
 import { deliveryReviewRequirements, matchingDeliveryVerification } from '../../web/src/delivery-presentation.ts';
 
-// Render the actual TSX components without a browser or network. These are
-// markup/semantics tests, not visual or click-interaction acceptance.
-async function component(name, exportName = name) {
-  const file = new URL(`../../web/src/${name}.tsx`, import.meta.url);
-  let source = ts.transpileModule(readFileSync(file, 'utf8'), {compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
-  for (const dependency of ['react', 'react/jsx-runtime', 'lucide-react']) source = source.replaceAll(`from "${dependency}"`, `from ${JSON.stringify(import.meta.resolve(dependency))}`);
-  source = source.replaceAll('from "../../src/v2/fund-contexts.mjs"', `from ${JSON.stringify(new URL('../../src/v2/fund-contexts.mjs', import.meta.url).href)}`);
-  source = source.replaceAll('from "./delivery-presentation"', `from ${JSON.stringify(new URL('../../web/src/delivery-presentation.ts', import.meta.url).href)}`);
-  source = source.replaceAll('from "./manual-run-recovery"', `from ${JSON.stringify(new URL('../../web/src/manual-run-recovery.ts', import.meta.url).href)}`);
-  source = source.replaceAll('from "./delivery-source"', `from ${JSON.stringify(new URL('../../web/src/delivery-source.ts', import.meta.url).href)}`);
-  return (await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`))[exportName];
-}
+import { component } from './fixtures/delivery-component.mjs';
+
 const FilePreview = await component('DeliveryFilePreview');
 const Review = await component('AgentPublicationReview');
 const publicationTargetMatches = await component('AgentPublicationReview', 'publicationTargetMatches');

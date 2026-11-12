@@ -109,7 +109,7 @@ import {
   resolveDeliverySchedule,
   unpackDeliveryPackage,
 } from "./delivery.mjs";
-import { assertSyncSqlRehearsal, verifyDeliveryDirectory } from "./delivery-runner.mjs";
+import { assertSyncSqlRehearsal, checkedSyncSqlFileRehearsal, syncSqlRehearsalSchemaDetails, verifyDeliveryDirectory } from "./delivery-runner.mjs";
 import {
   createPythonDeliveryPackage,
   unpackPythonDeliveryPackage,
@@ -1595,6 +1595,12 @@ export function createV2Server(options = {}) {
         if (local || !item) return item;
         const {artifact, remoteSubmission, leaseToken, ...visible} = projectCloudReleaseBatchStage(item,options.now?.()??Date.now());
         return visible;
+      };
+      const exposeDeliveryVerification = item => {
+        const { rehearsalOutputSchema: storedSchema, ...visible } = protectedDeliveryPayload(item);
+        const bundle = item.packageId && store.get("delivery_package", item.packageId, PROJECT);
+        const rehearsalOutputSchema = syncSqlRehearsalSchemaDetails(bundle, item);
+        return { ...exposeValidationRecord(visible), ...(rehearsalOutputSchema ? { rehearsalOutputSchema } : {}) };
       };
       const workflowDeliveryEvidence = delivery => {
         const bundle = delivery?.packageId ? get("delivery_package", delivery.packageId) : undefined;
@@ -4803,7 +4809,7 @@ export function createV2Server(options = {}) {
           })),
         );
       if (path === "/api/v2/delivery/verifications" && method === "GET")
-        return json(res, 200, visibleDelivery("delivery_verification").map(protectedDeliveryPayload).map(exposeValidationRecord));
+        return json(res, 200, visibleDelivery("delivery_verification").map(exposeDeliveryVerification));
       if (path === "/api/v2/release/approvals" && method === "GET")
         return json(res, 200, visibleDelivery("release_approval"));
       if (path === "/api/v2/releases" && method === "GET")
@@ -5247,8 +5253,7 @@ export function createV2Server(options = {}) {
         requireDeliveryEvidence(kind, item);
         if (method === "GET" && !deliveryRecord[3]) {
           if (kind === "delivery_package" && item.manifest?.source?.syncInput) validateAnyDeliveryPackage(item);
-          const visible = protectedDeliveryPayload(item);
-          return json(res, 200, kind === "delivery_verification" ? exposeValidationRecord(visible) : visible);
+          return json(res, 200, kind === "delivery_verification" ? exposeDeliveryVerification(item) : protectedDeliveryPayload(item));
         }
         if (
           kind === "delivery_verification" &&
@@ -5259,7 +5264,7 @@ export function createV2Server(options = {}) {
             store.update(kind, item.id, PROJECT, { status: "CANCELLED" });
             controls.get(item.id)?.abort();
           }
-          return json(res, 200, exposeValidationRecord(protectedDeliveryPayload(get(kind, item.id))));
+          return json(res, 200, exposeDeliveryVerification(get(kind, item.id)));
         }
         if (
           kind === "delivery_package" &&
@@ -5568,7 +5573,7 @@ export function createV2Server(options = {}) {
                 (isPythonDelivery(item)
                   ? options.pythonDeliveryRunner
                   : options.deliveryRunner) ?? releaseRunner;
-              const result = await executeFiles({
+              let result = await executeFiles({
                 directory,
                 expectedDigest: item.digest,
                 scheduledFor,
@@ -5576,7 +5581,7 @@ export function createV2Server(options = {}) {
               });
               if (result.status === "SUCCEEDED" && plan.source.syncInput) {
                 assertRequirementSource(item);
-                assertSyncSqlRehearsal(plan, item, result);
+                result = checkedSyncSqlFileRehearsal(plan, item, result);
               }
               if (
                 !["SUCCEEDED", "FAILED", "VALIDATION_FAILED"].includes(
@@ -5600,7 +5605,7 @@ export function createV2Server(options = {}) {
                   },
                 );
             });
-          return json(res, 202, exposeValidationRecord(protectedDeliveryPayload(verification)));
+          return json(res, 202, exposeDeliveryVerification(verification));
         }
       }
       if (path === "/api/v2/releases" && method === "POST") {
@@ -6415,8 +6420,8 @@ export function createV2Server(options = {}) {
                 executeFiles =
                   options.deliveryRunner ??
                   ((input) => verifyDeliveryDirectory(input, { runtime, runner,
-                    fundSignedExecution: fundSignedExecutionFor(packageItem) })),
-                receipt = await executeFiles({
+                    fundSignedExecution: fundSignedExecutionFor(packageItem) }));
+              let receipt = await executeFiles({
                   directory,
                   expectedDigest: packageItem.digest,
                   scheduledFor,
@@ -6429,7 +6434,7 @@ export function createV2Server(options = {}) {
                 });
                 return;
               }
-              const actual =
+              let actual =
                 receipt.status === "SUCCEEDED" &&
                 receipt.engine === "Apache Spark" &&
                 receipt.engineVersion === plan.deployment.runtime.version &&
@@ -6448,7 +6453,8 @@ export function createV2Server(options = {}) {
               }
               if (actual && plan.source.syncInput) {
                 assertRequirementSource(packageItem);
-                assertSyncSqlRehearsal(plan, packageItem, receipt);
+                receipt = checkedSyncSqlFileRehearsal(plan, packageItem, receipt);
+                actual = receipt.status === "SUCCEEDED";
               }
               store.update("delivery_verification", verification.id, PROJECT, {
                 ...receipt,

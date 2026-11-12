@@ -8,7 +8,7 @@ import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { getContext, referenceSql, contextIds } from "../../src/v2/context.mjs";
 import { identityPositionMapping } from "../../src/v2/ingestion.mjs";
 import { readSyncSqlInput, syncSqlOutputSchemaDetails } from "../../src/v2/sync-sql-input.mjs";
-import { checkedSyncSqlOutputSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
+import { checkedSyncSqlOutputSchema, checkedSyncSqlRehearsalSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import { runV2Cli } from "../../bin/shuduo.mjs";
 import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
 import { verifySavedSyncSqlInput } from "../../src/v2/sync-sql-saved-lifecycle.mjs";
@@ -242,11 +242,34 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     const failedRehearsal = await finished(`/delivery/verifications/${driftedRehearsal.value.id}`);
     assert.equal(failedRehearsal.status, "FAILED");
     assert.match(failedRehearsal.error, /冻结持仓输出列或类型不符合约定/);
+    const failedRehearsalPath = `/delivery/verifications/${failedRehearsal.id}`;
+    const rehearsalSchema = failedRehearsal.rehearsalOutputSchema;
+    const expectedRehearsal = { ...schema.source, runId:checked.id, verificationId:failedRehearsal.id,
+      packageId:stored.id, packageDigest:stored.digest };
+    assert.deepEqual(checkedSyncSqlRehearsalSchema(rehearsalSchema,expectedRehearsal),rehearsalSchema);
+    assert.deepEqual(rehearsalSchema.differences,schema.differences);
+    assert.throws(() => checkedSyncSqlRehearsalSchema(rehearsalSchema,{...expectedRehearsal,verificationId:checked.id}),/原运行/);
+    const rehearsalList = await request("/delivery/verifications");
+    assert.deepEqual(rehearsalList.value.find(row=>row.id===failedRehearsal.id).rehearsalOutputSchema,rehearsalSchema);
+    const fileOutput = [];
+    assert.equal(await runV2Cli(["delivery","verification","--id",failedRehearsal.id],{},
+      {client:schemaClient,output:line=>fileOutput.push(line),error:()=>{}}),0);
+    assert.deepEqual(JSON.parse(fileOutput.join("")).rehearsalOutputSchema,rehearsalSchema);
+    const fileMcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:2,method:"tools/call",
+      params:{name:"delivery_verification_detail",arguments:{verificationId:failedRehearsal.id}}},{client:schemaClient}));
+    assert.deepEqual(fileMcp.result.structuredContent.rehearsalOutputSchema,rehearsalSchema);
+    assert.equal((await request(packagePath+"/review",{packageDigest:stored.digest,verificationId:failedRehearsal.id,
+      reviewNote:"隔离环境的失败审阅",attestations:{code:true,assertions:true,deliveryFiles:true,localScope:true}})).status,409);
+    app.store.update("delivery_verification",failedRehearsal.id,PROJECT,{fileHashes:{...failedRehearsal.fileHashes,"main.sql":"0".repeat(64)}});
+    assert.equal((await request(failedRehearsalPath)).value.rehearsalOutputSchema,undefined);
+    app.store.update("delivery_verification",failedRehearsal.id,PROJECT,{fileHashes:failedRehearsal.fileHashes});
     rehearsalColumns = columns;
     const receipt = await request(packagePath + "/verify", { scheduledFor });
     assert.equal(receipt.status, 202);
     const verified = await finished(`/delivery/verifications/${receipt.value.id}`);
     assert.equal(verified.status, "SUCCEEDED");
+    assert.equal(verified.rehearsalOutputSchema,undefined);
+    assert.deepEqual((await request(failedRehearsalPath)).value.rehearsalOutputSchema,rehearsalSchema);
     const reviewed = await request(packagePath + "/review", { packageDigest: stored.digest, verificationId: verified.id,
       reviewNote: "隔离环境的测试审阅", attestations: { code: true, assertions: true, deliveryFiles: true, localScope: true } });
     assert.equal(reviewed.status, 201);
@@ -329,6 +352,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
       status:"ACTIVE",expiresAt:new Date(clock+60000).toISOString() });
     const otherIdentity = { Cookie:"shuduo_session="+otherCookie };
     assert.equal((await request(schemaPath, undefined, undefined, otherIdentity)).status, 403);
+    assert.equal((await request(failedRehearsalPath, undefined, undefined, otherIdentity)).status, 403);
     assert.deepEqual((await request("/data-services/sources", undefined, undefined, otherIdentity)).value, []);
     assert.equal((await request(`/data-services/xapis/${xapi.id}`, undefined, undefined, otherIdentity)).status, 403);
     const persisted = await app.dataServices.recheckCall(xapi.id, checkedCall.value.callId);

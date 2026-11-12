@@ -11,5 +11,11 @@ export type SyncSqlOutputSchema = {
     issues:("MISSING"|"TYPE"|"ORDER"|"DUPLICATE"|"EXTRA")[];
   }[];
 };
+export type SyncSqlRehearsalSource = SyncSqlSchemaSource & {verificationId:string;packageId:string;packageDigest:string};
+export type SyncSqlRehearsalSchema = Omit<SyncSqlOutputSchema,"protocol"|"source"> & {
+  protocol:"shuduo-sync-sql-rehearsal-schema/v1";
+  source:SyncSqlRehearsalSource;
+};
 export function checkedSyncSqlOutputSchema(value:unknown, expected:{runId:string}&Partial<SyncSqlSchemaSource>):SyncSqlOutputSchema;
+export function checkedSyncSqlRehearsalSchema(value:unknown, expected:SyncSqlRehearsalSource):SyncSqlRehearsalSchema;
 export function readSyncSqlOutputSchema(client:{request:(path:string)=>Promise<unknown>},input:{runId:string}):Promise<SyncSqlOutputSchema>;
