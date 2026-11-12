@@ -97,6 +97,7 @@ test("classic entry does not pass a global contract while Agent lock remains exp
   const agent = readFileSync(new URL("../../web/src/AgentDevelopmentWorkbench.tsx", import.meta.url), "utf8");
   assert.match(agent, /contractId=\{run\.validationContractId\} lockSource/);
   const workbench = readFileSync(new URL("../../web/src/DeliveryWorkbench.tsx", import.meta.url), "utf8");
-  assert.match(workbench, /const selected = sourceLocked && \(!source \|\| loadedPackage\?\.manifest\.source\.runId !== sourceRunId\) \? undefined : loadedPackage;/,
+  assert.match(workbench, /const selected = loadedPackage && \(!sourceLocked \|\| source && loadedPackage\.manifest\.source\.runId === sourceRunId\)\s*&& matchesSnapshot\(loadedPackage\) \? loadedPackage : undefined;/,
     "a rejected locked source cannot retain an actionable selected package");
+  assert.match(workbench, /bundle\.manifest\.source\.syncInput\?\.snapshotHash === snapshotHash/);
 });

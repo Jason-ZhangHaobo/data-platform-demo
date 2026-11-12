@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as pause } from "node:timers/promises";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
-import { getContext, referenceSql } from "../../src/v2/context.mjs";
+import { getContext, referenceSql, contextIds } from "../../src/v2/context.mjs";
 import { identityPositionMapping } from "../../src/v2/ingestion.mjs";
+import { readSyncSqlInput } from "../../src/v2/sync-sql-input.mjs";
+import { createDeliveryPackage, computeManifestDigest, sha256, validateDeliveryPackage } from "../../src/v2/delivery.mjs";
 
 test("Agent binds a committed position snapshot across overwrite, retry and restart", async () => {
   const root = mkdtempSync(join(tmpdir(), "shuduo-sync-sql-"));
@@ -122,6 +124,32 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     const checked = await finished(`/runs/${manual.value.id}`);
     assert.equal(checked.rows[0].total_assets, "2045.07");
     assert.deepEqual(checked.syncInput, run.syncInput);
+    const syncContext = readSyncSqlInput({ store: app.store, project: PROJECT, actorId: revision.value.author, binding: run.syncInput });
+    const exampleReceipt = { ...checked, mainSqlExecuted: true, testDouble: false, validation: {
+      ...checked.validation, selectedPassed: true, regressions: contextIds.map(contextId => ({ contextId, passed: true })),
+    } };
+    const deliverySource = { agent: completed, run: exampleReceipt, revision: revision.value, syncContext };
+    assert.throws(() => createDeliveryPackage({ ...deliverySource, run: checked }), /真实本机运行/);
+    assert.throws(() => createDeliveryPackage({ ...deliverySource, run: { ...exampleReceipt, rows: getContext().expected } }), /独立断言/);
+    const bundle = createDeliveryPackage({ ...deliverySource, name: "客户资产 T+1" });
+    assert.equal(bundle.manifest.name, "客户资产 T+1 · 冻结同步持仓");
+    const plan = validateDeliveryPackage(bundle, bundle.digest);
+    assert.equal(plan.source.syncInput.developmentMode, "MANUAL");
+    assert.equal(plan.source.syncInput.runId, first.run.id);
+    assert.equal(plan.fixtures.context.expected[0].total_assets, "2045.07");
+    const changed = (name, text) => {
+      const copy = structuredClone(bundle);
+      copy.files[name] = text;
+      copy.manifest.files[name] = { sha256: sha256(text), bytes: Buffer.byteLength(text) };
+      copy.digest = computeManifestDigest(copy.manifest);
+      return copy;
+    };
+    const wrongRows = changed("fixtures.json", JSON.stringify({ ...plan.fixtures, context: getContext() }));
+    assert.throws(() => validateDeliveryPackage(wrongRows, wrongRows.digest), /独立预期不一致/);
+    const noAssertions = changed("tests.sql", "SELECT true AS passed");
+    assert.throws(() => validateDeliveryPackage(noAssertions, noAssertions.digest), /独立断言不一致/);
+    const wrongCalendar = changed("calendar.json", JSON.stringify({ ...plan.calendar, tradingDays: ["2026-09-11", "2026-09-14"] }));
+    assert.throws(() => validateDeliveryPackage(wrongCalendar, wrongCalendar.digest), /前一个交易日/);
     const record = app.store.get("sync_sql_input", completed.syncInput.snapshotId, PROJECT);
     record.payload.context.expected[0].total_assets = "0.00";
     app.store.update("sync_sql_input", record.id, PROJECT, { payload: record.payload });

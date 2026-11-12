@@ -6,6 +6,7 @@ type DeliverySourceRun = {
   status: string;
   contextId?: string;
   validationContractId?: string;
+  syncInput?: { snapshotHash: string };
   validation?: { contractId?: string };
 };
 type SourceOptions = {
@@ -22,7 +23,8 @@ export function deliverySourceSelection<T extends DeliverySourceRun>(runs: T[], 
     if (run.status !== "SUCCEEDED" || (locked && run.id !== sourceRunId)) return false;
     // Both entry points resolve the run's family independently; a locked handoff
     // must additionally match its explicitly supplied contract.
-    const expectedContract = isFundContext(run.contextId)
+    const expectedContract = run.syncInput && run.contextId === "holdings-t1" && /^[a-f0-9]{64}$/.test(run.syncInput.snapshotHash)
+      ? "securities-synced-holdings-t1-v1" : isFundContext(run.contextId)
       ? "securities-fund-lookthrough-v1" : validationFamilyForContextId(run.contextId)?.id;
     if (!expectedContract || run.validationContractId !== expectedContract) return false;
     if (lockSource && contractId !== expectedContract) return false;

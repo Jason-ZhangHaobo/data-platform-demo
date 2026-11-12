@@ -9,6 +9,7 @@ import { getContext, validationContractId, validationFamilyForContext } from "./
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import {checkedAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 import {frozenSqlRequirements,sqlRequirementBinding,validateFrozenSqlRequirements} from './sql-requirements.mjs';
+import { syncSqlContractId, syncSqlContextId, syncSqlDeliverySource, syncSqlRowsMatch, validateSyncSqlDeliveryContext } from "./sync-sql-input.mjs";
 
 export const deliveryFormat = "shuduo-delivery/v1";
 export const deliveryFiles = [
@@ -104,9 +105,15 @@ export function createDeliveryPackage({
   name,
   developmentReference,
   manualAuthor = false,
+  syncContext,
 }) {
-  if (agent?.syncInput || revision?.syncInput || run?.syncInput)
-    throw Object.assign(Error("同步冻结输入当前仅支持代码开发与核验，尚未接入交付"), {status:409});
+  const syncInput = agent?.syncInput || revision?.syncInput || run?.syncInput
+    ? syncSqlDeliverySource({ agent, run, revision }) : undefined;
+  if (syncInput) {
+    validateSyncSqlDeliveryContext(syncInput, syncContext);
+    if (run.validation?.selectedPassed !== true || !syncSqlRowsMatch(run.rows, syncContext))
+      throw fail("源 Spark 运行与冻结持仓的独立断言不一致");
+  } else if (syncContext !== undefined) throw fail("没有原同步批次可供交付");
   const distribution=outputContractForContext(revision?.contextId);
   const fund = isFundContext(revision?.contextId);
   if(distribution&&(run?.isolation==="FUNCTION_PROCESS"||run?.mainSqlExecuted!==true||run?.testDouble===true||!verifyOutputRows(run?.rows,getContext(revision.contextId))))throw fail("分布交付须来自本机真实Spark及独立复合键核验，尚未开放云端");
@@ -122,7 +129,10 @@ export function createDeliveryPackage({
   if(reference&&!manualAuthor&&(revision?.sourceAttribution?.kind!=='ENGINEER_ASSISTED'||revision.sourceKind!=='MANUAL'||revision.agentIndependentE2E!==false||
     (reference.kind==='ASSISTED_CONTINUATION'?revision.sourceAttribution.parentRunId:revision.sourceAttribution.sourceRunId)!==reference.sourceRunId))throw Object.assign(new Error('开发依据与人工辅助版本不一致'),{status:409});
   const remoteExecution = run?.isolation === "FUNCTION_PROCESS";
-  const family = validationFamilyForContext(revision?.contextId);
+  const registeredFamily = validationFamilyForContext(revision?.contextId);
+  const family = syncInput ? { ...registeredFamily, id: syncSqlContractId } : registeredFamily;
+  if (syncInput && (name === undefined || name === "客户资产 T+1" || name === "客户资产 T+1 · Agent交付准备"))
+    name = syncContext.name;
   if (name === undefined || (distribution&&["客户资产 T+1","客户资产 T+1 · Agent交付准备"].includes(name)) || (family?.id !== validationContractId && name === "客户资产 T+1"))
     name = fund ? family.name : distribution ? distribution.name+" · T+1交付" : family?.id === validationContractId ? "客户资产 T+1" : "股票持仓＋可用现金 T+1（非客户全资产）";
   if (
@@ -164,9 +174,9 @@ export function createDeliveryPackage({
     });
   if (typeof name !== "string" || !name.trim() || name.length > 80)
     throw fail("任务名称需为1–80个字符");
-  const context = getContext(revision.contextId);
+  const context = syncContext ?? getContext(revision.contextId);
   if (!context) throw fail("输入上下文不存在");
-  const requirements=frozenSqlRequirements({agent,run,revision});
+  const requirements=frozenSqlRequirements({agent: syncInput?.developmentMode === "MANUAL" ? undefined : agent,run,revision});
   if(distribution&&revision.source==='LIVE_MODEL'&&!requirements)throw fail("分布Agent交付缺少当前版本的冻结需求依据");
   const calendar = {
     schema: "shuduo-calendar/v1",
@@ -253,6 +263,7 @@ export function createDeliveryPackage({
       sqlHash: revision.hash,
       contextId: context.id,
       validationContractId: family.id,
+      ...(syncInput ? { syncInput } : {}),
       ...(fund ? { fundLookthrough: fundDeliveryBinding(context.id) } : {}),
       ...(distribution?{outputContract:distributionDeliveryBinding(context.id)}:{}),
       ...(requirements?{requirement:sqlRequirementBinding(requirements)}:{}),
@@ -272,8 +283,8 @@ export function createDeliveryPackage({
       ]),
     ),
     releaseState: "NOT_PUBLISHED",
-    // Freeze the source timestamp so retries keep the fund package digest.
-    createdAt: fund ? new Date(run.finishedAt).toISOString() : new Date().toISOString(),
+    // Keep the digest stable for deliveries bound to a frozen source.
+    createdAt: fund || syncInput ? new Date(run.finishedAt).toISOString() : new Date().toISOString(),
   };
   return { manifest, files, digest: computeManifestDigest(manifest) };
 }
@@ -323,7 +334,9 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
   }
   if (total > 750000) throw fail("交付包超过本机演练大小限制");
   const source = bundle.manifest.source;
-  const family = validationFamilyForContext(source?.contextId);
+  const registeredFamily = validationFamilyForContext(source?.contextId);
+  const syncInput = source?.syncInput;
+  const family = syncInput ? { ...registeredFamily, id: syncSqlContractId } : registeredFamily;
   const fund = isFundContext(source?.contextId);
   if (
     !keysExactly(bundle.manifest, [
@@ -346,6 +359,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       ...(source?.outputContract === undefined ? [] : ["outputContract"]),
       ...(source?.fundLookthrough === undefined ? [] : ["fundLookthrough"]),
       ...(source?.fundSignedExecution === undefined ? [] : ["fundSignedExecution"]),
+      ...(syncInput === undefined ? [] : ["syncInput"]),
     ])
   )
     throw fail("交付清单包含未定义字段");
@@ -438,8 +452,18 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     throw fail(
       "部署清单包含未实现的目标、命令、资源配置或凭证；不会尝试云端部署",
     );
+  if (syncInput !== undefined) {
+    if (!localTarget || source.contextId !== syncSqlContextId ||
+        source.outputContract !== undefined || source.fundLookthrough !== undefined || source.fundSignedExecution !== undefined ||
+        proof.isolation !== "LOCAL_PROCESS" || proof.report?.selectedPassed !== true ||
+        !keysExactly(fixtures, ["context", "validationContexts"]))
+      throw fail("同步冻结持仓仅支持原业务日的本机文件演练");
+    validateSyncSqlDeliveryContext(syncInput, fixtures.context);
+    if (bundle.files["tests.sql"] !== createTestSql(fixtures.context.expected, source.contextId))
+      throw fail("测试 SQL 与冻结持仓的独立断言不一致");
+  }
   if (
-    !same(fixtures.context, getContext(source.contextId)) ||
+    (syncInput === undefined && !same(fixtures.context, getContext(source.contextId))) ||
     !same(fixtures.validationContexts, family.contextIds.map(getContext))
   )
     throw fail("演练输入不是当前已登记的合成数据契约");
@@ -456,6 +480,8 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
   validateDistributionDelivery({source,fixtures,testSql:bundle.files["tests.sql"],localTarget});
   validateFundDelivery({ source, proof, testSql: bundle.files["tests.sql"], localTarget });
   validateCalendar(calendar);
+  if (syncInput && resolveDeliverySchedule({ schedule, calendar }, "2026-09-11T09:00:00+08:00").businessDate !== fixtures.context.businessDate)
+    throw fail("演练日历与冻结持仓的原交易日不一致");
   if (fund && resolveDeliverySchedule({ schedule, calendar }, fundRehearsalAt(source.contextId)).businessDate !== fixtures.context.businessDate)
     throw fail("基金演练日历与登记交易日不一致");
   const requirements=validateFrozenSqlRequirements(proof.requirements,source.requirement,source,bundle.files['main.sql']);

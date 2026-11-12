@@ -65,7 +65,9 @@ export function frozenSqlRequirements({agent,run,revision}){
  const report=agent?.requirements,last=agent?.attempts?.at(-1);
  const syntheticFund = agent?.mode === "SYNTHETIC_MODEL" && isFundContext(agent.contextId) && agent.fundPreparation &&
   run?.fundPreparation && revision?.fundPreparation;
- if(!agent||!run||!revision||revision.source!==agent.mode||agent.language!=='SPARK_SQL'||agent.status!=='SUCCEEDED'||agent.mode!=='LIVE_MODEL'&&!syntheticFund||
+ const syntheticSync = agent?.mode === "SYNTHETIC_MODEL" && agent.syncInput &&
+  same(agent.syncInput, run?.syncInput) && same(agent.syncInput, revision?.syncInput);
+ if(!agent||!run||!revision||revision.source!==agent.mode||agent.language!=='SPARK_SQL'||agent.status!=='SUCCEEDED'||agent.mode!=='LIVE_MODEL'&&!syntheticFund&&!syntheticSync||
   agent.contextId!==revision.contextId||agent.projectId!==run.projectId||revision.projectId!==run.projectId||
   typeof agent.submittedBy!=='string'||!agent.submittedBy||agent.submittedBy!==revision.author||run.agentTaskId!==agent.id||last?.status!=='SUCCEEDED'||
   last.runId!==run.id||last.revisionId!==revision.id||report?.attempt!==agent.attempts.length||
