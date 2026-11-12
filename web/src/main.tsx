@@ -284,6 +284,7 @@ const deliveryStageLabels: Record<string, string> = {
   QUEUED: "等待串行执行",
   PACKAGE_READY: "调度与部署文件已保存",
   FILE_REHEARSAL_RUNNING: "按文件执行Spark测试",
+  FILE_REHEARSAL_UNCONFIRMED: "原演练结果待核对",
   AWAITING_ENGINEER_REVIEW: "真实演练通过 · 等待工程师审阅",
 };
 const icons: Record<string, React.ComponentType<{ size?: number }>> = {
