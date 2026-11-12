@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
+import {readSyncSqlOutputSchema} from "../src/v2/sync-sql-output-schema-client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
@@ -38,6 +39,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent clarify --id TASK_ID --evidence-digest SHA256 --answer "对原问题的回答" --request-id UUID --confirm
   shuduo status
   shuduo sql compare-candidates --run-id RUN_ID
+  shuduo sql output-schema --run-id RUN_ID
   shuduo sql compare-runs --run-id RUN_ID --baseline-run-id RUN_ID
   shuduo budget
   shuduo manual publication --source-run-id RUN_ID --id MANUAL_DELIVERY_ID --package-digest SHA256 --verification-id ID [--release-id ID]
@@ -454,6 +456,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     }
     else if (resource === "status") result = await client.request("/status");
     else if(resource==='sql'&&action==='compare-candidates')result=await readRunComparisonCandidates(client,{runId:required(parsed.options,'run_id')});
+    else if(resource==='sql'&&action==='output-schema')result=await readSyncSqlOutputSchema(client,{runId:required(parsed.options,'run_id')});
     else if(resource==='sql'&&action==='compare-runs')result=await readSqlRunComparison(client,{runId:required(parsed.options,'run_id'),baselineRunId:required(parsed.options,'baseline_run_id')});
     else if (resource === "budget" && !action)
       result = await client.request("/budget");
