@@ -9,13 +9,14 @@ import type {SqlRequirementReport} from '../../src/v2/sql-requirement-contract.m
 import type {FundExecutionBinding} from '../../src/v2/fund-preparation-client.mjs';
 
 export type Delivery = {id:string;version:number;status:string;stage:string;mode?:string;sourceKind?:string;packageId?:string;packageDigest?:string;verificationId?:string;sourceRevisionId?:string;sourceRunId?:string;error?:string};
-export type FileReview={id:string;status:"REVIEWED";packageId:string;packageDigest:string;verificationId:string;reviewedAt:string;scope:"LOCAL_FILE_REVIEW"};
+export type FundReviewBasis = {status:"READY";digest:string} | {status:"UNAVAILABLE"};
+export type FileReview={id:string;status:"REVIEWED";packageId:string;packageDigest:string;verificationId:string;reviewedAt:string;scope:"LOCAL_FILE_REVIEW";fundRehearsalDigest?:string};
 export type Workflow = {
  fileReview?:FileReview;
  report:{developmentReference?:AssistedDevelopmentReference;taskId:string;sourceKind?:string;agentIndependentE2E?:boolean;contextId?:string;validationContractId?:string;validationDetails?:ValidationDetailsReport;status:string;summary:string;definition?:string;checks:{id:string;label:string;passed:boolean}[];revisionId?:string;revisionHash?:string;runId?:string;rowCount:number;engine?:string;engineVersion?:string;notice:string};
  delivery?:Delivery;
  package?:{id:string;digest:string;manifest:unknown;files:Record<string,string>};
- verification?:{id:string;status:string;engine?:string;engineVersion?:string;mainSqlExecuted?:boolean;durationMs?:number;error?:string;testSqlValidation?:{passed:boolean};validation?:{passed:boolean;regressions?:{contextId:string;passed:boolean}[]}};
+ verification?:{id:string;status:string;engine?:string;engineVersion?:string;mainSqlExecuted?:boolean;durationMs?:number;error?:string;testSqlValidation?:{passed:boolean};validation?:{passed:boolean;regressions?:{contextId:string;passed:boolean}[]};fundReview?:FundReviewBasis};
  publication:{available:boolean;scope:string;reason:string};
 };
 export type WorkflowSelection={taskId:string;contextId?:string;revisionId?:string;runId?:string;manual:boolean;assisted?:boolean;expectedSourceBinding?:ServiceSourceBinding;fundPreparation?:FundExecutionBinding};
@@ -66,6 +67,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
  if(frozen&&(frozen.taskId!==r.taskId||frozen.revisionId!==r.revisionId||frozen.runId!==r.runId||(frozen.sourceKind==='MANUAL')!==selection.manual||
   (frozen.scope==='LOCAL_TEST_ONLY'?p.scope!=='LOCAL_TEST_RELEASE':p.scope!=='PRIVATE_CLOUD_TEST')))throw bad();
  const d=value.delivery,b=value.package,v=value.verification;
+ let signedFund=false;
  if(d!==undefined){
   if(!record(d)||!id(d.id)||!Number.isSafeInteger(d.version)||Number(d.version)<1||!['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','INTERRUPTED'].includes(String(d.status))||typeof d.stage!=='string'||!d.stage||
    !['mode','error'].every(k=>optional(d[k],text))||!['packageId','verificationId'].every(k=>optional(d[k],id))||!optional(d.packageDigest,hash)||
@@ -81,6 +83,8 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    canonical(Object.keys(files).sort())!==canonical(names)||canonical(Object.keys(entries).sort())!==canonical(names)||
    frozen&&b.digest!==frozen.packageDigest)throw bad();
   const attribution=source.attribution;
+  signedFund=source.fundSignedExecution!==undefined;
+  if(signedFund&&!selection.fundPreparation)throw bad();
  if(record(attribution)&&!sameAssistedDevelopmentReference(attribution.developmentReference,r.developmentReference))throw bad();
   if(selection.fundPreparation){
    if(!record(attribution)||attribution.kind!=='FUND_AGENT_GENERATED'||attribution.originAgentTaskId!==selection.taskId||
@@ -112,10 +116,15 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    !['engine','engineVersion','error'].every(k=>optional(v[k],text))||!optional(v.mainSqlExecuted,x=>typeof x==='boolean')||!optional(v.durationMs,x=>typeof x==='number'&&Number.isFinite(x)&&x>=0)||
    v.testSqlValidation!==undefined&&(!record(v.testSqlValidation)||typeof v.testSqlValidation.passed!=='boolean')||
    v.validation!==undefined&&(!record(v.validation)||typeof v.validation.passed!=='boolean'||v.validation.regressions!==undefined&&(!Array.isArray(v.validation.regressions)||!v.validation.regressions.every(x=>record(x)&&typeof x.contextId==='string'&&typeof x.passed==='boolean'))))throw bad();
+  const basis=v.fundReview;
+  if(signedFund&&v.status==='SUCCEEDED'){
+   if(!record(basis)||!(basis.status==='READY'&&hash(basis.digest)||basis.status==='UNAVAILABLE'&&basis.digest===undefined))throw bad();
+  }else if(basis!==undefined)throw bad();
  }
  if(value.fileReview!==undefined){
   const f=value.fileReview;
-  if((!selection.fundPreparation&&!distributionMetadataForContext(r.contextId as string))||!record(f)||Object.keys(f).length!==7||!id(f.id)||f.status!=='REVIEWED'||f.scope!=='LOCAL_FILE_REVIEW'||!text(f.reviewedAt)||
+  if((!selection.fundPreparation&&!distributionMetadataForContext(r.contextId as string))||!record(f)||Object.keys(f).length!==(signedFund?8:7)||
+   (signedFund?!hash(f.fundRehearsalDigest):f.fundRehearsalDigest!==undefined)||!id(f.id)||f.status!=='REVIEWED'||f.scope!=='LOCAL_FILE_REVIEW'||!text(f.reviewedAt)||
    !record(b)||!record(v)||f.packageId!==b.id||f.packageDigest!==b.digest||f.verificationId!==v.id||v.status!=='SUCCEEDED')throw bad();
  }
  if(frozen&&!record(b))throw bad();
