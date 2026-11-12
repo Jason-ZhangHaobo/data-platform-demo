@@ -54,12 +54,20 @@ function loadRuns(root, selectedId) {
 }
 
 function caseRow(definition, index, state, outcomes, simulated, executionFor) {
+  const context = getContext(definition.contextId);
   const entry = outcomes.get(definition.id);
   const parent = outcomes.get(definition.sourceCaseId);
   const submission = entry?.actions?.agent;
   const row = {
-    caseId:definition.id, context:getContext(definition.contextId).name,
+    caseId:definition.id, context:context.name,
     kind:definition.kind, sourceCaseId:definition.sourceCaseId,
+    expectation:{
+      scope:"REGISTERED_FIXTURE", businessDate:context.businessDate, definition:context.definition,
+      rows:context.expected.map(row=>({
+        clientId:row.client_id, holdingMarketValue:row.holding_market_value, availableCash:row.available_cash,
+        totalAssets:row.total_assets, securityCount:row.security_count,
+      })),
+    },
     phase:"REQUIREMENT", status:state && index >= state.caseLimit ? "OUTSIDE_RUN" : "NOT_RUN",
   };
   if (!entry) return row;
@@ -96,6 +104,8 @@ export function liveLifecycleOverview(root, selectedId, {origin, executionFor}={
     contractId, testDouble:selected?.executionEvidenceMode === "TEST_HARNESS",
   });
   const simulated = summary.measurementStatus === "TEST_HARNESS";
+  const rows = cases.map((definition, index) => caseRow(definition, index, selected, outcomes, simulated, selected?.origin === origin ? executionFor : undefined));
+  const rowsById = new Map(rows.map(row => [row.caseId, row]));
   return {
     contractId, runs, legacyCount, unreadableCount,
     selectedId:selected?.evaluationRunId ?? null,
@@ -105,6 +115,6 @@ export function liveLifecycleOverview(root, selectedId, {origin, executionFor}={
     attemptedCaseCount:summary.attemptedCaseCount,
     caseCount:summary.frozenCaseCount,
     autonomousCompletionRate:summary.autonomousCompletionRate,
-    cases:cases.map((definition, index) => caseRow(definition, index, selected, outcomes, simulated, selected?.origin === origin ? executionFor : undefined)),
+    cases:rows.map(row => row.sourceCaseId ? {...row, sourceStatus:rowsById.get(row.sourceCaseId).status} : row),
   };
 }

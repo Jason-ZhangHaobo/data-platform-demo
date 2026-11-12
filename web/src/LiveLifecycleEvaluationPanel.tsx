@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState} from "react";
+import {Fragment, useEffect, useRef, useState} from "react";
 import {RefreshCw} from "lucide-react";
 
 type Execution = {
@@ -13,6 +13,13 @@ type EvaluationCase = {
   context: string;
   kind: "FRESH" | "DERIVED";
   sourceCaseId?: string;
+  sourceStatus?: string;
+  expectation?: {
+    scope: "REGISTERED_FIXTURE";
+    businessDate: string;
+    definition: string;
+    rows: {clientId:string; holdingMarketValue:string; availableCash:string; totalAssets:string; securityCount:number}[];
+  };
   status: string;
   phase: string;
   taskUrl?: string;
@@ -71,8 +78,32 @@ function caseNavigation(row: EvaluationCase) {
     {task && <a href={task + section}>原任务</a>}
     {services && <a href={services}>同源接口</a>}
     {row.taskUrl && !task && <span>需打开原评测入口</span>}
-    {!row.taskUrl && !services && <span>—</span>}
   </div>;
+}
+
+function caseExpectation(row: EvaluationCase, parent?: EvaluationCase) {
+  const expected = row.expectation;
+  if (!expected || expected.scope !== "REGISTERED_FIXTURE") return <p role="status">冻结样例预期暂不可用。</p>;
+  return <>
+    <div className="ops-live-case-heading-v2">
+      <strong>冻结样例预期</strong>
+      <span>交易日 {expected.businessDate} · {expected.rows.length} 位虚构客户</span>
+    </div>
+    <p>{expected.definition}</p>
+    {row.sourceCaseId && <p>
+      父案例 <strong>{parent?.context ?? row.sourceCaseId}</strong> · {statuses[row.sourceStatus ?? ""] ?? "状态未确认"}
+      <small>{row.sourceStatus === "RECORDED_PASS" ? "提交派生前会复核父案例的原任务。" : "派生依赖同一评测中已完成并核验的父案例。"}</small>
+    </p>}
+    <div className="ops-live-expected-table-v2">
+      <table aria-label="冻结样例的独立结果预期">
+        <thead><tr><th scope="col">客户</th><th scope="col">持仓市值（元）</th><th scope="col">可用现金（元）</th><th scope="col">合计（元）</th><th scope="col">证券数</th></tr></thead>
+        <tbody>{expected.rows.map(item => <tr key={item.clientId}>
+          <th scope="row">{item.clientId}</th>
+          <td>{item.holdingMarketValue}</td><td>{item.availableCash}</td><td>{item.totalAssets}</td><td>{item.securityCount}</td>
+        </tr>)}</tbody>
+      </table>
+    </div>
+  </>;
 }
 
 const modelState: Record<string,string> = {
@@ -106,6 +137,8 @@ function executionDetails(execution: Execution) {
 export function LiveLifecycleEvaluationPanel({api}:{api:Api}) {
   const [selection, setSelection] = useState("");
   const [revision, setRevision] = useState(0);
+  const [casesOpen, setCasesOpen] = useState(false);
+  const [reviewCase, setReviewCase] = useState<string>();
   const [response, setResponse] = useState<{key:string; overview?:Overview; error?:string}>();
   const request = useRef(api);
   request.current = api;
@@ -121,6 +154,10 @@ export function LiveLifecycleEvaluationPanel({api}:{api:Api}) {
     );
     return () => { active = false; };
   }, [key, selection]);
+  useEffect(() => {
+    if (overview && casesOpen && reviewCase)
+      document.getElementById("case-expectation-" + reviewCase)?.scrollIntoView({block:"nearest"});
+  }, [overview, casesOpen, reviewCase]);
 
   return <section className="ops-live-evaluation-v2" aria-labelledby="ops-live-evaluation-title">
     <header>
@@ -151,19 +188,33 @@ export function LiveLifecycleEvaluationPanel({api}:{api:Api}) {
       </label>}
       {overview.legacyCount > 0 && <p>另有 {overview.legacyCount} 份旧版记录，按原评测口径保留。</p>}
       {overview.unreadableCount > 0 && <p role="status">{overview.unreadableCount} 份记录待核对。</p>}
-      <details>
+      <details open={casesOpen} onToggle={event => setCasesOpen(event.currentTarget.open)}>
         <summary>查看 {overview.caseCount} 例的阶段与原任务</summary>
         <div className="ops-live-table-v2">
           <table aria-label="v3 逐例验收">
             <thead><tr><th scope="col">案例与口径</th><th scope="col">记录状态</th><th scope="col">查看</th></tr></thead>
-            <tbody>{overview.cases.map(row => <tr key={row.caseId}>
-              <th scope="row"><span>{row.context}</span><small>{row.kind === "FRESH" ? "新任务" : "口径变更"}
-                {row.sourceCaseId && " · 来源：" + (overview.cases.find(item => item.caseId === row.sourceCaseId)?.context ?? row.sourceCaseId)}</small></th>
-              <td><strong>{statuses[row.status] ?? "证据未确认"}</strong>
-                {!["NOT_RUN","OUTSIDE_RUN"].includes(row.status) && <small>{phases[row.phase] ?? "阶段未确认"}</small>}
-                {row.execution && executionDetails(row.execution)}</td>
-              <td>{caseNavigation(row)}</td>
-            </tr>)}</tbody>
+            <tbody>{overview.cases.map(row => {
+              const parent = overview.cases.find(item => item.caseId === row.sourceCaseId);
+              const expanded = reviewCase === row.caseId;
+              const panelId = "case-expectation-" + row.caseId;
+              return <Fragment key={row.caseId}>
+                <tr>
+                  <th scope="row"><span>{row.context}</span><small>{row.kind === "FRESH" ? "新任务" : "口径变更"}
+                    {parent && " · 来源 " + parent.context}</small></th>
+                  <td><strong>{statuses[row.status] ?? "证据未确认"}</strong>
+                    {!["NOT_RUN","OUTSIDE_RUN"].includes(row.status) && <small>{phases[row.phase] ?? "阶段未确认"}</small>}
+                    {row.execution && executionDetails(row.execution)}</td>
+                  <td><button className="button ops-live-case-review-v2" type="button" aria-expanded={expanded}
+                    aria-controls={expanded ? panelId : undefined}
+                    aria-label={row.context + (row.kind === "FRESH" ? " 新任务" : " 口径变更") + (expanded ? " 收起预期" : " 核对预期")}
+                    onClick={() => setReviewCase(expanded ? undefined : row.caseId)}>{expanded ? "收起预期" : "核对预期"}</button>
+                    {caseNavigation(row)}</td>
+                </tr>
+                {expanded && <tr><td colSpan={3} className="ops-live-case-expectation-v2" id={panelId}>
+                  {caseExpectation(row, parent)}
+                </td></tr>}
+              </Fragment>;
+            })}</tbody>
           </table>
         </div>
       </details>

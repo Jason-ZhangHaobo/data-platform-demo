@@ -8143,6 +8143,12 @@ kbd {
 .ops-live-table-v2 td, .ops-live-table-v2 th { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .ops-live-table-v2 small { display: block; margin-top: 3px; font-weight: 400; }
 .ops-live-links-v2 { display: flex; flex-wrap: wrap; gap: 8px; }
+.ops-live-case-review-v2 { white-space: nowrap; margin-bottom: 4px; }
+.ops-live-case-expectation-v2 { background: #f4f8f3; }
+.ops-live-case-heading-v2 { display: flex; gap: 6px 14px; flex-wrap: wrap; align-items: baseline; }
+.ops-live-case-heading-v2 span { color: var(--muted); font-size: 12px; }
+.ops-live-expected-table-v2 { overflow-x: auto; max-width: 740px; font-variant-numeric: tabular-nums; }
+.ops-live-expected-table-v2 th, .ops-live-expected-table-v2 td { white-space: nowrap; }
 .ops-live-execution-v2 { margin-top: 4px; }
 .ops-live-execution-v2 > summary { padding: 3px 0; font-size: 12px; }
 .ops-live-execution-v2 > div { padding-left: 10px; border-left: 2px solid var(--border); }
