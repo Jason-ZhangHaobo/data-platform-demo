@@ -8,6 +8,8 @@ v3 沿用完整开发、文件、独立审阅、发布、监控和 `CONSUMPTION`
 
 旧 `securities-live-agent-reviewed-lifecycle-v1` 只覆盖至发布后监控；v2 增加受治理消费，但仍使用旧5套口径×4类意图目录。两者均保留原案例、摘要、分母和范围，不迁移为v3，不补造历史成功。v1继续只读报告；v2可按原范围恢复与刷新。库函数原有默认v2保持兼容，新增调用可传 `{contractId:currentLiveLifecycleContract.id}`；CLI新执行默认v3。
 
+基金 Agent 的[保存证据复核](acceptance.md#复核已保存的基金-agent-端到端证据)可按原编号对照从需求到授权消费的完整本机链路。报告保留模型来源、已记录的审阅和本机执行范围。此复核使用独立协议，真实评测继续沿用上述固定目录与计分口径。
+
 ## 计划与资源边界
 
 使用项目要求的Node.js 24运行`node scripts/run-live-lifecycle-evaluation.mjs --plan`仅输出计划，不连接服务、不提交任务。默认1例；`V2_LIVE_EVALUATION_CASE_LIMIT`可选择固定目录的前1—20例。完整v3包括两组共10套上下文的基础开发及其10个跨组变更，覆盖重复持仓、现金变化、同额不同持仓、仅有现金客户、字段范围、金额精度及口径变更；这仍不等于所有经典模块或全部证券业务范围。完整计划可设置案例数20后查看，`willExecute=false`不构成执行授权。

@@ -196,6 +196,22 @@ CLI 用 `shuduo services sources --agent-task-id ID --package-digest SHA256 --re
 
 隔离验收复用了此前已保存的两个实际本机 Spark 批次。授权 DAPI 返回七行，XAPI 两个分页的七条敞口逐行对照通过。错包和跨批次被拒，XAPI 应用不能直接调用其子接口。撤销两个应用后原令牌失效，旧 DAPI 版本和 XAPI 原调用仍可独立对照。篡改摘要返回待处理，重启回读及工作台交接均沿原来源。上游模型替身归因保留。
 
+## 复核已保存的基金 Agent 端到端证据
+
+命令以只读方式打开同一隔离项目保存的元数据和业务快照。输入原准备请求、Agent 任务、包摘要、发布及历史调用编号。DAPI 和 XAPI 均需提供覆盖完整结果的原分页调用，可重复传入相应选项。
+
+```sh
+node scripts/verify-saved-fund-lifecycle.mjs --agent \
+  --active-metadata /private/metadata.sqlite --business-snapshots /private/business.sqlite \
+  --request-id PREPARATION_REQUEST_ID --task-id TASK_ID --release-id RELEASE_ID \
+  --package-digest SHA256 --dapi-call-id DAPI_CALL_ID \
+  --xapi-call-id XAPI_PAGE_ONE_CALL_ID --xapi-call-id XAPI_PAGE_TWO_CALL_ID
+```
+
+复核覆盖原需求和创建幂等账本、失败与修正运行、独立结果、八文件演练、审阅和审批记录、两批调度与监控、撤权后的固定版本及原分页。报告输出摘要和编号，不输出原需求、SQL、数据行或凭证。重跑同一组证据得到同一报告摘要。错包、缺页、重复页、篡改创建账本、改绑修正版本、缺失或篡改监控及调用结果摘要时拒绝通过。
+
+已在原本机隔离保存库复核一条基金 Agent 链路。历史 Spark 和授权调用证据均沿原编号读取，本次没有新增计算或调用。原样例使用模型替身和隔离测试审阅。报告标明人工审阅身份未获独立验证，此结果保留在本机保存证据范围。
+
 ## 浏览器真实链路
 
 验收浏览器为 Codex 内置浏览器；没有以此冒充 Safari/Chrome 的公网验收。

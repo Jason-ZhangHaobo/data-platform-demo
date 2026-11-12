@@ -8,6 +8,10 @@ import { sqlRequirementBasis } from "./sql-requirements.mjs";
 
 const fail = (status, code, message) => Object.assign(new Error(message), { status, code });
 
+export function fundAgentRequestSignature({ message, language, contextId, fundPreparation }) {
+  return sha256(JSON.stringify({ message, language, contextId, fundPreparation }));
+}
+
 export function createFundPreparations({ store, project }) {
   const kind = "agent_fund_preparation";
   const keyFor = (actor, requestId) => `${project}:agent-fund-preparation:v1:${actor}:${requestId}`;
