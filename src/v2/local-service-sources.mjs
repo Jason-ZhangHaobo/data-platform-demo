@@ -84,7 +84,7 @@ export function localServiceSources({ store, project, selection = {} }) {
         release.mode === undefined && release.environment === "local-rehearsal" && release.adapter === "local-spark-v1" &&
         release.packageDigest === bundle.digest);
       const plan = validateDeliveryPackage(bundle, bundle.digest), source = plan.source;
-      requireProof(!source.outputContract && !source.fundLookthrough); // Composite contracts cannot use the legacy customer projection.
+      requireProof(!source.outputContract && !source.fundLookthrough && !source.syncInput);
       requireProof(native(source) && source.projectId === project && plan.deployment.adapter === "local-spark-v1" &&
         plan.deployment.environment === "local-rehearsal" && release.sourceRevisionId === source.revisionId &&
         (release.sourceCodeHash ?? release.sourceSqlHash) === source.sqlHash &&
