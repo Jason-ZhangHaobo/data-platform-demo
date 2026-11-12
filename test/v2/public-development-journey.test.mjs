@@ -1648,6 +1648,88 @@ test('a killed publication CLI recovers both original batches through signed sch
   }
 });
 
+test('an invited derived task progresses on original events after client disconnect and controller reopen',async t=>{
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
+  const definition=liveLifecyclePlan(11,{contractId:currentLiveLifecycleContract.id}).selectedCases.at(-1);
+  const owner=(await f.call('/auth/session')).body.user.id;
+  const source=seedContextDerivation(f.store,PROJECT,{actorId:owner});
+  const originalParent=f.store.get('agent',source.task.id,PROJECT);
+  const key=randomUUID(), contextId=definition.contextId;
+  const body=agentContextDerivationBody({message:definition.request,sql:source.sql,contextId,derivation:source.derivation});
+  const start=Math.max(f.now(),Date.parse(source.task.createdAt)+1);
+  f.later(start-f.now());
+  Object.assign(f.env,{V2_PUBLIC_DEVELOPMENT_STARTS_AT:new Date(start).toISOString(),
+    V2_PUBLIC_DEVELOPMENT_EXPIRES_AT:new Date(start+3600000).toISOString(),
+    V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST:developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)))});
+  await f.restart();
+  assert.equal((await f.call('/agent/tasks',{...body,background:true},key)).body.code,'PUBLIC_DEVELOPMENT_REQUEST_ONLY');
+  const created=await f.call('/agent/tasks',body,key);
+  assert.equal(created.status,202);
+  const {id,version,derivedFrom}=created.body;
+  const route=`/agent/tasks/${id}`;
+  assert.equal(derivedFrom.revisionId,source.revision.id);
+  assert.equal((await f.call(`/agent/tasks/${source.task.id}/background`,{expectedVersion:originalParent.version})).status,403);
+  const delegated=await f.call(route+'/background',{expectedVersion:version,maxEvents:3});
+  assert.equal(delegated.status,202);
+  assert.equal(delegated.body.status,'ACTIVE');
+  assert.equal(f.wakes.length,1);
+  assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
+
+  // The public client's connection is closed. Only private object events drive execution.
+  const initialStore=f.store;
+  await f.restart();
+  assert.notEqual(f.store,initialStore);
+  assert.equal((await f.privateCall(f.wakes[0])).status,200);
+  assert.equal((await f.privateCall(f.wakes[0])).status,200);
+  assert.equal(f.wakes.length,2);
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:0});
+  assert.equal((await f.privateCall(f.wakes[1])).status,200);
+  const waiting=f.store.get('agent',id,PROJECT);
+  assert.equal(waiting.stage,'WAITING_FOR_RUN');
+  assert.notEqual(waiting.runId,source.run.id);
+  const prepared=f.store.get('run',waiting.runId,PROJECT).remoteSubmission.prepared;
+  const family=validationFamilyForContext(contextId);
+  const measured=process.env.SHUDUO_TEST_LOCAL_SPARK_DERIVATION_RECOVERY==='true';
+  f.complete(prepared,measured?await measuredSpark(t,f,prepared,'derived event recovery'):{
+    status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,durationMs:100,
+    rows:getContext(contextId).expected,validation:{passed:true,contractId:family.id,
+      regressions:family.contextIds.map(value=>({contextId:value,passed:true}))},
+  });
+  const callback=structuredClone(f.wakes[1]);
+  callback.events[0].oss.object.key=prepared.resultKey;
+  await f.restart();
+  assert.equal((await f.privateCall(callback)).status,200);
+  assert.equal((await f.privateCall(callback)).status,200);
+  assert.equal(f.wakes.length,3);
+  assert.equal((await f.privateCall(f.wakes[2])).status,200);
+  assert.equal((await f.privateCall(f.wakes[2])).status,200);
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
+  const settled=f.store.get('agent',id,PROJECT), savedRun=f.store.get('run',waiting.runId,PROJECT);
+  assert.equal(settled.status,'SUCCEEDED');
+  assert.equal(settled.revisionId,waiting.revisionId);
+  assert.deepEqual(settled.derivedFrom,derivedFrom);
+  assert.equal(savedRun.validation.passed,true);
+  assert.equal(savedRun.validation.contractId,family.id);
+
+  f.expire();
+  await f.restart();
+  const recovered=await f.call('/agent/requests/'+key), evidence=await f.call('/agent/requests/'+key+'/execution-evidence');
+  assert.equal(recovered.status,200);
+  assert.equal(recovered.body.id,id);
+  assert.equal(recovered.body.runId,waiting.runId);
+  assert.equal(recovered.body.background.status,'COMPLETED');
+  assert.equal(recovered.body.background.consumedEvents,3);
+  assert.equal(evidence.body.status,'EXECUTION_RECORDED');
+  assert.deepEqual(evidence.body.derivedFrom,derivedFrom);
+  assert.equal(evidence.body.development.runId,waiting.runId);
+  assert.equal(evidence.body.development.revisionId,waiting.revisionId);
+  assert.equal(evidence.body.fullLifecycleE2E,false);
+  assert.deepEqual(f.store.get('run',waiting.runId,PROJECT),savedRun);
+  assert.deepEqual(f.store.get('agent',source.task.id,PROJECT),originalParent);
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
+  assert.equal(f.queueCounts().jobWriteAttempts,1);
+});
+
 test('an invited exact window binds derivation from the parent through signed release and both consumer batches',async t=>{
   const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
   const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_DERIVATION==='true';

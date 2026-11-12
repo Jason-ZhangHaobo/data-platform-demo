@@ -121,6 +121,19 @@ shuduo agent v3-prepare-delivery --checkpoint /private/first-case.json --bill-fi
 
 响应丢失后执行 `v3-inspect`，只查原请求回执。若回执显示 `storagePending`，说明该版本文件已保存到交付记录，产物存储尚待确认。在有效窗口对原交付版本执行一次 `advance-delivery` 可恢复同一文件摘要。对这一阶段的推进只恢复存储，后续 Spark 演练另行提交。两种推进均沿用原任务的审批与预算边界。
 
+### 派生任务在客户端离线后继续开发
+
+确切开发窗口绑定原派生请求正文。按原请求创建任务后，使用原任务编号和当前版本执行 `shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm`，委托现有事件后台。原创建请求保持原字节，后台委托单独绑定同一授权窗口。发起后的 `shuduo agent background --id TASK_ID` 只读状态。若响应丢失，先查原任务和已有委托状态。模型或计算用量仍记在原任务上。
+
+本机隔离验收在客户端断开后只投递原事件。控制面两次重开同一 SQLite，分别接续模型唤醒及 Worker 结果通知。重复事件只产生一次模型替身调用和一次 Spark 队列提交。开发窗口关闭后，按原创建请求核对同一派生任务、父代码版本、开发批次和独立校验。正式环境的浏览器关页、云实例恢复及真实模型仍按实际验收记录。
+
+有本机 Spark 3.5.9 时可重验原事件链及真实计算：
+
+```sh
+SHUDUO_TEST_LOCAL_SPARK_DERIVATION_RECOVERY=true node --test \
+  --test-name-pattern 'original events after client disconnect' test/v2/public-development-journey.test.mjs
+```
+
 ### 演练云端首例的原交付包
 
 ```sh
