@@ -16,10 +16,14 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
   const selectedMatches=releaseId===undefined||selectedRelease?.id===releaseId&&matches(selectedRelease)&&selectedRelease.packageDigest===packageDigest;
   const attribution=release=>({sourceKind:release.sourceKind??"AGENT",
     ...(release.sourceKind==="MANUAL"?{sourceAttribution:release.sourceAttribution??"ENGINEER_ASSISTED"}:{}),agentIndependentE2E:false});
+  const exactCall = callIdDigest === undefined || !selectedMatches ? undefined : calls().find(call =>
+    typeof call.id === "string" && typeof call.serviceVersionId === "string" && consumerDigest(call.id) === callIdDigest);
   let matchingCount = 0;
   for (const service of services) {
-    const root = service.publishedVersion;
-    if (!root || service.status !== "PUBLISHED") continue;
+    if (callIdDigest !== undefined && exactCall?.serviceId !== service.id) continue;
+    const root = exactCall ? getVersion(exactCall.serviceVersionId) : service.publishedVersion;
+    if (!root || service.status !== "PUBLISHED" || root.serviceId !== service.id || root.serviceType !== service.serviceType ||
+        (exactCall && !["PUBLISHED", "RETIRED"].includes(root.status))) continue;
     let children;
     try {
       children = root.serviceType === "XAPI" ? (Array.isArray(root.steps) ? root.steps.slice(0,5) : []).map(step => {
@@ -39,9 +43,7 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
       const app = application(c.applicationId);
       return app?.scope === scope && app.serviceIds?.includes(service.id) && ["ACTIVE", "REVOKED", "EXPIRED"].includes(app.status);
     };
-    const exactCall = callIdDigest === undefined ? undefined : calls(service.id).find(c =>
-      typeof c.id === "string" && consumerDigest(c.id) === callIdDigest && successful(c) && granted(c));
-    if (callIdDigest !== undefined && !exactCall) continue;
+    if (exactCall && (!successful(exactCall) || !granted(exactCall))) continue;
     matchingCount++;
     if (entries.length >= limit) continue;
     const entry = { serviceId: service.id, serviceType: service.serviceType, name: service.name,
@@ -91,7 +93,7 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
       const call = exactCall ?? calls(service.id).filter(successful)
         .sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt))).find(granted);
       if (call) {
-        const proof = await recheckCall(service.id, call.id);
+        const proof = await recheckCall(service.id, call.id, exactCall ? { pinnedVersionId: root.id } : undefined);
         entry.status = proof.verified ? "VERIFIED" : "NEEDS_ATTENTION";
         entry.code = proof.verified ? "OK" : "CONSUMPTION_RESULT_MISMATCH";
         entry.call = { ...proof, applicationId: call.applicationId, applicationStatus: application(call.applicationId).status, finishedAt: call.finishedAt };
