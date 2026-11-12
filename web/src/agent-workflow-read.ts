@@ -60,7 +60,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
  if(r.status==='PASSED'&&(!id(r.revisionId)||!id(r.runId)||!hash(r.revisionHash)||r.engine!=='Apache Spark'||checks.some(c=>!c.passed)))throw bad();
  if(selection.manual?(r.sourceKind!=='MANUAL'||r.agentIndependentE2E!==false||r.runId!==selection.runId||r.revisionId!==selection.revisionId||p.scope!=='PRIVATE_CLOUD_TEST'||p.sourceKind!=='MANUAL'||p.sourceRunId!==selection.runId||p.agentIndependentE2E!==false):r.sourceKind==='MANUAL'||p.sourceKind==='MANUAL')throw bad();
  if(selection.assisted&&(!selection.manual||r.developmentReference===undefined))throw bad();
- if(selection.fundPreparation&&(selection.manual||p.available!==false||p.scope!=='LOCAL_TEST_RELEASE'))throw bad();
+ if(selection.fundPreparation&&(selection.manual||p.scope!=='LOCAL_TEST_RELEASE'))throw bad();
  if(r.developmentReference!==undefined){if(!selection.manual)throw bad();checkedAssistedDevelopmentReference(r.developmentReference);}
  const frozen=selection.expectedSourceBinding;
  if(frozen&&(frozen.taskId!==r.taskId||frozen.revisionId!==r.revisionId||frozen.runId!==r.runId||(frozen.sourceKind==='MANUAL')!==selection.manual||

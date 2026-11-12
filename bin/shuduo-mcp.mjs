@@ -22,13 +22,19 @@ import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,muta
 import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication} from '../src/v2/standalone-manual-publication-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
-import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {agentReviewEvidencePath,publicationSelectorInput,publicationPreflightPath,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
 const publicationIdSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"};
 const servicePlanSourceSchema={type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},manualDeliveryTaskId:{type:'string',format:'uuid'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},releaseId:{type:'string',format:'uuid'},sourceReleaseRunId:{type:'string',format:'uuid'}},required:['packageDigest','releaseId','sourceReleaseRunId'],oneOf:[{required:['taskId'],not:{required:['manualDeliveryTaskId']}},{required:['manualDeliveryTaskId'],not:{required:['taskId']}}]};
 const publicationProperties={sourceKind:{type:"string",enum:["AGENT","MANUAL"]},sourceRunId:publicationIdSchema,packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},verificationId:publicationIdSchema,releaseId:publicationIdSchema};
+const fundConsentSchema = { type: "object", additionalProperties: false,
+  required: ["scope","packageDigest","verificationId","businessDate","scheduleSpec","preflightDigest","confirmFrozenFictionalData"],
+  properties: { scope:{const:"LOCAL_TEST_RELEASE"},packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema,
+    businessDate:{type:"string",format:"date"},preflightDigest:publicationProperties.packageDigest,confirmFrozenFictionalData:{const:true},
+    scheduleSpec:{type:"object",additionalProperties:false,required:["triggerAfterSeconds","intervalSeconds","runCount"],
+      properties:{triggerAfterSeconds:{const:5},intervalSeconds:{const:30},runCount:{const:2}}} } };
 const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANUAL"}},required:["sourceKind"]},then:{required:["sourceRunId","packageDigest","verificationId",...(stop?["releaseId"]:[])]}});
 
 const manualPublicationProperties={sourceRunId:{type:'string',format:'uuid'},taskId:{type:'string',format:'uuid'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},verificationId:{type:'string',format:'uuid'},releaseId:{type:'string',format:'uuid'}};
@@ -123,7 +129,10 @@ const tools = [
   { name: "delivery_review_list", description: "列出按包摘要与文件演练绑定的工程师审阅记录。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_review_create", description: "记录工程师已核对代码、断言、交付文件和本机范围；不审批、不发布。调用前必须完成实际审阅并取得明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, verificationId: { type: "string" }, reviewNote: { type: "string" }, attestations: { type: "object", properties: { code: { type: "boolean", const: true }, assertions: { type: "boolean", const: true }, deliveryFiles: { type: "boolean", const: true }, localScope: { type: "boolean", const: true } }, required: ["code", "assertions", "deliveryFiles", "localScope"], additionalProperties: false } }, required: ["packageId", "packageDigest", "verificationId", "reviewNote", "attestations"] } },
   { name: "release_approval_list", description: "列出绑定交付包摘要的发布审批记录。", inputSchema: { type: "object", properties: {} } },
-  { name: "release_approve", description: "审批已成功演练且已有摘要绑定审阅记录的交付包；会授予本机发布资格，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, reviewId: { type: "string" },distributionConsent:distributionApprovalSchema }, required: ["packageId", "packageDigest", "reviewId"] } },
+  { name: "fund_agent_publication_preflight", description: "只读核对指定基金任务、开发运行、交付包及成功文件演练，返回工程师审阅和两批本机计划。",
+    inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceRunId:publicationIdSchema,
+      packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema},required:["taskId","sourceRunId","packageDigest","verificationId"]},annotations:{readOnlyHint:true} },
+  { name: "release_approve", description: "审批已成功演练且已有摘要绑定审阅记录的交付包；会授予本机发布资格，调用前必须取得用户明确确认。基金 Agent 须提供已核对的 fundConsent。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, reviewId: { type: "string" },distributionConsent:distributionApprovalSchema,fundConsent:fundConsentSchema }, required: ["packageId", "packageDigest", "reviewId"] } },
   { name: "release_list", description: "列出本机发布版本、健康度和调度状态。", inputSchema: { type: "object", properties: {} } },
   { name: "release_detail", description: "读取指定本机发布版本及批次摘要。", inputSchema: { type: "object", properties: { releaseId: { type: "string" } }, required: ["releaseId"] } },
   { name: "release_create", description: "消费一次审批并激活本机发布、安排两个墙上时钟批次；调用前必须取得用户明确确认，且不代表公网发布。", inputSchema: { type: "object", properties: { approvalId: { type: "string" }, triggerAfterSeconds: { type: "integer", minimum: 1, maximum: 30 }, intervalSeconds: { type: "integer", minimum: 1, maximum: 60 }, runCount: { type: "integer", minimum: 2, maximum: 5 } }, required: ["approvalId"] } },
@@ -485,6 +494,10 @@ async function callTool(name, args = {}, client=defaultClient) {
     );
   if (name === "release_approval_list")
     return client.request("/release/approvals");
+  if (name === "fund_agent_publication_preflight") {
+    const { taskId, ...selector } = args;
+    return client.request(publicationPreflightPath(taskId, { ...selector, sourceKind: "AGENT" }));
+  }
   if (name === "release_approve")
     return client.request(
       `/delivery/packages/${encodeURIComponent(args.packageId)}/approve`,
@@ -494,6 +507,7 @@ async function callTool(name, args = {}, client=defaultClient) {
           packageDigest: args.packageDigest,
           reviewId: args.reviewId,
           ...(args.distributionConsent?{distributionConsent:args.distributionConsent}:{}),
+          ...(args.fundConsent?{fundConsent:args.fundConsent}:{}),
         },
       },
     );

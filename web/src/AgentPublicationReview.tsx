@@ -10,9 +10,10 @@ export function publicationTargetMatches(target: PublicationTarget | undefined,
     Number.isFinite(now) && now >= Date.parse(target.startsAt) && now < Date.parse(target.expiresAt));
 }
 
-export function AgentPublicationReview({ cloud, distribution=false, sourceKind="AGENT",originTaskId, packageDigest, revisionId, runId, verificationId, confirmed, disabled, onConfirm, onPublish, onCancel }: {
+export function AgentPublicationReview({ cloud, distribution=false, sourceKind="AGENT",originTaskId, packageDigest, revisionId, runId, verificationId, confirmed, disabled, onConfirm, onPublish, onCancel, fund }: {
   cloud: boolean; distribution?:boolean; packageDigest: string; revisionId?: string; runId?: string; verificationId?: string;
   sourceKind?:"AGENT"|"MANUAL";originTaskId?:string;
+  fund?:{businessDate:string;modelMode:string;scheduleSpec:{triggerAfterSeconds:number;intervalSeconds:number;runCount:number}};
   confirmed: Record<string, boolean>; disabled: boolean;
   onConfirm: (id: string, checked: boolean) => void; onPublish: () => void; onCancel: () => void;
 }) {
@@ -22,6 +23,7 @@ export function AgentPublicationReview({ cloud, distribution=false, sourceKind="
   return <section className="agent-review-form" aria-label="审阅指定版本">
     <div><h4>发布前确认</h4><p>本次只提交下面这个版本。不会自动代批，不改变公网入口或创建生产发布。</p></div>
     {sourceKind==="MANUAL"&&<p role="status">工程师接管版本（MANUAL／ENGINEER_ASSISTED）。原 Agent 任务 {originTaskId??"未确认"} 的失败与次数保留；本次发布不计作 Agent 自主完成。</p>}
+    {fund&&<p>基金业务日 {fund.businessDate} · {fund.modelMode==="SYNTHETIC_MODEL"?"模型替身":"模型生成"} · {fund.scheduleSpec.triggerAfterSeconds} 秒后触发首批，间隔 {fund.scheduleSpec.intervalSeconds} 秒，共 {fund.scheduleSpec.runCount} 批。</p>}
     <dl className="delivery-review-source"><dt>发布范围</dt><dd>{cloud ? "私有云测试 · 同一冻结业务日期的两个样例批次，不是两个交易日或生产调度" : distribution?"本机虚构证券测试 · 同一冻结业务日的两个批次，不调用模型":"本机测试 · 两个批次"}</dd><dt>代码版本</dt><dd>{revisionId ?? "未确认"}</dd><dt>源运行批次</dt><dd>{runId ?? "未确认"}</dd><dt>文件演练编号</dt><dd>{verificationId ?? "未确认"}</dd><dt>交付包摘要</dt><dd>{packageDigest}</dd></dl>
     {requirements.map(item => <div className="delivery-review-item" key={item.id}><label><input type="checkbox" disabled={disabled} checked={confirmed[item.id] === true} onChange={event => {if(!disabled)onConfirm(item.id, event.target.checked);}} />{item.label}</label><a href={`#${item.target}`}>查看依据</a></div>)}
     <small>{count} / {requirements.length} 项已确认；仅查看文件不会自动勾选。代码、交付包或演练记录变化后需要重新审阅。</small>

@@ -11,7 +11,7 @@ import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-pro
 import {checkedPrivateBatchReport, readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
 import {checkedBatchArchive, prepareBatchArchive, readBatchArchive, submitBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
-import {agentReviewEvidencePath,publicationSelectorInput,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {agentReviewEvidencePath,publicationSelectorInput,publicationPreflightPath,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
 import {advanceCloudV3Rehearsal,bindCloudV3Consumption,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,rebindCloudV3PreparedSource,submitCloudV3Publication} from "../scripts/start-cloud-v3-case.mjs";
 import {firstCloudCheckpointBinding} from "../scripts/first-cloud-v3-window.mjs";
@@ -102,6 +102,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent resume-background --id TASK_ID --version CURRENT_VERSION --confirm [--confirm-model-retry]
   shuduo agent stop-background --id TASK_ID --confirm
   shuduo agent publication --id AGENT_TASK_ID [--source-kind AGENT|MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
+  shuduo agent publication-preflight --id AGENT_TASK_ID --source-kind AGENT --source-run-id RUN_ID --package-digest SHA256 --verification-id ID
   shuduo agent publish --id AGENT_TASK_ID --file REVIEW_JSON [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --request-id ORIGINAL_REQUEST_ID]
   shuduo agent stop-publication --id AGENT_TASK_ID [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
     人工来源必须指定运行、包摘要和演练；停止还须指定发布编号。四项审阅来自 REVIEW_JSON，不自动批准或重试；发布重试沿用 --request-id。
@@ -125,6 +126,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   分布批准/回滚需 --distribution-consent 已审阅确认JSON文件；读取不自动确认。
   shuduo releases approvals
   shuduo releases approve --package-id PACKAGE_ID --package-digest SHA256 --review-id REVIEW_ID
+  基金 Agent 本机批准和激活使用 --fund-consent 已明确确认的预检JSON文件。
   shuduo releases list
   shuduo releases show --id RELEASE_ID
   shuduo releases publish --approval-id APPROVAL_ID [--trigger-after-seconds 5 --interval-seconds 15 --run-count 2]
@@ -673,9 +675,10 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       validateManualDeliveryFlags(parsed,argv);
       result = parsed.options.source_kind==='MANUAL'?await readManualDeliveryWorkflow(client,{taskId:required(parsed.options,'id'),sourceRunId:required(parsed.options,'source_run_id')}):await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
     }
-    else if (resource === "agent" && ["publication","publish","stop-publication"].includes(action)) {
+    else if (resource === "agent" && ["publication","publication-preflight","publish","stop-publication"].includes(action)) {
       const flags=publicationCliOptions(argv,parsed.options,action),taskId=required(parsed.options,"id");
       if(action==="publication")result=await client.request(publicationReadPath(taskId,publicationSelectorInput(flags)));
+      else if(action==="publication-preflight")result=await client.request(publicationPreflightPath(taskId,publicationSelectorInput(flags)));
       else if(action==="stop-publication"){
         const selector=publicationSelectorInput(flags);
         if(Object.keys(selector).length&&!selector.releaseId)throw Error("停止指定版本必须提供 --release-id，不选择其他历史发布");
@@ -820,7 +823,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: {
             packageDigest: required(parsed.options, "package_digest"),
             reviewId: required(parsed.options, "review_id"),
-            ...(parsed.options.distribution_consent?{distributionConsent:jsonObject(readFileSync(parsed.options.distribution_consent,"utf8"),"分布发布批准")}:{})
+            ...(parsed.options.distribution_consent?{distributionConsent:jsonObject(readFileSync(parsed.options.distribution_consent,"utf8"),"分布发布批准")} : {}),
+            ...(parsed.options.fund_consent?{fundConsent:jsonObject(readFileSync(parsed.options.fund_consent,"utf8"),"基金发布批准")} : {}),
           },
         },
       );
@@ -835,7 +839,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         method: "POST",
         body: {
           approvalId: required(parsed.options, "approval_id"),
-          ...(parsed.options.distribution_consent?jsonObject(readFileSync(parsed.options.distribution_consent,"utf8"),"分布发布批准").scheduleSpec:{triggerAfterSeconds:Number(parsed.options.trigger_after_seconds??5),intervalSeconds:Number(parsed.options.interval_seconds??15),runCount:Number(parsed.options.run_count??2)}),
+          ...(parsed.options.fund_consent ? jsonObject(readFileSync(parsed.options.fund_consent,"utf8"),"基金发布批准").scheduleSpec :
+            parsed.options.distribution_consent ? jsonObject(readFileSync(parsed.options.distribution_consent,"utf8"),"分布发布批准").scheduleSpec :
+            {triggerAfterSeconds:Number(parsed.options.trigger_after_seconds??5),intervalSeconds:Number(parsed.options.interval_seconds??15),runCount:Number(parsed.options.run_count??2)}),
         },
       });
     else if (resource === "releases" && action === "cancel")

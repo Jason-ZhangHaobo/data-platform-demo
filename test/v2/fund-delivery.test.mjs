@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createDeliveryPackage, validateDeliveryPackage, deliveryFiles, sha256, computeManifestDigest, unpackDeliveryPackage } from '../../src/v2/delivery.mjs';
+import { createDeliveryPackage, validateDeliveryPackage, deliveryFiles, sha256, computeManifestDigest, unpackDeliveryPackage, resolveDeliverySchedule } from '../../src/v2/delivery.mjs';
 import { verifyDeliveryDirectory } from '../../src/v2/delivery-runner.mjs';
 import { fundContext, fundReferenceSql } from '../../src/v2/fund-lookthrough.mjs';
 import { fundContextIds, fundRehearsalAt } from "../../src/v2/fund-contexts.mjs";
@@ -16,7 +16,8 @@ import { LocalArtifactStore } from '../../src/v2/artifact-store.mjs';
 import { loadDeliveryDirectory } from '../../src/v2/delivery.mjs';
 import { resolvePublishedReportSource } from '../../src/v2/published-report-source.mjs';
 import { resolveFundConsumptionSource, resolveFundReportPublication } from '../../src/v2/fund-consumption-source.mjs';
-import { assertFundConsent } from '../../src/v2/fund-publication.mjs';
+import { assertFundConsent, fundAgentPublicationPreflight } from '../../src/v2/fund-publication.mjs';
+import { sameLocalPublicationLane } from '../../src/v2/distribution-publication.mjs';
 import { bindSqlRequirementRevision, sqlRequirementBasis, sqlRequirementBinding, sqlRequirementReport } from '../../src/v2/sql-requirements.mjs';
 
 function fixture(context = fundContext()) {
@@ -89,12 +90,33 @@ test('fund Agent files freeze the exact successful proposal and preparation for 
     agent.requirements = bindSqlRequirementRevision(sqlRequirementReport({ task: agent, message, context, attempt: 1,
       generated: { model, requirement, requirementProtocol: basis.protocol } }), revision);
     revision.requirementBinding = sqlRequirementBinding(agent.requirements);
-    const bundle = createDeliveryPackage({ agent, run, revision }), plan = validateDeliveryPackage(bundle, bundle.digest);
+    const bundle = { id: randomUUID(), ...createDeliveryPackage({ agent, run, revision }) };
+    const plan = validateDeliveryPackage(bundle, bundle.digest);
     assert.deepEqual(plan.source.attribution, { kind: 'FUND_AGENT_GENERATED', actorId: revision.author,
       originAgentTaskId: taskId, modelMode: mode, preparation: fundPreparation, agentIndependentE2E: false });
     assert.equal(plan.requirements.basis.digest, basis.digest);
     assert.equal(plan.schedule.businessDate.rule, 'previous_trading_day');
-    assert.throws(() => assertFundConsent({ bundle }), { code: 'FUND_AGENT_REHEARSAL_ONLY' });
+    const verification = { ...run, id: randomUUID(), packageId: bundle.id, packageDigest: bundle.digest,
+      mode: 'LOCAL_FILE_REHEARSAL', published: false, schedulerTriggered: false, source: plan.source,
+      testSqlValidation: { passed: true, sqlHash: sha256(bundle.files['tests.sql']) },
+      occurrence: resolveDeliverySchedule(plan, fundRehearsalAt(context.id)) };
+    const review = { id: randomUUID(), packageId: bundle.id, packageDigest: bundle.digest, verificationId: verification.id,
+      reviewer: { id: agent.submittedBy }, status: 'REVIEWED', scope: 'LOCAL_FILE_REVIEW', publicDeploymentApproved: false,
+      attestations: { code: true, assertions: true, deliveryFiles: true, localScope: true } };
+    const input = { bundle, verification, review, localClassicSpark: true, schedulerMode: 'LOCAL_TIMER' };
+    assert.equal(fundAgentPublicationPreflight({ ...input, review: undefined }).ready, false);
+    const preflight = fundAgentPublicationPreflight(input);
+    assert.equal(preflight.ready, true);
+    assert.equal(preflight.modelMode, mode);
+    const consent = { scope: 'LOCAL_TEST_RELEASE', packageDigest: bundle.digest, verificationId: verification.id,
+      businessDate: context.businessDate, scheduleSpec: preflight.scheduleSpec, preflightDigest: preflight.digest,
+      confirmFrozenFictionalData: true };
+    assert.deepEqual(assertFundConsent({ ...input, consent }), consent);
+    assert.throws(() => assertFundConsent({ ...input, consent: { ...consent, preflightDigest: '0'.repeat(64) } }),
+      { code: 'FUND_PUBLICATION_SOURCE_CHANGED' });
+    assert.throws(() => assertFundConsent({ ...input, consent, review: { ...review, reviewer: { id: 'other' } } }),
+      { code: 'FUND_PUBLICATION_SOURCE_CHANGED' });
+    assert.equal(sameLocalPublicationLane(createDeliveryPackage(fixture(context)), bundle), false);
     assert.throws(() => createDeliveryPackage({ agent, run: { ...run, agentTaskId: randomUUID() }, revision }),
       { code: 'FUND_DELIVERY_CONTRACT_MISMATCH' });
     const altered = structuredClone(bundle);
