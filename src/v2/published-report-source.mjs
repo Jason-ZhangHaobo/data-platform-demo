@@ -1,3 +1,6 @@
+import {resolveFundConsumptionSource} from "./fund-consumption-source.mjs";
+import {fundContext} from "./fund-lookthrough.mjs";
+import {fundDapiContract} from "./fund-dapi-contract.mjs";
 import {resolveDistributionReportSource} from './distribution-reports.mjs';
 import {isDeepStrictEqual as same} from 'node:util';
 import {createHash} from 'node:crypto';
@@ -9,11 +12,27 @@ import {publishedReportSource} from './published-report-request.mjs';
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
 const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).filter(k=>v[k]!==undefined).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v);
 export const publishedReportHash=value=>createHash('sha256').update(canonical(value)).digest('hex');
-export function resolvePublishedReportSource({store,project,source,actorId}){
+export function resolvePublishedReportSource({store,project,source,actorId,allowFund=true,timeUnitMs}){
  source=publishedReportSource(source);
  const read=(kind,id)=>{const value=store.get(kind,id,project);if(!value||value.projectId!==project)throw fail(409,'REPORT_SOURCE_UNAVAILABLE','原发布来源缺失，未改用其他批次');return value;};
  const revision=read('revision',source.revisionId),code=read('run',source.runId),release=read('release',source.releaseId),bundle=read('delivery_package',release.packageId),batch=read('release_run',source.batchId);
- if(bundle.manifest?.source?.fundLookthrough)throw fail(422,'REPORT_SOURCE_UNSUPPORTED','基金组合穿透尚未接入报表消费');
+ if (bundle.manifest?.source?.fundLookthrough) {
+  if (!allowFund) throw fail(403, "REPORT_SOURCE_UNSUPPORTED", "基金报表仅在本机 Spark 环境开放");
+  if (source.kind !== "MANUAL" || revision.source !== "MANUAL" || revision.author !== actorId ||
+      revision.manualProvenance?.actorId !== actorId)
+   throw fail(403, "REPORT_SOURCE_OWNER", "基金报表须属于原开发工程师");
+  const { evidence, rows } = resolveFundConsumptionSource({ store, project,
+   selection: { releaseId: source.releaseId, packageDigest: source.packageDigest, batchId: source.batchId }, timeUnitMs });
+  if (!rows || !evidence.eligibleForService || evidence.revisionId !== source.revisionId || evidence.developmentRunId !== source.runId)
+   throw fail(409, "FUND_REPORT_SOURCE_UNPROVEN", "基金报表需要同一版本的真实 Spark 发布结果");
+  const contract = fundDapiContract, context = fundContext();
+  return {
+   asset: { id: "dataset:" + contract.id, versionId: batch.id, evidenceHash: publishedReportHash(rows), fields: contract.fields, outputContractId: contract.id },
+   rows, context: { id: context.id, name: context.name, definition: context.definition }, source,
+   sourceEvidence: { ...evidence, outputContractId: contract.id, sourceRevisionId: revision.id,
+    sourceRunId: code.id, sourceReleaseRunId: batch.id },
+  };
+ }
  if(bundle.manifest?.source?.outputContract)return resolveDistributionReportSource({store,project,source,actorId,hash:publishedReportHash});
  if(source.kind==='MANUAL'){
   if(revision.source!=='MANUAL'||revision.author!==actorId||revision.manualProvenance?.actorId!==actorId)throw fail(403,'REPORT_SOURCE_OWNER','手工报表来源须属于当前工程师');

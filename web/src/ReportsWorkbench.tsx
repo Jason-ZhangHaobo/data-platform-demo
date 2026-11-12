@@ -1,3 +1,4 @@
+import type {ReportSourceEvidence} from "./published-report-read";
 import {distributionReportTemplate} from '../../src/v2/distribution-report-contract.mjs';
 const ReportProvenancePanel=lazy(async()=>({default:(await import('./ReportProvenancePanel')).ReportProvenancePanel}));
 const DistributionReportResults=lazy(async()=>({default:(await import('./DistributionReportResults')).DistributionReportResults}));
@@ -64,7 +65,7 @@ type ReportRun = {
   id: string;
   reportVersionId: string;
   status: string;
-  widgets: WidgetResult[];outputContractId?:string;sourceEvidence?:{modelClassification?:string;engineClassification?:string};
+  widgets: WidgetResult[];outputContractId?:string;sourceEvidence?:ReportSourceEvidence;
   resultHash: string;
   datasetContentHash: string;
   durationMs: number;
@@ -378,5 +379,8 @@ export function ReportWidget({ widget }: { widget: WidgetResult }) {
       state.value = end;
       return state;
     }, { value: 0, colors: [] });
-  return <article className={`report-chart-v2 ${widget.type.toLowerCase()}`}><header><div>{widget.type === "PIE" ? <PieChart size={16} /> : <BarChart3 size={16} />}<strong>{widget.title}</strong></div><small>{widget.aggregation==="VALUE"?"同一客户、同一交易日":`${widget.aggregation}(${widget.field}) BY ${widget.dimension}`}</small></header>{widget.type === "PIE" ? <div className="report-pie-body-v2"><div className="report-donut-v2" style={{ background: `conic-gradient(${stops.colors.join(",")})` }}><span>{series.length}<small>分类</small></span></div><div className="report-legend-v2">{series.map((item, index) => <div key={item.group}><i style={{ background: colors[index % colors.length] }} /><span>{item.group}</span><strong>{widget.field==="market_value_ratio"?`${(Number(item.value)*100).toFixed(4)}%`:item.value}</strong></div>)}</div></div> : <div className="report-bars-v2">{series.map((item, index) => <div key={item.group}><span>{item.group}</span><div><i style={{ width: `${(numberValue(item.value) / max) * 100}%`, background: colors[index % colors.length] }} /></div><strong>{widget.field==="market_value_ratio"?`${(Number(item.value)*100).toFixed(4)}%`:item.value}</strong></div>)}</div>}</article>;
+  const fund = widget.field === "exposure_amount" || widget.field === "exposure_ratio";
+  const displayValue = (value: string) => widget.field === "market_value_ratio" || widget.field === "exposure_ratio"
+    ? `${(Number(value) * 100).toFixed(4)}%` : value;
+  return <article className={`report-chart-v2 ${widget.type.toLowerCase()}`}><header><div>{widget.type === "PIE" ? <PieChart size={16} /> : <BarChart3 size={16} />}<strong>{widget.title}</strong></div><small>{widget.aggregation==="VALUE"?(fund?"同一组合、同一交易日":"同一客户、同一交易日"):`${widget.aggregation}(${widget.field}) BY ${widget.dimension}`}</small></header>{widget.type === "PIE" ? <div className="report-pie-body-v2"><div className="report-donut-v2" style={{ background: `conic-gradient(${stops.colors.join(",")})` }}><span>{series.length}<small>分类</small></span></div><div className="report-legend-v2">{series.map((item, index) => <div key={item.group}><i style={{ background: colors[index % colors.length] }} /><span>{item.group}</span><strong>{displayValue(item.value)}</strong></div>)}</div></div> : <div className="report-bars-v2">{series.map((item, index) => <div key={item.group}><span>{item.group}</span><div><i style={{ width: `${(numberValue(item.value) / max) * 100}%`, background: colors[index % colors.length] }} /></div><strong>{displayValue(item.value)}</strong></div>)}</div>}</article>;
 }

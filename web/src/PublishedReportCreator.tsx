@@ -7,8 +7,8 @@ import type{PublishedReportBinding}from'../../src/v2/published-report-request.mj
 import type{PublishedReportSource}from'./published-report-read';
 type Pending={requestId:string;name:string;source:PublishedReportBinding};
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
-export function PublishedReportCreator({api,source,canCreate,onCreated}:{api:Api;source:PublishedReportSource;canCreate:boolean;onCreated:(receipt:PublishedReportReceipt)=>void}){
- const[name,setName]=useState('财富顾问资产分析报告'),[batchId,setBatchId]=useState(source.batchIds[0]),[pending,setPending]=useState<Pending>(),[receipt,setReceipt]=useState<PublishedReportReceipt>(),[busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[missing,setMissing]=useState(false),[storageBlocked,setStorageBlocked]=useState(false);
+export function PublishedReportCreator({api,source,canCreate,onCreated,defaultName="财富顾问资产分析报告"}:{api:Api;source:PublishedReportSource;canCreate:boolean;defaultName?:string;onCreated:(receipt:PublishedReportReceipt)=>void}){
+ const[name,setName]=useState(defaultName),[batchId,setBatchId]=useState(source.batchIds[0]),[pending,setPending]=useState<Pending>(),[receipt,setReceipt]=useState<PublishedReportReceipt>(),[busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[missing,setMissing]=useState(false),[storageBlocked,setStorageBlocked]=useState(false);
  const alive=useRef(true),key='shuduo:published-report:v1:'+JSON.stringify([source.kind,source.taskId??'',source.releaseId,source.packageDigest,source.revisionId,source.runId]);
  const client={request:(path:string,options?:{body?:unknown;idempotencyKey?:string})=>api<unknown>(path,options?.body,{idempotencyKey:options?.idempotencyKey})};
  const accept=(value:PublishedReportReceipt)=>{setReceipt(value);setMissing(false);if(value.status==='SUCCEEDED'){setNotice('确切批次的快照、报表和实际聚合已核验，结果已回到当前会话。');onCreated(value);}else setNotice(value.error?.message??'原请求已保存，尚未完成；可核对后续接原编号。');};

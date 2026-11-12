@@ -1,8 +1,8 @@
 import {createHash} from 'node:crypto';import {isDeepStrictEqual as same} from 'node:util';
 import {certifiedDistributionSource} from './distribution-service-source.mjs';
 import {normalizedDistributionRows} from './distribution-services.mjs';
-import {distributionMetadataById} from './output-contract-metadata.mjs';
-import {distributionReportTemplate} from './distribution-report-contract.mjs';
+import {fundContext} from "./fund-lookthrough.mjs";
+import {distributionReportTemplate, distributionReportMetadata, fundReportContractId} from "./distribution-report-contract.mjs";
 import {getContext} from './context.mjs';import {verifyOutputRows} from './output-contracts.mjs';
 const fail=()=>Object.assign(Error('分布报表的确切来源、快照或分类结果未确认'),{status:409,code:'DISTRIBUTION_REPORT_UNPROVEN'});
 export function resolveDistributionReportSource({store,project,source,actorId,hash}){
@@ -17,14 +17,42 @@ export function normalizeDistributionReportWidgets(widgets,contractId){
  const template=distributionReportTemplate(contractId);if(!template||!Array.isArray(widgets)||!widgets.length||widgets.length>3||new Set(widgets.map(w=>w.id)).size!==widgets.length)throw fail();
  return widgets.map(w=>{const expected=template.widgets.find(v=>v.id===w.id);if(!expected||!same(expected,w))throw fail();return structuredClone(expected);});
 }
-export function executeDistributionReport({version,snapshot,metadata,hash}){
- const c=distributionMetadataById(version.outputContractId),context=getContext(metadata.contextId);
- if(!c||metadata.outputContractId!==c.id||metadata.contentHash!==snapshot.contentHash||hash(snapshot.rows)!==snapshot.contentHash||snapshot.rowCount!==snapshot.rows.length||metadata.rowCount!==snapshot.rows.length||metadata.sourceEvidence?.agentIndependentE2E!==false||metadata.sourceEvidence.scope!=='LOCAL_TEST_ONLY'||metadata.sourceEvidence.outputContractId!==c.id||metadata.sourceEvidence.sourceReleaseRunId!==metadata.assetVersionId||!verifyOutputRows(snapshot.rows,context))throw fail();
- const definitions=normalizeDistributionReportWidgets(version.widgets,c.id),rows=normalizedDistributionRows(snapshot.rows,c.id);
- const widgets=definitions.map(w=>({...w,evaluatedCount:rows.length,series:rows.map(r=>({group:r[c.dimension],value:String(r[w.field]),partitionKey:createHash('sha256').update(JSON.stringify([r.client_id,r.trade_date])).digest('hex'),clientLabel:r.client_id.slice(0,3)+'***'+r.client_id.slice(-3),tradeDate:r.trade_date,zeroDenominator:rows.filter(v=>v.client_id===r.client_id&&v.trade_date===r.trade_date).every(v=>v.holding_market_value==='0.00')}))}));
- // Independently match every value to the registered case, not to another chart.
- for(const widget of widgets){const expected=context.expected;
-  if(widget.series.length!==expected.length||widget.series.some(item=>!expected.some(r=>item.partitionKey===createHash('sha256').update(JSON.stringify([r.client_id,r.trade_date])).digest('hex')&&item.tradeDate===r.trade_date&&item.zeroDenominator===expected.filter(v=>v.client_id===r.client_id&&v.trade_date===r.trade_date).every(v=>/^0(?:\.0+)?$/.test(String(v.holding_market_value)))&&item.clientLabel===r.client_id.slice(0,3)+'***'+r.client_id.slice(-3)&&item.group===r[c.dimension]&&item.value===String(r[widget.field]))))throw fail();
+export function executeDistributionReport({version,snapshot,metadata,hash}) {
+ const contract = distributionReportMetadata(version.outputContractId), source = metadata.sourceEvidence;
+ const fund = contract?.id === fundReportContractId;
+ const context = fund ? fundContext() : getContext(metadata.contextId);
+ if (!contract || metadata.outputContractId !== contract.id || metadata.contentHash !== snapshot.contentHash ||
+     hash(snapshot.rows) !== snapshot.contentHash || snapshot.rowCount !== snapshot.rows.length ||
+     metadata.rowCount !== snapshot.rows.length || source?.agentIndependentE2E !== false || source.scope !== "LOCAL_TEST_ONLY" ||
+     source.outputContractId !== contract.id || source.sourceReleaseRunId !== metadata.assetVersionId) throw fail();
+
+ const definitions = normalizeDistributionReportWidgets(version.widgets, contract.id);
+ const rows = normalizedDistributionRows(snapshot.rows, contract.id);
+ if (fund) {
+  if (metadata.contextId !== context.id || source.protocol !== "shuduo-fund-consumption-source/v1" ||
+      source.engineClassification !== "LOCAL_SPARK_PROCESS" || source.eligibleForService !== true ||
+      source.businessDate !== context.businessDate || source.batchId !== metadata.assetVersionId ||
+      source.rowCount !== rows.length || metadata.assetEvidenceHash !== hash(rows) ||
+      source.resultDigest !== createHash("sha256").update(JSON.stringify(rows)).digest("hex") ||
+      !same(rows, normalizedDistributionRows(context.expected, contract.id))) throw fail();
+ } else if (!verifyOutputRows(snapshot.rows, context)) throw fail();
+
+ const entity = fund ? "portfolio_id" : "client_id", amount = fund ? "exposure_amount" : "holding_market_value";
+ const partition = row => createHash("sha256").update(JSON.stringify([row[entity],row.trade_date])).digest("hex");
+ const masked = value => value.slice(0,3) + "***" + value.slice(-3);
+ const zero = (values, row) => values.filter(value => value[entity] === row[entity] && value.trade_date === row.trade_date)
+  .every(value => /^0(?:\.0+)?$/.test(String(value[amount])));
+ const widgets = definitions.map(definition => ({ ...definition, evaluatedCount: rows.length, series: rows.map(row => ({
+  group: row[contract.dimension], value: String(row[definition.field]), partitionKey: partition(row),
+  clientLabel: masked(row[entity]), tradeDate: row.trade_date, zeroDenominator: zero(rows, row),
+ })) }));
+ // Compare each displayed value with its independent, registered source row.
+ for (const widget of widgets) {
+  if (widget.series.length !== context.expected.length || widget.series.some(item => !context.expected.some(row =>
+    item.partitionKey === partition(row) && item.tradeDate === row.trade_date &&
+    item.zeroDenominator === zero(context.expected, row) && item.clientLabel === masked(row[entity]) &&
+    item.group === row[contract.dimension] && item.value === String(row[widget.field])))) throw fail();
  }
- return {widgets,distributionValidation:{passed:true,outputContractId:c.id,scope:'LOCAL_TEST_ONLY',agentIndependentE2E:false},sourceEvidence:metadata.sourceEvidence};
+ return { widgets, distributionValidation: { passed: true, outputContractId: contract.id, scope: "LOCAL_TEST_ONLY", agentIndependentE2E: false },
+  sourceEvidence: source };
 }
