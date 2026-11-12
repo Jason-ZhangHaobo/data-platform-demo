@@ -1766,7 +1766,7 @@ export function createV2Server(options = {}) {
         if (!privateSmokeEnabled) throw fail(404, "页面不存在");
         const privateInput = prefetchedPrivateInputs.get(req)??await readPrivateSmokeBody(req);prefetchedPrivateInputs.delete(req);
         if(serviceAgentAccess&&!['PRIVATE_STATUS_V1','PRIVATE_APPLICATION_HTTP_V1',...(serviceAgentEvents?['PRIVATE_AGENT_OBJECT_EVENT_V1']:[])].includes(privateInput.operation))throw Object.assign(fail(403,'服务规划窗口不接受计算、调度或其他私有操作'),{code:'PRIVATE_SERVICE_AGENT_SCOPE_DENIED'});
-        if (developmentAccess?.taskId && !['PRIVATE_STATUS_V1','PRIVATE_AGENT_OBJECT_EVENT_V1'].includes(privateInput.operation))
+        if ((developmentAccess?.taskId || developmentAccess?.requestDigest) && !['PRIVATE_STATUS_V1','PRIVATE_AGENT_OBJECT_EVENT_V1'].includes(privateInput.operation))
           throw targetDenied();
         if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
           throw Object.assign(fail(403, "本次仅开放既有发布结果的接口交付；计算与调度保持关闭。"), { code: "PUBLIC_SERVICE_SCOPE_DENIED" });
@@ -2049,7 +2049,8 @@ export function createV2Server(options = {}) {
                   dataState: { driver: "sqlite", healthy: true },
                 },
           publicReady: false,
-          agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery), eventBackgroundAvailable:Boolean(agentEventDriver), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER"), sqlMaxAttempts:3, sqlTokenBudget:Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) },
+          agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery),
+            requestBindingSupported:Boolean(durableAgent),eventBackgroundAvailable:Boolean(agentEventDriver), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER"), sqlMaxAttempts:3, sqlTokenBudget:Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) },
           validationContract: {
             id: validationContractId,
             fixtureCount: contextIds.length,
@@ -6838,7 +6839,7 @@ export function createV2Server(options = {}) {
         if (isFundContext(context.id) !== fundRequest)
           throw fail(422, "基金 Agent 开发须绑定已保存的基金准备，其他口径不适用");
         if(context.outputContractId&&(!local||durableDevelopment||runnerDescriptor.isolation!=="LOCAL_PROCESS"))throw Object.assign(fail(422,"分布Agent尚未启用云端执行"),{code:"OUTPUT_CONTRACT_LOCAL_ONLY"});
-        if (ingressChannel === "HTTP") assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, options.now?.() ?? Date.now());
+        if (ingressChannel === "HTTP") assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, options.now?.() ?? Date.now(), body);
         const actorId = language === "SPARK_SQL"
           ? auth.sessionFromHeaders(req.headers)?.user.id ?? (local ? "local-engineer" : undefined)
           : local ? "local-engineer" : auth.sessionFromHeaders(req.headers)?.user.id;

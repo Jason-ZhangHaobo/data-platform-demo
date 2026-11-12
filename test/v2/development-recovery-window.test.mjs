@@ -4,9 +4,12 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { developmentRecoveryScope, developmentRecoveryEnvironment, validateDevelopmentRecoveryPlan, runDevelopmentRecoveryOperation, recoveryDigest, recoveryUsageKeys } from '../../scripts/development-recovery-window.mjs';
-import { firstCloudApplicationBinding, firstCloudCheckpointBinding, firstCloudDevelopmentScope, firstCloudWindowReceiptProtocol } from '../../scripts/first-cloud-v3-window.mjs';
+import { firstCloudApplicationBinding, firstCloudCheckpointBinding, firstCloudDevelopmentScope, firstCloudWindowReceiptProtocol,
+  nextCloudDevelopmentScope, nextCloudWindowReceiptProtocol } from '../../scripts/first-cloud-v3-window.mjs';
 import { prepareCloudV3Start } from '../../scripts/start-cloud-v3-case.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
+import { sha256 } from '../../src/v2/delivery.mjs';
+import { currentLiveLifecycleContract, liveLifecyclePlan } from '../../src/v2/live-lifecycle-evaluation.mjs';
 import { fixtureFirstCloudInspection } from './fixtures/first-cloud-application-inspection.mjs';
 
 const time = Date.parse('2026-10-20T08:00:00Z'), stamp = new Date(time).toISOString();
@@ -81,11 +84,46 @@ function harness(plan, options={}) {
       return endpoint.endsWith('/session')?{status:200,body:{authenticated:false,readOnly:true,developmentOnly:open,
         developmentStartsAt:options.differentStart?new Date(time-1).toISOString():current.environmentVariables.V2_PUBLIC_DEVELOPMENT_STARTS_AT,
         developmentExpiresAt:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT,
-        ...(open&&current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID?{developmentTaskOnly:options.targetFlag!==false,...(options.leakTargetId?{developmentTaskId:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID}:{})}:{} )}}
-        :{status:200,body:{spark:{healthVerified:options.health!==false},agentDevelopment:{durableEnabled:true,eventBackgroundAvailable:true}}};
+        ...(open&&current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID?{developmentTaskOnly:options.targetFlag!==false,...(options.leakTargetId?{developmentTaskId:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID}:{})}:{} ),
+        ...(open&&current.environmentVariables.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST&&!options.oldRuntime?{developmentRequestOnly:true}:{})}}
+        :{status:200,body:{spark:{healthVerified:options.health!==false},agentDevelopment:{durableEnabled:true,
+          requestBindingSupported:!options.oldRuntime,eventBackgroundAvailable:true}}};
     }};
   return {io,report,calls,writes,snapshots,current:()=>current,setClock:v=>clock=v};
 }
+
+test('the next case has its own approval and closes back to the same read-only baseline',async t=>{
+  const first=firstFixture(t), {firstCase,...plan}=first;
+  const second=liveLifecyclePlan(2,{contractId:currentLiveLifecycleContract.id}).selectedCases[1];
+  const nextCase={...firstCase,protocol:'SHUDUO_V3_NEXT_CHECKPOINT_BINDING_V1',caseId:second.id,contextId:second.contextId,
+    checkpointDigest:hash('7'),requestKeyHash:hash('8'),
+    requestBodyHash:sha256(JSON.stringify({message:second.request,sql:second.seedSql,contextId:second.contextId})),
+    previousCase:{checkpointDigest:firstCase.checkpointDigest,completionDigest:hash('9'),approvalDigest:plan.binding.approvalDigest,reserveCny:64}};
+  const {firstCaseDigest,...binding}=plan.binding;
+  Object.assign(plan,{scope:nextCloudDevelopmentScope,contextId:second.contextId,nextCase,
+    binding:{...binding,protocol:'NEXT_CLOUD_WINDOW_CONTINUATION_V1',approvalDigest:hash('f'),nextCaseDigest:recoveryDigest(nextCase)}});
+  assert.throws(()=>validateDevelopmentRecoveryPlan({...plan,binding:{...plan.binding,approvalDigest:nextCase.previousCase.approvalDigest}},time));
+  assert.throws(()=>validateDevelopmentRecoveryPlan({...plan,priorReserveCny:63},time));
+  assert.throws(()=>validateDevelopmentRecoveryPlan({...plan,firstCase},time));
+  const legacyPlan=structuredClone(plan);
+  const old=harness(legacyPlan,{oldRuntime:true});
+  await assert.rejects(runDevelopmentRecoveryOperation(legacyPlan,legacyPlan.baseline,old.report,old.io));
+  assert.deepEqual(old.current(),legacyPlan.baseline);
+  assert.equal(old.writes.length,0);
+  assert.equal(old.report.nextCaseReceipt,undefined);
+  const h=harness(plan);
+  await runDevelopmentRecoveryOperation(plan,plan.baseline,h.report,h.io);
+  assert.equal(h.report.nextCaseReceipt.protocol,nextCloudWindowReceiptProtocol);
+  assert.deepEqual(h.report.nextCaseReceipt.checkpoint,nextCase);
+  assert.equal(h.report.firstCaseReceipt,undefined);
+  assert.match(h.report.activated.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST,/^[a-f0-9]{64}$/);
+  assert.equal(h.writes.length,1);
+  const close={...plan,mode:'close',phase:'OPENED',activated:h.report.activated,priorUsage:h.report.cumulativeUsage};
+  const c=harness(close,{current:h.current()});
+  await runDevelopmentRecoveryOperation(close,h.current(),c.report,c.io);
+  assert.deepEqual(c.current(),plan.baseline);
+  assert.equal(c.report.cumulativeUsage.configWrites,2);
+});
 async function opened() {
   const p=fixture(),h=harness(p);await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
   return {p,h,next:{...p,mode:'recycle',phase:'OPENED',activated:h.report.activated,priorUsage:h.report.cumulativeUsage,
@@ -170,7 +208,8 @@ test('workflow supports only environment lifecycle without artifact fetch; exist
   const source=readFileSync(new URL('../../scripts/deploy-development-pilot.mjs',import.meta.url),'utf8');
   const workflow=readFileSync(new URL('../../.github/workflows/deploy-v2-development-pilot.yml',import.meta.url),'utf8');
   assert.match(workflow,/activate, recycle, timers/);assert.match(workflow,/inputs.mode == 'deploy' \|\| inputs.mode == 'stage'/);
-  assert.match(source,/const environmentOnly=firstCase \|\| plan.scope===developmentRecoveryScope/);
+  assert.match(source,/const boundCase = cloudV3DevelopmentScope\(plan.scope\)/);
+  assert.match(source,/const environmentOnly=boundCase \|\| plan.scope===developmentRecoveryScope/);
   assert.match(source,/environmentOnly \? 7200000 : 3600000/);
   assert.match(source,/runDevelopmentRecoveryOperation\(plan, before, report/);
 });

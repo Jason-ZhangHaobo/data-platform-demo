@@ -218,7 +218,20 @@ shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CA
 
 完成核验沿原检查点顺序重读开发、八文件、演练、确切发布和监控。分别用两个原消费计划和报告重新核对 DAPI、XAPI 调用，再核对独立业务预期及原检查点。最多十次受邀 GET，可在只读窗口执行。缺批、错序、摘要变化或回执未匹配均不能生成完成回执。新回执以 0600 保存，绑定原检查点的原字节，原请求编号和检查点保留。
 
-`v3-run` 可省略完成回执，离线查看原评测编号下的 20 个固定案例。有回执时先核对原检查点与确切案例，回环匹配只记本机证据。受邀 HTTPS 完成回执还须绑定原开发窗口、独立验包和两个匹配的消费批次，才会让对应派生案例显示已核验的父版本。报告读取已有证据，不重查远端；`willExecute:false` 和 `executionAuthorized:false` 表示没有执行或授予权限。后续案例的窗口和逐例提交仍需接线。
+`v3-run` 可省略完成回执，离线查看原评测编号下的 20 个固定案例。有回执时先核对原检查点与确切案例，回环匹配只记本机证据。受邀 HTTPS 完成回执还须绑定原开发窗口、独立验包和两个匹配的消费批次，才会让对应派生案例显示已核验的父版本。报告读取已有证据，不重查远端。报告中的 `willExecute:false` 和 `executionAuthorized:false` 分别表示未执行与未授权。
+
+### 续接第二个基础案例
+
+```sh
+shuduo agent v3-prepare-next --checkpoint "$NEXT_CASE_CHECKPOINT" \
+  --first-checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CASE_COMPLETION" --source-revision "$REVIEWED_GIT_SHA"
+shuduo agent v3-start --checkpoint "$NEXT_CASE_CHECKPOINT" --window-binding
+shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CASE_COMPLETION" --next-checkpoint "$NEXT_CASE_CHECKPOINT"
+```
+
+固定第二例为「现金变动」。准备沿原评测编号和开始时间保存独立检查点，冻结确切请求及稳定幂等键。同一次评测的重复准备保持同一键。窗口操作使用 `INVITED_NEXT_V3_DEVELOPMENT_WINDOW_V1` 和确切验包，独立批准后才生成 `nextCaseReceipt`。它核对原预留与新审批摘要，按当前完整账单与配额检查。开启前先在只读状态核对控制面支持确切请求绑定。开启后核对该窗口确实生效，必要时恢复只读。
+
+提交与恢复沿用 `v3-start --confirm` 和 `v3-start --reconcile`，传入第二例检查点和对应窗口回执。运行时限定受邀管理员的确切需求、SQL、口径与幂等键。丢失响应后只用原编号查询。后续开发结果、交付、审阅、监控和消费沿用第二例的检查点。完成后可在 `v3-run` 附加 `--next-completion-file` 核对第二例，其他案例仍在固定目录中保留各自状态。
 
 ### 读取原任务的执行阶段
 

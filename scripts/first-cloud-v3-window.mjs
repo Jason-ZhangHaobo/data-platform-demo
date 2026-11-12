@@ -1,11 +1,15 @@
 import { sha256 } from '../src/v2/delivery.mjs';
-import { checkpointCaseScope, readCheckpoint, uuid } from '../src/v2/live-lifecycle-checkpoint.mjs';
+import { readCheckpoint, uuid } from '../src/v2/live-lifecycle-checkpoint.mjs';
+import { cloudV3CheckpointCase, validCloudV3Predecessor } from '../src/v2/cloud-v3-case-selection.mjs';
 import { currentLiveLifecycleContract, liveLifecyclePlan } from '../src/v2/live-lifecycle-evaluation.mjs';
 import { normalizeSessionBase } from '../src/v2/session-credential.mjs';
 
 export const firstCloudDevelopmentScope = 'INVITED_FIRST_V3_DEVELOPMENT_WINDOW_V1';
 export const firstCloudDevelopmentModes = ['activate','close','rollback'];
 export const firstCloudWindowReceiptProtocol = 'SHUDUO_FIRST_V3_WINDOW_RECEIPT_V2';
+export const nextCloudDevelopmentScope = 'INVITED_NEXT_V3_DEVELOPMENT_WINDOW_V1';
+export const nextCloudWindowReceiptProtocol = 'SHUDUO_NEXT_V3_WINDOW_RECEIPT_V1';
+export const cloudV3DevelopmentScope = scope => scope === firstCloudDevelopmentScope || scope === nextCloudDevelopmentScope;
 const hex = (value,length) => typeof value==='string' && value.length===length && /^[a-f0-9]+$/.test(value);
 const first = () => liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id});
 const requestHash = definition => sha256(JSON.stringify({message:definition.request,sql:definition.seedSql,contextId:definition.contextId}));
@@ -18,23 +22,34 @@ function validOrigin(value) {
   }
 }
 
-export function validFirstCloudBinding(value) {
+function validCloudBinding(value, next) {
   const fields=['protocol','evaluationRunId','caseId','contextId','caseSetDigest','projectId','origin','sourceRevision',
     'checkpointDigest','requestBodyHash','requestKeyHash'];
   if (value?.applicationTree !== undefined) fields.push('applicationTree');
-  const plan=first(),[definition]=plan.selectedCases;
+  if (next) fields.push('previousCase');
+  const plan=next ? liveLifecyclePlan(2,{contractId:currentLiveLifecycleContract.id}) : first();
+  const definition=plan.selectedCases.at(-1);
   return value && typeof value==='object' && !Array.isArray(value) && Object.keys(value).length===fields.length &&
-    fields.every(key=>Object.hasOwn(value,key)) && value.protocol==='SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1' &&
+    fields.every(key=>Object.hasOwn(value,key)) &&
+    value.protocol===(next?'SHUDUO_V3_NEXT_CHECKPOINT_BINDING_V1':'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1') &&
     typeof value.evaluationRunId==='string' && uuid.test(value.evaluationRunId) && value.caseId===definition.id &&
     value.contextId===definition.contextId && value.caseSetDigest===plan.caseSetDigest &&
     typeof value.projectId==='string' && /^[A-Za-z0-9_-]{1,100}$/.test(value.projectId) &&
     validOrigin(value.origin) &&
+    (!next || validCloudV3Predecessor(value.previousCase,value.origin)) &&
     hex(value.sourceRevision,40) && (value.applicationTree===undefined || hex(value.applicationTree,40)) && hex(value.checkpointDigest,64) &&
     value.requestBodyHash===requestHash(definition) && hex(value.requestKeyHash,64);
 }
+export const validFirstCloudBinding = value => validCloudBinding(value,false);
+export const validNextCloudBinding = value => validCloudBinding(value,true);
 
 export function firstCloudApplicationBinding(inspection, checkpoint) {
-  if (!validFirstCloudBinding(checkpoint) || inspection?.protocol !== 'shuduo-control-artifact-inspection/v1' ||
+  if (!validFirstCloudBinding(checkpoint)) return;
+  return cloudWindowApplicationBinding(inspection,checkpoint);
+}
+
+export function cloudWindowApplicationBinding(inspection, checkpoint) {
+  if (!(validFirstCloudBinding(checkpoint)||validNextCloudBinding(checkpoint)) || inspection?.protocol !== 'shuduo-control-artifact-inspection/v1' ||
       inspection.applicationSource !== checkpoint.sourceRevision || !hex(inspection.applicationTree,40) ||
       (checkpoint.applicationTree !== undefined && inspection.applicationTree !== checkpoint.applicationTree) ||
       !hex(inspection.operatorSource,40) || !hex(inspection.buildWorkflowSource,40) ||
@@ -58,19 +73,29 @@ export function firstCloudCheckpointBinding(path) {
 }
 
 export function preparedFirstCloudBinding(state,text) {
-  const {plan,contractId}=checkpointCaseScope(state,state?.evaluationRunId);
-  const [definition]=plan.selectedCases,[item]=state.outcomes,action=item?.actions?.agent;
+  if (state?.caseLimit!==1) throw Object.assign(new Error('须使用原未提交的云端首例检查点'),{safeCode:'FIRST_CLOUD_CHECKPOINT_INVALID'});
+  return preparedCloudBinding(state,text);
+}
+
+export function cloudWindowCheckpointBinding(path) {
+  const {state,text}=readCheckpoint(path,{privateFile:true});
+  return preparedCloudBinding(state,text);
+}
+
+function preparedCloudBinding(state,text) {
+  const {definition,item}=cloudV3CheckpointCase(state), action=item.actions?.agent;
+  const next=state.caseLimit===2;
   const history = state.sourceRebinds ?? [];
   const rebind = Array.isArray(history) ? history.at(-1) : undefined;
-  const binding={protocol:'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1',evaluationRunId:state.evaluationRunId,
+  const binding={protocol:next?'SHUDUO_V3_NEXT_CHECKPOINT_BINDING_V1':'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1',evaluationRunId:state.evaluationRunId,
     caseId:item?.caseId,contextId:definition.contextId,caseSetDigest:state.caseSetDigest,projectId:state.projectId,origin:state.origin,
     sourceRevision:state.reviewedSource,...(rebind ? {applicationTree:rebind.applicationTree} : {}),
     checkpointDigest:sha256(text),requestBodyHash:action?.bodyHash,
-    requestKeyHash:typeof action?.key==='string'&&uuid.test(action.key)?sha256(action.key):undefined};
-  if (contractId!==currentLiveLifecycleContract.id || state.caseLimit!==1 || state.outcomes.length!==1 ||
-      action?.status!=='PREPARED' || action.id!==undefined || item.taskId!==undefined || state.submission!==undefined ||
+    requestKeyHash:typeof action?.key==='string'&&uuid.test(action.key)?sha256(action.key):undefined,
+    ...(next?{previousCase:state.previousCase}:{})};
+  if (action?.status!=='PREPARED' || action.id!==undefined || item.taskId!==undefined || state.submission!==undefined ||
       !Array.isArray(history) || (history.length>0 && (rebind?.to!==state.reviewedSource || !hex(rebind?.applicationTree,40))) ||
-      !validFirstCloudBinding(binding))
-    throw Object.assign(new Error('须使用原未提交的云端首例检查点'),{safeCode:'FIRST_CLOUD_CHECKPOINT_INVALID'});
+      !validCloudBinding(binding,next))
+    throw Object.assign(new Error('须使用原未提交的云端案例检查点'),{safeCode:next?'NEXT_CLOUD_CHECKPOINT_INVALID':'FIRST_CLOUD_CHECKPOINT_INVALID'});
   return binding;
 }
