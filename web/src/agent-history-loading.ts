@@ -16,7 +16,8 @@ export function checkedAgentHistory<T extends HistoryTask>(value:unknown):T[] {
 }
 export function checkedAgentTask<T extends HistoryTask>(value:unknown,expectedId:string):T {
   const invalid=()=>Error("任务回执与原编号或记录结构不匹配，未替换当前任务和代码。");
-  if(!summaryValid(value)||value.id!==expectedId||!record(value)||!Array.isArray(value.attempts))throw invalid();
+  if(!summaryValid(value)||value.id!==expectedId||!record(value)||!Array.isArray(value.attempts)||
+    value.requestBound!==undefined && value.requestBound!==true)throw invalid();
   if(["sql","initialSql","explanation","error","executionMode","mode","sourceKind","createdAt"].some(key=>!optionalText(value[key]))||
     ["revisionId","runId","sourceRunId"].some(key=>value[key]!==undefined&&!identifier(value[key]))||
     value.language!==undefined&&value.language!=="SPARK_SQL"&&value.language!=="PYTHON"||

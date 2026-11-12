@@ -882,6 +882,8 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(reads,originalReads);
   const [task]=f.store.list('agent',PROJECT);
   assert.equal(recovered.taskId,task.id);
+  assert.equal(task.requestBound,true);
+  assert.equal((await f.call('/agent/tasks/'+task.id)).body.requestBound,true);
   assert.equal(recovered.taskUrl,'https://journey.example.invalid/v2/?module=agent-center&task='+task.id);
   assert.equal((await cli(['--reconcile'])).taskUrl,recovered.taskUrl);
   assert.deepEqual(reads,[]);
@@ -914,6 +916,45 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
     ledgerTokens:180,reportedTokens:0,reservedTokens:180,unattributedTokens:0});
   assert.equal(readFileSync(checkpoint,'utf8'),confirmedBytes);
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
+});
+
+test('a request-bound base task must prepare the exact verified version in the workbench',async t=>{
+  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,contextualModel:true});
+  const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
+  const body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
+  const key=randomUUID();
+  f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)));
+  await f.restart();
+  const created=await f.call('/agent/tasks',body,key);
+  assert.equal(created.status,202,created.body.message);
+  assert.equal(created.body.requestBound,true);
+  assert.equal(created.body.derivedFrom,undefined);
+  const taskPath='/agent/tasks/'+created.body.id;
+  const advance=async current=>{
+    const response=await f.call(taskPath+'/advance',{expectedVersion:current.version});
+    assert.equal(response.status,200,response.body.message);
+    return response.body;
+  };
+  let current=await advance(created.body);
+  current=await advance(current);
+  f.complete(f.store.get('run',current.runId,PROJECT).remoteSubmission.prepared);
+  current=await advance(current);
+  const sourceView=(await f.call(taskPath+'/workflow')).body.preparationSource;
+  assert.equal(sourceView.runId,current.runId);
+  assert.equal(sourceView.revisionId,current.revisionId);
+  const beforeFiles=f.counts();
+  assert.equal((await f.call(taskPath+'/prepare-delivery',{},randomUUID())).status,422);
+  assert.equal((await f.call(taskPath+'/prepare-delivery',{expectedSource:{...sourceView,revisionHash:'0'.repeat(64)}},randomUUID())).status,409);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
+  assert.deepEqual(f.counts(),beforeFiles);
+  const preparedFiles=await f.call(taskPath+'/prepare-delivery',{expectedSource:sourceView},randomUUID());
+  assert.equal(preparedFiles.status,202,preparedFiles.body.message);
+  assert.equal(preparedFiles.body.sourcePinned,true);
+  const bundle=f.store.get('delivery_package',preparedFiles.body.packageId,PROJECT);
+  assert.equal(bundle.manifest.source.runId,current.runId);
+  assert.equal(bundle.manifest.source.revisionId,current.revisionId);
+  assert.equal(Object.keys(bundle.files).length,8);
+  assert.deepEqual(f.counts(),beforeFiles);
 });
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
@@ -1795,6 +1836,7 @@ test('an invited exact window binds derivation from the parent through signed re
   assert.equal(created.status,202,created.body.code??created.body.message);
   const original=await f.call('/agent/requests/'+key);
   assert.equal(original.body.id,created.body.id);
+  assert.equal(original.body.requestBound,true);
   assert.deepEqual(original.body.derivedFrom,{...source.derivation,contextId:source.task.contextId,
     validationContractId:source.family.id});
   assert.equal(original.body.runId,undefined);
@@ -1823,6 +1865,7 @@ test('an invited exact window binds derivation from the parent through signed re
   assert.deepEqual(preparation,{revisionId:task.revisionId,revisionHash:evidence.body.development.revisionHash,runId,
     requirementBinding:evidence.body.development.requirementBinding});
   assert.equal((await f.call(taskPath+'/prepare-delivery',{expectedSource:{...preparation,runId:randomUUID()}},randomUUID())).status,409);
+  assert.equal((await f.call(taskPath+'/prepare-delivery',{},randomUUID())).status,422);
   assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
   assert.deepEqual(f.store.get('agent',source.task.id,PROJECT),initialParent);
   assert.deepEqual(f.counts(),before);
