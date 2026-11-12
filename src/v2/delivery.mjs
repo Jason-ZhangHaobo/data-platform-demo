@@ -9,7 +9,7 @@ import { getContext, validationContractId, validationFamilyForContext } from "./
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import {checkedAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 import {frozenSqlRequirements,sqlRequirementBinding,validateFrozenSqlRequirements} from './sql-requirements.mjs';
-import { syncSqlContractId, syncSqlContextId, syncSqlDeliverySource, syncSqlRowsMatch, validateSyncSqlDeliveryContext } from "./sync-sql-input.mjs";
+import { assertSyncSqlOutputSchema, syncSqlContractId, syncSqlContextId, syncSqlDeliverySource, syncSqlRowsMatch, validateSyncSqlDeliveryContext } from "./sync-sql-input.mjs";
 
 export const deliveryFormat = "shuduo-delivery/v1";
 export const deliveryFiles = [
@@ -113,6 +113,7 @@ export function createDeliveryPackage({
     validateSyncSqlDeliveryContext(syncInput, syncContext);
     if (run.validation?.selectedPassed !== true || !syncSqlRowsMatch(run.rows, syncContext))
       throw fail("源 Spark 运行与冻结持仓的独立断言不一致");
+    assertSyncSqlOutputSchema(run.columns);
   } else if (syncContext !== undefined) throw fail("没有原同步批次可供交付");
   const distribution=outputContractForContext(revision?.contextId);
   const fund = isFundContext(revision?.contextId);

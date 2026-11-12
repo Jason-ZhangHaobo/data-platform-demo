@@ -2,7 +2,7 @@ import { isDeepStrictEqual as same } from "node:util";
 import { validateDeliveryPackage } from "./delivery.mjs";
 import { assertSyncSqlRehearsal } from "./delivery-runner.mjs";
 import { assertSyncSqlBatch } from "./sync-sql-publication.mjs";
-import { readSyncSqlInput, syncSqlDeliverySource, syncSqlRowsMatch } from "./sync-sql-input.mjs";
+import { assertSyncSqlOutputSchema, readSyncSqlInput, syncSqlDeliverySource, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 import { assertSqlRequirementPackageSource } from "./sql-requirements.mjs";
 
 export const syncServiceProtocol = "shuduo-sync-sql-consumption-source/v1";
@@ -33,6 +33,7 @@ export function certifiedSyncSqlSource({ store, project, run, enabled, timeUnitM
       !same(input, syncSqlDeliverySource({ agent, run: development, revision }))) throw invalid();
   const context = readSyncSqlInput({ store, project, actorId: revision.author, binding: revision.syncInput });
   if (!same(context, plan.fixtures.context) || !syncSqlRowsMatch(development.rows, context)) throw invalid();
+  assertSyncSqlOutputSchema(development.columns);
   assertSqlRequirementPackageSource(bundle, { agent: input.developmentMode === "MANUAL" ? undefined : agent, run: development, revision });
   const batches = store.list("release_run", project).filter(batch => batch.releaseId === release.id)
     .sort((a, b) => a.sequence - b.sequence);

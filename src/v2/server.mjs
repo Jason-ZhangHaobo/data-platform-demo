@@ -42,7 +42,7 @@ import { fundAgentTaskConsumption } from "./fund-agent-task-consumption.mjs";
 import { localServiceSources } from "./local-service-sources.mjs";
 import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource,assertServicePlanVersions,bindServicePlanProposal,servicePlanDraftMatches,publicServicePlan} from './service-plan-source.mjs';
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
-import { currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlRowsMatch } from "./sync-sql-input.mjs";
+import { assertSyncSqlOutputSchema, currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlColumnsMatch, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlOutputColumns, syncSqlOutputSchemaCode, syncSqlOutputSchemaMessage, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, syncApprovalExpiry, syncSqlReviewDigest } from "./sync-sql-publication.mjs";
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence, syncServiceProtocol, syncSqlServiceSources } from "./sync-sql-service-source.mjs";
@@ -741,6 +741,7 @@ export function createV2Server(options = {}) {
           run.status !== "SUCCEEDED" || run.validation?.selectedPassed !== true ||
           !syncSqlRowsMatch(run.rows, inputs.syncContext))
         throw fail(409, "交付包与原同步批次、代码或开发结果不一致");
+      assertSyncSqlOutputSchema(run.columns);
     }
     if (source?.attribution?.kind === fundAgentAttributionKind || revision?.fundPreparation) {
       const current = assertPreparedFundSource(selected);
@@ -1434,6 +1435,12 @@ export function createV2Server(options = {}) {
         contractId,
         ...(rev.syncInput ? { scope: "SELECTED_SYNC_SNAPSHOT_AND_REGISTERED_FIXTURES" } : {}),
       };
+    if (rev.syncInput && result.status === "SUCCEEDED" && !syncSqlColumnsMatch(result.columns)) {
+      result.status = "VALIDATION_FAILED";
+      result.code = syncSqlOutputSchemaCode;
+      result.error = syncSqlOutputSchemaMessage;
+      result.validation.passed = false;
+    }
     if (run.fundPreparation && result.status === "SUCCEEDED" && !verifiedFundRun({ ...result, contextId: rev.contextId }, rev.contextId))
       throw fail(409, "基金运行未返回登记交易日及独立断言的完整证据");
     if (signal.aborted)
@@ -7090,6 +7097,7 @@ export function createV2Server(options = {}) {
                   message,
                   context: task.syncInput ? { ...context, expected: undefined,
                     tables: context.tables.map(({ name, columns }) => ({ name, columns })) } : context,
+                  ...(task.syncInput ? { outputColumns: syncSqlOutputColumns } : {}),
                   ...(fundPreparation ? { fundBasisDigest: fundPreparation.basisDigest } : {}),
                   ...(task.clarification?{clarification:task.clarification}:{}),
                   currentSql: sql,
@@ -7216,7 +7224,8 @@ export function createV2Server(options = {}) {
                 ? completed.status === "VALIDATION_FAILED"
                   ? "基金独立断言未通过，请检查组合范围、同日权重和敞口计算。"
                   : "Spark 未完成基金 SQL。请核对当前查询的语法、登记字段、参数和只读范围。"
-                : task.syncInput ? "当前 SQL 未通过冻结批次或登记回归断言，请核对输出列、交易日、客户范围与金额聚合。"
+                : task.syncInput ? completed.code === syncSqlOutputSchemaCode ? syncSqlOutputSchemaMessage
+                  : "当前 SQL 未通过冻结批次或登记回归断言，请核对输出列、交易日、客户范围与金额聚合。"
                 : completed.error ?? completed.validation?.issues?.join("；");
             }
             store.update("agent", task.id, PROJECT, {
