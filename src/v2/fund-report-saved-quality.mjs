@@ -30,9 +30,9 @@ export function verifyFundQualityCounts(receipt, rows) {
   return checks;
 }
 
-export function verifySavedFundReportQuality({ store, reportStore, project, actor, requestId, source, context }) {
-  const workflow = createPublishedReportWorkflow({ store, reportStore, project });
-  const { lineage, rows, snapshot, version, run } = workflow.qualitySource(requestId, actor);
+export function verifySavedFundReportQuality({ store, reportStore, project, actor, requestId, source, context, fundSignedExecutionFor, timeUnitMs }) {
+  const workflow = createPublishedReportWorkflow({ store, reportStore, project, fundSignedExecutionFor });
+  const { lineage, rows, snapshot, version, run } = workflow.qualitySource(requestId, actor, timeUnitMs);
   const binding = lineage.source;
   const monitor = source.batches.find(batch => batch.id === source.batchId);
   requireEvidence(binding.kind === 'AGENT' && binding.taskId === source.agentTaskId &&

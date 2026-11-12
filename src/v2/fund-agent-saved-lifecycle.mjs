@@ -98,7 +98,7 @@ async function verifyPages({ manager, read, callIds, type, context, source, chil
 }
 
 export async function verifySavedFundAgentLifecycle({ store, businessStore, project, actor, taskId,
-  requestId, releaseId, packageDigest, dapiCallIds, xapiCallIds, reportEvidence }) {
+  requestId, releaseId, packageDigest, dapiCallIds, xapiCallIds, reportEvidence, fundSignedExecutionFor, timeUnitMs }) {
   requireEvidence([dapiCallIds, xapiCallIds].every(ids => Array.isArray(ids) && ids.length >= 1 && ids.length <= 10), "SELECTION_INVALID");
   const callIds = [...dapiCallIds, ...xapiCallIds];
   requireEvidence([taskId, requestId, releaseId, ...callIds].every(id => typeof id === "string" && uuid.test(id)) &&
@@ -127,7 +127,8 @@ export async function verifySavedFundAgentLifecycle({ store, businessStore, proj
   requireEvidence(dapi.serviceType === "DAPI" && xapi.serviceType === "XAPI" && Array.isArray(xapi.steps) &&
     xapi.steps.length === 2 && serviceVersionConfigValid(dapi) && serviceVersionConfigValid(xapi), "CALL_VERSION_UNPROVEN");
   const children = xapi.steps.map(step => read("data_service_version", step.dapiVersionId));
-  const resolveSource = batchId => resolveFundConsumptionSource({ store, project, selection: { batchId, releaseId, packageDigest } });
+  const resolveSource = batchId => resolveFundConsumptionSource({ store, project, fundSignedExecutionFor,
+    timeUnitMs, selection: { batchId, releaseId, packageDigest } });
   const { evidence: source } = resolveSource(dapi.sourceReleaseRunId);
   requireEvidence(source.agentTaskId === task.id && source.modelMode === task.mode && source.revisionId === task.revisionId &&
     source.developmentRunId === task.runId && source.eligibleForService && source.businessDate === preparation.input.businessDate &&
@@ -151,7 +152,7 @@ export async function verifySavedFundAgentLifecycle({ store, businessStore, proj
   const after = time(monitoring.at(-1).finishedAt);
   const dapiProof = await verifyPages({ manager, read, callIds: dapiCallIds, type: "DAPI", context, source, version: dapi, after });
   const xapiProof = await verifyPages({ manager, read, callIds: xapiCallIds, type: "XAPI", context, source, children, version: xapi, after });
-  const savedReport = reportEvidence && verifySavedFundReportQuality({ ...reportEvidence, project, actor, source, context });
+  const savedReport = reportEvidence && verifySavedFundReportQuality({ ...reportEvidence, project, actor, source, context, timeUnitMs });
   const qualityStatus = savedReport?.quality.status;
   const report = {
     protocol: "shuduo-saved-fund-agent-lifecycle/v1",
@@ -161,9 +162,12 @@ export async function verifySavedFundAgentLifecycle({ store, businessStore, proj
     requirement: { requestDigest: preparation.basis.requestDigest, basisDigest: preparation.basis.digest,
       inputDigest: preparation.execution.inputDigest, assertionDigest: preparation.execution.assertionDigest },
     development: { revisionId: task.revisionId, runId: task.runId, attempts, independentlyVerifiedRows: source.rowCount },
-    rehearsal: { verificationId: verification.id, fileCount: deliveryFiles.length, testSqlDigest: source.testSqlDigest, trace },
+    rehearsal: { verificationId: verification.id, fileCount: deliveryFiles.length, testSqlDigest: source.testSqlDigest, trace,
+      ...(plan.source.fundSignedExecution ? {
+        signedWorker: { ...plan.source.fundSignedExecution, signatureVerified: true, rehearsalDigest: review.fundRehearsalDigest },
+      } : {}) },
     review: { reviewId: review.id, approvalId: approval.id, approvalScope: approval.scope, humanReviewVerified: false },
-    publication: { resultDigest: source.resultDigest, monitoring },
+    publication: { resultDigest: source.resultDigest, monitoring, ...(timeUnitMs !== undefined ? { testClockUnitMs: timeUnitMs } : {}) },
     consumption: { dapi: dapiProof, xapi: xapiProof, xapiExposureRows: source.rowCount },
     ...savedReport,
     provenance: { modelMode: task.mode, engineClassification: source.engineClassification, newModelCalls: 0, newSparkRuns: 0,
