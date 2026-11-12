@@ -45,6 +45,7 @@ import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs"
 import { currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, syncApprovalExpiry, syncSqlReviewDigest } from "./sync-sql-publication.mjs";
+import { certifiedSyncSqlSource, syncServiceProtocol, syncSqlServiceSources } from "./sync-sql-service-source.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
 import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress,serviceAgentSession} from './private-service-agent-policy.mjs';
 import { privateServiceSourceSelection } from "./private-service-routes.mjs";
@@ -1112,16 +1113,13 @@ export function createV2Server(options = {}) {
     return resolveFundConsumptionSource({ store, project: PROJECT, fundSignedExecutionFor,
       selection: { batchId: run.id, releaseId: run.releaseId, packageDigest: run.packageDigest }, timeUnitMs: releaseTimeUnitMs });
   };
+  const certifySyncService = run => certifiedSyncSqlSource({ store, project: PROJECT, run, enabled: syncSqlLocal, timeUnitMs: releaseTimeUnitMs });
   const dataServices = new DataServiceManager({
     store,
     businessStore,
     project: PROJECT,
-    releaseRunFor: id => {
-      const run = store.get("release_run", id, PROJECT);
-      if (run && (run.source?.syncInput || run.releaseId && store.get("release", run.releaseId, PROJECT)?.syncInput))
-        throw fail(422, "冻结持仓发布批次的接口授权消费待接入");
-      return run;
-    },
+    releaseRunFor: id => typeof id === "string" ? store.get("release_run", id, PROJECT) : undefined,
+    syncSourceFor: certifySyncService,
     fundSourceFor,
     distributionSourceFor: run=>{const proof=certifiedDistributionSource({store,project:PROJECT,run});if(proof&&!local)throw fail(422,"分布消费仅本机已核验来源");return proof;},
     now: options.now,
@@ -1634,13 +1632,15 @@ export function createV2Server(options = {}) {
       const assertFundServiceSourceAccess = (batchId) => {
         const run = typeof batchId === "string" && store.get("release_run", batchId, PROJECT);
         const bundle = typeof run?.packageId === "string" && store.get("delivery_package", run.packageId, PROJECT);
-        if (bundle?.manifest?.source?.attribution?.kind === fundAgentAttributionKind)
+        if (bundle?.manifest?.source?.syncInput || bundle?.manifest?.source?.attribution?.kind === fundAgentAttributionKind)
           requireDeliveryEvidence("release_run", run);
       };
       const assertFundServiceInputAccess = (type, body) => {
         if (type === "DAPI") return assertFundServiceSourceAccess(body.sourceReleaseRunId);
         if (Array.isArray(body.steps) && body.steps.length <= 5) for (const step of body.steps) {
-          const child = typeof step?.dapiVersionId === "string" && store.get("data_service_version", step.dapiVersionId, PROJECT);
+          const dapi = typeof step?.dapiId === "string" && store.get("data_service", step.dapiId, PROJECT);
+          const versionId = step?.dapiVersionId ?? dapi?.publishedVersionId;
+          const child = typeof versionId === "string" && store.get("data_service_version", versionId, PROJECT);
           assertFundServiceSourceAccess(child?.sourceReleaseRunId);
         }
       };
@@ -1648,6 +1648,13 @@ export function createV2Server(options = {}) {
         for (const version of [service.currentVersion, service.publishedVersion])
           if (version) assertFundServiceInputAccess(service.serviceType, version);
       };
+      const canReadService = service => {
+        try { assertFundServiceAccess(service); return true; }
+        catch (error) { if (error.status === 403) return false; throw error; }
+      };
+      const visibleServices = type => dataServices.list(type).filter(canReadService);
+      const syncSourcesFor = selection => syncSqlServiceSources({ store, project: PROJECT, selection,
+        canRead: run => canReadDelivery("release_run", run), certify: certifySyncService });
       const deliveryReceipt = item => {
         const {verification} = workflowDeliveryEvidence(item);
         const rehearsal = storedFileRehearsal(item,verification);
@@ -2165,6 +2172,9 @@ export function createV2Server(options = {}) {
             openService[2],
             req.headers.authorization,
             Object.fromEntries(url.searchParams),
+            { assertAccess: ({version}) => {
+              if (version.sourceEvidence?.protocol === syncServiceProtocol) requireSyncSqlLocal(req);
+            } },
           ),
         );
       }
@@ -4800,6 +4810,7 @@ export function createV2Server(options = {}) {
           requireDurableAgentOwner(agent,req);
         }
         return json(res,200,[...localServiceSources({store,project:PROJECT,selection}),...distributionServiceSources({store,project:PROJECT,selection}),
+          ...syncSourcesFor(selection),
           ...fundAgentServiceSources({store,project:PROJECT,selection,timeUnitMs:releaseTimeUnitMs,fundSignedExecutionFor})]);
       }
       if (path === "/api/v2/data-services/task-evidence" && method === "GET") {
@@ -4809,20 +4820,22 @@ export function createV2Server(options = {}) {
           throw fail(422, "需提供任务编号与确切包摘要");
         const {taskId,packageDigest,releaseId,callIdDigest}=selected;
         const agent = get("agent", taskId); requireDurableAgentOwner(agent, req);
-        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, callIdDigest, manager: dataServices, timeUnitMs: releaseTimeUnitMs, fundSignedExecutionFor }));
+        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, callIdDigest, manager: dataServices, timeUnitMs: releaseTimeUnitMs, fundSignedExecutionFor, syncSourcesFor }));
       }
       if (path === "/api/v2/data-services/dapis" && method === "GET")
-        return json(res, 200, dataServices.list("DAPI"));
+        return json(res, 200, visibleServices("DAPI"));
       if (path === "/api/v2/data-services/xapis" && method === "GET")
-        return json(res, 200, dataServices.list("XAPI"));
+        return json(res, 200, visibleServices("XAPI"));
       if (path === "/api/v2/data-services/applications" && method === "GET")
-        return json(res, 200, dataServices.listApplications());
-      if (path === "/api/v2/data-services/calls" && method === "GET")
+        return json(res, 200, dataServices.listApplications().filter(app => app.serviceIds.every(id => canReadService(dataServices.detail(id)))));
+      if (path === "/api/v2/data-services/calls" && method === "GET") {
+        const ids = new Set(visibleServices().map(service => service.id));
         return json(
           res,
           200,
-          dataServices.listCalls(url.searchParams.get("service_id") ?? undefined),
+          dataServices.listCalls(url.searchParams.get("service_id") ?? undefined).filter(call => ids.has(call.serviceId)),
         );
+      }
       const servicePlanRequest=path.match(/^\/api\/v2\/data-services\/agent\/requests\/([a-f0-9-]+)$/);
       if(servicePlanRequest&&method==='GET'){
         if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(servicePlanRequest[1]))throw fail(422,'原规划请求编号不合法');
@@ -4883,7 +4896,7 @@ export function createV2Server(options = {}) {
                 ),
               generated = await servicePlanner({
                 message,
-                services: frozenContext?.services??dataServices.list(),
+                services: frozenContext?.services??visibleServices(),
                 releaseRuns,
                 ...(frozenContext?{sourceContext:frozenContext.sourceContext}:{}),
                 signal,

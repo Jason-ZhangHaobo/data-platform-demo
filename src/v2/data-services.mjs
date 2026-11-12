@@ -9,6 +9,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { validateDeliveryPackage, sha256, validationMatchesFamily } from "./delivery.mjs";
+import { syncServiceProtocol } from "./sync-sql-service-source.mjs";
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -24,6 +25,9 @@ const canonical = (value) =>
           )
       : value,
   );
+const isSync = version => version?.sourceEvidence?.protocol === syncServiceProtocol;
+const syncChanged = () => fail(409, "冻结持仓接口的来源、固定版本或查询结果已变化", "SYNC_SERVICE_SOURCE_CHANGED");
+const sameSyncEvidence = (a, b) => a && b && serviceHash(a) === serviceHash(b);
 export const serviceHash = (value) =>
   createHash("sha256").update(canonical(value)).digest("hex");
 export function serviceVersionConfigValid(version) {
@@ -301,6 +305,7 @@ export class DataServiceManager {
     verifySource,
     distributionSourceFor,
     fundSourceFor,
+    syncSourceFor,
     now = () => Date.now(),
     executeDapi,
     contractGate,
@@ -314,6 +319,7 @@ export class DataServiceManager {
     this.verifySource = verifySource;
     this.distributionSourceFor=distributionSourceFor;
     this.fundSourceFor = fundSourceFor;
+    this.syncSourceFor = syncSourceFor;
     this.contractGate = contractGate;
     this.now = now;
     this.executeDapi =
@@ -370,7 +376,7 @@ export class DataServiceManager {
       text(input.sourceReleaseRunId, "源发布批次", 3, 80),
     );
     this.#assertReleaseRun(releaseRun);
-    const fund = this.#fundSource(releaseRun), source = fund ?? this.#distribution(releaseRun);
+    const fund = this.#fundSource(releaseRun), source = fund ?? this.#distribution(releaseRun), sync = this.#syncSource(releaseRun);
     const fields = source ? distributionFields(source.outputContractId, input.fields) : normalizeFields(input.fields);
     const snapshot = this.businessStore.materialize(
         `release-run:${releaseRun.id}`,
@@ -394,6 +400,7 @@ export class DataServiceManager {
         snapshotId: snapshot.id,
         snapshotHash: snapshot.contentHash,
         ...(source ? { outputContractId: source.outputContractId, sourceEvidence: source.sourceEvidence } : {}),
+        ...(sync ? { sourceEvidence: sync.sourceEvidence } : {}),
         fields,
         timeoutMs,
         rateLimitPerMinute,
@@ -416,8 +423,9 @@ export class DataServiceManager {
         text(input.sourceReleaseRunId, "源发布批次", 3, 80),
       );
     this.#assertReleaseRun(releaseRun);
-    const fund = this.#fundSource(releaseRun), source = fund ?? this.#distribution(releaseRun);
+    const fund = this.#fundSource(releaseRun), source = fund ?? this.#distribution(releaseRun), sync = this.#syncSource(releaseRun);
     const prior = this.#version(service.currentVersionId);
+    if ((sync || isSync(prior)) && !sameSyncEvidence(sync?.sourceEvidence, prior.sourceEvidence)) throw syncChanged();
     const fields = source ? distributionFields(source.outputContractId, input.fields ?? prior.fields) : normalizeFields(input.fields ?? prior.fields);
     if(prior.outputContractId!==source?.outputContractId)throw fail(409,'服务版本不能隐式切换输出粒度','OUTPUT_GRAIN_CHANGED');
     const snapshot = this.businessStore.materialize(
@@ -436,6 +444,7 @@ export class DataServiceManager {
         snapshotId: snapshot.id,
         snapshotHash: snapshot.contentHash,
         ...(source ? { outputContractId: source.outputContractId, sourceEvidence: source.sourceEvidence } : {}),
+        ...(sync ? { sourceEvidence: sync.sourceEvidence } : {}),
         fields,
         timeoutMs: integer(
           input.timeoutMs,
@@ -485,7 +494,7 @@ export class DataServiceManager {
         steps,
         ...(composition??{}),
         scope: this.scope,
-        joinKey: composition?.groupKeys[0] ?? "client_id",
+        joinKey: composition?.groupKeys?.[0] ?? "client_id",
         timeoutMs,
         rateLimitPerMinute,
         parameterSchema: {
@@ -504,11 +513,11 @@ export class DataServiceManager {
       prior = this.#version(service.currentVersionId),
       steps=input.steps===undefined?prior.steps:this.#steps(input.steps),
       composition=this.#xapiComposition(steps.map(s=>this.#version(s.dapiVersionId)),steps),
-      version = (()=>{if(prior.outputContractId!==composition?.outputContractId)throw fail(409,'组合版本不能隐式切换粒度','OUTPUT_GRAIN_CHANGED');return this.#createVersion(service, {
+      version = (()=>{if((isSync(prior)||isSync(composition))&&!sameSyncEvidence(prior.sourceEvidence,composition?.sourceEvidence))throw syncChanged();if(prior.outputContractId!==composition?.outputContractId)throw fail(409,'组合版本不能隐式切换粒度','OUTPUT_GRAIN_CHANGED');return this.#createVersion(service, {
         steps,
         ...(composition??{}),
         scope: this.scope,
-        joinKey: composition?.groupKeys[0] ?? "client_id",
+        joinKey: composition?.groupKeys?.[0] ?? "client_id",
         timeoutMs: integer(
           input.timeoutMs,
           "超时时间",
@@ -627,6 +636,7 @@ export class DataServiceManager {
         "SERVICE_TEST_REQUIRED",
       );
     const dataVersions=version.serviceType==='DAPI'?[version]:version.steps.map(step=>this.#version(step.dapiVersionId));
+    this.#syncVersion(version);
     for(const dataVersion of dataVersions){
       this.#assertFundVersion(dataVersion);
       const snapshot=this.businessStore.snapshotEvidence(dataVersion.snapshotId);
@@ -668,6 +678,7 @@ export class DataServiceManager {
     const service=this.#service(serviceId),version=this.#version(text(versionId,'版本编号',3,80));
     if(version.serviceId!==service.id||!['PUBLISHED','RETIRED'].includes(version.status))throw fail(409,'只能切换已发布历史版本','INVALID_VERSION');
     const dataVersions=version.serviceType==='DAPI'?[version]:version.steps.map(step=>this.#version(step.dapiVersionId));
+    this.#syncVersion(version);
     for(const v of dataVersions){this.#assertFundVersion(v);const evidence=this.businessStore.snapshotEvidence(v.snapshotId);if(!evidence?.integrityVerified||evidence.contentHash!==v.snapshotHash)throw fail(409,'目标版本源快照缺失或变化，不能切换','SOURCE_SNAPSHOT_UNAVAILABLE');}
     return this.contractGate?.evaluate({service,version,dataVersions,action:'ACTIVATE'});
   }
@@ -709,10 +720,19 @@ export class DataServiceManager {
       new Set(serviceIds).size !== serviceIds.length
     )
       throw fail(400, "应用必须授权1—20个不重复的数据服务", "INVALID_GRANTS");
+    const grants = [];
     for (const id of serviceIds) {
       const service = this.#service(id);
       if (service.status !== "PUBLISHED")
         throw fail(409, "应用只能授权已发布的数据服务", "UNPUBLISHED_GRANT");
+      const version = this.#version(service.publishedVersionId);
+      const proof = this.#syncVersion(version);
+      if (proof) grants.push({ id, versionId: version.id, evidence: proof.sourceEvidence });
+    }
+    if (grants.length) {
+      if (grants.length !== serviceIds.length || grants.some(grant => !sameSyncEvidence(grant.evidence, grants[0].evidence)))
+        throw fail(409, "冻结持仓应用须授权同一确切发布批次的服务版本", "SYNC_SERVICE_MIXED_GRANTS");
+      expiresAt ??= new Date(this.now() + 3600000).toISOString();
     }
     if (expiresAt !== undefined && (typeof expiresAt !== "string" ||
         !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= this.now() ||
@@ -727,6 +747,7 @@ export class DataServiceManager {
         tokenPrefix: token.slice(0, 17),
         createdBy: "local-engineer",
         scope: this.scope,
+        ...(grants.length ? { versionGrants: Object.fromEntries(grants.map(grant => [grant.id, grant.versionId])) } : {}),
         ...(expiresAt === undefined ? {} : { expiresAt }),
       });
     return { application: publicApp(app, this.now()), token, tokenShownOnce: true };
@@ -776,9 +797,9 @@ export class DataServiceManager {
         call.statusCode !== 200 || !Number.isSafeInteger(call.rowCount) || call.rowCount < 1 || !/^[a-f0-9]{64}$/.test(call.resultHash ?? ""))
       throw unavailable();
     const version = this.#version(call.serviceVersionId);
-    const historical = pinnedVersionId !== undefined;
+    const historical = pinnedVersionId !== undefined || isSync(version);
     const children = historical ? this.#assertHistoricalCall(service, version, call) : [];
-    const response = await this.#execute({ ...version, timeoutMs: Math.min(version.timeoutMs, 1000) }, queryFor(version.outputContractId, call.parameters));
+    const response = await this.#execute(version, queryFor(version.outputContractId, call.parameters), Math.min(version.timeoutMs, 1000));
     if (historical) {
       const savedCall = this.store.get("service_call", call.id, this.project), savedVersion = this.#version(version.id);
       if (!savedCall || serviceHash(savedCall) !== serviceHash(call) || savedVersion.configHash !== version.configHash)
@@ -786,9 +807,12 @@ export class DataServiceManager {
       const savedChildren = this.#assertHistoricalCall(service, savedVersion, savedCall);
       if (children.some((child, index) => savedChildren[index]?.configHash !== child.configHash)) throw unavailable();
     }
+    const checkedSync = isSync(version) && this.application(call.applicationId).versionGrants?.[service.id] === version.id &&
+      call.sourceEvidenceHash === serviceHash(version.sourceEvidence) && call.paginationHash === serviceHash(response.pagination);
     return { callId: call.id, versionId: version.id, configHash: version.configHash, rowCount: call.rowCount,
       resultHash: call.resultHash,
-      verified: response.data.length === call.rowCount && serviceHash(response.data) === call.resultHash };
+      ...(isSync(version) ? { independentResultVerified: checkedSync } : {}),
+      verified: (!isSync(version) || checkedSync) && response.data.length === call.rowCount && serviceHash(response.data) === call.resultHash };
   }
 
   #assertHistoricalCall(service, version, call) {
@@ -924,6 +948,8 @@ export class DataServiceManager {
           call.outcome !== "RATE_LIMITED" &&
           Date.parse(call.startedAt) >= windowStart,
       ).length;
+    if ((isSync(version) || app.versionGrants) && app.versionGrants?.[service.id] !== version.id)
+      throw fail(403, "应用只获原接口版本授权，请重新核对授权", "SERVICE_VERSION_FORBIDDEN");
     if (used >= version.rateLimitPerMinute) {
       this.#callLog(service, version, app, query, this.now(), {
         outcome: "RATE_LIMITED",
@@ -941,6 +967,7 @@ export class DataServiceManager {
           statusCode: 200,
           rowCount: response.data.length,
           resultHash: serviceHash(response.data),
+          ...(isSync(version) ? { sourceEvidenceHash: serviceHash(version.sourceEvidence), paginationHash: serviceHash(response.pagination) } : {}),
         });
       return {
         ...response,
@@ -995,6 +1022,54 @@ export class DataServiceManager {
   }
 
   #distribution(run){const proof=this.distributionSourceFor?.(run);if(proof&&this.scope!=="LOCAL_TEST_ONLY")throw fail(422,"分布查询尚未开放私有云适配","DISTRIBUTION_SCOPE_DISABLED");return proof;}
+
+  #syncSource(run) {
+    if (!this.syncSourceFor) return;
+    return this.syncSourceFor(run);
+  }
+
+  #syncDapi(version) {
+    const proof = this.syncSourceFor && this.#syncSource(this.releaseRunFor(version.sourceReleaseRunId));
+    if (!proof && !isSync(version)) return;
+    if (!proof || !isSync(version) || !serviceVersionConfigValid(version) || version.outputContractId !== undefined ||
+        !sameSyncEvidence(proof.sourceEvidence, version.sourceEvidence) ||
+        version.snapshotId !== `release-run:${version.sourceReleaseRunId}` ||
+        serviceHash(normalizedServiceSourceRows(proof.expected)) !== version.snapshotHash) throw syncChanged();
+    return proof;
+  }
+
+  #syncVersion(version) {
+    if (!this.syncSourceFor && !isSync(version)) return;
+    if (version.serviceType === "DAPI") return this.#syncDapi(version);
+    const children = version.steps.map(step => this.#version(step.dapiVersionId));
+    const proof = this.#syncComposition(children);
+    if (!proof && !isSync(version)) return;
+    if (!proof || !isSync(version) || !serviceVersionConfigValid(version) ||
+        !sameSyncEvidence(proof.sourceEvidence, version.sourceEvidence)) throw syncChanged();
+    return { ...proof, children };
+  }
+
+  #syncComposition(children) {
+    const sources = children.map(child => this.#syncDapi(child));
+    const proof = sources.find(Boolean);
+    if (proof && sources.some(source => !sameSyncEvidence(source?.sourceEvidence, proof.sourceEvidence)))
+      throw fail(409, "冻结持仓 XAPI 的子接口须属于同一确切发布批次", "SYNC_SERVICE_MIXED_SOURCES");
+    return proof;
+  }
+
+  #assertSyncResponse(version, query, result, proof) {
+    const current = this.#syncVersion(version);
+    if (!current || !sameSyncEvidence(current.sourceEvidence, proof.sourceEvidence)) throw syncChanged();
+    const rows = normalizedServiceSourceRows(proof.expected).filter(row => !query.clientId || row.client_id === query.clientId);
+    const project = (row, fields) => Object.fromEntries(fields.map(field => [field, row[field]]));
+    const start = (query.page - 1) * query.pageSize;
+    const expected = rows.slice(start, start + query.pageSize).map(row => version.serviceType === "DAPI"
+      ? project(row, version.fields)
+      : { client_id: row.client_id, ...Object.fromEntries(version.steps.map((step, i) =>
+        [step.alias, project(row, proof.children[i].fields.filter(field => field !== "client_id"))])) });
+    const page = { page: query.page, pageSize: query.pageSize, total: rows.length, totalPages: Math.max(1, Math.ceil(rows.length / query.pageSize)) };
+    if (serviceHash(expected) !== serviceHash(result.rows) || serviceHash(page) !== serviceHash(result.pagination)) throw syncChanged();
+  }
 
   #fundSource(run) {
     const source = this.fundSourceFor?.(run);
@@ -1092,8 +1167,9 @@ export class DataServiceManager {
     return steps;
   }
 
-  async #execute(version, query) {
+  async #execute(version, query, timeoutMs = version.timeoutMs) {
     this.#assertFundVersion(version);
+    const sync = this.#syncVersion(version);
     const task =
       version.serviceType === "DAPI"
         ? Promise.resolve().then(() => this.executeDapi(version, query))
@@ -1105,13 +1181,17 @@ export class DataServiceManager {
         new Promise((_, reject) => {
           timer = setTimeout(
             () => reject(fail(504, "数据服务执行超时", "SERVICE_TIMEOUT")),
-            version.timeoutMs,
+            timeoutMs,
           );
           timer.unref?.();
         }),
       ]);
       if (!result || !Array.isArray(result.rows) || !result.pagination)
         throw fail(500, "数据服务执行结果格式不合法", "INVALID_RESULT");
+      if (sync) {
+        this.#assertSyncResponse(version, query, result, sync);
+        return { data: result.rows, pagination: result.pagination, sourceEvidence: sync.sourceEvidence };
+      }
       const contract = snapshotContractById(version.outputContractId);
       if (!contract) return { data: result.rows, pagination: result.pagination };
       const fund = contract.id === fundDapiContract.id;
@@ -1127,6 +1207,8 @@ export class DataServiceManager {
 
   #xapiComposition(children, steps) {
     for (const child of children) this.#assertFundVersion(child);
+    const sync = this.#syncComposition(children);
+    if (sync) return { sourceEvidence: sync.sourceEvidence };
     return distributionComposition(children, steps);
   }
 

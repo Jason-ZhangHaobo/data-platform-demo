@@ -68,9 +68,9 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     app.store.close();
     app = undefined;
   }
-  async function request(path, body, key = "request") {
+  async function request(path, body, key = "request", headers = {}) {
     const response = await fetch(base + path, { method: body === undefined ? "GET" : "POST",
-      headers: { "Content-Type": "application/json", "X-Shuduo-Client": "workbench", "Idempotency-Key": key },
+      headers: { "Content-Type": "application/json", "X-Shuduo-Client": "workbench", "Idempotency-Key": key, ...headers },
       body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: response.status, value: await response.json() };
   }
@@ -220,6 +220,58 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     const replayAfterExpiry = await request("/releases", releaseBody, "sync-activate-after-expiry");
     assert.equal(replayAfterExpiry.value.id, activate.value.id);
     assert.equal(releaseCalls, 3);
+    const sources = await request("/data-services/sources");
+    assert.deepEqual(sources.value.map(source => source.id), batches.map(batch => batch.id));
+    const create = async (type, body) => {
+      const created = await request(`/data-services/${type}s`, body, body.slug);
+      assert.equal(created.status, 201, JSON.stringify(created.value));
+      const path = `/data-services/${type}s/${created.value.id}`;
+      assert.equal((await request(path + "/test", { pageSize: 1 })).status, 200);
+      assert.equal((await request(path + "/publish", { configHash: created.value.currentVersion.configHash })).status, 200);
+      return created.value;
+    };
+    const holdings = await create("dapi", { name:"冻结持仓查询", slug:"sync-holdings", sourceReleaseRunId:batches[0].id,
+      fields:["client_id","holding_market_value","total_assets","security_count"] });
+    const cash = await create("dapi", { name:"冻结现金查询", slug:"sync-cash", sourceReleaseRunId:batches[0].id, fields:["client_id","available_cash"] });
+    const otherBatch = await create("dapi", { name:"第二批现金查询", slug:"sync-cash-second", sourceReleaseRunId:batches[1].id, fields:["client_id","available_cash"] });
+    const parts = child => [{alias:"holdings",dapiId:holdings.id},{alias:"cash",dapiId:child.id}];
+    const mixed = await request("/data-services/xapis", { name:"混批查询", slug:"sync-mixed", steps:parts(otherBatch) });
+    assert.equal(mixed.value.code, "SYNC_SERVICE_MIXED_SOURCES");
+    const xapi = await create("xapi", { name:"冻结客户资产查询", slug:"sync-assets", steps:parts(cash) });
+    const issued = await request("/data-services/applications", {name:"冻结资产消费测试",serviceIds:[holdings.id,xapi.id]}, "sync-app");
+    assert.equal(issued.status, 201);
+    assert.equal(issued.value.application.versionGrants[xapi.id], xapi.currentVersion.id);
+    const bearer = { Authorization: "Bearer " + issued.value.token };
+    const checkedCall = await request("/open/xapis/sync-assets?page=1&page_size=1", undefined, undefined, bearer);
+    assert.equal(checkedCall.status, 200);
+    assert.equal(checkedCall.value.data[0].holdings.total_assets, "2045.07");
+    assert.equal(checkedCall.value.pagination.total, 2);
+    assert.equal((await request("/open/dapis/sync-cash", undefined, undefined, bearer)).status, 403);
+    const otherEngineer = app.store.create("auth_user", PROJECT, {
+      status: "ACTIVE", displayName: "另一测试工程师", email: "other-engineer@example.test",
+      memberships: [{projectId:PROJECT, role:"ENGINEER"}],
+    });
+    const otherCookie = "fictional-other-engineer-session";
+    app.store.create("auth_session", PROJECT, { userId:otherEngineer.id, tokenHash:sha256(otherCookie),
+      status:"ACTIVE",expiresAt:new Date(clock+60000).toISOString() });
+    const otherIdentity = { Cookie:"shuduo_session="+otherCookie };
+    assert.deepEqual((await request("/data-services/sources", undefined, undefined, otherIdentity)).value, []);
+    assert.equal((await request(`/data-services/xapis/${xapi.id}`, undefined, undefined, otherIdentity)).status, 403);
+    const persisted = await app.dataServices.recheckCall(xapi.id, checkedCall.value.callId);
+    assert.equal(persisted.independentResultVerified, true);
+    const holdPath = `/data-services/dapis/${holdings.id}`;
+    const replacement = await request(holdPath + "/versions", { sourceReleaseRunId: batches[0].id, rateLimitPerMinute: 20 }, "replace-frozen-dapi");
+    assert.equal(replacement.status, 201);
+    assert.equal((await request(holdPath + "/test", {})).status, 200);
+    assert.equal((await request(holdPath + "/publish", { configHash: replacement.value.configHash })).status, 200);
+    assert.equal((await request("/open/dapis/sync-holdings", undefined, undefined, bearer)).value.code, "SERVICE_VERSION_FORBIDDEN");
+    assert.equal((await request("/open/xapis/sync-assets", undefined, undefined, bearer)).status, 200);
+    const originalBatch = app.store.get("release_run", batches[1].id, PROJECT);
+    app.store.update("release_run", originalBatch.id, PROJECT, { snapshotHash:"0".repeat(64) });
+    assert.equal((await request("/open/xapis/sync-assets", undefined, undefined, bearer)).status, 409);
+    app.store.update("release_run", originalBatch.id, PROJECT, { snapshotHash:originalBatch.snapshotHash });
+    assert.equal((await request(`/data-services/applications/${issued.value.application.id}/revoke`, {})).status, 200);
+    assert.equal((await request("/open/xapis/sync-assets", undefined, undefined, bearer)).status, 401);
     const record = app.store.get("sync_sql_input", completed.syncInput.snapshotId, PROJECT);
     record.payload.context.expected[0].total_assets = "0.00";
     app.store.update("sync_sql_input", record.id, PROJECT, { payload: record.payload });

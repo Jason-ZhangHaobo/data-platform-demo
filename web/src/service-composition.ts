@@ -6,11 +6,11 @@ type ComposableService = {
 };
 
 export function compositionChoices<T extends ComposableService>(services: T[], options: {
-  privateCloud: boolean; sourceRunId: string; holdingsVersionId: string; cashVersionId: string; outputContractId?:string;
+  privateCloud: boolean; sameBatch?: boolean; sourceRunId: string; holdingsVersionId: string; cashVersionId: string; outputContractId?:string;
 }) {
   const fund = options.outputContractId === fundContractId;
   const scoped=services.filter(s=>s.serviceType==="DAPI"&&s.status==="PUBLISHED"&&s.publishedVersion&&
-    (!options.privateCloud && !fund || Boolean(options.sourceRunId)&&s.publishedVersion.sourceReleaseRunId===options.sourceRunId));
+    (!options.privateCloud && !options.sameBatch && !fund || Boolean(options.sourceRunId)&&s.publishedVersion.sourceReleaseRunId===options.sourceRunId));
   const typed=scoped.filter(s=>s.publishedVersion!.outputContractId===options.outputContractId);
   const holdingsOptions = typed.filter(service => {
     const fields = service.publishedVersion!.fields;

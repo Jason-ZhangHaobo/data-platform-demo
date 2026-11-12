@@ -8,11 +8,12 @@ const agentSource=record=>record&&[undefined,'AGENT'].includes(record.sourceKind
 
 // The HTTP route is local-only; every relationship is rebuilt from stored records.
 // No mutations, credential creation, model calls or Spark execution occur here.
-export async function localTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager,timeUnitMs,fundSignedExecutionFor}) {
+export async function localTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager,timeUnitMs,fundSignedExecutionFor,syncSourcesFor}) {
  if(agent.fundPreparation){
   if(!releaseId)throw Object.assign(Error('基金消费须指定原发布编号和包摘要'),{status:422,code:'FUND_AGENT_RELEASE_REQUIRED'});
   return fundAgentTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager,timeUnitMs,fundSignedExecutionFor});
  }
+ if(agent.syncInput && !releaseId) throw fail();
  if(releaseId!==undefined){
   const stored=store.get('agent',agent.id,project);
   if(!stored||agent.status!=='SUCCEEDED'||!agentSource(agent)||JSON.stringify(agent.attempts)!==JSON.stringify(stored.attempts))throw fail();
@@ -21,13 +22,23 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
    if(callIdDigest!==undefined)throw Object.assign(new Error('分布消费使用原固定批次核验'),{status:422,code:'EXACT_DISTRIBUTION_CALL_UNSUPPORTED'});
    return distributionTaskConsumption({store,project,agent,packageDigest,releaseId,manager});
   }
-  const selection={taskId:agent.id,packageDigest,releaseId},sources=localServiceSources({store,project,selection}),ids=new Set(sources.map(source=>source.id));
+  const sync = selectedPackage?.manifest?.source?.syncInput;
+  if (Boolean(agent.syncInput) !== Boolean(sync)) throw fail();
+  const selection={taskId:agent.id,packageDigest,releaseId},sources=sync ? syncSourcesFor(selection) : localServiceSources({store,project,selection}),ids=new Set(sources.map(source=>source.id));
+  if (sync && sources.length !== 2) throw fail();
   const getRelease=id=>id===releaseId&&sources.length?{...store.get('release',id,project),sourceAgentTaskId:agent.id,sourceKind:'AGENT'}:undefined;
-  return privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,callIdDigest,scope:'LOCAL_TEST_ONLY',services:manager.list(),
+  const report = await privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,callIdDigest,scope:'LOCAL_TEST_ONLY',services:manager.list(),
    getPackage:id=>store.get('delivery_package',id,project),
    ownedService:id=>manager.detail(id),getVersion:id=>store.get('data_service_version',id,project),getRelease,
    source:id=>{if(!ids.has(id))throw fail();return store.get('release_run',id,project);},
    application:id=>store.get('service_app',id,project),calls:id=>manager.listCalls(id),recheckCall:(id,callId,options)=>manager.recheckCall(id,callId,options)});
+  if (!sync || callIdDigest) return report;
+  const verified = (id, type) => report.services.some(service => service.sourceRunIds.length === 1 &&
+    service.sourceRunIds[0] === id && service.serviceType === type && service.status === "VERIFIED" &&
+    service.call?.independentResultVerified && (type === "DAPI" || service.fullAssetComposition));
+  const verifiedBatchIds = [...ids].filter(id => verified(id, "DAPI") && verified(id, "XAPI"));
+  return { ...report, status: verifiedBatchIds.length === 2 && !report.truncated ? "VERIFIED" : "PENDING",
+    verifiedBatchIds, snapshotHash: sync.snapshotHash };
  }
  const attempt=agent.attempts?.at(-1);
  const deliveries=store.list('agent_delivery_task',project).filter(d=>d.sourceAgentTaskId===agent.id&&d.packageDigest===packageDigest&&d.sourceRevisionId===attempt?.revisionId&&d.sourceRunId===attempt?.runId);

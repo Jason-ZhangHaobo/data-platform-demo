@@ -39,7 +39,7 @@ type ReleaseRun = {
   releaseId: string;
   sequence?:number;
   businessDate?: string;
-  source?: { contextId?: string };
+  source?: { syncInput?: unknown; contextId?: string };
   status: string;
   published: boolean;
   schedulerTriggered: boolean;
@@ -58,7 +58,7 @@ type ReleaseRun = {
   sourceKind?:string;sourceAttribution?:string;agentIndependentE2E?:boolean;
   scope?:string;
   sourceRevisionId?:string;sourceRunId?:string;
-  outputContractId?:string;sourceEvidence?:{modelClassification?:string;modelMode?:string;engineClassification?:string};
+  outputContractId?:string;sourceEvidence?:{protocol?:string;modelClassification?:string;modelMode?:string;engineClassification?:string;snapshotHash?:string;businessDate?:string};
 };
 type ServiceVersion = {
   id: string;
@@ -71,7 +71,7 @@ type ServiceVersion = {
   sourceEngineVersion?: string;
   snapshotHash?: string;
   queryTemplate?:string;
-  outputContractId?:string;sourceEvidence?:{modelClassification?:string;engineClassification?:string};
+  outputContractId?:string;sourceEvidence?:{protocol?:string;modelClassification?:string;engineClassification?:string;snapshotHash?:string;businessDate?:string;sourceReleaseRunId?:string};
   fields?: string[];
   steps?: { alias: string; dapiId: string; dapiVersionId: string }[];
   timeoutMs: number;
@@ -319,6 +319,8 @@ export function DataServicesWorkbench({
   let plannedXapiBody: ReturnType<typeof consumptionXapiInput> | undefined,plannedApplicationBody: ReturnType<typeof consumptionApplicationInput> | undefined;
   if(consumptionScope&&scopePlan){try{plannedXapiBody=consumptionXapiInput(consumptionScope,services);}catch{/* Wait for both approved DAPI versions. */}try{plannedApplicationBody=consumptionApplicationInput(consumptionScope,services);}catch{/* Wait for the approved three-service set. */}}
   const sourceContract=distributionMetadataById(eligibleRuns.find(run=>run.id===sourceRunId)?.outputContractId),selectedContract=distributionMetadataById(selected?.currentVersion?.outputContractId);
+  const frozenServiceRelease = Boolean(binding && eligibleRuns.some(run=>run.sourceEvidence?.protocol==="shuduo-sync-sql-consumption-source/v1"));
+  const syncSource = eligibleRuns.find(run=>run.id===sourceRunId&&run.sourceEvidence?.protocol==="shuduo-sync-sql-consumption-source/v1")?.sourceEvidence;
   const isFundSource = eligibleRuns.some(run => run.id === sourceRunId && run.outputContractId === fundContractId);
   const isFundService = selected?.currentVersion?.outputContractId === fundContractId;
   const [fundQuery, setFundQuery] = useState<Record<string, string>>({});
@@ -333,7 +335,7 @@ export function DataServicesWorkbench({
       full: contract.fields.filter(field => !contract.keyFields.includes(field.name)).map(field => field.name) };
     return [...contract.keyFields, ...metrics[choice]];
   }
-  const composition=compositionChoices(scopedDapis,{privateCloud,sourceRunId,holdingsVersionId,cashVersionId,outputContractId:isFundSource ? fundContractId : sourceContract?.id});
+  const composition=compositionChoices(scopedDapis,{privateCloud,sameBatch:Boolean(syncSource),sourceRunId,holdingsVersionId,cashVersionId,outputContractId:isFundSource ? fundContractId : sourceContract?.id});
   useEffect(() => {
     setXapiName(name => {
       if (isFundSource && name === "财富顾问客户资产组合查询") return "基金组合敞口查询";
@@ -350,7 +352,7 @@ export function DataServicesWorkbench({
   const versionContext=`${scopeKey}:${selectedId}:${selected?.currentVersion?.id??""}`;
   const activeVersionRef=useRef(versionContext);activeVersionRef.current=versionContext;
   const planSourceCandidate=binding?{...(binding.manualDeliveryTaskId?{manualDeliveryTaskId:binding.manualDeliveryTaskId}:{taskId:binding.taskId}),packageDigest:binding.packageDigest,releaseId:binding.releaseId,sourceReleaseRunId:sourceRunId}:undefined;
-  const boundPlanSource=!isFundSource&&boundPlannerAllowed&&validServicePlanSource(planSourceCandidate)&&eligibleRuns.some(run=>run.id===sourceRunId)?planSourceCandidate:undefined;
+  const boundPlanSource=!syncSource&&!isFundSource&&boundPlannerAllowed&&validServicePlanSource(planSourceCandidate)&&eligibleRuns.some(run=>run.id===sourceRunId)?planSourceCandidate:undefined;
   const privateContextSource=privateContextAllowed&&validServicePlanSource(planSourceCandidate)&&sourceRead.key===scopeKey&&sourceRead.state==='READY'&&eligibleRuns.some(run=>run.id===sourceRunId)?planSourceCandidate:undefined;
   const privateContextKey=JSON.stringify([scopeKey,privateContextSource??null]),privateContextRef=useRef(privateContextKey);privateContextRef.current=privateContextKey;
   const privateContextState=privateContextRead?.key===privateContextKey?privateContextRead:undefined;
@@ -364,7 +366,7 @@ export function DataServicesWorkbench({
       setPrivateContextRead({key,state:'READY',value});}}
     catch(cause){if(alive.current&&privateContextRef.current===key)setPrivateContextRead({key,state:'ERROR',error:(cause as Error).message});}
   }
-  const recoveryPlanSource=boundPlannerAllowed?servicePlanRecoverySource(binding,typeof window==='undefined'?undefined:window.location.href):undefined,readablePlanSource=boundPlanSource??recoveryPlanSource;
+  const recoveryPlanSource=boundPlannerAllowed&&!frozenServiceRelease?servicePlanRecoverySource(binding,typeof window==='undefined'?undefined:window.location.href):undefined,readablePlanSource=boundPlanSource??recoveryPlanSource;
   const plannerKey=JSON.stringify([scopeKey,readablePlanSource??null]),activePlanner=useRef(plannerKey);activePlanner.current=plannerKey;
   const plannerCurrent=(key:string)=>alive.current&&activePlanner.current===key;
   function serviceSubmission(){
@@ -407,7 +409,7 @@ export function DataServicesWorkbench({
     if(bindingError){setSourceRead({key,state:"ERROR",message:bindingError});return;}
     setSourceRead({key,state:"LOADING"});
     try{
-    const [releaseResults, nextDapis, nextXapis, nextApps, nextCalls, nextPlans, fundRuns] =
+    const [releaseResults, nextDapis, nextXapis, nextApps, nextCalls, nextPlans, fundRuns, syncRuns] =
       await Promise.all([
         api<ReleaseRun[]>(binding?serviceSourcesPath(binding):privateCloud ? "/data-services/sources" + (sourceAgentTaskId ? `?agent_task_id=${encodeURIComponent(sourceAgentTaskId)}` : "") : "/release/runs"),
         api<DataService[]>("/data-services/dapis"),
@@ -416,10 +418,12 @@ export function DataServicesWorkbench({
         api<ServiceCall[]>("/data-services/calls"),
         privateCloud || consumptionScope || bindingDeclared ? Promise.resolve([] as ServiceAgentPlan[]) : api<ServiceAgentPlan[]>("/data-services/agent/plans"),
         runtimeMode === "LOCAL_DEVELOPMENT" && !privateCloud && !bindingDeclared ? api<ReleaseRun[]>("/data-services/fund-sources") : Promise.resolve([] as ReleaseRun[]),
+        runtimeMode === "LOCAL_DEVELOPMENT" && !privateCloud && !bindingDeclared ? api<ReleaseRun[]>("/data-services/sources") : Promise.resolve([] as ReleaseRun[]),
       ]);
     if(!current())return;
-    if(![releaseResults,nextDapis,nextXapis,nextApps,nextCalls,nextPlans,fundRuns].every(Array.isArray))throw Error("服务目录响应不完整；未确认服务、批次、应用或调用数量，请重新读取。");
-    const nextRuns = [...releaseResults.filter(run => !isFundContext(run.source?.contextId)), ...fundRuns];
+    if(![releaseResults,nextDapis,nextXapis,nextApps,nextCalls,nextPlans,fundRuns,syncRuns].every(Array.isArray))throw Error("服务目录响应不完整；未确认服务、批次、应用或调用数量，请重新读取。");
+    const nextRuns = [...releaseResults.filter(run => !isFundContext(run.source?.contextId) && !run.source?.syncInput), ...fundRuns,
+      ...syncRuns.filter(run=>run.sourceEvidence?.protocol==="shuduo-sync-sql-consumption-source/v1")];
     if(binding&&nextRuns.some(run=>!sourceRunMatches(run,binding)))throw Error("发布来源回读与交接包或版本不一致，未采用其他结果。");
     const scopedRuns=pinnedBatch?nextRuns.filter(run=>run.id===pinnedBatch):nextRuns;
     const boundEligible=binding?scopedRuns.filter(run=>sourceRunMatches(run,binding)&&sourceRunEligible(run)):scopedRuns;
@@ -822,7 +826,7 @@ export function DataServicesWorkbench({
           <details><summary>查看来源标识</summary><p>发布 {privateContextState.value.sourceBinding.releaseId} · 批次 {privateContextState.value.sourceBinding.sourceReleaseRunId}</p></details></>}
         <p className="service-context-boundary" role="status">云端自动规划尚未开放。核对上下文不会调用模型、创建方案或发布接口。</p>
       </section>}
-      {!sourceContract&&!isFundSource&&(!privateCloud && !consumptionScope && !bindingDeclared || boundPlannerAllowed) && <section className="service-agent-studio">
+      {!frozenServiceRelease&&!sourceContract&&!isFundSource&&(!privateCloud && !consumptionScope && !bindingDeclared || boundPlannerAllowed) && <section className="service-agent-studio">
         <header>
           <div className="service-agent-icon">
             <Bot size={20} />
@@ -915,7 +919,7 @@ export function DataServicesWorkbench({
               <span className="eyebrow">SERVICE CATALOG</span>
               <h3>服务目录</h3>
             </div>
-            <button className="button" disabled={!canWrite||!!busy||Boolean(consumptionScope&&nextPlannedDapi<0)} onClick={()=>{if(!canWrite)return;setSelectedId("");if(consumptionScope){if(nextPlannedDapi>=0)setPlannedDapiIndex(nextPlannedDapi);return;}if(isFundSource){setProfile("full");setDapiName("基金组合敞口查询");setDapiSlug("fund-portfolio-exposure");return;}const hasHoldings=dapis.some(s=>s.currentVersion?.fields?.includes("holding_market_value")&&(!privateCloud||s.currentVersion.sourceReleaseRunId===sourceRunId));setProfile(hasHoldings?"cash":"holdings");setDapiName(hasHoldings?"客户现金查询":"客户持仓查询");setDapiSlug((hasHoldings?"customer-cash":"customer-holdings")+(sourceAgentTaskId?`-${sourceAgentTaskId.slice(0,8)}`:""));}}>新建 DAPI</button>
+            <button className="button" disabled={!canWrite||!!busy||Boolean(consumptionScope&&nextPlannedDapi<0)} onClick={()=>{if(!canWrite)return;setSelectedId("");if(consumptionScope){if(nextPlannedDapi>=0)setPlannedDapiIndex(nextPlannedDapi);return;}if(isFundSource){setProfile("full");setDapiName("基金组合敞口查询");setDapiSlug("fund-portfolio-exposure");return;}const hasHoldings=dapis.some(s=>s.currentVersion?.fields?.includes("holding_market_value")&&(!privateCloud&&!syncSource||s.currentVersion.sourceReleaseRunId===sourceRunId));setProfile(hasHoldings?"cash":"holdings");setDapiName(hasHoldings?"客户现金查询":"客户持仓查询");setDapiSlug((hasHoldings?"customer-cash":"customer-holdings")+(syncSource?`-${sourceRunId.slice(0,8)}`:sourceAgentTaskId?`-${sourceAgentTaskId.slice(0,8)}`:""));}}>新建 DAPI</button>
           </header>
           {services.length ? (
             services.map((service) => (
@@ -1006,6 +1010,7 @@ export function DataServicesWorkbench({
                 </label>
               </div>
               {!consumptionScope&&<small>{isFundSource ? fundScopeNotice : sourceContract?"客户＋交易日＋分类始终保留；DAPI按分布明细行分页，金额及占比返回精确字符串，不含现金。":fieldScopeNotice}</small>}
+              {syncSource && <p className="agent-dev-notice">冻结持仓 · 业务日 {syncSource.businessDate} · 快照 {syncSource.snapshotHash?.slice(0,12)}。应用令牌锁定当前接口版本。</p>}
               {isFundSource && binding && <p className="agent-dev-notice">绑定原基金 Agent 发布。{eligibleRuns.find(run=>run.id===sourceRunId)?.sourceEvidence?.modelMode==="SYNTHETIC_MODEL"?"上游为模型替身。":""}</p>}
               {sourceContract&&<p className="agent-dev-notice" role="status"><strong>{sourceContract.name} · 本机虚构测试</strong><br/>复用原Spark结果，创建接口不重新计算。上游模型归因保留，当前不计真实模型完整自主E2E。</p>}
               <div className="service-contract-preview">
@@ -1058,6 +1063,9 @@ export function DataServicesWorkbench({
                   <code>{selected.currentVersion?.configHash.slice(0, 12)}</code>
                 </div>
               </div>
+              {selected.currentVersion?.sourceEvidence?.protocol==="shuduo-sync-sql-consumption-source/v1" && <p className="agent-dev-notice">
+                冻结持仓 · 业务日 {selected.currentVersion.sourceEvidence.businessDate} · 批次 {selected.currentVersion.sourceEvidence.sourceReleaseRunId?.slice(0,8)} · 快照 {selected.currentVersion.sourceEvidence.snapshotHash?.slice(0,12)}
+              </p>}
               {!currentPublished && selected.publishedVersion && <div className="service-contract-preview"><span>线上 V{selected.publishedVersion.versionNumber}</span><small>查询端点仍使用原发布版本；当前草稿尚未上线。</small></div>}
               <section className="service-definition">
                 <header>
