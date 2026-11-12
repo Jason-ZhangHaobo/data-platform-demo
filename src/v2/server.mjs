@@ -5800,11 +5800,13 @@ export function createV2Server(options = {}) {
           if (kind==="release_run") return json(res,200,exposeReleaseRun(item));
           const visible=expose(protectedDeliveryPayload(item));
           if (!local && item.sourceKind==="AGENT" && item.reviewDigest &&
-              ["CRITICAL","RECOVERED_WITH_FAILURE"].includes(item.health)) {
+              (item.status==="COMPLETED_CLOUD_TEST" || ["CRITICAL","RECOVERED_WITH_FAILURE"].includes(item.health))) {
             try {
-              const {failureEvidence}=exactPublicationReceipt(store,PROJECT,item,options.now?.()??Date.now());
+              const {failureEvidence,monitoring}=exactPublicationReceipt(store,PROJECT,item,options.now?.()??Date.now());
+              if (monitoring.status==="VERIFIED") return json(res,200,{...visible,monitoringEvidence:{status:monitoring.status,batches:monitoring.batches}});
               if (failureEvidence) return json(res,200,{...visible,failureEvidence});
-            } catch { /* The saved status can be shown while its evidence is unavailable. */ }
+            } catch { /* Preserve the saved status while original evidence is unavailable. */ }
+            if (item.health==="HEALTHY") return json(res,200,{...visible,monitoringEvidence:{status:"UNCONFIRMED"}});
           }
           return json(res,200,visible);
         }

@@ -23,6 +23,7 @@ import {recheckFundRehearsal} from "../../src/v2/fund-rehearsal-recheck.mjs";
 import type {Delivery,Workflow} from "./agent-workflow-read";
 import {checkedAgentPublication,checkedAgentConsumption,checkedExactPublicationReceipt} from "./agent-delivery-evidence-read";
 import {publicationPreflightPath,publicationRequestReceiptPath} from "../../src/v2/publication-request.mjs";
+import {publicationMonitorHref} from "./ops-publication";
 import type {Publication,Release} from "./agent-delivery-evidence-read";
 import {privateReleasePendingLabel} from "../../src/v2/private-release-stage.mjs";
 import {publicationSelector,publicationSelectionKey,publicationReadPath,publicationReleaseMatches,checkedPublication,publicationWriteAllowed,publicationCancellationAllowed,cloudPublicationRequest,createPublicationAttempt} from "./publication-selection";
@@ -147,10 +148,10 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const current = journey.current;
   const firstBatch = batches.find(batch => batch.sequence === 1);
   const secondBatch = batches.find(batch => batch.sequence === 2);
-  const monitorHref = cloud && !manual && publicationReady && journey.publicationCurrent &&
-    release?.reviewDigest && revisionId && batches.length === 2 && firstBatch && secondBatch
-    ? "/v2/?" + new URLSearchParams({module:"ops",taskId,releaseId:release.id,revisionId,
-      firstBatchId:firstBatch.id,secondBatchId:secondBatch.id}) + "#ops-exact-publication"
+  const monitorHref = cloud && !manual && publicationReady && journey.publicationCurrent && !dirty && !handoffBlocked &&
+    release?.reviewDigest && release.packageDigest && release.verificationId && release.sourceRunId && revisionId && batches.length === 2 && firstBatch && secondBatch
+    ? publicationMonitorHref({taskId,releaseId:release.id,revisionId,firstBatchId:firstBatch.id,secondBatchId:secondBatch.id,
+      source:{runId:release.sourceRunId,packageDigest:release.packageDigest,verificationId:release.verificationId,reviewDigest:release.reviewDigest}})
     : undefined;
   const verified = journey.steps.find(step => step.id === "validation")?.state === "DONE";
   const canPrepare = verified && (!pinPreparation || Boolean(workflow?.preparationSource));

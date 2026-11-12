@@ -43,6 +43,7 @@ const ManualDeliveryWorkbench = lazy(async () => ({default:(await import("./Deli
 const RunColumnLineagePanel=lazy(()=>import('./RunColumnLineagePanel'));
 const RunComparisonPanel=lazy(()=>import('./RunComparisonPanel'));
 const StandaloneManualDeliveryPanel=lazy(async()=>({default:(await import('./StandaloneManualDeliveryPanel')).StandaloneManualDeliveryPanel}));
+const OpsPublicationPanel=lazy(async()=>({default:(await import('./OpsPublicationPanel')).OpsPublicationPanel}));
 type Context = { id: string; name: string; definition: string; businessDate?:string; validationFamily?:ValidationFamily; capabilities?:{delivery?:boolean;agentDevelopment?:boolean;fundPreparation?:boolean};outputContract?:{id:string;fields:{name:string;label:string}[]}; tables: { name: string; columns: [string, string][] }[] };
 type SyncSelection = {targetTable:"raw_positions";runId:string;targetHash:string};
 type SyncInput = SyncSelection & {metadataVersionId:string;sourceRevisionId:string;rowCount:number;snapshotId:string;snapshotHash:string};
@@ -66,6 +67,8 @@ type WorkbenchProps = {
 
 export function AgentDevelopmentWorkbench(props: WorkbenchProps) {
   const url = new URL(location.href);
+  if (url.hash === "#agent-publication-history")
+    return <Suspense fallback={<p role="status">正在读取原发布记录…</p>}><OpsPublicationPanel key={url.href} api={props.api} agent /></Suspense>;
   const taskId = url.searchParams.get("task") ?? "";
   const target = agentCallHistoryTarget(url.href, taskId);
   if (target !== undefined)

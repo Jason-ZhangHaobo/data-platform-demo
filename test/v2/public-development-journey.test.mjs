@@ -26,7 +26,7 @@ import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
 import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
 import { createCloudPublication } from '../../src/v2/cloud-publication.mjs';
-import { opsPublicationTarget, readOpsPublication } from '../../web/src/ops-publication.ts';
+import { opsPublicationTarget, publicationMonitorHref, readOpsPublication } from '../../web/src/ops-publication.ts';
 import { checkedAgentPublication, checkedExactPublicationReceipt } from '../../web/src/agent-delivery-evidence-read.ts';
 import { checkedAgentWorkflow, checkedCloudPublicationPreflight } from '../../web/src/agent-workflow-read.ts';
 import { cloudPublicationRequest } from '../../web/src/publication-selection.ts';
@@ -1300,8 +1300,8 @@ test('a killed publication CLI recovers both original batches through signed sch
   const monitoringBefore=f.queueCounts();
   const opsEvidence=await readOpsPublication(monitorReader,monitorTarget);
   assert.deepEqual(monitorReads,['/releases/'+releaseId,'/release/runs/'+firstId,'/release/runs/'+secondId]);
-  const {batches:monitorBatches,...monitorStatus}=opsEvidence;
-  assert.deepEqual(monitorStatus,{status:'COMPLETED_CLOUD_TEST',health:'HEALTHY'});
+  const {batches:monitorBatches,status:monitorStatus,health:monitorHealth,monitoringVerified}=opsEvidence;
+  assert.deepEqual({monitorStatus,monitorHealth,monitoringVerified},{monitorStatus:'COMPLETED_CLOUD_TEST',monitorHealth:'HEALTHY',monitoringVerified:true});
   assert.deepEqual(monitorBatches.map(({serviceHref,reportSource,...batch})=>batch),[
     {id:firstId,sequence:1,status:'SUCCEEDED',schedulerTriggered:true},
     {id:secondId,sequence:2,status:'SUCCEEDED',schedulerTriggered:true},
@@ -1947,6 +1947,24 @@ test('an invited exact window binds derivation from the parent through signed re
     firstBatchId:batchIds[0],secondBatchId:batchIds[1]})+'#ops-exact-publication';
   const monitor=await readOpsPublication(async path=>(await f.call(path)).body,opsPublicationTarget(new URL(monitorHref,f.base).href));
   assert.equal(monitor.health,'HEALTHY');
+  assert.equal(monitor.monitoringVerified,true);
+  const reader=async path=>(await f.call(path)).body;
+  const originalTarget={...opsPublicationTarget(new URL(monitorHref,f.base).href),source:monitor.source};
+  const returnHref=publicationMonitorHref(originalTarget,true);
+  const returnTarget=opsPublicationTarget(new URL(returnHref,f.base).href,true);
+  assert.deepEqual(returnTarget,originalTarget);
+  assert.equal(opsPublicationTarget(new URL(returnHref.replace('&reviewDigest=','&otherDigest='),f.base).href,true),null);
+  await assert.rejects(readOpsPublication(reader,{...returnTarget,source:{...returnTarget.source,packageDigest:'f'.repeat(64)}}),/来源不一致/);
+  await assert.rejects(readOpsPublication(reader,{...returnTarget,source:{...returnTarget.source,verificationId:randomUUID()}}),/来源不一致/);
+  await assert.rejects(readOpsPublication(reader,{...returnTarget,source:{...returnTarget.source,reviewDigest:'f'.repeat(64)}}),/来源不一致/);
+  const originalEvent=f.store.list('monitor_event',PROJECT).find(event=>event.releaseId===releaseId);
+  const readOnlyCounts=f.queueCounts();
+  f.store.update('monitor_event',originalEvent.id,PROJECT,{packageDigest:'0'.repeat(64)});
+  const unconfirmed=await readOpsPublication(reader,returnTarget);
+  assert.equal(unconfirmed.monitoringVerified,false);
+  assert.ok(unconfirmed.batches.every(batch=>!batch.serviceHref&&!batch.reportSource));
+  f.store.update('monitor_event',originalEvent.id,PROJECT,{packageDigest:originalEvent.packageDigest});
+  assert.deepEqual(f.queueCounts(),readOnlyCounts);
   for (const [index,batch] of monitor.batches.entries()) {
     const serviceUrl=new URL(batch.serviceHref,f.base).href, parsed=serviceSourceFromLocation(serviceUrl);
     assert.equal(parsed.binding.releaseId,releaseId);
