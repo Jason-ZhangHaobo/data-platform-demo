@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { agentExecutionEvidencePath } from "../src/v2/agent-execution-evidence.mjs";
 import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
 import { readCloudV3Review } from "../src/v2/cloud-v3-review.mjs";
-import { cloudV3CheckpointCase } from "../src/v2/cloud-v3-case-selection.mjs";
+import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys } from "../src/v2/cloud-v3-case-selection.mjs";
 import { getContext, validationFamilyForContext } from "../src/v2/context.mjs";
 import { validateConsumerSource } from "../src/v2/consumer-source.mjs";
 import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
@@ -26,7 +26,7 @@ import { validateConsumerPlan } from "./verify-service-consumer.mjs";
 import { cloudWindowApplicationBinding, cloudWindowCheckpointBinding, firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
 import { developmentRequestDigest } from "../src/v2/public-development-access.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
-import { cloudV3CompletionScope, readCloudV3Run } from "./cloud-v3-run.mjs";
+import { cloudV3CompletionScope, readCloudV3BaseCases } from "./cloud-v3-run.mjs";
 import { boundedBytes } from "./control-code-transport.mjs";
 import { inspectedControlEntryScript, WEB_ENTRY_SCRIPT_LIMIT, WEB_INDEX_LIMIT } from "./control-web-entry.mjs";
 
@@ -148,29 +148,29 @@ export function prepareCloudV3Start(path, client, reviewedSource) {
   return result(state, item, "PREPARED");
 }
 
-export function prepareCloudV3Next(path,client,{firstPath,completionPath,reviewedSource}={}) {
+export function prepareCloudV3Next(path,client,{firstPath,completionPath,recordsPath,reviewedSource}={}) {
   if (!isAbsolute(path ?? "") || !sourceRevision(reviewedSource)) stop("须提供续接检查点和已审阅源码版本");
-  const run=readCloudV3Run(firstPath,{completionPath});
-  const {state:first,text}=readCheckpoint(firstPath,{privateFile:true});
+  const {original,fullPlan,entries,approvals,reserveCny,usageFloor}=readCloudV3BaseCases(firstPath,{completionPath,recordsPath});
+  const {state:first}=original, parent=entries.at(-1);
   const base=new URL(normalizeSessionBase(client.baseUrl));
-  if (run.originalCheckpointDigest!==sha256(text) || base.pathname!=="/api/v2" ||
+  if (base.pathname!=="/api/v2" ||
       base.origin!==first.origin || first.projectId!==client.projectId ||
-      !(run.verifiedCloudCaseCount===1 || (base.protocol==="http:" && run.cases[0].status==="LOCAL_MATCHED_ONLY")))
-    stop("须核对同一评测的首例完成回执及原入口");
-  const plan=liveLifecyclePlan(2,{contractId:currentLiveLifecycleContract.id}), definition=plan.selectedCases[1];
-  const original=first.outcomes[0], priorBills=[first.submission?.bill,...Object.values(original.actions).map(action=>action.bill)];
-  const reserveCny=Math.max(...priorBills.map(bill=>bill?.unsettledReserveCny ?? 0));
-  const previousCase={checkpointDigest:run.originalCheckpointDigest,completionDigest:run.completionDigest,
-    approvalDigest:first.submission?.windowApprovalDigest ?? null,reserveCny};
+      parent.completion?.scope!==(base.protocol==="https:"?"INVITED_CLOUD_MATCHED":"LOCAL_MATCHED_ONLY"))
+    stop("须核对同一评测的上一例完成回执及原入口");
+  const definition=cloudV3BaseCases()[entries.length], caseLimit=entries.length+1;
+  if (!definition) stop("固定基础案例已全部记录");
+  const previousCase={checkpointDigest:sha256(parent.checkpoint.text),completionDigest:parent.completion.completionDigest,
+    approvalDigest:parent.checkpoint.state.submission?.windowApprovalDigest ?? null,reserveCny,
+    ...(caseLimit>2?{approvalDigests:approvals,...(usageFloor?{usageFloor}:{})}:{})};
   // The same original evaluation always yields the same request key, even
   // if a local preparation is interrupted and recreated in another file.
-  const entropy=sha256(JSON.stringify([first.evaluationRunId,original.actions.agent.key,definition.id]));
+  const entropy=sha256(JSON.stringify([first.evaluationRunId,entries[0].item.actions.agent.key,definition.id]));
   const key=[entropy.slice(0,8),entropy.slice(8,12),"4"+entropy.slice(13,16),"8"+entropy.slice(17,20),entropy.slice(20,32)].join("-");
-  const item={...liveCaseCheckpoint(definition,first.startedAt,plan.caseSetDigest,{
-    contractId:plan.contract.id,evaluationRunId:first.evaluationRunId,
+  const item={...liveCaseCheckpoint(definition,first.startedAt,fullPlan.caseSetDigest,{
+    contractId:fullPlan.contract.id,evaluationRunId:first.evaluationRunId,
   }),actions:{agent:{key,bodyHash:requestHash(definition),status:"PREPARED"}}};
-  const state={evaluationRunId:first.evaluationRunId,contract:plan.contract,startedAt:first.startedAt,caseSetDigest:plan.caseSetDigest,
-    caseLimit:2,origin:first.origin,projectId:first.projectId,reviewedSource,previousCase,outcomes:[item]};
+  const state={evaluationRunId:first.evaluationRunId,contract:fullPlan.contract,startedAt:first.startedAt,caseSetDigest:fullPlan.caseSetDigest,
+    caseLimit,origin:first.origin,projectId:first.projectId,reviewedSource,previousCase,outcomes:[item]};
   cloudV3CheckpointCase(state);
   writeCheckpoint(path,state,true);
   return result(state,item,"PREPARED");
@@ -279,7 +279,7 @@ function checkedWindowReceipt(path,windowPath,applicationPath,client,bill,previo
   const starts=Date.parse(receipt?.startsAt), ends=Date.parse(receipt?.expiresAt), checked=Date.parse(bounds?.checkedAt);
   const now=Date.now();
   if (receipt?.protocol!==(previousCase?nextCloudWindowReceiptProtocol:firstCloudWindowReceiptProtocol) ||
-      !digest(receipt.approvalDigest) || receipt.approvalDigest===previousCase?.approvalDigest ||
+      !digest(receipt.approvalDigest) || cloudV3PredecessorApprovals(previousCase).includes(receipt.approvalDigest) ||
       !isDeepStrictEqual(receipt.checkpoint,cloudWindowCheckpointBinding(path)) ||
       !Number.isFinite(starts) || !Number.isFinite(ends) || !(starts<=now&&now<ends&&ends-starts<=7200000) ||
       !Number.isFinite(checked) || checked>starts || starts-checked>=3600000 ||
@@ -413,6 +413,10 @@ export async function continueCloudV3Start(path, client, {billPath, windowPath, 
         session.developmentRequestDigest!==developmentRequestDigest(window.checkpoint.requestKeyHash,action.bodyHash)))
       stop("运行时尚未绑定本案例的确切请求");
     const submission = submissionSnapshot(status,session,client,bill,Date.now());
+    const floor=state.previousCase?.usageFloor;
+    if (floor && (bill.month<floor.month ||
+        (floor.month===bill.month && cloudV3UsageKeys.some(key=>submission.usage[key]<floor[key]))))
+      stop("本月模型或 Spark 用量低于原评测已记录的基线");
     if (window) await verifyFirstWindowEntry(client,window.application);
     const now = Date.now(), submittedAt = new Date(now).toISOString();
     if (now - Date.parse(bill.checkedAt) >= 3600000 || now >= Date.parse(submission.windowExpiresAt))

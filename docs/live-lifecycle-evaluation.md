@@ -220,18 +220,22 @@ shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CA
 
 `v3-run` 可省略完成回执，离线查看原评测编号下的 20 个固定案例。有回执时先核对原检查点与确切案例，回环匹配只记本机证据。受邀 HTTPS 完成回执还须绑定原开发窗口、独立验包和两个匹配的消费批次，才会让对应派生案例显示已核验的父版本。报告读取已有证据，不重查远端。报告中的 `willExecute:false` 和 `executionAuthorized:false` 分别表示未执行与未授权。
 
-### 续接第二个基础案例
+### 逐例续接固定基础案例
 
 ```sh
 shuduo agent v3-prepare-next --checkpoint "$NEXT_CASE_CHECKPOINT" \
-  --first-checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CASE_COMPLETION" --source-revision "$REVIEWED_GIT_SHA"
+  --first-checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CASE_COMPLETION" \
+  --source-revision "$REVIEWED_GIT_SHA"
 shuduo agent v3-start --checkpoint "$NEXT_CASE_CHECKPOINT" --window-binding
-shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CASE_COMPLETION" --next-checkpoint "$NEXT_CASE_CHECKPOINT"
+shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CASE_COMPLETION" \
+  --case-records "$BASE_CASE_RECORDS"
 ```
 
-固定第二例为「现金变动」。准备沿原评测编号和开始时间保存独立检查点，冻结确切请求及稳定幂等键。同一次评测的重复准备保持同一键。窗口操作使用 `INVITED_NEXT_V3_DEVELOPMENT_WINDOW_V1` 和确切验包，独立批准后才生成 `nextCaseReceipt`。它核对原预留与新审批摘要，按当前完整账单与配额检查。开启前先在只读状态核对控制面支持确切请求绑定。开启后核对该窗口确实生效，必要时恢复只读。
+首例之后按固定顺序续接其余九个基础案例。准备沿原评测编号和开始时间保存独立检查点，同一次评测的同一案例始终使用同一幂等键。第二例可直接使用上例命令。第三例起给准备命令添加 `--case-records "$BASE_CASE_RECORDS"`。该文件为权限 0600 的 JSON 数组，从第二例起按目录顺序排列，每项为 `{"checkpoint":"/private/case.json","completion":"/private/completion.json"}`，尚待核验的最后一例可省略 `completion`。续接准备要求上一例完成回执，跨案例复用任务、批次、调用回执或审批均会被拒绝。
 
-提交与恢复沿用 `v3-start --confirm` 和 `v3-start --reconcile`，传入第二例检查点和对应窗口回执。运行时限定受邀管理员的确切需求、SQL、口径与幂等键。丢失响应后只用原编号查询。后续开发结果、交付、审阅、监控和消费沿用第二例的检查点。完成后可在 `v3-run` 附加 `--next-completion-file` 核对第二例，其他案例仍在固定目录中保留各自状态。
+窗口使用 `INVITED_NEXT_V3_DEVELOPMENT_WINDOW_V1` 和确切验包，独立批准后才生成 `nextCaseReceipt`。续接保留历次预留，校验当前完整账单及配额。第三例起还会核对当月已记录的模型和 Spark 用量。开启前在只读状态核对控制面能力，开启后核对确切请求绑定。
+
+提交与恢复沿用 `v3-start --confirm` 和 `v3-start --reconcile`。运行时限定受邀管理员的确切需求、SQL、口径与幂等键，丢失响应后只用原编号查询。后续各阶段沿原案例检查点处理。第二例旧报告参数 `--next-checkpoint`、`--next-completion-file` 仍可使用。明确失败案例的结算续接和派生案例的提交另行接入。
 
 ### 读取原任务的执行阶段
 

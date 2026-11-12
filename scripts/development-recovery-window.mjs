@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { functionDigest, functionSnapshot } from './refresh-v2-spark-readiness.mjs';
 import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
 import { developmentRequestDigest, publicDevelopmentConfig } from '../src/v2/public-development-access.mjs';
+import { cloudV3PredecessorApprovals } from '../src/v2/cloud-v3-case-selection.mjs';
 import { cloudWindowApplicationBinding, cloudV3DevelopmentScope, nextCloudDevelopmentScope, firstCloudDevelopmentModes,
   firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol, validFirstCloudBinding, validNextCloudBinding } from './first-cloud-v3-window.mjs';
 
@@ -32,7 +33,8 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
   if (bound) {
     check(resumed===undefined && firstCloudDevelopmentModes.includes(plan.mode) &&
       (next ? plan.firstCase===undefined && validNextCloudBinding(selected) &&
-        plan.binding?.approvalDigest!==selected.previousCase.approvalDigest && plan.priorReserveCny>=selected.previousCase.reserveCny
+        !cloudV3PredecessorApprovals(selected.previousCase).includes(plan.binding?.approvalDigest) &&
+        plan.priorReserveCny>=selected.previousCase.reserveCny
         : plan.nextCase===undefined && validFirstCloudBinding(selected)) &&
       selected.sourceRevision===plan.applicationSource && plan.contextId===selected.contextId &&
       plan.maxNewTasks===1 && plan.maxModelCalls===3 &&
@@ -129,6 +131,8 @@ export function developmentRecoveryEnvironment(plan, now = Date.now()) {
     Number.isSafeInteger(plan.maxSparkRuns) && plan.maxSparkRuns >= 1 && plan.maxSparkRuns <= 4, 'RECOVERY_SCOPE_INVALID');
   check(u?.month === month(now) && fresh(u.checkedAt, now) && Number.isSafeInteger(u.sparkRuns) && u.sparkRuns >= 0 &&
     Number.isFinite(u.modelCny) && u.modelCny >= 0, 'RECOVERY_CURRENT_USAGE_REQUIRED');
+  const floor=plan.scope===nextCloudDevelopmentScope ? plan.nextCase.previousCase.usageFloor : undefined;
+  check(!floor || u.month>floor.month || (u.month===floor.month && u.sparkRuns>=floor.remoteSparkRuns), 'RECOVERY_PRIOR_USAGE_DECREASED');
   if (!noModels) check(pricing?.model === e.V2_MODEL && fresh(pricing.checkedAt, now) && pricing.available === true &&
     Number.isFinite(pricing.maxBatchCny) && pricing.maxBatchCny > 0 && pricing.maxBatchCny <= Math.min(4,increment) && hash(pricing.evidenceDigest), 'RECOVERY_MODEL_PRICE_REQUIRED');
   check(Number.isFinite(plan.billCny) && plan.billCny >= 0 && plan.billCny + plan.priorReserveCny + increment < 200, 'RECOVERY_BUDGET_INVALID');
