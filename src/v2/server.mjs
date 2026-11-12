@@ -1078,12 +1078,14 @@ export function createV2Server(options = {}) {
     executeDapi: options.dataServiceExecutor,
   });
   let serviceAgentEvents;
-  const privateServices = privateDataServicesEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment,
+  const savedServiceEvidenceEnabled = privateSmokeEnabled && options.ingress?.status.publicReadOnly === true;
+  const privateServiceRoutes = privateDataServicesEnabled || savedServiceEvidenceEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment,
     agentConfig:serviceAgentAccess,planner:input=>servicePlanner(input),assertModelBudget:reservation=>budget.assertCanStartServiceModel(reservation),budgetOverview:()=>budget.overview(),modelLeaseMs:options.serviceAgentModelLeaseMs,
     waitForModel:serviceAgentAccess?start=>statefulRequests.waitForProvider(start):undefined,
     backgroundView:task=>serviceAgentEvents?.status(task.id),
     dispatchPlan:serviceAgentAccess?.driver==='OSS_EVENTS'?(...args)=>serviceAgentEvents.advance(...args):undefined,
     cancelPlan:serviceAgentAccess?.driver==='OSS_EVENTS'?(...args)=>serviceAgentEvents.cancel(...args):undefined }) : undefined;
+  const privateServices = privateDataServicesEnabled ? privateServiceRoutes : undefined;
   if(serviceAgentAccess?.driver==='OSS_EVENTS'){
     if(agentEventDriver)throw Error('PRIVATE_SERVICE_AGENT_DRIVER_CONFLICT');
     const eventConfig=agentEventConfigFromEnvironment({...env,V2_AGENT_DRIVER_MODE:'OSS_EVENTS'});
@@ -1186,7 +1188,7 @@ export function createV2Server(options = {}) {
   });
   const serviceContractGates=createServiceContractGates({store,project:PROJECT,contracts:dataContracts,businessStore,now:options.now});
   dataServices.contractGate=serviceContractGates;
-  if(privateServices?.manager)privateServices.manager.contractGate=serviceContractGates;
+  if(privateServiceRoutes)privateServiceRoutes.manager.contractGate=serviceContractGates;
   const annotationRequests = createAssetAnnotationRequests({ store, assets, project: PROJECT });
   const assetPlanner =
     options.assetPlanner ??
@@ -2075,6 +2077,15 @@ export function createV2Server(options = {}) {
         return json(res, 200, await cloudReadiness());
       }
       if (privateSmokeEnabled && (path.startsWith("/api/v2/data-services/") || path.startsWith("/api/v2/open/"))) {
+        if (!privateServices && publicReadOnly && method === "GET" && path === "/api/v2/data-services/task-evidence") {
+          const proof = await privateServiceRoutes.readTaskEvidence(req, url.searchParams, (taskId, release, owner) => {
+            const sourceKind = release.sourceKind ?? "AGENT";
+            cloudPublicationHistory.savedDetail(taskId, { sourceKind, packageDigest: release.packageDigest,
+              releaseId: release.id, actorId: owner,
+              ...(sourceKind === "MANUAL" ? { sourceRunId: release.sourceRunId, verificationId: release.verificationId } : {}) });
+          });
+          return json(res, 200, proof);
+        }
         if(!privateServices)throw fail(503,"私有数据服务尚未启用");
         if(typeof persistence.flush==="function" && (method!=="GET" || path.startsWith("/api/v2/open/")))res.metadataFlush=()=>persistence.flush();
         const result=await privateServices.handle(req,url,readBody);return json(res,result.status,result.body);
@@ -7013,7 +7024,7 @@ export function createV2Server(options = {}) {
       .finally(() => {prefetchedPrivateInputs.delete(req);res.removeListener("close", onClose);});
   });
   server.on("close", () => {
-    privateServices?.agentPlanner.shutdown();
+    privateServiceRoutes?.agentPlanner.shutdown();
     for (const c of controls.values()) c.abort();
     releaseScheduler.shutdown();
     realtime.shutdown();

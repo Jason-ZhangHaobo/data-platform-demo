@@ -147,6 +147,41 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       const made=serviceType==='DAPI'?manager.createDapi(body):manager.createXapi(body);
       return store.update('data_service',made.id,project,{createdBy:actorId,scope:'PRIVATE_CLOUD_TEST'});
     },draftDetail:(id,actorId)=>service(identity(actorId),id)});
+  async function readTaskEvidence(req, params, verifySavedRelease) {
+    const a = actor(req), owner = a.user.id;
+    const selection = privateServiceSourceSelection(params, true);
+    if (!selection || (verifySavedRelease && (!selection.taskId || !selection.releaseId)))
+      throw fail(422, "需提供任务编号、确切包摘要及合法发布选择", "INVALID_CONSUMPTION_INPUT");
+    const { taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest } = selection;
+    const task = get(manualDeliveryTaskId ? "manual_delivery_task" : "agent", manualDeliveryTaskId ?? taskId);
+    if (!task || ((manualDeliveryTaskId || verifySavedRelease || a.role !== "ADMIN") && task.submittedBy !== owner))
+      throw fail(403, "无权读取此任务消费证据");
+    const releases = store.list("release", project).filter(release =>
+      (manualDeliveryTaskId
+        ? release.manualDeliveryTaskId === manualDeliveryTaskId && release.sourceAgentTaskId === undefined
+        : release.sourceAgentTaskId === taskId && release.manualDeliveryTaskId === undefined) &&
+      release.packageDigest === packageDigest && (releaseId === undefined || release.id === releaseId));
+    if (releases.some(release => !manualReleaseOwned(a, release)))
+      throw fail(403, "人工消费记录仅属于原任务工程师和发布者");
+    if (verifySavedRelease) {
+      if (releases.length !== 1) throw fail(409, "原发布与所选消费来源不一致", "CONSUMPTION_PUBLICATION_UNCONFIRMED");
+      verifySavedRelease(taskId, releases[0], owner);
+    }
+    return privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest,
+      getPackage: id => get("delivery_package", id),
+      services: manager.list().filter(item => owned(a, item)), ownedService: id => service(a, id),
+      getVersion: id => get("data_service_version", id),
+      source: id => { const run = source(id); sourceOwner(a, run); return run; }, getRelease: id => get("release", id),
+      application: id => get("service_app", id) ? manager.application(id) : undefined,
+      calls: id => manager.listCalls(id).filter(call => callOwned(a, call)),
+      recheckCall: (id, callId) => {
+        const call = get("service_call", callId);
+        assertApplicationVersion({ service: manager.detail(id), application: get("service_app", call?.applicationId),
+          version: get("data_service_version", call?.serviceVersionId) });
+        return manager.recheckCall(id, callId);
+      },
+    });
+  }
   let queryTail=Promise.resolve(),queries=0;
   async function handle(req,url,readBody) {
     const method=req.method,path=url.pathname;
@@ -175,23 +210,8 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       if(action==='apply'){bodyKeys(b,['proposalHash']);return {status:200,body:await agentPlanner.apply(id,owner,b.proposalHash)};}
       if(action==='cancel'){bodyKeys(b,['sourceBoundOnly']);if(b.sourceBoundOnly!==undefined&&b.sourceBoundOnly!==true)throw fail(422,'仅可取消原同源规划');return {status:200,body:await(cancelPlan?cancelPlan(id,owner):agentPlanner.cancel(id,owner))};}
     }
-    if(method==="GET" && path.endsWith("/task-evidence")){
-      const selection=privateServiceSourceSelection(url.searchParams,true);
-      if(!selection)throw fail(422,"需提供任务编号、确切包摘要及合法发布选择","INVALID_CONSUMPTION_INPUT");
-      const {taskId,manualDeliveryTaskId,packageDigest,releaseId,callIdDigest}=selection;
-      const task=get(manualDeliveryTaskId?"manual_delivery_task":"agent",manualDeliveryTaskId??taskId);
-      if(!task || (manualDeliveryTaskId?task.submittedBy!==owner:a.role!=="ADMIN" && task.submittedBy!==owner))throw fail(403,"无权读取此任务消费证据");
-      const releases=store.list("release",project).filter(release=>(manualDeliveryTaskId?release.manualDeliveryTaskId===manualDeliveryTaskId&&release.sourceAgentTaskId===undefined:release.sourceAgentTaskId===taskId&&release.manualDeliveryTaskId===undefined)&&release.packageDigest===packageDigest&&(releaseId===undefined||release.id===releaseId));
-      if(releases.some(release=>!manualReleaseOwned(a,release)))throw fail(403,"人工消费记录仅属于原任务工程师和发布者");
-      return {status:200,body:await privateTaskConsumption({taskId,manualDeliveryTaskId,packageDigest,releaseId,callIdDigest,
-        getPackage:id=>get("delivery_package",id),
-        services:manager.list().filter(s=>owned(a,s)),ownedService:id=>service(a,id),getVersion:id=>get("data_service_version",id),source:id=>{const run=source(id);sourceOwner(a,run);return run;},getRelease:id=>get("release",id),
-        application:id=>get("service_app",id)?manager.application(id):undefined,calls:id=>manager.listCalls(id).filter(call=>callOwned(a,call)),recheckCall:(id,callId)=>{
-          const call=get("service_call",callId);
-          assertApplicationVersion({service:manager.detail(id),application:get("service_app",call?.applicationId),version:get("data_service_version",call?.serviceVersionId)});
-          return manager.recheckCall(id,callId);
-        }})};
-    }
+    if(method==="GET" && path.endsWith("/task-evidence"))
+      return {status:200,body:await readTaskEvidence(req,url.searchParams)};
     if(path.endsWith("/sources")){
       const selection=privateServiceSourceSelection(url.searchParams);if(!selection)throw fail(422,"发布来源选择不完整");
       const {taskId,manualDeliveryTaskId,packageDigest,releaseId}=selection,selected=releaseId&&get("release",releaseId);
@@ -244,5 +264,5 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     }
     throw fail(404,"接口不存在");
   }
-  return {handle,manager,agentPlanner};
+  return {handle,manager,agentPlanner,readTaskEvidence};
 }

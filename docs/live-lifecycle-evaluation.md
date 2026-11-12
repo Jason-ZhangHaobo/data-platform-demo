@@ -185,6 +185,8 @@ shuduo agent v3-consumption --checkpoint /private/first-case.json --plan /privat
 
 核验命令读取已保存的 V2 计划和报告。独立预期须与原证券口径的登记数据一致。命令分别读取原 DAPI 与 XAPI 成功调用，核对同一应用、固定版本、结果摘要和撤销状态，再把两个调用摘要写入原检查点。重复核验可读回同一证明。每个批次单独保留证据。回环报告为 `MATCHED_ONLY`，真实外部验收与端到端计分另行核验。
 
+受保护的只读入口可在关闭发布和数据服务执行器后，通过 `GET /data-services/task-evidence` 核对已保存消费。请求须同时指定 `agent_task_id`、`package_digest` 和 `release_id`，也可加 `call_id_digest` 找回原调用。仅原任务所属人可访问。服务端先核对同一发布、演练和监控，再沿原服务版本及快照核对已保存调用。撤销应用显示撤销状态；历史读取不创建调用、应用或任务。
+
 ### 读取原任务的执行阶段
 
 在本机运维监控展开已受理案例的模型与 Spark 状态，或执行 `node scripts/run-live-lifecycle-evaluation.mjs --inspect 原评测UUID`。CLI 与页面共用原评测记录，CLI 额外核对本机检查点文件摘要。已冻结的案例始终展示原代码版本和批次，尚未冻结的案例只读最近尝试已关联的版本及批次。
