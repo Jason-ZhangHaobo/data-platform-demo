@@ -1,14 +1,32 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   loadDeliveryDirectory,
   resolveDeliverySchedule,
   sha256,
+  validationMatchesFamily,
 } from "./delivery.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import { verifiedFundRun } from "./fund-delivery.mjs";
 import { verifyFundSignedDelivery } from "./fund-signed-delivery.mjs";
+import { syncSqlRowsMatch } from "./sync-sql-input.mjs";
+
+export function assertSyncSqlRehearsal(plan, bundle, receipt) {
+  if (!plan.source.syncInput) return;
+  const family = { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) };
+  if (receipt.status !== "SUCCEEDED" || receipt.testDouble === true || receipt.mainSqlExecuted !== true ||
+      receipt.engine !== "Apache Spark" || receipt.engineVersion !== plan.deployment.runtime.version ||
+      receipt.packageDigest !== plan.digest || !isDeepStrictEqual(receipt.source, plan.source) ||
+      receipt.published !== false || receipt.schedulerTriggered !== false || receipt.mode !== "LOCAL_FILE_REHEARSAL" ||
+      receipt.occurrence?.businessDate !== plan.fixtures.context.businessDate ||
+      !isDeepStrictEqual(receipt.fileHashes, Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, entry]) => [name, entry.sha256]))) ||
+      receipt.testSqlValidation?.passed !== true || receipt.testSqlValidation.sqlHash !== sha256(bundle.files["tests.sql"]) ||
+      !validationMatchesFamily(receipt.validation, family) || receipt.validation.selectedPassed !== true ||
+      !syncSqlRowsMatch(receipt.rows, plan.fixtures.context))
+    throw Object.assign(Error("文件演练未证明原冻结批次的实际结果"), { status: 409 });
+}
 
 export async function verifyDeliveryDirectory(
   { directory, expectedDigest, scheduledFor, signal, beforeRun },
@@ -48,6 +66,8 @@ export async function verifyDeliveryDirectory(
       result.testSqlValidation?.passed &&
       result.testSqlValidation.sqlHash === sha256(bundle.files["tests.sql"]) &&
       (!plan.source.fundLookthrough || verifiedFundRun(result, plan.source.contextId)) &&
+      (!plan.source.syncInput || result.testDouble !== true && result.validation.selectedPassed === true &&
+        syncSqlRowsMatch(result.rows, plan.fixtures.context)) &&
       regressionIds.every((id) =>
         result.validation.regressions?.some(
           (check) => check.contextId === id && check.passed,

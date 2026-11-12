@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { getContext } from "./context.mjs";
+import { equalValidationNumber } from "./validation-number.mjs";
 
 export const syncSqlContextId = "holdings-t1";
 export const syncSqlContractId = "securities-synced-holdings-t1-v1";
@@ -111,4 +113,53 @@ export function readSyncSqlInput({ store, project, actorId, binding }) {
       hash(binding) !== hash({ ...payload.selection, ...payload.source, snapshotId: record.id, snapshotHash: record.contentHash }))
     throw fail(409, "同步冻结输入缺失或已变化，未执行计算", "SYNC_SQL_INPUT_CHANGED");
   return payload.context;
+}
+
+export function syncSqlDeliverySource({ agent, run, revision }) {
+  const binding = revision?.syncInput;
+  const manual = revision?.source === "MANUAL";
+  const attempt = agent?.attempts?.at(-1);
+  if (!binding || !isDeepStrictEqual(run?.syncInput, binding) || !isDeepStrictEqual(agent?.syncInput, binding) ||
+      agent.submittedBy !== revision.author || agent.projectId !== revision.projectId ||
+      agent.contextId !== syncSqlContextId || revision.contextId !== syncSqlContextId || run.contextId !== syncSqlContextId ||
+      run.validationContractId !== syncSqlContractId || run.mainSqlExecuted !== true || run.testDouble === true ||
+      !Number.isFinite(Date.parse(run.finishedAt)) ||
+      run.remoteSubmission !== undefined || ![undefined, "LOCAL_PROCESS"].includes(run.isolation) ||
+      (manual ? revision.manualProvenance?.originAgentTaskId !== agent.id || run.agentTaskId !== undefined ||
+        revision.manualProvenance?.kind !== "ENGINEER_EDIT" || revision.manualProvenance?.actorId !== revision.author ||
+        revision.manualProvenance?.agentIndependentE2E !== false :
+        !["LIVE_MODEL", "SYNTHETIC_MODEL"].includes(revision.source) || agent.mode !== revision.source ||
+        agent.status !== "SUCCEEDED" || agent.runId !== run.id || agent.revisionId !== revision.id ||
+        run.agentTaskId !== agent.id || attempt?.runId !== run.id || attempt.revisionId !== revision.id || attempt.status !== "SUCCEEDED"))
+    throw fail(409, "交付须绑定原同步快照、确切代码及真实本机运行");
+  return { ...binding, actorId: revision.author, agentTaskId: agent.id, developmentMode: revision.source };
+}
+
+export function validateSyncSqlDeliveryContext(binding, context) {
+  const invalid = () => fail(422, "交付输入、同步快照摘要或独立预期不一致");
+  if (!binding || typeof binding !== "object" || Object.keys(binding).length !== 12) throw invalid();
+  const { targetTable: target, runId, targetHash, taskId, sourceRevisionId, metadataVersionId, rowCount, snapshotId,
+    snapshotHash, actorId, agentTaskId, developmentMode } = binding;
+  const selection = parseSyncSqlSelection({ targetTable: target, runId, targetHash });
+  if (![taskId, sourceRevisionId, metadataVersionId, snapshotId, agentTaskId].every(id => typeof id === "string" && uuid.test(id)) ||
+      typeof snapshotHash !== "string" || !digest.test(snapshotHash) ||
+      typeof actorId !== "string" || !(actorId === "local-engineer" || uuid.test(actorId)) ||
+      !["LIVE_MODEL", "SYNTHETIC_MODEL", "MANUAL"].includes(developmentMode) ||
+      !Number.isInteger(rowCount) || rowCount < 1 || rowCount > 500) throw invalid();
+  const positions = Array.isArray(context?.tables) && context.tables.find(table => table?.name === "positions");
+  const columns = getContext(syncSqlContextId).tables.find(table => table.name === "positions").columns;
+  if (!Array.isArray(positions?.rows) || positions.rows.length !== rowCount ||
+      positions.rows.some(row => !Array.isArray(row) || row.length !== columns.length)) throw invalid();
+  const reconstructed = buildContext(positions.rows.map(row => Object.fromEntries(columns.map(([name], index) => [name, row[index]]))));
+  const source = { taskId, sourceRevisionId, metadataVersionId, rowCount };
+  if (!isDeepStrictEqual(reconstructed, context) || hash({ actorId, selection, source, context }) !== snapshotHash)
+    throw invalid();
+}
+
+export function syncSqlRowsMatch(rows, context) {
+  return Array.isArray(rows) && rows.length === context.expected.length && context.expected.every(expected => {
+    const matches = rows.filter(row => row?.client_id === expected.client_id);
+    return matches.length === 1 && Object.keys(matches[0]).length === Object.keys(expected).length &&
+      Object.keys(expected).every(field => field === "client_id" || equalValidationNumber(matches[0][field], expected[field]));
+  });
 }

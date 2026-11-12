@@ -14,6 +14,7 @@ import {assertSqlClarificationTask} from './sql-clarification.mjs';
 import { liveEvidenceProvenance, nonLiveModelLabel } from "./live-lifecycle-provenance.mjs";
 import { isFundContext } from "./fund-contexts.mjs";
 import { fundValidationMatches, verifiedFundRun } from "./fund-delivery.mjs";
+import { syncSqlContractId, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 export const standaloneManualDeliveryMode='DURABLE_MANUAL_DELIVERY_V1';
@@ -72,14 +73,15 @@ export function resolveEvidenceSource(agent, read) {
   return {revision, run, retainedFailure: true, sourceKind:"TASK_FAILED_RUN"};
 }
 
-export function developmentVerificationReport(task, run, revision) {
-  const context = getContext(task.contextId), expected = context?.expected ?? [];
-  const family = validationFamilyForContext(task.contextId), legacy = family?.id === validationContractId;
+export function developmentVerificationReport(task, run, revision, syncContext) {
+  const context = syncContext ?? getContext(task.contextId), expected = context?.expected ?? [];
+  const registeredFamily = validationFamilyForContext(task.contextId), legacy = registeredFamily?.id === validationContractId;
+  const family = syncContext ? { ...registeredFamily, id: syncSqlContractId, name: syncContext.name } : registeredFamily;
   const rows = run?.rows ?? [], fields = ["holding_market_value", "available_cash", "total_assets", "security_count"];
   const numericEqual = equalValidationNumber;
   const distribution=outputContractForContext(task.contextId);
   const fund = isFundContext(task.contextId);
-  const resultsMatch = fund ? verifiedFundRun(run, task.contextId) : distribution ? verifyOutputRows(rows,context) : rows.length === expected.length && expected.every(want => {
+  const resultsMatch = task.syncInput ? Boolean(syncContext && run?.validation?.selectedPassed && syncSqlRowsMatch(rows, syncContext)) : fund ? verifiedFundRun(run, task.contextId) : distribution ? verifyOutputRows(rows,context) : rows.length === expected.length && expected.every(want => {
     const matches = rows.filter(row => row.client_id === want.client_id);
     return matches.length === 1 && fields.every(field => numericEqual(matches[0][field], want[field]));
   });
@@ -102,7 +104,7 @@ export function developmentVerificationReport(task, run, revision) {
     status: passed ? "PASSED" : !run || ![...terminal, "VALIDATION_FAILED"].includes(run.status) ? "PENDING" : "NEEDS_ATTENTION",
     summary: passed ? fund ? "基金 SQL 与登记交易日的独立结果核验通过，可生成同一版本的本机交付文件。" : distribution?"持仓分布的代码、真实执行、复合键与五场景核验通过；占比不含现金，可准备本机交付文件并独立演练。":legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
     definition: context?.definition, checks, rowCount: rows.length, engine: run?.engine, engineVersion: run?.engineVersion,
-    validationDetails: fund ? undefined : validationDetails(run, revision, task.contextId),
+    validationDetails: fund || task.syncInput ? undefined : validationDetails(run, revision, task.contextId),
     finishedAt: run?.finishedAt, validationContractId: family?.id, validationFamily: family, completionScope: "KNOWN_SECURITIES_CONTRACT",
     notice: "核验仅覆盖所选数据与已登记口径；新增指标需要新的独立预期。",
   };
