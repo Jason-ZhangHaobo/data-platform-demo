@@ -63,7 +63,7 @@ import {
   validationContractId,
 } from "./context.mjs";
 import { fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
-import { createFundPreparations } from "./fund-preparation.mjs";
+import { createFundPreparations, fundAgentRequestSignature } from "./fund-preparation.mjs";
 import { fundAgentAttributionKind, fundAgentDeliveryAttribution, verifiedFundRun } from "./fund-delivery.mjs";
 import { fundAgentServiceSources, fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
 import { assertFundAgentMonitoring, assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease, fundAgentPublicationPreflight } from "./fund-publication.mjs";
@@ -6411,19 +6411,18 @@ export function createV2Server(options = {}) {
         )
           throw fail(503, "请先准备受限Python执行环境再运行Agent");
         const key = text(req.headers["idempotency-key"], 1, 100),
-          signature = hash(
-            JSON.stringify({
-              message,
-              language,
-              currentCode,
-              contextId: context.id,
-              ...(fundPreparation ? { fundPreparation } : {}),
-              ...(derivedFrom ? {derivation:derivedFrom} : {}),
-              ...(explicitRepair?{sourceRunId:body.sourceRunId}:{}),
-              ...(repairBasis?{sourceRunId:body.sourceRunId,repairComparison:repairBasis.binding}:{}),
-              ...(clarification?{clarification:clarification.digest}:{}),
-            }),
-          );
+          signature = fundPreparation
+            ? fundAgentRequestSignature({ message, language, contextId: context.id, fundPreparation })
+            : hash(JSON.stringify({
+                message,
+                language,
+                currentCode,
+                contextId: context.id,
+                ...(derivedFrom ? {derivation:derivedFrom} : {}),
+                ...(explicitRepair?{sourceRunId:body.sourceRunId}:{}),
+                ...(repairBasis?{sourceRunId:body.sourceRunId,repairComparison:repairBasis.binding}:{}),
+                ...(clarification?{clarification:clarification.digest}:{}),
+              }));
         const existingAgent = store.deduplicatedId(PROJECT + ":agent:" + key);
         if (existingAgent) requireDurableAgentOwner(get("agent", existingAgent), req);
         const dedup = store.deduplicate(
