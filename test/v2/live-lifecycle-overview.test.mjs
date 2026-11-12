@@ -35,6 +35,17 @@ test("overview shows all frozen v3 cases even if only legacy records exist", t =
   const root = rootFor(t);
   const empty = liveLifecycleOverview(root);
   assert.deepEqual(readdirSync(root), []);
+  assert.equal(empty.cases.length, 20);
+  assert(empty.cases.every(row => row.expectation.scope === "REGISTERED_FIXTURE" && row.expectation.rows.length >= 2));
+  const holdings = empty.cases.find(row => row.caseId === "v3-fresh--holdings-t1");
+  assert.deepEqual(holdings.expectation.rows[0], {
+    clientId:"CLIENT-001", holdingMarketValue:"1500.00", availableCash:"300.00", totalAssets:"1800.00", securityCount:2,
+  });
+  const derived = empty.cases.find(row => row.sourceCaseId === holdings.caseId);
+  assert.equal(derived.sourceStatus, "NOT_RUN");
+  assert.equal(derived.expectation.businessDate, "2026-09-10");
+  assert.equal(derived.expectation.rows[0].totalAssets, "1300.00");
+  assert.match(derived.expectation.definition, /不等于客户全资产/);
   const path = save(root, runState({contractId:legacyLiveLifecycleContract.id}));
   const original = readFileSync(path, "utf8");
   const overview = liveLifecycleOverview(root);
@@ -78,6 +89,7 @@ test("HTTP overview preserves waiting stages and binds navigation to one origina
     pending(monitorCase, "AWAITING_MONITORING", "POST_RELEASE_MONITORING"),
     pending(unknownCase, "PAUSED", "CODE_AND_DEBUG", true),
   ];
+  older.outcomes[0].expectation = {scope:"STORED_EXECUTION", rows:[{totalAssets:"999999.00"}]};
   older.privateField = "EXAMPLE_NEVER_RETURN_CHECKPOINT_CONTENT";
   const path = save(root, older), before = readFileSync(path, "utf8");
   const latest = runState({origin, startedAt:"2026-09-16T00:00:00.000Z"});
@@ -94,6 +106,13 @@ test("HTTP overview preserves waiting stages and binds navigation to one origina
     "AWAITING_CONSUMPTION","AWAITING_ENGINEER_REVIEW","AWAITING_MONITORING","SUBMISSION_UNKNOWN","OUTSIDE_RUN",
   ]);
   const [row,,,unknown] = selected.cases;
+  const dependent = selected.cases.find(item => item.sourceCaseId === row.caseId);
+  assert.equal(dependent.status, "OUTSIDE_RUN");
+  assert.equal(dependent.sourceStatus, "AWAITING_CONSUMPTION");
+  assert.equal(row.expectation.scope, "REGISTERED_FIXTURE");
+  assert.equal(row.expectation.rows[0].totalAssets, "1800.00");
+  assert.equal(row.expectation.tables, undefined);
+  assert(!JSON.stringify(selected).includes("999999.00"));
   assert.equal(row.taskUrl, origin + "/v2/?module=agent-center&task=" + fixture.task.id);
   const service = new URL(row.servicesUrl);
   assert.equal(service.searchParams.get("source_release"), fixture.release.id);
@@ -118,13 +137,16 @@ test("HTTP overview preserves waiting stages and binds navigation to one origina
   assert.equal(complete.status, "SUCCEEDED");
   older.outcomes[0] = complete;
   save(root, older);
-  assert.equal(liveLifecycleOverview(root, older.evaluationRunId).verifiedCaseCount, 1);
+  const verified = liveLifecycleOverview(root, older.evaluationRunId);
+  assert.equal(verified.verifiedCaseCount, 1);
+  assert.equal(verified.cases.find(item => item.caseId === dependent.caseId).sourceStatus, "RECORDED_PASS");
   older.outcomes[0].actions.agent.status = "UNKNOWN";
   save(root, older);
   const conflicted = liveLifecycleOverview(root, older.evaluationRunId);
   assert.equal(conflicted.verifiedCaseCount, 0);
   assert.equal(conflicted.cases[0].status, "SUBMISSION_UNKNOWN");
   assert.equal(conflicted.cases[0].taskUrl, undefined);
+  assert.equal(conflicted.cases.find(item => item.caseId === dependent.caseId).sourceStatus, "SUBMISSION_UNKNOWN");
 });
 
 test("reported success with synthetic or incomplete evidence never becomes a recorded pass", t => {
@@ -133,7 +155,9 @@ test("reported success with synthetic or incomplete evidence never becomes a rec
   const outcome = liveCaseCheckpoint(definition,state.startedAt,state.caseSetDigest,{contractId:v3,evaluationRunId:state.evaluationRunId});
   state.outcomes = [{...outcome, status:"SUCCEEDED", phase:"COMPLETE", testDouble:true}];
   save(root, state);
-  assert.equal(liveLifecycleOverview(root).cases[0].status, "TEST_HARNESS");
+  const simulated = liveLifecycleOverview(root);
+  assert.equal(simulated.cases[0].status, "TEST_HARNESS");
+  assert.equal(simulated.cases.find(item => item.sourceCaseId === definition.id).sourceStatus, "TEST_HARNESS");
   delete state.outcomes[0].testDouble;
   save(root, state);
   const current = liveLifecycleOverview(root);
