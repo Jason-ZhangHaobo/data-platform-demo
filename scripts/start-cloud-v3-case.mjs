@@ -14,6 +14,7 @@ import { bindExternalConsumption } from "../src/v2/external-consumption-binding.
 import { checkpointCaseScope, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedLiveTaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-execution.mjs";
+import { privateReleasePendingStage } from "../src/v2/private-release-stage.mjs";
 import { liveEvidenceProvenance, nonLiveModelLabel } from "../src/v2/live-lifecycle-provenance.mjs";
 import { publicationAttestationKeys, publicationPreflightPath, publicationReadPath, publicationRequestReceiptPath } from "../src/v2/publication-request.mjs";
 import { normalizeSessionBase } from "../src/v2/session-credential.mjs";
@@ -577,8 +578,11 @@ function bindPublication(item, receipt) {
   if (action.monitoring && !isDeepStrictEqual(action.monitoring,verified)) return;
   const saved = {releaseId:release.id, reviewId:release.reviewId, approvalId:release.approvalId,
     batchIds:runs.map(run=>run.id), status:release.status,
-    batches:runs.map(run=>({id:run.id,status:run.status,
-      ...(Number.isFinite(run.reservedDurationMs)&&run.reservedDurationMs>0?{reservedDurationMs:run.reservedDurationMs}:{})})),
+    batches:runs.map(run=>{
+      const stage = privateReleasePendingStage(run);
+      return {id:run.id,status:run.status,...(stage ? {stage} : {}),
+        ...(Number.isFinite(run.reservedDurationMs)&&run.reservedDurationMs>0?{reservedDurationMs:run.reservedDurationMs}:{})};
+    }),
     ...(["PENDING","NEEDS_ATTENTION","UNCONFIRMED","VERIFIED"].includes(monitoring?.status)?{monitoringStatus:monitoring.status}:{}),
     ...(verified?{monitoring:verified}:{})};
   item.actions.publication = {...action,id:release.id,status:"CONFIRMED",reviewId:release.reviewId,
