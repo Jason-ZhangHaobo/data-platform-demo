@@ -1,6 +1,6 @@
 # 将“Agent原生数据中台”复刻到成熟企业平台
 
-版本 1.1 · 2026-11-12。用于将数舵 V2 的任务流程、证据和验收方法接入已有企业平台。
+版本 1.2 · 2026-11-12。用于将数舵 V2 的任务流程、证据和验收方法接入已有企业平台。
 
 本手册只使用虚构证券案例和通用系统代号，不包含公司截图、地址、账号、架构细节或数据。
 
@@ -187,9 +187,39 @@ API是原子能力和治理契约；GUI、CLI、MCP是不同使用入口，不�
 
 两个报告都应返回 `VERIFIED` 和 `LOCAL_SAVED_EVIDENCE`。财富报告核对手工开发、两个真实本机 Spark 批次、原报表两行和七条历史授权回执。基金报告核对模型替身驱动的本机 Spark 过程、原报表七行和三条质量规则的独立计数。缺少基金质量记录时返回 `INCOMPLETE`，退出码为 2。错批次、错版本、缺少分页或证据被改写时，按错误码回查留存资料。归因和环境随报告交接，正式 v3 以真实执行及独立断言计分。
 
-若基金交接版本包含签名，另保留已登记的受保护原件目录，并通过受保护环境文件交接验签密钥。基金命令追加 `--signed-receipt-root "$FUND_WORKSPACE"`。历史测试调度使用非默认时钟刻度时，按原验收记录追加 `--test-clock-unit-ms`。签名版复核的报告同时包含 Worker 回执和签名演练摘要。[签名基金链路复核](acceptance.md#复核已登记的签名基金链路)
+### 复核带 Worker 签名的基金发布
 
-已在不含 `.runtime` 和 `node_modules` 的源码副本中用 Node.js 24.19.0 走查。财富、基金及后续签名基金报告分别与原本机验收报告逐字节一致。错批次和缺少质量回执的路径已验证，输出目录中的同名报告受覆盖保护。每次交接先核对退出码与报告状态，再归档证据摘要。
+记录生成原证据的应用版本及离线复核器的源码 SHA。离线复核器须支持[签名基金链路](acceptance.md#复核已登记的签名基金链路)，应用部署候选仍按自身的验包和审批记录核对。
+
+在仅复核人员可访问的 `FUND_SIGNED_DIR` 交接三份保存库和原 `.data/fund-signed-receipts/`。保留原件文件名与字节、元数据里的登记关联及原调用编号。原件目录使用 0700，原件文件使用 0600。使用凭证库交接的原验签材料准备 0600 环境文件 `FUND_SIGNED_ENV`，其中提供 `V2_SPARK_EXECUTOR_SECRET`。有自定义队列配置时沿用原运行所需配置。`FUND_PROJECT_ID` 与 `FUND_ACTOR_ID` 分别取原项目和任务所属人。签名场景下各 `FUND_*` 编号取这一组签名留存记录。
+
+```sh
+(
+  set -euC
+  umask 077
+  mkdir -p "$ACCEPTANCE_OUT"
+  node --env-file "$FUND_SIGNED_ENV" scripts/verify-saved-fund-lifecycle.mjs --agent \
+    --project "$FUND_PROJECT_ID" --actor "$FUND_ACTOR_ID" \
+    --active-metadata "$FUND_SIGNED_DIR/metadata.sqlite" --business-snapshots "$FUND_SIGNED_DIR/business.sqlite" \
+    --request-id "$FUND_PREPARATION_ID" --task-id "$FUND_TASK_ID" --release-id "$FUND_RELEASE_ID" \
+    --package-digest "$FUND_PACKAGE_DIGEST" --signed-receipt-root "$FUND_SIGNED_DIR" \
+    --test-clock-unit-ms "$FUND_TEST_CLOCK_UNIT_MS" --dapi-call-id "$FUND_DAPI_CALL_1" \
+    --xapi-call-id "$FUND_XAPI_CALL_1" --xapi-call-id "$FUND_XAPI_CALL_2" \
+    --report-request-id "$FUND_REPORT_REQUEST_ID" --report-snapshots "$FUND_SIGNED_DIR/reports.sqlite" \
+    > "$ACCEPTANCE_OUT/fund-signed.json"
+)
+```
+
+`FUND_TEST_CLOCK_UNIT_MS` 使用原留存刻度。普通本机调度为 1000，本手册走查的隔离样例为 500。报表保存在另一份历史元数据库时，追加 `--history-metadata` 并保留其中的原签名登记。
+
+| 报告字段 | 工程师核对内容 |
+| --- | --- |
+| `requirement`、`development` | 原需求摘要、输入和断言摘要，以及确切代码版本与原运行 |
+| `rehearsal`、`review` | 八文件、测试 SQL、Worker 验签结果、原演练摘要及对应审批记录 |
+| `publication`、`consumption` | 原发布的两批调度与成功事件，固定接口版本和撤权后的历史分页 |
+| `report`、`quality`、`provenance` | 同批报表和质量独立计数，以及本机、模型来源和评测归因 |
+
+已在不含 `.runtime` 和 `node_modules` 的源码副本中用 Node.js 24.19.0 走查。财富、基金及签名基金报告分别与各自原报告逐字节一致。错批次、缺少质量回执、缺签名原件与错时钟均按对应路径提示。每次交接先核对退出码和报告状态，再归档证据摘要。
 
 ### 启动真实试点前
 
@@ -199,6 +229,8 @@ API是原子能力和治理契约；GUI、CLI、MCP是不同使用入口，不�
 | 具体版本与执行预算 | 工程师及审批人 | 核对冻结源码、部署和回滚制品、月度账单与预留。部署、模型、计算、发布、消费各按已批准范围执行 |
 | 新任务及中断恢复 | 发起人、工程师、运维 | 保留原请求和检查点，关闭浏览器后仍能推进。发生实例变化或回执未知时核对同任务的执行与费用记录 |
 | 正式入口和消费 | 产品经理、受邀用户、外部调用方 | 同一版本的真实发布、监控及授权 DAPI/XAPI 独立断言通过。实际 Safari、Chrome 和两种网络分别记录从导航到可操作的时延，首屏目标 3 秒 |
+
+先核对待部署包、现网指纹和原回滚包，再按当前批准验收受邀只读入口。首例开发窗口绑定原请求、已验部署版本、当前账单与受邀会话。进入发布时，工程师按同一代码、独立结果、八文件和演练摘要提交人审，消费方再按原批次核对应用授权及撤销。
 
 可先运行下列计划检查，再按[真实评测合同](live-lifecycle-evaluation.md#实际流程)及[正式入口验收](domain-binding-acceptance.md#正式浏览器首屏验收)准备各自的实际执行范围。
 
