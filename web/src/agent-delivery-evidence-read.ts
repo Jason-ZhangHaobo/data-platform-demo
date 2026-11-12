@@ -95,3 +95,11 @@ export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBindi
  if(new Set(services.map(s=>s.serviceId)).size!==services.length||value.status==='VERIFIED'&&(value.truncated||!services.some(s=>s.status==='VERIFIED'&&s.fullAssetComposition===true)))throw invalidConsumption();
  return value as TaskConsumption;
 }
+
+export function checkedBatchConsumption(value:unknown,binding:ServiceSourceBinding,batchId:string) {
+ if(!record(value)||value.sourceReleaseRunId!==batchId||value.protocol!=="shuduo-private-task-consumption/v1"||
+   binding.scope!=="PRIVATE_CLOUD_TEST"||binding.sourceKind!=="AGENT")throw invalidConsumption();
+ const proof=checkedAgentConsumption(value,binding,[{id:batchId,status:"SUCCEEDED",schedulerTriggered:true}]);
+ if(proof.services.some(service=>service.sourceRunIds.some(id=>id!==batchId)))throw invalidConsumption();
+ return proof;
+}

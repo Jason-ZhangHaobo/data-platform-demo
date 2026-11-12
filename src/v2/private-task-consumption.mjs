@@ -5,7 +5,7 @@ import {consumerDigest,validateConsumerSource} from "./consumer-source.mjs";
 const assetFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 // Private, owner-authorized projection of persisted calls. No tokens, rows,
 // parameters, rematerialization, model invocation or new consumer calls.
-export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
+export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
   if (!["PRIVATE_CLOUD_TEST", "LOCAL_TEST_ONLY"].includes(scope)) throw new Error("Unsupported consumption scope");
   const entries = [], limit = 20;
   const sourceField=manualDeliveryTaskId?'manualDeliveryTaskId':'sourceAgentTaskId',sourceId=manualDeliveryTaskId??taskId,identity=manualDeliveryTaskId?{manualDeliveryTaskId}:{taskId},matches=r=>r?.[sourceField]===sourceId&&(!manualDeliveryTaskId||r.sourceAgentTaskId===undefined);
@@ -37,7 +37,7 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
       return selectedMatches && matches(release) && v.sourcePackageDigest === packageDigest &&
         (releaseId===undefined||release.id===releaseId);
     });
-    if (!related) continue;
+    if (!related || batchId && !children.every(version=>version?.sourceReleaseRunId===batchId)) continue;
     const successful = c => c.serviceVersionId === root.id && c.outcome === "SUCCEEDED" && c.statusCode === 200 && c.rowCount > 0;
     const granted = c => {
       const app = application(c.applicationId);
@@ -112,7 +112,7 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
   const sourceMetadata=selectedMatches&&selectedRelease?attribution(selectedRelease):sourceKinds.length===1?
     {sourceKind:sourceKinds[0],...(sourceKinds[0]==="MANUAL"?{sourceAttribution:manualDeliveryTaskId?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED"}:{})}:{};
   return { protocol: manualDeliveryTaskId?"shuduo-private-manual-consumption/v1":scope === "LOCAL_TEST_ONLY" ? "shuduo-local-task-consumption/v1" : "shuduo-private-task-consumption/v1", ...identity, packageDigest,
-    ...(releaseId===undefined?{}:{releaseId}),...sourceMetadata,
+    ...(releaseId===undefined?{}:{releaseId}),...(batchId ? {sourceReleaseRunId:batchId} : {}),...sourceMetadata,
     scope, status: verified ? "VERIFIED" : "PENDING", checkedAt: new Date().toISOString(),
     services: entries, matchingCount, truncated, publicDeployed: false, externalSystemVerified: false, agentIndependentE2E: false,
     notice: "持久授权调用与现有快照的只读对照；不新增调用、不消耗限流，不等同外部客户端独立断言或自主E2E验收。" };

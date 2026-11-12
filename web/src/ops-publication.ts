@@ -1,4 +1,6 @@
 import {privateReleasePendingLabel} from "../../src/v2/private-release-stage.mjs";
+import {serviceHandoffLocation, serviceSourceFromLocation} from "./service-source-binding.ts";
+import {serviceBatchFromLocation} from "./service-batch-scope.ts";
 
 type MonitorTarget = {
   taskId: string;
@@ -12,6 +14,7 @@ type MonitorTarget = {
 
 const fields = ["taskId", "releaseId", "revisionId", "firstBatchId", "secondBatchId"] as const;
 const sourceFields = ["runId", "packageDigest", "verificationId", "reviewDigest"] as const;
+const servicePublicationFields = ["firstBatchId","secondBatchId","verificationId","reviewDigest"] as const;
 const uuid = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 const hash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -43,6 +46,32 @@ export function publicationMonitorHref(target:MonitorTarget, agent = false) {
   for (const field of fields) query.set(field,target[field]);
   if (target.source) for (const field of sourceFields) query.set(field,target.source[field]);
   return "/v2/?" + query + (agent ? "#agent-publication-history" : "#ops-exact-publication");
+}
+
+export const batchServiceHistoryHash = "#release-batch-consumption";
+export function batchServiceHistoryHref(target:MonitorTarget,batchId:string) {
+  const source=target.source;
+  if (!source || ![target.firstBatchId,target.secondBatchId].includes(batchId)) throw Error("原消费批次未确认");
+  const url=serviceHandoffLocation("https://history.invalid/v2/",{taskId:target.taskId,releaseId:target.releaseId,
+    revisionId:target.revisionId,runId:source.runId,packageDigest:source.packageDigest,scope:"PRIVATE_CLOUD_TEST",sourceKind:"AGENT"});
+  const {firstBatchId,secondBatchId}=target, {verificationId,reviewDigest}=source;
+  for(const [field,value] of Object.entries({firstBatchId,secondBatchId,verificationId,reviewDigest})) url.searchParams.set(field,value);
+  url.searchParams.set("release_batch",batchId);
+  return url.pathname+url.search+batchServiceHistoryHash;
+}
+
+export function batchServiceHistoryTarget(href:string) {
+  const url=new URL(href), query=url.searchParams;
+  if(url.hash!==batchServiceHistoryHash) return;
+  const source=serviceSourceFromLocation(href);
+  const sourceCount=[...query.keys()].filter(key=>key.startsWith("source_")).length;
+  if(url.pathname!=="/v2/"||query.size!==sourceCount+servicePublicationFields.length+2||query.getAll("module").length!==1||source.status!=="VALID") return null;
+  const binding=source.binding,batchId=serviceBatchFromLocation(href,binding);
+  const [firstBatchId,secondBatchId,verificationId,reviewDigest]=servicePublicationFields.map(key=>query.getAll(key).length===1?query.get(key):null);
+  if(!batchId||!uuid(firstBatchId)||!uuid(secondBatchId)||firstBatchId===secondBatchId||![firstBatchId,secondBatchId].includes(batchId)||
+     !uuid(verificationId)||!hash(reviewDigest)||!uuid(binding.taskId)||!uuid(binding.revisionId)||!uuid(binding.runId)) return null;
+  return {binding,batchId,publication:{taskId:binding.taskId,releaseId:binding.releaseId,revisionId:binding.revisionId,firstBatchId,secondBatchId,
+    source:{runId:binding.runId,packageDigest:binding.packageDigest,verificationId,reviewDigest}}};
 }
 
 type SavedRelease = {
@@ -104,14 +133,11 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
     events.every((row,index)=>row?.batchId===[first,second][index].id&&uuid(row.eventId)&&typeof row.observedAt==="string"&&Number.isFinite(Date.parse(row.observedAt))) &&
     events[0].eventId!==events[1].eventId;
   const failure=readFailureEvidence(release,[first,second]);
+  const source=uuid(release.verificationId)?{runId:release.sourceRunId,packageDigest:release.packageDigest,verificationId:release.verificationId,reviewDigest:release.reviewDigest}:undefined;
   const batches = [first, second].map((batch,index) => {
     const {id, sequence, status, schedulerTriggered} = batch;
     const pendingLabel = privateReleasePendingLabel(batch);
-    const serviceHref = monitoringVerified ? "/v2/?" + new URLSearchParams({
-      module:"services", source_task:target.taskId, source_release:target.releaseId,
-      source_revision:target.revisionId, source_run:release.sourceRunId!, source_package:release.packageDigest!,
-      source_scope:"PRIVATE_CLOUD_TEST", source_kind:"AGENT", release_batch:id!,
-    }) : undefined;
+    const serviceHref = monitoringVerified && source && id ? batchServiceHistoryHref({...target,source},id) : undefined;
     const reportSource = monitoringVerified ? {
       kind:"AGENT" as const, taskId:target.taskId, releaseId:target.releaseId, revisionId:target.revisionId,
       runId:release.sourceRunId!, packageDigest:release.packageDigest!, batchId:id!,
@@ -120,7 +146,6 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
     return {id, sequence, status, schedulerTriggered, ...(pendingLabel ? {pendingLabel} : {}),
       ...(workerResult?{workerResult}:{}), serviceHref, reportSource};
   });
-  const source=uuid(release.verificationId)?{runId:release.sourceRunId,packageDigest:release.packageDigest,verificationId:release.verificationId,reviewDigest:release.reviewDigest}:undefined;
   return {status:release.status, health:release.health, batches, source,
     ...(savedHealthy ? {monitoringVerified} : {}),...(failure?{failureSettlement:failure.status}:{})};
 }
