@@ -728,6 +728,15 @@ export function createV2Server(options = {}) {
   // Raw signing evidence comes from the trusted runtime, never a request body.
   const fundSignedExecutionFor = item => item.manifest?.source?.fundSignedExecution === undefined
     ? undefined : options.fundSignedExecutionFor?.(item.digest);
+  const localFileReviewFor = (bundle, verification, actorId) => {
+    const reviews = store.list("delivery_review", PROJECT).filter(review =>
+      review.packageId === bundle.id && review.packageDigest === bundle.digest &&
+      review.verificationId === verification.id && review.reviewer?.id === actorId &&
+      review.status === "REVIEWED" && review.scope === "LOCAL_FILE_REVIEW");
+    if (!bundle.manifest.source.fundSignedExecution) return reviews[0];
+    const digest = hash(JSON.stringify(verification));
+    return reviews.find(review => review.fundRehearsalDigest === digest) ?? reviews[0];
+  };
   const releaseRunner =
     options.releaseRunner ??
     (async (input) => {
@@ -750,6 +759,21 @@ export function createV2Server(options = {}) {
     fundExecutionEvidenceMode: options.releaseRunner || options.runner ? "TEST_HARNESS" : "LOCAL_SPARK_PROCESS",
     assertRunSource: ({run,release,packageItem})=>{
       if (isFundContext(packageItem.manifest?.source?.contextId)) {
+        if (packageItem.manifest.source.fundSignedExecution) {
+          const currentRelease = get("release", release.id);
+          const currentRun = get("release_run", run.id);
+          if (currentRelease.status !== "ACTIVE_LOCAL" || currentRelease.approvalId !== release.approvalId ||
+              currentRelease.packageId !== release.packageId || currentRelease.packageDigest !== release.packageDigest ||
+              currentRun.status !== "RUNNING" || currentRun.releaseId !== release.id ||
+              currentRun.packageId !== run.packageId || currentRun.packageDigest !== run.packageDigest ||
+              currentRun.sequence !== run.sequence || currentRun.scheduledTriggerAt !== run.scheduledTriggerAt)
+            throw fail(409, "基金签名批次的批准或调度依据已变化");
+          release = currentRelease;
+          run = currentRun;
+          packageItem = get("delivery_package", currentRun.packageId);
+          if (packageItem.digest !== currentRun.packageDigest)
+            throw fail(409, "基金签名批次的交付摘要已变化");
+        }
         if (packageItem.manifest.source.attribution?.kind === fundAgentAttributionKind) validateAnyDeliveryPackage(packageItem);
         const approval = get("release_approval", release.approvalId);
         assertFundBatch({ bundle: packageItem, approval, release, run,
@@ -5780,7 +5804,8 @@ export function createV2Server(options = {}) {
           }
         }
         const fileReviewer=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
-        const fileReview=(bundle?.manifest?.source?.outputContract||agent.fundPreparation)&&verification?store.list('delivery_review',PROJECT).find(r=>r.packageId===bundle.id&&r.packageDigest===bundle.digest&&r.verificationId===verification.id&&r.reviewer?.id===fileReviewer&&r.status==='REVIEWED'&&r.scope==='LOCAL_FILE_REVIEW'):undefined;
+        const fileReview=bundle&&(bundle.manifest.source.outputContract||agent.fundPreparation)&&verification
+          ? localFileReviewFor(bundle, verification, fileReviewer) : undefined;
         return json(res, 200, {
           report,
           ...(fileReview?{fileReview:{id:fileReview.id,status:fileReview.status,packageId:fileReview.packageId,packageDigest:fileReview.packageDigest,verificationId:fileReview.verificationId,reviewedAt:fileReview.reviewedAt,scope:fileReview.scope,
@@ -5805,8 +5830,7 @@ export function createV2Server(options = {}) {
             const selector = validatePublicationSelector(publicationSelectorFromUrl(url), actorId);
             if (selector.releaseId) throw fail(422, "预检须选择原交付版本");
             const { bundle, verification } = selectFundPublication(agent, selector);
-            const review = store.list("delivery_review", PROJECT).find(item => item.packageId === bundle.id &&
-              item.packageDigest === bundle.digest && item.verificationId === verification.id && item.reviewer?.id === agent.submittedBy);
+            const review = localFileReviewFor(bundle, verification, agent.submittedBy);
             return json(res, 200, fundAgentPublicationPreflight({ bundle, verification, review,
               localClassicSpark, schedulerMode: releaseSchedulerMode, fundSignedExecution:fundSignedExecutionFor(bundle) }));
           }

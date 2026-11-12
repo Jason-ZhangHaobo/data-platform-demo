@@ -11,7 +11,7 @@ import { verifiedFundRun } from "./fund-delivery.mjs";
 import { verifyFundSignedDelivery } from "./fund-signed-delivery.mjs";
 
 export async function verifyDeliveryDirectory(
-  { directory, expectedDigest, scheduledFor, signal },
+  { directory, expectedDigest, scheduledFor, signal, beforeRun },
   options = {},
 ) {
   const { bundle, plan } = loadDeliveryDirectory(directory, expectedDigest);
@@ -33,6 +33,7 @@ export async function verifyDeliveryDirectory(
   const runner =
     options.runner ??
     ((input) => runSpark(input, options.runtime ?? runtimeConfig()));
+  beforeRun?.();
   const raw = await runner({
     ...input,
     timeoutMs: plan.deployment.runtime.timeoutSeconds * 1000,
