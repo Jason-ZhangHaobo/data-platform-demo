@@ -8,10 +8,10 @@ const agentSource=record=>record&&[undefined,'AGENT'].includes(record.sourceKind
 
 // The HTTP route is local-only; every relationship is rebuilt from stored records.
 // No mutations, credential creation, model calls or Spark execution occur here.
-export async function localTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager,timeUnitMs}) {
+export async function localTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager,timeUnitMs,fundSignedExecutionFor}) {
  if(agent.fundPreparation){
   if(!releaseId)throw Object.assign(Error('基金消费须指定原发布编号和包摘要'),{status:422,code:'FUND_AGENT_RELEASE_REQUIRED'});
-  return fundAgentTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager,timeUnitMs});
+  return fundAgentTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager,timeUnitMs,fundSignedExecutionFor});
  }
  if(releaseId!==undefined){
   const stored=store.get('agent',agent.id,project);

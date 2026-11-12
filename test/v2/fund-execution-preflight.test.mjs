@@ -10,6 +10,7 @@ import { computeManifestDigest, createDeliveryPackage, sha256, unpackDeliveryPac
 import { verifyDeliveryDirectory } from "../../src/v2/delivery-runner.mjs";
 import { createFcIngress } from "../../src/v2/fc-ingress.mjs";
 import { fundContextIds, fundRehearsalAt } from "../../src/v2/fund-contexts.mjs";
+import { resolveFundConsumptionSource } from "../../src/v2/fund-consumption-source.mjs";
 import { createFundTestSql } from "../../src/v2/fund-delivery.mjs";
 import { fundContext, fundReferenceSql } from "../../src/v2/fund-lookthrough.mjs";
 import { readFundExecutionPreflight } from "../../src/v2/fund-preparation-client.mjs";
@@ -22,6 +23,7 @@ import { createFundPreparations, fundAgentRequestSignature } from "../../src/v2/
 import { fundRequirementScope } from "../../src/v2/fund-requirement-contract.mjs";
 import { validatePrivateApplicationRequest } from "../../src/v2/private-application.mjs";
 import { createQueuedSparkJob, createQueuedSparkResult, queueConfigFromEnvironment } from "../../src/v2/remote-spark-queue.mjs";
+import { plannedLocalRuns } from "../../src/v2/release-scheduler.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { bindSqlRequirementRevision, sqlRequirementBinding, sqlRequirementReport } from "../../src/v2/sql-requirements.mjs";
 import { MetadataStore } from "../../src/v2/store.mjs";
@@ -269,4 +271,51 @@ test("signed fund execution binds immutable job bytes and independent result to 
     {code:"FUND_SIGNED_DELIVERY_EVIDENCE_REQUIRED"});
   assert.throws(()=>assertFundConsent({...reviewInput,review,consent,fundSignedExecution:{...evidence,envelope:{...envelope,signature:"bad"}}}),
     {code:"SPARK_QUEUE_RESULT_INVALID"});
+
+  const save = (kind, data) => store.create(kind, PROJECT, data);
+  const deliveryTask = save("agent_delivery_task", { status: "SUCCEEDED", submittedBy: actorId,
+    sourceAgentTaskId: original.task.id, sourceRunId: original.run.id,
+    sourceRevisionId: original.revision.id, sourceSqlHash: original.revision.hash });
+  const savedBundle = save("delivery_package", { ...bound, agentDeliveryTaskId: deliveryTask.id, sourceRunId: original.run.id });
+  const savedRehearsal = save("delivery_verification", { ...rehearsal, packageId: savedBundle.id });
+  store.update("agent_delivery_task", deliveryTask.id, PROJECT, { packageId: savedBundle.id,
+    packageDigest: bound.digest, verificationId: savedRehearsal.id });
+  const savedReview = save("delivery_review", { ...review, packageId: savedBundle.id, verificationId: savedRehearsal.id,
+    fundRehearsalDigest: sha256(JSON.stringify(savedRehearsal)) });
+  const publication = fundAgentPublicationPreflight({ ...reviewInput, bundle: savedBundle,
+    verification: savedRehearsal, review: savedReview });
+  const release = save("release", { status: "ACTIVE_LOCAL", health: "HEALTHY", successfulRunCount: 2,
+    failedRunCount: 0, openAlertCount: 0, packageId: savedBundle.id, packageDigest: bound.digest,
+    sourceRevisionId: original.revision.id, sourceSqlHash: original.revision.hash, sourceCodeHash: original.revision.hash,
+    publicDeployed: false,
+    adapter: "local-spark-v1", environment: "local-rehearsal", fundLookthrough: bound.manifest.source.fundLookthrough,
+    scheduleSpec: consent.scheduleSpec, businessScheduledFor: schedule, activatedAt: "2026-09-11T00:00:00.000Z" });
+  const approval = save("release_approval", { status: "APPROVED", scope: "LOCAL_TEST_RELEASE", publicDeploymentApproved: false,
+    approver: { id: actorId }, packageId: savedBundle.id, packageDigest: bound.digest,
+    sourceRevisionId: original.revision.id, sourceSqlHash: original.revision.hash, consumedByReleaseId: release.id,
+    rehearsalId: savedRehearsal.id, reviewId: savedReview.id,
+    fundConsent: { ...consent, verificationId: savedRehearsal.id, preflightDigest: publication.digest } });
+  store.update("release", release.id, PROJECT, { approvalId: approval.id });
+  const [batch] = plannedLocalRuns({ releaseId: release.id, packageId: savedBundle.id, packageDigest: bound.digest,
+    businessScheduledFor: schedule, spec: consent.scheduleSpec, nowMs: Date.parse(release.activatedAt) }).map(plan => {
+    const run = save("release_run", { ...savedRehearsal, ...plan, status: "SUCCEEDED", schedulerTriggered: true,
+      executionEvidenceMode: "TEST_HARNESS", mode: "LOCAL_SCHEDULED_RELEASE", clockMode: "WALL_CLOCK_TIMER",
+      triggeredAt: plan.scheduledTriggerAt, startedAt: plan.scheduledTriggerAt, finishedAt: plan.scheduledTriggerAt });
+    save("monitor_event", { releaseId: release.id, packageDigest: bound.digest, releaseRunId: run.id,
+      type: "BATCH_SUCCEEDED", status: "SUCCEEDED", schedulerTriggered: true, observedAt: run.finishedAt });
+    return run;
+  });
+  const selection = { batchId: batch.id, releaseId: release.id, packageDigest: bound.digest };
+  const readConsumption = fundSignedExecutionFor =>
+    resolveFundConsumptionSource({ store, project: PROJECT, selection, fundSignedExecutionFor });
+  assert.throws(() => readConsumption(), { code: "FUND_SIGNED_DELIVERY_EVIDENCE_REQUIRED" });
+  assert.throws(() => readConsumption(() => ({ ...evidence, envelope: { ...envelope, signature: "bad" } })),
+    { code: "FUND_CONSUMPTION_SOURCE_UNPROVEN" });
+  const verified = readConsumption(selected => {
+    assert.equal(selected.id, savedBundle.id);
+    return evidence;
+  });
+  assert.equal(verified.evidence.rowCount, 7);
+  assert.equal(verified.evidence.engineClassification, "TEST_HARNESS");
+  assert.equal(verified.rows, undefined);
 });

@@ -22,7 +22,7 @@ export function fundConsumptionSelection(batchId, query) {
   return { batchId, releaseId, packageDigest };
 }
 
-function verifyFundPublication({ store, project, selection, timeUnitMs }, includeHistorical) {
+function verifyFundPublication({ store, project, selection, timeUnitMs, fundSignedExecutionFor }, includeHistorical) {
   const read = (kind, id) => {
     const record = typeof id === "string" && store.get(kind, id, project);
     requireProof(record?.id === id && record.projectId === project);
@@ -62,8 +62,14 @@ function verifyFundPublication({ store, project, selection, timeUnitMs }, includ
   const selected = read("release_run", selection.batchId);
   const batches = store.list("release_run", project).filter(batch => batch.releaseId === release.id)
     .sort((left, right) => left.sequence - right.sequence);
-  assertFundBatch({ bundle, verification, review, approval, release, run: selected, batches,
-    localClassicSpark: true, schedulerMode: "LOCAL_TIMER", timeUnitMs });
+  try {
+    assertFundBatch({ bundle, verification, review, approval, release, run: selected, batches,
+      localClassicSpark: true, schedulerMode: "LOCAL_TIMER", timeUnitMs,
+      fundSignedExecution: source.fundSignedExecution === undefined ? undefined : fundSignedExecutionFor?.(bundle) });
+  } catch (error) {
+    if (["SPARK_QUEUE_RESULT_INVALID", "SPARK_QUEUE_SIGNATURE_INVALID"].includes(error.code)) throw reject();
+    throw error;
+  }
   requireProof(reviewChecks.every(key => review.attestations?.[key] === true) &&
     revision.contextId === source.contextId && revision.source === (fundAgent ? source.attribution.modelMode : "MANUAL") &&
     revision.hash === source.sqlHash && revision.sql === bundle.files["main.sql"] && sha256(revision.sql) === source.sqlHash &&
@@ -129,7 +135,7 @@ export function resolveFundConsumptionSource(args) {
   return { evidence, rows: evidence.eligibleForService ? rows : undefined };
 }
 
-export function fundAgentServiceSources({ store, project, selection, timeUnitMs }) {
+export function fundAgentServiceSources({ store, project, selection, timeUnitMs, fundSignedExecutionFor }) {
   if (!selection.taskId || !selection.packageDigest || !selection.releaseId) return [];
   const release = store.get("release", selection.releaseId, project);
   const source = release && store.get("delivery_package", release.packageId, project)?.manifest?.source;
@@ -138,7 +144,7 @@ export function fundAgentServiceSources({ store, project, selection, timeUnitMs 
   try {
     const runs = store.list("release_run", project).filter(run => run.releaseId === release.id);
     return runs.flatMap(run => {
-      const { evidence } = resolveFundConsumptionSource({ store, project, timeUnitMs,
+      const { evidence } = resolveFundConsumptionSource({ store, project, timeUnitMs, fundSignedExecutionFor,
         selection: { releaseId: release.id, packageDigest: release.packageDigest, batchId: run.id } });
       return evidence.eligibleForService ? [{
         id: run.id, releaseId: release.id, packageDigest: evidence.packageDigest, sourceKind: "AGENT", scope: evidence.scope,
