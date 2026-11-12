@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -89,6 +89,76 @@ test('first-case entry preflight distinguishes exact bytes, stale HTML and a tim
   reply=async ({signal})=>{await new Promise(resolve=>setTimeout(resolve,10));throw signal.reason;};
   assert.equal((await check(['--timeout-ms','1'])).reason,'ENTRY_TIMEOUT');
   assert.equal(reads.length,5);
+});
+
+test('first-case entry preflight optionally verifies the same-origin script from the exact inspected ZIP', async t => {
+  const directory=mkdtempSync(join(tmpdir(),'shuduo-entry-script-'));
+  t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const checkpoint=join(directory,'checkpoint.json'), applicationPath=join(directory,'application.json');
+  const path='/v2/assets/index-test.js', script='export const fictional = true;';
+  const index=`<html><script type="module" crossorigin src="${path}"></script></html>`;
+  const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
+  const source='a'.repeat(40), reads=[];
+  let html=index, scriptResponse=()=>new Response(script,{headers:{'content-type':'text/javascript; charset=utf-8'}});
+  const client={baseUrl:'https://pilot.example.invalid/api/v2',projectId:PROJECT,fetchImpl:async (url,options)=>{
+    reads.push({url,signal:options.signal});
+    assert.equal(options.method,'GET');
+    assert.equal(options.redirect,'error');
+    assert.equal(options.credentials,'omit');
+    assert.equal(Object.keys(options.headers).some(key=>['authorization','cookie'].includes(key.toLowerCase())),false);
+    if (url==='https://pilot.example.invalid/v2/') return new Response(html,{headers:{'content-type':'text/html'}});
+    assert.equal(url,'https://pilot.example.invalid'+path);
+    return scriptResponse(options);
+  },request:()=>assert.fail('Preflight must stay anonymous')};
+  prepareCloudV3Start(checkpoint,client,source);
+  const original=readFileSync(checkpoint);
+  const archive=(name,entry)=>{
+    const zip=join(directory,name+'.zip');
+    mkdirSync(join(directory,'web-dist/assets'),{recursive:true});
+    writeFileSync(join(directory,'web-dist/index.html'),entry);
+    writeFileSync(join(directory,'web-dist/assets/index-test.js'),script);
+    execFileSync('zip',['-q',zip,'web-dist/index.html','web-dist/assets/index-test.js'],{cwd:directory});
+    chmodSync(zip,0o600);
+    const bytes=readFileSync(zip);
+    return {zip,inspection:{...fixtureFirstCloudInspection(source,'b'.repeat(40)),bytes:bytes.length,sha256:hash(bytes),
+      webIndexBytes:Buffer.byteLength(entry),webIndexSha256:hash(entry)}};
+  };
+  const check=async (archive,flags=[])=>{
+    reads.length=0;
+    writeFileSync(applicationPath,JSON.stringify(archive.inspection),{mode:0o600});
+    const output=[];
+    assert.equal(await runV2Cli(['agent','v3-entry-preflight','--checkpoint',checkpoint,'--application-file',applicationPath,
+      '--zip-file',archive.zip,...flags],{},{client,output:line=>output.push(line),error:()=>{}}),0);
+    const report=JSON.parse(output.join(''));
+    assert.equal(report.agentSubmissions,0);
+    assert.equal(reads.length,report.entryRequests+report.scriptRequests);
+    assert.deepEqual(readFileSync(checkpoint),original);
+    assert.equal(existsSync(checkpoint+'.lock'),false);
+    return report;
+  };
+  const candidate=archive('candidate',index);
+  const other=archive('external','<html><script type="module" src="//untrusted.invalid/index-test.js"></script></html>');
+  assert.equal((await check({...candidate,zip:other.zip})).reason,'APPLICATION_ZIP_MISMATCH');
+  assert.equal((await check(other)).reason,'APPLICATION_ENTRY_INVALID');
+  chmodSync(candidate.zip,0o644);
+  assert.equal((await check(candidate)).reason,'APPLICATION_ZIP_MISMATCH');
+  chmodSync(candidate.zip,0o600);
+  const success=await check(candidate);
+  assert.equal(success.status,'MATCHED');
+  assert.equal(success.script.status,'MATCHED');
+  assert.equal(reads[0].signal,reads[1].signal);
+  html='<html>Wrong version</html>';
+  assert.equal((await check(candidate)).reason,'ENTRY_CONTENT_MISMATCH');
+  assert.equal(reads.length,1);
+  html=index;
+  scriptResponse=()=>new Response(script.replace('true','null'),{headers:{'content-type':'application/javascript'}});
+  assert.equal((await check(candidate)).reason,'ENTRY_SCRIPT_CONTENT_MISMATCH');
+  scriptResponse=()=>new Response('<html>Fallback</html>',{headers:{'content-type':'text/html'}});
+  assert.equal((await check(candidate)).reason,'ENTRY_SCRIPT_NOT_JAVASCRIPT');
+  scriptResponse=()=>new Response(script,{headers:{'content-type':'text/javascript','content-length':'2097153'}});
+  assert.equal((await check(candidate)).reason,'ENTRY_SCRIPT_TOO_LARGE');
+  scriptResponse=async ({signal})=>{await new Promise(resolve=>setTimeout(resolve,25));throw signal.reason;};
+  assert.equal((await check(candidate,['--timeout-ms','10'])).reason,'ENTRY_SCRIPT_TIMEOUT');
 });
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {

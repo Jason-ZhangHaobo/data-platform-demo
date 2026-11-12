@@ -25,6 +25,7 @@ import { validateConsumerPlan } from "./verify-service-consumer.mjs";
 import { firstCloudApplicationBinding, firstCloudCheckpointBinding, firstCloudWindowReceiptProtocol, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
 import { boundedBytes } from "./control-code-transport.mjs";
+import { inspectedControlEntryScript, WEB_ENTRY_SCRIPT_LIMIT, WEB_INDEX_LIMIT } from "./control-web-entry.mjs";
 
 const revisionPattern = /^[a-f0-9]{40}$/;
 const id = value => typeof value === "string" && uuid.test(value);
@@ -267,9 +268,8 @@ function checkedFirstWindowReceipt(path,windowPath,applicationPath,client,bill) 
   return receipt;
 }
 
-async function readFirstWindowEntry(client, application, timeoutMs) {
+async function readFirstWindowAsset(client, asset, signal) {
   const started = performance.now();
-  const signal = AbortSignal.timeout(timeoutMs);
   let response, headersMs;
   const result = (status, reason, extra = {}) => ({
     status, ...(reason ? {reason} : {}),
@@ -277,36 +277,44 @@ async function readFirstWindowEntry(client, application, timeoutMs) {
     elapsedMs: Math.round(performance.now() - started), ...extra,
   });
   try {
-    const url = new URL("/v2/",client.baseUrl);
+    const url = new URL(asset.path,client.baseUrl);
     response = await client.fetchImpl(url.href,{
       method:"GET", redirect:"error", cache:"no-store", credentials:"omit", signal,
-      headers:{Accept:"text/html","Cache-Control":"no-cache"},
+      headers:{Accept:asset.accept,"Cache-Control":"no-cache"},
     });
     headersMs = Math.round(performance.now() - started);
-    if (response.status !== 200 || !/^text\/html(?:;|$)/i.test(response.headers.get("content-type") ?? "")) {
+    if (response.status !== 200 || !asset.contentType.test(response.headers.get("content-type") ?? "")) {
       await response.body?.cancel();
-      return result("UNCONFIRMED","ENTRY_NOT_HTML");
+      return result("UNCONFIRMED",asset.invalidResponse);
     }
-    const bytes = await boundedBytes(response,300000);
-    return bytes.length === application.webIndexBytes && sha256(bytes) === application.webIndexSha256
+    const bytes = await boundedBytes(response,asset.limit);
+    return bytes.length === asset.bytes && sha256(bytes) === asset.digest
       ? result("MATCHED",undefined,{observedBytes:bytes.length})
-      : result("MISMATCH","ENTRY_CONTENT_MISMATCH",{observedBytes:bytes.length});
+      : result("MISMATCH",`${asset.label}_CONTENT_MISMATCH`,{observedBytes:bytes.length});
   } catch (error) {
     await response?.body?.cancel().catch(() => {});
-    const reason = signal.aborted ? "ENTRY_TIMEOUT" : error?.safeCode === "OBJECT_TOO_LARGE" ? "ENTRY_TOO_LARGE" : "ENTRY_TRANSPORT_UNCONFIRMED";
-    return result("UNCONFIRMED",reason);
+    const reason = signal.aborted ? "TIMEOUT" : error?.safeCode === "OBJECT_TOO_LARGE" ? "TOO_LARGE" : "TRANSPORT_UNCONFIRMED";
+    return result("UNCONFIRMED",`${asset.label}_${reason}`);
   }
 }
 
+function readFirstWindowEntry(client, application, signal) {
+  return readFirstWindowAsset(client,{
+    path:"/v2/", accept:"text/html", contentType:/^text\/html(?:;|$)/i,
+    invalidResponse:"ENTRY_NOT_HTML", label:"ENTRY", limit:WEB_INDEX_LIMIT,
+    bytes:application.webIndexBytes, digest:application.webIndexSha256,
+  },signal);
+}
+
 async function verifyFirstWindowEntry(client, application) {
-  const probe = await readFirstWindowEntry(client, application, client.timeoutMs ?? 15000);
+  const probe = await readFirstWindowEntry(client, application, AbortSignal.timeout(client.timeoutMs ?? 15000));
   if (probe.status === "MISMATCH")
     stop("正式入口 HTML 与验包证据不一致，请保留原请求和检查点");
   if (probe.status !== "MATCHED")
     stop("正式入口 HTML 未能核对，请保留原请求和检查点");
 }
 
-export async function checkCloudV3PreparedEntry(path, client, applicationPath, timeoutMs = client.timeoutMs ?? 15000) {
+export async function checkCloudV3PreparedEntry(path, client, applicationPath, timeoutMs = client.timeoutMs ?? 15000, zipPath) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000)
     stop("首例只读入口预检的超时须为 1—30000 毫秒");
   const checkpoint = firstCloudCheckpointBinding(path);
@@ -316,14 +324,38 @@ export async function checkCloudV3PreparedEntry(path, client, applicationPath, t
   const {state:inspection} = readCheckpoint(applicationPath,{privateFile:true});
   const application = firstCloudApplicationBinding(inspection,checkpoint);
   const report = {protocol:"shuduo-cloud-v3-entry-preflight/v1",scope:"READ_ONLY",checkpointStatus:"PREPARED",
-    checkpointDigest:checkpoint.checkpointDigest,sourceRevision:checkpoint.sourceRevision,entryRequests:0,agentSubmissions:0};
+    checkpointDigest:checkpoint.checkpointDigest,sourceRevision:checkpoint.sourceRevision,entryRequests:0,agentSubmissions:0,
+    ...(zipPath ? {scriptRequests:0} : {})};
   if (!application) return {...report,status:"UNCONFIRMED",reason:"APPLICATION_BINDING_MISMATCH"};
-  const probe = await readFirstWindowEntry(client,application,timeoutMs);
+  let expectedScript;
+  if (zipPath) {
+    try { expectedScript = inspectedControlEntryScript(zipPath,application); }
+    catch (error) {
+      return {...report,status:"UNCONFIRMED",reason:error?.safeCode === "APPLICATION_ZIP_MISMATCH"
+        ? "APPLICATION_ZIP_MISMATCH" : "APPLICATION_ENTRY_INVALID"};
+    }
+  }
+  const signal = AbortSignal.timeout(timeoutMs);
+  const probe = await readFirstWindowEntry(client,application,signal);
+  let script;
+  if (expectedScript && probe.status === "MATCHED") {
+    if (!signal.aborted) {
+      report.scriptRequests = 1;
+      script = await readFirstWindowAsset(client,{
+        ...expectedScript, accept:"text/javascript, application/javascript",
+        contentType:/^(?:text|application)\/javascript(?:;|$)/i,
+        invalidResponse:"ENTRY_SCRIPT_NOT_JAVASCRIPT", label:"ENTRY_SCRIPT", limit:WEB_ENTRY_SCRIPT_LIMIT,
+      },signal);
+    } else {
+      script = {status:"UNCONFIRMED",reason:"ENTRY_SCRIPT_TIMEOUT"};
+    }
+  }
   let unchanged = false;
   try { unchanged = firstCloudCheckpointBinding(path).checkpointDigest === checkpoint.checkpointDigest; }
   catch { /* An updated checkpoint needs its own preflight. */ }
   return {...report,entryRequests:1,applicationInspectionDigest:application.inspectionDigest,
-    ...probe,...(!unchanged?{status:"UNCONFIRMED",reason:"CHECKPOINT_CHANGED"}:{})};
+    ...probe,...(script?{htmlStatus:probe.status,script,status:script.status,...(script.reason?{reason:script.reason}:{})}:{}),
+    ...(!unchanged?{status:"UNCONFIRMED",reason:"CHECKPOINT_CHANGED"}:{})};
 }
 
 export async function continueCloudV3Start(path, client, {billPath, windowPath, applicationPath, reconcile=false} = {}) {

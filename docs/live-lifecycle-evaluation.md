@@ -62,6 +62,8 @@ node bin/shuduo.mjs agent v3-entry-preflight \
 `MATCHED` 表示返回 HTML 与验包摘要和字节数相同。`APPLICATION_BINDING_MISMATCH` 在发送请求前返回。`ENTRY_CONTENT_MISMATCH` 表示已读取 HTML、版本未匹配。`ENTRY_TIMEOUT` 表示在读取期限内未确认。命令最多发送一个匿名 GET，保留原检查点及原请求编号。响应头耗时用于诊断，交互性能继续按浏览器验收。实际开窗和提交仍使用下列独立回执和预算检查。
 
 
+要同时检查浏览器启动脚本，可追加 `--zip-file /private/v2-function.zip`。命令先按独立验包核对本机 ZIP 字节和摘要，从相同 HTML 提取唯一的同源 Vite 入口脚本，再比对脚本 MIME、字节数与 SHA-256。ZIP 不匹配或入口无法解析时不发送请求。HTML 通过才请求脚本，两次匿名 GET 共用读取期限。报告的 `htmlStatus` 与 `script` 分别记录结果，`entryRequests` 与 `scriptRequests` 分别计数。成功范围为这两个静态文件。Safari／Chrome 控件时间、登录和实际任务仍按各自验收执行。
+
 使用绑定原 V2 入口和项目的 CLI 配置。先准备受保护的检查点，再按现有新任务开发授权核对实际部署版本、当前账单及受邀会话。
 
 控制面构建可从主分支选择已经合入的完整应用 SHA。构建在该应用提交上安装锁定依赖、跑 CI、生成 Linux ZIP 并校验重复打包的字节一致性。构建回执分别记录工作流提交、应用提交及树、运行次数、ZIP 摘要和大小。包的独立检查同时验证 GitHub 运行与产物编号、原应用检出和 ZIP 内容。旧的同提交构建仍按原方式校验。构建产物有效期一天，下载保留的 ZIP 可用于离线验真，实际部署仍需可用产物及单独有效的部署授权。
