@@ -23,6 +23,7 @@ import { createFundSignedReceipts } from "../../src/v2/fund-signed-receipts.mjs"
 import { createFundPreparations, fundAgentRequestSignature } from "../../src/v2/fund-preparation.mjs";
 import { fundRequirementScope } from "../../src/v2/fund-requirement-contract.mjs";
 import { validatePrivateApplicationRequest } from "../../src/v2/private-application.mjs";
+import { resolvePublishedReportSource } from "../../src/v2/published-report-source.mjs";
 import { createQueuedSparkJob, createQueuedSparkResult, queueConfigFromEnvironment } from "../../src/v2/remote-spark-queue.mjs";
 import { plannedLocalRuns } from "../../src/v2/release-scheduler.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
@@ -338,4 +339,15 @@ test("signed fund execution binds immutable job bytes and independent result to 
   assert.equal(verified.evidence.rowCount, 7);
   assert.equal(verified.evidence.engineClassification, "TEST_HARNESS");
   assert.equal(verified.rows, undefined);
+
+  const reportSource = { ...selection, kind: "AGENT", taskId: original.task.id,
+    revisionId: original.revision.id, runId: original.run.id };
+  const readReport = (fundSignedExecutionFor, owner = actorId) =>
+    resolvePublishedReportSource({ store, project: PROJECT, source: reportSource, actorId: owner, fundSignedExecutionFor });
+  assert.throws(() => readReport(undefined), { code: "FUND_SIGNED_DELIVERY_EVIDENCE_REQUIRED" });
+  assert.throws(() => readReport(() => ({ ...evidence, envelope: { ...envelope, signature: "bad" } })),
+    { code: "FUND_CONSUMPTION_SOURCE_UNPROVEN" });
+  assert.throws(() => readReport(() => evidence), { code: "FUND_REPORT_SOURCE_UNPROVEN" });
+  assert.throws(() => readReport(() => assert.fail("foreign owner reached signing evidence"), randomUUID()),
+    { code: "REPORT_SOURCE_OWNER" });
 });

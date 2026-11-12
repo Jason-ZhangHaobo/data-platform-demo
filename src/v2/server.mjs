@@ -1222,7 +1222,7 @@ export function createV2Server(options = {}) {
       return result;
     });
   const resolveLocalReportSource = (source, actorId) => resolvePublishedReportSource({
-    store, project: PROJECT, source, actorId, allowFund: localClassicSpark, timeUnitMs: releaseTimeUnitMs,
+    store, project: PROJECT, source, actorId, allowFund: localClassicSpark, timeUnitMs: releaseTimeUnitMs, fundSignedExecutionFor,
   });
   const fundPreparations = createFundPreparations({ store, project: PROJECT });
   const reports = new ReportManager({
@@ -1238,7 +1238,7 @@ export function createV2Server(options = {}) {
   const privateBatchArchives = privateDataServicesEnabled
     ? createPrivateBatchArchive({store, businessStore, project:PROJECT, now:options.now}) : undefined;
   const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,reportStore,provenance:reportProvenance,
-    resolveSource:resolveLocalReportSource,afterStep:options.publishedReportAfterStep});
+    resolveSource:resolveLocalReportSource,fundSignedExecutionFor,afterStep:options.publishedReportAfterStep});
   const reportActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
   const publishedPlanContext=(source,actor)=>{
     if(!local)throw fail(403,'同源报表规划尚只在本机开发边界开放');
@@ -3119,7 +3119,7 @@ export function createV2Server(options = {}) {
           requireDurableAgentOwner(agent, req);
           const consumption = lineage.release.activeForConsumption ? await fundAgentTaskConsumption({
             store, project: PROJECT, agent, packageDigest: source.packageDigest, releaseId: source.releaseId,
-            batchId: source.batchId, manager: dataServices, timeUnitMs: releaseTimeUnitMs,
+            batchId: source.batchId, manager: dataServices, timeUnitMs: releaseTimeUnitMs, fundSignedExecutionFor,
           }) : undefined;
           return json(res, 200, { protocol: "shuduo-fund-report-consumption/v1", scope: "LOCAL_TEST_ONLY",
             requestId, source, report, status: consumption?.status ?? "UNAVAILABLE", consumption });
