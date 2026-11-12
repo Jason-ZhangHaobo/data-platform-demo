@@ -29,21 +29,8 @@ if [[ "$($python_binary -c 'import sys; print(f"{sys.version_info.major}.{sys.ve
   exit 1
 fi
 
-mkdir -p "$stage/src/v2" "$stage/python"
-cp "$repo_root/deploy/spark-worker/package.json" "$stage/package.json"
-cp \
-  "$repo_root/src/v2/remote-spark-worker.mjs" \
-  "$repo_root/src/v2/remote-spark.mjs" \
-  "$repo_root/src/v2/remote-spark-queue.mjs" \
-  "$repo_root/src/v2/oss-client.mjs" \
-  "$repo_root/src/v2/oss-request-retry.mjs" \
-  "$repo_root/src/v2/spark-worker-private-smoke.mjs" \
-  "$repo_root/src/v2/spark.mjs" \
-  "$repo_root/src/v2/worker.py" \
-  "$repo_root/src/v2/output_contracts.py" \
-  "$repo_root/src/v2/output-contracts.json" \
-  "$repo_root/src/v2/output-contract-metadata.json" \
-  "$stage/src/v2/"
+mkdir -p "$stage/python"
+bash "$repo_root/scripts/stage-v2-spark-worker-sources.sh" "$stage"
 
 "$python_binary" -m pip install \
   --requirement "$repo_root/deploy/spark-worker/requirements.txt" \

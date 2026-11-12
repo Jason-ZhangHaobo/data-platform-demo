@@ -90,6 +90,10 @@ jobs:
             echo '::endgroup::'
             exit 1
           fi
+          PYTHONPATH="$worker_root/python" \
+          V2_PYTHON="$(command -v python)" \
+          V2_ARTIFACT_ROOT="$RUNNER_TEMP" \
+          node scripts/smoke-v2-spark-worker-fund.mjs "$worker_root"
 
       - name: Upload short-lived package for controlled cloud validation
         uses: actions/upload-artifact@v6
