@@ -1,17 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runV2Cli } from "../../bin/shuduo.mjs";
 import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
-import { sha256 } from "../../src/v2/delivery.mjs";
+import { computeManifestDigest, createDeliveryPackage, sha256, unpackDeliveryPackage } from "../../src/v2/delivery.mjs";
+import { verifyDeliveryDirectory } from "../../src/v2/delivery-runner.mjs";
 import { createFcIngress } from "../../src/v2/fc-ingress.mjs";
-import { fundContextIds } from "../../src/v2/fund-contexts.mjs";
+import { fundContextIds, fundRehearsalAt } from "../../src/v2/fund-contexts.mjs";
 import { createFundTestSql } from "../../src/v2/fund-delivery.mjs";
 import { fundContext, fundReferenceSql } from "../../src/v2/fund-lookthrough.mjs";
 import { readFundExecutionPreflight } from "../../src/v2/fund-preparation-client.mjs";
 import { fundExecutionPreflightPath } from "../../src/v2/fund-preparation-request.mjs";
 import { fundExecutionPreflight, resolveFundExecutionCandidate } from "../../src/v2/fund-execution-preflight.mjs";
 import { verifyFundSignedExecution } from "../../src/v2/fund-signed-execution.mjs";
+import { bindFundSignedDelivery } from "../../src/v2/fund-signed-delivery.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "../../src/v2/fund-preparation.mjs";
 import { fundRequirementScope } from "../../src/v2/fund-requirement-contract.mjs";
 import { validatePrivateApplicationRequest } from "../../src/v2/private-application.mjs";
@@ -42,8 +47,9 @@ function savedFundSource(store, actor, contextId) {
     verifierRevision:"fund-lookthrough-v1",contentHash:execution.assertionDigest };
   const run = store.create("run",PROJECT,{contextId,agentTaskId:taskId,revisionId:revision.id,
     revisionHash:revision.hash, status:"SUCCEEDED", engine:"Apache Spark", engineVersion:"3.5.9", mainSqlExecuted:true,
-    isolation:"LOCAL_PROCESS", rows:context.expected,inputEvidence,fundPreparation,validation:{
-      passed:true,selectedPassed:true,assertionEvidence,regressions:[{contextId,passed:true,inputEvidence,assertionEvidence}],
+    isolation:"LOCAL_PROCESS", finishedAt:"2026-09-11T01:00:00.000Z", rows:context.expected,inputEvidence,fundPreparation,validation:{
+      passed:true,selectedPassed:true,contractId:context.outputContractId,assertionEvidence,
+      regressions:[{contextId,passed:true,inputEvidence,assertionEvidence}],
     }});
   const model = "TEST_DOUBLE";
   const requirement = { kind:"DEVELOPMENT",basisDigest:basis.digest,summary:message,grain:basis.grain,
@@ -148,7 +154,7 @@ test("invited fund preflight binds the owner and original request, code, date an
   assert.equal(computations,0);
 });
 
-test("signed fund execution binds immutable job bytes and independent result to one exact preflight", t => {
+test("signed fund execution binds immutable job bytes and independent result to one exact preflight and delivery rehearsal", async t => {
   const store = new MetadataStore(":memory:");
   t.after(()=>store.close());
   const actorId = randomUUID(), [original,next] = fundContextIds.map(id=>savedFundSource(store,actorId,id));
@@ -191,4 +197,46 @@ test("signed fund execution binds immutable job bytes and independent result to 
   ]) assert.throws(()=>verifyFundSignedExecution({...options,envelope,...invalid}),{code:"FUND_SIGNED_EXECUTION_MISMATCH"});
   assert.throws(()=>verifyFundSignedExecution({...options,envelope:{...envelope,signature:"bad"}}),
     {code:"SPARK_QUEUE_RESULT_INVALID"});
+
+  const build = item => createDeliveryPackage({agent:item.task,run:item.run,
+    revision:store.get("revision",item.revision.id,PROJECT)});
+  const delivery = build(original), nextDelivery = build(next);
+  const evidence = {...options,envelope};
+  assert.throws(()=>bindFundSignedDelivery(nextDelivery,nextDelivery.digest,evidence),{code:"FUND_SIGNED_DELIVERY_MISMATCH"});
+  const bound = bindFundSignedDelivery(delivery,delivery.digest,evidence);
+  assert.notEqual(bound.digest,delivery.digest);
+  assert.deepEqual(bound.files,delivery.files);
+  assert.equal(bindFundSignedDelivery(bound,bound.digest,evidence),bound);
+  const marker = bound.manifest.source.fundSignedExecution;
+  assert.equal(marker.queueJobDigest,proof.queueJobDigest);
+  assert.equal(marker.resultDigest,proof.resultDigest);
+
+  const directory=mkdtempSync(join(tmpdir(),"shuduo-signed-fund-rehearsal-"));
+  t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const schedule=fundRehearsalAt(original.context.id);
+  const request={directory:unpackDeliveryPackage(bound,join(directory,"bound"),bound.digest),
+    expectedDigest:bound.digest,scheduledFor:schedule};
+  let rehearsals=0;
+  const runner=async actual=>{
+    rehearsals++;
+    assert.deepEqual({sql:actual.sql,context:actual.context,validationContexts:actual.validationContexts,testSql:actual.testSql},input);
+    return output;
+  };
+  await assert.rejects(verifyDeliveryDirectory(request,{runner}),{code:"FUND_SIGNED_DELIVERY_EVIDENCE_REQUIRED"});
+  await assert.rejects(verifyDeliveryDirectory(request,{runner,fundSignedExecution:options}),
+    {code:"FUND_SIGNED_DELIVERY_EVIDENCE_REQUIRED"});
+  const modified=structuredClone(bound);
+  modified.manifest.source.fundSignedExecution.resultDigest="a".repeat(64);
+  modified.digest=computeManifestDigest(modified.manifest);
+  const alteredRequest={...request,directory:unpackDeliveryPackage(modified,join(directory,"altered"),modified.digest),
+    expectedDigest:modified.digest};
+  await assert.rejects(verifyDeliveryDirectory(alteredRequest,{runner,fundSignedExecution:evidence}),
+    {code:"FUND_SIGNED_DELIVERY_MISMATCH"});
+  assert.equal(rehearsals,0);
+  const rehearsal=await verifyDeliveryDirectory(request,{runner,fundSignedExecution:evidence});
+  assert.equal(rehearsal.status,"SUCCEEDED");
+  assert.equal(rehearsal.published,false);
+  assert.equal(rehearsal.mode,"LOCAL_FILE_REHEARSAL");
+  assert.deepEqual(rehearsal.source.fundSignedExecution,marker);
+  assert.equal(rehearsals,1);
 });

@@ -343,6 +343,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       ...(source?.requirement === undefined ? [] : ["requirement"]),
       ...(source?.outputContract === undefined ? [] : ["outputContract"]),
       ...(source?.fundLookthrough === undefined ? [] : ["fundLookthrough"]),
+      ...(source?.fundSignedExecution === undefined ? [] : ["fundSignedExecution"]),
     ])
   )
     throw fail("交付清单包含未定义字段");
