@@ -1045,7 +1045,7 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(reserved.runCount,3);
   assert.equal(releaseRun(firstId).reservedDurationMs,30000);
   await f.restart();
-  f.later(60000);
+  f.later(29999);
   const lostQueue=f.queueCounts();
   const waiting=(await cli('v3-publish',['--reconcile'])).publication;
   assert.equal(waiting.monitoringStatus,'PENDING');
@@ -1056,7 +1056,19 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(privateReleasePendingLabel({...submissionPending.runs[0],stage:'unknown'}),'运行阶段待确认');
   assert.equal(privateReleasePendingLabel({...submissionPending.runs[0],schedulerTriggered:false}),'运行阶段待确认');
   assert.throws(()=>checkedAgentPublication({...submissionPending,runs:[{...submissionPending.runs[0],reviewDigest:'f'.repeat(64)},submissionPending.runs[1]]},publicationOptions));
+  const originalClaim=releaseRun(firstId);
+  f.later(1);
+  const expiredSubmission=await pendingLabels();
+  assert.equal(privateReleasePendingLabel(expiredSubmission.runs[0]),'结果待核对');
+  assert.equal(expiredSubmission.runs[0].status,'RUNNING');
+  assert.equal(expiredSubmission.runs[0].reservedDurationMs,30000);
+  assert.equal(expiredSubmission.runs[0].remoteSubmission,undefined);
+  const expiredCli=(await cli('v3-publish',['--reconcile'])).publication;
+  assert.equal(expiredCli.monitoringStatus,'PENDING');
+  assert.deepEqual(expiredCli.batches[0],{id:firstId,status:'RUNNING',stage:'WORKER_RESULT_UNCONFIRMED',reservedDurationMs:30000});
+  assert.deepEqual(releaseRun(firstId),originalClaim);
   assert.deepEqual(f.queueCounts(),lostQueue);
+  f.later(30000);
   assert.equal((await f.privateCall(timer('b'))).status,200);
   assert.equal((await f.privateCall(timer('a'))).status,409,'changing the signed time with the original nonce is rejected');
   assert.deepEqual((await f.call('/status')).body.budget.remoteSpark,reserved);
@@ -1091,11 +1103,17 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(privateReleasePendingLabel(acknowledged.runs[0]),undefined);
   assert.equal(privateReleasePendingLabel(acknowledged.runs[1]),'等待 Worker 结果');
   assert.equal((await cli('v3-publish',['--reconcile'])).publication.batches[1].stage,'WAITING_FOR_WORKER_RESULT');
+  const originalAcknowledged=releaseRun(secondId);
+  f.later(30000);
+  const expiredAcknowledgement=await pendingLabels();
+  assert.equal(privateReleasePendingLabel(expiredAcknowledgement.runs[1]),'结果待核对');
+  assert.equal(expiredAcknowledgement.runs[1].status,'RUNNING');
+  assert.deepEqual(releaseRun(secondId),originalAcknowledged);
   const mcpRead=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:10,method:'tools/call',
     params:{name:'agent_publication_detail',arguments:{taskId:task.id,...exactSelection}}},
     {client:{request:monitorReader}}));
   assert.ok(mcpRead.result,mcpRead.error?.message);
-  assert.deepEqual(JSON.parse(mcpRead.result.content[0].text).runs.map(run=>run.stage),['COMPLETED','WAITING_FOR_WORKER_RESULT']);
+  assert.deepEqual(JSON.parse(mcpRead.result.content[0].text).runs.map(run=>run.stage),['COMPLETED','WORKER_RESULT_UNCONFIRMED']);
   assert.deepEqual(f.queueCounts(),beforeAcknowledgedRead);
   f.complete(second,useRealSpark?await measuredSpark(t,f,second,'release batch 2'):undefined);
   const beforeOldReplay=f.queueCounts();

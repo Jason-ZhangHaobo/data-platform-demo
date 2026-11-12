@@ -8,7 +8,7 @@ import {standaloneManualPublicationSource} from './standalone-manual-publication
 import {assertSqlRequirementPackageSource} from './sql-requirements.mjs';
 import {assertSqlClarificationTask} from './sql-clarification.mjs';
 import {storedAgentReviewEvidence} from './agent-review-evidence.mjs';
-import {exactPublicationReceipt,passedCloudReleaseBatch} from "./cloud-release-evidence.mjs";
+import {exactPublicationReceipt,passedCloudReleaseBatch,projectCloudReleaseBatchStage} from "./cloud-release-evidence.mjs";
 import {publicationAttestationKeys} from './publication-request.mjs';
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
@@ -57,7 +57,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if(agent?.clarification)assertSqlClarificationTask(agent,{store,project});
     assertSqlRequirementPackageSource(item,{agent,run,revision});
   };
-  const exactReceipt = release => exactPublicationReceipt(store,project,release);
+  const exactReceipt = release => exactPublicationReceipt(store,project,release,now());
   const kindOf = release => release.sourceKind ?? "AGENT";
   const runOf = release => release.sourceRunId ?? (kindOf(release) === "AGENT" ? store.get("delivery_package", release.packageId, project)?.manifest?.source?.runId : undefined);
   const matches = (release, agentId, selector) => release.mode === cloudPublicationMode && release[sourceField] === agentId && (!standaloneManual||release.sourceAgentTaskId===undefined) && kindOf(release) === selector.sourceKind &&
@@ -399,7 +399,10 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       for (const run of store.list("release_run", project).filter(r => r.releaseId === release.id && r.status === "RUNNING")) await reconcile(run);
     const latest = select(agentId, { ...selector, releaseId: release.id });
     if (!latest) throw fail(409, "发布来源在读取期间变化，请重新读取原记录");
-    return { release: clean(latest), runs: store.list("release_run", project).filter(r => r.releaseId === release.id).sort((a,b)=>a.sequence-b.sequence).map(clean), alerts: store.list("monitor_alert", project).filter(a=>a.releaseId===release.id), events:store.list("monitor_event",project).filter(e=>e.releaseId===release.id) };
+    const observedAt=now();
+    const runs=store.list("release_run",project).filter(run=>run.releaseId===release.id).sort((a,b)=>a.sequence-b.sequence)
+      .map(run=>clean(projectCloudReleaseBatchStage(run,observedAt)));
+    return { release: clean(latest), runs, alerts: store.list("monitor_alert", project).filter(a=>a.releaseId===release.id), events:store.list("monitor_event",project).filter(e=>e.releaseId===release.id) };
   }
   async function cancel(agentId, input = {}) {
     const selector = internalSelector(input), release = select(agentId, selector);
