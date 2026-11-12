@@ -18,3 +18,12 @@ test('a historical review is shown as retained evidence rather than current appr
  const current=renderToStaticMarkup(React.createElement(LocalDistributionReview,{...props,review}));assert.match(current,/此包本机文件已审阅/);assert.match(current,/不代表批准发布/);
  const stale=renderToStaticMarkup(React.createElement(LocalDistributionReview,{...props,review,current:false,enabled:false}));assert.match(stale,/当前依据需重新核验/);assert.doesNotMatch(stale,/class="passed"/);
 });
+test('a signed fund review shows its current rehearsal digest and asks for fresh checks after replacement',()=>{
+ const signed=renderToStaticMarkup(React.createElement(LocalDistributionReview,{...props,fund:true,staleReview:true,fundReview:{status:'READY',digest:'b'.repeat(64)}}));
+ assert.match(signed,/签名演练摘要 bbbbbbbbbbbbbbbb/);
+ assert.match(signed,/演练依据已更新，请重新逐项审阅/);
+ assert.doesNotMatch(signed,/checked=""/);
+ const unavailable=renderToStaticMarkup(React.createElement(LocalDistributionReview,{...props,fund:true,fundReview:{status:'UNAVAILABLE'}}));
+ assert.match(unavailable,/签名演练依据暂未核对/);
+ assert.equal((unavailable.match(/type="checkbox"[^>]*disabled=""/g)??[]).length,4);
+});

@@ -49,6 +49,8 @@ type Bundle = {
       codeHash?: string;
       contextId: string;
       fundLookthrough?: { businessDate: string; managerId: string };
+      fundSignedExecution?: { preflightDigest: string };
+      attribution?: { originAgentTaskId?: string };
     };
     files: Record<string, { sha256: string; bytes: number }>;
   };
@@ -280,11 +282,13 @@ export function DeliveryWorkbench({
   const packages = manualDeliveryPackages(loadedPackages, sourceRunId, sourceLocked);
   const selected = sourceLocked && (!source || loadedPackage?.manifest.source.runId !== sourceRunId) ? undefined : loadedPackage;
   const fund = selected?.manifest.source.fundLookthrough;
+  const signedFundTask = selected?.manifest.source.fundSignedExecution
+    ? selected.manifest.source.attribution?.originAgentTaskId : undefined;
   const [checks, setChecks] = useState<Verification[]>([]),
     [observedCheck, setCheck] = useState<Verification>();
   const check = observedCheck && matchingDeliveryVerification(selected, [observedCheck]);
   const [reviews, setReviews] = useState<Review[]>([]), [reviewDraft, setReviewDraft] = useState<ReviewDraft>();
-  const reviewTarget = selected && check?.status === "SUCCEEDED"
+  const reviewTarget = selected && !selected.manifest.source.fundSignedExecution && check?.status === "SUCCEEDED"
     ? `${selected.id}:${selected.digest}:${check.id}` : undefined;
   const [fundConsentTarget, setFundConsentTarget] = useState<string>();
   const fundConfirmed = Boolean(reviewTarget && fundConsentTarget === reviewTarget);
@@ -933,6 +937,7 @@ export function DeliveryWorkbench({
                 <p>
                   先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。{localReleaseScheduleText(selectedRelease)}
                 </p>
+                {signedFundTask && <p><a href={`/v2/?module=agent-center&task=${encodeURIComponent(signedFundTask)}#agent-delivery`}>到原 Agent 任务审阅签名交付</a></p>}
                 <fieldset className="delivery-review-checklist" disabled={!canWrite || !reviewTarget || !!selectedReview || !!busy}>
                   <legend>工程师审阅确认（不会发布）</legend>
                   {[
