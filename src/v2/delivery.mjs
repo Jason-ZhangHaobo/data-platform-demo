@@ -105,6 +105,8 @@ export function createDeliveryPackage({
   developmentReference,
   manualAuthor = false,
 }) {
+  if (agent?.syncInput || revision?.syncInput || run?.syncInput)
+    throw Object.assign(Error("同步冻结输入当前仅支持代码开发与核验，尚未接入交付"), {status:409});
   const distribution=outputContractForContext(revision?.contextId);
   const fund = isFundContext(revision?.contextId);
   if(distribution&&(run?.isolation==="FUNCTION_PROCESS"||run?.mainSqlExecuted!==true||run?.testDouble===true||!verifyOutputRows(run?.rows,getContext(revision.contextId))))throw fail("分布交付须来自本机真实Spark及独立复合键核验，尚未开放云端");

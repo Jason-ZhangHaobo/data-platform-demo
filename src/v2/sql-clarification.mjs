@@ -8,6 +8,7 @@ export function readSqlClarificationSource({store,project,taskId,actorId}){
  const parent=store.get('agent',taskId,project);
  if(!parent)throw fail('CLARIFICATION_SOURCE_NOT_FOUND','未找到当前项目的原澄清任务',404);
  if(!actorId||parent.submittedBy!==actorId)throw fail('CLARIFICATION_SOURCE_OWNER','仅原任务创建者可回答此澄清问题',403);
+ if(parent.syncInput)throw fail('CLARIFICATION_SYNC_INPUT_UNSUPPORTED','同步批次的多轮澄清尚未接入，请整理完整需求后显式选择批次');
  const r=parent.requirements,last=parent.attempts?.at(-1),sql=parent.sql??parent.initialSql;
  if(parent.language!=='SPARK_SQL'||parent.mode!=='LIVE_MODEL'||parent.status!=='FAILED'||parent.stage!=='REQUIREMENT_CLARIFICATION_REQUIRED'||
   parent.sourceKind==='MANUAL'||[parent.sourceAttribution,parent.manualContinuation,parent.assistedContinuation,parent.repairComparison,parent.sourceRunId,parent.derivedFrom].some(v=>v!==undefined)||
