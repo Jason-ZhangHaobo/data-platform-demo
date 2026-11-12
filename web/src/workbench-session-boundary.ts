@@ -1,4 +1,5 @@
 import type {AuthSession} from "./AuthDialog";
+export {loadStartupCore} from "./startup-core.ts";
 
 function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);

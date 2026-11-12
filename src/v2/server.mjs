@@ -196,6 +196,39 @@ import {
 export const PROJECT = "project-securities-lab";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const fail = (status, message) => Object.assign(new Error(message), { status });
+export function assertV2RequestScope(req, { env, local }) {
+  const origin = req.headers.origin;
+  let localOriginAllowed = false;
+  if (local && typeof origin === "string") {
+    try {
+      const parsedOrigin = new URL(origin),
+        localPort = String(req.socket.localPort ?? env.V2_PORT ?? 3100);
+      localOriginAllowed =
+        origin === parsedOrigin.origin &&
+        parsedOrigin.protocol === "http:" &&
+        ["localhost", "127.0.0.1", "[::1]"].includes(parsedOrigin.hostname) &&
+        [localPort, "5173"].includes(parsedOrigin.port);
+    } catch {
+      localOriginAllowed = false;
+    }
+  }
+  if (
+    origin &&
+    !(
+      localOriginAllowed ||
+      (!local &&
+        typeof env.V2_PUBLIC_ORIGIN === "string" &&
+        origin === env.V2_PUBLIC_ORIGIN)
+    )
+  )
+    throw fail(403, "请求来源不允许");
+  if (
+    req.headers["x-project-id"] &&
+    req.headers["x-project-id"] !== PROJECT
+  )
+    throw fail(403, "无权访问此项目");
+}
+export const publicV2Contexts = () => allContextIds.map(publicContext);
 const validationFamily = contextId => {
   const family=validationFamilyForContext(contextId);
   if(!family)throw fail(409,"代码或运行绑定的业务口径版本不存在");
@@ -1564,7 +1597,7 @@ export function createV2Server(options = {}) {
   };
   const statefulRequests = createRequestLane();
   const fixtureContexts = () =>
-    (localClassicSpark ? classicContextIds : allContextIds).map(publicContext);
+    localClassicSpark ? classicContextIds.map(publicContext) : publicV2Contexts();
   const prefetchedPrivateInputs=new WeakMap();
   const handleRequest = async (req, res) => {
     try {
@@ -1696,36 +1729,7 @@ export function createV2Server(options = {}) {
         const rehearsal = storedFileRehearsal(item,verification);
         return {...publicDeliveryTask(item),...(rehearsal?{rehearsal}:{})};
       };
-      const origin = req.headers.origin;
-      let localOriginAllowed = false;
-      if (local && typeof origin === "string") {
-        try {
-          const parsedOrigin = new URL(origin),
-            localPort = String(req.socket.localPort ?? env.V2_PORT ?? 3100);
-          localOriginAllowed =
-            origin === parsedOrigin.origin &&
-            parsedOrigin.protocol === "http:" &&
-            ["localhost", "127.0.0.1", "[::1]"].includes(parsedOrigin.hostname) &&
-            [localPort, "5173"].includes(parsedOrigin.port);
-        } catch {
-          localOriginAllowed = false;
-        }
-      }
-      if (
-        origin &&
-        !(
-          localOriginAllowed ||
-          (!local &&
-            typeof env.V2_PUBLIC_ORIGIN === "string" &&
-            origin === env.V2_PUBLIC_ORIGIN)
-        )
-      )
-        throw fail(403, "请求来源不允许");
-      if (
-        req.headers["x-project-id"] &&
-        req.headers["x-project-id"] !== PROJECT
-      )
-        throw fail(403, "无权访问此项目");
+      assertV2RequestScope(req, { env, local });
       if (method === "GET" && !path.startsWith("/api/v2"))
         return await serveV2Static(res, root, path, req.headers["accept-encoding"]);
       // This admitted HTTP read serves built-in fixtures independent of project state.
@@ -7285,7 +7289,8 @@ export function createV2Server(options = {}) {
       });
     }
   };
-  const server = createServer((req, res) => {
+  const server = options.httpServer ?? createServer();
+  const dispatchRequest = (req, res) => {
     let channel;
     try { channel = options.ingress?.assertRequest(req); }
     catch { void handleRequest(req, res).catch(() => {}); return; }
@@ -7321,8 +7326,13 @@ export function createV2Server(options = {}) {
         void json(res, 503, { code: notStarted ? "REQUEST_LANE_BUSY" : "REQUEST_OUTCOME_UNCONFIRMED", message: notStarted ? "服务忙，请稍后重试；本次操作未执行" : "操作结果尚未确认，请查看原任务状态，不要重复提交" }).catch(() => {});
       } })
       .finally(() => {prefetchedPrivateInputs.delete(req);res.removeListener("close", onClose);});
-  });
-  server.on("close", () => {
+  };
+  if (!options.httpServer) server.on("request", dispatchRequest);
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    server.off("close", dispose);
     privateServiceRoutes?.agentPlanner.shutdown();
     for (const c of controls.values()) c.abort();
     releaseScheduler.shutdown();
@@ -7331,9 +7341,12 @@ export function createV2Server(options = {}) {
     if (ownsLandingStore) landingStore.close();
     if (ownsStreamStateStore) streamStateStore.close();
     if (ownsReportStore) reportStore.close();
-  });
+  };
+  server.once("close", dispose);
   return {
     server,
+    dispatchRequest,
+    dispose,
     store,
     host,
     releaseScheduler,
