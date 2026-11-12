@@ -1,45 +1,10 @@
 import {sqlConditionReferences}from'../../src/v2/sql-condition-references.mjs';
-import type{SqlConditionReferences}from'../../src/v2/sql-condition-references.mjs';
-export type SqlValueLineage = {
-    assetId: string;
-    runId: string;
-    revisionId?: string;
-    sourceSqlHash?: string;
-    schemaHash?: string;
-    status: 'COMPLETE' | 'PARTIAL' | 'UNAVAILABLE';
-    analysis: 'STATIC_VALUE_DEPENDENCIES';
-    rowSetImpactAnalyzed: false;
-    reason?: string;
-    parser?: string;
-    parserVersion?: string;
-    notice?: string;
-    conditionReferences?:SqlConditionReferences;
-    fields: {
-        target: string;
-        status: 'RESOLVED' | 'CONSTANT' | 'UNRESOLVED';
-        expression: string;
-        sources: {
-            table: string;
-            column: string;
-        }[];
-        reason?: string;
-    }[];
-};
-const id = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v), digest = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v), name = (v: unknown) => typeof v === 'string' && /^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(v);
-function valueAnalysisValid(v: SqlValueLineage | undefined, outputs: {
-    name: string;
-}[]): v is SqlValueLineage {
-    if (!v || v.analysis !== 'STATIC_VALUE_DEPENDENCIES' || v.rowSetImpactAnalyzed !== false || !['COMPLETE', 'PARTIAL', 'UNAVAILABLE'].includes(v.status) || !Array.isArray(v.fields) || v.reason !== undefined && typeof v.reason !== 'string')
-        return false;
-    if(v.conditionReferences!==undefined&&!sqlConditionReferences(v.conditionReferences,{sourceSqlHash:v.sourceSqlHash,schemaHash:v.schemaHash}))return false;
-    if (v.status === 'UNAVAILABLE')
-        return v.fields.length === 0;
-    if (!id(v.revisionId) || !digest(v.sourceSqlHash) || !digest(v.schemaHash) || v.parser !== 'sqlglot' || typeof v.parserVersion !== 'string' || v.parserVersion.length > 40 || !v.fields.length || v.fields.length !== outputs.length)
-        return false;
-    if (v.fields.some((f, i) => !f || f.target !== outputs[i].name || !name(f.target) || !['RESOLVED', 'CONSTANT', 'UNRESOLVED'].includes(f.status) || typeof f.expression !== 'string' || f.expression.length > 1000 || !Array.isArray(f.sources) || f.sources.length > 150 || f.sources.some(s => !s || !name(s.table) || !name(s.column)) || f.status === 'RESOLVED' && !f.sources.length || f.status === 'CONSTANT' && f.sources.length || f.reason !== undefined && typeof f.reason !== 'string'))
-        return false;
-    return (v.status === 'COMPLETE') === v.fields.every(f => ['RESOLVED', 'CONSTANT'].includes(f.status));
-}
+import { sqlValueLineageShapeValid } from '../../src/v2/sql-value-lineage-view.mjs';
+import type { SqlValueLineage } from '../../src/v2/sql-value-lineage-view.mjs';
+
+export type { SqlValueLineage } from '../../src/v2/sql-value-lineage-view.mjs';
+
+const id = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v);
 export function sqlValueLineageValid(value: unknown, nodes: unknown[]): value is SqlValueLineage {
     const v = value as SqlValueLineage | undefined, node = nodes.find(x => x && typeof x === 'object' && (x as {
         id?: unknown;
@@ -51,7 +16,7 @@ export function sqlValueLineageValid(value: unknown, nodes: unknown[]): value is
             name: string;
         }[];
     } | undefined;
-    return Boolean(v && node && node.kind === 'PUBLISHED_DATASET' && node.versionId === v.runId && id(v.runId) && valueAnalysisValid(v, node.fields));
+    return Boolean(v && node && node.kind === 'PUBLISHED_DATASET' && node.versionId === v.runId && id(v.runId) && sqlValueLineageShapeValid(v, node.fields));
 }
 export type DevelopmentLineageRun = {
     id: string;
@@ -100,7 +65,7 @@ export async function developmentSqlValueLineage({ run, revisionId, sql, context
         if (value?.protocol !== 'shuduo-sql-value-lineage/v1' || value.dialect !== 'spark' || value.contextId !== context.id || value.sourceSqlHash !== sourceSqlHash || run.revisionHash !== sourceSqlHash || value.schemaHash !== schemaHash || !Array.isArray(run.columns))
             throw Error('BINDING');
         const item = { ...value, assetId: `run:${run.id}`, runId: run.id, revisionId } as unknown as SqlValueLineage;
-        if (!valueAnalysisValid(item, run.columns))
+        if (!sqlValueLineageShapeValid(item, run.columns))
             throw Error('SHAPE');
         const known = new Map(context.tables.map(t => [t.name, new Set(t.columns.map(c => c[0]))]));
         if (item.fields.some(f => f.sources.some(s => !known.get(s.table)?.has(s.column))))

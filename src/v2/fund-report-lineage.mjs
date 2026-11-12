@@ -2,6 +2,7 @@ import { isDeepStrictEqual as same } from "node:util";
 import { fundDapiContract } from "./fund-dapi-contract.mjs";
 import { resolveFundReportPublication } from "./fund-consumption-source.mjs";
 import { fundAgentAttributionKind } from "./fund-delivery.mjs";
+import { publishedSqlColumnLineage } from "./sql-column-lineage.mjs";
 
 const unproven = () => Object.assign(new Error("原报表的快照、发布批次或运维记录已变化"), {
   status: 409, code: "FUND_REPORT_LINEAGE_UNPROVEN",
@@ -17,7 +18,7 @@ function verifiedFundReportLineage({ store, project, record, artifacts, timeUnit
       snapshot.assetId !== "dataset:" + contract.id || dataset.assetId !== snapshot.assetId ||
       snapshot.contentHash !== snapshot.assetEvidenceHash) throw unproven();
 
-  const { evidence, status, batch, revision, development, verification } = resolveFundReportPublication({ store, project, timeUnitMs,
+  const { evidence, status, batch, publishedRun, revision, development, verification } = resolveFundReportPublication({ store, project, timeUnitMs,
     selection: { releaseId: source.releaseId, packageDigest: source.packageDigest, batchId: source.batchId } });
   const keys = ["protocol", "scope", "contractId", "releaseId", "packageDigest", "batchId", "revisionId", "developmentRunId",
     "batchSequence", "businessDate", "inputDigest", "assertionDigest", "testSqlDigest", "resultDigest", "rowCount",
@@ -38,10 +39,12 @@ function verifiedFundReportLineage({ store, project, record, artifacts, timeUnit
     snapshot: { id: snapshot.id, datasetId: dataset.id, assetId: snapshot.assetId, contractId: contract.id,
       fields: contract.fields.map(({ name, label }) => ({ name, label })), rowCount: snapshot.rowCount, contentHash: snapshot.contentHash },
     release: { id: evidence.releaseId, status, businessDate: evidence.businessDate, packageDigest: evidence.packageDigest,
-      resultDigest: evidence.resultDigest, assertionDigest: evidence.assertionDigest, engineClassification: evidence.engineClassification,
+      resultDigest: evidence.resultDigest, assertionDigest: evidence.assertionDigest, sourceSqlHash: revision.hash,
+      engineClassification: evidence.engineClassification,
       ...(fromAgent ? { upstreamKind: evidence.upstreamKind, modelMode: evidence.modelMode } : {}),
       activeForConsumption: evidence.eligibleForService },
-    batch, publicDeployed: false,
+    batch, columnLineage: publishedSqlColumnLineage({ store, project, run: publishedRun, assetId: snapshot.assetId }),
+    publicDeployed: false,
   };
   return { lineage, revision, development, verification, evidence };
 }

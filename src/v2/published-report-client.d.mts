@@ -1,4 +1,5 @@
 import type{PublishedReportBinding}from'./published-report-request.mjs';
+import type { SqlValueLineage } from './sql-value-lineage-view.mjs';
 type Client={request:(path:string,options?:{method?:string;body?:unknown;idempotencyKey?:string})=>Promise<unknown>};
 export type PublishedReportReceipt={protocol:'shuduo-published-report-creation/v1';id:string;requestId:string;status:'PREPARING'|'PARTIAL'|'SUCCEEDED';scope:'LOCAL_TEST_ONLY';source:PublishedReportBinding;name:string;stage:string;sourceEvidenceHash:string;outputContractId?:string;metricIds?:string[];datasetId?:string;snapshotId?:string;reportId?:string;reportVersionId?:string;reportRunId?:string;rowCount?:number;widgetCount?:number;resultHash?:string;error?:{code:string;message:string};agentIndependentE2E:false;publicDeployed:false};
 export function checkedPublishedReportReceipt(value:unknown,expected?:{requestId?:string;source?:PublishedReportBinding;name?:string;metricIds?:string[]}):PublishedReportReceipt;
@@ -15,10 +16,11 @@ export type PublishedReportLineage={
   report:{id:string;versionId:string;runId:string;resultHash:string};
   snapshot:{id:string;datasetId:string;assetId:string;contractId:string;fields:{name:string;label:string}[];rowCount:number;contentHash:string};
   release:{id:string;status:'ACTIVE_LOCAL'|'SUPERSEDED_LOCAL'|'CANCELLED';businessDate:string;packageDigest:string;
-    resultDigest:string;assertionDigest:string;engineClassification:'LOCAL_SPARK_PROCESS';activeForConsumption:boolean;
+    resultDigest:string;assertionDigest:string;sourceSqlHash?:string;engineClassification:'LOCAL_SPARK_PROCESS';activeForConsumption:boolean;
     upstreamKind?:'FUND_AGENT_GENERATED';modelMode?:'LIVE_MODEL'|'SYNTHETIC_MODEL'};
   batch:{id:string;sequence:number;status:'SUCCEEDED';scheduledAt:string;startedAt:string;finishedAt:string;
     monitorEvent:{id:string;type:'BATCH_SUCCEEDED';status:'SUCCEEDED';observedAt:string}};
+  columnLineage?: SqlValueLineage;
   publicDeployed:false;
 };
 type LineageExpected={requestId?:string;source?:PublishedReportBinding;receipt?:PublishedReportReceipt};

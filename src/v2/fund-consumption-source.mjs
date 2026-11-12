@@ -158,7 +158,7 @@ export function fundAgentServiceSources({ store, project, selection, timeUnitMs 
 export function resolveFundReportPublication(args) {
   const { evidence, release, selected, event, revision, development, verification } = verifyFundPublication(args, true);
   requireProof(evidence.engineClassification === "LOCAL_SPARK_PROCESS");
-  return { evidence, revision, development, verification, status: release.status, batch: {
+  return { evidence, revision, development, verification, publishedRun: selected, status: release.status, batch: {
     id: selected.id, sequence: selected.sequence, status: selected.status, scheduledAt: selected.scheduledTriggerAt,
     startedAt: selected.startedAt, finishedAt: selected.finishedAt,
     monitorEvent: { id: event.id, type: event.type, status: event.status, observedAt: event.observedAt },

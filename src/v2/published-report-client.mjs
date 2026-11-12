@@ -1,5 +1,6 @@
 import {distributionReportTemplate,fundReportContractId} from './distribution-report-contract.mjs';
 import {publishedReportInput,publishedReportSource,reportRequestId} from './published-report-request.mjs';
+import {sqlValueLineageShapeValid} from './sql-value-lineage-view.mjs';
 const hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 export function checkedPublishedReportReceipt(value,{requestId,source,name,metricIds}={}){
  const bad=()=>{throw Error('原报表请求的来源或产物回执尚未确认；保留原编号，不重新创建');};
@@ -58,7 +59,7 @@ export async function readPublishedReportResult(client,args) {
 export function checkedPublishedReportLineage(value, expected={}) {
  const bad=()=>{throw Error("原报表、固定快照和同批次运维证据未能对应");};
  if(!value||value.protocol!=="shuduo-fund-report-lineage/v1"||value.scope!=="LOCAL_TEST_ONLY"||value.publicDeployed!==false)bad();
- const {requestId,source,report,snapshot,release,batch}=value;
+ const {requestId,source,report,snapshot,release,batch,columnLineage}=value;
  try {
   reportRequestId(requestId);
   for(const id of [report?.id,report?.versionId,report?.runId,snapshot?.id,snapshot?.datasetId,batch?.monitorEvent?.id])reportRequestId(id);
@@ -79,6 +80,10 @@ export function checkedPublishedReportLineage(value, expected={}) {
     !Number.isSafeInteger(snapshot.rowCount)||snapshot.rowCount<1||snapshot.rowCount>1000||
     !Array.isArray(snapshot.fields)||snapshot.fields.map(field=>field?.name).join(",")!=="portfolio_id,trade_date,asset_class,exposure_amount,exposure_ratio"||
     snapshot.fields.some(field=>typeof field.label!=="string"||!field.label.trim()))bad();
+ if(columnLineage!==undefined&&(!sqlValueLineageShapeValid(columnLineage,snapshot.fields)||!hash(release.sourceSqlHash)||
+    columnLineage.assetId!==snapshot.assetId||columnLineage.runId!==batch.id||
+    (columnLineage.status==='UNAVAILABLE' ? columnLineage.conditionReferences!==undefined||columnLineage.revisionId!==undefined||columnLineage.sourceSqlHash!==undefined :
+      columnLineage.revisionId!==normalized.revisionId||columnLineage.sourceSqlHash!==release.sourceSqlHash)))bad();
  if(expected.receipt){
   const receipt=checkedPublishedReportReceipt(expected.receipt,{requestId,source:normalized});
   if(receipt.reportId!==report.id||receipt.reportVersionId!==report.versionId||receipt.reportRunId!==report.runId||
@@ -103,6 +108,7 @@ export async function checkedPublishedReportDevelopment(value, expected={}) {
     original.release.resultDigest!==lineage.release.resultDigest||original.release.assertionDigest!==lineage.release.assertionDigest))bad();
  if(revision?.id!==lineage.source.revisionId||
     revision.source!==(lineage.source.kind==="AGENT"?"FUND_AGENT_GENERATED":"ENGINEER_AUTHORED")||!hash(revision.hash)||
+    [lineage.release.sourceSqlHash,original?.release.sourceSqlHash].some(digest=>digest!==undefined&&digest!==revision.hash)||
     typeof revision.sql!=="string"||!revision.sql.trim()||revision.sql.length>100000||
     run?.id!==lineage.source.runId||run.revisionId!==revision.id||run.revisionHash!==revision.hash||run.status!=="SUCCEEDED"||
     run.engine!=="Apache Spark"||typeof run.engineVersion!=="string"||!/^\d+\.\d+\.\d+$/.test(run.engineVersion)||
