@@ -494,9 +494,10 @@ export function createV2Server(options = {}) {
   if(privateDataServicesEnabled && !privateSmokeEnabled)throw new Error("私有数据服务只能在受保护的私有边界启用");
   const standalonePublicationReady=Boolean(rawRunner.durable&&env.V2_DURABLE_MANUAL_DELIVERY_ENABLED==='true'&&publicationAccess?.sourceKind==='MANUAL_DELIVERY');
   if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery&&!standalonePublicationReady)) throw new Error("私有发布须使用已启用的私有持久执行边界");
-  const cloudPublication = durableDelivery ? createCloudPublication({ store, project: PROJECT, runner: publicationAccess ? rawRunner.durable : durableDevelopment, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30), singleRelease: Boolean(publicationAccess),
+  const cloudPublicationHistory = createCloudPublication({ store, project: PROJECT, runner: publicationAccess ? rawRunner.durable : durableDevelopment, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig && durableDelivery), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: durableDelivery ? Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) : 30, singleRelease: Boolean(publicationAccess),
     assertPublicationScope: target => assertPublicationTarget(publicationAccess, target, options.now?.() ?? Date.now()),
-    assertExecutionScope: release => assertPublicationExecutionWindow(publicationAccess, release, options.now?.() ?? Date.now()) }) : undefined;
+    assertExecutionScope: release => assertPublicationExecutionWindow(publicationAccess, release, options.now?.() ?? Date.now()) });
+  const cloudPublication = durableDelivery ? cloudPublicationHistory : undefined;
   const manualPublisher=(assertScope=()=>{})=>rawRunner.durable?createStandaloneManualPublication({store,project:PROJECT,runner:rawRunner.durable,artifactStore,persist:persistDevelopment,
     enabled:Boolean(privatePublicationConfig&&standalonePublicationReady),singleRelease:true,now:options.now??Date.now,reservationSeconds:Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS??30),
     assertBudget:()=>budget.assertCanStartRemoteSpark(),assertPublicationScope:target=>{assertPublicationTarget(publicationAccess,target,options.now?.()??Date.now());assertScope();},
@@ -5854,11 +5855,13 @@ export function createV2Server(options = {}) {
             return json(res, 200, fundAgentPublicationPreflight({ bundle, verification, review,
               localClassicSpark, schedulerMode: releaseSchedulerMode, fundSignedExecution:fundSignedExecutionFor(bundle) }));
           }
-          if (local || !cloudPublication) throw fail(503,"确切云端发布预检尚未就绪");
+          if (local) throw fail(503,"确切云端发布预检尚未就绪");
           if (privatePublication[3]) {
             if (url.searchParams.size) throw fail(422,"发布回执只接受原请求编号");
-            return json(res,200,cloudPublication.publicationRequestReceipt(agent.id,privatePublication[3],actorId));
+            const read = publicReadOnly || !cloudPublication ? cloudPublicationHistory.savedRequestReceipt : cloudPublication.publicationRequestReceipt;
+            return json(res,200,read(agent.id,privatePublication[3],actorId));
           }
+          if (!cloudPublication) throw fail(503,"确切云端发布预检尚未就绪");
           const selector = validatePublicationSelector(publicationSelectorFromUrl(url),actorId);
           return json(res,200,await cloudPublication.publicationPreflight(agent.id,selector));
         }
@@ -5879,11 +5882,13 @@ export function createV2Server(options = {}) {
           return json(res,200,localTaskPublication(store,PROJECT,agent,selector));
         }
         if(agent.executionMode!==durableSqlAgentMode)throw fail(422,"云端发布仅支持持久SQL Agent任务");
-        if (!cloudPublication) throw fail(503,"云端发布执行器尚未配置");
         if (method==="GET" && !privatePublication[2]) {
           const selector = validatePublicationSelector(publicationSelectorFromUrl(url), actorId);
-          return json(res,200,await cloudPublication.detail(agent.id, selector));
+          const view = publicReadOnly || !cloudPublication
+            ? cloudPublicationHistory.savedDetail(agent.id, selector) : await cloudPublication.detail(agent.id, selector);
+          return json(res,200,view);
         }
+        if (!cloudPublication) throw fail(503,"云端发布执行器尚未配置");
         if (method==="POST" && privatePublication[2]==="cancel") {
           const selector = validatePublicationSelector(await readBody(req), actorId);
           return json(res,200,await cloudPublication.cancel(agent.id, selector));

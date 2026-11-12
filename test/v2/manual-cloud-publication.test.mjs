@@ -89,6 +89,10 @@ test("manual review creates only a frozen attributed release; existing ticks exe
   assert.equal(done.release.status, "COMPLETED_CLOUD_TEST"); assert.equal(done.release.health, "HEALTHY");
   assert.equal(done.runs.length, 2); assert.ok(done.runs.every(r => r.status === "SUCCEEDED" && r.schedulerTriggered && r.agentIndependentE2E === false));
   assert.equal(f.submits.length, submitted + 2); assert.deepEqual(f.store.get("agent", f.agent.id, project), original);
+  const historical = createCloudPublication({ store: f.store, project, now: f.now });
+  assert.deepEqual(historical.savedDetail(f.agent.id, m.selector), { ...done, readMode: "SAVED_HISTORY" });
+  assert.throws(() => historical.savedDetail(f.agent.id, { ...m.selector, actorId: "other-engineer" }), { status: 403 });
+  assert.equal(f.submits.length, submitted + 2);
 });
 
 test("wrong kind, actor, context, revision, run, package or rehearsal cannot approve manual delivery", async t => {

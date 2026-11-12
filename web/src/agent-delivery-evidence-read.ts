@@ -7,7 +7,7 @@ import type {ServiceSourceBinding} from './service-source-binding';
 import type {TaskConsumption} from './agent-journey';
 export type RollbackTarget={id:string;packageDigest:string;metadataHash:string;sourceRevisionId:string;successfulRunCount:number;taskId?:string};
 export type Release={id:string;status:string;health:string;modelMode?:string;sourceKind?:string;sourceRunId?:string;reviewDigest?:string;agentIndependentE2E?:boolean;packageId?:string;packageDigest?:string;verificationId?:string;sourceAgentTaskId?:string;sourceRevisionId?:string;runCount?:number;rolledBackToReleaseId?:string;rolledBackToTaskId?:string;restoredAt?:string;outputContract?:{id:string;metadataHash:string}};
-export type Publication={rollbackTargets?:RollbackTarget[];historyRunCount?:number;release?:Release;runs:{id:string;status:string;sequence:number;schedulerTriggered?:boolean;stage?:unknown;resultUnknown?:boolean;durationMs?:number;triggeredAt?:string;finishedAt?:string}[];alerts:{id:string;status:string;message:string;recoveryRunId?:string}[];events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[]};
+export type Publication={readMode?:'SAVED_HISTORY';rollbackTargets?:RollbackTarget[];historyRunCount?:number;release?:Release;runs:{id:string;status:string;sequence:number;schedulerTriggered?:boolean;stage?:unknown;resultUnknown?:boolean;durationMs?:number;triggeredAt?:string;finishedAt?:string}[];alerts:{id:string;status:string;message:string;recoveryRunId?:string}[];events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[]};
 const record=(v:unknown):v is Record<string,unknown>=>Boolean(v&&typeof v==='object'&&!Array.isArray(v));
 const id=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v);
 const hash=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
@@ -18,7 +18,8 @@ const uniqueIds=(rows:Record<string,unknown>[])=>new Set(rows.map(r=>r.id)).size
 const invalidPublication=()=>Error('发布与监控回执的记录结构或确切来源未确认；保留原记录，只读重查，不自动发布。');
 
 export function checkedAgentPublication(value:unknown,{taskId,scope,selector,releaseId,requireRelease=false}:{taskId:string;scope:'LOCAL_TEST_RELEASE'|'PRIVATE_CLOUD_TEST';selector?:PublicationSelector;releaseId?:string;requireRelease?:boolean}):Publication{
- if(!record(value)||!optional(value.scope,v=>v===scope)||!Array.isArray(value.runs)||!Array.isArray(value.alerts)||!Array.isArray(value.events))throw invalidPublication();
+ if(!record(value)||!optional(value.scope,v=>v===scope)||!optional(value.readMode,v=>v==='SAVED_HISTORY'&&scope==='PRIVATE_CLOUD_TEST')||
+  !Array.isArray(value.runs)||!Array.isArray(value.alerts)||!Array.isArray(value.events))throw invalidPublication();
  const r=value.release,runs=value.runs,alerts=value.alerts,events=value.events;
  if(r!==undefined&&(!record(r)||!id(r.id)||!['ACTIVE_LOCAL','SUPERSEDED_LOCAL','ROLLED_BACK_LOCAL','FAILED_LOCAL','WAITING_SCHEDULER','RUNNING_CLOUD_TEST','ACTIVE_CLOUD_TEST','COMPLETED_CLOUD_TEST','CANCELLED','FAILED','ROLLED_BACK'].includes(String(r.status))||
   !['PENDING','OBSERVING','HEALTHY','CRITICAL','RECOVERED_WITH_FAILURE','RECOVERING','STOPPED'].includes(String(r.health))||!id(r.packageId)||!hash(r.packageDigest)||!id(r.sourceRevisionId)||
