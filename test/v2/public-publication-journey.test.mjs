@@ -75,7 +75,7 @@ async function fixture(t) {
     if (store) { store.close(); store = undefined; }
   };
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
-  const open = async ({ readOnly = false, servicePlan } = {}) => {
+  const open = async ({ readOnly = false, services = false, servicePlan } = {}) => {
     store ??= new MetadataStore(join(directory, 'metadata.sqlite'));
     const savedEnv = { V2_LOCAL_DEVELOPMENT: 'false', V2_PROVISIONING_ONLY: 'true',
       V2_PRIVATE_SMOKE_ENABLED: 'true', V2_ALLOW_INSECURE_PUBLIC_COOKIES: 'true', V2_PUBLIC_ORIGIN: env.V2_PUBLIC_ORIGIN };
@@ -83,9 +83,10 @@ async function fixture(t) {
       V2_FC_PUBLIC_WRITE_SCOPE: 'SERVICE_CONSUMPTION_ONLY', V2_PUBLIC_SERVICE_PLAN: JSON.stringify(servicePlan),
       V2_BOOTSTRAP_ADMIN_EMAIL: env.V2_BOOTSTRAP_ADMIN_EMAIL,
       V2_PUBLIC_SERVICE_STARTS_AT: new Date(now - 1000).toISOString(),
-      V2_PUBLIC_SERVICE_EXPIRES_AT: new Date(now + 3600000).toISOString() } : readOnly ? savedEnv : env;
+      V2_PUBLIC_SERVICE_EXPIRES_AT: new Date(now + 3600000).toISOString() }
+      : services ? { ...savedEnv, V2_PRIVATE_DATA_SERVICES_ENABLED: 'true' } : readOnly ? savedEnv : env;
     app = createV2Server({ root: directory, store, artifactStore, businessStore: new BusinessQueryStore(join(directory, 'business.sqlite')),
-      ...(readOnly || servicePlan ? {} : { runner }), env: applicationEnv, now: () => now,
+      ...(readOnly || services || servicePlan ? {} : { runner }), env: applicationEnv, now: () => now,
       ingress: createFcIngress({ publicHttpEnabled: true, publicReadOnly: readOnly }),
       generator: async () => { modelCalls++; throw Error('MODEL_CALL_FORBIDDEN_IN_PUBLICATION_FIXTURE'); } });
     const owner = app.auth.bootstrapAdmin({ email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticPublication!2026', displayName: '虚构审阅工程师' });
@@ -139,6 +140,7 @@ async function fixture(t) {
     restart: async () => { await close(); await open(); }, advance: () => { now += 60000; },
     restartReadOnly: async () => { await close(); await open({ readOnly: true }); },
     restartConsumption: async servicePlan => { await close(); await open({ servicePlan }); },
+    restartServices: async () => { await close(); await open({ services: true }); },
     expire: () => { now = Date.parse(env.V2_PUBLIC_PUBLICATION_EXPIRES_AT); },
     get store() { return store; }, counts: () => ({ modelCalls, jobCreates, submitCalls }) };
 }
@@ -303,6 +305,49 @@ test('the owner can recheck DAPI and XAPI receipts for the same saved publicatio
   const tampered = await f.call(proofPath);
   assert.equal(tampered.body.status, 'PENDING');
   assert.equal(tampered.body.services.find(item => item.serviceId === assets.id).status, 'NEEDS_ATTENTION');
+  f.store.update('service_call', combinedCall.id, PROJECT, { resultHash: combinedCall.resultHash });
+
+  // Both services really test and publish new versions. The historical XAPI
+  // must continue to pin the original children even after both DAPIs retire.
+  await f.restartServices();
+  const switchVersion = async (kind, service, input) => {
+    const path = '/data-services/' + kind + '/' + service.id;
+    const draft = await f.call(path + '/versions', input);
+    assert.equal(draft.status, 201);
+    assert.equal((await f.call(path + '/test', {})).status, 200);
+    assert.equal((await f.call(path + '/publish', { configHash: draft.body.configHash })).status, 200);
+    assert.equal(f.store.get('data_service_version', service.publishedVersionId, PROJECT).status, 'RETIRED');
+    return draft.body.id;
+  };
+  const newBatchId = history.body.runs[1].id;
+  const newHoldings = await switchVersion('dapis', holdings, { sourceReleaseRunId: newBatchId, fields: plan.dapis[0].fields });
+  const newCash = await switchVersion('dapis', cash, { sourceReleaseRunId: newBatchId, fields: plan.dapis[1].fields });
+  const newAssets = await switchVersion('xapis', assets, { steps: [
+    { alias: 'holdings', dapiId: holdings.id, dapiVersionId: newHoldings },
+    { alias: 'cash', dapiId: cash.id, dapiVersionId: newCash },
+  ] });
+  await f.restartReadOnly();
+  const afterSwitch = savedRecords();
+  const current = await f.call(proofPath);
+  assert.equal(current.body.status, 'PENDING');
+  assert.equal(current.body.services.find(item => item.serviceId === assets.id).versionId, newAssets);
+  assert.ok(current.body.services.every(item => !item.call && item.sourceRunIds[0] === newBatchId));
+  for (const result of [direct, combined]) {
+    const exact = proofPath + '&call_id_digest=' + consumerDigest(result.body.callId);
+    const originalEntry = proof.body.services.find(item => item.call?.callId === result.body.callId);
+    const found = await f.call(exact);
+    assert.equal(found.status, 200);
+    assert.deepEqual(found.body.services, [originalEntry]);
+    assert.equal((await f.call(exact, undefined, { identity: 'other' })).status, 403);
+  }
+  assert.deepEqual(savedRecords(), afterSwitch);
+  const originalApplication = f.store.get('service_app', issued.body.application.id, PROJECT);
+  f.store.update('service_app', originalApplication.id, PROJECT, { revokedAt: '2000-01-01T00:00:00.000Z' });
+  const historical = await f.call(proofPath + '&call_id_digest=' + consumerDigest(combined.body.callId));
+  assert.equal(historical.body.services[0].code, 'HISTORICAL_CONSUMPTION_UNCONFIRMED');
+  assert.equal(historical.body.services[0].call, undefined);
+  f.store.update('service_app', originalApplication.id, PROJECT, { revokedAt: originalApplication.revokedAt });
+
   const event = history.body.events[0];
   f.store.update('monitor_event', event.id, PROJECT, { packageDigest: 'f'.repeat(64) });
   const invalidSource = await f.call(proofPath);

@@ -402,6 +402,9 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
     {alias:'cash',dapiId:cash.id,dapiVersionId:cash.currentVersion.id}]});
   const app=await f.call('/data-services/applications',{name:applicationName,serviceIds:[holdings.id,xapi.id]},randomUUID());
   assert.equal(app.status,201);
+  // Store creation timestamps use wall time. The fixture's fixed invocation
+  // clock must start after the application grant it is testing.
+  f.alignWallClock();
   const tokenFile=join(f.directory,'consumer-token-'+sequence),planFile=join(f.directory,'consumer-plan-'+sequence+'.json');
   const reportFile=join(f.directory,'consumer-report-'+sequence+'.json');
   writeFileSync(tokenFile,app.body.token,{mode:0o600});

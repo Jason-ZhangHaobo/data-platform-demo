@@ -767,16 +767,49 @@ export class DataServiceManager {
 
   // Recheck an existing successful receipt without invoking an application,
   // consuming rate limits, recording another call or returning business rows.
-  async recheckCall(serviceId, callId) {
+  async recheckCall(serviceId, callId, { pinnedVersionId } = {}) {
     const service = this.#service(serviceId),
       call = this.store.get("service_call", callId, this.project);
-    if (!call || !call.parameters || typeof call.parameters!=="object" || call.serviceId !== service.id || call.serviceVersionId !== service.publishedVersionId || call.outcome !== "SUCCEEDED" || call.statusCode !== 200 || !Number.isSafeInteger(call.rowCount) || call.rowCount < 1 || !/^[a-f0-9]{64}$/.test(call.resultHash ?? ""))
-      throw fail(409, "当前发布版本尚无可对照的非空成功调用", "CONSUMPTION_RECEIPT_UNAVAILABLE");
+    const unavailable = () => fail(409, "所选接口版本尚无可对照的非空成功调用", "CONSUMPTION_RECEIPT_UNAVAILABLE");
+    if (!call || !call.parameters || typeof call.parameters!=="object" || call.serviceId !== service.id ||
+        call.serviceVersionId !== (pinnedVersionId ?? service.publishedVersionId) || call.outcome !== "SUCCEEDED" ||
+        call.statusCode !== 200 || !Number.isSafeInteger(call.rowCount) || call.rowCount < 1 || !/^[a-f0-9]{64}$/.test(call.resultHash ?? ""))
+      throw unavailable();
     const version = this.#version(call.serviceVersionId);
+    const historical = pinnedVersionId !== undefined;
+    const children = historical ? this.#assertHistoricalCall(service, version, call) : [];
     const response = await this.#execute({ ...version, timeoutMs: Math.min(version.timeoutMs, 1000) }, queryFor(version.outputContractId, call.parameters));
+    if (historical) {
+      const savedCall = this.store.get("service_call", call.id, this.project), savedVersion = this.#version(version.id);
+      if (!savedCall || serviceHash(savedCall) !== serviceHash(call) || savedVersion.configHash !== version.configHash)
+        throw unavailable();
+      const savedChildren = this.#assertHistoricalCall(service, savedVersion, savedCall);
+      if (children.some((child, index) => savedChildren[index]?.configHash !== child.configHash)) throw unavailable();
+    }
     return { callId: call.id, versionId: version.id, configHash: version.configHash, rowCount: call.rowCount,
       resultHash: call.resultHash,
       verified: response.data.length === call.rowCount && serviceHash(response.data) === call.resultHash };
+  }
+
+  #assertHistoricalCall(service, version, call) {
+    const invalid = () => fail(409, "原调用的发布版本或当时的应用授权未确认", "HISTORICAL_CONSUMPTION_UNCONFIRMED");
+    const app = this.application(call.applicationId), startedAt = Date.parse(call.startedAt);
+    const wasPublished = item => item.scope === this.scope && ["PUBLISHED", "RETIRED"].includes(item.status) &&
+      Date.parse(item.publishedAt) <= startedAt;
+    if (version.serviceId !== service.id || version.serviceType !== service.serviceType || call.serviceType !== version.serviceType ||
+        call.versionNumber !== version.versionNumber || Array.isArray(call.parameters) ||
+        !wasPublished(version) || !(startedAt <= Date.parse(call.finishedAt)) ||
+        (version.status === "RETIRED" && !(startedAt <= Date.parse(version.retiredAt))) ||
+        app.scope !== this.scope || !app.serviceIds?.includes(service.id) || !["ACTIVE", "EXPIRED", "REVOKED"].includes(app.status) ||
+        !(Date.parse(app.createdAt) <= startedAt) || (app.expiresAt !== undefined && !(startedAt < Date.parse(app.expiresAt))) ||
+        (app.status === "REVOKED" && !(startedAt <= Date.parse(app.revokedAt)))) throw invalid();
+    if (version.serviceType !== "XAPI") return [];
+    if (!Array.isArray(version.steps) || version.steps.length < 2 || version.steps.length > 5) throw invalid();
+    return version.steps.map(step => {
+      const child = this.#version(step.dapiVersionId);
+      if (child.serviceId !== step.dapiId || child.serviceType !== "DAPI" || !wasPublished(child)) throw invalid();
+      return child;
+    });
   }
 
   async recheckFundCall(serviceId, callId) {

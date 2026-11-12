@@ -27,7 +27,7 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
    getPackage:id=>store.get('delivery_package',id,project),
    ownedService:id=>manager.detail(id),getVersion:id=>store.get('data_service_version',id,project),getRelease,
    source:id=>{if(!ids.has(id))throw fail();return store.get('release_run',id,project);},
-   application:id=>store.get('service_app',id,project),calls:id=>manager.listCalls(id),recheckCall:(id,callId)=>manager.recheckCall(id,callId)});
+   application:id=>store.get('service_app',id,project),calls:id=>manager.listCalls(id),recheckCall:(id,callId,options)=>manager.recheckCall(id,callId,options)});
  }
  const attempt=agent.attempts?.at(-1);
  const deliveries=store.list('agent_delivery_task',project).filter(d=>d.sourceAgentTaskId===agent.id&&d.packageDigest===packageDigest&&d.sourceRevisionId===attempt?.revisionId&&d.sourceRunId===attempt?.runId);

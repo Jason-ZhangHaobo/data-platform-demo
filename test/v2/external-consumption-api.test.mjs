@@ -76,4 +76,19 @@ test('existing consumer V2 and pure binder join the exact real local API receipt
  const absent=await f.call(evidencePath+'&call_id_digest='+'0'.repeat(64));
  assert.equal(absent.status,200);assert.equal(absent.body.status,'PENDING');assert.deepEqual(absent.body.services,[]);
  assert.deepEqual(f.counts,before);assert.deepEqual({calls:f.store.list('service_call',PROJECT).length,apps:f.store.list('service_app',PROJECT).length},finalCounts);
+
+ const xapiPath='/data-services/xapis/'+xapi.id;
+ const updated=await f.call(xapiPath+'/versions',{rateLimitPerMinute:8});
+ assert.equal(updated.status,201);
+ assert.equal((await f.call(xapiPath+'/test',{})).status,200);
+ assert.equal((await f.call(xapiPath+'/publish',{configHash:updated.body.configHash})).status,200);
+ const current=await f.call(evidencePath);
+ const currentXapi=current.body.services.find(entry=>entry.serviceId===xapi.id);
+ assert.equal(currentXapi.versionId,updated.body.id);
+ assert.equal(currentXapi.status,'PENDING');
+ const archived=await f.call(evidencePath+'&call_id_digest='+bound.callIdDigest);
+ assert.deepEqual(archived.body.services,pinned.body.services);
+ assert.deepEqual(bindExternalConsumption({expectedSource:source,plan,report,taskEvidence:archived.body}),restored);
+ assert.deepEqual(f.counts,before);
+ assert.deepEqual({calls:f.store.list('service_call',PROJECT).length,apps:f.store.list('service_app',PROJECT).length},finalCounts);
 });

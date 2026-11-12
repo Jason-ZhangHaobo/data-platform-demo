@@ -187,6 +187,8 @@ shuduo agent v3-consumption --checkpoint /private/first-case.json --plan /privat
 
 受保护的只读入口可在关闭发布和数据服务执行器后，通过 `GET /data-services/task-evidence` 核对已保存消费。请求须同时指定 `agent_task_id`、`package_digest` 和 `release_id`，也可加 `call_id_digest` 找回原调用。仅原任务所属人可访问。服务端先核对同一发布、演练和监控，再沿原服务版本及快照核对已保存调用。撤销应用显示撤销状态；历史读取不创建调用、应用或任务。
 
+服务换版后，带 `call_id_digest` 的查询仍按原调用绑定的已发布版本及其固定 DAPI 子版本核验。核验包括调用发生时的应用授权、版本和快照摘要。省略调用摘要时，页面与接口仍展示当前已发布版本的消费证据。
+
 ### 读取原任务的执行阶段
 
 在本机运维监控展开已受理案例的模型与 Spark 状态，或执行 `node scripts/run-live-lifecycle-evaluation.mjs --inspect 原评测UUID`。CLI 与页面共用原评测记录，CLI 额外核对本机检查点文件摘要。已冻结的案例始终展示原代码版本和批次，尚未冻结的案例只读最近尝试已关联的版本及批次。

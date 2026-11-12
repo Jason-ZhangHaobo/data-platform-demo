@@ -174,11 +174,11 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       source: id => { const run = source(id); sourceOwner(a, run); return run; }, getRelease: id => get("release", id),
       application: id => get("service_app", id) ? manager.application(id) : undefined,
       calls: id => manager.listCalls(id).filter(call => callOwned(a, call)),
-      recheckCall: (id, callId) => {
+      recheckCall: (id, callId, options) => {
         const call = get("service_call", callId);
         assertApplicationVersion({ service: manager.detail(id), application: get("service_app", call?.applicationId),
           version: get("data_service_version", call?.serviceVersionId) });
-        return manager.recheckCall(id, callId);
+        return manager.recheckCall(id, callId, options);
       },
     });
   }

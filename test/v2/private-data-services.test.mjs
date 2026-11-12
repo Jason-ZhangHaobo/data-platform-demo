@@ -79,8 +79,12 @@ test('task consumption reads existing authorized calls without issuing tokens or
   const x2=await f.call(`/data-services/xapis/${x.id}/versions`,{steps:[{alias:'holdings',dapiId:h.id},{alias:'cash',dapiId:c.id}]},f.a,'evidence-x2');
   assert.equal(x2.status,201);await f.call(`/data-services/xapis/${x.id}/test`,{},f.a);
   assert.equal((await f.call(`/data-services/xapis/${x.id}/publish`,{configHash:x2.body.configHash},f.a)).status,200);
-  assert.equal((await f.call(path,undefined,f.a)).body.status,'PENDING','new XAPI version cannot borrow previous consumer receipt');
-  assert.deepEqual((await f.call(exactPath,undefined,f.a)).body.services,[],'an exact old receipt cannot be treated as proof of the new published version');
+  const current=await f.call(path,undefined,f.a);
+  assert.equal(current.body.status,'PENDING','new XAPI version cannot borrow previous consumer receipt');
+  assert.equal(current.body.services.find(item=>item.serviceId===x.id).versionId,x2.body.id);
+  assert.equal(current.body.services.find(item=>item.serviceId===x.id).call,undefined);
+  const archived=await f.call(exactPath,undefined,f.a);
+  assert.deepEqual(archived.body.services,[history.body.services.find(item=>item.serviceId===x.id)]);
   const otherPackage=await f.call(path.replace(f.bundle.digest,'a'.repeat(64)),undefined,f.a);assert.equal(otherPackage.body.services.length,0);assert.equal(otherPackage.body.status,'PENDING');
 });
 test('task consumption rejects damaged snapshots and changed immutable service versions',async t=>{
