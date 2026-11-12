@@ -31,7 +31,7 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,as
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
-import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal } from "./agent-development-workflow.mjs";
+import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import { projectCloudReleaseBatchStage } from "./cloud-release-evidence.mjs";
 import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
@@ -1727,7 +1727,8 @@ export function createV2Server(options = {}) {
       const deliveryReceipt = item => {
         const {verification} = workflowDeliveryEvidence(item);
         const rehearsal = storedFileRehearsal(item,verification);
-        return {...publicDeliveryTask(item),...(rehearsal?{rehearsal}:{})};
+        const settledFailure = storedFileRehearsalFailure(store,PROJECT,item,verification);
+        return {...publicDeliveryTask(item),...(rehearsal?{rehearsal}:{}),...(settledFailure?{settledFailure}:{})};
       };
       assertV2RequestScope(req, { env, local });
       if (method === "GET" && !path.startsWith("/api/v2"))

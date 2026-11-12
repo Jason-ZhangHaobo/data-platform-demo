@@ -63,8 +63,9 @@ export class MetadataStore {
       });
     return item;
   }
-  deduplicatedId(key) {
-    return this.db.prepare("SELECT result_id FROM idempotency WHERE key=?").get(key)?.result_id;
+  deduplicatedId(key, signature) {
+    const row = this.db.prepare("SELECT result_id, signature FROM idempotency WHERE key=?").get(key);
+    return signature === undefined || row?.signature === signature ? row?.result_id : undefined;
   }
   deduplicate(key, signature, create) {
     this.db.exec("BEGIN IMMEDIATE");

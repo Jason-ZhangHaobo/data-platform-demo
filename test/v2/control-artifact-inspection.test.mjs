@@ -45,10 +45,10 @@ test('readonly artifact source checks cover budget accounting, durable ownership
  assert.match(source,/sha\(extract\(name\)\)===sha\(readFileSync\(resolve\('\.artifact-source',name\)\)\)/);
  assert.ok(!source.includes('execFileSync(extract('),'package source is inspected, never executed');
 });
-test('source checkout makes new repair modules mandatory without breaking legacy application inspection',()=>{
- const root='/synthetic-source',modules=['sql-repair-feedback','sql-repair-progress','sql-repair-source','validation-details','publication-request','private-service-routes','private-task-consumption','consumer-source','agent-context-derivation','service-plan-source','service-plan-request','service-agent-context-client','service-plan-proposal','private-service-agent-policy','durable-service-agent'].map(name=>`src/v2/${name}.mjs`);
+test('source checkout requires new repair and Worker evidence modules while preserving legacy application inspection',()=>{
+ const root='/synthetic-source',modules=['sql-repair-feedback','sql-repair-progress','sql-repair-source','validation-details','publication-request','private-service-routes','private-task-consumption','consumer-source','agent-context-derivation','service-plan-source','service-plan-request','service-agent-context-client','service-plan-proposal','private-service-agent-policy','durable-service-agent','worker-result-evidence','cloud-release-evidence'].map(name=>`src/v2/${name}.mjs`);
  const queried=[];const checks=controlArtifactSourceChecks(root,path=>{queried.push(path);return true;});
- assert.deepEqual(checks,[...controlArtifactSources,...modules]);assert.equal(checks.length,38);assert.equal(Object.isFrozen(checks),true);
+ assert.deepEqual(checks,[...controlArtifactSources,...modules]);assert.equal(checks.length,40);assert.equal(Object.isFrozen(checks),true);
  assert.deepEqual(queried,modules.map(name=>resolve(root,name)));
  assert.deepEqual(controlArtifactSourceChecks(root,()=>false),controlArtifactSources);
  assert.deepEqual(controlArtifactSourceChecks(root,path=>path.endsWith('/sql-repair-source.mjs')),[...controlArtifactSources,modules[2]]);

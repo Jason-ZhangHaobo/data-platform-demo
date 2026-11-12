@@ -27,7 +27,7 @@ import { validateConsumerPlan } from "./verify-service-consumer.mjs";
 import { cloudWindowApplicationBinding, cloudWindowCheckpointBinding, firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
 import { developmentRequestDigest } from "../src/v2/public-development-access.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
-import { cloudV3CompletionScope, cloudV3DerivationSource, cloudV3FailureReceipt, nextCloudV3Definition, readCloudV3Cases } from "./cloud-v3-run.mjs";
+import { cloudV3CompletionScope, cloudV3DerivationSource, cloudV3FailureReceipt, nextCloudV3Definition, readCloudV3Cases, validDownstreamFailure } from "./cloud-v3-run.mjs";
 import { boundedBytes } from "./control-code-transport.mjs";
 import { inspectedControlEntryScript, WEB_ENTRY_SCRIPT_LIMIT, WEB_INDEX_LIMIT } from "./control-web-entry.mjs";
 
@@ -960,27 +960,60 @@ async function readOriginalCloudExecution({state,definition,item,action},client)
   return {view,execution};
 }
 
-export async function settleCloudV3DevelopmentFailure(path,client,outFile) {
+async function readDownstreamFailure(item,client) {
+  const {publication,delivery,rehearsal}=item.actions, copy=structuredClone(item);
+  if (publication) {
+    if (!id(publication.key) || publication.bodyHash!==sha256(JSON.stringify(publicationBody(publication)))) return;
+    let receipt;
+    try { receipt=await client.request(publicationRequestReceiptPath(item.taskId,publication.key)); }
+    catch { return; }
+    const saved=bindPublication(copy,receipt), batches=receipt?.settledFailure?.batches;
+    if (saved?.status!=="COMPLETED_CLOUD_TEST" || saved.monitoringStatus!=="NEEDS_ATTENTION" ||
+        !Array.isArray(batches) || batches.length!==saved.batches.length ||
+        !batches.every((batch,index)=>batch?.id===saved.batches[index].id && batch.status===saved.batches[index].status)) return;
+    return {kind:"PUBLICATION",releaseId:saved.releaseId,packageId:publication.packageId,packageDigest:publication.packageDigest,
+      verificationId:publication.verificationId,reviewDigest:publication.reviewDigest,batches};
+  }
+  if (!rehearsal || delivery?.status!=="CONFIRMED" || !id(delivery.key) || !item.code ||
+      !deliveryPreparationHashMatches(delivery.bodyHash,item.code)) return;
+  let receipt;
+  try { receipt=await client.request(`/agent/tasks/${item.taskId}/delivery-requests/${delivery.key}`); }
+  catch { return; }
+  const saved=bindOriginalDelivery(copy,item.code,receipt);
+  if (saved?.rehearsal?.status!=="FAILED" || saved.rehearsal.stage!=="FILE_REHEARSAL_FAILED" ||
+      receipt.settledFailure?.id!==saved.rehearsal.id) return;
+  return {kind:"FILE_REHEARSAL",packageId:delivery.packageId,packageDigest:delivery.packageDigest,
+    verificationId:saved.rehearsal.id,batches:[receipt.settledFailure]};
+}
+
+export async function settleCloudV3Failure(path,client,outFile) {
   if (!isAbsolute(outFile ?? "") || existsSync(outFile)) stop("须提供尚不存在的绝对失败回执路径");
   return withCloudCheckpoint(path,async()=>{
     const original=readCheckpoint(path,{privateFile:true}), selected=snapshot(client,path);
     const {state,item}=selected;
-    if (Object.keys(item.actions).length!==1 || item.code || item.rehearsal || item.consumption)
-      stop("此命令仅结算原开发阶段的失败");
-    const {unconfirmed,view,execution}=await readOriginalCloudExecution(selected,client);
-    if (unconfirmed) return unconfirmed;
-    const failure=view.settledFailure, {model,spark}=execution;
-    if (!validSettledDevelopmentFailure(failure) || failure.taskVersion!==execution.taskVersion ||
-        model.state!=="OUTPUT_RECORDED" || model.usage!=="RECORDED" ||
-        model.reservedTokens!==0 || model.unconfirmedAttempts!==0 || model.unattributedTokens!==0 ||
-        model.attempts!==failure.modelAttempts || model.ledgerTokens!==failure.ledgerTokens ||
-        model.reportedTokens!==failure.ledgerTokens ||
-        !["NOT_LINKED","REVISION_RECORDED","RESULT_RECORDED"].includes(spark.state) ||
-        (spark.state==="RESULT_RECORDED" &&
-          (!["FAILED","VALIDATION_FAILED"].includes(spark.resultStatus) || !failure.sparkRunIds.includes(spark.runId))))
-      return result(state,item,"PENDING","DEVELOPMENT_FAILURE_NOT_SETTLED");
+    let failure;
+    if (item.actions.delivery||item.actions.publication) {
+      await requireOriginalCreator(state,client);
+      failure=await readDownstreamFailure(item,client);
+      if (!failure || !validDownstreamFailure(item,failure)) return result(state,item,"PENDING",item.actions.publication?
+        "PUBLICATION_FAILURE_NOT_SETTLED":"FILE_REHEARSAL_FAILURE_NOT_SETTLED");
+    } else {
+      const {unconfirmed,view,execution}=await readOriginalCloudExecution(selected,client);
+      if (unconfirmed) return unconfirmed;
+      failure=view.settledFailure;
+      const {model,spark}=execution;
+      if (!validSettledDevelopmentFailure(failure) || failure.taskVersion!==execution.taskVersion ||
+          model.state!=="OUTPUT_RECORDED" || model.usage!=="RECORDED" ||
+          model.reservedTokens!==0 || model.unconfirmedAttempts!==0 || model.unattributedTokens!==0 ||
+          model.attempts!==failure.modelAttempts || model.ledgerTokens!==failure.ledgerTokens ||
+          model.reportedTokens!==failure.ledgerTokens ||
+          !["NOT_LINKED","REVISION_RECORDED","RESULT_RECORDED"].includes(spark.state) ||
+          (spark.state==="RESULT_RECORDED" &&
+            (!["FAILED","VALIDATION_FAILED"].includes(spark.resultStatus) || !failure.sparkRunIds.includes(spark.runId))))
+        return result(state,item,"PENDING","DEVELOPMENT_FAILURE_NOT_SETTLED");
+    }
     if (readCheckpoint(path,{privateFile:true}).text!==original.text) stop("重验期间原检查点已变化");
-    const receipt=cloudV3FailureReceipt(original,item,failure,new Date().toISOString());
+    const receipt=cloudV3FailureReceipt(original,item,failure,new Date(Date.now()).toISOString());
     writeCheckpoint(outFile,receipt,true);
     return {...result(state,item,"FAILURE_RECEIPT_SAVED"),scope:receipt.scope,completionDigest:receipt.completionDigest};
   },{reconcile:true});

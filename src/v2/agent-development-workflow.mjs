@@ -13,6 +13,7 @@ import {verifiedSqlRequirementForRevision,assertSqlRequirementPackageSource,sqlR
 import {assertSqlClarificationTask} from './sql-clarification.mjs';
 import { liveEvidenceProvenance, nonLiveModelLabel } from "./live-lifecycle-provenance.mjs";
 import { validStoredAgentDerivation } from "./agent-context-derivation.mjs";
+import { storedWorkerBatchResult, verifiedWorkerResultDigest } from "./worker-result-evidence.mjs";
 import { isFundContext } from "./fund-contexts.mjs";
 import { fundValidationMatches, verifiedFundRun } from "./fund-delivery.mjs";
 import { syncSqlColumnsMatch, syncSqlContractId, syncSqlRowsMatch } from "./sync-sql-input.mjs";
@@ -35,6 +36,17 @@ export function storedFileRehearsal(task, verification) {
       !Number.isFinite(verification.reservedDurationMs) || verification.reservedDurationMs <= 0) return;
   return {id:verification.id, status:verification.status, reservedDurationMs:verification.reservedDurationMs,
     ...(Number.isFinite(verification.durationMs) && verification.durationMs >= 0 ? {durationMs:verification.durationMs} : {})};
+}
+
+export function storedFileRehearsalFailure(store,project,task,verification) {
+  if (task.stage!=="FILE_REHEARSAL_FAILED" || task.status!=="FAILED" || task.actualExecution!==false ||
+      !(task.sourcePinned||task.rehearsalPinned) || !storedFileRehearsal(task,verification) ||
+      verification.status!=="FAILED" || verification.mode!=="CLOUD_ISOLATED_FILE_REHEARSAL" ||
+      verification.isolation!=="FUNCTION_PROCESS" || verification.actualExecution!==false ||
+      verification.finishedAt!==task.finishedAt)
+    return;
+  return storedWorkerBatchResult(store,verification,task.remoteSubmission?.prepared?.job,
+    `${project}:cloud-rehearsal-result:${verification.id}`);
 }
 
 // Read-only evidence selection. A skipped repair may display only the exact
@@ -325,8 +337,21 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const verification = store.get("delivery_verification", task.verificationId, project);
     // Whitelist receipt fields; a Worker cannot overwrite package/source identifiers.
     const result = Object.fromEntries(["engine", "engineVersion", "mainSqlExecuted", "testSqlValidation", "validation", "rows", "columns", "log", "durationMs", "error", "testDouble"].filter(k => receipt[k] !== undefined).map(k => [k, receipt[k]]));
-    store.update("delivery_verification", verification.id, project, { ...result, status: passed ? "SUCCEEDED" : "FAILED", finishedAt: new Date().toISOString(), mode: "CLOUD_ISOLATED_FILE_REHEARSAL", actualExecution: passed, published: false });
-    task = change(task, { status: passed ? "SUCCEEDED" : "FAILED", stage: passed ? "AWAITING_ENGINEER_REVIEW" : "FILE_REHEARSAL_FAILED", actualExecution: passed, finishedAt: new Date().toISOString(), ...(passed ? {} : { error: "演练未通过真实执行、测试SQL或独立回归，请检查演练记录。" }) });
+    const workerResultDigest=!standaloneManual && (task.sourcePinned||task.rehearsalPinned) &&
+      prepared?.job?.jobId===verification.id && prepared.job.projectId===project && storedFileRehearsal(task,verification)
+      ? verifiedWorkerResultDigest(receipt) : undefined;
+    if (workerResultDigest && !(Number.isFinite(result.durationMs) && result.durationMs>0)) delete result.durationMs;
+    const record = () => {
+      const finishedAt=new Date().toISOString(), status=passed?"SUCCEEDED":"FAILED";
+      const saved=store.update("delivery_verification",verification.id,project,{...result,status,finishedAt,
+        ...(workerResultDigest?{workerResultDigest}:{}),mode:"CLOUD_ISOLATED_FILE_REHEARSAL",actualExecution:passed,published:false});
+      change(task,{status,stage:passed?"AWAITING_ENGINEER_REVIEW":"FILE_REHEARSAL_FAILED",actualExecution:passed,finishedAt,
+        ...(passed?{}:{error:"演练未通过真实执行、测试SQL或独立回归，请检查演练记录。"})});
+      return saved;
+    };
+    if (workerResultDigest) store.deduplicate(`${project}:cloud-rehearsal-result:${verification.id}`,workerResultDigest,record);
+    else record();
+    task=get(id);
     await persist(); return publicDeliveryTask(task);
   }
   async function advance(id, expectedVersion, expectedRehearsal) {
