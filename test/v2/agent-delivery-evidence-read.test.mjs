@@ -2,6 +2,16 @@ import test from'node:test';import assert from'node:assert/strict';
 import{MetadataStore}from'../../src/v2/store.mjs';import{BusinessQueryStore,DataServiceManager}from'../../src/v2/data-services.mjs';
 import{createV2Server,PROJECT}from'../../src/v2/server.mjs';import{localTaskPublication}from'../../src/v2/local-task-publication.mjs';import{localTaskConsumption}from'../../src/v2/local-task-consumption.mjs';
 import{seedLocalServiceSource}from'./fixtures/local-service-sources.mjs';import{checkedAgentPublication,checkedAgentConsumption}from'../../web/src/agent-delivery-evidence-read.ts';
+
+test('local publication keeps the original interrupted batch visible with a scoped unknown result flag',async t=>{
+ const f=await fixture(t);
+ f.store.update('release_run',f.batches[0].id,PROJECT,{status:'INTERRUPTED',schedulerTriggered:true,resultUnknown:true});
+ const value=localTaskPublication(f.store,PROJECT,f.agent,{...f.selector,releaseId:f.release.id});
+ assert.equal(value.runs[0].resultUnknown,true);
+ assert.equal(checkedAgentPublication(value,f.options),value);
+ assert.throws(()=>checkedAgentPublication({...value,runs:[{...value.runs[0],status:'SUCCEEDED'},...value.runs.slice(1)]},f.options));
+ assert.throws(()=>checkedAgentPublication({...value,runs:[{...value.runs[0],schedulerTriggered:false},...value.runs.slice(1)]},f.options));
+});
 const foreign='99999999-9999-4999-8999-999999999999';
 async function fixture(t){
  const store=new MetadataStore(':memory:'),businessStore=new BusinessQueryStore(':memory:');t.after(()=>{businessStore.close();store.close();});

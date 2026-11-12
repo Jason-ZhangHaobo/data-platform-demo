@@ -46,7 +46,7 @@ export function localTaskPublication(store, project, agent, selector, verify) {
       ...(agent.fundPreparation ? { modelMode: agent.mode, agentIndependentE2E: false } : {}),
       ...(selector?{sourceKind:"AGENT",sourceAgentTaskId:agent.id,sourceRunId:store.get("delivery_package",selected.packageId,project).manifest.source.runId,
         verificationId:store.get("release_approval",selected.approvalId,project)?.rehearsalId}:{})},
-    runs:currentRuns.sort((a,b) => a.sequence-b.sequence).map(r => pick(r,["id","status","sequence","schedulerTriggered","durationMs","triggeredAt","finishedAt",
+    runs:currentRuns.sort((a,b) => a.sequence-b.sequence).map(r => pick(r,["id","status","sequence","schedulerTriggered","resultUnknown","durationMs","triggeredAt","finishedAt",
       ...(agent.fundPreparation ? ["executionEvidenceMode"] : [])])),
     alerts:alerts.map(a => pick(a,["id","status","message","recoveryRunId"])),
     events:events.filter(e => !selected.outputContract||!selected.currentRollbackId||!e.releaseRunId||currentRuns.some(r=>r.id===e.releaseRunId)).map(e => pick(e,["id","type","observedAt","releaseId","releaseRunId","packageDigest"])),
