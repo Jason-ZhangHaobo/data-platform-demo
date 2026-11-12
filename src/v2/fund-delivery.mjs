@@ -100,13 +100,21 @@ export function createFundTestSql(expected, contextId = fundContextId) {
   return `-- Independent fund look-through assertions, including uncovered holdings.\nSELECT CASE WHEN COUNT(*) = ${expected.length}\n  AND ${checks.join("\n  AND ")}\nTHEN true ELSE false END AS passed\nFROM __shuduo_result\n`;
 }
 
+const signedDeliveryDigests = ["preflightDigest", "queueJobDigest", "resultDigest", "requestDigest", "testSqlDigest"];
+
 export function validateFundDelivery({ source, proof, testSql, localTarget }) {
   if (!isFundContext(source.contextId)) {
-    if (source.fundLookthrough !== undefined) throw fail();
+    if (source.fundLookthrough !== undefined || source.fundSignedExecution !== undefined) throw fail();
     return;
   }
   const { contextId } = source, binding = fundDeliveryBinding(contextId);
   const agent = source.attribution?.kind === fundAgentAttributionKind;
+  const signed = source.fundSignedExecution;
+  if (signed !== undefined && (!agent || !signed || typeof signed !== "object" ||
+      Object.keys(signed).length !== signedDeliveryDigests.length + 1 ||
+      typeof signed.jobId !== "string" || !uuid.test(signed.jobId) || signed.jobId === source.runId ||
+      signedDeliveryDigests.some(key => typeof signed[key] !== "string" || !/^[a-f0-9]{64}$/.test(signed[key]))))
+    throw fail();
   const sourceMatches = agent
     ? source.requirement?.taskId === source.attribution.originAgentTaskId &&
       matchesFundPreparation(source.attribution.preparation, source.requirement?.basisDigest, binding) &&

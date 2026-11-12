@@ -8,12 +8,17 @@ import {
 } from "./delivery.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import { verifiedFundRun } from "./fund-delivery.mjs";
+import { verifyFundSignedDelivery } from "./fund-signed-delivery.mjs";
 
 export async function verifyDeliveryDirectory(
   { directory, expectedDigest, scheduledFor, signal },
   options = {},
 ) {
   const { bundle, plan } = loadDeliveryDirectory(directory, expectedDigest);
+  const input = plan.source.fundSignedExecution !== undefined || options.fundSignedExecution !== undefined
+    ? verifyFundSignedDelivery(bundle, plan, options.fundSignedExecution)
+    : { sql:bundle.files["main.sql"], testSql:bundle.files["tests.sql"],
+      context:plan.fixtures.context, validationContexts:plan.fixtures.validationContexts };
   const occurrence = resolveDeliverySchedule(plan, scheduledFor);
   if (!occurrence.eligible)
     throw Object.assign(new Error("样例非交易日，不执行 SQL"), { status: 422 });
@@ -29,10 +34,7 @@ export async function verifyDeliveryDirectory(
     options.runner ??
     ((input) => runSpark(input, options.runtime ?? runtimeConfig()));
   const raw = await runner({
-    sql: bundle.files["main.sql"],
-    testSql: bundle.files["tests.sql"],
-    context: plan.fixtures.context,
-    validationContexts: plan.fixtures.validationContexts,
+    ...input,
     timeoutMs: plan.deployment.runtime.timeoutSeconds * 1000,
     signal,
   });
