@@ -34,6 +34,7 @@ type SavedRelease = {
   sourceRunId?: string; scope?: string; sourceKind?: string; reviewDigest?: string;
   packageId?: string; packageDigest?: string; runCount?: number;
   status?: string; health?: string;
+  failureEvidence?: {status?: unknown; batches?: unknown};
 };
 type SavedBatch = {
   id?: string; releaseId?: string; sourceAgentTaskId?: string; sourceRunId?: string;
@@ -43,6 +44,21 @@ type SavedBatch = {
   testSqlValidation?: {passed?: boolean}; validation?: {passed?: boolean};
 };
 type Reader = <T>(path: string) => Promise<T>;
+type WorkerResult = "CONFIRMED" | "PENDING";
+
+function readFailureEvidence(release: SavedRelease, batches: SavedBatch[]) {
+  if (!batches.some(batch=>["FAILED","VALIDATION_FAILED"].includes(batch.status??""))) return;
+  const evidence=release.failureEvidence, rows=evidence?.batches;
+  const aligned=Array.isArray(rows) && rows.length===batches.length && rows.every((row,index)=>
+    row?.id===batches[index].id && (row.status==="PENDING" ||
+      row.status==="CONFIRMED" && ["SUCCEEDED","FAILED"].includes(batches[index].status??"") &&
+      batches[index].schedulerTriggered===true));
+  const workerResults=batches.map((batch,index):WorkerResult|undefined=>aligned && rows[index].status==="CONFIRMED" ? "CONFIRMED" :
+    batch.schedulerTriggered===true || ["FAILED","VALIDATION_FAILED"].includes(batch.status??"") ? "PENDING" : undefined);
+  const status:WorkerResult=evidence?.status==="CONFIRMED" && release.status==="COMPLETED_CLOUD_TEST" &&
+    workerResults.every(result=>result==="CONFIRMED") ? "CONFIRMED" : "PENDING";
+  return {status,workerResults};
+}
 
 export async function readOpsPublication(api: Reader, target: MonitorTarget) {
   const [release, first, second] = await Promise.all([
@@ -64,7 +80,8 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
     [first, second].every(batch => batch.status === "SUCCEEDED" && batch.schedulerTriggered === true &&
       batch.published === true && batch.engine === "Apache Spark" && batch.mainSqlExecuted === true &&
       batch.testSqlValidation?.passed === true && batch.validation?.passed === true);
-  const batches = [first, second].map(batch => {
+  const failure=readFailureEvidence(release,[first,second]);
+  const batches = [first, second].map((batch,index) => {
     const {id, sequence, status, schedulerTriggered} = batch;
     const pendingLabel = privateReleasePendingLabel(batch);
     const serviceHref = canConsume ? "/v2/?" + new URLSearchParams({
@@ -76,7 +93,9 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
       kind:"AGENT" as const, taskId:target.taskId, releaseId:target.releaseId, revisionId:target.revisionId,
       runId:release.sourceRunId!, packageDigest:release.packageDigest!, batchId:id!,
     } : undefined;
-    return {id, sequence, status, schedulerTriggered, ...(pendingLabel ? {pendingLabel} : {}), serviceHref, reportSource};
+    const workerResult=failure?.workerResults[index];
+    return {id, sequence, status, schedulerTriggered, ...(pendingLabel ? {pendingLabel} : {}),
+      ...(workerResult?{workerResult}:{}), serviceHref, reportSource};
   });
-  return {status:release.status, health:release.health, batches};
+  return {status:release.status, health:release.health, batches,...(failure?{failureSettlement:failure.status}:{})};
 }

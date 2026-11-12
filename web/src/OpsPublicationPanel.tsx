@@ -45,16 +45,19 @@ export function OpsPublicationPanel({api}: {api: Api}) {
         <div className="ops-live-table-v2">
           <table aria-label="确切发布批次">
             <caption>发布 {target.releaseId} · 代码版本 {target.revisionId}</caption>
-            <thead><tr><th scope="col">原批次编号</th><th scope="col">保存状态</th><th scope="col">调度状态</th><th scope="col">接口</th><th scope="col">报表</th></tr></thead>
+            <thead><tr><th scope="col">原批次编号</th><th scope="col">保存状态</th><th scope="col">调度状态</th>{evidence.failureSettlement && <th scope="col">Worker 回执</th>}<th scope="col">接口</th><th scope="col">报表</th></tr></thead>
             <tbody>{evidence.batches.map(batch => <tr key={batch.id}>
               <th scope="row">第 {batch.sequence} 批 <small>{batch.id}</small></th>
               <td>{batch.pendingLabel ?? label(batch.status)}</td><td>{batch.schedulerTriggered ? "已触发" : "未触发"}</td>
+              {evidence.failureSettlement && <td>{batch.workerResult==="CONFIRMED"?"原回执已确认":batch.workerResult==="PENDING"?"待核对":"—"}</td>}
               <td>{batch.serviceHref ? <a href={batch.serviceHref}>查看第 {batch.sequence} 批接口</a> : "—"}</td>
               <td>{batch.reportSource ? <a href={batchReportHref(location, batch.reportSource.batchId)}>查看第 {batch.sequence} 批报表</a> : "—"}</td>
             </tr>)}</tbody>
           </table>
         </div>
         <p>发布 {label(evidence.status)} · 监控 {label(evidence.health)}</p>
+        {evidence.failureSettlement && <p role="status">{evidence.failureSettlement==="CONFIRMED"
+          ? "原发布失败已确认，两个批次的回执均已核对。" : "原发布失败仍待核对，原批次及预留保留。"}</p>}
         <a href={"/v2/?module=agent-center&task=" + target.taskId + "#agent-publication"}>查看原任务的发布证据</a>
         {report?.reportSource && report.sequence !== undefined &&
           <Suspense fallback={<p role="status">正在加载批次报表…</p>}><OpsBatchReportPanel key={report.id} api={api} source={report.reportSource} sequence={report.sequence}/></Suspense>}

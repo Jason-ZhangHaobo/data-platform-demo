@@ -51,6 +51,18 @@ test('failed preparation remains readable without fabricated files or rehearsal'
  const f=fixture(t),value=structuredClone(f.value);value.delivery.status='FAILED';value.delivery.stage='PACKAGE_FAILED';value.delivery.error='合成准备失败';for(const key of ['packageId','packageDigest','verificationId'])delete value.delivery[key];delete value.package;delete value.verification;
  assert.equal((await checkedAgentWorkflow(value,f.selection)).delivery.status,'FAILED');
 });
+test('only exact private rehearsal failures can display confirmed Worker evidence',async t=>{
+ const f=fixture(t),value=structuredClone(f.value);
+ value.publication.scope='PRIVATE_CLOUD_TEST';value.delivery.status='FAILED';value.verification.status='FAILED';
+ value.verification.workerResult='CONFIRMED';
+ assert.equal((await checkedAgentWorkflow(value,f.selection)).verification.workerResult,'CONFIRMED');
+ value.verification.status='RUNNING';
+ await assert.rejects(checkedAgentWorkflow(value,f.selection),/未确认/);
+ value.verification.workerResult='PENDING';
+ assert.equal((await checkedAgentWorkflow(value,f.selection)).verification.workerResult,'PENDING');
+ value.publication.scope='LOCAL_TEST_RELEASE';
+ await assert.rejects(checkedAgentWorkflow(value,f.selection),/未确认/);
+});
 test('actual readonly HTTP projection is compatible and does not create new records',async t=>{
  const f=fixture(t),app=createV2Server({store:f.store,env:{V2_LOCAL_DEVELOPMENT:'true',V2_RELEASE_SCHEDULER_MODE:'DISABLED'}});
  await new Promise(r=>app.server.listen(0,'127.0.0.1',r));t.after(async()=>{app.server.closeAllConnections();await new Promise(r=>app.server.close(r));});
