@@ -57,6 +57,7 @@ export async function requestOssWithRetry(
         if (retried) retriedResponses.add(response);
         return response;
       }
+      void response.body?.cancel().catch(() => undefined);
       retried = true;
     } catch (error) {
       if (!transientNetworkError(error)) throw safeFailure(false);

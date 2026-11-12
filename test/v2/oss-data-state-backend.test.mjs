@@ -130,3 +130,137 @@ test("OSS revision writes enforce size limits before network mutation", async ()
   await assert.rejects(backend.compareAndSwap(PROJECT, 0, emptyDataState(PROJECT)), { code: "CLOUD_DATA_STATE_TOO_LARGE" });
   assert.equal(remote.objects.size, 0);
 });
+
+const baseUrl = `https://${config.bucket}.${config.endpoint}/${config.key}`;
+const slotUrl = revision => `${baseUrl}.revisions/${revision}.json`;
+
+async function seedRevisions(count, legacyRevision = 0) {
+  const remote = fakeOss(), writer = new OssDataStateBackend(config, remote.fetch),
+    payload = emptyDataState(PROJECT);
+  if (legacyRevision)
+    remote.objects.set(baseUrl, JSON.stringify({
+      format: "shuduo-data-state-envelope/v1", revision: legacyRevision, payload,
+    }));
+  await writer.load(PROJECT);
+  for (let revision = legacyRevision; revision < legacyRevision + count; revision++)
+    await writer.compareAndSwap(PROJECT, revision, payload);
+  remote.requests.length = 0;
+  return remote;
+}
+
+test("OSS cold restore overlaps successor reads after nine verified slots and keeps warm reads single", { timeout: 3000 }, async t => {
+  const remote = await seedRevisions(16);
+  const first = Promise.withResolvers(), second = Promise.withResolvers();
+  t.after(() => first.resolve());
+  const reader = new OssDataStateBackend(config, async (url, options) => {
+    if (url === slotUrl(10)) {
+      assert.equal(options.signal, undefined);
+      await first.promise;
+    }
+    if (url === slotUrl(11)) {
+      assert.ok(options.signal);
+      second.resolve();
+    }
+    return remote.fetch(url, options);
+  });
+  const restoring = reader.load(PROJECT);
+  await Promise.race([second.promise, restoring]);
+  first.resolve();
+  assert.equal((await restoring).revision, 16);
+  assert.equal(remote.requests.length, 19);
+  remote.requests.length = 0;
+  assert.equal((await reader.load(PROJECT)).revision, 16);
+  assert.deepEqual(remote.requests.map(request => request.url), [slotUrl(17)]);
+});
+
+test("OSS short chains from a legacy snapshot keep ordered reads with no lookahead", async () => {
+  const remote = await seedRevisions(8, 500);
+  assert.equal((await new OssDataStateBackend(config, remote.fetch).load(PROJECT)).revision, 508);
+  assert.equal(remote.requests.length, 10);
+  assert.equal(remote.requests.some(request => request.options.signal), false);
+});
+
+test("OSS stops at the first missing slot and aborts an unused lookahead without retry", async () => {
+  const remote = await seedRevisions(12);
+  remote.objects.delete(slotUrl(10));
+  let cancelled = false, speculativeReads = 0, signal;
+  const reader = new OssDataStateBackend(config, (url, options) => {
+    if (url !== slotUrl(11)) return remote.fetch(url, options);
+    speculativeReads++;
+    signal = options.signal;
+    return new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status: 503 });
+  }, { sleep: async () => assert.fail("an unused read must not retry") });
+  assert.equal((await reader.load(PROJECT)).revision, 9);
+  assert.equal(speculativeReads, 1);
+  assert.equal(signal.aborted, true);
+  assert.equal(cancelled, true);
+});
+
+test("OSS confirms an early lookahead miss after its predecessor and sees the intervening append", async () => {
+  const remote = await seedRevisions(14), attempts = [];
+  const reader = new OssDataStateBackend(config, (url, options) => {
+    attempts.push({ url, speculative: Boolean(options.signal) });
+    if (url === slotUrl(11) && options.signal) return new Response(null, { status: 404 });
+    return remote.fetch(url, options);
+  });
+  assert.equal((await reader.load(PROJECT)).revision, 14);
+  assert.deepEqual(attempts.filter(attempt => attempt.url === slotUrl(11)).map(a => a.speculative), [true, false]);
+  assert.equal(attempts.filter(attempt => attempt.speculative).length, 1);
+});
+
+test("OSS retries a needed speculative transient response within the existing request budget", async () => {
+  const remote = await seedRevisions(11);
+  const attempts = [], delays = [];
+  let discarded = false;
+  const reader = new OssDataStateBackend(config, (url, options) => {
+    if (url === slotUrl(11)) {
+      attempts.push(Boolean(options.signal));
+      if (options.signal)
+        return new Response(new ReadableStream({ cancel() { discarded = true; } }), { status: 503 });
+    }
+    return remote.fetch(url, options);
+  }, { attempts: 2, delayMs: 100, sleep: async delay => delays.push(delay) });
+  assert.equal((await reader.load(PROJECT)).revision, 11);
+  assert.deepEqual(attempts, [true, false]);
+  assert.deepEqual(delays, [100]);
+  assert.equal(discarded, true);
+});
+
+test("OSS still rejects a broken parent inside a prefetched pair", async () => {
+  const remote = await seedRevisions(12);
+  const corrupt = JSON.parse(remote.objects.get(slotUrl(11)));
+  remote.objects.set(slotUrl(11), JSON.stringify({ ...corrupt, previousHash: "0".repeat(64) }));
+  const reader = new OssDataStateBackend(config, remote.fetch);
+  await assert.rejects(reader.load(PROJECT), { code: "CLOUD_DATA_STATE_INVALID_CHAIN" });
+  assert.ok(remote.requests.find(request => request.url === slotUrl(11)).options.signal);
+  assert.equal(remote.requests.some(request => request.url === slotUrl(12)), false);
+});
+
+test("OSS preserves the maximum number of revision slots and reads none beyond it", async () => {
+  const remote = await seedRevisions(1024, 200);
+  const reader = new OssDataStateBackend(config, remote.fetch);
+  await assert.rejects(reader.load(PROJECT), { code: "CLOUD_DATA_STATE_REVISION_LIMIT" });
+  assert.equal(remote.requests.length, 1025);
+  assert.equal(new Set(remote.requests.map(request => request.url)).size, 1025);
+  assert.equal(remote.requests.some(request => request.url === slotUrl(1225)), false);
+});
+
+test("OSS avoids reading ahead after a large snapshot and caps undeclared bodies while streaming", async () => {
+  const remote = await seedRevisions(9);
+  remote.objects.set(slotUrl(9), remote.objects.get(slotUrl(9)) + " ".repeat(1024 * 1024));
+  const reader = new OssDataStateBackend({ ...config, maxBytes: 2 * 1024 * 1024 }, remote.fetch);
+  assert.equal((await reader.load(PROJECT)).revision, 9);
+  assert.equal(remote.requests.some(request => request.options.signal), false);
+  let pulls = 0, cancelled = false;
+  const body = new ReadableStream({
+    pull(controller) {
+      pulls++;
+      controller.enqueue(new Uint8Array(768));
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
+  const oversize = new OssDataStateBackend({ ...config, maxBytes: 1024 }, async () => new Response(body));
+  await assert.rejects(oversize.load(PROJECT), { code: "CLOUD_DATA_STATE_TOO_LARGE" });
+  assert.equal(pulls, 2);
+  assert.equal(cancelled, true);
+});
