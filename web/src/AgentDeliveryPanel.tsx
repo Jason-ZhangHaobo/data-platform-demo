@@ -17,6 +17,7 @@ import { createPublicationReader, publicationPollNeeded } from "./publication-re
 import {ValidationDetails} from "./ValidationDetails";
 import {checkedAgentWorkflow,frozenRequirementProposal} from "./agent-workflow-read";
 import type {FundExecutionBinding} from "../../src/v2/fund-preparation-client.mjs";
+import {recheckFundRehearsal} from "../../src/v2/fund-rehearsal-recheck.mjs";
 import type {Delivery,Workflow} from "./agent-workflow-read";
 import {checkedAgentPublication,checkedAgentConsumption} from "./agent-delivery-evidence-read";
 import type {Publication,Release} from "./agent-delivery-evidence-read";
@@ -141,6 +142,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const reportView = verificationPresentation(current, verified, evidenceRead, report?.status);
   const releaseLabel = (value: Release) => publicationEvidenceText(value, journey.publicationCurrent, journey.steps.some(step => step.id === "monitoring" && step.state === "DONE"));
   const working = busy || auto || codeBusy;
+  const receiptPending = fund && delivery?.status === "INTERRUPTED" && delivery.stage === "FILE_REHEARSAL_UNCONFIRMED";
   const fileVerified = journey.fileVerified;
   const targetMatches = publicationTargetMatches(publicationTarget, { taskId, packageDigest: workflow?.package?.digest, verificationId: workflow?.verification?.id }, publicationClock)
     && (!publicationTarget || delivery?.verificationId === publicationTarget.verificationId);
@@ -202,6 +204,26 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     if (!delivery || !canWrite || publicationTarget) return; epoch.current++; setAuto(false); setBusy(true);
     try { await api(`/agent/deliveries/${delivery.id}/cancel`, {}); await load(); }
     catch(e) { setError((e as Error).message); } finally { setBusy(false); }
+  }
+  async function recheckReceipt() {
+    if (!delivery || !receiptPending || !canWrite || !current || evidenceRead !== "READY" || working || publicationTarget) return;
+    const active = () => alive.current && activeWorkflowSource.current === workflowSourceKey;
+    setBusy(true); setError("");
+    try {
+      const result = await recheckFundRehearsal({ request: (path: string, options: {body: unknown}) => api(path, options.body) }, {
+        deliveryTaskId: delivery.id, expectedVersion: delivery.version,
+      });
+      if (!active()) return;
+      if (result.packageDigest !== delivery.packageDigest || result.verificationId !== delivery.verificationId)
+        throw Error("核对结果与原交付版本不符");
+      await load();
+      if (active() && result.status === "UNCONFIRMED") setError("本次核对后，原演练结果仍待确认。");
+    } catch (cause) {
+      if (!active()) return;
+      const updated = await load().catch(() => undefined);
+      if (active() && (updated?.delivery?.id !== delivery.id || updated.delivery.status !== "SUCCEEDED"))
+        setError((cause as Error).message);
+    } finally { if (active()) setBusy(false); }
   }
   async function openReview() {
     if (!publicationWritable || !publicationReady || !fileVerified || preparationUnknown || working) return;
@@ -299,7 +321,14 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
       <div id="agent-files" className="agent-delivery-card"><div className="agent-workflow-title"><Package size={16} /><h3>调度与部署交付</h3></div><p>把当前通过核验的代码、测试、调度依赖、交易日历和部署清单固定到同一版本，再用 Spark 按文件执行一次演练。</p>
         {preparationUnknown&&<p role="status">交付准备结果待确认。<button className="button" disabled={working||evidenceRead==='LOADING'} onClick={()=>void load().catch(()=>{})}>查询原交付</button>查询只恢复原版本记录；确认前不能重新准备。</p>}
         {!delivery && <button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => void prepare()}><Play size={14} />生成交付并演练</button>}
-        {delivery && <><strong className="agent-delivery-stage">{auto && <LoaderCircle size={14} className="spin" />}{fileReview&&!release?(current&&verified&&fileVerified&&evidenceRead==="READY"?"本机文件已审阅，不代表发布批准":"保留的文件审阅，当前待核验"):deliveryStageText(delivery.stage, journey.publicationCurrent, release?.status, journey.current)}</strong>{delivery.error && <p role="alert">{delivery.error}</p>}<div className="agent-delivery-actions">{!complete(delivery.status) && <><button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => void drive(delivery)}>继续交付准备</button><button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button></>}{!fund && ["FAILED","CANCELLED"].includes(delivery.status) && <button className="button" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => { if(preparationUnknown)return;requestKey.current=crypto.randomUUID(); void prepare(); }}>重新准备并演练</button>}{workflow.package && <button className="button" onClick={() => download("shuduo-delivery-package.json", workflow.package)}><Download size={14} />下载版本化交付包</button>}</div></>}
+        {delivery && <><strong className="agent-delivery-stage">{auto && <LoaderCircle size={14} className="spin" />}{fileReview&&!release?(current&&verified&&fileVerified&&evidenceRead==="READY"?"本机文件已审阅，不代表发布批准":"保留的文件审阅，当前待核验"):deliveryStageText(delivery.stage, journey.publicationCurrent, release?.status, journey.current)}</strong>{delivery.error && <p role="alert">{delivery.error}</p>}
+          <div className="agent-delivery-actions">
+            {receiptPending && <button className="button" disabled={!canWrite || !current || evidenceRead !== "READY" || working || !!publicationTarget}
+              onClick={() => void recheckReceipt()}>核对原演练回执</button>}
+            {!complete(delivery.status) && <><button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => void drive(delivery)}>继续交付准备</button><button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button></>}
+            {!fund && ["FAILED","CANCELLED"].includes(delivery.status) && <button className="button" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => { if(preparationUnknown)return;requestKey.current=crypto.randomUUID(); void prepare(); }}>重新准备并演练</button>}
+            {workflow.package && <button className="button" onClick={() => download("shuduo-delivery-package.json", workflow.package)}><Download size={14} />下载版本化交付包</button>}
+          </div></>}
         {workflow.package && (()=>{const frozen=frozenRequirementProposal(workflow.package,taskId);return frozen&&<AgentRequirementUnderstanding frozen dirty={!current} task={{id:taskId,contextId:frozen.contextId,message:frozen.request,revisionId:frozen.revisionId,language:'SPARK_SQL',requirements:frozen,
           clarification:frozen.clarification,humanClarified:frozen.humanClarified,directAutonomousEligible:frozen.directAutonomousEligible,clarificationOriginTaskId:frozen.clarificationOriginTaskId,
           attempts:[{attempt:frozen.attempt,revisionId:frozen.revisionId,model:frozen.model}]}}/>;})()}

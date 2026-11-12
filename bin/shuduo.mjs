@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
+import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import { fileURLToPath } from "node:url";
@@ -99,6 +100,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent prepare-delivery --id AGENT_TASK_ID
   shuduo agent prepare-delivery --id TASK_ID --source-kind MANUAL --source-run-id RUN_ID --request-id UUID --confirm
   shuduo agent delivery --id DELIVERY_TASK_ID
+  shuduo agent recheck-delivery-receipt --id DELIVERY_TASK_ID --version CURRENT_VERSION
   shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION
   shuduo agent background --id TASK_ID
   shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm
@@ -722,6 +724,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "agent" && action === "advance-delivery")
       result = await client.request(`/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}/advance`, { method: "POST", body: { expectedVersion: Number(required(parsed.options, "version")) } });
+    else if (resource === "agent" && action === "recheck-delivery-receipt")
+      result = await recheckFundRehearsal(client, { deliveryTaskId: required(parsed.options, "id"),
+        expectedVersion: Number(required(parsed.options, "version")) });
     else if(resource==="agent"&&action==="background")result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background`);
     else if(resource==="agent"&&action==="enable-background"){
       if(parsed.options.confirm!==true)throw new Error("云后台可能调用模型和Spark，须先确认范围并提供--confirm");

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
+import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
 import {distributionReportMetricIds} from '../src/v2/distribution-report-contract.mjs';
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
@@ -116,6 +117,7 @@ const tools = [
   { name: "agent_publication_create", description: "人工逐项审阅当前不可变包及成功演练后创建两个云端测试批次，不代批或自动重试。MANUAL须提供sourceKind与sourceRunId，不计Agent自主完成。可提供原requestId复用幂等编号；未知结果先查原发布，执行者不能指定。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceKind:publicationProperties.sourceKind,sourceRunId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema,requestId:publicationIdSchema,attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"],allOf:[manualPublicationCondition(false)]} },
   { name: "agent_publication_stop", description:"停止指定来源、交付包及演练的后续云端批次，保留记录。不选择其他历史发布。MANUAL必须提供sourceRunId、packageDigest、verificationId、releaseId；提供任何selector时也须releaseId，执行者来自会话。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(true)]} },
   { name: "agent_delivery_advance", description: "按当前版本推进原持久交付任务一个步骤；可提交真实Spark文件演练，不审批或发布。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 } }, required: ["deliveryTaskId", "expectedVersion"] } },
+  { name: "fund_delivery_receipt_recheck", description: "核对本机基金交付的原签名演练回执。仅在证据吻合时恢复原交付状态，不运行模型或 Spark。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 } }, required: ["deliveryTaskId", "expectedVersion"] } },
   { name: "agent_delivery_list", description: "列出代码Agent的后台交付准备、不可变包与文件演练结果。", inputSchema: { type: "object", properties: { sourceAgentTaskId: { type: "string" } } } },
   {name:'agent_delivery_prepare',description:'准备已核验版本的交付文件；人工辅助版本须指定MANUAL、原运行和稳定requestId并明确confirm，沿用人工流程；不审批或发布。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},sourceKind:{enum:['AGENT','MANUAL']},sourceRunId:{type:'string',format:'uuid'},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['taskId'],allOf:[{if:{properties:{sourceKind:{const:'MANUAL'}},required:['sourceKind']},then:{required:['sourceRunId','requestId','confirm']}}]}},
   { name: "agent_delivery_detail", description: "读取交付准备任务的阶段、包摘要、演练编号与明确失败。", inputSchema: { type: "object", properties: { deliveryTaskId: { type: "string" } }, required: ["deliveryTaskId"] } },
@@ -434,6 +436,7 @@ async function callTool(name, args = {}, client=defaultClient) {
   }
   if (name === "agent_delivery_advance")
     return client.request(`/agent/deliveries/${encodeURIComponent(args.deliveryTaskId)}/advance`, { method: "POST", body: { expectedVersion: args.expectedVersion } });
+  if (name === "fund_delivery_receipt_recheck") return recheckFundRehearsal(client, args);
   if (name === "agent_delivery_list")
     return client.request(
       `/agent/deliveries${args.sourceAgentTaskId ? `?sourceAgentTaskId=${encodeURIComponent(args.sourceAgentTaskId)}` : ""}`,

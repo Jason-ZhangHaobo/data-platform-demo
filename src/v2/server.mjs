@@ -68,6 +68,7 @@ import { fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
 import { bindFundSignedDelivery } from "./fund-signed-delivery.mjs";
 import { createFundSignedReceipts } from "./fund-signed-receipts.mjs";
 import { createFundRehearsalRecovery } from "./fund-rehearsal-recovery.mjs";
+import { fundRehearsalRecheckResult, readFundRehearsalRecheck } from "./fund-rehearsal-recheck.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "./fund-preparation.mjs";
 import { parseFundExecutionPreflightPath } from "./fund-preparation-request.mjs";
 import { fundExecutionPreflight } from "./fund-execution-preflight.mjs";
@@ -5952,6 +5953,29 @@ export function createV2Server(options = {}) {
       const agentDeliveryRecord = path.match(
         /^\/api\/v2\/agent\/deliveries\/([a-f0-9-]+)(?:\/(cancel|advance))?$/,
       );
+      const fundReceiptRecheck = path.match(/^\/api\/v2\/agent\/deliveries\/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/recheck-receipt$/);
+      if (fundReceiptRecheck && method === "POST") {
+        if (!fundRehearsalRecovery || !isLoopbackRequest(req)) throw fail(403, "原演练回执核对仅在本机可用");
+        if (url.searchParams.size) throw fail(422, "原演练回执核对不接受查询参数");
+        const expectedVersion = readFundRehearsalRecheck(await readBody(req));
+        const item = get("agent_delivery_task", fundReceiptRecheck[1]);
+        const agent = get("agent", item.sourceAgentTaskId);
+        requireDurableAgentOwner(agent, req);
+        const stale = () => Object.assign(fail(409, "交付版本已变化，请读取原编号后再核对"), { code: "STALE_DOCUMENT_VERSION" });
+        if (item.version !== expectedVersion) throw stale();
+        if (!agent.fundPreparation || item.submittedBy !== agent.submittedBy ||
+            item.status !== "INTERRUPTED" || item.stage !== "FILE_REHEARSAL_UNCONFIRMED" ||
+            !item.signedPackageDigest) throw fail(409, "当前交付没有待核对的基金签名演练回执");
+        const { bundle, verification } = workflowDeliveryEvidence(item);
+        if (!bundle?.manifest.source.fundSignedExecution || bundle.digest !== item.signedPackageDigest ||
+            verification?.status !== "INTERRUPTED") throw fail(409, "原签名交付与演练记录不一致");
+        fundRehearsalRecovery.recover(item);
+        const updated = get("agent_delivery_task", item.id);
+        if (updated.version === expectedVersion) return json(res, 200, fundRehearsalRecheckResult(updated, "UNCONFIRMED"));
+        if (updated.version !== expectedVersion + 1 || updated.status !== "SUCCEEDED" ||
+            updated.recoveredFromFileReceipt !== true) throw stale();
+        return json(res, 200, fundRehearsalRecheckResult(updated, "RECOVERED"));
+      }
       if (agentDeliveryRecord) {
         const item = get("agent_delivery_task", agentDeliveryRecord[1]);
         const agent = get("agent", item.sourceAgentTaskId);
