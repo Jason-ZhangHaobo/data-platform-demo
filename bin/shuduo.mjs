@@ -18,7 +18,7 @@ import {checkedBatchArchive, prepareBatchArchive, readBatchArchive, submitBatchA
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationPreflightPath,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
-import {advanceCloudV3Rehearsal,bindCloudV3Consumption,checkCloudV3PreparedEntry,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,prepareCloudV3Next,rebindCloudV3PreparedSource,submitCloudV3Publication,verifyCloudV3Completion} from "../scripts/start-cloud-v3-case.mjs";
+import {advanceCloudV3Rehearsal,bindCloudV3Consumption,checkCloudV3PreparedEntry,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,prepareCloudV3Next,rebindCloudV3PreparedSource,settleCloudV3DevelopmentFailure,submitCloudV3Publication,verifyCloudV3Completion} from "../scripts/start-cloud-v3-case.mjs";
 import {readCloudV3Run} from "../scripts/cloud-v3-run.mjs";
 import {cloudWindowCheckpointBinding} from "../scripts/first-cloud-v3-window.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
@@ -83,6 +83,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --batch-id ID --out-file ABSOLUTE_PATH
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256
   shuduo agent v3-complete --checkpoint ABSOLUTE_PATH --first-plan ABSOLUTE_PATH --second-plan ABSOLUTE_PATH --out-file ABSOLUTE_PATH
+  shuduo agent v3-settle-failure --checkpoint ABSOLUTE_PATH --out-file ABSOLUTE_PATH
   shuduo agent v3-run --checkpoint ABSOLUTE_PATH [--completion-file ABSOLUTE_PATH [--case-records ABSOLUTE_PATH]]
   shuduo agent v3-prepare-next --checkpoint ABSOLUTE_PATH --first-checkpoint ABSOLUTE_PATH --completion-file ABSOLUTE_PATH --source-revision SHA [--case-records ABSOLUTE_PATH]
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
@@ -676,6 +677,13 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result=await bindCloudV3Consumption(required(args,"checkpoint"),client,exporting?
         {batchId:required(args,"batch_id"),outFile:required(args,"out_file")}:
         {planPath:required(args,"plan"),callIdDigest:required(args,"call_id_digest")});
+    }
+    else if (resource === "agent" && action === "v3-settle-failure") {
+      const flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
+      if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
+          flags.some(flag=>!["checkpoint","out_file","base_url"].includes(flag)))
+        throw Error("失败结算只接受原检查点、原入口和新回执路径");
+      result=await settleCloudV3DevelopmentFailure(required(parsed.options,"checkpoint"),client,required(parsed.options,"out_file"));
     }
     else if (resource === "agent" && ["v3-complete","v3-run"].includes(action)) {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));

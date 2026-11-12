@@ -13,16 +13,16 @@ export const validCloudV3UsageFloor = value => Boolean(value && typeof value.mon
 
 export function validCloudV3Predecessor(previous, origin, ordinal=2) {
   const local = typeof origin==="string" && origin.startsWith("http://");
-  if (!(previous && Object.keys(previous).length === (ordinal===2 ? 4 : 5+Number(Object.hasOwn(previous,"usageFloor"))) &&
+  if (!(previous && Object.keys(previous).length === (ordinal===2 ? 4 : 5)+Number(Object.hasOwn(previous,"usageFloor")) &&
     digest(previous.checkpointDigest) && digest(previous.completionDigest) &&
     (digest(previous.approvalDigest) || (ordinal===2 && previous.approvalDigest===null && local)) &&
-    Number.isFinite(previous.reserveCny) && previous.reserveCny >= 0 && previous.reserveCny < 200))
+    Number.isFinite(previous.reserveCny) && previous.reserveCny >= 0 && previous.reserveCny < 200 &&
+    (!Object.hasOwn(previous,"usageFloor") || validCloudV3UsageFloor(previous.usageFloor))))
     return false;
-  if (ordinal===2) return !Object.hasOwn(previous,"approvalDigests") && !Object.hasOwn(previous,"usageFloor");
+  if (ordinal===2) return !Object.hasOwn(previous,"approvalDigests");
   const approvals=previous.approvalDigests;
   return Array.isArray(approvals) && (approvals.length===ordinal-1 || (local && approvals.length===ordinal-2)) &&
-    approvals.every(digest) && new Set(approvals).size===approvals.length && approvals.at(-1)===previous.approvalDigest &&
-    (!Object.hasOwn(previous,"usageFloor") || validCloudV3UsageFloor(previous.usageFloor));
+    approvals.every(digest) && new Set(approvals).size===approvals.length && approvals.at(-1)===previous.approvalDigest;
 }
 
 export function cloudV3CheckpointCase(state) {

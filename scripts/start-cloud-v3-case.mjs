@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, constants, existsSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { agentExecutionEvidencePath } from "../src/v2/agent-execution-evidence.mjs";
+import { agentExecutionEvidencePath, validSettledDevelopmentFailure } from "../src/v2/agent-execution-evidence.mjs";
 import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
 import { readCloudV3Review } from "../src/v2/cloud-v3-review.mjs";
 import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys } from "../src/v2/cloud-v3-case-selection.mjs";
@@ -26,7 +26,7 @@ import { validateConsumerPlan } from "./verify-service-consumer.mjs";
 import { cloudWindowApplicationBinding, cloudWindowCheckpointBinding, firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
 import { developmentRequestDigest } from "../src/v2/public-development-access.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
-import { cloudV3CompletionScope, readCloudV3BaseCases } from "./cloud-v3-run.mjs";
+import { cloudV3CompletionScope, cloudV3FailureReceipt, readCloudV3BaseCases } from "./cloud-v3-run.mjs";
 import { boundedBytes } from "./control-code-transport.mjs";
 import { inspectedControlEntryScript, WEB_ENTRY_SCRIPT_LIMIT, WEB_INDEX_LIMIT } from "./control-web-entry.mjs";
 
@@ -155,13 +155,15 @@ export function prepareCloudV3Next(path,client,{firstPath,completionPath,records
   const base=new URL(normalizeSessionBase(client.baseUrl));
   if (base.pathname!=="/api/v2" ||
       base.origin!==first.origin || first.projectId!==client.projectId ||
-      parent.completion?.scope!==(base.protocol==="https:"?"INVITED_CLOUD_MATCHED":"LOCAL_MATCHED_ONLY"))
-    stop("须核对同一评测的上一例完成回执及原入口");
+      !(base.protocol==="https:"?["INVITED_CLOUD_MATCHED","INVITED_CLOUD_SETTLED_FAILURE"]:
+        ["LOCAL_MATCHED_ONLY","LOCAL_SETTLED_FAILURE_ONLY"]).includes(parent.completion?.scope))
+    stop("须核对同一评测的上一例结算回执及原入口");
   const definition=cloudV3BaseCases()[entries.length], caseLimit=entries.length+1;
   if (!definition) stop("固定基础案例已全部记录");
   const previousCase={checkpointDigest:sha256(parent.checkpoint.text),completionDigest:parent.completion.completionDigest,
     approvalDigest:parent.checkpoint.state.submission?.windowApprovalDigest ?? null,reserveCny,
-    ...(caseLimit>2?{approvalDigests:approvals,...(usageFloor?{usageFloor}:{})}:{})};
+    ...(caseLimit>2?{approvalDigests:approvals}:{}),
+    ...(usageFloor&&(caseLimit>2||parent.completion.failure)?{usageFloor}:{})};
   // The same original evaluation always yields the same request key, even
   // if a local preparation is interrupted and recreated in another file.
   const entropy=sha256(JSON.stringify([first.evaluationRunId,entries[0].item.actions.agent.key,definition.id]));
@@ -415,7 +417,8 @@ export async function continueCloudV3Start(path, client, {billPath, windowPath, 
     const submission = submissionSnapshot(status,session,client,bill,Date.now());
     const floor=state.previousCase?.usageFloor;
     if (floor && (bill.month<floor.month ||
-        (floor.month===bill.month && cloudV3UsageKeys.some(key=>submission.usage[key]<floor[key]))))
+        (floor.month===bill.month && cloudV3UsageKeys.some(key=>key==="remoteSparkSeconds" ?
+          Math.round(submission.usage[key]*1000)<Math.round(floor[key]*1000) : submission.usage[key]<floor[key]))))
       stop("本月模型或 Spark 用量低于原评测已记录的基线");
     if (window) await verifyFirstWindowEntry(client,window.application);
     const now = Date.now(), submittedAt = new Date(now).toISOString();
@@ -899,25 +902,58 @@ export async function verifyCloudV3Completion(path,client,{firstPlanPath,secondP
   },{reconcile:true});
 }
 
+async function readOriginalCloudExecution({state,definition,item,action},client) {
+  const response = (status, reason) => ({unconfirmed:result(state,item,status,reason)});
+  if (action.status !== "CONFIRMED") return response("PENDING", "ORIGINAL_CREATION_UNCONFIRMED");
+  await requireOriginalCreator(state, client);
+  let view;
+  try { view = await client.request(agentExecutionEvidencePath(action.key)); }
+  catch { return response("UNCONFIRMED", "CLOUD_EXECUTION_READ_UNCONFIRMED"); }
+  if (view?.protocol !== "shuduo-agent-execution-evidence/v1" || view.scope !== "PRIVATE_CLOUD_TEST" ||
+      view.verificationMode !== "STORED_METADATA_ONLY" || view.status !== "EXECUTION_RECORDED" ||
+      view.fullLifecycleE2E !== false || view.publicDeployed !== false || view.taskId !== item.taskId ||
+      view.contextId !== definition.contextId || view.requestSha256 !== sha256(definition.request) ||
+      view.seedSqlSha256 !== sha256(definition.seedSql.trim()) || !Number.isFinite(Date.parse(view.taskCreatedAt)) ||
+      Date.parse(view.taskCreatedAt) < Date.parse(state.previousCase ? state.submission.submittedAt : item.evaluationStartedAt))
+    return response("UNCONFIRMED", "ORIGINAL_EXECUTION_MISMATCH");
+  const execution = checkedLiveExecutionProjection(view.execution, item.taskId);
+  if (execution.state !== "RECORDED" || execution.evidence !== "STORED_METADATA")
+    return response("UNCONFIRMED", "CLOUD_EXECUTION_PROVENANCE_UNCONFIRMED");
+  return {view,execution};
+}
+
+export async function settleCloudV3DevelopmentFailure(path,client,outFile) {
+  if (!isAbsolute(outFile ?? "") || existsSync(outFile)) stop("须提供尚不存在的绝对失败回执路径");
+  return withCloudCheckpoint(path,async()=>{
+    const original=readCheckpoint(path,{privateFile:true}), selected=snapshot(client,path);
+    const {state,item}=selected;
+    if (Object.keys(item.actions).length!==1 || item.code || item.rehearsal || item.consumption)
+      stop("此命令仅结算原开发阶段的失败");
+    const {unconfirmed,view,execution}=await readOriginalCloudExecution(selected,client);
+    if (unconfirmed) return unconfirmed;
+    const failure=view.settledFailure, {model,spark}=execution;
+    if (!validSettledDevelopmentFailure(failure) || failure.taskVersion!==execution.taskVersion ||
+        model.state!=="OUTPUT_RECORDED" || model.usage!=="RECORDED" ||
+        model.reservedTokens!==0 || model.unconfirmedAttempts!==0 || model.unattributedTokens!==0 ||
+        model.attempts!==failure.modelAttempts || model.ledgerTokens!==failure.ledgerTokens ||
+        model.reportedTokens!==failure.ledgerTokens ||
+        !["NOT_LINKED","REVISION_RECORDED","RESULT_RECORDED"].includes(spark.state) ||
+        (spark.state==="RESULT_RECORDED" &&
+          (!["FAILED","VALIDATION_FAILED"].includes(spark.resultStatus) || !failure.sparkRunIds.includes(spark.runId))))
+      return result(state,item,"PENDING","DEVELOPMENT_FAILURE_NOT_SETTLED");
+    if (readCheckpoint(path,{privateFile:true}).text!==original.text) stop("重验期间原检查点已变化");
+    const receipt=cloudV3FailureReceipt(original,item,failure,new Date().toISOString());
+    writeCheckpoint(outFile,receipt,true);
+    return {...result(state,item,"FAILURE_RECEIPT_SAVED"),scope:receipt.scope,completionDigest:receipt.completionDigest};
+  },{reconcile:true});
+}
+
 export async function inspectCloudV3Execution(path, client) {
   return withCloudCheckpoint(path, async () => {
-    const {state, definition, item, action} = snapshot(client, path);
-    const response = (status, reason) => result(state, item, status, reason);
-    if (action.status !== "CONFIRMED") return response("PENDING", "ORIGINAL_CREATION_UNCONFIRMED");
-    await requireOriginalCreator(state, client);
-    let view;
-    try { view = await client.request(agentExecutionEvidencePath(action.key)); }
-    catch { return response("UNCONFIRMED", "CLOUD_EXECUTION_READ_UNCONFIRMED"); }
-    if (view?.protocol !== "shuduo-agent-execution-evidence/v1" || view.scope !== "PRIVATE_CLOUD_TEST" ||
-        view.verificationMode !== "STORED_METADATA_ONLY" || view.status !== "EXECUTION_RECORDED" ||
-        view.fullLifecycleE2E !== false || view.publicDeployed !== false || view.taskId !== item.taskId ||
-        view.contextId !== definition.contextId || view.requestSha256 !== sha256(definition.request) ||
-        view.seedSqlSha256 !== sha256(definition.seedSql.trim()) || !Number.isFinite(Date.parse(view.taskCreatedAt)) ||
-        Date.parse(view.taskCreatedAt) < Date.parse(state.previousCase ? state.submission.submittedAt : item.evaluationStartedAt))
-      return response("UNCONFIRMED", "ORIGINAL_EXECUTION_MISMATCH");
-    const execution = checkedLiveExecutionProjection(view.execution, item.taskId);
-    if (execution.state !== "RECORDED" || execution.evidence !== "STORED_METADATA")
-      return response("UNCONFIRMED", "CLOUD_EXECUTION_PROVENANCE_UNCONFIRMED");
+    const selected=snapshot(client,path), {state,definition,item}=selected;
+    const {unconfirmed,view,execution}=await readOriginalCloudExecution(selected,client);
+    if (unconfirmed) return unconfirmed;
+    const response = (status, reason) => result(state,item,status,reason);
     const code = verifiedDevelopmentCode(definition, view, execution);
     if (!code) return {...response("EXECUTION_RECORDED", "DEVELOPMENT_RESULT_UNCONFIRMED"), execution};
     if (item.code && !isDeepStrictEqual(item.code,code))

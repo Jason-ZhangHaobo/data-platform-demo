@@ -4,25 +4,51 @@ import { sha256 } from "../src/v2/delivery.mjs";
 import { checkpointCaseScope, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseRequestDigest, liveLifecyclePlan } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { liveEvidenceProvenance } from "../src/v2/live-lifecycle-provenance.mjs";
+import { validSettledDevelopmentFailure } from "../src/v2/agent-execution-evidence.mjs";
 import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
+const failureProtocol="shuduo-cloud-v3-settled-failure/v1";
+const billingMonth=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit"});
+const hasCloudApplication=state=>digest(state.submission?.windowApprovalDigest) &&
+  state.submission?.application?.applicationSource===state.reviewedSource &&
+  digest(state.submission?.application?.inspectionDigest);
 
 export function cloudV3CompletionScope(state,proofs) {
   if (!Array.isArray(proofs) || proofs.length!==2) stop("完成回执须核验两个原发布批次");
   if (new URL(state.origin).protocol==="http:" && proofs.every(proof=>proof?.status==="MATCHED_ONLY"))
     return "LOCAL_MATCHED_ONLY";
   if (new URL(state.origin).protocol==="https:" && proofs.every(proof=>proof?.status==="MATCHED") &&
-      digest(state.submission?.windowApprovalDigest) &&
-      state.submission?.application?.applicationSource===state.reviewedSource &&
-      digest(state.submission?.application?.inspectionDigest))
+      hasCloudApplication(state))
     return "INVITED_CLOUD_MATCHED";
   stop("原开发窗口、验包或消费范围未获确认");
 }
 
+export function cloudV3FailureReceipt(original,item,failure,checkedAt) {
+  const {state,text}=original, protocol=new URL(state.origin).protocol;
+  const startedAt=state.previousCase ? state.submission?.submittedAt : item.evaluationStartedAt;
+  const provenance=liveEvidenceProvenance(item);
+  if (provenance.synthetic || provenance.nonNative || provenance.unconfirmed ||
+      item.actions.agent.status!=="CONFIRMED" || !id(item.taskId) || item.actions.agent.id!==item.taskId ||
+      Object.keys(item.actions).length!==1 || item.code || item.rehearsal || item.consumption ||
+      !validSettledDevelopmentFailure(failure) ||
+      !(Date.parse(startedAt)<=Date.parse(failure.finishedAt) && Date.parse(failure.finishedAt)<=Date.parse(checkedAt)) ||
+      !(protocol==="http:" || (protocol==="https:" && hasCloudApplication(state))))
+    stop("原案例尚无已结算的开发失败证据");
+  const body={protocol:failureProtocol,scope:protocol==="https:"?"INVITED_CLOUD_SETTLED_FAILURE":"LOCAL_SETTLED_FAILURE_ONLY",
+    checkedAt,checkpointDigest:sha256(text),evaluationRunId:state.evaluationRunId,caseSetDigest:state.caseSetDigest,
+    caseId:item.caseId,requestDigest:item.requestDigest,taskId:item.taskId,failure};
+  return {...body,completionDigest:sha256(JSON.stringify(body))};
+}
+
 function checkedCompletion(path, original, first) {
   const { state:receipt }=readCheckpoint(path,{privateFile:true});
+  if (receipt?.protocol===failureProtocol) {
+    if (!isDeepStrictEqual(receipt,cloudV3FailureReceipt(original,first,receipt.failure,receipt.checkedAt)))
+      stop("失败回执与原检查点或案例不一致");
+    return receipt;
+  }
   const {state,text}=original, action=first.actions?.publication;
   const batches=action?.batchIds;
   const provenance=liveEvidenceProvenance(first);
@@ -75,13 +101,20 @@ export function readCloudV3BaseCases(path,{completionPath,nextPath,nextCompletio
   const completion=completionPath ? checkedCompletion(completionPath,original,first) : undefined;
   const entries=[], approvals=[], evidence=new Set();
   let reserveCny=0, usageFloor;
+  const retainUsage=observed=>{
+    if (!validCloudV3UsageFloor(observed)) stop("原评测用量无法核对");
+    if (!usageFloor || observed.month>usageFloor.month) usageFloor=observed;
+    else if (observed.month===usageFloor.month) {
+      for (const key of cloudV3UsageKeys) usageFloor[key]=Math.max(usageFloor[key],observed[key]);
+    }
+  };
   const record=(checkpoint,item,completed)=>{
     const approval=checkpoint.state.submission?.windowApprovalDigest;
     if (approval!==undefined) {
       if (!digest(approval) || approvals.includes(approval)) stop("同一评测不能复用开发窗口审批");
       approvals.push(approval);
     }
-    const identities=caseEvidenceIdentities(item);
+    const identities=[...caseEvidenceIdentities(item),...(completed?.failure?.sparkRunIds??[])];
     if (identities.some(identity=>evidence.has(identity))) stop("同一评测不能复用其他案例的任务、批次或调用回执");
     for (const identity of identities) evidence.add(identity);
     for (const attempt of [checkpoint.state.submission,...Object.values(item.actions)]) {
@@ -91,14 +124,15 @@ export function readCloudV3BaseCases(path,{completionPath,nextPath,nextCompletio
           stop("原评测预留无法核对");
         reserveCny=Math.max(reserveCny,bill.unsettledReserveCny);
       }
-      if (attempt?.usage!==undefined) {
-        const observed={month:bill?.month,...attempt.usage};
-        if (!validCloudV3UsageFloor(observed)) stop("原评测用量无法核对");
-        if (!usageFloor || observed.month>usageFloor.month) usageFloor=observed;
-        else if (observed.month===usageFloor.month) {
-          for (const key of cloudV3UsageKeys) usageFloor[key]=Math.max(usageFloor[key],observed[key]);
-        }
-      }
+      if (attempt?.usage!==undefined) retainUsage({...attempt.usage,month:bill?.month});
+    }
+    const failure=completed?.failure, submission=checkpoint.state.submission;
+    if (failure && submission?.usage && [checkpoint.state.previousCase?submission.submittedAt:item.evaluationStartedAt,failure.finishedAt]
+        .every(time=>billingMonth.format(new Date(time))===submission.bill.month)) {
+      retainUsage({...submission.usage,month:submission.bill.month,
+        modelCalls:submission.usage.modelCalls+failure.modelAttempts,
+        remoteSparkRuns:submission.usage.remoteSparkRuns+failure.sparkRunIds.length,
+        remoteSparkSeconds:submission.usage.remoteSparkSeconds+failure.sparkDurationMs/1000});
     }
     entries.push({checkpoint,item,completion:completed});
   };
@@ -122,7 +156,7 @@ export function readCloudV3BaseCases(path,{completionPath,nextPath,nextCompletio
         previous.checkpointDigest!==sha256(parent.checkpoint.text) || previous.completionDigest!==parent.completion.completionDigest ||
         previous.approvalDigest!==(parent.checkpoint.state.submission?.windowApprovalDigest??null) ||
         !isDeepStrictEqual(cloudV3PredecessorApprovals(previous),approvals) || previous.reserveCny!==reserveCny ||
-        !isDeepStrictEqual(previous.usageFloor,next.state.caseLimit>2?usageFloor:undefined) ||
+        !isDeepStrictEqual(previous.usageFloor,next.state.caseLimit>2||parent.completion.failure?usageFloor:undefined) ||
         !validRecordedCreation(item))
       stop("续接案例与原评测、审批历史或上一例完成回执不一致");
     record(next,item,file.completion?checkedCompletion(file.completion,next,item):undefined);
@@ -135,16 +169,18 @@ export function readCloudV3Run(path,options) {
   const {state,text}=original, contractId=fullPlan.contract.id, completion=entries[0].completion;
   const recorded=new Map(entries.map(entry=>[entry.item.caseId,entry]));
   const verified=entry=>entry?.completion?.scope==="INVITED_CLOUD_MATCHED";
+  const cloudFailure=entry=>entry?.completion?.scope==="INVITED_CLOUD_SETTLED_FAILURE";
   const cases=fullPlan.selectedCases.map(definition=>{
     const item={caseId:definition.id,kind:definition.kind,contextId:definition.contextId,
       requestDigest:liveCaseRequestDigest(definition,contractId)};
     const existing=recorded.get(definition.id);
-    if (existing) return {...item,status:verified(existing) ? "CLOUD_CHAIN_VERIFIED"
-      : existing.completion ? "LOCAL_MATCHED_ONLY" : "ORIGINAL_CHECKPOINT",
+    if (existing) return {...item,status:verified(existing) ? "CLOUD_CHAIN_VERIFIED" : cloudFailure(existing) ? "CLOUD_FAILURE_SETTLED"
+      : existing.completion?.failure ? "LOCAL_FAILURE_SETTLED_ONLY" : existing.completion ? "LOCAL_MATCHED_ONLY" : "ORIGINAL_CHECKPOINT",
       creationStatus:existing.item.actions.agent.status,phase:existing.item.phase};
     if (definition.kind==="DERIVED") {
       const parent=recorded.get(definition.sourceCaseId), parentVerified=verified(parent);
-      return {...item,sourceCaseId:definition.sourceCaseId,status:parentVerified ? "SOURCE_VERIFIED" : "WAITING_FOR_SOURCE",
+      return {...item,sourceCaseId:definition.sourceCaseId,status:parentVerified ? "SOURCE_VERIFIED"
+        : cloudFailure(parent) ? "SOURCE_FAILED" : "WAITING_FOR_SOURCE",
         ...(parentVerified ? {source:{evaluationRunId:state.evaluationRunId,requestDigest:parent.item.requestDigest,
           taskId:parent.item.taskId,revisionId:parent.item.code.revisionId,revisionHash:parent.item.code.revisionHash,
           developmentRunId:parent.item.code.runId,completionDigest:parent.completion.completionDigest}} : {})};
@@ -154,7 +190,8 @@ export function readCloudV3Run(path,options) {
   return {protocol:"shuduo-cloud-v3-run/v1",verificationMode:"STORED_CHECKPOINT_AND_RECEIPT_ONLY",
     evaluationRunId:state.evaluationRunId,caseSetDigest:state.caseSetDigest,originalCheckpointDigest:sha256(text),
     expectedCaseCount:fullPlan.contract.expectedCaseCount,verifiedCloudCaseCount:[...recorded.values()].filter(verified).length,
-    nextCaseId:cases.find(entry=>entry.status!=="CLOUD_CHAIN_VERIFIED").caseId,
+    ...(entries.some(entry=>entry.completion?.failure)?{settledCloudFailureCount:entries.filter(cloudFailure).length}:{}),
+    nextCaseId:cases.find(entry=>!["CLOUD_CHAIN_VERIFIED","CLOUD_FAILURE_SETTLED","SOURCE_FAILED"].includes(entry.status)).caseId,
     ...(completion ? {completionDigest:completion.completionDigest} : {}),
     cases,willExecute:false,executionAuthorized:false,agentIndependentE2E:false,publicDeployed:false};
 }
