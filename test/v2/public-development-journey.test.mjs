@@ -1036,9 +1036,21 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(f.queueCounts().jobWriteAttempts,lostQueue.jobWriteAttempts);
   assert.equal(f.queueCounts().cancellationWrites,0);
 
+  const earlyReplay=await f.privateCall(firstTimer);
+  assert.equal(earlyReplay.status,200);
+  assert.equal(earlyReplay.body.succeeded,0);
+  assert.equal(earlyReplay.body.pending,2);
+  assert.equal(releaseRun(firstId).status,'RUNNING');
+  assert.equal(releaseRun(secondId).status,'SCHEDULED');
+  assert.equal(f.queueCounts().jobWriteAttempts,lostQueue.jobWriteAttempts);
+  assert.equal(f.queueCounts().cancellationWrites,0);
+
   const useRealSpark=process.env.SHUDUO_TEST_LOCAL_SPARK_RELEASE==='true';
   f.complete(first,useRealSpark?await measuredSpark(t,f,first,'release batch 1'):undefined);
-  assert.equal((await f.privateCall(firstTimer)).status,200);
+  const settledReplay=await f.privateCall(firstTimer);
+  assert.equal(settledReplay.status,200);
+  assert.equal(settledReplay.body.replayed,true);
+  assert.equal(settledReplay.body.succeeded,1,'a prior empty replay must not hide the original late Worker result');
   assert.equal(releaseRun(firstId).status,'SUCCEEDED');
   assert.equal(releaseRun(secondId).status,'SCHEDULED','the original signed event can settle only its prior batch');
   assert.equal((await f.privateCall(firstTimer)).body.replayed,true);
@@ -1047,6 +1059,10 @@ test('a killed publication CLI recovers both original batches through signed sch
   const second=releaseRun(secondId).remoteSubmission.prepared;
   assert.equal(second.job.jobId,secondId);
   f.complete(second,useRealSpark?await measuredSpark(t,f,second,'release batch 2'):undefined);
+  const beforeOldReplay=f.queueCounts();
+  assert.equal((await f.privateCall(firstTimer)).body.replayed,true);
+  assert.equal(releaseRun(secondId).status,'RUNNING','replaying batch one must not settle batch two');
+  assert.deepEqual(f.queueCounts(),beforeOldReplay);
   f.later(600001);
   assert.equal((await f.privateCall(timer('d'))).status,200);
   const monitorOffset=publicationCli.requests.length, queuesBeforeMonitoring=f.queueCounts();
