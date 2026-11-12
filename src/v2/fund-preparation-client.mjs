@@ -1,5 +1,5 @@
-import { fundPreparationInput, fundPreparationRequestId } from "./fund-preparation-request.mjs";
-import { fundRehearsalAt } from "./fund-contexts.mjs";
+import { fundExecutionPreflightPath, fundPreparationInput, fundPreparationRequestId } from "./fund-preparation-request.mjs";
+import { fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
 import { validSqlRequirementBasis } from "./sql-requirement-contract.mjs";
 
 const hash = async value => Array.from(new Uint8Array(await crypto.subtle.digest(
@@ -59,4 +59,23 @@ export async function executeFundPreparation(client, { requestId, basisDigest, c
       ["inputDigest", "schemaDigest", "assertionDigest"].some(key => task.fundPreparation[key] !== receipt.execution[key]))
     throw Error("基金任务回执与原准备不一致，请按原编号查询");
   return task;
+}
+
+export async function readFundExecutionPreflight(client, selection) {
+  const value = await client.request(fundExecutionPreflightPath(selection));
+  const { source, candidate } = value ?? {};
+  if (value?.protocol !== "shuduo-fund-execution-preflight/v1" || value.scope !== "INVITED_READ_ONLY" ||
+      value.status !== "SOURCE_VERIFIED" || !source || !candidate ||
+      !Object.entries(selection).every(([key, expected]) => source[key] === expected) ||
+      !isFundContext(source.contextId) || typeof source.businessDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(source.businessDate) || source.scope !== "LOCAL_TEST_ONLY" ||
+      (source.isolation !== undefined && source.isolation !== "LOCAL_PROCESS") ||
+      !["LIVE_MODEL", "SYNTHETIC_MODEL"].includes(source.modelMode) ||
+      candidate.engine !== "Apache Spark" || candidate.engineVersion !== "3.5.9" ||
+      ![source.requirementDigest, source.inputDigest, source.schemaDigest, source.assertionDigest,
+        candidate.sqlDigest, candidate.testSqlDigest, candidate.requestDigest].every(digest) ||
+      value.preflightDigest !== await hash(JSON.stringify({ source, candidate })) ||
+      value.approved !== false || value.willExecute !== false || value.publicDeployed !== false || value.agentIndependentE2E !== false)
+    throw Error("基金执行预检与原任务或确切来源不一致");
+  return value;
 }

@@ -66,6 +66,8 @@ import {
 } from "./context.mjs";
 import { fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "./fund-preparation.mjs";
+import { parseFundExecutionPreflightPath } from "./fund-preparation-request.mjs";
+import { fundExecutionPreflight } from "./fund-execution-preflight.mjs";
 import { fundAgentAttributionKind, fundAgentDeliveryAttribution, verifiedFundRun } from "./fund-delivery.mjs";
 import { fundAgentServiceSources, fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
 import { assertFundAgentMonitoring, assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease, fundAgentPublicationPreflight } from "./fund-publication.mjs";
@@ -6281,6 +6283,15 @@ export function createV2Server(options = {}) {
         if (!dedup.replayed)
           schedule("run", run, (signal) => execute(run, rev, signal));
         return json(res, 202, exposeDevelopmentRun(run));
+      }
+      if (method === "GET" && /^\/api\/v2\/agent\/tasks\/[^/]+\/fund-execution-preflight$/.test(path)) {
+        const session = auth.sessionFromHeaders(req.headers);
+        if (!session) throw Object.assign(fail(401, "请先登录受邀开发账号"), { code:"AUTHENTICATION_REQUIRED" });
+        if (!["ADMIN", "ENGINEER"].includes(session.role))
+          throw Object.assign(fail(403, "基金执行预检仅向受邀开发人员开放"), { code:"PROJECT_PERMISSION_DENIED" });
+        const selection = parseFundExecutionPreflightPath(req.url);
+        if (!selection) throw fail(422, "基金预检须指定原任务、准备编号、版本、运行及口径摘要");
+        return json(res, 200, fundExecutionPreflight({ store, project:PROJECT, actorId:session.user.id, selection }));
       }
       const fundPreparationRead = path.match(/^\/api\/v2\/agent\/fund-preparations\/requests\/([a-f0-9-]{36})$/);
       if ((method === "POST" && path === "/api/v2/agent/fund-preparations") || (method === "GET" && fundPreparationRead)) {

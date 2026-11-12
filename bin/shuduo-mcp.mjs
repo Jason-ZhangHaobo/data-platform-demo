@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { submitFundPreparation, readFundPreparation, executeFundPreparation } from "../src/v2/fund-preparation-client.mjs";
+import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
 import {distributionReportMetricIds} from '../src/v2/distribution-report-contract.mjs';
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
@@ -51,6 +51,12 @@ const tools = [
       required: ["requestId","contextId","businessDate","message","metrics"], additionalProperties: false } },
   { name: "fund_preparation_read", description: "按本账号原编号只读基金口径和执行准备。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" } }, required: ["requestId"], additionalProperties: false } },
+  { name: "fund_execution_preflight", description: "核对本人基金需求、日期、SQL 版本和独立断言，返回只读预检摘要。",
+    inputSchema: { type: "object", additionalProperties: false,
+      properties: { taskId: { type: "string", format: "uuid" }, requestId: { type: "string", format: "uuid" },
+        revisionId: { type: "string", format: "uuid" }, runId: { type: "string", format: "uuid" },
+        basisDigest: { type: "string", pattern: "^[a-f0-9]{64}$" } },
+      required: ["taskId", "requestId", "revisionId", "runId", "basisDigest"] }, annotations: { readOnlyHint: true } },
   { name: "fund_preparation_execute", description: "经人工确认原口径摘要后提交同一份本机基金开发，可能调用模型及 Spark。未知结果按原 requestId 查任务；不发布。",
     inputSchema: { type: "object", additionalProperties: false, required: ["requestId", "basisDigest", "confirm"],
       properties: { requestId: { type: "string", format: "uuid" }, basisDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, confirm: { const: true } } },
@@ -853,6 +859,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     return submitFundPreparation(client, input, requestId);
   }
   if (name === "fund_preparation_read") return readFundPreparation(client, args.requestId);
+  if (name === "fund_execution_preflight") return readFundExecutionPreflight(client, args);
   if (name === "fund_preparation_execute") return executeFundPreparation(client, args);
   if(name==='report_published_create')return submitPublishedReport(client,args);
   if(name==='report_published_request')return lookupPublishedReport(client,args);
