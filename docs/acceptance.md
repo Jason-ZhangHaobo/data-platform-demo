@@ -230,6 +230,10 @@ node --env-file-if-exists=.env.local scripts/register-fund-signed-receipt.mjs PR
 
 隔离本机实际执行一次 Spark 演练，在演练记录已更新但事务尚未提交时受控退出。SQLite 回滚未提交记录，独立进程从受保护回执恢复原交付和演练。核对七行结果、四项独立断言和测试 SQL。缺失或改动回执的对照保持待核对，所有恢复读取均沿用原结果。
 
+待核对时，原任务所属人可在工作台点击「核对原演练回执」。CLI 使用 `shuduo agent recheck-delivery-receipt --id DELIVERY_TASK_ID --version CURRENT_VERSION`，MCP 使用 `fund_delivery_receipt_recheck`，传入 `deliveryTaskId` 和 `expectedVersion`。两者共用本机 `POST /api/v2/agent/deliveries/{id}/recheck-receipt`。回执仍缺失或无效时返回 `UNCONFIRMED` 并保留版本。原件核验通过后返回 `RECOVERED` 并更新原交付记录。版本变化时先读取原任务状态。
+
+隔离验收复用了已保存的演练，不新增计算。CLI、MCP 和 API 的待核对响应一致，恢复原件后保持原交付、包和演练编号。非所属人、过期版本和请求携带回执原文均被拒。WebKit 验收中，工作台第一次点击显示仍待确认，第二次核对已提交但响应丢失，页面通过查询读回原演练并进入待审阅状态。
+
 ## 基金 Agent 确切版本的本机发布与监控
 
 在原任务记录四项文件审阅后，打开「审阅并发布测试任务」。预检读取原任务、开发运行、代码版本、包摘要、演练、冻结业务日和模型来源。确认表显示固定两批的触发参数。工程师明确确认后，审批把预检摘要和计时计划绑定到该交付包，激活时消费同一审批。工作台按确切发布显示两个批次、调度触发和监控事件。
