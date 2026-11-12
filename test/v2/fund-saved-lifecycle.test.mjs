@@ -9,6 +9,8 @@ import { BusinessQueryStore } from "../../src/v2/data-services.mjs";
 import { ReportDataStore } from "../../src/v2/reports.mjs";
 import { expectedFundCallRows } from "../../src/v2/fund-saved-lifecycle.mjs";
 import { verifySavedFundAgentLifecycle } from "../../src/v2/fund-agent-saved-lifecycle.mjs";
+import { verifyFundQualityCounts } from "../../src/v2/fund-report-saved-quality.mjs";
+import { publishedReportHash } from "../../src/v2/published-report-source.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "../../src/v2/fund-preparation.mjs";
 import { fundContextIds } from "../../src/v2/fund-contexts.mjs";
 import { fundRequirementScope } from "../../src/v2/fund-requirement-contract.mjs";
@@ -48,6 +50,26 @@ test("the evidence stores can open existing files without allowing SQLite writes
       reader.close();
     }
   }
+});
+
+test("saved fund quality independently checks counts with exact cent precision", () => {
+  const businessDate = '2026-09-11';
+  const rows = [
+    { trade_date: businessDate, asset_class: '债券', exposure_amount: '999999999999999999.99' },
+    { trade_date: businessDate, asset_class: '未穿透', exposure_amount: '0.00' },
+    { trade_date: '2026-09-10', asset_class: ' ', exposure_amount: '1000000000000000000.00' },
+    { trade_date: businessDate, asset_class: '', exposure_amount: '-0.01' },
+  ];
+  const checks = [['trade-date', 3], ['asset-class', 2], ['exposure-amount', 2]].map(([id, passedCount]) => ({
+    id, evaluatedCount: rows.length, passedCount, failedCount: rows.length - passedCount,
+  }));
+  const receipt = { businessDate, snapshot: { rowCount: rows.length, contentHash: publishedReportHash(rows) }, checks };
+  assert.deepEqual(verifyFundQualityCounts(receipt, rows), checks.map(({ evaluatedCount, ...check }) => check));
+  const changed = structuredClone(receipt);
+  changed.checks[2].passedCount++;
+  changed.checks[2].failedCount--;
+  assert.throws(() => verifyFundQualityCounts(changed, rows), { code: 'FUND_SAVED_REPORT_QUALITY_COUNTS_CHANGED' });
+  assert.throws(() => verifyFundQualityCounts(receipt, [...rows].reverse()), { code: 'FUND_SAVED_REPORT_QUALITY_SOURCE_CHANGED' });
 });
 
 test("saved Agent verification requires the original request ledger and rejects missing publication evidence", async t => {
