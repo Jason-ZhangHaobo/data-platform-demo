@@ -28,6 +28,7 @@ import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
 import { createCloudPublication } from '../../src/v2/cloud-publication.mjs';
 import { opsPublicationTarget, readOpsPublication } from '../../web/src/ops-publication.ts';
 import { checkedAgentPublication } from '../../web/src/agent-delivery-evidence-read.ts';
+import { checkedAgentWorkflow } from '../../web/src/agent-workflow-read.ts';
 import { privateReleasePendingLabel } from '../../src/v2/private-release-stage.mjs';
 import { serviceSourceFromLocation } from '../../web/src/service-source-binding.ts';
 import { serviceBatchFromLocation } from '../../web/src/service-batch-scope.ts';
@@ -1994,19 +1995,26 @@ test('original file and publication Worker failures settle read-only while unfin
     };
     const read=()=>JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0];
     const deliveryReceiptPath=taskPath+'/delivery-requests/'+read().actions.delivery.key;
+    const readRehearsal=async()=>checkedAgentWorkflow((await f.call(taskPath+'/workflow')).body,{
+      taskId:task.id,contextId:task.contextId,runId:task.runId,revisionId:task.revisionId,manual:false,
+    });
     const originalFailure={status:'FAILED',engine:'Apache Spark',engineVersion:'3.5.9'};
     let settledIds, settledPath, seconds;
     if (stage==='FILE_REHEARSAL') {
       await pending('FILE_REHEARSAL_FAILURE_NOT_SETTLED',deliveryReceiptPath);
+      assert.equal((await readRehearsal()).verification.workerResult,undefined);
       f.later(30001);
       await pending('FILE_REHEARSAL_FAILURE_NOT_SETTLED',deliveryReceiptPath);
+      assert.equal((await readRehearsal()).verification.workerResult,'PENDING');
       f.complete(rehearsalJob,{...originalFailure,durationMs:0});
       assert.equal((await cli('v3-rehearse',['--settle'])).delivery.rehearsal.status,'FAILED');
       const verified=f.store.get('delivery_verification',verificationId,PROJECT);
       assert.equal(verified.durationMs,undefined);
       f.store.update('delivery_verification',verificationId,PROJECT,{workerResultDigest:'f'.repeat(64)});
       await pending('FILE_REHEARSAL_FAILURE_NOT_SETTLED',deliveryReceiptPath);
+      assert.equal((await readRehearsal()).verification.workerResult,'PENDING');
       f.store.update('delivery_verification',verificationId,PROJECT,{workerResultDigest:verified.workerResultDigest});
+      assert.equal((await readRehearsal()).verification.workerResult,'CONFIRMED');
       settledIds=[verificationId];settledPath=deliveryReceiptPath;seconds=30100;
     } else {
       f.complete(rehearsalJob);
@@ -2026,6 +2034,10 @@ test('original file and publication Worker failures settle read-only while unfin
       const {publication}=await cli('v3-publish',['--review-file',file,...confirm]);
       const {releaseId,batchIds}=publication;
       settledPath=publicationRequestReceiptPath(task.id,read().actions.publication.key);
+      const monitorTarget=opsPublicationTarget(new URL('/v2/?'+new URLSearchParams({
+        module:'ops',taskId:task.id,releaseId,revisionId:task.revisionId,firstBatchId:batchIds[0],secondBatchId:batchIds[1],
+      }),f.base).href);
+      const readMonitor=()=>readOpsPublication(async path=>(await f.call(path)).body,monitorTarget);
       const tick=letter=>{
         const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=letter.repeat(24);
         const body=JSON.stringify({releaseId,triggerName,expiresAt:f.now()+300000});
@@ -2040,17 +2052,26 @@ test('original file and publication Worker failures settle read-only while unfin
       f.complete(f.store.get('release_run',batchIds[0],PROJECT).remoteSubmission.prepared,{...originalFailure,durationMs:123});
       assert.equal((await f.privateCall(first)).body.replayed,true);
       await pending('PUBLICATION_FAILURE_NOT_SETTLED',settledPath);
+      const partial=await readMonitor();
+      assert.equal(partial.failureSettlement,'PENDING');
+      assert.deepEqual(partial.batches.map(batch=>batch.workerResult),['CONFIRMED',undefined]);
       f.later(60001);
       const second=tick('b');
       assert.equal((await f.privateCall(second)).status,200);
       f.later(30001);
       await pending('PUBLICATION_FAILURE_NOT_SETTLED',settledPath);
+      assert.deepEqual((await readMonitor()).batches.map(batch=>batch.workerResult),['CONFIRMED','PENDING']);
       f.complete(f.store.get('release_run',batchIds[1],PROJECT).remoteSubmission.prepared);
       assert.equal((await f.privateCall(second)).body.replayed,true);
       const secondRun=f.store.get('release_run',batchIds[1],PROJECT);
       f.store.update('release_run',secondRun.id,PROJECT,{workerResultDigest:'e'.repeat(64)});
       await pending('PUBLICATION_FAILURE_NOT_SETTLED',settledPath);
+      assert.equal((await readMonitor()).failureSettlement,'PENDING');
       f.store.update('release_run',secondRun.id,PROJECT,{workerResultDigest:secondRun.workerResultDigest});
+      const monitored=await readMonitor();
+      assert.equal(monitored.failureSettlement,'CONFIRMED');
+      assert.ok(monitored.batches.every(batch=>batch.workerResult==='CONFIRMED'&&!batch.serviceHref&&!batch.reportSource));
+      assert.equal((await f.call('/release/runs/'+batchIds[0])).body.workerResultDigest,undefined);
       settledIds=batchIds;seconds=423;
     }
     f.env.V2_FC_PUBLIC_READ_ONLY='true';

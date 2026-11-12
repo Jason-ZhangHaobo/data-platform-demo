@@ -16,7 +16,7 @@ export type Workflow = {
  report:{developmentReference?:AssistedDevelopmentReference;taskId:string;sourceKind?:string;agentIndependentE2E?:boolean;contextId?:string;validationContractId?:string;validationDetails?:ValidationDetailsReport;status:string;summary:string;definition?:string;checks:{id:string;label:string;passed:boolean}[];revisionId?:string;revisionHash?:string;runId?:string;rowCount:number;engine?:string;engineVersion?:string;notice:string};
  delivery?:Delivery;
  package?:{id:string;digest:string;manifest:unknown;files:Record<string,string>};
- verification?:{id:string;status:string;engine?:string;engineVersion?:string;mainSqlExecuted?:boolean;durationMs?:number;error?:string;testSqlValidation?:{passed:boolean};validation?:{passed:boolean;regressions?:{contextId:string;passed:boolean}[]};fundReview?:FundReviewBasis};
+ verification?:{id:string;status:string;engine?:string;engineVersion?:string;mainSqlExecuted?:boolean;durationMs?:number;error?:string;workerResult?:"CONFIRMED"|"PENDING";testSqlValidation?:{passed:boolean};validation?:{passed:boolean;regressions?:{contextId:string;passed:boolean}[]};fundReview?:FundReviewBasis};
  publication:{available:boolean;scope:string;reason:string};
 };
 export type WorkflowSelection={taskId:string;contextId?:string;revisionId?:string;runId?:string;manual:boolean;assisted?:boolean;expectedSourceBinding?:ServiceSourceBinding;fundPreparation?:FundExecutionBinding};
@@ -116,6 +116,9 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    !['engine','engineVersion','error'].every(k=>optional(v[k],text))||!optional(v.mainSqlExecuted,x=>typeof x==='boolean')||!optional(v.durationMs,x=>typeof x==='number'&&Number.isFinite(x)&&x>=0)||
    v.testSqlValidation!==undefined&&(!record(v.testSqlValidation)||typeof v.testSqlValidation.passed!=='boolean')||
    v.validation!==undefined&&(!record(v.validation)||typeof v.validation.passed!=='boolean'||v.validation.regressions!==undefined&&(!Array.isArray(v.validation.regressions)||!v.validation.regressions.every(x=>record(x)&&typeof x.contextId==='string'&&typeof x.passed==='boolean'))))throw bad();
+  if(v.workerResult!==undefined&&(p.scope!=="PRIVATE_CLOUD_TEST"||selection.manual||
+    !(v.status==="FAILED"&&(v.workerResult==="CONFIRMED"||v.workerResult==="PENDING")||
+      v.status==="RUNNING"&&v.workerResult==="PENDING")))throw bad();
   const basis=v.fundReview;
   if(signedFund&&v.status==='SUCCEEDED'){
    if(!record(basis)||!(basis.status==='READY'&&hash(basis.digest)||basis.status==='UNAVAILABLE'&&basis.digest===undefined))throw bad();

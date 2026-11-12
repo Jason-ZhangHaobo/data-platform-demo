@@ -33,7 +33,7 @@ import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
-import { projectCloudReleaseBatchStage } from "./cloud-release-evidence.mjs";
+import { exactPublicationReceipt, projectCloudReleaseBatchStage } from "./cloud-release-evidence.mjs";
 import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
 import { parseAgentReviewEvidencePath, publicationSelectorFromUrl } from "./publication-request.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
@@ -1635,7 +1635,7 @@ export function createV2Server(options = {}) {
       };
       const protectedDeliveryPayload = item => {
         if (local || !item) return item;
-        const {artifact, remoteSubmission, leaseToken, ...visible} = projectCloudReleaseBatchStage(item,options.now?.()??Date.now());
+        const {artifact, remoteSubmission, leaseToken, workerResultDigest, ...visible} = projectCloudReleaseBatchStage(item,options.now?.()??Date.now());
         return visible;
       };
       const exposeDeliveryVerification = item => {
@@ -5796,8 +5796,18 @@ export function createV2Server(options = {}) {
             releaseRecord[1] === "releases" ? "release" : "release_run",
           item = get(kind, releaseRecord[2]);
         requireDeliveryEvidence(kind, item);
-        if (method === "GET" && !releaseRecord[3])
-          return json(res, 200, kind === "release_run" ? exposeReleaseRun(item) : expose(protectedDeliveryPayload(item)));
+        if (method === "GET" && !releaseRecord[3]) {
+          if (kind==="release_run") return json(res,200,exposeReleaseRun(item));
+          const visible=expose(protectedDeliveryPayload(item));
+          if (!local && item.sourceKind==="AGENT" && item.reviewDigest &&
+              ["CRITICAL","RECOVERED_WITH_FAILURE"].includes(item.health)) {
+            try {
+              const {failureEvidence}=exactPublicationReceipt(store,PROJECT,item,options.now?.()??Date.now());
+              if (failureEvidence) return json(res,200,{...visible,failureEvidence});
+            } catch { /* The saved status can be shown while its evidence is unavailable. */ }
+          }
+          return json(res,200,visible);
+        }
         if(kind==='release'&&method==='POST'&&releaseRecord[3]==='cancel'){
           const body=await readBody(req);
           if(!local||releaseSchedulerMode!=='LOCAL_TIMER'||(!item.outputContract&&!item.fundLookthrough&&!item.syncInput)||item.fundLookthrough&&!localClassicSpark)throw fail(422,'此停止入口仅用于本机受控测试发布');
@@ -6057,6 +6067,17 @@ export function createV2Server(options = {}) {
           delivery = get("agent_delivery_task", delivery.id);
         }
         const {bundle, verification} = workflowDeliveryEvidence(delivery);
+        let workerResult;
+        if (!local && delivery?.mode===durableDeliveryMode && (delivery.sourcePinned||delivery.rehearsalPinned) && verification) {
+          if (verification.status==="FAILED") {
+            workerResult=storedFileRehearsalFailure(store,PROJECT,delivery,verification)?"CONFIRMED":"PENDING";
+          } else if (verification.status==="RUNNING") {
+            const job=delivery.remoteSubmission?.prepared?.job;
+            const deadline=Date.parse(job?.expiresAt);
+            if (job?.jobId===verification.id && Number.isFinite(deadline) && (options.now?.()??Date.now())>=deadline)
+              workerResult="PENDING";
+          }
+        }
         let fundReview;
         if (bundle?.manifest.source.fundSignedExecution && verification?.status === "SUCCEEDED") {
           try {
@@ -6075,6 +6096,7 @@ export function createV2Server(options = {}) {
           delivery: publicDeliveryTask(delivery),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt,
+            ...(workerResult?{workerResult}:{}),
             ...(fundReview ? {fundReview} : {}) } : undefined,
           publication: { available: agent.syncInput ? false : agent.fundPreparation ? localClassicSpark && releaseSchedulerMode === "LOCAL_TIMER" : (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: agent.syncInput ? "冻结持仓已接入本机文件演练与审阅。" : agent.fundPreparation ? "审阅文件后，确认同一冻结业务日的两批本机测试。发布后按原版本查看批次。" : getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });

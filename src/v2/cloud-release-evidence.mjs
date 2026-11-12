@@ -24,8 +24,8 @@ export function projectCloudReleaseBatchStage(run, now) {
   return run;
 }
 
-function settledPublicationFailure(store,project,release,runs,events) {
-  if (release.status!=="COMPLETED_CLOUD_TEST" || !runs.some(run=>run.status==="FAILED")) return;
+function publicationFailureEvidence(store,project,release,runs,events) {
+  if (!runs.some(run=>run.status==="FAILED")) return {};
   const batches=runs.map(run=>{
     const result=storedWorkerBatchResult(store,run,run.remoteSubmission?.prepared?.job,
       `${project}:cloud-release-result:${run.id}`);
@@ -39,7 +39,12 @@ function settledPublicationFailure(store,project,release,runs,events) {
         !(Date.parse(event.observedAt)>=Date.parse(result.finishedAt))) return;
     return {...result,eventId:event.id};
   });
-  if (batches.every(Boolean)) return {batches};
+  const confirmed=release.status==="COMPLETED_CLOUD_TEST" && batches.every(Boolean);
+  return {
+    failureEvidence:{status:confirmed?"CONFIRMED":"PENDING",
+      batches:runs.map((run,index)=>({id:run.id,status:batches[index]?"CONFIRMED":"PENDING"}))},
+    ...(confirmed?{settledFailure:{batches}}:{}),
+  };
 }
 
 // Read the immutable release identity and committed monitor records. This path
@@ -68,7 +73,7 @@ export function exactPublicationReceipt(store, project, release, now=Date.now())
   const events = store.list("monitor_event",project).filter(event=>event.releaseId===release.id);
   const openAlertCount = store.list("monitor_alert",project).filter(alert=>alert.releaseId===release.id && alert.status==="OPEN").length;
   const monitoring = {status:"PENDING",health:release.health,openAlertCount};
-  const settledFailure=settledPublicationFailure(store,project,release,runs,events);
+  const failure=publicationFailureEvidence(store,project,release,runs,events);
   if (release.status === "CANCELLED" || runs.some(run=>["FAILED","CANCELLED","INTERRUPTED"].includes(run.status)))
     monitoring.status = "NEEDS_ATTENTION";
   else if (runs.every(run=>run.status==="SUCCEEDED")) {
@@ -102,5 +107,5 @@ export function exactPublicationReceipt(store, project, release, now=Date.now())
         ...(run.stage ? {stage:run.stage} : {}),
         ...(Number.isFinite(run.reservedDurationMs) ? {reservedDurationMs:run.reservedDurationMs} : {}),
         ...(Number.isFinite(run.durationMs) ? {durationMs:run.durationMs} : {})};
-    }),monitoring,...(settledFailure?{settledFailure}:{})};
+    }),monitoring,...failure};
 }

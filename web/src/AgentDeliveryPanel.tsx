@@ -144,6 +144,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const releaseLabel = (value: Release) => publicationEvidenceText(value, journey.publicationCurrent, journey.steps.some(step => step.id === "monitoring" && step.state === "DONE"));
   const working = busy || auto || codeBusy;
   const receiptPending = fund && delivery?.status === "INTERRUPTED" && delivery.stage === "FILE_REHEARSAL_UNCONFIRMED";
+  const workerResult=current?workflow?.verification?.workerResult:undefined;
   const fileVerified = journey.fileVerified;
   const targetMatches = publicationTargetMatches(publicationTarget, { taskId, packageDigest: workflow?.package?.digest, verificationId: workflow?.verification?.id }, publicationClock)
     && (!publicationTarget || delivery?.verificationId === publicationTarget.verificationId);
@@ -322,12 +323,16 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
       <div id="agent-files" className="agent-delivery-card"><div className="agent-workflow-title"><Package size={16} /><h3>调度与部署交付</h3></div><p>把当前通过核验的代码、测试、调度依赖、交易日历和部署清单固定到同一版本，再用 Spark 按文件执行一次演练。</p>
         {preparationUnknown&&<p role="status">交付准备结果待确认。<button className="button" disabled={working||evidenceRead==='LOADING'} onClick={()=>void load().catch(()=>{})}>查询原交付</button>查询只恢复原版本记录；确认前不能重新准备。</p>}
         {!delivery && <button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => void prepare()}><Play size={14} />生成交付并演练</button>}
-        {delivery && <><strong className="agent-delivery-stage">{auto && <LoaderCircle size={14} className="spin" />}{fileReview&&!release?(current&&verified&&fileVerified&&evidenceRead==="READY"?"本机文件已审阅，不代表发布批准":"保留的文件审阅，当前待核验"):deliveryStageText(delivery.stage, journey.publicationCurrent, release?.status, journey.current)}</strong>{delivery.error && <p role="alert">{delivery.error}</p>}
+        {delivery && <><strong className="agent-delivery-stage">{auto && <LoaderCircle size={14} className="spin" />}{workerResult==="PENDING"?"原演练结果待核对":workerResult==="CONFIRMED"?"演练失败已确认":fileReview&&!release?(current&&verified&&fileVerified&&evidenceRead==="READY"?"本机文件已审阅，不代表发布批准":"保留的文件审阅，当前待核验"):deliveryStageText(delivery.stage, journey.publicationCurrent, release?.status, journey.current)}</strong>{delivery.error && <p role="alert">{delivery.error}</p>}
+          {workerResult && <p role="status">{workerResult==="CONFIRMED"
+            ? "已核对原 Worker 回执。" : "原 Worker 回执待核对，原演练编号和预留保留。"}</p>}
           <div className="agent-delivery-actions">
+            {workerResult && <button className="button" disabled={working || evidenceRead!=="READY"}
+              onClick={() => void load().catch(()=>{})}>重新读取原演练</button>}
             {receiptPending && <button className="button" disabled={!canWrite || !current || evidenceRead !== "READY" || working || !!publicationTarget}
               onClick={() => void recheckReceipt()}>核对原演练回执</button>}
-            {!complete(delivery.status) && <><button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => void drive(delivery)}>继续交付准备</button><button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button></>}
-            {!fund && ["FAILED","CANCELLED"].includes(delivery.status) && <button className="button" disabled={!canWrite || !verified || working || preparationUnknown} onClick={() => { if(preparationUnknown)return;requestKey.current=crypto.randomUUID(); void prepare(); }}>重新准备并演练</button>}
+            {!complete(delivery.status) && <><button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown || workerResult==="PENDING"} onClick={() => void drive(delivery)}>继续交付准备</button><button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button></>}
+            {!fund && ["FAILED","CANCELLED"].includes(delivery.status) && <button className="button" disabled={!canWrite || !verified || working || preparationUnknown || workerResult==="PENDING"} onClick={() => { if(preparationUnknown)return;requestKey.current=crypto.randomUUID(); void prepare(); }}>重新准备并演练</button>}
             {workflow.package && <button className="button" onClick={() => download("shuduo-delivery-package.json", workflow.package)}><Download size={14} />下载版本化交付包</button>}
           </div></>}
         {workflow.package && (()=>{const frozen=frozenRequirementProposal(workflow.package,taskId);return frozen&&<AgentRequirementUnderstanding frozen dirty={!current} task={{id:taskId,contextId:frozen.contextId,message:frozen.request,revisionId:frozen.revisionId,language:'SPARK_SQL',requirements:frozen,
