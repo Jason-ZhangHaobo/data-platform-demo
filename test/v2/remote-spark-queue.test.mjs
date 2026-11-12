@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   RemoteSparkQueueClient,
   OssSparkQueueTransport,
@@ -163,6 +164,8 @@ test("Worker consumer executes only a signed create-only job and writes a bound 
   assert.equal(consumed.status, "SUCCEEDED");
   const stored = JSON.parse(objects.get(queued.resultKey));
   assert.equal(verifyQueuedSparkResult(stored, queued.job.jobId, config).observedSql, "SELECT 1");
+  assert.equal(verifyQueuedSparkResult(stored, queued.job.jobId, config).queueJobDigest,
+    createHash("sha256").update(objects.get(queued.jobKey)).digest("hex"));
   const replay = await consumeQueuedSparkJob({
     jobKey: queued.jobKey,
     config,
