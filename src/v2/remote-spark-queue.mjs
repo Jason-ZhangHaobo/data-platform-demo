@@ -433,7 +433,8 @@ export async function consumeQueuedSparkJob({ jobKey, config, transport, runner,
       result = { status: "CANCELLED", code: cancellationReason === "DEADLINE" ? "REMOTE_SPARK_TIMEOUT" : "REMOTE_SPARK_CANCELLED" };
     else if (runnerError) throw runnerError;
   }
-  const envelope = createQueuedSparkResult(job, result, config, now());
+  // The signed result binds the exact immutable job object the Worker consumed.
+  const envelope = createQueuedSparkResult(job, { ...result, queueJobDigest: bodyHash(raw) }, config, now());
   await transport.create(keys.resultKey, JSON.stringify(envelope));
   return {
     jobId: job.jobId,

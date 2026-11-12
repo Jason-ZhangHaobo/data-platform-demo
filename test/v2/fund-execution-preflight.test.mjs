@@ -10,9 +10,12 @@ import { createFundTestSql } from "../../src/v2/fund-delivery.mjs";
 import { fundContext, fundReferenceSql } from "../../src/v2/fund-lookthrough.mjs";
 import { readFundExecutionPreflight } from "../../src/v2/fund-preparation-client.mjs";
 import { fundExecutionPreflightPath } from "../../src/v2/fund-preparation-request.mjs";
+import { fundExecutionPreflight, resolveFundExecutionCandidate } from "../../src/v2/fund-execution-preflight.mjs";
+import { verifyFundSignedExecution } from "../../src/v2/fund-signed-execution.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "../../src/v2/fund-preparation.mjs";
 import { fundRequirementScope } from "../../src/v2/fund-requirement-contract.mjs";
 import { validatePrivateApplicationRequest } from "../../src/v2/private-application.mjs";
+import { createQueuedSparkJob, createQueuedSparkResult, queueConfigFromEnvironment } from "../../src/v2/remote-spark-queue.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { bindSqlRequirementRevision, sqlRequirementBinding, sqlRequirementReport } from "../../src/v2/sql-requirements.mjs";
 import { MetadataStore } from "../../src/v2/store.mjs";
@@ -143,4 +146,49 @@ test("invited fund preflight binds the owner and original request, code, date an
   store.update("run",next.run.id,PROJECT,{rows:next.run.rows.slice(1)});
   assert.equal((await read(next.selection)).status,409);
   assert.equal(computations,0);
+});
+
+test("signed fund execution binds immutable job bytes and independent result to one exact preflight", t => {
+  const store = new MetadataStore(":memory:");
+  t.after(()=>store.close());
+  const actorId = randomUUID(), [original,next] = fundContextIds.map(id=>savedFundSource(store,actorId,id));
+  const source = {store,project:PROJECT,actorId,selection:original.selection};
+  const preflightDigest = fundExecutionPreflight(source).preflightDigest;
+  const {input} = resolveFundExecutionCandidate(source,preflightDigest);
+  assert.throws(()=>resolveFundExecutionCandidate(source,"0".repeat(64)),{code:"FUND_EXECUTION_PREFLIGHT_CHANGED"});
+
+  const queueConfig = queueConfigFromEnvironment({V2_SPARK_EXECUTOR_TRANSPORT:"OSS_QUEUE",
+    V2_SPARK_EXECUTOR_SECRET:"synthetic-fund-signed-execution-only-12345"});
+  const submitted = Date.now(), now = submitted + queueConfig.timeoutMs + 1;
+  const {job} = createQueuedSparkJob(input,queueConfig,{now:submitted});
+  const serializedJob = JSON.stringify(job);
+  const options = {source,preflightDigest,jobId:job.jobId,serializedJob,queueConfig,now};
+  assert.equal(verifyFundSignedExecution(options),undefined);
+  const output = {...original.run,queueJobDigest:sha256(serializedJob),
+    testSqlValidation:{passed:true,sqlHash:sha256(input.testSql)}};
+  const sign = result => createQueuedSparkResult(job,result,queueConfig,now);
+  const envelope = sign(output);
+  const proof = verifyFundSignedExecution({...options,envelope});
+  assert.equal(proof.status,"VERIFIED");
+  assert.equal(proof.rowCount,7);
+  assert.equal(proof.source.businessDate,original.context.businessDate);
+  assert.equal(proof.source.modelMode,"SYNTHETIC_MODEL");
+  assert.equal(proof.approved||proof.publicDeployed||proof.agentIndependentE2E,false);
+  assert.doesNotMatch(JSON.stringify(proof),/PORT-DEMO|SELECT|"rows"|"expected"/);
+
+  const wrongDate = createQueuedSparkJob({...input,context:next.context},queueConfig,{requestId:job.jobId,now:submitted});
+  const differentJob = createQueuedSparkJob(input,queueConfig,{requestId:job.jobId,now:submitted});
+  const badResults = [
+    {...output,queueJobDigest:undefined}, {...output,rows:output.rows.slice(1)},
+    {...output,testSqlValidation:{passed:true,sqlHash:"a".repeat(64)}},
+    {...output,inputEvidence:{...output.inputEvidence,inputHash:"b".repeat(64)}},
+  ];
+  for (const invalid of [
+    {jobId:randomUUID()},
+    {serializedJob:JSON.stringify(wrongDate.job)},
+    {serializedJob:JSON.stringify(differentJob.job)},
+    ...badResults.map(result=>({envelope:sign(result)})),
+  ]) assert.throws(()=>verifyFundSignedExecution({...options,envelope,...invalid}),{code:"FUND_SIGNED_EXECUTION_MISMATCH"});
+  assert.throws(()=>verifyFundSignedExecution({...options,envelope:{...envelope,signature:"bad"}}),
+    {code:"SPARK_QUEUE_RESULT_INVALID"});
 });

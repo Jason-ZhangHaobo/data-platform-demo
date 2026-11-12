@@ -8,9 +8,7 @@ import { frozenSqlRequirements, sqlRequirementBinding } from "./sql-requirements
 const fail = (status, code, message) => Object.assign(new Error(message), { status, code });
 const mismatched = () => fail(409, "FUND_EXECUTION_SOURCE_MISMATCH", "原基金准备、SQL 版本、运行或独立断言不一致");
 
-// Preflight binds an existing local result to a reproducible candidate for review.
-// It never creates a new task, signs a queue job, or authorizes execution.
-export function fundExecutionPreflight({ store, project, actorId, selection }) {
+function readFundExecutionSource({ store, project, actorId, selection }) {
   const { taskId, requestId, revisionId, runId, basisDigest } = selection;
   const task = store.get("agent", taskId, project);
   if (!actorId || !task?.fundPreparation || task.submittedBy !== actorId)
@@ -41,6 +39,7 @@ export function fundExecutionPreflight({ store, project, actorId, selection }) {
 
   const context = fundContext(task.contextId);
   const testSql = createFundTestSql(context.expected, context.id);
+  const input = { sql: revision.sql, context, validationContexts: [], testSql };
   const basis = {
     source: { taskId, requestId, revisionId, runId, basisDigest, contextId: context.id,
       businessDate: context.businessDate, modelMode: attribution.modelMode, scope: preparation.scope,
@@ -48,9 +47,24 @@ export function fundExecutionPreflight({ store, project, actorId, selection }) {
       requirementDigest: revision.requirementBinding.reportDigest,
       inputDigest: binding.inputDigest, schemaDigest: binding.schemaDigest, assertionDigest: binding.assertionDigest },
     candidate: { engine: "Apache Spark", engineVersion: "3.5.9", sqlDigest: revision.hash,
-      testSqlDigest: sha256(testSql), requestDigest: sha256(JSON.stringify({ sql: revision.sql, context, validationContexts: [], testSql })) },
+      testSqlDigest: sha256(testSql), requestDigest: sha256(JSON.stringify(input)) },
   };
-  return { protocol: "shuduo-fund-execution-preflight/v1", scope: "INVITED_READ_ONLY", status: "SOURCE_VERIFIED",
+  const preflight = { protocol: "shuduo-fund-execution-preflight/v1", scope: "INVITED_READ_ONLY", status: "SOURCE_VERIFIED",
     ...basis, preflightDigest: sha256(JSON.stringify(basis)), approved: false, willExecute: false,
     publicDeployed: false, agentIndependentE2E: false };
+  return { preflight, input };
+}
+
+// The API only returns source metadata and digests, never the private job input.
+export function fundExecutionPreflight(options) {
+  return readFundExecutionSource(options).preflight;
+}
+
+// Internal preparation for a separate, reviewed execution step. A matching
+// digest checks source identity but does not grant permission to submit work.
+export function resolveFundExecutionCandidate(options, preflightDigest) {
+  const source = readFundExecutionSource(options);
+  if (source.preflight.preflightDigest !== preflightDigest)
+    throw fail(409, "FUND_EXECUTION_PREFLIGHT_CHANGED", "基金预检摘要已变化，请核对原来源");
+  return source;
 }

@@ -43,11 +43,15 @@ export function fundValidationMatches(validation, binding, contextId = fundConte
 }
 
 export function verifiedFundRun(run, contextId = run?.contextId ?? run?.inputEvidence?.contextId ?? fundContextId) {
+  return (run?.isolation === undefined || run.isolation === "LOCAL_PROCESS") && fundRunMatchesRegisteredResult(run, contextId);
+}
+
+export function fundRunMatchesRegisteredResult(run, contextId) {
   const context = fundContext(contextId);
   if (!context || run?.contextId !== undefined && run.contextId !== contextId) return false;
   const binding = fundDeliveryBinding(contextId), { expected } = context;
   if (run?.status !== "SUCCEEDED" || run.engine !== "Apache Spark" || run.mainSqlExecuted !== true ||
-      run.testDouble === true || (run.isolation !== undefined && run.isolation !== "LOCAL_PROCESS") ||
+      run.testDouble === true ||
       !inputMatches(run.inputEvidence, binding, contextId) || !fundValidationMatches(run.validation, binding, contextId) ||
       !Array.isArray(run.rows) || run.rows.length !== expected.length) return false;
   return expected.every(row => run.rows.filter(actual => same(row, actual)).length === 1);
