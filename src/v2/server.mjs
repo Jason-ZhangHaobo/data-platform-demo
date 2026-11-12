@@ -44,7 +44,7 @@ import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { assertSyncSqlOutputSchema, currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlColumnsMatch, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlOutputColumns, syncSqlOutputSchemaCode, syncSqlOutputSchemaDetails, syncSqlOutputSchemaMessage, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 import { isDeepStrictEqual } from "node:util";
-import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, syncApprovalExpiry, syncSqlReviewDigest } from "./sync-sql-publication.mjs";
+import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, syncApprovalExpiry, syncSqlReviewDigest, syncSqlScheduledSchemaDetails } from "./sync-sql-publication.mjs";
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence, syncServiceProtocol, syncSqlServiceSources } from "./sync-sql-service-source.mjs";
 import { isSyncAssetId, isSyncReportEvidence, syncAssetBatchId, syncAssetView, syncReportAsset } from "./sync-sql-report.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
@@ -109,7 +109,7 @@ import {
   resolveDeliverySchedule,
   unpackDeliveryPackage,
 } from "./delivery.mjs";
-import { assertSyncSqlRehearsal, checkedSyncSqlFileRehearsal, syncSqlRehearsalSchemaDetails, verifyDeliveryDirectory } from "./delivery-runner.mjs";
+import { assertSyncSqlRehearsal, boundSyncSqlFileColumns, checkedSyncSqlFileRehearsal, syncSqlRehearsalSchemaDetails, verifyDeliveryDirectory } from "./delivery-runner.mjs";
 import {
   createPythonDeliveryPackage,
   unpackPythonDeliveryPackage,
@@ -855,9 +855,18 @@ export function createV2Server(options = {}) {
       assertDistributionRelease({bundle:packageItem,verification:get('delivery_verification',approval.rehearsalId),review:get('delivery_review',approval.reviewId),approval,spec:release.scheduleSpec,local,schedulerMode:releaseSchedulerMode});
       if(!Number.isSafeInteger(run.sequence)||run.sequence<1||run.sequence>2||JSON.stringify(release.outputContract)!==JSON.stringify(packageItem.manifest.source.outputContract))throw fail(409,'分布批次超出已批准的冻结范围');
     },
-    assertRunResult: ({packageItem, result}) => {
-      if (packageItem.manifest?.source?.syncInput && result.status === "SUCCEEDED")
-        assertSyncSqlRehearsal(validateAnyDeliveryPackage(packageItem), packageItem, result);
+    assertRunResult: ({packageItem, result, run}) => {
+      if (!packageItem.manifest?.source?.syncInput ||
+          result.status !== "SUCCEEDED" && result.errorCode !== syncSqlOutputSchemaCode) return;
+      const plan = validateAnyDeliveryPackage(packageItem);
+      const checked = result.status === "SUCCEEDED" ? checkedSyncSqlFileRehearsal(plan, packageItem, result) : result;
+      if (checked.errorCode === syncSqlOutputSchemaCode) {
+        const details = boundSyncSqlFileColumns(plan, packageItem, checked, run.businessScheduledFor);
+        if (checked.status !== "FAILED" || checked.mode !== "LOCAL_FILE_REHEARSAL" ||
+            checked.published !== false || checked.schedulerTriggered !== false || !details || details.status === "MATCHED")
+          throw fail(409, "结构失败回执与原调度文件或业务日未核对一致");
+      }
+      return checked;
     },
     now: options.now,
     setTimer: options.setTimer,
@@ -1601,6 +1610,12 @@ export function createV2Server(options = {}) {
         const bundle = item.packageId && store.get("delivery_package", item.packageId, PROJECT);
         const rehearsalOutputSchema = syncSqlRehearsalSchemaDetails(bundle, item);
         return { ...exposeValidationRecord(visible), ...(rehearsalOutputSchema ? { rehearsalOutputSchema } : {}) };
+      };
+      const exposeReleaseRun = item => {
+        const { scheduledOutputSchema: storedSchema, ...visible } = protectedDeliveryPayload(item);
+        const scheduledOutputSchema = syncSqlScheduledSchemaDetails({ store, project:PROJECT, run:item,
+          enabled:syncSqlLocal, timeUnitMs:releaseTimeUnitMs });
+        return { ...expose(visible), ...(scheduledOutputSchema ? { scheduledOutputSchema } : {}) };
       };
       const workflowDeliveryEvidence = delivery => {
         const bundle = delivery?.packageId ? get("delivery_package", delivery.packageId) : undefined;
@@ -4822,7 +4837,7 @@ export function createV2Server(options = {}) {
         return json(
           res,
           200,
-          visibleDelivery("release_run").map(protectedDeliveryPayload).map(expose),
+          visibleDelivery("release_run").map(exposeReleaseRun),
         );
       if (path === "/api/v2/monitoring/overview" && method === "GET") {
         const releases = visibleDelivery("release"),
@@ -4847,7 +4862,7 @@ export function createV2Server(options = {}) {
             unknown: runs.filter((run) => run.status === "INTERRUPTED" && run.resultUnknown === true).length,
             openAlerts: alerts.filter((alert) => alert.status === "OPEN").length,
           },
-          recentRuns: runs.slice(0, 20).map(protectedDeliveryPayload).map(expose),
+          recentRuns: runs.slice(0, 20).map(exposeReleaseRun),
           alerts: alerts.slice(0, 20),
           recentEvents: events.slice(0, 30),
           notice:
@@ -5775,7 +5790,7 @@ export function createV2Server(options = {}) {
           item = get(kind, releaseRecord[2]);
         requireDeliveryEvidence(kind, item);
         if (method === "GET" && !releaseRecord[3])
-          return json(res, 200, expose(protectedDeliveryPayload(item)));
+          return json(res, 200, kind === "release_run" ? exposeReleaseRun(item) : expose(protectedDeliveryPayload(item)));
         if(kind==='release'&&method==='POST'&&releaseRecord[3]==='cancel'){
           const body=await readBody(req);
           if(!local||releaseSchedulerMode!=='LOCAL_TIMER'||(!item.outputContract&&!item.fundLookthrough&&!item.syncInput)||item.fundLookthrough&&!localClassicSpark)throw fail(422,'此停止入口仅用于本机受控测试发布');

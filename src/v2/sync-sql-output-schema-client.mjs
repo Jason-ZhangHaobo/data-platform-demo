@@ -43,13 +43,27 @@ export function checkedSyncSqlOutputSchema(value, expected) {
   return checkedSchema(value, expected, "shuduo-sync-sql-output-schema/v1");
 }
 
-export function checkedSyncSqlRehearsalSchema(value, expected) {
-  const checked = checkedSchema(value, expected, "shuduo-sync-sql-rehearsal-schema/v1");
-  const { verificationId, packageId, packageDigest } = value.source;
-  if (!matches(identifier, verificationId) || verificationId !== expected.verificationId ||
-      !matches(identifier, packageId) || packageId !== expected.packageId ||
+function checkedPackageSchema(value, expected, protocol) {
+  const checked = checkedSchema(value, expected, protocol);
+  const { packageId, packageDigest } = value.source;
+  if (!matches(identifier, packageId) || packageId !== expected.packageId ||
       !matches(digest, packageDigest) || packageDigest !== expected.packageDigest) throw invalid();
-  return { ...checked, source: { ...checked.source, verificationId, packageId, packageDigest } };
+  return { ...checked, source: { ...checked.source, packageId, packageDigest } };
+}
+
+export function checkedSyncSqlRehearsalSchema(value, expected) {
+  const checked = checkedPackageSchema(value, expected, "shuduo-sync-sql-rehearsal-schema/v1");
+  const { verificationId } = value.source;
+  if (!matches(identifier, verificationId) || verificationId !== expected.verificationId) throw invalid();
+  return { ...checked, source:{ ...checked.source, verificationId } };
+}
+
+export function checkedSyncSqlScheduledSchema(value, expected) {
+  const checked = checkedPackageSchema(value, expected, "shuduo-sync-sql-scheduled-schema/v1");
+  const { batchId, releaseId } = value.source;
+  if (!matches(identifier, batchId) || batchId !== expected.batchId ||
+      !matches(identifier, releaseId) || releaseId !== expected.releaseId) throw invalid();
+  return { ...checked, source:{ ...checked.source, batchId, releaseId } };
 }
 
 export async function readSyncSqlOutputSchema(client, { runId }) {
