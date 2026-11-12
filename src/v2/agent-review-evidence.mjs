@@ -40,6 +40,7 @@ export function storedAgentReviewEvidence({ task, delivery, revision, run, bundl
     plan = validateDeliveryPackage(bundle, delivery.packageDigest);
     assertSqlRequirementPackageSource(bundle, {agent:task, run, revision});
     if (!isDeepStrictEqual(delivery.sourceRequirementBinding, task.requirements ? sqlRequirementBinding(task.requirements) : undefined) ||
+        (plan.source.derivation!==undefined && !isDeepStrictEqual(plan.source.derivation,task.derivedFrom)) ||
         plan.source.projectId !== task.projectId || plan.source.revisionId !== revision.id || plan.source.sqlHash !== revision.hash ||
         plan.source.runId !== run.id || plan.source.contextId !== task.contextId || plan.source.validationContractId !== family?.id ||
         plan.deployment.adapter !== "remote-spark-worker-v1")

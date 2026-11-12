@@ -245,6 +245,10 @@ shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CA
 
 隔离 HTTP 回归覆盖确切窗口、父版本变化拒绝、新口径执行和八文件回读。本机已配置 Spark 时可用 `SHUDUO_TEST_LOCAL_SPARK_DERIVATION=true` 在该回归中执行派生开发及文件演练。模型替身与本机 Spark 证据分别记录。
 
+新派生交付把父任务、版本、批次、SQL 摘要和验证契约纳入清单。审阅、签名调度和两个服务消费批次都沿用该包摘要。即使另一父版本拥有相同 SQL，已审阅的发布也会拒绝切换来源。派生的消费断言按目标口径核对。股票持仓与现金的回归拒绝借用全品类持仓与现金的预期。
+
+在同一个回归设置 `SHUDUO_TEST_LOCAL_SPARK_DERIVATION_RELEASE=true` 可实际运行两个签名发布批次的本机 Spark，再经运维定位、DAPI／XAPI 调用和原报告完成回执。工程师批准和授权窗口在隔离夹具中建立。本机运行、替身及正式云端按各自证据记录。
+
 ### 结算已确认的开发失败
 
 ```sh

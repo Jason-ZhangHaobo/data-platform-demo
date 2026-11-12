@@ -10,6 +10,7 @@ import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import {checkedAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 import {frozenSqlRequirements,sqlRequirementBinding,validateFrozenSqlRequirements} from './sql-requirements.mjs';
 import { assertSyncSqlOutputSchema, syncSqlContractId, syncSqlContextId, syncSqlDeliverySource, syncSqlRowsMatch, validateSyncSqlDeliveryContext } from "./sync-sql-input.mjs";
+import { checkedDeliveryDerivation } from "./agent-context-derivation.mjs";
 
 export const deliveryFormat = "shuduo-delivery/v1";
 export const deliveryFiles = [
@@ -264,6 +265,8 @@ export function createDeliveryPackage({
       sqlHash: revision.hash,
       contextId: context.id,
       validationContractId: family.id,
+      ...(agent?.derivedFrom && revision.source==="LIVE_MODEL" && !revision.sourceAttribution && !fundAgent
+        ? {derivation:checkedDeliveryDerivation(agent.derivedFrom,context.id)} : {}),
       ...(syncInput ? { syncInput } : {}),
       ...(fund ? { fundLookthrough: fundDeliveryBinding(context.id) } : {}),
       ...(distribution?{outputContract:distributionDeliveryBinding(context.id)}:{}),
@@ -355,6 +358,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       "sqlHash",
       "contextId",
       "validationContractId",
+      ...(source?.derivation === undefined ? [] : ["derivation"]),
       ...(source?.attribution === undefined ? [] : ["attribution"]),
       ...(source?.requirement === undefined ? [] : ["requirement"]),
       ...(source?.outputContract === undefined ? [] : ["outputContract"]),
@@ -373,6 +377,10 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       typeof source.attribution.actorId !== "string" || !source.attribution.actorId || source.attribution.actorId.length > 100))
     throw fail("人工交付归因不完整");
   if(source.attribution?.developmentReference!==undefined)checkedAssistedDevelopmentReference(source.attribution.developmentReference);
+  if (source.derivation!==undefined) {
+    if (source.attribution!==undefined) throw fail("派生交付不能混用人工来源");
+    checkedDeliveryDerivation(source.derivation,source.contextId);
+  }
   if (
     !source ||
     source.sqlHash !== sha256(bundle.files["main.sql"]) ||

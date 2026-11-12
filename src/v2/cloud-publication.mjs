@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { validateDeliveryPackage, resolveDeliverySchedule } from "./delivery.mjs";
 import { deliveryArtifactValue } from "./artifact-store.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
@@ -87,7 +88,9 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if (candidates.length !== 1 || agent.executionMode !== "DURABLE_SQL_AGENT_V1") throw fail(409, "源任务或文件演练尚未通过；人工版本需要独立的发布审阅");
     const delivery = candidates[0], item = get("delivery_package", delivery.packageId), verification = get("delivery_verification", verificationId), plan = validateDeliveryPackage(item, item.digest);
     assertRequirementSource(item);
-    if (item.digest !== packageDigest || item.digest !== delivery.packageDigest || verification.packageId !== item.id || verification.packageDigest !== item.digest || !passedCloudReleaseBatch(verification,item,plan))
+    if (item.digest !== packageDigest || item.digest !== delivery.packageDigest || verification.packageId !== item.id ||
+        verification.packageDigest !== item.digest || !passedCloudReleaseBatch(verification,item,plan) ||
+        (plan.source.derivation!==undefined && !isDeepStrictEqual(plan.source.derivation,agent.derivedFrom)))
       throw fail(409, "审阅必须绑定当前代码、包摘要和真实演练");
     if (sourceKind === "MANUAL") {
       const source = manualCloudDeliverySource({store, project, runId: sourceRunId, actorId});

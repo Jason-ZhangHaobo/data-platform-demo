@@ -205,6 +205,9 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     }
     const agent = store.get("agent", task.sourceAgentTaskId, project);
     assertExecutionScope(agent);
+    const derivation=store.get("delivery_package",task.packageId,project)?.manifest?.source?.derivation;
+    if (derivation!==undefined && !isDeepStrictEqual(derivation,agent?.derivedFrom))
+      throw fail(409,"交付文件与原派生父版本不一致");
     if (task.sourcePinned) {
       if (!agent || agent.submittedBy !== task.submittedBy) throw fail(409,"交付原任务身份已变化");
       checkPinnedSource(agent,source(agent),{revisionId:task.sourceRevisionId,revisionHash:task.sourceSqlHash,

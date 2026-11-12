@@ -29,6 +29,16 @@ export function agentContextDerivationBody({message,sql,contextId,derivation}) {
   return {message,sql,contextId,language:"SPARK_SQL",derivation:validateAgentContextDerivation(derivation)};
 }
 
+export function checkedDeliveryDerivation(value,targetContextId) {
+  if (!value || Object.keys(value).length!==7) throw invalidSource();
+  const selected=validateAgentContextDerivation(agentContextDerivationRequest(value));
+  const family=validationFamilyForContext(value.contextId);
+  if (!family || family.id!==value.validationContractId || value.contextId===targetContextId ||
+      !isDeepStrictEqual(value,{...selected,contextId:value.contextId,validationContractId:family.id}))
+    throw invalidSource();
+  return value;
+}
+
 export function validStoredAgentDerivation(task,read) {
   if (task.derivedFrom===undefined) return true;
   try {
