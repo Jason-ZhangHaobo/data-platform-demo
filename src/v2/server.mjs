@@ -1166,7 +1166,7 @@ export function createV2Server(options = {}) {
   const reportProvenance=createReportProvenance({store,project:PROJECT,reportStore});
   const privateBatchArchives = privateDataServicesEnabled
     ? createPrivateBatchArchive({store, businessStore, project:PROJECT, now:options.now}) : undefined;
-  const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,provenance:reportProvenance,
+  const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,reportStore,provenance:reportProvenance,
     resolveSource:resolveLocalReportSource,afterStep:options.publishedReportAfterStep});
   const reportActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
   const publishedPlanContext=(source,actor)=>{
@@ -2965,6 +2965,12 @@ export function createV2Server(options = {}) {
         return json(res, 200, report, {
           "Content-Disposition": `attachment; filename="shuduo-batch-report-${source.batchId.slice(0, 8)}.json"`,
         });
+      }
+      const originalReportResult = path.match(/^\/api\/v2\/reports\/published\/requests\/([A-Fa-f0-9-]{36})\/result$/);
+      if (originalReportResult && method === "GET") {
+        if (!local) throw fail(403, "原发布报表结果仅在本机开发边界开放");
+        if (url.searchParams.size) throw fail(422, "按原编号读取结果不接受附加查询参数");
+        return json(res, 200, publishedReports.readResult(originalReportResult[1], reportActor(req)));
       }
       const reportCreation=path.match(/^\/api\/v2\/reports\/published(?:\/(requests)\/([a-f0-9-]{36})|\/([a-f0-9-]{36})\/(advance))?$/);
       if(reportCreation){

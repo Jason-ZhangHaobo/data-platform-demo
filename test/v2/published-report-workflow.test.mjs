@@ -1,7 +1,8 @@
+import {checkedPublishedReportResult} from '../../src/v2/published-report-client.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import{randomUUID}from'node:crypto';import{mkdtempSync}from'node:fs';import{tmpdir}from'node:os';import{join}from'node:path';
 import{MetadataStore}from'../../src/v2/store.mjs';import{ReportDataStore,ReportManager}from'../../src/v2/reports.mjs';import{resolvePublishedReportSource}from'../../src/v2/published-report-source.mjs';import{createPublishedReportWorkflow}from'../../src/v2/published-report-workflow.mjs';import{seedLocalServiceSource}from'./fixtures/local-service-sources.mjs';
 const project='synthetic-published-report',actor='local-engineer';
-function managers(store,reportStore,afterStep){const resolve=(source,actorId)=>resolvePublishedReportSource({store,project,source,actorId});const reports=new ReportManager({store,reportStore,assets:{reportRows(){throw Error('GLOBAL_LATEST_FORBIDDEN');}},project,resolvePublishedSource:resolve});return{reports,workflow:createPublishedReportWorkflow({store,project,reports,resolveSource:resolve,afterStep})};}
+function managers(store,reportStore,afterStep){const resolve=(source,actorId)=>resolvePublishedReportSource({store,project,source,actorId});const reports=new ReportManager({store,reportStore,assets:{reportRows(){throw Error('GLOBAL_LATEST_FORBIDDEN');}},project,resolvePublishedSource:resolve});return{reports,workflow:createPublishedReportWorkflow({store,project,reports,reportStore,resolveSource:resolve,afterStep})};}
 function setup(t,{manual=false,contextId='holdings-t1',persistent=false}={}){
  const dir=persistent?mkdtempSync(join(tmpdir(),'shuduo-report-resume-')):undefined,store=new MetadataStore(dir?join(dir,'meta.sqlite'):':memory:'),data=new ReportDataStore(dir?join(dir,'reports.sqlite'):':memory:');
  const f=seedLocalServiceSource({store,project,contextId});if(manual)store.update('revision',f.revision.id,project,{source:'MANUAL',author:actor,manualProvenance:{actorId:actor,kind:'ENGINEER_EDIT',agentIndependentE2E:false}});
@@ -43,6 +44,7 @@ test('lost checkpoint after a committed stage resumes original records without n
  const f=setup(t,{manual:true});let interrupted=true;
  const w=managers(f.store,f.data,name=>{if(name==='reportRun'&&interrupted){interrupted=false;throw Error('SYNTHETIC_CHECKPOINT_LOSS');}}).workflow;
  const requestId=randomUUID(),partial=w.submit({name:'虚构已运行回执恢复',source:f.source},actor,requestId);assert.equal(partial.status,'PARTIAL');assert.equal(count(f.store,'report_run'),1);
+ assert.throws(()=>w.readResult(requestId,actor),{code:'REPORT_RESULT_PENDING'});
  const done=w.advance(partial.id,actor);assert.equal(done.status,'SUCCEEDED');assert.equal(count(f.store,'report_run'),1);assert.equal(w.lookup(requestId,actor).reportRunId,done.reportRunId);
 });
 
@@ -50,4 +52,29 @@ test('new globally registered distribution metrics do not create partial artifac
  const f=setup(t,{contextId:'stock-cash-t1'}),before=['report_dataset','report_snapshot','report','report_run','published_report_creation'].map(k=>count(f.store,k));
  assert.throws(()=>f.workflow.submit({name:'不支持的行业指标',source:f.source,metricIds:['industry_distribution']},actor,randomUUID()),e=>e.status===422&&e.code==='INVALID_PUBLISHED_REPORT_METRIC');
  assert.deepEqual(['report_dataset','report_snapshot','report','report_run','published_report_creation'].map(k=>count(f.store,k)),before);
+});
+
+
+test('original report result remains fixed after a newer run, rejects another owner and reads without mutations', t => {
+  const f=setup(t,{manual:true}),requestId=randomUUID();
+  const result=f.workflow.submit({name:"虚构历史核验报表",source:f.source},actor,requestId);
+  const current=f.reports.reportDetail(result.reportId).currentVersion;
+  f.reports.createReportVersion(result.reportId,{widgets:current.widgets.slice(0,1),description:"另一个后续报表版本"});
+  const latest=f.reports.runReport(result.reportId).run;
+  assert.notEqual(latest.id,result.reportRunId);
+  const before=["report_dataset","report_snapshot","report_run","report_version","published_report_creation"].map(kind=>count(f.store,kind));
+  const read=checkedPublishedReportResult(f.workflow.readResult(requestId,actor),{requestId,source:f.source});
+  const [report]=read.overview.reports;
+  assert.equal(report.lastRunId,latest.id);
+  assert.equal(report.runs[0].id,result.reportRunId);
+  assert.equal(report.runs[0].widgets.length,5);
+  assert.ok(!JSON.stringify(read).includes("CLIENT-001"));
+  assert.throws(()=>f.workflow.readResult(requestId,"another-engineer"),{status:404});
+  assert.throws(()=>checkedPublishedReportResult(read,{source:{...f.source,batchId:randomUUID()}}));
+  const snapshot=f.store.get("report_snapshot",result.snapshotId,project);
+  const saved=f.data.db.prepare("SELECT rows_json FROM report_snapshots WHERE id=?").get(snapshot.dataSnapshotId);
+  f.data.db.prepare("UPDATE report_snapshots SET rows_json=? WHERE id=?").run("[]",snapshot.dataSnapshotId);
+  assert.throws(()=>f.workflow.readResult(requestId,actor),{status:409});
+  f.data.db.prepare("UPDATE report_snapshots SET rows_json=? WHERE id=?").run(saved.rows_json,snapshot.dataSnapshotId);
+  assert.deepEqual(["report_dataset","report_snapshot","report_run","report_version","published_report_creation"].map(kind=>count(f.store,kind)),before);
 });

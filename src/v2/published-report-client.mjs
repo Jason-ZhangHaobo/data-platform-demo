@@ -25,3 +25,32 @@ export async function resumePublishedReport(client,args){
  const value=checkedPublishedReportReceipt(await client.request(`/reports/published/${id}/advance`,{method:'POST',body:{}}),{requestId:args.requestId,source:args.source});
  if(value.id!==id)throw Error('续接回执不是原报表任务，未采用其他结果');return value;
 }
+
+export function checkedPublishedReportResult(value, expected) {
+ const bad=()=>{throw Error("原报表、版本、快照与运行未能对应，保留原编号");};
+ if(!value||value.protocol!=="shuduo-published-report-result/v1")bad();
+ const receipt=checkedPublishedReportReceipt(value.receipt,expected), overview=value.overview;
+ if(receipt.status!=="SUCCEEDED"||overview?.scope!=="LOCAL_AGGREGATED_REPORTING"||overview.publicDeployed!==false||
+    !Array.isArray(overview.datasets)||overview.datasets.length!==1||!Array.isArray(overview.reports)||overview.reports.length!==1)bad();
+ const [dataset]=overview.datasets,[report]=overview.reports;
+ if(dataset?.id!==receipt.datasetId||report?.id!==receipt.reportId||
+    !Array.isArray(dataset.snapshots)||dataset.snapshots.length!==1||!Array.isArray(report.versions)||report.versions.length!==1||
+    !Array.isArray(report.runs)||report.runs.length!==1)bad();
+ const [snapshot]=dataset.snapshots,[version]=report.versions,[run]=report.runs;
+ if(!snapshot||!version||!run||snapshot.id!==receipt.snapshotId||snapshot.datasetId!==dataset.id||
+    snapshot.assetVersionId!==receipt.source.batchId||snapshot.assetEvidenceHash!==receipt.sourceEvidenceHash||
+    snapshot.rowCount!==receipt.rowCount||!hash(snapshot.contentHash)||version.id!==receipt.reportVersionId||version.reportId!==report.id||
+    version.datasetId!==dataset.id||version.datasetSnapshotId!==snapshot.id||!hash(version.configHash)||
+    run.id!==receipt.reportRunId||run.reportId!==report.id||run.reportVersionId!==version.id||run.datasetId!==dataset.id||
+    run.datasetSnapshotId!==snapshot.id||run.reportConfigHash!==version.configHash||run.datasetContentHash!==snapshot.contentHash||
+    run.resultHash!==receipt.resultHash||run.status!=="SUCCEEDED"||run.actualExecution!==true||
+    run.fullLifecycleE2E!==false||run.publicDeployed!==false||!Array.isArray(run.widgets)||run.widgets.length!==receipt.widgetCount||
+    [dataset,snapshot,version,run].some(item=>item.outputContractId!==receipt.outputContractId)||
+    JSON.stringify(publishedReportSource(dataset.publishedSource))!==JSON.stringify(publishedReportSource(receipt.source)))bad();
+ return value;
+}
+
+export async function readPublishedReportResult(client,args) {
+ const requestId=reportRequestId(args.requestId);
+ return checkedPublishedReportResult(await client.request('/reports/published/requests/'+requestId+'/result'),{requestId,source:args.source});
+}
