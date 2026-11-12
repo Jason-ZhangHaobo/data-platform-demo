@@ -63,6 +63,7 @@ import {
   validationContractId,
 } from "./context.mjs";
 import { isFundContext } from "./fund-contexts.mjs";
+import { createFundPreparations } from "./fund-preparation.mjs";
 import { fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
 import { assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease } from "./fund-publication.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
@@ -193,7 +194,7 @@ const text = (value, min = 1, max = 20000) => {
     throw fail(400, "提交内容长度不符合要求");
   return value.trim();
 };
-function isLoopbackEvaluationRead(req) {
+function isLoopbackRequest(req) {
   const host = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]{1,5})?$/i;
   return host.test(req.headers.host ?? "") && ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress);
 }
@@ -1154,6 +1155,7 @@ export function createV2Server(options = {}) {
   const resolveLocalReportSource = (source, actorId) => resolvePublishedReportSource({
     store, project: PROJECT, source, actorId, allowFund: localClassicSpark, timeUnitMs: releaseTimeUnitMs,
   });
+  const fundPreparations = createFundPreparations({ store, project: PROJECT });
   const reports = new ReportManager({
     allowLocalPublishedEvidence:local,
     store,
@@ -3364,7 +3366,7 @@ export function createV2Server(options = {}) {
         }
       }
       if (method === "GET" && path === "/api/v2/evaluations/live-lifecycle/overview") {
-        if (!local || options.ingress || !isLoopbackEvaluationRead(req))
+        if (!local || options.ingress || !isLoopbackRequest(req))
           throw fail(403, "逐例验收记录仅在本机工作台读取");
         const query = url.searchParams;
         if ([...query.keys()].some(key => key !== "run_id") || query.getAll("run_id").length > 1)
@@ -5688,7 +5690,7 @@ export function createV2Server(options = {}) {
       }
       const deliveryRequestLookup = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\/delivery-requests\/([A-Za-z0-9_-]{1,100})$/);
       if (method === "GET" && deliveryRequestLookup) {
-        if (local && (options.ingress || !isLoopbackEvaluationRead(req)))
+        if (local && (options.ingress || !isLoopbackRequest(req)))
           throw fail(403, "交付请求回执仅在本机评测入口读取");
         if (url.searchParams.size) throw fail(422, "交付回执须按原任务和请求编号读取");
         const [, taskId, key] = deliveryRequestLookup;
@@ -6113,6 +6115,16 @@ export function createV2Server(options = {}) {
         if (!dedup.replayed)
           schedule("run", run, (signal) => execute(run, rev, signal));
         return json(res, 202, exposeDevelopmentRun(run));
+      }
+      const fundPreparationRead = path.match(/^\/api\/v2\/agent\/fund-preparations\/requests\/([a-f0-9-]{36})$/);
+      if ((method === "POST" && path === "/api/v2/agent/fund-preparations") || (method === "GET" && fundPreparationRead)) {
+        if (!localClassicSpark || options.ingress || !isLoopbackRequest(req))
+          throw fail(403, "基金需求准备仅在本机 Spark 工作台开放");
+        if (url.searchParams.size) throw fail(422, "基金需求准备不接受附加查询参数");
+        const actor = auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer";
+        if (fundPreparationRead) return json(res, 200, fundPreparations.read(fundPreparationRead[1], actor));
+        const { receipt, replayed } = fundPreparations.submit(await readBody(req), actor, req.headers["idempotency-key"]);
+        return json(res, replayed ? 200 : 201, receipt);
       }
       if (method === "POST" && path === "/api/v2/agent/intents") {
         const body = await readBody(req),

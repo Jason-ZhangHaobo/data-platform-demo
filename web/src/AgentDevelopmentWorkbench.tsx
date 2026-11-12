@@ -30,12 +30,13 @@ import {clearAgentArchivePin} from "./agent-archive-location";
 import type { PublicationTarget } from "./AuthDialog";
 import type {ValidationFamily} from "./validation-family";
 import "./agent-development.css";
+const FundAgentPreparation = lazy(() => import("./FundAgentPreparation"));
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const ManualDeliveryWorkbench = lazy(async () => ({default:(await import("./DeliveryWorkbench")).DeliveryWorkbench}));
 const RunColumnLineagePanel=lazy(()=>import('./RunColumnLineagePanel'));
 const RunComparisonPanel=lazy(()=>import('./RunComparisonPanel'));
 const StandaloneManualDeliveryPanel=lazy(async()=>({default:(await import('./StandaloneManualDeliveryPanel')).StandaloneManualDeliveryPanel}));
-type Context = { id: string; name: string; definition: string; validationFamily?:ValidationFamily; capabilities?:{delivery?:boolean};outputContract?:{id:string;fields:{name:string;label:string}[]}; tables: { name: string; columns: [string, string][] }[] };
+type Context = { id: string; name: string; definition: string; businessDate?:string; validationFamily?:ValidationFamily; capabilities?:{delivery?:boolean;agentDevelopment?:boolean;fundPreparation?:boolean};outputContract?:{id:string;fields:{name:string;label:string}[]}; tables: { name: string; columns: [string, string][] }[] };
 type Task = { id: string; version: number; status: string; stage?: string; requirements?:unknown;clarification?:import('../../src/v2/sql-clarification-client.mjs').SqlClarification;humanClarified?:boolean;directAutonomousEligible?:boolean;clarificationOriginTaskId?:string;executionMode?: string; mode?:string;language?:string;sourceKind?:string;sourceAttribution?:unknown;manualContinuation?:import('../../src/v2/manual-continuation-binding.mjs').ManualContinuationBinding;assistedContinuation?:import('../../src/v2/assisted-continuation-binding.mjs').AssistedContinuationBinding;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
 type Run = { id: string; status: string; agentTaskId?:string; contextId?:string; createdAt?: string; validationContractId?: string; validationDetails?:ValidationDetailsReport; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; mainSqlExecuted?:boolean;columnLineage?:unknown;testDouble?:boolean;sourceKind?:string;sourceAttribution?:unknown; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; contractId?:string; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
@@ -47,10 +48,13 @@ stageText.CLARIFICATION_SOURCE_CHANGED='澄清依据已变化，原记录保留'
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_market_value:"持仓市值（元）", available_cash:"可用现金（元）", total_assets:"总资产（元）", security_count:"证券数量" };
 
-export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, readOnly:requestedReadOnly=false, taskOnly=false, targetTaskId, expectedSourceBinding,expectedManualSource,expectedSourceError,onLogin, onDirtyChange, onOpenServices }: {
+export function AgentDevelopmentWorkbench({ api, contexts: availableContexts, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, readOnly:requestedReadOnly=false, taskOnly=false, targetTaskId, expectedSourceBinding,expectedManualSource,expectedSourceError,onLogin, onDirtyChange, onOpenServices }: {
   api: Api; contexts: Context[]; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; ready: boolean; readinessReason?:string; loading: boolean; privatePreview: boolean; runtimeMode?: "LOCAL_DEVELOPMENT" | "PUBLIC_INVITATION"; backgroundAvailable?:boolean; readOnly?:boolean; taskOnly?:boolean; targetTaskId?:string; onLogin: () => void; onDirtyChange: (dirty: boolean) => void; onOpenServices?: (source:ServiceSourceBinding) => void;
   expectedSourceBinding?:ServiceSourceBinding;expectedManualSource?:import("./service-source-binding").StandaloneServiceSourceBinding;expectedSourceError?:string;
 }) {
+  const contexts=availableContexts.filter(context=>context.capabilities?.agentDevelopment!==false);
+  const fundContexts=availableContexts.filter(context=>context.capabilities?.fundPreparation===true);
+  const [fundDirty,setFundDirty]=useState(false);
   const sourceReturnActive=Boolean(expectedSourceBinding||expectedManualSource||expectedSourceError),readOnly=requestedReadOnly||sourceReturnActive;
   const [returnSourceError,setReturnSourceError]=useState("");
   const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState("holdings-t1");
@@ -216,14 +220,14 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
   // Initialize its read/write epoch above before starting the first task read.
   // Context or worker readiness updates must not refetch the same task/history.
   useEffect(() => { if(startupStarted.current)return;startupStarted.current=true;void loadHistory(); }, []);
-  useEffect(() => { onDirtyChange(dirty || Boolean(message.trim()) || manualUnconfirmed || Boolean(pendingSaveKey) || Boolean(pendingAgentKey)); }, [dirty, message, manualUnconfirmed, pendingSaveKey, pendingAgentKey, onDirtyChange]);
+  useEffect(() => { onDirtyChange(dirty || Boolean(message.trim()) || manualUnconfirmed || Boolean(pendingSaveKey) || Boolean(pendingAgentKey) || fundDirty); }, [fundDirty, dirty, message, manualUnconfirmed, pendingSaveKey, pendingAgentKey, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(""), 9000); return () => clearTimeout(timer); }, [notice]);
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (dirty || message.trim() || manualUnconfirmed || pendingSaveKey || pendingAgentKey) { event.preventDefault(); event.returnValue = ""; } };
+    const warn = (event: BeforeUnloadEvent) => { if (fundDirty || dirty || message.trim() || manualUnconfirmed || pendingSaveKey || pendingAgentKey) { event.preventDefault(); event.returnValue = ""; } };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty, message, manualUnconfirmed, pendingSaveKey,pendingAgentKey]);
+  }, [fundDirty, dirty, message, manualUnconfirmed, pendingSaveKey,pendingAgentKey]);
   useEffect(() => { setManualDeliveryOpen(false); }, [run?.id, baselineRevisionId]);
   useEffect(() => { setRetryConsent(false); }, [task?.id, task?.stage]);
   useEffect(() => {
@@ -582,6 +586,10 @@ export function AgentDevelopmentWorkbench({ api, contexts, canWrite:originalCanW
     {pendingAgentKey&&<AgentSubmissionRecovery requestKey={pendingAgentKey} recoveryHref={(derivationActive&&derivationDraft?contextDerivationLocation(location.href,derivationDraft,pendingAgentKey):agentSubmissionLocation(location.href,pendingAgentKey)).href} canRetry={!taskOnly&&originalCanWrite&&Boolean(submission.current?.snapshot().canRetry)} busy={working} onRead={()=>void recoverAgentSubmission()} onRetry={()=>void recoverAgentSubmission(true)}/>}
     {pendingSaveKey && <div className="agent-dev-alert" role="alert"><div><strong>代码保存结果待确认</strong><p>只查询当前账号的原保存编号，不运行模型或 Spark。恢复链接不含代码；若服务端未收到保存且本页已关闭，需重新填写代码。同编号不同内容会被拒绝，不覆盖原记录。</p></div><div><button className="button" disabled={working} onClick={() => void recoverSavedRevision()}>查询原保存记录</button><button className="button" disabled={!canWrite || working || (!revisionRequest.current && !draft.trim())} onClick={() => void retrySavedRevision()}>{revisionRequest.current ? "按原编号重试保存" : "按原编号保存填写内容"}</button></div></div>}
     {manualUnconfirmed && <div className="agent-dev-alert" role="alert"><div><strong>手工运行结果待确认</strong><p>原提交编号已保留在恢复链接中。按原编号重试，不创建新的重试编号；未保存代码不会被覆盖。</p></div><button className="button" disabled={!canWrite || working} onClick={() => void resumeManualRun()}>按原编号重试提交</button></div>}
+    {localManualDelivery && !readOnly && !taskOnly && !publicationTarget && fundContexts.length > 0 &&
+      <Suspense fallback={<p role="status">正在加载基金准备…</p>}>
+        <FundAgentPreparation api={api} contexts={fundContexts} canWrite={originalCanWrite} onDirty={setFundDirty} />
+      </Suspense>}
     <div className="agent-dev-grid">
       <aside className="agent-dev-history"><header><span><History size={15} />任务历史</span><button className="icon-button" aria-label="刷新任务历史" onClick={() => loadHistory().catch(e => setError(e.message))}><RefreshCw size={14} /></button></header>
         {historyState==="loading"&&<p className="agent-dev-empty" role="status">正在读取任务历史；当前任务会优先显示。</p>}

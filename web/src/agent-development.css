@@ -65,3 +65,18 @@
 .local-distribution-controls select { display: block; width: 100%; margin-top: 6px; padding: 9px 11px; border: 1px solid #d8e3d6; border-radius: 6px; background: #fff; color: #385944; }
 .local-distribution-controls h4,.local-distribution-controls p { margin: 0; }
 .local-distribution-controls .button { justify-self: start; }
+
+.fund-agent-preparation { margin: 16px 0; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+.fund-preparation-form { display: grid; gap: 10px; }
+.fund-preparation-form label { display: grid; gap: 6px; }
+.fund-preparation-form select, .fund-preparation-form textarea { width: 100%; padding: 9px; border: 1px solid var(--border); border-radius: 8px; }
+.fund-preparation-form button { justify-self: start; }
+.fund-agent-preparation code { overflow-wrap: anywhere; }
+.fund-preparation-receipt { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: #f7faf6; }
+.fund-preparation-receipt header, .fund-preparation-receipt footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.fund-preparation-receipt header span { padding: 4px 10px; border-radius: 999px; background: #e9efe4; }
+.fund-preparation-receipt h4, .fund-preparation-receipt h5, .fund-preparation-receipt p { margin: 0; }
+.fund-preparation-result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 18px; }
+.fund-preparation-result-grid h5 { margin-bottom: 8px; }
+.fund-preparation-result-grid p + p { margin: 8px 0; }
+.fund-preparation-result-grid ul { padding-left: 20px; margin: 0; }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { submitFundPreparation, readFundPreparation } from "../src/v2/fund-preparation-client.mjs";
 import {distributionReportMetricIds} from '../src/v2/distribution-report-contract.mjs';
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
@@ -35,6 +36,13 @@ const manualPublicationRequired=['sourceRunId','taskId','packageDigest','verific
 const distributionApprovalSchema={type:'object',additionalProperties:false,properties:{scope:{const:'LOCAL_TEST_RELEASE'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},verificationId:{type:'string',format:'uuid'},metadataHash:{type:'string',pattern:'^[a-f0-9]{64}$'},scheduleSpec:{type:'object',additionalProperties:false,properties:{triggerAfterSeconds:{type:'integer',minimum:1,maximum:300},intervalSeconds:{type:'integer',minimum:1,maximum:300},runCount:{const:2}},required:['triggerAfterSeconds','intervalSeconds','runCount']},confirmFrozenFictionalData:{const:true}},required:['scope','packageDigest','verificationId','metadataHash','scheduleSpec','confirmFrozenFictionalData']};
 const distributionRollbackSchema={type:'object',additionalProperties:false,properties:{scope:{const:'LOCAL_TEST_RELEASE'},targetPackageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},metadataHash:{type:'string',pattern:'^[a-f0-9]{64}$'},confirmFrozenFictionalData:{const:true}},required:['scope','targetPackageDigest','metadataHash','confirmFrozenFictionalData']};
 const tools = [
+  { name: "fund_preparation_submit", description: "保存指定基金交易日和固定输出字段的本机需求准备，不运行模型或 Spark。",
+    inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, contextId: { type: "string" },
+      businessDate: { type: "string", format: "date" }, message: { type: "string" },
+      metrics: { type: "array", items: { type: "string", enum: ["portfolio_id","trade_date","asset_class","exposure_amount","exposure_ratio"] }, minItems: 5, maxItems: 5, uniqueItems: true } },
+      required: ["requestId","contextId","businessDate","message","metrics"], additionalProperties: false } },
+  { name: "fund_preparation_read", description: "按本账号原编号只读基金口径和执行准备。",
+    inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" } }, required: ["requestId"], additionalProperties: false } },
   {name:'agent_clarification_source',description:'只读本人原SQL澄清问题、输入与摘要，不调用模型或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'}},required:['taskId']},annotations:{readOnlyHint:true}},
   {name:'agent_clarification_reply',description:'明确回答已读取的原问题后新建独立任务，可能调用模型和Spark；保留原用量，不继承批准，不计直接自主完成。未知结果先按requestId查询，不自动重试。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},evidenceDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},answer:{type:'string',minLength:1,maxLength:1000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['taskId','evidenceDigest','answer','requestId','confirm']},annotations:{readOnlyHint:false}},
   {name:'manual_publication_detail',description:'只读本人独立手工交付的确切发布、批次和告警，不借用Agent身份或创建新计算。',inputSchema:{type:'object',additionalProperties:false,properties:manualPublicationProperties,required:manualPublicationRequired},annotations:{readOnlyHint:true}},
@@ -808,6 +816,11 @@ async function callTool(name, args = {}, client=defaultClient) {
       `/security/agent/plans/${encodeURIComponent(args.planId)}/apply`,
       { method: "POST", body: {} },
     );
+  if (name === "fund_preparation_submit") {
+    const { requestId, ...input } = args;
+    return submitFundPreparation(client, input, requestId);
+  }
+  if (name === "fund_preparation_read") return readFundPreparation(client, args.requestId);
   if(name==='report_published_create')return submitPublishedReport(client,args);
   if(name==='report_published_request')return lookupPublishedReport(client,args);
   if(name==='report_published_result')return readPublishedReportResult(client,args);
