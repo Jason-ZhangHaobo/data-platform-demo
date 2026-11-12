@@ -27,8 +27,9 @@ import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs
 import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
 import { createCloudPublication } from '../../src/v2/cloud-publication.mjs';
 import { opsPublicationTarget, readOpsPublication } from '../../web/src/ops-publication.ts';
-import { checkedAgentPublication } from '../../web/src/agent-delivery-evidence-read.ts';
-import { checkedAgentWorkflow } from '../../web/src/agent-workflow-read.ts';
+import { checkedAgentPublication, checkedExactPublicationReceipt } from '../../web/src/agent-delivery-evidence-read.ts';
+import { checkedAgentWorkflow, checkedCloudPublicationPreflight } from '../../web/src/agent-workflow-read.ts';
+import { cloudPublicationRequest } from '../../web/src/publication-selection.ts';
 import { privateReleasePendingLabel } from '../../src/v2/private-release-stage.mjs';
 import { serviceSourceFromLocation } from '../../web/src/service-source-binding.ts';
 import { serviceBatchFromLocation } from '../../web/src/service-batch-scope.ts';
@@ -1873,6 +1874,23 @@ test('an invited exact window binds derivation from the parent through signed re
     V2_SCHEDULER_TICK_SECRET:'synthetic-derived-release-authorization-1234567890',
   });
   await f.restart();
+  const selector={sourceKind:'AGENT',sourceRunId:task.runId,packageDigest:delivery.packageDigest,verificationId:settled.delivery.rehearsal.id};
+  const workflow=await checkedAgentWorkflow((await f.call(taskPath+'/workflow')).body,
+    {taskId:task.id,contextId:target,revisionId:task.revisionId,runId:task.runId,manual:false});
+  const preflightPath=publicationPreflightPath(task.id,selector), preflight=(await f.call(preflightPath)).body;
+  const checked=await checkedCloudPublicationPreflight(preflight,workflow);
+  assert.equal(checked.reviewDigest,draft.reviewDigest);
+  for (const key of ['packageDigest','verificationId']) {
+    const changed=structuredClone(preflight);
+    changed.basis.evidence.delivery[key]=key==='packageDigest'?'a'.repeat(64):randomUUID();
+    changed.reviewDigest=sha256(JSON.stringify(changed.basis));
+    await assert.rejects(checkedCloudPublicationPreflight(changed,workflow),/未确认/);
+  }
+  const originalPublish=cloudPublicationRequest(selector,delivery.packageId,reviewed.attestations,checked.reviewDigest);
+  const {reviewDigest,...withoutDigest}=originalPublish.body;
+  assert.equal((await f.call(taskPath+'/publication',withoutDigest,randomUUID())).status,422);
+  assert.equal((await f.call(taskPath+'/publication',{...originalPublish.body,reviewDigest:'f'.repeat(64)},randomUUID())).status,409);
+  assert.equal(f.store.list('release_approval',PROJECT).length,0);
   losePublication=true;
   assert.equal((await cli('v3-publish',['--review-file',reviewFile,...confirm])).reason,'INSPECT_ORIGINAL_PUBLICATION');
   assert.equal(requests.filter(entry=>entry.method==='POST').length,1);
@@ -1881,6 +1899,10 @@ test('an invited exact window binds derivation from the parent through signed re
   assert.equal(requests.filter(entry=>entry.method==='POST').length,0);
   assert.equal(f.store.list('release_approval',PROJECT).length,1);
   const {releaseId,batchIds}=publication;
+  const observed=await f.call(publicationRequestReceiptPath(task.id,JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.publication.key));
+  assert.equal(checkedExactPublicationReceipt(observed.body,{taskId:task.id,revisionId:task.revisionId,
+    revisionHash:evidence.body.development.revisionHash,runId:task.runId,packageId:delivery.packageId,
+    packageDigest:selector.packageDigest,verificationId:selector.verificationId,reviewDigest}),releaseId);
   const timer=(mark,forged=false)=>{
     const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=mark.repeat(24);
     const signed=JSON.stringify({releaseId,triggerName,expiresAt:f.now()+300000});

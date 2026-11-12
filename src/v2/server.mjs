@@ -6177,6 +6177,8 @@ export function createV2Server(options = {}) {
           if (exact && !publicationAccess) throw fail(403,"确切版本须在独立发布窗口提交");
           const selector = validatePublicationSelector({packageDigest:text(body.packageDigest,64,64),verificationId:text(body.verificationId,1,100),
             ...(Object.hasOwn(body,"sourceKind")?{sourceKind:body.sourceKind}:{}),...(Object.hasOwn(body,"sourceRunId")?{sourceRunId:body.sourceRunId}:{})},actorId);
+          if (publicationAccess && agent.derivedFrom && selector.sourceKind === "AGENT" && !exact)
+            throw fail(422,"派生任务须先审阅原交付、文件演练及发布预检摘要");
           return json(res,202,await cloudPublication.publish({agent,...selector,attestations:body.attestations,
             ...(exact?{reviewDigest:body.reviewDigest}:{}),idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
         }

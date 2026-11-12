@@ -17,6 +17,18 @@ const count=(v:unknown)=>Number.isSafeInteger(v)&&Number(v)>=0;
 const uniqueIds=(rows:Record<string,unknown>[])=>new Set(rows.map(r=>r.id)).size===rows.length;
 const invalidPublication=()=>Error('发布与监控回执的记录结构或确切来源未确认；保留原记录，只读重查，不自动发布。');
 
+export function checkedExactPublicationReceipt(value:unknown, expected:{taskId:string;revisionId:string;revisionHash:string;runId:string;packageId:string;
+ packageDigest:string;verificationId:string;reviewDigest:string}) {
+ if(!record(value)||value.protocol!=="shuduo-cloud-publication-receipt/v1"||!record(value.release)||!Array.isArray(value.runs))throw invalidPublication();
+ const release=value.release,runs=value.runs;
+ if(!id(release.id)||!id(release.reviewId)||!id(release.approvalId)||release.scope!=="PRIVATE_CLOUD_TEST"||
+  release.taskId!==expected.taskId||release.sourceRevisionId!==expected.revisionId||release.sourceCodeHash!==expected.revisionHash||
+  release.sourceRunId!==expected.runId||release.packageId!==expected.packageId||release.packageDigest!==expected.packageDigest||
+  release.verificationId!==expected.verificationId||release.reviewDigest!==expected.reviewDigest||runs.length!==2||
+  !runs.every((batch,index)=>record(batch)&&id(batch.id)&&batch.sequence===index+1&&typeof batch.schedulerTriggered==="boolean")||!uniqueIds(runs))throw invalidPublication();
+ return release.id as string;
+}
+
 export function checkedAgentPublication(value:unknown,{taskId,scope,selector,releaseId,requireRelease=false}:{taskId:string;scope:'LOCAL_TEST_RELEASE'|'PRIVATE_CLOUD_TEST';selector?:PublicationSelector;releaseId?:string;requireRelease?:boolean}):Publication{
  if(!record(value)||!optional(value.scope,v=>v===scope)||!optional(value.readMode,v=>v==='SAVED_HISTORY'&&scope==='PRIVATE_CLOUD_TEST')||
   !Array.isArray(value.runs)||!Array.isArray(value.alerts)||!Array.isArray(value.events))throw invalidPublication();
