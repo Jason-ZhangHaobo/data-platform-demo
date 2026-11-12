@@ -1,7 +1,7 @@
 import {outputContractForContext,verifyOutputRows} from './output-contracts.mjs';
 import {distributionDeliveryBinding,createDistributionTestSql,validateDistributionDelivery} from './distribution-delivery.mjs';
 import { isFundContext, fundRehearsalAt } from "./fund-contexts.mjs";
-import { createFundTestSql, fundDeliveryBinding, fundValidationMatches, validateFundDelivery, verifiedFundRun } from "./fund-delivery.mjs";
+import { createFundTestSql, fundAgentAttributionKind, fundAgentDeliveryAttribution, fundDeliveryBinding, fundValidationMatches, validateFundDelivery, verifiedFundRun } from "./fund-delivery.mjs";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { resolve, join } from "node:path";
@@ -110,7 +110,9 @@ export function createDeliveryPackage({
   if(distribution&&(run?.isolation==="FUNCTION_PROCESS"||run?.mainSqlExecuted!==true||run?.testDouble===true||!verifyOutputRows(run?.rows,getContext(revision.contextId))))throw fail("分布交付须来自本机真实Spark及独立复合键核验，尚未开放云端");
   const reference=developmentReference===undefined?undefined:checkedAssistedDevelopmentReference(developmentReference);
   const authored=revision?.source==='MANUAL'&&revision.manualProvenance?.kind==='ENGINEER_EDIT'&&revision.manualProvenance.actorId===revision.author&&revision.manualProvenance.agentIndependentE2E===false;
-  if (fund && (!authored || revision.manualProvenance.originAgentTaskId !== undefined || !verifiedFundRun(run, revision.contextId) ||
+  const fundAgent = fund && (agent?.fundPreparation || revision?.fundPreparation || run?.fundPreparation)
+    ? fundAgentDeliveryAttribution({ agent, run, revision }) : undefined;
+  if (fund && (!fundAgent && (!authored || revision.manualProvenance.originAgentTaskId !== undefined) || !verifiedFundRun(run, revision.contextId) ||
       run.contextId !== revision.contextId || !Number.isFinite(Date.parse(run.finishedAt))))
     throw fail("基金交付须来自原作者的本机真实 Spark 运行与独立组合断言");
   if(manualAuthor&&!authored)throw Object.assign(new Error('独立手工文件必须属于原作者和保存版本'),{status:409});
@@ -252,6 +254,7 @@ export function createDeliveryPackage({
       ...(fund ? { fundLookthrough: fundDeliveryBinding(context.id) } : {}),
       ...(distribution?{outputContract:distributionDeliveryBinding(context.id)}:{}),
       ...(requirements?{requirement:sqlRequirementBinding(requirements)}:{}),
+      ...(fundAgent ? { attribution: fundAgent } : {}),
       ...(revision.sourceAttribution?.kind==='ENGINEER_ASSISTED'?{attribution:{kind:'ENGINEER_ASSISTED',originAgentTaskId:revision.sourceAttribution.originAgentTaskId,
         actorId:revision.sourceAttribution.actorId,agentIndependentE2E:false,...(reference?{developmentReference:reference}:{})}}:{}),
       ...(!manualAuthor&&revision.source === "MANUAL" && revision.manualProvenance?.originAgentTaskId ? {attribution: {
@@ -343,9 +346,12 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
     ])
   )
     throw fail("交付清单包含未定义字段");
-  if (source.attribution !== undefined && (!keysExactly(source.attribution, ["kind", ...(source.attribution?.kind==='ENGINEER_AUTHORED'?[]:['originAgentTaskId']), "actorId", "agentIndependentE2E",...(source.attribution?.developmentReference===undefined?[]:['developmentReference'])]) ||
-      !['ENGINEER_ASSISTED','ENGINEER_AUTHORED'].includes(source.attribution.kind) || source.attribution.agentIndependentE2E !== false ||
-      source.attribution.kind==='ENGINEER_ASSISTED'&&!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(source.attribution.originAgentTaskId ?? "") ||
+  const fundAgent = source.attribution?.kind === fundAgentAttributionKind;
+  if (source.attribution !== undefined && (!keysExactly(source.attribution, ["kind", ...(source.attribution?.kind==='ENGINEER_AUTHORED'?[]:['originAgentTaskId']), "actorId", "agentIndependentE2E",
+        ...(fundAgent ? ["modelMode", "preparation"] : source.attribution?.developmentReference === undefined ? [] : ["developmentReference"])]) ||
+      !['ENGINEER_ASSISTED','ENGINEER_AUTHORED',fundAgentAttributionKind].includes(source.attribution.kind) || source.attribution.agentIndependentE2E !== false ||
+      source.attribution.kind!=='ENGINEER_AUTHORED'&&!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(source.attribution.originAgentTaskId ?? "") ||
+      fundAgent && (!fund || !["LIVE_MODEL", "SYNTHETIC_MODEL"].includes(source.attribution.modelMode)) ||
       typeof source.attribution.actorId !== "string" || !source.attribution.actorId || source.attribution.actorId.length > 100))
     throw fail("人工交付归因不完整");
   if(source.attribution?.developmentReference!==undefined)checkedAssistedDevelopmentReference(source.attribution.developmentReference);

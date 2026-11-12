@@ -62,9 +62,9 @@ import {
   referenceSql,
   validationContractId,
 } from "./context.mjs";
-import { isFundContext } from "./fund-contexts.mjs";
+import { fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
 import { createFundPreparations } from "./fund-preparation.mjs";
-import { verifiedFundRun } from "./fund-delivery.mjs";
+import { fundAgentAttributionKind, fundAgentDeliveryAttribution, verifiedFundRun } from "./fund-delivery.mjs";
 import { fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
 import { assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease } from "./fund-publication.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
@@ -472,7 +472,7 @@ export function createV2Server(options = {}) {
       throw Object.assign(fail(403, "无权读取或操作此开发记录"), { code: "DEVELOPMENT_ACCESS_DENIED" });
   };
   const requireDurableAgentOwner = (task, req) => {
-    if (!mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)))
+    if (!mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)) || task.fundPreparation && !isLoopbackRequest(req))
       throw fail(403, "无权操作此 Agent 任务");
   };
   const durableDelivery = durableAgent && durableDevelopment
@@ -683,10 +683,24 @@ export function createV2Server(options = {}) {
   const releaseTimeUnitMs = Number(options.releaseTimeUnitMs ?? 1000);
   if (!Number.isSafeInteger(releaseTimeUnitMs) || releaseTimeUnitMs < 1)
     throw new Error("本机发布调度时间单位不合法");
-  const packageRequirementSource=(run,revision)=>({run,revision,agent:revision?.source==='LIVE_MODEL'&&run?.agentTaskId?store.get('agent',run.agentTaskId,PROJECT):undefined});
+  const packageRequirementSource=(run,revision)=>({run,revision,agent:(revision?.source==='LIVE_MODEL'||revision?.fundPreparation)&&run?.agentTaskId?store.get('agent',run.agentTaskId,PROJECT):undefined});
+  const assertPreparedFundSource = (selected) => {
+    if (!localClassicSpark || options.ingress) throw fail(403, "基金 Agent 文件仅支持本机 Spark");
+    const attribution = fundAgentDeliveryAttribution(selected), { requestId, basisDigest } = attribution.preparation;
+    const { contextId, message, submittedBy } = selected.agent;
+    const original = fundPreparations.bindExecution({ requestId, basisDigest, confirm: true }, submittedBy,
+      { contextId, message, requestKey: requestId });
+    if (Object.keys(original).some(key => original[key] !== attribution.preparation[key]))
+      throw fail(409, "基金交付与原准备回执不一致");
+    return attribution;
+  };
   const assertRequirementSource=item=>{
     const source=item.manifest?.source,run=store.get('run',source?.runId??'',PROJECT),revision=store.get('revision',source?.revisionId??'',PROJECT);
     const selected=packageRequirementSource(run,revision);if(selected.agent?.clarification)assertSqlClarificationTask(selected.agent,{store,project:PROJECT});
+    if (source?.attribution?.kind === fundAgentAttributionKind || revision?.fundPreparation) {
+      const current = assertPreparedFundSource(selected);
+      if (hash(JSON.stringify(current)) !== hash(JSON.stringify(source.attribution))) throw fail(409, "基金交付的 Agent 来源已变化");
+    }
     return assertSqlRequirementPackageSource(item,selected);
   };
   const isPythonDelivery = (item) =>
@@ -1431,9 +1445,14 @@ export function createV2Server(options = {}) {
         store, project:PROJECT, local, session:auth.sessionFromHeaders(req.headers),
       });
       const canReadDelivery = (kind, item) => {
-        if (!localClassicSpark && item) {
-          const pack = kind === "delivery_package" ? item : item.packageId && store.get("delivery_package", item.packageId, PROJECT);
-          if (isFundContext(pack?.manifest?.source?.contextId)) return false;
+        const pack = kind === "delivery_package" ? item : item?.packageId && store.get("delivery_package", item.packageId, PROJECT);
+        const source = pack?.manifest?.source;
+        if (isFundContext(source?.contextId)) {
+          if (!localClassicSpark) return false;
+          if (source.attribution?.kind === fundAgentAttributionKind) {
+            const actorId = auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer";
+            if (options.ingress || !isLoopbackRequest(req) || source.attribution.actorId !== actorId) return false;
+          }
         }
         return deliveryAccessForRequest().canRead(kind, item);
       };
@@ -1452,17 +1471,20 @@ export function createV2Server(options = {}) {
         const verification = delivery?.verificationId ? get("delivery_verification", delivery.verificationId) : undefined;
         if (bundle) {
           requireDeliveryEvidence("delivery_package", bundle);
-          if (!local && (delivery.packageDigest !== bundle.digest ||
+          if ((!local || bundle.manifest?.source?.attribution?.kind === fundAgentAttributionKind) && (delivery.packageDigest !== bundle.digest ||
               delivery.sourceRunId !== bundle.manifest?.source?.runId ||
               delivery.sourceRevisionId !== bundle.manifest?.source?.revisionId)) throw deliveryDenied();
+          if (bundle.manifest?.source?.attribution?.kind === fundAgentAttributionKind) validateAnyDeliveryPackage(bundle);
         }
         if (verification) {
           requireDeliveryEvidence("delivery_verification", verification);
-          if (!local) {
+          if (!local || bundle?.manifest?.source?.attribution?.kind === fundAgentAttributionKind) {
             const attached = bundle && verification.packageId === bundle.id && verification.packageDigest === bundle.digest;
             const archivedFailure = !bundle && ["FAILED","CANCELLED","INTERRUPTED"].includes(verification.status) &&
               verification.packageId === undefined && verification.packageDigest === undefined;
             if (!attached && !archivedFailure) throw deliveryDenied();
+            if (attached && verification.status === "SUCCEEDED" && bundle.manifest?.source?.attribution?.kind === fundAgentAttributionKind)
+              assertFundRehearsal(bundle, verification);
           }
         }
         return {bundle, verification};
@@ -4846,6 +4868,7 @@ export function createV2Server(options = {}) {
           sourceRun = get("run", text(body.sourceRunId, 1, 80)),
           sourceRevision = get("revision", sourceRun.revisionId);
         if (!deliveryAccessForRequest().canPrepare(sourceRun, sourceRevision)) throw deliveryDenied();
+        if (sourceRevision.fundPreparation) throw fail(409, "已保存口径的基金交付请从原 Agent 任务准备");
         if (isFundContext(sourceRevision.contextId) && !localClassicSpark) throw fail(422, "基金交付仅支持本机文件演练");
         const family = validationFamilyForRun(sourceRun);
         const name =
@@ -5123,6 +5146,8 @@ export function createV2Server(options = {}) {
           deliveryRecord[3] === "verify" &&
           method === "POST"
         ) {
+          if (item.manifest?.source?.attribution?.kind === fundAgentAttributionKind)
+            throw fail(409, "请查看原 Agent 交付的演练回执");
           const body = await readBody(req),
             scheduledFor = text(body.scheduledFor, 1, 50);
           await ensureDeliveryArtifact(item);
@@ -5620,14 +5645,14 @@ export function createV2Server(options = {}) {
         }
         const {bundle, verification} = workflowDeliveryEvidence(delivery);
         const fileReviewer=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
-        const fileReview=bundle?.manifest?.source?.outputContract&&verification?store.list('delivery_review',PROJECT).find(r=>r.packageId===bundle.id&&r.packageDigest===bundle.digest&&r.verificationId===verification.id&&r.reviewer?.id===fileReviewer&&r.status==='REVIEWED'&&r.scope==='LOCAL_FILE_REVIEW'):undefined;
+        const fileReview=(bundle?.manifest?.source?.outputContract||agent.fundPreparation)&&verification?store.list('delivery_review',PROJECT).find(r=>r.packageId===bundle.id&&r.packageDigest===bundle.digest&&r.verificationId===verification.id&&r.reviewer?.id===fileReviewer&&r.status==='REVIEWED'&&r.scope==='LOCAL_FILE_REVIEW'):undefined;
         return json(res, 200, {
           report,
           ...(fileReview?{fileReview:{id:fileReview.id,status:fileReview.status,packageId:fileReview.packageId,packageDigest:fileReview.packageDigest,verificationId:fileReview.verificationId,reviewedAt:fileReview.reviewedAt,scope:fileReview.scope}}:{}),
           delivery: publicDeliveryTask(delivery),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt } : undefined,
-          publication: { available: (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
+          publication: { available: !agent.fundPreparation && (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: agent.fundPreparation ? "基金 Agent 当前开放本机文件演练与版本审阅。发布待独立接入。" : getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
       }
       const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel|preflight|requests\/([A-Za-z0-9_-]{1,100})))?$/);
@@ -5786,24 +5811,26 @@ export function createV2Server(options = {}) {
           return preparePythonAgentDelivery(agent, req, res);
         if (agent.status !== "SUCCEEDED" || finalAttempt?.status !== "SUCCEEDED")
           throw fail(409, "只有代码Agent与独立断言通过后才能准备交付");
-        const codeJourney = agentEvidenceJourney({ store, project: PROJECT, task: agent });
-        if (
-          codeJourney.stages.find((item) => item.id === "CODE")?.status !== "SUCCEEDED" ||
-          codeJourney.stages.find((item) => item.id === "DEBUG")?.status !== "SUCCEEDED"
-        )
-          throw fail(409, "缺少真实模型和Spark独立结果证据，不能委托交付准备");
+        const run = get("run", finalAttempt.runId), rev = get("revision", finalAttempt.revisionId);
+        const fund = isFundContext(agent.contextId);
+        if (fund) {
+          assertPreparedFundSource({ agent, run, revision: rev });
+        } else {
+          const codeJourney = agentEvidenceJourney({ store, project: PROJECT, task: agent });
+          if (codeJourney.stages.find(item => item.id === "CODE")?.status !== "SUCCEEDED" ||
+              codeJourney.stages.find(item => item.id === "DEBUG")?.status !== "SUCCEEDED")
+            throw fail(409, "缺少真实模型和Spark独立结果证据，不能委托交付准备");
+        }
         if(getContext(agent.contextId)?.outputContractId&&!local)throw fail(422,"分布交付当前仅支持本机");
         if (!options.deliveryRunner && !options.runner && !runtime.available)
           throw fail(503, "按文件Spark演练尚未就绪");
-        const run = get("run", finalAttempt.runId),
-          rev = get("revision", finalAttempt.revisionId);
         createDeliveryPackage({ run, revision: rev,agent });
         const requirement = agent.requirements ? sqlRequirementBinding(agent.requirements) : undefined;
         const existing = store.list("agent_delivery_task", PROJECT).find(item =>
           item.mode === "VERIFIED_ARTIFACT_ORCHESTRATION" && item.sourceAgentTaskId === agent.id &&
           item.sourceRevisionId === rev.id && item.sourceRunId === run.id && item.sourceSqlHash === rev.hash &&
           JSON.stringify(item.sourceRequirementBinding) === JSON.stringify(requirement) &&
-          ["QUEUED", "RUNNING", "SUCCEEDED"].includes(item.status));
+          (fund || ["QUEUED", "RUNNING", "SUCCEEDED"].includes(item.status)));
         if (existing?.packageId) assertRequirementSource(get("delivery_package", existing.packageId));
         if (existing && req.headers["idempotency-key"] === undefined) return json(res, 200, existing);
         const key = text(req.headers["idempotency-key"], 1, 100);
@@ -5813,6 +5840,7 @@ export function createV2Server(options = {}) {
         }));
         const dedup = store.deduplicate(namespace, signature, () => existing ?? store.create("agent_delivery_task", PROJECT, {
           sourceAgentTaskId:agent.id, sourceRunId:run.id, sourceRevisionId:rev.id, sourceSqlHash:rev.hash,
+          ...(fund ? { submittedBy: agent.submittedBy } : {}),
           ...(requirement ? {sourceRequirementBinding:requirement} : {}),
           status:"QUEUED", stage:"QUEUED", mode:"VERIFIED_ARTIFACT_ORCHESTRATION",
           completionScope:"DELIVERY_PREPARATION", fullLifecycleE2E:false, agentIndependentE2E:false, publicDeployed:false,
@@ -5831,6 +5859,7 @@ export function createV2Server(options = {}) {
                   .map((item) => item.packageId),
               );
             const sourceAgent=get('agent',task.sourceAgentTaskId);
+            if (fund) assertPreparedFundSource({ agent: sourceAgent, run: sourceRun, revision: sourceRevision });
             if(JSON.stringify(task.sourceRequirementBinding)!==JSON.stringify(sourceAgent.requirements?sqlRequirementBinding(sourceAgent.requirements):undefined))throw fail(409,'交付任务的原需求依据已变化');
             let packageItem = store
               .list("delivery_package", PROJECT)
@@ -5876,7 +5905,7 @@ export function createV2Server(options = {}) {
               packageDigest: packageItem.digest,
             });
             const plan = validateDeliveryPackage(packageItem, packageItem.digest),
-              scheduledFor = "2026-09-11T09:00:00+08:00",
+              scheduledFor = fundRehearsalAt(plan.source.contextId) ?? "2026-09-11T09:00:00+08:00",
               occurrence = resolveDeliverySchedule(plan, scheduledFor);
             if (
               !occurrence.eligible ||
@@ -5931,6 +5960,10 @@ export function createV2Server(options = {}) {
                 receipt.testSqlValidation?.passed === true &&
                 receipt.testSqlValidation.sqlHash === hash(packageItem.files["tests.sql"]) &&
                 receipt.testDouble !== true;
+              if (actual && fund) {
+                assertRequirementSource(packageItem);
+                assertFundRehearsal(packageItem, { ...verification, ...receipt });
+              }
               store.update("delivery_verification", verification.id, PROJECT, {
                 ...receipt,
                 status: actual ? "SUCCEEDED" : "FAILED",

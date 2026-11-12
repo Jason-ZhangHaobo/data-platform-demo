@@ -30,6 +30,8 @@ export function assertFundConsent({ bundle, verification, review, consent, local
     if (consent !== undefined) throw fail();
     return;
   }
+  if (bundle.manifest.source.attribution?.kind !== "ENGINEER_AUTHORED")
+    throw Object.assign(new Error("基金 Agent 文件演练仅支持本机文件审阅"), { status: 409, code: "FUND_AGENT_REHEARSAL_ONLY" });
   const occurrence = assertFundRehearsal(bundle, verification);
   const spec = consent?.scheduleSpec;
   if (!localClassicSpark || schedulerMode !== "LOCAL_TIMER" ||
