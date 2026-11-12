@@ -4,9 +4,10 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export class MetadataStore {
-  constructor(path) {
-    mkdirSync(dirname(path), { recursive: true });
-    this.db = new DatabaseSync(path);
+  constructor(path, { readOnly = false } = {}) {
+    if (!readOnly) mkdirSync(dirname(path), { recursive: true });
+    this.db = new DatabaseSync(path, { readOnly });
+    if (readOnly) return;
     this.db.exec(
       "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS documents(kind TEXT NOT NULL,id TEXT PRIMARY KEY,project TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS documents_project_kind ON documents(project,kind); CREATE TABLE IF NOT EXISTS idempotency(key TEXT PRIMARY KEY, signature TEXT NOT NULL, result_id TEXT NOT NULL);",
     );

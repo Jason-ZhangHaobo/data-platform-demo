@@ -54,9 +54,10 @@ const formatCents = (value) => {
 };
 
 export class ReportDataStore {
-  constructor(path = ":memory:") {
-    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-    this.db = new DatabaseSync(path);
+  constructor(path = ":memory:", { readOnly = false } = {}) {
+    if (!readOnly && path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+    this.db = new DatabaseSync(path, { readOnly });
+    if (readOnly) return;
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS report_snapshots(id TEXT PRIMARY KEY,asset_id TEXT NOT NULL,content_hash TEXT NOT NULL,row_count INTEGER NOT NULL,rows_json TEXT NOT NULL,created_at TEXT NOT NULL);",
     );

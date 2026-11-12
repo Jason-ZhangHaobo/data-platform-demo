@@ -131,6 +131,23 @@ Spark 用例涵盖：标准资产、现金变化、重复持仓、证券去重�
 
 隔离验收复用已停止发布的真实 Spark 结果。原 SQL 与发布包一致，独立核验对应七行、四项断言。错版本选择、SQL 篡改和改动的断言记录均被拒绝。回看保持只读，不产生新的开发、演练或发布运行。
 
+## 复跑基金保存链路
+
+准备同一虚构基金案例的四份本机 SQLite 保存库。两份来自消费时的活跃环境，包含元数据及服务快照；两份来自随后保留历史报表的环境，包含元数据及报表快照。使用确切报表请求编号和两个已成功、已撤权的原 DAPI/XAPI 调用编号。
+
+```bash
+umask 077
+node scripts/verify-saved-fund-lifecycle.mjs \
+  --active-metadata "$ACTIVE_METADATA" --business-snapshots "$BUSINESS_SNAPSHOTS" \
+  --history-metadata "$HISTORY_METADATA" --report-snapshots "$REPORT_SNAPSHOTS" \
+  --request-id "$REPORT_REQUEST_ID" --dapi-call-id "$DAPI_CALL_ID" --xapi-call-id "$XAPI_CALL_ID" \
+  > "$PROTECTED_OUTPUT/saved-fund-lifecycle.json"
+```
+
+通过时输出 `LOCAL_SAVED_EVIDENCE`，包含原 SQL 版本、断言、演练、两批成功监控、精确分页结果摘要和撤权状态。命令只读 SQLite，用登记的独立预期对照 DAPI 明细和 XAPI 组合分页。它核对报表原请求及各阶段账本是否仍指向原快照与原运行。中断是否实际发生以原验收证据为准。
+
+保存库复开两次得到逐字节一致的 JSON。错调用、篡改服务快照与改动恢复账本均拒绝。本次复核使用已有本机 Spark 结果，真实模型及公网 E2E 保持独立统计。
+
 ## 浏览器真实链路
 
 验收浏览器为 Codex 内置浏览器；没有以此冒充 Safari/Chrome 的公网验收。
