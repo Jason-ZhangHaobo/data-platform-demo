@@ -26,3 +26,22 @@ test('distribution composition choices preserve contract, release batch and immu
  const services=[item('values','run-a','hash-a',['holding_market_value']),item('ratio','run-a','hash-a',['market_value_ratio']),item('other-batch','run-b','hash-b',['market_value_ratio']),dapi('legacy','v-legacy','run-a',['available_cash'])];
  const c=compositionChoices(services,{...base,privateCloud:false,outputContractId:'distribution-contract'});assert.equal(c.holdings.id,'values');assert.deepEqual(c.cashOptions.map(s=>s.id),['ratio']);assert.equal(c.cash.id,'ratio');assert.equal(compositionChoices(services,{...base,privateCloud:false}).holdings,undefined);
 });
+
+test("fund picker offers amount and ratio from the selected batch and identical snapshot", () => {
+  const contract = "securities-fund-lookthrough-v1";
+  const service = (id, fields, batch = "fund-one", snapshot = "same") => ({
+    id, serviceType: "DAPI", status: "PUBLISHED",
+    publishedVersion: { id: id + "-v1", fields, outputContractId: contract, sourceReleaseRunId: batch, snapshotHash: snapshot },
+  });
+  const options = { privateCloud: false, sourceRunId: "fund-one", holdingsVersionId: "", cashVersionId: "", outputContractId: contract };
+  const choices = compositionChoices([
+    service("amount", ["exposure_amount"]),
+    service("ratio", ["exposure_ratio"]),
+    service("all", ["exposure_amount", "exposure_ratio"]),
+    service("different-snapshot", ["exposure_ratio"], "fund-one", "other"),
+    service("different-batch", ["exposure_ratio"], "fund-two"),
+  ], options);
+  assert.equal(choices.holdings.id, "amount");
+  assert.equal(choices.cash.id, "ratio");
+  assert.deepEqual(choices.cashOptions.map(option => option.id), ["ratio"]);
+});

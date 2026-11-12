@@ -461,7 +461,7 @@ export class DataServiceManager {
       );
     this.#uniqueSlug(path);
     const steps = this.#steps(input.steps),
-      composition=distributionComposition(steps.map(s=>this.#version(s.dapiVersionId)),steps),
+      composition=this.#xapiComposition(steps.map(s=>this.#version(s.dapiVersionId)),steps),
       service = this.store.create("data_service", this.project, {
         serviceType: "XAPI",
         name,
@@ -472,11 +472,11 @@ export class DataServiceManager {
         steps,
         ...(composition??{}),
         scope: this.scope,
-        joinKey: "client_id",
+        joinKey: composition?.groupKeys[0] ?? "client_id",
         timeoutMs,
         rateLimitPerMinute,
         parameterSchema: {
-          client_id: { type: "string", required: false },
+          ...(composition?.outputContractId === fundDapiContract.id ? fundParameters : { client_id: { type: "string", required: false } }),
           page: { type: "integer", default: 1 },
           page_size: { type: "integer", default: 20, maximum: 100 },
         },
@@ -490,12 +490,12 @@ export class DataServiceManager {
     const service = this.#service(serviceId, "XAPI"),
       prior = this.#version(service.currentVersionId),
       steps=input.steps===undefined?prior.steps:this.#steps(input.steps),
-      composition=distributionComposition(steps.map(s=>this.#version(s.dapiVersionId)),steps),
+      composition=this.#xapiComposition(steps.map(s=>this.#version(s.dapiVersionId)),steps),
       version = (()=>{if(prior.outputContractId!==composition?.outputContractId)throw fail(409,'组合版本不能隐式切换粒度','OUTPUT_GRAIN_CHANGED');return this.#createVersion(service, {
         steps,
         ...(composition??{}),
         scope: this.scope,
-        joinKey: "client_id",
+        joinKey: composition?.groupKeys[0] ?? "client_id",
         timeoutMs: integer(
           input.timeoutMs,
           "超时时间",
@@ -918,7 +918,7 @@ export class DataServiceManager {
   }
 
   #assertFundVersion(version) {
-    if (version.outputContractId !== fundDapiContract.id) return;
+    if (version.serviceType !== "DAPI" || version.outputContractId !== fundDapiContract.id) return;
     const current = this.#fundSource(this.releaseRunFor(version.sourceReleaseRunId));
     if (!current || serviceHash(current.sourceEvidence) !== serviceHash(version.sourceEvidence) ||
         version.snapshotId !== `release-run:${version.sourceReleaseRunId}` ||
@@ -1025,29 +1025,51 @@ export class DataServiceManager {
       ]);
       if (!result || !Array.isArray(result.rows) || !result.pagination)
         throw fail(500, "数据服务执行结果格式不合法", "INVALID_RESULT");
-      const c=snapshotContractById(version.outputContractId);
-      return { data: result.rows, pagination: result.pagination,...(c?{resultContract:{id:c.id,grain:version.serviceType==='DAPI'?c.grain:'CLIENT_TRADE_DATE_WITH_DISTRIBUTION_ARRAY',keyFields:version.serviceType==='DAPI'?c.keyFields:['client_id','trade_date'],paginationUnit:c.id === fundDapiContract.id ? 'FUND_EXPOSURE_ROWS' : version.serviceType==='DAPI'?'DISTRIBUTION_ROWS':'CLIENT_DATE_GROUPS'},sourceEvidence:version.sourceEvidence}:{}) };
+      const contract = snapshotContractById(version.outputContractId);
+      if (!contract) return { data: result.rows, pagination: result.pagination };
+      const fund = contract.id === fundDapiContract.id;
+      const dapi = version.serviceType === "DAPI";
+      const resultContract = { id: contract.id, keyFields: dapi ? contract.keyFields : version.groupKeys,
+        grain: dapi ? contract.grain : fund ? "PORTFOLIO_TRADE_DATE_WITH_EXPOSURE_ARRAY" : "CLIENT_TRADE_DATE_WITH_DISTRIBUTION_ARRAY",
+        paginationUnit: dapi ? (fund ? "FUND_EXPOSURE_ROWS" : "DISTRIBUTION_ROWS") : (fund ? "PORTFOLIO_DATE_GROUPS" : "CLIENT_DATE_GROUPS") };
+      return { data: result.rows, pagination: result.pagination, resultContract, sourceEvidence: version.sourceEvidence };
     } finally {
       clearTimeout(timer);
     }
   }
 
+  #xapiComposition(children, steps) {
+    for (const child of children) this.#assertFundVersion(child);
+    return distributionComposition(children, steps);
+  }
+
   async #executeXapi(version, query) {
-    const currentComposition=distributionComposition(version.steps.map(s=>this.#version(s.dapiVersionId)),version.steps);
-    if(currentComposition?.outputContractId!==version.outputContractId||currentComposition?.composition!==version.composition)throw fail(409,'组合粒度与子接口版本不一致','OUTPUT_GRAIN_CHANGED');
-    if(version.outputContractId){
-      const results=[];
-      for(const step of version.steps){
-        const child=this.#version(step.dapiVersionId),rows=[];let total;
-        for(let page=1;page<=10;page++){
-          const result=await this.executeDapi(child,{clientId:query.clientId,page,pageSize:100});
-          if(!result?.pagination||!Number.isSafeInteger(result.pagination.total)||result.pagination.total<0||result.pagination.total>1000||total!==undefined&&total!==result.pagination.total)throw fail(409,'分布子结果分页不一致','INVALID_RESULT');
-          total=result.pagination.total;rows.push(...result.rows);
-          if(page*100>=total)break;
+    const children = version.steps.map(step => this.#version(step.dapiVersionId));
+    const current = this.#xapiComposition(children, version.steps);
+    const fund = version.outputContractId === fundDapiContract.id;
+    if (current?.outputContractId !== version.outputContractId || current?.composition !== version.composition ||
+        fund && (serviceHash(current.sourceEvidence) !== serviceHash(version.sourceEvidence) ||
+          serviceHash(current.groupKeys) !== serviceHash(version.groupKeys) || serviceHash(current.joinKeys) !== serviceHash(version.joinKeys)))
+      throw fail(409, "组合粒度与子接口版本不一致", "OUTPUT_GRAIN_CHANGED");
+    if (version.outputContractId) {
+      const results = [];
+      const filters = fund ? normalizeFundFilters(query) : { clientId: query.clientId };
+      for (const [index, step] of version.steps.entries()) {
+        const child = children[index], rows = [];
+        let total;
+        for (let page = 1; page <= 10; page++) {
+          const result = await this.executeDapi(child, { ...filters, page, pageSize: 100 });
+          if (!result?.pagination || !Array.isArray(result.rows) || !Number.isSafeInteger(result.pagination.total) ||
+              result.pagination.total < 0 || result.pagination.total > 1000 || total !== undefined && total !== result.pagination.total)
+            throw fail(409, "组合子结果分页不一致", "INVALID_RESULT");
+          total = result.pagination.total;
+          rows.push(...result.rows);
+          if (page * 100 >= total) break;
         }
-        if(rows.length!==total)throw fail(409,'分布子结果不完整','INVALID_RESULT');results.push({alias:step.alias,rows});
+        if (rows.length !== total) throw fail(409, "组合子结果不完整", "INVALID_RESULT");
+        results.push({ alias: step.alias, rows });
       }
-      return combineDistributionResults(results,version.outputContractId,query);
+      return combineDistributionResults(results, version.outputContractId, query);
     }
     const results = await Promise.all(
         version.steps.map(async (step) => {
