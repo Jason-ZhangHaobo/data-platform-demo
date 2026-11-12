@@ -67,6 +67,8 @@ node scripts/verify-local-reference.mjs readback http://127.0.0.1:3131
 
 通过时，API、CLI 和 MCP 能读取同一交付包及摘要。原版本、运行与检查点保持一致，`counts.post` 为 `0`。也可在[隔离工作台](http://127.0.0.1:3131/v2/?module=schedules)选择原开发批次，查看交付包与文件演练。此流程的通过范围为本机参考 SQL 与文件演练。
 
+已有留存的基金发布可按[签名基金发布复核](company-replication-playbook.md#复核带-worker-签名的基金发布)交接，离线核对原 SQL、独立断言、签名演练、双批调度及历史授权消费。
+
 ## 3. 配置真实 Data Agent
 
 通过 [阿里云百炼 API Key 页面](https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key) 获取北京地域的模型服务密钥；入口和地域对应关系见 [官方说明](https://help.aliyun.com/zh/model-studio/get-api-key)。
