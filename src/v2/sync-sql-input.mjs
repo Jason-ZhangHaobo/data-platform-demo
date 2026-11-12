@@ -194,11 +194,13 @@ export function syncSqlOutputSchemaDetails(run, revision) {
       !isDeepStrictEqual(run.syncInput, revision.syncInput) || !digest.test(run.syncInput.snapshotHash ?? ""))
     return undefined;
   const source = { runId: run.id, revisionId: revision.id, revisionHash: revision.hash, snapshotHash: run.syncInput.snapshotHash };
-  const report = { protocol: "shuduo-sync-sql-output-schema/v1", source, readOnly: true };
-  const columns = run.columns;
+  return { protocol: "shuduo-sync-sql-output-schema/v1", source, readOnly: true, ...syncSqlColumnDifferences(run.columns) };
+}
+
+export function syncSqlColumnDifferences(columns) {
   if (!Array.isArray(columns) || columns.length === 0 || columns.length > 25 ||
       columns.some(column => typeof column?.name !== "string" || typeof column?.type !== "string"))
-    return { ...report, status: "UNAVAILABLE", differences: [] };
+    return { status: "UNAVAILABLE", differences: [] };
   const differences = [], used = new Set();
   const identifier = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
   const sparkType = /^(?:string|boolean|tinyint|smallint|int|bigint|float|double|binary|date|timestamp|timestamp_ntz|void|decimal\(\d{1,2},\d{1,2}\))$/;
@@ -226,5 +228,5 @@ export function syncSqlOutputSchemaDetails(run, revision) {
     const expected = original < 0 ? null : { ...syncSqlOutputColumns[original], position: original + 1 };
     differences.push({ expected, actual: observed(column, index), issues: [expected ? "DUPLICATE" : "EXTRA"] });
   });
-  return { ...report, status: differences.length ? "MISMATCH" : "MATCHED", differences };
+  return { status: differences.length ? "MISMATCH" : "MATCHED", differences };
 }

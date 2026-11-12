@@ -6,6 +6,9 @@ const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentRepo
 import { manualDeliveryPackages } from "./manual-run-recovery";
 import { deliverySourceSelection } from "./delivery-source";
 import { defaultLocalReleaseSchedule, localReleaseScheduleText, matchingDeliveryVerification } from "./delivery-presentation";
+import { checkedSyncSqlRehearsalSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
+import type { SyncSqlRehearsalSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
+import { SyncOutputSchemaDetails } from "./SyncOutputSchemaDetails";
 import {
   Activity,
   ArrowDownToLine,
@@ -73,6 +76,7 @@ type Verification = {
   codeExecuted?: boolean;
   testSqlValidation?: { passed: boolean };
   validation?: { passed: boolean };
+  rehearsalOutputSchema?: unknown;
   workflowTrace?: { id: string; kind: string; status: string }[];
 };
 type Approval = {
@@ -303,6 +307,17 @@ export function DeliveryWorkbench({
   const [checks, setChecks] = useState<Verification[]>([]),
     [observedCheck, setCheck] = useState<Verification>();
   const check = observedCheck && matchingDeliveryVerification(selected, [observedCheck]);
+  const savedChecks = syncInput ? checks.filter(item => matchingDeliveryVerification(selected, [item])) : [];
+  let rehearsalSchema:SyncSqlRehearsalSchema|undefined;
+  if (check?.rehearsalOutputSchema !== undefined && selected?.manifest.source.sqlHash && syncInput) {
+    const { runId, revisionId, sqlHash } = selected.manifest.source;
+    try {
+      rehearsalSchema = checkedSyncSqlRehearsalSchema(check.rehearsalOutputSchema, {
+        verificationId:check.id, packageId:selected.id, packageDigest:selected.digest, runId, revisionId,
+        revisionHash:sqlHash, snapshotHash:syncInput.snapshotHash,
+      });
+    } catch { /* Keep the original receipt when its optional details cannot be confirmed. */ }
+  }
   const [reviews, setReviews] = useState<Review[]>([]), [reviewDraft, setReviewDraft] = useState<ReviewDraft>();
   const reviewTarget = selected && !selected.manifest.source.fundSignedExecution && check?.status === "SUCCEEDED"
     ? `${selected.id}:${selected.digest}:${check.id}` : undefined;
@@ -331,12 +346,72 @@ export function DeliveryWorkbench({
     setSyncConsentTarget(current => current === reviewTarget ? current : undefined);
   }, [reviewTarget]);
   const scopedBundles = (bundles: Bundle[]) => manualDeliveryPackages(bundles, sourceRunId, sourceLocked).filter(matchesSnapshot);
+  const packageKey = `shuduo:delivery:package:${sourceLocked ? sourceRunId : "classic"}`;
+  const rememberPackage = (bundle:Bundle) => {
+    try {
+      if (bundle.manifest.source.syncInput) sessionStorage.setItem(packageKey, JSON.stringify({id:bundle.id,digest:bundle.digest}));
+      else sessionStorage.removeItem(packageKey);
+    } catch { /* The package remains available in the current session view. */ }
+  };
+  const restorePackage = (history:Bundle[]) => {
+    let saved;
+    try { saved = JSON.parse(sessionStorage.getItem(packageKey) ?? "null"); }
+    catch { /* No valid previous package selection. */ }
+    if (!saved) return history[0];
+    const original = history.find(bundle => bundle.id === saved.id && bundle.digest === saved.digest && bundle.manifest.source.syncInput);
+    if (!original) setError("上次的交付包未能确认。请在当前包列表重新核对。");
+    return original ?? history[0];
+  };
+  const checkKey = (bundle:Bundle) => `shuduo:delivery:rehearsal:${bundle.id}:${bundle.digest}`;
+  const rememberCheck = (bundle:Bundle, verification:Verification) => {
+    if (!bundle.manifest.source.syncInput) return;
+    rememberPackage(bundle);
+    try { sessionStorage.setItem(checkKey(bundle), verification.id); }
+    catch { /* History remains readable when browser storage is disabled. */ }
+  };
+  const restoreCheck = (bundle:Bundle, history:Verification[]) => {
+    let pinned;
+    if (bundle.manifest.source.syncInput) {
+      try { pinned = sessionStorage.getItem(checkKey(bundle)); }
+      catch { /* Use the visible history when no previous selection is available. */ }
+    }
+    if (!pinned) return matchingDeliveryVerification(bundle, history);
+    const original = matchingDeliveryVerification(bundle, history.filter(item => item.id === pinned));
+    if (!original) setError("原演练回执未能确认，请从本包的已保存演练重新选择。");
+    return original;
+  };
+  const openCheck = async (id:string) => {
+    if (!selected || !savedChecks.some(item => item.id === id)) return;
+    const request = ++ticket.current;
+    const previous = check;
+    setCheck(undefined);
+    setError("");
+    setBusy("read-verification");
+    try {
+      const latest = await api<Verification>("/delivery/verifications/" + id);
+      if (request !== ticket.current) return;
+      if (latest.id !== id || !matchingDeliveryVerification(selected, [latest]))
+        throw Error("演练回执与当前交付包不一致，请重新核对。");
+      rememberCheck(selected, latest);
+      setCheck(latest);
+    } catch (cause) {
+      if (request === ticket.current) {
+        setCheck(previous);
+        setError((cause as Error).message);
+      }
+    } finally {
+      setBusy(current => current === "read-verification" ? "" : current);
+    }
+  };
   const loadPackage = async (id: string) => {
     const request = ++ticket.current;
     const bundle = await api<Bundle>("/delivery/packages/" + id);
     if (request === ticket.current) {
+      if (bundle.id !== id || !packages.some(item => item.id === id && item.digest === bundle.digest))
+        throw Error("交付包与已选版本不一致，请重新核对。");
+      rememberPackage(bundle);
       setSelected(bundle);
-      setCheck(matchingDeliveryVerification(bundle, checks));
+      setCheck(restoreCheck(bundle, checks));
     }
   };
   const loadLifecycle = async () => {
@@ -384,13 +459,16 @@ export function DeliveryWorkbench({
         setApprovals(initialApprovals);
         setReleases(initialReleases);
         setMonitor(initialMonitor);
-        if (visibleBundles[0]) {
+        const initialBundle = restorePackage(visibleBundles);
+        if (initialBundle) {
           const bundle = await api<Bundle>(
-            "/delivery/packages/" + visibleBundles[0].id,
+            "/delivery/packages/" + initialBundle.id,
           );
           if (active) {
+            if (bundle.id !== initialBundle.id || bundle.digest !== initialBundle.digest)
+              throw Error("交付包与已选版本不一致，请重新核对。");
             setSelected(bundle);
-            setCheck(matchingDeliveryVerification(bundle, verifications));
+            setCheck(restoreCheck(bundle, verifications));
           }
         }
         },
@@ -444,8 +522,9 @@ export function DeliveryWorkbench({
         name,
       });
       if (bundle.manifest.source.runId !== source || !matchesSnapshot(bundle)) throw Error("交付包与所选运行或原快照不一致");
+      rememberPackage(bundle);
       setSelected(bundle);
-      setCheck(matchingDeliveryVerification(bundle, checks));
+      setCheck(restoreCheck(bundle, checks));
       setPackages(scopedBundles(await api<Bundle[]>("/delivery/packages")));
     } catch (error) {
       setError((error as Error).message);
@@ -466,7 +545,10 @@ export function DeliveryWorkbench({
       if (request === ticket.current) {
         const matched = matchingDeliveryVerification(selected, [verification]);
         setCheck(matched);
-        if (!matched) setError("演练回执与当前交付包不一致，请重新核对。");
+        if (matched) {
+          rememberCheck(selected, matched);
+          setChecks(history => [matched, ...history.filter(item => item.id !== matched.id)]);
+        } else setError("演练回执与当前交付包不一致，请重新核对。");
       }
     } catch (error) {
       setError((error as Error).message);
@@ -880,6 +962,13 @@ export function DeliveryWorkbench({
                   </small>
                 </div>
               </div>
+              {savedChecks.length > 0 && <label className="delivery-rehearsal-history">
+                已保存的文件演练
+                <select value={check?.id ?? ""} disabled={Boolean(busy)} onChange={event=>void openCheck(event.target.value)}>
+                  <option value="" disabled>选择演练</option>
+                  {savedChecks.map(item=><option key={item.id} value={item.id}>{labels[item.status] ?? item.status} · {item.id.slice(0,8)}</option>)}
+                </select>
+              </label>}
               {check && (
                 <div className="delivery-receipt">
                   <div>
@@ -928,6 +1017,9 @@ export function DeliveryWorkbench({
                       {check.error}
                     </p>
                   )}
+                  {rehearsalSchema && <SyncOutputSchemaDetails schema={rehearsalSchema}/>}
+                  {check.rehearsalOutputSchema !== undefined && !rehearsalSchema &&
+                    <p role="status">结构差异未能与原演练对应，已保留原回执。</p>}
                   {check.status === "SUCCEEDED" && (
                     <p>
                       {selectedIsPython ? "Python代码与五场景断言已实际执行 · CPython " : "测试 SQL 已实际执行 · Spark "}{check.engineVersion}
@@ -940,6 +1032,8 @@ export function DeliveryWorkbench({
             </aside>
           </div>
           <section className="release-lifecycle" aria-label="发布与监控链路">
+            {syncInput && check?.status === "FAILED" && selectedRelease &&
+              <p role="status" className="delivery-error-text">当前所选演练失败。下方运行监控对应本包此前的发布。</p>}
             <div className="release-stepper">
               {[
                 ["01", "交付包", "不可变代码与文件摘要", true],

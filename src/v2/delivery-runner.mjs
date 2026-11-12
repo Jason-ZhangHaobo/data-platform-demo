@@ -6,12 +6,15 @@ import {
   loadDeliveryDirectory,
   resolveDeliverySchedule,
   sha256,
+  validateDeliveryPackage,
   validationMatchesFamily,
 } from "./delivery.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import { verifiedFundRun } from "./fund-delivery.mjs";
 import { verifyFundSignedDelivery } from "./fund-signed-delivery.mjs";
-import { assertSyncSqlOutputSchema, syncSqlColumnsMatch, syncSqlOutputSchemaCode, syncSqlOutputSchemaMessage, syncSqlRowsMatch } from "./sync-sql-input.mjs";
+import { assertSyncSqlOutputSchema, syncSqlColumnDifferences, syncSqlColumnsMatch, syncSqlOutputSchemaCode, syncSqlOutputSchemaMessage, syncSqlRowsMatch } from "./sync-sql-input.mjs";
+
+const fileHashes = bundle => Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, entry]) => [name, entry.sha256]));
 
 export function assertSyncSqlRehearsal(plan, bundle, receipt) {
   if (!plan.source.syncInput) return;
@@ -21,12 +24,48 @@ export function assertSyncSqlRehearsal(plan, bundle, receipt) {
       receipt.packageDigest !== plan.digest || !isDeepStrictEqual(receipt.source, plan.source) ||
       receipt.published !== false || receipt.schedulerTriggered !== false || receipt.mode !== "LOCAL_FILE_REHEARSAL" ||
       receipt.occurrence?.businessDate !== plan.fixtures.context.businessDate ||
-      !isDeepStrictEqual(receipt.fileHashes, Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, entry]) => [name, entry.sha256]))) ||
+      !isDeepStrictEqual(receipt.fileHashes, fileHashes(bundle)) ||
       receipt.testSqlValidation?.passed !== true || receipt.testSqlValidation.sqlHash !== sha256(bundle.files["tests.sql"]) ||
       !validationMatchesFamily(receipt.validation, family) || receipt.validation.selectedPassed !== true ||
       !syncSqlRowsMatch(receipt.rows, plan.fixtures.context))
     throw Object.assign(Error("文件演练未证明原冻结批次的实际结果"), { status: 409 });
   assertSyncSqlOutputSchema(receipt.columns);
+}
+
+export function checkedSyncSqlFileRehearsal(plan, bundle, receipt) {
+  try {
+    assertSyncSqlRehearsal(plan, bundle, receipt);
+    return receipt;
+  } catch (error) {
+    if (error.code !== syncSqlOutputSchemaCode) throw error;
+    return { ...receipt, status: "FAILED", errorCode: error.code, error: error.message };
+  }
+}
+
+export function syncSqlRehearsalSchemaDetails(bundle, receipt) {
+  if (!bundle?.manifest?.source?.syncInput ||
+      !["FAILED", "VALIDATION_FAILED"].includes(receipt?.status) ||
+      receipt.packageId !== bundle.id || receipt.packageDigest !== bundle.digest ||
+      receipt.projectId !== bundle.projectId || receipt.mainSqlExecuted !== true || receipt.testDouble === true ||
+      receipt.mode !== "LOCAL_FILE_REHEARSAL" || receipt.published !== false || receipt.schedulerTriggered !== false)
+    return undefined;
+  try {
+    const plan = validateDeliveryPackage(bundle, bundle.digest);
+    const occurrence = resolveDeliverySchedule(plan, receipt.scheduledFor);
+    if (plan.source.projectId !== receipt.projectId || receipt.engine !== "Apache Spark" ||
+        receipt.engineVersion !== plan.deployment.runtime.version || !occurrence.eligible ||
+        occurrence.businessDate !== plan.fixtures.context.businessDate ||
+        !isDeepStrictEqual(occurrence, receipt.occurrence) || !isDeepStrictEqual(receipt.source, plan.source) ||
+        !isDeepStrictEqual(receipt.fileHashes, fileHashes(bundle))) return undefined;
+    const details = syncSqlColumnDifferences(receipt.columns);
+    if (details.status === "MATCHED") return undefined;
+    return { protocol:"shuduo-sync-sql-rehearsal-schema/v1", readOnly:true,
+      source:{ verificationId:receipt.id, packageId:bundle.id, packageDigest:plan.digest, runId:plan.source.runId,
+        revisionId:plan.source.revisionId, revisionHash:plan.source.sqlHash, snapshotHash:plan.source.syncInput.snapshotHash },
+      ...details };
+  } catch {
+    return undefined;
+  }
 }
 
 export async function verifyDeliveryDirectory(
@@ -104,12 +143,7 @@ export async function verifyDeliveryDirectory(
     occurrence,
     source: plan.source,
     packageDigest: expectedDigest,
-    fileHashes: Object.fromEntries(
-      Object.entries(bundle.manifest.files).map(([name, entry]) => [
-        name,
-        entry.sha256,
-      ]),
-    ),
+    fileHashes: fileHashes(bundle),
     workflowTrace: plan.order.map((node) => ({
       id: node.id,
       kind: node.kind,

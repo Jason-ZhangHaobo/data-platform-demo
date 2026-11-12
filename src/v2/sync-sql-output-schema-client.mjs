@@ -12,9 +12,9 @@ const column = (value, limit, nullable) => record(value) &&
   (nullable && value.type === null || matches(type, value.type)) &&
   Number.isInteger(value.position) && value.position >= 1 && value.position <= limit;
 
-export function checkedSyncSqlOutputSchema(value, expected) {
+function checkedSchema(value, expected, protocol) {
   const source = value?.source, differences = value?.differences;
-  if (value?.protocol !== "shuduo-sync-sql-output-schema/v1" || value.readOnly !== true ||
+  if (value?.protocol !== protocol || value.readOnly !== true ||
       !record(source) || !matches(identifier, source.runId) || !matches(identifier, source.revisionId) ||
       !matches(digest, source.revisionHash) || !matches(digest, source.snapshotHash) ||
       source.runId !== expected.runId ||
@@ -37,6 +37,19 @@ export function checkedSyncSqlOutputSchema(value, expected) {
       expected:pick(change.expected), actual:pick(change.actual), issues:[...change.issues],
     })),
   };
+}
+
+export function checkedSyncSqlOutputSchema(value, expected) {
+  return checkedSchema(value, expected, "shuduo-sync-sql-output-schema/v1");
+}
+
+export function checkedSyncSqlRehearsalSchema(value, expected) {
+  const checked = checkedSchema(value, expected, "shuduo-sync-sql-rehearsal-schema/v1");
+  const { verificationId, packageId, packageDigest } = value.source;
+  if (!matches(identifier, verificationId) || verificationId !== expected.verificationId ||
+      !matches(identifier, packageId) || packageId !== expected.packageId ||
+      !matches(digest, packageDigest) || packageDigest !== expected.packageDigest) throw invalid();
+  return { ...checked, source: { ...checked.source, verificationId, packageId, packageDigest } };
 }
 
 export async function readSyncSqlOutputSchema(client, { runId }) {

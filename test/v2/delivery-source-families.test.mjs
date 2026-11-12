@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import ts from "typescript";
+import { component } from "./fixtures/delivery-component.mjs";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { deliverySourceSelection } from "../../web/src/delivery-source.ts";
@@ -61,17 +61,7 @@ test("Agent manual lock preserves its exact source and explicitly supplied contr
   assert.equal(deliverySourceSelection([{ ...oldRun, contextId: undefined }], { lockSource: true, sourceRunId: oldRun.id, contractId: legacyContract }).source, oldRun.id);
 });
 
-async function component() {
-  let source = ts.transpileModule(readFileSync(new URL("../../web/src/DeliveryWorkbench.tsx", import.meta.url), "utf8"),
-    { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
-  for (const dependency of ["react", "react/jsx-runtime", "lucide-react"])
-    source = source.replaceAll(`from "${dependency}"`, `from ${JSON.stringify(import.meta.resolve(dependency))}`);
-  for (const file of ["manual-run-recovery", "delivery-source", "delivery-presentation"])
-    source = source.replaceAll(`from "./${file}"`, `from ${JSON.stringify(new URL(`../../web/src/${file}.ts`, import.meta.url).href)}`);
-  source = source.replaceAll('from "../../src/v2/fund-contexts.mjs"', `from ${JSON.stringify(new URL('../../src/v2/fund-contexts.mjs', import.meta.url).href)}`);
-  return (await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`)).DeliveryWorkbench;
-}
-const DeliveryWorkbench = await component();
+const DeliveryWorkbench = await component("DeliveryWorkbench");
 const render = props => renderToStaticMarkup(React.createElement(DeliveryWorkbench, {
   api: () => { throw Error("render must not make requests"); }, runs, canWrite: true, onBack: () => {}, ...props,
 }));
