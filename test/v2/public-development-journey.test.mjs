@@ -40,6 +40,57 @@ import { withCloudCheckpoint } from '../../scripts/cloud-v3-checkpoint-lock.mjs'
 import { firstCloudApplicationBinding, firstCloudWindowReceiptProtocol } from '../../scripts/first-cloud-v3-window.mjs';
 import { fixtureFirstCloudIndex, fixtureFirstCloudInspection } from './fixtures/first-cloud-application-inspection.mjs';
 
+test('first-case entry preflight distinguishes exact bytes, stale HTML and a timeout without modifying the checkpoint', async t => {
+  const directory=mkdtempSync(join(tmpdir(),'shuduo-entry-preflight-'));
+  t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const checkpoint=join(directory,'checkpoint.json'), applicationPath=join(directory,'application.json');
+  const source='a'.repeat(40), reads=[];
+  let reply=()=>new Response(fixtureFirstCloudIndex,{headers:{'content-type':'text/html; charset=utf-8'}});
+  const client={baseUrl:'https://pilot.example.invalid/api/v2',projectId:PROJECT,
+    fetchImpl:async (url,options)=>{
+      reads.push(url);
+      assert.equal(url,'https://pilot.example.invalid/v2/');
+      assert.equal(options.method,'GET');
+      assert.equal(options.credentials,'omit');
+      assert.equal(options.redirect,'error');
+      return reply(options);
+    },request:()=>assert.fail('The entry probe must not call authenticated API routes')};
+  prepareCloudV3Start(checkpoint,client,source);
+  const bytes=readFileSync(checkpoint), state=JSON.parse(bytes);
+  const inspection=fixtureFirstCloudInspection(source,'b'.repeat(40));
+  const save=value=>writeFileSync(applicationPath,JSON.stringify(value),{mode:0o600});
+  const check=async (flags=[],expectedExit=0)=>{
+    const output=[];
+    const status=await runV2Cli(['agent','v3-entry-preflight','--checkpoint',checkpoint,'--application-file',applicationPath,...flags],
+      {},{client,output:line=>output.push(line),error:()=>{}});
+    assert.equal(status,expectedExit);
+    assert.deepEqual(readFileSync(checkpoint),bytes);
+    assert.equal(existsSync(checkpoint+'.lock'),false);
+    if(expectedExit)return;
+    const result=JSON.parse(output.join(''));
+    assert.equal(result.agentSubmissions,0);
+    assert.ok(!output[0].includes(state.outcomes[0].actions.agent.key));
+    return result;
+  };
+  save({...inspection,applicationSource:'d'.repeat(40)});
+  assert.equal((await check()).reason,'APPLICATION_BINDING_MISMATCH');
+  assert.equal(reads.length,0);
+  save(inspection);
+  await check(['--timeout-ms','99999'],1);
+  await check(['--confirm'],1);
+  assert.equal(reads.length,0);
+  assert.equal((await check()).status,'MATCHED');
+  reply=()=>new Response('<html>rollback build</html>',{headers:{'content-type':'text/html'}});
+  assert.equal((await check()).reason,'ENTRY_CONTENT_MISMATCH');
+  reply=()=>new Response('{}',{headers:{'content-type':'application/json'}});
+  assert.equal((await check()).reason,'ENTRY_NOT_HTML');
+  reply=()=>new Response(fixtureFirstCloudIndex,{headers:{'content-type':'text/html','content-length':'300001'}});
+  assert.equal((await check()).reason,'ENTRY_TOO_LARGE');
+  reply=async ({signal})=>{await new Promise(resolve=>setTimeout(resolve,10));throw signal.reason;};
+  assert.equal((await check(['--timeout-ms','1'])).reason,'ENTRY_TIMEOUT');
+  assert.equal(reads.length,5);
+});
+
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;

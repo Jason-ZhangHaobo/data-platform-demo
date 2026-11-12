@@ -16,7 +16,7 @@ import {checkedBatchArchive, prepareBatchArchive, readBatchArchive, submitBatchA
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationSelectorInput,publicationPreflightPath,publicationReadPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
-import {advanceCloudV3Rehearsal,bindCloudV3Consumption,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,rebindCloudV3PreparedSource,submitCloudV3Publication} from "../scripts/start-cloud-v3-case.mjs";
+import {advanceCloudV3Rehearsal,bindCloudV3Consumption,checkCloudV3PreparedEntry,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,rebindCloudV3PreparedSource,submitCloudV3Publication} from "../scripts/start-cloud-v3-case.mjs";
 import {firstCloudCheckpointBinding} from "../scripts/first-cloud-v3-window.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
@@ -81,6 +81,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --source-revision SHA
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-binding
+  shuduo agent v3-entry-preflight --checkpoint ABSOLUTE_PATH --application-file ABSOLUTE_PATH [--timeout-ms 15000]
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-file ABSOLUTE_PATH --application-file ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --reconcile
   shuduo agent v3-rebind-source --checkpoint ABSOLUTE_PATH --source-revision SHA --out-file ABSOLUTE_PATH
@@ -582,6 +583,15 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
          flags.some(flag=>!["checkpoint","base_url"].includes(flag)))throw Error("评测证据读取仅接受原检查点和原入口");
       const checkpoint=required(parsed.options,"checkpoint");
       result=await (action==="v3-review"?readCloudV3Review:inspectCloudV3Execution)(checkpoint,client);
+    }
+    else if (resource === "agent" && action === "v3-entry-preflight") {
+      const args=parsed.options,flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
+      if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
+          flags.some(flag=>!["checkpoint","application_file","base_url","timeout_ms"].includes(flag)) ||
+          (args.timeout_ms!==undefined && (typeof args.timeout_ms!=="string" || !/^\d+$/.test(args.timeout_ms))))
+        throw Error("首例入口预检仅接受原检查点、独立验包、原入口和读取超时");
+      result=await checkCloudV3PreparedEntry(required(args,"checkpoint"),client,required(args,"application_file"),
+        args.timeout_ms===undefined?undefined:Number(args.timeout_ms));
     }
     else if (resource === "agent" && action === "v3-start") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
