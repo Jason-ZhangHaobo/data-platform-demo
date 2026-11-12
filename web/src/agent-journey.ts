@@ -31,7 +31,7 @@ export function deliveryStageText(stage: string, publicationCurrent: boolean, re
   if (publicationCurrent) return publicationStopped(releaseStatus)
     ? "交付文件已演练；发布已停止"
     : "交付文件已演练并完成发布审阅";
-  const labels: Record<string, string> = { PACKAGE_READY: "调度与部署文件已生成", FILE_REHEARSAL_SUBMITTING: "正在提交文件演练", FILE_REHEARSAL_RUNNING: "Spark 正在按交付文件演练", AWAITING_ENGINEER_REVIEW: "演练通过，待审阅交付", FILE_REHEARSAL_FAILED: "文件演练需要处理", CANCELLED: "交付准备已停止" };
+  const labels: Record<string, string> = { PACKAGE_READY: "调度与部署文件已生成", FILE_REHEARSAL_SUBMITTING: "正在提交文件演练", FILE_REHEARSAL_RUNNING: "Spark 正在按交付文件演练", FILE_REHEARSAL_UNCONFIRMED: "原演练结果待核对", AWAITING_ENGINEER_REVIEW: "演练通过，待审阅交付", FILE_REHEARSAL_FAILED: "文件演练需要处理", CANCELLED: "交付准备已停止" };
   return labels[stage] ?? stage;
 }
 export type TaskConsumption = {

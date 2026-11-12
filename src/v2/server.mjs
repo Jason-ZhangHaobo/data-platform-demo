@@ -67,6 +67,7 @@ import {
 import { fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
 import { bindFundSignedDelivery } from "./fund-signed-delivery.mjs";
 import { createFundSignedReceipts } from "./fund-signed-receipts.mjs";
+import { createFundRehearsalRecovery } from "./fund-rehearsal-recovery.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "./fund-preparation.mjs";
 import { parseFundExecutionPreflightPath } from "./fund-preparation-request.mjs";
 import { fundExecutionPreflight } from "./fund-execution-preflight.mjs";
@@ -692,6 +693,7 @@ export function createV2Server(options = {}) {
   const releaseTimeUnitMs = Number(options.releaseTimeUnitMs ?? 1000);
   if (!Number.isSafeInteger(releaseTimeUnitMs) || releaseTimeUnitMs < 1)
     throw new Error("本机发布调度时间单位不合法");
+  const fundPreparations = createFundPreparations({ store, project: PROJECT });
   const packageRequirementSource=(run,revision)=>({run,revision,agent:(revision?.source==='LIVE_MODEL'||revision?.fundPreparation)&&run?.agentTaskId?store.get('agent',run.agentTaskId,PROJECT):undefined});
   const assertPreparedFundSource = (selected) => {
     if (!localClassicSpark || options.ingress) throw fail(403, "基金 Agent 文件仅支持本机 Spark");
@@ -735,6 +737,11 @@ export function createV2Server(options = {}) {
     if (source?.fundSignedExecution !== undefined)
       return fundSignedReceipts?.read(source.runId) ?? options.fundSignedExecutionFor?.(item.digest);
   };
+  const fundRehearsalRecovery = fundSignedReceipts && createFundRehearsalRecovery({
+    store, project: PROJECT, root, evidenceFor: fundSignedExecutionFor, assertSource: assertRequirementSource,
+  });
+  if (fundRehearsalRecovery)
+    for (const item of store.list("agent_delivery_task", PROJECT)) fundRehearsalRecovery.recover(item);
   const createAgentBundle = ({ agent, run, revision }) => {
     const evidence = isFundContext(agent.contextId) ? fundSignedReceipts?.read(run.id) : undefined;
     const bundle = createDeliveryPackage({ agent, run, revision,
@@ -1224,7 +1231,6 @@ export function createV2Server(options = {}) {
   const resolveLocalReportSource = (source, actorId) => resolvePublishedReportSource({
     store, project: PROJECT, source, actorId, allowFund: localClassicSpark, timeUnitMs: releaseTimeUnitMs, fundSignedExecutionFor,
   });
-  const fundPreparations = createFundPreparations({ store, project: PROJECT });
   const reports = new ReportManager({
     allowLocalPublishedEvidence:local,
     store,
@@ -6049,7 +6055,10 @@ export function createV2Server(options = {}) {
           completionScope:"DELIVERY_PREPARATION", fullLifecycleE2E:false, agentIndependentE2E:false, publicDeployed:false,
         }));
         const task = get("agent_delivery_task", dedup.id);
-        if (existing) return json(res, 200, task);
+        if (existing) {
+          fundRehearsalRecovery?.recover(task);
+          return json(res, 200, get("agent_delivery_task", task.id));
+        }
         if (!dedup.replayed)
           schedule("agent_delivery_task", task, async (signal) => {
             if (signal.aborted) throw new Error("交付准备已取消");
@@ -6166,8 +6175,11 @@ export function createV2Server(options = {}) {
                 receipt.testDouble !== true;
               if (actual && fund) {
                 assertRequirementSource(packageItem);
+                if (signed) {
+                  fundRehearsalRecovery.complete(get("agent_delivery_task", task.id), packageItem, verification, receipt);
+                  return;
+                }
                 assertFundRehearsal(packageItem, { ...verification, ...receipt });
-                if (signed) fundSignedRehearsalDigest(packageItem, receipt, fundSignedExecutionFor(packageItem));
               }
               store.update("delivery_verification", verification.id, PROJECT, {
                 ...receipt,

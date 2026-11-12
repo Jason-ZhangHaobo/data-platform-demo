@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runV2Cli } from "../../bin/shuduo.mjs";
@@ -20,6 +20,7 @@ import { assertFundConsent, fundAgentPublicationPreflight } from "../../src/v2/f
 import { verifyFundSignedExecution } from "../../src/v2/fund-signed-execution.mjs";
 import { bindFundSignedDelivery } from "../../src/v2/fund-signed-delivery.mjs";
 import { createFundSignedReceipts } from "../../src/v2/fund-signed-receipts.mjs";
+import { createFundRehearsalRecovery } from "../../src/v2/fund-rehearsal-recovery.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "../../src/v2/fund-preparation.mjs";
 import { fundRequirementScope } from "../../src/v2/fund-requirement-contract.mjs";
 import { validatePrivateApplicationRequest } from "../../src/v2/private-application.mjs";
@@ -350,4 +351,46 @@ test("signed fund execution binds immutable job bytes and independent result to 
   assert.throws(() => readReport(() => evidence), { code: "FUND_REPORT_SOURCE_UNPROVEN" });
   assert.throws(() => readReport(() => assert.fail("foreign owner reached signing evidence"), randomUUID()),
     { code: "REPORT_SOURCE_OWNER" });
+
+  const recovering = save("agent_delivery_task", { status: "RUNNING", stage: "FILE_REHEARSAL_RUNNING",
+    mode: "VERIFIED_ARTIFACT_ORCHESTRATION", signedPackageDigest: bound.digest, packageDigest: bound.digest,
+    sourceAgentTaskId: original.task.id, sourceRunId: original.run.id, sourceRevisionId: original.revision.id,
+    sourceSqlHash: original.revision.hash });
+  const recoverablePackage = save("delivery_package", { ...bound, agentDeliveryTaskId: recovering.id });
+  const interruptedVerification = save("delivery_verification", { status: "RUNNING", scheduledFor: schedule,
+    agentDeliveryTaskId: recovering.id, packageId: recoverablePackage.id, packageDigest: bound.digest });
+  const activeDelivery = store.update("agent_delivery_task", recovering.id, PROJECT,
+    { packageId: recoverablePackage.id, verificationId: interruptedVerification.id });
+  const parent = join(directory, ".v2-artifacts", "agent-deliveries");
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const fileRoot = unpackDeliveryPackage(recoverablePackage, join(parent, recovering.id), bound.digest);
+  const recovery = createFundRehearsalRecovery({ store, project: PROJECT, root: directory, evidenceFor: () => evidence, assertSource: () => {} });
+  const oldUpdate = store.update.bind(store);
+  store.update = (kind, id, ...args) => {
+    if (kind === "agent_delivery_task" && id === recovering.id) throw Error("test failure between SQLite updates");
+    return oldUpdate(kind, id, ...args);
+  };
+  try {
+    assert.throws(() => recovery.complete(activeDelivery, recoverablePackage, interruptedVerification,
+      { ...rehearsal, startedAt: interruptedVerification.createdAt, finishedAt: interruptedVerification.createdAt }),
+    /test failure between SQLite updates/);
+  } finally { store.update = oldUpdate; }
+  const readDelivery = () => store.get("agent_delivery_task", recovering.id, PROJECT);
+  const readVerification = () => store.get("delivery_verification", interruptedVerification.id, PROJECT);
+  assert.equal(readDelivery().status, "RUNNING");
+  assert.equal(readVerification().status, "RUNNING");
+  store.interruptPending(PROJECT);
+  const recoveryFile = join(fileRoot, "fund-rehearsal-recovery.json");
+  renameSync(recoveryFile, recoveryFile + ".held");
+  recovery.recover(readDelivery());
+  assert.equal(readDelivery().stage, "FILE_REHEARSAL_UNCONFIRMED");
+  assert.equal(readVerification().status, "INTERRUPTED");
+  renameSync(recoveryFile + ".held", recoveryFile);
+  recovery.recover(readDelivery());
+  assert.equal(readDelivery().status, "SUCCEEDED");
+  assert.equal(readDelivery().recoveredFromFileReceipt, true);
+  assert.equal(readVerification().status, "SUCCEEDED");
+  const recoveredVersion = readDelivery().version;
+  recovery.recover(readDelivery());
+  assert.equal(readDelivery().version, recoveredVersion);
 });
