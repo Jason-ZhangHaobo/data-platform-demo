@@ -6,7 +6,7 @@ const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentRepo
 import { manualDeliveryPackages } from "./manual-run-recovery";
 import { deliverySourceSelection } from "./delivery-source";
 import { defaultLocalReleaseSchedule, localReleaseScheduleText, matchingDeliveryVerification } from "./delivery-presentation";
-import { checkedSyncSqlRehearsalSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
+import { checkedSyncSqlRehearsalSchema, checkedSyncSqlScheduledSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import type { SyncSqlRehearsalSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import { SyncOutputSchemaDetails } from "./SyncOutputSchemaDetails";
 import {
@@ -141,7 +141,22 @@ type ReleaseRun = {
   resultUnknown?: boolean;
   clockMode?: string;
   error?: string;
+  errorCode?: string;
+  scheduledOutputSchema?: unknown;
 };
+function ScheduledSchemaEvidence({ item, bundle }: { item:ReleaseRun; bundle:Bundle }) {
+  const source = bundle.manifest.source;
+  if (item.scheduledOutputSchema === undefined || !source.syncInput || !source.sqlHash) return null;
+  try {
+    const schema = checkedSyncSqlScheduledSchema(item.scheduledOutputSchema, {
+      batchId:item.id, releaseId:item.releaseId, packageId:bundle.id, packageDigest:bundle.digest,
+      runId:source.runId, revisionId:source.revisionId, revisionHash:source.sqlHash, snapshotHash:source.syncInput.snapshotHash,
+    });
+    return <SyncOutputSchemaDetails schema={schema}/>;
+  } catch {
+    return <small>结构差异与原调度批次未能核对一致。</small>;
+  }
+}
 type FundSourceEvidence = {
   protocol: string;
   releaseId: string;
@@ -1235,13 +1250,15 @@ export function DeliveryWorkbench({
                         .filter((item) => item.releaseId === selectedRelease.id)
                         .slice(0, 3)
                         .map((item) => (
-                          <p key={item.id}>
+                          <div className="monitor-batch-evidence" key={item.id}>
+                          <p>
                             <span
                               className={
                                 "status-pill " + item.status.toLowerCase()
                               }
                             >
-                              {item.resultUnknown ? "执行中断，结果待核对" : releaseRunLabels[item.status] ?? item.status}
+                              {item.resultUnknown ? "执行中断，结果待核对" : item.errorCode === "SYNC_SQL_OUTPUT_SCHEMA_MISMATCH"
+                                ? "输出结构不符" : releaseRunLabels[item.status] ?? item.status}
                             </span>
                             <code>批次 {item.id.slice(0, 8)}</code>
                             <small>
@@ -1252,6 +1269,8 @@ export function DeliveryWorkbench({
                                   ) + " 待触发"}
                             </small>
                           </p>
+                          <ScheduledSchemaEvidence item={item} bundle={selected}/>
+                          </div>
                         ))}
                     </div>
                     {syncHandoff && onOpenServices && <button className="button primary" onClick={()=>onOpenServices(syncHandoff)}>接续此版本的 DAPI／XAPI</button>}

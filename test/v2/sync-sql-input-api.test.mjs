@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as pause } from "node:timers/promises";
@@ -8,7 +8,7 @@ import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { getContext, referenceSql, contextIds } from "../../src/v2/context.mjs";
 import { identityPositionMapping } from "../../src/v2/ingestion.mjs";
 import { readSyncSqlInput, syncSqlOutputSchemaDetails } from "../../src/v2/sync-sql-input.mjs";
-import { checkedSyncSqlOutputSchema, checkedSyncSqlRehearsalSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
+import { checkedSyncSqlOutputSchema, checkedSyncSqlRehearsalSchema, checkedSyncSqlScheduledSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import { runV2Cli } from "../../bin/shuduo.mjs";
 import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
 import { verifySavedSyncSqlInput } from "../../src/v2/sync-sql-saved-lifecycle.mjs";
@@ -45,8 +45,8 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     return { status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", testDouble: true, mainSqlExecuted: true,
       rows: context.expected, columns: developmentColumns, validation: { passed: true } };
   };
-  async function start() {
-    app = createV2Server({ root, fixtureRoot, runner, now: () => clock, setTimer: () => ({}), clearTimer: () => {},
+  async function start(worktree = root) {
+    app = createV2Server({ root:worktree, fixtureRoot, runner, now: () => clock, setTimer: () => ({}), clearTimer: () => {},
       env: { V2_LOCAL_DEVELOPMENT: "true", V2_RELEASE_SCHEDULER_MODE: "LOCAL_TIMER" },
       releaseRunner: async ({ directory, expectedDigest, scheduledFor, beforeRun }) => {
         const { bundle, plan } = loadDeliveryDirectory(directory, expectedDigest);
@@ -297,6 +297,61 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     const batches = app.store.list("release_run", PROJECT).sort((a, b) => a.sequence - b.sequence);
     assert.equal(batches.length, 2);
     assert.equal(releaseCalls, 2); // One rejected rehearsal and one accepted rehearsal.
+
+    // Test the exact approved plan in an isolated copy before the happy-path batches run.
+    const failureRoot = join(root, "schema-failure-replay");
+    await stop();
+    mkdirSync(failureRoot);
+    cpSync(join(root,".data"),join(failureRoot,".data"),{recursive:true});
+    await start(failureRoot);
+    rehearsalColumns = wrongColumns;
+    clock = Date.parse(batches[0].scheduledTriggerAt);
+    await app.releaseScheduler.enqueue(batches[0].id);
+    const failedBatchPath = `/release/runs/${batches[0].id}`;
+    const failedBatch = (await request(failedBatchPath)).value;
+    assert.equal(failedBatch.status,"FAILED");
+    assert.equal(failedBatch.errorCode,"SYNC_SQL_OUTPUT_SCHEMA_MISMATCH");
+    assert.equal(failedBatch.schedulerTriggered,true);
+    assert.equal(failedBatch.rows[0].total_assets,"2045.07");
+    const batchSchema = failedBatch.scheduledOutputSchema;
+    const expectedBatch = {...expectedRehearsal,batchId:batches[0].id,releaseId:activate.value.id};
+    assert.deepEqual(checkedSyncSqlScheduledSchema(batchSchema,expectedBatch),batchSchema);
+    assert.deepEqual(batchSchema.differences,rehearsalSchema.differences);
+    assert.equal(failedBatch.rehearsalOutputSchema,undefined);
+    assert.throws(()=>checkedSyncSqlScheduledSchema(batchSchema,{...expectedBatch,batchId:batches[1].id}),/原运行/);
+    assert.equal((await request(failedRehearsalPath)).value.scheduledOutputSchema,undefined);
+    rehearsalColumns = columns;
+    clock = Date.parse(batches[1].scheduledTriggerAt);
+    await app.releaseScheduler.enqueue(batches[1].id);
+    const failureOverview = (await request("/monitoring/overview")).value;
+    assert.equal(failureOverview.activeRelease.health,"CRITICAL");
+    assert.equal(failureOverview.counts.succeeded,1);
+    assert.equal(failureOverview.counts.failed,1);
+    assert.deepEqual(failureOverview.recentRuns.find(item=>item.id===batches[0].id).scheduledOutputSchema,batchSchema);
+    const events = failureOverview.recentEvents.filter(item=>item.releaseRunId===batches[0].id);
+    assert.deepEqual(events.map(item=>[item.type,item.errorCode]),[["BATCH_FAILED","SYNC_SQL_OUTPUT_SCHEMA_MISMATCH"]]);
+    const event=events[0];
+    assert.equal(failureOverview.alerts.find(item=>item.releaseRunId===batches[0].id).status,"OPEN");
+    assert.deepEqual((await request("/data-services/sources")).value,[]);
+    assert.equal((await request("/data-services/dapis",{name:"失败批次查询",slug:"failed-batch-assets",
+      sourceReleaseRunId:batches[0].id,fields:["client_id","total_assets"]},"failed-batch-service")).status,409);
+    app.store.update("monitor_event",event.id,PROJECT,{snapshotHash:"0".repeat(64)});
+    assert.equal((await request(failedBatchPath)).value.scheduledOutputSchema,undefined);
+    app.store.update("monitor_event",event.id,PROJECT,{snapshotHash:event.snapshotHash});
+    await stop();
+    await start(failureRoot);
+    assert.deepEqual((await request(failedBatchPath)).value.scheduledOutputSchema,batchSchema);
+    const monitorCli=[];
+    assert.equal(await runV2Cli(["releases","monitor"],{}, {client:schemaClient,output:line=>monitorCli.push(line),error:()=>{}}),0);
+    assert.deepEqual(JSON.parse(monitorCli.join("")).recentRuns.find(item=>item.id===batches[0].id).scheduledOutputSchema,batchSchema);
+    const batchMcp=JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:3,method:"tools/call",
+      params:{name:"release_runs_list",arguments:{}}},{client:schemaClient}));
+    assert.deepEqual(batchMcp.result.structuredContent.find(item=>item.id===batches[0].id).scheduledOutputSchema,batchSchema);
+    await app.releaseScheduler.enqueue(batches[0].id);
+    assert.equal(releaseCalls,4);
+    await stop();
+    await start();
+
     clock = Date.parse(batches[0].scheduledTriggerAt);
     await app.releaseScheduler.enqueue(batches[0].id);
     await stop();
@@ -315,7 +370,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(observed.value.counts.succeeded, 2);
     const replayAfterExpiry = await request("/releases", releaseBody, "sync-activate-after-expiry");
     assert.equal(replayAfterExpiry.value.id, activate.value.id);
-    assert.equal(releaseCalls, 4);
+    assert.equal(releaseCalls, 6);
     const sources = await request("/data-services/sources");
     assert.deepEqual(sources.value.map(source => source.id), batches.map(batch => batch.id));
     const create = async (type, body) => {

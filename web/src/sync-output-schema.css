@@ -11,3 +11,5 @@
 .delivery-execution .agent-dev-output-schema tr{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);border-bottom:1px solid #eadcc8}
 .delivery-execution .agent-dev-output-schema th[scope=row],.delivery-execution .agent-dev-output-schema td:last-child{grid-column:1/-1}
 .delivery-execution .agent-dev-output-schema td::before{content:attr(data-label);display:block;margin-bottom:2px;color:#655747}
+.monitor-batch-evidence .agent-dev-output-schema p{display:block;margin:3px 0 7px;font-size:11px}
+.monitor-batch-evidence .agent-dev-output-schema code{color:inherit;font-size:inherit}

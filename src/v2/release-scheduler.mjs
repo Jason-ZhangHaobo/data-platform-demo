@@ -1,4 +1,5 @@
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
+import { syncSqlOutputSchemaCode } from "./sync-sql-input.mjs";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const terminal = new Set([
@@ -292,7 +293,7 @@ export class LocalReleaseScheduler {
       if(stopped())return await cancelBeforeRun();
       this.assertRunSource({run,release,packageItem});
       const executionStartedAt = new Date(this.now()).toISOString();
-      const result = await this.runPackage({
+      const output = await this.runPackage({
         directory,
         expectedDigest: run.packageDigest,
         scheduledFor: run.businessScheduledFor,
@@ -302,10 +303,10 @@ export class LocalReleaseScheduler {
           : {}),
       });
       if(scoped&&stopped())return await cancelBeforeRun();
-      if (!terminal.has(result.status) || result.status === "INTERRUPTED")
+      if (!terminal.has(output.status) || output.status === "INTERRUPTED")
         throw new Error("发布执行器返回无效状态");
       if (release.syncInput) this.assertRunSource({run,release,packageItem});
-      this.assertRunResult({packageItem,result});
+      const result = this.assertRunResult({ packageItem, result:output, run }) ?? output;
       const finished = this.store.update("release_run", id, this.project, {
         ...result,
         ...(release.fundLookthrough ? { executionEvidenceMode: this.fundExecutionEvidenceMode, startedAt: executionStartedAt } : {}),
@@ -354,6 +355,7 @@ export class LocalReleaseScheduler {
 
   async #recordMonitoring(run, release) {
     const success = run.status === "SUCCEEDED";
+    const schemaFailed = Boolean(release.syncInput && run.status === "FAILED" && run.errorCode === syncSqlOutputSchemaCode);
     this.store.create("monitor_event", this.project, {
       type: success ? "BATCH_SUCCEEDED" : (release.outputContract||release.fundLookthrough||release.syncInput)&&run.status==="CANCELLED"?"BATCH_CANCELLED":"BATCH_FAILED",
       releaseId: release.id,
@@ -363,6 +365,7 @@ export class LocalReleaseScheduler {
       status: run.status,
       durationMs: run.durationMs ?? null,
       schedulerTriggered: run.schedulerTriggered === true,
+      ...(schemaFailed ? { errorCode:syncSqlOutputSchemaCode } : {}),
       ...(release.syncInput ? { sourceRevisionId: run.sourceRevisionId, snapshotHash: run.snapshotHash } : {}),
     });
     if((release.outputContract||release.fundLookthrough||release.syncInput)&&run.status==='CANCELLED')return;
@@ -373,13 +376,15 @@ export class LocalReleaseScheduler {
         releaseRunId: run.id,
         status: "OPEN",
         severity: "ERROR",
-        code: "LOCAL_RELEASE_BATCH_FAILED",
+        code: schemaFailed ? syncSqlOutputSchemaCode : "LOCAL_RELEASE_BATCH_FAILED",
         message: run.error ?? "本机发布批次失败",
+        ...(schemaFailed ? { packageDigest:run.packageDigest, sourceRevisionId:run.sourceRevisionId, snapshotHash:run.snapshotHash } : {}),
         openedAt: new Date(this.now()).toISOString(),
       });
     } else if (!release.fundLookthrough) {
       for (const alert of this.store.list("monitor_alert", this.project)) {
-        if (alert.releaseId === release.id && alert.status === "OPEN" && alert.code !== localReleaseUnknownResultCode) {
+        if (alert.releaseId === release.id && alert.status === "OPEN" &&
+            ![localReleaseUnknownResultCode, syncSqlOutputSchemaCode].includes(alert.code)) {
           recoveredAlerts++;
           this.store.update("monitor_alert", alert.id, this.project, {
             status: "RESOLVED",

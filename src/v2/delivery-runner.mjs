@@ -42,6 +42,18 @@ export function checkedSyncSqlFileRehearsal(plan, bundle, receipt) {
   }
 }
 
+export function boundSyncSqlFileColumns(plan, bundle, receipt, scheduledFor) {
+  if (!plan.source.syncInput || receipt.mainSqlExecuted !== true || receipt.testDouble === true ||
+      receipt.packageDigest !== plan.digest || receipt.projectId !== undefined && receipt.projectId !== plan.source.projectId ||
+      receipt.engine !== "Apache Spark" || receipt.engineVersion !== plan.deployment.runtime.version ||
+      !isDeepStrictEqual(receipt.source, plan.source) || !isDeepStrictEqual(receipt.fileHashes, fileHashes(bundle)))
+    return undefined;
+  const occurrence = resolveDeliverySchedule(plan, scheduledFor);
+  if (!occurrence.eligible || occurrence.businessDate !== plan.fixtures.context.businessDate ||
+      !isDeepStrictEqual(occurrence, receipt.occurrence)) return undefined;
+  return syncSqlColumnDifferences(receipt.columns);
+}
+
 export function syncSqlRehearsalSchemaDetails(bundle, receipt) {
   if (!bundle?.manifest?.source?.syncInput ||
       !["FAILED", "VALIDATION_FAILED"].includes(receipt?.status) ||
@@ -51,14 +63,8 @@ export function syncSqlRehearsalSchemaDetails(bundle, receipt) {
     return undefined;
   try {
     const plan = validateDeliveryPackage(bundle, bundle.digest);
-    const occurrence = resolveDeliverySchedule(plan, receipt.scheduledFor);
-    if (plan.source.projectId !== receipt.projectId || receipt.engine !== "Apache Spark" ||
-        receipt.engineVersion !== plan.deployment.runtime.version || !occurrence.eligible ||
-        occurrence.businessDate !== plan.fixtures.context.businessDate ||
-        !isDeepStrictEqual(occurrence, receipt.occurrence) || !isDeepStrictEqual(receipt.source, plan.source) ||
-        !isDeepStrictEqual(receipt.fileHashes, fileHashes(bundle))) return undefined;
-    const details = syncSqlColumnDifferences(receipt.columns);
-    if (details.status === "MATCHED") return undefined;
+    const details = boundSyncSqlFileColumns(plan, bundle, receipt, receipt.scheduledFor);
+    if (plan.source.projectId !== receipt.projectId || !details || details.status === "MATCHED") return undefined;
     return { protocol:"shuduo-sync-sql-rehearsal-schema/v1", readOnly:true,
       source:{ verificationId:receipt.id, packageId:bundle.id, packageDigest:plan.digest, runId:plan.source.runId,
         revisionId:plan.source.revisionId, revisionHash:plan.source.sqlHash, snapshotHash:plan.source.syncInput.snapshotHash },

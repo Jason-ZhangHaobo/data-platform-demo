@@ -1,7 +1,8 @@
 import { isDeepStrictEqual as same } from "node:util";
-import { resolveDeliverySchedule, sha256 } from "./delivery.mjs";
-import { assertSyncSqlRehearsal } from "./delivery-runner.mjs";
+import { resolveDeliverySchedule, sha256, validateDeliveryPackage } from "./delivery.mjs";
+import { assertSyncSqlRehearsal, boundSyncSqlFileColumns } from "./delivery-runner.mjs";
 import { localScheduleSpec, plannedLocalRuns } from "./release-scheduler.mjs";
+import { syncSqlOutputSchemaCode } from "./sync-sql-input.mjs";
 
 const ttlMs = 15 * 60_000;
 const attestations = ["code", "assertions", "deliveryFiles", "localScope"];
@@ -93,11 +94,12 @@ export function activateSyncSqlRelease({ store, project, bundle, plan, approval,
 }
 
 export function assertSyncSqlBatch({ bundle, plan, approval, verification, review, release, run, batches, enabled, timeUnitMs,
-  expectedStatus = "RUNNING" }) {
+  expectedStatus = "RUNNING", historical = false }) {
   assertSyncSqlApproval({ bundle, plan, approval, verification, review, spec: release.scheduleSpec,
     actorId: plan.source.syncInput.actorId, enabled });
   const activated = Date.parse(release.activatedAt);
-  if (release.status !== "ACTIVE_LOCAL" || release.approvalId !== approval.id || approval.consumedByReleaseId !== release.id ||
+  if (!(release.status === "ACTIVE_LOCAL" || historical && release.status === "CANCELLED") ||
+      release.approvalId !== approval.id || approval.consumedByReleaseId !== release.id ||
       approval.consumedAt !== release.activatedAt || !Number.isFinite(activated) ||
       activated < Date.parse(approval.approvedAt) || activated >= Date.parse(approval.expiresAt) ||
       release.packageId !== bundle.id || release.packageDigest !== bundle.digest || release.sourceRevisionId !== plan.source.revisionId ||
@@ -114,4 +116,37 @@ export function assertSyncSqlBatch({ bundle, plan, approval, verification, revie
         batch.publicDeployed === false).length === 1) ||
       run.schedulerTriggered !== true || run.clockMode !== "WALL_CLOCK_TIMER" ||
       !(Date.parse(run.triggeredAt) >= Date.parse(run.scheduledTriggerAt))) throw invalid();
+}
+
+export function syncSqlScheduledSchemaDetails({ store, project, run, enabled, timeUnitMs }) {
+  if (!enabled || run?.status !== "FAILED" || run.errorCode !== syncSqlOutputSchemaCode ||
+      run.mode !== "LOCAL_SCHEDULED_RELEASE" || run.published !== true ||
+      !(Date.parse(run.finishedAt) >= Date.parse(run.triggeredAt))) return undefined;
+  const get = (kind, id) => typeof id === "string" ? store.get(kind, id, project) : undefined;
+  const release = get("release", run.releaseId), bundle = get("delivery_package", run.packageId);
+  if (!release?.syncInput || !bundle?.manifest?.source?.syncInput || run.projectId !== project || bundle.projectId !== project) return undefined;
+  try {
+    const plan = validateDeliveryPackage(bundle, release.packageDigest);
+    const approval = get("release_approval", release.approvalId);
+    const verification = get("delivery_verification", approval.rehearsalId), review = get("delivery_review", approval.reviewId);
+    const batches = store.list("release_run", project).filter(batch => batch.releaseId === release.id);
+    assertSyncSqlBatch({ bundle, plan, approval, verification, review, release, run, batches, enabled, timeUnitMs,
+      expectedStatus:"FAILED", historical:true });
+    const events = store.list("monitor_event", project).filter(event =>
+      event.type === "BATCH_FAILED" && event.releaseRunId === run.id);
+    if (events.length !== 1 || events[0].releaseId !== release.id ||
+        events[0].packageDigest !== plan.digest || events[0].sourceRevisionId !== plan.source.revisionId ||
+        events[0].snapshotHash !== plan.source.syncInput.snapshotHash || events[0].schedulerTriggered !== true ||
+        events[0].status !== "FAILED" || events[0].errorCode !== syncSqlOutputSchemaCode ||
+        !(Date.parse(events[0].observedAt) >= Date.parse(run.finishedAt)))
+      return undefined;
+    const details = boundSyncSqlFileColumns(plan, bundle, run, run.businessScheduledFor);
+    if (!details || details.status === "MATCHED") return undefined;
+    return { protocol:"shuduo-sync-sql-scheduled-schema/v1", readOnly:true,
+      source:{ batchId:run.id, releaseId:release.id, packageId:bundle.id, packageDigest:plan.digest, runId:plan.source.runId,
+        revisionId:plan.source.revisionId, revisionHash:plan.source.sqlHash, snapshotHash:plan.source.syncInput.snapshotHash },
+      ...details };
+  } catch {
+    return undefined;
+  }
 }
