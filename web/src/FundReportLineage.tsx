@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { readPublishedReportLineage, readPublishedReportDevelopment, readPublishedReportConsumption } from "../../src/v2/published-report-client.mjs";
 import type { PublishedReportConsumption, PublishedReportDevelopment, PublishedReportLineage, PublishedReportReceipt } from "../../src/v2/published-report-client.mjs";
+import { SqlColumnLineagePanel } from "./SqlColumnLineagePanel";
 
 const releaseLabels = {
   ACTIVE_LOCAL: "当前本机发布",
@@ -54,7 +55,13 @@ export function FundReportLineage({ api, receipt }: { api: <T>(path: string) => 
             <dt>记录时间</dt><dd>{time(result.batch.monitorEvent.observedAt)} 北京时间</dd>
           </dl>
         </section>
-      </div><DevelopmentEvidence api={api} receipt={receipt} lineage={result} />
+      </div>
+      <details className="report-development-v2">
+        <summary>查看原批次字段来源</summary>
+        {result.columnLineage ? <SqlColumnLineagePanel items={[result.columnLineage]} /> :
+          <p role="status">此报表回执没有字段来源证据。快照和运维记录仍可查看。</p>}
+      </details>
+      <DevelopmentEvidence api={api} receipt={receipt} lineage={result} />
       {result.source.kind === "AGENT" && <ConsumptionEvidence api={api} lineage={result} />}</>}
     </div>}
   </div>;

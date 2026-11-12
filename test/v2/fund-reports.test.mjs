@@ -62,6 +62,21 @@ test("fund lineage and development clients verify the original source, chronolog
   changed.batch.monitorEvent.observedAt="2026-09-10T00:00:01Z";
   assert.throws(() => checkedPublishedReportLineage(changed));
   const sql = "SELECT 1", sqlHash = createHash("sha256").update(sql).digest("hex");
+  const columnLineage = { assetId: body.snapshot.assetId, runId: source.batchId, revisionId: source.revisionId,
+    sourceSqlHash: sqlHash, schemaHash: hash, parser: "sqlglot", parserVersion: "27.14.0", status: "COMPLETE",
+    analysis: "STATIC_VALUE_DEPENDENCIES", rowSetImpactAnalyzed: false,
+    fields: body.snapshot.fields.map(({ name }) => ({ target: name, status: "CONSTANT", expression: "?", sources: [] })),
+  };
+  const reportWithFields = { ...body, release: { ...body.release, sourceSqlHash: sqlHash }, columnLineage };
+  assert.equal(checkedPublishedReportLineage(reportWithFields, { requestId, source }), reportWithFields);
+  for (const mismatch of [{ runId: source.runId }, { runId: id() }, { assetId: "dataset:other" },
+    { revisionId: id() }, { sourceSqlHash: hash }, { fields: columnLineage.fields.slice().reverse() },
+    { status: "UNAVAILABLE" }, { rowSetImpactAnalyzed: true }]) {
+    assert.throws(() => checkedPublishedReportLineage({ ...reportWithFields, columnLineage: { ...columnLineage, ...mismatch } }));
+  }
+  const unavailable = { ...reportWithFields, columnLineage: { assetId: body.snapshot.assetId, runId: source.batchId,
+    analysis: "STATIC_VALUE_DEPENDENCIES", rowSetImpactAnalyzed: false, status: "UNAVAILABLE", fields: [] } };
+  assert.equal(checkedPublishedReportLineage(unavailable), unavailable);
   const development = {protocol:"shuduo-fund-report-development/v1",lineage:body,
     revision:{id:source.revisionId,hash:sqlHash,sql,source:"ENGINEER_AUTHORED"},
     run:{id:source.runId,revisionId:source.revisionId,revisionHash:sqlHash,status:"SUCCEEDED",engine:"Apache Spark",
@@ -70,6 +85,13 @@ test("fund lineage and development clients verify the original source, chronolog
       inputDigest:hash,assertionDigest:hash,verifierRevision:"fund-lookthrough-v1",rehearsalId:id(),testSqlDigest:hash},
   };
   assert.equal(await checkedPublishedReportDevelopment(development,{requestId,source,lineage:body}),development);
+  assert.equal((await checkedPublishedReportDevelopment({ ...development, lineage: reportWithFields },
+    { requestId, source, lineage: reportWithFields })).lineage.columnLineage, columnLineage);
+  assert.equal(await checkedPublishedReportDevelopment(development,{lineage:reportWithFields}),development);
+  const wrongHash = { ...reportWithFields, release: { ...reportWithFields.release, sourceSqlHash: hash },
+    columnLineage: { ...columnLineage, sourceSqlHash: hash } };
+  await assert.rejects(checkedPublishedReportDevelopment({ ...development, lineage: wrongHash }));
+  await assert.rejects(checkedPublishedReportDevelopment(development,{lineage:wrongHash}));
   await assert.rejects(checkedPublishedReportDevelopment({...development,revision:{...development.revision,sql:"SELECT 2"}}));
   await assert.rejects(checkedPublishedReportDevelopment({...development,verification:{...development.verification,assertionDigest:"0".repeat(64)}}));
   await assert.rejects(checkedPublishedReportDevelopment(development,{lineage:{...body,batch:{...body.batch,monitorEvent:{...body.batch.monitorEvent,id:id()}}}}));
