@@ -14,6 +14,17 @@
 
 本机可用冻结候选与保留版本的原前端制品做启动顺序对照。对两个版本施加相同的身份响应延迟，记录浏览器自行发出的口径请求何时开始、何时返回、是否早于身份响应。把两版视口对齐后，在滚动前检查控件完整可见、中心可点击，再切换口径并核对游客写入仍关闭。本机结果用于定位串行等待和布局差异，正式首屏时间由真实浏览器和网络复验给出。
 
+已有本机 WebDriver 服务时，可用同一个脚本采集首访和同窗重访。使用已核验候选的验包记录和 ZIP，在受保护目录写入一个新 JSON。用 `--browser safari` 或 `--browser chrome` 匹配当前驱动，在各网络分别采样。脚本使用独立浏览器会话并校验证书。[Safari WebDriver](https://developer.apple.com/documentation/safari-developer-tools/webdriver/) · [W3C WebDriver](https://www.w3.org/TR/webdriver/)
+
+```sh
+node scripts/measure-v2-browser-startup.mjs \
+  --driver http://127.0.0.1:9515 --browser chrome \
+  --origin https://shuduoai.cn --network-label wifi \
+  --inspection-file "$inspection" --zip-file "$candidate" --out "$sample"
+```
+
+脚本检查选择器在首屏内的中心命中，切换业务口径并核对说明变化、完整工作台的游客状态和禁用新建。计时完成后最多追加两次匿名 GET，核对返回的 HTML 和入口脚本与候选逐字节一致。该回读记录与浏览器导航计时分开。每份输出仅覆盖一组浏览器和网络，回环诊断、标准浏览器实测、受邀验收分别留证。
+
 Agent 默认入口在身份未确认时可切换公开样例，界面只显示样例口径、交易日和说明。身份重试确认后接续所选口径，原任务和其他历史入口继续按各自权限读取。验收分别覆盖身份迟到、身份失败、恢复后的选择及深链读取边界。
 
 控制面启动时，指定 OSS Worker 就绪回执的读取可与状态恢复重叠。先恢复 MySQL 元数据，再恢复 OSS 业务状态，随后按当前时间核对回执签名和时效。首次持久化完成后才监听。无法读取或验证就绪证据时沿用只读降级。启动日志仅记录各阶段耗时，供后续定位。
