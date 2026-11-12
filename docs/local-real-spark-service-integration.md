@@ -44,6 +44,24 @@
 
 在本机隔离副本中，原报表运行显示四条直接 DAPI 和三条 XAPI 回执，切换到另一成功发布批次的报表运行显示待核对。浏览器、API、CLI 和 MCP 的结果一致，关闭服务后重新读取仍指向原批次。回看未创建新应用或调用日志。
 
+### 离线复核已保存的财富管理链路
+
+用已保存的三份 SQLite 文件和原编号运行。为每个分页调用重复传入相应选项，提供两个 DAPI 固定子版本及 XAPI 的完整分页。报表、批次及包摘要均须明确指定。
+
+```sh
+node scripts/verify-saved-wealth-lifecycle.mjs \
+  --metadata /private/metadata.sqlite --business-snapshots /private/business.sqlite \
+  --report-snapshots /private/reports.sqlite --release-id RELEASE_ID --package-digest SHA256 \
+  --batch-id ORIGINAL_BATCH_ID --report-id REPORT_ID --run-id ORIGINAL_REPORT_RUN_ID \
+  --dapi-call-id HOLDINGS_PAGE_ONE --dapi-call-id HOLDINGS_PAGE_TWO \
+  --dapi-call-id CASH_PAGE_ONE --dapi-call-id CASH_PAGE_TWO \
+  --xapi-call-id ORIGINAL_XAPI_PAGE_ONE --xapi-call-id ORIGINAL_XAPI_PAGE_TWO
+```
+
+通过时返回 `LOCAL_SAVED_EVIDENCE`、同版证据摘要及手工开发归因。核对范围包括原开发结果、八文件、T+1 业务日、演练、测试审阅、审批、原定时批次和监控。报表版本及快照、两条 DAPI 和 XAPI 的授权与撤销记录均绑定所选批次。命令只读文件，使用独立证券样例核对保存结果，输出不含客户明细或凭证。
+
+隔离样例实测复核两个实际 Spark 批次、原报表两行、四条 DAPI 和三条 XAPI 回执。重排调用编号得到相同结果。错批次、错包、缺页、重复或错类调用、改动时序、报表结果、业务快照或撤销状态均被拒绝。该复核证明本机保存链路的证据一致，人工审阅身份与公网业务仍由各自验收确认。
+
 ## 可复用方法
 
 复用既有API顺序：`/revisions` → `/runs` → `/delivery/packages` → 包的`verify` → 明确测试审阅和批准 → `/releases` → `/release/runs`及`/monitoring/overview` → DAPI／XAPI测试发布 → 临时应用查询与撤销。每次写入先保存请求键和正文摘要，结果未知先回查原记录，不重建案例。

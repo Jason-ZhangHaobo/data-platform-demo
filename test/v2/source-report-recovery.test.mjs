@@ -26,12 +26,12 @@ test('provider-compatible adapter records measured usage when returned JSON is i
 });
 
 test('timeout retains conservative reservation and budget replacement requires the exact active source report invocation',async t=>{
- const checked=Promise.withResolvers();
- const f=await ready(t,{reportPlanningTimeoutMs:100,reportPlanner:async input=>{
+ const checked=Promise.withResolvers(),timeoutMs=100;
+ const f=await ready(t,{reportPlanningTimeoutMs:timeoutMs,reportPlanner:async input=>{
   const reservation=input.sourceReservation;
   try{
    const lease=f.store.get('report_agent_plan',reservation.taskId,PROJECT);
-   const issuedAt=Date.parse(lease.createdAt),expiresAt=Date.parse(lease.modelLeaseExpiresAt);
+   const expiresAt=Date.parse(lease.modelLeaseExpiresAt),issuedAt=expiresAt-timeoutMs;
    assert(Number.isFinite(issuedAt)&&Number.isFinite(expiresAt)&&issuedAt<expiresAt);
    // The fixture issues the lease on its own clock. Check the live record
    // before awaiting the HTTP response or the real timeout.

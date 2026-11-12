@@ -42,7 +42,7 @@ function verifiedCall({ call, version, application, children, rows, finishedAt, 
     filtered: query.clientId !== undefined, rowCount: call.rowCount, resultHash: call.resultHash, finishedAt: call.finishedAt };
 }
 
-export function readWealthReportConsumption({ store, reportStore, businessStore, project, reportId, runId, actor, now = Date.now() }) {
+export function readWealthReportConsumption({ store, reportStore, businessStore, project, reportId, runId, actor, callIds, now = Date.now() }) {
   const read = (kind, id) => store.get(kind, id, project);
   const { report, version: reportVersion, run, snapshot, dataset, data } =
     checkedFixedReportArtifacts({ store, project, reportStore, reportId, runId });
@@ -81,7 +81,8 @@ export function readWealthReportConsumption({ store, reportStore, businessStore,
     return data?.integrityVerified && data.contentHash === item.snapshotHash && item.snapshotHash === serviceHash(rows);
   }).map(item => item.id));
   const byVersion = new Map(candidates.map(item => [item.id, item]));
-  const allCalls = store.list('service_call', project).filter(call => call.outcome === 'SUCCEEDED' && byVersion.has(call.serviceVersionId));
+  const storedCalls = callIds ? callIds.map(id => read('service_call', id)) : store.list('service_call', project);
+  const allCalls = storedCalls.filter(call => call?.outcome === 'SUCCEEDED' && byVersion.has(call.serviceVersionId));
   const calls = new Map();
   for (const call of allCalls.slice(0, 100)) {
     const version = byVersion.get(call.serviceVersionId);
