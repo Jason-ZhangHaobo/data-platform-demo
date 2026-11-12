@@ -132,6 +132,7 @@ import {
 import { AssetCatalogManager } from "./assets.mjs";
 import { QualityManager } from "./quality.mjs";
 import { fundReportQuality } from "./fund-report-quality.mjs";
+import { readWealthReportConsumption } from "./wealth-report-consumption.mjs";
 import { SecurityManager } from "./security.mjs";
 import { ReportDataStore, ReportManager } from "./reports.mjs";
 import { privateBatchReportQuery, privateBatchReportRoute } from "./private-batch-report-request.mjs";
@@ -3287,9 +3288,16 @@ export function createV2Server(options = {}) {
         }
       }
       const reportRecord = path.match(
-        /^\/api\/v2\/reports\/([a-f0-9-]+)(?:\/(versions|run|export|provenance))?$/,
+        /^\/api\/v2\/reports\/([a-f0-9-]+)(?:\/(versions|run|export|provenance|wealth-consumption))?$/,
       );
       if (reportRecord) {
+        if (method === 'GET' && reportRecord[2] === 'wealth-consumption') {
+          if (!localClassicSpark || options.ingress || !isLoopbackRequest(req)) throw fail(403, '财富管理报表消费回看仅支持本机');
+          if (url.searchParams.size !== 1 || !url.searchParams.has('run_id')) throw fail(422, '消费回看须选择一个确切报表运行');
+          const reportId = publishedReportSourceBatchId(reportRecord[1]), runId = publishedReportSourceBatchId(url.searchParams.get('run_id'));
+          return json(res, 200, readWealthReportConsumption({ store, reportStore, businessStore, project: PROJECT,
+            reportId, runId, actor: reportActor(req), now: options.now?.() ?? Date.now() }));
+        }
         const report = reports.reportDetail(reportRecord[1]),
           action = reportRecord[2];
         if(method==='GET'&&action==='provenance'){

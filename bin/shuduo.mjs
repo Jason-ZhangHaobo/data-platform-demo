@@ -9,6 +9,7 @@ import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-compa
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportLineage,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
+import { readWealthConsumption } from '../src/v2/wealth-report-consumption-client.mjs';
 import {checkedPrivateBatchReport, readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
 import {checkedBatchArchive, prepareBatchArchive, readBatchArchive, submitBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
@@ -235,6 +236,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo reports version --id REPORT_ID --preset holdings --description "报表V2"
   shuduo reports run|export --id REPORT_ID
   shuduo reports provenance --id REPORT_ID --run-id RUN_ID
+  shuduo reports wealth-consumption --id REPORT_ID --run-id RUN_ID
   shuduo reports verify-provenance --file evidence.json
   shuduo reports batch-summary --source-file source.json [--download-digest SHA256 --out-file batch.json]
   shuduo reports verify-batch-summary --file batch.json
@@ -1446,6 +1448,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         },
       );
     else if(resource==='reports'&&action==='provenance')result=await readReportProvenance(client,{reportId:required(parsed.options,'id'),runId:required(parsed.options,'run_id')});
+    else if(resource==='reports'&&action==='wealth-consumption')result=await readWealthConsumption(client,{reportId:required(parsed.options,'id'),runId:required(parsed.options,'run_id')});
     else if(resource==='reports'&&action==='verify-provenance'){const evidence=await checkedReportProvenance(JSON.parse(readFileSync(required(parsed.options,'file'),'utf8')));result={passed:true,digest:evidence.digest,artifacts:evidence.artifacts,integrity:evidence.integrity,onlineAuthorityVerified:false,agentIndependentE2E:false};}
     else if (resource === "reports" && action === "batch-summary") {
       const source = jsonObject(readFileSync(required(parsed.options, "source_file"), "utf8"), "批次报表来源");
