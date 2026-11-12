@@ -26,6 +26,8 @@ import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
 import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
 import { opsPublicationTarget, readOpsPublication } from '../../web/src/ops-publication.ts';
+import { checkedAgentPublication } from '../../web/src/agent-delivery-evidence-read.ts';
+import { privateReleasePendingLabel } from '../../src/v2/private-release-stage.mjs';
 import { serviceSourceFromLocation } from '../../web/src/service-source-binding.ts';
 import { serviceBatchFromLocation } from '../../web/src/service-batch-scope.ts';
 import { privateBatchReportPath } from '../../src/v2/private-batch-report-request.mjs';
@@ -998,6 +1000,27 @@ test('a killed publication CLI recovers both original batches through signed sch
 
   const releaseId=found.publication.releaseId,[firstId,secondId]=found.publication.batchIds;
   const releaseRun=id=>f.store.get('release_run',id,PROJECT);
+  const monitorHref='/v2/?'+new URLSearchParams({module:'ops',taskId:task.id,releaseId,revisionId:source.revisionId,
+    firstBatchId:firstId,secondBatchId:secondId})+'#ops-exact-publication';
+  const monitorTarget=opsPublicationTarget(new URL(monitorHref,f.base).href);
+  const monitorReads=[];
+  const monitorReader=async path=>{
+    monitorReads.push(path);
+    const result=await f.call(path);
+    assert.equal(result.status,200);
+    return result.body;
+  };
+  const exactSelection={...selector,releaseId}, publicationRead=taskPath+'/publication?'+new URLSearchParams(exactSelection);
+  const publicationOptions={taskId:task.id,scope:'PRIVATE_CLOUD_TEST',selector,releaseId};
+  const pendingLabels=async()=>{
+    const receipt=await monitorReader(publicationRead);
+    const workbench=checkedAgentPublication(receipt,publicationOptions);
+    const ops=await readOpsPublication(monitorReader,monitorTarget);
+    assert.deepEqual(ops.batches.map(batch=>batch.id),[firstId,secondId]);
+    assert.deepEqual(ops.batches.map(batch=>batch.pendingLabel),workbench.runs.map(privateReleasePendingLabel));
+    assert.ok(ops.batches.every(batch=>batch.serviceHref===undefined&&batch.reportSource===undefined));
+    return receipt;
+  };
   const timer=(mark,forged=false)=>{
     const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=mark.repeat(24);
     const body=JSON.stringify({releaseId,triggerName,expiresAt:f.now()+300000});
@@ -1026,8 +1049,13 @@ test('a killed publication CLI recovers both original batches through signed sch
   const lostQueue=f.queueCounts();
   const waiting=(await cli('v3-publish',['--reconcile'])).publication;
   assert.equal(waiting.monitoringStatus,'PENDING');
-  assert.deepEqual(waiting.batches,[{id:firstId,status:'RUNNING',reservedDurationMs:30000},{id:secondId,status:'SCHEDULED'}]);
-  assert.equal((await f.call(taskPath+'/publication')).body.release.status,'RUNNING_CLOUD_TEST');
+  assert.deepEqual(waiting.batches,[{id:firstId,status:'RUNNING',stage:'SUBMITTING',reservedDurationMs:30000},{id:secondId,status:'SCHEDULED'}]);
+  const submissionPending=await pendingLabels();
+  assert.equal(submissionPending.release.status,'RUNNING_CLOUD_TEST');
+  assert.equal(privateReleasePendingLabel(submissionPending.runs[0]),'提交待确认');
+  assert.equal(privateReleasePendingLabel({...submissionPending.runs[0],stage:'unknown'}),'运行阶段待确认');
+  assert.equal(privateReleasePendingLabel({...submissionPending.runs[0],schedulerTriggered:false}),'运行阶段待确认');
+  assert.throws(()=>checkedAgentPublication({...submissionPending,runs:[{...submissionPending.runs[0],reviewDigest:'f'.repeat(64)},submissionPending.runs[1]]},publicationOptions));
   assert.deepEqual(f.queueCounts(),lostQueue);
   assert.equal((await f.privateCall(timer('b'))).status,200);
   assert.equal((await f.privateCall(timer('a'))).status,409,'changing the signed time with the original nonce is rejected');
@@ -1058,6 +1086,17 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.ok(competing.every(response=>response.status===200));
   const second=releaseRun(secondId).remoteSubmission.prepared;
   assert.equal(second.job.jobId,secondId);
+  const beforeAcknowledgedRead=f.queueCounts();
+  const acknowledged=await pendingLabels();
+  assert.equal(privateReleasePendingLabel(acknowledged.runs[0]),undefined);
+  assert.equal(privateReleasePendingLabel(acknowledged.runs[1]),'等待 Worker 结果');
+  assert.equal((await cli('v3-publish',['--reconcile'])).publication.batches[1].stage,'WAITING_FOR_WORKER_RESULT');
+  const mcpRead=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:10,method:'tools/call',
+    params:{name:'agent_publication_detail',arguments:{taskId:task.id,...exactSelection}}},
+    {client:{request:monitorReader}}));
+  assert.ok(mcpRead.result,mcpRead.error?.message);
+  assert.deepEqual(JSON.parse(mcpRead.result.content[0].text).runs.map(run=>run.stage),['COMPLETED','WAITING_FOR_WORKER_RESULT']);
+  assert.deepEqual(f.queueCounts(),beforeAcknowledgedRead);
   f.complete(second,useRealSpark?await measuredSpark(t,f,second,'release batch 2'):undefined);
   const beforeOldReplay=f.queueCounts();
   assert.equal((await f.privateCall(firstTimer)).body.replayed,true);
@@ -1081,17 +1120,8 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(f.store.list('release_run',PROJECT).length,2);
   assert.equal(f.store.list('monitor_event',PROJECT).length,2);
   assert.equal(f.store.list('monitor_alert',PROJECT).length,0);
-  const monitorHref='/v2/?'+new URLSearchParams({module:'ops',taskId:task.id,releaseId,revisionId:source.revisionId,
-    firstBatchId:firstId,secondBatchId:secondId})+'#ops-exact-publication';
-  const monitorTarget=opsPublicationTarget(new URL(monitorHref,f.base).href);
   assert.equal(opsPublicationTarget(new URL(monitorHref.replace('#','&releaseId='+releaseId+'#'),f.base).href),null);
-  const monitorReads=[];
-  const monitorReader=async path=>{
-    monitorReads.push(path);
-    const result=await f.call(path);
-    assert.equal(result.status,200);
-    return result.body;
-  };
+  monitorReads.length=0;
   const monitoringBefore=f.queueCounts();
   const opsEvidence=await readOpsPublication(monitorReader,monitorTarget);
   assert.deepEqual(monitorReads,['/releases/'+releaseId,'/release/runs/'+firstId,'/release/runs/'+secondId]);

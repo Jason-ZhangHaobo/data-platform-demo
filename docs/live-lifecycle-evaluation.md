@@ -162,6 +162,8 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 
 在原 Agent 任务的「审阅发布与运行监控」中，确切发布通过核对后可打开「在运维监控查看原批次」。目标页用现有发布和批次权限读取原记录，并核对代码版本、交付包摘要、审阅摘要及两个批次的顺序。页面显示保存状态及调度是否触发，可重新读取或返回原任务。
 
+已触发但未结算的批次会显示「提交待确认」或「等待 Worker 结果」。提交确认仅表示队列写入已得到回执。旧记录缺少可核对的阶段时，界面显示「运行阶段待确认」。CLI 的 `v3-publish --reconcile` 在原批次中返回 `SUBMITTING`、`WAITING_FOR_WORKER_RESULT` 或 `UNCONFIRMED`。工作台、运维及 MCP 沿用原只读接口。刷新或重开页面不会推进 Worker，接口和报表入口仍须通过原双批核验。
+
 本机测试可用 `SHUDUO_TEST_LOCAL_SPARK_RELEASE=true` 执行同一包的两个真实 Spark 批次。签名入口、队列和数据仍在隔离本机环境，真实云调度、付费执行与授权消费需分别验收。
 
 ### 核对两个原发布批次的授权消费

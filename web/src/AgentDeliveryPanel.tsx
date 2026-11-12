@@ -19,6 +19,8 @@ import {checkedAgentWorkflow,frozenRequirementProposal} from "./agent-workflow-r
 import type {FundExecutionBinding} from "../../src/v2/fund-preparation-client.mjs";
 import type {Delivery,Workflow} from "./agent-workflow-read";
 import {checkedAgentPublication,checkedAgentConsumption} from "./agent-delivery-evidence-read";
+import type {Publication,Release} from "./agent-delivery-evidence-read";
+import {privateReleasePendingLabel} from "../../src/v2/private-release-stage.mjs";
 import {publicationSelector,publicationSelectionKey,publicationReadPath,publicationReleaseMatches,checkedPublication,publicationWriteAllowed,publicationCancellationAllowed,cloudPublicationRequest,createPublicationAttempt} from "./publication-selection";
 import type {PublicationSelector} from "./publication-selection";
 import {validServiceSourceBinding,serviceSourceKey,serviceSourceScope,serviceEvidencePath,returnedPublicationMatches,localAgentPublicationPath} from "./service-source-binding";
@@ -27,13 +29,15 @@ import type {PublishedReportSource} from "./published-report-read";
 const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
 const AgentBatchArchivePanel = lazy(async () => ({default:(await import("./AgentBatchArchivePanel")).AgentBatchArchivePanel}));
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
-type Release = { id: string; status: string; health: string; modelMode?:string; sourceKind?:string; sourceRunId?:string; reviewDigest?:string; agentIndependentE2E?:boolean; packageId?: string; packageDigest?: string; verificationId?: string; sourceAgentTaskId?: string; sourceRevisionId?: string; runCount?: number;rolledBackToReleaseId?:string;rolledBackToTaskId?:string;restoredAt?:string;outputContract?:{id:string;metadataHash:string} };
-type Publication = { rollbackTargets?:import("./agent-delivery-evidence-read").RollbackTarget[];historyRunCount?:number;release?: Release; runs: {id:string; status:string; sequence:number; schedulerTriggered?:boolean; resultUnknown?:boolean; durationMs?:number; triggeredAt?:string; finishedAt?:string}[]; alerts:{id:string;status:string;message:string;recoveryRunId?:string}[]; events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[] };
 type FundPreflight = { protocol:string;scope:string;ready:boolean;digest:string;taskId:string;sourceRunId:string;revisionId:string;
   packageId:string;packageDigest:string;verificationId:string;businessDate:string;modelMode:string;reviewId:string;
   scheduleSpec:{triggerAfterSeconds:number;intervalSeconds:number;runCount:2} };
 const complete = (status?: string) => ["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(status ?? "");
 const batchLabels: Record<string,string> = { SCHEDULED: "等待调度", RUNNING: "正在运行", SUCCEEDED: "独立核验通过", FAILED: "运行或核验失败", CANCELLED: "已停止", INTERRUPTED: "已中断" };
+function batchLabel(batch:Publication["runs"][number],reviewedPrivate:boolean) {
+  if (batch.resultUnknown) return "执行中断，结果待核对";
+  return (reviewedPrivate ? privateReleasePendingLabel(batch) : undefined) ?? batchLabels[batch.status] ?? batch.status;
+}
 function download(name: string, value: unknown) {
   const blob = new Blob([typeof value === "string" ? value : JSON.stringify(value, null, 2)], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob), link = document.createElement("a"); link.href = url; link.download = name; link.hidden = true;
@@ -316,7 +320,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           {fund&&<small>本机测试 · {release.modelMode==="SYNTHETIC_MODEL"?"模型替身":"模型生成"}</small>}
           {monitorHref && <a className="button" href={monitorHref}>在运维监控查看原批次</a>}
           {archiveChoices.length > 0 && <a className="button" href="#agent-report-archives">在此任务查看报表归档</a>}
-          <ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batch.resultUnknown ? "执行中断，结果待核对" : batchLabels[batch.status] ?? batch.status} · {batch.schedulerTriggered ? "调度器已触发" : batch.status === "CANCELLED" ? "未再触发" : "等待计划时间"}<small>批次编号：{batch.id}</small></li>)}</ul>
+          <ul>{batches.map(batch => <li key={batch.id}>第{batch.sequence}批 · {batchLabel(batch,cloud && Boolean(release.reviewDigest))} · {batch.schedulerTriggered ? "调度器已触发" : batch.status === "CANCELLED" ? "未再触发" : "等待计划时间"}<small>批次编号：{batch.id}</small></li>)}</ul>
           {publication?.alerts.map(alert => <p key={alert.id} role={alert.status === "OPEN" ? "alert" : undefined}>{alert.status === "OPEN" ? "未解除告警" : "已恢复"}：{alert.message}{alert.recoveryRunId ? ` · 恢复批次 ${alert.recoveryRunId.slice(0,8)}` : ""}</p>)}
           {cloud&&cancellationWritable&&!publicationReady&&<p role="status">监控读取尚未确认；原发布来源和编号已核对，仍可停止这个已确认版本的后续批次。</p>}
           {cloud && release.status !== "CANCELLED" && batches.some(batch => !complete(batch.status)) && <button className="button" disabled={!cancellationWritable} onClick={async () => {

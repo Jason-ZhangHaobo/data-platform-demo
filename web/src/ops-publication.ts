@@ -1,3 +1,5 @@
+import {privateReleasePendingLabel} from "../../src/v2/private-release-stage.mjs";
+
 type MonitorTarget = {
   taskId: string;
   releaseId: string;
@@ -36,7 +38,7 @@ type SavedRelease = {
 type SavedBatch = {
   id?: string; releaseId?: string; sourceAgentTaskId?: string; sourceRunId?: string;
   sourceKind?: string; reviewDigest?: string; packageId?: string; packageDigest?: string;
-  sequence?: number; status?: string; schedulerTriggered?: boolean;
+  sequence?: number; status?: string; schedulerTriggered?: boolean; stage?: unknown;
   published?: boolean; engine?: string; mainSqlExecuted?: boolean;
   testSqlValidation?: {passed?: boolean}; validation?: {passed?: boolean};
 };
@@ -62,7 +64,9 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
     [first, second].every(batch => batch.status === "SUCCEEDED" && batch.schedulerTriggered === true &&
       batch.published === true && batch.engine === "Apache Spark" && batch.mainSqlExecuted === true &&
       batch.testSqlValidation?.passed === true && batch.validation?.passed === true);
-  const batches = [first, second].map(({id, sequence, status, schedulerTriggered}) => {
+  const batches = [first, second].map(batch => {
+    const {id, sequence, status, schedulerTriggered} = batch;
+    const pendingLabel = privateReleasePendingLabel(batch);
     const serviceHref = canConsume ? "/v2/?" + new URLSearchParams({
       module:"services", source_task:target.taskId, source_release:target.releaseId,
       source_revision:target.revisionId, source_run:release.sourceRunId!, source_package:release.packageDigest!,
@@ -72,7 +76,7 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
       kind:"AGENT" as const, taskId:target.taskId, releaseId:target.releaseId, revisionId:target.revisionId,
       runId:release.sourceRunId!, packageDigest:release.packageDigest!, batchId:id!,
     } : undefined;
-    return {id, sequence, status, schedulerTriggered, serviceHref, reportSource};
+    return {id, sequence, status, schedulerTriggered, ...(pendingLabel ? {pendingLabel} : {}), serviceHref, reportSource};
   });
   return {status:release.status, health:release.health, batches};
 }
