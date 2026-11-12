@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { submitFundPreparation, readFundPreparation, executeFundPreparation } from "../src/v2/fund-preparation-client.mjs";
+import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import { fileURLToPath } from "node:url";
@@ -52,6 +52,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent prepare-fund --context-id ID --trade-date YYYY-MM-DD --message "需求" --metrics FIELD_LIST --request-id UUID
   shuduo agent fund-preparation --request-id UUID
   shuduo agent execute-fund --request-id UUID --basis-digest SHA256 --confirm
+  shuduo agent fund-execution-preflight --task-id UUID --request-id UUID --revision-id UUID --run-id UUID --basis-digest SHA256
   shuduo agent tools
   shuduo agent validate-tool --tool MODULE_ID --catalog-version VERSION --contract-digest SHA256 --input-json '{"message":"任务目标"}'
   shuduo agent invoke-tool --id INTENT_ID --tool MODULE_ID --approval-id APPROVAL_ID --catalog-version VERSION --contract-digest SHA256 --input-json '{"message":"已批准目标"}'
@@ -474,6 +475,10 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "execute-fund")
       result = await executeFundPreparation(client, { requestId: required(parsed.options, "request_id"),
         basisDigest: required(parsed.options, "basis_digest"), confirm: parsed.options.confirm === true });
+    else if (resource === "agent" && action === "fund-execution-preflight")
+      result = await readFundExecutionPreflight(client, { taskId: required(parsed.options, "task_id"),
+        requestId: required(parsed.options, "request_id"), revisionId: required(parsed.options, "revision_id"),
+        runId: required(parsed.options, "run_id"), basisDigest: required(parsed.options, "basis_digest") });
     else if (resource === "agent" && action === "intents")
       result = await client.request("/agent/intents");
     else if (resource === "agent" && action === "tools")
