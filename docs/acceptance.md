@@ -216,6 +216,12 @@ API 使用 `POST /api/v2/agent/tasks/{id}/prepare-delivery` 和原 `Idempotency-
 
 在原任务记录四项文件审阅后，打开「审阅并发布测试任务」。预检读取原任务、开发运行、代码版本、包摘要、演练、冻结业务日和模型来源。确认表显示固定两批的触发参数。工程师明确确认后，审批把预检摘要和计时计划绑定到该交付包，激活时消费同一审批。工作台按确切发布显示两个批次、调度触发和监控事件。
 
+### 基金签名交付的发布审阅核对
+
+绑定签名证据的基金包需要在发布预检中重新核对原签名、八文件和演练。提交文件审阅时回传预检返回的演练摘要。换包、换签名、同编号替换演练内容或撤走原件后，旧审阅无法用于批准。原本机未绑定签名的交付沿用原审阅格式。
+
+本机通过真实 HTTP 复用已保存的签名包及演练，只记录一条隔离测试审阅。篡改演练后预检退回待审阅，旧审批请求被拒。验收期间没有提交 Spark 或创建审批、发布与运行批次。
+
 预检使用 `GET /api/v2/agent/tasks/{id}/publication/preflight`，参数为 `sourceKind=AGENT`、`sourceRunId`、`packageDigest` 和 `verificationId`。监控使用同一查询参数访问 `/publication`，可追加 `releaseId`。CLI 对应 `shuduo agent publication-preflight` 和 `shuduo agent publication`。MCP 预检工具为 `fund_agent_publication_preflight`，监控工具为 `agent_publication_detail`。
 
 CLI 可用 `shuduo releases approve` 和 `shuduo releases publish` 的 `--fund-consent` 参数传入已审阅文件。该文件包含预检回执中的 `scope`、`packageDigest`、`verificationId`、`businessDate` 和 `scheduleSpec`。将预检回执的 `digest` 填入 `preflightDigest`，经本人确认后添加 `confirmFrozenFictionalData: true`。MCP 的 `release_approve` 使用同一个 `fundConsent` 对象，`release_create` 使用已批准的原计划。回执丢失时先按确切来源读取原发布。

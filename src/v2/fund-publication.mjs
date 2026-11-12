@@ -1,6 +1,7 @@
 import { isDeepStrictEqual as same } from "node:util";
 import { resolveDeliverySchedule, sha256, validateDeliveryPackage } from "./delivery.mjs";
 import { fundAgentAttributionKind, verifiedFundRun } from "./fund-delivery.mjs";
+import { verifyFundSignedDelivery } from "./fund-signed-delivery.mjs";
 import { isFundContext } from "./fund-contexts.mjs";
 import { plannedLocalRuns } from "./release-scheduler.mjs";
 
@@ -27,7 +28,17 @@ export function assertFundRehearsal(bundle, verification) {
   return occurrence;
 }
 
-export function assertFundConsent({ bundle, verification, review, consent, localClassicSpark, schedulerMode }) {
+export function fundSignedRehearsalDigest(bundle, verification, fundSignedExecution) {
+  if (bundle.manifest.source.fundSignedExecution === undefined) return;
+  const plan = validateDeliveryPackage(bundle, bundle.digest);
+  verifyFundSignedDelivery(bundle, plan, fundSignedExecution);
+  const fileHashes = Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, value]) => [name, value.sha256]));
+  const trace = plan.order.map(({ id, kind }) => ({ id, kind, status: "SUCCEEDED" }));
+  if (!same(verification.fileHashes, fileHashes) || !same(verification.workflowTrace, trace)) throw fail();
+  return sha256(JSON.stringify(verification));
+}
+
+export function assertFundConsent({ bundle, verification, review, consent, localClassicSpark, schedulerMode, fundSignedExecution }) {
   if (!isFundContext(bundle?.manifest?.source?.contextId)) {
     if (consent !== undefined) throw fail();
     return;
@@ -35,7 +46,7 @@ export function assertFundConsent({ bundle, verification, review, consent, local
   const attribution = bundle.manifest.source.attribution;
   const agent = attribution?.kind === fundAgentAttributionKind;
   if (!agent && attribution?.kind !== "ENGINEER_AUTHORED") throw fail();
-  const preflight = agent ? fundAgentPublicationPreflight({ bundle, verification, review, localClassicSpark, schedulerMode }) : undefined;
+  const preflight = agent ? fundAgentPublicationPreflight({ bundle, verification, review, localClassicSpark, schedulerMode, fundSignedExecution }) : undefined;
   const businessDate = preflight?.businessDate ?? assertFundRehearsal(bundle, verification).businessDate;
   const spec = consent?.scheduleSpec;
   if (!localClassicSpark || schedulerMode !== "LOCAL_TIMER" ||
@@ -52,25 +63,28 @@ export function assertFundConsent({ bundle, verification, review, consent, local
   return structuredClone(consent);
 }
 
-export function fundAgentPublicationPreflight({ bundle, verification, review, localClassicSpark, schedulerMode }) {
+export function fundAgentPublicationPreflight({ bundle, verification, review, localClassicSpark, schedulerMode, fundSignedExecution }) {
   const source = bundle?.manifest?.source, attribution = source?.attribution;
   if (attribution?.kind !== fundAgentAttributionKind) throw fail();
   const occurrence = assertFundRehearsal(bundle, verification);
+  const rehearsalDigest = fundSignedRehearsalDigest(bundle, verification, fundSignedExecution);
   const ready = Boolean(localClassicSpark && schedulerMode === "LOCAL_TIMER" && review?.status === "REVIEWED" &&
     review.scope === "LOCAL_FILE_REVIEW" && review.publicDeploymentApproved === false &&
     review.reviewer?.id === attribution.actorId && review.packageId === bundle.id &&
     review.packageDigest === bundle.digest && review.verificationId === verification.id &&
+    review.fundRehearsalDigest === rehearsalDigest &&
     exact(review.attestations, attestations) && attestations.every(key => review.attestations[key] === true));
   const evidence = { protocol: "shuduo-fund-agent-publication-preflight/v1", scope: "LOCAL_TEST_RELEASE",
     taskId: attribution.originAgentTaskId, sourceRunId: source.runId, revisionId: source.revisionId,
     packageId: bundle.id, packageDigest: bundle.digest, verificationId: verification.id,
     businessDate: occurrence.businessDate, modelMode: attribution.modelMode, scheduleSpec: fundAgentSchedule,
-    reviewId: ready ? review.id : null, ready };
+    reviewId: ready ? review.id : null, ready,
+    ...(rehearsalDigest ? { rehearsalDigest, fundSignedExecution: source.fundSignedExecution } : {}) };
   return { ...evidence, digest: sha256(JSON.stringify(evidence)) };
 }
 
-export function assertFundRelease({ bundle, verification, review, approval, spec, localClassicSpark, schedulerMode }) {
-  assertFundConsent({ bundle, verification, review, consent: approval?.fundConsent, localClassicSpark, schedulerMode });
+export function assertFundRelease({ bundle, verification, review, approval, spec, localClassicSpark, schedulerMode, fundSignedExecution }) {
+  assertFundConsent({ bundle, verification, review, consent: approval?.fundConsent, localClassicSpark, schedulerMode, fundSignedExecution });
   if (approval.status !== "APPROVED" || approval.scope !== "LOCAL_TEST_RELEASE" || approval.publicDeploymentApproved !== false ||
       approval.packageId !== bundle.id || approval.packageDigest !== bundle.digest || approval.rehearsalId !== verification.id ||
       approval.reviewId !== review.id || approval.sourceRevisionId !== bundle.manifest.source.revisionId ||
@@ -79,8 +93,8 @@ export function assertFundRelease({ bundle, verification, review, approval, spec
       approval.approver?.id !== bundle.manifest.source.attribution.actorId) throw fail();
 }
 
-export function assertFundBatch({ bundle, verification, review, approval, release, run, batches, localClassicSpark, schedulerMode, timeUnitMs }) {
-  assertFundRelease({ bundle, verification, review, approval, spec: release.scheduleSpec, localClassicSpark, schedulerMode });
+export function assertFundBatch({ bundle, verification, review, approval, release, run, batches, localClassicSpark, schedulerMode, timeUnitMs, fundSignedExecution }) {
+  assertFundRelease({ bundle, verification, review, approval, spec: release.scheduleSpec, localClassicSpark, schedulerMode, fundSignedExecution });
   const source = bundle.manifest.source;
   if (approval.consumedByReleaseId !== release.id || release.packageId !== bundle.id || release.packageDigest !== bundle.digest ||
       release.sourceRevisionId !== source.revisionId || release.sourceSqlHash !== source.sqlHash || release.publicDeployed !== false ||

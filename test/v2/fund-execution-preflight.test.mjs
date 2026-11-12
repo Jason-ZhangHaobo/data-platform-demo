@@ -15,6 +15,7 @@ import { fundContext, fundReferenceSql } from "../../src/v2/fund-lookthrough.mjs
 import { readFundExecutionPreflight } from "../../src/v2/fund-preparation-client.mjs";
 import { fundExecutionPreflightPath } from "../../src/v2/fund-preparation-request.mjs";
 import { fundExecutionPreflight, resolveFundExecutionCandidate } from "../../src/v2/fund-execution-preflight.mjs";
+import { assertFundConsent, fundAgentPublicationPreflight } from "../../src/v2/fund-publication.mjs";
 import { verifyFundSignedExecution } from "../../src/v2/fund-signed-execution.mjs";
 import { bindFundSignedDelivery } from "../../src/v2/fund-signed-delivery.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "../../src/v2/fund-preparation.mjs";
@@ -239,4 +240,30 @@ test("signed fund execution binds immutable job bytes and independent result to 
   assert.equal(rehearsal.mode,"LOCAL_FILE_REHEARSAL");
   assert.deepEqual(rehearsal.source.fundSignedExecution,marker);
   assert.equal(rehearsals,1);
+
+  const reviewBundle={...bound,id:randomUUID()}, verification={...rehearsal,id:randomUUID(),packageId:reviewBundle.id};
+  const reviewInput={bundle:reviewBundle,verification,localClassicSpark:true,schedulerMode:"LOCAL_TIMER",fundSignedExecution:evidence};
+  const beforeReview=fundAgentPublicationPreflight(reviewInput);
+  assert.equal(beforeReview.ready,false);
+  assert.equal(beforeReview.rehearsalDigest,sha256(JSON.stringify(verification)));
+  assert.deepEqual(beforeReview.fundSignedExecution,marker);
+  const review={id:randomUUID(),packageId:reviewBundle.id,packageDigest:bound.digest,verificationId:verification.id,
+    reviewer:{id:actorId},status:"REVIEWED",scope:"LOCAL_FILE_REVIEW",publicDeploymentApproved:false,
+    fundRehearsalDigest:beforeReview.rehearsalDigest,attestations:{code:true,assertions:true,deliveryFiles:true,localScope:true}};
+  const reviewed=fundAgentPublicationPreflight({...reviewInput,review});
+  assert.equal(reviewed.ready,true);
+  const consent={scope:"LOCAL_TEST_RELEASE",packageDigest:bound.digest,verificationId:verification.id,
+    businessDate:original.context.businessDate,scheduleSpec:reviewed.scheduleSpec,preflightDigest:reviewed.digest,
+    confirmFrozenFictionalData:true};
+  assert.deepEqual(assertFundConsent({...reviewInput,review,consent}),consent);
+  for(const changed of [
+    {review:{...review,fundRehearsalDigest:undefined}},
+    {verification:{...verification,id:randomUUID()}},
+    {verification:{...verification,durationMs:5}},
+    {bundle:nextDelivery},
+  ]) assert.throws(()=>assertFundConsent({...reviewInput,review,consent,...changed}),{code:"FUND_PUBLICATION_SOURCE_CHANGED"});
+  assert.throws(()=>assertFundConsent({...reviewInput,review,consent,fundSignedExecution:undefined}),
+    {code:"FUND_SIGNED_DELIVERY_EVIDENCE_REQUIRED"});
+  assert.throws(()=>assertFundConsent({...reviewInput,review,consent,fundSignedExecution:{...evidence,envelope:{...envelope,signature:"bad"}}}),
+    {code:"SPARK_QUEUE_RESULT_INVALID"});
 });
