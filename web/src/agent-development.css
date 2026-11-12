@@ -80,3 +80,8 @@
 .fund-preparation-result-grid h5 { margin-bottom: 8px; }
 .fund-preparation-result-grid p + p { margin: 8px 0; }
 .fund-preparation-result-grid ul { padding-left: 20px; margin: 0; }
+
+.agent-call-history { scroll-margin-top: 16px; }
+.agent-call-history dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; max-width: 680px; margin: 12px 0; }
+.agent-call-history dt { font-weight: 600; }
+.agent-call-history dd { margin: 0; overflow-wrap: anywhere; }

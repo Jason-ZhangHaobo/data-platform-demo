@@ -5849,10 +5849,18 @@ export function createV2Server(options = {}) {
           publication: { available: agent.fundPreparation ? localClassicSpark && releaseSchedulerMode === "LOCAL_TIMER" : (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: agent.fundPreparation ? "审阅文件后，确认同一冻结业务日的两批本机测试。发布后按原版本查看批次。" : getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
       }
-      const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel|preflight|requests\/([A-Za-z0-9_-]{1,100})))?$/);
+      const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel|history|preflight|requests\/([A-Za-z0-9_-]{1,100})))?$/);
       if (privatePublication) {
         const agent = get("agent", privatePublication[1]); requireDurableAgentOwner(agent,req);
         const actorId = auth.sessionFromHeaders(req.headers)?.user.id;
+        if (method === "GET" && privatePublication[2] === "history") {
+          if (local || agent.executionMode !== durableSqlAgentMode || !actorId || agent.submittedBy !== actorId)
+            throw fail(403, "原发布历史仅供任务所属人核验");
+          const selector = validatePublicationSelector(publicationSelectorFromUrl(url), actorId);
+          if (selector.sourceKind !== "AGENT" || !selector.releaseId || !selector.packageDigest)
+            throw fail(422, "请指定原 Agent 发布编号与确切包摘要");
+          return json(res, 200, cloudPublicationHistory.savedDetail(agent.id, selector));
+        }
         if (method === "POST") {
           if (url.search) throw fail(422, "发布写入仅接受正文中的确切来源，不接受查询参数");
           assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
