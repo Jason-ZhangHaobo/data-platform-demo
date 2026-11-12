@@ -145,6 +145,14 @@ export function verifiedStoredCloudDevelopment(task, revision, run) {
   }
 }
 
+export function pinnedCloudDeliverySource(agent, revision, run, read) {
+  const proof = liveEvidenceProvenance(agent,revision,run);
+  if (proof.synthetic || proof.nonNative || proof.unconfirmed || agent.sourceRunId !== undefined ||
+      !validStoredAgentDerivation(agent,read) || !verifiedStoredCloudDevelopment(agent,revision,run)) return;
+  return {revisionId:revision.id,revisionHash:revision.hash,runId:run.id,
+    ...(agent.requirements ? {requirementBinding:sqlRequirementBinding(agent.requirements)} : {})};
+}
+
 export function manualCloudDeliverySource({store, project, runId, actorId, requireVerified = true}) {
   const run = store.get("run", runId, project), revision = store.get("revision", run?.revisionId ?? "", project),
     provenance = revision?.manualProvenance;
@@ -188,13 +196,9 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     return { revision, run };
   };
   const checkPinnedSource = (agent, {revision,run}, expected) => {
-    const proof = liveEvidenceProvenance(agent,revision,run);
-    const requirement = agent.requirements ? sqlRequirementBinding(agent.requirements) : undefined;
-    if (proof.synthetic || proof.nonNative || proof.unconfirmed || agent.sourceRunId !== undefined ||
-        !validStoredAgentDerivation(agent,(kind,id)=>store.get(kind,id,project)) ||
-        revision.id !== expected.revisionId || revision.hash !== expected.revisionHash ||
-        run.id !== expected.runId || !isDeepStrictEqual(requirement,expected.requirementBinding) ||
-        !verifiedStoredCloudDevelopment(agent,revision,run))
+    const actual = pinnedCloudDeliverySource(agent,revision,run,(kind,id)=>store.get(kind,id,project));
+    if (!actual || actual.revisionId !== expected.revisionId || actual.revisionHash !== expected.revisionHash ||
+        actual.runId !== expected.runId || !isDeepStrictEqual(actual.requirementBinding,expected.requirementBinding))
       throw fail(409,"交付准备的代码版本、Spark 批次或需求依据已变化");
   };
   const bundleFor = async task => {

@@ -4,14 +4,16 @@ import type {ServiceSourceBinding} from './service-source-binding';
 import {deliveryFileGuide} from './delivery-presentation.ts';
 import {checkedAssistedDevelopmentReference,sameAssistedDevelopmentReference} from '../../src/v2/assisted-development-reference.mjs';
 import type {AssistedDevelopmentReference} from '../../src/v2/assisted-development-reference.mjs';
-import {sqlRequirementReportMatches} from '../../src/v2/sql-requirement-contract.mjs';
+import {sqlRequirementProtocol,sqlRequirementReportMatches} from '../../src/v2/sql-requirement-contract.mjs';
 import type {SqlRequirementReport} from '../../src/v2/sql-requirement-contract.mjs';
 import type {FundExecutionBinding} from '../../src/v2/fund-preparation-client.mjs';
 
-export type Delivery = {id:string;version:number;status:string;stage:string;mode?:string;sourceKind?:string;packageId?:string;packageDigest?:string;verificationId?:string;sourceRevisionId?:string;sourceRunId?:string;error?:string};
+export type Delivery = {id:string;version:number;status:string;stage:string;mode?:string;sourceKind?:string;packageId?:string;packageDigest?:string;verificationId?:string;sourceRevisionId?:string;sourceRunId?:string;sourcePinned?:boolean;rehearsalPinned?:boolean;error?:string};
+type PreparationSource = {revisionId:string;revisionHash:string;runId:string;requirementBinding?:{protocol:string;taskId:string;basisDigest:string;reportDigest:string}};
 export type FundReviewBasis = {status:"READY";digest:string} | {status:"UNAVAILABLE"};
 export type FileReview={id:string;status:"REVIEWED";packageId:string;packageDigest:string;verificationId:string;reviewedAt:string;scope:"LOCAL_FILE_REVIEW";fundRehearsalDigest?:string};
 export type Workflow = {
+ preparationSource?:PreparationSource;
  fileReview?:FileReview;
  report:{developmentReference?:AssistedDevelopmentReference;taskId:string;sourceKind?:string;agentIndependentE2E?:boolean;contextId?:string;validationContractId?:string;validationDetails?:ValidationDetailsReport;status:string;summary:string;definition?:string;checks:{id:string;label:string;passed:boolean}[];revisionId?:string;revisionHash?:string;runId?:string;rowCount:number;engine?:string;engineVersion?:string;notice:string};
  delivery?:Delivery;
@@ -29,6 +31,15 @@ const nonnegative=(v:unknown)=>Number.isSafeInteger(v)&&Number(v)>=0;
 const canonical=(v:unknown)=>JSON.stringify(v,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
 const digest=async(v:string)=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v)))].map(n=>n.toString(16).padStart(2,'0')).join('');
 const bad=()=>Error('核验与交付回执的结构、原任务或版本关系未确认；保留原记录，重新读取，不自动计算或发布。');
+export function exactDeliveryAdvance(workflow: Workflow | undefined, delivery: Delivery) {
+ const expectedVersion = delivery.version;
+ if ((!delivery.sourcePinned && !delivery.rehearsalPinned) || delivery.stage === "PACKAGE_PERSISTING") return {expectedVersion};
+ const bundle = workflow?.package;
+ if (!bundle || workflow.delivery?.id !== delivery.id || workflow.delivery.version !== expectedVersion ||
+   bundle.id !== delivery.packageId || bundle.digest !== delivery.packageDigest || workflow.verification?.id !== delivery.verificationId) throw bad();
+ return {expectedVersion,rehearsal:{packageId:bundle.id,packageDigest:bundle.digest,
+   ...(delivery.verificationId ? {verificationId:delivery.verificationId} : {})}};
+}
 export function frozenRequirementProposal(bundle:Workflow['package'],taskId:string):SqlRequirementReport|undefined{
  if(!bundle||!record(bundle.manifest)||!record(bundle.manifest.source))return;
  const source=bundle.manifest.source;let proof:unknown;
@@ -66,13 +77,25 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
  const frozen=selection.expectedSourceBinding;
  if(frozen&&(frozen.taskId!==r.taskId||frozen.revisionId!==r.revisionId||frozen.runId!==r.runId||(frozen.sourceKind==='MANUAL')!==selection.manual||
   (frozen.scope==='LOCAL_TEST_ONLY'?p.scope!=='LOCAL_TEST_RELEASE':p.scope!=='PRIVATE_CLOUD_TEST')))throw bad();
+ const preparation=value.preparationSource;
+ if(preparation!==undefined){
+  if(selection.manual||p.scope!=='PRIVATE_CLOUD_TEST'||r.status!=='PASSED'||!record(preparation)||
+   Object.keys(preparation).some(k=>!['revisionId','revisionHash','runId','requirementBinding'].includes(k))||
+   preparation.revisionId!==r.revisionId||preparation.revisionHash!==r.revisionHash||preparation.runId!==r.runId)throw bad();
+  const requirement=preparation.requirementBinding;
+  if(!optional(requirement,x=>record(x)&&Object.keys(x).length===4&&x.protocol===sqlRequirementProtocol&&
+   x.taskId===r.taskId&&hash(x.basisDigest)&&hash(x.reportDigest))||
+   (requirement!==undefined)!==checks.some(c=>c.id==='requirement'&&c.passed===true))throw bad();
+ }
  const d=value.delivery,b=value.package,v=value.verification;
  let signedFund=false;
  if(d!==undefined){
   if(!record(d)||!id(d.id)||!Number.isSafeInteger(d.version)||Number(d.version)<1||!['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','INTERRUPTED'].includes(String(d.status))||typeof d.stage!=='string'||!d.stage||
    !['mode','error'].every(k=>optional(d[k],text))||!['packageId','verificationId'].every(k=>optional(d[k],id))||!optional(d.packageDigest,hash)||
    !optional(d.sourceAgentTaskId,x=>x===r.taskId)||d.sourceRevisionId!==r.revisionId||d.sourceRunId!==r.runId||!id(d.sourceRevisionId)||!id(d.sourceRunId)||
-   !optional(d.sourceSqlHash,x=>x===r.revisionHash)||(selection.manual?d.sourceKind!=='MANUAL':d.sourceKind==='MANUAL'))throw bad();
+   !optional(d.sourceSqlHash,x=>x===r.revisionHash)||(selection.manual?d.sourceKind!=='MANUAL':d.sourceKind==='MANUAL')||
+   !['sourcePinned','rehearsalPinned'].every(k=>optional(d[k],v=>typeof v==='boolean'))||
+   (d.sourcePinned||d.rehearsalPinned)&&(selection.manual||d.mode!=='DURABLE_AGENT_DELIVERY_V1'))throw bad();
  }
  if(record(d)&&!sameAssistedDevelopmentReference(d.developmentReference,r.developmentReference))throw bad();
  if(b!==undefined){
@@ -81,7 +104,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
   if(manifest.format!=='shuduo-delivery/v1'||manifest.releaseState!=='NOT_PUBLISHED'||!record(source)||!record(entries)||
    source.runId!==r.runId||source.revisionId!==r.revisionId||source.contextId!==r.contextId||source.sqlHash!==r.revisionHash||source.validationContractId!==r.validationContractId||
    canonical(Object.keys(files).sort())!==canonical(names)||canonical(Object.keys(entries).sort())!==canonical(names)||
-   frozen&&b.digest!==frozen.packageDigest)throw bad();
+   frozen&&b.digest!==frozen.packageDigest||record(preparation)&&canonical(preparation.requirementBinding)!==canonical(source.requirement))throw bad();
   const attribution=source.attribution;
   signedFund=source.fundSignedExecution!==undefined;
   if(signedFund&&!selection.fundPreparation)throw bad();

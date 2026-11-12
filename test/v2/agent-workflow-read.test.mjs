@@ -3,7 +3,7 @@ import{MetadataStore}from'../../src/v2/store.mjs';import{createV2Server,PROJECT}
 import{getContext,contextIds,referenceSql,validationContractId}from'../../src/v2/context.mjs';
 import{createDeliveryPackage,sha256}from'../../src/v2/delivery.mjs';
 import{developmentVerificationReport}from'../../src/v2/agent-development-workflow.mjs';
-import{checkedAgentWorkflow}from'../../web/src/agent-workflow-read.ts';import{agentJourney}from'../../web/src/agent-journey.ts';
+import{checkedAgentWorkflow,exactDeliveryAdvance}from'../../web/src/agent-workflow-read.ts';import{agentJourney}from'../../web/src/agent-journey.ts';
 const uuid=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 function fixture(t,{manual=false}={}){
  const store=new MetadataStore(':memory:');t.after(()=>store.close());
@@ -50,6 +50,22 @@ test('same-task historical evidence stays historical while manual reads require 
 test('failed preparation remains readable without fabricated files or rehearsal',async t=>{
  const f=fixture(t),value=structuredClone(f.value);value.delivery.status='FAILED';value.delivery.stage='PACKAGE_FAILED';value.delivery.error='合成准备失败';for(const key of ['packageId','packageDigest','verificationId'])delete value.delivery[key];delete value.package;delete value.verification;
  assert.equal((await checkedAgentWorkflow(value,f.selection)).delivery.status,'FAILED');
+});
+test('private preparation and subsequent rehearsal stay bound to the verified workflow tuple',async t=>{
+ const f=fixture(t),value=structuredClone(f.value);
+ value.publication.scope='PRIVATE_CLOUD_TEST';
+ value.preparationSource={revisionId:f.revision.id,revisionHash:f.revision.hash,runId:f.run.id};
+ Object.assign(value.delivery,{mode:'DURABLE_AGENT_DELIVERY_V1',sourcePinned:true});
+ const checked=await checkedAgentWorkflow(value,f.selection), item=checked.delivery;
+ assert.deepEqual(exactDeliveryAdvance(checked,item),{expectedVersion:item.version,
+  rehearsal:{packageId:item.packageId,packageDigest:item.packageDigest,verificationId:item.verificationId}});
+ for(const change of [{id:uuid(2)},{version:item.version+1},{packageDigest:'a'.repeat(64)},{verificationId:uuid(3)}])
+  assert.throws(()=>exactDeliveryAdvance(checked,{...item,...change}),/未确认/);
+ for(const change of [{revisionId:uuid(4)},{runId:uuid(5)},{revisionHash:'a'.repeat(64)},
+  {requirementBinding:{protocol:'shuduo-sql-requirements/v1',taskId:f.task.id,basisDigest:'a'.repeat(64),reportDigest:'b'.repeat(64)}}])
+  await assert.rejects(checkedAgentWorkflow({...value,preparationSource:{...value.preparationSource,...change}},f.selection),/未确认/);
+ assert.deepEqual(exactDeliveryAdvance(undefined,{...item,stage:'PACKAGE_PERSISTING'}),{expectedVersion:item.version});
+ assert.deepEqual(exactDeliveryAdvance(undefined,{...item,sourcePinned:undefined}),{expectedVersion:item.version});
 });
 test('only exact private rehearsal failures can display confirmed Worker evidence',async t=>{
  const f=fixture(t),value=structuredClone(f.value);
