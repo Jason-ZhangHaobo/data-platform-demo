@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as pause } from "node:timers/promises";
@@ -8,6 +8,7 @@ import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { getContext, referenceSql, contextIds } from "../../src/v2/context.mjs";
 import { identityPositionMapping } from "../../src/v2/ingestion.mjs";
 import { readSyncSqlInput } from "../../src/v2/sync-sql-input.mjs";
+import { verifySavedSyncSqlInput } from "../../src/v2/sync-sql-saved-lifecycle.mjs";
 import { createDeliveryPackage, computeManifestDigest, loadDeliveryDirectory, resolveDeliverySchedule, sha256, validateDeliveryPackage } from "../../src/v2/delivery.mjs";
 
 test("Agent binds a committed position snapshot across overwrite, retry and restart", async () => {
@@ -151,6 +152,14 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(plan.source.syncInput.developmentMode, "MANUAL");
     assert.equal(plan.source.syncInput.runId, first.run.id);
     assert.equal(plan.fixtures.context.expected[0].total_assets, "2045.07");
+    const sourceRead = (kind,id) => app.store.get(kind,id,PROJECT);
+    const originalCsv = readFileSync(join(fixtureRoot,"first.csv"),"utf8");
+    const offlineInput = { read:sourceRead,input:plan.source.syncInput,context:plan.fixtures.context,csv:originalCsv };
+    assert.equal(verifySavedSyncSqlInput(offlineInput).targetHash,first.run.targetHash);
+    assert.throws(() => verifySavedSyncSqlInput({...offlineInput,csv:readFileSync(join(fixtureRoot,"later.csv"),"utf8")}),
+      {code:"SYNC_SAVED_INPUT_CHANGED"});
+    assert.throws(() => verifySavedSyncSqlInput({...offlineInput,input:{...offlineInput.input,targetHash:"0".repeat(64)}}),
+      {code:"SYNC_SAVED_INPUT_PROJECTION_CHANGED"});
     const changed = (name, text) => {
       const copy = structuredClone(bundle);
       copy.files[name] = text;

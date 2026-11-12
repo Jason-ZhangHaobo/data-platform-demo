@@ -221,6 +221,36 @@ API是原子能力和治理契约；GUI、CLI、MCP是不同使用入口，不�
 
 已在不含 `.runtime` 和 `node_modules` 的源码副本中用 Node.js 24.19.0 走查。财富、基金及签名基金报告分别与各自原报告逐字节一致。错批次、缺少质量回执、缺签名原件与错时钟均按对应路径提示。每次交接先核对退出码和报告状态，再归档证据摘要。
 
+### 离线复核冻结持仓链路
+
+在受保护目录 `SYNC_DIR` 交接以下原件。复制 SQLite 前停止写入，并确认 WAL 已完整检查点化，避免把未落盘的历史调用丢在侧文件。使用原任务、原发布和原批准留存的编号。
+
+| 原件 | 校验内容 |
+| --- | --- |
+| `metadata.sqlite` | 原同步、元数据、Agent 请求、代码、演练、审阅、批准、两批调度与接口版本 |
+| `business.sqlite`、`reports.sqlite` | 接口不可变快照、固定报表快照及内容摘要 |
+| `positions.csv`、`delivery-package.json` | 原 CSV 字节、冻结字段映射及原八文件 |
+| `batch-1-lineage.json`、`batch-2-lineage.json` | 各批报表的原编号、结果和历史授权调用摘要 |
+
+在仓库根目录用 Node.js 24 执行。三个选择量从原留存记录取得，依次为发布编号、原包摘要和 Agent 提交的幂等编号。项目和工程师 ID 与本机默认值不同时，分别传入 `--project` 和 `--actor`。保留原调度刻度，默认每秒 1000 毫秒。
+
+```sh
+(
+  set -euC
+  umask 077
+  mkdir -p "$ACCEPTANCE_OUT"
+  node scripts/verify-saved-sync-sql-lifecycle.mjs \
+    --metadata "$SYNC_DIR/metadata.sqlite" --business-snapshots "$SYNC_DIR/business.sqlite" \
+    --report-snapshots "$SYNC_DIR/reports.sqlite" --source-csv "$SYNC_DIR/positions.csv" \
+    --package-file "$SYNC_DIR/delivery-package.json" --release-id "$SYNC_RELEASE_ID" \
+    --package-digest "$SYNC_PACKAGE_DIGEST" --agent-request-id "$SYNC_AGENT_REQUEST_ID" \
+    --lineage "$SYNC_DIR/batch-1-lineage.json" --lineage "$SYNC_DIR/batch-2-lineage.json" \
+    > "$ACCEPTANCE_OUT/frozen-holdings.json"
+)
+```
+
+通过时报告返回 `VERIFIED` 和 `LOCAL_SAVED_EVIDENCE`。复核器在内存重放 CSV 字段映射，检查冻结快照和原开发断言。它核对同包批准、双批监控、完整分页、固定接口版本、撤权历史及两份独立聚合报表，输出必要编号和摘要。缺失或错误的原件以非零退出码终止。两批记录属于同一发布，计分继续按正式 v3 固定案例独立记录。运行复核命令只读留存库，无需运行数舵服务、Spark 或模型。
+
 ### 启动真实试点前
 
 | 接手检查 | 执行负责人 | 进入下一步的证据 |
