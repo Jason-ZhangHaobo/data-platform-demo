@@ -9,9 +9,9 @@ const invalid = () => Object.assign(new Error("基金 Agent 的原批次、固�
   status: 409, code: "FUND_AGENT_CONSUMPTION_UNCONFIRMED",
 });
 
-export async function fundAgentTaskConsumption({ store, project, agent, packageDigest, releaseId, callIdDigest, manager, timeUnitMs, batchId }) {
+export async function fundAgentTaskConsumption({ store, project, agent, packageDigest, releaseId, callIdDigest, manager, timeUnitMs, batchId, fundSignedExecutionFor }) {
   const selection = { taskId: agent.id, packageDigest, releaseId };
-  const sources = () => fundAgentServiceSources({ store, project, selection, timeUnitMs });
+  const sources = () => fundAgentServiceSources({ store, project, selection, timeUnitMs, fundSignedExecutionFor });
   const original = sources();
   if (original.length !== 2) throw invalid();
   const byBatch = new Map(original.filter(run => batchId === undefined || run.id === batchId).map(run => [run.id, run.sourceEvidence]));

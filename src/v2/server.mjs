@@ -1042,7 +1042,7 @@ export function createV2Server(options = {}) {
     if (!release?.fundLookthrough && !isFundContext(bundle?.manifest?.source?.contextId) &&
         !isFundContext(run?.source?.contextId)) return undefined;
     if (!localClassicSpark) throw fail(422, "基金组合穿透只支持本机数据服务");
-    return resolveFundConsumptionSource({ store, project: PROJECT,
+    return resolveFundConsumptionSource({ store, project: PROJECT, fundSignedExecutionFor,
       selection: { batchId: run.id, releaseId: run.releaseId, packageDigest: run.packageDigest }, timeUnitMs: releaseTimeUnitMs });
   };
   const dataServices = new DataServiceManager({
@@ -4693,7 +4693,7 @@ export function createV2Server(options = {}) {
         if (!localClassicSpark) throw fail(403, "基金发布来源仅在本机 Spark 环境可读");
         const selection = fundConsumptionSelection(fundSource[1], url.searchParams);
         assertFundServiceSourceAccess(selection.batchId);
-        const { evidence } = resolveFundConsumptionSource({ store, project: PROJECT, selection, timeUnitMs: releaseTimeUnitMs });
+        const { evidence } = resolveFundConsumptionSource({ store, project: PROJECT, selection, timeUnitMs: releaseTimeUnitMs, fundSignedExecutionFor });
         return json(res, 200, evidence);
       }
       if (path === "/api/v2/data-services/sources" && method === "GET") {
@@ -4706,7 +4706,7 @@ export function createV2Server(options = {}) {
           requireDurableAgentOwner(agent,req);
         }
         return json(res,200,[...localServiceSources({store,project:PROJECT,selection}),...distributionServiceSources({store,project:PROJECT,selection}),
-          ...fundAgentServiceSources({store,project:PROJECT,selection,timeUnitMs:releaseTimeUnitMs})]);
+          ...fundAgentServiceSources({store,project:PROJECT,selection,timeUnitMs:releaseTimeUnitMs,fundSignedExecutionFor})]);
       }
       if (path === "/api/v2/data-services/task-evidence" && method === "GET") {
         if (!local) throw fail(403, "本机消费证据仅在本机开发环境可读");
@@ -4715,7 +4715,7 @@ export function createV2Server(options = {}) {
           throw fail(422, "需提供任务编号与确切包摘要");
         const {taskId,packageDigest,releaseId,callIdDigest}=selected;
         const agent = get("agent", taskId); requireDurableAgentOwner(agent, req);
-        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, callIdDigest, manager: dataServices, timeUnitMs: releaseTimeUnitMs }));
+        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, callIdDigest, manager: dataServices, timeUnitMs: releaseTimeUnitMs, fundSignedExecutionFor }));
       }
       if (path === "/api/v2/data-services/dapis" && method === "GET")
         return json(res, 200, dataServices.list("DAPI"));
