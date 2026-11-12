@@ -12,6 +12,7 @@ import {resolveManualContinuation} from './manual-sql-continuation.mjs';
 import {verifiedSqlRequirementForRevision,assertSqlRequirementPackageSource,sqlRequirementBinding} from './sql-requirements.mjs';
 import {assertSqlClarificationTask} from './sql-clarification.mjs';
 import { liveEvidenceProvenance, nonLiveModelLabel } from "./live-lifecycle-provenance.mjs";
+import { validStoredAgentDerivation } from "./agent-context-derivation.mjs";
 import { isFundContext } from "./fund-contexts.mjs";
 import { fundValidationMatches, verifiedFundRun } from "./fund-delivery.mjs";
 import { syncSqlColumnsMatch, syncSqlContractId, syncSqlRowsMatch } from "./sync-sql-input.mjs";
@@ -178,7 +179,8 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const proof = liveEvidenceProvenance(agent,revision,run);
     const requirement = agent.requirements ? sqlRequirementBinding(agent.requirements) : undefined;
     if (proof.synthetic || proof.nonNative || proof.unconfirmed || agent.sourceRunId !== undefined ||
-        agent.derivedFrom !== undefined || revision.id !== expected.revisionId || revision.hash !== expected.revisionHash ||
+        !validStoredAgentDerivation(agent,(kind,id)=>store.get(kind,id,project)) ||
+        revision.id !== expected.revisionId || revision.hash !== expected.revisionHash ||
         run.id !== expected.runId || !isDeepStrictEqual(requirement,expected.requirementBinding) ||
         !verifiedStoredCloudDevelopment(agent,revision,run))
       throw fail(409,"交付准备的代码版本、Spark 批次或需求依据已变化");

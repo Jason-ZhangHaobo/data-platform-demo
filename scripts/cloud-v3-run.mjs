@@ -5,6 +5,7 @@ import { checkpointCaseScope, readCheckpoint, stop, uuid } from "../src/v2/live-
 import { currentLiveLifecycleContract, liveCaseRequestDigest, liveLifecyclePlan } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { liveEvidenceProvenance } from "../src/v2/live-lifecycle-provenance.mjs";
 import { validSettledDevelopmentFailure } from "../src/v2/agent-execution-evidence.mjs";
+import { validationFamilyForContext } from "../src/v2/context.mjs";
 import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
@@ -89,7 +90,26 @@ function caseEvidenceIdentities(item) {
     .filter(value=>id(value)||digest(value));
 }
 
-export function readCloudV3BaseCases(path,{completionPath,nextPath,nextCompletionPath,recordsPath}={}) {
+export function nextCloudV3Definition(fullPlan,entries) {
+  const baseCount=cloudV3BaseCases().length;
+  if (entries.length<baseCount) return fullPlan.selectedCases[entries.length];
+  return fullPlan.selectedCases.slice(baseCount).find(definition=>
+    !entries.some(entry=>entry.item.caseId===definition.id) &&
+    entries.some(entry=>entry.item.caseId===definition.sourceCaseId && entry.completion && !entry.completion.failure));
+}
+
+export function cloudV3DerivationSource(fullPlan,definition,parent) {
+  const source=fullPlan.selectedCases.find(entry=>entry.id===definition.sourceCaseId);
+  if (!source || parent?.item.caseId!==source.id || !parent.completion || parent.completion.failure)
+    stop("派生来源没有原案例成功回执");
+  const {item,completion}=parent, code=item.code;
+  return {protocol:"shuduo-cloud-v3-derivation-source/v1",sourceCaseId:source.id,
+    contextId:source.contextId,validationContractId:validationFamilyForContext(source.contextId).id,
+    taskId:item.taskId,revisionId:code.revisionId,runId:code.runId,revisionHash:code.revisionHash,
+    completionDigest:completion.completionDigest};
+}
+
+export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPath,recordsPath}={}) {
   const original=readCheckpoint(path,{privateFile:true});
   const {state,text}=original;
   const {plan,contractId}=checkpointCaseScope(state,state?.evaluationRunId);
@@ -141,7 +161,7 @@ export function readCloudV3BaseCases(path,{completionPath,nextPath,nextCompletio
     stop("请选择续接文件列表或第二例的原路径");
   const files=recordsPath?readCheckpoint(recordsPath,{privateFile:true}).state:
     nextPath?[{checkpoint:nextPath,...(nextCompletionPath?{completion:nextCompletionPath}:{})}]:[];
-  if (!Array.isArray(files) || files.length>=cloudV3BaseCases().length ||
+  if (!Array.isArray(files) || files.length>=fullPlan.selectedCases.length ||
       files.some(file=>!file || typeof file.checkpoint!=="string" || !isAbsolute(file.checkpoint) ||
         Object.keys(file).some(key=>!["checkpoint","completion"].includes(key)) ||
         (Object.hasOwn(file,"completion") && (typeof file.completion!=="string" || !isAbsolute(file.completion)))))
@@ -149,8 +169,8 @@ export function readCloudV3BaseCases(path,{completionPath,nextPath,nextCompletio
   for (const file of files) {
     const next=readCheckpoint(file.checkpoint,{privateFile:true}), {item}=cloudV3CheckpointCase(next.state);
     const previous=next.state.previousCase;
-    const parent=entries.at(-1);
-    if (!parent.completion || !previous || next.state.caseLimit!==entries.length+1 ||
+    const parent=entries.at(-1), definition=nextCloudV3Definition(fullPlan,entries);
+    if (!parent.completion || !previous || item.caseId!==definition?.id ||
         next.state.evaluationRunId!==state.evaluationRunId ||
         next.state.startedAt!==state.startedAt || next.state.origin!==state.origin || next.state.projectId!==state.projectId ||
         previous.checkpointDigest!==sha256(parent.checkpoint.text) || previous.completionDigest!==parent.completion.completionDigest ||
@@ -159,27 +179,31 @@ export function readCloudV3BaseCases(path,{completionPath,nextPath,nextCompletio
         !isDeepStrictEqual(previous.usageFloor,next.state.caseLimit>2||parent.completion.failure?usageFloor:undefined) ||
         !validRecordedCreation(item))
       stop("续接案例与原评测、审批历史或上一例完成回执不一致");
+    if (definition.kind==="DERIVED" && !isDeepStrictEqual(item.derivationSource,cloudV3DerivationSource(fullPlan,definition,
+      entries.find(entry=>entry.item.caseId===definition.sourceCaseId))))
+      stop("派生案例与固定父版本或成功回执不一致");
     record(next,item,file.completion?checkedCompletion(file.completion,next,item):undefined);
   }
   return {original,fullPlan,entries,approvals,reserveCny,usageFloor};
 }
 
 export function readCloudV3Run(path,options) {
-  const {original,fullPlan,entries}=readCloudV3BaseCases(path,options);
+  const {original,fullPlan,entries}=readCloudV3Cases(path,options);
   const {state,text}=original, contractId=fullPlan.contract.id, completion=entries[0].completion;
   const recorded=new Map(entries.map(entry=>[entry.item.caseId,entry]));
   const verified=entry=>entry?.completion?.scope==="INVITED_CLOUD_MATCHED";
   const cloudFailure=entry=>entry?.completion?.scope==="INVITED_CLOUD_SETTLED_FAILURE";
   const cases=fullPlan.selectedCases.map(definition=>{
     const item={caseId:definition.id,kind:definition.kind,contextId:definition.contextId,
-      requestDigest:liveCaseRequestDigest(definition,contractId)};
+      requestDigest:liveCaseRequestDigest(definition,contractId),
+      ...(definition.kind==="DERIVED"?{sourceCaseId:definition.sourceCaseId}:{})};
     const existing=recorded.get(definition.id);
     if (existing) return {...item,status:verified(existing) ? "CLOUD_CHAIN_VERIFIED" : cloudFailure(existing) ? "CLOUD_FAILURE_SETTLED"
       : existing.completion?.failure ? "LOCAL_FAILURE_SETTLED_ONLY" : existing.completion ? "LOCAL_MATCHED_ONLY" : "ORIGINAL_CHECKPOINT",
       creationStatus:existing.item.actions.agent.status,phase:existing.item.phase};
     if (definition.kind==="DERIVED") {
       const parent=recorded.get(definition.sourceCaseId), parentVerified=verified(parent);
-      return {...item,sourceCaseId:definition.sourceCaseId,status:parentVerified ? "SOURCE_VERIFIED"
+      return {...item,status:parentVerified ? "SOURCE_VERIFIED"
         : cloudFailure(parent) ? "SOURCE_FAILED" : "WAITING_FOR_SOURCE",
         ...(parentVerified ? {source:{evaluationRunId:state.evaluationRunId,requestDigest:parent.item.requestDigest,
           taskId:parent.item.taskId,revisionId:parent.item.code.revisionId,revisionHash:parent.item.code.revisionHash,
@@ -191,7 +215,7 @@ export function readCloudV3Run(path,options) {
     evaluationRunId:state.evaluationRunId,caseSetDigest:state.caseSetDigest,originalCheckpointDigest:sha256(text),
     expectedCaseCount:fullPlan.contract.expectedCaseCount,verifiedCloudCaseCount:[...recorded.values()].filter(verified).length,
     ...(entries.some(entry=>entry.completion?.failure)?{settledCloudFailureCount:entries.filter(cloudFailure).length}:{}),
-    nextCaseId:cases.find(entry=>!["CLOUD_CHAIN_VERIFIED","CLOUD_FAILURE_SETTLED","SOURCE_FAILED"].includes(entry.status)).caseId,
+    nextCaseId:cases.find(entry=>!["CLOUD_CHAIN_VERIFIED","CLOUD_FAILURE_SETTLED","SOURCE_FAILED"].includes(entry.status))?.caseId??null,
     ...(completion ? {completionDigest:completion.completionDigest} : {}),
     cases,willExecute:false,executionAuthorized:false,agentIndependentE2E:false,publicDeployed:false};
 }

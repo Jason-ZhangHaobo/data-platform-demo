@@ -3,10 +3,11 @@ import { durableDeliveryMode, verifiedStoredCloudDevelopment } from "./agent-dev
 import { sha256, validateDeliveryPackage, validationMatchesFamily } from "./delivery.mjs";
 import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
 import { assertSqlRequirementPackageSource, sqlRequirementBinding } from "./sql-requirements.mjs";
+import { validStoredAgentDerivation } from "./agent-context-derivation.mjs";
 
 // This only evaluates persisted, exact records. Provider and Worker reconciliation
 // stay on the existing task workflow, and review stays with the engineer.
-export function storedAgentReviewEvidence({ task, delivery, revision, run, bundle, verification, requestSha256 }) {
+export function storedAgentReviewEvidence({ task, delivery, revision, run, bundle, verification, requestSha256, read, includeDerivation=false }) {
   const base = {
     protocol: "shuduo-agent-review-evidence/v1", scope: "PRIVATE_CLOUD_TEST",
     verificationMode: "STORED_METADATA_ONLY", taskId: task.id, deliveryId: delivery.id,
@@ -20,7 +21,7 @@ export function storedAgentReviewEvidence({ task, delivery, revision, run, bundl
   if (typeof task.message !== "string" || sha256(task.message) !== requestSha256)
     return reject("REQUEST_DIGEST_MISMATCH");
   const proof = liveEvidenceProvenance(task, revision, run, delivery, bundle, verification);
-  if (proof.synthetic || proof.nonNative || proof.unconfirmed || task.sourceRunId !== undefined)
+  if (proof.synthetic || proof.nonNative || proof.unconfirmed || task.sourceRunId !== undefined || !validStoredAgentDerivation(task,read))
     return reject("EXECUTION_PROVENANCE_UNCONFIRMED");
   if (["QUEUED","RUNNING"].includes(task.status) || ["QUEUED","RUNNING"].includes(delivery.status))
     return { ...base, status:"PENDING", reason:"STORED_RESULT_PENDING" };
@@ -56,6 +57,7 @@ export function storedAgentReviewEvidence({ task, delivery, revision, run, bundl
     return reject("FILE_REHEARSAL_UNCONFIRMED");
 
   return { ...base, status:"REVIEW_EVIDENCE_READY", requestSha256, contextId:task.contextId, taskCreatedAt:task.createdAt,
+    ...(includeDerivation&&task.derivedFrom?{derivedFrom:task.derivedFrom}:{}),
     validationContractId:family.id, ...(plan.source.requirement ? {requirementBinding:plan.source.requirement} : {}),
     model:{id:attempt.model, attemptCount:attempts.length, accountedTokens:task.usedTokens,
       usageEstimated:attempts.some(item=>item?.usageEstimated === true)},

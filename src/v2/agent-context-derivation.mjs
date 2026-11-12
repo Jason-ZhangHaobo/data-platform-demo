@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { getContext, validationFamilyForContext } from "./context.mjs";
 import { developmentVerificationReport } from "./agent-development-workflow.mjs";
 
@@ -17,6 +18,27 @@ export function validateAgentContextDerivation(value) {
       ![value.taskId, value.revisionId, value.runId].every(uuid) || typeof value.revisionHash !== "string" || !/^[a-f0-9]{64}$/.test(value.revisionHash))
     throw failure("AGENT_CONTEXT_DERIVATION_INVALID", "口径变更来源必须包含确切任务、代码版本、运行及代码摘要", 422);
   return Object.fromEntries(keys.map(key => [key, value[key]]));
+}
+
+export const agentContextDerivationRequest = source => ({
+  kind:"REGISTERED_CONTEXT_CHANGE",taskId:source.taskId,revisionId:source.revisionId,
+  runId:source.runId,revisionHash:source.revisionHash,
+});
+
+export function agentContextDerivationBody({message,sql,contextId,derivation}) {
+  return {message,sql,contextId,language:"SPARK_SQL",derivation:validateAgentContextDerivation(derivation)};
+}
+
+export function validStoredAgentDerivation(task,read) {
+  if (task.derivedFrom===undefined) return true;
+  try {
+    return isDeepStrictEqual(task.derivedFrom,resolveAgentContextDerivation({
+      derivation:agentContextDerivationRequest(task.derivedFrom),actorId:task.submittedBy,
+      targetContextId:task.contextId,currentSql:task.initialSql,project:task.projectId,read,
+    }));
+  } catch {
+    return false;
+  }
 }
 
 // Returns genealogy only, never approval, budget, result rows or inherited run

@@ -10,6 +10,7 @@ import { prepareCloudV3Start } from '../../scripts/start-cloud-v3-case.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
 import { sha256 } from '../../src/v2/delivery.mjs';
 import { currentLiveLifecycleContract, liveLifecyclePlan } from '../../src/v2/live-lifecycle-evaluation.mjs';
+import { validationFamilyForContext } from '../../src/v2/context.mjs';
 import { fixtureFirstCloudInspection } from './fixtures/first-cloud-application-inspection.mjs';
 
 const time = Date.parse('2026-10-20T08:00:00Z'), stamp = new Date(time).toISOString();
@@ -87,7 +88,8 @@ function harness(plan, options={}) {
         ...(open&&current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID?{developmentTaskOnly:options.targetFlag!==false,...(options.leakTargetId?{developmentTaskId:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID}:{})}:{} ),
         ...(open&&current.environmentVariables.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST&&!options.oldRuntime?{developmentRequestOnly:true}:{})}}
         :{status:200,body:{spark:{healthVerified:options.health!==false},agentDevelopment:{durableEnabled:true,
-          requestBindingSupported:!options.oldRuntime,eventBackgroundAvailable:true}}};
+          requestBindingSupported:!options.oldRuntime,derivationBindingSupported:!options.oldDerivationRuntime,
+          eventBackgroundAvailable:true}}};
     }};
   return {io,report,calls,writes,snapshots,current:()=>current,setClock:v=>clock=v};
 }
@@ -123,6 +125,28 @@ test('the next case has its own approval and closes back to the same read-only b
   await runDevelopmentRecoveryOperation(close,h.current(),c.report,c.io);
   assert.deepEqual(c.current(),plan.baseline);
   assert.equal(c.report.cumulativeUsage.configWrites,2);
+});
+test('a derivative window checks exact derivation support before any write',async t=>{
+  const {firstCase,...plan}=firstFixture(t);
+  const definition=liveLifecyclePlan(20,{contractId:currentLiveLifecycleContract.id}).selectedCases[10];
+  const approvals=Array.from({length:10},(_,index)=>sha256("fixture approval "+index));
+  const nextCase={...firstCase,protocol:'SHUDUO_V3_NEXT_CHECKPOINT_BINDING_V1',caseId:definition.id,contextId:definition.contextId,
+    checkpointDigest:hash('7'),requestKeyHash:hash('8'),requestBodyHash:hash('9'),
+    previousCase:{checkpointDigest:firstCase.checkpointDigest,completionDigest:hash('9'),approvalDigest:approvals.at(-1),
+      approvalDigests:approvals,reserveCny:64},
+    derivationSource:{protocol:'shuduo-cloud-v3-derivation-source/v1',sourceCaseId:definition.sourceCaseId,
+      contextId:firstCase.contextId,validationContractId:validationFamilyForContext(firstCase.contextId).id,
+      taskId:uuid(1),revisionId:uuid(2),runId:uuid(3),revisionHash:hash('c'),completionDigest:hash('e')}};
+  const {firstCaseDigest,...binding}=plan.binding;
+  Object.assign(plan,{scope:nextCloudDevelopmentScope,contextId:definition.contextId,nextCase,
+    binding:{...binding,protocol:'NEXT_CLOUD_WINDOW_CONTINUATION_V1',approvalDigest:hash('f'),nextCaseDigest:recoveryDigest(nextCase)}});
+  const old=harness(plan,{oldDerivationRuntime:true});
+  await assert.rejects(runDevelopmentRecoveryOperation(plan,plan.baseline,old.report,old.io),/NEXT_CLOUD_REQUEST_BINDING_UNAVAILABLE/);
+  assert.equal(old.writes.length,0);
+  const ready=harness(plan);
+  await runDevelopmentRecoveryOperation(plan,plan.baseline,ready.report,ready.io);
+  assert.equal(ready.report.phase,'OPENED');
+  assert.deepEqual(ready.report.nextCaseReceipt.checkpoint.derivationSource,nextCase.derivationSource);
 });
 async function opened() {
   const p=fixture(),h=harness(p);await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);

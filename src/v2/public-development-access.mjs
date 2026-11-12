@@ -1,6 +1,7 @@
 // Optional, fail-closed rollout gate. This never grants a session or bypasses
 // existing CSRF, project, role, ownership, persistence or execution budgets.
 import { createHash } from "node:crypto";
+import { agentContextDerivationBody } from "./agent-context-derivation.mjs";
 
 const permissions = Object.freeze(['SESSION', 'AGENT', 'DEVELOPMENT', 'DELIVERY']);
 const authPaths = new Set(['/api/v2/auth/login', '/api/v2/auth/logout', '/api/v2/auth/password']);
@@ -69,8 +70,14 @@ export function assertDevelopmentTaskCreation(config, session, store, project, k
   if (language !== 'SPARK_SQL') throw fail('PUBLIC_DEVELOPMENT_SQL_ONLY', '本次开发窗口仅支持 Spark SQL。');
   if (config.requestDigest) {
     const fields=["message","sql","contextId"];
-    if (!uuid.test(key) || !body || Object.keys(body).length!==3 || !fields.every(name=>typeof body[name]==="string") ||
-        developmentRequestDigest(hash(key),hash(JSON.stringify({message:body.message,sql:body.sql,contextId:body.contextId})))!==config.requestDigest)
+    if (!uuid.test(key) || !body || !fields.every(name=>typeof body[name]==="string")) throw requestDenied();
+    let frozen;
+    if (Object.keys(body).length===3) frozen={message:body.message,sql:body.sql,contextId:body.contextId};
+    else if (Object.keys(body).length===5 && body.language==="SPARK_SQL" && body.derivation!==undefined) {
+      try { frozen=agentContextDerivationBody(body); }
+      catch { throw requestDenied(); }
+    }
+    if (!frozen || developmentRequestDigest(hash(key),hash(JSON.stringify(frozen)))!==config.requestDigest)
       throw requestDenied();
   }
   const id = store.deduplicatedId(`${project}:durable-agent:${session.user.id}:${key}`);

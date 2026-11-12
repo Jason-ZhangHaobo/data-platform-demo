@@ -235,7 +235,15 @@ shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CA
 
 窗口使用 `INVITED_NEXT_V3_DEVELOPMENT_WINDOW_V1` 和确切验包，独立批准后才生成 `nextCaseReceipt`。续接保留历次预留，校验当前完整账单及配额。第三例起还会核对当月已记录的模型和 Spark 用量。开启前在只读状态核对控制面能力，开启后核对确切请求绑定。
 
-提交与恢复沿用 `v3-start --confirm` 和 `v3-start --reconcile`。运行时限定受邀管理员的确切需求、SQL、口径与幂等键，丢失响应后只用原编号查询。后续各阶段沿原案例检查点处理。第二例旧报告参数 `--next-checkpoint`、`--next-completion-file` 仍可使用。派生提交沿各自已核验的父版本接入。
+提交与恢复沿用 `v3-start --confirm` 和 `v3-start --reconcile`。运行时限定受邀管理员的确切需求、SQL、口径与幂等键，丢失响应后只用原编号查询。后续各阶段沿原案例检查点处理。第二例旧报告参数 `--next-checkpoint`、`--next-completion-file` 仍可使用。
+
+### 续接基于已核验父版本的派生案例
+
+基础案例结算后，沿同一 `v3-prepare-next` 和 `--case-records` 顺序准备目录中的派生案例。仅选择各自父案例已核验成功的条目。父案例确认失败时，报告仍保留对应派生案例及其来源状态，随后选择其他有成功父版本的案例。
+
+准备由原创建者只读重验父任务、代码、Spark 核验和 SQL 摘要，并将父版本标识、完成回执摘要及新请求摘要存入检查点。SQL 正文在请求进程内读取。独立窗口在启用前须核对控制面支持确切派生请求；提交时再读原 SQL，服务端按原账号、项目、版本和批次复核。原请求恢复核对回执中的父版本，新案例单独生成和核验目标口径的 Spark、交付包及演练。
+
+隔离 HTTP 回归覆盖确切窗口、父版本变化拒绝、新口径执行和八文件回读。本机已配置 Spark 时可用 `SHUDUO_TEST_LOCAL_SPARK_DERIVATION=true` 在该回归中执行派生开发及文件演练。模型替身与本机 Spark 证据分别记录。
 
 ### 结算已确认的开发失败
 

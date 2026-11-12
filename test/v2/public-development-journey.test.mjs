@@ -14,13 +14,13 @@ import { LocalArtifactStore } from '../../src/v2/artifact-store.mjs';
 import { BusinessQueryStore } from '../../src/v2/data-services.mjs';
 import { createFcIngress } from '../../src/v2/fc-ingress.mjs';
 import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult } from '../../src/v2/remote-spark-queue.mjs';
-import { referenceSql, contextIds, getContext } from '../../src/v2/context.mjs';
+import { referenceSql, referenceSqlForContext, contextIds, getContext, validationFamilyForContext } from '../../src/v2/context.mjs';
 import { V2Client } from '../../src/v2/client.mjs';
 import { runV2Cli } from '../../bin/shuduo.mjs';
 import { handleV2Mcp } from '../../bin/shuduo-mcp.mjs';
 import { runSpark, runtimeConfig } from '../../src/v2/spark.mjs';
 import { syntheticSqlRequirement } from './fixtures/sql-requirement.mjs';
-import { publicationPreflightPath, publicationRequestReceiptPath } from '../../src/v2/publication-request.mjs';
+import { agentReviewEvidencePath, publicationPreflightPath, publicationRequestReceiptPath } from '../../src/v2/publication-request.mjs';
 import { validatePrivateApplicationRequest } from '../../src/v2/private-application.mjs';
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
@@ -39,6 +39,9 @@ import { exportCloudV3SourceReview, prepareCloudV3Start, rebindCloudV3PreparedSo
 import { withCloudCheckpoint } from '../../scripts/cloud-v3-checkpoint-lock.mjs';
 import { cloudWindowApplicationBinding, firstCloudApplicationBinding, firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol } from '../../scripts/first-cloud-v3-window.mjs';
 import { developmentRequestDigest } from '../../src/v2/public-development-access.mjs';
+import { agentContextDerivationBody } from '../../src/v2/agent-context-derivation.mjs';
+import { sha256 } from '../../src/v2/delivery.mjs';
+import { seedContextDerivation } from './fixtures/agent-context-derivation.mjs';
 import { fixtureFirstCloudIndex, fixtureFirstCloudInspection } from './fixtures/first-cloud-application-inspection.mjs';
 
 test('first-case entry preflight distinguishes exact bytes, stale HTML and a timeout without modifying the checkpoint', async t => {
@@ -162,7 +165,8 @@ test('first-case entry preflight optionally verifies the same-origin script from
   assert.equal((await check(candidate,['--timeout-ms','10'])).reason,'ENTRY_SCRIPT_TIMEOUT');
 });
 
-async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,queueTimeoutMs=180000}={}) {
+async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,
+  queueTimeoutMs=180000,contextualModel=false}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
   let loseArtifactAcknowledgement=false, packageWrites=0;
@@ -206,7 +210,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     const businessStore=new BusinessQueryStore(join(directory,'business.sqlite'));
     app = createV2Server({ store, businessStore, root: directory, env, runner, agentWakeTransport, now: () => now, artifactStore, ingress: createFcIngress({ publicHttpEnabled: true, publicReadOnly: env.V2_FC_PUBLIC_READ_ONLY === 'true' }), generator: async input => {
       modelCalls++; if(modelFault)throw Error('synthetic model interrupted');
-      return { sql: referenceSql, model: structuredRequirement?'qwen3-coder-plus':'synthetic-protocol-fixture',
+      return { sql: contextualModel?referenceSqlForContext(input.context.id):referenceSql, model: structuredRequirement?'qwen3-coder-plus':'synthetic-protocol-fixture',
         explanation: 'Local lifecycle fixture, not a real model', usage: { total_tokens: 12 },
         ...(structuredRequirement ? syntheticSqlRequirement(input) : {}) };
     } });
@@ -481,7 +485,7 @@ async function measuredSpark(t,f,prepared,label){
   assert.equal(result.status,'SUCCEEDED');
   assert.equal(result.engineVersion,'3.5.9');
   assert.equal(result.mainSqlExecuted,true);
-  assert.equal(result.testSqlValidation?.passed,true);
+  if (input.testSql) assert.equal(result.testSqlValidation?.passed,true);
   assert.equal(result.validation?.regressions.length,5);
   assert.ok(result.validation.regressions.every(check=>check.passed===true));
   t.diagnostic(`Local Spark ${result.engineVersion}, ${label}, five independent scenarios, ${result.durationMs} ms`);
@@ -1630,6 +1634,87 @@ test('a killed publication CLI recovers both original batches through signed sch
     assert.equal(JSON.parse(readFileSync(nextPath,'utf8')).startedAt,preparedState.startedAt);
     assert.equal(readFileSync(checkpoint,'utf8'),checkpointBytes);
   }
+});
+
+test('an invited exact window binds derivation to the original parent and reads the new Spark evidence',async t=>{
+  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
+  const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_DERIVATION==='true';
+  const owner=(await f.call('/auth/session')).body.user.id;
+  const source=seedContextDerivation(f.store,PROJECT,{actorId:owner});
+  const initialParent=f.store.get('agent',source.task.id,PROJECT);
+  const key=randomUUID(), target='stock-cash-t1', family=validationFamilyForContext(target);
+  const body=agentContextDerivationBody({message:'从已核验父版本派生股票持仓和现金口径',sql:source.sql,
+    contextId:target,derivation:source.derivation});
+  const starts=Math.max(Date.now(),Date.parse(source.task.createdAt)+1);
+  f.later(starts-f.now());
+  f.env.V2_PUBLIC_DEVELOPMENT_STARTS_AT=new Date(starts).toISOString();
+  f.env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT=new Date(starts+3600000).toISOString();
+  f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)));
+  await f.restart();
+  assert.equal((await f.call('/status')).body.agentDevelopment.derivationBindingSupported,true);
+  const parentRevision=await f.call('/revisions/'+source.revision.id);
+  assert.equal(parentRevision.status,200);
+  assert.equal(parentRevision.body.sql,source.sql);
+  for (const wrong of [{...body,sql:'SELECT 0'},{...body,derivation:{...body.derivation,runId:randomUUID()}}]) {
+    const denied=await f.call('/agent/tasks',wrong,key);
+    assert.equal(denied.body.code,'PUBLIC_DEVELOPMENT_REQUEST_ONLY');
+  }
+  const created=await f.call('/agent/tasks',body,key);
+  assert.equal(created.status,202,created.body.code??created.body.message);
+  const original=await f.call('/agent/requests/'+key);
+  assert.equal(original.body.id,created.body.id);
+  assert.deepEqual(original.body.derivedFrom,{...source.derivation,contextId:source.task.contextId,
+    validationContractId:source.family.id});
+  assert.equal(original.body.runId,undefined);
+  const taskPath='/agent/tasks/'+created.body.id;
+  let task=(await f.call(taskPath+'/advance',{expectedVersion:created.body.version})).body;
+  task=(await f.call(taskPath+'/advance',{expectedVersion:task.version})).body;
+  assert.equal(task.stage,'WAITING_FOR_RUN');
+  const runId=task.runId;
+  assert.notEqual(runId,source.run.id);
+  const developmentJob=f.store.get('run',runId,PROJECT).remoteSubmission.prepared;
+  f.complete(developmentJob,measure?await measuredSpark(t,f,developmentJob,'derived development'):{
+    status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,durationMs:100,
+    rows:getContext(target).expected,validation:{passed:true,contractId:family.id,
+      regressions:family.contextIds.map(contextId=>({contextId,passed:true}))},
+  });
+  task=(await f.call(taskPath+'/advance',{expectedVersion:task.version})).body;
+  assert.equal(task.status,'SUCCEEDED');
+  const before=f.counts(), evidencePath='/agent/requests/'+key+'/execution-evidence';
+  const evidence=await f.call(evidencePath);
+  assert.equal(evidence.body.status,'EXECUTION_RECORDED');
+  assert.equal(evidence.body.seedSqlSha256,source.revision.hash);
+  assert.deepEqual(evidence.body.derivedFrom,original.body.derivedFrom);
+  assert.equal(evidence.body.development.runId,runId);
+  assert.equal(evidence.body.development.validationContractId,family.id);
+  assert.deepEqual(f.store.get('agent',source.task.id,PROJECT),initialParent);
+  assert.deepEqual(f.counts(),before);
+  const {revisionId,revisionHash,requirementBinding}=evidence.body.development;
+  const delivery=await f.call(taskPath+'/prepare-delivery',{expectedSource:{revisionId,revisionHash,runId,requirementBinding}},randomUUID());
+  assert.equal(delivery.status,202,delivery.body.message);
+  const deliveryPath='/agent/deliveries/'+delivery.body.id+'/advance';
+  const exact={packageId:delivery.body.packageId,packageDigest:delivery.body.packageDigest};
+  const started=await f.call(deliveryPath,{expectedVersion:delivery.body.version,rehearsal:exact});
+  assert.equal(started.status,200,started.body.message);
+  const queued=f.store.get('agent_delivery_task',delivery.body.id,PROJECT).remoteSubmission.prepared;
+  f.complete(queued,measure?await measuredSpark(t,f,queued,'derived file rehearsal'):{
+    status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,durationMs:100,
+    rows:getContext(target).expected,validation:{passed:true,contractId:family.id,
+      regressions:family.contextIds.map(contextId=>({contextId,passed:true}))},
+    testSqlValidation:{passed:true,sqlHash:sha256(JSON.parse(queued.job.body).testSql)},
+  });
+  const settled=await f.call(deliveryPath,{expectedVersion:started.body.version,rehearsal:{...exact,verificationId:started.body.verificationId}});
+  assert.equal(settled.status,200,settled.body.message);
+  const reviewPath=agentReviewEvidencePath({taskId:task.id,deliveryId:delivery.body.id,requestSha256:sha256(body.message)});
+  const review=(await f.call(reviewPath)).body;
+  assert.equal(review.status,'REVIEW_EVIDENCE_READY',review.reason);
+  assert.deepEqual(review.derivedFrom,original.body.derivedFrom);
+  assert.equal(Object.keys(review.delivery.fileHashes).length,8);
+  const after=f.counts();
+  f.store.update('revision',source.revision.id,PROJECT,{hash:'f'.repeat(64)});
+  assert.equal((await f.call(evidencePath)).body.status,'UNCONFIRMED');
+  assert.equal((await f.call(reviewPath)).body.status,'UNCONFIRMED');
+  assert.deepEqual(f.counts(),after);
 });
 
 test('a settled original development failure allows the next case while pending usage and Spark stay unresolved',async t=>{

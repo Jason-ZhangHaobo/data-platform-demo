@@ -223,7 +223,8 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
       if (next) {
         spend('activeHttp');
         const capability=await io.http('/api/v2/status');
-        check(capability.status===200 && capability.body.agentDevelopment?.requestBindingSupported===true,
+        check(capability.status===200 && capability.body.agentDevelopment?.requestBindingSupported===true &&
+          (!selected.derivationSource || capability.body.agentDevelopment?.derivationBindingSupported===true),
           'NEXT_CLOUD_REQUEST_BINDING_UNAVAILABLE');
       }
       const pages = [], cycle = month(now());
