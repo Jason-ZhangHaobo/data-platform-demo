@@ -78,3 +78,21 @@ export function syncSqlServiceSources({ store, project, selection, canRead, cert
   }
   return rows.sort((a, b) => a.releaseId.localeCompare(b.releaseId) || a.sequence - b.sequence);
 }
+
+export async function readSyncSqlCallEvidence({ store, project, manager, evidence }) {
+  const matching = manager.listCalls().filter(call => {
+    if (call.outcome !== "SUCCEEDED" || call.statusCode !== 200 || call.rowCount < 1) return false;
+    const version = store.get("data_service_version", call.serviceVersionId, project);
+    return same(version?.sourceEvidence, evidence);
+  }).sort((a, b) => a.id.localeCompare(b.id));
+  if (matching.length > 20) throw invalid();
+  const proofs = [];
+  for (const call of matching) {
+    const proof = await manager.recheckCall(call.serviceId, call.id, { pinnedVersionId: call.serviceVersionId });
+    const application = manager.application(call.applicationId);
+    if (!proof.verified || !proof.independentResultVerified || !same(call, store.get("service_call", call.id, project))) throw invalid();
+    proofs.push({ ...proof, serviceId: call.serviceId, serviceType: call.serviceType, applicationStatus: application.status,
+      finishedAt: call.finishedAt, paginationHash: call.paginationHash });
+  }
+  return proofs;
+}

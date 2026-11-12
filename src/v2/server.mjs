@@ -45,7 +45,7 @@ import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs"
 import { currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, syncApprovalExpiry, syncSqlReviewDigest } from "./sync-sql-publication.mjs";
-import { certifiedSyncSqlSource, syncServiceProtocol, syncSqlServiceSources } from "./sync-sql-service-source.mjs";
+import { certifiedSyncSqlSource, readSyncSqlCallEvidence, syncServiceProtocol, syncSqlServiceSources } from "./sync-sql-service-source.mjs";
 import { isSyncAssetId, isSyncReportEvidence, syncAssetBatchId, syncAssetView, syncReportAsset } from "./sync-sql-report.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
 import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress,serviceAgentSession} from './private-service-agent-policy.mjs';
@@ -1297,25 +1297,7 @@ export function createV2Server(options = {}) {
   const reportProvenance=createReportProvenance({store,project:PROJECT,reportStore});
   const privateBatchArchives = privateDataServicesEnabled
     ? createPrivateBatchArchive({store, businessStore, project:PROJECT, now:options.now}) : undefined;
-  const readSyncCalls = async evidence => {
-    const matching = dataServices.listCalls().filter(call => {
-      if (call.outcome !== "SUCCEEDED" || call.statusCode !== 200 || call.rowCount < 1) return false;
-      const version = store.get("data_service_version", call.serviceVersionId, PROJECT);
-      return isDeepStrictEqual(version?.sourceEvidence, evidence);
-    }).sort((a,b) => a.id.localeCompare(b.id));
-    if (matching.length > 20) throw fail(409, "原批次授权调用超过本次溯源核验上限");
-    const proofs = [];
-    for (const call of matching) {
-      const proof = await dataServices.recheckCall(call.serviceId, call.id, {pinnedVersionId:call.serviceVersionId});
-      const application = dataServices.application(call.applicationId);
-      if (!proof.verified || !proof.independentResultVerified ||
-          !isDeepStrictEqual(call,store.get("service_call",call.id,PROJECT)))
-        throw fail(409, "原授权调用与报表固定批次不一致");
-      proofs.push({...proof,serviceId:call.serviceId,serviceType:call.serviceType,applicationStatus:application.status,
-        finishedAt:call.finishedAt,paginationHash:call.paginationHash});
-    }
-    return proofs;
-  };
+  const readSyncCalls = evidence => readSyncSqlCallEvidence({store,project:PROJECT,manager:dataServices,evidence});
   const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,reportStore,provenance:reportProvenance,
     resolveSource:resolveLocalReportSource,fundSignedExecutionFor,readSyncCalls,afterStep:options.publishedReportAfterStep});
   const reportActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
