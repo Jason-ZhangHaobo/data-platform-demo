@@ -3,6 +3,7 @@ import { validationFamilyForContext } from "./context.mjs";
 import { deliveryFiles, sha256 } from "./delivery.mjs";
 import { currentLiveLifecycleContract, verifiedLiveTaskSnapshotBinding } from "./live-lifecycle-evaluation.mjs";
 import { checkpointCaseScope, readCheckpoint, stop, uuid } from "./live-lifecycle-checkpoint.mjs";
+import { cloudV3CheckpointCase } from "./cloud-v3-case-selection.mjs";
 import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
 import { agentReviewEvidencePath } from "./publication-request.mjs";
 import { normalizeSessionBase } from "./session-credential.mjs";
@@ -19,25 +20,26 @@ const nativeEvidence = value => {
 export async function readCloudV3Review(checkpointPath, client) {
   const {state, text} = readCheckpoint(checkpointPath, {privateFile:true});
   if (!id(state?.evaluationRunId)) stop("须使用原 v3 评测检查点");
-  const {plan, contractId} = checkpointCaseScope(state, state.evaluationRunId);
-  if (contractId !== currentLiveLifecycleContract.id) stop("仅核对固定 v3 首例");
+  const {plan,contractId}=checkpointCaseScope(state,state.evaluationRunId);
+  if (contractId !== currentLiveLifecycleContract.id) stop("仅核对固定 v3 案例");
+  const {definition,item}=state.previousCase ? cloudV3CheckpointCase(state) :
+    {definition:plan.selectedCases[0],item:state.outcomes.find(row=>row.caseId===plan.selectedCases[0].id)};
   const base = new URL(normalizeSessionBase(client.baseUrl));
-  if (base.pathname !== "/api/v2" || state.origin !== base.origin)
+  if (base.pathname !== "/api/v2" || state.origin !== base.origin || (state.previousCase && state.projectId!==client.projectId))
     stop("读取入口与原评测入口不一致");
   if (base.protocol === "https:" && !client.sessionFile) stop("请使用绑定原入口的受保护会话文件");
 
-  const first = plan.selectedCases[0], item = state.outcomes.find(row => row.caseId === first.id);
-  const result = await inspectFirstReview(first, item, client);
+  const result = await inspectReview(definition,item,client,state.previousCase?state.submission?.submittedAt??null:undefined);
   if (readCheckpoint(checkpointPath, {privateFile:true}).text !== text)
     stop("读取期间原检查点已变化，请核对当前记录");
   return {
     protocol:"shuduo-cloud-v3-review-binding/v1", verificationMode:"STORED_RECEIPTS_ONLY",
-    evaluationRunId:state.evaluationRunId, caseId:first.id, expectedCaseCount:plan.contract.expectedCaseCount,
+    evaluationRunId:state.evaluationRunId, caseId:definition.id, expectedCaseCount:currentLiveLifecycleContract.expectedCaseCount,
     ...result, fullLifecycleE2E:false, agentIndependentE2E:false, publicDeployed:false,
   };
 }
 
-async function inspectFirstReview(definition, item, client) {
+async function inspectReview(definition,item,client,submittedAt) {
   const pending = reason => ({status:"PENDING", reason});
   const reject = reason => ({status:"UNCONFIRMED", reason});
   if (!item) return pending("ORIGINAL_AGENT_RECEIPT_PENDING");
@@ -55,6 +57,7 @@ async function inspectFirstReview(definition, item, client) {
   try {
     task = await client.request(`/agent/requests/${agentAction.key}`);
     if (task?.executionMode !== "DURABLE_SQL_AGENT_V1" || !nativeEvidence(task) ||
+        (submittedAt!==undefined && !(Date.parse(task.createdAt)>=Date.parse(submittedAt))) ||
         !verifiedLiveTaskSnapshotBinding(definition, item, task))
       return reject("ORIGINAL_AGENT_MISMATCH");
     const attempt = task.attempts.at(-1);

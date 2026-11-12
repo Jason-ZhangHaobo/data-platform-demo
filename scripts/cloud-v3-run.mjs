@@ -3,6 +3,7 @@ import { sha256 } from "../src/v2/delivery.mjs";
 import { checkpointCaseScope, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseRequestDigest, liveLifecyclePlan } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { liveEvidenceProvenance } from "../src/v2/live-lifecycle-provenance.mjs";
+import { cloudV3CheckpointCase } from "../src/v2/cloud-v3-case-selection.mjs";
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -47,38 +48,56 @@ function checkedCompletion(path, original, first) {
   return receipt;
 }
 
-export function readCloudV3Run(path, {completionPath}={}) {
+function validRecordedCreation(item) {
+  return id(item?.actions?.agent?.key) && digest(item.actions.agent.bodyHash) &&
+    ["PREPARED","SUBMITTING","UNKNOWN","CONFIRMED"].includes(item.actions.agent.status) &&
+    ["REQUIREMENT","CODE_AND_DEBUG","DELIVERY_PREPARATION"].includes(item.phase);
+}
+
+export function readCloudV3Run(path, {completionPath,nextPath,nextCompletionPath}={}) {
   const original=readCheckpoint(path,{privateFile:true});
   const {state,text}=original;
   const {plan,contractId}=checkpointCaseScope(state,state?.evaluationRunId);
   const [first]=state.outcomes;
   if (contractId!==currentLiveLifecycleContract.id || state.caseLimit!==1 || state.outcomes.length!==1 ||
-      !id(first?.actions?.agent?.key) || !digest(first.actions.agent.bodyHash) ||
-      !["PREPARED","SUBMITTING","UNKNOWN","CONFIRMED"].includes(first.actions.agent.status) ||
-      !["REQUIREMENT","CODE_AND_DEBUG","DELIVERY_PREPARATION"].includes(first.phase))
+      !validRecordedCreation(first))
     stop("须使用原云端首例检查点");
   const fullPlan=liveLifecyclePlan(plan.contract.expectedCaseCount,{contractId});
   const completion=completionPath ? checkedCompletion(completionPath,original,first) : undefined;
-  const verified=completion?.scope==="INVITED_CLOUD_MATCHED";
+  const recorded=new Map([[first.caseId,{item:first,completion}]]);
+  if (nextCompletionPath && !nextPath) stop("后续完成回执须绑定原续接检查点");
+  if (nextPath) {
+    const next=readCheckpoint(nextPath,{privateFile:true}), {item}=cloudV3CheckpointCase(next.state);
+    const previous=next.state.previousCase;
+    if (!completion || !previous || next.state.evaluationRunId!==state.evaluationRunId ||
+        next.state.startedAt!==state.startedAt || next.state.origin!==state.origin || next.state.projectId!==state.projectId ||
+        previous.checkpointDigest!==sha256(text) || previous.completionDigest!==completion.completionDigest ||
+        previous.approvalDigest!==(state.submission?.windowApprovalDigest??null) ||
+        !validRecordedCreation(item) || item.actions.agent.key===first.actions.agent.key)
+      stop("续接案例与原评测或首例完成回执不一致");
+    recorded.set(item.caseId,{item,completion:nextCompletionPath?checkedCompletion(nextCompletionPath,next,item):undefined});
+  }
+  const verified=entry=>entry?.completion?.scope==="INVITED_CLOUD_MATCHED";
   const cases=fullPlan.selectedCases.map(definition=>{
     const item={caseId:definition.id,kind:definition.kind,contextId:definition.contextId,
       requestDigest:liveCaseRequestDigest(definition,contractId)};
-    if (definition.id===first.caseId) return {...item,status:verified ? "CLOUD_CHAIN_VERIFIED"
-      : completion ? "LOCAL_MATCHED_ONLY" : "ORIGINAL_CHECKPOINT",
-      creationStatus:first.actions.agent.status,phase:first.phase};
+    const existing=recorded.get(definition.id);
+    if (existing) return {...item,status:verified(existing) ? "CLOUD_CHAIN_VERIFIED"
+      : existing.completion ? "LOCAL_MATCHED_ONLY" : "ORIGINAL_CHECKPOINT",
+      creationStatus:existing.item.actions.agent.status,phase:existing.item.phase};
     if (definition.kind==="DERIVED") {
-      const parentVerified=verified&&definition.sourceCaseId===first.caseId;
+      const parent=recorded.get(definition.sourceCaseId), parentVerified=verified(parent);
       return {...item,sourceCaseId:definition.sourceCaseId,status:parentVerified ? "SOURCE_VERIFIED" : "WAITING_FOR_SOURCE",
-        ...(parentVerified ? {source:{evaluationRunId:state.evaluationRunId,requestDigest:first.requestDigest,
-          taskId:first.taskId,revisionId:first.code.revisionId,revisionHash:first.code.revisionHash,
-          developmentRunId:first.code.runId,completionDigest:completion.completionDigest}} : {})};
+        ...(parentVerified ? {source:{evaluationRunId:state.evaluationRunId,requestDigest:parent.item.requestDigest,
+          taskId:parent.item.taskId,revisionId:parent.item.code.revisionId,revisionHash:parent.item.code.revisionHash,
+          developmentRunId:parent.item.code.runId,completionDigest:parent.completion.completionDigest}} : {})};
     }
     return {...item,status:"NOT_STARTED"};
   });
   return {protocol:"shuduo-cloud-v3-run/v1",verificationMode:"STORED_CHECKPOINT_AND_RECEIPT_ONLY",
     evaluationRunId:state.evaluationRunId,caseSetDigest:state.caseSetDigest,originalCheckpointDigest:sha256(text),
-    expectedCaseCount:fullPlan.contract.expectedCaseCount,verifiedCloudCaseCount:verified ? 1 : 0,
-    nextCaseId:verified ? fullPlan.selectedCases[1].id : first.caseId,
+    expectedCaseCount:fullPlan.contract.expectedCaseCount,verifiedCloudCaseCount:[...recorded.values()].filter(verified).length,
+    nextCaseId:cases.find(entry=>entry.status!=="CLOUD_CHAIN_VERIFIED").caseId,
     ...(completion ? {completionDigest:completion.completionDigest} : {}),
     cases,willExecute:false,executionAuthorized:false,agentIndependentE2E:false,publicDeployed:false};
 }

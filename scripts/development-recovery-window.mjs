@@ -4,8 +4,9 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { functionDigest, functionSnapshot } from './refresh-v2-spark-readiness.mjs';
 import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
-import { publicDevelopmentConfig } from '../src/v2/public-development-access.mjs';
-import { firstCloudApplicationBinding, firstCloudDevelopmentScope, firstCloudDevelopmentModes, firstCloudWindowReceiptProtocol, validFirstCloudBinding } from './first-cloud-v3-window.mjs';
+import { developmentRequestDigest, publicDevelopmentConfig } from '../src/v2/public-development-access.mjs';
+import { cloudWindowApplicationBinding, cloudV3DevelopmentScope, nextCloudDevelopmentScope, firstCloudDevelopmentModes,
+  firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol, validFirstCloudBinding, validNextCloudBinding } from './first-cloud-v3-window.mjs';
 
 export const developmentRecoveryScope = 'INVITED_DEVELOPMENT_RECOVERY_WINDOW_V1';
 export const developmentRecoveryModes = ['activate', 'recycle', 'close', 'rollback'];
@@ -24,12 +25,16 @@ const month = now => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai
 const fresh = (at, now) => Number.isFinite(Date.parse(at)) && Date.parse(at) <= now && now - Date.parse(at) < 3600000;
 
 export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
-  const firstCase = plan?.scope===firstCloudDevelopmentScope, resumed = plan?.resumeExistingTask;
-  const legacyFirstCleanup = firstCase && ['close','rollback'].includes(plan.mode) && plan.applicationInspection === undefined;
-  const inspected = firstCase && !legacyFirstCleanup ? firstCloudApplicationBinding(plan.applicationInspection,plan.firstCase) : undefined;
-  if (firstCase) {
-    check(resumed===undefined && firstCloudDevelopmentModes.includes(plan.mode) && validFirstCloudBinding(plan.firstCase) &&
-      plan.firstCase.sourceRevision===plan.applicationSource && plan.contextId===plan.firstCase.contextId &&
+  const bound = cloudV3DevelopmentScope(plan?.scope), next=plan?.scope===nextCloudDevelopmentScope, resumed = plan?.resumeExistingTask;
+  const selected=next?plan.nextCase:plan?.firstCase, caseDigest=next?'nextCaseDigest':'firstCaseDigest';
+  const legacyFirstCleanup = bound && !next && ['close','rollback'].includes(plan.mode) && plan.applicationInspection === undefined;
+  const inspected = bound && !legacyFirstCleanup ? cloudWindowApplicationBinding(plan.applicationInspection,selected) : undefined;
+  if (bound) {
+    check(resumed===undefined && firstCloudDevelopmentModes.includes(plan.mode) &&
+      (next ? plan.firstCase===undefined && validNextCloudBinding(selected) &&
+        plan.binding?.approvalDigest!==selected.previousCase.approvalDigest && plan.priorReserveCny>=selected.previousCase.reserveCny
+        : plan.nextCase===undefined && validFirstCloudBinding(selected)) &&
+      selected.sourceRevision===plan.applicationSource && plan.contextId===selected.contextId &&
       plan.maxNewTasks===1 && plan.maxModelCalls===3 &&
       Number.isSafeInteger(plan.maxSparkRuns) && plan.maxSparkRuns>=1 && plan.maxSparkRuns<=4 &&
       Number.isFinite(plan.maxIncrementCny) && plan.maxIncrementCny>0 && plan.maxIncrementCny<=5 &&
@@ -39,7 +44,7 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
     'FIRST_CLOUD_WINDOW_SCOPE_INVALID');
     if (!legacyFirstCleanup) check(inspected && inspected.sha256===plan.application?.sha256 && inspected.bytes===plan.application?.bytes &&
       inspected.inspectionDigest===plan.binding?.applicationInspectionDigest,'FIRST_CLOUD_APPLICATION_INSPECTION_INVALID');
-  } else check(plan?.firstCase===undefined && plan?.applicationInspection===undefined,'FIRST_CLOUD_WINDOW_SCOPE_INVALID');
+  } else check(plan?.firstCase===undefined && plan?.nextCase===undefined && plan?.applicationInspection===undefined,'FIRST_CLOUD_WINDOW_SCOPE_INVALID');
   if (resumed !== undefined) {
     check(sameKeys(resumed, ['protocol', 'taskId', 'originalStartsAt', 'originalDeadline', 'retainedAttempts', 'approvalDigest', 'priorCodeReads', 'priorCodeHttp', 'codeStageIssuedAt', 'codeStageClosedAt']) &&
       resumed.protocol === 'TARGET_TASK_FRESH_WINDOW_V1' && uuid(resumed.taskId) &&
@@ -56,7 +61,7 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
       Number.isSafeInteger(resumed.priorCodeHttp) && resumed.priorCodeHttp >= 0 && resumed.priorCodeHttp <= 40,
     'TARGET_TASK_WINDOW_INVALID');
   }
-  check(firstCase || plan?.scope === developmentRecoveryScope && developmentRecoveryModes.includes(plan.mode) &&
+  check(bound || plan?.scope === developmentRecoveryScope && developmentRecoveryModes.includes(plan.mode) &&
     plan.contextId === 'stock-cash-t1' && plan.maxNewTasks === (resumed ? 0 : 1) && plan.maxModelCalls === (resumed ? 3 - resumed.retainedAttempts : 3) &&
     (resumed ? Number.isSafeInteger(plan.maxSparkRuns) && plan.maxSparkRuns >= 1 && plan.maxSparkRuns <= 4 : plan.maxSparkRuns === 4) &&
     plan.maxIncrementCny === 5 && plan.monthlyCny === 200 && plan.maxReads === (resumed ? 160 - resumed.priorCodeReads : 120) &&
@@ -69,11 +74,11 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
     (['close', 'rollback'].includes(plan.mode) || plan.deadline > now), 'RECOVERY_WINDOW_INVALID');
   const b = plan.binding;
   check(sameKeys(b, ['protocol', 'approvalDigest', 'predecessorDigest', 'historyDigest', 'applicationSha256', 'workerDigest', 'priorReserveCny',
-    ...(resumed ? ['taskResumeDigest'] : []), ...(firstCase ? ['firstCaseDigest','budgetPolicyDigest'] : []),
+    ...(resumed ? ['taskResumeDigest'] : []), ...(bound ? [caseDigest,'budgetPolicyDigest'] : []),
     ...(inspected ? ['applicationInspectionDigest'] : [])]) &&
-    b.protocol === (firstCase ? 'FIRST_CLOUD_WINDOW_CONTINUATION_V1' : resumed ? 'DEVELOPMENT_TASK_RESUME_CONTINUATION_V1' : 'DEVELOPMENT_RECOVERY_CONTINUATION_V1') &&
+    b.protocol === (next ? 'NEXT_CLOUD_WINDOW_CONTINUATION_V1' : bound ? 'FIRST_CLOUD_WINDOW_CONTINUATION_V1' : resumed ? 'DEVELOPMENT_TASK_RESUME_CONTINUATION_V1' : 'DEVELOPMENT_RECOVERY_CONTINUATION_V1') &&
     (!resumed || b.taskResumeDigest === recoveryDigest(resumed)) &&
-    (!firstCase || b.firstCaseDigest===recoveryDigest(plan.firstCase) &&
+    (!bound || b[caseDigest]===recoveryDigest(selected) &&
       b.budgetPolicyDigest===recoveryDigest({reserveCny:plan.priorReserveCny,maxIncrementCny:plan.maxIncrementCny,
         monthlyCny:plan.monthlyCny,windowDeadline:plan.deadline,maxSparkRuns:plan.maxSparkRuns,maxModelCalls:plan.maxModelCalls})) &&
     ['approvalDigest', 'predecessorDigest', 'historyDigest', 'applicationSha256', 'workerDigest'].every(k => hash(b[k])) &&
@@ -93,7 +98,7 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
     e?.V2_LOCAL_DEVELOPMENT === 'false' && e.V2_PROVISIONING_ONLY === 'true' && e.V2_FC_PUBLIC_HTTP_ENABLED === 'true' &&
     e.V2_FC_PUBLIC_READ_ONLY === 'true' && !e.V2_FC_PUBLIC_WRITE_SCOPE && e.V2_PRIVATE_RELEASE_ENABLED !== 'true' &&
     e.V2_DURABLE_SQL_AGENT_ENABLED === 'true' && e.V2_AGENT_DRIVER_MODE === 'OSS_EVENTS' &&
-    (!(resumed || firstCase) || !e.V2_PUBLIC_DEVELOPMENT_TASK_ID) &&
+    (!(resumed || bound) || !e.V2_PUBLIC_DEVELOPMENT_TASK_ID) && e.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST===undefined &&
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.V2_BOOTSTRAP_ADMIN_EMAIL ?? ''), 'RECOVERY_READONLY_BASELINE_REQUIRED');
   if (plan.mode === 'activate') check(plan.phase === undefined && plan.activated === undefined && plan.reloaded === undefined && plan.priorUsage.configWrites === 0,
     'RECOVERY_ACTIVATION_CHECKPOINT_INVALID');
@@ -110,7 +115,7 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
         sameKeys(c, ['taskId', 'revisionId', 'runId', 'bootId', 'contextId', 'status', 'modelPending', 'sparkPending', 'evidenceDigest']) &&
         ['taskId', 'revisionId', 'runId', 'bootId'].every(k => uuid(c[k])) && c.contextId === plan.contextId && (!resumed || c.taskId === resumed.taskId) &&
         c.status === 'VERIFIED' && c.modelPending === false && c.sparkPending === false && hash(c.evidenceDigest), 'RECOVERY_PHASE_BOUNDARY_REQUIRED');
-    } else check((firstCase ? ['OPENED','ACTIVATION_REQUESTED','RESTORE_REQUESTED','RESTORE_UNCONFIRMED'] :
+    } else check((bound ? ['OPENED','ACTIVATION_REQUESTED','RESTORE_REQUESTED','RESTORE_UNCONFIRMED'] :
       ['OPENED', 'RELOAD_CONFIGURATION_VERIFIED', 'RESTORE_REQUESTED', 'RESTORE_UNCONFIRMED']).includes(plan.phase) &&
       plan.priorUsage.configWrites >= 1, 'RECOVERY_CLOSE_CHECKPOINT_INVALID');
   }
@@ -119,7 +124,7 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
 
 export function developmentRecoveryEnvironment(plan, now = Date.now()) {
   const e = plan.baseline?.environmentVariables, u = plan.usage, pricing = plan.modelPricing, noModels = plan.maxModelCalls === 0;
-  const increment=plan.scope===firstCloudDevelopmentScope ? plan.maxIncrementCny : 5;
+  const increment=cloudV3DevelopmentScope(plan.scope) ? plan.maxIncrementCny : 5;
   check((!noModels || plan.resumeExistingTask?.retainedAttempts === 3 && plan.maxNewTasks === 0) &&
     Number.isSafeInteger(plan.maxSparkRuns) && plan.maxSparkRuns >= 1 && plan.maxSparkRuns <= 4, 'RECOVERY_SCOPE_INVALID');
   check(u?.month === month(now) && fresh(u.checkedAt, now) && Number.isSafeInteger(u.sparkRuns) && u.sparkRuns >= 0 &&
@@ -136,6 +141,8 @@ export function developmentRecoveryEnvironment(plan, now = Date.now()) {
   const env = { ...e, V2_FC_PUBLIC_READ_ONLY: 'false', V2_FC_PUBLIC_WRITE_SCOPE: 'DEVELOPMENT_ONLY',
     V2_PUBLIC_DEVELOPMENT_STARTS_AT: new Date(now).toISOString(), V2_PUBLIC_DEVELOPMENT_EXPIRES_AT: new Date(plan.deadline).toISOString(),
     ...(plan.resumeExistingTask ? { V2_PUBLIC_DEVELOPMENT_TASK_ID: plan.resumeExistingTask.taskId } : {}),
+    ...(plan.scope===nextCloudDevelopmentScope ? { V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST:
+      developmentRequestDigest(plan.nextCase.requestKeyHash,plan.nextCase.requestBodyHash) } : {}),
     V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: String(runs), V2_MODEL_MONTHLY_BUDGET_CNY: noModels ? e.V2_MODEL_MONTHLY_BUDGET_CNY : String(model),
     V2_ACCOUNT_MONTHLY_SPEND_CNY: String(plan.billCny) };
   publicDevelopmentConfig(env);
@@ -148,8 +155,9 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
   const usage = { ...plan.priorUsage };
   usage.configReads += (report.configReads ?? 0) + (report.identityReads ?? 0);
   const cleanup = ['close', 'rollback'].includes(plan.mode), path = `/2023-03-30/functions/${plan.controlName}`;
-  const firstCase=plan.scope===firstCloudDevelopmentScope;
-  const normalReadLimit = firstCase ? plan.maxReads - Math.min(20,Math.floor(plan.maxReads/2)) : plan.resumeExistingTask ? plan.maxReads - 20 : 100;
+  const bound=cloudV3DevelopmentScope(plan.scope), next=plan.scope===nextCloudDevelopmentScope;
+  const selected=next?plan.nextCase:plan.firstCase, receiptField=next?'nextCaseReceipt':'firstCaseReceipt';
+  const normalReadLimit = bound ? plan.maxReads - Math.min(20,Math.floor(plan.maxReads/2)) : plan.resumeExistingTask ? plan.maxReads - 20 : 100;
   let restoring = cleanup;
   const expected = e => ({ ...plan.baseline, environmentVariables: e });
   Object.assign(report, { scope: plan.scope, mode: plan.mode, issuedAt: plan.issuedAt, deadline: plan.deadline, binding: plan.binding,
@@ -157,11 +165,11 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
     priorUsage: plan.priorUsage, cumulativeUsage: usage, activated: plan.activated, reloaded: plan.reloaded,
     phaseBoundary: plan.phaseBoundary, recoveryNonce: plan.recoveryNonce, modelCalls: 0, sparkRuns: 0,
     ...(plan.resumeExistingTask ? {resumeExistingTask:plan.resumeExistingTask} : {}),
-    ...(firstCase?{firstCase:plan.firstCase}:{}) });
+    ...(bound?{[next?'nextCase':'firstCase']:selected}:{}) });
   const save = () => { report.runUsage = Object.fromEntries(recoveryUsageKeys.map(k => [k, usage[k] - plan.priorUsage[k]])); io.save(report); };
   const spend = kind => {
     const readLimit = restoring ? plan.maxReads : normalReadLimit;
-    const probeLimit = firstCase && !restoring ? plan.maxProbes - 2 : plan.maxProbes;
+    const probeLimit = bound && !restoring ? plan.maxProbes - 2 : plan.maxProbes;
     check(restoring || now() < plan.deadline, 'RECOVERY_WINDOW_EXPIRED');
     check(usage.configReads <= readLimit && usage.activeHttp <= probeLimit && usage.configWrites <= plan.maxWrites, 'RECOVERY_USAGE_LIMIT');
     check(usage[kind] < ({ configReads: readLimit, activeHttp: probeLimit, configWrites: restoring ? plan.maxWrites : 2 })[kind], 'RECOVERY_USAGE_LIMIT');
@@ -187,10 +195,11 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
         const ready = session.status === 200 && session.body.authenticated === false && session.body.readOnly === true &&
           session.body.publicationOnly !== true && session.body.consumptionOnly !== true &&
           (opened ? session.body.developmentOnly === true && session.body.developmentExpiresAt === report.activated.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT &&
-            (!firstCase || session.body.developmentStartsAt===report.activated.V2_PUBLIC_DEVELOPMENT_STARTS_AT) &&
+            (!bound || session.body.developmentStartsAt===report.activated.V2_PUBLIC_DEVELOPMENT_STARTS_AT) &&
+            (!next || (session.body.developmentRequestOnly===true && !Object.hasOwn(session.body,'developmentRequestDigest'))) &&
             (plan.resumeExistingTask ? session.body.developmentTaskOnly === true && !Object.hasOwn(session.body, 'developmentTaskId') : session.body.developmentTaskOnly !== true) &&
             status.body.spark?.healthVerified === true && status.body.agentDevelopment?.durableEnabled === true && status.body.agentDevelopment?.eventBackgroundAvailable === true
-            : session.body.developmentOnly !== true) && status.status === 200;
+            : session.body.developmentOnly !== true && session.body.developmentRequestOnly!==true) && status.status === 200;
         report.runtime = { ready, readOnlyAnonymous: session.body.readOnly, developmentOnly: session.body.developmentOnly === true,
           sparkReady: status.body.spark?.healthVerified === true, driverReady: status.body.agentDevelopment?.eventBackgroundAvailable === true }; save();
         if (ready) return;
@@ -207,17 +216,23 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
     check(stable(before) && known().some(s => same(s, before)), 'RECOVERY_FOREIGN_CONFIGURATION');
     if (plan.mode === 'activate') {
       check(same(before, plan.baseline), 'RECOVERY_BASELINE_CHANGED');
+      if (next) {
+        spend('activeHttp');
+        const capability=await io.http('/api/v2/status');
+        check(capability.status===200 && capability.body.agentDevelopment?.requestBindingSupported===true,
+          'NEXT_CLOUD_REQUEST_BINDING_UNAVAILABLE');
+      }
       const pages = [], cycle = month(now());
       for (let page = 1; page <= 10; page++) {
         spend('configReads'); const result = await io.command(['bssopenapi', 'QueryBill', '--BillingCycle', cycle, '--PageNum', String(page), '--PageSize', '300']);
         pages.push(result); if (page * 300 >= Number(result.Data?.TotalCount)) break;
       }
       const bill = verifyV2MonthlyBillPages(pages, 200);
-      const increment=firstCase?plan.maxIncrementCny:5;
-      check(bill.ok && bill.billingCycle === cycle && (!firstCase || cycle === month(now())) &&
+      const increment=bound?plan.maxIncrementCny:5;
+      check(bill.ok && bill.billingCycle === cycle && (!bound || cycle === month(now())) &&
         Number(bill.spendCny) + plan.priorReserveCny + increment < 200, 'RECOVERY_BUDGET_INVALID');
       plan.billCny = Number(bill.spendCny); report.bill = bill;
-      if (firstCase) report.firstCaseBill={month:cycle,checkedAt:new Date(now()).toISOString(),spendCny:plan.billCny,
+      if (bound) report[next?'nextCaseBill':'firstCaseBill']={month:cycle,checkedAt:new Date(now()).toISOString(),spendCny:plan.billCny,
         recordCount:bill.recordCount,pagesDigest:recoveryDigest(pages),unsettledReserveCny:plan.priorReserveCny,maxIncrementCny:increment};
       report.activated = developmentRecoveryEnvironment(plan, now());
     } else if (plan.mode === 'recycle') {
@@ -235,15 +250,15 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
     try { await put(desired); } catch (e) { if (e.safeCode === 'RECOVERY_USAGE_LIMIT') throw e; report.updateResponseUnknown = true; save(); }
     await settle(expected(desired)); await runtime(!cleanup);
     report.phase = cleanup ? 'CLOSED_READONLY' : plan.mode === 'recycle' ? 'RELOAD_CONFIGURATION_VERIFIED' : 'OPENED';
-    if (firstCase && report.phase==='OPENED') report.firstCaseReceipt={
-      protocol:firstCloudWindowReceiptProtocol,checkpoint:plan.firstCase,approvalDigest:plan.binding.approvalDigest,
-      application:{...firstCloudApplicationBinding(plan.applicationInspection,plan.firstCase),crc64:plan.application.crc64},
+    if (bound && report.phase==='OPENED') report[receiptField]={
+      protocol:next?nextCloudWindowReceiptProtocol:firstCloudWindowReceiptProtocol,checkpoint:selected,approvalDigest:plan.binding.approvalDigest,
+      application:{...cloudWindowApplicationBinding(plan.applicationInspection,selected),crc64:plan.application.crc64},
       startsAt:report.activated.V2_PUBLIC_DEVELOPMENT_STARTS_AT,expiresAt:report.activated.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT,
-      bill:report.firstCaseBill};
+      bill:report[next?'nextCaseBill':'firstCaseBill']};
     save(); return report;
   } catch (e) {
     report.failure = e.safeCode ?? 'RECOVERY_OPERATION_UNCONFIRMED';
-    if (firstCase) delete report.firstCaseReceipt;
+    if (bound) delete report[receiptField];
     if (mutationRequested && !cleanup) {
       restoring = true;
       try {

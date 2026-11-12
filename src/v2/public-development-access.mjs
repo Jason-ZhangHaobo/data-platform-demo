@@ -1,5 +1,7 @@
 // Optional, fail-closed rollout gate. This never grants a session or bypasses
 // existing CSRF, project, role, ownership, persistence or execution budgets.
+import { createHash } from "node:crypto";
+
 const permissions = Object.freeze(['SESSION', 'AGENT', 'DEVELOPMENT', 'DELIVERY']);
 const authPaths = new Set(['/api/v2/auth/login', '/api/v2/auth/logout', '/api/v2/auth/password']);
 const routes = [
@@ -13,6 +15,10 @@ const routes = [
 ];
 const fail = (code, message) => Object.assign(new Error(message), { status: 403, code });
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const digest = /^[a-f0-9]{64}$/;
+const hash = value => createHash("sha256").update(value).digest("hex");
+export const developmentRequestDigest = (keyHash,bodyHash) => hash(keyHash + ":" + bodyHash);
+const requestDenied = () => fail('PUBLIC_DEVELOPMENT_REQUEST_ONLY', '当前窗口只执行已审阅的确切评测请求及其任务交付。');
 const targetDenied = () => fail('PUBLIC_DEVELOPMENT_TARGET_ONLY', '当前窗口只续接指定的既有任务及其关联代码；不能新建、派生或操作其他任务。');
 export function publicDevelopmentConfig(env) {
   const scope = env.V2_FC_PUBLIC_WRITE_SCOPE;
@@ -20,27 +26,33 @@ export function publicDevelopmentConfig(env) {
   const startsAt = Date.parse(env.V2_PUBLIC_DEVELOPMENT_STARTS_AT),
     expiresAt = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT),
     email = String(env.V2_BOOTSTRAP_ADMIN_EMAIL ?? '').trim().toLowerCase(),
-    taskId = env.V2_PUBLIC_DEVELOPMENT_TASK_ID;
+    taskId = env.V2_PUBLIC_DEVELOPMENT_TASK_ID,
+    requestDigest = env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST;
   if (scope !== 'DEVELOPMENT_ONLY' || env.V2_LOCAL_DEVELOPMENT !== 'false' ||
       !Number.isFinite(startsAt) || !Number.isFinite(expiresAt) || expiresAt <= startsAt || expiresAt - startsAt > 2 * 3600000 ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
       (env.V2_DURABLE_SQL_AGENT_ENABLED !== 'true' && env.V2_DURABLE_MANUAL_DELIVERY_ENABLED !== 'true' && env.V2_EXECUTION_UNAVAILABLE !== 'true') ||
-      (taskId !== undefined && taskId !== '' && (typeof taskId !== 'string' || !uuid.test(taskId))))
+      (taskId !== undefined && taskId !== '' && (typeof taskId !== 'string' || !uuid.test(taskId))) ||
+      (requestDigest!==undefined && (typeof requestDigest!=="string" || !digest.test(requestDigest) || taskId ||
+        env.V2_DURABLE_SQL_AGENT_ENABLED!=="true")))
     throw Error('PUBLIC_DEVELOPMENT_CONFIG_INVALID');
   return Object.freeze({ scope, startsAt, expiresAt, email,
-    executionAvailable: env.V2_EXECUTION_UNAVAILABLE !== 'true' && env.V2_FC_PUBLIC_READ_ONLY !== 'true', ...(taskId ? {taskId} : {}) });
+    executionAvailable: env.V2_EXECUTION_UNAVAILABLE !== 'true' && env.V2_FC_PUBLIC_READ_ONLY !== 'true',
+    ...(taskId ? {taskId} : {}), ...(requestDigest ? {requestDigest} : {}) });
 }
 export function developmentSession(config, session, now = Date.now()) {
   if (!config) return undefined;
   const allowed = config.executionAvailable && now >= config.startsAt && now < config.expiresAt && session?.role === 'ADMIN' && session?.user?.email?.toLowerCase() === config.email;
   return { readOnly: !allowed, permissions: allowed ? [...permissions] : ['SESSION'],
     developmentOnly: true, developmentStartsAt: new Date(config.startsAt).toISOString(), developmentExpiresAt: new Date(config.expiresAt).toISOString(),
-    ...(config.taskId ? {developmentTaskOnly:true,...(allowed?{developmentTaskId:config.taskId}:{})} : {}) };
+    ...(config.taskId ? {developmentTaskOnly:true,...(allowed?{developmentTaskId:config.taskId}:{})} : {}),
+    ...(config.requestDigest ? {developmentRequestOnly:true,...(allowed?{developmentRequestDigest:config.requestDigest}:{})} : {}) };
 }
 export function assertDevelopmentMutation(config, session, method, path, now = Date.now()) {
   if (!config || method === 'GET' || authPaths.has(path)) return;
   if (developmentSession(config, session, now).readOnly)
     throw fail('PUBLIC_DEVELOPMENT_CLOSED', '当前开发窗口未开放、已到期、执行器未就绪或此账号未获准；已保存结果仍可查看。');
+  if (config.requestDigest && !path.startsWith('/api/v2/agent/')) throw requestDenied();
   if(config.taskId){
     if(path.startsWith('/api/v2/delivery/manual'))throw targetDenied();
     if(path==='/api/v2/agent/tasks')throw targetDenied();
@@ -51,10 +63,16 @@ export function assertDevelopmentMutation(config, session, method, path, now = D
   if (method !== 'POST' || (!targetedResume && !routes.some(rule => rule.test(path))))
     throw fail('PUBLIC_DEVELOPMENT_SCOPE_DENIED', '当前仅开放 SQL 开发和交付文件准备；发布、其他模块写入及账号凭证管理未开放。');
 }
-export function assertDevelopmentTaskCreation(config, session, store, project, key, language, now = Date.now()) {
+export function assertDevelopmentTaskCreation(config, session, store, project, key, language, now = Date.now(), body) {
   if (!config) return;
   assertDevelopmentMutation(config, session, 'POST', '/api/v2/agent/tasks', now);
   if (language !== 'SPARK_SQL') throw fail('PUBLIC_DEVELOPMENT_SQL_ONLY', '本次开发窗口仅支持 Spark SQL。');
+  if (config.requestDigest) {
+    const fields=["message","sql","contextId"];
+    if (!uuid.test(key) || !body || Object.keys(body).length!==3 || !fields.every(name=>typeof body[name]==="string") ||
+        developmentRequestDigest(hash(key),hash(JSON.stringify({message:body.message,sql:body.sql,contextId:body.contextId})))!==config.requestDigest)
+      throw requestDenied();
+  }
   const id = store.deduplicatedId(`${project}:durable-agent:${session.user.id}:${key}`);
   const tasks = store.list('agent', project).filter(t => t.submittedBy === session.user.id && Date.parse(t.createdAt) >= config.startsAt);
   if (id && tasks.some(t => t.id === id)) return; // Original idempotent request, not another task.
@@ -87,11 +105,13 @@ export function developmentBackgroundBoundary(config,taskId,now=Date.now()){
   if(!config)return undefined;
   assertDevelopmentExecutionWindow(config,now);
   if(!uuid.test(taskId??'')||(config.taskId&&config.taskId!==taskId))throw targetDenied();
-  return {protocol:'shuduo-development-background-window/v1',taskId,startsAt:config.startsAt,expiresAt:config.expiresAt,targetTaskId:config.taskId??null};
+  return {protocol:'shuduo-development-background-window/v1',taskId,startsAt:config.startsAt,expiresAt:config.expiresAt,targetTaskId:config.taskId??null,
+    ...(config.requestDigest?{requestDigest:config.requestDigest}:{})};
 }
 export function assertDevelopmentBackgroundScope(config,task,owner,project,boundary,now=Date.now()){
   if((config && !boundary) || boundary && (!config||boundary.protocol!=='shuduo-development-background-window/v1'||boundary.taskId!==task?.id||
-    boundary.startsAt!==config.startsAt||boundary.expiresAt!==config.expiresAt||boundary.targetTaskId!==(config.taskId??null)))
+    boundary.startsAt!==config.startsAt||boundary.expiresAt!==config.expiresAt||boundary.targetTaskId!==(config.taskId??null)||
+    boundary.requestDigest!==config.requestDigest))
     throw fail('PUBLIC_DEVELOPMENT_BACKGROUND_SCOPE_CHANGED','后台委托不属于当前授权窗口；请审阅原任务后重新续接，历史计数不会重置。');
   if(config?.taskId)assertDevelopmentTargetTask(config,task,owner,project,now);
   else if(boundary){

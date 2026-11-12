@@ -37,7 +37,8 @@ import { batchArchiveRoute, batchArchiveListPath, batchArchiveRequestPath, prepa
 import { agentArchiveHref, agentArchivePin, checkedAgentArchive, clearAgentArchivePin } from '../../web/src/agent-archive-location.ts';
 import { exportCloudV3SourceReview, prepareCloudV3Start, rebindCloudV3PreparedSource } from '../../scripts/start-cloud-v3-case.mjs';
 import { withCloudCheckpoint } from '../../scripts/cloud-v3-checkpoint-lock.mjs';
-import { firstCloudApplicationBinding, firstCloudWindowReceiptProtocol } from '../../scripts/first-cloud-v3-window.mjs';
+import { cloudWindowApplicationBinding, firstCloudApplicationBinding, firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol } from '../../scripts/first-cloud-v3-window.mjs';
+import { developmentRequestDigest } from '../../src/v2/public-development-access.mjs';
 import { fixtureFirstCloudIndex, fixtureFirstCloudInspection } from './fixtures/first-cloud-application-inspection.mjs';
 
 test('first-case entry preflight distinguishes exact bytes, stale HTML and a timeout without modifying the checkpoint', async t => {
@@ -879,8 +880,13 @@ test('a killed publication CLI recovers both original batches through signed sch
     publicationAccepted.resolve({request,response});
     return false;
   });
+  let loseNextReceipt=false;
   const client=new V2Client({baseUrl:publicationCli.base,fetchImpl:async(url,options)=>{
     const target=new URL(url), path=target.pathname.slice('/api/v2'.length)+target.search;
+    if(target.pathname==='/v2/'){
+      requests.push({path:'/v2/',method:options.method});
+      return new Response(fixtureFirstCloudIndex,{headers:{'content-type':'text/html; charset=utf-8'}});
+    }
     const body=options.body?JSON.parse(options.body):undefined, key=options.headers['Idempotency-Key'];
     requests.push({path,method:options.method});
     if(path.endsWith('/prepare-delivery')){
@@ -890,6 +896,11 @@ test('a killed publication CLI recovers both original batches through signed sch
     if(path.startsWith('/agent/deliveries/')&&path.endsWith('/advance')&&body?.rehearsal&&!body.rehearsal.verificationId)
       savedAtRehearsalPost=JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.rehearsal;
     const response=await f.call(path,body,key);
+    if(loseNextReceipt&&options.method==='POST'&&path==='/agent/tasks'){
+      assert.equal(response.status,202);
+      loseNextReceipt=false;
+      throw Error('SYNTHETIC_NEXT_RECEIPT_LOST');
+    }
     return new Response(JSON.stringify(response.body),{status:response.status});
   }});
   const cli=async(action,flags=[],exit=0)=>{
@@ -1542,6 +1553,83 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal((await cli('v3-publish',['--reconcile'])).reason,'ORIGINAL_PUBLICATION_UNCONFIRMED');
   await cli('v3-consumption',secondConsumption.flags,1);
   assert.equal(readFileSync(checkpoint,'utf8'),checkpointBytes);
+
+  {
+    const nextPath=join(f.directory,'next-case.json'), inspectionPath=join(f.directory,'next-inspection.json'),
+      windowPath=join(f.directory,'next-window.json');
+    const nextCli=async(action,flags=[],exit=0,path=nextPath)=>{
+      requests.length=0;
+      let value,message;
+      const code=await runV2Cli(['agent',action,'--checkpoint',path,...flags],{},
+        {client,output:line=>{value=JSON.parse(line);},error:line=>{message=line;}});
+      assert.equal(code,exit,message);
+      return value;
+    };
+    const nextSource='a'.repeat(40);
+    const preparation=['--first-checkpoint',checkpoint,'--completion-file',completionFile,'--source-revision',nextSource];
+    const prepared=await nextCli('v3-prepare-next',preparation);
+    assert.equal(prepared.caseId,'v3-fresh--cash-change');
+    assert.equal(prepared.evaluationRunId,run.evaluationRunId);
+    const otherPath=join(f.directory,'same-next-case.json');
+    await nextCli('v3-prepare-next',preparation,0,otherPath);
+    const binding=await nextCli('v3-start',['--window-binding']);
+    assert.equal(binding.requestKeyHash,(await nextCli('v3-start',['--window-binding'],0,otherPath)).requestKeyHash);
+    assert.equal(binding.previousCase.reserveCny,64);
+    assert.equal(binding.previousCase.completionDigest,completion.completionDigest);
+    const inspection=fixtureFirstCloudInspection(nextSource,'b'.repeat(40));
+    writeFileSync(inspectionPath,JSON.stringify(inspection),{mode:0o600});
+    const runtimeDigest=developmentRequestDigest(binding.requestKeyHash,binding.requestBodyHash);
+    f.alignWallClock();
+    const startsAt=new Date(f.now()).toISOString(), expiresAt=new Date(f.now()+60000).toISOString();
+    Object.assign(f.env,{V2_FC_PUBLIC_READ_ONLY:'false',V2_FC_PUBLIC_WRITE_SCOPE:'DEVELOPMENT_ONLY',
+      V2_PUBLIC_DEVELOPMENT_STARTS_AT:startsAt,V2_PUBLIC_DEVELOPMENT_EXPIRES_AT:expiresAt,
+      V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST:runtimeDigest});
+    await f.restart();
+    const validWindow={protocol:nextCloudWindowReceiptProtocol,checkpoint:binding,approvalDigest:'d'.repeat(64),startsAt,expiresAt,
+      application:{...cloudWindowApplicationBinding(inspection,binding),crc64:'123456789'},
+      bill:{month,checkedAt:startsAt,spendCny:20,recordCount:1,pagesDigest:'e'.repeat(64),unsettledReserveCny:64,maxIncrementCny:2}};
+    const approve=['--window-file',windowPath,'--application-file',inspectionPath,'--bill-file',billPath,'--confirm'];
+    writeBill(64);
+    const nextPreparedBytes=readFileSync(nextPath,'utf8');
+    await nextCli('v3-start',confirm,1);
+    assert.deepEqual(requests,[]);
+    writeFileSync(windowPath,JSON.stringify({...validWindow,protocol:firstCloudWindowReceiptProtocol}),{mode:0o600});
+    await nextCli('v3-start',approve,1);
+    assert.deepEqual(requests,[]);
+    writeFileSync(windowPath,JSON.stringify(validWindow));
+    assert.equal((await f.call('/agent/tasks',{...taskInput,contextId:'cash-change'},randomUUID())).body.code,'PUBLIC_DEVELOPMENT_REQUEST_ONLY');
+    const preparedState=JSON.parse(nextPreparedBytes);
+    const requestKey=preparedState.outcomes[0].actions.agent.key;
+    assert.equal((await f.call('/agent/tasks',{...taskInput,contextId:'cash-change'},requestKey)).body.code,'PUBLIC_DEVELOPMENT_REQUEST_ONLY');
+    assert.equal(readFileSync(nextPath,'utf8'),nextPreparedBytes);
+    const beforeNext=f.counts();
+    await nextCli('v3-start',approve,1);
+    assert.deepEqual(requests,[{path:'/status?include=session',method:'GET'}]);
+    assert.equal(readFileSync(nextPath,'utf8'),nextPreparedBytes);
+    // The first fixture used its four-run cap. Reopen the fixture with a
+    // separately provisioned allowance while keeping all recorded usage.
+    f.env.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT='8';
+    await f.restart();
+    loseNextReceipt=true;
+    assert.equal((await nextCli('v3-start',approve)).reason,'RECONCILE_ORIGINAL_CREATION');
+    assert.deepEqual(requests,[{path:'/status?include=session',method:'GET'},{path:'/v2/',method:'GET'},{path:'/agent/tasks',method:'POST'}]);
+    assert.equal((await nextCli('v3-start',approve)).reason,'RECONCILE_ORIGINAL_CREATION');
+    assert.deepEqual(requests,[]);
+    f.env.V2_FC_PUBLIC_READ_ONLY='true';
+    delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
+    delete f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST;
+    await f.restart();
+    const recovered=await nextCli('v3-start',['--reconcile']);
+    assert.equal(recovered.status,'CREATION_CONFIRMED');
+    assert.deepEqual(requests,[{path:'/auth/session',method:'GET'},{path:'/agent/requests/'+requestKey,method:'GET'}]);
+    assert.equal(f.store.list('agent',PROJECT).filter(item=>item.contextId==='cash-change').length,1);
+    assert.deepEqual(f.counts(),beforeNext);
+    const joined=await cli('v3-run',['--completion-file',completionFile,'--next-checkpoint',nextPath]);
+    assert.equal(joined.cases[1].creationStatus,'CONFIRMED');
+    assert.equal(joined.verifiedCloudCaseCount,0);
+    assert.equal(JSON.parse(readFileSync(nextPath,'utf8')).startedAt,preparedState.startedAt);
+    assert.equal(readFileSync(checkpoint,'utf8'),checkpointBytes);
+  }
 });
 
 test('invited development reaches versioned files across restart without another task or submission', async t => {

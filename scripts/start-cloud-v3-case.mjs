@@ -6,12 +6,13 @@ import { isDeepStrictEqual } from "node:util";
 import { agentExecutionEvidencePath } from "../src/v2/agent-execution-evidence.mjs";
 import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
 import { readCloudV3Review } from "../src/v2/cloud-v3-review.mjs";
+import { cloudV3CheckpointCase } from "../src/v2/cloud-v3-case-selection.mjs";
 import { getContext, validationFamilyForContext } from "../src/v2/context.mjs";
 import { validateConsumerSource } from "../src/v2/consumer-source.mjs";
 import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
 import { deliveryPreparationBody, deliveryPreparationHashMatches, deliveryPreparationRequirement } from "../src/v2/delivery-preparation-request.mjs";
 import { bindExternalConsumption } from "../src/v2/external-consumption-binding.mjs";
-import { checkpointCaseScope, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
+import { readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedLiveTaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-execution.mjs";
 import { privateReleasePendingStage } from "../src/v2/private-release-stage.mjs";
@@ -22,9 +23,10 @@ import { serviceSourceReadPath } from "../src/v2/service-source-request.mjs";
 import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
 import { verifyV2MonthlyBillPages } from "./verify-v2-monthly-bill-pages.mjs";
 import { validateConsumerPlan } from "./verify-service-consumer.mjs";
-import { firstCloudApplicationBinding, firstCloudCheckpointBinding, firstCloudWindowReceiptProtocol, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
+import { cloudWindowApplicationBinding, cloudWindowCheckpointBinding, firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
+import { developmentRequestDigest } from "../src/v2/public-development-access.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
-import { cloudV3CompletionScope } from "./cloud-v3-run.mjs";
+import { cloudV3CompletionScope, readCloudV3Run } from "./cloud-v3-run.mjs";
 import { boundedBytes } from "./control-code-transport.mjs";
 import { inspectedControlEntryScript, WEB_ENTRY_SCRIPT_LIMIT, WEB_INDEX_LIMIT } from "./control-web-entry.mjs";
 
@@ -56,20 +58,17 @@ function writeCheckpoint(path, state, initial = false) {
 
 function snapshot(client, path) {
   const {state} = readCheckpoint(path, {privateFile:true});
-  if (!id(state?.evaluationRunId)) stop("须使用原云端首例检查点");
-  const {plan, contractId} = checkpointCaseScope(state, state.evaluationRunId);
-  if (contractId !== currentLiveLifecycleContract.id || state.caseLimit !== 1 ||
-      state.outcomes.length !== 1 || !sourceRevision(state.reviewedSource))
-    stop("云端启动检查点与固定 v3 首例不一致");
+  const {definition,item}=cloudV3CheckpointCase(state), action=item.actions?.agent;
+  if (!sourceRevision(state.reviewedSource)) stop("云端检查点未绑定已审阅源码");
   const base = new URL(normalizeSessionBase(client.baseUrl));
   if (base.pathname !== "/api/v2" || base.origin !== state.origin || client.projectId !== state.projectId)
     stop("读取或提交入口与原评测入口或项目不一致");
   if (base.protocol === "https:" && !client.sessionFile) stop("请使用绑定原入口的受保护会话文件");
-  const [definition] = plan.selectedCases, [item] = state.outcomes, action = item.actions?.agent;
   if (!id(action?.key) || action.bodyHash !== requestHash(definition) ||
       !["PREPARED","SUBMITTING","UNKNOWN","CONFIRMED"].includes(action.status) ||
       (action.status === "PREPARED" && (item.taskId !== undefined || action.id !== undefined || state.submission !== undefined)) ||
-      (action.status === "CONFIRMED" && (!id(action.id) || action.id !== item.taskId)))
+      (action.status === "CONFIRMED" && (!id(action.id) || action.id !== item.taskId)) ||
+      (state.previousCase && action.status!=="PREPARED" && !Number.isFinite(Date.parse(state.submission?.submittedAt))))
     stop("原请求编号或请求体摘要不一致");
   return {state, definition, item, action};
 }
@@ -126,7 +125,8 @@ function result(state, item, status, reason) {
 function confirmReceipt({state, definition, item, action}, receipt, path) {
   const proof = liveEvidenceProvenance(receipt);
   if (proof.synthetic || proof.nonNative || proof.unconfirmed || receipt?.executionMode !== "DURABLE_SQL_AGENT_V1" ||
-      !id(receipt.id) || (item.taskId !== undefined && item.taskId !== receipt.id))
+      !id(receipt.id) || (item.taskId !== undefined && item.taskId !== receipt.id) ||
+      (state.previousCase && !(Date.parse(receipt.createdAt)>=Date.parse(state.submission.submittedAt))))
     return false;
   const original = {...item, taskId:receipt.id, actions:{...item.actions, agent:{...action,id:receipt.id,status:"CONFIRMED"}}};
   if (!verifiedLiveTaskSnapshotBinding(definition, original, receipt)) return false;
@@ -146,6 +146,34 @@ export function prepareCloudV3Start(path, client, reviewedSource) {
     caseLimit:1, origin:base.origin, projectId:client.projectId, reviewedSource, outcomes:[item]};
   writeCheckpoint(path, state, true);
   return result(state, item, "PREPARED");
+}
+
+export function prepareCloudV3Next(path,client,{firstPath,completionPath,reviewedSource}={}) {
+  if (!isAbsolute(path ?? "") || !sourceRevision(reviewedSource)) stop("须提供续接检查点和已审阅源码版本");
+  const run=readCloudV3Run(firstPath,{completionPath});
+  const {state:first,text}=readCheckpoint(firstPath,{privateFile:true});
+  const base=new URL(normalizeSessionBase(client.baseUrl));
+  if (run.originalCheckpointDigest!==sha256(text) || base.pathname!=="/api/v2" ||
+      base.origin!==first.origin || first.projectId!==client.projectId ||
+      !(run.verifiedCloudCaseCount===1 || (base.protocol==="http:" && run.cases[0].status==="LOCAL_MATCHED_ONLY")))
+    stop("须核对同一评测的首例完成回执及原入口");
+  const plan=liveLifecyclePlan(2,{contractId:currentLiveLifecycleContract.id}), definition=plan.selectedCases[1];
+  const original=first.outcomes[0], priorBills=[first.submission?.bill,...Object.values(original.actions).map(action=>action.bill)];
+  const reserveCny=Math.max(...priorBills.map(bill=>bill?.unsettledReserveCny ?? 0));
+  const previousCase={checkpointDigest:run.originalCheckpointDigest,completionDigest:run.completionDigest,
+    approvalDigest:first.submission?.windowApprovalDigest ?? null,reserveCny};
+  // The same original evaluation always yields the same request key, even
+  // if a local preparation is interrupted and recreated in another file.
+  const entropy=sha256(JSON.stringify([first.evaluationRunId,original.actions.agent.key,definition.id]));
+  const key=[entropy.slice(0,8),entropy.slice(8,12),"4"+entropy.slice(13,16),"8"+entropy.slice(17,20),entropy.slice(20,32)].join("-");
+  const item={...liveCaseCheckpoint(definition,first.startedAt,plan.caseSetDigest,{
+    contractId:plan.contract.id,evaluationRunId:first.evaluationRunId,
+  }),actions:{agent:{key,bodyHash:requestHash(definition),status:"PREPARED"}}};
+  const state={evaluationRunId:first.evaluationRunId,contract:plan.contract,startedAt:first.startedAt,caseSetDigest:plan.caseSetDigest,
+    caseLimit:2,origin:first.origin,projectId:first.projectId,reviewedSource,previousCase,outcomes:[item]};
+  cloudV3CheckpointCase(state);
+  writeCheckpoint(path,state,true);
+  return result(state,item,"PREPARED");
 }
 
 function mergedApplicationTree(revision, cwd) {
@@ -242,16 +270,17 @@ function assertDeliveryWindow(session, taskId, bill) {
     stop("原任务未处于获准交付操作的开发窗口");
 }
 
-function checkedFirstWindowReceipt(path,windowPath,applicationPath,client,bill) {
+function checkedWindowReceipt(path,windowPath,applicationPath,client,bill,previousCase) {
   if (!windowPath) {
-    if (new URL(client.baseUrl).protocol==="https:" || applicationPath) stop("云端首例提交须提供原独立开发窗口回执");
+    if (previousCase || new URL(client.baseUrl).protocol==="https:" || applicationPath) stop("云端提交须提供本案例的独立开发窗口回执");
     return;
   }
   const {state:receipt}=readCheckpoint(windowPath,{privateFile:true}), bounds=receipt?.bill;
   const starts=Date.parse(receipt?.startsAt), ends=Date.parse(receipt?.expiresAt), checked=Date.parse(bounds?.checkedAt);
   const now=Date.now();
-  if (receipt?.protocol!==firstCloudWindowReceiptProtocol ||
-      !digest(receipt.approvalDigest) || !isDeepStrictEqual(receipt.checkpoint,firstCloudCheckpointBinding(path)) ||
+  if (receipt?.protocol!==(previousCase?nextCloudWindowReceiptProtocol:firstCloudWindowReceiptProtocol) ||
+      !digest(receipt.approvalDigest) || receipt.approvalDigest===previousCase?.approvalDigest ||
+      !isDeepStrictEqual(receipt.checkpoint,cloudWindowCheckpointBinding(path)) ||
       !Number.isFinite(starts) || !Number.isFinite(ends) || !(starts<=now&&now<ends&&ends-starts<=7200000) ||
       !Number.isFinite(checked) || checked>starts || starts-checked>=3600000 ||
       bounds.month!==bill.month || !digest(bounds.pagesDigest) || !Number.isFinite(bounds.spendCny) || bounds.spendCny<0 ||
@@ -259,9 +288,10 @@ function checkedFirstWindowReceipt(path,windowPath,applicationPath,client,bill) 
       bounds.unsettledReserveCny!==bill.unsettledReserveCny || bounds.maxIncrementCny!==bill.maxIncrementCny ||
       bounds.maxIncrementCny>5 || bounds.spendCny+bounds.unsettledReserveCny+bounds.maxIncrementCny>=200)
     stop("独立开发窗口、原检查点或预算范围不一致");
-  if (!applicationPath) stop("云端首例提交须提供独立验包文件");
+  if (previousCase && bill.unsettledReserveCny<previousCase.reserveCny) stop("须保留原评测未结算预留");
+  if (!applicationPath) stop("云端提交须提供独立验包文件");
   const {state:inspection}=readCheckpoint(applicationPath,{privateFile:true});
-  const application = firstCloudApplicationBinding(inspection,receipt.checkpoint);
+  const application = cloudWindowApplicationBinding(inspection,receipt.checkpoint);
   const crc64 = receipt.application?.crc64;
   if (!application || typeof crc64!=="string" || !/^\d{1,30}$/.test(crc64) ||
       !isDeepStrictEqual(receipt.application,{...application,crc64}))
@@ -318,12 +348,12 @@ async function verifyFirstWindowEntry(client, application) {
 export async function checkCloudV3PreparedEntry(path, client, applicationPath, timeoutMs = client.timeoutMs ?? 15000, zipPath) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000)
     stop("首例只读入口预检的超时须为 1—30000 毫秒");
-  const checkpoint = firstCloudCheckpointBinding(path);
+  const checkpoint = cloudWindowCheckpointBinding(path);
   const base = new URL(normalizeSessionBase(client.baseUrl));
   if (base.pathname !== "/api/v2" || base.origin !== checkpoint.origin || client.projectId !== checkpoint.projectId)
     stop("入口预检须使用原评测入口和项目");
   const {state:inspection} = readCheckpoint(applicationPath,{privateFile:true});
-  const application = firstCloudApplicationBinding(inspection,checkpoint);
+  const application = cloudWindowApplicationBinding(inspection,checkpoint);
   const report = {protocol:"shuduo-cloud-v3-entry-preflight/v1",scope:"READ_ONLY",checkpointStatus:"PREPARED",
     checkpointDigest:checkpoint.checkpointDigest,sourceRevision:checkpoint.sourceRevision,entryRequests:0,agentSubmissions:0,
     ...(zipPath ? {scriptRequests:0} : {})};
@@ -352,7 +382,7 @@ export async function checkCloudV3PreparedEntry(path, client, applicationPath, t
     }
   }
   let unchanged = false;
-  try { unchanged = firstCloudCheckpointBinding(path).checkpointDigest === checkpoint.checkpointDigest; }
+  try { unchanged = cloudWindowCheckpointBinding(path).checkpointDigest === checkpoint.checkpointDigest; }
   catch { /* An updated checkpoint needs its own preflight. */ }
   return {...report,entryRequests:1,applicationInspectionDigest:application.inspectionDigest,
     ...probe,...(script?{htmlStatus:probe.status,script,status:script.status,...(script.reason?{reason:script.reason}:{})}:{}),
@@ -374,19 +404,23 @@ export async function continueCloudV3Start(path, client, {billPath, windowPath, 
     }
     if (action.status !== "PREPARED") return result(state, item, "PENDING", "RECONCILE_ORIGINAL_CREATION");
     const bill = readCurrentBill(billPath, Date.now());
-    const window = checkedFirstWindowReceipt(path,windowPath,applicationPath,client,bill);
+    const window = checkedWindowReceipt(path,windowPath,applicationPath,client,bill,state.previousCase);
     const {status, session} = await client.request("/status?include=session");
     if (window && (session?.developmentStartsAt!==window.startsAt || session?.developmentExpiresAt!==window.expiresAt ||
         !(status?.budget?.account?.observedSpendCny>=window.bill.spendCny)))
       stop("实际运行时与原独立开发窗口不一致");
+    if (state.previousCase && (session?.developmentRequestOnly!==true ||
+        session.developmentRequestDigest!==developmentRequestDigest(window.checkpoint.requestKeyHash,action.bodyHash)))
+      stop("运行时尚未绑定本案例的确切请求");
     const submission = submissionSnapshot(status,session,client,bill,Date.now());
     if (window) await verifyFirstWindowEntry(client,window.application);
     const now = Date.now(), submittedAt = new Date(now).toISOString();
     if (now - Date.parse(bill.checkedAt) >= 3600000 || now >= Date.parse(submission.windowExpiresAt))
       stop("当前账单或开发窗口在预检期间到期");
     state.submission = {...submission,
+      ...(state.previousCase?{submittedAt}:{}),
       ...(window?{windowApprovalDigest:window.approvalDigest,application:window.application}:{})};
-    state.startedAt = item.evaluationStartedAt = submittedAt;
+    if (!state.previousCase) state.startedAt = item.evaluationStartedAt = submittedAt;
     item.status = "PAUSED"; item.phase = "CODE_AND_DEBUG"; action.status = "SUBMITTING";
     writeCheckpoint(path, state);
     let receipt;
@@ -875,7 +909,7 @@ export async function inspectCloudV3Execution(path, client) {
         view.fullLifecycleE2E !== false || view.publicDeployed !== false || view.taskId !== item.taskId ||
         view.contextId !== definition.contextId || view.requestSha256 !== sha256(definition.request) ||
         view.seedSqlSha256 !== sha256(definition.seedSql.trim()) || !Number.isFinite(Date.parse(view.taskCreatedAt)) ||
-        Date.parse(view.taskCreatedAt) < Date.parse(item.evaluationStartedAt))
+        Date.parse(view.taskCreatedAt) < Date.parse(state.previousCase ? state.submission.submittedAt : item.evaluationStartedAt))
       return response("UNCONFIRMED", "ORIGINAL_EXECUTION_MISMATCH");
     const execution = checkedLiveExecutionProjection(view.execution, item.taskId);
     if (execution.state !== "RECORDED" || execution.evidence !== "STORED_METADATA")

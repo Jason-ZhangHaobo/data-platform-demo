@@ -12,7 +12,7 @@ export function publicCapabilityStatus(status){
   metadata:pick(status.metadata,['driver','cloudVerified']),
   persistence:{...pick(status.persistence,['mode','healthy']),dataState:pick(status.persistence?.dataState,['driver','healthy'])},
   artifacts:pick(status.artifacts,['driver','durable','cloudVerified']),
-  agentDevelopment:pick(status.agentDevelopment,['durableEnabled','durableDeliveryEnabled','eventBackgroundAvailable','publishAvailable','sqlMaxAttempts','sqlTokenBudget']),
+  agentDevelopment:pick(status.agentDevelopment,['durableEnabled','durableDeliveryEnabled','requestBindingSupported','eventBackgroundAvailable','publishAvailable','sqlMaxAttempts','sqlTokenBudget']),
   validationContract:pick(status.validationContract,['id','fixtureCount']),
   dataServices:pick(status.dataServices,['privateEnabled','localSourcesEnabled','sourceBoundAgentContextEnabled','durableServiceAgentEnabled','durableServiceAgentReadEnabled','scope']),
   ingestion:{...pick(status.ingestion,['sourceType','availableSourceTypes']),serverMysql:pick(status.ingestion?.serverMysql,['configured','supportsOfflineSync','credentialMode'])},
