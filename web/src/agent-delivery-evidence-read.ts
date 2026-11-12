@@ -1,4 +1,5 @@
 import {checkedDistributionConsumption} from './distribution-consumption-read.ts';
+import {checkedFundConsumption} from './fund-consumption-read.ts';
 import {checkedPublication} from './publication-selection.ts';
 import type {PublicationSelector} from './publication-selection';
 import {serviceSourceScope,validServiceSourceBinding} from './service-source-binding.ts';
@@ -40,7 +41,8 @@ export function checkedAgentPublication(value:unknown,{taskId,scope,selector,rel
 
 const fields=['client_id','holding_market_value','available_cash','total_assets','security_count'];
 const invalidConsumption=()=>Error('消费回执的结构、固定版本或原发布来源未确认；只读重查，不创建接口、凭证或调用。');
-export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBinding,batches:{id:string;status:string;schedulerTriggered?:boolean}[],expectedOutput?:{id:string;metadataHash:string}):TaskConsumption{
+export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBinding,batches:{id:string;status:string;schedulerTriggered?:boolean}[],expectedOutput?:{id:string;metadataHash:string},expectedFund?:{id:string;modelMode:string}):TaskConsumption{
+ if(expectedFund)return checkedFundConsumption(value,binding,batches,expectedFund);
  if(record(value)&&value.protocol==='shuduo-local-distribution-consumption/v1')return checkedDistributionConsumption(value,binding,batches,expectedOutput);
  if(expectedOutput)throw invalidConsumption();
  if(!validServiceSourceBinding(binding)||!record(value)||value.protocol!==(serviceSourceScope(binding)==='LOCAL_TEST_ONLY'?'shuduo-local-task-consumption/v1':'shuduo-private-task-consumption/v1')||value.scope!==serviceSourceScope(binding)||
