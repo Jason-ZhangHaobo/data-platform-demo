@@ -267,24 +267,63 @@ function checkedFirstWindowReceipt(path,windowPath,applicationPath,client,bill) 
   return receipt;
 }
 
-async function verifyFirstWindowEntry(client, application) {
-  let bytes;
+async function readFirstWindowEntry(client, application, timeoutMs) {
+  const started = performance.now();
+  const signal = AbortSignal.timeout(timeoutMs);
+  let response, headersMs;
+  const result = (status, reason, extra = {}) => ({
+    status, ...(reason ? {reason} : {}),
+    ...(response ? {httpStatus:response.status,headersMs} : {}),
+    elapsedMs: Math.round(performance.now() - started), ...extra,
+  });
   try {
     const url = new URL("/v2/",client.baseUrl);
-    const response = await client.fetchImpl(url.href,{
-      method:"GET", redirect:"error", cache:"no-store", signal:AbortSignal.timeout(client.timeoutMs ?? 15000),
+    response = await client.fetchImpl(url.href,{
+      method:"GET", redirect:"error", cache:"no-store", credentials:"omit", signal,
       headers:{Accept:"text/html","Cache-Control":"no-cache"},
     });
+    headersMs = Math.round(performance.now() - started);
     if (response.status !== 200 || !/^text\/html(?:;|$)/i.test(response.headers.get("content-type") ?? "")) {
       await response.body?.cancel();
-      throw Error();
+      return result("UNCONFIRMED","ENTRY_NOT_HTML");
     }
-    bytes = await boundedBytes(response,application.webIndexBytes);
-  } catch {
-    stop("正式入口 HTML 未能核对，请保留原请求和检查点");
+    const bytes = await boundedBytes(response,300000);
+    return bytes.length === application.webIndexBytes && sha256(bytes) === application.webIndexSha256
+      ? result("MATCHED",undefined,{observedBytes:bytes.length})
+      : result("MISMATCH","ENTRY_CONTENT_MISMATCH",{observedBytes:bytes.length});
+  } catch (error) {
+    await response?.body?.cancel().catch(() => {});
+    const reason = signal.aborted ? "ENTRY_TIMEOUT" : error?.safeCode === "OBJECT_TOO_LARGE" ? "ENTRY_TOO_LARGE" : "ENTRY_TRANSPORT_UNCONFIRMED";
+    return result("UNCONFIRMED",reason);
   }
-  if (bytes.length!==application.webIndexBytes || sha256(bytes)!==application.webIndexSha256)
+}
+
+async function verifyFirstWindowEntry(client, application) {
+  const probe = await readFirstWindowEntry(client, application, client.timeoutMs ?? 15000);
+  if (probe.status === "MISMATCH")
     stop("正式入口 HTML 与验包证据不一致，请保留原请求和检查点");
+  if (probe.status !== "MATCHED")
+    stop("正式入口 HTML 未能核对，请保留原请求和检查点");
+}
+
+export async function checkCloudV3PreparedEntry(path, client, applicationPath, timeoutMs = client.timeoutMs ?? 15000) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000)
+    stop("首例只读入口预检的超时须为 1—30000 毫秒");
+  const checkpoint = firstCloudCheckpointBinding(path);
+  const base = new URL(normalizeSessionBase(client.baseUrl));
+  if (base.pathname !== "/api/v2" || base.origin !== checkpoint.origin || client.projectId !== checkpoint.projectId)
+    stop("入口预检须使用原评测入口和项目");
+  const {state:inspection} = readCheckpoint(applicationPath,{privateFile:true});
+  const application = firstCloudApplicationBinding(inspection,checkpoint);
+  const report = {protocol:"shuduo-cloud-v3-entry-preflight/v1",scope:"READ_ONLY",checkpointStatus:"PREPARED",
+    checkpointDigest:checkpoint.checkpointDigest,sourceRevision:checkpoint.sourceRevision,entryRequests:0,agentSubmissions:0};
+  if (!application) return {...report,status:"UNCONFIRMED",reason:"APPLICATION_BINDING_MISMATCH"};
+  const probe = await readFirstWindowEntry(client,application,timeoutMs);
+  let unchanged = false;
+  try { unchanged = firstCloudCheckpointBinding(path).checkpointDigest === checkpoint.checkpointDigest; }
+  catch { /* An updated checkpoint needs its own preflight. */ }
+  return {...report,entryRequests:1,applicationInspectionDigest:application.inspectionDigest,
+    ...probe,...(!unchanged?{status:"UNCONFIRMED",reason:"CHECKPOINT_CHANGED"}:{})};
 }
 
 export async function continueCloudV3Start(path, client, {billPath, windowPath, applicationPath, reconcile=false} = {}) {

@@ -51,6 +51,17 @@ v3 派生案例只能引用固定 `sourceCaseId` 对应的本轮已完成基础�
 
 ### 启动云端首例
 
+启动前可用独立验包回执检查正式入口。检查点须处于未提交状态，入口、项目和验包须与原检查点绑定。需要评估待审候选时，只在隔离副本进行源码换绑对照。
+
+```sh
+node bin/shuduo.mjs agent v3-entry-preflight \
+  --base-url "$V2_API_BASE" --checkpoint "$FIRST_CASE_CHECKPOINT" \
+  --application-file "$FIRST_CASE_APPLICATION_INSPECTION"
+```
+
+`MATCHED` 表示返回 HTML 与验包摘要和字节数相同。`APPLICATION_BINDING_MISMATCH` 在发送请求前返回。`ENTRY_CONTENT_MISMATCH` 表示已读取 HTML、版本未匹配。`ENTRY_TIMEOUT` 表示在读取期限内未确认。命令最多发送一个匿名 GET，保留原检查点及原请求编号。响应头耗时用于诊断，交互性能继续按浏览器验收。实际开窗和提交仍使用下列独立回执和预算检查。
+
+
 使用绑定原 V2 入口和项目的 CLI 配置。先准备受保护的检查点，再按现有新任务开发授权核对实际部署版本、当前账单及受邀会话。
 
 控制面构建可从主分支选择已经合入的完整应用 SHA。构建在该应用提交上安装锁定依赖、跑 CI、生成 Linux ZIP 并校验重复打包的字节一致性。构建回执分别记录工作流提交、应用提交及树、运行次数、ZIP 摘要和大小。包的独立检查同时验证 GitHub 运行与产物编号、原应用检出和 ZIP 内容。旧的同提交构建仍按原方式校验。构建产物有效期一天，下载保留的 ZIP 可用于离线验真，实际部署仍需可用产物及单独有效的部署授权。
