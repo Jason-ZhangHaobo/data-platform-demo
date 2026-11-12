@@ -76,6 +76,8 @@
 | `GET /reports/published/requests/{requestId}/development` | 原本机工程师，基金报表原请求已成功，无附加查询参数 | 核对同一发布包后返回原 SQL、代码版本、开发运行、独立断言及演练测试 SQL 摘要。SQL 和断言记录不一致时拒绝 |
 | `GET /data-services/task-evidence` | 必须有 `agent_task_id/package_digest`；可加 `release_id` 锁定发布，同时可用 `call_id_digest` 读取当前固定版本的原调用 | 固定服务版本及所有 XAPI 子版本必须来自相同发布和成功批次。原调用缺失时保留待核验状态 |
 
+本机基金口径按上下文编号分别登记业务日 `2026-09-10` 与 `2026-09-11`。代码版本、执行输入、文件包和回读均绑定原上下文；演练使用该上下文登记的样例 T+1 时间。
+
 重复、未知或不完整选择字段拒绝。人工消费保留 `sourceKind:MANUAL`、`sourceAttribution:ENGINEER_ASSISTED`、`agentIndependentE2E:false`；消费对照只是既有调用与不可变快照的一致性，不等于外部系统独立验收或 Agent 自主完成。历史调用中的凭证已撤销时，显示历史证据和当前凭证状态，不自动重新授权。
 
 本机原生 Agent 的 `task-evidence` 同样接受可选 `release_id`，保持 `LOCAL_TEST_ONLY` 和既有身份边界；人工/未知来源不能被转换为原生 Agent 成功。消费条目的 `sourceVersions` 仅投影最多5个固定 DAPI 的服务/版本编号、配置摘要、包摘要、发布/发布批次和允许字段名，不含业务行、SQL、参数或令牌。实际 `recheckCall` 返回配置摘要，`call.configHash` 必须与当前固定版本一致；摘要格式本身不构成独立真实性证明。

@@ -20,8 +20,8 @@ export function normalizeDistributionReportWidgets(widgets,contractId){
 export function executeDistributionReport({version,snapshot,metadata,hash}) {
  const contract = distributionReportMetadata(version.outputContractId), source = metadata.sourceEvidence;
  const fund = contract?.id === fundReportContractId;
- const context = fund ? fundContext() : getContext(metadata.contextId);
- if (!contract || metadata.outputContractId !== contract.id || metadata.contentHash !== snapshot.contentHash ||
+ const context = fund ? fundContext(metadata.contextId) : getContext(metadata.contextId);
+ if (!contract || !context || metadata.outputContractId !== contract.id || metadata.contentHash !== snapshot.contentHash ||
      hash(snapshot.rows) !== snapshot.contentHash || snapshot.rowCount !== snapshot.rows.length ||
      metadata.rowCount !== snapshot.rows.length || source?.agentIndependentE2E !== false || source.scope !== "LOCAL_TEST_ONLY" ||
      source.outputContractId !== contract.id || source.sourceReleaseRunId !== metadata.assetVersionId) throw fail();

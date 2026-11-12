@@ -1,7 +1,8 @@
 import { isDeepStrictEqual as same } from "node:util";
 import { resolveDeliverySchedule, sha256, validateDeliveryPackage } from "./delivery.mjs";
 import { verifiedFundRun } from "./fund-delivery.mjs";
-import { fundContextId, fundOutputContract } from "./fund-lookthrough.mjs";
+import { fundOutputContract } from "./fund-lookthrough.mjs";
+import { isFundContext } from "./fund-contexts.mjs";
 import { assertFundBatch } from "./fund-publication.mjs";
 
 const reject = () => Object.assign(new Error("基金组合消费需要同一发布的两个成功批次及完整监控证据"), {
@@ -31,7 +32,7 @@ function verifyFundPublication({ store, project, selection, timeUnitMs }, includ
   const active = release.status === "ACTIVE_LOCAL" && release.health === "HEALTHY";
   const superseded = release.status === "SUPERSEDED_LOCAL" && release.health === "HEALTHY";
   const stopped = release.status === "CANCELLED" && release.health === "STOPPED";
-  requireProof(source?.contextId === fundContextId && source.projectId === project &&
+  requireProof(isFundContext(source?.contextId) && source.projectId === project &&
     bundle.digest === selection.packageDigest && release.packageDigest === bundle.digest &&
     (active || includeHistorical && (superseded || stopped)) && release.mode === undefined &&
     release.successfulRunCount === 2 && release.failedRunCount === 0 && release.openAlertCount === 0 &&
@@ -51,7 +52,7 @@ function verifyFundPublication({ store, project, selection, timeUnitMs }, includ
     revision.contextId === source.contextId && revision.source === "MANUAL" &&
     revision.hash === source.sqlHash && revision.sql === bundle.files["main.sql"] && sha256(revision.sql) === source.sqlHash &&
     release.sourceCodeHash === source.sqlHash && bundle.sourceRunId === development.id && development.revisionId === revision.id &&
-    development.revisionHash === source.sqlHash && development.engineVersion === plan.deployment.runtime.version && verifiedFundRun(development));
+    development.revisionHash === source.sqlHash && development.engineVersion === plan.deployment.runtime.version && verifiedFundRun(development, source.contextId));
 
   const fileHashes = Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, entry]) => [name, entry.sha256]));
   const occurrence = resolveDeliverySchedule(plan, release.businessScheduledFor);
@@ -63,7 +64,7 @@ function verifyFundPublication({ store, project, selection, timeUnitMs }, includ
   for (const batch of batches) {
     const matching = events.filter(event => event.releaseRunId === batch.id);
     const event = matching[0];
-    requireProof(batch.projectId === project && verifiedFundRun(batch) && batch.engineVersion === plan.deployment.runtime.version &&
+    requireProof(batch.projectId === project && verifiedFundRun(batch, source.contextId) && batch.engineVersion === plan.deployment.runtime.version &&
       batch.executionEvidenceMode === mode && batch.published === true && batch.publicDeployed === false &&
       batch.schedulerTriggered === true && batch.mode === "LOCAL_SCHEDULED_RELEASE" && batch.clockMode === "WALL_CLOCK_TIMER" &&
       same(batch.source, source) && same(batch.occurrence, occurrence) && same(batch.fileHashes, fileHashes) &&

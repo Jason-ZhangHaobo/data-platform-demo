@@ -1,3 +1,4 @@
+import { fundRehearsalAt } from "../../src/v2/fund-contexts.mjs";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type {PublishedReportSource} from "./published-report-read";
 const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
@@ -436,7 +437,7 @@ export function DeliveryWorkbench({
     try {
       const verification = await api<Verification>(
         "/delivery/packages/" + selected.id + "/verify",
-        { scheduledFor },
+        { scheduledFor: fundRehearsalAt(selected.manifest.source.contextId) ?? scheduledFor },
       );
       if (request === ticket.current) {
         const matched = matchingDeliveryVerification(selected, [verification]);

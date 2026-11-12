@@ -44,7 +44,7 @@ export async function verifyDeliveryDirectory(
     result.validation?.passed &&
       result.testSqlValidation?.passed &&
       result.testSqlValidation.sqlHash === sha256(bundle.files["tests.sql"]) &&
-      (!plan.source.fundLookthrough || verifiedFundRun(result)) &&
+      (!plan.source.fundLookthrough || verifiedFundRun(result, plan.source.contextId)) &&
       regressionIds.every((id) =>
         result.validation.regressions?.some(
           (check) => check.contextId === id && check.passed,

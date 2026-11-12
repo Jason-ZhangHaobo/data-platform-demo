@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createDeliveryPackage, validateDeliveryPackage, deliveryFiles, sha256, computeManifestDigest, unpackDeliveryPackage } from '../../src/v2/delivery.mjs';
 import { verifyDeliveryDirectory } from '../../src/v2/delivery-runner.mjs';
 import { fundContext, fundReferenceSql } from '../../src/v2/fund-lookthrough.mjs';
+import { fundContextIds, fundRehearsalAt } from "../../src/v2/fund-contexts.mjs";
 import { fundDeliveryBinding } from '../../src/v2/fund-delivery.mjs';
 import { deliverySourceSelection } from '../../web/src/delivery-source.ts';
 import { createV2Server, PROJECT } from '../../src/v2/server.mjs';
@@ -15,8 +16,8 @@ import { loadDeliveryDirectory } from '../../src/v2/delivery.mjs';
 import { resolvePublishedReportSource } from '../../src/v2/published-report-source.mjs';
 import { resolveFundConsumptionSource, resolveFundReportPublication } from '../../src/v2/fund-consumption-source.mjs';
 
-function fixture() {
-  const context = fundContext(), binding = fundDeliveryBinding();
+function fixture(context = fundContext()) {
+  const binding = fundDeliveryBinding(context.id);
   const revision = { id: 'fund-revision', projectId: 'demo', contextId: context.id, sql: fundReferenceSql,
     hash: sha256(fundReferenceSql), source: 'MANUAL', author: 'engineer',
     manualProvenance: { kind: 'ENGINEER_EDIT', actorId: 'engineer', agentIndependentE2E: false } };
@@ -287,4 +288,24 @@ test('fund service source reads one exact batch only after verifying both and la
   assert.equal(f.calls(), 2);
   assert.equal(f.store.list('data_service', PROJECT).length, 0);
   assert.equal(f.store.list('service_call', PROJECT).length, 0);
+});
+
+
+test("fund delivery binds each trading date to its own inputs, assertions and rehearsal", async t => {
+  const [originalId, nextId] = fundContextIds;
+  const original = fixture(fundContext(originalId)), next = fixture(fundContext(nextId));
+  assert.equal(original.revision.sql, next.revision.sql);
+  const originalPackage = createDeliveryPackage(original), nextPackage = createDeliveryPackage(next);
+  assert.notEqual(originalPackage.digest, nextPackage.digest);
+  assert.notEqual(originalPackage.manifest.source.fundLookthrough.inputHash, nextPackage.manifest.source.fundLookthrough.inputHash);
+  assert.notEqual(originalPackage.manifest.source.fundLookthrough.assertionHash, nextPackage.manifest.source.fundLookthrough.assertionHash);
+  assert.ok(nextPackage.files["tests.sql"].includes("'2026-09-11'"));
+  assert.ok(nextPackage.files["README.md"].includes("2026-09-14T09:00:00+08:00"));
+  assert.throws(()=>createDeliveryPackage({...next,run:{...next.run,rows:original.run.rows}}),{status:422});
+  const directory = mkdtempSync(join(tmpdir(), "fund-date-package-"));
+  t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const target=unpackDeliveryPackage(nextPackage,join(directory,"next"),nextPackage.digest);
+  await assert.rejects(verifyDeliveryDirectory({directory:target,expectedDigest:nextPackage.digest,scheduledFor:fundRehearsalAt(originalId)},
+    {runner:async()=>{throw Error("WRONG_DAY_MUST_NOT_START_SPARK");}}),{status:422});
+  assert.equal(deliverySourceSelection([next.run]).source,next.run.id);
 });

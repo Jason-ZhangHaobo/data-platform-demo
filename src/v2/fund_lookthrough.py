@@ -8,6 +8,7 @@ import re
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures/fund-lookthrough"
 CONTRACT = json.loads((FIXTURES / "contract.json").read_text())
+CASES = {entry["id"]: entry["file"] for entry in json.loads((FIXTURES / "cases.json").read_text())}
 COLUMNS = {table["name"]: tuple(name for name, _ in table["columns"]) for table in CONTRACT["sourceTables"]}
 
 
@@ -66,7 +67,9 @@ def assert_output(rows, expected, totals):
 
 
 def registered_inputs(context):
-    case = json.loads((FIXTURES / "case.json").read_text())
+    registered = CASES.get(context.get("id"))
+    require(registered is not None, "FUND_LOOKTHROUGH_CONTEXT_MISMATCH")
+    case = json.loads((FIXTURES / registered).read_text())
     require(context.get("id") == case["id"] and context.get("managerId") == case["managerId"]
             and context.get("businessDate") == case["businessDate"]
             and context.get("classification") == case["classification"]

@@ -9,12 +9,12 @@ const requireEvidence = (condition, code) => {
   if (!condition) throw Object.assign(new Error(code), { code });
 };
 
-export function expectedFundCallRows(version, children, parameters) {
+export function expectedFundCallRows(version, children, parameters, context = fundContext()) {
   const filters = normalizeFundFilters(parameters);
   const { page, pageSize } = parameters;
   requireEvidence(Number.isSafeInteger(page) && page >= 1 && page <= 10000 &&
     Number.isSafeInteger(pageSize) && pageSize >= 1 && pageSize <= 100, "FUND_CALL_PAGINATION_INVALID");
-  const rows = fundContext().expected
+  const rows = context.expected
     .filter(row => Object.entries(filters).every(([key, value]) => row[key] === value))
     .sort((left, right) => {
       for (const key of fundDapiContract.keyFields) {
@@ -48,6 +48,9 @@ export async function verifySavedFundLifecycle({
   const development = history.readDevelopment(requestId, actor);
   const { lineage, revision, run, verification } = development;
   const { source } = lineage;
+  const contextId = historyStore.get("run", source.runId, project)?.contextId;
+  const context = contextId && fundContext(contextId);
+  requireEvidence(context?.businessDate === lineage.release.businessDate, "FUND_CONTEXT_UNPROVEN");
   requireEvidence(!lineage.release.activeForConsumption, "FUND_HISTORICAL_RELEASE_REQUIRED");
 
   const active = resolveFundConsumptionSource({
@@ -98,7 +101,7 @@ export async function verifySavedFundLifecycle({
       historyStore.get("data_service_version", version.id, project)?.configHash === version.configHash,
     "FUND_CALL_SOURCE_MISMATCH");
     const replay = await manager.recheckCall(service.id, callId);
-    const independent = expectedFundCallRows(version, children, call.parameters);
+    const independent = expectedFundCallRows(version, children, call.parameters, context);
     requireEvidence(replay.verified && independent.length === replay.rowCount &&
       serviceHash(independent) === replay.resultHash, "FUND_CALL_RESULT_MISMATCH");
     return { type, callId, versionId: version.id, rowCount: replay.rowCount, resultHash: replay.resultHash,

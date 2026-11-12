@@ -13,8 +13,8 @@ from pathlib import Path
 sys.path.insert(0,str(Path(sys.argv[1]).parent))
 from output_contracts import preflight_contexts, registered_contract, verify_output
 tree=ast.parse(Path(sys.argv[1]).read_text(encoding="utf-8"))
-names={"comparison_number","verify","preflight_execution_contexts","verify_context_rows","execute_with_validation"}
-constants={"COMPARISON_FIELDS","COMPARISON_LIMIT","FUND_CONTEXT_ID"}
+names={"is_fund_context","comparison_number","verify","preflight_execution_contexts","verify_context_rows","execute_with_validation"}
+constants={"COMPARISON_FIELDS","COMPARISON_LIMIT"}
 selected=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in names or
     isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in constants for target in node.targets)]
 scope={"Decimal":Decimal,"re":re,"hashlib":hashlib,"preflight_contexts":preflight_contexts,"registered_contract":registered_contract,"verify_output":verify_output}

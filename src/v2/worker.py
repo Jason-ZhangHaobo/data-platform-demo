@@ -8,15 +8,17 @@ import sqlglot
 from sqlglot import exp
 
 FUNCTIONS = {"SUM","COUNT","COALESCE","CAST","TRY_CAST","ROUND","ABS","MIN","MAX","AVG","IF","CASE","TRIM","UPPER","LOWER","CONCAT","NULLIF","DATE","TO_DATE","DATE_ADD","DATE_SUB"}
-FUND_CONTEXT_ID = "synthetic-fund-lookthrough-t1"
+def is_fund_context(context):
+    context_id = context.get("id")
+    return isinstance(context_id, str) and context_id.startswith("synthetic-fund-lookthrough-")
 
 def context_parameters(context):
-    scope = ("manager_id", "managerId") if context.get("id") == FUND_CONTEXT_ID else ("advisor_id", "advisorId")
+    scope = ("manager_id", "managerId") if is_fund_context(context) else ("advisor_id", "advisorId")
     return {scope[0]: context[scope[1]], "trade_date": context["businessDate"]}
 
 def preflight_execution_contexts(context, others):
     items = [context, *(others or [])]
-    if any(item.get("id") == FUND_CONTEXT_ID for item in items):
+    if any(is_fund_context(item) for item in items):
         from fund_lookthrough import registered_inputs
         for item in items:
             registered_inputs(item)
@@ -180,7 +182,7 @@ def analyze_column_lineage(sql, context, output_columns):
         return {**base,"status":"UNAVAILABLE","reason":"原SQL、输入结构或输出字段无法完成静态解析"}
 
 def execution_input_tables(context):
-    if context.get("id") == FUND_CONTEXT_ID:
+    if is_fund_context(context):
         from fund_lookthrough import registered_inputs
         return registered_inputs(context)[0]
     accounts=next(t for t in context["tables"] if t["name"]=="accounts")
@@ -199,7 +201,7 @@ def execute(spark, sql, context):
     from pyspark.sql.types import StructType, StructField, StringType
     input_tables = execution_input_tables(context)
     validated = validate_sql(sql, {**context, "tables": input_tables})
-    fund = context.get("id") == FUND_CONTEXT_ID
+    fund = is_fund_context(context)
     allowed_types = {"STRING", "DECIMAL(18,2)"}
     if fund:
         allowed_types.add("DECIMAL(9,6)")
@@ -317,7 +319,7 @@ def execute_test_sql(spark,test_sql,context):
     return {"passed":passed,"sqlHash":hashlib.sha256(test_sql.encode()).hexdigest(),"rowCount":len(values),"columns":frame.columns}
 
 def verify_context_rows(rows, context):
-    if context.get("id") == FUND_CONTEXT_ID:
+    if is_fund_context(context):
         from fund_lookthrough import verify_fund_output
         return verify_fund_output(rows, context)
     return verify_output(rows, context) if registered_contract(context) else verify(rows, context["expected"])

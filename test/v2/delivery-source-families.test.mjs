@@ -68,6 +68,7 @@ async function component() {
     source = source.replaceAll(`from "${dependency}"`, `from ${JSON.stringify(import.meta.resolve(dependency))}`);
   for (const file of ["manual-run-recovery", "delivery-source", "delivery-presentation"])
     source = source.replaceAll(`from "./${file}"`, `from ${JSON.stringify(new URL(`../../web/src/${file}.ts`, import.meta.url).href)}`);
+  source = source.replaceAll('from "../../src/v2/fund-contexts.mjs"', `from ${JSON.stringify(new URL('../../src/v2/fund-contexts.mjs', import.meta.url).href)}`);
   return (await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`)).DeliveryWorkbench;
 }
 const DeliveryWorkbench = await component();

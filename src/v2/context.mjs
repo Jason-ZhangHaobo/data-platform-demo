@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import {distributionContextIds,distributionContext,distributionFamilyForContext,distributionReferenceSql,outputContractForContext} from "./output-contracts.mjs";
-import { fundContextId, fundContext, fundFamily, fundOutputContract, fundReferenceSql } from "./fund-lookthrough.mjs";
+import { fundContext, fundFamily, fundOutputContract, fundReferenceSql } from "./fund-lookthrough.mjs";
+import { isFundContext, fundContextIds } from "./fund-contexts.mjs";
 const base = JSON.parse(
   readFileSync(
     new URL("../../fixtures/holdings/context.json", import.meta.url),
@@ -61,7 +62,7 @@ const stockCashVariants = {
   },
 };
 export function getContext(id = "holdings-t1") {
-  if (id === fundContextId) return fundContext();
+  if (isFundContext(id)) return fundContext(id);
   if (distributionContextIds.includes(id)) return distributionContext(id,getContext);
   if (Object.hasOwn(stockCashVariants, id)) {
     const variant = stockCashVariants[id];
@@ -112,8 +113,8 @@ export function getContext(id = "holdings-t1") {
 }
 export function publicContext(id) {
   const { expected, ...context } = getContext(id);
-  if (id === fundContextId) return {
-    ...context, referenceSql: fundReferenceSql, validationFamily: fundFamily(), outputContract: fundOutputContract(),
+  if (isFundContext(id)) return {
+    ...context, referenceSql: fundReferenceSql, validationFamily: fundFamily(id), outputContract: fundOutputContract(),
     capabilities: { classicSql: true, agentDevelopment: false, delivery: true, publication: false, dataServices: false, scope: "LOCAL_ONLY" },
   };
   return {
@@ -134,7 +135,7 @@ export const validationContractId =
   "securities-assets-five-fixtures-2026-09-14";
 const stockCashContextIds = Object.keys(stockCashVariants);
 export const allContextIds = [...contextIds, ...stockCashContextIds];
-export const classicContextIds = [...allContextIds, ...distributionContextIds, fundContextId];
+export const classicContextIds = [...allContextIds, ...distributionContextIds, ...fundContextIds];
 const validationFamilies = [
   {
     id: validationContractId,
@@ -164,12 +165,12 @@ const validationFamilies = [
   },
 ];
 export function validationFamilyForContext(id) {
-  if (id === fundContextId) return fundFamily();
+  if (isFundContext(id)) return fundFamily(id);
   const family = validationFamilies.find((item) => item.contextIds.includes(id));
   return family ? structuredClone(family) : distributionFamilyForContext(id);
 }
 export function referenceSqlForContext(id) {
-  if (id === fundContextId) return fundReferenceSql;
+  if (isFundContext(id)) return fundReferenceSql;
   if (contextIds.includes(id)) return referenceSql;
   if (stockCashContextIds.includes(id)) return stockCashReferenceSql;
   return distributionReferenceSql(id);

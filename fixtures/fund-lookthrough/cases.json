@@ -1,0 +1,4 @@
+[
+  { "id": "synthetic-fund-lookthrough-t1", "file": "case.json", "rehearsalDate": "2026-09-11" },
+  { "id": "synthetic-fund-lookthrough-next-trading-day", "file": "case-next-trading-day.json", "rehearsalDate": "2026-09-14" }
+]
