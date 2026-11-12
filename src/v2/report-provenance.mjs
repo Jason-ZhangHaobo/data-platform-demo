@@ -19,14 +19,20 @@ export function reviewedReportBasis(plan,actorId,reviewedHash) {
   originalAppliedAt:plan.appliedAt??null};
 }
 
-export function createReportProvenance({store,project,reportStore}) {
- const kind='report_provenance', key=id=>`${project}:report-provenance:v1:${id}`;
- const read=(kind,id)=>{const r=store.get(kind,id,project);if(!r)throw fail();return r;};
- function artifacts(r){
+export function checkedPublishedReportArtifacts({store,project,reportStore,record:r}) {
+ const read=(kind,id)=>{const value=store.get(kind,id,project);if(!value||value.projectId!==project)throw fail();return value;};
   const report=read('report',r.reportId),version=read('report_version',r.reportVersionId),run=read('report_run',r.reportRunId),snapshot=read('report_snapshot',r.snapshotId),dataset=read('report_dataset',r.datasetId),data=reportStore.read(snapshot.dataSnapshotId);
   const config={datasetId:version.datasetId,...(version.outputContractId?{outputContractId:version.outputContractId}:{}),datasetSnapshotId:version.datasetSnapshotId,widgets:version.widgets,description:version.description};
   if(run.reportId!==report.id||version.reportId!==report.id||version.datasetId!==dataset.id||run.datasetId!==dataset.id||snapshot.datasetId!==dataset.id||run.reportVersionId!==version.id||run.datasetSnapshotId!==snapshot.id||version.datasetSnapshotId!==snapshot.id||snapshot.assetVersionId!==r.input.source.batchId||snapshot.assetEvidenceHash!==r.sourceEvidenceHash||!same(dataset.publishedSource,r.input.source)||dataset.sourceActorId!==r.actorId||run.status!=='SUCCEEDED'||run.actualExecution!==true||run.publicDeployed!==false||run.fullLifecycleE2E!==false||version.configHash!==digest(config)||run.reportConfigHash!==version.configHash||run.resultHash!==digest(run.widgets)||run.datasetContentHash!==snapshot.contentHash||data.contentHash!==snapshot.contentHash||digest(data.rows)!==snapshot.contentHash||data.rowCount!==snapshot.rowCount||data.rows.length!==snapshot.rowCount||data.assetId!==snapshot.assetId)throw fail();
   if(r.outputContractId&&(run.outputContractId!==r.outputContractId||version.outputContractId!==r.outputContractId||snapshot.outputContractId!==r.outputContractId||run.distributionValidation?.passed!==true))throw fail();
+ return {report,version,run,snapshot,dataset};
+}
+
+export function createReportProvenance({store,project,reportStore}) {
+ const kind='report_provenance', key=id=>`${project}:report-provenance:v1:${id}`;
+ const read=(kind,id)=>{const r=store.get(kind,id,project);if(!r)throw fail();return r;};
+ function artifacts(r){
+  const {report,version,run,snapshot,dataset}=checkedPublishedReportArtifacts({store,project,reportStore,record:r});
   return {reportId:report.id,reportVersionId:version.id,versionNumber:version.versionNumber,reportRunId:run.id,datasetId:dataset.id,snapshotId:snapshot.id,sourceBatchId:snapshot.assetVersionId,contentHash:snapshot.contentHash,configHash:version.configHash,resultHash:run.resultHash,outputContractId:version.outputContractId??null,rowCount:snapshot.rowCount};
  }
  function verify(record,actorId){

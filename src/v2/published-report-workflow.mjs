@@ -1,16 +1,25 @@
 import {publishedReportInput,reportRequestId,publishedReportMetricIds} from './published-report-request.mjs';
 import {publishedReportHash} from './published-report-source.mjs';
+import {checkedPublishedReportArtifacts} from './report-provenance.mjs';
 import {publishedReportTemplate} from './report-template.mjs';
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
-export function createPublishedReportWorkflow({store,project,reports,resolveSource,provenance,afterStep=()=>{}}){
+export function createPublishedReportWorkflow({store,project,reports,reportStore,resolveSource,provenance,afterStep=()=>{}}){
  const kind='published_report_creation',keyFor=(actor,id)=>`${project}:published-report:v1:${actor}:${id}`;
  const owned=(id,actor)=>{const r=store.get(kind,id,project);if(!r||r.actorId!==actor)throw fail(404,'REPORT_CREATION_NOT_FOUND','未找到本账号的原报表请求');return r;};
- const view=r=>{
+ const lookupRecord=(requestId,actor)=>{
+  const id=store.deduplicatedId(keyFor(actor,reportRequestId(requestId)));
+  if(!id)throw fail(404,"REPORT_CREATION_NOT_FOUND","未找到本账号的原报表请求");
+  return owned(id,actor);
+ };
+ const view=(r,artifacts)=>{
   const result={protocol:'shuduo-published-report-creation/v1',id:r.id,requestId:r.requestId,status:r.status,scope:'LOCAL_TEST_ONLY',source:r.input.source,name:r.input.name,stage:r.stage,error:r.error,
     datasetId:r.datasetId,snapshotId:r.snapshotId,reportId:r.reportId,reportVersionId:r.reportVersionId,reportRunId:r.reportRunId,sourceEvidenceHash:r.sourceEvidenceHash,
     metricIds:r.metricIds??r.input.metricIds??[...publishedReportMetricIds],agentIndependentE2E:false,publicDeployed:false};
   if(r.status==='SUCCEEDED'){
-   const report=reports.reportDetail(r.reportId),run=report.runs.find(x=>x.id===r.reportRunId),version=report.versions.find(x=>x.id===r.reportVersionId),snapshot=reports.datasetDetail(r.datasetId).snapshots.find(x=>x.id===r.snapshotId);
+   const report=artifacts?.report??reports.reportDetail(r.reportId),
+    run=artifacts?.run??report.runs.find(x=>x.id===r.reportRunId),
+    version=artifacts?.version??report.versions.find(x=>x.id===r.reportVersionId),
+    snapshot=artifacts?.snapshot??reports.datasetDetail(r.datasetId).snapshots.find(x=>x.id===r.snapshotId);
    if(!run||!version||!snapshot||run.reportId!==report.id||run.reportVersionId!==version.id||run.datasetSnapshotId!==snapshot.id||version.datasetSnapshotId!==snapshot.id||snapshot.assetVersionId!==r.input.source.batchId||snapshot.assetEvidenceHash!==r.sourceEvidenceHash||run.datasetContentHash!==snapshot.contentHash||run.status!=='SUCCEEDED'||run.actualExecution!==true)throw fail(409,'REPORT_CREATION_RECEIPT_CHANGED','原报表请求与固定产物不一致，未重新计算');
    if(r.outputContractId&&(version.outputContractId!==r.outputContractId||snapshot.outputContractId!==r.outputContractId||run.outputContractId!==r.outputContractId||run.distributionValidation?.passed!==true||run.distributionValidation.agentIndependentE2E!==false))throw fail(409,'DISTRIBUTION_REPORT_RECEIPT_CHANGED','分布报表固定契约或独立结果未确认');
    if(r.outputContractId)result.outputContractId=r.outputContractId;
@@ -64,7 +73,49 @@ export function createPublishedReportWorkflow({store,project,reports,resolveSour
    if(reviewBasis&&r.reviewBasis){const core=v=>({...v,captureMode:undefined,originalAppliedAt:undefined});if(publishedReportHash(core(reviewBasis))!==publishedReportHash(core(r.reviewBasis)))throw fail(409,'REPORT_REVIEW_BASIS_CHANGED','原报表审阅依据已冻结，不能替换');}
    return advance(d.id,actor);
   },
-  lookup(requestId,actor){const id=store.deduplicatedId(keyFor(actor,reportRequestId(requestId)));if(!id)throw fail(404,'REPORT_CREATION_NOT_FOUND','未找到本账号的原报表请求');return view(owned(id,actor));},
+  lookup(requestId,actor){return view(lookupRecord(requestId,actor));},
+  readResult(requestId,actor){
+   const record=lookupRecord(requestId,actor);
+   if(record.status!=="SUCCEEDED")
+    throw fail(409,"REPORT_RESULT_PENDING","原报表请求尚无成功运行，可查询原请求状态");
+   const ledger=store.db.prepare("SELECT signature FROM idempotency WHERE key=?").get(keyFor(actor,requestId));
+   if(record.requestId!==requestId||ledger?.signature!==publishedReportHash(record.input))
+    throw fail(409,"REPORT_CREATION_RECEIPT_CHANGED","报表原请求与已保存的来源不一致");
+   const {report,version,run,snapshot,dataset}=checkedPublishedReportArtifacts({store,project,reportStore,record});
+   const receipt=view(record,{report,version,run,snapshot});
+   const pick=(value,keys)=>Object.fromEntries(keys.filter(key=>Object.hasOwn(value,key)).map(key=>[key,value[key]]));
+   const evidenceKeys=["protocol","scope","engineClassification","modelClassification","eligibleForService","agentIndependentE2E",
+    "releaseId","packageDigest","sourceTaskId","sourceRevisionId","sourceRunId","sourceReleaseRunId","outputContractId",
+    "batchId","businessDate","inputDigest","assertionDigest","resultDigest"];
+   const snapshotView=pick(snapshot,["id","datasetId","assetId","assetVersionId","assetEvidenceHash","contentHash",
+    "rowCount","fields","status","actualMaterialization","outputContractId","contextId"]);
+   const runView=pick(run,["id","reportId","reportVersionId","reportConfigHash","datasetId","datasetSnapshotId",
+    "datasetContentHash","status","outputContractId","resultHash","actualExecution","publicDeployed","fullLifecycleE2E"]);
+   if(snapshot.sourceEvidence||run.sourceEvidence){
+    if(!snapshot.sourceEvidence||!run.sourceEvidence||publishedReportHash(snapshot.sourceEvidence)!==publishedReportHash(run.sourceEvidence))
+     throw fail(409,"REPORT_CREATION_RECEIPT_CHANGED","运行与固定快照的来源摘要不一致");
+    snapshotView.sourceEvidence=pick(snapshot.sourceEvidence,evidenceKeys);
+    runView.sourceEvidence=pick(run.sourceEvidence,evidenceKeys);
+   }
+   if(run.distributionValidation)runView.distributionValidation=pick(run.distributionValidation,["passed","outputContractId","scope","agentIndependentE2E"]);
+   const widgetKeys=["id","type","title","aggregation","field","dimension","partitionBy"];
+   const widgetView=(widget)=>{
+    const result=pick(widget,[...widgetKeys,"value","evaluatedCount"]);
+    if(widget.series)result.series=widget.series.map(item=>pick(item,["group","value","partitionKey","clientLabel","tradeDate","zeroDenominator"]));
+    return result;
+   };
+   runView.widgets=run.widgets.map(widgetView);
+   if(publishedReportHash(runView.widgets)!==run.resultHash)
+    throw fail(409,"REPORT_CREATION_RECEIPT_CHANGED","报表组件与已保存摘要不一致");
+   return {protocol:"shuduo-published-report-result/v1",receipt,
+    overview:{scope:"LOCAL_AGGREGATED_REPORTING",publicDeployed:false,
+     datasets:[{...pick(dataset,["id","assetId","outputContractId","contextId","publishedSource"]),snapshots:[snapshotView]}],
+     reports:[{...pick(report,["id","name","lastRunId","currentVersionId"]),versions:[{
+      ...pick(version,["id","reportId","versionNumber","datasetId","datasetSnapshotId","description","configHash","outputContractId"]),
+      widgets:version.widgets.map(widget=>pick(widget,widgetKeys)),
+     }],runs:[runView]}],
+    }};
+  },
   advance(id,actor){return advance(reportRequestId(id),actor);},
  };
 }

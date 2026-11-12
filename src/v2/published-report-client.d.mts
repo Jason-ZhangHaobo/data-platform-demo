@@ -5,3 +5,7 @@ export function checkedPublishedReportReceipt(value:unknown,expected?:{requestId
 export function submitPublishedReport(client:Client,args:{name:string;source:PublishedReportBinding;requestId:string;metricIds?:string[]}):Promise<PublishedReportReceipt>;
 export function lookupPublishedReport(client:Client,args:{requestId:string;source?:PublishedReportBinding;name?:string}):Promise<PublishedReportReceipt>;
 export function resumePublishedReport(client:Client,args:{id:string;requestId?:string;source?:PublishedReportBinding}):Promise<PublishedReportReceipt>;
+
+export type PublishedReportResultRead={protocol:'shuduo-published-report-result/v1';receipt:PublishedReportReceipt;overview:unknown};
+export function checkedPublishedReportResult(value:unknown,expected?:{requestId?:string;source?:PublishedReportBinding}):PublishedReportResultRead;
+export function readPublishedReportResult(client:Client,args:{requestId:string;source?:PublishedReportBinding}):Promise<PublishedReportResultRead>;
