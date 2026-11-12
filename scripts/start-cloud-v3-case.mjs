@@ -4,16 +4,17 @@ import { closeSync, constants, existsSync, fsyncSync, openSync, renameSync, unli
 import { dirname, isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { agentExecutionEvidencePath, validSettledDevelopmentFailure } from "../src/v2/agent-execution-evidence.mjs";
+import { agentContextDerivationBody, agentContextDerivationRequest } from "../src/v2/agent-context-derivation.mjs";
 import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
 import { readCloudV3Review } from "../src/v2/cloud-v3-review.mjs";
-import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys } from "../src/v2/cloud-v3-case-selection.mjs";
+import { cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys } from "../src/v2/cloud-v3-case-selection.mjs";
 import { getContext, validationFamilyForContext } from "../src/v2/context.mjs";
 import { validateConsumerSource } from "../src/v2/consumer-source.mjs";
 import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
 import { deliveryPreparationBody, deliveryPreparationHashMatches, deliveryPreparationRequirement } from "../src/v2/delivery-preparation-request.mjs";
 import { bindExternalConsumption } from "../src/v2/external-consumption-binding.mjs";
 import { readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
-import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedLiveTaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
+import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedCloudV3TaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-execution.mjs";
 import { privateReleasePendingStage } from "../src/v2/private-release-stage.mjs";
 import { liveEvidenceProvenance, nonLiveModelLabel } from "../src/v2/live-lifecycle-provenance.mjs";
@@ -26,7 +27,7 @@ import { validateConsumerPlan } from "./verify-service-consumer.mjs";
 import { cloudWindowApplicationBinding, cloudWindowCheckpointBinding, firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
 import { developmentRequestDigest } from "../src/v2/public-development-access.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
-import { cloudV3CompletionScope, cloudV3FailureReceipt, readCloudV3BaseCases } from "./cloud-v3-run.mjs";
+import { cloudV3CompletionScope, cloudV3DerivationSource, cloudV3FailureReceipt, nextCloudV3Definition, readCloudV3Cases } from "./cloud-v3-run.mjs";
 import { boundedBytes } from "./control-code-transport.mjs";
 import { inspectedControlEntryScript, WEB_ENTRY_SCRIPT_LIMIT, WEB_INDEX_LIMIT } from "./control-web-entry.mjs";
 
@@ -64,7 +65,7 @@ function snapshot(client, path) {
   if (base.pathname !== "/api/v2" || base.origin !== state.origin || client.projectId !== state.projectId)
     stop("读取或提交入口与原评测入口或项目不一致");
   if (base.protocol === "https:" && !client.sessionFile) stop("请使用绑定原入口的受保护会话文件");
-  if (!id(action?.key) || action.bodyHash !== requestHash(definition) ||
+  if (!id(action?.key) || (item.derivationSource ? !digest(action.bodyHash) : action.bodyHash!==requestHash(definition)) ||
       !["PREPARED","SUBMITTING","UNKNOWN","CONFIRMED"].includes(action.status) ||
       (action.status === "PREPARED" && (item.taskId !== undefined || action.id !== undefined || state.submission !== undefined)) ||
       (action.status === "CONFIRMED" && (!id(action.id) || action.id !== item.taskId)) ||
@@ -129,7 +130,7 @@ function confirmReceipt({state, definition, item, action}, receipt, path) {
       (state.previousCase && !(Date.parse(receipt.createdAt)>=Date.parse(state.submission.submittedAt))))
     return false;
   const original = {...item, taskId:receipt.id, actions:{...item.actions, agent:{...action,id:receipt.id,status:"CONFIRMED"}}};
-  if (!verifiedLiveTaskSnapshotBinding(definition, original, receipt)) return false;
+  if (!verifiedCloudV3TaskSnapshotBinding(definition, original, receipt)) return false;
   state.outcomes = [original];
   writeCheckpoint(path, state);
   return original;
@@ -148,9 +149,21 @@ export function prepareCloudV3Start(path, client, reviewedSource) {
   return result(state, item, "PREPARED");
 }
 
-export function prepareCloudV3Next(path,client,{firstPath,completionPath,recordsPath,reviewedSource}={}) {
-  if (!isAbsolute(path ?? "") || !sourceRevision(reviewedSource)) stop("须提供续接检查点和已审阅源码版本");
-  const {original,fullPlan,entries,approvals,reserveCny,usageFloor}=readCloudV3BaseCases(firstPath,{completionPath,recordsPath});
+async function readDerivationBody(client,definition,source) {
+  const revision=await client.request("/revisions/"+source.revisionId);
+  const proof=liveEvidenceProvenance(revision);
+  if (revision?.id!==source.revisionId || revision.contextId!==source.contextId || revision.source!=="LIVE_MODEL" ||
+      proof.synthetic || proof.nonNative || proof.unconfirmed ||
+      typeof revision.sql!=="string" || revision.hash!==source.revisionHash || sha256(revision.sql)!==source.revisionHash)
+    stop("派生父版本 SQL 与已核验摘要不一致");
+  return agentContextDerivationBody({message:definition.request,sql:revision.sql,contextId:definition.contextId,
+    derivation:agentContextDerivationRequest(source)});
+}
+
+export async function prepareCloudV3Next(path,client,{firstPath,completionPath,recordsPath,reviewedSource}={}) {
+  if (!isAbsolute(path ?? "") || existsSync(path) || !sourceRevision(reviewedSource))
+    stop("须提供尚不存在的续接检查点和已审阅源码版本");
+  const {original,fullPlan,entries,approvals,reserveCny,usageFloor}=readCloudV3Cases(firstPath,{completionPath,recordsPath});
   const {state:first}=original, parent=entries.at(-1);
   const base=new URL(normalizeSessionBase(client.baseUrl));
   if (base.pathname!=="/api/v2" ||
@@ -158,8 +171,23 @@ export function prepareCloudV3Next(path,client,{firstPath,completionPath,records
       !(base.protocol==="https:"?["INVITED_CLOUD_MATCHED","INVITED_CLOUD_SETTLED_FAILURE"]:
         ["LOCAL_MATCHED_ONLY","LOCAL_SETTLED_FAILURE_ONLY"]).includes(parent.completion?.scope))
     stop("须核对同一评测的上一例结算回执及原入口");
-  const definition=cloudV3BaseCases()[entries.length], caseLimit=entries.length+1;
-  if (!definition) stop("固定基础案例已全部记录");
+  const definition=nextCloudV3Definition(fullPlan,entries);
+  if (!definition) stop("固定目录中没有待续接且来源已核验的案例");
+  const caseLimit=fullPlan.selectedCases.indexOf(definition)+1;
+  let derivationSource, bodyHash=requestHash(definition);
+  if (definition.kind==="DERIVED") {
+    if (base.protocol==="https:" && !client.sessionFile) stop("请使用绑定原入口的受保护会话文件");
+    const sourceEntry=entries.find(entry=>entry.item.caseId===definition.sourceCaseId);
+    derivationSource=cloudV3DerivationSource(fullPlan,definition,sourceEntry);
+    const selected={...cloudV3CheckpointCase(sourceEntry.checkpoint.state),state:sourceEntry.checkpoint.state,
+      action:sourceEntry.item.actions.agent};
+    const {view,execution}=await readOriginalCloudExecution(selected,client);
+    const code=view&&verifiedDevelopmentCode(selected.definition,view,execution);
+    if (!code || code.revisionId!==derivationSource.revisionId || code.runId!==derivationSource.runId ||
+        code.revisionHash!==derivationSource.revisionHash || code.validationContractId!==derivationSource.validationContractId)
+      stop("派生父版本或原 Spark 核验未通过");
+    bodyHash=sha256(JSON.stringify(await readDerivationBody(client,definition,derivationSource)));
+  }
   const previousCase={checkpointDigest:sha256(parent.checkpoint.text),completionDigest:parent.completion.completionDigest,
     approvalDigest:parent.checkpoint.state.submission?.windowApprovalDigest ?? null,reserveCny,
     ...(caseLimit>2?{approvalDigests:approvals}:{}),
@@ -170,7 +198,7 @@ export function prepareCloudV3Next(path,client,{firstPath,completionPath,records
   const key=[entropy.slice(0,8),entropy.slice(8,12),"4"+entropy.slice(13,16),"8"+entropy.slice(17,20),entropy.slice(20,32)].join("-");
   const item={...liveCaseCheckpoint(definition,first.startedAt,fullPlan.caseSetDigest,{
     contractId:fullPlan.contract.id,evaluationRunId:first.evaluationRunId,
-  }),actions:{agent:{key,bodyHash:requestHash(definition),status:"PREPARED"}}};
+  }),...(derivationSource?{derivationSource}:{}),actions:{agent:{key,bodyHash,status:"PREPARED"}}};
   const state={evaluationRunId:first.evaluationRunId,contract:fullPlan.contract,startedAt:first.startedAt,caseSetDigest:fullPlan.caseSetDigest,
     caseLimit,origin:first.origin,projectId:first.projectId,reviewedSource,previousCase,outcomes:[item]};
   cloudV3CheckpointCase(state);
@@ -414,6 +442,8 @@ export async function continueCloudV3Start(path, client, {billPath, windowPath, 
     if (state.previousCase && (session?.developmentRequestOnly!==true ||
         session.developmentRequestDigest!==developmentRequestDigest(window.checkpoint.requestKeyHash,action.bodyHash)))
       stop("运行时尚未绑定本案例的确切请求");
+    if (item.derivationSource && status?.agentDevelopment?.derivationBindingSupported!==true)
+      stop("运行时尚未支持确切派生请求");
     const submission = submissionSnapshot(status,session,client,bill,Date.now());
     const floor=state.previousCase?.usageFloor;
     if (floor && (bill.month<floor.month ||
@@ -421,6 +451,8 @@ export async function continueCloudV3Start(path, client, {billPath, windowPath, 
           Math.round(submission.usage[key]*1000)<Math.round(floor[key]*1000) : submission.usage[key]<floor[key]))))
       stop("本月模型或 Spark 用量低于原评测已记录的基线");
     if (window) await verifyFirstWindowEntry(client,window.application);
+    const body=item.derivationSource?await readDerivationBody(client,definition,item.derivationSource):requestBody(definition);
+    if (sha256(JSON.stringify(body))!==action.bodyHash) stop("请求与原审阅正文摘要不一致");
     const now = Date.now(), submittedAt = new Date(now).toISOString();
     if (now - Date.parse(bill.checkedAt) >= 3600000 || now >= Date.parse(submission.windowExpiresAt))
       stop("当前账单或开发窗口在预检期间到期");
@@ -432,7 +464,7 @@ export async function continueCloudV3Start(path, client, {billPath, windowPath, 
     writeCheckpoint(path, state);
     let receipt;
     try {
-      receipt = await client.request("/agent/tasks", {method:"POST", body:requestBody(definition), idempotencyKey:action.key});
+      receipt = await client.request("/agent/tasks", {method:"POST", body, idempotencyKey:action.key});
     } catch {
       action.status = "UNKNOWN";
       writeCheckpoint(path, state);
@@ -909,11 +941,15 @@ async function readOriginalCloudExecution({state,definition,item,action},client)
   let view;
   try { view = await client.request(agentExecutionEvidencePath(action.key)); }
   catch { return response("UNCONFIRMED", "CLOUD_EXECUTION_READ_UNCONFIRMED"); }
+  const source=item.derivationSource;
+  const expectedParent=source?{...agentContextDerivationRequest(source),contextId:source.contextId,
+    validationContractId:source.validationContractId}:undefined;
   if (view?.protocol !== "shuduo-agent-execution-evidence/v1" || view.scope !== "PRIVATE_CLOUD_TEST" ||
       view.verificationMode !== "STORED_METADATA_ONLY" || view.status !== "EXECUTION_RECORDED" ||
       view.fullLifecycleE2E !== false || view.publicDeployed !== false || view.taskId !== item.taskId ||
       view.contextId !== definition.contextId || view.requestSha256 !== sha256(definition.request) ||
-      view.seedSqlSha256 !== sha256(definition.seedSql.trim()) || !Number.isFinite(Date.parse(view.taskCreatedAt)) ||
+      view.seedSqlSha256 !== (source?.revisionHash??sha256(definition.seedSql.trim())) ||
+      !isDeepStrictEqual(view.derivedFrom,expectedParent) || !Number.isFinite(Date.parse(view.taskCreatedAt)) ||
       Date.parse(view.taskCreatedAt) < Date.parse(state.previousCase ? state.submission.submittedAt : item.evaluationStartedAt))
     return response("UNCONFIRMED", "ORIGINAL_EXECUTION_MISMATCH");
   const execution = checkedLiveExecutionProjection(view.execution, item.taskId);

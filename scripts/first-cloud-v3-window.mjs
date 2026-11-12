@@ -1,7 +1,7 @@
 import { sha256 } from '../src/v2/delivery.mjs';
 import { readCheckpoint, uuid } from '../src/v2/live-lifecycle-checkpoint.mjs';
-import { cloudV3BaseCases, cloudV3CheckpointCase, validCloudV3Predecessor } from '../src/v2/cloud-v3-case-selection.mjs';
-import { currentLiveLifecycleContract, liveLifecyclePlan } from '../src/v2/live-lifecycle-evaluation.mjs';
+import { cloudV3CheckpointCase, validCloudV3DerivationSource, validCloudV3Predecessor } from '../src/v2/cloud-v3-case-selection.mjs';
+import { currentLiveLifecycleContract, liveLifecycleCases, liveLifecyclePlan } from '../src/v2/live-lifecycle-evaluation.mjs';
 import { normalizeSessionBase } from '../src/v2/session-credential.mjs';
 
 export const firstCloudDevelopmentScope = 'INVITED_FIRST_V3_DEVELOPMENT_WINDOW_V1';
@@ -27,8 +27,9 @@ function validCloudBinding(value, next) {
     'checkpointDigest','requestBodyHash','requestKeyHash'];
   if (value?.applicationTree !== undefined) fields.push('applicationTree');
   if (next) fields.push('previousCase');
-  const cases=cloudV3BaseCases(), index=next?cases.findIndex(item=>item.id===value?.caseId):0;
-  const definition=cases[index];
+  const cases=liveLifecycleCases(currentLiveLifecycleContract.id), index=next?cases.findIndex(item=>item.id===value?.caseId):0;
+  const definition=cases[index], derived=definition?.kind==="DERIVED";
+  if (derived) fields.push("derivationSource");
   return definition && (!next || index>0) && value && typeof value==='object' && !Array.isArray(value) && Object.keys(value).length===fields.length &&
     fields.every(key=>Object.hasOwn(value,key)) &&
     value.protocol===(next?'SHUDUO_V3_NEXT_CHECKPOINT_BINDING_V1':'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1') &&
@@ -36,9 +37,10 @@ function validCloudBinding(value, next) {
     value.contextId===definition.contextId && value.caseSetDigest===first().caseSetDigest &&
     typeof value.projectId==='string' && /^[A-Za-z0-9_-]{1,100}$/.test(value.projectId) &&
     validOrigin(value.origin) &&
-    (!next || validCloudV3Predecessor(value.previousCase,value.origin,index+1)) &&
+    (!next || validCloudV3Predecessor(value.previousCase,value.origin,index+1,derived)) &&
     hex(value.sourceRevision,40) && (value.applicationTree===undefined || hex(value.applicationTree,40)) && hex(value.checkpointDigest,64) &&
-    value.requestBodyHash===requestHash(definition) && hex(value.requestKeyHash,64);
+    (derived ? validCloudV3DerivationSource(definition,value.derivationSource) && hex(value.requestBodyHash,64)
+      : value.requestBodyHash===requestHash(definition)) && hex(value.requestKeyHash,64);
 }
 export const validFirstCloudBinding = value => validCloudBinding(value,false);
 export const validNextCloudBinding = value => validCloudBinding(value,true);
@@ -92,7 +94,8 @@ function preparedCloudBinding(state,text) {
     sourceRevision:state.reviewedSource,...(rebind ? {applicationTree:rebind.applicationTree} : {}),
     checkpointDigest:sha256(text),requestBodyHash:action?.bodyHash,
     requestKeyHash:typeof action?.key==='string'&&uuid.test(action.key)?sha256(action.key):undefined,
-    ...(next?{previousCase:state.previousCase}:{})};
+    ...(next?{previousCase:state.previousCase}:{}),
+    ...(item.derivationSource?{derivationSource:item.derivationSource}:{})};
   if (action?.status!=='PREPARED' || action.id!==undefined || item.taskId!==undefined || state.submission!==undefined ||
       !Array.isArray(history) || (history.length>0 && (rebind?.to!==state.reviewedSource || !hex(rebind?.applicationTree,40))) ||
       !validCloudBinding(binding,next))

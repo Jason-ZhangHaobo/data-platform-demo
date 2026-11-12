@@ -295,6 +295,16 @@ export function verifiedLiveTaskSnapshotBinding(definition, state, task, sourceC
   return v3AgentInputMatches(definition, state, task);
 }
 
+// The cloud caller has independently checked the source against the fixed
+// evaluation catalog and the stored parent completion receipt.
+export function verifiedCloudV3TaskSnapshotBinding(definition,state,task) {
+  if (definition.kind!=="DERIVED") return verifiedLiveTaskSnapshotBinding(definition,state,task);
+  const action=state.actions?.agent;
+  return state.contractId===currentLiveLifecycleContract.id && state.requestDigest===liveCaseRequestDigest(definition,state.contractId) &&
+    action?.status==="CONFIRMED" && uuid(action.id) && action.id===state.taskId && task?.id===action.id &&
+    v3AgentInputMatches(definition,state,task);
+}
+
 export function pendingLiveCreation(state) {
   if (state.contractId !== currentLiveLifecycleContract.id || !["RUNNING", "PAUSED"].includes(state.status)) return undefined;
   const pending = ["agent", "delivery"].filter(name => ["UNKNOWN", "SUBMITTING"].includes(state.actions?.[name]?.status));

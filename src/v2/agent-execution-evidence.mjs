@@ -4,6 +4,7 @@ import { checkedLiveExecutionProjection, storedExecutionStages } from "./live-li
 import { sqlRequirementBinding } from "./sql-requirements.mjs";
 import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
 import { uuid } from "./live-lifecycle-checkpoint.mjs";
+import { validStoredAgentDerivation } from "./agent-context-derivation.mjs";
 
 const failureStages=new Set(["FAILED","REQUIREMENT_CLARIFICATION_REQUIRED","REQUIREMENT_EVIDENCE_INVALID"]);
 const settledSparkFailures=new Set(["FAILED","VALIDATION_FAILED"]);
@@ -68,14 +69,17 @@ export function storedAgentExecutionEvidence(task, read) {
   const base = {protocol:"shuduo-agent-execution-evidence/v1", scope:"PRIVATE_CLOUD_TEST",
     verificationMode:"STORED_METADATA_ONLY", taskId:task.id, fullLifecycleE2E:false, publicDeployed:false};
   if (task.executionMode !== "DURABLE_SQL_AGENT_V1" || task.language !== "SPARK_SQL" || task.mode !== "LIVE_MODEL" ||
-      !task.submittedBy || task.sourceRunId !== undefined || task.derivedFrom !== undefined ||
+      !task.submittedBy || task.sourceRunId !== undefined ||
       typeof task.message !== "string" || typeof task.initialSql !== "string")
     return {...base, status:"UNCONFIRMED", reason:"NATIVE_FRESH_TASK_REQUIRED"};
+  if (!validStoredAgentDerivation(task,read))
+    return {...base,status:"UNCONFIRMED",reason:"DERIVATION_SOURCE_UNCONFIRMED"};
   const execution = checkedLiveExecutionProjection(storedExecutionStages(task, read), task.id);
   if (execution.state !== "RECORDED")
     return {...base, status:"UNCONFIRMED", reason:"EXECUTION_PROVENANCE_UNCONFIRMED"};
   const snapshot = {...base, status:"EXECUTION_RECORDED", taskCreatedAt:task.createdAt, contextId:task.contextId,
-    requestSha256:sha256(task.message), seedSqlSha256:sha256(task.initialSql), execution};
+    requestSha256:sha256(task.message), seedSqlSha256:sha256(task.initialSql), execution,
+    ...(task.derivedFrom?{derivedFrom:task.derivedFrom}:{})};
   const failure=settledDevelopmentFailure(task,read,execution);
   if (failure) return {...snapshot,settledFailure:failure};
   if (execution.evidence !== "STORED_METADATA" || execution.spark.state !== "RESULT_RECORDED" ||

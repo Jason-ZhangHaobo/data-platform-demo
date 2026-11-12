@@ -623,7 +623,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
           flags.some(flag=>!["checkpoint","first_checkpoint","completion_file","source_revision","case_records","base_url"].includes(flag)))
         throw Error("续接准备只接受原首例、完成回执、续接检查点与确切源码");
-      result=prepareCloudV3Next(required(args,"checkpoint"),client,{
+      result=await prepareCloudV3Next(required(args,"checkpoint"),client,{
         firstPath:required(args,"first_checkpoint"),completionPath:required(args,"completion_file"),
         reviewedSource:required(args,"source_revision"),
         recordsPath:args.case_records===undefined?undefined:required(args,"case_records"),

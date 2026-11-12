@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { validationFamilyForContext } from "./context.mjs";
 import { deliveryFiles, sha256 } from "./delivery.mjs";
-import { currentLiveLifecycleContract, verifiedLiveTaskSnapshotBinding } from "./live-lifecycle-evaluation.mjs";
+import { currentLiveLifecycleContract, verifiedCloudV3TaskSnapshotBinding } from "./live-lifecycle-evaluation.mjs";
 import { checkpointCaseScope, readCheckpoint, stop, uuid } from "./live-lifecycle-checkpoint.mjs";
 import { cloudV3CheckpointCase } from "./cloud-v3-case-selection.mjs";
 import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
@@ -58,7 +58,7 @@ async function inspectReview(definition,item,client,submittedAt) {
     task = await client.request(`/agent/requests/${agentAction.key}`);
     if (task?.executionMode !== "DURABLE_SQL_AGENT_V1" || !nativeEvidence(task) ||
         (submittedAt!==undefined && !(Date.parse(task.createdAt)>=Date.parse(submittedAt))) ||
-        !verifiedLiveTaskSnapshotBinding(definition, item, task))
+        !verifiedCloudV3TaskSnapshotBinding(definition, item, task))
       return reject("ORIGINAL_AGENT_MISMATCH");
     const attempt = task.attempts.at(-1);
     if (task.status !== "SUCCEEDED" || attempt?.status !== "SUCCEEDED" ||
@@ -83,7 +83,8 @@ async function inspectReview(definition,item,client,submittedAt) {
     review = await client.request(agentReviewEvidencePath({taskId:task.id, deliveryId:delivery.id, requestSha256}));
     if (review?.protocol !== "shuduo-agent-review-evidence/v1" || review.scope !== "PRIVATE_CLOUD_TEST" ||
         review.verificationMode !== "STORED_METADATA_ONLY" || review.taskId !== task.id || review.deliveryId !== delivery.id ||
-        review.fullLifecycleE2E !== false || review.publicDeployed !== false || !nativeEvidence(review))
+        review.fullLifecycleE2E !== false || review.publicDeployed !== false || !nativeEvidence(review) ||
+        !isDeepStrictEqual(review.derivedFrom,task.derivedFrom))
       return reject("REVIEW_EVIDENCE_MISMATCH");
     if (review.status === "PENDING") return pending("CLOUD_REHEARSAL_PENDING");
     const files = review.delivery?.fileHashes, family = validationFamilyForContext(definition.contextId);

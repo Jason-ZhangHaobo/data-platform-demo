@@ -2050,7 +2050,8 @@ export function createV2Server(options = {}) {
                 },
           publicReady: false,
           agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery),
-            requestBindingSupported:Boolean(durableAgent),eventBackgroundAvailable:Boolean(agentEventDriver), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER"), sqlMaxAttempts:3, sqlTokenBudget:Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) },
+            requestBindingSupported:Boolean(durableAgent),derivationBindingSupported:Boolean(durableAgent),
+            eventBackgroundAvailable:Boolean(agentEventDriver), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER"), sqlMaxAttempts:3, sqlTokenBudget:Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) },
           validationContract: {
             id: validationContractId,
             fixtureCount: contextIds.length,
@@ -6030,7 +6031,8 @@ export function createV2Server(options = {}) {
         const {bundle, verification} = workflowDeliveryEvidence(delivery);
         const revision = store.get("revision", delivery.sourceRevisionId ?? "", PROJECT);
         const run = store.get("run", delivery.sourceRunId ?? "", PROJECT);
-        return json(res, 200, storedAgentReviewEvidence({task, delivery, bundle, verification, revision, run, requestSha256:selection.requestSha256}));
+        return json(res, 200, storedAgentReviewEvidence({task, delivery, bundle, verification, revision, run,
+          requestSha256:selection.requestSha256,read:(kind,id)=>store.get(kind,id,PROJECT),includeDerivation:true}));
       }
       const developmentWorkflow = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/workflow$/);
       if (developmentWorkflow && method === "GET") {
