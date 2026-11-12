@@ -180,7 +180,7 @@ export class RemoteSparkQueueClient {
     this.wait = options.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
-  async health() {
+  async prepareHealthCheck() {
     if (!this.config.readyJobId)
       throw fail(503, "Spark队列缺少真实Worker执行证据", "REMOTE_SPARK_NOT_READY");
     const raw = await this.transport.read(`${this.config.resultPrefix}/${this.config.readyJobId}.json`);
@@ -189,6 +189,14 @@ export class RemoteSparkQueueClient {
     let envelope;
     try { envelope = JSON.parse(raw); }
     catch { throw fail(502, "Spark队列就绪结果不是JSON", "SPARK_QUEUE_RESULT_INVALID"); }
+    return () => this.#checkHealthEnvelope(envelope);
+  }
+
+  async health() {
+    return (await this.prepareHealthCheck())();
+  }
+
+  #checkHealthEnvelope(envelope) {
     const result = verifyQueuedSparkResult(envelope, this.config.readyJobId, this.config);
     const completedAt = Date.parse(envelope.completedAt), now = this.now();
     if (!Number.isFinite(completedAt) || completedAt > now + 60000 || now - completedAt > this.config.readyMaxAgeMs ||

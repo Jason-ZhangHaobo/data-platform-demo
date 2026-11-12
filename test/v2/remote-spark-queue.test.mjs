@@ -55,6 +55,34 @@ test("signed result cannot be substituted across jobs", () => {
   assert.throws(() => verifyQueuedSparkResult({ ...result, jobId: "33333333-3333-4333-8333-333333333333" }, queued.job.jobId, config), { code: "SPARK_QUEUE_RESULT_INVALID" });
 });
 
+test("prefetched Worker evidence is rechecked for signature and age when readiness is committed", async () => {
+  const completedAt = 1789900000000;
+  let now = completedAt + 100, reads = 0;
+  const queued = createQueuedSparkJob(input, config, { now: completedAt - 100, requestId: "22222222-2222-4222-8222-222222222222" });
+  const readyConfig = { ...config, readyJobId: queued.job.jobId, readyMaxAgeMs: 1000 };
+  const envelope = createQueuedSparkResult(queued.job, {
+    status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9",
+    validation: { passed: true }, mainSqlExecuted: true,
+  }, config, completedAt);
+  let response = envelope;
+  const client = new RemoteSparkQueueClient(readyConfig, {
+    read: async key => {
+      assert.equal(key, queued.resultKey);
+      reads++;
+      return JSON.stringify(response);
+    },
+  }, { now: () => now });
+  const verify = await client.prepareHealthCheck();
+  assert.equal(reads, 1);
+  assert.equal(verify().verifiedAt, envelope.completedAt);
+  now = completedAt + 1001;
+  assert.throws(verify, { code: "REMOTE_SPARK_NOT_READY" });
+  assert.equal(reads, 1);
+  response = { ...envelope, signature: "v1=bad" };
+  const tampered = await client.prepareHealthCheck();
+  assert.throws(tampered, { code: "SPARK_QUEUE_RESULT_INVALID" });
+});
+
 test("queue client persists a cancellation marker and never returns an unsigned result", async () => {
   const objects = new Map(), controller = new AbortController();
   const transport = { create: async (key, body) => { if (objects.has(key)) throw new Error("conflict"); objects.set(key, body); }, read: async (key) => objects.get(key) };
