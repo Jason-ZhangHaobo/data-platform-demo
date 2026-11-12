@@ -2,6 +2,7 @@ import {distributionMetadataById} from "../../src/v2/output-contract-metadata.mj
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 const ServiceContractGatesPanel=lazy(async()=>({default:(await import('./ServiceContractGatesPanel')).ServiceContractGatesPanel}));
 import { EvidenceDownload, requestTextDownload } from "./EvidenceDownload";
+import { isFundContext } from "../../src/v2/fund-contexts.mjs";
 import { compositionChoices, fundContractId } from "./service-composition";
 import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
 import type { ConsumptionScope } from "./service-consumption-scope";
@@ -153,7 +154,7 @@ type ServiceAgentPlan = SourcePlan & {
   serviceId?: string;
 };
 
-const fundContextId = "synthetic-fund-lookthrough-t1";
+
 const fundKeys = ["portfolio_id", "trade_date", "asset_class"];
 const fundScopeNotice = "按组合、交易日和资产类别保留明细。金额及占比使用精确十进制字符串。";
 const fundFilters = [
@@ -418,7 +419,7 @@ export function DataServicesWorkbench({
       ]);
     if(!current())return;
     if(![releaseResults,nextDapis,nextXapis,nextApps,nextCalls,nextPlans,fundRuns].every(Array.isArray))throw Error("服务目录响应不完整；未确认服务、批次、应用或调用数量，请重新读取。");
-    const nextRuns = [...releaseResults.filter(run => run.source?.contextId !== fundContextId), ...fundRuns];
+    const nextRuns = [...releaseResults.filter(run => !isFundContext(run.source?.contextId)), ...fundRuns];
     if(binding&&nextRuns.some(run=>!sourceRunMatches(run,binding)))throw Error("发布来源回读与交接包或版本不一致，未采用其他结果。");
     const scopedRuns=pinnedBatch?nextRuns.filter(run=>run.id===pinnedBatch):nextRuns;
     const boundEligible=binding?scopedRuns.filter(run=>sourceRunMatches(run,binding)&&sourceRunEligible(run)):scopedRuns;

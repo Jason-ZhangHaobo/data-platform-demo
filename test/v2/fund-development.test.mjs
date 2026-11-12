@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createV2Server, PROJECT } from '../../src/v2/server.mjs';
 import { MetadataStore } from '../../src/v2/store.mjs';
-import { fundContextId, fundReferenceSql } from '../../src/v2/fund-lookthrough.mjs';
+import { fundContext, fundContextId, fundReferenceSql } from '../../src/v2/fund-lookthrough.mjs';
+import { fundContextIds, isFundContext } from '../../src/v2/fund-contexts.mjs';
 
 async function start(t, options) {
   const store = new MetadataStore(':memory:');
@@ -63,7 +65,7 @@ test('a remote Spark profile does not advertise or run fund SQL', async t => {
     runner: async () => { throw Error('fund SQL must never reach the remote runner'); },
   });
   const contexts = await (await fetch(base + '/contexts')).json();
-  assert.ok(!contexts.some(item => item.id === fundContextId));
+  assert.ok(!contexts.some(item => isFundContext(item.id)));
   const fundSources = await fetch(base + '/data-services/fund-sources');
   assert.equal(fundSources.status, 200);
   assert.deepEqual(await fundSources.json(), []);
@@ -71,4 +73,24 @@ test('a remote Spark profile does not advertise or run fund SQL', async t => {
   const revision = store.create('revision', PROJECT, { contextId: fundContextId, sql: fundReferenceSql });
   assert.equal((await post('/runs', { revisionId: revision.id }, 'blocked-run')).status, 403);
   assert.equal(store.list('run', PROJECT).length, 0);
+});
+
+test('fund worker preflight rejects an old oracle or old input tables under the new trading day', () => {
+  const [oldId, nextId] = fundContextIds;
+  const oldContext=fundContext(oldId), next=fundContext(nextId);
+  const sample = [next,{...next,expected:oldContext.expected},{...next,tables:oldContext.tables}];
+  const code = [
+    'import json,sys',
+    'sys.path.insert(0,"src/v2")',
+    'from fund_lookthrough import registered_inputs',
+    'for case in json.load(sys.stdin):',
+    ' try:',
+    '  registered_inputs(case)',
+    '  print("ACCEPTED")',
+    ' except ValueError as err:',
+    '  print(str(err))',
+  ].join('\n');
+  const process = spawnSync('python3',['-c',code],{input:JSON.stringify(sample),encoding:'utf8'});
+  assert.equal(process.status,0,process.stderr);
+  assert.deepEqual(process.stdout.trim().split('\n'),['ACCEPTED','FUND_LOOKTHROUGH_CONTEXT_MISMATCH','FUND_LOOKTHROUGH_INPUT_MISMATCH']);
 });

@@ -25,7 +25,7 @@ export function resolvePublishedReportSource({store,project,source,actorId,allow
    selection: { releaseId: source.releaseId, packageDigest: source.packageDigest, batchId: source.batchId }, timeUnitMs });
   if (!rows || !evidence.eligibleForService || evidence.revisionId !== source.revisionId || evidence.developmentRunId !== source.runId)
    throw fail(409, "FUND_REPORT_SOURCE_UNPROVEN", "基金报表需要同一版本的真实 Spark 发布结果");
-  const contract = fundDapiContract, context = fundContext();
+  const contract = fundDapiContract, context = fundContext(revision.contextId);
   return {
    asset: { id: "dataset:" + contract.id, versionId: batch.id, evidenceHash: publishedReportHash(rows), fields: contract.fields, outputContractId: contract.id },
    rows, context: { id: context.id, name: context.name, definition: context.definition }, source,

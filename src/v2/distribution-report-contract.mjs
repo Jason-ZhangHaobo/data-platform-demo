@@ -1,10 +1,11 @@
+import { fundContextIds, isFundContext } from "./fund-contexts.mjs";
 import {distributionMetadataById,distributionMetadataForContext} from './output-contract-metadata.mjs';
 export const fundReportContractId = "securities-fund-lookthrough-v1";
-const fundContextId = "synthetic-fund-lookthrough-t1";
+
 export function distributionReportMetadata(contractId) {
  if (contractId !== fundReportContractId) return distributionMetadataById(contractId);
  return {
-  id: fundReportContractId, contextIds: [fundContextId], dimension: "asset_class",
+  id: fundReportContractId, contextIds: [...fundContextIds], dimension: "asset_class",
   fields: [{ name: "portfolio_id", type: "STRING" }, { name: "trade_date", type: "STRING" },
    { name: "asset_class", type: "STRING" }, { name: "exposure_amount", type: "DECIMAL", scale: 2 },
    { name: "exposure_ratio", type: "DECIMAL", scale: 6 }],
@@ -28,4 +29,4 @@ export function distributionReportTemplate(contractId){
   {id:'distribution_ratio',type:'BAR',title:'各分类市值占比',aggregation:'VALUE',field:'market_value_ratio',dimension:c.dimension,partitionBy:['client_id','trade_date']}
  ],notes:['每次仅展示一个客户、一个交易日的分类，不跨客户或日期汇总占比。','持仓分布不含现金，不代表客户全资产；零持仓市值没有有效占比。','证券数量为分类内去重数，不能相加作为全局证券去重数。',...(c.dimension==='industry'?['行业是证券分类标签，不作基金底层持仓穿透。']:[]),'未知分类沿用源结果，不补造标签；客户编号已脱敏，切片保持独立。']};
 }
-export const distributionReportTemplateForContext=id=>distributionReportTemplate(id === fundContextId ? fundReportContractId : distributionMetadataForContext(id)?.id);
+export const distributionReportTemplateForContext=id=>distributionReportTemplate(isFundContext(id) ? fundReportContractId : distributionMetadataForContext(id)?.id);

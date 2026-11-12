@@ -1,7 +1,7 @@
 import { isDeepStrictEqual as same } from "node:util";
 import { resolveDeliverySchedule, sha256, validateDeliveryPackage } from "./delivery.mjs";
 import { verifiedFundRun } from "./fund-delivery.mjs";
-import { fundContextId } from "./fund-lookthrough.mjs";
+import { isFundContext } from "./fund-contexts.mjs";
 import { plannedLocalRuns } from "./release-scheduler.mjs";
 
 const exact = (value, keys) => value && typeof value === "object" && !Array.isArray(value) &&
@@ -11,9 +11,9 @@ const fail = () => Object.assign(new Error("基金本机发布须确认同一包
 });
 
 export function assertFundRehearsal(bundle, verification) {
-  if (bundle?.manifest?.source?.contextId !== fundContextId) return;
+  if (!isFundContext(bundle?.manifest?.source?.contextId)) return;
   const plan = validateDeliveryPackage(bundle, bundle.digest);
-  if (!verifiedFundRun(verification) || verification.engineVersion !== plan.deployment.runtime.version ||
+  if (!verifiedFundRun(verification, plan.source.contextId) || verification.engineVersion !== plan.deployment.runtime.version ||
       verification.packageId !== bundle.id || verification.packageDigest !== bundle.digest ||
       verification.mode !== "LOCAL_FILE_REHEARSAL" || verification.published !== false ||
       verification.schedulerTriggered !== false || !same(verification.source, plan.source) ||
@@ -26,7 +26,7 @@ export function assertFundRehearsal(bundle, verification) {
 }
 
 export function assertFundConsent({ bundle, verification, review, consent, localClassicSpark, schedulerMode }) {
-  if (bundle?.manifest?.source?.contextId !== fundContextId) {
+  if (!isFundContext(bundle?.manifest?.source?.contextId)) {
     if (consent !== undefined) throw fail();
     return;
   }

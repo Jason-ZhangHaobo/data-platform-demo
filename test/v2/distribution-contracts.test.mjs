@@ -25,7 +25,7 @@ function check(context,rows=context.expected,op='verify',others=[]){
 }
 test('distribution contracts are explicit, independent of old ten contexts and never expose expected answers',()=>{
  assert.equal(allContextIds.length,10);assert.equal(distributionContextIds.length,10);
- assert.deepEqual(classicContextIds, [...allContextIds, ...distributionContextIds, 'synthetic-fund-lookthrough-t1']);
+ assert.deepEqual(classicContextIds, [...allContextIds, ...distributionContextIds, 'synthetic-fund-lookthrough-t1', 'synthetic-fund-lookthrough-next-trading-day']);
  for(const id of distributionContextIds){
   const c=getContext(id),pub=publicContext(id),contract=outputContractForContext(id),family=validationFamilyForContext(id);
   assert.deepEqual(validationFamilyForContextId(id).contextIds,family.contextIds);assert.equal(validationFamilyForContextId(id).id,family.id);

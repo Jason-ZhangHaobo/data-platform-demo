@@ -1,3 +1,4 @@
+import { isFundContext } from "../../src/v2/fund-contexts.mjs";
 import { validationFamilyForContextId } from "./validation-family.ts";
 
 type DeliverySourceRun = {
@@ -21,7 +22,7 @@ export function deliverySourceSelection<T extends DeliverySourceRun>(runs: T[], 
     if (run.status !== "SUCCEEDED" || (locked && run.id !== sourceRunId)) return false;
     // Both entry points resolve the run's family independently; a locked handoff
     // must additionally match its explicitly supplied contract.
-    const expectedContract = run.contextId === "synthetic-fund-lookthrough-t1"
+    const expectedContract = isFundContext(run.contextId)
       ? "securities-fund-lookthrough-v1" : validationFamilyForContextId(run.contextId)?.id;
     if (!expectedContract || run.validationContractId !== expectedContract) return false;
     if (lockSource && contractId !== expectedContract) return false;
