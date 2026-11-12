@@ -25,6 +25,7 @@ import { validatePrivateApplicationRequest } from '../../src/v2/private-applicat
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
 import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
+import { createCloudPublication } from '../../src/v2/cloud-publication.mjs';
 import { opsPublicationTarget, readOpsPublication } from '../../web/src/ops-publication.ts';
 import { checkedAgentPublication } from '../../web/src/agent-delivery-evidence-read.ts';
 import { privateReleasePendingLabel } from '../../src/v2/private-release-stage.mjs';
@@ -990,6 +991,10 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.deepEqual(requests,[]);
   assert.equal((await f.call(publicationRequestReceiptPath(task.id,randomUUID()))).status,404);
   assert.equal((await f.call(receiptPath+'?releaseId='+acceptedRelease.release.id)).status,422);
+  const savedReader = createCloudPublication({ store: f.store, project: PROJECT, now: f.now });
+  const originalReceipt = await f.call(receiptPath);
+  assert.deepEqual(savedReader.savedRequestReceipt(task.id, savedAtPublicationPost.key,
+    f.store.get('agent', task.id, PROJECT).submittedBy), originalReceipt.body);
   const privateReceipt={operation:'PRIVATE_APPLICATION_HTTP_V1',method:'GET',path:'/api/v2'+receiptPath};
   assert.equal(validatePrivateApplicationRequest(privateReceipt,{allowDurableAgentRead:true}).path,privateReceipt.path);
   assert.equal(f.store.list('delivery_review',PROJECT).length,1);

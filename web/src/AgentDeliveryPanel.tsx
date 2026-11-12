@@ -296,7 +296,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     return () => { reader.close(); if (publicationReader.current === reader){publicationReader.current = undefined;publicationReaderKey.current="";} };
   }, [publicationKey]);
   useEffect(() => {
-    if (!publication || !publicationReady || !publicationPollNeeded(publication)) return;
+    if (!publication || !publicationReady || publication.readMode === "SAVED_HISTORY" || !publicationPollNeeded(publication)) return;
     const timer = setInterval(() => { void publicationReader.current?.refresh(); }, cloud ? 10000 : 5000);
     return () => clearInterval(timer);
   }, [publication, publicationReady, cloud]);
@@ -346,7 +346,9 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         {publicationUnknown&&<p role="status">原发布请求结果尚未确认。先刷新读取同一包的记录；如仍未找到，重新审阅后可按原请求编号重试，不会自动生成新的批准。</p>}
         {publicationKey && !publicationReady && <p role={publicationRead === "ERROR" ? "alert" : "status"}>{publicationRead === "ERROR" ? `发布与监控读取未确认：${publicationError}。已读取的历史记录保留，暂不能判断当前健康或再次发布。` : "正在恢复当前来源与确切交付包的发布、批次与告警记录…"}</p>}
         {fund && !fileReview && fileVerified && <p>请先记录此包的本机文件审阅。</p>}
-        {publicationReady && !release && !fund && <p>当前来源、交付包与演练尚未找到发布记录；需逐项审阅确切版本，发布后仍等待受控调度器执行。</p>}
+        {publicationReady && publication?.readMode === "SAVED_HISTORY" && release && <p role="status">已保存的发布与运维记录 · 当前仅回看。</p>}
+        {publicationReady && !release && !fund && <p>{publication?.readMode === "SAVED_HISTORY"
+          ? "当前交付与演练暂无发布记录。" : "当前来源、交付包与演练尚未找到发布记录；需逐项审阅确切版本，发布后仍等待受控调度器执行。"}</p>}
         {workflow.publication.available && (!release || !journey.publicationCurrent) && <button className="button primary" disabled={!publicationWritable || preparationUnknown || !fileVerified || !verified || working || !publicationReady || fund&&!fileReview} onClick={() => void openReview()}>{publicationUnknown?"重新审阅并重试原发布请求":"审阅并发布测试任务"}</button>}
         {!fund && !workflow.publication.available && !release && <span className="agent-publication-gate">交付演练通过后进入“待发布”；云端上线尚待完成。</span>}
         {review && workflow.package && <AgentPublicationReview cloud={cloud} fund={fundPreflight} distribution={fund||Boolean(distributionMetadataForContext(contextId))} sourceKind={manual?"MANUAL":"AGENT"} originTaskId={taskId} packageDigest={workflow.package.digest} revisionId={delivery?.sourceRevisionId} runId={delivery?.sourceRunId} verificationId={delivery?.verificationId} confirmed={confirmed} disabled={!publicationWritable || working || !publicationReady || !verified || !fileVerified || !workflow.publication.available} onConfirm={(id, checked) => setConfirmed(old => ({...old, [id]:checked}))} onPublish={() => void publishLocal()} onCancel={() => { setReview(false); setConfirmed({}); }} />}

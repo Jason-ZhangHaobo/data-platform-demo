@@ -73,10 +73,12 @@ async function fixture(t) {
     if (store) { store.close(); store = undefined; }
   };
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
-  const open = async () => {
+  const open = async ({ readOnly = false } = {}) => {
     store ??= new MetadataStore(join(directory, 'metadata.sqlite'));
-    app = createV2Server({ root: directory, store, artifactStore, runner, env, now: () => now,
-      ingress: createFcIngress({ publicHttpEnabled: true }),
+    const applicationEnv = readOnly ? { V2_LOCAL_DEVELOPMENT: 'false', V2_PROVISIONING_ONLY: 'true',
+      V2_PRIVATE_SMOKE_ENABLED: 'true', V2_ALLOW_INSECURE_PUBLIC_COOKIES: 'true', V2_PUBLIC_ORIGIN: env.V2_PUBLIC_ORIGIN } : env;
+    app = createV2Server({ root: directory, store, artifactStore, ...(readOnly ? {} : { runner }), env: applicationEnv, now: () => now,
+      ingress: createFcIngress({ publicHttpEnabled: true, publicReadOnly: readOnly }),
       generator: async () => { modelCalls++; throw Error('MODEL_CALL_FORBIDDEN_IN_PUBLICATION_FIXTURE'); } });
     const owner = app.auth.bootstrapAdmin({ email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticPublication!2026', displayName: '虚构审阅工程师' });
     app.auth.bootstrapAdmin({ email: 'other@example.invalid', password: 'SyntheticPublication!2026', displayName: '虚构其他管理员' });
@@ -126,9 +128,70 @@ async function fixture(t) {
     body: { packageDigest: item.digest, verificationId: verification.id,
       attestations: { code: true, assertions: true, deliveryFiles: true, cloudScope: true } },
     restart: async () => { await close(); await open(); }, advance: () => { now += 60000; },
+    restartReadOnly: async () => { await close(); await open({ readOnly: true }); },
     expire: () => { now = Date.parse(env.V2_PUBLIC_PUBLICATION_EXPIRES_AT); },
     get store() { return store; }, counts: () => ({ modelCalls, jobCreates, submitCalls }) };
 }
+
+test('read-only ingress returns saved release history without an executor, and separates missing and inconsistent evidence', async t => {
+  const f = await fixture(t);
+  const selector = new URLSearchParams({ sourceKind: 'AGENT', sourceRunId: f.item.sourceRunId,
+    packageDigest: f.item.digest, verificationId: f.verification.id });
+  const path = f.path + '?' + selector;
+  const accepted = await f.call(f.path, f.body);
+  assert.equal(accepted.status, 202);
+  const releaseId = accepted.body.release.id;
+  assert.equal((await f.tick(releaseId, 1)).status, 200);
+  const first = f.store.list('release_run', PROJECT).find(run => run.status === 'RUNNING');
+  f.complete(first.remoteSubmission.prepared);
+  await f.restartReadOnly();
+  const parked = await f.call(path);
+  assert.equal(parked.status, 200);
+  assert.equal(parked.body.readMode, 'SAVED_HISTORY');
+  assert.equal(parked.body.release.id, releaseId);
+  assert.equal(parked.body.runs[0].status, 'RUNNING');
+  assert.equal(parked.body.runs[0].remoteSubmission, undefined);
+  assert.equal(f.store.get('release_run', first.id, PROJECT).version, first.version);
+  assert.equal((await f.call(path, undefined, { identity: null })).status, 401);
+  const other = f.store.list('auth_user', PROJECT).find(user => user.email === 'other@example.invalid');
+  f.store.update('auth_user', other.id, PROJECT, { memberships: [{ projectId: PROJECT, role: 'ENGINEER' }] });
+  assert.equal((await f.call(path, undefined, { identity: 'other' })).status, 403);
+  assert.equal((await f.call(f.path, f.body)).body.code, 'PUBLIC_READ_ONLY');
+  assert.equal((await f.call(f.path + '/preflight?' + selector)).status, 503);
+  const empty = await f.call(`/agent/tasks/${f.otherAgent.id}/publication`);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body, { runs: [], alerts: [], events: [], readMode: 'SAVED_HISTORY' });
+  const wrong = await f.call(f.path + '?' + new URLSearchParams({ ...Object.fromEntries(selector), packageDigest: '0'.repeat(64) }));
+  assert.equal(wrong.status, 409);
+  assert.equal(wrong.body.code, 'PUBLICATION_HISTORY_UNCONFIRMED');
+  f.store.update('release', releaseId, PROJECT, { packageDigest: 'f'.repeat(64) });
+  const damaged = await f.call(path);
+  assert.equal(damaged.status, 409);
+  assert.equal(damaged.body.code, 'PUBLICATION_HISTORY_UNCONFIRMED');
+  f.store.update('release', releaseId, PROJECT, { packageDigest: f.item.digest });
+
+  await f.restart();
+  assert.equal((await f.call(path)).body.runs[0].status, 'SUCCEEDED');
+  f.advance();
+  assert.equal((await f.tick(releaseId, 2)).status, 200);
+  const second = f.store.list('release_run', PROJECT).find(run => run.status === 'RUNNING');
+  f.complete(second.remoteSubmission.prepared);
+  const finished = await f.call(path);
+  assert.equal(finished.body.release.health, 'HEALTHY');
+  await f.restartReadOnly();
+  const counts = f.counts();
+  const originalRuns = f.store.list('release_run', PROJECT);
+  const history = await f.call(path);
+  assert.deepEqual(history.body, { ...finished.body, readMode: 'SAVED_HISTORY' });
+  assert.deepEqual(f.store.list('release_run', PROJECT), originalRuns);
+  assert.deepEqual(f.counts(), counts);
+  const event = f.store.list('monitor_event', PROJECT)[0];
+  f.store.update('monitor_event', event.id, PROJECT, { packageDigest: 'f'.repeat(64) });
+  const unconfirmed = await f.call(path);
+  assert.equal(unconfirmed.status, 409);
+  assert.equal(unconfirmed.body.code, 'PUBLICATION_HISTORY_UNCONFIRMED');
+  assert.deepEqual(f.counts(), counts);
+});
 
 test('formal ingress keeps publication scoped to the existing administrator, task and reviewed package', async t => {
   const f = await fixture(t);

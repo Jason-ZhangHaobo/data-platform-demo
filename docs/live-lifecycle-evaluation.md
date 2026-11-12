@@ -152,6 +152,8 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 
 响应丢失或 CLI 被强制终止时，用 `--reconcile` 沿原创建者和原请求读取 `GET /agent/tasks/{id}/publication/requests/{key}`。在同一系统启动会话确认原进程已退出后，可接管遗留的检查点锁。回执核对同一发布、原审阅及批准和两个原批次。该读取不协调 Worker，窗口关闭后也可读取已保存的回执。实际调度、监控和消费分别验收。
 
+只读入口或发布执行器未配置时，`GET /agent/tasks/{id}/publication` 以 `SAVED_HISTORY` 返回已保存的同源发布、批次和运维证据。所属人、确切交付包、演练、批准和批次须一致。有效交付尚无发布时返回空记录；证据错配时返回 `PUBLICATION_HISTORY_UNCONFIRMED`。工作台在此模式手动刷新，原请求回执仍可读回，监控存疑时保留 `UNCONFIRMED` 状态。该读取不访问 Worker 队列，也不推进发布或结算。
+
 ### 核对同一发布的签名调度与监控
 
 确切审阅的发布沿用私有签名定时入口。每个新签名事件最多认领一个原批次，认领事务先保存原 Worker 编号、冻结 SQL 摘要和计算预留。提交前再次核对发布窗口、审阅摘要和预算。已有批次待确认时，后续事件先核对原签名结果，原批次未结算则下一批保持待调度。
