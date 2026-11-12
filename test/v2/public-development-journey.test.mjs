@@ -918,7 +918,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
-test('a request-bound base task must prepare the exact verified version in the workbench',async t=>{
+test('a request-bound base task requires the exact verified version for delivery and publication',async t=>{
   const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,contextualModel:true});
   const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
   const body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
@@ -955,6 +955,41 @@ test('a request-bound base task must prepare the exact verified version in the w
   assert.equal(bundle.manifest.source.revisionId,current.revisionId);
   assert.equal(Object.keys(bundle.files).length,8);
   assert.deepEqual(f.counts(),beforeFiles);
+  const exactPackage={packageId:bundle.id,packageDigest:bundle.digest};
+  const deliveryPath='/agent/deliveries/'+preparedFiles.body.id+'/advance';
+  const started=await f.call(deliveryPath,{expectedVersion:preparedFiles.body.version,rehearsal:exactPackage});
+  assert.equal(started.status,200,started.body.message);
+  const verificationId=started.body.verificationId;
+  const stored=f.store.get('agent_delivery_task',preparedFiles.body.id,PROJECT);
+  f.complete(stored.remoteSubmission.prepared);
+  const settled=await f.call(deliveryPath,{expectedVersion:started.body.version,rehearsal:{...exactPackage,verificationId}});
+  assert.equal(settled.body.status,'SUCCEEDED',settled.body.message);
+
+  f.alignWallClock();
+  Object.assign(f.env,{V2_FC_PUBLIC_WRITE_SCOPE:'PUBLICATION_ONLY',
+    V2_PUBLIC_PUBLICATION_STARTS_AT:new Date(f.now()-1000).toISOString(),
+    V2_PUBLIC_PUBLICATION_EXPIRES_AT:new Date(f.now()+600000).toISOString(),
+    V2_PUBLIC_PUBLICATION_TASK_ID:created.body.id,V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST:bundle.digest,
+    V2_PUBLIC_PUBLICATION_VERIFICATION_ID:verificationId,V2_PRIVATE_RELEASE_ENABLED:'true',
+    V2_PRIVATE_RELEASE_TRIGGER_NAMES:'shuduo-release-fictional-first',V2_SCHEDULER_TICK_SECRET:'fictional-first-release-authorization-1234567890'});
+  await f.restart();
+  const selector={sourceKind:'AGENT',sourceRunId:current.runId,packageDigest:bundle.digest,verificationId};
+  const preflight=await f.call(publicationPreflightPath(created.body.id,selector));
+  assert.equal(preflight.status,200,preflight.body.message);
+  const attestations={code:true,assertions:true,deliveryFiles:true,cloudScope:true};
+  const publication=taskPath+'/publication', counts=f.counts();
+  assert.equal((await f.call(publication,{...selector,attestations},randomUUID())).status,422);
+  assert.equal((await f.call(publication,{...selector,attestations,reviewDigest:'0'.repeat(64)},randomUUID())).status,409);
+  assert.equal(f.store.list('release',PROJECT).length,0);
+  const request=cloudPublicationRequest(selector,bundle.id,attestations,preflight.body.reviewDigest);
+  const accepted=await f.call(publication,request.body,request.idempotencyKey);
+  assert.equal(accepted.status,202,accepted.body.message);
+  assert.equal(accepted.body.release.sourceRunId,current.runId);
+  assert.deepEqual(accepted.body.runs.map(run=>[run.sequence,run.status,run.schedulerTriggered]),[[1,'SCHEDULED',false],[2,'SCHEDULED',false]]);
+  const original=await f.call(publicationRequestReceiptPath(created.body.id,request.idempotencyKey));
+  assert.deepEqual(original.body,accepted.body);
+  assert.equal(f.store.list('release_approval',PROJECT).length,1);
+  assert.deepEqual(f.counts(),counts);
 });
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
