@@ -1,3 +1,4 @@
+import {fundReportContractId} from "./distribution-report-contract.mjs";
 import {normalizeDistributionReportWidgets,executeDistributionReport} from './distribution-reports.mjs';
 import {distributionMetadataById} from './output-contract-metadata.mjs';
 import { DatabaseSync } from "node:sqlite";
@@ -204,7 +205,7 @@ export class ReportManager {
         .some((dataset) => dataset.code === code)
     )
       throw fail(409, "报表数据集代码已存在", "DUPLICATE_REPORT_DATASET");
-    if(asset.outputContractId&&JSON.stringify(fields)!==JSON.stringify(asset.fields.map(f=>f.name)))throw fail(422,"分布数据集须保留完整复合键与六列契约","DISTRIBUTION_REPORT_FIELDS");
+    if(asset.outputContractId&&JSON.stringify(fields)!==JSON.stringify(asset.fields.map(f=>f.name)))throw fail(422,"分布数据集须保留完整复合键和已登记字段","DISTRIBUTION_REPORT_FIELDS");
     return this.store.create("report_dataset", this.project, {
       name: text(input.name, "数据集名称", 2, 80),
       code,
@@ -358,6 +359,14 @@ export class ReportManager {
       throw fail(409, "报表绑定的数据集快照不存在", "REPORT_SNAPSHOT_MISSING");
     if(version.outputContractId!==snapshotMeta.outputContractId||!version.outputContractId&&version.widgets.some(w=>w.aggregation==='VALUE'))throw fail(409,'分布报表与固定快照契约不一致','REPORT_VERSION_CORRUPT');
     if(version.outputContractId&&stableHash({datasetId:version.datasetId,outputContractId:version.outputContractId,datasetSnapshotId:version.datasetSnapshotId,widgets:version.widgets,description:version.description})!==version.configHash)throw fail(409,'分布报表版本摘要不一致','REPORT_VERSION_CORRUPT');
+    if (version.outputContractId === fundReportContractId) {
+      const dataset = this.#dataset(version.datasetId), source = dataset.publishedSource, evidence = snapshotMeta.sourceEvidence;
+      if (!source || !evidence || snapshotMeta.datasetId !== dataset.id || snapshotMeta.assetId !== dataset.assetId ||
+          stableHash(dataset.sourceEvidence) !== stableHash(evidence) || source.kind !== "MANUAL" ||
+          source.releaseId !== evidence.releaseId || source.packageDigest !== evidence.packageDigest ||
+          source.revisionId !== evidence.revisionId || source.runId !== evidence.developmentRunId || source.batchId !== evidence.batchId)
+        throw fail(409, "基金报表快照与原发布来源不一致", "FUND_REPORT_SOURCE_CHANGED");
+    }
     const snapshot = this.reportStore.read(snapshotMeta.dataSnapshotId),
       started = this.now(),
       distribution=version.outputContractId?executeDistributionReport({version,snapshot,metadata:snapshotMeta,hash:stableHash}):undefined,
@@ -394,8 +403,10 @@ export class ReportManager {
       run = report.runs.find((item) => item.id === report.lastRunId);
     if (!run || run.status !== "SUCCEEDED")
       throw fail(409, "报表尚无成功运行，不能导出", "REPORT_RUN_REQUIRED");
-    const partitioned=Boolean(run.outputContractId);
-    const rows = [partitioned?["widget_id","title","customer_slice","client_label","trade_date","group","value"]:["widget_id", "title", "group", "value"]];
+    const partitioned=Boolean(run.outputContractId), fund=run.outputContractId===fundReportContractId;
+    if (fund && stableHash(run.widgets) !== run.resultHash)
+      throw fail(409, "基金报表结果摘要与原运行不一致", "REPORT_RUN_CORRUPT");
+    const rows = [partitioned?["widget_id","title",fund?"portfolio_slice":"customer_slice",fund?"portfolio_label":"client_label","trade_date","group","value"]:["widget_id", "title", "group", "value"]];
     for (const widget of run.widgets) {
       if (widget.value !== undefined)
         rows.push([widget.id, widget.title, "ALL", widget.value]);

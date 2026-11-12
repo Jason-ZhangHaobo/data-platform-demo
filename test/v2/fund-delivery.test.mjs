@@ -166,9 +166,11 @@ test('fixture fund publication requires exact evidence and one explicit two-batc
   assert.equal(dapi.status, 422);
   assert.match(dapi.body.message, /基金组合穿透/);
   const { revisionId, runId } = f.bundle.manifest.source;
+  const reportSource = { kind: 'MANUAL', releaseId: id, revisionId, runId, packageDigest: f.bundle.digest, batchId: runs[0].id };
   assert.throws(() => resolvePublishedReportSource({ store: f.store, project: PROJECT, actorId: 'local-engineer',
-    source: { kind: 'MANUAL', releaseId: id, revisionId, runId, packageDigest: f.bundle.digest, batchId: runs[0].id } }),
-  error => error.code === 'REPORT_SOURCE_UNSUPPORTED');
+    source: reportSource }), { code: 'REPORT_SOURCE_OWNER' });
+  assert.throws(() => resolvePublishedReportSource({ store: f.store, project: PROJECT, actorId: 'engineer',
+    source: reportSource }), { code: 'FUND_REPORT_SOURCE_UNPROVEN' });
 });
 
 test('a fund fixture with a changed batch date never calls the runner', async t => {

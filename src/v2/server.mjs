@@ -1151,24 +1151,27 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
+  const resolveLocalReportSource = (source, actorId) => resolvePublishedReportSource({
+    store, project: PROJECT, source, actorId, allowFund: localClassicSpark, timeUnitMs: releaseTimeUnitMs,
+  });
   const reports = new ReportManager({
     allowLocalPublishedEvidence:local,
     store,
     reportStore,
     assets,
     project: PROJECT,
-    resolvePublishedSource: (source, actorId) => resolvePublishedReportSource({store, project:PROJECT, source, actorId}),
+    resolvePublishedSource: resolveLocalReportSource,
     now: options.now,
   });
   const reportProvenance=createReportProvenance({store,project:PROJECT,reportStore});
   const privateBatchArchives = privateDataServicesEnabled
     ? createPrivateBatchArchive({store, businessStore, project:PROJECT, now:options.now}) : undefined;
   const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,provenance:reportProvenance,
-    resolveSource:(source,actorId)=>resolvePublishedReportSource({store,project:PROJECT,source,actorId}),afterStep:options.publishedReportAfterStep});
+    resolveSource:resolveLocalReportSource,afterStep:options.publishedReportAfterStep});
   const reportActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
   const publishedPlanContext=(source,actor)=>{
     if(!local)throw fail(403,'同源报表规划尚只在本机开发边界开放');
-    return publishedReportPlanningContext(resolvePublishedReportSource({store,project:PROJECT,source,actorId:actor}));
+    return publishedReportPlanningContext(resolveLocalReportSource(source,actor));
   };
   const canReadReportPlan = (plan, req) => local
     ? !plan.sourceBinding || plan.submittedBy === reportActor(req)
@@ -2999,7 +3002,7 @@ export function createV2Server(options = {}) {
         if (method === "GET" && !action) return json(res, 200, dataset);
         if (method === "POST" && action === "refresh") {
           await readBody(req);
-          const boundSource=dataset.publishedSource?resolvePublishedReportSource({store,project:PROJECT,source:dataset.publishedSource,actorId:auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer'}):undefined;
+          const boundSource=dataset.publishedSource?resolveLocalReportSource(dataset.publishedSource,auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer'):undefined;
           const asset = boundSource?.asset??assets.detail(dataset.assetId),
             key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(

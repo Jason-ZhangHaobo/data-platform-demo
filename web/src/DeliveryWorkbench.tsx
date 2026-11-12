@@ -620,7 +620,7 @@ export function DeliveryWorkbench({
   const selectedSourceHash =
     selected?.manifest.source.codeHash ?? selected?.manifest.source.sqlHash ?? "";
   const reportBatchIds = monitor?.recentRuns.filter(batch => batch.releaseId === selectedRelease?.id && batch.status === "SUCCEEDED" && batch.schedulerTriggered === true).map(batch => batch.id) ?? [];
-  const reportSource:PublishedReportSource|undefined=!fund&&sourceLocked&&source&&selected&&selectedRelease&&selectedRelease.sourceRevisionId===selected.manifest.source.revisionId&&reportBatchIds.length?
+  const reportSource:PublishedReportSource|undefined=(!fund||selectedHealthy)&&sourceLocked&&source&&selected&&selectedRelease&&selectedRelease.sourceRevisionId===selected.manifest.source.revisionId&&reportBatchIds.length?
     {kind:"MANUAL",releaseId:selectedRelease.id,packageDigest:selected.digest,revisionId:selected.manifest.source.revisionId,runId:selected.manifest.source.runId,batchIds:reportBatchIds}:undefined;
   return (
     <div className="delivery-workbench">
@@ -1128,7 +1128,7 @@ export function DeliveryWorkbench({
               </article>
             </div>
           </section>
-          {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!busy}/></Suspense>}
+          {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!busy} fund={Boolean(fund)}/></Suspense>}
         </>
       )}
     </div>
