@@ -1057,7 +1057,7 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 在原任务或人工保存的已核验版本打开「冻结持仓交付」。生成包时锁定该 SQL 运行、同步批次、元数据版本及快照。交付包的 `fixtures.json` 保留原输入，`tests.sql` 根据该输入的独立预期生成。在工作台选择「本机按文件演练」，调度文件的样例时刻应解出原业务日，Spark 实际执行主 SQL、测试 SQL 及五场景断言。审阅绑定包摘要与成功演练回执，范围为 `LOCAL_FILE_REVIEW`。
 
-同一操作也可用 `shuduo delivery create`、`shuduo delivery verify` 与 `shuduo delivery review`，均按原编号定位。导出的 JSON 可用 `shuduo-package unpack` 解包，并以从原项目取得的可信摘要运行 `plan` 或 `run`。验证重算内部文件摘要后，仍拒绝替换冻结输入、使用恒真测试、换错交易日或换成云端执行目标。本机计时发布沿用同一包与原演练。接口消费继续验收。
+同一操作也可用 `shuduo delivery create`、`shuduo delivery verify` 与 `shuduo delivery review`，均按原编号定位。导出的 JSON 可用 `shuduo-package unpack` 解包，并以从原项目取得的可信摘要运行 `plan` 或 `run`。验证重算内部文件摘要后，仍拒绝替换冻结输入、使用恒真测试、换错交易日或换成云端执行目标。本机计时发布及授权接口沿用同一包与原演练。
 
 ### 冻结持仓的确切版本发布与监控
 
@@ -1066,3 +1066,11 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 API 的审批请求在 `packageDigest` 和 `reviewId` 外传入 `syncConsent`，其字段为 `scope: LOCAL_TEST_RELEASE`、`packageDigest`、`verificationId`、`snapshotHash`、`businessDate`、`scheduleSpec` 和 `confirmFrozenFictionalData: true`。CLI 的 `shuduo releases approve` 与 `publish` 使用 `--sync-consent` 传入已核对的计划文件。MCP 的 `release_approve` 接受相同对象，`release_create` 使用同一审批号及计时参数。
 
 验收检查关闭页面后本机墙上时钟触发，服务进程在两批之间重启后，原待触发编号继续执行。两批沿原快照和 SQL 版本通过独立断言，各保留一个成功监控事件。保持本机测试与公网验收的独立记录。
+
+### 冻结持仓的双批授权消费
+
+从原工作台成功发布选择「接续此版本的 DAPI／XAPI」。服务来源按原任务、包摘要及发布编号筛选。两批都须通过原批准、快照、Spark 断言和成功监控事件核验。每个 DAPI 读取指定批次的不可变结果，XAPI 组合该批次的固定子版本。
+
+按批次测试并发布接口。为每批仅授权所需接口版本，冻结持仓应用默认一小时到期。接口换版后，旧授权仍指向原版本，需重新核对授权才可查询新版本。按客户和页码调用时独立复算结果与分页，调用日志保存版本、结果和分页摘要。测试直接访问未授权子接口、撤销后调用、跨批混用及原快照变化。
+
+使用 `shuduo services sources`、`shuduo services task-evidence` 或对应 MCP 读取原发布。两批分别具备非空 DAPI 和完整组合 XAPI 授权调用后，整组消费才记为通过。历史核验可回读撤销前的结果，不恢复应用权限。此验收范围为隔离本机虚构证券数据。

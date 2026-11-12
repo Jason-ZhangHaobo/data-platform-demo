@@ -92,7 +92,8 @@ export function activateSyncSqlRelease({ store, project, bundle, plan, approval,
   return { release, replayed: result.replayed };
 }
 
-export function assertSyncSqlBatch({ bundle, plan, approval, verification, review, release, run, batches, enabled, timeUnitMs }) {
+export function assertSyncSqlBatch({ bundle, plan, approval, verification, review, release, run, batches, enabled, timeUnitMs,
+  expectedStatus = "RUNNING" }) {
   assertSyncSqlApproval({ bundle, plan, approval, verification, review, spec: release.scheduleSpec,
     actorId: plan.source.syncInput.actorId, enabled });
   const activated = Date.parse(release.activatedAt);
@@ -101,7 +102,7 @@ export function assertSyncSqlBatch({ bundle, plan, approval, verification, revie
       activated < Date.parse(approval.approvedAt) || activated >= Date.parse(approval.expiresAt) ||
       release.packageId !== bundle.id || release.packageDigest !== bundle.digest || release.sourceRevisionId !== plan.source.revisionId ||
       release.sourceSqlHash !== plan.source.sqlHash || !same(release.syncInput, plan.source.syncInput) ||
-      release.businessScheduledFor !== verification.scheduledFor || release.publicDeployed !== false || run.status !== "RUNNING")
+      release.businessScheduledFor !== verification.scheduledFor || release.publicDeployed !== false || run.status !== expectedStatus)
     throw invalid();
   const expected = plannedLocalRuns({ releaseId: release.id, packageId: bundle.id, packageDigest: bundle.digest,
     businessScheduledFor: release.businessScheduledFor, spec: release.scheduleSpec, nowMs: activated, timeUnitMs });

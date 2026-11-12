@@ -1,5 +1,6 @@
 import { fundRehearsalAt } from "../../src/v2/fund-contexts.mjs";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type {ServiceSourceBinding} from "./service-source-binding";
 import type {PublishedReportSource} from "./published-report-read";
 const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
 import { manualDeliveryPackages } from "./manual-run-recovery";
@@ -51,7 +52,7 @@ type Bundle = {
       contextId: string;
       fundLookthrough?: { businessDate: string; managerId: string };
       fundSignedExecution?: { preflightDigest: string };
-      syncInput?: { runId: string; metadataVersionId: string; snapshotHash: string; rowCount: number; developmentMode: string };
+      syncInput?: { runId: string; metadataVersionId: string; snapshotHash: string; rowCount: number; developmentMode: string; agentTaskId: string };
       attribution?: { originAgentTaskId?: string };
     };
     files: Record<string, { sha256: string; bytes: number }>;
@@ -270,6 +271,7 @@ export function DeliveryWorkbench({
   sourceRunId,
   canWrite,
   onBack,
+  onOpenServices,
   lockSource = false,
 }: {
   api: Api;
@@ -278,6 +280,7 @@ export function DeliveryWorkbench({
   sourceRunId?: string;
   canWrite: boolean;
   onBack: () => void;
+  onOpenServices?: (source: ServiceSourceBinding) => void;
   lockSource?: boolean;
 }) {
   const [currentSource, setSource] = useState(""),
@@ -661,6 +664,10 @@ export function DeliveryWorkbench({
   const selectedSourceHash =
     selected?.manifest.source.codeHash ?? selected?.manifest.source.sqlHash ?? "";
   const reportBatchIds = monitor?.recentRuns.filter(batch => batch.releaseId === selectedRelease?.id && batch.status === "SUCCEEDED" && batch.schedulerTriggered === true).map(batch => batch.id) ?? [];
+  const syncHandoff:ServiceSourceBinding|undefined = syncInput && syncInput.developmentMode !== "MANUAL" &&
+    selected && selectedRelease && selectedHealthy && reportBatchIds.length === 2 && selectedRelease.syncInput?.snapshotHash === syncInput.snapshotHash
+    ? {taskId:syncInput.agentTaskId,packageDigest:selected.digest,releaseId:selectedRelease.id,sourceKind:"AGENT",scope:"LOCAL_TEST_ONLY",
+        revisionId:selected.manifest.source.revisionId,runId:selected.manifest.source.runId} : undefined;
   const reportSource:PublishedReportSource|undefined=!syncInput&&(!fund||selectedHealthy)&&sourceLocked&&source&&selected&&selectedRelease&&selectedRelease.sourceRevisionId===selected.manifest.source.revisionId&&reportBatchIds.length?
     {kind:"MANUAL",releaseId:selectedRelease.id,packageDigest:selected.digest,revisionId:selected.manifest.source.revisionId,runId:selected.manifest.source.runId,batchIds:reportBatchIds}:undefined;
   return (
@@ -1151,6 +1158,7 @@ export function DeliveryWorkbench({
                           </p>
                         ))}
                     </div>
+                    {syncHandoff && onOpenServices && <button className="button primary" onClick={()=>onOpenServices(syncHandoff)}>接续此版本的 DAPI／XAPI</button>}
                     {fund && selectedHealthy && fundSourceBatches.length === 2 && (
                       <FundSourceReadback key={selectedRelease.id} api={api} release={selectedRelease} batches={fundSourceBatches} />
                     )}

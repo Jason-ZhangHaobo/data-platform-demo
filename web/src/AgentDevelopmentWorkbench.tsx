@@ -759,7 +759,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       {manualDeliveryOpen&&run?.status==="SUCCEEDED"&&run.syncInput&&run.revisionId===baselineRevisionId&&<Suspense fallback={<p role="status">正在加载冻结持仓交付…</p>}>
         <ManualDeliveryWorkbench key={run.id} api={api} runs={[{...run,revisionId:run.revisionId!,createdAt:run.createdAt??""}]}
           sourceRunId={run.id} contractId={run.validationContractId} lockSource canWrite={canWrite&&!dirty&&!working&&!manualUnconfirmed}
-          onBack={()=>setManualDeliveryOpen(false)}/>
+          onOpenServices={dirty||working ? undefined : onOpenServices} onBack={()=>setManualDeliveryOpen(false)}/>
       </Suspense>}
     </section>}
     {(task||run) && context?.capabilities?.delivery===false&&<section id="agent-delivery" className="agent-dev-notice" role="status"><strong>分布代码阶段</strong><p>可查看需求、代码、结果与五场景核验。调度交付、发布和云端执行尚未适配；当前不计完整E2E。{task?.sourceKind==='MANUAL'?" 本次引用了原失败批次，人工参考归因保留。":""}</p><a className="button" href="#agent-code" onClick={()=>setTab("校验")}>查看本次五场景核验</a></section>}
