@@ -70,7 +70,7 @@ import { parseFundExecutionPreflightPath } from "./fund-preparation-request.mjs"
 import { fundExecutionPreflight } from "./fund-execution-preflight.mjs";
 import { fundAgentAttributionKind, fundAgentDeliveryAttribution, verifiedFundRun } from "./fund-delivery.mjs";
 import { fundAgentServiceSources, fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
-import { assertFundAgentMonitoring, assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease, fundAgentPublicationPreflight } from "./fund-publication.mjs";
+import { assertFundAgentMonitoring, assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease, fundAgentPublicationPreflight, fundSignedRehearsalDigest } from "./fund-publication.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import {
   pythonRuntimeConfig,
@@ -725,6 +725,9 @@ export function createV2Server(options = {}) {
       (isPythonDelivery(item)
         ? unpackPythonDeliveryPackage
         : unpackDeliveryPackage)(item, directory, item.digest);
+  // Raw signing evidence comes from the trusted runtime, never a request body.
+  const fundSignedExecutionFor = item => item.manifest?.source?.fundSignedExecution === undefined
+    ? undefined : options.fundSignedExecutionFor?.(item.digest);
   const releaseRunner =
     options.releaseRunner ??
     (async (input) => {
@@ -736,7 +739,8 @@ export function createV2Server(options = {}) {
             pythonRuntime,
             pythonRunner,
           })
-        : verifyDeliveryDirectory(input, { runtime, runner });
+        : verifyDeliveryDirectory(input, { runtime, runner,
+            fundSignedExecution: fundSignedExecutionFor({manifest,digest:input.expectedDigest}) });
     });
   const schedulerOptions = {
     store,
@@ -751,7 +755,8 @@ export function createV2Server(options = {}) {
         assertFundBatch({ bundle: packageItem, approval, release, run,
           verification: get("delivery_verification", approval.rehearsalId), review: get("delivery_review", approval.reviewId),
           batches: store.list("release_run", PROJECT).filter(batch => batch.releaseId === release.id),
-          localClassicSpark, schedulerMode: releaseSchedulerMode, timeUnitMs: releaseTimeUnitMs });
+          localClassicSpark, schedulerMode: releaseSchedulerMode, timeUnitMs: releaseTimeUnitMs,
+          fundSignedExecution:fundSignedExecutionFor(packageItem) });
         return;
       }
       if(!packageItem.manifest?.source?.outputContract)return;
@@ -5082,7 +5087,13 @@ export function createV2Server(options = {}) {
             throw fail(409, "审阅必须绑定当前交付包的成功按文件演练");
           await ensureDeliveryArtifact(item);
           validateAnyDeliveryPackage(item);
-          assertFundRehearsal(item, rehearsal);
+          const latestRehearsal = get("delivery_verification", verificationId);
+          if (latestRehearsal.packageId !== item.id || latestRehearsal.packageDigest !== item.digest || latestRehearsal.status !== "SUCCEEDED")
+            throw fail(409, "原演练已变化，请重新读取审阅依据");
+          assertFundRehearsal(item, latestRehearsal);
+          const rehearsalDigest = fundSignedRehearsalDigest(item, latestRehearsal, fundSignedExecutionFor(item));
+          if (body.fundRehearsalDigest !== rehearsalDigest)
+            throw fail(409, "审阅必须确认当前基金签名演练摘要");
           const session = auth.sessionFromHeaders(req.headers),
             reviewer = session
               ? {
@@ -5101,10 +5112,13 @@ export function createV2Server(options = {}) {
                 (review) =>
                   review.packageId === item.id &&
                   review.packageDigest === item.digest &&
-                  review.verificationId === rehearsal.id &&
+                  review.verificationId === latestRehearsal.id &&
+                  review.fundRehearsalDigest === rehearsalDigest &&
                   review.reviewer?.id === reviewer.id &&
                   review.status === "REVIEWED",
               );
+          if (rehearsalDigest && reviewer.id !== item.manifest.source.attribution.actorId)
+            throw deliveryDenied();
           if (existingReview) return json(res, 200, existingReview);
           const key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
@@ -5113,7 +5127,8 @@ export function createV2Server(options = {}) {
                 JSON.stringify({
                   packageId: item.id,
                   packageDigest: item.digest,
-                  verificationId: rehearsal.id,
+                  verificationId: latestRehearsal.id,
+                  ...(rehearsalDigest ? {fundRehearsalDigest:rehearsalDigest} : {}),
                   reviewerId: reviewer.id,
                   reviewNote,
                   attestations,
@@ -5123,7 +5138,8 @@ export function createV2Server(options = {}) {
                 store.create("delivery_review", PROJECT, {
                   packageId: item.id,
                   packageDigest: item.digest,
-                  verificationId: rehearsal.id,
+                  verificationId: latestRehearsal.id,
+                  ...(rehearsalDigest ? {fundRehearsalDigest:rehearsalDigest} : {}),
                   reviewer,
                   reviewNote,
                   attestations,
@@ -5174,8 +5190,10 @@ export function createV2Server(options = {}) {
           await ensureDeliveryArtifact(item);
           validateAnyDeliveryPackage(item);
           const distributionConsent=assertDistributionConsent({bundle:item,verification:rehearsal,review,consent:body.distributionConsent,local,schedulerMode:releaseSchedulerMode});
-          const fundConsent = assertFundConsent({ bundle: item, verification: rehearsal, review,
-            consent: body.fundConsent, localClassicSpark, schedulerMode: releaseSchedulerMode });
+          const fundConsent = assertFundConsent({ bundle: item,
+            verification:get("delivery_verification",rehearsal.id), review:get("delivery_review",review.id),
+            consent: body.fundConsent, localClassicSpark, schedulerMode: releaseSchedulerMode,
+            fundSignedExecution:fundSignedExecutionFor(item) });
           const actor = auth.sessionFromHeaders(req.headers),
             approver = actor
               ? {
@@ -5366,7 +5384,7 @@ export function createV2Server(options = {}) {
         const fundRelease = Boolean(plan.source.fundLookthrough);
         if (fundRelease) assertFundRelease({ bundle: item, approval: latestApproval, spec,
           verification: get("delivery_verification", latestApproval.rehearsalId), review: get("delivery_review", latestApproval.reviewId),
-          localClassicSpark, schedulerMode: releaseSchedulerMode });
+          localClassicSpark, schedulerMode: releaseSchedulerMode, fundSignedExecution:fundSignedExecutionFor(item) });
         if(plan.source.outputContract)assertDistributionRelease({bundle:item,verification:latestApproval.rehearsalId?store.get('delivery_verification',latestApproval.rehearsalId,PROJECT):undefined,review:latestApproval.reviewId?store.get('delivery_review',latestApproval.reviewId,PROJECT):undefined,approval:latestApproval,spec,local,schedulerMode:releaseSchedulerMode});
         const consumedReleaseId=plan.source.outputContract || fundRelease ? latestApproval.consumedByReleaseId : approval.consumedByReleaseId;
         if (
@@ -5780,7 +5798,7 @@ export function createV2Server(options = {}) {
             const review = store.list("delivery_review", PROJECT).find(item => item.packageId === bundle.id &&
               item.packageDigest === bundle.digest && item.verificationId === verification.id && item.reviewer?.id === agent.submittedBy);
             return json(res, 200, fundAgentPublicationPreflight({ bundle, verification, review,
-              localClassicSpark, schedulerMode: releaseSchedulerMode }));
+              localClassicSpark, schedulerMode: releaseSchedulerMode, fundSignedExecution:fundSignedExecutionFor(bundle) }));
           }
           if (local || !cloudPublication) throw fail(503,"确切云端发布预检尚未就绪");
           if (privatePublication[3]) {
@@ -5799,7 +5817,8 @@ export function createV2Server(options = {}) {
               const approval = get("release_approval", release.approvalId), review = get("delivery_review", approval.reviewId);
               if (approval.rehearsalId !== verification.id || batches.length !== 2) throw fail(409, "原基金发布批次未确认");
               assertFundBatch({ bundle, verification, approval, review, release, run: batches[0], batches,
-                localClassicSpark, schedulerMode: releaseSchedulerMode, timeUnitMs: releaseTimeUnitMs });
+                localClassicSpark, schedulerMode: releaseSchedulerMode, timeUnitMs: releaseTimeUnitMs,
+                fundSignedExecution:fundSignedExecutionFor(bundle) });
               assertFundAgentMonitoring({ bundle, verification, release, batches, events, alerts });
             }));
           }

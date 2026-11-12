@@ -84,6 +84,8 @@
 
 CLI 使用 `shuduo agent fund-execution-preflight --task-id UUID --request-id UUID --revision-id UUID --run-id UUID --basis-digest SHA256`。MCP 工具为 `fund_execution_preflight`。
 
+基金签名交付的原发布预检额外返回 `rehearsalDigest` 和签名证据摘要。对这类包提交 `POST /delivery/packages/{id}/review` 时，须将本次确认的 `rehearsalDigest` 作为 `fundRehearsalDigest` 回传。审批仍校验原 `fundConsent.preflightDigest`，服务端会重新核对演练内容和原签名。原签名任务、结果和密钥由受保护的运行环境读取，应用请求不上传这些原件。
+
 重复、未知或不完整选择字段拒绝。人工消费保留 `sourceKind:MANUAL`、`sourceAttribution:ENGINEER_ASSISTED`、`agentIndependentE2E:false`；消费对照只是既有调用与不可变快照的一致性，不等于外部系统独立验收或 Agent 自主完成。历史调用中的凭证已撤销时，显示历史证据和当前凭证状态，不自动重新授权。
 
 本机原生 Agent 的 `task-evidence` 同样接受可选 `release_id`，保持 `LOCAL_TEST_ONLY` 和既有身份边界；人工/未知来源不能被转换为原生 Agent 成功。消费条目的 `sourceVersions` 仅投影最多5个固定 DAPI 的服务/版本编号、配置摘要、包摘要、发布/发布批次和允许字段名，不含业务行、SQL、参数或令牌。实际 `recheckCall` 返回配置摘要，`call.configHash` 必须与当前固定版本一致；摘要格式本身不构成独立真实性证明。
