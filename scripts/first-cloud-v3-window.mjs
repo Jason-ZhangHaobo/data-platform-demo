@@ -1,6 +1,6 @@
 import { sha256 } from '../src/v2/delivery.mjs';
 import { readCheckpoint, uuid } from '../src/v2/live-lifecycle-checkpoint.mjs';
-import { cloudV3CheckpointCase, validCloudV3Predecessor } from '../src/v2/cloud-v3-case-selection.mjs';
+import { cloudV3BaseCases, cloudV3CheckpointCase, validCloudV3Predecessor } from '../src/v2/cloud-v3-case-selection.mjs';
 import { currentLiveLifecycleContract, liveLifecyclePlan } from '../src/v2/live-lifecycle-evaluation.mjs';
 import { normalizeSessionBase } from '../src/v2/session-credential.mjs';
 
@@ -27,16 +27,16 @@ function validCloudBinding(value, next) {
     'checkpointDigest','requestBodyHash','requestKeyHash'];
   if (value?.applicationTree !== undefined) fields.push('applicationTree');
   if (next) fields.push('previousCase');
-  const plan=next ? liveLifecyclePlan(2,{contractId:currentLiveLifecycleContract.id}) : first();
-  const definition=plan.selectedCases.at(-1);
-  return value && typeof value==='object' && !Array.isArray(value) && Object.keys(value).length===fields.length &&
+  const cases=cloudV3BaseCases(), index=next?cases.findIndex(item=>item.id===value?.caseId):0;
+  const definition=cases[index];
+  return definition && (!next || index>0) && value && typeof value==='object' && !Array.isArray(value) && Object.keys(value).length===fields.length &&
     fields.every(key=>Object.hasOwn(value,key)) &&
     value.protocol===(next?'SHUDUO_V3_NEXT_CHECKPOINT_BINDING_V1':'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1') &&
     typeof value.evaluationRunId==='string' && uuid.test(value.evaluationRunId) && value.caseId===definition.id &&
-    value.contextId===definition.contextId && value.caseSetDigest===plan.caseSetDigest &&
+    value.contextId===definition.contextId && value.caseSetDigest===first().caseSetDigest &&
     typeof value.projectId==='string' && /^[A-Za-z0-9_-]{1,100}$/.test(value.projectId) &&
     validOrigin(value.origin) &&
-    (!next || validCloudV3Predecessor(value.previousCase,value.origin)) &&
+    (!next || validCloudV3Predecessor(value.previousCase,value.origin,index+1)) &&
     hex(value.sourceRevision,40) && (value.applicationTree===undefined || hex(value.applicationTree,40)) && hex(value.checkpointDigest,64) &&
     value.requestBodyHash===requestHash(definition) && hex(value.requestKeyHash,64);
 }
@@ -84,7 +84,7 @@ export function cloudWindowCheckpointBinding(path) {
 
 function preparedCloudBinding(state,text) {
   const {definition,item}=cloudV3CheckpointCase(state), action=item.actions?.agent;
-  const next=state.caseLimit===2;
+  const next=state.caseLimit>1;
   const history = state.sourceRebinds ?? [];
   const rebind = Array.isArray(history) ? history.at(-1) : undefined;
   const binding={protocol:next?'SHUDUO_V3_NEXT_CHECKPOINT_BINDING_V1':'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1',evaluationRunId:state.evaluationRunId,

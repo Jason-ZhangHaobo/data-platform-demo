@@ -83,8 +83,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --batch-id ID --out-file ABSOLUTE_PATH
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256
   shuduo agent v3-complete --checkpoint ABSOLUTE_PATH --first-plan ABSOLUTE_PATH --second-plan ABSOLUTE_PATH --out-file ABSOLUTE_PATH
-  shuduo agent v3-run --checkpoint ABSOLUTE_PATH [--completion-file ABSOLUTE_PATH [--next-checkpoint ABSOLUTE_PATH [--next-completion-file ABSOLUTE_PATH]]]
-  shuduo agent v3-prepare-next --checkpoint ABSOLUTE_PATH --first-checkpoint ABSOLUTE_PATH --completion-file ABSOLUTE_PATH --source-revision SHA
+  shuduo agent v3-run --checkpoint ABSOLUTE_PATH [--completion-file ABSOLUTE_PATH [--case-records ABSOLUTE_PATH]]
+  shuduo agent v3-prepare-next --checkpoint ABSOLUTE_PATH --first-checkpoint ABSOLUTE_PATH --completion-file ABSOLUTE_PATH --source-revision SHA [--case-records ABSOLUTE_PATH]
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --source-revision SHA
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-binding
@@ -620,11 +620,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "v3-prepare-next") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
       if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
-          flags.some(flag=>!["checkpoint","first_checkpoint","completion_file","source_revision","base_url"].includes(flag)))
+          flags.some(flag=>!["checkpoint","first_checkpoint","completion_file","source_revision","case_records","base_url"].includes(flag)))
         throw Error("续接准备只接受原首例、完成回执、续接检查点与确切源码");
       result=prepareCloudV3Next(required(args,"checkpoint"),client,{
         firstPath:required(args,"first_checkpoint"),completionPath:required(args,"completion_file"),
         reviewedSource:required(args,"source_revision"),
+        recordsPath:args.case_records===undefined?undefined:required(args,"case_records"),
       });
     }
     else if (resource === "agent" && action === "v3-rebind-source") {
@@ -679,7 +680,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && ["v3-complete","v3-run"].includes(action)) {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
       const verifying=action==="v3-complete";
-      const allowed=["checkpoint",...(verifying?["first_plan","second_plan","out_file","base_url"]:["completion_file","next_checkpoint","next_completion_file"])];
+      const allowed=["checkpoint",...(verifying?["first_plan","second_plan","out_file","base_url"]:["completion_file","next_checkpoint","next_completion_file","case_records"])];
       if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length || flags.some(flag=>!allowed.includes(flag)))
         throw Error("评测续接须使用原检查点和对应的核验材料");
       const checkpoint=required(args,"checkpoint");
@@ -689,6 +690,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         completionPath:args.completion_file===undefined?undefined:required(args,"completion_file"),
         nextPath:args.next_checkpoint===undefined?undefined:required(args,"next_checkpoint"),
         nextCompletionPath:args.next_completion_file===undefined?undefined:required(args,"next_completion_file"),
+        recordsPath:args.case_records===undefined?undefined:required(args,"case_records"),
       });
     }
     else if (resource === "agent" && action === "request") {
