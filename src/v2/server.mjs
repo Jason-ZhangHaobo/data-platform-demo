@@ -65,6 +65,8 @@ import {
   validationContractId,
 } from "./context.mjs";
 import { fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
+import { bindFundSignedDelivery } from "./fund-signed-delivery.mjs";
+import { createFundSignedReceipts } from "./fund-signed-receipts.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "./fund-preparation.mjs";
 import { parseFundExecutionPreflightPath } from "./fund-preparation-request.mjs";
 import { fundExecutionPreflight } from "./fund-execution-preflight.mjs";
@@ -726,8 +728,19 @@ export function createV2Server(options = {}) {
         ? unpackPythonDeliveryPackage
         : unpackDeliveryPackage)(item, directory, item.digest);
   // Raw signing evidence comes from the trusted runtime, never a request body.
-  const fundSignedExecutionFor = item => item.manifest?.source?.fundSignedExecution === undefined
-    ? undefined : options.fundSignedExecutionFor?.(item.digest);
+  const fundSignedReceipts = localClassicSpark && !options.ingress
+    ? createFundSignedReceipts({ store, project: PROJECT, root, env }) : undefined;
+  const fundSignedExecutionFor = item => {
+    const source = item.manifest?.source;
+    if (source?.fundSignedExecution !== undefined)
+      return fundSignedReceipts?.read(source.runId) ?? options.fundSignedExecutionFor?.(item.digest);
+  };
+  const createAgentBundle = ({ agent, run, revision }) => {
+    const evidence = isFundContext(agent.contextId) ? fundSignedReceipts?.read(run.id) : undefined;
+    const bundle = createDeliveryPackage({ agent, run, revision,
+      ...(evidence ? {} : { name: "客户资产 T+1 · Agent交付准备" }) });
+    return evidence ? bindFundSignedDelivery(bundle, bundle.digest, evidence) : bundle;
+  };
   const localFileReviewFor = (bundle, verification, actorId) => {
     const reviews = store.list("delivery_review", PROJECT).filter(review =>
       review.packageId === bundle.id && review.packageDigest === bundle.digest &&
@@ -6005,24 +6018,33 @@ export function createV2Server(options = {}) {
         if(getContext(agent.contextId)?.outputContractId&&!local)throw fail(422,"分布交付当前仅支持本机");
         if (!options.deliveryRunner && !options.runner && !runtime.available)
           throw fail(503, "按文件Spark演练尚未就绪");
-        createDeliveryPackage({ run, revision: rev,agent });
+        const candidate = createAgentBundle({ run, revision: rev, agent });
+        const signedPackageDigest = candidate.manifest.source.fundSignedExecution ? candidate.digest : undefined;
         const requirement = agent.requirements ? sqlRequirementBinding(agent.requirements) : undefined;
         const existing = store.list("agent_delivery_task", PROJECT).find(item =>
           item.mode === "VERIFIED_ARTIFACT_ORCHESTRATION" && item.sourceAgentTaskId === agent.id &&
           item.sourceRevisionId === rev.id && item.sourceRunId === run.id && item.sourceSqlHash === rev.hash &&
+          item.signedPackageDigest === signedPackageDigest &&
           JSON.stringify(item.sourceRequirementBinding) === JSON.stringify(requirement) &&
           (fund || ["QUEUED", "RUNNING", "SUCCEEDED"].includes(item.status)));
-        if (existing?.packageId) assertRequirementSource(get("delivery_package", existing.packageId));
+        if (existing?.packageId) {
+          const existingBundle = get("delivery_package", existing.packageId);
+          assertRequirementSource(existingBundle);
+          if (signedPackageDigest && (existingBundle.digest !== signedPackageDigest || existingBundle.agentDeliveryTaskId !== existing.id))
+            throw fail(409, "已登记的基金签名交付与原任务不一致");
+        }
         if (existing && req.headers["idempotency-key"] === undefined) return json(res, 200, existing);
         const key = text(req.headers["idempotency-key"], 1, 100);
         const namespace = `${PROJECT}:agent-delivery:${agent.id}:${key}`;
         const signature = hash(JSON.stringify({
           agentTaskId:agent.id, runId:run.id, revisionHash:rev.hash, ...(requirement ? {requirement} : {}),
+          ...(signedPackageDigest ? { signedPackageDigest } : {}),
         }));
         const dedup = store.deduplicate(namespace, signature, () => existing ?? store.create("agent_delivery_task", PROJECT, {
           sourceAgentTaskId:agent.id, sourceRunId:run.id, sourceRevisionId:rev.id, sourceSqlHash:rev.hash,
           ...(fund ? { submittedBy: agent.submittedBy } : {}),
           ...(requirement ? {sourceRequirementBinding:requirement} : {}),
+          ...(signedPackageDigest ? { signedPackageDigest } : {}),
           status:"QUEUED", stage:"QUEUED", mode:"VERIFIED_ARTIFACT_ORCHESTRATION",
           completionScope:"DELIVERY_PREPARATION", fullLifecycleE2E:false, agentIndependentE2E:false, publicDeployed:false,
         }));
@@ -6042,6 +6064,10 @@ export function createV2Server(options = {}) {
             const sourceAgent=get('agent',task.sourceAgentTaskId);
             if (fund) assertPreparedFundSource({ agent: sourceAgent, run: sourceRun, revision: sourceRevision });
             if(JSON.stringify(task.sourceRequirementBinding)!==JSON.stringify(sourceAgent.requirements?sqlRequirementBinding(sourceAgent.requirements):undefined))throw fail(409,'交付任务的原需求依据已变化');
+            const bundle = createAgentBundle({ agent: sourceAgent, run: sourceRun, revision: sourceRevision });
+            const signed = bundle.manifest.source.fundSignedExecution !== undefined;
+            if ((signed ? bundle.digest : undefined) !== task.signedPackageDigest)
+              throw fail(409, "交付任务的原签名回执已变化");
             let packageItem = store
               .list("delivery_package", PROJECT)
               .find(
@@ -6049,6 +6075,8 @@ export function createV2Server(options = {}) {
                   item.sourceRunId === sourceRun.id &&
                   item.manifest?.source?.revisionId === sourceRevision.id &&
                   JSON.stringify(item.manifest?.source?.requirement)===JSON.stringify(task.sourceRequirementBinding)&&
+                  (signed ? item.digest === bundle.digest && item.agentDeliveryTaskId === task.id :
+                    item.manifest?.source?.fundSignedExecution === undefined) &&
                   !approvedPackageIds.has(item.id) &&
                   item.published !== true,
               );
@@ -6058,13 +6086,7 @@ export function createV2Server(options = {}) {
               validateDeliveryPackage(packageItem, packageItem.digest);
               assertRequirementSource(packageItem);
             } else {
-              const bundle = createDeliveryPackage({
-                  run: sourceRun,
-                  revision: sourceRevision,
-                  agent:sourceAgent,
-                  name: "客户资产 T+1 · Agent交付准备",
-                }),
-                artifact = await artifactStore.put(
+              const artifact = await artifactStore.put(
                   "delivery-package",
                   bundle.digest,
                   bundle,
@@ -6118,7 +6140,8 @@ export function createV2Server(options = {}) {
                 ),
                 executeFiles =
                   options.deliveryRunner ??
-                  ((input) => verifyDeliveryDirectory(input, { runtime, runner })),
+                  ((input) => verifyDeliveryDirectory(input, { runtime, runner,
+                    fundSignedExecution: fundSignedExecutionFor(packageItem) })),
                 receipt = await executeFiles({
                   directory,
                   expectedDigest: packageItem.digest,
@@ -6144,6 +6167,7 @@ export function createV2Server(options = {}) {
               if (actual && fund) {
                 assertRequirementSource(packageItem);
                 assertFundRehearsal(packageItem, { ...verification, ...receipt });
+                if (signed) fundSignedRehearsalDigest(packageItem, receipt, fundSignedExecutionFor(packageItem));
               }
               store.update("delivery_verification", verification.id, PROJECT, {
                 ...receipt,
