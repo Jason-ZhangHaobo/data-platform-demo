@@ -8,6 +8,7 @@ import {createV2Server,PROJECT} from "../../src/v2/server.mjs";
 import {AGENT_WAKE_PREFIX} from "../../src/v2/agent-event-driver.mjs";
 import {SPARK_QUEUE_PREFIXES} from "../../src/v2/remote-spark-queue.mjs";
 import {createFcIngress} from "../../src/v2/fc-ingress.mjs";
+import {agentBackgroundAction,agentBackgroundLabel} from "../../web/src/agent-task-scope.ts";
 
 test("background HTTP admission uses invitation owner and CSRF; old tasks are not implicitly opted in",async t=>{
   const root=mkdtempSync(join(tmpdir(),"shuduo-background-api-")),objects=new Map();let models=0;
@@ -65,4 +66,23 @@ test("UI/API/CLI/MCP expose explicit bounded background controls, not a hidden p
   assert.match(ui,/cloud|云端事件后台/);assert.match(cli,/enable-background/);assert.match(cli,/options\.confirm!==true/);
   for(const name of ["agent_background_status","agent_background_enable","agent_background_resume","agent_background_cancel"]){assert.ok(client.includes(name));assert.ok(mcp.includes(name));}
   assert.match(mcp,/args\.confirm!==true/);assert.notEqual(AGENT_WAKE_PREFIX,SPARK_QUEUE_PREFIXES.results);
+});
+
+test("saved Spark tasks can delegate only from a known checkpoint or redrive an unconfirmed active wake",()=>{
+  const task={executionMode:"DURABLE_SQL_AGENT_V1",language:"SPARK_SQL",status:"QUEUED",stage:"READY_FOR_MODEL"};
+  const pending={status:"ACTIVE",delivery:"UNCONFIRMED",expiresAt:100};
+  assert.equal(agentBackgroundAction(task,99),"ENABLE");
+  assert.equal(agentBackgroundAction({...task,stage:"READY_FOR_RUN",background:pending},99),"REDRIVE");
+  assert.equal(agentBackgroundLabel(pending,99),"唤醒投递待确认");
+  assert.equal(agentBackgroundAction({...task,background:{...pending,delivery:undefined}},99),"REDRIVE");
+  assert.equal(agentBackgroundLabel({...pending,delivery:undefined},99),"唤醒投递待确认");
+  const acknowledged={...pending,delivery:"ACKNOWLEDGED"};
+  assert.equal(agentBackgroundAction({...task,background:acknowledged},99),undefined);
+  assert.equal(agentBackgroundLabel(acknowledged,99),"已委托");
+  assert.equal(agentBackgroundLabel({...acknowledged,scopeBlocked:true},99),"当前窗口不可推进");
+  assert.equal(agentBackgroundLabel(acknowledged,100),"已到期");
+  for (const ineligible of [{stage:"MODEL_OUTCOME_UNKNOWN"},{stage:"MODEL_NOT_SENT"},{stage:"MODEL_IN_FLIGHT"},
+    {status:"SUCCEEDED"},{language:"PYTHON"},{background:{...pending,status:"CANCELLED"}},
+    {background:{...pending,scopeBlocked:true}},{background:{...pending,expiresAt:99}}])
+    assert.equal(agentBackgroundAction({...task,...ineligible},99),undefined);
 });

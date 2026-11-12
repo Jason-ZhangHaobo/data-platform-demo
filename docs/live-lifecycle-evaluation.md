@@ -125,6 +125,8 @@ shuduo agent v3-prepare-delivery --checkpoint /private/first-case.json --bill-fi
 
 确切开发窗口绑定原派生请求正文。按原请求创建任务后，使用原任务编号和当前版本执行 `shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm`，委托现有事件后台。原创建请求保持原字节，后台委托单独绑定同一授权窗口。发起后的 `shuduo agent background --id TASK_ID` 只读状态。若响应丢失，先查原任务和已有委托状态。模型或计算用量仍记在原任务上。
 
+也可以在独立 Data Agent 工作台打开原任务，确认已保存的检查点，选择「委托后台继续」。界面沿用 `POST /agent/tasks/{id}/background`，发送原任务的当前版本，随后读取同一任务确认状态。界面提示「已委托」后可以关页，稍后打开原链接查看同一批次。请求结果不明时，先「核对原后台委托」；只有服务端返回「唤醒投递待确认」且原窗口有效时，才可明确选择「重新投递原唤醒」。
+
 本机隔离验收在客户端断开后只投递原事件。控制面两次重开同一 SQLite，分别接续模型唤醒及 Worker 结果通知。重复事件只产生一次模型替身调用和一次 Spark 队列提交。开发窗口关闭后，按原创建请求核对同一派生任务、父代码版本、开发批次和独立校验。正式环境的浏览器关页、云实例恢复及真实模型仍按实际验收记录。
 
 有本机 Spark 3.5.9 时可重验原事件链及真实计算：
