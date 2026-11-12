@@ -6093,7 +6093,7 @@ export function createV2Server(options = {}) {
         const fileReviewer=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
         const fileReview=bundle&&(bundle.manifest.source.outputContract||agent.fundPreparation||agent.syncInput)&&verification
           ? localFileReviewFor(bundle, verification, fileReviewer) : undefined;
-        const preparationSource = !local && durableDelivery && agent.executionMode === durableSqlAgentMode && agent.derivedFrom &&
+        const preparationSource = !local && durableDelivery && agent.executionMode === durableSqlAgentMode && (agent.requestBound === true || agent.derivedFrom) &&
           agent.submittedBy === fileReviewer && report.status === "PASSED"
           ? pinnedCloudDeliverySource(agent,revision,run,(kind,id)=>store.get(kind,id,PROJECT)) : undefined;
         return json(res, 200, {
@@ -6181,8 +6181,8 @@ export function createV2Server(options = {}) {
           if (exact && !publicationAccess) throw fail(403,"确切版本须在独立发布窗口提交");
           const selector = validatePublicationSelector({packageDigest:text(body.packageDigest,64,64),verificationId:text(body.verificationId,1,100),
             ...(Object.hasOwn(body,"sourceKind")?{sourceKind:body.sourceKind}:{}),...(Object.hasOwn(body,"sourceRunId")?{sourceRunId:body.sourceRunId}:{})},actorId);
-          if (publicationAccess && agent.derivedFrom && selector.sourceKind === "AGENT" && !exact)
-            throw fail(422,"派生任务须先审阅原交付、文件演练及发布预检摘要");
+          if (publicationAccess && (agent.requestBound === true || agent.derivedFrom) && selector.sourceKind === "AGENT" && !exact)
+            throw fail(422,"此任务须先审阅原交付、文件演练及发布预检摘要");
           return json(res,202,await cloudPublication.publish({agent,...selector,attestations:body.attestations,
             ...(exact?{reviewDigest:body.reviewDigest}:{}),idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
         }
@@ -6308,6 +6308,8 @@ export function createV2Server(options = {}) {
           finalAttempt = agent.attempts?.at(-1);
         requireDurableAgentOwner(agent, req);
         if (agent.syncInput) requireSyncSqlLocal(req);
+        if (agent.requestBound === true && !expected)
+          throw fail(422,"此任务的交付须绑定已核验的代码版本和 Spark 批次");
         if (expected && agent.submittedBy !== auth.sessionFromHeaders(req.headers)?.user.id)
           throw fail(403,"确切版本交付须由原任务创建者提交");
         if (expected && agent.executionMode !== durableSqlAgentMode)
@@ -6906,6 +6908,7 @@ export function createV2Server(options = {}) {
           }
           const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
             actorId,
+            requestBound: ingressChannel === "HTTP" && Boolean(developmentAccess?.requestDigest),
             idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}),...(repairBasis?{repairComparison:repairBasis.binding}:{}),...(body.assistedContinuation!==undefined?{assistedContinuation:body.assistedContinuation}:{}),...(body.manualContinuation!==undefined?{manualContinuation:body.manualContinuation}:{}),...(body.clarification!==undefined?{clarification:body.clarification}:{}) });
           if(body.background){
             const background=await agentEventDriver.enable(created.id,auth.sessionFromHeaders(req.headers)?.user.id,{expectedVersion:created.version,...backgroundWindow,
