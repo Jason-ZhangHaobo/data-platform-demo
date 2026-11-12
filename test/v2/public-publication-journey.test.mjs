@@ -14,6 +14,8 @@ import { createDeliveryPackage, sha256 } from '../../src/v2/delivery.mjs';
 import { contextIds, getContext, referenceSql, validationContractId } from '../../src/v2/context.mjs';
 import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult } from '../../src/v2/remote-spark-queue.mjs';
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
+import { BusinessQueryStore } from '../../src/v2/data-services.mjs';
+import { consumerDigest } from '../../src/v2/consumer-source.mjs';
 
 async function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-publication-journey-'));
@@ -69,15 +71,21 @@ async function fixture(t) {
     // One historical source run plus exactly two new publication batches.
     V2_PRIVATE_RELEASE_TRIGGER_NAMES: triggerName, V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: '3' };
   const close = async () => {
-    if (app) { app.server.closeAllConnections(); await new Promise(resolve => app.server.close(resolve)); app = undefined; }
+    if (app) { app.server.closeAllConnections(); await new Promise(resolve => app.server.close(resolve)); app.businessStore.close(); app = undefined; }
     if (store) { store.close(); store = undefined; }
   };
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
-  const open = async ({ readOnly = false } = {}) => {
+  const open = async ({ readOnly = false, servicePlan } = {}) => {
     store ??= new MetadataStore(join(directory, 'metadata.sqlite'));
-    const applicationEnv = readOnly ? { V2_LOCAL_DEVELOPMENT: 'false', V2_PROVISIONING_ONLY: 'true',
-      V2_PRIVATE_SMOKE_ENABLED: 'true', V2_ALLOW_INSECURE_PUBLIC_COOKIES: 'true', V2_PUBLIC_ORIGIN: env.V2_PUBLIC_ORIGIN } : env;
-    app = createV2Server({ root: directory, store, artifactStore, ...(readOnly ? {} : { runner }), env: applicationEnv, now: () => now,
+    const savedEnv = { V2_LOCAL_DEVELOPMENT: 'false', V2_PROVISIONING_ONLY: 'true',
+      V2_PRIVATE_SMOKE_ENABLED: 'true', V2_ALLOW_INSECURE_PUBLIC_COOKIES: 'true', V2_PUBLIC_ORIGIN: env.V2_PUBLIC_ORIGIN };
+    const applicationEnv = servicePlan ? { ...savedEnv, V2_PRIVATE_DATA_SERVICES_ENABLED: 'true',
+      V2_FC_PUBLIC_WRITE_SCOPE: 'SERVICE_CONSUMPTION_ONLY', V2_PUBLIC_SERVICE_PLAN: JSON.stringify(servicePlan),
+      V2_BOOTSTRAP_ADMIN_EMAIL: env.V2_BOOTSTRAP_ADMIN_EMAIL,
+      V2_PUBLIC_SERVICE_STARTS_AT: new Date(now - 1000).toISOString(),
+      V2_PUBLIC_SERVICE_EXPIRES_AT: new Date(now + 3600000).toISOString() } : readOnly ? savedEnv : env;
+    app = createV2Server({ root: directory, store, artifactStore, businessStore: new BusinessQueryStore(join(directory, 'business.sqlite')),
+      ...(readOnly || servicePlan ? {} : { runner }), env: applicationEnv, now: () => now,
       ingress: createFcIngress({ publicHttpEnabled: true, publicReadOnly: readOnly }),
       generator: async () => { modelCalls++; throw Error('MODEL_CALL_FORBIDDEN_IN_PUBLICATION_FIXTURE'); } });
     const owner = app.auth.bootstrapAdmin({ email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticPublication!2026', displayName: '虚构审阅工程师' });
@@ -96,7 +104,8 @@ async function fixture(t) {
         'idempotency-key': key, ...(identity ? identities[identity] : {}), ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    return { status: response.status, body: await response.json(), cookies: response.headers.getSetCookie() };
+    return { status: response.status, body: await response.json(), cookies: response.headers.getSetCookie(),
+      cacheControl: response.headers.get('cache-control') };
   };
   const tick = async (releaseId, sequence, extra = {}) => {
     const timestamp = String(now), nonce = `synthetic-publication-event-${sequence}`;
@@ -129,6 +138,7 @@ async function fixture(t) {
       attestations: { code: true, assertions: true, deliveryFiles: true, cloudScope: true } },
     restart: async () => { await close(); await open(); }, advance: () => { now += 60000; },
     restartReadOnly: async () => { await close(); await open({ readOnly: true }); },
+    restartConsumption: async servicePlan => { await close(); await open({ servicePlan }); },
     expire: () => { now = Date.parse(env.V2_PUBLIC_PUBLICATION_EXPIRES_AT); },
     get store() { return store; }, counts: () => ({ modelCalls, jobCreates, submitCalls }) };
 }
@@ -190,6 +200,115 @@ test('read-only ingress returns saved release history without an executor, and s
   const unconfirmed = await f.call(path);
   assert.equal(unconfirmed.status, 409);
   assert.equal(unconfirmed.body.code, 'PUBLICATION_HISTORY_UNCONFIRMED');
+  assert.deepEqual(f.counts(), counts);
+});
+
+test('the owner can recheck DAPI and XAPI receipts for the same saved publication with both drivers off', async t => {
+  const f = await fixture(t);
+  const published = await f.call(f.path, f.body);
+  assert.equal(published.status, 202);
+  const releaseId = published.body.release.id;
+  const publicationPath = f.path + '?' + new URLSearchParams({
+    releaseId, sourceRunId: f.item.sourceRunId, packageDigest: f.item.digest, verificationId: f.verification.id,
+  });
+  for (const sequence of [1, 2]) {
+    assert.equal((await f.tick(releaseId, sequence)).status, 200);
+    const pending = f.store.list('release_run', PROJECT).find(run => run.sequence === sequence);
+    f.complete(pending.remoteSubmission.prepared);
+    assert.equal((await f.call(publicationPath)).body.runs[sequence - 1].status, 'SUCCEEDED');
+    f.advance();
+  }
+  const originalPublication = (await f.call(publicationPath)).body;
+  const batchId = originalPublication.runs[0].id;
+  const plan = { taskId: f.agent.id, packageDigest: f.item.digest, sourceReleaseRunId: batchId,
+    dapis: [
+      { name: '虚构客户持仓', slug: 'saved-holdings', fields: ['client_id','holding_market_value','security_count'], timeoutMs: 1000, rateLimitPerMinute: 30 },
+      { name: '虚构客户现金', slug: 'saved-cash', fields: ['client_id','available_cash','total_assets'], timeoutMs: 1000, rateLimitPerMinute: 30 },
+    ],
+    xapi: { name: '虚构客户资产', slug: 'saved-assets', timeoutMs: 2000, rateLimitPerMinute: 30,
+      steps: [{ alias: 'holdings', dapiSlug: 'saved-holdings' }, { alias: 'cash', dapiSlug: 'saved-cash' }] },
+    applicationName: '虚构历史消费验收',
+  };
+  await f.restartConsumption(plan);
+  const create = async (kind, input) => {
+    const draft = await f.call('/data-services/' + kind, input, { key: input.slug });
+    assert.equal(draft.status, 201);
+    const path = '/data-services/' + kind + '/' + draft.body.id;
+    assert.equal((await f.call(path + '/test', {})).status, 200);
+    const result = await f.call(path + '/publish', { configHash: draft.body.currentVersion.configHash });
+    assert.equal(result.status, 200);
+    return result.body.service;
+  };
+  const holdings = await create('dapis', { ...plan.dapis[0], sourceReleaseRunId: batchId });
+  const cash = await create('dapis', { ...plan.dapis[1], sourceReleaseRunId: batchId });
+  const { steps, ...xapi } = plan.xapi;
+  const assets = await create('xapis', { ...xapi, steps: steps.map(({ alias }, index) => {
+    const dapi = [holdings, cash][index];
+    return { alias, dapiId: dapi.id, dapiVersionId: dapi.publishedVersionId };
+  }) });
+  const issued = await f.call('/data-services/applications', { name: plan.applicationName, serviceIds: [holdings.id, assets.id] });
+  assert.equal(issued.status, 201);
+  const consumer = { identity: null, headers: { authorization: 'Bearer ' + issued.body.token } };
+  const direct = await f.call('/open/dapis/saved-holdings?page=1&page_size=1', undefined, consumer);
+  const combined = await f.call('/open/xapis/saved-assets?page=1&page_size=1', undefined, consumer);
+  assert.equal(direct.status, 200);
+  assert.equal(combined.status, 200);
+  const first = getContext('holdings-t1').expected[0];
+  assert.deepEqual(direct.body.data, [{ client_id: first.client_id, holding_market_value: first.holding_market_value, security_count: first.security_count }]);
+  assert.deepEqual(combined.body.data, [{ client_id: first.client_id,
+    holdings: { holding_market_value: first.holding_market_value, security_count: first.security_count },
+    cash: { available_cash: first.available_cash, total_assets: first.total_assets } }]);
+  assert.equal((await f.call('/data-services/applications/' + issued.body.application.id + '/revoke', {})).status, 200);
+  const proofPath = '/data-services/task-evidence?' + new URLSearchParams({
+    agent_task_id: f.agent.id, package_digest: f.item.digest, release_id: releaseId,
+  });
+  const original = await f.call(proofPath);
+  assert.equal(original.status, 200);
+  assert.equal(original.body.status, 'VERIFIED');
+  await f.restartReadOnly();
+  const savedRecords = () => Object.fromEntries(['release', 'release_run', 'monitor_event', 'monitor_alert',
+    'data_service', 'data_service_version', 'service_call', 'service_app'].map(kind => [kind, f.store.list(kind, PROJECT)]));
+  const before = savedRecords(), counts = f.counts();
+  const history = await f.call(publicationPath);
+  assert.deepEqual(history.body, { ...originalPublication, readMode: 'SAVED_HISTORY' });
+  const proof = await f.call(proofPath);
+  assert.equal(proof.status, 200);
+  assert.equal(proof.cacheControl, 'no-store');
+  assert.deepEqual({ ...proof.body, checkedAt: original.body.checkedAt }, original.body);
+  for (const [service, result] of [[holdings, direct], [assets, combined]]) {
+    const entry = proof.body.services.find(item => item.serviceId === service.id);
+    assert.equal(entry.status, 'VERIFIED');
+    assert.equal(entry.call.callId, result.body.callId);
+    assert.equal(entry.call.applicationStatus, 'REVOKED');
+    assert.equal(entry.versionId, service.publishedVersionId);
+    assert.equal(entry.source.revisionId, history.body.release.sourceRevisionId);
+    assert.equal(entry.source.developmentRunId, history.body.release.sourceRunId);
+    assert.equal(entry.source.releaseId, history.body.release.id);
+    assert.deepEqual(entry.sourceRunIds, [history.body.runs[0].id]);
+    assert.ok(history.body.events.some(event => event.releaseRunId === entry.sourceRunIds[0] && event.type === 'BATCH_SUCCEEDED'));
+  }
+  const pinned = await f.call(proofPath + '&call_id_digest=' + consumerDigest(combined.body.callId));
+  assert.deepEqual(pinned.body.services.map(item => item.call.callId), [combined.body.callId]);
+  assert.ok(!JSON.stringify(proof.body).includes(issued.body.token));
+  assert.ok(proof.body.services.every(item => !item.call || !('parameters' in item.call) && !('data' in item.call)));
+  assert.equal((await f.call(proofPath, undefined, { identity: null })).status, 401);
+  assert.equal((await f.call(proofPath, undefined, { identity: 'other' })).status, 403);
+  assert.equal((await f.call(proofPath.replace(releaseId, history.body.runs[1].id))).status, 409);
+  assert.equal((await f.call(proofPath.split('&release_id=')[0])).status, 422);
+  assert.equal((await f.call('/open/xapis/saved-assets', undefined, consumer)).status, 503);
+  assert.equal((await f.call('/data-services/applications', {})).body.code, 'PUBLIC_READ_ONLY');
+  assert.deepEqual(savedRecords(), before);
+  const combinedCall = f.store.get('service_call', combined.body.callId, PROJECT);
+  f.store.update('service_call', combinedCall.id, PROJECT, { resultHash: 'f'.repeat(64) });
+  const tampered = await f.call(proofPath);
+  assert.equal(tampered.body.status, 'PENDING');
+  assert.equal(tampered.body.services.find(item => item.serviceId === assets.id).status, 'NEEDS_ATTENTION');
+  const event = history.body.events[0];
+  f.store.update('monitor_event', event.id, PROJECT, { packageDigest: 'f'.repeat(64) });
+  const invalidSource = await f.call(proofPath);
+  assert.equal(invalidSource.status, 409);
+  assert.equal(invalidSource.body.code, 'PUBLICATION_HISTORY_UNCONFIRMED');
+  assert.equal(invalidSource.body.services, undefined);
   assert.deepEqual(f.counts(), counts);
 });
 
