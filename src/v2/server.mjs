@@ -33,6 +33,7 @@ import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
 import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
+import { projectCloudReleaseBatchStage } from "./cloud-release-evidence.mjs";
 import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
 import { parseAgentReviewEvidencePath, publicationSelectorFromUrl } from "./publication-request.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
@@ -1471,7 +1472,7 @@ export function createV2Server(options = {}) {
       };
       const protectedDeliveryPayload = item => {
         if (local || !item) return item;
-        const {artifact, remoteSubmission, leaseToken, ...visible} = item;
+        const {artifact, remoteSubmission, leaseToken, ...visible} = projectCloudReleaseBatchStage(item,options.now?.()??Date.now());
         return visible;
       };
       const workflowDeliveryEvidence = delivery => {

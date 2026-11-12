@@ -9,9 +9,23 @@ export function passedCloudReleaseBatch(receipt,item,plan) {
     validationMatchesFamily(receipt.validation,{id:plan.source.validationContractId,contextIds:plan.fixtures.validationContexts.map(context=>context.id)});
 }
 
+// Derived only from the original batch and the clock. The signed timer remains
+// responsible for settling Worker results and their monitoring evidence.
+export function projectCloudReleaseBatchStage(run, now) {
+  const job=run.remoteSubmission?.prepared?.job;
+  if (run.status==="RUNNING" && run.schedulerTriggered===true && run.clockMode==="FC_TIMER" &&
+      run.sourceKind==="AGENT" && typeof run.reviewDigest==="string" && /^[a-f0-9]{64}$/.test(run.reviewDigest) &&
+      ["SUBMITTING","WAITING_FOR_WORKER_RESULT"].includes(run.stage) &&
+      job && job.jobId===run.id && job.projectId===run.projectId) {
+    const deadline=Date.parse(job.expiresAt), triggered=Date.parse(run.triggeredAt);
+    if (deadline>triggered && now>=deadline) return {...run,stage:"WORKER_RESULT_UNCONFIRMED"};
+  }
+  return run;
+}
+
 // Read the immutable release identity and committed monitor records. This path
 // performs no queue, artifact, model or mutation operations.
-export function exactPublicationReceipt(store, project, release) {
+export function exactPublicationReceipt(store, project, release, now=Date.now()) {
   const get = (kind,id) => {
     const value=store.get(kind,id,project);
     if (!value) throw fail(404,"未找到原发布证据");
@@ -62,8 +76,11 @@ export function exactPublicationReceipt(store, project, release) {
       packageDigest:release.packageDigest, verificationId:release.verificationId, reviewDigest:release.reviewDigest,
       reviewId:review.id, approvalId:approval.id, status:release.status, scope:release.scope,
       businessScheduledFor:release.businessScheduledFor},
-    runs:runs.map(run=>({id:run.id,sequence:run.sequence,status:run.status,schedulerTriggered:run.schedulerTriggered,
-      ...(run.stage ? {stage:run.stage} : {}),
-      ...(Number.isFinite(run.reservedDurationMs) ? {reservedDurationMs:run.reservedDurationMs} : {}),
-      ...(Number.isFinite(run.durationMs) ? {durationMs:run.durationMs} : {})})),monitoring};
+    runs:runs.map(record=>{
+      const run=projectCloudReleaseBatchStage(record,now);
+      return {id:run.id,sequence:run.sequence,status:run.status,schedulerTriggered:run.schedulerTriggered,
+        ...(run.stage ? {stage:run.stage} : {}),
+        ...(Number.isFinite(run.reservedDurationMs) ? {reservedDurationMs:run.reservedDurationMs} : {}),
+        ...(Number.isFinite(run.durationMs) ? {durationMs:run.durationMs} : {})};
+    }),monitoring};
 }
