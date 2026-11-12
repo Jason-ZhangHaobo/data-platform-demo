@@ -65,7 +65,7 @@ import {
 import { fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
 import { createFundPreparations } from "./fund-preparation.mjs";
 import { fundAgentAttributionKind, fundAgentDeliveryAttribution, verifiedFundRun } from "./fund-delivery.mjs";
-import { fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
+import { fundAgentServiceSources, fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
 import { assertFundAgentMonitoring, assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease, fundAgentPublicationPreflight } from "./fund-publication.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import {
@@ -1494,17 +1494,38 @@ export function createV2Server(options = {}) {
         return {bundle, verification};
       };
       const selectFundPublication = (agent, selector) => {
-        if (selector?.sourceKind !== "AGENT" || !selector.sourceRunId || !selector.packageDigest || !selector.verificationId)
+        if (selector?.sourceKind !== "AGENT" || !selector.sourceRunId || !selector.packageDigest)
           throw fail(422, "基金发布须指定原运行、包摘要和文件演练");
+        const release = selector.releaseId && store.get("release", selector.releaseId, PROJECT);
+        const approval = release?.packageDigest === selector.packageDigest && store.get("release_approval", release.approvalId, PROJECT);
+        const verificationId = selector.verificationId ?? approval?.rehearsalId;
+        if (!verificationId) throw fail(422, "需提供文件演练或确切发布编号");
         const matches = store.list("agent_delivery_task", PROJECT).filter(delivery =>
           delivery.sourceAgentTaskId === agent.id && delivery.sourceRunId === selector.sourceRunId &&
-          delivery.packageDigest === selector.packageDigest && delivery.verificationId === selector.verificationId &&
+          delivery.packageDigest === selector.packageDigest && delivery.verificationId === verificationId &&
           delivery.status === "SUCCEEDED");
         if (matches.length !== 1) throw fail(409, "未找到唯一的原基金交付及成功演练");
         const { bundle, verification } = workflowDeliveryEvidence(matches[0]);
         if (!bundle || !verification || bundle.manifest?.source?.attribution?.originAgentTaskId !== agent.id)
           throw fail(409, "基金交付与当前任务不一致");
         return { bundle, verification };
+      };
+      const assertFundServiceSourceAccess = (batchId) => {
+        const run = typeof batchId === "string" && store.get("release_run", batchId, PROJECT);
+        const bundle = typeof run?.packageId === "string" && store.get("delivery_package", run.packageId, PROJECT);
+        if (bundle?.manifest?.source?.attribution?.kind === fundAgentAttributionKind)
+          requireDeliveryEvidence("release_run", run);
+      };
+      const assertFundServiceInputAccess = (type, body) => {
+        if (type === "DAPI") return assertFundServiceSourceAccess(body.sourceReleaseRunId);
+        if (Array.isArray(body.steps) && body.steps.length <= 5) for (const step of body.steps) {
+          const child = typeof step?.dapiVersionId === "string" && store.get("data_service_version", step.dapiVersionId, PROJECT);
+          assertFundServiceSourceAccess(child?.sourceReleaseRunId);
+        }
+      };
+      const assertFundServiceAccess = service => {
+        for (const version of [service.currentVersion, service.publishedVersion])
+          if (version) assertFundServiceInputAccess(service.serviceType, version);
       };
       const deliveryReceipt = item => {
         const {verification} = workflowDeliveryEvidence(item);
@@ -4569,7 +4590,7 @@ export function createV2Server(options = {}) {
         if (!localClassicSpark) return json(res, 200, []);
         const sources = [];
         for (const run of store.list("release_run", PROJECT)) {
-          if (!isFundContext(run.source?.contextId) || run.status !== "SUCCEEDED") continue;
+          if (!isFundContext(run.source?.contextId) || run.status !== "SUCCEEDED" || !canReadDelivery("release_run", run)) continue;
           try {
             const proof = fundSourceFor(run)?.evidence;
             if (proof?.eligibleForService) sources.push({ id: run.id, releaseId: run.releaseId, status: run.status,
@@ -4586,6 +4607,7 @@ export function createV2Server(options = {}) {
       if (fundSource && method === "GET") {
         if (!localClassicSpark) throw fail(403, "基金发布来源仅在本机 Spark 环境可读");
         const selection = fundConsumptionSelection(fundSource[1], url.searchParams);
+        assertFundServiceSourceAccess(selection.batchId);
         const { evidence } = resolveFundConsumptionSource({ store, project: PROJECT, selection, timeUnitMs: releaseTimeUnitMs });
         return json(res, 200, evidence);
       }
@@ -4598,7 +4620,8 @@ export function createV2Server(options = {}) {
           if (!agent) return json(res,200,[]);
           requireDurableAgentOwner(agent,req);
         }
-        return json(res,200,[...localServiceSources({store,project:PROJECT,selection}),...distributionServiceSources({store,project:PROJECT,selection})]);
+        return json(res,200,[...localServiceSources({store,project:PROJECT,selection}),...distributionServiceSources({store,project:PROJECT,selection}),
+          ...fundAgentServiceSources({store,project:PROJECT,selection,timeUnitMs:releaseTimeUnitMs})]);
       }
       if (path === "/api/v2/data-services/task-evidence" && method === "GET") {
         if (!local) throw fail(403, "本机消费证据仅在本机开发环境可读");
@@ -4607,7 +4630,7 @@ export function createV2Server(options = {}) {
           throw fail(422, "需提供任务编号与确切包摘要");
         const {taskId,packageDigest,releaseId,callIdDigest}=selected;
         const agent = get("agent", taskId); requireDurableAgentOwner(agent, req);
-        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, callIdDigest, manager: dataServices }));
+        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, callIdDigest, manager: dataServices, timeUnitMs: releaseTimeUnitMs }));
       }
       if (path === "/api/v2/data-services/dapis" && method === "GET")
         return json(res, 200, dataServices.list("DAPI"));
@@ -4777,6 +4800,8 @@ export function createV2Server(options = {}) {
         const body = await readBody(req),
           key = text(req.headers["idempotency-key"], 1, 100);
         let issued;
+        if (Array.isArray(body.serviceIds) && body.serviceIds.length <= 20)
+          for (const id of body.serviceIds) assertFundServiceAccess(dataServices.detail(id));
         const dedup = store.deduplicate(
           `${PROJECT}:service-application:${key}`,
           hash(JSON.stringify(body)),
@@ -4800,6 +4825,8 @@ export function createV2Server(options = {}) {
       );
       if (applicationRecord && method === "POST") {
         await readBody(req);
+        for (const id of dataServices.application(applicationRecord[1]).serviceIds)
+          assertFundServiceAccess(dataServices.detail(id));
         return json(
           res,
           200,
@@ -4813,8 +4840,9 @@ export function createV2Server(options = {}) {
         method === "POST"
       ) {
         const body = await readBody(req),
-          type = path.endsWith("dapis") ? "DAPI" : "XAPI",
-          key = text(req.headers["idempotency-key"], 1, 100),
+          type = path.endsWith("dapis") ? "DAPI" : "XAPI";
+        assertFundServiceInputAccess(type, body);
+        const key = text(req.headers["idempotency-key"], 1, 100),
           dedup = store.deduplicate(
             `${PROJECT}:data-service:${type}:${key}`,
             hash(JSON.stringify(body)),
@@ -4838,6 +4866,7 @@ export function createV2Server(options = {}) {
           action = dataServiceRecord[3];
         if (service.serviceType !== type)
           throw fail(404, "未找到当前类型的数据服务");
+        assertFundServiceAccess(service);
         if (method === "GET" && !action) return json(res, 200, service);
         if (method === "GET" && action === "openapi")
           return json(
@@ -4853,8 +4882,9 @@ export function createV2Server(options = {}) {
         if (method === "GET" && action === "history")
           return json(res,200,store.list('service_version_switch',PROJECT).filter(r=>r.serviceId===service.id));
         if (method === "POST" && action === "versions") {
-          const body = await readBody(req),
-            key = text(req.headers["idempotency-key"], 1, 100),
+          const body = await readBody(req);
+          assertFundServiceInputAccess(type, body);
+          const key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               `${PROJECT}:${type.toLowerCase()}-version:${service.id}:${key}`,
               hash(JSON.stringify(body)),
@@ -4871,6 +4901,8 @@ export function createV2Server(options = {}) {
           return json(res, 200, publishServiceReviewed(dataServices,service.id,await readBody(req)));
         if (method === "POST" && action === "activate") {
           const body = await readBody(req);
+          const target = service.versions.find(version => version.id === body.versionId);
+          if (target) assertFundServiceInputAccess(type, target);
           return json(
             res,
             200,

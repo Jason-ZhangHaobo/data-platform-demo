@@ -184,7 +184,17 @@ API 使用 `POST /api/v2/agent/tasks/{id}/prepare-delivery` 和原 `Idempotency-
 
 CLI 可用 `shuduo releases approve` 和 `shuduo releases publish` 的 `--fund-consent` 参数传入已审阅文件。该文件包含预检回执中的 `scope`、`packageDigest`、`verificationId`、`businessDate` 和 `scheduleSpec`。将预检回执的 `digest` 填入 `preflightDigest`，经本人确认后添加 `confirmFrozenFictionalData: true`。MCP 的 `release_approve` 使用同一个 `fundConsent` 对象，`release_create` 使用已批准的原计划。回执丢失时先按确切来源读取原发布。
 
-验收在隔离副本复用原包与演练，使用测试审阅驱动实际本机调度。两个 Spark 批次各通过七条结果和独立测试 SQL。核验覆盖错误包摘要、未审阅状态、错误计时计划、发布回执丢失、重启回读及篡改监控事件。原包仍待工程师审阅。模型替身来源保留，云端发布与接口消费继续验收。
+验收在隔离副本复用原包与演练，使用测试审阅驱动实际本机调度。两个 Spark 批次各通过七条结果和独立测试 SQL。核验覆盖错误包摘要、未审阅状态、错误计时计划、发布回执丢失、重启回读及篡改监控事件。原包仍待工程师审阅。模型替身来源保留，云端发布继续验收。
+
+## 基金 Agent 同版本 DAPI／XAPI 授权消费
+
+在原任务的发布监控通过后，点击「继续此任务的接口交付」。服务目录仅接收当前任务、包和发布匹配的成功批次。用同一批次发布金额和占比 DAPI，再固定这两个版本编排 XAPI。DAPI 按敞口明细分页，XAPI 按组合及交易日分页并保留完整敞口数组。
+
+原任务的消费证据重新核对保存的授权、调用参数、固定版本、快照摘要和独立基金预期，保存所核对的分页调用编号、结果摘要和当前应用状态。完成状态要求同批次已核验的 XAPI 及其至少一个直接授权 DAPI 调用。换版或撤权后，可按原调用摘要回读，查询不会创建应用、追加调用或重新跑 Spark。
+
+CLI 用 `shuduo services sources --agent-task-id ID --package-digest SHA256 --release-id ID` 和 `shuduo services task-evidence --task-id ID --package-digest SHA256 --release-id ID`。可用 `--call-id-digest` 选原调用。MCP 对应 `data_service_sources` 和 `data_service_task_evidence`。
+
+隔离验收复用了此前已保存的两个实际本机 Spark 批次。授权 DAPI 返回七行，XAPI 两个分页的七条敞口逐行对照通过。错包和跨批次被拒，XAPI 应用不能直接调用其子接口。撤销两个应用后原令牌失效，旧 DAPI 版本和 XAPI 原调用仍可独立对照。篡改摘要返回待处理，重启回读及工作台交接均沿原来源。上游模型替身归因保留。
 
 ## 浏览器真实链路
 

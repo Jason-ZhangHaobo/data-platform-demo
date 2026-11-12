@@ -58,7 +58,7 @@ type ReleaseRun = {
   sourceKind?:string;sourceAttribution?:string;agentIndependentE2E?:boolean;
   scope?:string;
   sourceRevisionId?:string;sourceRunId?:string;
-  outputContractId?:string;sourceEvidence?:{modelClassification?:string;engineClassification?:string};
+  outputContractId?:string;sourceEvidence?:{modelClassification?:string;modelMode?:string;engineClassification?:string};
 };
 type ServiceVersion = {
   id: string;
@@ -350,7 +350,7 @@ export function DataServicesWorkbench({
   const versionContext=`${scopeKey}:${selectedId}:${selected?.currentVersion?.id??""}`;
   const activeVersionRef=useRef(versionContext);activeVersionRef.current=versionContext;
   const planSourceCandidate=binding?{...(binding.manualDeliveryTaskId?{manualDeliveryTaskId:binding.manualDeliveryTaskId}:{taskId:binding.taskId}),packageDigest:binding.packageDigest,releaseId:binding.releaseId,sourceReleaseRunId:sourceRunId}:undefined;
-  const boundPlanSource=boundPlannerAllowed&&validServicePlanSource(planSourceCandidate)&&eligibleRuns.some(run=>run.id===sourceRunId)?planSourceCandidate:undefined;
+  const boundPlanSource=!isFundSource&&boundPlannerAllowed&&validServicePlanSource(planSourceCandidate)&&eligibleRuns.some(run=>run.id===sourceRunId)?planSourceCandidate:undefined;
   const privateContextSource=privateContextAllowed&&validServicePlanSource(planSourceCandidate)&&sourceRead.key===scopeKey&&sourceRead.state==='READY'&&eligibleRuns.some(run=>run.id===sourceRunId)?planSourceCandidate:undefined;
   const privateContextKey=JSON.stringify([scopeKey,privateContextSource??null]),privateContextRef=useRef(privateContextKey);privateContextRef.current=privateContextKey;
   const privateContextState=privateContextRead?.key===privateContextKey?privateContextRead:undefined;
@@ -1006,6 +1006,7 @@ export function DataServicesWorkbench({
                 </label>
               </div>
               {!consumptionScope&&<small>{isFundSource ? fundScopeNotice : sourceContract?"客户＋交易日＋分类始终保留；DAPI按分布明细行分页，金额及占比返回精确字符串，不含现金。":fieldScopeNotice}</small>}
+              {isFundSource && binding && <p className="agent-dev-notice">绑定原基金 Agent 发布。{eligibleRuns.find(run=>run.id===sourceRunId)?.sourceEvidence?.modelMode==="SYNTHETIC_MODEL"?"上游为模型替身。":""}</p>}
               {sourceContract&&<p className="agent-dev-notice" role="status"><strong>{sourceContract.name} · 本机虚构测试</strong><br/>复用原Spark结果，创建接口不重新计算。上游模型归因保留，当前不计真实模型完整自主E2E。</p>}
               <div className="service-contract-preview">
                 <span>GET</span>

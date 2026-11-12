@@ -2,6 +2,8 @@ import {checkDistributionResponse} from './distribution-consumption-check.mjs';
 import {distributionFields,distributionComposition,distributionResponseSchema,combineDistributionResults,snapshotContractById} from './distribution-services.mjs';
 import {initDistributionStore,distributionDescriptor,materializeDistribution,distributionSnapshotEvidence,queryDistribution,resultSnapshotHash} from './distribution-query-store.mjs';
 import { fundDapiContract, normalizeFundFilters } from "./fund-dapi-contract.mjs";
+import { expectedFundCallRows } from "./fund-call-result.mjs";
+import { fundContext } from "./fund-lookthrough.mjs";
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -765,6 +767,47 @@ export class DataServiceManager {
     return { callId: call.id, versionId: version.id, configHash: version.configHash, rowCount: call.rowCount,
       resultHash: call.resultHash,
       verified: response.data.length === call.rowCount && serviceHash(response.data) === call.resultHash };
+  }
+
+  async recheckFundCall(serviceId, callId) {
+    const invalid = () => fail(409, "基金历史调用的授权、版本或独立结果未确认", "FUND_CALL_EVIDENCE_UNCONFIRMED");
+    const service = this.#service(serviceId), call = this.store.get("service_call", callId, this.project);
+    if (this.scope !== "LOCAL_TEST_ONLY" || call?.serviceId !== service.id || call.outcome !== "SUCCEEDED" ||
+        call.statusCode !== 200 || !call.parameters || typeof call.parameters !== "object" || Array.isArray(call.parameters) ||
+        !Number.isSafeInteger(call.rowCount) || call.rowCount < 0 || !/^[a-f0-9]{64}$/.test(call.resultHash ?? "")) throw invalid();
+    const version = this.#version(call.serviceVersionId), app = this.application(call.applicationId);
+    const startedAt = Date.parse(call.startedAt);
+    if (version.serviceId !== service.id || version.serviceType !== service.serviceType || call.serviceType !== version.serviceType ||
+        version.outputContractId !== fundDapiContract.id || version.scope !== this.scope ||
+        !["PUBLISHED", "RETIRED"].includes(version.status) || !serviceVersionConfigValid(version) ||
+        !Number.isFinite(startedAt) || !(Date.parse(version.publishedAt) <= startedAt && startedAt <= Date.parse(call.finishedAt)) ||
+        app.scope !== this.scope || !app.serviceIds.includes(service.id) || !(Date.parse(app.createdAt) <= startedAt) ||
+        app.expiresAt !== undefined && !(startedAt < Date.parse(app.expiresAt)) ||
+        app.status === "REVOKED" && !(startedAt <= Date.parse(app.revokedAt))) throw invalid();
+    if (version.serviceType === "XAPI" && (!Array.isArray(version.steps) || version.steps.length < 2)) throw invalid();
+    const children = version.serviceType === "DAPI" ? [version] : version.steps.map(step => this.#version(step.dapiVersionId));
+    const certify = () => {
+      for (const child of children) {
+        const saved = this.#version(child.id);
+        if (saved.configHash !== child.configHash || !serviceVersionConfigValid(saved)) throw invalid();
+        this.#assertFundVersion(saved);
+      }
+    };
+    certify();
+    const contextId = this.releaseRunFor(children[0].sourceReleaseRunId)?.source?.contextId;
+    const context = contextId && fundContext(contextId);
+    if (!context || children.some(child => child.sourceReleaseRunId !== children[0].sourceReleaseRunId)) throw invalid();
+    const query = queryFor(version.outputContractId, call.parameters);
+    const expected = expectedFundCallRows(version, children, query, context);
+    const response = await this.#execute({ ...version, timeoutMs: Math.min(version.timeoutMs, 1000) }, query);
+    certify();
+    const savedCall = this.store.get("service_call", call.id, this.project), savedVersion = this.#version(version.id);
+    if (!savedCall || serviceHash(savedCall) !== serviceHash(call) ||
+        savedVersion.configHash !== version.configHash || !serviceVersionConfigValid(savedVersion)) throw invalid();
+    return { callId: call.id, versionId: version.id, configHash: version.configHash, rowCount: call.rowCount, resultHash: call.resultHash,
+      verified: response.data.length === call.rowCount && serviceHash(response.data) === call.resultHash,
+      independentResultVerified: expected.length === call.rowCount && serviceHash(expected) === call.resultHash,
+      expectedRowCount: expected.length, paginationUnit: response.resultContract?.paginationUnit };
   }
 
   async recheckDistributionCall(serviceId,callId) {

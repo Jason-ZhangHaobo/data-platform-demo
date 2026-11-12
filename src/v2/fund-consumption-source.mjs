@@ -1,6 +1,8 @@
 import { isDeepStrictEqual as same } from "node:util";
 import { resolveDeliverySchedule, sha256, validateDeliveryPackage } from "./delivery.mjs";
-import { verifiedFundRun } from "./fund-delivery.mjs";
+import { fundAgentAttributionKind, fundAgentDeliveryAttribution, verifiedFundRun } from "./fund-delivery.mjs";
+import { createFundPreparations } from "./fund-preparation.mjs";
+import { assertSqlRequirementPackageSource } from "./sql-requirements.mjs";
 import { fundOutputContract } from "./fund-lookthrough.mjs";
 import { isFundContext } from "./fund-contexts.mjs";
 import { assertFundBatch } from "./fund-publication.mjs";
@@ -43,13 +45,27 @@ function verifyFundPublication({ store, project, selection, timeUnitMs }, includ
   const review = read("delivery_review", approval.reviewId);
   const verification = read("delivery_verification", approval.rehearsalId);
   const revision = read("revision", source.revisionId), development = read("run", source.runId);
+  const fundAgent = source.attribution?.kind === fundAgentAttributionKind;
+  if (fundAgent) {
+    const agent = read("agent", source.attribution.originAgentTaskId);
+    const delivery = read("agent_delivery_task", bundle.agentDeliveryTaskId);
+    const binding = fundAgentDeliveryAttribution({ agent, run: development, revision });
+    const { requestId, basisDigest } = binding.preparation;
+    const saved = createFundPreparations({ store, project }).bindExecution({ requestId, basisDigest, confirm: true }, agent.submittedBy,
+      { contextId: agent.contextId, message: agent.message, requestKey: requestId });
+    requireProof(same(binding, source.attribution) && same(saved, binding.preparation) &&
+      delivery.status === "SUCCEEDED" && delivery.sourceAgentTaskId === agent.id && delivery.submittedBy === agent.submittedBy &&
+      delivery.packageId === bundle.id && delivery.packageDigest === bundle.digest && delivery.verificationId === verification.id &&
+      delivery.sourceRunId === development.id && delivery.sourceRevisionId === revision.id && delivery.sourceSqlHash === source.sqlHash);
+    assertSqlRequirementPackageSource(bundle, { agent, run: development, revision });
+  }
   const selected = read("release_run", selection.batchId);
   const batches = store.list("release_run", project).filter(batch => batch.releaseId === release.id)
     .sort((left, right) => left.sequence - right.sequence);
   assertFundBatch({ bundle, verification, review, approval, release, run: selected, batches,
     localClassicSpark: true, schedulerMode: "LOCAL_TIMER", timeUnitMs });
   requireProof(reviewChecks.every(key => review.attestations?.[key] === true) &&
-    revision.contextId === source.contextId && revision.source === "MANUAL" &&
+    revision.contextId === source.contextId && revision.source === (fundAgent ? source.attribution.modelMode : "MANUAL") &&
     revision.hash === source.sqlHash && revision.sql === bundle.files["main.sql"] && sha256(revision.sql) === source.sqlHash &&
     release.sourceCodeHash === source.sqlHash && bundle.sourceRunId === development.id && development.revisionId === revision.id &&
     development.revisionHash === source.sqlHash && development.engineVersion === plan.deployment.runtime.version && verifiedFundRun(development, source.contextId));
@@ -95,7 +111,8 @@ function verifyFundPublication({ store, project, selection, timeUnitMs }, includ
     });
   const eligibleForService = active && mode === "LOCAL_SPARK_PROCESS";
   const evidence = {
-    protocol: "shuduo-fund-consumption-source/v1", scope: "LOCAL_TEST_ONLY", upstreamKind: "ENGINEER_AUTHORED",
+    protocol: "shuduo-fund-consumption-source/v1", scope: "LOCAL_TEST_ONLY", upstreamKind: source.attribution.kind,
+    ...(fundAgent ? { agentTaskId: source.attribution.originAgentTaskId, modelMode: source.attribution.modelMode } : {}),
     releaseId: release.id, packageDigest: bundle.digest, batchId: selected.id, batchSequence: selected.sequence,
     revisionId: revision.id, developmentRunId: development.id, contractId: contract.id, keyFields: contract.keyFields,
     businessDate: occurrence.businessDate, inputDigest: source.fundLookthrough.inputHash, assertionDigest: source.fundLookthrough.assertionHash,
@@ -110,6 +127,32 @@ function verifyFundPublication({ store, project, selection, timeUnitMs }, includ
 export function resolveFundConsumptionSource(args) {
   const { evidence, rows } = verifyFundPublication(args, false);
   return { evidence, rows: evidence.eligibleForService ? rows : undefined };
+}
+
+export function fundAgentServiceSources({ store, project, selection, timeUnitMs }) {
+  if (!selection.taskId || !selection.packageDigest || !selection.releaseId) return [];
+  const release = store.get("release", selection.releaseId, project);
+  const source = release && store.get("delivery_package", release.packageId, project)?.manifest?.source;
+  if (release?.packageDigest !== selection.packageDigest || source?.attribution?.kind !== fundAgentAttributionKind ||
+      source.attribution.originAgentTaskId !== selection.taskId) return [];
+  try {
+    const runs = store.list("release_run", project).filter(run => run.releaseId === release.id);
+    return runs.flatMap(run => {
+      const { evidence } = resolveFundConsumptionSource({ store, project, timeUnitMs,
+        selection: { releaseId: release.id, packageDigest: release.packageDigest, batchId: run.id } });
+      return evidence.eligibleForService ? [{
+        id: run.id, releaseId: release.id, packageDigest: evidence.packageDigest, sourceKind: "AGENT", scope: evidence.scope,
+        sourceAgentTaskId: evidence.agentTaskId, sourceRevisionId: evidence.revisionId, sourceRunId: evidence.developmentRunId,
+        status: "SUCCEEDED", published: true, schedulerTriggered: true, engine: run.engine, engineVersion: run.engineVersion,
+        mainSqlExecuted: true, testSqlValidation: { passed: true }, validation: { passed: true }, sequence: run.sequence, createdAt: run.createdAt,
+        outputContractId: evidence.contractId, businessDate: evidence.businessDate, sourceEvidence: evidence,
+        agentIndependentE2E: false, publicDeployed: false,
+      }] : [];
+    }).sort((left, right) => left.sequence - right.sequence);
+  } catch (error) {
+    if ([404, 409, 422].includes(error.status)) return [];
+    throw error;
+  }
 }
 
 export function resolveFundReportPublication(args) {

@@ -54,6 +54,7 @@ test("fund XAPI joins exact amount and ratio snapshots and retains complete port
   t.after(() => { store.close(); businessStore.close(); });
   const rows = fundContext().expected;
   const run = { id: "first-batch", releaseId: "fixture-release", packageDigest: "a".repeat(64), rows,
+    source: { contextId: fundContext().id },
     engine: "Apache Spark", engineVersion: "3.5.9", status: "SUCCEEDED", published: true, schedulerTriggered: true,
     publicDeployed: false, mainSqlExecuted: true, testSqlValidation: { passed: true }, validation: { passed: true } };
   const runs = [run, { ...run, id: "other-batch" }];
@@ -107,4 +108,12 @@ test("fund XAPI joins exact amount and ratio snapshots and retains complete port
   await assert.rejects(invoke({}), { code: "FUND_SNAPSHOT_SOURCE_CHANGED" });
   manager.revokeApplication(application.id);
   await assert.rejects(invoke({}), { status: 401 });
+  sourceChanged = false;
+  const replay = await manager.recheckFundCall(xapi.id, first.callId);
+  assert.equal(replay.verified && replay.independentResultVerified, true);
+  assert.equal(replay.paginationUnit, "PORTFOLIO_DATE_GROUPS");
+  const count = manager.listCalls(xapi.id).length;
+  store.update("service_call", first.callId, project, { resultHash: "0".repeat(64) });
+  assert.equal((await manager.recheckFundCall(xapi.id, first.callId)).independentResultVerified, false);
+  assert.equal(manager.listCalls(xapi.id).length, count);
 });
