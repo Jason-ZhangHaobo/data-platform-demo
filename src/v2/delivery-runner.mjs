@@ -11,7 +11,7 @@ import {
 import { runSpark, runtimeConfig } from "./spark.mjs";
 import { verifiedFundRun } from "./fund-delivery.mjs";
 import { verifyFundSignedDelivery } from "./fund-signed-delivery.mjs";
-import { syncSqlRowsMatch } from "./sync-sql-input.mjs";
+import { assertSyncSqlOutputSchema, syncSqlColumnsMatch, syncSqlOutputSchemaCode, syncSqlOutputSchemaMessage, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 
 export function assertSyncSqlRehearsal(plan, bundle, receipt) {
   if (!plan.source.syncInput) return;
@@ -26,6 +26,7 @@ export function assertSyncSqlRehearsal(plan, bundle, receipt) {
       !validationMatchesFamily(receipt.validation, family) || receipt.validation.selectedPassed !== true ||
       !syncSqlRowsMatch(receipt.rows, plan.fixtures.context))
     throw Object.assign(Error("文件演练未证明原冻结批次的实际结果"), { status: 409 });
+  assertSyncSqlOutputSchema(receipt.columns);
 }
 
 export async function verifyDeliveryDirectory(
@@ -61,11 +62,14 @@ export async function verifyDeliveryDirectory(
   const regressionIds = plan.fixtures.validationContexts.map(
     (context) => context.id,
   );
+  const schemaMismatch = plan.source.syncInput && result.status === "SUCCEEDED" &&
+    !syncSqlColumnsMatch(result.columns);
   const checked = Boolean(
     result.validation?.passed &&
       result.testSqlValidation?.passed &&
       result.testSqlValidation.sqlHash === sha256(bundle.files["tests.sql"]) &&
       (!plan.source.fundLookthrough || verifiedFundRun(result, plan.source.contextId)) &&
+      !schemaMismatch &&
       (!plan.source.syncInput || result.testDouble !== true && result.validation.selectedPassed === true &&
         syncSqlRowsMatch(result.rows, plan.fixtures.context)) &&
       regressionIds.every((id) =>
@@ -82,6 +86,7 @@ export async function verifyDeliveryDirectory(
     result.engineVersion === plan.deployment.runtime.version;
   const receipt = {
     ...result,
+    ...(schemaMismatch ? { error: syncSqlOutputSchemaMessage, errorCode: syncSqlOutputSchemaCode } : {}),
     status: passed
       ? "SUCCEEDED"
       : result.status === "SUCCEEDED"

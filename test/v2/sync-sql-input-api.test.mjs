@@ -24,7 +24,14 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
   sample("first.csv", "1245.07");
   sample("later.csv", "4000.00");
   sample("bad.csv", "0.001");
+  const columns = [
+    {name:"client_id",type:"string"}, {name:"holding_market_value",type:"decimal(18,2)"},
+    {name:"available_cash",type:"decimal(18,2)"}, {name:"total_assets",type:"decimal(18,2)"},
+    {name:"security_count",type:"bigint"},
+  ];
+  const wrongColumns = columns.map(column => column.name === "total_assets" ? { ...column, type:"string" } : column);
   let modelCalls = 0, runs = 0, releaseCalls = 0, clock = Date.now(), base, app;
+  let developmentColumns = columns, rehearsalColumns = columns;
   let openModel;
   const modelGate = new Promise(resolve => { openModel = resolve; });
   const runner = async ({ context, validationContexts }) => {
@@ -33,7 +40,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(context.expected[0].total_assets, "2045.07");
     assert.equal(validationContexts[0].expected[0].total_assets, "1800.00");
     return { status: "SUCCEEDED", engine: "Apache Spark", engineVersion: "3.5.9", testDouble: true,
-      rows: context.expected, validation: { passed: true } };
+      rows: context.expected, columns: developmentColumns, validation: { passed: true } };
   };
   async function start() {
     app = createV2Server({ root, fixtureRoot, runner, now: () => clock, setTimer: () => ({}), clearTimer: () => {},
@@ -48,13 +55,14 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
           packageDigest: expectedDigest, source: plan.source, occurrence: resolveDeliverySchedule(plan, scheduledFor),
           fileHashes: Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, file]) => [name, file.sha256])),
           testSqlValidation: { passed: true, sqlHash: sha256(bundle.files["tests.sql"]) },
-          validation: JSON.parse(bundle.files["validation.json"]).report, rows: plan.fixtures.context.expected,
+          validation: JSON.parse(bundle.files["validation.json"]).report, rows: plan.fixtures.context.expected, columns: rehearsalColumns,
         };
       },
-      generator: async ({ context }) => {
+      generator: async ({ context, outputColumns }) => {
         modelCalls++;
         assert.equal(context.expected, undefined);
         assert.ok(context.tables.every(table => table.rows === undefined));
+        assert.deepEqual(outputColumns, columns);
         await modelGate;
         return { sql: referenceSql, explanation: "虚构测试替身", usage: { total_tokens: 1 } };
       } });
@@ -134,6 +142,13 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     const revision = await request("/revisions", { contextId: "holdings-t1", originAgentTaskId: completed.id, sql: referenceSql }, "manual");
     assert.equal(revision.status, 201);
     assert.deepEqual(revision.value.syncInput, run.syncInput);
+    developmentColumns = wrongColumns;
+    const drifted = await request("/runs", { revisionId: revision.value.id }, "manual-schema-drift");
+    const failedDevelopment = await finished(`/runs/${drifted.value.id}`);
+    assert.equal(failedDevelopment.status, "VALIDATION_FAILED");
+    assert.equal(failedDevelopment.code, "SYNC_SQL_OUTPUT_SCHEMA_MISMATCH");
+    assert.equal(failedDevelopment.rows[0].total_assets, "2045.07");
+    developmentColumns = columns;
     const manual = await request("/runs", { revisionId: revision.value.id }, "manual-run");
     assert.equal(manual.status, 202);
     const checked = await finished(`/runs/${manual.value.id}`);
@@ -146,6 +161,9 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     const deliverySource = { agent: completed, run: exampleReceipt, revision: revision.value, syncContext };
     assert.throws(() => createDeliveryPackage({ ...deliverySource, run: checked }), /真实本机运行/);
     assert.throws(() => createDeliveryPackage({ ...deliverySource, run: { ...exampleReceipt, rows: getContext().expected } }), /独立断言/);
+    for (const invalid of [wrongColumns, [...columns].reverse(), undefined])
+      assert.throws(() => createDeliveryPackage({ ...deliverySource, run: { ...exampleReceipt, columns: invalid } }),
+        {code:"SYNC_SQL_OUTPUT_SCHEMA_MISMATCH"});
     const bundle = createDeliveryPackage({ ...deliverySource, name: "客户资产 T+1" });
     assert.equal(bundle.manifest.name, "客户资产 T+1 · 冻结同步持仓");
     const plan = validateDeliveryPackage(bundle, bundle.digest);
@@ -179,6 +197,13 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(stored.digest, bundle.digest);
     const packagePath = `/delivery/packages/${stored.id}`;
     const scheduledFor = "2026-09-11T09:00:00+08:00";
+    rehearsalColumns = wrongColumns;
+    const driftedRehearsal = await request(packagePath + "/verify", { scheduledFor }, "file-schema-drift");
+    assert.equal(driftedRehearsal.status, 202);
+    const failedRehearsal = await finished(`/delivery/verifications/${driftedRehearsal.value.id}`);
+    assert.equal(failedRehearsal.status, "FAILED");
+    assert.match(failedRehearsal.error, /冻结持仓输出列或类型不符合约定/);
+    rehearsalColumns = columns;
     const receipt = await request(packagePath + "/verify", { scheduledFor });
     assert.equal(receipt.status, 202);
     const verified = await finished(`/delivery/verifications/${receipt.value.id}`);
@@ -209,7 +234,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(replayRelease.value.id, activate.value.id);
     const batches = app.store.list("release_run", PROJECT).sort((a, b) => a.sequence - b.sequence);
     assert.equal(batches.length, 2);
-    assert.equal(releaseCalls, 1); // The stored rehearsal is the only file execution so far.
+    assert.equal(releaseCalls, 2); // One rejected rehearsal and one accepted rehearsal.
     clock = Date.parse(batches[0].scheduledTriggerAt);
     await app.releaseScheduler.enqueue(batches[0].id);
     await stop();
@@ -228,7 +253,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(observed.value.counts.succeeded, 2);
     const replayAfterExpiry = await request("/releases", releaseBody, "sync-activate-after-expiry");
     assert.equal(replayAfterExpiry.value.id, activate.value.id);
-    assert.equal(releaseCalls, 3);
+    assert.equal(releaseCalls, 4);
     const sources = await request("/data-services/sources");
     assert.deepEqual(sources.value.map(source => source.id), batches.map(batch => batch.id));
     const create = async (type, body) => {
@@ -304,6 +329,10 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal((await request("/open/dapis/sync-holdings", undefined, undefined, bearer)).value.code, "SERVICE_VERSION_FORBIDDEN");
     assert.equal((await request("/open/xapis/sync-assets", undefined, undefined, bearer)).status, 200);
     const originalBatch = app.store.get("release_run", batches[1].id, PROJECT);
+    app.store.update("release_run", originalBatch.id, PROJECT, { columns:wrongColumns });
+    assert.deepEqual((await request("/data-services/sources")).value, []);
+    assert.equal((await request(reportPath + "/lineage")).status,409);
+    app.store.update("release_run", originalBatch.id, PROJECT, { columns });
     app.store.update("release_run", originalBatch.id, PROJECT, { snapshotHash:"0".repeat(64) });
     assert.equal((await request("/open/xapis/sync-assets", undefined, undefined, bearer)).status, 409);
     assert.equal((await request(reportPath + "/lineage")).status,409);
@@ -317,7 +346,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal((await request("/runs", { revisionId: revision.value.id }, "tampered")).value.code, "SYNC_SQL_INPUT_CHANGED");
     assert.equal(sync("bad.csv").run.status, "SUCCEEDED");
     assert.equal((await request("/development/synced-positions")).status, 422);
-    assert.equal(runs, 2);
+    assert.equal(runs, 3);
     assert.equal(modelCalls, 1);
   } finally {
     openModel();

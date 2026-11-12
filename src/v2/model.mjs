@@ -92,7 +92,7 @@ export async function generateAgentIntent(
   };
 }
 export async function generateSql(
-  { message, context, currentSql, error, repairFeedback, repairComparison, clarification, fundBasisDigest, signal, remainingBudget },
+  { message, context, currentSql, error, repairFeedback, repairComparison, clarification, fundBasisDigest, outputColumns, signal, remainingBudget },
   env = process.env,
   fetchImpl = fetch,
 ) {
@@ -138,6 +138,7 @@ export async function generateSql(
     context: {
       name: context.name,
       definition: context.definition,
+      ...(outputColumns ? { resultColumns: outputColumns, resultColumnsRule: "SELECT 必须按所列顺序返回且类型完全一致。必要时显式 CAST。" } : {}),
       ...(distribution?{outputContract:{id:distribution.id,grain:distribution.grain,keyFields:distribution.keyFields,fields:distribution.fields}}:{}),
       tables: context.tables.map((t) => ({ name: t.name, columns: t.columns })),
       parameters: requirementBasis.parameters,

@@ -14,7 +14,7 @@ import {assertSqlClarificationTask} from './sql-clarification.mjs';
 import { liveEvidenceProvenance, nonLiveModelLabel } from "./live-lifecycle-provenance.mjs";
 import { isFundContext } from "./fund-contexts.mjs";
 import { fundValidationMatches, verifiedFundRun } from "./fund-delivery.mjs";
-import { syncSqlContractId, syncSqlRowsMatch } from "./sync-sql-input.mjs";
+import { syncSqlColumnsMatch, syncSqlContractId, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 export const standaloneManualDeliveryMode='DURABLE_MANUAL_DELIVERY_V1';
@@ -95,6 +95,8 @@ export function developmentVerificationReport(task, run, revision, syncContext) 
       (run?.validationContractId === undefined || run.validationContractId === family?.id) &&
       (fund ? fundValidationMatches(run?.validation, undefined, task.contextId) : validationMatchesFamily(run?.validation, family, { requireContract: true })) },
   ];
+  if (task.syncInput)
+    checks.push({ id: "outputSchema", label: "冻结持仓输出的字段、顺序和 Spark 类型一致", passed: syncSqlColumnsMatch(run?.columns) });
   if(task.fundPreparation || (task.requirements!==undefined||distribution)&&revision?.source==='LIVE_MODEL')checks.push({id:'requirement',label:'结构化理解绑定当前需求与代码，结果另行核验',
     passed:verifiedSqlRequirementForRevision(task.requirements,task,revision)});
   const passed = run?.status === "SUCCEEDED" && checks.every(check => check.passed);

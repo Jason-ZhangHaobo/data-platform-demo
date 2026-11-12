@@ -5,6 +5,16 @@ import { equalValidationNumber } from "./validation-number.mjs";
 
 export const syncSqlContextId = "holdings-t1";
 export const syncSqlContractId = "securities-synced-holdings-t1-v1";
+export const syncSqlOutputColumns = Object.freeze([
+  { name: "client_id", type: "string" },
+  { name: "holding_market_value", type: "decimal(18,2)" },
+  { name: "available_cash", type: "decimal(18,2)" },
+  { name: "total_assets", type: "decimal(18,2)" },
+  { name: "security_count", type: "bigint" },
+].map(Object.freeze));
+export const syncSqlOutputSchemaCode = "SYNC_SQL_OUTPUT_SCHEMA_MISMATCH";
+export const syncSqlOutputSchemaMessage =
+  "冻结持仓输出列或类型不符合约定。按顺序返回客户编号 STRING、持仓市值、可用现金和总资产 DECIMAL(18,2)、证券数量 BIGINT。";
 const targetTable = "raw_positions";
 const kind = "sync_sql_input";
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -162,4 +172,14 @@ export function syncSqlRowsMatch(rows, context) {
     return matches.length === 1 && Object.keys(matches[0]).length === Object.keys(expected).length &&
       Object.keys(expected).every(field => field === "client_id" || equalValidationNumber(matches[0][field], expected[field]));
   });
+}
+
+export function syncSqlColumnsMatch(columns) {
+  return Array.isArray(columns) && columns.length === syncSqlOutputColumns.length &&
+    syncSqlOutputColumns.every(({ name, type }, index) => columns[index]?.name === name && columns[index]?.type === type);
+}
+
+export function assertSyncSqlOutputSchema(columns) {
+  if (!syncSqlColumnsMatch(columns))
+    throw fail(409, syncSqlOutputSchemaMessage, syncSqlOutputSchemaCode);
 }

@@ -1059,6 +1059,10 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 同一操作也可用 `shuduo delivery create`、`shuduo delivery verify` 与 `shuduo delivery review`，均按原编号定位。导出的 JSON 可用 `shuduo-package unpack` 解包，并以从原项目取得的可信摘要运行 `plan` 或 `run`。验证重算内部文件摘要后，仍拒绝替换冻结输入、使用恒真测试、换错交易日或换成云端执行目标。本机计时发布及授权接口沿用同一包与原演练。
 
+冻结持仓的 Spark 输出按参考 SQL 的列顺序核对。依次是 `client_id STRING`、`holding_market_value DECIMAL(18,2)`、`available_cash DECIMAL(18,2)`、`total_assets DECIMAL(18,2)` 和 `security_count BIGINT`。开发失败会保留原行及错误原因，Agent 获得同一结构用于修正。生成交付、回读文件演练、批准、实际调度结果和同批服务来源继续使用同一校验。已有符合此约定的八文件及演练可沿原摘要复核。
+
+本机用冻结输入实际执行了一个反例。Spark 把 `total_assets` 转为字符串后，原金额、测试 SQL 和五场景仍通过。回放此结果时文件演练及发布前核对拒绝，列顺序错误和缺少结构也拒绝。原成功演练、审阅和两个留存批次复核通过。此处验证冻结持仓口径的本机交付路径。
+
 ### 冻结持仓的确切版本发布与监控
 
 审阅成功后单独确认原快照、业务日和两批计时计划，再锁定摘要。工作台默认在激活 5 秒后开始、间隔 45 秒。审批在 15 分钟内可激活，已激活的两批按原计划执行。重复激活读回原发布，逾期的未激活审批需要重新确认。工作台监控按该发布编号显示两批和对应的健康状态。
