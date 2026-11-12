@@ -31,6 +31,7 @@ const canonical = (value) =>
       : value,
   );
 const stableHash = (value) => hash(canonical(value));
+const landingHash = rows => stableHash(rows.map(({ sourceHash: _source, syncedAt: _time, ...row }) => row));
 const text = (value, name, min = 1, max = 100) => {
   if (
     typeof value !== "string" ||
@@ -191,7 +192,7 @@ export class LandingStore {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec(
-      "CREATE TABLE IF NOT EXISTS landing_rows(target_table TEXT NOT NULL,row_key TEXT NOT NULL,payload TEXT NOT NULL,source_hash TEXT NOT NULL,synced_at TEXT NOT NULL,PRIMARY KEY(target_table,row_key)); CREATE INDEX IF NOT EXISTS landing_target ON landing_rows(target_table,row_key);",
+      "CREATE TABLE IF NOT EXISTS landing_rows(target_table TEXT NOT NULL,row_key TEXT NOT NULL,payload TEXT NOT NULL,source_hash TEXT NOT NULL,synced_at TEXT NOT NULL,PRIMARY KEY(target_table,row_key)); CREATE INDEX IF NOT EXISTS landing_target ON landing_rows(target_table,row_key); CREATE TABLE IF NOT EXISTS landing_commits(target_table TEXT PRIMARY KEY,run_id TEXT NOT NULL,target_hash TEXT NOT NULL);",
     );
     this.mutationListener = undefined;
   }
@@ -200,7 +201,7 @@ export class LandingStore {
     this.mutationListener = listener;
   }
 
-  sync({ targetTable, mode, rows, mapping, keyFields, sourceHash, syncedAt }) {
+  sync({ targetTable, mode, rows, mapping, keyFields, sourceHash, syncedAt, runId }) {
     const target = identifier(targetTable, "目标表"),
       normalizedMapping = normalizeMapping(mapping),
       keys = normalizeKeys(keyFields, normalizedMapping),
@@ -222,7 +223,8 @@ export class LandingStore {
     let inserted = 0,
       updated = 0,
       unchanged = 0,
-      deleted = 0;
+      deleted = 0,
+      finalRows, targetHash;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       if (mode === "FULL") {
@@ -247,13 +249,18 @@ export class LandingStore {
         else updated++;
         upsert.run(target, item.key, payload, sourceHash, syncedAt);
       }
+      finalRows = this.readTable(target);
+      targetHash = landingHash(finalRows);
+      if (runId) this.db.prepare(
+        "INSERT INTO landing_commits VALUES(?,?,?) ON CONFLICT(target_table) DO UPDATE SET run_id=excluded.run_id,target_hash=excluded.target_hash",
+      ).run(target, runId, targetHash);
+      else this.db.prepare("DELETE FROM landing_commits WHERE target_table=?").run(target);
       this.db.exec("COMMIT");
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     }
     this.mutationListener?.();
-    const finalRows = this.readTable(target);
     return {
       targetTable: target,
       readCount: rows.length,
@@ -262,10 +269,17 @@ export class LandingStore {
       unchanged,
       deleted,
       finalCount: finalRows.length,
-      targetHash: stableHash(
-        finalRows.map(({ sourceHash: _source, syncedAt: _time, ...row }) => row),
-      ),
+      targetHash,
     };
+  }
+
+  inspectTarget(targetTable) {
+    this.db.exec("BEGIN");
+    try {
+      const rows = this.readTable(targetTable), targetHash = landingHash(rows);
+      const commit = this.db.prepare("SELECT run_id,target_hash FROM landing_commits WHERE target_table=?").get(targetTable);
+      return { rowCount: rows.length, targetHash, runId: commit?.target_hash === targetHash ? commit.run_id : undefined };
+    } finally { this.db.exec("ROLLBACK"); }
   }
 
   readTable(targetTable) {
@@ -737,6 +751,7 @@ export class IngestionManager {
           "SOURCE_CHANGED",
         );
       const output = this.landingStore.sync({
+        runId: pending.id,
         targetTable: task.targetTable,
         mode: task.mode,
         rows: parsed.rows,
@@ -877,6 +892,7 @@ export class IngestionManager {
         ),
         sourceHash = stableHash(rows),
         output = this.landingStore.sync({
+          runId: pending.id,
           targetTable: task.targetTable,
           mode: task.mode,
           rows,

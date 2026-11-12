@@ -2521,7 +2521,7 @@ export function createV2Server(options = {}) {
                 signal,
               });
             if (get("asset_agent_task", task.id).status === "CANCELLED") return;
-            const insight = assets.validateAgentInsight(generated.insight);
+            const insight = assets.validateAgentInsight(generated.insight, context);
             store.update("asset_agent_task", task.id, PROJECT, {
               status: "SUCCEEDED",
               insight,

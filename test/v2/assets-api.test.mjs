@@ -91,7 +91,13 @@ test("V2 asset API searches lineage, executes metrics/standards and grounds Agen
       },
       "asset-sync-task",
     );
-    await request(base, `/sync/tasks/${task.body.id}/run`, {}, "asset-sync-run");
+    const synced = await request(base, `/sync/tasks/${task.body.id}/run`, {}, "asset-sync-run");
+    assert.equal(synced.body.status, "SUCCEEDED");
+    const draft = await request(base, "/sync/tasks", {
+      name: "新草稿", sourceId: source.body.id, targetTable: "raw_positions", mode: "FULL",
+      mapping: {...identityPositionMapping, market_value:"draft_amount"}, keyFields: ["position_id"], watermarkField: "trade_date",
+    }, "newer-draft");
+    assert.equal(draft.status, 201);
 
     const search = await request(base, "/assets?q=market_value");
     assert.equal(search.status, 200);
@@ -112,8 +118,15 @@ test("V2 asset API searches lineage, executes metrics/standards and grounds Agen
       );
     assert.equal(annotation.status, 201);
     assert.equal(annotation.body.businessName, "证券持仓明细");
+    const landed = (await request(base, `/assets/${encoded}`)).body;
+    assert.equal(landed.versionId, synced.body.id);
+    assert.equal(landed.syncSource.metadataVersionId, synced.body.metadataVersionId);
+    assert.equal(landed.evidenceHash, synced.body.targetHash);
+    assert.ok(landed.fields.some(field=>field.name==="market_value"));
+    assert.ok(!landed.fields.some(field=>field.name==="draft_amount"));
     const lineage = await request(base, `/assets/${encoded}/lineage`);
-    assert.ok(lineage.body.edges.some((edge) => edge.type === "FULL"));
+    assert.deepEqual(lineage.body.edges.map(edge=>[edge.evidenceId,edge.sourceVersionId,edge.targetVersionId]),
+      [[synced.body.id,synced.body.metadataVersionId,synced.body.id]]);
 
     const metric = await request(
         base,
@@ -174,7 +187,22 @@ test("V2 asset API searches lineage, executes metrics/standards and grounds Agen
     assert.equal(completed.status, "SUCCEEDED");
     assert.equal(completed.completionScope, "ASSET_DISCOVERY");
     assert.deepEqual(completed.insight.assetIds, ["landing:raw_positions"]);
+    assert.deepEqual(completed.insight.syncCitations, [{
+      assetId:"landing:raw_positions",runId:synced.body.id,metadataVersionId:synced.body.metadataVersionId,targetHash:synced.body.targetHash,
+    }]);
     assert.equal(completed.fullLifecycleE2E, false);
+    const captured = app.assets.agentContext();
+    const refreshed = await request(base, `/sync/tasks/${task.body.id}/run`, {}, "same-content-new-run");
+    assert.equal(refreshed.body.targetHash, synced.body.targetHash);
+    assert.notEqual(refreshed.body.id, synced.body.id);
+    assert.equal((await request(base, `/assets/${encoded}`)).body.versionId, refreshed.body.id);
+    assert.throws(()=>app.assets.validateAgentInsight(completed.insight,captured),{code:"ASSET_SYNC_CITATION_CHANGED"});
+    const saved = (await request(base, `/assets/agent/tasks/${started.body.id}`)).body;
+    assert.deepEqual(saved.insight.syncCitations,completed.insight.syncCitations);
+    landingStore.db.prepare("UPDATE landing_rows SET payload=json_set(payload,'$.market_value','900.00') WHERE target_table='raw_positions'").run();
+    const altered = (await request(base, `/assets/${encoded}`)).body;
+    assert.equal(altered.syncSource.status,"UNCONFIRMED");
+    assert.deepEqual(altered.lineage.edges,[]);
   } finally {
     await new Promise((resolve) => app.server.close(resolve));
     stateStore.close();

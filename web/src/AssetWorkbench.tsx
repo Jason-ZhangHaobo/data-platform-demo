@@ -52,6 +52,7 @@ type Asset = {
   tags: string[];
   evidenceHash: string;
   versionId?: string;
+  syncSource?: {status:"VERIFIED";runId:string;metadataVersionId:string;targetHash:string;mode:string} | {status:"UNCONFIRMED";targetHash:string};
   executableMetrics: boolean;
   owner?: string;
   classification: string;
@@ -126,6 +127,7 @@ type AgentTask = {
     assetIds: string[];
     lineageFocusAssetId: string;
     caveats: string[];
+    syncCitations?: {assetId:string;runId:string;metadataVersionId:string;targetHash:string}[];
   };
   error?: string;
   model?: string;
@@ -149,6 +151,7 @@ const statusLabels: Record<string, string> = {
   PUBLISHED: "已发布",
   PUBLISHED_LOCAL: "本机发布",
   VERIFIED_FIXTURE: "已验证样例",
+  UNCONFIRMED: "待核对",
   FAILED: "失败",
   QUEUED: "排队中",
   RUNNING: "运行中",
@@ -434,7 +437,7 @@ export function AssetWorkbench({
       <section className="asset-agent-v2">
         <header><div className="asset-agent-icon-v2"><Bot size={20} /></div><div><span className="eyebrow">DATA AGENT · GROUNDED DISCOVERY</span><h3>找数据、解释口径、看下游影响</h3><p>模型只接收资产摘要、版本绑定关系和已检查的契约摘要；引用未知资产即失败，不读取业务行。</p></div></header>
         <div className="asset-agent-compose-v2"><textarea aria-label="向Data Agent询问数据资产" rows={2} readOnly={!originalCanWrite} value={agentMessage} onChange={(event) => setAgentMessage(event.target.value)} /><button className="button primary" onClick={askAgent} type="button" disabled={!originalCanWrite || !catalogReady || !!busy || pending(agentTask?.status)}>{busy === "agent" || pending(agentTask?.status) ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />}询问资产 Agent</button></div>
-        {agentTask && <div className="asset-agent-answer-v2"><span className={`status-pill ${agentTask.status.toLowerCase()}`}>{statusLabels[agentTask.status] ?? agentTask.status}</span><div><small>原问题：{agentTask.message} · 不随本次检索重新生成</small><strong>{agentTask.insight?.answer ?? agentTask.error ?? "正在分析资产关系…"}</strong>{agentTask.insight?.caveats.map((item) => <p key={item}>边界：{item}</p>)}{agentTask.usage?.total_tokens && <small>{agentTask.model} · {agentTask.usage.total_tokens} Token</small>}</div><div className="asset-citations-v2">{agentTask.insight?.assetIds.map((id) => <button type="button" disabled={!!busy} key={id} onClick={() => { selectAsset(id); setTab("lineage"); }}>{id}<ChevronRight size={12} /></button>)}</div></div>}
+        {agentTask && <div className="asset-agent-answer-v2"><span className={`status-pill ${agentTask.status.toLowerCase()}`}>{statusLabels[agentTask.status] ?? agentTask.status}</span><div><small>原问题：{agentTask.message} · 不随本次检索重新生成</small><strong>{agentTask.insight?.answer ?? agentTask.error ?? "正在分析资产关系…"}</strong>{agentTask.insight?.caveats.map((item) => <p key={item}>边界：{item}</p>)}{agentTask.usage?.total_tokens && <small>{agentTask.model} · {agentTask.usage.total_tokens} Token</small>}</div><div className="asset-citations-v2">{agentTask.insight?.syncCitations?.map(citation => <small key={citation.assetId}>回答引用 {citation.assetId} · 同步批次 {citation.runId.slice(0,8)}</small>)}{agentTask.insight?.assetIds.map((id) => <button type="button" disabled={!!busy} key={id} onClick={() => { selectAsset(id); setTab("lineage"); }}>查看当前资产 {id}<ChevronRight size={12} /></button>)}</div></div>}
         <small>{catalogReady?`${agentTasks.length}次受治理问答`:"问答目录尚未确认"} · 不自动修改资产</small>
       </section>
 
@@ -450,6 +453,13 @@ export function AssetWorkbench({
           {detail&&<p className="asset-read-scope">详情定位：{detail.id} · 已读说明V{detail.annotation?.revision??0}。{!catalogReady?"目录尚未确认，详情单独核对。":!assets.some(asset=>asset.id===detail.id)?"此资产不在当前检索结果中，来自原定位。":"属于当前检索结果。"}<button className="button" disabled={!!busy||detailRead.state==="LOADING"} onClick={()=>void reader.current?.refreshDetail()}>刷新所选详情</button></p>}
           {detail ? <>
             <header className="asset-detail-head-v2"><div><span className="eyebrow">{kindLabels[detail.kind] ?? detail.kind} · {detail.system}</span><h3>{detail.businessName}</h3><code>{detail.id}</code></div><div><span className={`status-pill ${detail.status.toLowerCase()}`}>{statusLabels[detail.status] ?? detail.status}</span><small>evidence {detail.evidenceHash.slice(0, 12)}</small></div></header>
+            {detail.syncSource && <div className="lineage-boundary-v2">
+              {detail.syncSource.status === "VERIFIED" ? <><CheckCircle2 size={16}/><div>
+                <strong>最近提交批次 {detail.syncSource.runId.slice(0,8)}</strong>
+                <p>原元数据 {detail.syncSource.metadataVersionId.slice(0,8)} · 落地摘要 {detail.syncSource.targetHash.slice(0,12)}
+                  {detail.syncSource.mode === "INCREMENTAL_UPSERT" && " · 增量落地可包含此前保留行"}</p>
+              </div></> : <><AlertTriangle size={16}/><strong>同步批次与当前落地数据待核对</strong></>}
+            </div>}
             <div className="asset-tabs-v2" role="tablist" aria-label="资产详情视图">{[["overview", "概览"], ["fields", `字段 ${detail.fields.length}`], ["lineage", `血缘 ${detail.lineage.edges.length}`], ["governance", "指标、标准与契约"]].map(([id, label]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id as typeof tab)}>{label}</button>)}</div>
             {tab === "overview" && <div className="asset-overview-v2">
               <div className="asset-proof-v2"><div><span>真实行数</span><strong>{detail.rowCount ?? "—"}</strong></div><div><span>业务域</span><strong>{detail.domain}</strong></div><div><span>责任人</span><strong>{detail.owner ?? "待补充"}</strong></div><div><span>说明版本</span><strong>V{detail.annotation?.revision ?? 0}</strong></div></div>
