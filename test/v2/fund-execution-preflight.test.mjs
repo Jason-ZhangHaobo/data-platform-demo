@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runV2Cli } from "../../bin/shuduo.mjs";
@@ -19,6 +19,7 @@ import { fundExecutionPreflight, resolveFundExecutionCandidate } from "../../src
 import { assertFundConsent, fundAgentPublicationPreflight } from "../../src/v2/fund-publication.mjs";
 import { verifyFundSignedExecution } from "../../src/v2/fund-signed-execution.mjs";
 import { bindFundSignedDelivery } from "../../src/v2/fund-signed-delivery.mjs";
+import { createFundSignedReceipts } from "../../src/v2/fund-signed-receipts.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "../../src/v2/fund-preparation.mjs";
 import { fundRequirementScope } from "../../src/v2/fund-requirement-contract.mjs";
 import { validatePrivateApplicationRequest } from "../../src/v2/private-application.mjs";
@@ -216,6 +217,25 @@ test("signed fund execution binds immutable job bytes and independent result to 
 
   const directory=mkdtempSync(join(tmpdir(),"shuduo-signed-fund-rehearsal-"));
   t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const receiptOptions = { store, project: PROJECT, root: directory, env: { V2_SPARK_EXECUTOR_SECRET: queueConfig.sharedSecret } };
+  const receipts = createFundSignedReceipts(receiptOptions);
+  assert.equal(receipts.read(original.run.id), undefined);
+  const registration = { selection: original.selection, preflightDigest, jobId: job.jobId, serializedJob, envelope };
+  const savedRegistration = receipts.register(registration);
+  assert.equal(savedRegistration.replayed, false);
+  assert.deepEqual(receipts.register(registration), { ...savedRegistration, replayed: true });
+  assert.throws(() => receipts.register({ ...registration, envelope: sign({ ...output, durationMs: 123 }) }),
+    { code: "FUND_SIGNED_RECEIPT_UNAVAILABLE" });
+  const reopened = createFundSignedReceipts(receiptOptions);
+  assert.deepEqual(verifyFundSignedExecution(reopened.read(original.run.id)), proof);
+  const receiptDirectory = join(directory, ".data", "fund-signed-receipts");
+  const [receiptFilename] = readdirSync(receiptDirectory);
+  const receiptFile = join(receiptDirectory, receiptFilename);
+  const originalBytes = readFileSync(receiptFile);
+  writeFileSync(receiptFile, Buffer.concat([originalBytes, Buffer.from(" ")]));
+  assert.throws(() => reopened.read(original.run.id), { code: "FUND_SIGNED_RECEIPT_UNAVAILABLE" });
+  writeFileSync(receiptFile, originalBytes);
+  assert.doesNotMatch(JSON.stringify(store.list("fund_signed_execution", PROJECT)), /serializedJob|envelope|sharedSecret/);
   const schedule=fundRehearsalAt(original.context.id);
   const request={directory:unpackDeliveryPackage(bound,join(directory,"bound"),bound.digest),
     expectedDigest:bound.digest,scheduledFor:schedule};
