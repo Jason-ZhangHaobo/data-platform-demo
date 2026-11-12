@@ -1,5 +1,5 @@
 import {lazy, Suspense, useEffect, useRef, useState} from "react";
-import {opsPublicationTarget, publicationMonitorHref, readOpsPublication} from "./ops-publication";
+import {opsPublicationTarget, publicationBatchReportHref, publicationMonitorHref, readOpsPublication} from "./ops-publication";
 const OpsBatchReportPanel = lazy(async () => ({default:(await import("./OpsBatchReportPanel")).OpsBatchReportPanel}));
 
 type Api = <T>(path: string) => Promise<T>;
@@ -32,6 +32,7 @@ export function OpsPublicationPanel({api, agent = false}: {api: Api; agent?:bool
   }, [key]);
   if (target === undefined) return null;
   const evidence = current?.evidence;
+  const publication = target && evidence?.source ? {...target,source:evidence.source} : undefined;
   const report = evidence?.batches.find(batch => batch.id === target?.reportBatchId);
   return <section id={agent?"agent-publication-history":"ops-exact-publication"} className="ops-live-evaluation-v2" aria-labelledby="ops-exact-publication-title">
     <header>
@@ -51,7 +52,7 @@ export function OpsPublicationPanel({api, agent = false}: {api: Api; agent?:bool
               <td>{batch.pendingLabel ?? label(batch.status)}</td><td>{batch.schedulerTriggered ? "已触发" : "未触发"}</td>
               {evidence.failureSettlement && <td>{batch.workerResult==="CONFIRMED"?"原回执已确认":batch.workerResult==="PENDING"?"待核对":"—"}</td>}
               <td>{batch.serviceHref ? <a href={batch.serviceHref}>查看第 {batch.sequence} 批接口</a> : "—"}</td>
-              <td>{batch.reportSource ? <a href={batchReportHref(location, batch.reportSource.batchId)}>查看第 {batch.sequence} 批报表</a> : "—"}</td>
+              <td>{batch.reportSource && publication ? <a href={publicationBatchReportHref(publication, batch.reportSource.batchId)}>查看第 {batch.sequence} 批报表</a> : "—"}</td>
             </tr>)}</tbody>
           </table>
         </div>
@@ -64,14 +65,8 @@ export function OpsPublicationPanel({api, agent = false}: {api: Api; agent?:bool
           {agent && <a className="button" href={"/v2/?module=agent-center&task="+target.taskId}>打开当前任务</a>}
         </div>
         {report?.reportSource && report.sequence !== undefined &&
-          <Suspense fallback={<p role="status">正在加载批次报表…</p>}><OpsBatchReportPanel key={report.id} api={api} source={report.reportSource} sequence={report.sequence}/></Suspense>}
+          <Suspense fallback={<p role="status">正在加载批次报表…</p>}><OpsBatchReportPanel key={report.id} api={api} source={report.reportSource} sequence={report.sequence} serviceHref={report.serviceHref} /></Suspense>}
         {report && !report.reportSource && <p role="status">整次发布及两个批次通过核验后可读取此报表。</p>}
       </>}
   </section>;
-}
-
-function batchReportHref(location: string, id: string) {
-  const url = new URL(location);
-  url.searchParams.set("reportBatchId", id);
-  return url.pathname + url.search + "#ops-batch-report";
 }

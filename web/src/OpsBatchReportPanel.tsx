@@ -3,13 +3,12 @@ import {readPrivateBatchSummary} from "../../src/v2/private-batch-report-client.
 import type {PrivateBatchSummary} from "../../src/v2/private-batch-report-client.mjs";
 import type {PublishedReportBinding} from "../../src/v2/published-report-request.mjs";
 import {OpsBatchArchivePanel} from "./OpsBatchArchivePanel";
+import {privateBatchReportPath} from "../../src/v2/private-batch-report-request.mjs";
 
 type Api = <T>(path: string, body?: unknown, options?: {idempotencyKey?: string}) => Promise<T>;
-export function OpsBatchReportPanel({api, source, sequence}: {api: Api; source: PublishedReportBinding; sequence: number}) {
+export function OpsBatchReportPanel({api, source, sequence, serviceHref}: {api: Api; source: PublishedReportBinding; sequence: number;serviceHref?:string}) {
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<{revision: number; report?: PrivateBatchSummary; message?: string}>();
-  const [downloading, setDownloading] = useState(false);
-  const [notice, setNotice] = useState("");
   const generation = useRef(0);
   const request = useRef(api);
   request.current = api;
@@ -23,30 +22,9 @@ export function OpsBatchReportPanel({api, source, sequence}: {api: Api; source: 
   }, [revision, source]);
   const current = result?.revision === revision ? result : undefined;
   const report = current?.report;
-  const download = async () => {
-    if (!report || downloading) return;
-    const version = generation.current;
-    setNotice("");
-    setDownloading(true);
-    try {
-      const file = await readPrivateBatchSummary({request:api}, {source, downloadDigest:report.digest});
-      if (version !== generation.current) return;
-      const href = URL.createObjectURL(new Blob([JSON.stringify(file)], {type:"application/json"}));
-      const link = document.createElement("a");
-      link.href = href;
-      link.download = "shuduo-batch-report-" + source.batchId.slice(0, 8) + ".json";
-      try { document.body.appendChild(link); link.click(); }
-      finally { link.remove(); setTimeout(() => URL.revokeObjectURL(href), 60000); }
-      setNotice("汇总摘要已复核，已请求浏览器下载。");
-    } catch (error) {
-      if (version === generation.current) setNotice("下载未确认。" + (error as Error).message);
-    } finally {
-      if (version === generation.current) setDownloading(false);
-    }
-  };
   return <section id="ops-batch-report" className="ops-live-evaluation-v2" aria-labelledby="ops-batch-report-title">
     <header><div><h3 id="ops-batch-report-title">第 {sequence} 批客户资产汇总</h3><p>私有发布 · 汇总只读</p></div>
-      <button className="button" disabled={!current || downloading} onClick={() => {setNotice(""); setRevision(value => value + 1);}}>重新读取汇总</button>
+      <button className="button" disabled={!current} onClick={() => setRevision(value => value + 1)}>重新读取汇总</button>
     </header>
     {!current && <p role="status">正在核对固定发布、快照和汇总…</p>}
     {current?.message && <p role="alert">{current.message}</p>}
@@ -64,9 +42,11 @@ export function OpsBatchReportPanel({api, source, sequence}: {api: Api; source: 
         <p>监控事件 {report.provenance.monitorEventId}</p>
         <p>此汇总来自已核验的发布快照。报表需求与审阅记录未包含在此附件。</p>
       </details>
-      <button className="button" disabled={downloading} onClick={() => void download()}>下载批次溯源 JSON</button>
+      <div className="agent-delivery-actions">
+        <a className="button" href={"/api/v2"+privateBatchReportPath(source,report.digest)}>下载批次溯源 JSON</a>
+        {serviceHref&&<a className="button" href={serviceHref}>查看本批次授权调用</a>}
+      </div>
     </>}
-    {notice && <p role="status">{notice}</p>}
     <OpsBatchArchivePanel api={api} source={source} summary={report}/>
   </section>;
 }

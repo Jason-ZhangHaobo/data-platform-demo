@@ -48,6 +48,11 @@ export function publicationMonitorHref(target:MonitorTarget, agent = false) {
   return "/v2/?" + query + (agent ? "#agent-publication-history" : "#ops-exact-publication");
 }
 
+export function publicationBatchReportHref(target:MonitorTarget, batchId:string) {
+  if (![target.firstBatchId,target.secondBatchId].includes(batchId)) throw Error("原报表批次未确认");
+  return publicationMonitorHref(target).replace("#ops-exact-publication", "&reportBatchId="+encodeURIComponent(batchId)+"#ops-batch-report");
+}
+
 export const batchServiceHistoryHash = "#release-batch-consumption";
 export function batchServiceHistoryHref(target:MonitorTarget,batchId:string) {
   const source=target.source;
