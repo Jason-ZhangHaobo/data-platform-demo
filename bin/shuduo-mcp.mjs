@@ -8,6 +8,7 @@ import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportLineage,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
+import { readWealthConsumption } from '../src/v2/wealth-report-consumption-client.mjs';
 import {readReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import {readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
 import {readBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
@@ -250,6 +251,9 @@ const tools = [
       required: ["requestId"], additionalProperties: false }, annotations:{readOnlyHint:true} },
   { name: 'report_published_quality', description: '只读核对原基金报表快照、规则版本与质量回执。',
     inputSchema: { type: 'object', properties: { requestId: { type: 'string', format: 'uuid' } }, required: ['requestId'], additionalProperties: false }, annotations: { readOnlyHint: true } },
+  { name: 'report_wealth_consumption', description: '只读核对确切财富管理报表运行的原发布批次及同批 DAPI/XAPI 授权调用。',
+    inputSchema: { type: 'object', properties: { reportId: { type: 'string', format: 'uuid' }, runId: { type: 'string', format: 'uuid' } },
+      required: ['reportId', 'runId'], additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'report_published_quality_run', description: '经明确确认后，在固定本机报表快照执行一次质量检测，复用原回执。',
     inputSchema: { type: 'object', properties: { requestId: { type: 'string', format: 'uuid' }, snapshotId: { type: 'string', format: 'uuid' },
       basisDigest: { type: 'string', pattern: '^[a-f0-9]{64}$' }, confirm: { type: 'boolean', const: true } },
@@ -857,6 +861,7 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==='report_published_development')return readPublishedReportDevelopment(client,args);
   if(name==='report_published_consumption')return readPublishedReportConsumption(client,args);
   if (name === 'report_published_quality') return readFundReportQuality(client, args);
+  if (name === 'report_wealth_consumption') return readWealthConsumption(client, args);
   if (name === 'report_published_quality_run') return runFundReportQuality(client, args);
   if(name==='report_published_resume')return resumePublishedReport(client,args);
   if (name === "report_overview") return client.request("/reports/overview");

@@ -2,6 +2,7 @@ import type {ReportSourceEvidence} from "./published-report-read";
 import {distributionReportTemplate} from '../../src/v2/distribution-report-contract.mjs';
 const ReportProvenancePanel=lazy(async()=>({default:(await import('./ReportProvenancePanel')).ReportProvenancePanel}));
 const DistributionReportResults=lazy(async()=>({default:(await import('./DistributionReportResults')).DistributionReportResults}));
+const WealthReportConsumptionPanel=lazy(()=>import('./WealthReportConsumptionPanel'));
 import { lazy,Suspense,useEffect, useMemo, useState } from "react";
 import { securitiesReportTemplate } from "./report-template";
 import {
@@ -40,6 +41,7 @@ type Snapshot = {
 };
 type Dataset = {
   outputContractId?:string;
+  publishedSource?: { kind: 'MANUAL' | 'AGENT' };
   id: string;
   name: string;
   code: string;
@@ -347,6 +349,10 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
             <header><div><span className="eyebrow">{selectedReport.code} · SNAPSHOT PINNED</span><h3>{selectedReport.name}</h3><p>{selectedReport.currentVersion.description}</p></div><div><button className="button primary" onClick={runReport} disabled={!canWrite || !!busy}>{busy === "run" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际运行</button><button className="button" onClick={download} disabled={!latestRun || !!busy}><Download size={14} />导出聚合CSV</button></div></header>
             <div className="reports-proof-v2"><div><span>状态</span><strong>{labels[selectedReport.status] ?? selectedReport.status}</strong></div><div><span>快照</span><code>{selectedReport.currentVersion.datasetSnapshotId.slice(0, 8)}</code></div><div><span>报表版本</span><strong>V{selectedReport.currentVersion.versionNumber}</strong></div><div><span>运行</span><strong>{selectedReport.runs.length}</strong></div><div><span>公网</span><strong>未部署</strong></div></div>
             {latestRun&&<Suspense fallback={<p>正在加载溯源核对…</p>}><ReportProvenancePanel key={latestRun.id} api={api} reportId={selectedReport.id} versionId={latestRun.reportVersionId} runId={latestRun.id} resultHash={latestRun.resultHash}/></Suspense>}
+            {datasets.some(dataset => dataset.id === selectedReport.datasetId && dataset.assetId === 'dataset:customer_assets_t1' &&
+              !dataset.outputContractId && dataset.publishedSource?.kind !== 'AGENT') &&
+              <Suspense fallback={<p>正在加载授权消费回看…</p>}><WealthReportConsumptionPanel key={selectedReport.id} api={api}
+                reportId={selectedReport.id} runs={selectedReport.runs.filter(run => run.status === 'SUCCEEDED' && !run.outputContractId)} /></Suspense>}
             {latestRun ? <>{latestRun.outputContractId?<Suspense fallback={<p>正在读取分布报表…</p>}><DistributionReportResults key={latestRun.id} contractId={latestRun.outputContractId} widgets={latestRun.widgets} sourceEvidence={latestRun.sourceEvidence}/></Suspense>:<div className="report-widgets-v2">{latestRun.widgets.map((widget) => <ReportWidget key={widget.id} widget={widget} />)}</div>}</> : <div className="reports-empty-canvas-v2"><Sparkles size={28} /><strong>草稿已固定快照，尚未计算</strong><p>点击“实际运行”后才生成KPI与分布，不使用预设结果。</p></div>}
             {latestRun && <footer className="reports-run-proof-v2"><CheckCircle2 size={14} />运行 {latestRun.id.slice(0, 8)} · 结果摘要 {latestRun.resultHash.slice(0, 12)} · {latestRun.durationMs}ms · public=false</footer>}
           </> : <div className="reports-empty-canvas-v2"><BarChart3 size={28} /><strong>创建第一张聚合报表</strong><p>数据集必须先完成实际快照。</p></div>}
