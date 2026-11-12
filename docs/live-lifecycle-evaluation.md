@@ -231,11 +231,21 @@ shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CA
   --case-records "$BASE_CASE_RECORDS"
 ```
 
-首例之后按固定顺序续接其余九个基础案例。准备沿原评测编号和开始时间保存独立检查点，同一次评测的同一案例始终使用同一幂等键。第二例可直接使用上例命令。第三例起给准备命令添加 `--case-records "$BASE_CASE_RECORDS"`。该文件为权限 0600 的 JSON 数组，从第二例起按目录顺序排列，每项为 `{"checkpoint":"/private/case.json","completion":"/private/completion.json"}`，尚待核验的最后一例可省略 `completion`。续接准备要求上一例完成回执，跨案例复用任务、批次、调用回执或审批均会被拒绝。
+首例之后按固定顺序续接其余九个基础案例。准备沿原评测编号和开始时间保存独立检查点，同一次评测的同一案例始终使用同一幂等键。第二例可直接使用上例命令。第三例起给准备命令添加 `--case-records "$BASE_CASE_RECORDS"`。该文件为权限 0600 的 JSON 数组，从第二例起按目录顺序排列，每项为 `{"checkpoint":"/private/case.json","completion":"/private/completion.json"}`，尚待核验的最后一例可省略 `completion`。续接准备接受上一例完成或开发失败结算回执。跨案例复用任务、批次、调用回执或审批均会被拒绝。
 
 窗口使用 `INVITED_NEXT_V3_DEVELOPMENT_WINDOW_V1` 和确切验包，独立批准后才生成 `nextCaseReceipt`。续接保留历次预留，校验当前完整账单及配额。第三例起还会核对当月已记录的模型和 Spark 用量。开启前在只读状态核对控制面能力，开启后核对确切请求绑定。
 
-提交与恢复沿用 `v3-start --confirm` 和 `v3-start --reconcile`。运行时限定受邀管理员的确切需求、SQL、口径与幂等键，丢失响应后只用原编号查询。后续各阶段沿原案例检查点处理。第二例旧报告参数 `--next-checkpoint`、`--next-completion-file` 仍可使用。明确失败案例的结算续接和派生案例的提交另行接入。
+提交与恢复沿用 `v3-start --confirm` 和 `v3-start --reconcile`。运行时限定受邀管理员的确切需求、SQL、口径与幂等键，丢失响应后只用原编号查询。后续各阶段沿原案例检查点处理。第二例旧报告参数 `--next-checkpoint`、`--next-completion-file` 仍可使用。派生提交沿各自已核验的父版本接入。
+
+### 结算已确认的开发失败
+
+```sh
+shuduo agent v3-settle-failure --checkpoint "$CASE_CHECKPOINT" --out-file "$FAILURE_RECEIPT"
+```
+
+命令以原创建者身份做两次只读 GET，沿原请求核对已保存的终态、所有模型尝试用量与已关联的 Spark 批次。任务确认失败、模型用量已记账且所发批次均有确切失败回执时，另存权限 0600 的失败回执。模型用量待核对、Worker 结果未知或超时只保留原状态。文件演练和发布阶段的失败结算仍待接入。
+
+用失败回执代替 `--completion-file` 或案例列表中的 `completion` 后，可准备下一独立基础案例，继续保留历史未结算预留和同月已确认用量。云端确认失败仍在 20 例分母中，依赖该案例的派生标为 `SOURCE_FAILED`。本机失败回执只记本机验证范围。
 
 ### 读取原任务的执行阶段
 

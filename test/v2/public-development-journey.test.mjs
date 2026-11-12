@@ -1632,6 +1632,97 @@ test('a killed publication CLI recovers both original batches through signed sch
   }
 });
 
+test('a settled original development failure allows the next case while pending usage and Spark stay unresolved',async t=>{
+  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true});
+  const checkpoint=join(f.directory,'failed-case.json'), bill=join(f.directory,'bill.json'),
+    outFile=join(f.directory,'failure.json'), nextPath=join(f.directory,'next.json');
+  const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
+  writeFileSync(bill,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny:64,maxIncrementCny:2,
+    pages:[{Success:true,Data:{PageNum:1,PageSize:300,TotalCount:1,BillingCycle:month,Items:{Item:[{Currency:'CNY',PretaxAmount:'20.00'}]}}}]}),{mode:0o600});
+  const calls=[],client=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
+    const uri=new URL(url), path=uri.pathname.slice('/api/v2'.length)+uri.search;
+    calls.push({method:options.method,path});
+    const reply=await f.call(path,options.body?JSON.parse(options.body):undefined,options.headers['Idempotency-Key']);
+    return new Response(JSON.stringify(reply.body),{status:reply.status});
+  }});
+  const cli=async(action,flags,exit=0,path=checkpoint)=>{
+    calls.length=0;
+    let value,message;
+    assert.equal(await runV2Cli(['agent',action,'--checkpoint',path,...flags],{},
+      {client,output:line=>{value=JSON.parse(line);},error:line=>{message=line;}}),exit,message);
+    return value;
+  };
+  const source='a'.repeat(40);
+  await cli('v3-start',['--source-revision',source]);
+  const created=await cli('v3-start',['--bill-file',bill,'--confirm']);
+  const taskPath='/agent/tasks/'+created.taskId;
+  const advance=async version=>{
+    f.alignWallClock();
+    const response=await f.call(taskPath+'/advance',{expectedVersion:version});
+    assert.equal(response.status,200);
+    return response.body;
+  };
+  const evidencePath='/agent/requests/'+JSON.parse(readFileSync(checkpoint,'utf8')).outcomes[0].actions.agent.key+'/execution-evidence';
+  const inspectReads=[{method:'GET',path:'/auth/session'},{method:'GET',path:evidencePath}];
+  const pending=async()=>{
+    const snapshot=readFileSync(checkpoint);
+    const proof=await cli('v3-settle-failure',['--out-file',outFile]);
+    assert.equal(proof.reason,'DEVELOPMENT_FAILURE_NOT_SETTLED');
+    assert.deepEqual(calls,inspectReads);
+    assert.equal(existsSync(outFile),false);
+    assert.deepEqual(readFileSync(checkpoint),snapshot);
+  };
+  let task=await advance((await f.call(taskPath)).body.version);
+  task=await advance(task.version);
+  assert.equal(task.stage,'WAITING_FOR_RUN');
+  const runId=task.runId, prepared=f.store.get('run',runId,PROJECT).remoteSubmission.prepared;
+  await pending();
+  f.complete(prepared,{status:'FAILED',engine:'Apache Spark',engineVersion:'3.5.9',durationMs:100,error:'fixture SQL error'});
+  task=await advance(task.version);
+  assert.equal(task.stage,'READY_FOR_MODEL');
+  task=await advance(task.version);
+  assert.equal(task.status,'FAILED');
+  assert.equal(task.code,'AGENT_SQL_UNCHANGED_AFTER_FAILURE');
+  f.env.V2_FC_PUBLIC_READ_ONLY='true';
+  delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
+  await f.restart();
+  const rawTask=f.store.get('agent',task.id,PROJECT);
+  f.store.update('agent',task.id,PROJECT,{attempts:rawTask.attempts.map((attempt,index)=>index===0?{...attempt,usageEstimated:true}:attempt)});
+  await pending();
+  f.store.update('agent',task.id,PROJECT,{attempts:rawTask.attempts});
+  const run=f.store.get('run',runId,PROJECT);
+  f.store.update('run',runId,PROJECT,{code:'REMOTE_SPARK_TIMEOUT'});
+  await pending();
+  f.store.update('run',runId,PROJECT,{code:run.code});
+  const beforeSettlement=readFileSync(checkpoint), beforeCounts=f.counts();
+  const failure=await cli('v3-settle-failure',['--out-file',outFile]);
+  assert.equal(failure.status,'FAILURE_RECEIPT_SAVED');
+  assert.equal(failure.scope,'LOCAL_SETTLED_FAILURE_ONLY');
+  assert.equal(statSync(outFile).mode&0o777,0o600);
+  assert.deepEqual(calls,inspectReads);
+  const receipt=JSON.parse(readFileSync(outFile,'utf8'));
+  assert.deepEqual(receipt.failure.sparkRunIds,[runId]);
+  assert.equal(receipt.failure.modelAttempts,2);
+  assert.equal(receipt.failure.ledgerTokens,24);
+  assert.equal(receipt.failure.sparkDurationMs,100);
+  assert.deepEqual(readFileSync(checkpoint),beforeSettlement);
+  assert.deepEqual(f.counts(),beforeCounts);
+  const next=await cli('v3-prepare-next',['--first-checkpoint',checkpoint,'--completion-file',outFile,'--source-revision',source],0,nextPath);
+  assert.equal(next.caseId,'v3-fresh--cash-change');
+  const binding=await cli('v3-start',['--window-binding'],0,nextPath);
+  assert.equal(binding.previousCase.reserveCny,64);
+  assert.deepEqual(binding.previousCase.usageFloor,{month,modelCalls:2,remoteSparkRuns:1,remoteSparkSeconds:0.1});
+  const report=await cli('v3-run',['--completion-file',outFile,'--next-checkpoint',nextPath]);
+  assert.equal(report.expectedCaseCount,20);
+  assert.equal(report.verifiedCloudCaseCount,0);
+  assert.equal(report.cases[0].status,'LOCAL_FAILURE_SETTLED_ONLY');
+  assert.equal(report.cases[1].creationStatus,'PREPARED');
+  assert.deepEqual(calls,[]);
+  const tampered=join(f.directory,'tampered-failure.json');
+  writeFileSync(tampered,JSON.stringify({...receipt,taskId:randomUUID()}),{mode:0o600});
+  await cli('v3-run',['--completion-file',tampered],1);
+});
+
 test('invited development reaches versioned files across restart without another task or submission', async t => {
   const f = await fixture(t);
   let task = (await f.call('/agent/tasks', taskInput)).body;
