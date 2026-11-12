@@ -10,13 +10,28 @@ import {developmentVerificationReport} from './agent-development-workflow.mjs';
 import {localServiceSources} from './local-service-sources.mjs';
 import {getContext} from './context.mjs';
 import {publishedReportSource} from './published-report-request.mjs';
+import { certifiedSyncSqlSource } from "./sync-sql-service-source.mjs";
+import { syncReportAsset } from "./sync-sql-report.mjs";
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
 const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).filter(k=>v[k]!==undefined).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v);
 export const publishedReportHash=value=>createHash('sha256').update(canonical(value)).digest('hex');
-export function resolvePublishedReportSource({store,project,source,actorId,allowFund=true,timeUnitMs,fundSignedExecutionFor}){
+export function resolvePublishedReportSource({store,project,source,actorId,allowFund=true,allowSync=false,timeUnitMs,fundSignedExecutionFor}){
  source=publishedReportSource(source);
  const read=(kind,id)=>{const value=store.get(kind,id,project);if(!value||value.projectId!==project)throw fail(409,'REPORT_SOURCE_UNAVAILABLE','原发布来源缺失，未改用其他批次');return value;};
  const revision=read('revision',source.revisionId),code=read('run',source.runId),release=read('release',source.releaseId),bundle=read('delivery_package',release.packageId),batch=read('release_run',source.batchId);
+ if (bundle.manifest?.source?.syncInput || release.syncInput || batch.source?.syncInput) {
+  if (!allowSync || revision.author !== actorId || bundle.manifest?.source?.syncInput?.actorId !== actorId)
+   throw fail(403,"REPORT_SOURCE_OWNER","冻结持仓报表仅供原工程师在本机核对");
+  const proof = certifiedSyncSqlSource({store,project,run:batch,enabled:allowSync,timeUnitMs});
+  const evidence = proof?.sourceEvidence;
+  if (!evidence || evidence.releaseId!==source.releaseId || evidence.packageDigest!==source.packageDigest ||
+      evidence.sourceRevisionId!==source.revisionId || evidence.sourceRunId!==source.runId ||
+      (source.kind==="AGENT" ? evidence.developmentMode==="MANUAL" || evidence.sourceTaskId!==source.taskId : evidence.developmentMode!=="MANUAL"))
+   throw fail(409,"REPORT_SOURCE_UNPROVEN","原冻结持仓版本与指定批次不一致");
+  const context = getContext(revision.contextId);
+  return {asset:syncReportAsset(batch,proof,publishedReportHash),rows:structuredClone(batch.rows),expected:proof.expected,
+   context:{id:context.id,name:"冻结持仓客户资产 T+1",definition:context.definition},source,sourceEvidence:evidence};
+ }
  if (bundle.manifest?.source?.fundLookthrough) {
   if (!allowFund) throw fail(403, "REPORT_SOURCE_UNSUPPORTED", "基金报表仅在本机 Spark 环境开放");
   const attribution = bundle.manifest.source.attribution;

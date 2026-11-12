@@ -7,7 +7,7 @@ import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/ass
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
-import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportLineage,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
+import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
 import { readWealthConsumption } from '../src/v2/wealth-report-consumption-client.mjs';
 import {readReportProvenance} from '../src/v2/report-provenance-client.mjs';
@@ -253,7 +253,7 @@ const tools = [
   { name: "report_published_result", description: "按本账号原报表请求只读核对固定历史运行和脱敏组件，可附原来源。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, source: publishedReportSourceSchema },
       required: ["requestId"], additionalProperties: false } },
-  { name: "report_published_lineage", description: "按本人原基金报表请求核对已保存的快照和同批次运维证据。",
+  { name: "report_published_lineage", description: "按本人原报表请求核对快照、同批次运维或授权调用证据。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, source: publishedReportSourceSchema },
       required: ["requestId"], additionalProperties: false } },
   { name: "report_published_development", description: "按本账号原基金报表请求读取原 SQL 和已保存的独立核验，只读。",
@@ -873,7 +873,7 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==='report_published_create')return submitPublishedReport(client,args);
   if(name==='report_published_request')return lookupPublishedReport(client,args);
   if(name==='report_published_result')return readPublishedReportResult(client,args);
-  if(name==='report_published_lineage')return readPublishedReportLineage(client,args);
+  if(name==='report_published_lineage')return readPublishedReportEvidence(client,args);
   if(name==='report_published_development')return readPublishedReportDevelopment(client,args);
   if(name==='report_published_consumption')return readPublishedReportConsumption(client,args);
   if (name === 'report_published_quality') return readFundReportQuality(client, args);

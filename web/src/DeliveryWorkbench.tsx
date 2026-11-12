@@ -668,8 +668,10 @@ export function DeliveryWorkbench({
     selected && selectedRelease && selectedHealthy && reportBatchIds.length === 2 && selectedRelease.syncInput?.snapshotHash === syncInput.snapshotHash
     ? {taskId:syncInput.agentTaskId,packageDigest:selected.digest,releaseId:selectedRelease.id,sourceKind:"AGENT",scope:"LOCAL_TEST_ONLY",
         revisionId:selected.manifest.source.revisionId,runId:selected.manifest.source.runId} : undefined;
-  const reportSource:PublishedReportSource|undefined=!syncInput&&(!fund||selectedHealthy)&&sourceLocked&&source&&selected&&selectedRelease&&selectedRelease.sourceRevisionId===selected.manifest.source.revisionId&&reportBatchIds.length?
-    {kind:"MANUAL",releaseId:selectedRelease.id,packageDigest:selected.digest,revisionId:selected.manifest.source.revisionId,runId:selected.manifest.source.runId,batchIds:reportBatchIds}:undefined;
+  const reportSource:PublishedReportSource|undefined=syncHandoff && syncHandoff.taskId && syncHandoff.revisionId && syncHandoff.runId
+    ? {kind:"AGENT",taskId:syncHandoff.taskId,releaseId:syncHandoff.releaseId,packageDigest:syncHandoff.packageDigest,revisionId:syncHandoff.revisionId,runId:syncHandoff.runId,batchIds:reportBatchIds}
+    : (!syncInput||syncInput.developmentMode==="MANUAL"&&selectedHealthy)&&(!fund||selectedHealthy)&&sourceLocked&&source&&selected&&selectedRelease&&selectedRelease.sourceRevisionId===selected.manifest.source.revisionId&&reportBatchIds.length
+      ? {kind:"MANUAL",releaseId:selectedRelease.id,packageDigest:selected.digest,revisionId:selected.manifest.source.revisionId,runId:selected.manifest.source.runId,batchIds:reportBatchIds} : undefined;
   return (
     <div className="delivery-workbench">
       <div className="delivery-notice">
@@ -1180,7 +1182,7 @@ export function DeliveryWorkbench({
               </article>
             </div>
           </section>
-          {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!busy} fund={Boolean(fund)}/></Suspense>}
+          {reportSource&&<Suspense fallback={<p role="status">正在加载同源报表视图…</p>}><AgentReportPanel api={api} source={reportSource} canCreate={canWrite&&!busy} fund={Boolean(fund)} sync={Boolean(syncInput)}/></Suspense>}
         </>
       )}
     </div>
