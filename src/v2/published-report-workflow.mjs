@@ -4,8 +4,9 @@ import {checkedPublishedReportArtifacts} from './report-provenance.mjs';
 import {fundReportLineage,fundReportDevelopment} from "./fund-report-lineage.mjs";
 import {publishedReportTemplate} from './report-template.mjs';
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
+export const publishedReportRequestKey=(project,actor,id)=>`${project}:published-report:v1:${actor}:${id}`;
 export function createPublishedReportWorkflow({store,project,reports,reportStore,resolveSource,provenance,afterStep=()=>{}}){
- const kind='published_report_creation',keyFor=(actor,id)=>`${project}:published-report:v1:${actor}:${id}`;
+ const kind='published_report_creation',keyFor=(actor,id)=>publishedReportRequestKey(project,actor,id);
  const owned=(id,actor)=>{const r=store.get(kind,id,project);if(!r||r.actorId!==actor)throw fail(404,'REPORT_CREATION_NOT_FOUND','未找到本账号的原报表请求');return r;};
  const lookupRecord=(requestId,actor)=>{
   const id=store.deduplicatedId(keyFor(actor,reportRequestId(requestId)));
