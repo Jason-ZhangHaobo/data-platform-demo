@@ -271,6 +271,18 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     await persist();
     return summary;
   }
+  async function replayExactTick(releaseId,event) {
+    if (event.batchId) {
+      const original = get("release_run",event.batchId);
+      if (original.releaseId !== releaseId) throw fail(409,"原调度事件与批次不一致");
+      if (original.status === "RUNNING") {
+        await reconcile(original,{passive:true});
+        if (terminal.has(get("release_run",original.id).status))
+          return {replayed:true,...await finishTick(releaseId,event)};
+      }
+    }
+    return {replayed:true,...(event.status === "COMPLETED" ? event.summary : await finishTick(releaseId,event))};
+  }
   function exactTickSource(release) {
     exactReceipt(release);
     const source = reviewedSource({agentId:release.sourceAgentTaskId,sourceKind:"AGENT",sourceRunId:release.sourceRunId,
@@ -284,17 +296,21 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
   async function tickExact(release, input, old) {
     exactReceipt(release);
     const {releaseId,requestId,triggerName,triggerTime}=input;
+    // Completing the timer request does not mean its Worker has returned.
+    // Replays can read the batch this event claimed, even after an empty read.
+    if (old) return replayExactTick(releaseId,old);
     const key = `${project}:cloud-release-tick:${requestId}`;
     const saved = store.deduplicate(key,hash(JSON.stringify({releaseId,triggerName,triggerTime})),()=>
-      old ?? store.create("cloud_release_tick",project,{requestId,releaseId,triggerName,triggerTime,status:"RUNNING"}));
+      store.create("cloud_release_tick",project,{requestId,releaseId,triggerName,triggerTime,status:"RUNNING"}));
     const event = get("cloud_release_tick",saved.id);
+    if (saved.replayed) return replayExactTick(releaseId,event);
     await persist();
     const releaseRuns = () => store.list("release_run",project).filter(run=>run.releaseId===releaseId);
     for (const run of releaseRuns().filter(run=>run.status==="RUNNING")) await reconcile(run,{passive:true});
-    // A replay may settle its original result. Only a fresh signed event may
-    // claim a new batch, and a pending earlier batch keeps the queue serial.
+    // Only a fresh signed event reaches the claim. A pending earlier batch
+    // keeps the queue serial.
     const all=releaseRuns();
-    const selected = !old && !saved.replayed && !all.some(run=>run.status==="RUNNING") &&
+    const selected = !all.some(run=>run.status==="RUNNING") &&
       all.filter(run=>run.status==="SCHEDULED" && Date.parse(run.scheduledTriggerAt)<=now())
         .sort((a,b)=>a.sequence-b.sequence)[0];
     if (!selected) return finishTick(releaseId,event);
@@ -339,8 +355,8 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if (old && old.releaseId !== release.id) throw fail(409, "同一事件不能调用另一发布版本");
     if (old && release.reviewDigest && (old.triggerName!==triggerName || old.triggerTime!==triggerTime))
       throw fail(409,"同一签名编号不能替换调度时间或触发器");
-    if (old?.status === "COMPLETED") return { replayed: true, ...old.summary };
     if (release.reviewDigest) return tickExact(release,{releaseId,requestId,triggerName,triggerTime},old);
+    if (old?.status === "COMPLETED") return { replayed: true, ...old.summary };
     const event = old ?? store.create("cloud_release_tick", project, { requestId, releaseId, triggerName, triggerTime, status: "RUNNING" });
     if (event.releaseId !== release.id) throw fail(409, "同一事件不能调用另一发布版本");
     await persist();
