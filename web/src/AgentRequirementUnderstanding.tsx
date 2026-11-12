@@ -1,4 +1,5 @@
 import {distributionGrainLabel} from '../../src/v2/output-contract-metadata.mjs';
+import {fundConstraintLabels} from '../../src/v2/fund-requirement-contract.mjs';
 import React from 'react';
 import {ClipboardList,ChevronDown} from 'lucide-react';
 import {sqlRequirementReportMatches} from '../../src/v2/sql-requirement-contract.mjs';
@@ -26,11 +27,11 @@ export function AgentRequirementUnderstanding({task,dirty,frozen=false}:{task:{i
    </details>}
    {invalid?<p role="alert">{r.reason}</p>:<><p>{r.interpretation!.summary}</p>
     {clarification?<><p className="agent-requirement-question">{r.interpretation!.question}</p><small>请补充完整需求后重新委托；本条记录及模型用量保留，没有执行 SQL。</small></>:
-    <><dl className="agent-requirement-basis"><div><dt>计算粒度</dt><dd>{distributionGrainLabel(r.basis.grain)}</dd></div><div><dt>业务口径</dt><dd>{r.basis.contextName}</dd></div>
-     <div><dt>参数范围</dt><dd>{r.basis.parameters.advisor_id} · {r.basis.parameters.trade_date}</dd></div></dl>
+    <><dl className="agent-requirement-basis"><div><dt>计算粒度</dt><dd>{r.basis.parameters.manager_id?"组合 / 交易日 / 资产类别":distributionGrainLabel(r.basis.grain)}</dd></div><div><dt>业务口径</dt><dd>{r.basis.contextName}</dd></div>
+     <div><dt>参数范围</dt><dd>{r.basis.parameters.manager_id??r.basis.parameters.advisor_id} · {r.basis.parameters.trade_date}</dd></div></dl>
      <div className="agent-requirement-metrics">{r.interpretation!.metrics!.map(m=><div key={m.field}><strong>{r.basis.metrics.find(v=>v.field===m.field)?.label}</strong>
       <p>{m.meaning}</p><small>{m.sourceFields.join(' · ')}</small></div>)}</div>
-     <ul>{r.interpretation!.constraints!.map(id=><li key={id}>{constraintLabels[id]??id}</li>)}</ul>
+     <ul>{r.interpretation!.constraints!.map(id=><li key={id}>{constraintLabels[id]??fundConstraintLabels[id]??id}</li>)}</ul>
      <small>第{r.attempt}次模型响应 · 代码版本 {r.revisionId?.slice(0,8)} · 口径V{r.basis.definitionVersion}</small>
      {frozen&&<small className="agent-requirement-note">依据摘要 {r.basis.digest.slice(0,12)} · 内容保存在 validation.json，随包摘要审阅；不是新的模型调用。</small>}
      <p className="agent-requirement-note">{dirty?'代码已编辑；这份理解仅对应原保存版本，不能作为当前草稿已核验的证明。':'结构及字段引用已核对；含义与代码正确性仍须查看独立结果核验，提案不等于执行通过。'}</p>

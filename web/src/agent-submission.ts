@@ -40,9 +40,9 @@ export function createAgentSubmission<T extends {id:string}>({api,initialKey,onP
   return {
     snapshot:()=>({key:pending?.key,canRetry:Boolean(pending?.payload),closed}),
     expectedBody:()=>pending?.payload?JSON.parse(pending.payload):undefined,
-    submit(body:unknown){
+    submit(body:unknown,requestKey?:string){
       if(pending)return Promise.reject(Error("请先确认原提交结果，不新建第二个请求编号"));
-      const key=makeKey();if(!uuid.test(key))return Promise.reject(Error("提交编号不合法"));
+      const key=requestKey??makeKey();if(!uuid.test(key))return Promise.reject(Error("提交编号不合法"));
       pending={key,payload:JSON.stringify(body)};onPending(key);
       return run(()=>api<T>("/agent/tasks",JSON.parse(pending!.payload!),{idempotencyKey:key}));
     },

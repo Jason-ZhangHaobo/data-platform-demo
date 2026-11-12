@@ -2,7 +2,7 @@ export type SqlRequirementReport={protocol:string;taskId:string;contextId:string
  clarification?:import('./sql-clarification-client.mjs').SqlClarification;humanClarified?:true;directAutonomousEligible?:false;clarificationOriginTaskId?:string;
  status:'MODEL_PROPOSED'|'CLARIFICATION_REQUIRED'|'INVALID';semanticVerification:string;revisionId?:string;sqlHash?:string;reason?:string;
  basis:{protocol:string;requestDigest:string;digest:string;contextId:string;contextName:string;definition:string;validationContractId:string;definitionVersion:number;
- parameters:{advisor_id:string;trade_date:string};grain:string;constraints:string[];clarificationDigest?:string;tables:{name:string;columns:[string,string][]}[];
+ parameters:({advisor_id:string;manager_id?:never}|{manager_id:string;advisor_id?:never})&{trade_date:string};grain:string;constraints:string[];clarificationDigest?:string;tables:{name:string;columns:[string,string][]}[];
  metrics:{field:string;label:string;sourceFields:string[]}[]};
  interpretation?:{kind:string;basisDigest:string;summary:string;question?:string;grain?:string;constraints?:string[];
  metrics?:{field:string;meaning:string;sourceFields:string[]}[]}};

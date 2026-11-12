@@ -6,14 +6,16 @@ import { fundConstraintLabels, fundRequirementScope } from "../../src/v2/fund-re
 type Context = { id: string; name: string; businessDate?: string };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 
-export default function FundAgentPreparation({ api, contexts, canWrite, onDirty }: {
+export default function FundAgentPreparation({ api, contexts, canWrite, onDirty, onExecute, executionDisabled, executionNotice, executionRequestId }: {
   api: Api; contexts: Context[]; canWrite: boolean; onDirty: (value: boolean) => void;
+  onExecute: (receipt: FundPreparationReceipt) => void; executionDisabled: boolean; executionNotice?: string; executionRequestId?: string;
 }) {
   const [requestId, setRequestId] = useState(() => new URLSearchParams(location.search).get("fund_prepare_request") ?? "");
   const [open, setOpen] = useState(Boolean(requestId));
   const [contextId, setContextId] = useState(contexts[0]?.id ?? "");
   const [message, setMessage] = useState("");
   const [receipt, setReceipt] = useState<FundPreparationReceipt>();
+  const executionLinked = receipt !== undefined && receipt.requestId === executionRequestId;
   const [busy, setBusy] = useState(false);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState("");
@@ -102,7 +104,7 @@ export default function FundAgentPreparation({ api, contexts, canWrite, onDirty 
       {busy && <p role="status">正在核对基金准备记录…</p>}
       {error && <p role="alert">{error}</p>}
       {receipt && <div className="fund-preparation-receipt">
-        <header><h4>基金口径已保存</h4><span>待执行授权</span></header>
+        <header><h4>基金口径已保存</h4><span>{executionLinked ? "已关联开发任务" : "待确认开发"}</span></header>
         <p>交易日 {receipt.basis.parameters.trade_date} · 管理人 {receipt.basis.parameters.manager_id}</p>
         <div className="fund-preparation-result-grid">
           <div><h5>业务需求</h5><p>{receipt.input.message}</p>
@@ -112,11 +114,14 @@ export default function FundAgentPreparation({ api, contexts, canWrite, onDirty 
         </div>
         <small>样例 T+1 {receipt.execution.rehearsalAt} · 口径摘要 <code title={receipt.basis.digest}>{receipt.basis.digest.slice(0, 12)}</code>
           {" · 独立断言 "}<code title={receipt.execution.assertionDigest}>{receipt.execution.assertionDigest.slice(0, 12)}</code></small>
-        <footer><p>模型调用 {receipt.modelCalls} 次 · Spark 运行 {receipt.sparkRuns} 次</p>
+        <footer><p>{executionLinked ? "在下方查看对应任务、SQL 和校验。" : "保存口径未调用模型。确认后可调用模型并运行本机 Spark。"}</p>
+          {!executionLinked && <button className="button primary" disabled={!canWrite || busy || executionDisabled}
+            onClick={() => onExecute(receipt)}>确认并生成、校验 SQL</button>}
           <button className="button" disabled={!canWrite || busy} onClick={() => {
             setReceipt(undefined); setMessage(""); setError(""); setMissing(false); persistId("");
           }}>新建基金准备</button>
         </footer>
+        {!executionLinked && executionNotice && <p role="status">{executionNotice}</p>}
       </div>}
     </section>}
   </details>;

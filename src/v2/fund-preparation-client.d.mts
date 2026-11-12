@@ -12,3 +12,8 @@ export type FundPreparationReceipt = {
 };
 export function submitFundPreparation(client: Client, input: FundPreparationInput, requestId: string): Promise<FundPreparationReceipt>;
 export function readFundPreparation(client: Client, requestId: string): Promise<FundPreparationReceipt>;
+export type FundExecutionBinding = { requestId: string; basisDigest: string; inputDigest: string; schemaDigest: string; assertionDigest: string };
+type FundExecutionBody = { message: string; contextId: string; language: "SPARK_SQL"; fundPreparation: { requestId: string; basisDigest: string; confirm: true } };
+export function fundExecutionBody(receipt: FundPreparationReceipt): FundExecutionBody;
+export function fundExecutionReceiptMatches(task: { contextId?: string; message?: string; language?: string; fundPreparation?: FundExecutionBinding },
+  body: FundExecutionBody | undefined, requestId: string): boolean;

@@ -1,4 +1,5 @@
 import {distributionMetadataForContext} from './output-contract-metadata.mjs';
+import {fundRequirementScope} from './fund-requirement-contract.mjs';
 import { getContext,validationFamilyForContext } from "./context.mjs";
 import {createHash}from'node:crypto';
 import {sqlLineageSchemaHash}from'./sql-column-lineage.mjs';
@@ -7,7 +8,7 @@ import{sqlConditionReferences}from'./sql-condition-references.mjs';
 const protocol = "SECURITIES_SQL_REPAIR_FEEDBACK_V1";
 const legacyFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 const legacyKinds = ["VALUE_MISMATCH", "INVALID_NUMBER", "CLIENT_COUNT", "DUPLICATE_CLIENT", "CLIENT_SCOPE", "OUTPUT_FIELDS"];
-const fieldsFor=id=>distributionMetadataForContext(id)?.fields.map(f=>f.name)??legacyFields;
+const fieldsFor=id=>fundRequirementScope(id)?.metrics.map(metric=>metric.field)??distributionMetadataForContext(id)?.fields.map(f=>f.name)??legacyFields;
 const kindsFor=id=>distributionMetadataForContext(id)?[...legacyKinds,"ROW_COUNT","DUPLICATE_KEY","GROUP_SCOPE","DECIMAL_RANGE"]:legacyKinds;
 const classify = (issues,fields,issueKinds) => {
   const selectedFields = new Set(), kinds = new Set();
@@ -15,7 +16,7 @@ const classify = (issues,fields,issueKinds) => {
     if (typeof raw !== "string") continue;
     const issue = raw.slice(0, 1024);
     for (const field of fields) if (new RegExp(`\\b${field}\\b`).test(issue)) selectedFields.add(field);
-    if (issue.includes("结果不符")) kinds.add("VALUE_MISMATCH");
+    if (issue.includes("结果不符") || issue.includes("独立预期不符")) kinds.add("VALUE_MISMATCH");
     if (issue.includes("非有效数值")) kinds.add("INVALID_NUMBER");
     if (issue.includes("客户记录数不符")) kinds.add("CLIENT_COUNT");
     if (issue.includes("客户记录重复")) kinds.add("DUPLICATE_CLIENT");

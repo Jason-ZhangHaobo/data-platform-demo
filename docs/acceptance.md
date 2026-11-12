@@ -156,9 +156,17 @@ node scripts/verify-saved-fund-lifecycle.mjs \
 
 ## 独立 Data Agent 基金需求准备
 
-在本机 Agent 数据开发展开「基金需求准备」，选择已登记交易日并保存需求。准备记录绑定管理人、业务日、五列输出、源表结构、业务约束、样例演练时间及独立断言摘要。页面显示待执行授权，模型和 Spark 用量均为零。源表数据行和独立预期值未进入准备回执。
+在本机 Agent 数据开发展开「基金需求准备」，选择已登记交易日并保存需求。准备记录绑定管理人、业务日、五列输出、源表结构、业务约束、样例演练时间及独立断言摘要。保存准备时模型和 Spark 用量均为零。源表数据行和独立预期值未进入准备回执。
 
 回包断开后重开本机服务，按原请求编号恢复同一份记录。API、`shuduo agent prepare-fund` 和 MCP `fund_preparation_read` 的回执一致。错日期、错指标、跨拥有者和同编号改写均拒绝。准备记录供后续实际执行使用，真实模型和公网链路独立验收。
+
+## 按已保存基金口径生成和核验 SQL
+
+在基金准备回执中点击「确认并生成、校验 SQL」。API 使用 `POST /api/v2/agent/tasks`，正文传入 `message`、`contextId`、`language: "SPARK_SQL"` 和 `fundPreparation: {requestId, basisDigest, confirm: true}`。请求头的 `Idempotency-Key` 使用同一准备编号。CLI 使用 `shuduo agent execute-fund --request-id UUID --basis-digest SHA256 --confirm`。MCP 工具为 `fund_preparation_execute`。提交结果未知时，按原编号调用 `GET /api/v2/agent/requests/{requestId}` 或 `shuduo agent request --request-id UUID`。
+
+服务端验证原拥有者、业务需求、交易日和口径摘要，并在模型调用前及提交 Spark 前重新核对保存依据。模型使用登记字段、管理人参数和交易日，不接收样例行或独立预期。Spark 执行结果须绑定原输入与断言并通过逐行核验。错编号、交易日、摘要或混用其他执行来源时拒绝。公网及远程执行入口未启用此基金开发。
+
+已用原准备的隔离副本和本机 Spark 3.5.9 验收。合成模型响应先生成敞口偏差，独立断言拒绝；第二次修正后七条结果通过。WebKit 提交并查看两次执行，CLI 和 MCP 重放同一任务，重启后按原编号回读，仍只有两次计算。真实模型调用为零。基金 Agent 生成版本的调度文件、演练及审阅发布仍待接入。
 
 ## 浏览器真实链路
 
