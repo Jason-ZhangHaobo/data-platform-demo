@@ -728,6 +728,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   };
   const prepared=await cli(['--source-revision',source]);
   assert.equal(prepared.status,'PREPARED');
+  assert.equal(prepared.taskUrl,undefined);
   assert.equal(prepared.expectedCaseCount,20);
   assert.deepEqual(reads,[]);
   assert.equal(statSync(checkpoint).mode&0o777,0o600);
@@ -855,6 +856,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   wrongEntry=false;
   const unknown=await cli(confirmedFlags);
   assert.equal(unknown.reason,'RECONCILE_ORIGINAL_CREATION');
+  assert.equal(unknown.taskUrl,undefined);
   assert.deepEqual(reads.map(read=>read.method),['GET','GET','POST']);
   assert.equal(f.store.list('agent',PROJECT).length,1);
   const unknownBytes=readFileSync(checkpoint,'utf8');
@@ -880,6 +882,9 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(reads,originalReads);
   const [task]=f.store.list('agent',PROJECT);
   assert.equal(recovered.taskId,task.id);
+  assert.equal(recovered.taskUrl,'https://journey.example.invalid/v2/?module=agent-center&task='+task.id);
+  assert.equal((await cli(['--reconcile'])).taskUrl,recovered.taskUrl);
+  assert.deepEqual(reads,[]);
   const state=JSON.parse(readFileSync(checkpoint,'utf8'));
   assert.equal(state.outcomes[0].actions.agent.id,task.id);
   assert.equal(state.outcomes[0].actions.agent.key,originalKey);
