@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { submitFundPreparation, readFundPreparation } from "../src/v2/fund-preparation-client.mjs";
+import { submitFundPreparation, readFundPreparation, executeFundPreparation } from "../src/v2/fund-preparation-client.mjs";
 import {distributionReportMetricIds} from '../src/v2/distribution-report-contract.mjs';
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
@@ -43,6 +43,10 @@ const tools = [
       required: ["requestId","contextId","businessDate","message","metrics"], additionalProperties: false } },
   { name: "fund_preparation_read", description: "按本账号原编号只读基金口径和执行准备。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" } }, required: ["requestId"], additionalProperties: false } },
+  { name: "fund_preparation_execute", description: "经人工确认原口径摘要后提交同一份本机基金开发，可能调用模型及 Spark。未知结果按原 requestId 查任务；不发布。",
+    inputSchema: { type: "object", additionalProperties: false, required: ["requestId", "basisDigest", "confirm"],
+      properties: { requestId: { type: "string", format: "uuid" }, basisDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, confirm: { const: true } } },
+    annotations: { readOnlyHint: false } },
   {name:'agent_clarification_source',description:'只读本人原SQL澄清问题、输入与摘要，不调用模型或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'}},required:['taskId']},annotations:{readOnlyHint:true}},
   {name:'agent_clarification_reply',description:'明确回答已读取的原问题后新建独立任务，可能调用模型和Spark；保留原用量，不继承批准，不计直接自主完成。未知结果先按requestId查询，不自动重试。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},evidenceDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},answer:{type:'string',minLength:1,maxLength:1000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['taskId','evidenceDigest','answer','requestId','confirm']},annotations:{readOnlyHint:false}},
   {name:'manual_publication_detail',description:'只读本人独立手工交付的确切发布、批次和告警，不借用Agent身份或创建新计算。',inputSchema:{type:'object',additionalProperties:false,properties:manualPublicationProperties,required:manualPublicationRequired},annotations:{readOnlyHint:true}},
@@ -821,6 +825,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     return submitFundPreparation(client, input, requestId);
   }
   if (name === "fund_preparation_read") return readFundPreparation(client, args.requestId);
+  if (name === "fund_preparation_execute") return executeFundPreparation(client, args);
   if(name==='report_published_create')return submitPublishedReport(client,args);
   if(name==='report_published_request')return lookupPublishedReport(client,args);
   if(name==='report_published_result')return readPublishedReportResult(client,args);

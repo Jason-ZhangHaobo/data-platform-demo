@@ -44,5 +44,17 @@ export function createFundPreparations({ store, project }) {
       return { receipt: read(requestId, actor), replayed };
     },
     read,
+    bindExecution(binding, actor, { contextId, message, requestKey }) {
+      if (!binding || typeof binding !== "object" || Array.isArray(binding) ||
+          Object.keys(binding).length !== 3 || binding.confirm !== true ||
+          typeof binding.basisDigest !== "string" || !/^[a-f0-9]{64}$/.test(binding.basisDigest) ||
+          fundPreparationRequestId(binding.requestId) !== requestKey)
+        throw fail(422, "FUND_PREPARATION_EXECUTION_INVALID", "请使用原准备编号确认这次基金开发");
+      const receipt = read(binding.requestId, actor);
+      if (receipt.basis.digest !== binding.basisDigest || receipt.input.contextId !== contextId || receipt.input.message !== message)
+        throw fail(409, "FUND_PREPARATION_EXECUTION_MISMATCH", "开发请求与已保存的基金交易日或需求不一致");
+      const { inputDigest, schemaDigest, assertionDigest } = receipt.execution;
+      return { requestId: receipt.requestId, basisDigest: receipt.basis.digest, inputDigest, schemaDigest, assertionDigest };
+    },
   };
 }

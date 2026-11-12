@@ -35,3 +35,28 @@ export async function readFundPreparation(client, requestId) {
   const id = fundPreparationRequestId(requestId);
   return checkedFundPreparation(await client.request("/agent/fund-preparations/requests/" + id), { requestId: id });
 }
+
+export function fundExecutionBody(receipt) {
+  return { message: receipt.input.message, contextId: receipt.input.contextId, language: "SPARK_SQL",
+    fundPreparation: { requestId: receipt.requestId, basisDigest: receipt.basis.digest, confirm: true } };
+}
+
+export function fundExecutionReceiptMatches(task, body, requestId) {
+  if (!body?.fundPreparation) return !task?.fundPreparation || body === undefined && task.fundPreparation.requestId === requestId;
+  const expected = body.fundPreparation, actual = task?.fundPreparation;
+  return Boolean(actual && task.contextId === body.contextId && task.message === body.message && task.language === "SPARK_SQL" &&
+    actual.requestId === requestId && actual.requestId === expected.requestId && actual.basisDigest === expected.basisDigest &&
+    [actual.inputDigest, actual.schemaDigest, actual.assertionDigest].every(digest));
+}
+
+export async function executeFundPreparation(client, { requestId, basisDigest, confirm }) {
+  if (confirm !== true || !digest(basisDigest)) throw Error("须确认已审阅的原基金口径摘要");
+  const receipt = await readFundPreparation(client, requestId);
+  if (receipt.basis.digest !== basisDigest) throw Error("准备摘要已变化；本次未提交开发");
+  const body = fundExecutionBody(receipt);
+  const task = await client.request("/agent/tasks", { method: "POST", body, idempotencyKey: requestId });
+  if (!fundExecutionReceiptMatches(task, body, requestId) ||
+      ["inputDigest", "schemaDigest", "assertionDigest"].some(key => task.fundPreparation[key] !== receipt.execution[key]))
+    throw Error("基金任务回执与原准备不一致，请按原编号查询");
+  return task;
+}

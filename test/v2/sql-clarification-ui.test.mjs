@@ -4,7 +4,7 @@ import {getContext,referenceSql} from '../../src/v2/context.mjs';import {appendS
 import {clarificationAttribution,clarificationReplyReason} from '../../src/v2/sql-clarification-contract.mjs';import {sqlRequirementReport,bindSqlRequirementRevision} from '../../src/v2/sql-requirements.mjs';
 import {syntheticSqlRequirement} from './fixtures/sql-requirement.mjs';
 async function component(name){let source=ts.transpileModule(readFileSync(`web/src/${name}.tsx`,'utf8'),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
- for(const dependency of ['react','react/jsx-runtime','lucide-react','../../src/v2/sql-requirement-contract.mjs','../../src/v2/output-contract-metadata.mjs'])source=source.replaceAll(`from '${dependency}'`,`from ${JSON.stringify(import.meta.resolve(dependency))}`).replaceAll(`from "${dependency}"`,`from ${JSON.stringify(import.meta.resolve(dependency))}`);
+ for(const dependency of ['react','react/jsx-runtime','lucide-react','../../src/v2/sql-requirement-contract.mjs','../../src/v2/output-contract-metadata.mjs','../../src/v2/fund-requirement-contract.mjs'])source=source.replaceAll(`from '${dependency}'`,`from ${JSON.stringify(import.meta.resolve(dependency))}`).replaceAll(`from "${dependency}"`,`from ${JSON.stringify(import.meta.resolve(dependency))}`);
  return (await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`))[name];}
 const AgentClarificationReply=await component('AgentClarificationReply'),AgentRequirementUnderstanding=await component('AgentRequirementUnderstanding');
 test('reply form is explicit, bounded and disabled in readonly/busy scope; rendering never submits or enables background silently',()=>{

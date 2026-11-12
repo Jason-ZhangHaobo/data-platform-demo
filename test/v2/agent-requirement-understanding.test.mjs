@@ -9,7 +9,7 @@ import {getContext} from '../../src/v2/context.mjs';
 import {syntheticSqlRequirement} from './fixtures/sql-requirement.mjs';
 let source=ts.transpileModule(readFileSync('web/src/AgentRequirementUnderstanding.tsx','utf8'),{
  compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
-for(const dependency of ['react','react/jsx-runtime','lucide-react','../../src/v2/sql-requirement-contract.mjs','../../src/v2/output-contract-metadata.mjs'])
+for(const dependency of ['react','react/jsx-runtime','lucide-react','../../src/v2/sql-requirement-contract.mjs','../../src/v2/output-contract-metadata.mjs','../../src/v2/fund-requirement-contract.mjs'])
  source=source.replaceAll(`from '${dependency}'`,`from ${JSON.stringify(import.meta.resolve(dependency))}`).replaceAll(`from "${dependency}"`,`from ${JSON.stringify(import.meta.resolve(dependency))}`);
 const {AgentRequirementUnderstanding}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 function fixture(clarification=false,contextId='stock-cash-t1'){
