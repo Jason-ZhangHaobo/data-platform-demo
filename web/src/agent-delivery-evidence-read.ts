@@ -7,7 +7,7 @@ import type {ServiceSourceBinding} from './service-source-binding';
 import type {TaskConsumption} from './agent-journey';
 export type RollbackTarget={id:string;packageDigest:string;metadataHash:string;sourceRevisionId:string;successfulRunCount:number;taskId?:string};
 export type Release={id:string;status:string;health:string;sourceKind?:string;sourceRunId?:string;agentIndependentE2E?:boolean;packageId?:string;packageDigest?:string;verificationId?:string;sourceAgentTaskId?:string;sourceRevisionId?:string;runCount?:number;rolledBackToReleaseId?:string;rolledBackToTaskId?:string;restoredAt?:string;outputContract?:{id:string;metadataHash:string}};
-export type Publication={rollbackTargets?:RollbackTarget[];historyRunCount?:number;release?:Release;runs:{id:string;status:string;sequence:number;schedulerTriggered?:boolean;durationMs?:number;triggeredAt?:string;finishedAt?:string}[];alerts:{id:string;status:string;message:string;recoveryRunId?:string}[];events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[]};
+export type Publication={rollbackTargets?:RollbackTarget[];historyRunCount?:number;release?:Release;runs:{id:string;status:string;sequence:number;schedulerTriggered?:boolean;resultUnknown?:boolean;durationMs?:number;triggeredAt?:string;finishedAt?:string}[];alerts:{id:string;status:string;message:string;recoveryRunId?:string}[];events:{id:string;type:string;observedAt:string;releaseId?:string;releaseRunId?:string;packageDigest?:string}[]};
 const record=(v:unknown):v is Record<string,unknown>=>Boolean(v&&typeof v==='object'&&!Array.isArray(v));
 const id=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v);
 const hash=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
@@ -26,7 +26,8 @@ export function checkedAgentPublication(value:unknown,{taskId,scope,selector,rel
   !optional(r.agentIndependentE2E,v=>typeof v==='boolean')||r.sourceKind==='MANUAL'&&r.agentIndependentE2E!==false||
   !optional(r.runCount,v=>count(v)&&Number(v)>0)||releaseId!==undefined&&r.id!==releaseId))throw invalidPublication();
  if(!r&&(runs.length||alerts.length||events.length||releaseId||requireRelease))throw invalidPublication();
- if(!runs.every(b=>record(b)&&id(b.id)&&['SCHEDULED','QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED'].includes(String(b.status))&&count(b.sequence)&&Number(b.sequence)>0&&
+ if(!runs.every(b=>record(b)&&id(b.id)&&(['SCHEDULED','QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED'].includes(String(b.status))||scope==='LOCAL_TEST_RELEASE'&&b.status==='INTERRUPTED')&&count(b.sequence)&&Number(b.sequence)>0&&
+  optional(b.resultUnknown,v=>typeof v==='boolean'&&(v===false||scope==='LOCAL_TEST_RELEASE'&&b.status==='INTERRUPTED'&&b.schedulerTriggered===true))&&
   optional(b.schedulerTriggered,v=>typeof v==='boolean')&&optional(b.durationMs,v=>typeof v==='number'&&Number.isFinite(v)&&v>=0)&&['triggeredAt','finishedAt'].every(k=>optional(b[k],date))&&
   optional(b.releaseId,v=>record(r)&&v===r.id)&&optional(b.packageDigest,v=>record(r)&&v===r.packageDigest))||!uniqueIds(runs)||new Set(runs.map(b=>b.sequence)).size!==runs.length||record(r)&&r.runCount!==undefined&&runs.length>Number(r.runCount))throw invalidPublication();
  if(!alerts.every(a=>record(a)&&id(a.id)&&['OPEN','RESOLVED'].includes(String(a.status))&&typeof a.message==='string'&&optional(a.recoveryRunId,id)&&optional(a.releaseId,v=>record(r)&&v===r.id))||!uniqueIds(alerts))throw invalidPublication();

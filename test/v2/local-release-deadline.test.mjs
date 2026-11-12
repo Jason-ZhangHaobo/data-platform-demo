@@ -76,3 +76,35 @@ test("the serial queue rechecks a clock rollback and clears overlapping wakeups 
   assert.deepEqual(f.calls, [1010]); assert.equal(f.current().triggeredAt, f.run.scheduledTriggerAt);
   assert.equal(f.scheduler.timers.size, 0); assert.equal(f.scheduler.controllers.size, 0);
 });
+
+test("a restarted local claim records one unknown result and a later batch cannot resolve it", async t => {
+  const f = fixture(t), { store, project, release, run, scheduler } = f;
+  store.update("release", release.id, project, { packageId: run.packageId, packageDigest: run.packageDigest, publicDeployed: false });
+  store.update("release_run", run.id, project, { status: "RUNNING", mode: "LOCAL_SCHEDULED_RELEASE",
+    clockMode: "WALL_CLOCK_TIMER", schedulerTriggered: true, triggeredAt: new Date(1010).toISOString() });
+  const sibling = store.create("release_run", project, { releaseId: release.id, packageId: run.packageId,
+    packageDigest: run.packageDigest, status: "SCHEDULED", scheduledTriggerAt: new Date(1020).toISOString() });
+  f.time(1015);
+  store.interruptPending(project);
+  scheduler.start(); scheduler.start();
+  assert.equal(f.current().status, "INTERRUPTED");
+  assert.equal(f.current().resultUnknown, true);
+  assert.equal(f.current().finishedAt, undefined);
+  assert.equal(scheduler.timers.has(run.id), false);
+  assert.equal(scheduler.timers.has(sibling.id), true);
+  const [event] = store.list("monitor_event", project), [alert] = store.list("monitor_alert", project);
+  assert.equal(event.type, "BATCH_RESULT_UNKNOWN");
+  assert.equal(event.releaseRunId, run.id);
+  assert.equal(alert.code, "LOCAL_RELEASE_RESULT_UNKNOWN");
+  assert.equal(store.get("release", release.id, project).health, "CRITICAL");
+  f.time(1020);
+  await scheduler.enqueue(run.id);
+  await scheduler.enqueue(sibling.id);
+  assert.deepEqual(f.calls, [1020]);
+  assert.equal(f.current().resultUnknown, true);
+  assert.equal(store.get("monitor_alert", alert.id, project).status, "OPEN");
+  assert.equal(store.list("monitor_alert", project).length, 1);
+  assert.equal(store.list("monitor_event", project).length, 2);
+  assert.equal(store.get("release", release.id, project).health, "CRITICAL");
+  assert.equal(store.get("release", release.id, project).failedRunCount, 0);
+});

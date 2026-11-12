@@ -107,6 +107,7 @@ import {
 import {
   DurableReleaseScheduler,
   LocalReleaseScheduler,
+  localReleaseUnknownResultCode,
   localScheduleSpec,
   plannedLocalRuns,
   publicRelease,
@@ -4625,6 +4626,7 @@ export function createV2Server(options = {}) {
             failed: runs.filter((run) =>
               ["FAILED", "VALIDATION_FAILED"].includes(run.status),
             ).length,
+            unknown: runs.filter((run) => run.status === "INTERRUPTED" && run.resultUnknown === true).length,
             openAlerts: alerts.filter((alert) => alert.status === "OPEN").length,
           },
           recentRuns: runs.slice(0, 20).map(protectedDeliveryPayload).map(expose),
@@ -5566,7 +5568,7 @@ export function createV2Server(options = {}) {
           });
           const resolvedAlertIds = [];
           for (const alert of store.list("monitor_alert", PROJECT)) {
-            if (alert.releaseId === item.id && alert.status === "OPEN") {
+            if (alert.releaseId === item.id && alert.status === "OPEN" && alert.code !== localReleaseUnknownResultCode) {
               resolvedAlertIds.push(alert.id);
               store.update("monitor_alert", alert.id, PROJECT, {
                 status: "RESOLVED",

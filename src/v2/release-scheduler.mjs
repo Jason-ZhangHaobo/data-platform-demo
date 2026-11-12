@@ -9,6 +9,7 @@ const terminal = new Set([
   "INTERRUPTED",
 ]);
 const MAX_TIMER_DELAY = 2_147_000_000;
+export const localReleaseUnknownResultCode = "LOCAL_RELEASE_RESULT_UNKNOWN";
 const durableProfile = (leaseMs) => ({
   mode: "CLOUD_DURABLE_SCHEDULE",
   clockMode: "EXTERNAL_DURABLE_TICK",
@@ -124,8 +125,44 @@ export class LocalReleaseScheduler {
   }
 
   start() {
-    for (const run of this.store.list("release_run", this.project))
+    if (this.closed) return;
+    for (const run of this.store.list("release_run", this.project)) {
       if (run.status === "SCHEDULED") this.schedule(run);
+      else if (run.status === "INTERRUPTED") this.#recordInterruptedResult(run);
+    }
+  }
+
+  #recordInterruptedResult(run) {
+    if (run.resultUnknown === true || run.mode !== "LOCAL_SCHEDULED_RELEASE" ||
+        run.clockMode !== "WALL_CLOCK_TIMER" || run.schedulerTriggered !== true ||
+        !Number.isFinite(Date.parse(run.triggeredAt))) return;
+    const release = this.store.get("release", run.releaseId, this.project);
+    if (!release || release.publicDeployed !== false || release.packageId !== run.packageId ||
+        release.packageDigest !== run.packageDigest) return;
+    const key = `${this.project}:local-release-result-unknown:${run.id}`;
+    const signature = JSON.stringify([release.id, run.packageDigest, run.triggeredAt]);
+    this.store.deduplicate(key, signature, () => {
+      const observedAt = new Date(this.now()).toISOString();
+      const message = "本机服务重启前此批次已触发，执行结果待核对。请按原批次查证。";
+      const marked = this.store.update("release_run", run.id, this.project, {
+        resultUnknown: true, resultUnknownObservedAt: observedAt, error: message,
+      });
+      this.store.create("monitor_event", this.project, {
+        type: "BATCH_RESULT_UNKNOWN", releaseId: release.id, releaseRunId: run.id, packageDigest: run.packageDigest,
+        observedAt, status: "INTERRUPTED", schedulerTriggered: true,
+      });
+      this.store.create("monitor_alert", this.project, {
+        releaseId: release.id, releaseRunId: run.id, status: "OPEN", severity: "ERROR",
+        code: localReleaseUnknownResultCode, message, openedAt: observedAt,
+      });
+      const openAlertCount = this.store.list("monitor_alert", this.project)
+        .filter(alert => alert.releaseId === release.id && alert.status === "OPEN").length;
+      this.store.update("release", release.id, this.project, {
+        ...(release.status === "ACTIVE_LOCAL" ? { health: "CRITICAL" } : {}),
+        openAlertCount, lastObservedAt: observedAt,
+      });
+      return marked;
+    });
   }
 
   schedule(run) {
@@ -332,7 +369,7 @@ export class LocalReleaseScheduler {
       });
     } else if (!release.fundLookthrough) {
       for (const alert of this.store.list("monitor_alert", this.project)) {
-        if (alert.releaseId === release.id && alert.status === "OPEN") {
+        if (alert.releaseId === release.id && alert.status === "OPEN" && alert.code !== localReleaseUnknownResultCode) {
           recoveredAlerts++;
           this.store.update("monitor_alert", alert.id, this.project, {
             status: "RESOLVED",
@@ -367,7 +404,7 @@ export class LocalReleaseScheduler {
       const rollback=this.store.get('release_rollback',release.currentRollbackId,this.project);
       if(rollback?.status==='SCHEDULED_FOR_VERIFICATION'&&successfulRunCount>=2&&!openAlertCount){
         const resolvedAlertIds=[];
-        for(const alert of this.store.list('monitor_alert',this.project))if(alert.releaseId===rollback.fromReleaseId&&alert.status==='OPEN'){
+        for(const alert of this.store.list('monitor_alert',this.project))if(alert.releaseId===rollback.fromReleaseId&&alert.status==='OPEN'&&alert.code!==localReleaseUnknownResultCode){
           resolvedAlertIds.push(alert.id);this.store.update('monitor_alert',alert.id,this.project,{status:'RESOLVED',resolutionMode:'VERIFIED_ROLLBACK',recoveryReleaseId:release.id,recoveryRunId:run.id,resolvedAt:new Date(this.now()).toISOString()});
         }
         this.store.update('release_rollback',rollback.id,this.project,{status:'VERIFIED',resolvedAlertIds,verifiedAt:new Date(this.now()).toISOString()});

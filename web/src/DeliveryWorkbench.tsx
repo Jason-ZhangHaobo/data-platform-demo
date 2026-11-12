@@ -126,6 +126,7 @@ type ReleaseRun = {
   triggeredAt?: string;
   durationMs?: number;
   schedulerTriggered: boolean;
+  resultUnknown?: boolean;
   clockMode?: string;
   error?: string;
 };
@@ -1095,7 +1096,7 @@ export function DeliveryWorkbench({
                                 "status-pill " + item.status.toLowerCase()
                               }
                             >
-                              {releaseRunLabels[item.status] ?? item.status}
+                              {item.resultUnknown ? "执行中断，结果待核对" : releaseRunLabels[item.status] ?? item.status}
                             </span>
                             <code>批次 {item.id.slice(0, 8)}</code>
                             <small>
