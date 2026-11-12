@@ -6,6 +6,8 @@ import { ReportDataStore, ReportManager } from '../../src/v2/reports.mjs';
 import { resolvePublishedReportSource } from '../../src/v2/published-report-source.mjs';
 import { readWealthReportConsumption } from '../../src/v2/wealth-report-consumption.mjs';
 import { checkedWealthReportConsumption } from '../../src/v2/wealth-report-consumption-client.mjs';
+import { verifySavedWealthLifecycle } from '../../src/v2/wealth-saved-lifecycle.mjs';
+import { resolveDeliverySchedule, validateDeliveryPackage } from '../../src/v2/delivery.mjs';
 import { seedLocalServiceSource } from './fixtures/local-service-sources.mjs';
 
 test('wealth report reads only original manual snapshot and complete historically authorized pages', async t => {
@@ -16,6 +18,18 @@ test('wealth report reads only original manual snapshot and complete historicall
   const { revision, codeRun, release, bundle, batches: [batch, sibling] } = fixture;
   store.update('revision', revision.id, project, { source: 'MANUAL', author: actor,
     manualProvenance: { actorId: actor, kind: 'ENGINEER_EDIT', agentIndependentE2E: false } });
+  const plan = validateDeliveryPackage(bundle, bundle.digest), scheduledFor = '2026-09-11T09:00:00+08:00';
+  const occurrence = resolveDeliverySchedule(plan, scheduledFor);
+  const workflowTrace = plan.order.map(node => ({ id: node.id, kind: node.kind, status: 'SUCCEEDED' }));
+  const time = seconds => new Date(Date.UTC(2026, 8, 15, 0, 0, seconds)).toISOString();
+  store.update('release', release.id, project, { businessScheduledFor: scheduledFor });
+  store.update('run', codeRun.id, project, { startedAt: time(4), finishedAt: time(5) });
+  store.update('delivery_verification', fixture.verification.id, project, {
+    scheduledFor, occurrence, workflowTrace, startedAt: time(6), finishedAt: time(7),
+  });
+  store.update('delivery_review', fixture.review.id, project, { reviewedAt: time(8) });
+  store.update('release_approval', fixture.approval.id, project, { approvedAt: time(9) });
+  for (const item of fixture.batches) store.update('release_run', item.id, project, { occurrence, workflowTrace });
   const source = { kind: 'MANUAL', releaseId: release.id, packageDigest: bundle.digest, revisionId: revision.id, runId: codeRun.id, batchId: batch.id };
   const resolve = pinned => resolvePublishedReportSource({ store, project, actorId: actor, source: pinned });
   let selectedBatch = batch.id;
@@ -46,10 +60,10 @@ test('wealth report reads only original manual snapshot and complete historicall
     manager.revokeApplication(issued.application.id);
     return responses;
   }
-  await call(combination, [1, 2]);
+  const combinedCalls = await call(combination, [1, 2]);
   assert.equal(read().status, 'PENDING');
   const calls = await call(holdings, [1, 2]);
-  await call(cash, [1, 2]);
+  const cashCalls = await call(cash, [1, 2]);
   const verified = read();
   assert.equal(verified.status, 'VERIFIED');
   assert.equal(verified.verifiedCalls, 6);
@@ -61,6 +75,17 @@ test('wealth report reads only original manual snapshot and complete historicall
   mixedPages.services.find(service => service.type === 'DAPI').calls[0].applicationId =
     mixedPages.services.find(service => service.type === 'XAPI').calls[0].applicationId;
   assert.throws(() => checkedWealthReportConsumption(mixedPages));
+  const offline = { store, reportStore, businessStore, project, actor, reportId: report.id, runId: original.id,
+    releaseId: release.id, batchId: batch.id, packageDigest: bundle.digest,
+    dapiCallIds: [...calls, ...cashCalls].map(item => item.callId), xapiCallIds: combinedCalls.map(item => item.callId) };
+  const audit = verifySavedWealthLifecycle(offline);
+  assert.equal(audit.status, 'VERIFIED');
+  assert.equal(audit.publication.batches.length, 2);
+  assert.equal(audit.rehearsal.fileCount, 8);
+  assert.deepEqual(verifySavedWealthLifecycle({ ...offline, dapiCallIds: offline.dapiCallIds.toReversed() }), audit);
+  assert.throws(() => verifySavedWealthLifecycle({ ...offline, dapiCallIds: offline.dapiCallIds.slice(1) }),
+    { code: 'WEALTH_SAVED_CONSUMPTION_UNPROVEN' });
+  assert.throws(() => verifySavedWealthLifecycle({ ...offline, batchId: sibling.id }), { code: 'WEALTH_SAVED_REPORT_BATCH_CHANGED' });
 
   selectedBatch = sibling.id;
   reports.refreshDataset(dataset.id);
@@ -77,6 +102,7 @@ test('wealth report reads only original manual snapshot and complete historicall
   assert.equal(tampered.status, 'UNCONFIRMED');
   assert.equal(tampered.unconfirmedCalls, 1);
   assert.equal(tampered.verifiedCalls, 5);
+  assert.throws(() => verifySavedWealthLifecycle(offline), { code: 'WEALTH_SAVED_CONSUMPTION_UNPROVEN' });
   assert.throws(() => readWealthReportConsumption({ store, reportStore, businessStore, project, reportId: report.id,
     runId: original.id, actor: 'another-engineer' }), { code: 'REPORT_SOURCE_OWNER' });
 });
