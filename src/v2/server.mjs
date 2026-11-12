@@ -6825,6 +6825,8 @@ export function createV2Server(options = {}) {
               ? "SPARK_SQL"
               : text(body.language, 3, 20),
           suppliedCode = body.code ?? body.sql;
+        if (ingressChannel === "HTTP" && developmentAccess?.requestDigest)
+          assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, developmentNow(), body);
         const fundRequest = body.fundPreparation !== undefined;
         let syncSelection;
         if (body.syncInput !== undefined) {
@@ -6874,7 +6876,8 @@ export function createV2Server(options = {}) {
         if (isFundContext(context.id) !== fundRequest)
           throw fail(422, "基金 Agent 开发须绑定已保存的基金准备，其他口径不适用");
         if(context.outputContractId&&(!local||durableDevelopment||runnerDescriptor.isolation!=="LOCAL_PROCESS"))throw Object.assign(fail(422,"分布Agent尚未启用云端执行"),{code:"OUTPUT_CONTRACT_LOCAL_ONLY"});
-        if (ingressChannel === "HTTP") assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, options.now?.() ?? Date.now(), body);
+        if (ingressChannel === "HTTP" && !developmentAccess?.requestDigest)
+          assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, developmentNow(), body);
         const actorId = language === "SPARK_SQL"
           ? auth.sessionFromHeaders(req.headers)?.user.id ?? (local ? "local-engineer" : undefined)
           : local ? "local-engineer" : auth.sessionFromHeaders(req.headers)?.user.id;

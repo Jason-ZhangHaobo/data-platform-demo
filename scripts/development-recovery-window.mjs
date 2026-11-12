@@ -106,8 +106,13 @@ export function validateDevelopmentRecoveryPlan(plan, now = Date.now()) {
     'RECOVERY_ACTIVATION_CHECKPOINT_INVALID');
   else {
     const a = plan.activated, starts = Date.parse(a?.V2_PUBLIC_DEVELOPMENT_STARTS_AT);
-    check(Number.isFinite(starts) && starts >= plan.issuedAt && starts < plan.deadline &&
-      isDeepStrictEqual(a, developmentRecoveryEnvironment(plan, starts)), 'RECOVERY_ACTIVE_SNAPSHOT_INVALID');
+    check(Number.isFinite(starts) && starts >= plan.issuedAt && starts < plan.deadline, 'RECOVERY_ACTIVE_SNAPSHOT_INVALID');
+    const expected = developmentRecoveryEnvironment(plan, starts);
+    // A pre-binding first-case window can be closed or rolled back using its
+    // original snapshot. Do not synthesize a binding that was never deployed.
+    if (bound && !next && ['close','rollback'].includes(plan.mode) && !Object.hasOwn(a,'V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST'))
+      delete expected.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST;
+    check(isDeepStrictEqual(a, expected), 'RECOVERY_ACTIVE_SNAPSHOT_INVALID');
     if (plan.reloaded !== undefined) check(isDeepStrictEqual(plan.reloaded, { ...a, V2_RECOVERY_PILOT_NONCE: plan.recoveryNonce }) &&
       /^[a-f0-9]{32}$/.test(plan.recoveryNonce ?? ''), 'RECOVERY_RELOAD_SNAPSHOT_INVALID');
     if (plan.mode === 'recycle') {
@@ -142,11 +147,12 @@ export function developmentRecoveryEnvironment(plan, now = Date.now()) {
     Number(e.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT) >= runs && typeof e.V2_MODEL_MONTHLY_BUDGET_CNY === 'string' &&
     e.V2_MODEL_MONTHLY_BUDGET_CNY.trim() !== '' && Number.isFinite(Number(e.V2_MODEL_MONTHLY_BUDGET_CNY)) &&
     Number(e.V2_MODEL_MONTHLY_BUDGET_CNY) >= 0 && Number(e.V2_MODEL_MONTHLY_BUDGET_CNY) >= model, 'RECOVERY_EXISTING_QUOTA_INSUFFICIENT');
+  const selected = plan.scope === nextCloudDevelopmentScope ? plan.nextCase : plan.firstCase;
   const env = { ...e, V2_FC_PUBLIC_READ_ONLY: 'false', V2_FC_PUBLIC_WRITE_SCOPE: 'DEVELOPMENT_ONLY',
     V2_PUBLIC_DEVELOPMENT_STARTS_AT: new Date(now).toISOString(), V2_PUBLIC_DEVELOPMENT_EXPIRES_AT: new Date(plan.deadline).toISOString(),
     ...(plan.resumeExistingTask ? { V2_PUBLIC_DEVELOPMENT_TASK_ID: plan.resumeExistingTask.taskId } : {}),
-    ...(plan.scope===nextCloudDevelopmentScope ? { V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST:
-      developmentRequestDigest(plan.nextCase.requestKeyHash,plan.nextCase.requestBodyHash) } : {}),
+    ...(cloudV3DevelopmentScope(plan.scope) ? { V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST:
+      developmentRequestDigest(selected.requestKeyHash,selected.requestBodyHash) } : {}),
     V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: String(runs), V2_MODEL_MONTHLY_BUDGET_CNY: noModels ? e.V2_MODEL_MONTHLY_BUDGET_CNY : String(model),
     V2_ACCOUNT_MONTHLY_SPEND_CNY: String(plan.billCny) };
   publicDevelopmentConfig(env);
@@ -200,11 +206,12 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
           session.body.publicationOnly !== true && session.body.consumptionOnly !== true &&
           (opened ? session.body.developmentOnly === true && session.body.developmentExpiresAt === report.activated.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT &&
             (!bound || session.body.developmentStartsAt===report.activated.V2_PUBLIC_DEVELOPMENT_STARTS_AT) &&
-            (!next || (session.body.developmentRequestOnly===true && !Object.hasOwn(session.body,'developmentRequestDigest'))) &&
+            (!bound || (session.body.developmentRequestOnly===true && !Object.hasOwn(session.body,'developmentRequestDigest'))) &&
             (plan.resumeExistingTask ? session.body.developmentTaskOnly === true && !Object.hasOwn(session.body, 'developmentTaskId') : session.body.developmentTaskOnly !== true) &&
             status.body.spark?.healthVerified === true && status.body.agentDevelopment?.durableEnabled === true && status.body.agentDevelopment?.eventBackgroundAvailable === true
             : session.body.developmentOnly !== true && session.body.developmentRequestOnly!==true) && status.status === 200;
         report.runtime = { ready, readOnlyAnonymous: session.body.readOnly, developmentOnly: session.body.developmentOnly === true,
+          ...(bound ? {requestOnly:session.body.developmentRequestOnly===true} : {}),
           sparkReady: status.body.spark?.healthVerified === true, driverReady: status.body.agentDevelopment?.eventBackgroundAvailable === true }; save();
         if (ready) return;
       } catch (e) {
@@ -220,12 +227,12 @@ export async function runDevelopmentRecoveryOperation(plan, before, report, io) 
     check(stable(before) && known().some(s => same(s, before)), 'RECOVERY_FOREIGN_CONFIGURATION');
     if (plan.mode === 'activate') {
       check(same(before, plan.baseline), 'RECOVERY_BASELINE_CHANGED');
-      if (next) {
+      if (bound) {
         spend('activeHttp');
         const capability=await io.http('/api/v2/status');
         check(capability.status===200 && capability.body.agentDevelopment?.requestBindingSupported===true &&
           (!selected.derivationSource || capability.body.agentDevelopment?.derivationBindingSupported===true),
-          'NEXT_CLOUD_REQUEST_BINDING_UNAVAILABLE');
+          next ? 'NEXT_CLOUD_REQUEST_BINDING_UNAVAILABLE' : 'FIRST_CLOUD_REQUEST_BINDING_UNAVAILABLE');
       }
       const pages = [], cycle = month(now());
       for (let page = 1; page <= 10; page++) {

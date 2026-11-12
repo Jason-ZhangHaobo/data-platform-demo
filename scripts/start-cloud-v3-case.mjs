@@ -439,7 +439,7 @@ export async function continueCloudV3Start(path, client, {billPath, windowPath, 
     if (window && (session?.developmentStartsAt!==window.startsAt || session?.developmentExpiresAt!==window.expiresAt ||
         !(status?.budget?.account?.observedSpendCny>=window.bill.spendCny)))
       stop("实际运行时与原独立开发窗口不一致");
-    if (state.previousCase && (session?.developmentRequestOnly!==true ||
+    if (window && (session?.developmentRequestOnly!==true ||
         session.developmentRequestDigest!==developmentRequestDigest(window.checkpoint.requestKeyHash,action.bodyHash)))
       stop("运行时尚未绑定本案例的确切请求");
     if (item.derivationSource && status?.agentDevelopment?.derivationBindingSupported!==true)

@@ -11,6 +11,7 @@ import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
 import { sha256 } from '../../src/v2/delivery.mjs';
 import { currentLiveLifecycleContract, liveLifecyclePlan } from '../../src/v2/live-lifecycle-evaluation.mjs';
 import { validationFamilyForContext } from '../../src/v2/context.mjs';
+import { developmentRequestDigest } from '../../src/v2/public-development-access.mjs';
 import { fixtureFirstCloudInspection } from './fixtures/first-cloud-application-inspection.mjs';
 
 const time = Date.parse('2026-10-20T08:00:00Z'), stamp = new Date(time).toISOString();
@@ -86,7 +87,7 @@ function harness(plan, options={}) {
         developmentStartsAt:options.differentStart?new Date(time-1).toISOString():current.environmentVariables.V2_PUBLIC_DEVELOPMENT_STARTS_AT,
         developmentExpiresAt:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT,
         ...(open&&current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID?{developmentTaskOnly:options.targetFlag!==false,...(options.leakTargetId?{developmentTaskId:current.environmentVariables.V2_PUBLIC_DEVELOPMENT_TASK_ID}:{})}:{} ),
-        ...(open&&current.environmentVariables.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST&&!options.oldRuntime?{developmentRequestOnly:true}:{})}}
+        ...(open&&current.environmentVariables.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST&&!options.oldRuntime&&!options.missingRequestFlag?{developmentRequestOnly:true}:{})}}
         :{status:200,body:{spark:{healthVerified:options.health!==false},agentDevelopment:{durableEnabled:true,
           requestBindingSupported:!options.oldRuntime,derivationBindingSupported:!options.oldDerivationRuntime,
           eventBackgroundAvailable:true}}};
@@ -243,6 +244,8 @@ test('first v3 activation binds the original request and complete bill, then res
   await runDevelopmentRecoveryOperation(p,p.baseline,h.report,h.io);
   assert.equal(h.report.phase,'OPENED');
   assert.equal(h.writes.length,1);
+  assert.equal(h.report.activated.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST,developmentRequestDigest(p.firstCase.requestKeyHash,p.firstCase.requestBodyHash));
+  assert.equal(h.report.runtime.requestOnly,true);
   const receipt=h.report.firstCaseReceipt;
   assert.equal(receipt.protocol,firstCloudWindowReceiptProtocol);
   assert.deepEqual(receipt.checkpoint,p.firstCase);
@@ -273,11 +276,16 @@ test('first v3 activation binds the original request and complete bill, then res
   const legacy=structuredClone(close);
   delete legacy.applicationInspection;
   delete legacy.binding.applicationInspectionDigest;
-  const legacyClose=harness(legacy,{current:h.current()});
+  delete legacy.activated.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST;
+  const legacyCurrent={...p.baseline,environmentVariables:legacy.activated};
+  const legacyClose=harness(legacy,{current:legacyCurrent,oldRuntime:true});
   legacyClose.setClock(p.deadline+1);
-  await runDevelopmentRecoveryOperation(legacy,h.current(),legacyClose.report,legacyClose.io);
+  await runDevelopmentRecoveryOperation(legacy,legacyCurrent,legacyClose.report,legacyClose.io);
   assert.equal(legacyClose.report.phase,'CLOSED_READONLY');
   assert.equal(legacyClose.writes.length,1);
+  assert.deepEqual(legacyClose.current(),p.baseline);
+  const wrongDigest={...close,activated:{...close.activated,V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST:hash('0')}};
+  assert.throws(()=>validateDevelopmentRecoveryPlan(wrongDigest,time),/RECOVERY_ACTIVE_SNAPSHOT_INVALID/);
 });
 
 test('first v3 rejects altered request, reserve, source or window and restores if the runtime start differs',async t=>{
@@ -300,6 +308,15 @@ test('first v3 rejects altered request, reserve, source or window and restores i
   const over=harness(p,{bill:133});
   await assert.rejects(runDevelopmentRecoveryOperation(p,p.baseline,over.report,over.io),/RECOVERY_BUDGET_INVALID/);
   assert.equal(over.writes.length,0);
+  const old=harness(p,{oldRuntime:true});
+  await assert.rejects(runDevelopmentRecoveryOperation(p,p.baseline,old.report,old.io),/FIRST_CLOUD_REQUEST_BINDING_UNAVAILABLE/);
+  assert.equal(old.writes.length,0);
+  assert.equal(old.report.firstCaseReceipt,undefined);
+  const missingFlag=harness(p,{missingRequestFlag:true});
+  await assert.rejects(runDevelopmentRecoveryOperation(p,p.baseline,missingFlag.report,missingFlag.io),/RECOVERY_RUNTIME_UNCONFIRMED/);
+  assert.equal(missingFlag.report.firstCaseReceipt,undefined);
+  assert.equal(missingFlag.report.restoration,'VERIFIED');
+  assert.deepEqual(missingFlag.current(),p.baseline);
   const drift=harness(p,{differentStart:true});
   await assert.rejects(runDevelopmentRecoveryOperation(p,p.baseline,drift.report,drift.io),/RECOVERY_RUNTIME_UNCONFIRMED/);
   assert.equal(drift.report.restoration,'VERIFIED');

@@ -685,7 +685,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   writeFileSync(sessionFile,JSON.stringify({protocol:'shuduo-invite-session/v1',apiBaseUrl:baseUrl,projectId:PROJECT,
     cookie:'shuduo_session=fictional-session-placeholder',csrfToken:'fictional-csrf-placeholder',
     expiresAt:f.env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT}),{mode:0o600});
-  let originalKey, activeApplication, hideReceipt=false, differentActor=false, missingUsage=false, wrongEntry=false;
+  let originalKey, activeApplication, hideReceipt=false, differentActor=false, missingUsage=false, wrongEntry=false, wrongRuntimeDigest=false;
   const client=new V2Client({baseUrl,sessionFile,fetchImpl:async(url,options)=>{
     const target=new URL(url), path=target.pathname==='/v2/'?'/v2/':target.pathname.slice('/api/v2'.length)+target.search;
     reads.push({path,method:options.method});
@@ -716,6 +716,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
     const response=await f.call(path);
     if(differentActor&&path==='/auth/session')response.body.user.id=randomUUID();
     if(missingUsage&&path==='/status?include=session')delete response.body.status.budget.model.recordedCalls;
+    if(wrongRuntimeDigest&&path==='/status?include=session')response.body.session.developmentRequestDigest='0'.repeat(64);
     return new Response(JSON.stringify(response.body),{status:response.status});
   }});
   const cli=async(flags,expectedExit=0)=>{
@@ -789,6 +790,34 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   await cli(confirmedFlags,1);
   assert.deepEqual(reads,[]);
   client.projectId=PROJECT;
+  // A legacy window receipt cannot start a new cloud case on a runtime with no request binding.
+  await cli(confirmedFlags,1);
+  assert.deepEqual(reads,[{path:'/status?include=session',method:'GET'}]);
+  assert.equal(f.store.list('agent',PROJECT).length,0);
+  const expectedDigest=developmentRequestDigest(binding.requestKeyHash,binding.requestBodyHash);
+  f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=expectedDigest;
+  await f.restart();
+  const admitted=await f.call('/auth/session');
+  assert.equal(admitted.body.developmentRequestDigest,expectedDigest);
+  const guest=await (await fetch(f.base+'/auth/session')).json();
+  assert.equal(guest.developmentRequestOnly,true);
+  assert.equal(Object.hasOwn(guest,'developmentRequestDigest'),false);
+  const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
+  const firstBody={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
+  assert.equal(sha(JSON.stringify(firstBody)),binding.requestBodyHash);
+  for (const [body,key] of [[{...firstBody,message:firstBody.message+' 改动'},originalKey],
+    [{...firstBody,sql:'SELECT 0'},originalKey],[{...firstBody,contextId:'cash-change'},originalKey],
+    [{...firstBody,background:true},originalKey],[firstBody,randomUUID()]]) {
+    const denied=await f.call('/agent/tasks',body,key);
+    assert.equal(denied.status,403);
+    assert.equal(denied.body.code,'PUBLIC_DEVELOPMENT_REQUEST_ONLY');
+  }
+  assert.equal(f.store.list('agent',PROJECT).length,0);
+  assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
+  wrongRuntimeDigest=true;
+  await cli(confirmedFlags,1);
+  assert.deepEqual(reads,[{path:'/status?include=session',method:'GET'}]);
+  wrongRuntimeDigest=false;
   missingUsage=true;
   await cli(confirmedFlags,1);
   assert.deepEqual(reads,[{path:'/status?include=session',method:'GET'}]);
