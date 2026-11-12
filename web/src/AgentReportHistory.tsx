@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fundReportContractId } from "../../src/v2/distribution-report-contract.mjs";
 import { FundReportLineage } from "./FundReportLineage";
+import { SyncReportLineage } from "./SyncReportLineage";
 import type { PublishedReportReceipt } from "../../src/v2/published-report-client.mjs";
 import { readPublishedReportResult } from "../../src/v2/published-report-client.mjs";
 import { reportRequestId } from "../../src/v2/published-report-request.mjs";
@@ -100,6 +101,8 @@ function HistoricalResult({ result, receipt, api, canWrite }: { result: Publishe
       {" · 运行 "}<code title={result.runId}>{result.runId.slice(0, 8)}</code>
       {" · 结果 "}<code title={result.resultHash}>{result.resultHash.slice(0, 12)}</code></small>
     {result.outputContractId === fundReportContractId && <FundReportLineage key={result.key} api={api} receipt={receipt} canWrite={canWrite} />}
+    {result.sourceEvidence?.protocol === "shuduo-sync-sql-consumption-source/v1" &&
+      <SyncReportLineage key={result.key} api={api} receipt={receipt} />}
     {result.outputContractId
       ? <DistributionReportResults key={result.key} contractId={result.outputContractId} widgets={result.widgets} sourceEvidence={result.sourceEvidence} />
       : <div className="report-widgets-v2">{result.widgets.map(widget => <ReportWidget key={widget.id} widget={widget} />)}</div>}

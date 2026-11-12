@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { assertSyncReportWidgets, isSyncReportEvidence } from "./sync-sql-report.mjs";
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -207,6 +208,8 @@ export class ReportManager {
     )
       throw fail(409, "报表数据集代码已存在", "DUPLICATE_REPORT_DATASET");
     if(asset.outputContractId&&JSON.stringify(fields)!==JSON.stringify(asset.fields.map(f=>f.name)))throw fail(422,"分布数据集须保留完整复合键和已登记字段","DISTRIBUTION_REPORT_FIELDS");
+    if (isSyncReportEvidence(resolved?.sourceEvidence) && fields.length !== asset.fields.length)
+      throw fail(422, "冻结持仓数据集须保留原快照的五个核验字段", "SYNC_REPORT_FIELDS");
     return this.store.create("report_dataset", this.project, {
       name: text(input.name, "数据集名称", 2, 80),
       code,
@@ -215,17 +218,21 @@ export class ReportManager {
       status: "DRAFT",
       actualSnapshot: false,
       ...(asset.outputContractId?{outputContractId:asset.outputContractId,contextId:resolved.context.id,sourceEvidence:resolved.sourceEvidence}:{}),
+      ...(isSyncReportEvidence(resolved?.sourceEvidence)?{contextId:resolved.context.id,sourceEvidence:resolved.sourceEvidence}:{}),
       ...(publishedSource ? { publishedSource, sourceActorId: actorId } : {}),
     });
   }
 
   refreshDataset(id, { fixedSnapshotId } = {}) {
     const dataset = this.#dataset(id),
-      { asset, rows } = dataset.publishedSource ? this.resolvePublishedSource(dataset.publishedSource, dataset.sourceActorId) : this.assets.reportRows(dataset.assetId),
+      { asset, rows, sourceEvidence } = dataset.publishedSource ? this.resolvePublishedSource(dataset.publishedSource, dataset.sourceActorId) : this.assets.reportRows(dataset.assetId),
       projected = rows.map((row) =>
         Object.fromEntries(dataset.fields.map((field) => [field, row[field]])),
-      ),
-      materialized = this.reportStore.materialize(
+      );
+    if (isSyncReportEvidence(dataset.sourceEvidence) && (!isSyncReportEvidence(sourceEvidence) ||
+        stableHash(sourceEvidence)!==stableHash(dataset.sourceEvidence) || stableHash(projected)!==asset.evidenceHash))
+      throw fail(409, "冻结持仓数据集与原发布快照不一致", "SYNC_REPORT_SOURCE_CHANGED");
+    const materialized = this.reportStore.materialize(
         asset.id,
         projected,
         new Date(this.now()).toISOString(),
@@ -243,6 +250,7 @@ export class ReportManager {
         status: "READY",
         actualMaterialization: true,
         ...(asset.outputContractId?{outputContractId:asset.outputContractId,contextId:dataset.contextId,sourceEvidence:dataset.sourceEvidence}:{}),
+        ...(isSyncReportEvidence(sourceEvidence)?{contextId:dataset.contextId,sourceEvidence}:{}),
       });
     this.store.update("report_dataset", dataset.id, this.project, {
       currentSnapshotId: snapshot.id,
@@ -373,8 +381,18 @@ export class ReportManager {
     const snapshot = this.reportStore.read(snapshotMeta.dataSnapshotId),
       started = this.now(),
       distribution=version.outputContractId?executeDistributionReport({version,snapshot,metadata:snapshotMeta,hash:stableHash}):undefined,
-      widgets = distribution?.widgets??version.widgets.map((widget) =>executeWidget(widget, snapshot.rows)),
-      run = this.store.create("report_run", this.project, {
+      widgets = distribution?.widgets??version.widgets.map((widget) =>executeWidget(widget, snapshot.rows));
+    const dataset = this.#dataset(version.datasetId);
+    const syncEvidence = dataset.sourceEvidence;
+    if (isSyncReportEvidence(syncEvidence)) {
+      const resolved = this.resolvePublishedSource(dataset.publishedSource, dataset.sourceActorId);
+      if (!isSyncReportEvidence(resolved.sourceEvidence) || stableHash(syncEvidence)!==stableHash(resolved.sourceEvidence) ||
+          stableHash(syncEvidence)!==stableHash(snapshotMeta.sourceEvidence) || snapshotMeta.assetVersionId!==resolved.asset.versionId ||
+          snapshot.contentHash!==resolved.asset.evidenceHash || stableHash(snapshot.rows)!==snapshot.contentHash)
+        throw fail(409,"冻结持仓报表快照与原发布来源不一致","SYNC_REPORT_SOURCE_CHANGED");
+      assertSyncReportWidgets(widgets,resolved.expected);
+    }
+    const run = this.store.create("report_run", this.project, {
         reportId: report.id,
         reportVersionId: version.id,
         reportConfigHash: version.configHash,
@@ -384,6 +402,7 @@ export class ReportManager {
         status: "SUCCEEDED",
         widgets,
         ...(distribution?{outputContractId:version.outputContractId,distributionValidation:distribution.distributionValidation,sourceEvidence:distribution.sourceEvidence}:{}),
+        ...(isSyncReportEvidence(syncEvidence)?{sourceEvidence:syncEvidence}:{}),
         resultHash: stableHash(widgets),
         durationMs: this.now() - started,
         actualExecution: true,
@@ -407,8 +426,8 @@ export class ReportManager {
     if (!run || run.status !== "SUCCEEDED")
       throw fail(409, "报表尚无成功运行，不能导出", "REPORT_RUN_REQUIRED");
     const partitioned=Boolean(run.outputContractId), fund=run.outputContractId===fundReportContractId;
-    if (fund && stableHash(run.widgets) !== run.resultHash)
-      throw fail(409, "基金报表结果摘要与原运行不一致", "REPORT_RUN_CORRUPT");
+    if ((fund || isSyncReportEvidence(run.sourceEvidence)) && stableHash(run.widgets) !== run.resultHash)
+      throw fail(409, "报表结果摘要与原运行不一致", "REPORT_RUN_CORRUPT");
     const rows = [partitioned?["widget_id","title",fund?"portfolio_slice":"customer_slice",fund?"portfolio_label":"client_label","trade_date","group","value"]:["widget_id", "title", "group", "value"]];
     for (const widget of run.widgets) {
       if (widget.value !== undefined)

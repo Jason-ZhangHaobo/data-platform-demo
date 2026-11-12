@@ -259,6 +259,34 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal((await request(`/data-services/xapis/${xapi.id}`, undefined, undefined, otherIdentity)).status, 403);
     const persisted = await app.dataServices.recheckCall(xapi.id, checkedCall.value.callId);
     assert.equal(persisted.independentResultVerified, true);
+    const source = { kind: "MANUAL", releaseId:activate.value.id, packageDigest:stored.digest, revisionId:revision.value.id,
+      runId:checked.id, batchId:batches[0].id };
+    const reportRequestId = crypto.randomUUID();
+    const reportInput = { name:"冻结持仓验收报告", source };
+    const createdReport = await request("/reports/published", reportInput, reportRequestId);
+    assert.equal(createdReport.value.status, "SUCCEEDED", JSON.stringify(createdReport.value.error));
+    const reportPath = `/reports/published/requests/${reportRequestId}`;
+    const result = await request(reportPath + "/result");
+    assert.equal(result.value.overview.reports[0].runs[0].widgets.find(w=>w.id==="total_assets").value, "2995.07");
+    const lineage = await request(reportPath + "/lineage");
+    assert.equal(lineage.value.release.snapshotHash,run.syncInput.snapshotHash);
+    assert.equal(lineage.value.calls[0].callId,checkedCall.value.callId);
+    const assetPath = "/assets/" + encodeURIComponent(lineage.value.snapshot.assetId);
+    const asset = await request(assetPath + "/lineage");
+    assert.ok(asset.value.edges.some(edge=>edge.evidenceId===first.run.id&&edge.evidenceHash===run.syncInput.snapshotHash));
+    assert.ok(!asset.value.nodes.some(node=>node.id==="fixture:positions"));
+    assert.equal(asset.value.nodes.length,4);
+    assert.ok(asset.value.nodes.every(node=>node.fields?.length&&node.evidenceHash));
+    assert.equal((await request(assetPath, undefined, undefined, otherIdentity)).status, 403);
+    const classic = await request("/reports/datasets", { name:"原批次资产数据集",code:"frozen_asset_report",assetId:lineage.value.snapshot.assetId,
+      fields:asset.value.nodes.find(node=>node.id===lineage.value.snapshot.assetId).fields.map(field=>field.name) });
+    assert.equal(classic.status,201,JSON.stringify(classic.value));
+    assert.equal(classic.value.publishedSource.batchId,batches[0].id);
+    assert.equal((await request(`/reports/datasets/${classic.value.id}/refresh`, {})).value.currentSnapshot.assetVersionId,batches[0].id);
+    assert.equal((await request(`/reports/${createdReport.value.reportId}`, undefined, undefined, otherIdentity)).status, 404);
+    assert.equal((await request(reportPath + "/lineage?download_digest=" + "0".repeat(64))).status, 409);
+    const replayReport = await request("/reports/published", reportInput, reportRequestId);
+    assert.equal(replayReport.value.reportRunId,createdReport.value.reportRunId);
     const holdPath = `/data-services/dapis/${holdings.id}`;
     const replacement = await request(holdPath + "/versions", { sourceReleaseRunId: batches[0].id, rateLimitPerMinute: 20 }, "replace-frozen-dapi");
     assert.equal(replacement.status, 201);
@@ -269,6 +297,8 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     const originalBatch = app.store.get("release_run", batches[1].id, PROJECT);
     app.store.update("release_run", originalBatch.id, PROJECT, { snapshotHash:"0".repeat(64) });
     assert.equal((await request("/open/xapis/sync-assets", undefined, undefined, bearer)).status, 409);
+    assert.equal((await request(reportPath + "/lineage")).status,409);
+    assert.equal((await request(reportPath + "/result")).value.receipt.reportRunId,createdReport.value.reportRunId);
     app.store.update("release_run", originalBatch.id, PROJECT, { snapshotHash:originalBatch.snapshotHash });
     assert.equal((await request(`/data-services/applications/${issued.value.application.id}/revoke`, {})).status, 200);
     assert.equal((await request("/open/xapis/sync-assets", undefined, undefined, bearer)).status, 401);

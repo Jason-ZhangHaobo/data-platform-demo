@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync } from "node:fs";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
-import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportLineage,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
+import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance,checkedReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
 import { readWealthConsumption } from '../src/v2/wealth-report-consumption-client.mjs';
@@ -1414,7 +1414,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         snapshotId: required(parsed.options, 'snapshot_id'), basisDigest: required(parsed.options, 'basis_digest'),
         confirm: parsed.options.confirm === true });
     else if(resource==='reports'&&['result','lineage','development','consumption'].includes(action))
-      result=await ({result:readPublishedReportResult,lineage:readPublishedReportLineage,development:readPublishedReportDevelopment,consumption:readPublishedReportConsumption}[action])(client,{requestId:required(parsed.options,'request_id'),
+      result=await ({result:readPublishedReportResult,lineage:readPublishedReportEvidence,development:readPublishedReportDevelopment,consumption:readPublishedReportConsumption}[action])(client,{requestId:required(parsed.options,'request_id'),
         ...(parsed.options.source_file?{source:jsonObject(readFileSync(required(parsed.options,'source_file'),'utf8'),'报表发布来源')}:{})});
     else if(resource==='reports'&&action==='resume')result=await resumePublishedReport(client,{id:required(parsed.options,'id')});
     else if (resource === "reports" && action === "overview")

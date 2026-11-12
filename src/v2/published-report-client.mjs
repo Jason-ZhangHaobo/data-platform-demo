@@ -97,6 +97,54 @@ export async function readPublishedReportLineage(client,args) {
  return checkedPublishedReportLineage(await client.request('/reports/published/requests/'+requestId+'/lineage'),{...args,requestId});
 }
 
+export async function checkedSyncReportLineage(value, expected={}) {
+ const bad=()=>{throw Error("冻结持仓报表、原批次或授权回执未能对应");};
+ if(value?.protocol!=="shuduo-sync-sql-report-lineage/v1"||value.scope!=="LOCAL_TEST_ONLY"||
+    value.publicDeployed!==false||value.agentIndependentE2E!==false)bad();
+ const {requestId,source,report,snapshot,release,batch,calls,digest,...rest}=value;
+ const normalized=publishedReportSource(source);
+ try{
+  for(const id of [requestId,report.id,report.versionId,report.runId,snapshot.id,snapshot.datasetId,release.syncRunId,release.metadataVersionId,release.approvalId])
+   reportRequestId(id);
+ }catch{bad();}
+ if(expected.requestId&&expected.requestId!==requestId||
+    expected.source&&JSON.stringify(publishedReportSource(expected.source))!==JSON.stringify(normalized)||
+    release.protocol!=="shuduo-sync-sql-consumption-source/v1"||release.scope!==value.scope||release.agentIndependentE2E!==false||
+    release.releaseId!==source.releaseId||release.packageDigest!==source.packageDigest||release.sourceRevisionId!==source.revisionId||
+    release.sourceRunId!==source.runId||release.sourceReleaseRunId!==source.batchId||batch?.id!==source.batchId||
+    (source.kind==="AGENT"?release.sourceTaskId!==source.taskId||!["LIVE_MODEL","SYNTHETIC_MODEL"].includes(release.developmentMode):release.developmentMode!=="MANUAL")||
+    !Array.isArray(release.batchIds)||release.batchIds.length!==2||new Set(release.batchIds).size!==2||
+    ![1,2].includes(batch.sequence)||release.batchIds[batch.sequence-1]!==batch.id||batch.status!=="SUCCEEDED"||
+    snapshot.assetId!=="dataset:sync-holdings:"+batch.id||!Number.isInteger(snapshot.rowCount)||snapshot.rowCount<1||
+    !/^\d{4}-\d{2}-\d{2}$/.test(release.businessDate)||![snapshot.contentHash,report.resultHash,release.snapshotHash,digest].every(hash)||
+    !Array.isArray(calls)||calls.length>20||new Set(calls.map(call=>call?.callId)).size!==calls.length)bad();
+ if(expected.receipt){
+  const receipt=checkedPublishedReportReceipt(expected.receipt,{requestId,source});
+  if(receipt.reportId!==report.id||receipt.reportVersionId!==report.versionId||receipt.reportRunId!==report.runId||
+     receipt.resultHash!==report.resultHash||receipt.snapshotId!==snapshot.id||receipt.datasetId!==snapshot.datasetId||
+     receipt.sourceEvidenceHash!==snapshot.contentHash||receipt.rowCount!==snapshot.rowCount)bad();
+ }
+ for(const call of calls){
+  try{for(const id of [call.callId,call.serviceId,call.versionId])reportRequestId(id);}catch{bad();}
+  if(!["DAPI","XAPI"].includes(call.serviceType)||!["ACTIVE","REVOKED","EXPIRED"].includes(call.applicationStatus)||
+     call.verified!==true||call.independentResultVerified!==true||!Number.isInteger(call.rowCount)||
+     call.rowCount<1||call.rowCount>snapshot.rowCount||![call.configHash,call.resultHash,call.paginationHash].every(hash))bad();
+ }
+ const body={requestId,source,report,snapshot,release,batch,calls,...rest};
+ const json=JSON.stringify(body,(_key,item)=>item&&typeof item==="object"&&!Array.isArray(item)?
+  Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
+ const actual=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(json))),byte=>byte.toString(16).padStart(2,"0")).join("");
+ if(actual!==digest)bad();
+ return value;
+}
+
+export async function readPublishedReportEvidence(client,args) {
+ const requestId=reportRequestId(args.requestId);
+ const value=await client.request('/reports/published/requests/'+requestId+'/lineage');
+ return value?.protocol==="shuduo-sync-sql-report-lineage/v1"
+  ? checkedSyncReportLineage(value,{...args,requestId}) : checkedPublishedReportLineage(value,{...args,requestId});
+}
+
 export async function checkedPublishedReportDevelopment(value, expected={}) {
  const bad=()=>{throw Error("原开发版本或独立核验与固定报表来源不一致");};
  if(!value||value.protocol!=="shuduo-fund-report-development/v1")bad();

@@ -619,7 +619,7 @@ export class AssetCatalogManager {
         item.status === "SUCCEEDED" &&
         item.published === true &&
         item.schedulerTriggered === true &&
-        item.validation?.passed,
+        item.validation?.passed && !item.source?.syncInput && !item.snapshotHash,
     );
     if (publishedRuns.length) {
       const run = publishedRuns[0];
@@ -655,6 +655,7 @@ export class AssetCatalogManager {
           service.serviceType === "DAPI"
             ? (version?.fields ?? []).map((name) => ({ name, type: "API_FIELD", nullable: true }))
             : (version?.steps ?? []).map((step) => ({ name: step.alias, type: "DAPI_RESULT", nullable: true }));
+      if (version?.sourceEvidence?.protocol === "shuduo-sync-sql-consumption-source/v1") continue;
       items.push({
         id: `service:${service.id}`,
         kind: service.serviceType,

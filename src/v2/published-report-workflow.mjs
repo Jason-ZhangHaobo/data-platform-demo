@@ -3,9 +3,10 @@ import {publishedReportHash} from './published-report-source.mjs';
 import {checkedPublishedReportArtifacts} from './report-provenance.mjs';
 import {fundReportLineage,fundReportDevelopment} from "./fund-report-lineage.mjs";
 import {publishedReportTemplate} from './report-template.mjs';
+import { isSyncReportEvidence, syncReportLineage } from "./sync-sql-report.mjs";
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
 export const publishedReportRequestKey=(project,actor,id)=>`${project}:published-report:v1:${actor}:${id}`;
-export function createPublishedReportWorkflow({store,project,reports,reportStore,resolveSource,provenance,fundSignedExecutionFor,afterStep=()=>{}}){
+export function createPublishedReportWorkflow({store,project,reports,reportStore,resolveSource,provenance,fundSignedExecutionFor,readSyncCalls,afterStep=()=>{}}){
  const kind='published_report_creation',keyFor=(actor,id)=>publishedReportRequestKey(project,actor,id);
  const owned=(id,actor)=>{const r=store.get(kind,id,project);if(!r||r.actorId!==actor)throw fail(404,'REPORT_CREATION_NOT_FOUND','未找到本账号的原报表请求');return r;};
  const lookupRecord=(requestId,actor)=>{
@@ -92,7 +93,8 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
    const evidenceKeys=["protocol","scope","engineClassification","modelClassification","eligibleForService","agentIndependentE2E",
     ...(record.input.source.kind==="AGENT"?["modelMode","upstreamKind","agentTaskId"]:[]),
     "releaseId","packageDigest","sourceTaskId","sourceRevisionId","sourceRunId","sourceReleaseRunId","outputContractId",
-    "batchId","businessDate","inputDigest","assertionDigest","resultDigest"];
+    "batchId","businessDate","inputDigest","assertionDigest","resultDigest",
+    "snapshotHash","batchIds","approvalId","syncRunId","metadataVersionId","developmentMode"];
    const snapshotView=pick(snapshot,["id","datasetId","assetId","assetVersionId","assetEvidenceHash","contentHash",
     "rowCount","fields","status","actualMaterialization","outputContractId","contextId"]);
    const runView=pick(run,["id","reportId","reportVersionId","reportConfigHash","datasetId","datasetSnapshotId",
@@ -124,6 +126,15 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
   },
   readLineage(requestId,actor,timeUnitMs){
    const {record,artifacts}=verifiedResult(requestId,actor);
+   if (isSyncReportEvidence(artifacts.dataset.sourceEvidence)) {
+    const source = record.input.source, first = resolveSource(source, actor);
+    return readSyncCalls(first.sourceEvidence).then(calls => {
+     const resolved = resolveSource(source, actor);
+     const current = verifiedResult(requestId, actor);
+     return syncReportLineage({ ...current, resolved, calls, hash: publishedReportHash,
+       batch: store.get("release_run",source.batchId,project) });
+    });
+   }
    return fundReportLineage({store,project,record,artifacts,timeUnitMs,fundSignedExecutionFor});
   },
   readDevelopment(requestId,actor,timeUnitMs){

@@ -15,7 +15,7 @@ export type ReportWidgetResult = {
   value?: string; series?: { group: string; value: string;partitionKey?:string;clientLabel?:string;tradeDate?:string;zeroDenominator?:boolean }[]; evaluatedCount: number;
 };
 export type ReportSourceEvidence = {
-  modelClassification?: string; engineClassification?: string; assertionDigest?: string; packageDigest?: string; resultDigest?: string;
+  protocol?: string; modelClassification?: string; engineClassification?: string; assertionDigest?: string; packageDigest?: string; resultDigest?: string;
 };
 export type PublishedReportResult = {
   key: string; reportId: string; name: string; versionId: string; versionNumber: number;
@@ -55,9 +55,18 @@ export function boundPublishedReports(value: unknown, source: PublishedReportSou
     for (const snapshot of dataset.snapshots) {
       if (!record(snapshot) || !id(snapshot.id) || snapshots.has(snapshot.id)) throw invalid();
       if (!source.batchIds.includes(snapshot.assetVersionId)) continue;
-      if (snapshot.datasetId !== dataset.id || (snapshot.outputContractId?(!distributionReportMetadata(snapshot.outputContractId)||snapshot.assetId!=="dataset:"+snapshot.outputContractId):snapshot.assetId !== "dataset:customer_assets_t1") || dataset.assetId !== snapshot.assetId ||
+      const frozen = snapshot.assetId === "dataset:sync-holdings:" + snapshot.assetVersionId;
+      if (snapshot.datasetId !== dataset.id || (snapshot.outputContractId?(!distributionReportMetadata(snapshot.outputContractId)||snapshot.assetId!=="dataset:"+snapshot.outputContractId):!frozen && snapshot.assetId !== "dataset:customer_assets_t1") || dataset.assetId !== snapshot.assetId ||
         snapshot.actualMaterialization !== true || snapshot.status !== "READY" || !hash(snapshot.contentHash) || !hash(snapshot.assetEvidenceHash) || !count(snapshot.rowCount) ||
         !Array.isArray(snapshot.fields) || !snapshot.fields.length || !snapshot.fields.every(text) || new Set(snapshot.fields).size !== snapshot.fields.length) throw invalid();
+      if(frozen){
+        const p=dataset.publishedSource,e=snapshot.sourceEvidence;
+        if(!record(p)||p.kind!==source.kind||p.taskId!==source.taskId||p.releaseId!==source.releaseId||p.packageDigest!==source.packageDigest||
+           p.revisionId!==source.revisionId||p.runId!==source.runId||p.batchId!==snapshot.assetVersionId||!record(e)||
+           e.protocol!=="shuduo-sync-sql-consumption-source/v1"||e.scope!=="LOCAL_TEST_ONLY"||e.agentIndependentE2E!==false||
+           e.releaseId!==p.releaseId||e.packageDigest!==p.packageDigest||e.sourceRevisionId!==p.revisionId||e.sourceRunId!==p.runId||
+           e.sourceReleaseRunId!==p.batchId||!hash(e.snapshotHash))throw invalid();
+      }
       if(snapshot.outputContractId){const c=distributionReportMetadata(snapshot.outputContractId),p=dataset.publishedSource,e=snapshot.sourceEvidence;
        if(!c||dataset.outputContractId!==c.id||JSON.stringify(snapshot.fields)!==JSON.stringify(c.fields.map(f=>f.name))||!c.contextIds.includes(snapshot.contextId)||snapshot.contextId!==dataset.contextId||!record(p)||p.kind!==source.kind||p.taskId!==source.taskId||p.releaseId!==source.releaseId||p.packageDigest!==source.packageDigest||p.revisionId!==source.revisionId||p.runId!==source.runId||p.batchId!==snapshot.assetVersionId||!record(e)||e.agentIndependentE2E!==false||e.scope!=='LOCAL_TEST_ONLY'||e.sourceTaskId!==source.taskId||e.sourceRevisionId!==source.revisionId||e.sourceRunId!==source.runId||e.sourceReleaseRunId!==p.batchId)throw invalid();
        if(c.id===fundReportContractId&&(e.engineClassification!=="LOCAL_SPARK_PROCESS"||
@@ -89,13 +98,16 @@ export function boundPublishedReports(value: unknown, source: PublishedReportSou
       const distribution=bound.snapshot.outputContractId;
       if(distribution&&(version.outputContractId!==distribution||run.outputContractId!==distribution||run.distributionValidation?.passed!==true||run.distributionValidation.agentIndependentE2E!==false))throw invalid();
       if(distribution&&(!record(run.sourceEvidence)||['modelClassification','engineClassification','sourceTaskId','sourceRevisionId','sourceRunId','sourceReleaseRunId','outputContractId','packageDigest','releaseId',...(distribution===fundReportContractId?['resultDigest','assertionDigest','batchId','upstreamKind','agentTaskId','modelMode']:[])].some(k=>run.sourceEvidence[k]!==bound.snapshot.sourceEvidence[k])))throw invalid();
+      const frozen = bound.snapshot.assetId === "dataset:sync-holdings:" + bound.snapshot.assetVersionId;
+      if(frozen&&(!record(run.sourceEvidence)||["protocol","snapshotHash","releaseId","sourceReleaseRunId","sourceRevisionId","packageDigest"]
+        .some(k=>run.sourceEvidence[k]!==bound.snapshot.sourceEvidence[k])))throw invalid();
       const widgets = distribution?checkedDistributionReportWidgets(run.widgets,version.widgets,distribution,bound.snapshot.rowCount):checkedWidgets(run.widgets);
       if (!Array.isArray(version.widgets) || version.widgets.length !== widgets.length ||
         widgets.some((w, i) => !record(version.widgets[i]) || definition(w) !== definition(version.widgets[i]) ||
           w.evaluatedCount !== bound.snapshot.rowCount || w.field !== undefined && !bound.snapshot.fields.includes(w.field) || w.dimension !== undefined && !bound.snapshot.fields.includes(w.dimension))) throw invalid();
       results.push({ key: `${report.id}:${version.id}:${run.id}`, reportId: report.id, name: report.name, versionId: version.id, versionNumber: version.versionNumber,
         runId: run.id, snapshotId: run.datasetSnapshotId, sourceBatchId: bound.snapshot.assetVersionId, contentHash: bound.snapshot.contentHash,
-        ...(distribution?{outputContractId:distribution,sourceEvidence:run.sourceEvidence}:{}),
+        ...(distribution?{outputContractId:distribution,sourceEvidence:run.sourceEvidence}:frozen?{sourceEvidence:run.sourceEvidence}:{}),
         resultHash: run.resultHash, description: version.description, fields: bound.snapshot.fields, widgets,
         exportable: report.lastRunId === run.id && report.currentVersionId === version.id });
     }
