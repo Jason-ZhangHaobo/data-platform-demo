@@ -3,10 +3,24 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { loadModuleStartup, loadStartupCore, moduleStartupPaths, startupReadCurrent } from '../../web/src/startup-loading.ts';
 import { workbenchSessionScope } from '../../web/src/workbench-session-boundary.ts';
+import { isAgentSampleLanding, publicAgentSamples } from '../../web/src/agent-startup-samples.ts';
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
 const status={mode:'PUBLIC_INVITATION',capabilities:[]};
 const session=id=>({authenticated:true,user:{id},role:'ENGINEER',permissions:['DEVELOPMENT','AGENT']});
 const fixtures={'/contexts':[{id:'holdings-t1',referenceSql:'SELECT 1'}],'/runs':[{id:'fictional-run'}],'/revisions':[{id:'fictional-revision',sql:'SELECT 1'}],'/agent/tasks':[{id:'fictional-task'}],'/agent/deliveries':[{id:'fictional-delivery'}]};
+
+test('early Agent samples retain only the public picker fields and skip original task links',()=>{
+  const base='https://demo.example/v2/';
+  assert.equal(isAgentSampleLanding(base),true);
+  assert.equal(isAgentSampleLanding(base+'?module=agent-center'),true);
+  for (const suffix of ['?module=services','?module=agent-center&task=original','?revision=original','#agent-call-history'])
+    assert.equal(isAgentSampleLanding(base+suffix),false);
+  const sample={id:'holdings-t1',name:'客户资产 T+1',definition:'持仓和现金',businessDate:'2026-09-10'};
+  const context={...sample,classification:'SYNTHETIC',referenceSql:'SELECT 1',tables:[],expected:[{test:'fixture'}]};
+  assert.deepEqual(publicAgentSamples([context,{...context,classification:'PRIVATE'},{...context,capabilities:{scope:'LOCAL_ONLY'}},
+    {...context,capabilities:{agentDevelopment:false}},{...context,id:'../wrong'}]),[sample]);
+  assert.deepEqual(publicAgentSamples({items:[context]}),[]);
+});
 
 test('identity and status become usable while historical inputs are still pending or later fail',async()=>{
   const pending=deferred(),coreEvents=[],legacyEvents=[],requests=[];
@@ -139,6 +153,8 @@ test('actual app wires guarded loading, explicit retry and no-context write gate
   assert.match(source,/const currentView = \(\) => active && startupReadCurrent/);
   assert.ok((source.match(/if \(!currentView\(\)\) return/g)||[]).length>=6);
   assert.match(source,/active = false; clearInterval\(interval\)/);
-  assert.match(source,/core === 1 \? openingContexts.current/);
+  assert.match(source,/core === 1 && !openingContexts\.current\.consumed \? openingContexts\.current\.request/);
+  assert.match(source,/<AgentStartupPreview read=\{readOpeningContexts\}/);
+  assert.match(source,/void readOpeningContexts\(\)\.catch/);
   assert.match(source,/!privatePreview && inputModule === "agent-center" && agentWorkspaceMode === "development"/);
 });

@@ -76,6 +76,7 @@ const AgentReportHistory = lazy(() => import("./AgentReportHistory").then(module
 const AgentCenter = lazy(async () => ({ default: (await import("./AgentCenter")).AgentCenter }));
 const SqlContractScope = lazy(async () => ({ default: (await import("./SqlContractScope")).SqlContractScope }));
 const AgentDevelopmentWorkbench = lazy(async () => ({ default: (await import("./AgentDevelopmentWorkbench")).AgentDevelopmentWorkbench }));
+const AgentStartupPreview = lazy(() => import("./AgentStartupPreview"));
 const PythonWorkbench = lazy(async () => ({ default: (await import("./PythonWorkbench")).PythonWorkbench }));
 const CloudReadinessPanel = lazy(async () => ({ default: (await import("./CloudReadinessPanel")).CloudReadinessPanel }));
 const AuthDialog = lazy(async () => ({ default: (await import("./AuthDialog")).AuthDialog }));
@@ -401,7 +402,8 @@ function App() {
     };
   }, [viewEpoch]);
   const coreRequest = useRef(0), inputRequest = useRef(0);
-  const openingContexts = useRef<Promise<Context[]> | undefined>(undefined);
+  const openingContexts = useRef<{request?:Promise<Context[]>; consumed?:boolean; selected?:string}>({});
+  const readOpeningContexts = () => openingContexts.current.request ??= requestApi<Context[]>("/contexts");
   const [coreReadState, setCoreReadState] = useState<StartupReadState>("LOADING"),
     [coreError, setCoreError] = useState(""), [confirmedCoreEpoch, setConfirmedCoreEpoch] = useState(-1),
     [confirmedCoreRequest, setConfirmedCoreRequest] = useState(0);
@@ -461,6 +463,7 @@ function App() {
   const inputModuleRef = useRef(inputModule); inputModuleRef.current = inputModule;
   const [agentDraftDirty, setAgentDraftDirty] = useState(false);
   const clearPersonalView = () => {
+    openingContexts.current.selected = undefined;
     inputRequest.current++; setContexts([]);
     setModuleRead({ module: inputModuleRef.current, epoch: authEpoch.current, core: coreRequest.current, state: "LOADING", error: "" });
     setRuns([]); setRun(undefined); setRevisions([]);
@@ -567,8 +570,8 @@ function App() {
   const reloadModule = async () => {
     if (coreReadState !== "READY" || confirmedCoreEpoch !== authEpoch.current || confirmedCoreRequest !== coreRequest.current) return;
     const epoch = authEpoch.current, core = coreRequest.current, module = inputModuleRef.current, request = ++inputRequest.current;
-    const prefetchedContexts = core === 1 ? openingContexts.current : undefined;
-    openingContexts.current = undefined;
+    const prefetchedContexts = core === 1 && !openingContexts.current.consumed ? openingContexts.current.request : undefined;
+    openingContexts.current.consumed = true;
     const current = () => startupReadCurrent({ authEpoch: epoch, coreRequest: core, moduleRequest: request, module }, { authEpoch: authEpoch.current, coreRequest: coreRequest.current, moduleRequest: inputRequest.current, module: inputModuleRef.current });
     setModuleRead({ module, epoch, core, state: "LOADING", error: "" });
     try {
@@ -589,9 +592,7 @@ function App() {
     if (!privatePreview && inputModule === "agent-center" && agentWorkspaceMode === "development") {
       // This route serves public fictional fixtures. Only the first confirmed
       // startup may consume it; retries and account changes read again.
-      const response = requestApi<Context[]>("/contexts");
-      openingContexts.current = response;
-      void response.catch(() => {}); // The module read handles failure after identity confirmation.
+      void readOpeningContexts().catch(() => {}); // Preview and module handle failures independently.
     }
   }, []);
   useEffect(() => { void reloadModule(); }, [inputModule, coreReadState, confirmedCoreEpoch, confirmedCoreRequest, session.user?.id]);
@@ -788,7 +789,7 @@ function App() {
   const contextsReady = moduleInputsReady && contexts.length > 0;
   const startupWritable = coreReady && (!moduleInputsRequired || moduleInputsReady) && (!needsContexts || contextsReady);
   const moduleInputError = moduleRead.module === inputModule && moduleRead.epoch === authEpoch.current && moduleRead.core === coreRequest.current && moduleRead.state === "ERROR" ? moduleRead.error : "";
-  const contextReadinessReason = !coreReady ? "身份与服务状态尚未确认；暂不提交开发请求。" : !moduleInputsReady
+  const contextReadinessReason = !coreReady ? "等待身份与服务核验。" : !moduleInputsReady
     ? moduleInputError ? "业务上下文读取失败，请点击上方重新读取；原任务与代码保留。" : "正在读取业务上下文；确认表结构与口径前不提交开发任务。"
     : !contexts.length ? "当前项目没有可用业务上下文，不能生成或运行；已保存任务仍可读取。" : undefined;
   const dirty = sql !== original,
@@ -963,8 +964,8 @@ function App() {
             </span>
           </div>
         </header>
-        {coreReadState !== "READY" && <div className={coreReadState === "ERROR" ? "error-banner" : "notice-banner"} role={coreReadState === "ERROR" ? "alert" : "status"}><div><strong>{coreReadState === "ERROR" ? "服务或身份读取未确认" : "正在确认服务与身份"}</strong><p>{coreReadState === "ERROR" && coreError}{coreSnapshotKnown ? identityChecking ? " 暂时隐藏已读内容，暂停写入。" : " 保留已读内容，暂停写入。" : " 身份、任务状态和写入权限待确认。"}</p></div>{coreReadState === "ERROR" && <button className="button" onClick={() => void reload()}>重新读取服务与身份</button>}</div>}
-        {coreReady && moduleInputsRequired && (!moduleInputsReady || needsContexts && !contexts.length) && <div className={moduleInputError ? "error-banner" : "notice-banner"} role={moduleInputError ? "alert" : "status"}><div><strong>{moduleInputError ? "当前模块数据读取失败" : moduleInputsReady ? "没有可用业务上下文" : "正在读取当前模块所需数据"}</strong><p>{moduleInputError || (needsContexts ? "表结构与业务口径未确认前，开发按钮保持禁用；已保存任务可继续读取。" : "历史列表尚未确认，不把加载中显示为空结果。")}</p></div>{(moduleInputError || moduleInputsReady) && <button className="button" disabled={!coreReady} onClick={() => void reloadModule()}>重新读取当前模块</button>}</div>}
+        {coreReadState !== "READY" && <div className={coreReadState === "ERROR" ? "error-banner" : "notice-banner"} role={coreReadState === "ERROR" ? "alert" : "status"}><div><strong>{coreReadState === "ERROR" ? "服务或身份读取未确认" : "正在确认服务与身份"}</strong>{coreError && <p>{coreError}</p>}</div>{coreReadState === "ERROR" && <button className="button" onClick={() => void reload()}>重新读取服务与身份</button>}</div>}
+        {coreReady && moduleInputsRequired && (!moduleInputsReady || needsContexts && !contexts.length) && <div className={moduleInputError ? "error-banner" : "notice-banner"} role={moduleInputError ? "alert" : "status"}><div><strong>{moduleInputError ? "当前模块数据读取失败" : moduleInputsReady ? "没有可用业务上下文" : "正在读取当前模块所需数据"}</strong><p>{moduleInputError || (needsContexts ? "等待业务口径，暂不可开发。" : "历史列表尚未确认，不把加载中显示为空结果。")}</p></div>{(moduleInputError || moduleInputsReady) && <button className="button" disabled={!coreReady} onClick={() => void reloadModule()}>重新读取当前模块</button>}</div>}
         {session.readOnly && <div className="notice-banner" role="status">只读验收入口 · 已有账号可登录查看已保存结果；创建、运行、发布及新邀请暂未开放。不会因登录自动运行模型或 Spark。</div>}
         {!identityChecking && session.developmentOnly && !session.readOnly && <div className="notice-banner" role="status">受邀开发试点 · {session.developmentTaskOnly ? "仅续接指定既有任务及其关联代码与交付文件，原次数和费用预留不重置；其他任务只读" : "仅限一条新 Agent 任务、SQL 编辑运行及交付文件准备；历史任务只读"}，发布、全平台规划、邀请和接口凭证管理关闭。窗口截止 {session.developmentExpiresAt ? new Date(session.developmentExpiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间），到期停止新计算并保留结果。</div>}
         {!identityChecking && session.publicationOnly && <div className="notice-banner" role="status"><div><strong>受邀发布试点 · 仅指定交付包的两个样例批次</strong><p>代码、需求和交付文件只读，不重新调用模型或演练；同一冻结业务日期运行两批，不代表两个交易日或生产调度。{canPublish ? "请核对下方指定版本并逐项审阅。" : "当前发布窗口未开放、已结束或此账号无发布权限；已有结果仍可查看。"}</p><small>窗口：{session.publicationStartsAt ? new Date(session.publicationStartsAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"} — {session.publicationExpiresAt ? new Date(session.publicationExpiresAt).toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) : "未确认"}（北京时间）；邀请码及其他业务模块写入保持关闭。</small>{publicationTaskHref ? <a className="button" href={publicationTaskHref}>查看指定{session.manualPublicationOnly?"独立手工版本":session.publicationSource?.sourceKind==="MANUAL"?"人工版本":"任务"}与审阅范围</a>:<p>{session.manualPublicationOnly?"独立手工发布来源尚未确认，请重新读取身份与交付记录。":"指定发布来源尚未解析；请重新读取身份与包记录，不会回退到原 Agent 的其他版本。"}</p>}</div></div>}
@@ -981,13 +982,13 @@ function App() {
           </div>
         )}
         {identityChecking && coreSnapshotKnown && <WorkbenchLoading label="正在核对当前会话权限，暂时隐藏已读内容…" />}
-        {!coreSnapshotKnown ? <WorkbenchLoading label={coreReadState === "ERROR" ? "工作台等待身份与服务重新核验，未加载任何个人任务。" : "正在确认当前身份，随后加载所选工作台…"} /> : <div hidden={identityChecking} inert={identityChecking} style={{display:identityChecking ? "none" : "contents"}}><Suspense key={viewEpoch} fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
+        {!coreSnapshotKnown ? (!privatePreview && nav === "agent-center" && agentWorkspaceMode === "development" ? <Suspense fallback={<WorkbenchLoading />}><AgentStartupPreview read={readOpeningContexts} selected={openingContexts.current.selected} onSelect={id => openingContexts.current.selected = id}/></Suspense> : <WorkbenchLoading />) : <div hidden={identityChecking} inert={identityChecking} style={{display:identityChecking ? "none" : "contents"}}><Suspense key={viewEpoch} fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? new URLSearchParams(location.search).has("report_request") ?
           <AgentReportHistory api={api} local={localWorkbench} canWrite={canWrite} /> : (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>{setServiceLocation(serviceSourceFromLocation(window.location.href,true));setAgentWorkspaceMode("services");}}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}{workbench.runtimeMode === "LOCAL_DEVELOPMENT" && !agentDraftDirty &&
           <a className="button" href="?module=agent-center&report_request=">历史报表</a>}</div>}
-          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedManualSource={sourceBinding?.manualDeliveryTaskId?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"&&!sourceBinding.manualDeliveryTaskId?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
+          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} initialContextId={openingContexts.current.selected} contexts={contexts} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedManualSource={sourceBinding?.manualDeliveryTaskId?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"&&!sourceBinding.manualDeliveryTaskId?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite && !session.developmentOnly}
