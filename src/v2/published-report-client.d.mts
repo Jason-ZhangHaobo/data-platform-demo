@@ -23,3 +23,15 @@ export type PublishedReportLineage={
 type LineageExpected={requestId?:string;source?:PublishedReportBinding;receipt?:PublishedReportReceipt};
 export function checkedPublishedReportLineage(value:unknown,expected?:LineageExpected):PublishedReportLineage;
 export function readPublishedReportLineage(client:Client,args:LineageExpected&{requestId:string}):Promise<PublishedReportLineage>;
+
+export type PublishedReportDevelopment={
+  protocol:'shuduo-fund-report-development/v1';lineage:PublishedReportLineage;
+  revision:{id:string;hash:string;sql:string;source:'ENGINEER_AUTHORED'};
+  run:{id:string;revisionId:string;revisionHash:string;status:'SUCCEEDED';engine:'Apache Spark';engineVersion:string;
+    finishedAt:string;durationMs:number;rowCount:number};
+  verification:{status:'PASSED';assertions:string[];inputDigest:string;assertionDigest:string;verifierRevision:string;
+    rehearsalId:string;testSqlDigest:string};
+};
+type DevelopmentExpected=LineageExpected&{lineage?:PublishedReportLineage};
+export function checkedPublishedReportDevelopment(value:unknown,expected?:DevelopmentExpected):Promise<PublishedReportDevelopment>;
+export function readPublishedReportDevelopment(client:Client,args:DevelopmentExpected&{requestId:string}):Promise<PublishedReportDevelopment>;

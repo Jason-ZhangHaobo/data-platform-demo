@@ -6,7 +6,7 @@ const unproven = () => Object.assign(new Error("原报表的快照、发布批�
   status: 409, code: "FUND_REPORT_LINEAGE_UNPROVEN",
 });
 
-export function fundReportLineage({ store, project, record, artifacts, timeUnitMs }) {
+function verifiedFundReportLineage({ store, project, record, artifacts, timeUnitMs }) {
   const { report, version, run, snapshot, dataset } = artifacts;
   const source = record.input.source, saved = snapshot.sourceEvidence, contract = fundDapiContract;
   if (source.kind !== "MANUAL" || version.outputContractId !== contract.id)
@@ -16,7 +16,7 @@ export function fundReportLineage({ store, project, record, artifacts, timeUnitM
       snapshot.assetId !== "dataset:" + contract.id || dataset.assetId !== snapshot.assetId ||
       snapshot.contentHash !== snapshot.assetEvidenceHash) throw unproven();
 
-  const { evidence, status, batch } = resolveFundReportPublication({ store, project, timeUnitMs,
+  const { evidence, status, batch, revision, development, verification } = resolveFundReportPublication({ store, project, timeUnitMs,
     selection: { releaseId: source.releaseId, packageDigest: source.packageDigest, batchId: source.batchId } });
   const keys = ["protocol", "scope", "contractId", "releaseId", "packageDigest", "batchId", "revisionId", "developmentRunId",
     "batchSequence", "businessDate", "inputDigest", "assertionDigest", "testSqlDigest", "resultDigest", "rowCount",
@@ -25,7 +25,7 @@ export function fundReportLineage({ store, project, record, artifacts, timeUnitM
       snapshot.rowCount !== evidence.rowCount || keys.some(key => !same(saved[key], evidence[key])))
     throw unproven();
 
-  return {
+  const lineage = {
     protocol: "shuduo-fund-report-lineage/v1", scope: "LOCAL_TEST_ONLY", requestId: record.requestId, source,
     report: { id: report.id, versionId: version.id, runId: run.id, resultHash: run.resultHash },
     snapshot: { id: snapshot.id, datasetId: dataset.id, assetId: snapshot.assetId, contractId: contract.id,
@@ -34,5 +34,35 @@ export function fundReportLineage({ store, project, record, artifacts, timeUnitM
       resultDigest: evidence.resultDigest, assertionDigest: evidence.assertionDigest, engineClassification: evidence.engineClassification,
       activeForConsumption: evidence.eligibleForService },
     batch, publicDeployed: false,
+  };
+  return { lineage, revision, development, verification, evidence };
+}
+
+export function fundReportLineage(args) {
+  return verifiedFundReportLineage(args).lineage;
+}
+
+export const fundDevelopmentAssertions = Object.freeze([
+  "组合及交易日隔离", "资产类别敞口金额与占比", "未穿透余额", "组合市值守恒",
+]);
+
+export function fundReportDevelopment(args) {
+  const { lineage, revision, development, verification, evidence } = verifiedFundReportLineage(args);
+  if (revision.author !== args.record.actorId || revision.manualProvenance?.actorId !== args.record.actorId)
+    throw Object.assign(new Error("原开发版本只允许其拥有者查看"), { status: 403, code: "REPORT_DEVELOPMENT_OWNER" });
+  const validation = development.validation, regression = validation.regressions[0];
+  if (!same(validation.assertions, fundDevelopmentAssertions) || !same(regression.assertions, fundDevelopmentAssertions) ||
+      !same(validation.issues, []) || !same(regression.issues, []) || !Number.isFinite(Date.parse(development.finishedAt)) ||
+      !Number.isSafeInteger(development.durationMs) || development.durationMs < 0 || development.exitCode !== 0)
+    throw Object.assign(new Error("原开发运行的独立核验记录不完整"), { status: 409, code: "REPORT_DEVELOPMENT_UNPROVEN" });
+  return {
+    protocol: "shuduo-fund-report-development/v1", lineage,
+    revision: { id: revision.id, hash: revision.hash, sql: revision.sql, source: "ENGINEER_AUTHORED" },
+    run: { id: development.id, revisionId: development.revisionId, revisionHash: development.revisionHash,
+      status: development.status, engine: development.engine, engineVersion: development.engineVersion,
+      finishedAt: development.finishedAt, durationMs: development.durationMs, rowCount: development.rows.length },
+    verification: { status: "PASSED", assertions: [...validation.assertions], inputDigest: evidence.inputDigest,
+      assertionDigest: evidence.assertionDigest, verifierRevision: validation.assertionEvidence.verifierRevision,
+      rehearsalId: verification.id, testSqlDigest: evidence.testSqlDigest },
   };
 }
