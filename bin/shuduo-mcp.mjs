@@ -43,6 +43,11 @@ const manualPublicationCondition=stop=>({if:{properties:{sourceKind:{const:"MANU
 const manualPublicationProperties={sourceRunId:{type:'string',format:'uuid'},taskId:{type:'string',format:'uuid'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},verificationId:{type:'string',format:'uuid'},releaseId:{type:'string',format:'uuid'}};
 const manualPublicationRequired=['sourceRunId','taskId','packageDigest','verificationId'];
 const distributionApprovalSchema={type:'object',additionalProperties:false,properties:{scope:{const:'LOCAL_TEST_RELEASE'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},verificationId:{type:'string',format:'uuid'},metadataHash:{type:'string',pattern:'^[a-f0-9]{64}$'},scheduleSpec:{type:'object',additionalProperties:false,properties:{triggerAfterSeconds:{type:'integer',minimum:1,maximum:300},intervalSeconds:{type:'integer',minimum:1,maximum:300},runCount:{const:2}},required:['triggerAfterSeconds','intervalSeconds','runCount']},confirmFrozenFictionalData:{const:true}},required:['scope','packageDigest','verificationId','metadataHash','scheduleSpec','confirmFrozenFictionalData']};
+const syncConsentSchema = { type: "object", additionalProperties: false,
+  properties: { scope: { const: "LOCAL_TEST_RELEASE" }, packageDigest: publicationProperties.packageDigest,
+    verificationId: publicationIdSchema, snapshotHash: publicationProperties.packageDigest, businessDate: { type: "string", format: "date" },
+    scheduleSpec: distributionApprovalSchema.properties.scheduleSpec, confirmFrozenFictionalData: { const: true } },
+  required: ["scope", "packageDigest", "verificationId", "snapshotHash", "businessDate", "scheduleSpec", "confirmFrozenFictionalData"] };
 const distributionRollbackSchema={type:'object',additionalProperties:false,properties:{scope:{const:'LOCAL_TEST_RELEASE'},targetPackageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},metadataHash:{type:'string',pattern:'^[a-f0-9]{64}$'},confirmFrozenFictionalData:{const:true}},required:['scope','targetPackageDigest','metadataHash','confirmFrozenFictionalData']};
 const tools = [
   { name: "fund_preparation_submit", description: "保存指定基金交易日和固定输出字段的本机需求准备，不运行模型或 Spark。",
@@ -142,11 +147,11 @@ const tools = [
   { name: "fund_agent_publication_preflight", description: "只读核对指定基金任务、开发运行、交付包及成功文件演练，返回工程师审阅和两批本机计划。",
     inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceRunId:publicationIdSchema,
       packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema},required:["taskId","sourceRunId","packageDigest","verificationId"]},annotations:{readOnlyHint:true} },
-  { name: "release_approve", description: "审批已成功演练且已有摘要绑定审阅记录的交付包；会授予本机发布资格，调用前必须取得用户明确确认。基金 Agent 须提供已核对的 fundConsent。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, reviewId: { type: "string" },distributionConsent:distributionApprovalSchema,fundConsent:fundConsentSchema }, required: ["packageId", "packageDigest", "reviewId"] } },
+  { name: "release_approve", description: "审批已成功演练且已有摘要绑定审阅记录的交付包；会授予本机发布资格，调用前必须取得用户明确确认。基金 Agent 须提供已核对的 fundConsent。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, reviewId: { type: "string" },distributionConsent:distributionApprovalSchema,fundConsent:fundConsentSchema,syncConsent:syncConsentSchema }, required: ["packageId", "packageDigest", "reviewId"] } },
   { name: "release_list", description: "列出本机发布版本、健康度和调度状态。", inputSchema: { type: "object", properties: {} } },
   { name: "release_detail", description: "读取指定本机发布版本及批次摘要。", inputSchema: { type: "object", properties: { releaseId: { type: "string" } }, required: ["releaseId"] } },
-  { name: "release_create", description: "消费一次审批并激活本机发布、安排两个墙上时钟批次；调用前必须取得用户明确确认，且不代表公网发布。", inputSchema: { type: "object", properties: { approvalId: { type: "string" }, triggerAfterSeconds: { type: "integer", minimum: 1, maximum: 30 }, intervalSeconds: { type: "integer", minimum: 1, maximum: 60 }, runCount: { type: "integer", minimum: 2, maximum: 5 } }, required: ["approvalId"] } },
-  { name:"release_cancel",description:"停止确切本机分布发布的后续批次；需明确确认并提供包摘要，不改变历史成功记录。",inputSchema:{type:"object",properties:{releaseId:{type:"string"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}},required:["releaseId","packageDigest"]}},
+  { name: "release_create", description: "消费一次审批并激活本机发布、安排两个墙上时钟批次；调用前必须取得用户明确确认，且不代表公网发布。", inputSchema: { type: "object", properties: { approvalId: { type: "string" }, triggerAfterSeconds: { type: "integer", minimum: 1, maximum: 300 }, intervalSeconds: { type: "integer", minimum: 1, maximum: 300 }, runCount: { type: "integer", minimum: 2, maximum: 3 } }, required: ["approvalId"] } },
+  { name:"release_cancel",description:"停止确切本机受控测试发布的后续批次；需明确确认并提供包摘要，不改变历史成功记录。",inputSchema:{type:"object",properties:{releaseId:{type:"string"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}},required:["releaseId","packageDigest"]}},
   { name: "release_rollback", description: "回滚到已有健康本机版本并安排恢复批次；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { releaseId: { type: "string" }, targetReleaseId: { type: "string" }, triggerAfterSeconds: { type: "integer", minimum: 1, maximum: 30 }, intervalSeconds: { type: "integer", minimum: 1, maximum: 60 }, reason: { type: "string" },distributionRollback:distributionRollbackSchema,requestId:{type:"string",format:"uuid"} }, required: ["releaseId", "targetReleaseId", "reason"] } },
   { name: "release_monitor", description: "读取本机发布批次、告警、恢复和健康度；明确不是公网监控。", inputSchema: { type: "object", properties: {} } },
   { name: "dapi_list", description: "列出版本化DAPI。", inputSchema: { type: "object", properties: {} } },
@@ -530,6 +535,7 @@ async function callTool(name, args = {}, client=defaultClient) {
           packageDigest: args.packageDigest,
           reviewId: args.reviewId,
           ...(args.distributionConsent?{distributionConsent:args.distributionConsent}:{}),
+          ...(args.syncConsent?{syncConsent:args.syncConsent}:{}),
           ...(args.fundConsent?{fundConsent:args.fundConsent}:{}),
         },
       },

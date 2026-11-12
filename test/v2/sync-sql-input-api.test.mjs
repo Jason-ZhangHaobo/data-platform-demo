@@ -8,7 +8,7 @@ import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { getContext, referenceSql, contextIds } from "../../src/v2/context.mjs";
 import { identityPositionMapping } from "../../src/v2/ingestion.mjs";
 import { readSyncSqlInput } from "../../src/v2/sync-sql-input.mjs";
-import { createDeliveryPackage, computeManifestDigest, sha256, validateDeliveryPackage } from "../../src/v2/delivery.mjs";
+import { createDeliveryPackage, computeManifestDigest, loadDeliveryDirectory, resolveDeliverySchedule, sha256, validateDeliveryPackage } from "../../src/v2/delivery.mjs";
 
 test("Agent binds a committed position snapshot across overwrite, retry and restart", async () => {
   const root = mkdtempSync(join(tmpdir(), "shuduo-sync-sql-"));
@@ -23,7 +23,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
   sample("first.csv", "1245.07");
   sample("later.csv", "4000.00");
   sample("bad.csv", "0.001");
-  let modelCalls = 0, runs = 0, base, app;
+  let modelCalls = 0, runs = 0, releaseCalls = 0, clock = Date.now(), base, app;
   let openModel;
   const modelGate = new Promise(resolve => { openModel = resolve; });
   const runner = async ({ context, validationContexts }) => {
@@ -35,7 +35,21 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
       rows: context.expected, validation: { passed: true } };
   };
   async function start() {
-    app = createV2Server({ root, fixtureRoot, runner, env: { V2_LOCAL_DEVELOPMENT: "true", V2_RELEASE_SCHEDULER_MODE: "DISABLED" },
+    app = createV2Server({ root, fixtureRoot, runner, now: () => clock, setTimer: () => ({}), clearTimer: () => {},
+      env: { V2_LOCAL_DEVELOPMENT: "true", V2_RELEASE_SCHEDULER_MODE: "LOCAL_TIMER" },
+      releaseRunner: async ({ directory, expectedDigest, scheduledFor, beforeRun }) => {
+        const { bundle, plan } = loadDeliveryDirectory(directory, expectedDigest);
+        beforeRun?.();
+        releaseCalls++;
+        return {
+          status: "SUCCEEDED", mainSqlExecuted: true, engine: "Apache Spark", engineVersion: "3.5.9",
+          mode: "LOCAL_FILE_REHEARSAL", published: false, schedulerTriggered: false,
+          packageDigest: expectedDigest, source: plan.source, occurrence: resolveDeliverySchedule(plan, scheduledFor),
+          fileHashes: Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, file]) => [name, file.sha256])),
+          testSqlValidation: { passed: true, sqlHash: sha256(bundle.files["tests.sql"]) },
+          validation: JSON.parse(bundle.files["validation.json"]).report, rows: plan.fixtures.context.expected,
+        };
+      },
       generator: async ({ context }) => {
         modelCalls++;
         assert.equal(context.expected, undefined);
@@ -150,6 +164,62 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.throws(() => validateDeliveryPackage(noAssertions, noAssertions.digest), /独立断言不一致/);
     const wrongCalendar = changed("calendar.json", JSON.stringify({ ...plan.calendar, tradingDays: ["2026-09-11", "2026-09-14"] }));
     assert.throws(() => validateDeliveryPackage(wrongCalendar, wrongCalendar.digest), /前一个交易日/);
+
+    app.store.update("run", checked.id, PROJECT, exampleReceipt);
+    const stored = (await request("/delivery/packages", { sourceRunId: checked.id })).value;
+    assert.equal(stored.digest, bundle.digest);
+    const packagePath = `/delivery/packages/${stored.id}`;
+    const scheduledFor = "2026-09-11T09:00:00+08:00";
+    const receipt = await request(packagePath + "/verify", { scheduledFor });
+    assert.equal(receipt.status, 202);
+    const verified = await finished(`/delivery/verifications/${receipt.value.id}`);
+    assert.equal(verified.status, "SUCCEEDED");
+    const reviewed = await request(packagePath + "/review", { packageDigest: stored.digest, verificationId: verified.id,
+      reviewNote: "隔离环境的测试审阅", attestations: { code: true, assertions: true, deliveryFiles: true, localScope: true } });
+    assert.equal(reviewed.status, 201);
+    const scheduleSpec = { triggerAfterSeconds: 5, intervalSeconds: 45, runCount: 2 };
+    const syncConsent = { scope: "LOCAL_TEST_RELEASE", packageDigest: stored.digest, verificationId: verified.id,
+      businessDate: "2026-09-10", snapshotHash: run.syncInput.snapshotHash, scheduleSpec, confirmFrozenFictionalData: true };
+    const approvalBody = { packageDigest: stored.digest, reviewId: reviewed.value.id, syncConsent };
+    for (const replacement of [undefined, {...syncConsent, businessDate:"2026-09-11"}, {...syncConsent, snapshotHash:"0".repeat(64)}])
+      assert.equal((await request(packagePath + "/approve", { ...approvalBody, syncConsent: replacement })).status, 409);
+    const firstApproval = await request(packagePath + "/approve", approvalBody, "sync-approve-first");
+    assert.equal(firstApproval.status, 201);
+    clock = Date.parse(firstApproval.value.expiresAt);
+    const expired = await request("/releases", { approvalId: firstApproval.value.id, ...scheduleSpec });
+    assert.equal(expired.value.code, "SYNC_RELEASE_APPROVAL_EXPIRED");
+    assert.equal(app.store.list("release_run", PROJECT).length, 0);
+    const approval = await request(packagePath + "/approve", approvalBody, "sync-approve-renewed");
+    assert.equal(approval.status, 201);
+    assert.notEqual(approval.value.id, firstApproval.value.id);
+    const releaseBody = { approvalId: approval.value.id, ...scheduleSpec };
+    assert.equal((await request("/releases", { ...releaseBody, intervalSeconds: 1 })).status, 409);
+    const activate = await request("/releases", releaseBody, "sync-activate");
+    assert.equal(activate.status, 201);
+    const replayRelease = await request("/releases", releaseBody, "sync-activate-lost-response");
+    assert.equal(replayRelease.value.id, activate.value.id);
+    const batches = app.store.list("release_run", PROJECT).sort((a, b) => a.sequence - b.sequence);
+    assert.equal(batches.length, 2);
+    assert.equal(releaseCalls, 1); // The stored rehearsal is the only file execution so far.
+    clock = Date.parse(batches[0].scheduledTriggerAt);
+    await app.releaseScheduler.enqueue(batches[0].id);
+    await stop();
+    await start();
+    clock = Date.parse(approval.value.expiresAt) + 1000;
+    await app.releaseScheduler.enqueue(batches[1].id);
+    for (const batch of batches) {
+      const actual = app.store.get("release_run", batch.id, PROJECT);
+      assert.equal(actual.status, "SUCCEEDED");
+      assert.equal(actual.schedulerTriggered, true);
+      assert.equal(actual.snapshotHash, run.syncInput.snapshotHash);
+      assert.equal(actual.rows[0].total_assets, "2045.07");
+    }
+    const observed = await request("/monitoring/overview");
+    assert.equal(observed.value.activeRelease.health, "HEALTHY");
+    assert.equal(observed.value.counts.succeeded, 2);
+    const replayAfterExpiry = await request("/releases", releaseBody, "sync-activate-after-expiry");
+    assert.equal(replayAfterExpiry.value.id, activate.value.id);
+    assert.equal(releaseCalls, 3);
     const record = app.store.get("sync_sql_input", completed.syncInput.snapshotId, PROJECT);
     record.payload.context.expected[0].total_assets = "0.00";
     app.store.update("sync_sql_input", record.id, PROJECT, { payload: record.payload });

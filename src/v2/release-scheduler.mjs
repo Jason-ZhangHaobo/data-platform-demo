@@ -105,6 +105,7 @@ export class LocalReleaseScheduler {
     persist = async () => undefined,
     resolveDirectory = async ({ release }) => release.artifactDirectory,
     assertRunSource = () => {},
+    assertRunResult = () => {},
     fundExecutionEvidenceMode,
   }) {
     this.store = store;
@@ -117,6 +118,7 @@ export class LocalReleaseScheduler {
     this.persist = persist;
     this.resolveDirectory = resolveDirectory;
     this.assertRunSource = assertRunSource;
+    this.assertRunResult = assertRunResult;
     this.fundExecutionEvidenceMode = fundExecutionEvidenceMode;
     this.timers = new Map();
     this.controllers = new Map();
@@ -253,9 +255,9 @@ export class LocalReleaseScheduler {
       return;
     }
     const controller = new AbortController();
-    this.controllers.set(run.id, controller);
+    const scoped = Boolean(release.outputContract || release.fundLookthrough || release.syncInput);
     const triggeredAt = new Date(triggerTime).toISOString();
-    this.store.update("release_run", id, this.project, {
+    try { this.store.update("release_run", id, this.project, {
       status: "RUNNING",
       triggeredAt,
       startedAt: triggeredAt,
@@ -265,7 +267,9 @@ export class LocalReleaseScheduler {
       ...(profile.leaseMs
         ? { leaseExpiresAt: new Date(this.now() + profile.leaseMs).toISOString() }
         : {}),
-    });
+    }, release.syncInput ? {expectedVersion:run.version} : undefined); }
+    catch (error) { if (release.syncInput && error.code === "STALE_DOCUMENT_VERSION") return; throw error; }
+    this.controllers.set(run.id, controller);
     // A durable scheduler must persist the claim before any side effect. If the
     // process dies afterwards, a later tick can recover the expired lease.
     let claimPersisted = false;
@@ -293,13 +297,15 @@ export class LocalReleaseScheduler {
         expectedDigest: run.packageDigest,
         scheduledFor: run.businessScheduledFor,
         signal: controller.signal,
-        ...(packageItem.manifest?.source?.fundSignedExecution
+        ...(packageItem.manifest?.source?.fundSignedExecution || release.syncInput
           ? { beforeRun: () => this.assertRunSource({run,release,packageItem}) }
           : {}),
       });
-      if((release.outputContract||release.fundLookthrough)&&stopped())return await cancelBeforeRun();
+      if(scoped&&stopped())return await cancelBeforeRun();
       if (!terminal.has(result.status) || result.status === "INTERRUPTED")
         throw new Error("发布执行器返回无效状态");
+      if (release.syncInput) this.assertRunSource({run,release,packageItem});
+      this.assertRunResult({packageItem,result});
       const finished = this.store.update("release_run", id, this.project, {
         ...result,
         ...(release.fundLookthrough ? { executionEvidenceMode: this.fundExecutionEvidenceMode, startedAt: executionStartedAt } : {}),
@@ -321,7 +327,7 @@ export class LocalReleaseScheduler {
       return finished;
     } catch (error) {
       if (!claimPersisted) throw error;
-      if((release.outputContract||release.fundLookthrough)&&controller.signal.aborted)return await cancelBeforeRun();
+      if(scoped&&controller.signal.aborted)return await cancelBeforeRun();
       return this.#finishFailure(run, release, error.message, profile);
     } finally {
       this.controllers.delete(run.id);
@@ -349,7 +355,7 @@ export class LocalReleaseScheduler {
   async #recordMonitoring(run, release) {
     const success = run.status === "SUCCEEDED";
     this.store.create("monitor_event", this.project, {
-      type: success ? "BATCH_SUCCEEDED" : (release.outputContract||release.fundLookthrough)&&run.status==="CANCELLED"?"BATCH_CANCELLED":"BATCH_FAILED",
+      type: success ? "BATCH_SUCCEEDED" : (release.outputContract||release.fundLookthrough||release.syncInput)&&run.status==="CANCELLED"?"BATCH_CANCELLED":"BATCH_FAILED",
       releaseId: release.id,
       releaseRunId: run.id,
       packageDigest: run.packageDigest,
@@ -357,8 +363,9 @@ export class LocalReleaseScheduler {
       status: run.status,
       durationMs: run.durationMs ?? null,
       schedulerTriggered: run.schedulerTriggered === true,
+      ...(release.syncInput ? { sourceRevisionId: run.sourceRevisionId, snapshotHash: run.snapshotHash } : {}),
     });
-    if((release.outputContract||release.fundLookthrough)&&run.status==='CANCELLED')return;
+    if((release.outputContract||release.fundLookthrough||release.syncInput)&&run.status==='CANCELLED')return;
     let recoveredAlerts = 0;
     if (!success) {
       this.store.create("monitor_alert", this.project, {

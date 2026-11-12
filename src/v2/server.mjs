@@ -44,6 +44,7 @@ import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 import { isDeepStrictEqual } from "node:util";
+import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, syncApprovalExpiry, syncSqlReviewDigest } from "./sync-sql-publication.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
 import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress,serviceAgentSession} from './private-service-agent-policy.mjs';
 import { privateServiceSourceSelection } from "./private-service-routes.mjs";
@@ -809,7 +810,17 @@ export function createV2Server(options = {}) {
     runPackage: releaseRunner,
     fundExecutionEvidenceMode: options.releaseRunner || options.runner ? "TEST_HARNESS" : "LOCAL_SPARK_PROCESS",
     assertRunSource: ({run,release,packageItem})=>{
-      if (packageItem.manifest?.source?.syncInput) throw fail(409, "同步持仓交付仅可按文件演练");
+      if (packageItem.manifest?.source?.syncInput || release.syncInput) {
+        packageItem = get("delivery_package", packageItem.id);
+        const plan = validateAnyDeliveryPackage(packageItem);
+        if (!plan.source.syncInput) throw fail(409, "发布包失去原同步快照");
+        const approval = get("release_approval", release.approvalId);
+        assertSyncSqlBatch({ bundle: packageItem, plan, approval, release: get("release", release.id),
+          run: get("release_run", run.id), batches: store.list("release_run", PROJECT).filter(batch => batch.releaseId === release.id),
+          verification: get("delivery_verification", approval.rehearsalId), review: get("delivery_review", approval.reviewId),
+          enabled: syncSqlLocal && releaseSchedulerMode === "LOCAL_TIMER", timeUnitMs: releaseTimeUnitMs });
+        return;
+      }
       if (isFundContext(packageItem.manifest?.source?.contextId)) {
         if (packageItem.manifest.source.fundSignedExecution) {
           const currentRelease = get("release", release.id);
@@ -840,6 +851,10 @@ export function createV2Server(options = {}) {
       const approval=get('release_approval',release.approvalId);
       assertDistributionRelease({bundle:packageItem,verification:get('delivery_verification',approval.rehearsalId),review:get('delivery_review',approval.reviewId),approval,spec:release.scheduleSpec,local,schedulerMode:releaseSchedulerMode});
       if(!Number.isSafeInteger(run.sequence)||run.sequence<1||run.sequence>2||JSON.stringify(release.outputContract)!==JSON.stringify(packageItem.manifest.source.outputContract))throw fail(409,'分布批次超出已批准的冻结范围');
+    },
+    assertRunResult: ({packageItem, result}) => {
+      if (packageItem.manifest?.source?.syncInput && result.status === "SUCCEEDED")
+        assertSyncSqlRehearsal(validateAnyDeliveryPackage(packageItem), packageItem, result);
     },
     now: options.now,
     setTimer: options.setTimer,
@@ -1101,7 +1116,12 @@ export function createV2Server(options = {}) {
     store,
     businessStore,
     project: PROJECT,
-    releaseRunFor: id => store.get("release_run", id, PROJECT),
+    releaseRunFor: id => {
+      const run = store.get("release_run", id, PROJECT);
+      if (run && (run.source?.syncInput || run.releaseId && store.get("release", run.releaseId, PROJECT)?.syncInput))
+        throw fail(422, "冻结持仓发布批次的接口授权消费待接入");
+      return run;
+    },
     fundSourceFor,
     distributionSourceFor: run=>{const proof=certifiedDistributionSource({store,project:PROJECT,run});if(proof&&!local)throw fail(422,"分布消费仅本机已核验来源");return proof;},
     now: options.now,
@@ -5264,7 +5284,6 @@ export function createV2Server(options = {}) {
           deliveryRecord[3] === "approve" &&
           method === "POST"
         ) {
-          if (item.manifest?.source?.syncInput) throw fail(409, "同步持仓交付当前仅支持文件演练与审阅");
           const body = await readBody(req),
             packageDigest = text(body.packageDigest, 64, 64);
           if (packageDigest !== item.digest)
@@ -5280,7 +5299,8 @@ export function createV2Server(options = {}) {
                 record.packageId === item.id &&
                 record.packageDigest === item.digest &&
                 record.status === "SUCCEEDED" && (!item.manifest?.source?.outputContract||record.id===body.distributionConsent?.verificationId) &&
-                (!isFundContext(item.manifest?.source?.contextId) || record.id === body.fundConsent?.verificationId),
+                (!isFundContext(item.manifest?.source?.contextId) || record.id === body.fundConsent?.verificationId) &&
+                (!item.manifest?.source?.syncInput || record.id === body.syncConsent?.verificationId),
             );
           if (!rehearsal)
             throw fail(409, "交付包尚无成功的按文件演练，不能审批发布");
@@ -5293,7 +5313,9 @@ export function createV2Server(options = {}) {
           )
             throw fail(409, "审批必须引用当前包、摘要和演练一致的审阅记录");
           await ensureDeliveryArtifact(item);
-          validateAnyDeliveryPackage(item);
+          const plan = validateAnyDeliveryPackage(item);
+          const latestRehearsal = plan.source.syncInput ? get("delivery_verification", rehearsal.id) : rehearsal;
+          const latestReview = plan.source.syncInput ? get("delivery_review", review.id) : review;
           const distributionConsent=assertDistributionConsent({bundle:item,verification:rehearsal,review,consent:body.distributionConsent,local,schedulerMode:releaseSchedulerMode});
           const fundConsent = assertFundConsent({ bundle: item,
             verification:get("delivery_verification",rehearsal.id), review:get("delivery_review",review.id),
@@ -5311,19 +5333,29 @@ export function createV2Server(options = {}) {
                   displayName: "本机工程师",
                   role: "LOCAL_DEVELOPMENT",
                 };
-          const existingApproval = store
+          const syncConsent = assertSyncSqlConsent({ bundle: item, plan, verification: latestRehearsal, review: latestReview,
+            consent: body.syncConsent, actorId: approver.id, enabled: syncSqlLocal && releaseSchedulerMode === "LOCAL_TIMER" });
+          const approvedAt = syncConsent ? options.now?.() ?? Date.now() : Date.now();
+          const syncReviewDigest = syncConsent && syncSqlReviewDigest(latestRehearsal, latestReview);
+          const findExistingApproval = () => store
             .list("release_approval", PROJECT)
             .find(
               (approval) =>
                 approval.packageId === item.id &&
                 approval.packageDigest === item.digest &&
-                approval.status === "APPROVED",
+                approval.status === "APPROVED" &&
+                (!syncConsent || approval.consumedByReleaseId || approvedAt < Date.parse(approval.expiresAt)),
             );
-          if (existingApproval) {
+          const checkExistingApproval = existingApproval => {
             if(distributionConsent&&!sameDistributionConsent(existingApproval.distributionConsent,distributionConsent))throw fail(409,"原批准绑定另一份分布测试发布计划");
             if(fundConsent&&!sameDistributionConsent(existingApproval.fundConsent,fundConsent))throw fail(409,"原批准绑定另一份基金测试发布计划");
-            return json(res, 200, existingApproval);
-          }
+            if (syncConsent && (!isDeepStrictEqual(existingApproval.syncConsent, syncConsent) ||
+                existingApproval.reviewId !== review.id || existingApproval.syncReviewDigest !== syncReviewDigest))
+              throw fail(409, "原批准绑定另一份持仓测试发布计划");
+            return existingApproval;
+          };
+          const existingApproval = findExistingApproval();
+          if (existingApproval) return json(res, 200, checkExistingApproval(existingApproval));
           const key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               PROJECT + ":release-approval:" + key,
@@ -5336,10 +5368,12 @@ export function createV2Server(options = {}) {
                   approverId: approver.id,
                   ...(distributionConsent?{distributionConsent}:{}),
                   ...(fundConsent ? { fundConsent } : {}),
+                  ...(syncConsent ? { syncConsent, syncReviewDigest } : {}),
                 }),
               ),
-              () =>
-                store.create("release_approval", PROJECT, {
+              () => {
+                const raced = syncConsent && findExistingApproval();
+                return raced ? checkExistingApproval(raced) : store.create("release_approval", PROJECT, {
                   packageId: item.id,
                   packageDigest: item.digest,
                   rehearsalId: rehearsal.id,
@@ -5355,13 +5389,15 @@ export function createV2Server(options = {}) {
                   reviewedBy: review.reviewer,
                   ...(distributionConsent?{distributionConsent,approver}:{}),
                   ...(fundConsent ? { fundConsent, approver } : {}),
+                  ...(syncConsent ? { syncConsent, syncReviewDigest, approver, expiresAt: syncApprovalExpiry(approvedAt) } : {}),
                   decision: "APPROVED",
                   status: "APPROVED",
                   reviewNote: review.reviewNote,
-                  approvedAt: new Date().toISOString(),
+                  approvedAt: new Date(approvedAt).toISOString(),
                   scope: "LOCAL_TEST_RELEASE",
                   publicDeploymentApproved: false,
-                }),
+                });
+              },
             );
           return json(
             res,
@@ -5488,13 +5524,27 @@ export function createV2Server(options = {}) {
           ),
           item = get("delivery_package", approval.packageId),
           spec = localScheduleSpec(body);
-        if (item.manifest?.source?.attribution?.kind === fundAgentAttributionKind) {
+        if (item.manifest?.source?.syncInput || item.manifest?.source?.attribution?.kind === fundAgentAttributionKind) {
           requireDeliveryEvidence("delivery_package", item);
           requireDeliveryEvidence("release_approval", approval);
         }
         const artifact = await ensureDeliveryArtifact(item), plan = validateAnyDeliveryPackage(item);
-        if (plan.source.syncInput) throw fail(409, "同步持仓交付当前仅支持文件演练与审阅");
         const latestApproval=get('release_approval',approval.id);
+        if (plan.source.syncInput) {
+          const parent = join(root, ".v2-artifacts", "releases");
+          mkdirSync(parent, { recursive: true });
+          const { release, replayed } = activateSyncSqlRelease({ store, project: PROJECT, bundle: item, plan, artifact, spec,
+            approval: latestApproval, verification: get("delivery_verification", latestApproval.rehearsalId),
+            review: get("delivery_review", latestApproval.reviewId),
+            actorId: auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer",
+            enabled: syncSqlLocal && releaseSchedulerMode === "LOCAL_TIMER",
+            now: options.now ?? Date.now, timeUnitMs: releaseTimeUnitMs,
+            unpack: releaseId => unpackAnyDeliveryPackage(item, join(parent, releaseId)),
+          });
+          for (const run of store.list("release_run", PROJECT).filter(run => run.releaseId === release.id))
+            releaseScheduler.schedule(run);
+          return json(res, replayed ? 200 : 201, expose(release));
+        }
         const fundRelease = Boolean(plan.source.fundLookthrough);
         if (fundRelease) assertFundRelease({ bundle: item, approval: latestApproval, spec,
           verification: get("delivery_verification", latestApproval.rehearsalId), review: get("delivery_review", latestApproval.reviewId),
@@ -5634,7 +5684,7 @@ export function createV2Server(options = {}) {
           return json(res, 200, expose(protectedDeliveryPayload(item)));
         if(kind==='release'&&method==='POST'&&releaseRecord[3]==='cancel'){
           const body=await readBody(req);
-          if(!local||releaseSchedulerMode!=='LOCAL_TIMER'||(!item.outputContract&&!item.fundLookthrough)||item.fundLookthrough&&!localClassicSpark)throw fail(422,'此停止入口仅用于本机分布或基金测试发布');
+          if(!local||releaseSchedulerMode!=='LOCAL_TIMER'||(!item.outputContract&&!item.fundLookthrough&&!item.syncInput)||item.fundLookthrough&&!localClassicSpark)throw fail(422,'此停止入口仅用于本机受控测试发布');
           if(body.packageDigest!==item.packageDigest)throw fail(409,'停止须绑定确切发布与包摘要');
           if(item.status==='CANCELLED')return json(res,200,expose(item));
           if(!['ACTIVE_LOCAL','DEPLOYING'].includes(item.status))throw fail(409,'只能停止当前生效的本机测试发布');
@@ -5653,6 +5703,8 @@ export function createV2Server(options = {}) {
             target = get("release", text(body.targetReleaseId, 1, 80));
           requireDeliveryEvidence("release", target);
           const currentBundle=get('delivery_package',item.packageId),targetBundle=get('delivery_package',target.packageId);
+          if (currentBundle.manifest.source.syncInput || targetBundle.manifest.source.syncInput)
+            throw fail(422, "冻结持仓的历史版本须重新审阅与批准后发布");
           if (currentBundle.manifest.source.fundLookthrough || targetBundle.manifest.source.fundLookthrough)
             throw fail(422, "基金组合穿透尚未开放回滚");
           if(currentBundle.manifest.source.outputContract||targetBundle.manifest.source.outputContract){

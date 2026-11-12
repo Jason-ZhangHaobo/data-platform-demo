@@ -132,6 +132,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo releases approvals
   shuduo releases approve --package-id PACKAGE_ID --package-digest SHA256 --review-id REVIEW_ID
   基金 Agent 本机批准和激活使用 --fund-consent 已明确确认的预检JSON文件。
+  冻结持仓本机批准和激活使用 --sync-consent 已明确确认的两批计划JSON文件。
   shuduo releases list
   shuduo releases show --id RELEASE_ID
   shuduo releases publish --approval-id APPROVAL_ID [--trigger-after-seconds 5 --interval-seconds 15 --run-count 2]
@@ -840,6 +841,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
             reviewId: required(parsed.options, "review_id"),
             ...(parsed.options.distribution_consent?{distributionConsent:jsonObject(readFileSync(parsed.options.distribution_consent,"utf8"),"分布发布批准")} : {}),
             ...(parsed.options.fund_consent?{fundConsent:jsonObject(readFileSync(parsed.options.fund_consent,"utf8"),"基金发布批准")} : {}),
+            ...(parsed.options.sync_consent?{syncConsent:jsonObject(readFileSync(parsed.options.sync_consent,"utf8"),"冻结持仓发布批准")} : {}),
           },
         },
       );
@@ -854,7 +856,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         method: "POST",
         body: {
           approvalId: required(parsed.options, "approval_id"),
-          ...(parsed.options.fund_consent ? jsonObject(readFileSync(parsed.options.fund_consent,"utf8"),"基金发布批准").scheduleSpec :
+          ...(parsed.options.sync_consent ? jsonObject(readFileSync(parsed.options.sync_consent,"utf8"),"冻结持仓发布批准").scheduleSpec :
+            parsed.options.fund_consent ? jsonObject(readFileSync(parsed.options.fund_consent,"utf8"),"基金发布批准").scheduleSpec :
             parsed.options.distribution_consent ? jsonObject(readFileSync(parsed.options.distribution_consent,"utf8"),"分布发布批准").scheduleSpec :
             {triggerAfterSeconds:Number(parsed.options.trigger_after_seconds??5),intervalSeconds:Number(parsed.options.interval_seconds??15),runCount:Number(parsed.options.run_count??2)}),
         },
