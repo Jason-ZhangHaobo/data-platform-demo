@@ -1,13 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
+import {existsSync,mkdtempSync,readFileSync,readdirSync,rmSync,statSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {MetadataStore} from '../../src/v2/store.mjs';
 import {ReportDataStore} from '../../src/v2/reports.mjs';
 import {createV2Server,PROJECT} from '../../src/v2/server.mjs';
 import {V2Client} from '../../src/v2/client.mjs';
 import {seedLocalServiceSource} from './fixtures/local-service-sources.mjs';
 import {publishedReportHash} from '../../src/v2/published-report-source.mjs';
-import {checkedReportProvenance,readReportProvenance} from '../../src/v2/report-provenance-client.mjs';
+import {checkedReportProvenance,downloadReportProvenance,readReportProvenance} from '../../src/v2/report-provenance-client.mjs';
 import {runV2Cli} from '../../bin/shuduo.mjs';
 import {handleV2Mcp} from '../../bin/shuduo-mcp.mjs';
 
@@ -36,15 +39,71 @@ test('exact reviewed report freezes once, recovers without recomputation and is 
  assert.equal(downloaded.headers.get('cache-control'), 'no-store');
  assert.equal(downloaded.headers.get('content-disposition'),
   'attachment; filename="shuduo-report-provenance-' + done.reportRunId.slice(0, 8) + '.json"');
- assert.equal((await checkedReportProvenance(JSON.parse(await downloaded.text()), {
+ const originalBytes=Buffer.from(await downloaded.arrayBuffer());
+ assert.equal((await checkedReportProvenance(JSON.parse(originalBytes), {
   reportId: done.reportId, reportVersionId: done.reportVersionId, reportRunId: done.reportRunId,
  })).digest, e.digest);
+ const directory=mkdtempSync(join(tmpdir(),'shuduo-provenance-cli-'));
+ t.after(()=>rmSync(directory,{recursive:true,force:true}));
+ const outputFile=join(directory,'evidence.json'),staleFile=join(directory,'stale.json');
+ const args=['reports','provenance','--id',done.reportId,'--run-id',done.reportRunId];
+ let cliError;
+ const cliOptions={client:f.client,output:value=>{cli=JSON.parse(value);},error:value=>{cliError=value;}};
+ const save=[...args,'--download-digest',e.digest,'--out-file',outputFile];
+ assert.equal(await runV2Cli(save,{},cliOptions),0);
+ assert.deepEqual(cli,{saved:true,digest:e.digest,reportId:done.reportId,runId:done.reportRunId,reportVersionId:done.reportVersionId});
+ assert.deepEqual(readFileSync(outputFile),originalBytes);
+ assert.equal(statSync(outputFile).mode&0o777,0o600);
+ assert.equal(statSync(outputFile).nlink,1);
+ assert.equal(await runV2Cli(save,{},cliOptions),1);
+ assert.match(cliError,/原文件未覆盖/);
+ assert.deepEqual(readFileSync(outputFile),originalBytes);
+ assert.equal(await runV2Cli([...args,'--download-digest','f'.repeat(64),'--out-file',staleFile],{},cliOptions),1);
+ assert.match(cliError,/重新核对/);
+ assert.ok(!existsSync(staleFile));
+ assert.deepEqual(readdirSync(directory),['evidence.json']);
+ assert.equal(await runV2Cli(['reports','verify-provenance','--file',outputFile],{},cliOptions),0);
+ assert.equal(cli.digest,e.digest);
+ assert.equal(cli.onlineAuthorityVerified,false);
  const stale = await fetch(attachmentUrl + 'f'.repeat(64));
  assert.equal(stale.status, 409);
  assert.equal(stale.headers.get('content-disposition'), null);
  assert.equal((await fetch(attachmentUrl + 'invalid')).status, 422);
  assert(!JSON.stringify(e).includes('CLIENT-001'));assert(!JSON.stringify(e).includes('local-engineer'));assert(!JSON.stringify(e).includes('rows'));
  const before=publishedReportHash(f.store.list('report_provenance',PROJECT));await f.client.request(path);assert.equal(publishedReportHash(f.store.list('report_provenance',PROJECT)),before);
+});
+
+test('report attachment download rejects malformed arguments and substituted or oversized responses',async t=>{
+ const f=await fixture(t),done=await f.apply();
+ const reportId=done.reportId,runId=done.reportRunId,downloadDigest=done.provenanceDigest;
+ const args=['reports','provenance','--id',reportId,'--run-id',runId];
+ const noRequest=()=>{assert.fail('invalid CLI arguments must not call the API');};
+ let errors=0,requests=0;
+ const client={request:()=>{requests++;noRequest();}};
+ for (const flags of [
+  ['--out-file','never-written.json'],
+  ['--download-digest',downloadDigest],
+  ['--download-digest','bad','--out-file','never-written.json'],
+  ['--download-digest',downloadDigest,'--out-fle','never-written.json'],
+ ]) {
+  assert.equal(await runV2Cli([...args,...flags],{},{client,output:noRequest,error:()=>{errors++;}}),1);
+ }
+ assert.equal(errors,4);
+ assert.equal(requests,0);
+ const filename=`attachment; filename="shuduo-report-provenance-${runId.slice(0,8)}.json"`;
+ const headers={'content-type':'application/json','cache-control':'no-store','content-disposition':filename};
+ const selected={reportId,runId,downloadDigest};
+ const original=await readReportProvenance(f.client,selected);
+ const altered=structuredClone(original);
+ altered.review.originalRequest+='篡改';
+ const mock=(body, responseHeaders=headers)=>new V2Client({fetchImpl:async()=>new Response(body,{headers:responseHeaders})});
+ await assert.rejects(downloadReportProvenance(mock(JSON.stringify(altered)),selected),/所选版本不一致/);
+ await assert.rejects(downloadReportProvenance(mock(JSON.stringify(original),{...headers,'content-disposition':'inline'}),selected),{
+  code:'JSON_ATTACHMENT_REJECTED',
+ });
+ await assert.rejects(downloadReportProvenance(mock(new Uint8Array(128*1024+1)),selected),{
+  code:'JSON_ATTACHMENT_TOO_LARGE',
+ });
 });
 
 test('historical provenance stays pinned after chat or latest report changes; a new apply still checks the live request',async t=>{

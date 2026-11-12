@@ -23,3 +23,20 @@ export async function checkedReportProvenance(value,expected={}) {
 export async function readReportProvenance(client,{reportId,runId}) {
  if(!id(reportId)||!id(runId))bad();return checkedReportProvenance(await client.request(`/reports/${reportId}/provenance?run_id=${runId}`),{reportId,reportRunId:runId});
 }
+
+export async function downloadReportProvenance(client, { reportId, runId, downloadDigest }) {
+  if (!id(reportId) || !id(runId) || !hash(downloadDigest)) bad();
+  const query = new URLSearchParams({ run_id: runId, download_digest: downloadDigest });
+  const bytes = await client.request(`/reports/${reportId}/provenance?${query}`, {
+    attachmentFilename: `shuduo-report-provenance-${runId.slice(0, 8)}.json`,
+  });
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes));
+  } catch {
+    bad();
+  }
+  const evidence = await checkedReportProvenance(value, { reportId, reportRunId: runId });
+  if (evidence.digest !== downloadDigest) bad();
+  return { bytes, digest: evidence.digest, reportVersionId: evidence.artifacts.reportVersionId };
+}
