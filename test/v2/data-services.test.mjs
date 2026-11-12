@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MetadataStore } from "../../src/v2/store.mjs";
@@ -12,6 +12,27 @@ import {
 import { getContext } from "../../src/v2/context.mjs";
 import { PROJECT } from "../../src/v2/server.mjs";
 import { generateDataServicePlan } from "../../src/v2/model.mjs";
+
+test('read-only archived customer-asset snapshots work before the distribution schema existed', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'shuduo-archived-asset-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'business.sqlite'), rows = getContext('holdings-t1').expected;
+  const writer = new BusinessQueryStore(path);
+  const original = writer.materialize('archived-assets', rows);
+  writer.db.prepare('INSERT INTO service_snapshots VALUES(?,?,?,?)').run('missing-rows', 'a'.repeat(64), 2, new Date().toISOString());
+  writer.db.exec('DROP TABLE service_distribution_snapshots');
+  writer.close();
+  const before = readFileSync(path), reader = new BusinessQueryStore(path, { readOnly: true });
+  try {
+    const evidence = reader.snapshotEvidence(original.id);
+    assert.equal(evidence.integrityVerified, true);
+    assert.equal(evidence.contentHash, original.contentHash);
+    assert.deepEqual(reader.queryAssets(original.id, { pageSize: 1, page: 2 }).rows, rows.slice(1));
+    assert.equal(reader.snapshotEvidence('missing-rows').integrityVerified, false);
+    assert.equal(reader.db.prepare("SELECT name FROM sqlite_master WHERE name='service_distribution_snapshots'").get(), undefined);
+  } finally { reader.close(); }
+  assert.deepEqual(readFileSync(path), before);
+});
 
 function setup(options = {}) {
   const root = mkdtempSync(join(tmpdir(), "shuduo-data-services-")),

@@ -156,15 +156,25 @@ export function normalizedServiceSourceRows(rows) {
 }
 
 export class BusinessQueryStore {
+  #distributionAvailable;
+
   constructor(path = ":memory:", { readOnly = false } = {}) {
     if (!readOnly && path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path, { readOnly });
+    // Archived customer-asset stores predate the distribution snapshot table.
+    this.#distributionAvailable = !readOnly || Boolean(this.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='service_distribution_snapshots'",
+    ).get());
     if (readOnly) return;
     this.db.exec(
       "PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS service_snapshots(id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, row_count INTEGER NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS customer_assets(snapshot_id TEXT NOT NULL, client_id TEXT NOT NULL, holding_market_value TEXT NOT NULL, available_cash TEXT NOT NULL, total_assets TEXT NOT NULL, security_count INTEGER NOT NULL, PRIMARY KEY(snapshot_id,client_id), FOREIGN KEY(snapshot_id) REFERENCES service_snapshots(id)); CREATE INDEX IF NOT EXISTS customer_assets_snapshot ON customer_assets(snapshot_id,client_id);",
     );
     initDistributionStore(this.db);
     this.mutationListener = undefined;
+  }
+
+  #distributionFor(snapshotId) {
+    return this.#distributionAvailable ? distributionDescriptor(this.db, snapshotId) : undefined;
   }
 
   setMutationListener(listener) {
@@ -216,7 +226,7 @@ export class BusinessQueryStore {
   }
 
   queryAssets(snapshotId, input = {}, fields) {
-    const descriptor=distributionDescriptor(this.db,snapshotId);
+    const descriptor=this.#distributionFor(snapshotId);
     if(descriptor)return queryDistribution(this,text(snapshotId,"快照编号",3,120),queryFor(descriptor.output_contract_id,input),fields,descriptor);
     const id = text(snapshotId, "快照编号", 3, 120),
       query = normalizeQuery(input),
@@ -256,14 +266,14 @@ export class BusinessQueryStore {
 
   snapshot(id) {
     const value=this.db.prepare("SELECT id,content_hash,row_count FROM service_snapshots WHERE id=?").get(id);
-    const d=value?distributionDescriptor(this.db,id):undefined;
+    const d=value?this.#distributionFor(id):undefined;
     return value ? {id:value.id,contentHash:value.content_hash,rowCount:value.row_count,...(d?{outputContractId:d.output_contract_id}:{})} : undefined;
   }
 
   snapshotEvidence(id) {
     const snapshot = this.snapshot(id);
     if (!snapshot) return undefined;
-    const d=distributionDescriptor(this.db,id);if(d)return distributionSnapshotEvidence(this,snapshot,d,serviceHash);
+    const d=this.#distributionFor(id);if(d)return distributionSnapshotEvidence(this,snapshot,d,serviceHash);
     // The materialization contract permits at most 1,000 rows. Reading one
     // extra detects corrupt restores without allowing an unbounded scan.
     const rows = this.db.prepare(
