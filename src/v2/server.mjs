@@ -42,6 +42,7 @@ import { fundAgentTaskConsumption } from "./fund-agent-task-consumption.mjs";
 import { localServiceSources } from "./local-service-sources.mjs";
 import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource,assertServicePlanVersions,bindServicePlanProposal,servicePlanDraftMatches,publicServicePlan} from './service-plan-source.mjs';
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
+import { currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlContextId, syncSqlContractId } from "./sync-sql-input.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
 import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress,serviceAgentSession} from './private-service-agent-policy.mjs';
 import { privateServiceSourceSelection } from "./private-service-routes.mjs";
@@ -396,6 +397,10 @@ export function createV2Server(options = {}) {
   const pythonRunner =
     options.pythonRunner ?? ((input) => runRestrictedPython(input, pythonRuntime));
   const localClassicSpark = local && !durableDevelopment && runnerDescriptor.isolation === "LOCAL_PROCESS";
+  const syncSqlLocal = localClassicSpark && !options.ingress && env.V2_DURABLE_SQL_AGENT_ENABLED !== "true";
+  const requireSyncSqlLocal = req => {
+    if (!syncSqlLocal || !isLoopbackRequest(req)) throw fail(403, "同步批次开发仅在本机 Spark 工作台开放");
+  };
   const assertClassicSqlContext = context => {
     if (localClassicSpark || !context?.outputContractId) return;
     if (isFundContext(context.id)) throw fail(422, "基金组合穿透仅支持本机经典 Spark SQL");
@@ -464,26 +469,32 @@ export function createV2Server(options = {}) {
       assertExecutionScope: assertTargetTask,
       tokenBudget: Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000), now: options.now ?? Date.now })
     : undefined;
-  const mayReadDurableAgent = (task, session) => task?.fundPreparation
+  const mayReadDurableAgent = (task, session) => task?.syncInput
+    ? syncSqlLocal && task.submittedBy === (session?.user.id ?? "local-engineer")
+    : task?.fundPreparation
     ? localClassicSpark && !options.ingress && task.submittedBy === (session?.user.id ?? "local-engineer")
     : local || session?.role === "ADMIN" || Boolean(session && task?.submittedBy === session.user.id);
   const mayReadRevision = (item, session) =>
     (!isFundContext(item?.contextId) || localClassicSpark) &&
+    (!item?.syncInput || syncSqlLocal && item.author === (session?.user.id ?? "local-engineer")) &&
     (!item?.fundPreparation || !options.ingress && item.author === (session?.user.id ?? "local-engineer")) &&
     (local || session?.role === "ADMIN" || Boolean(session && item?.author === session.user.id));
   const mayReadRun = (item, session, kind = "revision") =>
     (!isFundContext(item?.contextId) || localClassicSpark) &&
+    (!item?.syncInput || mayReadRevision(store.get(kind, item.revisionId, PROJECT), session) &&
+      syncSqlLocal && (item.agentTaskId === undefined || mayReadDurableAgent(store.get("agent", item.agentTaskId, PROJECT), session))) &&
     (!item?.fundPreparation || mayReadDurableAgent(store.get("agent", item.agentTaskId, PROJECT), session) &&
       mayReadRevision(store.get("revision", item.revisionId, PROJECT), session)) &&
     ((local || session?.role === "ADMIN") || Boolean(session && mayReadRevision(store.get(kind, item.revisionId, PROJECT), session) &&
       (!item.agentTaskId || mayReadDurableAgent(store.get("agent", item.agentTaskId, PROJECT), session))));
   const requireDevelopmentOwner = (kind, item, req) => {
     const session = auth.sessionFromHeaders(req.headers);
+    if (item?.syncInput) requireSyncSqlLocal(req);
     if (!(kind === "revision" || kind === "python_revision" ? mayReadRevision(item, session) : mayReadRun(item, session, kind === "python_run" ? "python_revision" : "revision")))
       throw Object.assign(fail(403, "无权读取或操作此开发记录"), { code: "DEVELOPMENT_ACCESS_DENIED" });
   };
   const requireDurableAgentOwner = (task, req) => {
-    if (!mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)) || task.fundPreparation && !isLoopbackRequest(req))
+    if (!mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)) || (task.fundPreparation || task.syncInput) && !isLoopbackRequest(req))
       throw fail(403, "无权操作此 Agent 任务");
   };
   const durableDelivery = durableAgent && durableDevelopment
@@ -1180,6 +1191,7 @@ export function createV2Server(options = {}) {
     project: PROJECT,
     now: options.now,
   });
+  const syncSqlResources = { assets, landingStore, store, project: PROJECT };
   const dataContracts = new DataContractManager({
     store,
     assets,
@@ -1287,13 +1299,14 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
-  const revision = (sql, contextId, source, author = "local-engineer") =>
+  const revision = (sql, contextId, source, author = "local-engineer", syncInput) =>
     store.create("revision", PROJECT, {
       sql,
       contextId,
       source,
       hash: hash(sql),
       author,
+      ...(syncInput ? { syncInput } : {}),
     });
   const pythonRevision = (code, contextId, source, author = "local-engineer") =>
     store.create("python_revision", PROJECT, {
@@ -1343,10 +1356,15 @@ export function createV2Server(options = {}) {
   const scheduleSourceReport=task=>schedule('report_agent_plan',task,signal=>runSourceReportPlan({store,project:PROJECT,id:task.id,bootId:privateRuntimeBootId,signal,contextFor:publishedPlanContext,planner:reportPlanner,budget,hash:publishedReportHash,planHash:publishedReportPlanHash,validate:validatePublishedReportPlan,now:options.now??Date.now,timeoutMs:options.reportPlanningTimeoutMs??60000}));
   const execute = async (run, rev, signal) => {
     const family=validationFamily(rev.contextId);
-    if(run.validationContractId!==family.id)throw fail(409,"运行与代码业务口径验证契约不一致");
+    const contractId = rev.syncInput ? syncSqlContractId : family.id;
+    if(run.validationContractId!==contractId || JSON.stringify(run.syncInput) !== JSON.stringify(rev.syncInput))
+      throw fail(409,"运行与代码业务口径验证契约不一致");
+    const context = rev.syncInput
+      ? readSyncSqlInput({ ...syncSqlResources, actorId: rev.author, binding: rev.syncInput })
+      : getContext(rev.contextId);
     const output = await runner({
       sql: rev.sql,
-      context: getContext(rev.contextId),
+      context,
       validationContexts: validationContextsFor(rev.contextId),
       signal,
       timeoutMs: Number(env.V2_RUN_TIMEOUT_MS ?? 90000),
@@ -1374,7 +1392,8 @@ export function createV2Server(options = {}) {
     if (result.validation)
       result.validation = {
         ...result.validation,
-        contractId: family.id,
+        contractId,
+        ...(rev.syncInput ? { scope: "SELECTED_SYNC_SNAPSHOT_AND_REGISTERED_FIXTURES" } : {}),
       };
     if (run.fundPreparation && result.status === "SUCCEEDED" && !verifiedFundRun({ ...result, contextId: rev.contextId }, rev.contextId))
       throw fail(409, "基金运行未返回登记交易日及独立断言的完整证据");
@@ -6045,6 +6064,7 @@ export function createV2Server(options = {}) {
         const agent = get("agent", prepareAgentDelivery[1]),
           finalAttempt = agent.attempts?.at(-1);
         requireDurableAgentOwner(agent, req);
+        if (agent.syncInput) throw fail(409, "同步冻结输入当前仅支持代码开发与核验，尚未接入交付");
         if (expected && agent.submittedBy !== auth.sessionFromHeaders(req.headers)?.user.id)
           throw fail(403,"确切版本交付须由原任务创建者提交");
         if (expected && agent.executionMode !== durableSqlAgentMode)
@@ -6373,22 +6393,32 @@ export function createV2Server(options = {}) {
         if (!actor) throw fail(401,"请先登录后保存代码");
         const originAgentTaskId=body.originAgentTaskId === undefined ? undefined : text(body.originAgentTaskId,1,80);
         if (developmentAccess?.taskId && originAgentTaskId !== developmentAccess.taskId) throw targetDenied();
+        let syncInput;
         if (originAgentTaskId) {
           const origin=get("agent",originAgentTaskId);
           requireDurableAgentOwner(origin,req);
           if (ingressChannel === 'HTTP') assertScopedRecord(session, origin);
           if (!local && session?.role !== "ADMIN" && origin.submittedBy !== actor) throw fail(403,"无权引用该人工接管来源");
           if (origin.contextId !== contextId) throw fail(409,"接管来源与代码业务口径不一致");
+          if (origin.syncInput) {
+            requireSyncSqlLocal(req);
+            readSyncSqlInput({ ...syncSqlResources, actorId: actor, binding: origin.syncInput });
+            syncInput = origin.syncInput;
+          }
         }
         const key=req.headers["idempotency-key"] === undefined ? undefined : text(req.headers["idempotency-key"],1,100);
         if (key && !/^[A-Za-z0-9_-]+$/.test(key)) throw fail(400,"代码保存请求编号不合法");
-        const result=saveManualRevision({store,project:PROJECT,actor,key,sql,contextId,originAgentTaskId});
+        const result=saveManualRevision({store,project:PROJECT,actor,key,sql,contextId,originAgentTaskId,syncInput});
         return json(res,result.replayed ? 200 : 201,result.revision);
       }
       if (method === "POST" && path === "/api/v2/runs") {
         const body = await readBody(req),
           rev = get("revision", text(body.revisionId, 1, 80));
         requireDevelopmentOwner("revision", rev, req);
+        if (rev.syncInput) {
+          requireSyncSqlLocal(req);
+          readSyncSqlInput({ ...syncSqlResources, actorId: rev.author, binding: rev.syncInput });
+        }
         assertClassicSqlContext(getContext(rev.contextId));
         if (ingressChannel === 'HTTP') assertScopedRecord(auth.sessionFromHeaders(req.headers), rev);
         if (!options.runner && !runtime.available)
@@ -6401,7 +6431,8 @@ export function createV2Server(options = {}) {
           () => {
             if (durableDevelopment) budget.assertCanStartRemoteSpark();
             return store.create("run", PROJECT, {
-              validationContractId:validationFamily(rev.contextId).id,
+              validationContractId:rev.syncInput ? syncSqlContractId : validationFamily(rev.contextId).id,
+              ...(rev.syncInput ? { syncInput: rev.syncInput } : {}),
               revisionId: rev.id,
               revisionHash: rev.hash,
               contextId: rev.contextId,
@@ -6509,6 +6540,12 @@ export function createV2Server(options = {}) {
           });
         return json(res, 202, publicAgentIntent(task));
       }
+      if (method === "GET" && path === "/api/v2/development/synced-positions") {
+        requireSyncSqlLocal(req);
+        if (url.searchParams.size) throw fail(422, "同步开发输入不接受附加参数");
+        const { selection, source } = currentSyncSqlInput(syncSqlResources);
+        return json(res, 200, { selection, ...source, contextId: syncSqlContextId });
+      }
       if (method === "POST" && path === "/api/v2/agent/tasks") {
         const body = await readBody(req),
           message = text(body.message, body.clarification===undefined?4:1, body.clarification===undefined?2000:1000),
@@ -6518,6 +6555,14 @@ export function createV2Server(options = {}) {
               : text(body.language, 3, 20),
           suppliedCode = body.code ?? body.sql;
         const fundRequest = body.fundPreparation !== undefined;
+        let syncSelection;
+        if (body.syncInput !== undefined) {
+          requireSyncSqlLocal(req);
+          if (language !== "SPARK_SQL" || body.contextId !== syncSqlContextId ||
+              Object.keys(body).some(key => !["message", "sql", "language", "contextId", "syncInput"].includes(key)))
+            throw fail(422, "同步批次只支持客户资产 T+1 的本机 SQL 开发");
+          syncSelection = parseSyncSqlSelection(body.syncInput);
+        }
         if (fundRequest && (language !== "SPARK_SQL" || !localClassicSpark || durableAgent || options.ingress ||
             !isLoopbackRequest(req) || Object.keys(body).some(key => !["message", "language", "contextId", "fundPreparation"].includes(key))))
           throw Object.assign(fail(422, "基金准备只支持本机 Spark SQL，不能混用代码或其他来源"), { code: "FUND_PREPARATION_EXECUTION_INVALID" });
@@ -6565,7 +6610,7 @@ export function createV2Server(options = {}) {
         const resolveFundExecution = () => fundPreparations.bindExecution(body.fundPreparation, actorId,
           { contextId: context.id, message, requestKey: req.headers["idempotency-key"] });
         const fundPreparation = fundRequest ? resolveFundExecution() : undefined;
-        const mode = fundPreparation && options.generator ? "SYNTHETIC_MODEL" : "LIVE_MODEL";
+        const mode = (fundPreparation || syncSelection) && options.generator ? "SYNTHETIC_MODEL" : "LIVE_MODEL";
         const clarification=body.clarification===undefined?undefined:resolveSqlClarification({store,project:PROJECT,actorId,binding:body.clarification,contextId:context.id,currentSql:currentCode,answer:message});
         const derivedFrom = body.derivation === undefined ? undefined : resolveAgentContextDerivation({derivation:body.derivation, actorId,
           targetContextId:context.id,currentSql:currentCode,project:PROJECT,read:(kind,id)=>store.get(kind,id,PROJECT)});
@@ -6620,6 +6665,7 @@ export function createV2Server(options = {}) {
                 language,
                 currentCode,
                 contextId: context.id,
+                ...(syncSelection ? { syncInput: syncSelection } : {}),
                 ...(derivedFrom ? {derivation:derivedFrom} : {}),
                 ...(explicitRepair?{sourceRunId:body.sourceRunId}:{}),
                 ...(repairBasis?{sourceRunId:body.sourceRunId,repairComparison:repairBasis.binding}:{}),
@@ -6637,6 +6683,8 @@ export function createV2Server(options = {}) {
               language,
               contextId: context.id,
               ...(fundPreparation ? { fundPreparation } : {}),
+              ...(syncSelection ? { syncInput: freezeSyncSqlInput({ ...syncSqlResources, actorId, selection: syncSelection,
+                current: currentSyncSqlInput(syncSqlResources) }) } : {}),
               ...(language==='SPARK_SQL'?{initialSql:currentCode,usedTokens:0}:{}),
               ...(clarification?{clarification,...clarificationAttribution({clarification})}:derivedFrom?clarificationAttribution(store.get('agent',derivedFrom.taskId,PROJECT)):{}),
               ...(derivedFrom ? {derivedFrom,initialSql:currentCode,sql:currentCode,usedTokens:0} : {}),
@@ -6650,7 +6698,7 @@ export function createV2Server(options = {}) {
                   ? "PYTHON_DEVELOPMENT"
                   : "SQL_DEVELOPMENT",
               fullLifecycleE2E: false,
-              validationContractId:validationFamily(context.id).id,
+              validationContractId:syncSelection ? syncSqlContractId : validationFamily(context.id).id,
               maxAttempts: language === "PYTHON" ? 5 : 3,
             }),
         );
@@ -6821,6 +6869,11 @@ export function createV2Server(options = {}) {
             };
             for (let attempt = 1; attempt <= 3; attempt++) {
               if (signal.aborted) throw new Error("任务已取消");
+              if (task.syncInput) {
+                if (JSON.stringify(get("agent", task.id).syncInput) !== JSON.stringify(task.syncInput))
+                  throw fail(409, "原任务的同步冻结输入已变化");
+                readSyncSqlInput({ ...syncSqlResources, actorId, binding: task.syncInput });
+              }
               const remainingBudget =
                 Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) - usedTokens;
               if (remainingBudget < 1)
@@ -6841,7 +6894,8 @@ export function createV2Server(options = {}) {
               try {
                 generated = await generator({
                   message,
-                  context,
+                  context: task.syncInput ? { ...context, expected: undefined,
+                    tables: context.tables.map(({ name, columns }) => ({ name, columns })) } : context,
                   ...(fundPreparation ? { fundBasisDigest: fundPreparation.basisDigest } : {}),
                   ...(task.clarification?{clarification:task.clarification}:{}),
                   currentSql: sql,
@@ -6886,6 +6940,8 @@ export function createV2Server(options = {}) {
               if (usedTokens > Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000))
                 throw new Error("本次 Agent 已达到 Token 预算上限");
               if (!checkFundExecution(attempt, generated)) return;
+              if (task.syncInput && JSON.stringify(get("agent", task.id).syncInput) !== JSON.stringify(task.syncInput))
+                throw fail(409, "原任务的同步冻结输入已变化");
               if(task.clarification){try{assertSqlClarificationTask(get('agent',task.id),{store,project:PROJECT});}catch{store.update('agent',task.id,PROJECT,{usedTokens,status:'FAILED',stage:'CLARIFICATION_SOURCE_CHANGED',error:'原澄清依据在模型返回前发生变化；已保留用量，未执行SQL。',
                 attempts:[...get('agent',task.id).attempts,{attempt,status:'CLARIFICATION_SOURCE_CHANGED',model:generated.model,usage:generated.usage,computationSkipped:true}],finishedAt:new Date().toISOString()});return;}}
               const requirements=sqlRequirementReport({task,message,context,generated,attempt});
@@ -6903,7 +6959,7 @@ export function createV2Server(options = {}) {
                 if(attempt===1&&sameSqlIgnoringLayout(generated.sql,currentCode))throw fail(409,'模型未修改失败代码，未重新提交计算');
               }
               sql = generated.sql;
-              const rev = revision(sql, context.id, mode, task.submittedBy);
+              const rev = revision(sql, context.id, mode, task.submittedBy, task.syncInput);
               if (fundPreparation) store.update("revision", rev.id, PROJECT, { fundPreparation });
               if(task.humanClarified)store.update('revision',rev.id,PROJECT,clarificationAttribution(task));
               if(requirements)store.update('revision',rev.id,PROJECT,{requirementBinding:sqlRequirementBinding(bindSqlRequirementRevision(requirements,rev))});
@@ -6911,7 +6967,7 @@ export function createV2Server(options = {}) {
                 sql,attempts:[...get('agent',task.id).attempts,{attempt,status:'GENERATED',model:generated.model,usage:generated.usage,revisionId:rev.id}]});
               if(explicitRepair)store.update('revision',rev.id,PROJECT,repairComparisonAttribution(task));
               const run = store.create("run", PROJECT, {
-                validationContractId:validationFamily(context.id).id,
+                validationContractId:task.validationContractId,
                 revisionId: rev.id,
                 revisionHash: rev.hash,
                 contextId: context.id,
@@ -6919,6 +6975,7 @@ export function createV2Server(options = {}) {
                 startedAt: new Date().toISOString(),
                 agentTaskId: task.id,
                 ...(fundPreparation ? { fundPreparation } : {}),
+                ...(task.syncInput ? { syncInput: task.syncInput } : {}),
                 ...clarificationAttribution(task),
                 ...repairComparisonAttribution(task),
               });
@@ -6965,6 +7022,7 @@ export function createV2Server(options = {}) {
                 ? completed.status === "VALIDATION_FAILED"
                   ? "基金独立断言未通过，请检查组合范围、同日权重和敞口计算。"
                   : "Spark 未完成基金 SQL。请核对当前查询的语法、登记字段、参数和只读范围。"
+                : task.syncInput ? "当前 SQL 未通过冻结批次或登记回归断言，请核对输出列、交易日、客户范围与金额聚合。"
                 : completed.error ?? completed.validation?.issues?.join("；");
             }
             store.update("agent", task.id, PROJECT, {

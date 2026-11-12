@@ -273,12 +273,13 @@ export class LandingStore {
     };
   }
 
-  inspectTarget(targetTable) {
+  inspectTarget(targetTable, { includeRows = false } = {}) {
     this.db.exec("BEGIN");
     try {
       const rows = this.readTable(targetTable), targetHash = landingHash(rows);
       const commit = this.db.prepare("SELECT run_id,target_hash FROM landing_commits WHERE target_table=?").get(targetTable);
-      return { rowCount: rows.length, targetHash, runId: commit?.target_hash === targetHash ? commit.run_id : undefined };
+      return { rowCount: rows.length, targetHash, runId: commit?.target_hash === targetHash ? commit.run_id : undefined,
+        ...(includeRows ? { rows } : {}) };
     } finally { this.db.exec("ROLLBACK"); }
   }
 
