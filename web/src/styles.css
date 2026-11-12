@@ -8188,3 +8188,21 @@ kbd {
 }
 .agent-report-history-v2 .agent-report-heading-v2 { margin-top: 18px; }
 .agent-report-history-v2 .distribution-report-view { margin-top: 20px; }
+
+.report-lineage-v2 { margin: 16px 0; }
+.report-lineage-grid-v2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.report-lineage-grid-v2 section {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #f7faf6;
+}
+.report-lineage-grid-v2 h4 { margin: 0 0 10px; }
+.report-lineage-grid-v2 dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; margin: 0; }
+.report-lineage-grid-v2 dt { color: var(--muted); }
+.report-lineage-grid-v2 dd { margin: 0; overflow-wrap: anywhere; }

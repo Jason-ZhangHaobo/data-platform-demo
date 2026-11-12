@@ -5,7 +5,7 @@ import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/ass
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
-import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult} from '../src/v2/published-report-client.mjs';
+import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportLineage} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import {readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
 import {readBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
@@ -215,6 +215,9 @@ const tools = [
   { name: "report_published_create", description: "从确切已核验本机发布批次实际生成快照和聚合报表；固定requestId可恢复，不运行模型或Spark。", inputSchema: {type:"object",properties:{name:{type:"string"},requestId:{type:"string"},metricIds:{type:"array",items:{type:"string",enum:[...publishedReportMetricIds,...distributionReportMetricIds]},minItems:1,maxItems:5},source:{type:"object",properties:{kind:{type:"string",enum:["AGENT","MANUAL"]},releaseId:{type:"string"},packageDigest:{type:"string"},revisionId:{type:"string"},runId:{type:"string"},batchId:{type:"string"},taskId:{type:"string"}},required:["kind","releaseId","packageDigest","revisionId","runId","batchId"],additionalProperties:false}},required:["name","source","requestId"],additionalProperties:false}},
   { name: "report_published_request",description:"只读查询本账号原报表创建请求，不创建或聚合。",inputSchema:{type:"object",properties:{requestId:{type:"string"}},required:["requestId"],additionalProperties:false}},
   { name: "report_published_result", description: "按本账号原报表请求只读核对固定历史运行和脱敏组件，可附原来源。",
+    inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, source: publishedReportSourceSchema },
+      required: ["requestId"], additionalProperties: false } },
+  { name: "report_published_lineage", description: "按本人原基金报表请求核对已保存的快照和同批次运维证据。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, source: publishedReportSourceSchema },
       required: ["requestId"], additionalProperties: false } },
   { name: "report_published_resume",description:"续接已有报表创建任务，复用原数据集、快照和运行；不改变原来源。",inputSchema:{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false}},
@@ -805,6 +808,7 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==='report_published_create')return submitPublishedReport(client,args);
   if(name==='report_published_request')return lookupPublishedReport(client,args);
   if(name==='report_published_result')return readPublishedReportResult(client,args);
+  if(name==='report_published_lineage')return readPublishedReportLineage(client,args);
   if(name==='report_published_resume')return resumePublishedReport(client,args);
   if (name === "report_overview") return client.request("/reports/overview");
   if (name === "report_dataset_list") return client.request("/reports/datasets");

@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { executeDistributionReport } from "../../src/v2/distribution-reports.mjs";
 import { distributionReportTemplate, fundReportContractId } from "../../src/v2/distribution-report-contract.mjs";
 import { fundContext } from "../../src/v2/fund-lookthrough.mjs";
 import { normalizedDistributionRows } from "../../src/v2/distribution-services.mjs";
 import { publishedReportHash } from "../../src/v2/published-report-source.mjs";
+import { checkedPublishedReportLineage } from "../../src/v2/published-report-client.mjs";
 import { checkedDistributionReportWidgets } from "../../web/src/distribution-report-read.ts";
 
 test("fund reporting preserves partitions and independent precision even when wrong snapshot bytes are rehashed", () => {
@@ -38,4 +39,26 @@ test("fund reporting preserves partitions and independent precision even when wr
   const badChart = structuredClone(result.widgets);
   badChart[1].series[0].value = "1.000001";
   assert.throws(() => checkedDistributionReportWidgets(badChart, template.widgets, fundReportContractId, 7));
+});
+
+test("fund lineage client rejects a different batch, inconsistent lifecycle and reversed monitor chronology", () => {
+  const id = () => randomUUID(), hash = "a".repeat(64), requestId = id();
+  const source = { kind: "MANUAL", releaseId: id(), packageDigest: hash, revisionId: id(), runId: id(), batchId: id() };
+  const body = { protocol: "shuduo-fund-report-lineage/v1", scope: "LOCAL_TEST_ONLY", requestId, source, publicDeployed: false,
+    report: { id: id(), versionId: id(), runId: id(), resultHash: hash },
+    snapshot: { id: id(), datasetId: id(), assetId: "dataset:" + fundReportContractId, contractId: fundReportContractId,
+      fields: ["portfolio_id", "trade_date", "asset_class", "exposure_amount", "exposure_ratio"].map(name=>({name,label:name})),
+      rowCount: 7, contentHash: hash },
+    release: { id: source.releaseId, packageDigest: hash, status: "CANCELLED", activeForConsumption: false,
+      businessDate: "2026-09-10", engineClassification: "LOCAL_SPARK_PROCESS", resultDigest: hash, assertionDigest: hash },
+    batch: { id: source.batchId, sequence: 1, status: "SUCCEEDED", scheduledAt: "2026-09-10T00:00:00Z",
+      startedAt: "2026-09-10T00:00:01Z", finishedAt: "2026-09-10T00:00:02Z",
+      monitorEvent: { id: id(), type: "BATCH_SUCCEEDED", status: "SUCCEEDED", observedAt: "2026-09-10T00:00:03Z" } },
+  };
+  assert.equal(checkedPublishedReportLineage(body, {requestId, source}), body);
+  assert.throws(() => checkedPublishedReportLineage(body,{source:{...source,batchId:id()}}));
+  assert.throws(() => checkedPublishedReportLineage({...body,release:{...body.release,activeForConsumption:true}}));
+  const changed=structuredClone(body);
+  changed.batch.monitorEvent.observedAt="2026-09-10T00:00:01Z";
+  assert.throws(() => checkedPublishedReportLineage(changed));
 });

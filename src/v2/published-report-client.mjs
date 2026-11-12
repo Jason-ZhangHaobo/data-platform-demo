@@ -1,4 +1,4 @@
-import {distributionReportTemplate} from './distribution-report-contract.mjs';
+import {distributionReportTemplate,fundReportContractId} from './distribution-report-contract.mjs';
 import {publishedReportInput,publishedReportSource,reportRequestId} from './published-report-request.mjs';
 const hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 export function checkedPublishedReportReceipt(value,{requestId,source,name,metricIds}={}){
@@ -53,4 +53,40 @@ export function checkedPublishedReportResult(value, expected) {
 export async function readPublishedReportResult(client,args) {
  const requestId=reportRequestId(args.requestId);
  return checkedPublishedReportResult(await client.request('/reports/published/requests/'+requestId+'/result'),{requestId,source:args.source});
+}
+
+export function checkedPublishedReportLineage(value, expected={}) {
+ const bad=()=>{throw Error("原报表、固定快照和同批次运维证据未能对应");};
+ if(!value||value.protocol!=="shuduo-fund-report-lineage/v1"||value.scope!=="LOCAL_TEST_ONLY"||value.publicDeployed!==false)bad();
+ const {requestId,source,report,snapshot,release,batch}=value;
+ try {
+  reportRequestId(requestId);
+  for(const id of [report?.id,report?.versionId,report?.runId,snapshot?.id,snapshot?.datasetId,batch?.monitorEvent?.id])reportRequestId(id);
+ }catch{bad();}
+ const normalized=publishedReportSource(source);
+ if(normalized.kind!=="MANUAL"||expected.requestId&&requestId!==expected.requestId||
+    expected.source&&JSON.stringify(normalized)!==JSON.stringify(publishedReportSource(expected.source)))bad();
+ const event=batch.monitorEvent, dates=[batch.scheduledAt,batch.startedAt,batch.finishedAt,event.observedAt].map(Date.parse);
+ if(release?.id!==normalized.releaseId||release.packageDigest!==normalized.packageDigest||batch.id!==normalized.batchId||
+    !["ACTIVE_LOCAL","SUPERSEDED_LOCAL","CANCELLED"].includes(release.status)||
+    release.activeForConsumption!==(release.status==="ACTIVE_LOCAL")||release.engineClassification!=="LOCAL_SPARK_PROCESS"||
+    !/^\d{4}-\d{2}-\d{2}$/.test(release.businessDate)||
+    ![1,2].includes(batch.sequence)||batch.status!=="SUCCEEDED"||event.type!=="BATCH_SUCCEEDED"||event.status!=="SUCCEEDED"||
+    dates.some((date,index)=>!Number.isFinite(date)||index>0&&date<dates[index-1])||
+    ![report.resultHash,snapshot.contentHash,release.resultDigest,release.assertionDigest].every(hash)||
+    snapshot.contractId!==fundReportContractId||snapshot.assetId!=="dataset:"+snapshot.contractId||
+    !Number.isSafeInteger(snapshot.rowCount)||snapshot.rowCount<1||snapshot.rowCount>1000||
+    !Array.isArray(snapshot.fields)||snapshot.fields.map(field=>field?.name).join(",")!=="portfolio_id,trade_date,asset_class,exposure_amount,exposure_ratio"||
+    snapshot.fields.some(field=>typeof field.label!=="string"||!field.label.trim()))bad();
+ if(expected.receipt){
+  const receipt=checkedPublishedReportReceipt(expected.receipt,{requestId,source:normalized});
+  if(receipt.reportId!==report.id||receipt.reportVersionId!==report.versionId||receipt.reportRunId!==report.runId||
+     receipt.resultHash!==report.resultHash||receipt.snapshotId!==snapshot.id||receipt.datasetId!==snapshot.datasetId||
+     receipt.sourceEvidenceHash!==snapshot.contentHash||receipt.rowCount!==snapshot.rowCount||receipt.outputContractId!==snapshot.contractId)bad();
+ }
+ return value;
+}
+export async function readPublishedReportLineage(client,args) {
+ const requestId=reportRequestId(args.requestId);
+ return checkedPublishedReportLineage(await client.request('/reports/published/requests/'+requestId+'/lineage'),{...args,requestId});
 }

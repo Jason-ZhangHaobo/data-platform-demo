@@ -1,6 +1,7 @@
 import {publishedReportInput,reportRequestId,publishedReportMetricIds} from './published-report-request.mjs';
 import {publishedReportHash} from './published-report-source.mjs';
 import {checkedPublishedReportArtifacts} from './report-provenance.mjs';
+import {fundReportLineage} from "./fund-report-lineage.mjs";
 import {publishedReportTemplate} from './report-template.mjs';
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
 export function createPublishedReportWorkflow({store,project,reports,reportStore,resolveSource,provenance,afterStep=()=>{}}){
@@ -10,6 +11,15 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
   const id=store.deduplicatedId(keyFor(actor,reportRequestId(requestId)));
   if(!id)throw fail(404,"REPORT_CREATION_NOT_FOUND","未找到本账号的原报表请求");
   return owned(id,actor);
+ };
+ const verifiedResult=(requestId,actor)=>{
+   const record=lookupRecord(requestId,actor);
+   if(record.status!=="SUCCEEDED")
+    throw fail(409,"REPORT_RESULT_PENDING","原报表请求尚无成功运行，可查询原请求状态");
+   const ledger=store.db.prepare("SELECT signature FROM idempotency WHERE key=?").get(keyFor(actor,requestId));
+   if(record.requestId!==requestId||ledger?.signature!==publishedReportHash(record.input))
+    throw fail(409,"REPORT_CREATION_RECEIPT_CHANGED","报表原请求与已保存的来源不一致");
+   return {record,artifacts:checkedPublishedReportArtifacts({store,project,reportStore,record})};
  };
  const view=(r,artifacts)=>{
   const result={protocol:'shuduo-published-report-creation/v1',id:r.id,requestId:r.requestId,status:r.status,scope:'LOCAL_TEST_ONLY',source:r.input.source,name:r.input.name,stage:r.stage,error:r.error,
@@ -75,13 +85,7 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
   },
   lookup(requestId,actor){return view(lookupRecord(requestId,actor));},
   readResult(requestId,actor){
-   const record=lookupRecord(requestId,actor);
-   if(record.status!=="SUCCEEDED")
-    throw fail(409,"REPORT_RESULT_PENDING","原报表请求尚无成功运行，可查询原请求状态");
-   const ledger=store.db.prepare("SELECT signature FROM idempotency WHERE key=?").get(keyFor(actor,requestId));
-   if(record.requestId!==requestId||ledger?.signature!==publishedReportHash(record.input))
-    throw fail(409,"REPORT_CREATION_RECEIPT_CHANGED","报表原请求与已保存的来源不一致");
-   const {report,version,run,snapshot,dataset}=checkedPublishedReportArtifacts({store,project,reportStore,record});
+   const {record,artifacts:{report,version,run,snapshot,dataset}}=verifiedResult(requestId,actor);
    const receipt=view(record,{report,version,run,snapshot});
    const pick=(value,keys)=>Object.fromEntries(keys.filter(key=>Object.hasOwn(value,key)).map(key=>[key,value[key]]));
    const evidenceKeys=["protocol","scope","engineClassification","modelClassification","eligibleForService","agentIndependentE2E",
@@ -115,6 +119,10 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
       widgets:version.widgets.map(widget=>pick(widget,widgetKeys)),
      }],runs:[runView]}],
     }};
+  },
+  readLineage(requestId,actor,timeUnitMs){
+   const {record,artifacts}=verifiedResult(requestId,actor);
+   return fundReportLineage({store,project,record,artifacts,timeUnitMs});
   },
   advance(id,actor){return advance(reportRequestId(id),actor);},
  };

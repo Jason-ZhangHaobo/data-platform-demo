@@ -19,7 +19,7 @@ export function fundConsumptionSelection(batchId, query) {
   return { batchId, releaseId, packageDigest };
 }
 
-export function resolveFundConsumptionSource({ store, project, selection, timeUnitMs }) {
+function verifyFundPublication({ store, project, selection, timeUnitMs }, includeHistorical) {
   const read = (kind, id) => {
     const record = typeof id === "string" && store.get(kind, id, project);
     requireProof(record?.id === id && record.projectId === project);
@@ -28,9 +28,12 @@ export function resolveFundConsumptionSource({ store, project, selection, timeUn
   const release = read("release", selection.releaseId);
   const bundle = read("delivery_package", release.packageId);
   const source = bundle.manifest?.source;
+  const active = release.status === "ACTIVE_LOCAL" && release.health === "HEALTHY";
+  const superseded = release.status === "SUPERSEDED_LOCAL" && release.health === "HEALTHY";
+  const stopped = release.status === "CANCELLED" && release.health === "STOPPED";
   requireProof(source?.contextId === fundContextId && source.projectId === project &&
     bundle.digest === selection.packageDigest && release.packageDigest === bundle.digest &&
-    release.status === "ACTIVE_LOCAL" && release.health === "HEALTHY" && release.mode === undefined &&
+    (active || includeHistorical && (superseded || stopped)) && release.mode === undefined &&
     release.successfulRunCount === 2 && release.failedRunCount === 0 && release.openAlertCount === 0 &&
     !store.list("monitor_alert", project).some(alert => alert.releaseId === release.id && alert.status === "OPEN"));
 
@@ -71,6 +74,16 @@ export function resolveFundConsumptionSource({ store, project, selection, timeUn
       timestamp(batch.finishedAt) <= timestamp(event.observedAt));
   }
 
+  const lastFinished = timestamp(batches.at(-1).finishedAt);
+  if (superseded) requireProof(idPattern.test(release.supersededByReleaseId ?? "") && release.supersededByReleaseId !== release.id &&
+    timestamp(release.supersededAt) >= lastFinished);
+  if (stopped) {
+    const closingEvents = store.list("monitor_event", project).filter(event =>
+      event.releaseId === release.id && event.type === "RELEASE_CANCELLED");
+    requireProof(closingEvents.length === 1 && closingEvents[0].projectId === project && closingEvents[0].packageDigest === bundle.digest &&
+      timestamp(release.cancelledAt) >= lastFinished && timestamp(closingEvents[0].observedAt) >= timestamp(release.cancelledAt));
+  }
+
   const contract = fundOutputContract();
   const rows = selected.rows.map(row => Object.fromEntries(contract.fields.map(field => [field.name, row[field.name]])))
     .sort((left, right) => {
@@ -79,7 +92,7 @@ export function resolveFundConsumptionSource({ store, project, selection, timeUn
       }
       return 0;
     });
-  const eligibleForService = mode === "LOCAL_SPARK_PROCESS";
+  const eligibleForService = active && mode === "LOCAL_SPARK_PROCESS";
   const evidence = {
     protocol: "shuduo-fund-consumption-source/v1", scope: "LOCAL_TEST_ONLY", upstreamKind: "ENGINEER_AUTHORED",
     releaseId: release.id, packageDigest: bundle.digest, batchId: selected.id, batchSequence: selected.sequence,
@@ -90,5 +103,20 @@ export function resolveFundConsumptionSource({ store, project, selection, timeUn
       monitorEventId: events.find(event => event.releaseRunId === batch.id).id })),
     engineClassification: mode, eligibleForService, agentIndependentE2E: false, publicDeployed: false,
   };
-  return { evidence, rows: eligibleForService ? rows : undefined };
+  return { evidence, rows, release, selected, event: events.find(event => event.releaseRunId === selected.id) };
+}
+
+export function resolveFundConsumptionSource(args) {
+  const { evidence, rows } = verifyFundPublication(args, false);
+  return { evidence, rows: evidence.eligibleForService ? rows : undefined };
+}
+
+export function resolveFundReportPublication(args) {
+  const { evidence, release, selected, event } = verifyFundPublication(args, true);
+  requireProof(evidence.engineClassification === "LOCAL_SPARK_PROCESS");
+  return { evidence, status: release.status, batch: {
+    id: selected.id, sequence: selected.sequence, status: selected.status, scheduledAt: selected.scheduledTriggerAt,
+    startedAt: selected.startedAt, finishedAt: selected.finishedAt,
+    monitorEvent: { id: event.id, type: event.type, status: event.status, observedAt: event.observedAt },
+  } };
 }
