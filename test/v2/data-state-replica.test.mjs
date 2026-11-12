@@ -34,6 +34,7 @@ const writeAllStoreTypes = (stores, suffix = "001") => {
     keyFields: ["position_id"],
     sourceHash: `source-${suffix}`,
     syncedAt: "2026-09-15T00:00:00.000Z",
+    runId: `run-${suffix}`,
   });
   const event = {
     event_id: `EVT-${suffix}`,
@@ -95,6 +96,7 @@ test("OSS-style data state survives a cold reopen for all four SQLite indexes", 
       project: PROJECT,
     });
   assert.equal(secondStores.landingStore.readTable("raw_positions").length, 1);
+  assert.equal(secondStores.landingStore.inspectTarget("raw_positions").runId,"run-001");
   assert.equal(secondStores.streamStateStore.eventCount("stream-job-001"), 1);
   assert.equal(secondStores.streamStateStore.checkpoints("stream-job-001").length, 1);
   assert.equal(
@@ -187,8 +189,21 @@ test('distribution snapshots survive replica reopening without changing legacy s
  assert.equal(again.businessStore.snapshotEvidence(id).integrityVerified,true);assert.equal(again.businessStore.queryAssets(id,{page:2,pageSize:1}).rows.length,1);assert.equal(again.businessStore.queryAssets('release-run-001').rows[0].total_assets,'1200.00');await reopened.closeReplicated({closeStores:true});await replica.closeReplicated({closeStores:true});
 });
 
-test('old v1 data-state payload without the optional distribution table retains its original hashable shape',async()=>{
+test('old v1 data-state payload without optional tables retains its original hashable shape',async()=>{
  const {emptyDataState,validateDataState,replaceDataStores}=await import('../../src/v2/data-state-replica.mjs');
- const payload=emptyDataState(PROJECT);delete payload.tables.serviceDistributions;const before=JSON.stringify(payload);assert.equal(validateDataState(payload,PROJECT),payload);assert.equal(JSON.stringify(payload),before);
- const stores=makeStores();try{replaceDataStores(stores,payload,PROJECT);assert.equal(stores.businessStore.db.prepare('SELECT COUNT(*) AS n FROM service_distribution_snapshots').get().n,0);}finally{for(const s of Object.values(stores))s.close();}
+ const payload=emptyDataState(PROJECT);
+ delete payload.tables.serviceDistributions;
+ delete payload.tables.landingCommits;
+ payload.tables.landingRows.push({target_table:"raw_positions",row_key:"POS-OLD",payload:'{"position_id":"POS-OLD"}',
+   source_hash:"old-source",synced_at:"2026-09-15T00:00:00.000Z"});
+ const before=JSON.stringify(payload);
+ assert.equal(validateDataState(payload,PROJECT),payload);
+ assert.equal(JSON.stringify(payload),before);
+ const stores=makeStores();
+ try {
+   replaceDataStores(stores,payload,PROJECT);
+   assert.equal(stores.businessStore.db.prepare('SELECT COUNT(*) AS n FROM service_distribution_snapshots').get().n,0);
+   assert.equal(stores.landingStore.inspectTarget("raw_positions").rowCount,1);
+   assert.equal(stores.landingStore.inspectTarget("raw_positions").runId,undefined);
+ } finally {for(const s of Object.values(stores))s.close();}
 });

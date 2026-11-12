@@ -122,11 +122,11 @@ export class AssetCatalogManager {
   }
 
   detail(id) {
-    const item = this.#inventory().find((asset) => asset.id === assetId(id));
+    const inventory = this.#inventory(), item = inventory.find((asset) => asset.id === assetId(id));
     if (!item) throw fail(404, "未找到当前项目的数据资产", "ASSET_NOT_FOUND");
     return {
       ...item,
-      lineage: this.lineage(item.id),
+      lineage: this.#lineageFor(item.id, inventory),
       metrics: this.listMetrics().filter((metric) => metric.assetId === item.id),
       standards: this.listStandards().filter(
         (standard) => standard.assetId === item.id,
@@ -168,10 +168,14 @@ export class AssetCatalogManager {
   }
 
   lineage(id) {
-    const focus = this.#asset(id),
-      inventory = this.#inventory(),
-      nodes = new Map(inventory.map((item) => [item.id, item])),
-      allEdges = this.#lineageEdges(inventory),
+    return this.#lineageFor(assetId(id), this.#inventory());
+  }
+
+  #lineageFor(id, inventory) {
+    const nodes = new Map(inventory.map((item) => [item.id, item])),
+      focus = nodes.get(id);
+    if (!focus) throw fail(404, "未找到当前项目的数据资产", "ASSET_NOT_FOUND");
+    const allEdges = this.#lineageEdges(inventory),
       selected = new Set([focus.id]),
       selectedEdges = new Set(),
       upstream = [focus.id],
@@ -387,7 +391,7 @@ export class AssetCatalogManager {
   }
 
   agentContext() {
-    const assets = this.listAssets().map((asset) => ({
+    const inventory = this.#inventory(), assets = inventory.map((asset) => ({
         id: asset.id,
         name: asset.name,
         businessName: asset.businessName,
@@ -396,8 +400,9 @@ export class AssetCatalogManager {
         rowCount: asset.rowCount,
         fields: asset.fields.map((field) => ({ name: field.name, type: field.type })),
         tags: asset.tags,
+        ...(asset.syncSource ? {syncSource:asset.syncSource} : {}),
       })),
-      lineage = this.#lineageEdges(this.#inventory()).map((edge) => ({
+      lineage = this.#lineageEdges(inventory).map((edge) => ({
         from: edge.from,
         to: edge.to,
         type: edge.type,
@@ -405,10 +410,10 @@ export class AssetCatalogManager {
     return { assets, lineage };
   }
 
-  validateAgentInsight(value) {
+  validateAgentInsight(value, context) {
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw fail(422, "Agent未返回可验证的资产回答", "INVALID_ASSET_INSIGHT");
-    const known = new Set(this.#inventory().map((asset) => asset.id)),
+    const known = new Map(this.#inventory().map((asset) => [asset.id, asset])),
       assetIds = Array.isArray(value.assetIds)
         ? [...new Set(value.assetIds.map((id) => assetId(id)))]
         : [];
@@ -419,10 +424,26 @@ export class AssetCatalogManager {
       : assetIds[0];
     if (!known.has(lineageFocusAssetId))
       throw fail(422, "Agent血缘焦点资产不存在", "UNKNOWN_AGENT_ASSET");
+    const citations = [];
+    if (context) {
+      const supplied = new Map(context.assets.map(asset => [asset.id, asset]));
+      for (const id of new Set([...assetIds, lineageFocusAssetId])) {
+        const captured = supplied.get(id), current = known.get(id);
+        if (!captured) throw fail(422, "Agent引用了本次未读取的资产", "UNKNOWN_AGENT_ASSET");
+        if (!captured.syncSource) continue;
+        if (stableHash(current.syncSource ?? null) !== stableHash(captured.syncSource))
+          throw fail(409, "引用的同步批次已变化，请重新读取资产元数据", "ASSET_SYNC_CITATION_CHANGED");
+        if (captured.syncSource.status === "VERIFIED") {
+          const {runId, metadataVersionId, targetHash} = captured.syncSource;
+          citations.push({assetId:id, runId, metadataVersionId, targetHash});
+        }
+      }
+    }
     return {
       answer: text(value.answer, "Agent回答", 4, 1600),
       assetIds,
       lineageFocusAssetId,
+      ...(citations.length ? {syncCitations:citations} : {}),
       caveats: Array.isArray(value.caveats)
         ? value.caveats.slice(0, 6).map((item) => text(item, "边界说明", 2, 240))
         : [],
@@ -506,10 +527,19 @@ export class AssetCatalogManager {
     const targets = new Map();
     for (const task of this.store.list("offline_sync_task", this.project))
       if (!targets.has(task.targetTable)) targets.set(task.targetTable, task);
-    for (const [targetTable, task] of targets) {
-      const metadata = this.store.get("source_metadata", task.metadataVersionId, this.project),
+    for (const [targetTable, draft] of targets) {
+      const observed = this.landingStore.inspectTarget(targetTable),
+        run = observed.runId && this.store.get("offline_sync_run", observed.runId, this.project),
+        applied = run && this.store.get("offline_sync_task", run.taskId, this.project),
+        original = run && this.store.get("source_metadata", run.metadataVersionId, this.project);
+      const verified = run?.status === "SUCCEEDED" && run.actualExecution === true && run.targetTable === targetTable &&
+        run.targetHash === observed.targetHash && run.finalCount === observed.rowCount && applied?.targetTable === targetTable &&
+        applied.configHash === run.configHash && applied.sourceRevisionId === run.sourceRevisionId &&
+        applied.metadataVersionId === run.metadataVersionId && original?.revisionId === run.sourceRevisionId &&
+        original.sourceId === applied.sourceId && (applied.sourceType !== "LOCAL_CSV" || original.contentHash === run.sourceHash);
+      const task = verified ? applied : draft;
+      const metadata = verified ? original : this.store.get("source_metadata", task.metadataVersionId, this.project),
         types = new Map(metadata?.columns.map((field) => [field.name, field]) ?? []),
-        rows = this.landingStore.readTable(targetTable),
         fields = Object.entries(task.mapping).map(([from, to]) => ({
           name: to,
           type: types.get(from)?.type ?? "STRING",
@@ -522,13 +552,18 @@ export class AssetCatalogManager {
         businessName: targetTable === "raw_positions" ? "证券持仓落地表" : task.name,
         system: "LOCAL_SQLITE_LANDING",
         domain: "经纪与财富管理",
-        description: "由版本化离线同步任务实际写入的本机落地表",
-        status: task.status,
-        rowCount: rows.length,
+        description: verified ? "已核对提交批次的离线同步落地表" : "同步批次与当前落地数据待核对",
+        status: verified ? "SUCCEEDED" : "UNCONFIRMED",
+        rowCount: observed.rowCount,
         fields,
         tags: ["虚构证券", "离线同步", task.mode],
-        evidenceHash: task.runs?.[0]?.targetHash ?? stableHash(rows),
-        versionId: task.id,
+        evidenceHash: observed.targetHash,
+        versionId: verified ? run.id : task.id,
+        syncSource: verified ? {
+          status:"VERIFIED", runId:run.id, taskId:task.id, sourceId:task.sourceId,
+          sourceRevisionId:run.sourceRevisionId, metadataVersionId:run.metadataVersionId, targetHash:run.targetHash,
+          mode:task.mode, fieldMappings:Object.entries(task.mapping).map(([source,target])=>({source,target})),
+        } : {status:"UNCONFIRMED",targetHash:observed.targetHash},
         executableMetrics: true,
         reportable: true,
       });
@@ -656,18 +691,21 @@ export class AssetCatalogManager {
   #lineageEdges(inventory) {
     const ids = new Set(inventory.map((item) => item.id)),
       edges = [];
-    for (const task of this.store.list("offline_sync_task", this.project)) {
-      const from = `source:${task.sourceId}`,
-        to = `landing:${task.targetTable}`;
-      if (ids.has(from) && ids.has(to))
+    for (const asset of inventory) {
+      const source = asset.syncSource;
+      if (source?.status !== "VERIFIED") continue;
+      const from = `source:${source.sourceId}`;
+      if (ids.has(from))
         edges.push({
-          id: `sync:${task.id}`,
+          id: `sync:${source.taskId}`,
           from,
-          to,
-          type: task.mode,
-          fieldMappings: Object.entries(task.mapping).map(([source, target]) => ({ source, target })),
-          evidenceId: task.id,
-          evidenceHash: task.configHash,
+          to: asset.id,
+          type: source.mode,
+          fieldMappings: source.fieldMappings,
+          evidenceId: source.runId,
+          evidenceHash: source.targetHash,
+          sourceVersionId: source.metadataVersionId,
+          targetVersionId: source.runId,
         });
     }
     for (const job of this.store.list("stream_job", this.project)) {

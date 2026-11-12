@@ -714,6 +714,7 @@ export async function generateAssetInsight(
       kind: asset.kind,
       system: asset.system,
       rowCount: asset.rowCount,
+      syncSourceStatus: asset.syncSource?.status,
       fields: (asset.fields ?? []).map(({ name, type }) => ({ name, type })),
       tags: asset.tags,
     })),

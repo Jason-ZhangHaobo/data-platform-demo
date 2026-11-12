@@ -12,6 +12,14 @@ const specs = {
     key: ["target_table", "row_key"],
     order: "target_table,row_key",
   },
+  landingCommits: {
+    store: "landingStore",
+    table: "landing_commits",
+    columns: ["target_table", "run_id", "target_hash"],
+    key: ["target_table"],
+    order: "target_table",
+    optional: true,
+  },
   streamEvents: {
     store: "streamStateStore",
     table: "stream_events",
@@ -68,7 +76,7 @@ const specs = {
     key: ["id"],
     order: "id",
   },
-  serviceDistributions: {store:'businessStore',table:'service_distribution_snapshots',columns:['snapshot_id','output_contract_id','metadata_hash','rows_json'],key:['snapshot_id'],order:'snapshot_id'},
+  serviceDistributions: {store:'businessStore',table:'service_distribution_snapshots',columns:['snapshot_id','output_contract_id','metadata_hash','rows_json'],key:['snapshot_id'],order:'snapshot_id',optional:true},
   customerAssets: {
     store: "businessStore",
     table: "customer_assets",
@@ -164,7 +172,7 @@ export function validateDataState(payload, project) {
   )
     throw fail("云端业务状态快照格式不合法");
   for (const [name, spec] of Object.entries(specs))
-    validateRows(name, name==='serviceDistributions'?(payload.tables[name]??[]):payload.tables[name], spec);
+    validateRows(name, spec.optional ? (payload.tables[name] ?? []) : payload.tables[name], spec);
   const snapshotIds = new Set(
     payload.tables.serviceSnapshots.map((row) => row.id),
   );
@@ -214,6 +222,7 @@ const deleteOrder = [
   "streamState",
   "streamEvents",
   "landingRows",
+  "landingCommits",
   "reportSnapshots",
 ];
 
