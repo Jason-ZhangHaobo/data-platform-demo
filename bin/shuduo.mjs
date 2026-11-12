@@ -81,7 +81,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-review --checkpoint ABSOLUTE_PATH
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --source-revision SHA
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-binding
-  shuduo agent v3-entry-preflight --checkpoint ABSOLUTE_PATH --application-file ABSOLUTE_PATH [--timeout-ms 15000]
+  shuduo agent v3-entry-preflight --checkpoint ABSOLUTE_PATH --application-file ABSOLUTE_PATH [--zip-file ABSOLUTE_PATH] [--timeout-ms 15000]
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --window-file ABSOLUTE_PATH --application-file ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
   shuduo agent v3-start --checkpoint ABSOLUTE_PATH --reconcile
   shuduo agent v3-rebind-source --checkpoint ABSOLUTE_PATH --source-revision SHA --out-file ABSOLUTE_PATH
@@ -587,11 +587,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "v3-entry-preflight") {
       const args=parsed.options,flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
       if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
-          flags.some(flag=>!["checkpoint","application_file","base_url","timeout_ms"].includes(flag)) ||
+          flags.some(flag=>!["checkpoint","application_file","base_url","timeout_ms","zip_file"].includes(flag)) ||
           (args.timeout_ms!==undefined && (typeof args.timeout_ms!=="string" || !/^\d+$/.test(args.timeout_ms))))
-        throw Error("首例入口预检仅接受原检查点、独立验包、原入口和读取超时");
+        throw Error("首例入口预检仅接受原检查点、独立验包、原 ZIP、原入口和读取超时");
       result=await checkCloudV3PreparedEntry(required(args,"checkpoint"),client,required(args,"application_file"),
-        args.timeout_ms===undefined?undefined:Number(args.timeout_ms));
+        args.timeout_ms===undefined?undefined:Number(args.timeout_ms),
+        args.zip_file===undefined?undefined:required(args,"zip_file"));
     }
     else if (resource === "agent" && action === "v3-start") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
