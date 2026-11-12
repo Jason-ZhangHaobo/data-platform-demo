@@ -133,7 +133,8 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
   qualitySource(requestId,actor,timeUnitMs){
    const {record,artifacts}=verifiedResult(requestId,actor);
    const lineage=fundReportLineage({store,project,record,artifacts,timeUnitMs});
-   return {lineage,rows:artifacts.data.rows};
+   const {data,snapshot,version,run}=artifacts;
+   return {lineage,rows:data.rows,snapshot,version,run};
   },
   advance(id,actor){return advance(reportRequestId(id),actor);},
  };
