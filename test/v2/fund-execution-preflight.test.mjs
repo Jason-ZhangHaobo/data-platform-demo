@@ -233,6 +233,9 @@ test("signed fund execution binds immutable job bytes and independent result to 
     expectedDigest:modified.digest};
   await assert.rejects(verifyDeliveryDirectory(alteredRequest,{runner,fundSignedExecution:evidence}),
     {code:"FUND_SIGNED_DELIVERY_MISMATCH"});
+  await assert.rejects(verifyDeliveryDirectory({...request,
+    beforeRun:()=>{throw new Error("approval changed before Spark");}},{runner,fundSignedExecution:evidence}),
+    /approval changed before Spark/);
   assert.equal(rehearsals,0);
   const rehearsal=await verifyDeliveryDirectory(request,{runner,fundSignedExecution:evidence});
   assert.equal(rehearsal.status,"SUCCEEDED");

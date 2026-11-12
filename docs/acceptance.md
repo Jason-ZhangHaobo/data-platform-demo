@@ -224,6 +224,8 @@ API 使用 `POST /api/v2/agent/tasks/{id}/prepare-delivery` 和原 `Idempotency-
 
 Agent 工作台显示当前签名演练摘要。刷新核验后，演练内容变化会清空四项勾选。同一编号的演练在页面打开期间被替换时，提交旧摘要会被拒绝，工作台会读取当前依据。逐项重新确认后可保存新的文件审阅。Chrome 测试版已用原交付和演练验证这两个场景。
 
+同一演练编号有多份审阅时，预检优先选取与当前演练内容摘要相符的一份。隔离本机复用原签名交付和真实演练，以测试批准驱动两个墙上时钟批次。Spark 3.5.9 每批产出七行，通过四项独立断言和测试 SQL。运维读回同一发布的两条成功事件。等待装载交付文件期间替换批准，或在触发前移除原签名证据，会阻止计算并分别留下失败事件及告警。结果保留本机测试发布和上游模型替身归因。
+
 预检使用 `GET /api/v2/agent/tasks/{id}/publication/preflight`，参数为 `sourceKind=AGENT`、`sourceRunId`、`packageDigest` 和 `verificationId`。监控使用同一查询参数访问 `/publication`，可追加 `releaseId`。CLI 对应 `shuduo agent publication-preflight` 和 `shuduo agent publication`。MCP 预检工具为 `fund_agent_publication_preflight`，监控工具为 `agent_publication_detail`。
 
 CLI 可用 `shuduo releases approve` 和 `shuduo releases publish` 的 `--fund-consent` 参数传入已审阅文件。该文件包含预检回执中的 `scope`、`packageDigest`、`verificationId`、`businessDate` 和 `scheduleSpec`。将预检回执的 `digest` 填入 `preflightDigest`，经本人确认后添加 `confirmFrozenFictionalData: true`。MCP 的 `release_approve` 使用同一个 `fundConsent` 对象，`release_create` 使用已批准的原计划。回执丢失时先按确切来源读取原发布。

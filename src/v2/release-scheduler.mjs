@@ -293,6 +293,9 @@ export class LocalReleaseScheduler {
         expectedDigest: run.packageDigest,
         scheduledFor: run.businessScheduledFor,
         signal: controller.signal,
+        ...(packageItem.manifest?.source?.fundSignedExecution
+          ? { beforeRun: () => this.assertRunSource({run,release,packageItem}) }
+          : {}),
       });
       if((release.outputContract||release.fundLookthrough)&&stopped())return await cancelBeforeRun();
       if (!terminal.has(result.status) || result.status === "INTERRUPTED")
