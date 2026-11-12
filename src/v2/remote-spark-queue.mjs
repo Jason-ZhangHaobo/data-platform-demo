@@ -313,10 +313,11 @@ export class OssSparkQueueTransport {
     return body;
   }
 
-  async create(key, body, {retry=true} = {}) {
+  async create(key, body, {retry=true, verifyCreateOnly=false} = {}) {
     if (Buffer.byteLength(body, "utf8") > 2 * 1024 * 1024)
       throw fail(413, "Spark队列对象超过上限", "SPARK_QUEUE_OBJECT_TOO_LARGE");
-    const response = await this.#request("PUT", key, body, "*",retry?this.retryOptions:{...this.retryOptions,attempts:1});
+    const singleAttempt = {...this.retryOptions,attempts:1};
+    const response = await this.#request("PUT", key, body, "*",retry?this.retryOptions:singleAttempt);
     if ([409, 412].includes(response.status)) {
       const existing = await this.read(key);
       if (existing === body) return { created: false };
@@ -324,6 +325,13 @@ export class OssSparkQueueTransport {
     }
     if (!response.ok)
       throw fail(503, "Spark队列对象保存失败", "SPARK_QUEUE_STORE_UNAVAILABLE");
+    // OSS ignores forbid-overwrite on buckets with enabled or suspended
+    // versioning. Prove this exact claim rejects a second PUT before computing.
+    if (verifyCreateOnly) {
+      const probe = await this.#request("PUT",key,body,"*",singleAttempt);
+      if (![409,412].includes(probe.status) || await this.read(key) !== body)
+        throw fail(503, "Spark队列存储未阻止覆盖，执行尚未开始", "SPARK_QUEUE_CREATE_ONLY_UNVERIFIED");
+    }
     return { created: true };
   }
 }
@@ -337,6 +345,14 @@ const queueKeys = (config, jobId) => ({
   resultKey: `${config.resultPrefix}/${jobId}.json`,
   cancelKey: `${config.cancellationPrefix}/${jobId}.cancel.json`,
 });
+
+function storedQueueResult(raw, jobId, resultKey, config) {
+  let envelope;
+  try { envelope = JSON.parse(raw); }
+  catch { throw fail(502, "Spark队列结果不是JSON", "SPARK_QUEUE_RESULT_INVALID"); }
+  const trusted = verifyQueuedSparkResult(envelope, jobId, config);
+  return {jobId,resultKey,status:trusted.status,containsSecret:false,replayed:true};
+}
 
 async function queuedCancellationReason(transport, key, jobId, config, now) {
   const raw = await transport.read(key);
@@ -362,24 +378,30 @@ export async function consumeQueuedSparkJob({ jobKey, config, transport, runner,
     throw fail(422, "Spark队列任务对象键与任务不符", "SPARK_QUEUE_JOB_KEY_INVALID");
   const previous = await transport.read(keys.resultKey);
   const payload = verifyQueuedSparkJob(job, config, now(), { allowExpired: previous !== undefined });
-  if (previous !== undefined) {
-    let envelope;
-    try { envelope = JSON.parse(previous); }
-    catch { throw fail(502, "Spark队列结果不是JSON", "SPARK_QUEUE_RESULT_INVALID"); }
-    const trusted = verifyQueuedSparkResult(envelope, job.jobId, config);
-    return {
-      jobId: job.jobId,
-      resultKey: keys.resultKey,
-      status: trusted.status,
-      containsSecret: false,
-      replayed: true,
-    };
+  if (previous !== undefined) return storedQueueResult(previous,job.jobId,keys.resultKey,config);
+
+  const cancellationBeforeClaim = await queuedCancellationReason(transport, keys.cancelKey, job.jobId, config, now());
+  // A claim binds the immutable signed job, has no expiry or takeover, and
+  // stays outside the .json result trigger. Only its confirmed creator can run.
+  const claimKey = `${config.resultPrefix}/${job.jobId}.claim`;
+  const claim = JSON.stringify({schema:"shuduo-spark-queue-claim/v1",jobId:job.jobId,jobDigest:bodyHash(raw)});
+  const acquired = await transport.create(claimKey,claim,{retry:false,verifyCreateOnly:true});
+  if (acquired?.created === false) {
+    const settled = await transport.read(keys.resultKey);
+    return settled === undefined
+      ? {jobId:job.jobId,resultKey:keys.resultKey,status:"RESULT_PENDING",containsSecret:false,replayed:true}
+      : storedQueueResult(settled,job.jobId,keys.resultKey,config);
   }
-  const cancelled = await queuedCancellationReason(transport, keys.cancelKey, job.jobId, config, now());
+  if (acquired?.created !== true)
+    throw fail(503,"Spark任务占用结果待核对，执行尚未开始","SPARK_QUEUE_CLAIM_UNCONFIRMED");
+
+  const cancelled = cancellationBeforeClaim ?? await queuedCancellationReason(transport, keys.cancelKey, job.jobId, config, now());
   let result;
   if (cancelled)
     result = { status: "CANCELLED", code: cancelled === "DEADLINE" ? "REMOTE_SPARK_TIMEOUT" : "REMOTE_SPARK_CANCELLED" };
   if (!result) {
+    if (Date.parse(job.expiresAt) <= now())
+      throw fail(504,"云端任务已超时","REMOTE_SPARK_TIMEOUT");
     const controller = new AbortController();
     let pendingCheck, checkError, cancellationReason;
     const checkCancellation = () => {
