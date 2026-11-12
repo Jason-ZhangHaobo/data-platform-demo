@@ -1,4 +1,5 @@
 import {fundRequirementScope} from "./fund-requirement-contract.mjs";
+import {isFundContext} from "./fund-contexts.mjs";
 import {distributionMetadataForContext} from './output-contract-metadata.mjs';
 import {createHash} from 'node:crypto';
 import {getContext,validationFamilyForContext} from './context.mjs';
@@ -62,7 +63,9 @@ export function verifiedSqlRequirementForRevision(report,task,revision){
 export function frozenSqlRequirements({agent,run,revision}){
  if(agent?.requirements===undefined&&revision?.requirementBinding===undefined)return undefined;
  const report=agent?.requirements,last=agent?.attempts?.at(-1);
- if(!agent||!run||!revision||revision.source!=='LIVE_MODEL'||agent.language!=='SPARK_SQL'||agent.status!=='SUCCEEDED'||agent.mode!=='LIVE_MODEL'||
+ const syntheticFund = agent?.mode === "SYNTHETIC_MODEL" && isFundContext(agent.contextId) && agent.fundPreparation &&
+  run?.fundPreparation && revision?.fundPreparation;
+ if(!agent||!run||!revision||revision.source!==agent.mode||agent.language!=='SPARK_SQL'||agent.status!=='SUCCEEDED'||agent.mode!=='LIVE_MODEL'&&!syntheticFund||
   agent.contextId!==revision.contextId||agent.projectId!==run.projectId||revision.projectId!==run.projectId||
   typeof agent.submittedBy!=='string'||!agent.submittedBy||agent.submittedBy!==revision.author||run.agentTaskId!==agent.id||last?.status!=='SUCCEEDED'||
   last.runId!==run.id||last.revisionId!==revision.id||report?.attempt!==agent.attempts.length||

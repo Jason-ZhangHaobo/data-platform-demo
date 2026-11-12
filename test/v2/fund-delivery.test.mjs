@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,6 +16,8 @@ import { LocalArtifactStore } from '../../src/v2/artifact-store.mjs';
 import { loadDeliveryDirectory } from '../../src/v2/delivery.mjs';
 import { resolvePublishedReportSource } from '../../src/v2/published-report-source.mjs';
 import { resolveFundConsumptionSource, resolveFundReportPublication } from '../../src/v2/fund-consumption-source.mjs';
+import { assertFundConsent } from '../../src/v2/fund-publication.mjs';
+import { bindSqlRequirementRevision, sqlRequirementBasis, sqlRequirementBinding, sqlRequirementReport } from '../../src/v2/sql-requirements.mjs';
 
 function fixture(context = fundContext()) {
   const binding = fundDeliveryBinding(context.id);
@@ -63,6 +66,41 @@ test('fund file validation rejects a rehashed wrong date or weakened assertion',
     mutate(bundle);
     bundle.digest = computeManifestDigest(bundle.manifest);
     assert.throws(() => validateDeliveryPackage(bundle, bundle.digest), { code: 'FUND_DELIVERY_CONTRACT_MISMATCH' });
+  }
+});
+
+test('fund Agent files freeze the exact successful proposal and preparation for both provider and test modes', () => {
+  for (const mode of ['LIVE_MODEL', 'SYNTHETIC_MODEL']) {
+    const context = fundContext(fundContextIds[1]), { run, revision, binding } = fixture(context);
+    const taskId = randomUUID(), model = mode === 'LIVE_MODEL' ? 'qwen-demo' : 'TEST_DOUBLE';
+    const message = '按登记基金交易日核对组合敞口';
+    const basis = sqlRequirementBasis(message, context);
+    const fundPreparation = { requestId: randomUUID(), basisDigest: basis.digest,
+      inputDigest: binding.inputHash, schemaDigest: binding.schemaHash, assertionDigest: binding.assertionHash };
+    delete revision.manualProvenance;
+    Object.assign(revision, { source: mode, fundPreparation });
+    Object.assign(run, { agentTaskId: taskId, fundPreparation });
+    const attempt = { attempt: 1, status: 'SUCCEEDED', runId: run.id, revisionId: revision.id, model };
+    const agent = { id: taskId, projectId: run.projectId, mode, language: 'SPARK_SQL', message, contextId: context.id,
+      status: 'SUCCEEDED', attempts: [attempt], submittedBy: revision.author, runId: run.id, revisionId: revision.id,
+      sql: revision.sql, fundPreparation };
+    const requirement = { kind: 'DEVELOPMENT', basisDigest: basis.digest, summary: message, grain: basis.grain,
+      metrics: basis.metrics.map(({ field, label, sourceFields }) => ({ field, meaning: label, sourceFields })), constraints: basis.constraints };
+    agent.requirements = bindSqlRequirementRevision(sqlRequirementReport({ task: agent, message, context, attempt: 1,
+      generated: { model, requirement, requirementProtocol: basis.protocol } }), revision);
+    revision.requirementBinding = sqlRequirementBinding(agent.requirements);
+    const bundle = createDeliveryPackage({ agent, run, revision }), plan = validateDeliveryPackage(bundle, bundle.digest);
+    assert.deepEqual(plan.source.attribution, { kind: 'FUND_AGENT_GENERATED', actorId: revision.author,
+      originAgentTaskId: taskId, modelMode: mode, preparation: fundPreparation, agentIndependentE2E: false });
+    assert.equal(plan.requirements.basis.digest, basis.digest);
+    assert.equal(plan.schedule.businessDate.rule, 'previous_trading_day');
+    assert.throws(() => assertFundConsent({ bundle }), { code: 'FUND_AGENT_REHEARSAL_ONLY' });
+    assert.throws(() => createDeliveryPackage({ agent, run: { ...run, agentTaskId: randomUUID() }, revision }),
+      { code: 'FUND_DELIVERY_CONTRACT_MISMATCH' });
+    const altered = structuredClone(bundle);
+    altered.manifest.source.attribution.preparation.assertionDigest = 'a'.repeat(64);
+    altered.digest = computeManifestDigest(altered.manifest);
+    assert.throws(() => validateDeliveryPackage(altered, altered.digest), { code: 'FUND_DELIVERY_CONTRACT_MISMATCH' });
   }
 });
 

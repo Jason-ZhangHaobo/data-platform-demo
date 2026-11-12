@@ -166,7 +166,15 @@ node scripts/verify-saved-fund-lifecycle.mjs \
 
 服务端验证原拥有者、业务需求、交易日和口径摘要，并在模型调用前及提交 Spark 前重新核对保存依据。模型使用登记字段、管理人参数和交易日，不接收样例行或独立预期。Spark 执行结果须绑定原输入与断言并通过逐行核验。错编号、交易日、摘要或混用其他执行来源时拒绝。公网及远程执行入口未启用此基金开发。
 
-已用原准备的隔离副本和本机 Spark 3.5.9 验收。合成模型响应先生成敞口偏差，独立断言拒绝；第二次修正后七条结果通过。WebKit 提交并查看两次执行，CLI 和 MCP 重放同一任务，重启后按原编号回读，仍只有两次计算。真实模型调用为零。基金 Agent 生成版本的调度文件、演练及审阅发布仍待接入。
+已用原准备的隔离副本和本机 Spark 3.5.9 验收。合成模型响应先生成敞口偏差，独立断言拒绝；第二次修正后七条结果通过。WebKit 提交并查看两次执行，CLI 和 MCP 重放同一任务，重启后按原编号回读，仍只有两次计算。真实模型调用为零。
+
+## 基金 Agent 调度文件与本机演练
+
+从已通过校验的基金 Agent 任务点击「生成交付并演练」。八个文件绑定原准备、结构化需求、实际 SQL 版本、开发运行、登记数据和独立断言。包内保存模型来源和原任务编号。调度按样例交易日解析 T+1，部署目标为本机 Spark。
+
+API 使用 `POST /api/v2/agent/tasks/{id}/prepare-delivery` 和原 `Idempotency-Key`。结果未知时读原任务工作流或 `GET /api/v2/agent/tasks/{id}/delivery-requests/{key}`。CLI 使用 `shuduo agent prepare-delivery --id TASK_ID` 和 `shuduo agent workflow --id TASK_ID`。MCP 使用 `agent_delivery_prepare` 和 `agent_development_workflow`。
+
+已复用上一阶段保存的虚构基金任务，在 WebKit 提交后模拟响应丢失，按原编号找回同一份交付。Spark 3.5.9 从八个文件执行主 SQL、测试 SQL 和证据节点，七条结果与独立预期一致。CLI 重放、MCP 查询和重启回读均返回同一份交付与演练。全程仅执行一次本机文件演练。该版本等待工程师审阅，基金 Agent 发布、运维及公网验收待继续。
 
 ## 浏览器真实链路
 

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { fundContext, fundFamily } from "./fund-lookthrough.mjs";
 import { fundContextId, isFundContext } from "./fund-contexts.mjs";
+import { nonLiveModelLabel } from "./live-lifecycle-provenance.mjs";
 
 const canonical = value => JSON.stringify(value, (_key, item) =>
   item && typeof item === "object" && !Array.isArray(item)
@@ -52,6 +53,38 @@ export function verifiedFundRun(run, contextId = run?.contextId ?? run?.inputEvi
   return expected.every(row => run.rows.filter(actual => same(row, actual)).length === 1);
 }
 
+const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+export const fundAgentAttributionKind = "FUND_AGENT_GENERATED";
+
+function matchesFundPreparation(preparation, basisDigest, binding) {
+  return typeof preparation?.requestId === "string" && uuid.test(preparation.requestId) &&
+    typeof basisDigest === "string" && /^[a-f0-9]{64}$/.test(basisDigest) &&
+    same(preparation, { requestId: preparation.requestId, basisDigest, inputDigest: binding.inputHash,
+      schemaDigest: binding.schemaHash, assertionDigest: binding.assertionHash });
+}
+
+export function fundAgentDeliveryAttribution({ agent, run, revision }) {
+  const preparation = agent?.fundPreparation, attempt = agent?.attempts?.at(-1);
+  if (!isFundContext(agent?.contextId) || !["LIVE_MODEL", "SYNTHETIC_MODEL"].includes(agent.mode) ||
+      agent.status !== "SUCCEEDED" || agent.language !== "SPARK_SQL" || attempt?.status !== "SUCCEEDED" ||
+      agent.sourceKind !== undefined || agent.sourceAttribution !== undefined ||
+      revision?.manualProvenance !== undefined || revision?.sourceAttribution !== undefined ||
+      typeof attempt.model !== "string" || !attempt.model.trim() || agent.mode === "LIVE_MODEL" && nonLiveModelLabel(attempt.model) ||
+      !uuid.test(agent.id) || typeof agent.submittedBy !== "string" || !agent.submittedBy ||
+      agent.submittedBy !== revision?.author || revision.source !== agent.mode ||
+      agent.projectId !== revision.projectId || agent.projectId !== run?.projectId ||
+      agent.contextId !== revision.contextId || agent.contextId !== run.contextId ||
+      agent.revisionId !== revision.id || agent.runId !== run.id || agent.sql !== revision.sql ||
+      attempt.revisionId !== revision.id || attempt.runId !== run.id || run.agentTaskId !== agent.id ||
+      run.revisionId !== revision.id || run.revisionHash !== revision.hash ||
+      agent.requirements?.model !== attempt.model || revision.requirementBinding?.basisDigest !== preparation?.basisDigest ||
+      !matchesFundPreparation(preparation, agent.requirements?.basis?.digest, fundDeliveryBinding(agent.contextId)) ||
+      !same(preparation, revision.fundPreparation) || !same(preparation, run.fundPreparation) ||
+      !verifiedFundRun(run, agent.contextId)) throw fail();
+  return { kind: fundAgentAttributionKind, actorId: agent.submittedBy, originAgentTaskId: agent.id,
+    modelMode: agent.mode, preparation, agentIndependentE2E: false };
+}
+
 export function createFundTestSql(expected, contextId = fundContextId) {
   if (!same(expected, fundContext(contextId).expected)) throw fail();
   const checks = expected.map(row => {
@@ -69,8 +102,15 @@ export function validateFundDelivery({ source, proof, testSql, localTarget }) {
     return;
   }
   const { contextId } = source, binding = fundDeliveryBinding(contextId);
-  if (!localTarget || proof.isolation !== "LOCAL_PROCESS" || source.requirement !== undefined ||
-      source.attribution?.kind !== "ENGINEER_AUTHORED" || source.attribution.developmentReference !== undefined ||
+  const agent = source.attribution?.kind === fundAgentAttributionKind;
+  const sourceMatches = agent
+    ? source.requirement?.taskId === source.attribution.originAgentTaskId &&
+      matchesFundPreparation(source.attribution.preparation, source.requirement?.basisDigest, binding) &&
+      typeof proof.requirements?.model === "string" && proof.requirements.model.trim() &&
+      (source.attribution.modelMode === "SYNTHETIC_MODEL" || !nonLiveModelLabel(proof.requirements.model))
+    : source.requirement === undefined && source.attribution?.kind === "ENGINEER_AUTHORED" &&
+      source.attribution.developmentReference === undefined;
+  if (!localTarget || proof.isolation !== "LOCAL_PROCESS" || !sourceMatches ||
       !same(source.fundLookthrough, binding) || !inputMatches(proof.inputEvidence, binding, contextId) ||
       !fundValidationMatches(proof.report, binding, contextId) || testSql !== createFundTestSql(fundContext(contextId).expected, contextId)) throw fail();
 }

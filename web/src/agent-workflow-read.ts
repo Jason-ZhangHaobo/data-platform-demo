@@ -6,6 +6,7 @@ import {checkedAssistedDevelopmentReference,sameAssistedDevelopmentReference} fr
 import type {AssistedDevelopmentReference} from '../../src/v2/assisted-development-reference.mjs';
 import {sqlRequirementReportMatches} from '../../src/v2/sql-requirement-contract.mjs';
 import type {SqlRequirementReport} from '../../src/v2/sql-requirement-contract.mjs';
+import type {FundExecutionBinding} from '../../src/v2/fund-preparation-client.mjs';
 
 export type Delivery = {id:string;version:number;status:string;stage:string;mode?:string;sourceKind?:string;packageId?:string;packageDigest?:string;verificationId?:string;sourceRevisionId?:string;sourceRunId?:string;error?:string};
 export type FileReview={id:string;status:"REVIEWED";packageId:string;packageDigest:string;verificationId:string;reviewedAt:string;scope:"LOCAL_FILE_REVIEW"};
@@ -17,7 +18,7 @@ export type Workflow = {
  verification?:{id:string;status:string;engine?:string;engineVersion?:string;mainSqlExecuted?:boolean;durationMs?:number;error?:string;testSqlValidation?:{passed:boolean};validation?:{passed:boolean;regressions?:{contextId:string;passed:boolean}[]}};
  publication:{available:boolean;scope:string;reason:string};
 };
-export type WorkflowSelection={taskId:string;contextId?:string;revisionId?:string;runId?:string;manual:boolean;assisted?:boolean;expectedSourceBinding?:ServiceSourceBinding};
+export type WorkflowSelection={taskId:string;contextId?:string;revisionId?:string;runId?:string;manual:boolean;assisted?:boolean;expectedSourceBinding?:ServiceSourceBinding;fundPreparation?:FundExecutionBinding};
 const record=(v:unknown):v is Record<string,unknown>=>Boolean(v&&typeof v==='object'&&!Array.isArray(v));
 const id=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v);
 const hash=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
@@ -59,13 +60,14 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
  if(r.status==='PASSED'&&(!id(r.revisionId)||!id(r.runId)||!hash(r.revisionHash)||r.engine!=='Apache Spark'||checks.some(c=>!c.passed)))throw bad();
  if(selection.manual?(r.sourceKind!=='MANUAL'||r.agentIndependentE2E!==false||r.runId!==selection.runId||r.revisionId!==selection.revisionId||p.scope!=='PRIVATE_CLOUD_TEST'||p.sourceKind!=='MANUAL'||p.sourceRunId!==selection.runId||p.agentIndependentE2E!==false):r.sourceKind==='MANUAL'||p.sourceKind==='MANUAL')throw bad();
  if(selection.assisted&&(!selection.manual||r.developmentReference===undefined))throw bad();
+ if(selection.fundPreparation&&(selection.manual||p.available!==false||p.scope!=='LOCAL_TEST_RELEASE'))throw bad();
  if(r.developmentReference!==undefined){if(!selection.manual)throw bad();checkedAssistedDevelopmentReference(r.developmentReference);}
  const frozen=selection.expectedSourceBinding;
  if(frozen&&(frozen.taskId!==r.taskId||frozen.revisionId!==r.revisionId||frozen.runId!==r.runId||(frozen.sourceKind==='MANUAL')!==selection.manual||
   (frozen.scope==='LOCAL_TEST_ONLY'?p.scope!=='LOCAL_TEST_RELEASE':p.scope!=='PRIVATE_CLOUD_TEST')))throw bad();
  const d=value.delivery,b=value.package,v=value.verification;
  if(d!==undefined){
-  if(!record(d)||!id(d.id)||!Number.isSafeInteger(d.version)||Number(d.version)<1||!['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED'].includes(String(d.status))||typeof d.stage!=='string'||!d.stage||
+  if(!record(d)||!id(d.id)||!Number.isSafeInteger(d.version)||Number(d.version)<1||!['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','INTERRUPTED'].includes(String(d.status))||typeof d.stage!=='string'||!d.stage||
    !['mode','error'].every(k=>optional(d[k],text))||!['packageId','verificationId'].every(k=>optional(d[k],id))||!optional(d.packageDigest,hash)||
    !optional(d.sourceAgentTaskId,x=>x===r.taskId)||d.sourceRevisionId!==r.revisionId||d.sourceRunId!==r.runId||!id(d.sourceRevisionId)||!id(d.sourceRunId)||
    !optional(d.sourceSqlHash,x=>x===r.revisionHash)||(selection.manual?d.sourceKind!=='MANUAL':d.sourceKind==='MANUAL'))throw bad();
@@ -80,7 +82,11 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    frozen&&b.digest!==frozen.packageDigest)throw bad();
   const attribution=source.attribution;
  if(record(attribution)&&!sameAssistedDevelopmentReference(attribution.developmentReference,r.developmentReference))throw bad();
-  if(selection.manual?(!record(attribution)||attribution.kind!=='ENGINEER_ASSISTED'||attribution.originAgentTaskId!==selection.taskId||attribution.agentIndependentE2E!==false):attribution!==undefined)throw bad();
+  if(selection.fundPreparation){
+   if(!record(attribution)||attribution.kind!=='FUND_AGENT_GENERATED'||attribution.originAgentTaskId!==selection.taskId||
+    attribution.agentIndependentE2E!==false||!['LIVE_MODEL','SYNTHETIC_MODEL'].includes(String(attribution.modelMode))||
+    canonical(attribution.preparation)!==canonical(selection.fundPreparation))throw bad();
+  }else if(selection.manual?(!record(attribution)||attribution.kind!=='ENGINEER_ASSISTED'||attribution.originAgentTaskId!==selection.taskId||attribution.agentIndependentE2E!==false):attribution!==undefined)throw bad();
   let total=0;
   for(const name of names){const content=files[name],entry=entries[name];if(typeof content!=='string'||!record(entry))throw bad();const bytes=new TextEncoder().encode(content).length;total+=bytes;if(bytes>250000||entry.bytes!==bytes||entry.sha256!==await digest(content))throw bad();}
   if(total>750000||b.digest!==await digest(canonical(manifest))||source.sqlHash!==await digest(files['main.sql'] as string))throw bad();
@@ -92,6 +98,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    if(!record(fixture)||canonical(fixture.outputContract)!==canonical(metadata))throw bad();
   }else if(source.outputContract!==undefined)throw bad();
   const requirements=frozenRequirementProposal(b as Workflow['package'],r.taskId);
+  if(selection.fundPreparation&&requirements?.basis.digest!==selection.fundPreparation.basisDigest)throw bad();
   if(requirements){
    const {digest:basisDigest,...basis}=requirements.basis;
    if(!record(source.requirement)||await digest(canonical(requirements))!==source.requirement.reportDigest||
@@ -101,14 +108,14 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
  }
  if(record(d)&&(d.packageId!==undefined&&b===undefined||d.verificationId!==undefined&&v===undefined||d.status==='SUCCEEDED'&&(b===undefined||v===undefined)))throw bad();
  if(v!==undefined){
-  if(!record(v)||!record(d)||!record(b)||!id(v.id)||v.id!==d.verificationId||!['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED'].includes(String(v.status))||
+  if(!record(v)||!record(d)||!record(b)||!id(v.id)||v.id!==d.verificationId||!['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','INTERRUPTED'].includes(String(v.status))||
    !['engine','engineVersion','error'].every(k=>optional(v[k],text))||!optional(v.mainSqlExecuted,x=>typeof x==='boolean')||!optional(v.durationMs,x=>typeof x==='number'&&Number.isFinite(x)&&x>=0)||
    v.testSqlValidation!==undefined&&(!record(v.testSqlValidation)||typeof v.testSqlValidation.passed!=='boolean')||
    v.validation!==undefined&&(!record(v.validation)||typeof v.validation.passed!=='boolean'||v.validation.regressions!==undefined&&(!Array.isArray(v.validation.regressions)||!v.validation.regressions.every(x=>record(x)&&typeof x.contextId==='string'&&typeof x.passed==='boolean'))))throw bad();
  }
  if(value.fileReview!==undefined){
   const f=value.fileReview;
-  if(!distributionMetadataForContext(r.contextId as string)||!record(f)||Object.keys(f).length!==7||!id(f.id)||f.status!=='REVIEWED'||f.scope!=='LOCAL_FILE_REVIEW'||!text(f.reviewedAt)||
+  if((!selection.fundPreparation&&!distributionMetadataForContext(r.contextId as string))||!record(f)||Object.keys(f).length!==7||!id(f.id)||f.status!=='REVIEWED'||f.scope!=='LOCAL_FILE_REVIEW'||!text(f.reviewedAt)||
    !record(b)||!record(v)||f.packageId!==b.id||f.packageDigest!==b.digest||f.verificationId!==v.id||v.status!=='SUCCEEDED')throw bad();
  }
  if(frozen&&!record(b))throw bad();

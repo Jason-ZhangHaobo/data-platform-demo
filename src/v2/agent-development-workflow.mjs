@@ -12,6 +12,8 @@ import {resolveManualContinuation} from './manual-sql-continuation.mjs';
 import {verifiedSqlRequirementForRevision,assertSqlRequirementPackageSource,sqlRequirementBinding} from './sql-requirements.mjs';
 import {assertSqlClarificationTask} from './sql-clarification.mjs';
 import { liveEvidenceProvenance, nonLiveModelLabel } from "./live-lifecycle-provenance.mjs";
+import { isFundContext } from "./fund-contexts.mjs";
+import { fundValidationMatches, verifiedFundRun } from "./fund-delivery.mjs";
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 export const standaloneManualDeliveryMode='DURABLE_MANUAL_DELIVERY_V1';
@@ -76,7 +78,8 @@ export function developmentVerificationReport(task, run, revision) {
   const rows = run?.rows ?? [], fields = ["holding_market_value", "available_cash", "total_assets", "security_count"];
   const numericEqual = equalValidationNumber;
   const distribution=outputContractForContext(task.contextId);
-  const resultsMatch = distribution ? verifyOutputRows(rows,context) : rows.length === expected.length && expected.every(want => {
+  const fund = isFundContext(task.contextId);
+  const resultsMatch = fund ? verifiedFundRun(run, task.contextId) : distribution ? verifyOutputRows(rows,context) : rows.length === expected.length && expected.every(want => {
     const matches = rows.filter(row => row.client_id === want.client_id);
     return matches.length === 1 && fields.every(field => numericEqual(matches[0][field], want[field]));
   });
@@ -84,22 +87,22 @@ export function developmentVerificationReport(task, run, revision) {
     { id: "revision", label: "结果对应当前代码版本", passed: Boolean(revision && revision.contextId === task.contextId &&
       (run?.contextId === undefined || run.contextId === task.contextId) && run?.revisionId === revision.id && run.revisionHash === revision.hash && hash(revision.sql) === revision.hash) },
     { id: "execution", label: "Spark 实际执行完成", passed: ["SUCCEEDED", "VALIDATION_FAILED"].includes(run?.status) && run.engine === "Apache Spark" && run.mainSqlExecuted === true && run.testDouble !== true },
-    { id: "results", label: distribution?"客户/交易日/分类、市值和占比匹配独立预期":"客户、金额与证券数量匹配独立预期", passed: resultsMatch },
-    { id: "regressions", label: distribution?"持仓去重、现金客户、未分类及零分母等五场景通过":legacy ? "重复持仓、现金变化及现金客户等五场景通过" : "股票持仓、现金变化及现金客户等五场景通过", passed:
+    { id: "results", label: fund ? "组合、交易日、资产类别和敞口匹配独立预期" : distribution?"客户/交易日/分类、市值和占比匹配独立预期":"客户、金额与证券数量匹配独立预期", passed: resultsMatch },
+    { id: "regressions", label: fund ? "登记交易日、输入和独立断言一致" : distribution?"持仓去重、现金客户、未分类及零分母等五场景通过":legacy ? "重复持仓、现金变化及现金客户等五场景通过" : "股票持仓、现金变化及现金客户等五场景通过", passed:
       (task.validationContractId === undefined || task.validationContractId === family?.id) &&
       (run?.validationContractId === undefined || run.validationContractId === family?.id) &&
-      validationMatchesFamily(run?.validation, family, { requireContract: true }) },
+      (fund ? fundValidationMatches(run?.validation, undefined, task.contextId) : validationMatchesFamily(run?.validation, family, { requireContract: true })) },
   ];
-  if((task.requirements!==undefined||distribution)&&revision?.source==='LIVE_MODEL')checks.push({id:'requirement',label:'结构化理解绑定当前需求与代码，结果另行核验',
+  if(task.fundPreparation || (task.requirements!==undefined||distribution)&&revision?.source==='LIVE_MODEL')checks.push({id:'requirement',label:'结构化理解绑定当前需求与代码，结果另行核验',
     passed:verifiedSqlRequirementForRevision(task.requirements,task,revision)});
   const passed = run?.status === "SUCCEEDED" && checks.every(check => check.passed);
   return {
     schema: "shuduo-development-verification/v1", taskId: task.id, revisionId: revision?.id,
     revisionHash: revision?.hash, runId: run?.id, contextId: task.contextId,
     status: passed ? "PASSED" : !run || ![...terminal, "VALIDATION_FAILED"].includes(run.status) ? "PENDING" : "NEEDS_ATTENTION",
-    summary: passed ? distribution?"持仓分布的代码、真实执行、复合键与五场景核验通过；占比不含现金，可准备本机交付文件并独立演练。":legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
+    summary: passed ? fund ? "基金 SQL 与登记交易日的独立结果核验通过，可生成同一版本的本机交付文件。" : distribution?"持仓分布的代码、真实执行、复合键与五场景核验通过；占比不含现金，可准备本机交付文件并独立演练。":legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
     definition: context?.definition, checks, rowCount: rows.length, engine: run?.engine, engineVersion: run?.engineVersion,
-    validationDetails: validationDetails(run, revision, task.contextId),
+    validationDetails: fund ? undefined : validationDetails(run, revision, task.contextId),
     finishedAt: run?.finishedAt, validationContractId: family?.id, validationFamily: family, completionScope: "KNOWN_SECURITIES_CONTRACT",
     notice: "核验仅覆盖所选数据与已登记口径；新增指标需要新的独立预期。",
   };

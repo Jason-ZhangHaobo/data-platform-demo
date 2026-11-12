@@ -1,4 +1,5 @@
 import {distributionMetadataForContext} from '../../src/v2/output-contract-metadata.mjs';
+import {fundRequirementScope} from '../../src/v2/fund-requirement-contract.mjs';
 import { deliveryFilePresentation } from "./delivery-presentation.ts";
 import { publicationStopped } from "./publication-read.ts";
 import {validationFamilyForContextId,regressionsMatchFamily} from "./validation-family.ts";
@@ -49,7 +50,7 @@ export function manualConsumptionEntryMatches(entry:{releaseId?:string;sourceKin
   return typeof id==="string"&&id.length>0&&id!==developmentRunId&&matches.length===1&&matches[0].status==="SUCCEEDED"&&matches[0].schedulerTriggered===true;
 }
 type Evidence = {
-  taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; evidenceReadable?: boolean; publicationReadable?: boolean;
+  taskId: string; contextId?:string; fund?: boolean; revisionId?: string; runId?: string; dirty: boolean; evidenceReadable?: boolean; publicationReadable?: boolean;
   report?: { taskId?: string; contextId?:string; validationContractId?:string; revisionId?: string; runId?: string; status: string; checks: { id: string; passed: boolean }[] };
   delivery?: { status: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string };
   bundle?: { id: string; digest: string; files: Record<string, string> };
@@ -63,9 +64,11 @@ type Evidence = {
 
 // A display projection, not a replacement for server-side approval or an E2E score.
 export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: JourneyStep; current: boolean; fileVerified: boolean; publicationCurrent: boolean } {
-  const family=validationFamilyForContextId(e.contextId??e.report?.contextId);
+  const contextId = e.contextId ?? e.report?.contextId;
+  const fund = e.fund ? fundRequirementScope(contextId) : undefined;
+  const family = fund && contextId ? { id: fund.id, contextIds: [contextId] } : validationFamilyForContextId(contextId);
   const current = e.evidenceReadable !== false && !e.dirty && Boolean(e.revisionId && e.runId && e.report?.taskId === e.taskId && e.report.revisionId === e.revisionId && e.report.runId === e.runId&&(!e.contextId||e.report.contextId===e.contextId));
-  const required = ["revision", "execution", "results", "regressions"];
+  const required = ["revision", "execution", "results", "regressions", ...(fund ? ["requirement"] : [])];
   const verified = current && Boolean(family) && e.report?.status === "PASSED" && (e.report.validationContractId===undefined||e.report.validationContractId===family?.id) && required.every(id => e.report?.checks.some(c => c.id === id && c.passed === true));
   const codeExecuted = current && Boolean(family) && (e.report?.validationContractId===undefined||e.report.validationContractId===family?.id) &&
     ["PASSED", "NEEDS_ATTENTION"].includes(e.report?.status ?? "") &&
@@ -94,7 +97,7 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
       detail:requirementCheck?(!current?'当前版本的需求理解尚未确认，原记录仅供对照。':requirementCheck.passed?'结构化理解已绑定需求与代码；语义和结果仍须独立核验。':'需求理解与原版本的绑定未通过；不能沿用原交付与批准。'):
        "需求已记录；按已登记证券口径执行，不代表模型已理解任意需求。", target: "agent-requirement" },
     { id: "code", label: "代码与调试", state: state(codeExecuted, codeFailed), detail: e.dirty ? "未保存修改不继承旧结论。" : codeExecuted ? `代码版本 ${e.revisionId!.slice(0, 8)} 已完成实际执行；业务正确性另见独立结果核验。` : codeFailed ? "当前代码执行尚未通过，请查看报错并修正。" : e.revisionId ? `代码版本 ${e.revisionId.slice(0, 8)} 已生成，等待核对执行与调试回执。` : "等待生成代码，可随时人工接管。", target: "agent-code" },
-    { id: "validation", label: "独立结果核验", state: state(verified, current && e.report?.status === "NEEDS_ATTENTION"), detail: verified ? "版本、真实执行、结果和五场景断言通过。" : "查看未通过项；SQL跑通不等于完整核验。", target: "agent-verification" },
+    { id: "validation", label: "独立结果核验", state: state(verified, current && e.report?.status === "NEEDS_ATTENTION"), detail: verified ? (e.fund?"版本、真实执行和登记基金断言通过。":"版本、真实执行、结果和五场景断言通过。") : "查看未通过项；SQL跑通不等于完整核验。", target: "agent-verification" },
     { id: "files", label: "调度与部署文件", state: state(fileVerified, e.delivery?.status === "FAILED"), detail: fileVerified ? "同一版本的交付文件演练通过。" : files ? "文件已生成，仍需实际演练。" : "核验通过后准备版本化交付。", target: "agent-files" },
     { id: "publication", label: "审阅与发布", state: state(executed, stopped), detail: executed ? `当前交付包已由调度器执行 · ${e.release?.id.slice(0, 8)}` : e.release && !publicationCurrent ? "保留历史发布，不替当前版本证明上线。" : "需审阅确切版本；不会自动代批。", target: "agent-publication" },
     { id: "monitoring", label: "上线后监控", state: state(Boolean(healthy), publicationCurrent && (e.release?.health === "CRITICAL" || (e.alerts ?? []).some(a => a.status === "OPEN"))), detail: healthy ? "所有计划批次成功，无未解除告警。仅本次测试范围。" : "检查批次、告警与恢复记录；不凭健康标签判完成。", target: "agent-publication" },
