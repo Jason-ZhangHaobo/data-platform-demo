@@ -57,13 +57,15 @@ export function publicationCancellationAllowed({taskId,selector,release,publicat
     publicationKey===confirmedReadKey&&publicationKey===publicationSelectionKey(taskId,selector)&&
     pinnedReleaseId===release.id&&publicationReleaseMatches(release,taskId,selector,pinnedReleaseId));
 }
-export function cloudPublicationRequest(selector:PublicationSelector,packageId:string,attestations:Record<string,boolean>){
+export function cloudPublicationRequest(selector:PublicationSelector,packageId:string,attestations:Record<string,boolean>,reviewDigest?:string){
   const idempotencyKey=`agent-publish-${packageId}-${selector.verificationId}`;
   if(!opaque(packageId)||!opaque(selector.verificationId)||idempotencyKey.length>100||
     !["MANUAL","AGENT"].includes(selector.sourceKind)||!/^[a-f0-9]{64}$/.test(selector.packageDigest)||
-    selector.sourceKind==="MANUAL"&&!opaque(selector.sourceRunId)||!reviewAttestationsComplete(attestations,true))throw Error("请逐项审阅这个确切版本的四项依据。");
+    selector.sourceKind==="MANUAL"&&!opaque(selector.sourceRunId)||!reviewAttestationsComplete(attestations,true)||
+    reviewDigest!==undefined&&(selector.sourceKind!=="AGENT"||!opaque(selector.sourceRunId)||!/^[a-f0-9]{64}$/.test(reviewDigest)))throw Error("请逐项审阅这个确切版本的四项依据。");
   return {body:{packageDigest:selector.packageDigest,verificationId:selector.verificationId,
     ...(selector.sourceKind==="MANUAL"?{sourceKind:"MANUAL" as const,sourceRunId:selector.sourceRunId}:{}),
+    ...(reviewDigest ? {sourceKind:"AGENT" as const,sourceRunId:selector.sourceRunId,reviewDigest}:{}),
     attestations:{code:true,assertions:true,deliveryFiles:true,cloudScope:true}},
     idempotencyKey};
 }
@@ -75,6 +77,7 @@ export function createPublicationAttempt(request:ReturnType<typeof cloudPublicat
   let status:"IDLE"|"SENDING"|"UNKNOWN"|"CONFIRMED"="IDLE",readChecked=false;
   return {
     snapshot:()=>({status,readChecked}),
+    request:()=>structuredClone(frozen),
     readback(hasRelease:boolean){readChecked=true;if(hasRelease)status="CONFIRMED";},
     async submit<T>(post:(request:typeof frozen)=>Promise<T>,explicitRetry=false):Promise<T>{
       if(status==="SENDING"||status==="CONFIRMED")throw Error("原发布请求正在提交或已确认，请读取同一版本的发布记录。");

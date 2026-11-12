@@ -40,6 +40,35 @@ export function exactDeliveryAdvance(workflow: Workflow | undefined, delivery: D
  return {expectedVersion,rehearsal:{packageId:bundle.id,packageDigest:bundle.digest,
    ...(delivery.verificationId ? {verificationId:delivery.verificationId} : {})}};
 }
+
+export type CloudPublicationPreflight = {reviewDigest:string;businessDate:string;businessScheduledFor:string;plannedBatchCount:2};
+export async function checkedCloudPublicationPreflight(value:unknown, workflow:Workflow):Promise<CloudPublicationPreflight> {
+ const {report,delivery,package:bundle,verification}=workflow;
+ if(!delivery||!bundle||!verification||!record(bundle.manifest)||!record(bundle.manifest.files)||!record(bundle.manifest.source)||
+  !record(value)||value.protocol!=="shuduo-cloud-publication-preflight/v1"||value.schedulerAvailable!==true||!hash(value.reviewDigest)||
+  !record(value.basis)||!record(value.package))throw bad();
+ const basis=value.basis, evidence=basis.evidence, source=bundle.manifest.source;
+ if(basis.scope!=="PRIVATE_CLOUD_TEST"||basis.plannedBatchCount!==2||!record(evidence)||evidence.status!=="REVIEW_EVIDENCE_READY"||
+  evidence.scope!==basis.scope||evidence.taskId!==report.taskId||evidence.deliveryId!==delivery.id||evidence.contextId!==report.contextId||
+  evidence.validationContractId!==report.validationContractId||!hash(evidence.requestSha256)||
+  canonical(evidence.requirementBinding)!==canonical(source.requirement)||!record(evidence.development)||
+  evidence.development.revisionId!==report.revisionId||evidence.development.revisionHash!==report.revisionHash||evidence.development.runId!==report.runId||
+  !record(evidence.delivery)||evidence.delivery.packageId!==bundle.id||evidence.delivery.packageDigest!==bundle.digest||
+  evidence.delivery.verificationId!==verification.id||!record(evidence.delivery.fileHashes)||
+  canonical(value.package)!==canonical({digest:bundle.digest,manifest:bundle.manifest,files:bundle.files}))throw bad();
+ const fileHashes=evidence.delivery.fileHashes, manifestFiles=bundle.manifest.files;
+ if(Object.keys(fileHashes).length!==deliveryFileGuide.length||!deliveryFileGuide.every(({name})=>{
+   const file=manifestFiles[name];return record(file)&&fileHashes[name]===file.sha256;
+ }))throw bad();
+ const schedule=JSON.parse(bundle.files['schedule.json']),calendar=JSON.parse(bundle.files['calendar.json']),fixtures=JSON.parse(bundle.files['fixtures.json']);
+ const businessDate=fixtures.context?.businessDate, days=calendar.tradingDays;
+ const index=Array.isArray(days)?days.indexOf(businessDate):-1;
+ const businessScheduledFor=index>=0&&days[index+1]?`${days[index+1]}T${schedule.at}+08:00`:undefined;
+ if(typeof businessDate!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)||!businessScheduledFor||
+  !Number.isFinite(Date.parse(businessScheduledFor))||basis.businessDate!==businessDate||basis.businessScheduledFor!==businessScheduledFor||
+  await digest(JSON.stringify(basis))!==value.reviewDigest)throw bad();
+ return {reviewDigest:value.reviewDigest,businessDate,businessScheduledFor,plannedBatchCount:2};
+}
 export function frozenRequirementProposal(bundle:Workflow['package'],taskId:string):SqlRequirementReport|undefined{
  if(!bundle||!record(bundle.manifest)||!record(bundle.manifest.source))return;
  const source=bundle.manifest.source;let proof:unknown;
