@@ -16,6 +16,7 @@ import { publicationPilotTimers, publicationPilotTimerNames } from './publicatio
 import { publicServiceConfig } from '../src/v2/public-service-access.mjs';
 import { developmentRecoveryScope, developmentRecoveryModes, runDevelopmentRecoveryOperation } from './development-recovery-window.mjs';
 import { inspectedControlEntryScriptBytes, readInspectedWebIndex, readInspectedWebScript, WEB_INDEX_LIMIT } from './control-web-entry.mjs';
+import { readReadonlyRuntimeProbe, verifyReadonlyRuntime } from './readonly-runtime-verification.mjs';
 import { cloudV3DevelopmentScope, nextCloudDevelopmentScope, firstCloudDevelopmentModes } from './first-cloud-v3-window.mjs';
 
 const check = (v, code) => { if (!v) throw Object.assign(new Error(code), { safeCode: code }); };
@@ -412,32 +413,46 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     check(verified.ok && verified.billingCycle === cycle && Number(verified.spendCny) + plan.priorReserveCny + plan.maxIncrementCny < 200, 'MONTHLY_BUDGET_NOT_VERIFIED');
     plan.billCny = Number(verified.spendCny); report.bill = verified; save();
   };
-  const verifyWeb = async (identity, script) => {
-    spend('activeHttp');
+  const webDeadline = () => cleanupReading ? plan.deadline : plan.deadline - 60000;
+  const verifyWeb = async (identity, script, field = 'web') => {
     const webClient = {baseUrl:formalOrigin,fetchImpl:(url,options)=>(io.fetchWeb ?? fetch)(url,options)};
-    const signal = AbortSignal.timeout(Math.max(1,Math.min(30000,plan.deadline-now())));
-    const index = await readInspectedWebIndex(webClient,identity,signal);
-    report.web = {index}; save();
-    check(index.status==='MATCHED',index.reason ?? 'READONLY_WEB_INDEX_UNCONFIRMED');
-    if (script) {
-      check(!signal.aborted,'ENTRY_SCRIPT_TIMEOUT');
-      spend('activeHttp');
-      const entry = await readInspectedWebScript(webClient,script,signal);
-      report.web.script = entry; save();
-      check(entry.status==='MATCHED',entry.reason ?? 'READONLY_WEB_SCRIPT_UNCONFIRMED');
-    }
+    const until = Math.min(now() + 45000, webDeadline());
+    const read = async (kind, reader, expected) => {
+      const delays = [1000, 3000, 6000];
+      for (let attempt = 0; now() < until; attempt++) {
+        spend('activeHttp');
+        const result = await reader(webClient, expected, AbortSignal.timeout(Math.max(1, Math.min(20000, until - now()))));
+        report[field] ??= {};
+        report[field][kind] = result;
+        report[field].attempts ??= [];
+        report[field].attempts.push({ kind, ...result });
+        save();
+        if (result.status === 'MATCHED') return;
+        const transient = [502, 504].includes(result.httpStatus) || /_(?:TIMEOUT|TRANSPORT_UNCONFIRMED)$/.test(result.reason ?? '');
+        if (!transient || delays[attempt] === undefined || now() + delays[attempt] >= until)
+          check(false, result.reason ?? 'READONLY_WEB_UNCONFIRMED');
+        await wait(delays[attempt]);
+      }
+      check(false, 'READONLY_WEB_DEADLINE_REACHED');
+    };
+    await read('index', readInspectedWebIndex, identity);
+    if (script) await read('script', readInspectedWebScript, script);
   };
   const rollbackIndex = web ? {webIndexBytes:web.rollbackIndexBytes,webIndexSha256:web.rollbackIndexSha256} : undefined;
-  const verifyRollbackWeb = async () => {
-    const stageWeb = report.web;
-    delete report.web;
-    try { await verifyWeb(rollbackIndex); }
-    finally {
-      if (report.web) report.rollbackWeb=report.web;
-      report.web=stageWeb;
-    }
+  const exactRuntime = async (field = 'runtime') => {
+    report[field] = { ready: false };
+    const attempts = field === 'runtime' ? 'runtimeAttempts' : 'rollbackRuntimeAttempts';
+    report[field] = await verifyReadonlyRuntime({
+      read: io.http, reserve: () => spend('activeHttp'), now, wait, deadline: webDeadline(),
+      record: observation => {
+        (report[attempts] ??= []).push(observation);
+        save();
+      },
+    });
+    save();
   };
   const runtime = async opened => {
+    if (web) return exactRuntime();
     for (let n = 0; n < 3; n++) {
       let access, status, readFailure, failureEndpoint;
       spend('activeHttp');
@@ -723,7 +738,10 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
           catch { report.rollbackResponseUnknown = true; save(); }
           await settle(restore); report.rollback = 'VERIFIED';
         }
-        if (staging && rollbackIndex && report.web) await verifyRollbackWeb();
+        if (staging && rollbackIndex && report.web) {
+          await verifyWeb(rollbackIndex, undefined, 'rollbackWeb');
+          await exactRuntime('rollbackRuntime');
+        }
       } catch (rollback) { report.rollbackFailure = rollback.safeCode ?? 'ROLLBACK_UNCONFIRMED'; }
       save();
     }
@@ -815,8 +833,9 @@ async function main(env = process.env) {
           const request = privateOssRequest({ bucket, region: config.region, credentials, key: controlPackageObject(pkg.sha256), method, body: bytes, query });
           return fetch(request.url, { ...request.options, signal: AbortSignal.timeout(method === 'PUT' ? 300000 : 120000) });
         },
-        http: async endpoint => {
+        http: async (endpoint, signal) => {
           check(['/api/v2/auth/session', '/api/v2/status'].includes(endpoint), 'PUBLICATION_HTTP_SCOPE_INVALID');
+          if (plan.readonlyWeb) return readReadonlyRuntimeProbe(endpoint, { baseUrl: formalOrigin, signal });
           const response = await fetch(formalOrigin + endpoint, { redirect: 'error', signal: AbortSignal.timeout(30000) });
           check(/json/i.test(response.headers.get('content-type') ?? ''), 'PUBLICATION_HTTP_RESPONSE_INVALID');
           return { status: response.status, body: await response.json() };
