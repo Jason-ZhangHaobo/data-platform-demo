@@ -1,4 +1,5 @@
 import { sha256, validateDeliveryPackage, validationMatchesFamily } from "./delivery.mjs";
+import { fundRehearsalMatchesPlan } from "./fund-delivery.mjs";
 import { publicationAttestationKeys } from "./publication-request.mjs";
 import { storedWorkerBatchResult } from "./worker-result-evidence.mjs";
 
@@ -10,6 +11,7 @@ export function exactPublicationReviewBasis(evidence,{businessDate,businessSched
 }
 
 export function passedCloudReleaseBatch(receipt,item,plan) {
+  if (plan.source.fundDevelopment) return Boolean(receipt && fundRehearsalMatchesPlan(receipt,plan,item.files["tests.sql"]));
   return receipt?.status==="SUCCEEDED" && receipt.engine==="Apache Spark" &&
     receipt.engineVersion===plan.deployment.runtime.version && receipt.mainSqlExecuted===true && receipt.testDouble!==true &&
     receipt.testSqlValidation?.passed===true && receipt.testSqlValidation.sqlHash===sha256(item.files["tests.sql"]) &&
@@ -99,6 +101,8 @@ export function exactPublicationReceipt(store, project, release, now=Date.now())
           run.businessScheduledFor !== release.businessScheduledFor || !Number.isFinite(triggered) ||
           !Number.isFinite(scheduled) || triggered < scheduled || !Number.isFinite(finished) || finished < triggered ||
           !original || !passedCloudReleaseBatch(run,item,plan) ||
+          (plan.source.fundDevelopment && (release.fundBusinessDate!==plan.source.fundLookthrough.businessDate ||
+            run.fundBusinessDate!==release.fundBusinessDate)) ||
           !["main.sql","tests.sql"].every(name=>run.fileHashes?.[name]===item.manifest.files[name].sha256) ||
           observed.length!==1 || event.status!=="SUCCEEDED" || event.packageDigest!==release.packageDigest ||
           !(Date.parse(event.observedAt)>=finished)) return;

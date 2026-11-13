@@ -50,7 +50,7 @@ export function manualConsumptionEntryMatches(entry:{releaseId?:string;sourceKin
   return typeof id==="string"&&id.length>0&&id!==developmentRunId&&matches.length===1&&matches[0].status==="SUCCEEDED"&&matches[0].schedulerTriggered===true;
 }
 type Evidence = {
-  taskId: string; contextId?:string; fund?: boolean; revisionId?: string; runId?: string; dirty: boolean; evidenceReadable?: boolean; publicationReadable?: boolean;
+  taskId: string; contextId?:string; fund?: boolean; revisionId?: string; runId?: string; dirty: boolean; evidenceReadable?: boolean; publicationReadable?: boolean; monitoringVerified?: boolean;
   report?: { taskId?: string; contextId?:string; validationContractId?:string; revisionId?: string; runId?: string; status: string; checks: { id: string; passed: boolean }[] };
   delivery?: { status: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string };
   bundle?: { id: string; digest: string; files: Record<string, string> };
@@ -80,7 +80,7 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
   const stopped = publicationStopped(e.release?.status);
   const batches = e.batches ?? [];
   const executed = e.publicationReadable !== false && publicationCurrent && !stopped && batches.some(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true);
-  const healthy = executed && e.release?.health === "HEALTHY" && Number.isSafeInteger(e.release.runCount) && e.release.runCount! > 0 && batches.length === e.release.runCount && new Set(batches.map(b => b.id)).size === batches.length && batches.every(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true && e.events?.some(event => event.type === "BATCH_SUCCEEDED" && event.releaseId === e.release?.id && event.releaseRunId === b.id && event.packageDigest === e.bundle?.digest)) && !(e.alerts ?? []).some(a => a.status === "OPEN");
+  const healthy = e.monitoringVerified !== false && executed && e.release?.health === "HEALTHY" && Number.isSafeInteger(e.release.runCount) && e.release.runCount! > 0 && batches.length === e.release.runCount && new Set(batches.map(b => b.id)).size === batches.length && batches.every(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true && e.events?.some(event => event.type === "BATCH_SUCCEEDED" && event.releaseId === e.release?.id && event.releaseRunId === b.id && event.packageDigest === e.bundle?.digest)) && !(e.alerts ?? []).some(a => a.status === "OPEN");
   const state = (done: boolean, failed = false): JourneyState => e.dirty ? "STALE" : done ? "DONE" : failed ? "ATTENTION" : "PENDING";
   const distribution=distributionMetadataForContext(e.contextId??e.report?.contextId);
   const distributionReceipt=Boolean(distribution&&e.consumption?.protocol==='shuduo-local-distribution-consumption/v1'&&e.consumption.outputContractId===distribution.id&&e.consumption.agentIndependentE2E===false);

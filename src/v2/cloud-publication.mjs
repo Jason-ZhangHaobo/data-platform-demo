@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { validateDeliveryPackage, resolveDeliverySchedule } from "./delivery.mjs";
 import { deliveryArtifactValue } from "./artifact-store.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
-import { manualCloudDeliverySource, durableDeliveryMode } from "./agent-development-workflow.mjs";
+import { manualCloudDeliverySource, durableDeliveryMode, storedFundFileRehearsal } from "./agent-development-workflow.mjs";
 import {sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
 import {standaloneManualPublicationSource} from './standalone-manual-publication-source.mjs';
 import {assertSqlRequirementPackageSource} from './sql-requirements.mjs';
@@ -11,6 +11,7 @@ import {assertSqlClarificationTask} from './sql-clarification.mjs';
 import {storedAgentReviewEvidence} from './agent-review-evidence.mjs';
 import {exactPublicationReceipt,exactPublicationReviewBasis,passedCloudReleaseBatch,projectCloudReleaseBatchStage} from "./cloud-release-evidence.mjs";
 import {publicationAttestationKeys} from './publication-request.mjs';
+import {fundDevelopmentBinding} from "./fund-delivery.mjs";
 import {verifiedWorkerResultDigest} from "./worker-result-evidence.mjs";
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
@@ -107,6 +108,19 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
         throw fail(409, "人工版本、来源工程师、交付包和文件演练不一致");
       return { agent, delivery, item, verification, plan, run, revision, sourceRunId: run.id };
     }
+    if (plan.source.fundDevelopment) {
+      if (agent.mode !== "LIVE_MODEL" || item.sourceKind === "MANUAL" || actorId !== agent.submittedBy ||
+          delivery.submittedBy !== actorId || delivery.sourceRunId !== plan.source.runId ||
+          delivery.sourceRevisionId !== plan.source.revisionId || delivery.sourceSqlHash !== plan.source.sqlHash ||
+          item.sourceRunId !== plan.source.runId || item.agentDeliveryTaskId !== delivery.id ||
+          sourceRunId !== plan.source.runId || !storedFundFileRehearsal(store,project,delivery,verification,item,plan))
+        throw fail(409,"基金发布须关联原工程师、确切开发和签名演练");
+      const { attribution,evidence } = fundDevelopmentBinding({agent,
+        run:get("run",plan.source.runId),revision:get("revision",plan.source.revisionId)});
+      if (!isDeepStrictEqual(attribution,plan.source.attribution) || !isDeepStrictEqual(evidence,plan.source.fundDevelopment))
+        throw fail(409,"基金原开发来源已变化");
+      return {agent,delivery,item,verification,plan,sourceRunId:plan.source.runId};
+    }
     const last = historical
       ? agent.attempts?.find(attempt => attempt.runId === item.sourceRunId && attempt.revisionId === plan.source.revisionId)
       : agent.attempts?.at(-1);
@@ -183,7 +197,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const publicationScope = { ...identity(subject.id), packageDigest, verificationId };
     assertPublicationScope(publicationScope);
     const required = publicationAttestationKeys;
-    if (!attestations || Object.keys(attestations).length !== required.length || !required.every(key => attestations[key] === true) || !actorId ||
+    if (!attestations || typeof attestations !== "object" || Array.isArray(attestations) || Object.keys(attestations).length !== required.length || !required.every(key => attestations[key] === true) || !actorId ||
         typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 100)
       throw fail(422, "请逐项审阅代码、核验、交付文件和云端测试范围");
     const requested = validatePublicationSelector({ sourceKind, ...(sourceRunId === undefined ? {} : { sourceRunId }), packageDigest, verificationId }, actorId);
@@ -193,7 +207,10 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     // changes before approving; an earlier in-memory success is not authority.
     const fresh = reviewedSource(input);
     if (hash(JSON.stringify(initial)) !== hash(JSON.stringify(fresh))) throw fail(409, "发布来源在审阅期间变化，请重新核对确切版本");
-    const { item, plan } = fresh, selector = { ...requested, sourceRunId: fresh.sourceRunId };
+    const { item, plan } = fresh;
+    if (plan.source.fundDevelopment && (!singleRelease || !reviewDigest))
+      throw fail(403,"基金发布只接受独立窗口内的确切审阅摘要");
+    const selector = { ...requested, sourceRunId: fresh.sourceRunId };
     if (reviewDigest !== undefined && (standaloneManual || sourceKind !== "AGENT" || sourceRunId !== fresh.sourceRunId ||
         reviewDigest !== hash(JSON.stringify(reviewBasis(fresh,actorId)))))
       throw fail(409,"人工审阅摘要与当前确切交付不一致");
@@ -225,7 +242,8 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     // Artifact verification yields; an approval window may close before records
     // are created. Re-check without changing the reviewed package or its scope.
     assertPublicationScope(publicationScope);
-    const attribution = { sourceKind, sourceRunId: fresh.sourceRunId, ...(reviewDigest ? {reviewDigest} : {}), ...(sourceKind === "MANUAL" ? { sourceAttribution: standaloneManual?'ENGINEER_AUTHORED':"ENGINEER_ASSISTED", agentIndependentE2E: false } : {}),
+    const attribution = { sourceKind, sourceRunId: fresh.sourceRunId,
+      ...(plan.source.fundDevelopment ? { modelMode:plan.source.attribution.modelMode, fundBusinessDate:plan.source.fundLookthrough.businessDate } : {}), ...(reviewDigest ? {reviewDigest} : {}), ...(sourceKind === "MANUAL" ? { sourceAttribution: standaloneManual?'ENGINEER_AUTHORED':"ENGINEER_ASSISTED", agentIndependentE2E: false } : {}),
       ...(standaloneManual?{source:{kind:'MANUAL_RUN',runId:fresh.run.id,revisionId:fresh.revision.id,revisionHash:fresh.revision.hash,manualDeliveryTaskId:subject.id},manualDeliveryTaskId:subject.id}:{}) };
     const created = store.deduplicate(key, signature, () => {
       const review = store.create("delivery_review", project, { ...attribution, packageId: item.id, packageDigest, verificationId, status: "REVIEWED", scope: "PRIVATE_CLOUD_TEST", submittedBy: actorId, attestations: confirmed, reviewedAt: stamp() });
@@ -242,6 +260,14 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const item = get("delivery_package", run.packageId), plan = await ensure(item), passed = passedCloudReleaseBatch(receipt, item, plan);
     const latest = get("release_run", run.id), latestRelease=get("release",run.releaseId);
     if (terminal.has(latest.status) || latestRelease.status === "CANCELLED") return;
+    if (plan.source.fundDevelopment) {
+      const prepared = latest.remoteSubmission?.prepared;
+      if (!verifiedWorkerResultDigest(receipt) || typeof prepared?.serialized !== "string" ||
+          receipt.queueJobDigest !== hash(prepared.serialized))
+        throw fail(409,"基金发布结果未绑定原签名批次");
+      if (receipt.status === "SUCCEEDED" && !passed)
+        throw fail(409,"基金发布结果与登记交易日或独立断言不一致");
+    }
     if (release.reviewDigest) {
       if (latest.remoteSubmission?.prepared?.job?.jobId !== latest.id || latest.reviewDigest !== release.reviewDigest ||
           latestRelease.reviewDigest!==release.reviewDigest || latestRelease.packageDigest!==item.digest ||
@@ -263,7 +289,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     return true;
   }
   function recordBatchResult(run, release, item, receipt, passed, workerResultDigest) {
-    const values = Object.fromEntries(["engine", "engineVersion", "mainSqlExecuted", "testSqlValidation", "validation", "durationMs", "rows", "columns", "log"].filter(k => receipt[k] !== undefined).map(k => [k, receipt[k]]));
+    const values = Object.fromEntries(["engine", "engineVersion", "mainSqlExecuted", "testSqlValidation", "validation", "durationMs", "rows", "columns", "log", "inputEvidence"].filter(k => receipt[k] !== undefined).map(k => [k, receipt[k]]));
     if (release.reviewDigest && !(Number.isFinite(values.durationMs) && values.durationMs>0)) delete values.durationMs;
     const saved = patch("release_run", run, { ...values, ...(workerResultDigest?{workerResultDigest}:{}),
       status: passed ? "SUCCEEDED" : "FAILED", stage: "COMPLETED", finishedAt: stamp(), ...(passed ? {} : { error: "云端发布批次执行或独立校验未通过" }) });
@@ -456,7 +482,9 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const observedAt = now();
     const runs = store.list("release_run", project).filter(run => run.releaseId === release.id)
       .sort((a,b) => a.sequence-b.sequence).map(run => clean(projectCloudReleaseBatchStage(run, observedAt)));
-    return { release: clean(release), runs, alerts: store.list("monitor_alert", project).filter(a => a.releaseId === release.id),
+    const monitoringVerified = release.fundBusinessDate && release.status === "COMPLETED_CLOUD_TEST"
+      ? exactReceipt(release).monitoring.status === "VERIFIED" : undefined;
+    return { release: clean(release), runs, ...(monitoringVerified!==undefined?{monitoringVerified}:{}), alerts: store.list("monitor_alert", project).filter(a => a.releaseId === release.id),
       events: store.list("monitor_event", project).filter(e => e.releaseId === release.id) };
   }
   function savedDelivery(agentId, selector) {
@@ -485,7 +513,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       throw savedUnconfirmed();
     return { bundle, verification };
   }
-  function checkedSavedView(agentId, release, selector) {
+  function checkedSavedView(agentId, release, selector, historical = true) {
     const sourceRunId = runOf(release);
     try {
       const { bundle, verification } = savedDelivery(agentId, { ...selector, sourceRunId, packageDigest: release.packageDigest,
@@ -493,7 +521,12 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       const source = reviewedSource({ agentId, sourceKind: kindOf(release), sourceRunId, packageDigest: release.packageDigest,
         verificationId: release.verificationId, actorId: selector.actorId }, { historical: true });
       const review = get("delivery_review", release.reviewId), approval = get("release_approval", release.approvalId);
+      const fund = source.plan.source.fundDevelopment;
+      if (fund && (release.fundBusinessDate!==source.plan.source.fundLookthrough.businessDate ||
+          release.reviewDigest!==hash(JSON.stringify(reviewBasis(source,release.submittedBy)))))
+        throw savedUnconfirmed();
       const view = publicationView(release);
+      const validatedRun = run => fund ? get("release_run",run.id) : run;
       const successfulEvent = run => {
         const events = view.events.filter(event => event.releaseRunId === run.id && event.type === "BATCH_SUCCEEDED");
         return events.length === 1 && events[0].status === "SUCCEEDED" && events[0].packageDigest === bundle.digest &&
@@ -510,13 +543,13 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
           view.runs.length !== 2 || view.runs.some((run, i) => run.sequence !== i + 1 || run.mode !== cloudPublicationMode ||
             run.packageId !== bundle.id || run.packageDigest !== bundle.digest || run.sourceAgentTaskId !== agentId ||
             (run.sourceRunId !== undefined && run.sourceRunId !== sourceRunId) ||
-            (run.status === "SUCCEEDED" && (!passedCloudReleaseBatch(run, bundle, source.plan) || !successfulEvent(run)))) ||
+            (run.status === "SUCCEEDED" && (!passedCloudReleaseBatch(validatedRun(run), bundle, source.plan) || !successfulEvent(run)))) ||
           [...view.events, ...view.alerts].some(item => (item.packageDigest !== undefined && item.packageDigest !== bundle.digest) ||
             [item.releaseRunId, item.recoveryRunId].some(id => id !== undefined && !view.runs.some(run => run.id === id)) ||
             (item.recoveryReleaseId !== undefined && item.recoveryReleaseId !== release.id)) ||
           (release.reviewDigest !== undefined && exactReceipt(release).monitoring.status === "UNCONFIRMED"))
         throw savedUnconfirmed();
-      return { ...view, readMode: "SAVED_HISTORY" };
+      return historical ? {...view,readMode:"SAVED_HISTORY"} : view;
     } catch {
       throw savedUnconfirmed();
     }
@@ -551,6 +584,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       for (const run of store.list("release_run", project).filter(r => r.releaseId === release.id && r.status === "RUNNING")) await reconcile(run);
     const latest = select(agentId, { ...selector, releaseId: release.id });
     if (!latest) throw fail(409, "发布来源在读取期间变化，请重新读取原记录");
+    if (latest.fundBusinessDate) return checkedSavedView(agentId,latest,selector,false);
     return publicationView(latest);
   }
   async function cancel(agentId, input = {}) {
