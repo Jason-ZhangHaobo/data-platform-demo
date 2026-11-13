@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { bindExternalConsumption } from "../../src/v2/external-consumption-binding.mjs";
-import { consumerCanonical, consumerDigest, consumerV2PlanEvidence } from "../../src/v2/consumer-source.mjs";
+import { consumerCanonical, consumerDigest, consumerV2PlanEvidence, consumerDenialCodes, consumerDenialEvidence } from "../../src/v2/consumer-source.mjs";
 
 // Synthetic in-memory report documents only. MATCHED means consistent documents,
 // never actual network/model/Spark execution or verified external environment.
@@ -92,6 +92,24 @@ test("V2 exact XAPI call, pinned DAPIs and independent row digests bind without 
 test("two directly granted DAPIs may use an explicitly bound fourth ungranted service", () => {
   const input = fixture({ twoGranted: true }); assert.equal(input.report.requestCount, 20);
   assert.equal(bindExternalConsumption(input).status, "MATCHED");
+});
+
+test("new denial evidence must match each expected application code without changing historical report compatibility",()=>{
+  const value=fixture();
+  assert.equal(bindExternalConsumption(value).status,"MATCHED");
+  value.report.denialEvidence=consumerDenialEvidence;
+  const denials=value.report.requests.filter(row=>row.statusCode!==200);
+  for(const row of denials)row.applicationCode=consumerDenialCodes[row.check];
+  assert.equal(bindExternalConsumption(value).status,"MATCHED");
+  const call=value.taskEvidence.services[0].call;
+  call.applicationStatus="EXPIRED";
+  assert.equal(bindExternalConsumption(value).reason,"CALL_PROOF_INVALID");
+  call.applicationStatus="REVOKED";
+  const limited=denials.find(row=>row.check==="RATE_LIMIT_REJECTED");
+  limited.applicationCode="PRIVATE_SERVICE_QUEUE_FULL";
+  assert.equal(bindExternalConsumption(value).reason,"DENIAL_EVIDENCE_INVALID");
+  delete limited.applicationCode;
+  assert.equal(bindExternalConsumption(value).reason,"REQUEST_EVIDENCE_INVALID");
 });
 
 test("plan/source/service snapshots and unknown report fields fail closed even if an attacker rehashes a plan", () => {

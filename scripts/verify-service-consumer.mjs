@@ -30,7 +30,8 @@ import { pathToFileURL } from "node:url";
 import http from "node:http";
 import https from "node:https";
 import { isDeepStrictEqual } from "node:util";
-import { ConsumerSourceError, consumerCanonical as canonical, consumerDigest as digest, consumerV2PlanEvidence } from "../src/v2/consumer-source.mjs";
+import { ConsumerSourceError, consumerCanonical as canonical, consumerDigest as digest, consumerV2PlanEvidence,
+  consumerDenialEvidence, consumerDenialCodes } from "../src/v2/consumer-source.mjs";
 import { bindExternalConsumption } from "../src/v2/external-consumption-binding.mjs";
 
 const PROTOCOL = "SERVICE_CONSUMER_V1";
@@ -150,7 +151,7 @@ function requestOnce(url, token, timeoutMs) {
       response.on("end", () => {
         clearTimeout(timer);
         if (response.statusCode >= 300 && response.statusCode < 400) return reject(new AcceptanceError("REDIRECT_REFUSED"));
-        resolveResponse({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") });
+        resolveResponse({ status: response.statusCode, contentType: response.headers["content-type"], body: Buffer.concat(chunks).toString("utf8") });
       });
     });
     const timer = setTimeout(() => request.destroy(new AcceptanceError("REQUEST_TIMEOUT")), timeoutMs);
@@ -198,6 +199,16 @@ function verifySuccess(plan, service, query, response) {
       versionBindingsVerified: true, ...(childBindingsVerified ? { childBindingsDigest: digest(canonical(body.service.steps)) } : {}) } : {}) };
 }
 
+function verifyDenial(check, response) {
+  const code = consumerDenialCodes[check];
+  requireThat(typeof code === "string" && /^application\/json(?:\s*;|$)/i.test(response.contentType ?? ""),
+    "DENIAL_RESPONSE_UNCONFIRMED");
+  let body;
+  try { body = JSON.parse(response.body); } catch { fail("DENIAL_RESPONSE_UNCONFIRMED"); }
+  requireThat(record(body) && body.code === code, "DENIAL_CODE_MISMATCH");
+  return code;
+}
+
 function validateReport(report, planHash, credentialDigest, plan) {
   requireThat(record(report) && report.protocol === plan.protocol && report.planDigest === planHash &&
     report.credentialDigest === credentialDigest && report.maxRequests === plan.maxRequests && report.deadline === plan.deadline &&
@@ -207,13 +218,14 @@ function validateReport(report, planHash, credentialDigest, plan) {
     ["PENDING", "PASSED", "FAILED"].includes(entry.result)), "REPORT_COUNTER_INVALID");
   if (plan.protocol === SOURCE_PROTOCOL) {
     const metadata = consumerV2PlanEvidence(plan);
-    const keys = ["protocol", "planDigest", "credentialDigest", "maxRequests", "startedAt", "deadline", "evidence", "requestCount", "phases", "requests", "finishedAt", ...Object.keys(metadata)];
+    const keys = ["protocol", "planDigest", "credentialDigest", "maxRequests", "startedAt", "deadline", "evidence", "denialEvidence", "requestCount", "phases", "requests", "finishedAt", ...Object.keys(metadata)];
     requireThat(Object.keys(report).every(key => keys.includes(key)) && Object.entries(metadata).every(([key, value]) => isDeepStrictEqual(report[key], value)) &&
       report.startedAt === plan.startedAt && report.evidence === (plan.testOnly ? "LOCAL_HTTP_FIXTURE" : "HTTP_CONSUMER_ONLY") &&
+      (report.denialEvidence === undefined || report.denialEvidence === consumerDenialEvidence) &&
       Object.keys(report.phases).length === PHASES.length && (!Object.hasOwn(report, "finishedAt") || safeTime(report.finishedAt)) &&
       (!PHASES.every(phase => report.phases[phase] === "PASSED") || safeTime(report.finishedAt)), "REPORT_BINDING_INVALID");
     const requestKeys = ["sequence", "phase", "check", "startedAt", "result", "serviceId", "type", "versionId", "configHash", "expectedStatus", "queryDigest",
-      "statusCode", "finishedAt", "failure", "responseDigest", "callIdDigest", "childBindingsVerified", "rowsDigest", "rowCount", "versionBindingsVerified", "childBindingsDigest"];
+      "statusCode", "finishedAt", "failure", "responseDigest", "callIdDigest", "childBindingsVerified", "rowsDigest", "rowCount", "versionBindingsVerified", "childBindingsDigest", "applicationCode"];
     requireThat(report.requests.every(entry => {
       const target = [...metadata.services, metadata.ungrantedService].find(service => service.id === entry.serviceId && service.type === entry.type &&
         service.versionId === entry.versionId && service.configHash === entry.configHash);
@@ -223,6 +235,9 @@ function validateReport(report, planHash, credentialDigest, plan) {
           Object.hasOwn(entry, "finishedAt") && (!safeTime(entry.finishedAt) || Date.parse(entry.finishedAt) < Date.parse(entry.startedAt)) ||
           Object.hasOwn(entry, "failure") && (typeof entry.failure !== "string" || !/^[A-Z0-9_]{1,80}$/.test(entry.failure)) ||
           Object.hasOwn(entry, "statusCode") && !integer(entry.statusCode,100,599)) return false;
+      const strictDenial = report.denialEvidence === consumerDenialEvidence && entry.expectedStatus !== 200;
+      if (Object.hasOwn(entry, "applicationCode") !== (strictDenial && entry.result === "PASSED") ||
+          Object.hasOwn(entry, "applicationCode") && entry.applicationCode !== consumerDenialCodes[entry.check]) return false;
       if (entry.result === "PASSED") {
         if (!safeTime(entry.finishedAt) || entry.statusCode !== entry.expectedStatus) return false;
         if (entry.expectedStatus === 200) return entry.versionBindingsVerified === true && integer(entry.rowCount,0,100) &&
@@ -256,7 +271,7 @@ export async function runConsumerAcceptance({ planFile, tokenFile, phase = "cons
     } else {
       requireThat(phase === "consume", "PRIOR_CONSUMER_REPORT_REQUIRED");
       report = { ...(bounds.metadata ?? {}), protocol: plan.protocol, planDigest: planHash, credentialDigest, maxRequests: plan.maxRequests,
-        ...(bounds.metadata ? { startedAt: plan.startedAt } : {}),
+        ...(bounds.metadata ? { startedAt: plan.startedAt, denialEvidence: consumerDenialEvidence } : {}),
         deadline: plan.deadline, evidence: plan.testOnly ? "LOCAL_HTTP_FIXTURE" : "HTTP_CONSUMER_ONLY",
         requestCount: 0, phases: { consume: "NOT_STARTED", revoked: "NOT_STARTED" }, requests: [] };
       persist(plan.reportFile, report, true);
@@ -288,7 +303,8 @@ export async function runConsumerAcceptance({ planFile, tokenFile, phase = "cons
         if (expectedStatus === 200) {
           Object.assign(entry, verifySuccess(plan, service, query, response));
           if (!firstSuccess.has(service.id)) firstSuccess.set(service.id, Date.parse(entry.startedAt));
-        }
+        } else if (report.denialEvidence === consumerDenialEvidence)
+          entry.applicationCode = verifyDenial(check, response);
         entry.result = "PASSED";
       } catch (error) { entry.result = "FAILED"; entry.failure = safeCode(error); throw error; }
       finally { if (bounds.metadata) entry.finishedAt = new Date().toISOString(); persist(plan.reportFile, report); }
