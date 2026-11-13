@@ -236,7 +236,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     });
     await persist(); return reviewDigest ? exactReceipt(get("release",created.id)) : detail(subject.id, { ...selector, releaseId: created.id });
   }
-  async function finish(run, receipt) {
+  async function finish(run, receipt, resultEvent) {
     const current = get("release_run", run.id), release = get("release", run.releaseId);
     if (terminal.has(current.status) || release.status === "CANCELLED") return;
     const item = get("delivery_package", run.packageId), plan = await ensure(item), passed = passedCloudReleaseBatch(receipt, item, plan);
@@ -247,11 +247,20 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
           latestRelease.reviewDigest!==release.reviewDigest || latestRelease.packageDigest!==item.digest ||
           latest.packageId !== item.id || latest.packageDigest !== item.digest)
         throw fail(409,"调度批次与原 Worker 回执不一致");
-      const workerResultDigest=verifiedWorkerResultDigest(receipt);
+      if (resultEvent) {
+        if (latest.version!==run.version) throw fail(409,"原发布批次在核验期间变化");
+        exactReceipt(latestRelease);
+      }
+      const workerResultDigest=resultEvent?.digest ?? verifiedWorkerResultDigest(receipt);
       store.deduplicate(`${project}:cloud-release-result:${run.id}`,workerResultDigest??hash(JSON.stringify(receipt)),
-        ()=>recordBatchResult(latest,release,item,receipt,passed,workerResultDigest));
+        ()=>{
+          const saved=recordBatchResult(latest,latestRelease,item,receipt,passed,workerResultDigest);
+          if (resultEvent) recordTickSummary(release.id,resultEvent.tick);
+          return saved;
+        });
     } else recordBatchResult(latest,release,item,receipt,passed);
     await persist();
+    return true;
   }
   function recordBatchResult(run, release, item, receipt, passed, workerResultDigest) {
     const values = Object.fromEntries(["engine", "engineVersion", "mainSqlExecuted", "testSqlValidation", "validation", "durationMs", "rows", "columns", "log"].filter(k => receipt[k] !== undefined).map(k => [k, receipt[k]]));
@@ -276,11 +285,48 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     catch (error) { if (passive || error.code !== "REMOTE_SPARK_TIMEOUT") throw error; receipt = { status: "FAILED" }; }
     if (receipt) await finish(run, receipt);
   }
-  async function finishTick(releaseId,event) {
+  async function settleResultEvent({id,key}, assertResultTarget) {
+    const run=store.get("release_run",id,project), prepared=run?.remoteSubmission?.prepared;
+    if (!runner || standaloneManual || run?.mode!==cloudPublicationMode || run.sourceKind!=="AGENT" ||
+        !run.reviewDigest || run.clockMode!=="FC_TIMER" || run.schedulerTriggered!==true ||
+        run.published!==true || run.isolation!=="FUNCTION_PROCESS" ||
+        prepared?.resultKey!==key || prepared.job?.jobId!==id || prepared.job.projectId!==project ||
+        store.deduplicatedId(`${project}:cloud-release-claim:${id}`,run.reviewDigest)!==id) return;
+    const release=get("release",run.releaseId);
+    if (release.mode!==cloudPublicationMode || release.sourceKind!=="AGENT" ||
+        release.submittedBy!==run.submittedBy) throw fail(409,"发布批次与原发布来源不一致");
+    assertResultTarget(release);
+    exactReceipt(release);
+    if (terminal.has(run.status) || release.status==="CANCELLED") return {state:"RELEASE_BATCH_ALREADY_SETTLED"};
+    if (run.status!=="RUNNING" || !["SUBMITTING","WAITING_FOR_WORKER_RESULT"].includes(run.stage)) return;
+    const claims=store.list("cloud_release_tick",project).filter(event=>event.batchId===id);
+    const tick=claims.length===1 ? claims[0] : undefined;
+    if (!tick || tick.releaseId!==release.id || tick.triggerName!==run.triggerName ||
+        store.deduplicatedId(`${project}:cloud-release-tick:${tick.requestId}`,
+          hash(JSON.stringify({releaseId:tick.releaseId,triggerName:tick.triggerName,triggerTime:tick.triggerTime})))!==tick.id)
+      throw fail(409,"原调度事件与发布批次不一致");
+    const owner=store.get("auth_user",release.submittedBy,project);
+    if (owner?.status!=="ACTIVE" || !owner.memberships?.some(member=>member.projectId===project && member.role==="ADMIN"))
+      return {state:"RELEASE_BATCH_OWNER_INACTIVE"};
+    // The timer already reserved this batch. Even if the queue ACK was lost,
+    // a signed result can finish it after the timer or write window expires.
+    const receipt=await runner.read(prepared,{cancelOnTimeout:false});
+    if (!receipt) throw fail(503,"原发布批次结果对象暂不可读取");
+    const digest=verifiedWorkerResultDigest(receipt);
+    if (!digest || typeof prepared.serialized!=="string" || receipt.queueJobDigest!==hash(prepared.serialized))
+      return {state:"RELEASE_BATCH_RESULT_UNCONFIRMED"};
+    const settled=await finish(run,receipt,{digest,tick});
+    return {state:settled ? "RELEASE_BATCH_SETTLED" : "RELEASE_BATCH_ALREADY_SETTLED"};
+  }
+  function recordTickSummary(releaseId,event) {
     const all = store.list("release_run",project).filter(run=>run.releaseId===releaseId);
     const summary = {releaseId,succeeded:all.filter(run=>run.status==="SUCCEEDED").length,
       failed:all.filter(run=>run.status==="FAILED").length,pending:all.filter(run=>!terminal.has(run.status)).length};
     store.update("cloud_release_tick",event.id,project,{status:"COMPLETED",summary});
+    return summary;
+  }
+  async function finishTick(releaseId,event) {
+    const summary=recordTickSummary(releaseId,event);
     await persist();
     return summary;
   }
@@ -518,7 +564,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const jobs=[]; for(const run of store.list("release_run",project).filter(r=>r.releaseId===release.id&&!terminal.has(r.status))) { patch("release_run",run,{status:"CANCELLED",finishedAt:stamp()}); if(run.remoteSubmission)jobs.push(run.remoteSubmission.prepared); }
     await persist(); for(const job of jobs)await runner.cancel(job);return detail(agentId, { ...selector, releaseId: release.id });
   }
-  return { publish, detail, savedDetail, tick, cancel, sourceForNavigation, publicationPreflight, publicationRequestReceipt, savedRequestReceipt };
+  return { publish, detail, savedDetail, tick, settleResultEvent, cancel, sourceForNavigation, publicationPreflight, publicationRequestReceipt, savedRequestReceipt };
 }
 
 export function createStandaloneManualPublication(options){
