@@ -513,7 +513,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       throw savedUnconfirmed();
     return { bundle, verification };
   }
-  function checkedSavedView(agentId, release, selector) {
+  function checkedSavedView(agentId, release, selector, historical = true) {
     const sourceRunId = runOf(release);
     try {
       const { bundle, verification } = savedDelivery(agentId, { ...selector, sourceRunId, packageDigest: release.packageDigest,
@@ -521,8 +521,12 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       const source = reviewedSource({ agentId, sourceKind: kindOf(release), sourceRunId, packageDigest: release.packageDigest,
         verificationId: release.verificationId, actorId: selector.actorId }, { historical: true });
       const review = get("delivery_review", release.reviewId), approval = get("release_approval", release.approvalId);
+      const fund = source.plan.source.fundDevelopment;
+      if (fund && (release.fundBusinessDate!==source.plan.source.fundLookthrough.businessDate ||
+          release.reviewDigest!==hash(JSON.stringify(reviewBasis(source,release.submittedBy)))))
+        throw savedUnconfirmed();
       const view = publicationView(release);
-      const validatedRun = run => source.plan.source.fundDevelopment ? get("release_run",run.id) : run;
+      const validatedRun = run => fund ? get("release_run",run.id) : run;
       const successfulEvent = run => {
         const events = view.events.filter(event => event.releaseRunId === run.id && event.type === "BATCH_SUCCEEDED");
         return events.length === 1 && events[0].status === "SUCCEEDED" && events[0].packageDigest === bundle.digest &&
@@ -545,7 +549,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
             (item.recoveryReleaseId !== undefined && item.recoveryReleaseId !== release.id)) ||
           (release.reviewDigest !== undefined && exactReceipt(release).monitoring.status === "UNCONFIRMED"))
         throw savedUnconfirmed();
-      return { ...view, readMode: "SAVED_HISTORY" };
+      return historical ? {...view,readMode:"SAVED_HISTORY"} : view;
     } catch {
       throw savedUnconfirmed();
     }
@@ -580,7 +584,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       for (const run of store.list("release_run", project).filter(r => r.releaseId === release.id && r.status === "RUNNING")) await reconcile(run);
     const latest = select(agentId, { ...selector, releaseId: release.id });
     if (!latest) throw fail(409, "发布来源在读取期间变化，请重新读取原记录");
-    if (latest.fundBusinessDate) return checkedSavedView(agentId,latest,selector);
+    if (latest.fundBusinessDate) return checkedSavedView(agentId,latest,selector,false);
     return publicationView(latest);
   }
   async function cancel(agentId, input = {}) {
