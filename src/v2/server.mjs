@@ -2308,13 +2308,16 @@ export function createV2Server(options = {}) {
         return json(res, 200, await cloudReadiness());
       }
       if (privateSmokeEnabled && (path.startsWith("/api/v2/data-services/") || path.startsWith("/api/v2/open/"))) {
-        if (!privateServices && publicReadOnly && method === "GET" && path === "/api/v2/data-services/task-evidence") {
-          const proof = await privateServiceRoutes.readTaskEvidence(req, url.searchParams, (taskId, release, owner) => {
+        if (!privateServices && publicReadOnly && method === "GET" &&
+            ["/api/v2/data-services/task-evidence","/api/v2/data-services/sources"].includes(path)) {
+          const verifySavedRelease = (taskId, release, owner) => {
             const sourceKind = release.sourceKind ?? "AGENT";
             cloudPublicationHistory.savedDetail(taskId, { sourceKind, packageDigest: release.packageDigest,
               releaseId: release.id, actorId: owner,
               ...(sourceKind === "MANUAL" ? { sourceRunId: release.sourceRunId, verificationId: release.verificationId } : {}) });
-          });
+          };
+          const read = path.endsWith("/sources") ? privateServiceRoutes.readReleaseSources : privateServiceRoutes.readTaskEvidence;
+          const proof = await read(req, url.searchParams, verifySavedRelease);
           return json(res, 200, proof);
         }
         if(!privateServices)throw fail(503,"私有数据服务尚未启用");
