@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/delivery-preparation-request.mjs";
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
 import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
 import {distributionReportMetricIds} from '../src/v2/distribution-report-contract.mjs';
@@ -123,10 +124,18 @@ const tools = [
   { name: "agent_publication_detail", description: "按来源、包摘要及演练读取云端测试发布，不创建计算。MANUAL必须提供sourceRunId、packageDigest、verificationId；已知releaseId时一并绑定，不选择其他历史包。执行者来自会话。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(false)]} },
   { name: "agent_publication_create", description: "人工逐项审阅当前不可变包及成功演练后创建两个云端测试批次，不代批或自动重试。MANUAL须提供sourceKind与sourceRunId，不计Agent自主完成。可提供原requestId复用幂等编号；未知结果先查原发布，执行者不能指定。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceKind:publicationProperties.sourceKind,sourceRunId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema,requestId:publicationIdSchema,attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"],allOf:[manualPublicationCondition(false)]} },
   { name: "agent_publication_stop", description:"停止指定来源、交付包及演练的后续云端批次，保留记录。不选择其他历史发布。MANUAL必须提供sourceRunId、packageDigest、verificationId、releaseId；提供任何selector时也须releaseId，执行者来自会话。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(true)]} },
-  { name: "agent_delivery_advance", description: "按当前版本推进原持久交付任务一个步骤；可提交真实Spark文件演练，不审批或发布。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 } }, required: ["deliveryTaskId", "expectedVersion"] } },
+  { name: "agent_delivery_advance", description: "按当前版本推进原持久交付任务一个步骤；可提交真实Spark文件演练，不审批或发布。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 }, rehearsal:{type:"object",additionalProperties:false,properties:{
+    packageId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema},
+    required:["packageId","packageDigest"]},confirm:{const:true} }, required: ["deliveryTaskId", "expectedVersion"],
+    dependentRequired:{rehearsal:["confirm"],confirm:["rehearsal"]} } },
   { name: "fund_delivery_receipt_recheck", description: "核对本机基金交付的原签名演练回执。仅在证据吻合时恢复原交付状态，不运行模型或 Spark。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 } }, required: ["deliveryTaskId", "expectedVersion"] } },
   { name: "agent_delivery_list", description: "列出代码Agent的后台交付准备、不可变包与文件演练结果。", inputSchema: { type: "object", properties: { sourceAgentTaskId: { type: "string" } } } },
-  {name:'agent_delivery_prepare',description:'准备已核验版本的交付文件；人工辅助版本须指定MANUAL、原运行和稳定requestId并明确confirm，沿用人工流程；不审批或发布。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},sourceKind:{enum:['AGENT','MANUAL']},sourceRunId:{type:'string',format:'uuid'},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['taskId'],allOf:[{if:{properties:{sourceKind:{const:'MANUAL'}},required:['sourceKind']},then:{required:['sourceRunId','requestId','confirm']}}]}},
+  {name:'agent_delivery_prepare',description:'准备已核验版本的交付文件；人工辅助版本须指定MANUAL、原运行和稳定requestId并明确confirm，沿用人工流程；不审批或发布。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},sourceKind:{enum:['AGENT','MANUAL']},sourceRunId:{type:'string',format:'uuid'},requestId:{type:'string',format:'uuid'},confirm:{const:true},
+    expectedSource:{type:'object',additionalProperties:false,properties:{revisionId:publicationIdSchema,revisionHash:publicationProperties.packageDigest,runId:publicationIdSchema,
+      requirementBinding:{type:'object',additionalProperties:false,properties:{protocol:{const:'shuduo-sql-requirements/v1'},taskId:publicationIdSchema,
+        basisDigest:publicationProperties.packageDigest,reportDigest:publicationProperties.packageDigest},required:['protocol','taskId','basisDigest','reportDigest']}},
+      required:['revisionId','revisionHash','runId']}},required:['taskId'],
+    dependentRequired:{expectedSource:['requestId','confirm']},allOf:[{if:{properties:{sourceKind:{const:'MANUAL'}},required:['sourceKind']},then:{required:['sourceRunId','requestId','confirm'],not:{required:['expectedSource']}}}]}},
   { name: "agent_delivery_detail", description: "读取交付准备任务的阶段、包摘要、演练编号与明确失败。", inputSchema: { type: "object", properties: { deliveryTaskId: { type: "string" } }, required: ["deliveryTaskId"] } },
   { name: "agent_delivery_cancel", description: "取消未完成的交付准备并保留包/演练证据；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { deliveryTaskId: { type: "string" } }, required: ["deliveryTaskId"] } },
   { name: "python_revision_list", description: "列出本机受限Python代码版本；不是云端Python沙箱。", inputSchema: { type: "object", properties: {} } },
@@ -405,7 +414,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(agentReviewEvidencePath(args));
   if (name === "agent_execution_evidence")
     return client.request(agentExecutionEvidencePath(args.requestId));
-  if(['agent_development_workflow','agent_delivery_prepare'].includes(name)&&args.sourceKind!=='MANUAL'&&['sourceRunId','requestId','confirm'].some(k=>Object.hasOwn(args,k)))throw Error('人工辅助参数必须显式选择MANUAL来源');
+  if(['agent_development_workflow','agent_delivery_prepare'].includes(name)&&!(name==='agent_delivery_prepare'&&args.expectedSource!==undefined)&&args.sourceKind!=='MANUAL'&&['sourceRunId','requestId','confirm'].some(k=>Object.hasOwn(args,k)))throw Error('人工辅助参数必须显式选择MANUAL来源');
   if (name === "agent_development_workflow")
     return args.sourceKind==='MANUAL'?readManualDeliveryWorkflow(client,args):client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/workflow`);
   if(name==='agent_context_derive')return createContextDerivedTask(client,args);
@@ -442,13 +451,25 @@ async function callTool(name, args = {}, client=defaultClient) {
     if(requestId!==undefined&&(typeof requestId!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(requestId)))throw Error("原发布requestId不合法");
     return client.request(path,{method:"POST",body:{...selector,attestations:Object.fromEntries(required.map(key=>[key,true]))},...(requestId===undefined?{}:{idempotencyKey:requestId})});
   }
-  if (name === "agent_delivery_advance")
-    return client.request(`/agent/deliveries/${encodeURIComponent(args.deliveryTaskId)}/advance`, { method: "POST", body: { expectedVersion: args.expectedVersion } });
+  if (name === "agent_delivery_advance") {
+    if (args.rehearsal!==undefined && args.confirm!==true) throw Error("须确认原包和演练批次");
+    const body={expectedVersion:args.expectedVersion,...(args.rehearsal===undefined?{}:{rehearsal:args.rehearsal})};
+    readDeliveryAdvance(body);
+    return client.request(`/agent/deliveries/${encodeURIComponent(args.deliveryTaskId)}/advance`,{method:"POST",body});
+  }
   if (name === "fund_delivery_receipt_recheck") return recheckFundRehearsal(client, args);
   if (name === "agent_delivery_list")
     return client.request(
       `/agent/deliveries${args.sourceAgentTaskId ? `?sourceAgentTaskId=${encodeURIComponent(args.sourceAgentTaskId)}` : ""}`,
     );
+  if (name === "agent_delivery_prepare" && args.expectedSource!==undefined) {
+    if (args.confirm!==true || args.sourceKind==='MANUAL' || args.sourceRunId!==undefined ||
+        typeof args.requestId!=="string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(args.requestId))
+      throw Error("须确认原交付来源和请求编号");
+    const expectedSource=readDeliveryPreparationSource({expectedSource:args.expectedSource},args.taskId);
+    return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/prepare-delivery`,
+      {method:"POST",body:{expectedSource},idempotencyKey:args.requestId});
+  }
   if (name === "agent_delivery_prepare")
     return args.sourceKind==='MANUAL'?prepareManualDelivery(client,args):client.request(
       `/agent/tasks/${encodeURIComponent(args.taskId)}/prepare-delivery`,

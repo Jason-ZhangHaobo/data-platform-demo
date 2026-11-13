@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { verifiedWorkerResultDigest } from "./worker-result-evidence.mjs";
 import { fundContext, fundFamily } from "./fund-lookthrough.mjs";
 import { fundContextId, isFundContext } from "./fund-contexts.mjs";
 import { nonLiveModelLabel } from "./live-lifecycle-provenance.mjs";
@@ -7,9 +8,11 @@ const canonical = value => JSON.stringify(value, (_key, item) =>
   item && typeof item === "object" && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 const digest = value => createHash("sha256").update(canonical(value)).digest("hex");
+const sha = text => createHash("sha256").update(text).digest("hex");
+const hashValue = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const same = (left, right) => canonical(left) === canonical(right);
 const literal = value => "'" + value.replaceAll("'", "''") + "'";
-const fail = () => Object.assign(new Error("基金交付的登记输入、组合断言或本机范围不一致"), {
+const fail = () => Object.assign(new Error("基金交付的登记输入、组合断言或执行范围不一致"), {
   status: 422, code: "FUND_DELIVERY_CONTRACT_MISMATCH",
 });
 
@@ -84,7 +87,7 @@ export function fundAgentDeliveryAttribution({ agent, run, revision }) {
       agent.requirements?.model !== attempt.model || revision.requirementBinding?.basisDigest !== preparation?.basisDigest ||
       !matchesFundPreparation(preparation, agent.requirements?.basis?.digest, fundDeliveryBinding(agent.contextId)) ||
       !same(preparation, revision.fundPreparation) || !same(preparation, run.fundPreparation) ||
-      !verifiedFundRun(run, agent.contextId)) throw fail();
+      !(run.isolation === "FUNCTION_PROCESS" ? fundRunMatchesRegisteredResult(run, agent.contextId) : verifiedFundRun(run, agent.contextId))) throw fail();
   return { kind: fundAgentAttributionKind, actorId: agent.submittedBy, originAgentTaskId: agent.id,
     modelMode: agent.mode, preparation, agentIndependentE2E: false };
 }
@@ -100,11 +103,43 @@ export function createFundTestSql(expected, contextId = fundContextId) {
   return `-- Independent fund look-through assertions, including uncovered holdings.\nSELECT CASE WHEN COUNT(*) = ${expected.length}\n  AND ${checks.join("\n  AND ")}\nTHEN true ELSE false END AS passed\nFROM __shuduo_result\n`;
 }
 
+export function fundDevelopmentBinding({ agent, run, revision }) {
+  const attribution = fundAgentDeliveryAttribution({ agent, run, revision });
+  const context = fundContext(agent.contextId), prepared = run.remoteSubmission?.prepared;
+  const testSql = createFundTestSql(context.expected, context.id);
+  let payload, original;
+  try { payload = JSON.parse(prepared?.job?.body); original = JSON.parse(prepared.serialized); } catch { throw fail(); }
+  if (agent.executionMode !== "DURABLE_SQL_AGENT_V1" || agent.requestBound !== true ||
+      run.mode !== "DURABLE_REMOTE_SUBMISSION" || run.isolation !== "FUNCTION_PROCESS" ||
+      run.engineVersion !== "3.5.9" || prepared.job.jobId !== run.id || prepared.job.projectId !== run.projectId ||
+      typeof prepared.serialized !== "string" || !same(original, prepared.job) ||
+      payload.requestId !== run.id || payload.sql !== revision.sql || payload.testSql !== testSql ||
+      !same(payload.context, context) || !same(payload.validationContexts, [context]) ||
+      run.testSqlValidation?.passed !== true || run.testSqlValidation.sqlHash !== sha(testSql) ||
+      !hashValue(run.workerResultDigest)) throw fail();
+  return { attribution, evidence: { jobDigest: sha(prepared.serialized), resultDigest: run.workerResultDigest, testSqlDigest: sha(testSql) } };
+}
+
+export async function recheckFundDevelopmentReceipt(selected, evidence, runner) {
+  const actual = fundDevelopmentBinding(selected).evidence;
+  if (!same(actual, evidence)) throw fail();
+  const receipt = await runner.read(selected.run.remoteSubmission.prepared, {cancelOnTimeout:false});
+  if (receipt?.queueJobDigest !== actual.jobDigest || verifiedWorkerResultDigest(receipt) !== actual.resultDigest ||
+      !fundRunMatchesRegisteredResult(receipt, selected.agent.contextId)) throw fail();
+}
+
+export function fundRehearsalMatchesPlan(result, plan, testSql) {
+  const contextId = plan.source.contextId;
+  return result.engineVersion === plan.deployment.runtime.version &&
+    result.testSqlValidation?.passed === true && result.testSqlValidation.sqlHash === sha(testSql) &&
+    fundRunMatchesRegisteredResult(result, contextId);
+}
+
 const signedDeliveryDigests = ["preflightDigest", "queueJobDigest", "resultDigest", "requestDigest", "testSqlDigest"];
 
 export function validateFundDelivery({ source, proof, testSql, localTarget }) {
   if (!isFundContext(source.contextId)) {
-    if (source.fundLookthrough !== undefined || source.fundSignedExecution !== undefined) throw fail();
+    if (source.fundLookthrough !== undefined || source.fundSignedExecution !== undefined || source.fundDevelopment !== undefined) throw fail();
     return;
   }
   const { contextId } = source, binding = fundDeliveryBinding(contextId);
@@ -122,7 +157,13 @@ export function validateFundDelivery({ source, proof, testSql, localTarget }) {
       (source.attribution.modelMode === "SYNTHETIC_MODEL" || !nonLiveModelLabel(proof.requirements.model))
     : source.requirement === undefined && source.attribution?.kind === "ENGINEER_AUTHORED" &&
       source.attribution.developmentReference === undefined;
-  if (!localTarget || proof.isolation !== "LOCAL_PROCESS" || !sourceMatches ||
+  const development = source.fundDevelopment;
+  const correctTarget = localTarget ? proof.isolation === "LOCAL_PROCESS" && development === undefined :
+    proof.isolation === "FUNCTION_PROCESS" && proof.engineVersion === "3.5.9" && signed === undefined && agent &&
+    development && Object.keys(development).length === 3 &&
+    [development.jobDigest, development.resultDigest, development.testSqlDigest].every(hashValue) &&
+    development.testSqlDigest === sha(testSql);
+  if (!correctTarget || !sourceMatches ||
       !same(source.fundLookthrough, binding) || !inputMatches(proof.inputEvidence, binding, contextId) ||
       !fundValidationMatches(proof.report, binding, contextId) || testSql !== createFundTestSql(fundContext(contextId).expected, contextId)) throw fail();
 }

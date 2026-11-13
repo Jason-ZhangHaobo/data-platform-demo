@@ -1,7 +1,7 @@
 import {outputContractForContext,verifyOutputRows} from './output-contracts.mjs';
 import {distributionDeliveryBinding,createDistributionTestSql,validateDistributionDelivery} from './distribution-delivery.mjs';
 import { isFundContext, fundRehearsalAt } from "./fund-contexts.mjs";
-import { createFundTestSql, fundAgentAttributionKind, fundAgentDeliveryAttribution, fundDeliveryBinding, fundValidationMatches, validateFundDelivery, verifiedFundRun } from "./fund-delivery.mjs";
+import { createFundTestSql, fundAgentAttributionKind, fundAgentDeliveryAttribution, fundDeliveryBinding, fundDevelopmentBinding, fundValidationMatches, validateFundDelivery, verifiedFundRun } from "./fund-delivery.mjs";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, lstatSync } from "node:fs";
 import { resolve, join } from "node:path";
@@ -121,16 +121,18 @@ export function createDeliveryPackage({
   if(distribution&&(run?.isolation==="FUNCTION_PROCESS"||run?.mainSqlExecuted!==true||run?.testDouble===true||!verifyOutputRows(run?.rows,getContext(revision.contextId))))throw fail("分布交付须来自本机真实Spark及独立复合键核验，尚未开放云端");
   const reference=developmentReference===undefined?undefined:checkedAssistedDevelopmentReference(developmentReference);
   const authored=revision?.source==='MANUAL'&&revision.manualProvenance?.kind==='ENGINEER_EDIT'&&revision.manualProvenance.actorId===revision.author&&revision.manualProvenance.agentIndependentE2E===false;
-  const fundAgent = fund && (agent?.fundPreparation || revision?.fundPreparation || run?.fundPreparation)
-    ? fundAgentDeliveryAttribution({ agent, run, revision }) : undefined;
-  if (fund && (!fundAgent && (!authored || revision.manualProvenance.originAgentTaskId !== undefined) || !verifiedFundRun(run, revision.contextId) ||
+  const remoteExecution = run?.isolation === "FUNCTION_PROCESS";
+  const fundDevelopment = fund && remoteExecution && agent?.fundPreparation
+    ? fundDevelopmentBinding({agent,run,revision}) : undefined;
+  const fundAgent = fundDevelopment?.attribution ?? (fund && (agent?.fundPreparation || revision?.fundPreparation || run?.fundPreparation)
+    ? fundAgentDeliveryAttribution({ agent, run, revision }) : undefined);
+  if (fund && (!fundAgent && (!authored || revision.manualProvenance.originAgentTaskId !== undefined) || (!fundDevelopment && !verifiedFundRun(run, revision.contextId)) ||
       run.contextId !== revision.contextId || !Number.isFinite(Date.parse(run.finishedAt))))
     throw fail("基金交付须来自原作者的本机真实 Spark 运行与独立组合断言");
   if(manualAuthor&&!authored)throw Object.assign(new Error('独立手工文件必须属于原作者和保存版本'),{status:409});
   if(reference&&manualAuthor&&(reference.kind!=='MANUAL_SUCCESS_REFERENCE'||reference.sourceRunId!==run?.id||reference.sourceRevisionId!==revision.id||reference.sourceRevisionHash!==revision.hash))throw Object.assign(new Error('手工文件与成功来源引用不一致'),{status:409});
   if(reference&&!manualAuthor&&(revision?.sourceAttribution?.kind!=='ENGINEER_ASSISTED'||revision.sourceKind!=='MANUAL'||revision.agentIndependentE2E!==false||
     (reference.kind==='ASSISTED_CONTINUATION'?revision.sourceAttribution.parentRunId:revision.sourceAttribution.sourceRunId)!==reference.sourceRunId))throw Object.assign(new Error('开发依据与人工辅助版本不一致'),{status:409});
-  const remoteExecution = run?.isolation === "FUNCTION_PROCESS";
   const registeredFamily = validationFamilyForContext(revision?.contextId);
   const family = syncInput ? { ...registeredFamily, id: syncSqlContractId } : registeredFamily;
   if (syncInput && (name === undefined || name === "客户资产 T+1" || name === "客户资产 T+1 · Agent交付准备"))
@@ -268,6 +270,7 @@ export function createDeliveryPackage({
       ...(agent?.derivedFrom && revision.source==="LIVE_MODEL" && !revision.sourceAttribution && !fundAgent
         ? {derivation:checkedDeliveryDerivation(agent.derivedFrom,context.id)} : {}),
       ...(syncInput ? { syncInput } : {}),
+      ...(fundDevelopment ? { fundDevelopment: fundDevelopment.evidence } : {}),
       ...(fund ? { fundLookthrough: fundDeliveryBinding(context.id) } : {}),
       ...(distribution?{outputContract:distributionDeliveryBinding(context.id)}:{}),
       ...(requirements?{requirement:sqlRequirementBinding(requirements)}:{}),
@@ -362,6 +365,7 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       ...(source?.attribution === undefined ? [] : ["attribution"]),
       ...(source?.requirement === undefined ? [] : ["requirement"]),
       ...(source?.outputContract === undefined ? [] : ["outputContract"]),
+      ...(source?.fundDevelopment === undefined ? [] : ["fundDevelopment"]),
       ...(source?.fundLookthrough === undefined ? [] : ["fundLookthrough"]),
       ...(source?.fundSignedExecution === undefined ? [] : ["fundSignedExecution"]),
       ...(syncInput === undefined ? [] : ["syncInput"]),
