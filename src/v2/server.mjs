@@ -567,6 +567,7 @@ export function createV2Server(options = {}) {
   })() : undefined;
   const agentEventDriver = agentEventConfig ? createAgentEventDriver({store,project:PROJECT,dispatcher:agentDispatcher,engine:durableAgent,
     transport:agentWakeTransport,config:agentEventConfig,queueConfig:queueConfigFromEnvironment(env),persist:persistDevelopment,now:options.now ?? Date.now,
+    settleRehearsal:durableDelivery?.settleRehearsal,
     assertExecutionScope:(task,boundary)=>assertDevelopmentBackgroundScope(developmentAccess,task,store.get('auth_user',task?.submittedBy??'',PROJECT),PROJECT,boundary,developmentNow())}) : undefined;
   const exposeDurableTask = task => {
     const background=agentEventDriver&&task.executionMode===durableSqlAgentMode?agentEventDriver.status(task.id):undefined;
@@ -6109,6 +6110,9 @@ export function createV2Server(options = {}) {
           ? pinnedCloudDeliverySource(agent,revision,run,(kind,id)=>store.get(kind,id,PROJECT)) : undefined;
         return json(res, 200, {
           report,
+          ...(agentEventDriver && !publicationAccess && !serviceAccess && !serviceAgentAccess &&
+            delivery?.sourcePinned === true && delivery.sourceKind !== "MANUAL" &&
+            delivery.submittedBy === fileReviewer ? {eventDrivenRehearsal:true} : {}),
           ...(preparationSource ? {preparationSource} : {}),
           ...(fileReview?{fileReview:{id:fileReview.id,status:fileReview.status,packageId:fileReview.packageId,packageDigest:fileReview.packageDigest,verificationId:fileReview.verificationId,reviewedAt:fileReview.reviewedAt,scope:fileReview.scope,
             ...(fileReview.fundRehearsalDigest ? {fundRehearsalDigest:fileReview.fundRehearsalDigest} : {})}}:{}),

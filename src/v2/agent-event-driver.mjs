@@ -46,7 +46,7 @@ export function parseAgentObjectEvent(event,config) {
 
 // No process timer, idle polling, publication or user-controlled command. Each
 // event can claim only its opted-in task and one durable development boundary.
-export function createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist,now=Date.now,assertExecutionScope=()=>{},taskKind='agent',assertCancelScope}) {
+export function createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist,now=Date.now,assertExecutionScope=()=>{},taskKind='agent',assertCancelScope,settleRehearsal}) {
   const servicePlanning=taskKind==='service_agent_plan',eventProtocol=servicePlanning?serviceAgentEventProtocol:agentEventProtocol,
     wakeProtocol=servicePlanning?'shuduo-service-agent-wake/v1':'shuduo-agent-wake/v1',
     owns=item=>Boolean(item&&(servicePlanning?item.taskKind===taskKind:item.taskKind===undefined||item.taskKind==='agent')),
@@ -210,7 +210,11 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
   }
   async function consumeResult(object) {
     const run=store.get("run",object.id,project);
-    if(!run || run.remoteSubmission?.prepared?.resultKey!==object.key)return{protocol:agentEventProtocol,state:"IGNORED_UNREGISTERED"};
+    if(!run) {
+      const rehearsal=await settleRehearsal?.(object);
+      return {protocol:agentEventProtocol,...(rehearsal??{state:"IGNORED_UNREGISTERED"})};
+    }
+    if(run.remoteSubmission?.prepared?.resultKey!==object.key)return{protocol:agentEventProtocol,state:"IGNORED_UNREGISTERED"};
     const task=store.list("agent",project).find(t=>t.executionMode===durableSqlAgentMode && t.runId===run.id),g=task&&grantFor(task.id);
     if(!g)return{protocol:agentEventProtocol,state:"INACTIVE"};
     const gated=await live(g,task);if(gated)return gated;

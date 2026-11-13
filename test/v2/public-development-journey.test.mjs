@@ -199,6 +199,8 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     if(objects.has(key)){assert.equal(objects.get(key),body);return;}
     objects.set(key,body);wakes.push({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',eventTime:new Date(now).toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key}}}]});
   }};
+  const resultEvent=key=>({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',
+    eventTime:new Date(now).toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key}}}]});
   const close = async () => { if (!app) return; app.server.closeAllConnections(); await new Promise(r => app.server.close(r)); app.businessStore.close(); store.close(); app = undefined; };
   const open = async () => {
     store = new MetadataStore(join(directory, 'metadata.sqlite'));
@@ -226,7 +228,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     const r = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json', 'x-shuduo-client': 'workbench', origin: env.V2_PUBLIC_ORIGIN, 'idempotency-key': key, ...(stableOrigin ? {connection:'close'} : {}), ...(cookie ? { cookie, 'x-csrf-token': csrf } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: r.status, body: await r.json(), cookies: r.headers.getSetCookie(), headers: r.headers };
   };
-  const complete = (prepared, measuredResult) => {
+  const complete = (prepared, measuredResult, queueJobDigest=sha256(prepared.serialized)) => {
     const payload = JSON.parse(prepared.job.body);
     const result=measuredResult ?? {
       status: 'SUCCEEDED', engine: 'Apache Spark', engineVersion: '3.5.9', mainSqlExecuted: true,
@@ -236,13 +238,13 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
       log: 'Synthetic queue receipt. No real Spark was run.',
     };
     objects.set(prepared.resultKey, JSON.stringify(createQueuedSparkResult(prepared.job,
-      {...result,queueJobDigest:sha256(prepared.serialized)},config,now)));
+      {...result,queueJobDigest},config,now)));
   };
   await open();
   const login = await call('/auth/login', { email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026' });
   assert.equal(login.status, 200); cookie = login.cookies.map(c => c.split(';')[0]).join('; '); csrf = login.body.csrfToken;
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
-  return { call, complete, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
+  return { call, complete, resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
     get businessStore(){return app.businessStore;}, addAdmin:input=>app.auth.bootstrapAdmin(input),
     loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
     queueCounts:()=>({jobWriteAttempts,cancellationWrites,resultReads}),
@@ -927,7 +929,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
 });
 
 test('a request-bound base task requires the exact verified version for delivery and publication',async t=>{
-  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true});
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true});
   const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_WORKBENCH==='true';
   const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
   const body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
@@ -1013,14 +1015,55 @@ test('a request-bound base task requires the exact verified version for delivery
   alter=undefined;
   const exactPackage={packageId:bundle.id,packageDigest:bundle.digest};
   const deliveryPath='/agent/deliveries/'+preparedFiles.body.id+'/advance';
-  const started=await f.call(deliveryPath,{expectedVersion:preparedFiles.body.version,rehearsal:exactPackage});
-  assert.equal(started.status,200,started.body.message);
-  const verificationId=started.body.verificationId;
+  // The queue accepts the original rehearsal while its acknowledgement is lost.
+  f.lose();
+  assert.equal((await f.call(deliveryPath,{expectedVersion:preparedFiles.body.version,rehearsal:exactPackage})).status,500);
   const stored=f.store.get('agent_delivery_task',preparedFiles.body.id,PROJECT);
+  const {verificationId}=stored;
+  assert.equal(stored.stage,'FILE_REHEARSAL_SUBMITTING');
+  assert.equal(stored.remoteSubmission.submitted,false);
+  assert.equal((await f.call(taskPath+'/workflow')).body.eventDrivenRehearsal,true);
+  const event=f.resultEvent(stored.remoteSubmission.prepared.resultKey);
+  const controls=f.queueCounts();
+  assert.equal((await f.privateCall(f.resultEvent(stored.remoteSubmission.prepared.resultKey.replace(verificationId,randomUUID())))).body.state,'IGNORED_UNREGISTERED');
+  assert.deepEqual(f.queueCounts(),controls);
+  assert.equal((await f.privateCall(event)).status,503);
+  assert.equal(f.store.get('agent_delivery_task',stored.id,PROJECT).version,stored.version);
+  f.complete(stored.remoteSubmission.prepared,undefined,'0'.repeat(64));
+  assert.equal((await f.privateCall(event)).body.code,'SPARK_QUEUE_RESULT_INVALID');
+  assert.equal(f.store.get('agent_delivery_task',stored.id,PROJECT).version,stored.version);
   f.complete(stored.remoteSubmission.prepared,measure?await measuredSpark(t,f,stored.remoteSubmission.prepared,'workbench rehearsal'):undefined);
-  const settled=await f.call(deliveryPath,{expectedVersion:started.body.version,rehearsal:{...exactPackage,verificationId}});
-  assert.equal(settled.body.status,'SUCCEEDED',settled.body.message);
+  // The original HTTP client is gone. Reopen the persisted controller with
+  // writes closed and settle solely through the original private result event.
+  f.expire();
+  f.env.V2_FC_PUBLIC_READ_ONLY='true';
+  const originalStore=f.store;
+  await f.restart();
+  assert.notEqual(f.store,originalStore);
+  const owner=f.store.get('auth_user',actorId,PROJECT);
+  f.store.update('auth_user',actorId,PROJECT,{status:'DISABLED'});
+  const whileDisabled=f.queueCounts();
+  assert.equal((await f.privateCall(event)).body.state,'REHEARSAL_OWNER_INACTIVE');
+  assert.deepEqual(f.queueCounts(),whileDisabled);
+  f.store.update('auth_user',actorId,PROJECT,{status:owner.status});
+  const beforeSettlement=f.queueCounts();
+  const settled=await f.privateCall(event);
+  assert.equal(settled.status,200,settled.body.message);
+  assert.equal(settled.body.state,'REHEARSAL_SETTLED');
+  const duplicate=await f.privateCall(event);
+  assert.equal(duplicate.body.state,'REHEARSAL_ALREADY_SETTLED');
+  assert.deepEqual(f.queueCounts(),{...beforeSettlement,resultReads:beforeSettlement.resultReads+1});
+  assert.equal(f.store.list('delivery_verification',PROJECT).length,1);
+  assert.equal(f.store.list('release_approval',PROJECT).length,0);
+  assert.equal(f.wakes.length,0);
+  const readback=await f.call(taskPath+'/delivery-requests/'+deliveryRequestId);
+  assert.equal(readback.body.verificationId,verificationId);
+  assert.equal(readback.body.status,'SUCCEEDED');
+  assert.equal(readback.body.stage,'AWAITING_ENGINEER_REVIEW');
+  assert.equal(readback.body.packageDigest,bundle.digest);
+  assert.equal((await f.call(deliveryPath,{expectedVersion:readback.body.version,rehearsal:{...exactPackage,verificationId}})).status,403);
 
+  delete f.env.V2_FC_PUBLIC_READ_ONLY;
   f.alignWallClock();
   Object.assign(f.env,{V2_FC_PUBLIC_WRITE_SCOPE:'PUBLICATION_ONLY',
     V2_PUBLIC_PUBLICATION_STARTS_AT:new Date(f.now()-1000).toISOString(),
