@@ -174,7 +174,7 @@ test('first-case entry preflight optionally verifies the same-origin script from
 });
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,
-  queueTimeoutMs=180000,contextualModel=false}={}) {
+  queueTimeoutMs=180000,contextualModel=false,sqlForAttempt}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, cloudState, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
   let loseArtifactAcknowledgement=false, packageWrites=0;
@@ -229,7 +229,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     const businessStore=new BusinessQueryStore(join(directory,'business.sqlite'));
     app = createV2Server({ store, businessStore, root: directory, env, runner, agentWakeTransport, now: () => now, artifactStore, ingress: createFcIngress({ publicHttpEnabled: true, publicReadOnly: env.V2_FC_PUBLIC_READ_ONLY === 'true' }), generator: async input => {
       modelCalls++; if(modelFault)throw Error('synthetic model interrupted');
-      return { sql: contextualModel?referenceSqlForContext(input.context.id):referenceSql, model: structuredRequirement?'qwen3-coder-plus':'synthetic-protocol-fixture',
+      return { sql: sqlForAttempt?.(modelCalls,input) ?? (contextualModel?referenceSqlForContext(input.context.id):referenceSql), model: structuredRequirement?'qwen3-coder-plus':'synthetic-protocol-fixture',
         explanation: 'Local lifecycle fixture, not a real model', usage: { total_tokens: 12 },
         ...(structuredRequirement ? syntheticSqlRequirement(input) : {}) };
     } });
@@ -284,7 +284,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   const login = await call('/auth/login', { email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026' });
   assert.equal(login.status, 200); cookie = login.cookies.map(c => c.split(';')[0]).join('; '); csrf = login.body.csrfToken;
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
-  return { call, complete, resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, restartWithExpiredReadiness, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
+  return { call, complete, removeResult:prepared=>objects.delete(prepared.resultKey), resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, restartWithExpiredReadiness, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
     get businessStore(){return app.businessStore;}, addAdmin:input=>app.auth.bootstrapAdmin(input),
     loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
     queueCounts:()=>({jobWriteAttempts,cancellationWrites,resultReads}),
@@ -527,15 +527,15 @@ test('v3-inspect recovers the same delivery files and rehearsal after CLI termin
   assert.equal(existsSync(checkpoint+'.lock'),false);
 });
 
-async function measuredSpark(t,f,prepared,label){
+async function measuredSpark(t,f,prepared,label,expectedStatus='SUCCEEDED'){
   const input=JSON.parse(prepared.job.body);
   const result=await runSpark(input,{...runtimeConfig({}),artifactRoot:f.directory,retainArtifacts:false});
-  assert.equal(result.status,'SUCCEEDED');
+  assert.equal(result.status,expectedStatus);
   assert.equal(result.engineVersion,'3.5.9');
   assert.equal(result.mainSqlExecuted,true);
   if (input.testSql) assert.equal(result.testSqlValidation?.passed,true);
   assert.equal(result.validation?.regressions.length,5);
-  assert.ok(result.validation.regressions.every(check=>check.passed===true));
+  assert.equal(result.validation.regressions.every(check=>check.passed===true),expectedStatus==='SUCCEEDED');
   t.diagnostic(`Local Spark ${result.engineVersion}, ${label}, five independent scenarios, ${result.durationMs} ms`);
   return result;
 }
@@ -2138,6 +2138,110 @@ test('an invited derived task progresses on original events after client disconn
   assert.deepEqual(f.store.get('agent',source.task.id,PROJECT),originalParent);
   assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
   assert.equal(f.queueCounts().jobWriteAttempts,1);
+});
+
+test('expired Worker readiness settles original Agent development, then resumes repair under the original request',async t=>{
+  const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_DEVELOPMENT_RECOVERY==='true';
+  for (const initiallyInvalid of [false,true]) await t.test(initiallyInvalid?'validation failure and repair':'successful receipt',async t=>{
+    const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,
+      sqlForAttempt:(attempt,input)=>initiallyInvalid&&attempt===1 ? 'SELECT 1 AS wrong_metric' : referenceSqlForContext(input.context.id)});
+    const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
+    const body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId}, key=randomUUID();
+    f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)));
+    await f.restart();
+    const created=await f.call('/agent/tasks',body,key);
+    assert.equal(created.status,202);
+    const path='/agent/tasks/'+created.body.id;
+    const advance=async task=>{
+      const response=await f.call(path+'/advance',{expectedVersion:task.version});
+      assert.equal(response.status,200,response.body.message);
+      return response.body;
+    };
+    const waiting=await advance(await advance(created.body));
+    assert.equal(waiting.stage,'WAITING_FOR_RUN');
+    let original=f.store.get('run',waiting.runId,PROJECT);
+    const prepared=original.remoteSubmission.prepared;
+    const event=f.resultEvent(prepared.resultKey);
+    const resultStatus=initiallyInvalid?'VALIDATION_FAILED':'SUCCEEDED';
+    const family=validationFamilyForContext(definition.contextId);
+    const result=measure ? await measuredSpark(t,f,prepared,'development '+resultStatus,resultStatus) :
+      initiallyInvalid ? {status:resultStatus,engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,
+        validation:{passed:false,issues:['虚构独立断言未通过'],
+          regressions:family.contextIds.map(contextId=>({contextId,passed:false,issues:['虚构独立断言未通过']}))},
+        rows:[{wrong_metric:1}],durationMs:100} : undefined;
+    if (!initiallyInvalid) {
+      // An older controller could commit the run and stop before updating the Agent.
+      f.complete(prepared,result);
+      assert.equal((await f.call('/runs/'+original.id)).body.status,'SUCCEEDED');
+      assert.equal(f.store.get('agent',waiting.id,PROJECT).stage,'WAITING_FOR_RUN');
+      original=f.store.get('run',original.id,PROJECT);
+      f.removeResult(prepared);
+    }
+    f.expire();
+    await f.restartWithExpiredReadiness();
+    assert.equal((await f.call('/status')).body.spark.healthVerified,false);
+    assert.equal((await f.call(path+'/advance',{expectedVersion:waiting.version})).status,403);
+    assert.equal((await f.privateCall(event)).status,503);
+    assert.deepEqual(f.store.get('run',original.id,PROJECT),original);
+    f.complete(prepared,result,'0'.repeat(64));
+    assert.equal((await f.privateCall(event)).body.code,'SPARK_QUEUE_RESULT_INVALID');
+    assert.deepEqual(f.store.get('run',original.id,PROJECT),original);
+    f.complete(prepared,result);
+    const before=f.queueCounts();
+    assert.equal((await f.privateCall(event)).body.state,'DEVELOPMENT_BATCH_SETTLED');
+    const saved=f.store.get('run',original.id,PROJECT);
+    assert.equal(saved.status,resultStatus);
+    assert.equal(saved.revisionId,waiting.revisionId);
+    if (!initiallyInvalid) assert.equal(saved.finishedAt,original.finishedAt);
+    const recovered=(await f.call('/agent/requests/'+key)).body;
+    assert.equal(recovered.id,created.body.id);
+    assert.equal(recovered.runId,waiting.runId);
+    assert.equal(recovered.revisionId,waiting.revisionId);
+    assert.equal(recovered.stage,initiallyInvalid?'READY_FOR_MODEL':'SUCCEEDED');
+    assert.equal(recovered.usedTokens,12);
+    assert.equal(recovered.attempts.length,1);
+    assert.equal(recovered.attempts[0].status,resultStatus);
+    assert.equal((await f.privateCall(event)).body.state,'DEVELOPMENT_BATCH_ALREADY_SETTLED');
+    assert.deepEqual(f.queueCounts(),{...before,resultReads:before.resultReads+1});
+    assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
+    assert.equal(f.wakes.length,0);
+    assert.equal(f.store.list('delivery_package',PROJECT).length,0);
+    assert.equal(f.store.list('release_approval',PROJECT).length,0);
+    const evidence=(await f.call('/agent/requests/'+key+'/execution-evidence')).body;
+    assert.equal(evidence.execution.spark.runId,waiting.runId);
+    assert.equal(evidence.execution.spark.resultStatus,resultStatus);
+    if (!initiallyInvalid) {
+      assert.equal(evidence.development.runId,waiting.runId);
+      return;
+    }
+    assert.equal(evidence.development,undefined);
+    assert.equal(saved.validation.passed,false);
+    const beforeDeniedRepair=f.queueCounts();
+    assert.equal((await f.call(path+'/advance',{expectedVersion:recovered.version})).status,403);
+    assert.deepEqual(f.queueCounts(),beforeDeniedRepair);
+    assert.equal(f.counts().modelCalls,1);
+    // Reopen a new, explicit continuation window for the same task.
+    f.alignWallClock();
+    delete f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST;
+    Object.assign(f.env,{V2_PUBLIC_DEVELOPMENT_TASK_ID:recovered.id,
+      V2_PUBLIC_DEVELOPMENT_STARTS_AT:new Date(f.now()-1000).toISOString(),
+      V2_PUBLIC_DEVELOPMENT_EXPIRES_AT:new Date(f.now()+600000).toISOString()});
+    await f.restart();
+    const generated=await advance(recovered);
+    assert.equal(generated.stage,'READY_FOR_RUN');
+    assert.equal(generated.id,recovered.id);
+    assert.notEqual(generated.revisionId,recovered.revisionId);
+    const repairing=await advance(generated);
+    const repairedJob=f.store.get('run',repairing.runId,PROJECT).remoteSubmission.prepared;
+    f.complete(repairedJob,measure?await measuredSpark(t,f,repairedJob,'development repair'):undefined);
+    const finished=await advance(repairing);
+    assert.equal(finished.status,'SUCCEEDED');
+    assert.equal(finished.attempts[0].runId,waiting.runId);
+    assert.equal(finished.attempts[0].status,'VALIDATION_FAILED');
+    assert.equal(finished.usedTokens,24);
+    assert.deepEqual(f.store.get('run',waiting.runId,PROJECT),saved);
+    assert.deepEqual(f.counts(),{modelCalls:2,jobCreates:2});
+  });
 });
 
 test('an invited exact window binds derivation from the parent through signed release and both consumer batches',async t=>{

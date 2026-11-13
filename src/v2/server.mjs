@@ -26,7 +26,7 @@ import { MetadataStore } from "./store.mjs";
 import { callPrivateApplication, verifyPrivateApplicationTask,validatePrivateApplicationRequest } from "./private-application.mjs";
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
-import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent } from "./durable-agent.mjs";
+import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent, settleAgentDevelopmentResult } from "./durable-agent.mjs";
 import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,assertSqlRequirementPackageSource} from './sql-requirements.mjs';
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
@@ -545,6 +545,11 @@ export function createV2Server(options = {}) {
   if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery&&!standalonePublicationReady)) throw new Error("私有发布须使用已启用的私有持久执行边界");
   const resultEventRunner=privateSmokeEnabled && options.resultEventConfig && options.readPendingSparkResult
     ? {read:options.readPendingSparkResult} : undefined;
+  const assertSavedDevelopmentTarget=task=>{
+    if (developmentAccess?.taskId && task.id!==developmentAccess.taskId ||
+        developmentAccess?.requestDigest && developmentNow()<developmentAccess.expiresAt)
+      throw targetDenied();
+  };
   const settleSavedRehearsal=resultEventRunner
     ? createDurableAgentDelivery({store,project:PROJECT,runner:resultEventRunner,artifactStore,persist:persistDevelopment}).settleRehearsal
     : undefined;
@@ -1794,12 +1799,10 @@ export function createV2Server(options = {}) {
             // Degraded startup has only a passive receipt reader. A new
             // request-bound window cannot settle work from an earlier request.
             if (settleSavedRehearsal && !publicationAccess) {
-              const rehearsal=await settleSavedRehearsal(object, task=>{
-                if (!developmentAccess) return;
-                if (developmentAccess.taskId && task.id!==developmentAccess.taskId ||
-                    developmentAccess.requestDigest && developmentNow()<developmentAccess.expiresAt)
-                  throw targetDenied();
-              });
+              const development=await settleAgentDevelopmentResult(object,{store,project:PROJECT,runner:resultEventRunner,
+                persist:persistDevelopment,validationFamily:validationFamilyForContext,now:developmentNow,assertResultTarget:assertSavedDevelopmentTarget});
+              if (development) return json(res,200,{protocol:"shuduo-agent-event-driver/v1",...development});
+              const rehearsal=await settleSavedRehearsal(object,assertSavedDevelopmentTarget);
               if (rehearsal) return json(res,200,{protocol:"shuduo-agent-event-driver/v1",...rehearsal});
             }
           }
