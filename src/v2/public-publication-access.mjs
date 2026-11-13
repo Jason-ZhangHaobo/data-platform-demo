@@ -61,6 +61,11 @@ export function assertPublicationExecutionWindow(config, release, now = Date.now
   if (!config) return;
   if (!inWindow(config, now))
     throw fail('PUBLIC_PUBLICATION_CLOSED', '发布窗口未开放、已到期或执行器未就绪；不再启动新 Spark，已提交结果仍可查看。');
+  assertPublicationResultTarget(config,release);
+}
+
+export function assertPublicationResultTarget(config,release) {
+  if (!config) return;
   const manual=config.sourceKind==='MANUAL_DELIVERY';
   if (!release || (manual?release.manualDeliveryTaskId!==config.taskId||release.sourceAgentTaskId!==undefined:release.sourceAgentTaskId!==config.taskId||release.manualDeliveryTaskId!==undefined) || release.packageDigest !== config.packageDigest ||
       release.verificationId !== config.verificationId)

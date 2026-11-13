@@ -15,7 +15,7 @@ import { createAssetAnnotationRequests } from "./asset-annotation-requests.mjs";
 import { serveV2Static } from "./static-response.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
 import { publicDevelopmentConfig, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow, assertDevelopmentTargetTask, developmentBackgroundBoundary, assertDevelopmentBackgroundScope } from "./public-development-access.mjs";
-import { publicPublicationConfig, publicationSession, assertPublicationMutation, assertPublicationTarget, assertPublicationExecutionWindow } from "./public-publication-access.mjs";
+import { publicPublicationConfig, publicationSession, assertPublicationMutation, assertPublicationTarget, assertPublicationExecutionWindow, assertPublicationResultTarget } from "./public-publication-access.mjs";
 import { publicServiceConfig, serviceSession, assertServiceMutation } from "./public-service-access.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
@@ -54,7 +54,7 @@ import { publishServiceReviewed, activateServiceReviewed } from "./service-versi
 import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-release-timer.mjs";
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import {createServiceAgentEvents} from './service-agent-events.mjs';
-import { createAgentEventDriver, agentEventConfigFromEnvironment } from "./agent-event-driver.mjs";
+import { createAgentEventDriver, agentEventConfigFromEnvironment, parseAgentObjectEvent } from "./agent-event-driver.mjs";
 import { createAgentWakeOssTransport } from "./agent-wake-oss-transport.mjs";
 import { ossConfigFromEnvironment } from "./oss-client.mjs";
 import { queueConfigFromEnvironment } from "./remote-spark-queue.mjs";
@@ -545,7 +545,11 @@ export function createV2Server(options = {}) {
   if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery&&!standalonePublicationReady)) throw new Error("私有发布须使用已启用的私有持久执行边界");
   const cloudPublicationHistory = createCloudPublication({ store, project: PROJECT, runner: publicationAccess ? rawRunner.durable : durableDevelopment, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig && durableDelivery), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: durableDelivery ? Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) : 30, singleRelease: Boolean(publicationAccess),
     assertPublicationScope: target => assertPublicationTarget(publicationAccess, target, options.now?.() ?? Date.now()),
-    assertExecutionScope: release => assertPublicationExecutionWindow(publicationAccess, release, options.now?.() ?? Date.now()) });
+    assertExecutionScope: release => {
+      if (release.reviewDigest && (!publicationAccess || options.ingress?.status.publicReadOnly))
+        throw Object.assign(fail(403,"当前只可结算已提交批次，启动新批次须在原发布窗口内"),{code:"PUBLIC_PUBLICATION_CLOSED"});
+      assertPublicationExecutionWindow(publicationAccess, release, options.now?.() ?? Date.now());
+    } });
   const cloudPublication = durableDelivery ? cloudPublicationHistory : undefined;
   const manualPublisher=(assertScope=()=>{})=>rawRunner.durable?createStandaloneManualPublication({store,project:PROJECT,runner:rawRunner.durable,artifactStore,persist:persistDevelopment,
     enabled:Boolean(privatePublicationConfig&&standalonePublicationReady),singleRelease:true,now:options.now??Date.now,reservationSeconds:Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS??30),
@@ -1772,6 +1776,15 @@ export function createV2Server(options = {}) {
           throw targetDenied();
         if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
           throw Object.assign(fail(403, "本次仅开放既有发布结果的接口交付；计算与调度保持关闭。"), { code: "PUBLIC_SERVICE_SCOPE_DENIED" });
+        if (ingressChannel==="EVENT" && privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1" &&
+            agentEventDriver && !developmentAccess && !serviceAgentAccess) {
+          let object;
+          try { object=parseAgentObjectEvent(privateInput.event,agentEventConfig); }
+          catch (error) { if (!publicationAccess) throw error; }
+          const settled=object?.kind==="RESULT" && await cloudPublication?.settleResultEvent(object,
+            release=>assertPublicationResultTarget(publicationAccess,release));
+          if (settled) return json(res,200,{protocol:"shuduo-release-result-event/v1",...settled});
+        }
         // This rollout permits only the reviewed publication. Legacy private
         // acceptance and Agent drivers can mutate records before API forwarding.
         if (publicationAccess && !["PRIVATE_STATUS_V1", "PRIVATE_RELEASE_TIMER_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))

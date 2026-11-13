@@ -1194,7 +1194,7 @@ test('a request-bound base task requires the exact verified version for delivery
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.
-  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,stableOrigin:true,queueTimeoutMs:30000});
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,queueTimeoutMs:30000});
   const checkpoint=join(f.directory,'exact-delivery.json'),billPath=join(f.directory,'current-bill.json'),requests=[];
   const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
   const writeBill=unsettledReserveCny=>writeFileSync(billPath,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny,maxIncrementCny:2,
@@ -1509,6 +1509,7 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal((await f.privateCall(firstTimer)).status,500);
   const first=releaseRun(firstId).remoteSubmission.prepared;
   assert.equal(first.job.jobId,firstId);
+  const firstResultEvent=f.resultEvent(first.resultKey);
   const reserved=(await f.call('/status')).body.budget.remoteSpark;
   assert.equal(reserved.runCount,3);
   assert.equal(releaseRun(firstId).reservedDurationMs,30000);
@@ -1553,15 +1554,49 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(f.queueCounts().jobWriteAttempts,lostQueue.jobWriteAttempts);
   assert.equal(f.queueCounts().cancellationWrites,0);
 
+  const beforeEvent=f.queueCounts();
+  assert.equal((await f.privateCall(f.resultEvent(first.resultKey.replace(firstId,secondId)))).body.code,'PUBLIC_PUBLICATION_SCOPE_DENIED');
+  assert.deepEqual(f.queueCounts(),beforeEvent);
+  assert.equal((await f.privateCall(firstResultEvent)).status,503);
+  assert.deepEqual(releaseRun(firstId),originalClaim);
+  const beforeFakeIngress=f.queueCounts();
+  const fakeIngress=await fetch(f.base.replace(/\/api\/v2$/,'')+'/invoke',{
+    method:'POST',headers:{'content-type':'application/json','x-fc-control-path':'/http-invoke'},body:JSON.stringify(firstResultEvent),
+  });
+  assert.equal(fakeIngress.status,404);
+  assert.deepEqual(f.queueCounts(),beforeFakeIngress);
   const useRealSpark=process.env.SHUDUO_TEST_LOCAL_SPARK_RELEASE==='true';
+  f.complete(first,undefined,'0'.repeat(64));
+  assert.equal((await f.privateCall(firstResultEvent)).body.code,'SPARK_QUEUE_RESULT_INVALID');
+  assert.deepEqual(releaseRun(firstId),originalClaim);
   f.complete(first,useRealSpark?await measuredSpark(t,f,first,'release batch 1'):undefined);
-  const settledReplay=await f.privateCall(firstTimer);
-  assert.equal(settledReplay.status,200);
-  assert.equal(settledReplay.body.replayed,true);
-  assert.equal(settledReplay.body.succeeded,1,'a prior empty replay must not hide the original late Worker result');
+  const publicationTaskId=f.env.V2_PUBLIC_PUBLICATION_TASK_ID;
+  f.env.V2_PUBLIC_PUBLICATION_TASK_ID=randomUUID();
+  await f.restart();
+  const beforeWrongWindow=f.queueCounts();
+  assert.equal((await f.privateCall(firstResultEvent)).body.code,'PUBLIC_PUBLICATION_TARGET_MISMATCH');
+  assert.deepEqual(f.queueCounts(),beforeWrongWindow);
+  f.env.V2_PUBLIC_PUBLICATION_TASK_ID=publicationTaskId;
+  f.later(180001);
+  await f.restart();
+  assert.equal((await f.privateCall(firstTimer)).body.code,'PRIVATE_RELEASE_TIMER_INVALID');
+  assert.equal((await f.privateCall(firstResultEvent)).body.state,'RELEASE_BATCH_SETTLED');
+  const afterFirstEvent=f.queueCounts();
+  assert.equal((await f.privateCall(firstResultEvent)).body.state,'RELEASE_BATCH_ALREADY_SETTLED');
+  assert.deepEqual(f.queueCounts(),afterFirstEvent);
   assert.equal(releaseRun(firstId).status,'SUCCEEDED');
-  assert.equal(releaseRun(secondId).status,'SCHEDULED','the original signed event can settle only its prior batch');
-  assert.equal((await f.privateCall(firstTimer)).body.replayed,true);
+  assert.equal(releaseRun(secondId).status,'SCHEDULED');
+  assert.equal(f.store.list('monitor_event',PROJECT).length,1);
+  assert.equal(afterFirstEvent.jobWriteAttempts,lostQueue.jobWriteAttempts);
+  const firstTick=f.store.list('cloud_release_tick',PROJECT).find(record=>record.batchId===firstId);
+  assert.equal(firstTick.summary.succeeded,1);
+  f.env.V2_FC_PUBLIC_READ_ONLY='true';
+  await f.restart();
+  assert.equal((await f.privateCall(timer('q'))).body.code,'PUBLIC_PUBLICATION_CLOSED');
+  assert.equal(releaseRun(secondId).status,'SCHEDULED');
+  assert.deepEqual(f.queueCounts(),afterFirstEvent);
+  delete f.env.V2_FC_PUBLIC_READ_ONLY;
+  await f.restart();
   const competing=await Promise.all([f.privateCall(timer('c')),f.privateCall(timer('e'))]);
   assert.ok(competing.every(response=>response.status===200));
   const second=releaseRun(secondId).remoteSubmission.prepared;
@@ -1585,11 +1620,22 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.deepEqual(f.queueCounts(),beforeAcknowledgedRead);
   f.complete(second,useRealSpark?await measuredSpark(t,f,second,'release batch 2'):undefined);
   const beforeOldReplay=f.queueCounts();
-  assert.equal((await f.privateCall(firstTimer)).body.replayed,true);
-  assert.equal(releaseRun(secondId).status,'RUNNING','replaying batch one must not settle batch two');
+  assert.equal((await f.privateCall(firstResultEvent)).body.state,'RELEASE_BATCH_ALREADY_SETTLED');
+  assert.equal(releaseRun(secondId).status,'RUNNING','replaying result one must not settle batch two');
   assert.deepEqual(f.queueCounts(),beforeOldReplay);
   f.later(600001);
-  assert.equal((await f.privateCall(timer('d'))).status,200);
+  f.env.V2_FC_PUBLIC_READ_ONLY='true';
+  delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
+  delete f.env.V2_PRIVATE_RELEASE_ENABLED;
+  await f.restart();
+  const secondResultEvent=f.resultEvent(second.resultKey);
+  assert.equal((await f.privateCall(secondResultEvent)).body.state,'RELEASE_BATCH_SETTLED');
+  const afterSecondEvent=f.queueCounts();
+  assert.equal((await f.privateCall(secondResultEvent)).body.state,'RELEASE_BATCH_ALREADY_SETTLED');
+  assert.deepEqual(afterSecondEvent,{...beforeOldReplay,resultReads:beforeOldReplay.resultReads+1});
+  assert.deepEqual(f.queueCounts(),afterSecondEvent);
+  delete f.env.V2_FC_PUBLIC_READ_ONLY;
+  await f.restart();
   const monitorOffset=publicationCli.requests.length, queuesBeforeMonitoring=f.queueCounts();
   const monitoring=await publicationCli.run('v3-publish',['--reconcile']).done;
   assert.equal(monitoring.code,0,monitoring.stderr);
