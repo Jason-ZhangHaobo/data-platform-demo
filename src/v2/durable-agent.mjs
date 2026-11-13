@@ -11,11 +11,64 @@ import {resolveManualContinuation} from './manual-sql-continuation.mjs';
 import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding} from './sql-requirements.mjs';
 import {resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
+import {liveEvidenceProvenance} from './live-lifecycle-provenance.mjs';
 
 export const durableSqlAgentMode = "DURABLE_SQL_AGENT_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 const digest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const fail = (status, code, message) => Object.assign(new Error(message), { status, code });
+
+function settledDevelopmentPatch(task,run,now) {
+  const attempts=task.attempts.map((attempt,index)=>index===task.attempts.length-1 ? {...attempt,status:run.status} : attempt);
+  const finish=(status,error)=>({attempts,status,stage:status,error,finishedAt:new Date(now).toISOString()});
+  if (run.status==="SUCCEEDED") return finish("SUCCEEDED");
+  if (run.status==="CANCELLED") return finish("CANCELLED","计算任务已取消");
+  if (run.code==="REMOTE_SPARK_TIMEOUT") return finish("FAILED","计算任务超时；已保留原批次，请检查执行环境，不自动触发模型重写");
+  if (!["FAILED","VALIDATION_FAILED"].includes(run.status))
+    throw fail(409,"AGENT_RUN_STATE_INVALID","运行状态需要人工核查");
+  if (attempts.length>=task.maxAttempts || task.usedTokens>=task.tokenBudget)
+    return finish("FAILED","已达到修正次数或预算上限，请人工检查");
+  return {attempts,stage:"READY_FOR_MODEL",status:"QUEUED",
+    durable:{...task.durable,validationError:String(run.error ?? run.validation?.issues?.join("；") ?? "执行失败").slice(0,8000)}};
+}
+
+// This event path can only settle a previously reserved development job. It
+// shares the normal result validation and never has a model or queue writer.
+export async function settleAgentDevelopmentResult({id,key},{store,project,runner,persist,validationFamily,now=Date.now,assertResultTarget}) {
+  const run=store.get("run",id,project), prepared=run?.remoteSubmission?.prepared;
+  if (run?.mode!=="DURABLE_REMOTE_SUBMISSION" || run.isolation!=="FUNCTION_PROCESS" ||
+      !run.agentTaskId || prepared?.resultKey!==key || prepared.job?.jobId!==id || prepared.job.projectId!==project) return;
+  const task=store.get("agent",run.agentTaskId,project), revision=store.get("revision",run.revisionId,project);
+  if (task?.executionMode!==durableSqlAgentMode || task.runId!==id || task.revisionId!==revision?.id ||
+      revision?.source!=="LIVE_MODEL" || revision.author!==task.submittedBy || revision.contextId!==task.contextId ||
+      run.contextId!==task.contextId || run.revisionHash!==revision.hash || typeof revision.sql!=="string" ||
+      revision.sql!==task.sql || createHash("sha256").update(revision.sql).digest("hex")!==revision.hash ||
+      task.attempts?.at(-1)?.runId!==id || task.attempts.at(-1).revisionId!==revision.id ||
+      store.deduplicatedId(`${project}:durable-agent-run:${task.id}:${task.attempts.length}`,
+        digest({revisionId:revision.id,hash:revision.hash}))!==id) return;
+  assertResultTarget?.(task);
+  if ((terminal.has(run.status) || run.status==="VALIDATION_FAILED") && task.stage!=="WAITING_FOR_RUN")
+    return {state:"DEVELOPMENT_BATCH_ALREADY_SETTLED"};
+  if (task.stage!=="WAITING_FOR_RUN") return;
+  const proof=liveEvidenceProvenance(task,revision,run);
+  if (proof.synthetic || proof.nonNative || proof.unconfirmed) return;
+  const owner=store.get("auth_user",task.submittedBy,project);
+  if (owner?.status!=="ACTIVE" || !owner.memberships?.some(member=>member.projectId===project &&
+      ["ADMIN","ENGINEER"].includes(member.role))) return {state:"DEVELOPMENT_BATCH_OWNER_INACTIVE"};
+  const family=validationFamily(task.contextId);
+  if (!family || family.id!==task.validationContractId || family.id!==run.validationContractId) return;
+  let payload;
+  try { payload=JSON.parse(prepared.job.body); }
+  catch { throw fail(409,"AGENT_RUN_LINK_INVALID","原开发批次正文不合法"); }
+  if (payload?.sql!==revision.sql || payload.context?.id!==task.contextId ||
+      !Array.isArray(payload.validationContexts) || payload.validationContexts.length!==family.contextIds.length ||
+      !family.contextIds.every((contextId,index)=>payload.validationContexts[index]?.id===contextId)) return;
+  const saved=await reconcileDurableDevelopment(run,{runner,store,project,persist,contextIds:family.contextIds,
+    contractId:family.id,allowSubmit:false,settleResultEvent:result=>{
+      store.update("agent",task.id,project,settledDevelopmentPatch(task,result,now()),{expectedVersion:task.version});
+    }});
+  return {state:saved.workerResultDigest ? "DEVELOPMENT_BATCH_SETTLED" : "DEVELOPMENT_BATCH_RESULT_UNCONFIRMED"};
+}
 
 export function publicDurableAgent(task) {
   if (!task || task.executionMode !== durableSqlAgentMode) return task;
@@ -310,18 +363,8 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     task = get(task.id);
     if (terminal.has(task.status) || task.stage === "CANCELLING") return publicDurableAgent(task);
     if (["QUEUED", "RUNNING"].includes(run.status)) return publicDurableAgent(task);
-    task = change(task, { attempts: replaceAttempt(task, { status: run.status }) });
-    if (run.status === "SUCCEEDED") return finish(task, "SUCCEEDED");
-    if (run.status === "CANCELLED") return finish(task, "CANCELLED", "计算任务已取消");
-    if (run.code === "REMOTE_SPARK_TIMEOUT")
-      return finish(task, "FAILED", "计算任务超时；已保留原批次，请检查执行环境，不自动触发模型重写");
-    if (!["FAILED", "VALIDATION_FAILED"].includes(run.status))
-      throw fail(409, "AGENT_RUN_STATE_INVALID", "运行状态需要人工核查");
-    if (task.attempts.length >= task.maxAttempts || task.usedTokens >= task.tokenBudget)
-      return finish(task, "FAILED", "已达到修正次数或预算上限，请人工检查");
-    change(task, { stage: "READY_FOR_MODEL", status: "QUEUED",
-      durable: { ...task.durable, validationError: String(run.error ?? run.validation?.issues?.join("；") ?? "执行失败").slice(0,8000) } });
-    await persist(); return publicDurableAgent(get(task.id));
+    const saved=change(task,settledDevelopmentPatch(task,run,now()));
+    await persist(); return publicDurableAgent(saved);
   }
 
   async function advance(id, { expectedVersion, confirmModelRetry = false } = {}) {
