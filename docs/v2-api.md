@@ -84,6 +84,8 @@
 
 CLI 使用 `shuduo agent prepare-delivery --id TASK_ID --source-file SOURCE_JSON --request-id UUID --confirm`，来源文件为工作流返回的 `preparationSource`。演练使用 `shuduo agent advance-delivery --id DELIVERY_ID --version VERSION --package-id UUID --package-digest SHA256 --confirm`，续接附 `--verification-id UUID`。MCP 对应 `agent_delivery_prepare` 的 `expectedSource`、`requestId`、`confirm` 与 `agent_delivery_advance` 的 `rehearsal`、`confirm`。
 
+基金接口使用确切的 `SERVICE_CONSUMPTION_ONLY` 窗口。消费计划增加 `outputContractId: "securities-fund-lookthrough-v1"`，同一批次依次配置金额 DAPI、占比 DAPI，均携带组合、交易日与资产类别键。组合 XAPI 固定两个子版本。调用应用仅授权金额 DAPI 和组合 XAPI，服务端校验原发布审阅、两条成功监控事件及各自签名结果。外部 GET 支持 `portfolio_id`、`trade_date`、`asset_class` 和分页。任务消费回执协议为 `shuduo-private-fund-agent-consumption/v1`；加 `release_batch_id` 读取单批结果，任务级状态须两批均通过。凭证撤销后仍能核验原成功记录。
+
 受邀开发人员可以用 `GET /agent/tasks/{taskId}/fund-execution-preflight` 核对本人保存的基金来源。查询必须提供 `requestId`、`revisionId`、`runId` 和 `basisDigest`。服务端核对原需求、登记交易日、代码、独立断言及实际保存的本机结果，返回候选 SQL、测试 SQL 和请求的摘要。回执保留本机来源与模型归因，`approved` 和 `willExecute` 均为 `false`。接口只返回摘要和来源字段，其他账号无法读取。
 
 CLI 使用 `shuduo agent fund-execution-preflight --task-id UUID --request-id UUID --revision-id UUID --run-id UUID --basis-digest SHA256`。MCP 工具为 `fund_execution_preflight`。

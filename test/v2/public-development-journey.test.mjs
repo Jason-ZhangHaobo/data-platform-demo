@@ -36,7 +36,7 @@ import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs
 import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
 import { createCloudPublication } from '../../src/v2/cloud-publication.mjs';
 import { batchServiceHistoryTarget, opsPublicationTarget, publicationBatchReportHref, publicationMonitorHref, readOpsPublication } from '../../web/src/ops-publication.ts';
-import { checkedAgentPublication, checkedBatchConsumption, checkedExactPublicationReceipt } from '../../web/src/agent-delivery-evidence-read.ts';
+import { checkedAgentPublication, checkedAgentConsumption, checkedBatchConsumption, checkedExactPublicationReceipt } from '../../web/src/agent-delivery-evidence-read.ts';
 import { serviceEvidencePath } from '../../web/src/service-source-binding.ts';
 import { checkedAgentWorkflow, checkedCloudPublicationPreflight } from '../../web/src/agent-workflow-read.ts';
 import { cloudPublicationRequest } from '../../web/src/publication-selection.ts';
@@ -2337,7 +2337,7 @@ async function fundPilotJourney(t,{publication=false}={}) {
 }
 test('invited fund pilot binds one original request, approved trade date and signed Spark output',t=>fundPilotJourney(t));
 
-test('invited fund release binds one review to two signed batches and original monitoring',async t=>{
+async function fundReleaseJourney(t){
   const {f,context,otherId,path,created,pack,run,verificationId,fixtureResult,ownerViewHeaders,workflowSelection}
     =await fundPilotJourney(t,{publication:true});
   const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_INVITED_FUND==='true';
@@ -2439,7 +2439,7 @@ test('invited fund release binds one review to two signed batches and original m
     source:{runId:run.id,packageDigest:pack.digest,verificationId,reviewDigest:checked.reviewDigest}};
   const ops=await readOpsPublication(async route=>(await f.call(route)).body,opsTarget);
   assert.equal(ops.monitoringVerified,true);
-  assert.ok(ops.batches.every(batch=>batch.serviceHref===undefined&&batch.reportSource===undefined));
+  assert.ok(ops.batches.every(batch=>batch.serviceHref&&batch.reportSource===undefined));
   const first=f.store.get('release_run',ids[0],PROJECT), second=f.store.get('release_run',ids[1],PROJECT);
   f.store.update('release_run',ids[0],PROJECT,{workerResultDigest:second.workerResultDigest});
   assert.equal((await f.call('/releases/'+releaseId)).body.monitoringEvidence.status,'UNCONFIRMED');
@@ -2450,6 +2450,124 @@ test('invited fund release binds one review to two signed batches and original m
   assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:4});
   assert.equal(f.queueCounts().jobWriteAttempts,4);
   assert.equal(f.store.list('monitor_event',PROJECT).filter(e=>e.releaseId===releaseId&&e.type==='BATCH_SUCCEEDED').length,2);
+  return {f,context,created,pack,releaseId,ids,ownerViewHeaders};
+}
+test('invited fund release binds one review to two signed batches and original monitoring',t=>fundReleaseJourney(t));
+
+test('invited fund consumption serves both original batches with pinned and revoked grants',async t=>{
+  const {f,context,created,pack,releaseId,ids,ownerViewHeaders}=await fundReleaseJourney(t);
+  const contractId=context.outputContractId, keys=['portfolio_id','trade_date','asset_class'];
+  const releaseQuery=new URLSearchParams({agent_task_id:created.id,package_digest:pack.digest,release_id:releaseId});
+  const evidencePath='/data-services/task-evidence?'+releaseQuery;
+  delete f.env.V2_FC_PUBLIC_READ_ONLY;
+  f.alignWallClock();
+  const reports=[];
+  for (const [index,batchId] of ids.entries()) {
+    const suffix=index+1, limits={timeoutMs:1500,rateLimitPerMinute:5};
+    const amount={name:'组合敞口金额 '+suffix,slug:'fund-amount-'+suffix,fields:[...keys,'exposure_amount'],...limits};
+    const ratio={name:'组合敞口占比 '+suffix,slug:'fund-ratio-'+suffix,fields:[...keys,'exposure_ratio'],...limits};
+    const xapiSpec={name:'组合敞口查询 '+suffix,slug:'fund-composition-'+suffix,...limits};
+    const applicationName='虚构基金外部验收 '+suffix;
+    Object.assign(f.env,{V2_FC_PUBLIC_WRITE_SCOPE:'SERVICE_CONSUMPTION_ONLY',V2_PRIVATE_DATA_SERVICES_ENABLED:'true',
+      V2_PUBLIC_SERVICE_STARTS_AT:new Date(f.now()-1000).toISOString(),V2_PUBLIC_SERVICE_EXPIRES_AT:new Date(f.now()+900000).toISOString(),
+      V2_PUBLIC_SERVICE_PLAN:JSON.stringify({taskId:created.id,packageDigest:pack.digest,sourceReleaseRunId:batchId,outputContractId:contractId,
+        dapis:[amount,ratio],xapi:{...xapiSpec,steps:[{alias:'amount',dapiSlug:amount.slug},{alias:'ratio',dapiSlug:ratio.slug}]},applicationName})});
+    await f.restart();
+    const sources=await f.call('/data-services/sources?'+releaseQuery);
+    assert.equal(sources.status,200,sources.body.message);
+    assert.deepEqual(sources.body.map(x=>x.id).sort(),[...ids].sort());
+    assert.ok(sources.body.every(x=>x.outputContractId===contractId&&x.businessDate===context.businessDate));
+    const otherSources=await fetch(f.base+'/data-services/sources?'+releaseQuery,{headers:ownerViewHeaders});
+    if(otherSources.ok)assert.deepEqual(await otherSources.json(),[]);
+    else assert.equal(otherSources.status,403);
+    assert.equal((await fetch(f.base+evidencePath,{headers:ownerViewHeaders})).status,403);
+    assert.equal((await f.call('/data-services/dapis',{...amount,sourceReleaseRunId:ids[1-index]},randomUUID())).status,403);
+    const make=async(type,body)=>{
+      const made=await f.call('/data-services/'+type,body,randomUUID());
+      assert.equal(made.status,201,made.body.message);
+      const path='/data-services/'+type+'/'+made.body.id;
+      const tested=await f.call(path+'/test',{trade_date:context.businessDate,pageSize:2});
+      assert.equal(tested.status,200,tested.body.message);
+      const published=await f.call(path+'/publish',{configHash:made.body.currentVersion.configHash});
+      assert.equal(published.status,200,published.body.message);
+      return published.body.service;
+    };
+    const a=await make('dapis',{...amount,sourceReleaseRunId:batchId});
+    const b=await make('dapis',{...ratio,sourceReleaseRunId:batchId});
+    const x=await make('xapis',{...xapiSpec,steps:[{alias:'amount',dapiId:a.id,dapiVersionId:a.publishedVersionId},
+      {alias:'ratio',dapiId:b.id,dapiVersionId:b.publishedVersionId}]});
+    assert.equal((await f.call('/data-services/applications',{name:applicationName,serviceIds:[a.id,b.id,x.id]},randomUUID())).status,403);
+    const grant=await f.call('/data-services/applications',{name:applicationName,serviceIds:[a.id,x.id]},randomUUID());
+    assert.equal(grant.status,201,grant.body.message);
+    const app=grant.body.application, token=grant.body.token;
+    f.alignWallClock();
+    const invoke=async(type,slug,query,status,tokenValue=token)=>{
+      const response=await fetch(f.base+'/open/'+type+'/'+slug+'?'+new URLSearchParams(query),
+        {headers:tokenValue?{authorization:'Bearer '+tokenValue}:{}});
+      const body=await response.json();
+      assert.equal(response.status,status,body.message);
+      return body;
+    };
+    const rows=[...context.expected].sort((a,b)=>a.portfolio_id.localeCompare(b.portfolio_id)||
+      (a.asset_class<b.asset_class?-1:a.asset_class>b.asset_class?1:0));
+    const byPortfolio=new Map();
+    for(const row of rows){
+      if(!byPortfolio.has(row.portfolio_id))byPortfolio.set(row.portfolio_id,{portfolio_id:row.portfolio_id,trade_date:row.trade_date,exposures:[]});
+      byPortfolio.get(row.portfolio_id).exposures.push({asset_class:row.asset_class,amount:{exposure_amount:row.exposure_amount},ratio:{exposure_ratio:row.exposure_ratio}});
+    }
+    const queries={trade_date:context.businessDate,pageSize:2};
+    const calls=[];
+    for(const page of [1,2,3,4]){
+      const actual=await invoke('dapis',a.slug,{...queries,page},200);
+      assert.deepEqual(actual.data,rows.slice((page-1)*2,page*2).map(({exposure_ratio,...record})=>record));
+      assert.deepEqual(actual.pagination,{page,pageSize:2,total:7,totalPages:4});
+      assert.equal(actual.resultContract.paginationUnit,'FUND_EXPOSURE_ROWS');
+      assert.equal(actual.sourceEvidence.batchId,batchId);
+      calls.push(actual.callId);
+    }
+    for(const page of [1,2]){
+      const actual=await invoke('xapis',x.slug,{...queries,pageSize:1,page},200);
+      assert.deepEqual(actual.data,[...byPortfolio.values()].slice(page-1,page));
+      assert.equal(actual.resultContract.paginationUnit,'PORTFOLIO_DATE_GROUPS');
+      assert.deepEqual(actual.pagination,{page,pageSize:1,total:2,totalPages:2});
+      assert.equal(actual.sourceEvidence.children[0].batchId,batchId);
+      calls.push(actual.callId);
+    }
+    await invoke('dapis',b.slug,queries,403);
+    await invoke('xapis',x.slug,{trade_date:'2026-02-30'},400);
+    const empty=await invoke('xapis',x.slug,{trade_date:'2026-09-10'},200);
+    assert.deepEqual(empty.data,[]);
+    await invoke('xapis',x.slug,queries,401,'');
+    await invoke('dapis',a.slug,queries,200);
+    await invoke('dapis',a.slug,queries,429);
+    const revoked=await f.call('/data-services/applications/'+app.id+'/revoke',{});
+    assert.equal(revoked.status,200,revoked.body.message);
+    await invoke('xapis',x.slug,queries,401);
+    const logsBefore=f.store.list('service_call',PROJECT).length;
+    const result=await f.call(evidencePath+'&release_batch_id='+batchId);
+    assert.equal(result.status,200,result.body.message);
+    assert.equal(result.body.status,'VERIFIED',JSON.stringify(result.body.services.map(x=>[x.serviceType,x.status,x.notice])));
+    const binding={taskId:created.id,releaseId,packageDigest:pack.digest,sourceKind:'AGENT',scope:'PRIVATE_CLOUD_TEST',
+      revisionId:created.revisionId,runId:created.runId};
+    assert.equal(checkedBatchConsumption(result.body,binding,batchId,true).status,'VERIFIED');
+    assert.equal(checkedAgentConsumption(result.body,binding,[{id:batchId,status:'SUCCEEDED',schedulerTriggered:true}],undefined,{id:contractId,modelMode:'LIVE_MODEL'}).status,'VERIFIED');
+    assert.ok(result.body.services.filter(entry=>entry.status==='VERIFIED').every(entry=>
+      entry.call.applicationStatus==='REVOKED'&&entry.call.independentResultVerified&&entry.sourceRunIds[0]===batchId));
+    assert.equal(f.store.list('service_call',PROJECT).length,logsBefore);
+    assert.ok(!JSON.stringify(result.body).includes(token));
+    assert.equal((await f.call(evidencePath)).body.status,index===0?'PENDING':'VERIFIED');
+    reports.push({batch:batchId,verifiedCalls:calls.length,revoked:true});
+  }
+  f.env.V2_FC_PUBLIC_READ_ONLY='true';
+  f.env.V2_PRIVATE_DATA_SERVICES_ENABLED='false';
+  delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
+  await f.restart();
+  const history=await f.call(evidencePath);
+  assert.equal(history.status,200,history.body.message);
+  assert.equal(history.body.status,'VERIFIED');
+  assert.deepEqual([...new Set(history.body.services.filter(x=>x.status==='VERIFIED').flatMap(x=>x.sourceRunIds))].sort(),[...ids].sort());
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:4});
+  t.diagnostic(JSON.stringify({batches:reports.length,pagedSuccessfulCalls:reports.reduce((n,b)=>n+b.verifiedCalls,0),allRevoked:true,afterCloseReadback:true}));
 });
 
 test('expired Worker readiness settles original Agent development, then resumes repair under the original request',async t=>{

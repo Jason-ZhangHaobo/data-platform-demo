@@ -39,7 +39,7 @@ export function readPrivateBatchReport({store, businessStore, project, actorId, 
   // The delivery verifier has already checked the fixtures file against the
   // manifest. Use the frozen business definition rather than mutable drafts.
   const context = JSON.parse(bundle.files["fixtures.json"]).context;
-  if (origin.outputContract || context.id !== origin.contextId ||
+  if (origin.outputContract || origin.fundDevelopment || context.id !== origin.contextId ||
       validationFamilyForContext(context.id)?.id !== origin.validationContractId)
     throw fail(409, "PRIVATE_BATCH_REPORT_CONTRACT_UNSUPPORTED", "此批次不属于已支持的证券客户资产汇总口径");
   const rows = normalizedServiceSourceRows(batch.rows);

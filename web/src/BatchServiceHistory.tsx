@@ -23,7 +23,7 @@ export default function BatchServiceHistory({api,workspaceAvailable}:{api:Reader
       if(!active) return;
       if(!monitor.monitoringVerified)throw Error("原发布的两个批次与监控事件尚未核对。");
       const response=await api(serviceEvidencePath(binding)+"&release_batch_id="+encodeURIComponent(batchId));
-      if(active)setState({href,refresh,value:checkedBatchConsumption(response,binding,batchId)});
+      if(active)setState({href,refresh,value:checkedBatchConsumption(response,binding,batchId,monitor.fund===true)});
     };
     void load().catch(error=>{if(active)setState({href,refresh,error:error instanceof Error?error.message:"读取失败"});});
     return ()=>{active=false;};
@@ -51,7 +51,7 @@ export default function BatchServiceHistory({api,workspaceAvailable}:{api:Reader
       <div className="agent-delivery-actions">
         <a className="button" href={publicationMonitorHref(target.publication,true)}>返回原发布</a>
         <a className="button" href={publicationMonitorHref(target.publication)}>返回运维</a>
-        {current?.value && <a className="button" href={publicationBatchReportHref(target.publication,target.batchId)}>查看本批次报表</a>}
+        {current?.value && current.value.protocol!=="shuduo-private-fund-agent-consumption/v1" && <a className="button" href={publicationBatchReportHref(target.publication,target.batchId)}>查看本批次报表</a>}
         {current?.value && workspaceAvailable && <a className="button" href={batchWorkspaceHref(href,target)}>打开本批次接口工作区</a>}
       </div>
     </>}

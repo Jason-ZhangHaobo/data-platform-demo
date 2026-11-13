@@ -22,7 +22,7 @@ export function privateServiceRoute(method,path,{agentPlanning=false,agentRead=f
   const url=new URL(path,"http://127.0.0.1"),p=url.pathname;
   if(p!==path.split("?")[0] || new Set(url.searchParams.keys()).size!==[...url.searchParams.keys()].length)return false;
   let allowed=[];
-  if(method==="GET" && /^\/api\/v2\/open\/(dapis|xapis)\/[a-z][a-z0-9-]{2,47}$/.test(p))allowed=["client_id","clientId","page","page_size","pageSize"];
+  if(method==="GET" && /^\/api\/v2\/open\/(dapis|xapis)\/[a-z][a-z0-9-]{2,47}$/.test(p))allowed=["client_id","clientId","portfolio_id","trade_date","asset_class","page","page_size","pageSize"];
   else if(method==='GET' && p==='/api/v2/data-services/agent/context'){
     try{return Boolean(servicePlanSourceQuery(url.searchParams));}catch{return false;}
   }

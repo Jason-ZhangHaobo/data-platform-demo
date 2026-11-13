@@ -96,10 +96,12 @@ export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBindi
  return value as TaskConsumption;
 }
 
-export function checkedBatchConsumption(value:unknown,binding:ServiceSourceBinding,batchId:string) {
- if(!record(value)||value.sourceReleaseRunId!==batchId||value.protocol!=="shuduo-private-task-consumption/v1"||
+export function checkedBatchConsumption(value:unknown,binding:ServiceSourceBinding,batchId:string,fund=false) {
+ if(!record(value)||value.sourceReleaseRunId!==batchId||
+   value.protocol!==(fund?"shuduo-private-fund-agent-consumption/v1":"shuduo-private-task-consumption/v1")||
    binding.scope!=="PRIVATE_CLOUD_TEST"||binding.sourceKind!=="AGENT")throw invalidConsumption();
- const proof=checkedAgentConsumption(value,binding,[{id:batchId,status:"SUCCEEDED",schedulerTriggered:true}]);
+ const proof=checkedAgentConsumption(value,binding,[{id:batchId,status:"SUCCEEDED",schedulerTriggered:true}],
+   undefined,fund?{id:"securities-fund-lookthrough-v1",modelMode:"LIVE_MODEL"}:undefined);
  if(proof.services.some(service=>service.sourceRunIds.some(id=>id!==batchId)))throw invalidConsumption();
  return proof;
 }
