@@ -3,6 +3,7 @@ import { closeSync, constants, fstatSync, mkdtempSync, openSync, readSync, rmSyn
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { sha256 } from "../src/v2/delivery.mjs";
+import { boundedBytes } from "./control-code-transport.mjs";
 
 export const WEB_INDEX_LIMIT = 300000;
 export const WEB_ENTRY_SCRIPT_LIMIT = 2 * 1024 * 1024;
@@ -38,7 +39,12 @@ function readArchive(path, application) {
 }
 
 export function inspectedControlEntryScript(zipPath, application) {
-  const bytes = readArchive(zipPath, application);
+  return inspectedControlEntryScriptBytes(readArchive(zipPath, application), application);
+}
+
+export function inspectedControlEntryScriptBytes(bytes, application) {
+  requireEntry(Buffer.isBuffer(bytes) && bytes.length === application.bytes &&
+    sha256(bytes) === application.sha256, "APPLICATION_ZIP_MISMATCH");
   const directory = mkdtempSync(join(tmpdir(), "shuduo-control-entry-"));
   try {
     // Extract only from the exact bytes checked above, never from a reopened
@@ -64,4 +70,51 @@ export function inspectedControlEntryScript(zipPath, application) {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+export async function readInspectedWebAsset(client, asset, signal) {
+  const started = performance.now();
+  let response, headersMs;
+  const result = (status, reason, extra = {}) => ({
+    status, ...(reason ? {reason} : {}),
+    ...(response ? {httpStatus:response.status,headersMs} : {}),
+    elapsedMs: Math.round(performance.now() - started), ...extra,
+  });
+  try {
+    const url = new URL(asset.path,client.baseUrl);
+    response = await client.fetchImpl(url.href,{
+      method:"GET", redirect:"error", cache:"no-store", credentials:"omit", signal,
+      headers:{Accept:asset.accept,"Cache-Control":"no-cache"},
+    });
+    headersMs = Math.round(performance.now() - started);
+    if (response.status !== 200 || !asset.contentType.test(response.headers.get("content-type") ?? "")) {
+      await response.body?.cancel();
+      return result("UNCONFIRMED",asset.invalidResponse);
+    }
+    const bytes = await boundedBytes(response,asset.limit);
+    return bytes.length === asset.bytes && sha256(bytes) === asset.digest
+      ? result("MATCHED",undefined,{observedBytes:bytes.length})
+      : result("MISMATCH",`${asset.label}_CONTENT_MISMATCH`,{observedBytes:bytes.length});
+  } catch (error) {
+    await response?.body?.cancel().catch(() => {});
+    const reason = signal.aborted ? "TIMEOUT" : error?.safeCode === "OBJECT_TOO_LARGE" ? "TOO_LARGE" : "TRANSPORT_UNCONFIRMED";
+    return result("UNCONFIRMED",`${asset.label}_${reason}`);
+  }
+}
+
+export function readInspectedWebIndex(client, application, signal) {
+  return readInspectedWebAsset(client,{
+    path:"/v2/", accept:"text/html", contentType:/^text\/html(?:;|$)/i,
+    invalidResponse:"ENTRY_NOT_HTML", label:"ENTRY", limit:WEB_INDEX_LIMIT,
+    bytes:application.webIndexBytes, digest:application.webIndexSha256,
+  },signal);
+}
+
+
+export function readInspectedWebScript(client, expected, signal) {
+  return readInspectedWebAsset(client,{
+    ...expected, accept:"text/javascript, application/javascript",
+    contentType:/^(?:text|application)\/javascript(?:;|$)/i,
+    invalidResponse:"ENTRY_SCRIPT_NOT_JAVASCRIPT", label:"ENTRY_SCRIPT", limit:WEB_ENTRY_SCRIPT_LIMIT,
+  },signal);
 }

@@ -29,8 +29,7 @@ import { cloudWindowApplicationBinding, cloudWindowCheckpointBinding, firstCloud
 import { developmentRequestDigest } from "../src/v2/public-development-access.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
 import { cloudV3CompletionReceipt, cloudV3DerivationSource, cloudV3FailureReceipt, nextCloudV3Definition, readCloudV3Cases, validCloudV3ApprovalTiming, validDownstreamFailure } from "./cloud-v3-run.mjs";
-import { boundedBytes } from "./control-code-transport.mjs";
-import { inspectedControlEntryScript, WEB_ENTRY_SCRIPT_LIMIT, WEB_INDEX_LIMIT } from "./control-web-entry.mjs";
+import { inspectedControlEntryScript, readInspectedWebIndex, readInspectedWebScript } from "./control-web-entry.mjs";
 
 const revisionPattern = /^[a-f0-9]{40}$/;
 const id = value => typeof value === "string" && uuid.test(value);
@@ -333,46 +332,9 @@ function checkedWindowReceipt(path,windowPath,applicationPath,client,bill,previo
   return receipt;
 }
 
-async function readFirstWindowAsset(client, asset, signal) {
-  const started = performance.now();
-  let response, headersMs;
-  const result = (status, reason, extra = {}) => ({
-    status, ...(reason ? {reason} : {}),
-    ...(response ? {httpStatus:response.status,headersMs} : {}),
-    elapsedMs: Math.round(performance.now() - started), ...extra,
-  });
-  try {
-    const url = new URL(asset.path,client.baseUrl);
-    response = await client.fetchImpl(url.href,{
-      method:"GET", redirect:"error", cache:"no-store", credentials:"omit", signal,
-      headers:{Accept:asset.accept,"Cache-Control":"no-cache"},
-    });
-    headersMs = Math.round(performance.now() - started);
-    if (response.status !== 200 || !asset.contentType.test(response.headers.get("content-type") ?? "")) {
-      await response.body?.cancel();
-      return result("UNCONFIRMED",asset.invalidResponse);
-    }
-    const bytes = await boundedBytes(response,asset.limit);
-    return bytes.length === asset.bytes && sha256(bytes) === asset.digest
-      ? result("MATCHED",undefined,{observedBytes:bytes.length})
-      : result("MISMATCH",`${asset.label}_CONTENT_MISMATCH`,{observedBytes:bytes.length});
-  } catch (error) {
-    await response?.body?.cancel().catch(() => {});
-    const reason = signal.aborted ? "TIMEOUT" : error?.safeCode === "OBJECT_TOO_LARGE" ? "TOO_LARGE" : "TRANSPORT_UNCONFIRMED";
-    return result("UNCONFIRMED",`${asset.label}_${reason}`);
-  }
-}
-
-function readFirstWindowEntry(client, application, signal) {
-  return readFirstWindowAsset(client,{
-    path:"/v2/", accept:"text/html", contentType:/^text\/html(?:;|$)/i,
-    invalidResponse:"ENTRY_NOT_HTML", label:"ENTRY", limit:WEB_INDEX_LIMIT,
-    bytes:application.webIndexBytes, digest:application.webIndexSha256,
-  },signal);
-}
 
 async function verifyFirstWindowEntry(client, application) {
-  const probe = await readFirstWindowEntry(client, application, AbortSignal.timeout(client.timeoutMs ?? 15000));
+  const probe = await readInspectedWebIndex(client, application, AbortSignal.timeout(client.timeoutMs ?? 15000));
   if (probe.status === "MISMATCH")
     stop("正式入口 HTML 与验包证据不一致，请保留原请求和检查点");
   if (probe.status !== "MATCHED")
@@ -401,16 +363,12 @@ export async function checkCloudV3PreparedEntry(path, client, applicationPath, t
     }
   }
   const signal = AbortSignal.timeout(timeoutMs);
-  const probe = await readFirstWindowEntry(client,application,signal);
+  const probe = await readInspectedWebIndex(client,application,signal);
   let script;
   if (expectedScript && probe.status === "MATCHED") {
     if (!signal.aborted) {
       report.scriptRequests = 1;
-      script = await readFirstWindowAsset(client,{
-        ...expectedScript, accept:"text/javascript, application/javascript",
-        contentType:/^(?:text|application)\/javascript(?:;|$)/i,
-        invalidResponse:"ENTRY_SCRIPT_NOT_JAVASCRIPT", label:"ENTRY_SCRIPT", limit:WEB_ENTRY_SCRIPT_LIMIT,
-      },signal);
+      script = await readInspectedWebScript(client,expectedScript,signal);
     } else {
       script = {status:"UNCONFIRMED",reason:"ENTRY_SCRIPT_TIMEOUT"};
     }

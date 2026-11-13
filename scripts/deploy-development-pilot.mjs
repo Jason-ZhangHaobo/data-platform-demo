@@ -15,10 +15,12 @@ import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
 import { publicationPilotTimers, publicationPilotTimerNames } from './publication-pilot-timers.mjs';
 import { publicServiceConfig } from '../src/v2/public-service-access.mjs';
 import { developmentRecoveryScope, developmentRecoveryModes, runDevelopmentRecoveryOperation } from './development-recovery-window.mjs';
+import { inspectedControlEntryScriptBytes, readInspectedWebIndex, readInspectedWebScript, WEB_INDEX_LIMIT } from './control-web-entry.mjs';
 import { cloudV3DevelopmentScope, nextCloudDevelopmentScope, firstCloudDevelopmentModes } from './first-cloud-v3-window.mjs';
 
 const check = (v, code) => { if (!v) throw Object.assign(new Error(code), { safeCode: code }); };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+const formalOrigin = 'https://shuduoai.cn';
 const same = (a, b) => isDeepStrictEqual(functionSnapshot(a), functionSnapshot(b));
 // This receipt authorizes only GET-based verification, never a replacement PUT.
 export function validatePilotPackageTransport(plan, workflowPreStaged) {
@@ -223,7 +225,8 @@ export function validateReadonlyCodeRefreshPlan(plan) {
     : reserve === (securityContinuation ? 62 : taskContinuation ? taskContinuation.previousReserveCny : continuation ? 52 : 45);
   const keys = ['protocol', 'predecessorDigest', 'approvalDigest', 'historyUsageDigest',
     'previousSha256', 'candidateSha256', 'applicationSource', 'buildRunId', 'artifactId', ...(taskContinuation ? ['taskResumeDigest'] : []),
-    ...(securityContinuation ? ['securityMaintenanceDigest'] : []), ...(reserveBound ? ['priorReserveCny'] : [])];
+    ...(securityContinuation ? ['securityMaintenanceDigest'] : []), ...(reserveBound ? ['priorReserveCny'] : []),
+    ...(Object.hasOwn(plan ?? {},'readonlyWeb') ? ['webEvidenceDigest'] : [])];
   check(plan?.scope === readonlyCodeRefreshScope && readonlyCodeModes.includes(plan.mode) &&
     plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === (continuation || taskContinuation ? 5 : 2) &&
     plan.monthlyCny === 200 && validReserve,
@@ -248,6 +251,20 @@ export function validateReadonlyCodeRefreshPlan(plan) {
     ['triggerCreates', 'triggerDeletes', 'permissionProbes'].every(key => plan.priorUsage[key] === 0) &&
     plan.priorUsage.objectPuts <= 1 && plan.priorUsage.configWrites <= 2,
   'READONLY_CODE_USAGE_INVALID');
+  const web = plan.readonlyWeb;
+  const bindsWeb = Object.hasOwn(binding, 'webEvidenceDigest');
+  check(bindsWeb === Object.hasOwn(plan, 'readonlyWeb'), 'READONLY_WEB_BINDING_INVALID');
+  if (bindsWeb) {
+    const fields = ['protocol', 'candidatePackageSha256', 'rollbackPackageSha256', 'webIndexSha256', 'webIndexBytes',
+      'rollbackIndexSha256', 'rollbackIndexBytes'];
+    check(web && Object.keys(web).length === fields.length && fields.every(key => Object.hasOwn(web,key)) &&
+      web.protocol === 'READONLY_CODE_WEB_V1' && web.candidatePackageSha256 === plan.candidate.sha256 &&
+      web.rollbackPackageSha256 === plan.previous.sha256 &&
+      [web.webIndexSha256,web.rollbackIndexSha256].every(digest=>/^[a-f0-9]{64}$/.test(digest ?? '')) &&
+      web.webIndexSha256 !== web.rollbackIndexSha256 &&
+      [web.webIndexBytes,web.rollbackIndexBytes].every(bytes=>Number.isSafeInteger(bytes) && bytes>0 && bytes<=WEB_INDEX_LIMIT) &&
+      binding.webEvidenceDigest === timerHash(web), 'READONLY_WEB_BINDING_INVALID');
+  }
   if (plan.mode === 'rollback') check(['STAGED', 'RESTORE_REQUESTED'].includes(plan.phase) &&
     plan.priorUsage.configWrites === (plan.phase === 'RESTORE_REQUESTED' ? 2 : 1), 'READONLY_CODE_ROLLBACK_CHECKPOINT_REQUIRED');
   return true;
@@ -305,6 +322,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const now = io.now ?? Date.now, wait = io.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const serviceOnly = plan.scope === serviceConsumptionScope;
   const codeOnly = plan.scope === readonlyCodeRefreshScope, noTimers = serviceOnly || codeOnly;
+  const web = codeOnly ? plan.readonlyWeb : undefined;
   const extendedCode = codeOnly && (plan.budgetFixContinuation !== undefined || plan.targetTaskCodeContinuation !== undefined);
   const securityCode = codeOnly && plan.securityMaintenanceContinuation !== undefined;
   check(codeOnly || plan.securityMaintenanceContinuation === undefined, 'SECURITY_MAINTENANCE_SCOPE_INVALID');
@@ -345,6 +363,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     ...(preStaged ? { packageTransport: plan.packageTransport, preStagedObject: structuredClone(plan.preStagedObject), preStagedObjectDigest } : {}),
     ...(noTimers && ['close', 'rollback'].includes(plan.mode) && plan.phase === 'RESTORE_REQUESTED' ? { phase: 'RESTORE_REQUESTED' } : {}),
     ...(codeOnly ? { readonlyCodeRefresh: structuredClone(plan.readonlyCodeRefresh), historyUsage: structuredClone(plan.historyUsage),
+      ...(web ? { readonlyWeb:structuredClone(web) } : {}),
       ...(plan.budgetFixContinuation ? { budgetFixContinuation: structuredClone(plan.budgetFixContinuation) } : {}),
       ...(plan.targetTaskCodeContinuation ? { targetTaskCodeContinuation: structuredClone(plan.targetTaskCodeContinuation) } : {}),
       ...(plan.securityMaintenanceContinuation ? { securityMaintenanceContinuation: structuredClone(plan.securityMaintenanceContinuation) } : {}) }
@@ -392,6 +411,27 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     const verified = verifyV2MonthlyBillPages(pages, 200);
     check(verified.ok && verified.billingCycle === cycle && Number(verified.spendCny) + plan.priorReserveCny + plan.maxIncrementCny < 200, 'MONTHLY_BUDGET_NOT_VERIFIED');
     plan.billCny = Number(verified.spendCny); report.bill = verified; save();
+  };
+  const verifyWeb = async (identity, script) => {
+    spend('activeHttp');
+    const webClient = {baseUrl:formalOrigin,fetchImpl:(url,options)=>(io.fetchWeb ?? fetch)(url,options)};
+    const signal = AbortSignal.timeout(Math.max(1,Math.min(30000,plan.deadline-now())));
+    const index = await readInspectedWebIndex(webClient,identity,signal);
+    report.web = {index}; save();
+    check(index.status==='MATCHED',index.reason ?? 'READONLY_WEB_INDEX_UNCONFIRMED');
+    if (script) {
+      check(!signal.aborted,'ENTRY_SCRIPT_TIMEOUT');
+      spend('activeHttp');
+      const entry = await readInspectedWebScript(webClient,script,signal);
+      report.web.script = entry; save();
+      check(entry.status==='MATCHED',entry.reason ?? 'READONLY_WEB_SCRIPT_UNCONFIRMED');
+    }
+  };
+  const rollbackIndex = web ? {webIndexBytes:web.rollbackIndexBytes,webIndexSha256:web.rollbackIndexSha256} : undefined;
+  const verifyRollbackWeb = async () => {
+    const stageWeb = report.web;
+    try { await verifyWeb(rollbackIndex); }
+    finally { report.rollbackWeb=report.web; report.web=stageWeb; }
   };
   const runtime = async opened => {
     for (let n = 0; n < 3; n++) {
@@ -565,6 +605,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       check(same(before, report.baseline), 'PILOT_BASELINE_CHANGED');
       check(plan.bucketPrivacy?.bucketHash === sha(before.environmentVariables.OSS_BUCKET) && plan.bucketPrivacy.aclPrivate === true && plan.bucketPrivacy.policyNotPublic === true && plan.bucketPrivacy.publicAccessBlocked === true &&
         Date.parse(plan.bucketPrivacy.checkedAt) <= now() && now() - Date.parse(plan.bucketPrivacy.checkedAt) < 3600000, 'PRIVATE_BUCKET_REQUIRED');
+      let expectedScript;
       if (!resume && !noTimers) await probeMissingTimerDeletion(); // No timer authority in service or code-only mode.
       await bill();
       for (const suffix of ['/concurrency', '/scaling-config']) {
@@ -577,13 +618,16 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
         report.previous = plan.previous; report.candidate = await verifyObject(plan.candidate);
       } else {
         const bytes = await io.readCandidate(); check(bytes.length === plan.candidate.bytes && sha(bytes) === plan.candidate.sha256, 'CANDIDATE_NOT_FROZEN');
+        if (web) expectedScript=inspectedControlEntryScriptBytes(bytes,{...plan.candidate,...web});
         report.previous = await verifyObject(plan.previous); report.candidate = await verifyObject(plan.candidate, bytes);
       }
       save();
       await settle(report.baseline);
       report.phase = 'STAGE_REQUESTED'; save();
       try { await put({ code: packageBody(report.candidate) }); } catch { report.updateResponseUnknown = true; save(); }
-      report.staged = await settle(stagedSnapshot()); await runtime(false); report.phase = 'STAGED';
+      report.staged = await settle(stagedSnapshot());
+      if (web) await verifyWeb(web,expectedScript);
+      await runtime(false); report.phase = 'STAGED';
     } else if (plan.mode === 'activate') {
       check(plan.phase === 'STAGED' && same(before, stagedSnapshot()), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
       await bill();
@@ -640,7 +684,9 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
           try { await put({ ...(!codeOnly ? { environmentVariables: report.baseline.environmentVariables } : {}), ...(plan.mode === 'rollback' ? { code: packageBody(plan.previous) } : {}) }); }
         catch { report.restoreResponseUnknown = true; save(); }
       } else { report.readOnlyAlreadyRestored = true; save(); }
-      await settle(plan.mode === 'rollback' ? report.baseline : staged); await runtime(false);
+      await settle(plan.mode === 'rollback' ? report.baseline : staged);
+      if (rollbackIndex) await verifyWeb(rollbackIndex);
+      await runtime(false);
       if (!noTimers) {
         check(!(await listTimers()).some(timer => plan.triggerNames.includes(timer.triggerName)), 'PUBLICATION_TIMERS_NOT_CLEANED');
         report.timersAbsenceVerified = true;
@@ -673,6 +719,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
           catch { report.rollbackResponseUnknown = true; save(); }
           await settle(restore); report.rollback = 'VERIFIED';
         }
+        if (staging && rollbackIndex && report.web) await verifyRollbackWeb();
       } catch (rollback) { report.rollbackFailure = rollback.safeCode ?? 'ROLLBACK_UNCONFIRMED'; }
       save();
     }
@@ -736,7 +783,7 @@ async function main(env = process.env) {
         },
         http: async endpoint => {
           check(['/api/v2/auth/session', '/api/v2/status'].includes(endpoint), 'PUBLICATION_HTTP_SCOPE_INVALID');
-          const response = await fetch('https://shuduoai.cn' + endpoint, { redirect: 'error', signal: AbortSignal.timeout(30000) });
+          const response = await fetch(formalOrigin + endpoint, { redirect: 'error', signal: AbortSignal.timeout(30000) });
           check(/json/i.test(response.headers.get('content-type') ?? ''), 'PUBLICATION_HTTP_RESPONSE_INVALID');
           return { status: response.status, body: await response.json() };
         },
@@ -766,7 +813,7 @@ async function main(env = process.env) {
         },
         http: async endpoint => {
           check(['/api/v2/auth/session', '/api/v2/status'].includes(endpoint), 'PUBLICATION_HTTP_SCOPE_INVALID');
-          const response = await fetch('https://shuduoai.cn' + endpoint, { redirect: 'error', signal: AbortSignal.timeout(30000) });
+          const response = await fetch(formalOrigin + endpoint, { redirect: 'error', signal: AbortSignal.timeout(30000) });
           check(/json/i.test(response.headers.get('content-type') ?? ''), 'PUBLICATION_HTTP_RESPONSE_INVALID');
           return { status: response.status, body: await response.json() };
         },
