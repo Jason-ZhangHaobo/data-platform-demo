@@ -24,6 +24,11 @@ import { runV2Cli } from '../../bin/shuduo.mjs';
 import { handleV2Mcp } from '../../bin/shuduo-mcp.mjs';
 import { runSpark, runtimeConfig } from '../../src/v2/spark.mjs';
 import { syntheticSqlRequirement } from './fixtures/sql-requirement.mjs';
+import { fundContextIds } from '../../src/v2/fund-contexts.mjs';
+import { fundRequirementScope } from '../../src/v2/fund-requirement-contract.mjs';
+import { fundExecutionBody } from '../../src/v2/fund-preparation-client.mjs';
+import { sqlRequirementBasis } from '../../src/v2/sql-requirements.mjs';
+import { fundDeliveryBinding } from '../../src/v2/fund-delivery.mjs';
 import { agentReviewEvidencePath, publicationPreflightPath, publicationRequestReceiptPath } from '../../src/v2/publication-request.mjs';
 import { validatePrivateApplicationRequest } from '../../src/v2/private-application.mjs';
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
@@ -229,9 +234,14 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     const businessStore=new BusinessQueryStore(join(directory,'business.sqlite'));
     app = createV2Server({ store, businessStore, root: directory, env, runner, agentWakeTransport, now: () => now, artifactStore, ingress: createFcIngress({ publicHttpEnabled: true, publicReadOnly: env.V2_FC_PUBLIC_READ_ONLY === 'true' }), generator: async input => {
       modelCalls++; if(modelFault)throw Error('synthetic model interrupted');
+      const fund=fundRequirementScope(input.context.id), basis=fund && sqlRequirementBasis(input.message,input.context);
+      if (fund) assert.equal(input.fundBasisDigest,basis.digest);
+      const requirement=fund ? {requirementProtocol:basis.protocol,requirement:{kind:'DEVELOPMENT',basisDigest:basis.digest,
+        summary:'按原交易日计算组合敞口',grain:basis.grain,metrics:basis.metrics.map(({field,label,sourceFields})=>
+          ({field,meaning:label,sourceFields})),constraints:basis.constraints}} : syntheticSqlRequirement(input);
       return { sql: sqlForAttempt?.(modelCalls,input) ?? (contextualModel?referenceSqlForContext(input.context.id):referenceSql), model: structuredRequirement?'qwen3-coder-plus':'synthetic-protocol-fixture',
         explanation: 'Local lifecycle fixture, not a real model', usage: { total_tokens: 12 },
-        ...(structuredRequirement ? syntheticSqlRequirement(input) : {}) };
+        ...(structuredRequirement ? requirement : {}) };
     } });
     app.auth.bootstrapAdmin({ email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026', displayName: '虚构开发者' });
     const port=stableOrigin && base ? Number(new URL(base).port) : 0;
@@ -2138,6 +2148,91 @@ test('an invited derived task progresses on original events after client disconn
   assert.deepEqual(f.store.get('agent',source.task.id,PROJECT),originalParent);
   assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
   assert.equal(f.queueCounts().jobWriteAttempts,1);
+});
+
+test('invited fund pilot binds one original request, approved trade date and signed Spark output',async t=>{
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
+  const [otherId,contextId]=fundContextIds, context=getContext(contextId), other=getContext(otherId);
+  const message='核对已登记交易日的组合敞口并保留未穿透余额', key=randomUUID();
+  const basis=sqlRequirementBasis(message,context), binding=fundDeliveryBinding(contextId);
+  const input={message,contextId,businessDate:context.businessDate,metrics:basis.metrics.map(metric=>metric.field)};
+  const request=fundExecutionBody({input,requestId:key,basis});
+  f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(request)));
+  await f.restart();
+  assert.equal((await f.call('/agent/fund-preparations',input,key)).status,403);
+  f.env.V2_INVITED_FUND_DEVELOPMENT='true';
+  await f.restart();
+  assert.equal((await f.call('/status')).body.agentDevelopment.fundPilotAvailable,true);
+  const guest=await (await fetch(f.base+'/status')).json();
+  assert.equal(guest.agentDevelopment.fundPilotAvailable,undefined);
+  assert.equal(guest.agentDevelopment.fundContexts,undefined);
+  assert.equal((await f.call('/agent/fund-preparations',{...input,businessDate:other.businessDate},key)).body.code,'FUND_PREPARATION_DATE_MISMATCH');
+  assert.equal((await f.call('/agent/fund-preparations',{...input,contextId:otherId,businessDate:other.businessDate},key)).status,403);
+  assert.equal((await f.call('/agent/fund-preparations',input,randomUUID())).status,403);
+  assert.equal(f.store.list('agent_fund_preparation',PROJECT).length,0);
+  assert.equal((await f.call('/agent/tasks',request,key)).status,404);
+  const prepared=await f.call('/agent/fund-preparations',input,key);
+  assert.equal(prepared.status,201,prepared.body.message);
+  assert.equal(prepared.body.scope,'PRIVATE_CLOUD_TEST');
+  assert.equal(prepared.body.execution.inputDigest,binding.inputHash);
+  assert.deepEqual(await f.call('/agent/fund-preparations',input,key).then(value=>value.body),prepared.body);
+  assert.equal((await f.call('/agent/tasks',{...request,contextId:otherId},key)).status,403);
+  assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
+  const created=await f.call('/agent/tasks',request,key);
+  assert.equal(created.status,202,created.body.message);
+  assert.equal(created.body.mode,'SYNTHETIC_MODEL');
+  assert.equal(created.body.fundPreparation.basisDigest,basis.digest);
+  assert.equal((await f.call('/agent/tasks',request,key)).body.id,created.body.id);
+  const path='/agent/tasks/'+created.body.id;
+  const advance=task=>f.call(path+'/advance',{expectedVersion:task.version});
+  const generated=await advance(created.body);
+  assert.equal(generated.body.stage,'READY_FOR_RUN');
+  const waiting=await advance(generated.body);
+  assert.equal(waiting.body.stage,'WAITING_FOR_RUN');
+  const run=f.store.get('run',waiting.body.runId,PROJECT), queued=run.remoteSubmission.prepared;
+  const packet=JSON.parse(queued.job.body);
+  assert.equal(packet.context.businessDate,context.businessDate);
+  assert.equal(packet.validationContexts[0].id,contextId);
+  assert.match(packet.testSql,/Independent fund look-through assertions/);
+  const fixtureResult={status:'SUCCEEDED',engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,
+    inputEvidence:{protocol:'shuduo-spark-execution-input/v1',scope:'MANAGER_SCOPED_REGISTERED_TABLES',
+      contextId,inputHash:binding.inputHash,schemaHash:binding.schemaHash,tableCount:3},
+    rows:context.expected,testSqlValidation:{passed:true,sqlHash:sha256(packet.testSql)},durationMs:100};
+  const assertionEvidence={protocol:'shuduo-securities-assertion-evidence/v1',verifierRevision:'fund-lookthrough-v1',contentHash:binding.assertionHash};
+  fixtureResult.validation={passed:true,selectedPassed:true,assertionEvidence,
+    regressions:[{contextId,passed:true,assertionEvidence,inputEvidence:fixtureResult.inputEvidence}]};
+  const result=process.env.SHUDUO_TEST_LOCAL_SPARK_INVITED_FUND==='true'
+    ? await runSpark(packet,{...runtimeConfig({}),artifactRoot:f.directory,retainArtifacts:false}) : fixtureResult;
+  assert.equal(result.status,'SUCCEEDED');
+  t.diagnostic(`Spark ${result.engineVersion}, registered fund assertions, ${result.rows.length} rows, ${result.durationMs} ms`);
+  f.complete(queued,{...result,inputEvidence:{...result.inputEvidence,contextId:otherId}});
+  assert.equal((await advance(waiting.body)).body.code,'REMOTE_SPARK_INVALID_RESULT');
+  assert.equal(f.store.get('run',run.id,PROJECT).version,run.version);
+  f.complete(queued,result);
+  await f.restart();
+  const done=await advance(waiting.body);
+  assert.equal(done.body.status,'SUCCEEDED',done.body.message);
+  assert.equal(done.body.runId,run.id);
+  assert.equal((await f.call(path+'/workflow')).body.report.status,'PASSED');
+  assert.equal((await f.call('/runs/'+run.id)).body.validation.assertionEvidence.contentHash,binding.assertionHash);
+  assert.equal((await f.call(path+'/prepare-delivery',{},randomUUID())).status,422);
+  const otherAdmin={email:'other-fund-owner@example.invalid',password:'SyntheticJourney!2026',displayName:'其他虚构管理员'};
+  f.addAdmin(otherAdmin);
+  const otherLogin=await f.call('/auth/login',{email:otherAdmin.email,password:otherAdmin.password});
+  assert.equal(otherLogin.status,200);
+  const headers={cookie:otherLogin.cookies.map(value=>value.split(';')[0]).join('; ')};
+  for(const protectedPath of [path, path+'/workflow', '/runs/'+run.id, '/revisions/'+done.body.revisionId]){
+    assert.equal((await fetch(f.base+protectedPath,{headers})).status,403,protectedPath);
+  }
+  assert.equal((await (await fetch(f.base+'/status',{headers})).json()).agentDevelopment.fundContexts,undefined);
+  f.expire();
+  await f.restart();
+  const expired=await f.call('/status');
+  assert.equal(expired.body.agentDevelopment.fundPilotAvailable,undefined);
+  assert.ok(expired.body.agentDevelopment.fundContexts.some(item=>item.id===contextId));
+  assert.equal((await f.call(path+'/workflow')).body.report.status,'PASSED');
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
+  assert.equal(f.store.list('release',PROJECT).length,0);
 });
 
 test('expired Worker readiness settles original Agent development, then resumes repair under the original request',async t=>{

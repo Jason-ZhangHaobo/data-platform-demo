@@ -22,6 +22,20 @@ export function fundPreparationInput(input) {
   return { contextId: input.contextId, businessDate: input.businessDate, message: input.message.trim(), metrics };
 }
 
+export function fundExecutionBody(receipt) {
+  return { message: receipt.input.message, contextId: receipt.input.contextId, language: "SPARK_SQL",
+    fundPreparation: { requestId: receipt.requestId, basisDigest: receipt.basis.digest, confirm: true } };
+}
+
+export function fundExecutionRequest(body, key) {
+  const binding=body?.fundPreparation;
+  if (!body || Object.keys(body).length!==4 || body.language!=="SPARK_SQL" || !isFundContext(body.contextId) ||
+      typeof body.message!=="string" || body.message.trim()!==body.message || body.message.length<4 || body.message.length>2000 ||
+      !binding || Object.keys(binding).length!==3 || binding.confirm!==true || fundPreparationRequestId(binding.requestId)!==key ||
+      typeof binding.basisDigest!=="string" || !/^[a-f0-9]{64}$/.test(binding.basisDigest)) throw invalid();
+  return fundExecutionBody({input:body,requestId:key,basis:{digest:binding.basisDigest}});
+}
+
 const preflightPath = /^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\/fund-execution-preflight$/;
 const preflightFields = ["requestId", "revisionId", "runId", "basisDigest"];
 

@@ -78,7 +78,9 @@
 
 本机基金口径按上下文编号分别登记业务日 `2026-09-10` 与 `2026-09-11`。代码版本、执行输入、文件包和回读均绑定原上下文；演练使用该上下文登记的样例 T+1 时间。
 
-`POST /agent/fund-preparations` 接受 `contextId`、`businessDate`、`message` 和 `metrics`，用 UUID `Idempotency-Key` 保存本机基金准备。五个输出字段为 `portfolio_id`、`trade_date`、`asset_class`、`exposure_amount`、`exposure_ratio`。原拥有者用 `GET /agent/fund-preparations/requests/{requestId}` 读回同一口径和摘要。两条接口限本机回环，均无模型或 Spark 执行。
+`POST /agent/fund-preparations` 接受 `contextId`、`businessDate`、`message` 和 `metrics`，用 UUID `Idempotency-Key` 保存本机基金准备。五个输出字段为 `portfolio_id`、`trade_date`、`asset_class`、`exposure_amount`、`exposure_ratio`。原拥有者用 `GET /agent/fund-preparations/requests/{requestId}` 读回同一口径和摘要。两条接口均无模型或 Spark 执行。本机使用回环接口；受邀试点写入另需下述确切开发窗口。
+
+受邀基金开发开关 `V2_INVITED_FUND_DEVELOPMENT` 默认关闭。试点需私有执行边界、通过就绪核验的 OSS Spark 队列以及绑定原请求的 `DEVELOPMENT_ONLY` 窗口。操作员使用登记上下文与固定需求计算 `sqlRequirementBasis`，按 `fundExecutionBody` 生成规范正文，再将原 UUID 与正文摘要传入 `developmentRequestDigest` 计算窗口的 `V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST`。获准账号在工作台沿带 `fund_prepare_request` 的原链接填写已核对的口径，或使用 `shuduo agent prepare-fund`。提交执行使用同一 UUID 和审阅过的 `basisDigest`，CLI 为 `shuduo agent execute-fund`。确认执行后才调用模型和隔离 Spark。归属校验覆盖原任务、代码、运行和准备回执，窗口关闭后仍可按原记录回读。试点当前覆盖开发与独立验证。
 
 受邀开发人员可以用 `GET /agent/tasks/{taskId}/fund-execution-preflight` 核对本人保存的基金来源。查询必须提供 `requestId`、`revisionId`、`runId` 和 `basisDigest`。服务端核对原需求、登记交易日、代码、独立断言及实际保存的本机结果，返回候选 SQL、测试 SQL 和请求的摘要。回执保留本机来源与模型归因，`approved` 和 `willExecute` 均为 `false`。接口只返回摘要和来源字段，其他账号无法读取。
 

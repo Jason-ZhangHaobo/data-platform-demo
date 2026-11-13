@@ -1,4 +1,5 @@
-import { fundExecutionPreflightPath, fundPreparationInput, fundPreparationRequestId } from "./fund-preparation-request.mjs";
+import { fundExecutionBody, fundExecutionPreflightPath, fundPreparationInput, fundPreparationRequestId } from "./fund-preparation-request.mjs";
+export { fundExecutionBody };
 import { fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
 import { validSqlRequirementBasis } from "./sql-requirement-contract.mjs";
 
@@ -9,7 +10,7 @@ const digest = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value
 export async function checkedFundPreparation(value, { requestId, input: expected } = {}) {
   const invalid = () => { throw Error("基金准备回执与原请求或登记口径不一致"); };
   if (!value || value.protocol !== "shuduo-fund-preparation/v1" || value.status !== "PREPARED" ||
-      value.scope !== "LOCAL_TEST_ONLY" || value.modelCalls !== 0 || value.sparkRuns !== 0 ||
+      !["LOCAL_TEST_ONLY","PRIVATE_CLOUD_TEST"].includes(value.scope) || value.modelCalls !== 0 || value.sparkRuns !== 0 ||
       value.publicDeployed !== false || value.agentIndependentE2E !== false ||
       fundPreparationRequestId(value.requestId) !== (requestId ?? value.requestId)) invalid();
   const input = fundPreparationInput(value.input), { basis, execution } = value;
@@ -34,11 +35,6 @@ export async function submitFundPreparation(client, input, requestId) {
 export async function readFundPreparation(client, requestId) {
   const id = fundPreparationRequestId(requestId);
   return checkedFundPreparation(await client.request("/agent/fund-preparations/requests/" + id), { requestId: id });
-}
-
-export function fundExecutionBody(receipt) {
-  return { message: receipt.input.message, contextId: receipt.input.contextId, language: "SPARK_SQL",
-    fundPreparation: { requestId: receipt.requestId, basisDigest: receipt.basis.digest, confirm: true } };
 }
 
 export function fundExecutionReceiptMatches(task, body, requestId) {

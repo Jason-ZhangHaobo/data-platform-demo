@@ -3,6 +3,8 @@ import { syncSqlOutputSchemaDetails } from "./sync-sql-input.mjs";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { verifiedWorkerResultDigest } from "./worker-result-evidence.mjs";
+import { createFundTestSql, fundRunMatchesRegisteredResult } from "./fund-delivery.mjs";
+import { fundContext } from "./fund-lookthrough.mjs";
 
 const terminal = new Set(["SUCCEEDED", "FAILED", "VALIDATION_FAILED", "CANCELLED"]);
 
@@ -72,6 +74,23 @@ export async function reconcileDurableDevelopment(run, { runner, store, project,
       throw Object.assign(new Error("云端任务回执不合法"), { code: "REMOTE_SPARK_INVALID_RESULT" });
     if(result.validation?.contractId!==undefined&&result.validation.contractId!==contractId)
       throw Object.assign(new Error("云端回执声明了不同的业务口径验证契约"),{code:"REMOTE_SPARK_INVALID_RESULT"});
+    if (run.fundPreparation) {
+      const context=fundContext(run.contextId), binding=run.fundPreparation;
+      const testSql=createFundTestSql(context.expected,context.id);
+      workerResultDigest=verifiedWorkerResultDigest(result);
+      const resultBelongsToRun = workerResultDigest && typeof prepared.serialized === "string" &&
+        result.queueJobDigest === createHash("sha256").update(prepared.serialized).digest("hex");
+      const matchesInput = result.inputEvidence?.inputHash === binding.inputDigest &&
+        result.inputEvidence?.schemaHash === binding.schemaDigest && result.inputEvidence?.contextId === context.id;
+      const matchesTest = result.testSqlValidation?.sqlHash === createHash("sha256").update(testSql).digest("hex");
+      const sqlFinished = result.status === "SUCCEEDED" || result.status === "VALIDATION_FAILED";
+      if (!resultBelongsToRun || (result.inputEvidence !== undefined && !matchesInput) ||
+          (result.testSqlValidation !== undefined && !matchesTest) ||
+          (sqlFinished && (result.engineVersion !== "3.5.9" || result.mainSqlExecuted !== true || !matchesInput || !matchesTest)) ||
+          (result.status === "VALIDATION_FAILED" && result.validation?.passed !== false) ||
+          (result.status === "SUCCEEDED" && (result.testSqlValidation?.passed !== true || !fundRunMatchesRegisteredResult(result, context.id))))
+        throw Object.assign(new Error("签名基金结果与原交易日、登记输入或独立断言不一致"), {status:502,code:"REMOTE_SPARK_INVALID_RESULT"});
+    }
     if (result.status === "SUCCEEDED" &&
         (result.engine !== "Apache Spark" || result.engineVersion !== "3.5.9" ||
          result.mainSqlExecuted !== true || result.testDouble === true || result.validation?.passed !== true ||
@@ -87,7 +106,7 @@ export async function reconcileDurableDevelopment(run, { runner, store, project,
   if (!settleResultEvent && terminal.has(current.status)) return current;
   const receipt = Object.fromEntries([
     "status", "engine", "engineVersion", "mainSqlExecuted", "validation", "rows", "columns", "durationMs",
-    "log", "stdout", "stderr", "code", "error", "isolation", "adapter", "mode", "remoteWorker",
+    "log", "stdout", "stderr", "code", "error", "isolation", "adapter", "mode", "remoteWorker","inputEvidence","testSqlValidation",
   ].filter(key => result[key] !== undefined).map(key => [key, result[key]]));
   const outcome = {
     ...receipt, durationMs: typeof receipt.durationMs === "number" ? receipt.durationMs : undefined,

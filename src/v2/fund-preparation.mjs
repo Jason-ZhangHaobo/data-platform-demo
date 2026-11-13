@@ -12,16 +12,16 @@ export function fundAgentRequestSignature({ message, language, contextId, fundPr
   return sha256(JSON.stringify({ message, language, contextId, fundPreparation }));
 }
 
-export function createFundPreparations({ store, project }) {
+export function createFundPreparations({ store, project, scope="LOCAL_TEST_ONLY" }) {
   const kind = "agent_fund_preparation";
-  const keyFor = (actor, requestId) => `${project}:agent-fund-preparation:v1:${actor}:${requestId}`;
+  const keyFor = (actor, requestId) => `${project}:agent-fund-preparation:v1:${scope==="PRIVATE_CLOUD_TEST"?"cloud:":""}${actor}:${requestId}`;
   const build = (input, requestId) => {
     const context = getContext(input.contextId);
     if (!context || context.businessDate !== input.businessDate)
       throw fail(422, "FUND_PREPARATION_DATE_MISMATCH", "业务日与所选基金口径不一致");
     const binding = fundDeliveryBinding(context.id), basis = sqlRequirementBasis(input.message, context);
     return {
-      protocol: "shuduo-fund-preparation/v1", status: "PREPARED", scope: "LOCAL_TEST_ONLY", requestId, input, basis,
+      protocol: "shuduo-fund-preparation/v1", status: "PREPARED", scope, requestId, input, basis,
       execution: { state: "AWAITING_EXECUTION_AUTHORIZATION", engine: "Apache Spark", dialect: "SPARK_SQL",
         rehearsalAt: fundRehearsalAt(context.id), inputDigest: binding.inputHash, schemaDigest: binding.schemaHash,
         assertionDigest: binding.assertionHash },
@@ -40,9 +40,10 @@ export function createFundPreparations({ store, project }) {
     return item.receipt;
   };
   return {
-    submit(body, actor, requestId) {
+    submit(body, actor, requestId, authorize) {
       requestId = fundPreparationRequestId(requestId);
       const input = fundPreparationInput(body), receipt = build(input, requestId);
+      authorize?.(receipt);
       const { replayed } = store.deduplicate(keyFor(actor, requestId), sha256(JSON.stringify(input)),
         () => store.create(kind, project, { actorId: actor, receipt }));
       return { receipt: read(requestId, actor), replayed };
