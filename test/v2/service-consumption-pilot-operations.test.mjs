@@ -3,6 +3,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runPublicationPilotOperation, serviceConsumptionPilotEnvironment, validatePilotPackageTransport, validateServicePilotReserve,
   readonlyCodeRefreshScope, validateReadonlyCodeRefreshPlan } from '../../scripts/deploy-development-pilot.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
@@ -13,7 +17,7 @@ const failure = safeCode => Object.assign(new Error(safeCode), { safeCode });
 function fixture(options = {}) {
   let now = Date.parse('2026-10-28T08:00:00Z');
   const previousBytes = Buffer.from('synthetic previous read-only service package');
-  const candidateBytes = Buffer.from('synthetic reviewed service-consumption package');
+  const candidateBytes = options.candidateBytes ?? Buffer.from('synthetic reviewed service-consumption package');
   const previous = { sha256: sha(previousBytes), bytes: previousBytes.length, crc64: '1234' };
   const candidate = { sha256: sha(candidateBytes), bytes: candidateBytes.length, crc64: '5678' };
   const baseline = { functionName: 'dataplatform-v2-synthetic-api', runtime: 'custom.debian12', cpu: 0.25, memorySize: 512,
@@ -44,6 +48,11 @@ function fixture(options = {}) {
   let current = structuredClone(baseline), lastPlan, lastReport, activeReport, saved;
   const calls = [], controls = {}, objects = new Map([[previous.sha256, previousBytes]]);
   const io = {
+    fetchWeb: (url, options) => {
+      assert.deepEqual(saved.cumulativeUsage,activeReport.cumulativeUsage,'reserve before each web request');
+      calls.push({web:new URL(url).pathname});
+      return controls.fetchWeb(url,options,current);
+    },
     now: () => now, wait: async () => {}, save: report => {
       if (controls.saveFailure) throw failure('SYNTHETIC_SAVE_FAILED');
       if (controls.runtimeSaveTypeError && report.phase === 'STAGE_REQUESTED' && report.activeHttp > 0) throw new TypeError('SYNTHETIC_RUNTIME_SAVE_FAILED');
@@ -135,8 +144,8 @@ function preStagedFixture(putAttempts = 0) {
 }
 
 const canonicalHash = value => sha(JSON.stringify(Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]))));
-function codeFixture() {
-  const f=fixture({extraBaseline:{role:'acs:ram::111122223333:role/synthetic-control-runtime',
+function codeFixture(candidateBytes) {
+  const f=fixture({candidateBytes,extraBaseline:{role:'acs:ram::111122223333:role/synthetic-control-runtime',
     vpcConfig:{vpcId:'vpc-synthetic',vSwitchIds:['vsw-synthetic'],securityGroupId:'sg-synthetic'},
     logConfig:{project:'synthetic-logs',logstore:'synthetic-control'},layers:['synthetic-layer']}}),p=f.basePlan;
   delete p.target; delete p.servicePlan;
@@ -374,6 +383,88 @@ test('code-only refresh rejects an open or drifted baseline, wrong capacity and 
   for(const change of [f=>f.controls.reservedConcurrency=2,f=>f.controls.minInstances=1,f=>f.controls.publicObject=true]){
     const f=codeFixture();change(f);await assert.rejects(f.step('stage'));assert.equal(f.calls.filter(c=>c.args?.[1]==='PUT').length,0);
   }
+});
+
+function codeWebFixture() {
+  const html = '<html><script type="module" src="/v2/assets/index-ReviewedScript.js"></script></html>';
+  const script = 'export const reviewed = true;';
+  const rollback = '<html>Original read-only page</html>';
+  const folder = mkdtempSync(join(tmpdir(),'shuduo-web-grant-'));
+  let archive;
+  try {
+    mkdirSync(join(folder,'web-dist','assets'),{recursive:true});
+    writeFileSync(join(folder,'web-dist','index.html'),html);
+    writeFileSync(join(folder,'web-dist','assets','index-ReviewedScript.js'),script);
+    execFileSync('zip',['-q','-r','candidate.zip','web-dist'],{cwd:folder});
+    archive=readFileSync(join(folder,'candidate.zip'));
+  } finally { rmSync(folder,{recursive:true,force:true}); }
+  const f=codeFixture(archive), plan=f.basePlan;
+  plan.readonlyWeb={protocol:'READONLY_CODE_WEB_V1',candidatePackageSha256:f.candidate.sha256,
+    rollbackPackageSha256:f.previous.sha256,webIndexSha256:sha(html),webIndexBytes:Buffer.byteLength(html),
+    rollbackIndexSha256:sha(rollback),rollbackIndexBytes:Buffer.byteLength(rollback)};
+  plan.readonlyCodeRefresh.webEvidenceDigest=canonicalHash(plan.readonlyWeb);
+  f.controls.fetchWeb=(target,options,current)=>{
+    const url=new URL(target);
+    assert.equal(url.origin,'https://shuduoai.cn');
+    assert.equal(options.credentials,'omit');
+    assert.equal(options.redirect,'error');
+    assert.equal(options.method,'GET');
+    if(url.pathname==='/v2/')return new Response(current.codeChecksum===f.previous.crc64 || f.controls.wrongHtml ? rollback : html,
+      {headers:{'content-type':'text/html'}});
+    assert.equal(url.pathname,'/v2/assets/index-ReviewedScript.js');
+    return new Response(f.controls.wrongScript?'export const reviewed=false;':script,{headers:{'content-type':'text/javascript'}});
+  };
+  return f;
+}
+
+test('exact read-only code refresh verifies the public HTML, script and manual rollback entry',async()=>{
+  const f=codeWebFixture();
+  const stage=await f.step('stage');
+  assert.equal(stage.phase,'STAGED');
+  assert.equal(stage.web.index.status,'MATCHED');
+  assert.equal(stage.web.script.status,'MATCHED');
+  assert.equal(stage.cumulativeUsage.activeHttp,4);
+  const rollback=await f.step('rollback');
+  assert.equal(rollback.phase,'ROLLED_BACK');
+  assert.equal(rollback.web.index.status,'MATCHED');
+  assert.deepEqual(f.calls.filter(c=>c.web).map(c=>c.web),['/v2/','/v2/assets/index-ReviewedScript.js','/v2/']);
+  assert.equal(rollback.cumulativeUsage.activeHttp,7);
+});
+
+test('unbound HTML is rejected before cloud IO and stale entry bytes trigger only the original rollback',async()=>{
+  const bad=codeWebFixture();
+  bad.basePlan.readonlyWeb.webIndexSha256='a'.repeat(64);
+  await assert.rejects(bad.step('stage'),/READONLY_WEB_BINDING_INVALID/);
+  assert.equal(bad.calls.length,0);
+  const malformed=codeWebFixture();
+  malformed.basePlan.readonlyWeb.webIndexSha256='a'.repeat(64);
+  malformed.basePlan.readonlyCodeRefresh.webEvidenceDigest=canonicalHash(malformed.basePlan.readonlyWeb);
+  await assert.rejects(malformed.step('stage'),/APPLICATION_ENTRY_INVALID/);
+  assert.equal(malformed.calls.filter(c=>c.method==='PUT'||c.args?.[1]==='PUT').length,0);
+  for(const type of ['wrongHtml','wrongScript']){
+    const f=codeWebFixture();
+    f.controls[type]=true;
+    await assert.rejects(f.step('stage'),type==='wrongHtml'?/ENTRY_CONTENT_MISMATCH/:/ENTRY_SCRIPT_CONTENT_MISMATCH/);
+    assert.deepEqual(f.current,f.baseline);
+    assert.equal(f.report.web[type==='wrongHtml'?'index':'script'].status,'MISMATCH');
+    assert.equal(f.report.rollback,'VERIFIED');
+    assert.equal(f.report.rollbackWeb.index.status,'MATCHED');
+    assert.equal(f.report.configWrites,2);
+    assert.equal(f.report.activeHttp,type==='wrongHtml'?2:3);
+    assert.ok(f.calls.filter(c=>c.args?.[1]==='PUT').every(c=>Object.keys(c.body).join()==='code'));
+  }
+});
+
+test('an exhausted web read allowance preserves the mismatch without inventing rollback entry evidence',async()=>{
+  const f=codeWebFixture();
+  f.controls.wrongHtml=true;
+  await assert.rejects(f.step('stage',{priorUsage:{...f.basePlan.priorUsage,activeHttp:39}}),/ENTRY_CONTENT_MISMATCH/);
+  assert.equal(f.report.rollback,'VERIFIED');
+  assert.equal(f.report.rollbackFailure,'PUBLICATION_USAGE_LIMIT');
+  assert.equal(f.report.web.index.status,'MISMATCH');
+  assert.equal(f.report.rollbackWeb,undefined);
+  assert.equal(f.calls.filter(call=>call.web).length,1);
+  assert.equal(f.report.cumulativeUsage.activeHttp,40);
 });
 
 test('code-only refresh checks a complete bill including the retained reserve and never uses a former low reserve',async()=>{
