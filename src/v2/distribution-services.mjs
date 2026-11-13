@@ -57,7 +57,7 @@ export function distributionComposition(versions, steps) {
    throw fail("基金 DAPI 缺少组合、交易日或资产类别");
   const metrics = versions.map(version => version.fields.filter(field => !contract.keyFields.includes(field)));
   if (!same(metrics.map(fields => fields.join(",")).sort(), ["exposure_amount", "exposure_ratio"]) ||
-      versions.some(version => version.scope !== "LOCAL_TEST_ONLY" || version.snapshotId !== first.snapshotId ||
+      versions.some(version => !["LOCAL_TEST_ONLY","PRIVATE_CLOUD_TEST"].includes(version.scope) || version.scope !== first.scope || version.snapshotId !== first.snapshotId ||
         version.sourceReleaseId !== first.sourceReleaseId || version.sourcePackageDigest !== first.sourcePackageDigest ||
         !same(version.sourceEvidence, first.sourceEvidence)))
    throw fail("基金 XAPI 需要同一已核验快照的金额与占比 DAPI 各一个");

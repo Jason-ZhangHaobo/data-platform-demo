@@ -5,6 +5,8 @@ import {getContext,validationFamilyForContext} from './context.mjs';
 import { privateServiceRoute, privateServiceSourceSelection } from "./private-service-routes.mjs";
 import { privateServiceRecovery } from "./private-service-recovery.mjs";
 import { publishServiceReviewed, activateServiceReviewed } from "./service-version-governance.mjs";
+import { fundDapiContract } from "./fund-dapi-contract.mjs";
+import { fundAgentTaskConsumption } from "./fund-agent-task-consumption.mjs";
 import { privateTaskConsumption } from "./private-task-consumption.mjs";
 import { createServicePilotGuard, assertServiceMutation } from "./public-service-access.mjs";
 import {createDurableServiceAgent} from './durable-service-agent.mjs';
@@ -19,12 +21,16 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
   agentConfig,planner,assertModelBudget=()=>{throw Error('Model budget not configured');},budgetOverview=()=>{throw Error('Budget not configured');},modelLeaseMs,waitForModel,backgroundView,dispatchPlan,cancelPlan}) {
   const get=(kind,id)=>typeof id==="string"?store.get(kind,id,project):undefined;
   const source=id=>readPrivateReleaseBatch(store,project,id).batch;
-  const manager=new DataServiceManager({store,businessStore,project,scope:"PRIVATE_CLOUD_TEST",releaseRunFor:source,verifySource:run=>source(run?.id),now});
+  const manager=new DataServiceManager({store,businessStore,project,scope:"PRIVATE_CLOUD_TEST",releaseRunFor:source,verifySource:run=>source(run?.id),fundSourceFor:run=>run?.fundSource,now});
   const pilot = pilotConfig ? createServicePilotGuard({config:pilotConfig,store,project,source,detail:id=>manager.detail(id),now}) : undefined;
   const actor=req=>{const a=auth.sessionFromHeaders(req.headers);if(!a)throw fail(401,"请先登录受邀账号","AUTHENTICATION_REQUIRED");return a;};
   const manualReleaseOwned=(a,release)=>{
     const bundle=get("delivery_package",release?.packageId),origin=bundle?.manifest?.source,attribution=origin?.attribution;
     if(!release||!bundle)return false;
+    if (origin?.fundDevelopment)
+      return Boolean(attribution?.kind==="FUND_AGENT_GENERATED" && a?.user?.id===attribution.actorId &&
+        release.submittedBy===a.user.id && release.sourceAgentTaskId===attribution.originAgentTaskId &&
+        release.sourceKind==="AGENT" && get("agent",release.sourceAgentTaskId)?.submittedBy===a.user.id);
     const manual=attribution!==undefined||[release,bundle].some(item=>item.sourceKind==="MANUAL"||item.sourceAttribution==="ENGINEER_ASSISTED");
     if(!manual)return [undefined,"AGENT"].includes(release.sourceKind)&&[undefined,"AGENT"].includes(bundle.sourceKind);
     if(attribution?.kind==='ENGINEER_AUTHORED')return Boolean(a?.user?.id&&attribution.actorId===a.user.id&&release.submittedBy===a.user.id&&release.manualDeliveryTaskId===bundle.manualDeliveryTaskId&&release.sourceAgentTaskId===undefined&&get('manual_delivery_task',release.manualDeliveryTaskId)?.submittedBy===a.user.id&&release.sourceKind==='MANUAL'&&release.sourceAttribution==='ENGINEER_AUTHORED'&&release.agentIndependentE2E===false&&bundle.digest===release.packageDigest&&bundle.sourceRunId===origin.runId&&release.sourceRunId===origin.runId&&release.sourceRevisionId===origin.revisionId&&release.sourceCodeHash===origin.sqlHash);
@@ -92,6 +98,8 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     if(pilotConfig&&((binding.manualDeliveryTaskId?pilotConfig.plan.manualDeliveryTaskId!==binding.manualDeliveryTaskId||pilotConfig.plan.taskId!==undefined:pilotConfig.plan.taskId!==binding.taskId||pilotConfig.plan.manualDeliveryTaskId!==undefined)||pilotConfig.plan.packageDigest!==binding.packageDigest||pilotConfig.plan.sourceReleaseRunId!==run.id))
       throw fail(403,'上下文不属于当前限定消费来源','PUBLIC_SERVICE_TARGET_MISMATCH');
     const bundle=get('delivery_package',run.packageId),origin=bundle.manifest.source,context=getContext(origin.contextId),family=validationFamilyForContext(origin.contextId);
+    if (origin.fundDevelopment)
+      throw fail(422,"基金接口使用已审阅的消费计划","FUND_AGENT_PLAN_UNSUPPORTED");
     // getContext has a legacy default. A missing/unregistered manifest context
     // must never acquire that default or borrow a mutable Agent context instead.
     if(typeof origin.contextId!=='string'||context.id!==origin.contextId||family?.id!==origin.validationContractId||!family?.contextIds.includes(context.id))
@@ -125,8 +133,12 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
   };
   const checkInput=(a,type,b,version=false)=>{
     bodyKeys(b,type==="DAPI"?[...(version?[]:["name","slug"]),"sourceReleaseRunId","fields","timeoutMs","rateLimitPerMinute"]:[...(version?[]:["name","slug"]),"steps","timeoutMs","rateLimitPerMinute"]);
-    if(type==="DAPI")sourceOwner(a,source(b.sourceReleaseRunId));
-    else if(b.steps!==undefined){if(!Array.isArray(b.steps))throw fail(422,"XAPI步骤无效");for(const s of b.steps){bodyKeys(s,["alias","dapiId","dapiVersionId"]);const child=service(a,s.dapiId);if(s.dapiVersionId && s.dapiVersionId!==child.publishedVersionId)throw fail(409,"XAPI子版本已经变更","STALE_SERVICE_VERSION");}}
+    if(type==="DAPI"){
+      const batch=source(b.sourceReleaseRunId);
+      sourceOwner(a,batch);
+      if (batch.fundSource && !pilot) throw fail(403,"基金接口须使用确切的消费窗口","PUBLIC_SERVICE_TARGET_MISMATCH");
+    }
+    else if(b.steps!==undefined){if(!Array.isArray(b.steps))throw fail(422,"XAPI步骤无效");for(const s of b.steps){bodyKeys(s,["alias","dapiId","dapiVersionId"]);const child=service(a,s.dapiId);if (!pilot && child.publishedVersion?.outputContractId===fundDapiContract.id) throw fail(403,"基金接口须使用确切的消费窗口","PUBLIC_SERVICE_TARGET_MISMATCH");if(s.dapiVersionId && s.dapiVersionId!==child.publishedVersionId)throw fail(409,"XAPI子版本已经变更","STALE_SERVICE_VERSION");}}
   };
   const identity=id=>{const user=get('auth_user',id);return {user,role:user?.memberships?.find(item=>item.projectId===project)?.role};};
   const assertPlanVersions=(actorId,binding,refs,current)=>{
@@ -154,7 +166,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       throw fail(422, "需提供任务编号、确切包摘要及合法发布选择", "INVALID_CONSUMPTION_INPUT");
     const { taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId } = selection;
     const task = get(manualDeliveryTaskId ? "manual_delivery_task" : "agent", manualDeliveryTaskId ?? taskId);
-    if (!task || ((manualDeliveryTaskId || verifySavedRelease || a.role !== "ADMIN") && task.submittedBy !== owner))
+    if (!task || ((task.fundPreparation || manualDeliveryTaskId || verifySavedRelease || a.role !== "ADMIN") && task.submittedBy !== owner))
       throw fail(403, "无权读取此任务消费证据");
     const releases = store.list("release", project).filter(release =>
       (manualDeliveryTaskId
@@ -173,6 +185,15 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     if (verifySavedRelease) {
       if (releases.length !== 1) throw fail(409, "原发布与所选消费来源不一致", "CONSUMPTION_PUBLICATION_UNCONFIRMED");
       verifySavedRelease(taskId, releases[0], owner);
+    }
+    if (task.fundPreparation) {
+      if (!releaseId || releases.length!==1) throw fail(409,"基金消费须选择原发布和包","FUND_AGENT_CONSUMPTION_UNCONFIRMED");
+      return fundAgentTaskConsumption({store,project,agent:task,packageDigest,releaseId,batchId,callIdDigest,manager,
+        canReadService:item=>owned(a,item),privateSources:()=>store.list("release_run",project)
+          .filter(run=>run.releaseId===releaseId).sort((a,b)=>a.sequence-b.sequence).map(run=>{
+            const verified=source(run.id);sourceOwner(a,verified);
+            return {id:verified.id,sourceEvidence:verified.fundSource?.evidence};
+          })});
     }
     return privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId,
       getPackage: id => get("delivery_package", id),
@@ -229,6 +250,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
         rows.push({id:run.id,releaseId:run.releaseId,...(release.manualDeliveryTaskId?{manualDeliveryTaskId:release.manualDeliveryTaskId}:{sourceAgentTaskId:release.sourceAgentTaskId}),sourceKind:release.sourceKind??"AGENT",scope:"PRIVATE_CLOUD_TEST",
           sourceRevisionId:sourceInfo.revisionId,sourceRunId:sourceInfo.runId,sourceRevisionHash:sourceInfo.sqlHash,
           ...(release.sourceKind==="MANUAL"?{sourceAttribution:release.sourceAttribution}:{}),agentIndependentE2E:false,
+          ...(run.fundSource?{outputContractId:run.outputContractId,businessDate:run.businessDate,sourceEvidence:run.fundSource.evidence}:{}),
           status:run.status,published:run.published,schedulerTriggered:run.schedulerTriggered,engine:run.engine,engineVersion:run.engineVersion,mainSqlExecuted:run.mainSqlExecuted,testSqlValidation:{passed:true},validation:{passed:true},packageDigest:run.packageDigest,sequence:run.sequence,createdAt:run.createdAt,rowCount:run.rows.length});}catch(e){if(![403,409,422].includes(e.status))throw e;}}
       return {status:200,body:rows};
     }
@@ -238,7 +260,11 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     const key=req.headers["idempotency-key"];
     const dedup=(namespace,b,create)=>{if(typeof key!=="string"||key.length<1||key.length>100)throw fail(422,"缺少幂等键");return store.deduplicate(`${project}:private-service:${owner}:${namespace}:${key}`,serviceHash(b),create);};
     if(method==="POST" && path.endsWith("/applications")){
-      const b=bodyKeys(await readBody(req),["name","serviceIds"]);if(!Array.isArray(b.serviceIds))throw fail(422,"授权服务列表无效");for(const id of b.serviceIds)service(a,id);
+      const b=bodyKeys(await readBody(req),["name","serviceIds"]);if(!Array.isArray(b.serviceIds))throw fail(422,"授权服务列表无效");for(const id of b.serviceIds){
+        const item=service(a,id);
+        if (!pilot && item.publishedVersion?.outputContractId===fundDapiContract.id)
+          throw fail(403,"基金凭证须在确切的消费窗口签发","PUBLIC_SERVICE_TARGET_MISMATCH");
+      }
       let issued;const record=dedup("app",b,()=>{pilot?.assertApplicationCreate(b);issued=manager.createApplication(b,{expiresAt:pilot?.applicationTags.expiresAt});return store.update("service_app",issued.application.id,project,{createdBy:owner,...pilot?.applicationTags});});
       if(record.replayed)return {status:200,body:{application:manager.application(record.id),token:null,tokenShownOnce:false}};
       return {status:201,body:{...issued,application:manager.application(record.id)}};
@@ -251,6 +277,8 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     }
     const match=path.match(new RegExp(`^/api/v2/data-services/(dapis|xapis)/(${uuid})(?:/(versions|test|publish|activate|openapi|calls|recovery|history))?$`));
     if(match){const type=match[1]==="dapis"?"DAPI":"XAPI",s=service(a,match[2]),action=match[3];if(s.serviceType!==type)throw fail(404,"服务类型不匹配");
+      if (method!=="GET" && !pilot && s.pilotId && s.currentVersion?.outputContractId===fundDapiContract.id)
+        throw fail(403,"基金接口写入须使用确切的消费窗口","PUBLIC_SERVICE_TARGET_MISMATCH");
       if(method!=="GET")pilot?.assertService(s);
       if(method==="GET" && action==="history")return {status:200,body:store.list("service_version_switch",project).filter(r=>r.serviceId===s.id)};
       if(method==="GET" && action==="recovery")return {status:200,body:privateServiceRecovery({

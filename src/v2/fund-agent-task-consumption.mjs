@@ -9,9 +9,10 @@ const invalid = () => Object.assign(new Error("基金 Agent 的原批次、固�
   status: 409, code: "FUND_AGENT_CONSUMPTION_UNCONFIRMED",
 });
 
-export async function fundAgentTaskConsumption({ store, project, agent, packageDigest, releaseId, callIdDigest, manager, timeUnitMs, batchId, fundSignedExecutionFor }) {
+export async function fundAgentTaskConsumption({ store, project, agent, packageDigest, releaseId, callIdDigest, manager, timeUnitMs, batchId, fundSignedExecutionFor, privateSources, canReadService }) {
   const selection = { taskId: agent.id, packageDigest, releaseId };
-  const sources = () => fundAgentServiceSources({ store, project, selection, timeUnitMs, fundSignedExecutionFor });
+  const scope = privateSources ? "PRIVATE_CLOUD_TEST" : "LOCAL_TEST_ONLY";
+  const sources = privateSources ?? (() => fundAgentServiceSources({ store, project, selection, timeUnitMs, fundSignedExecutionFor }));
   const original = sources();
   if (original.length !== 2) throw invalid();
   const byBatch = new Map(original.filter(run => batchId === undefined || run.id === batchId).map(run => [run.id, run.sourceEvidence]));
@@ -19,6 +20,7 @@ export async function fundAgentTaskConsumption({ store, project, agent, packageD
   const services = [];
   let matchingCount = 0;
   for (const service of manager.list()) {
+    if (canReadService && !canReadService(service)) continue;
     const logs = manager.listCalls(service.id).filter(call => call.outcome === "SUCCEEDED" && call.statusCode === 200);
     const exact = callIdDigest && logs.find(call => consumerDigest(call.id) === callIdDigest);
     if (callIdDigest && !exact) continue;
@@ -37,7 +39,7 @@ export async function fundAgentTaskConsumption({ store, project, agent, packageD
       agentIndependentE2E: false, fundExposureComposition: false, notice: "等待这一个固定版本的非空授权调用。" };
     try {
       const children = childrenFor(version), batchId = children[0]?.sourceReleaseRunId, evidence = byBatch.get(batchId);
-      if (!evidence || !serviceVersionConfigValid(version) || version.scope !== "LOCAL_TEST_ONLY" ||
+      if (!evidence || !serviceVersionConfigValid(version) || version.scope !== scope ||
           version.serviceType !== service.serviceType || children.some(child => !child || !serviceVersionConfigValid(child) ||
             child.outputContractId !== fundDapiContract.id || child.sourceReleaseRunId !== batchId ||
             child.sourceReleaseId !== releaseId || child.sourcePackageDigest !== packageDigest ||
@@ -79,11 +81,13 @@ export async function fundAgentTaskConsumption({ store, project, agent, packageD
   }
   if (!same(sources(), original)) throw invalid();
   const truncated = matchingCount > services.length;
-  const complete = !truncated && services.some(entry => entry.status === "VERIFIED" && entry.fundExposureComposition &&
-    services.some(dapi => dapi.serviceType === "DAPI" && dapi.status === "VERIFIED" &&
-      dapi.sourceRunIds[0] === entry.sourceRunIds[0] && entry.sourceVersions.some(child => child.versionId === dapi.versionId)));
-  return { protocol: "shuduo-local-fund-agent-consumption/v1", scope: "LOCAL_TEST_ONLY", taskId: agent.id,
-    releaseId, packageDigest, ...(batchId ? { batchId } : {}), sourceKind: "AGENT", outputContractId: fundDapiContract.id, status: complete ? "VERIFIED" : "PENDING",
+  const checkedBatches = new Set(services.filter(entry=>entry.status==="VERIFIED" && entry.fundExposureComposition &&
+    services.some(dapi=>dapi.serviceType==="DAPI" && dapi.status==="VERIFIED" &&
+      dapi.sourceRunIds[0]===entry.sourceRunIds[0] && entry.sourceVersions.some(child=>child.versionId===dapi.versionId)))
+    .map(entry=>entry.sourceRunIds[0]));
+  const complete = !truncated && (privateSources ? [...byBatch.keys()].every(id=>checkedBatches.has(id)) : checkedBatches.size>0);
+  return { protocol: privateSources ? "shuduo-private-fund-agent-consumption/v1" : "shuduo-local-fund-agent-consumption/v1", scope, taskId: agent.id,
+    releaseId, packageDigest, ...(batchId ? (privateSources ? {sourceReleaseRunId:batchId} : {batchId}) : {}), sourceKind: "AGENT", outputContractId: fundDapiContract.id, status: complete ? "VERIFIED" : "PENDING",
     checkedAt: new Date().toISOString(), matchingCount, truncated, services,
     publicDeployed: false, externalSystemVerified: false, agentIndependentE2E: false,
     notice: "历史消费仅核对原批次的固定版本和调用结果。凭证状态以本次读取为准。" };

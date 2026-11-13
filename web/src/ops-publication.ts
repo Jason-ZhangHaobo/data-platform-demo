@@ -142,7 +142,7 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
   const batches = [first, second].map((batch,index) => {
     const {id, sequence, status, schedulerTriggered} = batch;
     const pendingLabel = privateReleasePendingLabel(batch);
-    const serviceHref = monitoringVerified && !release.fundBusinessDate && source && id ? batchServiceHistoryHref({...target,source},id) : undefined;
+    const serviceHref = monitoringVerified && source && id ? batchServiceHistoryHref({...target,source},id) : undefined;
     const reportSource = monitoringVerified && !release.fundBusinessDate ? {
       kind:"AGENT" as const, taskId:target.taskId, releaseId:target.releaseId, revisionId:target.revisionId,
       runId:release.sourceRunId!, packageDigest:release.packageDigest!, batchId:id!,
@@ -151,6 +151,6 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
     return {id, sequence, status, schedulerTriggered, ...(pendingLabel ? {pendingLabel} : {}),
       ...(workerResult?{workerResult}:{}), serviceHref, reportSource};
   });
-  return {status:release.status, health:release.health, batches, source,
+  return {status:release.status, health:release.health, batches, source, ...(release.fundBusinessDate?{fund:true}:{}),
     ...(savedHealthy ? {monitoringVerified} : {}),...(failure?{failureSettlement:failure.status}:{})};
 }

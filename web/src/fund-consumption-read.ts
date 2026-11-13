@@ -18,9 +18,10 @@ function checkedCall(call: unknown, version: Record<string, unknown>, dapi: bool
 
 export function checkedFundConsumption(value: unknown, binding: ServiceSourceBinding,
   batches: { id: string; status: string; schedulerTriggered?: boolean }[], expected: { id: string; modelMode: string }): TaskConsumption {
-  if (!record(value) || value.protocol !== "shuduo-local-fund-agent-consumption/v1" ||
+  const isolated=binding.scope==="PRIVATE_CLOUD_TEST";
+  if (!record(value) || value.protocol !== (isolated?"shuduo-private-fund-agent-consumption/v1":"shuduo-local-fund-agent-consumption/v1") ||
       value.taskId !== binding.taskId || value.releaseId !== binding.releaseId || value.packageDigest !== binding.packageDigest ||
-      value.sourceKind !== "AGENT" || binding.sourceKind !== "AGENT" || value.scope !== "LOCAL_TEST_ONLY" || value.scope !== binding.scope ||
+      value.sourceKind !== "AGENT" || binding.sourceKind !== "AGENT" || value.scope !== binding.scope ||
       value.outputContractId !== expected.id || !["PENDING", "VERIFIED"].includes(String(value.status)) ||
       typeof value.checkedAt !== "string" || !Number.isFinite(Date.parse(value.checkedAt)) || typeof value.notice !== "string" ||
       value.agentIndependentE2E !== false || value.externalSystemVerified !== false || value.publicDeployed !== false ||
@@ -39,7 +40,7 @@ export function checkedFundConsumption(value: unknown, binding: ServiceSourceBin
     if (entry.sourceRunIds.length !== 1 || batchId === binding.runId ||
         !batches.some(batch => batch.id === batchId && batch.status === "SUCCEEDED" && batch.schedulerTriggered === true) ||
         !record(source) || source.revisionId !== binding.revisionId || source.developmentRunId !== binding.runId ||
-        source.modelMode !== expected.modelMode || source.engineClassification !== "LOCAL_SPARK_PROCESS" || !hash(source.resultDigest) ||
+        source.modelMode !== expected.modelMode || source.engineClassification !== (isolated?"ISOLATED_SPARK_RECEIPTS":"LOCAL_SPARK_PROCESS") || !hash(source.resultDigest) ||
         !Array.isArray(versions) || versions.length < (dapi ? 1 : 2) || versions.length > (dapi ? 1 : 5) ||
         versions.some(version => !record(version) || !id(version.versionId) || !id(version.serviceId) ||
           !hash(version.configHash) || !hash(version.snapshotHash) || !Array.isArray(version.fields)) ||
@@ -55,8 +56,13 @@ export function checkedFundConsumption(value: unknown, binding: ServiceSourceBin
     verified.push({ type: entry.serviceType, composition: complete, batchId, versionId: entry.versionId,
       children: versions.map(version => version.versionId) });
   }
-  if (new Set(value.services.map(entry => entry.serviceId)).size !== value.services.length ||
-      value.status === "VERIFIED" && (value.truncated || !verified.some(xapi => xapi.composition && verified.some(dapi =>
-        dapi.type === "DAPI" && dapi.batchId === xapi.batchId && xapi.children.includes(dapi.versionId))))) throw bad();
+  const completed = new Set(verified.filter(xapi=>xapi.composition && verified.some(dapi=>
+    dapi.type==="DAPI" && dapi.batchId===xapi.batchId && xapi.children.includes(dapi.versionId))).map(entry=>entry.batchId));
+  const requested = value.sourceReleaseRunId;
+  const targets = requested===undefined ? batches.map(batch=>batch.id) : [requested];
+  if (new Set(value.services.map(entry=>entry.serviceId)).size !== value.services.length ||
+      isolated && requested!==undefined && (!id(requested)||!batches.some(batch=>batch.id===requested)) ||
+      value.status === "VERIFIED" && (value.truncated || (isolated ?
+        targets.length===0 || !targets.every(batchId=>completed.has(batchId)) : completed.size===0))) throw bad();
   return value as unknown as TaskConsumption;
 }

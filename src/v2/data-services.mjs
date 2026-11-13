@@ -727,11 +727,16 @@ export class DataServiceManager {
         throw fail(409, "应用只能授权已发布的数据服务", "UNPUBLISHED_GRANT");
       const version = this.#version(service.publishedVersionId);
       const proof = this.#syncVersion(version);
-      if (proof) grants.push({ id, versionId: version.id, evidence: proof.sourceEvidence });
+      if (this.scope==="PRIVATE_CLOUD_TEST" && version.outputContractId===fundDapiContract.id) {
+        const children=version.serviceType==="DAPI" ? [version] : version.steps.map(step=>this.#version(step.dapiVersionId));
+        for(const child of children) this.#assertFundVersion(child);
+        if (version.serviceType==="XAPI") this.#xapiComposition(children,version.steps);
+        grants.push({id,versionId:version.id,evidence:children[0].sourceEvidence});
+      } else if (proof) grants.push({ id, versionId: version.id, evidence: proof.sourceEvidence });
     }
     if (grants.length) {
       if (grants.length !== serviceIds.length || grants.some(grant => !sameSyncEvidence(grant.evidence, grants[0].evidence)))
-        throw fail(409, "冻结持仓应用须授权同一确切发布批次的服务版本", "SYNC_SERVICE_MIXED_GRANTS");
+        throw fail(409, "应用须授权同一确切发布批次的服务版本", "SYNC_SERVICE_MIXED_GRANTS");
       expiresAt ??= new Date(this.now() + 3600000).toISOString();
     }
     if (expiresAt !== undefined && (typeof expiresAt !== "string" ||
@@ -839,7 +844,7 @@ export class DataServiceManager {
   async recheckFundCall(serviceId, callId) {
     const invalid = () => fail(409, "基金历史调用的授权、版本或独立结果未确认", "FUND_CALL_EVIDENCE_UNCONFIRMED");
     const service = this.#service(serviceId), call = this.store.get("service_call", callId, this.project);
-    if (this.scope !== "LOCAL_TEST_ONLY" || call?.serviceId !== service.id || call.outcome !== "SUCCEEDED" ||
+    if (call?.serviceId !== service.id || call.outcome !== "SUCCEEDED" ||
         call.statusCode !== 200 || !call.parameters || typeof call.parameters !== "object" || Array.isArray(call.parameters) ||
         !Number.isSafeInteger(call.rowCount) || call.rowCount < 0 || !/^[a-f0-9]{64}$/.test(call.resultHash ?? "")) throw invalid();
     const version = this.#version(call.serviceVersionId), app = this.application(call.applicationId);
@@ -848,7 +853,9 @@ export class DataServiceManager {
         version.outputContractId !== fundDapiContract.id || version.scope !== this.scope ||
         !["PUBLISHED", "RETIRED"].includes(version.status) || !serviceVersionConfigValid(version) ||
         !Number.isFinite(startedAt) || !(Date.parse(version.publishedAt) <= startedAt && startedAt <= Date.parse(call.finishedAt)) ||
-        app.scope !== this.scope || !app.serviceIds.includes(service.id) || !(Date.parse(app.createdAt) <= startedAt) ||
+        app.scope !== this.scope || !app.serviceIds.includes(service.id) ||
+        this.scope==="PRIVATE_CLOUD_TEST" && app.versionGrants?.[service.id]!==version.id ||
+        !(Date.parse(app.createdAt) <= startedAt) ||
         app.expiresAt !== undefined && !(startedAt < Date.parse(app.expiresAt)) ||
         app.status === "REVOKED" && !(startedAt <= Date.parse(app.revokedAt))) throw invalid();
     if (version.serviceType === "XAPI" && (!Array.isArray(version.steps) || version.steps.length < 2)) throw invalid();
@@ -1074,7 +1081,7 @@ export class DataServiceManager {
   #fundSource(run) {
     const source = this.fundSourceFor?.(run);
     if (!source) return undefined;
-    if (this.scope !== "LOCAL_TEST_ONLY" || !source.evidence.eligibleForService || !source.rows)
+    if ((source.evidence.scope ?? "LOCAL_TEST_ONLY") !== this.scope || !source.evidence.eligibleForService || !source.rows)
       throw fail(422, "基金组合穿透需要真实本机双批结果才能生成接口快照", "FUND_SNAPSHOT_SOURCE_REQUIRED");
     return { outputContractId: fundDapiContract.id, sourceEvidence: source.evidence, rows: source.rows };
   }

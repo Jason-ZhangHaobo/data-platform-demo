@@ -84,10 +84,10 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
   const state = (done: boolean, failed = false): JourneyState => e.dirty ? "STALE" : done ? "DONE" : failed ? "ATTENTION" : "PENDING";
   const distribution=distributionMetadataForContext(e.contextId??e.report?.contextId);
   const distributionReceipt=Boolean(distribution&&e.consumption?.protocol==='shuduo-local-distribution-consumption/v1'&&e.consumption.outputContractId===distribution.id&&e.consumption.agentIndependentE2E===false);
-  const fundReceipt=Boolean(fund&&e.consumption?.protocol==="shuduo-local-fund-agent-consumption/v1"&&e.consumption.outputContractId===fund.id&&e.consumption.agentIndependentE2E===false);
+  const fundReceipt=Boolean(fund&&["shuduo-local-fund-agent-consumption/v1","shuduo-private-fund-agent-consumption/v1"].includes(e.consumption?.protocol??"")&&e.consumption?.outputContractId===fund.id&&e.consumption.agentIndependentE2E===false);
   const consumptionScopeMatches = e.release?.status === "ACTIVE_LOCAL"
     ? (fund?fundReceipt:distribution?distributionReceipt:e.consumption?.protocol === "shuduo-local-task-consumption/v1") && e.consumption?.scope === "LOCAL_TEST_ONLY"
-    : e.consumption?.protocol === "shuduo-private-task-consumption/v1" && e.consumption.scope === "PRIVATE_CLOUD_TEST";
+    : (fund?fundReceipt:e.consumption?.protocol === "shuduo-private-task-consumption/v1") && e.consumption?.scope === "PRIVATE_CLOUD_TEST";
   const consumptionCurrent = current && consumptionScopeMatches && e.consumption?.taskId === e.taskId && e.consumption.packageDigest === e.bundle?.digest&&
     (e.release?.sourceKind==="MANUAL"?e.consumption.releaseId===e.release.id&&e.consumption.sourceKind==="MANUAL"&&e.consumption.agentIndependentE2E===false:e.consumption.releaseId===undefined||e.consumption.releaseId===e.release?.id);
   const consumed = Boolean(healthy && consumptionCurrent && !e.consumption?.truncated && e.consumption?.status === "VERIFIED" && e.consumption.services.some(s => s.serviceType === "XAPI" && s.status === "VERIFIED" && (fund?fundReceipt&&s.fundExposureComposition===true&&s.call?.independentResultVerified===true:distribution?distributionReceipt&&s.distributionComposition===true&&s.fullAssetComposition===false&&s.call?.independentResultVerified===true:s.fullAssetComposition === true) && s.call?.verified === true && s.call.versionId === s.versionId && s.call.rowCount > 0&&

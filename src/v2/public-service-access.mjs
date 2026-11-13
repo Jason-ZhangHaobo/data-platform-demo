@@ -1,3 +1,4 @@
+import { fundDapiContract } from "./fund-dapi-contract.mjs";
 import { serviceHash, serviceVersionConfigValid, dataServiceFields } from './data-services.mjs';
 
 const scope = 'SERVICE_CONSUMPTION_ONLY';
@@ -16,6 +17,14 @@ const limitsValid = value => Number.isSafeInteger(value.timeoutMs) && value.time
 const same = (a, b) => { try { return serviceHash(a) === serviceHash(b); } catch { return false; } };
 const selected = (config, session) => session?.role === 'ADMIN' && typeof session?.user?.email === 'string' && session.user.email.toLowerCase() === config.email;
 const inWindow = (config, now) => Number.isFinite(now) && now >= config.startsAt && now < config.expiresAt;
+const fundId=fundDapiContract.id;
+const fundMetrics=["exposure_amount","exposure_ratio"];
+const fundFields=fundDapiContract.fields.map(field=>field.name);
+const validFields=(fields,fund)=>Array.isArray(fields) && fields.length>=1 &&
+  new Set(fields).size===fields.length && (fund
+    ? fields.length===fundDapiContract.keyFields.length+1 && fundDapiContract.keyFields.every((key,index)=>fields[index]===key) &&
+      fields.every(field=>fundFields.includes(field))
+    : fields.includes("client_id") && fields.every(field=>dataServiceFields.includes(field)));
 const deepFreeze = value => { for (const child of Object.values(value)) if (child && typeof child === 'object') deepFreeze(child); return Object.freeze(value); };
 
 export function publicServiceConfig(env) {
@@ -28,15 +37,17 @@ export function publicServiceConfig(env) {
   try {
     if (typeof env.V2_PUBLIC_SERVICE_PLAN !== 'string' || env.V2_PUBLIC_SERVICE_PLAN.length > 8192) throw Error();
     plan = JSON.parse(env.V2_PUBLIC_SERVICE_PLAN);
+    const fund=plan?.outputContractId===fundId;
+    if (fund && sourceKind!=="AGENT_TASK") throw Error();
     if (!["AGENT_TASK","MANUAL_DELIVERY"].includes(sourceKind) || env.V2_LOCAL_DEVELOPMENT !== 'false' || !Number.isFinite(startsAt) || !Number.isFinite(expiresAt) ||
         expiresAt <= startsAt || expiresAt - startsAt > 2 * 3600000 || email.length > 160 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-        !keys(plan, [sourceKey, 'packageDigest', 'sourceReleaseRunId', 'dapis', 'xapi', 'applicationName']) ||
+        !keys(plan, [sourceKey, 'packageDigest', 'sourceReleaseRunId', 'dapis', 'xapi', 'applicationName', ...(fund?['outputContractId']:[])]) ||
         typeof plan[sourceKey] !== 'string' || !uuid.test(plan[sourceKey]) || typeof plan.packageDigest !== 'string' || !digest.test(plan.packageDigest) ||
         typeof plan.sourceReleaseRunId !== 'string' || !uuid.test(plan.sourceReleaseRunId) || !nameValid(plan.applicationName) ||
         !Array.isArray(plan.dapis) || plan.dapis.length !== 2 || plan.dapis.some(item =>
           !keys(item, ['name', 'slug', 'fields', 'timeoutMs', 'rateLimitPerMinute']) || !nameValid(item.name) || !slugValid(item.slug) || !limitsValid(item) ||
-          !Array.isArray(item.fields) || item.fields.length < 1 || item.fields.length > dataServiceFields.length ||
-          !item.fields.includes('client_id') || new Set(item.fields).size !== item.fields.length || item.fields.some(field => !dataServiceFields.includes(field))) ||
+          !validFields(item.fields,fund)) ||
+        fund && !fundMetrics.every((field,index)=>plan.dapis[index].fields.includes(field)) ||
         !keys(plan.xapi, ['name', 'slug', 'timeoutMs', 'rateLimitPerMinute', 'steps']) || !nameValid(plan.xapi.name) || !slugValid(plan.xapi.slug) || !limitsValid(plan.xapi) ||
         new Set([...plan.dapis.map(item => item.slug), plan.xapi.slug]).size !== 3 ||
         !Array.isArray(plan.xapi.steps) || plan.xapi.steps.length !== 2 || plan.xapi.steps.some(step =>
@@ -81,14 +92,14 @@ export function createServicePilotGuard({ config, store, project, source, detail
     const run = source(config.plan.sourceReleaseRunId);
     const release = run && store.get('release', run.releaseId, project);
     allowed(run?.id === config.plan.sourceReleaseRunId && run.packageDigest === config.plan.packageDigest &&
-      release?.id === run.releaseId && (config.sourceKind==='MANUAL_DELIVERY'?release.manualDeliveryTaskId===config.plan.manualDeliveryTaskId&&release.sourceAgentTaskId===undefined:release.sourceAgentTaskId===config.plan.taskId&&release.manualDeliveryTaskId===undefined) && release.packageDigest === config.plan.packageDigest);
+      release?.id === run.releaseId && (config.sourceKind==='MANUAL_DELIVERY'?release.manualDeliveryTaskId===config.plan.manualDeliveryTaskId&&release.sourceAgentTaskId===undefined:release.sourceAgentTaskId===config.plan.taskId&&release.manualDeliveryTaskId===undefined) && release.packageDigest === config.plan.packageDigest && run.outputContractId === config.plan.outputContractId);
     return run;
   };
   const specFor = item => item?.serviceType === 'DAPI' ? config.plan.dapis.find(spec => spec.slug === item.slug)
     : item?.serviceType === 'XAPI' && item.slug === config.plan.xapi.slug ? config.plan.xapi : undefined;
   const dapiFieldsMatch = (version, spec) => version.serviceType === 'DAPI' && version.sourceReleaseRunId === config.plan.sourceReleaseRunId &&
     version.sourceReleaseId === sourceMatches().releaseId && version.sourcePackageDigest === config.plan.packageDigest &&
-    same(version.fields, spec.fields) && version.timeoutMs === spec.timeoutMs && version.rateLimitPerMinute === spec.rateLimitPerMinute;
+    version.outputContractId===config.plan.outputContractId && same(version.fields, spec.fields) && version.timeoutMs === spec.timeoutMs && version.rateLimitPerMinute === spec.rateLimitPerMinute;
   const serviceById = id => {
     allowed(typeof id === 'string' && uuid.test(id));
     const item = detail(id), spec = specFor(item);
@@ -119,7 +130,8 @@ export function createServicePilotGuard({ config, store, project, source, detail
     if (item.serviceType === 'DAPI') return assertDapi(item.id);
     const version = item.currentVersion;
     allowed(version?.serviceId === item.id && version.id === item.currentVersionId && version.scope === 'PRIVATE_CLOUD_TEST' &&
-      version.versionNumber === 1 && version.serviceType === 'XAPI' && version.joinKey === 'client_id' && serviceVersionConfigValid(version) &&
+      version.versionNumber === 1 && version.serviceType === 'XAPI' && version.outputContractId === config.plan.outputContractId &&
+      version.joinKey === (config.plan.outputContractId === fundId ? 'portfolio_id' : 'client_id') && serviceVersionConfigValid(version) &&
       version.timeoutMs === spec.timeoutMs && version.rateLimitPerMinute === spec.rateLimitPerMinute);
     xapiSteps(version.steps);
     if (item.publishedVersionId) allowed(item.publishedVersion?.id === item.publishedVersionId && item.publishedVersionId === version.id &&
@@ -144,6 +156,11 @@ export function createServicePilotGuard({ config, store, project, source, detail
       body.serviceIds.length >= 1 && body.serviceIds.length <= 3 && new Set(body.serviceIds).size === body.serviceIds.length);
     for (const id of body.serviceIds) {
       const item = assertService({ id }); allowed(item.status === 'PUBLISHED' && item.publishedVersionId && item.publishedVersion?.status === 'PUBLISHED');
+    }
+    if(config.plan.outputContractId===fundId){
+      const expected=[config.plan.dapis.find(spec=>spec.fields.includes("exposure_amount")).slug,config.plan.xapi.slug];
+      allowed(body.serviceIds.length===expected.length && expected.every(slug=>body.serviceIds.some(id=>detail(id)?.slug===slug)),
+        "基金凭证仅授权金额 DAPI 与组合 XAPI");
     }
     check(!store.list('service_app', project).some(app => app.pilotId === config.pilotId),
       'PUBLIC_SERVICE_APPLICATION_USED', '本次调用应用名额已使用；撤销或到期后不会自动签发第二个凭证。');
