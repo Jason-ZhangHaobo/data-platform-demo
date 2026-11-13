@@ -5,6 +5,12 @@ const safeId = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,100}$/.te
 const invalid = () => Object.assign(new Error("发布选择参数不合法；仅允许指定来源、运行、包摘要、演练和发布编号"), { status: 422, code: "PUBLICATION_SELECTOR_INVALID" });
 export const publicationAttestationKeys = Object.freeze(["code","assertions","deliveryFiles","cloudScope"]);
 
+export function workbenchPublicationRequestKey(packageId, verificationId) {
+  const key = `agent-publish-${packageId}-${verificationId}`;
+  if (!safeId(packageId) || !safeId(verificationId) || !safeId(key)) throw invalid();
+  return key;
+}
+
 function exactPreflightSelector(selector) {
   return selector.sourceKind === "AGENT" && selector.sourceRunId && selector.packageDigest &&
     selector.verificationId && !selector.releaseId;

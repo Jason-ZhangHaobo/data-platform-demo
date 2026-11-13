@@ -25,7 +25,7 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 const fail = (status, message) => Object.assign(new Error(message), { status });
 export function publicDeliveryTask(task) {
   if (!task) return task;
-  const { remoteSubmission, submittedBy, ...visible } = task;
+  const { remoteSubmission, submittedBy, preparationRequestId, ...visible } = task;
   return visible;
 }
 
@@ -313,7 +313,8 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       const equivalent = existing ?? findExisting();
       if (equivalent) return equivalent;
       const task = store.create(resource, project, { mode, sourceAgentTaskId: agent.id, sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: agent.submittedBy, status: "QUEUED",
-        stage:artifact?"PACKAGE_READY":"PACKAGE_PERSISTING", packageDigest: bundle.digest,...(requirement?{sourceRequirementBinding:requirement}:{}),...(expected?{sourcePinned:true}:{}), completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
+        stage:artifact?"PACKAGE_READY":"PACKAGE_PERSISTING", packageDigest: bundle.digest,...(requirement?{sourceRequirementBinding:requirement}:{}),
+        ...(expected?{sourcePinned:true,preparationRequestId:key}:{}), completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
       const item = store.create("delivery_package", project, { ...bundle, ...(artifact?{artifact}:{}), sourceRunId: run.id, agentDeliveryTaskId:task.id, stage: "M2A", published: false });
       return change(task, { packageId: item.id });
     });

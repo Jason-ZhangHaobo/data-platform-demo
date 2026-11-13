@@ -17,7 +17,7 @@ const nativeEvidence = value => {
   return !synthetic && !nonNative && !unconfirmed;
 };
 
-export async function readCloudV3Review(checkpointPath, client) {
+export async function readCloudV3Review(checkpointPath, client, {includeEvidence=false}={}) {
   const {state, text} = readCheckpoint(checkpointPath, {privateFile:true});
   if (!id(state?.evaluationRunId)) stop("须使用原 v3 评测检查点");
   const {plan,contractId}=checkpointCaseScope(state,state.evaluationRunId);
@@ -29,13 +29,14 @@ export async function readCloudV3Review(checkpointPath, client) {
     stop("读取入口与原评测入口不一致");
   if (base.protocol === "https:" && !client.sessionFile) stop("请使用绑定原入口的受保护会话文件");
 
-  const result = await inspectReview(definition,item,client,state.previousCase?state.submission?.submittedAt??null:undefined);
+  const {evidence,...result} = await inspectReview(definition,item,client,state.previousCase?state.submission?.submittedAt??null:undefined);
   if (readCheckpoint(checkpointPath, {privateFile:true}).text !== text)
     stop("读取期间原检查点已变化，请核对当前记录");
   return {
     protocol:"shuduo-cloud-v3-review-binding/v1", verificationMode:"STORED_RECEIPTS_ONLY",
     evaluationRunId:state.evaluationRunId, caseId:definition.id, expectedCaseCount:currentLiveLifecycleContract.expectedCaseCount,
-    ...result, fullLifecycleE2E:false, agentIndependentE2E:false, publicDeployed:false,
+    ...result, ...(includeEvidence && evidence ? {evidence} : {}),
+    fullLifecycleE2E:false, agentIndependentE2E:false, publicDeployed:false,
   };
 }
 
@@ -103,7 +104,7 @@ async function inspectReview(definition,item,client,submittedAt) {
       return reject("REVIEW_EVIDENCE_UNCONFIRMED");
     return {status:"REVIEW_EVIDENCE_BOUND", taskId:task.id, deliveryId:delivery.id, requestSha256,
       revisionId:code.revisionId, developmentRunId:code.runId, packageId:delivery.packageId,
-      packageDigest:delivery.packageDigest, verificationId:delivery.verificationId};
+      packageDigest:delivery.packageDigest, verificationId:delivery.verificationId, evidence:review};
   } catch (error) {
     if (error?.status === 404 && !review)
       return reject(!task ? "ORIGINAL_AGENT_NOT_RECORDED" : !delivery ? "ORIGINAL_DELIVERY_NOT_RECORDED" : "REVIEW_EVIDENCE_NOT_RECORDED");

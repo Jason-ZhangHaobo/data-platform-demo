@@ -919,17 +919,48 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
 });
 
 test('a request-bound base task requires the exact verified version for delivery and publication',async t=>{
-  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,contextualModel:true});
+  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true});
+  const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_WORKBENCH==='true';
   const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
   const body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
   const key=randomUUID();
+  const checkpoint=join(f.directory,'workbench-case.json'), origin=new URL(f.base).origin, requests=[];
+  const plan=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}), evaluationRunId=randomUUID();
+  const startedAt=new Date(f.now()-1000).toISOString();
+  const {user:{id:actorId}}=(await f.call('/auth/session')).body;
+  const month=(await f.call('/status')).body.budget.month;
+  let alter;
+  const client=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
+    const uri=new URL(url), path=uri.pathname.slice('/api/v2'.length)+uri.search;
+    requests.push([options.method,path]);
+    const response=await f.call(path,options.body?JSON.parse(options.body):undefined,options.headers['Idempotency-Key']);
+    alter?.(path,response.body);
+    return new Response(JSON.stringify(response.body),{status:response.status});
+  }});
+  const cli=async(action,flags=[],expectedCode=0,checkpointFile=checkpoint)=>{
+    requests.length=0;
+    let value, error;
+    const exit=await runV2Cli(['agent',action,'--checkpoint',checkpointFile,...flags],{},
+      {client,output:line=>{value=JSON.parse(line);},error:line=>{error=line;}});
+    assert.equal(exit,expectedCode,error);
+    assert.ok(requests.every(([method])=>method==='GET'));
+    return value;
+  };
+  const saved=()=>JSON.parse(readFileSync(checkpoint,'utf8'));
   f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)));
   await f.restart();
   const created=await f.call('/agent/tasks',body,key);
   assert.equal(created.status,202,created.body.message);
   assert.equal(created.body.requestBound,true);
   assert.equal(created.body.derivedFrom,undefined);
+  writeFileSync(checkpoint,JSON.stringify({evaluationRunId,contract:plan.contract,startedAt,caseSetDigest:plan.caseSetDigest,
+    caseLimit:1,origin,projectId:PROJECT,reviewedSource:'a'.repeat(40),submission:{actorId,
+      bill:{month,unsettledReserveCny:64},usage:{modelCalls:0,remoteSparkRuns:0,remoteSparkSeconds:0}},
+    outcomes:[{...liveCaseCheckpoint(definition,startedAt,plan.caseSetDigest,{contractId:plan.contract.id,evaluationRunId}),
+      status:'PAUSED',phase:'CODE_AND_DEBUG',taskId:created.body.id,
+      actions:{agent:{key,status:'CONFIRMED',id:created.body.id,bodyHash:sha256(JSON.stringify(body))}}}]}),{mode:0o600});
   const taskPath='/agent/tasks/'+created.body.id;
+  const evidencePath='/agent/requests/'+key+'/execution-evidence';
   const advance=async current=>{
     const response=await f.call(taskPath+'/advance',{expectedVersion:current.version});
     assert.equal(response.status,200,response.body.message);
@@ -937,7 +968,8 @@ test('a request-bound base task requires the exact verified version for delivery
   };
   let current=await advance(created.body);
   current=await advance(current);
-  f.complete(f.store.get('run',current.runId,PROJECT).remoteSubmission.prepared);
+  const developmentJob=f.store.get('run',current.runId,PROJECT).remoteSubmission.prepared;
+  f.complete(developmentJob,measure?await measuredSpark(t,f,developmentJob,'workbench development'):undefined);
   current=await advance(current);
   const sourceView=(await f.call(taskPath+'/workflow')).body.preparationSource;
   assert.equal(sourceView.runId,current.runId);
@@ -947,7 +979,8 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal((await f.call(taskPath+'/prepare-delivery',{expectedSource:{...sourceView,revisionHash:'0'.repeat(64)}},randomUUID())).status,409);
   assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
   assert.deepEqual(f.counts(),beforeFiles);
-  const preparedFiles=await f.call(taskPath+'/prepare-delivery',{expectedSource:sourceView},randomUUID());
+  const deliveryRequestId=randomUUID();
+  const preparedFiles=await f.call(taskPath+'/prepare-delivery',{expectedSource:sourceView},deliveryRequestId);
   assert.equal(preparedFiles.status,202,preparedFiles.body.message);
   assert.equal(preparedFiles.body.sourcePinned,true);
   const bundle=f.store.get('delivery_package',preparedFiles.body.packageId,PROJECT);
@@ -955,13 +988,28 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal(bundle.manifest.source.revisionId,current.revisionId);
   assert.equal(Object.keys(bundle.files).length,8);
   assert.deepEqual(f.counts(),beforeFiles);
+  assert.equal(preparedFiles.body.preparationRequestId,undefined);
+  assert.deepEqual((await f.call(evidencePath)).body.originalDelivery,{id:preparedFiles.body.id,requestId:deliveryRequestId});
+  assert.ok(!(await (await fetch(f.base+evidencePath)).text()).includes(deliveryRequestId));
+  assert.equal((await cli('v3-inspect')).delivery.status,'REQUEST_NOT_SUBMITTED');
+  const beforeImport=readFileSync(checkpoint,'utf8');
+  assert.equal((await cli('v3-inspect',['--workbench','--delivery-request-id',randomUUID()])).reason,'WORKBENCH_DELIVERY_REQUEST_MISMATCH');
+  await cli('v3-inspect',['--workbench','--delivery-request-id','../fake'],1);
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeImport);
+  alter=(path,value)=>{if(path===evidencePath)delete value.originalDelivery;};
+  assert.equal((await cli('v3-inspect',['--workbench'])).delivery.reason,'WORKBENCH_DELIVERY_REQUEST_UNCONFIRMED');
+  assert.equal((await cli('v3-inspect',['--workbench','--delivery-request-id',randomUUID()])).delivery.status,'PENDING');
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeImport);
+  assert.equal((await cli('v3-inspect',['--workbench','--delivery-request-id',deliveryRequestId])).delivery.id,preparedFiles.body.id);
+  writeFileSync(checkpoint,beforeImport);
+  alter=undefined;
   const exactPackage={packageId:bundle.id,packageDigest:bundle.digest};
   const deliveryPath='/agent/deliveries/'+preparedFiles.body.id+'/advance';
   const started=await f.call(deliveryPath,{expectedVersion:preparedFiles.body.version,rehearsal:exactPackage});
   assert.equal(started.status,200,started.body.message);
   const verificationId=started.body.verificationId;
   const stored=f.store.get('agent_delivery_task',preparedFiles.body.id,PROJECT);
-  f.complete(stored.remoteSubmission.prepared);
+  f.complete(stored.remoteSubmission.prepared,measure?await measuredSpark(t,f,stored.remoteSubmission.prepared,'workbench rehearsal'):undefined);
   const settled=await f.call(deliveryPath,{expectedVersion:started.body.version,rehearsal:{...exactPackage,verificationId}});
   assert.equal(settled.body.status,'SUCCEEDED',settled.body.message);
 
@@ -990,6 +1038,83 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.deepEqual(original.body,accepted.body);
   assert.equal(f.store.list('release_approval',PROJECT).length,1);
   assert.deepEqual(f.counts(),counts);
+
+  const queueBeforeImport=f.queueCounts();
+  const inspected=await cli('v3-inspect',['--workbench']);
+  assert.equal(inspected.delivery.id,preparedFiles.body.id);
+  assert.equal(inspected.delivery.rehearsal.id,verificationId);
+  assert.equal(saved().outcomes[0].actions.delivery.key,deliveryRequestId);
+  assert.equal((await cli('v3-review')).status,'REVIEW_EVIDENCE_BOUND');
+  const beforePublication=readFileSync(checkpoint,'utf8');
+  const receiptPath=publicationRequestReceiptPath(created.body.id,request.idempotencyKey);
+  alter=(path,value)=>{if(path===receiptPath)value.release.reviewDigest='0'.repeat(64);};
+  assert.equal((await cli('v3-publish',['--reconcile','--workbench'])).reason,'ORIGINAL_PUBLICATION_UNCONFIRMED');
+  assert.equal(readFileSync(checkpoint,'utf8'),beforePublication);
+  alter=undefined;
+  const adopted=await cli('v3-publish',['--reconcile','--workbench']);
+  const {releaseId,batchIds}=adopted.publication;
+  assert.equal(releaseId,accepted.body.release.id);
+  assert.deepEqual(batchIds,accepted.body.runs.map(run=>run.id));
+  assert.equal(saved().outcomes[0].actions.publication.key,request.idempotencyKey);
+  assert.equal(saved().submission.bill.unsettledReserveCny,64);
+  const afterPublication=readFileSync(checkpoint,'utf8');
+  assert.deepEqual(await cli('v3-publish',['--reconcile']),adopted);
+  assert.equal(readFileSync(checkpoint,'utf8'),afterPublication);
+  assert.deepEqual(f.queueCounts(),queueBeforeImport);
+  assert.deepEqual(f.counts(),counts);
+
+  for (const [index,batchId] of batchIds.entries()) {
+    if (index) f.later(60001);
+    const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=(index?'b':'a').repeat(24);
+    const signed=JSON.stringify({releaseId,triggerName,expiresAt:f.now()+300000});
+    const tick={triggerName,triggerTime:new Date(f.now()).toISOString(),payload:JSON.stringify({
+      operation:'PRIVATE_RELEASE_TIMER_V1',timestamp,nonce,body:signed,
+      signature:signSchedulerTick({sharedSecret:f.env.V2_SCHEDULER_TICK_SECRET,timestamp,nonce,body:signed}),
+    })};
+    assert.equal((await f.privateCall(tick)).status,200);
+    const prepared=f.store.get('release_run',batchId,PROJECT).remoteSubmission.prepared;
+    f.complete(prepared,measure?await measuredSpark(t,f,prepared,'workbench publication '+(index+1)):undefined);
+    assert.equal((await f.privateCall(tick)).body.replayed,true);
+  }
+  const beforeUsage=readFileSync(checkpoint,'utf8'), queueBeforeReadback=f.queueCounts();
+  alter=(path,value)=>{if(path==='/status')value.budget.remoteSpark.runCount=1;};
+  assert.equal((await cli('v3-publish',['--reconcile'])).reason,'WORKBENCH_USAGE_UNCONFIRMED');
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeUsage);
+  alter=undefined;
+  const monitored=await cli('v3-publish',['--reconcile']);
+  assert.equal(monitored.publication.monitoringStatus,'VERIFIED');
+  assert.deepEqual(monitored.publication.monitoring.map(row=>row.batchId),batchIds);
+  assert.deepEqual(requests,[['GET','/auth/session'],['GET',receiptPath],['GET','/status']]);
+  const usage=saved().outcomes[0].workbenchUsage;
+  assert.equal(usage.modelCalls,1);
+  assert.equal(usage.remoteSparkRuns,4);
+  assert.deepEqual(monitored.workbenchUsage,usage);
+  assert.deepEqual(f.queueCounts(),queueBeforeReadback);
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:4});
+  const consumed=[];
+  for (const [index,batchId] of batchIds.entries())
+    consumed.push(await consumeOriginalBatch(f,cli,{taskId:created.body.id,releaseId,packageDigest:bundle.digest,
+      batchId,sequence:index+1,origin}));
+  f.env.V2_FC_PUBLIC_READ_ONLY='true';
+  await f.restart();
+  assert.equal((await cli('v3-publish',['--reconcile'])).publication.monitoringStatus,'VERIFIED');
+  const completionFile=join(f.directory,'workbench-completion.json');
+  const completion=await cli('v3-complete',['--first-plan',consumed[0].flags[1],'--second-plan',consumed[1].flags[1],'--out-file',completionFile]);
+  assert.equal(completion.scope,'LOCAL_MATCHED_ONLY');
+  assert.equal(completion.independentlyVerifiedCloudCase,false);
+  const run=await cli('v3-run',['--completion-file',completionFile]);
+  assert.equal(run.verifiedCloudCaseCount,0);
+  assert.equal(run.cases[0].status,'LOCAL_MATCHED_ONLY');
+  const nextFile=join(f.directory,'next-workbench-case.json');
+  assert.equal((await cli('v3-prepare-next',['--first-checkpoint',checkpoint,'--completion-file',completionFile,
+    '--source-revision','a'.repeat(40)],0,nextFile)).status,'PREPARED');
+  const next=JSON.parse(readFileSync(nextFile,'utf8'));
+  assert.equal(next.previousCase.reserveCny,64);
+  assert.deepEqual(next.previousCase.usageFloor,usage);
+  assert.equal((await cli('v3-run',['--completion-file',completionFile,'--next-checkpoint',nextFile])).verifiedCloudCaseCount,0);
+  assert.equal(f.store.list('release_approval',PROJECT).length,1);
+  assert.equal(f.store.list('release_run',PROJECT).length,2);
+  assert.deepEqual(f.queueCounts(),queueBeforeReadback);
 });
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{

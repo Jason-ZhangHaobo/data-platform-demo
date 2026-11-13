@@ -127,6 +127,18 @@ shuduo agent v3-prepare-delivery --checkpoint /private/first-case.json --bill-fi
 
 响应丢失后执行 `v3-inspect`，只查原请求回执。若回执显示 `storagePending`，说明该版本文件已保存到交付记录，产物存储尚待确认。在有效窗口对原交付版本执行一次 `advance-delivery` 可恢复同一文件摘要。对这一阶段的推进只恢复存储，后续 Spark 演练另行提交。两种推进均沿用原任务的审批与预算边界。
 
+### 从工作台续接同一评测
+
+```sh
+shuduo agent v3-inspect --checkpoint /private/first-case.json --workbench
+shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile --workbench
+shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
+```
+
+原创建者用同一受保护检查点续接。第一条通过原任务找到已保存的交付请求，再核对需求、代码版本、运行、八文件包及演练编号。历史记录未保留可查的原请求时，可追加 `--delivery-request-id ORIGINAL_UUID` 指定此前保存的原编号。缺少回执、来源不一致或同来源存在多份交付时需要人工核对原编号。
+
+第二条按原包和演练推导工作台发布请求编号，核对存档审阅摘要和原批准。已收录后，第三条持续读取同一发布的两个原批次和运维证据。收录和复查只有 GET，不新增批准、调度、模型调用或 Spark 计算。监控确认后，校验并保存项目月度用量读数，保留原未结算预留，在下一案例沿用。用量未确认时保留已有检查点，等待同一回执复查。随后按原批次走 `v3-consumption` 和 `v3-complete`。
+
 ### 派生任务在客户端离线后继续开发
 
 确切开发窗口绑定原派生请求正文。按原请求创建任务后，使用原任务编号和当前版本执行 `shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm`，委托现有事件后台。原创建请求保持原字节，后台委托单独绑定同一授权窗口。发起后的 `shuduo agent background --id TASK_ID` 只读状态。若响应丢失，先查原任务和已有委托状态。模型或计算用量仍记在原任务上。
