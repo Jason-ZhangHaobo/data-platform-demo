@@ -125,7 +125,12 @@ test("exact rehearsal uses one OSS PUT and can read a signed result after expiry
   assert.equal(await client.readPreparedResult(prepared,{cancelOnTimeout:false}),undefined);
   result=createQueuedSparkResult(prepared.job,{status:"SUCCEEDED"},config,clock);
   assert.deepEqual(await client.readPreparedResult(prepared,{cancelOnTimeout:false}),{status:"SUCCEEDED"});
-  assert.deepEqual(requests.map(request=>request.method),["PUT","GET","GET"]);
+  result=createQueuedSparkResult(prepared.job,{status:"SUCCEEDED",queueJobDigest:"f".repeat(64)},config,clock);
+  await assert.rejects(client.readPreparedResult(prepared,{cancelOnTimeout:false}),{code:"SPARK_QUEUE_RESULT_INVALID"});
+  const queueJobDigest=createHash("sha256").update(prepared.serialized).digest("hex");
+  result=createQueuedSparkResult(prepared.job,{status:"SUCCEEDED",queueJobDigest},config,clock);
+  assert.deepEqual(await client.readPreparedResult(prepared,{cancelOnTimeout:false}),{status:"SUCCEEDED",queueJobDigest});
+  assert.deepEqual(requests.map(request=>request.method),["PUT","GET","GET","GET","GET"]);
   assert.ok(requests.slice(1).every(request=>request.url.endsWith(prepared.resultKey)));
 });
 

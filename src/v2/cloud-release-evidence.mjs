@@ -3,6 +3,8 @@ import { publicationAttestationKeys } from "./publication-request.mjs";
 import { storedWorkerBatchResult } from "./worker-result-evidence.mjs";
 
 const fail = (status,message) => Object.assign(new Error(message),{status});
+const originalBatchResult = (store,project,run) =>
+  storedWorkerBatchResult(store,run,run.remoteSubmission?.prepared?.job,`${project}:cloud-release-result:${run.id}`);
 export function exactPublicationReviewBasis(evidence,{businessDate,businessScheduledFor}) {
   return {evidence,businessDate,businessScheduledFor,plannedBatchCount:2,scope:"PRIVATE_CLOUD_TEST"};
 }
@@ -31,8 +33,7 @@ export function projectCloudReleaseBatchStage(run, now) {
 function publicationFailureEvidence(store,project,release,runs,events) {
   if (!runs.some(run=>run.status==="FAILED")) return {};
   const batches=runs.map(run=>{
-    const result=storedWorkerBatchResult(store,run,run.remoteSubmission?.prepared?.job,
-      `${project}:cloud-release-result:${run.id}`);
+    const result=originalBatchResult(store,project,run);
     const observed=events.filter(event=>event.releaseRunId===run.id &&
       ["BATCH_SUCCEEDED","BATCH_FAILED"].includes(event.type));
     const event=observed[0], triggered=Date.parse(run.triggeredAt), scheduled=Date.parse(run.scheduledTriggerAt);
@@ -85,11 +86,13 @@ export function exactPublicationReceipt(store, project, release, now=Date.now())
     const checks = runs.map(run=>{
       const observed = events.filter(event=>event.releaseRunId===run.id && event.type==="BATCH_SUCCEEDED");
       const event = observed[0], triggered = Date.parse(run.triggeredAt), scheduled = Date.parse(run.scheduledTriggerAt);
+      const original = originalBatchResult(store,project,run);
       const finished = Date.parse(run.finishedAt);
       if (run.schedulerTriggered !== true || run.clockMode !== "FC_TIMER" ||
           run.businessScheduledFor !== release.businessScheduledFor || !Number.isFinite(triggered) ||
           !Number.isFinite(scheduled) || triggered < scheduled || !Number.isFinite(finished) || finished < triggered ||
-          !passedCloudReleaseBatch(run,item,plan) || !["main.sql","tests.sql"].every(name=>run.fileHashes?.[name]===item.manifest.files[name].sha256) ||
+          !original || !passedCloudReleaseBatch(run,item,plan) ||
+          !["main.sql","tests.sql"].every(name=>run.fileHashes?.[name]===item.manifest.files[name].sha256) ||
           observed.length!==1 || event.status!=="SUCCEEDED" || event.packageDigest!==release.packageDigest ||
           !(Date.parse(event.observedAt)>=finished)) return;
       return {batchId:run.id,eventId:event.id,observedAt:event.observedAt};

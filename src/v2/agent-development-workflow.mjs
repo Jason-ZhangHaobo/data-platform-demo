@@ -45,6 +45,11 @@ export function storedFileRehearsalFailure(store,project,task,verification) {
       verification.isolation!=="FUNCTION_PROCESS" || verification.actualExecution!==false ||
       verification.finishedAt!==task.finishedAt)
     return;
+  return storedFileRehearsalResult(store,project,task,verification);
+}
+
+export function storedFileRehearsalResult(store,project,task,verification) {
+  if (!storedFileRehearsal(task,verification) || verification.finishedAt !== task.finishedAt) return;
   return storedWorkerBatchResult(store,verification,task.remoteSubmission?.prepared?.job,
     `${project}:cloud-rehearsal-result:${verification.id}`);
 }

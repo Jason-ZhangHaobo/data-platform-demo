@@ -196,7 +196,7 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --review-file /pri
 shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 ```
 
-审阅文件通过 `GET /agent/tasks/{id}/publication/preflight` 读取。按原开发批次、包摘要及演练选择，复核实际存储的八个文件、原需求、独立断言、冻结交易日期及两个计划批次。文件为当前用户所有的 0600 JSON，四项人工确认初始均为 `false`。
+审阅文件通过 `GET /agent/tasks/{id}/publication/preflight` 读取。按原开发批次、包摘要及演练选择，复核实际存储的八个文件、原需求、独立断言、冻结交易日期及两个计划批次。对已绑定的演练，另核对结果摘要是否登记于同一 Worker 批次。文件为当前用户所有的 0600 JSON，四项人工确认初始均为 `false`。
 
 工程师逐项确认后，提交命令重新核对审阅文件、当月完整账单、未结算预留和独立发布窗口。先保存确切审阅摘要和原幂等编号，再向已有发布接口发出一次请求。服务端复核同一审阅摘要后创建审阅、批准、一个发布和两个待调度批次。状态为 `WAITING_SCHEDULER` 时表示发布记录已受理。
 
@@ -212,7 +212,7 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 
 有效的原签名事件可继续核对它认领的 Worker 回执。此前重放查不到结果时，即使已保存事件摘要，回执迟到后仍能核对。重放只读原 Worker 结果，确认通过后记录原批次及监控事件。它不会再提交 Worker、补写取消或读取其他批次的 Worker 回执。签名有效期和新批次的发布窗口保持独立校验。
 
-`shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile` 读取原发布、两个原批次及已存预留。只读查询不触发 Worker。签名调度结算时将批次结果和监控事件一起落盘。两个原批次均通过 Spark、测试 SQL 和独立断言，且各有同包、完成时间之后的成功事件并且没有开放告警，才返回 `monitoringStatus: VERIFIED`。
+`shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile` 读取原发布、两个原批次及已存预留。只读查询不触发 Worker。签名调度结算时将批次结果和监控事件一起落盘。两个原批次均须核对原 Worker 编号、结果登记、Spark、测试 SQL 和独立断言，各有同包、完成时间之后的成功事件且无开放告警，才返回 `monitoringStatus: VERIFIED`。Worker 签名结果带原任务正文摘要时，队列还核对该摘要。摘要错配或缺少已登记的原结果时，保留现有批次及用量，暂停确认运维和消费。
 
 在原 Agent 任务的「审阅发布与运行监控」中，确切发布通过核对后可打开「在运维监控查看原批次」。目标页用现有发布和批次权限读取原记录，并核对代码版本、交付包摘要、审阅摘要及两个批次的顺序。页面显示保存状态及调度是否触发，可重新读取或返回原任务。
 

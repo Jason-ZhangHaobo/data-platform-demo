@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { durableDeliveryMode, verifiedStoredCloudDevelopment } from "./agent-development-workflow.mjs";
+import { durableDeliveryMode, storedFileRehearsalResult, verifiedStoredCloudDevelopment } from "./agent-development-workflow.mjs";
 import { sha256, validateDeliveryPackage, validationMatchesFamily } from "./delivery.mjs";
 import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
 import { assertSqlRequirementPackageSource, sqlRequirementBinding } from "./sql-requirements.mjs";
@@ -7,7 +7,8 @@ import { validStoredAgentDerivation } from "./agent-context-derivation.mjs";
 
 // This only evaluates persisted, exact records. Provider and Worker reconciliation
 // stay on the existing task workflow, and review stays with the engineer.
-export function storedAgentReviewEvidence({ task, delivery, revision, run, bundle, verification, requestSha256, read, includeDerivation=false }) {
+export function storedAgentReviewEvidence({ task, delivery, revision, run, bundle, verification, requestSha256, store, includeDerivation=false }) {
+  const read = (kind,id) => store.get(kind,id,task.projectId);
   const base = {
     protocol: "shuduo-agent-review-evidence/v1", scope: "PRIVATE_CLOUD_TEST",
     verificationMode: "STORED_METADATA_ONLY", taskId: task.id, deliveryId: delivery.id,
@@ -54,7 +55,8 @@ export function storedAgentReviewEvidence({ task, delivery, revision, run, bundl
       verification.status !== "SUCCEEDED" || verification.actualExecution !== true || verification.engine !== "Apache Spark" ||
       verification.engineVersion !== plan.deployment.runtime.version || verification.mainSqlExecuted !== true ||
       verification.testSqlValidation?.passed !== true || verification.testSqlValidation.sqlHash !== sha256(bundle.files["tests.sql"]) ||
-      !validationMatchesFamily(verification.validation, family) || delivery.remoteSubmission?.prepared?.job?.jobId !== verification.id)
+      !validationMatchesFamily(verification.validation, family) || delivery.remoteSubmission?.prepared?.job?.jobId !== verification.id ||
+      ((delivery.sourcePinned || delivery.rehearsalPinned) && !storedFileRehearsalResult(store,task.projectId,delivery,verification)))
     return reject("FILE_REHEARSAL_UNCONFIRMED");
 
   return { ...base, status:"REVIEW_EVIDENCE_READY", requestSha256, contextId:task.contextId, taskCreatedAt:task.createdAt,

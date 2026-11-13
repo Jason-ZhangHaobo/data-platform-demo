@@ -228,13 +228,15 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   };
   const complete = (prepared, measuredResult) => {
     const payload = JSON.parse(prepared.job.body);
-    objects.set(prepared.resultKey, JSON.stringify(createQueuedSparkResult(prepared.job, measuredResult ?? {
+    const result=measuredResult ?? {
       status: 'SUCCEEDED', engine: 'Apache Spark', engineVersion: '3.5.9', mainSqlExecuted: true,
       rows: getContext(payload.context.id).expected, durationMs: 100,
       validation: { passed: true, regressions: contextIds.map(contextId => ({ contextId, passed: true })) },
       ...(payload.testSql ? { testSqlValidation: { passed: true, sqlHash: createHash('sha256').update(payload.testSql).digest('hex') } } : {}),
       log: 'Synthetic queue receipt. No real Spark was run.',
-    }, config, now)));
+    };
+    objects.set(prepared.resultKey, JSON.stringify(createQueuedSparkResult(prepared.job,
+      {...result,queueJobDigest:sha256(prepared.serialized)},config,now)));
   };
   await open();
   const login = await call('/auth/login', { email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026' });
@@ -1022,7 +1024,14 @@ test('a request-bound base task requires the exact verified version for delivery
     V2_PRIVATE_RELEASE_TRIGGER_NAMES:'shuduo-release-fictional-first',V2_SCHEDULER_TICK_SECRET:'fictional-first-release-authorization-1234567890'});
   await f.restart();
   const selector={sourceKind:'AGENT',sourceRunId:current.runId,packageDigest:bundle.digest,verificationId};
-  const preflight=await f.call(publicationPreflightPath(created.body.id,selector));
+  const preflightPath=publicationPreflightPath(created.body.id,selector);
+  const rehearsalResult=f.store.get('delivery_verification',verificationId,PROJECT);
+  const rehearsalQueue=f.queueCounts();
+  f.store.update('delivery_verification',verificationId,PROJECT,{workerResultDigest:'f'.repeat(64)});
+  assert.equal((await f.call(preflightPath)).status,409);
+  assert.deepEqual(f.queueCounts(),rehearsalQueue);
+  f.store.update('delivery_verification',verificationId,PROJECT,{workerResultDigest:rehearsalResult.workerResultDigest});
+  const preflight=await f.call(preflightPath);
   assert.equal(preflight.status,200,preflight.body.message);
   const attestations={code:true,assertions:true,deliveryFiles:true,cloudScope:true};
   const publication=taskPath+'/publication', counts=f.counts();
@@ -1063,6 +1072,7 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.deepEqual(f.queueCounts(),queueBeforeImport);
   assert.deepEqual(f.counts(),counts);
 
+  f.later(1000);
   for (const [index,batchId] of batchIds.entries()) {
     if (index) f.later(60001);
     const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=(index?'b':'a').repeat(24);
@@ -1077,6 +1087,17 @@ test('a request-bound base task requires the exact verified version for delivery
     assert.equal((await f.privateCall(tick)).body.replayed,true);
   }
   const beforeUsage=readFileSync(checkpoint,'utf8'), queueBeforeReadback=f.queueCounts();
+  const firstResult=f.store.get('release_run',batchIds[0],PROJECT);
+  const secondResult=f.store.get('release_run',batchIds[1],PROJECT);
+  assert.notEqual(firstResult.workerResultDigest,secondResult.workerResultDigest);
+  f.store.update('release_run',batchIds[0],PROJECT,{workerResultDigest:secondResult.workerResultDigest});
+  assert.equal((await cli('v3-publish',['--reconcile'])).publication.monitoringStatus,'UNCONFIRMED');
+  assert.equal((await f.call('/releases/'+releaseId)).body.monitoringEvidence.status,'UNCONFIRMED');
+  await cli('v3-consumption',['--batch-id',batchIds[0],'--out-file',join(f.directory,'wrong-worker-source.json')],1);
+  assert.equal(existsSync(join(f.directory,'wrong-worker-source.json')),false);
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeUsage);
+  assert.deepEqual(f.queueCounts(),queueBeforeReadback);
+  f.store.update('release_run',batchIds[0],PROJECT,{workerResultDigest:firstResult.workerResultDigest});
   alter=(path,value)=>{if(path==='/status')value.budget.remoteSpark.runCount=1;};
   assert.equal((await cli('v3-publish',['--reconcile'])).reason,'WORKBENCH_USAGE_UNCONFIRMED');
   assert.equal(readFileSync(checkpoint,'utf8'),beforeUsage);
@@ -2160,6 +2181,7 @@ test('an invited exact window binds derivation from the parent through signed re
   assert.deepEqual(f.counts(),after);
   f.store.update('agent',task.id,PROJECT,{derivedFrom:original.body.derivedFrom});
 
+  f.later(1000);
   for (const [index,id] of batchIds.entries()) {
     if (index) f.later(60001);
     const tick=timer(index?'b':'a');

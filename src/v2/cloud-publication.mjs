@@ -148,7 +148,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       throw fail(403,"确切发布审阅只允许原任务创建者");
     const evidence = storedAgentReviewEvidence({task:agent,delivery,bundle:item,verification,
       revision:get("revision",plan.source.revisionId),run:get("run",sourceRunId),
-      requestSha256:hash(agent.message ?? ""),read:(kind,id)=>store.get(kind,id,project)});
+      requestSha256:hash(agent.message ?? ""),store});
     if (evidence.status !== "REVIEW_EVIDENCE_READY") throw fail(409,"原文件演练与开发核验尚未绑定");
     return exactPublicationReviewBasis(evidence,businessSchedule(plan));
   }
