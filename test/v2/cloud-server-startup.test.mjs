@@ -207,6 +207,76 @@ test("the read-only listener serves the same public files with a returning sessi
   assert.equal((await read("/api/v2/agent/tasks",{method:"POST",headers:returning.headers,body:"{}"})).status,403);
 });
 
+test("a bounded startup identity read waits for recovered state and releases disconnected capacity", {timeout:5000}, async t => {
+  const options = fixture(t), gate = Promise.withResolvers();
+  const metadata = new MemorySnapshotBackend();
+  const seed = await ReplicatedMetadataStore.open({backend:metadata,project:PROJECT,autoFlush:false});
+  const auth = new AuthManager({store:seed,project:PROJECT,env:{}});
+  const credentials = {email:"startup-waiter@example.invalid",password:"SyntheticStartup!2026"};
+  const owner = auth.bootstrapAdmin({...credentials,displayName:"虚构回访顾问"});
+  const {cookies}=auth.sessionResponse(auth.login(credentials),true);
+  await seed.closeReplicated();
+  const env={...cloudEnv};
+  const listener=startCloudV2Listener(env,{...options,port:0,host:"127.0.0.1",
+    openMetadataBackend:async()=>{await gate.promise;return metadata;},
+    createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
+  t.after(async()=>{gate.resolve();await listener.close();});
+  await once(listener.server,"listening");
+  const base="http://127.0.0.1:"+listener.server.address().port;
+  env.V2_PUBLIC_ORIGIN=base;
+  const path="/api/v2/status?include=session";
+  const headers={"x-shuduo-client":"workbench",cookie:cookies.map(cookie=>cookie.split(";",1)[0]).join("; ")};
+  const requests=[];
+  const seen = () => new Promise(resolve => listener.server.once("request", (_req,res)=>resolve(res)));
+  for(let i=0;i<2;i++){
+    const arrived=seen(), controller=new AbortController();
+    const response=fetch(base+path,{headers,signal:controller.signal});
+    response.catch(()=>{});
+    requests.push({controller,response,res:await arrived});
+  }
+  assert.ok(requests.every(({res})=>!res.headersSent));
+  for(const target of [path,"/api/v2/auth/session","/api/v2/agent/tasks",path+"&extra=1"]){
+    const pending=await fetch(base+target,{headers,signal:AbortSignal.timeout(600)});
+    assert.equal(pending.status,503);
+    assert.equal((await pending.json()).code,"CLOUD_STARTUP_PENDING");
+  }
+  const closed=once(requests[0].res,"close");
+  requests[0].controller.abort();
+  await closed;
+  await assert.rejects(requests[0].response,{name:"AbortError"});
+  const arrived=seen();
+  const replacement=fetch(base+path,{headers,signal:AbortSignal.timeout(2000)});
+  const third=await arrived;
+  assert.equal(third.headersSent,false);
+  gate.resolve();
+  await listener.ready;
+  for(const read of [requests[1].response,replacement]){
+    const response=await read;
+    assert.equal(response.status,200);
+    assert.equal(response.headers.get("cache-control"),"no-store");
+    const {session}=await response.json();
+    assert.equal(session.authenticated,true);
+    assert.equal(session.user.id,owner.id);
+    assert.equal(session.readOnly,true);
+  }
+});
+
+test("an unfinished startup releases the combined read with the existing retry response", {timeout:5000}, async t => {
+  const options=fixture(t), gate=Promise.withResolvers();
+  const listener=startCloudV2Listener(cloudEnv,{...options,port:0,host:"127.0.0.1",
+    openMetadataBackend:async()=>{await gate.promise;return new MemorySnapshotBackend();},
+    createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
+  t.after(async()=>{gate.resolve();await listener.close();});
+  await once(listener.server,"listening");
+  const base="http://127.0.0.1:"+listener.server.address().port;
+  const response=await fetch(base+"/api/v2/status?include=session",{
+    headers:{"x-shuduo-client":"workbench"},signal:AbortSignal.timeout(3800),
+  });
+  assert.equal(response.status,503);
+  assert.equal(response.headers.get("retry-after"),"1");
+  assert.equal((await response.json()).code,"CLOUD_STARTUP_PENDING");
+});
+
 test("private and writable configurations bind after recovery and failed early listeners close", {timeout:5000}, async t => {
   const options=fixture(t);
   for (const env of [{V2_FC_PUBLIC_HTTP_ENABLED:"false"},{...cloudEnv,V2_FC_PUBLIC_READ_ONLY:"false"}]) {
