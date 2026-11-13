@@ -430,8 +430,12 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const rollbackIndex = web ? {webIndexBytes:web.rollbackIndexBytes,webIndexSha256:web.rollbackIndexSha256} : undefined;
   const verifyRollbackWeb = async () => {
     const stageWeb = report.web;
+    delete report.web;
     try { await verifyWeb(rollbackIndex); }
-    finally { report.rollbackWeb=report.web; report.web=stageWeb; }
+    finally {
+      if (report.web) report.rollbackWeb=report.web;
+      report.web=stageWeb;
+    }
   };
   const runtime = async opened => {
     for (let n = 0; n < 3; n++) {

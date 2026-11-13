@@ -455,6 +455,18 @@ test('unbound HTML is rejected before cloud IO and stale entry bytes trigger onl
   }
 });
 
+test('an exhausted web read allowance preserves the mismatch without inventing rollback entry evidence',async()=>{
+  const f=codeWebFixture();
+  f.controls.wrongHtml=true;
+  await assert.rejects(f.step('stage',{priorUsage:{...f.basePlan.priorUsage,activeHttp:39}}),/ENTRY_CONTENT_MISMATCH/);
+  assert.equal(f.report.rollback,'VERIFIED');
+  assert.equal(f.report.rollbackFailure,'PUBLICATION_USAGE_LIMIT');
+  assert.equal(f.report.web.index.status,'MISMATCH');
+  assert.equal(f.report.rollbackWeb,undefined);
+  assert.equal(f.calls.filter(call=>call.web).length,1);
+  assert.equal(f.report.cumulativeUsage.activeHttp,40);
+});
+
 test('code-only refresh checks a complete bill including the retained reserve and never uses a former low reserve',async()=>{
   const f=codeFixture();f.controls.bill='153.00';await assert.rejects(f.step('stage'),/MONTHLY_BUDGET_NOT_VERIFIED/);
   assert.equal(f.calls.filter(c=>c.method==='PUT'||c.args?.[1]==='PUT').length,0);
