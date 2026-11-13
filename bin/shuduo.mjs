@@ -74,12 +74,14 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent review-evidence --id AGENT_TASK_ID --delivery-id ID --request-sha256 SHA256
   shuduo agent execution-evidence --request-id ORIGINAL_REQUEST_ID
   shuduo agent v3-inspect --checkpoint ABSOLUTE_PATH
+  shuduo agent v3-inspect --checkpoint ABSOLUTE_PATH --workbench [--delivery-request-id ORIGINAL_UUID]
   shuduo agent v3-prepare-delivery --checkpoint ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
   shuduo agent v3-rehearse --checkpoint ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
   shuduo agent v3-rehearse --checkpoint ABSOLUTE_PATH --settle
   shuduo agent v3-publication-review --checkpoint ABSOLUTE_PATH --out-file ABSOLUTE_PATH
   shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --review-file ABSOLUTE_PATH --bill-file ABSOLUTE_PATH --confirm
   shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --reconcile
+  shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --reconcile --workbench
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --batch-id ID --out-file ABSOLUTE_PATH
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256
   shuduo agent v3-complete --checkpoint ABSOLUTE_PATH --first-plan ABSOLUTE_PATH --second-plan ABSOLUTE_PATH --out-file ABSOLUTE_PATH
@@ -587,11 +589,14 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "execution-evidence")
       result = await client.request(agentExecutionEvidencePath(required(parsed.options,"request_id")));
     else if (resource === "agent" && ["v3-review","v3-inspect"].includes(action)) {
+      const args=parsed.options, workbench=action==="v3-inspect" && args.workbench===true;
       const flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
+      const allowed=["checkpoint","base_url",...(workbench?["workbench","delivery_request_id"]:[])];
       if(parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
-         flags.some(flag=>!["checkpoint","base_url"].includes(flag)))throw Error("评测证据读取仅接受原检查点和原入口");
-      const checkpoint=required(parsed.options,"checkpoint");
-      result=await (action==="v3-review"?readCloudV3Review:inspectCloudV3Execution)(checkpoint,client);
+         flags.some(flag=>!allowed.includes(flag)))throw Error("评测证据读取仅接受原检查点、原入口及明确的工作台来源");
+      const checkpoint=required(args,"checkpoint");
+      result=action==="v3-review"?await readCloudV3Review(checkpoint,client):await inspectCloudV3Execution(checkpoint,client,
+        {workbench,deliveryRequestId:args.delivery_request_id===undefined?undefined:required(args,"delivery_request_id")});
     }
     else if (resource === "agent" && action === "v3-entry-preflight") {
       const args=parsed.options,flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
@@ -659,13 +664,14 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && ["v3-publication-review","v3-publish"].includes(action)) {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
       const exporting=action==="v3-publication-review", reconcile=!exporting && args.reconcile===true;
-      const allowed=["checkpoint","base_url",...(exporting?["out_file"]:reconcile?["reconcile"]:["review_file","bill_file","confirm"])];
+      const workbench=reconcile && args.workbench===true;
+      const allowed=["checkpoint","base_url",...(exporting?["out_file"]:reconcile?["reconcile",...(workbench?["workbench"]:[])]:["review_file","bill_file","confirm"])];
       if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length ||
           flags.some(flag=>!allowed.includes(flag)) || (!exporting && !reconcile && args.confirm!==true))
         throw Error("须选择导出确切审阅、明确提交已审阅版本或核对原发布回执");
       const checkpoint=required(args,"checkpoint");
       result=exporting?await exportCloudV3PublicationReview(checkpoint,client,required(args,"out_file")):
-        await submitCloudV3Publication(checkpoint,client,reconcile?{reconcile:true}:{reviewPath:required(args,"review_file"),
+        await submitCloudV3Publication(checkpoint,client,reconcile?{reconcile:true,workbench}:{reviewPath:required(args,"review_file"),
           billPath:required(args,"bill_file")});
     }
     else if (resource === "agent" && action === "v3-consumption") {

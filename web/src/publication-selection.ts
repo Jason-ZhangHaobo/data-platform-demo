@@ -1,4 +1,5 @@
 import {reviewAttestationsComplete} from "./delivery-presentation.ts";
+import {workbenchPublicationRequestKey} from "../../src/v2/publication-request.mjs";
 
 export type PublicationSelector = {sourceKind:"AGENT"|"MANUAL";sourceRunId?:string;packageDigest:string;verificationId:string};
 export type PublicationSelection = {taskId:string;manual:boolean;runId?:string;revisionId?:string;contextId?:string};
@@ -58,8 +59,7 @@ export function publicationCancellationAllowed({taskId,selector,release,publicat
     pinnedReleaseId===release.id&&publicationReleaseMatches(release,taskId,selector,pinnedReleaseId));
 }
 export function cloudPublicationRequest(selector:PublicationSelector,packageId:string,attestations:Record<string,boolean>,reviewDigest?:string){
-  const idempotencyKey=`agent-publish-${packageId}-${selector.verificationId}`;
-  if(!opaque(packageId)||!opaque(selector.verificationId)||idempotencyKey.length>100||
+  if(!opaque(packageId)||!opaque(selector.verificationId)||
     !["MANUAL","AGENT"].includes(selector.sourceKind)||!/^[a-f0-9]{64}$/.test(selector.packageDigest)||
     selector.sourceKind==="MANUAL"&&!opaque(selector.sourceRunId)||!reviewAttestationsComplete(attestations,true)||
     reviewDigest!==undefined&&(selector.sourceKind!=="AGENT"||!opaque(selector.sourceRunId)||!/^[a-f0-9]{64}$/.test(reviewDigest)))throw Error("请逐项审阅这个确切版本的四项依据。");
@@ -67,7 +67,7 @@ export function cloudPublicationRequest(selector:PublicationSelector,packageId:s
     ...(selector.sourceKind==="MANUAL"?{sourceKind:"MANUAL" as const,sourceRunId:selector.sourceRunId}:{}),
     ...(reviewDigest ? {sourceKind:"AGENT" as const,sourceRunId:selector.sourceRunId,reviewDigest}:{}),
     attestations:{code:true,assertions:true,deliveryFiles:true,cloudScope:true}},
-    idempotencyKey};
+    idempotencyKey:workbenchPublicationRequestKey(packageId,selector.verificationId)};
 }
 
 // One frozen request per exact package/rehearsal. Unknown replies are read first;

@@ -188,6 +188,7 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
       }
       if (attempt?.usage!==undefined) retainUsage({...attempt.usage,month:bill?.month});
     }
+    if (item.workbenchUsage !== undefined) retainUsage(item.workbenchUsage);
     const submission=checkpoint.state.submission;
     if (failure?.batches) {
       const attempt=failure.kind==="PUBLICATION"?item.actions.publication:item.actions.rehearsal;
@@ -224,7 +225,7 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
         previous.checkpointDigest!==sha256(parent.checkpoint.text) || previous.completionDigest!==parent.completion.completionDigest ||
         previous.approvalDigest!==(parent.checkpoint.state.submission?.windowApprovalDigest??null) ||
         !isDeepStrictEqual(cloudV3PredecessorApprovals(previous),approvals) || previous.reserveCny!==reserveCny ||
-        !isDeepStrictEqual(previous.usageFloor,next.state.caseLimit>2||parent.completion.failure?usageFloor:undefined) ||
+        !isDeepStrictEqual(previous.usageFloor,next.state.caseLimit>2||parent.completion.failure||parent.item.workbenchUsage?usageFloor:undefined) ||
         !validRecordedCreation(item))
       stop("续接案例与原评测、审批历史或上一例完成回执不一致");
     if (definition.kind==="DERIVED" && !isDeepStrictEqual(item.derivationSource,cloudV3DerivationSource(fullPlan,definition,

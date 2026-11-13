@@ -3912,7 +3912,18 @@ export function createV2Server(options = {}) {
         requireDurableAgentOwner(task,req);
         if (agentRequestLookup[2]) {
           if (task.submittedBy !== actorId) throw fail(403, "云端执行证据仅原任务创建者可读");
-          return json(res,200,storedAgentExecutionEvidence(task,(kind,id)=>store.get(kind,id,PROJECT)));
+          const evidence = storedAgentExecutionEvidence(task,(kind,id)=>store.get(kind,id,PROJECT));
+          const code = evidence.development;
+          if (!code) return json(res,200,evidence);
+          const deliveries = store.list("agent_delivery_task",PROJECT).filter(item =>
+            item.mode === durableDeliveryMode && item.sourcePinned === true && item.sourceAgentTaskId === task.id &&
+            item.submittedBy === actorId && item.sourceKind !== "MANUAL" &&
+            item.sourceRevisionId === code.revisionId && item.sourceSqlHash === code.revisionHash && item.sourceRunId === code.runId);
+          const delivery = deliveries.length === 1 ? deliveries[0] : undefined;
+          const requestId = delivery?.preparationRequestId;
+          const original = typeof requestId === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(requestId) &&
+            store.deduplicatedId(`${PROJECT}:durable-delivery:${task.id}:${requestId}`) === delivery.id;
+          return json(res,200,{...evidence,...(original?{originalDelivery:{id:delivery.id,requestId}}:{})});
         }
         return json(res,200,exposeDurableTask(task));
       }

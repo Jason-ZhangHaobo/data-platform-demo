@@ -3,6 +3,10 @@ import { publicationAttestationKeys } from "./publication-request.mjs";
 import { storedWorkerBatchResult } from "./worker-result-evidence.mjs";
 
 const fail = (status,message) => Object.assign(new Error(message),{status});
+export function exactPublicationReviewBasis(evidence,{businessDate,businessScheduledFor}) {
+  return {evidence,businessDate,businessScheduledFor,plannedBatchCount:2,scope:"PRIVATE_CLOUD_TEST"};
+}
+
 export function passedCloudReleaseBatch(receipt,item,plan) {
   return receipt?.status==="SUCCEEDED" && receipt.engine==="Apache Spark" &&
     receipt.engineVersion===plan.deployment.runtime.version && receipt.mainSqlExecuted===true && receipt.testDouble!==true &&

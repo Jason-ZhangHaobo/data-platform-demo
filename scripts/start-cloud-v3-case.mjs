@@ -7,7 +7,8 @@ import { agentExecutionEvidencePath, validSettledDevelopmentFailure } from "../s
 import { agentContextDerivationBody, agentContextDerivationRequest } from "../src/v2/agent-context-derivation.mjs";
 import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
 import { readCloudV3Review } from "../src/v2/cloud-v3-review.mjs";
-import { cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys } from "../src/v2/cloud-v3-case-selection.mjs";
+import { exactPublicationReviewBasis } from "../src/v2/cloud-release-evidence.mjs";
+import { cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
 import { getContext, validationFamilyForContext } from "../src/v2/context.mjs";
 import { validateConsumerSource } from "../src/v2/consumer-source.mjs";
 import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
@@ -18,7 +19,7 @@ import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, ve
 import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-execution.mjs";
 import { privateReleasePendingStage } from "../src/v2/private-release-stage.mjs";
 import { liveEvidenceProvenance, nonLiveModelLabel } from "../src/v2/live-lifecycle-provenance.mjs";
-import { publicationAttestationKeys, publicationPreflightPath, publicationReadPath, publicationRequestReceiptPath } from "../src/v2/publication-request.mjs";
+import { publicationAttestationKeys, publicationPreflightPath, publicationReadPath, publicationRequestReceiptPath, workbenchPublicationRequestKey } from "../src/v2/publication-request.mjs";
 import { normalizeSessionBase } from "../src/v2/session-credential.mjs";
 import { serviceSourceReadPath } from "../src/v2/service-source-request.mjs";
 import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
@@ -194,7 +195,7 @@ export async function prepareCloudV3Next(path,client,{firstPath,completionPath,r
   const previousCase={checkpointDigest:sha256(parent.checkpoint.text),completionDigest:parent.completion.completionDigest,
     approvalDigest:parent.checkpoint.state.submission?.windowApprovalDigest ?? null,reserveCny,
     ...(caseLimit>2?{approvalDigests:approvals}:{}),
-    ...(usageFloor&&(caseLimit>2||parent.completion.failure)?{usageFloor}:{})};
+    ...(usageFloor&&(caseLimit>2||parent.completion.failure||parent.item.workbenchUsage)?{usageFloor}:{})};
   // The same original evaluation always yields the same request key, even
   // if a local preparation is interrupted and recreated in another file.
   const entropy=sha256(JSON.stringify([first.evaluationRunId,entries[0].item.actions.agent.key,definition.id]));
@@ -526,6 +527,7 @@ function bindOriginalDelivery(item, code, receipt) {
   const proof = liveEvidenceProvenance(receipt);
   if (proof.synthetic || proof.nonNative || proof.unconfirmed || !id(receipt?.id) || receipt.mode !== durableDeliveryMode ||
       (action.id !== undefined && action.id !== receipt.id) || receipt.sourceAgentTaskId !== item.taskId ||
+      (action.origin === "WORKBENCH" && receipt.sourcePinned !== true) ||
       receipt.sourceRevisionId !== code.revisionId || receipt.sourceSqlHash !== code.revisionHash ||
       receipt.sourceRunId !== code.runId || !id(receipt.packageId) || !digest(receipt.packageDigest) ||
       (action.packageId !== undefined && action.packageId !== receipt.packageId) ||
@@ -701,9 +703,61 @@ function publicationBody(selection) {
     attestations:Object.fromEntries(publicationAttestationKeys.map(key=>[key,true]))};
 }
 
+function publicationActionKeyMatches(action) {
+  if (action?.origin === "WORKBENCH")
+    return id(action.packageId) && id(action.verificationId) &&
+      action.key === workbenchPublicationRequestKey(action.packageId,action.verificationId);
+  return id(action?.key);
+}
+
+async function findWorkbenchPublication(path,client,item) {
+  const review = await readCloudV3Review(path,client,{includeEvidence:true});
+  if (review.status !== "REVIEW_EVIDENCE_BOUND" || item.rehearsal?.status !== "SUCCEEDED" ||
+      item.rehearsal.id !== review.verificationId) return;
+  const key = workbenchPublicationRequestKey(review.packageId,review.verificationId);
+  const receipt = await client.request(publicationRequestReceiptPath(item.taskId,key));
+  const {businessScheduledFor,reviewDigest} = receipt.release ?? {};
+  // The review endpoint includes the parent for reconciliation. The publication
+  // digest uses the preflight projection, which binds it through the package.
+  const evidence = {...review.evidence};
+  delete evidence.derivedFrom;
+  const basis = exactPublicationReviewBasis(evidence,{businessDate:getContext(item.code.contextId).businessDate,businessScheduledFor});
+  if (!Number.isFinite(Date.parse(businessScheduledFor)) || reviewDigest !== sha256(JSON.stringify(basis))) return;
+  const selection = {sourceKind:"AGENT",sourceRunId:review.developmentRunId,packageId:review.packageId,
+    packageDigest:review.packageDigest,verificationId:review.verificationId,reviewDigest,businessScheduledFor};
+  return {receipt,action:{...selection,key,origin:"WORKBENCH",
+    bodyHash:sha256(JSON.stringify(publicationBody(selection))),status:"SUBMITTING"}};
+}
+
+async function recordWorkbenchUsage(state,item,publication,client) {
+  const status = await client.request("/status");
+  const budget = status?.budget, prior = item.workbenchUsage;
+  const observed = {month:budget?.month,modelCalls:budget?.model?.recordedCalls,
+    remoteSparkRuns:budget?.remoteSpark?.runCount,remoteSparkSeconds:budget?.remoteSpark?.seconds};
+  const start = state.submission;
+  const sameMonth = start?.bill?.month === observed.month;
+  const triggered = publication.batches.filter(batch=>batch.reservedDurationMs!==undefined).length;
+  if (status?.mode !== "PUBLIC_INVITATION" || status.projectId !== state.projectId ||
+      !validCloudV3UsageFloor(observed) ||
+      (start?.bill?.month && observed.month < start.bill.month) ||
+      (publication.monitoringStatus === "VERIFIED" && triggered !== publication.batchIds.length) ||
+      (sameMonth && (!start.usage || observed.modelCalls < start.usage.modelCalls+item.code.modelAttempts ||
+        observed.remoteSparkRuns < start.usage.remoteSparkRuns+2+triggered)) ||
+      (prior && (!validCloudV3UsageFloor(prior) || observed.month < prior.month ||
+        (observed.month === prior.month && (observed.modelCalls<prior.modelCalls || observed.remoteSparkRuns<prior.remoteSparkRuns)))))
+    return false;
+  // A completed reservation can settle to fewer seconds. Keep the previous
+  // exposure for this month as a conservative floor for the next case.
+  if (observed.month === prior?.month) observed.remoteSparkSeconds=Math.max(observed.remoteSparkSeconds,prior.remoteSparkSeconds);
+  item.workbenchUsage = observed;
+  return true;
+}
+
 function bindPublication(item, receipt) {
   const action = item.actions.publication, release = receipt?.release, runs = receipt?.runs;
-  if (receipt?.protocol !== "shuduo-cloud-publication-receipt/v1" || !id(release?.id) ||
+  const proof = liveEvidenceProvenance(receipt);
+  if (proof.synthetic || proof.nonNative || proof.unconfirmed ||
+      receipt?.protocol !== "shuduo-cloud-publication-receipt/v1" || !id(release?.id) ||
       release.taskId !== item.taskId || release.sourceRunId !== action.sourceRunId ||
       release.sourceRevisionId !== item.code?.revisionId || release.sourceCodeHash !== item.code?.revisionHash ||
       release.scope !== "PRIVATE_CLOUD_TEST" ||
@@ -740,22 +794,40 @@ function bindPublication(item, receipt) {
   return saved;
 }
 
-export async function submitCloudV3Publication(path,client,{reviewPath,billPath,reconcile=false}={}) {
+export async function submitCloudV3Publication(path,client,{reviewPath,billPath,reconcile=false,workbench=false}={}) {
   return withCloudCheckpoint(path,async()=>{
-    const {state,item} = snapshot(client,path), action = item.actions.publication;
+    const {state,item} = snapshot(client,path);
+    let action = item.actions.publication;
     const response = (status,reason) => result(state,item,status,reason);
     if (reconcile) {
-      if (!id(action?.key) || !["SUBMITTING","UNKNOWN","CONFIRMED"].includes(action.status) ||
-          action.bodyHash !== sha256(JSON.stringify(publicationBody(action))))
+      if ((!action && !workbench) || (action && (!publicationActionKeyMatches(action) ||
+          !["SUBMITTING","UNKNOWN","CONFIRMED"].includes(action.status) ||
+          action.bodyHash !== sha256(JSON.stringify(publicationBody(action))))))
         return response("PENDING","ORIGINAL_PUBLICATION_UNCONFIRMED");
       await requireOriginalCreator(state,client);
+      const before = JSON.stringify(item);
       let receipt;
-      try { receipt=await client.request(publicationRequestReceiptPath(item.taskId,action.key)); }
+      try {
+        if (action) receipt=await client.request(publicationRequestReceiptPath(item.taskId,action.key));
+        else {
+          const original=await findWorkbenchPublication(path,client,item);
+          if (!original) return response("PENDING","ORIGINAL_PUBLICATION_UNCONFIRMED");
+          ({receipt,action}=original);
+          item.actions.publication=action;
+        }
+      }
       catch { return response("PENDING","ORIGINAL_PUBLICATION_UNCONFIRMED"); }
       const publication = bindPublication(item,receipt);
       if (!publication) return response("PENDING","ORIGINAL_PUBLICATION_UNCONFIRMED");
-      if (!isDeepStrictEqual(action,item.actions.publication)) writeCheckpoint(path,state);
-      return {...response("PUBLICATION_RECORDED"),publication};
+      if (action.origin === "WORKBENCH" && publication.status === "COMPLETED_CLOUD_TEST" &&
+          ["VERIFIED","NEEDS_ATTENTION"].includes(publication.monitoringStatus)) {
+        try {
+          if (!await recordWorkbenchUsage(state,item,publication,client)) return response("PENDING","WORKBENCH_USAGE_UNCONFIRMED");
+        } catch { return response("PENDING","WORKBENCH_USAGE_UNCONFIRMED"); }
+      }
+      if (JSON.stringify(item) !== before) writeCheckpoint(path,state);
+      return {...response("PUBLICATION_RECORDED"),publication,
+        ...(action.origin==="WORKBENCH" && item.workbenchUsage ? {workbenchUsage:item.workbenchUsage} : {})};
     }
     if (action) return response("PENDING","INSPECT_ORIGINAL_PUBLICATION");
     const {state:reviewed} = readCheckpoint(reviewPath,{privateFile:true});
@@ -800,7 +872,8 @@ export async function submitCloudV3Publication(path,client,{reviewPath,billPath,
 
 async function readVerifiedConsumptionBatches(state,item,client,batchId) {
   const action=item.actions.publication, code=item.code;
-  if (action?.status!=="CONFIRMED" || !id(action.key) || !id(action.id) ||
+  if (action?.status!=="CONFIRMED" || !publicationActionKeyMatches(action) || !id(action.id) ||
+      (action.origin==="WORKBENCH" && !validCloudV3UsageFloor(item.workbenchUsage)) ||
       !Array.isArray(action.batchIds) || (batchId!==undefined && !action.batchIds.includes(batchId)) || !Array.isArray(action.monitoring) ||
       action.bodyHash!==sha256(JSON.stringify(publicationBody(action))))
     stop("消费须绑定已核验的两个原发布批次和所选原编号");
@@ -966,7 +1039,7 @@ async function readOriginalCloudExecution({state,definition,item,action},client)
 async function readDownstreamFailure(item,client) {
   const {publication,delivery,rehearsal}=item.actions, copy=structuredClone(item);
   if (publication) {
-    if (!id(publication.key) || publication.bodyHash!==sha256(JSON.stringify(publicationBody(publication)))) return;
+    if (!publicationActionKeyMatches(publication) || publication.bodyHash!==sha256(JSON.stringify(publicationBody(publication)))) return;
     let receipt;
     try { receipt=await client.request(publicationRequestReceiptPath(item.taskId,publication.key)); }
     catch { return; }
@@ -997,6 +1070,8 @@ export async function settleCloudV3Failure(path,client,outFile) {
     let failure;
     if (item.actions.delivery||item.actions.publication) {
       await requireOriginalCreator(state,client);
+      if (item.actions.publication?.origin==="WORKBENCH" && !validCloudV3UsageFloor(item.workbenchUsage))
+        return result(state,item,"PENDING","WORKBENCH_USAGE_UNCONFIRMED");
       failure=await readDownstreamFailure(item,client);
       if (!failure || !validDownstreamFailure(item,failure)) return result(state,item,"PENDING",item.actions.publication?
         "PUBLICATION_FAILURE_NOT_SETTLED":"FILE_REHEARSAL_FAILURE_NOT_SETTLED");
@@ -1022,7 +1097,8 @@ export async function settleCloudV3Failure(path,client,outFile) {
   },{reconcile:true});
 }
 
-export async function inspectCloudV3Execution(path, client) {
+export async function inspectCloudV3Execution(path, client, {workbench=false,deliveryRequestId}={}) {
+  if (deliveryRequestId !== undefined && !id(deliveryRequestId)) stop("工作台交付请求编号须为原 UUID");
   return withCloudCheckpoint(path, async () => {
     const selected=snapshot(client,path), {state,definition,item}=selected;
     const {unconfirmed,view,execution}=await readOriginalCloudExecution(selected,client);
@@ -1032,11 +1108,23 @@ export async function inspectCloudV3Execution(path, client) {
     if (!code) return {...response("EXECUTION_RECORDED", "DEVELOPMENT_RESULT_UNCONFIRMED"), execution};
     if (item.code && !isDeepStrictEqual(item.code,code))
       return response("UNCONFIRMED", "ORIGINAL_DEVELOPMENT_MISMATCH");
+    const original = view.originalDelivery;
+    const requestId = deliveryRequestId ?? original?.requestId;
+    if (workbench && deliveryRequestId !== undefined &&
+        ((item.actions.delivery && item.actions.delivery.key !== deliveryRequestId) ||
+          (original && original.requestId !== deliveryRequestId)))
+      return response("UNCONFIRMED","WORKBENCH_DELIVERY_REQUEST_MISMATCH");
 
     const before = JSON.stringify(item);
     item.code = code;
     if (item.phase === "CODE_AND_DEBUG") item.phase = "DELIVERY_PREPARATION";
-    const delivery = await reconcileOriginalDelivery(client, item, code);
+    const adopting = workbench && !item.actions.delivery && id(requestId) &&
+      (!original || (id(original.id) && requestId === original.requestId));
+    if (adopting) item.actions.delivery = {key:requestId,bodyHash:sha256(JSON.stringify(deliveryPreparationBody(code))),
+      status:"SUBMITTING",origin:"WORKBENCH",...(original?{id:original.id}:{})};
+    const delivery = workbench && !item.actions.delivery ? {status:"UNCONFIRMED",reason:"WORKBENCH_DELIVERY_REQUEST_UNCONFIRMED"} :
+      await reconcileOriginalDelivery(client, item, code);
+    if (adopting && delivery.status !== "CONFIRMED") delete item.actions.delivery;
     if (JSON.stringify(item) !== before) writeCheckpoint(path,state);
     return {...response("DEVELOPMENT_BOUND"), execution, delivery};
   }, {reconcile:true});

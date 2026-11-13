@@ -9,7 +9,7 @@ import {standaloneManualPublicationSource} from './standalone-manual-publication
 import {assertSqlRequirementPackageSource} from './sql-requirements.mjs';
 import {assertSqlClarificationTask} from './sql-clarification.mjs';
 import {storedAgentReviewEvidence} from './agent-review-evidence.mjs';
-import {exactPublicationReceipt,passedCloudReleaseBatch,projectCloudReleaseBatchStage} from "./cloud-release-evidence.mjs";
+import {exactPublicationReceipt,exactPublicationReviewBasis,passedCloudReleaseBatch,projectCloudReleaseBatchStage} from "./cloud-release-evidence.mjs";
 import {publicationAttestationKeys} from './publication-request.mjs';
 import {verifiedWorkerResultDigest} from "./worker-result-evidence.mjs";
 
@@ -150,7 +150,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       revision:get("revision",plan.source.revisionId),run:get("run",sourceRunId),
       requestSha256:hash(agent.message ?? ""),read:(kind,id)=>store.get(kind,id,project)});
     if (evidence.status !== "REVIEW_EVIDENCE_READY") throw fail(409,"原文件演练与开发核验尚未绑定");
-    return {evidence,...businessSchedule(plan),plannedBatchCount:2,scope:"PRIVATE_CLOUD_TEST"};
+    return exactPublicationReviewBasis(evidence,businessSchedule(plan));
   }
   async function publicationPreflight(agentId, input) {
     const selector = internalSelector(input);
