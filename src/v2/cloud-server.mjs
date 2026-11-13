@@ -16,6 +16,7 @@ import {
 import { CloudStateCoordinator } from "./cloud-state-coordinator.mjs";
 import { createRemoteSparkRunner } from "./remote-spark.mjs";
 import { cloudExecutionState } from "./cloud-execution-state.mjs";
+import { agentEventConfigFromEnvironment } from "./agent-event-driver.mjs";
 import { createFcIngress } from "./fc-ingress.mjs";
 import { serveV2Static } from "./static-response.mjs";
 import {
@@ -30,6 +31,7 @@ export async function createCloudV2Application(env = process.env, {
   createRunner = createRemoteSparkRunner,
   root,
   httpServer,
+  now = Date.now,
   ingress = createFcIngress({
     publicHttpEnabled: env.V2_FC_PUBLIC_HTTP_ENABLED === "true",
     publicReadOnly: env.V2_FC_PUBLIC_READ_ONLY !== "false",
@@ -94,7 +96,7 @@ export async function createCloudV2Application(env = process.env, {
     }
     const execution = cloudExecutionState({
       ...env, V2_LOCAL_DEVELOPMENT: "false", V2_META_DRIVER: "mysql-project-snapshot-cas",
-    }, runner, descriptor);
+    }, runner, descriptor, runnerCandidate);
     app = createV2Server({
       root,
       store,
@@ -103,9 +105,13 @@ export async function createCloudV2Application(env = process.env, {
       stateCoordinator,
       runner: execution.runner,
       runnerDescriptor: execution.descriptor,
+      readPendingSparkResult: execution.readPendingSparkResult,
+      resultEventConfig: execution.readPendingSparkResult && env.V2_PROVISIONING_ONLY==="true" &&
+        env.V2_PRIVATE_SMOKE_ENABLED==="true" ? agentEventConfigFromEnvironment(env) : undefined,
       env: execution.env,
       ingress,
       httpServer,
+      now,
     });
     await measure("initialFlushMs", () => stateCoordinator.flush());
     return { app, stateCoordinator, timing: { ...phases, elapsedMs: Math.round(performance.now() - started) } };

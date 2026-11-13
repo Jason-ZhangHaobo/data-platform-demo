@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { backup } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -10,6 +11,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createV2Server, PROJECT } from '../../src/v2/server.mjs';
 import { MetadataStore } from '../../src/v2/store.mjs';
+import { createCloudV2Application } from '../../src/v2/cloud-server.mjs';
+import { MemorySnapshotBackend } from '../../src/v2/metadata-replica.mjs';
+import { MemoryDataStateBackend } from '../../src/v2/data-state-replica.mjs';
 import { LocalArtifactStore } from '../../src/v2/artifact-store.mjs';
 import { BusinessQueryStore } from '../../src/v2/data-services.mjs';
 import { createFcIngress } from '../../src/v2/fc-ingress.mjs';
@@ -172,7 +176,7 @@ test('first-case entry preflight optionally verifies the same-origin script from
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,
   queueTimeoutMs=180000,contextualModel=false}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
-  let now = Date.now(), app, store, base, cookie, csrf, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
+  let now = Date.now(), app, store, base, cookie, csrf, cloudState, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
   let loseArtifactAcknowledgement=false, packageWrites=0;
   let jobWriteAttempts=0, cancellationWrites=0, resultReads=0;
   const objects = new Map();
@@ -201,7 +205,16 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   }};
   const resultEvent=key=>({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',
     eventTime:new Date(now).toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key}}}]});
-  const close = async () => { if (!app) return; app.server.closeAllConnections(); await new Promise(r => app.server.close(r)); app.businessStore.close(); store.close(); app = undefined; };
+  const close = async () => {
+    if (!app) return;
+    app.server.closeAllConnections(); await new Promise(r => app.server.close(r));
+    if (cloudState) {
+      await backup(store.db,join(directory,'metadata.sqlite'));
+      await cloudState.closeReplicated({closeDataStores:true}); cloudState=undefined;
+    }
+    else { app.businessStore.close(); store.close(); }
+    app=undefined;
+  };
   const open = async () => {
     store = new MetadataStore(join(directory, 'metadata.sqlite'));
     const artifactStore=new LocalArtifactStore(join(directory,'artifacts')), put=artifactStore.put.bind(artifactStore);
@@ -240,11 +253,38 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     objects.set(prepared.resultKey, JSON.stringify(createQueuedSparkResult(prepared.job,
       {...result,queueJobDigest},config,now)));
   };
+  const restartWithExpiredReadiness=async()=>{
+    assert.equal(cloudState,undefined);
+    const metadata=new MemorySnapshotBackend(), data=new MemoryDataStateBackend();
+    const documents=store.db.prepare('SELECT kind,id,project,version,data FROM documents ORDER BY rowid').all();
+    const idempotency=store.db.prepare('SELECT key,signature,result_id FROM idempotency ORDER BY key').all();
+    await metadata.compareAndSwap(PROJECT,0,{format:'shuduo-metadata-snapshot/v1',projectId:PROJECT,documents,idempotency});
+    const port=Number(new URL(base).port);
+    await close();
+    const readyJob=queue.prepare({sql:'SELECT 1',context:{id:'synthetic-health'},validationContexts:[]},randomUUID());
+    const healthQueue=new RemoteSparkQueueClient({...config,readyJobId:readyJob.job.jobId,readyMaxAgeMs:60000}, {
+      read:async key=>{
+        assert.equal(key,readyJob.resultKey);
+        return JSON.stringify(createQueuedSparkResult(readyJob.job,{status:'SUCCEEDED',engine:'Apache Spark',
+          engineVersion:'3.5.9',mainSqlExecuted:true,validation:{passed:true}},config,Date.now()-61000));
+      },
+    });
+    const candidate=Object.assign(()=>assert.fail('new Spark execution during recovery'),{
+      descriptor:runner.descriptor,
+      prepareVerification:()=>healthQueue.prepareHealthCheck(),
+      durable:{read:runner.durable.read,prepare:()=>assert.fail('new Spark reservation during recovery'),
+        submit:()=>assert.fail('new Spark submission during recovery'),cancel:()=>assert.fail('Spark cancellation during recovery')},
+    });
+    const boot=await createCloudV2Application({...env,V2_FC_PUBLIC_HTTP_ENABLED:'true'},{root:directory,now:()=>now,createRunner:()=>candidate,
+      openMetadataBackend:async()=>metadata,createDataBackend:()=>data,createArtifactStore:()=>new LocalArtifactStore(join(directory,'artifacts'))});
+    app=boot.app;store=app.store;cloudState=boot.stateCoordinator;
+    await new Promise(resolve=>app.server.listen(port,'127.0.0.1',resolve));
+  };
   await open();
   const login = await call('/auth/login', { email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026' });
   assert.equal(login.status, 200); cookie = login.cookies.map(c => c.split(';')[0]).join('; '); csrf = login.body.csrfToken;
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
-  return { call, complete, resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
+  return { call, complete, resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, restartWithExpiredReadiness, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
     get businessStore(){return app.businessStore;}, addAdmin:input=>app.auth.bootstrapAdmin(input),
     loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
     queueCounts:()=>({jobWriteAttempts,cancellationWrites,resultReads}),
@@ -1038,8 +1078,11 @@ test('a request-bound base task requires the exact verified version for delivery
   f.expire();
   f.env.V2_FC_PUBLIC_READ_ONLY='true';
   const originalStore=f.store;
-  await f.restart();
+  await f.restartWithExpiredReadiness();
   assert.notEqual(f.store,originalStore);
+  const degraded=(await f.call('/status')).body;
+  assert.equal(degraded.spark.healthVerified,false);
+  assert.equal(degraded.agentDevelopment.eventBackgroundAvailable,false);
   const owner=f.store.get('auth_user',actorId,PROJECT);
   f.store.update('auth_user',actorId,PROJECT,{status:'DISABLED'});
   const whileDisabled=f.queueCounts();
@@ -1624,17 +1667,25 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(releaseRun(secondId).status,'RUNNING','replaying result one must not settle batch two');
   assert.deepEqual(f.queueCounts(),beforeOldReplay);
   f.later(600001);
-  f.env.V2_FC_PUBLIC_READ_ONLY='true';
-  delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
-  delete f.env.V2_PRIVATE_RELEASE_ENABLED;
-  await f.restart();
+  const priorOwner=f.store.list('auth_user',PROJECT).length;
+  await f.restartWithExpiredReadiness();
+  const degraded=(await f.call('/status')).body;
+  assert.equal(degraded.spark.healthVerified,false);
+  assert.equal(degraded.agentDevelopment.publishAvailable,false);
+  assert.equal(degraded.agentDevelopment.eventBackgroundAvailable,false);
+  assert.equal((await f.call('/auth/session')).body.readOnly,true);
+  assert.equal((await f.call('/agent/tasks',taskInput,randomUUID())).status,403);
+  assert.equal((await f.privateCall(timer('d'))).status,401);
+  assert.equal(f.store.list('auth_user',PROJECT).length,priorOwner);
+  assert.deepEqual(f.queueCounts(),beforeOldReplay);
   const secondResultEvent=f.resultEvent(second.resultKey);
   assert.equal((await f.privateCall(secondResultEvent)).body.state,'RELEASE_BATCH_SETTLED');
   const afterSecondEvent=f.queueCounts();
   assert.equal((await f.privateCall(secondResultEvent)).body.state,'RELEASE_BATCH_ALREADY_SETTLED');
   assert.deepEqual(afterSecondEvent,{...beforeOldReplay,resultReads:beforeOldReplay.resultReads+1});
   assert.deepEqual(f.queueCounts(),afterSecondEvent);
-  delete f.env.V2_FC_PUBLIC_READ_ONLY;
+  delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
+  delete f.env.V2_PRIVATE_RELEASE_ENABLED;
   await f.restart();
   const monitorOffset=publicationCli.requests.length, queuesBeforeMonitoring=f.queueCounts();
   const monitoring=await publicationCli.run('v3-publish',['--reconcile']).done;

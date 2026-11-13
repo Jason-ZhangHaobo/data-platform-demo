@@ -26,6 +26,23 @@ test('saved agent reads are allowed in private recovery without admitting agent 
  assert.throws(()=>validatePrivateApplicationRequest(input),/PRIVATE_APPLICATION_REQUEST_INVALID/);
  assert.throws(()=>validatePrivateApplicationRequest({...input,method:'POST',body:{}},{allowDurableAgentRead:true}),/PRIVATE_APPLICATION_REQUEST_INVALID/);
 });
+test('degraded startup retains only passive OSS receipt reads',async()=>{
+ const original={...env(),V2_PRIVATE_DATA_SERVICES_ENABLED:'false',V2_DURABLE_MANUAL_DELIVERY_ENABLED:'true'};
+ const calls=[],candidate={descriptor:{transport:'PRIVATE_OSS_QUEUE'},durable:{
+   read:(...args)=>{calls.push(args);return {status:'SUCCEEDED'};},
+   prepare:()=>assert.fail('prepare'),submit:()=>assert.fail('submit'),cancel:()=>assert.fail('cancel'),
+ }};
+ const state=cloudExecutionState(original,undefined,{errorCode:'REMOTE_SPARK_NOT_READY'},candidate);
+ assert.equal(state.env.V2_EXECUTION_UNAVAILABLE,'true');
+ assert.equal(state.env.V2_DURABLE_MANUAL_DELIVERY_ENABLED,'false');
+ assert.equal(state.runner.durable,undefined);
+ const prepared={fixture:true};
+ assert.equal((await state.readPendingSparkResult(prepared)).status,'SUCCEEDED');
+ assert.deepEqual(calls,[[prepared,{cancelOnTimeout:false}]]);
+ assert.equal(cloudExecutionState(original,undefined,{},{
+   ...candidate,descriptor:{transport:'HTTP'},
+ }).readPendingSparkResult,undefined);
+});
 test('private query startup survives unavailable worker while auth and execution denial remain effective',async t=>{
  const root=mkdtempSync(join(tmpdir(),'shuduo-worker-offline-'));
  const state=cloudExecutionState(env(),undefined,{errorCode:'REMOTE_SPARK_NOT_READY'});
