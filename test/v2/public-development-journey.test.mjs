@@ -916,7 +916,13 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   const paused=await inspect();
   assert.deepEqual(paused.execution.model,{state:'OUTCOME_UNKNOWN',usage:'PENDING',attempts:1,unconfirmedAttempts:1,
     ledgerTokens:180,reportedTokens:0,reservedTokens:180,unattributedTokens:0});
-  assert.equal(readFileSync(checkpoint,'utf8'),confirmedBytes);
+  const observedBytes=readFileSync(checkpoint,'utf8');
+  const observed=JSON.parse(observedBytes);
+  assert.deepEqual(observed.outcomes[0].developmentObservation,{stage:'DEVELOPMENT_UNCONFIRMED',provenance:'STORED_METADATA'});
+  delete observed.outcomes[0].developmentObservation;
+  assert.deepEqual(observed,JSON.parse(confirmedBytes));
+  await inspect();
+  assert.equal(readFileSync(checkpoint,'utf8'),observedBytes);
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
@@ -1065,6 +1071,8 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal(releaseId,accepted.body.release.id);
   assert.deepEqual(batchIds,accepted.body.runs.map(run=>run.id));
   assert.equal(saved().outcomes[0].actions.publication.key,request.idempotencyKey);
+  assert.deepEqual(saved().outcomes[0].actions.publication.approvalTiming,accepted.body.release.approvalTiming);
+  assert.ok(Date.parse(accepted.body.release.approvalTiming.approvedAt)>=Date.parse(accepted.body.release.approvalTiming.readyAt));
   assert.equal(saved().submission.bill.unsettledReserveCny,64);
   const afterPublication=readFileSync(checkpoint,'utf8');
   assert.deepEqual(await cli('v3-publish',['--reconcile']),adopted);
@@ -1126,6 +1134,9 @@ test('a request-bound base task requires the exact verified version for delivery
   const run=await cli('v3-run',['--completion-file',completionFile]);
   assert.equal(run.verifiedCloudCaseCount,0);
   assert.equal(run.cases[0].status,'LOCAL_MATCHED_ONLY');
+  assert.equal(run.score.localOnlySuccesses,1);
+  assert.equal(run.score.reviewedCloudCompletionRate,null);
+  assert.equal(run.score.reviewedCloudTargetStatus,'INCOMPLETE');
   const nextFile=join(f.directory,'next-workbench-case.json');
   assert.equal((await cli('v3-prepare-next',['--first-checkpoint',checkpoint,'--completion-file',completionFile,
     '--source-revision','a'.repeat(40)],0,nextFile)).status,'PREPARED');
@@ -1632,7 +1643,8 @@ test('a killed publication CLI recovers both original batches through signed sch
   assert.equal(run.cases.length,20);
   assert.equal(run.verifiedCloudCaseCount,0);
   assert.equal(run.cases[0].status,'LOCAL_MATCHED_ONLY');
-  assert.equal(run.cases.filter(item=>item.status==='WAITING_FOR_SOURCE').length,10);
+  assert.equal(run.cases.filter(item=>item.status==='WAITING_FOR_SOURCE').length,9);
+  assert.equal(run.cases.find(item=>item.sourceCaseId===run.cases[0].caseId).status,'LOCAL_SOURCE_MATCHED');
   const changedCompletion=join(f.directory,'changed-completion.json');
   const receipt=JSON.parse(readFileSync(completionFile,'utf8'));
   writeFileSync(changedCompletion,JSON.stringify({...receipt,revisionId:randomUUID()}),{mode:0o600});
@@ -2365,6 +2377,9 @@ test('a settled original development failure allows the next case while pending 
   assert.equal(report.verifiedCloudCaseCount,0);
   assert.equal(report.cases[0].status,'LOCAL_FAILURE_SETTLED_ONLY');
   assert.equal(report.cases[1].creationStatus,'PREPARED');
+  assert.equal(report.score.localOnlyFailures,1);
+  assert.equal(report.score.settledCloudFailures,0);
+  assert.equal(report.cases.find(row=>row.sourceCaseId===report.cases[0].caseId).status,'LOCAL_SOURCE_FAILED');
   assert.deepEqual(calls,[]);
   const tampered=join(f.directory,'tampered-failure.json');
   writeFileSync(tampered,JSON.stringify({...receipt,taskId:randomUUID()}),{mode:0o600});

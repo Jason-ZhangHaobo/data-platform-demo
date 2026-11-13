@@ -79,6 +79,13 @@ export function exactPublicationReceipt(store, project, release, now=Date.now())
   const openAlertCount = store.list("monitor_alert",project).filter(alert=>alert.releaseId===release.id && alert.status==="OPEN").length;
   const monitoring = {status:"PENDING",health:release.health,openAlertCount};
   const failure=publicationFailureEvidence(store,project,release,runs,events);
+  const verification = store.get("delivery_verification",release.verificationId,project);
+  const approvalTiming = verification?.status === "SUCCEEDED" && verification.packageId === release.packageId &&
+    verification.packageDigest === release.packageDigest &&
+    [verification.finishedAt,review.reviewedAt,approval.approvedAt].every(value=>typeof value==="string" && Number.isFinite(Date.parse(value))) &&
+    Date.parse(verification.finishedAt) <= Date.parse(review.reviewedAt) &&
+    Date.parse(review.reviewedAt) <= Date.parse(approval.approvedAt) ?
+    {readyAt:verification.finishedAt,reviewedAt:review.reviewedAt,approvedAt:approval.approvedAt} : undefined;
   if (release.status === "CANCELLED" || runs.some(run=>["FAILED","CANCELLED","INTERRUPTED"].includes(run.status)))
     monitoring.status = "NEEDS_ATTENTION";
   else if (runs.every(run=>run.status==="SUCCEEDED")) {
@@ -107,7 +114,7 @@ export function exactPublicationReceipt(store, project, release, now=Date.now())
       sourceRevisionId:release.sourceRevisionId, sourceCodeHash:release.sourceCodeHash, packageId:release.packageId,
       packageDigest:release.packageDigest, verificationId:release.verificationId, reviewDigest:release.reviewDigest,
       reviewId:review.id, approvalId:approval.id, status:release.status, scope:release.scope,
-      businessScheduledFor:release.businessScheduledFor},
+      businessScheduledFor:release.businessScheduledFor,...(approvalTiming?{approvalTiming}:{})},
     runs:runs.map(record=>{
       const run=projectCloudReleaseBatchStage(record,now);
       return {id:run.id,sequence:run.sequence,status:run.status,schedulerTriggered:run.schedulerTriggered,
