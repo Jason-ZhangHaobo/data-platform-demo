@@ -210,6 +210,48 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       },
     });
   }
+  function readReleaseSources(req, params, verifySavedRelease) {
+    const a=actor(req),selection=privateServiceSourceSelection(params);
+    if(!selection)throw fail(422,"发布来源选择不完整");
+    const {taskId,manualDeliveryTaskId,packageDigest,releaseId}=selection,selected=releaseId&&get("release",releaseId);
+    if(verifySavedRelease){
+      if(!taskId||!releaseId||!packageDigest||manualDeliveryTaskId)throw fail(422,"须提供原任务、包摘要及发布编号","INVALID_CONSUMPTION_INPUT");
+      const task=get("agent",taskId);
+      if(!task||task.submittedBy!==a.user.id)throw fail(403,"无权读取此任务消费证据");
+      if(!selected||selected.sourceAgentTaskId!==taskId||selected.manualDeliveryTaskId!==undefined||selected.packageDigest!==packageDigest)
+        throw fail(409,"原发布与所选消费来源不一致","CONSUMPTION_PUBLICATION_UNCONFIRMED");
+      verifySavedRelease(taskId,selected,a.user.id);
+    }
+    if(selected&&(manualDeliveryTaskId?selected.manualDeliveryTaskId===manualDeliveryTaskId:selected.sourceAgentTaskId===taskId)&&selected.packageDigest===packageDigest&&!manualReleaseOwned(a,selected))
+      throw fail(403,"人工发布仅属于原任务工程师和发布者");
+    const rows=[];
+    for(const r of store.list("release_run",project)){
+      if(releaseId&&r.releaseId!==releaseId)continue;
+      try{
+        const run=source(r.id);
+        sourceOwner(a,run);
+        const release=get("release",run.releaseId);
+        if(manualDeliveryTaskId&&(release.manualDeliveryTaskId!==manualDeliveryTaskId||release.sourceAgentTaskId!==undefined)||
+            taskId&&(release.sourceAgentTaskId!==taskId||release.manualDeliveryTaskId!==undefined)||
+            packageDigest&&run.packageDigest!==packageDigest)continue;
+        const sourceInfo=get("delivery_package",run.packageId).manifest.source;
+        rows.push({id:run.id,releaseId:run.releaseId,
+          ...(release.manualDeliveryTaskId?{manualDeliveryTaskId:release.manualDeliveryTaskId}:{sourceAgentTaskId:release.sourceAgentTaskId}),
+          sourceKind:release.sourceKind??"AGENT",scope:"PRIVATE_CLOUD_TEST",
+          sourceRevisionId:sourceInfo.revisionId,sourceRunId:sourceInfo.runId,sourceRevisionHash:sourceInfo.sqlHash,
+          ...(release.sourceKind==="MANUAL"?{sourceAttribution:release.sourceAttribution}:{}),agentIndependentE2E:false,
+          ...(run.fundSource?{outputContractId:run.outputContractId,businessDate:run.businessDate,sourceEvidence:run.fundSource.evidence}:{}),
+          status:run.status,published:run.published,schedulerTriggered:run.schedulerTriggered,engine:run.engine,engineVersion:run.engineVersion,
+          mainSqlExecuted:run.mainSqlExecuted,testSqlValidation:{passed:true},validation:{passed:true},packageDigest:run.packageDigest,
+          sequence:run.sequence,createdAt:run.createdAt,rowCount:run.rows.length});
+      }catch(error){
+        if(verifySavedRelease||![403,409,422].includes(error.status))throw error;
+      }
+    }
+    if(verifySavedRelease&&(rows.length!==2||!rows.some(row=>row.sequence===1)||!rows.some(row=>row.sequence===2)))
+      throw fail(409,"原发布的两个成功批次尚未核对","CONSUMPTION_PUBLICATION_UNCONFIRMED");
+    return rows;
+  }
   let queryTail=Promise.resolve(),queries=0;
   async function handle(req,url,readBody) {
     const method=req.method,path=url.pathname;
@@ -240,20 +282,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     }
     if(method==="GET" && path.endsWith("/task-evidence"))
       return {status:200,body:await readTaskEvidence(req,url.searchParams)};
-    if(path.endsWith("/sources")){
-      const selection=privateServiceSourceSelection(url.searchParams);if(!selection)throw fail(422,"发布来源选择不完整");
-      const {taskId,manualDeliveryTaskId,packageDigest,releaseId}=selection,selected=releaseId&&get("release",releaseId);
-      if(selected&&(manualDeliveryTaskId?selected.manualDeliveryTaskId===manualDeliveryTaskId:selected.sourceAgentTaskId===taskId)&&selected.packageDigest===packageDigest&&!manualReleaseOwned(a,selected))throw fail(403,"人工发布仅属于原任务工程师和发布者");
-      const rows=[];for(const r of store.list("release_run",project)){try {const run=source(r.id);sourceOwner(a,run);const release=get("release",run.releaseId);
-        if(manualDeliveryTaskId&&(release.manualDeliveryTaskId!==manualDeliveryTaskId||release.sourceAgentTaskId!==undefined)||taskId&&(release.sourceAgentTaskId!==taskId||release.manualDeliveryTaskId!==undefined)||packageDigest&&run.packageDigest!==packageDigest||releaseId&&run.releaseId!==releaseId)continue;
-        const sourceInfo=get("delivery_package",run.packageId).manifest.source;
-        rows.push({id:run.id,releaseId:run.releaseId,...(release.manualDeliveryTaskId?{manualDeliveryTaskId:release.manualDeliveryTaskId}:{sourceAgentTaskId:release.sourceAgentTaskId}),sourceKind:release.sourceKind??"AGENT",scope:"PRIVATE_CLOUD_TEST",
-          sourceRevisionId:sourceInfo.revisionId,sourceRunId:sourceInfo.runId,sourceRevisionHash:sourceInfo.sqlHash,
-          ...(release.sourceKind==="MANUAL"?{sourceAttribution:release.sourceAttribution}:{}),agentIndependentE2E:false,
-          ...(run.fundSource?{outputContractId:run.outputContractId,businessDate:run.businessDate,sourceEvidence:run.fundSource.evidence}:{}),
-          status:run.status,published:run.published,schedulerTriggered:run.schedulerTriggered,engine:run.engine,engineVersion:run.engineVersion,mainSqlExecuted:run.mainSqlExecuted,testSqlValidation:{passed:true},validation:{passed:true},packageDigest:run.packageDigest,sequence:run.sequence,createdAt:run.createdAt,rowCount:run.rows.length});}catch(e){if(![403,409,422].includes(e.status))throw e;}}
-      return {status:200,body:rows};
-    }
+    if(path.endsWith("/sources"))return {status:200,body:readReleaseSources(req,url.searchParams)};
     if(method==="GET" && /\/data-services\/(dapis|xapis)$/.test(path))return {status:200,body:manager.list(path.endsWith("dapis")?"DAPI":"XAPI").filter(s=>owned(a,s))};
     if(method==="GET" && path.endsWith("/applications"))return {status:200,body:manager.listApplications().filter(s=>owned(a,s))};
     if(method==="GET" && path.endsWith("/calls") && !path.match(new RegExp(`/${uuid}/calls$`))){const id=url.searchParams.get("service_id");if(id)service(a,id);return {status:200,body:manager.listCalls(id??undefined).filter(c=>owned(a,get("data_service",c.serviceId))&&callOwned(a,c))};}
@@ -299,5 +328,5 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     }
     throw fail(404,"接口不存在");
   }
-  return {handle,manager,agentPlanner,readTaskEvidence};
+  return {handle,manager,agentPlanner,readTaskEvidence,readReleaseSources};
 }
