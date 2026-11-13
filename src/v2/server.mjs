@@ -31,7 +31,7 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,as
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
-import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, pinnedCloudDeliverySource } from "./agent-development-workflow.mjs";
+import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, storedFileRehearsalResult, pinnedCloudDeliverySource } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import { exactPublicationReceipt, projectCloudReleaseBatchStage } from "./cloud-release-evidence.mjs";
 import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
@@ -77,7 +77,7 @@ import { fundRehearsalRecheckResult, readFundRehearsalRecheck } from "./fund-reh
 import { createFundPreparations, fundAgentRequestSignature } from "./fund-preparation.mjs";
 import { fundExecutionBody, parseFundExecutionPreflightPath } from "./fund-preparation-request.mjs";
 import { fundExecutionPreflight } from "./fund-execution-preflight.mjs";
-import { fundAgentAttributionKind, fundAgentDeliveryAttribution, verifiedFundRun } from "./fund-delivery.mjs";
+import { fundAgentAttributionKind, fundAgentDeliveryAttribution, fundDevelopmentBinding, fundRehearsalMatchesPlan, verifiedFundRun } from "./fund-delivery.mjs";
 import { fundAgentServiceSources, fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
 import { assertFundAgentMonitoring, assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease, fundAgentPublicationPreflight, fundSignedRehearsalDigest } from "./fund-publication.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
@@ -816,7 +816,17 @@ export function createV2Server(options = {}) {
       assertSyncSqlOutputSchema(run.columns);
     }
     if (source?.attribution?.kind === fundAgentAttributionKind || revision?.fundPreparation) {
-      const current = assertPreparedFundSource(selected);
+      let current;
+      if (source?.fundDevelopment) {
+        const { attribution, evidence } = fundDevelopmentBinding(selected);
+        const { requestId, basisDigest } = attribution.preparation;
+        const { contextId, message, submittedBy } = selected.agent;
+        const original = cloudFundPreparations.bindExecution({ requestId, basisDigest, confirm: true }, submittedBy,
+          {contextId,message,requestKey:requestId});
+        if (!isDeepStrictEqual(original,attribution.preparation) || !isDeepStrictEqual(evidence,source.fundDevelopment))
+          throw fail(409,"基金交付与原准备或开发回执不一致");
+        current = attribution;
+      } else current = assertPreparedFundSource(selected);
       if (hash(JSON.stringify(current)) !== hash(JSON.stringify(source.attribution))) throw fail(409, "基金交付的 Agent 来源已变化");
     }
     return assertSqlRequirementPackageSource(item,selected);
@@ -824,7 +834,7 @@ export function createV2Server(options = {}) {
   const isPythonDelivery = (item) =>
       item?.manifest?.format === "shuduo-python-delivery/v1",
     validateAnyDeliveryPackage = (item) => {
-      if (isFundContext(item?.manifest?.source?.contextId) && !localClassicSpark) throw fail(422, "基金交付仅支持本机文件演练");
+      if (isFundContext(item?.manifest?.source?.contextId) && !localClassicSpark && !item.manifest?.source?.fundDevelopment) throw fail(422, "基金交付须使用原本机或受邀隔离开发证据");
       if(item?.manifest?.source?.outputContract&&!local)throw fail(422,"分布交付当前仅支持本机文件演练");
       const plan=(isPythonDelivery(item)
         ? validatePythonDeliveryPackage
@@ -1659,7 +1669,10 @@ export function createV2Server(options = {}) {
         if (source?.syncInput && (!syncSqlLocal || !isLoopbackRequest(req) ||
             source.syncInput.actorId !== (auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer"))) return false;
         if (isFundContext(source?.contextId)) {
-          if (!localClassicSpark) return false;
+          if (!localClassicSpark)
+            return Boolean(!local && source.fundDevelopment && source.attribution?.kind === fundAgentAttributionKind &&
+              mayReadDurableAgent(store.get("agent",source.attribution.originAgentTaskId,PROJECT),auth.sessionFromHeaders(req.headers)) &&
+              ["delivery_package","delivery_verification"].includes(kind) && deliveryAccessForRequest().canRead(kind,item));
           if (source.attribution?.kind === fundAgentAttributionKind) {
             const actorId = auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer";
             if (options.ingress || !isLoopbackRequest(req) || source.attribution.actorId !== actorId) return false;
@@ -1706,8 +1719,16 @@ export function createV2Server(options = {}) {
             const archivedFailure = !bundle && ["FAILED","CANCELLED","INTERRUPTED"].includes(verification.status) &&
               verification.packageId === undefined && verification.packageDigest === undefined;
             if (!attached && !archivedFailure) throw deliveryDenied();
-            if (attached && verification.status === "SUCCEEDED" && bundle.manifest?.source?.attribution?.kind === fundAgentAttributionKind)
-              assertFundRehearsal(bundle, verification);
+            if (attached && verification.status === "SUCCEEDED" && bundle.manifest?.source?.attribution?.kind === fundAgentAttributionKind) {
+              if (bundle.manifest.source.fundDevelopment) {
+                const plan = validateDeliveryPackage(bundle,bundle.digest);
+                if (!fundRehearsalMatchesPlan(verification,plan,bundle.files["tests.sql"]) ||
+                    verification.occurrence?.businessDate !== plan.source.fundLookthrough.businessDate ||
+                    !storedFileRehearsalResult(store,PROJECT,delivery,verification) ||
+                    !isDeepStrictEqual(verification.occurrence,resolveDeliverySchedule(plan,verification.scheduledFor)))
+                  throw fail(409,"基金隔离演练与原交付或签名回执不一致");
+              } else assertFundRehearsal(bundle, verification);
+            }
             if (attached && verification.status === "SUCCEEDED" && bundle.manifest.source.syncInput)
               assertSyncSqlRehearsal(validateAnyDeliveryPackage(bundle), bundle, verification);
           }
@@ -5359,7 +5380,7 @@ export function createV2Server(options = {}) {
         const item = get(kind, deliveryRecord[2]);
         requireDeliveryEvidence(kind, item);
         if (method === "GET" && !deliveryRecord[3]) {
-          if (kind === "delivery_package" && item.manifest?.source?.syncInput) validateAnyDeliveryPackage(item);
+          if (kind === "delivery_package" && (item.manifest?.source?.syncInput || item.manifest?.source?.fundDevelopment)) validateAnyDeliveryPackage(item);
           return json(res, 200, kind === "delivery_verification" ? exposeDeliveryVerification(item) : protectedDeliveryPayload(item));
         }
         if (
@@ -6176,7 +6197,7 @@ export function createV2Server(options = {}) {
         const fileReviewer=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
         const fileReview=bundle&&(bundle.manifest.source.outputContract||agent.fundPreparation||agent.syncInput)&&verification
           ? localFileReviewFor(bundle, verification, fileReviewer) : undefined;
-        const preparationSource = !local && !agent.fundPreparation && durableDelivery && agent.executionMode === durableSqlAgentMode && (agent.requestBound === true || agent.derivedFrom) &&
+        const preparationSource = !local && (!agent.fundPreparation || env.V2_INVITED_FUND_DEVELOPMENT==="true") && durableDelivery && agent.executionMode === durableSqlAgentMode && (agent.requestBound === true || agent.derivedFrom) &&
           agent.submittedBy === fileReviewer && report.status === "PASSED"
           ? pinnedCloudDeliverySource(agent,revision,run,(kind,id)=>store.get(kind,id,PROJECT)) : undefined;
         return json(res, 200, {
@@ -6192,7 +6213,7 @@ export function createV2Server(options = {}) {
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt,
             ...(workerResult?{workerResult}:{}),
             ...(fundReview ? {fundReview} : {}) } : undefined,
-          publication: { available: agent.syncInput ? false : agent.fundPreparation ? localClassicSpark && releaseSchedulerMode === "LOCAL_TIMER" : (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: agent.syncInput ? "冻结持仓已接入本机文件演练与审阅。" : agent.fundPreparation ? (local ? "审阅文件后，确认同一冻结业务日的两批本机测试。发布后按原版本查看批次。" : "受邀基金试点当前开放开发与独立校验。") : getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
+          publication: { available: agent.syncInput ? false : agent.fundPreparation ? localClassicSpark && releaseSchedulerMode === "LOCAL_TIMER" : (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: agent.syncInput ? "冻结持仓已接入本机文件演练与审阅。" : agent.fundPreparation ? (local ? "审阅文件后，确认同一冻结业务日的两批本机测试。发布后按原版本查看批次。" : "受邀基金试点可生成调度与部署文件并完成隔离演练，发布仍待独立验收。") : getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
       }
       const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel|history|preflight|requests\/([A-Za-z0-9_-]{1,100})))?$/);
@@ -6207,6 +6228,7 @@ export function createV2Server(options = {}) {
             throw fail(422, "请指定原 Agent 发布编号与确切包摘要");
           return json(res, 200, cloudPublicationHistory.savedDetail(agent.id, selector));
         }
+        if (!local && agent.fundPreparation) throw fail(403,"基金隔离演练尚未开放发布");
         if (method === "POST") {
           if (url.search) throw fail(422, "发布写入仅接受正文中的确切来源，不接受查询参数");
           assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
@@ -6402,7 +6424,8 @@ export function createV2Server(options = {}) {
           throw fail(409,"确切版本交付须来自原云端持久 SQL 任务");
         if(agent.repairComparison!==undefined||agent.sourceKind==='MANUAL'||agent.sourceAttribution!==undefined)throw fail(409,'人工辅助修正的开发结果已保留；人工辅助交付须独立审阅，当前不能作为原生Agent成果发布');
         if (agent.executionMode === durableSqlAgentMode) {
-          if (agent.fundPreparation) throw fail(422,"受邀基金试点当前仅开放开发与独立验证");
+          if (agent.fundPreparation && (env.V2_INVITED_FUND_DEVELOPMENT!=="true" || !expected))
+            throw fail(403,"基金交付须在获准开发窗口使用确切来源");
           if (!durableDelivery) throw fail(503, "持久交付执行器尚未启用");
           const key = text(req.headers["idempotency-key"], 1, 100);
           return json(res, 202, await durableDelivery.create(agent, key, expected));

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/delivery-preparation-request.mjs";
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
 import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
@@ -109,10 +110,11 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services task-evidence [--task-id AGENT_TASK_ID | --manual-delivery-task-id MANUAL_DELIVERY_ID] --package-digest SHA256 [--release-id RELEASE_ID [--call-id-digest SHA256]]
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-delivery --id AGENT_TASK_ID
+  shuduo agent prepare-delivery --id TASK_ID --source-file SOURCE_JSON --request-id UUID --confirm
   shuduo agent prepare-delivery --id TASK_ID --source-kind MANUAL --source-run-id RUN_ID --request-id UUID --confirm
   shuduo agent delivery --id DELIVERY_TASK_ID
   shuduo agent recheck-delivery-receipt --id DELIVERY_TASK_ID --version CURRENT_VERSION
-  shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION
+  shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION [--package-id UUID --package-digest SHA256 --verification-id UUID --confirm]
   shuduo agent background --id TASK_ID
   shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm
   shuduo agent resume-background --id TASK_ID --version CURRENT_VERSION --confirm [--confirm-model-retry]
@@ -772,6 +774,17 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         `/agent/deliveries${sourceId ? `?sourceAgentTaskId=${encodeURIComponent(sourceId)}` : ""}`,
       );
     }
+    else if (resource === "agent" && action === "prepare-delivery" && parsed.options.source_file !== undefined) {
+      const taskId=required(parsed.options,"id"), requestId=required(parsed.options,"request_id");
+      const allowed=["id","source_file","request_id","confirm","base_url"];
+      if (parsed.positionals.length!==2 || argv.filter(value=>value.startsWith("--")).length!==Object.keys(parsed.options).length ||
+          Object.keys(parsed.options).some(key=>!allowed.includes(key)) || parsed.options.confirm!==true ||
+          !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(requestId))
+        throw Error("准备确切交付须确认已核对的来源文件和原请求编号");
+      const expectedSource=readDeliveryPreparationSource({expectedSource:jsonObject(readFileSync(required(parsed.options,"source_file"),"utf8"),"原交付来源")},taskId);
+      result=await client.request(`/agent/tasks/${encodeURIComponent(taskId)}/prepare-delivery`,
+        {method:"POST",body:{expectedSource},idempotencyKey:requestId});
+    }
     else if (resource === "agent" && action === "prepare-delivery") {
       validateManualDeliveryFlags(parsed,argv);
       result = parsed.options.source_kind==='MANUAL'?await prepareManualDelivery(client,{taskId:required(parsed.options,'id'),sourceRunId:required(parsed.options,'source_run_id'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm}):await client.request(
@@ -783,8 +796,17 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         `/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}`,
       );
-    else if (resource === "agent" && action === "advance-delivery")
-      result = await client.request(`/agent/deliveries/${encodeURIComponent(required(parsed.options, "id"))}/advance`, { method: "POST", body: { expectedVersion: Number(required(parsed.options, "version")) } });
+    else if (resource === "agent" && action === "advance-delivery") {
+      const flags=parsed.options, expectedVersion=Number(required(flags,"version"));
+      const selected=["package_id","package_digest","verification_id","confirm"].some(key=>flags[key]!==undefined);
+      if (selected && (flags.confirm!==true || parsed.positionals.length!==2 ||
+          Object.keys(flags).some(key=>!["id","version","package_id","package_digest","verification_id","confirm","base_url"].includes(key)) ||
+          argv.filter(value=>value.startsWith("--")).length!==Object.keys(flags).length)) throw Error("演练须确认当前包及原批次");
+      const body={expectedVersion,...(selected?{rehearsal:{packageId:flags.package_id,packageDigest:flags.package_digest,
+        ...(flags.verification_id===undefined?{}:{verificationId:flags.verification_id})}}:{})};
+      readDeliveryAdvance(body);
+      result=await client.request(`/agent/deliveries/${encodeURIComponent(required(flags,"id"))}/advance`,{method:"POST",body});
+    }
     else if (resource === "agent" && action === "recheck-delivery-receipt")
       result = await recheckFundRehearsal(client, { deliveryTaskId: required(parsed.options, "id"),
         expectedVersion: Number(required(parsed.options, "version")) });

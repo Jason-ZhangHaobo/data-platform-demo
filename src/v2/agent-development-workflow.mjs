@@ -15,7 +15,7 @@ import { liveEvidenceProvenance, nonLiveModelLabel } from "./live-lifecycle-prov
 import { validStoredAgentDerivation } from "./agent-context-derivation.mjs";
 import { storedWorkerBatchResult, verifiedWorkerResultDigest } from "./worker-result-evidence.mjs";
 import { isFundContext } from "./fund-contexts.mjs";
-import { createFundTestSql, fundRunMatchesRegisteredResult, fundValidationMatches, verifiedFundRun } from "./fund-delivery.mjs";
+import { createFundTestSql, fundDevelopmentBinding, fundRehearsalMatchesPlan, fundRunMatchesRegisteredResult, fundValidationMatches, recheckFundDevelopmentReceipt, verifiedFundRun } from "./fund-delivery.mjs";
 import { syncSqlColumnsMatch, syncSqlContractId, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
@@ -157,6 +157,14 @@ export function verifiedStoredCloudDevelopment(task, revision, run) {
 
 export function pinnedCloudDeliverySource(agent, revision, run, read) {
   const proof = liveEvidenceProvenance(agent,revision,run);
+  if (agent.fundPreparation) {
+    try {
+      fundDevelopmentBinding({agent, run, revision});
+      if (proof.nonNative || proof.unconfirmed || developmentVerificationReport(agent, run, revision).status !== "PASSED") return;
+      return {revisionId:revision.id, revisionHash:revision.hash, runId:run.id,
+        requirementBinding:sqlRequirementBinding(agent.requirements)};
+    } catch { return; }
+  }
   if (proof.synthetic || proof.nonNative || proof.unconfirmed || agent.sourceRunId !== undefined ||
       !validStoredAgentDerivation(agent,read) || !verifiedStoredCloudDevelopment(agent,revision,run)) return;
   return {revisionId:revision.id,revisionHash:revision.hash,runId:run.id,
@@ -201,6 +209,10 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     if(agent.clarification)assertSqlClarificationTask(agent,{store,project});
     if(agent.repairComparison!==undefined||agent.sourceKind==='MANUAL'||agent.sourceAttribution!==undefined)throw fail(409,'人工辅助修正须独立记录来源并重新审阅交付，不能从原生Agent入口继承发布');
     const attempt = agent.attempts?.at(-1), revision = store.get("revision", attempt?.revisionId ?? "", project), run = store.get("run", attempt?.runId ?? "", project);
+    if (agent.fundPreparation) {
+      if (!pinnedCloudDeliverySource(agent,revision,run)) throw fail(409,"基金交付须绑定原登记交易日、开发版本与签名回执");
+      return {revision,run};
+    }
     if (agent.status !== "SUCCEEDED" || agent.mode !== "LIVE_MODEL" || attempt?.status !== "SUCCEEDED" || !attempt.model || /TEST_DOUBLE|unconfirmed/.test(attempt.model) || developmentVerificationReport(agent, run, revision).status !== "PASSED")
       throw fail(409, "请先完成真实模型、Spark 与独立结果核验");
     return { revision, run };
@@ -217,6 +229,14 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       throw fail(409, "交付文件与已核验源版本不一致");
     await artifactStore.verify(item.artifact, "delivery-package", item.digest, deliveryArtifactValue(item));
     const plan = validateDeliveryPackage(item, task.packageDigest);
+    if (plan.source.fundDevelopment) {
+      const agent = store.get("agent",task.sourceAgentTaskId,project);
+      const {revision,run} = source(agent);
+      const {evidence} = fundDevelopmentBinding({agent,revision,run});
+      if (task.submittedBy !== agent.submittedBy || plan.source.runId !== run.id ||
+          plan.source.revisionId !== revision.id || !isDeepStrictEqual(plan.source.fundDevelopment,evidence))
+        throw fail(409,"基金演练包与原开发证据不一致");
+    }
     if (task.sourceKind === "MANUAL" && (plan.source.attribution?.kind !== (standaloneManual?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED") ||
         (!standaloneManual&&plan.source.attribution.originAgentTaskId !== task.sourceAgentTaskId) || plan.source.attribution.actorId !== task.submittedBy ||
         plan.source.attribution.agentIndependentE2E !== false||!sameAssistedDevelopmentReference(plan.source.attribution.developmentReference,task.developmentReference))) throw fail(409, "人工交付来源与不可变清单不一致");
@@ -299,6 +319,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     if(standaloneManual)throw fail(422,'独立手工交付不能接受Agent任务作为来源');
     assertExecutionScope(agent);
     const { run, revision } = source(agent);
+    if (agent.fundPreparation && !expected) throw fail(422,"基金交付须提供已核对的确切开发来源");
     if (expected) checkPinnedSource(agent,{revision,run},expected);
     const requirement = agent.requirements ? sqlRequirementBinding(agent.requirements) : undefined;
     const findExisting = () => store.list(resource, project).find(t => t.mode === durableDeliveryMode && t.sourceAgentTaskId === agent.id &&
@@ -311,8 +332,17 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     let bundle, artifact;
     if (!existing && !store.deduplicatedId(namespace)) {
       const family = validationFamilyForContext(revision.contextId);
-      bundle = createDeliveryPackage({run,revision,agent,name:family?.id === validationContractId
+      bundle = createDeliveryPackage({run,revision,agent,name:agent.fundPreparation ? undefined : family?.id === validationContractId
         ? "客户资产 T+1 · Agent交付" : "股票持仓＋可用现金（非客户全资产）· Agent交付"});
+      if (agent.fundPreparation) {
+        await recheckFundDevelopmentReceipt({agent,run,revision},bundle.manifest.source.fundDevelopment,runner);
+        const fresh = store.get("agent",agent.id,project);
+        assertExecutionScope(fresh);
+        const current = source(fresh);
+        checkPinnedSource(fresh,current,expected);
+        if (!isDeepStrictEqual(fundDevelopmentBinding({agent:fresh,...current}).evidence,bundle.manifest.source.fundDevelopment))
+          throw fail(409,"原基金开发证据已变化");
+      }
       if (!expected) {
         artifact = await artifactStore.put("delivery-package",bundle.digest,bundle);
         const freshAgent = store.get("agent",agent.id,project);
@@ -351,13 +381,19 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     if (passive && (task.verificationId !== verificationId || task.packageId !== item.id || task.packageDigest !== item.digest))
       throw fail(409,"演练批次或交付包已变化");
     const family = { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) };
-    const passed = receipt.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) && validationMatchesFamily(receipt.validation, family);
+    const fund = plan.source.fundDevelopment !== undefined;
+    const proof = verifiedWorkerResultDigest(receipt);
+    if (fund && (!proof || typeof prepared.serialized !== "string" ||
+        receipt.queueJobDigest !== hash(prepared.serialized))) throw fail(409,"基金演练回执与原签名演练任务不一致");
+    if (fund && receipt.status === "SUCCEEDED" &&
+        !fundRehearsalMatchesPlan(receipt,plan,item.files["tests.sql"])) throw fail(409,"基金演练结果与原交易日或独立预期不一致");
+    const passed = receipt.status === "SUCCEEDED" && receipt.engine === "Apache Spark" && receipt.engineVersion === plan.deployment.runtime.version && receipt.mainSqlExecuted === true && receipt.testDouble !== true && receipt.testSqlValidation?.passed === true && receipt.testSqlValidation.sqlHash === hash(item.files["tests.sql"]) && (fund || validationMatchesFamily(receipt.validation, family));
     const verification = store.get("delivery_verification", task.verificationId, project);
     // Whitelist receipt fields; a Worker cannot overwrite package/source identifiers.
-    const result = Object.fromEntries(["engine", "engineVersion", "mainSqlExecuted", "testSqlValidation", "validation", "rows", "columns", "log", "durationMs", "error", "testDouble"].filter(k => receipt[k] !== undefined).map(k => [k, receipt[k]]));
+    const result = Object.fromEntries(["engine", "engineVersion", "mainSqlExecuted", "testSqlValidation", "validation", "rows", "columns", "log", "durationMs", "error", "testDouble", "inputEvidence"].filter(k => receipt[k] !== undefined).map(k => [k, receipt[k]]));
     const workerResultDigest=!standaloneManual && (task.sourcePinned||task.rehearsalPinned) &&
       prepared?.job?.jobId===verification.id && prepared.job.projectId===project && storedFileRehearsal(task,verification)
-      ? verifiedWorkerResultDigest(receipt) : undefined;
+      ? proof : undefined;
     if (resultEvent && (!workerResultDigest || typeof prepared.serialized!=="string" ||
         receipt.queueJobDigest!==hash(prepared.serialized))) return publicDeliveryTask(task);
     if (workerResultDigest && !(Number.isFinite(result.durationMs) && result.durationMs>0)) delete result.durationMs;
@@ -413,6 +449,8 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const protectedRehearsal = Boolean(expectedRehearsal || task.sourcePinned || task.rehearsalPinned);
     if (expectedRehearsal && (task.stage === "PACKAGE_PERSISTING" || expectedRehearsal.verificationId && !task.remoteSubmission))
       throw fail(409,"原交付包或演练批次尚未就绪");
+    if (task.sourcePinned && isFundContext(store.get("agent",task.sourceAgentTaskId,project)?.contextId) && !expectedRehearsal)
+      throw fail(422,"基金演练须确认原交付包及摘要");
     if (protectedRehearsal && task.remoteSubmission) return reconcile(id,{passive:true});
     if (task.sourceKind === "MANUAL") task = await persistDeliveryArtifact(task);
     else if (task.stage === "PACKAGE_PERSISTING") return publicDeliveryTask(await persistDeliveryArtifact(task));
@@ -422,6 +460,11 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       if (terminal.has(task.status)) return publicDeliveryTask(task);
     }
     const { item, plan } = await bundleFor(task);
+    const fund = plan.source.fundDevelopment;
+    if (fund) {
+      const agent = store.get("agent",task.sourceAgentTaskId,project);
+      await recheckFundDevelopmentReceipt({agent,...source(agent)},fund,runner);
+    }
     const refreshed=get(id);
     if(terminal.has(refreshed.status))return publicDeliveryTask(refreshed);
     if(refreshed.version!==task.version)throw fail(409,'交付任务已更新，请读取原任务后继续');

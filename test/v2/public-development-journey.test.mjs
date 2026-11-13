@@ -2215,13 +2215,98 @@ test('invited fund pilot binds one original request, approved trade date and sig
   assert.equal(done.body.runId,run.id);
   assert.equal((await f.call(path+'/workflow')).body.report.status,'PASSED');
   assert.equal((await f.call('/runs/'+run.id)).body.validation.assertionEvidence.contentHash,binding.assertionHash);
+  const firstWorkflow=await f.call(path+'/workflow');
+  const expectedSource=firstWorkflow.body.preparationSource;
+  assert.equal(expectedSource.runId,run.id);
+  assert.equal(expectedSource.revisionId,done.body.revisionId);
   assert.equal((await f.call(path+'/prepare-delivery',{},randomUUID())).status,422);
+  assert.equal((await f.call(path+'/prepare-delivery',{expectedSource:{...expectedSource,runId:randomUUID()}},randomUUID())).status,409);
+  const deliveryKey=randomUUID(), prepare=()=>f.call(path+'/prepare-delivery',{expectedSource},deliveryKey);
+  f.removeResult(queued);
+  assert.ok((await prepare()).status>=400);
+  assert.equal(f.store.list('delivery_package',PROJECT).length,0);
+  f.complete(queued,result);
+  const adapter={request:async (route,options={})=>{
+    const response=await f.call(route,options.body,options.idempotencyKey);
+    if(response.status>=400)throw Object.assign(Error(response.body.message),{status:response.status});
+    return response.body;
+  }};
+  const sourceFile=join(f.directory,'exact-fund-source.json');
+  writeFileSync(sourceFile,JSON.stringify(expectedSource),{mode:0o600});
+  const cli=async (args,expectedCode=0)=>{
+    let output;
+    assert.equal(await runV2Cli(['agent',...args],{},{client:adapter,output:value=>{output=value;},error:()=>{}}),expectedCode);
+    return output&&JSON.parse(output);
+  };
+  const mcp=async(name,args,expectError=false)=>{
+    const response=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}},{client:adapter}));
+    assert.equal(Boolean(response.error),expectError,response.error?.message);
+    return response.result?.structuredContent;
+  };
+  const prepareArgs=['prepare-delivery','--id',created.body.id,'--source-file',sourceFile,'--request-id',deliveryKey];
+  await cli(prepareArgs,1);
+  const delivered=await cli([...prepareArgs,'--confirm']);
+  assert.equal((await mcp('agent_delivery_prepare',{taskId:created.body.id,expectedSource,requestId:deliveryKey,confirm:true})).id,delivered.id);
+  const delivery=await prepare();
+  assert.equal(delivery.status,202,delivery.body.message);
+  assert.equal(delivery.body.id,delivered.id);
+  const workflowBefore=await f.call(path+'/workflow');
+  const {package:pack}=await checkedAgentWorkflow(workflowBefore.body,{taskId:created.body.id,contextId,revisionId:done.body.revisionId,
+    runId:run.id,fundPreparation:done.body.fundPreparation,manual:false});
+  assert.equal(Object.keys(pack.files).length,8);
+  assert.equal(pack.manifest.source.runId,run.id);
+  assert.equal(pack.manifest.source.attribution.modelMode,'SYNTHETIC_MODEL');
+  assert.equal(pack.manifest.source.fundDevelopment.testSqlDigest,sha256(pack.files['tests.sql']));
+  assert.equal(pack.manifest.source.fundDevelopment.jobDigest,sha256(queued.serialized));
+  assert.equal(pack.manifest.source.fundDevelopment.resultDigest,f.store.get('run',run.id,PROJECT).workerResultDigest);
+  const advancePath='/agent/deliveries/'+delivery.body.id+'/advance';
+  const exactPackage={packageId:pack.id,packageDigest:pack.digest};
+  assert.equal((await f.call(advancePath,{expectedVersion:delivery.body.version})).status,422);
+  assert.equal((await f.call(advancePath,{expectedVersion:delivery.body.version,rehearsal:{...exactPackage,packageDigest:'0'.repeat(64)}})).status,409);
+  assert.equal(f.store.list('delivery_verification',PROJECT).length,0);
+  await mcp('agent_delivery_advance',{deliveryTaskId:delivery.body.id,expectedVersion:delivery.body.version,rehearsal:exactPackage},true);
+  f.lose();
+  await cli(['advance-delivery','--id',delivery.body.id,'--version',String(delivery.body.version),'--package-id',pack.id,'--package-digest',pack.digest,'--confirm'],1);
+  const pending=f.store.get('agent_delivery_task',delivery.body.id,PROJECT), rehearsal=pending.remoteSubmission.prepared;
+  assert.notEqual(pending.verificationId,run.id);
+  assert.equal(pending.stage,'FILE_REHEARSAL_SUBMITTING');
+  const rehearsalPayload=JSON.parse(rehearsal.job.body);
+  assert.equal(rehearsalPayload.context.businessDate,context.businessDate);
+  assert.equal(rehearsalPayload.sql,pack.files['main.sql']);
+  assert.equal(rehearsalPayload.testSql,pack.files['tests.sql']);
+  const event=f.resultEvent(rehearsal.resultKey);
+  f.expire();
+  await f.restartWithExpiredReadiness();
+  const resultBefore=f.queueCounts();
+  assert.equal((await f.privateCall(event)).status,503);
+  f.complete(rehearsal,{...result,inputEvidence:{...result.inputEvidence,contextId:otherId}});
+  assert.equal((await f.privateCall(event)).status,409);
+  assert.equal(f.store.get('agent_delivery_task',pending.id,PROJECT).stage,'FILE_REHEARSAL_SUBMITTING');
+  const rehearsalResult=process.env.SHUDUO_TEST_LOCAL_SPARK_INVITED_FUND==='true'
+    ? await runSpark(rehearsalPayload,{...runtimeConfig({}),artifactRoot:f.directory,retainArtifacts:false}) : fixtureResult;
+  f.complete(rehearsal,rehearsalResult);
+  assert.equal((await f.privateCall(event)).body.state,'REHEARSAL_SETTLED');
+  assert.equal((await f.privateCall(event)).body.state,'REHEARSAL_ALREADY_SETTLED');
+  assert.equal(f.queueCounts().jobWriteAttempts,resultBefore.jobWriteAttempts);
+  assert.equal(f.queueCounts().cancellationWrites,resultBefore.cancellationWrites);
+  const finalWorkflow=await checkedAgentWorkflow((await f.call(path+'/workflow')).body,{taskId:created.body.id,contextId,
+    revisionId:done.body.revisionId,runId:run.id,fundPreparation:done.body.fundPreparation,manual:false});
+  assert.equal(finalWorkflow.delivery.stage,'AWAITING_ENGINEER_REVIEW');
+  assert.equal(finalWorkflow.verification.id,pending.verificationId);
+  assert.equal(finalWorkflow.verification.testSqlValidation.passed,true);
+  assert.equal(finalWorkflow.publication.available,false);
+  assert.equal((await cli(['workflow','--id',created.body.id])).verification.id,pending.verificationId);
+  assert.equal((await mcp('agent_development_workflow',{taskId:created.body.id})).package.digest,pack.digest);
+  assert.equal((await f.call(path+'/publication')).status,403);
+  assert.equal((await f.call('/delivery/packages/'+pack.id)).status,200);
+  t.diagnostic(`Same-date file rehearsal, ${rehearsalResult.rows.length} rows, ${rehearsalResult.durationMs} ms`);
+
   const otherAdmin={email:'other-fund-owner@example.invalid',password:'SyntheticJourney!2026',displayName:'其他虚构管理员'};
   f.addAdmin(otherAdmin);
   const otherLogin=await f.call('/auth/login',{email:otherAdmin.email,password:otherAdmin.password});
   assert.equal(otherLogin.status,200);
   const headers={cookie:otherLogin.cookies.map(value=>value.split(';')[0]).join('; ')};
-  for(const protectedPath of [path, path+'/workflow', '/runs/'+run.id, '/revisions/'+done.body.revisionId]){
+  for(const protectedPath of [path, path+'/workflow', '/runs/'+run.id, '/revisions/'+done.body.revisionId,'/delivery/packages/'+pack.id,'/delivery/verifications/'+pending.verificationId]){
     assert.equal((await fetch(f.base+protectedPath,{headers})).status,403,protectedPath);
   }
   assert.equal((await (await fetch(f.base+'/status',{headers})).json()).agentDevelopment.fundContexts,undefined);
@@ -2231,7 +2316,7 @@ test('invited fund pilot binds one original request, approved trade date and sig
   assert.equal(expired.body.agentDevelopment.fundPilotAvailable,undefined);
   assert.ok(expired.body.agentDevelopment.fundContexts.some(item=>item.id===contextId));
   assert.equal((await f.call(path+'/workflow')).body.report.status,'PASSED');
-  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:2});
   assert.equal(f.store.list('release',PROJECT).length,0);
 });
 

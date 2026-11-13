@@ -102,7 +102,8 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
  if(r.status==='PASSED'&&(!id(r.revisionId)||!id(r.runId)||!hash(r.revisionHash)||r.engine!=='Apache Spark'||checks.some(c=>!c.passed)))throw bad();
  if(selection.manual?(r.sourceKind!=='MANUAL'||r.agentIndependentE2E!==false||r.runId!==selection.runId||r.revisionId!==selection.revisionId||p.scope!=='PRIVATE_CLOUD_TEST'||p.sourceKind!=='MANUAL'||p.sourceRunId!==selection.runId||p.agentIndependentE2E!==false):r.sourceKind==='MANUAL'||p.sourceKind==='MANUAL')throw bad();
  if(selection.assisted&&(!selection.manual||r.developmentReference===undefined))throw bad();
- if(selection.fundPreparation&&(selection.manual||p.scope!=='LOCAL_TEST_RELEASE'))throw bad();
+ const isolatedFund=Boolean(selection.fundPreparation&&p.scope==='PRIVATE_CLOUD_TEST');
+ if(selection.fundPreparation&&(selection.manual||isolatedFund&&p.available))throw bad();
  if(r.developmentReference!==undefined){if(!selection.manual)throw bad();checkedAssistedDevelopmentReference(r.developmentReference);}
  const frozen=selection.expectedSourceBinding;
  if(frozen&&(frozen.taskId!==r.taskId||frozen.revisionId!==r.revisionId||frozen.runId!==r.runId||(frozen.sourceKind==='MANUAL')!==selection.manual||
@@ -140,6 +141,12 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
   const attribution=source.attribution;
   signedFund=source.fundSignedExecution!==undefined;
   if(signedFund&&!selection.fundPreparation)throw bad();
+  if (isolatedFund) {
+   const origin=source.fundDevelopment;
+   if(signedFund||!record(origin)||Object.keys(origin).length!==3||
+      !['jobDigest','resultDigest','testSqlDigest'].every(k=>hash(origin[k]))||
+      origin.testSqlDigest!==await digest(files['tests.sql'] as string))throw bad();
+  } else if(source.fundDevelopment!==undefined)throw bad();
  if(record(attribution)&&!sameAssistedDevelopmentReference(attribution.developmentReference,r.developmentReference))throw bad();
   if(selection.fundPreparation){
    if(!record(attribution)||attribution.kind!=='FUND_AGENT_GENERATED'||attribution.originAgentTaskId!==selection.taskId||
