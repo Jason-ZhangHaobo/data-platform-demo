@@ -241,7 +241,10 @@ export class RemoteSparkQueueClient {
     if (raw !== undefined) {
       let envelope;
       try { envelope = JSON.parse(raw); } catch { throw fail(502, "Spark队列结果不是JSON", "SPARK_QUEUE_RESULT_INVALID"); }
-      return verifyQueuedSparkResult(envelope, queued.job.jobId, this.config);
+      const result = verifyQueuedSparkResult(envelope, queued.job.jobId, this.config);
+      if (result?.queueJobDigest !== undefined && result.queueJobDigest !== bodyHash(queued.serialized))
+        throw fail(502, "Spark队列结果与原任务正文不一致", "SPARK_QUEUE_RESULT_INVALID");
+      return result;
     }
     if (cancelOnTimeout && Date.parse(queued.job.expiresAt) <= this.now()) {
       await this.cancelPrepared(queued, "DEADLINE");

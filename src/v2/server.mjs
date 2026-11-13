@@ -6058,7 +6058,7 @@ export function createV2Server(options = {}) {
         const revision = store.get("revision", delivery.sourceRevisionId ?? "", PROJECT);
         const run = store.get("run", delivery.sourceRunId ?? "", PROJECT);
         return json(res, 200, storedAgentReviewEvidence({task, delivery, bundle, verification, revision, run,
-          requestSha256:selection.requestSha256,read:(kind,id)=>store.get(kind,id,PROJECT),includeDerivation:true}));
+          requestSha256:selection.requestSha256,store,includeDerivation:true}));
       }
       const developmentWorkflow = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/workflow$/);
       if (developmentWorkflow && method === "GET") {
