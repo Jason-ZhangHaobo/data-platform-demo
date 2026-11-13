@@ -193,6 +193,49 @@ test("private OSS queue runner needs a fresh signed successful Worker result bef
   await assert.rejects(staleRunner.verify(), { code: "REMOTE_SPARK_NOT_READY" });
 });
 
+test("a warm OSS runner stops starting work after readiness expires and still reads the original result", async t => {
+  const readyJobId = "91000000-0000-4000-8000-000000000001";
+  const env = {
+    V2_SPARK_EXECUTOR_TRANSPORT: "OSS_QUEUE", V2_SPARK_EXECUTOR_SECRET: sharedSecret,
+    V2_SPARK_QUEUE_READY_JOB_ID: readyJobId, V2_SPARK_QUEUE_READY_MAX_AGE_MS: "60000",
+    V2_SPARK_QUEUE_TIMEOUT_MS: "5000", OSS_BUCKET: "synthetic-private-bucket",
+    ALIBABA_CLOUD_ACCESS_KEY_ID: "synthetic-access-id", ALIBABA_CLOUD_ACCESS_KEY_SECRET: "synthetic-access-secret",
+  };
+  const config = queueConfigFromEnvironment(env);
+  const issued = Date.parse("2026-11-13T03:00:00Z");
+  let now = issued + 1000, writes = 0, healthReads = 0;
+  t.mock.method(Date, "now", () => now);
+  const key = `${config.resultPrefix}/${readyJobId}.json`;
+  const objects = new Map([[key, JSON.stringify(createQueuedSparkResult({jobId:readyJobId}, success, config, issued))]]);
+  const runner = createRemoteSparkRunner(env, async (url, options) => {
+    const path = new URL(url).pathname.slice(1);
+    if (options.method === "PUT") {
+      writes++;
+      objects.set(path, options.body);
+      return new Response(null, { status: 200 });
+    }
+    assert.equal(options.method, "GET");
+    if (path === key) healthReads++;
+    return objects.has(path) ? new Response(objects.get(path)) : new Response(null, { status: 404 });
+  });
+  const input = {sql:"SELECT 1",context:{id:"synthetic"}};
+  await runner.verify();
+  const original = runner.durable.prepare(input, "91000000-0000-4000-8000-000000000002");
+  const missing = runner.durable.prepare(input, "91000000-0000-4000-8000-000000000003");
+  await runner.durable.submit(original);
+  objects.set(original.resultKey, JSON.stringify(createQueuedSparkResult(original.job, success, config, issued + 2000)));
+  now = issued + 60001;
+  assert.equal(runner.descriptor.healthVerified, false);
+  assert.equal(runner.descriptor.publicWriteEnabled, false);
+  assert.throws(() => runner.durable.prepare(input), { code: "REMOTE_SPARK_NOT_READY" });
+  await assert.rejects(runner.durable.submit(missing), { code: "REMOTE_SPARK_NOT_READY" });
+  await assert.rejects(runner(input), { code: "REMOTE_SPARK_NOT_READY" });
+  assert.equal((await runner.durable.read(original)).status, "SUCCEEDED");
+  assert.equal(await runner.durable.read(missing), undefined);
+  assert.equal(writes, 1);
+  assert.equal(healthReads, 1);
+});
+
 test("remote Spark client rejects a success without independent validation", async () => {
   const client = new RemoteSparkClient(
     {

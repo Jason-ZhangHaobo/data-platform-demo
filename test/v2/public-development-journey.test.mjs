@@ -182,7 +182,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   queueTimeoutMs=180000,contextualModel=false,sqlForAttempt,fundProviderFixture=false}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, cloudState, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
-  let loseArtifactAcknowledgement=false, packageWrites=0;
+  let loseArtifactAcknowledgement=false, packageWrites=0, warmWorkerReady=true;
   let jobWriteAttempts=0, cancellationWrites=0, resultReads=0;
   const objects = new Map();
   const wakes=[];
@@ -200,6 +200,9 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   }, { now: () => now });
   const runner = async () => { throw Error('BLOCKING_RUNNER_FORBIDDEN_IN_THIS_TEST'); };
   runner.descriptor = { engine: 'Apache Spark', isolation: 'REMOTE_FUNCTION', transport: 'PRIVATE_OSS_QUEUE', healthVerified: true, publicWriteEnabled: true };
+  runner.assertWriteReady=()=>{
+    if(!warmWorkerReady)throw Object.assign(Error('Simulated warm Worker readiness expiry'),{status:503,code:'REMOTE_SPARK_NOT_READY'});
+  };
   runner.durable = { prepare: (input, id) => queue.prepare(input, id), submit: (q,options) => queue.submitPrepared(q,options), read: (q,options) => queue.readPreparedResult(q,options), cancel: q => queue.cancelPrepared(q) };
   const env = { V2_LOCAL_DEVELOPMENT: 'false', V2_HOST: '127.0.0.1', V2_PROVISIONING_ONLY: 'true', V2_PRIVATE_SMOKE_ENABLED: 'true', V2_ALLOW_INSECURE_PUBLIC_COOKIES: 'true', V2_PUBLIC_ORIGIN: 'https://journey.example.invalid', V2_DURABLE_SQL_AGENT_ENABLED: 'true', V2_FC_PUBLIC_WRITE_SCOPE: 'DEVELOPMENT_ONLY', V2_PUBLIC_DEVELOPMENT_STARTS_AT: new Date(now - 1000).toISOString(), V2_PUBLIC_DEVELOPMENT_EXPIRES_AT: new Date(now + 3600000).toISOString(), V2_BOOTSTRAP_ADMIN_EMAIL: 'owner@example.invalid', V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: '4' };
   if(startupPreflight)Object.assign(env,{DASHSCOPE_API_KEY:'synthetic-no-provider-credential',V2_ACCOUNT_MONTHLY_SPEND_CNY:'20'});
@@ -304,7 +307,11 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   const login = await call('/auth/login', { email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026' });
   assert.equal(login.status, 200); cookie = login.cookies.map(c => c.split(';')[0]).join('; '); csrf = login.body.csrfToken;
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
-  return { call, complete, removeResult:prepared=>objects.delete(prepared.resultKey), resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, restartWithExpiredReadiness, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
+  return { call, complete, removeResult:prepared=>objects.delete(prepared.resultKey), resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, restartWithExpiredReadiness, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, expireWarmWorker:()=>{
+    warmWorkerReady=false;
+    runner.descriptor.healthVerified=false;
+    runner.descriptor.publicWriteEnabled=false;
+  }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
     get businessStore(){return app.businessStore;}, addAdmin:input=>app.auth.bootstrapAdmin(input),
     loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
     queueCounts:()=>({jobWriteAttempts,cancellationWrites,resultReads}),
@@ -2568,6 +2575,51 @@ test('invited fund consumption serves both original batches with pinned and revo
   assert.deepEqual([...new Set(history.body.services.filter(x=>x.status==='VERIFIED').flatMap(x=>x.sourceRunIds))].sort(),[...ids].sort());
   assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:4});
   t.diagnostic(JSON.stringify({batches:reports.length,pagedSuccessfulCalls:reports.reduce((n,b)=>n+b.verifiedCalls,0),allRevoked:true,afterCloseReadback:true}));
+});
+
+test('warm Worker expiry denies new work and settles the already submitted request-bound batch in the same control process',async t=>{
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,contextualModel:true});
+  const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
+  const key=randomUUID(), body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
+  f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)));
+  await f.restart();
+  const created=await f.call('/agent/tasks',body,key);
+  assert.equal(created.status,202,created.body.message);
+  const path='/agent/tasks/'+created.body.id;
+  const advance=async task=>{
+    const response=await f.call(path+'/advance',{expectedVersion:task.version});
+    assert.equal(response.status,200,response.body.message);
+    return response.body;
+  };
+  const waiting=await advance(await advance(created.body));
+  assert.equal(waiting.stage,'WAITING_FOR_RUN');
+  const background=await f.call(path+'/background',{expectedVersion:waiting.version});
+  assert.equal(background.status,202,background.body.message);
+  const {prepared}=f.store.get('run',waiting.runId,PROJECT).remoteSubmission;
+  const originalStore=f.store, usage=f.queueCounts(), wakes=f.wakes.length;
+  f.complete(prepared);
+  f.expireWarmWorker();
+  const status=(await f.call('/status')).body;
+  assert.equal(status.spark.healthVerified,false);
+  assert.equal(status.spark.publicWriteEnabled,false);
+  assert.equal(status.agentDevelopment.eventBackgroundAvailable,false);
+  assert.equal((await f.call('/auth/session')).body.readOnly,true);
+  const denied=await f.call(path+'/advance',{expectedVersion:waiting.version});
+  assert.equal(denied.status,503);
+  assert.equal(denied.body.code,'REMOTE_SPARK_NOT_READY');
+  assert.deepEqual(f.queueCounts(),usage);
+  const event=f.resultEvent(prepared.resultKey);
+  assert.equal((await f.privateCall(event)).body.state,'DEVELOPMENT_BATCH_SETTLED');
+  assert.equal((await f.privateCall(event)).body.state,'DEVELOPMENT_BATCH_ALREADY_SETTLED');
+  assert.equal(f.store,originalStore);
+  const recovered=(await f.call('/agent/requests/'+key)).body;
+  assert.equal(recovered.id,created.body.id);
+  assert.equal(recovered.runId,waiting.runId);
+  assert.equal(recovered.revisionId,waiting.revisionId);
+  assert.equal(recovered.stage,'SUCCEEDED');
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
+  assert.deepEqual(f.queueCounts(),{...usage,resultReads:usage.resultReads+1});
+  assert.equal(f.wakes.length,wakes);
 });
 
 test('expired Worker readiness settles original Agent development, then resumes repair under the original request',async t=>{
