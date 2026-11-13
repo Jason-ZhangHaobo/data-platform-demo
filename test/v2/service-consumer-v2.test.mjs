@@ -46,6 +46,32 @@ test("V2 records frozen source and precise target before HTTP, with independent 
   const final = load(f.plan.reportFile); assert.deepEqual(final.phases,{ consume:"PASSED",revoked:"PASSED" });
   assert.deepEqual(final.requests.slice(0,14),report.requests);assert.equal(final.requestCount,15);assert.ok(Number.isFinite(Date.parse(final.finishedAt)));
   assert.equal(final.externalSystemVerified,false);assert.ok(f.state.requests.every(entry=>entry.method==="GET"));
+  assert.equal(final.denialEvidence,"APPLICATION_CODES_V1");
+  assert.deepEqual(final.requests.filter(entry=>entry.statusCode!==200).map(entry=>entry.applicationCode),
+    ["TOKEN_REQUIRED","TOKEN_INVALID","SERVICE_FORBIDDEN","INVALID_INTEGER","RATE_LIMITED","TOKEN_INVALID"]);
+});
+
+test("matching HTTP statuses cannot prove rate limiting or token rejection on their own",async t=>{
+  const queue=await fixture(t,{denial:({code})=>code==="RATE_LIMITED"?
+    {code:"PRIVATE_SERVICE_QUEUE_FULL",message:"SYNTHETIC_BODY_MUST_NOT_BE_RETAINED"}:undefined});
+  await assert.rejects(queue.run(),{code:"DENIAL_CODE_MISMATCH"});
+  const report=load(queue.plan.reportFile),last=report.requests.at(-1);
+  assert.equal(report.phases.consume,"FAILED");
+  assert.equal(last.check,"RATE_LIMIT_REJECTED");
+  assert.equal(last.statusCode,429);
+  assert.equal(last.applicationCode,undefined);
+  assert.equal(JSON.stringify(report).includes("SYNTHETIC_BODY_MUST_NOT_BE_RETAINED"),false);
+  await assert.rejects(queue.run(),{code:"PHASE_ALREADY_ATTEMPTED"});
+  assert.equal(queue.state.requests.length,14);
+  const gateway=await fixture(t,{denial:({code})=>code==="TOKEN_REQUIRED"?{html:"<html>Unauthenticated gateway</html>"}:undefined});
+  await assert.rejects(gateway.run(),{code:"DENIAL_RESPONSE_UNCONFIRMED"});
+  assert.equal(load(gateway.plan.reportFile).requests.at(-1).statusCode,401);
+  const expired=await fixture(t,{denial:({code})=>code==="TOKEN_INVALID"&&expired.state.revoked?{code:"TOKEN_EXPIRED"}:undefined});
+  await expired.run();
+  expired.state.revoked=true;
+  await assert.rejects(expired.run({phase:"revoked"}),{code:"DENIAL_CODE_MISMATCH"});
+  assert.equal(load(expired.plan.reportFile).phases.revoked,"FAILED");
+  assert.equal(expired.state.requests.length,15);
 });
 
 test("V2 preserves two granted DAPIs and an explicitly described fourth ungranted service",async t=>{

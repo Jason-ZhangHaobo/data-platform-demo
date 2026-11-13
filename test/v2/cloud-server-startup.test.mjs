@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalArtifactStore } from "../../src/v2/artifact-store.mjs";
+import { AuthManager } from "../../src/v2/auth.mjs";
 import { createCloudV2Application, startCloudV2Listener } from "../../src/v2/cloud-server.mjs";
 import { MemoryDataStateBackend } from "../../src/v2/data-state-replica.mjs";
 import { MemorySnapshotBackend, ReplicatedMetadataStore } from "../../src/v2/metadata-replica.mjs";
@@ -130,13 +131,20 @@ test("a persistence failure never commits prefetched Worker readiness and closes
   assert.deepEqual(closed.sort(), ["metadata", "oss"]);
 });
 
-test("the read-only listener serves public first-screen files during recovery and waits to deliver marked events", {timeout:5000}, async t => {
+test("the read-only listener serves the same public files with a returning session during recovery", {timeout:5000}, async t => {
   const options = fixture(t), gate = Promise.withResolvers();
+  const metadata = new MemorySnapshotBackend();
+  const seed = await ReplicatedMetadataStore.open({backend:metadata,project:PROJECT,autoFlush:false});
+  const auth = new AuthManager({store:seed,project:PROJECT,env:{}});
+  const credentials = {email:"returning-engineer@example.invalid",password:"SyntheticReturning!2026"};
+  const owner = auth.bootstrapAdmin({...credentials,displayName:"虚构回访工程师"});
+  const session = auth.sessionResponse(auth.login(credentials),true);
+  await seed.closeReplicated();
   mkdirSync(join(options.root, "web-dist", "assets"));
   writeFileSync(join(options.root, "web-dist", "assets", "index-FictionalHash.js"), "export const sample = true;");
   const env = {...cloudEnv,V2_PROVISIONING_ONLY:"true",V2_PRIVATE_SMOKE_ENABLED:"true"};
   const listener = startCloudV2Listener(env,{...options,port:0,host:"127.0.0.1",
-    openMetadataBackend:async()=>{await gate.promise;return new MemorySnapshotBackend();},
+    openMetadataBackend:async()=>{await gate.promise;return metadata;},
     createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
   t.after(async()=>{gate.resolve();await listener.close();});
   await once(listener.server,"listening");
@@ -151,28 +159,36 @@ test("the read-only listener serves public first-screen files during recovery an
   assert.match(script.headers.get("cache-control"),/immutable/);
   const catalog=await (await read("/api/v2/contexts")).json();
   assert.ok(catalog.some(context=>context.id==="holdings-t1"));
+  const [sessionCookie,csrfCookie]=session.cookies.map(cookie=>cookie.split(";",1)[0]);
+  const returning={headers:{cookie:[sessionCookie,csrfCookie].join("; ")},signal:AbortSignal.timeout(1000)};
+  const returningPage=await read("/v2/?module=agent-center",{
+    ...returning,headers:{cookie:csrfCookie},
+  });
+  assert.equal(await returningPage.text(),"<html>Fictional cloud startup</html>");
+  assert.equal(returningPage.headers.get("set-cookie"),null);
+  const returningScript=await read("/v2/assets/index-FictionalHash.js",returning);
+  assert.equal(await returningScript.text(),"export const sample = true;");
+  assert.deepEqual(await (await read("/api/v2/contexts",returning)).json(),catalog);
+  const pendingDeepLink=await read("/v2/?module=agent-center&task=00000000-0000-4000-8000-000000000001",returning);
+  assert.equal(await pendingDeepLink.text(),"<html>Fictional cloud startup</html>");
   for (const [path,headers] of [["/v2/",{origin:"https://wrong.example"}],
     ["/api/v2/contexts",{"x-project-id":"different-project"}],["/api/v2/internal/status",{}],["/v2/%69ndex",{}]]) {
     const denied=await read(path,{headers});
     assert.ok([403,404].includes(denied.status));
   }
   for (const path of ["/api/v2/status?include=session","/api/v2/auth/session","/api/v2/agent/tasks"]) {
-    const pending = await read(path);
+    const pending = await read(path,returning);
     assert.equal(pending.status,503);
     assert.equal(pending.headers.get("retry-after"),"1");
     assert.equal((await pending.json()).code,"CLOUD_STARTUP_PENDING");
   }
   assert.equal((await read("/api/v2/agent/tasks",{method:"POST",body:"{}"})).status,403);
-  let eventSettled=false, signedPageSettled=false;
+  let eventSettled=false;
   const event=read("/invoke",{method:"POST",headers:{"x-fc-control-path":"/invoke","content-type":"application/octet-stream"},
     body:JSON.stringify({operation:"PRIVATE_STATUS_V1"})}).then(value=>{eventSettled=true;return value;});
-  const signedPage=read("/v2/",{headers:{cookie:"test-session=fictional"}})
-    .then(value=>{signedPageSettled=true;return value;});
-  // Give the actual socket a turn before releasing persistence. Neither the
-  // event nor the signed-in navigation is acknowledged by the early handler.
+  // The private event still waits for recovered state.
   await new Promise(resolve=>setTimeout(resolve,40));
   assert.equal(eventSettled,false);
-  assert.equal(signedPageSettled,false);
   gate.resolve();
   const boot = await listener.ready;
   assert.equal(boot.app.server,listener.server);
@@ -181,11 +197,84 @@ test("the read-only listener serves public first-screen files during recovery an
   const delivered=await event;
   assert.equal(delivered.status,200);
   assert.equal((await delivered.json()).mode,"PRIVATE_CONTROL_PLANE");
-  assert.equal((await signedPage).status,200);
-  const session=await (await read("/api/v2/auth/session")).json();
-  assert.equal(session.authenticated,false);
-  assert.equal(session.readOnly,true);
-  assert.equal((await read("/api/v2/agent/tasks",{method:"POST",body:"{}"})).status,403);
+  const authenticated=await (await read("/api/v2/auth/session",{headers:returning.headers})).json();
+  assert.equal(authenticated.authenticated,true);
+  assert.equal(authenticated.user.id,owner.id);
+  assert.equal(authenticated.readOnly,true);
+  const guest=await (await read("/api/v2/auth/session")).json();
+  assert.equal(guest.authenticated,false);
+  assert.equal(guest.readOnly,true);
+  assert.equal((await read("/api/v2/agent/tasks",{method:"POST",headers:returning.headers,body:"{}"})).status,403);
+});
+
+test("a bounded startup identity read waits for recovered state and releases disconnected capacity", {timeout:5000}, async t => {
+  const options = fixture(t), gate = Promise.withResolvers();
+  const metadata = new MemorySnapshotBackend();
+  const seed = await ReplicatedMetadataStore.open({backend:metadata,project:PROJECT,autoFlush:false});
+  const auth = new AuthManager({store:seed,project:PROJECT,env:{}});
+  const credentials = {email:"startup-waiter@example.invalid",password:"SyntheticStartup!2026"};
+  const owner = auth.bootstrapAdmin({...credentials,displayName:"虚构回访顾问"});
+  const {cookies}=auth.sessionResponse(auth.login(credentials),true);
+  await seed.closeReplicated();
+  const env={...cloudEnv};
+  const listener=startCloudV2Listener(env,{...options,port:0,host:"127.0.0.1",
+    openMetadataBackend:async()=>{await gate.promise;return metadata;},
+    createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
+  t.after(async()=>{gate.resolve();await listener.close();});
+  await once(listener.server,"listening");
+  const base="http://127.0.0.1:"+listener.server.address().port;
+  env.V2_PUBLIC_ORIGIN=base;
+  const path="/api/v2/status?include=session";
+  const headers={"x-shuduo-client":"workbench",cookie:cookies.map(cookie=>cookie.split(";",1)[0]).join("; ")};
+  const requests=[];
+  const seen = () => new Promise(resolve => listener.server.once("request", (_req,res)=>resolve(res)));
+  for(let i=0;i<2;i++){
+    const arrived=seen(), controller=new AbortController();
+    const response=fetch(base+path,{headers,signal:controller.signal});
+    response.catch(()=>{});
+    requests.push({controller,response,res:await arrived});
+  }
+  assert.ok(requests.every(({res})=>!res.headersSent));
+  for(const target of [path,"/api/v2/auth/session","/api/v2/agent/tasks",path+"&extra=1"]){
+    const pending=await fetch(base+target,{headers,signal:AbortSignal.timeout(600)});
+    assert.equal(pending.status,503);
+    assert.equal((await pending.json()).code,"CLOUD_STARTUP_PENDING");
+  }
+  const closed=once(requests[0].res,"close");
+  requests[0].controller.abort();
+  await closed;
+  await assert.rejects(requests[0].response,{name:"AbortError"});
+  const arrived=seen();
+  const replacement=fetch(base+path,{headers,signal:AbortSignal.timeout(2000)});
+  const third=await arrived;
+  assert.equal(third.headersSent,false);
+  gate.resolve();
+  await listener.ready;
+  for(const read of [requests[1].response,replacement]){
+    const response=await read;
+    assert.equal(response.status,200);
+    assert.equal(response.headers.get("cache-control"),"no-store");
+    const {session}=await response.json();
+    assert.equal(session.authenticated,true);
+    assert.equal(session.user.id,owner.id);
+    assert.equal(session.readOnly,true);
+  }
+});
+
+test("an unfinished startup releases the combined read with the existing retry response", {timeout:5000}, async t => {
+  const options=fixture(t), gate=Promise.withResolvers();
+  const listener=startCloudV2Listener(cloudEnv,{...options,port:0,host:"127.0.0.1",
+    openMetadataBackend:async()=>{await gate.promise;return new MemorySnapshotBackend();},
+    createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
+  t.after(async()=>{gate.resolve();await listener.close();});
+  await once(listener.server,"listening");
+  const base="http://127.0.0.1:"+listener.server.address().port;
+  const response=await fetch(base+"/api/v2/status?include=session",{
+    headers:{"x-shuduo-client":"workbench"},signal:AbortSignal.timeout(3800),
+  });
+  assert.equal(response.status,503);
+  assert.equal(response.headers.get("retry-after"),"1");
+  assert.equal((await response.json()).code,"CLOUD_STARTUP_PENDING");
 });
 
 test("private and writable configurations bind after recovery and failed early listeners close", {timeout:5000}, async t => {

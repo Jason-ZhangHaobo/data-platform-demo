@@ -11,6 +11,7 @@ import { runPublicationPilotOperation, serviceConsumptionPilotEnvironment, valid
   readonlyCodeRefreshScope, validateReadonlyCodeRefreshPlan } from '../../scripts/deploy-development-pilot.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
 import { runServiceCodePrestage } from '../../scripts/service-code-prestage.mjs';
+import { readReadonlyRuntimeProbe } from '../../scripts/readonly-runtime-verification.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const failure = safeCode => Object.assign(new Error(safeCode), { safeCode });
@@ -53,7 +54,7 @@ function fixture(options = {}) {
       calls.push({web:new URL(url).pathname});
       return controls.fetchWeb(url,options,current);
     },
-    now: () => now, wait: async () => {}, save: report => {
+    now: () => now, wait: async ms => { controls.wait?.(ms); }, save: report => {
       if (controls.saveFailure) throw failure('SYNTHETIC_SAVE_FAILED');
       if (controls.runtimeSaveTypeError && report.phase === 'STAGE_REQUESTED' && report.activeHttp > 0) throw new TypeError('SYNTHETIC_RUNTIME_SAVE_FAILED');
       saved = structuredClone(report);
@@ -101,15 +102,17 @@ function fixture(options = {}) {
       if (!objects.has(pkg.sha256)) return new Response('', { status: 404 });
       return new Response(objects.get(pkg.sha256), { headers: { 'x-oss-hash-crc64ecma': controls.wrongCrc && pkg.sha256 === candidate.sha256 ? '9999' : pkg.crc64 } });
     },
-    http: async path => {
+    http: async (path, signal) => {
       assert.deepEqual(saved.cumulativeUsage, activeReport.cumulativeUsage); calls.push({ http: path });
+      if (controls.http) return controls.http(path, current, signal);
       if (controls.runtimeHardError) throw controls.runtimeHardError;
       if (controls.runtimeTransientErrors > 0) { controls.runtimeTransientErrors--; throw new TypeError('synthetic-private-message-must-not-be-logged'); }
       if (controls.badRuntime) return { status: 503, body: {} };
       if (path.endsWith('/status')) return { status: controls.badStatus ? 503 : 200,
-        body: { spark: { healthVerified: false }, agentDevelopment: { durableEnabled: false } } };
+        body: { mode:'PUBLIC_INVITATION',authentication:{publicSessionEnforced:true},publicReady:false,
+          spark: { healthVerified: false }, agentDevelopment: { durableEnabled: false } } };
       assert.equal(path, '/api/v2/auth/session'); const e = current.environmentVariables;
-      return { status: 200, body: { authenticated: false, readOnly: controls.anonymousWritable ? false : true,
+      return { status: 200, body: { authenticated: false, mode:'INVITATION_SESSION',readOnly: controls.anonymousWritable ? false : true,
         ...(e.V2_FC_PUBLIC_WRITE_SCOPE === 'SERVICE_CONSUMPTION_ONLY' ? { consumptionOnly: true,
           consumptionExpiresAt: controls.wrongExpires ? new Date(now + 1).toISOString() : e.V2_PUBLIC_SERVICE_EXPIRES_AT } : {}) } };
     },
@@ -431,6 +434,110 @@ test('exact read-only code refresh verifies the public HTML, script and manual r
   assert.equal(rollback.cumulativeUsage.activeHttp,7);
 });
 
+const guestRuntime = path => path.endsWith('/session')
+  ? {status:200,body:{mode:'INVITATION_SESSION',authenticated:false,readOnly:true}}
+  : {status:200,body:{mode:'PUBLIC_INVITATION',publicReady:false,authentication:{publicSessionEnforced:true},
+    spark:{healthVerified:false}}};
+
+test('exact refresh distinguishes gateway errors and declared startup before accepting the original read-only boundary',async()=>{
+  const f=codeWebFixture(), waits=[];
+  let calls=0;
+  f.controls.wait=ms=>{waits.push(ms);f.advance(ms);};
+  f.controls.http=(path,_current,signal)=>{
+    assert.ok(signal instanceof AbortSignal);
+    f.advance(500);
+    calls++;
+    if(calls===1)return {status:502,format:'NON_JSON',headersMs:300};
+    if(calls===2)return {status:503,body:{code:'CLOUD_STARTUP_PENDING',message:'DO_NOT_LOG_PRIVATE_BODY'}};
+    if(calls===4)return {status:503,body:{code:'REQUEST_LANE_BUSY'}};
+    return guestRuntime(path);
+  };
+  const r=await f.step('stage');
+  assert.equal(r.phase,'STAGED');
+  assert.equal(r.runtime.ready,true);
+  assert.equal(r.runtime.sparkReady,false);
+  assert.deepEqual(waits,[1000,2000,4000]);
+  assert.deepEqual(r.runtimeAttempts.map(x=>[x.attempt,x.httpStatus,x.outcome,x.elapsedMs]),[
+    [1,502,'GATEWAY_UNAVAILABLE',500],[2,503,'APPLICATION_PENDING',500],[3,200,'MATCHED',500],
+    [3,503,'APPLICATION_PENDING',500],[4,200,'MATCHED',500],[4,200,'MATCHED',500],
+  ]);
+  assert.equal(r.runtimeAttempts[0].headersMs,300);
+  assert.doesNotMatch(JSON.stringify(r),/DO_NOT_LOG_PRIVATE_BODY/);
+  assert.equal(r.cumulativeUsage.activeHttp,8);
+  assert.equal(r.cumulativeUsage.configWrites,1);
+  assert.equal(r.cumulativeUsage.objectPuts,1);
+});
+
+test('an actual scope mismatch stops immediately and independently verifies the rollback after a transient 502',async()=>{
+  const f=codeWebFixture(), originalWeb=f.controls.fetchWeb, waits=[];
+  let rollbackReads=0;
+  f.controls.fetchWeb=(url,options,current)=>{
+    if(current.codeChecksum===f.previous.crc64 && rollbackReads++===0)return new Response('temporary gateway',{status:502});
+    return originalWeb(url,options,current);
+  };
+  f.controls.wait=ms=>{waits.push(ms);f.advance(ms);};
+  f.controls.http=(path,current)=>current.codeChecksum===f.previous.crc64
+    ? guestRuntime(path) : {status:200,body:{mode:'INVITATION_SESSION',authenticated:false,readOnly:false}};
+  await assert.rejects(f.step('stage'),/READONLY_RUNTIME_BOUNDARY_MISMATCH/);
+  const r=f.report;
+  assert.equal(r.runtimeAttempts.length,1);
+  assert.equal(r.runtimeAttempts[0].outcome,'SESSION_BOUNDARY_MISMATCH');
+  assert.equal(r.runtime.ready,false);
+  assert.deepEqual(waits,[1000]);
+  assert.equal(r.rollback,'VERIFIED');
+  assert.equal(r.rollbackRuntime.ready,true);
+  assert.deepEqual(r.rollbackWeb.attempts.map(x=>[x.httpStatus,x.status]),[[502,'UNCONFIRMED'],[200,'MATCHED']]);
+  assert.equal(r.rollbackRuntimeAttempts.length,2);
+  assert.equal(r.cumulativeUsage.configWrites,2);
+  assert.equal(r.cumulativeUsage.objectPuts,1);
+});
+
+test('authorization errors and unrelated 503s do not consume recovery retries',async()=>{
+  for(const rejected of [{status:403,body:{code:'INGRESS_DENIED'}},{status:503,body:{code:'OTHER_FAILURE'}}]){
+    const f=codeWebFixture();
+    f.controls.http=(path,current)=>current.codeChecksum===f.previous.crc64 ? guestRuntime(path) : rejected;
+    f.controls.wait=()=>assert.fail('unexpected recovery wait');
+    await assert.rejects(f.step('stage'),rejected.status===403?/BOUNDARY_MISMATCH/:/RESPONSE_UNCONFIRMED/);
+    assert.equal(f.report.runtimeAttempts.length,1);
+    assert.equal(f.report.rollback,'VERIFIED');
+  }
+});
+
+test('exact refresh stops slow cold-start observations while the original rollback still has time',async()=>{
+  const f=codeWebFixture();
+  f.controls.wait=ms=>f.advance(ms);
+  f.controls.http=(path,current)=>{
+    if(current.codeChecksum===f.previous.crc64)return guestRuntime(path);
+    f.advance(20000);
+    return {status:503,body:{code:'CLOUD_STARTUP_PENDING'}};
+  };
+  const deadline=f.now+95000;
+  await assert.rejects(f.step('stage',{deadline}),/READONLY_RUNTIME_RECOVERY_UNCONFIRMED/);
+  assert.equal(f.report.runtimeAttempts.length,2);
+  assert.ok(f.now<deadline);
+  assert.equal(f.report.rollbackRuntime.ready,true);
+  assert.equal(f.report.cumulativeUsage.configWrites,2);
+});
+
+test('the read-only HTTP adapter omits credentials, refuses redirects and bounds response bodies',async()=>{
+  const signal=AbortSignal.timeout(5000), baseUrl='https://example.invalid';
+  const read=response=>readReadonlyRuntimeProbe('/api/v2/auth/session',{baseUrl,signal,fetchImpl:(url,options)=>{
+    assert.equal(url.href,baseUrl+'/api/v2/auth/session');
+    assert.equal(options.credentials,'omit');
+    assert.equal(options.redirect,'error');
+    assert.equal(options.method,'GET');
+    assert.equal(options.signal,signal);
+    return response;
+  }});
+  assert.equal((await read(new Response('<html>gateway</html>',{status:502}))).format,'NON_JSON');
+  const pending=await read(Response.json({code:'CLOUD_STARTUP_PENDING'},{status:503}));
+  assert.equal(pending.status,503);
+  assert.equal(pending.body.code,'CLOUD_STARTUP_PENDING');
+  const oversize=await read(Response.json({message:'x'.repeat(132000)},{status:503}));
+  assert.equal(oversize.format,'INVALID_JSON');
+  await assert.rejects(readReadonlyRuntimeProbe('/v2/',{baseUrl,signal,fetchImpl:()=>assert.fail('unexpected fetch')}),/HTTP_SCOPE_INVALID/);
+});
+
 test('unbound HTML is rejected before cloud IO and stale entry bytes trigger only the original rollback',async()=>{
   const bad=codeWebFixture();
   bad.basePlan.readonlyWeb.webIndexSha256='a'.repeat(64);
@@ -450,7 +557,7 @@ test('unbound HTML is rejected before cloud IO and stale entry bytes trigger onl
     assert.equal(f.report.rollback,'VERIFIED');
     assert.equal(f.report.rollbackWeb.index.status,'MATCHED');
     assert.equal(f.report.configWrites,2);
-    assert.equal(f.report.activeHttp,type==='wrongHtml'?2:3);
+    assert.equal(f.report.activeHttp,type==='wrongHtml'?4:5);
     assert.ok(f.calls.filter(c=>c.args?.[1]==='PUT').every(c=>Object.keys(c.body).join()==='code'));
   }
 });

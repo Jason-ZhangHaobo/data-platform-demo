@@ -15,6 +15,16 @@ export const consumerCanonical = value => JSON.stringify(value && typeof value =
     : Object.fromEntries(Object.keys(value).sort().map(key => [key, JSON.parse(consumerCanonical(value[key]))])) : value);
 export const consumerDigest = value => createHash("sha256").update(value).digest("hex");
 
+export const consumerDenialEvidence = "APPLICATION_CODES_V1";
+export const consumerDenialCodes = Object.freeze({
+  MISSING_TOKEN: "TOKEN_REQUIRED",
+  INVALID_TOKEN: "TOKEN_INVALID",
+  UNGRANTED_SERVICE: "SERVICE_FORBIDDEN",
+  INVALID_PARAMETERS: "INVALID_INTEGER",
+  RATE_LIMIT_REJECTED: "RATE_LIMITED",
+  REVOKED_TOKEN: "TOKEN_INVALID",
+});
+
 // Pure schema validation. IDs and digests become evidence only after the caller
 // cross-checks the frozen plan against authorized platform records.
 export function validateConsumerSource(source) {

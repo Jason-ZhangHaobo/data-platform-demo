@@ -21,15 +21,21 @@ export async function createConsumerFixture(t, behavior = {}) {
     state.requests.push({ method: request.method, path, query: url.search });
     if (behavior.onRequest) behavior.onRequest(state, request);
     const reply = (status, body) => { response.writeHead(status, { "Content-Type": "application/json" }); response.end(JSON.stringify(body)); };
+    const deny = (status, code) => {
+      const altered=behavior.denial?.({status,code});
+      if(altered?.html){response.writeHead(status,{"Content-Type":"text/html"});response.end(altered.html);return;}
+      reply(status,{code:altered?.code??code,...(altered?.message ? {message:altered.message} : {})});
+    };
     if (behavior.redirect) { response.writeHead(302, { Location: behavior.redirect }); response.end(); return; }
     if (behavior.disconnect) { request.socket.destroy(); return; }
     if (behavior.hang) return;
-    if (state.revoked || request.headers.authorization !== `Bearer ${TOKEN}`) return reply(401, { error: "TOKEN_INVALID" });
-    if (path.endsWith("/other-demo") || path.endsWith("/cash-demo") && !behavior.twoGranted) return reply(403, { error: "SERVICE_FORBIDDEN" });
+    if (!request.headers.authorization) return deny(401, "TOKEN_REQUIRED");
+    if (state.revoked || request.headers.authorization !== `Bearer ${TOKEN}`) return deny(401, "TOKEN_INVALID");
+    if (path.endsWith("/other-demo") || path.endsWith("/cash-demo") && !behavior.twoGranted) return deny(403, "SERVICE_FORBIDDEN");
     const page = Number(url.searchParams.get("page")), pageSize = Number(url.searchParams.get("page_size"));
-    if (!Number.isSafeInteger(page) || page < 1) return reply(400, { error: "INVALID_INTEGER" });
+    if (!Number.isSafeInteger(page) || page < 1) return deny(400, "INVALID_INTEGER");
     const count = state.allowed.get(path) ?? 0;
-    if (count >= 6) return reply(429, { error: "RATE_LIMITED" });
+    if (count >= 6) return deny(429, "RATE_LIMITED");
     state.allowed.set(path, count + 1);
     const isXapi = path.endsWith("/overview-demo"), isCash = path.endsWith("/cash-demo");
     let source = [

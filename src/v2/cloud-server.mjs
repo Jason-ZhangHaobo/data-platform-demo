@@ -125,6 +125,10 @@ export async function createCloudV2Application(env = process.env, {
 }
 
 const startupAsset = /^\/v2\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:js|css|svg|woff2?)$/;
+const startupIdentityPath = "/api/v2/status?include=session";
+const startupIdentityWaitMs = 2800;
+// Leave capacity for the public files, other reads and the recovered handler.
+const maxStartupIdentityWaiters = 2;
 function startupResponse(res, status, payload, retry = false) {
   if (res.destroyed || res.writableEnded) return;
   res.writeHead(status, {
@@ -147,6 +151,25 @@ export function startCloudV2Listener(env = process.env, {
   const ingress = createFcIngress({ publicHttpEnabled, publicReadOnly });
   const earlyRead = publicHttpEnabled && publicReadOnly && !env.V2_BOOTSTRAP_ADMIN_PASSWORD;
   let app, stopped = false, closing;
+  const identityWaiters = new Set();
+  const releaseIdentityWaiters = () => {
+    for (const finish of identityWaiters) finish();
+  };
+  const waitForStartupIdentity = res => {
+    if (res.destroyed || identityWaiters.size >= maxStartupIdentityWaiters) return;
+    return new Promise(resolve => {
+      const finish = () => {
+        clearTimeout(timeout);
+        res.off("close", finish);
+        identityWaiters.delete(finish);
+        resolve();
+      };
+      const timeout = setTimeout(finish, startupIdentityWaitMs);
+      timeout.unref?.();
+      identityWaiters.add(finish);
+      res.once("close", finish);
+    });
+  };
   const listen = () => new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, host, () => { server.off("error", reject); resolve(); });
@@ -175,6 +198,8 @@ export function startCloudV2Listener(env = process.env, {
       await stopListening(true);
       await dispose(runtime).catch(() => {});
       throw error;
+    } finally {
+      releaseIdentityWaiters();
     }
   })();
   const opening = async (req, res) => {
@@ -185,15 +210,23 @@ export function startCloudV2Listener(env = process.env, {
       const staticFile = path === "/v2" || path === "/v2/" || startupAsset.test(path);
       const catalog = path === "/api/v2/contexts";
       const publicOpeningRead = earlyRead && channel === "HTTP" && req.method === "GET" && (staticFile || catalog);
-      if (!stopped && publicOpeningRead && req.headers.cookie === undefined && req.headers.authorization === undefined) {
+      // These responses contain only the shared shell, assets or built-in
+      // fixtures. Session-bearing requests receive those same public bytes.
+      if (!stopped && publicOpeningRead && req.headers.authorization === undefined) {
         if (catalog) return startupResponse(res, 200, publicV2Contexts());
         return await serveV2Static(res, options.root ?? process.cwd(), path, req.headers["accept-encoding"]);
       }
-      // Deliver marked events and signed-in page reads to the normal handler
-      // only once the application owns a recovered, durably flushed state.
+      // Marked events and public reads carrying explicit authorization use
+      // the recovered application.
       if (!stopped && (channel === "EVENT" || publicOpeningRead)) {
         await ready;
         if (!stopped && !res.destroyed) return app.dispatchRequest(req, res);
+      }
+      if (!stopped && earlyRead && channel === "HTTP" && req.method === "GET" &&
+          req.url === startupIdentityPath && req.headers["x-shuduo-client"] === "workbench" &&
+          req.headers.authorization === undefined) {
+        await waitForStartupIdentity(res);
+        if (!stopped && app && !res.destroyed) return app.dispatchRequest(req, res);
       }
       return startupResponse(res, 503, { code: "CLOUD_STARTUP_PENDING", message: "服务正在恢复，请稍候。" }, true);
     } catch (error) {
@@ -209,6 +242,7 @@ export function startCloudV2Listener(env = process.env, {
   });
   const close = () => closing ??= (async () => {
     stopped = true;
+    releaseIdentityWaiters();
     await stopListening(!app);
     const runtime = await ready.catch(() => undefined);
     await stopListening(true);

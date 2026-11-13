@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { consumerCanonical, consumerDigest, consumerV2PlanEvidence, validateConsumerSource } from "./consumer-source.mjs";
+import { consumerCanonical, consumerDigest, consumerV2PlanEvidence, validateConsumerSource,
+  consumerDenialEvidence, consumerDenialCodes } from "./consumer-source.mjs";
 
 const hash = value => consumerDigest(consumerCanonical(value));
 const record = value => Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -53,10 +54,14 @@ function independentResponse(plan, service, query) {
 }
 
 function verifyReport(plan, report, metadata, program) {
-  const keys = ["protocol", "planDigest", "credentialDigest", "maxRequests", "startedAt", "deadline", "evidence", "requestCount", "phases", "requests", "finishedAt", ...Object.keys(metadata)];
+  const strictDenials = Object.hasOwn(report, "denialEvidence");
+  const keys = ["protocol", "planDigest", "credentialDigest", "maxRequests", "startedAt", "deadline", "evidence", "requestCount", "phases", "requests", "finishedAt",
+    ...Object.keys(metadata), ...(strictDenials ? ["denialEvidence"] : [])];
   check(exact(report, keys) && report.protocol === "SERVICE_CONSUMER_V2" && report.planDigest === hash(plan) && digest(report.credentialDigest) &&
     report.maxRequests === plan.maxRequests && report.startedAt === plan.startedAt && report.deadline === plan.deadline &&
-    report.evidence === (plan.testOnly ? "LOCAL_HTTP_FIXTURE" : "HTTP_CONSUMER_ONLY") && Object.entries(metadata).every(([key, value]) => same(report[key], value)), "REPORT_BINDING_INVALID");
+    report.evidence === (plan.testOnly ? "LOCAL_HTTP_FIXTURE" : "HTTP_CONSUMER_ONLY") &&
+    (!strictDenials || report.denialEvidence === consumerDenialEvidence) &&
+    Object.entries(metadata).every(([key, value]) => same(report[key], value)), "REPORT_BINDING_INVALID");
   check(exact(report.phases, ["consume", "revoked"]) && report.phases.consume === "PASSED" && report.phases.revoked === "PASSED" &&
     report.requestCount === program.length && Array.isArray(report.requests) && report.requests.length === program.length && timestamp(report.finishedAt), "REPORT_INCOMPLETE");
   const common = ["sequence", "phase", "check", "startedAt", "result", "serviceId", "type", "versionId", "configHash", "expectedStatus", "queryDigest", "statusCode", "finishedAt"];
@@ -66,7 +71,8 @@ function verifyReport(plan, report, metadata, program) {
   const firstSuccess = new Map(), calls = new Set();
   report.requests.forEach((entry, index) => {
     const expected = program[index], service = expected.service;
-    check(exact(entry, [...common, ...(expected.expectedStatus === 200 ? [...success, ...(service.type === "XAPI" ? ["childBindingsDigest"] : [])] : [])]) &&
+    const denial = strictDenials && expected.expectedStatus !== 200;
+    check(exact(entry, [...common, ...(expected.expectedStatus === 200 ? [...success, ...(service.type === "XAPI" ? ["childBindingsDigest"] : [])] : denial ? ["applicationCode"] : [])]) &&
       entry.sequence === index + 1 && entry.phase === expected.phase && entry.check === expected.check && entry.result === "PASSED" &&
       entry.serviceId === service.id && entry.type === service.type && entry.versionId === service.versionId && entry.configHash === service.configHash &&
       entry.expectedStatus === expected.expectedStatus && entry.statusCode === expected.expectedStatus && entry.queryDigest === hash(expected.query) &&
@@ -74,7 +80,9 @@ function verifyReport(plan, report, metadata, program) {
       Date.parse(entry.startedAt) < Date.parse(plan.deadline) && Date.parse(entry.finishedAt) >= Date.parse(entry.startedAt), "REQUEST_EVIDENCE_INVALID");
     previousEnd = Date.parse(entry.finishedAt);
     if (entry.check.startsWith("RATE_LIMIT_")) check(Date.parse(entry.startedAt) - firstSuccess.get(service.id) + plan.timeoutMs < 60000, "RATE_WINDOW_INVALID");
-    if (entry.statusCode !== 200) return; // 401/403 etc are rejection checks, not version proofs.
+    if (denial) check(typeof consumerDenialCodes[expected.check] === "string" &&
+      entry.applicationCode === consumerDenialCodes[expected.check], "DENIAL_EVIDENCE_INVALID");
+    if (entry.statusCode !== 200) return; // Denials do not prove a returned data version.
     const response = independentResponse(plan, service, expected.query);
     check(entry.versionBindingsVerified === true && entry.childBindingsVerified === (service.type === "XAPI") &&
       (service.type !== "XAPI" || entry.childBindingsDigest === childBindingsDigest) && entry.rowsDigest === hash(response.data) &&
@@ -91,6 +99,9 @@ const versionKeys = ["serviceId", "versionId", "configHash", "releaseId", "sourc
 const callKeys = ["callId", "versionId", "configHash", "rowCount", "resultHash", "verified", "applicationId", "applicationStatus", "finishedAt"];
 const attributionMatches = (value, source) => source.sourceKind === "MANUAL" ? value.sourceAttribution === (source.manualDeliveryTaskId?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED") : value.sourceAttribution === undefined;
 const textFieldsSafe = value => ["name", "notice", "code"].every(key => value[key] === undefined || typeof value[key] === "string" && value[key].length <= 4000);
+const inactiveApplication = (call, report) => report.denialEvidence === consumerDenialEvidence
+  ? call.applicationStatus === "REVOKED"
+  : ["REVOKED", "EXPIRED"].includes(call.applicationStatus);
 const samePublicationSource = (value, source) => {
   const observed = validateConsumerSource(value);
   return ["scope", "sourceKind", ...(source.manualDeliveryTaskId?["manualDeliveryTaskId"]:["taskId"]), "packageDigest", "releaseId"].every(key => observed[key] === source[key]);
@@ -124,7 +135,7 @@ function platformMatch(source, plan, report, evidence) {
   }), "CHILD_VERSION_MISMATCH");
   const call = entry.call;
   check(exact(call, callKeys) && id(call.callId) && id(call.applicationId) && call.verified === true && call.versionId === entry.versionId && call.configHash === entry.configHash &&
-    integer(call.rowCount, 1, 100) && digest(call.resultHash) && ["REVOKED", "EXPIRED"].includes(call.applicationStatus) &&
+    integer(call.rowCount, 1, 100) && digest(call.resultHash) && inactiveApplication(call, report) &&
     timestamp(call.finishedAt) && Date.parse(call.finishedAt) <= Date.parse(evidence.checkedAt), "CALL_PROOF_INVALID");
   // Client/server clocks are not compared at per-request millisecond precision.
   // An out-of-window receipt needs clock/evidence review, never an automatic call.
@@ -160,7 +171,7 @@ function matchedDapiReceipt(source,plan,report,evidence,xapiEvidence) {
     "DAPI_SOURCE_MISMATCH");
   check(exact(call,callKeys) && id(call.callId) && call.applicationId===xapi?.call?.applicationId &&
     call.verified===true && call.versionId===service.versionId && call.configHash===service.configHash &&
-    ["REVOKED","EXPIRED"].includes(call.applicationStatus) && timestamp(call.finishedAt) &&
+    inactiveApplication(call, report) && timestamp(call.finishedAt) &&
     Date.parse(call.finishedAt)>=Date.parse(plan.startedAt) && Date.parse(call.finishedAt)<Date.parse(plan.deadline) &&
     Date.parse(call.finishedAt)<=Date.parse(evidence.checkedAt),"DAPI_CALL_PROOF_INVALID");
   const callIdDigest=consumerDigest(call.callId);

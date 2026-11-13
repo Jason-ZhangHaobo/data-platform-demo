@@ -10,7 +10,7 @@ import { readCloudV3Review } from "../src/v2/cloud-v3-review.mjs";
 import { exactPublicationReviewBasis } from "../src/v2/cloud-release-evidence.mjs";
 import { cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
 import { getContext, validationFamilyForContext } from "../src/v2/context.mjs";
-import { validateConsumerSource } from "../src/v2/consumer-source.mjs";
+import { consumerDenialEvidence, validateConsumerSource } from "../src/v2/consumer-source.mjs";
 import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
 import { deliveryPreparationBody, deliveryPreparationHashMatches, deliveryPreparationRequirement } from "../src/v2/delivery-preparation-request.mjs";
 import { bindExternalConsumption } from "../src/v2/external-consumption-binding.mjs";
@@ -878,6 +878,8 @@ function readOriginalConsumerReport(planPath,state,definition,callIdDigest) {
       !isDeepStrictEqual(ordered(plan.expectedRows),ordered(getContext(definition.contextId).expected)))
     stop("消费者计划须绑定原入口及独立登记的证券业务预期");
   const {state:report}=readCheckpoint(plan.reportFile,{privateFile:true});
+  if (!plan.testOnly && report.denialEvidence!==consumerDenialEvidence)
+    stop("正式消费报告须提供应用拒绝码证据，原报告与请求记录仍可保留");
   const successful=row=>row?.phase==="consume" && row.statusCode===200;
   const xapi=Array.isArray(report?.requests) && report.requests.find(row=>successful(row) &&
     row.type==="XAPI" && row.serviceId===plan.xapi.id && row.callIdDigest===callIdDigest);
