@@ -14,7 +14,7 @@ import { createRequestLane } from "./request-lane.mjs";
 import { createAssetAnnotationRequests } from "./asset-annotation-requests.mjs";
 import { serveV2Static } from "./static-response.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
-import { publicDevelopmentConfig, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow, assertDevelopmentTargetTask, developmentBackgroundBoundary, assertDevelopmentBackgroundScope } from "./public-development-access.mjs";
+import { publicDevelopmentConfig, developmentRequestDigest, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow, assertDevelopmentTargetTask, developmentBackgroundBoundary, assertDevelopmentBackgroundScope } from "./public-development-access.mjs";
 import { publicPublicationConfig, publicationSession, assertPublicationMutation, assertPublicationTarget, assertPublicationExecutionWindow, assertPublicationResultTarget } from "./public-publication-access.mjs";
 import { publicServiceConfig, serviceSession, assertServiceMutation } from "./public-service-access.mjs";
 import { readFile, readdir } from "node:fs/promises";
@@ -69,13 +69,13 @@ import {
   referenceSql,
   validationContractId,
 } from "./context.mjs";
-import { fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
+import { fundContextIds, fundRehearsalAt, isFundContext } from "./fund-contexts.mjs";
 import { bindFundSignedDelivery } from "./fund-signed-delivery.mjs";
 import { createFundSignedReceipts } from "./fund-signed-receipts.mjs";
 import { createFundRehearsalRecovery } from "./fund-rehearsal-recovery.mjs";
 import { fundRehearsalRecheckResult, readFundRehearsalRecheck } from "./fund-rehearsal-recheck.mjs";
 import { createFundPreparations, fundAgentRequestSignature } from "./fund-preparation.mjs";
-import { parseFundExecutionPreflightPath } from "./fund-preparation-request.mjs";
+import { fundExecutionBody, parseFundExecutionPreflightPath } from "./fund-preparation-request.mjs";
 import { fundExecutionPreflight } from "./fund-execution-preflight.mjs";
 import { fundAgentAttributionKind, fundAgentDeliveryAttribution, verifiedFundRun } from "./fund-delivery.mjs";
 import { fundAgentServiceSources, fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
@@ -386,8 +386,17 @@ export function createV2Server(options = {}) {
   assertServiceAgentIngress(serviceAgentAccess,options.ingress);
   const developmentAccess = publicDevelopmentConfig(env);
   const developmentNow = () => options.now?.() ?? Date.now();
-  const assertTargetTask = task => assertDevelopmentTargetTask(developmentAccess, task,
-    store.get('auth_user', task?.submittedBy ?? '', PROJECT), PROJECT, developmentNow());
+  const assertTargetTask = task => {
+    assertDevelopmentTargetTask(developmentAccess, task,store.get("auth_user",task?.submittedBy ?? "",PROJECT),PROJECT,developmentNow());
+    if (!task?.fundPreparation || task.executionMode!==durableSqlAgentMode) return;
+    const binding=task.fundPreparation;
+    const body=fundExecutionBody({input:task,requestId:binding.requestId,basis:{digest:binding.basisDigest}});
+    if (env.V2_INVITED_FUND_DEVELOPMENT!=="true" ||
+        (developmentAccess?.taskId!==task.id &&
+         developmentAccess?.requestDigest!==developmentRequestDigest(hash(binding.requestId),hash(JSON.stringify(body)))))
+      throw targetDenied();
+    assertDevelopmentExecutionWindow(developmentAccess,developmentNow());
+  };
   const assertScopedRecord = (session, item) => assertDevelopmentRecord(developmentAccess, session, item, {
     task: developmentAccess?.taskId ? store.get('agent', developmentAccess.taskId, PROJECT) : undefined, now: developmentNow(),
   });
@@ -417,6 +426,14 @@ export function createV2Server(options = {}) {
     if (publicationAccess) throw Object.assign(fail(403, "本次仅允许审阅发布既有交付包，不启动模型或新的开发计算。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
     assertDevelopmentExecutionWindow(developmentAccess, options.now?.() ?? Date.now());
   };
+  const fundPilotReady=Boolean(!local && privateSmokeEnabled && developmentAccess?.requestDigest && env.V2_INVITED_FUND_DEVELOPMENT==="true" &&
+    env.V2_DURABLE_SQL_AGENT_ENABLED==="true" && rawRunner.durable && runnerDescriptor.transport==="PRIVATE_OSS_QUEUE" &&
+    runnerDescriptor.healthVerified===true && runnerDescriptor.publicWriteEnabled===true);
+  const invitedFundContexts=()=>fundContextIds.map(id=>{
+    const {id:contextId,name,businessDate,definition,validationFamily,outputContract,capabilities,tables}=publicContext(id);
+    return {id:contextId,name,businessDate,definition,validationFamily,outputContract,capabilities,
+      tables:tables.map(({name,label,columns})=>({name,label,columns,rows:[]})),referenceSql:""};
+  });
   const durableDevelopment = !rawRunner.durable || (!developmentAccess && !publicationAccess && !serviceAccess && !serviceAgentAccess) ? rawRunner.durable : {
     prepare: (input, id) => { assertDevelopmentExecution(); assertTargetRun(id, input); return rawRunner.durable.prepare(input, id); },
     submit: (prepared, options) => { assertDevelopmentExecution(); assertTargetRun(prepared?.job?.jobId); return rawRunner.durable.submit(prepared,options); },
@@ -509,16 +526,20 @@ export function createV2Server(options = {}) {
     : undefined;
   const mayReadDurableAgent = (task, session) => task?.syncInput
     ? syncSqlLocal && task.submittedBy === (session?.user.id ?? "local-engineer")
+    : task?.fundPreparation && task.executionMode===durableSqlAgentMode
+    ? Boolean(session && task.submittedBy===session.user.id)
     : task?.fundPreparation
     ? localClassicSpark && !options.ingress && task.submittedBy === (session?.user.id ?? "local-engineer")
     : local || session?.role === "ADMIN" || Boolean(session && task?.submittedBy === session.user.id);
   const mayReadRevision = (item, session) =>
-    (!isFundContext(item?.contextId) || localClassicSpark) &&
+    (!isFundContext(item?.contextId) || localClassicSpark || item?.fundPreparation && item.author===session?.user.id) &&
     (!item?.syncInput || syncSqlLocal && item.author === (session?.user.id ?? "local-engineer")) &&
-    (!item?.fundPreparation || !options.ingress && item.author === (session?.user.id ?? "local-engineer")) &&
+    (!item?.fundPreparation || (localClassicSpark && !options.ingress || !local && session) &&
+      item.author === (session?.user.id ?? "local-engineer")) &&
     (local || session?.role === "ADMIN" || Boolean(session && item?.author === session.user.id));
   const mayReadRun = (item, session, kind = "revision") =>
-    (!isFundContext(item?.contextId) || localClassicSpark) &&
+    (!isFundContext(item?.contextId) || localClassicSpark || item?.fundPreparation && item.agentTaskId &&
+      mayReadDurableAgent(store.get("agent",item.agentTaskId,PROJECT),session)) &&
     (!item?.syncInput || mayReadRevision(store.get(kind, item.revisionId, PROJECT), session) &&
       syncSqlLocal && (item.agentTaskId === undefined || mayReadDurableAgent(store.get("agent", item.agentTaskId, PROJECT), session))) &&
     (!item?.fundPreparation || mayReadDurableAgent(store.get("agent", item.agentTaskId, PROJECT), session) &&
@@ -532,7 +553,8 @@ export function createV2Server(options = {}) {
       throw Object.assign(fail(403, "无权读取或操作此开发记录"), { code: "DEVELOPMENT_ACCESS_DENIED" });
   };
   const requireDurableAgentOwner = (task, req) => {
-    if (!mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)) || (task.fundPreparation || task.syncInput) && !isLoopbackRequest(req))
+    if (!mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)) ||
+        (task.fundPreparation && task.executionMode!==durableSqlAgentMode || task.syncInput) && !isLoopbackRequest(req))
       throw fail(403, "无权操作此 Agent 任务");
   };
   const durableDelivery = durableAgent && durableDevelopment
@@ -761,6 +783,7 @@ export function createV2Server(options = {}) {
   if (!Number.isSafeInteger(releaseTimeUnitMs) || releaseTimeUnitMs < 1)
     throw new Error("本机发布调度时间单位不合法");
   const fundPreparations = createFundPreparations({ store, project: PROJECT });
+  const cloudFundPreparations = createFundPreparations({ store, project: PROJECT, scope:"PRIVATE_CLOUD_TEST" });
   const packageRequirementSource=(run,revision)=>({run,revision,agent:(revision?.source==='LIVE_MODEL'||revision?.fundPreparation||revision?.syncInput)&&run?.agentTaskId?store.get('agent',run.agentTaskId,PROJECT):undefined});
   const syncDeliveryInputs = (run, revision) => {
     if (!revision?.syncInput && !run?.syncInput) return {};
@@ -2045,6 +2068,9 @@ export function createV2Server(options = {}) {
       }
       if (path === "/api/v2/status" && method === "GET") {
         const actor = local && !includeSession ? undefined : scopeActor();
+        const fundPilotAvailable=fundPilotReady && developmentSession(developmentAccess,actor,developmentNow())?.readOnly===false;
+        const canReadFundContexts=actor && (fundPilotAvailable || store.list("agent",PROJECT).some(task=>
+          task.fundPreparation && task.executionMode===durableSqlAgentMode && task.submittedBy===actor.user.id));
         const mayReadAdminStatus = local || actor?.role === "ADMIN";
         const cloudReplication =
           typeof options.stateCoordinator?.replicationStatus === "function"
@@ -2096,6 +2122,8 @@ export function createV2Server(options = {}) {
           publicReady: false,
           agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery),
             requestBindingSupported:Boolean(durableAgent),derivationBindingSupported:Boolean(durableAgent),
+            ...(fundPilotAvailable ? {fundPilotAvailable:true} : {}),
+            ...(canReadFundContexts ? {fundContexts:invitedFundContexts()} : {}),
             eventBackgroundAvailable:Boolean(agentEventDriver), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER"), sqlMaxAttempts:3, sqlTokenBudget:Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) },
           validationContract: {
             id: validationContractId,
@@ -6148,7 +6176,7 @@ export function createV2Server(options = {}) {
         const fileReviewer=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
         const fileReview=bundle&&(bundle.manifest.source.outputContract||agent.fundPreparation||agent.syncInput)&&verification
           ? localFileReviewFor(bundle, verification, fileReviewer) : undefined;
-        const preparationSource = !local && durableDelivery && agent.executionMode === durableSqlAgentMode && (agent.requestBound === true || agent.derivedFrom) &&
+        const preparationSource = !local && !agent.fundPreparation && durableDelivery && agent.executionMode === durableSqlAgentMode && (agent.requestBound === true || agent.derivedFrom) &&
           agent.submittedBy === fileReviewer && report.status === "PASSED"
           ? pinnedCloudDeliverySource(agent,revision,run,(kind,id)=>store.get(kind,id,PROJECT)) : undefined;
         return json(res, 200, {
@@ -6164,7 +6192,7 @@ export function createV2Server(options = {}) {
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt,
             ...(workerResult?{workerResult}:{}),
             ...(fundReview ? {fundReview} : {}) } : undefined,
-          publication: { available: agent.syncInput ? false : agent.fundPreparation ? localClassicSpark && releaseSchedulerMode === "LOCAL_TIMER" : (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: agent.syncInput ? "冻结持仓已接入本机文件演练与审阅。" : agent.fundPreparation ? "审阅文件后，确认同一冻结业务日的两批本机测试。发布后按原版本查看批次。" : getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
+          publication: { available: agent.syncInput ? false : agent.fundPreparation ? localClassicSpark && releaseSchedulerMode === "LOCAL_TIMER" : (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: agent.syncInput ? "冻结持仓已接入本机文件演练与审阅。" : agent.fundPreparation ? (local ? "审阅文件后，确认同一冻结业务日的两批本机测试。发布后按原版本查看批次。" : "受邀基金试点当前开放开发与独立校验。") : getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
       }
       const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel|history|preflight|requests\/([A-Za-z0-9_-]{1,100})))?$/);
@@ -6374,6 +6402,7 @@ export function createV2Server(options = {}) {
           throw fail(409,"确切版本交付须来自原云端持久 SQL 任务");
         if(agent.repairComparison!==undefined||agent.sourceKind==='MANUAL'||agent.sourceAttribution!==undefined)throw fail(409,'人工辅助修正的开发结果已保留；人工辅助交付须独立审阅，当前不能作为原生Agent成果发布');
         if (agent.executionMode === durableSqlAgentMode) {
+          if (agent.fundPreparation) throw fail(422,"受邀基金试点当前仅开放开发与独立验证");
           if (!durableDelivery) throw fail(503, "持久交付执行器尚未启用");
           const key = text(req.headers["idempotency-key"], 1, 100);
           return json(res, 202, await durableDelivery.create(agent, key, expected));
@@ -6794,12 +6823,16 @@ export function createV2Server(options = {}) {
       }
       const fundPreparationRead = path.match(/^\/api\/v2\/agent\/fund-preparations\/requests\/([a-f0-9-]{36})$/);
       if ((method === "POST" && path === "/api/v2/agent/fund-preparations") || (method === "GET" && fundPreparationRead)) {
-        if (!localClassicSpark || options.ingress || !isLoopbackRequest(req))
-          throw fail(403, "基金需求准备仅在本机 Spark 工作台开放");
         if (url.searchParams.size) throw fail(422, "基金需求准备不接受附加查询参数");
-        const actor = auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer";
-        if (fundPreparationRead) return json(res, 200, fundPreparations.read(fundPreparationRead[1], actor));
-        const { receipt, replayed } = fundPreparations.submit(await readBody(req), actor, req.headers["idempotency-key"]);
+        const session=auth.sessionFromHeaders(req.headers);
+        const onMachine=localClassicSpark && !options.ingress && isLoopbackRequest(req);
+        if (!onMachine && (local || ingressChannel!=="HTTP" || !session || !["ADMIN","ENGINEER"].includes(session.role) ||
+            !fundPreparationRead && !fundPilotReady)) throw fail(403,"基金需求准备须使用获准的受邀开发窗口");
+        const actor = session?.user.id ?? "local-engineer", preparations=onMachine?fundPreparations:cloudFundPreparations;
+        if (fundPreparationRead) return json(res, 200, preparations.read(fundPreparationRead[1], actor));
+        const key=req.headers["idempotency-key"];
+        const { receipt, replayed } = preparations.submit(await readBody(req),actor,key,onMachine?undefined:receipt=>
+          assertDevelopmentTaskCreation(developmentAccess,session,store,PROJECT,key,"SPARK_SQL",developmentNow(),fundExecutionBody(receipt)));
         return json(res, replayed ? 200 : 201, receipt);
       }
       if (method === "POST" && path === "/api/v2/agent/intents") {
@@ -6888,6 +6921,7 @@ export function createV2Server(options = {}) {
         if (ingressChannel === "HTTP" && developmentAccess?.requestDigest)
           assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, developmentNow(), body);
         const fundRequest = body.fundPreparation !== undefined;
+        const cloudFundRequest=fundRequest && !local && ingressChannel==="HTTP" && fundPilotReady;
         let syncSelection;
         if (body.syncInput !== undefined) {
           requireSyncSqlLocal(req);
@@ -6896,10 +6930,10 @@ export function createV2Server(options = {}) {
             throw fail(422, "同步批次只支持客户资产 T+1 的本机 SQL 开发");
           syncSelection = parseSyncSqlSelection(body.syncInput);
         }
-        if (fundRequest && (language !== "SPARK_SQL" || !localClassicSpark || durableAgent || options.ingress ||
-            !isLoopbackRequest(req) || Object.keys(body).some(key => !["message", "language", "contextId", "fundPreparation"].includes(key))))
+        if (fundRequest && (language !== "SPARK_SQL" || (!cloudFundRequest && (!localClassicSpark || durableAgent || options.ingress ||
+            !isLoopbackRequest(req))) || Object.keys(body).some(key => !["message", "language", "contextId", "fundPreparation"].includes(key))))
           throw Object.assign(fail(422, "基金准备只支持本机 Spark SQL，不能混用代码或其他来源"), { code: "FUND_PREPARATION_EXECUTION_INVALID" });
-        let currentCode = fundRequest ? undefined : text(suppliedCode, 1, 20_000);
+        let currentCode = fundRequest ? (cloudFundRequest?"":undefined) : text(suppliedCode, 1, 20_000);
         if(body.clarification!==undefined){
           if(Object.keys(body).some(k=>!['message','sql','code','language','contextId','clarification','background'].includes(k)))throw fail(422,'澄清请求包含未支持字段');
           if(language!=='SPARK_SQL'||[body.sourceRunId,body.sourceError,body.derivation,body.repairComparison,body.assistedContinuation,body.manualContinuation].some(v=>v!==undefined)||body.code!==undefined&&body.sql!==undefined&&body.code!==body.sql)throw fail(422,'澄清答复只能绑定原SQL问题，不能混用其他来源');
@@ -6935,13 +6969,13 @@ export function createV2Server(options = {}) {
         if (!context) throw fail(400, "请选择有效上下文");
         if (isFundContext(context.id) !== fundRequest)
           throw fail(422, "基金 Agent 开发须绑定已保存的基金准备，其他口径不适用");
-        if(context.outputContractId&&(!local||durableDevelopment||runnerDescriptor.isolation!=="LOCAL_PROCESS"))throw Object.assign(fail(422,"分布Agent尚未启用云端执行"),{code:"OUTPUT_CONTRACT_LOCAL_ONLY"});
+        if(context.outputContractId&&!cloudFundRequest&&(!local||durableDevelopment||runnerDescriptor.isolation!=="LOCAL_PROCESS"))throw Object.assign(fail(422,"分布Agent尚未启用云端执行"),{code:"OUTPUT_CONTRACT_LOCAL_ONLY"});
         if (ingressChannel === "HTTP" && !developmentAccess?.requestDigest)
           assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, developmentNow(), body);
         const actorId = language === "SPARK_SQL"
           ? auth.sessionFromHeaders(req.headers)?.user.id ?? (local ? "local-engineer" : undefined)
           : local ? "local-engineer" : auth.sessionFromHeaders(req.headers)?.user.id;
-        const resolveFundExecution = () => fundPreparations.bindExecution(body.fundPreparation, actorId,
+        const resolveFundExecution = () => (cloudFundRequest?cloudFundPreparations:fundPreparations).bindExecution(body.fundPreparation, actorId,
           { contextId: context.id, message, requestKey: req.headers["idempotency-key"] });
         const fundPreparation = fundRequest ? resolveFundExecution() : undefined;
         const mode = (fundPreparation || syncSelection) && options.generator ? "SYNTHETIC_MODEL" : "LIVE_MODEL";
@@ -6966,6 +7000,7 @@ export function createV2Server(options = {}) {
           }
           const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
             actorId,
+            ...(cloudFundRequest ? {fundPreparation,mode} : {}),
             requestBound: ingressChannel === "HTTP" && Boolean(developmentAccess?.requestDigest),
             idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}),...(repairBasis?{repairComparison:repairBasis.binding}:{}),...(body.assistedContinuation!==undefined?{assistedContinuation:body.assistedContinuation}:{}),...(body.manualContinuation!==undefined?{manualContinuation:body.manualContinuation}:{}),...(body.clarification!==undefined?{clarification:body.clarification}:{}) });
           if(body.background){

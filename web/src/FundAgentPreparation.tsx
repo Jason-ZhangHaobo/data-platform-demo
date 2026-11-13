@@ -50,7 +50,7 @@ export default function FundAgentPreparation({ api, contexts, canWrite, onDirty,
       setReceipt(undefined);
       const failure = cause as Error & { status?: number };
       setMissing(failure.status === 404);
-      setError(failure.message);
+      setError(failure.status === 404 ? "" : failure.message);
     } finally {
       if (alive.current) setBusy(false);
     }
@@ -102,6 +102,7 @@ export default function FundAgentPreparation({ api, contexts, canWrite, onDirty,
       {requestId && <p>原请求 <code title={requestId}>{requestId}</code>{" "}
         <button className="button" disabled={busy} onClick={() => void lookup()}>查回原准备</button></p>}
       {busy && <p role="status">正在核对基金准备记录…</p>}
+      {missing && !busy && !error && <p role="status">原编号尚未保存。填写已核对的交易日与需求后，按原编号保存。</p>}
       {error && <p role="alert">{error}</p>}
       {receipt && <div className="fund-preparation-receipt">
         <header><h4>基金口径已保存</h4><span>{executionLinked ? "已关联开发任务" : "待确认开发"}</span></header>
@@ -114,7 +115,9 @@ export default function FundAgentPreparation({ api, contexts, canWrite, onDirty,
         </div>
         <small>样例 T+1 {receipt.execution.rehearsalAt} · 口径摘要 <code title={receipt.basis.digest}>{receipt.basis.digest.slice(0, 12)}</code>
           {" · 独立断言 "}<code title={receipt.execution.assertionDigest}>{receipt.execution.assertionDigest.slice(0, 12)}</code></small>
-        <footer><p>{executionLinked ? "在下方查看对应任务、SQL 和校验。" : "保存口径未调用模型。确认后可调用模型并运行本机 Spark。"}</p>
+        <footer><p>{executionLinked ? "在下方查看对应任务、SQL 和校验。" :
+          receipt.scope==="PRIVATE_CLOUD_TEST" ? "确认后使用隔离 Spark 核验登记交易日的组合敞口。" :
+          "保存口径未调用模型。确认后可调用模型并运行本机 Spark。"}</p>
           {!executionLinked && <button className="button primary" disabled={!canWrite || busy || executionDisabled}
             onClick={() => onExecute(receipt)}>确认并生成、校验 SQL</button>}
           <button className="button" disabled={!canWrite || busy} onClick={() => {

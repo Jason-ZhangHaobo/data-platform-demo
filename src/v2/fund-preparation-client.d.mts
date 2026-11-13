@@ -1,6 +1,7 @@
 export type FundPreparationInput = { contextId: string; businessDate: string; message: string; metrics: string[] };
 type Client = { request: (path: string, options?: { method?: string; body?: unknown; idempotencyKey?: string }) => Promise<unknown> };
 export type FundPreparationReceipt = {
+  scope: "LOCAL_TEST_ONLY" | "PRIVATE_CLOUD_TEST";
   requestId: string; input: FundPreparationInput;
   basis: { contextId: string; contextName: string; definition: string; digest: string;
     parameters: { manager_id: string; trade_date: string }; grain: string; constraints: string[];

@@ -15,7 +15,7 @@ import { liveEvidenceProvenance, nonLiveModelLabel } from "./live-lifecycle-prov
 import { validStoredAgentDerivation } from "./agent-context-derivation.mjs";
 import { storedWorkerBatchResult, verifiedWorkerResultDigest } from "./worker-result-evidence.mjs";
 import { isFundContext } from "./fund-contexts.mjs";
-import { fundValidationMatches, verifiedFundRun } from "./fund-delivery.mjs";
+import { createFundTestSql, fundRunMatchesRegisteredResult, fundValidationMatches, verifiedFundRun } from "./fund-delivery.mjs";
 import { syncSqlColumnsMatch, syncSqlContractId, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
@@ -99,7 +99,12 @@ export function developmentVerificationReport(task, run, revision, syncContext) 
   const numericEqual = equalValidationNumber;
   const distribution=outputContractForContext(task.contextId);
   const fund = isFundContext(task.contextId);
-  const resultsMatch = task.syncInput ? Boolean(syncContext && run?.validation?.selectedPassed && syncSqlRowsMatch(rows, syncContext)) : fund ? verifiedFundRun(run, task.contextId) : distribution ? verifyOutputRows(rows,context) : rows.length === expected.length && expected.every(want => {
+  const fundCloud = fund && task.executionMode==="DURABLE_SQL_AGENT_V1";
+  const fundResult = fundCloud ? Boolean(task.fundPreparation) && run?.isolation==="FUNCTION_PROCESS" && run.engineVersion==="3.5.9" &&
+    run.testSqlValidation?.passed===true && run.testSqlValidation.sqlHash===hash(createFundTestSql(expected,task.contextId)) &&
+    isDeepStrictEqual(task.fundPreparation,revision?.fundPreparation) && isDeepStrictEqual(task.fundPreparation,run.fundPreparation) &&
+    fundRunMatchesRegisteredResult(run,task.contextId) : fund && verifiedFundRun(run,task.contextId);
+  const resultsMatch = task.syncInput ? Boolean(syncContext && run?.validation?.selectedPassed && syncSqlRowsMatch(rows, syncContext)) : fund ? fundResult : distribution ? verifyOutputRows(rows,context) : rows.length === expected.length && expected.every(want => {
     const matches = rows.filter(row => row.client_id === want.client_id);
     return matches.length === 1 && fields.every(field => numericEqual(matches[0][field], want[field]));
   });
@@ -122,7 +127,7 @@ export function developmentVerificationReport(task, run, revision, syncContext) 
     schema: "shuduo-development-verification/v1", taskId: task.id, revisionId: revision?.id,
     revisionHash: revision?.hash, runId: run?.id, contextId: task.contextId,
     status: passed ? "PASSED" : !run || ![...terminal, "VALIDATION_FAILED"].includes(run.status) ? "PENDING" : "NEEDS_ATTENTION",
-    summary: passed ? fund ? "基金 SQL 与登记交易日的独立结果核验通过，可生成同一版本的本机交付文件。" : distribution?"持仓分布的代码、真实执行、复合键与五场景核验通过；占比不含现金，可准备本机交付文件并独立演练。":legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
+    summary: passed ? fund ? (fundCloud ? "隔离 Spark 已通过登记交易日的基金结果与测试 SQL 核验。" : "基金 SQL 与登记交易日的独立结果核验通过，可生成同一版本的本机交付文件。") : distribution?"持仓分布的代码、真实执行、复合键与五场景核验通过；占比不含现金，可准备本机交付文件并独立演练。":legacy ? "当前证券业务口径下，代码版本、真实执行、结果和五场景核验均通过，可以准备交付。" : "股票持仓＋可用现金口径的代码、执行、结果和五场景核验均通过；结果不等于客户全资产。" : "尚未形成完整核验结论，请先查看未通过项。",
     definition: context?.definition, checks, rowCount: rows.length, engine: run?.engine, engineVersion: run?.engineVersion,
     validationDetails: fund || task.syncInput ? undefined : validationDetails(run, revision, task.contextId),
     finishedAt: run?.finishedAt, validationContractId: family?.id, validationFamily: family, completionScope: "KNOWN_SECURITIES_CONTRACT",

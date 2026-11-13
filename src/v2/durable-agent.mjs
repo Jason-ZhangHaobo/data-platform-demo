@@ -12,11 +12,23 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding} f
 import {resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import {liveEvidenceProvenance} from './live-lifecycle-provenance.mjs';
+import {isDeepStrictEqual} from "node:util";
+import {isFundContext} from "./fund-contexts.mjs";
+import {createFundTestSql} from "./fund-delivery.mjs";
+import {createFundPreparations} from "./fund-preparation.mjs";
 
 export const durableSqlAgentMode = "DURABLE_SQL_AGENT_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 const digest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const fail = (status, code, message) => Object.assign(new Error(message), { status, code });
+const fundPreparationChanged=()=>fail(409,"FUND_PREPARATION_SOURCE_CHANGED","原基金准备或登记交易日发生变化");
+function assertFundPreparation(task,store,project) {
+  const binding=task.fundPreparation;
+  if (!binding || task.executionMode!==durableSqlAgentMode ||
+      !isDeepStrictEqual(binding,createFundPreparations({store,project,scope:"PRIVATE_CLOUD_TEST"}).bindExecution(
+        {requestId:binding.requestId,basisDigest:binding.basisDigest,confirm:true},task.submittedBy,
+        {contextId:task.contextId,message:task.message,requestKey:binding.requestId}))) throw fundPreparationChanged();
+}
 
 function settledDevelopmentPatch(task,run,now) {
   const attempts=task.attempts.map((attempt,index)=>index===task.attempts.length-1 ? {...attempt,status:run.status} : attempt);
@@ -40,7 +52,7 @@ export async function settleAgentDevelopmentResult({id,key},{store,project,runne
       !run.agentTaskId || prepared?.resultKey!==key || prepared.job?.jobId!==id || prepared.job.projectId!==project) return;
   const task=store.get("agent",run.agentTaskId,project), revision=store.get("revision",run.revisionId,project);
   if (task?.executionMode!==durableSqlAgentMode || task.runId!==id || task.revisionId!==revision?.id ||
-      revision?.source!=="LIVE_MODEL" || revision.author!==task.submittedBy || revision.contextId!==task.contextId ||
+      revision?.source!==(task.fundPreparation ? task.mode : "LIVE_MODEL") || revision.author!==task.submittedBy || revision.contextId!==task.contextId ||
       run.contextId!==task.contextId || run.revisionHash!==revision.hash || typeof revision.sql!=="string" ||
       revision.sql!==task.sql || createHash("sha256").update(revision.sql).digest("hex")!==revision.hash ||
       task.attempts?.at(-1)?.runId!==id || task.attempts.at(-1).revisionId!==revision.id ||
@@ -52,6 +64,11 @@ export async function settleAgentDevelopmentResult({id,key},{store,project,runne
   if (task.stage!=="WAITING_FOR_RUN") return;
   const proof=liveEvidenceProvenance(task,revision,run);
   if (proof.synthetic || proof.nonNative || proof.unconfirmed) return;
+  if (isFundContext(task.contextId)) {
+    assertFundPreparation(task,store,project);
+    if (!isDeepStrictEqual(task.fundPreparation,revision.fundPreparation) ||
+        !isDeepStrictEqual(task.fundPreparation,run.fundPreparation)) throw fundPreparationChanged();
+  }
   const owner=store.get("auth_user",task.submittedBy,project);
   if (owner?.status!=="ACTIVE" || !owner.memberships?.some(member=>member.projectId===project &&
       ["ADMIN","ENGINEER"].includes(member.role))) return {state:"DEVELOPMENT_BATCH_OWNER_INACTIVE"};
@@ -142,12 +159,18 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     contextId:task.contextId,currentSql:task.initialSql??task.currentSql,binding});
   const continuationBasis=task=>resolveAssistedContinuation({store,project,actorId:task.submittedBy??task.actorId,binding:task.assistedContinuation,contextId:task.contextId,currentSql:task.initialSql??task.currentSql});
   const manualBasis=task=>resolveManualContinuation({store,project,actorId:task.submittedBy??task.actorId,binding:task.manualContinuation,contextId:task.contextId,currentSql:task.initialSql??task.currentSql});
-  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError, derivation, repairComparison, assistedContinuation, manualContinuation, clarification:clarificationRef, requestBound = false }) {
+  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError, derivation, repairComparison, assistedContinuation, manualContinuation, clarification:clarificationRef, requestBound = false, fundPreparation, mode="LIVE_MODEL" }) {
     assertExecutionScope(undefined);
     if (!getContext(contextId) || typeof message !== "string" || !message.trim() || message.length > 2000 ||
-        typeof currentSql !== "string" || !currentSql.trim() || currentSql.length > 20000 ||
-        typeof actorId !== "string" || !actorId || typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 100)
+        typeof currentSql !== "string" || (!fundPreparation && !currentSql.trim()) || currentSql.length > 20000 ||
+        typeof actorId !== "string" || !actorId || typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 100 ||
+        !["LIVE_MODEL","SYNTHETIC_MODEL"].includes(mode) || mode==="SYNTHETIC_MODEL" && !fundPreparation)
       throw fail(422, "DURABLE_AGENT_INPUT_INVALID", "持久任务输入不合法");
+    if (isFundContext(contextId)!==Boolean(fundPreparation) ||
+        fundPreparation && (!requestBound || fundPreparation.requestId!==idempotencyKey ||
+          [sourceRunId,sourceError,derivation,repairComparison,assistedContinuation,manualContinuation,clarificationRef].some(value=>value!==undefined)))
+      throw fundPreparationChanged();
+    if (fundPreparation) assertFundPreparation({fundPreparation,contextId,message,submittedBy:actorId,executionMode:durableSqlAgentMode},store,project);
     if(clarificationRef!==undefined&&[sourceRunId,sourceError,derivation,repairComparison,assistedContinuation,manualContinuation].some(v=>v!==undefined))throw fail(422,'CLARIFICATION_INPUT_CONFLICT','澄清答复不能混用修正、人工或口径派生来源');
     const clarification=clarificationRef===undefined?undefined:resolveSqlClarification({store,project,actorId,binding:clarificationRef,contextId,currentSql,answer:message});
     if(manualContinuation!==undefined&&[sourceRunId,sourceError,derivation,repairComparison,assistedContinuation].some(v=>v!==undefined))throw fail(422,'MANUAL_CONTINUATION_CONFLICT','手工成功版本续改不能混用其他来源');
@@ -167,21 +190,23 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     const continuation=assistedContinuation===undefined?undefined:continuationBasis({actorId,assistedContinuation,contextId,currentSql});
     const manual=manualContinuation===undefined?undefined:manualBasis({actorId,manualContinuation,contextId,currentSql});
     const family=validationFamily(contextId);
-    const signature = digest({ message, currentSql, contextId, ...(sourceRunId ? { sourceRunId, sourceError } : {}), ...(derivedFrom ? {derivation:derivedFrom} : {}),...(basis?{repairComparison:basis.binding}:{}),...(continuation?{assistedContinuation:continuation.binding}:{}),...(manual?{manualContinuation:manual.binding}:{}),...(clarification?{clarification:clarification.digest}:{}) });
+    const signature = digest({ message, currentSql, contextId, ...(fundPreparation ? {fundPreparation} : {}), ...(sourceRunId ? { sourceRunId, sourceError } : {}), ...(derivedFrom ? {derivation:derivedFrom} : {}),...(basis?{repairComparison:basis.binding}:{}),...(continuation?{assistedContinuation:continuation.binding}:{}),...(manual?{manualContinuation:manual.binding}:{}),...(clarification?{clarification:clarification.digest}:{}) });
     const result = store.deduplicate(`${project}:durable-agent:${actorId}:${idempotencyKey}`, signature, () =>
       store.create("agent", project, { message, sql: currentSql, initialSql: currentSql, sourceRunId, language: "SPARK_SQL", contextId,
         ...(requestBound ? {requestBound:true} : {}),
+        ...(fundPreparation ? {fundPreparation} : {}),
         ...(clarification?{clarification,...clarificationAttribution({clarification})}:derivedFrom?clarificationAttribution(store.get('agent',derivedFrom.taskId,project)):{}),
         ...(derivedFrom ? {derivedFrom} : {}),...(sourceRunId?explicitRepairAttribution(sourceRunId):{}),...(basis?{repairComparison:basis.binding,...basis.attribution}:{}),
         ...(continuation?{assistedContinuation:continuation.binding,...continuation.attribution}:{}),...(manual?{manualContinuation:manual.binding,...manual.attribution}:{}),
         submittedBy: actorId, status: "QUEUED", stage: "READY_FOR_MODEL", attempts: [], usedTokens: 0,
-        maxAttempts, tokenBudget, requestTokenLimit, executionMode: durableSqlAgentMode, mode: "LIVE_MODEL",
+        maxAttempts, tokenBudget, requestTokenLimit, executionMode: durableSqlAgentMode, mode,
         completionScope: "SQL_DEVELOPMENT", fullLifecycleE2E: false, validationContractId: family.id,
         durable: { contextDigest: contextDigest(contextId), ...(sourceError ? { validationError: sourceError } : {}) } }));
     await persist(); return publicDurableAgent(get(result.id));
   }
 
   async function generate(task) {
+    if (task.fundPreparation) assertFundPreparation(task,store,project);
     if(task.clarification){try{assertSqlClarificationTask(task,{store,project});}catch(cause){return finish(change(task,{code:'CLARIFICATION_SOURCE_CHANGED'}),'FAILED',cause.message);}}
     if(task.manualContinuation)manualBasis(task);
     if(task.assistedContinuation)continuationBasis(task);
@@ -221,10 +246,15 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
       const work = Promise.resolve().then(() => {
         if (controller.signal.aborted || now() >= Date.parse(task.durable.leaseExpiresAt) || !ownedLease(task.id, token)) throw new Error("Model step no longer owned");
         if(task.clarification){try{assertSqlClarificationTask(get(task.id),{store,project});}catch{throw Object.assign(Error('原澄清依据已变化；没有发送模型请求'),{clarificationSourceChanged:true});}}
+        if (task.fundPreparation) {
+          try { assertFundPreparation(get(task.id),store,project); }
+          catch { throw Object.assign(diagnosticFailure("FUND_PREPARATION_SOURCE_CHANGED","PREPARE"),{fundPreparationChanged:true}); }
+        }
         const previousRun = store.get("run", task.runId ?? "", project);
         const feedbackRun = previousRun?.agentTaskId===task.id && previousRun.revisionId===task.revisionId ? previousRun : explicitSource?.run;
         return generator({ message: task.message, context: getContext(task.contextId),
           ...(task.clarification?{clarification:task.clarification}:{}),
+          ...(task.fundPreparation?{fundBasisDigest:task.fundPreparation.basisDigest}:{}),
           currentSql: task.sql, error: task.durable.validationError,
           repairFeedback: feedbackRun ? buildSqlRepairFeedback(feedbackRun, task.contextId,{currentSql:task.sql}) : undefined,
           ...(!task.runId&&comparison?{repairComparison:comparison.summary}:{}),
@@ -235,10 +265,12 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     } catch (error) {
       if (ownedLease(task.id, token)) {
         const current=get(task.id),deadline=Date.parse(current.durable?.leaseExpiresAt);
-        if(error?.clarificationSourceChanged){
-          const saved=change(current,{attempts:replaceAttempt(current,{status:'CLARIFICATION_SOURCE_CHANGED',modelRequestSent:false,usageEstimated:true}),
-            durable:{...current.durable,leaseToken:undefined,leaseExpiresAt:undefined},code:'CLARIFICATION_SOURCE_CHANGED'});
-          return finish(saved,'FAILED','原澄清依据已变化；没有发送模型请求，原尝试与保留额度仍在。请回答当前问题后新建任务。');
+        if(error?.clarificationSourceChanged || error?.fundPreparationChanged){
+          const code=error.fundPreparationChanged ? "FUND_PREPARATION_SOURCE_CHANGED" : "CLARIFICATION_SOURCE_CHANGED";
+          const saved=change(current,{attempts:replaceAttempt(current,{status:code,modelRequestSent:false,usageEstimated:true}),
+            durable:{...current.durable,leaseToken:undefined,leaseExpiresAt:undefined},code});
+          return finish(saved,'FAILED',error.fundPreparationChanged ? "基金准备已变化，模型请求未发送。" :
+            '原澄清依据已变化；没有发送模型请求，原尝试与保留额度仍在。请回答当前问题后新建任务。');
         }
         const interrupted=controller.signal.aborted || !Number.isFinite(deadline) || now()>=deadline;
         const diagnostic=safeModelDiagnostic(interrupted
@@ -267,6 +299,10 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     if (spent > reserved || completedPatch.usedTokens > task.tokenBudget)
       return modelFailure("MODEL_BUDGET_EXCEEDED", "模型返回的用量超出本次预算，未提交计算任务");
     if(task.clarification){try{assertSqlClarificationTask(task,{store,project});}catch{return modelFailure('CLARIFICATION_SOURCE_CHANGED','原澄清依据在模型返回前发生变化；本次用量保留，未提交计算。');}}
+    if (task.fundPreparation) {
+      try { assertFundPreparation(task,store,project); }
+      catch { return modelFailure("FUND_PREPARATION_SOURCE_CHANGED","原基金依据在模型返回前发生变化；本次用量保留，未提交计算。"); }
+    }
     const requirements=sqlRequirementReport({task,message:task.message,context:getContext(task.contextId),generated,attempt:attempts.length});
     if(requirements&&requirements.status!=='MODEL_PROPOSED'){
       const code=requirements.status==='CLARIFICATION_REQUIRED'?'REQUIREMENT_CLARIFICATION_REQUIRED':'REQUIREMENT_EVIDENCE_INVALID';
@@ -311,7 +347,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     const linked = store.deduplicate(`${project}:durable-agent-revision:${task.id}:${attempts.length}`,
       digest(generated.sql), () => {
         const rev = store.create("revision", project, { sql: generated.sql.trim(), contextId: task.contextId,
-          source: "LIVE_MODEL", author: task.submittedBy, ...repairComparisonAttribution(task),...clarificationAttribution(task), hash: createHash("sha256").update(generated.sql.trim()).digest("hex") });
+          source: task.mode, author: task.submittedBy, ...(task.fundPreparation?{fundPreparation:task.fundPreparation}:{}), ...repairComparisonAttribution(task),...clarificationAttribution(task), hash: createHash("sha256").update(generated.sql.trim()).digest("hex") });
         if(requirements)store.update('revision',rev.id,project,{requirementBinding:sqlRequirementBinding(bindSqlRequirementRevision(requirements,rev))});
         change(task, { ...completedPatch, stage: "READY_FOR_RUN", sql: rev.sql, revisionId: rev.id,
           ...(requirements?{requirements:bindSqlRequirementRevision(requirements,rev)}:{}),
@@ -324,6 +360,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
   }
 
   async function runStep(task) {
+    if (task.fundPreparation) assertFundPreparation(task,store,project);
     if(task.clarification&&task.stage==='READY_FOR_RUN'){try{assertSqlClarificationTask(task,{store,project});}catch(cause){return finish(change(task,{code:'CLARIFICATION_SOURCE_CHANGED'}),'FAILED',cause.message);}}
     if(task.manualContinuation&&task.stage==='READY_FOR_RUN')manualBasis(task);
     if(task.assistedContinuation&&task.stage==='READY_FOR_RUN')continuationBasis(task);
@@ -338,8 +375,10 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
           assertRunBudget();
           const run = store.create("run", project, { status: "QUEUED", revisionId: rev.id,
             revisionHash: rev.hash, contextId: task.contextId, validationContractId: family.id,
-            agentTaskId: task.id,...repairComparisonAttribution(task),...clarificationAttribution(task), mode: "DURABLE_REMOTE_SUBMISSION", isolation: "FUNCTION_PROCESS", durationMs: 30000 });
-          const prepared = runner.prepare({ sql: rev.sql, context: getContext(task.contextId), validationContexts: family.contextIds.map(getContext) }, run.id);
+            agentTaskId: task.id,...(task.fundPreparation?{fundPreparation:task.fundPreparation}:{}),...repairComparisonAttribution(task),...clarificationAttribution(task), mode: "DURABLE_REMOTE_SUBMISSION", isolation: "FUNCTION_PROCESS", durationMs: 30000 });
+          const context=getContext(task.contextId);
+          const prepared = runner.prepare({ sql: rev.sql, context, validationContexts: family.contextIds.map(getContext),
+            ...(task.fundPreparation?{testSql:createFundTestSql(context.expected,context.id)}:{}) }, run.id);
           if (prepared?.job?.jobId !== run.id) throw new Error("持久运行标识不一致");
           store.update("run", run.id, project, { stage: "SUBMITTING", remoteSubmission: { prepared, submitted: false } });
           change(task, { stage: "WAITING_FOR_RUN", runId: run.id,
@@ -353,9 +392,17 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     if (!run || run.agentTaskId !== task.id) throw fail(409, "AGENT_RUN_LINK_INVALID", "运行批次关联不一致");
     // Reconcile reads an existing receipt before considering a resubmission.
     // This also recovers a completed job after its submission deadline elapsed.
-    const guarded=task.clarification?{prepare:(...a)=>runner.prepare(...a),read:(...a)=>runner.read(...a),cancel:(...a)=>runner.cancel(...a),submit:p=>{
-      assertSqlClarificationTask(get(task.id),{store,project});return runner.submit(p);
+    const guarded=task.clarification||task.fundPreparation?{read:(...a)=>runner.read(...a),submit:p=>{
+      const current=get(task.id);
+      if (task.clarification) assertSqlClarificationTask(current,{store,project});
+      if (task.fundPreparation) {
+        if (!isDeepStrictEqual(current.fundPreparation,task.fundPreparation) || !isDeepStrictEqual(run.fundPreparation,task.fundPreparation))
+          throw fundPreparationChanged();
+        assertFundPreparation(current,store,project);
+      }
+      return runner.submit(p);
     }}:runner;
+    if (task.fundPreparation && !isDeepStrictEqual(run.fundPreparation,task.fundPreparation)) throw fundPreparationChanged();
     try{run = await reconcileDurableDevelopment(run, { runner:guarded, store, project, persist, contextIds:family.contextIds, contractId:family.id });}
     catch(cause){if(!String(cause.code??'').startsWith('CLARIFICATION_'))throw cause;
       task=change(get(task.id),{status:'INTERRUPTED',stage:'CLARIFICATION_SOURCE_CHANGED',code:'CLARIFICATION_SOURCE_CHANGED',

@@ -2,6 +2,7 @@
 // existing CSRF, project, role, ownership, persistence or execution budgets.
 import { createHash } from "node:crypto";
 import { agentContextDerivationBody } from "./agent-context-derivation.mjs";
+import { fundExecutionRequest } from "./fund-preparation-request.mjs";
 
 const permissions = Object.freeze(['SESSION', 'AGENT', 'DEVELOPMENT', 'DELIVERY']);
 const authPaths = new Set(['/api/v2/auth/login', '/api/v2/auth/logout', '/api/v2/auth/password']);
@@ -9,6 +10,7 @@ const routes = [
   /^\/api\/v2\/delivery\/manual$/,
   /^\/api\/v2\/delivery\/manual\/[a-f0-9-]{36}\/(?:advance|cancel)$/,
   /^\/api\/v2\/(?:revisions|runs|agent\/tasks)$/,
+  /^\/api\/v2\/agent\/fund-preparations$/,
   /^\/api\/v2\/runs\/[a-f0-9-]{36}\/cancel$/,
   /^\/api\/v2\/runs\/[a-f0-9-]{36}\/prepare-delivery$/,
   /^\/api\/v2\/agent\/tasks\/[a-f0-9-]{36}\/(?:advance|cancel|prepare-delivery|background(?:\/cancel)?)$/,
@@ -70,9 +72,12 @@ export function assertDevelopmentTaskCreation(config, session, store, project, k
   if (language !== 'SPARK_SQL') throw fail('PUBLIC_DEVELOPMENT_SQL_ONLY', '本次开发窗口仅支持 Spark SQL。');
   if (config.requestDigest) {
     const fields=["message","sql","contextId"];
-    if (!uuid.test(key) || !body || !fields.every(name=>typeof body[name]==="string")) throw requestDenied();
+    if (!uuid.test(key) || !body) throw requestDenied();
     let frozen;
-    if (Object.keys(body).length===3) frozen={message:body.message,sql:body.sql,contextId:body.contextId};
+    if (body.fundPreparation!==undefined) {
+      try { frozen=fundExecutionRequest(body,key); } catch { throw requestDenied(); }
+    }
+    else if (Object.keys(body).length===3 && fields.every(name=>typeof body[name]==="string")) frozen={message:body.message,sql:body.sql,contextId:body.contextId};
     else if (Object.keys(body).length===5 && body.language==="SPARK_SQL" && body.derivation!==undefined) {
       try { frozen=agentContextDerivationBody(body); }
       catch { throw requestDenied(); }
