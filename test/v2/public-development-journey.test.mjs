@@ -179,7 +179,7 @@ test('first-case entry preflight optionally verifies the same-origin script from
 });
 
 async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredRequirement=false,stableOrigin=false,
-  queueTimeoutMs=180000,contextualModel=false,sqlForAttempt}={}) {
+  queueTimeoutMs=180000,contextualModel=false,sqlForAttempt,fundProviderFixture=false}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, cloudState, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
   let loseArtifactAcknowledgement=false, packageWrites=0;
@@ -232,7 +232,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
       return result;
     };
     const businessStore=new BusinessQueryStore(join(directory,'business.sqlite'));
-    app = createV2Server({ store, businessStore, root: directory, env, runner, agentWakeTransport, now: () => now, artifactStore, ingress: createFcIngress({ publicHttpEnabled: true, publicReadOnly: env.V2_FC_PUBLIC_READ_ONLY === 'true' }), generator: async input => {
+    const modelFixture=async input => {
       modelCalls++; if(modelFault)throw Error('synthetic model interrupted');
       const fund=fundRequirementScope(input.context.id), basis=fund && sqlRequirementBasis(input.message,input.context);
       if (fund) assert.equal(input.fundBasisDigest,basis.digest);
@@ -242,7 +242,17 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
       return { sql: sqlForAttempt?.(modelCalls,input) ?? (contextualModel?referenceSqlForContext(input.context.id):referenceSql), model: structuredRequirement?'qwen3-coder-plus':'synthetic-protocol-fixture',
         explanation: 'Local lifecycle fixture, not a real model', usage: { total_tokens: 12 },
         ...(structuredRequirement ? requirement : {}) };
-    } });
+    };
+    const sqlModelFetch=async (url,request)=>{
+      assert.ok(url.endsWith('/chat/completions'));
+      const prompt=JSON.parse(JSON.parse(request.body).messages[1].content);
+      const context=getContext(prompt.requirementBasis.contextId);
+      const generated=await modelFixture({context,message:prompt.request,fundBasisDigest:prompt.requirementBasis.digest});
+      return Response.json({choices:[{message:{content:JSON.stringify(generated)}}],usage:generated.usage});
+    };
+    app = createV2Server({ store, businessStore, root: directory, env, runner, agentWakeTransport, now: () => now, artifactStore,
+      ingress: createFcIngress({publicHttpEnabled:true,publicReadOnly:env.V2_FC_PUBLIC_READ_ONLY==='true'}),
+      ...(fundProviderFixture ? {sqlModelFetch} : {generator:modelFixture}) });
     app.auth.bootstrapAdmin({ email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026', displayName: '虚构开发者' });
     const port=stableOrigin && base ? Number(new URL(base).port) : 0;
     await new Promise(r => app.server.listen(port, '127.0.0.1', r)); base = `http://127.0.0.1:${app.server.address().port}/api/v2`;
@@ -2150,8 +2160,9 @@ test('an invited derived task progresses on original events after client disconn
   assert.equal(f.queueCounts().jobWriteAttempts,1);
 });
 
-test('invited fund pilot binds one original request, approved trade date and signed Spark output',async t=>{
-  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
+async function fundPilotJourney(t,{publication=false}={}) {
+  const modelMode=publication?'LIVE_MODEL':'SYNTHETIC_MODEL';
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true,fundProviderFixture:publication});
   const [otherId,contextId]=fundContextIds, context=getContext(contextId), other=getContext(otherId);
   const message='核对已登记交易日的组合敞口并保留未穿透余额', key=randomUUID();
   const basis=sqlRequirementBasis(message,context), binding=fundDeliveryBinding(contextId);
@@ -2180,7 +2191,7 @@ test('invited fund pilot binds one original request, approved trade date and sig
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
   const created=await f.call('/agent/tasks',request,key);
   assert.equal(created.status,202,created.body.message);
-  assert.equal(created.body.mode,'SYNTHETIC_MODEL');
+  assert.equal(created.body.mode,modelMode);
   assert.equal(created.body.fundPreparation.basisDigest,basis.digest);
   assert.equal((await f.call('/agent/tasks',request,key)).body.id,created.body.id);
   const path='/agent/tasks/'+created.body.id;
@@ -2255,7 +2266,7 @@ test('invited fund pilot binds one original request, approved trade date and sig
     runId:run.id,fundPreparation:done.body.fundPreparation,manual:false});
   assert.equal(Object.keys(pack.files).length,8);
   assert.equal(pack.manifest.source.runId,run.id);
-  assert.equal(pack.manifest.source.attribution.modelMode,'SYNTHETIC_MODEL');
+  assert.equal(pack.manifest.source.attribution.modelMode,modelMode);
   assert.equal(pack.manifest.source.fundDevelopment.testSqlDigest,sha256(pack.files['tests.sql']));
   assert.equal(pack.manifest.source.fundDevelopment.jobDigest,sha256(queued.serialized));
   assert.equal(pack.manifest.source.fundDevelopment.resultDigest,f.store.get('run',run.id,PROJECT).workerResultDigest);
@@ -2297,7 +2308,8 @@ test('invited fund pilot binds one original request, approved trade date and sig
   assert.equal(finalWorkflow.publication.available,false);
   assert.equal((await cli(['workflow','--id',created.body.id])).verification.id,pending.verificationId);
   assert.equal((await mcp('agent_development_workflow',{taskId:created.body.id})).package.digest,pack.digest);
-  assert.equal((await f.call(path+'/publication')).status,403);
+  assert.equal((await f.call(publicationPreflightPath(created.body.id,{
+    sourceKind:'AGENT',sourceRunId:run.id,packageDigest:pack.digest,verificationId:pending.verificationId}))).status,403);
   assert.equal((await f.call('/delivery/packages/'+pack.id)).status,200);
   t.diagnostic(`Same-date file rehearsal, ${rehearsalResult.rows.length} rows, ${rehearsalResult.durationMs} ms`);
 
@@ -2318,6 +2330,126 @@ test('invited fund pilot binds one original request, approved trade date and sig
   assert.equal((await f.call(path+'/workflow')).body.report.status,'PASSED');
   assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:2});
   assert.equal(f.store.list('release',PROJECT).length,0);
+
+  return {f,context,contextId,otherId,path,created:done.body,pack,run,verificationId:pending.verificationId,
+    fixtureResult,ownerViewHeaders:headers,workflowSelection:{taskId:done.body.id,contextId,
+      revisionId:done.body.revisionId,runId:run.id,fundPreparation:done.body.fundPreparation,manual:false}};
+}
+test('invited fund pilot binds one original request, approved trade date and signed Spark output',t=>fundPilotJourney(t));
+
+test('invited fund release binds one review to two signed batches and original monitoring',async t=>{
+  const {f,context,otherId,path,created,pack,run,verificationId,fixtureResult,ownerViewHeaders,workflowSelection}
+    =await fundPilotJourney(t,{publication:true});
+  const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_INVITED_FUND==='true';
+  const selector={sourceKind:'AGENT',sourceRunId:run.id,packageDigest:pack.digest,verificationId};
+  const preflightPath=publicationPreflightPath(created.id,selector), publication=path+'/publication';
+  const attestations={code:true,assertions:true,deliveryFiles:true,cloudScope:true}, key=randomUUID();
+  f.later(1000);
+  Object.assign(f.env,{V2_FC_PUBLIC_WRITE_SCOPE:'PUBLICATION_ONLY',
+    V2_PUBLIC_PUBLICATION_STARTS_AT:new Date(f.now()-1000).toISOString(),
+    V2_PUBLIC_PUBLICATION_EXPIRES_AT:new Date(f.now()+600000).toISOString(),
+    V2_PUBLIC_PUBLICATION_TASK_ID:created.id,V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST:pack.digest,
+    V2_PUBLIC_PUBLICATION_VERIFICATION_ID:verificationId,V2_PRIVATE_RELEASE_ENABLED:'true',
+    V2_PRIVATE_RELEASE_TRIGGER_NAMES:'shuduo-release-fictional-fund',V2_SCHEDULER_TICK_SECRET:'fictional-fund-authorization-1234567890'});
+  await f.restart();
+  assert.equal((await f.call(preflightPath)).status,403);
+  f.env.V2_INVITED_FUND_PUBLICATION='true';
+  await f.restart();
+  const workflow=await checkedAgentWorkflow((await f.call(path+'/workflow')).body,workflowSelection);
+  assert.equal(workflow.publication.available,true);
+  assert.equal((await f.call('/auth/session')).body.publicationSource.status,'RESOLVED');
+  assert.equal((await fetch(f.base+preflightPath,{headers:ownerViewHeaders})).status,403);
+  assert.equal((await f.call(publicationPreflightPath(created.id,{...selector,packageDigest:'e'.repeat(64)}))).status,403);
+  const saved=f.store.get('delivery_verification',verificationId,PROJECT);
+  f.store.update('delivery_verification',verificationId,PROJECT,{workerResultDigest:'e'.repeat(64)});
+  assert.equal((await f.call(preflightPath)).status,409);
+  f.store.update('delivery_verification',verificationId,PROJECT,{workerResultDigest:saved.workerResultDigest});
+  const preflight=await f.call(preflightPath);
+  assert.equal(preflight.status,200,preflight.body.message);
+  const checked=await checkedCloudPublicationPreflight(preflight.body,workflow);
+  assert.equal(checked.businessDate,context.businessDate);
+  assert.equal(preflight.body.basis.evidence.fund.rehearsal.resultDigest,saved.workerResultDigest);
+  const counts=f.counts(), queue=f.queueCounts();
+  assert.equal((await f.call(publication,{...selector,attestations},key)).status,422);
+  assert.equal((await f.call(publication,{...selector,attestations,reviewDigest:'0'.repeat(64)},key)).status,409);
+  assert.equal((await f.call(publication,{...selector,attestations:{...attestations,code:false},reviewDigest:checked.reviewDigest},key)).status,422);
+  assert.equal(f.store.list('release_approval',PROJECT).length,0);
+  const body={...selector,attestations,reviewDigest:checked.reviewDigest};
+  const accepted=await f.call(publication,body,key);
+  assert.equal(accepted.status,202,accepted.body.message);
+  assert.deepEqual((await f.call(publication,body,key)).body,accepted.body);
+  assert.deepEqual((await f.call(publicationRequestReceiptPath(created.id,key))).body,accepted.body);
+  assert.deepEqual(f.counts(),counts);
+  assert.deepEqual(f.queueCounts(),queue);
+  assert.equal(f.store.list('release_approval',PROJECT).length,1);
+  const releaseId=accepted.body.release.id, ids=accepted.body.runs.map(x=>x.id);
+  assert.deepEqual(accepted.body.runs.map(x=>x.status),['SCHEDULED','SCHEDULED']);
+  const timer=(index,forged=false)=>{
+    const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=(index?'d':'c').repeat(24);
+    const signed=JSON.stringify({releaseId,triggerName,expiresAt:f.now()+300000});
+    return {triggerName,triggerTime:new Date(f.now()).toISOString(),payload:JSON.stringify({
+      operation:'PRIVATE_RELEASE_TIMER_V1',timestamp,nonce,body:signed,
+      signature:forged?'bad':signSchedulerTick({sharedSecret:f.env.V2_SCHEDULER_TICK_SECRET,timestamp,nonce,body:signed}),
+    })};
+  };
+  assert.ok((await f.privateCall(timer(0,true))).status>=400);
+  assert.deepEqual(f.counts(),counts);
+  for (const [index,id] of ids.entries()) {
+    f.later(index ? 61000 : 1000);
+    const tick=timer(index);
+    if(index===0)f.lose();
+    const claimed=await f.privateCall(tick);
+    assert.equal(claimed.status,index===0?500:200,claimed.body.message);
+    const batch=f.store.get('release_run',id,PROJECT), prepared=batch.remoteSubmission.prepared, input=JSON.parse(prepared.job.body);
+    assert.equal(input.context.businessDate,context.businessDate);
+    assert.equal(input.sql,pack.files['main.sql']);
+    assert.equal(input.testSql,pack.files['tests.sql']);
+    assert.equal(batch.businessScheduledFor,checked.businessScheduledFor);
+    const event=f.resultEvent(prepared.resultKey);
+    if (index===0) {
+      f.complete(prepared,{...fixtureResult,inputEvidence:{...fixtureResult.inputEvidence,contextId:otherId}});
+      assert.equal((await f.privateCall(event)).status,409);
+      assert.equal(f.store.get('release_run',id,PROJECT).status,'RUNNING');
+      assert.equal(f.store.get('release_run',ids[1],PROJECT).status,'SCHEDULED');
+    }
+    const result=measure ? await runSpark(input,{...runtimeConfig({}),artifactRoot:f.directory,retainArtifacts:false}) : fixtureResult;
+    assert.equal(result.status,'SUCCEEDED');
+    t.diagnostic(`Fund signed release batch ${index+1}, Spark ${result.engineVersion}, ${result.rows.length} rows, ${result.durationMs} ms`);
+    if (index===1) {
+      f.env.V2_FC_PUBLIC_READ_ONLY='true';
+      f.later(600001);
+      await f.restartWithExpiredReadiness();
+    }
+    f.complete(prepared,result);
+    assert.equal((await f.privateCall(event)).body.state,'RELEASE_BATCH_SETTLED');
+    assert.equal((await f.privateCall(event)).body.state,'RELEASE_BATCH_ALREADY_SETTLED');
+  }
+  const receipt=await f.call(publicationRequestReceiptPath(created.id,key));
+  assert.equal(receipt.body.monitoring.status,'VERIFIED',receipt.body.message);
+  assert.deepEqual(receipt.body.monitoring.batches.map(b=>b.batchId),ids);
+  assert.equal(receipt.body.release.scope,'PRIVATE_CLOUD_TEST');
+  assert.equal((await f.call('/releases/'+releaseId)).body.monitoringEvidence.status,'VERIFIED');
+  const view=await f.call(publication+'?'+new URLSearchParams({...selector,releaseId}));
+  assert.equal(view.status,200,view.body.message);
+  assert.equal(view.body.readMode,'SAVED_HISTORY');
+  assert.ok(view.body.runs.every(record=>record.rows===undefined&&record.status==='SUCCEEDED'));
+  assert.equal((await fetch(f.base+'/releases/'+releaseId,{headers:ownerViewHeaders})).status,403);
+  assert.equal((await fetch(f.base+'/release/runs/'+ids[0],{headers:ownerViewHeaders})).status,403);
+  const opsTarget={taskId:created.id,releaseId,revisionId:created.revisionId,firstBatchId:ids[0],secondBatchId:ids[1],
+    source:{runId:run.id,packageDigest:pack.digest,verificationId,reviewDigest:checked.reviewDigest}};
+  const ops=await readOpsPublication(async route=>(await f.call(route)).body,opsTarget);
+  assert.equal(ops.monitoringVerified,true);
+  assert.ok(ops.batches.every(batch=>batch.serviceHref===undefined&&batch.reportSource===undefined));
+  const first=f.store.get('release_run',ids[0],PROJECT), second=f.store.get('release_run',ids[1],PROJECT);
+  f.store.update('release_run',ids[0],PROJECT,{workerResultDigest:second.workerResultDigest});
+  assert.equal((await f.call('/releases/'+releaseId)).body.monitoringEvidence.status,'UNCONFIRMED');
+  assert.equal((await f.call(publication+'?'+new URLSearchParams({...selector,releaseId}))).status,409);
+  f.store.update('release_run',ids[0],PROJECT,{workerResultDigest:first.workerResultDigest});
+  assert.equal((await f.call(path+'/workflow')).body.publication.available,false);
+  assert.equal((await f.call(publication,body,key)).status,403);
+  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:4});
+  assert.equal(f.queueCounts().jobWriteAttempts,4);
+  assert.equal(f.store.list('monitor_event',PROJECT).filter(e=>e.releaseId===releaseId&&e.type==='BATCH_SUCCEEDED').length,2);
 });
 
 test('expired Worker readiness settles original Agent development, then resumes repair under the original request',async t=>{

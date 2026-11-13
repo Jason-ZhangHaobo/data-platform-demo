@@ -54,6 +54,26 @@ export function storedFileRehearsalResult(store,project,task,verification) {
     `${project}:cloud-rehearsal-result:${verification.id}`);
 }
 
+export function storedFundFileRehearsal(store, project, delivery, verification, bundle, plan) {
+  const prepared = delivery?.remoteSubmission?.prepared;
+  const original = storedFileRehearsalResult(store,project,delivery,verification);
+  if (!plan.source.fundDevelopment || !original || !delivery.sourcePinned || !delivery.rehearsalPinned ||
+      verification.status !== "SUCCEEDED" || verification.actualExecution !== true ||
+      verification.mode !== "CLOUD_ISOLATED_FILE_REHEARSAL" || verification.isolation !== "FUNCTION_PROCESS" ||
+      verification.published !== false || verification.id === plan.source.runId ||
+      !fundRehearsalMatchesPlan(verification,plan,bundle.files["tests.sql"])) return;
+  try {
+    const occurrence = resolveDeliverySchedule(plan,verification.scheduledFor);
+    const job = JSON.parse(prepared.serialized), input = JSON.parse(job.body);
+    if (!occurrence.eligible || occurrence.businessDate !== plan.source.fundLookthrough.businessDate ||
+        !isDeepStrictEqual(occurrence,verification.occurrence) || !isDeepStrictEqual(job,prepared.job) ||
+        input.requestId !== verification.id || input.sql !== bundle.files["main.sql"] ||
+        input.testSql !== bundle.files["tests.sql"] || !isDeepStrictEqual(input.context,plan.fixtures.context) ||
+        !isDeepStrictEqual(input.validationContexts,plan.fixtures.validationContexts)) return;
+    return {jobDigest:hash(prepared.serialized),resultDigest:original.resultDigest};
+  } catch { return; }
+}
+
 // Read-only evidence selection. A skipped repair may display only the exact
 // earlier failed run it references; this is never a delivery/publication source.
 export function resolveEvidenceSource(agent, read) {

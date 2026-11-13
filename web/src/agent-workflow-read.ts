@@ -57,6 +57,13 @@ export async function checkedCloudPublicationPreflight(value:unknown, workflow:W
   !record(evidence.delivery)||evidence.delivery.packageId!==bundle.id||evidence.delivery.packageDigest!==bundle.digest||
   evidence.delivery.verificationId!==verification.id||!record(evidence.delivery.fileHashes)||
   canonical(value.package)!==canonical({digest:bundle.digest,manifest:bundle.manifest,files:bundle.files}))throw bad();
+ if(source.fundDevelopment!==undefined){
+  const fund=evidence.fund, lookthrough=source.fundLookthrough;
+  if(!record(fund)||!record(lookthrough)||fund.businessDate!==lookthrough.businessDate||fund.businessDate!==basis.businessDate||
+     fund.modelMode!=="LIVE_MODEL"||canonical(fund.development)!==canonical(source.fundDevelopment)||
+     !record(fund.rehearsal)||Object.keys(fund.rehearsal).length!==2||
+     !hash(fund.rehearsal.jobDigest)||!hash(fund.rehearsal.resultDigest))throw bad();
+ }else if(evidence.fund!==undefined)throw bad();
  const fileHashes=evidence.delivery.fileHashes, manifestFiles=bundle.manifest.files;
  if(Object.keys(fileHashes).length!==deliveryFileGuide.length||!deliveryFileGuide.every(({name})=>{
    const file=manifestFiles[name];return record(file)&&fileHashes[name]===file.sha256;
@@ -103,7 +110,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
  if(selection.manual?(r.sourceKind!=='MANUAL'||r.agentIndependentE2E!==false||r.runId!==selection.runId||r.revisionId!==selection.revisionId||p.scope!=='PRIVATE_CLOUD_TEST'||p.sourceKind!=='MANUAL'||p.sourceRunId!==selection.runId||p.agentIndependentE2E!==false):r.sourceKind==='MANUAL'||p.sourceKind==='MANUAL')throw bad();
  if(selection.assisted&&(!selection.manual||r.developmentReference===undefined))throw bad();
  const isolatedFund=Boolean(selection.fundPreparation&&p.scope==='PRIVATE_CLOUD_TEST');
- if(selection.fundPreparation&&(selection.manual||isolatedFund&&p.available))throw bad();
+ if(selection.fundPreparation&&selection.manual)throw bad();
  if(r.developmentReference!==undefined){if(!selection.manual)throw bad();checkedAssistedDevelopmentReference(r.developmentReference);}
  const frozen=selection.expectedSourceBinding;
  if(frozen&&(frozen.taskId!==r.taskId||frozen.revisionId!==r.revisionId||frozen.runId!==r.runId||(frozen.sourceKind==='MANUAL')!==selection.manual||

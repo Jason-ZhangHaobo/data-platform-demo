@@ -31,7 +31,7 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,as
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
-import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, storedFileRehearsalResult, pinnedCloudDeliverySource } from "./agent-development-workflow.mjs";
+import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, storedFundFileRehearsal, pinnedCloudDeliverySource } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import { exactPublicationReceipt, projectCloudReleaseBatchStage } from "./cloud-release-evidence.mjs";
 import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
@@ -77,7 +77,7 @@ import { fundRehearsalRecheckResult, readFundRehearsalRecheck } from "./fund-reh
 import { createFundPreparations, fundAgentRequestSignature } from "./fund-preparation.mjs";
 import { fundExecutionBody, parseFundExecutionPreflightPath } from "./fund-preparation-request.mjs";
 import { fundExecutionPreflight } from "./fund-execution-preflight.mjs";
-import { fundAgentAttributionKind, fundAgentDeliveryAttribution, fundDevelopmentBinding, fundRehearsalMatchesPlan, verifiedFundRun } from "./fund-delivery.mjs";
+import { fundAgentAttributionKind, fundAgentDeliveryAttribution, fundDevelopmentBinding, verifiedFundRun } from "./fund-delivery.mjs";
 import { fundAgentServiceSources, fundConsumptionSelection, resolveFundConsumptionSource } from "./fund-consumption-source.mjs";
 import { assertFundAgentMonitoring, assertFundBatch, assertFundConsent, assertFundRehearsal, assertFundRelease, fundAgentPublicationPreflight, fundSignedRehearsalDigest } from "./fund-publication.mjs";
 import { runSpark, runtimeConfig } from "./spark.mjs";
@@ -466,7 +466,7 @@ export function createV2Server(options = {}) {
     (async (input) => {
       budget.assertCanStartModel(input.modelBudgetReservation);
       const keyAtRequest = env.DASHSCOPE_API_KEY;
-      const result = await generateSql(input, env);
+      const result = await generateSql(input, env, options.sqlModelFetch);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
         modelVerifiedAt = new Date().toISOString();
       return result;
@@ -575,9 +575,14 @@ export function createV2Server(options = {}) {
   const settleSavedRehearsal=resultEventRunner
     ? createDurableAgentDelivery({store,project:PROJECT,runner:resultEventRunner,artifactStore,persist:persistDevelopment}).settleRehearsal
     : undefined;
+  const fundPublicationEnabled = env.V2_INVITED_FUND_PUBLICATION === "true";
+  const fundPublicationWindow = taskId => Boolean(fundPublicationEnabled && publicationAccess?.sourceKind === "AGENT_TASK" &&
+    publicationAccess.taskId === taskId && privatePublicationConfig);
   const cloudPublicationHistory = createCloudPublication({ store, project: PROJECT, runner: (publicationAccess ? rawRunner.durable : durableDevelopment) ?? resultEventRunner, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig && durableDelivery), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: durableDelivery ? Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) : 30, singleRelease: Boolean(publicationAccess),
     assertPublicationScope: target => assertPublicationTarget(publicationAccess, target, options.now?.() ?? Date.now()),
     assertExecutionScope: release => {
+      if (store.get("agent",release.sourceAgentTaskId ?? "",PROJECT)?.fundPreparation && !fundPublicationWindow(release.sourceAgentTaskId))
+        throw fail(403,"基金新批次须使用独立发布窗口");
       if (release.reviewDigest && (!publicationAccess || options.ingress?.status.publicReadOnly))
         throw Object.assign(fail(403,"当前只可结算已提交批次，启动新批次须在原发布窗口内"),{code:"PUBLIC_PUBLICATION_CLOSED"});
       assertPublicationExecutionWindow(publicationAccess, release, options.now?.() ?? Date.now());
@@ -1672,7 +1677,10 @@ export function createV2Server(options = {}) {
           if (!localClassicSpark)
             return Boolean(!local && source.fundDevelopment && source.attribution?.kind === fundAgentAttributionKind &&
               mayReadDurableAgent(store.get("agent",source.attribution.originAgentTaskId,PROJECT),auth.sessionFromHeaders(req.headers)) &&
-              ["delivery_package","delivery_verification"].includes(kind) && deliveryAccessForRequest().canRead(kind,item));
+              (["delivery_package","delivery_verification"].includes(kind) ||
+                ["release","release_run","monitor_alert","monitor_event"].includes(kind) &&
+                (release ?? (kind==="release" ? item : store.get("release",item.releaseId ?? "",PROJECT)))?.sourceAgentTaskId===source.attribution.originAgentTaskId) &&
+              deliveryAccessForRequest().canRead(kind,item));
           if (source.attribution?.kind === fundAgentAttributionKind) {
             const actorId = auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer";
             if (options.ingress || !isLoopbackRequest(req) || source.attribution.actorId !== actorId) return false;
@@ -1722,10 +1730,7 @@ export function createV2Server(options = {}) {
             if (attached && verification.status === "SUCCEEDED" && bundle.manifest?.source?.attribution?.kind === fundAgentAttributionKind) {
               if (bundle.manifest.source.fundDevelopment) {
                 const plan = validateDeliveryPackage(bundle,bundle.digest);
-                if (!fundRehearsalMatchesPlan(verification,plan,bundle.files["tests.sql"]) ||
-                    verification.occurrence?.businessDate !== plan.source.fundLookthrough.businessDate ||
-                    !storedFileRehearsalResult(store,PROJECT,delivery,verification) ||
-                    !isDeepStrictEqual(verification.occurrence,resolveDeliverySchedule(plan,verification.scheduledFor)))
+                if (!storedFundFileRehearsal(store,PROJECT,delivery,verification,bundle,plan))
                   throw fail(409,"基金隔离演练与原交付或签名回执不一致");
               } else assertFundRehearsal(bundle, verification);
             }
@@ -6197,6 +6202,10 @@ export function createV2Server(options = {}) {
         const fileReviewer=auth.sessionFromHeaders(req.headers)?.user.id??(local?'local-engineer':undefined);
         const fileReview=bundle&&(bundle.manifest.source.outputContract||agent.fundPreparation||agent.syncInput)&&verification
           ? localFileReviewFor(bundle, verification, fileReviewer) : undefined;
+        const fundPublicationAvailable = Boolean(bundle?.manifest.source.fundDevelopment && agent.mode==="LIVE_MODEL" && verification?.status==="SUCCEEDED" &&
+          fundPublicationWindow(agent.id) && publicationAccess.packageDigest===bundle.digest &&
+          publicationAccess.verificationId===verification.id &&
+          publicationSession(publicationAccess,scopeActor(),developmentNow())?.readOnly===false && !publicReadOnly);
         const preparationSource = !local && (!agent.fundPreparation || env.V2_INVITED_FUND_DEVELOPMENT==="true") && durableDelivery && agent.executionMode === durableSqlAgentMode && (agent.requestBound === true || agent.derivedFrom) &&
           agent.submittedBy === fileReviewer && report.status === "PASSED"
           ? pinnedCloudDeliverySource(agent,revision,run,(kind,id)=>store.get(kind,id,PROJECT)) : undefined;
@@ -6213,7 +6222,7 @@ export function createV2Server(options = {}) {
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt,
             ...(workerResult?{workerResult}:{}),
             ...(fundReview ? {fundReview} : {}) } : undefined,
-          publication: { available: agent.syncInput ? false : agent.fundPreparation ? localClassicSpark && releaseSchedulerMode === "LOCAL_TIMER" : (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: agent.syncInput ? "冻结持仓已接入本机文件演练与审阅。" : agent.fundPreparation ? (local ? "审阅文件后，确认同一冻结业务日的两批本机测试。发布后按原版本查看批次。" : "受邀基金试点可生成调度与部署文件并完成隔离演练，发布仍待独立验收。") : getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
+          publication: { available: agent.syncInput ? false : agent.fundPreparation ? (local ? localClassicSpark && releaseSchedulerMode === "LOCAL_TIMER" : fundPublicationAvailable) : (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: agent.syncInput ? "冻结持仓已接入本机文件演练与审阅。" : agent.fundPreparation ? (local ? "审阅文件后，确认同一冻结业务日的两批本机测试。发布后按原版本查看批次。" : (fundPublicationAvailable ? "审阅同一基金交付与签名演练后，可提交两个冻结业务日批次。" : "可核对原基金交付、演练与历史。提交发布需使用确切版本的独立发布窗口。")) : getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
       }
       const privatePublication = path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/publication(?:\/(cancel|history|preflight|requests\/([A-Za-z0-9_-]{1,100})))?$/);
@@ -6228,7 +6237,9 @@ export function createV2Server(options = {}) {
             throw fail(422, "请指定原 Agent 发布编号与确切包摘要");
           return json(res, 200, cloudPublicationHistory.savedDetail(agent.id, selector));
         }
-        if (!local && agent.fundPreparation) throw fail(403,"基金隔离演练尚未开放发布");
+        const isolatedFund = !local && Boolean(agent.fundPreparation);
+        if (isolatedFund && (method === "POST" || privatePublication[2] === "preflight") && !fundPublicationWindow(agent.id))
+          throw fail(403,"基金发布须使用确切版本的独立发布窗口");
         if (method === "POST") {
           if (url.search) throw fail(422, "发布写入仅接受正文中的确切来源，不接受查询参数");
           assertPublicationMutation(publicationAccess, auth.sessionFromHeaders(req.headers), method, path, options.now?.() ?? Date.now());
@@ -6249,6 +6260,10 @@ export function createV2Server(options = {}) {
             return json(res,200,read(agent.id,privatePublication[3],actorId));
           }
           if (!cloudPublication) throw fail(503,"确切云端发布预检尚未就绪");
+          if (isolatedFund && (publicReadOnly || publicationSession(publicationAccess,scopeActor(),developmentNow())?.readOnly!==false ||
+              url.searchParams.get("packageDigest")!==publicationAccess.packageDigest ||
+              url.searchParams.get("verificationId")!==publicationAccess.verificationId))
+            throw fail(403,"只可审阅本次开放的基金交付");
           const selector = validatePublicationSelector(publicationSelectorFromUrl(url),actorId);
           return json(res,200,await cloudPublication.publicationPreflight(agent.id,selector));
         }

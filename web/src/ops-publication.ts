@@ -83,7 +83,7 @@ type SavedRelease = {
   id?: string; sourceAgentTaskId?: string; sourceRevisionId?: string;
   sourceRunId?: string; scope?: string; sourceKind?: string; reviewDigest?: string;
   packageId?: string; packageDigest?: string; verificationId?:string; runCount?: number;
-  status?: string; health?: string;
+  status?: string; health?: string; fundBusinessDate?:string;
   failureEvidence?: {status?: unknown; batches?: unknown};
   monitoringEvidence?: {status?:unknown; batches?:unknown};
 };
@@ -142,8 +142,8 @@ export async function readOpsPublication(api: Reader, target: MonitorTarget) {
   const batches = [first, second].map((batch,index) => {
     const {id, sequence, status, schedulerTriggered} = batch;
     const pendingLabel = privateReleasePendingLabel(batch);
-    const serviceHref = monitoringVerified && source && id ? batchServiceHistoryHref({...target,source},id) : undefined;
-    const reportSource = monitoringVerified ? {
+    const serviceHref = monitoringVerified && !release.fundBusinessDate && source && id ? batchServiceHistoryHref({...target,source},id) : undefined;
+    const reportSource = monitoringVerified && !release.fundBusinessDate ? {
       kind:"AGENT" as const, taskId:target.taskId, releaseId:target.releaseId, revisionId:target.revisionId,
       runId:release.sourceRunId!, packageDigest:release.packageDigest!, batchId:id!,
     } : undefined;
