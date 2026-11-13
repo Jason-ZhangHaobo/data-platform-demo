@@ -251,12 +251,27 @@ export function remoteSparkConfigFromEnvironment(env = process.env) {
 export function createRemoteSparkRunner(env = process.env, fetchImpl = fetch) {
   if (env.V2_SPARK_EXECUTOR_TRANSPORT === "OSS_QUEUE") {
     const queue = queueConfigFromEnvironment(env),
-      client = new RemoteSparkQueueClient(queue, ossSparkQueueTransportFromEnvironment(env, fetchImpl)),
-      runner = (input) => client.execute(input);
+      client = new RemoteSparkQueueClient(queue, ossSparkQueueTransportFromEnvironment(env, fetchImpl));
+    let readiness;
+    const writeReady = () => readiness !== undefined && Date.now() <= readiness.expiresAt;
+    const assertWriteReady = () => {
+      if (!writeReady()) throw fail(503, "Spark Worker 就绪证据已失效；已保存结果仍可读取", "REMOTE_SPARK_NOT_READY");
+    };
+    const runner = async (input) => {
+      assertWriteReady();
+      return client.execute(input);
+    };
+    runner.assertWriteReady = assertWriteReady;
     runner.durable = {
-      prepare: (input, requestId) => client.prepare(input, requestId),
-      submit: (queued, options) => client.submitPrepared(queued, options),
-      read: (queued, options) => client.readPreparedResult(queued, options),
+      prepare: (input, requestId) => {
+        assertWriteReady();
+        return client.prepare(input, requestId);
+      },
+      submit: async (queued, options) => {
+        assertWriteReady();
+        return client.submitPrepared(queued, options);
+      },
+      read: (queued, options) => client.readPreparedResult(queued, writeReady() ? options : { cancelOnTimeout: false }),
       cancel: queued => client.cancelPrepared(queued),
     };
     runner.descriptor = {
@@ -264,16 +279,15 @@ export function createRemoteSparkRunner(env = process.env, fetchImpl = fetch) {
       isolation: "REMOTE_FUNCTION",
       transport: "PRIVATE_OSS_QUEUE",
       endpointConfigured: false,
-      healthVerified: false,
-      publicWriteEnabled: false,
+      get healthVerified() { return writeReady(); },
+      get publicWriteEnabled() { return writeReady(); },
+      get verifiedAt() { return readiness?.verifiedAt; },
     };
     runner.prepareVerification = async () => {
       const check = await client.prepareHealthCheck();
       return () => {
         const status = check();
-        runner.descriptor.healthVerified = true;
-        runner.descriptor.publicWriteEnabled = true;
-        runner.descriptor.verifiedAt = status.verifiedAt;
+        readiness = { verifiedAt: status.verifiedAt, expiresAt: Date.parse(status.verifiedAt) + queue.readyMaxAgeMs };
         return status;
       };
     };

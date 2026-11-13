@@ -14,6 +14,7 @@ import { createRequestLane } from "./request-lane.mjs";
 import { createAssetAnnotationRequests } from "./asset-annotation-requests.mjs";
 import { serveV2Static } from "./static-response.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
+import { modelFailure } from "./model-diagnostics.mjs";
 import { publicDevelopmentConfig, developmentRequestDigest, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow, assertDevelopmentTargetTask, developmentBackgroundBoundary, assertDevelopmentBackgroundScope } from "./public-development-access.mjs";
 import { publicPublicationConfig, publicationSession, assertPublicationMutation, assertPublicationTarget, assertPublicationExecutionWindow, assertPublicationResultTarget } from "./public-publication-access.mjs";
 import { publicServiceConfig, serviceSession, assertServiceMutation } from "./public-service-access.mjs";
@@ -380,12 +381,21 @@ export function createV2Server(options = {}) {
       return rawRunner(input);
     };
   runner.descriptor = runnerDescriptor;
+  const executionUnavailable = () => env.V2_EXECUTION_UNAVAILABLE === "true" ||
+    (typeof rawRunner.assertWriteReady === "function" && runnerDescriptor.healthVerified !== true);
   const publicationAccess = publicPublicationConfig(env);
   const serviceAccess = publicServiceConfig(env);
   const serviceAgentAccess=privateServiceAgentProfile(env);
   assertServiceAgentIngress(serviceAgentAccess,options.ingress);
   const developmentAccess = publicDevelopmentConfig(env);
   const developmentNow = () => options.now?.() ?? Date.now();
+  const developmentSessionFor = actor => developmentSession(
+    executionUnavailable() && developmentAccess ? { ...developmentAccess, executionAvailable: false } : developmentAccess,
+    actor, developmentNow(),
+  );
+  const currentPublicationAccess = () => executionUnavailable() && publicationAccess
+    ? { ...publicationAccess, executionAvailable: false } : publicationAccess;
+  const publicationSessionFor = actor => publicationSession(currentPublicationAccess(), actor, developmentNow());
   const assertTargetTask = task => {
     assertDevelopmentTargetTask(developmentAccess, task,store.get("auth_user",task?.submittedBy ?? "",PROJECT),PROJECT,developmentNow());
     if (!task?.fundPreparation || task.executionMode!==durableSqlAgentMode) return;
@@ -426,6 +436,7 @@ export function createV2Server(options = {}) {
     if (publicationAccess) throw Object.assign(fail(403, "本次仅允许审阅发布既有交付包，不启动模型或新的开发计算。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
     assertDevelopmentExecutionWindow(developmentAccess, options.now?.() ?? Date.now());
   };
+  const assertNewSpark = () => rawRunner.assertWriteReady?.();
   const fundPilotReady=Boolean(!local && privateSmokeEnabled && developmentAccess?.requestDigest && env.V2_INVITED_FUND_DEVELOPMENT==="true" &&
     env.V2_DURABLE_SQL_AGENT_ENABLED==="true" && rawRunner.durable && runnerDescriptor.transport==="PRIVATE_OSS_QUEUE" &&
     runnerDescriptor.healthVerified===true && runnerDescriptor.publicWriteEnabled===true);
@@ -473,6 +484,7 @@ export function createV2Server(options = {}) {
     });
   const generator = async input => {
     assertDevelopmentExecution();
+    if (executionUnavailable()) throw modelFailure("REMOTE_SPARK_NOT_READY", "PREPARE");
     if (developmentAccess?.taskId) assertTargetTask(store.get('agent', input?.modelBudgetReservation?.taskId ?? '', PROJECT));
     return rawGenerator(input);
   };
@@ -520,7 +532,8 @@ export function createV2Server(options = {}) {
   const durableAgent = env.V2_DURABLE_SQL_AGENT_ENABLED === "true"
     ? createDurableSqlAgent({ store, project: PROJECT, runner: durableDevelopment, generator,
       persist: persistDevelopment, getContext, contextIds, contractId: validationContractId, resolveValidationFamily:validationFamilyForContext,
-      assertModelBudget: () => budget.assertCanStartModel(), assertRunBudget: () => budget.assertCanStartRemoteSpark(),
+      assertModelBudget: () => { assertNewSpark(); budget.assertCanStartModel(); },
+      assertRunBudget: () => { assertNewSpark(); budget.assertCanStartRemoteSpark(); },
       assertExecutionScope: assertTargetTask,
       tokenBudget: Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000), now: options.now ?? Date.now })
     : undefined;
@@ -567,13 +580,18 @@ export function createV2Server(options = {}) {
   if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery&&!standalonePublicationReady)) throw new Error("私有发布须使用已启用的私有持久执行边界");
   const resultEventRunner=privateSmokeEnabled && options.resultEventConfig && options.readPendingSparkResult
     ? {read:options.readPendingSparkResult} : undefined;
+  const passiveRunner=resultEventRunner ?? (rawRunner.assertWriteReady && rawRunner.durable
+    ? { read:prepared=>rawRunner.durable.read(prepared,{cancelOnTimeout:false}) } : undefined);
   const assertSavedDevelopmentTarget=task=>{
-    if (developmentAccess?.taskId && task.id!==developmentAccess.taskId ||
-        developmentAccess?.requestDigest && developmentNow()<developmentAccess.expiresAt)
-      throw targetDenied();
+    if (developmentAccess?.taskId && task.id!==developmentAccess.taskId) throw targetDenied();
+    if (developmentAccess?.requestDigest && developmentNow()<developmentAccess.expiresAt) {
+      const grant=store.list("agent_background",PROJECT).find(item=>item.taskId===task.id && item.actorId===task.submittedBy);
+      const owner=store.get("auth_user",task.submittedBy,PROJECT);
+      assertDevelopmentBackgroundScope(developmentAccess,task,owner,PROJECT,grant?.developmentBoundary,developmentNow());
+    }
   };
-  const settleSavedRehearsal=resultEventRunner
-    ? createDurableAgentDelivery({store,project:PROJECT,runner:resultEventRunner,artifactStore,persist:persistDevelopment}).settleRehearsal
+  const settleSavedRehearsal=passiveRunner
+    ? createDurableAgentDelivery({store,project:PROJECT,runner:passiveRunner,artifactStore,persist:persistDevelopment}).settleRehearsal
     : undefined;
   const fundPublicationEnabled = env.V2_INVITED_FUND_PUBLICATION === "true";
   const fundPublicationWindow = taskId => Boolean(fundPublicationEnabled && publicationAccess?.sourceKind === "AGENT_TASK" &&
@@ -1806,14 +1824,14 @@ export function createV2Server(options = {}) {
       const startupActor = includeSession ? auth.sessionFromHeaders(req.headers) : undefined;
       const scopeActor = () => includeSession ? startupActor : auth.sessionFromHeaders(req.headers);
       const developmentSessionView = ingressChannel === "HTTP" && !publicReadOnly
-        ? serviceSession(serviceAccess, scopeActor(), options.now?.() ?? Date.now()) ?? publicationSession(publicationAccess, scopeActor(), options.now?.() ?? Date.now()) ?? developmentSession(developmentAccess, scopeActor(), options.now?.() ?? Date.now()) : undefined;
+        ? serviceSession(serviceAccess, scopeActor(), developmentNow()) ?? publicationSessionFor(scopeActor()) ?? developmentSessionFor(scopeActor()) : undefined;
       if (ingressChannel === "HTTP" && !publicReadOnly) {
         assertDevelopmentMutation(developmentAccess, scopeActor(), method, path, options.now?.() ?? Date.now());
       }
       // The rollout scope also constrains trusted internal application forwarding;
       // only the separately authenticated event envelope bypasses this API gate.
       if (!isPrivateSmokeInvoke)
-        assertPublicationMutation(publicationAccess, scopeActor(), method, path, options.now?.() ?? Date.now());
+        assertPublicationMutation(currentPublicationAccess(), scopeActor(), method, path, developmentNow());
       if (!isPrivateSmokeInvoke)
         assertServiceMutation(serviceAccess, scopeActor(), method, path, options.now?.() ?? Date.now());
       if(!isPrivateSmokeInvoke)assertServiceAgentMutation(serviceAgentAccess,scopeActor(),method,path);
@@ -1847,8 +1865,8 @@ export function createV2Server(options = {}) {
             if (settled) return json(res,200,{protocol:"shuduo-release-result-event/v1",...settled});
             // Degraded startup has only a passive receipt reader. A new
             // request-bound window cannot settle work from an earlier request.
-            if (settleSavedRehearsal && !publicationAccess) {
-              const development=await settleAgentDevelopmentResult(object,{store,project:PROJECT,runner:resultEventRunner,
+            if (settleSavedRehearsal && !publicationAccess && executionUnavailable()) {
+              const development=await settleAgentDevelopmentResult(object,{store,project:PROJECT,runner:passiveRunner,
                 persist:persistDevelopment,validationFamily:validationFamilyForContext,now:developmentNow,assertResultTarget:assertSavedDevelopmentTarget});
               if (development) return json(res,200,{protocol:"shuduo-agent-event-driver/v1",...development});
               const rehearsal=await settleSavedRehearsal(object,assertSavedDevelopmentTarget);
@@ -1862,26 +1880,28 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(403, "本次仅允许指定交付包发布、签名调度与状态读取；其他私有任务和验收操作未开放。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
         if(privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1") {
           const driver=serviceAgentEvents??agentEventDriver;
-          if (!driver) throw Object.assign(fail(503,"远程执行器尚未就绪；事件未推进"),{code:"REMOTE_SPARK_NOT_READY"});
+          if (!driver || !serviceAgentEvents && executionUnavailable()) throw Object.assign(fail(503,"远程执行器尚未就绪；事件未推进"),{code:"REMOTE_SPARK_NOT_READY"});
           return json(res,200,await driver.consume(privateInput.event));
         }
         if (privateInput.operation === "PRIVATE_RELEASE_TIMER_V1") {
           const release=store.get('release',privateInput.releaseId,PROJECT),publisher=release?.manualDeliveryTaskId?standaloneCloudPublication:cloudPublication;
-          if (!publisher || !privatePublicationConfig) throw fail(503,"私有发布调度未启用");
+          if (!publisher || !privatePublicationConfig || executionUnavailable()) throw fail(503,"私有发布调度未启用或执行器尚未就绪");
           return json(res,200,await publisher.tick(privateInput));
         }
-        if (privateInput.operation === "PRIVATE_AGENT_RECOVERY_V1")
+        if (privateInput.operation === "PRIVATE_AGENT_RECOVERY_V1") {
+          if (executionUnavailable()) throw Object.assign(fail(503,"远程执行器尚未就绪；恢复操作未推进"),{code:"REMOTE_SPARK_NOT_READY"});
           return json(res, 200, await privateAgentRecovery(privateInput, { store, project: PROJECT,
             engine: durableAgent, persist: persistDevelopment, bootId: privateRuntimeBootId }));
+        }
         if (privateInput.operation === "PRIVATE_AGENT_TICK_V1") {
           if(agentEventDriver)throw Object.assign(fail(403,"事件模式禁止无任务范围的后台轮询"),{code:"AGENT_UNSCOPED_TICK_DENIED"});
-          if (!agentDispatcher) throw Object.assign(fail(503, "Agent 后台推进尚未启用"), { code: "AGENT_DRIVER_DISABLED" });
+          if (!agentDispatcher || executionUnavailable()) throw Object.assign(fail(503, "Agent 后台推进尚未启用或执行器尚未就绪"), { code: "AGENT_DRIVER_DISABLED" });
           if (Object.keys(privateInput).some(k => !["operation", "requestId"].includes(k))) throw fail(422, "Agent 后台推进字段不受支持");
           return json(res, 200, await agentDispatcher.tick({ requestId: privateInput.requestId }));
         }
         if (privateInput.operation !== "PRIVATE_STATUS_V1") {
           const address = server.address(), base = `http://127.0.0.1:${address.port}`;
-          if (privateInput.operation==="PRIVATE_APPLICATION_TASK_V1" && env.V2_EXECUTION_UNAVAILABLE==="true")
+          if (privateInput.operation==="PRIVATE_APPLICATION_TASK_V1" && executionUnavailable())
             throw Object.assign(fail(503,"远程执行器尚未就绪，验收任务未创建"),{code:"REMOTE_SPARK_NOT_READY"});
           const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
             ? await verifyPrivateApplicationTask(privateInput, { base, store, project: PROJECT, internalHeaders: options.ingress?.internalHeaders })
@@ -1920,7 +1940,7 @@ export function createV2Server(options = {}) {
       const isSchedulerTick =
         method === "POST" && path === "/api/v2/internal/scheduler/tick";
       if (isSchedulerTick) {
-        if (releaseSchedulerMode !== "DURABLE_TICK" || !schedulerTickConfig)
+        if (releaseSchedulerMode !== "DURABLE_TICK" || !schedulerTickConfig || executionUnavailable())
           throw Object.assign(fail(503, "持久调度入口未配置"), {
             code: "DURABLE_SCHEDULER_NOT_CONFIGURED",
           });
@@ -1989,7 +2009,7 @@ export function createV2Server(options = {}) {
         )
           auth.requireMutation(req.headers, path);
       }
-      if (method === "POST" && env.V2_EXECUTION_UNAVAILABLE === "true" &&
+      if (method === "POST" && executionUnavailable() &&
           (budgetAgentCreationPaths.has(path)&&!(serviceAgentAccess&&path==='/api/v2/data-services/agent/plans') || path === "/api/v2/runs" || path === "/api/v2/python/runs" || path.startsWith("/api/v2/agent/")))
         throw Object.assign(fail(503, "远程执行器尚未就绪；已保存结果仍可读取"), { code: "REMOTE_SPARK_NOT_READY" });
       if (method === "POST" && budgetAgentCreationPaths.has(path)&&!(serviceAgentAccess&&path==='/api/v2/data-services/agent/plans'))
@@ -2000,8 +2020,8 @@ export function createV2Server(options = {}) {
         if(planningView)return {...body,...planningView};
         if (ingressChannel !== "HTTP") return body;
         const identity = {user: body.user, role: body.role}, now = options.now?.() ?? Date.now();
-        const constrained = {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSession(publicationAccess, identity, now) ?? developmentSession(developmentAccess, identity, now) ??
-          (env.V2_EXECUTION_UNAVAILABLE==="true" ? {permissions:["SESSION"],readOnly:true} : {}))};
+        const constrained = {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSessionFor(identity) ?? developmentSessionFor(identity) ??
+          (executionUnavailable() ? {permissions:["SESSION"],readOnly:true} : {}))};
         // The scope projection only exposes these identifiers to the selected
         // administrator. Anonymous/other accounts do not get source metadata.
         if (constrained.publicationOnly && constrained.publicationTaskId && body.user?.id) {
@@ -2037,7 +2057,7 @@ export function createV2Server(options = {}) {
         : {
             authenticated: false,
             ...(publicReadOnly ? { readOnly: true } : developmentSessionView ??
-              (env.V2_EXECUTION_UNAVAILABLE==="true" ? {readOnly:true} : {})),
+              (executionUnavailable() ? {readOnly:true} : {})),
             mode: local ? "LOCAL_DEVELOPMENT_BYPASS" : "INVITATION_SESSION",
           };
       if (path === "/api/v2/auth/session" && method === "GET")
@@ -2094,7 +2114,7 @@ export function createV2Server(options = {}) {
       }
       if (path === "/api/v2/status" && method === "GET") {
         const actor = local && !includeSession ? undefined : scopeActor();
-        const fundPilotAvailable=fundPilotReady && developmentSession(developmentAccess,actor,developmentNow())?.readOnly===false;
+        const fundPilotAvailable=fundPilotReady && developmentSessionFor(actor)?.readOnly===false;
         const canReadFundContexts=actor && (fundPilotAvailable || store.list("agent",PROJECT).some(task=>
           task.fundPreparation && task.executionMode===durableSqlAgentMode && task.submittedBy===actor.user.id));
         const mayReadAdminStatus = local || actor?.role === "ADMIN";
@@ -2150,7 +2170,8 @@ export function createV2Server(options = {}) {
             requestBindingSupported:Boolean(durableAgent),derivationBindingSupported:Boolean(durableAgent),
             ...(fundPilotAvailable ? {fundPilotAvailable:true} : {}),
             ...(canReadFundContexts ? {fundContexts:invitedFundContexts()} : {}),
-            eventBackgroundAvailable:Boolean(agentEventDriver), publishAvailable: Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER"), sqlMaxAttempts:3, sqlTokenBudget:Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) },
+            eventBackgroundAvailable:Boolean(agentEventDriver) && !executionUnavailable(),
+            publishAvailable: Boolean(privatePublicationConfig) && !executionUnavailable() || (local && releaseSchedulerMode === "LOCAL_TIMER"), sqlMaxAttempts:3, sqlTokenBudget:Number(env.V2_MODEL_TOKEN_BUDGET ?? 32000) },
           validationContract: {
             id: validationContractId,
             fixtureCount: contextIds.length,
@@ -6865,7 +6886,7 @@ export function createV2Server(options = {}) {
         const session=auth.sessionFromHeaders(req.headers);
         const onMachine=localClassicSpark && !options.ingress && isLoopbackRequest(req);
         if (!onMachine && (local || ingressChannel!=="HTTP" || !session || !["ADMIN","ENGINEER"].includes(session.role) ||
-            !fundPreparationRead && !fundPilotReady)) throw fail(403,"基金需求准备须使用获准的受邀开发窗口");
+            !fundPreparationRead && (!fundPilotReady || executionUnavailable()))) throw fail(403,"基金需求准备须使用获准的受邀开发窗口");
         const actor = session?.user.id ?? "local-engineer", preparations=onMachine?fundPreparations:cloudFundPreparations;
         if (fundPreparationRead) return json(res, 200, preparations.read(fundPreparationRead[1], actor));
         const key=req.headers["idempotency-key"];
