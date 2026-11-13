@@ -370,7 +370,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     await persist(); return publicDeliveryTask(task);
   }
 
-  async function settleRehearsal({id,key}) {
+  async function settleRehearsal({id,key}, assertResultTarget) {
     const verification=store.get("delivery_verification",id,project);
     const task=verification && store.get("agent_delivery_task",verification.agentDeliveryTaskId ?? "",project);
     const prepared=task?.remoteSubmission?.prepared;
@@ -382,6 +382,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       return;
     const agent=store.get("agent",task.sourceAgentTaskId,project);
     if (agent?.submittedBy!==task.submittedBy || typeof task.submittedBy!=="string") return;
+    assertResultTarget?.(agent);
     if (terminal.has(task.status)) return {state:"REHEARSAL_ALREADY_SETTLED"};
     if (task.status!=="RUNNING" || !["FILE_REHEARSAL_SUBMITTING","FILE_REHEARSAL_RUNNING"].includes(task.stage) ||
         verification.status!=="RUNNING") return;

@@ -543,7 +543,12 @@ export function createV2Server(options = {}) {
   if(privateDataServicesEnabled && !privateSmokeEnabled)throw new Error("私有数据服务只能在受保护的私有边界启用");
   const standalonePublicationReady=Boolean(rawRunner.durable&&env.V2_DURABLE_MANUAL_DELIVERY_ENABLED==='true'&&publicationAccess?.sourceKind==='MANUAL_DELIVERY');
   if (privatePublicationConfig && (!privateSmokeEnabled || !durableDelivery&&!standalonePublicationReady)) throw new Error("私有发布须使用已启用的私有持久执行边界");
-  const cloudPublicationHistory = createCloudPublication({ store, project: PROJECT, runner: publicationAccess ? rawRunner.durable : durableDevelopment, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig && durableDelivery), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: durableDelivery ? Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) : 30, singleRelease: Boolean(publicationAccess),
+  const resultEventRunner=privateSmokeEnabled && options.resultEventConfig && options.readPendingSparkResult
+    ? {read:options.readPendingSparkResult} : undefined;
+  const settleSavedRehearsal=resultEventRunner
+    ? createDurableAgentDelivery({store,project:PROJECT,runner:resultEventRunner,artifactStore,persist:persistDevelopment}).settleRehearsal
+    : undefined;
+  const cloudPublicationHistory = createCloudPublication({ store, project: PROJECT, runner: (publicationAccess ? rawRunner.durable : durableDevelopment) ?? resultEventRunner, artifactStore, persist: persistDevelopment, enabled: Boolean(privatePublicationConfig && durableDelivery), assertBudget: () => budget.assertCanStartRemoteSpark(), now: options.now ?? Date.now, reservationSeconds: durableDelivery ? Number(env.V2_REMOTE_SPARK_RESERVATION_SECONDS ?? 30) : 30, singleRelease: Boolean(publicationAccess),
     assertPublicationScope: target => assertPublicationTarget(publicationAccess, target, options.now?.() ?? Date.now()),
     assertExecutionScope: release => {
       if (release.reviewDigest && (!publicationAccess || options.ingress?.status.publicReadOnly))
@@ -564,6 +569,7 @@ export function createV2Server(options = {}) {
     ? createAgentDispatcher({ store, project: PROJECT, engine: durableAgent, persist: persistDevelopment, now: options.now ?? Date.now })
     : undefined;
   const agentEventConfig = agentEventConfigFromEnvironment(env);
+  const resultEventConfig=agentEventConfig ?? (resultEventRunner ? options.resultEventConfig : undefined);
   const agentWakeTransport = agentEventConfig ? options.agentWakeTransport ?? (()=>{
     const oss=ossConfigFromEnvironment(env);
     return createAgentWakeOssTransport({...oss,credentialsProvider:async()=>ossConfigFromEnvironment(env).credentials,
@@ -1522,7 +1528,7 @@ export function createV2Server(options = {}) {
   const readBody = async (req) => (await readJsonBody(req)).parsed;
   const readPrivateSmokeBody = async (req) => {
     const binaryPayload = String(req.headers["content-type"]).startsWith("application/octet-stream");
-    if (!binaryPayload && !((privatePublicationConfig || agentEventDriver || serviceAgentEvents) && String(req.headers["content-type"]).startsWith("application/json")))
+    if (!binaryPayload && !((privatePublicationConfig || resultEventConfig || serviceAgentEvents) && String(req.headers["content-type"]).startsWith("application/json")))
       throw fail(415, "私有函数验收仅接受二进制事件载荷");
     let body = "";
     for await (const chunk of req) {
@@ -1535,7 +1541,7 @@ export function createV2Server(options = {}) {
     } catch {
       throw fail(400, "私有函数验收载荷不是JSON");
     }
-    if ((agentEventDriver||serviceAgentEvents) && parsed && Array.isArray(parsed.events)) return {operation:"PRIVATE_AGENT_OBJECT_EVENT_V1",event:parsed};
+    if ((resultEventConfig||serviceAgentEvents) && parsed && Array.isArray(parsed.events)) return {operation:"PRIVATE_AGENT_OBJECT_EVENT_V1",event:parsed};
     if (parsed && typeof parsed === "object" && ("triggerName" in parsed || "payload" in parsed))
       return { operation: "PRIVATE_RELEASE_TIMER_V1", ...validatePrivateReleaseTimer(parsed, privatePublicationConfig, options.now?.() ?? Date.now()) };
     if (!binaryPayload) throw fail(415, "普通私有调用只接受二进制载荷");
@@ -1777,19 +1783,36 @@ export function createV2Server(options = {}) {
         if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
           throw Object.assign(fail(403, "本次仅开放既有发布结果的接口交付；计算与调度保持关闭。"), { code: "PUBLIC_SERVICE_SCOPE_DENIED" });
         if (ingressChannel==="EVENT" && privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1" &&
-            agentEventDriver && !developmentAccess && !serviceAgentAccess) {
+            resultEventConfig && !serviceAgentAccess) {
           let object;
-          try { object=parseAgentObjectEvent(privateInput.event,agentEventConfig); }
+          try { object=parseAgentObjectEvent(privateInput.event,resultEventConfig); }
           catch (error) { if (!publicationAccess) throw error; }
-          const settled=object?.kind==="RESULT" && await cloudPublication?.settleResultEvent(object,
-            release=>assertPublicationResultTarget(publicationAccess,release));
-          if (settled) return json(res,200,{protocol:"shuduo-release-result-event/v1",...settled});
+          if (object?.kind==="RESULT") {
+            const settled=!developmentAccess && await cloudPublicationHistory.settleResultEvent(object,
+              release=>assertPublicationResultTarget(publicationAccess,release));
+            if (settled) return json(res,200,{protocol:"shuduo-release-result-event/v1",...settled});
+            // Degraded startup has only a passive receipt reader. A new
+            // request-bound window cannot settle work from an earlier request.
+            if (settleSavedRehearsal && !publicationAccess) {
+              const rehearsal=await settleSavedRehearsal(object, task=>{
+                if (!developmentAccess) return;
+                if (developmentAccess.taskId && task.id!==developmentAccess.taskId ||
+                    developmentAccess.requestDigest && developmentNow()<developmentAccess.expiresAt)
+                  throw targetDenied();
+              });
+              if (rehearsal) return json(res,200,{protocol:"shuduo-agent-event-driver/v1",...rehearsal});
+            }
+          }
         }
         // This rollout permits only the reviewed publication. Legacy private
         // acceptance and Agent drivers can mutate records before API forwarding.
         if (publicationAccess && !["PRIVATE_STATUS_V1", "PRIVATE_RELEASE_TIMER_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
           throw Object.assign(fail(403, "本次仅允许指定交付包发布、签名调度与状态读取；其他私有任务和验收操作未开放。"), { code: "PUBLIC_PUBLICATION_SCOPE_DENIED" });
-        if(privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1")return json(res,200,await(serviceAgentEvents??agentEventDriver).consume(privateInput.event));
+        if(privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1") {
+          const driver=serviceAgentEvents??agentEventDriver;
+          if (!driver) throw Object.assign(fail(503,"远程执行器尚未就绪；事件未推进"),{code:"REMOTE_SPARK_NOT_READY"});
+          return json(res,200,await driver.consume(privateInput.event));
+        }
         if (privateInput.operation === "PRIVATE_RELEASE_TIMER_V1") {
           const release=store.get('release',privateInput.releaseId,PROJECT),publisher=release?.manualDeliveryTaskId?standaloneCloudPublication:cloudPublication;
           if (!publisher || !privatePublicationConfig) throw fail(503,"私有发布调度未启用");
@@ -1806,9 +1829,11 @@ export function createV2Server(options = {}) {
         }
         if (privateInput.operation !== "PRIVATE_STATUS_V1") {
           const address = server.address(), base = `http://127.0.0.1:${address.port}`;
+          if (privateInput.operation==="PRIVATE_APPLICATION_TASK_V1" && env.V2_EXECUTION_UNAVAILABLE==="true")
+            throw Object.assign(fail(503,"远程执行器尚未就绪，验收任务未创建"),{code:"REMOTE_SPARK_NOT_READY"});
           const result = privateInput.operation === "PRIVATE_APPLICATION_TASK_V1"
             ? await verifyPrivateApplicationTask(privateInput, { base, store, project: PROJECT, internalHeaders: options.ingress?.internalHeaders })
-            : await callPrivateApplication(privateInput, base, undefined, { internalHeaders: options.ingress?.internalHeaders, allowDurableAgent: Boolean(durableAgent), allowDurableAgentRead: privateDataServicesEnabled, allowDataServices: privateDataServicesEnabled,allowServiceAgent:Boolean(serviceAgentAccess),allowStandaloneManualPublication:env.V2_DURABLE_MANUAL_DELIVERY_ENABLED==='true' });
+            : await callPrivateApplication(privateInput, base, undefined, { internalHeaders: options.ingress?.internalHeaders, allowDurableAgent: Boolean(durableAgent), allowDurableAgentRead: privateDataServicesEnabled || Boolean(resultEventRunner), allowDataServices: privateDataServicesEnabled,allowServiceAgent:Boolean(serviceAgentAccess),allowStandaloneManualPublication:env.V2_DURABLE_MANUAL_DELIVERY_ENABLED==='true' });
           await persistence.flush?.();
           return json(res, 200, result);
         }
@@ -1923,7 +1948,8 @@ export function createV2Server(options = {}) {
         if(planningView)return {...body,...planningView};
         if (ingressChannel !== "HTTP") return body;
         const identity = {user: body.user, role: body.role}, now = options.now?.() ?? Date.now();
-        const constrained = {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSession(publicationAccess, identity, now) ?? developmentSession(developmentAccess, identity, now) ?? {})};
+        const constrained = {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSession(publicationAccess, identity, now) ?? developmentSession(developmentAccess, identity, now) ??
+          (env.V2_EXECUTION_UNAVAILABLE==="true" ? {permissions:["SESSION"],readOnly:true} : {}))};
         // The scope projection only exposes these identifiers to the selected
         // administrator. Anonymous/other accounts do not get source metadata.
         if (constrained.publicationOnly && constrained.publicationTaskId && body.user?.id) {
@@ -1958,7 +1984,8 @@ export function createV2Server(options = {}) {
           })
         : {
             authenticated: false,
-            ...(publicReadOnly ? { readOnly: true } : developmentSessionView ?? {}),
+            ...(publicReadOnly ? { readOnly: true } : developmentSessionView ??
+              (env.V2_EXECUTION_UNAVAILABLE==="true" ? {readOnly:true} : {})),
             mode: local ? "LOCAL_DEVELOPMENT_BYPASS" : "INVITATION_SESSION",
           };
       if (path === "/api/v2/auth/session" && method === "GET")
