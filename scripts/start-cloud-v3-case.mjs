@@ -28,7 +28,7 @@ import { validateConsumerPlan } from "./verify-service-consumer.mjs";
 import { cloudWindowApplicationBinding, cloudWindowCheckpointBinding, firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
 import { developmentRequestDigest } from "../src/v2/public-development-access.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
-import { cloudV3CompletionScope, cloudV3DerivationSource, cloudV3FailureReceipt, nextCloudV3Definition, readCloudV3Cases, validDownstreamFailure } from "./cloud-v3-run.mjs";
+import { cloudV3CompletionReceipt, cloudV3DerivationSource, cloudV3FailureReceipt, nextCloudV3Definition, readCloudV3Cases, validCloudV3ApprovalTiming, validDownstreamFailure } from "./cloud-v3-run.mjs";
 import { boundedBytes } from "./control-code-transport.mjs";
 import { inspectedControlEntryScript, WEB_ENTRY_SCRIPT_LIMIT, WEB_INDEX_LIMIT } from "./control-web-entry.mjs";
 
@@ -536,7 +536,8 @@ function bindOriginalDelivery(item, code, receipt) {
       !bindRehearsal(item,receipt))
     return;
   item.actions.delivery = {...action, id:receipt.id, status:"CONFIRMED",
-    packageId:receipt.packageId, packageDigest:receipt.packageDigest};
+    packageId:receipt.packageId, packageDigest:receipt.packageDigest,
+    ...(receipt.status==="CANCELLED" ? {cancelled:true} : {})};
   return {status:"CONFIRMED", id:receipt.id, packageId:receipt.packageId, packageDigest:receipt.packageDigest,
     ...(Number.isSafeInteger(receipt.version) && receipt.version > 0 ? {version:receipt.version} : {}),
     ...(receipt.stage === "PACKAGE_PERSISTING" ? {storagePending:true} : {}),
@@ -768,6 +769,9 @@ function bindPublication(item, receipt) {
       action.id && (action.id !== release.id || action.reviewId !== release.reviewId || action.approvalId !== release.approvalId ||
         !isDeepStrictEqual(action.batchIds,runs.map(run=>run.id))))
     return;
+  const {approvalTiming}=release;
+  if ((approvalTiming!==undefined && !validCloudV3ApprovalTiming(approvalTiming)) ||
+      (action.approvalTiming && !isDeepStrictEqual(action.approvalTiming,approvalTiming))) return;
   const monitoring=receipt.monitoring;
   let verified;
   if (monitoring?.status==="VERIFIED") {
@@ -790,7 +794,8 @@ function bindPublication(item, receipt) {
     ...(["PENDING","NEEDS_ATTENTION","UNCONFIRMED","VERIFIED"].includes(monitoring?.status)?{monitoringStatus:monitoring.status}:{}),
     ...(verified?{monitoring:verified}:{})};
   item.actions.publication = {...action,id:release.id,status:"CONFIRMED",reviewId:release.reviewId,
-    approvalId:release.approvalId,batchIds:saved.batchIds,...(verified?{monitoring:verified}:{})};
+    approvalId:release.approvalId,batchIds:saved.batchIds,...(verified?{monitoring:verified}:{}),
+    ...(approvalTiming ? {approvalTiming} : {}),...(release.status==="CANCELLED" ? {cancelled:true} : {})};
   return saved;
 }
 
@@ -988,25 +993,16 @@ export async function verifyCloudV3Completion(path,client,{firstPlanPath,secondP
         review.taskId!==item.taskId || review.packageDigest!==action.packageDigest ||
         review.verificationId!==action.verificationId || review.verificationId!==item.rehearsal.id)
       stop("原开发、八文件和演练核验未通过");
-    const proofs=[];
     for (const [index,batchId] of batches.batchIds.entries()) {
       const {proof}=await checkOriginalConsumerProof(client,consumptionSourceForBatch(item,batches,batchId),reports[index]);
       if (!proof || !isDeepStrictEqual(proof,item.consumption[batchId]))
         stop("原批次的消费报告或平台回执未通过重验");
-      proofs.push(proof);
     }
-    if (new Set(proofs.flatMap(proof=>[proof.dapiCallIdDigest,proof.xapiCallIdDigest])).size!==4)
-      stop("两个原批次不得共享消费调用回执");
     const current=readCheckpoint(path,{privateFile:true});
     if (current.text!==original.text) stop("重验期间原检查点已变化");
-    const scope=cloudV3CompletionScope(state,proofs);
-    const body={protocol:"shuduo-cloud-v3-completion/v1",scope,checkedAt:new Date().toISOString(),
-      checkpointDigest:sha256(original.text),evaluationRunId:state.evaluationRunId,caseSetDigest:state.caseSetDigest,
-      caseId:definition.id,requestDigest:item.requestDigest,taskId:item.taskId,revisionId:review.revisionId,
-      developmentRunId:review.developmentRunId,packageDigest:review.packageDigest,verificationId:review.verificationId,
-      releaseId:action.id,batchIds:batches.batchIds,consumptionDigest:sha256(JSON.stringify(proofs))};
-    const completionDigest=sha256(JSON.stringify(body));
-    writeCheckpoint(outFile,{...body,completionDigest},true);
+    const receipt=cloudV3CompletionReceipt(original,original.state.outcomes[0],new Date().toISOString());
+    const {scope,completionDigest}=receipt;
+    writeCheckpoint(outFile,receipt,true);
     return {...result(state,item,"COMPLETION_RECEIPT_SAVED"),scope,completionDigest,
       independentlyVerifiedCloudCase:scope==="INVITED_CLOUD_MATCHED",externalSystemVerified:false,agentIndependentE2E:false};
   },{reconcile:true});
@@ -1104,8 +1100,25 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
     const {unconfirmed,view,execution}=await readOriginalCloudExecution(selected,client);
     if (unconfirmed) return unconfirmed;
     const response = (status, reason) => result(state,item,status,reason);
+    if (item.developmentObservation?.provenance==="TEST_HARNESS")
+      return {...response("UNCONFIRMED","ORIGINAL_DEVELOPMENT_TEST_HARNESS"),execution};
     const code = verifiedDevelopmentCode(definition, view, execution);
-    if (!code) return {...response("EXECUTION_RECORDED", "DEVELOPMENT_RESULT_UNCONFIRMED"), execution};
+    if (!code) {
+      const {model,spark}=execution;
+      const stage=execution.evidence==="TEST_HARNESS" ? "DEVELOPMENT_PENDING"
+        : spark.resultStatus==="CANCELLED" ? "CANCELLED"
+        : ["OUTCOME_UNKNOWN","NOT_SENT"].includes(model.state) || spark.state==="RESULT_UNCONFIRMED" ||
+          spark.state==="SUBMISSION_UNCONFIRMED" ? "DEVELOPMENT_UNCONFIRMED"
+        : view.settledFailure ? "DEVELOPMENT_FAILURE_UNSETTLED" : "DEVELOPMENT_PENDING";
+      if (!item.code && (item.developmentObservation || stage!=="DEVELOPMENT_PENDING" || execution.evidence==="TEST_HARNESS")) {
+        const observation={stage,provenance:execution.evidence};
+        if (!isDeepStrictEqual(item.developmentObservation,observation)) {
+          item.developmentObservation=observation;
+          writeCheckpoint(path,state);
+        }
+      }
+      return {...response("EXECUTION_RECORDED", "DEVELOPMENT_RESULT_UNCONFIRMED"), execution};
+    }
     if (item.code && !isDeepStrictEqual(item.code,code))
       return response("UNCONFIRMED", "ORIGINAL_DEVELOPMENT_MISMATCH");
     const original = view.originalDelivery;
@@ -1117,6 +1130,7 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
 
     const before = JSON.stringify(item);
     item.code = code;
+    delete item.developmentObservation;
     if (item.phase === "CODE_AND_DEBUG") item.phase = "DELIVERY_PREPARATION";
     const adopting = workbench && !item.actions.delivery && id(requestId) &&
       (!original || (id(original.id) && requestId === original.requestId));

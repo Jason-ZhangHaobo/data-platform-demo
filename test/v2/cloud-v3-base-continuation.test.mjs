@@ -219,6 +219,11 @@ test("all twenty fixed V3 cases continue with distinct requests, checked parent 
   assert.equal(run.cases.filter(item=>item.status==="WAITING_FOR_SOURCE").length,0);
   assert.equal(run.cases[10].sourceCaseId,catalog[0].id);
   assert.equal(run.verifiedCloudCaseCount,0);
+  assert.equal(run.nextCaseId,null);
+  assert.equal(run.score.localOnlySuccesses,20);
+  assert.equal(run.score.pendingCloudCases,20);
+  assert.equal(run.score.cloudCoverage,0);
+  assert.equal(run.score.reviewedCloudCompletionRate,null);
   assert.deepEqual(readFileSync(firstPath),original);
   await prepare(file("beyond-base-cases"),1);
   write(recordsPath,[entries[1],entries[0],...entries.slice(2)]);
