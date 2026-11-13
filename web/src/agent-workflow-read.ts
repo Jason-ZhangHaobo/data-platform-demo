@@ -14,6 +14,7 @@ export type FundReviewBasis = {status:"READY";digest:string} | {status:"UNAVAILA
 export type FileReview={id:string;status:"REVIEWED";packageId:string;packageDigest:string;verificationId:string;reviewedAt:string;scope:"LOCAL_FILE_REVIEW";fundRehearsalDigest?:string};
 export type Workflow = {
  preparationSource?:PreparationSource;
+ eventDrivenRehearsal?:true;
  fileReview?:FileReview;
  report:{developmentReference?:AssistedDevelopmentReference;taskId:string;sourceKind?:string;agentIndependentE2E?:boolean;contextId?:string;validationContractId?:string;validationDetails?:ValidationDetailsReport;status:string;summary:string;definition?:string;checks:{id:string;label:string;passed:boolean}[];revisionId?:string;revisionHash?:string;runId?:string;rowCount:number;engine?:string;engineVersion?:string;notice:string};
  delivery?:Delivery;
@@ -127,6 +128,8 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    (d.sourcePinned||d.rehearsalPinned)&&(selection.manual||d.mode!=='DURABLE_AGENT_DELIVERY_V1'))throw bad();
  }
  if(record(d)&&!sameAssistedDevelopmentReference(d.developmentReference,r.developmentReference))throw bad();
+ if(value.eventDrivenRehearsal!==undefined&&(value.eventDrivenRehearsal!==true||selection.manual||
+   p.scope!=='PRIVATE_CLOUD_TEST'||!record(d)||d.sourcePinned!==true))throw bad();
  if(b!==undefined){
   if(!record(d)||!record(b)||!id(b.id)||!hash(b.digest)||d.packageId!==b.id||d.packageDigest!==b.digest||!record(b.manifest)||!record(b.files))throw bad();
   const manifest=b.manifest,source=manifest.source,names=deliveryFileGuide.map(f=>f.name).sort(),files=b.files,entries=manifest.files;

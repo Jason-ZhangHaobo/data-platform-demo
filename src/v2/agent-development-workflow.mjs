@@ -327,7 +327,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const task = get(dedup.id);
     return publicDeliveryTask(expected ? await persistDeliveryArtifact(task) : task);
   }
-  async function reconcile(id, {passive=false} = {}) {
+  async function reconcile(id, {passive=false, resultEvent=false} = {}) {
     let task = get(id);
     if (terminal.has(task.status) || !task.remoteSubmission) return publicDeliveryTask(task);
     const verificationId = task.verificationId, prepared = task.remoteSubmission.prepared;
@@ -338,7 +338,10 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     let receipt;
     try { receipt = await runner.read(prepared,passive ? {cancelOnTimeout:false} : undefined); }
     catch (error) { if (passive || error.code !== "REMOTE_SPARK_TIMEOUT") throw error; receipt = { status: "FAILED", error: "交付文件演练超时" }; }
-    if (!receipt) return publicDeliveryTask(task);
+    if (!receipt) {
+      if (resultEvent) throw fail(503,"原演练结果对象暂不可读取");
+      return publicDeliveryTask(task);
+    }
     task = get(id); if (terminal.has(task.status)) return publicDeliveryTask(task);
     if (passive && (task.verificationId !== verificationId || task.packageId !== item.id || task.packageDigest !== item.digest))
       throw fail(409,"演练批次或交付包已变化");
@@ -350,6 +353,8 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const workerResultDigest=!standaloneManual && (task.sourcePinned||task.rehearsalPinned) &&
       prepared?.job?.jobId===verification.id && prepared.job.projectId===project && storedFileRehearsal(task,verification)
       ? verifiedWorkerResultDigest(receipt) : undefined;
+    if (resultEvent && (!workerResultDigest || typeof prepared.serialized!=="string" ||
+        receipt.queueJobDigest!==hash(prepared.serialized))) return publicDeliveryTask(task);
     if (workerResultDigest && !(Number.isFinite(result.durationMs) && result.durationMs>0)) delete result.durationMs;
     const record = () => {
       const finishedAt=new Date().toISOString(), status=passed?"SUCCEEDED":"FAILED";
@@ -363,6 +368,31 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     else record();
     task=get(id);
     await persist(); return publicDeliveryTask(task);
+  }
+
+  async function settleRehearsal({id,key}) {
+    const verification=store.get("delivery_verification",id,project);
+    const task=verification && store.get("agent_delivery_task",verification.agentDeliveryTaskId ?? "",project);
+    const prepared=task?.remoteSubmission?.prepared;
+    if (standaloneManual || task?.mode!==durableDeliveryMode || task.sourcePinned!==true || task.rehearsalPinned!==true ||
+        (task.sourceKind!==undefined && task.sourceKind!=="AGENT") || task.verificationId!==id ||
+        prepared?.resultKey!==key || prepared.job?.jobId!==id || prepared.job.projectId!==project ||
+        !storedFileRehearsal(task,verification) ||
+        store.deduplicatedId(`${project}:delivery-rehearsal:${task.id}`,task.packageDigest)!==task.id)
+      return;
+    const agent=store.get("agent",task.sourceAgentTaskId,project);
+    if (agent?.submittedBy!==task.submittedBy || typeof task.submittedBy!=="string") return;
+    if (terminal.has(task.status)) return {state:"REHEARSAL_ALREADY_SETTLED"};
+    if (task.status!=="RUNNING" || !["FILE_REHEARSAL_SUBMITTING","FILE_REHEARSAL_RUNNING"].includes(task.stage) ||
+        verification.status!=="RUNNING") return;
+    const owner=store.get("auth_user",task.submittedBy,project);
+    if (owner?.status!=="ACTIVE" || !owner.memberships?.some(member=>member.projectId===project &&
+        ["ADMIN","ENGINEER"].includes(member.role))) return {state:"REHEARSAL_OWNER_INACTIVE"};
+    // The original POST has already reserved this exact job. A signed result
+    // can settle a lost submit acknowledgement, even after the write window.
+    // This path never calls advance, submit, cancel, or publication.
+    const settled=await reconcile(task.id,{passive:true,resultEvent:true});
+    return {state:terminal.has(settled.status) ? "REHEARSAL_SETTLED" : "REHEARSAL_RESULT_UNCONFIRMED"};
   }
   async function advance(id, expectedVersion, expectedRehearsal) {
     let task = get(id);
@@ -433,7 +463,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     if (task.remoteSubmission) await runner.cancel(task.remoteSubmission.prepared);
     return publicDeliveryTask(task);
   }
-  return { create, createManual, advance, reconcile, cancel, bundleFor };
+  return { create, createManual, advance, reconcile, settleRehearsal, cancel, bundleFor };
 }
 
 export function createStandaloneManualDelivery(options){

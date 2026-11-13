@@ -160,6 +160,8 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const working = busy || auto || codeBusy;
   const receiptPending = fund && delivery?.status === "INTERRUPTED" && delivery.stage === "FILE_REHEARSAL_UNCONFIRMED";
   const workerResult=current?workflow?.verification?.workerResult:undefined;
+  const awaitingRehearsalEvent=Boolean(workflow?.eventDrivenRehearsal && delivery?.verificationId &&
+    ["FILE_REHEARSAL_SUBMITTING","FILE_REHEARSAL_RUNNING"].includes(delivery.stage));
   const fileVerified = journey.fileVerified;
   const targetMatches = publicationTargetMatches(publicationTarget, { taskId, packageDigest: workflow?.package?.digest, verificationId: workflow?.verification?.id }, publicationClock)
     && (!publicationTarget || delivery?.verificationId === publicationTarget.verificationId);
@@ -200,20 +202,24 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   useEffect(()=>{setConsumption(undefined);setConsumptionError("");setConsumptionRead("LOADING");void readConsumption();return()=>{consumptionEpoch.current++;};},[serviceHandoffKey,cloud]);
   useEffect(() => { setReview(false); setConfirmed({});setFundPreflight(undefined);setCloudPreflight(undefined); }, [publicationKey,workflow?.package?.digest, workflow?.verification?.id, fileReview?.id, rehearsalDigest, dirty, current, publicationRead]);
   useEffect(() => { requestKey.current = crypto.randomUUID(); }, [taskId, revisionId, runId]);
-  async function drive(start: Delivery, snapshot = workflow) {
+  async function drive(start: Delivery, snapshot = workflow, reconcileOnce = false) {
     if (!canWrite || publicationTarget) return;
     if(preparationUnknown)return;
     const token = ++epoch.current; setAuto(true); setError(""); let item = start;
     try {
       for (let i = 0; i < 40 && alive.current && activeWorkflowSource.current===workflowSourceKey && token === epoch.current && !complete(item.status); i++) {
         const pinned = item.sourcePinned || item.rehearsalPinned;
-        const next = item.mode === "DURABLE_AGENT_DELIVERY_V1" ? await api<Delivery>(`/agent/deliveries/${item.id}/advance`, exactDeliveryAdvance(snapshot,item)) : await api<Delivery>(`/agent/deliveries/${item.id}`);
+        const waitingForEvent=snapshot?.eventDrivenRehearsal && item.verificationId &&
+          ["FILE_REHEARSAL_SUBMITTING","FILE_REHEARSAL_RUNNING"].includes(item.stage);
+        const next = waitingForEvent && !reconcileOnce ? item :
+          item.mode === "DURABLE_AGENT_DELIVERY_V1" ? await api<Delivery>(`/agent/deliveries/${item.id}/advance`, exactDeliveryAdvance(snapshot,item)) : await api<Delivery>(`/agent/deliveries/${item.id}`);
         if (!alive.current || activeWorkflowSource.current!==workflowSourceKey || token !== epoch.current) break;
         snapshot = await load();
         if (pinned) {
           if (snapshot?.delivery?.id !== item.id) throw Error("当前交付或批次已变化，请重新读取原记录。");
           item = snapshot.delivery;
         } else item = next;
+        if (reconcileOnce) break;
         if (!complete(item.status)) await new Promise(r => setTimeout(r, 5000));
       }
     } catch (e) { if (token === epoch.current) setError((e as Error).message + " 记录已保留，请刷新核对后继续同一交付。"); }
@@ -411,7 +417,11 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
               onClick={() => void load().catch(()=>{})}>重新读取原演练</button>}
             {receiptPending && <button className="button" disabled={!canWrite || !current || evidenceRead !== "READY" || working || !!publicationTarget}
               onClick={() => void recheckReceipt()}>核对原演练回执</button>}
-            {!complete(delivery.status) && <><button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown || workerResult==="PENDING"} onClick={() => void drive(delivery)}>继续交付准备</button><button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button></>}
+            {!complete(delivery.status) && <>{awaitingRehearsalEvent ? <>
+              <p role="status">已保留原演练批次。可以关闭页面，后台收到结果后会核验。</p>
+              <button className="button" disabled={busy} onClick={() => void load().catch(()=>{})}>刷新演练状态</button>
+              {canWrite && <button className="button" disabled={!verified || working || preparationUnknown} onClick={() => void drive(delivery,workflow,true)}>核对原演练结果</button>}
+            </> : <button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown || workerResult==="PENDING"} onClick={() => void drive(delivery)}>继续交付准备</button>}<button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button></>}
             {!fund && ["FAILED","CANCELLED"].includes(delivery.status) && <button className="button" disabled={!canWrite || !canPrepare || working || preparationUnknown || workerResult==="PENDING"} onClick={() => { if(preparationUnknown)return;requestKey.current=crypto.randomUUID(); void prepare(); }}>重新准备并演练</button>}
             {workflow.package && <button className="button" onClick={() => download("shuduo-delivery-package.json", workflow.package)}><Download size={14} />下载版本化交付包</button>}
           </div></>}
