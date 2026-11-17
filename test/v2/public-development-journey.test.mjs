@@ -43,6 +43,7 @@ import { cloudPublicationRequest } from '../../web/src/publication-selection.ts'
 import { privateReleasePendingLabel } from '../../src/v2/private-release-stage.mjs';
 import { serviceSourceFromLocation } from '../../web/src/service-source-binding.ts';
 import { serviceBatchFromLocation } from '../../web/src/service-batch-scope.ts';
+import { agentConsumptionLocation, agentConsumptionReceiptSelection, checkedAgentConsumptionReceipt } from '../../web/src/agent-consumption-view.ts';
 import { privateBatchReportPath } from '../../src/v2/private-batch-report-request.mjs';
 import { reportEvidenceDigest } from '../../src/v2/report-provenance-client.mjs';
 import { batchArchiveRoute, batchArchiveListPath, batchArchiveRequestPath, prepareBatchArchive, readBatchArchive, submitBatchArchive } from '../../src/v2/private-batch-archive-client.mjs';
@@ -1698,6 +1699,22 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal((await f.call(sourcesPath)).status,409);
   f.store.update('monitor_event',recordedEvent.id,PROJECT,{observedAt:recordedEvent.observedAt});
   assert.equal((await f.call('/data-services/dapis')).status,503);
+  if(withAgentEvidence){
+    const receipts=await Promise.all(consumed.map(({bound})=>f.call('/data-services/agent/consumption-jobs/'+bound.consumption.agent.requestId)));
+    const links=receipts.map(({status,body},index)=>{
+      assert.equal(status,200);
+      assert.equal(body.sourceBinding.sourceReleaseRunId,batchIds[index]);
+      const {sourceBinding,applicationId,dapiVersionId,xapiVersionId,requestId}=body;
+      const href=agentConsumptionLocation(origin+'/v2/?module=services',requestId,
+        {sourceBinding,applicationId,dapiVersionId,xapiVersionId}).href;
+      const verified=checkedAgentConsumptionReceipt(body,requestId,agentConsumptionReceiptSelection(href));
+      assert.equal(verified.state,'COMPLETED');
+      assert.equal(verified.calls.length,2);
+      return href;
+    });
+    assert.throws(()=>checkedAgentConsumptionReceipt(receipts[1].body,receipts[1].body.requestId,agentConsumptionReceiptSelection(links[0])),
+      {code:'AGENT_CONSUMPTION_SCOPE_MISMATCH'});
+  }
   const consumerToken=readFileSync(join(f.directory,'consumer-token-1'),'utf8');
   const closedQuery=await fetch(f.base+'/open/xapis/verified-assets-1',{headers:{authorization:'Bearer '+consumerToken}});
   assert.equal(closedQuery.status,503);

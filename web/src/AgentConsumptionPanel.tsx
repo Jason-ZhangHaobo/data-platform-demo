@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} from '../../src/v2/agent-consumption-request.mjs';
+import type {AgentConsumptionInput} from '../../src/v2/agent-consumption-request.mjs';
 import {agentConsumptionLocation,agentConsumptionRequestMarker,checkedAgentConsumptionReceipt} from './agent-consumption-view';
 import {applicationStatusText} from './service-consumption-scope';
 import type {agentConsumptionTarget} from './agent-consumption-view';
@@ -10,28 +11,31 @@ type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promi
 const messages={DELIVERY_UNKNOWN:'委托送达待确认。',QUEUED:'已提交后台委托，等待原接口回执。',
   RESULT_UNCONFIRMED:'部分结果尚待核对。',COMPLETED:'原 DAPI 与 XAPI 调用已核验。',FAILED:'原委托未通过业务断言。'};
 
-export default function AgentConsumptionPanel({api,target,canAct=false,applicationStatus}:{api:Api;target?:Target;canAct?:boolean;applicationStatus?:string}) {
+export default function AgentConsumptionPanel({api,target,readOnlySelection,canAct=false,applicationStatus}:
+  {api:Api;target?:Target;readOnlySelection?:AgentConsumptionInput;canAct?:boolean;applicationStatus?:string}) {
   const initial=useRef(agentConsumptionRequestMarker(location.href));
   const [requestId,setRequestId]=useState(initial.current);
   const [receipt,setReceipt]=useState<ReturnType<typeof checkedAgentConsumptionReceipt>>();
   const [confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const epoch=useRef(0),inFlight=useRef(false);
+  const selection=readOnlySelection??target?.input;
 
   function start(){const sequence=++epoch.current;inFlight.current=true;setBusy(true);setError('');return sequence;}
   function finish(sequence:number){if(sequence===epoch.current){inFlight.current=false;setBusy(false);}}
   async function read(key:string,sequence:number) {
     try {
-      const value=checkedAgentConsumptionReceipt(await api(agentConsumptionReceiptPath(key)),key,target?.input);
+      const value=checkedAgentConsumptionReceipt(await api(agentConsumptionReceiptPath(key)),key,selection);
       if(sequence===epoch.current)setReceipt(value);
     } catch(cause) {
       if(sequence!==epoch.current)return;
       setReceipt(undefined);
-      const {status}=(cause??{}) as {status?:number};
-      setError(status===401?'登录原受邀账号后可查询此回执。':status===404?'当前账号尚未查到该原委托。可按同一编号再次核对。':'暂时无法核对原回执，请重新读取。');
+      const {status,code}=(cause??{}) as {status?:number;code?:string};
+      setError(code==='AGENT_CONSUMPTION_SCOPE_MISMATCH'?'回执与所选发布批次、应用或接口版本不一致。':
+        status===401?'登录原受邀账号后可查询此回执。':status===404?'当前账号尚未查到该原委托。可按同一编号再次核对。':'暂时无法核对原回执，请重新读取。');
     } finally {finish(sequence);}
   }
   useEffect(()=>{
-    if(initial.current)void read(initial.current,start());
+    if(initial.current&&selection)void read(initial.current,start());
     return()=>{epoch.current++;inFlight.current=false;};
   },[]);
 
@@ -52,7 +56,7 @@ export default function AgentConsumptionPanel({api,target,canAct=false,applicati
     }finally{finish(sequence);}
   }
 
-  const source=receipt??target?.input;
+  const source=receipt??selection;
   return <section id="agent-consumption-receipt" className="agent-delivery-panel" aria-label="Agent 消费核验">
     <header><strong>{target?'Agent 消费核验':'Agent 消费回执'}</strong>{!target&&<small>只读</small>}</header>
     {source&&<dl className="delivery-review-source">
@@ -75,9 +79,9 @@ export default function AgentConsumptionPanel({api,target,canAct=false,applicati
         委托 Agent 消费
       </button></div>
     </>}
-    {typeof requestId==='string'&&<div className="agent-delivery-actions">
+    {typeof requestId==='string'&&selection&&<div className="agent-delivery-actions">
       <button className="button" type="button" disabled={busy} onClick={()=>{if(!inFlight.current)void read(requestId,start());}}>核对原委托</button>
-      {target&&<a className="button" href={agentConsumptionLocation(location.href,requestId,true).href}>打开只读回执</a>}
+      {target&&<a className="button" href={agentConsumptionLocation(location.href,requestId,target.input).href}>打开只读回执</a>}
     </div>}
   </section>;
 }

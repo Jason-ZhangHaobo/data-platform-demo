@@ -1,17 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {agentConsumptionLocation,agentConsumptionRequestMarker,agentConsumptionTarget,checkedAgentConsumptionReceipt} from '../../web/src/agent-consumption-view.ts';
+import {agentConsumptionLocation,agentConsumptionReceiptSelection,agentConsumptionRequestMarker,agentConsumptionTarget,checkedAgentConsumptionReceipt} from '../../web/src/agent-consumption-view.ts';
 
 const entry='https://fictional.example/v2/?module=services';
 
-test('the receipt deep link keeps the original request and rejects duplicate markers',()=>{
-  const id=randomUUID(),url=agentConsumptionLocation(entry,id,true);
+const consumptionSelection=()=>({sourceBinding:{taskId:randomUUID(),releaseId:randomUUID(),packageDigest:'a'.repeat(64),sourceReleaseRunId:randomUUID()},
+  applicationId:randomUUID(),dapiVersionId:randomUUID(),xapiVersionId:randomUUID()});
+
+test('the receipt deep link binds the original scope and rejects incomplete or duplicate selection',()=>{
+  const id=randomUUID(),scope=consumptionSelection(),url=agentConsumptionLocation(entry+'&unrelated=value',id,scope);
   assert.equal(agentConsumptionRequestMarker(url.href),id);
+  assert.deepEqual(agentConsumptionReceiptSelection(url.href),scope);
+  assert.equal(url.searchParams.has('unrelated'),false);
   assert.equal(url.hash,'#release-batch-consumption');
   assert.notEqual(url.search,agentConsumptionLocation(entry,id).search);
+  const omitted=new URL(url);
+  omitted.searchParams.delete('release_batch');
+  assert.equal(agentConsumptionReceiptSelection(omitted.href),null);
+  const doubled=new URL(url);
+  doubled.searchParams.append('release_batch',randomUUID());
+  assert.equal(agentConsumptionReceiptSelection(doubled.href),null);
   url.searchParams.append('agent_consumption_request',id);
   assert.equal(agentConsumptionRequestMarker(url.href),null);
+  assert.equal(agentConsumptionReceiptSelection(url.href),null);
 });
 
 test('the workbench offers only the two authorized versions for the exact original batch',()=>{
@@ -37,8 +49,7 @@ test('the workbench offers only the two authorized versions for the exact origin
 });
 
 test('receipt projection verifies request and versions and keeps untrusted fields out of the view',()=>{
-  const candidate={sourceBinding:{taskId:randomUUID(),releaseId:randomUUID(),packageDigest:'a'.repeat(64),sourceReleaseRunId:randomUUID()},
-    applicationId:randomUUID(),dapiVersionId:randomUUID(),xapiVersionId:randomUUID()};
+  const candidate=consumptionSelection();
   const requestId=randomUUID(),receipt={...candidate,requestId,wakeId:randomUUID(),protocol:'shuduo-agent-consumption-wake/v1',
     state:'COMPLETED',agentInitiated:true,externalSystemVerified:false,token:'fictional-must-not-display',calls:['DAPI','XAPI'].map((type,index)=>({
       type,versionId:index?candidate.xapiVersionId:candidate.dapiVersionId,serviceId:randomUUID(),callIdDigest:(index?'b':'c').repeat(64),
@@ -49,4 +60,8 @@ test('receipt projection verifies request and versions and keeps untrusted field
   assert.throws(()=>checkedAgentConsumptionReceipt(receipt,randomUUID()),/不一致/);
   assert.throws(()=>checkedAgentConsumptionReceipt(receipt,requestId,{...candidate,xapiVersionId:randomUUID()}),/不一致/);
   assert.throws(()=>checkedAgentConsumptionReceipt({...receipt,calls:receipt.calls.slice(0,1)},requestId),/不一致/);
+  const wrongBatch=agentConsumptionLocation(entry,requestId,candidate);
+  wrongBatch.searchParams.set('release_batch',randomUUID());
+  assert.throws(()=>checkedAgentConsumptionReceipt(receipt,requestId,agentConsumptionReceiptSelection(wrongBatch.href)),
+    {code:'AGENT_CONSUMPTION_SCOPE_MISMATCH'});
 });

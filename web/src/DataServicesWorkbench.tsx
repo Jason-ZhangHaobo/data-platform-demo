@@ -2,7 +2,7 @@ import {distributionMetadataById} from "../../src/v2/output-contract-metadata.mj
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 const ServiceContractGatesPanel=lazy(async()=>({default:(await import('./ServiceContractGatesPanel')).ServiceContractGatesPanel}));
 import { EvidenceDownload, requestTextDownload } from "./EvidenceDownload";
-import {agentConsumptionRequestParam,agentConsumptionTarget} from "./agent-consumption-view";
+import {agentConsumptionTarget} from "./agent-consumption-view";
 const AgentConsumptionPanel=lazy(()=>import('./AgentConsumptionPanel'));
 import { isFundContext } from "../../src/v2/fund-contexts.mjs";
 import { compositionChoices, fundContractId } from "./service-composition";
@@ -1281,7 +1281,7 @@ LIMIT :limit OFFSET :offset`}</pre>
             </div>
             )}
           {scopedApplications.filter(app=>consumptionScope||!selected||app.serviceIds.includes(selected.id)).map(app=><div key={app.id}><span>{app.name} · {applicationStatusText(serviceApplicationStatus(app,scopeClock))}{app.expiresAt&&<small>到期：{new Date(app.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}</small>}</span><button className="button" disabled={!canWrite||serviceApplicationStatus(app,scopeClock)!=="ACTIVE"||!!busy} onClick={async()=>{if(!canWrite||!scopedApplications.some(a=>a.id===app.id))return;setBusy("revoke");try{await api(`/data-services/applications/${app.id}/revoke`,{});for(const id of app.serviceIds)delete requestKeys.current["app:"+id];setIssuedToken("");await reload();setNotice("凭证已撤销，旧令牌不能继续调用");}catch(e){setError((e as Error).message);}finally{setBusy("");}}}>撤销凭证</button></div>)}
-          {privateCloud&&(agentTarget||new URLSearchParams(location.search).has(agentConsumptionRequestParam))&&
+          {privateCloud&&agentTarget&&
             <Suspense fallback={<p role="status">正在打开 Agent 消费核验…</p>}>
               <AgentConsumptionPanel key={scopeKey} api={api} target={agentTarget} applicationStatus={activeApplicationStatus}
                 canAct={canWrite&&!busy&&activeApplicationStatus==='ACTIVE'}/>

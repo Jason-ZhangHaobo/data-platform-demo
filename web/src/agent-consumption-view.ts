@@ -5,10 +5,12 @@ import {consumptionPlanAvailable,consumptionServices} from './service-consumptio
 import type {ConsumptionScope} from './service-consumption-scope.ts';
 
 export const agentConsumptionRequestParam = 'agent_consumption_request';
+const receiptMode = 'agent_consumption_view';
+const sourceFields = ['task','release','package','release_batch','application','dapi_version','xapi_version'] as const;
 const id=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 const digest=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const record=(value:unknown):value is Record<string,unknown>=>Boolean(value&&typeof value==='object'&&!Array.isArray(value));
-const bad=()=>Error('回执与原委托、应用或确切接口版本不一致。');
+const bad=()=>Object.assign(Error('回执与所选发布批次、应用或接口版本不一致。'),{code:'AGENT_CONSUMPTION_SCOPE_MISMATCH'});
 
 export function agentConsumptionRequestMarker(href:string):string|undefined|null {
   const values=new URL(href).searchParams.getAll(agentConsumptionRequestParam);
@@ -16,12 +18,35 @@ export function agentConsumptionRequestMarker(href:string):string|undefined|null
   return values.length===1&&id(values[0])?values[0]:null;
 }
 
-export function agentConsumptionLocation(href:string,requestId:string,historyView=false) {
+export function agentConsumptionLocation(href:string,requestId:string,selection?:AgentConsumptionInput) {
   agentConsumptionReceiptPath(requestId);
   const url=new URL(href);
   url.searchParams.set(agentConsumptionRequestParam,requestId);
-  if(historyView){url.searchParams.set('module','services');url.searchParams.set('agent_consumption_view','receipt');url.hash='release-batch-consumption';}
+  if(selection){
+    const {sourceBinding,applicationId,dapiVersionId,xapiVersionId}=readAgentConsumption(selection,requestId);
+    const values=[sourceBinding.taskId, sourceBinding.releaseId, sourceBinding.packageDigest, sourceBinding.sourceReleaseRunId,
+      applicationId,dapiVersionId,xapiVersionId];
+    const query=new URLSearchParams({module:'services',[receiptMode]:'receipt',[agentConsumptionRequestParam]:requestId});
+    sourceFields.forEach((field,index)=>query.set(field,values[index]));
+    url.search=query.toString();
+    url.hash='release-batch-consumption';
+  }
   return url;
+}
+
+export function agentConsumptionReceiptSelection(href:string) {
+  const url=new URL(href),query=url.searchParams;
+  if(!query.has(receiptMode))return undefined;
+  const requestId=agentConsumptionRequestMarker(href);
+  if(!requestId||url.pathname!=='/v2/'||url.hash!=='#release-batch-consumption'||query.get('module')!=='services'||
+    query.get(receiptMode)!=='receipt'||query.size!==sourceFields.length+3||
+    !['module',receiptMode,...sourceFields].every(field=>query.getAll(field).length===1))return null;
+  const [taskId,releaseId,packageDigest,sourceReleaseRunId,applicationId,dapiVersionId,xapiVersionId]=sourceFields.map(field=>query.get(field));
+  try {
+    return readAgentConsumption({sourceBinding:{taskId,releaseId,packageDigest,sourceReleaseRunId},applicationId,dapiVersionId,xapiVersionId},requestId);
+  } catch {
+    return null;
+  }
 }
 
 const states=['DELIVERY_UNKNOWN','QUEUED','RESULT_UNCONFIRMED','COMPLETED','FAILED'] as const;

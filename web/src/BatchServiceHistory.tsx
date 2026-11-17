@@ -3,6 +3,7 @@ import {batchServiceHistoryHref, batchServiceHistoryTarget, publicationBatchRepo
 import {checkedBatchConsumption} from "./agent-delivery-evidence-read";
 import {serviceEvidencePath,serviceHandoffLocation} from "./service-source-binding";
 import {applicationStatusText} from "./service-consumption-scope";
+import {agentConsumptionReceiptSelection} from "./agent-consumption-view";
 import "./agent-development.css";
 
 const AgentConsumptionPanel=lazy(()=>import('./AgentConsumptionPanel'));
@@ -11,7 +12,12 @@ type Reader = <T>(path:string)=>Promise<T>;
 
 type Props={api:Reader;workspaceAvailable:boolean};
 export default function BatchServiceHistory(props:Props){
-  return new URLSearchParams(location.search).get('agent_consumption_view')==='receipt'?<Suspense fallback={<p role="status">正在读取原委托…</p>}><AgentConsumptionPanel api={props.api}/></Suspense>:<ReleaseBatchHistory {...props}/>;
+  const selection=agentConsumptionReceiptSelection(location.href);
+  if(selection===undefined)return <ReleaseBatchHistory {...props}/>;
+  if(selection===null)return <p role="alert">原消费回执地址不完整，请从对应批次的接口工作区重新打开。</p>;
+  return <Suspense fallback={<p role="status">正在读取原委托…</p>}>
+    <AgentConsumptionPanel api={props.api} readOnlySelection={selection}/>
+  </Suspense>;
 }
 
 function ReleaseBatchHistory({api,workspaceAvailable}:Props) {
