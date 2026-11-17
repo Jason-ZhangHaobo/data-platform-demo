@@ -27,7 +27,8 @@ const same = (a, b) => isDeepStrictEqual(functionSnapshot(a), functionSnapshot(b
 export function validatePilotPackageTransport(plan, workflowPreStaged) {
   const preStaged = plan?.packageTransport === 'PRESTAGED_READ_ONLY_V1';
   check(plan && (plan.packageTransport === undefined || preStaged) &&
-    (!preStaged || plan.scope === 'INVITED_SERVICE_CONSUMPTION_PILOT_V1'), 'PILOT_PACKAGE_TRANSPORT_INVALID');
+    (!preStaged || plan.scope === serviceConsumptionScope ||
+      (plan.scope === readonlyCodeRefreshScope && plan.readonlyWeb)), 'PILOT_PACKAGE_TRANSPORT_INVALID');
   if (workflowPreStaged !== undefined) check(['true', 'false'].includes(workflowPreStaged) &&
     (workflowPreStaged === 'true') === preStaged, 'PILOT_PRESTAGED_INPUT_MISMATCH');
   if (!preStaged) {
@@ -181,6 +182,7 @@ const readonlyCodeModes = ['stage', 'rollback'];
 // A new, independently approved code refresh is not another development,
 // publication or service-consumption grant. It never opens a business window.
 export function validateReadonlyCodeRefreshPlan(plan) {
+  const preStaged = validatePilotPackageTransport(plan);
   const binding = plan?.readonlyCodeRefresh;
   const continuation = plan?.budgetFixContinuation;
   const taskContinuation = plan?.targetTaskCodeContinuation;
@@ -227,7 +229,8 @@ export function validateReadonlyCodeRefreshPlan(plan) {
   const keys = ['protocol', 'predecessorDigest', 'approvalDigest', 'historyUsageDigest',
     'previousSha256', 'candidateSha256', 'applicationSource', 'buildRunId', 'artifactId', ...(taskContinuation ? ['taskResumeDigest'] : []),
     ...(securityContinuation ? ['securityMaintenanceDigest'] : []), ...(reserveBound ? ['priorReserveCny'] : []),
-    ...(Object.hasOwn(plan ?? {},'readonlyWeb') ? ['webEvidenceDigest'] : [])];
+    ...(Object.hasOwn(plan ?? {},'readonlyWeb') ? ['webEvidenceDigest'] : []),
+    ...(preStaged ? ['preStagedObjectDigest'] : [])];
   check(plan?.scope === readonlyCodeRefreshScope && readonlyCodeModes.includes(plan.mode) &&
     plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === (continuation || taskContinuation ? 5 : 2) &&
     plan.monthlyCny === 200 && validReserve,
@@ -248,6 +251,7 @@ export function validateReadonlyCodeRefreshPlan(plan) {
     Object.keys(plan.historyUsage).length === publicationUsageKeys.length &&
     publicationUsageKeys.every(key => Number.isSafeInteger(plan.historyUsage[key]) && plan.historyUsage[key] >= 0) &&
     binding.historyUsageDigest === timerHash(plan.historyUsage), 'READONLY_CODE_CONTINUATION_INVALID');
+  if (preStaged) check(binding.preStagedObjectDigest === timerHash(plan.preStagedObject), 'READONLY_CODE_PRESTAGE_BINDING_INVALID');
   check(plan.priorUsage && publicationUsageKeys.every(key => Number.isSafeInteger(plan.priorUsage[key]) && plan.priorUsage[key] >= 0) &&
     ['triggerCreates', 'triggerDeletes', 'permissionProbes'].every(key => plan.priorUsage[key] === 0) &&
     plan.priorUsage.objectPuts <= 1 && plan.priorUsage.configWrites <= 2,
@@ -496,7 +500,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     spend(method === 'PUT' ? 'objectPuts' : 'objectGets');
     return io.object(pkg, method, bytes, query);
   };
-  const verifyObject = async (pkg, bytes) => {
+  const verifyObject = async (pkg, bytes, inspect) => {
     let response = await object(pkg);
     if (response.status === 404 && bytes) {
       await response.body?.cancel();
@@ -508,6 +512,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     check(raw.length === pkg.bytes && sha(raw) === pkg.sha256 && /^\d+$/.test(crc64 ?? '') && (!pkg.crc64 || pkg.crc64 === crc64), 'PACKAGE_BYTES_OR_CHECKSUM_INVALID');
     const acl = await object(pkg, 'GET', undefined, 'acl');
     check(acl.ok && /<Grant>(private|default)<\/Grant>/.test(await acl.text()), 'PACKAGE_PRIVACY_UNCONFIRMED');
+    if (inspect) inspect(raw);
     return { ...pkg, crc64 };
   };
   const packageBody = pkg => ({ ossBucketName: report.baseline.environmentVariables.OSS_BUCKET, ossObjectName: controlPackageObject(pkg.sha256), checksum: pkg.crc64 });
@@ -625,6 +630,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       check(plan.bucketPrivacy?.bucketHash === sha(before.environmentVariables.OSS_BUCKET) && plan.bucketPrivacy.aclPrivate === true && plan.bucketPrivacy.policyNotPublic === true && plan.bucketPrivacy.publicAccessBlocked === true &&
         Date.parse(plan.bucketPrivacy.checkedAt) <= now() && now() - Date.parse(plan.bucketPrivacy.checkedAt) < 3600000, 'PRIVATE_BUCKET_REQUIRED');
       let expectedScript;
+      const inspectCandidate = web ? bytes => { expectedScript = inspectedControlEntryScriptBytes(bytes, { ...plan.candidate, ...web }); } : undefined;
       if (!resume && !noTimers) await probeMissingTimerDeletion(); // No timer authority in service or code-only mode.
       await bill();
       for (const suffix of ['/concurrency', '/scaling-config']) {
@@ -632,12 +638,13 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
         check(suffix === '/concurrency' ? value.reservedConcurrency === 1 : value.minInstances === 0, 'EXISTING_CAPACITY_MISMATCH');
       }
       if (preStaged) {
-        report.previous = await verifyObject(plan.previous); report.candidate = await verifyObject(plan.candidate);
+        report.previous = await verifyObject(plan.previous);
+        report.candidate = await verifyObject(plan.candidate, undefined, inspectCandidate);
       } else if (resume) {
         report.previous = plan.previous; report.candidate = await verifyObject(plan.candidate);
       } else {
         const bytes = await io.readCandidate(); check(bytes.length === plan.candidate.bytes && sha(bytes) === plan.candidate.sha256, 'CANDIDATE_NOT_FROZEN');
-        if (web) expectedScript=inspectedControlEntryScriptBytes(bytes,{...plan.candidate,...web});
+        inspectCandidate?.(bytes);
         report.previous = await verifyObject(plan.previous); report.candidate = await verifyObject(plan.candidate, bytes);
       }
       save();
@@ -786,6 +793,8 @@ async function main(env = process.env) {
     const before = read(); report.initial = before;
     plan = openReadinessProof(env.V2_PILOT_PLAN, before.environmentVariables?.V2_SPARK_EXECUTOR_SECRET);
     const preStaged = validatePilotPackageTransport(plan, env.V2_PILOT_PRE_STAGED ?? 'false');
+    if (preStaged && plan.scope === readonlyCodeRefreshScope)
+      check(env.V2_PILOT_BUILD_RUN === plan.buildRunId && env.V2_PILOT_ARTIFACT_ID === plan.artifactId, 'ARTIFACT_BINDING_INVALID');
     const boundCase = cloudV3DevelopmentScope(plan.scope);
     const environmentOnly=boundCase || plan.scope===developmentRecoveryScope;
     check((environmentOnly || ['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) &&
