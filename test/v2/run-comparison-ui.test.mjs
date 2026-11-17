@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-function component(file) { let code = ts.transpileModule(readFileSync(file, 'utf8'), { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText; for (const m of [...code.matchAll(/from (["'])([^"']+)\1/g)]) {
+function component(file) { let code = ts.transpileModule(readFileSync(file, 'utf8'), { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText.replace(/^import ["'][^"']+\.css["'];$/gm, ''); for (const m of [...code.matchAll(/from (["'])([^"']+)\1/g)]) {
     const target = m[2].startsWith('.') ? resolve(dirname(file), m[2]) : undefined, url = target ? (m[2].endsWith('.mjs') ? pathToFileURL(target).href : component(target + '.tsx')) : import.meta.resolve(m[2]);
     code = code.replaceAll(m[0], `from ${JSON.stringify(url)}`);
 } return 'data:text/javascript;base64,' + Buffer.from(code).toString('base64'); }

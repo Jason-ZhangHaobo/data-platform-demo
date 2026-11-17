@@ -8,6 +8,7 @@ import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { getContext, referenceSql, contextIds } from "../../src/v2/context.mjs";
 import { identityPositionMapping } from "../../src/v2/ingestion.mjs";
 import { readSyncSqlInput, syncSqlOutputSchemaDetails } from "../../src/v2/sync-sql-input.mjs";
+import { checkedSqlRunComparison } from "../../src/v2/run-comparison-client.mjs";
 import { checkedSyncSqlOutputSchema, checkedSyncSqlRehearsalSchema, checkedSyncSqlScheduledSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import { runV2Cli } from "../../bin/shuduo.mjs";
 import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
@@ -226,6 +227,35 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(checked.syncOutputSchema.status,"MATCHED");
     assert.equal(checked.rows[0].total_assets, "2045.07");
     assert.deepEqual(checked.syncInput, run.syncInput);
+    const comparisonPath = "/runs/"+checked.id+"/comparison";
+    const candidatesPath = comparisonPath+"-candidates";
+    const failureComparison = comparisonPath+"?baseline_run_id="+failedDevelopment.id;
+    const candidates = (await request(candidatesPath)).value;
+    assert.equal(candidates.snapshotHash,run.syncInput.snapshotHash);
+    assert.ok(candidates.candidates.some(candidate=>candidate.runId===failedDevelopment.id));
+    const compared = (await request(failureComparison)).value;
+    assert.equal(compared.frozenInput.baseline.output.status,"MISMATCH");
+    assert.equal(compared.frozenInput.current.output.status,"MATCHED");
+    assert.equal(compared.frozenInput.baseline.selectedRows,"MATCHED");
+    assert.equal(compared.frozenInput.current.selectedRows,"MATCHED");
+    assert.equal(compared.frozenInput.syncRunId,first.run.id);
+    assert.equal(compared.frozenInput.metadataVersionId,first.metadata.id);
+    assert.equal(compared.readOnly,true);
+    assert.equal(compared.frozenInput.current.rows,undefined);
+    const compareArgs = {runId:checked.id,baselineRunId:failedDevelopment.id,snapshotHash:run.syncInput.snapshotHash};
+    assert.throws(()=>checkedSqlRunComparison({...compared,frozenInput:{...compared.frozenInput,
+      baseline:compared.frozenInput.current}},compareArgs),/原运行/);
+    const swapped = app.store.create("run",PROJECT,{...originalFailure,syncInput:{...originalFailure.syncInput,snapshotHash:"0".repeat(64)}});
+    assert.ok(!(await request(candidatesPath)).value.candidates.some(candidate=>candidate.runId===swapped.id));
+    assert.equal((await request(comparisonPath+"?baseline_run_id="+swapped.id)).value.code,"FROZEN_RUN_COMPARISON_SCOPE");
+    assert.equal((await request(comparisonPath+"?baseline_run_id="+checked.id)).status,409);
+    const cliCompare = [];
+    assert.equal(await runV2Cli(["sql","compare-runs","--run-id",checked.id,"--baseline-run-id",failedDevelopment.id],{},
+      {client:schemaClient,output:line=>cliCompare.push(line),error:()=>{}}),0);
+    assert.deepEqual(JSON.parse(cliCompare.join("")),compared);
+    const mcpCompare = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",
+      params:{name:"sql_run_compare",arguments:{runId:checked.id,baselineRunId:failedDevelopment.id}}},{client:schemaClient}));
+    assert.deepEqual(mcpCompare.result.structuredContent,compared);
     const syncContext = readSyncSqlInput({ store: app.store, project: PROJECT, actorId: revision.value.author, binding: run.syncInput });
     const exampleReceipt = { ...checked, mainSqlExecuted: true, testDouble: false, validation: {
       ...checked.validation, selectedPassed: true, regressions: contextIds.map(contextId => ({ contextId, passed: true })),
@@ -439,10 +469,14 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     app.store.create("auth_session", PROJECT, { userId:otherEngineer.id, tokenHash:sha256(otherCookie),
       status:"ACTIVE",expiresAt:new Date(clock+60000).toISOString() });
     const otherIdentity = { Cookie:"shuduo_session="+otherCookie };
-    for (const path of [schemaPath, "/runs/"+failedDevelopment.id]) {
+    for (const path of [schemaPath, "/runs/"+failedDevelopment.id, failureComparison, candidatesPath, "/revisions/"+revision.value.id]) {
       assert.equal((await request(path,undefined,undefined,otherIdentity)).status,403);
       assert.equal((await request(path,undefined,undefined,bearer)).status,403);
       assert.equal((await request(path,undefined,undefined,{Cookie:"shuduo_session=expired-fixture"})).status,403);
+    }
+    for (const headers of [otherIdentity,bearer,{Cookie:"shuduo_session=expired-fixture"}]) {
+      assert.ok(!(await request("/runs",undefined,undefined,headers)).value.some(item=>item.id===checked.id));
+      assert.ok(!(await request("/revisions",undefined,undefined,headers)).value.some(item=>item.id===revision.value.id));
     }
     assert.equal((await request(failedRehearsalPath, undefined, undefined, otherIdentity)).status, 403);
     assert.deepEqual((await request("/data-services/sources", undefined, undefined, otherIdentity)).value, []);

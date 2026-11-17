@@ -571,10 +571,11 @@ export function createV2Server(options = {}) {
     const session = auth.sessionFromHeaders(req.headers);
     if (item?.syncInput) {
       requireSyncSqlLocal(req);
-      if (kind === "run" && req.method === "GET") {
+      if ((kind === "run" || kind === "revision") && req.method === "GET") {
         const actor = workspaceReadActor(req);
-        if (!actor || actor !== store.get("revision", item.revisionId, PROJECT)?.author)
-          throw Object.assign(fail(403, "无权读取此冻结运行"), { code: "DEVELOPMENT_ACCESS_DENIED" });
+        const revision = kind === "revision" ? item : store.get("revision", item.revisionId, PROJECT);
+        if (!actor || actor !== revision?.author)
+          throw Object.assign(fail(403, "无权读取此冻结开发记录"), { code: "DEVELOPMENT_ACCESS_DENIED" });
       }
     }
     if (!(kind === "revision" || kind === "python_revision" ? mayReadRevision(item, session) : mayReadRun(item, session, kind === "python_run" ? "python_revision" : "revision")))
@@ -4032,10 +4033,17 @@ export function createV2Server(options = {}) {
         });
         return json(res, 200, configured);
       }
-      if (path === "/api/v2/revisions" && method === "GET")
-        return json(res, 200, store.list("revision", PROJECT).filter(item => mayReadRevision(item, auth.sessionFromHeaders(req.headers))));
-      if (path === "/api/v2/runs" && method === "GET")
-        return json(res, 200, await Promise.all(store.list("run", PROJECT).filter(item => mayReadRun(item, auth.sessionFromHeaders(req.headers))).map(async run => exposeDevelopmentRun(await reconcileDevelopment(run)))));
+      if (path === "/api/v2/revisions" && method === "GET") {
+        const session = auth.sessionFromHeaders(req.headers), actor = workspaceReadActor(req);
+        return json(res, 200, store.list("revision", PROJECT).filter(item =>
+          mayReadRevision(item, session) && (!item.syncInput || Boolean(actor && actor === item.author))));
+      }
+      if (path === "/api/v2/runs" && method === "GET") {
+        const session = auth.sessionFromHeaders(req.headers), actor = workspaceReadActor(req);
+        const readable = store.list("run", PROJECT).filter(item => mayReadRun(item, session) &&
+          (!item.syncInput || Boolean(actor && actor === store.get("revision", item.revisionId, PROJECT)?.author)));
+        return json(res, 200, await Promise.all(readable.map(async run => exposeDevelopmentRun(await reconcileDevelopment(run)))));
+      }
       if (path === "/api/v2/python/revisions" && method === "GET")
         return json(res, 200, store.list("python_revision", PROJECT).filter(item => mayReadRevision(item, auth.sessionFromHeaders(req.headers))));
       if (path === "/api/v2/python/revisions" && method === "POST") {
@@ -6860,8 +6868,26 @@ export function createV2Server(options = {}) {
         const current=get('run',comparisonRead[1]);requireDevelopmentOwner('run',current,req);
         if(comparisonRead[2]==='comparison-candidates'){
           if(url.searchParams.size)throw fail(422,'运行候选读取不接受其他参数');
-          const revision=get('revision',current.revisionId),session=auth.sessionFromHeaders(req.headers),all=store.list('run',PROJECT).filter(r=>r.id!==current.id&&['SUCCEEDED','VALIDATION_FAILED','FAILED','CANCELLED','INTERRUPTED'].includes(r.status)&&mayReadRun(r,session)&&store.get('revision',r.revisionId,PROJECT)?.contextId===revision.contextId);
-          return json(res,200,{protocol:'shuduo-run-comparison-candidates/v1',currentRunId:current.id,contextId:revision.contextId,truncated:all.length>50,candidates:all.slice(0,50).map(r=>{const rev=store.get('revision',r.revisionId,PROJECT);return{runId:r.id,revisionId:rev.id,revisionHash:r.revisionHash,contextId:rev.contextId,runStatus:r.status,createdAt:r.createdAt,sourceKind:rev.source==='MANUAL'?'MANUAL':'AGENT_OR_OTHER'};})});
+          const revision = get('revision', current.revisionId);
+          const session = auth.sessionFromHeaders(req.headers);
+          const frozen = current.syncInput;
+          if (frozen) {
+            if (!syncSqlOutputSchemaDetails(current, revision)) throw fail(409, '当前冻结持仓运行尚无可核验的 Spark 证据');
+            readSyncSqlInput({ store, project: PROJECT, actorId: revision.author, binding: frozen });
+          }
+          const all = store.list('run', PROJECT).filter(run => {
+            if (run.id === current.id || !['SUCCEEDED','VALIDATION_FAILED','FAILED','CANCELLED','INTERRUPTED'].includes(run.status) ||
+                !isDeepStrictEqual(run.syncInput, frozen) || !mayReadRun(run, session)) return false;
+            const candidate = store.get('revision', run.revisionId, PROJECT);
+            return candidate?.contextId === revision.contextId &&
+              (!frozen || candidate.author === revision.author && Boolean(syncSqlOutputSchemaDetails(run, candidate)));
+          });
+          return json(res, 200, { protocol:'shuduo-run-comparison-candidates/v1', currentRunId:current.id, contextId:revision.contextId,
+            ...(frozen ? { snapshotHash:frozen.snapshotHash } : {}), truncated:all.length>50, candidates:all.slice(0,50).map(run => {
+              const candidate = store.get('revision', run.revisionId, PROJECT);
+              return { runId:run.id, revisionId:candidate.id, revisionHash:run.revisionHash, contextId:candidate.contextId,
+                runStatus:run.status, createdAt:run.createdAt, sourceKind:candidate.source==='MANUAL'?'MANUAL':'AGENT_OR_OTHER' };
+            }) });
         }
         if([...url.searchParams.keys()].some(k=>k!=='baseline_run_id')||url.searchParams.getAll('baseline_run_id').length!==1||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(url.searchParams.get('baseline_run_id')??''))throw fail(422,'需要一个确切的基线运行编号');
         const baseline=get('run',url.searchParams.get('baseline_run_id'));requireDevelopmentOwner('run',baseline,req);
