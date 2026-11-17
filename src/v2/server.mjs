@@ -1477,7 +1477,7 @@ export function createV2Server(options = {}) {
   const readSyncCalls = evidence => readSyncSqlCallEvidence({store,project:PROJECT,manager:dataServices,evidence});
   const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,reportStore,provenance:reportProvenance,
     resolveSource:resolveLocalReportSource,fundSignedExecutionFor,readSyncCalls,afterStep:options.publishedReportAfterStep});
-  const reportActor = req => {
+  const workspaceReadActor = req => {
     if (req.headers.authorization !== undefined) return undefined;
     const session = auth.sessionFromHeaders(req.headers);
     if (session) return session.user.id;
@@ -1489,8 +1489,8 @@ export function createV2Server(options = {}) {
     return publishedReportPlanningContext(resolveLocalReportSource(source,actor));
   };
   const canReadReportPlan = (plan, req) => local
-    ? !plan.sourceBinding || plan.submittedBy === reportActor(req)
-    : plan.contextScope === "INVITED_PROJECT_REPORTS" && !plan.sourceBinding && plan.submittedBy === reportActor(req);
+    ? !plan.sourceBinding || plan.submittedBy === workspaceReadActor(req)
+    : plan.contextScope === "INVITED_PROJECT_REPORTS" && !plan.sourceBinding && plan.submittedBy === workspaceReadActor(req);
   const requireReportPlanOwner = (plan, req) => {
     if (!canReadReportPlan(plan, req)) throw fail(404, "未找到本账号的报表方案");
   };
@@ -1759,7 +1759,7 @@ export function createV2Server(options = {}) {
         const pack = kind === "delivery_package" ? item : packageId && store.get("delivery_package", packageId, PROJECT);
         const source = pack?.manifest?.source;
         if (source?.syncInput && (!syncSqlLocal || !isLoopbackRequest(req) ||
-            source.syncInput.actorId !== (auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer"))) return false;
+            source.syncInput.actorId !== workspaceReadActor(req))) return false;
         if (isFundContext(source?.contextId)) {
           if (!localClassicSpark)
             return Boolean(!local && source.fundDevelopment && source.attribution?.kind === fundAgentAttributionKind &&
@@ -1873,7 +1873,7 @@ export function createV2Server(options = {}) {
       const canReadReportDataset = dataset => {
         if (!dataset) return false;
         if (!hasPublishedBinding(dataset)) return true;
-        const owner = reportActor(req);
+        const owner = workspaceReadActor(req);
         return Boolean(owner && local && !options.ingress && isLoopbackRequest(req) && dataset.sourceActorId === owner &&
           (syncSqlLocal || !(isSyncAssetId(dataset.assetId) || isSyncReportEvidence(dataset.sourceEvidence))));
       };
@@ -1892,14 +1892,17 @@ export function createV2Server(options = {}) {
       };
       assertV2RequestScope(req, { env, local });
       const reportRoute = path === "/api/v2/reports" || path.startsWith("/api/v2/reports/");
+      const assetRoute = path === "/api/v2/assets" || path.startsWith("/api/v2/assets/");
       if (reportRoute && req.headers.authorization !== undefined)
         throw Object.assign(fail(403,"数据服务凭证无权读取或操作报表"),{code:"REPORT_SERVICE_CREDENTIAL_FORBIDDEN"});
+      if (assetRoute && req.headers.authorization !== undefined)
+        throw Object.assign(fail(403,"数据服务凭证无权读取或操作资产"),{code:"ASSET_SERVICE_CREDENTIAL_FORBIDDEN"});
       if (method === "GET" && !path.startsWith("/api/v2"))
         return await serveV2Static(res, root, path, req.headers["accept-encoding"], publicReadOnly ? {started,phase:"ready"} : undefined);
       // This admitted HTTP read serves built-in fixtures independent of project state.
       if (isPublicContextRead(req, ingressChannel)) return json(res, 200, fixtureContexts());
       if (typeof persistence.refresh === "function") await persistence.refresh();
-      if (reportRoute && !reportActor(req))
+      if (reportRoute && !workspaceReadActor(req))
         throw Object.assign(fail(401,"请使用原报表账号登录"),{code:"AUTHENTICATION_REQUIRED"});
       const includeSession = method === "GET" && path === "/api/v2/status" &&
         url.searchParams.size === 1 && url.searchParams.get("include") === "session";
@@ -2912,6 +2915,7 @@ export function createV2Server(options = {}) {
           action = assetRecord[2];
         if (isSyncAssetId(id)) {
           requireSyncSqlLocal(req);
+          if (!workspaceReadActor(req)) throw Object.assign(fail(401,"请使用原资产账号登录"),{code:"AUTHENTICATION_REQUIRED"});
           if (method !== "GET" || action && action !== "lineage") throw fail(405,"冻结发布资产支持读取原字段和血缘");
           const batch = get("release_run", publishedReportSourceBatchId(syncAssetBatchId(id)));
           requireDeliveryEvidence("release_run", batch);
@@ -3479,7 +3483,7 @@ export function createV2Server(options = {}) {
       if (reportQuality && ["GET", "POST"].includes(method)) {
         if (!localClassicSpark || options.ingress || !isLoopbackRequest(req)) throw fail(403, "基金报表质量检测仅支持本机");
         if (url.searchParams.size) throw fail(422, "请使用原报表编号，质量检测不接受切换批次");
-        const [, requestId] = reportQuality, actor = reportActor(req);
+        const [, requestId] = reportQuality, actor = workspaceReadActor(req);
         const confirmation = method === "POST" ? await readBody(req) : undefined;
         requireFundAgentReportOwner(publishedReports.lookup(requestId, actor).source);
         const { lineage, rows } = publishedReports.qualitySource(requestId, actor, releaseTimeUnitMs);
@@ -3492,7 +3496,7 @@ export function createV2Server(options = {}) {
         const downloadDigest = url.searchParams.get("download_digest");
         if (url.searchParams.size && (view !== "lineage" || url.searchParams.size !== 1 ||
             !/^[a-f0-9]{64}$/.test(downloadDigest ?? ""))) throw fail(422, "按原编号读取结果只接受确切溯源下载摘要");
-        const actor = reportActor(req);
+        const actor = workspaceReadActor(req);
         requireFundAgentReportOwner(publishedReports.lookup(requestId, actor).source);
         if (view === "export") {
           const { receipt } = publishedReports.readResult(requestId, actor);
@@ -3525,7 +3529,7 @@ export function createV2Server(options = {}) {
       const reportCreation=path.match(/^\/api\/v2\/reports\/published(?:\/(requests)\/([a-f0-9-]{36})|\/([a-f0-9-]{36})\/(advance))?$/);
       if(reportCreation){
         if(!local)throw fail(403,'确切发布报表创建尚只在本机开发边界开放');
-        const actorId=reportActor(req);
+        const actorId=workspaceReadActor(req);
         if(method==='POST'&&!reportCreation[1]&&!reportCreation[3]){
           const body=await readBody(req);
           requireFundAgentReportOwner(body.source);
@@ -3557,7 +3561,7 @@ export function createV2Server(options = {}) {
           const manual = evidence.developmentMode === "MANUAL";
           fixedSource = { publishedSource: {kind:manual?"MANUAL":"AGENT",releaseId:evidence.releaseId,packageDigest:evidence.packageDigest,
             revisionId:evidence.sourceRevisionId,runId:evidence.sourceRunId,batchId,...(!manual?{taskId:evidence.sourceTaskId}:{})},
-            actorId:reportActor(req) };
+            actorId:workspaceReadActor(req) };
         }
         const dedup = store.deduplicate(
             fixedSource ? `${PROJECT}:report-dataset:sync:${fixedSource.actorId}:${key}` : `${PROJECT}:report-dataset:${key}`,
@@ -3582,7 +3586,7 @@ export function createV2Server(options = {}) {
         if (method === "GET" && !action) return json(res, 200, dataset);
         if (method === "POST" && action === "refresh") {
           await readBody(req);
-          const boundSource=dataset.publishedSource?resolveLocalReportSource(dataset.publishedSource,reportActor(req)):undefined;
+          const boundSource=dataset.publishedSource?resolveLocalReportSource(dataset.publishedSource,workspaceReadActor(req)):undefined;
           const asset = boundSource?.asset??assets.detail(dataset.assetId),
             key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
@@ -3622,19 +3626,19 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/reports/agent/plans" && method === "GET") {
         const batchId=url.searchParams.has('source_batch_id')?publishedReportSourceBatchId(url.searchParams.get('source_batch_id')):undefined;
         if(batchId&&!local)throw fail(403,'同源报表规划仅供本机读取');
-        return json(res,200,store.list('report_agent_plan',PROJECT).filter(p=>canReadReportPlan(p,req)).filter(p=>batchId?p.sourceBinding?.batchId===batchId&&p.submittedBy===reportActor(req):!p.sourceBinding).map(publicReportPlan));
+        return json(res,200,store.list('report_agent_plan',PROJECT).filter(p=>canReadReportPlan(p,req)).filter(p=>batchId?p.sourceBinding?.batchId===batchId&&p.submittedBy===workspaceReadActor(req):!p.sourceBinding).map(publicReportPlan));
       }
       const sourceReportRequest=path.match(/^\/api\/v2\/reports\/agent\/requests\/([A-Za-z0-9_-]{1,100})$/);
       if(sourceReportRequest&&method==='GET'){
         if(!local)throw fail(403,'同源报表原请求仅供本机读取');
-        const id=store.deduplicatedId(`${PROJECT}:source-report-plan:${reportActor(req)}:${sourceReportRequest[1]}`),task=id?store.get('report_agent_plan',id,PROJECT):undefined;
+        const id=store.deduplicatedId(`${PROJECT}:source-report-plan:${workspaceReadActor(req)}:${sourceReportRequest[1]}`),task=id?store.get('report_agent_plan',id,PROJECT):undefined;
         if(!task)throw fail(404,'未找到本账号的原报表规划请求');requireReportPlanOwner(task,req);return json(res,200,publicReportPlan(task));
       }
       if (path === "/api/v2/reports/agent/plans" && method === "POST") {
         const body = await readBody(req),
           message = text(body.message, 4, 2000);
         if(Object.keys(body).some(k=>!['message','source'].includes(k)))throw fail(422,'报表规划只接受需求和可选确切发布来源');
-        const source=body.source===undefined?undefined:publishedReportSource(body.source),actor=reportActor(req);
+        const source=body.source===undefined?undefined:publishedReportSource(body.source),actor=workspaceReadActor(req);
         if (source) requireFundAgentReportOwner(source);
         const publication=source?publishedPlanContext(source,actor):undefined;
         if (!options.reportPlanner && !modelSettings(env).configured)
@@ -3691,11 +3695,11 @@ export function createV2Server(options = {}) {
         if (method === "GET" && !action) return json(res, 200, publicReportPlan(plan));
         if(method==='GET'&&action==='clarification'){
           if(!local||!plan.sourceBinding)throw fail(403,'报表澄清仅供本机原所属人使用');
-          return json(res,200,readReportClarification({store,project:PROJECT,planId:plan.id,actorId:reportActor(req),contextFor:publishedPlanContext}));
+          return json(res,200,readReportClarification({store,project:PROJECT,planId:plan.id,actorId:workspaceReadActor(req),contextFor:publishedPlanContext}));
         }
         if(method==='POST'&&action==='clarify'){
           const body=await readBody(req);if(!local||!plan.sourceBinding||Object.keys(body).length!==2||!['evidenceDigest','answer'].every(k=>Object.hasOwn(body,k)))throw fail(422,'回答须绑定原问题摘要');
-          const actor=reportActor(req),key=sourceReportKey(req.headers['idempotency-key']),resolved=deriveReportClarification({store,project:PROJECT,planId:plan.id,actorId:actor,contextFor:publishedPlanContext,...body});
+          const actor=workspaceReadActor(req),key=sourceReportKey(req.headers['idempotency-key']),resolved=deriveReportClarification({store,project:PROJECT,planId:plan.id,actorId:actor,contextFor:publishedPlanContext,...body});
           const dedup=store.deduplicate(`${PROJECT}:source-report-plan:${actor}:${key}`,reportClarificationSignature(plan.id,body.evidenceDigest,resolved.answer),()=>{
             if(!options.reportPlanner&&!modelSettings(env).configured)throw new ModelUnavailable();budget.assertCanStartModel();
             return store.create('report_agent_plan',PROJECT,{message:resolved.answer,status:'QUEUED',mode:'LIVE_MODEL',completionScope:'REPORT_DESIGN',fullLifecycleE2E:false,agentIndependentE2E:false,...sourceReportInitial(privateRuntimeBootId),sourceBinding:resolved.parent.sourceBinding,submittedBy:actor,requestId:key,planMode:'PUBLISHED_SOURCE_REPORT_V1',sourceEvidenceHash:resolved.parent.sourceEvidenceHash,contextHash:resolved.parent.contextHash,derivationKind:'REPORT_CLARIFICATION_V1',originPlanId:plan.id,clarification:resolved.frame});
@@ -3708,7 +3712,7 @@ export function createV2Server(options = {}) {
           if(!local||!current.sourceBinding||Object.keys(body).length||!publicReportPlan(current).recovery?.canResume)throw fail(409,'仅能显式续接模型尚未调用的原报表规划；未知结果不重试');
           if(!options.reportPlanner&&!modelSettings(env).configured)throw new ModelUnavailable();
           assertReportClarificationPlan(current,{store,project:PROJECT,contextFor:publishedPlanContext});
-          if(publishedReportHash(publishedPlanContext(current.sourceBinding,reportActor(req)))!==current.contextHash)throw fail(409,'原来源变化，未重新调用模型');
+          if(publishedReportHash(publishedPlanContext(current.sourceBinding,workspaceReadActor(req)))!==current.contextHash)throw fail(409,'原来源变化，未重新调用模型');
           const resumed=store.update('report_agent_plan',current.id,PROJECT,{...sourceReportInitial(privateRuntimeBootId),status:'QUEUED',resumeCount:(current.resumeCount??0)+1},{expectedVersion:current.version});scheduleSourceReport(resumed);return json(res,202,publicReportPlan(resumed));
         }
         if (method === "POST" && action === "cancel") {
@@ -3734,8 +3738,8 @@ export function createV2Server(options = {}) {
             if(Object.keys(body).some(k=>k!=='proposalHash')||body.proposalHash!==plan.proposalHash||!['SUCCEEDED','APPLYING','APPLIED'].includes(plan.status)||plan.proposal?.kind!=='PUBLISHED_REPORT'||
               reportProposalHash(plan,plan.proposal)!==plan.proposalHash)throw fail(409,'请先审阅并提交此确切同源报表方案摘要');
             assertReportClarificationPlan(plan,{store,project:PROJECT,contextFor:publishedPlanContext});
-            const context=publishedPlanContext(plan.sourceBinding,reportActor(req));if(publishedReportHash(context)!==plan.contextHash)throw fail(409,'来源或指标定义已变化，请重新审阅方案');
-            const created=publishedReports.submit({name:plan.proposal.name,source:plan.sourceBinding,metricIds:plan.proposal.metricIds},reportActor(req),plan.id,reviewedReportBasis(plan,reportActor(req),body.proposalHash));
+            const context=publishedPlanContext(plan.sourceBinding,workspaceReadActor(req));if(publishedReportHash(context)!==plan.contextHash)throw fail(409,'来源或指标定义已变化，请重新审阅方案');
+            const created=publishedReports.submit({name:plan.proposal.name,source:plan.sourceBinding,metricIds:plan.proposal.metricIds},workspaceReadActor(req),plan.id,reviewedReportBasis(plan,workspaceReadActor(req),body.proposalHash));
             store.update('report_agent_plan',plan.id,PROJECT,{status:created.status==='SUCCEEDED'?'APPLIED':'APPLYING',reportCreation:created,...(created.reportId?{reportId:created.reportId}:{}),appliedAt:plan.appliedAt??new Date().toISOString()});return json(res,created.status==='SUCCEEDED'?200:202,created);
           }
           if (plan.status === "APPLIED" && plan.reportId)
@@ -3761,7 +3765,7 @@ export function createV2Server(options = {}) {
           if (url.searchParams.size !== 1 || !url.searchParams.has('run_id')) throw fail(422, '消费回看须选择一个确切报表运行');
           const reportId = publishedReportSourceBatchId(reportRecord[1]), runId = publishedReportSourceBatchId(url.searchParams.get('run_id'));
           return json(res, 200, readWealthReportConsumption({ store, reportStore, businessStore, project: PROJECT,
-            reportId, runId, actor: reportActor(req), now: options.now?.() ?? Date.now() }));
+            reportId, runId, actor: workspaceReadActor(req), now: options.now?.() ?? Date.now() }));
         }
         const report = reports.reportDetail(reportRecord[1]),
           action = reportRecord[2];
@@ -3776,7 +3780,7 @@ export function createV2Server(options = {}) {
           const downloadDigest = query.get('download_digest');
           if (downloadDigest !== null && !/^[a-f0-9]{64}$/.test(downloadDigest))
             throw fail(422, '下载须提供已核对的溯源摘要');
-          const evidence = reportProvenance.read(report.id, runId, reportActor(req));
+          const evidence = reportProvenance.read(report.id, runId, workspaceReadActor(req));
           if (downloadDigest === null) return json(res, 200, evidence);
           if (downloadDigest !== evidence.digest) throw fail(409, '溯源摘要已变化，请重新核对');
           return json(res, 200, evidence, {
@@ -4295,7 +4299,7 @@ export function createV2Server(options = {}) {
         });
         if(destinationId==='reports'&&(intent.reportSource||body.input.source)){
           if(!intent.reportSource||!body.input.source||!samePublishedReportSource(intent.reportSource,body.input.source))throw Object.assign(fail(409,'报表工具来源须与原意图保存的发布上下文一致'),{code:'AGENT_REPORT_SOURCE_MISMATCH'});
-          publishedPlanContext(body.input.source,reportActor(req));
+          publishedPlanContext(body.input.source,workspaceReadActor(req));
         }
         if (
           !approval ||

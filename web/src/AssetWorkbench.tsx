@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createAssetReader, assetSummaryValid, assetDetailValid, assetResourcePath, annotationKey, annotationValues, annotationDirty, annotationTags, annotationReceiptMatches, reconcileAnnotation, rebaseAnnotation } from "./asset-read";
+import { createAssetReader, assetSummaryValid, assetDetailValid, assetResourcePath, columnSourceAssetId, annotationKey, annotationValues, annotationDirty, annotationTags, annotationReceiptMatches, reconcileAnnotation, rebaseAnnotation } from "./asset-read";
 import type { AssetCatalogRead, AssetDetailRead, AnnotationDraft, AnnotationValues } from "./asset-read";
 import {createAnnotationSubmission,annotationRecoveryMarker,annotationRecoveryLocation,assetLocationTarget} from './asset-annotation-submission';
 import {normalizeAnnotationValues} from '../../src/v2/asset-annotation-client.mjs';
@@ -469,7 +469,11 @@ export function AssetWorkbench({
             {tab === "fields" && <div className="asset-fields-v2"><table><thead><tr><th>#</th><th>字段</th><th>类型</th><th>可空</th><th>基数</th></tr></thead><tbody>{detail.fields.map((field, index) => <tr key={field.name}><td>{index + 1}</td><td><code>{field.name}</code></td><td>{field.type}</td><td>{field.nullable ? "是" : "否"}</td><td>{field.distinctCount ?? "—"}</td></tr>)}</tbody></table></div>}
             {tab === "lineage" && <div className="asset-lineage-v2">
               <div className="lineage-boundary-v2"><ShieldCheck size={16} /><div><strong>版本绑定与字段值来源分开展示</strong><p>同步字段映射可追溯；SQL值来源仅使用原发布批次保存并通过版本核对的分析。连接、筛选及分组的完整影响仍未覆盖。</p></div></div>
-              {Boolean(detail.lineage.columnLineages?.length)&&<SqlColumnLineagePanel items={detail.lineage.columnLineages!} onSource={table=>{selectAsset(`fixture:${table}`);setTab('fields');}}/>}
+              {Boolean(detail.lineage.columnLineages?.length)&&<SqlColumnLineagePanel items={detail.lineage.columnLineages!} onSource={table=>{
+                const id=columnSourceAssetId(detail.id,table,detail.lineage.nodes);
+                if(!id){setError("当前血缘中未找到该原字段来源。");return;}
+                setError("");selectAsset(id);setTab('fields');
+              }}/>}
               <div className="lineage-edges-v2">{detail.lineage.edges.map((edge) => <article key={edge.id}><div><span>{kindLabels[nodeById.get(edge.from)?.kind ?? ""] ?? nodeById.get(edge.from)?.kind}</span><strong>{nodeById.get(edge.from)?.businessName ?? edge.from}</strong><code>{edge.from}</code></div><div className="lineage-arrow-v2"><span>{edge.type}</span><ArrowRight size={21} /><small>{edge.fieldMappings.length}字段映射</small></div><div><span>{kindLabels[nodeById.get(edge.to)?.kind ?? ""] ?? nodeById.get(edge.to)?.kind}</span><strong>{nodeById.get(edge.to)?.businessName ?? edge.to}</strong><code>{edge.to}</code></div></article>)}</div>
             </div>}
             {tab === "governance" && <div className="asset-governance-v2">

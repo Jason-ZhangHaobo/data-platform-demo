@@ -1,6 +1,11 @@
 import { assetResourcePath, isAssetResourceId } from "../../src/v2/asset-resource-path.mjs";
 import {sqlValueLineageValid} from './sql-column-lineage.ts';
 export { assetResourcePath } from "../../src/v2/asset-resource-path.mjs";
+export function columnSourceAssetId(assetId: string, table: string, nodes: readonly { id: string }[]) {
+  const frozen = /^(?:dataset|snapshot):sync-holdings:([a-f0-9-]{36})$/.exec(assetId);
+  const sourceId = frozen && table === "positions" ? `snapshot:sync-holdings:${frozen[1]}` : `fixture:${table}`;
+  return isAssetResourceId(sourceId) && nodes.some(node => node.id === sourceId) ? sourceId : undefined;
+}
 export type AssetCriteria = { query: string; kind: string };
 type Failure = { state: "ERROR"; message: string; loginRequired: boolean };
 export type AssetCatalogRead<A, M, S, Q> =
@@ -62,7 +67,9 @@ export function createAssetReader<A extends { id: string }, M, S, Q, D extends {
       if (![assets, metrics, standards, tasks].every(Array.isArray) || !assets.every(validAsset)) throw Error("资产目录响应不完整，数量和空结果尚未确认。");
       onCatalog({ state: "READY", criteria: scope, assets, metrics, standards, tasks });
       if (epoch === selectionEpoch) {
-        const next = assets.find(asset => asset.id === selectedId)?.id ?? assets.find(asset => asset.id === initialId)?.id ?? assets.find(asset => asset.id === "landing:raw_positions")?.id ?? assets[0]?.id ?? "";
+        const next = initialId && selectedId === initialId ? initialId :
+          assets.find(asset => asset.id === selectedId)?.id ?? assets.find(asset => asset.id === initialId)?.id ??
+          assets.find(asset => asset.id === "landing:raw_positions")?.id ?? assets[0]?.id ?? "";
         void select(next);
       }
       return true;

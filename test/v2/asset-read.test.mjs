@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAssetReader, assetSummaryValid, assetDetailValid, annotationKey, annotationDirty, annotationTags, annotationReceiptMatches, reconcileAnnotation, rebaseAnnotation } from "../../web/src/asset-read.ts";
+import { createAssetReader, assetSummaryValid, assetDetailValid, columnSourceAssetId, annotationKey, annotationDirty, annotationTags, annotationReceiptMatches, reconcileAnnotation, rebaseAnnotation } from "../../web/src/asset-read.ts";
 
 const asset = (id="fixture:positions", patch={}) => ({id,kind:"FIXTURE_TABLE",name:id,businessName:"虚构持仓",system:"证券实验室",domain:"财富管理",description:"虚构证券持仓说明",status:"READY",fields:[],tags:["持仓"],evidenceHash:"a".repeat(64),executableMetrics:false,...patch});
 const detail = (id="fixture:positions", patch={}) => ({...asset(id),lineage:{focusAssetId:id,nodes:[asset(id)],edges:[]},metrics:[],standards:[],...patch});
@@ -34,6 +34,19 @@ test("empty success clears an old selection; failures never masquerade as empty"
 test("an explicit initial target is read once and never falls back to another asset",async()=>{
  const f=fixture(async path=>{if(path==="/assets/fixture:missing")throw Object.assign(Error("不可见"),{status:404});return normal(path);},"fixture:missing");await f.reader.search();await Promise.resolve();assert.equal(f.details.at(-1).id,"fixture:missing");assert.equal(f.details.at(-1).state,"ERROR");assert.equal(f.calls.filter(args=>args[0]==="/assets/fixture:positions").length,0);
 });
+test("refreshing or filtering a denied frozen deep link keeps the original asset and clears any old graph",async()=>{
+ const original="dataset:sync-holdings:00000000-0000-4000-8000-000000000001",path="/assets/"+original;
+ let denied=false;
+ const f=fixture(p=>p===path?(denied?Promise.reject(Object.assign(Error("不可见"),{status:403})):Promise.resolve(detail(original))):normal(p),original);
+ await f.reader.search();await Promise.resolve();
+ assert.equal(f.details.at(-1).value.id,original);
+ denied=true;
+ await f.reader.search({query:"其他资产",kind:""});await Promise.resolve();
+ assert.equal(f.details.at(-1).id,original);
+ assert.equal(f.details.at(-1).state,"ERROR");
+ assert.equal(f.details.at(-1).value,undefined);
+ assert.ok(f.calls.every(args=>args[0]!=="/assets/fixture:positions"));
+});
 test("initial detail restoration is independent of a synchronously failed catalog",async()=>{
  const f=fixture(path=>{if(path==="/assets")throw Error("目录失败");return normal(path);},"fixture:positions");assert.equal(await f.reader.search(),false);await Promise.resolve();assert.equal(f.details.at(-1).state,"READY");assert.equal(f.catalogs.at(-1).state,"ERROR");
 });
@@ -46,6 +59,15 @@ test("malformed collections stay unknown and closed readers suppress late callba
 test("detail validation binds identity, lineage and snapshot structure",()=>{
  assert.equal(assetDetailValid(detail(),"fixture:positions"),true);
  for(const value of [detail("fixture:other"),detail(undefined,{lineage:{focusAssetId:"fixture:other",nodes:[],edges:[]}}),detail(undefined,{evidenceHash:"bad"}),detail(undefined,{tags:null}),detail(undefined,{annotation:{revision:-1}})])assert.equal(assetDetailValid(value,"fixture:positions"),false);
+});
+test("a frozen position field opens the exact input snapshot referenced by the publication",()=>{
+ const batch="00000000-0000-4000-8000-000000000001",current="dataset:sync-holdings:"+batch,input="snapshot:sync-holdings:"+batch;
+ const available=[{id:input},{id:"fixture:cash"},{id:"fixture:positions"}];
+ assert.equal(columnSourceAssetId(current,"positions",available),input);
+ assert.equal(columnSourceAssetId(input,"positions",available),input);
+ assert.equal(columnSourceAssetId(current,"cash",available),"fixture:cash");
+ assert.equal(columnSourceAssetId("dataset:customer_assets_t1","positions",available),"fixture:positions");
+ assert.equal(columnSourceAssetId(current,"positions",available.slice(1)),undefined);
 });
 test("dirty annotation survives rereads and exposes a changed read baseline",()=>{
  const base=detail(),draft=reconcileAnnotation(undefined,base);draft.values={...draft.values,businessName:"本页新名称"};const latest=detail(undefined,{businessName:"另一读入名称",annotation:{revision:1}});const kept=reconcileAnnotation(draft,latest);assert.equal(kept,draft);assert.equal(kept.values.businessName,"本页新名称");assert.notEqual(kept.key,annotationKey(latest));assert(annotationDirty(kept));

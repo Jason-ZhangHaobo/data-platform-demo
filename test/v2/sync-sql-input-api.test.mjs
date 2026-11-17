@@ -431,6 +431,22 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(asset.value.nodes.length,4);
     assert.ok(asset.value.nodes.every(node=>node.fields?.length&&node.evidenceHash));
     assert.equal((await request(assetPath, undefined, undefined, otherIdentity)).status, 403);
+    const upstreamId=asset.value.nodes.find(node=>node.id.startsWith("snapshot:sync-holdings:")).id;
+    const upstreamPath="/assets/"+encodeURIComponent(upstreamId);
+    const frozenSearch="/assets?kind=PUBLISHED_DATASET&q="+encodeURIComponent("冻结持仓客户资产");
+    assert.equal((await request(frozenSearch)).value.length,2);
+    assert.deepEqual((await request(frozenSearch,undefined,undefined,otherIdentity)).value,[]);
+    for(const path of [assetPath,assetPath+"/lineage",upstreamPath,upstreamPath+"/lineage"]){
+      assert.equal((await request(path)).status,200);
+      assert.equal((await request(path,undefined,undefined,otherIdentity)).status,403);
+      assert.equal((await request(path,undefined,undefined,{Cookie:"shuduo_session=expired-fixture"})).status,401);
+      const denied=await request(path,undefined,undefined,bearer);
+      assert.equal(denied.status,403);
+      assert.equal(denied.value.code,"ASSET_SERVICE_CREDENTIAL_FORBIDDEN");
+    }
+    assert.equal((await request(frozenSearch,undefined,undefined,bearer)).status,403);
+    assert.deepEqual((await request(frozenSearch,undefined,undefined,{Cookie:"shuduo_session=expired-fixture"})).value,[]);
+    assert.equal((await request("/assets/fixture:positions",undefined,undefined,otherIdentity)).status,200);
     const classic = await request("/reports/datasets", { name:"原批次资产数据集",code:"frozen_asset_report",assetId:lineage.value.snapshot.assetId,
       fields:asset.value.nodes.find(node=>node.id===lineage.value.snapshot.assetId).fields.map(field=>field.name) });
     assert.equal(classic.status,201,JSON.stringify(classic.value));
