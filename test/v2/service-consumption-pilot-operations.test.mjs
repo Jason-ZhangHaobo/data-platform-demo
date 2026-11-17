@@ -434,6 +434,68 @@ test('exact read-only code refresh verifies the public HTML, script and manual r
   assert.equal(rollback.cumulativeUsage.activeHttp,7);
 });
 
+function preStagedCodeWebFixture() {
+  const f = codeWebFixture(), plan = f.basePlan;
+  plan.packageTransport = 'PRESTAGED_READ_ONLY_V1';
+  plan.preStagedObject = { protocol: 'VERIFIED_PRIVATE_CODE_OBJECT_V1', ...f.candidate,
+    verifiedAt: new Date(plan.issuedAt - 1000).toISOString(), putAttempts: 1 };
+  plan.readonlyCodeRefresh.preStagedObjectDigest = canonicalHash(plan.preStagedObject);
+  plan.priorUsage.objectPuts = 1;
+  f.objects.set(f.candidate.sha256, f.candidateBytes);
+  f.controls.forbidCandidateRead = true;
+  f.controls.forbidObjectPut = true;
+  return f;
+}
+
+test('pre-staged read-only refresh checks the live entry using the verified OSS bytes', async () => {
+  const f = preStagedCodeWebFixture();
+  assert.equal(validatePilotPackageTransport(f.basePlan, 'true'), true);
+  const staged = await f.step('stage');
+  assert.equal(staged.phase, 'STAGED');
+  assert.equal(staged.web.script.status, 'MATCHED');
+  assert.equal(staged.cumulativeUsage.objectPuts, 1);
+  assert.equal(staged.runUsage.objectPuts, 0);
+  assert.equal(f.calls.filter(c => c.object === f.candidate.sha256 && !c.query).length, 1);
+  assert.deepEqual(f.current.environmentVariables, f.baseline.environmentVariables);
+  const rolledBack = await f.step('rollback');
+  assert.equal(rolledBack.phase, 'ROLLED_BACK');
+  assert.equal(rolledBack.web.index.status, 'MATCHED');
+  assert.equal(rolledBack.preStagedObjectDigest, staged.preStagedObjectDigest);
+  assert.equal(rolledBack.cumulativeUsage.objectPuts, 1);
+  assert.ok(!f.calls.some(c => c.candidateRead || c.object && c.method !== 'GET'));
+  assert.deepEqual(f.current, f.baseline);
+});
+
+test('pre-staged read-only refresh rejects defective objects or missing web bindings without cloud writes', async () => {
+  for (const [alter, code] of [
+    [f => { delete f.basePlan.readonlyWeb; }, /PILOT_PACKAGE_TRANSPORT_INVALID/],
+    [f => { f.basePlan.readonlyCodeRefresh.preStagedObjectDigest = '5'.repeat(64); }, /READONLY_CODE_PRESTAGE_BINDING_INVALID/],
+    [f => { f.objects.delete(f.candidate.sha256); }, /OBJECT_READ_NOT_CONFIRMED/],
+    [f => { f.objects.set(f.candidate.sha256, Buffer.alloc(f.candidate.bytes)); }, /PACKAGE_BYTES_OR_CHECKSUM_INVALID/],
+    [f => { f.controls.wrongCrc = true; }, /PACKAGE_BYTES_OR_CHECKSUM_INVALID/],
+    [f => { f.controls.publicObject = true; }, /PACKAGE_PRIVACY_UNCONFIRMED/],
+    [f => {
+      f.basePlan.readonlyWeb.webIndexSha256 = '5'.repeat(64);
+      f.basePlan.readonlyCodeRefresh.webEvidenceDigest = canonicalHash(f.basePlan.readonlyWeb);
+    }, /APPLICATION_ENTRY_INVALID/],
+  ]) {
+    const f = preStagedCodeWebFixture();
+    alter(f);
+    await assert.rejects(f.step('stage'), code);
+    assert.ok(!f.calls.some(c => c.web || c.candidateRead || c.method === 'PUT' || c.args?.[1] === 'PUT'));
+  }
+});
+
+test('pre-staged read-only refresh returns to the original version if the live script differs', async () => {
+  const f = preStagedCodeWebFixture();
+  f.controls.wrongScript = true;
+  await assert.rejects(f.step('stage'), /ENTRY_SCRIPT_CONTENT_MISMATCH|READONLY_WEB_ENTRY_MISMATCH/);
+  assert.equal(f.report.web.script.status, 'MISMATCH');
+  assert.equal(f.report.cumulativeUsage.configWrites, 2);
+  assert.equal(f.report.runUsage.objectPuts, 0);
+  assert.deepEqual(f.current, f.baseline);
+});
+
 const guestRuntime = path => path.endsWith('/session')
   ? {status:200,body:{mode:'INVITATION_SESSION',authenticated:false,readOnly:true}}
   : {status:200,body:{mode:'PUBLIC_INVITATION',publicReady:false,authentication:{publicSessionEnforced:true},
