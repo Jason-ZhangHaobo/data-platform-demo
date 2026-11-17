@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   OssDataStateBackend,
 } from "../../src/v2/oss-data-state-backend.mjs";
@@ -133,6 +134,65 @@ test("OSS revision writes enforce size limits before network mutation", async ()
 
 const baseUrl = `https://${config.bucket}.${config.endpoint}/${config.key}`;
 const slotUrl = revision => `${baseUrl}.revisions/${revision}.json`;
+
+// Wire layouts from the first three releases of the v1 OSS state protocol.
+const originalTables = [
+  "landingRows", "streamEvents", "streamState", "streamCheckpoints",
+  "serviceSnapshots", "customerAssets", "reportSnapshots",
+];
+const distributionTables = [
+  "landingRows", "streamEvents", "streamState", "streamCheckpoints",
+  "serviceSnapshots", "serviceDistributions", "customerAssets", "reportSnapshots",
+];
+const committedSyncTables = [
+  "landingRows", "landingCommits", "streamEvents", "streamState", "streamCheckpoints",
+  "serviceSnapshots", "serviceDistributions", "customerAssets", "reportSnapshots",
+];
+const snapshot = tables => ({
+  format: "shuduo-data-state/v1",
+  projectId: PROJECT,
+  tables: Object.fromEntries(tables.map(table => [table, []])),
+});
+const persistedHash = (revision, payload) => createHash("sha256")
+  .update(`${revision}\n${JSON.stringify(payload)}`).digest("hex");
+
+test("OSS restores every historical v1 root and preserves committed state on cold start", async () => {
+  for (const [name, tables] of [
+    ["original", originalTables],
+    ["distribution", distributionTables],
+    ["committed sync", committedSyncTables],
+  ]) {
+    const remote = fakeOss(), first = snapshot(tables), latest = emptyDataState(PROJECT);
+    first.tables.reportSnapshots.push({ id: "synthetic-test-report", asset_id: "synthetic-test-asset",
+      content_hash: "synthetic-hash", row_count: 0, rows_json: "[]", created_at: "2026-09-10T00:00:00Z" });
+    latest.tables.reportSnapshots = structuredClone(first.tables.reportSnapshots);
+    const firstLink = persistedHash(0, snapshot(tables));
+    const successor = { format: "shuduo-data-state-envelope/v1", revision: 2,
+      previousHash: persistedHash(1, first), payload: latest };
+    remote.objects.set(slotUrl(1), JSON.stringify({ format: successor.format, revision: 1,
+      previousHash: firstLink, payload: first }));
+    remote.objects.set(slotUrl(2), JSON.stringify(successor));
+    const persisted = [...remote.objects.entries()];
+    assert.deepEqual(await new OssDataStateBackend(config, remote.fetch).load(PROJECT),
+      { revision: 2, payload: latest }, name);
+    assert.deepEqual([...remote.objects.entries()], persisted, name);
+    assert.ok(remote.requests.every(request => request.options.method === "GET"), name);
+
+    remote.objects.set(slotUrl(2), JSON.stringify({ ...successor, previousHash: firstLink }));
+    await assert.rejects(new OssDataStateBackend(config, remote.fetch).load(PROJECT),
+      { code: "CLOUD_DATA_STATE_INVALID_CHAIN" }, name);
+  }
+});
+
+test("OSS first writes anchor the original v1 layout while exposing the current empty business schema", async () => {
+  const remote = fakeOss(), backend = new OssDataStateBackend(config, remote.fetch);
+  const current = emptyDataState(PROJECT);
+  assert.deepEqual((await backend.load(PROJECT)).payload, current);
+  await backend.compareAndSwap(PROJECT, 0, current);
+  const persisted = JSON.parse(remote.objects.get(slotUrl(1)));
+  assert.equal(persisted.previousHash, persistedHash(0, snapshot(originalTables)));
+  assert.deepEqual(persisted.payload, current);
+});
 
 async function seedRevisions(count, legacyRevision = 0) {
   const remote = fakeOss(), writer = new OssDataStateBackend(config, remote.fetch),

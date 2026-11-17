@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,8 +8,9 @@ import { join } from "node:path";
 import { LocalArtifactStore } from "../../src/v2/artifact-store.mjs";
 import { AuthManager } from "../../src/v2/auth.mjs";
 import { createCloudV2Application, startCloudV2Listener } from "../../src/v2/cloud-server.mjs";
-import { MemoryDataStateBackend } from "../../src/v2/data-state-replica.mjs";
+import { emptyDataState, MemoryDataStateBackend } from "../../src/v2/data-state-replica.mjs";
 import { MemorySnapshotBackend, ReplicatedMetadataStore } from "../../src/v2/metadata-replica.mjs";
+import { OssDataStateBackend } from "../../src/v2/oss-data-state-backend.mjs";
 import { PROJECT } from "../../src/v2/server.mjs";
 
 const cloudEnv = { V2_FC_PUBLIC_HTTP_ENABLED: "true", V2_FC_PUBLIC_READ_ONLY: "true" };
@@ -259,6 +261,102 @@ test("a bounded startup identity read waits for recovered state and releases dis
     assert.equal(session.user.id,owner.id);
     assert.equal(session.readOnly,true);
   }
+});
+
+test("the read-only cloud listener cold-starts from the original OSS state and returns the authenticated record", {
+  timeout:10000,
+}, async t=>{
+  const key="data-platform-v2/state/fictional-startup.json", basePath="/"+key;
+  const slot=revision=>basePath+".revisions/"+revision+".json";
+  const digest=value=>createHash("sha256").update(value).digest("hex");
+  const hash=(revision,payload)=>digest(revision+"\n"+JSON.stringify(payload));
+  // Encode the original wire layout independently of today's empty snapshot.
+  const genesis={format:"shuduo-data-state/v1",projectId:PROJECT,tables:{
+    landingRows:[],streamEvents:[],streamState:[],streamCheckpoints:[],
+    serviceSnapshots:[],customerAssets:[],reportSnapshots:[],
+  }};
+  const reportId="fictional-wealth-report", reportRows=[{client_id:"FICTIONAL-CLIENT",total_assets:"1750.00"}];
+  const storedRow={id:reportId,asset_id:"fictional-assets",content_hash:digest(JSON.stringify(reportRows)),
+    row_count:1,rows_json:JSON.stringify(reportRows),created_at:"2026-09-10T00:00:00Z"};
+  const first=structuredClone(genesis), latest=emptyDataState(PROJECT);
+  latest.tables.reportSnapshots.push(storedRow);
+  const envelope=(revision,previousHash,payload)=>JSON.stringify({
+    format:"shuduo-data-state-envelope/v1",revision,previousHash,payload,
+  });
+  const revisionOne=envelope(1,hash(0,genesis),first);
+  const scenarios=[
+    {name:"missing legacy anchor",keepAnchor:false,corrupt:false},
+    {name:"retained legacy anchor",keepAnchor:true,corrupt:false},
+    {name:"broken successor chain",keepAnchor:false,corrupt:true},
+  ];
+  for(const {name,keepAnchor,corrupt} of scenarios)await t.test(name,async child=>{
+    const options=fixture(child), metadata=new MemorySnapshotBackend();
+    const seed=await ReplicatedMetadataStore.open({backend:metadata,project:PROJECT,autoFlush:false});
+    const auth=new AuthManager({store:seed,project:PROJECT,env:{}});
+    const credentials={email:"fictional-oss-engineer@example.invalid",password:"SyntheticStartup!2026"};
+    const owner=auth.bootstrapAdmin({...credentials,displayName:"虚构证券工程师"});
+    const task=seed.create("agent",PROJECT,{submittedBy:owner.id,status:"SUCCEEDED",message:"虚构证券持仓 T+1"});
+    const {cookies}=auth.sessionResponse(auth.login(credentials),true);
+    await seed.closeReplicated();
+
+    const objects=new Map([[slot(1),revisionOne],
+      [slot(2),envelope(2,corrupt?hash(0,genesis):hash(1,first),latest)]]);
+    if(keepAnchor)objects.set(basePath,revisionOne);
+    const saved=[...objects], entered=Promise.withResolvers(), release=Promise.withResolvers(), requests=[];
+    const config={bucket:"synthetic-startup-bucket",endpoint:"oss-cn-hangzhou-internal.aliyuncs.com",key,maxBytes:1024*1024,
+      credentials:{accessKeyId:"fictional-key",accessKeySecret:"fictional-secret"}};
+    const backend=new OssDataStateBackend(config,async(url,opts)=>{
+      const path=new URL(url).pathname;
+      requests.push({path,method:opts.method});
+      assert.equal(opts.method,"GET","readonly recovery must not rewrite OSS objects");
+      if(path===basePath){entered.resolve();await release.promise;}
+      return objects.has(path)?new Response(objects.get(path)):new Response("",{status:404});
+    });
+    const listener=startCloudV2Listener({...cloudEnv},{...options,port:0,host:"127.0.0.1",
+      openMetadataBackend:async()=>metadata,createDataBackend:()=>backend,createRunner:()=>undefined});
+    child.after(async()=>{release.resolve();await listener.close();});
+    // The known failing control may complete before the HTTP response finishes.
+    listener.ready.catch(()=>{});
+    await Promise.all([once(listener.server,"listening"),entered.promise]);
+    const base="http://127.0.0.1:"+listener.server.address().port;
+    const headers={"x-shuduo-client":"workbench",cookie:cookies.map(cookie=>cookie.split(";",1)[0]).join("; ")};
+    const read=async(path,init={})=>fetch(base+path,{...init,signal:AbortSignal.timeout(4000)});
+    assert.equal(await (await read("/v2/?module=agent-center",{headers})).text(),"<html>Fictional cloud startup</html>");
+    const arrived=once(listener.server,"request");
+    const waiting=read("/api/v2/status?include=session",{headers});
+    waiting.catch(()=>{});
+    const [,response]=await arrived;
+    assert.equal(response.headersSent,false);
+    release.resolve();
+    if(corrupt){
+      await assert.rejects(listener.ready,{code:"CLOUD_DATA_STATE_INVALID_CHAIN"});
+      await assert.rejects(waiting);
+      assert.equal(listener.server.listening,false);
+    }else{
+      const boot=await listener.ready;
+      const reply=await waiting;
+      assert.equal(reply.status,200);
+      assert.equal(reply.headers.get("cache-control"),"no-store");
+      const {session}=await reply.json();
+      assert.equal(session.authenticated,true);
+      assert.equal(session.user.id,owner.id);
+      assert.equal(session.readOnly,true);
+      assert.deepEqual(boot.app.reportStore.read(reportId).rows,reportRows);
+      assert.equal(boot.app.reportStore.read(reportId).contentHash,storedRow.content_hash);
+      assert.equal(boot.stateCoordinator.replicationStatus().dataState.remoteRevision,2);
+      const path="/api/v2/agent/tasks/"+task.id;
+      assert.equal((await read(path)).status,401);
+      const ownerRead=await read(path,{headers});
+      assert.equal(ownerRead.status,200);
+      assert.equal((await ownerRead.json()).id,task.id);
+      const denied=await read("/api/v2/agent/tasks",{method:"POST",headers,body:"{}"});
+      assert.equal(denied.status,403);
+      assert.equal((await denied.json()).code,"PUBLIC_READ_ONLY");
+    }
+    const readOrder=keepAnchor?[basePath,slot(2)]:[basePath,slot(1),slot(2)];
+    assert.deepEqual(requests.slice(0,readOrder.length).map(({path})=>path),readOrder);
+    assert.deepEqual([...objects],saved);
+  });
 });
 
 test("an unfinished startup releases the combined read with the existing retry response", {timeout:5000}, async t => {

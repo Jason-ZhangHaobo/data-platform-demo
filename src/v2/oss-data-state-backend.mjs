@@ -18,8 +18,33 @@ const DEFAULT_MAX_BYTES = 40 * 1024 * 1024;
 const MAX_REVISION_READS = 1024;
 const SEQUENTIAL_COLD_READS = 9;
 const MAX_LOOKAHEAD_SNAPSHOT_BYTES = 1024 * 1024;
+// These ordered v1 wire layouts have already been used as the parent of
+// revision 1. Keep them fixed when tables are added to business snapshots.
+const genesisTables = [
+  "landingRows", "streamEvents", "streamState", "streamCheckpoints",
+  "serviceSnapshots", "customerAssets", "reportSnapshots",
+];
+const compatibleGenesisTables = [
+  genesisTables,
+  [
+    "landingRows", "streamEvents", "streamState", "streamCheckpoints",
+    "serviceSnapshots", "serviceDistributions", "customerAssets", "reportSnapshots",
+  ],
+  [
+    "landingRows", "landingCommits", "streamEvents", "streamState", "streamCheckpoints",
+    "serviceSnapshots", "serviceDistributions", "customerAssets", "reportSnapshots",
+  ],
+];
 const stateHash = (state) => createHash("sha256")
   .update(`${state.revision}\n${JSON.stringify(state.payload)}`).digest("hex");
+const genesisHash = (project, tables = genesisTables) => stateHash({
+  revision: 0,
+  payload: {
+    format: "shuduo-data-state/v1",
+    projectId: project,
+    tables: Object.fromEntries(tables.map(table => [table, []])),
+  },
+});
 
 const unavailable = (message, code = "CLOUD_DATA_STATE_UNAVAILABLE") =>
   Object.assign(new Error(message), { status: 503, code });
@@ -95,7 +120,10 @@ export class OssDataStateBackend {
           return structuredClone(current);
         }
         const { envelope: next, bytes } = await this.readEnvelope(response, project);
-        if (next.revision !== revision || next.previousHash !== stateHash(current))
+        const parentMatches = current.revision === 0
+          ? compatibleGenesisTables.some(tables => next.previousHash === genesisHash(project, tables))
+          : next.previousHash === stateHash(current);
+        if (next.revision !== revision || !parentMatches)
           throw unavailable("OSS 状态版本链不连续", "CLOUD_DATA_STATE_INVALID_CHAIN");
         current = { revision: next.revision, payload: next.payload };
         lastSize = bytes;
@@ -196,7 +224,7 @@ export class OssDataStateBackend {
       body = JSON.stringify({
         format: ENVELOPE_FORMAT,
         revision,
-        previousHash: stateHash(cached),
+      previousHash: expectedRevision === 0 ? genesisHash(project) : stateHash(cached),
         payload,
       });
     if (Buffer.byteLength(body, "utf8") > this.config.maxBytes)
