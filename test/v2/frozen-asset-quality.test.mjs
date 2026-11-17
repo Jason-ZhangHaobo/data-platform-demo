@@ -6,6 +6,7 @@ import {QualityManager} from "../../src/v2/quality.mjs";
 import {frozenAssetQuality} from "../../src/v2/frozen-asset-quality.mjs";
 import {checkedFrozenAssetQuality} from "../../src/v2/frozen-asset-quality-client.mjs";
 import {publishedReportHash} from "../../src/v2/published-report-source.mjs";
+import {verifySavedFrozenAssetQuality} from "../../src/v2/sync-sql-saved-lifecycle.mjs";
 
 test("a failed frozen quality check remains failed on recheck, without running the rules on read",t=>{
   const store=new MetadataStore(":memory:");t.after(()=>store.close());
@@ -13,11 +14,13 @@ test("a failed frozen quality check remains failed on recheck, without running t
   let passes=0;
   const quality={evaluateRows(rule,rows){passes++;return manager.evaluateRows(rule,rows);}};
   const rows=[{client_id:"CLIENT-001",total_assets:"2.00"},{client_id:"CLIENT-001",total_assets:"3.001"}];
-  const batch={id:randomUUID(),releaseId:randomUUID(),rows};
+  const batch={id:randomUUID(),releaseId:randomUUID(),sequence:1,finishedAt:"2026-09-10T08:00:00.000Z",rows};
   const asset={id:"dataset:sync-holdings:"+batch.id,evidenceHash:publishedReportHash(rows),rowCount:2};
   const input={store,project,quality,asset,batch,source:{snapshotHash:"a".repeat(64)}};
   const pending=frozenAssetQuality(input);
+  const offline={store,project,batch,proof:{sourceEvidence:{...input.source,businessDate:"2026-09-10"}}};
   assert.equal(pending.status,"PENDING");
+  assert.equal(verifySavedFrozenAssetQuality(offline).status,"PENDING");
   assert.equal(passes,0);
   const run={...input,confirmation:{confirm:true,basisDigest:pending.basisDigest}};
   const settled=frozenAssetQuality(run);
@@ -33,7 +36,18 @@ test("a failed frozen quality check remains failed on recheck, without running t
   assert.throws(()=>checkedFrozenAssetQuality({...settled,rows}));
   assert.throws(()=>frozenAssetQuality({...input,source:{snapshotHash:"b".repeat(64)}}),
     {code:"FROZEN_ASSET_QUALITY_UNPROVEN"});
+  const verified=verifySavedFrozenAssetQuality({...offline,download:settled});
+  assert.equal(verified.status,"FAILED");
+  assert.deepEqual(verified.checks.map(check=>check.failedCount),[0,1,1]);
+  assert.ok(!JSON.stringify(verified).includes("CLIENT-001"));
+  assert.throws(()=>verifySavedFrozenAssetQuality({...offline,download:{...settled,releaseId:randomUUID()}}),
+    {code:"SYNC_SAVED_QUALITY_DOWNLOAD_CHANGED"});
   const record=store.get("quality_frozen_asset_check",settled.checkId,project);
+  const forgedChecks=record.receipt.checks.map(check=>({...check,status:"PASSED",passedCount:2,failedCount:0,passRate:1}));
+  const forged={...record.receipt,status:"PASSED",checks:forgedChecks};
+  store.update("quality_frozen_asset_check",record.id,project,{receipt:forged,receiptDigest:publishedReportHash(forged)});
+  assert.equal(frozenAssetQuality(input).status,"PASSED");
+  assert.throws(()=>verifySavedFrozenAssetQuality(offline),{code:"SYNC_SAVED_QUALITY_OUTCOME_CHANGED"});
   store.update("quality_frozen_asset_check",record.id,project,{receipt:{...record.receipt,status:"PASSED"}});
   assert.throws(()=>frozenAssetQuality(input),{code:"FROZEN_ASSET_QUALITY_UNPROVEN"});
   assert.equal(passes,3);

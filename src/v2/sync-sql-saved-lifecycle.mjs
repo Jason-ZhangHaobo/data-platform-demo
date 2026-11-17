@@ -1,13 +1,16 @@
 import { isDeepStrictEqual as same } from "node:util";
 import { DataServiceManager } from "./data-services.mjs";
 import { sha256, validateDeliveryPackage } from "./delivery.mjs";
+import { checkedFrozenAssetQuality, frozenQualityRules } from "./frozen-asset-quality-client.mjs";
+import { frozenAssetQuality } from "./frozen-asset-quality.mjs";
 import { inferCsvSchema, LandingStore, parseCsv } from "./ingestion.mjs";
 import { checkedSyncReportLineage } from "./published-report-client.mjs";
 import { publishedReportHash, resolvePublishedReportSource } from "./published-report-source.mjs";
 import { publishedReportRequestKey } from "./published-report-workflow.mjs";
+import { QualityManager } from "./quality.mjs";
 import { checkedPublishedReportArtifacts } from "./report-provenance.mjs";
 import { publishedSqlColumnLineage } from "./sql-column-lineage.mjs";
-import { syncReportLineage, syncReportFields } from "./sync-sql-report.mjs";
+import { syncReportAsset, syncReportLineage, syncReportFields } from "./sync-sql-report.mjs";
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence } from "./sync-sql-service-source.mjs";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -74,8 +77,38 @@ function verifyPages({ calls, read, expectedRows, batch }) {
   });
 }
 
+export function verifySavedFrozenAssetQuality({ store, project, batch, proof, download }) {
+  const source = proof.sourceEvidence;
+  const asset = syncReportAsset(batch, proof, publishedReportHash);
+  const expected = { assetId: asset.id, batchId: batch.id, releaseId: batch.releaseId, snapshotHash: source.snapshotHash,
+    evidenceHash: asset.evidenceHash, rowCount: asset.rowCount };
+  let saved;
+  try {
+    saved = checkedFrozenAssetQuality(frozenAssetQuality({ store, project, batch, asset, source }), expected);
+  } catch {
+    requireEvidence(false, "QUALITY_RECORD_CHANGED");
+  }
+  if (download !== undefined) {
+    let archived;
+    try { archived = checkedFrozenAssetQuality(download, expected); }
+    catch { requireEvidence(false, "QUALITY_DOWNLOAD_CHANGED"); }
+    requireEvidence(same(saved, archived), "QUALITY_DOWNLOAD_CHANGED");
+  }
+  const basis = { ...expected, ruleSet: saved.ruleSet, basisDigest: saved.basisDigest, status: saved.status };
+  if (saved.status === "PENDING") return basis;
+  requireEvidence(chronological(batch.finishedAt, saved.checkedAt), "QUALITY_CHRONOLOGY_CHANGED");
+  const verifier = new QualityManager({ store, project });
+  const fields = ["status", "evaluatedCount", "passedCount", "failedCount", "passRate"];
+  const checks = frozenQualityRules().map((rule, index) => {
+    const actual = verifier.evaluateRows(rule, batch.rows), original = saved.checks[index];
+    requireEvidence(fields.every(key => actual[key] === original[key]), "QUALITY_OUTCOME_CHANGED");
+    return { id: rule.id, ...Object.fromEntries(fields.map(key => [key, actual[key]])) };
+  });
+  return { ...basis, checkId: saved.checkId, receiptDigest: saved.receiptDigest, checkedAt: saved.checkedAt, checks };
+}
+
 export async function verifySavedSyncSqlLifecycle({ store, businessStore, reportStore, project, actor,
-  releaseId, packageDigest, requestId, csv, originalPackage, lineages, timeUnitMs = 1000 }) {
+  releaseId, packageDigest, requestId, csv, originalPackage, lineages, qualityReceipts, timeUnitMs = 1000 }) {
   requireEvidence(uuid.test(releaseId ?? "") && digest.test(packageDigest ?? "") &&
     typeof requestId === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(requestId) &&
     typeof csv === "string" && Array.isArray(lineages) && lineages.length === 2 &&
@@ -111,6 +144,11 @@ export async function verifySavedSyncSqlLifecycle({ store, businessStore, report
   const batches = store.list("release_run", project).filter(batch => batch.releaseId === releaseId)
     .sort((a, b) => a.sequence - b.sequence);
   requireEvidence(batches.length === 2 && new Set(lineages.map(item => item?.source?.batchId)).size === 2, "BATCH_SELECTION_CHANGED");
+  const qualityEnabled = qualityReceipts !== undefined;
+  if (qualityEnabled) requireEvidence(Array.isArray(qualityReceipts) && qualityReceipts.length <= batches.length &&
+    new Set(qualityReceipts.map(receipt => receipt?.batchId)).size === qualityReceipts.length &&
+    qualityReceipts.every(receipt => batches.some(batch => batch.id === receipt?.batchId)), "QUALITY_BATCH_SELECTION_CHANGED");
+  const qualityBatches = [];
   const records = [];
   for (const batch of batches) {
     const proof = certify(batch), archived = lineages.find(item => item?.source?.batchId === batch.id);
@@ -128,6 +166,8 @@ export async function verifySavedSyncSqlLifecycle({ store, businessStore, report
     const calls = await readSyncSqlCallEvidence({ store, project, manager, evidence: proof.sourceEvidence });
     const rebuilt = syncReportLineage({ record, artifacts, resolved, batch, calls, hash: publishedReportHash });
     requireEvidence(same(request, rebuilt), "REPORT_DOWNLOAD_CHANGED");
+    if (qualityEnabled) qualityBatches.push(verifySavedFrozenAssetQuality({ store, project, batch, proof,
+      download: qualityReceipts.find(receipt => receipt.batchId === batch.id) }));
     const column = publishedSqlColumnLineage({ store, project, run: batch, assetId: rebuilt.snapshot.assetId });
     requireEvidence(column.status === "COMPLETE" && column.fields.length === syncReportFields.length &&
       column.fields.every(field => field.status === "RESOLVED"), "COLUMN_LINEAGE_UNPROVEN");
@@ -139,12 +179,16 @@ export async function verifySavedSyncSqlLifecycle({ store, businessStore, report
   }
   requireEvidence(new Set(records.map(item => item.report.runId)).size === 2 &&
     time(batches[0].finishedAt) <= time(batches[1].triggeredAt), "BATCH_CHRONOLOGY_CHANGED");
-  const result = { protocol: "shuduo-saved-sync-sql-lifecycle/v1", status: "VERIFIED", scope: "LOCAL_SAVED_EVIDENCE",
+  const qualityStatus = qualityBatches.some(batch => batch.status === "FAILED") ? "FAILED" :
+    qualityBatches.some(batch => batch.status === "PENDING") ? "PENDING" : "PASSED";
+  const result = { protocol: qualityEnabled ? "shuduo-saved-sync-sql-lifecycle/v2" : "shuduo-saved-sync-sql-lifecycle/v1",
+    status: qualityStatus === "PASSED" ? "VERIFIED" : qualityStatus, scope: "LOCAL_SAVED_EVIDENCE",
     input: origin, requirement: { requestId, taskId: task.id, digest: source.requirement.basisDigest },
     development: { runId: development.id, revisionId: source.revisionId, sqlHash: source.sqlHash, engineVersion: development.engineVersion },
     rehearsal: { id: rehearsal.id, fileCount: Object.keys(bundle.files).length, testSqlHash: sha256(bundle.files["tests.sql"]) },
     review: { id: review.id, approvalId: approval.id, scope: approval.scope, humanReviewVerified: false },
     publication: { releaseId, packageDigest, businessDate: plan.fixtures.context.businessDate, batches: records },
+    ...(qualityEnabled ? { quality: { status: qualityStatus, batches: qualityBatches } } : {}),
     provenance: { developmentMode: input.developmentMode, newSparkRuns: 0, newModelCalls: 0, cloudRequests: 0,
       publicDeployed: false, countsTowardLiveEvaluation: false, agentIndependentE2E: false } };
   return { ...result, evidenceDigest: publishedReportHash(result) };
