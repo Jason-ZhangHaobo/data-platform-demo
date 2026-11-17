@@ -34,6 +34,7 @@ test('local task consumption joins existing source and revoked-app receipts with
  assert.ok(entry.sourceVersions.every(v=>v.sourceKind==='AGENT'&&v.releaseId===release.id&&v.sourceReleaseRunId===run.id&&v.packageDigest===bundle.digest&&/^[a-f0-9]{64}$/.test(v.configHash)));
  assert.deepEqual([...new Set(entry.sourceVersions.flatMap(v=>v.fields))].sort(),['available_cash','client_id','holding_market_value','security_count','total_assets']);
  const unknown=await read({releaseId:randomUUID()});assert.equal(unknown.status,'PENDING');assert.equal(unknown.services.length,0);
+ await assert.rejects(read({releaseId:release.id,batchId:run.id}),{status:422,code:"LOCAL_BATCH_SCOPE_UNSUPPORTED"});
  await assert.rejects(read({agent:{...agent,status:'FAILED'}}),{status:409});
  for(const sourceKind of ['MANUAL','UNKNOWN'])await assert.rejects(read({agent:{...agent,sourceKind}}),{status:409});
  store.update('service_app',issued.application.id,PROJECT,{scope:'PRIVATE_CLOUD_TEST'});assert.equal((await read()).status,'PENDING');

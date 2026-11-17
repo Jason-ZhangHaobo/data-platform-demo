@@ -1137,6 +1137,8 @@ API 的审批请求在 `packageDigest` 和 `reviewId` 外传入 `syncConsent`，
 
 使用 `shuduo services sources`、`shuduo services task-evidence` 或对应 MCP 读取原发布。两批分别具备非空 DAPI 和完整组合 XAPI 授权调用后，整组消费才记为通过。历史核验可回读撤销前的结果，不恢复应用权限。此验收范围为隔离本机虚构证券数据。
 
+在调度发布的监控卡片点击目标批次的「查看本批授权消费」，核对同一监控事件和各接口版本、历史调用及授权状态。CLI 在 `shuduo services task-evidence` 中传入原任务、包、发布和 `--batch-id`，MCP 使用 `data_service_task_evidence` 的 `batchId`，API 使用 `release_batch_id`。两类接口都须有整批独立核验结果，单客户调用单列。跨包、跨批、开发运行编号和待审包不会返回授权消费证明。
+
 ### 冻结持仓的报表、资产血缘与历史授权
 
 在原发布工作台展开「手动创建与原请求恢复」，从原两个批次分别生成报表。实际聚合使用批次的固定快照。验证两份报表的总资产、持仓和现金，确认客户分组已脱敏。

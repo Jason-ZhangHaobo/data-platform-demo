@@ -12,8 +12,11 @@ async function componentUrl(name) {
   source = source.replaceAll('from "./manual-run-recovery"', `from ${JSON.stringify(new URL('../../../web/src/manual-run-recovery.ts', import.meta.url).href)}`);
   source = source.replaceAll('from "./delivery-source"', `from ${JSON.stringify(new URL('../../../web/src/delivery-source.ts', import.meta.url).href)}`);
   source = source.replaceAll('from "../../src/v2/sync-sql-output-schema-client.mjs"', `from ${JSON.stringify(new URL('../../../src/v2/sync-sql-output-schema-client.mjs', import.meta.url).href)}`);
+  for (const dependency of ['agent-delivery-evidence-read','service-source-binding','service-consumption-scope'])
+    source = source.replaceAll(`from "./${dependency}"`, `from ${JSON.stringify(new URL(`../../../web/src/${dependency}.ts`,import.meta.url).href)}`);
   source = source.replace('import "./sync-output-schema.css";', '');
-  if (name === 'DeliveryWorkbench') source = source.replace('from "./SyncOutputSchemaDetails"', `from ${JSON.stringify(await componentUrl('SyncOutputSchemaDetails'))}`);
+  if (name === 'DeliveryWorkbench') for (const child of ['SyncOutputSchemaDetails','LocalSyncBatchConsumption'])
+    source = source.replace(`from "./${child}"`, `from ${JSON.stringify(await componentUrl(child))}`);
   return `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 }
 export async function component(name, exportName = name) {

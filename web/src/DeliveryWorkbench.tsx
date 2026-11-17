@@ -9,6 +9,7 @@ import { defaultLocalReleaseSchedule, localReleaseScheduleText, matchingDelivery
 import { checkedSyncSqlRehearsalSchema, checkedSyncSqlScheduledSchema, readSyncReviewEvidence } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import type { SyncSqlRehearsalSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import { SyncOutputSchemaDetails } from "./SyncOutputSchemaDetails";
+import { LocalSyncBatchConsumption } from "./LocalSyncBatchConsumption";
 import {
   Activity,
   ArrowDownToLine,
@@ -1308,6 +1309,9 @@ export function DeliveryWorkbench({
                             </small>
                           </p>
                           <ScheduledSchemaEvidence item={item} bundle={selected}/>
+                          {syncHandoff && syncInput && reportBatchIds.includes(item.id) &&
+                            <LocalSyncBatchConsumption key={`${selectedRelease.id}:${selected.digest}:${item.id}`}
+                              api={api} binding={syncHandoff} batchId={item.id} snapshotHash={syncInput.snapshotHash} sequence={item.sequence}/>}
                           </div>
                         ))}
                     </div>

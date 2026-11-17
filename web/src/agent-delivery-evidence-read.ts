@@ -121,3 +121,21 @@ export function checkedBatchConsumption(value:unknown,binding:ServiceSourceBindi
  if(proof.services.some(service=>service.sourceRunIds.some(id=>id!==batchId)))throw invalidConsumption();
  return proof;
 }
+
+export function checkedLocalSyncBatchConsumption(value:unknown,binding:ServiceSourceBinding,batchId:string,snapshotHash:string,sequence:number) {
+ const monitor=record(value)?value.monitoring:undefined;
+ if(!record(value)||binding.scope!=="LOCAL_TEST_ONLY"||binding.sourceKind!=="AGENT"||
+   value.sourceReleaseRunId!==batchId||value.snapshotHash!==snapshotHash||!record(monitor)||
+   !id(monitor.eventId)||!date(monitor.observedAt)||monitor.sequence!==sequence||
+   typeof monitor.businessDate!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(monitor.businessDate))throw invalidConsumption();
+ const proof=checkedAgentConsumption(value,binding,[{id:batchId,status:"SUCCEEDED",schedulerTriggered:true}]);
+ if(proof.services.some(service=>service.sourceRunIds.some(runId=>runId!==batchId)))throw invalidConsumption();
+ const verified=proof.services.filter(service=>service.status==="VERIFIED"&&service.sourceRunIds[0]===batchId&&
+   service.call?.independentResultVerified===true&&service.call.coverage===undefined);
+ const passed=!proof.truncated&&verified.some(service=>service.serviceType==="DAPI")&&
+   verified.some(service=>service.serviceType==="XAPI"&&service.fullAssetComposition===true);
+ const batches=value.verifiedBatchIds;
+ if((proof.status==="VERIFIED")!==passed||!Array.isArray(batches)||
+   batches.length>1||batches.some(runId=>runId!==batchId)||passed&&batches.length!==1)throw invalidConsumption();
+ return {proof,monitor};
+}
