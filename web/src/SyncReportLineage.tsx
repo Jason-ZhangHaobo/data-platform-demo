@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { checkedSyncReportLineage } from "../../src/v2/published-report-client.mjs";
 import type { PublishedReportReceipt, SyncReportLineage as Lineage } from "../../src/v2/published-report-client.mjs";
+import { FrozenAssetQualityPanel } from "./FrozenAssetQualityPanel";
 
 export function SyncReportLineage({ api, receipt }: {
   api: <T>(path: string) => Promise<T>;
@@ -31,6 +32,10 @@ export function SyncReportLineage({ api, receipt }: {
         {call.applicationStatus === "REVOKED" ? "已撤销" : call.applicationStatus === "EXPIRED" ? "已过期" : "有效"}</li>)}</ul>
       <a className="button" href={"/api/v2"+path+"?download_digest="+value.digest}>下载原批次溯源 JSON</a>
       <a className="button" href={"?module=assets&asset="+encodeURIComponent(value.snapshot.assetId)}>查看原批次资产血缘</a>
+      <FrozenAssetQualityPanel key={value.digest} api={api} canWrite={false} source={{
+        assetId:value.snapshot.assetId,batchId:value.source.batchId,releaseId:value.source.releaseId,
+        snapshotHash:value.release.snapshotHash,evidenceHash:value.snapshot.contentHash,rowCount:value.snapshot.rowCount,
+      }}/>
     </> : error ? <p role="alert">{error}</p> : <p role="status">正在核对原批次与历史授权…</p>)}
   </section>;
 }

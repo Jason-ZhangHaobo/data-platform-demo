@@ -29,7 +29,8 @@ export function checkedFrozenAssetQuality(value, expected={}) {
       ![value.basisDigest,value.evidenceHash,value.snapshotHash].every(digest) ||
       !Number.isSafeInteger(value.rowCount) || value.rowCount<1 || value.rowCount>1000 ||
       !["PENDING","PASSED","FAILED"].includes(value.status) ||
-      ["assetId","evidenceHash","rowCount"].some(key=>expected[key]!==undefined&&expected[key]!==value[key])) invalid();
+      ["assetId","batchId","releaseId","snapshotHash","evidenceHash","rowCount"]
+        .some(key=>expected[key]!==undefined&&expected[key]!==value[key])) invalid();
   const keys=["protocol","scope","publicDeployed","ruleSet","assetId","batchId","releaseId","snapshotHash","evidenceHash",
     "rowCount","basisDigest","status","actualExecution"];
   if(value.status!=="PENDING") keys.push("checks","checkId","checkedAt","receiptDigest");

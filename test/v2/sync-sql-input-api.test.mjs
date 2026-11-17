@@ -453,6 +453,16 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(pendingQuality.value.status,"PENDING");
     assert.equal(pendingQuality.value.actualExecution,false);
     assert.equal(app.store.list("quality_frozen_asset_check",PROJECT).length,0);
+    const monitoringPath="/operations/overview";
+    const opsBefore=(await request(monitoringPath)).value;
+    const visibleBatches=opsBefore.recentActivity.filter(item=>item.frozenQualitySource);
+    assert.deepEqual(visibleBatches.map(item=>item.id).sort(),batches.map(batch=>batch.id).sort());
+    const matching=visibleBatches.find(item=>item.id===batches[0].id).frozenQualitySource;
+    for(const key of ["assetId","batchId","releaseId","snapshotHash","evidenceHash","rowCount"])
+      assert.equal(matching[key],pendingQuality.value[key]);
+    assert.equal(opsBefore.fullLifecycleE2E,false);
+    const otherOps=(await request(monitoringPath,undefined,undefined,otherIdentity)).value;
+    assert.ok(otherOps.recentActivity.every(item=>!item.frozenQualitySource));
     assert.equal((await request(qualityPath,undefined,undefined,otherIdentity)).status,403);
     assert.equal((await request(qualityPath,undefined,undefined,bearer)).status,403);
     assert.equal((await request(qualityPath,{confirm:true,basisDigest:"0".repeat(64)})).status,409);
@@ -465,6 +475,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.ok(inspected.value.checks.every(check=>check.evaluatedCount===2&&check.passedCount===2&&!check.invalidRowHashes));
     assert.deepEqual((await runQuality()).value,inspected.value);
     assert.deepEqual((await request(qualityPath)).value,inspected.value);
+    assert.deepEqual((await request(monitoringPath)).value,opsBefore);
     assert.equal(app.store.list("quality_frozen_asset_check",PROJECT).length,1);
     const differentQuality=await request("/assets/"+encodeURIComponent("dataset:sync-holdings:"+batches[1].id)+"/quality");
     assert.equal(differentQuality.value.status,"PENDING");

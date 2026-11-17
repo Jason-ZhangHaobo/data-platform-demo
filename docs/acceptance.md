@@ -1150,3 +1150,5 @@ API 的审批请求在 `packageDigest` 和 `reviewId` 外传入 `syncConsent`，
 经原工程师确认后对已保存的输出检查客户编号非空、同批客户编号唯一和资产合计精度。只保存规则结果与行数摘要。检测前核对原资产摘要，完成后回查原回执。完整开发、Spark、发布和 E2E 验收仍按各自流程。
 
 API 为 `GET /api/v2/assets/{frozenAssetId}/quality`。明确确认用同一路径 POST，提交 `confirm` 和 GET 返回的 `basisDigest`。CLI `shuduo assets quality --id` 与 MCP `asset_quality_receipt` 使用同一只读校验。本机冻结资产继承原账号边界，调用不给其他批次产生结果。
+
+原报表的冻结溯源以及运维中的原批次运行活动也能打开此质量回执。两处都先核对所属批次，再逐项核对原发布、输入快照和输出摘要。查看与刷新只发读取请求。监控活动仍按实际调度状态显示，消费与完整评测沿用独立证据。

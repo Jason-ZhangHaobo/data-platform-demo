@@ -4,21 +4,22 @@ import type {FrozenAssetQuality,FrozenQualitySource} from "../../src/v2/frozen-a
 
 type Api=<T>(path:string,body?:unknown)=>Promise<T>;
 
-export function FrozenAssetQualityPanel({api,source,canWrite}:{api:Api;source:FrozenQualitySource;canWrite:boolean}) {
-  const {assetId,evidenceHash,rowCount}=source;
-  const [open,setOpen]=useState(false),[cycle,setCycle]=useState(0);
+export function FrozenAssetQualityPanel({api,source,canWrite,initiallyOpen=false}:
+  {api:Api;source:FrozenQualitySource;canWrite:boolean;initiallyOpen?:boolean}) {
+  const {assetId,batchId,releaseId,snapshotHash,evidenceHash,rowCount}=source;
+  const [open,setOpen]=useState(initiallyOpen),[cycle,setCycle]=useState(0);
   const [result,setResult]=useState<FrozenAssetQuality>(),[error,setError]=useState("");
   const [busy,setBusy]=useState(false),generation=useRef(0),inFlight=useRef(false);
   useEffect(()=>{
     if(!open)return;
     const current=++generation.current;
     setResult(undefined);setError("");setBusy(false);
-    void readFrozenAssetQuality({request:path=>api(path)},{assetId,evidenceHash,rowCount}).then(
+    void readFrozenAssetQuality({request:path=>api(path)},{assetId,batchId,releaseId,snapshotHash,evidenceHash,rowCount}).then(
       value=>{if(generation.current===current)setResult(value);},
       cause=>{if(generation.current===current)setError((cause as Error).message);},
     );
     return()=>{generation.current++;inFlight.current=false;};
-  },[api,assetId,evidenceHash,rowCount,open,cycle]);
+  },[api,assetId,batchId,releaseId,snapshotHash,evidenceHash,rowCount,open,cycle]);
   async function run() {
     if(!canWrite||!open||result?.status!=="PENDING"||inFlight.current)return;
     const current=generation.current,basisDigest=result.basisDigest;

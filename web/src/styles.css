@@ -7652,6 +7652,10 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ops-activity-v2 article .ops-quality-link-v2 {
+  grid-column: 2;
+  justify-self: start;
+}
 .ops-activity-v2 article code {
   grid-column: 2;
   color: #788575;

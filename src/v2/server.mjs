@@ -3832,8 +3832,8 @@ export function createV2Server(options = {}) {
       const opsSession = () => auth.sessionFromHeaders(req.headers);
       const canReadOpsSource = (kind, item) => {
         if (kind === "report_run" && !canReadReport(item)) return false;
-        if (local) return true;
         if (kind === "release_run") return canReadDelivery(kind, item);
+        if (local) return true;
         if (kind === "report_run") return reports.canReadRun(item);
         if (kind === "run") return Boolean(item && mayReadRun(item, opsSession()));
         return true;
@@ -3844,14 +3844,24 @@ export function createV2Server(options = {}) {
           task.submittedBy === session.user.id &&
           (!task.diagnosis || operations.canReadIncident(store.get("ops_incident", task.diagnosis.incidentId, PROJECT), canReadOpsSource)));
       };
-      if (path === "/api/v2/operations/overview" && method === "GET")
+      if (path === "/api/v2/operations/overview" && method === "GET") {
+        const overview=operations.overview(canReadOpsSource);
+        const recentActivity=syncSqlLocal&&isLoopbackRequest(req)?overview.recentActivity.map(item=>{
+          if(item.kind!=="release_run"||item.status!=="SUCCEEDED")return item;
+          const batch=store.get("release_run",item.id,PROJECT),sync=batch?.source?.syncInput;
+          if(!sync||!batch.published||!batch.schedulerTriggered||!batch.validation?.passed||
+             !Array.isArray(batch.rows)||batch.rows.length<1||batch.rows.length>1000)return item;
+          return {...item,frozenQualitySource:{assetId:syncReportAssetId(batch.id),batchId:batch.id,releaseId:batch.releaseId,
+            snapshotHash:sync.snapshotHash,evidenceHash:publishedReportHash(batch.rows),rowCount:batch.rows.length}};
+        }):overview.recentActivity;
         return json(res, 200, {
-          ...operations.overview(canReadOpsSource),
+          ...overview,recentActivity,
           externalModelContextAllowed: Boolean(
             options.opsPlanner ||
               env.V2_ALLOW_EXTERNAL_OPS_CONTEXT === "true",
           ),
         });
+      }
       if (path === "/api/v2/operations/refresh" && method === "POST") {
         await readBody(req);
         return json(res, 200, operations.refresh(canReadOpsSource));

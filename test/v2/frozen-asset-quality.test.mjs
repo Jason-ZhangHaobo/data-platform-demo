@@ -23,6 +23,9 @@ test("a failed frozen quality check remains failed on recheck, without running t
   const settled=frozenAssetQuality(run);
   assert.equal(settled.status,"FAILED");
   assert.deepEqual(settled.checks.map(check=>check.status),["PASSED","FAILED","FAILED"]);
+  assert.equal(checkedFrozenAssetQuality(settled,{batchId:batch.id,releaseId:batch.releaseId,snapshotHash:"a".repeat(64)}).status,"FAILED");
+  assert.throws(()=>checkedFrozenAssetQuality(settled,{releaseId:randomUUID()}));
+  assert.throws(()=>checkedFrozenAssetQuality(settled,{snapshotHash:"b".repeat(64)}));
   assert.deepEqual(frozenAssetQuality(input),settled);
   assert.deepEqual(frozenAssetQuality(run),settled);
   assert.equal(passes,3);
