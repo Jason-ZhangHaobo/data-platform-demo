@@ -156,9 +156,11 @@ test("the read-only listener serves the same public files with a returning sessi
   const html = await read("/v2/?module=agent-center");
   assert.equal(await html.text(),"<html>Fictional cloud startup</html>");
   assert.equal(html.headers.get("cache-control"),"no-cache");
+  assert.match(html.headers.get("server-timing"),/^shuduo_index_opening;dur=\d+\.\d$/);
   const script=await read("/v2/assets/index-FictionalHash.js",{headers:{origin:base}});
   assert.equal(await script.text(),"export const sample = true;");
   assert.match(script.headers.get("cache-control"),/immutable/);
+  assert.equal(script.headers.get("server-timing"),null);
   const catalog=await (await read("/api/v2/contexts")).json();
   assert.ok(catalog.some(context=>context.id==="holdings-t1"));
   const [sessionCookie,csrfCookie]=session.cookies.map(cookie=>cookie.split(";",1)[0]);
@@ -181,6 +183,7 @@ test("the read-only listener serves the same public files with a returning sessi
   for (const path of ["/api/v2/status?include=session","/api/v2/auth/session","/api/v2/agent/tasks"]) {
     const pending = await read(path,returning);
     assert.equal(pending.status,503);
+    assert.equal(pending.headers.get("server-timing"),null);
     assert.equal(pending.headers.get("retry-after"),"1");
     assert.equal((await pending.json()).code,"CLOUD_STARTUP_PENDING");
   }
@@ -195,6 +198,9 @@ test("the read-only listener serves the same public files with a returning sessi
   const boot = await listener.ready;
   assert.equal(boot.app.server,listener.server);
   assert.equal(listener.server.listenerCount("request"),1);
+  const readyPage=await read("/v2/?module=agent-center");
+  assert.equal(await readyPage.text(),"<html>Fictional cloud startup</html>");
+  assert.match(readyPage.headers.get("server-timing"),/^shuduo_index_ready;dur=\d+\.\d$/);
   assert.deepEqual(await (await read("/api/v2/contexts")).json(),catalog);
   const delivered=await event;
   assert.equal(delivered.status,200);

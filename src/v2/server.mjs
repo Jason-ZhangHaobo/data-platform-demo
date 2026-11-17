@@ -1734,6 +1734,7 @@ export function createV2Server(options = {}) {
     localClassicSpark ? classicContextIds.map(publicContext) : publicV2Contexts();
   const prefetchedPrivateInputs=new WeakMap();
   const handleRequest = async (req, res) => {
+    const started = performance.now();
     try {
       const ingressChannel = options.ingress?.assertRequest(req);
       const url = new URL(req.url, "http://localhost"),
@@ -1880,7 +1881,7 @@ export function createV2Server(options = {}) {
       };
       assertV2RequestScope(req, { env, local });
       if (method === "GET" && !path.startsWith("/api/v2"))
-        return await serveV2Static(res, root, path, req.headers["accept-encoding"]);
+        return await serveV2Static(res, root, path, req.headers["accept-encoding"], publicReadOnly ? {started,phase:"ready"} : undefined);
       // This admitted HTTP read serves built-in fixtures independent of project state.
       if (isPublicContextRead(req, ingressChannel)) return json(res, 200, fixtureContexts());
       if (typeof persistence.refresh === "function") await persistence.refresh();

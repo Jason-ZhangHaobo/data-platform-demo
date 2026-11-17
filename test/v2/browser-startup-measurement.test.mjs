@@ -135,6 +135,18 @@ test("an empty document, destroyed context, or old same-URL document never trigg
   ]);
 });
 
+test("the sample preserves only the public HTML handler timing and still applies the browser target", async () => {
+  const opening={phase:"opening",durationMs:1.2},ready={phase:"ready",durationMs:2.5};
+  const visits=[{...first,indexTiming:{...opening,ignored:"fixture"}},{...revisit,indexTiming:ready,changedMs:3500},readback];
+  const report=await measureAgentStartup(sampleFixture(visits).session,{origin,networkLabel:"wifi",entry});
+  assert.deepEqual(report.reads.map(view=>view.indexTiming),[opening,ready]);
+  assert.equal(report.threeSecondTargetMet,false);
+  for(const indexTiming of [{phase:"unknown",durationMs:0},{phase:"ready",durationMs:-1}]){
+    const {session}=sampleFixture([{...first,indexTiming}]);
+    await assert.rejects(measureAgentStartup(session,{origin,networkLabel:"wifi",entry}),{code:"BROWSER_SAMPLE_INVALID"});
+  }
+});
+
 test("an entry mismatch stops without refreshing or reading from the wrong bytes", async () => {
   const {session,steps}=sampleFixture([{...first,status:"ENTRY_SCRIPT_MISMATCH"}]);
   const report=await measureAgentStartup(session,{origin,networkLabel:"wifi",entry});

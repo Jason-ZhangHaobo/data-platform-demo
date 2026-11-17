@@ -90,9 +90,15 @@ async function waitForOpeningDocument(session, expectedUrl, previousTimeOrigin) 
 function observeInPage(expectedUrl, expectedScript, timeOrigin, done) {
   const deadline = performance.now() + 12000;
   const timing = performance.getEntriesByType("navigation")[0];
+  const indexTimings = Array.from(timing?.serverTiming ?? []).filter(entry =>
+    entry.name === "shuduo_index_opening" || entry.name === "shuduo_index_ready");
   const samples = { timeOrigin:performance.timeOrigin, htmlFirstByteMs:Math.round(timing?.responseStart ?? 0),
     observationStartedMs:Math.round(performance.now()), openingDocumentLoading:document.readyState === "loading",
     viewport:{width:innerWidth,height:innerHeight} };
+  if (indexTimings.length === 1) {
+    const {name, duration}=indexTimings[0];
+    samples.indexTiming={phase:name.slice("shuduo_index_".length),durationMs:duration};
+  }
   let selected, initialDefinition;
   function tick() {
     if (location.href !== expectedUrl || performance.timeOrigin !== timeOrigin)
@@ -203,10 +209,12 @@ export async function measureAgentStartup(session, { origin, networkLabel, entry
     requireCondition(view && ["OBSERVED","NAVIGATION_NOT_CONFIRMED","ENTRY_SCRIPT_MISMATCH",
       "SELECTION_OR_GUEST_UNCONFIRMED","FIRST_SCREEN_UNCONFIRMED"].includes(view.status),"BROWSER_SAMPLE_INVALID");
     const {status,timeOrigin,htmlFirstByteMs,viewport,from,to,selectableMs,changedMs,stage,guestReadOnly,contextsEndMs,
-      observationStartedMs,openingDocumentLoading,changedBeforeDOMContentLoaded,guestReadyMs}=view;
+      observationStartedMs,openingDocumentLoading,changedBeforeDOMContentLoaded,guestReadyMs,indexTiming}=view;
     requireCondition(Number.isFinite(timeOrigin) && timeOrigin>0 && Number.isFinite(htmlFirstByteMs) && htmlFirstByteMs>=0 &&
       Number.isFinite(observationStartedMs) && observationStartedMs>=0 && typeof openingDocumentLoading==="boolean" &&
       Number.isInteger(viewport?.width) && viewport.width>0 && Number.isInteger(viewport?.height) && viewport.height>0 &&
+      (indexTiming === undefined || ["opening","ready"].includes(indexTiming?.phase) &&
+        Number.isFinite(indexTiming.durationMs) && indexTiming.durationMs >= 0) &&
       (status==="NAVIGATION_NOT_CONFIRMED" || timeOrigin===confirmed) &&
       (status!=="OBSERVED" || guestReadOnly===true &&
         typeof from==="string" && /^[a-z0-9-]{1,100}$/.test(from) &&
@@ -218,7 +226,9 @@ export async function measureAgentStartup(session, { origin, networkLabel, entry
     "BROWSER_SAMPLE_INVALID");
     reads.push({visit,status,timeOrigin,htmlFirstByteMs,viewport:{width:viewport.width,height:viewport.height},
       observationStartedMs,openingDocumentLoading,from,to,selectableMs,changedMs,stage,guestReadOnly,contextsEndMs,
-      changedBeforeDOMContentLoaded,guestReadyMs});
+      changedBeforeDOMContentLoaded,guestReadyMs,...(indexTiming && {
+        indexTiming:{phase:indexTiming.phase,durationMs:indexTiming.durationMs},
+      })});
     if (status==="NAVIGATION_NOT_CONFIRMED" || status==="ENTRY_SCRIPT_MISMATCH") break;
     readbackOrigin = confirmed;
   }

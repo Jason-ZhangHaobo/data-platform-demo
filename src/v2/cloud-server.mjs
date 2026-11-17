@@ -203,6 +203,7 @@ export function startCloudV2Listener(env = process.env, {
     }
   })();
   const opening = async (req, res) => {
+    const started = performance.now();
     try {
       const channel = ingress.assertRequest(req);
       assertV2RequestScope(req, { env, local: false });
@@ -214,7 +215,7 @@ export function startCloudV2Listener(env = process.env, {
       // fixtures. Session-bearing requests receive those same public bytes.
       if (!stopped && publicOpeningRead && req.headers.authorization === undefined) {
         if (catalog) return startupResponse(res, 200, publicV2Contexts());
-        return await serveV2Static(res, options.root ?? process.cwd(), path, req.headers["accept-encoding"]);
+        return await serveV2Static(res, options.root ?? process.cwd(), path, req.headers["accept-encoding"], {started,phase:"opening"});
       }
       // Marked events and public reads carrying explicit authorization use
       // the recovered application.
