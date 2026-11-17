@@ -1,13 +1,20 @@
-import {useEffect, useState} from "react";
+import {lazy, Suspense, useEffect, useState} from "react";
 import {batchServiceHistoryHref, batchServiceHistoryTarget, publicationBatchReportHref, publicationMonitorHref, readOpsPublication} from "./ops-publication";
 import {checkedBatchConsumption} from "./agent-delivery-evidence-read";
 import {serviceEvidencePath,serviceHandoffLocation} from "./service-source-binding";
 import {applicationStatusText} from "./service-consumption-scope";
 import "./agent-development.css";
 
+const AgentConsumptionPanel=lazy(()=>import('./AgentConsumptionPanel'));
+
 type Reader = <T>(path:string)=>Promise<T>;
 
-export default function BatchServiceHistory({api,workspaceAvailable}:{api:Reader;workspaceAvailable:boolean}) {
+type Props={api:Reader;workspaceAvailable:boolean};
+export default function BatchServiceHistory(props:Props){
+  return new URLSearchParams(location.search).get('agent_consumption_view')==='receipt'?<Suspense fallback={<p role="status">正在读取原委托…</p>}><AgentConsumptionPanel api={props.api}/></Suspense>:<ReleaseBatchHistory {...props}/>;
+}
+
+function ReleaseBatchHistory({api,workspaceAvailable}:Props) {
   const href=window.location.href;
   const target=batchServiceHistoryTarget(href);
   const [refresh,setRefresh]=useState(0);

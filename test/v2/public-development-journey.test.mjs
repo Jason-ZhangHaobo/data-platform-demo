@@ -623,6 +623,7 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   assert.equal(app.body.application.issuanceEvidence,undefined);
   let agentRequestId;
   if(agentConsumption||withAgentEvidence){
+    assert.equal((await f.call('/auth/session')).body.consumptionPlan.agentConsumptionAvailable,true);
     f.alignWallClock();
     const path='/data-services/agent/consumption-jobs',requestId=randomUUID(),receiptPath=path+'/'+requestId;
     const binding={sourceBinding:{taskId,releaseId,packageDigest,sourceReleaseRunId:batchId},applicationId:app.body.application.id,
@@ -690,6 +691,7 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
       f.env.V2_PRIVATE_DATA_SERVICES_ENABLED='false';
       delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
       await f.restart();
+      assert.equal((await f.call('/auth/session')).body.consumptionPlan?.agentConsumptionAvailable,undefined);
       assert.deepEqual((await f.call(receiptPath)).body,completed.body);
       assert.equal((await fetch(f.base+receiptPath)).status,401);
       const other=f.addAdmin({email:'other-agent-consumption@example.invalid',password:'SyntheticJourney!2026',displayName:'另一位虚构工程师'});

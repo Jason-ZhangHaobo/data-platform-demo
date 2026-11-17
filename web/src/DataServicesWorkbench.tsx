@@ -2,6 +2,8 @@ import {distributionMetadataById} from "../../src/v2/output-contract-metadata.mj
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 const ServiceContractGatesPanel=lazy(async()=>({default:(await import('./ServiceContractGatesPanel')).ServiceContractGatesPanel}));
 import { EvidenceDownload, requestTextDownload } from "./EvidenceDownload";
+import {agentConsumptionRequestParam,agentConsumptionTarget} from "./agent-consumption-view";
+const AgentConsumptionPanel=lazy(()=>import('./AgentConsumptionPanel'));
 import { isFundContext } from "../../src/v2/fund-contexts.mjs";
 import { compositionChoices, fundContractId } from "./service-composition";
 import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
@@ -310,6 +312,8 @@ export function DataServicesWorkbench({
   const scopedDapis=services.filter(s=>s.serviceType==="DAPI"),scopedXapis=services.filter(s=>s.serviceType==="XAPI");
   const visibleApplications=bindingDeclared?applications.filter(a=>a.serviceIds.length>0&&a.serviceIds.every(id=>services.some(s=>s.id===id))):applications;
   const scopedApplications=consumptionScope?visibleApplications.filter(a=>scopePlan&&a.pilotId===consumptionScope.pilotId&&a.name===scopePlan.applicationName&&a.serviceIds.length>0&&a.serviceIds.every(id=>services.some(s=>s.id===id))):visibleApplications;
+  const agentTarget=dataReady?agentConsumptionTarget(consumptionScope,eligibleRuns.find(run=>run.id===scopePlan?.sourceReleaseRunId),services,scopedApplications):undefined;
+  const activeApplicationStatus=agentTarget?serviceApplicationStatus(agentTarget.application,scopeClock):undefined;
   const plannedDapi=scopePlan?.dapis[plannedDapiIndex];
   const nextPlannedDapi=scopePlan?.dapis.findIndex(d=>!dapis.some(s=>s.slug===d.slug))??-1;
   const dapiAlreadyExists=Boolean(consumptionScope&&plannedDapi&&dapis.some(s=>s.slug===plannedDapi.slug));
@@ -1277,6 +1281,11 @@ LIMIT :limit OFFSET :offset`}</pre>
             </div>
             )}
           {scopedApplications.filter(app=>consumptionScope||!selected||app.serviceIds.includes(selected.id)).map(app=><div key={app.id}><span>{app.name} · {applicationStatusText(serviceApplicationStatus(app,scopeClock))}{app.expiresAt&&<small>到期：{new Date(app.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}</small>}</span><button className="button" disabled={!canWrite||serviceApplicationStatus(app,scopeClock)!=="ACTIVE"||!!busy} onClick={async()=>{if(!canWrite||!scopedApplications.some(a=>a.id===app.id))return;setBusy("revoke");try{await api(`/data-services/applications/${app.id}/revoke`,{});for(const id of app.serviceIds)delete requestKeys.current["app:"+id];setIssuedToken("");await reload();setNotice("凭证已撤销，旧令牌不能继续调用");}catch(e){setError((e as Error).message);}finally{setBusy("");}}}>撤销凭证</button></div>)}
+          {privateCloud&&(agentTarget||new URLSearchParams(location.search).has(agentConsumptionRequestParam))&&
+            <Suspense fallback={<p role="status">正在打开 Agent 消费核验…</p>}>
+              <AgentConsumptionPanel key={scopeKey} api={api} target={agentTarget} applicationStatus={activeApplicationStatus}
+                canAct={canWrite&&!busy&&activeApplicationStatus==='ACTIVE'}/>
+            </Suspense>}
         </article>
       </section></>}
       <footer className="service-boundary">

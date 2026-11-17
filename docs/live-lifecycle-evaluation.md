@@ -256,6 +256,8 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 
 在首次绑定每一批的独立消费报告时，可为 `v3-consumption` 额外提供该批的 `--agent-request-id UUID`。两套回执须通过同一确切任务、发布、交付包、成功批次、授权应用及 DAPI／XAPI 版本对照，调用编号必须分别唯一。`v3-complete` 会按已保存的原请求重新只读核验签名委托和独立 HTTP 回执。已登记的旧外部消费证据保持原版本。两批都匹配时，离线报告显示 `SIGNED_AGENT_AND_INDEPENDENT_HTTP`，保留各自回执。应用按既有调用限额执行两种消费，所需间隔由同一窗口的发布和应用限制决定。此分阶段结果仍独立于全链路自主完成率。
 
+受邀数据服务工作台在原窗口、应用及固定 DAPI／XAPI 均可核验时，提供「委托 Agent 消费」。确认后，页面在提交前保留原请求编号。刷新或响应丢失时按同一编号读取。使用「打开只读回执」可在应用撤销或服务窗口关闭后，以原受邀账号查看原两次调用的版本、行数及摘要。页面不保存令牌和查询数据。
+
 证券持仓类受邀消费窗口可明确委托 Agent 核对同一成功批次的两个接口。`POST /api/v2/data-services/agent/consumption-jobs` 使用原 UUID 幂等编号，正文提供 `sourceBinding`、当前获授权的 `applicationId`、`dapiVersionId` 与 `xapiVersionId`。`shuduo agent consume-services --file EXACT_JSON --request-id UUID --confirm` 与 MCP `service_agent_consume` 复用该协议。签名事件按原角色、授权、发布批次和服务版本各查询一次，并对照登记的独立业务预期及分页。两次调用计入现有限流。`shuduo agent consumption-request --request-id UUID` 或 MCP `service_agent_consumption_request` 可在关窗后由原账号查询，不附带令牌或业务行。原回执结果未知时只查原请求；已有确切记录的接口不会重跑。原 Agent 执行回执单独保留，独立 HTTP 客户端的验收仍走另一路径。
 
 新的受邀签发和成功调用会记录会话签发摘要、受保护的凭证指纹、实际请求参数摘要和服务端受信入口。按原调用编号核对时，独立消费报告的凭证指纹和请求参数必须对应同一发布批次的 DAPI 与 XAPI。内部私有转发不能作为公网 Bearer 调用使用。确切接口版本如果由该批次的设计 Agent 生成并经审阅应用，回执可关联原规划请求及方案摘要。这个来源记录描述接口设计和实际调用入口，自主完成率及独立外部系统仍须各自的验收证据。早于该改动的回执照原格式保留。已有消费来源的 v3 检查点在 `v3-complete` 原批次重验时须再次核对。

@@ -2101,6 +2101,8 @@ export function createV2Server(options = {}) {
         const identity = {user: body.user, role: body.role}, now = options.now?.() ?? Date.now();
         const constrained = {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSessionFor(identity) ?? developmentSessionFor(identity) ??
           (executionUnavailable() ? {permissions:["SESSION"],readOnly:true} : {}))};
+        if(privateServices?.consumptionWake&&constrained.consumptionPlan&&constrained.readOnly===false)
+          constrained.consumptionPlan={...constrained.consumptionPlan,agentConsumptionAvailable:true};
         // The scope projection only exposes these identifiers to the selected
         // administrator. Anonymous/other accounts do not get source metadata.
         if (constrained.publicationOnly && constrained.publicationTaskId && body.user?.id) {
