@@ -14,6 +14,7 @@ import { getContext, validationFamilyForContext } from "../src/v2/context.mjs";
 import { consumerDenialEvidence, validateConsumerSource } from "../src/v2/consumer-source.mjs";
 import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
 import { deliveryPreparationBody, deliveryPreparationHashMatches, deliveryPreparationRequirement } from "../src/v2/delivery-preparation-request.mjs";
+import { validBackgroundPreparationEvidence } from "../src/v2/delivery-preparation-evidence.mjs";
 import { bindExternalConsumption } from "../src/v2/external-consumption-binding.mjs";
 import { liveAgentTaskUrl, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedCloudV3TaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
@@ -487,6 +488,9 @@ function bindRehearsal(item, receipt) {
 function bindOriginalDelivery(item, code, receipt) {
   const action = item.actions.delivery;
   const proof = liveEvidenceProvenance(receipt);
+  const originalPreparation=action.preparationEvidence;
+  const preparing=!item.rehearsal && !item.actions.rehearsal && !item.actions.publication;
+  const preparationEvidence=originalPreparation!==undefined || preparing ? receipt?.preparationEvidence : undefined;
   if (proof.synthetic || proof.nonNative || proof.unconfirmed || !id(receipt?.id) || receipt.mode !== durableDeliveryMode ||
       (action.id !== undefined && action.id !== receipt.id) || receipt.sourceAgentTaskId !== item.taskId ||
       (action.origin === "WORKBENCH" && receipt.sourcePinned !== true) ||
@@ -495,15 +499,19 @@ function bindOriginalDelivery(item, code, receipt) {
       (action.packageId !== undefined && action.packageId !== receipt.packageId) ||
       (action.packageDigest !== undefined && action.packageDigest !== receipt.packageDigest) ||
       !isDeepStrictEqual(receipt.sourceRequirementBinding,deliveryPreparationRequirement(code)) ||
+      (preparationEvidence!==undefined && !validBackgroundPreparationEvidence(preparationEvidence,code,receipt)) ||
+      (originalPreparation!==undefined && !isDeepStrictEqual(originalPreparation,preparationEvidence)) ||
       !bindRehearsal(item,receipt))
     return;
   item.actions.delivery = {...action, id:receipt.id, status:"CONFIRMED",
     packageId:receipt.packageId, packageDigest:receipt.packageDigest,
+    ...(preparationEvidence?{preparationEvidence}:{}),
     ...(receipt.status==="CANCELLED" ? {cancelled:true} : {})};
   return {status:"CONFIRMED", id:receipt.id, packageId:receipt.packageId, packageDigest:receipt.packageDigest,
     ...(Number.isSafeInteger(receipt.version) && receipt.version > 0 ? {version:receipt.version} : {}),
     ...(receipt.stage === "PACKAGE_PERSISTING" ? {storagePending:true} : {}),
     ...(receipt.stage === "PACKAGE_READY" ? {readyForRehearsal:true} : {}),
+    ...(preparationEvidence?{preparationEvidence}:{}),
     ...(item.rehearsal ? {rehearsal:item.rehearsal} : {})};
 }
 

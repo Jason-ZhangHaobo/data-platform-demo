@@ -2183,12 +2183,33 @@ test('a killed publication CLI recovers both original batches through signed sch
 
 test('signed background opt-in prepares one original package and recovers a lost artifact acknowledgement',async t=>{
   const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
-  const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
+  const plan=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}), [definition]=plan.selectedCases;
   const key=randomUUID(),body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
-  f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)));
+  const bodyHash=sha256(JSON.stringify(body));
+  f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),bodyHash);
   await f.restart();
   const created=await f.call('/agent/tasks',body,key);
   assert.equal(created.status,202,created.body.message);
+  const checkpoint=join(f.directory,'background-package-case.json'), evaluationRunId=randomUUID();
+  const startedAt=new Date(f.now()-1000).toISOString(), actor=(await f.call('/auth/session')).body.user;
+  writeFileSync(checkpoint,JSON.stringify({evaluationRunId,contract:plan.contract,startedAt,caseSetDigest:plan.caseSetDigest,
+    caseLimit:1,origin:new URL(f.base).origin,projectId:PROJECT,reviewedSource:'a'.repeat(40),submission:{actorId:actor.id},
+    outcomes:[{...liveCaseCheckpoint(definition,startedAt,plan.caseSetDigest,{contractId:plan.contract.id,evaluationRunId}),
+      phase:'CODE_AND_DEBUG',status:'PAUSED',taskId:created.body.id,
+      actions:{agent:{key,bodyHash,id:created.body.id,status:'CONFIRMED'}}}]}),{mode:0o600});
+  const readOnlyClient={baseUrl:f.base,projectId:PROJECT,request:async(path,options)=>{
+    assert.equal(options?.method??'GET','GET');
+    const response=await f.call(path);
+    assert.ok(response.status<300,response.body.message);
+    return response.body;
+  }};
+  const cli=async(action,flags=[],expectedExit=0,path=checkpoint)=>{
+    let output,error;
+    assert.equal(await runV2Cli(['agent',action,'--checkpoint',path,...flags],{},{
+      client:readOnlyClient,output:line=>{output=JSON.parse(line);},error:line=>{error=line;},
+    }),expectedExit,error);
+    return output;
+  };
   const route='/agent/tasks/'+created.body.id, background=route+'/background';
   assert.equal((await f.call(background,{expectedVersion:created.body.version,prepareFiles:'true'})).status,422);
   assert.equal(f.wakes.length,0);
@@ -2222,6 +2243,9 @@ test('signed background opt-in prepares one original package and recovers a lost
   assert.equal(pending.stage,'PACKAGE_PERSISTING');
   assert.equal(pending.sourceRunId,originalRun.id);
   assert.equal(pending.preparationTrigger,'SIGNED_BACKGROUND_EVENT');
+  const unconfirmed=await cli('v3-inspect',['--workbench']);
+  assert.equal(unconfirmed.delivery.storagePending,true);
+  assert.equal(unconfirmed.delivery.preparationEvidence,undefined);
   assert.equal(f.packageWrites(),1);
   const counts=f.counts();
   assert.deepEqual(counts,{modelCalls:1,jobCreates:1});
@@ -2257,6 +2281,26 @@ test('signed background opt-in prepares one original package and recovers a lost
   const evidence=(await f.call('/agent/requests/'+key+'/execution-evidence')).body;
   assert.deepEqual(evidence.originalDelivery,{id:pending.id,requestId:pending.preparationRequestId});
   assert.equal((await f.call('/agent/deliveries/'+pending.id)).body.preparationTrigger,'SIGNED_BACKGROUND_EVENT');
+  const expectedPreparation={trigger:'SIGNED_BACKGROUND_EVENT',taskId:created.body.id,
+    revisionId:pending.sourceRevisionId,revisionHash:pending.sourceSqlHash,
+    developmentRunId:originalRun.id,deliveryId:pending.id,packageId:pending.packageId,packageDigest:pending.packageDigest};
+  assert.deepEqual((await cli('v3-inspect')).delivery.preparationEvidence,expectedPreparation);
+  const confirmedBytes=readFileSync(checkpoint,'utf8');
+  assert.deepEqual(JSON.parse(confirmedBytes).outcomes[0].actions.delivery.preparationEvidence,expectedPreparation);
+  const report=await cli('v3-run');
+  assert.deepEqual(report.cases[0].deliveryPreparationEvidence,expectedPreparation);
+  assert.equal(report.verifiedCloudCaseCount,0);
+  assert.equal((await cli('v3-review')).reason,'CLOUD_REHEARSAL_PENDING');
+  const grant=f.store.get('agent_background',pending.preparationRequestId,PROJECT);
+  f.store.update('agent_background',grant.id,PROJECT,{preparedDelivery:{...grant.preparedDelivery,packageDigest:'0'.repeat(64)}});
+  assert.equal((await cli('v3-inspect')).delivery.status,'UNCONFIRMED');
+  assert.equal((await cli('v3-review')).reason,'ORIGINAL_DELIVERY_PREPARATION_MISMATCH');
+  assert.equal(readFileSync(checkpoint,'utf8'),confirmedBytes);
+  f.store.update('agent_background',grant.id,PROJECT,{preparedDelivery:grant.preparedDelivery});
+  const invalid=JSON.parse(confirmedBytes), invalidPath=join(f.directory,'wrong-background-source.json');
+  invalid.outcomes[0].actions.delivery.preparationEvidence.revisionId=randomUUID();
+  writeFileSync(invalidPath,JSON.stringify(invalid),{mode:0o600});
+  await cli('v3-run',[],1,invalidPath);
   assert.equal(f.store.get('agent_delivery_task',pending.id,PROJECT).stage,'PACKAGE_READY');
   assert.equal(f.store.list('agent_delivery_task',PROJECT).length,1);
   const [artifact]=f.store.list('delivery_package',PROJECT);

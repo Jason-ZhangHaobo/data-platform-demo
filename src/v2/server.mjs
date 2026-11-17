@@ -167,6 +167,7 @@ import{compareSqlRuns}from'./run-comparison.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
 import { storedAgentReviewEvidence } from "./agent-review-evidence.mjs";
 import { storedAgentExecutionEvidence } from "./agent-execution-evidence.mjs";
+import { storedBackgroundPreparationEvidence } from "./delivery-preparation-evidence.mjs";
 import { storedDevelopmentDrivers } from "./agent-execution-drivers.mjs";
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
 import {
@@ -1824,7 +1825,9 @@ export function createV2Server(options = {}) {
         const {verification} = workflowDeliveryEvidence(item);
         const rehearsal = storedFileRehearsal(item,verification);
         const settledFailure = storedFileRehearsalFailure(store,PROJECT,item,verification);
-        return {...publicDeliveryTask(item),...(rehearsal?{rehearsal}:{}),...(settledFailure?{settledFailure}:{})};
+        const preparationEvidence=storedBackgroundPreparationEvidence(store,PROJECT,item);
+        return {...publicDeliveryTask(item),...(rehearsal?{rehearsal}:{}),...(settledFailure?{settledFailure}:{}),
+          ...(preparationEvidence?{preparationEvidence}:{})};
       };
       assertV2RequestScope(req, { env, local });
       if (method === "GET" && !path.startsWith("/api/v2"))

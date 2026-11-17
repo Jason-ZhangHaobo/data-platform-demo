@@ -80,13 +80,25 @@ test("cloud completion cannot be created from consumer matches alone, unsettled 
     consumption:Object.fromEntries(batchIds.map((batchId,index)=>[batchId,{batchId,status:"MATCHED",
       ...Object.fromEntries(["sourceDigest","planDigest","reportDigest","dapiCallIdDigest","xapiCallIdDigest",
         "dapiRowsDigest","xapiRowsDigest"].map((key,offset)=>[key,hex(20+index*10+offset)]))}]))};
-  assert.equal(cloudV3CompletionReceipt(original,item,time(9)).scope,"INVITED_CLOUD_MATCHED");
+  const historical=cloudV3CompletionReceipt(original,item,time(9));
+  assert.equal(historical.scope,"INVITED_CLOUD_MATCHED");
+  assert.equal(historical.deliveryPreparationEvidence,undefined);
   const withSchedule=structuredClone(item);
+  const preparationEvidence={trigger:"SIGNED_BACKGROUND_EVENT",taskId:withSchedule.taskId,
+    revisionId:withSchedule.code.revisionId,revisionHash:withSchedule.code.revisionHash,developmentRunId:withSchedule.code.runId,
+    deliveryId:withSchedule.actions.delivery.id,packageId:withSchedule.actions.delivery.packageId,
+    packageDigest:withSchedule.actions.delivery.packageDigest};
+  withSchedule.actions.delivery.preparationEvidence=preparationEvidence;
   withSchedule.actions.publication.scheduledBatches=batchIds.map((batchId,index)=>({
     batchId,clockMode:"FC_TIMER",scheduledTriggerAt:time(4),triggeredAt:time(5),
     finishedAt:time(6+index),workerResultDigest:hex(60+index),
   }));
-  assert.equal(cloudV3CompletionReceipt(original,withSchedule,time(9)).scope,"INVITED_CLOUD_MATCHED");
+  const receipt=cloudV3CompletionReceipt(original,withSchedule,time(9));
+  assert.equal(receipt.scope,"INVITED_CLOUD_MATCHED");
+  assert.deepEqual(receipt.deliveryPreparationEvidence,preparationEvidence);
+  const incorrectPreparation=structuredClone(withSchedule);
+  incorrectPreparation.actions.delivery.preparationEvidence.packageId=id(25);
+  assert.throws(()=>cloudV3CompletionReceipt(original,incorrectPreparation,time(9)));
   for(const invalidate of [
     batches=>{batches[0].clockMode="MANUAL";},
     batches=>{batches[0].triggeredAt=time(3);},

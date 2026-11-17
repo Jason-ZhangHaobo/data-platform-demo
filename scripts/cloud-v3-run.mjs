@@ -11,6 +11,7 @@ import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
 import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
 import { validStoredCloudV3DevelopmentDrivers } from "../src/v2/cloud-v3-development-drivers.mjs";
 import { validStoredPublicationSchedule } from "../src/v2/cloud-release-evidence.mjs";
+import { validBackgroundPreparationEvidence } from "../src/v2/delivery-preparation-evidence.mjs";
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -116,7 +117,7 @@ function hasReviewedCloudEvidence(state,item,checkedAt) {
 }
 
 export function cloudV3CompletionReceipt(original,first,checkedAt) {
-  const {state,text}=original, action=first.actions?.publication;
+  const {state,text}=original, action=first.actions?.publication, delivery=first.actions?.delivery;
   const batches=action?.batchIds;
   const provenance=liveEvidenceProvenance(first);
   if (provenance.synthetic || provenance.nonNative || provenance.unconfirmed || first.developmentObservation?.provenance==="TEST_HARNESS" ||
@@ -124,6 +125,9 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
       action?.status!=="CONFIRMED" || ![first.taskId,first.code?.revisionId,first.code?.runId,action.id,action.verificationId].every(id) ||
       !digest(first.code?.revisionHash) || !digest(action.packageDigest) ||
       !Array.isArray(batches) || batches.length!==2 || new Set(batches).size!==2 || !batches.every(id) ||
+      (delivery?.preparationEvidence!==undefined &&
+        (delivery.status!=="CONFIRMED" || !validBackgroundPreparationEvidence(delivery.preparationEvidence,first.code,delivery) ||
+         delivery.packageId!==action.packageId || delivery.packageDigest!==action.packageDigest)) ||
       (action.scheduledBatches!==undefined && !validStoredPublicationSchedule(action.scheduledBatches,action)) ||
       !date(checkedAt))
     stop("完成回执缺少原双批证据");
@@ -140,7 +144,8 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
     checkpointDigest:sha256(text),evaluationRunId:state.evaluationRunId,caseSetDigest:state.caseSetDigest,
     caseId:first.caseId,requestDigest:first.requestDigest,taskId:first.taskId,revisionId:first.code?.revisionId,
     developmentRunId:first.code?.runId,packageDigest:action.packageDigest,verificationId:action.verificationId,
-    releaseId:action.id,batchIds:batches,consumptionDigest:sha256(JSON.stringify(proofs))};
+    releaseId:action.id,batchIds:batches,consumptionDigest:sha256(JSON.stringify(proofs)),
+    ...(delivery?.preparationEvidence ? {deliveryPreparationEvidence:delivery.preparationEvidence} : {})};
   return {...body,completionDigest:sha256(JSON.stringify(body))};
 }
 
@@ -214,6 +219,11 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
         (!id(item.taskId) || item.actions.agent.status !== "CONFIRMED" || item.actions.agent.id !== item.taskId ||
          item.code?.taskId !== item.taskId || !validStoredCloudV3DevelopmentDrivers(item.developmentDriverEvidence,item.code)))
       stop("原任务、版本或批次的执行触发证据不一致");
+    const delivery=item.actions.delivery;
+    if (delivery?.preparationEvidence!==undefined &&
+        (delivery.status!=="CONFIRMED" || item.code?.taskId!==item.taskId ||
+         !validBackgroundPreparationEvidence(delivery.preparationEvidence,item.code,delivery)))
+      stop("原交付的后台准备证据不一致");
     const publication=item.actions.publication;
     if (publication?.scheduledBatches!==undefined &&
         (publication.status!=="CONFIRMED" || !id(publication.id) || !digest(publication.packageDigest) ||
@@ -344,6 +354,8 @@ function cloudV3CaseProgress(fullPlan,entries) {
       return {...item,status,creationStatus:existing.item.actions.agent.status,phase:existing.item.phase,
         ...(existing.completion ? {evidenceScope:existing.completion.scope} : {checkpointStage:stage}),
         ...(existing.item.developmentDriverEvidence ? {developmentDriverEvidence:existing.item.developmentDriverEvidence} : {}),
+        ...(existing.item.actions.delivery?.preparationEvidence ?
+          {deliveryPreparationEvidence:existing.item.actions.delivery.preparationEvidence} : {}),
         ...(publication?.scheduledBatches ? {publicationScheduleEvidence:{
           releaseId:publication.id,packageDigest:publication.packageDigest,batches:publication.scheduledBatches,
         }} : {}),
