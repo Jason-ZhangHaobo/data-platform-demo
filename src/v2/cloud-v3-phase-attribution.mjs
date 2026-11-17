@@ -7,6 +7,7 @@ import {validStoredPublicationSchedule} from './cloud-release-evidence.mjs';
 import {validBatchConsumptionAttribution} from './service-consumption-attribution.mjs';
 import {liveEvidenceAttribution} from './live-lifecycle-provenance.mjs';
 import {validBackgroundRehearsalEvidence} from './rehearsal-wake.mjs';
+import {storedAgentConsumptionProofs} from './cloud-v3-agent-consumption.mjs';
 
 const id=value=>typeof value==='string'&&uuid.test(value);
 const digest=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
@@ -27,6 +28,7 @@ function consumptionOrigin(item, publication) {
   if (!proofs.every((proof,index)=>proof?.batchId===ids[index]&&['MATCHED','MATCHED_ONLY'].includes(proof.status)&&
       digest(proof.dapiCallIdDigest)&&digest(proof.xapiCallIdDigest))) return pending;
   if (new Set(proofs.flatMap(proof=>[proof.dapiCallIdDigest,proof.xapiCallIdDigest])).size!==4)return unrecorded;
+  if(storedAgentConsumptionProofs(item)?.length===2)return 'SIGNED_AGENT_AND_INDEPENDENT_HTTP';
   return proofs.every(proof=>validBatchConsumptionAttribution(proof.attribution,proof)&&
     ['dapi','xapi'].every(type=>proof.attribution[type].evidence.channel==='BEARER_HTTP'))
     ? 'AUTHENTICATED_HTTP_CALLER_UNCONFIRMED' : 'MATCHED_RESULTS_CALLER_UNCONFIRMED';
@@ -61,8 +63,9 @@ export function cloudV3PhaseAttribution(item, {approvalTimingVerified=false}={})
     authorizedConsumption: exactPublication?consumptionOrigin(item,publication):pending,
   };
   const expectedOrigins={requirements:'STRUCTURED_MODEL_RESULT',code:signed,sparkDebugging:signed,deliveryFiles:signed,
-    fileRehearsal:signed,publication:'SIGNED_PUBLICATION_WAKE',schedulingAndMonitoring:'FC_TIMER_AND_SIGNED_WORKER_RESULT'};
-  const unconfirmedAutonomousStages=[...Object.keys(expectedOrigins).filter(stage=>phases[stage]!==expectedOrigins[stage]),'authorizedConsumption'];
+    fileRehearsal:signed,publication:'SIGNED_PUBLICATION_WAKE',schedulingAndMonitoring:'FC_TIMER_AND_SIGNED_WORKER_RESULT',
+    authorizedConsumption:'SIGNED_AGENT_AND_INDEPENDENT_HTTP'};
+  const unconfirmedAutonomousStages=Object.keys(expectedOrigins).filter(stage=>phases[stage]!==expectedOrigins[stage]);
   return {phases,executionEvidence:provenance.synthetic||item.developmentObservation?.provenance==='TEST_HARNESS'?'TEST_HARNESS':provenance.unconfirmed?'UNCONFIRMED':'STORED',
     intervention:provenance.engineerRescue?'ENGINEER_RESCUE':provenance.humanClarification?'BUSINESS_CLARIFICATION':
     provenance.nonNative?'NON_NATIVE_SOURCE':'NO_RESCUE_RECORDED',

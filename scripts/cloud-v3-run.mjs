@@ -16,6 +16,7 @@ import { validPublicationInitiation } from "../src/v2/publication-initiation-evi
 import {validBatchConsumptionAttribution} from '../src/v2/service-consumption-attribution.mjs';
 import {cloudV3PhaseAttribution} from '../src/v2/cloud-v3-phase-attribution.mjs';
 import {validBackgroundRehearsalEvidence} from '../src/v2/rehearsal-wake.mjs';
+import {storedAgentConsumptionProofs} from '../src/v2/cloud-v3-agent-consumption.mjs';
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -157,6 +158,8 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
     stop("完成回执缺少原双批证据");
   const scope=cloudV3CompletionScope(state,proofs);
   const attribution=storedConsumptionAttribution(first);
+  const agent=storedAgentConsumptionProofs(first);
+  if(!agent)stop('原签名消费与独立客户端的调用或批次重叠');
   if (scope==="INVITED_CLOUD_MATCHED" && !hasReviewedCloudEvidence(state,first,checkedAt))
     stop("正式云端完成回执缺少原需求、用量、演练、审阅时间或双批监控证据");
   const body={protocol:completionProtocol,scope,checkedAt,
@@ -167,7 +170,7 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
     ...(delivery?.preparationEvidence ? {deliveryPreparationEvidence:delivery.preparationEvidence} : {}),
     ...(first.rehearsal?.initiationEvidence ? {rehearsalInitiationEvidence:first.rehearsal.initiationEvidence} : {}),
     ...(action.initiationEvidence ? {publicationInitiationEvidence:action.initiationEvidence} : {}),
-    ...(attribution.length?{consumptionAttribution:attribution}:{})};
+    ...(attribution.length?{consumptionAttribution:attribution}:{}),...(agent.length?{agentConsumption:agent}:{})};
   return {...body,completionDigest:sha256(JSON.stringify(body))};
 }
 
@@ -194,7 +197,8 @@ function caseEvidenceIdentities(item) {
     ...(Array.isArray(publication?.batchIds)?publication.batchIds:[]),
     ...(Array.isArray(publication?.scheduledBatches)?publication.scheduledBatches.map(batch=>batch.workerResultDigest):[]),
     ...(Array.isArray(publication?.monitoring)?publication.monitoring.map(event=>event?.eventId):[]),
-    ...Object.values(item.consumption??{}).flatMap(proof=>[proof?.dapiCallIdDigest,proof?.xapiCallIdDigest])]
+    ...Object.values(item.consumption??{}).flatMap(proof=>[proof?.dapiCallIdDigest,proof?.xapiCallIdDigest,
+      proof?.agent?.wakeId,proof?.agent?.requestId,proof?.agent?.dapi?.callIdDigest,proof?.agent?.xapi?.callIdDigest])]
     .filter(value=>id(value)||digest(value));
 }
 
@@ -258,6 +262,7 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
           !validPublicationInitiation(publication.initiationEvidence,item.code,publication)))
       stop("原发布请求的发起证据与批准不一致");
     storedConsumptionAttribution(item);
+    if(!storedAgentConsumptionProofs(item))stop('原签名消费与独立客户端的调用或批次重叠');
     const approval=checkpoint.state.submission?.windowApprovalDigest;
     if (approval!==undefined) {
       if (!digest(approval) || approvals.includes(approval)) stop("同一评测不能复用开发窗口审批");
@@ -381,6 +386,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
         : proof.unconfirmed ? "PROVENANCE_UNCONFIRMED" : "ORIGINAL_CHECKPOINT";
       const publication=existing.item.actions.publication;
       const attribution=storedConsumptionAttribution(existing.item);
+      const agent=storedAgentConsumptionProofs(existing.item);
       const phaseAttribution=cloudV3PhaseAttribution(existing.item,{approvalTimingVerified:validCloudV3ApprovalTiming(publication?.approvalTiming)});
       return {...item,status,creationStatus:existing.item.actions.agent.status,phase:existing.item.phase,
         ...(existing.completion ? {evidenceScope:existing.completion.scope} : {checkpointStage:stage}),
@@ -393,6 +399,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
         }} : {}),
         ...(publication?.initiationEvidence ? {publicationInitiationEvidence:publication.initiationEvidence} : {}),
         ...(attribution.length?{consumptionAttribution:attribution}:{}),
+        ...(agent?.length?{agentConsumption:agent}:{}),
         ...(phaseAttribution?{phaseAttribution}:{}),
         ...(status==="CLOUD_CHAIN_VERIFIED" ? {approvalWaitMs:Date.parse(existing.item.actions.publication.approvalTiming.approvedAt)-
           Date.parse(existing.item.actions.publication.approvalTiming.readyAt)} : {})};

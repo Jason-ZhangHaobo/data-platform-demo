@@ -237,6 +237,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
           })});
     }
     return privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId,
+      now,
       getPackage: id => get("delivery_package", id),
       services: manager.list().filter(item => owned(a, item)), ownedService: id => service(a, id),
       getVersion: id => get("data_service_version", id),

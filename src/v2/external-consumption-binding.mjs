@@ -45,7 +45,7 @@ function expectedRequests(plan, metadata) {
   return requests;
 }
 
-function independentResponse(plan, service, query) {
+export function independentConsumerResponse(plan, service, query) {
   const all = [...plan.expectedRows].sort((a, b) => a.client_id.localeCompare(b.client_id)).filter(row => !query.client_id || row.client_id === query.client_id);
   const page = all.slice((query.page - 1) * query.page_size, query.page * query.page_size);
   const projection = (row, fields) => Object.fromEntries(fields.map(field => [field, row[field]]));
@@ -84,7 +84,7 @@ function verifyReport(plan, report, metadata, program) {
     if (denial) check(typeof consumerDenialCodes[expected.check] === "string" &&
       entry.applicationCode === consumerDenialCodes[expected.check], "DENIAL_EVIDENCE_INVALID");
     if (entry.statusCode !== 200) return; // Denials do not prove a returned data version.
-    const response = independentResponse(plan, service, expected.query);
+    const response = independentConsumerResponse(plan, service, expected.query);
     check(entry.versionBindingsVerified === true && entry.childBindingsVerified === (service.type === "XAPI") &&
       (service.type !== "XAPI" || entry.childBindingsDigest === childBindingsDigest) && entry.rowsDigest === hash(response.data) &&
       entry.responseDigest === hash(response) && entry.rowCount === response.data.length && digest(entry.callIdDigest) && !calls.has(entry.callIdDigest), "INDEPENDENT_RESULT_MISMATCH");

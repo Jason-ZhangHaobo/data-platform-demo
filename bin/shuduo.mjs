@@ -86,7 +86,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --reconcile
   shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --reconcile --workbench
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --batch-id ID --out-file ABSOLUTE_PATH
-  shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256
+  shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256 [--agent-request-id UUID]
   shuduo agent consume-services --file EXACT_SOURCE_AND_VERSIONS_JSON --request-id UUID --confirm
   shuduo agent consumption-request --request-id UUID
   shuduo agent v3-complete --checkpoint ABSOLUTE_PATH --first-plan ABSOLUTE_PATH --second-plan ABSOLUTE_PATH --out-file ABSOLUTE_PATH
@@ -701,12 +701,13 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "v3-consumption") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
       const exporting=Object.hasOwn(args,"out_file");
-      const allowed=["checkpoint","base_url",...(exporting?["out_file","batch_id"]:["plan","call_id_digest"])];
+      const allowed=["checkpoint","base_url",...(exporting?["out_file","batch_id"]:["plan","call_id_digest","agent_request_id"])];
       if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length || flags.some(flag=>!allowed.includes(flag)))
         throw Error("消费核验仅接受原批次导出或原报告与调用摘要");
       result=await bindCloudV3Consumption(required(args,"checkpoint"),client,exporting?
         {batchId:required(args,"batch_id"),outFile:required(args,"out_file")}:
-        {planPath:required(args,"plan"),callIdDigest:required(args,"call_id_digest")});
+        {planPath:required(args,"plan"),callIdDigest:required(args,"call_id_digest"),
+          ...(args.agent_request_id===undefined?{}:{agentRequestId:required(args,'agent_request_id')})});
     }
     else if (resource === "agent" && action === "v3-settle-failure") {
       const flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));

@@ -17,6 +17,8 @@ import { deliveryPreparationBody, deliveryPreparationHashMatches, deliveryPrepar
 import { validBackgroundPreparationEvidence } from "../src/v2/delivery-preparation-evidence.mjs";
 import {validBackgroundRehearsalEvidence} from '../src/v2/rehearsal-wake.mjs';
 import { bindExternalConsumption } from "../src/v2/external-consumption-binding.mjs";
+import {agentConsumptionReceiptPath} from '../src/v2/agent-consumption-request.mjs';
+import {agentConsumptionPair,storedAgentConsumptionProofs,verifyAgentConsumptionCall} from '../src/v2/cloud-v3-agent-consumption.mjs';
 import { liveAgentTaskUrl, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedCloudV3TaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-execution.mjs";
@@ -921,24 +923,37 @@ function readOriginalConsumerReport(planPath,state,definition,callIdDigest) {
   return {plan,report,callIdDigest,dapiCallIdDigest:dapi.callIdDigest};
 }
 
-async function checkOriginalConsumerProof(client,{source,selector},{plan,report,callIdDigest,dapiCallIdDigest}) {
+async function checkOriginalConsumerProof(client,{source,selector},{plan,report,callIdDigest,dapiCallIdDigest},agentRequestId) {
   if (!isDeepStrictEqual(source,validateConsumerSource(plan.source))) stop("消费者计划与冻结原批次不一致");
   const evidence=digest=>client.request(serviceSourceReadPath("task-evidence",{...selector,callIdDigest:digest}));
   const [taskEvidence,dapiEvidence]=await Promise.all([evidence(callIdDigest),evidence(dapiCallIdDigest)]);
   const decision=bindExternalConsumption({expectedSource:source,plan,report,taskEvidence,dapiEvidence});
   if (!["MATCHED","MATCHED_ONLY"].includes(decision.status) || decision.callIdDigest!==callIdDigest)
     return {reason:decision.reason};
-  return {proof:{batchId:source.sourceReleaseRunId, status:decision.status, sourceDigest:decision.sourceDigest,
+  const proof={batchId:source.sourceReleaseRunId, status:decision.status, sourceDigest:decision.sourceDigest,
     planDigest:decision.planDigest, reportDigest:decision.reportDigest, xapiCallIdDigest:decision.callIdDigest,
     xapiRowsDigest:decision.rowsDigest, dapiCallIdDigest:decision.dapiCallIdDigest,dapiRowsDigest:decision.dapiRowsDigest,
-    ...(decision.consumptionAttribution?{attribution:decision.consumptionAttribution}:{})}};
+    ...(decision.consumptionAttribution?{attribution:decision.consumptionAttribution}:{})};
+  if(agentRequestId!==undefined){
+    try {
+      const external={dapi:dapiEvidence.services[0],xapi:taskEvidence.services.find(entry=>entry.serviceId===plan.xapi.id)};
+      const job=await client.request(agentConsumptionReceiptPath(agentRequestId));
+      const agent=agentConsumptionPair(job,agentRequestId,source,plan,proof,external);
+      if(!agent)return {reason:'ORIGINAL_AGENT_CONSUMPTION_MISMATCH'};
+      const [agentDapi,agentXapi]=await Promise.all([evidence(agent.dapi.callIdDigest),evidence(agent.xapi.callIdDigest)]);
+      if(!verifyAgentConsumptionCall(agentDapi,'dapi',agent,external.dapi,proof,source)||
+        !verifyAgentConsumptionCall(agentXapi,'xapi',agent,external.xapi,proof,source))return {reason:'ORIGINAL_AGENT_CALL_MISMATCH'};
+      proof.agent=agent;
+    } catch { return {reason:'ORIGINAL_AGENT_CONSUMPTION_UNCONFIRMED'}; }
+  }
+  return {proof};
 }
 
-export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPath,callIdDigest}={}) {
+export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPath,callIdDigest,agentRequestId}={}) {
   return withCloudCheckpoint(path,async()=>{
     const {state,item,definition}=snapshot(client,path);
     if (outFile!==undefined) {
-      if (!id(batchId) || !isAbsolute(outFile)) stop("须提供原发布批次及受保护的导出路径");
+      if (!id(batchId) || !isAbsolute(outFile) || agentRequestId!==undefined) stop("须提供原发布批次及受保护的导出路径");
       const batches=await readVerifiedConsumptionBatches(state,item,client,batchId);
       const {source}=consumptionSourceForBatch(item,batches,batchId);
       writeCheckpoint(outFile,source,true);
@@ -947,12 +962,16 @@ export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPa
     const report=readOriginalConsumerReport(planPath,state,definition,callIdDigest);
     const batches=await readVerifiedConsumptionBatches(state,item,client,report.plan.source.sourceReleaseRunId);
     const source=consumptionSourceForBatch(item,batches,report.plan.source.sourceReleaseRunId);
-    const {proof,reason}=await checkOriginalConsumerProof(client,source,report);
+    const prior=item.consumption?.[source.source.sourceReleaseRunId];
+    if(agentRequestId!==undefined&&(!id(agentRequestId)||prior?.agent&&prior.agent.requestId!==agentRequestId))
+      stop('须使用原批次的签名消费请求编号');
+    const {proof,reason}=await checkOriginalConsumerProof(client,source,report,agentRequestId??prior?.agent?.requestId);
     if (!proof) return result(state,item,"CONSUMPTION_UNCONFIRMED",reason);
-    const prior=item.consumption?.[proof.batchId];
     if (prior && !isDeepStrictEqual(prior,proof)) stop("此批次已有原消费回执，须核对原报告");
     if (!prior) {
-      item.consumption={...item.consumption,[proof.batchId]:proof};
+      const consumption={...item.consumption,[proof.batchId]:proof};
+      if(!storedAgentConsumptionProofs({...item,consumption}))stop('原签名委托或调用不能跨批次复用');
+      item.consumption=consumption;
       writeCheckpoint(path,state);
     }
     return {...result(state,item,"CONSUMPTION_BOUND"),consumption:proof,externalSystemVerified:false,agentIndependentE2E:false};
@@ -987,7 +1006,7 @@ export async function verifyCloudV3Completion(path,client,{firstPlanPath,secondP
         review.verificationId!==action.verificationId || review.verificationId!==item.rehearsal.id)
       stop("原开发、八文件和演练核验未通过");
     for (const [index,batchId] of batches.batchIds.entries()) {
-      const {proof}=await checkOriginalConsumerProof(client,consumptionSourceForBatch(item,batches,batchId),reports[index]);
+      const {proof}=await checkOriginalConsumerProof(client,consumptionSourceForBatch(item,batches,batchId),reports[index],item.consumption[batchId].agent?.requestId);
       if (!proof || !isDeepStrictEqual(proof,item.consumption[batchId]))
         stop("原批次的消费报告或平台回执未通过重验");
     }
