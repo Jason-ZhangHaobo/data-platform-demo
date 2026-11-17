@@ -109,6 +109,12 @@ test("invited asset, report, and service routes cannot read or rematerialize loc
   const overview=(await f.call("/reports/overview",f.reader)).body;
   assert.equal(overview.counts.runs,0);
   assert(!JSON.stringify(overview).includes(id));
+  for(const path of ["/reports/overview","/reports/"+id+"/export","/reports/published/requests/"+randomUUID()+"/export"]){
+    assert.equal((await f.call(path)).status,401);
+    const service=await f.call(path,{authorization:"Bearer "+f.oldGrant.token});
+    assert.equal(service.status,403);
+    assert.equal(service.body.code,"REPORT_SERVICE_CREDENTIAL_FORBIDDEN");
+  }
   assert(!JSON.stringify((await f.call("/operations/overview",f.reader)).body).includes(f.legacyRun.id));
   assert.equal((await f.call("/data-services/dapis",f.reader)).status,403);
   assert.equal((await f.call("/data-services/dapis",f.reader,{sourceReleaseRunId:f.batch.id})).status,403);

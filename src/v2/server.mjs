@@ -152,7 +152,7 @@ import { QualityManager } from "./quality.mjs";
 import { fundReportQuality } from "./fund-report-quality.mjs";
 import { readWealthReportConsumption } from "./wealth-report-consumption.mjs";
 import { SecurityManager } from "./security.mjs";
-import { ReportDataStore, ReportManager } from "./reports.mjs";
+import { hasPublishedBinding, ReportDataStore, ReportManager } from "./reports.mjs";
 import { privateBatchReportQuery, privateBatchReportRoute } from "./private-batch-report-request.mjs";
 import { readPrivateBatchReport } from "./private-batch-report.mjs";
 import { archiveSha, batchArchiveRoute } from "./private-batch-archive-client.mjs";
@@ -1477,7 +1477,13 @@ export function createV2Server(options = {}) {
   const readSyncCalls = evidence => readSyncSqlCallEvidence({store,project:PROJECT,manager:dataServices,evidence});
   const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,reportStore,provenance:reportProvenance,
     resolveSource:resolveLocalReportSource,fundSignedExecutionFor,readSyncCalls,afterStep:options.publishedReportAfterStep});
-  const reportActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
+  const reportActor = req => {
+    if (req.headers.authorization !== undefined) return undefined;
+    const session = auth.sessionFromHeaders(req.headers);
+    if (session) return session.user.id;
+    const attemptedSession = /(?:^|;)\s*shuduo_session\s*(?:=|;|$)/.test(req.headers.cookie ?? "");
+    if (local && !options.ingress && isLoopbackRequest(req) && !attemptedSession) return "local-engineer";
+  };
   const publishedPlanContext=(source,actor)=>{
     if(!local)throw fail(403,'同源报表规划尚只在本机开发边界开放');
     return publishedReportPlanningContext(resolveLocalReportSource(source,actor));
@@ -1864,12 +1870,17 @@ export function createV2Server(options = {}) {
       const visibleServices = type => dataServices.list(type).filter(canReadService);
       const syncSourcesFor = selection => syncSqlServiceSources({ store, project: PROJECT, selection,
         canRead: run => canReadDelivery("release_run", run), certify: certifySyncService });
-      const canReadSyncDataset = dataset => !isSyncAssetId(dataset?.assetId) && !isSyncReportEvidence(dataset?.sourceEvidence) ||
-        syncSqlLocal && isLoopbackRequest(req) && dataset.sourceActorId === reportActor(req);
-      const requireSyncDataset = dataset => {
-        if (!canReadSyncDataset(dataset)) throw fail(404, "未找到本账号的冻结持仓报表");
+      const canReadReportDataset = dataset => {
+        if (!dataset) return false;
+        if (!hasPublishedBinding(dataset)) return true;
+        const owner = reportActor(req);
+        return Boolean(owner && local && !options.ingress && isLoopbackRequest(req) && dataset.sourceActorId === owner &&
+          (syncSqlLocal || !(isSyncAssetId(dataset.assetId) || isSyncReportEvidence(dataset.sourceEvidence))));
       };
-      const canReadSyncReport = report => canReadSyncDataset(typeof report?.datasetId === "string" && store.get("report_dataset", report.datasetId, PROJECT));
+      const requireReportDataset = dataset => {
+        if (!canReadReportDataset(dataset)) throw fail(404, "未找到本账号的报表数据集");
+      };
+      const canReadReport = report => canReadReportDataset(typeof report?.datasetId === "string" && store.get("report_dataset", report.datasetId, PROJECT));
       const deliveryReceipt = item => {
         const {verification} = workflowDeliveryEvidence(item);
         const rehearsal = storedFileRehearsal(item,verification);
@@ -1880,11 +1891,16 @@ export function createV2Server(options = {}) {
           ...(preparationEvidence?{preparationEvidence}:{}),...(rehearsalInitiationEvidence?{rehearsalInitiationEvidence}:{})};
       };
       assertV2RequestScope(req, { env, local });
+      const reportRoute = path === "/api/v2/reports" || path.startsWith("/api/v2/reports/");
+      if (reportRoute && req.headers.authorization !== undefined)
+        throw Object.assign(fail(403,"数据服务凭证无权读取或操作报表"),{code:"REPORT_SERVICE_CREDENTIAL_FORBIDDEN"});
       if (method === "GET" && !path.startsWith("/api/v2"))
         return await serveV2Static(res, root, path, req.headers["accept-encoding"], publicReadOnly ? {started,phase:"ready"} : undefined);
       // This admitted HTTP read serves built-in fixtures independent of project state.
       if (isPublicContextRead(req, ingressChannel)) return json(res, 200, fixtureContexts());
       if (typeof persistence.refresh === "function") await persistence.refresh();
+      if (reportRoute && !reportActor(req))
+        throw Object.assign(fail(401,"请使用原报表账号登录"),{code:"AUTHENTICATION_REQUIRED"});
       const includeSession = method === "GET" && path === "/api/v2/status" &&
         url.searchParams.size === 1 && url.searchParams.get("include") === "session";
       const startupActor = includeSession ? auth.sessionFromHeaders(req.headers) : undefined;
@@ -3397,8 +3413,8 @@ export function createV2Server(options = {}) {
         }
       }
       if (path === "/api/v2/reports/overview" && method === "GET") {
-        const overview = reports.overview(), datasets = overview.datasets.filter(canReadSyncDataset),
-          visible = overview.reports.filter(canReadSyncReport);
+        const overview = reports.overview(), datasets = overview.datasets.filter(canReadReportDataset),
+          visible = overview.reports.filter(canReadReport);
         return json(res, 200, {...overview,datasets,reports:visible,counts:{
           datasets:datasets.length,readyDatasets:datasets.filter(item=>item.status==="READY").length,
           reports:visible.length,verifiedReports:visible.filter(item=>item.status==="VERIFIED_LOCAL").length,
@@ -3509,7 +3525,7 @@ export function createV2Server(options = {}) {
       const reportCreation=path.match(/^\/api\/v2\/reports\/published(?:\/(requests)\/([a-f0-9-]{36})|\/([a-f0-9-]{36})\/(advance))?$/);
       if(reportCreation){
         if(!local)throw fail(403,'确切发布报表创建尚只在本机开发边界开放');
-        const actorId=auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
+        const actorId=reportActor(req);
         if(method==='POST'&&!reportCreation[1]&&!reportCreation[3]){
           const body=await readBody(req);
           requireFundAgentReportOwner(body.source);
@@ -3525,7 +3541,7 @@ export function createV2Server(options = {}) {
         }
       }
       if (path === "/api/v2/reports/datasets" && method === "GET")
-        return json(res, 200, reports.listDatasets().filter(canReadSyncDataset));
+        return json(res, 200, reports.listDatasets().filter(canReadReportDataset));
       if (path === "/api/v2/reports/datasets" && method === "POST") {
         const body = await readBody(req),
           key = text(req.headers["idempotency-key"], 1, 100);
@@ -3549,7 +3565,7 @@ export function createV2Server(options = {}) {
             () => reports.createDataset(body,fixedSource),
           );
         const dataset = reports.datasetDetail(dedup.id);
-        requireSyncDataset(dataset);
+        requireReportDataset(dataset);
         return json(
           res,
           dedup.replayed ? 200 : 201,
@@ -3562,11 +3578,11 @@ export function createV2Server(options = {}) {
       if (reportDatasetRecord) {
         const dataset = reports.datasetDetail(reportDatasetRecord[1]),
           action = reportDatasetRecord[2];
-        requireSyncDataset(dataset);
+        requireReportDataset(dataset);
         if (method === "GET" && !action) return json(res, 200, dataset);
         if (method === "POST" && action === "refresh") {
           await readBody(req);
-          const boundSource=dataset.publishedSource?resolveLocalReportSource(dataset.publishedSource,auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer'):undefined;
+          const boundSource=dataset.publishedSource?resolveLocalReportSource(dataset.publishedSource,reportActor(req)):undefined;
           const asset = boundSource?.asset??assets.detail(dataset.assetId),
             key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
@@ -3585,18 +3601,18 @@ export function createV2Server(options = {}) {
         }
       }
       if (path === "/api/v2/reports" && method === "GET")
-        return json(res, 200, reports.listReports().filter(canReadSyncReport));
+        return json(res, 200, reports.listReports().filter(canReadReport));
       if (path === "/api/v2/reports" && method === "POST") {
         const body = await readBody(req),
           key = text(req.headers["idempotency-key"], 1, 100);
-        if (typeof body.datasetId === "string") requireSyncDataset(store.get("report_dataset",body.datasetId,PROJECT));
+        if (typeof body.datasetId === "string") requireReportDataset(store.get("report_dataset",body.datasetId,PROJECT));
         const dedup = store.deduplicate(
             `${PROJECT}:report:${key}`,
             hash(JSON.stringify(body)),
             () => reports.createReport(body),
           );
         const report = reports.reportDetail(dedup.id);
-        if (!canReadSyncReport(report)) throw fail(404, "未找到本账号的冻结持仓报表");
+        if (!canReadReport(report)) throw fail(404, "未找到本账号的报表");
         return json(
           res,
           dedup.replayed ? 200 : 201,
@@ -3644,8 +3660,8 @@ export function createV2Server(options = {}) {
           schedule("report_agent_plan", task, async (signal) => {
             const context = source ? {publication:publishedPlanContext(source,actor)} : (() => {
               const all = reports.agentContext();
-              return {datasets:all.datasets.filter(dataset=>canReadSyncDataset(store.get("report_dataset",dataset.id,PROJECT))),
-                reports:all.reports.filter(canReadSyncReport)};
+              return {datasets:all.datasets.filter(dataset=>canReadReportDataset(store.get("report_dataset",dataset.id,PROJECT))),
+                reports:all.reports.filter(canReadReport)};
             })(),
               generated = await reportPlanner({
                 message,
@@ -3749,7 +3765,7 @@ export function createV2Server(options = {}) {
         }
         const report = reports.reportDetail(reportRecord[1]),
           action = reportRecord[2];
-        if (!canReadSyncReport(report)) throw fail(404, "未找到本账号的冻结持仓报表");
+        if (!canReadReport(report)) throw fail(404, "未找到本账号的报表");
         if(method==='GET'&&action==='provenance'){
           if(!local)throw fail(403,'报表需求溯源尚仅在本机所属人边界开放');
           const query = url.searchParams;
@@ -3803,7 +3819,7 @@ export function createV2Server(options = {}) {
       }
       const opsSession = () => auth.sessionFromHeaders(req.headers);
       const canReadOpsSource = (kind, item) => {
-        if (kind === "report_run" && !canReadSyncReport(item)) return false;
+        if (kind === "report_run" && !canReadReport(item)) return false;
         if (local) return true;
         if (kind === "release_run") return canReadDelivery(kind, item);
         if (kind === "report_run") return reports.canReadRun(item);
