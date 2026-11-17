@@ -3,6 +3,7 @@ import { fundRehearsalMatchesPlan } from "./fund-delivery.mjs";
 import { uuid } from "./live-lifecycle-checkpoint.mjs";
 import { publicationAttestationKeys } from "./publication-request.mjs";
 import { storedWorkerBatchResult } from "./worker-result-evidence.mjs";
+import { storedPublicationInitiation } from "./publication-initiation-evidence.mjs";
 
 const fail = (status,message) => Object.assign(new Error(message),{status});
 const originalBatchResult = (store,project,run) =>
@@ -139,12 +140,14 @@ export function exactPublicationReceipt(store, project, release, now=Date.now())
       })) monitoring.scheduledBatches=scheduledBatches;
     } else monitoring.status="UNCONFIRMED";
   }
+  const initiationEvidence=storedPublicationInitiation(store,project,release,approvalTiming,monitoring.scheduledBatches);
   return {protocol:"shuduo-cloud-publication-receipt/v1",
     release:{id:release.id, taskId:release.sourceAgentTaskId, sourceRunId:release.sourceRunId,
       sourceRevisionId:release.sourceRevisionId, sourceCodeHash:release.sourceCodeHash, packageId:release.packageId,
       packageDigest:release.packageDigest, verificationId:release.verificationId, reviewDigest:release.reviewDigest,
       reviewId:review.id, approvalId:approval.id, status:release.status, scope:release.scope,
-      businessScheduledFor:release.businessScheduledFor,...(approvalTiming?{approvalTiming}:{})},
+      businessScheduledFor:release.businessScheduledFor,...(approvalTiming?{approvalTiming}:{}),
+      ...(initiationEvidence?{initiationEvidence}:{})},
     runs:runs.map(record=>{
       const run=projectCloudReleaseBatchStage(record,now);
       return {id:run.id,sequence:run.sequence,status:run.status,schedulerTriggered:run.schedulerTriggered,

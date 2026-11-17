@@ -6347,7 +6347,7 @@ export function createV2Server(options = {}) {
           if (publicationAccess && (agent.requestBound === true || agent.derivedFrom) && selector.sourceKind === "AGENT" && !exact)
             throw fail(422,"此任务须先审阅原交付、文件演练及发布预检摘要");
           return json(res,202,await cloudPublication.publish({agent,...selector,attestations:body.attestations,
-            ...(exact?{reviewDigest:body.reviewDigest}:{}),idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
+            ...(exact?{reviewDigest:body.reviewDigest,initiatedBySession:true}:{}),idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
         }
       }
       if (path === "/api/v2/agent/deliveries" && method === "GET") {

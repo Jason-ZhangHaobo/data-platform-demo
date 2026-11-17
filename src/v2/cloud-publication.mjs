@@ -42,7 +42,7 @@ const internalSelector = (selector = {}) => {
   return validatePublicationSelector(input, actorId);
 };
 const clean = item => {
-  const { remoteSubmission, submittedBy, rows, log, stdout, stderr, ...result } = item;
+  const { remoteSubmission, submittedBy, rows, log, stdout, stderr, initiationId, initiationRequestDigest, ...result } = item;
   return Object.hasOwn(result, "validation") ? { ...result, validation: validationWithoutRawComparisons(result.validation) } : result;
 };
 
@@ -191,7 +191,8 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     return release;
   }
   const publicationRequestReceipt = (agentId, requestId, actorId) => exactReceipt(originalRequestRelease(agentId, requestId, actorId));
-  async function publish({ agent, manualDelivery, sourceKind = "AGENT", sourceRunId, packageDigest, verificationId, attestations, reviewDigest, actorId, idempotencyKey }) {
+  async function publish({ agent, manualDelivery, sourceKind = "AGENT", sourceRunId, packageDigest, verificationId, attestations,
+    reviewDigest, actorId, idempotencyKey, initiatedBySession = false }) {
     if (!enabled) throw fail(503, "云端发布驱动尚未配置");
     const subject=standaloneManual?manualDelivery:agent;if(!subject||typeof subject.id!=='string'||standaloneManual&&agent!==undefined)throw fail(422,'发布缺少指定来源任务');
     const publicationScope = { ...identity(subject.id), packageDigest, verificationId };
@@ -248,7 +249,11 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const created = store.deduplicate(key, signature, () => {
       const review = store.create("delivery_review", project, { ...attribution, packageId: item.id, packageDigest, verificationId, status: "REVIEWED", scope: "PRIVATE_CLOUD_TEST", submittedBy: actorId, attestations: confirmed, reviewedAt: stamp() });
       const approval = store.create("release_approval", project, { ...attribution, packageId: item.id, packageDigest, rehearsalId: verificationId, reviewId: review.id, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, status: "APPROVED", scope: "PRIVATE_CLOUD_TEST", submittedBy: actorId, approvedAt: stamp() });
-      const release = store.create("release", project, { ...attribution, mode: cloudPublicationMode, [sourceField]: subject.id, submittedBy: actorId, reviewId: review.id, approvalId: approval.id, packageId: item.id, packageDigest, verificationId, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, businessScheduledFor, status: "WAITING_SCHEDULER", health: "PENDING", scope: "PRIVATE_CLOUD_TEST", runCount: 2, publicDeployed: false, fullLifecycleE2E: false });
+      const initiation=initiatedBySession && reviewDigest && !standaloneManual && sourceKind==="AGENT"
+        ? store.create("release_initiation",project,{trigger:"INVITED_SESSION_CONFIRMATION",requestId:idempotencyKey,actorId,
+          reviewId:review.id,approvalId:approval.id,acceptedAt:stamp()}) : undefined;
+      const release = store.create("release", project, { ...attribution, mode: cloudPublicationMode, [sourceField]: subject.id, submittedBy: actorId, reviewId: review.id, approvalId: approval.id, packageId: item.id, packageDigest, verificationId, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, businessScheduledFor, status: "WAITING_SCHEDULER", health: "PENDING", scope: "PRIVATE_CLOUD_TEST", runCount: 2, publicDeployed: false, fullLifecycleE2E: false,
+        ...(initiation?{initiationId:initiation.id,initiationRequestDigest:hash(idempotencyKey)}:{}) });
       for (let sequence = 1; sequence <= 2; sequence++) store.create("release_run", project, { ...attribution, mode: cloudPublicationMode, [sourceField]: subject.id, submittedBy: actorId, releaseId: release.id, packageId: item.id, packageDigest, sequence, businessScheduledFor, status: "SCHEDULED", schedulerTriggered: false, scheduledTriggerAt: new Date(now() + (sequence - 1) * 60000).toISOString(), published: false, publicDeployed: false });
       return release;
     });

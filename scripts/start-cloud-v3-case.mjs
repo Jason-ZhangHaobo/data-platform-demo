@@ -22,6 +22,7 @@ import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-executi
 import { privateReleasePendingStage } from "../src/v2/private-release-stage.mjs";
 import { liveEvidenceProvenance, nonLiveModelLabel } from "../src/v2/live-lifecycle-provenance.mjs";
 import { publicationAttestationKeys, publicationPreflightPath, publicationReadPath, publicationRequestReceiptPath, workbenchPublicationRequestKey } from "../src/v2/publication-request.mjs";
+import { validPublicationInitiation } from "../src/v2/publication-initiation-evidence.mjs";
 import { normalizeSessionBase } from "../src/v2/session-credential.mjs";
 import { serviceSourceReadPath } from "../src/v2/service-source-request.mjs";
 import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
@@ -761,6 +762,10 @@ function bindPublication(item, receipt) {
   if ((scheduledBatches!==undefined && !validStoredPublicationSchedule(scheduledBatches,{
     batchIds,monitoring:verified,approvalTiming,
   })) || (action.scheduledBatches!==undefined && !isDeepStrictEqual(action.scheduledBatches,scheduledBatches))) return;
+  const initiationEvidence = !action.id || action.initiationEvidence!==undefined ? release.initiationEvidence : undefined;
+  if ((initiationEvidence!==undefined && !validPublicationInitiation(initiationEvidence,item.code,{
+    ...action,id:release.id,approvalId:release.approvalId,approvalTiming,scheduledBatches,
+  })) || (action.initiationEvidence!==undefined && !isDeepStrictEqual(action.initiationEvidence,initiationEvidence))) return;
   const saved = {releaseId:release.id, reviewId:release.reviewId, approvalId:release.approvalId,
     batchIds, status:release.status,
     batches:runs.map(run=>{
@@ -769,10 +774,12 @@ function bindPublication(item, receipt) {
         ...(Number.isFinite(run.reservedDurationMs)&&run.reservedDurationMs>0?{reservedDurationMs:run.reservedDurationMs}:{})};
     }),
     ...(["PENDING","NEEDS_ATTENTION","UNCONFIRMED","VERIFIED"].includes(monitoring?.status)?{monitoringStatus:monitoring.status}:{}),
-    ...(verified?{monitoring:verified}:{}),...(scheduledBatches?{scheduledBatches}:{})};
+    ...(verified?{monitoring:verified}:{}),...(scheduledBatches?{scheduledBatches}:{}),
+    ...(initiationEvidence?{initiationEvidence}:{})};
   item.actions.publication = {...action,id:release.id,status:"CONFIRMED",reviewId:release.reviewId,
     approvalId:release.approvalId,batchIds:saved.batchIds,...(verified?{monitoring:verified}:{}),
     ...(scheduledBatches?{scheduledBatches}:{}),
+    ...(initiationEvidence?{initiationEvidence}:{}),
     ...(approvalTiming ? {approvalTiming} : {}),...(release.status==="CANCELLED" ? {cancelled:true} : {})};
   return saved;
 }

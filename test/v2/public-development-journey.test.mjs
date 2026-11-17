@@ -1178,12 +1178,30 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal((await f.call(publication,{...selector,attestations,reviewDigest:'0'.repeat(64)},randomUUID())).status,409);
   assert.equal(f.store.list('release',PROJECT).length,0);
   const request=cloudPublicationRequest(selector,bundle.id,attestations,preflight.body.reviewDigest);
+  assert.equal((await f.call(publication,{...request.body,initiatedBySession:true},request.idempotencyKey)).status,422);
   const accepted=await f.call(publication,request.body,request.idempotencyKey);
   assert.equal(accepted.status,202,accepted.body.message);
   assert.equal(accepted.body.release.sourceRunId,current.runId);
+  const initialRelease=accepted.body.release;
+  const initiation=initialRelease.initiationEvidence;
+  assert.deepEqual(initiation,{trigger:'INVITED_SESSION_CONFIRMATION',
+    originalRequestDigest:sha256(request.idempotencyKey),acceptedAt:initialRelease.approvalTiming.approvedAt,
+    taskId:created.body.id,revisionId:current.revisionId,developmentRunId:current.runId,
+    releaseId:initialRelease.id,approvalId:initialRelease.approvalId,packageDigest:bundle.digest,
+    reviewDigest:initialRelease.reviewDigest});
+  assert.ok(!JSON.stringify(initialRelease).includes(request.idempotencyKey));
   assert.deepEqual(accepted.body.runs.map(run=>[run.sequence,run.status,run.schedulerTriggered]),[[1,'SCHEDULED',false],[2,'SCHEDULED',false]]);
   const original=await f.call(publicationRequestReceiptPath(created.body.id,request.idempotencyKey));
   assert.deepEqual(original.body,accepted.body);
+  const aliasKey=randomUUID();
+  const alias=await f.call(publication,request.body,aliasKey);
+  assert.equal(alias.status,202);
+  assert.deepEqual(alias.body.release.initiationEvidence,initiation);
+  assert.equal(f.store.list('release_initiation',PROJECT).length,1);
+  const [storedInitiation]=f.store.list('release_initiation',PROJECT);
+  f.store.update('release_initiation',storedInitiation.id,PROJECT,{requestId:aliasKey});
+  assert.equal((await f.call(publicationRequestReceiptPath(created.body.id,request.idempotencyKey))).status,409);
+  f.store.update('release_initiation',storedInitiation.id,PROJECT,{requestId:storedInitiation.requestId});
   assert.equal(f.store.list('release_approval',PROJECT).length,1);
   assert.deepEqual(f.counts(),counts);
 
@@ -1205,6 +1223,7 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.deepEqual(batchIds,accepted.body.runs.map(run=>run.id));
   assert.equal(saved().outcomes[0].actions.publication.key,request.idempotencyKey);
   assert.deepEqual(saved().outcomes[0].actions.publication.approvalTiming,accepted.body.release.approvalTiming);
+  assert.deepEqual(saved().outcomes[0].actions.publication.initiationEvidence,initiation);
   assert.ok(Date.parse(accepted.body.release.approvalTiming.approvedAt)>=Date.parse(accepted.body.release.approvalTiming.readyAt));
   assert.equal(saved().submission.bill.unsettledReserveCny,64);
   const afterPublication=readFileSync(checkpoint,'utf8');
@@ -1314,6 +1333,10 @@ test('a request-bound base task requires the exact verified version for delivery
   const completionFile=join(f.directory,'workbench-completion.json');
   const completionFlags=['--first-plan',consumed[0].flags[1],'--second-plan',consumed[1].flags[1],'--out-file',completionFile];
   const beforeCompletion=readFileSync(checkpoint,'utf8');
+  alter=(path,value)=>{if(path===receiptPath)delete value.release.initiationEvidence;};
+  await cli('v3-complete',completionFlags,1);
+  assert.equal(existsSync(completionFile),false);
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
   alter=(path,value)=>{if(path===receiptPath)delete value.monitoring.scheduledBatches;};
   await cli('v3-complete',completionFlags,1);
   assert.equal(existsSync(completionFile),false);
@@ -1327,6 +1350,7 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal(completion.scope,'LOCAL_MATCHED_ONLY');
   assert.equal(completion.independentlyVerifiedCloudCase,false);
   assert.equal(requests.length,10);
+  assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).publicationInitiationEvidence,initiation);
   assert.deepEqual(f.store.list('service_call',PROJECT),savedCalls);
   assert.deepEqual(f.store.list('service_app',PROJECT),savedApplications);
   const run=await cli('v3-run',['--completion-file',completionFile]);
@@ -1334,6 +1358,7 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal(run.cases[0].status,'LOCAL_MATCHED_ONLY');
   assert.deepEqual(run.cases[0].developmentDriverEvidence,driverEvidence);
   assert.deepEqual(run.cases[0].publicationScheduleEvidence,{releaseId,packageDigest:bundle.digest,batches:scheduledBatches});
+  assert.deepEqual(run.cases[0].publicationInitiationEvidence,initiation);
   assert.equal(run.score.directAutonomousCompletionRate,null);
   assert.equal(run.score.localOnlySuccesses,1);
   assert.equal(run.score.reviewedCloudCompletionRate,null);

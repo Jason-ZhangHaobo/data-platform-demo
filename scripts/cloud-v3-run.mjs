@@ -12,6 +12,7 @@ import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, c
 import { validStoredCloudV3DevelopmentDrivers } from "../src/v2/cloud-v3-development-drivers.mjs";
 import { validStoredPublicationSchedule } from "../src/v2/cloud-release-evidence.mjs";
 import { validBackgroundPreparationEvidence } from "../src/v2/delivery-preparation-evidence.mjs";
+import { validPublicationInitiation } from "../src/v2/publication-initiation-evidence.mjs";
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -129,6 +130,8 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
         (delivery.status!=="CONFIRMED" || !validBackgroundPreparationEvidence(delivery.preparationEvidence,first.code,delivery) ||
          delivery.packageId!==action.packageId || delivery.packageDigest!==action.packageDigest)) ||
       (action.scheduledBatches!==undefined && !validStoredPublicationSchedule(action.scheduledBatches,action)) ||
+      (action.initiationEvidence!==undefined && (first.code?.taskId!==first.taskId ||
+        !validPublicationInitiation(action.initiationEvidence,first.code,action))) ||
       !date(checkedAt))
     stop("完成回执缺少原双批证据");
   const proofs=batches.map(batchId=>first.consumption?.[batchId]);
@@ -145,7 +148,8 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
     caseId:first.caseId,requestDigest:first.requestDigest,taskId:first.taskId,revisionId:first.code?.revisionId,
     developmentRunId:first.code?.runId,packageDigest:action.packageDigest,verificationId:action.verificationId,
     releaseId:action.id,batchIds:batches,consumptionDigest:sha256(JSON.stringify(proofs)),
-    ...(delivery?.preparationEvidence ? {deliveryPreparationEvidence:delivery.preparationEvidence} : {})};
+    ...(delivery?.preparationEvidence ? {deliveryPreparationEvidence:delivery.preparationEvidence} : {}),
+    ...(action.initiationEvidence ? {publicationInitiationEvidence:action.initiationEvidence} : {})};
   return {...body,completionDigest:sha256(JSON.stringify(body))};
 }
 
@@ -229,6 +233,10 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
         (publication.status!=="CONFIRMED" || !id(publication.id) || !digest(publication.packageDigest) ||
           !validStoredPublicationSchedule(publication.scheduledBatches,publication)))
       stop("原发布批次的调度证据不一致");
+    if (publication?.initiationEvidence!==undefined &&
+        (publication.status!=="CONFIRMED" || item.code?.taskId!==item.taskId ||
+          !validPublicationInitiation(publication.initiationEvidence,item.code,publication)))
+      stop("原发布请求的发起证据与批准不一致");
     const approval=checkpoint.state.submission?.windowApprovalDigest;
     if (approval!==undefined) {
       if (!digest(approval) || approvals.includes(approval)) stop("同一评测不能复用开发窗口审批");
@@ -359,6 +367,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
         ...(publication?.scheduledBatches ? {publicationScheduleEvidence:{
           releaseId:publication.id,packageDigest:publication.packageDigest,batches:publication.scheduledBatches,
         }} : {}),
+        ...(publication?.initiationEvidence ? {publicationInitiationEvidence:publication.initiationEvidence} : {}),
         ...(status==="CLOUD_CHAIN_VERIFIED" ? {approvalWaitMs:Date.parse(existing.item.actions.publication.approvalTiming.approvedAt)-
           Date.parse(existing.item.actions.publication.approvalTiming.readyAt)} : {})};
     }

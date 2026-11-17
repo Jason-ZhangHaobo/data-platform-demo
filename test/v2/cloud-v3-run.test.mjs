@@ -83,6 +83,7 @@ test("cloud completion cannot be created from consumer matches alone, unsettled 
   const historical=cloudV3CompletionReceipt(original,item,time(9));
   assert.equal(historical.scope,"INVITED_CLOUD_MATCHED");
   assert.equal(historical.deliveryPreparationEvidence,undefined);
+  assert.equal(historical.publicationInitiationEvidence,undefined);
   const withSchedule=structuredClone(item);
   const preparationEvidence={trigger:"SIGNED_BACKGROUND_EVENT",taskId:withSchedule.taskId,
     revisionId:withSchedule.code.revisionId,revisionHash:withSchedule.code.revisionHash,developmentRunId:withSchedule.code.runId,
@@ -93,9 +94,20 @@ test("cloud completion cannot be created from consumer matches alone, unsettled 
     batchId,clockMode:"FC_TIMER",scheduledTriggerAt:time(4),triggeredAt:time(5),
     finishedAt:time(6+index),workerResultDigest:hex(60+index),
   }));
+  const initiation={trigger:"INVITED_SESSION_CONFIRMATION",originalRequestDigest:hex(73),acceptedAt:time(4),
+    taskId,revisionId:withSchedule.code.revisionId,developmentRunId:withSchedule.code.runId,
+    releaseId:withSchedule.actions.publication.id,approvalId:withSchedule.actions.publication.approvalId,
+    packageDigest:withSchedule.actions.publication.packageDigest,reviewDigest:withSchedule.actions.publication.reviewDigest};
+  withSchedule.actions.publication.initiationEvidence=initiation;
   const receipt=cloudV3CompletionReceipt(original,withSchedule,time(9));
   assert.equal(receipt.scope,"INVITED_CLOUD_MATCHED");
   assert.deepEqual(receipt.deliveryPreparationEvidence,preparationEvidence);
+  assert.deepEqual(receipt.publicationInitiationEvidence,initiation);
+  for(const invalid of [{trigger:"AGENT"}, {approvalId:id(99)}, {acceptedAt:time(6)}]){
+    const wrong=structuredClone(withSchedule);
+    Object.assign(wrong.actions.publication.initiationEvidence,invalid);
+    assert.throws(()=>cloudV3CompletionReceipt(original,wrong,time(9)));
+  }
   const incorrectPreparation=structuredClone(withSchedule);
   incorrectPreparation.actions.delivery.preparationEvidence.packageId=id(25);
   assert.throws(()=>cloudV3CompletionReceipt(original,incorrectPreparation,time(9)));
