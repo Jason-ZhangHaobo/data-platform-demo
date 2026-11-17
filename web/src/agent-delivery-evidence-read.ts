@@ -17,11 +17,23 @@ const count=(v:unknown)=>Number.isSafeInteger(v)&&Number(v)>=0;
 const uniqueIds=(rows:Record<string,unknown>[])=>new Set(rows.map(r=>r.id)).size===rows.length;
 const invalidPublication=()=>Error('发布与监控回执的记录结构或确切来源未确认；保留原记录，只读重查，不自动发布。');
 
-export function checkedExactPublicationReceipt(value:unknown, expected:{taskId:string;revisionId:string;revisionHash:string;runId:string;packageId:string;
- packageDigest:string;verificationId:string;reviewDigest:string}) {
+export type ExactPublicationSource={taskId:string;revisionId:string;revisionHash:string;runId:string;packageId:string;
+ packageDigest:string;verificationId:string;reviewDigest:string};
+
+export function checkedExactPublicationApproval(value:unknown, expected:ExactPublicationSource, window:{startsAt:string;expiresAt:string}) {
+ if(!record(value)||value.protocol!=="shuduo-cloud-publication-approval/v1"||value.status!=="APPROVED"||!id(value.approvalId)||!id(value.reviewId)||
+  value.taskId!==expected.taskId||value.sourceRevisionId!==expected.revisionId||value.sourceCodeHash!==expected.revisionHash||
+  value.sourceRunId!==expected.runId||value.packageId!==expected.packageId||value.packageDigest!==expected.packageDigest||
+  value.verificationId!==expected.verificationId||value.reviewDigest!==expected.reviewDigest||value.releaseId!==undefined||
+  typeof value.approvedAt!=="string"||typeof value.expiresAt!=="string"||Date.parse(value.expiresAt)!==Date.parse(window.expiresAt)||
+  !(Date.parse(window.startsAt)<=Date.parse(value.approvedAt)&&Date.parse(value.approvedAt)<Date.parse(window.expiresAt)))throw invalidPublication();
+ return {approvalId:value.approvalId as string,expiresAt:value.expiresAt};
+}
+
+export function checkedExactPublicationReceipt(value:unknown, expected:ExactPublicationSource, approvalId?:string) {
  if(!record(value)||value.protocol!=="shuduo-cloud-publication-receipt/v1"||!record(value.release)||!Array.isArray(value.runs))throw invalidPublication();
  const release=value.release,runs=value.runs;
- if(!id(release.id)||!id(release.reviewId)||!id(release.approvalId)||release.scope!=="PRIVATE_CLOUD_TEST"||
+ if(!id(release.id)||!id(release.reviewId)||!id(release.approvalId)||approvalId!==undefined&&release.approvalId!==approvalId||release.scope!=="PRIVATE_CLOUD_TEST"||
   release.taskId!==expected.taskId||release.sourceRevisionId!==expected.revisionId||release.sourceCodeHash!==expected.revisionHash||
   release.sourceRunId!==expected.runId||release.packageId!==expected.packageId||release.packageDigest!==expected.packageDigest||
   release.verificationId!==expected.verificationId||release.reviewDigest!==expected.reviewDigest||runs.length!==2||

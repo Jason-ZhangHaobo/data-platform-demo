@@ -22,6 +22,7 @@ import type {FundExecutionBinding} from "../../src/v2/fund-preparation-client.mj
 import {recheckFundRehearsal} from "../../src/v2/fund-rehearsal-recheck.mjs";
 import type {Delivery,Workflow} from "./agent-workflow-read";
 import {checkedAgentPublication,checkedAgentConsumption,checkedExactPublicationReceipt} from "./agent-delivery-evidence-read";
+import {AgentPublicationApprovalActions} from "./AgentPublicationApprovalActions";
 import {publicationPreflightPath,publicationRequestReceiptPath} from "../../src/v2/publication-request.mjs";
 import {publicationMonitorHref} from "./ops-publication";
 import type {Publication,Release} from "./agent-delivery-evidence-read";
@@ -167,6 +168,12 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     && (!publicationTarget || delivery?.verificationId === publicationTarget.verificationId);
   const publicationWritable = (!exactCloudReview || Boolean(publicationTarget)) && publicationWriteAllowed({manual,canPublish,canWrite,cloud,hasSelector:Boolean(selector),targetMatches});
   const reviewedCloud = cloudPreflight?.key === publicationKey ? cloudPreflight.value : undefined;
+  const [confirmedApprovalKey,setConfirmedApprovalKey]=useState<string>();
+  const exactApproval=reviewedCloud?.approvalRequestId && publicationTarget && selector && revisionId && runId && workflow?.report.revisionHash && workflow.package
+    ? {requestId:reviewedCloud.approvalRequestId,window:publicationTarget,source:{taskId,revisionId,runId,revisionHash:workflow.report.revisionHash,
+      packageId:workflow.package.id,packageDigest:selector.packageDigest,verificationId:selector.verificationId,reviewDigest:reviewedCloud.reviewDigest}}
+    : undefined;
+  const exactApprovalKey=exactApproval?JSON.stringify([publicationKey,exactApproval.requestId,exactApproval.source.reviewDigest,exactApproval.window.expiresAt]):undefined;
   const activeReview=useRef({key:publicationKey,allowed:publicationWritable&&publicationReady&&verified&&fileVerified&&!preparationUnknown});
   activeReview.current={key:publicationKey,allowed:publicationWritable&&publicationReady&&verified&&fileVerified&&!preparationUnknown};
   const publicationUnknown=publicationAttempts.current.get(publicationKey)?.snapshot().status==="UNKNOWN";
@@ -304,6 +311,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     } finally { if (alive.current) setBusy(false); }
   }
   async function publishLocal() {
+    if (reviewedCloud?.approvalRequestId) return;
     if (!publicationWritable || working || preparationUnknown || !publicationReady || !workflow?.package || !delivery?.verificationId || !verified || !fileVerified || !workflow.publication.available || fund&&!cloud&&(!fundPreflight||fundPreflight.reviewId!==fileReview?.id||fundPreflight.rehearsalDigest!==rehearsalDigest) || !reviewAttestationsComplete(confirmed, cloud,fund||Boolean(distributionMetadataForContext(contextId)))) return;
     setBusy(true); setError("");
     const bundle = workflow.package,writeKey=publicationKey;
@@ -348,6 +356,15 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
       await api<Release>("/releases", { approvalId: approved.id, ...(fundConsent?.scheduleSpec ?? { triggerAfterSeconds: 5, intervalSeconds: 30, runCount: 2 }) }, { idempotencyKey: `agent-workbench-release-${bundle.id}` });
       publicationReader.current?.invalidate(); setReview(false); await refreshPublication();
     } catch(e) { if(alive.current&&activePublicationKey.current===writeKey){setReview(false);setConfirmed({});setError((e as Error).message + " 只查询当前包的原发布记录；不会自动重发。明确重试仍复用原请求编号和审阅内容，不重新创建批准。"); publicationReader.current?.invalidate(); await refreshPublication();} } finally { if(alive.current)setBusy(false); }
+  }
+  async function checkExactApprovalWrite() {
+    const key=publicationKey;
+    const current=()=>alive.current && activeReview.current.key===key && activeReview.current.allowed &&
+      exactApproval && publicationTargetMatches(exactApproval.window,exactApproval.source);
+    if (!workflow || !selector || !exactApproval || !current()) throw Error("发布窗口已关闭或交付版本已变化。");
+    const next=await checkedCloudPublicationPreflight(await api(publicationPreflightPath(taskId,selector)),workflow);
+    if (!current() || next.reviewDigest!==exactApproval.source.reviewDigest || next.approvalRequestId!==exactApproval.requestId)
+      throw Error("原审阅或批准请求已变化，请关闭后重新打开审阅。");
   }
   useEffect(() => {
     const key=publicationKey;
@@ -447,7 +464,16 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           ? "当前交付与演练暂无发布记录。" : "当前来源、交付包与演练尚未找到发布记录；需逐项审阅确切版本，发布后仍等待受控调度器执行。"}</p>}
         {workflow.publication.available && (!release || !journey.publicationCurrent) && <button className="button primary" disabled={!publicationWritable || preparationUnknown || !fileVerified || !verified || working || !publicationReady || fund&&!cloud&&!fileReview} onClick={() => void openReview()}>{publicationUnknown?"重新审阅并重试原发布请求":"审阅并发布测试任务"}</button>}
         {!fund && !workflow.publication.available && !release && <span className="agent-publication-gate">交付演练通过后进入“待发布”；云端上线尚待完成。</span>}
-        {review && workflow.package && (!exactCloudReview || reviewedCloud) && <AgentPublicationReview cloud={cloud} preflight={reviewedCloud} fund={fundPreflight} distribution={fund||Boolean(distributionMetadataForContext(contextId))} sourceKind={manual?"MANUAL":"AGENT"} originTaskId={taskId} packageDigest={workflow.package.digest} revisionId={delivery?.sourceRevisionId} runId={delivery?.sourceRunId} verificationId={delivery?.verificationId} confirmed={confirmed} disabled={!publicationWritable || working || !publicationReady || !verified || !fileVerified || !workflow.publication.available} onConfirm={(id, checked) => setConfirmed(old => ({...old, [id]:checked}))} onPublish={() => void publishLocal()} onCancel={() => { setReview(false); setConfirmed({}); }} />}
+        {review && workflow.package && (!exactCloudReview || reviewedCloud) && <AgentPublicationReview cloud={cloud} preflight={reviewedCloud} fund={fundPreflight} distribution={fund||Boolean(distributionMetadataForContext(contextId))} sourceKind={manual?"MANUAL":"AGENT"} originTaskId={taskId} packageDigest={workflow.package.digest} revisionId={delivery?.sourceRevisionId} runId={delivery?.sourceRunId} verificationId={delivery?.verificationId} confirmed={confirmed} disabled={!publicationWritable || working || !publicationReady || !verified || !fileVerified || !workflow.publication.available} onConfirm={(id, checked) => setConfirmed(old => ({...old, [id]:checked}))} onPublish={() => void publishLocal()} onCancel={() => { setReview(false); setConfirmed({}); }}
+          approvalSaved={Boolean(exactApprovalKey&&confirmedApprovalKey===exactApprovalKey)}
+          approvalActions={exactApproval&&<AgentPublicationApprovalActions key={exactApprovalKey}
+            requestId={exactApproval.requestId} expected={exactApproval.source} window={exactApproval.window} api={api}
+            disabled={!activeReview.current.allowed||working||!workflow.publication.available} confirmed={reviewAttestationsComplete(confirmed,true)}
+            beforeWrite={checkExactApprovalWrite} onSaved={()=>setConfirmedApprovalKey(exactApprovalKey)} onClose={()=>{setReview(false);setConfirmed({});}} onReleased={releaseId=>{
+              if(!alive.current||activePublicationKey.current!==publicationKey)return;
+              pinnedReleases.current.set(publicationKey,releaseId);setReview(false);setConfirmed({});
+              publicationReader.current?.invalidate();void refreshPublication();
+            }}/>} />}
         {release && <>
           <strong>发布版本 {release.id.slice(0,8)} · {publicationReady ? releaseLabel(release) : "上次读取的记录 · 当前状态未确认"}</strong>
           <p className="agent-publication-id">发布编号：{release.id}</p>

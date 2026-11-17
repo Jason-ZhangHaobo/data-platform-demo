@@ -167,7 +167,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if (evidence.status !== "REVIEW_EVIDENCE_READY") throw fail(409,"原文件演练与开发核验尚未绑定");
     return exactPublicationReviewBasis(evidence,businessSchedule(plan));
   }
-  async function publicationPreflight(agentId, input) {
+  async function publicationPreflight(agentId, input, approvalWindow) {
     const selector = internalSelector(input);
     if (standaloneManual || selector.sourceKind !== "AGENT" || !selector.sourceRunId ||
         !selector.packageDigest || !selector.verificationId || selector.releaseId)
@@ -178,8 +178,24 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     const fresh = reviewedSource(selection);
     if (hash(JSON.stringify(initial)) !== hash(JSON.stringify(fresh)))
       throw fail(409,"发布来源在读取期间变化，请重新核对");
-    return {protocol:"shuduo-cloud-publication-preflight/v1", basis, reviewDigest:hash(JSON.stringify(basis)),
-      package:deliveryArtifactValue(fresh.item), schedulerAvailable:enabled};
+    const reviewDigest=hash(JSON.stringify(basis));
+    let approvalRequestId;
+    if (approvalWindow && enabled && approvalWindow.startsAt<=now() && now()<approvalWindow.expiresAt &&
+        get("agent",agentId).submittedBy===selector.actorId) {
+      const saved=store.list("release_approval",project).find(record=>
+        record.agentTaskId===agentId && record.submittedBy===selector.actorId && record.packageDigest===selector.packageDigest &&
+        isDeepStrictEqual(record.publicationWindow,approvalWindow));
+      if (saved) {
+        const original=originalSeparateApproval(agentId,saved.approvalRequestId,selector.actorId).approval;
+        if (original.id!==saved.id || original.reviewDigest!==reviewDigest || original.rehearsalId!==selector.verificationId)
+          throw fail(409,"原批准与当前审阅不一致");
+        approvalRequestId=saved.approvalRequestId;
+      } else {
+        approvalRequestId=`approval-${hash(JSON.stringify([agentId,selector.actorId,reviewDigest,approvalWindow]))}`;
+      }
+    }
+    return {protocol:"shuduo-cloud-publication-preflight/v1", basis, reviewDigest,
+      package:deliveryArtifactValue(fresh.item), schedulerAvailable:enabled,...(approvalRequestId?{approvalRequestId}:{})};
   }
   function originalRequestRelease(agentId, requestId, actorId) {
     if (standaloneManual || !identifier(requestId) || !actorId || get("agent",agentId).submittedBy !== actorId)
@@ -229,7 +245,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     if (!enabled) throw fail(503, "云端发布驱动尚未配置");
     const subject=standaloneManual?manualDelivery:agent;if(!subject||typeof subject.id!=='string'||standaloneManual&&agent!==undefined)throw fail(422,'发布缺少指定来源任务');
     const separate=approvalOnly!==undefined || approvalId!==undefined;
-    if (separate && (standaloneManual || sourceKind!=="AGENT" || !reviewDigest || !initiatedBySession ||
+    if (separate && (standaloneManual || sourceKind!=="AGENT" || !reviewDigest || !initiatedBySession || !identifier(idempotencyKey) ||
         !approvalWindow || !Number.isFinite(approvalWindow.startsAt) || !Number.isFinite(approvalWindow.expiresAt) ||
         !(approvalWindow.startsAt<=now() && now()<approvalWindow.expiresAt) ||
         (approvalOnly!==undefined && approvalOnly!==true) || (approvalId!==undefined && !uuid.test(approvalId)) ||
@@ -282,7 +298,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
         isDeepStrictEqual(record.publicationWindow,approvalWindow))))
         throw fail(409,"该版本已保存批准或发布，请按原请求核对");
       store.deduplicate(approvalKey,scopedSignature,()=>recordApproval({agentTaskId:subject.id,publicationWindow:approvalWindow,
-        approvalRequestDigest:hash(idempotencyKey)}).approval);
+        approvalRequestId:idempotencyKey,approvalRequestDigest:hash(idempotencyKey)}).approval);
       await persist();
       return separateApprovalReceipt(subject.id,idempotencyKey,actorId);
     }

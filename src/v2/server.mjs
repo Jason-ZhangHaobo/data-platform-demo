@@ -4983,7 +4983,7 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/delivery/verifications" && method === "GET")
         return json(res, 200, visibleDelivery("delivery_verification").map(exposeDeliveryVerification));
       if (path === "/api/v2/release/approvals" && method === "GET")
-        return json(res, 200, visibleDelivery("release_approval"));
+        return json(res, 200, visibleDelivery("release_approval").map(({approvalRequestId,...approval})=>approval));
       if (path === "/api/v2/releases" && method === "GET")
         return json(
           res,
@@ -6305,7 +6305,12 @@ export function createV2Server(options = {}) {
               url.searchParams.get("verificationId")!==publicationAccess.verificationId))
             throw fail(403,"只可审阅本次开放的基金交付");
           const selector = validatePublicationSelector(publicationSelectorFromUrl(url),actorId);
-          return json(res,200,await cloudPublication.publicationPreflight(agent.id,selector));
+          const access=publicationAccess;
+          const window=!publicReadOnly && access?.sourceKind==="AGENT_TASK" && access.taskId===agent.id &&
+            access.packageDigest===selector.packageDigest && access.verificationId===selector.verificationId &&
+            publicationSession(access,scopeActor(),developmentNow())?.readOnly===false
+            ? {startsAt:access.startsAt,expiresAt:access.expiresAt} : undefined;
+          return json(res,200,await cloudPublication.publicationPreflight(agent.id,selector,window));
         }
         if (local && method === "GET" && !privatePublication[2]) {
           const selector=url.search?validatePublicationSelector(publicationSelectorFromUrl(url),actorId):undefined;

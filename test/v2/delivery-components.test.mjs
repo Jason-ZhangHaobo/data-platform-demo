@@ -59,6 +59,11 @@ test('actual review requires explicit scope confirmations and shows frozen prove
   assert.match(render({confirmed,disabled:true}),/disabled="">确认并发布此版本/);
   assert.match(render({confirmed,runId:undefined}),/disabled="">确认并发布此版本/);
   assert.match(render({confirmed,cloud:false}),/disabled="">确认并发布此版本/);
+  const saved=render({approvalActions:React.createElement('button',null,'使用原批准发起测试发布'),approvalSaved:true});
+  assert.equal([...saved.matchAll(/<input(?=[^>]*disabled="")(?=[^>]*checked="")[^>]*>/g)].length,4);
+  assert.match(saved,/4 项确认已随原批准保存/);
+  assert.match(saved,/使用原批准发起测试发布/);
+  assert.doesNotMatch(saved,/确认并发布此版本/);
 });
 test('publication target requires the actual task, package, verification and live window', () => {
   const now=Date.parse('2026-10-27T02:00:00Z'),target={taskId:'fictional-task',packageDigest:'fictional-package-digest',verificationId:'fictional-verification',startsAt:new Date(now-1000).toISOString(),expiresAt:new Date(now+60000).toISOString()};

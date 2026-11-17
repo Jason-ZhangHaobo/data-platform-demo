@@ -1184,6 +1184,9 @@ async function requestBoundPublicationJourney(t,{separateApproval=false}={}) {
     return response.result.structuredContent;
   };
   if(separateApproval){
+    assert.match(preflight.body.approvalRequestId,/^approval-[a-f0-9]{64}$/);
+    assert.equal((await f.call(preflightPath)).body.approvalRequestId,preflight.body.approvalRequestId);
+    assert.equal((await f.call(publication,{...request.body,approvalOnly:true},'invalid request')).status,422);
     const saveApproval=await f.call(publication,{...request.body,approvalOnly:true},request.idempotencyKey);
     assert.equal(saveApproval.status,202,saveApproval.body.message);
     const approved=saveApproval.body;
@@ -1193,6 +1196,10 @@ async function requestBoundPublicationJourney(t,{separateApproval=false}={}) {
     assert.equal(approved.taskId,created.body.id);
     assert.equal(approved.packageDigest,bundle.digest);
     assert.equal(approved.sourceRunId,current.runId);
+    const afterReload=await f.call(preflightPath);
+    assert.equal(afterReload.status,200);
+    assert.equal(afterReload.body.approvalRequestId,request.idempotencyKey);
+    assert.equal(afterReload.body.reviewDigest,preflight.body.reviewDigest);
     const approvalLookup=publicationRequestReceiptPath(created.body.id,request.idempotencyKey);
     assert.deepEqual((await f.call(approvalLookup)).body,approved);
     const reviewFile=join(f.directory,'exact-publication-review.json');
@@ -1215,6 +1222,10 @@ async function requestBoundPublicationJourney(t,{separateApproval=false}={}) {
     const originalExpiry=f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT;
     f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT=new Date(Date.parse(originalExpiry)+1000).toISOString();
     await f.restart();
+    const changedWindow=await f.call(preflightPath);
+    assert.match(changedWindow.body.approvalRequestId,/^approval-[a-f0-9]{64}$/);
+    assert.notEqual(changedWindow.body.approvalRequestId,preflight.body.approvalRequestId);
+    assert.notEqual(changedWindow.body.approvalRequestId,request.idempotencyKey);
     assert.equal((await f.call(publication,{...request.body,approvalId:approved.approvalId},request.idempotencyKey)).status,409);
     assert.equal(f.store.list('release',PROJECT).length,0);
     f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT=originalExpiry;
