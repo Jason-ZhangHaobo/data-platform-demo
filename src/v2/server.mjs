@@ -7158,9 +7158,10 @@ export function createV2Server(options = {}) {
       }
       if (method === "GET" && path === "/api/v2/development/synced-positions") {
         requireSyncSqlLocal(req);
+        if (!workspaceReadActor(req)) throw fail(403, "请使用有效工作台身份核对同步持仓");
         if (url.searchParams.size) throw fail(422, "同步开发输入不接受附加参数");
-        const { selection, source } = currentSyncSqlInput(syncSqlResources);
-        return json(res, 200, { selection, ...source, contextId: syncSqlContextId });
+        const { selection, source, verifiedCurrency } = currentSyncSqlInput(syncSqlResources);
+        return json(res, 200, { selection, ...source, contextId: syncSqlContextId, verifiedCurrency });
       }
       if (method === "POST" && path === "/api/v2/agent/tasks") {
         const body = await readBody(req),
@@ -7177,6 +7178,7 @@ export function createV2Server(options = {}) {
         let syncSelection;
         if (body.syncInput !== undefined) {
           requireSyncSqlLocal(req);
+          if (!workspaceReadActor(req)) throw fail(403, "请使用有效工作台身份选择同步持仓");
           if (language !== "SPARK_SQL" || body.contextId !== syncSqlContextId ||
               Object.keys(body).some(key => !["message", "sql", "language", "contextId", "syncInput"].includes(key)))
             throw fail(422, "同步批次只支持客户资产 T+1 的本机 SQL 开发");

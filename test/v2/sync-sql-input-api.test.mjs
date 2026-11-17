@@ -31,6 +31,11 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
   const captured = readFileSync(join(fixtureRoot, "first.csv"), "utf8").split("\n");
   writeFileSync(join(fixtureRoot, "currency.csv"), captured.map((line, index) =>
     line + (index === 0 ? ",currency" : ",CNY")).join("\n"));
+  writeFileSync(join(fixtureRoot, "mixed.csv"), captured.map((line, index) =>
+    line + (index === 0 ? ",currency" : index === 1 ? ",USD" : ",CNY")).join("\n"));
+  writeFileSync(join(fixtureRoot, "unknown.csv"), captured.map((line, index) =>
+    line + (index === 0 ? ",unregistered" : ",test")).join("\n"));
+  cpSync(join(fixtureRoot,"currency.csv"),join(fixtureRoot,"missing.csv"));
   const columns = [
     {name:"client_id",type:"string"}, {name:"holding_market_value",type:"decimal(18,2)"},
     {name:"available_cash",type:"decimal(18,2)"}, {name:"total_assets",type:"decimal(18,2)"},
@@ -99,12 +104,12 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     }
     assert.fail("Execution did not settle");
   }
-  function sync(fileName) {
+  function sync(fileName, mapping = identityPositionMapping) {
     const source = app.ingestion.createSource({ name: "虚构证券源 " + fileName, sourceType: "LOCAL_CSV", fileName });
     app.ingestion.testConnection(source.id);
     const metadata = app.ingestion.collectMetadata(source.id);
     const task = app.ingestion.createTask({ name: "虚构持仓同步 " + fileName, sourceId: source.id, targetTable: "raw_positions",
-      mode: "FULL", mapping: identityPositionMapping, keyFields: ["position_id"] });
+      mode: "FULL", mapping, keyFields: ["position_id"] });
     return { run: app.ingestion.runTask(task.id), metadata };
   }
   try {
@@ -580,13 +585,59 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal((await request(`/data-services/applications/${issued.value.application.id}/revoke`, {})).status, 200);
     assert.equal((await request("/open/xapis/sync-assets", undefined, undefined, bearer)).status, 401);
     const record = app.store.get("sync_sql_input", completed.syncInput.snapshotId, PROJECT);
+    assert.equal(runs, 3);
+    assert.equal(modelCalls, 1);
+    const recoveredBatch = sync("currency.csv", {...identityPositionMapping,currency:"currency"});
+    const recoveredOffer = await request("/development/synced-positions");
+    assert.equal(recoveredOffer.status,200);
+    assert.equal(recoveredOffer.value.verifiedCurrency,"CNY");
+    assert.equal(recoveredOffer.value.selection.runId,recoveredBatch.run.id);
+    assert.equal(recoveredOffer.value.selection.targetHash,recoveredBatch.run.targetHash);
+    assert.equal(recoveredOffer.value.context,undefined);
+    assert.equal((await request("/development/synced-positions",undefined,undefined,bearer)).status,403);
+    const recoveredBody = {...body,syncInput:recoveredOffer.value.selection};
+    assert.equal((await request("/agent/tasks",recoveredBody,"forbidden-recovered",bearer)).status,403);
+    assert.equal((await request("/agent/tasks",recoveredBody,"expired-recovered",{Cookie:"shuduo_session=expired"})).status,403);
+    const stdoutRecovered = [];
+    assert.equal(await runV2Cli(["sql","synced-positions"],{},{client:schemaClient,output:line=>stdoutRecovered.push(line),error:()=>{}}),0);
+    assert.deepEqual(JSON.parse(stdoutRecovered.join("")),recoveredOffer.value);
+    const recoveredMcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",
+      params:{name:"sql_synced_positions",arguments:{}}},{client:schemaClient}));
+    assert.deepEqual(recoveredMcp.result.structuredContent,recoveredOffer.value);
+    assert.equal((await request("/agent/tasks",{...recoveredBody,syncInput:{...recoveredBody.syncInput,targetHash:"0".repeat(64)}},"wrong-hash")).value.code,
+      "SYNC_SQL_INPUT_STALE");
+    const newTask = await request("/agent/tasks",recoveredBody,"new-frozen-currency");
+    assert.equal(newTask.status,202);
+    const newResult = await finished("/agent/tasks/"+newTask.value.id);
+    assert.equal(newResult.status,"SUCCEEDED");
+    assert.notEqual(newResult.syncInput.snapshotHash,completed.syncInput.snapshotHash);
+    assert.equal(newResult.syncInput.metadataVersionId,recoveredBatch.metadata.id);
+    const projected = readSyncSqlInput({store:app.store,project:PROJECT,actorId:revision.value.author,binding:newResult.syncInput});
+    assert.deepEqual(projected,syncContext);
+    const projectedReceipt = verifySavedSyncSqlInput({read:sourceRead,input:newResult.syncInput,context:projected,
+      csv:readFileSync(join(fixtureRoot,"currency.csv"),"utf8")});
+    assert.equal(projectedReceipt.targetHash,recoveredBatch.run.targetHash);
+    assert.deepEqual(app.store.get("sync_sql_input",record.id,PROJECT),record);
+    const actualMetadata = recoveredBatch.metadata;
+    app.store.update("source_metadata",actualMetadata.id,PROJECT,{schemaHash:"0".repeat(64)});
+    assert.equal((await request("/development/synced-positions")).value.code,"SYNC_SQL_INPUT_UNAVAILABLE");
+    app.store.update("source_metadata",actualMetadata.id,PROJECT,{schemaHash:actualMetadata.schemaHash});
+    sync("mixed.csv",{...identityPositionMapping,currency:"currency"});
+    const mixedCurrency = await request("/development/synced-positions");
+    assert.equal(mixedCurrency.status,422);
+    assert.equal(mixedCurrency.value.code,"SYNC_SQL_INPUT_INVALID");
+    sync("unknown.csv",{...identityPositionMapping,unregistered:"unregistered"});
+    assert.equal((await request("/development/synced-positions")).value.code,"SYNC_SQL_INPUT_UNAVAILABLE");
+    const {industry: omitted, ...missingField} = identityPositionMapping;
+    sync("missing.csv",{...missingField,currency:"currency"});
+    assert.equal((await request("/development/synced-positions")).value.code,"SYNC_SQL_INPUT_UNAVAILABLE");
     record.payload.context.expected[0].total_assets = "0.00";
     app.store.update("sync_sql_input", record.id, PROJECT, { payload: record.payload });
     assert.equal((await request("/runs", { revisionId: revision.value.id }, "tampered")).value.code, "SYNC_SQL_INPUT_CHANGED");
     assert.equal(sync("bad.csv").run.status, "SUCCEEDED");
     assert.equal((await request("/development/synced-positions")).status, 422);
-    assert.equal(runs, 3);
-    assert.equal(modelCalls, 1);
+    assert.equal(runs, 4);
+    assert.equal(modelCalls, 2);
   } finally {
     openModel();
     await stop();

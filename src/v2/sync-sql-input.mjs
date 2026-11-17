@@ -51,8 +51,10 @@ function buildContext(rows) {
   const accounts = context.tables.find(table => table.name === "accounts").rows;
   const cash = context.tables.find(table => table.name === "cash").rows;
   const knownClients = new Set(accounts.map(([client]) => client));
-  const classes = new Set(positions.rows.map(row => row[3]));
-  const industries = new Set(positions.rows.map(row => row[4]));
+  // The repository's synchronized securities fixture also registers fund holdings
+  // in diversified financials. Other inputs still go through the same allowlists.
+  const classes = new Set([...positions.rows.map(row => row[3]), "基金"]);
+  const industries = new Set([...positions.rows.map(row => row[4]), "多元金融"]);
   const positionIds = new Set();
   positions.rows = rows.map(row => {
     const { position_id, client_id, security_code, asset_class, industry, market_value, trade_date } = row;
@@ -84,6 +86,21 @@ function buildContext(rows) {
   return context;
 }
 
+export function syncSqlLandingContext(rows, fieldNames) {
+  const required = getContext(syncSqlContextId).tables.find(table => table.name === "positions").columns.map(([name]) => name);
+  const fields = new Set(fieldNames);
+  const hasCurrency = fields.has("currency");
+  if (fields.size !== fieldNames.length || fields.size !== required.length + Number(hasCurrency) ||
+      !required.every(name => fields.has(name)))
+    throw fail(409, "持仓批次需包含七个合同字段，仅支持新增人民币币种列", "SYNC_SQL_INPUT_UNAVAILABLE");
+  if (rows.some(({ rowKey, sourceHash, syncedAt, ...row }) =>
+    Object.keys(row).length !== fields.size || fieldNames.some(name => !Object.hasOwn(row, name))))
+    throw fail(409, "确认的字段映射与实际落地行不一致", "SYNC_SQL_INPUT_UNAVAILABLE");
+  if (hasCurrency && rows.some(row => row.currency !== "CNY"))
+    throw fail(422, "持仓币种须逐行为 CNY。本口径尚不支持其他币种或缺失币种。");
+  return buildContext(rows);
+}
+
 export function currentSyncSqlInput({ assets, landingStore, store, project }) {
   const unavailable = () => fail(409, "尚无符合此口径的已核对全量虚构持仓同步批次", "SYNC_SQL_INPUT_UNAVAILABLE");
   let asset;
@@ -91,18 +108,21 @@ export function currentSyncSqlInput({ assets, landingStore, store, project }) {
   catch (cause) { if (cause.code === "ASSET_NOT_FOUND") throw unavailable(); throw cause; }
   const source = asset.syncSource;
   const syncTask = source?.taskId && store.get("offline_sync_task", source.taskId, project);
-  const columns = getContext(syncSqlContextId).tables.find(table => table.name === "positions").columns;
   if (source?.status !== "VERIFIED" || source.mode !== "FULL" || syncTask?.sourceType !== "LOCAL_CSV" ||
-      asset.fields.length !== columns.length || !columns.every(([name]) => asset.fields.some(field => field.name === name)) ||
       !asset.rowCount || asset.rowCount > 500) throw unavailable();
+  const metadata = store.get("source_metadata", source.metadataVersionId, project);
+  if (!Array.isArray(metadata?.columns) || metadata.schemaHash !== ingestionSchemaHash(metadata.columns) ||
+      !Object.keys(syncTask.mapping).every(field => metadata.columns.some(column => column.name === field))) throw unavailable();
   const snapshot = landingStore.inspectTarget(targetTable, { includeRows: true });
   if (snapshot.runId !== source.runId || snapshot.targetHash !== source.targetHash || snapshot.rowCount !== asset.rowCount)
     throw unavailable();
+  const fieldNames = asset.fields.map(field => field.name);
   return {
     selection: { targetTable, runId: source.runId, targetHash: source.targetHash },
     source: { taskId: source.taskId, sourceRevisionId: source.sourceRevisionId, metadataVersionId: source.metadataVersionId,
       rowCount: snapshot.rowCount },
-    context: buildContext(snapshot.rows),
+    context: syncSqlLandingContext(snapshot.rows, fieldNames),
+    ...(fieldNames.includes("currency") ? { verifiedCurrency: "CNY" } : {}),
   };
 }
 

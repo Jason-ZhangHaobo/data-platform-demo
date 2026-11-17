@@ -9,6 +9,10 @@
 .agent-dev-context-picker{display:grid;gap:4px;inline-size:clamp(15rem,26vw,23rem);max-inline-size:100%;color:#40574c;font-size:12px;font-weight:600}
 .agent-dev-context-picker select{width:100%;min-width:0;min-height:34px;padding:5px 8px;border:1px solid var(--ad-border);border-radius:6px;background:#fff;color:#213e35;font:inherit;font-size:13px;text-overflow:ellipsis}
 .agent-dev-context-picker small{color:#63776a;font-weight:400}
+.agent-dev-notice.agent-dev-sync-input{display:grid;gap:6px;align-items:start;justify-content:stretch;overflow-wrap:anywhere}
+.agent-dev-sync-input p{margin:0}
+.agent-dev-sync-input-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+.agent-dev-sync-input-actions .button{font-size:11px;padding:6px 9px;max-width:100%}
 @media(max-width:850px){
   .agent-dev-heading{flex-direction:column;gap:12px}
   .agent-dev-heading-controls{align-items:flex-start;width:100%}

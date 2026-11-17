@@ -1085,6 +1085,10 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 `GET /api/v2/sync/tasks/{taskId}/recovery`、`shuduo sync recovery-preview --id OLD_TASK_ID` 和 MCP `sync_recovery_preview` 读取同一依据。确认保存可用同一路径 POST、`shuduo sync recovery-save --id OLD_TASK_ID --basis-digest SHA256 --mapping SOURCE:TARGET --confirm` 或 MCP `sync_recovery_save`。这些恢复接口限本机工作台，会检查已采集版本和原失败。
 
+恢复后的 `raw_positions` 批次在 Data Agent 客户资产 T+1 中须重新选择，接口绑定新同步编号、落地摘要及元数据。SQL 按已登记的七个业务字段执行。新增 `currency` 时逐行确认 `CNY`，完整落地摘要仍涵盖币种字段。其他额外字段、缺失必需字段、币种不符或过期版本会被拒绝。虚构基金持仓及「多元金融」按仓库已登记样例处理。原任务和旧冻结载荷可按原编号核对。
+
+可用 `GET /api/v2/development/synced-positions`、`shuduo sql synced-positions` 或 MCP `sql_synced_positions` 只读核对当前候选及币种条件。离线复核从原 CSV 及配置重新生成落地行，核对完整摘要并按同一合同重建冻结输入。
+
 ### 冻结持仓的八文件交付
 
 在原任务或人工保存的已核验版本打开「冻结持仓交付」。生成包时锁定该 SQL 运行、同步批次、元数据版本及快照。交付包的 `fixtures.json` 保留原输入，`tests.sql` 根据该输入的独立预期生成。在工作台选择「本机按文件演练」，调度文件的样例时刻应解出原业务日，Spark 实际执行主 SQL、测试 SQL 及五场景断言。审阅绑定包摘要与成功演练回执，范围为 `LOCAL_FILE_REVIEW`。

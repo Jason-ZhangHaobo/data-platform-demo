@@ -25,8 +25,8 @@ import {contextDerivationFromLocation,contextDerivationLocation,clearContextDeri
 import type {ContextDerivationDraft,VerifiedDerivationSource,DerivedFrom} from "./agent-context-derivation";
 import {ValidationDetails,ValidationResultScope} from "./ValidationDetails";
 import {SyncOutputSchemaDetails} from "./SyncOutputSchemaDetails";
-import {checkedSyncSqlOutputSchema} from "../../src/v2/sync-sql-output-schema-client.mjs";
-import type {SyncSqlOutputSchema} from "../../src/v2/sync-sql-output-schema-client.mjs";
+import {checkedSyncSqlOutputSchema,readSyncedPositions} from "../../src/v2/sync-sql-output-schema-client.mjs";
+import type {SyncSqlOutputSchema,SyncedPositionsOffer} from "../../src/v2/sync-sql-output-schema-client.mjs";
 import type {ValidationDetailsReport} from "./validation-details";
 import type {ServiceSourceBinding} from "./service-source-binding";
 import {validServiceSourceBinding,sourceBindingEnvironmentMatches,agentReturnSourceMatches,serviceSourcesPath,currentAgentTaskLocation} from "./service-source-binding";
@@ -47,7 +47,6 @@ const OpsPublicationPanel=lazy(async()=>({default:(await import('./OpsPublicatio
 type Context = { id: string; name: string; definition: string; businessDate?:string; validationFamily?:ValidationFamily; capabilities?:{delivery?:boolean;agentDevelopment?:boolean;fundPreparation?:boolean};outputContract?:{id:string;fields:{name:string;label:string}[]}; tables: { name: string; columns: [string, string][] }[] };
 type SyncSelection = {targetTable:"raw_positions";runId:string;targetHash:string};
 type SyncInput = SyncSelection & {metadataVersionId:string;sourceRevisionId:string;rowCount:number;snapshotId:string;snapshotHash:string};
-type SyncOffer = {selection:SyncSelection;metadataVersionId:string;rowCount:number;contextId:"holdings-t1"};
 type DevelopmentDriver = { attempt: number; modelTrigger: string; spark?: { runId: string; submissionTriggers: string[] } };
 type Task = { requestBound?:true; syncInput?: SyncInput; id: string; version: number; status: string; stage?: string; requirements?:unknown;clarification?:import('../../src/v2/sql-clarification-client.mjs').SqlClarification;humanClarified?:boolean;directAutonomousEligible?:boolean;clarificationOriginTaskId?:string;executionMode?: string; mode?:string;language?:string;fundPreparation?:FundExecutionBinding;sourceKind?:string;sourceAttribution?:unknown;manualContinuation?:import('../../src/v2/manual-continuation-binding.mjs').ManualContinuationBinding;assistedContinuation?:import('../../src/v2/assisted-continuation-binding.mjs').AssistedContinuationBinding;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean;prepareFiles?:boolean;preparedDelivery?:{deliveryId:string;preparationTrigger?:string}}; developmentDrivers?: DevelopmentDriver[]; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
 type Run = { syncInput?: SyncInput; id: string; status: string; agentTaskId?:string; contextId?:string; createdAt?: string; validationContractId?: string; validationDetails?:ValidationDetailsReport; syncOutputSchema?:unknown; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; mainSqlExecuted?:boolean;columnLineage?:unknown;testDouble?:boolean;sourceKind?:string;sourceAttribution?:unknown; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; contractId?:string; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
@@ -90,7 +89,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const sourceReturnActive=Boolean(expectedSourceBinding||expectedManualSource||expectedSourceError),readOnly=requestedReadOnly||sourceReturnActive;
   const [returnSourceError,setReturnSourceError]=useState("");
   const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState(initialContextId ?? "holdings-t1");
-  const [syncOffer,setSyncOffer]=useState<SyncOffer>(),[syncOfferState,setSyncOfferState]=useState("");
+  const [syncOffer,setSyncOffer]=useState<SyncedPositionsOffer>(),[syncOfferState,setSyncOfferState]=useState("");
   const [syncRequested,setSyncRequested]=useState(false);
   const [message, setMessage] = useState(""), [draft, setDraft] = useState(""), [baseline, setBaseline] = useState("");
   const [run, setRunValue] = useState<Run>(), [tab, setTab] = useState("结果"), [diff, setDiff] = useState(false);
@@ -167,7 +166,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     setSyncRequested(true);
     setSyncOffer(undefined);setSyncOfferState("正在核对最近提交的持仓批次…");
     try{
-      const offer=await api<SyncOffer>("/development/synced-positions");
+      const offer=await readSyncedPositions({request:path=>api<unknown>(path)});
       if(alive.current&&epoch.current===token){setSyncOffer(offer);setSyncOfferState("");}
     }catch(cause){
       if(alive.current&&epoch.current===token)setSyncOfferState((cause as Error).message);
@@ -744,15 +743,18 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       </aside>
       <section id="agent-requirement" className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
         <div className="agent-dev-conversation">
-          {frozenInput && <div className="agent-dev-notice" role="status"><strong>原同步输入已冻结</strong><p>批次 {frozenInput.runId.slice(0,8)} · 元数据 {frozenInput.metadataVersionId.slice(0,8)} · {frozenInput.rowCount} 行 · 快照 {frozenInput.snapshotHash.slice(0,12)}。账户与现金使用登记样例。</p></div>}
+          {frozenInput && <div className="agent-dev-notice agent-dev-sync-input" role="status"><strong>原同步输入已冻结</strong><p>批次 {frozenInput.runId.slice(0,8)} · 元数据 {frozenInput.metadataVersionId.slice(0,8)} · {frozenInput.rowCount} 行 · 快照 {frozenInput.snapshotHash.slice(0,12)}。账户与现金使用登记样例。</p></div>}
           <details className="agent-dev-context" open={!task}><summary>本次数据与业务口径 <ChevronDown size={14} /></summary>
             {derivationActive && <p>目标口径在上方变更草稿中选择；下方展示其已登记定义与数据结构。</p>}
             {context?.validationFamily&&<small>已登记口径 · {context.validationFamily.name} · V{context.validationFamily.definitionVersion}</small>}
-            {maySelectSync && <div className="agent-dev-notice">
+            {maySelectSync && <div className="agent-dev-notice agent-dev-sync-input">
               <strong>{selectedSync ? "已选择同步持仓" : syncRequested ? "同步持仓待确认" : "持仓输入 · 登记样例"}</strong>
               {selectedSync && <p>同步批次 {selectedSync.runId.slice(0,8)} · 元数据 {syncOffer?.metadataVersionId.slice(0,8)} · {syncOffer?.rowCount} 行。账户与现金使用登记样例。</p>}
-              <button type="button" className="button" disabled={!canWrite||working||syncOfferState.startsWith("正在")} onClick={()=>void selectLatestSync()}>{selectedSync?"核对最新同步批次":"使用已核对的同步持仓"}</button>
-              {syncRequested && <button type="button" className="button" disabled={working||Boolean(pendingAgentKey)||syncOfferState.startsWith("正在")} onClick={useRegisteredPositions}>改用登记样例</button>}
+              {selectedSync && syncOffer?.verifiedCurrency==="CNY" && <p>币种逐行核验为 CNY。SQL 使用七个已登记的持仓字段。</p>}
+              <div className="agent-dev-sync-input-actions">
+                <button type="button" className="button" disabled={!canWrite||working||syncOfferState.startsWith("正在")} onClick={()=>void selectLatestSync()}>{selectedSync?"核对最新同步批次":"使用已核对的同步持仓"}</button>
+                {syncRequested && <button type="button" className="button" disabled={working||Boolean(pendingAgentKey)||syncOfferState.startsWith("正在")} onClick={useRegisteredPositions}>改用登记样例</button>}
+              </div>
               {syncOfferState && <p role="status">{syncOfferState}</p>}
             </div>}
             <p>{context?.definition ?? "正在加载数据上下文…"}</p><div className="agent-dev-tables">{context?.tables.map(t => <details key={t.name}><summary>{t.name} · {t.columns.length}字段</summary><dl>{t.columns.map(([name,type]) => <div key={name}><dt>{name}</dt><dd>{type}</dd></div>)}</dl></details>)}</div>

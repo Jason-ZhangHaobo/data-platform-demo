@@ -11,6 +11,7 @@ import { QualityManager } from "./quality.mjs";
 import { checkedPublishedReportArtifacts } from "./report-provenance.mjs";
 import { publishedSqlColumnLineage } from "./sql-column-lineage.mjs";
 import { syncReportAsset, syncReportLineage, syncReportFields } from "./sync-sql-report.mjs";
+import { syncSqlLandingContext } from "./sync-sql-input.mjs";
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence } from "./sync-sql-service-source.mjs";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -45,10 +46,9 @@ export function verifySavedSyncSqlInput({ read, input, context, csv }) {
   try {
     const replay = landing.sync({ targetTable: task.targetTable, mode: task.mode, rows: parsed.rows, mapping: task.mapping,
       keyFields: task.keyFields, sourceHash: contentHash, syncedAt: source.finishedAt });
-    const positions = context.tables.find(table => table.name === "positions");
-    const projected = landing.readTable(task.targetTable).map(row => positions.columns.map(([name]) => row[name]));
+    const replayedContext = syncSqlLandingContext(landing.readTable(task.targetTable), Object.values(task.mapping));
     requireEvidence(replay.targetHash === source.targetHash && replay.targetHash === input.targetHash &&
-      replay.finalCount === input.rowCount && same(projected, positions.rows), "INPUT_PROJECTION_CHANGED");
+      replay.finalCount === input.rowCount && same(replayedContext, context), "INPUT_PROJECTION_CHANGED");
   } finally { landing.close(); }
   return { syncRunId: source.id, metadataVersionId: metadata.id, sourceRevisionId: revision.id, snapshotHash: input.snapshotHash,
     contentHash, targetHash: source.targetHash, rows: input.rowCount, finishedAt: source.finishedAt };

@@ -36,3 +36,6 @@ export function checkedSyncSqlOutputSchema(value:unknown, expected:{runId:string
 export function checkedSyncSqlRehearsalSchema(value:unknown, expected:SyncSqlRehearsalSource):SyncSqlRehearsalSchema;
 export function checkedSyncSqlScheduledSchema(value:unknown, expected:SyncSqlScheduledSource):SyncSqlScheduledSchema;
 export function readSyncSqlOutputSchema(client:{request:(path:string)=>Promise<unknown>},input:{runId:string}):Promise<SyncSqlOutputSchema>;
+export type SyncedPositionsOffer = {contextId:"holdings-t1";selection:{targetTable:"raw_positions";runId:string;targetHash:string};
+  taskId:string;sourceRevisionId:string;metadataVersionId:string;rowCount:number;verifiedCurrency?:"CNY"};
+export function readSyncedPositions(client:{request:(path:string)=>Promise<unknown>}):Promise<SyncedPositionsOffer>;

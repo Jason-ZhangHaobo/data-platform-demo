@@ -103,3 +103,16 @@ export async function readSyncSqlOutputSchema(client, { runId }) {
   if (!matches(identifier, runId)) throw invalid();
   return checkedSyncSqlOutputSchema(await client.request("/runs/" + runId + "/output-schema"), { runId });
 }
+
+export async function readSyncedPositions(client) {
+  const value = await client.request("/development/synced-positions");
+  const selection = value?.selection;
+  if (value?.contextId !== "holdings-t1" || selection?.targetTable !== "raw_positions" ||
+      ![selection.runId, value.taskId, value.sourceRevisionId, value.metadataVersionId].every(id => matches(identifier,id)) ||
+      !matches(digest,selection.targetHash) || !Number.isInteger(value.rowCount) || value.rowCount < 1 || value.rowCount > 500 ||
+      value.verifiedCurrency !== undefined && value.verifiedCurrency !== "CNY")
+    throw Error("持仓同步批次、元数据或币种证据未确认。");
+  return { contextId:value.contextId, selection:{targetTable:selection.targetTable,runId:selection.runId,targetHash:selection.targetHash},
+    taskId:value.taskId,sourceRevisionId:value.sourceRevisionId,metadataVersionId:value.metadataVersionId,rowCount:value.rowCount,
+    ...(value.verifiedCurrency === "CNY" ? {verifiedCurrency:"CNY"} : {}) };
+}
