@@ -27,7 +27,10 @@ export function checkedExactPublicationApproval(value:unknown, expected:ExactPub
   value.verificationId!==expected.verificationId||value.reviewDigest!==expected.reviewDigest||value.releaseId!==undefined||
   typeof value.approvedAt!=="string"||typeof value.expiresAt!=="string"||Date.parse(value.expiresAt)!==Date.parse(window.expiresAt)||
   !(Date.parse(window.startsAt)<=Date.parse(value.approvedAt)&&Date.parse(value.approvedAt)<Date.parse(window.expiresAt)))throw invalidPublication();
- return {approvalId:value.approvalId as string,expiresAt:value.expiresAt};
+ const background=value.background;
+ if(background!==undefined&&(!record(background)||!id(background.wakeId)||!(background.state==='QUEUED'||background.state==='DELIVERY_UNKNOWN')))throw invalidPublication();
+ return {approvalId:value.approvalId as string,expiresAt:value.expiresAt,
+  ...(background?{background:{wakeId:background.wakeId as string,state:background.state as 'QUEUED'|'DELIVERY_UNKNOWN'}}:{})};
 }
 
 export function checkedExactPublicationReceipt(value:unknown, expected:ExactPublicationSource, approvalId?:string) {

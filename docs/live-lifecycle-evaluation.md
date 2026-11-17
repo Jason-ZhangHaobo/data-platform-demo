@@ -291,6 +291,8 @@ shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CA
 
 在具备分步批准能力的受邀窗口，工作台显示「保存此版本的批准」和「使用原批准发起测试发布」。页面重开后通过预检找回同一窗口内从工作台、CLI 或 MCP 保存的原请求，回读原批准和已经保存的四项确认。操作响应未知时，先点击「核对原请求回执」。工作台在后端仍使用原一次提交协议时沿用原操作。
 
+当确切发布窗口也启用了现有 OSS Agent 事件驱动，第二步可选择「委托后台发起测试发布」。此操作先持久保存原批准、请求和窗口的绑定，再向现有唤醒前缀放入一条签名对象。浏览器关闭后，私有事件重新校验原人审、版本、角色和窗口，最多为原批准创建一个发布及两个待调度批次。正式运行仍由后续签名定时批次启动。送达或结果未确认时按原请求查回。需要重新投递时复用原事件键并先核对已存在对象。CLI 在原批准命令加 `--dispatch-in-background`，MCP 在 `agent_publication_create` 加 `dispatchInBackground: true`。发布回执将 `SIGNED_PUBLICATION_WAKE` 及原事件编号记入 v3 证据。
+
 CLI 对应 `shuduo agent publish --id TASK_ID --file REVIEW_JSON --request-id REQUEST_ID --approve-only`，第二步将 `--approve-only` 换成 `--approval-id APPROVAL_ID`。只读回查用 `shuduo agent publication-request --id TASK_ID --request-id REQUEST_ID`。MCP 对应 `agent_publication_create` 的两个参数及 `agent_publication_request`。已有分步批准的版本须带原批准编号发起。该流程的本机回归使用虚构签名回执，正式评测以同版线上记录为准。
 
 `v3-run` 可省略完成回执，离线查看原评测编号下的 20 个固定案例。有回执时核对原检查点与确切案例，回环匹配只记本机证据。受邀 HTTPS 完成还须绑定原开发窗口、独立验包、已登记的结构化需求、已结算的模型用量、原演练、确切审阅批准、双批监控和两个匹配的消费批次。完成记录列出从演练就绪到工程师批准的等待时间。缺少时间证据时先用 `v3-publish --reconcile` 核对原发布，保留同一批准与批次。

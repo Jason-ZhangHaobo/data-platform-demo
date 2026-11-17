@@ -363,7 +363,8 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
       exactApproval && publicationTargetMatches(exactApproval.window,exactApproval.source);
     if (!workflow || !selector || !exactApproval || !current()) throw Error("发布窗口已关闭或交付版本已变化。");
     const next=await checkedCloudPublicationPreflight(await api(publicationPreflightPath(taskId,selector)),workflow);
-    if (!current() || next.reviewDigest!==exactApproval.source.reviewDigest || next.approvalRequestId!==exactApproval.requestId)
+    if (!current() || next.reviewDigest!==exactApproval.source.reviewDigest || next.approvalRequestId!==exactApproval.requestId ||
+        next.backgroundPublicationSupported!==reviewedCloud?.backgroundPublicationSupported)
       throw Error("原审阅或批准请求已变化，请关闭后重新打开审阅。");
   }
   useEffect(() => {
@@ -469,6 +470,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           approvalActions={exactApproval&&<AgentPublicationApprovalActions key={exactApprovalKey}
             requestId={exactApproval.requestId} expected={exactApproval.source} window={exactApproval.window} api={api}
             disabled={!activeReview.current.allowed||working||!workflow.publication.available} confirmed={reviewAttestationsComplete(confirmed,true)}
+            backgroundSupported={reviewedCloud?.backgroundPublicationSupported}
             beforeWrite={checkExactApprovalWrite} onSaved={()=>setConfirmedApprovalKey(exactApprovalKey)} onClose={()=>{setReview(false);setConfirmed({});}} onReleased={releaseId=>{
               if(!alive.current||activePublicationKey.current!==publicationKey)return;
               pinnedReleases.current.set(publicationKey,releaseId);setReview(false);setConfirmed({});

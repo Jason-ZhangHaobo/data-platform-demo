@@ -124,7 +124,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent publication-preflight --id AGENT_TASK_ID --source-kind AGENT --source-run-id RUN_ID --package-digest SHA256 --verification-id ID
   shuduo agent publish --id AGENT_TASK_ID --file REVIEW_JSON [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --request-id ORIGINAL_REQUEST_ID]
   shuduo agent publish --id AGENT_TASK_ID --file EXACT_REVIEW_JSON --request-id ORIGINAL_REQUEST_ID --approve-only
-  shuduo agent publish --id AGENT_TASK_ID --file EXACT_REVIEW_JSON --request-id ORIGINAL_REQUEST_ID --approval-id ORIGINAL_APPROVAL_ID
+  shuduo agent publish --id AGENT_TASK_ID --file EXACT_REVIEW_JSON --request-id ORIGINAL_REQUEST_ID --approval-id ORIGINAL_APPROVAL_ID [--dispatch-in-background]
   shuduo agent publication-request --id AGENT_TASK_ID --request-id ORIGINAL_REQUEST_ID
   shuduo agent stop-publication --id AGENT_TASK_ID [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
     人工来源必须指定运行、包摘要和演练；停止还须指定发布编号。四项审阅来自 REVIEW_JSON，不自动批准或重试；发布重试沿用 --request-id。
@@ -318,7 +318,7 @@ const jsonObject = (value, name) => {
 };
 const publicationCliFields={source_kind:"sourceKind",source_run_id:"sourceRunId",package_digest:"packageDigest",verification_id:"verificationId",release_id:"releaseId"};
 function publicationCliOptions(argv,options,action){
-  const actionFlags=action==="publish"?["file","request_id","approve_only","approval_id"]:
+  const actionFlags=action==="publish"?["file","request_id","approve_only","approval_id","dispatch_in_background"]:
     action==="publication-request"?["request_id"]:[];
   const allowed=new Set(["id","base_url","help",...Object.keys(publicationCliFields),...actionFlags]),seen=new Set();
   for(const token of argv.filter(value=>value.startsWith("--"))){
@@ -777,7 +777,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         }
         const body=reviewedPublication({...reviewed,...flags}),requestId=parsed.options.request_id;
         if(requestId!==undefined&&(typeof requestId!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(requestId)))throw Error("原发布请求编号不合法");
-        const step=publicationApprovalStep({approvalOnly:parsed.options.approve_only,approvalId:parsed.options.approval_id,
+        const step=publicationApprovalStep({approvalOnly:parsed.options.approve_only,approvalId:parsed.options.approval_id,dispatchInBackground:parsed.options.dispatch_in_background,
           reviewDigest:body.reviewDigest,requestId,selector:body});
         result=await client.request(publicationReadPath(taskId),{method:"POST",body:{...body,...step},
           ...(requestId===undefined?{}:{idempotencyKey:requestId})});

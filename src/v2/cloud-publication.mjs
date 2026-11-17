@@ -14,6 +14,7 @@ import {publicationAttestationKeys} from './publication-request.mjs';
 import {fundDevelopmentBinding} from "./fund-delivery.mjs";
 import {verifiedWorkerResultDigest} from "./worker-result-evidence.mjs";
 import {uuid} from "./live-lifecycle-checkpoint.mjs";
+import {publicationWakeKey,publicationWakeView} from "./publication-wake.mjs";
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -231,21 +232,28 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
   }
   function separateApprovalReceipt(agentId,requestId,actorId) {
     const {approval}=originalSeparateApproval(agentId,requestId,actorId);
+    const wakeId=store.deduplicatedId(publicationWakeKey(project,approval.id));
+    const wake=wakeId&&get("publication_wake",wakeId);
+    if (wake && (wake.binding.approvalId!==approval.id || wake.binding.requestId!==requestId || wake.binding.actorId!==actorId || wake.binding.taskId!==agentId))
+      throw fail(409,"原批准与后台发布请求不一致");
     return {protocol:"shuduo-cloud-publication-approval/v1",status:"APPROVED",taskId:agentId,
       approvalId:approval.id,reviewId:approval.reviewId,sourceRunId:approval.sourceRunId,
       sourceRevisionId:approval.sourceRevisionId,sourceCodeHash:approval.sourceCodeHash,
       packageId:approval.packageId,packageDigest:approval.packageDigest,verificationId:approval.rehearsalId,
       reviewDigest:approval.reviewDigest,approvedAt:approval.approvedAt,expiresAt:new Date(approval.publicationWindow.expiresAt).toISOString(),
-      ...(approval.usedByReleaseId?{releaseId:approval.usedByReleaseId}:{})};
+      ...(wake?{background:publicationWakeView(wake)}:{}),...(approval.usedByReleaseId?{releaseId:approval.usedByReleaseId}:{})};
   }
   const publicationRequestReceipt = (agentId, requestId, actorId) => releaseRequestExists(actorId,requestId)
     ? exactReceipt(originalRequestRelease(agentId, requestId, actorId)) : separateApprovalReceipt(agentId,requestId,actorId);
   async function publish({ agent, manualDelivery, sourceKind = "AGENT", sourceRunId, packageDigest, verificationId, attestations,
-    reviewDigest, actorId, idempotencyKey, initiatedBySession = false, approvalOnly, approvalId, approvalWindow }) {
+    reviewDigest, actorId, idempotencyKey, initiatedBySession = false, approvalOnly, approvalId, approvalWindow,
+    deferToWake, activationWakeId, assertWakeAuthority }) {
     if (!enabled) throw fail(503, "云端发布驱动尚未配置");
     const subject=standaloneManual?manualDelivery:agent;if(!subject||typeof subject.id!=='string'||standaloneManual&&agent!==undefined)throw fail(422,'发布缺少指定来源任务');
     const separate=approvalOnly!==undefined || approvalId!==undefined;
-    if (separate && (standaloneManual || sourceKind!=="AGENT" || !reviewDigest || !initiatedBySession || !identifier(idempotencyKey) ||
+    if ((deferToWake || activationWakeId) && (!approvalId || approvalOnly || (deferToWake&&!initiatedBySession) ||
+        (activationWakeId&&(!assertWakeAuthority||deferToWake||initiatedBySession)))) throw fail(422,"后台发起须绑定同一人工批准");
+    if (separate && (standaloneManual || sourceKind!=="AGENT" || !reviewDigest || (!initiatedBySession&&!activationWakeId) || !identifier(idempotencyKey) ||
         !approvalWindow || !Number.isFinite(approvalWindow.startsAt) || !Number.isFinite(approvalWindow.expiresAt) ||
         !(approvalWindow.startsAt<=now() && now()<approvalWindow.expiresAt) ||
         (approvalOnly!==undefined && approvalOnly!==true) || (approvalId!==undefined && !uuid.test(approvalId)) ||
@@ -302,7 +310,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       await persist();
       return separateApprovalReceipt(subject.id,idempotencyKey,actorId);
     }
-    let separateApproval;
+    let separateApproval,binding,wakeId;
     if (approvalId!==undefined) {
       separateApproval=originalSeparateApproval(subject.id,idempotencyKey,actorId);
       const {approval}=separateApproval;
@@ -311,6 +319,11 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
           approval.sourceRunId!==fresh.sourceRunId || approval.sourceRevisionId!==plan.source.revisionId ||
           approval.sourceCodeHash!==plan.source.sqlHash || !isDeepStrictEqual(approval.publicationWindow,approvalWindow))
         throw fail(409,"须使用原窗口、原请求和确切版本的独立批准");
+      binding={taskId:subject.id,actorId,requestId:idempotencyKey,approvalId,sourceRunId,packageDigest,verificationId,reviewDigest,approvalWindow};
+      wakeId=store.deduplicatedId(publicationWakeKey(project,approvalId));
+      if (activationWakeId && (wakeId!==activationWakeId || !isDeepStrictEqual(get("publication_wake",wakeId).binding,binding)))
+        throw fail(409,"原后台发布授权与批准不一致");
+      if (activationWakeId) assertWakeAuthority(binding);
     } else if (reviewDigest && store.list("release_approval",project).some(record=>
       record.agentTaskId===subject.id && record.submittedBy===actorId && record.packageDigest===packageDigest &&
       record.rehearsalId===verificationId && record.reviewDigest===reviewDigest && record.publicationWindow &&
@@ -328,6 +341,12 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     }
     if (separateApproval && (samePackage.length || separateApproval.approval.usedByReleaseId))
       throw fail(409,"原批准已绑定发布，请查询原请求");
+    if (deferToWake) {
+      businessSchedule(plan);
+      await deferToWake(binding);
+      return separateApprovalReceipt(subject.id,idempotencyKey,actorId);
+    }
+    if (wakeId && !activationWakeId) throw fail(409,"原批准已委托后台，请按原请求核对");
     const existing = samePackage.filter(r => matches(r, subject.id, selector) && (singleRelease || !["CANCELLED", "ROLLED_BACK"].includes(r.status)));
     if (existing.length > 1 || singleRelease && samePackage.some(r => !matches(r, subject.id, selector)))
       throw fail(409, "此交付包已有另一演练或发布记录，不能借用旧批准");
@@ -344,8 +363,9 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     assertPublicationScope(publicationScope);
     const created = store.deduplicate(key, signature, () => {
       const {review,approval}=separateApproval??recordApproval();
-      const initiation=initiatedBySession && reviewDigest && !standaloneManual && sourceKind==="AGENT"
-        ? store.create("release_initiation",project,{trigger:"INVITED_SESSION_CONFIRMATION",requestId:idempotencyKey,actorId,
+      const initiation=(initiatedBySession||activationWakeId) && reviewDigest && !standaloneManual && sourceKind==="AGENT"
+        ? store.create("release_initiation",project,{trigger:activationWakeId?"SIGNED_PUBLICATION_WAKE":"INVITED_SESSION_CONFIRMATION",
+          ...(activationWakeId?{wakeId:activationWakeId}:{}),requestId:idempotencyKey,actorId,
           reviewId:review.id,approvalId:approval.id,acceptedAt:stamp()}) : undefined;
       const release = store.create("release", project, { ...attribution, mode: cloudPublicationMode, [sourceField]: subject.id, submittedBy: actorId, reviewId: review.id, approvalId: approval.id, packageId: item.id, packageDigest, verificationId, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, businessScheduledFor, status: "WAITING_SCHEDULER", health: "PENDING", scope: "PRIVATE_CLOUD_TEST", runCount: 2, publicDeployed: false, fullLifecycleE2E: false,
         ...(initiation?{initiationId:initiation.id,initiationRequestDigest:hash(idempotencyKey)}:{}) });

@@ -42,13 +42,14 @@ export function exactDeliveryAdvance(workflow: Workflow | undefined, delivery: D
    ...(delivery.verificationId ? {verificationId:delivery.verificationId} : {})}};
 }
 
-export type CloudPublicationPreflight = {reviewDigest:string;businessDate:string;businessScheduledFor:string;plannedBatchCount:2;approvalRequestId?:string};
+export type CloudPublicationPreflight = {reviewDigest:string;businessDate:string;businessScheduledFor:string;plannedBatchCount:2;approvalRequestId?:string;backgroundPublicationSupported?:true};
 export async function checkedCloudPublicationPreflight(value:unknown, workflow:Workflow):Promise<CloudPublicationPreflight> {
  const {report,delivery,package:bundle,verification}=workflow;
  if(!delivery||!bundle||!verification||!record(bundle.manifest)||!record(bundle.manifest.files)||!record(bundle.manifest.source)||
   !record(value)||value.protocol!=="shuduo-cloud-publication-preflight/v1"||value.schedulerAvailable!==true||!hash(value.reviewDigest)||
   !record(value.basis)||!record(value.package)||value.approvalRequestId!==undefined&&
-  (typeof value.approvalRequestId!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(value.approvalRequestId)))throw bad();
+  (typeof value.approvalRequestId!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(value.approvalRequestId))||
+  value.backgroundPublicationSupported!==undefined&&(value.backgroundPublicationSupported!==true||!value.approvalRequestId))throw bad();
  const basis=value.basis, evidence=basis.evidence, source=bundle.manifest.source;
  if(basis.scope!=="PRIVATE_CLOUD_TEST"||basis.plannedBatchCount!==2||!record(evidence)||evidence.status!=="REVIEW_EVIDENCE_READY"||
   evidence.scope!==basis.scope||evidence.taskId!==report.taskId||evidence.deliveryId!==delivery.id||evidence.contextId!==report.contextId||
@@ -76,7 +77,8 @@ export async function checkedCloudPublicationPreflight(value:unknown, workflow:W
  if(typeof businessDate!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)||!businessScheduledFor||
   !Number.isFinite(Date.parse(businessScheduledFor))||basis.businessDate!==businessDate||basis.businessScheduledFor!==businessScheduledFor||
   await digest(JSON.stringify(basis))!==value.reviewDigest)throw bad();
- return {reviewDigest:value.reviewDigest,businessDate,businessScheduledFor,plannedBatchCount:2,approvalRequestId:value.approvalRequestId as string|undefined};
+ return {reviewDigest:value.reviewDigest,businessDate,businessScheduledFor,plannedBatchCount:2,approvalRequestId:value.approvalRequestId as string|undefined,
+  backgroundPublicationSupported:value.backgroundPublicationSupported===true?true:undefined};
 }
 export function frozenRequirementProposal(bundle:Workflow['package'],taskId:string):SqlRequirementReport|undefined{
  if(!bundle||!record(bundle.manifest)||!record(bundle.manifest.source))return;

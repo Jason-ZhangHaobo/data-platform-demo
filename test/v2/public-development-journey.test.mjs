@@ -182,7 +182,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   queueTimeoutMs=180000,contextualModel=false,sqlForAttempt,fundProviderFixture=false}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, cloudState, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
-  let loseArtifactAcknowledgement=false, packageWrites=0, warmWorkerReady=true;
+  let loseArtifactAcknowledgement=false, loseWakeAcknowledgement=false, loseReleaseAcknowledgement=false, packageWrites=0, warmWorkerReady=true;
   let jobWriteAttempts=0, cancellationWrites=0, resultReads=0;
   const objects = new Map();
   const wakes=[];
@@ -210,6 +210,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   const agentWakeTransport={read:async key=>objects.get(key),create:async(key,body)=>{
     if(objects.has(key)){assert.equal(objects.get(key),body);return;}
     objects.set(key,body);wakes.push({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',eventTime:new Date(now).toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key}}}]});
+    if(loseWakeAcknowledgement){loseWakeAcknowledgement=false;throw Error('SYNTHETIC_WAKE_ACK_LOST');}
   }};
   const resultEvent=key=>({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',
     eventTime:new Date(now).toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key}}}]});
@@ -225,6 +226,12 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   };
   const open = async () => {
     store = new MetadataStore(join(directory, 'metadata.sqlite'));
+    store.flush=async()=>{
+      if(loseReleaseAcknowledgement&&store.list('release_initiation',PROJECT).some(record=>record.trigger==='SIGNED_PUBLICATION_WAKE')){
+        loseReleaseAcknowledgement=false;
+        throw Error('SYNTHETIC_RELEASE_ACK_LOST');
+      }
+    };
     const artifactStore=new LocalArtifactStore(join(directory,'artifacts')), put=artifactStore.put.bind(artifactStore);
     artifactStore.put=async(kind,digest,value)=>{
       const result=await put(kind,digest,value);
@@ -314,6 +321,9 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
     get businessStore(){return app.businessStore;}, addAdmin:input=>app.auth.bootstrapAdmin(input),
     loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
+    loseWake:()=>{loseWakeAcknowledgement=true;}, loseRelease:()=>{loseReleaseAcknowledgement=true;}, replaceWake:(event,replace)=>{
+      const key=event.events[0].oss.object.key, original=objects.get(key);objects.set(key,replace(original));return ()=>objects.set(key,original);
+    },
     queueCounts:()=>({jobWriteAttempts,cancellationWrites,resultReads}),
     alignWallClock:()=>{now=Date.now();},
     privateCall:async body=>{const r=await fetch(base.replace(/\/api\/v2$/,'')+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke',...(stableOrigin?{connection:'close'}:{})},body:JSON.stringify(body)});return{status:r.status,body:await r.json()};} };
@@ -995,7 +1005,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
-async function requestBoundPublicationJourney(t,{separateApproval=false}={}) {
+async function requestBoundPublicationJourney(t,{separateApproval=false,backgroundPublication=false}={}) {
   const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true});
   const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_WORKBENCH==='true';
   const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
@@ -1234,16 +1244,68 @@ async function requestBoundPublicationJourney(t,{separateApproval=false}={}) {
     request.body={...request.body,approvalId:approved.approvalId};
   }
   assert.equal((await f.call(publication,{...request.body,initiatedBySession:true},request.idempotencyKey)).status,422);
-  const accepted=await f.call(publication,request.body,request.idempotencyKey);
-  assert.equal(accepted.status,202,accepted.body.message);
+  let accepted,wakeId;
+  const originalPublicationPath=publicationRequestReceiptPath(created.body.id,request.idempotencyKey);
+  if(backgroundPublication){
+    assert.equal(preflight.body.backgroundPublicationSupported,true);
+    const delegated={...request.body,dispatchInBackground:true};
+    assert.equal((await f.call(publication,{...delegated,approvalId:undefined},request.idempotencyKey)).status,422);
+    assert.equal((await f.call(publication,{...delegated,approvalId:randomUUID()},request.idempotencyKey)).status,409);
+    const priorWakes=f.wakes.length;
+    f.loseWake();
+    const reviewFile=join(f.directory,'exact-publication-review.json');
+    let queued;
+    assert.equal(await runV2Cli(['agent','publish','--id',created.body.id,'--request-id',request.idempotencyKey,'--file',reviewFile,
+      '--approval-id',request.body.approvalId,'--dispatch-in-background'],{},{client,output:line=>{queued=JSON.parse(line);},error:line=>assert.fail(line)}),0);
+    wakeId=queued.background?.wakeId;
+    assert.ok(wakeId);
+    assert.equal(queued.background.state,'DELIVERY_UNKNOWN');
+    assert.equal(f.wakes.length,priorWakes+1);
+    assert.equal(f.store.list('release_run',PROJECT).length,0);
+    assert.deepEqual((await f.call(originalPublicationPath)).body,queued);
+    assert.equal((await f.call(publication,request.body,request.idempotencyKey)).status,409);
+    assert.equal(f.wakes.length,priorWakes+1);
+    assert.deepEqual(f.counts(),counts);
+    const event=f.wakes.at(-1);
+    const restore=f.replaceWake(event,raw=>raw.replace('signature','signatureChanged'));
+    assert.equal((await f.privateCall(event)).status,401);
+    restore();
+    const actor=f.store.get('auth_user',actorId,PROJECT);
+    f.store.update('auth_user',actorId,PROJECT,{status:'DISABLED'});
+    assert.equal((await f.privateCall(event)).status,403);
+    f.store.update('auth_user',actorId,PROJECT,{status:actor.status});
+    const originalExpiry=f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT;
+    f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT=new Date(Date.parse(originalExpiry)+1000).toISOString();
+    await f.restart();
+    assert.equal((await f.privateCall(event)).status,403);
+    assert.equal(f.store.list('release_run',PROJECT).length,0);
+    f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT=originalExpiry;
+    await f.restart();
+    f.loseRelease();
+    assert.equal((await f.privateCall(event)).status,500);
+    assert.equal(f.store.list('release',PROJECT).length,1);
+    assert.equal(f.store.list('release_run',PROJECT).length,2);
+    assert.equal(f.store.get('publication_wake',wakeId,PROJECT).state,'DELIVERY_UNKNOWN');
+    await f.restart();
+    assert.deepEqual((await f.privateCall(event)).body,{protocol:'shuduo-publication-wake/v1',state:'RELEASED'});
+    assert.deepEqual((await f.privateCall(event)).body,{protocol:'shuduo-publication-wake/v1',state:'REPLAYED'});
+    assert.deepEqual(f.counts(),counts);
+    assert.equal(f.store.list('publication_wake',PROJECT).length,1);
+    accepted=await f.call(originalPublicationPath);
+    assert.equal(accepted.status,200,accepted.body.message);
+    assert.deepEqual(await readPublicationTool('agent_publication_create',{taskId:created.body.id,requestId:request.idempotencyKey,...delegated}),accepted.body);
+  }else{
+    accepted=await f.call(publication,request.body,request.idempotencyKey);
+    assert.equal(accepted.status,202,accepted.body.message);
+  }
   assert.equal(accepted.body.release.sourceRunId,current.runId);
   const initialRelease=accepted.body.release;
   const initiation=initialRelease.initiationEvidence;
-  assert.deepEqual(initiation,{trigger:'INVITED_SESSION_CONFIRMATION',
+  assert.deepEqual(initiation,{trigger:backgroundPublication?'SIGNED_PUBLICATION_WAKE':'INVITED_SESSION_CONFIRMATION',
     originalRequestDigest:sha256(request.idempotencyKey),acceptedAt:new Date(f.now()).toISOString(),
     taskId:created.body.id,revisionId:current.revisionId,developmentRunId:current.runId,
     releaseId:initialRelease.id,approvalId:initialRelease.approvalId,packageDigest:bundle.digest,
-    reviewDigest:initialRelease.reviewDigest});
+    reviewDigest:initialRelease.reviewDigest,...(backgroundPublication?{wakeId}:{})});
   assert.ok(!JSON.stringify(initialRelease).includes(request.idempotencyKey));
   if(separateApproval){
     assert.equal(initialRelease.approvalId,request.body.approvalId);
@@ -1452,6 +1514,8 @@ async function requestBoundPublicationJourney(t,{separateApproval=false}={}) {
 test('a request-bound base task requires the exact verified version for delivery and publication',requestBoundPublicationJourney);
 test('a request-bound exact approval starts no batches until the original approval launches publication',t=>
   requestBoundPublicationJourney(t,{separateApproval:true}));
+test('a purpose-signed publication wake resumes the original exact approval after restart without duplicate batches',t=>
+  requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true}));
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.

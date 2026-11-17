@@ -56,6 +56,7 @@ import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-rel
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import {createServiceAgentEvents} from './service-agent-events.mjs';
 import { createAgentEventDriver, agentEventConfigFromEnvironment, parseAgentObjectEvent } from "./agent-event-driver.mjs";
+import {createPublicationWakeDriver} from "./publication-wake.mjs";
 import { createAgentWakeOssTransport } from "./agent-wake-oss-transport.mjs";
 import { ossConfigFromEnvironment } from "./oss-client.mjs";
 import { queueConfigFromEnvironment } from "./remote-spark-queue.mjs";
@@ -627,6 +628,23 @@ export function createV2Server(options = {}) {
     return createAgentWakeOssTransport({...oss,credentialsProvider:async()=>ossConfigFromEnvironment(env).credentials,
       wakePrefix:agentEventConfig.wakePrefix,resultPrefix:agentEventConfig.resultPrefix});
   })() : undefined;
+  const assertPublicationWakeScope=binding=>{
+    const actor=store.get("auth_user",binding.actorId,PROJECT),task=store.get("agent",binding.taskId,PROJECT);
+    const administrator=actor?.status==="ACTIVE" && actor.memberships?.some(member=>member.projectId===PROJECT && member.role==="ADMIN");
+    if (options.ingress?.status.publicReadOnly || executionUnavailable() || publicationAccess?.sourceKind!=="AGENT_TASK" ||
+        binding.approvalWindow.startsAt!==publicationAccess.startsAt || binding.approvalWindow.expiresAt!==publicationAccess.expiresAt ||
+        !administrator || task?.submittedBy!==binding.actorId || publicationSession(publicationAccess,{role:"ADMIN",user:actor},developmentNow())?.readOnly!==false)
+      throw Object.assign(fail(403,"原受邀批准的发布窗口已关闭或权限已变化"),{code:"PUBLICATION_WAKE_SCOPE_DENIED"});
+    assertPublicationTarget(publicationAccess,{agentId:binding.taskId,packageDigest:binding.packageDigest,verificationId:binding.verificationId},developmentNow());
+  };
+  const publicationWake=publicationAccess?.sourceKind==="AGENT_TASK" && privatePublicationConfig && cloudPublication && agentWakeTransport
+    ? createPublicationWakeDriver({store,project:PROJECT,transport:agentWakeTransport,config:agentEventConfig,persist:persistDevelopment,
+      assertScope:assertPublicationWakeScope,publish:(binding,activationWakeId)=>{
+        const {taskId,requestId,...scope}=binding, approval=store.get("release_approval",scope.approvalId,PROJECT);
+        const review=approval&&store.get("delivery_review",approval.reviewId,PROJECT);
+        return cloudPublication.publish({agent:store.get("agent",taskId,PROJECT),...scope,idempotencyKey:requestId,
+          attestations:review?.attestations,activationWakeId,assertWakeAuthority:assertPublicationWakeScope});
+      }}) : undefined;
   const prepareBackgroundPackage=durableDelivery && !options.ingress?.status.publicReadOnly ? async (task,key)=>{
     const source=pinnedCloudDeliverySource(task,store.get("revision",task.revisionId,PROJECT),store.get("run",task.runId,PROJECT),
       (kind,id)=>store.get(kind,id,PROJECT));
@@ -1875,6 +1893,10 @@ export function createV2Server(options = {}) {
           let object;
           try { object=parseAgentObjectEvent(privateInput.event,resultEventConfig); }
           catch (error) { if (!publicationAccess) throw error; }
+          if (object?.kind==="WAKE" && publicationWake) {
+            const released=await publicationWake.consume(object);
+            if (released) return json(res,200,released);
+          }
           if (object?.kind==="RESULT") {
             const settled=!developmentAccess && await cloudPublicationHistory.settleResultEvent(object,
               release=>assertPublicationResultTarget(publicationAccess,release));
@@ -6310,7 +6332,8 @@ export function createV2Server(options = {}) {
             access.packageDigest===selector.packageDigest && access.verificationId===selector.verificationId &&
             publicationSession(access,scopeActor(),developmentNow())?.readOnly===false
             ? {startsAt:access.startsAt,expiresAt:access.expiresAt} : undefined;
-          return json(res,200,await cloudPublication.publicationPreflight(agent.id,selector,window));
+          const preflight=await cloudPublication.publicationPreflight(agent.id,selector,window);
+          return json(res,200,{...preflight,...(window&&publicationWake?{backgroundPublicationSupported:true}:{})});
         }
         if (local && method === "GET" && !privatePublication[2]) {
           const selector=url.search?validatePublicationSelector(publicationSelectorFromUrl(url),actorId):undefined;
@@ -6342,7 +6365,11 @@ export function createV2Server(options = {}) {
         }
         if (method==="POST" && !privatePublication[2]) {
           const body=await readBody(req);
-          if(Object.keys(body).some(k=>!["sourceKind","sourceRunId","packageDigest","verificationId","attestations","reviewDigest","approvalOnly","approvalId"].includes(k)))throw fail(422,"发布请求包含未支持字段");
+          if(Object.keys(body).some(k=>!["sourceKind","sourceRunId","packageDigest","verificationId","attestations","reviewDigest","approvalOnly","approvalId","dispatchInBackground"].includes(k)))throw fail(422,"发布请求包含未支持字段");
+          const dispatch=Object.hasOwn(body,"dispatchInBackground");
+          if (dispatch && (body.dispatchInBackground!==true || typeof body.approvalId!=="string" || body.approvalOnly!==undefined))
+            throw fail(422,"后台发起须使用当前确切版本的原批准");
+          if (dispatch && !publicationWake) throw fail(503,"当前没有可用的后台发布驱动");
           const exact = Object.hasOwn(body,"reviewDigest");
           if (exact && (typeof body.reviewDigest !== "string" || !/^[a-f0-9]{64}$/.test(body.reviewDigest)))
             throw fail(422,"人工审阅摘要格式不合法");
@@ -6353,7 +6380,7 @@ export function createV2Server(options = {}) {
           if (publicationAccess && (agent.requestBound === true || agent.derivedFrom) && selector.sourceKind === "AGENT" && !exact)
             throw fail(422,"此任务须先审阅原交付、文件演练及发布预检摘要");
           return json(res,202,await cloudPublication.publish({agent,...selector,attestations:body.attestations,
-            approvalOnly:body.approvalOnly,approvalId:body.approvalId,approvalWindow,
+            approvalOnly:body.approvalOnly,approvalId:body.approvalId,approvalWindow,...(dispatch?{deferToWake:publicationWake.enqueue}:{}),
             ...(exact?{reviewDigest:body.reviewDigest,initiatedBySession:true}:{}),idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
         }
       }
