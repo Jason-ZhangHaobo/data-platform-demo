@@ -205,6 +205,8 @@ const tools = [
   { name: "source_metadata_collect", description: "基于已测试版本扫描字段类型、基数和结构变化。", inputSchema: { type: "object", properties: { sourceId: { type: "string" } }, required: ["sourceId"] } },
   { name: "source_revision_create", description: "为现有数据源创建新的合成CSV版本，不复用旧元数据。", inputSchema: { type: "object", properties: { sourceId: { type: "string" }, fileName: { type: "string" } }, required: ["sourceId", "fileName"] } },
   { name: "sync_task_list", description: "列出V2离线同步任务和全部运行证据。", inputSchema: { type: "object", properties: {} } },
+  { name: "sync_recovery_preview", description: "只读原失败的CSV同步任务和当前已采集字段，用于审阅恢复映射。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:{type:"string"}},required:["taskId"]}, annotations:{readOnlyHint:true} },
+  { name: "sync_recovery_save", description: "明确审阅后保存恢复草稿。保留原失败记录，执行需另行确认。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:{type:"string"},basisDigest:{type:"string"},confirm:{const:true},mapping:{type:"object",additionalProperties:{type:"string"}}},required:["taskId","basisDigest","confirm","mapping"]} },
   { name: "sync_task_create", description: "创建绑定源版本和元数据版本的FULL或INCREMENTAL_UPSERT草稿。", inputSchema: { type: "object", properties: { name: { type: "string" }, sourceId: { type: "string" }, targetTable: { type: "string" }, mode: { type: "string", enum: ["FULL", "INCREMENTAL_UPSERT"] }, mapping: { type: "object", additionalProperties: { type: "string" } }, keyFields: { type: "array", items: { type: "string" } }, watermarkField: { type: "string" } }, required: ["name", "sourceId", "targetTable", "mode", "mapping", "keyFields"] } },
   { name: "sync_task_run", description: "实际执行离线同步并返回读写、摘要和水位。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
   { name: "sync_target_rows", description: "读取本机合成落地区目标行，用于验收。", inputSchema: { type: "object", properties: { targetTable: { type: "string" } }, required: ["targetTable"] } },
@@ -706,6 +708,11 @@ async function callTool(name, args = {}, client=defaultClient) {
       { method: "POST", body: { fileName: args.fileName } },
     );
   if (name === "sync_task_list") return client.request("/sync/tasks");
+  if (name === "sync_recovery_preview" || name === "sync_recovery_save") {
+    const {taskId,...body} = args;
+    return client.request(`/sync/tasks/${encodeURIComponent(taskId)}/recovery`,
+      name === "sync_recovery_save" ? {method:"POST",body} : undefined);
+  }
   if (name === "sync_task_create")
     return client.request("/sync/tasks", { method: "POST", body: args });
   if (name === "sync_task_run")

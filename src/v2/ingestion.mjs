@@ -33,6 +33,10 @@ const canonical = (value) =>
 const stableHash = (value) => hash(canonical(value));
 export const ingestionSchemaHash = columns => stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable })));
 const landingHash = rows => stableHash(rows.map(({ sourceHash: _source, syncedAt: _time, ...row }) => row));
+const staleSyncErrors = {
+  SOURCE_REVISION_STALE: "数据源版本已变化，请新建同步任务版本",
+  METADATA_STALE: "元数据版本已变化，请重新配置同步任务",
+};
 const text = (value, name, min = 1, max = 100) => {
   if (
     typeof value !== "string" ||
@@ -605,6 +609,60 @@ export class IngestionManager {
     );
   }
 
+  syncRecoveryPreview(taskId) {
+    const task = this.#task(taskId);
+    const run = this.store.get("offline_sync_run", task.lastRunId ?? "", this.project);
+    const recoverable = run?.errorCode ? Object.hasOwn(staleSyncErrors, run.errorCode) : Object.values(staleSyncErrors).includes(run?.error);
+    if (task.sourceType !== "LOCAL_CSV" || task.status !== "FAILED" || run?.status !== "FAILED" ||
+        run.taskId !== task.id || run.configHash !== task.configHash || run.sourceRevisionId !== task.sourceRevisionId ||
+        run.metadataVersionId !== task.metadataVersionId || !recoverable)
+      throw fail(409, "当前任务没有因源或元数据版本变化而失败的原运行", "SYNC_RECOVERY_NOT_APPLICABLE");
+
+    const source = this.#source(task.sourceId);
+    const metadata = (id, revisionId) => {
+      const item = this.store.get("source_metadata", id ?? "", this.project);
+      if (item?.sourceId !== source.id || item.revisionId !== revisionId || item.classification !== "ACTUAL_FILE_SCAN" ||
+          item.status !== "COLLECTED" || !Array.isArray(item.columns) ||
+          item.schemaHash !== ingestionSchemaHash(item.columns)) return undefined;
+      return { sourceRevisionId: revisionId, metadataVersionId: item.id, schemaHash: item.schemaHash,
+        columns: item.columns.map(({name,type,nullable}) => ({name,type,nullable})), contentHash: item.contentHash };
+    };
+    const previous = metadata(task.metadataVersionId, task.sourceRevisionId);
+    const current = metadata(source.currentMetadataId, source.currentRevisionId);
+    if (!previous || !current || previous.metadataVersionId === current.metadataVersionId)
+      throw fail(409, "请先采集当前源版本并核对原元数据，再准备恢复映射", "SYNC_RECOVERY_METADATA_REQUIRED");
+    const suggestedMapping = Object.fromEntries(Object.entries(task.mapping)
+      .filter(([name]) => current.columns.some(column => column.name === name)));
+    const evidence = { protocol: "shuduo-sync-recovery/v1", previousTaskId: task.id, failedRunId: run.id,
+      previousConfigHash: task.configHash, targetTable: task.targetTable, mode: task.mode, keyFields: task.keyFields,
+      watermarkField: task.watermarkField, previous, current, previousMapping: task.mapping, suggestedMapping };
+    return { ...evidence, basisDigest: stableHash(evidence) };
+  }
+
+  createSyncRecovery(taskId, input) {
+    if (input?.confirm !== true || typeof input.basisDigest !== "string" || !/^[a-f0-9]{64}$/.test(input.basisDigest) ||
+        Object.keys(input).some(key => !["confirm", "basisDigest", "mapping"].includes(key)))
+      throw fail(422, "请审阅新旧映射并确认对应的恢复依据", "SYNC_RECOVERY_CONFIRMATION_REQUIRED");
+    const mapping = normalizeMapping(input.mapping);
+    const signature = stableHash({taskId, basisDigest: input.basisDigest, mapping});
+    return this.store.deduplicate(`${this.project}:sync-recovery:${signature}`, signature, () => {
+      const preview = this.syncRecoveryPreview(taskId);
+      if (preview.basisDigest !== input.basisDigest)
+        throw fail(409, "源版本或原运行已有变化，请重新核对恢复映射", "SYNC_RECOVERY_CHANGED");
+      const task = this.#task(taskId);
+      const config = this.#normalizeTask({ ...task, name: "恢复 · " + task.name.slice(0,75), mapping });
+      if (task.mode === "INCREMENTAL_UPSERT") {
+        const targetTypes = (mapping, schema) => Object.fromEntries(Object.entries(mapping)
+          .map(([source, target]) => [target, schema.columns.find(column => column.name === source)?.type]));
+        if (stableHash(targetTypes(task.mapping, preview.previous)) !== stableHash(targetTypes(config.mapping, preview.current)))
+          throw fail(409, "增量恢复须保留原目标字段和类型；需要改变结构时请创建全量任务", "SYNC_RECOVERY_TARGET_SCHEMA_CHANGED");
+      }
+      return this.store.create("offline_sync_task", this.project, { ...config, recovery: {
+        previousTaskId: task.id, failedRunId: preview.failedRunId, basisDigest: preview.basisDigest,
+      } });
+    });
+  }
+
   validateAgentPlan(value) {
     if (
       !value ||
@@ -729,7 +787,7 @@ export class IngestionManager {
       if (source.currentRevisionId !== task.sourceRevisionId)
         throw fail(
           409,
-          "数据源版本已变化，请新建同步任务版本",
+          staleSyncErrors.SOURCE_REVISION_STALE,
           "SOURCE_REVISION_STALE",
         );
       const metadata = this.store.get(
@@ -740,7 +798,7 @@ export class IngestionManager {
       if (!metadata || source.currentMetadataId !== metadata.id)
         throw fail(
           409,
-          "元数据版本已变化，请重新配置同步任务",
+          staleSyncErrors.METADATA_STALE,
           "METADATA_STALE",
         );
       const revision = this.#revision(task.sourceRevisionId),
@@ -809,6 +867,7 @@ export class IngestionManager {
         metadataVersionId: task.metadataVersionId,
         configHash: task.configHash,
         error: error.message,
+        errorCode: error.code ?? "CSV_SYNC_FAILED",
         durationMs: this.now() - started,
         finishedAt: new Date(this.now()).toISOString(),
         actualExecution: true,

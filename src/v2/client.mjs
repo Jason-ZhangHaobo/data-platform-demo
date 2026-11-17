@@ -100,6 +100,8 @@ export const V2_OPERATIONS = Object.freeze([
   "source_metadata",
   "source_revision",
   "sync_task_list",
+  "sync_recovery_preview",
+  "sync_recovery_save",
   "sync_task_create",
   "sync_task_run",
   "sync_target_rows",

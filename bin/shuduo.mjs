@@ -191,6 +191,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo sync list
   shuduo sync create --name 名称 --source-id ID --target-table raw_positions --mode full|incremental --mapping from:to,... --keys position_id [--watermark trade_date]
   shuduo sync run --id ID
+  shuduo sync recovery-preview --id OLD_TASK_ID
+  shuduo sync recovery-save --id OLD_TASK_ID --basis-digest SHA256 --mapping SOURCE:TARGET,SOURCE:TARGET --confirm
   shuduo sync rows --table raw_positions
   shuduo sync plan --message "同步需求"
   shuduo sync apply-plan --id PLAN_ID
@@ -1137,6 +1139,15 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "sync" && action === "list")
       result = await client.request("/sync/tasks");
+    else if (resource === "sync" && ["recovery-preview","recovery-save"].includes(action)) {
+      const path = `/sync/tasks/${encodeURIComponent(required(parsed.options,"id"))}/recovery`;
+      if (action === "recovery-preview") result = await client.request(path);
+      else {
+        if (parsed.options.confirm !== true) throw Error("请先审阅恢复映射，再明确确认保存草稿");
+        result = await client.request(path, { method:"POST", body:{ confirm:true,
+          basisDigest:required(parsed.options,"basis_digest"), mapping:mapping(required(parsed.options,"mapping")) } });
+      }
+    }
     else if (resource === "sync" && action === "create") {
       const mode = required(parsed.options, "mode");
       if (!["full", "incremental"].includes(mode))

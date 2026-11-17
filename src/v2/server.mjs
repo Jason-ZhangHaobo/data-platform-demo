@@ -2617,12 +2617,22 @@ export function createV2Server(options = {}) {
         );
       }
       const syncTaskRecord = path.match(
-        /^\/api\/v2\/sync\/tasks\/([a-f0-9-]+)(?:\/(run))?$/,
+        /^\/api\/v2\/sync\/tasks\/([a-f0-9-]+)(?:\/(run|recovery))?$/,
       );
       if (syncTaskRecord) {
         const task = ingestion.taskDetail(syncTaskRecord[1]),
           action = syncTaskRecord[2];
         if (method === "GET" && !action) return json(res, 200, task);
+        if (action === "recovery") {
+          if (!local || options.ingress || !isLoopbackRequest(req) || !workspaceReadActor(req))
+            throw fail(403, "同步恢复须由本机工作台工程师审阅");
+          if (url.searchParams.size) throw fail(422, "同步恢复只接受原任务编号");
+          if (method === "GET") return json(res, 200, ingestion.syncRecoveryPreview(task.id));
+          if (method === "POST") {
+            const saved = ingestion.createSyncRecovery(task.id, await readBody(req));
+            return json(res, saved.replayed ? 200 : 201, ingestion.taskDetail(saved.id));
+          }
+        }
         if (method === "POST" && action === "run") {
           await readBody(req);
           const requestKey = text(req.headers["idempotency-key"], 1, 100),

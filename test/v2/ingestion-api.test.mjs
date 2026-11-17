@@ -9,6 +9,8 @@ import {
   identityPositionMapping,
 } from "../../src/v2/ingestion.mjs";
 import { createV2Server } from "../../src/v2/server.mjs";
+import {runV2Cli} from "../../bin/shuduo.mjs";
+import {handleV2Mcp} from "../../bin/shuduo-mcp.mjs";
 
 const header =
   "position_id,client_id,security_code,asset_class,industry,market_value,trade_date\n";
@@ -32,13 +34,14 @@ async function start(options) {
     base: `http://127.0.0.1:${app.server.address().port}/api/v2`,
   };
 }
-async function request(base, path, body, key = "ingestion-api") {
+async function request(base, path, body, key = "ingestion-api", headers = {}) {
   const response = await fetch(base + path, {
     method: body === undefined ? "GET" : "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Shuduo-Client": "workbench",
       "Idempotency-Key": key,
+      ...headers,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -231,6 +234,57 @@ test("V2 API executes CSV metadata, full sync, incremental UPSERT and stale-vers
     assert.equal(status.body.ingestion.offlineTaskCount, 2);
     assert.equal(status.body.ingestion.cloudVerified, false);
 
+    const recoveryPath = `/sync/tasks/${fullTask.body.id}/recovery`;
+    const suggested = (await request(server.base,recoveryPath)).body;
+    assert.equal(suggested.previousTaskId,fullTask.body.id);
+    assert.equal(suggested.failedRunId,stale.body.runId);
+    assert.equal(suggested.previous.metadataVersionId,baseSource.metadata.id);
+    assert.equal(suggested.current.metadataVersionId,metadata.body.id);
+    assert.deepEqual(suggested.suggestedMapping,identityPositionMapping);
+    assert.ok(suggested.current.columns.some(column=>column.name==="currency"));
+    assert.equal((await request(server.base,recoveryPath,undefined,undefined,{Authorization:"Bearer fictional-service"})).status,403);
+    assert.equal((await request(server.base,recoveryPath,undefined,undefined,{Cookie:"shuduo_session=expired-fixture"})).status,403);
+    assert.equal((await request(server.base,recoveryPath+"?x=1")).status,422);
+    const mapping = {...identityPositionMapping,currency:"currency"};
+    const draft = {confirm:true,basisDigest:suggested.basisDigest,mapping};
+    assert.equal((await request(server.base,recoveryPath,{...draft,confirm:false})).status,422);
+    await request(server.base,`/sources/${baseSource.source.id}/metadata`,{},"schema-metadata-next");
+    assert.equal((await request(server.base,recoveryPath,draft)).body.code,"SYNC_RECOVERY_CHANGED");
+    const current = (await request(server.base,recoveryPath)).body;
+    const client = {request:async (path, options)=> (await request(server.base,path,options?.body)).body};
+    const out = [];
+    assert.equal(await runV2Cli(["sync","recovery-preview","--id",fullTask.body.id],{},
+      {client,output:line=>out.push(line),error:()=>{}}),0);
+    assert.deepEqual(JSON.parse(out.join("")),current);
+    const create = await request(server.base,recoveryPath,{...draft,basisDigest:current.basisDigest});
+    assert.equal(create.status,201);
+    assert.equal(create.body.status,"READY");
+    assert.equal(create.body.runs.length,0);
+    assert.equal(create.body.recovery.failedRunId,stale.body.runId);
+    assert.equal(create.body.recovery.previousTaskId,fullTask.body.id);
+    assert.notEqual(create.body.id,fullTask.body.id);
+    assert.deepEqual(landingStore.readTable("raw_positions"),rows.body);
+    const mcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",
+      params:{name:"sync_recovery_save",arguments:{taskId:fullTask.body.id,...draft,basisDigest:current.basisDigest}}},{client}));
+    assert.equal(mcp.result.structuredContent.id,create.body.id);
+    assert.deepEqual((await request(server.base,`/sync/tasks/${fullTask.body.id}`)).body,taskDetail.body);
+
+    await request(server.base,`/sources/${deltaSource.source.id}/revisions`,{fileName:"changed.csv"},"delta-schema");
+    await request(server.base,`/sources/${deltaSource.source.id}/test`,{},"delta-schema-test");
+    await request(server.base,`/sources/${deltaSource.source.id}/metadata`,{},"delta-schema-metadata");
+    const deltaStale = await request(server.base,`/sync/tasks/${deltaTask.body.id}/run`,{},"delta-stale");
+    assert.equal(deltaStale.status,409);
+    const deltaRecovery = `/sync/tasks/${deltaTask.body.id}/recovery`;
+    const deltaBasis = (await request(server.base,deltaRecovery)).body;
+    assert.equal((await request(server.base,deltaRecovery,{confirm:true,basisDigest:deltaBasis.basisDigest,mapping})).body.code,
+      "SYNC_RECOVERY_TARGET_SCHEMA_CHANGED");
+
+    const executed = await request(server.base,`/sync/tasks/${create.body.id}/run`,{},"run-recovery");
+    assert.equal(executed.body.finalCount,1);
+    assert.equal(executed.body.metadataVersionId,current.current.metadataVersionId);
+    assert.equal((await request(server.base,"/sync/targets/raw_positions/rows")).body[0].currency,"CNY");
+    assert.deepEqual((await request(server.base,`/sync/tasks/${fullTask.body.id}`)).body,taskDetail.body);
+
     await new Promise((resolve) => server.app.server.close(resolve));
     server = await start({
       store,
@@ -239,6 +293,7 @@ test("V2 API executes CSV metadata, full sync, incremental UPSERT and stale-vers
       env: { V2_LOCAL_DEVELOPMENT: "false" },
     });
     assert.equal((await request(server.base, "/sources")).status, 401);
+    assert.equal((await request(server.base,recoveryPath)).status,401);
     assert.equal(
       (
         await request(

@@ -1077,6 +1077,14 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 运行用真实 Spark 核对冻结持仓结果，并在另外四个登记样例做回归。对已保存任务进行人工编辑时，代码版本与新运行继续引用原快照。检查另一次全量覆盖、原请求重查、进程重启后的人工重跑，以及篡改输入拒绝。工作台保留冻结持仓版本的本机开发结果。
 
+### 离线同步映射恢复
+
+旧 CSV 同步任务因数据源或元数据版本变化失败后，先采集当前版本，再在原任务选择「检查恢复映射」。核对原失败编号、新旧元数据、目标表、主键和水位。已有有效映射保留，新字段默认留空。确认后保存为独立草稿，并可回看原任务及已保存映射。相同依据和映射重复确认返回同一草稿，过期依据须重新读取。
+
+全量任务实际执行时替换目标表数据。增量恢复须保留目标字段及类型，改变目标结构时可另建全量任务。用虚构证券持仓验证原失败仍可读取，新草稿保存时无运行，明确执行后的两笔落地记录均含 `currency=CNY`。
+
+`GET /api/v2/sync/tasks/{taskId}/recovery`、`shuduo sync recovery-preview --id OLD_TASK_ID` 和 MCP `sync_recovery_preview` 读取同一依据。确认保存可用同一路径 POST、`shuduo sync recovery-save --id OLD_TASK_ID --basis-digest SHA256 --mapping SOURCE:TARGET --confirm` 或 MCP `sync_recovery_save`。这些恢复接口限本机工作台，会检查已采集版本和原失败。
+
 ### 冻结持仓的八文件交付
 
 在原任务或人工保存的已核验版本打开「冻结持仓交付」。生成包时锁定该 SQL 运行、同步批次、元数据版本及快照。交付包的 `fixtures.json` 保留原输入，`tests.sql` 根据该输入的独立预期生成。在工作台选择「本机按文件演练」，调度文件的样例时刻应解出原业务日，Spark 实际执行主 SQL、测试 SQL 及五场景断言。审阅绑定包摘要与成功演练回执，范围为 `LOCAL_FILE_REVIEW`。
