@@ -370,8 +370,33 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     const currentReviewDigest = repeatVerification.value.syncRehearsalDigest;
     assert.match(currentReviewDigest,/^[a-f0-9]{64}$/);
     assert.equal((await request(verifiedPath)).value.syncRehearsalDigest,currentReviewDigest);
+    const exportPath = verifiedPath+"/review-evidence";
+    const changesBeforeExport = app.store.db.prepare("SELECT total_changes() AS count").get().count;
+    const exportResponse = await request(exportPath);
+    assert.equal(exportResponse.status,200);
+    const exported = exportResponse.value;
+    assert.equal(exported.readOnly,true);
+    assert.equal(exported.verificationId,verified.id);
+    assert.equal(exported.syncRehearsalDigest,currentReviewDigest);
+    assert.equal(exported.source.snapshotHash,run.syncInput.snapshotHash);
+    assert.equal(exported.source.syncRunId,first.run.id);
+    assert.equal(exported.rehearsal.businessDate,"2026-09-10");
+    assert.deepEqual(exported.fileHashes,verified.fileHashes);
+    assert.ok(!JSON.stringify(exported).includes("CLIENT-001"));
+    assert.equal(exported.files,undefined);
+    assert.equal(exported.rehearsal.rows,undefined);
+    const outputEvidence = [];
+    assert.equal(await runV2Cli(["delivery","review-evidence","--verification-id",verified.id],{},
+      {client:schemaClient,output:line=>outputEvidence.push(line),error:()=>{}}),0);
+    assert.deepEqual(JSON.parse(outputEvidence.join("")),exported);
+    const exportMcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:4,method:"tools/call",
+      params:{name:"sync_review_evidence_read",arguments:{verificationId:verified.id}}},{client:schemaClient}));
+    assert.deepEqual(exportMcp.result.structuredContent,exported);
+    assert.equal(app.store.db.prepare("SELECT total_changes() AS count").get().count,changesBeforeExport);
+    assert.equal((await request(exportPath+"?package_id="+stored.id)).status,422);
+    assert.equal((await request(failedRehearsalPath+"/review-evidence")).status,409);
     assert.equal((await request(reviewPath,reviewInput,"missing-reviewed-receipt")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
-    const oldReviewInput = {...reviewInput,syncRehearsalDigest:currentReviewDigest};
+    const oldReviewInput = {...reviewInput,syncRehearsalDigest:exported.syncRehearsalDigest};
     const reviewOutput = [];
     assert.equal(await runV2Cli(["delivery","review","--id",stored.id,"--package-digest",stored.digest,"--verification-id",verified.id,
       "--sync-rehearsal-digest",currentReviewDigest,"--note",reviewInput.reviewNote,
@@ -385,6 +410,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(changedReceipt.id,verified.id);
     assert.equal(changedReceipt.status,"SUCCEEDED");
     assert.notEqual(changedReceipt.syncRehearsalDigest,currentReviewDigest);
+    assert.equal((await request(exportPath)).value.syncRehearsalDigest,changedReceipt.syncRehearsalDigest);
     const approvalFor = reviewId => ({packageDigest:stored.digest,reviewId,syncConsent});
     assert.equal((await request(reviewPath,oldReviewInput,"old-browser-review")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
     assert.equal((await request(packagePath+"/approve",approvalFor(oldReview.id),"approve-stale-review")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
@@ -535,6 +561,8 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
       assert.equal((await request(path,undefined,undefined,bearer)).status,403);
       assert.equal((await request(path,undefined,undefined,{Cookie:"shuduo_session=expired-fixture"})).status,403);
     }
+    for (const headers of [otherIdentity,bearer,{Cookie:"shuduo_session=expired-fixture"}])
+      assert.equal((await request(exportPath,undefined,undefined,headers)).status,403);
     for (const headers of [otherIdentity,bearer,{Cookie:"shuduo_session=expired-fixture"}]) {
       assert.ok(!(await request("/runs",undefined,undefined,headers)).value.some(item=>item.id===checked.id));
       assert.ok(!(await request("/revisions",undefined,undefined,headers)).value.some(item=>item.id===revision.value.id));

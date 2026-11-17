@@ -1093,6 +1093,8 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 工程师记录冻结持仓审阅时，必须带上已核对回执的演练内容摘要。工作台显示该摘要，并在回执切换时清空未提交的勾选。CLI 先用 `shuduo delivery verification --id VERIFICATION_ID` 读取 `syncRehearsalDigest`，审阅确认后在 `shuduo delivery review` 使用 `--sync-rehearsal-digest`，MCP 的 `delivery_review_create` 传入同名字段。回执编号相同但内容变化时，保存旧摘要或用旧审阅批准均拒绝。未批准的历史审阅需重新确认，已经批准的历史记录沿用原审批摘要复核。
 
+在成功演练的审阅卡片选择「导出审阅证据」可保存独立 JSON。也可使用 `shuduo delivery review-evidence --verification-id VERIFICATION_ID`、MCP `sync_review_evidence_read` 或 `GET /api/v2/delivery/verifications/{id}/review-evidence`。同一 JSON 包含原代码和冻结输入标识、调度时点、独立断言计数、三步状态、八个文件摘要及 `syncRehearsalDigest`。原始客户行与文件正文留在授权工作台。保存审阅前以当前原回执重验该摘要。
+
 ### 冻结持仓的八文件交付
 
 在原任务或人工保存的已核验版本打开「冻结持仓交付」。生成包时锁定该 SQL 运行、同步批次、元数据版本及快照。交付包的 `fixtures.json` 保留原输入，`tests.sql` 根据该输入的独立预期生成。在工作台选择「本机按文件演练」，调度文件的样例时刻应解出原业务日，Spark 实际执行主 SQL、测试 SQL 及五场景断言。审阅绑定包摘要与成功演练回执，范围为 `LOCAL_FILE_REVIEW`。

@@ -9,7 +9,7 @@ import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/ass
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
-import {readSyncSqlOutputSchema,readSyncedPositions} from "../src/v2/sync-sql-output-schema-client.mjs";
+import {readSyncSqlOutputSchema,readSyncedPositions,readSyncReviewEvidence} from "../src/v2/sync-sql-output-schema-client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
 import { readWealthConsumption } from '../src/v2/wealth-report-consumption-client.mjs';
@@ -163,6 +163,7 @@ const tools = [
   { name: "delivery_verification_detail", description: "读取指定文件演练的步骤和验证证据。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
   { name: "delivery_verification_cancel", description: "取消未完成的文件演练并保留记录；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
   { name: "delivery_review_list", description: "列出按包摘要与文件演练绑定的工程师审阅记录。", inputSchema: { type: "object", properties: {} } },
+  {name:"sync_review_evidence_read",description:"按原演练编号导出冻结持仓的只读审阅证据与摘要。",inputSchema:{type:"object",additionalProperties:false,properties:{verificationId:{type:"string",format:"uuid"}},required:["verificationId"]},annotations:{readOnlyHint:true}},
   { name: "delivery_review_create", description: "记录工程师已完成的实际审阅。冻结持仓须传入原回执的 syncRehearsalDigest；调用前需要明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, verificationId: { type: "string" }, syncRehearsalDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}, reviewNote: { type: "string" }, attestations: { type: "object", properties: { code: { type: "boolean", const: true }, assertions: { type: "boolean", const: true }, deliveryFiles: { type: "boolean", const: true }, localScope: { type: "boolean", const: true } }, required: ["code", "assertions", "deliveryFiles", "localScope"], additionalProperties: false } }, required: ["packageId", "packageDigest", "verificationId", "reviewNote", "attestations"] } },
   { name: "release_approval_list", description: "列出绑定交付包摘要的发布审批记录。", inputSchema: { type: "object", properties: {} } },
   { name: "fund_agent_publication_preflight", description: "只读核对指定基金任务、开发运行、交付包及成功文件演练，返回工程师审阅和两批本机计划。",
@@ -569,6 +570,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     );
   if (name === "delivery_review_list")
     return client.request("/delivery/reviews");
+  if(name==="sync_review_evidence_read")return readSyncReviewEvidence(client,args);
   if (name === "delivery_review_create")
     return client.request(
       `/delivery/packages/${encodeURIComponent(args.packageId)}/review`,

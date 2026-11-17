@@ -10,7 +10,7 @@ import { linkSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync }
 import { dirname, join } from "node:path";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
-import {readSyncSqlOutputSchema,readSyncedPositions} from "../src/v2/sync-sql-output-schema-client.mjs";
+import {readSyncSqlOutputSchema,readSyncedPositions,readSyncReviewEvidence} from "../src/v2/sync-sql-output-schema-client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance,checkedReportProvenance,downloadReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
@@ -149,6 +149,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo delivery verification --id VERIFICATION_ID
   shuduo delivery cancel --id VERIFICATION_ID
   shuduo delivery reviews
+  shuduo delivery review-evidence --verification-id VERIFICATION_ID
   shuduo delivery review --id PACKAGE_ID --package-digest SHA256 --verification-id VERIFICATION_ID [--sync-rehearsal-digest SHA256] --note "已核对" --attest-code --attest-assertions --attest-delivery-files --attest-local-scope
   分布批准/回滚需 --distribution-consent 已审阅确认JSON文件；读取不自动确认。
   shuduo releases approvals
@@ -931,6 +932,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "delivery" && action === "reviews")
       result = await client.request("/delivery/reviews");
+    else if (resource === "delivery" && action === "review-evidence")
+      result = await readSyncReviewEvidence(client,{verificationId:required(parsed.options,"verification_id")});
     else if (resource === "delivery" && action === "review")
       result = await client.request(
         `/delivery/packages/${encodeURIComponent(required(parsed.options, "id"))}/review`,

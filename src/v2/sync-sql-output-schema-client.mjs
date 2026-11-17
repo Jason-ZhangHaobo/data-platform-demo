@@ -116,3 +116,38 @@ export async function readSyncedPositions(client) {
     taskId:value.taskId,sourceRevisionId:value.sourceRevisionId,metadataVersionId:value.metadataVersionId,rowCount:value.rowCount,
     ...(value.verifiedCurrency === "CNY" ? {verifiedCurrency:"CNY"} : {}) };
 }
+
+export async function readSyncReviewEvidence(client, expected) {
+  if (!matches(identifier,expected.verificationId)) throw invalid();
+  const value = await client.request("/delivery/verifications/"+expected.verificationId+"/review-evidence");
+  const source = value?.source, rehearsal = value?.rehearsal, hashes = value?.fileHashes;
+  const ids = ["agentTaskId","revisionId","runId","syncRunId","metadataVersionId"];
+  const digests = ["revisionHash","snapshotHash","targetHash"];
+  const files = ["main.sql","tests.sql","schedule.json","deployment.json","calendar.json","fixtures.json","validation.json","README.md"];
+  if (value?.protocol !== "shuduo-sync-review-evidence/v1" || value.scope !== "LOCAL_FILE_REVIEW" || value.readOnly !== true ||
+      value.verificationId !== expected.verificationId || !matches(identifier,value.packageId) ||
+      !matches(digest,value.packageDigest) || !matches(digest,value.syncRehearsalDigest) ||
+      ["packageId","packageDigest","syncRehearsalDigest"].some(key=>expected[key] !== undefined && value[key] !== expected[key]) ||
+      !record(source) || source.contextId !== "holdings-t1" || !["LIVE_MODEL","SYNTHETIC_MODEL","MANUAL"].includes(source.developmentMode) ||
+      !ids.every(key=>matches(identifier,source[key])) || !digests.every(key=>matches(digest,source[key])) ||
+      expected.snapshotHash !== undefined && expected.snapshotHash !== source.snapshotHash ||
+      !record(hashes) || Object.keys(hashes).length !== files.length || files.some(name=>!matches(digest,hashes[name])) ||
+      !record(rehearsal) || rehearsal.validationContractId !== "securities-synced-holdings-t1-v1" ||
+      !matches(/^\d{4}-\d{2}-\d{2}$/,rehearsal.businessDate) ||
+      !matches(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$/,rehearsal.scheduledFor) ||
+      !matches(/^\d+\.\d+\.\d+$/,rehearsal.engineVersion) || rehearsal.regressionCount !== 5 ||
+      !Number.isInteger(rehearsal.selectedRowCount) || rehearsal.selectedRowCount < 1 || rehearsal.selectedRowCount > 500 ||
+      !Array.isArray(rehearsal.steps) || rehearsal.steps.length !== 3 || rehearsal.steps.some(step=>
+        !matches(token,step?.id) || !matches(token,step.kind) || step.status !== "SUCCEEDED"))
+    throw Error("审阅证据与所选演练不一致，请重读原回执。");
+  return {
+    protocol:value.protocol,scope:value.scope,readOnly:true,packageId:value.packageId,packageDigest:value.packageDigest,
+    verificationId:value.verificationId,syncRehearsalDigest:value.syncRehearsalDigest,
+    source:{contextId:source.contextId,developmentMode:source.developmentMode,
+      ...Object.fromEntries([...ids,...digests].map(key=>[key,source[key]]))},
+    rehearsal:{businessDate:rehearsal.businessDate,scheduledFor:rehearsal.scheduledFor,engineVersion:rehearsal.engineVersion,
+      validationContractId:rehearsal.validationContractId,selectedRowCount:rehearsal.selectedRowCount,regressionCount:rehearsal.regressionCount,
+      steps:rehearsal.steps.map(({id,kind,status})=>({id,kind,status}))},
+    fileHashes:Object.fromEntries(files.map(name=>[name,hashes[name]])),
+  };
+}

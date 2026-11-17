@@ -6,7 +6,7 @@ const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentRepo
 import { manualDeliveryPackages } from "./manual-run-recovery";
 import { deliverySourceSelection } from "./delivery-source";
 import { defaultLocalReleaseSchedule, localReleaseScheduleText, matchingDeliveryVerification } from "./delivery-presentation";
-import { checkedSyncSqlRehearsalSchema, checkedSyncSqlScheduledSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
+import { checkedSyncSqlRehearsalSchema, checkedSyncSqlScheduledSchema, readSyncReviewEvidence } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import type { SyncSqlRehearsalSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import { SyncOutputSchemaDetails } from "./SyncOutputSchemaDetails";
 import {
@@ -680,6 +680,28 @@ export function DeliveryWorkbench({
     anchor.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
+  const downloadReviewEvidence = async () => {
+    if (!selected || !check || !syncInput || !syncReviewDigest || busy) return;
+    const request = ++ticket.current;
+    setBusy("review-evidence");
+    setError("");
+    try {
+      const evidence = await readSyncReviewEvidence({request:path=>api<unknown>(path)}, {
+        verificationId:check.id,packageId:selected.id,packageDigest:selected.digest,
+        syncRehearsalDigest:syncReviewDigest,snapshotHash:syncInput.snapshotHash,
+      });
+      if (request === ticket.current)
+        download(JSON.stringify(evidence,null,2)+"\n", "sync-review-evidence-"+check.id.slice(0,8)+".json");
+    } catch (error) {
+      if (request === ticket.current) {
+        setReviewDraft(undefined);
+        setSyncConsentTarget(undefined);
+        setError((error as Error).message);
+      }
+    } finally {
+      setBusy(current=>current==="review-evidence"?"":current);
+    }
+  };
   const content = selected
     ? file === "manifest.json"
       ? JSON.stringify(selected.manifest, null, 2)
@@ -1097,6 +1119,9 @@ export function DeliveryWorkbench({
                   {syncInput ? "文件审阅绑定交付包和演练内容摘要。测试发布批准在 15 分钟内有效。" : <>先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。{localReleaseScheduleText(selectedRelease)}</>}
                 </p>
                 {syncReviewDigest && <p>演练内容摘要 <code title={syncReviewDigest}>{syncReviewDigest.slice(0,16)}</code></p>}
+                {syncReviewDigest && <button className="button" type="button" disabled={!!busy} onClick={()=>void downloadReviewEvidence()}>
+                  <ArrowDownToLine size={15}/>{busy==="review-evidence"?"正在核对证据…":"导出审阅证据"}
+                </button>}
                 {staleSyncReview && <p role="status" className="delivery-error-text">原审阅与当前演练证据不符，请核对当前内容后重新审阅。</p>}
                 {signedFundTask && <p><a href={`/v2/?module=agent-center&task=${encodeURIComponent(signedFundTask)}#agent-delivery`}>到原 Agent 任务审阅签名交付</a></p>}
                 <fieldset className="delivery-review-checklist" disabled={!canWrite || !reviewTarget || !!selectedReview || !!busy}>

@@ -39,3 +39,6 @@ export function readSyncSqlOutputSchema(client:{request:(path:string)=>Promise<u
 export type SyncedPositionsOffer = {contextId:"holdings-t1";selection:{targetTable:"raw_positions";runId:string;targetHash:string};
   taskId:string;sourceRevisionId:string;metadataVersionId:string;rowCount:number;verifiedCurrency?:"CNY"};
 export function readSyncedPositions(client:{request:(path:string)=>Promise<unknown>}):Promise<SyncedPositionsOffer>;
+export function readSyncReviewEvidence(client:{request:(path:string)=>Promise<unknown>},expected:{
+  verificationId:string;packageId?:string;packageDigest?:string;syncRehearsalDigest?:string;snapshotHash?:string;
+}):Promise<Record<string,unknown>>;

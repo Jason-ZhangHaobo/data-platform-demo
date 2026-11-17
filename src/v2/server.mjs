@@ -45,7 +45,7 @@ import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { assertSyncSqlOutputSchema, currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlColumnsMatch, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlOutputColumns, syncSqlOutputSchemaCode, syncSqlOutputSchemaDetails, syncSqlOutputSchemaMessage, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 import { isDeepStrictEqual } from "node:util";
-import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, assertSyncSqlReviewBinding, syncApprovalExpiry,
+import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, assertSyncSqlReviewBinding, storedSyncSqlReviewEvidence, syncApprovalExpiry,
   syncSqlRehearsalDigest, syncSqlReviewDigest, syncSqlScheduledSchemaDetails } from "./sync-sql-publication.mjs";
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence, syncServiceProtocol, syncSqlServiceSources } from "./sync-sql-service-source.mjs";
 import { isSyncAssetId, isSyncReportEvidence, syncAssetBatchId, syncAssetView, syncReportAsset, syncReportAssetId } from "./sync-sql-report.mjs";
@@ -5560,7 +5560,7 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/delivery/reviews" && method === "GET")
         return json(res, 200, visibleDelivery("delivery_review"));
       const deliveryRecord = path.match(
-        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|review|approve))?$/,
+        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|review|approve|review-evidence))?$/,
       );
       if (deliveryRecord) {
         const kind =
@@ -5569,6 +5569,13 @@ export function createV2Server(options = {}) {
             : "delivery_verification";
         const item = get(kind, deliveryRecord[2]);
         requireDeliveryEvidence(kind, item);
+        if (method === "GET" && kind === "delivery_verification" && deliveryRecord[3] === "review-evidence") {
+          if (url.searchParams.size) throw fail(422, "审阅导出仅接受原演练编号");
+          const bundle = get("delivery_package",item.packageId);
+          requireDeliveryEvidence("delivery_package",bundle);
+          if (!bundle.manifest?.source?.syncInput) throw fail(409, "原演练不是冻结持仓交付");
+          return json(res, 200, storedSyncSqlReviewEvidence(validateAnyDeliveryPackage(bundle),bundle,item));
+        }
         if (method === "GET" && !deliveryRecord[3]) {
           if (kind === "delivery_package" && (item.manifest?.source?.syncInput || item.manifest?.source?.fundDevelopment)) validateAnyDeliveryPackage(item);
           return json(res, 200, kind === "delivery_verification" ? exposeDeliveryVerification(item) : protectedDeliveryPayload(item));

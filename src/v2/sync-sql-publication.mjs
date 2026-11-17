@@ -23,6 +23,26 @@ export function assertSyncSqlReviewBinding(verification, expectedDigest) {
     throw fail("SYNC_REHEARSAL_REVIEW_CHANGED", "演练证据未按当前摘要审阅，请重新核对后记录审阅");
 }
 
+export function storedSyncSqlReviewEvidence(plan, bundle, verification) {
+  const source = plan.source, input = source.syncInput;
+  if (!input || verification.packageId !== bundle.id || verification.projectId !== source.projectId)
+    throw fail("SYNC_REVIEW_SCOPE_INVALID", "审阅导出须绑定原冻结持仓交付包及本机演练");
+  assertSyncSqlRehearsal(plan, bundle, verification);
+  return {
+    protocol:"shuduo-sync-review-evidence/v1", scope:"LOCAL_FILE_REVIEW", readOnly:true,
+    packageId:bundle.id, packageDigest:plan.digest, verificationId:verification.id,
+    syncRehearsalDigest:syncSqlRehearsalDigest(verification),
+    source:{ agentTaskId:input.agentTaskId, developmentMode:input.developmentMode,
+      contextId:source.contextId, revisionId:source.revisionId, revisionHash:source.sqlHash, runId:source.runId,
+      syncRunId:input.runId, metadataVersionId:input.metadataVersionId, snapshotHash:input.snapshotHash, targetHash:input.targetHash },
+    rehearsal:{ businessDate:verification.occurrence.businessDate, scheduledFor:verification.scheduledFor,
+      engineVersion:verification.engineVersion, validationContractId:source.validationContractId,
+      selectedRowCount:verification.rows.length, regressionCount:verification.validation.regressions.length,
+      steps:verification.workflowTrace.map(step=>({id:step.id,kind:step.kind,status:step.status})) },
+    fileHashes:Object.fromEntries(Object.entries(bundle.manifest.files).map(([name,file])=>[name,file.sha256])),
+  };
+}
+
 export function assertSyncSqlConsent({ bundle, plan, verification, review, consent, actorId, enabled }) {
   const input = plan?.source?.syncInput;
   if (!input) {
