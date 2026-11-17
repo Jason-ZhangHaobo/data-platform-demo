@@ -191,7 +191,7 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
       g=patch(g,{consumedEvents:g.consumedEvents+1,state:"RUNNING"});
       store.update("agent_wake",wake.id,project,{status:"CLAIMED"},{expectedVersion:wake.version});await persist();
     }
-    const result=await dispatcher.tick({requestId:wake.id,taskId:g.taskId});
+    const result=await dispatcher.tick({requestId:wake.id,taskId:g.taskId,signedBackgroundEvent:true});
     if(["BUSY","IN_PROGRESS","LEASE_EXPIRED"].includes(result.state))throw fail(503,"AGENT_EVENT_LEASE_BUSY");
     g=store.get("agent_background",g.id,project);
     if(!owns(g)||g.status!=='ACTIVE')return{protocol:eventProtocol,state:'INACTIVE'};

@@ -164,7 +164,10 @@ test("headless ticks recover the actual SQL Agent state machine across SQLite re
     rows: getContext("holdings-t1").expected, validation: { passed: true, regressions: contextIds.map(contextId => ({ contextId, passed: true })) } };
   clock += 6000; assert.equal((await driver.tick({ requestId: randomUUID() })).status, "SUCCEEDED");
   assert.equal(models, 1); assert.equal(submissions, 1); assert.equal(store.list("revision", PROJECT).length, 1);
-  assert.equal(engine.get(task.id).status, "SUCCEEDED");
+  const saved=engine.get(task.id);
+  assert.equal(saved.status, "SUCCEEDED");
+  assert.equal(saved.attempts[0].modelTrigger,"PRIVATE_TICK");
+  assert.deepEqual(store.get("run",saved.runId,PROJECT).remoteSubmission.agentSubmissionTriggers,["PRIVATE_TICK"]);
 });
 
 test("private tick route is opt-in, validates fields and is unavailable outside private provisioning", async t => {

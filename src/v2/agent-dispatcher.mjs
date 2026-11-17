@@ -23,7 +23,7 @@ export function createAgentDispatcher({ store, project, engine, persist, now = D
     return store.get("agent_dispatch_state", item.id, project);
   };
 
-  async function tick({ requestId, taskId } = {}) {
+  async function tick({ requestId, taskId, signedBackgroundEvent = false } = {}) {
     if (typeof requestId !== "string" || !/^[a-f0-9-]{36}$/.test(requestId)) throw fail(422, "AGENT_TICK_REQUEST_INVALID");
     if (taskId !== undefined && (typeof taskId !== "string" || !/^[a-f0-9-]{36}$/.test(taskId))) throw fail(422, "AGENT_TICK_TASK_INVALID");
     const prior = store.list("agent_tick", project).find(t => t.requestId === requestId);
@@ -78,7 +78,8 @@ export function createAgentDispatcher({ store, project, engine, persist, now = D
         // Keep the existing driver protocol and do not treat that as consent.
         result = response("IDLE", {requestId,taskId:task.id,status:fresh.status,stage:fresh.stage,pending:0});
       } else {
-        const advanced = await engine.advance(task.id, { expectedVersion: fresh.version });
+        const advanced = await engine.advance(task.id, { expectedVersion: fresh.version,
+          executionTrigger: signedBackgroundEvent ? "SIGNED_BACKGROUND_EVENT" : "PRIVATE_TICK" });
         result = response("ADVANCED", { requestId, taskId: task.id, status: advanced.status, stage: advanced.stage });
       }
     } catch (error) {

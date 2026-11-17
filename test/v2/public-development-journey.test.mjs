@@ -1038,6 +1038,9 @@ test('a request-bound base task requires the exact verified version for delivery
       actions:{agent:{key,status:'CONFIRMED',id:created.body.id,bodyHash:sha256(JSON.stringify(body))}}}]}),{mode:0o600});
   const taskPath='/agent/tasks/'+created.body.id;
   const evidencePath='/agent/requests/'+key+'/execution-evidence';
+  assert.equal((await f.call(taskPath+'/advance',{
+    expectedVersion:created.body.version,executionTrigger:'SIGNED_BACKGROUND_EVENT',
+  })).status,422);
   const advance=async current=>{
     const response=await f.call(taskPath+'/advance',{expectedVersion:current.version});
     assert.equal(response.status,200,response.body.message);
@@ -1048,6 +1051,10 @@ test('a request-bound base task requires the exact verified version for delivery
   const developmentJob=f.store.get('run',current.runId,PROJECT).remoteSubmission.prepared;
   f.complete(developmentJob,measure?await measuredSpark(t,f,developmentJob,'workbench development'):undefined);
   current=await advance(current);
+  const foregroundDrivers=[{attempt:1,modelTrigger:'OWNER_ADVANCE',
+    spark:{runId:current.runId,submissionTriggers:['OWNER_ADVANCE']}}];
+  assert.deepEqual(current.developmentDrivers,foregroundDrivers);
+  assert.deepEqual((await f.call(evidencePath)).body.developmentDrivers,foregroundDrivers);
   const sourceView=(await f.call(taskPath+'/workflow')).body.preparationSource;
   assert.equal(sourceView.runId,current.runId);
   assert.equal(sourceView.revisionId,current.revisionId);

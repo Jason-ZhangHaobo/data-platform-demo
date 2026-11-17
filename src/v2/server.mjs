@@ -167,6 +167,7 @@ import{compareSqlRuns}from'./run-comparison.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
 import { storedAgentReviewEvidence } from "./agent-review-evidence.mjs";
 import { storedAgentExecutionEvidence } from "./agent-execution-evidence.mjs";
+import { storedDevelopmentDrivers } from "./agent-execution-drivers.mjs";
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
 import {
   LocalArtifactStore,
@@ -632,6 +633,7 @@ export function createV2Server(options = {}) {
   const exposeDurableTask = task => {
     const background=agentEventDriver&&task.executionMode===durableSqlAgentMode?agentEventDriver.status(task.id):undefined;
     const visible={...publicDurableAgent(task)};
+    const drivers=storedDevelopmentDrivers(task,id=>store.get("run",id,PROJECT));
     // Older local SQL tasks retained the final run only inside attempts. Recover
     // its display pointer from the verified existing relationship, never by
     // choosing a newer run or modifying the stored task on a read.
@@ -642,7 +644,7 @@ export function createV2Server(options = {}) {
         run.revisionHash===revision.hash&&typeof revision.sql==="string"&&hash(revision.sql)===revision.hash&&task.sql===revision.sql)
         visible.runId=run.id;
     }
-    return {...visible,...(background&&background.status!=="INACTIVE"?{background}:{})};
+    return {...visible,...(drivers?{developmentDrivers:drivers}:{}),...(background&&background.status!=="INACTIVE"?{background}:{})};
   };
   const privateRuntimeBootId = randomUUID();
   const publicAgentIntent = ({ submittedBy, message, ...item }) => item;
@@ -4091,7 +4093,7 @@ export function createV2Server(options = {}) {
         if (Object.keys(body).some(k => !["expectedVersion", "confirmModelRetry"].includes(k)) ||
             (body.confirmModelRetry !== undefined && typeof body.confirmModelRetry !== "boolean"))
           throw fail(422, "恢复请求包含无效字段");
-        await durableAgent.advance(task.id, body);
+        await durableAgent.advance(task.id, {...body,executionTrigger:"OWNER_ADVANCE"});
         return json(res, 200, exposeDurableTask(get("agent",task.id)));
       }
       if (path === "/api/v2/agent/tools" && method === "GET")
