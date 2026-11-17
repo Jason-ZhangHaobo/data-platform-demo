@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { cloudV3CompletionReceipt, cloudV3CompletionScope, cloudV3FailureReceipt, summarizeCloudV3Progress } from "../../scripts/cloud-v3-run.mjs";
 import { currentLiveLifecycleContract } from "../../src/v2/live-lifecycle-evaluation.mjs";
+import {cloudV3PhaseAttribution} from '../../src/v2/cloud-v3-phase-attribution.mjs';
 
 test("an HTTPS completion requires both matched batches and the original approved application", () => {
   const source = "a".repeat(40);
@@ -53,6 +54,7 @@ test("reviewed cloud scoring keeps the frozen denominator and waits for all orig
   assert.equal(met.reviewedCloudCompletionRate,0.85);
   assert.equal(met.reviewedCloudTargetStatus,"MET");
   assert.equal(met.directAutonomousCompletionRate,null);
+  assert.equal(met.recordedPhaseAttributionCases,0);
   assert.equal(met.fullGoalTargetMet,false);
   assert.equal(score([...successes.slice(1),...Array(4).fill("CLOUD_FAILURE_SETTLED")]).reviewedCloudTargetStatus,"NOT_MET");
   assert.throws(()=>score(successes),/冻结案例分母/);
@@ -103,6 +105,36 @@ test("cloud completion cannot be created from consumer matches alone, unsettled 
   assert.equal(receipt.scope,"INVITED_CLOUD_MATCHED");
   assert.deepEqual(receipt.deliveryPreparationEvidence,preparationEvidence);
   assert.deepEqual(receipt.publicationInitiationEvidence,initiation);
+  const phaseInput=structuredClone(withSchedule);
+  phaseInput.developmentDriverEvidence={taskId,revisionId:phaseInput.code.revisionId,developmentRunId:phaseInput.code.runId,
+    attempts:[{attempt:1,modelTrigger:'SIGNED_BACKGROUND_EVENT',spark:{runId:phaseInput.code.runId,submissionTriggers:['SIGNED_BACKGROUND_EVENT']}}]};
+  phaseInput.actions.publication.initiationEvidence={...initiation,trigger:'SIGNED_PUBLICATION_WAKE',wakeId:id(28)};
+  const phases=cloudV3PhaseAttribution(phaseInput,{approvalTimingVerified:true});
+  assert.deepEqual(phases.phases,{requirements:'STRUCTURED_MODEL_RESULT',code:'SIGNED_BACKGROUND_EVENT',sparkDebugging:'SIGNED_BACKGROUND_EVENT',
+    deliveryFiles:'SIGNED_BACKGROUND_EVENT',fileRehearsal:'ORIGIN_UNCONFIRMED',publication:'SIGNED_PUBLICATION_WAKE',
+    schedulingAndMonitoring:'FC_TIMER_AND_SIGNED_WORKER_RESULT',authorizedConsumption:'MATCHED_RESULTS_CALLER_UNCONFIRMED'});
+  assert.deepEqual(phases.approval,{status:'RECORDED',waitMs:2000});
+  assert.equal(phases.directAutonomousEligible,false);
+  assert.deepEqual(phases.unconfirmedAutonomousStages,['fileRehearsal','authorizedConsumption']);
+  const revised=structuredClone(phaseInput);
+  revised.developmentDriverEvidence.attempts[0].spark.submissionTriggers.push('OWNER_ADVANCE');
+  revised.humanClarified=true;
+  const mixed=cloudV3PhaseAttribution(revised,{approvalTimingVerified:true});
+  assert.equal(mixed.phases.sparkDebugging,'MULTIPLE_DRIVERS_RECORDED');
+  assert.equal(mixed.ownerAdvanceRecorded,true);
+  assert.equal(mixed.intervention,'BUSINESS_CLARIFICATION');
+  const rescued=cloudV3PhaseAttribution({...revised,manualContinuation:{revisionId:id(29)}});
+  assert.equal(rescued.intervention,'ENGINEER_RESCUE');
+  assert.equal(rescued.businessClarificationRecorded,true);
+  assert.equal(cloudV3PhaseAttribution({...phaseInput,code:{...phaseInput.code,sourceKind:'MANUAL'}}).intervention,'NON_NATIVE_SOURCE');
+  const withoutInitiation=structuredClone(phaseInput);
+  delete withoutInitiation.actions.publication.initiationEvidence;
+  const historicalPhases=cloudV3PhaseAttribution(withoutInitiation).phases;
+  assert.equal(historicalPhases.publication,'ORIGIN_UNCONFIRMED');
+  assert.equal(historicalPhases.schedulingAndMonitoring,'FC_TIMER_AND_SIGNED_WORKER_RESULT');
+  assert.equal(cloudV3PhaseAttribution({...phaseInput,developmentDriverEvidence:undefined}).phases.code,'ORIGIN_UNCONFIRMED');
+  assert.equal(cloudV3PhaseAttribution({...phaseInput,code:{...phaseInput.code,model:'synthetic'}}).executionEvidence,'TEST_HARNESS');
+  assert.equal(cloudV3PhaseAttribution({actions:{agent:{status:'PREPARED'}}}),undefined);
   for(const invalid of [{trigger:"AGENT"}, {approvalId:id(99)}, {acceptedAt:time(6)}]){
     const wrong=structuredClone(withSchedule);
     Object.assign(wrong.actions.publication.initiationEvidence,invalid);

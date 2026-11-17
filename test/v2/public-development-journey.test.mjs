@@ -1512,6 +1512,18 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(run.cases[0].publicationScheduleEvidence,{releaseId,packageDigest:bundle.digest,batches:scheduledBatches});
   assert.deepEqual(run.cases[0].publicationInitiationEvidence,initiation);
   assert.deepEqual(run.cases[0].consumptionAttribution,consumptionAttribution);
+  assert.deepEqual(run.cases[0].phaseAttribution.phases,{
+    requirements:'STRUCTURED_MODEL_RESULT',code:'OWNER_ADVANCE',sparkDebugging:'OWNER_ADVANCE',deliveryFiles:'ORIGIN_UNCONFIRMED',
+    fileRehearsal:'ORIGIN_UNCONFIRMED',publication:initiation.trigger,schedulingAndMonitoring:'FC_TIMER_AND_SIGNED_WORKER_RESULT',
+    authorizedConsumption:'AUTHENTICATED_HTTP_CALLER_UNCONFIRMED',
+  });
+  assert.equal(run.cases[0].phaseAttribution.approval.status,'RECORDED');
+  assert.equal(run.cases[0].phaseAttribution.ownerAdvanceRecorded,true);
+  assert.equal(run.cases[0].phaseAttribution.intervention,'NO_RESCUE_RECORDED');
+  assert.equal(run.cases[0].phaseAttribution.directAutonomousEligible,false);
+  assert.equal(run.score.recordedPhaseAttributionCases,1);
+  assert.equal(run.score.ownerAdvanceObserved,1);
+  assert.equal(run.score.engineerRescueObserved,0);
   const wrongConsumptionPath=join(f.directory,'wrong-consumption-attribution.json'),wrongConsumption=saved();
   wrongConsumption.outcomes[0].consumption[batchIds[0]].attribution.dapi.callIdDigest='a'.repeat(64);
   writeFileSync(wrongConsumptionPath,JSON.stringify(wrongConsumption),{mode:0o600});

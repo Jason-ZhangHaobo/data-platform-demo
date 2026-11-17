@@ -14,6 +14,7 @@ import { validStoredPublicationSchedule } from "../src/v2/cloud-release-evidence
 import { validBackgroundPreparationEvidence } from "../src/v2/delivery-preparation-evidence.mjs";
 import { validPublicationInitiation } from "../src/v2/publication-initiation-evidence.mjs";
 import {validBatchConsumptionAttribution} from '../src/v2/service-consumption-attribution.mjs';
+import {cloudV3PhaseAttribution} from '../src/v2/cloud-v3-phase-attribution.mjs';
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -374,6 +375,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
         : proof.unconfirmed ? "PROVENANCE_UNCONFIRMED" : "ORIGINAL_CHECKPOINT";
       const publication=existing.item.actions.publication;
       const attribution=storedConsumptionAttribution(existing.item);
+      const phaseAttribution=cloudV3PhaseAttribution(existing.item,{approvalTimingVerified:validCloudV3ApprovalTiming(publication?.approvalTiming)});
       return {...item,status,creationStatus:existing.item.actions.agent.status,phase:existing.item.phase,
         ...(existing.completion ? {evidenceScope:existing.completion.scope} : {checkpointStage:stage}),
         ...(existing.item.developmentDriverEvidence ? {developmentDriverEvidence:existing.item.developmentDriverEvidence} : {}),
@@ -384,6 +386,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
         }} : {}),
         ...(publication?.initiationEvidence ? {publicationInitiationEvidence:publication.initiationEvidence} : {}),
         ...(attribution.length?{consumptionAttribution:attribution}:{}),
+        ...(phaseAttribution?{phaseAttribution}:{}),
         ...(status==="CLOUD_CHAIN_VERIFIED" ? {approvalWaitMs:Date.parse(existing.item.actions.publication.approvalTiming.approvedAt)-
           Date.parse(existing.item.actions.publication.approvalTiming.readyAt)} : {})};
     }
@@ -412,6 +415,7 @@ export function summarizeCloudV3Progress(contract,cases) {
   const settled=reviewedCloudSuccesses+settledCloudFailures;
   const measured=settled===denominator;
   const pendingCloudCases=denominator-settled-cloudSourceBlocked;
+  const phaseEvidence=cases.flatMap(item=>item.phaseAttribution??[]);
   return {denominator,targetRate,requiredSuccesses,
     reviewedCloudSuccesses,settledCloudFailures,cloudSourceBlocked,
     localOnlySuccesses:count("LOCAL_MATCHED_ONLY"),localOnlyFailures:count("LOCAL_FAILURE_SETTLED_ONLY"),
@@ -427,5 +431,9 @@ export function summarizeCloudV3Progress(contract,cases) {
     cloudCoverage:settled/denominator,reviewedCloudCompletionRate:measured ? reviewedCloudSuccesses/denominator : null,
     reviewedCloudTargetStatus:measured ? (reviewedCloudSuccesses>=requiredSuccesses ? "MET" : "NOT_MET")
       : cloudSourceBlocked ? "INCOMPLETE_BLOCKED_SOURCE" : "INCOMPLETE",
+    recordedPhaseAttributionCases:phaseEvidence.length,
+    engineerRescueObserved:phaseEvidence.filter(item=>item.intervention==='ENGINEER_RESCUE').length,
+    businessClarificationObserved:phaseEvidence.filter(item=>item.businessClarificationRecorded).length,
+    ownerAdvanceObserved:phaseEvidence.filter(item=>item.ownerAdvanceRecorded).length,
     directAutonomousCompletionRate:null,fullGoalTargetMet:false};
 }
