@@ -12,7 +12,8 @@ import { referenceSqlForContext, validationFamilyForContext } from "../../src/v2
 import { developmentRequestDigest } from "../../src/v2/public-development-access.mjs";
 import { cloudWindowApplicationBinding, cloudWindowCheckpointBinding, nextCloudWindowReceiptProtocol } from "../../scripts/first-cloud-v3-window.mjs";
 import { continueCloudV3Start, prepareCloudV3Start } from "../../scripts/start-cloud-v3-case.mjs";
-import { nextCloudV3Definition, readCloudV3Run } from "../../scripts/cloud-v3-run.mjs";
+import { cloudV3CompletionReceipt, nextCloudV3Definition, readCloudV3Run } from "../../scripts/cloud-v3-run.mjs";
+import { sqlRequirementProtocol } from "../../src/v2/sql-requirement-contract.mjs";
 import { fixtureFirstCloudIndex, fixtureFirstCloudInspection } from "./fixtures/first-cloud-application-inspection.mjs";
 
 const source = "a".repeat(40);
@@ -39,6 +40,68 @@ function recordLocalCompletion(path, completionPath, reserveCny,definition,actor
     packageDigest,verificationId,releaseId,batchIds,consumptionDigest:sha256(JSON.stringify(Object.values(item.consumption)))};
   write(completionPath,{...body,completionDigest:sha256(JSON.stringify(body))});
 }
+
+test("the first validated cloud receipt exposes its derived source in the offline run report", async t=>{
+  const dir=mkdtempSync(join(tmpdir(),"shuduo-cloud-report-"));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const checkpoint=join(dir,"first.json"), completionPath=join(dir,"completion.json");
+  const {selectedCases:catalog}=liveLifecyclePlan(20,{contractId:currentLiveLifecycleContract.id});
+  const [firstDefinition,nextDefinition]=catalog;
+  const child=catalog.find(item=>item.sourceCaseId===firstDefinition.id);
+  const client={baseUrl:"https://demo.example/api/v2",projectId:"fictional-securities",
+    request:()=>assert.fail("offline run report must not call the application")};
+  const actorId=randomUUID();
+  prepareCloudV3Start(checkpoint,client,source);
+  recordLocalCompletion(checkpoint,completionPath,64,firstDefinition,actorId);
+  const state=read(checkpoint), [item]=state.outcomes;
+  const publication=item.actions.publication;
+  const moment=seconds=>new Date(Date.parse(item.evaluationStartedAt)+seconds*1000).toISOString();
+
+  // Assemble fictional evidence in the accepted cloud shape to regress the
+  // reporting path. This test never creates a cloud task or requests a service.
+  Object.assign(state.submission,{
+    windowApprovalDigest:sha256("approval"),application:{applicationSource:source,inspectionDigest:sha256("inspection")},
+  });
+  Object.assign(item.code,{
+    taskId:item.taskId, sourceKind:"AGENT", model:"qwen3-coder-plus", createdAt:moment(1),
+    requirementBinding:{protocol:sqlRequirementProtocol,taskId:item.taskId,basisDigest:sha256("basis"),reportDigest:sha256("requirement")},
+    modelAttempts:1,accountedTokens:12,reportedTokens:12,reservedTokens:0,unattributedTokens:0,
+  });
+  item.actions.delivery={id:randomUUID(),status:"CONFIRMED",packageId:randomUUID(),packageDigest:publication.packageDigest};
+  item.rehearsal={id:publication.verificationId,status:"SUCCEEDED",stage:"AWAITING_ENGINEER_REVIEW"};
+  Object.assign(publication,{
+    packageId:item.actions.delivery.packageId, sourceRunId:item.code.runId, reviewDigest:sha256("review"),
+    reviewId:randomUUID(), approvalId:randomUUID(), approvalTiming:{readyAt:moment(2),reviewedAt:moment(3),approvedAt:moment(4)},
+    monitoring:publication.batchIds.map(batchId=>({batchId,eventId:randomUUID(),observedAt:moment(5)})),
+  });
+  for (const proof of Object.values(item.consumption)) proof.status="MATCHED";
+  write(checkpoint,state);
+  const original=readFileSync(checkpoint,"utf8");
+  const receipt=cloudV3CompletionReceipt({state,text:original},item,moment(6));
+  assert.equal(receipt.scope,"INVITED_CLOUD_MATCHED");
+  write(completionPath,receipt);
+
+  let report;
+  const result=await runV2Cli(["agent","v3-run","--checkpoint",checkpoint,"--completion-file",completionPath],{},{
+    client,output:line=>{report=JSON.parse(line);},error:line=>assert.fail(line),
+  });
+  assert.equal(result,0);
+  assert.equal(report.cases.length,20);
+  assert.equal(report.cases[0].status,"CLOUD_CHAIN_VERIFIED");
+  assert.equal(report.verifiedCloudCaseCount,1);
+  assert.equal(report.score.reviewedCloudCompletionRate,null);
+  assert.equal(report.score.directAutonomousCompletionRate,null);
+  assert.equal(report.nextCaseId,nextDefinition.id);
+  const derived=report.cases.find(candidate=>candidate.caseId===child.id);
+  assert.equal(derived.status,"SOURCE_VERIFIED");
+  assert.deepEqual(derived.source,{
+    evaluationRunId:state.evaluationRunId,requestDigest:item.requestDigest,taskId:item.taskId,
+    revisionId:item.code.revisionId,revisionHash:item.code.revisionHash,developmentRunId:item.code.runId,
+    completionDigest:receipt.completionDigest,
+  });
+  assert.equal(report.cases.filter(candidate=>candidate.status==="SOURCE_VERIFIED").length,1);
+  assert.equal(readFileSync(checkpoint,"utf8"),original);
+});
 
 test("all twenty fixed V3 cases continue with distinct requests, checked parent bindings and retained approvals",async t=>{
   const dir=mkdtempSync(join(tmpdir(),"shuduo-cloud-base-"));

@@ -337,7 +337,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
       return {...item,status:parentVerified ? "SOURCE_VERIFIED"
         : cloudFailure(parent) ? "SOURCE_FAILED" : localFailure(parent) ? "LOCAL_SOURCE_FAILED"
         : parent?.completion?.scope==="LOCAL_MATCHED_ONLY" ? "LOCAL_SOURCE_MATCHED" : "WAITING_FOR_SOURCE",
-        ...(parentVerified ? {source:{evaluationRunId:state.evaluationRunId,requestDigest:parent.item.requestDigest,
+        ...(parentVerified ? {source:{evaluationRunId:parent.completion.evaluationRunId,requestDigest:parent.item.requestDigest,
           taskId:parent.item.taskId,revisionId:parent.item.code.revisionId,revisionHash:parent.item.code.revisionHash,
           developmentRunId:parent.item.code.runId,completionDigest:parent.completion.completionDigest}} : {})};
     }
