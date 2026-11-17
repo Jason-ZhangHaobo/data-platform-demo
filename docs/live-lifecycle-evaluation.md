@@ -309,6 +309,8 @@ CLI 对应 `shuduo agent publish --id TASK_ID --file REVIEW_JSON --request-id RE
 
 `v3-inspect` 首次绑定完整开发结果时保存已有触发记录，核对模型尝试数、原版本和最终 Spark 批次。`v3-review`、`v3-complete` 和派生准备通过各自已有的原任务读取复核这份绑定，`v3-run` 离线显示已保存的证据。历史检查点缺少触发记录时照常读取，原字节和完成回执保持有效。触发证据与发布审阅等待、人工救援和完整自主成功率分别报告。
 
+原执行回执提供各次尝试的 Spark 编号时，导入会逐次核对，包括失败后保留的原批次。审阅重验也与原任务的尝试记录对照。用 `SHUDUO_TEST_LOCAL_SPARK_WORKBENCH=true node --test --test-name-pattern "one signed holdings case" test/v2/public-development-journey.test.mjs` 可复现同一虚构持仓任务的签名开发、首轮业务断言失败和修正、交付准备恢复、签名演练、确切人审、原两批调度及双来源消费。该用例使用本机 Spark 和确定性模型夹具，日志逐阶段标注实际执行范围。
+
 `v3-run` 的 `phaseAttribution` 按原检查点分别显示需求、代码、Spark 调试、交付文件、文件演练、发布、调度监控和授权消费的可核验来源。工程师审阅批准单列及计时。任务创建者点击推进会保留其触发记录，业务澄清与有原证据的人工救援分别统计。演练结果已核验但发起来源缺失时显示 `ORIGIN_UNCONFIRMED`。两批 Bearer 调用均通过身份与参数核对时，仍只确认调用入口，操作者显示未确认。`unconfirmedAutonomousStages` 列出缺少自主推进证明的阶段。离线读取不改写历史回执，自主完成率仍以独立端到端证据为准。
 
 报告的 `score` 固定以 20 例为分母，列出已核验的受邀云端通过、已结算失败、来源阻塞、待结算、本机结果、替身和人工介入或非原生记录。取消与结果不明单独显示，保留在分母。完整受邀评测至少需要 17 例通过且 20 例均有确定结果。未跑完时展示已覆盖比例及还差多少个成功，最终完成率为 `null`。来源失败的派生项留在分母并单独显示。人工代写或代调仍不能进入原生完成回执。审批后的受邀评测与自主完成率独立，`directAutonomousCompletionRate` 保持未测，`fullGoalTargetMet` 不由此报告判定。

@@ -69,7 +69,8 @@ async function inspectReview(definition,item,client,submittedAt) {
         attempt.revisionId !== code.revisionId || attempt.runId !== code.runId)
       return reject("ORIGINAL_DEVELOPMENT_MISMATCH");
     if (item.developmentDriverEvidence !== undefined &&
-        !isDeepStrictEqual(item.developmentDriverEvidence,bindCloudV3DevelopmentDrivers(task.developmentDrivers,code)))
+        !isDeepStrictEqual(item.developmentDriverEvidence,bindCloudV3DevelopmentDrivers(task.developmentDrivers,code,
+          task.attempts.map(attempt=>attempt?.runId??null))))
       return reject("ORIGINAL_DEVELOPMENT_DRIVERS_MISMATCH");
     delivery = await client.request(`/agent/tasks/${task.id}/delivery-requests/${deliveryAction.key}`);
     const requirement = deliveryPreparationRequirement(code);

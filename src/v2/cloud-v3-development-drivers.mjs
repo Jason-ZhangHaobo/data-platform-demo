@@ -5,10 +5,12 @@ import { uuid } from "./live-lifecycle-checkpoint.mjs";
 const id = value => typeof value === "string" && uuid.test(value);
 const validTrigger = value => value === agentExecutionTrigger(value);
 
-export function bindCloudV3DevelopmentDrivers(attempts, code) {
+export function bindCloudV3DevelopmentDrivers(attempts, code, originalRunIds) {
   if (code?.sourceKind !== "AGENT" || ![code.taskId, code.revisionId, code.runId].every(id) ||
       !Array.isArray(attempts) || attempts.length < 1 || attempts.length > 3 ||
       attempts.length !== code.modelAttempts || attempts.at(-1)?.spark?.runId !== code.runId) return;
+  if (originalRunIds!==undefined && (!Array.isArray(originalRunIds)||originalRunIds.length!==attempts.length||
+      !originalRunIds.every((runId,index)=>(runId===null||id(runId))&&runId===(attempts[index]?.spark?.runId??null)))) return;
 
   const usedRuns = new Set(), boundAttempts = [];
   for (const [index, item] of attempts.entries()) {

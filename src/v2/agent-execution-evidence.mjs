@@ -81,6 +81,8 @@ export function storedAgentExecutionEvidence(task, read) {
   const snapshot = {...base, status:"EXECUTION_RECORDED", taskCreatedAt:task.createdAt, contextId:task.contextId,
     requestSha256:sha256(task.message), seedSqlSha256:sha256(task.initialSql), execution,
     developmentDrivers:storedDevelopmentDrivers(task,id=>read("run",id)),
+    ...(task.attempts?.length?{developmentAttemptRunIds:task.attempts.map(attempt=>
+      typeof attempt?.runId==='string'&&uuid.test(attempt.runId)?attempt.runId:null)}:{}),
     ...(task.derivedFrom?{derivedFrom:task.derivedFrom}:{})};
   const failure=settledDevelopmentFailure(task,read,execution);
   if (failure) return {...snapshot,settledFailure:failure};

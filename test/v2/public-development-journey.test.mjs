@@ -1118,8 +1118,88 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
-async function requestBoundPublicationJourney(t,{separateApproval=false,backgroundPublication=false,agentConsumption=false,withAgentEvidence=false}={}) {
-  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true});
+async function developWorkbenchInBackground(t,f,taskPath,created,definition,measure) {
+  const delegated=await f.call(taskPath+'/background',{expectedVersion:created.version,prepareFiles:true,maxEvents:12});
+  assert.equal(delegated.status,202,delegated.body.message);
+  assert.equal(delegated.body.status,'ACTIVE');
+  assert.equal(delegated.body.prepareFiles,true);
+  const initialStore=f.store;
+  await f.restart();
+  assert.notEqual(f.store,initialStore);
+  const attempts=[];
+  let wakeIndex=0, failedRun;
+  const takeWake=()=>{
+    const event=f.wakes[wakeIndex++];
+    assert.ok(event,`Missing signed wake ${wakeIndex}`);
+    return event;
+  };
+  const fire=async event=>{
+    const receipt=await f.privateCall(event);
+    assert.equal(receipt.status,200,receipt.body.code??receipt.body.message);
+    return receipt.body;
+  };
+  for(const attempt of [1,2]){
+    const modelWake=takeWake();
+    await fire(modelWake);
+    await fire(modelWake);
+    assert.equal(f.counts().modelCalls,attempt);
+    await fire(takeWake());
+    const waiting=f.store.get('agent',created.id,PROJECT);
+    assert.equal(waiting.stage,'WAITING_FOR_RUN');
+    const prepared=f.store.get('run',waiting.runId,PROJECT).remoteSubmission.prepared;
+    assert.equal(prepared.job.jobId,waiting.runId);
+    attempts.push({attempt,modelTrigger:'SIGNED_BACKGROUND_EVENT',spark:{runId:waiting.runId,submissionTriggers:['SIGNED_BACKGROUND_EVENT']}});
+    const resultStatus=attempt===1?'VALIDATION_FAILED':'SUCCEEDED';
+    const family=validationFamilyForContext(definition.contextId);
+    f.complete(prepared,measure?await measuredSpark(t,f,prepared,`signed development attempt ${attempt}`,resultStatus):attempt===1?{
+      status:resultStatus,engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,rows:[{wrong_metric:1}],durationMs:100,
+      validation:{passed:false,issues:['虚构持仓字段不符合业务契约'],regressions:family.contextIds.map(contextId=>({contextId,passed:false}))},
+    }:undefined);
+    await fire(f.resultEvent(prepared.resultKey));
+    const finishWake=takeWake();
+    if(attempt===1){
+      await fire(finishWake);
+      failedRun=f.store.get('run',waiting.runId,PROJECT);
+      assert.equal(failedRun.status,'VALIDATION_FAILED');
+      assert.equal(failedRun.validation.passed,false);
+      assert.equal(f.store.get('agent',created.id,PROJECT).stage,'READY_FOR_MODEL');
+      assert.equal(f.store.list('delivery_package',PROJECT).length,0);
+      continue;
+    }
+    f.loseArtifact();
+    assert.equal((await f.privateCall(finishWake)).status,500);
+    const [pending]=f.store.list('agent_delivery_task',PROJECT);
+    assert.equal(pending.stage,'PACKAGE_PERSISTING');
+    assert.equal(pending.sourceRunId,waiting.runId);
+    assert.equal(f.packageWrites(),1);
+    const counts=f.counts();
+    await f.restart();
+    const restored=await fire(finishWake);
+    assert.equal(restored.status,'COMPLETED');
+    assert.equal(restored.preparedDelivery.deliveryId,pending.id);
+    assert.equal(restored.preparedDelivery.packageId,pending.packageId);
+    assert.equal((await fire(finishWake)).state,'INACTIVE');
+    assert.deepEqual(f.counts(),counts);
+    assert.deepEqual(f.store.get('run',failedRun.id,PROJECT),failedRun);
+  }
+  const current=(await f.call(taskPath)).body,[delivery]=f.store.list('agent_delivery_task',PROJECT);
+  assert.equal(current.status,'SUCCEEDED');
+  assert.equal(current.attempts[0].status,'VALIDATION_FAILED');
+  assert.notEqual(attempts[0].spark.runId,current.runId);
+  assert.deepEqual(f.counts(),{modelCalls:2,jobCreates:2});
+  assert.equal(f.store.list('delivery_package',PROJECT).length,1);
+  assert.equal(f.store.list('release',PROJECT).length,0);
+  assert.equal(delivery.stage,'PACKAGE_READY');
+  const deliveryRequestId=delivery.preparationRequestId;
+  const preparedFiles=await f.call(taskPath+'/delivery-requests/'+deliveryRequestId);
+  assert.equal(preparedFiles.status,200,preparedFiles.body.message);
+  assert.equal(preparedFiles.body.preparationEvidence.trigger,'SIGNED_BACKGROUND_EVENT');
+  return {current,drivers:attempts,preparedFiles,deliveryRequestId};
+}
+
+async function requestBoundPublicationJourney(t,{separateApproval=false,backgroundPublication=false,agentConsumption=false,withAgentEvidence=false,backgroundDevelopment=false}={}) {
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true,
+    ...(backgroundDevelopment?{sqlForAttempt:(attempt,input)=>attempt===1?'SELECT 1 AS wrong_metric':referenceSqlForContext(input.context.id)}:{})});
   const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_WORKBENCH==='true';
   const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
   const body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
@@ -1148,6 +1228,7 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   };
   const saved=()=>JSON.parse(readFileSync(checkpoint,'utf8'));
   f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)));
+  if(backgroundDevelopment)f.env.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT='5';
   await f.restart();
   const created=await f.call('/agent/tasks',body,key);
   assert.equal(created.status,202,created.body.message);
@@ -1169,26 +1250,30 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
     assert.equal(response.status,200,response.body.message);
     return response.body;
   };
-  let current=await advance(created.body);
-  current=await advance(current);
-  const developmentJob=f.store.get('run',current.runId,PROJECT).remoteSubmission.prepared;
-  f.complete(developmentJob,measure?await measuredSpark(t,f,developmentJob,'workbench development'):undefined);
-  current=await advance(current);
-  const foregroundDrivers=[{attempt:1,modelTrigger:'OWNER_ADVANCE',
-    spark:{runId:current.runId,submissionTriggers:['OWNER_ADVANCE']}}];
-  assert.deepEqual(current.developmentDrivers,foregroundDrivers);
-  assert.deepEqual((await f.call(evidencePath)).body.developmentDrivers,foregroundDrivers);
+  const signedDevelopment=backgroundDevelopment?await developWorkbenchInBackground(t,f,taskPath,created.body,definition,measure):undefined;
+  let current, drivers;
+  if(signedDevelopment){
+    ({current,drivers}=signedDevelopment);
+  } else {
+    current=await advance(await advance(created.body));
+    const developmentJob=f.store.get('run',current.runId,PROJECT).remoteSubmission.prepared;
+    f.complete(developmentJob,measure?await measuredSpark(t,f,developmentJob,'workbench development'):undefined);
+    current=await advance(current);
+    drivers=[{attempt:1,modelTrigger:'OWNER_ADVANCE',spark:{runId:current.runId,submissionTriggers:['OWNER_ADVANCE']}}];
+  }
+  assert.deepEqual(current.developmentDrivers,drivers);
+  assert.deepEqual((await f.call(evidencePath)).body.developmentDrivers,drivers);
   const sourceView=(await f.call(taskPath+'/workflow')).body.preparationSource;
   assert.equal(sourceView.runId,current.runId);
   assert.equal(sourceView.revisionId,current.revisionId);
   const beforeFiles=f.counts();
   assert.equal((await f.call(taskPath+'/prepare-delivery',{},randomUUID())).status,422);
   assert.equal((await f.call(taskPath+'/prepare-delivery',{expectedSource:{...sourceView,revisionHash:'0'.repeat(64)}},randomUUID())).status,409);
-  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,signedDevelopment?1:0);
   assert.deepEqual(f.counts(),beforeFiles);
-  const deliveryRequestId=randomUUID();
-  const preparedFiles=await f.call(taskPath+'/prepare-delivery',{expectedSource:sourceView},deliveryRequestId);
-  assert.equal(preparedFiles.status,202,preparedFiles.body.message);
+  const deliveryRequestId=signedDevelopment?.deliveryRequestId??randomUUID();
+  const preparedFiles=signedDevelopment?.preparedFiles??await f.call(taskPath+'/prepare-delivery',{expectedSource:sourceView},deliveryRequestId);
+  assert.equal(preparedFiles.status,signedDevelopment?200:202,preparedFiles.body.message);
   assert.equal(preparedFiles.body.sourcePinned,true);
   const bundle=f.store.get('delivery_package',preparedFiles.body.packageId,PROJECT);
   assert.equal(bundle.manifest.source.runId,current.runId);
@@ -1203,13 +1288,13 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal((await cli('v3-inspect')).reason,'ORIGINAL_DEVELOPMENT_DRIVERS_MISMATCH');
   assert.equal(readFileSync(checkpoint,'utf8'),unbound);
   alter=undefined;
-  const driverEvidence={taskId:current.id,revisionId:current.revisionId,developmentRunId:current.runId,attempts:foregroundDrivers};
+  const driverEvidence={taskId:current.id,revisionId:current.revisionId,developmentRunId:current.runId,attempts:drivers};
   const initialInspection=await cli('v3-inspect');
   assert.equal(initialInspection.delivery.status,'REQUEST_NOT_SUBMITTED');
   assert.deepEqual(initialInspection.developmentDriverEvidence,driverEvidence);
   const beforeImport=readFileSync(checkpoint,'utf8');
   assert.deepEqual(saved().outcomes[0].developmentDriverEvidence,driverEvidence);
-  alter=(path,value)=>{if(path===evidencePath)value.developmentDrivers[0].modelTrigger='SIGNED_BACKGROUND_EVENT';};
+  alter=(path,value)=>{if(path===evidencePath)value.developmentDrivers[0].modelTrigger=signedDevelopment?'OWNER_ADVANCE':'SIGNED_BACKGROUND_EVENT';};
   assert.equal((await cli('v3-inspect')).reason,'ORIGINAL_DEVELOPMENT_DRIVERS_MISMATCH');
   assert.equal(readFileSync(checkpoint,'utf8'),beforeImport);
   alter=undefined;
@@ -1226,6 +1311,7 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   const exactPackage={packageId:bundle.id,packageDigest:bundle.digest};
   const deliveryPath='/agent/deliveries/'+preparedFiles.body.id+'/advance';
   // The queue accepts the original rehearsal while its acknowledgement is lost.
+  const developmentWakes=f.wakes.length;
   let rehearsalWakeId;
   if (backgroundPublication) {
     assert.equal((await f.call(taskPath+'/workflow')).body.backgroundRehearsalAvailable,true);
@@ -1308,7 +1394,7 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(f.queueCounts(),{...beforeSettlement,resultReads:beforeSettlement.resultReads+1});
   assert.equal(f.store.list('delivery_verification',PROJECT).length,1);
   assert.equal(f.store.list('release_approval',PROJECT).length,0);
-  assert.equal(f.wakes.length,backgroundPublication?1:0);
+  assert.equal(f.wakes.length,developmentWakes+(backgroundPublication?1:0));
   const readback=await f.call(taskPath+'/delivery-requests/'+deliveryRequestId);
   assert.equal(readback.body.verificationId,verificationId);
   assert.equal(readback.body.status,'SUCCEEDED');
@@ -1567,11 +1653,11 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal(legacyRead.publication.scheduledBatches,undefined);
   assert.equal(readFileSync(legacyPath,'utf8'),legacyBytes);
   const usage=saved().outcomes[0].workbenchUsage;
-  assert.equal(usage.modelCalls,1);
-  assert.equal(usage.remoteSparkRuns,4);
+  assert.equal(usage.modelCalls,signedDevelopment?2:1);
+  assert.equal(usage.remoteSparkRuns,signedDevelopment?5:4);
   assert.deepEqual(monitored.workbenchUsage,usage);
   assert.deepEqual(f.queueCounts(),queueBeforeReadback);
-  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:4});
+  assert.deepEqual(f.counts(),{modelCalls:signedDevelopment?2:1,jobCreates:signedDevelopment?5:4});
   if(agentConsumption){
     await consumeOriginalBatch(f,cli,{taskId:created.body.id,releaseId,packageDigest:bundle.digest,batchId:batchIds[0],sequence:1,origin,agentConsumption:true});
     return;
@@ -1665,7 +1751,8 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(run.cases[0].publicationInitiationEvidence,initiation);
   assert.deepEqual(run.cases[0].consumptionAttribution,consumptionAttribution);
   assert.deepEqual(run.cases[0].phaseAttribution.phases,{
-    requirements:'STRUCTURED_MODEL_RESULT',code:'OWNER_ADVANCE',sparkDebugging:'OWNER_ADVANCE',deliveryFiles:'ORIGIN_UNCONFIRMED',
+    requirements:'STRUCTURED_MODEL_RESULT',code:signedDevelopment?'SIGNED_BACKGROUND_EVENT':'OWNER_ADVANCE',
+    sparkDebugging:signedDevelopment?'SIGNED_BACKGROUND_EVENT':'OWNER_ADVANCE',deliveryFiles:signedDevelopment?'SIGNED_BACKGROUND_EVENT':'ORIGIN_UNCONFIRMED',
     fileRehearsal:backgroundPublication?'SIGNED_BACKGROUND_EVENT':'ORIGIN_UNCONFIRMED',publication:initiation.trigger,schedulingAndMonitoring:'FC_TIMER_AND_SIGNED_WORKER_RESULT',
     authorizedConsumption:withAgentEvidence?'SIGNED_AGENT_AND_INDEPENDENT_HTTP':'AUTHENTICATED_HTTP_CALLER_UNCONFIRMED',
   });
@@ -1679,12 +1766,23 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
     await cli('v3-run',[],1,wrongAgentPath);
   }
   assert.equal(run.cases[0].phaseAttribution.approval.status,'RECORDED');
-  assert.equal(run.cases[0].phaseAttribution.ownerAdvanceRecorded,true);
+  assert.equal(run.cases[0].phaseAttribution.ownerAdvanceRecorded,!signedDevelopment);
   assert.equal(run.cases[0].phaseAttribution.intervention,'NO_RESCUE_RECORDED');
   assert.equal(run.cases[0].phaseAttribution.directAutonomousEligible,false);
   assert.equal(run.score.recordedPhaseAttributionCases,1);
-  assert.equal(run.score.ownerAdvanceObserved,1);
+  assert.equal(run.score.ownerAdvanceObserved,signedDevelopment?0:1);
   assert.equal(run.score.engineerRescueObserved,0);
+  if(signedDevelopment){
+    assert.deepEqual(run.cases[0].deliveryPreparationEvidence,preparedFiles.body.preparationEvidence);
+    assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).deliveryPreparationEvidence,preparedFiles.body.preparationEvidence);
+    assert.deepEqual(run.cases[0].phaseAttribution.unconfirmedAutonomousStages,[]);
+    assert.equal(run.cases[0].phaseAttribution.approval.status,'RECORDED');
+    assert.equal(f.store.list('agent',PROJECT).length,1);
+    t.diagnostic(JSON.stringify({case:'fictional-holdings-t1',scope:completion.scope,modelSource:'DETERMINISTIC_TEST_FIXTURE',
+      cloudEventTransport:'LOCAL_TEST_FIXTURE',spark:measure?'ACTUAL_LOCAL_SPARK':'SYNTHETIC_WORKER_RECEIPTS',
+      developmentAttempts:drivers.length,firstAttempt:'VALIDATION_FAILED',approval:'REQUIRED_AND_RECORDED',
+      phases:run.cases[0].phaseAttribution.phases,verifiedCloudCases:run.verifiedCloudCaseCount}));
+  }
   if (backgroundPublication) {
     const proof=saved().outcomes[0].rehearsal.initiationEvidence;
     assert.equal(proof.wakeId,rehearsalWakeId);
@@ -1730,6 +1828,8 @@ test('a signed Agent delegate consumes the exact DAPI and XAPI once despite a lo
   requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true,agentConsumption:true}));
 test('v3 keeps separate signed and independent HTTP consumption on both original batches',t=>
   requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true,withAgentEvidence:true}));
+test('one signed holdings case repairs its Spark result and reaches both consumers after reviewed publication',t=>
+  requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true,withAgentEvidence:true,backgroundDevelopment:true}));
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.

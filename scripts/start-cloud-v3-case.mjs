@@ -196,7 +196,7 @@ export async function prepareCloudV3Next(path,client,{firstPath,completionPath,r
         code.revisionHash!==derivationSource.revisionHash || code.validationContractId!==derivationSource.validationContractId)
       stop("派生父版本或原 Spark 核验未通过");
     if (sourceEntry.item.developmentDriverEvidence !== undefined &&
-        !isDeepStrictEqual(sourceEntry.item.developmentDriverEvidence,bindCloudV3DevelopmentDrivers(view.developmentDrivers,code)))
+        !isDeepStrictEqual(sourceEntry.item.developmentDriverEvidence,bindCloudV3DevelopmentDrivers(view.developmentDrivers,code,view.developmentAttemptRunIds)))
       stop("派生父任务的原执行触发证据未通过");
     bodyHash=sha256(JSON.stringify(await readDerivationBody(client,definition,derivationSource)));
   }
@@ -1136,7 +1136,7 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
     const captureDrivers = !item.code && view.developmentDrivers !== undefined;
     const savedDrivers = item.developmentDriverEvidence;
     const drivers = captureDrivers || savedDrivers !== undefined
-      ? bindCloudV3DevelopmentDrivers(view.developmentDrivers,code) : undefined;
+      ? bindCloudV3DevelopmentDrivers(view.developmentDrivers,code,view.developmentAttemptRunIds) : undefined;
     if ((captureDrivers && !drivers) || (savedDrivers !== undefined && !isDeepStrictEqual(savedDrivers,drivers)))
       return response("UNCONFIRMED", "ORIGINAL_DEVELOPMENT_DRIVERS_MISMATCH");
     const original = view.originalDelivery;
