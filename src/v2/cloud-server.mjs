@@ -1,127 +1,29 @@
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertV2RequestScope, createV2Server, publicV2Contexts, PROJECT } from "./server.mjs";
-import { ReplicatedMetadataStore } from "./metadata-replica.mjs";
-import { MySqlMetadataBackend } from "./mysql-metadata-backend.mjs";
-import { LandingStore } from "./ingestion.mjs";
-import { StreamStateStore } from "./realtime.mjs";
-import { BusinessQueryStore } from "./data-services.mjs";
-import { ReportDataStore } from "./reports.mjs";
-import { ReplicatedDataState } from "./data-state-replica.mjs";
-import {
-  OssDataStateBackend,
-  ossDataStateConfigFromEnvironment,
-} from "./oss-data-state-backend.mjs";
-import { CloudStateCoordinator } from "./cloud-state-coordinator.mjs";
-import { createRemoteSparkRunner } from "./remote-spark.mjs";
-import { cloudExecutionState } from "./cloud-execution-state.mjs";
-import { agentEventConfigFromEnvironment } from "./agent-event-driver.mjs";
 import { createFcIngress } from "./fc-ingress.mjs";
+import { assertV2RequestScope } from "./request-scope.mjs";
 import { serveV2Static } from "./static-response.mjs";
-import {
-  OssImmutableArtifactStore,
-  ossArtifactConfigFromEnvironment,
-} from "./artifact-store.mjs";
 
-export async function createCloudV2Application(env = process.env, {
-  openMetadataBackend = MySqlMetadataBackend.open,
-  createDataBackend = config => new OssDataStateBackend(ossDataStateConfigFromEnvironment(config)),
-  createArtifactStore = config => new OssImmutableArtifactStore(ossArtifactConfigFromEnvironment(config)),
-  createRunner = createRemoteSparkRunner,
-  root,
-  httpServer,
-  now = Date.now,
-  ingress = createFcIngress({
-    publicHttpEnabled: env.V2_FC_PUBLIC_HTTP_ENABLED === "true",
-    publicReadOnly: env.V2_FC_PUBLIC_READ_ONLY !== "false",
-  }),
-} = {}) {
+const cloudIngress = env => createFcIngress({
+  publicHttpEnabled: env.V2_FC_PUBLIC_HTTP_ENABLED === "true",
+  publicReadOnly: env.V2_FC_PUBLIC_READ_ONLY !== "false",
+});
+const loadApplicationModule = () => import("./cloud-application.mjs");
+
+export async function createCloudV2Application(env = process.env, options = {}) {
+  return createCloudApplication(env, options, loadApplicationModule);
+}
+
+async function createCloudApplication(env, options, loadApplication) {
   if (env.V2_BOOTSTRAP_ADMIN_PASSWORD)
     throw new Error("云端禁止注入管理员明文密码，请仅配置V2_BOOTSTRAP_ADMIN_PASSWORD_HASH");
-
-  const started = performance.now(), phases = {};
-  const measure = async (phase, operation) => {
-    const phaseStarted = performance.now();
-    try { return await operation(); }
-    finally { phases[phase] = Math.round(performance.now() - phaseStarted); }
-  };
-  const dataStateBackend = createDataBackend(env);
-  const artifactStore = createArtifactStore(env);
-  const runnerCandidate = createRunner(env);
-  // The immutable Worker result belongs to its own OSS prefix. Read it during
-  // persistence restoration, then verify the signature and age at the original
-  // readiness gate. Keep the MySQL snapshot ahead of the OSS state read.
-  const pendingWorkerEvidence = runnerCandidate?.prepareVerification
-    ? measure("workerEvidenceReadMs", () => runnerCandidate.prepareVerification())
-        .then(verify => ({ verify }), error => ({ error }))
-    : undefined;
-
-  let metadataBackend, store, stores, app;
-  try {
-    metadataBackend = await measure("mysqlOpenMs", () => openMetadataBackend(env));
-    store = await measure("metadataRestoreMs", () => ReplicatedMetadataStore.open({
-      backend: metadataBackend, project: PROJECT, autoFlush: false,
-    }));
-    stores = {
-      businessStore: new BusinessQueryStore(), landingStore: new LandingStore(),
-      streamStateStore: new StreamStateStore(), reportStore: new ReportDataStore(),
-    };
-    const dataState = await measure("dataStateRestoreMs", () => ReplicatedDataState.open({
-      backend: dataStateBackend, project: PROJECT, autoFlush: false, stores,
-    }));
-    const stateCoordinator = new CloudStateCoordinator({ metadata: store, dataState });
-    let runner, descriptor;
-    if (runnerCandidate) {
-      try {
-        await measure("workerReadyMs", async () => {
-          if (!pendingWorkerEvidence) {
-            await runnerCandidate.verify();
-            return;
-          }
-          const evidence = await pendingWorkerEvidence;
-          if (!evidence.verify) throw evidence.error;
-          evidence.verify();
-        });
-        runner = runnerCandidate;
-        descriptor = runnerCandidate.descriptor;
-      } catch (error) {
-        descriptor = {
-          ...runnerCandidate.descriptor,
-          healthVerified: false,
-          publicWriteEnabled: false,
-          errorCode: error?.code ?? "REMOTE_SPARK_NOT_READY",
-        };
-      }
-    }
-    const execution = cloudExecutionState({
-      ...env, V2_LOCAL_DEVELOPMENT: "false", V2_META_DRIVER: "mysql-project-snapshot-cas",
-    }, runner, descriptor, runnerCandidate);
-    app = createV2Server({
-      root,
-      store,
-      ...stores,
-      artifactStore,
-      stateCoordinator,
-      runner: execution.runner,
-      runnerDescriptor: execution.descriptor,
-      readPendingSparkResult: execution.readPendingSparkResult,
-      resultEventConfig: execution.readPendingSparkResult && env.V2_PROVISIONING_ONLY==="true" &&
-        env.V2_PRIVATE_SMOKE_ENABLED==="true" ? agentEventConfigFromEnvironment(env) : undefined,
-      env: execution.env,
-      ingress,
-      httpServer,
-      now,
-    });
-    await measure("initialFlushMs", () => stateCoordinator.flush());
-    return { app, stateCoordinator, timing: { ...phases, elapsedMs: Math.round(performance.now() - started) } };
-  } catch (error) {
-    app?.dispose();
-    store?.close();
-    for (const stateStore of Object.values(stores ?? {})) stateStore.close();
-    await Promise.allSettled([metadataBackend?.close?.(), dataStateBackend.close?.()]);
-    throw error;
-  }
+  const importStarted = performance.now();
+  const module = await loadApplication();
+  const applicationModuleLoadMs = Math.round(performance.now() - importStarted);
+  const result = await module.createCloudV2Application(env, {...options, ingress:options.ingress ?? cloudIngress(env)});
+  return {...result, timing:{...result.timing, applicationModuleLoadMs,
+    elapsedMs:Math.round(performance.now() - importStarted)}};
 }
 
 const startupAsset = /^\/v2\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:js|css|svg|woff2?)$/;
@@ -143,12 +45,13 @@ function startupResponse(res, status, payload, retry = false) {
 export function startCloudV2Listener(env = process.env, {
   port = Number(env.FC_CUSTOM_LISTEN_PORT ?? env.PORT ?? 9000),
   host = env.V2_HOST ?? env.HOST ?? "0.0.0.0",
+  loadApplication = loadApplicationModule,
   ...options
 } = {}) {
   const server = createServer();
   const publicHttpEnabled = env.V2_FC_PUBLIC_HTTP_ENABLED === "true",
     publicReadOnly = env.V2_FC_PUBLIC_READ_ONLY !== "false";
-  const ingress = createFcIngress({ publicHttpEnabled, publicReadOnly });
+  const ingress = cloudIngress(env);
   const earlyRead = publicHttpEnabled && publicReadOnly && !env.V2_BOOTSTRAP_ADMIN_PASSWORD;
   let app, stopped = false, closing;
   const identityWaiters = new Set();
@@ -188,9 +91,10 @@ export function startCloudV2Listener(env = process.env, {
   const ready = (async () => {
     let runtime;
     try {
+      // The public shell needs only the HTTP boundary and static renderer.
       if (earlyRead) await listen();
       if (stopped) return undefined;
-      runtime = await createCloudV2Application(env, { ...options, ingress, httpServer: server });
+      runtime = await createCloudApplication(env, { ...options, ingress, httpServer: server },loadApplication);
       if (!earlyRead && !stopped) await listen();
       if (!stopped) app = runtime.app;
       return runtime;
@@ -214,7 +118,10 @@ export function startCloudV2Listener(env = process.env, {
       // These responses contain only the shared shell, assets or built-in
       // fixtures. Session-bearing requests receive those same public bytes.
       if (!stopped && publicOpeningRead && req.headers.authorization === undefined) {
-        if (catalog) return startupResponse(res, 200, publicV2Contexts());
+        if (catalog) {
+          const {publicV2Contexts} = await import("./context.mjs");
+          return startupResponse(res, 200, publicV2Contexts());
+        }
         return await serveV2Static(res, options.root ?? process.cwd(), path, req.headers["accept-encoding"], {started,phase:"opening"});
       }
       // Marked events and public reads carrying explicit authorization use

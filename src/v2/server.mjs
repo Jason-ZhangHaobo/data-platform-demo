@@ -70,7 +70,7 @@ import {
   getContext,
   publicContext,
   contextIds,
-  allContextIds,
+  publicV2Contexts,
   classicContextIds,
   validationFamilyForContext,
   referenceSql,
@@ -202,42 +202,10 @@ import {
   validateAgentIntentRoute,
 } from "./agent-router.mjs";
 
-export const PROJECT = "project-securities-lab";
+import { assertV2RequestScope, PROJECT } from "./request-scope.mjs";
+export { assertV2RequestScope, PROJECT, publicV2Contexts };
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const fail = (status, message) => Object.assign(new Error(message), { status });
-export function assertV2RequestScope(req, { env, local }) {
-  const origin = req.headers.origin;
-  let localOriginAllowed = false;
-  if (local && typeof origin === "string") {
-    try {
-      const parsedOrigin = new URL(origin),
-        localPort = String(req.socket.localPort ?? env.V2_PORT ?? 3100);
-      localOriginAllowed =
-        origin === parsedOrigin.origin &&
-        parsedOrigin.protocol === "http:" &&
-        ["localhost", "127.0.0.1", "[::1]"].includes(parsedOrigin.hostname) &&
-        [localPort, "5173"].includes(parsedOrigin.port);
-    } catch {
-      localOriginAllowed = false;
-    }
-  }
-  if (
-    origin &&
-    !(
-      localOriginAllowed ||
-      (!local &&
-        typeof env.V2_PUBLIC_ORIGIN === "string" &&
-        origin === env.V2_PUBLIC_ORIGIN)
-    )
-  )
-    throw fail(403, "请求来源不允许");
-  if (
-    req.headers["x-project-id"] &&
-    req.headers["x-project-id"] !== PROJECT
-  )
-    throw fail(403, "无权访问此项目");
-}
-export const publicV2Contexts = () => allContextIds.map(publicContext);
 const validationFamily = contextId => {
   const family=validationFamilyForContext(contextId);
   if(!family)throw fail(409,"代码或运行绑定的业务口径版本不存在");

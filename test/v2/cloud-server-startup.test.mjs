@@ -35,7 +35,7 @@ test("cloud startup overlaps only the Worker read and waits for persistence and 
   const events = [];
   const mysql = Promise.withResolvers(), oss = Promise.withResolvers(), worker = Promise.withResolvers(),
     enteredOss = Promise.withResolvers(), prefetched = Promise.withResolvers(), flush = Promise.withResolvers(),
-    enteredFlush = Promise.withResolvers();
+    enteredFlush = Promise.withResolvers(), enteredMysql = Promise.withResolvers();
   t.after(() => { for (const gate of [mysql, oss, worker, flush]) gate.resolve(); });
   const readMeta = metadata.load.bind(metadata);
   metadata.load = project => { events.push("metadata"); return readMeta(project); };
@@ -67,10 +67,11 @@ test("cloud startup overlaps only the Worker read and waits for persistence and 
   let returned = false;
   const starting = createCloudV2Application(cloudEnv, {
     ...options,
-    openMetadataBackend: async () => { events.push("mysql"); await mysql.promise; return metadata; },
+    openMetadataBackend: async () => { events.push("mysql"); enteredMysql.resolve(); await mysql.promise; return metadata; },
     createDataBackend: () => dataBackend,
     createRunner: () => runner,
   }).then(value => { returned = true; return value; });
+  await enteredMysql.promise;
   assert.deepEqual(events, ["worker-read", "mysql"]);
   mysql.resolve();
   await enteredOss.promise;
@@ -87,7 +88,7 @@ test("cloud startup overlaps only the Worker read and waits for persistence and 
   t.after(() => closeApp(boot));
   assert.equal(app.server.listening, false);
   assert.equal(app.store.get("run", prior.id, PROJECT).status, "INTERRUPTED");
-  assert.ok(["workerEvidenceReadMs", "mysqlOpenMs", "metadataRestoreMs", "dataStateRestoreMs", "workerReadyMs", "initialFlushMs"]
+  assert.ok(["applicationModuleLoadMs", "workerEvidenceReadMs", "mysqlOpenMs", "metadataRestoreMs", "dataStateRestoreMs", "workerReadyMs", "initialFlushMs"]
     .every(phase => Number.isSafeInteger(timing[phase])));
   await new Promise(resolve => app.server.listen(0, "127.0.0.1", resolve));
   const base = "http://127.0.0.1:" + app.server.address().port;
@@ -95,6 +96,37 @@ test("cloud startup overlaps only the Worker read and waits for persistence and 
   const denied = await fetch(base + "/api/v2/agent/tasks", { method: "POST", body: "{}" });
   assert.equal(denied.status, 403);
   assert.equal((await denied.json()).code, "PUBLIC_READ_ONLY");
+});
+
+test("early public shell and catalog are readable while the application module is still loading", {timeout:5000}, async t=>{
+  const options=fixture(t), load=Promise.withResolvers(), entered=Promise.withResolvers();
+  let restores=0;
+  const listener=startCloudV2Listener(cloudEnv,{...options,port:0,host:"127.0.0.1",
+    loadApplication:async()=>{
+      entered.resolve();
+      await load.promise;
+      return import("../../src/v2/cloud-application.mjs");
+    },
+    openMetadataBackend:async()=>{restores++;return new MemorySnapshotBackend();},
+    createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
+  t.after(async()=>{load.resolve();await listener.close();});
+  await once(listener.server,"listening");
+  await entered.promise;
+  const base="http://127.0.0.1:"+listener.server.address().port;
+  const html=await fetch(base+"/v2/");
+  assert.equal(await html.text(),"<html>Fictional cloud startup</html>");
+  assert.match(html.headers.get("server-timing"),/shuduo_index_opening/);
+  assert.ok((await (await fetch(base+"/api/v2/contexts")).json()).some(context=>context.id==="holdings-t1"));
+  assert.equal((await fetch(base+"/api/v2/auth/session")).status,503);
+  assert.equal((await fetch(base+"/api/v2/agent/tasks",{method:"POST",body:"{}"})).status,403);
+  assert.equal(restores,0);
+  load.resolve();
+  const ready=await listener.ready;
+  assert.equal(restores,1);
+  assert.ok(Number.isSafeInteger(ready.timing.applicationModuleLoadMs));
+  const session=await (await fetch(base+"/api/v2/auth/session")).json();
+  assert.equal(session.authenticated,false);
+  assert.equal(session.readOnly,true);
 });
 
 test("a failed prefetched Worker check preserves restored read-only state", async t => {
