@@ -1246,7 +1246,26 @@ test('a request-bound base task requires the exact verified version for delivery
   const monitored=await cli('v3-publish',['--reconcile']);
   assert.equal(monitored.publication.monitoringStatus,'VERIFIED');
   assert.deepEqual(monitored.publication.monitoring.map(row=>row.batchId),batchIds);
+  const scheduledBatches=[firstResult,secondResult].map(row=>({
+    batchId:row.id,clockMode:'FC_TIMER',scheduledTriggerAt:row.scheduledTriggerAt,
+    triggeredAt:row.triggeredAt,finishedAt:row.finishedAt,workerResultDigest:row.workerResultDigest,
+  }));
+  assert.deepEqual(monitored.publication.scheduledBatches,scheduledBatches);
+  assert.deepEqual(saved().outcomes[0].actions.publication.scheduledBatches,scheduledBatches);
   assert.deepEqual(requests,[['GET','/auth/session'],['GET',receiptPath],['GET','/status']]);
+  const afterMonitored=readFileSync(checkpoint,'utf8');
+  alter=(path,value)=>{if(path===receiptPath)value.monitoring.scheduledBatches[0].workerResultDigest='0'.repeat(64);};
+  assert.equal((await cli('v3-publish',['--reconcile'])).reason,'ORIGINAL_PUBLICATION_UNCONFIRMED');
+  assert.equal(readFileSync(checkpoint,'utf8'),afterMonitored);
+  alter=undefined;
+  const legacyPath=join(f.directory,'legacy-monitoring-summary.json'), legacy=saved();
+  delete legacy.outcomes[0].actions.publication.scheduledBatches;
+  const legacyBytes=JSON.stringify(legacy);
+  writeFileSync(legacyPath,legacyBytes,{mode:0o600});
+  const legacyRead=await cli('v3-publish',['--reconcile'],0,legacyPath);
+  assert.equal(legacyRead.publication.monitoringStatus,'VERIFIED');
+  assert.equal(legacyRead.publication.scheduledBatches,undefined);
+  assert.equal(readFileSync(legacyPath,'utf8'),legacyBytes);
   const usage=saved().outcomes[0].workbenchUsage;
   assert.equal(usage.modelCalls,1);
   assert.equal(usage.remoteSparkRuns,4);
@@ -1295,6 +1314,10 @@ test('a request-bound base task requires the exact verified version for delivery
   const completionFile=join(f.directory,'workbench-completion.json');
   const completionFlags=['--first-plan',consumed[0].flags[1],'--second-plan',consumed[1].flags[1],'--out-file',completionFile];
   const beforeCompletion=readFileSync(checkpoint,'utf8');
+  alter=(path,value)=>{if(path===receiptPath)delete value.monitoring.scheduledBatches;};
+  await cli('v3-complete',completionFlags,1);
+  assert.equal(existsSync(completionFile),false);
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
   alter=(path,value)=>{if(path==='/agent/requests/'+key)delete value.developmentDrivers;};
   await cli('v3-complete',completionFlags,1);
   assert.equal(existsSync(completionFile),false);
@@ -1310,6 +1333,7 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal(run.verifiedCloudCaseCount,0);
   assert.equal(run.cases[0].status,'LOCAL_MATCHED_ONLY');
   assert.deepEqual(run.cases[0].developmentDriverEvidence,driverEvidence);
+  assert.deepEqual(run.cases[0].publicationScheduleEvidence,{releaseId,packageDigest:bundle.digest,batches:scheduledBatches});
   assert.equal(run.score.directAutonomousCompletionRate,null);
   assert.equal(run.score.localOnlySuccesses,1);
   assert.equal(run.score.reviewedCloudCompletionRate,null);
@@ -1324,6 +1348,10 @@ test('a request-bound base task requires the exact verified version for delivery
   altered.outcomes[0].developmentDriverEvidence.taskId=randomUUID();
   writeFileSync(alteredCheckpoint,JSON.stringify(altered),{mode:0o600});
   await cli('v3-run',[],1,alteredCheckpoint);
+  const wrongSchedulePath=join(f.directory,'wrong-schedule-order.json'), wrongSchedule=saved();
+  wrongSchedule.outcomes[0].actions.publication.scheduledBatches.reverse();
+  writeFileSync(wrongSchedulePath,JSON.stringify(wrongSchedule),{mode:0o600});
+  await cli('v3-run',[],1,wrongSchedulePath);
   assert.equal((await cli('v3-run',['--completion-file',completionFile,'--next-checkpoint',nextFile])).verifiedCloudCaseCount,0);
   assert.equal(f.store.list('release_approval',PROJECT).length,1);
   assert.equal(f.store.list('release_run',PROJECT).length,2);

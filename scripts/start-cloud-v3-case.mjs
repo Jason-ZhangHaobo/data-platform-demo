@@ -7,7 +7,7 @@ import { agentExecutionEvidencePath, validSettledDevelopmentFailure } from "../s
 import { agentContextDerivationBody, agentContextDerivationRequest } from "../src/v2/agent-context-derivation.mjs";
 import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
 import { readCloudV3Review } from "../src/v2/cloud-v3-review.mjs";
-import { exactPublicationReviewBasis } from "../src/v2/cloud-release-evidence.mjs";
+import { exactPublicationReviewBasis, validStoredPublicationSchedule } from "../src/v2/cloud-release-evidence.mjs";
 import { cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
 import { bindCloudV3DevelopmentDrivers } from "../src/v2/cloud-v3-development-drivers.mjs";
 import { getContext, validationFamilyForContext } from "../src/v2/context.mjs";
@@ -746,17 +746,25 @@ function bindPublication(item, receipt) {
     verified=monitoring.batches.map(({batchId,eventId,observedAt})=>({batchId,eventId,observedAt}));
   }
   if (action.monitoring && !isDeepStrictEqual(action.monitoring,verified)) return;
+  // Bind the expanded evidence when monitoring is first verified. Older
+  // checkpoints already sealed with summary-only monitoring stay readable.
+  const batchIds=runs.map(run=>run.id);
+  const scheduledBatches=!action.monitoring || action.scheduledBatches!==undefined ? monitoring?.scheduledBatches : undefined;
+  if ((scheduledBatches!==undefined && !validStoredPublicationSchedule(scheduledBatches,{
+    batchIds,monitoring:verified,approvalTiming,
+  })) || (action.scheduledBatches!==undefined && !isDeepStrictEqual(action.scheduledBatches,scheduledBatches))) return;
   const saved = {releaseId:release.id, reviewId:release.reviewId, approvalId:release.approvalId,
-    batchIds:runs.map(run=>run.id), status:release.status,
+    batchIds, status:release.status,
     batches:runs.map(run=>{
       const stage = privateReleasePendingStage(run);
       return {id:run.id,status:run.status,...(stage ? {stage} : {}),
         ...(Number.isFinite(run.reservedDurationMs)&&run.reservedDurationMs>0?{reservedDurationMs:run.reservedDurationMs}:{})};
     }),
     ...(["PENDING","NEEDS_ATTENTION","UNCONFIRMED","VERIFIED"].includes(monitoring?.status)?{monitoringStatus:monitoring.status}:{}),
-    ...(verified?{monitoring:verified}:{})};
+    ...(verified?{monitoring:verified}:{}),...(scheduledBatches?{scheduledBatches}:{})};
   item.actions.publication = {...action,id:release.id,status:"CONFIRMED",reviewId:release.reviewId,
     approvalId:release.approvalId,batchIds:saved.batchIds,...(verified?{monitoring:verified}:{}),
+    ...(scheduledBatches?{scheduledBatches}:{}),
     ...(approvalTiming ? {approvalTiming} : {}),...(release.status==="CANCELLED" ? {cancelled:true} : {})};
   return saved;
 }

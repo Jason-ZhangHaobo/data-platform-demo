@@ -81,6 +81,22 @@ test("cloud completion cannot be created from consumer matches alone, unsettled 
       ...Object.fromEntries(["sourceDigest","planDigest","reportDigest","dapiCallIdDigest","xapiCallIdDigest",
         "dapiRowsDigest","xapiRowsDigest"].map((key,offset)=>[key,hex(20+index*10+offset)]))}]))};
   assert.equal(cloudV3CompletionReceipt(original,item,time(9)).scope,"INVITED_CLOUD_MATCHED");
+  const withSchedule=structuredClone(item);
+  withSchedule.actions.publication.scheduledBatches=batchIds.map((batchId,index)=>({
+    batchId,clockMode:"FC_TIMER",scheduledTriggerAt:time(4),triggeredAt:time(5),
+    finishedAt:time(6+index),workerResultDigest:hex(60+index),
+  }));
+  assert.equal(cloudV3CompletionReceipt(original,withSchedule,time(9)).scope,"INVITED_CLOUD_MATCHED");
+  for(const invalidate of [
+    batches=>{batches[0].clockMode="MANUAL";},
+    batches=>{batches[0].triggeredAt=time(3);},
+    batches=>{batches[0].finishedAt=time(8);},
+    batches=>{batches[0].workerResultDigest=batches[1].workerResultDigest;},
+  ]){
+    const altered=structuredClone(withSchedule);
+    invalidate(altered.actions.publication.scheduledBatches);
+    assert.throws(()=>cloudV3CompletionReceipt(original,altered,time(9)));
+  }
   for (const mutate of [
     value=>delete value.code.requirementBinding,
     value=>{value.code.reservedTokens=12;},

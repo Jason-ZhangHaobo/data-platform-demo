@@ -10,6 +10,7 @@ import { validationFamilyForContext } from "../src/v2/context.mjs";
 import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
 import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
 import { validStoredCloudV3DevelopmentDrivers } from "../src/v2/cloud-v3-development-drivers.mjs";
+import { validStoredPublicationSchedule } from "../src/v2/cloud-release-evidence.mjs";
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -123,6 +124,7 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
       action?.status!=="CONFIRMED" || ![first.taskId,first.code?.revisionId,first.code?.runId,action.id,action.verificationId].every(id) ||
       !digest(first.code?.revisionHash) || !digest(action.packageDigest) ||
       !Array.isArray(batches) || batches.length!==2 || new Set(batches).size!==2 || !batches.every(id) ||
+      (action.scheduledBatches!==undefined && !validStoredPublicationSchedule(action.scheduledBatches,action)) ||
       !date(checkedAt))
     stop("完成回执缺少原双批证据");
   const proofs=batches.map(batchId=>first.consumption?.[batchId]);
@@ -163,6 +165,7 @@ function caseEvidenceIdentities(item) {
   return [item.actions.agent.key,item.taskId,item.code?.revisionId,item.code?.runId,item.actions.delivery?.id,
     item.rehearsal?.id,publication?.id,publication?.reviewId,publication?.approvalId,
     ...(Array.isArray(publication?.batchIds)?publication.batchIds:[]),
+    ...(Array.isArray(publication?.scheduledBatches)?publication.scheduledBatches.map(batch=>batch.workerResultDigest):[]),
     ...(Array.isArray(publication?.monitoring)?publication.monitoring.map(event=>event?.eventId):[]),
     ...Object.values(item.consumption??{}).flatMap(proof=>[proof?.dapiCallIdDigest,proof?.xapiCallIdDigest])]
     .filter(value=>id(value)||digest(value));
@@ -211,6 +214,11 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
         (!id(item.taskId) || item.actions.agent.status !== "CONFIRMED" || item.actions.agent.id !== item.taskId ||
          item.code?.taskId !== item.taskId || !validStoredCloudV3DevelopmentDrivers(item.developmentDriverEvidence,item.code)))
       stop("原任务、版本或批次的执行触发证据不一致");
+    const publication=item.actions.publication;
+    if (publication?.scheduledBatches!==undefined &&
+        (publication.status!=="CONFIRMED" || !id(publication.id) || !digest(publication.packageDigest) ||
+          !validStoredPublicationSchedule(publication.scheduledBatches,publication)))
+      stop("原发布批次的调度证据不一致");
     const approval=checkpoint.state.submission?.windowApprovalDigest;
     if (approval!==undefined) {
       if (!digest(approval) || approvals.includes(approval)) stop("同一评测不能复用开发窗口审批");
@@ -332,9 +340,13 @@ function cloudV3CaseProgress(fullPlan,entries) {
         : localFailure(existing) ? "LOCAL_FAILURE_SETTLED_ONLY" : existing.completion ? "LOCAL_MATCHED_ONLY"
         : proof.synthetic || observation?.provenance==="TEST_HARNESS" ? "TEST_HARNESS" : proof.nonNative ? "HUMAN_ASSISTED_OR_NON_NATIVE"
         : proof.unconfirmed ? "PROVENANCE_UNCONFIRMED" : "ORIGINAL_CHECKPOINT";
+      const publication=existing.item.actions.publication;
       return {...item,status,creationStatus:existing.item.actions.agent.status,phase:existing.item.phase,
         ...(existing.completion ? {evidenceScope:existing.completion.scope} : {checkpointStage:stage}),
         ...(existing.item.developmentDriverEvidence ? {developmentDriverEvidence:existing.item.developmentDriverEvidence} : {}),
+        ...(publication?.scheduledBatches ? {publicationScheduleEvidence:{
+          releaseId:publication.id,packageDigest:publication.packageDigest,batches:publication.scheduledBatches,
+        }} : {}),
         ...(status==="CLOUD_CHAIN_VERIFIED" ? {approvalWaitMs:Date.parse(existing.item.actions.publication.approvalTiming.approvedAt)-
           Date.parse(existing.item.actions.publication.approvalTiming.readyAt)} : {})};
     }
