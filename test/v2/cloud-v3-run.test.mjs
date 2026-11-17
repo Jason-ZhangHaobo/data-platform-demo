@@ -61,6 +61,39 @@ test("reviewed cloud scoring keeps the frozen denominator and waits for all orig
   assert.throws(()=>summarizeCloudV3Progress(currentLiveLifecycleContract,Array(20).fill({caseId:"duplicate"})),/冻结案例分母/);
 });
 
+test('direct autonomy counts only verified cloud outcomes over the frozen twenty cases',()=>{
+  const phaseAttribution={directAutonomousEligible:true,executionEvidence:'STORED',intervention:'NO_RESCUE_RECORDED',
+    ownerAdvanceRecorded:false,approval:{status:'RECORDED'},unconfirmedAutonomousStages:[]};
+  const verified={status:'CLOUD_CHAIN_VERIFIED',evidenceScope:'INVITED_CLOUD_MATCHED',phaseAttribution};
+  const failed={status:'CLOUD_FAILURE_SETTLED',evidenceScope:'INVITED_CLOUD_SETTLED_FAILURE'};
+  const owner={...verified,phaseAttribution:{...phaseAttribution,directAutonomousEligible:false,ownerAdvanceRecorded:true}};
+  const missing={...verified,phaseAttribution:{...phaseAttribution,directAutonomousEligible:false,unconfirmedAutonomousStages:['authorizedConsumption']}};
+  const local={...verified,status:'LOCAL_MATCHED_ONLY',evidenceScope:'LOCAL_MATCHED_ONLY'};
+  const fixture={...verified,phaseAttribution:{...phaseAttribution,executionEvidence:'TEST_HARNESS'}};
+  const rescued={...verified,phaseAttribution:{...phaseAttribution,intervention:'ENGINEER_RESCUE'}};
+  const score=cases=>summarizeCloudV3Progress(currentLiveLifecycleContract,cases.map((item,caseId)=>({...item,caseId:String(caseId)})));
+  const pending=score([...Array(15).fill(verified),failed,missing,local,fixture,{status:'SOURCE_FAILED'}]);
+  assert.equal(pending.directAutonomousSuccesses,15);
+  assert.equal(pending.directAutonomousSettledCases,16);
+  assert.equal(pending.directAutonomousCoverage,0.8);
+  assert.equal(pending.additionalDirectAutonomousSuccessesRequired,2);
+  assert.equal(pending.unconfirmedAutonomousCloudCases,2);
+  assert.equal(pending.directAutonomousCompletionRate,null);
+  assert.equal(pending.directAutonomousTargetStatus,'INCOMPLETE_BLOCKED_SOURCE');
+  const met=score([...Array(17).fill(verified),failed,failed,owner]);
+  assert.equal(met.directAutonomousCompletionRate,0.85);
+  assert.equal(met.ownerAdvancedCloudCases,1);
+  assert.equal(met.directAutonomousTargetStatus,'MET');
+  assert.equal(met.fullGoalTargetMet,false);
+  const notMet=score([...Array(16).fill(verified),failed,failed,owner,owner]);
+  assert.equal(notMet.directAutonomousCompletionRate,0.8);
+  assert.equal(notMet.directAutonomousTargetStatus,'NOT_MET');
+  const allReviewedButUnconfirmed=score([...Array(18).fill(verified),missing,rescued]);
+  assert.equal(allReviewedButUnconfirmed.directAutonomousCompletionRate,null);
+  assert.equal(allReviewedButUnconfirmed.directAutonomousTargetStatus,'INCOMPLETE');
+  assert.equal(allReviewedButUnconfirmed.engineerRescueObserved,1);
+});
+
 test("cloud completion cannot be created from consumer matches alone, unsettled model usage or missing human review timing", () => {
   const id = n => "00000000-0000-4000-8000-"+String(n).padStart(12,"0");
   const time = second => new Date(Date.UTC(2026,8,1,0,0,second)).toISOString();
@@ -135,6 +168,34 @@ test("cloud completion cannot be created from consumer matches alone, unsettled 
   assert.equal(cloudV3PhaseAttribution({...phaseInput,developmentDriverEvidence:undefined}).phases.code,'ORIGIN_UNCONFIRMED');
   assert.equal(cloudV3PhaseAttribution({...phaseInput,code:{...phaseInput.code,model:'synthetic'}}).executionEvidence,'TEST_HARNESS');
   assert.equal(cloudV3PhaseAttribution({actions:{agent:{status:'PREPARED'}}}),undefined);
+  const paired=structuredClone(phaseInput),delivery=paired.actions.delivery;
+  paired.rehearsal.initiationEvidence={trigger:'SIGNED_BACKGROUND_EVENT',taskId,revisionId:paired.code.revisionId,
+    revisionHash:paired.code.revisionHash,developmentRunId:paired.code.runId,deliveryId:delivery.id,packageId:delivery.packageId,
+    packageDigest:delivery.packageDigest,verificationId:paired.rehearsal.id,wakeId:id(30),workerResultDigest:hex(80)};
+  for(const [index,batchId] of batchIds.entries()){
+    const proof=paired.consumption[batchId],callEvidence={protocol:'shuduo-service-call-attribution/v1',channel:'BEARER_HTTP',
+      queryDigest:hex(90+index),issuanceMode:'AUTHENTICATED_SESSION',issuanceRequestDigest:hex(92+index),credentialProofDigest:hex(94+index),
+      serviceDesign:{kind:'UNRECORDED'}};
+    proof.attribution={batchId,dapi:{callIdDigest:proof.dapiCallIdDigest,evidence:callEvidence},
+      xapi:{callIdDigest:proof.xapiCallIdDigest,evidence:callEvidence}};
+    const invocation=(offset)=>({serviceId:id(40+index*10+offset),versionId:id(41+index*10+offset),callIdDigest:hex(100+index*10+offset),
+      rowsDigest:hex(101+index*10+offset),paginationDigest:hex(102+index*10+offset),rowCount:1});
+    proof.agent={requestId:id(60+index*2),wakeId:id(61+index*2),batchId,sourceDigest:proof.sourceDigest,
+      applicationId:id(70+index),dapi:invocation(0),xapi:invocation(2)};
+  }
+  const verifiedScope=cloudV3CompletionReceipt(original,paired,time(9)).scope;
+  const classified=cloudV3PhaseAttribution(paired,{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope});
+  assert.equal(classified.directAutonomousEligible,true);
+  assert.deepEqual(classified.unconfirmedAutonomousStages,[]);
+  assert.equal(cloudV3PhaseAttribution(paired,{approvalTimingVerified:true,verifiedCompletionScope:'LOCAL_MATCHED_ONLY'}).directAutonomousEligible,false);
+  assert.equal(cloudV3PhaseAttribution({...paired,synthetic:true},{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope}).directAutonomousEligible,false);
+  assert.equal(cloudV3PhaseAttribution({...paired,humanClarified:true},{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope}).directAutonomousEligible,false);
+  assert.equal(cloudV3PhaseAttribution(paired,{verifiedCompletionScope:verifiedScope}).directAutonomousEligible,false);
+  const ownerAdvanced=structuredClone(paired);
+  ownerAdvanced.developmentDriverEvidence.attempts[0].modelTrigger='OWNER_ADVANCE';
+  const ownerResult=cloudV3PhaseAttribution(ownerAdvanced,{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope});
+  assert.equal(ownerResult.ownerAdvanceRecorded,true);
+  assert.equal(ownerResult.directAutonomousEligible,false);
   for(const invalid of [{trigger:"AGENT"}, {approvalId:id(99)}, {acceptedAt:time(6)}]){
     const wrong=structuredClone(withSchedule);
     Object.assign(wrong.actions.publication.initiationEvidence,invalid);

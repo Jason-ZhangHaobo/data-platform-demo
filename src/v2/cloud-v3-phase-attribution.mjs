@@ -34,7 +34,7 @@ function consumptionOrigin(item, publication) {
     ? 'AUTHENTICATED_HTTP_CALLER_UNCONFIRMED' : 'MATCHED_RESULTS_CALLER_UNCONFIRMED';
 }
 
-export function cloudV3PhaseAttribution(item, {approvalTimingVerified=false}={}) {
+export function cloudV3PhaseAttribution(item, {approvalTimingVerified=false,verifiedCompletionScope}={}) {
   const {code,developmentDriverEvidence:drivers,rehearsal,actions={}}=item;
   const {agent,delivery,publication}=actions;
   if (agent?.status!=='CONFIRMED' || !id(item.taskId) || agent.id!==item.taskId) return;
@@ -66,11 +66,16 @@ export function cloudV3PhaseAttribution(item, {approvalTimingVerified=false}={})
     fileRehearsal:signed,publication:'SIGNED_PUBLICATION_WAKE',schedulingAndMonitoring:'FC_TIMER_AND_SIGNED_WORKER_RESULT',
     authorizedConsumption:'SIGNED_AGENT_AND_INDEPENDENT_HTTP'};
   const unconfirmedAutonomousStages=Object.keys(expectedOrigins).filter(stage=>phases[stage]!==expectedOrigins[stage]);
-  return {phases,executionEvidence:provenance.synthetic||item.developmentObservation?.provenance==='TEST_HARNESS'?'TEST_HARNESS':provenance.unconfirmed?'UNCONFIRMED':'STORED',
-    intervention:provenance.engineerRescue?'ENGINEER_RESCUE':provenance.humanClarification?'BUSINESS_CLARIFICATION':
-    provenance.nonNative?'NON_NATIVE_SOURCE':'NO_RESCUE_RECORDED',
+  const executionEvidence=provenance.synthetic||item.developmentObservation?.provenance==='TEST_HARNESS'?'TEST_HARNESS':provenance.unconfirmed?'UNCONFIRMED':'STORED';
+  const intervention=provenance.engineerRescue?'ENGINEER_RESCUE':provenance.humanClarification?'BUSINESS_CLARIFICATION':
+    provenance.nonNative?'NON_NATIVE_SOURCE':'NO_RESCUE_RECORDED';
+  const ownerAdvanceRecorded=triggers.includes('OWNER_ADVANCE');
+  const approval=exactPublication&&approvalTimingVerified
+    ? {status:'RECORDED',waitMs:Date.parse(publication.approvalTiming.approvedAt)-Date.parse(publication.approvalTiming.readyAt)}
+    : {status:'UNCONFIRMED'};
+  return {phases,executionEvidence,intervention,
     businessClarificationRecorded:provenance.humanClarification,
-    ownerAdvanceRecorded:triggers.includes('OWNER_ADVANCE'),
-    approval:exactPublication&&approvalTimingVerified?{status:'RECORDED',waitMs:Date.parse(publication.approvalTiming.approvedAt)-Date.parse(publication.approvalTiming.readyAt)}:{status:'UNCONFIRMED'},
-    unconfirmedAutonomousStages,directAutonomousEligible:false};
+    ownerAdvanceRecorded,approval,unconfirmedAutonomousStages,
+    directAutonomousEligible:verifiedCompletionScope==='INVITED_CLOUD_MATCHED'&&executionEvidence==='STORED'&&
+      intervention==='NO_RESCUE_RECORDED'&&!ownerAdvanceRecorded&&approval.status==='RECORDED'&&unconfirmedAutonomousStages.length===0};
 }

@@ -387,7 +387,10 @@ function cloudV3CaseProgress(fullPlan,entries) {
       const publication=existing.item.actions.publication;
       const attribution=storedConsumptionAttribution(existing.item);
       const agent=storedAgentConsumptionProofs(existing.item);
-      const phaseAttribution=cloudV3PhaseAttribution(existing.item,{approvalTimingVerified:validCloudV3ApprovalTiming(publication?.approvalTiming)});
+      const phaseAttribution=cloudV3PhaseAttribution(existing.item,{approvalTimingVerified:validCloudV3ApprovalTiming(publication?.approvalTiming),
+        verifiedCompletionScope:existing.completion?.scope});
+      const evidenceScope=existing.completion?.scope;
+      const directAutonomousOutcome=directAutonomousOutcomeFor({status,evidenceScope,phaseAttribution});
       return {...item,status,creationStatus:existing.item.actions.agent.status,phase:existing.item.phase,
         ...(existing.completion ? {evidenceScope:existing.completion.scope} : {checkpointStage:stage}),
         ...(existing.item.developmentDriverEvidence ? {developmentDriverEvidence:existing.item.developmentDriverEvidence} : {}),
@@ -401,6 +404,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
         ...(attribution.length?{consumptionAttribution:attribution}:{}),
         ...(agent?.length?{agentConsumption:agent}:{}),
         ...(phaseAttribution?{phaseAttribution}:{}),
+        ...(directAutonomousOutcome?{directAutonomousOutcome}:{}),
         ...(status==="CLOUD_CHAIN_VERIFIED" ? {approvalWaitMs:Date.parse(existing.item.actions.publication.approvalTiming.approvedAt)-
           Date.parse(existing.item.actions.publication.approvalTiming.readyAt)} : {})};
     }
@@ -417,6 +421,16 @@ function cloudV3CaseProgress(fullPlan,entries) {
   });
 }
 
+function directAutonomousOutcomeFor(item) {
+  if(item.status==='CLOUD_FAILURE_SETTLED'&&item.evidenceScope==='INVITED_CLOUD_SETTLED_FAILURE')return 'SETTLED_FAILURE';
+  if(item.status!=='CLOUD_CHAIN_VERIFIED'||item.evidenceScope!=='INVITED_CLOUD_MATCHED')return;
+  const phase=item.phaseAttribution;
+  if(phase?.executionEvidence!=='STORED'||phase.intervention!=='NO_RESCUE_RECORDED')return 'UNCONFIRMED';
+  if(phase.ownerAdvanceRecorded===true)return 'OWNER_ADVANCE';
+  return phase.directAutonomousEligible===true&&phase.approval?.status==='RECORDED'&&
+    Array.isArray(phase.unconfirmedAutonomousStages)&&phase.unconfirmedAutonomousStages.length===0?'VERIFIED':'UNCONFIRMED';
+}
+
 export function summarizeCloudV3Progress(contract,cases) {
   const denominator=contract.expectedCaseCount, targetRate=contract.targetRate;
   if (cases.length!==denominator || new Set(cases.map(item=>item.caseId)).size!==denominator)
@@ -430,6 +444,12 @@ export function summarizeCloudV3Progress(contract,cases) {
   const measured=settled===denominator;
   const pendingCloudCases=denominator-settled-cloudSourceBlocked;
   const phaseEvidence=cases.flatMap(item=>item.phaseAttribution??[]);
+  const directOutcomes=cases.map(directAutonomousOutcomeFor);
+  const directAutonomousSuccesses=directOutcomes.filter(value=>value==='VERIFIED').length;
+  const ownerAdvancedCloudCases=directOutcomes.filter(value=>value==='OWNER_ADVANCE').length;
+  const unconfirmedAutonomousCloudCases=directOutcomes.filter(value=>value==='UNCONFIRMED').length;
+  const directSettled=directAutonomousSuccesses+ownerAdvancedCloudCases+directOutcomes.filter(value=>value==='SETTLED_FAILURE').length;
+  const directMeasured=directSettled===denominator;
   return {denominator,targetRate,requiredSuccesses,
     reviewedCloudSuccesses,settledCloudFailures,cloudSourceBlocked,
     localOnlySuccesses:count("LOCAL_MATCHED_ONLY"),localOnlyFailures:count("LOCAL_FAILURE_SETTLED_ONLY"),
@@ -449,5 +469,10 @@ export function summarizeCloudV3Progress(contract,cases) {
     engineerRescueObserved:phaseEvidence.filter(item=>item.intervention==='ENGINEER_RESCUE').length,
     businessClarificationObserved:phaseEvidence.filter(item=>item.businessClarificationRecorded).length,
     ownerAdvanceObserved:phaseEvidence.filter(item=>item.ownerAdvanceRecorded).length,
-    directAutonomousCompletionRate:null,fullGoalTargetMet:false};
+    directAutonomousSuccesses,ownerAdvancedCloudCases,unconfirmedAutonomousCloudCases,
+    directAutonomousSettledCases:directSettled,directAutonomousCoverage:directSettled/denominator,
+    additionalDirectAutonomousSuccessesRequired:Math.max(0,requiredSuccesses-directAutonomousSuccesses),
+    directAutonomousCompletionRate:directMeasured?directAutonomousSuccesses/denominator:null,
+    directAutonomousTargetStatus:directMeasured?(directAutonomousSuccesses>=requiredSuccesses?'MET':'NOT_MET'):
+      cloudSourceBlocked?'INCOMPLETE_BLOCKED_SOURCE':'INCOMPLETE',fullGoalTargetMet:false};
 }

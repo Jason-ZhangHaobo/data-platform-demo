@@ -1796,6 +1796,9 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   writeFileSync(wrongConsumptionPath,JSON.stringify(wrongConsumption),{mode:0o600});
   await cli('v3-run',[],1,wrongConsumptionPath);
   assert.equal(run.score.directAutonomousCompletionRate,null);
+  assert.equal(run.score.directAutonomousSuccesses,0);
+  assert.equal(run.score.directAutonomousSettledCases,0);
+  assert.equal(run.score.directAutonomousTargetStatus,'INCOMPLETE');
   assert.equal(run.score.localOnlySuccesses,1);
   assert.equal(run.score.reviewedCloudCompletionRate,null);
   assert.equal(run.score.reviewedCloudTargetStatus,'INCOMPLETE');
