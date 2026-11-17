@@ -4,6 +4,7 @@ import { deliveryFiles, sha256 } from "./delivery.mjs";
 import { currentLiveLifecycleContract, verifiedCloudV3TaskSnapshotBinding } from "./live-lifecycle-evaluation.mjs";
 import { checkpointCaseScope, readCheckpoint, stop, uuid } from "./live-lifecycle-checkpoint.mjs";
 import { cloudV3CheckpointCase } from "./cloud-v3-case-selection.mjs";
+import { bindCloudV3DevelopmentDrivers } from "./cloud-v3-development-drivers.mjs";
 import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
 import { agentReviewEvidencePath } from "./publication-request.mjs";
 import { normalizeSessionBase } from "./session-credential.mjs";
@@ -65,6 +66,9 @@ async function inspectReview(definition,item,client,submittedAt) {
     if (task.status !== "SUCCEEDED" || attempt?.status !== "SUCCEEDED" ||
         attempt.revisionId !== code.revisionId || attempt.runId !== code.runId)
       return reject("ORIGINAL_DEVELOPMENT_MISMATCH");
+    if (item.developmentDriverEvidence !== undefined &&
+        !isDeepStrictEqual(item.developmentDriverEvidence,bindCloudV3DevelopmentDrivers(task.developmentDrivers,code)))
+      return reject("ORIGINAL_DEVELOPMENT_DRIVERS_MISMATCH");
     delivery = await client.request(`/agent/tasks/${task.id}/delivery-requests/${deliveryAction.key}`);
     const requirement = deliveryPreparationRequirement(code);
     if (delivery?.id !== deliveryAction.id || delivery.mode !== "DURABLE_AGENT_DELIVERY_V1" || !nativeEvidence(delivery) ||

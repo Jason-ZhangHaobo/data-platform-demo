@@ -88,6 +88,7 @@ test("the first validated cloud receipt exposes its derived source in the offlin
   assert.equal(result,0);
   assert.equal(report.cases.length,20);
   assert.equal(report.cases[0].status,"CLOUD_CHAIN_VERIFIED");
+  assert.equal(Object.hasOwn(report.cases[0],"developmentDriverEvidence"),false);
   assert.equal(report.verifiedCloudCaseCount,1);
   assert.equal(report.score.reviewedCloudCompletionRate,null);
   assert.equal(report.score.directAutonomousCompletionRate,null);

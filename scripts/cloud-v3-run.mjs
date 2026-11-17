@@ -9,6 +9,7 @@ import { validStoredWorkerBatchResult } from "../src/v2/worker-result-evidence.m
 import { validationFamilyForContext } from "../src/v2/context.mjs";
 import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
 import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
+import { validStoredCloudV3DevelopmentDrivers } from "../src/v2/cloud-v3-development-drivers.mjs";
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -206,6 +207,10 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
     }
   };
   const record=(checkpoint,item,completed)=>{
+    if (item.developmentDriverEvidence !== undefined &&
+        (!id(item.taskId) || item.actions.agent.status !== "CONFIRMED" || item.actions.agent.id !== item.taskId ||
+         item.code?.taskId !== item.taskId || !validStoredCloudV3DevelopmentDrivers(item.developmentDriverEvidence,item.code)))
+      stop("原任务、版本或批次的执行触发证据不一致");
     const approval=checkpoint.state.submission?.windowApprovalDigest;
     if (approval!==undefined) {
       if (!digest(approval) || approvals.includes(approval)) stop("同一评测不能复用开发窗口审批");
@@ -329,6 +334,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
         : proof.unconfirmed ? "PROVENANCE_UNCONFIRMED" : "ORIGINAL_CHECKPOINT";
       return {...item,status,creationStatus:existing.item.actions.agent.status,phase:existing.item.phase,
         ...(existing.completion ? {evidenceScope:existing.completion.scope} : {checkpointStage:stage}),
+        ...(existing.item.developmentDriverEvidence ? {developmentDriverEvidence:existing.item.developmentDriverEvidence} : {}),
         ...(status==="CLOUD_CHAIN_VERIFIED" ? {approvalWaitMs:Date.parse(existing.item.actions.publication.approvalTiming.approvedAt)-
           Date.parse(existing.item.actions.publication.approvalTiming.readyAt)} : {})};
     }

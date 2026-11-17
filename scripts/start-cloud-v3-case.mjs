@@ -9,6 +9,7 @@ import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
 import { readCloudV3Review } from "../src/v2/cloud-v3-review.mjs";
 import { exactPublicationReviewBasis } from "../src/v2/cloud-release-evidence.mjs";
 import { cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
+import { bindCloudV3DevelopmentDrivers } from "../src/v2/cloud-v3-development-drivers.mjs";
 import { getContext, validationFamilyForContext } from "../src/v2/context.mjs";
 import { consumerDenialEvidence, validateConsumerSource } from "../src/v2/consumer-source.mjs";
 import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
@@ -189,6 +190,9 @@ export async function prepareCloudV3Next(path,client,{firstPath,completionPath,r
     if (!code || code.revisionId!==derivationSource.revisionId || code.runId!==derivationSource.runId ||
         code.revisionHash!==derivationSource.revisionHash || code.validationContractId!==derivationSource.validationContractId)
       stop("派生父版本或原 Spark 核验未通过");
+    if (sourceEntry.item.developmentDriverEvidence !== undefined &&
+        !isDeepStrictEqual(sourceEntry.item.developmentDriverEvidence,bindCloudV3DevelopmentDrivers(view.developmentDrivers,code)))
+      stop("派生父任务的原执行触发证据未通过");
     bodyHash=sha256(JSON.stringify(await readDerivationBody(client,definition,derivationSource)));
   }
   const previousCase={checkpointDigest:sha256(parent.checkpoint.text),completionDigest:parent.completion.completionDigest,
@@ -1081,6 +1085,12 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
     }
     if (item.code && !isDeepStrictEqual(item.code,code))
       return response("UNCONFIRMED", "ORIGINAL_DEVELOPMENT_MISMATCH");
+    const captureDrivers = !item.code && view.developmentDrivers !== undefined;
+    const savedDrivers = item.developmentDriverEvidence;
+    const drivers = captureDrivers || savedDrivers !== undefined
+      ? bindCloudV3DevelopmentDrivers(view.developmentDrivers,code) : undefined;
+    if ((captureDrivers && !drivers) || (savedDrivers !== undefined && !isDeepStrictEqual(savedDrivers,drivers)))
+      return response("UNCONFIRMED", "ORIGINAL_DEVELOPMENT_DRIVERS_MISMATCH");
     const original = view.originalDelivery;
     const requestId = deliveryRequestId ?? original?.requestId;
     if (workbench && deliveryRequestId !== undefined &&
@@ -1090,6 +1100,7 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
 
     const before = JSON.stringify(item);
     item.code = code;
+    if (captureDrivers) item.developmentDriverEvidence = drivers;
     delete item.developmentObservation;
     if (item.phase === "CODE_AND_DEBUG") item.phase = "DELIVERY_PREPARATION";
     const adopting = workbench && !item.actions.delivery && id(requestId) &&
@@ -1100,6 +1111,7 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
       await reconcileOriginalDelivery(client, item, code);
     if (adopting && delivery.status !== "CONFIRMED") delete item.actions.delivery;
     if (JSON.stringify(item) !== before) writeCheckpoint(path,state);
-    return {...response("DEVELOPMENT_BOUND"), execution, delivery};
+    return {...response("DEVELOPMENT_BOUND"), execution, delivery,
+      ...(drivers ? {developmentDriverEvidence:drivers} : {})};
   }, {reconcile:true});
 }
