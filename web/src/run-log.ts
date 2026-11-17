@@ -27,3 +27,7 @@ export function developmentRunLog(run?: RunLog): string {
   return records.join("\n") + "\n\n" + (output.length ? output.join("\n\n") :
     "本次记录未包含 Worker 原始日志；以上为真实运行元数据，不是控制台日志。不会补造输出，也不代表模型未配置。");
 }
+
+export function RunLogContent({ run }: { run?: RunLog }) {
+  return developmentRunLog(run);
+}
