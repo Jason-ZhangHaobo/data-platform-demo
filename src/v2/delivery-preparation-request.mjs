@@ -45,12 +45,14 @@ export function deliveryPreparationHashMatches(bodyHash, code) {
 
 export function readDeliveryAdvance(body) {
   const bad = () => Object.assign(new Error("须提供原交付版本、包与演练批次"), {status:422});
-  if (!record(body) || Object.keys(body).some(key => !["expectedVersion","rehearsal"].includes(key)) ||
+  if (!record(body) || Object.keys(body).some(key => !["expectedVersion","rehearsal","dispatchInBackground"].includes(key)) ||
       !Number.isSafeInteger(body.expectedVersion) || body.expectedVersion < 1) throw bad();
+  const background=Object.hasOwn(body,'dispatchInBackground');
+  if (background && (body.dispatchInBackground!==true || !body.rehearsal || Object.hasOwn(body.rehearsal,'verificationId'))) throw bad();
   if (!Object.hasOwn(body,"rehearsal")) return {version:body.expectedVersion};
   const value = body.rehearsal;
   if (!record(value) || Object.keys(value).some(key => !["packageId","packageDigest","verificationId"].includes(key)) ||
       !uuid(value.packageId) || !digest(value.packageDigest) ||
       (Object.hasOwn(value,"verificationId") && !uuid(value.verificationId))) throw bad();
-  return {version:body.expectedVersion, rehearsal:value};
+  return {version:body.expectedVersion, rehearsal:value,...(background?{dispatchInBackground:true}:{})};
 }

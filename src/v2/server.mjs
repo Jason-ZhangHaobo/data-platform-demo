@@ -32,7 +32,7 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,as
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
-import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, storedFundFileRehearsal, pinnedCloudDeliverySource } from "./agent-development-workflow.mjs";
+import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, storedFundFileRehearsal, pinnedCloudDeliverySource,storedBackgroundRehearsalEvidence } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import { exactPublicationReceipt, projectCloudReleaseBatchStage } from "./cloud-release-evidence.mjs";
 import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
@@ -57,6 +57,8 @@ import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import {createServiceAgentEvents} from './service-agent-events.mjs';
 import { createAgentEventDriver, agentEventConfigFromEnvironment, parseAgentObjectEvent } from "./agent-event-driver.mjs";
 import {createPublicationWakeDriver} from "./publication-wake.mjs";
+import {createSignedTaskWakeDriver,signedTaskWakeView} from './signed-task-wake.mjs';
+import {rehearsalWakeFor,rehearsalWakeKey,rehearsalWakeMatches} from './rehearsal-wake.mjs';
 import { createAgentWakeOssTransport } from "./agent-wake-oss-transport.mjs";
 import { ossConfigFromEnvironment } from "./oss-client.mjs";
 import { queueConfigFromEnvironment } from "./remote-spark-queue.mjs";
@@ -585,10 +587,12 @@ export function createV2Server(options = {}) {
     ? {read:options.readPendingSparkResult} : undefined;
   const passiveRunner=resultEventRunner ?? (rawRunner.assertWriteReady && rawRunner.durable
     ? { read:prepared=>rawRunner.durable.read(prepared,{cancelOnTimeout:false}) } : undefined);
-  const assertSavedDevelopmentTarget=task=>{
+  const assertSavedDevelopmentTarget=(task,delivery)=>{
     if (developmentAccess?.taskId && task.id!==developmentAccess.taskId) throw targetDenied();
     if (developmentAccess?.requestDigest && developmentNow()<developmentAccess.expiresAt) {
-      const grant=store.list("agent_background",PROJECT).find(item=>item.taskId===task.id && item.actorId===task.submittedBy);
+      const wake=delivery?.rehearsalWakeId && rehearsalWakeFor(store,PROJECT,delivery.id);
+      const grant= wake && wake.id===delivery.rehearsalWakeId && rehearsalWakeMatches(wake,delivery)
+        ? wake.binding : store.list("agent_background",PROJECT).find(item=>item.taskId===task.id && item.actorId===task.submittedBy);
       const owner=store.get("auth_user",task.submittedBy,PROJECT);
       assertDevelopmentBackgroundScope(developmentAccess,task,owner,PROJECT,grant?.developmentBoundary,developmentNow());
     }
@@ -645,6 +649,30 @@ export function createV2Server(options = {}) {
         return cloudPublication.publish({agent:store.get("agent",taskId,PROJECT),...scope,idempotencyKey:requestId,
           attestations:review?.attestations,activationWakeId,assertWakeAuthority:assertPublicationWakeScope});
       }}) : undefined;
+  const assertRehearsalWakeScope=binding=>{
+    const delivery=store.get('agent_delivery_task',binding.deliveryId,PROJECT),agent=store.get('agent',binding.taskId,PROJECT);
+    const owner=store.get('auth_user',binding.actorId,PROJECT),wake=delivery&&rehearsalWakeFor(store,PROJECT,delivery.id);
+    if(!developmentAccess || options.ingress?.status.publicReadOnly || executionUnavailable() ||
+      !delivery || delivery.sourcePinned!==true || delivery.mode!==durableDeliveryMode || !rehearsalWakeMatches({binding},delivery) ||
+      delivery.status==='CANCELLED' || !agent || agent.submittedBy!==binding.actorId ||
+      (delivery.verificationId ? !wake || delivery.rehearsalWakeId!==wake.id : delivery.stage!=='PACKAGE_READY'||delivery.version!==binding.expectedVersion))
+      throw Object.assign(fail(403,'演练委托须绑定当前有效窗口和原交付'),{code:'REHEARSAL_WAKE_SCOPE_DENIED'});
+    assertDevelopmentBackgroundScope(developmentAccess,agent,owner,PROJECT,binding.developmentBoundary,developmentNow());
+  };
+  const rehearsalWake=developmentAccess && durableDelivery && agentWakeTransport && !options.ingress?.status.publicReadOnly
+    ? createSignedTaskWakeDriver({store,project:PROJECT,transport:agentWakeTransport,config:agentEventConfig,persist:persistDevelopment,
+      assertScope:assertRehearsalWakeScope,kind:'rehearsal_wake',protocol:'shuduo-rehearsal-wake/v1',codePrefix:'REHEARSAL_WAKE',
+      completedState:'BATCH_RESERVED',bindingKey:binding=>rehearsalWakeKey(PROJECT,binding.deliveryId),execute:async(binding,rehearsalWakeId)=>{
+        const delivery=store.get('agent_delivery_task',binding.deliveryId,PROJECT),{packageId,packageDigest,verificationId}=delivery;
+        const advanced=await durableDelivery.advance(delivery.id,delivery.version,{packageId,packageDigest,...(verificationId?{verificationId}:{})},
+          {rehearsalWakeId,assertWakeAuthority:assertRehearsalWakeScope});
+        if(!advanced.verificationId)throw fail(409,'原演练批次尚未登记');
+        return {verificationId:advanced.verificationId};
+      }}) : undefined;
+  const rehearsalBackground=item=>{
+    const wake=item&&rehearsalWakeFor(store,PROJECT,item.id);
+    return wake&&rehearsalWakeMatches(wake,item)?{rehearsalBackground:signedTaskWakeView(wake)}:{};
+  };
   const prepareBackgroundPackage=durableDelivery && !options.ingress?.status.publicReadOnly ? async (task,key)=>{
     const source=pinnedCloudDeliverySource(task,store.get("revision",task.revisionId,PROJECT),store.get("run",task.runId,PROJECT),
       (kind,id)=>store.get(kind,id,PROJECT));
@@ -1844,8 +1872,9 @@ export function createV2Server(options = {}) {
         const rehearsal = storedFileRehearsal(item,verification);
         const settledFailure = storedFileRehearsalFailure(store,PROJECT,item,verification);
         const preparationEvidence=storedBackgroundPreparationEvidence(store,PROJECT,item);
-        return {...publicDeliveryTask(item),...(rehearsal?{rehearsal}:{}),...(settledFailure?{settledFailure}:{}),
-          ...(preparationEvidence?{preparationEvidence}:{})};
+        const rehearsalInitiationEvidence=storedBackgroundRehearsalEvidence(store,PROJECT,item,verification);
+        return {...publicDeliveryTask(item),...rehearsalBackground(item),...(rehearsal?{rehearsal}:{}),...(settledFailure?{settledFailure}:{}),
+          ...(preparationEvidence?{preparationEvidence}:{}),...(rehearsalInitiationEvidence?{rehearsalInitiationEvidence}:{})};
       };
       assertV2RequestScope(req, { env, local });
       if (method === "GET" && !path.startsWith("/api/v2"))
@@ -1896,6 +1925,10 @@ export function createV2Server(options = {}) {
           if (object?.kind==="WAKE" && publicationWake) {
             const released=await publicationWake.consume(object);
             if (released) return json(res,200,released);
+          }
+          if (object?.kind==='WAKE' && rehearsalWake) {
+            const launched=await rehearsalWake.consume(object);
+            if (launched) return json(res,200,launched);
           }
           if (object?.kind==="RESULT") {
             const settled=!developmentAccess && await cloudPublicationHistory.settleResultEvent(object,
@@ -6279,7 +6312,9 @@ export function createV2Server(options = {}) {
           ...(preparationSource ? {preparationSource} : {}),
           ...(fileReview?{fileReview:{id:fileReview.id,status:fileReview.status,packageId:fileReview.packageId,packageDigest:fileReview.packageDigest,verificationId:fileReview.verificationId,reviewedAt:fileReview.reviewedAt,scope:fileReview.scope,
             ...(fileReview.fundRehearsalDigest ? {fundRehearsalDigest:fileReview.fundRehearsalDigest} : {})}}:{}),
-          delivery: publicDeliveryTask(delivery),
+          delivery: delivery?{...publicDeliveryTask(delivery),...rehearsalBackground(delivery)}:undefined,
+          ...(rehearsalWake && (delivery?delivery.sourcePinned===true && !delivery.verificationId && delivery.stage==='PACKAGE_READY':Boolean(preparationSource)) &&
+            !publicReadOnly && developmentSessionFor(scopeActor())?.readOnly===false ? {backgroundRehearsalAvailable:true}:{}),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt,
             ...(workerResult?{workerResult}:{}),
@@ -6471,10 +6506,17 @@ export function createV2Server(options = {}) {
             return json(res, 200, await durableDelivery.reconcile(item.id));
           }
           if (method === "POST" && agentDeliveryRecord[2] === "advance") {
-            const {version,rehearsal} = readDeliveryAdvance(await readBody(req));
+            const {version,rehearsal,dispatchInBackground} = readDeliveryAdvance(await readBody(req));
             if ((rehearsal || item.sourcePinned || item.rehearsalPinned) && (item.submittedBy !== agent.submittedBy ||
                 item.submittedBy !== auth.sessionFromHeaders(req.headers)?.user.id))
               throw fail(403,"确切包演练须由原任务创建者操作");
+            if(dispatchInBackground){
+              if (!rehearsalWake || ingressChannel!=='HTTP' || publicReadOnly) throw fail(503,'后台文件演练尚未启用');
+              await rehearsalWake.enqueue({deliveryId:item.id,taskId:agent.id,actorId:item.submittedBy,expectedVersion:version,
+                packageId:rehearsal.packageId,packageDigest:rehearsal.packageDigest,
+                developmentBoundary:developmentBackgroundBoundary(developmentAccess,agent.id,developmentNow())});
+              return json(res,202,deliveryReceipt(get('agent_delivery_task',item.id)));
+            }
             const advanced = await durableDelivery.advance(item.id,version,rehearsal);
             return json(res,200,deliveryReceipt(get("agent_delivery_task",advanced.id)));
           }

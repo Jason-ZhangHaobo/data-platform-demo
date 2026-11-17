@@ -8,13 +8,15 @@ import {sqlRequirementProtocol,sqlRequirementReportMatches} from '../../src/v2/s
 import type {SqlRequirementReport} from '../../src/v2/sql-requirement-contract.mjs';
 import type {FundExecutionBinding} from '../../src/v2/fund-preparation-client.mjs';
 
-export type Delivery = {id:string;version:number;status:string;stage:string;mode?:string;sourceKind?:string;packageId?:string;packageDigest?:string;verificationId?:string;sourceRevisionId?:string;sourceRunId?:string;sourcePinned?:boolean;rehearsalPinned?:boolean;error?:string};
+export type Delivery = {id:string;version:number;status:string;stage:string;mode?:string;sourceKind?:string;packageId?:string;packageDigest?:string;verificationId?:string;sourceRevisionId?:string;sourceRunId?:string;sourcePinned?:boolean;rehearsalPinned?:boolean;error?:string;
+ rehearsalBackground?:{wakeId:string;state:'DELIVERY_UNKNOWN'|'QUEUED'|'BATCH_RESERVED'}};
 type PreparationSource = {revisionId:string;revisionHash:string;runId:string;requirementBinding?:{protocol:string;taskId:string;basisDigest:string;reportDigest:string}};
 export type FundReviewBasis = {status:"READY";digest:string} | {status:"UNAVAILABLE"};
 export type FileReview={id:string;status:"REVIEWED";packageId:string;packageDigest:string;verificationId:string;reviewedAt:string;scope:"LOCAL_FILE_REVIEW";fundRehearsalDigest?:string};
 export type Workflow = {
  preparationSource?:PreparationSource;
  eventDrivenRehearsal?:true;
+ backgroundRehearsalAvailable?:true;
  fileReview?:FileReview;
  report:{developmentReference?:AssistedDevelopmentReference;taskId:string;sourceKind?:string;agentIndependentE2E?:boolean;contextId?:string;validationContractId?:string;validationDetails?:ValidationDetailsReport;status:string;summary:string;definition?:string;checks:{id:string;label:string;passed:boolean}[];revisionId?:string;revisionHash?:string;runId?:string;rowCount:number;engine?:string;engineVersion?:string;notice:string};
  delivery?:Delivery;
@@ -136,11 +138,15 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
    !optional(d.sourceAgentTaskId,x=>x===r.taskId)||d.sourceRevisionId!==r.revisionId||d.sourceRunId!==r.runId||!id(d.sourceRevisionId)||!id(d.sourceRunId)||
    !optional(d.sourceSqlHash,x=>x===r.revisionHash)||(selection.manual?d.sourceKind!=='MANUAL':d.sourceKind==='MANUAL')||
    !['sourcePinned','rehearsalPinned'].every(k=>optional(d[k],v=>typeof v==='boolean'))||
+   !optional(d.rehearsalBackground,x=>record(x)&&id(x.wakeId)&&['DELIVERY_UNKNOWN','QUEUED','BATCH_RESERVED'].includes(String(x.state))&&
+     d.sourcePinned===true&&(x.state!=='BATCH_RESERVED'||id(d.verificationId)))||
    (d.sourcePinned||d.rehearsalPinned)&&(selection.manual||d.mode!=='DURABLE_AGENT_DELIVERY_V1'))throw bad();
  }
  if(record(d)&&!sameAssistedDevelopmentReference(d.developmentReference,r.developmentReference))throw bad();
  if(value.eventDrivenRehearsal!==undefined&&(value.eventDrivenRehearsal!==true||selection.manual||
    p.scope!=='PRIVATE_CLOUD_TEST'||!record(d)||d.sourcePinned!==true))throw bad();
+ if(value.backgroundRehearsalAvailable!==undefined&&(value.backgroundRehearsalAvailable!==true||selection.manual||p.scope!=='PRIVATE_CLOUD_TEST'||
+   (d?(!record(d)||d.sourcePinned!==true||d.stage!=='PACKAGE_READY'||d.verificationId!==undefined):!preparation)))throw bad();
  if(b!==undefined){
   if(!record(d)||!record(b)||!id(b.id)||!hash(b.digest)||d.packageId!==b.id||d.packageDigest!==b.digest||!record(b.manifest)||!record(b.files))throw bad();
   const manifest=b.manifest,source=manifest.source,names=deliveryFileGuide.map(f=>f.name).sort(),files=b.files,entries=manifest.files;

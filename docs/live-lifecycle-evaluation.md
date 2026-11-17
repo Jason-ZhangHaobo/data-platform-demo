@@ -166,6 +166,8 @@ SHUDUO_TEST_LOCAL_SPARK_DERIVATION_RECOVERY=true node --test \
 
 ### 演练云端首例的原交付包
 
+受邀窗口启用 OSS 事件时，工作台可先生成不可变交付包，再对当前包和版本明确「委托一次后台 Spark 演练」。CLI 使用 `agent advance-delivery --id DELIVERY_ID --version VERSION --package-id PACKAGE_ID --package-digest DIGEST --confirm --dispatch-in-background`，MCP 在 `agent_delivery_advance` 中提供 `dispatchInBackground: true` 及相同确切参数。委托只登记一个签名事件，事件复核原身份、预算、执行器与窗口后才保留并提交原 Spark 批次。回执未知时只核对原事件和批次。签名结果结算后，交付回执和 v3 记录可核对发起事件、代码版本、包、验收批次及 Worker 摘要。发布仍需确切版本人审。
+
 开启 OSS 事件推进时，原创建者提交确切文件演练后可以关闭工作台。控制面只用既有 Worker 结果通知结算该交付的原批次，核对原对象路径、签名、任务正文摘要和文件断言。提交确认丢失时，同一签名结果仍可结算原批次。重复通知只读取已保存的状态。开发窗口到期后，已提交的演练可结算到待审阅；实际发布仍需独立窗口和工程师批准。
 
 页面等待期间只读取当前演练状态，也可主动刷新。开发写入窗口有效时可单次核对原结果。文件演练尚未提交时，仍须由原创建者操作。回环验收可关闭客户端、重开控制面并投递同一结果两次，检查原包、原批次和单次计算。正式 OSS 投递和实际云实例恢复需实测。

@@ -15,6 +15,7 @@ import { validBackgroundPreparationEvidence } from "../src/v2/delivery-preparati
 import { validPublicationInitiation } from "../src/v2/publication-initiation-evidence.mjs";
 import {validBatchConsumptionAttribution} from '../src/v2/service-consumption-attribution.mjs';
 import {cloudV3PhaseAttribution} from '../src/v2/cloud-v3-phase-attribution.mjs';
+import {validBackgroundRehearsalEvidence} from '../src/v2/rehearsal-wake.mjs';
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -141,6 +142,8 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
       (delivery?.preparationEvidence!==undefined &&
         (delivery.status!=="CONFIRMED" || !validBackgroundPreparationEvidence(delivery.preparationEvidence,first.code,delivery) ||
          delivery.packageId!==action.packageId || delivery.packageDigest!==action.packageDigest)) ||
+      (first.rehearsal?.initiationEvidence!==undefined && (!validBackgroundRehearsalEvidence(first.rehearsal.initiationEvidence,first.code,delivery,first.rehearsal) ||
+        first.rehearsal.id!==action.verificationId)) ||
       (action.scheduledBatches!==undefined && !validStoredPublicationSchedule(action.scheduledBatches,action)) ||
       (action.initiationEvidence!==undefined && (first.code?.taskId!==first.taskId ||
         !validPublicationInitiation(action.initiationEvidence,first.code,action))) ||
@@ -162,6 +165,7 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
     developmentRunId:first.code?.runId,packageDigest:action.packageDigest,verificationId:action.verificationId,
     releaseId:action.id,batchIds:batches,consumptionDigest:sha256(JSON.stringify(proofs)),
     ...(delivery?.preparationEvidence ? {deliveryPreparationEvidence:delivery.preparationEvidence} : {}),
+    ...(first.rehearsal?.initiationEvidence ? {rehearsalInitiationEvidence:first.rehearsal.initiationEvidence} : {}),
     ...(action.initiationEvidence ? {publicationInitiationEvidence:action.initiationEvidence} : {}),
     ...(attribution.length?{consumptionAttribution:attribution}:{})};
   return {...body,completionDigest:sha256(JSON.stringify(body))};
@@ -243,6 +247,8 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
          !validBackgroundPreparationEvidence(delivery.preparationEvidence,item.code,delivery)))
       stop("原交付的后台准备证据不一致");
     const publication=item.actions.publication;
+    if(item.rehearsal?.initiationEvidence!==undefined && !validBackgroundRehearsalEvidence(item.rehearsal.initiationEvidence,item.code,delivery,item.rehearsal))
+      stop('原文件演练的签名委托与原批次不一致');
     if (publication?.scheduledBatches!==undefined &&
         (publication.status!=="CONFIRMED" || !id(publication.id) || !digest(publication.packageDigest) ||
           !validStoredPublicationSchedule(publication.scheduledBatches,publication)))
@@ -381,6 +387,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
         ...(existing.item.developmentDriverEvidence ? {developmentDriverEvidence:existing.item.developmentDriverEvidence} : {}),
         ...(existing.item.actions.delivery?.preparationEvidence ?
           {deliveryPreparationEvidence:existing.item.actions.delivery.preparationEvidence} : {}),
+        ...(existing.item.rehearsal?.initiationEvidence ? {rehearsalInitiationEvidence:existing.item.rehearsal.initiationEvidence} : {}),
         ...(publication?.scheduledBatches ? {publicationScheduleEvidence:{
           releaseId:publication.id,packageDigest:publication.packageDigest,batches:publication.scheduledBatches,
         }} : {}),

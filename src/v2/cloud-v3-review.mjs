@@ -10,6 +10,7 @@ import { agentReviewEvidencePath } from "./publication-request.mjs";
 import { normalizeSessionBase } from "./session-credential.mjs";
 import { deliveryPreparationHashMatches, deliveryPreparationRequirement } from "./delivery-preparation-request.mjs";
 import { validBackgroundPreparationEvidence } from "./delivery-preparation-evidence.mjs";
+import {validBackgroundRehearsalEvidence} from './rehearsal-wake.mjs';
 
 const digest = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value === "string" && uuid.test(value);
@@ -83,6 +84,10 @@ async function inspectReview(definition,item,client,submittedAt) {
         (!validBackgroundPreparationEvidence(delivery.preparationEvidence,code,delivery) ||
          !isDeepStrictEqual(deliveryAction.preparationEvidence,delivery.preparationEvidence)))
       return reject("ORIGINAL_DELIVERY_PREPARATION_MISMATCH");
+    if(item.rehearsal?.initiationEvidence!==undefined &&
+      (!validBackgroundRehearsalEvidence(delivery.rehearsalInitiationEvidence,code,delivery,delivery.rehearsal) ||
+       !isDeepStrictEqual(item.rehearsal.initiationEvidence,delivery.rehearsalInitiationEvidence)))
+      return reject('ORIGINAL_REHEARSAL_INITIATION_MISMATCH');
     if (["QUEUED","RUNNING"].includes(delivery.status)) return pending("CLOUD_REHEARSAL_PENDING");
     if (delivery.status !== "SUCCEEDED" || delivery.stage !== "AWAITING_ENGINEER_REVIEW" || delivery.actualExecution !== true ||
         !id(delivery.packageId) || !digest(delivery.packageDigest) || !id(delivery.verificationId) ||

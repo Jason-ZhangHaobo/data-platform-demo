@@ -17,6 +17,7 @@ import { storedWorkerBatchResult, verifiedWorkerResultDigest } from "./worker-re
 import { isFundContext } from "./fund-contexts.mjs";
 import { createFundTestSql, fundDevelopmentBinding, fundRehearsalMatchesPlan, fundRunMatchesRegisteredResult, fundValidationMatches, recheckFundDevelopmentReceipt, verifiedFundRun } from "./fund-delivery.mjs";
 import { syncSqlColumnsMatch, syncSqlContractId, syncSqlRowsMatch } from "./sync-sql-input.mjs";
+import {rehearsalWakeFor,rehearsalWakeMatches} from './rehearsal-wake.mjs';
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 export const standaloneManualDeliveryMode='DURABLE_MANUAL_DELIVERY_V1';
@@ -25,7 +26,7 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 const fail = (status, message) => Object.assign(new Error(message), { status });
 export function publicDeliveryTask(task) {
   if (!task) return task;
-  const { remoteSubmission, submittedBy, preparationRequestId, ...visible } = task;
+  const { remoteSubmission, submittedBy, preparationRequestId, rehearsalWakeId, ...visible } = task;
   return visible;
 }
 
@@ -52,6 +53,17 @@ export function storedFileRehearsalResult(store,project,task,verification) {
   if (!storedFileRehearsal(task,verification) || verification.finishedAt !== task.finishedAt) return;
   return storedWorkerBatchResult(store,verification,task.remoteSubmission?.prepared?.job,
     `${project}:cloud-rehearsal-result:${verification.id}`);
+}
+
+export function storedBackgroundRehearsalEvidence(store,project,task,verification) {
+  if (!task?.rehearsalWakeId || task.sourcePinned!==true || task.rehearsalPinned!==true || task.status!=='SUCCEEDED' ||
+      task.stage!=='AWAITING_ENGINEER_REVIEW' || task.actualExecution!==true || verification?.status!=='SUCCEEDED') return;
+  const wake=rehearsalWakeFor(store,project,task.id),result=storedFileRehearsalResult(store,project,task,verification);
+  if (!result || wake?.id!==task.rehearsalWakeId || !rehearsalWakeMatches(wake,task) ||
+      wake.verificationId!==undefined&&wake.verificationId!==verification.id) return;
+  return {trigger:'SIGNED_BACKGROUND_EVENT',taskId:task.sourceAgentTaskId,revisionId:task.sourceRevisionId,revisionHash:task.sourceSqlHash,developmentRunId:task.sourceRunId,
+    deliveryId:task.id,packageId:task.packageId,packageDigest:task.packageDigest,verificationId:verification.id,
+    wakeId:wake.id,workerResultDigest:result.resultDigest};
 }
 
 export function storedFundFileRehearsal(store, project, delivery, verification, bundle, plan) {
@@ -444,7 +456,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       return;
     const agent=store.get("agent",task.sourceAgentTaskId,project);
     if (agent?.submittedBy!==task.submittedBy || typeof task.submittedBy!=="string") return;
-    assertResultTarget?.(agent);
+    assertResultTarget?.(agent,task);
     if (terminal.has(task.status)) return {state:"REHEARSAL_ALREADY_SETTLED"};
     if (task.status!=="RUNNING" || !["FILE_REHEARSAL_SUBMITTING","FILE_REHEARSAL_RUNNING"].includes(task.stage) ||
         verification.status!=="RUNNING") return;
@@ -457,8 +469,14 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const settled=await reconcile(task.id,{passive:true,resultEvent:true});
     return {state:terminal.has(settled.status) ? "REHEARSAL_SETTLED" : "REHEARSAL_RESULT_UNCONFIRMED"};
   }
-  async function advance(id, expectedVersion, expectedRehearsal) {
+  async function advance(id, expectedVersion, expectedRehearsal, {rehearsalWakeId,assertWakeAuthority}={}) {
     let task = get(id);
+    const wake=!standaloneManual && rehearsalWakeFor(store,project,task.id);
+    if (rehearsalWakeId && (!assertWakeAuthority || wake?.id!==rehearsalWakeId || !rehearsalWakeMatches(wake,task) ||
+        task.sourcePinned!==true || !expectedRehearsal || (task.remoteSubmission && task.rehearsalWakeId!==wake.id)))
+      throw fail(409,"演练委托与原交付或批次不一致");
+    if (wake && !rehearsalWakeId && !task.remoteSubmission && !terminal.has(task.status))
+      throw fail(409,"原交付已委托后台演练，请读取原任务");
     if (expectedRehearsal && (task.sourceKind === "MANUAL" || standaloneManual ||
         task.packageId !== expectedRehearsal.packageId || task.packageDigest !== expectedRehearsal.packageDigest ||
         task.verificationId !== expectedRehearsal.verificationId ||
@@ -491,6 +509,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     if(refreshed.version!==task.version)throw fail(409,'交付任务已更新，请读取原任务后继续');
     task=refreshed;
     if (!task.remoteSubmission) {
+      if (rehearsalWakeId) assertWakeAuthority(wake.binding);
       assertTaskScope(task); // Storage reads may outlive the selected source or session.
       assertRunBudget();
       const businessIndex = plan.calendar.tradingDays.indexOf(plan.fixtures.context.businessDate), nextDay = plan.calendar.tradingDays[businessIndex + 1];
@@ -501,6 +520,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
         const verification = store.create("delivery_verification", project, { packageId: item.id, packageDigest: item.digest, ...(standaloneManual?{manualDeliveryTaskId:task.id}:{agentDeliveryTaskId:task.id}), scheduledFor, occurrence, status: "RUNNING", mode, isolation: "FUNCTION_PROCESS", reservedDurationMs: reservationSeconds * 1000, published: false });
         const prepared = runner.prepare({ sql: item.files["main.sql"], testSql: item.files["tests.sql"], context: plan.fixtures.context, validationContexts: plan.fixtures.validationContexts }, verification.id);
         return change(task, { status: "RUNNING", stage: "FILE_REHEARSAL_SUBMITTING", verificationId: verification.id,
+          ...(rehearsalWakeId?{rehearsalWakeId}:{}),
           ...(protectedRehearsal ? {rehearsalPinned:true} : {}), remoteSubmission: { prepared, submitted: false } });
       };
       if (protectedRehearsal) {
@@ -516,6 +536,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     task=get(id);
     if(terminal.has(task.status))return publicDeliveryTask(task);
     if (!task.remoteSubmission.submitted) {
+      if (rehearsalWakeId) assertWakeAuthority(wake.binding);
       assertTaskScope(task); // Recheck after durable persistence, before new computation.
       await runner.submit(task.remoteSubmission.prepared,protectedRehearsal?{retry:false}:undefined);
       task = get(id); if (terminal.has(task.status)) return publicDeliveryTask(task);

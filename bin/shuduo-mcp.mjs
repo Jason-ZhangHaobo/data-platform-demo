@@ -125,10 +125,10 @@ const tools = [
   { name: "agent_publication_create", description: "人工逐项审阅当前不可变包及成功演练后创建两个云端测试批次。指定 approvalOnly 仅保存批准。凭原 requestId、reviewDigest 和 approvalId 发起发布，可显式选择 dispatchInBackground 委托签名事件。未知结果先查原请求。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceKind:publicationProperties.sourceKind,sourceRunId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema,requestId:publicationIdSchema,reviewDigest:publicationProperties.packageDigest,approvalOnly:{const:true},approvalId:{type:"string",format:"uuid"},dispatchInBackground:{const:true},attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"],dependentRequired:{dispatchInBackground:["approvalId","requestId","reviewDigest"]},allOf:[manualPublicationCondition(false)]} },
   { name: "agent_publication_request", description: "按原请求编号只读核对已保存的确切批准或发布回执。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,requestId:publicationIdSchema},required:["taskId","requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false} },
   { name: "agent_publication_stop", description:"停止指定来源、交付包及演练的后续云端批次，保留记录。不选择其他历史发布。MANUAL必须提供sourceRunId、packageDigest、verificationId、releaseId；提供任何selector时也须releaseId，执行者来自会话。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(true)]} },
-  { name: "agent_delivery_advance", description: "按当前版本推进原持久交付任务一个步骤；可提交真实Spark文件演练，不审批或发布。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 }, rehearsal:{type:"object",additionalProperties:false,properties:{
+  { name: "agent_delivery_advance", description: "按当前版本推进原持久交付任务。明确指定 dispatchInBackground 可委托原包的一次 Spark 文件演练，须先确认授权。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 },dispatchInBackground:{const:true}, rehearsal:{type:"object",additionalProperties:false,properties:{
     packageId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema},
     required:["packageId","packageDigest"]},confirm:{const:true} }, required: ["deliveryTaskId", "expectedVersion"],
-    dependentRequired:{rehearsal:["confirm"],confirm:["rehearsal"]} } },
+    dependentRequired:{rehearsal:["confirm"],confirm:["rehearsal"],dispatchInBackground:["rehearsal","confirm"]} } },
   { name: "fund_delivery_receipt_recheck", description: "核对本机基金交付的原签名演练回执。仅在证据吻合时恢复原交付状态，不运行模型或 Spark。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 } }, required: ["deliveryTaskId", "expectedVersion"] } },
   { name: "agent_delivery_list", description: "列出代码Agent的后台交付准备、不可变包与文件演练结果。", inputSchema: { type: "object", properties: { sourceAgentTaskId: { type: "string" } } } },
   {name:'agent_delivery_prepare',description:'准备已核验版本的交付文件；人工辅助版本须指定MANUAL、原运行和稳定requestId并明确confirm，沿用人工流程；不审批或发布。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},sourceKind:{enum:['AGENT','MANUAL']},sourceRunId:{type:'string',format:'uuid'},requestId:{type:'string',format:'uuid'},confirm:{const:true},
@@ -463,7 +463,8 @@ async function callTool(name, args = {}, client=defaultClient) {
   }
   if (name === "agent_delivery_advance") {
     if (args.rehearsal!==undefined && args.confirm!==true) throw Error("须确认原包和演练批次");
-    const body={expectedVersion:args.expectedVersion,...(args.rehearsal===undefined?{}:{rehearsal:args.rehearsal})};
+    const body={expectedVersion:args.expectedVersion,...(args.rehearsal===undefined?{}:{rehearsal:args.rehearsal}),
+      ...(args.dispatchInBackground===undefined?{}:{dispatchInBackground:args.dispatchInBackground})};
     readDeliveryAdvance(body);
     return client.request(`/agent/deliveries/${encodeURIComponent(args.deliveryTaskId)}/advance`,{method:"POST",body});
   }

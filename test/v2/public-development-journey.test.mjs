@@ -1135,8 +1135,48 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   const exactPackage={packageId:bundle.id,packageDigest:bundle.digest};
   const deliveryPath='/agent/deliveries/'+preparedFiles.body.id+'/advance';
   // The queue accepts the original rehearsal while its acknowledgement is lost.
-  f.lose();
-  assert.equal((await f.call(deliveryPath,{expectedVersion:preparedFiles.body.version,rehearsal:exactPackage})).status,500);
+  let rehearsalWakeId;
+  if (backgroundPublication) {
+    assert.equal((await f.call(taskPath+'/workflow')).body.backgroundRehearsalAvailable,true);
+    const wakeCount=f.wakes.length,activity=f.counts();
+    const delegation={expectedVersion:preparedFiles.body.version,rehearsal:exactPackage,dispatchInBackground:true};
+    assert.equal((await f.call(deliveryPath,{...delegation,rehearsal:{...exactPackage,verificationId:randomUUID()}})).status,422);
+    assert.equal((await f.call(deliveryPath,{...delegation,rehearsal:{...exactPackage,packageDigest:'0'.repeat(64)}})).status,403);
+    f.loseWake();
+    let queued;
+    assert.equal(await runV2Cli(['agent','advance-delivery','--id',preparedFiles.body.id,'--version',String(preparedFiles.body.version),
+      '--package-id',bundle.id,'--package-digest',bundle.digest,'--confirm','--dispatch-in-background'],{},{client,
+      output:line=>{queued=JSON.parse(line);},error:line=>assert.fail(line)}),0);
+    rehearsalWakeId=queued.rehearsalBackground.wakeId;
+    assert.equal(queued.rehearsalBackground.state,'DELIVERY_UNKNOWN');
+    assert.equal(f.wakes.length,wakeCount+1);
+    assert.deepEqual(f.counts(),activity);
+    const rejected=await f.call(deliveryPath,{expectedVersion:preparedFiles.body.version,rehearsal:exactPackage});
+    assert.equal(rejected.status,409);
+    const wakeEvent=f.wakes.at(-1);
+    const restore=f.replaceWake(wakeEvent,raw=>raw.replace('signature','signatureChanged'));
+    assert.equal((await f.privateCall(wakeEvent)).status,401);
+    restore();
+    await f.restart();
+    const replayed=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'agent_delivery_advance',
+      arguments:{deliveryTaskId:preparedFiles.body.id,...delegation,confirm:true}}},{client}));
+    assert.deepEqual(replayed.result.structuredContent.rehearsalBackground,{wakeId:rehearsalWakeId,state:'QUEUED'});
+    assert.equal(f.wakes.length,wakeCount+1);
+    f.lose();
+    assert.equal((await f.privateCall(wakeEvent)).status,500);
+    const originalBatch=f.store.get('agent_delivery_task',preparedFiles.body.id,PROJECT);
+    assert.equal(originalBatch.rehearsalWakeId,rehearsalWakeId);
+    const submitted=f.queueCounts();
+    await f.restart();
+    assert.equal((await f.privateCall(wakeEvent)).body.state,'BATCH_RESERVED');
+    assert.equal((await f.privateCall(wakeEvent)).body.state,'REPLAYED');
+    assert.equal(f.queueCounts().jobWriteAttempts,submitted.jobWriteAttempts);
+    assert.equal(f.store.get('agent_delivery_task',preparedFiles.body.id,PROJECT).verificationId,originalBatch.verificationId);
+    assert.equal(f.store.list('delivery_verification',PROJECT).length,1);
+  } else {
+    f.lose();
+    assert.equal((await f.call(deliveryPath,{expectedVersion:preparedFiles.body.version,rehearsal:exactPackage})).status,500);
+  }
   const stored=f.store.get('agent_delivery_task',preparedFiles.body.id,PROJECT);
   const {verificationId}=stored;
   assert.equal(stored.stage,'FILE_REHEARSAL_SUBMITTING');
@@ -1177,7 +1217,7 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(f.queueCounts(),{...beforeSettlement,resultReads:beforeSettlement.resultReads+1});
   assert.equal(f.store.list('delivery_verification',PROJECT).length,1);
   assert.equal(f.store.list('release_approval',PROJECT).length,0);
-  assert.equal(f.wakes.length,0);
+  assert.equal(f.wakes.length,backgroundPublication?1:0);
   const readback=await f.call(taskPath+'/delivery-requests/'+deliveryRequestId);
   assert.equal(readback.body.verificationId,verificationId);
   assert.equal(readback.body.status,'SUCCEEDED');
@@ -1496,6 +1536,13 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal(existsSync(completionFile),false);
   assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
   alter=undefined;
+  if(backgroundPublication){
+    alter=(path,value)=>{if(path===taskPath+'/delivery-requests/'+deliveryRequestId)delete value.rehearsalInitiationEvidence;};
+    await cli('v3-complete',completionFlags,1);
+    assert.equal(existsSync(completionFile),false);
+    assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+    alter=undefined;
+  }
   const completion=await cli('v3-complete',completionFlags);
   assert.equal(completion.scope,'LOCAL_MATCHED_ONLY');
   assert.equal(completion.independentlyVerifiedCloudCase,false);
@@ -1514,7 +1561,7 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(run.cases[0].consumptionAttribution,consumptionAttribution);
   assert.deepEqual(run.cases[0].phaseAttribution.phases,{
     requirements:'STRUCTURED_MODEL_RESULT',code:'OWNER_ADVANCE',sparkDebugging:'OWNER_ADVANCE',deliveryFiles:'ORIGIN_UNCONFIRMED',
-    fileRehearsal:'ORIGIN_UNCONFIRMED',publication:initiation.trigger,schedulingAndMonitoring:'FC_TIMER_AND_SIGNED_WORKER_RESULT',
+    fileRehearsal:backgroundPublication?'SIGNED_BACKGROUND_EVENT':'ORIGIN_UNCONFIRMED',publication:initiation.trigger,schedulingAndMonitoring:'FC_TIMER_AND_SIGNED_WORKER_RESULT',
     authorizedConsumption:'AUTHENTICATED_HTTP_CALLER_UNCONFIRMED',
   });
   assert.equal(run.cases[0].phaseAttribution.approval.status,'RECORDED');
@@ -1524,6 +1571,14 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal(run.score.recordedPhaseAttributionCases,1);
   assert.equal(run.score.ownerAdvanceObserved,1);
   assert.equal(run.score.engineerRescueObserved,0);
+  if (backgroundPublication) {
+    const proof=saved().outcomes[0].rehearsal.initiationEvidence;
+    assert.equal(proof.wakeId,rehearsalWakeId);
+    assert.equal(proof.verificationId,verificationId);
+    assert.equal(proof.workerResultDigest,f.store.get('delivery_verification',verificationId,PROJECT).workerResultDigest);
+    assert.deepEqual(run.cases[0].rehearsalInitiationEvidence,proof);
+    assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).rehearsalInitiationEvidence,proof);
+  }
   const wrongConsumptionPath=join(f.directory,'wrong-consumption-attribution.json'),wrongConsumption=saved();
   wrongConsumption.outcomes[0].consumption[batchIds[0]].attribution.dapi.callIdDigest='a'.repeat(64);
   writeFileSync(wrongConsumptionPath,JSON.stringify(wrongConsumption),{mode:0o600});

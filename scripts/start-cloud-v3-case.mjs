@@ -15,6 +15,7 @@ import { consumerDenialEvidence, validateConsumerSource } from "../src/v2/consum
 import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
 import { deliveryPreparationBody, deliveryPreparationHashMatches, deliveryPreparationRequirement } from "../src/v2/delivery-preparation-request.mjs";
 import { validBackgroundPreparationEvidence } from "../src/v2/delivery-preparation-evidence.mjs";
+import {validBackgroundRehearsalEvidence} from '../src/v2/rehearsal-wake.mjs';
 import { bindExternalConsumption } from "../src/v2/external-consumption-binding.mjs";
 import { liveAgentTaskUrl, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedCloudV3TaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
@@ -469,18 +470,22 @@ function verifiedDevelopmentCode(definition, view, execution) {
 
 const rehearsalStages = new Set(["FILE_REHEARSAL_SUBMITTING","FILE_REHEARSAL_RUNNING","FILE_REHEARSAL_FAILED","AWAITING_ENGINEER_REVIEW","CANCELLED"]);
 
-function bindRehearsal(item, receipt) {
+function bindRehearsal(item, code, receipt) {
   const rehearsal = receipt.rehearsal, old = item.rehearsal, action = item.actions.rehearsal;
-  if (!rehearsal) return !old && (!action || receipt.verificationId === undefined);
+  const initiationEvidence=old?.initiationEvidence!==undefined||!item.actions.publication?receipt.rehearsalInitiationEvidence:undefined;
+  if (!rehearsal) return !old && !initiationEvidence && (!action || receipt.verificationId === undefined);
   if (!id(rehearsal.id) || rehearsal.id !== receipt.verificationId || !rehearsalStages.has(receipt.stage) ||
       rehearsal.status !== receipt.status || !["RUNNING","SUCCEEDED","FAILED","CANCELLED"].includes(rehearsal.status) ||
       !Number.isFinite(rehearsal.reservedDurationMs) || rehearsal.reservedDurationMs <= 0 ||
       (rehearsal.status === "SUCCEEDED" && (receipt.stage !== "AWAITING_ENGINEER_REVIEW" || receipt.actualExecution !== true)) ||
       (old && (old.id !== rehearsal.id || old.reservedDurationMs !== rehearsal.reservedDurationMs ||
         (old.status !== "RUNNING" && old.status !== rehearsal.status))) ||
+      (initiationEvidence!==undefined && !validBackgroundRehearsalEvidence(initiationEvidence,code,receipt,rehearsal)) ||
+      (old?.initiationEvidence!==undefined && !isDeepStrictEqual(old.initiationEvidence,initiationEvidence)) ||
       (action?.id !== undefined && action.id !== rehearsal.id)) return false;
   item.rehearsal = {id:rehearsal.id, status:rehearsal.status, stage:receipt.stage,
     reservedDurationMs:rehearsal.reservedDurationMs,
+    ...(initiationEvidence?{initiationEvidence}:{}),
     ...(Number.isFinite(rehearsal.durationMs) && rehearsal.durationMs >= 0 ? {durationMs:rehearsal.durationMs} : {})};
   if (action) item.actions.rehearsal = {...action, id:rehearsal.id, status:"CONFIRMED"};
   return true;
@@ -502,7 +507,7 @@ function bindOriginalDelivery(item, code, receipt) {
       !isDeepStrictEqual(receipt.sourceRequirementBinding,deliveryPreparationRequirement(code)) ||
       (preparationEvidence!==undefined && !validBackgroundPreparationEvidence(preparationEvidence,code,receipt)) ||
       (originalPreparation!==undefined && !isDeepStrictEqual(originalPreparation,preparationEvidence)) ||
-      !bindRehearsal(item,receipt))
+      !bindRehearsal(item,code,receipt))
     return;
   item.actions.delivery = {...action, id:receipt.id, status:"CONFIRMED",
     packageId:receipt.packageId, packageDigest:receipt.packageDigest,

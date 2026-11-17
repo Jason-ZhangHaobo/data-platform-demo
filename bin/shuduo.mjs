@@ -115,7 +115,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent prepare-delivery --id TASK_ID --source-kind MANUAL --source-run-id RUN_ID --request-id UUID --confirm
   shuduo agent delivery --id DELIVERY_TASK_ID
   shuduo agent recheck-delivery-receipt --id DELIVERY_TASK_ID --version CURRENT_VERSION
-  shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION [--package-id UUID --package-digest SHA256 --verification-id UUID --confirm]
+  shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION [--package-id UUID --package-digest SHA256 --confirm] [--verification-id UUID | --dispatch-in-background]
   shuduo agent background --id TASK_ID
   shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm [--prepare-files]
   shuduo agent resume-background --id TASK_ID --version CURRENT_VERSION --confirm [--confirm-model-retry]
@@ -813,11 +813,11 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "agent" && action === "advance-delivery") {
       const flags=parsed.options, expectedVersion=Number(required(flags,"version"));
-      const selected=["package_id","package_digest","verification_id","confirm"].some(key=>flags[key]!==undefined);
+      const selected=["package_id","package_digest","verification_id","confirm","dispatch_in_background"].some(key=>flags[key]!==undefined);
       if (selected && (flags.confirm!==true || parsed.positionals.length!==2 ||
-          Object.keys(flags).some(key=>!["id","version","package_id","package_digest","verification_id","confirm","base_url"].includes(key)) ||
+          Object.keys(flags).some(key=>!["id","version","package_id","package_digest","verification_id","confirm","base_url","dispatch_in_background"].includes(key)) ||
           argv.filter(value=>value.startsWith("--")).length!==Object.keys(flags).length)) throw Error("演练须确认当前包及原批次");
-      const body={expectedVersion,...(selected?{rehearsal:{packageId:flags.package_id,packageDigest:flags.package_digest,
+      const body={expectedVersion,...(flags.dispatch_in_background!==undefined?{dispatchInBackground:flags.dispatch_in_background}:{}),...(selected?{rehearsal:{packageId:flags.package_id,packageDigest:flags.package_digest,
         ...(flags.verification_id===undefined?{}:{verificationId:flags.verification_id})}}:{})};
       readDeliveryAdvance(body);
       result=await client.request(`/agent/deliveries/${encodeURIComponent(required(flags,"id"))}/advance`,{method:"POST",body});

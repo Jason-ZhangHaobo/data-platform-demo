@@ -245,10 +245,24 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         const saved=value.delivery;
         if (!saved || saved.id !== started.id || saved.sourceRevisionId !== revisionId || saved.sourceRunId !== runId)
           throw Error("交付回执与已核验版本或批次不同，请核对原请求。");
-        void drive(saved,value);
+        if (!workflow?.backgroundRehearsalAvailable && !value.backgroundRehearsalAvailable) void drive(saved,value);
       } else void drive(started,value);
     }
     catch (e) { if(current()){setUnconfirmedPreparation(source);setError((e as Error).message+" 请先查询原交付，来源与原请求编号保留，不会自动重提。");} } finally { preparationFlight.current=false;if(current())setBusy(false); }
+  }
+  async function queueRehearsal() {
+    if(!canWrite||working||preparationUnknown||!verified||!delivery||!workflow?.backgroundRehearsalAvailable||delivery.rehearsalBackground?.state==='QUEUED')return;
+    const source=workflowSourceKey, active=()=>alive.current&&activeWorkflowSource.current===source;
+    setBusy(true);setError('');
+    try {
+      await api(`/agent/deliveries/${delivery.id}/advance`,{...exactDeliveryAdvance(workflow,delivery),dispatchInBackground:true});
+      if(active())await load();
+    } catch(cause){if(active()){
+      const recovered=await load().catch(()=>undefined);
+      if(active()&&!recovered?.delivery?.verificationId&&recovered?.delivery?.rehearsalBackground?.state!=='QUEUED')
+        setError(`${(cause as Error).message} 请刷新核对原委托。`);
+    }}
+    finally{if(active())setBusy(false);}
   }
   async function stop() {
     if (!delivery || !canWrite || publicationTarget) return; epoch.current++; setAuto(false); setBusy(true);
@@ -426,7 +440,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
       <div id="agent-files" className="agent-delivery-card"><div className="agent-workflow-title"><Package size={16} /><h3>调度与部署交付</h3></div><p>把当前通过核验的代码、测试、调度依赖、交易日历和部署清单固定到同一版本，再用 Spark 按文件执行一次演练。</p>
         {preparationUnknown&&<p role="status">交付准备结果待确认。<button className="button" disabled={working||evidenceRead==='LOADING'} onClick={()=>void load().catch(()=>{})}>查询原交付</button>查询只恢复原版本记录；确认前不能重新准备。</p>}
         {pinPreparation && verified && !workflow.preparationSource && !delivery && <p role="status">当前版本的交付来源待核对。请刷新原任务和运行，再准备交付。</p>}
-        {!delivery && <button className="button primary" disabled={!canWrite || !canPrepare || working || preparationUnknown} onClick={() => void prepare()}><Play size={14} />生成交付并演练</button>}
+        {!delivery && <button className="button primary" disabled={!canWrite || !canPrepare || working || preparationUnknown} onClick={() => void prepare()}><Play size={14} />{workflow.backgroundRehearsalAvailable?'生成交付文件':'生成交付并演练'}</button>}
         {delivery && <><strong className="agent-delivery-stage">{auto && <LoaderCircle size={14} className="spin" />}{workerResult==="PENDING"?"原演练结果待核对":workerResult==="CONFIRMED"?"演练失败已确认":fileReview&&!release?(current&&verified&&fileVerified&&evidenceRead==="READY"?"本机文件已审阅，不代表发布批准":"保留的文件审阅，当前待核验"):deliveryStageText(delivery.stage, journey.publicationCurrent, release?.status, journey.current)}</strong>{delivery.error && <p role="alert">{delivery.error}</p>}
           {workerResult && <p role="status">{workerResult==="CONFIRMED"
             ? "已核对原 Worker 回执。" : "原 Worker 回执待核对，原演练编号和预留保留。"}</p>}
@@ -439,6 +453,13 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
               <p role="status">已保留原演练批次。可以关闭页面，后台收到结果后会核验。</p>
               <button className="button" disabled={busy} onClick={() => void load().catch(()=>{})}>刷新演练状态</button>
               {canWrite && <button className="button" disabled={!verified || working || preparationUnknown} onClick={() => void drive(delivery,workflow,true)}>核对原演练结果</button>}
+            </> : workflow.backgroundRehearsalAvailable||delivery.rehearsalBackground ? <>
+              {delivery.rehearsalBackground&&<p role="status">{delivery.rehearsalBackground.state==='QUEUED'?'后台演练已委托，等待原批次。':
+                delivery.rehearsalBackground.state==='BATCH_RESERVED'?'原演练批次已登记，等待核对结果。':'后台演练委托送达待核对。'}</p>}
+              {delivery.rehearsalBackground&&<button className="button" disabled={working} onClick={()=>void load().catch(()=>{})}>刷新原演练委托</button>}
+              {workflow.backgroundRehearsalAvailable&&delivery.rehearsalBackground?.state!=='QUEUED'&&<button className="button primary"
+                disabled={!canWrite||!verified||working||preparationUnknown} onClick={()=>void queueRehearsal()}>
+                {delivery.rehearsalBackground?'重投原演练委托':'委托一次后台 Spark 演练'}</button>}
             </> : <button className="button primary" disabled={!canWrite || !verified || working || preparationUnknown || workerResult==="PENDING"} onClick={() => void drive(delivery)}>继续交付准备</button>}<button className="button" disabled={!canWrite || busy} onClick={() => void stop()}><Square size={13} />停止</button></>}
             {!fund && ["FAILED","CANCELLED"].includes(delivery.status) && <button className="button" disabled={!canWrite || !canPrepare || working || preparationUnknown || workerResult==="PENDING"} onClick={() => { if(preparationUnknown)return;requestKey.current=crypto.randomUUID(); void prepare(); }}>重新准备并演练</button>}
             {workflow.package && <button className="button" onClick={() => download("shuduo-delivery-package.json", workflow.package)}><Download size={14} />下载版本化交付包</button>}

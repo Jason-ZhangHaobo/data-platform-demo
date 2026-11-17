@@ -6,6 +6,7 @@ import {validPublicationInitiation} from './publication-initiation-evidence.mjs'
 import {validStoredPublicationSchedule} from './cloud-release-evidence.mjs';
 import {validBatchConsumptionAttribution} from './service-consumption-attribution.mjs';
 import {liveEvidenceAttribution} from './live-lifecycle-provenance.mjs';
+import {validBackgroundRehearsalEvidence} from './rehearsal-wake.mjs';
 
 const id=value=>typeof value==='string'&&uuid.test(value);
 const digest=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
@@ -54,7 +55,7 @@ export function cloudV3PhaseAttribution(item, {approvalTimingVerified=false}={})
     code: recorded?executionOrigin(attempts.map(attempt=>attempt.modelTrigger)):code?unrecorded:pending,
     sparkDebugging: recorded?executionOrigin(attempts.flatMap(attempt=>attempt.spark?.submissionTriggers??[])):code?unrecorded:pending,
     deliveryFiles: prepared?signed:delivery?.status==='CONFIRMED'?unrecorded:pending,
-    fileRehearsal: verifiedRehearsal?unrecorded:pending,
+    fileRehearsal: nativeCode&&validBackgroundRehearsalEvidence(rehearsal?.initiationEvidence,code,delivery,rehearsal)?signed:verifiedRehearsal?unrecorded:pending,
     publication: published?publication.initiationEvidence.trigger:publication?.status==='CONFIRMED'?unrecorded:pending,
     schedulingAndMonitoring: scheduled?'FC_TIMER_AND_SIGNED_WORKER_RESULT':publication?.monitoring?unrecorded:pending,
     authorizedConsumption: exactPublication?consumptionOrigin(item,publication):pending,
