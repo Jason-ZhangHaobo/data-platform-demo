@@ -14,13 +14,18 @@ try {
   const { values } = parseArgs({ options: {
     ...Object.fromEntries(required.map(key => [key, { type: "string" }])),
     lineage: { type: "string", multiple: true, default: [] },
+    "consumption-only": { type: "boolean", default: false },
     "verify-quality": { type: "boolean", default: false },
     "quality-receipt": { type: "string", multiple: true, default: [] },
     project: { type: "string", default: "project-securities-lab" },
     actor: { type: "string", default: "local-engineer" },
     "test-clock-unit-ms": { type: "string", default: "1000" },
   } });
-  if ([...required,"project","actor"].some(key => !values[key]?.trim()) || values.lineage.length !== 2 ||
+  const consumptionOnly=values["consumption-only"];
+  const selectedRequired=consumptionOnly?required.filter(key=>key!=="report-snapshots"):required;
+  if ([...selectedRequired,"project","actor"].some(key => !values[key]?.trim()) ||
+      (consumptionOnly ? values["report-snapshots"]!==undefined || values.lineage.length>0 || values["verify-quality"]
+        : values.lineage.length!==2) ||
       values["quality-receipt"].length > 2 || (!values["verify-quality"] && values["quality-receipt"].length > 0) ||
       !/^[1-9]\d*$/.test(values["test-clock-unit-ms"])) throw invalid();
   const open = (Store, key) => {
@@ -36,7 +41,8 @@ try {
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readFileSync(path));
   };
   const result = await verifySavedSyncSqlLifecycle({ store: open(MetadataStore,"metadata"),
-    businessStore: open(BusinessQueryStore,"business-snapshots"), reportStore: open(ReportDataStore,"report-snapshots"),
+    businessStore: open(BusinessQueryStore,"business-snapshots"),
+    ...(consumptionOnly ? {consumptionOnly} : {reportStore:open(ReportDataStore,"report-snapshots")}),
     project: values.project, actor: values.actor, releaseId: values["release-id"], packageDigest: values["package-digest"],
     requestId: values["agent-request-id"], timeUnitMs: Number(values["test-clock-unit-ms"]), csv: text(values["source-csv"]),
     originalPackage: JSON.parse(text(values["package-file"])), lineages: values.lineage.map(path => JSON.parse(text(path))),

@@ -12,7 +12,7 @@ import { checkedPublishedReportArtifacts } from "./report-provenance.mjs";
 import { publishedSqlColumnLineage } from "./sql-column-lineage.mjs";
 import { syncReportAsset, syncReportLineage, syncReportFields } from "./sync-sql-report.mjs";
 import { syncSqlLandingContext } from "./sync-sql-input.mjs";
-import { certifiedSyncSqlSource, readSyncSqlCallEvidence, syncSqlPageShape } from "./sync-sql-service-source.mjs";
+import { certifiedSyncSqlSource, readSyncSqlCallEvidence, readSyncSqlPaginationCoverage, syncSqlPageShape } from "./sync-sql-service-source.mjs";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const digest = /^[a-f0-9]{64}$/;
@@ -77,6 +77,46 @@ function verifyPages({ calls, read, expectedRows, batch }) {
   });
 }
 
+async function savedConsumptionHandoff({store,project,manager,read,batches,certify,releaseId,packageDigest,requestId,input}) {
+  const records = [];
+  for (const batch of batches) {
+    const source = certify(batch);
+    requireEvidence(source, "BATCH_RESULT_CHANGED");
+    const proofs = (await readSyncSqlCallEvidence({store,project,manager,evidence:source.sourceEvidence}))
+      .filter(call => call.applicationStatus === "REVOKED" && call.coverage === undefined);
+    const byCall = new Map(proofs.map(proof => [proof.callId,proof]));
+    const logs = proofs.map(proof=>read("service_call",proof.callId))
+      .filter(log=>chronological(batch.finishedAt,log.startedAt,log.finishedAt,read("service_app",log.applicationId).revokedAt));
+    const versions = [];
+    for (const versionId of [...new Set(logs.map(log=>log.serviceVersionId))].sort()) {
+      const version = read("data_service_version",versionId);
+      requireEvidence(["DAPI","XAPI"].includes(version.serviceType) && ["PUBLISHED","RETIRED"].includes(version.status), "CALL_SOURCE_CHANGED");
+      const children = version.serviceType === "XAPI" ? version.steps.map(step=>read("data_service_version",step.dapiVersionId)) : [version];
+      requireEvidence(children.length > 0 && children.every(child=>child.sourceReleaseRunId===batch.id),"CALL_SOURCE_CHANGED");
+      const fullAssetComposition = version.serviceType === "XAPI" &&
+        syncReportFields.every(field=>children.some(child=>child.fields.includes(field)));
+      const pagination = await readSyncSqlPaginationCoverage({
+        entry:{status:"VERIFIED",sourceRunIds:[batch.id],serviceId:version.serviceId,versionId,configHash:version.configHash},
+        expectedRows:source.expected.length,calls:logs,application:id=>read("service_app",id),
+        recheckCall:(_serviceId,callId)=>byCall.get(callId),
+      });
+      if (pagination) versions.push({serviceId:version.serviceId,versionId,type:version.serviceType,
+        versionStatus:version.status,fullAssetComposition, ...pagination});
+    }
+    const pass = type => versions.some(version=>version.type===type && version.status==="COMPLETE" &&
+      (type==="DAPI" || version.fullAssetComposition));
+    const monitorEvent = store.list("monitor_event",project).find(event=>event.releaseRunId===batch.id && event.type==="BATCH_SUCCEEDED");
+    records.push({batchId:batch.id,sequence:batch.sequence,monitorEventId:monitorEvent.id,
+      status:pass("DAPI")&&pass("XAPI")?"VERIFIED":"PENDING",versions});
+  }
+  const result = {protocol:"shuduo-saved-sync-consumption/v1",scope:"LOCAL_SAVED_EVIDENCE",
+    status:records.every(record=>record.status==="VERIFIED")?"VERIFIED":"PENDING",
+    releaseId,packageDigest,requestId,snapshotHash:input.snapshotHash,batches:records,
+    provenance:{developmentMode:input.developmentMode,newSparkRuns:0,newModelCalls:0,cloudRequests:0,
+      publicDeployed:false,countsTowardLiveEvaluation:false,agentIndependentE2E:false}};
+  return {...result,evidenceDigest:publishedReportHash(result)};
+}
+
 export function verifySavedFrozenAssetQuality({ store, project, batch, proof, download }) {
   const source = proof.sourceEvidence;
   const asset = syncReportAsset(batch, proof, publishedReportHash);
@@ -108,10 +148,10 @@ export function verifySavedFrozenAssetQuality({ store, project, batch, proof, do
 }
 
 export async function verifySavedSyncSqlLifecycle({ store, businessStore, reportStore, project, actor,
-  releaseId, packageDigest, requestId, csv, originalPackage, lineages, qualityReceipts, timeUnitMs = 1000 }) {
+  releaseId, packageDigest, requestId, csv, originalPackage, lineages, qualityReceipts, consumptionOnly = false, timeUnitMs = 1000 }) {
   requireEvidence(uuid.test(releaseId ?? "") && digest.test(packageDigest ?? "") &&
     typeof requestId === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(requestId) &&
-    typeof csv === "string" && Array.isArray(lineages) && lineages.length === 2 &&
+    typeof csv === "string" && (consumptionOnly || Array.isArray(lineages) && lineages.length === 2) &&
     Number.isSafeInteger(timeUnitMs) && timeUnitMs >= 1, "SELECTION_INVALID");
   const read = (kind, id) => {
     const value = typeof id === "string" && store.get(kind, id, project);
@@ -143,7 +183,9 @@ export async function verifySavedSyncSqlLifecycle({ store, businessStore, report
     releaseRunFor: id => read("release_run", id) });
   const batches = store.list("release_run", project).filter(batch => batch.releaseId === releaseId)
     .sort((a, b) => a.sequence - b.sequence);
-  requireEvidence(batches.length === 2 && new Set(lineages.map(item => item?.source?.batchId)).size === 2, "BATCH_SELECTION_CHANGED");
+  requireEvidence(batches.length === 2, "BATCH_SELECTION_CHANGED");
+  if (consumptionOnly) return savedConsumptionHandoff({store,project,manager,read,batches,certify,releaseId,packageDigest,requestId,input});
+  requireEvidence(new Set(lineages.map(item => item?.source?.batchId)).size === 2, "BATCH_SELECTION_CHANGED");
   const qualityEnabled = qualityReceipts !== undefined;
   if (qualityEnabled) requireEvidence(Array.isArray(qualityReceipts) && qualityReceipts.length <= batches.length &&
     new Set(qualityReceipts.map(receipt => receipt?.batchId)).size === qualityReceipts.length &&
