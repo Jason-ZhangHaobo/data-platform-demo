@@ -49,7 +49,7 @@ type SyncSelection = {targetTable:"raw_positions";runId:string;targetHash:string
 type SyncInput = SyncSelection & {metadataVersionId:string;sourceRevisionId:string;rowCount:number;snapshotId:string;snapshotHash:string};
 type SyncOffer = {selection:SyncSelection;metadataVersionId:string;rowCount:number;contextId:"holdings-t1"};
 type DevelopmentDriver = { attempt: number; modelTrigger: string; spark?: { runId: string; submissionTriggers: string[] } };
-type Task = { requestBound?:true; syncInput?: SyncInput; id: string; version: number; status: string; stage?: string; requirements?:unknown;clarification?:import('../../src/v2/sql-clarification-client.mjs').SqlClarification;humanClarified?:boolean;directAutonomousEligible?:boolean;clarificationOriginTaskId?:string;executionMode?: string; mode?:string;language?:string;fundPreparation?:FundExecutionBinding;sourceKind?:string;sourceAttribution?:unknown;manualContinuation?:import('../../src/v2/manual-continuation-binding.mjs').ManualContinuationBinding;assistedContinuation?:import('../../src/v2/assisted-continuation-binding.mjs').AssistedContinuationBinding;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; developmentDrivers?: DevelopmentDriver[]; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
+type Task = { requestBound?:true; syncInput?: SyncInput; id: string; version: number; status: string; stage?: string; requirements?:unknown;clarification?:import('../../src/v2/sql-clarification-client.mjs').SqlClarification;humanClarified?:boolean;directAutonomousEligible?:boolean;clarificationOriginTaskId?:string;executionMode?: string; mode?:string;language?:string;fundPreparation?:FundExecutionBinding;sourceKind?:string;sourceAttribution?:unknown;manualContinuation?:import('../../src/v2/manual-continuation-binding.mjs').ManualContinuationBinding;assistedContinuation?:import('../../src/v2/assisted-continuation-binding.mjs').AssistedContinuationBinding;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean;prepareFiles?:boolean;preparedDelivery?:{deliveryId:string;preparationTrigger?:string}}; developmentDrivers?: DevelopmentDriver[]; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
 type Run = { syncInput?: SyncInput; id: string; status: string; agentTaskId?:string; contextId?:string; createdAt?: string; validationContractId?: string; validationDetails?:ValidationDetailsReport; syncOutputSchema?:unknown; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; mainSqlExecuted?:boolean;columnLineage?:unknown;testDouble?:boolean;sourceKind?:string;sourceAttribution?:unknown; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; contractId?:string; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type SavedRevision = {syncInput?:SyncInput;id:string;sql:string;hash?:string;contextId:string;source?:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
@@ -115,6 +115,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const revisionRequest = useRef<{key:string;sql:string;contextId:string;originAgentTaskId?:string} | undefined>(undefined);
   const confirmedManualRevision = useRef<SavedRevision | undefined>(undefined);
   const [backgroundConsent,setBackgroundConsent]=useState(true);
+  const [prepareFilesTask,setPrepareFilesTask]=useState<string>();
   const pendingBackground = useRef(new Set<string>());
   const [historyState,setHistoryState]=useState<"loading"|"loaded"|"deferred"|"error">("loading"),[historyError,setHistoryError]=useState("");
   const historyFlight=useRef<Promise<void>|undefined>(undefined),startupStarted=useRef(false);
@@ -182,6 +183,9 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const resumeInput = task ? {task,canWrite,working,dirty,
     pendingResult:manualUnconfirmed||Boolean(pendingSaveKey)||Boolean(pendingAgentKey)||backgroundUnconfirmed,retryConsent} : undefined;
   const resumeReason = resumeInput ? agentResumeDecision(resumeInput).reason : undefined;
+  const filesPending = task?.status==="SUCCEEDED" && task.background?.prepareFiles===true && !task.background.preparedDelivery;
+  const backgroundResumeInput = resumeInput && {...resumeInput,filesOnly:filesPending};
+  const backgroundResumeReason = backgroundResumeInput ? agentResumeDecision(backgroundResumeInput).reason : undefined;
   const backgroundAction = task && backgroundAvailable && canWrite && agentBackgroundAction(task);
   const backgroundDisabled = Boolean(resumeReason || !ready || runPending);
   const backgroundLabel = task?.background && agentBackgroundLabel(task.background);
@@ -381,7 +385,9 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     pendingBackground.current.add(id);
     setBusy(true);setError("");setNotice("正在提交并核对原任务的后台委托…");
     let failure: string | undefined;
-    try { await api(`/agent/tasks/${id}/background`, {expectedVersion:version}); }
+    const prepareFiles=backgroundAction==="ENABLE"&&prepareFilesTask===id;
+    setPrepareFilesTask(undefined);
+    try { await api(`/agent/tasks/${id}/background`, {expectedVersion:version,...(prepareFiles?{prepareFiles:true}:{})}); }
     catch (cause) { if (cause instanceof Error) failure = cause.message; }
     if (alive.current && epoch.current === token && selectedId.current === id) await selectTask(id,false,failure);
   }
@@ -774,10 +780,15 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
             <div className="agent-dev-task-actions"><button className="button" disabled={busy} onClick={() => void selectTask(task.id, false)}><RefreshCw size={14} />{backgroundUnconfirmed ? "核对原后台委托" : "刷新 / 恢复"}</button>
               {backgroundAction&&<button className="button primary" disabled={backgroundDisabled} onClick={()=>void delegateSavedTask()}>{backgroundAction==="REDRIVE"?"重新投递原唤醒":"委托后台继续"}</button>}
               {task.background?.status==="ACTIVE"&&<button className="button" disabled={!canWrite||busy||backgroundUnconfirmed} onClick={async()=>{epoch.current++;setAutomatic(false);setBusy(true);try{await api(`/agent/tasks/${task.id}/background/cancel`,{});setNotice("已停止后续后台推进；已提交步骤不会重复运行，待当前步骤确认后可人工接管。");await selectTask(task.id,false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}><Square size={13}/>停止后台自动推进</button>}
-              {task.background&&(["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(task.background.status)||task.background.scopeBlocked||Date.now()>=task.background.expiresAt)&&!agentTaskFinished(task.status)&&<button className="button primary" title={resumeReason} disabled={Boolean(resumeReason)} onClick={()=>resumeInput&&submitAgentResume(resumeInput,{explain:setNotice,submit:async confirmModelRetry=>{setBusy(true);try{await api(`/agent/tasks/${task.id}/background/resume`,{expectedVersion:task.version,confirmModelRetry});setRetryConsent(false);setNotice("已审阅并在当前窗口内恢复原任务云后台，最多15分钟；原次数与预算不清零，不自动发布。");await selectTask(task.id,false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}})}>{modelNotSent?"修复后恢复后台":"审阅并恢复云后台"}</button>}
+              {task.background&&(["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(task.background.status)||task.background.scopeBlocked||Date.now()>=task.background.expiresAt)&&(!agentTaskFinished(task.status)||filesPending)&&<button className="button primary" title={backgroundResumeReason} disabled={Boolean(backgroundResumeReason)} onClick={()=>backgroundResumeInput&&submitAgentResume(backgroundResumeInput,{explain:setNotice,submit:async confirmModelRetry=>{setBusy(true);try{await api(`/agent/tasks/${task.id}/background/resume`,{expectedVersion:task.version,confirmModelRetry});setRetryConsent(false);setNotice(filesPending?"已续接原交付包准备，完成后可回查文件。":"已审阅并在当前窗口内恢复原任务云后台，最多15分钟；原次数与预算不清零，不自动发布。");await selectTask(task.id,false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}})}>{filesPending?"恢复原交付包准备":modelNotSent?"修复后恢复后台":"审阅并恢复云后台"}</button>}
               {!agentTaskFinished(task.status) && <button className={backgroundAction ? "button" : "button primary"} title={resumeReason} disabled={Boolean(resumeReason)} onClick={()=>resumeInput&&submitAgentResume(resumeInput,{explain:setNotice,submit:confirmModelRetry=>drive(task,confirmModelRetry,true)})}><Play size={14} />{modelNotSent ? "修复后重试原任务" : unknown ? "确认重试" : task.background?.status==="ACTIVE"?"查看后台进度":"继续任务"}</button>}
               {!agentTaskFinished(task.status) && <button className="button" disabled={!canWrite || busy || backgroundUnconfirmed} onClick={() => void stop()}><Square size={13} />停止</button>}
             </div>
+            {backgroundAction==="ENABLE"&&!backgroundDisabled&&<label className="agent-dev-consent">
+              <input type="checkbox" checked={prepareFilesTask===task.id} onChange={e=>setPrepareFilesTask(e.target.checked?task.id:undefined)}/>
+              核验成功后准备同版交付文件，演练与发布单独确认
+            </label>}
+            {task.background?.preparedDelivery&&<p role="status">交付包可查看 · {task.background.preparedDelivery.preparationTrigger==="SIGNED_BACKGROUND_EVENT"?"签名后台事件":"已存在的原交付"} · {task.background.preparedDelivery.deliveryId.slice(0,8)}</p>}
             {backgroundUnconfirmed ? <p className="agent-dev-notice" role="status">{busy?"正在核对原任务的后台委托…":"后台委托结果待确认。请先核对原任务状态。"}</p> :
               !agentTaskFinished(task.status)&&resumeReason ? <p className="agent-dev-notice" role="status">{resumeReason}</p> :
               backgroundAction==="ENABLE"&&<p><small>沿当前已保存版本推进，最多 15 分钟、20 个事件。发布仍须审阅。</small></p>}

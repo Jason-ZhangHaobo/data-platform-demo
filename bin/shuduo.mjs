@@ -116,7 +116,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent recheck-delivery-receipt --id DELIVERY_TASK_ID --version CURRENT_VERSION
   shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION [--package-id UUID --package-digest SHA256 --verification-id UUID --confirm]
   shuduo agent background --id TASK_ID
-  shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm
+  shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm [--prepare-files]
   shuduo agent resume-background --id TASK_ID --version CURRENT_VERSION --confirm [--confirm-model-retry]
   shuduo agent stop-background --id TASK_ID --confirm
   shuduo agent publication --id AGENT_TASK_ID [--source-kind AGENT|MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
@@ -813,7 +813,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if(resource==="agent"&&action==="background")result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background`);
     else if(resource==="agent"&&action==="enable-background"){
       if(parsed.options.confirm!==true)throw new Error("云后台可能调用模型和Spark，须先确认范围并提供--confirm");
-      result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background`,{method:"POST",body:{expectedVersion:Number(required(parsed.options,"version"))}});
+      if(parsed.options.prepare_files!==undefined && parsed.options.prepare_files!==true)throw new Error("准备交付文件须使用 --prepare-files 开关");
+      result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background`,{method:"POST",body:{
+        expectedVersion:Number(required(parsed.options,"version")),...(parsed.options.prepare_files?{prepareFiles:true}:{})}});
     }
     else if(resource==="agent"&&action==="resume-background"){
       if(parsed.options.confirm!==true)throw new Error("恢复原任务须审阅剩余次数与预算并提供--confirm；未知模型结果另须--confirm-model-retry");

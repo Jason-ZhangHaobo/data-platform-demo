@@ -626,9 +626,20 @@ export function createV2Server(options = {}) {
     return createAgentWakeOssTransport({...oss,credentialsProvider:async()=>ossConfigFromEnvironment(env).credentials,
       wakePrefix:agentEventConfig.wakePrefix,resultPrefix:agentEventConfig.resultPrefix});
   })() : undefined;
+  const prepareBackgroundPackage=durableDelivery && !options.ingress?.status.publicReadOnly ? async (task,key)=>{
+    const source=pinnedCloudDeliverySource(task,store.get("revision",task.revisionId,PROJECT),store.get("run",task.runId,PROJECT),
+      (kind,id)=>store.get(kind,id,PROJECT));
+    if(!source)throw Object.assign(fail(409,"暂缺原代码或 Spark 核验证据，未准备交付包"),{code:"AGENT_BACKGROUND_PREPARATION_UNCONFIRMED"});
+    const prepared=await durableDelivery.create(task,key,source,{preparationTrigger:"SIGNED_BACKGROUND_EVENT"});
+    if(!prepared.packageId || !prepared.packageDigest || prepared.stage==="PACKAGE_PERSISTING" ||
+       !["QUEUED","RUNNING","SUCCEEDED"].includes(prepared.status))
+      throw Object.assign(fail(409,"未确认原交付包已保存"),{code:"AGENT_BACKGROUND_PREPARATION_UNCONFIRMED"});
+    return {deliveryId:prepared.id,packageId:prepared.packageId,packageDigest:prepared.packageDigest,
+      ...(prepared.preparationTrigger?{preparationTrigger:prepared.preparationTrigger}:{})};
+  } : undefined;
   const agentEventDriver = agentEventConfig ? createAgentEventDriver({store,project:PROJECT,dispatcher:agentDispatcher,engine:durableAgent,
     transport:agentWakeTransport,config:agentEventConfig,queueConfig:queueConfigFromEnvironment(env),persist:persistDevelopment,now:options.now ?? Date.now,
-    settleRehearsal:durableDelivery?.settleRehearsal,
+    settleRehearsal:durableDelivery?.settleRehearsal,preparePackage:prepareBackgroundPackage,
     assertExecutionScope:(task,boundary)=>assertDevelopmentBackgroundScope(developmentAccess,task,store.get('auth_user',task?.submittedBy??'',PROJECT),PROJECT,boundary,developmentNow())}) : undefined;
   const exposeDurableTask = task => {
     const background=agentEventDriver&&task.executionMode===durableSqlAgentMode?agentEventDriver.status(task.id):undefined;
@@ -4077,7 +4088,7 @@ export function createV2Server(options = {}) {
             if(Object.keys(body).length)throw fail(422,"停止后台请求不接受额外字段");
             return json(res,200,await agentEventDriver.cancel(task.id,actor,{developmentBoundary:developmentBackgroundBoundary(developmentAccess,task.id,developmentNow())}));
           }
-          if(Object.keys(body).some(k=>!["expectedVersion","maxEvents","durationMs"].includes(k)))throw fail(422,"后台请求字段不受支持");
+          if(Object.keys(body).some(k=>!["expectedVersion","maxEvents","durationMs","prepareFiles"].includes(k)))throw fail(422,"后台请求字段不受支持");
           const window = ingressChannel === 'HTTP' ? developmentBackgroundWindow(developmentAccess, options.now?.() ?? Date.now(), body) : {};
           return json(res,202,await agentEventDriver.enable(task.id,actor,{...body,...window,
             developmentBoundary:developmentBackgroundBoundary(developmentAccess,task.id,developmentNow())}));

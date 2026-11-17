@@ -335,7 +335,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const task = get(dedup.id);
     return publicDeliveryTask(terminal.has(task.status) ? task : await persistDeliveryArtifact(task));
   }
-  async function create(agent, key, expected) {
+  async function create(agent, key, expected, {preparationTrigger}={}) {
     if(standaloneManual)throw fail(422,'独立手工交付不能接受Agent任务作为来源');
     assertExecutionScope(agent);
     const { run, revision } = source(agent);
@@ -374,6 +374,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       if (equivalent) return equivalent;
       const task = store.create(resource, project, { mode, sourceAgentTaskId: agent.id, sourceRunId: run.id, sourceRevisionId: revision.id, sourceSqlHash: revision.hash, submittedBy: agent.submittedBy, status: "QUEUED",
         stage:artifact?"PACKAGE_READY":"PACKAGE_PERSISTING", packageDigest: bundle.digest,...(requirement?{sourceRequirementBinding:requirement}:{}),
+        ...(preparationTrigger==="SIGNED_BACKGROUND_EVENT"?{preparationTrigger}:{}),
         ...(expected?{sourcePinned:true,preparationRequestId:key}:{}), completionScope: "DELIVERY_PREPARATION", fullLifecycleE2E: false, publicDeployed: false });
       const item = store.create("delivery_package", project, { ...bundle, ...(artifact?{artifact}:{}), sourceRunId: run.id, agentDeliveryTaskId:task.id, stage: "M2A", published: false });
       return change(task, { packageId: item.id });

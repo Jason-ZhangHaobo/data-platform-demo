@@ -2181,6 +2181,93 @@ test('a killed publication CLI recovers both original batches through signed sch
   }
 });
 
+test('signed background opt-in prepares one original package and recovers a lost artifact acknowledgement',async t=>{
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
+  const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
+  const key=randomUUID(),body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
+  f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)));
+  await f.restart();
+  const created=await f.call('/agent/tasks',body,key);
+  assert.equal(created.status,202,created.body.message);
+  const route='/agent/tasks/'+created.body.id, background=route+'/background';
+  assert.equal((await f.call(background,{expectedVersion:created.body.version,prepareFiles:'true'})).status,422);
+  assert.equal(f.wakes.length,0);
+  let approval;
+  const client={request:async(path,options)=>{
+    const response=await f.call(path,options?.body);
+    assert.ok(response.status<300,response.body.message);
+    return response.body;
+  }};
+  assert.equal(await runV2Cli(['agent','enable-background','--id',created.body.id,'--version',String(created.body.version),
+    '--confirm','--prepare-files'],{},{client,output:line=>{approval=JSON.parse(line);},error:line=>assert.fail(line)}),0);
+  assert.equal(approval.prepareFiles,true);
+  assert.equal(approval.preparedDelivery,undefined);
+  const replayedOptIn=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{
+    name:'agent_background_enable',arguments:{taskId:created.body.id,expectedVersion:created.body.version,confirm:true,prepareFiles:true},
+  }},{client}));
+  assert.equal(replayedOptIn.result.structuredContent.prepareFiles,true);
+  assert.equal(f.wakes.length,1);
+  const fire=event=>f.privateCall(event);
+  assert.equal((await fire(f.wakes[0])).status,200);
+  assert.equal((await fire(f.wakes[1])).status,200);
+  const waiting=f.store.get('agent',created.body.id,PROJECT);
+  const originalRun=f.store.get('run',waiting.runId,PROJECT);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
+  f.complete(originalRun.remoteSubmission.prepared);
+  assert.equal((await fire(f.resultEvent(originalRun.remoteSubmission.prepared.resultKey))).status,200);
+  const finishWake=f.wakes[2];
+  f.loseArtifact();
+  assert.equal((await fire(finishWake)).status,500);
+  const [pending]=f.store.list('agent_delivery_task',PROJECT);
+  assert.equal(pending.stage,'PACKAGE_PERSISTING');
+  assert.equal(pending.sourceRunId,originalRun.id);
+  assert.equal(pending.preparationTrigger,'SIGNED_BACKGROUND_EVENT');
+  assert.equal(f.packageWrites(),1);
+  const counts=f.counts();
+  assert.deepEqual(counts,{modelCalls:1,jobCreates:1});
+
+  f.later(15*60000+1);
+  await f.restart();
+  assert.equal((await fire(finishWake)).body.status,'EXPIRED');
+  assert.equal(f.packageWrites(),1);
+  const version=f.store.get('agent',created.body.id,PROJECT).version;
+  assert.equal((await f.call(background+'/resume',{expectedVersion:version})).status,403);
+  // Only a separately scoped continuation window may resume a past grant.
+  delete f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST;
+  f.env.V2_PUBLIC_DEVELOPMENT_TASK_ID=created.body.id;
+  await f.restart();
+  assert.equal((await f.call(background+'/resume',{expectedVersion:version,confirmModelRetry:true})).status,422);
+  const resumed=await f.call(background+'/resume',{expectedVersion:version});
+  assert.equal(resumed.status,202,resumed.body.message);
+  assert.equal(resumed.body.prepareFiles,true);
+  assert.equal(resumed.body.consumedEvents,3);
+  const retryWake=f.wakes[3];
+  assert.notDeepEqual(retryWake,finishWake);
+  assert.equal((await fire(finishWake)).body.state,'IGNORED_SUPERSEDED');
+  const restored=await fire(retryWake);
+  assert.equal(restored.status,200,restored.body.message);
+  assert.equal(restored.body.status,'COMPLETED');
+  const packageReceipt={deliveryId:pending.id,packageId:pending.packageId,packageDigest:pending.packageDigest,
+    preparationTrigger:'SIGNED_BACKGROUND_EVENT'};
+  assert.deepEqual(restored.body.preparedDelivery,packageReceipt);
+  const status=(await f.call(background)).body;
+  assert.deepEqual(status.preparedDelivery,packageReceipt);
+  const task=(await f.call(route)).body;
+  assert.deepEqual(task.background.preparedDelivery,packageReceipt);
+  const evidence=(await f.call('/agent/requests/'+key+'/execution-evidence')).body;
+  assert.deepEqual(evidence.originalDelivery,{id:pending.id,requestId:pending.preparationRequestId});
+  assert.equal((await f.call('/agent/deliveries/'+pending.id)).body.preparationTrigger,'SIGNED_BACKGROUND_EVENT');
+  assert.equal(f.store.get('agent_delivery_task',pending.id,PROJECT).stage,'PACKAGE_READY');
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,1);
+  const [artifact]=f.store.list('delivery_package',PROJECT);
+  assert.equal(artifact.id,pending.packageId);
+  assert.equal(Object.keys(artifact.files).length,8);
+  assert.equal((await fire(retryWake)).body.state,'INACTIVE');
+  assert.deepEqual(f.counts(),counts);
+  assert.equal(f.store.list('delivery_verification',PROJECT).length,0);
+  assert.equal(f.store.list('release',PROJECT).length,0);
+});
+
 test('an invited derived task progresses on original events after client disconnect and controller reopen',async t=>{
   const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
   const definition=liveLifecyclePlan(11,{contractId:currentLiveLifecycleContract.id}).selectedCases.at(-1);
@@ -2239,6 +2326,7 @@ test('an invited derived task progresses on original events after client disconn
   assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
   const settled=f.store.get('agent',id,PROJECT), savedRun=f.store.get('run',waiting.runId,PROJECT);
   assert.equal(settled.status,'SUCCEEDED');
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
   assert.equal(settled.revisionId,waiting.revisionId);
   assert.deepEqual(settled.derivedFrom,derivedFrom);
   assert.equal(savedRun.validation.passed,true);
