@@ -9,11 +9,11 @@ import { agentExecutionTrigger } from "./agent-execution-drivers.mjs";
 
 const terminal = new Set(["SUCCEEDED", "FAILED", "VALIDATION_FAILED", "CANCELLED"]);
 
-export function publicDevelopmentRun(run, revision) {
+export function publicDevelopmentRun(run, revision, sourceStore) {
   if (!run) return run;
   const { remoteSubmission, workerResultDigest, syncOutputSchema: storedSchema, ...visible } = run;
   if (!terminal.has(run.status)) delete visible.durationMs;
-  const syncOutputSchema = syncSqlOutputSchemaDetails(run, revision);
+  const syncOutputSchema = syncSqlOutputSchemaDetails(run, revision, sourceStore);
   return { ...visible, validation: validationWithoutRawComparisons(visible.validation), validationDetails: validationDetails(run, revision),
     ...(syncOutputSchema ? { syncOutputSchema } : {}) };
 }

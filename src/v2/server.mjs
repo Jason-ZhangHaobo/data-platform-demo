@@ -525,7 +525,8 @@ export function createV2Server(options = {}) {
     if (!item) throw fail(404, "未找到当前项目的记录");
     return item;
   };
-  const exposeDevelopmentRun = run => publicDevelopmentRun(run, store.get("revision", run?.revisionId ?? "", PROJECT));
+  const exposeDevelopmentRun = (run, includeSource = false) => publicDevelopmentRun(run,
+    store.get("revision", run?.revisionId ?? "", PROJECT), includeSource ? { store, project: PROJECT } : undefined);
   function validationFamilyForRun(run) {
     // Older persisted runs only carry the context on their immutable revision.
     // Missing duplicate metadata may be read, but conflicting metadata must not
@@ -568,7 +569,14 @@ export function createV2Server(options = {}) {
       (!item.agentTaskId || mayReadDurableAgent(store.get("agent", item.agentTaskId, PROJECT), session))));
   const requireDevelopmentOwner = (kind, item, req) => {
     const session = auth.sessionFromHeaders(req.headers);
-    if (item?.syncInput) requireSyncSqlLocal(req);
+    if (item?.syncInput) {
+      requireSyncSqlLocal(req);
+      if (kind === "run" && req.method === "GET") {
+        const actor = workspaceReadActor(req);
+        if (!actor || actor !== store.get("revision", item.revisionId, PROJECT)?.author)
+          throw Object.assign(fail(403, "无权读取此冻结运行"), { code: "DEVELOPMENT_ACCESS_DENIED" });
+      }
+    }
     if (!(kind === "revision" || kind === "python_revision" ? mayReadRevision(item, session) : mayReadRun(item, session, kind === "python_run" ? "python_revision" : "revision")))
       throw Object.assign(fail(403, "无权读取或操作此开发记录"), { code: "DEVELOPMENT_ACCESS_DENIED" });
   };
@@ -6843,7 +6851,7 @@ export function createV2Server(options = {}) {
         if (url.searchParams.size) throw fail(422, "输出结构只接受原运行编号");
         const run = get("run", schemaRead[1]);
         requireDevelopmentOwner("run", run, req);
-        const schema = syncSqlOutputSchemaDetails(run, store.get("revision", run.revisionId ?? "", PROJECT));
+        const schema = syncSqlOutputSchemaDetails(run, store.get("revision", run.revisionId ?? "", PROJECT), syncSqlResources);
         if (!schema) throw fail(409, "原运行、版本或冻结快照的输出结构未能核对");
         return json(res, 200, schema);
       }
@@ -6890,7 +6898,7 @@ export function createV2Server(options = {}) {
         if (kind !== "agent") requireDevelopmentOwner(kind, original, req);
         const item = kind === "run" ? await reconcileDevelopment(original) : original;
         if (kind === "agent") requireDurableAgentOwner(item, req);
-        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? exposeDevelopmentRun(item) : kind === "agent" ? exposeDurableTask(item) : item);
+        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? exposeDevelopmentRun(item, true) : kind === "agent" ? exposeDurableTask(item) : item);
         if (method === "GET" && record[3] === "journey" && kind === "agent")
           return json(
             res,

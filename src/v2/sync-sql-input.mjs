@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { getContext } from "./context.mjs";
+import { ingestionSchemaHash } from "./ingestion.mjs";
+import { checkedSyncSqlInputMetadata } from "./sync-sql-output-schema-client.mjs";
 import { equalValidationNumber } from "./validation-number.mjs";
 
 export const syncSqlContextId = "holdings-t1";
@@ -184,7 +186,39 @@ export function assertSyncSqlOutputSchema(columns) {
     throw fail(409, syncSqlOutputSchemaMessage, syncSqlOutputSchemaCode);
 }
 
-export function syncSqlOutputSchemaDetails(run, revision) {
+function readInputMetadata({ store, project }, binding, actorId) {
+  try { readSyncSqlInput({ store, project, actorId, binding }); }
+  catch (cause) { if (cause.code !== "SYNC_SQL_INPUT_CHANGED") throw cause; return null; }
+
+  const read = (kind, id) => id && store.get(kind, id, project);
+  const sync = read("offline_sync_run", binding.runId);
+  const task = read("offline_sync_task", binding.taskId);
+  const frozen = read("source_metadata", binding.metadataVersionId);
+  if (sync?.status !== "SUCCEEDED" || sync.actualExecution !== true || sync.taskId !== task?.id ||
+      sync.sourceRevisionId !== binding.sourceRevisionId || sync.metadataVersionId !== binding.metadataVersionId ||
+      sync.targetHash !== binding.targetHash || sync.targetTable !== binding.targetTable || sync.finalCount !== binding.rowCount ||
+      task?.sourceType !== "LOCAL_CSV" || frozen?.sourceId !== task.sourceId || sync.sourceHash !== frozen.contentHash)
+    return null;
+  const source = read("ingestion_source", task.sourceId);
+  const describe = (metadata, revisionId) => {
+    const revision = read("source_revision", revisionId);
+    if (revision?.sourceId !== task.sourceId || !metadata || metadata.status !== "COLLECTED" ||
+        metadata.classification !== "ACTUAL_FILE_SCAN" || metadata.sourceId !== task.sourceId || metadata.revisionId !== revisionId ||
+        !Array.isArray(metadata.columns) || metadata.columns.some(field => !field || typeof field.type !== "string") ||
+        metadata.schemaHash !== ingestionSchemaHash(metadata.columns)) return null;
+    return { metadataVersionId:metadata.id, sourceRevisionId:revision.id, schemaHash:metadata.schemaHash,
+      columns:metadata.columns.map(({ name, type, nullable }, index) => ({ name, type:type.toLowerCase(), nullable, position:index+1 })) };
+  };
+  const input = describe(frozen, binding.sourceRevisionId);
+  if (!input) return null;
+  const report = { syncRunId:binding.runId, frozen:input, current:null };
+  try { checkedSyncSqlInputMetadata(report); } catch { return null; }
+  const current = describe(read("source_metadata", source?.currentMetadataId), source?.currentRevisionId);
+  try { return checkedSyncSqlInputMetadata({ ...report, current }); }
+  catch { return checkedSyncSqlInputMetadata(report); }
+}
+
+export function syncSqlOutputSchemaDetails(run, revision, sourceStore) {
   if (!["SUCCEEDED", "VALIDATION_FAILED"].includes(run?.status) ||
       run.engine !== "Apache Spark" || run.mainSqlExecuted !== true || !run.syncInput ||
       run.contextId !== syncSqlContextId || run.validationContractId !== syncSqlContractId ||
@@ -194,7 +228,8 @@ export function syncSqlOutputSchemaDetails(run, revision) {
       !isDeepStrictEqual(run.syncInput, revision.syncInput) || !digest.test(run.syncInput.snapshotHash ?? ""))
     return undefined;
   const source = { runId: run.id, revisionId: revision.id, revisionHash: revision.hash, snapshotHash: run.syncInput.snapshotHash };
-  return { protocol: "shuduo-sync-sql-output-schema/v1", source, readOnly: true, ...syncSqlColumnDifferences(run.columns) };
+  return { protocol: "shuduo-sync-sql-output-schema/v1", source, readOnly: true, ...syncSqlColumnDifferences(run.columns),
+    ...(sourceStore ? { inputMetadata: readInputMetadata(sourceStore, run.syncInput, revision.author) } : {}) };
 }
 
 export function syncSqlColumnDifferences(columns) {

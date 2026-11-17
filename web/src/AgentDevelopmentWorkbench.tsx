@@ -147,6 +147,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     try {
       syncSchema = checkedSyncSqlOutputSchema(run.syncOutputSchema,{
         runId:run.id, revisionId:run.revisionId, revisionHash:run.revisionHash, snapshotHash:frozenInput.snapshotHash,
+        syncRunId:frozenInput.runId, metadataVersionId:frozenInput.metadataVersionId, sourceRevisionId:frozenInput.sourceRevisionId,
       });
     } catch { /* Keep the current SQL and results if the optional details do not match. */ }
   }

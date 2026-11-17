@@ -27,6 +27,9 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
   sample("first.csv", "1245.07");
   sample("later.csv", "4000.00");
   sample("bad.csv", "0.001");
+  const captured = readFileSync(join(fixtureRoot, "first.csv"), "utf8").split("\n");
+  writeFileSync(join(fixtureRoot, "currency.csv"), captured.map((line, index) =>
+    line + (index === 0 ? ",currency" : ",CNY")).join("\n"));
   const columns = [
     {name:"client_id",type:"string"}, {name:"holding_market_value",type:"decimal(18,2)"},
     {name:"available_cash",type:"decimal(18,2)"}, {name:"total_assets",type:"decimal(18,2)"},
@@ -160,16 +163,46 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
       issues:["TYPE"],
     }]);
     assert.equal(schema.source.snapshotHash, run.syncInput.snapshotHash);
+    const input = schema.inputMetadata;
+    assert.equal(input.syncRunId, first.run.id);
+    assert.equal(input.frozen.metadataVersionId, first.metadata.id);
+    assert.equal(input.frozen.sourceRevisionId, first.metadata.revisionId);
+    assert.equal(input.frozen.columns.length, 7);
+    assert.deepEqual(input.current, input.frozen);
+    assert.deepEqual(input.differences, []);
+    assert.equal(input.frozen.columns[0].distinctCount, undefined);
     assert.deepEqual((await request(schemaPath)).value, schema);
     assert.equal((await request(schemaPath + "?run_id=other")).status, 422);
+    const sourceId = first.metadata.sourceId;
+    app.ingestion.createSourceRevision(sourceId, {fileName:"currency.csv"});
+    const missingCurrent = (await request(schemaPath)).value.inputMetadata;
+    assert.equal(missingCurrent.current, null);
+    assert.deepEqual(missingCurrent.frozen, input.frozen);
+    app.ingestion.testConnection(sourceId);
+    const currentMetadata = app.ingestion.collectMetadata(sourceId);
+    const report = (await request(schemaPath)).value;
+    assert.deepEqual(report.differences, schema.differences);
+    assert.deepEqual(report.inputMetadata.frozen, input.frozen);
+    assert.equal(report.inputMetadata.current.metadataVersionId, currentMetadata.id);
+    assert.deepEqual(report.inputMetadata.differences, [
+      {name:"currency",before:null,after:{name:"currency",type:"string",position:8,nullable:false}},
+    ]);
+    assert.deepEqual((await request("/runs/"+failedDevelopment.id)).value.syncOutputSchema, report);
+    app.store.update("ingestion_source", sourceId, PROJECT, {currentMetadataId:latest.metadata.id});
+    assert.equal((await request(schemaPath)).value.inputMetadata.current,null);
+    app.store.update("ingestion_source", sourceId, PROJECT, {currentMetadataId:currentMetadata.id});
+    app.store.update("source_metadata", first.metadata.id, PROJECT, {schemaHash:"0".repeat(64)});
+    assert.equal((await request(schemaPath)).value.inputMetadata,null);
+    app.store.update("source_metadata", first.metadata.id, PROJECT, {schemaHash:first.metadata.schemaHash});
     const schemaClient = {request:async path => (await request(path)).value};
     const stdout = [];
     assert.equal(await runV2Cli(["sql","output-schema","--run-id",failedDevelopment.id],{},
       {client:schemaClient,output:line=>stdout.push(line),error:()=>{}}),0);
-    assert.deepEqual(JSON.parse(stdout.join("")),schema);
+    assert.deepEqual(JSON.parse(stdout.join("")),report);
     const mcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",
       params:{name:"sql_run_output_schema",arguments:{runId:failedDevelopment.id}}},{client:schemaClient}));
-    assert.deepEqual(mcp.result.structuredContent,schema);
+    assert.deepEqual(mcp.result.structuredContent,report);
+    assert.throws(() => checkedSyncSqlOutputSchema(report,{...schema.source,metadataVersionId:currentMetadata.id}),/原运行/);
     assert.throws(() => checkedSyncSqlOutputSchema(schema,{runId:run.id}),/原运行/);
     assert.throws(() => checkedSyncSqlOutputSchema({...schema,differences:[{}]},schema.source),/原运行/);
     const {rows:ignored, ...safeSchema} = checkedSyncSqlOutputSchema({...schema,rows:failedDevelopment.rows},schema.source);
@@ -406,7 +439,11 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     app.store.create("auth_session", PROJECT, { userId:otherEngineer.id, tokenHash:sha256(otherCookie),
       status:"ACTIVE",expiresAt:new Date(clock+60000).toISOString() });
     const otherIdentity = { Cookie:"shuduo_session="+otherCookie };
-    assert.equal((await request(schemaPath, undefined, undefined, otherIdentity)).status, 403);
+    for (const path of [schemaPath, "/runs/"+failedDevelopment.id]) {
+      assert.equal((await request(path,undefined,undefined,otherIdentity)).status,403);
+      assert.equal((await request(path,undefined,undefined,bearer)).status,403);
+      assert.equal((await request(path,undefined,undefined,{Cookie:"shuduo_session=expired-fixture"})).status,403);
+    }
     assert.equal((await request(failedRehearsalPath, undefined, undefined, otherIdentity)).status, 403);
     assert.deepEqual((await request("/data-services/sources", undefined, undefined, otherIdentity)).value, []);
     assert.equal((await request(`/data-services/xapis/${xapi.id}`, undefined, undefined, otherIdentity)).status, 403);

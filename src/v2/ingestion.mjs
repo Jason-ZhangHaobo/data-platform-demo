@@ -31,6 +31,7 @@ const canonical = (value) =>
       : value,
   );
 const stableHash = (value) => hash(canonical(value));
+export const ingestionSchemaHash = columns => stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable })));
 const landingHash = rows => stableHash(rows.map(({ sourceHash: _source, syncedAt: _time, ...row }) => row));
 const text = (value, name, min = 1, max = 100) => {
   if (
@@ -496,7 +497,7 @@ export class IngestionManager {
         rowCount: parsed.rows.length,
         bytes: input.bytes,
         contentHash: input.fileHash,
-        schemaHash: stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable }))),
+        schemaHash: ingestionSchemaHash(columns),
         columns,
         change,
         collectedAt: new Date(this.now()).toISOString(),
@@ -568,7 +569,7 @@ export class IngestionManager {
         status: "COLLECTED",
         classification: "SERVER_MYSQL_SCHEMA_SCAN",
         rowCount: described.rowCount,
-        schemaHash: stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable }))),
+        schemaHash: ingestionSchemaHash(columns),
         columns,
         change,
         collectedAt: new Date(this.now()).toISOString(),

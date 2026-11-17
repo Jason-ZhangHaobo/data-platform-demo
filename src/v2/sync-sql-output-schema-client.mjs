@@ -12,6 +12,36 @@ const column = (value, limit, nullable) => record(value) &&
   (nullable && value.type === null || matches(type, value.type)) &&
   Number.isInteger(value.position) && value.position >= 1 && value.position <= limit;
 
+// The comparison is oriented from the input used by Spark to the latest collected
+// source version. Uncollected revisions have no comparison.
+function metadataDifferences(frozen, current) {
+  const fields = new Set([...frozen.columns, ...current.columns].map(field => field.name));
+  return [...fields].flatMap(name => {
+    const before = frozen.columns.find(field => field.name === name) ?? null;
+    const after = current.columns.find(field => field.name === name) ?? null;
+    if (before && after && before.type === after.type && before.nullable === after.nullable && before.position === after.position) return [];
+    return [{ name, before, after }];
+  });
+}
+
+export function checkedSyncSqlInputMetadata(value, expected = {}) {
+  const checkedVersion = item => {
+    if (!record(item) || !matches(identifier, item.metadataVersionId) || !matches(identifier, item.sourceRevisionId) ||
+        !matches(digest, item.schemaHash) || !Array.isArray(item.columns) || item.columns.length < 1 || item.columns.length > 50 ||
+        new Set(item.columns.map(field => field?.name)).size !== item.columns.length ||
+        !item.columns.every((field, index) => column(field, 50, false) && field.position === index + 1 &&
+          typeof field.nullable === "boolean")) throw invalid();
+    return { metadataVersionId:item.metadataVersionId, sourceRevisionId:item.sourceRevisionId, schemaHash:item.schemaHash,
+      columns:item.columns.map(({ name, type, position, nullable }) => ({ name, type, position, nullable })) };
+  };
+  if (!record(value) || !matches(identifier, value.syncRunId) ||
+      (expected.syncRunId !== undefined && value.syncRunId !== expected.syncRunId)) throw invalid();
+  const frozen = checkedVersion(value.frozen), current = value.current === null ? null : checkedVersion(value.current);
+  if (["metadataVersionId", "sourceRevisionId"].some(key => expected[key] !== undefined && frozen[key] !== expected[key]) ||
+      current && current.metadataVersionId === frozen.metadataVersionId && JSON.stringify(current) !== JSON.stringify(frozen)) throw invalid();
+  return { syncRunId: value.syncRunId, frozen, current, differences: current === null ? [] : metadataDifferences(frozen, current) };
+}
+
 function checkedSchema(value, expected, protocol) {
   const source = value?.source, differences = value?.differences;
   if (value?.protocol !== protocol || value.readOnly !== true ||
@@ -40,7 +70,10 @@ function checkedSchema(value, expected, protocol) {
 }
 
 export function checkedSyncSqlOutputSchema(value, expected) {
-  return checkedSchema(value, expected, "shuduo-sync-sql-output-schema/v1");
+  const checked = checkedSchema(value, expected, "shuduo-sync-sql-output-schema/v1");
+  if (value.inputMetadata === undefined) return checked;
+  const inputMetadata = value.inputMetadata === null ? null : checkedSyncSqlInputMetadata(value.inputMetadata, expected);
+  return { ...checked, inputMetadata };
 }
 
 function checkedPackageSchema(value, expected, protocol) {

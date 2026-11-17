@@ -1091,6 +1091,8 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 同一差异可用 `GET /api/v2/runs/{runId}/output-schema`、`shuduo sql output-schema --run-id RUN_ID` 或 MCP `sql_run_output_schema` 读取。只允许原运行所属人。响应绑定运行、SQL 版本、摘要与冻结快照，不返回结果行。原运行、代码或快照不一致时不会采用其他批次。
 
+在原运行的输出差异下展开「冻结输入元数据」可查看实际使用的同步批次、元数据版本及字段。若同一源已采集新版本，列出增加、移除、类型、顺序或可空性的变化，并保留两份版本编号。当前源版本还未采集，或记录无法与同一源核对时，只显示可验证的原元数据。接口、CLI 与 MCP 在原结构回执的 `inputMetadata` 中提供同一对照。源字段变化和 Spark 输出错误分别显示，重新同步或修正仍走原来的确认步骤。用已有的失败样例验证输出金额字段错误不变，同时对照同一源新采集的 `currency` 字段。
+
 在交付工作台的「已保存的文件演练」选择原回执。失败演练按包摘要、原 SQL 版本、业务日和文件哈希核对后显示实际与预期字段结构。历史失败与后来的成功演练可单独查看，刷新后按浏览器会话恢复上次选择。无法核对已选回执时提示重新选择，失败演练不能进入审阅或批准。
 
 `GET /api/v2/delivery/verifications/{verificationId}`、`shuduo delivery verification --id VERIFICATION_ID` 和 MCP `delivery_verification_detail` 共用 `rehearsalOutputSchema`。它从原演练投影列差异，保留演练编号、包摘要、源版本及快照。没有可用列结构时明确标记证据缺失。读取不会提交演练或重新执行。
