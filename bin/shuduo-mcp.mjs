@@ -163,7 +163,7 @@ const tools = [
   { name: "delivery_verification_detail", description: "读取指定文件演练的步骤和验证证据。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
   { name: "delivery_verification_cancel", description: "取消未完成的文件演练并保留记录；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
   { name: "delivery_review_list", description: "列出按包摘要与文件演练绑定的工程师审阅记录。", inputSchema: { type: "object", properties: {} } },
-  { name: "delivery_review_create", description: "记录工程师已核对代码、断言、交付文件和本机范围；不审批、不发布。调用前必须完成实际审阅并取得明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, verificationId: { type: "string" }, reviewNote: { type: "string" }, attestations: { type: "object", properties: { code: { type: "boolean", const: true }, assertions: { type: "boolean", const: true }, deliveryFiles: { type: "boolean", const: true }, localScope: { type: "boolean", const: true } }, required: ["code", "assertions", "deliveryFiles", "localScope"], additionalProperties: false } }, required: ["packageId", "packageDigest", "verificationId", "reviewNote", "attestations"] } },
+  { name: "delivery_review_create", description: "记录工程师已完成的实际审阅。冻结持仓须传入原回执的 syncRehearsalDigest；调用前需要明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, verificationId: { type: "string" }, syncRehearsalDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}, reviewNote: { type: "string" }, attestations: { type: "object", properties: { code: { type: "boolean", const: true }, assertions: { type: "boolean", const: true }, deliveryFiles: { type: "boolean", const: true }, localScope: { type: "boolean", const: true } }, required: ["code", "assertions", "deliveryFiles", "localScope"], additionalProperties: false } }, required: ["packageId", "packageDigest", "verificationId", "reviewNote", "attestations"] } },
   { name: "release_approval_list", description: "列出绑定交付包摘要的发布审批记录。", inputSchema: { type: "object", properties: {} } },
   { name: "fund_agent_publication_preflight", description: "只读核对指定基金任务、开发运行、交付包及成功文件演练，返回工程师审阅和两批本机计划。",
     inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceRunId:publicationIdSchema,
@@ -577,6 +577,7 @@ async function callTool(name, args = {}, client=defaultClient) {
         body: {
           packageDigest: args.packageDigest,
           verificationId: args.verificationId,
+          ...(args.syncRehearsalDigest === undefined ? {} : {syncRehearsalDigest:args.syncRehearsalDigest}),
           reviewNote: args.reviewNote,
           attestations: args.attestations,
         },

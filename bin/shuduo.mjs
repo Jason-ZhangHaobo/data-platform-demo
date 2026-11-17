@@ -149,7 +149,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo delivery verification --id VERIFICATION_ID
   shuduo delivery cancel --id VERIFICATION_ID
   shuduo delivery reviews
-  shuduo delivery review --id PACKAGE_ID --package-digest SHA256 --verification-id VERIFICATION_ID --note "已核对" --attest-code --attest-assertions --attest-delivery-files --attest-local-scope
+  shuduo delivery review --id PACKAGE_ID --package-digest SHA256 --verification-id VERIFICATION_ID [--sync-rehearsal-digest SHA256] --note "已核对" --attest-code --attest-assertions --attest-delivery-files --attest-local-scope
   分布批准/回滚需 --distribution-consent 已审阅确认JSON文件；读取不自动确认。
   shuduo releases approvals
   shuduo releases approve --package-id PACKAGE_ID --package-digest SHA256 --review-id REVIEW_ID
@@ -939,6 +939,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: {
             packageDigest: required(parsed.options, "package_digest"),
             verificationId: required(parsed.options, "verification_id"),
+            ...(parsed.options.sync_rehearsal_digest ? {syncRehearsalDigest:parsed.options.sync_rehearsal_digest} : {}),
             reviewNote: required(parsed.options, "note"),
             attestations: {
               code: parsed.options.attest_code === true,

@@ -45,7 +45,8 @@ import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { assertSyncSqlOutputSchema, currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlColumnsMatch, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlOutputColumns, syncSqlOutputSchemaCode, syncSqlOutputSchemaDetails, syncSqlOutputSchemaMessage, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 import { isDeepStrictEqual } from "node:util";
-import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, syncApprovalExpiry, syncSqlReviewDigest, syncSqlScheduledSchemaDetails } from "./sync-sql-publication.mjs";
+import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, assertSyncSqlReviewBinding, syncApprovalExpiry,
+  syncSqlRehearsalDigest, syncSqlReviewDigest, syncSqlScheduledSchemaDetails } from "./sync-sql-publication.mjs";
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence, syncServiceProtocol, syncSqlServiceSources } from "./sync-sql-service-source.mjs";
 import { isSyncAssetId, isSyncReportEvidence, syncAssetBatchId, syncAssetView, syncReportAsset, syncReportAssetId } from "./sync-sql-report.mjs";
 import { frozenAssetQuality } from "./frozen-asset-quality.mjs";
@@ -1796,7 +1797,7 @@ export function createV2Server(options = {}) {
         return visible;
       };
       const exposeDeliveryVerification = item => {
-        const { rehearsalOutputSchema: storedSchema, ...visible } = protectedDeliveryPayload(item);
+        const { rehearsalOutputSchema: storedSchema, syncRehearsalDigest: storedDigest, ...visible } = protectedDeliveryPayload(item);
         const bundle = item.packageId && store.get("delivery_package", item.packageId, PROJECT);
         if (bundle?.manifest?.source?.syncInput && item.status === "SUCCEEDED") {
           try {
@@ -1805,6 +1806,7 @@ export function createV2Server(options = {}) {
             return exposeValidationRecord({ ...visible, status:"UNCONFIRMED", storedStatus:item.status, workflowTrace:undefined,
               error:"原演练的调度、文件或结果证据未能核对，暂不可审阅。" });
           }
+          return { ...exposeValidationRecord(visible), syncRehearsalDigest:syncSqlRehearsalDigest(item) };
         }
         const rehearsalOutputSchema = syncSqlRehearsalSchemaDetails(bundle, item);
         return { ...exposeValidationRecord(visible), ...(rehearsalOutputSchema ? { rehearsalOutputSchema } : {}) };
@@ -5625,6 +5627,8 @@ export function createV2Server(options = {}) {
             throw fail(409, "原演练已变化，请重新读取审阅依据");
           assertFundRehearsal(item, latestRehearsal);
           assertSyncSqlRehearsal(plan, item, latestRehearsal);
+          const syncRehearsalDigest = plan.source.syncInput ? syncSqlRehearsalDigest(latestRehearsal) : undefined;
+          if (plan.source.syncInput) assertSyncSqlReviewBinding(latestRehearsal, body.syncRehearsalDigest);
           const rehearsalDigest = fundSignedRehearsalDigest(item, latestRehearsal, fundSignedExecutionFor(item));
           if (body.fundRehearsalDigest !== rehearsalDigest)
             throw fail(409, "审阅必须确认当前基金签名演练摘要");
@@ -5648,6 +5652,7 @@ export function createV2Server(options = {}) {
                   review.packageDigest === item.digest &&
                   review.verificationId === latestRehearsal.id &&
                   review.fundRehearsalDigest === rehearsalDigest &&
+                  review.syncRehearsalDigest === syncRehearsalDigest &&
                   review.reviewer?.id === reviewer.id &&
                   review.status === "REVIEWED",
               );
@@ -5663,6 +5668,7 @@ export function createV2Server(options = {}) {
                   packageDigest: item.digest,
                   verificationId: latestRehearsal.id,
                   ...(rehearsalDigest ? {fundRehearsalDigest:rehearsalDigest} : {}),
+                  ...(syncRehearsalDigest ? {syncRehearsalDigest} : {}),
                   reviewerId: reviewer.id,
                   reviewNote,
                   attestations,
@@ -5674,6 +5680,7 @@ export function createV2Server(options = {}) {
                   packageDigest: item.digest,
                   verificationId: latestRehearsal.id,
                   ...(rehearsalDigest ? {fundRehearsalDigest:rehearsalDigest} : {}),
+                  ...(syncRehearsalDigest ? {syncRehearsalDigest} : {}),
                   reviewer,
                   reviewNote,
                   attestations,
@@ -5760,12 +5767,14 @@ export function createV2Server(options = {}) {
             if(distributionConsent&&!sameDistributionConsent(existingApproval.distributionConsent,distributionConsent))throw fail(409,"原批准绑定另一份分布测试发布计划");
             if(fundConsent&&!sameDistributionConsent(existingApproval.fundConsent,fundConsent))throw fail(409,"原批准绑定另一份基金测试发布计划");
             if (syncConsent && (!isDeepStrictEqual(existingApproval.syncConsent, syncConsent) ||
-                existingApproval.reviewId !== review.id || existingApproval.syncReviewDigest !== syncReviewDigest))
+                existingApproval.reviewId !== review.id || existingApproval.syncReviewDigest !== syncReviewDigest ||
+                existingApproval.syncRehearsalDigest !== latestReview.syncRehearsalDigest))
               throw fail(409, "原批准绑定另一份持仓测试发布计划");
             return existingApproval;
           };
           const existingApproval = findExistingApproval();
           if (existingApproval) return json(res, 200, checkExistingApproval(existingApproval));
+          if (syncConsent) assertSyncSqlReviewBinding(latestRehearsal, latestReview.syncRehearsalDigest);
           const key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               PROJECT + ":release-approval:" + key,
@@ -5799,7 +5808,8 @@ export function createV2Server(options = {}) {
                   reviewedBy: review.reviewer,
                   ...(distributionConsent?{distributionConsent,approver}:{}),
                   ...(fundConsent ? { fundConsent, approver } : {}),
-                  ...(syncConsent ? { syncConsent, syncReviewDigest, approver, expiresAt: syncApprovalExpiry(approvedAt) } : {}),
+                  ...(syncConsent ? { syncConsent, syncReviewDigest, syncRehearsalDigest:latestReview.syncRehearsalDigest,
+                    approver, expiresAt: syncApprovalExpiry(approvedAt) } : {}),
                   decision: "APPROVED",
                   status: "APPROVED",
                   reviewNote: review.reviewNote,

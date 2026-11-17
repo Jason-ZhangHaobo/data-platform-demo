@@ -201,7 +201,9 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     app.store.update("source_metadata", first.metadata.id, PROJECT, {schemaHash:"0".repeat(64)});
     assert.equal((await request(schemaPath)).value.inputMetadata,null);
     app.store.update("source_metadata", first.metadata.id, PROJECT, {schemaHash:first.metadata.schemaHash});
-    const schemaClient = {request:async path => (await request(path)).value};
+    let adapterRequest = 0;
+    const schemaClient = {request:async (path, options) => (await request(path, options?.body,
+      options?.body === undefined ? undefined : "adapter-"+(++adapterRequest))).value};
     const stdout = [];
     assert.equal(await runV2Cli(["sql","output-schema","--run-id",failedDevelopment.id],{},
       {client:schemaClient,output:line=>stdout.push(line),error:()=>{}}),0);
@@ -361,16 +363,48 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     }
     const repeatVerification = await request(packagePath+"/verify",{scheduledFor},"verified-replay");
     assert.equal(repeatVerification.value.id,verified.id);
-    const reviewed = await request(packagePath + "/review", reviewInput);
-    assert.equal(reviewed.status, 201);
     const scheduleSpec = { triggerAfterSeconds: 5, intervalSeconds: 45, runCount: 2 };
     const syncConsent = { scope: "LOCAL_TEST_RELEASE", packageDigest: stored.digest, verificationId: verified.id,
       businessDate: "2026-09-10", snapshotHash: run.syncInput.snapshotHash, scheduleSpec, confirmFrozenFictionalData: true };
-    const approvalBody = { packageDigest: stored.digest, reviewId: reviewed.value.id, syncConsent };
+    const reviewPath = packagePath+"/review";
+    const currentReviewDigest = repeatVerification.value.syncRehearsalDigest;
+    assert.match(currentReviewDigest,/^[a-f0-9]{64}$/);
+    assert.equal((await request(verifiedPath)).value.syncRehearsalDigest,currentReviewDigest);
+    assert.equal((await request(reviewPath,reviewInput,"missing-reviewed-receipt")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
+    const oldReviewInput = {...reviewInput,syncRehearsalDigest:currentReviewDigest};
+    const reviewOutput = [];
+    assert.equal(await runV2Cli(["delivery","review","--id",stored.id,"--package-digest",stored.digest,"--verification-id",verified.id,
+      "--sync-rehearsal-digest",currentReviewDigest,"--note",reviewInput.reviewNote,
+      "--attest-code","--attest-assertions","--attest-delivery-files","--attest-local-scope"],{},
+      {client:schemaClient,output:line=>reviewOutput.push(line),error:()=>{}}),0);
+    const oldReview = JSON.parse(reviewOutput.join(""));
+    assert.equal(oldReview.syncRehearsalDigest,currentReviewDigest);
+    assert.equal((await request(reviewPath,oldReviewInput,"retry-same-reviewed-evidence")).value.id,oldReview.id);
+    app.store.update("delivery_verification",verified.id,PROJECT,{notice:"隔离测试中同编号且有效的另一份执行说明"});
+    const changedReceipt = (await request(verifiedPath)).value;
+    assert.equal(changedReceipt.id,verified.id);
+    assert.equal(changedReceipt.status,"SUCCEEDED");
+    assert.notEqual(changedReceipt.syncRehearsalDigest,currentReviewDigest);
+    const approvalFor = reviewId => ({packageDigest:stored.digest,reviewId,syncConsent});
+    assert.equal((await request(reviewPath,oldReviewInput,"old-browser-review")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
+    assert.equal((await request(packagePath+"/approve",approvalFor(oldReview.id),"approve-stale-review")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
+    const legacyReview = app.store.create("delivery_review",PROJECT,{...oldReview,syncRehearsalDigest:undefined});
+    assert.equal((await request(packagePath+"/approve",approvalFor(legacyReview.id),"approve-legacy-unapproved")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
+    assert.equal(app.store.list("release_approval",PROJECT).length,0);
+    const updatedReviewInput = {...reviewInput,syncRehearsalDigest:changedReceipt.syncRehearsalDigest};
+    const reviewMcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:3,method:"tools/call",
+      params:{name:"delivery_review_create",arguments:{...updatedReviewInput,packageId:stored.id}}},{client:schemaClient}));
+    const reviewed = reviewMcp.result.structuredContent;
+    assert.equal(reviewed.status,"REVIEWED");
+    assert.equal(reviewed.syncRehearsalDigest,changedReceipt.syncRehearsalDigest);
+    assert.notEqual(reviewed.id,oldReview.id);
+    assert.deepEqual(app.store.get("delivery_review",oldReview.id,PROJECT),oldReview);
+    const approvalBody = approvalFor(reviewed.id);
     for (const replacement of [undefined, {...syncConsent, businessDate:"2026-09-11"}, {...syncConsent, snapshotHash:"0".repeat(64)}])
       assert.equal((await request(packagePath + "/approve", { ...approvalBody, syncConsent: replacement })).status, 409);
     const firstApproval = await request(packagePath + "/approve", approvalBody, "sync-approve-first");
     assert.equal(firstApproval.status, 201);
+    assert.equal(firstApproval.value.syncRehearsalDigest,changedReceipt.syncRehearsalDigest);
     clock = Date.parse(firstApproval.value.expiresAt);
     const expired = await request("/releases", { approvalId: firstApproval.value.id, ...scheduleSpec });
     assert.equal(expired.value.code, "SYNC_RELEASE_APPROVAL_EXPIRED");

@@ -12,6 +12,17 @@ const exact = (value, keys) => value && typeof value === "object" && !Array.isAr
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const digest = value => sha256(JSON.stringify(value));
 
+export function syncSqlRehearsalDigest(verification) {
+  return sha256(JSON.stringify({ protocol:"shuduo-sync-rehearsal-review/v1", verification }, (_key, value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value));
+}
+
+export function assertSyncSqlReviewBinding(verification, expectedDigest) {
+  if (expectedDigest !== syncSqlRehearsalDigest(verification))
+    throw fail("SYNC_REHEARSAL_REVIEW_CHANGED", "演练证据未按当前摘要审阅，请重新核对后记录审阅");
+}
+
 export function assertSyncSqlConsent({ bundle, plan, verification, review, consent, actorId, enabled }) {
   const input = plan?.source?.syncInput;
   if (!input) {
@@ -33,6 +44,7 @@ export function assertSyncSqlConsent({ bundle, plan, verification, review, conse
       !exact(review.attestations, attestations) || !attestations.every(key => review.attestations[key] === true))
     throw invalid();
   assertSyncSqlRehearsal(plan, bundle, verification);
+  if (review.syncRehearsalDigest !== undefined) assertSyncSqlReviewBinding(verification, review.syncRehearsalDigest);
   const occurrence = resolveDeliverySchedule(plan, verification.scheduledFor);
   if (!occurrence.eligible || occurrence.businessDate !== consent.businessDate ||
       !same(occurrence, verification.occurrence)) throw invalid();
@@ -53,6 +65,7 @@ export function assertSyncSqlApproval({ bundle, plan, approval, verification, re
       approval.packageId !== bundle.id || approval.packageDigest !== bundle.digest || approval.reviewId !== review.id ||
       approval.rehearsalId !== verification.id || approval.sourceRevisionId !== plan.source.revisionId ||
       approval.sourceSqlHash !== plan.source.sqlHash || !same(spec, consent.scheduleSpec) ||
+      approval.syncRehearsalDigest !== review.syncRehearsalDigest ||
       approval.syncReviewDigest !== syncSqlReviewDigest(verification, review) ||
       !Number.isFinite(approvedAt) || expiresAt - approvedAt !== ttlMs) throw invalid();
 }
