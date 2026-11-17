@@ -3,6 +3,7 @@ import {privateTaskConsumption} from './private-task-consumption.mjs';
 import {validateDeliveryPackage} from './delivery.mjs';
 import {localServiceSources} from './local-service-sources.mjs';
 import {fundAgentTaskConsumption} from './fund-agent-task-consumption.mjs';
+import {readSyncSqlPaginationCoverage} from './sync-sql-service-source.mjs';
 const fail=()=>Object.assign(new Error('任务、交付包与本机发布来源不一致'),{status:409,code:'LOCAL_CONSUMPTION_SOURCE_MISMATCH'});
 const agentSource=record=>record&&[undefined,'AGENT'].includes(record.sourceKind)&&record.sourceAttribution===undefined;
 
@@ -35,6 +36,14 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
    source:id=>{if(!ids.has(id)||batchId&&id!==batchId)throw fail();return store.get('release_run',id,project);},
    application:id=>store.get('service_app',id,project),calls:id=>manager.listCalls(id),recheckCall:(id,callId,options)=>manager.recheckCall(id,callId,options)});
   if (!sync || callIdDigest && !batchId) return report;
+  if (!callIdDigest) {
+    const savedCalls = manager.listCalls(), expectedRows = new Map(sources.map(source=>[source.id,source.rowCount]));
+    for (const entry of report.services) {
+      const coverage = await readSyncSqlPaginationCoverage({ entry,expectedRows:expectedRows.get(entry.sourceRunIds[0]),calls:savedCalls,
+        application:id=>store.get('service_app',id,project),recheckCall:(id,callId,options)=>manager.recheckCall(id,callId,options) });
+      if (coverage) entry.paginationCoverage=coverage;
+    }
+  }
   let monitoring;
   if (batchId) {
     if (callIdDigest && report.services.length !== 1) throw fail();
@@ -46,7 +55,7 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
   }
   const verified = (id, type) => report.services.some(service => service.sourceRunIds.length === 1 &&
     service.sourceRunIds[0] === id && service.serviceType === type && service.status === "VERIFIED" &&
-    service.call?.independentResultVerified && service.call.coverage === undefined && (type === "DAPI" || service.fullAssetComposition));
+    service.paginationCoverage?.status === "COMPLETE" && (type === "DAPI" || service.fullAssetComposition));
   const requestedBatches = batchId ? [batchId] : [...ids];
   const verifiedBatchIds = requestedBatches.filter(id => verified(id, "DAPI") && verified(id, "XAPI"));
   return { ...report, status: verifiedBatchIds.length === requestedBatches.length && !report.truncated ? "VERIFIED" : "PENDING",

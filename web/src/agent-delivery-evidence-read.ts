@@ -75,6 +75,12 @@ export function checkedAgentPublication(value:unknown,{taskId,scope,selector,rel
 
 const fields=['client_id','holding_market_value','available_cash','total_assets','security_count'];
 const invalidConsumption=()=>Error('消费回执的结构、固定版本或原发布来源未确认；只读重查，不创建接口、凭证或调用。');
+const pageCoverage=(value:unknown)=>record(value)&&id(value.applicationId)&&
+  Number.isSafeInteger(value.pageSize)&&Number(value.pageSize)>=1&&Number(value.pageSize)<=100&&
+  Number.isSafeInteger(value.totalPages)&&Number(value.totalPages)>=1&&Number(value.totalPages)<=1000&&
+  Array.isArray(value.verifiedPages)&&value.verifiedPages.every((page,index,pages)=>Number.isSafeInteger(page)&&page>=1&&
+    page<=Number(value.totalPages)&&(index===0||pages[index-1]<page))&&
+  value.status===(value.verifiedPages.length===value.totalPages?"COMPLETE":"INCOMPLETE");
 export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBinding,batches:{id:string;status:string;schedulerTriggered?:boolean}[],expectedOutput?:{id:string;metadataHash:string},expectedFund?:{id:string;modelMode:string},allowVersionHistory=false):TaskConsumption{
  if(expectedFund)return checkedFundConsumption(value,binding,batches,expectedFund);
  if(record(value)&&value.protocol==='shuduo-local-distribution-consumption/v1')return checkedDistributionConsumption(value,binding,batches,expectedOutput);
@@ -89,7 +95,8 @@ export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBindi
   if(!record(entry)||!id(entry.serviceId)||!id(entry.versionId)||!hash(entry.configHash)||!['DAPI','XAPI'].includes(String(entry.serviceType))||typeof entry.name!=='string'||typeof entry.notice!=='string'||
    !['PENDING','VERIFIED','NEEDS_ATTENTION'].includes(String(entry.status))||!optional(entry.code,v=>typeof v==='string')||!optional(entry.fullAssetComposition,v=>typeof v==='boolean')||
    !Array.isArray(entry.sourceRunIds)||!entry.sourceRunIds.every(id)||new Set(entry.sourceRunIds).size!==entry.sourceRunIds.length||
-   !optional(entry.releaseId,v=>v===binding.releaseId)||!optional(entry.sourceKind,v=>v===binding.sourceKind)||!optional(entry.agentIndependentE2E,v=>v===false))throw invalidConsumption();
+   !optional(entry.releaseId,v=>v===binding.releaseId)||!optional(entry.sourceKind,v=>v===binding.sourceKind)||!optional(entry.agentIndependentE2E,v=>v===false)||
+   !optional(entry.paginationCoverage,pageCoverage))throw invalidConsumption();
   const call=entry.call;
   if(call!==undefined&&(!record(call)||!id(call.callId)||call.versionId!==entry.versionId||!hash(call.resultHash)||!count(call.rowCount)||typeof call.verified!=='boolean'||
    !id(call.applicationId)||!['ACTIVE','REVOKED','EXPIRED'].includes(String(call.applicationStatus))||!date(call.finishedAt)||call.configHash!==entry.configHash||
@@ -135,7 +142,7 @@ export function checkedLocalSyncBatchConsumption(value:unknown,binding:ServiceSo
  const active=proof.services.filter(service=>service.versionStatus!=="RETIRED").map(service=>service.serviceId);
  if(new Set(active).size!==active.length)throw invalidConsumption();
  const verified=proof.services.filter(service=>service.status==="VERIFIED"&&service.sourceRunIds[0]===batchId&&
-   service.call?.independentResultVerified===true&&service.call.coverage===undefined);
+   service.paginationCoverage?.status==="COMPLETE");
  const passed=!proof.truncated&&verified.some(service=>service.serviceType==="DAPI")&&
    verified.some(service=>service.serviceType==="XAPI"&&service.fullAssetComposition===true);
  const batches=value.verifiedBatchIds;

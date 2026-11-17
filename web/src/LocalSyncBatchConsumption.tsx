@@ -36,6 +36,10 @@ export function LocalSyncBatchConsumption({api,binding,batchId,snapshotHash,sequ
           {service.status==="VERIFIED"&&service.call?.verified?<small>
             {service.call.coverage==="SINGLE_CUSTOMER"&&"单客户授权 · "}调用 {service.call.callId.slice(0,8)} · {service.call.rowCount} 行 · {applicationStatusText(service.call.applicationStatus,true)}
           </small>:<small>{service.notice}</small>}
+          {service.paginationCoverage && <small>
+            分页 {service.paginationCoverage.verifiedPages.length}/{service.paginationCoverage.totalPages}
+            {service.paginationCoverage.status==="COMPLETE"?" 页齐备":" 页已核验"}
+          </small>}
         </p>)}
       </>}
     </section>}

@@ -9,6 +9,7 @@ import {MetadataStore} from '../../src/v2/store.mjs';
 import {BusinessQueryStore,DataServiceManager} from '../../src/v2/data-services.mjs';
 import {localTaskConsumption} from '../../src/v2/local-task-consumption.mjs';
 import {privateTaskConsumption} from '../../src/v2/private-task-consumption.mjs';
+import {readSyncSqlPaginationCoverage} from '../../src/v2/sync-sql-service-source.mjs';
 import {seedLocalServiceSource} from './fixtures/local-service-sources.mjs';
 
 test('local task consumption joins existing source and revoked-app receipts without executing or writing',async t=>{
@@ -68,4 +69,25 @@ test('local task consumption joins existing source and revoked-app receipts with
    [[next.id,'PUBLISHED','PENDING'],[original.id,'RETIRED','VERIFIED']]);
  assert.equal(variants[1].call.applicationStatus,'REVOKED');
  assert.equal(store.list('service_call',PROJECT).length,count);
+});
+
+test('frozen pagination requires distinct verified pages from one application and one version',async()=>{
+ const entry={serviceId:'service',versionId:'version',configHash:'a'.repeat(64),status:'VERIFIED',sourceRunIds:['batch']};
+ const saved=(id,page,applicationId='a',patch={})=>({id,serviceId:entry.serviceId,serviceVersionId:entry.versionId,
+   outcome:'SUCCEEDED',statusCode:200,applicationId,rowCount:1,parameters:{page,pageSize:1},...patch});
+ const read=calls=>readSyncSqlPaginationCoverage({entry,calls,expectedRows:2,
+   application:()=>({scope:'LOCAL_TEST_ONLY',status:'REVOKED',versionGrants:{service:'version'}}),
+   recheckCall:async(serviceId,callId,{pinnedVersionId})=>{
+     assert.equal(serviceId,'service');assert.equal(pinnedVersionId,'version');
+     return {callId,versionId:entry.versionId,configHash:entry.configHash,rowCount:1,verified:callId!=='bad',independentResultVerified:true};
+   }});
+ const first=saved('first',1),second=saved('second',2);
+ for (const other of [saved('other-app',2,'b'),saved('wrong-version',2,'a',{serviceVersionId:'new'}),
+   saved('filtered',2,'a',{parameters:{page:2,pageSize:1,clientId:'CLIENT-001'}}),saved('bad',2)]) {
+   const partial=await read([first,saved('duplicate',1),other]);
+   assert.equal(partial.status,'INCOMPLETE');
+   assert.equal(partial.verifiedPages.length,1);
+ }
+ assert.deepEqual(await read([saved('bad',2),second,saved('duplicate',1),first]),
+   {status:'COMPLETE',applicationId:'a',pageSize:1,totalPages:2,verifiedPages:[1,2]});
 });

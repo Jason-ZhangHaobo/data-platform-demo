@@ -10,6 +10,59 @@ const invalid = () => Object.assign(Error("冻结持仓的原发布、双批运�
   { status: 409, code: "SYNC_SERVICE_SOURCE_UNCONFIRMED" });
 const time = value => typeof value === "string" ? Date.parse(value) : NaN;
 
+export function syncSqlPageShape(expectedRows, parameters) {
+  const {page, pageSize, clientId} = parameters ?? {};
+  if (clientId !== undefined || !Number.isSafeInteger(expectedRows) || expectedRows < 1 ||
+      !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100 || !Number.isInteger(page) || page < 1) return;
+  const totalPages = Math.ceil(expectedRows / pageSize);
+  if (page > totalPages) return;
+  return {page, pageSize, totalPages, rowCount:Math.min(pageSize, expectedRows - (page - 1) * pageSize)};
+}
+
+export async function readSyncSqlPaginationCoverage({entry, expectedRows, calls, application, recheckCall}) {
+  if (entry.status !== "VERIFIED" || entry.sourceRunIds.length !== 1) return;
+  const groups = new Map();
+  for (const call of calls) {
+    if (call.serviceId !== entry.serviceId || call.serviceVersionId !== entry.versionId ||
+        call.statusCode !== 200 || call.outcome !== "SUCCEEDED" || call.customerAccessHash !== undefined) continue;
+    const shape = syncSqlPageShape(expectedRows, call.parameters);
+    if (!shape || call.rowCount !== shape.rowCount) continue;
+    const app = application(call.applicationId);
+    if (app?.scope !== "LOCAL_TEST_ONLY" || !["ACTIVE","EXPIRED","REVOKED"].includes(app.status) || Object.hasOwn(app,"customerAccess") ||
+        app.versionGrants?.[entry.serviceId] !== entry.versionId) continue;
+    const key = `${call.applicationId}:${shape.pageSize}`;
+    const group = groups.get(key) ?? {applicationId:call.applicationId, pageSize:shape.pageSize,
+      totalPages:shape.totalPages, candidates:new Map()};
+    const samePage = group.candidates.get(shape.page) ?? [];
+    samePage.push(call);
+    group.candidates.set(shape.page,samePage);
+    groups.set(key,group);
+  }
+  let best;
+  for (const {applicationId,pageSize,totalPages,candidates} of groups.values()) {
+    const pages = [];
+    for (const [page, receipts] of candidates) {
+      for (const saved of receipts) {
+        try {
+          const proof = saved.id === entry.call?.callId ? entry.call : await recheckCall(entry.serviceId,saved.id,{pinnedVersionId:entry.versionId});
+          if (!proof.verified || proof.independentResultVerified !== true || proof.coverage !== undefined ||
+              proof.callId !== saved.id || proof.versionId !== entry.versionId || proof.configHash !== entry.configHash ||
+              proof.rowCount !== saved.rowCount) continue;
+          pages.push(page);
+          break;
+        } catch (error) {
+          if (![400,403,404,409,422,504].includes(error.status)) throw error;
+        }
+      }
+    }
+    const summary = { status:pages.length===totalPages?"COMPLETE":"INCOMPLETE", applicationId,pageSize,totalPages,
+      verifiedPages:pages.sort((left,right)=>left-right) };
+    if (summary.status === "COMPLETE") return summary;
+    if (!best || pages.length * best.totalPages > best.verifiedPages.length * totalPages) best = summary;
+  }
+  return best;
+}
+
 export function certifiedSyncSqlSource({ store, project, run, enabled, timeUnitMs = 1000 }) {
   const get = (kind, id) => typeof id === "string" ? store.get(kind, id, project) : undefined;
   const release = get("release", run?.releaseId);

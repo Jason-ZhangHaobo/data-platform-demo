@@ -12,7 +12,7 @@ import { checkedPublishedReportArtifacts } from "./report-provenance.mjs";
 import { publishedSqlColumnLineage } from "./sql-column-lineage.mjs";
 import { syncReportAsset, syncReportLineage, syncReportFields } from "./sync-sql-report.mjs";
 import { syncSqlLandingContext } from "./sync-sql-input.mjs";
-import { certifiedSyncSqlSource, readSyncSqlCallEvidence } from "./sync-sql-service-source.mjs";
+import { certifiedSyncSqlSource, readSyncSqlCallEvidence, syncSqlPageShape } from "./sync-sql-service-source.mjs";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const digest = /^[a-f0-9]{64}$/;
@@ -63,12 +63,12 @@ function verifyPages({ calls, read, expectedRows, batch }) {
     requireEvidence(pages.length > 0, "CALL_PAGE_COVERAGE");
     const first = pages[0].log, version = read("data_service_version", first.serviceVersionId);
     const app = read("service_app", first.applicationId), pageSize = first.parameters?.pageSize;
-    requireEvidence(Number.isInteger(pageSize) && pageSize >= 1 && pageSize <= 100 && pages.length === Math.ceil(expectedRows / pageSize) &&
+    requireEvidence(pages.length === syncSqlPageShape(expectedRows, {page:1,pageSize})?.totalPages &&
       app.status === "REVOKED" && app.versionGrants?.[version.serviceId] === version.id &&
       pages.every(({ proof, log }, index) => log.serviceVersionId === version.id && log.applicationId === app.id &&
         log.parameters?.page === index + 1 && log.parameters.pageSize === pageSize && log.parameters.clientId === undefined &&
         chronological(batch.finishedAt, log.startedAt, log.finishedAt, app.revokedAt) &&
-        proof.rowCount === Math.min(pageSize, expectedRows - index * pageSize)), "CALL_PAGE_COVERAGE");
+        proof.rowCount === syncSqlPageShape(expectedRows, log.parameters)?.rowCount), "CALL_PAGE_COVERAGE");
     const children = type === "XAPI" ? version.steps.map(step => read("data_service_version", step.dapiVersionId)) : [version];
     requireEvidence(children.every(child => child.sourceReleaseRunId === batch.id) &&
       (type !== "XAPI" || syncReportFields.every(field => children.some(child => child.fields.includes(field)))), "CALL_SOURCE_CHANGED");

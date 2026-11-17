@@ -65,10 +65,12 @@ test('local batch presentation requires matching monitoring and both whole-batch
  f.manager.revokeApplication(issued.application.id);
  const both=await localTaskConsumption({store:f.store,project:PROJECT,agent:f.agent,packageDigest:f.bundle.digest,releaseId:f.release.id,manager:f.manager});
  const exact={...proof,services:both.services,verifiedBatchIds:[batchId],status:'VERIFIED'};
- assert.throws(()=>check(exact),/未确认/); // Generic service receipts do not carry the frozen-input assertion.
+ assert.throws(()=>check(exact),/未确认/); // An individually checked call does not attest complete page coverage.
  const frozenFixture={...exact,services:exact.services.map(entry=>entry.call
-   ? {...entry,call:{...entry.call,independentResultVerified:true}} : entry)};
+   ? {...entry,paginationCoverage:{status:'COMPLETE',applicationId:entry.call.applicationId,pageSize:1,totalPages:2,verifiedPages:[1,2]}} : entry)};
  assert.equal(check(frozenFixture).proof.status,'VERIFIED');
+ assert.throws(()=>check({...frozenFixture,services:frozenFixture.services.map(entry=>entry.paginationCoverage?
+   {...entry,paginationCoverage:{...entry.paginationCoverage,verifiedPages:[1,1]}}:entry)}),/未确认/);
  assert.throws(()=>check({...frozenFixture,services:frozenFixture.services.map(entry=>({...entry,sourceRunIds:[f.batches[1].id]}))}),/未确认/);
  const old=frozenFixture.services.find(entry=>entry.serviceType==='XAPI');
  const retained=frozenFixture.services.map(entry=>entry===old?{...entry,versionStatus:'RETIRED'}:entry);
