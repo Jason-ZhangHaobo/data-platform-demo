@@ -4,6 +4,6 @@ export const isAssetResourceId = value => typeof value === "string" && /^[A-Za-z
 // Keep their canonical form; encoded paths remain rejected by FC ingress.
 export function assetResourcePath(id, action) {
   if (!isAssetResourceId(id)) throw new Error("资产编号格式不合法，未发送请求");
-  if (action !== undefined && !["annotation", "lineage", "impact"].includes(action)) throw new Error("资产操作不受支持");
+  if (action !== undefined && !["annotation", "lineage", "impact", "quality"].includes(action)) throw new Error("资产操作不受支持");
   return `/assets/${id}${action ? `/${action}` : ""}`;
 }

@@ -3,6 +3,7 @@ import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/de
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
 import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
+import { readFrozenAssetQuality } from "../src/v2/frozen-asset-quality-client.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import { fileURLToPath } from "node:url";
 import { linkSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -206,6 +207,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo streams plans
   shuduo streams apply-plan --id PLAN_ID
   shuduo assets list [--query 持仓] [--kind LANDING_TABLE]
+  shuduo assets quality --id 资产编号
   shuduo assets show|lineage|impact --id ASSET_ID
   shuduo assets annotate --id ASSET_ID --business-name 名称 --description 说明 --domain 财富管理 --owner 负责人 [--tags 持仓,T+1]
   shuduo assets annotation-submit --id ASSET_ID --file 完整标注请求.json
@@ -1267,7 +1269,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         assetResourcePath(required(parsed.options, "id"), action === "show" ? undefined : action),
       );
-    } else if (resource === "assets" && action === "annotation-submit")
+    } else if (resource === "assets" && action === "quality")
+      result = await readFrozenAssetQuality(client, {assetId:required(parsed.options,"id")});
+    else if (resource === "assets" && action === "annotation-submit")
       result = await submitAssetAnnotation(client, required(parsed.options,"id"), jsonObject(readFileSync(required(parsed.options,"file"),"utf8"),"标注请求"));
     else if (resource === "assets" && action === "annotation-request")
       result = await readAssetAnnotationRequest(client, required(parsed.options,"id"), required(parsed.options,"request_id"));

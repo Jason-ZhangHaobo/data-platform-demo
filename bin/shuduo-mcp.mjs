@@ -4,6 +4,7 @@ import { submitFundPreparation, readFundPreparation, executeFundPreparation, rea
 import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
 import {distributionReportMetricIds} from '../src/v2/distribution-report-contract.mjs';
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
+import { readFrozenAssetQuality } from "../src/v2/frozen-asset-quality-client.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
@@ -226,6 +227,7 @@ const tools = [
   { name: "realtime_plan_apply", description: "把已验证实时方案应用为READY草稿，不自动启动。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
   { name: "asset_list", description: "搜索由实际版本绑定生成的数据资产目录。", inputSchema: { type: "object", properties: { query: { type: "string" }, kind: { type: "string" } } } },
   { name: "asset_detail", description: "读取资产字段、证据摘要、指标、标准和血缘。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
+  { name: "asset_quality_receipt", description: "按原冻结发布资产读取质量检测回执，读取不执行检测。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
   { name: "asset_lineage", description: "只读版本血缘、原批次保存的SQL值来源及筛选/关联/分组/去重字段引用；引用完整不代表语义影响完整，无字段引用不代表无影响，读取不解析或计算。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
   { name: "asset_impact", description: "读取指定资产的下游版本绑定影响范围。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
   { name: "asset_annotate", description: "为合成资产保存版本化业务名称、说明、域、负责人和标签。", inputSchema: { type: "object", properties: { assetId: { type: "string" }, businessName: { type: "string" }, description: { type: "string" }, domain: { type: "string" }, owner: { type: "string" }, classification: { type: "string", enum: ["PUBLIC_DEMO", "INTERNAL_DEMO", "RESTRICTED_DEMO"] }, tags: { type: "array", items: { type: "string" } } }, required: ["assetId", "businessName", "description", "domain", "owner"] } },
@@ -777,6 +779,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     });
     return client.request(`/assets${query.size ? `?${query}` : ""}`);
   }
+  if (name === "asset_quality_receipt") return readFrozenAssetQuality(client, {assetId:args.assetId});
   if (["asset_detail", "asset_lineage", "asset_impact"].includes(name)) {
     const action = {
       asset_detail: undefined,

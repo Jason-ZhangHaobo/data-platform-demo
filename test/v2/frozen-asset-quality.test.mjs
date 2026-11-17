@@ -1,0 +1,37 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {randomUUID} from "node:crypto";
+import {MetadataStore} from "../../src/v2/store.mjs";
+import {QualityManager} from "../../src/v2/quality.mjs";
+import {frozenAssetQuality} from "../../src/v2/frozen-asset-quality.mjs";
+import {checkedFrozenAssetQuality} from "../../src/v2/frozen-asset-quality-client.mjs";
+import {publishedReportHash} from "../../src/v2/published-report-source.mjs";
+
+test("a failed frozen quality check remains failed on recheck, without running the rules on read",t=>{
+  const store=new MetadataStore(":memory:");t.after(()=>store.close());
+  const project="fictional-frozen-quality", manager=new QualityManager({store,project});
+  let passes=0;
+  const quality={evaluateRows(rule,rows){passes++;return manager.evaluateRows(rule,rows);}};
+  const rows=[{client_id:"CLIENT-001",total_assets:"2.00"},{client_id:"CLIENT-001",total_assets:"3.001"}];
+  const batch={id:randomUUID(),releaseId:randomUUID(),rows};
+  const asset={id:"dataset:sync-holdings:"+batch.id,evidenceHash:publishedReportHash(rows),rowCount:2};
+  const input={store,project,quality,asset,batch,source:{snapshotHash:"a".repeat(64)}};
+  const pending=frozenAssetQuality(input);
+  assert.equal(pending.status,"PENDING");
+  assert.equal(passes,0);
+  const run={...input,confirmation:{confirm:true,basisDigest:pending.basisDigest}};
+  const settled=frozenAssetQuality(run);
+  assert.equal(settled.status,"FAILED");
+  assert.deepEqual(settled.checks.map(check=>check.status),["PASSED","FAILED","FAILED"]);
+  assert.deepEqual(frozenAssetQuality(input),settled);
+  assert.deepEqual(frozenAssetQuality(run),settled);
+  assert.equal(passes,3);
+  assert.throws(()=>checkedFrozenAssetQuality({...settled,status:"PASSED"}));
+  assert.throws(()=>checkedFrozenAssetQuality({...settled,rows}));
+  assert.throws(()=>frozenAssetQuality({...input,source:{snapshotHash:"b".repeat(64)}}),
+    {code:"FROZEN_ASSET_QUALITY_UNPROVEN"});
+  const record=store.get("quality_frozen_asset_check",settled.checkId,project);
+  store.update("quality_frozen_asset_check",record.id,project,{receipt:{...record.receipt,status:"PASSED"}});
+  assert.throws(()=>frozenAssetQuality(input),{code:"FROZEN_ASSET_QUALITY_UNPROVEN"});
+  assert.equal(passes,3);
+});

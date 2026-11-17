@@ -47,7 +47,8 @@ import { assertSyncSqlOutputSchema, currentSyncSqlInput, freezeSyncSqlInput, par
 import { isDeepStrictEqual } from "node:util";
 import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, syncApprovalExpiry, syncSqlReviewDigest, syncSqlScheduledSchemaDetails } from "./sync-sql-publication.mjs";
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence, syncServiceProtocol, syncSqlServiceSources } from "./sync-sql-service-source.mjs";
-import { isSyncAssetId, isSyncReportEvidence, syncAssetBatchId, syncAssetView, syncReportAsset } from "./sync-sql-report.mjs";
+import { isSyncAssetId, isSyncReportEvidence, syncAssetBatchId, syncAssetView, syncReportAsset, syncReportAssetId } from "./sync-sql-report.mjs";
+import { frozenAssetQuality } from "./frozen-asset-quality.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
 import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress,serviceAgentSession} from './private-service-agent-policy.mjs';
 import { privateServiceSourceSelection } from "./private-service-routes.mjs";
@@ -2908,7 +2909,7 @@ export function createV2Server(options = {}) {
         throw fail(405, "标注请求方法不受支持");
       }
       const assetRecord = path.match(
-        /^\/api\/v2\/assets\/([^/]+)(?:\/(annotation|lineage|impact))?$/,
+        /^\/api\/v2\/assets\/([^/]+)(?:\/(annotation|lineage|impact|quality))?$/,
       );
       if (assetRecord) {
         const id = decodeURIComponent(assetRecord[1]),
@@ -2916,11 +2917,18 @@ export function createV2Server(options = {}) {
         if (isSyncAssetId(id)) {
           requireSyncSqlLocal(req);
           if (!workspaceReadActor(req)) throw Object.assign(fail(401,"请使用原资产账号登录"),{code:"AUTHENTICATION_REQUIRED"});
-          if (method !== "GET" || action && action !== "lineage") throw fail(405,"冻结发布资产支持读取原字段和血缘");
           const batch = get("release_run", publishedReportSourceBatchId(syncAssetBatchId(id)));
           requireDeliveryEvidence("release_run", batch);
           const proof = certifySyncService(batch);
           if (!proof) throw fail(404, "未找到已核对的原发布资产");
+          if (action === "quality" && (method === "GET" || method === "POST")) {
+            if (id !== syncReportAssetId(batch.id)) throw fail(404,"质量检测只支持原发布资产");
+            if (url.searchParams.size) throw fail(422,"质量回执须按原资产编号核对");
+            return json(res,200,frozenAssetQuality({store,project:PROJECT,quality,batch,source:proof.sourceEvidence,
+              asset:syncReportAsset(batch,proof,publishedReportHash),
+              confirmation:method==="POST"?await readBody(req):undefined}));
+          }
+          if (method !== "GET" || action && action !== "lineage") throw fail(405,"冻结发布资产支持读取原字段和血缘");
           const detail = syncAssetView({store,project:PROJECT,batch,proof,id,hash:publishedReportHash,
             fixtures:assets.listAssets({kind:"FIXTURE_TABLE"})});
           return json(res,200,action === "lineage" ? detail.lineage : detail);

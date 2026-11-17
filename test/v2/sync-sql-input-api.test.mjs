@@ -447,6 +447,28 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal((await request(frozenSearch,undefined,undefined,bearer)).status,403);
     assert.deepEqual((await request(frozenSearch,undefined,undefined,{Cookie:"shuduo_session=expired-fixture"})).value,[]);
     assert.equal((await request("/assets/fixture:positions",undefined,undefined,otherIdentity)).status,200);
+    const qualityPath=assetPath+"/quality";
+    const pendingQuality=await request(qualityPath);
+    assert.equal(pendingQuality.status,200);
+    assert.equal(pendingQuality.value.status,"PENDING");
+    assert.equal(pendingQuality.value.actualExecution,false);
+    assert.equal(app.store.list("quality_frozen_asset_check",PROJECT).length,0);
+    assert.equal((await request(qualityPath,undefined,undefined,otherIdentity)).status,403);
+    assert.equal((await request(qualityPath,undefined,undefined,bearer)).status,403);
+    assert.equal((await request(qualityPath,{confirm:true,basisDigest:"0".repeat(64)})).status,409);
+    const runQuality=()=>request(qualityPath,{confirm:true,basisDigest:pendingQuality.value.basisDigest});
+    const inspected=await runQuality();
+    assert.equal(inspected.status,200);
+    assert.equal(inspected.value.status,"PASSED");
+    assert.equal(inspected.value.batchId,batches[0].id);
+    assert.equal(inspected.value.checks.length,3);
+    assert.ok(inspected.value.checks.every(check=>check.evaluatedCount===2&&check.passedCount===2&&!check.invalidRowHashes));
+    assert.deepEqual((await runQuality()).value,inspected.value);
+    assert.deepEqual((await request(qualityPath)).value,inspected.value);
+    assert.equal(app.store.list("quality_frozen_asset_check",PROJECT).length,1);
+    const differentQuality=await request("/assets/"+encodeURIComponent("dataset:sync-holdings:"+batches[1].id)+"/quality");
+    assert.equal(differentQuality.value.status,"PENDING");
+    assert.ok(!JSON.stringify(inspected.value).includes("CLIENT-001"));
     const classic = await request("/reports/datasets", { name:"原批次资产数据集",code:"frozen_asset_report",assetId:lineage.value.snapshot.assetId,
       fields:asset.value.nodes.find(node=>node.id===lineage.value.snapshot.assetId).fields.map(field=>field.name) });
     assert.equal(classic.status,201,JSON.stringify(classic.value));
