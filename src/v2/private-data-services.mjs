@@ -342,7 +342,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     const key=req.headers["idempotency-key"];
     const dedup=(namespace,b,create)=>{if(typeof key!=="string"||key.length<1||key.length>100)throw fail(422,"缺少幂等键");return store.deduplicate(`${project}:private-service:${owner}:${namespace}:${key}`,serviceHash(b),create);};
     if(method==="POST" && path.endsWith("/applications")){
-      const b=bodyKeys(await readBody(req),["name","serviceIds"]);if(!Array.isArray(b.serviceIds))throw fail(422,"授权服务列表无效");for(const id of b.serviceIds){
+      const b=bodyKeys(await readBody(req),["name","serviceIds","customerAccess"]);if(!Array.isArray(b.serviceIds))throw fail(422,"授权服务列表无效");for(const id of b.serviceIds){
         const item=service(a,id);
         if (!pilot && item.publishedVersion?.outputContractId===fundDapiContract.id)
           throw fail(403,"基金凭证须在确切的消费窗口签发","PUBLIC_SERVICE_TARGET_MISMATCH");

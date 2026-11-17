@@ -180,7 +180,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services calls [--id ID]
   shuduo services invoke --type dapi|xapi --slug path [--client-id CLIENT-001 | --portfolio-id ID --trade-date YYYY-MM-DD --asset-class 类别] [--page N --page-size N]
   shuduo apps list
-  shuduo apps create --name 名称 --service-ids ID,ID
+  shuduo apps create --name 名称 --service-ids ID,ID [--customer-id CLIENT-001 --mask-fields client_id,available_cash]
   shuduo apps revoke --id ID
   shuduo sources list
   shuduo sources create --name 名称 --file positions_baseline.csv
@@ -1075,7 +1075,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     } else if (resource === "apps" && action === "list")
       result = await client.request("/data-services/applications");
-    else if (resource === "apps" && action === "create")
+    else if (resource === "apps" && action === "create") {
+      const customer = parsed.options.customer_id, masks = parsed.options.mask_fields;
+      if (masks !== undefined && customer === undefined) throw new Error("--mask-fields 需要 --customer-id");
       result = await client.request("/data-services/applications", {
         method: "POST",
         body: {
@@ -1084,9 +1086,13 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
             required(parsed.options, "service_ids"),
             "--service-ids",
           ),
+          ...(customer === undefined ? {} : { customerAccess: {
+            clientId: required(parsed.options, "customer_id"),
+            maskedFields: masks === undefined ? [] : list(masks, "--mask-fields"),
+          } }),
         },
       });
-    else if (resource === "apps" && action === "revoke")
+    } else if (resource === "apps" && action === "revoke")
       result = await client.request(
         `/data-services/applications/${encodeURIComponent(required(parsed.options, "id"))}/revoke`,
         { method: "POST", body: {} },

@@ -207,6 +207,44 @@ test("V2 API exposes versioned DAPI/XAPI to an authorized external caller", asyn
     assert.ok(
       spec.body.paths["/api/v2/open/xapis/customer-asset-overview"],
     );
+    const grant={name:"虚构单客户应用",serviceIds:[holdings.id,xapi.body.id],
+      customerAccess:{clientId:"CLIENT-001",maskedFields:["client_id","available_cash","security_count"]}};
+    const issue=body=>request(server.base,"/api/v2/data-services/applications",{key:"restricted-app",body});
+    const invalid=await issue({...grant,customerAccess:{...grant.customerAccess,maskedFields:["unregistered_field"]}});
+    assert.equal(invalid.body.code,"INVALID_CUSTOMER_ACCESS");
+    const restricted=await issue(grant);
+    assert.equal(restricted.status,201);
+    assert.deepEqual(restricted.body.application.versionGrants,{
+      [holdings.id]:holdings.publishedVersionId,[xapi.body.id]:publishedXapi.body.version.id,
+    });
+    const allowed=path=>request(server.base,"/api/v2/open/"+path,{headers:{Authorization:"Bearer "+restricted.body.token}});
+    const [positions,combined]=await Promise.all([allowed("dapis/customer-holdings-api"),allowed("xapis/customer-asset-overview")]);
+    assert.equal(positions.status,200);
+    assert.equal(combined.status,200);
+    assert.deepEqual(positions.body.data,[{client_id:"******",holding_market_value:"1500.00",security_count:"******"}]);
+    assert.deepEqual(combined.body.data,[{client_id:"******",positions:{holding_market_value:"1500.00",security_count:"******"},
+      cash:{available_cash:"******",total_assets:"1800.00"}}]);
+    assert.equal(positions.body.pagination.total,1);
+    assert.equal(combined.body.pagination.total,1);
+    const pageTwo=await allowed("xapis/customer-asset-overview?page=2&page_size=1");
+    assert.deepEqual(pageTwo.body.data,[]);
+    assert.equal(pageTwo.body.pagination.total,1);
+    const denied=await allowed("xapis/customer-asset-overview?client_id=CLIENT-002");
+    assert.equal(denied.status,403);
+    assert.equal(denied.body.code,"CUSTOMER_SCOPE_FORBIDDEN");
+    assert.equal((await allowed("dapis/customer-cash-api")).body.code,"SERVICE_FORBIDDEN");
+    assert.equal((await issue({...grant,customerAccess:{...grant.customerAccess,clientId:"CLIENT-002"}})).status,409);
+    const revokedRestricted=await request(server.base,`/api/v2/data-services/applications/${restricted.body.application.id}/revoke`,{body:{}});
+    assert.equal(revokedRestricted.status,200);
+    assert.equal((await allowed("xapis/customer-asset-overview")).status,401);
+    const evidence=await server.app.dataServices.recheckCall(xapi.body.id,combined.body.callId);
+    assert.equal(evidence.verified,true);
+    assert.equal(evidence.rowCount,1);
+    assert.equal(evidence.data,undefined);
+    const savedApp=store.get("service_app",restricted.body.application.id,PROJECT);
+    store.update("service_app",savedApp.id,PROJECT,{customerAccess:{clientId:"CLIENT-002",maskedFields:[]}});
+    await assert.rejects(server.app.dataServices.recheckCall(xapi.body.id,combined.body.callId), {code:"CONSUMPTION_RECEIPT_UNAVAILABLE"});
+    store.update("service_app",savedApp.id,PROJECT,{customerAccess:savedApp.customerAccess});
     const status = await request(server.base, "/api/v2/status");
     assert.equal(status.body.dataServices.serviceCount, 3);
     assert.equal(status.body.dataServices.cloudVerified, false);

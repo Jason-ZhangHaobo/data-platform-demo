@@ -2870,6 +2870,30 @@ kbd {
   color: #5c715d;
   font-size: 11px;
 }
+.service-customer-access {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+.service-mask-fields {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 16px;
+  row-gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.service-mask-fields legend {
+  margin-bottom: 8px;
+  padding: 0;
+}
+.service-mask-fields label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .service-form-grid input,
 .service-form-grid select {
   display: block;

@@ -189,7 +189,12 @@ const tools = [
   { name: "data_service_recovery", description: "使用当前平台身份读取私有服务启动标识、快照完整性和恢复对照；不执行计算、不发凭证，单份报告不代表冷启动验收。", inputSchema: { type: "object", additionalProperties: false, properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string", format: "uuid" } }, required: ["type", "serviceId"] } },
   { name: "data_service_calls", description: "读取数据服务调用日志，可按服务过滤。", inputSchema: { type: "object", properties: { serviceId: { type: "string" } } } },
   { name: "service_application_list", description: "列出调用应用与授权，不返回令牌或令牌哈希。", inputSchema: { type: "object", properties: {} } },
-  { name: "service_application_create", description: "创建本机调用应用并仅显示一次令牌。该操作创建持久访问能力，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { name: { type: "string" }, serviceIds: { type: "array", items: { type: "string" } } }, required: ["name", "serviceIds"] } },
+  { name: "service_application_create", description: "创建调用应用并仅显示一次令牌。可为客户资产服务限定单一客户并脱敏指定字段。该操作创建持久访问能力，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: {
+    name: { type: "string" }, serviceIds: { type: "array", items: { type: "string" } },
+    customerAccess: { type: "object", additionalProperties: false, properties: {
+      clientId: { type: "string" }, maskedFields: { type: "array", items: { type: "string", enum: ["client_id","holding_market_value","available_cash","total_assets","security_count"] } },
+    }, required: ["clientId","maskedFields"] },
+  }, required: ["name", "serviceIds"] } },
   { name: "service_application_revoke", description: "撤销本机调用应用。该操作会使令牌立即失效，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { applicationId: { type: "string" } }, required: ["applicationId"] } },
   { name: "data_service_invoke", description: "使用服务器环境中的SHUDUO_APP_TOKEN调用已授权服务；令牌不进入模型参数。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, slug: { type: "string" }, clientId: { type: "string" }, page: { type: "integer", minimum: 1 }, pageSize: { type: "integer", minimum: 1, maximum: 100 } }, required: ["type", "slug"] } },
   { name: "source_list", description: "列出V2真实数据源、版本、连接测试和元数据摘要。", inputSchema: { type: "object", properties: {} } },
