@@ -13,6 +13,7 @@ import {exactPublicationReceipt,exactPublicationReviewBasis,passedCloudReleaseBa
 import {publicationAttestationKeys} from './publication-request.mjs';
 import {fundDevelopmentBinding} from "./fund-delivery.mjs";
 import {verifiedWorkerResultDigest} from "./worker-result-evidence.mjs";
+import {uuid} from "./live-lifecycle-checkpoint.mjs";
 
 export const cloudPublicationMode = "DURABLE_PRIVATE_RELEASE_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -190,11 +191,49 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       throw fail(404,"未找到原发布请求回执");
     return release;
   }
-  const publicationRequestReceipt = (agentId, requestId, actorId) => exactReceipt(originalRequestRelease(agentId, requestId, actorId));
+  const approvalRequestKey = (actorId, requestId) => `${project}:cloud-publication-approval:${actorId}:${requestId}`;
+  const releaseRequestExists = (actorId, requestId) => store.deduplicatedId(`${project}:cloud-publication:${actorId}:${requestId}`);
+  function originalSeparateApproval(agentId,requestId,actorId) {
+    if (standaloneManual || !identifier(requestId) || !actorId || get("agent",agentId).submittedBy !== actorId)
+      throw fail(403,"独立批准仅原任务创建者可查看");
+    const approvalId=store.deduplicatedId(approvalRequestKey(actorId,requestId));
+    if (!approvalId) throw fail(404,"未找到原发布请求回执");
+    const approval=get("release_approval",approvalId), review=get("delivery_review",approval.reviewId);
+    const approvedAt=Date.parse(approval.approvedAt);
+    if (approval.agentTaskId!==agentId || approval.submittedBy!==actorId || approval.status!=="APPROVED" ||
+        !Number.isFinite(approval.publicationWindow?.startsAt) || !Number.isFinite(approval.publicationWindow?.expiresAt) ||
+        approval.publicationWindow.startsAt>=approval.publicationWindow.expiresAt ||
+        !Number.isFinite(approvedAt) || approvedAt<approval.publicationWindow.startsAt || approvedAt>=approval.publicationWindow.expiresAt ||
+        approval.approvalRequestDigest!==hash(requestId) ||
+        review.submittedBy!==actorId || review.status!=="REVIEWED" ||
+        !publicationAttestationKeys.every(key=>review.attestations?.[key]===true) ||
+        review.reviewDigest!==approval.reviewDigest || review.packageId!==approval.packageId ||
+        review.packageDigest!==approval.packageDigest || review.verificationId!==approval.rehearsalId ||
+        review.sourceRunId!==approval.sourceRunId)
+      throw fail(409,"原批准、审阅或请求绑定不一致");
+    return {approval,review};
+  }
+  function separateApprovalReceipt(agentId,requestId,actorId) {
+    const {approval}=originalSeparateApproval(agentId,requestId,actorId);
+    return {protocol:"shuduo-cloud-publication-approval/v1",status:"APPROVED",taskId:agentId,
+      approvalId:approval.id,reviewId:approval.reviewId,sourceRunId:approval.sourceRunId,
+      sourceRevisionId:approval.sourceRevisionId,sourceCodeHash:approval.sourceCodeHash,
+      packageId:approval.packageId,packageDigest:approval.packageDigest,verificationId:approval.rehearsalId,
+      reviewDigest:approval.reviewDigest,approvedAt:approval.approvedAt,expiresAt:new Date(approval.publicationWindow.expiresAt).toISOString(),
+      ...(approval.usedByReleaseId?{releaseId:approval.usedByReleaseId}:{})};
+  }
+  const publicationRequestReceipt = (agentId, requestId, actorId) => releaseRequestExists(actorId,requestId)
+    ? exactReceipt(originalRequestRelease(agentId, requestId, actorId)) : separateApprovalReceipt(agentId,requestId,actorId);
   async function publish({ agent, manualDelivery, sourceKind = "AGENT", sourceRunId, packageDigest, verificationId, attestations,
-    reviewDigest, actorId, idempotencyKey, initiatedBySession = false }) {
+    reviewDigest, actorId, idempotencyKey, initiatedBySession = false, approvalOnly, approvalId, approvalWindow }) {
     if (!enabled) throw fail(503, "云端发布驱动尚未配置");
     const subject=standaloneManual?manualDelivery:agent;if(!subject||typeof subject.id!=='string'||standaloneManual&&agent!==undefined)throw fail(422,'发布缺少指定来源任务');
+    const separate=approvalOnly!==undefined || approvalId!==undefined;
+    if (separate && (standaloneManual || sourceKind!=="AGENT" || !reviewDigest || !initiatedBySession ||
+        !approvalWindow || !Number.isFinite(approvalWindow.startsAt) || !Number.isFinite(approvalWindow.expiresAt) ||
+        !(approvalWindow.startsAt<=now() && now()<approvalWindow.expiresAt) ||
+        (approvalOnly!==undefined && approvalOnly!==true) || (approvalId!==undefined && !uuid.test(approvalId)) ||
+        (approvalOnly && approvalId))) throw fail(422,"独立批准与发起须使用当前确切发布窗口和原编号");
     const publicationScope = { ...identity(subject.id), packageDigest, verificationId };
     assertPublicationScope(publicationScope);
     const required = publicationAttestationKeys;
@@ -218,17 +257,61 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     assertPublicationScope(publicationScope);
     const confirmed = Object.fromEntries(required.map(key => [key,true]));
     const signature = hash(JSON.stringify({ ...identity(subject.id), packageDigest, verificationId, actorId, attestations: confirmed,
-      ...(sourceKind === "MANUAL" ? { sourceKind, sourceRunId } : {}), ...(reviewDigest ? {reviewDigest} : {}) }));
+      ...(sourceKind === "MANUAL" ? { sourceKind, sourceRunId } : {}), ...(reviewDigest ? {reviewDigest} : {}),
+      ...(approvalId?{approvalId}:{}) }));
     const key = `${project}:${standaloneManual?"manual-publication":"cloud-publication"}:${actorId}:${idempotencyKey}`;
+    const attribution = { sourceKind, sourceRunId: fresh.sourceRunId,
+      ...(plan.source.fundDevelopment ? { modelMode:plan.source.attribution.modelMode, fundBusinessDate:plan.source.fundLookthrough.businessDate } : {}), ...(reviewDigest ? {reviewDigest} : {}), ...(sourceKind === "MANUAL" ? { sourceAttribution: standaloneManual?'ENGINEER_AUTHORED':"ENGINEER_ASSISTED", agentIndependentE2E: false } : {}),
+      ...(standaloneManual?{source:{kind:'MANUAL_RUN',runId:fresh.run.id,revisionId:fresh.revision.id,revisionHash:fresh.revision.hash,manualDeliveryTaskId:subject.id},manualDeliveryTaskId:subject.id}:{}) };
+    const recordApproval = extra=>{
+      const review=store.create("delivery_review",project,{...attribution,packageId:item.id,packageDigest,verificationId,
+        status:"REVIEWED",scope:"PRIVATE_CLOUD_TEST",submittedBy:actorId,attestations:confirmed,reviewedAt:stamp()});
+      const approval=store.create("release_approval",project,{...attribution,packageId:item.id,packageDigest,
+        rehearsalId:verificationId,reviewId:review.id,sourceRevisionId:plan.source.revisionId,sourceCodeHash:plan.source.sqlHash,
+        status:"APPROVED",scope:"PRIVATE_CLOUD_TEST",submittedBy:actorId,approvedAt:stamp(),...extra});
+      return {review,approval};
+    };
+    const samePackage = store.list("release", project).filter(r => r.mode === cloudPublicationMode && r[sourceField] === subject.id && r.packageDigest === item.digest);
+    const approvalKey=approvalRequestKey(actorId,idempotencyKey);
+    if (approvalOnly) {
+      businessSchedule(plan);
+      const savedApprovalId=store.deduplicatedId(approvalKey);
+      const scopedSignature=hash(JSON.stringify({signature,approvalWindow}));
+      if (!savedApprovalId && (samePackage.length || store.list("release_approval",project).some(record=>
+        record.agentTaskId===subject.id && record.submittedBy===actorId && record.packageDigest===packageDigest &&
+        isDeepStrictEqual(record.publicationWindow,approvalWindow))))
+        throw fail(409,"该版本已保存批准或发布，请按原请求核对");
+      store.deduplicate(approvalKey,scopedSignature,()=>recordApproval({agentTaskId:subject.id,publicationWindow:approvalWindow,
+        approvalRequestDigest:hash(idempotencyKey)}).approval);
+      await persist();
+      return separateApprovalReceipt(subject.id,idempotencyKey,actorId);
+    }
+    let separateApproval;
+    if (approvalId!==undefined) {
+      separateApproval=originalSeparateApproval(subject.id,idempotencyKey,actorId);
+      const {approval}=separateApproval;
+      if (approval.id!==approvalId || approval.reviewDigest!==reviewDigest || approval.packageId!==item.id ||
+          approval.packageDigest!==packageDigest || approval.rehearsalId!==verificationId ||
+          approval.sourceRunId!==fresh.sourceRunId || approval.sourceRevisionId!==plan.source.revisionId ||
+          approval.sourceCodeHash!==plan.source.sqlHash || !isDeepStrictEqual(approval.publicationWindow,approvalWindow))
+        throw fail(409,"须使用原窗口、原请求和确切版本的独立批准");
+    } else if (reviewDigest && store.list("release_approval",project).some(record=>
+      record.agentTaskId===subject.id && record.submittedBy===actorId && record.packageDigest===packageDigest &&
+      record.rehearsalId===verificationId && record.reviewDigest===reviewDigest && record.publicationWindow &&
+      isDeepStrictEqual(record.publicationWindow,approvalWindow)))
+      throw fail(409,"已有独立批准，请沿原编号发起发布");
     const prior = store.deduplicatedId(key);
     if (prior) {
       store.deduplicate(key, signature, () => { throw fail(409, "原发布幂等记录缺失"); });
       const previous = get("release", prior);
       if (!matches(previous, subject.id, selector)) throw fail(409, "原发布请求绑定了不同来源或演练");
+      if (separateApproval && (previous.approvalId!==approvalId || separateApproval.approval.usedByReleaseId!==previous.id))
+        throw fail(409,"原发布与独立批准不一致");
       authorizeManualRead(subject.id, selector, previous);
       await persist(); return reviewDigest ? exactReceipt(previous) : detail(subject.id, { ...selector, releaseId: previous.id });
     }
-    const samePackage = store.list("release", project).filter(r => r.mode === cloudPublicationMode && r[sourceField] === subject.id && r.packageDigest === item.digest);
+    if (separateApproval && (samePackage.length || separateApproval.approval.usedByReleaseId))
+      throw fail(409,"原批准已绑定发布，请查询原请求");
     const existing = samePackage.filter(r => matches(r, subject.id, selector) && (singleRelease || !["CANCELLED", "ROLLED_BACK"].includes(r.status)));
     if (existing.length > 1 || singleRelease && samePackage.some(r => !matches(r, subject.id, selector)))
       throw fail(409, "此交付包已有另一演练或发布记录，不能借用旧批准");
@@ -243,17 +326,14 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     // Artifact verification yields; an approval window may close before records
     // are created. Re-check without changing the reviewed package or its scope.
     assertPublicationScope(publicationScope);
-    const attribution = { sourceKind, sourceRunId: fresh.sourceRunId,
-      ...(plan.source.fundDevelopment ? { modelMode:plan.source.attribution.modelMode, fundBusinessDate:plan.source.fundLookthrough.businessDate } : {}), ...(reviewDigest ? {reviewDigest} : {}), ...(sourceKind === "MANUAL" ? { sourceAttribution: standaloneManual?'ENGINEER_AUTHORED':"ENGINEER_ASSISTED", agentIndependentE2E: false } : {}),
-      ...(standaloneManual?{source:{kind:'MANUAL_RUN',runId:fresh.run.id,revisionId:fresh.revision.id,revisionHash:fresh.revision.hash,manualDeliveryTaskId:subject.id},manualDeliveryTaskId:subject.id}:{}) };
     const created = store.deduplicate(key, signature, () => {
-      const review = store.create("delivery_review", project, { ...attribution, packageId: item.id, packageDigest, verificationId, status: "REVIEWED", scope: "PRIVATE_CLOUD_TEST", submittedBy: actorId, attestations: confirmed, reviewedAt: stamp() });
-      const approval = store.create("release_approval", project, { ...attribution, packageId: item.id, packageDigest, rehearsalId: verificationId, reviewId: review.id, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, status: "APPROVED", scope: "PRIVATE_CLOUD_TEST", submittedBy: actorId, approvedAt: stamp() });
+      const {review,approval}=separateApproval??recordApproval();
       const initiation=initiatedBySession && reviewDigest && !standaloneManual && sourceKind==="AGENT"
         ? store.create("release_initiation",project,{trigger:"INVITED_SESSION_CONFIRMATION",requestId:idempotencyKey,actorId,
           reviewId:review.id,approvalId:approval.id,acceptedAt:stamp()}) : undefined;
       const release = store.create("release", project, { ...attribution, mode: cloudPublicationMode, [sourceField]: subject.id, submittedBy: actorId, reviewId: review.id, approvalId: approval.id, packageId: item.id, packageDigest, verificationId, sourceRevisionId: plan.source.revisionId, sourceCodeHash: plan.source.sqlHash, businessScheduledFor, status: "WAITING_SCHEDULER", health: "PENDING", scope: "PRIVATE_CLOUD_TEST", runCount: 2, publicDeployed: false, fullLifecycleE2E: false,
         ...(initiation?{initiationId:initiation.id,initiationRequestDigest:hash(idempotencyKey)}:{}) });
+      if(separateApproval) patch("release_approval",approval,{usedByReleaseId:release.id});
       for (let sequence = 1; sequence <= 2; sequence++) store.create("release_run", project, { ...attribution, mode: cloudPublicationMode, [sourceField]: subject.id, submittedBy: actorId, releaseId: release.id, packageId: item.id, packageDigest, sequence, businessScheduledFor, status: "SCHEDULED", schedulerTriggered: false, scheduledTriggerAt: new Date(now() + (sequence - 1) * 60000).toISOString(), published: false, publicDeployed: false });
       return release;
     });
@@ -572,6 +652,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
     return { ...publicationView(), readMode: "SAVED_HISTORY" };
   }
   function savedRequestReceipt(agentId, requestId, actorId) {
+    if (!releaseRequestExists(actorId,requestId)) return separateApprovalReceipt(agentId,requestId,actorId);
     const release = originalRequestRelease(agentId, requestId, actorId);
     const { bundle } = savedDelivery(agentId, { sourceKind: "AGENT", sourceRunId: runOf(release),
       packageDigest: release.packageDigest, verificationId: release.verificationId });

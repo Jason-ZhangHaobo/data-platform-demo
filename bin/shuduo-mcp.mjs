@@ -27,7 +27,7 @@ import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,muta
 import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication} from '../src/v2/standalone-manual-publication-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
-import {agentReviewEvidencePath,publicationSelectorInput,publicationPreflightPath,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {agentReviewEvidencePath,publicationApprovalStep,publicationSelectorInput,publicationPreflightPath,publicationReadPath,publicationRequestReceiptPath} from "../src/v2/publication-request.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
@@ -122,7 +122,8 @@ const tools = [
   { name: "agent_request_lookup",description:"按当前创建者与原幂等请求编号找回Agent任务；只读，不重发需求或调用模型。",inputSchema:{type:"object",additionalProperties:false,properties:{requestId:{type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"}},required:["requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},
   { name: "agent_execution_evidence",description:"按原创建请求编号读取已保存的模型用量、Spark阶段及通过核验的版本。",inputSchema:{type:"object",additionalProperties:false,properties:{requestId:publicationIdSchema},required:["requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},
   { name: "agent_publication_detail", description: "按来源、包摘要及演练读取云端测试发布，不创建计算。MANUAL必须提供sourceRunId、packageDigest、verificationId；已知releaseId时一并绑定，不选择其他历史包。执行者来自会话。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(false)]} },
-  { name: "agent_publication_create", description: "人工逐项审阅当前不可变包及成功演练后创建两个云端测试批次，不代批或自动重试。MANUAL须提供sourceKind与sourceRunId，不计Agent自主完成。可提供原requestId复用幂等编号；未知结果先查原发布，执行者不能指定。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceKind:publicationProperties.sourceKind,sourceRunId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema,requestId:publicationIdSchema,attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"],allOf:[manualPublicationCondition(false)]} },
+  { name: "agent_publication_create", description: "人工逐项审阅当前不可变包及成功演练后创建两个云端测试批次。指定 approvalOnly 仅保存确切批准，随后凭原 requestId、reviewDigest 和 approvalId 发起发布。MANUAL 须提供 sourceKind 与 sourceRunId。未知结果先查原请求。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceKind:publicationProperties.sourceKind,sourceRunId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema,requestId:publicationIdSchema,reviewDigest:publicationProperties.packageDigest,approvalOnly:{const:true},approvalId:{type:"string",format:"uuid"},attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"],allOf:[manualPublicationCondition(false)]} },
+  { name: "agent_publication_request", description: "按原请求编号只读核对已保存的确切批准或发布回执。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,requestId:publicationIdSchema},required:["taskId","requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false} },
   { name: "agent_publication_stop", description:"停止指定来源、交付包及演练的后续云端批次，保留记录。不选择其他历史发布。MANUAL必须提供sourceRunId、packageDigest、verificationId、releaseId；提供任何selector时也须releaseId，执行者来自会话。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(true)]} },
   { name: "agent_delivery_advance", description: "按当前版本推进原持久交付任务一个步骤；可提交真实Spark文件演练，不审批或发布。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 }, rehearsal:{type:"object",additionalProperties:false,properties:{
     packageId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema},
@@ -437,11 +438,15 @@ async function callTool(name, args = {}, client=defaultClient) {
     if(args.confirm!==true)throw new Error("必须先确认停止后台推进");
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background/cancel`,{method:"POST",body:{}});
   }
+  if(name==="agent_publication_request"){
+    if(!args||typeof args!=="object"||Array.isArray(args)||Object.keys(args).some(key=>!["taskId","requestId"].includes(key)))throw Error("核对原发布请求只接受任务和请求编号");
+    return client.request(publicationRequestReceiptPath(args.taskId,args.requestId));
+  }
   if(["agent_publication_detail","agent_publication_create","agent_publication_stop"].includes(name)){
     const creating=name==="agent_publication_create";
-    const allowed=new Set(["taskId",...Object.keys(publicationProperties),...(creating?["attestations","requestId"]:[])]);
+    const allowed=new Set(["taskId",...Object.keys(publicationProperties),...(creating?["attestations","requestId","reviewDigest","approvalOnly","approvalId"]:[])]);
     if(!args||typeof args!=="object"||Array.isArray(args)||Object.keys(args).some(key=>!allowed.has(key)))throw Error("发布工具包含未知参数；执行者只能来自当前会话");
-    const {taskId,attestations,requestId,...rawSelector}=args,selector=publicationSelectorInput(rawSelector);
+    const {taskId,attestations,requestId,reviewDigest,approvalOnly,approvalId,...rawSelector}=args,selector=publicationSelectorInput(rawSelector);
     const path=publicationReadPath(taskId);
     if(name==="agent_publication_detail")return client.request(publicationReadPath(taskId,selector));
     if(name==="agent_publication_stop"){
@@ -451,7 +456,10 @@ async function callTool(name, args = {}, client=defaultClient) {
     const required=["code","assertions","deliveryFiles","cloudScope"];
     if(!selector.packageDigest||!selector.verificationId||selector.releaseId||!attestations||typeof attestations!=="object"||Array.isArray(attestations)||Object.keys(attestations).length!==required.length||!required.every(key=>attestations[key]===true))throw Error("请逐项审阅确切包、成功演练和四项云端测试依据，不自动代批");
     if(requestId!==undefined&&(typeof requestId!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(requestId)))throw Error("原发布requestId不合法");
-    return client.request(path,{method:"POST",body:{...selector,attestations:Object.fromEntries(required.map(key=>[key,true]))},...(requestId===undefined?{}:{idempotencyKey:requestId})});
+    if(reviewDigest!==undefined&&(typeof reviewDigest!=="string"||!/^[a-f0-9]{64}$/.test(reviewDigest)))throw Error("确切审阅摘要不合法");
+    const step=publicationApprovalStep({approvalOnly,approvalId,reviewDigest,requestId,selector});
+    return client.request(path,{method:"POST",body:{...selector,attestations:Object.fromEntries(required.map(key=>[key,true])),
+      ...(reviewDigest===undefined?{}:{reviewDigest}),...step},...(requestId===undefined?{}:{idempotencyKey:requestId})});
   }
   if (name === "agent_delivery_advance") {
     if (args.rehearsal!==undefined && args.confirm!==true) throw Error("须确认原包和演练批次");

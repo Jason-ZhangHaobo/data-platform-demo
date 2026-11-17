@@ -995,7 +995,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
-test('a request-bound base task requires the exact verified version for delivery and publication',async t=>{
+async function requestBoundPublicationJourney(t,{separateApproval=false}={}) {
   const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true});
   const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_WORKBENCH==='true';
   const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
@@ -1178,6 +1178,50 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal((await f.call(publication,{...selector,attestations,reviewDigest:'0'.repeat(64)},randomUUID())).status,409);
   assert.equal(f.store.list('release',PROJECT).length,0);
   const request=cloudPublicationRequest(selector,bundle.id,attestations,preflight.body.reviewDigest);
+  const readPublicationTool=async(name,args)=>{
+    const response=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}},{client}));
+    assert.ok(response.result?.structuredContent,JSON.stringify(response));
+    return response.result.structuredContent;
+  };
+  if(separateApproval){
+    const saveApproval=await f.call(publication,{...request.body,approvalOnly:true},request.idempotencyKey);
+    assert.equal(saveApproval.status,202,saveApproval.body.message);
+    const approved=saveApproval.body;
+    assert.equal(approved.protocol,'shuduo-cloud-publication-approval/v1');
+    assert.equal(approved.status,'APPROVED');
+    assert.equal(approved.releaseId,undefined);
+    assert.equal(approved.taskId,created.body.id);
+    assert.equal(approved.packageDigest,bundle.digest);
+    assert.equal(approved.sourceRunId,current.runId);
+    const approvalLookup=publicationRequestReceiptPath(created.body.id,request.idempotencyKey);
+    assert.deepEqual((await f.call(approvalLookup)).body,approved);
+    const reviewFile=join(f.directory,'exact-publication-review.json');
+    writeFileSync(reviewFile,JSON.stringify(request.body),{mode:0o600});
+    for(const [action,flags] of [['publish',['--file',reviewFile,'--approve-only']],['publication-request',[]]]){
+      let received;
+      assert.equal(await runV2Cli(['agent',action,'--id',created.body.id,'--request-id',request.idempotencyKey,...flags],{},
+        {client,output:line=>{received=JSON.parse(line);},error:line=>assert.fail(line)}),0);
+      assert.deepEqual(received,approved);
+    }
+    assert.deepEqual(await readPublicationTool('agent_publication_request',{taskId:created.body.id,requestId:request.idempotencyKey}),approved);
+    assert.deepEqual((await f.call(publication,{...request.body,approvalOnly:true},request.idempotencyKey)).body,approved);
+    assert.equal((await f.call(publication,{...request.body,approvalOnly:true},randomUUID())).status,409);
+    assert.equal((await f.call(publication,request.body,request.idempotencyKey)).status,409);
+    assert.equal((await f.call(publication,{...request.body,approvalId:randomUUID()},request.idempotencyKey)).status,409);
+    assert.equal(f.store.list('release_approval',PROJECT).length,1);
+    assert.equal(f.store.list('release',PROJECT).length,0);
+    assert.equal(f.store.list('release_run',PROJECT).length,0);
+    assert.deepEqual(f.counts(),counts);
+    const originalExpiry=f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT;
+    f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT=new Date(Date.parse(originalExpiry)+1000).toISOString();
+    await f.restart();
+    assert.equal((await f.call(publication,{...request.body,approvalId:approved.approvalId},request.idempotencyKey)).status,409);
+    assert.equal(f.store.list('release',PROJECT).length,0);
+    f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT=originalExpiry;
+    await f.restart();
+    f.later(100);
+    request.body={...request.body,approvalId:approved.approvalId};
+  }
   assert.equal((await f.call(publication,{...request.body,initiatedBySession:true},request.idempotencyKey)).status,422);
   const accepted=await f.call(publication,request.body,request.idempotencyKey);
   assert.equal(accepted.status,202,accepted.body.message);
@@ -1185,18 +1229,29 @@ test('a request-bound base task requires the exact verified version for delivery
   const initialRelease=accepted.body.release;
   const initiation=initialRelease.initiationEvidence;
   assert.deepEqual(initiation,{trigger:'INVITED_SESSION_CONFIRMATION',
-    originalRequestDigest:sha256(request.idempotencyKey),acceptedAt:initialRelease.approvalTiming.approvedAt,
+    originalRequestDigest:sha256(request.idempotencyKey),acceptedAt:new Date(f.now()).toISOString(),
     taskId:created.body.id,revisionId:current.revisionId,developmentRunId:current.runId,
     releaseId:initialRelease.id,approvalId:initialRelease.approvalId,packageDigest:bundle.digest,
     reviewDigest:initialRelease.reviewDigest});
   assert.ok(!JSON.stringify(initialRelease).includes(request.idempotencyKey));
+  if(separateApproval){
+    assert.equal(initialRelease.approvalId,request.body.approvalId);
+    assert.ok(Date.parse(initiation.acceptedAt)>Date.parse(initialRelease.approvalTiming.approvedAt));
+    assert.equal(f.store.get('release_approval',request.body.approvalId,PROJECT).usedByReleaseId,initialRelease.id);
+    assert.deepEqual((await f.call(publication,request.body,request.idempotencyKey)).body,accepted.body);
+    const replay=await readPublicationTool('agent_publication_create',{taskId:created.body.id,requestId:request.idempotencyKey,...request.body});
+    assert.deepEqual(replay,accepted.body);
+  }
   assert.deepEqual(accepted.body.runs.map(run=>[run.sequence,run.status,run.schedulerTriggered]),[[1,'SCHEDULED',false],[2,'SCHEDULED',false]]);
   const original=await f.call(publicationRequestReceiptPath(created.body.id,request.idempotencyKey));
   assert.deepEqual(original.body,accepted.body);
   const aliasKey=randomUUID();
   const alias=await f.call(publication,request.body,aliasKey);
-  assert.equal(alias.status,202);
-  assert.deepEqual(alias.body.release.initiationEvidence,initiation);
+  if(separateApproval)assert.equal(alias.status,404);
+  else{
+    assert.equal(alias.status,202);
+    assert.deepEqual(alias.body.release.initiationEvidence,initiation);
+  }
   assert.equal(f.store.list('release_initiation',PROJECT).length,1);
   const [storedInitiation]=f.store.list('release_initiation',PROJECT);
   f.store.update('release_initiation',storedInitiation.id,PROJECT,{requestId:aliasKey});
@@ -1381,7 +1436,11 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal(f.store.list('release_approval',PROJECT).length,1);
   assert.equal(f.store.list('release_run',PROJECT).length,2);
   assert.deepEqual(f.queueCounts(),queueBeforeReadback);
-});
+}
+
+test('a request-bound base task requires the exact verified version for delivery and publication',requestBoundPublicationJourney);
+test('a request-bound exact approval starts no batches until the original approval launches publication',t=>
+  requestBoundPublicationJourney(t,{separateApproval:true}));
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.

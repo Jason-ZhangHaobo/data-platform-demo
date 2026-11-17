@@ -17,7 +17,8 @@ import { readWealthConsumption } from '../src/v2/wealth-report-consumption-clien
 import {checkedPrivateBatchReport, readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
 import {checkedBatchArchive, prepareBatchArchive, readBatchArchive, submitBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
-import {agentReviewEvidencePath,publicationSelectorInput,publicationPreflightPath,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {agentReviewEvidencePath,publicationApprovalStep,publicationSelectorInput,publicationPreflightPath,
+  publicationReadPath,publicationRequestReceiptPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
 import {advanceCloudV3Rehearsal,bindCloudV3Consumption,checkCloudV3PreparedEntry,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,prepareCloudV3Next,rebindCloudV3PreparedSource,settleCloudV3Failure,submitCloudV3Publication,verifyCloudV3Completion} from "../scripts/start-cloud-v3-case.mjs";
 import {readCloudV3Run} from "../scripts/cloud-v3-run.mjs";
@@ -122,6 +123,9 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent publication --id AGENT_TASK_ID [--source-kind AGENT|MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
   shuduo agent publication-preflight --id AGENT_TASK_ID --source-kind AGENT --source-run-id RUN_ID --package-digest SHA256 --verification-id ID
   shuduo agent publish --id AGENT_TASK_ID --file REVIEW_JSON [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --request-id ORIGINAL_REQUEST_ID]
+  shuduo agent publish --id AGENT_TASK_ID --file EXACT_REVIEW_JSON --request-id ORIGINAL_REQUEST_ID --approve-only
+  shuduo agent publish --id AGENT_TASK_ID --file EXACT_REVIEW_JSON --request-id ORIGINAL_REQUEST_ID --approval-id ORIGINAL_APPROVAL_ID
+  shuduo agent publication-request --id AGENT_TASK_ID --request-id ORIGINAL_REQUEST_ID
   shuduo agent stop-publication --id AGENT_TASK_ID [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
     人工来源必须指定运行、包摘要和演练；停止还须指定发布编号。四项审阅来自 REVIEW_JSON，不自动批准或重试；发布重试沿用 --request-id。
   shuduo agent cancel-delivery --id DELIVERY_TASK_ID
@@ -314,7 +318,9 @@ const jsonObject = (value, name) => {
 };
 const publicationCliFields={source_kind:"sourceKind",source_run_id:"sourceRunId",package_digest:"packageDigest",verification_id:"verificationId",release_id:"releaseId"};
 function publicationCliOptions(argv,options,action){
-  const allowed=new Set(["id","base_url","help",...Object.keys(publicationCliFields),...(action==="publish"?["file","request_id"]:[])]),seen=new Set();
+  const actionFlags=action==="publish"?["file","request_id","approve_only","approval_id"]:
+    action==="publication-request"?["request_id"]:[];
+  const allowed=new Set(["id","base_url","help",...Object.keys(publicationCliFields),...actionFlags]),seen=new Set();
   for(const token of argv.filter(value=>value.startsWith("--"))){
     const key=token.slice(2).replaceAll("-","_");
     if(!allowed.has(key)||seen.has(key))throw Error("发布命令包含未知或重复参数；不能指定执行者或覆盖审阅范围");
@@ -325,12 +331,14 @@ function publicationCliOptions(argv,options,action){
 }
 function reviewedPublication(input){
   if(!input||typeof input!=="object"||Array.isArray(input))throw Error("发布审阅必须为JSON对象");
-  const {attestations,...selector}=input;
+  const {attestations,reviewDigest,...selector}=input;
   const required=["code","assertions","deliveryFiles","cloudScope"];
   if(!attestations||typeof attestations!=="object"||Array.isArray(attestations)||Object.keys(attestations).length!==required.length||!required.every(key=>attestations[key]===true))throw Error("必须逐项确认代码、断言、交付文件和云端测试范围，不自动代批");
   const selected=publicationSelectorInput(selector);
   if(!selected.packageDigest||!selected.verificationId||selected.releaseId)throw Error("发布必须绑定包摘要和演练，不能提供已有发布编号");
-  return {...selected,attestations:Object.fromEntries(required.map(key=>[key,true]))};
+  if(reviewDigest!==undefined&&(typeof reviewDigest!=="string"||!/^[a-f0-9]{64}$/.test(reviewDigest)))
+    throw Error("确切审阅摘要不合法");
+  return {...selected,attestations:Object.fromEntries(required.map(key=>[key,true])),...(reviewDigest?{reviewDigest}:{})};
 }
 function serviceQueryOptions(options) {
   const flags = ["client_id", "portfolio_id", "trade_date", "asset_class", "page", "page_size"];
@@ -750,10 +758,14 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       validateManualDeliveryFlags(parsed,argv);
       result = parsed.options.source_kind==='MANUAL'?await readManualDeliveryWorkflow(client,{taskId:required(parsed.options,'id'),sourceRunId:required(parsed.options,'source_run_id')}):await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
     }
-    else if (resource === "agent" && ["publication","publication-preflight","publish","stop-publication"].includes(action)) {
+    else if (resource === "agent" && ["publication","publication-preflight","publication-request","publish","stop-publication"].includes(action)) {
       const flags=publicationCliOptions(argv,parsed.options,action),taskId=required(parsed.options,"id");
       if(action==="publication")result=await client.request(publicationReadPath(taskId,publicationSelectorInput(flags)));
       else if(action==="publication-preflight")result=await client.request(publicationPreflightPath(taskId,publicationSelectorInput(flags)));
+      else if(action==="publication-request"){
+        if(Object.keys(flags).length)throw Error("回执读取只接受原任务和原请求编号");
+        result=await client.request(publicationRequestReceiptPath(taskId,required(parsed.options,"request_id")));
+      }
       else if(action==="stop-publication"){
         const selector=publicationSelectorInput(flags);
         if(Object.keys(selector).length&&!selector.releaseId)throw Error("停止指定版本必须提供 --release-id，不选择其他历史发布");
@@ -765,7 +777,10 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         }
         const body=reviewedPublication({...reviewed,...flags}),requestId=parsed.options.request_id;
         if(requestId!==undefined&&(typeof requestId!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(requestId)))throw Error("原发布请求编号不合法");
-        result=await client.request(publicationReadPath(taskId),{method:"POST",body,...(requestId===undefined?{}:{idempotencyKey:requestId})});
+        const step=publicationApprovalStep({approvalOnly:parsed.options.approve_only,approvalId:parsed.options.approval_id,
+          reviewDigest:body.reviewDigest,requestId,selector:body});
+        result=await client.request(publicationReadPath(taskId),{method:"POST",body:{...body,...step},
+          ...(requestId===undefined?{}:{idempotencyKey:requestId})});
       }
     }
     else if (resource === "agent" && action === "deliveries") {

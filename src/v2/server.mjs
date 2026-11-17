@@ -6337,16 +6337,18 @@ export function createV2Server(options = {}) {
         }
         if (method==="POST" && !privatePublication[2]) {
           const body=await readBody(req);
-          if(Object.keys(body).some(k=>!["sourceKind","sourceRunId","packageDigest","verificationId","attestations","reviewDigest"].includes(k)))throw fail(422,"发布请求包含未支持字段");
+          if(Object.keys(body).some(k=>!["sourceKind","sourceRunId","packageDigest","verificationId","attestations","reviewDigest","approvalOnly","approvalId"].includes(k)))throw fail(422,"发布请求包含未支持字段");
           const exact = Object.hasOwn(body,"reviewDigest");
           if (exact && (typeof body.reviewDigest !== "string" || !/^[a-f0-9]{64}$/.test(body.reviewDigest)))
             throw fail(422,"人工审阅摘要格式不合法");
           if (exact && !publicationAccess) throw fail(403,"确切版本须在独立发布窗口提交");
+          const approvalWindow=publicationAccess && {startsAt:publicationAccess.startsAt,expiresAt:publicationAccess.expiresAt};
           const selector = validatePublicationSelector({packageDigest:text(body.packageDigest,64,64),verificationId:text(body.verificationId,1,100),
             ...(Object.hasOwn(body,"sourceKind")?{sourceKind:body.sourceKind}:{}),...(Object.hasOwn(body,"sourceRunId")?{sourceRunId:body.sourceRunId}:{})},actorId);
           if (publicationAccess && (agent.requestBound === true || agent.derivedFrom) && selector.sourceKind === "AGENT" && !exact)
             throw fail(422,"此任务须先审阅原交付、文件演练及发布预检摘要");
           return json(res,202,await cloudPublication.publish({agent,...selector,attestations:body.attestations,
+            approvalOnly:body.approvalOnly,approvalId:body.approvalId,approvalWindow,
             ...(exact?{reviewDigest:body.reviewDigest,initiatedBySession:true}:{}),idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
         }
       }

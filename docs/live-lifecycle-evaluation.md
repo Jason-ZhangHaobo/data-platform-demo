@@ -287,6 +287,10 @@ shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CA
 
 确切版本发布的只读回执保留受邀会话确认的原请求摘要和受理时间，绑定原 Agent、版本、批准和交付包。相同包的别名请求读取同一发起证据。v3 首次认领发布时保存证据，后续只读结算复核时序与内容。旧回执保持原格式。受邀会话确认只记录批准与发起的边界，签名定时批次仍单独归因，计算整链自主率还需要 Agent 发起与接口消费的实际证据。
 
+受邀创建者也可以只保存确切版本的批准。在有效的原发布窗口，向现有发布接口提交原请求编号、当前审阅摘要与四项确认，并设置 `approvalOnly: true`。保存后的回执含批准编号和有效时间，此时还没有待调度批次。取得批准后，同一受邀创建者使用原请求编号、同一版审阅和 `approvalId` 发起发布。服务端重新核对任务、代码、包、演练与原窗口，再用原批准创建两个待调度批次。响应未知时先读取原请求的回执。
+
+CLI 对应 `shuduo agent publish --id TASK_ID --file REVIEW_JSON --request-id REQUEST_ID --approve-only`，第二步将 `--approve-only` 换成 `--approval-id APPROVAL_ID`。只读回查用 `shuduo agent publication-request --id TASK_ID --request-id REQUEST_ID`。MCP 对应 `agent_publication_create` 的两个参数及 `agent_publication_request`。工作台保留原一次提交路径。已有分步批准的版本须带原批准编号发起。该流程的本机回归使用虚构签名回执，正式评测以同版线上记录为准。
+
 `v3-run` 可省略完成回执，离线查看原评测编号下的 20 个固定案例。有回执时核对原检查点与确切案例，回环匹配只记本机证据。受邀 HTTPS 完成还须绑定原开发窗口、独立验包、已登记的结构化需求、已结算的模型用量、原演练、确切审阅批准、双批监控和两个匹配的消费批次。完成记录列出从演练就绪到工程师批准的等待时间。缺少时间证据时先用 `v3-publish --reconcile` 核对原发布，保留同一批准与批次。
 
 开发工作台、`shuduo agent execution-evidence` 和 MCP 的 `agent_execution_evidence` 共用原任务的触发来源。模型尝试和原 Spark 批次分别记录签名后台事件、任务创建者发起推进或私有调度调用。存储未记录的来源显示“未记录”。Spark 回执未知后沿原编号核对或提交时可保留多个尝试来源，实际批次仍只有一个。触发记录不代替模型用量、签名结果、浏览器关闭试验或整条链路验收。工程师审阅和人工修正保留各自原证据。
