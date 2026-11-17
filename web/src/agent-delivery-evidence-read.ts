@@ -75,7 +75,7 @@ export function checkedAgentPublication(value:unknown,{taskId,scope,selector,rel
 
 const fields=['client_id','holding_market_value','available_cash','total_assets','security_count'];
 const invalidConsumption=()=>Error('消费回执的结构、固定版本或原发布来源未确认；只读重查，不创建接口、凭证或调用。');
-export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBinding,batches:{id:string;status:string;schedulerTriggered?:boolean}[],expectedOutput?:{id:string;metadataHash:string},expectedFund?:{id:string;modelMode:string}):TaskConsumption{
+export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBinding,batches:{id:string;status:string;schedulerTriggered?:boolean}[],expectedOutput?:{id:string;metadataHash:string},expectedFund?:{id:string;modelMode:string},allowVersionHistory=false):TaskConsumption{
  if(expectedFund)return checkedFundConsumption(value,binding,batches,expectedFund);
  if(record(value)&&value.protocol==='shuduo-local-distribution-consumption/v1')return checkedDistributionConsumption(value,binding,batches,expectedOutput);
  if(expectedOutput)throw invalidConsumption();
@@ -108,7 +108,8 @@ export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBindi
    if(entry.fullAssetComposition!==complete)throw invalidConsumption();
   }
  }
- if(new Set(services.map(s=>s.serviceId)).size!==services.length||value.status==='VERIFIED'&&(value.truncated||!services.some(s=>s.status==='VERIFIED'&&s.fullAssetComposition===true&&s.call?.coverage===undefined)))throw invalidConsumption();
+ const keys=services.map(s=>allowVersionHistory?`${s.serviceId}:${s.versionId}`:s.serviceId);
+ if(new Set(keys).size!==services.length||value.status==='VERIFIED'&&(value.truncated||!services.some(s=>s.status==='VERIFIED'&&s.fullAssetComposition===true&&s.call?.coverage===undefined)))throw invalidConsumption();
  return value as TaskConsumption;
 }
 
@@ -128,8 +129,11 @@ export function checkedLocalSyncBatchConsumption(value:unknown,binding:ServiceSo
    value.sourceReleaseRunId!==batchId||value.snapshotHash!==snapshotHash||!record(monitor)||
    !id(monitor.eventId)||!date(monitor.observedAt)||monitor.sequence!==sequence||
    typeof monitor.businessDate!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(monitor.businessDate))throw invalidConsumption();
- const proof=checkedAgentConsumption(value,binding,[{id:batchId,status:"SUCCEEDED",schedulerTriggered:true}]);
- if(proof.services.some(service=>service.sourceRunIds.some(runId=>runId!==batchId)))throw invalidConsumption();
+ const proof=checkedAgentConsumption(value,binding,[{id:batchId,status:"SUCCEEDED",schedulerTriggered:true}],undefined,undefined,true);
+ if(proof.services.some(service=>service.sourceRunIds.some(runId=>runId!==batchId)||
+   !optional(service.versionStatus,status=>status==="PUBLISHED"||status==="RETIRED")))throw invalidConsumption();
+ const active=proof.services.filter(service=>service.versionStatus!=="RETIRED").map(service=>service.serviceId);
+ if(new Set(active).size!==active.length)throw invalidConsumption();
  const verified=proof.services.filter(service=>service.status==="VERIFIED"&&service.sourceRunIds[0]===batchId&&
    service.call?.independentResultVerified===true&&service.call.coverage===undefined);
  const passed=!proof.truncated&&verified.some(service=>service.serviceType==="DAPI")&&

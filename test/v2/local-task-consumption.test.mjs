@@ -8,6 +8,7 @@ import {createV2Server,PROJECT} from '../../src/v2/server.mjs';
 import {MetadataStore} from '../../src/v2/store.mjs';
 import {BusinessQueryStore,DataServiceManager} from '../../src/v2/data-services.mjs';
 import {localTaskConsumption} from '../../src/v2/local-task-consumption.mjs';
+import {privateTaskConsumption} from '../../src/v2/private-task-consumption.mjs';
 import {seedLocalServiceSource} from './fixtures/local-service-sources.mjs';
 
 test('local task consumption joins existing source and revoked-app receipts without executing or writing',async t=>{
@@ -53,4 +54,18 @@ test('local task consumption joins existing source and revoked-app receipts with
  for(const suffix of ['&release_id=invalid','&release_id='+release.id+'&release_id='+release.id,'&package_digest='+bundle.digest])assert.equal((await fetch(path+suffix)).status,422);
  assert.equal((await fetch(path+'&extra=not-supported')).status,422);
  assert.equal(computations,0);assert.equal(store.list('service_call',PROJECT).length,count);
+ const original=store.get('data_service_version',manager.detail(x.id).publishedVersion.id,PROJECT);
+ const next=manager.createXapiVersion(x.id,{steps:original.steps,rateLimitPerMinute:45});
+ await manager.test(x.id,{});manager.publish(x.id);
+ const history=await privateTaskConsumption({store,project:PROJECT,taskId:agent.id,packageDigest:bundle.digest,releaseId:release.id,
+   batchId:run.id,includeRetiredBatchVersions:true,scope:'LOCAL_TEST_ONLY',services:manager.list(),
+   ownedService:id=>manager.detail(id),getVersion:id=>store.get('data_service_version',id,PROJECT),
+   source:id=>store.get('release_run',id,PROJECT),getRelease:id=>id===release.id?{...release,sourceAgentTaskId:agent.id}:undefined,
+   application:id=>manager.application(id),calls:id=>manager.listCalls(id),
+   recheckCall:(id,callId,options)=>manager.recheckCall(id,callId,options)});
+ const variants=history.services.filter(item=>item.serviceId===x.id);
+ assert.deepEqual(variants.map(item=>[item.versionId,item.versionStatus,item.status]),
+   [[next.id,'PUBLISHED','PENDING'],[original.id,'RETIRED','VERIFIED']]);
+ assert.equal(variants[1].call.applicationStatus,'REVOKED');
+ assert.equal(store.list('service_call',PROJECT).length,count);
 });

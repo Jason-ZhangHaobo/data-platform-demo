@@ -70,6 +70,12 @@ test('local batch presentation requires matching monitoring and both whole-batch
    ? {...entry,call:{...entry.call,independentResultVerified:true}} : entry)};
  assert.equal(check(frozenFixture).proof.status,'VERIFIED');
  assert.throws(()=>check({...frozenFixture,services:frozenFixture.services.map(entry=>({...entry,sourceRunIds:[f.batches[1].id]}))}),/未确认/);
+ const old=frozenFixture.services.find(entry=>entry.serviceType==='XAPI');
+ const retained=frozenFixture.services.map(entry=>entry===old?{...entry,versionStatus:'RETIRED'}:entry);
+ const replacement={...old,versionId:foreign,versionStatus:'PUBLISHED',status:'PENDING',call:undefined};
+ const history={...frozenFixture,services:[...retained,replacement],matchingCount:retained.length+1};
+ assert.equal(check(history).proof.status,'VERIFIED');
+ assert.throws(()=>check({...history,services:[...retained,{...replacement,versionId:old.versionId}]}),/未确认/);
 });
 test('manual private projections preserve attribution and require published batches rather than development runs',async t=>{
  const f=await fixture(t),value=structuredClone(f.consumption),binding={...f.binding,sourceKind:'MANUAL',scope:'PRIVATE_CLOUD_TEST'};

@@ -28,7 +28,8 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
   const selection={taskId:agent.id,packageDigest,releaseId},sources=sync ? syncSourcesFor(selection) : localServiceSources({store,project,selection}),ids=new Set(sources.map(source=>source.id));
   if (sync && (sources.length !== 2 || batchId && !ids.has(batchId))) throw fail();
   const getRelease=id=>id===releaseId&&sources.length?{...store.get('release',id,project),sourceAgentTaskId:agent.id,sourceKind:'AGENT'}:undefined;
-  const report = await privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,callIdDigest,batchId,scope:'LOCAL_TEST_ONLY',services:manager.list(),
+  const report = await privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,callIdDigest,batchId,
+   includeRetiredBatchVersions:Boolean(sync&&batchId),scope:'LOCAL_TEST_ONLY',services:manager.list(),
    getPackage:id=>store.get('delivery_package',id,project),
    ownedService:id=>manager.detail(id),getVersion:id=>store.get('data_service_version',id,project),getRelease,
    source:id=>{if(!ids.has(id)||batchId&&id!==batchId)throw fail();return store.get('release_run',id,project);},

@@ -31,8 +31,8 @@ export function LocalSyncBatchConsumption({api,binding,batchId,snapshotHash,sequ
         <p>监控事件 <code>{String(result.monitor.eventId).slice(0,8)}</code> · 业务日 {String(result.monitor.businessDate)}</p>
         <strong role="status">{result.proof.status==="VERIFIED"?"本批 DAPI 与 XAPI 消费已核验":"本批消费待核验"}</strong>
         {!result.proof.services.length&&<p>该批次暂无可核对的历史调用。</p>}
-        {result.proof.services.map(service=><p key={service.serviceId}>
-          <span>{service.serviceType} · {service.name}</span><code>版本 {service.versionId.slice(0,8)}</code>
+        {result.proof.services.map(service=><p key={service.serviceId+":"+service.versionId}>
+          <span>{service.serviceType} · {service.name}</span><code>{service.versionStatus==="RETIRED"?"退役版本":"版本"} {service.versionId.slice(0,8)}</code>
           {service.status==="VERIFIED"&&service.call?.verified?<small>
             {service.call.coverage==="SINGLE_CUSTOMER"&&"单客户授权 · "}调用 {service.call.callId.slice(0,8)} · {service.call.rowCount} 行 · {applicationStatusText(service.call.applicationStatus,true)}
           </small>:<small>{service.notice}</small>}

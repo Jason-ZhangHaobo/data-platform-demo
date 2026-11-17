@@ -5,25 +5,43 @@ import {consumerDigest,validateConsumerSource} from "./consumer-source.mjs";
 const assetFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 // Private, owner-authorized projection of persisted calls. No tokens, rows,
 // parameters, rematerialization, model invocation or new consumer calls.
-export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, callAttribution, scope = "PRIVATE_CLOUD_TEST",now=Date.now }) {
+export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId, includeRetiredBatchVersions = false, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, callAttribution, scope = "PRIVATE_CLOUD_TEST",now=Date.now }) {
   if (!["PRIVATE_CLOUD_TEST", "LOCAL_TEST_ONLY"].includes(scope)) throw new Error("Unsupported consumption scope");
   const entries = [], limit = 20;
   const sourceField=manualDeliveryTaskId?'manualDeliveryTaskId':'sourceAgentTaskId',sourceId=manualDeliveryTaskId??taskId,identity=manualDeliveryTaskId?{manualDeliveryTaskId}:{taskId},matches=r=>r?.[sourceField]===sourceId&&(!manualDeliveryTaskId||r.sourceAgentTaskId===undefined);
   if(manualDeliveryTaskId&&(taskId!==undefined||!releaseId||scope!=='PRIVATE_CLOUD_TEST'))throw Error('Invalid manual consumption identity');
   if (callIdDigest !== undefined && (!releaseId || typeof callIdDigest !== "string" || !/^[a-f0-9]{64}$/.test(callIdDigest)))
     throw Error("Invalid exact consumption call");
+  if (includeRetiredBatchVersions && (scope !== "LOCAL_TEST_ONLY" || !batchId || !releaseId))
+    throw Error("Invalid frozen batch version history");
   const selectedRelease=releaseId===undefined?undefined:getRelease(releaseId);
   const selectedMatches=releaseId===undefined||selectedRelease?.id===releaseId&&matches(selectedRelease)&&selectedRelease.packageDigest===packageDigest;
   const attribution=release=>({sourceKind:release.sourceKind??"AGENT",
     ...(release.sourceKind==="MANUAL"?{sourceAttribution:release.sourceAttribution??"ENGINEER_ASSISTED"}:{}),agentIndependentE2E:false});
   const exactCall = callIdDigest === undefined || !selectedMatches ? undefined : calls().find(call =>
     typeof call.id === "string" && typeof call.serviceVersionId === "string" && consumerDigest(call.id) === callIdDigest);
+  const successfulReceipt = call => call.outcome === "SUCCEEDED" && call.statusCode === 200 && call.rowCount > 0;
+  const candidatesFor = service => {
+    if (service.status !== "PUBLISHED") return [];
+    if (callIdDigest !== undefined)
+      return exactCall?.serviceId === service.id ? [{service,root:getVersion(exactCall.serviceVersionId)}] : [];
+    if (!includeRetiredBatchVersions || !selectedMatches) return [{service,root:service.publishedVersion}];
+    const savedCalls = calls(service.id);
+    const roots = [service.publishedVersion];
+    const retiredIds = new Set(savedCalls.filter(call=>successfulReceipt(call) && typeof call.serviceVersionId === "string")
+      .map(call=>call.serviceVersionId));
+    retiredIds.delete(service.publishedVersion?.id);
+    for (const id of retiredIds) {
+      const version = getVersion(id);
+      if (version?.status === "RETIRED") roots.push(version);
+    }
+    return roots.map(root=>({service,root,savedCalls}));
+  };
   let matchingCount = 0;
-  for (const service of services) {
-    if (callIdDigest !== undefined && exactCall?.serviceId !== service.id) continue;
-    const root = exactCall ? getVersion(exactCall.serviceVersionId) : service.publishedVersion;
-    if (!root || service.status !== "PUBLISHED" || root.serviceId !== service.id || root.serviceType !== service.serviceType ||
-        (exactCall && !["PUBLISHED", "RETIRED"].includes(root.status))) continue;
+  for (const {service,root,savedCalls} of services.flatMap(candidatesFor)) {
+    const historical = includeRetiredBatchVersions && root?.status === "RETIRED";
+    if (!root || root.serviceId !== service.id || root.serviceType !== service.serviceType ||
+        ((exactCall || includeRetiredBatchVersions) && !["PUBLISHED", "RETIRED"].includes(root.status))) continue;
     let children;
     try {
       children = root.serviceType === "XAPI" ? (Array.isArray(root.steps) ? root.steps.slice(0,5) : []).map(step => {
@@ -38,7 +56,7 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
         (releaseId===undefined||release.id===releaseId);
     });
     if (!related || batchId && !children.every(version=>version?.sourceReleaseRunId===batchId)) continue;
-    const successful = c => c.serviceVersionId === root.id && c.outcome === "SUCCEEDED" && c.statusCode === 200 && c.rowCount > 0;
+    const successful = c => c.serviceVersionId === root.id && successfulReceipt(c);
     const granted = c => {
       const app = application(c.applicationId);
       return app?.scope === scope && app.serviceIds?.includes(service.id) && ["ACTIVE", "REVOKED", "EXPIRED"].includes(app.status);
@@ -48,6 +66,7 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
     if (entries.length >= limit) continue;
     const entry = { serviceId: service.id, serviceType: service.serviceType, name: service.name,
       versionId: root.id, configHash: root.configHash, status: "PENDING", sourceRunIds: [],
+      ...(includeRetiredBatchVersions ? {versionStatus:root.status} : {}),
       notice: "尚无当前发布版本的成功授权调用；测试或打开模块不算消费。" };
     try {
       if (!serviceVersionConfigValid(root) || !children.length || root.serviceType==="XAPI"&&(!Array.isArray(root.steps)||root.steps.length<2||root.steps.length>5) ||
@@ -93,11 +112,12 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
       // A later restricted receipt should remain readable by exact ID, but
       // cannot stand in for or displace the ordinary batch evidence.
       const limited = call => call.customerAccessHash !== undefined || Object.hasOwn(application(call.applicationId) ?? {}, "customerAccess");
-      const candidates = exactCall ? [] : calls(service.id).filter(c=>successful(c) && granted(c))
+      const candidates = exactCall ? [] : (savedCalls ?? calls(service.id)).filter(c=>successful(c) && granted(c))
         .sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt)));
       const call = exactCall ?? candidates.find(candidate=>!limited(candidate)) ?? candidates[0];
+      if (historical && !call) { matchingCount--; continue; }
       if (call) {
-        const proof = await recheckCall(service.id, call.id, exactCall ? { pinnedVersionId: root.id } : undefined);
+        const proof = await recheckCall(service.id, call.id, exactCall || historical ? { pinnedVersionId: root.id } : undefined);
         if (proof.coverage !== (limited(call) ? "SINGLE_CUSTOMER" : undefined))
           throw Object.assign(new Error(), {status:409,code:"CONSUMPTION_SCOPE_UNCONFIRMED"});
         entry.status = proof.verified ? "VERIFIED" : "NEEDS_ATTENTION";

@@ -39,7 +39,7 @@ export type TaskConsumption = {
   outputContractId?:string;metadataHash?:string;
   checkedAt: string; notice: string; externalSystemVerified: boolean; agentIndependentE2E: boolean;
   services: { serviceId: string; serviceType: string; name: string; versionId: string; configHash: string;
-    releaseId?:string;sourceKind?:string;agentIndependentE2E?:boolean;
+    releaseId?:string;sourceKind?:string;agentIndependentE2E?:boolean;versionStatus?:"PUBLISHED"|"RETIRED";
     status: string; code?: string; notice: string; sourceRunIds: string[]; fullAssetComposition?: boolean;distributionComposition?:boolean;fundExposureComposition?:boolean;
     source?:{modelClassification?:string;modelMode?:string;engineClassification?:string};checkedCalls?:unknown[];
     call?: { callId: string; versionId: string; verified: boolean;independentResultVerified?:boolean; coverage?:"SINGLE_CUSTOMER"; resultHash: string; rowCount: number; applicationId: string; applicationStatus: string; finishedAt: string } }[];
