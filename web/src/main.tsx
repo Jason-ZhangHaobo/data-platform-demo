@@ -52,7 +52,6 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { initialPythonCode } from "./python-template";
-import { developmentRunLog } from "./run-log";
 import {agentDevelopmentReadiness} from "./agent-submission";
 import {workbenchEnvironment,mayWriteServices} from "./workbench-environment";
 import type { AuthSession, PublicationTarget } from "./AuthDialog";
@@ -64,6 +63,7 @@ import type {ServiceSourceBinding} from "./service-source-binding";
 import { loadModuleStartup, moduleStartupPaths, startupReadCurrent } from "./startup-loading";
 import type { StartupReadState } from "./startup-loading";
 const SqlEditor = lazy(() => import("./SqlEditor"));
+const RunLogContent = lazy(async () => ({ default: (await import("./run-log")).RunLogContent }));
 const DataServicesWorkbench = lazy(async () => ({ default: (await import("./DataServicesWorkbench")).DataServicesWorkbench }));
 const BatchServiceHistory = lazy(() => import("./BatchServiceHistory"));
 const IngestionWorkbench = lazy(async () => ({ default: (await import("./IngestionWorkbench")).IngestionWorkbench }));
@@ -77,7 +77,6 @@ const AgentReportHistory = lazy(() => import("./AgentReportHistory").then(module
 const AgentCenter = lazy(async () => ({ default: (await import("./AgentCenter")).AgentCenter }));
 const SqlContractScope = lazy(async () => ({ default: (await import("./SqlContractScope")).SqlContractScope }));
 const AgentDevelopmentWorkbench = lazy(async () => ({ default: (await import("./AgentDevelopmentWorkbench")).AgentDevelopmentWorkbench }));
-const AgentStartupPreview = lazy(() => import("./AgentStartupPreview"));
 const PythonWorkbench = lazy(async () => ({ default: (await import("./PythonWorkbench")).PythonWorkbench }));
 const CloudReadinessPanel = lazy(async () => ({ default: (await import("./CloudReadinessPanel")).CloudReadinessPanel }));
 const AuthDialog = lazy(async () => ({ default: (await import("./AuthDialog")).AuthDialog }));
@@ -86,6 +85,7 @@ const ChangePasswordPanel = lazy(async () => ({ default: (await import("./AuthDi
 const InvitationPanel = lazy(async () => ({ default: (await import("./AuthDialog")).InvitationPanel }));
 // This marker narrows the UI only; proxy and application authorize requests.
 const privatePreview = Boolean(document.querySelector('meta[name="shuduo-private-preview"]'));
+let opening: typeof import("./AgentStartupPreview") | undefined;
 const agentDevelopmentPreview = privatePreview && Boolean(document.querySelector('meta[name="shuduo-agent-development"]'));
 const privateServicesPreview=privatePreview && Boolean(document.querySelector('meta[name="shuduo-private-services"]'));
 const privateServiceAgentPreview=privateServicesPreview&&Boolean(document.querySelector('meta[name="shuduo-private-service-agent"]'));
@@ -403,7 +403,8 @@ function App() {
     };
   }, [viewEpoch]);
   const coreRequest = useRef(0), inputRequest = useRef(0);
-  const openingContexts = useRef<{request?:Promise<Context[]>; consumed?:boolean; selected?:string}>({});
+  const openingContexts = useRef<{request?:Promise<Context[]>; consumed?:boolean; settled?:boolean}>({});
+  const [openingContextId, setOpeningContextId] = useState(opening?.selection);
   const readOpeningContexts = () => openingContexts.current.request ??= requestApi<Context[]>("/contexts");
   const [coreReadState, setCoreReadState] = useState<StartupReadState>("LOADING"),
     [coreError, setCoreError] = useState(""), [confirmedCoreEpoch, setConfirmedCoreEpoch] = useState(-1),
@@ -464,7 +465,7 @@ function App() {
   const inputModuleRef = useRef(inputModule); inputModuleRef.current = inputModule;
   const [agentDraftDirty, setAgentDraftDirty] = useState(false);
   const clearPersonalView = () => {
-    openingContexts.current.selected = undefined;
+    setOpeningContextId(undefined);
     inputRequest.current++; setContexts([]);
     setModuleRead({ module: inputModuleRef.current, epoch: authEpoch.current, core: coreRequest.current, state: "LOADING", error: "" });
     setRuns([]); setRun(undefined); setRevisions([]);
@@ -575,6 +576,7 @@ function App() {
     setModuleRead({ module, epoch, core, state: "LOADING", error: "" });
     try {
       await loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>({ read: api, module, privatePreview, prefetchedContexts, isCurrent: current, accept: ({ contexts: c, runs: r, revisions: v, agents: a, deliveries: d }) => {
+        if (module === "agent-center") openingContexts.current.settled = true;
         if (c) setContexts(c);
         if (r) setRuns(r);
         if (module === "development") {
@@ -584,7 +586,12 @@ function App() {
         }
         setModuleRead({ module, epoch, core, state: "READY", error: "" });
       } });
-    } catch (cause) { if (current()) setModuleRead({ module, epoch, core, state: "ERROR", error: (cause as Error).message }); }
+    } catch (cause) {
+      if (current()) {
+        if (module === "agent-center") openingContexts.current.settled = true;
+        setModuleRead({ module, epoch, core, state: "ERROR", error: (cause as Error).message });
+      }
+    }
   };
   useEffect(() => {
     reload().catch((e) => setError(e.message));
@@ -788,6 +795,9 @@ function App() {
   const contextsReady = moduleInputsReady && contexts.length > 0;
   const startupWritable = coreReady && (!moduleInputsRequired || moduleInputsReady) && (!needsContexts || contextsReady);
   const moduleInputError = moduleRead.module === inputModule && moduleRead.epoch === authEpoch.current && moduleRead.core === coreRequest.current && moduleRead.state === "ERROR" ? moduleRead.error : "";
+  const startupPreview = opening && !identityChecking && nav === "agent-center" && agentWorkspaceMode === "development" && opening.isOpeningLanding(location.href)
+    ? <opening.Preview selected={openingContextId} onSelect={setOpeningContextId}/>
+    : undefined;
   const contextReadinessReason = !coreReady ? "等待身份与服务核验。" : !moduleInputsReady
     ? moduleInputError ? "业务上下文读取失败，请点击上方重新读取；原任务与代码保留。" : "正在读取业务上下文；确认表结构与口径前不提交开发任务。"
     : !contexts.length ? "当前项目没有可用业务上下文，不能生成或运行；已保存任务仍可读取。" : undefined;
@@ -981,13 +991,15 @@ function App() {
           </div>
         )}
         {identityChecking && coreSnapshotKnown && <WorkbenchLoading label="正在核对当前会话权限，暂时隐藏已读内容…" />}
-        {!coreSnapshotKnown ? (!privatePreview && nav === "agent-center" && agentWorkspaceMode === "development" ? <Suspense fallback={<WorkbenchLoading />}><AgentStartupPreview read={readOpeningContexts} selected={openingContexts.current.selected} onSelect={id => openingContexts.current.selected = id}/></Suspense> : <WorkbenchLoading />) : <div hidden={identityChecking} inert={identityChecking} style={{display:identityChecking ? "none" : "contents"}}><Suspense key={viewEpoch} fallback={<WorkbenchLoading label="正在加载数舵工作台…" />}>
+        {!coreSnapshotKnown || (startupPreview && !openingContexts.current.settled)
+          ? startupPreview ?? <WorkbenchLoading />
+          : <div hidden={identityChecking} inert={identityChecking} style={{display:identityChecking ? "none" : "contents"}}><Suspense key={viewEpoch} fallback={startupPreview ?? <WorkbenchLoading label="正在加载数舵工作台…" />}>
         {!previewModuleAllowed(nav) ? <div className="workbench-loading">此模块尚未接入私有预览。<button onClick={() => setNav("development")}>返回数据开发</button></div> : nav === "agent-center" ? new URLSearchParams(location.search).has("report_request") ?
           <AgentReportHistory api={api} local={localWorkbench} canWrite={canWrite} /> : (
           <>
           {(!privatePreview || privateServicesPreview) && <div className="development-language-v2" role="tablist" aria-label="Agent 工作台范围"><button role="tab" aria-selected={agentWorkspaceMode === "development"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("development")}>Agent 数据开发</button>{workbench.agentServiceHandoffAvailable && <button role="tab" aria-selected={agentWorkspaceMode === "services"} disabled={agentDraftDirty} onClick={()=>{setServiceLocation(serviceSourceFromLocation(window.location.href,true));setAgentWorkspaceMode("services");}}>发布结果 → 接口交付</button>}{!privatePreview && <button role="tab" aria-selected={agentWorkspaceMode === "platform"} disabled={agentDraftDirty} onClick={() => setAgentWorkspaceMode("platform")}>全平台任务规划</button>}{workbench.runtimeMode === "LOCAL_DEVELOPMENT" && !agentDraftDirty &&
           <a className="button" href="?module=agent-center&report_request=">历史报表</a>}</div>}
-          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} initialContextId={openingContexts.current.selected} contexts={contexts.concat(status?.agentDevelopment?.fundContexts??[])} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} fundPilotAvailable={status?.agentDevelopment?.fundPilotAvailable} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedManualSource={sourceBinding?.manualDeliveryTaskId?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"&&!sourceBinding.manualDeliveryTaskId?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
+          {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} initialContextId={openingContextId} contexts={contexts.concat(status?.agentDevelopment?.fundContexts??[])} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} fundPilotAvailable={status?.agentDevelopment?.fundPilotAvailable} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedManualSource={sourceBinding?.manualDeliveryTaskId?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"&&!sourceBinding.manualDeliveryTaskId?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
           <AgentCenter
             api={api}
             canWrite={canWrite && !session.developmentOnly}
@@ -1380,7 +1392,7 @@ function App() {
                       ))}
                     {tab === "日志" && (
                       <pre className="log-text">
-                        {developmentRunLog(run)}
+                        <Suspense fallback="正在读取运行日志…"><RunLogContent run={run} /></Suspense>
                       </pre>
                     )}
                     {tab === "运行记录" && (
@@ -2196,4 +2208,7 @@ function App() {
     </div>
   );
 }
-createRoot(document.getElementById("root")!).render(<WorkbenchBoundary><App /></WorkbenchBoundary>);
+const mount = () => createRoot(document.getElementById("root")!).render(<WorkbenchBoundary><App /></WorkbenchBoundary>);
+if (document.querySelector("#root .agent-startup-preview")) {
+  void import("./AgentStartupPreview").then(module => { opening = module; }).then(mount, mount);
+} else mount();

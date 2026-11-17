@@ -1,0 +1,36 @@
+<script id="agent-opening-data" type="application/json"><!-- agent-opening-data --></script>
+<template id="agent-opening-template">
+  <section class="agent-startup-preview" aria-labelledby="agent-startup-title"
+    style="box-sizing:border-box;max-width:880px;margin:32px auto;padding:24px;border:1px solid #dce4db;border-radius:12px;background:#f8fbf7;color:#19332a;font:16px system-ui,sans-serif">
+    <h1 id="agent-startup-title" style="margin:0 0 4px;font-size:22px">数舵 Data Agent</h1>
+    <div role="status" style="margin:0 0 16px;color:#536d60;font-size:14px">正在加载工作台，可先切换公开样例。</div>
+    <div class="agent-startup-actions" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <label style="display:grid;min-width:0;max-width:100%">业务口径与验证数据
+        <select aria-label="Agent 验证数据" style="display:block;max-width:100%;min-height:36px;font:inherit"></select>
+      </label>
+      <button type="button" disabled>新建任务</button>
+    </div>
+    <p></p>
+    <p></p>
+  </section>
+</template>
+<script>
+  (() => {
+    const { searchParams, hash } = new URL(location.href);
+    if (document.querySelector('meta[name="shuduo-private-preview"]') || hash ||
+        searchParams.size && (searchParams.size !== 1 || searchParams.get("module") !== "agent-center")) return;
+    const samples = JSON.parse(document.getElementById("agent-opening-data").textContent);
+    const fragment = document.getElementById("agent-opening-template").content.cloneNode(true);
+    const picker = fragment.querySelector("select");
+    const [date, definition] = fragment.querySelectorAll("p");
+    for (const sample of samples) picker.add(new Option(sample.name, sample.id));
+    function showSample() {
+      const sample = samples[picker.selectedIndex];
+      date.textContent = "交易日 " + sample.businessDate;
+      definition.textContent = sample.definition;
+    }
+    picker.addEventListener("change", showSample);
+    showSample();
+    document.getElementById("root").append(fragment);
+  })();
+</script>
