@@ -27,6 +27,7 @@ import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,muta
 import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication} from '../src/v2/standalone-manual-publication-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
+import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} from '../src/v2/agent-consumption-request.mjs';
 import {agentReviewEvidencePath,publicationApprovalStep,publicationSelectorInput,publicationPreflightPath,publicationReadPath,publicationRequestReceiptPath} from "../src/v2/publication-request.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
@@ -91,6 +92,12 @@ const tools = [
   {name:'sql_run_compare',description:'只读两个确切已保存运行的代码/值来源/条件引用及验证对照；缺旧证据不当新增或删除，不证明业务因果，不解析草稿或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'},baselineRunId:{type:'string',format:'uuid'}},required:['runId','baselineRunId']},annotations:{readOnlyHint:true}},
   {name:'service_agent_plan_advance',description:'显式推进已读取的持久私有服务规划。直接模式可能调用模型，事件模式只登记原任务的受控唤醒。须有效独立窗口和原版本；未知结果不自动重试，confirmModelRetry仅表示本次明确确认。不会确认草稿、发布或发凭证。',inputSchema:{type:'object',additionalProperties:false,properties:{planId:{type:'string',format:'uuid'},expectedVersion:{type:'integer',minimum:1},confirmModelRetry:{type:'boolean'}},required:['planId','expectedVersion']}},
   {name:'service_agent_context',description:'只读核对确切私有发布批次、业务口径和可用DAPI固定版本。不调用模型，不创建任务或接口，不构成规划/发布授权。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceBinding:servicePlanSourceSchema},required:['sourceBinding']},annotations:{readOnlyHint:true}},
+  {name:'service_agent_consume',description:'经明确确认后委托 Agent 调用同一发布批次的 DAPI 和 XAPI 各一次。应用及接口必须已授权，未知结果查询原请求。',inputSchema:{type:'object',additionalProperties:false,
+    properties:{sourceBinding:servicePlanSourceSchema,applicationId:{type:'string',format:'uuid'},dapiVersionId:{type:'string',format:'uuid'},
+      xapiVersionId:{type:'string',format:'uuid'},requestId:{type:'string',format:'uuid'},confirm:{const:true}},
+    required:['sourceBinding','applicationId','dapiVersionId','xapiVersionId','requestId','confirm']}},
+  {name:'service_agent_consumption_request',description:'按原请求编号只读 Agent 消费委托及确切版本结果。',inputSchema:{type:'object',additionalProperties:false,
+    properties:{requestId:{type:'string',format:'uuid'}},required:['requestId']},annotations:{readOnlyHint:true}},
   {name:'service_agent_plan_create',description:'基于确切发布来源创建DAPI/XAPI规划；本机模式排队模型，持久私有模式仅保存待推进任务。未知结果查询原requestId，不自动重试，不创建草稿、发布或发凭证。',inputSchema:{type:'object',additionalProperties:false,properties:{message:{type:'string',minLength:4,maxLength:2000},sourceBinding:servicePlanSourceSchema,requestId:{type:'string',format:'uuid'}},required:['message','sourceBinding','requestId']}},
   {name:'service_agent_plan_list',description:'只读当前确切来源的本人规划记录。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceBinding:servicePlanSourceSchema},required:['sourceBinding']},annotations:{readOnlyHint:true}},
   ...['detail','request','apply','cancel'].map(operation=>({name:'service_agent_plan_'+operation,description:operation==='apply'?'应用本人原同源方案为草稿；不测试、发布或发令牌。':operation==='cancel'?'取消本人原同源规划并保留记录，不取消其他资源。':operation==='request'?'按原请求编号只读找回规划，不重新调用模型。':'只读原同源规划与固定版本。',inputSchema:{type:'object',additionalProperties:false,properties:{[operation==='request'?'requestId':'planId']:{type:'string',format:'uuid'}},required:[operation==='request'?'requestId':'planId']},annotations:{readOnlyHint:['detail','request'].includes(operation)}})),
@@ -346,6 +353,15 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==='agent_repair_comparison_basis')return readRepairComparisonBasis(client,args);
   if(name==='agent_repair_comparison_create')return createComparisonRepairTask(client,args);
   if(name==='service_agent_context')return readServiceAgentContext(client,args);
+  if(name==='service_agent_consume'){
+    const {requestId,confirm,...body}=args;
+    if(confirm!==true)throw Error('须明确确认此批次的单次消费委托');
+    return client.request(agentConsumptionPath,{method:'POST',idempotencyKey:requestId,body:readAgentConsumption(body,requestId)});
+  }
+  if(name==='service_agent_consumption_request'){
+    if(Object.keys(args).length!==1)throw Error('只接受原委托请求编号');
+    return client.request(agentConsumptionReceiptPath(args.requestId));
+  }
   if(typeof name==='string'&&name.startsWith('service_agent_plan_'))return callServicePlan(client,name.slice('service_agent_plan_'.length),args);
   if (name === "v2_status") return client.request("/status");
   if (name === "budget_status") return client.request("/budget");

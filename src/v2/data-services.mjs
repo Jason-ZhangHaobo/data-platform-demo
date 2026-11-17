@@ -946,9 +946,21 @@ export class DataServiceManager {
       .find((item) => item.slug === path && item.serviceType === type);
     if (!service || service.status !== "PUBLISHED" || !service.publishedVersionId)
       throw fail(404, "数据服务不存在或尚未发布", "SERVICE_NOT_FOUND");
-    const app = this.#authorize(authorization, service.id),
-      version = this.#version(service.publishedVersionId),
-      query = queryFor(version.outputContractId, input),
+    return this.#invokeAuthorized(service,this.#authorize(authorization,service.id),this.#version(service.publishedVersionId),input,{assertAccess,ingress});
+  }
+
+  async invokeDelegated({serviceId,versionId,applicationId},input,{assertAccess,assertResult,delegation}) {
+    const service=this.#service(serviceId),version=this.#version(versionId),app=this.store.get('service_app',applicationId,this.project);
+    if(this.scope!=='PRIVATE_CLOUD_TEST'||service.status!=='PUBLISHED'||service.publishedVersionId!==versionId||version.serviceId!==serviceId||
+       !app||app.scope!==this.scope||app.status!=='ACTIVE'||!(Date.parse(app.expiresAt)>this.now())||!app.serviceIds.includes(serviceId)||
+       !app.issuanceEvidence||typeof assertAccess!=='function'||typeof assertResult!=='function'||
+       !delegation||Object.keys(delegation).length!==3||!['wakeId','stepId','requestId'].every(key=>typeof delegation[key]==='string'&&/^[a-f0-9-]{36}$/.test(delegation[key])))
+      throw fail(403,'原授权应用或发布版本已变化','AGENT_CONSUMPTION_GRANT_INVALID');
+    return this.#invokeAuthorized(service,app,version,input,{assertAccess,assertResult,delegation});
+  }
+
+  async #invokeAuthorized(service,app,version,input,{assertAccess,ingress,assertResult,delegation}) {
+    const query = queryFor(version.outputContractId, input),
       windowStart = this.now() - 60_000,
       used = this.listCalls(service.id).filter(
         (call) =>
@@ -969,12 +981,16 @@ export class DataServiceManager {
     const started = this.now();
     try {
       assertAccess?.({service,application:app,version});
-      const response = await this.#execute(version, query),
-        call = this.#callLog(service, version, app, query, started, {
+      const response = await this.#execute(version, query);
+      if (assertResult) assertResult(response);
+      const call = this.#callLog(service, version, app, query, started, {
           outcome: "SUCCEEDED",
           statusCode: 200,
           rowCount: response.data.length,
           resultHash: serviceHash(response.data),
+          ...(delegation?{invocationEvidence:{channel:'SIGNED_AGENT_CONSUMPTION',queryDigest:consumerWireQueryDigest(input),
+            parametersDigest:consumerParametersDigest(query),issuanceDigest:serviceHash(app.issuanceEvidence),delegation,
+            paginationDigest:serviceHash(response.pagination)}}:{}),
           ...(ingress==='HTTP'||ingress==='INTERNAL'?{invocationEvidence:{channel:ingress==='HTTP'?'BEARER_HTTP':'BEARER_PRIVATE_BRIDGE',
             queryDigest:consumerWireQueryDigest(input),parametersDigest:consumerParametersDigest(query),
             ...(app.issuanceEvidence?{issuanceDigest:serviceHash(app.issuanceEvidence)}:{})}}:{}),

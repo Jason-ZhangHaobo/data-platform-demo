@@ -254,6 +254,8 @@ shuduo agent v3-publish --checkpoint /private/first-case.json --reconcile
 
 ### 核对两个原发布批次的授权消费
 
+证券持仓类受邀消费窗口可明确委托 Agent 核对同一成功批次的两个接口。`POST /api/v2/data-services/agent/consumption-jobs` 使用原 UUID 幂等编号，正文提供 `sourceBinding`、当前获授权的 `applicationId`、`dapiVersionId` 与 `xapiVersionId`。`shuduo agent consume-services --file EXACT_JSON --request-id UUID --confirm` 与 MCP `service_agent_consume` 复用该协议。签名事件按原角色、授权、发布批次和服务版本各查询一次，并对照登记的独立业务预期及分页。两次调用计入现有限流。`shuduo agent consumption-request --request-id UUID` 或 MCP `service_agent_consumption_request` 可在关窗后由原账号查询，不附带令牌或业务行。原回执结果未知时只查原请求；已有确切记录的接口不会重跑。原 Agent 执行回执单独保留，独立 HTTP 客户端的验收仍走另一路径。
+
 新的受邀签发和成功调用会记录会话签发摘要、受保护的凭证指纹、实际请求参数摘要和服务端受信入口。按原调用编号核对时，独立消费报告的凭证指纹和请求参数必须对应同一发布批次的 DAPI 与 XAPI。内部私有转发不能作为公网 Bearer 调用使用。确切接口版本如果由该批次的设计 Agent 生成并经审阅应用，回执可关联原规划请求及方案摘要。这个来源记录描述接口设计和实际调用入口，自主完成率及独立外部系统仍须各自的验收证据。早于该改动的回执照原格式保留。已有消费来源的 v3 检查点在 `v3-complete` 原批次重验时须再次核对。
 
 从运维监控的「查看第 1 批接口」或「查看第 2 批接口」进入数据服务。整次发布完成且健康，并且两个批次均已实际执行、通过 SQL 测试与独立结果验证后，页面才显示入口。数据服务重新核对任务、版本、包和批次，按本批次显示 DAPI、XAPI、应用授权与调用记录。批次错误或不在当前授权范围时提示回到原发布核对。本机 Chrome 测试版已用同一虚构发布的两个批次验证该交接。

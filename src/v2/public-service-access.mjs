@@ -76,6 +76,7 @@ export function assertServiceMutation(config, session, method, path, now = Date.
   if (administrator && method === 'POST' && revoke) return;
   check(administrator && inWindow(config, now), 'PUBLIC_SERVICE_CLOSED', '当前数据服务窗口未开放、已到期或此账号未获准；已保存结果仍可查看。');
   const allowed = /^\/api\/v2\/data-services\/(dapis|xapis|applications)$/.test(path ?? '') ||
+    (config.sourceKind==='AGENT_TASK'&&!config.plan.outputContractId&&path==='/api/v2/data-services/agent/consumption-jobs') ||
     new RegExp(`^/api/v2/data-services/(dapis|xapis)/${uuid.source.slice(1, -1)}/(test|publish)$`).test(path ?? '');
   check(method === 'POST' && allowed, 'PUBLIC_SERVICE_SCOPE_DENIED', '当前仅允许指定发布结果的两个DAPI、一个XAPI及一个短期调用应用；其他写入保持关闭。');
 }

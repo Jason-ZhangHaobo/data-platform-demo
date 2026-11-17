@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { bindExternalConsumption } from "../../src/v2/external-consumption-binding.mjs";
-import { consumerCanonical, consumerDigest, consumerV2PlanEvidence, consumerDenialCodes, consumerDenialEvidence } from "../../src/v2/consumer-source.mjs";
+import { consumerCanonical, consumerDigest, consumerV2PlanEvidence, consumerDenialCodes, consumerDenialEvidence,consumerCredentialProof,consumerWireQueryDigest } from "../../src/v2/consumer-source.mjs";
 
 // Synthetic in-memory report documents only. MATCHED means consistent documents,
 // never actual network/model/Spark execution or verified external environment.
@@ -76,6 +76,15 @@ function fixture({ scope = "PRIVATE_CLOUD_TEST", sourceKind = "AGENT", twoGrante
   return { expectedSource: structuredClone(source), plan, report, taskEvidence };
 }
 const notCandidate = value => { const result = bindExternalConsumption(value); assert.notEqual(result.status, "MATCHED"); assert.equal(result.eligibleForExternalAcceptance, false); return result; };
+
+test('a signed Agent receipt cannot substitute for an independent HTTP caller',()=>{
+  const value=fixture(),call=value.taskEvidence.services.find(service=>service.serviceType==='XAPI').call;
+  call.attribution={protocol:'shuduo-service-call-attribution/v1',channel:'SIGNED_AGENT_CONSUMPTION',
+    queryDigest:consumerWireQueryDigest({page:1,page_size:1}),issuanceMode:'AUTHENTICATED_SESSION',issuanceRequestDigest:'b'.repeat(64),
+    credentialProofDigest:consumerCredentialProof(value.report.credentialDigest),serviceDesign:{kind:'UNRECORDED'},
+    delegation:{wakeId:'00000000-0000-4000-8000-000000000001',requestDigest:'c'.repeat(64)}};
+  assert.equal(notCandidate(value).reason,'CALL_ATTRIBUTION_UNCONFIRMED');
+});
 
 test("V2 exact XAPI call, pinned DAPIs and independent row digests bind without claiming environment truth", () => {
   const input = fixture(), before = structuredClone(input), result = bindExternalConsumption(input);

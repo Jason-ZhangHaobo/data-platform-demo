@@ -57,6 +57,7 @@ import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import {createServiceAgentEvents} from './service-agent-events.mjs';
 import { createAgentEventDriver, agentEventConfigFromEnvironment, parseAgentObjectEvent } from "./agent-event-driver.mjs";
 import {createPublicationWakeDriver} from "./publication-wake.mjs";
+import {agentConsumptionPath,agentConsumptionReceiptPath} from './agent-consumption-request.mjs';
 import {createSignedTaskWakeDriver,signedTaskWakeView} from './signed-task-wake.mjs';
 import {rehearsalWakeFor,rehearsalWakeKey,rehearsalWakeMatches} from './rehearsal-wake.mjs';
 import { createAgentWakeOssTransport } from "./agent-wake-oss-transport.mjs";
@@ -1304,6 +1305,7 @@ export function createV2Server(options = {}) {
   let serviceAgentEvents;
   const savedServiceEvidenceEnabled = privateSmokeEnabled && options.ingress?.status.publicReadOnly === true;
   const privateServiceRoutes = privateDataServicesEnabled || savedServiceEvidenceEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment,
+    consumptionTransport:serviceAccess&&agentWakeTransport&&!options.ingress?.status.publicReadOnly?{transport:agentWakeTransport,config:agentEventConfig}:undefined,
     agentConfig:serviceAgentAccess,planner:input=>servicePlanner(input),assertModelBudget:reservation=>budget.assertCanStartServiceModel(reservation),budgetOverview:()=>budget.overview(),modelLeaseMs:options.serviceAgentModelLeaseMs,
     waitForModel:serviceAgentAccess?start=>statefulRequests.waitForProvider(start):undefined,
     backgroundView:task=>serviceAgentEvents?.status(task.id),
@@ -1915,8 +1917,14 @@ export function createV2Server(options = {}) {
         if(serviceAgentAccess&&!['PRIVATE_STATUS_V1','PRIVATE_APPLICATION_HTTP_V1',...(serviceAgentEvents?['PRIVATE_AGENT_OBJECT_EVENT_V1']:[])].includes(privateInput.operation))throw Object.assign(fail(403,'服务规划窗口不接受计算、调度或其他私有操作'),{code:'PRIVATE_SERVICE_AGENT_SCOPE_DENIED'});
         if ((developmentAccess?.taskId || developmentAccess?.requestDigest) && !['PRIVATE_STATUS_V1','PRIVATE_AGENT_OBJECT_EVENT_V1'].includes(privateInput.operation))
           throw targetDenied();
-        if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
+        if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation)) {
+          if(ingressChannel==='EVENT'&&privateInput.operation==='PRIVATE_AGENT_OBJECT_EVENT_V1'&&privateServices?.consumptionWake){
+            const object=parseAgentObjectEvent(privateInput.event,agentEventConfig);
+            const consumed=await privateServices.consumptionWake.consume(object);
+            if(consumed)return json(res,200,consumed);
+          }
           throw Object.assign(fail(403, "本次仅开放既有发布结果的接口交付；计算与调度保持关闭。"), { code: "PUBLIC_SERVICE_SCOPE_DENIED" });
+        }
         if (ingressChannel==="EVENT" && privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1" &&
             resultEventConfig && !serviceAgentAccess) {
           let object;
@@ -2379,6 +2387,11 @@ export function createV2Server(options = {}) {
         return json(res, 200, await cloudReadiness());
       }
       if (privateSmokeEnabled && (path.startsWith("/api/v2/data-services/") || path.startsWith("/api/v2/open/"))) {
+        if(!privateServices&&publicReadOnly&&method==='GET'&&path.startsWith('/api/v2'+agentConsumptionPath+'/')) {
+          const requestId=path.slice(('/api/v2'+agentConsumptionPath+'/').length);
+          if(url.searchParams.size||path!=='/api/v2'+agentConsumptionReceiptPath(requestId))throw fail(422,'委托回执只接受原请求编号');
+          return json(res,200,privateServiceRoutes.readConsumptionJob(req,requestId));
+        }
         if (!privateServices && publicReadOnly && method === "GET" &&
             ["/api/v2/data-services/task-evidence","/api/v2/data-services/sources"].includes(path)) {
           const verifySavedRelease = (taskId, release, owner) => {

@@ -29,6 +29,8 @@ export function privateServiceRoute(method,path,{agentPlanning=false,agentRead=f
   else if(agentRead&&method==='GET'&&p==='/api/v2/data-services/agent/plans'){
     try{return Boolean(servicePlanSourceQuery(url.searchParams));}catch{return false;}
   }
+  else if((method==='POST'&&p==='/api/v2/data-services/agent/consumption-jobs') ||
+    (method==='GET'&&new RegExp(`^/api/v2/data-services/agent/consumption-jobs/${uuid}$`).test(p)))allowed=[];
   else if(agentRead&&method==='GET'&&new RegExp(`^/api/v2/data-services/agent/(?:plans|requests)/${uuid}$`).test(p))allowed=[];
   else if(agentPlanning&&method==='POST'&&(p==='/api/v2/data-services/agent/plans'||new RegExp(`^/api/v2/data-services/agent/plans/${uuid}/(?:advance|apply|cancel)$`).test(p)))allowed=[];
   else if(agentRead&&method==='POST'&&new RegExp(`^/api/v2/data-services/agent/plans/${uuid}/cancel$`).test(p))allowed=[];

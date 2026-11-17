@@ -1,6 +1,7 @@
 import {isDeepStrictEqual as same} from 'node:util';
 import {consumerCanonical,consumerDigest,consumerParametersDigest} from './consumer-source.mjs';
 import {privateServiceAgentMode} from './private-service-agent-policy.mjs';
+import {storedAgentConsumptionCall} from './agent-consumption-wake.mjs';
 
 const protocol='shuduo-service-call-attribution/v1';
 const hash=value=>consumerDigest(consumerCanonical(value));
@@ -33,13 +34,23 @@ export function storedServiceCallAttribution({store,project,call,version,source}
   const value={protocol,channel:invocation.channel,queryDigest:invocation.queryDigest,
     issuanceMode:issuance.mode,issuanceRequestDigest:issuance.requestDigest,credentialProofDigest:issuance.credentialProofDigest,
     serviceDesign:reviewedServiceDesign(store,project,version,source)};
+  if(invocation.channel==='SIGNED_AGENT_CONSUMPTION'){
+    const delegation=invocation.delegation,wake=typeof delegation?.wakeId==='string'&&store.get('agent_consumption_wake',delegation.wakeId,project);
+    const binding=wake?.binding,selected=binding?.sourceBinding;
+    if(!binding||!selected||binding.actorId!==app.createdBy||selected.taskId!==source.taskId||selected.releaseId!==source.releaseId||
+      selected.packageDigest!==source.packageDigest||selected.sourceReleaseRunId!==source.sourceReleaseRunId||
+      storedAgentConsumptionCall(store,project,binding,wake.id,call.serviceType)?.id!==call.id)throw invalid();
+    value.delegation={wakeId:wake.id,requestDigest:consumerDigest(binding.requestId)};
+  }
   if (!validServiceCallAttribution(value)) throw invalid();
   return value;
 }
 
 export function validServiceCallAttribution(value) {
-  if(!hasOnly(value,['protocol','channel','queryDigest','issuanceMode','issuanceRequestDigest','credentialProofDigest','serviceDesign'])||
-     value.protocol!==protocol||!['BEARER_HTTP','BEARER_PRIVATE_BRIDGE'].includes(value.channel)||
+  const delegated=value?.channel==='SIGNED_AGENT_CONSUMPTION';
+  if(!hasOnly(value,['protocol','channel','queryDigest','issuanceMode','issuanceRequestDigest','credentialProofDigest','serviceDesign',...(delegated?['delegation']:[])])||
+     value.protocol!==protocol||!['BEARER_HTTP','BEARER_PRIVATE_BRIDGE','SIGNED_AGENT_CONSUMPTION'].includes(value.channel)||
+     delegated&&(!hasOnly(value.delegation,['wakeId','requestDigest'])||!id(value.delegation.wakeId)||!digest(value.delegation.requestDigest))||
      value.issuanceMode!=='AUTHENTICATED_SESSION'||![value.queryDigest,value.issuanceRequestDigest,value.credentialProofDigest].every(digest))return false;
   const design=value.serviceDesign;
   return design?.kind==='UNRECORDED'?hasOnly(design,['kind']):hasOnly(design,['kind','requestDigest','proposalDigest'])&&

@@ -13,13 +13,15 @@ import {createDurableServiceAgent} from './durable-service-agent.mjs';
 import {assertServiceAgentMutation} from './private-service-agent-policy.mjs';
 import {consumerCredentialProof,consumerDigest} from './consumer-source.mjs';
 import {storedServiceCallAttribution} from './service-consumption-attribution.mjs';
+import {createAgentConsumptionWake,readAgentConsumptionReceipt} from './agent-consumption-wake.mjs';
+import {agentConsumptionPath,readAgentConsumption} from './agent-consumption-request.mjs';
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(new Error(message),{status,code});
 
 // One shared allowlist for the private transport, temporary preview and router.
 export { privateServiceRoute } from "./private-service-routes.mjs";
 
-export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,pilotConfig,persist=async()=>{},
+export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,pilotConfig,persist=async()=>{},consumptionTransport,
   agentConfig,planner,assertModelBudget=()=>{throw Error('Model budget not configured');},budgetOverview=()=>{throw Error('Budget not configured');},modelLeaseMs,waitForModel,backgroundView,dispatchPlan,cancelPlan}) {
   const get=(kind,id)=>typeof id==="string"?store.get(kind,id,project):undefined;
   const source=id=>readPrivateReleaseBatch(store,project,id).batch;
@@ -143,6 +145,43 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     else if(b.steps!==undefined){if(!Array.isArray(b.steps))throw fail(422,"XAPI步骤无效");for(const s of b.steps){bodyKeys(s,["alias","dapiId","dapiVersionId"]);const child=service(a,s.dapiId);if (!pilot && child.publishedVersion?.outputContractId===fundDapiContract.id) throw fail(403,"基金接口须使用确切的消费窗口","PUBLIC_SERVICE_TARGET_MISMATCH");if(s.dapiVersionId && s.dapiVersionId!==child.publishedVersionId)throw fail(409,"XAPI子版本已经变更","STALE_SERVICE_VERSION");}}
   };
   const identity=id=>{const user=get('auth_user',id);return {user,role:user?.memberships?.find(item=>item.projectId===project)?.role};};
+  const consumptionRoute='/api/v2'+agentConsumptionPath;
+  const authorizeConsumption=binding=>{
+    const a=identity(binding.actorId),s=binding.sourceBinding, nowMs=now?.()??Date.now();
+    assertServiceMutation(pilotConfig,a,'POST',consumptionRoute,nowMs);
+    if(a.user?.status!=='ACTIVE'||binding.pilotId!==pilotConfig.pilotId||binding.startsAt!==pilotConfig.startsAt||binding.expiresAt!==pilotConfig.expiresAt||
+      s.taskId!==pilotConfig.plan.taskId||s.packageDigest!==pilotConfig.plan.packageDigest||s.sourceReleaseRunId!==pilotConfig.plan.sourceReleaseRunId)
+      throw fail(403,'原委托与消费窗口不一致','AGENT_CONSUMPTION_SCOPE_DENIED');
+    const batch=source(s.sourceReleaseRunId),release=get('release',s.releaseId),owner=get('agent',s.taskId);
+    if(
+      release?.sourceKind!=='AGENT'||release.sourceAgentTaskId!==s.taskId||release.submittedBy!==binding.actorId||owner?.submittedBy!==binding.actorId||
+      batch.releaseId!==s.releaseId||batch.packageDigest!==s.packageDigest)
+      throw fail(403,'原委托与消费窗口或发布批次不一致','AGENT_CONSUMPTION_SCOPE_DENIED');
+    const app=get('service_app',binding.applicationId);
+    pilot.assertApplication(app);
+    if(app?.createdBy!==binding.actorId||app.status!=='ACTIVE'||!(Date.parse(app.expiresAt)>nowMs)||!app.issuanceEvidence||
+      serviceHash(app.issuanceEvidence)!==binding.issuanceDigest)
+      throw fail(403,'原应用授权已失效','AGENT_CONSUMPTION_GRANT_INVALID');
+    const targets={DAPI:get('data_service_version',binding.dapiVersionId),XAPI:get('data_service_version',binding.xapiVersionId)};
+    for(const [type,version] of Object.entries(targets)) {
+      const item=version&&pilot.assertService({id:version.serviceId});
+      if(version?.serviceType!==type||version.configHash!==binding.configHashes[type]||item?.publishedVersionId!==version.id||!app.serviceIds.includes(item.id))
+        throw fail(403,'原应用未授权确切 DAPI 及 XAPI 版本','AGENT_CONSUMPTION_GRANT_INVALID');
+      assertApplicationVersion({service:item,application:app,version});
+    }
+    const fixture=getContext(get('delivery_package',batch.packageId).manifest.source.contextId).expected;
+    if(!Array.isArray(fixture)||fixture.length<1||fixture.length>100)throw fail(409,'原业务口径缺少登记预期','AGENT_CONSUMPTION_ASSERTION_UNAVAILABLE');
+    const rows=[...fixture].sort((left,right)=>left.client_id.localeCompare(right.client_id));
+    const projectRow=(row,fields)=>Object.fromEntries(fields.map(field=>[field,row[field]]));
+    const pagination={page:1,pageSize:100,total:rows.length,totalPages:1};
+    const expected={DAPI:{data:rows.map(row=>projectRow(row,targets.DAPI.fields)),pagination},
+      XAPI:{data:rows.map(row=>({client_id:row.client_id,...Object.fromEntries(targets.XAPI.steps.map(step=>[
+        step.alias,projectRow(row,get('data_service_version',step.dapiVersionId).fields.filter(name=>name!=='client_id'))]))})),pagination}};
+    return {targets,expected};
+  };
+  const consumptionWake=consumptionTransport&&pilotConfig?.sourceKind==='AGENT_TASK'&&!pilotConfig.plan.outputContractId
+    ? createAgentConsumptionWake({...consumptionTransport,store,project,manager,authorize:authorizeConsumption,persist}):undefined;
+  const readConsumptionJob=(req,requestId)=>readAgentConsumptionReceipt(store,project,actor(req).user.id,requestId);
   const assertPlanVersions=(actorId,binding,refs,current)=>{
     const a=identity(actorId);
     if(!Array.isArray(refs)||refs.length>100||new Set(refs.map(ref=>ref?.serviceId)).size!==refs.length)throw fail(409,'原规划固定版本记录不完整','SERVICE_PLAN_VERSION_CHANGED');
@@ -267,6 +306,16 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     assertServiceMutation(pilotConfig,a,method,path,now?.()??Date.now());
     assertServiceAgentMutation(agentConfig,a,method,path);
     if(method==="POST")auth.requireMutation(req.headers,path);
+    if(path===consumptionRoute&&method==='POST'){
+      if(!consumptionWake||ingress!=='HTTP')throw fail(503,'当前窗口尚未启用 Agent 消费委托');
+      const requestId=req.headers['idempotency-key'],selected=readAgentConsumption(await readBody(req),requestId);
+      const issuance=get('service_app',selected.applicationId)?.issuanceEvidence;
+      await consumptionWake.enqueue({...selected,requestId,actorId:owner,pilotId:pilotConfig.pilotId,startsAt:pilotConfig.startsAt,expiresAt:pilotConfig.expiresAt,
+        issuanceDigest:issuance?serviceHash(issuance):null,configHashes:{DAPI:get('data_service_version',selected.dapiVersionId)?.configHash??null,
+          XAPI:get('data_service_version',selected.xapiVersionId)?.configHash??null}});
+      return {status:202,body:readConsumptionJob(req,requestId)};
+    }
+    if(method==='GET'&&path.startsWith(consumptionRoute+'/'))return {status:200,body:readConsumptionJob(req,path.slice(consumptionRoute.length+1))};
     if(method==='GET'&&path==='/api/v2/data-services/agent/context')return {status:200,body:agentContext(a,servicePlanSourceQuery(url.searchParams))};
     if(path==='/api/v2/data-services/agent/plans'){
       if(method==='GET')return {status:200,body:agentPlanner.list(servicePlanSourceQuery(url.searchParams),owner)};
@@ -336,5 +385,5 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     }
     throw fail(404,"接口不存在");
   }
-  return {handle,manager,agentPlanner,readTaskEvidence,readReleaseSources};
+  return {handle,manager,agentPlanner,readTaskEvidence,readReleaseSources,consumptionWake,readConsumptionJob};
 }

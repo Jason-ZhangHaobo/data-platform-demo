@@ -25,6 +25,7 @@ import {readCloudV3Run} from "../scripts/cloud-v3-run.mjs";
 import {cloudWindowCheckpointBinding} from "../scripts/first-cloud-v3-window.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
+import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} from '../src/v2/agent-consumption-request.mjs';
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -86,6 +87,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --reconcile --workbench
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --batch-id ID --out-file ABSOLUTE_PATH
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256
+  shuduo agent consume-services --file EXACT_SOURCE_AND_VERSIONS_JSON --request-id UUID --confirm
+  shuduo agent consumption-request --request-id UUID
   shuduo agent v3-complete --checkpoint ABSOLUTE_PATH --first-plan ABSOLUTE_PATH --second-plan ABSOLUTE_PATH --out-file ABSOLUTE_PATH
   shuduo agent v3-settle-failure --checkpoint ABSOLUTE_PATH --out-file ABSOLUTE_PATH
   shuduo agent v3-run --checkpoint ABSOLUTE_PATH [--completion-file ABSOLUTE_PATH [--case-records ABSOLUTE_PATH]]
@@ -683,6 +686,17 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result=exporting?await exportCloudV3PublicationReview(checkpoint,client,required(args,"out_file")):
         await submitCloudV3Publication(checkpoint,client,reconcile?{reconcile:true,workbench}:{reviewPath:required(args,"review_file"),
           billPath:required(args,"bill_file")});
+    }
+    else if (resource==='agent'&&['consume-services','consumption-request'].includes(action)) {
+      const creating=action==='consume-services',flags=parsed.options;
+      const allowed=['request_id','base_url',...(creating?['file','confirm']:[])];
+      if (parsed.positionals.length!==2||Object.keys(flags).some(key=>!allowed.includes(key))||
+          argv.filter(value=>value.startsWith('--')).length!==Object.keys(flags).length||creating&&flags.confirm!==true)
+        throw Error('须确认确切批次与应用的单次消费，查回只使用原请求编号');
+      const requestId=required(flags,'request_id');
+      result=creating?await client.request(agentConsumptionPath,{method:'POST',idempotencyKey:requestId,
+        body:readAgentConsumption(jsonObject(readFileSync(required(flags,'file'),'utf8'),'消费委托'),requestId)}):
+        await client.request(agentConsumptionReceiptPath(requestId));
     }
     else if (resource === "agent" && action === "v3-consumption") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));

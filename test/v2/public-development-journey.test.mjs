@@ -182,7 +182,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   queueTimeoutMs=180000,contextualModel=false,sqlForAttempt,fundProviderFixture=false}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, cloudState, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
-  let loseArtifactAcknowledgement=false, loseWakeAcknowledgement=false, loseReleaseAcknowledgement=false, packageWrites=0, warmWorkerReady=true;
+  let loseArtifactAcknowledgement=false, loseWakeAcknowledgement=false, loseReleaseAcknowledgement=false,loseConsumptionAcknowledgement=false, packageWrites=0, warmWorkerReady=true;
   let jobWriteAttempts=0, cancellationWrites=0, resultReads=0;
   const objects = new Map();
   const wakes=[];
@@ -227,6 +227,9 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   const open = async () => {
     store = new MetadataStore(join(directory, 'metadata.sqlite'));
     store.flush=async()=>{
+      if(loseConsumptionAcknowledgement&&store.list('service_call',PROJECT).some(record=>record.invocationEvidence?.channel==='SIGNED_AGENT_CONSUMPTION')){
+        loseConsumptionAcknowledgement=false;throw Error('SYNTHETIC_AGENT_CONSUMPTION_ACK_LOST');
+      }
       if(loseReleaseAcknowledgement&&store.list('release_initiation',PROJECT).some(record=>record.trigger==='SIGNED_PUBLICATION_WAKE')){
         loseReleaseAcknowledgement=false;
         throw Error('SYNTHETIC_RELEASE_ACK_LOST');
@@ -321,7 +324,8 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
     get businessStore(){return app.businessStore;}, addAdmin:input=>app.auth.bootstrapAdmin(input),
     loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
-    loseWake:()=>{loseWakeAcknowledgement=true;}, loseRelease:()=>{loseReleaseAcknowledgement=true;}, replaceWake:(event,replace)=>{
+    loseWake:()=>{loseWakeAcknowledgement=true;}, loseRelease:()=>{loseReleaseAcknowledgement=true;},
+    loseConsumption:()=>{loseConsumptionAcknowledgement=true;}, replaceWake:(event,replace)=>{
       const key=event.events[0].oss.object.key, original=objects.get(key);objects.set(key,replace(original));return ()=>objects.set(key,original);
     },
     queueCounts:()=>({jobWriteAttempts,cancellationWrites,resultReads}),
@@ -578,7 +582,7 @@ async function measuredSpark(t,f,prepared,label,expectedStatus='SUCCEEDED'){
 }
 
 async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchId,sequence,origin,expectedRows=baseConsumerRows,
-  differentContextRows}){
+  differentContextRows,agentConsumption=false}){
   const [holdingsSpec,cashSpec]=[
     {name:'虚构持仓原批次 '+sequence,slug:'verified-holdings-'+sequence,
       fields:['client_id','holding_market_value','security_count'],timeoutMs:3000,rateLimitPerMinute:12},
@@ -616,6 +620,78 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   const app=await f.call('/data-services/applications',{name:applicationName,serviceIds:[holdings.id,xapi.id]},issuanceKey);
   assert.equal(app.status,201);
   assert.equal(app.body.application.issuanceEvidence,undefined);
+  if(agentConsumption){
+    f.alignWallClock();
+    const path='/data-services/agent/consumption-jobs',requestId=randomUUID(),receiptPath=path+'/'+requestId;
+    const binding={sourceBinding:{taskId,releaseId,packageDigest,sourceReleaseRunId:batchId},applicationId:app.body.application.id,
+      dapiVersionId:holdings.currentVersion.id,xapiVersionId:xapi.currentVersion.id};
+    const wakes=f.wakes.length,calls=f.store.list('service_call',PROJECT).length,compute=f.counts();
+    assert.equal((await f.call(path,{...binding,dapiVersionId:cash.currentVersion.id},requestId)).status,403);
+    assert.equal((await f.call(path,{...binding,sourceBinding:{...binding.sourceBinding,sourceReleaseRunId:randomUUID()}},requestId)).status,403);
+    assert.equal((await f.call(path,{...binding,token:app.body.token},requestId)).status,422);
+    const delegatedClient=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
+      const response=await f.call(new URL(url).pathname.slice('/api/v2'.length),options.body?JSON.parse(options.body):undefined,options.headers['Idempotency-Key']);
+      return new Response(JSON.stringify(response.body),{status:response.status});
+    }});
+    const requestFile=join(f.directory,'agent-consumption.json');
+    writeFileSync(requestFile,JSON.stringify(binding),{mode:0o600});
+    let queued;
+    f.loseWake();
+    assert.equal(await runV2Cli(['agent','consume-services','--file',requestFile,'--request-id',requestId,'--confirm'],{},
+      {client:delegatedClient,output:line=>{queued=JSON.parse(line);},error:line=>assert.fail(line)}),0);
+    assert.equal(queued.state,'DELIVERY_UNKNOWN');
+    assert.deepEqual(queued.calls,[]);
+    assert.equal(f.wakes.length,wakes+1);
+    assert.equal((await f.call(path,binding,randomUUID())).status,409);
+    const wake=f.wakes.at(-1);
+    const restore=f.replaceWake(wake,raw=>raw.replace('signature','signatureChanged'));
+    assert.equal((await f.privateCall(wake)).status,401);
+    restore();
+    f.loseConsumption();
+    assert.equal((await f.privateCall(wake)).status,500);
+    const partial=await f.call(receiptPath);
+    assert.equal(partial.body.state,'RESULT_UNCONFIRMED');
+    assert.deepEqual(partial.body.calls.map(call=>call.type),['DAPI']);
+    assert.equal(partial.body.agentInitiated,false);
+    await f.restart();
+    assert.equal((await f.privateCall(wake)).body.state,'COMPLETED');
+    assert.equal((await f.privateCall(wake)).body.state,'REPLAYED');
+    const completed=await f.call(receiptPath);
+    assert.equal(completed.status,200,completed.body.message);
+    assert.equal(completed.body.wakeId,queued.wakeId);
+    assert.equal(completed.body.agentInitiated,true);
+    assert.equal(completed.body.externalSystemVerified,false);
+    assert.deepEqual(completed.body.calls.map(call=>[call.type,call.versionId,call.rowCount]),[
+      ['DAPI',binding.dapiVersionId,expectedRows.length],['XAPI',binding.xapiVersionId,expectedRows.length]]);
+    assert.ok(!JSON.stringify(completed.body).includes(app.body.token));
+    assert.equal(f.store.list('service_call',PROJECT).length,calls+2);
+    assert.equal(f.store.list('agent_consumption_step',PROJECT).length,2);
+    const mcp=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'service_agent_consumption_request',arguments:{requestId}}},{client:delegatedClient}));
+    assert.deepEqual(mcp.result.structuredContent,completed.body);
+    assert.deepEqual(f.counts(),compute);
+    const evidence='/data-services/task-evidence?'+new URLSearchParams({agent_task_id:taskId,package_digest:packageDigest,release_id:releaseId,
+      call_id_digest:completed.body.calls[1].callIdDigest});
+    const history=(await f.call(evidence)).body.services[0];
+    assert.equal(history.status,'VERIFIED',history.code);
+    const attribution=history.call.attribution;
+    assert.equal(attribution.channel,'SIGNED_AGENT_CONSUMPTION');
+    assert.equal(attribution.delegation.requestDigest,sha256(requestId));
+    assert.equal((await f.call('/data-services/applications/'+binding.applicationId+'/revoke',{})).status,200);
+    assert.equal((await f.privateCall(wake)).status,403);
+    f.env.V2_FC_PUBLIC_READ_ONLY='true';
+    f.env.V2_PRIVATE_DATA_SERVICES_ENABLED='false';
+    delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
+    await f.restart();
+    assert.deepEqual((await f.call(receiptPath)).body,completed.body);
+    assert.equal((await fetch(f.base+receiptPath)).status,401);
+    const other=f.addAdmin({email:'other-agent-consumption@example.invalid',password:'SyntheticJourney!2026',displayName:'另一位虚构工程师'});
+    const alternate=await f.call('/auth/login',{email:other.email,password:'SyntheticJourney!2026'});
+    const otherCookie=alternate.cookies.map(cookie=>cookie.split(';',1)[0]).join('; ');
+    assert.equal((await fetch(f.base+receiptPath,{headers:{cookie:otherCookie}})).status,404);
+    assert.equal((await f.call(path,binding,requestId)).status,403);
+    assert.equal(f.store.list('service_call',PROJECT).length,calls+2);
+    return;
+  }
   // Store creation timestamps use wall time. The fixture's fixed invocation
   // clock must start after the application grant it is testing.
   f.alignWallClock();
@@ -1027,7 +1103,7 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
-async function requestBoundPublicationJourney(t,{separateApproval=false,backgroundPublication=false}={}) {
+async function requestBoundPublicationJourney(t,{separateApproval=false,backgroundPublication=false,agentConsumption=false}={}) {
   const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true});
   const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_WORKBENCH==='true';
   const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
@@ -1481,6 +1557,10 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(monitored.workbenchUsage,usage);
   assert.deepEqual(f.queueCounts(),queueBeforeReadback);
   assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:4});
+  if(agentConsumption){
+    await consumeOriginalBatch(f,cli,{taskId:created.body.id,releaseId,packageDigest:bundle.digest,batchId:batchIds[0],sequence:1,origin,agentConsumption:true});
+    return;
+  }
   const consumed=[];
   for (const [index,batchId] of batchIds.entries())
     consumed.push(await consumeOriginalBatch(f,cli,{taskId:created.body.id,releaseId,packageDigest:bundle.digest,
@@ -1612,6 +1692,8 @@ test('a request-bound exact approval starts no batches until the original approv
   requestBoundPublicationJourney(t,{separateApproval:true}));
 test('a purpose-signed publication wake resumes the original exact approval after restart without duplicate batches',t=>
   requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true}));
+test('a signed Agent delegate consumes the exact DAPI and XAPI once despite a lost result acknowledgement',t=>
+  requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true,agentConsumption:true}));
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.
