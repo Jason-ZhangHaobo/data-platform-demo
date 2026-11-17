@@ -253,6 +253,7 @@ const labels: Record<string, string> = {
   SUCCEEDED: "本机演练通过",
   FAILED: "演练失败",
   VALIDATION_FAILED: "结果未通过",
+  UNCONFIRMED: "原演练待核对",
   CANCELLED: "已取消",
   INTERRUPTED: "已中断",
 };

@@ -1035,7 +1035,7 @@ export function createV2Server(options = {}) {
       if (!packageItem.manifest?.source?.syncInput ||
           result.status !== "SUCCEEDED" && result.errorCode !== syncSqlOutputSchemaCode) return;
       const plan = validateAnyDeliveryPackage(packageItem);
-      const checked = result.status === "SUCCEEDED" ? checkedSyncSqlFileRehearsal(plan, packageItem, result) : result;
+      const checked = result.status === "SUCCEEDED" ? checkedSyncSqlFileRehearsal(plan, packageItem, result, run.businessScheduledFor) : result;
       if (checked.errorCode === syncSqlOutputSchemaCode) {
         const details = boundSyncSqlFileColumns(plan, packageItem, checked, run.businessScheduledFor);
         if (checked.status !== "FAILED" || checked.mode !== "LOCAL_FILE_REHEARSAL" ||
@@ -1798,6 +1798,14 @@ export function createV2Server(options = {}) {
       const exposeDeliveryVerification = item => {
         const { rehearsalOutputSchema: storedSchema, ...visible } = protectedDeliveryPayload(item);
         const bundle = item.packageId && store.get("delivery_package", item.packageId, PROJECT);
+        if (bundle?.manifest?.source?.syncInput && item.status === "SUCCEEDED") {
+          try {
+            assertSyncSqlRehearsal(validateAnyDeliveryPackage(bundle), bundle, item);
+          } catch {
+            return exposeValidationRecord({ ...visible, status:"UNCONFIRMED", storedStatus:item.status, workflowTrace:undefined,
+              error:"原演练的调度、文件或结果证据未能核对，暂不可审阅。" });
+          }
+        }
         const rehearsalOutputSchema = syncSqlRehearsalSchemaDetails(bundle, item);
         return { ...exposeValidationRecord(visible), ...(rehearsalOutputSchema ? { rehearsalOutputSchema } : {}) };
       };
@@ -5841,7 +5849,8 @@ export function createV2Server(options = {}) {
           const key = text(req.headers["idempotency-key"], 1, 100);
           const existing = plan.source.syncInput && store.list("delivery_verification", PROJECT)
             .find(record => record.packageId === item.id && record.packageDigest === item.digest &&
-              record.scheduledFor === scheduledFor && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(record.status));
+              (record.scheduledFor === scheduledFor || record.occurrence?.scheduledFor === scheduledFor) &&
+              ["QUEUED", "RUNNING", "SUCCEEDED"].includes(record.status));
           if (existing?.status === "SUCCEEDED") assertSyncSqlRehearsal(plan, item, existing);
           const dedup = store.deduplicate(
             PROJECT + ":delivery-verify:" + key,
@@ -5889,7 +5898,7 @@ export function createV2Server(options = {}) {
               });
               if (result.status === "SUCCEEDED" && plan.source.syncInput) {
                 assertRequirementSource(item);
-                result = checkedSyncSqlFileRehearsal(plan, item, result);
+                result = checkedSyncSqlFileRehearsal(plan, item, result, scheduledFor);
               }
               if (
                 !["SUCCEEDED", "FAILED", "VALIDATION_FAILED"].includes(
@@ -5907,6 +5916,7 @@ export function createV2Server(options = {}) {
                   PROJECT,
                   {
                     ...result,
+                    scheduledFor,
                     published: false,
                     fullLifecycleE2E: false,
                     finishedAt: new Date().toISOString(),
@@ -6831,11 +6841,12 @@ export function createV2Server(options = {}) {
               }
               if (actual && plan.source.syncInput) {
                 assertRequirementSource(packageItem);
-                receipt = checkedSyncSqlFileRehearsal(plan, packageItem, receipt);
+                receipt = checkedSyncSqlFileRehearsal(plan, packageItem, receipt, scheduledFor);
                 actual = receipt.status === "SUCCEEDED";
               }
               store.update("delivery_verification", verification.id, PROJECT, {
                 ...receipt,
+                scheduledFor,
                 status: actual ? "SUCCEEDED" : "FAILED",
                 published: false,
                 fullLifecycleE2E: false,

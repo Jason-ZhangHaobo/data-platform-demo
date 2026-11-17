@@ -1089,6 +1089,8 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 可用 `GET /api/v2/development/synced-positions`、`shuduo sql synced-positions` 或 MCP `sql_synced_positions` 只读核对当前候选及币种条件。离线复核从原 CSV 及配置重新生成落地行，核对完整摘要并按同一合同重建冻结输入。
 
+复用该批次生成的八文件包进行本机演练时，按同一摘要解析样例调度时点、前一交易日和完整步骤，再执行主 SQL 与测试 SQL。读取成功回执时重新校验原时点、业务日、文件摘要、步骤和独立结果。任一项无法对应时，工作台显示「原演练待核对」，审阅入口关闭。同一个包和时点的成功演练可用原编号回看。
+
 ### 冻结持仓的八文件交付
 
 在原任务或人工保存的已核验版本打开「冻结持仓交付」。生成包时锁定该 SQL 运行、同步批次、元数据版本及快照。交付包的 `fixtures.json` 保留原输入，`tests.sql` 根据该输入的独立预期生成。在工作台选择「本机按文件演练」，调度文件的样例时刻应解出原业务日，Spark 实际执行主 SQL、测试 SQL 及五场景断言。审阅绑定包摘要与成功演练回执，范围为 `LOCAL_FILE_REVIEW`。

@@ -43,7 +43,7 @@ export function certifiedSyncSqlSource({ store, project, run, enabled, timeUnitM
     assertSyncSqlBatch({ bundle, plan, approval, verification, review, release, run: batch, batches, enabled, timeUnitMs, expectedStatus: "SUCCEEDED" });
     if (batch.mode !== "LOCAL_SCHEDULED_RELEASE" || batch.published !== true || batch.fullLifecycleE2E !== false ||
         !(time(batch.startedAt) >= time(batch.triggeredAt) && time(batch.finishedAt) >= time(batch.startedAt))) throw invalid();
-    assertSyncSqlRehearsal(plan, bundle, { ...batch, published: false, schedulerTriggered: false, mode: "LOCAL_FILE_REHEARSAL" });
+    assertSyncSqlRehearsal(plan, bundle, { ...batch, published: false, schedulerTriggered: false, mode: "LOCAL_FILE_REHEARSAL" }, release.businessScheduledFor);
     const succeeded = events.filter(event => event.type === "BATCH_SUCCEEDED" && event.releaseRunId === batch.id);
     if (succeeded.length !== 1 || succeeded[0].packageDigest !== bundle.digest || succeeded[0].schedulerTriggered !== true ||
         succeeded[0].status !== "SUCCEEDED" || !(time(succeeded[0].observedAt) >= time(batch.finishedAt))) throw invalid();

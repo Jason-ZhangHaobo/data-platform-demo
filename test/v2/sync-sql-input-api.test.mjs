@@ -65,6 +65,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
           status: "SUCCEEDED", mainSqlExecuted: true, engine: "Apache Spark", engineVersion: "3.5.9",
           mode: "LOCAL_FILE_REHEARSAL", published: false, schedulerTriggered: false,
           packageDigest: expectedDigest, source: plan.source, occurrence: resolveDeliverySchedule(plan, scheduledFor),
+          workflowTrace:plan.order.map(({id,kind})=>({id,kind,status:"SUCCEEDED"})),
           fileHashes: Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, file]) => [name, file.sha256])),
           testSqlValidation: { passed: true, sqlHash: sha256(bundle.files["tests.sql"]) },
           validation: JSON.parse(bundle.files["validation.json"]).report, rows: plan.fixtures.context.expected, columns: rehearsalColumns,
@@ -338,8 +339,29 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(verified.status, "SUCCEEDED");
     assert.equal(verified.rehearsalOutputSchema,undefined);
     assert.deepEqual((await request(failedRehearsalPath)).value.rehearsalOutputSchema,rehearsalSchema);
-    const reviewed = await request(packagePath + "/review", { packageDigest: stored.digest, verificationId: verified.id,
-      reviewNote: "隔离环境的测试审阅", attestations: { code: true, assertions: true, deliveryFiles: true, localScope: true } });
+    const verifiedPath = `/delivery/verifications/${verified.id}`;
+    const reviewInput = { packageDigest: stored.digest, verificationId: verified.id,
+      reviewNote: "隔离环境的测试审阅", attestations: { code: true, assertions: true, deliveryFiles: true, localScope: true } };
+    for (const change of [
+      {occurrence:{...verified.occurrence,timezone:"UTC"}},
+      {scheduledFor:undefined},
+      {workflowTrace:verified.workflowTrace.slice(0,-1)},
+      {fileHashes:{...verified.fileHashes,"tests.sql":"0".repeat(64)}},
+    ]) {
+      app.store.update("delivery_verification",verified.id,PROJECT,change);
+      const doubtful = await request(verifiedPath);
+      assert.equal(doubtful.value.status,"UNCONFIRMED");
+      assert.equal(doubtful.value.storedStatus,"SUCCEEDED");
+      assert.equal(doubtful.value.workflowTrace,undefined);
+      assert.equal((await request("/delivery/verifications")).value.find(item=>item.id===verified.id).status,"UNCONFIRMED");
+      assert.equal((await request(packagePath+"/review",reviewInput)).value.code,"SYNC_SQL_REHEARSAL_UNPROVEN");
+      assert.equal((await request(packagePath+"/verify",{scheduledFor},"doubtful-replay")).value.code,"SYNC_SQL_REHEARSAL_UNPROVEN");
+      assert.equal(app.store.get("delivery_verification",verified.id,PROJECT).status,"SUCCEEDED");
+      app.store.update("delivery_verification",verified.id,PROJECT,Object.fromEntries(Object.keys(change).map(key=>[key,verified[key]])));
+    }
+    const repeatVerification = await request(packagePath+"/verify",{scheduledFor},"verified-replay");
+    assert.equal(repeatVerification.value.id,verified.id);
+    const reviewed = await request(packagePath + "/review", reviewInput);
     assert.equal(reviewed.status, 201);
     const scheduleSpec = { triggerAfterSeconds: 5, intervalSeconds: 45, runCount: 2 };
     const syncConsent = { scope: "LOCAL_TEST_RELEASE", packageDigest: stored.digest, verificationId: verified.id,

@@ -16,25 +16,31 @@ import { assertSyncSqlOutputSchema, syncSqlColumnDifferences, syncSqlColumnsMatc
 
 const fileHashes = bundle => Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, entry]) => [name, entry.sha256]));
 
-export function assertSyncSqlRehearsal(plan, bundle, receipt) {
+export function assertSyncSqlRehearsal(plan, bundle, receipt, scheduledFor = receipt.scheduledFor) {
   if (!plan.source.syncInput) return;
   const family = { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) };
+  const invalid = () => Object.assign(Error("文件演练未证明原冻结批次的实际结果"), { status: 409, code: "SYNC_SQL_REHEARSAL_UNPROVEN" });
+  const trace = plan.order.map(({id,kind}) => ({id,kind,status:"SUCCEEDED"}));
+  let occurrence;
+  try { occurrence = resolveDeliverySchedule(plan, scheduledFor); }
+  catch { throw invalid(); }
   if (receipt.status !== "SUCCEEDED" || receipt.testDouble === true || receipt.mainSqlExecuted !== true ||
       receipt.engine !== "Apache Spark" || receipt.engineVersion !== plan.deployment.runtime.version ||
       receipt.packageDigest !== plan.digest || !isDeepStrictEqual(receipt.source, plan.source) ||
       receipt.published !== false || receipt.schedulerTriggered !== false || receipt.mode !== "LOCAL_FILE_REHEARSAL" ||
-      receipt.occurrence?.businessDate !== plan.fixtures.context.businessDate ||
+      occurrence.businessDate !== plan.fixtures.context.businessDate || !isDeepStrictEqual(receipt.occurrence, occurrence) ||
+      !isDeepStrictEqual(receipt.workflowTrace, trace) ||
       !isDeepStrictEqual(receipt.fileHashes, fileHashes(bundle)) ||
       receipt.testSqlValidation?.passed !== true || receipt.testSqlValidation.sqlHash !== sha256(bundle.files["tests.sql"]) ||
       !validationMatchesFamily(receipt.validation, family) || receipt.validation.selectedPassed !== true ||
       !syncSqlRowsMatch(receipt.rows, plan.fixtures.context))
-    throw Object.assign(Error("文件演练未证明原冻结批次的实际结果"), { status: 409 });
+    throw invalid();
   assertSyncSqlOutputSchema(receipt.columns);
 }
 
-export function checkedSyncSqlFileRehearsal(plan, bundle, receipt) {
+export function checkedSyncSqlFileRehearsal(plan, bundle, receipt, scheduledFor) {
   try {
-    assertSyncSqlRehearsal(plan, bundle, receipt);
+    assertSyncSqlRehearsal(plan, bundle, receipt, scheduledFor);
     return receipt;
   } catch (error) {
     if (error.code !== syncSqlOutputSchemaCode) throw error;
@@ -144,6 +150,7 @@ export async function verifyDeliveryDirectory(
     published: false,
     schedulerTriggered: false,
     clockMode: "EXPLICIT_REHEARSAL_TIME",
+    scheduledFor,
     startedAt,
     finishedAt: new Date().toISOString(),
     occurrence,
