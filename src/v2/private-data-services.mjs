@@ -11,6 +11,8 @@ import { privateTaskConsumption } from "./private-task-consumption.mjs";
 import { createServicePilotGuard, assertServiceMutation } from "./public-service-access.mjs";
 import {createDurableServiceAgent} from './durable-service-agent.mjs';
 import {assertServiceAgentMutation} from './private-service-agent-policy.mjs';
+import {consumerCredentialProof,consumerDigest} from './consumer-source.mjs';
+import {storedServiceCallAttribution} from './service-consumption-attribution.mjs';
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(new Error(message),{status,code});
 
@@ -202,6 +204,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       source: id => { const run = source(id); sourceOwner(a, run); return run; }, getRelease: id => get("release", id),
       application: id => get("service_app", id) ? manager.application(id) : undefined,
       calls: id => manager.listCalls(id).filter(call => callOwned(a, call)),
+      callAttribution: (call,version,source) => storedServiceCallAttribution({store,project,call,version,source}),
       recheckCall: (id, callId, options) => {
         const call = get("service_call", callId);
         assertApplicationVersion({ service: manager.detail(id), application: get("service_app", call?.applicationId),
@@ -253,11 +256,11 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     return rows;
   }
   let queryTail=Promise.resolve(),queries=0;
-  async function handle(req,url,readBody) {
+  async function handle(req,url,readBody,ingress) {
     const method=req.method,path=url.pathname;
     if(!privateServiceRoute(method,url.pathname+url.search,{agentRead:true,agentPlanning:Boolean(agentConfig)}))throw fail(404,"私有数据服务接口未开放");
     const open=path.match(/^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/);
-    if(open){if(queries>=8)throw fail(429,"私有查询队列已满","PRIVATE_SERVICE_QUEUE_FULL");queries++;const query=queryTail.then(async()=>{try{return {status:200,body:await manager.invoke(open[1]==="dapis"?"DAPI":"XAPI",open[2],req.headers.authorization,Object.fromEntries(url.searchParams),{assertAccess:input=>{
+    if(open){if(queries>=8)throw fail(429,"私有查询队列已满","PRIVATE_SERVICE_QUEUE_FULL");queries++;const query=queryTail.then(async()=>{try{return {status:200,body:await manager.invoke(open[1]==="dapis"?"DAPI":"XAPI",open[2],req.headers.authorization,Object.fromEntries(url.searchParams),{ingress,assertAccess:input=>{
       pilot?.assertService(input.service);pilot?.assertApplication(input.application);assertApplicationVersion(input);
     }})};}finally{await persist();}});queryTail=query.catch(()=>{});try{return await query;}finally{queries--;}}
     const a=actor(req),owner=a.user.id;
@@ -294,7 +297,12 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
         if (!pilot && item.publishedVersion?.outputContractId===fundDapiContract.id)
           throw fail(403,"基金凭证须在确切的消费窗口签发","PUBLIC_SERVICE_TARGET_MISMATCH");
       }
-      let issued;const record=dedup("app",b,()=>{pilot?.assertApplicationCreate(b);issued=manager.createApplication(b,{expiresAt:pilot?.applicationTags.expiresAt});return store.update("service_app",issued.application.id,project,{createdBy:owner,...pilot?.applicationTags});});
+      let issued;const record=dedup("app",b,()=>{
+        pilot?.assertApplicationCreate(b);issued=manager.createApplication(b,{expiresAt:pilot?.applicationTags.expiresAt});
+        return store.update("service_app",issued.application.id,project,{createdBy:owner,...pilot?.applicationTags,
+          ...(ingress==='HTTP'||ingress==='INTERNAL'?{issuanceEvidence:{mode:'AUTHENTICATED_SESSION',requestDigest:consumerDigest(key),
+            credentialProofDigest:consumerCredentialProof(consumerDigest(issued.token))}}:{})});
+      });
       if(record.replayed)return {status:200,body:{application:manager.application(record.id),token:null,tokenShownOnce:false}};
       return {status:201,body:{...issued,application:manager.application(record.id)}};
     }

@@ -612,8 +612,10 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   const cash=await createService('dapis',{...cashSpec,sourceReleaseRunId:batchId});
   const xapi=await createService('xapis',{...xapiSpec,steps:[{alias:'holdings',dapiId:holdings.id,dapiVersionId:holdings.currentVersion.id},
     {alias:'cash',dapiId:cash.id,dapiVersionId:cash.currentVersion.id}]});
-  const app=await f.call('/data-services/applications',{name:applicationName,serviceIds:[holdings.id,xapi.id]},randomUUID());
+  const issuanceKey=randomUUID();
+  const app=await f.call('/data-services/applications',{name:applicationName,serviceIds:[holdings.id,xapi.id]},issuanceKey);
   assert.equal(app.status,201);
+  assert.equal(app.body.application.issuanceEvidence,undefined);
   // Store creation timestamps use wall time. The fixture's fixed invocation
   // clock must start after the application grant it is testing.
   f.alignWallClock();
@@ -642,9 +644,29 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   assert.equal(bound.consumption.status,'MATCHED_ONLY');
   assert.equal(bound.consumption.dapiCallIdDigest,dapiCall.callIdDigest);
   assert.equal(bound.consumption.xapiCallIdDigest,xapiCall.callIdDigest);
+  const attribution=bound.consumption.attribution;
+  assert.equal(attribution.batchId,batchId);
+  for (const [kind,request] of [['dapi',dapiCall],['xapi',xapiCall]]) {
+    assert.equal(attribution[kind].callIdDigest,request.callIdDigest);
+    assert.equal(attribution[kind].evidence.channel,'BEARER_HTTP');
+    assert.equal(attribution[kind].evidence.issuanceMode,'AUTHENTICATED_SESSION');
+    assert.equal(attribution[kind].evidence.issuanceRequestDigest,sha256(issuanceKey));
+    assert.deepEqual(attribution[kind].evidence.serviceDesign,{kind:'UNRECORDED'});
+  }
   assert.equal(bound.agentIndependentE2E,false);
   assert.equal(f.store.list('service_call',PROJECT).length,storedCalls);
   assert.ok(!JSON.stringify(bound).includes(app.body.token));
+  assert.ok(!JSON.stringify(bound).includes(issuanceKey));
+  const wrongToken={...report,credentialDigest:'b'.repeat(64)};
+  writeFileSync(reportFile,JSON.stringify(wrongToken));
+  assert.equal((await cli('v3-consumption',flags)).reason,'CALL_ATTRIBUTION_UNCONFIRMED');
+  writeFileSync(reportFile,JSON.stringify(report));
+  const storedXapi=f.store.list('service_call',PROJECT).find(call=>sha256(call.id)===xapiCall.callIdDigest);
+  for (const patch of [{queryDigest:'c'.repeat(64)},{channel:'BEARER_PRIVATE_BRIDGE'}]) {
+    f.store.update('service_call',storedXapi.id,PROJECT,{invocationEvidence:{...storedXapi.invocationEvidence,...patch}});
+    assert.equal((await cli('v3-consumption',flags)).reason,'CALL_ATTRIBUTION_UNCONFIRMED');
+  }
+  f.store.update('service_call',storedXapi.id,PROJECT,{invocationEvidence:storedXapi.invocationEvidence});
   const missing=structuredClone(report);
   missing.requests[dapiCall.sequence-1].callIdDigest='a'.repeat(64);
   writeFileSync(reportFile,JSON.stringify(missing));
@@ -1479,6 +1501,8 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal(completion.independentlyVerifiedCloudCase,false);
   assert.equal(requests.length,10);
   assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).publicationInitiationEvidence,initiation);
+  const consumptionAttribution=consumed.map(value=>value.bound.consumption.attribution);
+  assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).consumptionAttribution,consumptionAttribution);
   assert.deepEqual(f.store.list('service_call',PROJECT),savedCalls);
   assert.deepEqual(f.store.list('service_app',PROJECT),savedApplications);
   const run=await cli('v3-run',['--completion-file',completionFile]);
@@ -1487,6 +1511,11 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(run.cases[0].developmentDriverEvidence,driverEvidence);
   assert.deepEqual(run.cases[0].publicationScheduleEvidence,{releaseId,packageDigest:bundle.digest,batches:scheduledBatches});
   assert.deepEqual(run.cases[0].publicationInitiationEvidence,initiation);
+  assert.deepEqual(run.cases[0].consumptionAttribution,consumptionAttribution);
+  const wrongConsumptionPath=join(f.directory,'wrong-consumption-attribution.json'),wrongConsumption=saved();
+  wrongConsumption.outcomes[0].consumption[batchIds[0]].attribution.dapi.callIdDigest='a'.repeat(64);
+  writeFileSync(wrongConsumptionPath,JSON.stringify(wrongConsumption),{mode:0o600});
+  await cli('v3-run',[],1,wrongConsumptionPath);
   assert.equal(run.score.directAutonomousCompletionRate,null);
   assert.equal(run.score.localOnlySuccesses,1);
   assert.equal(run.score.reviewedCloudCompletionRate,null);

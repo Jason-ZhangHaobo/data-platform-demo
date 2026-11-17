@@ -925,7 +925,8 @@ async function checkOriginalConsumerProof(client,{source,selector},{plan,report,
     return {reason:decision.reason};
   return {proof:{batchId:source.sourceReleaseRunId, status:decision.status, sourceDigest:decision.sourceDigest,
     planDigest:decision.planDigest, reportDigest:decision.reportDigest, xapiCallIdDigest:decision.callIdDigest,
-    xapiRowsDigest:decision.rowsDigest, dapiCallIdDigest:decision.dapiCallIdDigest,dapiRowsDigest:decision.dapiRowsDigest}};
+    xapiRowsDigest:decision.rowsDigest, dapiCallIdDigest:decision.dapiCallIdDigest,dapiRowsDigest:decision.dapiRowsDigest,
+    ...(decision.consumptionAttribution?{attribution:decision.consumptionAttribution}:{})}};
 }
 
 export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPath,callIdDigest}={}) {

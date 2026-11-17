@@ -5,7 +5,7 @@ import {consumerDigest,validateConsumerSource} from "./consumer-source.mjs";
 const assetFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 // Private, owner-authorized projection of persisted calls. No tokens, rows,
 // parameters, rematerialization, model invocation or new consumer calls.
-export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, scope = "PRIVATE_CLOUD_TEST" }) {
+export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, callAttribution, scope = "PRIVATE_CLOUD_TEST" }) {
   if (!["PRIVATE_CLOUD_TEST", "LOCAL_TEST_ONLY"].includes(scope)) throw new Error("Unsupported consumption scope");
   const entries = [], limit = 20;
   const sourceField=manualDeliveryTaskId?'manualDeliveryTaskId':'sourceAgentTaskId',sourceId=manualDeliveryTaskId??taskId,identity=manualDeliveryTaskId?{manualDeliveryTaskId}:{taskId},matches=r=>r?.[sourceField]===sourceId&&(!manualDeliveryTaskId||r.sourceAgentTaskId===undefined);
@@ -96,7 +96,9 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
         const proof = await recheckCall(service.id, call.id, exactCall ? { pinnedVersionId: root.id } : undefined);
         entry.status = proof.verified ? "VERIFIED" : "NEEDS_ATTENTION";
         entry.code = proof.verified ? "OK" : "CONSUMPTION_RESULT_MISMATCH";
-        entry.call = { ...proof, applicationId: call.applicationId, applicationStatus: application(call.applicationId).status, finishedAt: call.finishedAt };
+        const evidence=exactCall && proof.verified ? callAttribution?.(call,root,entry.source) : undefined;
+        entry.call = { ...proof, applicationId: call.applicationId, applicationStatus: application(call.applicationId).status, finishedAt: call.finishedAt,
+          ...(evidence?{attribution:evidence}:{}) };
         entry.notice = proof.verified ? "历史授权调用结果与当前不可变快照对照通过；不表示应用现在仍获授权。" : "持久调用结果与当前快照不一致。";
       }
     } catch (error) {

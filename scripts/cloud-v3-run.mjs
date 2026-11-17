@@ -13,6 +13,7 @@ import { validStoredCloudV3DevelopmentDrivers } from "../src/v2/cloud-v3-develop
 import { validStoredPublicationSchedule } from "../src/v2/cloud-release-evidence.mjs";
 import { validBackgroundPreparationEvidence } from "../src/v2/delivery-preparation-evidence.mjs";
 import { validPublicationInitiation } from "../src/v2/publication-initiation-evidence.mjs";
+import {validBatchConsumptionAttribution} from '../src/v2/service-consumption-attribution.mjs';
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -117,6 +118,16 @@ function hasReviewedCloudEvidence(state,item,checkedAt) {
       Date.parse(approvalTiming.approvedAt)<=Date.parse(row.observedAt) && Date.parse(row.observedAt)<=Date.parse(checkedAt));
 }
 
+function storedConsumptionAttribution(item) {
+  const batches=item.actions?.publication?.batchIds;
+  for(const [batchId,proof] of Object.entries(item.consumption??{})) {
+    if (proof?.attribution===undefined) continue;
+    if (!Array.isArray(batches) || !batches.includes(batchId) || proof.batchId!==batchId || !validBatchConsumptionAttribution(proof.attribution,proof))
+      stop("原授权消费的批次、调用或签发证据不一致");
+  }
+  return Array.isArray(batches)?batches.flatMap(batchId=>item.consumption?.[batchId]?.attribution??[]):[];
+}
+
 export function cloudV3CompletionReceipt(original,first,checkedAt) {
   const {state,text}=original, action=first.actions?.publication, delivery=first.actions?.delivery;
   const batches=action?.batchIds;
@@ -141,6 +152,7 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
       new Set(proofs.flatMap(proof=>[proof.dapiCallIdDigest,proof.xapiCallIdDigest])).size!==4)
     stop("完成回执缺少原双批证据");
   const scope=cloudV3CompletionScope(state,proofs);
+  const attribution=storedConsumptionAttribution(first);
   if (scope==="INVITED_CLOUD_MATCHED" && !hasReviewedCloudEvidence(state,first,checkedAt))
     stop("正式云端完成回执缺少原需求、用量、演练、审阅时间或双批监控证据");
   const body={protocol:completionProtocol,scope,checkedAt,
@@ -149,7 +161,8 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
     developmentRunId:first.code?.runId,packageDigest:action.packageDigest,verificationId:action.verificationId,
     releaseId:action.id,batchIds:batches,consumptionDigest:sha256(JSON.stringify(proofs)),
     ...(delivery?.preparationEvidence ? {deliveryPreparationEvidence:delivery.preparationEvidence} : {}),
-    ...(action.initiationEvidence ? {publicationInitiationEvidence:action.initiationEvidence} : {})};
+    ...(action.initiationEvidence ? {publicationInitiationEvidence:action.initiationEvidence} : {}),
+    ...(attribution.length?{consumptionAttribution:attribution}:{})};
   return {...body,completionDigest:sha256(JSON.stringify(body))};
 }
 
@@ -237,6 +250,7 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
         (publication.status!=="CONFIRMED" || item.code?.taskId!==item.taskId ||
           !validPublicationInitiation(publication.initiationEvidence,item.code,publication)))
       stop("原发布请求的发起证据与批准不一致");
+    storedConsumptionAttribution(item);
     const approval=checkpoint.state.submission?.windowApprovalDigest;
     if (approval!==undefined) {
       if (!digest(approval) || approvals.includes(approval)) stop("同一评测不能复用开发窗口审批");
@@ -359,6 +373,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
         : proof.synthetic || observation?.provenance==="TEST_HARNESS" ? "TEST_HARNESS" : proof.nonNative ? "HUMAN_ASSISTED_OR_NON_NATIVE"
         : proof.unconfirmed ? "PROVENANCE_UNCONFIRMED" : "ORIGINAL_CHECKPOINT";
       const publication=existing.item.actions.publication;
+      const attribution=storedConsumptionAttribution(existing.item);
       return {...item,status,creationStatus:existing.item.actions.agent.status,phase:existing.item.phase,
         ...(existing.completion ? {evidenceScope:existing.completion.scope} : {checkpointStage:stage}),
         ...(existing.item.developmentDriverEvidence ? {developmentDriverEvidence:existing.item.developmentDriverEvidence} : {}),
@@ -368,6 +383,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
           releaseId:publication.id,packageDigest:publication.packageDigest,batches:publication.scheduledBatches,
         }} : {}),
         ...(publication?.initiationEvidence ? {publicationInitiationEvidence:publication.initiationEvidence} : {}),
+        ...(attribution.length?{consumptionAttribution:attribution}:{}),
         ...(status==="CLOUD_CHAIN_VERIFIED" ? {approvalWaitMs:Date.parse(existing.item.actions.publication.approvalTiming.approvedAt)-
           Date.parse(existing.item.actions.publication.approvalTiming.readyAt)} : {})};
     }

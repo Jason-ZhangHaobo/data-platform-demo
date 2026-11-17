@@ -340,12 +340,18 @@ test('the owner can recheck DAPI and XAPI receipts for the same saved publicatio
   assert.equal(current.body.status, 'PENDING');
   assert.equal(current.body.services.find(item => item.serviceId === assets.id).versionId, newAssets);
   assert.ok(current.body.services.every(item => !item.call && item.sourceRunIds[0] === newBatchId));
+  const exactEntries=new Map();
   for (const result of [direct, combined]) {
     const exact = proofPath + '&call_id_digest=' + consumerDigest(result.body.callId);
     const originalEntry = proof.body.services.find(item => item.call?.callId === result.body.callId);
     const found = await f.call(exact);
     assert.equal(found.status, 200);
-    assert.deepEqual(found.body.services, [originalEntry]);
+    assert.equal(found.body.services.length,1);
+    const {call:{attribution,...originalCall},...entry}=found.body.services[0];
+    assert.deepEqual({...entry,call:originalCall},originalEntry);
+    assert.equal(attribution.issuanceMode,'AUTHENTICATED_SESSION');
+    assert.equal(attribution.channel,'BEARER_HTTP');
+    exactEntries.set(result.body.callId,found.body.services[0]);
     assert.equal((await f.call(exact, undefined, { identity: 'other' })).status, 403);
   }
   const link = await agentCallHistoryHref('https://publication.example.invalid/v2/?source_old=ignore', {
@@ -364,7 +370,7 @@ test('the owner can recheck DAPI and XAPI receipts for the same saved publicatio
     assert.equal(result.cacheControl, 'no-store');
     return result.body;
   };
-  assert.deepEqual(await readAgentCallHistory(api, target), proof.body.services.find(item => item.call?.callId === combined.body.callId));
+  assert.deepEqual(await readAgentCallHistory(api, target),exactEntries.get(combined.body.callId));
   assert.equal(reads.length, 2);
   await assert.rejects(readAgentCallHistory(api, {...target, batch: newBatchId}), /消费回执/);
   await assert.rejects(readAgentCallHistory(path => api(path, 'other'), target), /403/);

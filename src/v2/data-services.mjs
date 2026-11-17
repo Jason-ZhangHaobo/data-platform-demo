@@ -10,6 +10,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { validateDeliveryPackage, sha256, validationMatchesFamily } from "./delivery.mjs";
 import { syncServiceProtocol } from "./sync-sql-service-source.mjs";
+import {consumerParametersDigest,consumerWireQueryDigest} from './consumer-source.mjs';
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -123,7 +124,7 @@ const queryFor = (contractId, input = {}) => {
 };
 const publicApp = (app, now = Date.now()) => {
   if (!app) return app;
-  const { tokenHash, ...safe } = app;
+  const { tokenHash, issuanceEvidence, ...safe } = app;
   if (safe.status === "ACTIVE" && Object.hasOwn(safe, "expiresAt") &&
       (!Number.isFinite(Date.parse(safe.expiresAt)) || now >= Date.parse(safe.expiresAt))) safe.status = "EXPIRED";
   return safe;
@@ -939,7 +940,7 @@ export class DataServiceManager {
     };
   }
 
-  async invoke(type, path, authorization, input = {}, { assertAccess } = {}) {
+  async invoke(type, path, authorization, input = {}, { assertAccess, ingress } = {}) {
     const service = this.store
       .list("data_service", this.project)
       .find((item) => item.slug === path && item.serviceType === type);
@@ -974,6 +975,9 @@ export class DataServiceManager {
           statusCode: 200,
           rowCount: response.data.length,
           resultHash: serviceHash(response.data),
+          ...(ingress==='HTTP'||ingress==='INTERNAL'?{invocationEvidence:{channel:ingress==='HTTP'?'BEARER_HTTP':'BEARER_PRIVATE_BRIDGE',
+            queryDigest:consumerWireQueryDigest(input),parametersDigest:consumerParametersDigest(query),
+            ...(app.issuanceEvidence?{issuanceDigest:serviceHash(app.issuanceEvidence)}:{})}}:{}),
           ...(isSync(version) ? { sourceEvidenceHash: serviceHash(version.sourceEvidence), paginationHash: serviceHash(response.pagination) } : {}),
         });
       return {

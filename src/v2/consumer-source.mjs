@@ -14,6 +14,11 @@ export const consumerCanonical = value => JSON.stringify(value && typeof value =
   ? Array.isArray(value) ? value.map(item => JSON.parse(consumerCanonical(item)))
     : Object.fromEntries(Object.keys(value).sort().map(key => [key, JSON.parse(consumerCanonical(value[key]))])) : value);
 export const consumerDigest = value => createHash("sha256").update(value).digest("hex");
+export const consumerWireQueryDigest = query => consumerDigest(consumerCanonical(Object.fromEntries(
+  Object.entries(query).map(([key,value])=>[key,String(value)]))));
+export const consumerParametersDigest = query => consumerDigest(consumerCanonical(Object.fromEntries(
+  Object.entries(query).filter(([,value])=>value!==undefined))));
+export const consumerCredentialProof = digest => consumerDigest(`shuduo-consumer-credential/v1\n${digest}`);
 
 export const consumerDenialEvidence = "APPLICATION_CODES_V1";
 export const consumerDenialCodes = Object.freeze({
