@@ -86,6 +86,17 @@ test('a signed Agent receipt cannot substitute for an independent HTTP caller',(
   assert.equal(notCandidate(value).reason,'CALL_ATTRIBUTION_UNCONFIRMED');
 });
 
+test("a perfectly matching row digest from a restricted application cannot bind batch acceptance",()=>{
+  const restricted=fixture();
+  restricted.taskEvidence.services[0].call.coverage="SINGLE_CUSTOMER";
+  assert.equal(notCandidate(restricted).reason,"CALL_PROOF_INVALID");
+  const allowed=fixture(),unrelated=structuredClone(restricted.taskEvidence.services[0]);
+  unrelated.serviceId="other-scoped-service";
+  allowed.taskEvidence.services.push(unrelated);
+  allowed.taskEvidence.matchingCount=2;
+  assert.equal(bindExternalConsumption(allowed).status,"MATCHED");
+});
+
 test("V2 exact XAPI call, pinned DAPIs and independent row digests bind without claiming environment truth", () => {
   const input = fixture(), before = structuredClone(input), result = bindExternalConsumption(input);
   assert.equal(result.status, "MATCHED"); assert.equal(result.eligibleForExternalAcceptance, true);

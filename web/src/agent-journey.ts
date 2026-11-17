@@ -42,7 +42,7 @@ export type TaskConsumption = {
     releaseId?:string;sourceKind?:string;agentIndependentE2E?:boolean;
     status: string; code?: string; notice: string; sourceRunIds: string[]; fullAssetComposition?: boolean;distributionComposition?:boolean;fundExposureComposition?:boolean;
     source?:{modelClassification?:string;modelMode?:string;engineClassification?:string};checkedCalls?:unknown[];
-    call?: { callId: string; versionId: string; verified: boolean;independentResultVerified?:boolean; resultHash: string; rowCount: number; applicationId: string; applicationStatus: string; finishedAt: string } }[];
+    call?: { callId: string; versionId: string; verified: boolean;independentResultVerified?:boolean; coverage?:"SINGLE_CUSTOMER"; resultHash: string; rowCount: number; applicationId: string; applicationStatus: string; finishedAt: string } }[];
 };
 export function manualConsumptionEntryMatches(entry:{releaseId?:string;sourceKind?:string;agentIndependentE2E?:boolean;sourceRunIds?:string[]},releaseId:string,batches:{id:string;status:string;schedulerTriggered?:boolean}[],developmentRunId?:string){
   if(entry.releaseId!==releaseId||entry.sourceKind!=="MANUAL"||entry.agentIndependentE2E!==false||!Array.isArray(entry.sourceRunIds)||entry.sourceRunIds.length!==1)return false;
@@ -90,8 +90,9 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
     : (fund?fundReceipt:e.consumption?.protocol === "shuduo-private-task-consumption/v1") && e.consumption?.scope === "PRIVATE_CLOUD_TEST";
   const consumptionCurrent = current && consumptionScopeMatches && e.consumption?.taskId === e.taskId && e.consumption.packageDigest === e.bundle?.digest&&
     (e.release?.sourceKind==="MANUAL"?e.consumption.releaseId===e.release.id&&e.consumption.sourceKind==="MANUAL"&&e.consumption.agentIndependentE2E===false:e.consumption.releaseId===undefined||e.consumption.releaseId===e.release?.id);
-  const consumed = Boolean(healthy && consumptionCurrent && !e.consumption?.truncated && e.consumption?.status === "VERIFIED" && e.consumption.services.some(s => s.serviceType === "XAPI" && s.status === "VERIFIED" && (fund?fundReceipt&&s.fundExposureComposition===true&&s.call?.independentResultVerified===true:distribution?distributionReceipt&&s.distributionComposition===true&&s.fullAssetComposition===false&&s.call?.independentResultVerified===true:s.fullAssetComposition === true) && s.call?.verified === true && s.call.versionId === s.versionId && s.call.rowCount > 0&&
+  const consumed = Boolean(healthy && consumptionCurrent && !e.consumption?.truncated && e.consumption?.status === "VERIFIED" && e.consumption.services.some(s => s.serviceType === "XAPI" && s.status === "VERIFIED" && (fund?fundReceipt&&s.fundExposureComposition===true&&s.call?.independentResultVerified===true:distribution?distributionReceipt&&s.distributionComposition===true&&s.fullAssetComposition===false&&s.call?.independentResultVerified===true:s.fullAssetComposition === true) && s.call?.verified === true && s.call.coverage===undefined && s.call.versionId === s.versionId && s.call.rowCount > 0&&
     (e.release?.sourceKind!=="MANUAL"||manualConsumptionEntryMatches(s,e.release.id,batches,e.runId))));
+  const singleCustomerVerified=consumptionCurrent&&e.consumption?.services.some(s=>s.status==="VERIFIED"&&s.call?.verified===true&&s.call.coverage==="SINGLE_CUSTOMER");
   const requirementCheck=e.report?.taskId===e.taskId?e.report.checks.find(check=>check.id==='requirement'):undefined;
   const steps: JourneyStep[] = [
     { id: "requirement", label: "需求与口径", state:requirementCheck?state(Boolean(current&&requirementCheck.passed),current&&!requirementCheck.passed):"DONE",
@@ -102,7 +103,7 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
     { id: "files", label: "调度与部署文件", state: state(fileVerified, e.delivery?.status === "FAILED"), detail: fileVerified ? "同一版本的交付文件演练通过。" : files ? "文件已生成，仍需实际演练。" : "核验通过后准备版本化交付。", target: "agent-files" },
     { id: "publication", label: "审阅与发布", state: state(executed, stopped), detail: executed ? `当前交付包已由调度器执行 · ${e.release?.id.slice(0, 8)}` : e.release && !publicationCurrent ? "保留历史发布，不替当前版本证明上线。" : "需审阅确切版本；不会自动代批。", target: "agent-publication" },
     { id: "monitoring", label: "上线后监控", state: state(Boolean(healthy), publicationCurrent && (e.release?.health === "CRITICAL" || (e.alerts ?? []).some(a => a.status === "OPEN"))), detail: healthy ? "所有计划批次成功，无未解除告警。仅本次测试范围。" : "检查批次、告警与恢复记录；不凭健康标签判完成。", target: "agent-publication" },
-    { id: "services", label: "DAPI / XAPI消费", state: state(consumed, Boolean(consumptionCurrent && e.consumption?.services.some(s => s.status === "NEEDS_ATTENTION"))), detail: consumed ? "当前包的组合接口、历史授权调用与实际快照对照通过；不是外部系统验收。" : "到同任务服务工作台核对来源、授权调用与日志；本视图尚未核验消费。", target: "agent-service-handoff" },
+    { id: "services", label: "DAPI / XAPI消费", state: state(consumed, Boolean(consumptionCurrent && e.consumption?.services.some(s => s.status === "NEEDS_ATTENTION"))), detail: consumed ? "当前包的组合接口、历史授权调用与实际快照对照通过；不是外部系统验收。" : singleCustomerVerified ? "单客户授权调用已核验，批次消费验收待核对。" : "到同任务服务工作台核对来源、授权调用与日志；本视图尚未核验消费。", target: "agent-service-handoff" },
   ];
   const next: JourneyStep = steps.find(step => step.state !== "DONE") ?? { id:"evidence",label:"查看完整证据",state:"DONE",detail:"当前任务的测试范围证据已齐；仍不代表自主E2E或公网验收。",target:"agent-service-handoff" };
   return { steps, next, current, fileVerified, publicationCurrent };

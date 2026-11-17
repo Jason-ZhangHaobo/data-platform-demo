@@ -70,13 +70,13 @@ export function checkedAgentConsumptionReceipt(value:unknown,requestId:string,ca
 
 export function agentConsumptionTarget(scope:ConsumptionScope|undefined,
   batch:{id:string;releaseId:string;sourceAgentTaskId?:string;packageDigest?:string}|undefined, services:Parameters<typeof consumptionServices>[0],
-  applications:{id:string;name:string;status:string;pilotId?:string;expiresAt?:string;scope:string;serviceIds:string[]}[]) {
+  applications:{id:string;name:string;status:string;pilotId?:string;expiresAt?:string;scope:string;serviceIds:string[];customerAccess?:unknown}[]) {
   if(!consumptionPlanAvailable(scope)||scope.plan.agentConsumptionAvailable!==true||scope.plan.outputContractId||!scope.plan.taskId||
     !batch||batch.id!==scope.plan.sourceReleaseRunId||batch.packageDigest!==scope.plan.packageDigest||batch.sourceAgentTaskId!==scope.plan.taskId||
     applications.length!==1)return;
   const app=applications[0],scoped=consumptionServices(services,scope);
   const dapi=scoped.find(item=>item.slug===scope.plan.dapis[0].slug),xapi=scoped.find(item=>item.slug===scope.plan.xapi.slug);
-  if(app.scope!=='PRIVATE_CLOUD_TEST'||app.pilotId!==scope.pilotId||app.name!==scope.plan.applicationName||
+  if(app.scope!=='PRIVATE_CLOUD_TEST'||app.pilotId!==scope.pilotId||app.name!==scope.plan.applicationName||app.customerAccess!==undefined||
     !dapi?.publishedVersion||!xapi?.publishedVersion||dapi.status!=='PUBLISHED'||xapi.status!=='PUBLISHED'||
     ![dapi.id,xapi.id].every(id=>app.serviceIds.includes(id)))return;
   return {input:{sourceBinding:{taskId:scope.plan.taskId,releaseId:batch.releaseId,packageDigest:scope.plan.packageDigest,sourceReleaseRunId:batch.id},

@@ -630,6 +630,11 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
     const binding={sourceBinding:{taskId,releaseId,packageDigest,sourceReleaseRunId:batchId},applicationId:app.body.application.id,
       dapiVersionId:holdings.currentVersion.id,xapiVersionId:xapi.currentVersion.id};
     const wakes=f.wakes.length,calls=f.store.list('service_call',PROJECT).length,compute=f.counts();
+    f.store.update('service_app',binding.applicationId,PROJECT,{customerAccess:{clientId:'CLIENT-001',maskedFields:[]}});
+    assert.equal((await f.call(path,binding,requestId)).body.code,'AGENT_CONSUMPTION_GRANT_INVALID');
+    assert.equal(f.wakes.length,wakes);
+    assert.equal(f.store.list('service_call',PROJECT).length,calls);
+    f.store.update('service_app',binding.applicationId,PROJECT,{customerAccess:undefined});
     assert.equal((await f.call(path,{...binding,dapiVersionId:cash.currentVersion.id},requestId)).status,403);
     assert.equal((await f.call(path,{...binding,sourceBinding:{...binding.sourceBinding,sourceReleaseRunId:randomUUID()}},requestId)).status,403);
     assert.equal((await f.call(path,{...binding,token:app.body.token},requestId)).status,422);

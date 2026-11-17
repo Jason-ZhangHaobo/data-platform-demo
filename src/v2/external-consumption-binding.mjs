@@ -98,8 +98,9 @@ const evidenceKeys = ["protocol", "taskId", "packageDigest", "releaseId", "scope
 const entryKeys = ["serviceId", "serviceType", "name", "versionId", "configHash", "status", "sourceRunIds", "notice", "sourceKind", "sourceAttribution", "agentIndependentE2E", "releaseId", "sourceVersions", "fullAssetComposition", "call", "code", "source"];
 const versionKeys = ["serviceId", "versionId", "configHash", "releaseId", "sourceReleaseRunId", "packageDigest", "sourceKind", "sourceAttribution", "fields"];
 const callKeys = ["callId", "versionId", "configHash", "rowCount", "resultHash", "verified", "applicationId", "applicationStatus", "finishedAt"];
-const exactCallProof=call=>call?.attribution===undefined?exact(call,callKeys):
-  exact(call,[...callKeys,'attribution'])&&validServiceCallAttribution(call.attribution);
+const exactCallProof=call=>call && (call.coverage===undefined||call.coverage==="SINGLE_CUSTOMER" && call.rowCount===1) &&
+  exact(call,[...callKeys,...(call.coverage===undefined?[]:["coverage"]),...(call.attribution===undefined?[]:["attribution"])]) &&
+  (call.attribution===undefined||validServiceCallAttribution(call.attribution));
 function checkCallAttribution(attribution,report,program,match) {
   if(!attribution) return;
   check(attribution.channel==='BEARER_HTTP' && attribution.credentialProofDigest===consumerCredentialProof(report.credentialDigest) &&
@@ -142,7 +143,7 @@ function platformMatch(source, plan, report, evidence) {
       Array.isArray(version.fields) && same([...version.fields].sort(), [...service.fields].sort());
   }), "CHILD_VERSION_MISMATCH");
   const call = entry.call;
-  check(exactCallProof(call) && id(call.callId) && id(call.applicationId) && call.verified === true && call.versionId === entry.versionId && call.configHash === entry.configHash &&
+  check(exactCallProof(call) && call.coverage === undefined && id(call.callId) && id(call.applicationId) && call.verified === true && call.versionId === entry.versionId && call.configHash === entry.configHash &&
     integer(call.rowCount, 1, 100) && digest(call.resultHash) && inactiveApplication(call, report) &&
     timestamp(call.finishedAt) && Date.parse(call.finishedAt) <= Date.parse(evidence.checkedAt), "CALL_PROOF_INVALID");
   // Client/server clocks are not compared at per-request millisecond precision.
@@ -177,7 +178,7 @@ function matchedDapiReceipt(source,plan,report,evidence,xapiEvidence,program) {
     versions[0].sourceKind==="AGENT" &&
     Array.isArray(versions[0].fields) && same([...versions[0].fields].sort(),[...service.fields].sort()),
     "DAPI_SOURCE_MISMATCH");
-  check(exactCallProof(call) && id(call.callId) && call.applicationId===xapi?.call?.applicationId &&
+  check(exactCallProof(call) && call.coverage === undefined && id(call.callId) && call.applicationId===xapi?.call?.applicationId &&
     call.verified===true && call.versionId===service.versionId && call.configHash===service.configHash &&
     inactiveApplication(call, report) && timestamp(call.finishedAt) &&
     Date.parse(call.finishedAt)>=Date.parse(plan.startedAt) && Date.parse(call.finishedAt)<Date.parse(plan.deadline) &&

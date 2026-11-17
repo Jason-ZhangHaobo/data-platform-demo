@@ -156,6 +156,10 @@ test('consumption stages bind task, package, current version, receipt and comple
   const consumption={protocol:'shuduo-private-task-consumption/v1',taskId:'synthetic-task',packageDigest:'digest-one',scope:'PRIVATE_CLOUD_TEST',status:'VERIFIED',truncated:false,services:[{serviceType:'XAPI',status:'VERIFIED',fullAssetComposition:true,versionId:'x-version',call:{verified:true,versionId:'x-version',rowCount:2}}]};
   assert.equal(stage({...fixture(),consumption},'services'),'DONE');
   assert.equal(agentJourney({...fixture(),consumption}).next.id,'evidence');
+  const limited=structuredClone(consumption);
+  Object.assign(limited.services[0].call,{coverage:'SINGLE_CUSTOMER',rowCount:1});
+  assert.equal(stage({...fixture(),consumption:limited},'services'),'PENDING');
+  assert.match(agentJourney({...fixture(),consumption:limited}).next.detail,/单客户授权调用已核验/);
   for(const patch of [{taskId:'foreign'},{packageDigest:'old'},{truncated:true},{status:'PENDING'},{services:[]},{scope:'LOCAL_TEST_ONLY'}])assert.notEqual(stage({...fixture(),consumption:{...consumption,...patch}},'services'),'DONE');
   assert.notEqual(stage({...fixture(),dirty:true,consumption},'services'),'DONE');
   assert.notEqual(stage({...fixture(),consumption:{...consumption,services:[{...consumption.services[0],call:{verified:true,versionId:'old',rowCount:2}}]}},'services'),'DONE');

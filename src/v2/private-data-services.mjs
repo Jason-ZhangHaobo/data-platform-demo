@@ -159,7 +159,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       throw fail(403,'原委托与消费窗口或发布批次不一致','AGENT_CONSUMPTION_SCOPE_DENIED');
     const app=get('service_app',binding.applicationId);
     pilot.assertApplication(app);
-    if(app?.createdBy!==binding.actorId||app.status!=='ACTIVE'||!(Date.parse(app.expiresAt)>nowMs)||!app.issuanceEvidence||
+    if(app?.createdBy!==binding.actorId||app.status!=='ACTIVE'||Object.hasOwn(app,'customerAccess')||!(Date.parse(app.expiresAt)>nowMs)||!app.issuanceEvidence||
       serviceHash(app.issuanceEvidence)!==binding.issuanceDigest)
       throw fail(403,'原应用授权已失效','AGENT_CONSUMPTION_GRANT_INVALID');
     const targets={DAPI:get('data_service_version',binding.dapiVersionId),XAPI:get('data_service_version',binding.xapiVersionId)};

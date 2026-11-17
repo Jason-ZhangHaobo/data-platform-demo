@@ -30,7 +30,7 @@ export type SyncReportLineage = {
  protocol:"shuduo-sync-sql-report-lineage/v1"; requestId:string; source:PublishedReportBinding;
  snapshot:{id:string;assetId:string;rowCount:number;contentHash:string}; digest:string;
  release:{businessDate:string;snapshotHash:string;syncRunId:string;metadataVersionId:string};
- calls:{callId:string;serviceType:"DAPI"|"XAPI";versionId:string;rowCount:number;applicationStatus:"ACTIVE"|"REVOKED"|"EXPIRED"}[];
+ calls:{callId:string;serviceType:"DAPI"|"XAPI";versionId:string;rowCount:number;coverage?:"SINGLE_CUSTOMER";applicationStatus:"ACTIVE"|"REVOKED"|"EXPIRED"}[];
 };
 export function checkedSyncReportLineage(value:unknown,expected?:LineageExpected):Promise<SyncReportLineage>;
 export function readPublishedReportEvidence(client:Client,args:LineageExpected&{requestId:string}):Promise<PublishedReportLineage|SyncReportLineage>;

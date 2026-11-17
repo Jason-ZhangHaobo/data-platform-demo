@@ -13,6 +13,7 @@ export async function readStandaloneConsumption(client,input){
   if(e.sourceVersions.some(v=>!uuid(v.serviceId)||!uuid(v.versionId)||!hash(v.configHash)||v.releaseId!==input.releaseId||v.sourceReleaseRunId!==s.sourceReleaseRunId||v.packageDigest!==input.packageDigest||v.sourceKind!=='MANUAL'||!Array.isArray(v.fields)||v.fields.some(f=>!fields.includes(f))))throw bad();
   if(e.fullAssetComposition===true&&!fields.every(f=>e.sourceVersions.some(v=>v.fields.includes(f))))throw bad();
  }
- if(value.status==='VERIFIED'&&(value.truncated||!value.services.some(e=>e.status==='VERIFIED'&&e.serviceType==='XAPI'&&e.fullAssetComposition===true)))throw bad();
+ if(value.services.some(e=>e.call?.coverage!==undefined&&e.call.coverage!=='SINGLE_CUSTOMER')||
+  value.status==='VERIFIED'&&(value.truncated||!value.services.some(e=>e.status==='VERIFIED'&&e.serviceType==='XAPI'&&e.fullAssetComposition===true&&e.call?.coverage===undefined)))throw bad();
  return{protocol:'shuduo-standalone-service-reading/v1',sources,evidence:value};
 }

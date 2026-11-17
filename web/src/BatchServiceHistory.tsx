@@ -54,11 +54,13 @@ function ReleaseBatchHistory({api,workspaceAvailable}:Props) {
       <dl className="delivery-review-source"><dt>发布编号</dt><dd>{target.publication.releaseId}</dd><dt>调度批次</dt><dd>{target.batchId}</dd></dl>
       {!current ? <p role="status">正在核对原发布、批次与授权调用…</p> : current.error ? <p role="alert">{current.error}</p> : <>
         <p role="status">已核对所选发布与批次 · 只读历史</p>
+        {current.value?.status==="PENDING" && services?.some(service=>service.call?.coverage==="SINGLE_CUSTOMER")&&
+          <p>单客户授权调用已核验，批次消费验收待核对。</p>}
         {current.value?.truncated&&<p>记录超过读取上限，以下仅显示已返回的记录。</p>}
         {services?.length ? <ul className="agent-dev-attempts">{services.map(service=><li key={service.serviceId}>
           <strong>{service.serviceType} · {service.name}</strong>
           <code>版本 {service.versionId}</code>
-          {service.status==="VERIFIED" && service.call?.verified ? <span>调用 {service.call.callId} · {service.call.rowCount} 行 · {applicationStatusText(service.call.applicationStatus,true)}</span> : <span>{service.notice}</span>}
+          {service.status==="VERIFIED" && service.call?.verified ? <span>{service.call.coverage==="SINGLE_CUSTOMER" && "单客户授权 · "}调用 {service.call.callId} · {service.call.rowCount} 行 · {applicationStatusText(service.call.applicationStatus,true)}</span> : <span>{service.notice}</span>}
         </li>)}</ul> : <p>此批次暂无已保存的接口记录。</p>}
       </>}
       <div className="agent-delivery-actions">

@@ -256,6 +256,22 @@ test('the owner can recheck DAPI and XAPI receipts for the same saved publicatio
     const dapi = [holdings, cash][index];
     return { alias, dapiId: dapi.id, dapiVersionId: dapi.publishedVersionId };
   }) });
+  const proofPath = '/data-services/task-evidence?' + new URLSearchParams({
+    agent_task_id: f.agent.id, package_digest: f.item.digest, release_id: releaseId,
+  });
+  await f.restartServices();
+  const limitedApp=await f.call('/data-services/applications',{name:'虚构单客户受限应用',serviceIds:[holdings.id,assets.id],
+    customerAccess:{clientId:'CLIENT-001',maskedFields:['client_id','available_cash']}},{key:'single-customer-application'});
+  assert.equal(limitedApp.status,201);
+  const limitedCaller={identity:null,headers:{authorization:'Bearer '+limitedApp.body.token}};
+  const limited=await f.call('/open/xapis/saved-assets',undefined,limitedCaller);
+  assert.equal(limited.status,200);
+  assert.equal(limited.body.data[0].client_id,'******');
+  assert.equal(limited.body.pagination.total,1);
+  const limitedOnly=await f.call(proofPath);
+  assert.equal(limitedOnly.body.status,'PENDING');
+  assert.equal(limitedOnly.body.services.find(s=>s.serviceId===assets.id).call.coverage,'SINGLE_CUSTOMER');
+  await f.restartConsumption(plan);
   const issued = await f.call('/data-services/applications', { name: plan.applicationName, serviceIds: [holdings.id, assets.id] });
   assert.equal(issued.status, 201);
   const consumer = { identity: null, headers: { authorization: 'Bearer ' + issued.body.token } };
@@ -269,9 +285,11 @@ test('the owner can recheck DAPI and XAPI receipts for the same saved publicatio
     holdings: { holding_market_value: first.holding_market_value, security_count: first.security_count },
     cash: { available_cash: first.available_cash, total_assets: first.total_assets } }]);
   assert.equal((await f.call('/data-services/applications/' + issued.body.application.id + '/revoke', {})).status, 200);
-  const proofPath = '/data-services/task-evidence?' + new URLSearchParams({
-    agent_task_id: f.agent.id, package_digest: f.item.digest, release_id: releaseId,
-  });
+  await f.restartServices();
+  f.advance();
+  const newerLimited=await f.call('/open/xapis/saved-assets',undefined,limitedCaller);
+  assert.equal(newerLimited.status,200);
+  assert.equal((await f.call('/data-services/applications/'+limitedApp.body.application.id+'/revoke',{})).status,200);
   const original = await f.call(proofPath);
   assert.equal(original.status, 200);
   assert.equal(original.body.status, 'VERIFIED');
@@ -299,6 +317,10 @@ test('the owner can recheck DAPI and XAPI receipts for the same saved publicatio
   }
   const pinned = await f.call(proofPath + '&call_id_digest=' + consumerDigest(combined.body.callId));
   assert.deepEqual(pinned.body.services.map(item => item.call.callId), [combined.body.callId]);
+  const scoped=await f.call(proofPath+'&call_id_digest='+consumerDigest(newerLimited.body.callId));
+  assert.equal(scoped.body.status,'PENDING');
+  assert.deepEqual(scoped.body.services.map(s=>[s.status,s.call?.coverage,s.call?.applicationStatus]),[['VERIFIED','SINGLE_CUSTOMER','REVOKED']]);
+  assert.ok(!JSON.stringify(scoped.body).includes('CLIENT-001'));
   assert.ok(!JSON.stringify(proof.body).includes(issued.body.token));
   assert.ok(proof.body.services.every(item => !item.call || !('parameters' in item.call) && !('data' in item.call)));
   assert.equal((await f.call(proofPath, undefined, { identity: null })).status, 401);

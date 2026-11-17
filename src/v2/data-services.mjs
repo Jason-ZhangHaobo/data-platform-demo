@@ -867,6 +867,7 @@ export class DataServiceManager {
       call.sourceEvidenceHash === serviceHash(version.sourceEvidence) && call.paginationHash === serviceHash(response.pagination);
     return { callId: call.id, versionId: version.id, configHash: version.configHash, rowCount: call.rowCount,
       resultHash: call.resultHash,
+      ...(access ? { coverage: "SINGLE_CUSTOMER" } : {}),
       ...(isSync(version) ? { independentResultVerified: checkedSync } : {}),
       verified: (!isSync(version) || checkedSync) && response.data.length === call.rowCount && serviceHash(response.data) === call.resultHash };
   }
@@ -1004,7 +1005,7 @@ export class DataServiceManager {
     const service=this.#service(serviceId),version=this.#version(versionId),app=this.store.get('service_app',applicationId,this.project);
     if(this.scope!=='PRIVATE_CLOUD_TEST'||service.status!=='PUBLISHED'||service.publishedVersionId!==versionId||version.serviceId!==serviceId||
        !app||app.scope!==this.scope||app.status!=='ACTIVE'||!(Date.parse(app.expiresAt)>this.now())||!app.serviceIds.includes(serviceId)||
-       !app.issuanceEvidence||typeof assertAccess!=='function'||typeof assertResult!=='function'||
+       Object.hasOwn(app,'customerAccess')||!app.issuanceEvidence||typeof assertAccess!=='function'||typeof assertResult!=='function'||
        !delegation||Object.keys(delegation).length!==3||!['wakeId','stepId','requestId'].every(key=>typeof delegation[key]==='string'&&/^[a-f0-9-]{36}$/.test(delegation[key])))
       throw fail(403,'原授权应用或发布版本已变化','AGENT_CONSUMPTION_GRANT_INVALID');
     return this.#invokeAuthorized(service,app,version,input,{assertAccess,assertResult,delegation});

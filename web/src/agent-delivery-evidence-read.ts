@@ -92,7 +92,8 @@ export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBindi
    !optional(entry.releaseId,v=>v===binding.releaseId)||!optional(entry.sourceKind,v=>v===binding.sourceKind)||!optional(entry.agentIndependentE2E,v=>v===false))throw invalidConsumption();
   const call=entry.call;
   if(call!==undefined&&(!record(call)||!id(call.callId)||call.versionId!==entry.versionId||!hash(call.resultHash)||!count(call.rowCount)||typeof call.verified!=='boolean'||
-   !id(call.applicationId)||!['ACTIVE','REVOKED','EXPIRED'].includes(String(call.applicationStatus))||!date(call.finishedAt)||call.configHash!==entry.configHash))throw invalidConsumption();
+   !id(call.applicationId)||!['ACTIVE','REVOKED','EXPIRED'].includes(String(call.applicationStatus))||!date(call.finishedAt)||call.configHash!==entry.configHash||
+   !optional(call.coverage,coverage=>coverage==='SINGLE_CUSTOMER'&&call.rowCount===1)))throw invalidConsumption();
   if(entry.status==='VERIFIED'){
    const versions=entry.sourceVersions,source=entry.source,sourceRunIds=entry.sourceRunIds;
    if(!record(call)||call.verified!==true||Number(call.rowCount)<1||entry.releaseId!==binding.releaseId||entry.sourceKind!==binding.sourceKind||entry.agentIndependentE2E!==false||!entry.sourceRunIds.length||
@@ -107,7 +108,7 @@ export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBindi
    if(entry.fullAssetComposition!==complete)throw invalidConsumption();
   }
  }
- if(new Set(services.map(s=>s.serviceId)).size!==services.length||value.status==='VERIFIED'&&(value.truncated||!services.some(s=>s.status==='VERIFIED'&&s.fullAssetComposition===true)))throw invalidConsumption();
+ if(new Set(services.map(s=>s.serviceId)).size!==services.length||value.status==='VERIFIED'&&(value.truncated||!services.some(s=>s.status==='VERIFIED'&&s.fullAssetComposition===true&&s.call?.coverage===undefined)))throw invalidConsumption();
  return value as TaskConsumption;
 }
 

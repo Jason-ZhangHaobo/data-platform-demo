@@ -90,16 +90,25 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
         sourceKind:sourceReleases[index].sourceKind??"AGENT",fields:assetFields.filter(field=>version.fields.includes(field))}));
       const fields = new Set(children.flatMap(v => v.fields ?? []));
       entry.fullAssetComposition = root.serviceType === "XAPI" && assetFields.every(field => fields.has(field));
-      const call = exactCall ?? calls(service.id).filter(successful)
-        .sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt))).find(granted);
+      // A later restricted receipt should remain readable by exact ID, but
+      // cannot stand in for or displace the ordinary batch evidence.
+      const limited = call => call.customerAccessHash !== undefined || Object.hasOwn(application(call.applicationId) ?? {}, "customerAccess");
+      const candidates = exactCall ? [] : calls(service.id).filter(c=>successful(c) && granted(c))
+        .sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt)));
+      const call = exactCall ?? candidates.find(candidate=>!limited(candidate)) ?? candidates[0];
       if (call) {
         const proof = await recheckCall(service.id, call.id, exactCall ? { pinnedVersionId: root.id } : undefined);
+        if (proof.coverage !== (limited(call) ? "SINGLE_CUSTOMER" : undefined))
+          throw Object.assign(new Error(), {status:409,code:"CONSUMPTION_SCOPE_UNCONFIRMED"});
         entry.status = proof.verified ? "VERIFIED" : "NEEDS_ATTENTION";
         entry.code = proof.verified ? "OK" : "CONSUMPTION_RESULT_MISMATCH";
         const evidence=exactCall && proof.verified ? callAttribution?.(call,root,entry.source) : undefined;
         entry.call = { ...proof, applicationId: call.applicationId, applicationStatus: application(call.applicationId).status, finishedAt: call.finishedAt,
           ...(evidence?{attribution:evidence}:{}) };
-        entry.notice = proof.verified ? "历史授权调用结果与当前不可变快照对照通过；不表示应用现在仍获授权。" : "持久调用结果与当前快照不一致。";
+        entry.notice = proof.verified ? proof.coverage === "SINGLE_CUSTOMER"
+          ? "单客户授权范围内的历史调用已核验，批次消费验收仍需独立证据。"
+          : "历史授权调用结果与当前不可变快照对照通过；不表示应用现在仍获授权。"
+          : "持久调用结果与当前快照不一致。";
       }
     } catch (error) {
       if (![400,403,404,409,422,504].includes(error.status)) throw error;
@@ -109,7 +118,7 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
     entries.push(entry);
   }
   const truncated = matchingCount > limit;
-  const verified = !truncated && entries.some(e => e.status === "VERIFIED" && e.fullAssetComposition === true);
+  const verified = !truncated && entries.some(e => e.status === "VERIFIED" && e.fullAssetComposition === true && e.call?.coverage === undefined);
   const sourceKinds=[...new Set(entries.map(entry=>entry.sourceKind).filter(Boolean))];
   const sourceMetadata=selectedMatches&&selectedRelease?attribution(selectedRelease):sourceKinds.length===1?
     {sourceKind:sourceKinds[0],...(sourceKinds[0]==="MANUAL"?{sourceAttribution:manualDeliveryTaskId?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED"}:{})}:{};

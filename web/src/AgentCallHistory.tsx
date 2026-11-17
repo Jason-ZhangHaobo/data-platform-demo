@@ -55,7 +55,7 @@ export function AgentCallHistory({api, target, loading, onLogin}: {
       : state.error ? <p role="alert">无法核验原调用，请确认已用原任务账号登录，并从原发布重新打开链接。</p>
       : !entry || !call ? <p role="status">正在核对原调用与发布批次…</p>
       : <>
-        <p role="status">原调用核验通过 · {applicationStatusText(call.applicationStatus, true)}</p>
+        <p role="status">{call.coverage==="SINGLE_CUSTOMER"?"单客户授权调用已核验":"原调用核验通过"} · {applicationStatusText(call.applicationStatus, true)}</p>
         <dl>
           <dt>接口</dt><dd>{entry.serviceType} · {entry.name}</dd>
           <dt>调用与版本</dt><dd>{call.callId.slice(0, 8)} · 版本 {entry.versionId.slice(0, 8)}</dd>

@@ -24,7 +24,7 @@ export function storedAgentConsumptionCall(store,project,binding,wakeId,type) {
   const calls=store.list('service_call',project).filter(call=>call.invocationEvidence?.delegation?.stepId===step.id);
   if(!calls.length)return;
   const [call]=calls, invocation=call.invocationEvidence;
-  if(calls.length!==1||!same(invocation.delegation,{wakeId,stepId:step.id,requestId:binding.requestId})||
+  if(calls.length!==1||call.customerAccessHash!==undefined||!same(invocation.delegation,{wakeId,stepId:step.id,requestId:binding.requestId})||
     step.failureCode||invocation.channel!=='SIGNED_AGENT_CONSUMPTION'||call.serviceType!==type||call.serviceVersionId!==step.versionId||
     call.serviceId!==step.serviceId||call.applicationId!==binding.applicationId||call.outcome!=='SUCCEEDED'||call.statusCode!==200||
     call.resultHash!==step.rowsDigest||invocation.paginationDigest!==step.paginationDigest||call.rowCount!==step.rowCount||

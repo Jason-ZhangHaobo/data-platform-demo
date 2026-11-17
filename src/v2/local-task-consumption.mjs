@@ -35,7 +35,7 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
   if (!sync || callIdDigest) return report;
   const verified = (id, type) => report.services.some(service => service.sourceRunIds.length === 1 &&
     service.sourceRunIds[0] === id && service.serviceType === type && service.status === "VERIFIED" &&
-    service.call?.independentResultVerified && (type === "DAPI" || service.fullAssetComposition));
+    service.call?.independentResultVerified && service.call.coverage === undefined && (type === "DAPI" || service.fullAssetComposition));
   const verifiedBatchIds = [...ids].filter(id => verified(id, "DAPI") && verified(id, "XAPI"));
   return { ...report, status: verifiedBatchIds.length === 2 && !report.truncated ? "VERIFIED" : "PENDING",
     verifiedBatchIds, snapshotHash: sync.snapshotHash };

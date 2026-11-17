@@ -27,7 +27,7 @@ export function SyncReportLineage({ api, receipt }: {
       <h4>同批次授权调用</h4>
       <p>业务日 {value.release.businessDate} · 原同步 {value.release.syncRunId.slice(0,8)} · 快照 {value.release.snapshotHash.slice(0,12)}。</p>
       <p>{value.calls.length} 条原调用已核对结果、分页和固定版本。</p>
-      <ul>{value.calls.map(call => <li key={call.callId}>{call.serviceType} · 版本 {call.versionId.slice(0,8)} · {call.rowCount} 行 · 应用
+      <ul>{value.calls.map(call => <li key={call.callId}>{call.serviceType} · 版本 {call.versionId.slice(0,8)} · {call.rowCount} 行 · {call.coverage==="SINGLE_CUSTOMER"&&"单客户授权 · "}应用
         {call.applicationStatus === "REVOKED" ? "已撤销" : call.applicationStatus === "EXPIRED" ? "已过期" : "有效"}</li>)}</ul>
       <a className="button" href={"/api/v2"+path+"?download_digest="+value.digest}>下载原批次溯源 JSON</a>
       <a className="button" href={"?module=assets&asset="+encodeURIComponent(value.snapshot.assetId)}>查看原批次资产血缘</a>

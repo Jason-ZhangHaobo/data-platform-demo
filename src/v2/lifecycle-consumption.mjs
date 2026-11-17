@@ -30,6 +30,7 @@ export function inspectLifecycleConsumption(source, report) {
   for (const entry of report.services) {
     if (entry?.serviceType !== "XAPI" || entry.status !== "VERIFIED") continue;
     const versions = entry.sourceVersions, call = entry.call;
+    if (call?.coverage !== undefined) continue;
     if (!id(entry.serviceId) || !id(entry.versionId) || !digest(entry.configHash) || entry.sourceKind !== "AGENT" || entry.sourceAttribution !== undefined || entry.releaseId !== source.releaseId ||
         entry.agentIndependentE2E !== false || entry.fullAssetComposition !== true || !Array.isArray(entry.sourceRunIds) || entry.sourceRunIds.length !== 1 ||
         !Array.isArray(versions) || versions.length < 2 || versions.length > 5 ||
