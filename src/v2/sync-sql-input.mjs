@@ -4,11 +4,11 @@ import { getContext } from "./context.mjs";
 import { ingestionSchemaHash } from "./ingestion.mjs";
 import { checkedSyncSqlInputMetadata } from "./sync-sql-output-schema-client.mjs";
 import { equalValidationNumber } from "./validation-number.mjs";
-import {parseSyncSqlSelection,syncSqlSelectionFromBinding,archivedSyncInputKind} from './sync-sql-selection.mjs';
+import {syncSqlSelectionFromBinding,archivedSyncInputKind} from './sync-sql-selection.mjs';
+import {syncSqlContextId,syncSqlContractId} from './sync-sql-contract.mjs';
 export {parseSyncSqlSelection} from './sync-sql-selection.mjs';
+export {syncSqlContextId,syncSqlContractId} from './sync-sql-contract.mjs';
 
-export const syncSqlContextId = "holdings-t1";
-export const syncSqlContractId = "securities-synced-holdings-t1-v1";
 export const syncSqlOutputColumns = Object.freeze([
   { name: "client_id", type: "string" },
   { name: "holding_market_value", type: "decimal(18,2)" },

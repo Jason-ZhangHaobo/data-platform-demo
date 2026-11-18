@@ -6,6 +6,7 @@ import { deliveryFiles } from "../../src/v2/delivery.mjs";
 import { developmentVerificationReport } from "../../src/v2/agent-development-workflow.mjs";
 import { referenceSql, validationContractId } from "../../src/v2/context.mjs";
 import { sha256 } from "../../src/v2/delivery.mjs";
+import {syncSqlContractId} from '../../src/v2/sync-sql-contract.mjs';
 
 const fixture = () => ({
   taskId: "synthetic-task", revisionId: "revision-one", runId: "run-one", dirty: false,
@@ -226,4 +227,16 @@ test('distribution journey uses its schema-specific receipt, complete arrays and
  for(const change of [{outputContractId:'wrong'},{protocol:'shuduo-local-task-consumption/v1'},{agentIndependentE2E:true},{releaseId:'different'}])assert.notEqual(stage({...f,consumption:{...receipt,...change}},'services'),'DONE');
  for(const change of [{distributionComposition:false},{fullAssetComposition:true},{call:{...receipt.services[0].call,independentResultVerified:false}}])assert.notEqual(stage({...f,consumption:{...receipt,services:[{...receipt.services[0],...change}]}},'services'),'DONE');
  assert.equal(stage({...f,dirty:true},'services'),'STALE');
+});
+
+test('frozen holdings journey recognizes its registered contract and still requires output schema and exact regression family',()=>{
+ const f=fixture();f.contextId='holdings-t1';f.report.contextId='holdings-t1';f.report.validationContractId=syncSqlContractId;
+ f.report.checks.push({id:'outputSchema',passed:true});f.verification.validation.contractId=syncSqlContractId;
+ assert.equal(stage(f,'validation'),'DONE');assert.equal(agentJourney(f).fileVerified,true);
+ const failed=structuredClone(f);failed.delivery.status='FAILED';failed.verification.status='FAILED';
+ assert.equal(stage(failed,'validation'),'DONE');assert.equal(stage(failed,'files'),'ATTENTION');assert.equal(agentJourney(failed).publicationCurrent,false);
+ for(const change of [e=>{e.report.checks=e.report.checks.filter(c=>c.id!=='outputSchema');},e=>{e.report.checks.find(c=>c.id==='outputSchema').passed=false;},e=>{e.report.contextId=e.contextId='stock-cash-t1';}]){
+  const altered=structuredClone(f);change(altered);assert.notEqual(stage(altered,'validation'),'DONE');assert.equal(agentJourney(altered).publicationCurrent,false);
+ }
+ const wrongFamily=structuredClone(f);wrongFamily.verification.validation.contractId='other-contract';assert.equal(agentJourney(wrongFamily).fileVerified,false);
 });
