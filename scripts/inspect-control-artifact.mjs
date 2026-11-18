@@ -11,8 +11,28 @@ const repairSources=['sql-repair-feedback','sql-repair-progress','sql-repair-sou
 // Source checkout, not archive contents, determines required checks. Legacy
 // applications may predate these modules; a new archive cannot omit one that
 // its immutable application source contains and still pass inspection.
+export const splitStartupArtifactSources=Object.freeze([
+ 'src/v2/cloud-application.mjs',
+ 'src/v2/request-scope.mjs',
+ 'src/v2/context.mjs',
+ 'fixtures/holdings/context.json',
+ 'fixtures/holdings/reference.sql',
+ 'fixtures/holdings/stock-cash-reference.sql',
+]);
 export function controlArtifactSourceChecks(sourceRoot, exists=existsSync){
- return Object.freeze([...controlArtifactSources,...repairSources.filter(name=>exists(resolve(sourceRoot,name)))]);
+ const sources=[...controlArtifactSources,...repairSources.filter(name=>exists(resolve(sourceRoot,name)))];
+ if(exists(resolve(sourceRoot,splitStartupArtifactSources[0]))){
+  check(splitStartupArtifactSources.slice(1).every(name=>exists(resolve(sourceRoot,name))),'STARTUP_SOURCE_CHECKOUT_INCOMPLETE');
+  sources.push(...splitStartupArtifactSources);
+ }
+ return Object.freeze(sources);
+}
+export function verifyControlArtifactSources(sourceRoot,extract){
+ const sources=controlArtifactSourceChecks(sourceRoot);
+ for(const name of sources){
+  check(sha(extract(name))===sha(readFileSync(resolve(sourceRoot,name))),'SOURCE_MISMATCH');
+ }
+ return sources;
 }
 const controlBuildWorkflow='.github/workflows/build-v2-control-plane.yml';
 
@@ -50,8 +70,7 @@ export async function inspectControlArtifact(env=process.env){
  const names=execFileSync('unzip',['-Z1',path],{encoding:'utf8'}).trim().split('\n');
  check(!names.some(n=>/(^|\/)(\.env(?:\..*)?|[^/]+\.(?:pem|key))$/.test(n)||n.startsWith('/')||n.split('/').includes('..')),'UNSAFE_PACKAGE');
  const extract=name=>execFileSync('unzip',['-p',path,name],{maxBuffer:10000000});
- const sources=controlArtifactSourceChecks('.artifact-source');
- for(const name of sources)check(sha(extract(name))===sha(readFileSync(resolve('.artifact-source',name))),'SOURCE_MISMATCH');
+ const sources=verifyControlArtifactSources('.artifact-source',extract);
  const index=extract('web-dist/index.html');
  const report={protocol:'shuduo-control-artifact-inspection/v1',operatorSource:env.GITHUB_SHA,inspectionRunId:env.GITHUB_RUN_ID,applicationSource:identity.source,buildRunId:identity.buildRunId,artifactId:identity.artifactId,artifactDigest:artifact.digest,sha256:sha(bytes),bytes:bytes.length,webIndexSha256:sha(index),webIndexBytes:index.length,sourceChecks:sources.length,sourceFiles:sources,zipValid:true,sensitivePaths:0,
   ...(build?{buildWorkflowSource:build.workflowSource,applicationTree:build.applicationTree,buildAttempt:build.buildAttempt}:{})};
