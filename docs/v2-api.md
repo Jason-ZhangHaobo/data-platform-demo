@@ -1,5 +1,16 @@
 # V2 API 契约与实现边界
 
+## 离线同步的手工映射与版本绑定（2026-11-18，部署另验）
+
+`POST /sync/tasks` 的 `mapping` 为源字段到目标字段的对象，`keyFields` 与 `watermarkField` 使用目标字段。字段映射不含表达式转换。可选的 `sourceRevisionId` 和 `metadataVersionId` 须同时提供，用于冻结已经核对的源／元数据版本；旧调用同时省略时使用服务端当前版本。
+
+- 单独提供一个版本字段可返回400 `SYNC_SOURCE_BINDING_REQUIRED`；版本已变化返回409 `SYNC_SOURCE_BINDING_CHANGED`，不创建任务。
+- CLI `sync create` 支持 `--source-revision-id` 与 `--metadata-version-id`；MCP `sync_task_create` 使用同名JSON字段，均调用相同API。
+- 主键1—5列且逐列非空，含不支持的控制字符拒绝。执行失败回执可含 `EMPTY_SYNC_KEY`、`INVALID_SYNC_KEY_VALUE`，不修改原目标数据。
+- 水位记录输入最大值，数值字段精确比较，其余按原文本顺序；不按水位过滤输入，也不是CDC。数值水位不合法时，执行回执记录 `INVALID_WATERMARK_VALUE`，在落地前停止。
+
+完整虚构证券用例见[手工映射](manual-sync-mapping.md)，当前能力边界见[盘点](classic-capability-audit.md)。
+
 ## 新交付生成的执行来源（2026-11-18，部署另验）
 
 `POST /delivery/packages` 及共用文件生成逻辑的入口，要求来源 `mainSqlExecuted=true`、未标为 `testDouble=true`，并匹配 Spark 引擎与适配版本。本机版本为 3.5.7／3.5.8／3.5.9，隔离 Worker 为 3.5.8／3.5.9；业务口径、代码摘要、权限和原窗口校验仍需通过。拒绝发生在制品写入之前。

@@ -1,5 +1,7 @@
 # V2 迭代路线与证据
 
+经典模块实现边界已按[当前能力盘点](classic-capability-audit.md)重新核对，本轮补齐[离线同步手工映射](manual-sync-mapping.md)。运行与部署状态仍以[唯一续接清单](goal-mode-next.md)为准。
+
 当前增量：[两个原批次的授权消费](live-lifecycle-evaluation.md#核对两个原发布批次的授权消费)回环验证同一应用的 DAPI／XAPI 实际调用与独立报告，见[执行清单](goal-mode-next.md)。
 
 此前增量：[云端原批次签名调度](live-lifecycle-evaluation.md#核对同一发布的签名调度与监控)绑定原发布和两个原批次，覆盖失联恢复及同包监控核验。

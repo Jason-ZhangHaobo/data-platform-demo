@@ -9,7 +9,8 @@ test("ingestion UI reflects actual server MySQL capability and never labels snap
     ),
     main = await readFile(new URL("../../web/src/main.tsx", import.meta.url), "utf8");
   assert.match(main, /serverMysqlSyncEnabled=\{status\?\.ingestion\?\.serverMysql\?\.supportsOfflineSync === true\}/);
-  assert.match(workbench, /source\.currentMetadataId && source\.supportsOfflineSync/);
+  assert.match(workbench, /filter\(source => source\.supportsOfflineSync\)/);
+  assert.match(workbench, /disabled=\{!canWrite \|\| !metadataForTask \|\| !!busy \|\| Boolean\(mappingProblem\)\}/);
   assert.match(workbench, /快照差异UPSERT（非CDC）/);
   assert.match(workbench, /可创建离线同步/);
   assert.match(workbench, /仅连接与元数据/);

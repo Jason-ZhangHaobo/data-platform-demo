@@ -8279,3 +8279,24 @@ kbd {
   .delivery-source-block { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; }
   .delivery-source-block > .button { grid-column: 2; justify-self: start; }
 }
+
+.sync-task-mapping { margin-top:16px; padding-top:14px; border-top:1px solid var(--border); }
+.sync-task-mapping > header { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.sync-task-mapping h4 { margin:0 0 4px; }
+.sync-task-mapping p, .sync-task-mapping small { font-size:12px; color:#657663; line-height:1.65; }
+.sync-mapping-table-wrap { overflow-x:auto; }
+.sync-mapping-table { width:100%; table-layout:fixed; border-collapse:collapse; font-size:12px; text-align:left; }
+.sync-mapping-table th, .sync-mapping-table td { padding:10px 8px; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }
+.sync-mapping-table th:nth-child(1) { width:42%; }
+.sync-mapping-table th:nth-child(3) { width:56px; text-align:center; }
+.sync-mapping-table th small { display:block; font-weight:400; }
+.sync-mapping-table input[type=checkbox] { width:16px; height:16px; padding:0; margin:auto; accent-color:#246b50; }
+.sync-mapping-roles { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px; align-items:start; }
+.sync-mapping-roles p { overflow-wrap:anywhere; margin:6px 0; }
+.sync-task-mapping .sync-mapping-problem { padding:10px 12px; border-radius:8px; background:#fff5e9; color:#965b32; }
+@media(max-width:600px){.sync-task-mapping > header{align-items:flex-start;flex-direction:column}.sync-mapping-roles{grid-template-columns:1fr}.sync-mapping-table th:nth-child(1){width:39%}.sync-mapping-table th:nth-child(3){width:46px}}
+
+.sync-saved-mapping { margin-top:14px; padding-top:12px; border-top:1px solid var(--border); font-size:12px; }
+.sync-saved-mapping summary { cursor:pointer; font-weight:600; }
+.sync-saved-mapping p, .sync-saved-mapping small { color:#657663; line-height:1.7; }
+.sync-saved-mapping ul { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:8px; padding-left:18px; overflow-wrap:anywhere; }

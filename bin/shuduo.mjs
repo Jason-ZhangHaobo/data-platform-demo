@@ -191,7 +191,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo sources test|metadata --id ID
   shuduo sources revision --id ID --file positions_schema_change.csv
   shuduo sync list
-  shuduo sync create --name 名称 --source-id ID --target-table raw_positions --mode full|incremental --mapping from:to,... --keys position_id [--watermark trade_date]
+  shuduo sync create --name 名称 --source-id ID --target-table raw_positions --mode full|incremental --mapping from:to,... --keys position_id [--watermark trade_date] [--source-revision-id ID --metadata-version-id ID]
   shuduo sync run --id ID
   shuduo sync recovery-preview --id OLD_TASK_ID
   shuduo sync recovery-save --id OLD_TASK_ID --basis-digest SHA256 --mapping SOURCE:TARGET,SOURCE:TARGET --confirm
@@ -1158,6 +1158,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       const mode = required(parsed.options, "mode");
       if (!["full", "incremental"].includes(mode))
         throw new Error("--mode必须是full或incremental");
+      const sourceRevisionId=parsed.options.source_revision_id,metadataVersionId=parsed.options.metadata_version_id;
+      if(Boolean(sourceRevisionId)!==Boolean(metadataVersionId))throw Error("--source-revision-id与--metadata-version-id须同时提供");
       result = await client.request("/sync/tasks", {
         method: "POST",
         body: {
@@ -1165,6 +1167,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           sourceId: required(parsed.options, "source_id"),
           targetTable: required(parsed.options, "target_table"),
           mode: mode === "full" ? "FULL" : "INCREMENTAL_UPSERT",
+          ...(sourceRevisionId?{sourceRevisionId,metadataVersionId}:{}),
           mapping: mapping(required(parsed.options, "mapping")),
           keyFields: list(required(parsed.options, "keys"), "--keys"),
           ...(parsed.options.watermark
