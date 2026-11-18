@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import {qualityAlertView,qualityRuleHealth,qualityRunView} from './quality-evidence.mjs';
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -73,12 +74,14 @@ export class QualityManager {
         .sort((a, b) => b.versionNumber - a.versionNumber),
       runs = this.store
         .list("quality_run", this.project)
-        .filter((run) => run.ruleId === rule.id),
+        .filter((run) => run.ruleId === rule.id).map(qualityRunView),
       alerts = this.store
         .list("quality_alert", this.project)
-        .filter((alert) => alert.ruleId === rule.id);
+        .filter((alert) => alert.ruleId === rule.id)
+        .map(alert=>qualityAlertView(alert,id=>runs.find(run=>run.id===id)));
     return {
       ...rule,
+      health:qualityRuleHealth(rule,runs.find(run=>run.id===rule.lastRunId)),
       currentVersion: versions.find(
         (version) => version.id === rule.currentVersionId,
       ),
@@ -102,6 +105,7 @@ export class QualityManager {
         code,
         assetId: normalized.assetId,
         status: "ACTIVE",
+        health:'PENDING',
       }),
       version = this.store.create("quality_rule_version", this.project, {
         ruleId: rule.id,
@@ -143,6 +147,7 @@ export class QualityManager {
     this.store.update("quality_rule", rule.id, this.project, {
       currentVersionId: version.id,
       status: "ACTIVE",
+      health:'PENDING',
     });
     return this.detail(rule.id);
   }
@@ -173,6 +178,8 @@ export class QualityManager {
         ruleConfigHash: version.configHash,
         assetId: asset.id,
         assetEvidenceHash: asset.evidenceHash,
+        assetVersionId: asset.versionId,
+        ...(asset.syncSource?.status==='VERIFIED'?{syncRunId:asset.syncSource.runId,metadataVersionId:asset.syncSource.metadataVersionId}:{}),
         ...this.evaluateRows(version, rows, { includeInvalidRowHashes: true }),
       });
     if (run.status === "FAILED") {
@@ -191,14 +198,15 @@ export class QualityManager {
         health: "FAILED",
         lastRunId: run.id,
       });
-    } else {
+    } else if(run.status==='PASSED') {
       const resolvedAlertIds = [];
       for (const alert of this.store.list("quality_alert", this.project))
-        if (alert.ruleId === rule.id && alert.status === "OPEN") {
+        if (alert.ruleId === rule.id && qualityAlertView(alert,id=>id?this.store.get('quality_run',id,this.project):undefined).status === "OPEN") {
           resolvedAlertIds.push(alert.id);
           this.store.update("quality_alert", alert.id, this.project, {
             status: "RESOLVED",
             recoveryRunId: run.id,
+            ...(alert.recoveryRunId?{previousRecoveryRunId:alert.recoveryRunId}:{}),
             resolvedAt: new Date(this.now()).toISOString(),
           });
         }
@@ -207,11 +215,18 @@ export class QualityManager {
         lastRunId: run.id,
         resolvedAlertIds,
       });
+    } else {
+      // An empty input proves no row constraint and cannot resolve a prior
+      // failed batch. Keep alert history open until nonempty data passes.
+      this.store.update('quality_rule',rule.id,this.project,{health:'NO_DATA',lastRunId:run.id,resolvedAlertIds:[]});
     }
     return { rule: this.detail(rule.id), run };
   }
 
   evaluateRows(rule, rows, { includeInvalidRowHashes = false } = {}) {
+    if(!Array.isArray(rows)||rows.some(row=>!row||typeof row!=='object'||Array.isArray(row)))throw fail(422,'质量检测需要实际对象行集合','QUALITY_ROWS_REQUIRED');
+    if(!rows.length)return {status:'NO_DATA',reasonCode:'QUALITY_NO_DATA',evaluatedCount:0,passedCount:0,failedCount:0,missingFieldCount:0,
+      passRate:null,...(includeInvalidRowHashes?{invalidRowHashes:[]}:{}),durationMs:0,actualExecution:true,fullLifecycleE2E:false};
     const started = this.now(), invalid = this.#evaluate(rule, rows), passed = rows.length - invalid.length;
     return {
       status: invalid.length ? "FAILED" : "PASSED",
@@ -219,7 +234,8 @@ export class QualityManager {
       passedCount: passed,
       failedCount: invalid.length,
       passRate: rows.length ? Number((passed / rows.length).toFixed(4)) : 1,
-      ...(includeInvalidRowHashes ? { invalidRowHashes: invalid.slice(0, 10).map(index => stableHash(rows[index])) } : {}),
+      ...(includeInvalidRowHashes ? { missingFieldCount:rows.filter(row=>!Object.hasOwn(row,rule.field)||row[rule.field]===undefined).length,
+        invalidRowHashes: invalid.slice(0, 10).map(index => stableHash(rows[index])) } : {}),
       durationMs: this.now() - started,
       actualExecution: true,
       fullLifecycleE2E: false,
@@ -229,7 +245,7 @@ export class QualityManager {
   overview() {
     const rules = this.listRules(),
       runs = this.store.list("quality_run", this.project),
-      alerts = this.store.list("quality_alert", this.project);
+      alerts = this.store.list("quality_alert", this.project).map(alert=>qualityAlertView(alert,id=>runs.find(run=>run.id===id)));
     return {
       scope: "LOCAL_ACTUAL_ROWS",
       publicDeployed: false,
@@ -238,6 +254,7 @@ export class QualityManager {
         rules: rules.length,
         healthy: rules.filter((rule) => rule.health === "HEALTHY").length,
         failed: rules.filter((rule) => rule.health === "FAILED").length,
+        noData: rules.filter(rule=>rule.health==='NO_DATA').length,
         runs: runs.length,
         openAlerts: alerts.filter((alert) => alert.status === "OPEN").length,
         resolvedAlerts: alerts.filter((alert) => alert.status === "RESOLVED").length,
@@ -337,14 +354,16 @@ export class QualityManager {
   }
 
   #evaluate(version, rows) {
+    const missing=row=>!Object.hasOwn(row,version.field)||row[version.field]===undefined;
     if (version.type === "NOT_NULL")
       return rows
-        .map((row, index) => (row[version.field] === null || row[version.field] === "" ? index : -1))
+        .map((row, index) => (missing(row)||row[version.field] === null || row[version.field] === "" ? index : -1))
         .filter((index) => index >= 0);
     if (version.type === "UNIQUE") {
       const seen = new Set(),
         invalid = [];
       rows.forEach((row, index) => {
+        if(missing(row)){invalid.push(index);return;}
         const value = canonical(row[version.field]);
         if (seen.has(value)) invalid.push(index);
         else seen.add(value);
@@ -368,7 +387,7 @@ export class QualityManager {
     if (version.type === "ALLOWED_VALUES") {
       const allowed = new Set(version.config.values);
       return rows
-        .map((row, index) => (allowed.has(String(row[version.field])) ? -1 : index))
+        .map((row, index) => (!missing(row)&&row[version.field]!==null&&allowed.has(String(row[version.field])) ? -1 : index))
         .filter((index) => index >= 0);
     }
     const cutoff = this.now() - version.config.maxAgeSeconds * 1000;

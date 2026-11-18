@@ -1,3 +1,4 @@
+import {nonemptyQualityPass,qualityRunView} from './quality-evidence.mjs';
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
 const text = (value, name, min = 1, max = 500) => {
@@ -178,6 +179,8 @@ export class OperationsManager {
       throw fail(404, "未找到恢复证据", "RECOVERY_EVIDENCE_NOT_FOUND");
     if (!new Set(["SUCCEEDED", "PASSED"]).has(evidence.status))
       throw fail(409, "恢复证据未成功", "RECOVERY_EVIDENCE_NOT_SUCCESSFUL");
+    if(evidenceKind==='quality_run'&&!nonemptyQualityPass(evidence))
+      throw fail(409,'质量恢复须有实际非空数据并全部通过，空表不能证明恢复','QUALITY_RECOVERY_UNPROVEN');
     if (
       !sameResource(incident, evidenceKind, evidence) ||
       Date.parse(evidence.createdAt) <= Date.parse(incident.sourceCreatedAt)
@@ -233,17 +236,18 @@ export class OperationsManager {
     for (const [kind, domain] of mappings)
       for (const item of this.store.list(kind, this.project)) {
         if (!canRead(kind, item)) continue;
-        if (["FAILED", "VALIDATION_FAILED"].includes(item.status))
+        const status=kind==='quality_run'?qualityRunView(item).status:item.status;
+        if (["FAILED", "VALIDATION_FAILED"].includes(status))
           domainCounts[domain].failures++;
-        else if (["RUNNING", "QUEUED", "SCHEDULED"].includes(item.status))
+        else if (["RUNNING", "QUEUED", "SCHEDULED"].includes(status))
           domainCounts[domain].running++;
-        else if (["SUCCEEDED", "PASSED"].includes(item.status))
+        else if (["SUCCEEDED", "PASSED"].includes(status))
           domainCounts[domain].succeeded++;
         activity.push({
           id: item.id,
           kind,
           domain,
-          status: item.status,
+          status,
           createdAt: item.createdAt,
           durationMs: item.durationMs,
           errorCode: item.errorCode,
@@ -359,7 +363,8 @@ export class OperationsManager {
       const alert = this.store
         .list("quality_alert", this.project)
         .find((item) => item.runId === failure.id && item.status === "RESOLVED");
-      return alert?.recoveryRunId
+      const recovery=alert?.recoveryRunId?this.store.get('quality_run',alert.recoveryRunId,this.project):undefined;
+      return nonemptyQualityPass(recovery)&&recovery.ruleId===failure.ruleId
         ? {
             kind: "quality_run",
             id: alert.recoveryRunId,

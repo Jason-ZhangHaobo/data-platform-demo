@@ -117,6 +117,8 @@ const labels: Record<string, string> = {
   RESOLVED: "已恢复",
   SUCCEEDED: "成功",
   PASSED: "通过",
+  NO_DATA: "无数据待核验",
+  UNCONFIRMED: "回执待核对",
   FAILED: "失败",
   VALIDATION_FAILED: "验证失败",
   RUNNING: "运行中",
