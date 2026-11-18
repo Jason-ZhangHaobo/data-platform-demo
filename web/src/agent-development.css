@@ -96,3 +96,9 @@
 @media(max-width:600px){.agent-repair-action{flex-direction:column;align-items:stretch}.agent-repair-action>.button{width:100%}}
 
 .agent-dev-artifacts>.agent-repair-action{margin:12px}
+
+.agent-sync-archive-picker{margin-top:14px;padding-top:12px;border-top:1px solid var(--line,#dce6df);min-width:0}
+.agent-sync-archive-picker summary{cursor:pointer;font-size:12px;font-weight:600;color:#276c50}
+.agent-sync-archive-picker label{display:grid;gap:6px;margin-top:12px;font-size:12px}
+.agent-sync-archive-picker select{min-width:0;width:100%;padding:9px;border:1px solid var(--line,#dce6df);border-radius:8px;background:#fff;color:inherit;text-overflow:ellipsis}
+.agent-sync-archive-picker button{margin-top:8px;white-space:nowrap}.agent-sync-archive-picker p{overflow-wrap:anywhere}

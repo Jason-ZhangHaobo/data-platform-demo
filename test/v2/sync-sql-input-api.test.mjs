@@ -15,7 +15,7 @@ import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
 import { verifySavedSyncSqlInput } from "../../src/v2/sync-sql-saved-lifecycle.mjs";
 import { createDeliveryPackage, computeManifestDigest, loadDeliveryDirectory, resolveDeliverySchedule, sha256, validateDeliveryPackage } from "../../src/v2/delivery.mjs";
 
-test("Agent binds a committed position snapshot across overwrite, retry and restart", async () => {
+for(const inputMode of ['CURRENT','ARCHIVED']) test(`Agent binds a ${inputMode} position snapshot across overwrite, retry and restart`, async () => {
   const root = mkdtempSync(join(tmpdir(), "shuduo-sync-sql-"));
   const fixtureRoot = join(root, "sources");
   mkdirSync(fixtureRoot);
@@ -27,6 +27,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
   };
   sample("first.csv", "1245.07");
   sample("later.csv", "4000.00");
+  sample('before-archival.csv','4000.00');
   sample("bad.csv", "0.001");
   const captured = readFileSync(join(fixtureRoot, "first.csv"), "utf8").split("\n");
   writeFileSync(join(fixtureRoot, "currency.csv"), captured.map((line, index) =>
@@ -117,11 +118,13 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     await start();
     assert.equal((await request("/development/synced-positions")).status, 409);
     const first = sync("first.csv");
-    const offer = await request("/development/synced-positions");
+    if(inputMode==='ARCHIVED')sync('before-archival.csv');
+    const offer = await request(inputMode==='ARCHIVED'?`/development/synced-positions/archives/${first.run.taskId}/${first.run.id}`:"/development/synced-positions");
     assert.equal(offer.status, 200);
     assert.equal(offer.value.selection.runId, first.run.id);
     assert.equal(offer.value.metadataVersionId, first.metadata.id);
     assert.equal(offer.value.context, undefined);
+    assert.equal(offer.value.selection.kind,inputMode==='ARCHIVED'?'SYNC_RUN_ARCHIVE_V1':undefined);
     const body = { contextId: "holdings-t1", message: "按冻结持仓计算客户总资产", sql: "SELECT 1", syncInput: offer.value.selection };
     const requestId = "freeze-request";
     assert.equal((await request("/agent/tasks", { ...body, contextId: "stock-cash-t1" })).status, 422);
@@ -134,7 +137,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.notEqual(latest.run.targetHash, first.run.targetHash);
     const replay = await request("/agent/tasks", body, requestId);
     assert.equal(replay.value.id, task.value.id);
-    const stale = await request("/agent/tasks", body, "stale-request");
+    const stale = await request("/agent/tasks", {...body,syncInput:{targetTable:'raw_positions',runId:first.run.id,targetHash:first.run.targetHash}}, "stale-request");
     assert.equal(stale.status, 409);
     assert.equal(stale.value.code, "SYNC_SQL_INPUT_STALE");
     assert.equal((await request("/agent/requests/stale-request")).status, 404);

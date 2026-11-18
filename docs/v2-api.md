@@ -1,5 +1,11 @@
 # V2 API 契约与实现边界
 
+## 指定归档持仓开发输入（2026-11-18，本机范围）
+
+`GET /development/synced-positions/archives` 返回 `shuduo-sync-sql-archives/v1`、readOnly及最多100条候选；`verification=REQUIRES_CHECK`不代表归档已读取。`GET /development/synced-positions/archives/:taskId/:runId` 重核指定批次，返回offer，不返回行或context。
+
+`POST /agent/tasks` 的syncInput保留旧三字段协议；新显式选择为 `{kind:"SYNC_RUN_ARCHIVE_V1",targetTable:"raw_positions",taskId,runId,targetHash,landingSnapshotHash}`。新请求重核同一归档，摘要漂移拒绝；重复原请求回读原任务不重算。新增读取与归档开发限本机工程师，不开放云端。CLI `sql sync-archives`／`sql archived-positions`和MCP `sql_sync_archives`／`sql_archived_positions`共用此契约。[边界与流程](synced-archive-agent-input.md)。
+
 ## 离线同步原批次快照（2026-11-18，本机范围）
 
 `GET /sync/tasks/:taskId/runs/:runId/snapshot?page=1&pageSize=50` 仅读取指定成功批次的归档，页大小1—100。新增行数据入口要求本机工作台边界及工程师权限，不开放到公网或受邀云端；其他项目、错任务、无效会话和额外查询参数被拒绝。

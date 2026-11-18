@@ -177,6 +177,7 @@ import { storedAgentExecutionEvidence } from "./agent-execution-evidence.mjs";
 import { storedBackgroundPreparationEvidence } from "./delivery-preparation-evidence.mjs";
 import { storedDevelopmentDrivers } from "./agent-execution-drivers.mjs";
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
+import {archivedSyncSqlInput,selectedSyncSqlInput,syncSqlArchiveCandidates} from './sync-sql-archive.mjs';
 import {
   LocalArtifactStore,
   deliveryArtifactValue,
@@ -1383,7 +1384,7 @@ export function createV2Server(options = {}) {
     project: PROJECT,
     now: options.now,
   });
-  const syncSqlResources = { assets, landingStore, store, project: PROJECT };
+  const syncSqlResources = { assets, landingStore, store, ingestion, project: PROJECT };
   const dataContracts = new DataContractManager({
     store,
     assets,
@@ -7150,6 +7151,16 @@ export function createV2Server(options = {}) {
           });
         return json(res, 202, publicAgentIntent(task));
       }
+      const archivedPositions=path.match(/^\/api\/v2\/development\/synced-positions\/archives(?:\/([a-f0-9-]{36})\/([a-f0-9-]{36}))?$/);
+      if(method==='GET'&&archivedPositions){
+        requireSyncSqlLocal(req);
+        const actor=workspaceReadActor(req),session=auth.sessionFromHeaders(req.headers);
+        if(!actor||session&&!session.permissions.some(permission=>['*','DEVELOPMENT','INGESTION'].includes(permission)))throw fail(403,'请使用工程师身份核对原持仓批次');
+        if(url.searchParams.size)throw fail(422,'原批次只接受确切任务与运行编号');
+        if(!archivedPositions[1])return json(res,200,{protocol:'shuduo-sync-sql-archives/v1',readOnly:true,candidates:syncSqlArchiveCandidates(syncSqlResources)});
+        const {selection,source,verifiedCurrency}=archivedSyncSqlInput(syncSqlResources,archivedPositions[1],archivedPositions[2]);
+        return json(res,200,{selection,...source,contextId:syncSqlContextId,verifiedCurrency});
+      }
       if (method === "GET" && path === "/api/v2/development/synced-positions") {
         requireSyncSqlLocal(req);
         if (!workspaceReadActor(req)) throw fail(403, "请使用有效工作台身份核对同步持仓");
@@ -7177,6 +7188,9 @@ export function createV2Server(options = {}) {
               Object.keys(body).some(key => !["message", "sql", "language", "contextId", "syncInput"].includes(key)))
             throw fail(422, "同步批次只支持客户资产 T+1 的本机 SQL 开发");
           syncSelection = parseSyncSqlSelection(body.syncInput);
+          const syncSession=auth.sessionFromHeaders(req.headers);
+          if(syncSelection.kind&&syncSession&&!syncSession.permissions.some(permission=>['*','DEVELOPMENT','INGESTION'].includes(permission)))
+            throw fail(403,'当前角色不能使用原同步行数据开发');
         }
         if (fundRequest && (language !== "SPARK_SQL" || (!cloudFundRequest && (!localClassicSpark || durableAgent || options.ingress ||
             !isLoopbackRequest(req))) || Object.keys(body).some(key => !["message", "language", "contextId", "fundPreparation"].includes(key))))
@@ -7302,7 +7316,7 @@ export function createV2Server(options = {}) {
               contextId: context.id,
               ...(fundPreparation ? { fundPreparation } : {}),
               ...(syncSelection ? { syncInput: freezeSyncSqlInput({ ...syncSqlResources, actorId, selection: syncSelection,
-                current: currentSyncSqlInput(syncSqlResources) }) } : {}),
+                current: selectedSyncSqlInput(syncSqlResources,syncSelection) }) } : {}),
               ...(language==='SPARK_SQL'?{initialSql:currentCode,usedTokens:0}:{}),
               ...(clarification?{clarification,...clarificationAttribution({clarification})}:derivedFrom?clarificationAttribution(store.get('agent',derivedFrom.taskId,PROJECT)):{}),
               ...(derivedFrom ? {derivedFrom,initialSql:currentCode,sql:currentCode,usedTokens:0} : {}),

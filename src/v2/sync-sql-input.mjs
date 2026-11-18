@@ -4,6 +4,8 @@ import { getContext } from "./context.mjs";
 import { ingestionSchemaHash } from "./ingestion.mjs";
 import { checkedSyncSqlInputMetadata } from "./sync-sql-output-schema-client.mjs";
 import { equalValidationNumber } from "./validation-number.mjs";
+import {parseSyncSqlSelection,syncSqlSelectionFromBinding,archivedSyncInputKind} from './sync-sql-selection.mjs';
+export {parseSyncSqlSelection} from './sync-sql-selection.mjs';
 
 export const syncSqlContextId = "holdings-t1";
 export const syncSqlContractId = "securities-synced-holdings-t1-v1";
@@ -23,14 +25,6 @@ const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const digest = /^[a-f0-9]{64}$/;
 const hash = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const fail = (status, message, code = "SYNC_SQL_INPUT_INVALID") => Object.assign(Error(message), { status, code });
-
-export function parseSyncSqlSelection(selection) {
-  if (!selection || typeof selection !== "object" || Object.keys(selection).length !== 3 ||
-      selection.targetTable !== targetTable || typeof selection.runId !== "string" || !uuid.test(selection.runId) ||
-      typeof selection.targetHash !== "string" || !digest.test(selection.targetHash))
-    throw fail(422, "请选择已核对的持仓同步批次和落地摘要");
-  return { targetTable, runId: selection.runId, targetHash: selection.targetHash };
-}
 
 function cents(value) {
   if (value === null) return 0n;
@@ -127,7 +121,7 @@ export function currentSyncSqlInput({ assets, landingStore, store, project }) {
 }
 
 export function freezeSyncSqlInput({ store, project, actorId, selection, current }) {
-  if (selection.runId !== current.selection.runId || selection.targetHash !== current.selection.targetHash)
+  if (!isDeepStrictEqual(selection,current.selection))
     throw fail(409, "所选同步批次已变化，请重新核对后选择", "SYNC_SQL_INPUT_STALE");
   const { context, source } = current;
   const payload = { actorId, selection, source, context };
@@ -169,10 +163,10 @@ export function syncSqlDeliverySource({ agent, run, revision }) {
 
 export function validateSyncSqlDeliveryContext(binding, context) {
   const invalid = () => fail(422, "交付输入、同步快照摘要或独立预期不一致");
-  if (!binding || typeof binding !== "object" || Object.keys(binding).length !== 12) throw invalid();
+  if (!binding || typeof binding !== "object" || Object.keys(binding).length !== (binding.kind===archivedSyncInputKind?14:12)) throw invalid();
   const { targetTable: target, runId, targetHash, taskId, sourceRevisionId, metadataVersionId, rowCount, snapshotId,
     snapshotHash, actorId, agentTaskId, developmentMode } = binding;
-  const selection = parseSyncSqlSelection({ targetTable: target, runId, targetHash });
+  const selection = syncSqlSelectionFromBinding(binding);
   if (![taskId, sourceRevisionId, metadataVersionId, snapshotId, agentTaskId].every(id => typeof id === "string" && uuid.test(id)) ||
       typeof snapshotHash !== "string" || !digest.test(snapshotHash) ||
       typeof actorId !== "string" || !(actorId === "local-engineer" || uuid.test(actorId)) ||

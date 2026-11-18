@@ -1,5 +1,7 @@
 # V2 迭代路线与证据
 
+当前增量：[原归档批次进入独立Agent](synced-archive-agent-input.md)，连接同步结果复核到开发输入，保持原字段、币种、业务日和权限校验。部署及真实计算分别验收。
+
 本机同步结果复核加入[原批次快照](manual-sync-mapping.md#原批次落地快照)：实际落地事务归档、有界分页、摘要重核和旧记录缺失提示，默认当前表预览保持原语义。正式受邀验收仍是首要续接。
 
 经典模块实现边界已按[当前能力盘点](classic-capability-audit.md)重新核对，本轮补齐[离线同步手工映射](manual-sync-mapping.md)。运行与部署状态仍以[唯一续接清单](goal-mode-next.md)为准。
