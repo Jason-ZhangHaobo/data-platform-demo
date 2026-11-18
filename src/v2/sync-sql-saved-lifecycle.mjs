@@ -12,7 +12,8 @@ import { checkedPublishedReportArtifacts } from "./report-provenance.mjs";
 import { publishedSqlColumnLineage } from "./sql-column-lineage.mjs";
 import { syncReportAsset, syncReportLineage, syncReportFields } from "./sync-sql-report.mjs";
 import { syncSqlLandingContext } from "./sync-sql-input.mjs";
-import {syncSqlSelectionFromBinding} from './sync-sql-selection.mjs';
+import {verifySavedMaterializedInput} from './materialized-saved-input.mjs';
+import {materializedSyncInputKind,syncSqlSelectionFromBinding} from './sync-sql-selection.mjs';
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence, readSyncSqlPaginationCoverage, syncSqlPageShape } from "./sync-sql-service-source.mjs";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -26,7 +27,8 @@ const requireEvidence = (condition, stage) => {
   }
 };
 
-export function verifySavedSyncSqlInput({ read, input, context, csv }) {
+export function verifySavedSyncSqlInput({ read, input, context, csv, readSnapshot }) {
+  if(input?.kind===materializedSyncInputKind)return verifySavedMaterializedInput({read,input,context,csv,readSnapshot});
   const source = read("offline_sync_run", input.runId), task = read("offline_sync_task", input.taskId);
   const metadata = read("source_metadata", input.metadataVersionId), revision = read("source_revision", input.sourceRevisionId);
   const config = Object.fromEntries(["sourceRevisionId", "sourceType", "metadataVersionId", "targetTable", "mode", "mapping", "keyFields", "watermarkField"]
@@ -55,6 +57,21 @@ export function verifySavedSyncSqlInput({ read, input, context, csv }) {
     contentHash, targetHash: source.targetHash, rows: input.rowCount, finishedAt: source.finishedAt };
 }
 
+// A package input check is usable before publication and never attests lifecycle completion.
+export function verifySavedSyncSqlPackageInput({store,project,actor,originalPackage,packageDigest,csv,readSnapshot}) {
+  requireEvidence(digest.test(packageDigest??'')&&typeof project==='string'&&project.length>0&&typeof actor==='string'&&actor.length>0,'SELECTION_INVALID');
+  const plan=validateDeliveryPackage(originalPackage,packageDigest),input=plan.source?.syncInput;
+  requireEvidence(input?.actorId===actor,'AGENT_SOURCE_REQUIRED');
+  requireEvidence(plan.source.projectId===project,'INPUT_PROJECT_CHANGED');
+  const read=(kind,id)=>{const value=store.get(kind,id,project);requireEvidence(value?.id===id&&value.projectId===project,'RECORD_MISSING');return value;};
+  const origin=verifySavedSyncSqlInput({read,input,context:plan.fixtures.context,csv,readSnapshot});
+  const result={protocol:'shuduo-saved-sync-sql-input/v1',status:'VERIFIED',scope:'LOCAL_SAVED_INPUT_ONLY',
+    packageDigest,input:origin,
+    provenance:{developmentMode:input.developmentMode,newSparkRuns:0,newModelCalls:0,cloudRequests:0,
+      publicDeployed:false,countsTowardLiveEvaluation:false,agentIndependentE2E:false,fullLifecycleE2E:false}};
+  return {...result,evidenceDigest:publishedReportHash(result)};
+}
+
 function verifyPages({ calls, read, expectedRows, batch }) {
   requireEvidence(calls.length > 0 && calls.every(call => call.applicationStatus === "REVOKED"), "APPLICATION_NOT_REVOKED");
   return ["DAPI", "XAPI"].map(type => {
@@ -78,7 +95,7 @@ function verifyPages({ calls, read, expectedRows, batch }) {
   });
 }
 
-async function savedConsumptionHandoff({store,project,manager,read,batches,certify,releaseId,packageDigest,requestId,input}) {
+async function savedConsumptionHandoff({store,project,manager,read,batches,certify,releaseId,packageDigest,requestId,input,origin}) {
   const records = [];
   for (const batch of batches) {
     const source = certify(batch);
@@ -110,7 +127,7 @@ async function savedConsumptionHandoff({store,project,manager,read,batches,certi
     records.push({batchId:batch.id,sequence:batch.sequence,monitorEventId:monitorEvent.id,
       status:pass("DAPI")&&pass("XAPI")?"VERIFIED":"PENDING",versions});
   }
-  const result = {protocol:"shuduo-saved-sync-consumption/v1",scope:"LOCAL_SAVED_EVIDENCE",
+  const result = {protocol:origin?.proof?"shuduo-saved-sync-consumption/v2":"shuduo-saved-sync-consumption/v1",...(origin?.proof?{input:origin}:{}),scope:"LOCAL_SAVED_EVIDENCE",
     status:records.every(record=>record.status==="VERIFIED")?"VERIFIED":"PENDING",
     releaseId,packageDigest,requestId,snapshotHash:input.snapshotHash,batches:records,
     provenance:{developmentMode:input.developmentMode,newSparkRuns:0,newModelCalls:0,cloudRequests:0,
@@ -149,7 +166,7 @@ export function verifySavedFrozenAssetQuality({ store, project, batch, proof, do
 }
 
 export async function verifySavedSyncSqlLifecycle({ store, businessStore, reportStore, project, actor,
-  releaseId, packageDigest, requestId, csv, originalPackage, lineages, qualityReceipts, consumptionOnly = false, timeUnitMs = 1000 }) {
+  releaseId, packageDigest, requestId, csv, originalPackage, lineages, qualityReceipts, readSnapshot, consumptionOnly = false, timeUnitMs = 1000 }) {
   requireEvidence(uuid.test(releaseId ?? "") && digest.test(packageDigest ?? "") &&
     typeof requestId === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(requestId) &&
     typeof csv === "string" && (consumptionOnly || Array.isArray(lineages) && lineages.length === 2) &&
@@ -173,7 +190,7 @@ export async function verifySavedSyncSqlLifecycle({ store, businessStore, report
     message: task.message, language: task.language, currentCode: task.initialSql, contextId: task.contextId, syncInput: selection,
   })) && task.mode === input.developmentMode && task.language === "SPARK_SQL" &&
     task.fullLifecycleE2E === false && source.requirement?.taskId === task.id, "REQUEST_CHANGED");
-  const origin = verifySavedSyncSqlInput({ read, input, context: plan.fixtures.context, csv });
+  const origin = verifySavedSyncSqlInput({ read, input, context: plan.fixtures.context, csv, readSnapshot });
   const trace = plan.order.map(({ id, kind }) => ({ id, kind, status: "SUCCEEDED" }));
   requireEvidence(same(rehearsal.workflowTrace, trace) && chronological(origin.finishedAt, task.createdAt,
     development.startedAt, development.finishedAt, rehearsal.startedAt, rehearsal.finishedAt, review.reviewedAt,
@@ -185,7 +202,7 @@ export async function verifySavedSyncSqlLifecycle({ store, businessStore, report
   const batches = store.list("release_run", project).filter(batch => batch.releaseId === releaseId)
     .sort((a, b) => a.sequence - b.sequence);
   requireEvidence(batches.length === 2, "BATCH_SELECTION_CHANGED");
-  if (consumptionOnly) return savedConsumptionHandoff({store,project,manager,read,batches,certify,releaseId,packageDigest,requestId,input});
+  if (consumptionOnly) return savedConsumptionHandoff({store,project,manager,read,batches,certify,releaseId,packageDigest,requestId,input,origin});
   requireEvidence(new Set(lineages.map(item => item?.source?.batchId)).size === 2, "BATCH_SELECTION_CHANGED");
   const qualityEnabled = qualityReceipts !== undefined;
   if (qualityEnabled) requireEvidence(Array.isArray(qualityReceipts) && qualityReceipts.length <= batches.length &&
@@ -224,7 +241,7 @@ export async function verifySavedSyncSqlLifecycle({ store, businessStore, report
     time(batches[0].finishedAt) <= time(batches[1].triggeredAt), "BATCH_CHRONOLOGY_CHANGED");
   const qualityStatus = qualityBatches.some(batch => batch.status === "FAILED") ? "FAILED" :
     qualityBatches.some(batch => batch.status === "PENDING") ? "PENDING" : "PASSED";
-  const result = { protocol: qualityEnabled ? "shuduo-saved-sync-sql-lifecycle/v2" : "shuduo-saved-sync-sql-lifecycle/v1",
+  const result = { protocol: origin.proof ? "shuduo-saved-sync-sql-lifecycle/v3" : qualityEnabled ? "shuduo-saved-sync-sql-lifecycle/v2" : "shuduo-saved-sync-sql-lifecycle/v1",
     status: qualityStatus === "PASSED" ? "VERIFIED" : qualityStatus, scope: "LOCAL_SAVED_EVIDENCE",
     input: origin, requirement: { requestId, taskId: task.id, digest: source.requirement.basisDigest },
     development: { runId: development.id, revisionId: source.revisionId, sqlHash: source.sqlHash, engineVersion: development.engineVersion },

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { lstatSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { DatabaseSync } from 'node:sqlite';
 import { MetadataStore } from "../src/v2/store.mjs";
 import { BusinessQueryStore } from "../src/v2/data-services.mjs";
 import { ReportDataStore } from "../src/v2/reports.mjs";
-import { verifySavedSyncSqlLifecycle } from "../src/v2/sync-sql-saved-lifecycle.mjs";
+import { verifySavedSyncSqlLifecycle, verifySavedSyncSqlPackageInput } from "../src/v2/sync-sql-saved-lifecycle.mjs";
 
 const required = ["metadata", "business-snapshots", "report-snapshots", "source-csv", "package-file",
   "release-id", "package-digest", "agent-request-id"];
@@ -15,16 +16,19 @@ try {
     ...Object.fromEntries(required.map(key => [key, { type: "string" }])),
     lineage: { type: "string", multiple: true, default: [] },
     "consumption-only": { type: "boolean", default: false },
+    "input-only": { type: "boolean", default: false },
+    "landing-snapshots": { type: "string" },
     "verify-quality": { type: "boolean", default: false },
     "quality-receipt": { type: "string", multiple: true, default: [] },
     project: { type: "string", default: "project-securities-lab" },
     actor: { type: "string", default: "local-engineer" },
     "test-clock-unit-ms": { type: "string", default: "1000" },
   } });
-  const consumptionOnly=values["consumption-only"];
-  const selectedRequired=consumptionOnly?required.filter(key=>key!=="report-snapshots"):required;
+  const consumptionOnly=values["consumption-only"],inputOnly=values['input-only'];
+  const selectedRequired=inputOnly?['metadata','source-csv','package-file','package-digest']:consumptionOnly?required.filter(key=>key!=="report-snapshots"):required;
   if ([...selectedRequired,"project","actor"].some(key => !values[key]?.trim()) ||
-      (consumptionOnly ? values["report-snapshots"]!==undefined || values.lineage.length>0 || values["verify-quality"]
+      (inputOnly ? consumptionOnly || ['business-snapshots','report-snapshots','release-id','agent-request-id'].some(key=>values[key]!==undefined) || values.lineage.length>0 || values['verify-quality']
+        : consumptionOnly ? values["report-snapshots"]!==undefined || values.lineage.length>0 || values["verify-quality"]
         : values.lineage.length!==2) ||
       values["quality-receipt"].length > 2 || (!values["verify-quality"] && values["quality-receipt"].length > 0) ||
       !/^[1-9]\d*$/.test(values["test-clock-unit-ms"])) throw invalid();
@@ -40,12 +44,20 @@ try {
     if (!stat.isFile() || stat.size < 1 || stat.size > 4 * 1024 * 1024) throw invalid();
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readFileSync(path));
   };
-  const result = await verifySavedSyncSqlLifecycle({ store: open(MetadataStore,"metadata"),
+  let readSnapshot;
+  if(values['landing-snapshots']!==undefined){
+    if(!values['landing-snapshots'].trim()||!lstatSync(values['landing-snapshots']).isFile())throw invalid();
+    const db=new DatabaseSync(values['landing-snapshots'],{readOnly:true});
+    stores.push({db,close:()=>db.close()});db.exec('BEGIN');
+    readSnapshot=runId=>db.prepare('SELECT * FROM landing_run_snapshots WHERE run_id=?').get(runId);
+  }
+  const common={store:open(MetadataStore,'metadata'),project:values.project,actor:values.actor,
+    packageDigest:values['package-digest'],csv:text(values['source-csv']),originalPackage:JSON.parse(text(values['package-file'])),readSnapshot};
+  const result = inputOnly?verifySavedSyncSqlPackageInput(common):await verifySavedSyncSqlLifecycle({ ...common,
     businessStore: open(BusinessQueryStore,"business-snapshots"),
     ...(consumptionOnly ? {consumptionOnly} : {reportStore:open(ReportDataStore,"report-snapshots")}),
-    project: values.project, actor: values.actor, releaseId: values["release-id"], packageDigest: values["package-digest"],
-    requestId: values["agent-request-id"], timeUnitMs: Number(values["test-clock-unit-ms"]), csv: text(values["source-csv"]),
-    originalPackage: JSON.parse(text(values["package-file"])), lineages: values.lineage.map(path => JSON.parse(text(path))),
+    releaseId: values["release-id"], requestId: values["agent-request-id"], timeUnitMs: Number(values["test-clock-unit-ms"]),
+    lineages: values.lineage.map(path => JSON.parse(text(path))),
     ...(values["verify-quality"] ? { qualityReceipts: values["quality-receipt"].map(path => JSON.parse(text(path))) } : {}),
   });
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
