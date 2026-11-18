@@ -1,5 +1,5 @@
 import{readReportClarification,deriveReportClarification,assertReportClarificationPlan,reportProposalHash,reportClarificationSignature}from'./report-clarification.mjs';
-import {sourceReportInitial,sourceReportMayStart,sourceReportProjection,runSourceReportPlan} from './source-report-execution.mjs';
+import {sourceReportInitial,sourceReportMayStart,sourceReportProjection,sourceReportUsage,runSourceReportPlan} from './source-report-execution.mjs';
 import {certifiedDistributionSource,distributionServiceSources} from './distribution-service-source.mjs';
 import {assertDistributionConsent,assertDistributionRelease,sameLocalPublicationLane,sameDistributionConsent,assertDistributionRollback,activateDistributionRollback,distributionRequestSignature} from './distribution-publication.mjs';
 import { createServer } from "node:http";
@@ -477,7 +477,6 @@ export function createV2Server(options = {}) {
   const intentPlanner =
     options.intentPlanner ??
     (async (input) => {
-      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateAgentIntent(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -2099,7 +2098,8 @@ export function createV2Server(options = {}) {
       if (method === "POST" && executionUnavailable() &&
           (budgetAgentCreationPaths.has(path)&&!(serviceAgentAccess&&path==='/api/v2/data-services/agent/plans') || path === "/api/v2/runs" || path === "/api/v2/python/runs" || path.startsWith("/api/v2/agent/")))
         throw Object.assign(fail(503, "远程执行器尚未就绪；已保存结果仍可读取"), { code: "REMOTE_SPARK_NOT_READY" });
-      if (method === "POST" && budgetAgentCreationPaths.has(path)&&!(serviceAgentAccess&&path==='/api/v2/data-services/agent/plans'))
+      if (method === "POST" && budgetAgentCreationPaths.has(path) &&
+          path !== "/api/v2/agent/intents" && !(serviceAgentAccess && path === "/api/v2/data-services/agent/plans"))
         budget.assertCanStartModel();
       const constrainAuthSession = body => {
         const planningView=serviceAgentSession(serviceAgentAccess,{user:body.user,role:body.role},store,PROJECT,options.now?.()??Date.now());
@@ -7091,15 +7091,16 @@ export function createV2Server(options = {}) {
           submittedBy = session?.user.id ?? "local-engineer";
         const reportSource=body.reportSource===undefined?undefined:publishedReportSource(body.reportSource);
         if(reportSource)publishedPlanContext(reportSource,submittedBy);
-        if (!options.intentPlanner && !modelSettings(env).configured)
-          throw new ModelUnavailable();
         const key = text(req.headers["idempotency-key"], 1, 100),
           signature = hash(JSON.stringify({ message, approvalMode,...(reportSource?{reportSource}:{}) })),
           dedup = store.deduplicate(
             `${PROJECT}:agent-intent:${key}`,
             signature,
-            () =>
-              store.create("agent_intent", PROJECT, {
+            () => {
+              if (!options.intentPlanner && !modelSettings(env).configured)
+                throw new ModelUnavailable();
+              budget.assertCanStartModel();
+              return store.create("agent_intent", PROJECT, {
                 messageHash: hash(message),
                 messageLength: message.length,
                 approvalMode,
@@ -7107,27 +7108,64 @@ export function createV2Server(options = {}) {
                 status: "QUEUED",
                 mode: "LIVE_MODEL",
                 completionScope: "CROSS_MODULE_INTENT_ROUTING",
+                modelRequestSent: false,
                 execution: "NO_EXECUTION",
                 fullLifecycleE2E: false,
                 publicDeployed: false,
                 ...(reportSource?{reportSource}:{}),
-              }),
+              });
+            },
           ),
           task = get("agent_intent", dedup.id);
+        if (task.submittedBy !== submittedBy)
+          throw fail(403, "规划请求编号不属于当前用户");
         if (!dedup.replayed)
           schedule("agent_intent", task, async (signal) => {
-            const generated = await intentPlanner({
+            const unsent = {model:undefined, usage:undefined, usageEstimated:false, usageUnknown:false, modelRequestSent:false};
+            try {
+              budget.assertCanStartModel();
+            } catch (error) {
+              store.update("agent_intent", task.id, PROJECT, unsent);
+              throw error;
+            }
+            const reserved = budget.fallbackTokens;
+            store.update("agent_intent", task.id, PROJECT, {
+              model:"unconfirmed", usage:{total_tokens:reserved}, usageEstimated:true, usageUnknown:true, modelRequestSent:undefined,
+            });
+            try {
+              await persistDevelopment();
+            } catch (error) {
+              store.update("agent_intent", task.id, PROJECT, unsent);
+              throw error;
+            }
+            if (signal.aborted || get("agent_intent", task.id).status === "CANCELLED") {
+              store.update("agent_intent", task.id, PROJECT, unsent);
+              await persistDevelopment();
+              return;
+            }
+            let generated;
+            try {
+              generated = await intentPlanner({
                 message,
                 destinations: publicAgentIntentDestinations(),
                 signal,
               });
+            } catch (error) {
+              const diagnostic = safeModelDiagnostic(error);
+              if (error instanceof ModelUnavailable || !diagnostic.requestMayHaveBeenSent)
+                store.update("agent_intent", task.id, PROJECT, unsent);
+              else if (error.modelResultRecorded)
+                store.update("agent_intent", task.id, PROJECT, {...sourceReportUsage(error,reserved), modelRequestSent:true});
+              await persistDevelopment();
+              throw error;
+            }
+            store.update("agent_intent", task.id, PROJECT, {...sourceReportUsage(generated,reserved), modelRequestSent:true});
+            await persistDevelopment();
             if (get("agent_intent", task.id).status === "CANCELLED") return;
             const route = validateAgentIntentRoute(generated.route);
             store.update("agent_intent", task.id, PROJECT, {
               status: "SUCCEEDED",
               route,
-              model: generated.model,
-              usage: generated.usage,
               finishedAt: new Date().toISOString(),
             });
             store.create("agent_intent_trace", PROJECT, {
