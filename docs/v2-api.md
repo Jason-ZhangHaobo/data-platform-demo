@@ -1,5 +1,11 @@
 # V2 API 契约与实现边界
 
+## 质量规则编辑、基准版本与回读（2026-11-19）
+
+POST `/quality/rules/:id/versions`和`/run`可携带expectedVersionId；格式错422 QUALITY_VERSION_BASIS_INVALID，当前已变化409 QUALITY_RULE_VERSION_CHANGED，不新增版本或执行检测。旧调用可省略。版本写返回versionWrite.versionId/replayed，创建版本存basedOnVersionId，另有后续版本时仍识别原保存版本。
+
+GET `/quality/rules/:id/version-requests/:requestId`仅按原UUID回读，404 QUALITY_VERSION_REQUEST_NOT_FOUND表示尚未找到，不自动重提。GUI响应未知先查回执、使用原编号重试；刷新链接仅含编号并只读。CLI/MCP参数与回读工具共用本契约。字段支持已登记的一位合法名称，时效阈值只接受数字/整数字符串，拒绝布尔/数组。告警恢复还需原字段及类型匹配。[详情](quality-rule-editor.md)。
+
 ## 质量检测结果与恢复（2026-11-18，本机范围）
 
 既有质量run/list/overview接口新增NO_DATA（0行，passRate=null）及缺证据历史解释UNCONFIRMED。规则health可为PENDING／NO_DATA／UNCONFIRMED；counts.noData统计无数据规则。缺字段计missingFieldCount并失败；原同步已核对时run返回syncRunId／metadataVersionId，保留assetVersionId／assetEvidenceHash及原ruleVersionId。

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {readQualityVersionRequest,qualityVersionRequestPath} from '../src/v2/quality-version-request.mjs';
 import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
 import {readSyncSqlArchives,readArchivedSyncedPositions} from '../src/v2/sync-sql-output-schema-client.mjs';
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/delivery-preparation-request.mjs";
@@ -241,8 +242,9 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo standards check --id STANDARD_ID
   shuduo quality overview|list
   shuduo quality create --name 名称 --code holding_value_range --asset-id landing:raw_positions --field market_value --type value-range --min 0.00 --max 5000.00 --description "持仓市值范围"
-  shuduo quality version --id RULE_ID --type value-range --min 0.00 --max 10000.00 --description "校准范围"
-  shuduo quality run --id RULE_ID
+  shuduo quality version --id RULE_ID [--field FIELD] [--expected-version-id VERSION_ID] [--request-id UUID] --type value-range --min 0.00 --max 10000.00 --description "校准范围"
+  shuduo quality version-request --id RULE_ID --request-id UUID
+  shuduo quality run --id RULE_ID [--expected-version-id VERSION_ID]
   shuduo quality plan --message "为证券代码生成非空规则"
   shuduo quality plans
   shuduo quality apply-plan --id PLAN_ID
@@ -1436,23 +1438,28 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           description: required(parsed.options, "description"),
         },
       });
-    } else if (resource === "quality" && action === "version") {
+    } else if(resource==='quality'&&action==='version-request')result=await readQualityVersionRequest(client,{ruleId:required(parsed.options,'id'),requestId:required(parsed.options,'request_id')});
+    else if (resource === "quality" && action === "version") {
       const type = qualityType(required(parsed.options, "type"));
+      if(parsed.options.request_id!==undefined)qualityVersionRequestPath(required(parsed.options,'id'),parsed.options.request_id);
       result = await client.request(
         `/quality/rules/${encodeURIComponent(required(parsed.options, "id"))}/versions`,
         {
           method: "POST",
           body: {
             type,
+            ...(parsed.options.expected_version_id!==undefined?{expectedVersionId:parsed.options.expected_version_id}:{}),
+            ...(parsed.options.field!==undefined?{field:parsed.options.field}:{}),
             config: qualityConfig(parsed.options, type),
             description: required(parsed.options, "description"),
           },
+          ...(parsed.options.request_id!==undefined?{idempotencyKey:parsed.options.request_id}:{}),
         },
       );
     } else if (resource === "quality" && action === "run")
       result = await client.request(
         `/quality/rules/${encodeURIComponent(required(parsed.options, "id"))}/run`,
-        { method: "POST", body: {} },
+        { method: "POST", body:parsed.options.expected_version_id!==undefined?{expectedVersionId:parsed.options.expected_version_id}:{} },
       );
     else if (resource === "quality" && action === "plan")
       result = await client.request("/quality/agent/plans", {

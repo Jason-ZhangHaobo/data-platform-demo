@@ -1,4 +1,4 @@
-import {nonemptyQualityPass,qualityRunView} from './quality-evidence.mjs';
+import {qualityRecoveryMatches,qualityRunView} from './quality-evidence.mjs';
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
 const text = (value, name, min = 1, max = 500) => {
@@ -179,7 +179,7 @@ export class OperationsManager {
       throw fail(404, "未找到恢复证据", "RECOVERY_EVIDENCE_NOT_FOUND");
     if (!new Set(["SUCCEEDED", "PASSED"]).has(evidence.status))
       throw fail(409, "恢复证据未成功", "RECOVERY_EVIDENCE_NOT_SUCCESSFUL");
-    if(evidenceKind==='quality_run'&&!nonemptyQualityPass(evidence))
+    if(evidenceKind==='quality_run'&&!qualityRecoveryMatches(this.store.get(incident.sourceKind,incident.sourceId,this.project),evidence,id=>id?this.store.get('quality_rule_version',id,this.project):undefined))
       throw fail(409,'质量恢复须有实际非空数据并全部通过，空表不能证明恢复','QUALITY_RECOVERY_UNPROVEN');
     if (
       !sameResource(incident, evidenceKind, evidence) ||
@@ -364,7 +364,7 @@ export class OperationsManager {
         .list("quality_alert", this.project)
         .find((item) => item.runId === failure.id && item.status === "RESOLVED");
       const recovery=alert?.recoveryRunId?this.store.get('quality_run',alert.recoveryRunId,this.project):undefined;
-      return nonemptyQualityPass(recovery)&&recovery.ruleId===failure.ruleId
+      return qualityRecoveryMatches(failure,recovery,id=>id?this.store.get('quality_rule_version',id,this.project):undefined)
         ? {
             kind: "quality_run",
             id: alert.recoveryRunId,

@@ -11,10 +11,15 @@ export function qualityRunView(run) {
     return {...run,status:'UNCONFIRMED',passRate:null,storedStatus:'PASSED',reasonCode:'QUALITY_PASS_UNPROVEN'};
   return run;
 }
-export function qualityAlertView(alert,runFor) {
+export function qualityRecoveryMatches(source,recovery,versionFor){
+  if(!source||!nonemptyQualityPass(recovery)||recovery.ruleId!==source.ruleId)return false;
+  const before=versionFor(source.ruleVersionId),after=versionFor(recovery.ruleVersionId);
+  return Boolean(before&&after&&before.ruleId===source.ruleId&&after.ruleId===source.ruleId&&['assetId','field','type'].every(field=>before[field]===after[field]));
+}
+export function qualityAlertView(alert,runFor,versionFor) {
   if(alert.status!=='RESOLVED')return alert;
   const recovery=runFor(alert.recoveryRunId);
-  if(nonemptyQualityPass(recovery)&&recovery.ruleId===alert.ruleId)return alert;
+  if(qualityRecoveryMatches(alert,recovery,versionFor))return alert;
   return {...alert,status:'OPEN',storedStatus:'RESOLVED',recoveryUnconfirmed:true};
 }
 export function qualityRuleHealth(rule,lastRun) {

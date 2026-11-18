@@ -156,6 +156,7 @@ export const V2_OPERATIONS = Object.freeze([
   "quality_rule_list",
   "quality_rule_create",
   "quality_rule_version",
+  "quality_rule_version_request",
   "quality_rule_run",
   "quality_plan_list",
   "quality_plan_create",
