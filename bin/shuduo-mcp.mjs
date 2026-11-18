@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {qualityRunBody,qualityArchiveInputsPath,qualityRunRequestPath} from '../src/v2/quality-input-client.mjs';
 import {readFrozenSchedule} from '../src/v2/frozen-schedule-client.mjs';
 import {readTradingCalendars,readTradingCalendarVersion,readTradingDay} from '../src/v2/trading-calendar-client.mjs';
 import {readQualityVersionRequest,qualityVersionRequestPath} from '../src/v2/quality-version-request.mjs';
@@ -272,7 +273,9 @@ const tools = [
   { name: "quality_rule_create", description: "在已登记可读取的虚构资产上创建质量规则，不自动运行。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, field: { type: "string" }, type: { type: "string", enum: ["NOT_NULL", "UNIQUE", "VALUE_RANGE", "ALLOWED_VALUES", "FRESHNESS_SECONDS"] }, config: { type: "object" }, description: { type: "string" } }, required: ["name", "code", "assetId", "field", "type", "config", "description"] } },
   {name:'quality_rule_version_request',description:'按原规则和请求UUID只读找回保存版本，不重新创建。',inputSchema:{type:'object',properties:{ruleId:{type:'string'},requestId:{type:'string'}},required:['ruleId','requestId'],additionalProperties:false},annotations:{readOnlyHint:true}},
   { name: "quality_rule_version", description: "创建质量规则新版本并保留旧版本，新版本待检测，不继承旧通过。", inputSchema: { type: "object", properties: { ruleId: { type: "string" }, expectedVersionId:{type:"string"},requestId:{type:"string"}, field: { type: "string" }, type: { type: "string" }, config: { type: "object" }, description: { type: "string" } }, required: ["ruleId", "config", "description"] } },
-  { name: "quality_rule_run", description: "在当前资产证据上实际检测；缺失字段失败，无数据不算通过，实际非空数据全部通过才可关联恢复。", inputSchema: { type: "object", properties: { ruleId: { type: "string" },expectedVersionId:{type:"string"} }, required: ["ruleId"] } },
+  {name:'quality_archive_inputs',description:'只读列出本机规则对应留存批次，使用前重核摘要。',inputSchema:{type:'object',properties:{ruleId:{type:'string'}},required:['ruleId']},annotations:{readOnlyHint:true}},
+  {name:'quality_run_request',description:'按原规则及请求UUID回读已保存检测，不重跑。',inputSchema:{type:'object',properties:{ruleId:{type:'string'},requestId:{type:'string'}},required:['ruleId','requestId']},annotations:{readOnlyHint:true}},
+  { name: "quality_rule_run", description: "检测当前表或显式原归档批次。历史复检不改变当前健康/告警；来源须完整，未知字段拒绝。", inputSchema: { type: "object", properties: { ruleId: { type: "string" },expectedVersionId:{type:"string"},sourceSelection:{type:"object",properties:{kind:{const:"SYNC_RUN_ARCHIVE_V1"},taskId:{type:"string"},runId:{type:"string"},metadataVersionId:{type:"string"},snapshotHash:{type:"string"}},required:["kind","taskId","runId","metadataVersionId","snapshotHash"],additionalProperties:false},requestId:{type:"string"} }, required: ["ruleId"],additionalProperties:false } },
   { name: "quality_plan_list", description: "列出受治理质量Agent规则方案。", inputSchema: { type: "object", properties: {} } },
   { name: "quality_plan_create", description: "让真实模型基于字段元数据和聚合质量结果生成规则草稿，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
   { name: "quality_plan_apply", description: "把已验证质量方案应用为规则草稿，不自动运行或解除告警。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
@@ -893,11 +896,9 @@ async function callTool(name, args = {}, client=defaultClient) {
       { method: "POST", body,...(requestId!==undefined?{idempotencyKey:requestId}:{}) },
     );
   }
-  if (name === "quality_rule_run")
-    return client.request(
-      `/quality/rules/${encodeURIComponent(args.ruleId)}/run`,
-      { method: "POST", body: args.expectedVersionId!==undefined?{expectedVersionId:args.expectedVersionId}:{} },
-    );
+  if(name==='quality_archive_inputs')return client.request(qualityArchiveInputsPath(args.ruleId));
+  if(name==='quality_run_request')return client.request(qualityRunRequestPath(args.ruleId,args.requestId));
+  if (name === "quality_rule_run") {const {ruleId,requestId,...input}=args;if(requestId!==undefined)qualityRunRequestPath(ruleId,requestId);return client.request(`/quality/rules/${encodeURIComponent(ruleId)}/run`,{method:'POST',body:qualityRunBody(input),...(requestId===undefined?{}:{idempotencyKey:requestId})});}
   if (name === "quality_plan_list")
     return client.request("/quality/agent/plans");
   if (name === "quality_plan_create")

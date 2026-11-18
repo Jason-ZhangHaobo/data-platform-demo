@@ -1,3 +1,4 @@
+import {qualityRunInput} from './quality-source.mjs';
 import { createHash } from "node:crypto";
 import {qualityAlertView,qualityRuleHealth,qualityRunView,qualityRecoveryMatches} from './quality-evidence.mjs';
 
@@ -53,9 +54,10 @@ const decimalCents = (value, name) => {
 };
 
 export class QualityManager {
-  constructor({ store, assets, project, now = () => Date.now() }) {
+  constructor({ store, assets, project, archiveSource, now = () => Date.now() }) {
     this.store = store;
     this.assets = assets;
+    this.archiveSource = archiveSource;
     this.project = project;
     this.now = now;
   }
@@ -170,21 +172,29 @@ export class QualityManager {
     };
   }
 
+  inputEvidence(ruleId,input={}) {
+    qualityRunInput(input);const rule=this.#rule(ruleId),version=this.#version(rule.currentVersionId);this.#basis(version,input.expectedVersionId);
+    if(input.sourceSelection!==undefined){if(!this.archiveSource)throw fail(403,'归档检测当前仅支持本机已留存批次','QUALITY_ARCHIVE_LOCAL_ONLY');return this.archiveSource(rule,input.sourceSelection);}
+    return this.assets.executionRows(rule.assetId);
+  }
+
   runRule(ruleId,input={}) {
     const rule = this.#rule(ruleId),
       version = this.#version(rule.currentVersionId);
     this.#basis(version,input.expectedVersionId);
-    const { asset, rows } = this.assets.executionRows(rule.assetId),
+    const { asset, rows, archiveSource } = this.inputEvidence(ruleId,input),
       run = this.store.create("quality_run", this.project, {
         ruleId: rule.id,
         ruleVersionId: version.id,
         ruleConfigHash: version.configHash,
+        ...(archiveSource?{archiveSource,evaluatedAt:new Date(this.now()).toISOString()}:{}),
         assetId: asset.id,
         assetEvidenceHash: asset.evidenceHash,
         assetVersionId: asset.versionId,
         ...(asset.syncSource?.status==='VERIFIED'?{syncRunId:asset.syncSource.runId,metadataVersionId:asset.syncSource.metadataVersionId}:{}),
         ...this.evaluateRows(version, rows, { includeInvalidRowHashes: true }),
       });
+    if(archiveSource)return {rule:this.detail(rule.id),run}; // Historical rechecks never replace current health or alerts.
     if (run.status === "FAILED") {
       this.store.create("quality_alert", this.project, {
         ruleId: rule.id,

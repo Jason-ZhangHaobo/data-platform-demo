@@ -1,3 +1,4 @@
+import {createQualityArchiveSource,qualityArchiveSelection} from './quality-source.mjs';
 import {frozenSchedulePreview} from './frozen-schedule-preview.mjs';
 import {runBudgetedPlanning} from './budgeted-planning.mjs';
 import{readReportClarification,deriveReportClarification,assertReportClarificationPlan,reportProposalHash,reportClarificationSignature}from'./report-clarification.mjs';
@@ -1406,7 +1407,9 @@ export function createV2Server(options = {}) {
         modelVerifiedAt = new Date().toISOString();
       return result;
     });
+  const qualityArchives=local&&!options.ingress?createQualityArchiveSource({store,project:PROJECT,ingestion,assets}):undefined;
   const quality = new QualityManager({
+    archiveSource:qualityArchives?.source,
     store,
     assets,
     project: PROJECT,
@@ -3211,6 +3214,19 @@ export function createV2Server(options = {}) {
           return json(res, 201, rule);
         }
       }
+      const qualityArchiveRead=path.match(/^\/api\/v2\/quality\/rules\/([a-f0-9-]{36})\/archive-inputs$/);
+      if(qualityArchiveRead&&method==='GET'){
+        if(!qualityArchives||!isLoopbackRequest(req))throw fail(403,'归档检测来源仅在本机回环开放');
+        if(url.searchParams.size)throw fail(422,'归档目录只接受规则编号');
+        return json(res,200,{ruleId:qualityArchiveRead[1],candidates:qualityArchives.candidates(quality.detail(qualityArchiveRead[1]))});
+      }
+      const qualityRunRequest=path.match(/^\/api\/v2\/quality\/rules\/([a-f0-9-]{36})\/run-requests\/([a-f0-9-]{36})$/);
+      if(qualityRunRequest&&method==='GET'){
+        if(url.searchParams.size)throw fail(422,'检测回读只接受规则及请求编号');if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(qualityRunRequest[2]))throw fail(422,'检测请求UUID无效');const rule=quality.detail(qualityRunRequest[1]),id=store.deduplicatedId(`${PROJECT}:quality-run:${rule.id}:${qualityRunRequest[2]}`);
+        if(!id)throw Object.assign(fail(404,'尚未找到原检测请求'),{code:'QUALITY_RUN_REQUEST_NOT_FOUND'});
+        const run=rule.runs.find(run=>run.id===id);if(!run)throw fail(409,'检测回执与规则不符');if(run.archiveSource&&(!qualityArchives||!isLoopbackRequest(req)))throw fail(403,'归档检测回执仅在本机开放');
+        const version=rule.versions.find(version=>version.id===run.ruleVersionId);if(!version)throw fail(409,'原检测规则版本不存在');return json(res,200,{ruleId:rule.id,run,ruleVersion:version,runWrite:{runId:id,replayed:true}});
+      }
       const qualityVersionRequest=path.match(/^\/api\/v2\/quality\/rules\/([a-f0-9-]{36})\/version-requests\/([a-f0-9-]{36})$/);
       if(qualityVersionRequest&&method==='GET'){
         if(url.searchParams.size)throw fail(422,'规则保存回执只接受原规则及请求编号');
@@ -3247,8 +3263,11 @@ export function createV2Server(options = {}) {
         if (method === "POST" && action === "run") {
           const body=await readBody(req);
           if(!body||typeof body!=='object'||Array.isArray(body))throw fail(422,'规则检测参数必须为对象');
+          if(body.sourceSelection!==undefined&&(!qualityArchives||!isLoopbackRequest(req)))throw fail(403,'归档复检仅在本机回环开放');
+          if(body.sourceSelection!==undefined&&!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(req.headers['idempotency-key']??''))throw fail(422,'归档复检须使用可恢复的请求UUID');
           const current = quality.detail(rule.id),
-            evidenceHash = assets.detail(rule.assetId).evidenceHash,
+            inputEvidence=quality.inputEvidence(rule.id,body),
+            evidenceHash = inputEvidence.asset.evidenceHash,
             key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               `${PROJECT}:quality-run:${rule.id}:${key}`,
@@ -3258,13 +3277,14 @@ export function createV2Server(options = {}) {
                   versionId: current.currentVersionId,
                   configHash: current.currentVersion.configHash,
                   evidenceHash,
+                  ...(body.sourceSelection===undefined?{}:{sourceSelection:qualityArchiveSelection(body.sourceSelection)}),
                   ...(body.expectedVersionId===undefined?{}:{expectedVersionId:body.expectedVersionId}),
                 }),
               ),
               () => quality.runRule(rule.id,body).run,
             );
           get("quality_run", dedup.id);
-          return json(res, dedup.replayed ? 200 : 201, quality.detail(rule.id));
+          return json(res, dedup.replayed ? 200 : 201, {...quality.detail(rule.id),...(body.sourceSelection===undefined?{}:{runWrite:{runId:dedup.id,replayed:dedup.replayed}})});
         }
       }
       if (path === "/api/v2/security/overview" && method === "GET")
