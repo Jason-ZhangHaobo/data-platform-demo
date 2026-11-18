@@ -3209,6 +3209,16 @@ export function createV2Server(options = {}) {
           return json(res, 201, rule);
         }
       }
+      const qualityVersionRequest=path.match(/^\/api\/v2\/quality\/rules\/([a-f0-9-]{36})\/version-requests\/([a-f0-9-]{36})$/);
+      if(qualityVersionRequest&&method==='GET'){
+        if(url.searchParams.size)throw fail(422,'规则保存回执只接受原规则及请求编号');
+        const rule=quality.detail(qualityVersionRequest[1]),requestId=qualityVersionRequest[2];
+        if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(requestId))throw fail(422,'保存请求编号无效');
+        const id=store.deduplicatedId(`${PROJECT}:quality-rule-version:${rule.id}:${requestId}`);
+        if(!id)throw Object.assign(fail(404,'尚未找到该原请求的保存回执'),{code:'QUALITY_VERSION_REQUEST_NOT_FOUND'});
+        const version=get('quality_rule_version',id);if(version.ruleId!==rule.id)throw fail(409,'保存回执与原规则不一致');
+        return json(res,200,{...rule,versionWrite:{versionId:id,replayed:true}});
+      }
       const qualityRuleRecord = path.match(
         /^\/api\/v2\/quality\/rules\/([a-f0-9-]+)(?:\/(versions|run))?$/,
       );
@@ -3217,8 +3227,9 @@ export function createV2Server(options = {}) {
           action = qualityRuleRecord[2];
         if (method === "GET" && !action) return json(res, 200, rule);
         if (method === "POST" && action === "versions") {
-          const body = await readBody(req),
-            key = text(req.headers["idempotency-key"], 1, 100),
+          const body = await readBody(req);
+          if(!body||typeof body!=='object'||Array.isArray(body))throw fail(422,'规则版本配置必须为对象');
+          const key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               `${PROJECT}:quality-rule-version:${rule.id}:${key}`,
               hash(JSON.stringify(body)),
@@ -3228,11 +3239,12 @@ export function createV2Server(options = {}) {
           return json(
             res,
             dedup.replayed ? 200 : 201,
-            quality.detail(rule.id),
+            {...quality.detail(rule.id),versionWrite:{versionId:dedup.id,replayed:dedup.replayed}},
           );
         }
         if (method === "POST" && action === "run") {
-          await readBody(req);
+          const body=await readBody(req);
+          if(!body||typeof body!=='object'||Array.isArray(body))throw fail(422,'规则检测参数必须为对象');
           const current = quality.detail(rule.id),
             evidenceHash = assets.detail(rule.assetId).evidenceHash,
             key = text(req.headers["idempotency-key"], 1, 100),
@@ -3244,9 +3256,10 @@ export function createV2Server(options = {}) {
                   versionId: current.currentVersionId,
                   configHash: current.currentVersion.configHash,
                   evidenceHash,
+                  ...(body.expectedVersionId===undefined?{}:{expectedVersionId:body.expectedVersionId}),
                 }),
               ),
-              () => quality.runRule(rule.id).run,
+              () => quality.runRule(rule.id,body).run,
             );
           get("quality_run", dedup.id);
           return json(res, dedup.replayed ? 200 : 201, quality.detail(rule.id));

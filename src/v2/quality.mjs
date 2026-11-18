@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import {qualityAlertView,qualityRuleHealth,qualityRunView} from './quality-evidence.mjs';
+import {qualityAlertView,qualityRuleHealth,qualityRunView,qualityRecoveryMatches} from './quality-evidence.mjs';
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -30,15 +30,15 @@ const text = (value, name, min = 1, max = 120) => {
     throw fail(400, `${name}长度必须为${min}—${max}个字符`, "INVALID_TEXT");
   return value.trim();
 };
-const identifier = (value, name) => {
-  const result = text(value, name, 2, 63);
+const identifier = (value, name, min=2) => {
+  const result = text(value, name, min, 63);
   if (!/^[a-z][a-z0-9_]*$/.test(result))
     throw fail(400, `${name}只能使用小写字母、数字和下划线`, "INVALID_IDENTIFIER");
   return result;
 };
 const integer = (value, name, min, max) => {
   const result = Number(value);
-  if (!Number.isSafeInteger(result) || result < min || result > max)
+  if (!['number','string'].includes(typeof value)||typeof value==='string'&&!/^\d+$/.test(value)||!Number.isSafeInteger(result) || result < min || result > max)
     throw fail(400, `${name}必须为${min}—${max}的整数`, "INVALID_INTEGER");
   return result;
 };
@@ -78,7 +78,7 @@ export class QualityManager {
       alerts = this.store
         .list("quality_alert", this.project)
         .filter((alert) => alert.ruleId === rule.id)
-        .map(alert=>qualityAlertView(alert,id=>runs.find(run=>run.id===id)));
+        .map(alert=>qualityAlertView(alert,id=>runs.find(run=>run.id===id),id=>versions.find(version=>version.id===id)));
     return {
       ...rule,
       health:qualityRuleHealth(rule,runs.find(run=>run.id===rule.lastRunId)),
@@ -121,8 +121,9 @@ export class QualityManager {
 
   createVersion(ruleId, input) {
     const rule = this.#rule(ruleId),
-      current = this.#version(rule.currentVersionId),
-      normalized = this.#normalize({
+      current = this.#version(rule.currentVersionId);
+    this.#basis(current,input.expectedVersionId);
+    const normalized = this.#normalize({
         assetId: rule.assetId,
         field: input.field ?? current.field,
         type: input.type ?? current.type,
@@ -137,6 +138,7 @@ export class QualityManager {
     });
     const version = this.store.create("quality_rule_version", this.project, {
       ruleId: rule.id,
+      basedOnVersionId:current.id,
       versionNumber:
         this.store
           .list("quality_rule_version", this.project)
@@ -168,10 +170,11 @@ export class QualityManager {
     };
   }
 
-  runRule(ruleId) {
+  runRule(ruleId,input={}) {
     const rule = this.#rule(ruleId),
-      version = this.#version(rule.currentVersionId),
-      { asset, rows } = this.assets.executionRows(rule.assetId),
+      version = this.#version(rule.currentVersionId);
+    this.#basis(version,input.expectedVersionId);
+    const { asset, rows } = this.assets.executionRows(rule.assetId),
       run = this.store.create("quality_run", this.project, {
         ruleId: rule.id,
         ruleVersionId: version.id,
@@ -201,7 +204,8 @@ export class QualityManager {
     } else if(run.status==='PASSED') {
       const resolvedAlertIds = [];
       for (const alert of this.store.list("quality_alert", this.project))
-        if (alert.ruleId === rule.id && qualityAlertView(alert,id=>id?this.store.get('quality_run',id,this.project):undefined).status === "OPEN") {
+        if (alert.ruleId === rule.id && qualityAlertView(alert,id=>id?this.store.get('quality_run',id,this.project):undefined,id=>id?this.store.get('quality_rule_version',id,this.project):undefined).status === "OPEN"&&
+            qualityRecoveryMatches(alert,run,id=>id?this.store.get('quality_rule_version',id,this.project):undefined)) {
           resolvedAlertIds.push(alert.id);
           this.store.update("quality_alert", alert.id, this.project, {
             status: "RESOLVED",
@@ -245,7 +249,7 @@ export class QualityManager {
   overview() {
     const rules = this.listRules(),
       runs = this.store.list("quality_run", this.project),
-      alerts = this.store.list("quality_alert", this.project).map(alert=>qualityAlertView(alert,id=>runs.find(run=>run.id===id)));
+      alerts = this.store.list("quality_alert", this.project).map(alert=>qualityAlertView(alert,id=>runs.find(run=>run.id===id),id=>id?this.store.get('quality_rule_version',id,this.project):undefined));
     return {
       scope: "LOCAL_ACTUAL_ROWS",
       publicDeployed: false,
@@ -302,7 +306,7 @@ export class QualityManager {
 
   #normalize(input) {
     const { asset } = this.assets.executionRows(text(input.assetId, "资产编号", 4, 160)),
-      field = identifier(input.field, "字段名"),
+      field = identifier(input.field, "字段名",1),
       fieldMeta = asset.fields.find((item) => item.name === field);
     if (!fieldMeta)
       throw fail(400, `资产中不存在字段${field}`, "QUALITY_FIELD_NOT_FOUND");
@@ -397,6 +401,12 @@ export class QualityManager {
         return Number.isNaN(value) || value < cutoff ? index : -1;
       })
       .filter((index) => index >= 0);
+  }
+
+  #basis(version,expected){
+    if(expected===undefined)return;
+    if(typeof expected!=='string'||expected.length!==36||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(expected))throw fail(422,'请使用已审阅的质量规则版本编号','QUALITY_VERSION_BASIS_INVALID');
+    if(expected!==version.id)throw fail(409,'质量规则已有新版本，请重读并审阅后操作；未采用其他版本','QUALITY_RULE_VERSION_CHANGED');
   }
 
   #rule(id) {

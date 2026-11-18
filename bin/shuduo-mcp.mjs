@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {readQualityVersionRequest,qualityVersionRequestPath} from '../src/v2/quality-version-request.mjs';
 import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
 import {readSyncSqlArchives,readArchivedSyncedPositions} from '../src/v2/sync-sql-output-schema-client.mjs';
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/delivery-preparation-request.mjs";
@@ -263,8 +264,9 @@ const tools = [
   { name: "quality_overview", description: "读取质量规则健康、运行和告警汇总。", inputSchema: { type: "object", properties: {} } },
   { name: "quality_rule_list", description: "列出版本化质量规则、运行与告警。", inputSchema: { type: "object", properties: {} } },
   { name: "quality_rule_create", description: "在已登记可读取的虚构资产上创建质量规则，不自动运行。", inputSchema: { type: "object", properties: { name: { type: "string" }, code: { type: "string" }, assetId: { type: "string" }, field: { type: "string" }, type: { type: "string", enum: ["NOT_NULL", "UNIQUE", "VALUE_RANGE", "ALLOWED_VALUES", "FRESHNESS_SECONDS"] }, config: { type: "object" }, description: { type: "string" } }, required: ["name", "code", "assetId", "field", "type", "config", "description"] } },
-  { name: "quality_rule_version", description: "创建质量规则新版本并保留旧版本，新版本待检测，不继承旧通过。", inputSchema: { type: "object", properties: { ruleId: { type: "string" }, field: { type: "string" }, type: { type: "string" }, config: { type: "object" }, description: { type: "string" } }, required: ["ruleId", "config", "description"] } },
-  { name: "quality_rule_run", description: "在当前资产证据上实际检测；缺失字段失败，无数据不算通过，实际非空数据全部通过才可关联恢复。", inputSchema: { type: "object", properties: { ruleId: { type: "string" } }, required: ["ruleId"] } },
+  {name:'quality_rule_version_request',description:'按原规则和请求UUID只读找回保存版本，不重新创建。',inputSchema:{type:'object',properties:{ruleId:{type:'string'},requestId:{type:'string'}},required:['ruleId','requestId'],additionalProperties:false},annotations:{readOnlyHint:true}},
+  { name: "quality_rule_version", description: "创建质量规则新版本并保留旧版本，新版本待检测，不继承旧通过。", inputSchema: { type: "object", properties: { ruleId: { type: "string" }, expectedVersionId:{type:"string"},requestId:{type:"string"}, field: { type: "string" }, type: { type: "string" }, config: { type: "object" }, description: { type: "string" } }, required: ["ruleId", "config", "description"] } },
+  { name: "quality_rule_run", description: "在当前资产证据上实际检测；缺失字段失败，无数据不算通过，实际非空数据全部通过才可关联恢复。", inputSchema: { type: "object", properties: { ruleId: { type: "string" },expectedVersionId:{type:"string"} }, required: ["ruleId"] } },
   { name: "quality_plan_list", description: "列出受治理质量Agent规则方案。", inputSchema: { type: "object", properties: {} } },
   { name: "quality_plan_create", description: "让真实模型基于字段元数据和聚合质量结果生成规则草稿，不读取业务行。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
   { name: "quality_plan_apply", description: "把已验证质量方案应用为规则草稿，不自动运行或解除告警。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
@@ -872,17 +874,19 @@ async function callTool(name, args = {}, client=defaultClient) {
   if (name === "quality_rule_list") return client.request("/quality/rules");
   if (name === "quality_rule_create")
     return client.request("/quality/rules", { method: "POST", body: args });
+  if(name==='quality_rule_version_request')return readQualityVersionRequest(client,args);
   if (name === "quality_rule_version") {
-    const { ruleId, ...body } = args;
+    const { ruleId, requestId, ...body } = args;
+    if(requestId!==undefined)qualityVersionRequestPath(ruleId,requestId);
     return client.request(
       `/quality/rules/${encodeURIComponent(ruleId)}/versions`,
-      { method: "POST", body },
+      { method: "POST", body,...(requestId!==undefined?{idempotencyKey:requestId}:{}) },
     );
   }
   if (name === "quality_rule_run")
     return client.request(
       `/quality/rules/${encodeURIComponent(args.ruleId)}/run`,
-      { method: "POST", body: {} },
+      { method: "POST", body: args.expectedVersionId!==undefined?{expectedVersionId:args.expectedVersionId}:{} },
     );
   if (name === "quality_plan_list")
     return client.request("/quality/agent/plans");
