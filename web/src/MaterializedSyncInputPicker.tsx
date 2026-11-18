@@ -11,7 +11,7 @@ export function MaterializedSyncInputPicker({api,disabled,onChoose}:{api:Api;dis
   <button className="button" disabled={disabled||loading} onClick={()=>void read()}>{loading?'正在读取…':items?'重读完整快照目录':'读取完整快照目录'}</button>
   {error&&<p role="alert">{error}</p>}{items?.length===0&&<p role="status">暂无七个登记持仓字段、500行以内的完整快照。可先完成对应同步并留存；当前表不会补造历史。</p>}
   {Boolean(items?.length)&&<><label>完整目标快照<select aria-label="选择完整持仓快照" value={selected} disabled={disabled||loading} onChange={e=>setSelected(e.target.value)}>{items?.map(c=><option key={c.runId} value={c.runId}>{c.targetTable} · {materializedModeLabels[c.mode]} · {c.rowCount}行 · {c.runId.slice(0,8)}</option>)}</select></label>
-   {candidate&&<div><strong>{candidate.taskName}</strong><p>{candidate.targetTable} · {materializedModeLabels[candidate.mode]} · {candidate.rowCount===0?'已确认空持仓（仍保留登记账户现金）':`${candidate.rowCount}行完整目标状态`}</p><small>目录回执尚未核对实际行。核对成功后才可作为开发输入，提交时再次检查。</small></div>}
+   {candidate&&<div><strong>{candidate.taskName}</strong><p>{candidate.targetTable} · {materializedModeLabels[candidate.mode]} · {candidate.rowCount===0?'空持仓候选（核对后保留登记账户现金）':`${candidate.rowCount}行完整目标状态`}</p><small>目录回执尚未核对实际行。核对成功后才可作为开发输入，提交时再次检查。</small></div>}
    <button className="button" disabled={disabled||loading||!candidate} onClick={()=>candidate&&onChoose(candidate)}>核对并使用完整快照</button></>}
  </details>;
 }
