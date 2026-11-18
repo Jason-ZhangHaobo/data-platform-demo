@@ -20,6 +20,11 @@ const specs = {
     order: "target_table",
     optional: true,
   },
+  landingRunSnapshots: {
+    store:'landingStore', table:'landing_run_snapshots',
+    columns:['run_id','target_table','payload','snapshot_hash','byte_count'],
+    key:['run_id'], order:'run_id', optional:true,
+  },
   streamEvents: {
     store: "streamStateStore",
     table: "stream_events",
@@ -184,6 +189,7 @@ export function validateDataState(payload, project) {
     throw fail("云端 DAPI 数据行引用了不存在的快照");
   for (const row of [
     ...payload.tables.landingRows,
+    ...(payload.tables.landingRunSnapshots ?? []),
     ...payload.tables.streamEvents,
   ]) {
     try {
@@ -223,6 +229,7 @@ const deleteOrder = [
   "streamEvents",
   "landingRows",
   "landingCommits",
+  "landingRunSnapshots",
   "reportSnapshots",
 ];
 

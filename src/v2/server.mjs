@@ -2588,6 +2588,21 @@ export function createV2Server(options = {}) {
           ingestion.taskDetail(dedup.id),
         );
       }
+      const syncRunSnapshot = path.match(/^\/api\/v2\/sync\/tasks\/([a-f0-9-]{36})\/runs\/([a-f0-9-]{36})\/snapshot$/);
+      if (syncRunSnapshot && method === 'GET') {
+        // New row-level reads remain local-only until invited-cloud acceptance.
+        const session=auth.sessionFromHeaders(req.headers);
+        if (!local || options.ingress || !isLoopbackRequest(req) || !workspaceReadActor(req))
+          throw fail(403,'原批次快照仅供本机工作台工程师读取');
+        if (session && !session.permissions.some(permission=>['*','INGESTION'].includes(permission)))
+          throw fail(403,'当前项目角色不能读取同步行数据');
+        if ([...url.searchParams.keys()].some(key=>!['page','pageSize'].includes(key)) ||
+          url.searchParams.size!==new Set(url.searchParams.keys()).size)
+          throw fail(422,'快照只接受页码和每页行数');
+        return json(res,200,ingestion.previewRunSnapshot(syncRunSnapshot[1],syncRunSnapshot[2],{
+          page:url.searchParams.has('page')?Number(url.searchParams.get('page')):1,
+          pageSize:url.searchParams.has('pageSize')?Number(url.searchParams.get('pageSize')):50}));
+      }
       const syncTaskRecord = path.match(
         /^\/api\/v2\/sync\/tasks\/([a-f0-9-]+)(?:\/(run|recovery))?$/,
       );

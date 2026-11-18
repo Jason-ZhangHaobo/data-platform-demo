@@ -282,6 +282,10 @@ test("enabled server MySQL performs bounded FULL and snapshot-diff UPSERT withou
     assert.equal(deltaRun.finalCount, 3);
     assert.equal(deltaRun.watermark, "2026-09-11");
     assert.equal(app.manager.previewTarget("mysql_positions")[0].market_value, "1100.00");
+    const original=app.manager.previewRunSnapshot(full.id,fullRun.id);
+    assert.equal(original.rows[0].market_value,'1000.00');
+    assert.equal(original.currentTarget.matchesOriginalRun,false);
+    assert.equal(app.manager.previewRunSnapshot(delta.id,deltaRun.id).rowCount,3);
   } finally {
     app.close();
   }

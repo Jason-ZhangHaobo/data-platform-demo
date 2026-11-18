@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { RealtimeWorkbench } from "./RealtimeWorkbench";
 import { SyncRecoveryPanel } from "./SyncRecoveryPanel";
+import {SyncRunSnapshotPanel} from './SyncRunSnapshotPanel';
 import {SyncTaskMappingEditor} from './SyncTaskMappingEditor';
 import {newSyncMappingDraft,syncMappingProblem,syncTaskMappingFields} from './sync-task-mapping';
 import type {SyncMappingDraft} from './sync-task-mapping';
@@ -521,6 +522,7 @@ export function IngestionWorkbench({
                   <header><h4>运行证据</h4><span>{selectedTask.runs.length}次</span></header>
                   {selectedTask.runs.map((run) => <article key={run.id}><span className={"status-pill " + run.status.toLowerCase()}>{statusLabels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><span>读取 {run.readCount ?? "—"}</span><span>新增 {run.inserted ?? "—"}</span><span>更新 {run.updated ?? "—"}</span><span>最终 {run.finalCount ?? "—"}</span></div><small>{run.error ?? `${run.durationMs}ms · ${run.targetHash?.slice(0, 12)}`}</small></article>)}
                 </div>
+                <SyncRunSnapshotPanel key={selectedTask.id} api={api} taskId={selectedTask.id} runs={selectedTask.runs}/>
                 {selectedTask.recovery && <div className="sync-recovery-origin">
                   <p>来自原失败 <code>{selectedTask.recovery.failedRunId.slice(0,8)}</code> <button className="button" onClick={()=>setSelectedTaskId(selectedTask.recovery!.previousTaskId)}>查看原任务</button></p>
                 </div>}

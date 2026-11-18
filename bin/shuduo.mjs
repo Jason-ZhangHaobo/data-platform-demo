@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/delivery-preparation-request.mjs";
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
 import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
@@ -196,6 +197,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo sync recovery-preview --id OLD_TASK_ID
   shuduo sync recovery-save --id OLD_TASK_ID --basis-digest SHA256 --mapping SOURCE:TARGET,SOURCE:TARGET --confirm
   shuduo sync rows --table raw_positions
+  shuduo sync snapshot --id TASK_UUID --run-id RUN_UUID [--page 1] [--page-size 50]
   shuduo sync plan --message "同步需求"
   shuduo sync apply-plan --id PLAN_ID
   shuduo streams sources
@@ -1143,6 +1145,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: { fileName: required(parsed.options, "file") },
         },
       );
+    else if (resource === 'sync' && action === 'snapshot')
+      result=await client.request(syncRunSnapshotPath({taskId:required(parsed.options,'id'),runId:required(parsed.options,'run_id'),
+        page:parsed.options.page===undefined?1:Number(parsed.options.page),pageSize:parsed.options.page_size===undefined?50:Number(parsed.options.page_size)}));
     else if (resource === "sync" && action === "list")
       result = await client.request("/sync/tasks");
     else if (resource === "sync" && ["recovery-preview","recovery-save"].includes(action)) {

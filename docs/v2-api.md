@@ -1,5 +1,15 @@
 # V2 API 契约与实现边界
 
+## 离线同步原批次快照（2026-11-18，本机范围）
+
+`GET /sync/tasks/:taskId/runs/:runId/snapshot?page=1&pageSize=50` 仅读取指定成功批次的归档，页大小1—100。新增行数据入口要求本机工作台边界及工程师权限，不开放到公网或受邀云端；其他项目、错任务、无效会话和额外查询参数被拒绝。
+
+- `status=VERIFIED`：实际行摘要及完整快照摘要与任务、源／元数据版本、配置和原运行一致。返回动态`columns`、分页`rows`、`rowCount`、`totalPages`、`targetHash`与`snapshotHash`。
+- `currentTarget.status=VERIFIED` 的`matchesOriginalRun`同时核对当前表提交编号与实际摘要；`UNCONFIRMED`只代表当前表读失败，已验证的原归档仍可查看。
+- `status=NOT_RETAINED`：`reason=LEGACY_RUN`或`RETENTION_LIMIT`，不返回行、不从当前表补历史。归档每批10000行／1MiB、累计8MiB，超限不撤销实际同步成功，只停止新增行归档。
+- 损坏、绑定漂移409 `SYNC_SNAPSHOT_MISMATCH`；应有归档缺失409 `SYNC_SNAPSHOT_MISSING`；未成功409 `SYNC_RUN_NOT_SUCCEEDED`；错任务404；非法页码422 `INVALID_SNAPSHOT_PAGE`。
+- CLI `sync snapshot --id TASK_UUID --run-id RUN_UUID [--page 1] [--page-size 50]`及MCP `sync_run_snapshot`共用本入口。仅GET，不触发计算、写入或自动重试。默认`/sync/targets/:table/rows`保持当前表语义。
+
 ## 离线同步的手工映射与版本绑定（2026-11-18，部署另验）
 
 `POST /sync/tasks` 的 `mapping` 为源字段到目标字段的对象，`keyFields` 与 `watermarkField` 使用目标字段。字段映射不含表达式转换。可选的 `sourceRevisionId` 和 `metadataVersionId` 须同时提供，用于冻结已经核对的源／元数据版本；旧调用同时省略时使用服务端当前版本。

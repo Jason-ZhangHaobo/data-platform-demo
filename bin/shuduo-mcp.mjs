@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/delivery-preparation-request.mjs";
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
 import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
@@ -211,6 +212,7 @@ const tools = [
   { name: "sync_recovery_save", description: "明确审阅后保存恢复草稿。保留原失败记录，执行需另行确认。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:{type:"string"},basisDigest:{type:"string"},confirm:{const:true},mapping:{type:"object",additionalProperties:{type:"string"}}},required:["taskId","basisDigest","confirm","mapping"]} },
   { name: "sync_task_create", description: "创建FULL或INCREMENTAL_UPSERT草稿；mapping使用源到目标字段，keyFields与watermarkField使用目标字段。可同时提供sourceRevisionId和metadataVersionId绑定已核对版本。", inputSchema: { type: "object", properties: { name: { type: "string" }, sourceId: { type: "string" }, sourceRevisionId: { type: "string" }, metadataVersionId: { type: "string" }, targetTable: { type: "string" }, mode: { type: "string", enum: ["FULL", "INCREMENTAL_UPSERT"] }, mapping: { type: "object", additionalProperties: { type: "string" } }, keyFields: { type: "array", items: { type: "string" } }, watermarkField: { type: "string" } }, required: ["name", "sourceId", "targetTable", "mode", "mapping", "keyFields"] } },
   { name: "sync_task_run", description: "实际执行离线同步并返回读写、摘要和水位。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
+  { name:'sync_run_snapshot', description:'只读核对指定任务原成功批次的落地快照，每次重算摘要；本机虚构数据范围。未留存或损坏不以当前表代替，不触发计算。',inputSchema:{type:'object',properties:{taskId:{type:'string'},runId:{type:'string'},page:{type:'integer',minimum:1},pageSize:{type:'integer',minimum:1,maximum:100}},required:['taskId','runId'],additionalProperties:false} },
   { name: "sync_target_rows", description: "读取本机合成落地区目标行，用于验收。", inputSchema: { type: "object", properties: { targetTable: { type: "string" } }, required: ["targetTable"] } },
   { name: "ingestion_plan_list", description: "列出受治理的同步Agent方案。", inputSchema: { type: "object", properties: {} } },
   { name: "ingestion_plan_create", description: "让真实模型基于现有元数据生成同步方案，不执行同步。", inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } },
@@ -712,6 +714,7 @@ async function callTool(name, args = {}, client=defaultClient) {
       `/sources/${encodeURIComponent(args.sourceId)}/revisions`,
       { method: "POST", body: { fileName: args.fileName } },
     );
+  if (name === 'sync_run_snapshot') return client.request(syncRunSnapshotPath(args));
   if (name === "sync_task_list") return client.request("/sync/tasks");
   if (name === "sync_recovery_preview" || name === "sync_recovery_save") {
     const {taskId,...body} = args;
