@@ -19,10 +19,13 @@ import {
 } from "lucide-react";
 import { RealtimeWorkbench } from "./RealtimeWorkbench";
 import { SyncRecoveryPanel } from "./SyncRecoveryPanel";
+import {SyncTaskMappingEditor} from './SyncTaskMappingEditor';
+import {newSyncMappingDraft,syncMappingProblem,syncTaskMappingFields} from './sync-task-mapping';
+import type {SyncMappingDraft} from './sync-task-mapping';
 import { createIngestionReader } from "./ingestion-read";
 import type { IngestionReadStatus } from "./ingestion-read";
 
-type Api = <T>(path: string, body?: unknown) => Promise<T>;
+type Api = <T>(path: string, body?: unknown,options?:{idempotencyKey?:string}) => Promise<T>;
 type Column = {
   name: string;
   ordinal: number;
@@ -122,6 +125,8 @@ const fixtureFiles = [
   ["positions_baseline.csv", "持仓全量 · 4行/7字段"],
   ["positions_incremental.csv", "持仓增量 · 2行/7字段"],
   ["positions_schema_change.csv", "结构变化 · 新增currency"],
+  ["positions_aliased.csv", "异名持仓 · 手工字段映射"],
+  ["positions_aliased_incremental.csv", "异名持仓增量 · 2行"],
 ] as const;
 const statusLabels: Record<string, string> = {
   NOT_TESTED: "待测试",
@@ -134,8 +139,6 @@ const statusLabels: Record<string, string> = {
   QUEUED: "排队中",
   APPLIED: "草稿已创建",
 };
-const identityMapping = (metadata?: Metadata) =>
-  Object.fromEntries((metadata?.columns ?? []).map((column) => [column.name, column.name]));
 
 export function IngestionWorkbench({
   api,
@@ -176,6 +179,8 @@ export function IngestionWorkbench({
     [taskMode, setTaskMode] = useState("FULL"),
     [taskSourceId, setTaskSourceId] = useState(""),
     [targetTable, setTargetTable] = useState("raw_positions_review");
+  const [mappingDrafts,setMappingDrafts]=useState<Record<string,SyncMappingDraft>>({});
+  const taskCreateRequest=useRef<{signature:string;key:string}|undefined>(undefined);
   const [agentMessage, setAgentMessage] = useState(
       "基于证券持仓增量CSV，生成写入raw_positions的增量合并任务，position_id为主键，trade_date为水位",
     ),
@@ -197,6 +202,8 @@ export function IngestionWorkbench({
     );
 
   const lastRun = selectedTask?.runs[0];
+  const mappingDraft=mappingDrafts[taskSourceId]??(metadataForTask?newSyncMappingDraft(taskSourceId,metadataForTask):undefined);
+  const mappingProblem=syncMappingProblem(mappingDraft,taskSourceId,metadataForTask);
   const recoverableFailure = selectedTaskSource?.sourceType === "LOCAL_CSV" && lastRun?.status === "FAILED" &&
     (lastRun.errorCode ? ["SOURCE_REVISION_STALE","METADATA_STALE"].includes(lastRun.errorCode)
       : ["数据源版本已变化，请新建同步任务版本","元数据版本已变化，请重新配置同步任务"].includes(lastRun.error ?? ""));
@@ -210,8 +217,8 @@ export function IngestionWorkbench({
       if (result.state !== "READY") return;
       setSources(result.sources); setTasks(result.tasks); setPlans(result.plans);
       setSelectedSourceId(previous => result.sources.some(source => source.id === previous) ? previous : result.sources[0]?.id ?? "");
-      const available = result.sources.filter(source => source.currentMetadataId && source.supportsOfflineSync);
-      setTaskSourceId(previous => available.some(source => source.id === previous) ? previous : available[0]?.id ?? "");
+      const available = result.sources.filter(source => source.supportsOfflineSync);
+      setTaskSourceId(previous => available.some(source => source.id === previous) ? previous : available.find(source=>source.currentMetadataId)?.id ?? available[0]?.id ?? "");
       setSelectedTaskId(previous => result.tasks.some(task => task.id === previous) ? previous : result.tasks[0]?.id ?? "");
       setAgentPlan(previous => previous ?? result.plans[0]);
     },
@@ -294,19 +301,17 @@ export function IngestionWorkbench({
     action(
       "create-task",
       async () => {
-        const task = await api<SyncTask>("/sync/tasks", {
+        if(!mappingDraft||mappingProblem)throw Error(mappingProblem??'请先配置字段映射。');
+        const body={
           name: taskName,
           sourceId: taskSourceId,
           targetTable,
           mode: taskMode,
-          mapping: identityMapping(metadataForTask),
-          keyFields: ["position_id"],
-          watermarkField: metadataForTask?.columns.some(
-            (column) => column.name === "trade_date",
-          )
-            ? "trade_date"
-            : undefined,
-        });
+          ...syncTaskMappingFields(mappingDraft,taskSourceId,metadataForTask),
+        };
+        const signature=JSON.stringify(body);
+        if(taskCreateRequest.current?.signature!==signature)taskCreateRequest.current={signature,key:crypto.randomUUID()};
+        const task = await api<SyncTask>("/sync/tasks",body,{idempotencyKey:taskCreateRequest.current.key});
         setSelectedTaskId(task.id);
       },
       "同步任务已绑定当前源与元数据版本",
@@ -518,8 +523,12 @@ export function IngestionWorkbench({
                 </div>
                 {selectedTask.recovery && <div className="sync-recovery-origin">
                   <p>来自原失败 <code>{selectedTask.recovery.failedRunId.slice(0,8)}</code> <button className="button" onClick={()=>setSelectedTaskId(selectedTask.recovery!.previousTaskId)}>查看原任务</button></p>
-                  <details><summary>已保存的恢复映射</summary><ul>{Object.entries(selectedTask.mapping??{}).map(([source,target])=><li key={source}><code>{source}</code> → <code>{target}</code></li>)}</ul></details>
                 </div>}
+                <details className="sync-saved-mapping"><summary>{selectedTask.recovery?'已保存的恢复映射':'已保存的字段映射'}</summary>
+                  <p>主键：{selectedTask.keyFields.join(' → ')} · 记录水位：{selectedTask.watermarkField??'未设置'}</p>
+                  <small>属于所选任务；下方新建配置不会修改这份已保存记录。</small>
+                  <ul>{Object.entries(selectedTask.mapping??{}).map(([source,target])=><li key={source}><code>{source}</code> → <code>{target}</code></li>)}</ul>
+                </details>
                 {recoverableFailure && lastRun && <SyncRecoveryPanel key={lastRun.id} api={api} taskId={selectedTask.id} failedRunId={lastRun.id}
                   canWrite={canWrite} disabled={Boolean(busy)} onSaved={async id=>{
                     if (!await reload()) throw Error("恢复草稿已保存，目录暂未确认。请重读任务目录。");
@@ -531,8 +540,9 @@ export function IngestionWorkbench({
           </div>
           <section className="sync-create-panel">
             <header><div><span className="eyebrow">MANUAL CONFIGURATION</span><h3>手动创建同步任务</h3></div><ArrowRight size={20} /></header>
-            <div><label>任务名称<input value={taskName} onChange={(event) => setTaskName(event.target.value)} /></label><label>可同步数据源<select value={taskSourceId} onChange={(event) => setTaskSourceId(event.target.value)}>{sources.filter((source) => source.currentMetadataId && source.supportsOfflineSync).map((source) => <option value={source.id} key={source.id}>{source.name} · V{source.currentRevision.revisionNumber}</option>)}</select></label><label>同步模式<select value={taskMode} onChange={(event) => setTaskMode(event.target.value)}><option value="FULL">FULL全量</option><option value="INCREMENTAL_UPSERT">{sourceForTask?.sourceType === "SERVER_MYSQL" ? "快照差异UPSERT（非CDC）" : "增量UPSERT"}</option></select></label><label>目标表<input value={targetTable} onChange={(event) => setTargetTable(event.target.value)} /></label></div>
-            <footer><span>{Object.keys(identityMapping(metadataForTask)).length}个字段同名映射 · position_id主键</span><button className="button" onClick={createTask} disabled={!canWrite || !metadataForTask || !!busy}>创建版本化任务</button></footer>
+            <div><label>任务名称<input value={taskName} onChange={(event) => setTaskName(event.target.value)} /></label><label>可同步数据源<select value={taskSourceId} onChange={(event) => setTaskSourceId(event.target.value)}>{sources.filter((source) => source.supportsOfflineSync).map((source) => <option value={source.id} key={source.id}>{source.name} · V{source.currentRevision.revisionNumber}{source.currentMetadataId?"":" · 待采集元数据"}</option>)}</select></label><label>同步模式<select value={taskMode} onChange={(event) => setTaskMode(event.target.value)}><option value="FULL">FULL全量</option><option value="INCREMENTAL_UPSERT">{sourceForTask?.sourceType === "SERVER_MYSQL" ? "快照差异UPSERT（非CDC）" : "增量UPSERT"}</option></select></label><label>目标表<input value={targetTable} onChange={(event) => setTargetTable(event.target.value)} /></label></div>
+            <SyncTaskMappingEditor draft={mappingDraft} sourceId={taskSourceId} metadata={metadataForTask} disabled={!canWrite||Boolean(busy)} onChange={draft=>setMappingDrafts(previous=>({...previous,[draft.sourceId]:draft}))}/>
+            <footer><span>{mappingDraft?Object.values(mappingDraft.mapping).filter(value=>value.trim()).length:0}个映射字段 · {mappingDraft?.keySources.length??0}个主键 · 创建后尚未执行</span><button className="button" onClick={createTask} disabled={!canWrite || !metadataForTask || !!busy || Boolean(mappingProblem)}>创建版本化任务</button></footer>
           </section>
           </>}
           <section className="target-preview" aria-label="默认落地表预览"><header><div><Table2 size={18}/><h3>raw_positions 默认表预览</h3></div><span>{previewReady ? `${targetRows.length}行` : "行数待确认"}</span><button className="button" disabled={previewRead.state === "LOADING" || !!busy} onClick={() => void reader.current?.readPreview()}>重读默认表预览</button></header>

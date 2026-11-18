@@ -1,0 +1,4 @@
+holding_id,customer_id,security_code,asset_class,industry,holding_value,biz_date
+POS-001,CLIENT-001,SEC-DEMO-001,股票,金融,1000.00,2026-09-10
+POS-002,CLIENT-001,SEC-DEMO-002,债券,公共事业,500.00,2026-09-10
+POS-003,CLIENT-002,SEC-DEMO-001,股票,金融,750.00,2026-09-10

@@ -1,3 +1,4 @@
+import {ingestionWatermark} from './ingestion-watermark.mjs';
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import {
@@ -219,8 +220,10 @@ export class LandingStore {
         row,
         key: keys.map((key) => String(row[key] ?? "")).join("\u001f"),
       }));
-    if (keyed.some((item) => !item.key.replaceAll("\u001f", "")))
+    if (projected.some(row=>keys.some(key=>row[key]===null||row[key]===undefined||String(row[key]).trim()==='')))
       throw fail(422, "同步主键不能为空", "EMPTY_SYNC_KEY");
+    if(projected.some(row=>keys.some(key=>String(row[key]).includes('\u001f'))))
+      throw fail(422,"同步主键含不支持的控制字符，请清理后再同步","INVALID_SYNC_KEY_VALUE");
     if (new Set(keyed.map((item) => item.key)).size !== keyed.length)
       throw fail(422, "当前批次包含重复同步主键", "DUPLICATE_SYNC_KEY");
     if (!["FULL", "INCREMENTAL_UPSERT"].includes(mode))
@@ -650,7 +653,8 @@ export class IngestionManager {
       if (preview.basisDigest !== input.basisDigest)
         throw fail(409, "源版本或原运行已有变化，请重新核对恢复映射", "SYNC_RECOVERY_CHANGED");
       const task = this.#task(taskId);
-      const config = this.#normalizeTask({ ...task, name: "恢复 · " + task.name.slice(0,75), mapping });
+      const config = this.#normalizeTask({ ...task, name: "恢复 · " + task.name.slice(0,75), mapping,
+        sourceRevisionId:preview.current.sourceRevisionId,metadataVersionId:preview.current.metadataVersionId });
       if (task.mode === "INCREMENTAL_UPSERT") {
         const targetTypes = (mapping, schema) => Object.fromEntries(Object.entries(mapping)
           .map(([source, target]) => [target, schema.columns.find(column => column.name === source)?.type]));
@@ -693,6 +697,10 @@ export class IngestionManager {
       throw fail(409, "SERVER_MYSQL首期仅支持连接与元数据采集，尚未开放同步执行", "MYSQL_SYNC_NOT_ENABLED");
     if (!metadata || metadata.revisionId !== revision.id)
       throw fail(409, "请先采集当前数据源版本的元数据", "METADATA_REQUIRED");
+    if ((input.sourceRevisionId===undefined)!==(input.metadataVersionId===undefined))
+      throw fail(400,"源版本与元数据版本须同时提供","SYNC_SOURCE_BINDING_REQUIRED");
+    if(input.sourceRevisionId!==undefined&&(input.sourceRevisionId!==revision.id||input.metadataVersionId!==metadata.id))
+      throw fail(409,"源版本或元数据已变化，请重新读取并核对字段映射","SYNC_SOURCE_BINDING_CHANGED");
     const mapping = normalizeMapping(input.mapping),
       sourceFields = new Set(metadata.columns.map((column) => column.name));
     if (!Object.keys(mapping).every((field) => sourceFields.has(field)))
@@ -810,6 +818,7 @@ export class IngestionManager {
           "源文件在元数据采集后发生变化",
           "SOURCE_CHANGED",
         );
+      const watermark=ingestionWatermark(parsed.rows,task.watermarkField?Object.entries(task.mapping).find(([,target])=>target===task.watermarkField)?.[0]:undefined,metadata.columns);
       const output = this.landingStore.sync({
         runId: pending.id,
         targetTable: task.targetTable,
@@ -820,19 +829,7 @@ export class IngestionManager {
         sourceHash: input.fileHash,
         syncedAt: new Date(this.now()).toISOString(),
       });
-      const sourceWatermarkField = task.watermarkField
-          ? Object.entries(task.mapping).find(
-              ([, target]) => target === task.watermarkField,
-            )?.[0]
-          : undefined,
-        watermark = sourceWatermarkField
-          ? parsed.rows
-              .map((row) => row[sourceWatermarkField])
-              .filter((value) => value !== null && value !== undefined)
-              .sort()
-              .at(-1)
-          : undefined,
-        run = this.store.update(
+      const run = this.store.update(
           "offline_sync_run",
           pending.id,
           this.project,
@@ -952,6 +949,7 @@ export class IngestionManager {
             ),
         ),
         sourceHash = stableHash(rows),
+        watermark=ingestionWatermark(rows,task.watermarkField?Object.entries(task.mapping).find(([,target])=>target===task.watermarkField)?.[0]:undefined,metadata.columns),
         output = this.landingStore.sync({
           runId: pending.id,
           targetTable: task.targetTable,
@@ -962,17 +960,6 @@ export class IngestionManager {
           sourceHash,
           syncedAt: new Date(this.now()).toISOString(),
         }),
-        sourceWatermarkField = task.watermarkField
-          ? Object.entries(task.mapping).find(([, target]) => target === task.watermarkField)?.[0]
-          : undefined,
-        watermark = sourceWatermarkField
-          ? rows
-              .map((row) => row[sourceWatermarkField])
-              .filter((value) => value !== null && value !== undefined)
-              .map(String)
-              .sort()
-              .at(-1)
-          : undefined,
         run = this.store.update("offline_sync_run", pending.id, this.project, {
           status: "SUCCEEDED",
           sourceType: "SERVER_MYSQL",
