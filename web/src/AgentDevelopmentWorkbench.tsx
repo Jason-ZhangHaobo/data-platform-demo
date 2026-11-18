@@ -1,6 +1,8 @@
 import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Bot, CheckCircle2, ChevronDown, Code2, FileCode2, GitCompareArrows, History, LoaderCircle, Play, Plus, RefreshCw, Send, Square, Undo2 } from "lucide-react";
 import { developmentRunLog } from "./run-log";
+import {nextDevelopmentFeedback,developmentValidationScenarios} from './development-feedback';
+import type {DevelopmentFeedback} from './development-feedback';
 import { AgentDeliveryPanel } from "./AgentDeliveryPanel";
 import { AgentRequirementExample } from "./AgentRequirementExample";
 import {AgentRequirementUnderstanding} from './AgentRequirementUnderstanding';
@@ -94,7 +96,18 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const [message, setMessage] = useState(""), [draft, setDraft] = useState(""), [baseline, setBaseline] = useState("");
   const [run, setRunValue] = useState<Run>(), [tab, setTab] = useState("结果"), [diff, setDiff] = useState(false);
   const [runRead,setRunRead]=useState<{state:"IDLE"|"LOADING"|"ERROR";message?:string}>({state:"IDLE"});
-  function setRun(value:Run|undefined){setRunValue(value);setRunRead({state:"IDLE"});}
+  const feedbackSelection = useRef<DevelopmentFeedback|undefined>(undefined);
+  function setRun(value:Run|undefined){
+    setRunValue(value);setRunRead({state:"IDLE"});
+    if(!value)return;
+    const selection=nextDevelopmentFeedback(feedbackSelection.current,value)!;
+    feedbackSelection.current=selection;
+    setTab(selection.tab);
+  }
+  function chooseFeedback(name:string){
+    if(feedbackSelection.current)feedbackSelection.current={...feedbackSelection.current,tab:name,manual:true};
+    setTab(name);
+  }
   const [baselineRevisionId, setBaselineRevisionId] = useState<string>();
   const [automatic, setAutomatic] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [retryConsent, setRetryConsent] = useState(false);
@@ -399,7 +412,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     try {
       const actual=checkedAgentRun<Run>(await api<unknown>(`/runs/${runId}`),{...(source?{}:{id:taskId}),contextId:context,runId,revisionId});
       if(!active())return;
-      setRun(actual);setTab(view);setNotice(label+" 编辑器保留当前代码；结果以原批次所绑定版本为准，没有新增计算。");
+      setRun(actual);chooseFeedback(view);setNotice(label+" 编辑器保留当前代码；结果以原批次所绑定版本为准，没有新增计算。");
     } catch(cause) {if(active())setError((cause as Error).message+" 已展示的原批次保持不变。");}
     finally {if(active())setBusy(false);}
   }
@@ -632,7 +645,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       if (!alive.current) return;
       if (actual.revisionId !== revision.id) throw new Error("返回批次与保存版本不一致，保留原提交编号");
       manualRequest.current = undefined; setManualUnconfirmed(false); rememberManual(revision.id, actual.id, undefined, origin);
-      setRun(actual); setTab("结果"); setNotice("人工修改已另存版本并提交Spark；不会改写原Agent任务的验证结论。");
+      setRun(actual); setNotice("人工修改已另存版本并提交Spark；不会改写原Agent任务的验证结论。");
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -805,18 +818,18 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       <section id="agent-code" className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : baselineRevisionId ? `版本 ${baselineRevisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>
         <div className="agent-dev-editor"><Suspense fallback={<div className="agent-dev-empty">正在加载代码编辑器…</div>}><SqlEditor value={draft} original={codeOriginal} diff={diff} onChange={setDraft} readOnly={derivationActive||readOnly||!scopeEditable||Boolean(publicationTarget)||working||fundTask} /></Suspense></div>
         <div className="agent-dev-code-actions"><small><Code2 size={14} />{fundTask?"此处展示与准备回执绑定的生成代码":derivationActive?"源SQL已冻结；新任务确认后才按目标口径生成新版本":readOnly ? "代码只读；编辑与执行尚未开放" : !scopeEditable ? "其他任务只读；请查看指定任务续接" : automatic ? "Agent 处理中，可随时停止后接管" : "可直接编辑；修改后需重新验证"}</small>{runPending && !automatic && <button className="button" disabled={!canWrite || busy} onClick={async () => { if (!run) return; setBusy(true); try { setRun(await api<Run>(`/runs/${run.id}/cancel`, {})); setNotice("取消标记已保存；迟到结果不会覆盖已取消状态。"); } catch(e) { setError((e as Error).message); } finally { setBusy(false); } }}><Square size={13} />停止运行</button>}{!fundTask&&<button className="button" disabled={derivationActive||!canWrite || working || runPending || manualUnconfirmed || Boolean(pendingSaveKey) || Boolean(pendingAgentKey) || (maySelectSync && syncRequested) || !draft.trim()} onClick={() => void runDraft()}><Play size={14} />保存并运行我的代码</button>}</div>
-        <div id="agent-development-result" className="agent-dev-result-tabs" role="tablist" aria-label="开发执行反馈">{["结果","字段来源","运行对照","校验","日志"].map(name => <button key={name} role="tab" aria-selected={tab === name} onClick={() => setTab(name)}>{name}</button>)}<span>{runRead.state==="LOADING"?"正在读取原运行记录":runRead.state==="ERROR"?"运行结果未确认":run ? `${displayedRunStatus} · ${run.id.slice(0,8)}` : "尚未执行"}</span></div>
+        <div id="agent-development-result" className="agent-dev-result-tabs" role="tablist" aria-label="开发执行反馈">{["结果","字段来源","运行对照","校验","日志"].map(name => <button key={name} role="tab" aria-selected={tab === name} onClick={() => chooseFeedback(name)}>{name}</button>)}<span>{runRead.state==="LOADING"?"正在读取原运行记录":runRead.state==="ERROR"?"运行结果未确认":run ? `${displayedRunStatus} · ${run.id.slice(0,8)}` : "尚未执行"}</span></div>
         <div className={`agent-dev-results ${tab==='运行对照'?'agent-dev-results-compare':''}`}>{!run ? runRead.state!=="IDLE"?<div className="agent-dev-empty" role={runRead.state==="ERROR"?"alert":"status"}>{runRead.state==="LOADING"?"正在核对原任务的运行记录；不重新执行计算。":<>{runRead.message}<p>已读代码与草稿保留，不显示其他任务的结果。</p><button className="button" disabled={working||!task} onClick={()=>task&&void selectTask(task.id,false)}>重新读取原任务与运行</button></>}</div>:<div className="agent-dev-empty">执行后的真实结果、校验与日志会显示在这里。<br />不会预先填入报表结果。</div> : <>
           {run.error && <p className="agent-dev-error-text" role="alert">{run.error}</p>}
           {syncSchema && tab!=="运行对照" && <SyncOutputSchemaDetails schema={syncSchema} dirty={dirty}/>}
           {hasSyncSchema && !syncSchema && <p role="status">输出结构详情未能与原运行对应。当前代码和结果已保留。</p>}
-          {!frozenInput&&tab!=='运行对照'&&<AgentRepairAction input={repairInput} onSubmit={request=>send(request.message,request.sourceRunId)} onExplain={setNotice} />}
           {tab === "结果" && (resultFields.length ? <><ValidationResultScope contextId={run.contextId} contextName={availableContexts.find(item=>item.id===run.contextId)?.name} runId={run.id} revisionId={run.revisionId} dirty={dirty} /><div className="agent-dev-table-scroll"><table><thead><tr>{resultFields.map(k => <th key={k} title={k}>{resultLabel(k)}</th>)}</tr></thead><tbody>{run.rows?.map((row,i) => <tr key={i}>{resultFields.map(k => <td key={k}>{String(row[k] ?? "—")}</td>)}</tr>)}</tbody></table></div><p>{run.engine} {run.engineVersion} · {run.rows?.length} 行 · 结果绑定版本 {run.revisionId?.slice(0,8)}</p></> : <p className="agent-dev-empty">{terminal(run.status) ? "本次未产生可展示的数据行。请查看校验和日志。" : "Spark 正在执行，结果完成后显示。"}</p>)}
           {tab === "字段来源" && <Suspense fallback={<p role="status">正在加载字段来源视图…</p>}><RunColumnLineagePanel key={run.id} run={run} revisionId={baselineRevisionId} sql={baseline} context={context} dirty={dirty}/></Suspense>}
           {tab === "运行对照" && <Suspense fallback={<p role="status">正在加载已保存运行对照…</p>}><RunComparisonPanel key={run.id} api={api} runId={run.id} revisionHash={run.revisionHash} contextId={run.contextId??contextId} snapshotHash={frozenInput?.snapshotHash} runStatus={run.status} dirty={dirty} repairReason={failedRunRepairAction(repairInput).request?undefined:failedRunRepairAction(repairInput).reason} onRepair={frozenInput ? undefined : basis=>send('参考所选成功基线的已核验差异，修正当前失败 SQL；以实际运行与独立断言验证，不继承发布批准。',basis.sourceRunId,basis)}/></Suspense>}
-          {tab === "校验" && <><h4>{run.validation?.passed ? "独立业务断言通过" : "校验尚未通过"}</h4>{run.validation?.issues?.map((x,i) => <p key={i}>{x}</p>)}{run.validation?.regressions?.map(r => <div className="agent-dev-check" key={r.contextId}><span>{r.name ?? r.contextId}</span><strong>{r.passed ? "通过" : "未通过"}</strong></div>)}{!frozenInput&&!context?.outputContract&&<ValidationDetails details={run.validationDetails} expectedSource={{runId:run.id,revisionId:baselineRevisionId,contextId,revisionHash:run.revisionHash,contractId:run.validationContractId}} dirty={dirty} />}{context?.outputContract&&<p className="agent-dev-notice">{fundTask?"按组合、交易日、资产类别核对敞口金额与六位占比，查看每次运行可复核原结果。":"分布按客户/交易日/分类复合键与六位占比独立核验；具体失败见各场景摘要，不套用旧客户级差异表。"}</p>}</>}
+          {tab === "校验" && <><h4>{run.validation?.passed ? "独立业务断言通过" : "校验尚未通过"}</h4>{run.validation?.issues?.map((x,i) => <p key={i}>{x}</p>)}{developmentValidationScenarios(run.validation?.regressions).map(r => <div className="agent-dev-check" key={r.contextId}><span>{r.name ?? r.contextId}</span><strong className={r.passed?undefined:"agent-dev-error-text"}>{r.passed ? "通过" : "未通过"}</strong></div>)}{!frozenInput&&!context?.outputContract&&<ValidationDetails details={run.validationDetails} expectedSource={{runId:run.id,revisionId:baselineRevisionId,contextId,revisionHash:run.revisionHash,contractId:run.validationContractId}} dirty={dirty} />}{context?.outputContract&&<p className="agent-dev-notice">{fundTask?"按组合、交易日、资产类别核对敞口金额与六位占比，查看每次运行可复核原结果。":"分布按客户/交易日/分类复合键与六位占比独立核验；具体失败见各场景摘要，不套用旧客户级差异表。"}</p>}</>}
           {tab === "日志" && <pre>{developmentRunLog(run)}</pre>}
         </>}</div>
+        {run&&!frozenInput&&tab!=='运行对照'&&<AgentRepairAction input={repairInput} onSubmit={request=>send(request.message,request.sourceRunId)} onExplain={setNotice} />}
       </section>
     </div>
     {task?.sourceKind==='MANUAL'&&(task.executionMode==='DURABLE_SQL_AGENT_V1'&&task.status==='SUCCEEDED'&&run?.id===task.runId&&run?.agentTaskId===task.id&&baselineRevisionId===task.revisionId&&run?.revisionId===baselineRevisionId?

@@ -9,7 +9,7 @@ export function AgentRepairAction({ input, onSubmit, onExplain }: {
 }) {
   const action = failedRunRepairAction(input);
   if (!action.visible) return null;
-  return <div className="agent-dev-notice" role="status">
+  return <div className="agent-dev-notice agent-repair-action" role="status">
     <div><strong>{input.taskOnly ? "在指定任务范围内继续处理" : "基于失败批次修正"}</strong>
       <p>{action.reason}</p>
       {input.taskOnly && !input.canWrite && <p>当前代码只读；查看与定位不会提交计算。</p>}

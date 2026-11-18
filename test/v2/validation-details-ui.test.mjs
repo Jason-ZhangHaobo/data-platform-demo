@@ -138,7 +138,7 @@ test('workbench and delivery report reuse the same source-checked renderer and r
   const workbench=readFileSync('web/src/AgentDevelopmentWorkbench.tsx','utf8'),panel=readFileSync('web/src/AgentDeliveryPanel.tsx','utf8');
   assert.match(workbench,/ValidationDetails details=\{run\.validationDetails\}/);
   assert.match(workbench,/runId:run\.id,revisionId:baselineRevisionId,contextId/);
-  assert.match(workbench,/run\.validation\?\.regressions\?\.map/);
+  assert.match(workbench,/developmentValidationScenarios\(run\.validation\?\.regressions\)\.map/);
   assert.match(workbench,/<ValidationResultScope contextId=\{run\.contextId\}/);
   assert.match(panel,/report\?\.validationDetails/);assert.match(panel,/runId:report\?\.runId,revisionId:report\?\.revisionId,contextId:report\?\.contextId/);
   assert.match(panel,/historical=\{!current\}/);
