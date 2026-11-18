@@ -3,6 +3,7 @@ import {fundRequirementScope} from '../../src/v2/fund-requirement-contract.mjs';
 import { deliveryFilePresentation } from "./delivery-presentation.ts";
 import { publicationStopped } from "./publication-read.ts";
 import {validationFamilyForContextId,regressionsMatchFamily} from "./validation-family.ts";
+import {syncSqlContractId} from '../../src/v2/sync-sql-contract.mjs';
 export type JourneyState = "DONE" | "PENDING" | "ATTENTION" | "STALE";
 export type JourneyStep = { id: string; label: string; state: JourneyState; detail: string; target: string };
 export type EvidenceReadState = "LOADING" | "READY" | "ERROR";
@@ -26,8 +27,11 @@ export function publicationEvidenceText(release: { status: string; health: strin
   if (release.health === "RECOVERED_WITH_FAILURE") return "后续批次已恢复 · 历史失败保留";
   return "发布记录已保存 · 批次或监控证据尚未齐备";
 }
-export function deliveryStageText(stage: string, publicationCurrent: boolean, releaseStatus?: string, current = true): string {
+export function deliveryStageText(stage: string, publicationCurrent: boolean, releaseStatus?: string, current = true, deliveryStatus?:string): string {
   if (!current) return "原版本交付记录；当前修改待核验";
+  if(deliveryStatus==='FAILED')return stage.startsWith('FILE_REHEARSAL')?'文件演练失败，待处理':'交付准备失败，待处理';
+  if(deliveryStatus==='CANCELLED')return '交付准备已停止';
+  if(deliveryStatus==='INTERRUPTED')return '交付已中断，结果待核对';
   if (stage === "PACKAGE_PERSISTING") return "正在保存版本化交付包；记录保留，可继续确认";
   if (publicationCurrent) return publicationStopped(releaseStatus)
     ? "交付文件已演练；发布已停止"
@@ -68,9 +72,9 @@ type Evidence = {
 export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: JourneyStep; current: boolean; fileVerified: boolean; publicationCurrent: boolean } {
   const contextId = e.contextId ?? e.report?.contextId;
   const fund = e.fund ? fundRequirementScope(contextId) : undefined;
-  const family = fund && contextId ? { id: fund.id, contextIds: [contextId] } : validationFamilyForContextId(contextId);
+  const family = fund && contextId ? { id: fund.id, contextIds: [contextId] } : validationFamilyForContextId(contextId,e.report?.validationContractId);
   const current = e.evidenceReadable !== false && !e.dirty && Boolean(e.revisionId && e.runId && e.report?.taskId === e.taskId && e.report.revisionId === e.revisionId && e.report.runId === e.runId&&(!e.contextId||e.report.contextId===e.contextId));
-  const required = ["revision", "execution", "results", "regressions", ...(fund ? ["requirement"] : [])];
+  const required = ["revision", "execution", "results", "regressions", ...(family?.id===syncSqlContractId?['outputSchema']:[]), ...(fund ? ["requirement"] : [])];
   const verified = current && Boolean(family) && e.report?.status === "PASSED" && (e.report.validationContractId===undefined||e.report.validationContractId===family?.id) && required.every(id => e.report?.checks.some(c => c.id === id && c.passed === true));
   const codeExecuted = current && Boolean(family) && (e.report?.validationContractId===undefined||e.report.validationContractId===family?.id) &&
     ["PASSED", "NEEDS_ATTENTION"].includes(e.report?.status ?? "") &&

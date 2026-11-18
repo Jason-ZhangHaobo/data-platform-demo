@@ -1,8 +1,10 @@
 // Display-side known contracts. Server-side family and artifact checks remain authoritative.
+import {syncSqlContextId,syncSqlContractId} from '../../src/v2/sync-sql-contract.mjs';
 export type ValidationFamily = {id:string;contextIds:string[];name?:string;definitionVersion?:number;metricLabels?:Record<string,string>};
 const legacyIds=["holdings-t1","cash-change","duplicate-position","equal-value-positions","cash-only-client"];
 const stockIds=["stock-cash-t1","stock-cash-cash-change","stock-cash-duplicate-position","stock-cash-equal-value-positions","stock-cash-cash-only-client"];
-export function validationFamilyForContextId(contextId?:string):ValidationFamily|undefined{
+export function validationFamilyForContextId(contextId?:string,contractId?:string):ValidationFamily|undefined{
+  if(contextId===syncSqlContextId&&contractId===syncSqlContractId)return{id:syncSqlContractId,contextIds:[...legacyIds],name:'冻结同步持仓'};
   if(contextId===undefined||legacyIds.includes(contextId))return{id:"securities-assets-five-fixtures-2026-09-14",contextIds:[...legacyIds]};
   if(stockIds.includes(contextId))return{id:"securities-stock-cash-five-fixtures-v1",contextIds:[...stockIds]};
   for(const [dimension,label] of [["asset-class","资产类别"],["industry","行业标签"]]){
