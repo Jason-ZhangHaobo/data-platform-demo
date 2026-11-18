@@ -1,4 +1,5 @@
 import test from "node:test";
+import {spawnSync} from "node:child_process";
 import assert from "node:assert/strict";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,7 +13,7 @@ import { checkedSqlRunComparison } from "../../src/v2/run-comparison-client.mjs"
 import { checkedSyncSqlOutputSchema, checkedSyncSqlRehearsalSchema, checkedSyncSqlScheduledSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import { runV2Cli } from "../../bin/shuduo.mjs";
 import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
-import { verifySavedSyncSqlInput } from "../../src/v2/sync-sql-saved-lifecycle.mjs";
+import { verifySavedSyncSqlInput, verifySavedSyncSqlPackageInput } from "../../src/v2/sync-sql-saved-lifecycle.mjs";
 import { createDeliveryPackage, computeManifestDigest, loadDeliveryDirectory, resolveDeliverySchedule, sha256, validateDeliveryPackage } from "../../src/v2/delivery.mjs";
 
 for(const inputMode of ['CURRENT','ARCHIVED','MATERIALIZED']) test(`Agent binds a ${inputMode} position snapshot across overwrite, retry and restart`, async () => {
@@ -285,8 +286,28 @@ for(const inputMode of ['CURRENT','ARCHIVED','MATERIALIZED']) test(`Agent binds 
     assert.equal(plan.fixtures.context.expected[0].total_assets, "2045.07");
     const sourceRead = (kind,id) => app.store.get(kind,id,PROJECT);
     const originalCsv = readFileSync(join(fixtureRoot,"first.csv"),"utf8");
-    const offlineInput = { read:sourceRead,input:plan.source.syncInput,context:plan.fixtures.context,csv:originalCsv };
+    const offlineInput = { read:sourceRead,input:plan.source.syncInput,context:plan.fixtures.context,csv:originalCsv,...(inputMode==='MATERIALIZED'?{readSnapshot:id=>app.landingStore.db.prepare('SELECT * FROM landing_run_snapshots WHERE run_id=?').get(id)}:{}) };
     assert.equal(verifySavedSyncSqlInput(offlineInput).targetHash,first.run.targetHash);
+    if(inputMode==='MATERIALIZED'){
+      const checkedInput=verifySavedSyncSqlPackageInput({store:app.store,project:PROJECT,actor:revision.value.author,
+        originalPackage:bundle,packageDigest:bundle.digest,csv:originalCsv,readSnapshot:offlineInput.readSnapshot});
+      assert.equal(checkedInput.scope,'LOCAL_SAVED_INPUT_ONLY');assert.equal(checkedInput.input.proof.scope,'RETAINED_TARGET_SNAPSHOT');
+      assert.equal(checkedInput.provenance.fullLifecycleE2E,false);assert.equal(checkedInput.input.proof.eventReplayVerified,false);
+      const file=join(root,'input-check-package.json');writeFileSync(file,JSON.stringify(bundle));
+      const args=['scripts/verify-saved-sync-sql-lifecycle.mjs','--input-only','--metadata',join(root,'.data/v2-platform.sqlite'),
+        '--landing-snapshots',join(root,'.data/v2-landing.sqlite'),'--source-csv',join(fixtureRoot,'first.csv'),
+        '--package-file',file,'--package-digest',bundle.digest];
+      const before=[sha256(readFileSync(join(root,'.data/v2-platform.sqlite'))),sha256(readFileSync(join(root,'.data/v2-landing.sqlite')))];
+      const offline=spawnSync(process.execPath,args,{encoding:'utf8',timeout:10000});assert.equal(offline.status,0,offline.stderr);
+      assert.deepEqual(JSON.parse(offline.stdout),checkedInput);
+      assert.deepEqual([sha256(readFileSync(join(root,'.data/v2-platform.sqlite'))),sha256(readFileSync(join(root,'.data/v2-landing.sqlite')))],before);
+      const missing=spawnSync(process.execPath,args.filter((v,i)=>v!=='--landing-snapshots'&&args[i-1]!=='--landing-snapshots'),{encoding:'utf8',timeout:10000});
+      assert.equal(missing.status,1);assert.equal(JSON.parse(missing.stderr).code,'SYNC_SAVED_TARGET_SNAPSHOT_REQUIRED');
+      const foreign=spawnSync(process.execPath,[...args,'--actor','another-engineer'],{encoding:'utf8',timeout:10000});
+      assert.equal(foreign.status,1);assert.equal(JSON.parse(foreign.stderr).code,'SYNC_SAVED_AGENT_SOURCE_REQUIRED');
+
+    }
+
     assert.throws(() => verifySavedSyncSqlInput({...offlineInput,csv:readFileSync(join(fixtureRoot,"later.csv"),"utf8")}),
       {code:"SYNC_SAVED_INPUT_CHANGED"});
     assert.throws(() => verifySavedSyncSqlInput({...offlineInput,input:{...offlineInput.input,targetHash:"0".repeat(64)}}),
