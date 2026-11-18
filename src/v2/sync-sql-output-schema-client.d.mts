@@ -45,3 +45,7 @@ export function readArchivedSyncedPositions(client:{request:(path:string)=>Promi
 export function readSyncReviewEvidence(client:{request:(path:string)=>Promise<unknown>},expected:{
   verificationId:string;packageId?:string;packageDigest?:string;syncRehearsalDigest?:string;snapshotHash?:string;
 }):Promise<Record<string,unknown>>;
+
+export type MaterializedSyncSqlCandidate=import('./sync-sql-selection.mjs').MaterializedSyncSelection&{taskName:string;rowCount:number;finishedAt:string;verification:'REQUIRES_CHECK'};
+export function readMaterializedSyncSqlArchives(client:{request:(path:string)=>Promise<unknown>}):Promise<MaterializedSyncSqlCandidate[]>;
+export function readMaterializedSyncedPositions(client:{request:(path:string)=>Promise<unknown>},expected:{taskId:string;runId:string;targetTable?:string;mode?:string;targetHash?:string;landingSnapshotHash?:string;changeEpochId?:string;changeStateHash?:string;rowCount?:number}):Promise<SyncedPositionsOffer>;

@@ -180,7 +180,7 @@ import { storedAgentExecutionEvidence } from "./agent-execution-evidence.mjs";
 import { storedBackgroundPreparationEvidence } from "./delivery-preparation-evidence.mjs";
 import { storedDevelopmentDrivers } from "./agent-execution-drivers.mjs";
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
-import {archivedSyncSqlInput,selectedSyncSqlInput,syncSqlArchiveCandidates} from './sync-sql-archive.mjs';
+import {archivedSyncSqlInput,selectedSyncSqlInput,syncSqlArchiveCandidates,materializedSyncSqlCandidates,materializedSyncSqlInput} from './sync-sql-archive.mjs';
 import {listTradingCalendars,readTradingCalendar,resolveTradingCalendar} from './trading-calendar.mjs';
 import {
   LocalArtifactStore,
@@ -7208,6 +7208,14 @@ export function createV2Server(options = {}) {
             });
           });
         return json(res, 202, publicAgentIntent(task));
+      }
+      const materializedPositions=path.match(/^\/api\/v2\/development\/synced-positions\/materialized(?:\/([a-f0-9-]{36})\/([a-f0-9-]{36}))?$/);
+      if(method==='GET'&&materializedPositions){
+        requireSyncSqlLocal(req);const actor=workspaceReadActor(req),session=auth.sessionFromHeaders(req.headers);
+        if(!actor||session&&!session.permissions.some(permission=>['*','DEVELOPMENT','INGESTION'].includes(permission)))throw fail(403,'请使用工程师身份核对完整持仓快照');
+        if(url.searchParams.size)throw fail(422,'完整目标快照只接受确切任务与运行编号');
+        if(!materializedPositions[1])return json(res,200,{protocol:'shuduo-materialized-holdings/v1',readOnly:true,candidates:materializedSyncSqlCandidates(syncSqlResources)});
+        const {selection,source,verifiedCurrency}=materializedSyncSqlInput(syncSqlResources,materializedPositions[1],materializedPositions[2]);return json(res,200,{selection,...source,contextId:syncSqlContextId,verifiedCurrency});
       }
       const archivedPositions=path.match(/^\/api\/v2\/development\/synced-positions\/archives(?:\/([a-f0-9-]{36})\/([a-f0-9-]{36}))?$/);
       if(method==='GET'&&archivedPositions){

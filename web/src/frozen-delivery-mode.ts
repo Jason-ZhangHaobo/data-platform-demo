@@ -1,3 +1,4 @@
+import {syncSqlSelectionFromBinding,materializedSyncInputKind} from '../../src/v2/sync-sql-selection.mjs';
 type Task={id:string;runId?:string;revisionId?:string;contextId?:string;status:string;mode?:string;sourceKind?:string;sourceAttribution?:unknown;syncInput?:unknown};
 type Run={id:string;revisionId?:string;agentTaskId?:string;contextId?:string;status:string;syncInput?:unknown};
 const record=(value:unknown):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
@@ -14,9 +15,10 @@ export function frozenDeliveryMode({task,run,revisionId}:{task?:Task;run?:Run;re
     !uuid(revisionId)||task.revisionId!==revisionId||run.revisionId!==revisionId||task.contextId!=='holdings-t1'||task.contextId!==run.contextId||
     !record(task.syncInput))return 'UNCONFIRMED';
   const input=task.syncInput,other=run.syncInput;
-  if(input.targetTable!=='raw_positions'||!digest(input.snapshotHash)||!uuid(input.snapshotId)||!uuid(input.runId)||!digest(input.targetHash)||
-    !['taskId','sourceRevisionId','metadataVersionId'].every(field=>uuid(input[field]))||!Number.isInteger(input.rowCount)||Number(input.rowCount)<1||Number(input.rowCount)>500||
-    (input.kind===undefined?input.landingSnapshotHash!==undefined:input.kind!=='SYNC_RUN_ARCHIVE_V1'||!digest(input.landingSnapshotHash))||
-    !['targetTable','snapshotHash','snapshotId','runId','targetHash','taskId','sourceRevisionId','metadataVersionId','rowCount','kind','landingSnapshotHash'].every(field=>input[field]===other[field]))return 'UNCONFIRMED';
+  try{syncSqlSelectionFromBinding(input);}catch{return 'UNCONFIRMED';}
+  if(!digest(input.snapshotHash)||!uuid(input.snapshotId)||!uuid(input.runId)||!digest(input.targetHash)||
+    !['taskId','sourceRevisionId','metadataVersionId'].every(field=>uuid(input[field]))||!Number.isInteger(input.rowCount)||Number(input.rowCount)<(input.kind===materializedSyncInputKind?0:1)||Number(input.rowCount)>500||
+    (input.kind===undefined?input.landingSnapshotHash!==undefined:!digest(input.landingSnapshotHash))||
+    !['targetTable','snapshotHash','snapshotId','runId','targetHash','taskId','sourceRevisionId','metadataVersionId','rowCount','kind','landingSnapshotHash','mode','changeEpochId','changeStateHash'].every(field=>input[field]===other[field]))return 'UNCONFIRMED';
   return 'AGENT';
 }

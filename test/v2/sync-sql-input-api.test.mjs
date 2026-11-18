@@ -15,7 +15,7 @@ import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
 import { verifySavedSyncSqlInput } from "../../src/v2/sync-sql-saved-lifecycle.mjs";
 import { createDeliveryPackage, computeManifestDigest, loadDeliveryDirectory, resolveDeliverySchedule, sha256, validateDeliveryPackage } from "../../src/v2/delivery.mjs";
 
-for(const inputMode of ['CURRENT','ARCHIVED']) test(`Agent binds a ${inputMode} position snapshot across overwrite, retry and restart`, async () => {
+for(const inputMode of ['CURRENT','ARCHIVED','MATERIALIZED']) test(`Agent binds a ${inputMode} position snapshot across overwrite, retry and restart`, async () => {
   const root = mkdtempSync(join(tmpdir(), "shuduo-sync-sql-"));
   const fixtureRoot = join(root, "sources");
   mkdirSync(fixtureRoot);
@@ -119,12 +119,12 @@ for(const inputMode of ['CURRENT','ARCHIVED']) test(`Agent binds a ${inputMode} 
     assert.equal((await request("/development/synced-positions")).status, 409);
     const first = sync("first.csv");
     if(inputMode==='ARCHIVED')sync('before-archival.csv');
-    const offer = await request(inputMode==='ARCHIVED'?`/development/synced-positions/archives/${first.run.taskId}/${first.run.id}`:"/development/synced-positions");
+    const offer = await request(inputMode==='MATERIALIZED'?`/development/synced-positions/materialized/${first.run.taskId}/${first.run.id}`:inputMode==='ARCHIVED'?`/development/synced-positions/archives/${first.run.taskId}/${first.run.id}`:"/development/synced-positions");
     assert.equal(offer.status, 200);
     assert.equal(offer.value.selection.runId, first.run.id);
     assert.equal(offer.value.metadataVersionId, first.metadata.id);
     assert.equal(offer.value.context, undefined);
-    assert.equal(offer.value.selection.kind,inputMode==='ARCHIVED'?'SYNC_RUN_ARCHIVE_V1':undefined);
+    assert.equal(offer.value.selection.kind,inputMode==='MATERIALIZED'?'SYNC_MATERIALIZED_HOLDINGS_V1':inputMode==='ARCHIVED'?'SYNC_RUN_ARCHIVE_V1':undefined);
     const body = { contextId: "holdings-t1", message: "按冻结持仓计算客户总资产", sql: "SELECT 1", syncInput: offer.value.selection };
     const requestId = "freeze-request";
     assert.equal((await request("/agent/tasks", { ...body, contextId: "stock-cash-t1" })).status, 422);
