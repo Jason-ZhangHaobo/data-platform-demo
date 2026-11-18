@@ -28,7 +28,9 @@ import {contextDerivationFromLocation,contextDerivationLocation,clearContextDeri
 import type {ContextDerivationDraft,VerifiedDerivationSource,DerivedFrom} from "./agent-context-derivation";
 import {ValidationDetails,ValidationResultScope} from "./ValidationDetails";
 import {SyncOutputSchemaDetails} from "./SyncOutputSchemaDetails";
-import {checkedSyncSqlOutputSchema,readSyncedPositions} from "../../src/v2/sync-sql-output-schema-client.mjs";
+import {checkedSyncSqlOutputSchema,readSyncedPositions,readArchivedSyncedPositions} from "../../src/v2/sync-sql-output-schema-client.mjs";
+import {ArchivedSyncInputPicker} from './ArchivedSyncInputPicker';
+import type {SyncSqlArchiveCandidate} from '../../src/v2/sync-sql-output-schema-client.mjs';
 import type {SyncSqlOutputSchema,SyncedPositionsOffer} from "../../src/v2/sync-sql-output-schema-client.mjs";
 import type {ValidationDetailsReport} from "./validation-details";
 import type {ServiceSourceBinding} from "./service-source-binding";
@@ -48,7 +50,7 @@ const RunComparisonPanel=lazy(()=>import('./RunComparisonPanel'));
 const StandaloneManualDeliveryPanel=lazy(async()=>({default:(await import('./StandaloneManualDeliveryPanel')).StandaloneManualDeliveryPanel}));
 const OpsPublicationPanel=lazy(async()=>({default:(await import('./OpsPublicationPanel')).OpsPublicationPanel}));
 type Context = { id: string; name: string; definition: string; businessDate?:string; validationFamily?:ValidationFamily; capabilities?:{delivery?:boolean;agentDevelopment?:boolean;fundPreparation?:boolean};outputContract?:{id:string;fields:{name:string;label:string}[]}; tables: { name: string; columns: [string, string][] }[] };
-type SyncSelection = {targetTable:"raw_positions";runId:string;targetHash:string};
+type SyncSelection = import('../../src/v2/sync-sql-selection.mjs').SyncSqlSelection;
 type SyncInput = SyncSelection & {metadataVersionId:string;sourceRevisionId:string;rowCount:number;snapshotId:string;snapshotHash:string};
 type DevelopmentDriver = { attempt: number; modelTrigger: string; spark?: { runId: string; submissionTriggers: string[] } };
 type Task = { requestBound?:true; syncInput?: SyncInput; id: string; version: number; status: string; stage?: string; requirements?:unknown;clarification?:import('../../src/v2/sql-clarification-client.mjs').SqlClarification;humanClarified?:boolean;directAutonomousEligible?:boolean;clarificationOriginTaskId?:string;executionMode?: string; mode?:string;language?:string;fundPreparation?:FundExecutionBinding;sourceKind?:string;sourceAttribution?:unknown;manualContinuation?:import('../../src/v2/manual-continuation-binding.mjs').ManualContinuationBinding;assistedContinuation?:import('../../src/v2/assisted-continuation-binding.mjs').AssistedContinuationBinding;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean;prepareFiles?:boolean;preparedDelivery?:{deliveryId:string;preparationTrigger?:string}}; developmentDrivers?: DevelopmentDriver[]; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
@@ -93,6 +95,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const [returnSourceError,setReturnSourceError]=useState("");
   const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState(initialContextId ?? "holdings-t1");
   const [syncOffer,setSyncOffer]=useState<SyncedPositionsOffer>(),[syncOfferState,setSyncOfferState]=useState("");
+  const syncChoiceSequence=useRef(0);
   const [syncRequested,setSyncRequested]=useState(false);
   const [message, setMessage] = useState(""), [draft, setDraft] = useState(""), [baseline, setBaseline] = useState("");
   const [run, setRunValue] = useState<Run>(), [tab, setTab] = useState("结果"), [diff, setDiff] = useState(false);
@@ -173,18 +176,27 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const selectedSync = maySelectSync ? syncOffer?.selection : undefined;
   const syncSelectionPending = maySelectSync && syncRequested && !selectedSync;
   function useRegisteredPositions(){
+    syncChoiceSequence.current++;
     setSyncRequested(false);setSyncOffer(undefined);setSyncOfferState("");
   }
   async function selectLatestSync(){
     const token=epoch.current;
+    const sequence=++syncChoiceSequence.current;
     setSyncRequested(true);
     setSyncOffer(undefined);setSyncOfferState("正在核对最近提交的持仓批次…");
     try{
       const offer=await readSyncedPositions({request:path=>api<unknown>(path)});
-      if(alive.current&&epoch.current===token){setSyncOffer(offer);setSyncOfferState("");}
+      if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current){setSyncOffer(offer);setSyncOfferState("");}
     }catch(cause){
-      if(alive.current&&epoch.current===token)setSyncOfferState((cause as Error).message);
+      if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current)setSyncOfferState((cause as Error).message);
     }
+  }
+  async function selectArchivedSync(candidate:SyncSqlArchiveCandidate){
+    const token=epoch.current,sequence=++syncChoiceSequence.current;
+    setSyncRequested(true);setSyncOffer(undefined);setSyncOfferState('正在核对原持仓批次…');
+    try{const offer=await readArchivedSyncedPositions({request:path=>api(path)},candidate);
+      if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current){setSyncOffer(offer);setSyncOfferState('原批次已核对。提交开发时将再次核对并冻结，不会替换为当前表。');}}
+    catch(cause){if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current)setSyncOfferState((cause as Error).message);}
   }
   const runPending = Boolean(run && !terminal(run.status));
   const working = automatic || busy, durable = task?.executionMode === "DURABLE_SQL_AGENT_V1";
@@ -474,6 +486,8 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     const requestedSync:SyncSelection|undefined=submissionController().expectedBody()?.syncInput;
     if(requestedSync && (current.contextId!=="holdings-t1" || current.syncInput?.targetTable!==requestedSync.targetTable ||
       current.syncInput?.runId!==requestedSync.runId || current.syncInput?.targetHash!==requestedSync.targetHash ||
+      current.syncInput?.kind!==requestedSync.kind || requestedSync.kind==='SYNC_RUN_ARCHIVE_V1'&&
+        (current.syncInput?.kind!=='SYNC_RUN_ARCHIVE_V1'||current.syncInput.taskId!==requestedSync.taskId||current.syncInput.landingSnapshotHash!==requestedSync.landingSnapshotHash)||
       !/^[a-f0-9]{64}$/.test(current.syncInput?.snapshotHash??"")))
       throw Error("任务回执与所选同步批次不一致，保留原提交编号");
     if(!manualContinuationReceiptMatches(current,submissionController().expectedBody()))throw Error("手工续改回执与原保存版本、意图或来源不一致，原编号保留。");
@@ -768,7 +782,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       </aside>
       <section id="agent-requirement" className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
         <div className="agent-dev-conversation">
-          {frozenInput && <div className="agent-dev-notice agent-dev-sync-input" role="status"><strong>原同步输入已冻结</strong><p>批次 {frozenInput.runId.slice(0,8)} · 元数据 {frozenInput.metadataVersionId.slice(0,8)} · {frozenInput.rowCount} 行 · 快照 {frozenInput.snapshotHash.slice(0,12)}。账户与现金使用登记样例。</p></div>}
+          {frozenInput && <div className="agent-dev-notice agent-dev-sync-input" role="status"><strong>原同步输入已冻结</strong><p>批次 {frozenInput.runId.slice(0,8)} · 元数据 {frozenInput.metadataVersionId.slice(0,8)} · {frozenInput.rowCount} 行 · 快照 {frozenInput.snapshotHash.slice(0,12)}。账户与现金使用登记样例。</p>{frozenInput.kind==='SYNC_RUN_ARCHIVE_V1'&&<p>来源为原归档 · 同步任务 {frozenInput.taskId.slice(0,8)} · 落地快照 {frozenInput.landingSnapshotHash.slice(0,12)}，不会随当前表变化。</p>}</div>}
           <details className="agent-dev-context" open={!task}><summary>本次数据与业务口径 <ChevronDown size={14} /></summary>
             {derivationActive && <p>目标口径在上方变更草稿中选择；下方展示其已登记定义与数据结构。</p>}
             {context?.validationFamily&&<small>已登记口径 · {context.validationFamily.name} · V{context.validationFamily.definitionVersion}</small>}
@@ -776,11 +790,13 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
               <strong>{selectedSync ? "已选择同步持仓" : syncRequested ? "同步持仓待确认" : "持仓输入 · 登记样例"}</strong>
               {selectedSync && <p>同步批次 {selectedSync.runId.slice(0,8)} · 元数据 {syncOffer?.metadataVersionId.slice(0,8)} · {syncOffer?.rowCount} 行。账户与现金使用登记样例。</p>}
               {selectedSync && syncOffer?.verifiedCurrency==="CNY" && <p>币种逐行核验为 CNY。SQL 使用七个已登记的持仓字段。</p>}
+              {selectedSync?.kind==='SYNC_RUN_ARCHIVE_V1'&&<p>使用原归档快照，不要求当前表仍属于此批次。</p>}
               <div className="agent-dev-sync-input-actions">
                 <button type="button" className="button" disabled={!canWrite||working||syncOfferState.startsWith("正在")} onClick={()=>void selectLatestSync()}>{selectedSync?"核对最新同步批次":"使用已核对的同步持仓"}</button>
                 {syncRequested && <button type="button" className="button" disabled={working||Boolean(pendingAgentKey)||syncOfferState.startsWith("正在")} onClick={useRegisteredPositions}>改用登记样例</button>}
               </div>
               {syncOfferState && <p role="status">{syncOfferState}</p>}
+              <ArchivedSyncInputPicker api={api} disabled={!canWrite||working||Boolean(pendingAgentKey)} onChoose={candidate=>void selectArchivedSync(candidate)}/>
             </div>}
             <p>{context?.definition ?? "正在加载数据上下文…"}</p><div className="agent-dev-tables">{context?.tables.map(t => <details key={t.name}><summary>{t.name} · {t.columns.length}字段</summary><dl>{t.columns.map(([name,type]) => <div key={name}><dt>{name}</dt><dd>{type}</dd></div>)}</dl></details>)}</div>
             <small>输出：{scopedLabels?(context?.outputContract?.fields.map(f=>f.name)??["client_id","holding_market_value","available_cash","total_assets","security_count"]).map(resultLabel).join("、"):"客户、持仓市值、可用现金、总资产、证券数量"}。其他指标请先补充并审阅口径，不默认纳入。</small>

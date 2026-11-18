@@ -36,9 +36,12 @@ export function checkedSyncSqlOutputSchema(value:unknown, expected:{runId:string
 export function checkedSyncSqlRehearsalSchema(value:unknown, expected:SyncSqlRehearsalSource):SyncSqlRehearsalSchema;
 export function checkedSyncSqlScheduledSchema(value:unknown, expected:SyncSqlScheduledSource):SyncSqlScheduledSchema;
 export function readSyncSqlOutputSchema(client:{request:(path:string)=>Promise<unknown>},input:{runId:string}):Promise<SyncSqlOutputSchema>;
-export type SyncedPositionsOffer = {contextId:"holdings-t1";selection:{targetTable:"raw_positions";runId:string;targetHash:string};
+export type SyncedPositionsOffer = {contextId:"holdings-t1";selection:import('./sync-sql-selection.mjs').SyncSqlSelection;
   taskId:string;sourceRevisionId:string;metadataVersionId:string;rowCount:number;verifiedCurrency?:"CNY"};
 export function readSyncedPositions(client:{request:(path:string)=>Promise<unknown>}):Promise<SyncedPositionsOffer>;
+export type SyncSqlArchiveCandidate={taskId:string;runId:string;targetHash:string;landingSnapshotHash:string;taskName:string;rowCount:number;finishedAt:string;verification:'REQUIRES_CHECK'};
+export function readSyncSqlArchives(client:{request:(path:string)=>Promise<unknown>}):Promise<SyncSqlArchiveCandidate[]>;
+export function readArchivedSyncedPositions(client:{request:(path:string)=>Promise<unknown>},expected:{taskId:string;runId:string;targetHash?:string;landingSnapshotHash?:string}):Promise<SyncedPositionsOffer>;
 export function readSyncReviewEvidence(client:{request:(path:string)=>Promise<unknown>},expected:{
   verificationId:string;packageId?:string;packageDigest?:string;syncRehearsalDigest?:string;snapshotHash?:string;
 }):Promise<Record<string,unknown>>;

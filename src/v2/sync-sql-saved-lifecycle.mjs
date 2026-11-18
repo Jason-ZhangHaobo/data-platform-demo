@@ -12,6 +12,7 @@ import { checkedPublishedReportArtifacts } from "./report-provenance.mjs";
 import { publishedSqlColumnLineage } from "./sql-column-lineage.mjs";
 import { syncReportAsset, syncReportLineage, syncReportFields } from "./sync-sql-report.mjs";
 import { syncSqlLandingContext } from "./sync-sql-input.mjs";
+import {syncSqlSelectionFromBinding} from './sync-sql-selection.mjs';
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence, readSyncSqlPaginationCoverage, syncSqlPageShape } from "./sync-sql-service-source.mjs";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -167,7 +168,7 @@ export async function verifySavedSyncSqlLifecycle({ store, businessStore, report
   const approval = read("release_approval", release.approvalId), review = read("delivery_review", approval.reviewId);
   const rehearsal = read("delivery_verification", approval.rehearsalId);
   const key = `${project}:agent:${requestId}`, ledger = store.db.prepare("SELECT signature,result_id FROM idempotency WHERE key=?").get(key);
-  const selection = { targetTable: input.targetTable, runId: input.runId, targetHash: input.targetHash };
+  const selection = syncSqlSelectionFromBinding(input);
   requireEvidence(ledger?.result_id === task.id && ledger.signature === sha256(JSON.stringify({
     message: task.message, language: task.language, currentCode: task.initialSql, contextId: task.contextId, syncInput: selection,
   })) && task.mode === input.developmentMode && task.language === "SPARK_SQL" &&

@@ -1,3 +1,4 @@
+import {parseSyncSqlSelection} from './sync-sql-selection.mjs';
 const identifier = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const digest = /^[a-f0-9]{64}$/;
 const token = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
@@ -106,15 +107,39 @@ export async function readSyncSqlOutputSchema(client, { runId }) {
 
 export async function readSyncedPositions(client) {
   const value = await client.request("/development/synced-positions");
-  const selection = value?.selection;
+  return checkedSyncedPositions(value);
+}
+function checkedSyncedPositions(value) {
+  const selection = parseSyncSqlSelection(value?.selection);
   if (value?.contextId !== "holdings-t1" || selection?.targetTable !== "raw_positions" ||
       ![selection.runId, value.taskId, value.sourceRevisionId, value.metadataVersionId].every(id => matches(identifier,id)) ||
       !matches(digest,selection.targetHash) || !Number.isInteger(value.rowCount) || value.rowCount < 1 || value.rowCount > 500 ||
       value.verifiedCurrency !== undefined && value.verifiedCurrency !== "CNY")
     throw Error("持仓同步批次、元数据或币种证据未确认。");
-  return { contextId:value.contextId, selection:{targetTable:selection.targetTable,runId:selection.runId,targetHash:selection.targetHash},
+  if(selection.kind&&selection.taskId!==value.taskId)throw Error('原持仓批次与任务未核对一致');
+  return { contextId:value.contextId, selection,
     taskId:value.taskId,sourceRevisionId:value.sourceRevisionId,metadataVersionId:value.metadataVersionId,rowCount:value.rowCount,
     ...(value.verifiedCurrency === "CNY" ? {verifiedCurrency:"CNY"} : {}) };
+}
+
+export async function readSyncSqlArchives(client) {
+  const value=await client.request('/development/synced-positions/archives');
+  if(value?.protocol!=='shuduo-sync-sql-archives/v1'||value.readOnly!==true||!Array.isArray(value.candidates)||value.candidates.length>100)
+    throw Error('原同步批次目录未确认');
+  const seen=new Set();
+  return value.candidates.map(candidate=>{
+    const {taskId,runId,targetHash,landingSnapshotHash,taskName,rowCount,finishedAt,verification}=candidate??{};
+    parseSyncSqlSelection({kind:'SYNC_RUN_ARCHIVE_V1',targetTable:'raw_positions',taskId,runId,targetHash,landingSnapshotHash});
+    if(seen.has(runId)||typeof taskName!=='string'||taskName.length>100||!taskName.trim()||!Number.isInteger(rowCount)||rowCount<1||rowCount>500||!Number.isFinite(Date.parse(finishedAt))||verification!=='REQUIRES_CHECK')throw Error('原同步批次目录不完整');
+    seen.add(runId);return {taskId,runId,targetHash,landingSnapshotHash,taskName,rowCount,finishedAt,verification};
+  });
+}
+export async function readArchivedSyncedPositions(client,expected) {
+  if(![expected.taskId,expected.runId].every(value=>matches(identifier,value)&&value.length===36))throw Error('原持仓批次须使用确切任务和运行UUID');
+  const offer=checkedSyncedPositions(await client.request(`/development/synced-positions/archives/${expected.taskId}/${expected.runId}`));
+  if(offer.selection.kind!=='SYNC_RUN_ARCHIVE_V1'||offer.taskId!==expected.taskId||offer.selection.runId!==expected.runId||
+    ['targetHash','landingSnapshotHash'].some(field=>expected[field]!==undefined&&expected[field]!==offer.selection[field]))throw Error('原持仓批次或快照摘要已变化，未自动替换');
+  return offer;
 }
 
 export async function readSyncReviewEvidence(client, expected) {

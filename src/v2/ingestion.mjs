@@ -1040,27 +1040,33 @@ export class IngestionManager {
       metadataVersionId:task.metadataVersionId,configHash:task.configHash,sourceHash};
   }
 
-  previewRunSnapshot(taskId,runId,{page=1,pageSize=50}={}) {
+  retainedRunSnapshot(taskId,runId) {
     const task=this.#task(taskId),run=this.store.get('offline_sync_run',runId,this.project);
     if (!run || run.taskId!==task.id) throw fail(404,'同步运行不存在','SYNC_RUN_NOT_FOUND');
-    if (!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100)
-      throw fail(422,'页码须为正整数，每页1—100行','INVALID_SNAPSHOT_PAGE');
     if (run.status!=='SUCCEEDED'||run.actualExecution!==true) throw fail(409,'只有实际成功的批次可核对落地快照','SYNC_RUN_NOT_SUCCEEDED');
     if (run.configHash!==task.configHash||run.sourceRevisionId!==task.sourceRevisionId||run.metadataVersionId!==task.metadataVersionId||run.targetTable!==task.targetTable)
       throw fail(409,'运行与原任务版本不一致','SYNC_SNAPSHOT_MISMATCH');
     const summary={taskId:task.id,runId:run.id,targetTable:run.targetTable,rowCount:run.finalCount,targetHash:run.targetHash};
-    if (run.snapshotStatus!=='RETAINED') return {...summary,status:'NOT_RETAINED',reason:run.snapshotStatus==='NOT_RETAINED_LIMIT'?'RETENTION_LIMIT':'LEGACY_RUN',page,pageSize};
+    if (run.snapshotStatus!=='RETAINED') return {...summary,status:'NOT_RETAINED',reason:run.snapshotStatus==='NOT_RETAINED_LIMIT'?'RETENTION_LIMIT':'LEGACY_RUN'};
     const value=this.landingStore.readRunSnapshot({runId,targetTable:task.targetTable,binding:this.#snapshotBinding(task,run.sourceHash),
       targetHash:run.targetHash,rowCount:run.finalCount,snapshotHash:run.landingSnapshotHash});
-    const totalPages=Math.max(1,Math.ceil(value.rows.length/pageSize));
+    return {...summary,status:'VERIFIED',integrityVerified:true,snapshotHash:run.landingSnapshotHash,createdAt:value.createdAt,rows:value.rows};
+  }
+
+  previewRunSnapshot(taskId,runId,{page=1,pageSize=50}={}) {
+    if (!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100)
+      throw fail(422,'页码须为正整数，每页1—100行','INVALID_SNAPSHOT_PAGE');
+    const value=this.retainedRunSnapshot(taskId,runId);
+    if(value.status!=='VERIFIED')return {...value,page,pageSize};
+    const task=this.#task(taskId),totalPages=Math.max(1,Math.ceil(value.rows.length/pageSize));
     if (page>totalPages) throw fail(422,'页码超过原批次范围','INVALID_SNAPSHOT_PAGE');
     let currentTarget;
     try {
       const current=this.landingStore.inspectTarget(task.targetTable);
       currentTarget={status:'VERIFIED',runId:current.runId,rowCount:current.rowCount,targetHash:current.targetHash,
-        matchesOriginalRun:current.runId===run.id&&current.targetHash===run.targetHash};
+        matchesOriginalRun:current.runId===runId&&current.targetHash===value.targetHash};
     } catch { currentTarget={status:'UNCONFIRMED'}; }
-    return {...summary,status:'VERIFIED',integrityVerified:true,snapshotHash:run.landingSnapshotHash,createdAt:value.createdAt,
+    return {...value,
       currentTarget,
       columns:[...new Set(value.rows.flatMap(row=>Object.keys(row)))].filter(key=>key!=='rowKey'),
       page,pageSize,totalPages,rows:value.rows.slice((page-1)*pageSize,page*pageSize)};

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
+import {readSyncSqlArchives,readArchivedSyncedPositions} from '../src/v2/sync-sql-output-schema-client.mjs';
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/delivery-preparation-request.mjs";
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
 import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
@@ -48,6 +49,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo sql compare-candidates --run-id RUN_ID
   shuduo sql output-schema --run-id RUN_ID
   shuduo sql synced-positions
+  shuduo sql sync-archives
+  shuduo sql archived-positions --task-id UUID --run-id UUID
   shuduo sql compare-runs --run-id RUN_ID --baseline-run-id RUN_ID
   shuduo budget
   shuduo manual publication --source-run-id RUN_ID --id MANUAL_DELIVERY_ID --package-digest SHA256 --verification-id ID [--release-id ID]
@@ -487,6 +490,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if(resource==='sql'&&action==='compare-candidates')result=await readRunComparisonCandidates(client,{runId:required(parsed.options,'run_id')});
     else if(resource==='sql'&&action==='output-schema')result=await readSyncSqlOutputSchema(client,{runId:required(parsed.options,'run_id')});
     else if(resource==='sql'&&action==='synced-positions')result=await readSyncedPositions(client);
+    else if(resource==='sql'&&action==='sync-archives')result=await readSyncSqlArchives(client);
+    else if(resource==='sql'&&action==='archived-positions')result=await readArchivedSyncedPositions(client,{taskId:required(parsed.options,'task_id'),runId:required(parsed.options,'run_id')});
     else if(resource==='sql'&&action==='compare-runs')result=await readSqlRunComparison(client,{runId:required(parsed.options,'run_id'),baselineRunId:required(parsed.options,'baseline_run_id')});
     else if (resource === "budget" && !action)
       result = await client.request("/budget");
