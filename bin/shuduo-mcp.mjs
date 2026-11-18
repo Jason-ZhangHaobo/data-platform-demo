@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {readFrozenSchedule} from '../src/v2/frozen-schedule-client.mjs';
 import {readTradingCalendars,readTradingCalendarVersion,readTradingDay} from '../src/v2/trading-calendar-client.mjs';
 import {readQualityVersionRequest,qualityVersionRequestPath} from '../src/v2/quality-version-request.mjs';
 import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
@@ -163,6 +164,7 @@ const tools = [
   { name: "release_runs_list", description: "列出真实调度发布批次及验证证据。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_list", description: "列出交付包摘要、源代码版本和发布状态，不返回文件正文。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_detail", description: "读取指定不可变交付包、文件与可信摘要。", inputSchema: { type: "object", properties: { packageId: { type: "string" } }, required: ["packageId"] } },
+  {name:'delivery_schedule_preview',description:'只读核对确切冻结包的调度日、T+1业务日、原日历覆盖与依赖，不计算、不审批、不发布。',inputSchema:{type:'object',properties:{packageId:{type:'string'},packageDigest:{type:'string'},scheduledFor:{type:'string'}},required:['packageId','packageDigest']},annotations:{readOnlyHint:true}},
   {name:'trading_calendar_list',description:'列出本机登记的沪深A股公告推导交易日历、覆盖和来源，不推断范围外日期。',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true}},
   {name:'trading_calendar_detail',description:'读取确切日历版本及日期，只读。',inputSchema:{type:'object',properties:{calendarId:{type:'string'}},required:['calendarId']},annotations:{readOnlyHint:true}},
   {name:'trading_calendar_resolve',description:'按登记版本预检交易日和T+1，不触发计算、调度或发布；范围不足明确拒绝。',inputSchema:{type:'object',properties:{calendarId:{type:'string'},date:{type:'string'},calendarDigest:{type:'string'}},required:['calendarId','date']},annotations:{readOnlyHint:true}},
@@ -560,6 +562,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(
       `/delivery/packages/${encodeURIComponent(args.packageId)}`,
     );
+  if(name==='delivery_schedule_preview')return readFrozenSchedule(client,args);
   if(name==='trading_calendar_list')return readTradingCalendars(client);
   if(name==='trading_calendar_detail')return readTradingCalendarVersion(client,args.calendarId);
   if(name==='trading_calendar_resolve')return readTradingDay(client,args);

@@ -102,13 +102,16 @@ test("invited read-only HTTP keeps package, rehearsal, approval, release and mon
     assert((await f.call(route,admin)).body.some(row=>row.id===id),route);
   }
   for(const route of [
-    "/delivery/packages/"+x.pack.id,"/delivery/verifications/"+x.rehearsal.id,"/releases/"+x.release.id,
+    "/delivery/packages/"+x.pack.id,"/delivery/packages/"+x.pack.id+"/schedule-preview?packageDigest="+x.pack.digest,"/delivery/verifications/"+x.rehearsal.id,"/releases/"+x.release.id,
     "/release/runs/"+x.batch.id,"/operations/incidents/"+x.incident.id,
   ]){
     assert.equal((await f.call(route,owner)).status,200,route);
     assert.equal((await f.call(route,other)).status,403,route);
     assert.equal((await f.call(route,admin)).status,200,route);
   }
+  const previewPath="/delivery/packages/"+x.pack.id+"/schedule-preview?packageDigest="+x.pack.digest;
+  assert.equal((await f.call(previewPath)).status,401);assert.equal((await f.call(previewPath,viewer)).status,403);
+  const preview=await f.call(previewPath,owner);assert.equal(preview.body.readOnly,true);assert.equal(preview.body.selected.status,'MATCHES_FROZEN_INPUT');assert.equal(preview.body.binding.packageId,x.pack.id);assert(!JSON.stringify(preview.body).includes('EXAMPLE_INTERNAL_STORAGE_REFERENCE'));
   const own = await f.call("/delivery/packages/"+x.pack.id,owner);
   assert.equal(own.body.files["main.sql"],x.pack.files["main.sql"]);
   assert.equal(own.body.artifact,undefined);
