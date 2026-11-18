@@ -58,6 +58,29 @@ test("monthly model estimate uses reported input/output tokens and conservative 
   }
 });
 
+test("intent costs include reported usage and legacy unknown work while keeping proven unsent work free", () => {
+  const app = setup({V2_MODEL_TOKEN_BUDGET:"1000"});
+  try {
+    current(app.store, "agent_intent", {
+      mode:"LIVE_MODEL", status:"SUCCEEDED", model:"qwen3.7-plus",
+      usage:{prompt_tokens:100,completion_tokens:50,total_tokens:150},
+    });
+    const legacy = current(app.store, "agent_intent", {
+      mode:"LIVE_MODEL", status:"CANCELLED", startedAt:"2026-09-15T01:00:01.000Z",
+    });
+    current(app.store, "agent_intent", {
+      mode:"LIVE_MODEL", status:"FAILED", startedAt:"2026-09-15T01:00:01.000Z", modelRequestSent:false,
+    });
+    current(app.store, "agent_intent", {mode:"LIVE_MODEL",status:"CANCELLED"});
+    const status = app.budget.overview();
+    assert.equal(status.model.recordedCalls, 2);
+    assert.equal(status.model.estimatedCostCny, 0.2006);
+    assert.deepEqual(app.store.get("agent_intent",legacy.id,PROJECT), legacy);
+  } finally {
+    app.close();
+  }
+});
+
 test("model and account budget guards fail before another paid request", () => {
   const model = setup({ V2_MODEL_MONTHLY_BUDGET_CNY: "0.6", V2_MODEL: "qwen3-coder-plus" });
   try {

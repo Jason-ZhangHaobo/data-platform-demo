@@ -680,6 +680,14 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 ## 2026-09-15：应用内月度预算门
 
+### 跨模块规划的用量与请求恢复
+
+- 需求规划的 `agent_intent` 与专业 Agent 共用月度预算。开始模型请求前保存保守用量预留，落盘失败不调用模型；取消后到达的用量、格式错误回执中的用量也须结算。
+- 无法确认请求结果时保留预留，不因取消、重启或格式错误自动重试。能够证明请求未发送时释放预留。旧版已开始但缺少用量的规划按未知记录计入，不改写原历史。
+- 原创建者按相同幂等键恢复已保存任务，在额度耗尽后仍可读取同一编号；新请求受预算限制。其他用户复用该键被拒绝。
+- `test/v2/agent-intent-budget.test.mjs`、`agent-router.test.mjs`、`budget.test.mjs` 和 `model-diagnostics.test.mjs` 使用本机 HTTP、SQLite 与合成模型回执，覆盖取消竞态、持久化失败、未知结果、旧记录、解析失败和跨用户隔离。此类回归不计真实模型、Spark 或完整 E2E 通过数，云端仍须按确切应用版本验收。
+- 2026-11-18 本机完整 `npm run ci` 通过，2065 项通过、0 失败、1 项既有跳过，前后端构建及入口包大小门通过。尚未部署本次修复。
+
 - 汇总本月九类Agent资源；有prompt/completion usage时按qwen3-coder-plus输入档位分别计价，只有total或缺usage时使用保守上界，未知模型使用最高配置单价。
 - 模型任务在持久记录创建前检查一次，真实模型每次调用前再次检查，避免排队期间其他任务已耗尽额度；超限返回`MONTHLY_MODEL_BUDGET_EXCEEDED`。
 - 远程Spark Runner在调用前同时检查本月实际运行数、累计秒数和下一次30秒预留；超限返回`MONTHLY_SPARK_BUDGET_EXCEEDED`。

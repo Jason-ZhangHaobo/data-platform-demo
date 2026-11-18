@@ -1,10 +1,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateSql, modelSettings } from "../../src/v2/model.mjs";
+import { generateSql, generateAgentIntent, modelSettings } from "../../src/v2/model.mjs";
 import { safeModelDiagnostic } from "../../src/v2/model-diagnostics.mjs";
 import { getContext, referenceSql } from "../../src/v2/context.mjs";
 const input = { message: "虚构证券资产加工", context: getContext(), currentSql: referenceSql };
 const env = { DASHSCOPE_API_KEY: "SYNTHETIC_SECRET_NEVER_PERSIST" };
+test("intent generation validates its token bound before I/O and retains safe usage after a malformed reply", async()=>{
+  const request={message:"解释虚构证券持仓字段",destinations:[{id:"assets",label:"数据资产",action:"解释字段",risk:"LOW"}]};
+  let calls=0;
+  await assert.rejects(generateAgentIntent(request,{...env,V2_MODEL_TOKEN_BUDGET:"100"},async()=>{calls++;}),error=>{
+    assert.equal(safeModelDiagnostic(error).requestMayHaveBeenSent,false);
+    return error.code==="MODEL_CONTEXT_BUDGET";
+  });
+  assert.equal(calls,0);
+  const usage={prompt_tokens:17,completion_tokens:12,total_tokens:29};
+  await assert.rejects(generateAgentIntent(request,env,async()=>{
+    calls++;return Response.json({choices:[{message:{content:"SYNTHETIC_PROVIDER_BODY"}}],usage});
+  }),error=>{
+    assert.equal(error.modelResultRecorded,true);assert.deepEqual(error.usage,usage);
+    assert.equal(error.model,"qwen3.7-plus");assert.equal(safeModelDiagnostic(error).phase,"PARSE");
+    assert.ok(!error.message.includes("SYNTHETIC_PROVIDER_BODY"));return true;
+  });
+  await assert.rejects(generateAgentIntent(request,env,async()=>new Response("SYNTHETIC_PROVIDER_BODY")),error=>{
+    assert.equal(safeModelDiagnostic(error).phase,"PARSE");
+    assert.ok(!error.message.includes("SYNTHETIC_PROVIDER_BODY"));return true;
+  });
+  await assert.rejects(generateAgentIntent(request,env,async()=>{throw Error("SYNTHETIC_PROVIDER_SECRET");}),error=>{
+    assert.equal(safeModelDiagnostic(error).phase,"REQUEST");
+    assert.equal(safeModelDiagnostic(error).requestMayHaveBeenSent,true);
+    assert.ok(!error.message.includes("SYNTHETIC_PROVIDER_SECRET"));return true;
+  });
+  await assert.rejects(generateAgentIntent(request,env,async()=>new Response("SYNTHETIC_PROVIDER_SECRET",{status:429})),error=>{
+    assert.equal(safeModelDiagnostic(error).httpStatus,429);
+    assert.equal(safeModelDiagnostic(error).phase,"RESPONSE");
+    assert.ok(!error.message.includes("SYNTHETIC_PROVIDER_SECRET"));return true;
+  });
+});
 async function diagnostic(overrides, fetchImpl) {
   try { await generateSql({ ...input, ...overrides }, env, fetchImpl); assert.fail("must fail"); }
   catch (error) { return safeModelDiagnostic(error); }

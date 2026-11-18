@@ -2,6 +2,7 @@ import {modelFailure} from "./model-diagnostics.mjs";
 
 const agentKinds = [
   "agent",
+  "agent_intent",
   "service_agent_plan",
   "ingestion_agent_plan",
   "realtime_agent_plan",
@@ -75,7 +76,11 @@ const modelCost = (model, usage, fallbackTokens) => {
   return (total * 200) / 1_000_000;
 };
 
-const usageEntries = (item, fallbackTokens) => {
+const usageEntries = (item, fallbackTokens, kind) => {
+  if (kind === "agent_intent" && item.mode === "LIVE_MODEL" &&
+      !item.model && !tokens(item.usage).total &&
+      Number.isFinite(Date.parse(item.startedAt)) && item.modelRequestSent !== false)
+    return [{model:"unconfirmed",usage:{total_tokens:fallbackTokens},cost:modelCost("unconfirmed",{},fallbackTokens)}];
   if (item.mode !== "LIVE_MODEL" && !item.model && !item.usage)
     return [];
   if (Array.isArray(item.attempts) && item.attempts.length)
@@ -156,7 +161,7 @@ export class BudgetManager {
         this.store
           .list(kind, this.project)
           .filter((item) => monthKey(item.createdAt) === currentMonth)
-          .flatMap((item) => usageEntries(item, this.fallbackTokens))),
+          .flatMap((item) => usageEntries(item, this.fallbackTokens, kind))),
       modelCostCny = modelRecords.reduce((sum, item) => sum + item.cost, 0),
       remoteRuns = remoteRunKinds.flatMap((kind) =>
         this.store

@@ -1090,6 +1090,9 @@ test("late model completion cannot overwrite a cancelled running Agent intent", 
     const final = store.get("agent_intent", created.id, PROJECT);
     assert.equal(final.status, "CANCELLED");
     assert.equal(final.route, undefined);
+    assert.equal(final.model, "LATE_TEST_MODEL");
+    assert.equal(final.usage.total_tokens, 1);
+    assert.equal(app.budget.overview().model.recordedCalls, 1);
     assert.deepEqual(
       store
         .list("agent_intent_trace", PROJECT)
@@ -1181,6 +1184,16 @@ test("public Agent intent history is isolated per member and viewer cannot submi
     assert.equal(viewerValidation.body.code, "PROJECT_PERMISSION_DENIED");
     const created = await publicRequest(base, "/agent/intents", { body: { message: "理解虚构持仓并设计报表" }, cookie: pm.cookie, csrf: pm.body.csrfToken, key: "pm-intent" });
     assert.equal(created.status, 202);
+    const otherInvite = await invite("pm-two@example.test", "PRODUCT_MANAGER", "pm-two-invite");
+    const other = await publicRequest(base, "/auth/redeem", {
+      body:{inviteCode:otherInvite.body.inviteCode,displayName:"另一位虚构产品经理",password:"ProductTwo#Pass2026"},key:"pm-two-redeem",
+    });
+    const foreignReplay = await publicRequest(base, "/agent/intents", {
+      body:{message:"理解虚构持仓并设计报表"},cookie:other.cookie,csrf:other.body.csrfToken,key:"pm-intent",
+    });
+    assert.equal(foreignReplay.status, 403);
+    assert.equal(foreignReplay.body.id, undefined);
+    assert.equal(store.list("agent_intent",PROJECT).length, 1);
     const pmTasks = await waitFor(
       () => publicRequest(base, "/agent/intents", { cookie: pm.cookie }).then((value) => value.body),
       (value) => value.length === 1 && value[0].status === "SUCCEEDED",
