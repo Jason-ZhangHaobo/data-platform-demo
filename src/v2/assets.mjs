@@ -532,11 +532,13 @@ export class AssetCatalogManager {
         run = observed.runId && this.store.get("offline_sync_run", observed.runId, this.project),
         applied = run && this.store.get("offline_sync_task", run.taskId, this.project),
         original = run && this.store.get("source_metadata", run.metadataVersionId, this.project);
-      const verified = run?.status === "SUCCEEDED" && run.actualExecution === true && run.targetTable === targetTable &&
+      let verified = run?.status === "SUCCEEDED" && run.actualExecution === true && run.targetTable === targetTable &&
         run.targetHash === observed.targetHash && run.finalCount === observed.rowCount && applied?.targetTable === targetTable &&
         applied.configHash === run.configHash && applied.sourceRevisionId === run.sourceRevisionId &&
         applied.metadataVersionId === run.metadataVersionId && original?.revisionId === run.sourceRevisionId &&
         original.sourceId === applied.sourceId && (applied.sourceType !== "LOCAL_CSV" || original.contentHash === run.sourceHash);
+      const registry=this.store.list('sync_change_target',this.project).find(r=>r.targetTable===targetTable);
+      if(applied?.mode==='INCREMENTAL_CHANGELOG'){try{const marker=this.landingStore.changeStatus(targetTable);verified=Boolean(verified&&registry?.status==='READY'&&registry.lastRunId===run.id&&registry.stateHash===marker?.state_hash);}catch{verified=false;}}
       const task = verified ? applied : draft;
       const metadata = verified ? original : this.store.get("source_metadata", task.metadataVersionId, this.project),
         types = new Map(metadata?.columns.map((field) => [field.name, field]) ?? []),
@@ -555,7 +557,7 @@ export class AssetCatalogManager {
         description: verified ? "已核对提交批次的离线同步落地表" : "同步批次与当前落地数据待核对",
         status: verified ? "SUCCEEDED" : "UNCONFIRMED",
         rowCount: observed.rowCount,
-        fields,
+        fields: applied?.mode==='INCREMENTAL_CHANGELOG'&&verified?registry.targetFields:fields,
         tags: ["虚构证券", "离线同步", task.mode],
         evidenceHash: observed.targetHash,
         versionId: verified ? run.id : task.id,

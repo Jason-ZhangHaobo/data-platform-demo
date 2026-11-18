@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {csvChangeConfig,csvChangeRequestId} from '../src/v2/csv-changelog-client.mjs';
 import {qualityRunBody,qualityArchiveInputsPath,qualityRunRequestPath} from '../src/v2/quality-input-client.mjs';
 import {readFrozenSchedule} from '../src/v2/frozen-schedule-client.mjs';
 import {readTradingCalendars,readTradingCalendarVersion,readTradingDay} from '../src/v2/trading-calendar-client.mjs';
@@ -203,8 +204,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo sources test|metadata --id ID
   shuduo sources revision --id ID --file positions_schema_change.csv
   shuduo sync list
-  shuduo sync create --name 名称 --source-id ID --target-table raw_positions --mode full|incremental --mapping from:to,... --keys position_id [--watermark trade_date] [--source-revision-id ID --metadata-version-id ID]
-  shuduo sync run --id ID
+  shuduo sync create --name 名称 --source-id ID --target-table raw_positions --mode full|incremental|changelog --mapping from:to,... --keys position_id [--watermark trade_date] [--source-revision-id ID --metadata-version-id ID] [--change-epoch UUID --operation-field op --sequence-field seq] [--request-id UUID]
+  shuduo sync run --id ID [--request-id UUID]
   shuduo sync recovery-preview --id OLD_TASK_ID
   shuduo sync recovery-save --id OLD_TASK_ID --basis-digest SHA256 --mapping SOURCE:TARGET,SOURCE:TARGET --confirm
   shuduo sync rows --table raw_positions
@@ -1184,17 +1185,22 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     }
     else if (resource === "sync" && action === "create") {
       const mode = required(parsed.options, "mode");
-      if (!["full", "incremental"].includes(mode))
-        throw new Error("--mode必须是full或incremental");
+      if (!["full", "incremental","changelog"].includes(mode))
+        throw new Error("--mode必须是full、incremental或changelog");
+      const controls=['change_epoch','operation_field','sequence_field'].some(k=>parsed.options[k]!==undefined);
+      if(mode!=='changelog'&&controls)throw Error('变更控制字段仅供--mode changelog');if(mode==='changelog'&&parsed.options.watermark!==undefined)throw Error('变更模式使用独立序号，不使用记录水位');
+      const changeConfig=mode==='changelog'?csvChangeConfig({epochId:parsed.options.change_epoch,operationField:parsed.options.operation_field,sequenceField:parsed.options.sequence_field}):undefined;
       const sourceRevisionId=parsed.options.source_revision_id,metadataVersionId=parsed.options.metadata_version_id;
       if(Boolean(sourceRevisionId)!==Boolean(metadataVersionId))throw Error("--source-revision-id与--metadata-version-id须同时提供");
       result = await client.request("/sync/tasks", {
         method: "POST",
+        ...(parsed.options.request_id?{idempotencyKey:csvChangeRequestId(parsed.options.request_id)}:{}),
         body: {
           name: required(parsed.options, "name"),
           sourceId: required(parsed.options, "source_id"),
           targetTable: required(parsed.options, "target_table"),
-          mode: mode === "full" ? "FULL" : "INCREMENTAL_UPSERT",
+          mode: mode === "full" ? "FULL" : mode==='changelog'?'INCREMENTAL_CHANGELOG':"INCREMENTAL_UPSERT",
+          ...(changeConfig?{changeConfig}:{}),
           ...(sourceRevisionId?{sourceRevisionId,metadataVersionId}:{}),
           mapping: mapping(required(parsed.options, "mapping")),
           keyFields: list(required(parsed.options, "keys"), "--keys"),
@@ -1204,10 +1210,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         },
       });
     } else if (resource === "sync" && action === "run")
-      result = await client.request(
-        `/sync/tasks/${encodeURIComponent(required(parsed.options, "id"))}/run`,
-        { method: "POST", body: {} },
-      );
+      result = await client.request(`/sync/tasks/${encodeURIComponent(required(parsed.options,"id"))}/run`,{method:'POST',body:{},...(parsed.options.request_id===undefined?{}:{idempotencyKey:csvChangeRequestId(parsed.options.request_id)})});
     else if (resource === "sync" && action === "rows")
       result = await client.request(
         `/sync/targets/${encodeURIComponent(required(parsed.options, "table"))}/rows`,

@@ -1,3 +1,4 @@
+import {changelogMode,normalizeChangeConfig,changeSpecHash,initializeChangeTables,inspectChangeState,prepareChangeEvents,assertChangeStart,applyChangeEvents,changeStateHash,changeHash} from './csv-changelog.mjs';
 import {ingestionWatermark} from './ingestion-watermark.mjs';
 import { buildSyncSnapshot, checkedSyncSnapshot, syncSnapshotLimits } from './sync-run-snapshot.mjs';
 import { DatabaseSync } from "node:sqlite";
@@ -202,6 +203,7 @@ export class LandingStore {
       "CREATE TABLE IF NOT EXISTS landing_rows(target_table TEXT NOT NULL,row_key TEXT NOT NULL,payload TEXT NOT NULL,source_hash TEXT NOT NULL,synced_at TEXT NOT NULL,PRIMARY KEY(target_table,row_key)); CREATE INDEX IF NOT EXISTS landing_target ON landing_rows(target_table,row_key); CREATE TABLE IF NOT EXISTS landing_commits(target_table TEXT PRIMARY KEY,run_id TEXT NOT NULL,target_hash TEXT NOT NULL);",
     );
     this.db.exec('CREATE TABLE IF NOT EXISTS landing_run_snapshots(run_id TEXT PRIMARY KEY,target_table TEXT NOT NULL,payload TEXT NOT NULL,snapshot_hash TEXT NOT NULL,byte_count INTEGER NOT NULL)');
+    initializeChangeTables(this.db);
     this.mutationListener = undefined;
   }
 
@@ -209,7 +211,7 @@ export class LandingStore {
     this.mutationListener = listener;
   }
 
-  sync({ targetTable, mode, rows, mapping, keyFields, sourceHash, syncedAt, runId, snapshotBinding }) {
+  sync({ targetTable, mode, rows, mapping, keyFields, sourceHash, syncedAt, runId, snapshotBinding,changeConfig,changeGuard }) {
     const target = identifier(targetTable, "目标表"),
       normalizedMapping = normalizeMapping(mapping),
       keys = normalizeKeys(keyFields, normalizedMapping),
@@ -226,10 +228,16 @@ export class LandingStore {
       throw fail(422, "同步主键不能为空", "EMPTY_SYNC_KEY");
     if(projected.some(row=>keys.some(key=>String(row[key]).includes('\u001f'))))
       throw fail(422,"同步主键含不支持的控制字符，请清理后再同步","INVALID_SYNC_KEY_VALUE");
-    if (new Set(keyed.map((item) => item.key)).size !== keyed.length)
+    if (mode!==changelogMode&&new Set(keyed.map((item) => item.key)).size !== keyed.length)
       throw fail(422, "当前批次包含重复同步主键", "DUPLICATE_SYNC_KEY");
-    if (!["FULL", "INCREMENTAL_UPSERT"].includes(mode))
+    if (!["FULL", "INCREMENTAL_UPSERT",changelogMode].includes(mode))
       throw fail(400, "同步模式不支持", "INVALID_SYNC_MODE");
+    const managed=this.db.prepare('SELECT 1 FROM landing_change_targets WHERE target_table=?').get(target);
+    if(mode!==changelogMode&&managed)throw fail(409,'变更受控目标不能用旧FULL/UPSERT覆盖','CHANGE_TARGET_MANAGED');
+    const config=mode===changelogMode?normalizeChangeConfig(changeConfig,normalizedMapping,keys):undefined,
+      events=config?prepareChangeEvents(rows,normalizedMapping,keys,config):undefined,specHash=config?changeSpecHash(config,normalizedMapping,keys):undefined;
+    if(config&&(!runId||!snapshotBinding))throw fail(422,'变更批次须绑定原运行和快照配置','CHANGE_RUN_BINDING_REQUIRED');
+    let changeCounts,changeState;
     let inserted = 0,
       updated = 0,
       unchanged = 0,
@@ -239,6 +247,9 @@ export class LandingStore {
     try {
       if (runId && this.db.prepare('SELECT 1 FROM landing_run_snapshots WHERE run_id=?').get(runId))
         throw fail(409,'原同步运行已留存快照，不允许重复落地覆盖','SYNC_SNAPSHOT_EXISTS');
+      if(config){assertChangeStart({db:this.db,target,targetHash:landingHash(this.readTable(target)),config,specHash,guard:changeGuard,events});
+        changeCounts=applyChangeEvents(this.db,target,events,sourceHash,syncedAt);({inserted,updated,unchanged,deleted}=changeCounts);
+      }else{
       if (mode === "FULL") {
         deleted = this.db
           .prepare("SELECT COUNT(*) AS count FROM landing_rows WHERE target_table=?")
@@ -261,6 +272,7 @@ export class LandingStore {
         else updated++;
         upsert.run(target, item.key, payload, sourceHash, syncedAt);
       }
+      }
       finalRows = this.readTable(target);
       targetHash = landingHash(finalRows);
       if (runId) this.db.prepare(
@@ -279,6 +291,12 @@ export class LandingStore {
           }
         }
       }
+      if(config){
+        const dataStateHash=changeStateHash(this.db,target,targetHash,config.epochId,specHash),info={epochId:config.epochId,specHash,appliedEvents:changeCounts.appliedEvents,deleteEvents:changeCounts.deleteEvents,duplicateEvents:changeCounts.duplicateEvents,staleEvents:changeCounts.staleEvents};
+        const receipt={protocol:'shuduo-csv-changelog/v1',targetTable:target,readCount:rows.length,inserted,updated,unchanged,deleted,finalCount:finalRows.length,targetHash,...snapshotReceipt,...info,dataStateHash,previousStateHash:changeGuard.expectedStateHash??null,previousStatus:changeGuard.initialize?'DRAFT':'READY',runId,taskId:snapshotBinding.taskId,configHash:snapshotBinding.configHash,sourceHash};
+        const stateHash=changeHash({dataStateHash,receiptHash:changeHash(receipt)});changeState={...info,changeStateHash:stateHash};
+        this.db.prepare('INSERT INTO landing_change_targets VALUES(?,?,?,?,?,?) ON CONFLICT(target_table) DO UPDATE SET state_hash=excluded.state_hash,last_run_id=excluded.last_run_id,receipt=excluded.receipt').run(target,config.epochId,specHash,stateHash,runId,JSON.stringify(receipt));
+      }
       this.db.exec("COMMIT");
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
@@ -295,8 +313,12 @@ export class LandingStore {
       finalCount: finalRows.length,
       targetHash,
       ...snapshotReceipt,
+      ...(changeState?{changeState}:{}),
     };
   }
+
+  changeStatus(targetTable){return inspectChangeState(this.db,targetTable,landingHash(this.readTable(targetTable)));}
+  assertChangeIntegrity(){for(const marker of this.db.prepare('SELECT target_table FROM landing_change_targets').all())this.changeStatus(marker.target_table);}
 
   readRunSnapshot(expected) {
     const record = this.db.prepare('SELECT * FROM landing_run_snapshots WHERE run_id=?').get(expected.runId);
@@ -368,12 +390,13 @@ const normalizeKeys = (keys, mapping) => {
 };
 
 export class IngestionManager {
-  constructor({ store, landingStore, project, fixtureRoot, serverMysqlAdapter, now = () => Date.now() }) {
+  constructor({ store, landingStore, project, fixtureRoot, serverMysqlAdapter, allowChangelog = true, now = () => Date.now() }) {
     this.store = store;
     this.landingStore = landingStore;
     this.project = project;
     this.fixtureRoot = realpathSync(fixtureRoot);
     this.serverMysqlAdapter = serverMysqlAdapter;
+    this.allowChangelog = allowChangelog;
     this.now = now;
   }
 
@@ -628,11 +651,46 @@ export class IngestionManager {
   }
 
   createTask(input) {
-    return this.store.create(
-      "offline_sync_task",
-      this.project,
-      this.#normalizeTask(input),
-    );
+    if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'同步配置须为对象','INVALID_SYNC_CONFIG');
+    if(['operationField','sequenceField','deleteValues','changePolicy'].some(k=>Object.hasOwn(input,k)))throw fail(422,'请使用独立变更模式和完整changeConfig，不接受忽略的删除控项','UNKNOWN_CHANGE_OPTIONS');
+    const config=this.#normalizeTask(input);
+    let registry;
+    if(config.mode===changelogMode){
+      registry=this.store.list('sync_change_target',this.project).find(r=>r.targetTable===config.targetTable);
+      if(registry){if(registry.epochId!==config.changeConfig.epochId||registry.specHash!==config.changeSpecHash)throw fail(409,'目标已绑定其他变更代号或映射','CHANGE_TARGET_BINDING_MISMATCH');}
+      else{
+        if(this.store.list('offline_sync_task',this.project).some(t=>t.targetTable===config.targetTable)||this.landingStore.readTable(config.targetTable).length||this.landingStore.changeStatus(config.targetTable))throw fail(409,'已有目标或旧变更控制状态不完整，请恢复完整状态或使用空的新目标','CHANGE_TARGET_NOT_EMPTY');
+        const metadata=this.store.get('source_metadata',config.metadataVersionId,this.project),columns=new Map(metadata.columns.map(c=>[c.name,c]));
+        registry=this.store.create('sync_change_target',this.project,{targetTable:config.targetTable,epochId:config.changeConfig.epochId,specHash:config.changeSpecHash,status:'DRAFT',stateHash:null,targetFields:Object.entries(config.mapping).map(([from,name])=>({name,type:columns.get(from)?.type??'STRING',nullable:columns.get(from)?.nullable??true}))});
+      }
+    }else if(input.changeConfig!==undefined||this.store.list('sync_change_target',this.project).some(r=>r.targetTable===config.targetTable))throw fail(409,'变更受控目标不可用旧模式覆盖，changeConfig仅供变更模式','CHANGE_TARGET_MANAGED');
+    return this.store.create('offline_sync_task',this.project,{...config,...(registry?{changeRegistryId:registry.id}:{})});
+  }
+
+  #changeRegistry(task){const r=this.store.get('sync_change_target',task.changeRegistryId,this.project);if(!r||r.targetTable!==task.targetTable||r.epochId!==task.changeConfig?.epochId||r.specHash!==task.changeSpecHash)throw fail(409,'变更目标登记与原任务不一致，不能推断恢复状态','CHANGE_REGISTRY_MISSING');return r;}
+  #changeReceipt(task,pending){
+    const r=this.#changeRegistry(task),marker=this.landingStore.changeStatus(task.targetTable);if(!marker||marker.last_run_id!==pending.id)return undefined;
+    const value=marker.receipt,metadata=this.store.get('source_metadata',task.metadataVersionId,this.project);
+    if(value.taskId!==task.id||value.configHash!==task.configHash||value.sourceHash!==metadata?.contentHash||value.epochId!==r.epochId||value.specHash!==r.specHash)throw fail(409,'原变更提交回执与任务版本不符','CHANGE_RECEIPT_MISMATCH');
+    return {targetTable:value.targetTable,readCount:value.readCount,inserted:value.inserted,updated:value.updated,unchanged:value.unchanged,deleted:value.deleted,finalCount:value.finalCount,targetHash:value.targetHash,snapshotStatus:value.snapshotStatus,...(value.landingSnapshotHash?{landingSnapshotHash:value.landingSnapshotHash}:{}),sourceHash:value.sourceHash,changeState:{epochId:value.epochId,specHash:value.specHash,changeStateHash:value.changeStateHash,appliedEvents:value.appliedEvents,deleteEvents:value.deleteEvents,duplicateEvents:value.duplicateEvents,staleEvents:value.staleEvents}};
+  }
+  #finishChange(task,pending,output,{reconciled=false}={}){
+    const registry=this.#changeRegistry(task);this.store.update('sync_change_target',registry.id,this.project,{status:'READY',stateHash:output.changeState.changeStateHash,lastRunId:pending.id,...(registry.pendingTargetFields?{targetFields:registry.pendingTargetFields}:{}),pendingTargetFields:undefined,pendingRunId:undefined,previousStatus:undefined,previousStateHash:undefined});
+    const run=this.store.update('offline_sync_run',pending.id,this.project,{...output,status:'SUCCEEDED',actualExecution:true,fullLifecycleE2E:false,finishedAt:new Date(this.now()).toISOString(),durationMs:this.now()-Date.parse(pending.startedAt),...(reconciled?{reconciled:true,recoveredFromStatus:pending.status}:{}),error:undefined,errorCode:undefined});
+    this.store.update('offline_sync_task',task.id,this.project,{status:'SUCCEEDED',lastRunId:run.id});return run;
+  }
+  #reserveChange(task,pending){
+    const r=this.#changeRegistry(task),marker=this.landingStore.changeStatus(task.targetTable);
+    const reused=r.status==='UPDATING'&&r.pendingRunId===pending.id,status=reused?r.previousStatus:r.status,hash=reused?r.previousStateHash:r.stateHash;
+    if(status==='DRAFT'&&(!marker&&this.landingStore.readTable(task.targetTable).length===0)||status==='READY'&&marker?.state_hash===hash&&marker?.epoch_id===r.epochId&&marker?.spec_hash===r.specHash){
+      const before={...r,status,stateHash:hash};if(!reused){const metadata=this.store.get('source_metadata',task.metadataVersionId,this.project),columns=new Map(metadata.columns.map(c=>[c.name,c]));this.store.update('sync_change_target',r.id,this.project,{status:'UPDATING',pendingRunId:pending.id,previousStatus:status,previousStateHash:hash,...(status==='DRAFT'?{pendingTargetFields:Object.entries(task.mapping).map(([from,name])=>({name,type:columns.get(from)?.type??'STRING',nullable:columns.get(from)?.nullable??true}))}:{})});}
+      return {before,guard:{initialize:status==='DRAFT',expectedStateHash:hash,epochId:r.epochId,specHash:r.specHash}};
+    }
+    throw fail(409,'变更状态缺失或有未确认原提交；先按原请求核对，不得重新初始化','CHANGE_STATE_UNCONFIRMED');
+  }
+  #rollbackChange(task,pending,reservation){
+    if(!reservation)return;const marker=this.landingStore.changeStatus(task.targetTable),old=reservation.before;
+    if(old.status==='DRAFT'&&!marker&&this.landingStore.readTable(task.targetTable).length===0||old.status==='READY'&&marker?.state_hash===old.stateHash)this.store.update('sync_change_target',old.id,this.project,{status:old.status,stateHash:old.stateHash,pendingTargetFields:undefined,pendingRunId:undefined,previousStatus:undefined,previousStateHash:undefined});
   }
 
   syncRecoveryPreview(taskId) {
@@ -729,7 +787,7 @@ export class IngestionManager {
     if (!Object.keys(mapping).every((field) => sourceFields.has(field)))
       throw fail(400, "字段映射引用了不存在的源字段", "UNKNOWN_SOURCE_FIELD");
     const mode = input.mode;
-    if (!["FULL", "INCREMENTAL_UPSERT"].includes(mode))
+    if (!["FULL", "INCREMENTAL_UPSERT",changelogMode].includes(mode))
       throw fail(400, "同步模式不支持", "INVALID_SYNC_MODE");
     const keyFields = normalizeKeys(input.keyFields, mapping),
       watermarkField = input.watermarkField
@@ -740,6 +798,13 @@ export class IngestionManager {
       !Object.values(mapping).includes(watermarkField)
     )
       throw fail(400, "水位字段必须存在于目标映射中", "INVALID_WATERMARK");
+    let changeConfig,changeSpec;
+    if(mode===changelogMode){
+      if(!this.allowChangelog||source.sourceType!=='LOCAL_CSV')throw fail(403,'CSV变更模式当前仅供本机CSV目标','CHANGE_LOCAL_ONLY');
+      changeConfig=normalizeChangeConfig(input.changeConfig,mapping,keyFields);
+      if(!sourceFields.has(changeConfig.operationField)||!sourceFields.has(changeConfig.sequenceField)||watermarkField)throw fail(422,'操作/序号源字段须存在，变更模式不使用旧记录水位','CHANGE_SOURCE_FIELDS_INVALID');
+      changeSpec=changeSpecHash(changeConfig,mapping,keyFields);
+    }else if(input.changeConfig!==undefined)throw fail(422,'changeConfig仅供独立变更模式','CHANGE_MODE_REQUIRED');
     const config = {
       name: text(input.name, "同步任务名称", 2, 80),
       sourceId: source.id,
@@ -751,6 +816,7 @@ export class IngestionManager {
       mapping,
       keyFields,
       watermarkField,
+      ...(changeConfig?{changeConfig,changeSpecHash:changeSpec}:{}),
       status: "READY",
     };
     return {
@@ -764,6 +830,7 @@ export class IngestionManager {
         mapping,
         keyFields,
         watermarkField,
+        ...(changeConfig?{changeConfig,changeSpecHash:changeSpec}:{}),
       }),
     };
   }
@@ -771,6 +838,9 @@ export class IngestionManager {
   runTask(taskId, request = {}) {
     const task = this.#task(taskId),
       started = this.now();
+    let resumed,changeReservation;
+    if(task.mode!==changelogMode&&this.store.list('sync_change_target',this.project).some(r=>r.targetTable===task.targetTable))throw fail(409,'变更受控目标不可用旧任务覆盖','CHANGE_TARGET_MANAGED');
+    if(task.mode===changelogMode&&!this.allowChangelog)throw fail(403,'变更模式当前仅供本机执行','CHANGE_LOCAL_ONLY');
     if (request.requestKey) {
       const prior = this.store
         .list("offline_sync_run", this.project)
@@ -782,16 +852,21 @@ export class IngestionManager {
             "相同幂等键不能用于不同同步请求",
             "SYNC_IDEMPOTENCY_CONFLICT",
           );
+        if(task.mode===changelogMode&&!['SUCCEEDED','FAILED'].includes(prior.status)){
+          const receipt=this.#changeReceipt(task,prior);if(receipt)return {...this.#finishChange(task,prior,receipt,{reconciled:true}),replayed:true};
+          const r=this.#changeRegistry(task);if(r.status!=='UPDATING'||r.pendingRunId!==prior.id)throw fail(409,'原变更请求缺少可核对的控制状态','CHANGE_STATE_UNCONFIRMED');resumed=prior;
+        }
         if (["SUCCEEDED", "FAILED"].includes(prior.status))
           return { ...prior, replayed: true };
-        throw fail(
+        if(!resumed)throw fail(
           409,
           "该同步请求仍在运行或已中断，请先检查运行记录",
           "SYNC_RUN_UNCERTAIN",
         );
       }
     }
-    const pending = this.store.create("offline_sync_run", this.project, {
+    if(task.mode===changelogMode&&!resumed&&(()=>{const r=this.#changeRegistry(task);return r.status==='UPDATING'||r.lastRunId&&this.store.get('offline_sync_run',r.lastRunId,this.project)?.status!=='SUCCEEDED';})())throw fail(409,'目标有未确认的原请求，请先恢复原请求','CHANGE_STATE_UNCONFIRMED');
+    const pending = resumed??this.store.create("offline_sync_run", this.project, {
       taskId: task.id,
       status: "RUNNING",
       sourceRevisionId: task.sourceRevisionId,
@@ -842,7 +917,9 @@ export class IngestionManager {
           "SOURCE_CHANGED",
         );
       const watermark=ingestionWatermark(parsed.rows,task.watermarkField?Object.entries(task.mapping).find(([,target])=>target===task.watermarkField)?.[0]:undefined,metadata.columns);
+      if(task.mode===changelogMode)changeReservation=this.#reserveChange(task,pending);
       const output = this.landingStore.sync({
+        ...(changeReservation?{changeConfig:task.changeConfig,changeGuard:changeReservation.guard}:{}),
         runId: pending.id,
         snapshotBinding: this.#snapshotBinding(task,input.fileHash),
         targetTable: task.targetTable,
@@ -853,6 +930,7 @@ export class IngestionManager {
         sourceHash: input.fileHash,
         syncedAt: new Date(this.now()).toISOString(),
       });
+      if(task.mode===changelogMode)return this.#finishChange(task,pending,{...output,sourceHash:input.fileHash},{reconciled:Boolean(resumed)});
       const run = this.store.update(
           "offline_sync_run",
           pending.id,
@@ -878,6 +956,12 @@ export class IngestionManager {
       });
       return run;
     } catch (error) {
+      if(task.mode===changelogMode){
+        let receipt;try{receipt=this.#changeReceipt(task,pending);}catch{throw Object.assign(fail(409,'原变更控制证据待核对，保留原请求','CHANGE_STATE_UNCONFIRMED'),{runId:pending.id});}
+        if(receipt){try{const r=this.#changeRegistry(task);this.store.update('sync_change_target',r.id,this.project,{status:'UPDATING',pendingRunId:pending.id});this.store.update('offline_sync_run',pending.id,this.project,{status:'UNCONFIRMED',error:'落地已提交，元数据结果待原请求核对',errorCode:'CHANGE_RESULT_UNCONFIRMED'});this.store.update('offline_sync_task',task.id,this.project,{status:'UNCONFIRMED',lastRunId:pending.id});}catch{}throw Object.assign(fail(409,'落地已提交，请使用原请求回读，不重新落地','CHANGE_RESULT_UNCONFIRMED'),{runId:pending.id});}
+        if(resumed&&!changeReservation)changeReservation=this.#reserveChange(task,pending);
+        this.#rollbackChange(task,pending,changeReservation);
+      }
       const run = this.store.update(
         "offline_sync_run",
         pending.id,
@@ -904,6 +988,8 @@ export class IngestionManager {
   }
 
   async runServerMysqlTask(taskId, request = {}) {
+    const selected=this.#task(taskId);if(this.store.list('sync_change_target',this.project).some(r=>r.targetTable===selected.targetTable))throw fail(409,'变更受控目标不可被MySQL任务覆盖','CHANGE_TARGET_MANAGED');
+
     const task = this.#task(taskId),
       source = this.#source(task.sourceId),
       started = this.now();
