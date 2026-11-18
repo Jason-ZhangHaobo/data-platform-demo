@@ -1,5 +1,11 @@
 # V2 API 契约与实现边界
 
+## 质量检测结果与恢复（2026-11-18，本机范围）
+
+既有质量run/list/overview接口新增NO_DATA（0行，passRate=null）及缺证据历史解释UNCONFIRMED。规则health可为PENDING／NO_DATA／UNCONFIRMED；counts.noData统计无数据规则。缺字段计missingFieldCount并失败；原同步已核对时run返回syncRunId／metadataVersionId，保留assetVersionId／assetEvidenceHash及原ruleVersionId。
+
+旧0行通过返回storedStatus=PASSED及QUALITY_LEGACY_EMPTY_PASS；不足的恢复告警返回storedStatus=RESOLVED、status=OPEN、recoveryUnconfirmed=true，读取不改原记录。实际非空通过才可恢复，新的正确恢复保留previousRecoveryRunId。运维手动恢复对缺证明质量回执返回409 QUALITY_RECOVERY_UNPROVEN；NO_DATA自身不属于成功状态。[完整语义](quality-evidence.md)。
+
 ## 指定归档持仓开发输入（2026-11-18，本机范围）
 
 `GET /development/synced-positions/archives` 返回 `shuduo-sync-sql-archives/v1`、readOnly及最多100条候选；`verification=REQUIRES_CHECK`不代表归档已读取。`GET /development/synced-positions/archives/:taskId/:runId` 重核指定批次，返回offer，不返回行或context。

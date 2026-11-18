@@ -33,7 +33,14 @@ type QualityRun = {
   evaluatedCount: number;
   passedCount: number;
   failedCount: number;
-  passRate: number;
+  passRate: number|null;
+  reasonCode?:string;
+  storedStatus?:string;
+  missingFieldCount?:number;
+  assetEvidenceHash?:string;
+  assetVersionId?:string;
+  syncRunId?:string;
+  metadataVersionId?:string;
   durationMs: number;
 };
 type QualityAlert = {
@@ -43,6 +50,7 @@ type QualityAlert = {
   message: string;
   runId: string;
   recoveryRunId?: string;
+  recoveryUnconfirmed?:boolean;
 };
 type RuleVersion = {
   id: string;
@@ -75,6 +83,7 @@ type Overview = {
     rules: number;
     healthy: number;
     failed: number;
+    noData?:number;
     runs: number;
     openAlerts: number;
     resolvedAlerts: number;
@@ -103,6 +112,9 @@ type AgentPlan = {
 const labels: Record<string, string> = {
   HEALTHY: "健康",
   FAILED: "异常",
+  NO_DATA: "无数据待核验",
+  PENDING:"待检测当前版本",
+  UNCONFIRMED:"健康回执待核对",
   PASSED: "通过",
   ACTIVE: "生效中",
   RETIRED: "已退役",
@@ -243,7 +255,7 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
     action(
       "run",
       () => api(`/quality/rules/${selectedRule.id}/run`, {}),
-      "规则已在实际资产行上执行，结果和告警已保存",
+      "检测回执已保存；无数据不算通过，也不会解除原告警",
     );
   const createVersion = () =>
     selectedRule &&
@@ -289,11 +301,12 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
     <div className="quality-workbench-v2">
       <section className="quality-hero-v2">
         <div><span className="eyebrow">DATA QUALITY · M4D</span><h2>让失败可重现，让修复有证据</h2><p>每次检测绑定资产摘要和规则版本；失败产生告警，校准新版本后重新检测并关联恢复。</p></div>
-        <div className="quality-kpis-v2"><div><ShieldCheck size={15} /><strong>{overview?.counts.healthy ?? 0}</strong><span>健康规则</span></div><div><ShieldAlert size={15} /><strong>{overview?.counts.failed ?? 0}</strong><span>异常规则</span></div><div><Activity size={15} /><strong>{overview?.counts.runs ?? 0}</strong><span>实际运行</span></div><div><AlertTriangle size={15} /><strong>{overview?.counts.openAlerts ?? 0}</strong><span>开放告警</span></div></div>
+        <div className="quality-kpis-v2"><div><ShieldCheck size={15} /><strong>{overview?.counts.healthy ?? 0}</strong><span>最近检测通过</span></div><div><ShieldAlert size={15} /><strong>{overview?.counts.failed ?? 0}</strong><span>异常规则</span></div><div><Activity size={15} /><strong>{overview?.counts.runs ?? 0}</strong><span>实际运行</span></div><div><AlertTriangle size={15} /><strong>{overview?.counts.openAlerts ?? 0}</strong><span>开放告警</span></div></div>
       </section>
       {(notice || error) && <div className={error ? "ingestion-feedback error" : "ingestion-feedback"} role={error ? "alert" : "status"}>{error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}{error || notice}</div>}
       {local && <FundReportQualityLookup api={api} canWrite={canWrite} />}
 
+      {Boolean(overview?.counts.noData)&&<p className="quality-no-data-v2" role="status">{overview?.counts.noData}条规则当前无行可核验，未恢复为健康。请先检查源同步批次和数据范围；已有告警保持原状态。</p>}
       <section className="quality-agent-v2">
         <header><div className="quality-agent-icon-v2"><Bot size={20} /></div><div><span className="eyebrow">DATA AGENT · METADATA + AGGREGATED EVIDENCE</span><h3>让 Agent 建议规则，人决定是否创建与运行</h3><p>模型只看字段元数据和失败计数，不接收业务行、无效样本或客户标识。</p></div></header>
         <div className="quality-agent-compose-v2"><textarea aria-label="向Data Agent描述质量需求" rows={2} value={agentMessage} onChange={(event) => setAgentMessage(event.target.value)} /><button className="button primary" onClick={generatePlan} disabled={!canWrite || !!busy || pending(agentPlan?.status)}>{busy === "agent" || pending(agentPlan?.status) ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />}生成规则方案</button></div>
@@ -310,10 +323,14 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
         <section className="quality-detail-v2">
           {selectedRule ? <>
             <header><div><span className="eyebrow">{selectedRule.code} · V{selectedRule.currentVersion.versionNumber}</span><h3>{selectedRule.name}</h3><p>{selectedRule.assetId}</p></div><button className="button primary" onClick={runRule} disabled={!canWrite || !!busy}>{busy === "run" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际检测</button></header>
-            <div className="quality-proof-v2"><div><span>健康度</span><strong>{labels[selectedRule.health ?? selectedRule.status] ?? selectedRule.health ?? selectedRule.status}</strong></div><div><span>规则表达</span><strong>{configText(selectedRule.currentVersion)}</strong></div><div><span>版本</span><strong>{selectedRule.versions.length}</strong></div><div><span>检测</span><strong>{selectedRule.runs.length}</strong></div><div><span>开放告警</span><strong>{selectedRule.alerts.filter((item) => item.status === "OPEN").length}</strong></div></div>
-            {selectedRule.alerts[0] && <div className={`quality-alert-v2 ${selectedRule.alerts[0].status.toLowerCase()}`}>{selectedRule.alerts[0].status === "OPEN" ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}<div><strong>{selectedRule.alerts[0].message}</strong><p>{selectedRule.alerts[0].status === "OPEN" ? `失败批次 ${selectedRule.alerts[0].runId.slice(0, 8)}` : `恢复批次 ${selectedRule.alerts[0].recoveryRunId?.slice(0, 8)}`}</p></div><span>{labels[selectedRule.alerts[0].status]}</span></div>}
+            <div className="quality-proof-v2"><div><span>最近结论</span><strong>{labels[selectedRule.health ?? selectedRule.status] ?? selectedRule.health ?? selectedRule.status}</strong></div><div><span>规则表达</span><strong>{configText(selectedRule.currentVersion)}</strong></div><div><span>版本</span><strong>{selectedRule.versions.length}</strong></div><div><span>检测</span><strong>{selectedRule.runs.length}</strong></div><div><span>开放告警</span><strong>{selectedRule.alerts.filter((item) => item.status === "OPEN").length}</strong></div></div>
+            {selectedRule.alerts[0] && <div className={`quality-alert-v2 ${selectedRule.alerts[0].status.toLowerCase()}`}>{selectedRule.alerts[0].status === "OPEN" ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}<div><strong>{selectedRule.alerts[0].message}</strong><p>{selectedRule.alerts[0].recoveryUnconfirmed?"原恢复回执没有非空通过证据，当前按待恢复处理":selectedRule.alerts[0].status === "OPEN" ? `失败批次 ${selectedRule.alerts[0].runId.slice(0, 8)}` : `恢复批次 ${selectedRule.alerts[0].recoveryRunId?.slice(0, 8)}`}</p></div><span>{labels[selectedRule.alerts[0].status]}</span></div>}
             <div className="quality-evidence-v2">
-              <section><header><div><History size={15} /><h4>运行历史</h4></div><span>{selectedRule.runs.length}</span></header>{selectedRule.runs.map((run) => <article key={run.id}><span className={`status-pill ${run.status.toLowerCase()}`}>{labels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><strong>{run.passedCount}/{run.evaluatedCount}通过</strong><p>失败{run.failedCount} · {(run.passRate * 100).toFixed(1)}% · {run.durationMs}ms</p></div></article>)}</section>
+              <section><header><div><History size={15} /><h4>运行历史</h4></div><span>{selectedRule.runs.length}</span></header>{selectedRule.runs.map((run) => <article key={run.id}><span className={`status-pill ${run.status.toLowerCase()}`}>{labels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><strong>{run.status==='NO_DATA'?'无数据，未给出通过率':run.status==='UNCONFIRMED'?'回执待核对，未确认通过':`${run.passedCount}/${run.evaluatedCount}通过`}</strong><p>{run.status==='NO_DATA'?'请检查数据范围；未解除原告警':run.status==='UNCONFIRMED'?'未计为健康或告警恢复依据':`失败${run.failedCount} · ${run.passRate===null?'通过率待核对':(run.passRate*100).toFixed(1)+'%'} · ${run.durationMs}ms`}</p>
+                {Boolean(run.missingFieldCount)&&<p>有{run.missingFieldCount}行缺少检测字段，按未通过处理。</p>}
+                {run.reasonCode==='QUALITY_LEGACY_EMPTY_PASS'&&<p>原回执记录通过，但检测行数为0；历史原值保留，不作为恢复证据。</p>}
+                {run.reasonCode==='QUALITY_PASS_UNPROVEN'&&<p>原通过回执的执行或计数待核对，未计为健康或恢复依据。</p>}
+                <small>规则V{selectedRule.versions.find(version=>version.id===run.ruleVersionId)?.versionNumber??'待核对'} · {run.syncRunId?`同步批次 ${run.syncRunId.slice(0,8)}`:'未记录已核对的同步批次'} · 数据摘要 {run.assetEvidenceHash?.slice(0,12)??'未记录'}</small></div></article>)}</section>
               <section><header><div><RefreshCw size={15} /><h4>版本历史</h4></div><span>{selectedRule.versions.length}</span></header>{selectedRule.versions.map((version) => <article key={version.id}><span className={`status-pill ${version.status.toLowerCase()}`}>V{version.versionNumber}</span><div><strong>{configText(version)}</strong><p>{version.description}</p><code>{version.configHash.slice(0, 12)}</code></div></article>)}</section>
             </div>
             {selectedRule.currentVersion.type === "VALUE_RANGE" && <details className="quality-version-form-v2" open={selectedRule.health === "FAILED"}><summary><SlidersHorizontal size={14} />校准为新版本</summary><div><label>最小值<input value={nextMin} onChange={(event) => setNextMin(event.target.value)} /></label><label>最大值<input value={nextMax} onChange={(event) => setNextMax(event.target.value)} /></label><label className="wide">版本说明<input value={nextDescription} onChange={(event) => setNextDescription(event.target.value)} /></label><button className="button" onClick={createVersion} disabled={!canWrite || !!busy}><RefreshCw size={14} />创建V{selectedRule.currentVersion.versionNumber + 1}</button></div></details>}

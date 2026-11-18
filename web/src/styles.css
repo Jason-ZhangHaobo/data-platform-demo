@@ -8310,3 +8310,7 @@ kbd {
 .sync-snapshot-scroll{overflow:auto;max-height:320px;max-width:100%;border:1px solid var(--line,#dce6df);border-radius:9px}
 .sync-snapshot-scroll table{border-collapse:collapse;font-size:12px;min-width:100%;white-space:nowrap}.sync-snapshot-scroll td,.sync-snapshot-scroll th{padding:9px 12px;border-bottom:1px solid var(--line,#dce6df);text-align:left}.sync-snapshot-scroll th{background:#f3f7f2;position:sticky;top:0}
 .sync-run-snapshot nav{margin-top:12px;justify-content:space-between;font-size:12px}.sync-run-snapshot button{white-space:nowrap}
+
+.quality-no-data-v2{padding:12px 16px;border:1px solid #dfc99a;border-radius:10px;background:#fffaf0;color:#795522;font-size:12px;line-height:1.7}
+.quality-evidence-v2 article>div{grid-column:1/-1}.quality-evidence-v2 article small{display:block;overflow-wrap:anywhere;color:#6d7e72;font-size:10px}.quality-evidence-v2 article p,.quality-evidence-v2 article small{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.6}
+.quality-workbench-v2 .status-pill.no_data,.quality-workbench-v2 .status-pill.pending,.quality-workbench-v2 .status-pill.unconfirmed{color:#795522;background:#fff3d9}
