@@ -77,6 +77,7 @@ type Rule = {
   assetId: string;
   status: string;
   health?: string;
+  sourceFreshness?:{status:string;reason:string;lastDetected?:{runId:string;status:string;versionId?:string;evidenceHash?:string;rowsHash?:string;validUntil?:string};current?:{versionId?:string;evidenceHash?:string;rowsHash?:string;rowCount:number}};
   currentVersionId: string;
   currentVersion: RuleVersion;
   versions: RuleVersion[];
@@ -92,6 +93,7 @@ type Overview = {
     healthy: number;
     failed: number;
     noData?:number;
+    stale?:number;unconfirmed?:number;
     runs: number;
     openAlerts: number;
     resolvedAlerts: number;
@@ -119,6 +121,7 @@ type AgentPlan = {
 
 const labels: Record<string, string> = {
   HEALTHY: "健康",
+  STALE:"当前数据待检测",
   FAILED: "异常",
   NO_DATA: "无数据待核验",
   PENDING:"待检测当前版本",
@@ -324,12 +327,14 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
     <div className="quality-workbench-v2">
       <section className="quality-hero-v2">
         <div><span className="eyebrow">DATA QUALITY · M4D</span><h2>让失败可重现，让修复有证据</h2><p>每次检测绑定资产摘要和规则版本；失败产生告警，校准新版本后重新检测并关联恢复。</p></div>
-        <div className="quality-kpis-v2"><div><ShieldCheck size={15} /><strong>{overview?.counts.healthy ?? 0}</strong><span>最近检测通过</span></div><div><ShieldAlert size={15} /><strong>{overview?.counts.failed ?? 0}</strong><span>异常规则</span></div><div><Activity size={15} /><strong>{overview?.counts.runs ?? 0}</strong><span>实际运行</span></div><div><AlertTriangle size={15} /><strong>{overview?.counts.openAlerts ?? 0}</strong><span>开放告警</span></div></div>
+        <div className="quality-kpis-v2"><div><ShieldCheck size={15} /><strong>{overview?.counts.healthy ?? 0}</strong><span>当前数据已核验</span></div><div><ShieldAlert size={15} /><strong>{overview?.counts.failed ?? 0}</strong><span>异常规则</span></div><div><Activity size={15} /><strong>{overview?.counts.runs ?? 0}</strong><span>实际运行</span></div><div><AlertTriangle size={15} /><strong>{overview?.counts.openAlerts ?? 0}</strong><span>开放告警</span></div></div>
       </section>
       {(notice || error) && <div className={error ? "ingestion-feedback error" : "ingestion-feedback"} role={error ? "alert" : "status"}>{error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}{error || notice}</div>}
       {savedVersionReceipt&&<article className="quality-version-receipt" aria-label="原版本保存回执"><header><strong>{savedVersionReceipt.name} · 原回执V{savedVersionReceipt.version.versionNumber}</strong><button className="button" onClick={()=>setSavedVersionReceipt(undefined)}>关闭回执</button></header><p>{configText(savedVersionReceipt.version)}</p><p>{savedVersionReceipt.version.description}</p><small>原保存版本V{savedVersionReceipt.version.versionNumber} · 回读时当前规则V{savedVersionReceipt.currentVersion}。本框只读，仍须实际检测，编辑按当前规则基准。</small></article>}
       {local && <FundReportQualityLookup api={api} canWrite={canWrite} />}
 
+      {Boolean(overview?.counts.stale)&&<p className="quality-no-data-v2" role="status">{overview?.counts.stale}条规则的当前数据已变化或时效已到期，尚未重新检测；旧通过未计为当前健康。</p>}
+      {Boolean(overview?.counts.unconfirmed)&&<p className="quality-no-data-v2" role="status">{overview?.counts.unconfirmed}条规则的当前来源或原检测证据未能完整核对，未计为健康；原记录保留。</p>}
       {Boolean(overview?.counts.noData)&&<p className="quality-no-data-v2" role="status">{overview?.counts.noData}条规则当前无行可核验，未恢复为健康。请先检查源同步批次和数据范围；已有告警保持原状态。</p>}
       <section className="quality-agent-v2">
         <header><div className="quality-agent-icon-v2"><Bot size={20} /></div><div><span className="eyebrow">DATA AGENT · METADATA + AGGREGATED EVIDENCE</span><h3>让 Agent 建议规则，人决定是否创建与运行</h3><p>模型只看字段元数据和失败计数，不接收业务行、无效样本或客户标识。</p></div></header>
@@ -347,8 +352,12 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
         <section className="quality-detail-v2">
           {selectedRule ? <>
             <header><div><span className="eyebrow">{selectedRule.code} · V{selectedRule.currentVersion.versionNumber}</span><h3>{selectedRule.name}</h3><p>{selectedRule.assetId}</p></div><button className="button primary" onClick={runRule} disabled={!canWrite || !!busy}>{busy === "run" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际检测当前表</button></header>
-            <div className="quality-proof-v2"><div><span>最近结论</span><strong>{labels[selectedRule.health ?? selectedRule.status] ?? selectedRule.health ?? selectedRule.status}</strong></div><div><span>规则表达</span><strong>{configText(selectedRule.currentVersion)}</strong></div><div><span>版本</span><strong>{selectedRule.versions.length}</strong></div><div><span>检测</span><strong>{selectedRule.runs.length}</strong></div><div><span>开放告警</span><strong>{selectedRule.alerts.filter((item) => item.status === "OPEN").length}</strong></div></div>
-            {selectedRule.alerts[0] && <div className={`quality-alert-v2 ${selectedRule.alerts[0].status.toLowerCase()}`}>{selectedRule.alerts[0].status === "OPEN" ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}<div><strong>{selectedRule.alerts[0].message}</strong><p>{selectedRule.alerts[0].recoveryUnconfirmed?"原恢复回执没有非空通过证据，当前按待恢复处理":selectedRule.alerts[0].status === "OPEN" ? `失败批次 ${selectedRule.alerts[0].runId.slice(0, 8)}` : `恢复批次 ${selectedRule.alerts[0].recoveryRunId?.slice(0, 8)}`}</p></div><span>{labels[selectedRule.alerts[0].status]}</span></div>}
+            <div className="quality-proof-v2"><div><span>本次读取状态</span><strong>{labels[selectedRule.health ?? selectedRule.status] ?? selectedRule.health ?? selectedRule.status}</strong></div><div><span>规则表达</span><strong>{configText(selectedRule.currentVersion)}</strong></div><div><span>版本</span><strong>{selectedRule.versions.length}</strong></div><div><span>检测</span><strong>{selectedRule.runs.length}</strong></div><div><span>开放告警</span><strong>{selectedRule.alerts.filter((item) => item.status === "OPEN").length}</strong></div></div>
+            {selectedRule.sourceFreshness&&<section className={"quality-current-evidence "+(selectedRule.health==='STALE'||selectedRule.health==='UNCONFIRMED'?'pending':'')} aria-label="当前质量证据"><header><div><strong>{selectedRule.sourceFreshness.status==='MATCHED'?'本次读取的数据与原检测一致':'当前证据核对'}</strong><p>{selectedRule.sourceFreshness.reason}</p></div><button className="button" disabled={!!busy} onClick={()=>void reload().catch(cause=>setError((cause as Error).message))}>重读当前数据状态</button></header>
+              {selectedRule.sourceFreshness.lastDetected&&<p>原检测结论：{labels[selectedRule.sourceFreshness.lastDetected.status]??selectedRule.sourceFreshness.lastDetected.status} · 批次 {selectedRule.sourceFreshness.lastDetected.versionId?.slice(0,8)??'未记录'}{selectedRule.sourceFreshness.current?.versionId&&<> · 当前批次 {selectedRule.sourceFreshness.current.versionId.slice(0,8)}</>}</p>}
+              {selectedRule.sourceFreshness.lastDetected?.validUntil&&<small>时效证据有效至 {new Date(selectedRule.sourceFreshness.lastDetected.validUntil).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})} 北京时间</small>}
+              <details><summary>核对原检测和当前来源</summary><p>原检测编号 {selectedRule.sourceFreshness.lastDetected?.runId??'尚无检测'}<br/>原数据摘要 {selectedRule.sourceFreshness.lastDetected?.evidenceHash??'未记录'}<br/>当前数据摘要 {selectedRule.sourceFreshness.current?.evidenceHash??'未确认'}<br/>原实际行摘要 {selectedRule.sourceFreshness.lastDetected?.rowsHash??'未记录'}<br/>当前实际行摘要 {selectedRule.sourceFreshness.current?.rowsHash??'未确认'}</p></details></section>}
+            {selectedRule.alerts[0] && <div className={`quality-alert-v2 ${selectedRule.alerts[0].status.toLowerCase()}`}>{selectedRule.alerts[0].status === "OPEN" ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}<div><strong>{selectedRule.alerts[0].message}</strong><p>{selectedRule.alerts[0].recoveryUnconfirmed?"原恢复回执没有非空通过证据，当前按待恢复处理":selectedRule.alerts[0].status === "OPEN" ? `失败批次 ${selectedRule.alerts[0].runId.slice(0, 8)}` : `恢复批次 ${selectedRule.alerts[0].recoveryRunId?.slice(0, 8)}`}</p></div><span>{selectedRule.alerts[0].status==="RESOLVED"&&selectedRule.sourceFreshness?.status!=="MATCHED"?"原批次已恢复":labels[selectedRule.alerts[0].status]}</span></div>}
             {local&&<Suspense fallback={<p role="status">正在读取原批次复检…</p>}><QualityArchiveRun key={selectedRule.id} api={api} ruleId={selectedRule.id} versionId={selectedRule.currentVersionId} versionNumber={selectedRule.currentVersion.versionNumber} canWrite={canWrite&&!busy} onSaved={reload}/></Suspense>}
             <div className="quality-evidence-v2">
               <section><header><div><History size={15} /><h4>运行历史</h4></div><span>{selectedRule.runs.length}</span></header>{selectedRule.runs.map((run) => <article key={run.id}><span className={`status-pill ${run.status.toLowerCase()}`}>{labels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><strong>{run.status==='NO_DATA'?'无数据，未给出通过率':run.status==='UNCONFIRMED'?'回执待核对，未确认通过':`${run.passedCount}/${run.evaluatedCount}通过`}</strong><p>{run.status==='NO_DATA'?'请检查数据范围；未解除原告警':run.status==='UNCONFIRMED'?'未计为健康或告警恢复依据':`失败${run.failedCount} · ${run.passRate===null?'通过率待核对':(run.passRate*100).toFixed(1)+'%'} · ${run.durationMs}ms`}</p>

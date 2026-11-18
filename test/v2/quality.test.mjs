@@ -211,7 +211,8 @@ test("quality model adapter never receives business rows or invalid samples", as
           id: "rule-id",
           code: "old_rule",
           assetId: "landing:quality_positions",
-          health: "FAILED",
+          health: "STALE",
+          currentInputStatus:"DATA_CHANGED",
           currentVersion: { type: "NOT_NULL", field: "security_code", config: {} },
           latestRun: { status: "FAILED", evaluatedCount: 3, failedCount: 1 },
           invalidRows: ["POS-SHOULD-NOT-LEAK"],
@@ -249,5 +250,6 @@ test("quality model adapter never receives business rows or invalid samples", as
   const sent = requestBody.messages[1].content;
   assert.match(sent, /quality_positions/);
   assert.doesNotMatch(sent, /CLIENT-SHOULD-NOT-LEAK|POS-SHOULD-NOT-LEAK/);
+  const modelInput=JSON.parse(requestBody.messages[1].content);assert.equal(modelInput.existingRulesAndSummaries[0].currentInputStatus,'DATA_CHANGED');assert.equal(modelInput.existingRulesAndSummaries[0].health,'STALE');assert.match(requestBody.messages[0].content,/不能声称当前数据已通过/);
   assert.equal(generated.plan.type, "NOT_NULL");
 });

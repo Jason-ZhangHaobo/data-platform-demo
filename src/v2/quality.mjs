@@ -1,6 +1,7 @@
+import {currentQualityEvidence,qualityRowsHash,qualityValidUntil} from './quality-current-evidence.mjs';
 import {qualityRunInput} from './quality-source.mjs';
 import { createHash } from "node:crypto";
-import {qualityAlertView,qualityRuleHealth,qualityRunView,qualityRecoveryMatches} from './quality-evidence.mjs';
+import {qualityAlertView,qualityRunView,qualityRecoveryMatches} from './quality-evidence.mjs';
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -81,9 +82,10 @@ export class QualityManager {
         .list("quality_alert", this.project)
         .filter((alert) => alert.ruleId === rule.id)
         .map(alert=>qualityAlertView(alert,id=>runs.find(run=>run.id===id),id=>versions.find(version=>version.id===id)));
+    const currentVersion=versions.find(version=>version.id===rule.currentVersionId),lastRun=runs.find(run=>run.id===rule.lastRunId);
     return {
       ...rule,
-      health:qualityRuleHealth(rule,runs.find(run=>run.id===rule.lastRunId)),
+      ...currentQualityEvidence({rule,version:currentVersion,lastRun,readCurrent:()=>this.assets.executionRows(rule.assetId),now:this.now()}),
       currentVersion: versions.find(
         (version) => version.id === rule.currentVersionId,
       ),
@@ -183,16 +185,18 @@ export class QualityManager {
       version = this.#version(rule.currentVersionId);
     this.#basis(version,input.expectedVersionId);
     const { asset, rows, archiveSource } = this.inputEvidence(ruleId,input),
+      evaluated=this.evaluateRows(version, rows, { includeInvalidRowHashes: true }),validUntil=qualityValidUntil(version,rows,evaluated),
       run = this.store.create("quality_run", this.project, {
         ruleId: rule.id,
         ruleVersionId: version.id,
         ruleConfigHash: version.configHash,
-        ...(archiveSource?{archiveSource,evaluatedAt:new Date(this.now()).toISOString()}:{}),
+        evaluatedAt:new Date(this.now()).toISOString(),inputRowsHash:qualityRowsHash(rows),...(validUntil?{validUntil}:{}),
+        ...(archiveSource?{archiveSource}:{}),
         assetId: asset.id,
         assetEvidenceHash: asset.evidenceHash,
         assetVersionId: asset.versionId,
         ...(asset.syncSource?.status==='VERIFIED'?{syncRunId:asset.syncSource.runId,metadataVersionId:asset.syncSource.metadataVersionId}:{}),
-        ...this.evaluateRows(version, rows, { includeInvalidRowHashes: true }),
+        ...evaluated,
       });
     if(archiveSource)return {rule:this.detail(rule.id),run}; // Historical rechecks never replace current health or alerts.
     if (run.status === "FAILED") {
@@ -269,6 +273,8 @@ export class QualityManager {
         healthy: rules.filter((rule) => rule.health === "HEALTHY").length,
         failed: rules.filter((rule) => rule.health === "FAILED").length,
         noData: rules.filter(rule=>rule.health==='NO_DATA').length,
+        stale:rules.filter(rule=>rule.health==='STALE').length,
+        unconfirmed:rules.filter(rule=>rule.health==='UNCONFIRMED').length,
         runs: runs.length,
         openAlerts: alerts.filter((alert) => alert.status === "OPEN").length,
         resolvedAlerts: alerts.filter((alert) => alert.status === "RESOLVED").length,
@@ -303,13 +309,8 @@ export class QualityManager {
           field: rule.currentVersion.field,
           config: rule.currentVersion.config,
         },
-        latestRun: rule.runs[0]
-          ? {
-              status: rule.runs[0].status,
-              evaluatedCount: rule.runs[0].evaluatedCount,
-              failedCount: rule.runs[0].failedCount,
-            }
-          : undefined,
+        currentInputStatus:rule.sourceFreshness?.status,
+        latestRun:(()=>{const run=rule.runs.find(run=>run.id===rule.lastRunId);return run?{status:run.status,evaluatedCount:run.evaluatedCount,failedCount:run.failedCount}:undefined;})(),
       })),
     };
   }
