@@ -3,7 +3,7 @@ export function acknowledgedManualDraft(current: string, submitted: string, save
   if (saved !== submitted.trim()) throw new Error("保存回执与提交代码不一致，请查询原保存记录。");
   return current === submitted ? saved : current;
 }
-type ManualRevisionReceipt = {id:string;sql:string;contextId:string;source?:string;manualProvenance?:{kind:string;originAgentTaskId?:string;agentIndependentE2E:boolean}};
+export type ManualRevisionReceipt = {id:string;sql:string;contextId:string;source?:string;manualProvenance?:{kind:string;originAgentTaskId?:string;agentIndependentE2E:boolean}};
 export function verifiedManualOrigin(saved:Pick<ManualRevisionReceipt,'source'|'manualProvenance'>,requestedOrigin?:string):string|undefined {
   const provenance=saved.manualProvenance,origin=provenance?.originAgentTaskId;
   const verified=saved.source==='MANUAL'&&provenance?.kind==='ENGINEER_EDIT'&&provenance.agentIndependentE2E===false&&typeof origin==='string'&&uuid.test(origin)?origin:undefined;

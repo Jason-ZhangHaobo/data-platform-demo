@@ -1,3 +1,4 @@
+import {recoverManualRun} from './manual-run-confirmation';
 import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Bot, CheckCircle2, ChevronDown, Code2, FileCode2, GitCompareArrows, History, LoaderCircle, Play, Plus, RefreshCw, Send, Square, Undo2 } from "lucide-react";
 import { developmentRunLog } from "./run-log";
@@ -350,7 +351,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     setManualDeliveryOpen(false);
     history.replaceState(null, "", url);
   };
-  const rememberManual = (revisionId: string, runId?: string, requestKey?: string, origin = originTaskId) => {
+  const rememberManual = (revisionId: string, runId?: string, requestKey?: string, origin?:string) => {
     selectedId.current = undefined;
     restoredManual.current=JSON.stringify([revisionId,runId,requestKey]);
     const url = manualRunLocation(location.href, {revisionId, runId, requestKey, originTaskId:expectedManualSource?undefined:origin});
@@ -652,16 +653,27 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   async function resumeManualRun() {
     const pending = manualRequest.current;
     if (!pending || !canWrite || working) return;
+    const recoveryEpoch=++epoch.current,draftAtStart=draftRef.current;
+    const hadConfirmedVersion=confirmedManualRevision.current?.id===pending.revisionId;
+    const current=()=>alive.current&&epoch.current===recoveryEpoch&&manualRequest.current?.revisionId===pending.revisionId&&manualRequest.current?.key===pending.key;
     setBusy(true); setError("");
     try {
-      const actual = await api<Run>("/runs", {revisionId:pending.revisionId}, {idempotencyKey:pending.key});
-      if (!alive.current) return;
-      if (actual.revisionId !== pending.revisionId) throw new Error("返回批次与原版本不一致，保留恢复编号");
-      setRun(actual); setManualUnconfirmed(false); manualRequest.current=undefined;
-      rememberManual(pending.revisionId, actual.id);
+      const restored=await recoverManualRun(pending,{
+        href:location.href,isCurrent:current,
+        readRevision:id=>api<SavedRevision>(`/revisions/${id}`),
+        submitRun:(revisionId,key)=>api<Run>("/runs",{revisionId},{idempotencyKey:key}),
+        acceptRevision:(saved,origin)=>{
+          confirmedManualRevision.current=saved;
+          setTask(undefined);setContextId(saved.contextId);setBaseline(saved.sql);setBaselineRevisionId(saved.id);setOriginTaskId(origin);
+          setDraft(value=>!hadConfirmedVersion&&!value&&value===draftAtStart?saved.sql:value);
+        },
+      });
+      if(!restored)return;
+      setRun(restored.run); setManualUnconfirmed(false); manualRequest.current=undefined;
+      rememberManual(pending.revisionId, restored.run.id,undefined,restored.originTaskId);
       setNotice("已按原提交编号确认批次；未保存的编辑保持不变，结果只属于原代码版本。");
-    } catch(e) { setError((e as Error).message + " 原提交编号保留，不会生成新的重试编号。"); }
-    finally { setBusy(false); }
+    } catch(e) { if(current())setError((e as Error).message + " 原提交编号保留，不会生成新的重试编号。"); }
+    finally { if(alive.current&&epoch.current===recoveryEpoch)setBusy(false); }
   }
   async function recoverSavedRevision(key = pendingSaveKey) {
     if (!key) return;
