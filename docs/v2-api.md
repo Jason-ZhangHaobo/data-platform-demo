@@ -1,5 +1,17 @@
 # V2 API 契约与实现边界
 
+## 新交付生成的执行来源（2026-11-18，部署另验）
+
+`POST /delivery/packages` 及共用文件生成逻辑的入口，要求来源 `mainSqlExecuted=true`、未标为 `testDouble=true`，并匹配 Spark 引擎与适配版本。本机版本为 3.5.7／3.5.8／3.5.9，隔离 Worker 为 3.5.8／3.5.9；业务口径、代码摘要、权限和原窗口校验仍需通过。拒绝发生在制品写入之前。
+
+| HTTP | code | 含义 |
+| --- | --- | --- |
+| 409 | `DELIVERY_SOURCE_SIMULATED` | 来源明确标记为模拟执行 |
+| 409 | `DELIVERY_SOURCE_EXECUTION_UNCONFIRMED` | 缺少肯定的主 SQL 实际执行标记 |
+| 409 | `DELIVERY_SOURCE_ENGINE_UNSUPPORTED` | 来源引擎或版本不能用于当前适配器 |
+
+现有交付包的 GET 和文件查看继续按原身份与来源边界处理。这条新建门槛不自动补写历史证据，也不重跑旧批次；文件演练、审阅和发布保留各自验收门槛。GUI、CLI 与 MCP 通过相同服务端生成规则处理请求。
+
 ## 只读业务期间的本人改密（2026-11-02，部署与真实账号验收待完成）
 
 `POST /auth/password` 仅接受 `currentPassword,newPassword` 两个字段。只读和开发/发布/服务试点均允许该精确 POST 进入原身份校验；仍需有效本人会话、Origin、客户端标记、CSRF 和当前密码。目标账号、角色、项目等额外字段拒绝，不能给他人改密。成功前等待持久化，随后撤销旧会话并签发新会话；持久化失败不返回成功 Cookie。

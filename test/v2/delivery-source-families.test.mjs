@@ -8,8 +8,9 @@ import { deliverySourceSelection } from "../../web/src/delivery-source.ts";
 import { manualDeliveryPackages } from "../../web/src/manual-run-recovery.ts";
 
 const legacyContract = "securities-assets-five-fixtures-2026-09-14", stockContract = "securities-stock-cash-five-fixtures-v1";
-const oldRun = { id: "old-run", status: "SUCCEEDED", contextId: "holdings-t1", validationContractId: legacyContract };
-const stockRun = { id: "stock-run", status: "SUCCEEDED", contextId: "stock-cash-t1", validationContractId: stockContract };
+const execution = {engine:"Apache Spark",engineVersion:"3.5.9",mainSqlExecuted:true};
+const oldRun = { ...execution,id: "old-run", status: "SUCCEEDED", contextId: "holdings-t1", validationContractId: legacyContract };
+const stockRun = { ...execution,id: "stock-run", status: "SUCCEEDED", contextId: "stock-cash-t1", validationContractId: stockContract };
 const runs = [oldRun, stockRun];
 
 test("classic delivery validates each run's known family rather than the legacy status contract", () => {
@@ -79,6 +80,17 @@ test("actual missing-source markup explains non-fallback and disables package cr
   assert.match(html, /不会改选其他运行/);
   assert.doesNotMatch(html, /<option value="old-run"/);
   assert.match(html, /<button[^>]*disabled=""[^>]*>[\s\S]*?生成交付包/);
+});
+
+test('simulated and unconfirmed sources remain inspectable while all new file generation is disabled',()=>{
+  for(const patch of [{testDouble:true},{mainSqlExecuted:false},{mainSqlExecuted:undefined}]){
+    const run=Object.freeze({...stockRun,...patch});
+    const state=deliverySourceSelection([run],{sourceRunId:run.id,lockSource:true,contractId:stockContract});
+    assert.equal(state.source,run.id);assert.equal(state.canCreate,false);
+    const html=render({runs:[run],sourceRunId:run.id,contractId:stockContract,lockSource:true});
+    assert.match(html,/不能.*交付/);assert.match(html,/<button[^>]*disabled=""[^>]*>[\s\S]*?生成交付包/);
+    assert.match(html,/<option value="stock-run" selected=""/);
+  }
 });
 
 test("classic entry does not pass a global contract while Agent lock remains explicit", () => {

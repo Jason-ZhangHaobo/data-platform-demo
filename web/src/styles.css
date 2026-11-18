@@ -8273,3 +8273,9 @@ kbd {
   background: #f3f6f1;
   line-height: 1.6;
 }
+
+.delivery-source-block > .button { flex-shrink: 0; white-space: nowrap; }
+@media (max-width: 600px) {
+  .delivery-source-block { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; }
+  .delivery-source-block > .button { grid-column: 2; justify-self: start; }
+}

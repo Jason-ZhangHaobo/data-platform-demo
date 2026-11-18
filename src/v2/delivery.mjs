@@ -11,6 +11,7 @@ import {checkedAssistedDevelopmentReference} from './assisted-development-refere
 import {frozenSqlRequirements,sqlRequirementBinding,validateFrozenSqlRequirements} from './sql-requirements.mjs';
 import { assertSyncSqlOutputSchema, syncSqlContractId, syncSqlContextId, syncSqlDeliverySource, syncSqlRowsMatch, validateSyncSqlDeliveryContext } from "./sync-sql-input.mjs";
 import { checkedDeliveryDerivation } from "./agent-context-derivation.mjs";
+import {deliverySourceExecutionIssue,supportedDeliverySparkVersion} from './delivery-source-evidence.mjs';
 
 export const deliveryFormat = "shuduo-delivery/v1";
 export const deliveryFiles = [
@@ -33,8 +34,6 @@ export function validationMatchesFamily(validation, family, { requireContract = 
     Array.isArray(checks) && checks.length === ids.length && new Set(checks.map(check => check?.contextId)).size === ids.length &&
     ids.every(id => checks.some(check => check?.contextId === id && check.passed === true)));
 }
-const supportedSparkVersions = new Set(["3.5.7", "3.5.8", "3.5.9"]);
-const cloudSparkVersions = new Set(["3.5.8", "3.5.9"]);
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
 const canonical = (value) =>
   JSON.stringify(
@@ -148,6 +147,8 @@ export function createDeliveryPackage({
     throw Object.assign(new Error("缺少有效的源运行、项目或代码版本标识"), {
       status: 409,
     });
+  const executionIssue=run&&deliverySourceExecutionIssue(run);
+  if(executionIssue)throw Object.assign(new Error(executionIssue.message),{status:409,code:executionIssue.code});
   if (
     !run ||
     !revision ||
@@ -155,8 +156,8 @@ export function createDeliveryPackage({
     run.revisionId !== revision.id ||
     run.status !== "SUCCEEDED" ||
     run.engine !== "Apache Spark" ||
-    !supportedSparkVersions.has(run.engineVersion) ||
-    (remoteExecution && !cloudSparkVersions.has(run.engineVersion)) ||
+    !supportedDeliverySparkVersion(run.engineVersion) ||
+    (remoteExecution && !supportedDeliverySparkVersion(run.engineVersion,true)) ||
     !family || !run.validation?.passed ||
     run.validation.contractId !== family.id ||
     (run.contextId !== undefined && run.contextId !== revision.contextId) ||
@@ -457,8 +458,8 @@ export function validateDeliveryPackage(bundle, expectedDigest) {
       "driverMemoryMiB",
     ]) ||
     deployment.runtime.engine !== "Apache Spark" ||
-    !supportedSparkVersions.has(deployment.runtime.version) ||
-    (remoteTarget && !cloudSparkVersions.has(deployment.runtime.version)) ||
+    !supportedDeliverySparkVersion(deployment.runtime.version) ||
+    (remoteTarget && !supportedDeliverySparkVersion(deployment.runtime.version,true)) ||
     deployment.runtime.timeoutSeconds !== 90 ||
     deployment.runtime.parallelism !== 1
   )

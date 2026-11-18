@@ -25,6 +25,7 @@ function setup() {
       status: "SUCCEEDED",
       engine: "Apache Spark",
       engineVersion: "3.5.9",
+      mainSqlExecuted: true,
       rows: [{ client_id: "CLIENT-SECRET", total_assets: "1000.00" }],
       error: "SECRET-ERROR-BUSINESS-ROW",
       validation: {

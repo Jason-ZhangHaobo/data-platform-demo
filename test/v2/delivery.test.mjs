@@ -47,6 +47,7 @@ function source() {
     status: "SUCCEEDED",
     engine: "Apache Spark",
     engineVersion: "3.5.7",
+    mainSqlExecuted: true,
     validation: {
       passed: true,
       contractId: validationContractId,
