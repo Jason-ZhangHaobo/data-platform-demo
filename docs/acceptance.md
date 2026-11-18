@@ -727,6 +727,8 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 ## 2026-09-15：代码Agent七阶段证据旅程
 
+当前版本的核验报告按实际状态展示每个检查项。等待执行或回执时显示「待核验」，已结算且不通过时显示红色「未通过」。存在未保存修改、读取中或读取失败时，原检查项按历史记录展示，当前通过标记撤下。刷新仅重读原记录。
+
 - 现有Agent委托只覆盖SQL开发；新增只读`/agent/tasks/:id/journey`从同任务attempt、代码版本和Spark运行关联交付包、调度/部署文件、演练、摘要审批、墙上时钟批次、健康与告警，七阶段标明Agent/工程师/调度器责任。
 - 合成实测将成功模型+Spark任务依次接上不可变交付包、成功文件演练、审批、发布与两个计时批次；本机证据完整可显示，但`agentIndependentE2E=false`、`evaluatedAsFullLifecycle=false`、`publicDeployed=false`不改变。
 - 开放告警使当前监控阶段降为待完成；回滚的历史发布降为HISTORICAL。响应不含SQL、业务行或原始报错；CLI/MCP共用同一只读API，开发Agent面板可展开阶段和短证据ID。

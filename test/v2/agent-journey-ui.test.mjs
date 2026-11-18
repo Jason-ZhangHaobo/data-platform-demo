@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { agentJourney, deliveryStageText, publicationEvidenceText, verificationPresentation,manualConsumptionEntryMatches } from "../../web/src/agent-journey.ts";
 import { contextIds } from "../../src/v2/context.mjs";
 import { deliveryFiles } from "../../src/v2/delivery.mjs";
+import { developmentVerificationReport } from "../../src/v2/agent-development-workflow.mjs";
+import { referenceSql, validationContractId } from "../../src/v2/context.mjs";
+import { sha256 } from "../../src/v2/delivery.mjs";
 
 const fixture = () => ({
   taskId: "synthetic-task", revisionId: "revision-one", runId: "run-one", dirty: false,
@@ -86,6 +89,32 @@ test("an in-flight report asks to await the existing receipt, not repair or resu
   assert.equal(verificationPresentation(false, false, "READY", "PENDING").title, "原版本报告");
   assert.equal(verificationPresentation(true, false, "ERROR", "PENDING").title, "读取未确认");
   assert.equal(verificationPresentation(true, false, "READY", "NEEDS_ATTENTION").title, "需要处理");
+});
+
+test('settled failed checks are distinct from pending and historical backend reports',()=>{
+ const task={id:'fictional-task',contextId:'holdings-t1'};
+ const revision={id:'fictional-revision',contextId:task.contextId,sql:referenceSql,hash:sha256(referenceSql)};
+ const run={id:'fictional-run',contextId:task.contextId,revisionId:revision.id,revisionHash:revision.hash,
+  status:'VALIDATION_FAILED',engine:'Apache Spark',mainSqlExecuted:true,rows:[],
+  validation:{passed:false,contractId:validationContractId,regressions:contextIds.map(contextId=>({contextId,passed:false}))}};
+ const report=developmentVerificationReport(task,run,revision);
+ assert.equal(report.status,'NEEDS_ATTENTION');
+ assert.ok(report.checks.some(check=>check.passed));
+ assert.ok(report.checks.some(check=>!check.passed));
+ const failed=verificationPresentation(true,false,'READY',report.status);
+ assert.equal(failed.currentChecks,true);
+ assert.equal(failed.unpassedCheckLabel,'未通过');
+ const pendingReport=developmentVerificationReport(task,{...run,status:'RUNNING'},revision);
+ assert.equal(pendingReport.status,'PENDING');
+ assert.equal(verificationPresentation(true,false,'READY',pendingReport.status).unpassedCheckLabel,'待核验');
+ for(const state of ['LOADING','ERROR']){
+  const view=verificationPresentation(true,false,state,report.status);
+  assert.equal(view.currentChecks,false);
+  assert.equal(view.unpassedCheckLabel,undefined);
+ }
+ const old=verificationPresentation(false,false,'READY',report.status);
+ assert.equal(old.currentChecks,false);
+ assert.equal(old.unpassedCheckLabel,undefined);
 });
 
 test("publication card uses the same evidence gate as journey, not a healthy status label", () => {

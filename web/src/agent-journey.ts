@@ -6,12 +6,13 @@ import {validationFamilyForContextId,regressionsMatchFamily} from "./validation-
 export type JourneyState = "DONE" | "PENDING" | "ATTENTION" | "STALE";
 export type JourneyStep = { id: string; label: string; state: JourneyState; detail: string; target: string };
 export type EvidenceReadState = "LOADING" | "READY" | "ERROR";
-export function verificationPresentation(current: boolean, verified: boolean, readState: EvidenceReadState, reportStatus?: string) {
+type VerificationPresentation = {title:string;detail:string;currentChecks:boolean;unpassedCheckLabel?:"待核验"|"未通过"};
+export function verificationPresentation(current: boolean, verified: boolean, readState: EvidenceReadState, reportStatus?: string):VerificationPresentation {
   if (readState === "ERROR") return { title: "读取未确认", detail: "无法读取最新核验记录；已有报告仅供参考。重试只读取记录，不重新运行模型或 Spark。", currentChecks: false };
   if (readState === "LOADING") return { title: "正在核对记录", detail: "正在读取当前任务与版本的证据；读取完成前不能审阅发布。", currentChecks: false };
   if (!current) return { title: "原版本报告", detail: "报告与当前代码或批次不一致；请运行当前代码后重新核验，原报告保留供对照。", currentChecks: false };
-  if (!verified && reportStatus === "PENDING") return { title: "等待执行核验", detail: "任务仍在执行或等待回执；刷新只读取原记录，不重复提交模型或 Spark。", currentChecks: true };
-  return { title: verified ? "核验通过" : "需要处理", detail: verified ? "当前版本的独立核验通过，可继续准备交付文件。" : "请先处理未通过的检查项，再重新核验；SQL 跑通不等于结果正确。", currentChecks: true };
+  if (!verified && reportStatus === "PENDING") return { title: "等待执行核验", detail: "任务仍在执行或等待回执；刷新只读取原记录，不重复提交模型或 Spark。", currentChecks: true, unpassedCheckLabel:"待核验" };
+  return { title: verified ? "核验通过" : "需要处理", detail: verified ? "当前版本的独立核验通过，可继续准备交付文件。" : "请先处理未通过的检查项，再重新核验；SQL 跑通不等于结果正确。", currentChecks: true, unpassedCheckLabel:"未通过" };
 }
 export function publicationEvidenceText(release: { status: string; health: string }, current: boolean, monitored: boolean): string {
   if (!current) return "历史发布记录 · 不代表当前版本上线";
