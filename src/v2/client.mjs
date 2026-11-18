@@ -21,6 +21,8 @@ export const V2_OPERATIONS = Object.freeze([
   'sql_run_comparison_candidates',
   'sql_run_compare',
   'sql_synced_positions',
+  'sql_materialized_archives',
+  'sql_materialized_positions',
   'sql_sync_archives',
   'sql_archived_positions',
   "agent_background_status",

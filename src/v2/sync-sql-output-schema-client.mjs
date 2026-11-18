@@ -1,4 +1,4 @@
-import {parseSyncSqlSelection} from './sync-sql-selection.mjs';
+import {parseSyncSqlSelection,materializedSyncInputKind} from './sync-sql-selection.mjs';
 const identifier = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const digest = /^[a-f0-9]{64}$/;
 const token = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
@@ -107,13 +107,13 @@ export async function readSyncSqlOutputSchema(client, { runId }) {
 
 export async function readSyncedPositions(client) {
   const value = await client.request("/development/synced-positions");
-  return checkedSyncedPositions(value);
+  const offer=checkedSyncedPositions(value);if(offer.selection.kind!==undefined)throw Error('当前表入口未返回原当前表选择');return offer;
 }
 function checkedSyncedPositions(value) {
   const selection = parseSyncSqlSelection(value?.selection);
-  if (value?.contextId !== "holdings-t1" || selection?.targetTable !== "raw_positions" ||
+  if (value?.contextId !== "holdings-t1" ||
       ![selection.runId, value.taskId, value.sourceRevisionId, value.metadataVersionId].every(id => matches(identifier,id)) ||
-      !matches(digest,selection.targetHash) || !Number.isInteger(value.rowCount) || value.rowCount < 1 || value.rowCount > 500 ||
+      !matches(digest,selection.targetHash) || !Number.isInteger(value.rowCount) || value.rowCount < (selection.kind===materializedSyncInputKind?0:1) || value.rowCount > 500 ||
       value.verifiedCurrency !== undefined && value.verifiedCurrency !== "CNY")
     throw Error("持仓同步批次、元数据或币种证据未确认。");
   if(selection.kind&&selection.taskId!==value.taskId)throw Error('原持仓批次与任务未核对一致');
@@ -140,6 +140,21 @@ export async function readArchivedSyncedPositions(client,expected) {
   if(offer.selection.kind!=='SYNC_RUN_ARCHIVE_V1'||offer.taskId!==expected.taskId||offer.selection.runId!==expected.runId||
     ['targetHash','landingSnapshotHash'].some(field=>expected[field]!==undefined&&expected[field]!==offer.selection[field]))throw Error('原持仓批次或快照摘要已变化，未自动替换');
   return offer;
+}
+
+export async function readMaterializedSyncSqlArchives(client){
+ const value=await client.request('/development/synced-positions/materialized');
+ if(value?.protocol!=='shuduo-materialized-holdings/v1'||value.readOnly!==true||!Array.isArray(value.candidates)||value.candidates.length>100)throw Error('完整持仓快照目录未确认');
+ const seen=new Set();return value.candidates.map(c=>{
+  const {taskId,runId,targetTable,mode,targetHash,landingSnapshotHash,taskName,rowCount,finishedAt,verification,changeEpochId,changeStateHash}=c??{};
+  const selection=parseSyncSqlSelection({kind:materializedSyncInputKind,targetTable,taskId,runId,targetHash,landingSnapshotHash,mode,...(mode==='INCREMENTAL_CHANGELOG'?{changeEpochId,changeStateHash}:{})});
+  if(seen.has(runId)||typeof taskName!=='string'||!taskName.trim()||taskName.length>100||!Number.isInteger(rowCount)||rowCount<0||rowCount>500||!Number.isFinite(Date.parse(finishedAt))||verification!=='REQUIRES_CHECK')throw Error('完整快照目录不完整');seen.add(runId);return {...selection,taskName,rowCount,finishedAt,verification};
+ });
+}
+export async function readMaterializedSyncedPositions(client,expected){
+ if(![expected.taskId,expected.runId].every(v=>matches(identifier,v)&&v.length===36))throw Error('请选择确切完整快照的任务/运行UUID');
+ const offer=checkedSyncedPositions(await client.request(`/development/synced-positions/materialized/${expected.taskId}/${expected.runId}`));
+ if(offer.selection.kind!==materializedSyncInputKind||offer.taskId!==expected.taskId||offer.selection.runId!==expected.runId||['targetTable','mode','targetHash','landingSnapshotHash','changeEpochId','changeStateHash'].some(k=>expected[k]!==undefined&&offer.selection[k]!==expected[k]))throw Error('所选完整快照、模式或控制摘要已变化，未自动替换');if(expected.rowCount!==undefined&&expected.rowCount!==offer.rowCount)throw Error('所选完整快照行数与目录回执不一致');return offer;
 }
 
 export async function readSyncReviewEvidence(client, expected) {

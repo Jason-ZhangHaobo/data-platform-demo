@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## 完整持仓目标快照输入（2026-11-19，本机）
+
+新增 GET `/development/synced-positions/materialized` 及 `/:taskId/:runId`，只读候选与确切快照，沿用回环及工程师权限，额外查询拒绝。新 selection.kind=SYNC_MATERIALIZED_HOLDINGS_V1，目标/模式/批次/两个摘要固定，显式变更另需代号和状态摘要；零行可选。POST `/agent/tasks` 共用该选择并重新核对冻结，CLI/MCP 同契约。旧选择及交付摘要不变；完整说明见[输入契约](materialized-agent-input.md)。
+
 ## CSV显式变更与恢复（2026-11-19，本机）
 
 POST `/sync/tasks`新增mode=INCREMENTAL_CHANGELOG、changeConfig={epochId,operationField,sequenceField}，映射不得含控制列，当前仅本机CSV。新模式未知参数拒绝，创建按规范对象摘要幂等；POST run仅原配置空body，稳定请求UUID用于原提交回读/恢复。run.changeState含代号/状态摘要及接受、删除事件、重复/旧事件计数，deleted仍是物理行数。业务状态追加可选控制表并保持旧v1形状与版本链兼容，见[协议和多端用法](csv-changelog.md)。

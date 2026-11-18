@@ -4,7 +4,7 @@ import { getContext } from "./context.mjs";
 import { ingestionSchemaHash } from "./ingestion.mjs";
 import { checkedSyncSqlInputMetadata } from "./sync-sql-output-schema-client.mjs";
 import { equalValidationNumber } from "./validation-number.mjs";
-import {syncSqlSelectionFromBinding,archivedSyncInputKind} from './sync-sql-selection.mjs';
+import {syncSqlSelectionFromBinding,archivedSyncInputKind,materializedSyncInputKind} from './sync-sql-selection.mjs';
 import {syncSqlContextId,syncSqlContractId} from './sync-sql-contract.mjs';
 export {parseSyncSqlSelection} from './sync-sql-selection.mjs';
 export {syncSqlContextId,syncSqlContractId} from './sync-sql-contract.mjs';
@@ -163,7 +163,7 @@ export function syncSqlDeliverySource({ agent, run, revision }) {
 
 export function validateSyncSqlDeliveryContext(binding, context) {
   const invalid = () => fail(422, "交付输入、同步快照摘要或独立预期不一致");
-  if (!binding || typeof binding !== "object" || Object.keys(binding).length !== (binding.kind===archivedSyncInputKind?14:12)) throw invalid();
+  if (!binding || typeof binding !== "object" || Object.keys(binding).length !== (binding.kind===materializedSyncInputKind?(binding.mode==='INCREMENTAL_CHANGELOG'?17:15):binding.kind===archivedSyncInputKind?14:12)) throw invalid();
   const { targetTable: target, runId, targetHash, taskId, sourceRevisionId, metadataVersionId, rowCount, snapshotId,
     snapshotHash, actorId, agentTaskId, developmentMode } = binding;
   const selection = syncSqlSelectionFromBinding(binding);
@@ -171,7 +171,7 @@ export function validateSyncSqlDeliveryContext(binding, context) {
       typeof snapshotHash !== "string" || !digest.test(snapshotHash) ||
       typeof actorId !== "string" || !(actorId === "local-engineer" || uuid.test(actorId)) ||
       !["LIVE_MODEL", "SYNTHETIC_MODEL", "MANUAL"].includes(developmentMode) ||
-      !Number.isInteger(rowCount) || rowCount < 1 || rowCount > 500) throw invalid();
+      !Number.isInteger(rowCount) || rowCount < (binding.kind===materializedSyncInputKind?0:1) || rowCount > 500) throw invalid();
   const positions = Array.isArray(context?.tables) && context.tables.find(table => table?.name === "positions");
   const columns = getContext(syncSqlContextId).tables.find(table => table.name === "positions").columns;
   if (!Array.isArray(positions?.rows) || positions.rows.length !== rowCount ||

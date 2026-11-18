@@ -5,7 +5,7 @@ import {readFrozenSchedule} from '../src/v2/frozen-schedule-client.mjs';
 import {readTradingCalendars,readTradingCalendarVersion,readTradingDay} from '../src/v2/trading-calendar-client.mjs';
 import {readQualityVersionRequest,qualityVersionRequestPath} from '../src/v2/quality-version-request.mjs';
 import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
-import {readSyncSqlArchives,readArchivedSyncedPositions} from '../src/v2/sync-sql-output-schema-client.mjs';
+import {readSyncSqlArchives,readArchivedSyncedPositions,readMaterializedSyncSqlArchives,readMaterializedSyncedPositions} from '../src/v2/sync-sql-output-schema-client.mjs';
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/delivery-preparation-request.mjs";
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
 import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
@@ -97,6 +97,8 @@ const tools = [
   {name:'agent_repair_comparison_create',description:'明确委托后新建对照辅助修正任务；后台重核双方归属、代码和证据，只传脱敏摘要。记为人工辅助，不计自主完成，不批准发布。未知结果用同一requestId查询原请求，不另建任务。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},baselineRunId:{type:'string',format:'uuid'},message:{type:'string',minLength:4,maxLength:2000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['sourceRunId','baselineRunId','message','requestId','confirm']},annotations:{readOnlyHint:false}},
   {name:'sql_run_comparison_candidates',description:'只读当前用户可见的同口径运行候选，最多50条元数据；不读业务行、不推进运行。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'}},required:['runId']},annotations:{readOnlyHint:true}},
   {name:'sql_run_output_schema',description:'按原运行编号只读冻结持仓的实际与预期输出结构差异。读取保存回执，不执行 SQL。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'}},required:['runId']},annotations:{readOnlyHint:true}},
+  {name:'sql_materialized_archives',description:'只读列出完整持仓目标快照（全量/合并/显式变更），不是原始事件；允许空持仓保留登记现金，使用前核对。',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true}},
+  {name:'sql_materialized_positions',description:'按原任务和运行核对完整物化快照及控制摘要，不启动模型或计算，不用当前表替代。',inputSchema:{type:'object',properties:{taskId:{type:'string'},runId:{type:'string'},targetTable:{type:'string'},mode:{type:'string'},targetHash:{type:'string'},landingSnapshotHash:{type:'string'},changeEpochId:{type:'string'},changeStateHash:{type:'string'},rowCount:{type:'integer'}},required:['taskId','runId'],additionalProperties:false},annotations:{readOnlyHint:true}},
   {name:'sql_sync_archives',description:'读取本机全量虚构持仓归档候选回执，不代表行数据已核对，不调用模型或Spark。',inputSchema:{type:'object',additionalProperties:false,properties:{}},annotations:{readOnlyHint:true}},
   {name:'sql_archived_positions',description:'按确切任务与运行核对原持仓归档、元数据和口径，返回可显式提交的归档选择；不读取当前表替代，不启动开发。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string'},runId:{type:'string'},targetHash:{type:'string'},landingSnapshotHash:{type:'string'}},required:['taskId','runId']},annotations:{readOnlyHint:true}},
   {name:'sql_synced_positions',description:'只读核对可选择的全量持仓同步批次、元数据、摘要及币种条件。',inputSchema:{type:'object',additionalProperties:false,properties:{}},annotations:{readOnlyHint:true}},
@@ -378,6 +380,8 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==='sql_run_comparison_candidates')return readRunComparisonCandidates(client,args);
   if(name==='sql_run_output_schema')return readSyncSqlOutputSchema(client,args);
   if(name==='sql_synced_positions')return readSyncedPositions(client);
+  if(name==='sql_materialized_archives')return readMaterializedSyncSqlArchives(client);
+  if(name==='sql_materialized_positions')return readMaterializedSyncedPositions(client,args);
   if(name==='sql_sync_archives')return readSyncSqlArchives(client);
   if(name==='sql_archived_positions')return readArchivedSyncedPositions(client,args);
   if(name==='sql_run_compare')return readSqlRunComparison(client,args);
