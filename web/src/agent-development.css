@@ -89,3 +89,10 @@
 .agent-call-history dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; max-width: 680px; margin: 12px 0; }
 .agent-call-history dt { font-weight: 600; }
 .agent-call-history dd { margin: 0; overflow-wrap: anywhere; }
+
+@media(max-width:600px){.agent-dev-result-tabs{flex-wrap:wrap;gap:0 13px}.agent-dev-result-tabs button{flex-shrink:0;white-space:nowrap}.agent-dev-result-tabs>span{flex-basis:100%;margin-left:0;padding-bottom:8px}}
+
+.agent-dev-check strong{flex-shrink:0;white-space:nowrap}
+@media(max-width:600px){.agent-repair-action{flex-direction:column;align-items:stretch}.agent-repair-action>.button{width:100%}}
+
+.agent-dev-artifacts>.agent-repair-action{margin:12px}
