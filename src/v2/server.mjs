@@ -1,5 +1,6 @@
+import {runBudgetedPlanning} from './budgeted-planning.mjs';
 import{readReportClarification,deriveReportClarification,assertReportClarificationPlan,reportProposalHash,reportClarificationSignature}from'./report-clarification.mjs';
-import {sourceReportInitial,sourceReportMayStart,sourceReportProjection,sourceReportUsage,runSourceReportPlan} from './source-report-execution.mjs';
+import {sourceReportInitial,sourceReportMayStart,sourceReportProjection,runSourceReportPlan} from './source-report-execution.mjs';
 import {certifiedDistributionSource,distributionServiceSources} from './distribution-service-source.mjs';
 import {assertDistributionConsent,assertDistributionRelease,sameLocalPublicationLane,sameDistributionConsent,assertDistributionRollback,activateDistributionRollback,distributionRequestSignature} from './distribution-publication.mjs';
 import { createServer } from "node:http";
@@ -1328,7 +1329,7 @@ export function createV2Server(options = {}) {
   const servicePlanner =
     options.servicePlanner ??
     (async (input) => {
-      if(input.modelBudgetReservation)budget.assertCanStartServiceModel(input.modelBudgetReservation);else budget.assertCanStartModel();
+      if(input.modelBudgetReservation)budget.assertCanStartServiceModel(input.modelBudgetReservation);
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateDataServicePlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -1349,7 +1350,6 @@ export function createV2Server(options = {}) {
   const ingestionPlanner =
     options.ingestionPlanner ??
     (async (input) => {
-      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateIngestionPlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -1368,7 +1368,6 @@ export function createV2Server(options = {}) {
   const realtimePlanner =
     options.realtimePlanner ??
     (async (input) => {
-      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateRealtimePlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -1398,7 +1397,6 @@ export function createV2Server(options = {}) {
   const assetPlanner =
     options.assetPlanner ??
     (async (input) => {
-      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateAssetInsight(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -1414,7 +1412,6 @@ export function createV2Server(options = {}) {
   const qualityPlanner =
     options.qualityPlanner ??
     (async (input) => {
-      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateQualityPlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -1430,7 +1427,6 @@ export function createV2Server(options = {}) {
   const securityPlanner =
     options.securityPlanner ??
     (async (input) => {
-      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateSecurityPlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -1477,7 +1473,7 @@ export function createV2Server(options = {}) {
   const reportPlanner =
     options.reportPlanner ??
     (async (input) => {
-      if(input.sourceReservation)budget.assertCanStartReportModel(input.sourceReservation);else budget.assertCanStartModel();
+      if(input.sourceReservation)budget.assertCanStartReportModel(input.sourceReservation);
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateReportPlan(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -1492,7 +1488,6 @@ export function createV2Server(options = {}) {
   const opsPlanner =
     options.opsPlanner ??
     (async (input) => {
-      budget.assertCanStartModel();
       const keyAtRequest = env.DASHSCOPE_API_KEY,
         result = await generateOpsDiagnosis(input, env);
       if (keyAtRequest === env.DASHSCOPE_API_KEY)
@@ -1553,6 +1548,7 @@ export function createV2Server(options = {}) {
         controls.delete(item.id);
       });
   };
+  const budgetedPlan = (kind, id, signal, invoke) => runBudgetedPlanning({store, project:PROJECT, kind, id, signal, budget, persist:persistDevelopment, invoke});
   const scheduleSourceReport=task=>schedule('report_agent_plan',task,signal=>runSourceReportPlan({store,project:PROJECT,id:task.id,bootId:privateRuntimeBootId,signal,contextFor:publishedPlanContext,planner:reportPlanner,budget,hash:publishedReportHash,planHash:publishedReportPlanHash,validate:validatePublishedReportPlan,now:options.now??Date.now,timeoutMs:options.reportPlanningTimeoutMs??60000}));
   const execute = async (run, rev, signal) => {
     const family=validationFamily(rev.contextId);
@@ -2528,19 +2524,17 @@ export function createV2Server(options = {}) {
           task = get("ingestion_agent_plan", dedup.id);
         if (!dedup.replayed)
           schedule("ingestion_agent_plan", task, async (signal) => {
-            const generated = await ingestionPlanner({
+            const generated = await budgetedPlan("ingestion_agent_plan", task.id, signal, () => ingestionPlanner({
                 message,
                 sources: ingestion.listSources(),
                 signal,
-              });
+              }));
             if (get("ingestion_agent_plan", task.id).status === "CANCELLED") return;
             const proposal = ingestion.validateAgentPlan(generated.plan);
             store.update("ingestion_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
               explanation: generated.explanation,
-              model: generated.model,
-              usage: generated.usage,
               finishedAt: new Date().toISOString(),
             });
           });
@@ -2663,19 +2657,17 @@ export function createV2Server(options = {}) {
           task = get("realtime_agent_plan", dedup.id);
         if (!dedup.replayed)
           schedule("realtime_agent_plan", task, async (signal) => {
-            const generated = await realtimePlanner({
+            const generated = await budgetedPlan("realtime_agent_plan", task.id, signal, () => realtimePlanner({
                 message,
                 sources: realtime.listSources(),
                 signal,
-              });
+              }));
             if (get("realtime_agent_plan", task.id).status === "CANCELLED") return;
             const proposal = realtime.validateAgentPlan(generated.plan);
             store.update("realtime_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
               explanation: generated.explanation,
-              model: generated.model,
-              usage: generated.usage,
               finishedAt: new Date().toISOString(),
             });
           });
@@ -2858,19 +2850,17 @@ export function createV2Server(options = {}) {
         if (!dedup.replayed)
           schedule("asset_agent_task", task, async (signal) => {
             const context = assets.agentContext(),
-              generated = await assetPlanner({
+              generated = await budgetedPlan("asset_agent_task", task.id, signal, () => assetPlanner({
                 message,
                 ...context,
                 contracts: dataContracts.agentContext(),
                 signal,
-              });
+              }));
             if (get("asset_agent_task", task.id).status === "CANCELLED") return;
             const insight = assets.validateAgentInsight(generated.insight, context);
             store.update("asset_agent_task", task.id, PROJECT, {
               status: "SUCCEEDED",
               insight,
-              model: generated.model,
-              usage: generated.usage,
               finishedAt: new Date().toISOString(),
             });
           });
@@ -3153,19 +3143,17 @@ export function createV2Server(options = {}) {
         if (!dedup.replayed)
           schedule("quality_agent_plan", task, async (signal) => {
             const context = quality.agentContext(),
-              generated = await qualityPlanner({
+              generated = await budgetedPlan("quality_agent_plan", task.id, signal, () => qualityPlanner({
                 message,
                 ...context,
                 signal,
-              });
+              }));
             if (get("quality_agent_plan", task.id).status === "CANCELLED") return;
             const proposal = quality.validateAgentPlan(generated.plan);
             store.update("quality_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
               explanation: generated.explanation,
-              model: generated.model,
-              usage: generated.usage,
               finishedAt: new Date().toISOString(),
             });
           });
@@ -3369,19 +3357,17 @@ export function createV2Server(options = {}) {
         if (!dedup.replayed)
           schedule("security_agent_plan", task, async (signal) => {
             const context = security.agentContext(),
-              generated = await securityPlanner({
+              generated = await budgetedPlan("security_agent_plan", task.id, signal, () => securityPlanner({
                 message,
                 ...context,
                 signal,
-              });
+              }));
             if (get("security_agent_plan", task.id).status === "CANCELLED") return;
             const proposal = security.validateAgentPlan(generated.plan);
             store.update("security_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
               explanation: generated.explanation,
-              model: generated.model,
-              usage: generated.usage,
               finishedAt: new Date().toISOString(),
             });
           });
@@ -3672,19 +3658,17 @@ export function createV2Server(options = {}) {
               return {datasets:all.datasets.filter(dataset=>canReadReportDataset(store.get("report_dataset",dataset.id,PROJECT))),
                 reports:all.reports.filter(canReadReport)};
             })(),
-              generated = await reportPlanner({
+              generated = await budgetedPlan("report_agent_plan", task.id, signal, () => reportPlanner({
                 message,
                 ...context,
                 signal,
-              });
+              }));
             if (get("report_agent_plan", task.id).status === "CANCELLED") return;
             const proposal = reports.validateAgentPlan(generated.plan);
             store.update("report_agent_plan", task.id, PROJECT, {
               status: "SUCCEEDED",
               proposal,
               explanation: generated.explanation,
-              model: generated.model,
-              usage: generated.usage,
               finishedAt: new Date().toISOString(),
             });
           });
@@ -3930,11 +3914,11 @@ export function createV2Server(options = {}) {
         if (!dedup.replayed)
           schedule("ops_agent_diagnosis", task, async (signal) => {
             const context = operations.agentContext(canReadOpsSource),
-              generated = await opsPlanner({
+              generated = await budgetedPlan("ops_agent_diagnosis", task.id, signal, () => opsPlanner({
                 message,
                 ...context,
                 signal,
-              });
+              }));
             if (get("ops_agent_diagnosis", task.id).status === "CANCELLED") return;
             const diagnosis = operations.validateAgentDiagnosis(
                 generated.diagnosis, canReadOpsSource,
@@ -3942,8 +3926,6 @@ export function createV2Server(options = {}) {
             store.update("ops_agent_diagnosis", task.id, PROJECT, {
               status: "SUCCEEDED",
               diagnosis,
-              model: generated.model,
-              usage: generated.usage,
               finishedAt: new Date().toISOString(),
             });
           });
@@ -5262,13 +5244,13 @@ export function createV2Server(options = {}) {
                     run.schedulerTriggered === true &&
                     run.validation?.passed,
                 ),
-              generated = await servicePlanner({
+              generated = await budgetedPlan("service_agent_plan", task.id, signal, () => servicePlanner({
                 message,
                 services: frozenContext?.services??visibleServices(),
                 releaseRuns,
                 ...(frozenContext?{sourceContext:frozenContext.sourceContext}:{}),
                 signal,
-              });
+              }));
             if (get("service_agent_plan", task.id).status === "CANCELLED") return;
             const proposal = dataServices.validateAgentPlan(generated.plan);
             let selectedVersions;
@@ -5281,8 +5263,6 @@ export function createV2Server(options = {}) {
               status: "SUCCEEDED",
               proposal,
               explanation: generated.explanation,
-              model: generated.model,
-              usage: generated.usage,
               finishedAt: new Date().toISOString(),
               ...(frozenContext?{selectedVersions,proposalHash:hash(JSON.stringify(proposal))}:{}),
             });
@@ -7121,46 +7101,11 @@ export function createV2Server(options = {}) {
           throw fail(403, "规划请求编号不属于当前用户");
         if (!dedup.replayed)
           schedule("agent_intent", task, async (signal) => {
-            const unsent = {model:undefined, usage:undefined, usageEstimated:false, usageUnknown:false, modelRequestSent:false};
-            try {
-              budget.assertCanStartModel();
-            } catch (error) {
-              store.update("agent_intent", task.id, PROJECT, unsent);
-              throw error;
-            }
-            const reserved = budget.fallbackTokens;
-            store.update("agent_intent", task.id, PROJECT, {
-              model:"unconfirmed", usage:{total_tokens:reserved}, usageEstimated:true, usageUnknown:true, modelRequestSent:undefined,
-            });
-            try {
-              await persistDevelopment();
-            } catch (error) {
-              store.update("agent_intent", task.id, PROJECT, unsent);
-              throw error;
-            }
-            if (signal.aborted || get("agent_intent", task.id).status === "CANCELLED") {
-              store.update("agent_intent", task.id, PROJECT, unsent);
-              await persistDevelopment();
-              return;
-            }
-            let generated;
-            try {
-              generated = await intentPlanner({
-                message,
-                destinations: publicAgentIntentDestinations(),
-                signal,
-              });
-            } catch (error) {
-              const diagnostic = safeModelDiagnostic(error);
-              if (error instanceof ModelUnavailable || !diagnostic.requestMayHaveBeenSent)
-                store.update("agent_intent", task.id, PROJECT, unsent);
-              else if (error.modelResultRecorded)
-                store.update("agent_intent", task.id, PROJECT, {...sourceReportUsage(error,reserved), modelRequestSent:true});
-              await persistDevelopment();
-              throw error;
-            }
-            store.update("agent_intent", task.id, PROJECT, {...sourceReportUsage(generated,reserved), modelRequestSent:true});
-            await persistDevelopment();
+            const generated = await budgetedPlan("agent_intent", task.id, signal, () => intentPlanner({
+              message,
+              destinations: publicAgentIntentDestinations(),
+              signal,
+            }));
             if (get("agent_intent", task.id).status === "CANCELLED") return;
             const route = validateAgentIntentRoute(generated.route);
             store.update("agent_intent", task.id, PROJECT, {

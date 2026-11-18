@@ -63,7 +63,7 @@ test("late specialist model responses cannot overwrite cancellation across all p
       }),
       planner = async () => {
         await gate;
-        return {};
+        return {model:'qwen3.7-plus',usage:{prompt_tokens:100,completion_tokens:50,total_tokens:150}};
       },
       app = createV2Server({
         root,
@@ -101,6 +101,9 @@ test("late specialist model responses cannot overwrite cancellation across all p
       assert.equal(final.proposal, undefined, item.name);
       assert.equal(final.insight, undefined, item.name);
       assert.equal(final.diagnosis, undefined, item.name);
+      assert.equal(final.model, 'qwen3.7-plus', item.name);
+      assert.equal(final.usage.total_tokens, 150, item.name);
+      assert.equal(app.budget.overview().model.estimatedCostCny, 0.0006, item.name);
     } finally {
       releasePlanner?.();
       await new Promise((resolve) => app.server.close(resolve));
